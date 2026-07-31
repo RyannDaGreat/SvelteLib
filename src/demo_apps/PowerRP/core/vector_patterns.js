@@ -57,7 +57,7 @@
  * DOM-free and bare-node loadable, like the rest of core/.
  */
 
-import { rectPathD, ellipsePathD } from "./svg_paths.js";
+import { rectPathD, ellipsePathD, arcToCubics, transformPathD } from "./svg_paths.js";
 
 /** The two abstract paint slots a cell shape may name. The cell is colour-blind:
  *  a consumer maps these to real colours (and "background" may be OFF entirely),
@@ -539,6 +539,368 @@ export function latticeCell({ period = 10, thickness = 0.1, radius = 0.5 } = {})
 }
 
 /**
+ * Pure function. BASKET WEAVE — pairs of parallel slats laid alternately
+ * horizontal and vertical, the fabric sheet's over-under weave. The domain is
+ * a 2x2 grid of slat-pairs: a horizontal pair occupies one diagonal, a
+ * vertical pair the other, exactly like checkerboard's diagonal alternation
+ * but each "square" is itself split into two slats with a gap between them
+ * (the woven look) rather than a solid block.
+ *
+ * Seamless for the same reason checkerboard is: the 2x2 domain is the whole
+ * repeat unit, and each pair sits fully inside its own quadrant.
+ *
+ * @param {{period: number, gap: number}} params - `period` is one quadrant's
+ *   side; `gap` is the slat gap as a fraction of period
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example basketWeaveCell({period: 10}).w // 20
+ * @example basketWeaveCell({period: 10}).shapes.length // 5 (bg + 2 h-slats + 2 v-slats)
+ */
+export function basketWeaveCell({ period = 10, gap = 0.12 } = {}) {
+  const s = clampParam("period", period, 0.01, 1e6);
+  const g = s * clampParam("gap", gap, 0, 0.45);
+  const slat = (s - g) / 2;
+  const w = s * 2;
+  const shapes = [backgroundShape(w, w)];
+  // Horizontal quadrant (top-left): two stacked horizontal slats spanning the
+  // full quadrant width. Vertical quadrant (bottom-right): the transpose.
+  shapes.push(inkRect(0, 0, s, slat), inkRect(0, slat + g, s, slat));
+  shapes.push(inkRect(s, s, slat, s), inkRect(s + slat + g, s, slat, s));
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. GREEK KEY / FRET — a right-angle spiral-step meander built
+ * from axis-aligned bars only (no diagonals), the fabric sheet's key/fret
+ * border turned into a tileable field.
+ *
+ * THE MOTIF IS A ONE-SIDED STAIRCASE, not a symmetric up-and-down spike (the
+ * first version of this generator drew a spike that went up AND down at the
+ * mid-line, which is a plus-sign, not a key — caught by rendering the roster
+ * and looking, exactly the failure mode this file's own QUALITY BAR names).
+ * A real Greek key climbs monotonically away from a baseline band in a
+ * square staircase, then the NEXT period's staircase descends back — that
+ * asymmetry (climb, then fall) is what makes it read as a running key rather
+ * than a row of crosses.
+ *
+ * Traced as ONE outline: a baseline band of thickness `t` runs the full
+ * width; a staircase of `steps` treads climbs from it on the LEFT half of
+ * the period and descends back to it on the RIGHT half, so consecutive
+ * periods interlock. Both the left and right ends sit on the baseline band
+ * at the same y, so translating by (±period, 0) reconnects the line exactly.
+ *
+ * @param {{period: number, thickness: number, steps: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example fretCell({period: 12}).w // 12
+ * @example fretCell({period: 12}).shapes.length // 4 (bg + 3 wrapping copies)
+ */
+export function fretCell({ period = 12, thickness = 0.16, steps = 3 } = {}) {
+  const s = clampParam("period", period, 0.01, 1e6);
+  const t = s * clampParam("thickness", thickness, 0.05, 0.3);
+  const nSteps = Math.round(clampParam("steps", steps, 2, 5));
+  const shapes = [backgroundShape(s, s)];
+  // The baseline band sits low in the cell; the staircase climbs from its
+  // LEFT end, treads across the top, then the NEXT copy's staircase (drawn by
+  // the x=+s translate) descends symmetrically back down on ITS left end —
+  // so the two staircases together read as one continuous running key.
+  const baseY = s * 0.78;
+  const top = t * 1.5;
+  const climbW = s * 0.5; // the staircase occupies the left half of the period
+  const treadW = climbW / nSteps;
+  // Outer edge: baseline-left -> climbs in `nSteps` treads up to `top` ->
+  // continues along `top` to the period's right edge -> back down the
+  // baseline's thickness to close the band. Inner edge (the return path)
+  // retraces one step lower/right, `t` thick, back to the start.
+  const outer = [[0, baseY + t]];
+  for (let k = 0; k < nSteps; k++) {
+    outer.push([k * treadW, baseY - k * ((baseY - top) / nSteps)]);
+    outer.push([(k + 1) * treadW, baseY - k * ((baseY - top) / nSteps)]);
+  }
+  outer.push([climbW, top]);
+  outer.push([s, top]);
+  outer.push([s, top + t]);
+  outer.push([climbW, top + t]);
+  for (let k = nSteps - 1; k >= 0; k--) {
+    outer.push([(k + 1) * treadW, baseY - k * ((baseY - top) / nSteps) + t]);
+    outer.push([k * treadW, baseY - k * ((baseY - top) / nSteps) + t]);
+  }
+  outer.push([0, baseY + t]);
+  for (const dx of [-s, 0, s]) shapes.push(inkPolygon(outer.map(([x, y]) => [x + dx, y])));
+  return { w: s, h: s, shapes };
+}
+
+/**
+ * Pure function. QUATREFOIL / MOROCCAN — four overlapping lens shapes (each a
+ * thin ellipse rotated 45° from the last) meeting at the cell centre, the
+ * fabric sheet's four-lobed medallion. The corner quarter-lobes reassemble
+ * across the seam exactly as diamonds' corner quarters do, so the motif reads
+ * as an unbroken lattice of medallions rather than isolated flowers.
+ *
+ * @param {{period: number, lobe: number}} params - `lobe` is lobe length as a
+ *   fraction of period
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example quatrefoilCell({period: 16}).w // 16
+ * @example quatrefoilCell({period: 16}).shapes.length // 6 (bg + 1 centre medallion + 4 corner medallions)
+ */
+export function quatrefoilCell({ period = 16, lobe = 0.42 } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const L = w * clampParam("lobe", lobe, 0.1, 0.5);
+  const thin = L * 0.42;
+  // A "petal" is a lens: a thin ellipse (major L, minor `thin`) centred L/2
+  // out from the medallion centre, ROTATED so its long axis points outward.
+  // Built by rotating+translating a plain ellipsePathD via transformPathD's
+  // general affine (which converts nothing to `A` — the ellipse is already
+  // cubic beziers, so the rotation stays exactly PDF-safe).
+  const petal = (cx, cy, angleDeg) => {
+    const a = (angleDeg * Math.PI) / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const petalCentre = ellipsePathD(L / 2, 0, L / 2, thin);
+    // Rotate about the ORIGIN then translate to (cx, cy): m = R(a) then +(cx,cy).
+    return transformPathD(petalCentre, { a: cos, b: sin, c: -sin, d: cos, e: cx, f: cy });
+  };
+  // Four petals at 0/90/180/270 make one medallion; all four wound the same
+  // way, drawn as one nonzero-fill shape so the overlap at the centre reads
+  // as solid ink rather than a punched hole.
+  const lensAt = (cx, cy) => ({ d: [0, 90, 180, 270].map((deg) => petal(cx, cy, deg)).join(""), paint: "ink" });
+  // The centre medallion PLUS its four corner quarters — same seam logic
+  // diamonds/polka_dots already use: a corner medallion straddles all four
+  // neighbouring cells, so drawing it once per corner reassembles across
+  // every edge into an unbroken lattice.
+  const shapes = [backgroundShape(w, w), lensAt(w / 2, w / 2)];
+  for (const [x, y] of [[0, 0], [w, 0], [0, w], [w, w]]) shapes.push(lensAt(x, y));
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. EIGHT-POINT STAR — two overlapping squares, one rotated 45°,
+ * the classic quilt/tile star (and the CAD sheet's "star" hatch). Built as a
+ * single 8-point outline rather than two overlapping squares so it is ONE
+ * nonzero-fill shape with a clean silhouette (two overlapping filled squares
+ * would double-cover their intersection, which is harmless for opaque ink but
+ * would show through at partial alpha — the outline avoids that entirely).
+ *
+ * @param {{period: number, size: number}} params - `size` as a fraction of period
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example starCell({period: 14}).w // 14
+ * @example starCell({period: 14}).shapes.length // 2 (background + the star)
+ */
+export function starCell({ period = 14, size = 0.85 } = {}) {
+  const w = clampParam("period", period, 0.01, 1e6);
+  const R = (w / 2) * clampParam("size", size, 0.2, 1);
+  const r = R * 0.42; // inner radius — the concave points between the 8 outer tips
+  const cx = w / 2, cy = w / 2;
+  const pts = [];
+  for (let k = 0; k < 16; k++) {
+    const a = (Math.PI / 8) * k - Math.PI / 2;
+    const rad = k % 2 === 0 ? R : r;
+    pts.push([cx + rad * Math.cos(a), cy + rad * Math.sin(a)]);
+  }
+  return { w, h: w, shapes: [backgroundShape(w, w), inkPolygon(pts)] };
+}
+
+/**
+ * Pure function. RUNNING-BOND BRICK — offset courses of rectangles with
+ * mortar gaps, the CAD sheet's plain brick/block hatch (and, at a tall narrow
+ * ratio, its floorboard/plank sibling — the same generator, different knobs,
+ * per the engine's "family via params" idiom already used by plaid).
+ *
+ * The domain is TWO courses tall (one full brick, one half-offset brick),
+ * which is what makes alternating-course brick a plain rectangular tile: the
+ * half-brick at each end of the offset course is what reassembles across the
+ * left/right seam.
+ *
+ * @param {{brickW: number, brickH: number, mortar: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example brickCell({brickW: 20, brickH: 10}).h // 20
+ * @example brickCell({brickW: 20, brickH: 10}).shapes.length // 4 (bg + 1 brick row1 + 2 half-bricks row2)
+ */
+export function brickCell({ brickW = 20, brickH = 10, mortar = 0.08 } = {}) {
+  const bw = clampParam("brickW", brickW, 0.5, 1e6);
+  const bh = clampParam("brickH", brickH, 0.5, 1e6);
+  const m = Math.min(bw, bh) * clampParam("mortar", mortar, 0, 0.3);
+  const w = bw, h = bh * 2;
+  const shapes = [backgroundShape(w, h)];
+  // Row 1: one full brick spanning the domain width. Row 2: offset by half a
+  // brick, so it is drawn as two half-bricks — one at each edge — which is
+  // exactly the piece that must wrap for the course to read as continuous.
+  shapes.push(inkRect(m / 2, m / 2, bw - m, bh - m));
+  const half = bw / 2;
+  shapes.push(inkRect(m / 2, bh + m / 2, half - m, bh - m));
+  shapes.push(inkRect(half + m / 2, bh + m / 2, half - m, bh - m));
+  return { w, h, shapes };
+}
+
+/**
+ * Pure function. SCALLOP / FAN — rows of overlapping half-circle arcs, the
+ * CAD sheet's fanned/scallop hatch and the fabric sheet's shell trim. Each
+ * arc is a true circular arc SAMPLED TO CUBIC BEZIERS via arcToCubics (never
+ * an SVG `A` command — the codebase's PDF-export-safety rule), closed against
+ * the row's baseline into a filled half-disc "scale".
+ *
+ * The domain is one scallop wide and one row tall; alternating rows offset by
+ * half a scallop is expressed as TWO rows in the domain (the same half-drop
+ * idiom svgTileCell documents), so plain x/y repetition still suffices.
+ *
+ * @param {{radius: number, overlap: number}} params - `overlap` as a fraction of radius
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example scallopCell({radius: 10}).h // 16 (2 rows of 0.8*radius each)
+ */
+export function scallopCell({ radius = 10, overlap = 0.15 } = {}) {
+  const R = clampParam("radius", radius, 0.5, 1e6);
+  const ov = clampParam("overlap", overlap, 0, 0.5);
+  const period = R * 2 * (1 - ov * 0.5);
+  const rowH = R * 0.8;
+  const w = period, h = rowH * 2;
+  const shapes = [backgroundShape(w, h)];
+  // A half-disc: flat diameter along the baseline, arc bulging DOWN into the
+  // row (a "scale" hanging from the course above). In this y-DOWN space,
+  // sweep=false is the flag that bulges the arc toward +y (down the screen);
+  // sweep=true bulges up, which was the FIRST version's bug (the roster
+  // rendered upward-pointing chevrons instead of hanging scales — caught by
+  // rendering the contact sheet and looking, per this file's own QUALITY BAR).
+  // arcToCubics(x1,y1, R,R, 0, false, false, x2,y2) sweeps the semicircle;
+  // segs are the pre-sampled cubics.
+  const scale = (cx, baseY) => {
+    const segs = arcToCubics(cx - R, baseY, R, R, 0, false, false, cx + R, baseY);
+    let d = `M${cellNum(cx - R)} ${cellNum(baseY)}`;
+    for (const [c1x, c1y, c2x, c2y, ex, ey] of segs)
+      d += `C${cellNum(c1x)} ${cellNum(c1y)} ${cellNum(c2x)} ${cellNum(c2y)} ${cellNum(ex)} ${cellNum(ey)}`;
+    d += "Z";
+    return { d, paint: "ink" };
+  };
+  // Row 0 centred at x=0 (plus its wrap at x=w) and x=w/2; row 1 (half-drop)
+  // the same, one rowH lower — the two rows are what makes the arcs stagger.
+  for (let row = 0; row < 2; row++) {
+    const baseY = rowH * (row + 1);
+    const xOff = row === 1 ? w / 2 : 0;
+    for (const cx of [xOff, xOff + w, xOff - w]) shapes.push(scale(cx, baseY));
+  }
+  return { w, h, shapes };
+}
+
+/**
+ * Pure function. STONE COURSING — seeded irregular polygon "stones" over a
+ * mortar background, the CAD sheet's cobblestone/pebble/rubblestone/granules/
+ * gravel/squared-stones/stonewall/paving/limestone family. ONE generator, the
+ * family distinguished by params exactly like plaid's band spec: `roundness`
+ * near 0 gives hard-edged squared masonry (limestone, paving, squared
+ * stones), near 1 gives lumpy rounded pebbles (cobblestone, gravel,
+ * rubblestone); `count`/`domain` set how coarse (few big stones) or fine
+ * (many small ones, granules) the aggregate reads.
+ *
+ * Each stone is a jittered-radius polygon around a scattered centre — the
+ * same hashUnit scatter randomDotsCell uses, so it is PROPERTY STATE (a pure
+ * function of seed) for the same reason. SEAMLESS BY THE SAME CONSTRUCTION
+ * randomDotsCell documents: every stone is emitted at all nine domain
+ * translates, so one straddling an edge is drawn whole on both sides.
+ *
+ * @param {{count: number, seed: number, domain: number, size: number, roundness: number, sides: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example cobbleCell({count: 4, domain: 1, seed: 3}).shapes.length // 37 (bg + 4 stones x 9 translates)
+ * @example cobbleCell({seed: 3}).shapes[1].d === cobbleCell({seed: 3}).shapes[1].d // true (deterministic)
+ */
+export function cobbleCell({ count = 10, seed = 1, domain = 3, size = 0.28, roundness = 0.6, sides = 7 } = {}) {
+  const unit = 10; // pattern-unit scale, matching the other generators' "period ~10" convention
+  const n = Math.round(clampParam("domain", domain, 1, 8));
+  const w = unit * n;
+  const baseR = unit * clampParam("size", size, 0.05, 0.6);
+  const round = clampParam("roundness", roundness, 0, 1);
+  const nSides = Math.round(clampParam("sides", sides, 4, 12));
+  const many = Math.round(clampParam("count", count, 1, 200));
+  const shapes = [backgroundShape(w, w)];
+  for (let i = 0; i < many; i++) {
+    const x = hashUnit(seed, i, 0) * w;
+    const y = hashUnit(seed, i, 1) * w;
+    const r = baseR * (0.7 + hashUnit(seed, i, 2) * 0.6);
+    const rot = hashUnit(seed, i, 3) * Math.PI * 2;
+    const pts = [];
+    for (let k = 0; k < nSides; k++) {
+      const a = rot + (Math.PI * 2 * k) / nSides;
+      // roundness jitters each vertex radius independently (irregular pebble
+      // outline); roundness=0 keeps every vertex at r (a hard regular
+      // polygon — squared stone).
+      const jitter = 1 + (hashUnit(seed, i * 100 + k, 4) - 0.5) * round * 0.7;
+      pts.push([x + r * jitter * Math.cos(a), y + r * jitter * Math.sin(a)]);
+    }
+    for (const dx of [-w, 0, w]) for (const dy of [-w, 0, w])
+      shapes.push(inkPolygon(pts.map(([px, py]) => [px + dx, py + dy])));
+  }
+  return { w, h: w, shapes };
+}
+
+/**
+ * Pure function. PLANK COURSING — offset rows of wide flat boards, each
+ * carrying one wavy grain line, the CAD sheet's floorboard/woodgrain/
+ * wavygrain/cedarshake/roofslate/spanish-roof family. Same running-bond
+ * offset brickCell uses (a full board on row 1, two half-boards on row 2),
+ * generalized with a per-board sinusoidal grain stroke — the ONE knob
+ * (`waveAmp`) that turns a plain plank (amp 0) into a wood-grain or shake
+ * texture (amp > 0), so the whole family is this one generator plus params.
+ *
+ * The grain line is built from sampled points joined by `L` segments rather
+ * than a smooth curve fit, which keeps it trivially exact at the board's own
+ * left/right edges (the sample always lands there) — a fitted curve would
+ * need its tangents pinned to guarantee that, for no visual benefit at this
+ * line thickness.
+ *
+ * @param {{boardW: number, boardH: number, gap: number, waveAmp: number, waveCycles: number, seed: number}} params
+ * @returns {{w: number, h: number, shapes: Array}}
+ *
+ * @example plankCell({boardW: 20, boardH: 8}).h // 16
+ * @example plankCell({boardW: 20, boardH: 8, waveAmp: 0}).shapes.length // 4 (bg + 1 board row1 + 2 half-boards row2, grain off)
+ * @example plankCell({boardW: 20, boardH: 8, waveAmp: 0.2}).shapes.length // 7 (same 3 outlines, each plus a grain ribbon)
+ */
+export function plankCell({ boardW = 24, boardH = 8, gap = 0.1, waveAmp = 0.18, waveCycles = 3, seed = 1 } = {}) {
+  const bw = clampParam("boardW", boardW, 0.5, 1e6);
+  const bh = clampParam("boardH", boardH, 0.5, 1e6);
+  const g = Math.min(bw, bh) * clampParam("gap", gap, 0, 0.3);
+  const amp = bh * clampParam("waveAmp", waveAmp, 0, 0.45);
+  const cycles = Math.max(1, Math.round(clampParam("waveCycles", waveCycles, 1, 8)));
+  const w = bw, h = bh * 2;
+  const shapes = [backgroundShape(w, h)];
+  const SAMPLES = 16;
+  // A board outline (the gap-inset rect) plus its grain line, sampled as a
+  // sine wave whose PHASE is seeded per board so neighbouring boards do not
+  // read as mechanically identical (matching cedarshake/wavygrain reference
+  // texture, where each course's wave is visibly offset from its neighbours).
+  const grainThickness = Math.max(bh * 0.03, 0.05);
+  const board = (x, y, bWidth, phaseSeedIndex) => {
+    const outline = inkRect(x + g / 2, y + g / 2, bWidth - g, bh - g);
+    const phase = hashUnit(seed, phaseSeedIndex, 0) * Math.PI * 2;
+    const midY = y + bh / 2;
+    const innerW = bWidth - g * 3;
+    const x0 = x + g * 1.5;
+    // The grain is a THICKENED ribbon (forward samples along the top edge,
+    // backward along the bottom edge of the ribbon), not a stroke — this
+    // engine draws filled shapes only, the same idiom chevron's V-band uses.
+    if (amp <= 0) return [outline];
+    const top = [], bottom = [];
+    for (let s = 0; s <= SAMPLES; s++) {
+      const t = s / SAMPLES;
+      const gx = x0 + t * innerW;
+      const gy = midY + amp * Math.sin(phase + t * cycles * Math.PI * 2);
+      top.push([gx, gy - grainThickness / 2]);
+      bottom.push([gx, gy + grainThickness / 2]);
+    }
+    const ribbon = { d: inkPolygon([...top, ...bottom.reverse()]).d, paint: "background" };
+    return [outline, ribbon];
+  };
+  // Row 1: one full board. Row 2 (half-drop, as brickCell's offset row is):
+  // two half-boards, one per edge, so the course wraps across the seam.
+  shapes.push(...board(0, 0, bw, 0));
+  const half = bw / 2;
+  shapes.push(...board(0, bh, half, 1));
+  shapes.push(...board(half, bh, half, 2));
+  return { w, h, shapes };
+}
+
+/**
  * Pure function. A TILED SVG ASSET's cell — an already-flattened SVG (a list of
  * {d, paint} records produced by core/svg_paths.flattenSvgTree) placed on a grid,
  * optionally HALF-DROPPED so alternate rows offset by half a cell.
@@ -699,6 +1061,72 @@ export const PATTERN_GENERATORS = Object.freeze({
       { name: "period", kind: "number", default: 14, min: 0.5, max: 400, step: 0.5, help: "Lattice spacing" },
       { name: "radius", kind: "number", default: 0.5, min: 0.05, max: 1.5, step: 0.01, help: "Ring radius, as a fraction of spacing" },
       { name: "thickness", kind: "number", default: 0.1, min: 0.01, max: 0.5, step: 0.01, help: "Ring thickness" },
+    ],
+  },
+  basket_weave: {
+    title: "Basket Weave", generate: basketWeaveCell,
+    params: [
+      { name: "period", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "One quadrant's side" },
+      { name: "gap", kind: "number", default: 0.12, min: 0, max: 0.45, step: 0.01, help: "Gap between the two slats, as a fraction of the quadrant" },
+    ],
+  },
+  fret: {
+    title: "Greek Key", generate: fretCell,
+    params: [
+      { name: "period", kind: "number", default: 12, min: 0.5, max: 400, step: 0.5, help: "Meander repeat width" },
+      { name: "thickness", kind: "number", default: 0.16, min: 0.05, max: 0.3, step: 0.01, help: "Line thickness, as a fraction of the repeat" },
+      { name: "steps", kind: "number", default: 3, min: 2, max: 5, step: 1, help: "Staircase treads per meander" },
+    ],
+  },
+  quatrefoil: {
+    title: "Quatrefoil", generate: quatrefoilCell,
+    params: [
+      { name: "period", kind: "number", default: 16, min: 0.5, max: 400, step: 0.5, help: "Medallion spacing" },
+      { name: "lobe", kind: "number", default: 0.42, min: 0.1, max: 0.5, step: 0.01, help: "Petal length, as a fraction of the spacing" },
+    ],
+  },
+  star8: {
+    title: "Eight-Point Star", generate: starCell,
+    params: [
+      { name: "period", kind: "number", default: 14, min: 0.5, max: 400, step: 0.5, help: "Star spacing" },
+      { name: "size", kind: "number", default: 0.85, min: 0.2, max: 1, step: 0.01, help: "Star size, as a fraction of the spacing" },
+    ],
+  },
+  brick: {
+    title: "Running Bond Brick", generate: brickCell,
+    params: [
+      { name: "brickW", kind: "number", default: 20, min: 0.5, max: 400, step: 0.5, help: "Brick length" },
+      { name: "brickH", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "Brick (course) height" },
+      { name: "mortar", kind: "number", default: 0.08, min: 0, max: 0.3, step: 0.01, help: "Mortar gap, as a fraction of the smaller brick dimension" },
+    ],
+  },
+  scallop: {
+    title: "Scallop / Fan", generate: scallopCell,
+    params: [
+      { name: "radius", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "Scale radius" },
+      { name: "overlap", kind: "number", default: 0.15, min: 0, max: 0.5, step: 0.01, help: "How much each scale overlaps its neighbour" },
+    ],
+  },
+  cobble: {
+    title: "Stone Coursing", generate: cobbleCell,
+    params: [
+      { name: "count", kind: "number", default: 10, min: 1, max: 200, step: 1, help: "Stones per fundamental domain" },
+      { name: "seed", kind: "number", default: 1, min: 0, max: 99999, step: 1, help: "Scatter seed — the same seed always lays out the same stones" },
+      { name: "domain", kind: "number", default: 3, min: 1, max: 8, step: 1, help: "Domain size in cells — larger hides the repeat" },
+      { name: "size", kind: "number", default: 0.28, min: 0.05, max: 0.6, step: 0.01, help: "Stone size" },
+      { name: "roundness", kind: "number", default: 0.6, min: 0, max: 1, step: 0.01, help: "0 = hard squared masonry, 1 = lumpy rounded pebbles" },
+      { name: "sides", kind: "number", default: 7, min: 4, max: 12, step: 1, help: "Polygon sides per stone" },
+    ],
+  },
+  plank: {
+    title: "Plank / Wood Grain", generate: plankCell,
+    params: [
+      { name: "boardW", kind: "number", default: 24, min: 0.5, max: 400, step: 0.5, help: "Board length" },
+      { name: "boardH", kind: "number", default: 8, min: 0.5, max: 400, step: 0.5, help: "Board (course) height" },
+      { name: "gap", kind: "number", default: 0.1, min: 0, max: 0.3, step: 0.01, help: "Gap between boards" },
+      { name: "waveAmp", kind: "number", default: 0.18, min: 0, max: 0.45, step: 0.01, help: "Grain wave amplitude — 0 leaves a plain board" },
+      { name: "waveCycles", kind: "number", default: 3, min: 1, max: 8, step: 1, help: "Grain wave cycles across one board" },
+      { name: "seed", kind: "number", default: 1, min: 0, max: 99999, step: 1, help: "Grain phase seed, per board" },
     ],
   },
 });
