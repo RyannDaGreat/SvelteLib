@@ -54,7 +54,7 @@ import {
   ringSectorOutline, polygonStarOutline, cornerRectOutline, quadWedgeOutline,
   crossPlusOutline, frameOutline, gearOutline, calloutOutline, bannerOutline,
   bracketOutline, arrowOutline, pointInOutlines, closestPointOnRoundedRect,
-  closestPointOnSegment, closestPointOnAxisRange,
+  closestPointOnSegment, closestPointOnAxisRange, cloudOutline, heartOutline,
   boltOutline, screwOutline, screwHeadOutline,
   scrollOutline, scrollPairOutline, ironFinialOutline,
 } from "../core/outline.js";
@@ -476,6 +476,106 @@ export const FAMILIES = [
       return [{ id: "tail", x: s.tailX ?? s.w * 0.25, y: s.tailY ?? s.h, apply: (_st, pt) => ({ tailX: pt.x, tailY: pt.y }) }];
     },
   },
+  // ── ORGANIC FAMILIES ────────────────────────────────────────────────────────
+  // The two silhouettes the legacy preset table drew as FIXED bezier art with no
+  // knobs at all. They are families rather than more fixed paths because each has
+  // an obvious thing an author varies — a cloud's puff count, a heart's cleft —
+  // and a shape you cannot adjust is the complaint this whole consolidation is
+  // answering.
+  {
+    type: "ss_cloud", title: "Cloud", icon: "mdi:cloud-outline", fill: "#c0caf5",
+    // w/h are declared here (the hardware/scroll families' precedent) so the seed
+    // state is a COMPLETE, drawable state on its own: a family whose defaults omit
+    // the box hands its generator an undefined extent, and every vertex comes back
+    // NaN. A cloud is wider than it is tall.
+    defaults: { bumps: 6, lobeDepth: 0.28, flatten: 0.35, w: 260, h: 180 },
+    rows: [
+      N("bumps", "Puffs", { min: 3, help: "How many lobes ring the cloud (three or more; no upper cap). Few reads as a cartoon cloud, many as foam or a thought bubble. Drag the puff handle around the rim." }),
+      N("lobeDepth", "Puff depth", { min: 0, max: 1, help: "How far each lobe bulges past the body: 0 is a plain ellipse, high is a billowing cumulus. Drag the depth handle." }),
+      N("flatten", "Flat bottom", { min: 0, max: 1, help: "Pulls the lower lobes toward a straight base: 0 is a round all-over cloud, 1 a flat-bottomed one sitting on a line." }),
+    ],
+    presets: [
+      { name: "Cartoon Cloud", description: "Few fat puffs on a flat base — the storybook cloud.", props: { bumps: 5, lobeDepth: 0.34, flatten: 0.6 } },
+      { name: "Thought Bubble", description: "Many even puffs all round, no flattening — the classic thought balloon.", props: { bumps: 11, lobeDepth: 0.26, flatten: 0 } },
+      { name: "Cumulus", description: "A billowing weather cloud: deep lobes, strongly flat-bottomed.", props: { bumps: 8, lobeDepth: 0.45, flatten: 0.85 } },
+      { name: "Soft Blob", description: "Shallow lobes on a round body — nearly an ellipse, just barely puffy.", props: { bumps: 7, lobeDepth: 0.1, flatten: 0.2 } },
+      { name: "Trefoil Puff", description: "The fewest lobes a cloud can have: three fat puffs, round underneath.", props: { bumps: 3, lobeDepth: 0.5, flatten: 0 } },
+      { name: "Storm Front", description: "A long run of deep lobes over a hard flat base — a squall line.", props: { bumps: 13, lobeDepth: 0.55, flatten: 1 } },
+      { name: "Sea Foam", description: "Many shallow puffs, no flattening: froth rather than weather.", props: { bumps: 16, lobeDepth: 0.14, flatten: 0 } },
+      { name: "Fair-Weather Cumulus", description: "The small tidy daytime cloud: moderate lobes on a level base.", props: { bumps: 7, lobeDepth: 0.3, flatten: 0.7 } },
+      { name: "Speech Puff", description: "Round, even and unflattened — a comic-strip speech cloud.", props: { bumps: 9, lobeDepth: 0.3, flatten: 0 } },
+      { name: "Anvil Head", description: "Deep billows with a partly flattened underside — a thunderhead.", props: { bumps: 6, lobeDepth: 0.6, flatten: 0.45 } },
+      { name: "Popcorn", description: "Maximum lobe depth at a middling count — knobbly and irregular-reading.", props: { bumps: 8, lobeDepth: 1, flatten: 0.3 } },
+      { name: "Mist Bank", description: "Barely-there lobes flattened almost to a bar — low-lying haze.", props: { bumps: 12, lobeDepth: 0.06, flatten: 1 } },
+    ],
+    outline: (s) => cloudOutline(s.w, s.h, { bumps: s.bumps ?? 6, lobeDepth: s.lobeDepth ?? 0.28, flatten: s.flatten ?? 0.35 }),
+    // `bumps` rides the RIM as a discrete count (the polygonStar precedent: the
+    // nearest allowed COUNT, not the nearest allowed angle); `lobeDepth` rides the
+    // RADIAL segment straight up, the direction the top lobe bulges.
+    modifierPoints(s) {
+      const g = ellipseGeom(s);
+      const TOP = -Math.PI / 2;
+      const n = Math.max(3, Math.round(s.bumps ?? 6));
+      const depth = clamp(s.lobeDepth, 0, 1);
+      return [
+        {
+          id: "bumps", x: g.cx + g.rx * Math.cos(TOP + (2 * Math.PI) / n), y: g.cy + g.ry * Math.sin(TOP + (2 * Math.PI) / n),
+          constrain: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return ellipsePoint(gg, 1, TOP + (2 * Math.PI) / pointCountFromAngle(TOP, angleAt(gg, pt.x, pt.y)));
+          },
+          apply: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return { bumps: readOrKeep(gg, () => pointCountFromAngle(TOP, angleAt(gg, pt.x, pt.y)), Math.max(3, Math.round(st.bumps ?? 6))) };
+          },
+        },
+        {
+          id: "lobeDepth", x: g.cx + g.rx * depth * Math.cos(TOP), y: g.cy + g.ry * depth * Math.sin(TOP),
+          constrain: (st, pt) => radialConstrain(ellipseGeom(st), TOP, pt, 0, 1),
+          apply: (st, pt) => {
+            const gg = ellipseGeom(st);
+            return { lobeDepth: readOrKeep(gg, () => radialT(gg, pt.x, pt.y, TOP), clamp(st.lobeDepth, 0, 1)) };
+          },
+        },
+      ];
+    },
+  },
+  {
+    type: "ss_heart", title: "Heart", icon: "mdi:heart-outline", fill: "#f7768e",
+    defaults: { cleft: 0.22, lobeWidth: 1, tipSharpness: 0.45, w: 200, h: 200 },
+    rows: [
+      N("cleft", "Cleft depth", { min: 0, max: 0.9, help: "How deep the notch between the two lobes cuts, as a fraction of the height. 0 is a domed top; deep turns the heart toward a spade." }),
+      N("lobeWidth", "Lobe width", { min: 0.05, max: 1, help: "How wide each lobe is, as a fraction of the width. Narrow gives a tall slender heart, wide a squat one." }),
+      N("tipSharpness", "Tip sharpness", { min: 0, max: 1, help: "How drawn-out the bottom point is: 0 is a round bottom, 1 a long tapering spike." }),
+    ],
+    presets: [
+      { name: "Valentine", description: "The classic proportions: a moderate cleft over full-width lobes with a soft point.", props: { cleft: 0.22, lobeWidth: 1, tipSharpness: 0.45 } },
+      { name: "Sweetheart", description: "A shallow cleft and fat lobes — a plump, friendly heart.", props: { cleft: 0.12, lobeWidth: 1, tipSharpness: 0.25 } },
+      { name: "Spade", description: "A deep cleft between narrow lobes with a long sharp tail — the card-suit reading.", props: { cleft: 0.42, lobeWidth: 0.66, tipSharpness: 0.95 } },
+      { name: "Locket", description: "Small round lobes over a long tapering point, sized for a pendant.", props: { cleft: 0.2, lobeWidth: 0.6, tipSharpness: 0.8 } },
+      { name: "Dome", description: "Almost no cleft: the two lobes merge into a single arch over a soft point.", props: { cleft: 0.03, lobeWidth: 1, tipSharpness: 0.4 } },
+      { name: "Gothic Heart", description: "A deep notch and a drawn-out spike — tall, severe, ecclesiastical.", props: { cleft: 0.55, lobeWidth: 0.8, tipSharpness: 1 } },
+      { name: "Slim Pendant", description: "Narrow lobes and a long taper: a heart that reads at small sizes in a row.", props: { cleft: 0.25, lobeWidth: 0.42, tipSharpness: 0.9 } },
+      { name: "Candy Heart", description: "Squat and blunt — wide lobes, shallow cleft, a nearly round bottom.", props: { cleft: 0.15, lobeWidth: 1, tipSharpness: 0 } },
+      { name: "Folk Motif", description: "Even, geometric proportions suited to a stencil or embroidery repeat.", props: { cleft: 0.3, lobeWidth: 0.85, tipSharpness: 0.6 } },
+      { name: "Cleaved", description: "The cleft cut almost to the tip, splitting the lobes into two near-separate arcs.", props: { cleft: 0.75, lobeWidth: 0.9, tipSharpness: 0.7 } },
+      { name: "Balloon", description: "Fat round lobes with a stubby point — a party-balloon heart.", props: { cleft: 0.1, lobeWidth: 0.95, tipSharpness: 0.15 } },
+      { name: "Hairline Heart", description: "Minimal: the narrowest lobes and a fine long point, for a delicate accent.", props: { cleft: 0.28, lobeWidth: 0.3, tipSharpness: 1 } },
+    ],
+    outline: (s) => heartOutline(s.w, s.h, { cleft: s.cleft ?? 0.25, lobeWidth: s.lobeWidth ?? 0.5, tipSharpness: s.tipSharpness ?? 0.5 }),
+    // ONE handle, deliberately: the cleft is the knob that changes what the shape
+    // READS as (valentine ↔ spade), and it rides the vertical centre line, which is
+    // exactly where the notch lives. Lobe width and tip sharpness are Inspector
+    // knobs — neither has a trajectory a user would find by dragging.
+    modifierPoints(s) {
+      const [LO, HI] = [0, 0.9]; // the `cleft` row's declared bounds
+      return [{
+        id: "cleft", x: s.w / 2, y: clamp(s.cleft, LO, HI) * s.h,
+        constrain: (st, pt) => closestPointOnSegment({ x: st.w / 2, y: LO * st.h }, { x: st.w / 2, y: HI * st.h }, pt),
+        apply: (st, pt) => ({ cleft: ratioOf(pt.y, st.h, clamp(st.cleft, LO, HI)) }),
+      }];
+    },
+  },
   {
     type: "ss_banner", title: "Banner / Ribbon", icon: "mdi:flag-outline", fill: "#bb9af7",
     defaults: { endStyle: "forked", notchDepth: 0.15 },
@@ -499,20 +599,63 @@ export const FAMILIES = [
   },
   {
     type: "ss_bracket", title: "Bracket", icon: "mdi:code-brackets", fill: "#9ece6a",
-    defaults: { thickness: 0.22, w: 90, h: 220 },
+    defaults: { thickness: 0.22, armDepth: 0.12, armLength: 1, w: 90, h: 220 },
+    // THREE thicknesses, THREE handles (user: "the one part could be skinnier than
+    // the other"). The spine, the arms' depth and the arms' reach are separate
+    // measurements on a real bracket, and each gets its own knob and its own yellow
+    // square: one handle for three numbers could only ever write one of them.
     rows: [
-      N("thickness", "Thickness", { min: 0.02, max: 0.9, help: "Width of the bracket's bar and arms as a fraction of the width. Drag the inner handle. Rotate the widget to orient the bracket." }),
+      N("thickness", "Spine width", { min: 0.02, max: 0.9, help: "Width of the bracket's vertical bar as a fraction of the width. Drag the spine handle. Rotate the widget to orient the bracket." }),
+      N("armDepth", "Arm depth", { min: 0.02, max: 0.45, help: "Thickness of the top and bottom arms as a fraction of the height — independent of the spine, so the arms can be skinnier or chunkier than the bar." }),
+      N("armLength", "Arm reach", { min: 0.05, max: 1, help: "How far the arms reach across, as a fraction of the width. 1 is a full bracket; less pulls the arms back toward the spine." }),
     ],
-    outline: (s) => bracketOutline(s.w, s.h, { thickness: s.thickness ?? 0.2 }),
-    // The bar's inner edge, on the bracket's horizontal midline: a horizontal SEGMENT
-    // spanning the thickness bounds — the plain metric projection.
+    presets: [
+      { name: "Square Bracket", description: "The plain typographic \"[\": even spine and arms, arms reaching the full width.", props: { thickness: 0.22, armDepth: 0.12, armLength: 1 } },
+      { name: "Hairline Rule", description: "A thin editorial bracket — skinny spine, skinnier arms, full reach.", props: { thickness: 0.08, armDepth: 0.04, armLength: 1 } },
+      { name: "Heavy Spine", description: "A thick structural bar with light arms — the spine dominates.", props: { thickness: 0.55, armDepth: 0.07, armLength: 1 } },
+      { name: "Deep Serif", description: "A slim bar under deep slab arms, the inverse weighting of Heavy Spine.", props: { thickness: 0.12, armDepth: 0.34, armLength: 1 } },
+      { name: "Stub Corner", description: "Full-weight spine with arms pulled back to a third of the reach — a corner tick.", props: { thickness: 0.3, armDepth: 0.16, armLength: 0.35 } },
+      { name: "Slab Brace", description: "Everything heavy: a thick spine under thick arms at full reach.", props: { thickness: 0.45, armDepth: 0.35, armLength: 1 } },
+      { name: "Tick Mark", description: "A short thin bracket that reads as a corner registration mark.", props: { thickness: 0.1, armDepth: 0.06, armLength: 0.4 } },
+      { name: "Wide Staple", description: "A skinny spine with long deep arms — a staple laid on its side.", props: { thickness: 0.09, armDepth: 0.28, armLength: 1 } },
+      { name: "Column Rule", description: "A near-bare vertical rule: full spine, arms barely present.", props: { thickness: 0.3, armDepth: 0.03, armLength: 0.15 } },
+      { name: "Display Bracket", description: "Bold and even, scaled for a pull-quote or a title flank.", props: { thickness: 0.28, armDepth: 0.2, armLength: 0.8 } },
+      { name: "Chevron Stub", description: "A thick spine with short deep arms — compact and blocky.", props: { thickness: 0.5, armDepth: 0.4, armLength: 0.6 } },
+      { name: "Fine Serif", description: "A hairline spine with slightly heavier arms — the most delicate of the set.", props: { thickness: 0.05, armDepth: 0.09, armLength: 0.7 } },
+      { name: "Half Frame", description: "Maximum arms at full reach over a mid spine — nearly a three-sided frame.", props: { thickness: 0.2, armDepth: 0.45, armLength: 1 } },
+    ],
+    outline: (s) => bracketOutline(s.w, s.h, { thickness: s.thickness ?? 0.2, armDepth: s.armDepth, armLength: s.armLength }),
+    // Three handles, each on its own axis-aligned SEGMENT (the plain metric
+    // projection): the spine's inner edge slides along the horizontal midline, the
+    // top arm's inner edge slides down the left of the opening, and the arm tip
+    // slides along the top edge.
     modifierPoints(s) {
-      const [LO, HI] = [0.02, 0.9]; // the `thickness` row's declared bounds
-      return [{
-        id: "thickness", x: clamp(s.thickness, LO, HI) * s.w, y: s.h / 2,
-        constrain: (st, pt) => closestPointOnSegment({ x: LO * st.w, y: st.h / 2 }, { x: HI * st.w, y: st.h / 2 }, pt),
-        apply: (st, pt) => ({ thickness: ratioOf(pt.x, st.w, clamp(st.thickness, LO, HI)) }),
-      }];
+      const [LO, HI] = [0.02, 0.9];       // the `thickness` row's declared bounds
+      const [DLO, DHI] = [0.02, 0.45];    // the `armDepth` row's declared bounds
+      const [RLO, RHI] = [0.05, 1];       // the `armLength` row's declared bounds
+      const depthOf = (st) => clamp(st.armDepth ?? st.thickness, DLO, DHI);
+      const reachOf = (st) => clamp(st.armLength ?? 1, RLO, RHI);
+      return [
+        {
+          id: "thickness", x: clamp(s.thickness, LO, HI) * s.w, y: s.h / 2,
+          constrain: (st, pt) => closestPointOnSegment({ x: LO * st.w, y: st.h / 2 }, { x: HI * st.w, y: st.h / 2 }, pt),
+          apply: (st, pt) => ({ thickness: ratioOf(pt.x, st.w, clamp(st.thickness, LO, HI)) }),
+        },
+        {
+          id: "armDepth", x: clamp(s.thickness, LO, HI) * s.w, y: depthOf(s) * s.h,
+          constrain: (st, pt) => closestPointOnSegment(
+            { x: clamp(st.thickness, LO, HI) * st.w, y: DLO * st.h },
+            { x: clamp(st.thickness, LO, HI) * st.w, y: DHI * st.h }, pt),
+          apply: (st, pt) => ({ armDepth: ratioOf(pt.y, st.h, depthOf(st)) }),
+        },
+        {
+          id: "armLength", x: reachOf(s) * s.w, y: depthOf(s) * s.h / 2,
+          constrain: (st, pt) => closestPointOnSegment(
+            { x: RLO * st.w, y: depthOf(st) * st.h / 2 },
+            { x: RHI * st.w, y: depthOf(st) * st.h / 2 }, pt),
+          apply: (st, pt) => ({ armLength: ratioOf(pt.x, st.w, reachOf(st)) }),
+        },
+      ];
     },
   },
   {

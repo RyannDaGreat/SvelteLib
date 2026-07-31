@@ -1095,18 +1095,34 @@ export function cornerRectOutline(w, h, { r0 = 0, r1 = 0, r2 = 0, r3 = 0, corner
  * Pure function. QUAD / WEDGE family (rectangle → parallelogram → trapezoid →
  * triangle → rhombus/kite). `taper` is the top edge width as a fraction of the
  * base (1 = rectangle, 0 = triangle apex, >1 = inverted); `shear` slants the top
- * edge sideways (parallelogram) by that fraction of w; `topOffset` shifts the
- * top edge's center (right-trapezoid/keystone). `cornerRadius` rounds all four.
+ * edge sideways by that fraction of w; `topOffset` shifts the top edge's center
+ * (right-trapezoid/keystone). `cornerRadius` rounds all four.
+ *
+ * `shear` LEANS THE QUAD INSIDE ITS BOX: the top edge slides right by shear·w and
+ * the base slides left by the same amount, both edges NARROWING to keep every
+ * corner within 0..w. Shearing the top edge alone (the earlier reading) slid the
+ * silhouette out of the box — at shear 0.25 the top-right corner sat at x = 1.25w
+ * while the base still spanned the full width, which is not a parallelogram but a
+ * right-leaning trapezoid overflowing its own bounds. A parallelogram is exactly
+ * `taper: 1` + a shear, and it is now expressible and bbox-tight: the classic 0.25
+ * slant gives [[25, 0], [100, 0], [75, 100], [0, 100]].
  *
  * @example quadWedgeOutline(100, 100, {taper: 1, shear: 0})[0] // [[0, 0], [100, 0], [100, 100], [0, 100]]
+ * @example quadWedgeOutline(100, 100, {taper: 1, shear: 0.25})[0] // [[25, 0], [100, 0], [75, 100], [0, 100]]
  * @example quadWedgeOutline(100, 100, {taper: 0, shear: 0})[0].map(([x, y]) => [Math.round(x), Math.round(y)]) // [[50, 0], [50, 0], [100, 100], [0, 100]]
  * @example quadWedgeOutline(100, 100, {taper: 0.4, shear: 0})[0][0].map(Math.round) // [30, 0]
  */
 export function quadWedgeOutline(w, h, { taper = 1, shear = 0, topOffset = 0, cornerRadius = 0 } = {}) {
-  const topW = Math.max(0, taper) * w; // floor 0 (a width can't be negative); no upper cap — a wider-than-2× funnel is valid
-  const cxTop = w / 2 + topOffset * w + shear * w;
+  const lean = shear * w; // the top edge starts `lean` in from the left, the base `lean` in from the right
+  // The leaning quad is inscribed in the box, so each edge is `lean` shorter than
+  // the box: at shear 0 this is the full width and the plain rectangle/trapezoid
+  // geometry is untouched.
+  const spanW = w - Math.abs(lean);
+  const topW = Math.max(0, taper) * spanW; // floor 0 (a width can't be negative); no upper cap — a wider-than-2× funnel is valid
+  const cxTop = Math.abs(lean) / 2 + lean / 2 + spanW / 2 + topOffset * w;
+  const cxBase = Math.abs(lean) / 2 - lean / 2 + spanW / 2;
   const tl = cxTop - topW / 2, tr = cxTop + topW / 2;
-  const verts = [[tl, 0], [tr, 0], [w, h], [0, h]];
+  const verts = [[tl, 0], [tr, 0], [cxBase + spanW / 2, h], [cxBase - spanW / 2, h]];
   return [roundedVerts(verts, cornerRadius * Math.min(w, h) / 2)];
 }
 
@@ -1232,18 +1248,230 @@ export function bannerOutline(w, h, { endStyle = "forked", notchDepth = 0.15 } =
 
 /**
  * Pure function. BRACKET / BRACE family (square bracket "[" → thick/thin). A
- * filled thin outline: a full-height bar on the left with top and bottom arms
- * reaching right by the same `thickness` (bar/arm width as a fraction of w).
- * `orientation` is handled by the widget's rotation, so this always draws a
- * left "[".
+ * filled outline: a full-height SPINE on the left with an ARM reaching right at
+ * the top and at the bottom. `orientation` is handled by the widget's rotation,
+ * so this always draws a left "[".
+ *
+ * THREE INDEPENDENT THICKNESSES, because a bracket has three parts that a real
+ * one sizes separately (user: "the one part could be skinnier than the other"):
+ *   `thickness`   the vertical spine's width, as a fraction of w
+ *   `armDepth`    each arm's vertical thickness, as a fraction of h
+ *   `armLength`   how far the arms reach right, as a fraction of w
+ * Each defaults to tracking `thickness` when absent, so a document written before
+ * they existed — where one knob drove the spine and both arms — reads back the
+ * shape it always had. That is the whole compatibility contract here: an omitted
+ * `armDepth`/`armLength` is not "0", it is "same as the spine".
  *
  * @example bracketOutline(40, 100, {thickness: 0.25})[0] // [[0, 0], [40, 0], [40, 25], [10, 25], [10, 75], [40, 75], [40, 100], [0, 100]]
  * @example bracketOutline(40, 100, {thickness: 0.25})[0].length // 8
+ * @example bracketOutline(40, 100, {thickness: 0.1, armDepth: 0.4})[0][2] // [40, 40] (a skinny spine under deep arms)
+ * @example bracketOutline(40, 100, {thickness: 0.25, armLength: 0.5})[0][1] // [20, 0] (arms reach only halfway)
  */
-export function bracketOutline(w, h, { thickness = 0.2 } = {}) {
+export function bracketOutline(w, h, { thickness = 0.2, armDepth = null, armLength = null } = {}) {
   const t = Math.max(0.02, Math.min(thickness, 0.9)) * w;
-  const ty = Math.max(0.02, Math.min(thickness, 0.45)) * h;
-  return [[[0, 0], [w, 0], [w, ty], [t, ty], [t, h - ty], [w, h - ty], [w, h], [0, h]]];
+  // An absent arm knob tracks the spine — the pre-three-knob shape, exactly.
+  const ty = Math.max(0.02, Math.min(armDepth ?? thickness, 0.45)) * h;
+  const ax = Math.max(t, Math.min(armLength ?? 1, 1) * w); // an arm never retracts behind its own spine
+  return [[[0, 0], [ax, 0], [ax, ty], [t, ty], [t, h - ty], [ax, h - ty], [ax, h], [0, h]]];
+}
+
+// A cloud's lobes are sampled arcs; this is points-per-lobe, matched to
+// CORNER_SEGMENTS' resolution so a bump reads round at poster scale.
+const CLOUD_LOBE_SEGMENTS = 14;
+
+/**
+ * Pure function. CLOUD family (puffy cloud → thought bubble → foam → a single
+ * dome). A ring of `bumps` circular lobes around the bbox ellipse, each lobe a
+ * sampled outward arc, with the bottom `flatten`ed toward a straight base.
+ *
+ * The legacy cloud was FOUR fixed beziers with no knobs at all. Parameterizing it
+ * is the whole reason this is a family: `bumps` is what a cloud actually varies
+ * (three puffs vs a dozen), `lobeDepth` is how far each puff bulges past the body,
+ * and `flatten` slides between a round cartoon cloud and a flat-bottomed one.
+ *
+ * A LOBE IS SIZED BY ITS SPACING, not by the body radius. Adjacent lobe centres
+ * sit `2·sin(π/n)` apart on the body ellipse, so a lobe radius fixed as a fraction
+ * of the body would leave visible flat chords between lobes at low counts — a
+ * five-bump cloud rendered as a PENTAGON with dimples, which is exactly what the
+ * first cut of this generator drew. Scaling the radius by that chord makes each
+ * lobe overlap its neighbours at every count, so three bumps and twelve bumps both
+ * read as a cloud. `lobeDepth` then means "how far past the body the crest sits",
+ * which is what the knob's help text promises.
+ *
+ * Args:
+ *   w, h (number): bbox size in local units
+ *   bumps (number): lobe count around the rim (rounded, floored at 3)
+ *   lobeDepth (number): each lobe's bulge as a fraction of the lobe spacing
+ *   flatten (number): 0 = fully round, 1 = the bottom lobes pulled flat
+ *
+ * Returns:
+ *   number[][][]: ONE closed subpath (a cloud has no hole)
+ *
+ * @example cloudOutline(100, 100, {bumps: 3}).length // 1
+ * @example cloudOutline(100, 100, {bumps: 5})[0].length // 75 (5 lobes x 15 samples: the arc is closed, so both ends are kept)
+ * @example cloudOutline(100, 100, {bumps: 3, lobeDepth: 0})[0].every(([x, y]) => x >= -0.01 && x <= 100.01) // true (depth 0 stays on the body ellipse)
+ */
+export function cloudOutline(w, h, { bumps = 6, lobeDepth = 0.28, flatten = 0.35 } = {}) {
+  const n = Math.max(3, Math.round(bumps));
+  const depth = Math.max(0, Math.min(lobeDepth, 1));
+  const flat = Math.max(0, Math.min(flatten, 1));
+  // A LOBE IS SIZED AGAINST ITS NEIGHBOURS, not against the body. Lobe centres end
+  // up on a ring of radius (1 − bulge), so their half-spacing is (1 − bulge)·sin(π/n);
+  // a lobe of exactly that radius touches its neighbours and a larger one overlaps.
+  // Solving r = k·(1 − r)·sin(π/n) for r gives the closed form below, with the
+  // overlap factor k > 1 running from "just touching" up to a deep merge. Fixing
+  // the radius as a bare fraction of the BODY is the mistake that drew a five-bump
+  // cloud as a pentagon with dimples: at low n the gap between centres is large and
+  // a body-fraction lobe is nowhere near big enough to close it.
+  // `lobeDepth` IS that overlap factor, remapped. The floor is well ABOVE 1 (the
+  // "just touching" value) because a cloud reads as a cloud only when each lobe is
+  // comparable in size to the body it rings: at a factor near 1 the lobes are small
+  // dimples on a big disc and the silhouette is a rounded POLYGON, which is what
+  // the first two cuts of this generator drew. At 1.6 the lobe is ~0.8 of the body
+  // radius, at 3.2 it is ~1.6 of it — puffy through to billowing.
+  const OVERLAP_MIN = 1.6, OVERLAP_MAX = 3.2;
+  const overlap = OVERLAP_MIN + (OVERLAP_MAX - OVERLAP_MIN) * depth;
+  const s = Math.sin(Math.PI / n);
+  const lobeFrac = (overlap * s) / (1 + overlap * s);
+  // No separate body inset: lobe centres ride a ring at (1 − bulge) and each lobe's
+  // crest reaches exactly 1, so the outermost ink lands on the bbox ellipse by
+  // construction and the cloud fills its box without escaping it.
+  const cx = w / 2, cy = h / 2, rx = w / 2, ry = h / 2;
+  // Lobe centres ride a ring pulled IN by the lobe radius, so a lobe's crest —
+  // centre plus radius — lands back on the body rim regardless of how big the lobe
+  // had to be to span the gap to its neighbours. The radius is CONSTANT around the
+  // ring: resizing individual lobes would break the neighbour intersection the arc
+  // sweep is solved from, so `flatten` MOVES a lobe instead of shrinking it. Every
+  // centre is computed up front because each arc's extent depends on where its two
+  // ACTUAL neighbours ended up, flatten displacement included.
+  const ringT = 1 - lobeFrac;
+  const centres = [];
+  for (let i = 0; i < n; i++) {
+    const a = SHAPE_TOP_UP + (i * 2 * Math.PI) / n;
+    // A lobe centred low is pulled UP toward the base line by `flatten` (sin > 0 is
+    // the bottom half in y-down space), flattening the underside. The pull is a
+    // fraction of the lobe radius: displacing a centre by more than this opens the
+    // seam wider than the symmetric sweep below covers, and the gap renders as a
+    // spike where two arcs fail to meet.
+    const FLATTEN_PULL = 0.5;
+    const lowness = Math.max(0, Math.sin(a));
+    centres.push({
+      a,
+      x: cx + rx * ringT * Math.cos(a),
+      y: cy + ry * ringT * Math.sin(a) - ry * lobeFrac * flat * lowness * FLATTEN_PULL,
+    });
+  }
+  // ONLY THE OUTWARD ARC of each lobe is drawn, centred on its own outward normal:
+  // from where the PREVIOUS lobe's circle cuts this one, to where the NEXT one does.
+  // Neighbouring lobes of radius r whose centres are d apart cross at ±acos(d / 2r)
+  // off the line joining them, and on the undisplaced ring that line IS the tangent
+  // direction, so the crossing is symmetric about the outward normal and ONE
+  // half-sweep describes both ends. Sweeping further makes each lobe loop back
+  // through its neighbours and the outline renders as a scribble of overlapping
+  // circles; sweeping less leaves the chord between centres visible as a facet.
+  //
+  // The half-sweep is measured on the UNDISPLACED ring even when `flatten` has
+  // moved the centres. Flatten slides a lobe along the body, which changes where
+  // two neighbours cross by a hair; solving per-side for that hair needs the two
+  // crossings ordered around the circle, and getting that ordering wrong turns the
+  // arc inside out (it renders as loose overlapping discs). The symmetric sweep is
+  // exact at flatten 0 and visually indistinguishable at flatten 1, so it is the
+  // one that ships.
+  // The sweep stops a little SHORT of the computed crossing. Past the crossing an
+  // arc has re-entered its neighbour's disc, so its tail runs back INSIDE the
+  // silhouette and the outline doubles back on itself — which the stroke draws as a
+  // spike at every seam (plainly visible at 8+ bumps, and worse the further the
+  // sweep overshoots). Stopping just before the crossing keeps every sampled point
+  // on the true outer boundary; the tiny facet left between two arcs is far below
+  // one pixel at any usable size.
+  const SEAM_TRIM = 0.8; // tuned by eye on the contact sheet at 3…12 bumps
+  const centreGap = 2 * ringT * s;
+  const halfSweep = SEAM_TRIM * Math.acos(Math.max(-1, Math.min(1, centreGap / (2 * lobeFrac))));
+  const out = [];
+  for (const c of centres) {
+    for (let k = 0; k <= CLOUD_LOBE_SEGMENTS; k++) {
+      const a = c.a - halfSweep + (k * 2 * halfSweep) / CLOUD_LOBE_SEGMENTS;
+      out.push([c.x + rx * lobeFrac * Math.cos(a), c.y + ry * lobeFrac * Math.sin(a)]);
+    }
+  }
+  return [out];
+}
+
+/**
+ * Pure function. HEART family (classic heart → wide/narrow → deep or shallow
+ * cleft). Two lobe arcs meeting at a top cleft, falling to a single bottom tip.
+ *
+ * `cleft` is the ONE knob worth a handle: it sets how deep the notch between the
+ * lobes cuts, which is the difference between a valentine and a spade. `lobeWidth`
+ * spreads the lobes apart and `tipSharpness` pulls the bottom point to a spike.
+ *
+ * Args:
+ *   w, h (number): bbox size in local units
+ *   cleft (number): notch depth as a fraction of the height (0 = a domed top)
+ *   lobeWidth (number): lobe half-width as a fraction of w
+ *   tipSharpness (number): 0 = a round bottom, 1 = a drawn-out spike
+ *
+ * Returns:
+ *   number[][][]: ONE closed subpath
+ *
+ * @example heartOutline(100, 100).length // 1
+ * @example heartOutline(100, 100)[0][0].map(Math.round) // [50, 36] (the path opens where the right lobe meets the cleft)
+ * @example heartOutline(100, 100, {cleft: 0.4})[0][0].map(Math.round) // [50, 51] (a deeper notch opens lower)
+ */
+export function heartOutline(w, h, { cleft = 0.25, lobeWidth = 0.5, tipSharpness = 0.5 } = {}) {
+  const notch = Math.max(0, Math.min(cleft, 0.9)) * h;
+  const lw = Math.max(0.05, Math.min(lobeWidth, 1));
+  const sharp = Math.max(0, Math.min(tipSharpness, 1));
+  const cx = w / 2, tipY = h;
+  // BUILT DIRECTLY IN BBOX COORDINATES, deliberately NOT bbox-refitted. A refit
+  // rescales whatever was drawn to fill the box, which cancels exactly the
+  // parameter it is supposed to express: a narrow-lobed heart and a wide-lobed one
+  // both got stretched back to full width, so `lobeWidth` had almost no visible
+  // effect and the "Spade" preset came out WIDER than the plain Valentine. The
+  // lobes span the full width here and the shape spans the full height by
+  // construction, so there is nothing left for a refit to correct.
+  // Two lobes side by side span 4 radii at lobeWidth 1, and the flank bulges a
+  // little past the shoulder, so the radius is sized off the WIDEST point the
+  // outline will reach rather than off the lobe alone — that is what keeps the ink
+  // inside 0..w at every lobeWidth.
+  const FLANK_BULGE = 1.15;             // flank control x, as a multiple of the shoulder offset
+  const lobeR = (lw * w) / (2 * FLANK_BULGE * 2);
+  const shoulderX = cx + 2 * lobeR;     // the widest point the flank reaches
+  const lobeY = notch + lobeR;          // lobe centres sit one radius below the cleft
+  const arcSteps = CURVE_SEGMENTS / 2;
+  // Walk the RIGHT side down, then the LEFT side back up, so the ring is one
+  // continuous closed loop: cleft → over the right lobe → down the right flank →
+  // tip → up the left flank → over the left lobe → back to the cleft.
+  const lobeArc = (side) => {
+    // A lobe sweeps from the cleft, over the top, to its outward shoulder — a half
+    // turn, so the flank leaves the lobe already heading downward.
+    const pts = [];
+    for (let k = 0; k <= arcSteps; k++) {
+      const a = SHAPE_TOP_UP - side * Math.PI / 2 + side * (Math.PI * k) / arcSteps;
+      pts.push([cx + side * lobeR + lobeR * Math.cos(a), lobeY + lobeR * Math.sin(a)]);
+    }
+    return pts;
+  };
+  // The flank's control point sits OUTSIDE the shoulder so the silhouette stays
+  // full-width below the lobes; `tipSharpness` slides it DOWN, which holds that
+  // width for longer and reads as a drawn-out point rather than a round bottom.
+  const flankTo = (from, side) => {
+    const ctrl = { x: cx + side * (shoulderX - cx) * 1.15, y: lobeY + (tipY - lobeY) * (0.1 + 0.6 * sharp) };
+    const pts = [];
+    for (let k = 1; k <= arcSteps; k++) {
+      const p = quadraticBezierPoint({ x: from[0], y: from[1] }, ctrl, { x: cx, y: tipY }, k / arcSteps);
+      pts.push([p.x, p.y]);
+    }
+    return pts;
+  };
+  const right = lobeArc(1);
+  const left = lobeArc(-1);
+  return [[
+    ...right,
+    ...flankTo(right[right.length - 1], 1),
+    ...flankTo(left[left.length - 1], -1).reverse().slice(1),
+    ...left.slice().reverse(),
+  ]];
 }
 
 /**
