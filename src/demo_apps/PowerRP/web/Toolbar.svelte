@@ -36,6 +36,7 @@
   // The save indicator's sentence — pure and doctested, so the four save states
   // are executed by the bare-node gate rather than read off a screenshot.
   import { saveText } from "./draftKeys.js";
+  import { themeKind } from "./app.svelte.js";
 
   // BROWSER-STORAGE surfacing (user ruling 2026-07-30, replacing the top-left
   // chip that could overlap the project name): in static mode the save/load
@@ -477,7 +478,11 @@
       aria-label={app.commands.get("toggle-light-dark").title}
       onclick={() => app.runCommand("toggle-light-dark")}
     >
-      <iconify-icon icon={app.theme === "light" ? "mdi:weather-night" : "mdi:weather-sunny"} width="18" height="18"></iconify-icon>
+      <!-- The glyph is the pole this button would switch TO, so it must read the
+           CURRENT theme's kind from the registry rather than test for one id:
+           `app.theme === "light"` was true for exactly one of the light themes
+           and drew "go dark" on every other one. -->
+      <iconify-icon icon={themeKind(app.theme) === "light" ? "mdi:weather-night" : "mdi:weather-sunny"} width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
   <Tooltip>

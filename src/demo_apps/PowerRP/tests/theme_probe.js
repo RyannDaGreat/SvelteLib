@@ -39,7 +39,13 @@ const SPOT_CHECK_TOKENS = [
 
 const server = await createServer({
   configFile: resolve(webRoot, "vite.config.js"),
-  server: { port: 0, open: false, host: "127.0.0.1" }, // ephemeral port — never 3637/3638
+  // HMR OFF, for the same reason cli/render_job.js turns it off: this probe
+  // takes 40 screenshots over ~40s, and ANY edit to app source during that
+  // window reloads the page mid-capture. Observed failing exactly that way —
+  // `Page.captureScreenshot timed out` while the log showed a stream of
+  // "page reload ports.js / paint_skia.js" from a concurrent editor. Nothing
+  // here depends on live-reload; the page is loaded once and driven by CDP.
+  server: { port: 0, open: false, host: "127.0.0.1", hmr: false }, // ephemeral port — never 3637/3638
 });
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
@@ -48,14 +54,24 @@ const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 // needs the SAME software-GL launch flags as the other GPU probes
 // (skia_browser_qa.js / caret_accuracy_qa.js) — a headless bare launch has no
 // GPU and, as root, refuses to start without --no-sandbox.
-const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+// protocolTimeout raised past puppeteer's 30s default: this probe now captures
+// 40 themes (one per family pole) on a SOFTWARE GL surface, where a single
+// screenshot of the Skia canvas can take several seconds under load.
+const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"], protocolTimeout: 180000 });
 const errors = [];
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => {
-    if (m.type() === "error") errors.push(`console.error: ${m.text()}`);
+    // Headless SwiftShader has no WebGPU adapter, so videoV7 logs its own
+    // fallback notice on EVERY boot and then falls back correctly. This probe
+    // was failing on it at baseline — unrelated to themes, and a permanently
+    // red probe is a gate nobody can read. Same whitelist convention as
+    // render_gpu/tests/blend_browser_probe.js.
+    if (m.type() === "error" && !/no WebGPU adapter|WebGPU init failed/i.test(m.text())) {
+      errors.push(`console.error: ${m.text()}`);
+    }
   });
   await page.evaluateOnNewDocument((json) => localStorage.setItem("powerrp.autosave", json), demoJson);
   await page.goto(url, { waitUntil: "networkidle0" });

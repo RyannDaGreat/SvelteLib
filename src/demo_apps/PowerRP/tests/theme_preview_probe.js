@@ -21,7 +21,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
 
 const { createServer } = await import("vite");
-const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
+// hmr:false — an edit to app source mid-probe reloads the page and fails the
+// run; see theme_probe.js's note for the observed failure.
+const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1", hmr: false } });
 await server.listen();
 const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`;
 
@@ -39,11 +41,17 @@ try {
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   // Ignore backend-absent noise: this probe self-spins a FRONTEND-ONLY Vite (no
   // server.py), so best-effort thumbnail-persist POSTs 404. Orthogonal to themes.
-  page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|thumbnail|\/api\/thumb/i.test(m.text())) errors.push(`console.error: ${m.text()}`); });
+  // "no WebGPU adapter" joins the existing whitelist: headless SwiftShader has
+  // none, so videoV7 logs its own fallback notice every boot (and falls back
+  // correctly). This probe was red at baseline for that reason alone.
+  page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource|thumbnail|\/api\/thumb|no WebGPU adapter|WebGPU init failed/i.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
-  await sleep(3500); // Skia wasm + fonts + first paint
-  await page.waitForFunction(() => window.__powerrp_app != null, { timeout: 10000 });
+  // POLL, do not sleep-then-assume: boot is Skia-wasm + font-load bound, so its
+  // duration is machine- and load-dependent. The old `sleep(3500)` + 10s wait
+  // timed out whenever another browser probe was running beside this one.
+  await page.waitForFunction(() => window.__powerrp_app != null, { timeout: 60000 });
+  await sleep(400); // let the first paint settle before driving the palette
   if (errors.length) { console.error("BOOT ERRORS:\n" + errors.join("\n")); process.exit(1); }
 
   // Reads of the APPLIED theme state and the PERSISTED preference.
@@ -78,22 +86,35 @@ try {
 
   // ── 1. ARROW-FOCUS previews LIVE (typing filters to one row → row 0 is the
   //      arrow/keyboard-focused entry → the effect previews it). ──────────────
+  // THEMES ARE GROUPED BY FAMILY NOW, so "synthwave" inside the Color Theme
+  // submenu highlights the Synthwave FAMILY row — a container with no `run` and
+  // no `preview` (the registry's run-XOR-children rule), so nothing previews on
+  // it, correctly. Enter drills in; the highlighted child is then a real member
+  // and previewing resumes. That extra Enter is the only behavioural change
+  // grouping makes to this flow, and asserting it here is what pins it.
   await openPalette();
   await enterThemeSubmenu();
   await typeQuery("synthwave");
   let s = await applied();
+  assert(s.attr === ORIGINAL, `a FAMILY row previews nothing (attr=${s.attr})`);
+  await pressKey("Enter"); // into the Synthwave family; row 0 = its dark member
+  s = await applied();
   assert(s.attr === "synthwave" && s.field === "synthwave", `arrow-focus previews LIVE (attr=${s.attr}, field=${s.field})`);
   assert(s.stored === ORIGINAL, `preview does NOT persist (localStorage still "${s.stored}")`);
 
-  // ── 2. Focus moves OFF (Escape backs out of the submenu to the top level,
-  //      highlighting a non-previewable command) → revert to the original. ────
+  // ── 2. Focus moves OFF (Escape backs out to a non-previewable row) → revert.
+  //      TWO levels now: family members -> family list -> top level. Reverting
+  //      after the FIRST Escape is the assertion that matters (leaving a
+  //      previewed member must not leave its theme applied).
   await pressKey("Escape");
   s = await applied();
   assert(s.attr === ORIGINAL && s.field === ORIGINAL, `focus-off reverts to "${ORIGINAL}" (attr=${s.attr})`);
+  await pressKey("Escape"); // out of Color Theme, back to the top level
 
   // ── 3. Preview a theme, then CLOSE WITHOUT SELECTING (backdrop) → revert. ───
   await enterThemeSubmenu();
   await typeQuery("dracula");
+  await pressKey("Enter"); // into the Dracula family (see the note in step 1)
   s = await applied();
   assert(s.attr === "dracula", `re-preview LIVE (attr=${s.attr})`);
   await page.evaluate(() => (window.__powerrp_app.paletteOpen = false)); // backdrop-equivalent close
@@ -112,16 +133,31 @@ try {
     await rows[i].hover();
     await sleep(140);
   };
-  await hoverRow("Monokai");
+  // THEMES ARE NOW GROUPED BY FAMILY (web/app.svelte.js THEME_FAMILIES): the
+  // "Color Theme" submenu lists one row per FAMILY, and each family row is a
+  // container whose two children are its dark and light members. So a hover
+  // target is "<Family> — Dark", not the bare family name — a family row has no
+  // `run` and previews nothing, by the registry's run-XOR-children rule.
+  // Drilling into one family first, then hovering its two poles, also exercises
+  // the thing worth checking under the new shape: preview follows the MEMBER.
+  // Drilling in CLEARS the query itself (CommandPalette's `if (cmd.children)`
+  // branch sets query = ""), so no clearQuery() here — calling it would
+  // select-all+Backspace and back out of the submenu entirely.
+  await typeQuery("monokai");
+  await pressKey("Enter"); // into the Monokai family; its two poles are listed
+  await hoverRow("Monokai — Dark");
   s = await applied();
   assert(s.attr === "monokai", `HOVER previews LIVE (attr=${s.attr})`);
-  await hoverRow("Tokyo Night");
+  await hoverRow("Monokai — Light");
   s = await applied();
-  assert(s.attr === "tokyonight", `hovering another row switches preview (attr=${s.attr})`);
+  assert(s.attr === "monokai-light", `hovering the SIBLING row switches preview (attr=${s.attr})`);
   assert(s.stored === ORIGINAL, `hover previews still do NOT persist (stored=${s.stored})`);
 
   // ── 5. SELECT commits: click the hovered row → change stays AND persists. ───
-  const catppuccinRow = await (async () => { const i = await rowIndex("Catppuccin Mocha"); return (await page.$$(".palette-item"))[i]; })();
+  await pressKey("Escape"); // back out of Monokai to the family list
+  await typeQuery("catppuccin");
+  await pressKey("Enter"); // into the Catppuccin family
+  const catppuccinRow = await (async () => { const i = await rowIndex("Catppuccin — Dark"); return (await page.$$(".palette-item"))[i]; })();
   await catppuccinRow.hover();
   await sleep(120);
   await catppuccinRow.click();

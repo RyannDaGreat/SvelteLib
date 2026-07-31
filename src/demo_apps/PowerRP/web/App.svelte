@@ -42,7 +42,7 @@
   import { ZIP_PARAM } from "./projectUrlImport.js";
   import { bootFailed, bootStage } from "./bootProgress.js";
   import { humanReadableFileSize } from "./fileSize.js";
-  import { PowerRPApp, THEMES } from "./app.svelte.js";
+  import { PowerRPApp, THEME_FAMILIES } from "./app.svelte.js";
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
   import { cameraRectAt } from "./cameraFrame.js";
@@ -672,36 +672,27 @@
   const HELP_EXPORT_CAMERA = "THE CAMERA decides the output — its rect IS the image, at its own size and aspect. Not the visible viewport, and not the widgets' extent, so what you export does not change when you pan or zoom.";
   const HELP_FLIP = "Reverses ONE widget's own content about its own centre (a negative size with the position compensated), leaving it where it sits. Mirror Layout is the one that moves widgets to each other's side.";
 
-  // Per-theme palette icons (mdi), keyed by THEMES[].id. No colors (user spec).
+  // Palette icons (mdi), keyed by THEME_FAMILIES[].id — one glyph per FAMILY,
+  // because the icon names the identity and both poles share it. The two
+  // children under each family row use the sun/moon glyphs instead, which is
+  // the one place the pole is the thing being chosen. No colors (user spec).
   const THEME_ICONS = {
     graphite: "mdi:brightness-6",
-    light: "mdi:weather-sunny",
-    black: "mdi:weather-night",
-    warm: "mdi:palette-swatch-outline",
-    // 14.11 additions:
-    sepia: "mdi:file-document-outline",
     slate: "mdi:contrast-box",
     nord: "mdi:snowflake",
     gruvbox: "mdi:coffee-outline",
     aurora: "mdi:creation",
-    // Colorful set:
     dracula: "mdi:bat",
-    tokyonight: "mdi:city-variant-outline",
     catppuccin: "mdi:cat",
     rosepine: "mdi:flower-outline",
     monokai: "mdi:code-tags",
     synthwave: "mdi:sine-wave",
-    // Material set:
     blueprint: "mdi:ruler-square-compass",
     sunrise: "mdi:weather-sunset-up",
     desert: "mdi:cactus",
-    // Material set II (the non-colour levers):
+    sepia: "mdi:file-document-outline",
     nocturne: "mdi:glass-tulip",
-    daybreak: "mdi:glass-cocktail", // the glass pair: same vessel family, lighter stem
-
-    "futura-dark": "mdi:format-letter-case",
-    "futura-light": "mdi:format-letter-case-upper",
-    // Material set III:
+    futura: "mdi:format-letter-case",
     eink: "mdi:book-open-page-variant-outline",
     phosphor: "mdi:console",
     platinum: "mdi:desktop-classic",
@@ -1191,15 +1182,34 @@
       id: "color-theme",
       title: "Color Theme",
       icon: "mdi:palette-outline",
-      children: THEMES.map((t) => ({
-        id: `theme-${t.id}`,
-        title: t.title,
-        icon: THEME_ICONS[t.id],
-        run: (a) => a.setTheme(t.id),
-        // Previewable-command hook (see CommandPalette.svelte): hovering/
-        // arrowing this entry applies the theme LIVE; moving off restores the
-        // previously-applied theme; selecting commits via `run` (which persists).
-        preview: (a) => a.previewTheme(t.id),
+      // ONE ROW PER FAMILY, not per theme. With every theme now paired there are
+      // 40 of them, and a flat list would be 20 near-duplicate adjacent pairs
+      // ("Ember", "Ember" …) — the family IS the choice a user is making, and
+      // which pole they land on is the toggle's job afterwards.
+      // Picking the family row applies the member matching the CURRENT kind, so
+      // browsing themes never yanks someone out of the pole they work in; the
+      // two children are there for when they do want to say which.
+      // A registry entry is `run` XOR `children` (core/commands.js enforces it),
+      // so a family row cannot both apply a theme and drill in. It is therefore
+      // a pure CONTAINER and the two poles are the leaves — which is also the
+      // honest shape: "Ember" is not a thing you can apply, "Ember (dark)" is.
+      // The one-keystroke way to stay in your pole is the toggle button; this
+      // submenu is where you go when you want to say which.
+      children: THEME_FAMILIES.map((f) => ({
+        // `theme-family-` prefix, NOT `theme-`: a family id and its dark member's
+        // theme id are frequently the same string (family "graphite" holds theme
+        // "graphite"), so sharing the namespace makes the container collide with
+        // its own child — the registry throws "Duplicate command id" at boot.
+        id: `theme-family-${f.id}`,
+        title: f.title,
+        icon: THEME_ICONS[f.id],
+        children: [
+          // Previewable-command hook (see CommandPalette.svelte): hovering/
+          // arrowing applies the theme LIVE; moving off restores the previously
+          // applied theme; selecting commits via `run` (which persists).
+          { id: `theme-${f.dark}`, title: `${f.title} — Dark`, icon: "mdi:weather-night", run: (a) => a.setTheme(f.dark), preview: (a) => a.previewTheme(f.dark) },
+          { id: `theme-${f.light}`, title: `${f.title} — Light`, icon: "mdi:weather-sunny", run: (a) => a.setTheme(f.light), preview: (a) => a.previewTheme(f.light) },
+        ],
       })),
     },
     // ADD NUMBER — a numeric READOUT (plugins/number.js): a plaintext-like box

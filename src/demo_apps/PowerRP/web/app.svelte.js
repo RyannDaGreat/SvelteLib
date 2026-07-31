@@ -188,60 +188,176 @@ const PANEL_SETTINGS = Object.fromEntries(
  *  store then silently rewrites, making the divider stick). */
 export const LABEL_FRAC_BOUNDS = { min: SETTINGS.labelFrac.min, max: SETTINGS.labelFrac.max };
 
-/** Theme catalog — viewer preference (localStorage), NOT document state.
- * `kind` categorizes every theme as "dark"|"light" (user ruling 2026-07-30) —
- * derived from each theme's --bg relative luminance, verified by
- * tests/theme_contrast_test.py so a mislabeled or unlabeled theme fails the
- * gate. Consumers: the Monaco editor picks vs-dark/vs from it.
- * Each id matches a `:root[data-theme="…"]` block in app.css. (14.11: five
- * new moods appended — sepia paper light, high-contrast slate dark, a
- * Nord-inspired cool dark, a gruvbox-inspired warm dark, and a saturated
- * "aurora" dark — each a full token override, see app.css for the palette.) */
-export const THEMES = [
-  { id: "graphite", kind: "dark", title: "Graphite (dark)" },
-  { id: "light", kind: "light", title: "Light" },
-  { id: "black", kind: "dark", title: "Pure Black" },
-  { id: "warm", kind: "dark", title: "Warm Gray (dark)" },
-  { id: "sepia", kind: "light", title: "Sepia" },
-  { id: "slate", kind: "dark", title: "Slate" },
-  { id: "nord", kind: "dark", title: "Nord" },
-  { id: "gruvbox", kind: "dark", title: "Gruvbox" },
-  { id: "aurora", kind: "dark", title: "Aurora" },
-  // Colorful set (user: "make some more colorful color themes") — six beloved
-  // editor palettes; full token overrides live in app.css alongside the others.
-  { id: "dracula", kind: "dark", title: "Dracula" },
-  { id: "tokyonight", kind: "dark", title: "Tokyo Night" },
-  { id: "catppuccin", kind: "dark", title: "Catppuccin Mocha" },
-  { id: "rosepine", kind: "dark", title: "Rosé Pine" },
-  { id: "monokai", kind: "dark", title: "Monokai" },
-  { id: "synthwave", kind: "dark", title: "Synthwave '84" },
-  // Material set (user: "get more creative … every color theme so far has just
-  // been dark buttons on a different tint") — themes that restructure the
-  // chrome, not just re-tint it: Blueprint draws it as line-work, Sunrise and
-  // Desert are LIGHT (grading-atmospheric and dry-mineral respectively).
-  { id: "blueprint", kind: "dark", title: "Blueprint" },
-  { id: "sunrise", kind: "light", title: "Sunrise" },
-  { id: "desert", kind: "light", title: "Desert" },
-  // Material set II — the themes that pull the NON-COLOUR levers introduced
-  // alongside them (--a-radius-*, --a-glass-*, --a-ui-font). Each justifies
-  // exactly one: Nocturne is glass (blur/round/rim on FLOATING surfaces only),
-  // the two Futuras are typographic (geometric sans over near-monochrome).
-  // The GLASS PAIR — one material, two times of day. Daybreak is not an
+/** THE THEME FAMILIES — viewer preference (localStorage), NOT document state.
+ *
+ * USER RULING (2026-07-30, verbatim): "maybe we can make every theme have a
+ * twin — a sibling — a dark/light sibling with common prefix for both. That way
+ * the dark/light toggle toggles between those siblings. We can structurally
+ * make sure every theme has a dark/light variant."
+ *
+ * So a FAMILY is the unit, not a theme: one identity, expressed at two
+ * luminance poles. `dark` and `light` are theme ids, each matching a
+ * `:root[data-theme="…"]` block in app.css. The toggle flips between the two
+ * members of whatever family you are in and changes NOTHING else — that is the
+ * bug this shape exists to make unrepresentable (the old toggle hardcoded
+ * graphite⟷light, so the user reported "ember: i went to it, then toggled
+ * light/dark and was no longer on ember").
+ *
+ * WHY A FAMILY IS DATA AND NOT A NAME PREFIX. The ruling says "common prefix",
+ * and the two Futuras already had one — but a prefix is a convention a reader
+ * has to parse and a test cannot enforce without re-implementing the parse.
+ * Making the pairing an explicit field means `siblingTheme` is a lookup rather
+ * than string surgery, and lets the enforcement test (tests/theme_contrast_test.py)
+ * assert three structural facts directly: every family has BOTH poles, no family
+ * has two members of the same pole, and each member's slot agrees with its
+ * MEASURED --bg luminance. Titles are therefore free to not share a prefix
+ * where a real pair of names reads better (Nocturne/Daybreak, not
+ * "Nocturne Dark"/"Nocturne Light").
+ *
+ * `kind` is derived from the slot, never stored per theme: a theme's kind IS
+ * which side of its family it sits on, and storing it twice is how the two
+ * drift. THEMES below is the flattened view every existing consumer still
+ * reads (the Monaco editor picks vs-dark/vs from `kind`). */
+export const THEME_FAMILIES = [
+  // ── The neutrals ────────────────────────────────────────────────────────────
+  // Graphite is the app default and Light was always its opposite; the pairing
+  // is a marriage, not a design. ABSORBED: `warm` and `black`, which measured
+  // 2.10 and 5.16 CIELAB from Graphite with byte-identical chroma tokens — a
+  // background-warmth knob and a brightness knob, not identities.
+  { id: "graphite", title: "Graphite", dark: "graphite", light: "light" },
+  // Slate was Graphite-with-blue-diamonds on the same neutral surfaces. Kept as
+  // its own family because the STRICT neutrality plus an all-sky-blue accent
+  // system is a real thesis; its light twin is the same thesis on paper.
+  { id: "slate", title: "Slate", dark: "slate", light: "slate-light" },
+  // ── Editor palettes ─────────────────────────────────────────────────────────
+  { id: "nord", title: "Nord", dark: "nord", light: "nord-light" },
+  { id: "gruvbox", title: "Gruvbox", dark: "gruvbox", light: "gruvbox-light" },
+  { id: "aurora", title: "Aurora", dark: "aurora", light: "aurora-light" },
+  { id: "dracula", title: "Dracula", dark: "dracula", light: "dracula-light" },
+  { id: "catppuccin", title: "Catppuccin", dark: "catppuccin", light: "catppuccin-light" },
+  { id: "rosepine", title: "Rosé Pine", dark: "rosepine", light: "rosepine-light" },
+  { id: "monokai", title: "Monokai", dark: "monokai", light: "monokai-light" },
+  { id: "synthwave", title: "Synthwave", dark: "synthwave", light: "synthwave-light" },
+  // ── Material families: identity is a MATERIAL, not a hue ────────────────────
+  { id: "blueprint", title: "Blueprint", dark: "blueprint", light: "blueprint-light" },
+  // Sunrise's light member is the original; its dark twin is the same horizon
+  // an hour the other side of the sun. Desert ABSORBED into this family? No —
+  // see its own entry: mineral flatness is a different thesis from atmosphere.
+  { id: "sunrise", title: "Sunrise", dark: "sunset", light: "sunrise" },
+  { id: "desert", title: "Desert", dark: "desert-night", light: "desert" },
+  { id: "sepia", title: "Sepia", dark: "sepia-dark", light: "sepia" },
+  // THE GLASS PAIR — one material, two times of day. Daybreak is not an
   // inversion of Nocturne (a flipped light glass washes out); it re-earns each
   // of the three glass cues for a light field. See its app.css block.
-  { id: "nocturne", kind: "dark", title: "Nocturne (glass)" },
-  { id: "daybreak", kind: "light", title: "Daybreak (glass)" },
-  { id: "futura-dark", kind: "dark", title: "Futura Dark" },
-  { id: "futura-light", kind: "light", title: "Futura Light" },
-  // Material set III — one idea each: E-Ink is a REFLECTIVE display (nothing
-  // glows), Phosphor is an EMISSIVE one (single-hue, bloom instead of shadow),
-  // Platinum's identity is the BEVEL rather than the palette, and Ember is the
-  // set's only gradient — one lit surface, on the canvas alone, never a control.
-  { id: "eink", kind: "light", title: "E-Ink" },
-  { id: "phosphor", kind: "dark", title: "Phosphor" },
-  { id: "platinum", kind: "light", title: "Platinum" },
-  { id: "ember", kind: "dark", title: "Ember" },
+  // ABSORBED: `tokyonight`, which measured 3.56 from Nocturne with IDENTICAL
+  // --a-selection and --a-keyed — it was Nocturne without the glass.
+  { id: "nocturne", title: "Nocturne", dark: "nocturne", light: "daybreak" },
+  { id: "futura", title: "Futura", dark: "futura-dark", light: "futura-light" },
+  { id: "eink", title: "E-Ink", dark: "eink-dark", light: "eink" },
+  { id: "phosphor", title: "Phosphor", dark: "phosphor", light: "phosphor-light" },
+  { id: "platinum", title: "Platinum", dark: "platinum-dark", light: "platinum" },
+  { id: "ember", title: "Ember", dark: "ember", light: "ember-light" },
 ];
+
+/** Saved-preference migration for theme ids this app no longer ships.
+ *
+ * A culled theme's id must keep RESOLVING or a returning user boots into a
+ * `data-theme` with no matching CSS block — which is not a missing theme, it is
+ * the :root defaults wearing the wrong name, silently. Each entry maps a dead
+ * id to the surviving theme that absorbed it; `loadTheme` rewrites the stored
+ * preference through this map and REPORTS the substitution (console.warn) so a
+ * migration is visible rather than mysterious.
+ *
+ * Every cull here was measured, not eyeballed — CIELAB distance over the three
+ * surfaces plus the identity chroma (tests/scratchpad_themecluster.py), with
+ * the shipped screenshots checked by eye afterwards:
+ *   warm       2.10 from graphite, chroma byte-identical → a warmth knob
+ *   black      5.16 from graphite, chroma byte-identical → a brightness knob
+ *   tokyonight 3.56 from nocturne, --a-selection AND --a-keyed identical
+ * (user ruling: "many of them have super similar colors tbh — we could group
+ * them together and eliminate near-duplicates that arent super creative") */
+export const THEME_ALIASES = {
+  warm: "graphite",
+  black: "graphite",
+  tokyonight: "nocturne",
+};
+
+/**
+ * Pure function. Flattens THEME_FAMILIES into the one-entry-per-theme list the
+ * app's consumers read, deriving `kind` from the slot the theme occupies.
+ *
+ * Args:
+ *     families (Array): THEME_FAMILIES-shaped entries.
+ *
+ * Returns:
+ *     Array<{id, kind, family, title}>: `title` is the family title for a
+ *     one-member-per-pole family, so the picker can show one row per family.
+ *
+ * Examples:
+ *     >>> flattenedThemes([{ id: "f", title: "F", dark: "f-d", light: "f-l" }])
+ *     [{ id: 'f-d', kind: 'dark', family: 'f', title: 'F' },
+ *      { id: 'f-l', kind: 'light', family: 'f', title: 'F' }]
+ */
+export function flattenedThemes(families) {
+  return families.flatMap((f) => [
+    { id: f.dark, kind: "dark", family: f.id, title: f.title },
+    { id: f.light, kind: "light", family: f.id, title: f.title },
+  ]);
+}
+
+/** The flat catalog — every theme, `kind` derived from its family slot. */
+export const THEMES = flattenedThemes(THEME_FAMILIES);
+
+/**
+ * Pure function. The theme on the OTHER luminance pole of `id`'s family — what
+ * the top-right toggle switches to. Returns `id` itself if it is unknown, so a
+ * stale preference degrades to a no-op flip rather than throwing mid-click.
+ *
+ * Args:
+ *     id (string): a theme id (THEMES[].id).
+ *     families (Array): THEME_FAMILIES-shaped entries.
+ *
+ * Returns:
+ *     string: the sibling's theme id.
+ *
+ * Examples:
+ *     >>> siblingTheme("ember", THEME_FAMILIES)
+ *     'ember-light'
+ *     >>> siblingTheme("ember-light", THEME_FAMILIES)
+ *     'ember'
+ *     >>> siblingTheme("graphite", THEME_FAMILIES)
+ *     'light'
+ *     >>> siblingTheme("no-such-theme", THEME_FAMILIES)
+ *     'no-such-theme'
+ */
+export function siblingTheme(id, families = THEME_FAMILIES) {
+  const fam = families.find((f) => f.dark === id || f.light === id);
+  if (!fam) return id;
+  return fam.dark === id ? fam.light : fam.dark;
+}
+
+/**
+ * Pure function. Which luminance pole a theme sits on — the one lookup every
+ * kind-following consumer shares (Monaco's vs-dark/vs choice, the toolbar
+ * toggle's glyph). Unknown ids read as "dark", the app's default pole.
+ *
+ * Args:
+ *     id (string): a theme id (THEMES[].id).
+ *
+ * Returns:
+ *     "dark" | "light"
+ *
+ * Examples:
+ *     >>> themeKind("ember")
+ *     'dark'
+ *     >>> themeKind("daybreak")
+ *     'light'
+ *     >>> themeKind("no-such-theme")
+ *     'dark'
+ */
+export function themeKind(id) {
+  return THEMES.find((t) => t.id === id)?.kind ?? "dark";
+}
 
 /**
  * Pure function. Asset kind of a File/Blob by MIME prefix — the paste-to-
@@ -1421,13 +1537,30 @@ export class PowerRPApp {
     return () => this.applyThemeVisual(prev);
   }
 
+  /** Command. Restores the saved theme, migrating a CULLED id through
+   * THEME_ALIASES first — loudly, because a silent substitution is
+   * indistinguishable from the app forgetting your preference. An id that is
+   * neither live nor aliased falls back to the default, also loudly: it means
+   * localStorage holds something this build has never shipped. */
   loadTheme() {
-    this.setTheme(localStorage.getItem(THEME_KEY) ?? "graphite");
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved == null) return this.setTheme("graphite");
+    if (THEMES.some((t) => t.id === saved)) return this.setTheme(saved);
+    const alias = THEME_ALIASES[saved];
+    if (alias) {
+      console.warn(`[theme] "${saved}" was retired and is now "${alias}" — migrating your saved preference.`);
+      return this.setTheme(alias);
+    }
+    console.warn(`[theme] saved theme "${saved}" is not in this build's catalog — falling back to graphite.`);
+    this.setTheme("graphite");
   }
 
-  /** Quick light/dark flip (toolbar); full set lives in the palette submenu. */
+  /** Command. THE dark/light toggle (toolbar + palette): flips to the sibling
+   * on the other pole of the CURRENT theme's family, preserving the family.
+   * See THEME_FAMILIES for why this is a lookup and not a graphite⟷light
+   * special case — the hardcoded version is the reported Ember bug. */
   toggleLightDark() {
-    this.setTheme(this.theme === "light" ? "graphite" : "light");
+    this.setTheme(siblingTheme(this.theme));
   }
 
   // ── Transactions (undo units) ──────────────────────────────────────────────

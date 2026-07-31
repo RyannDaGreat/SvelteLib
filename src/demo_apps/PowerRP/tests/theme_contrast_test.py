@@ -10,10 +10,13 @@ House rule (app.css 14.11 comment): --fg-dim clears 4.3:1 and every chroma token
 clears 3.4:1 against BOTH --bg and --a-panel-bg. Themes inherit unset tokens
 from :root, so each block is resolved over the :root defaults before checking.
 
-Run with no args.
+Run with no args; pass -v/--verbose for the full per-theme ratio table (a
+failing theme prints its table either way — that is where the diagnosis is).
 """
 import re
 import sys
+
+VERBOSE = any(a in ("-v", "--verbose") for a in sys.argv[1:])
 
 CSS = "/Users/ryan/CleanCode/Sandbox/RP_Dumps/PowerRP/SvelteLib/src/demo_apps/PowerRP/web/app.css"
 
@@ -131,10 +134,10 @@ def check(name, resolved):
     strings (empty = the theme passes).
     """
     fails = []
-    print(f"\n== {name}")
+    lines = []
     missing = [t for t in (SURFACES + CHROMA + ("--fg", "--fg-dim")) if t not in resolved]
     if missing:
-        print(f"  (not rated, non-hex or unset: {', '.join(missing)})")
+        lines.append(f"  (not rated, non-hex or unset: {', '.join(missing)})")
     for surf in SURFACES:
         if surf not in resolved:
             continue
@@ -146,38 +149,103 @@ def check(name, resolved):
             bad = floor is not None and r < floor
             if bad:
                 fails.append(f"{name}: {tok} vs {surf} = {r:.2f} (< {floor})")
-            print(f"  {tok:14} vs {surf:13} {r:5.2f}{'   << FAIL' if bad else ''}")
+            lines.append(f"  {tok:14} vs {surf:13} {r:5.2f}{'   << FAIL' if bad else ''}")
+    # The full 16-row table per theme is 640 lines across 40 themes, which buries
+    # the verdict it exists to support. Printed only when the theme FAILS (where
+    # the numbers are the diagnosis) or when asked for explicitly.
+    if fails or VERBOSE:
+        print(f"\n== {name}")
+        print("\n".join(lines))
     return fails
 
 
-# ── kind categorization guard (user ruling 2026-07-30): every THEMES entry
-# carries kind "dark"|"light", and the label must MATCH the theme's measured
-# --bg luminance — a mislabeled theme would silently give the code editor the
-# wrong Monaco palette. Parsed textually (app.svelte.js is a rune module, not
-# bare-node importable).
+# ── THE FAMILY GUARD (user ruling 2026-07-30, verbatim: "We can structurally
+# make sure every theme has a dark/light variant") — this section IS that
+# structure. The registry pairs every theme into a FAMILY with one dark and one
+# light member; the toggle flips between them. Four things can rot, and each is
+# checked below rather than trusted:
+#   1. a family missing a pole      → the toggle would have nowhere to go
+#   2. a family with two same-kind  → the toggle would flip to the same pole
+#   3. a slot contradicting reality → a "light" member whose --bg is dark, which
+#      would hand Monaco the wrong palette AND draw the wrong toggle glyph
+#   4. a member with no CSS block   → data-theme set to a name nothing styles,
+#      i.e. the :root defaults silently wearing another theme's name
+# Parsed textually (app.svelte.js is a rune module, not bare-node importable).
 import re as _re
 
-def _theme_kinds_from_registry(path=CSS.replace("app.css", "app.svelte.js")):
-    """Query. {id: kind} parsed from the THEMES array text.
+LIGHT_LUMINANCE_MIN = 0.35  # above this a --bg is a light surface, below it dark
 
-    >>> isinstance(_theme_kinds_from_registry(), dict)
-    True
+
+def _families_from_registry(path=CSS.replace("app.css", "app.svelte.js")):
+    """
+    Query (reads app.svelte.js). Parses THEME_FAMILIES into
+    [(family_id, dark_id, light_id)].
+
+    Returns:
+        list[tuple[str, str, str]]
+
+    Examples:
+        >>> fams = _families_from_registry()
+        >>> ("ember", "ember", "ember-light") in fams
+        True
+        >>> all(len(f) == 3 for f in fams)
+        True
     """
     src = open(path).read()
-    block = _re.search(r"export const THEMES = \[(.*?)\];", src, _re.S).group(1)
-    return dict(_re.findall(r'id: "([a-z-]+)", kind: "(dark|light)"', block))
+    block = _re.search(r"export const THEME_FAMILIES = \[(.*?)^\];", src, _re.S | _re.M)
+    if not block:
+        raise RuntimeError("app.svelte.js has no THEME_FAMILIES array — the family gate cannot run")
+    return _re.findall(
+        r'\{\s*id:\s*"([\w-]+)",\s*title:\s*"[^"]*",\s*dark:\s*"([\w-]+)",\s*light:\s*"([\w-]+)"\s*\}',
+        block.group(1),
+    )
 
-def check_kinds(theme_bgs):
-    """Command (asserts). Every theme labeled, every label true to luminance."""
-    kinds = _theme_kinds_from_registry()
+
+def check_families(theme_bgs):
+    """
+    Query. Enforces the family contract against MEASURED --bg luminance.
+    Returns a list of failure strings (empty = the structure holds).
+
+    Args:
+        theme_bgs (dict[str, str]): {theme id: resolved --bg hex} for every
+            `:root[data-theme=…]` block found in app.css, plus "graphite" for
+            the :root block itself.
+
+    Returns:
+        list[str]
+
+    Examples:
+        >>> # a family whose "light" slot holds a theme with a DARK --bg fails
+        >>> check_families({"ember": "#17120f", "ember-light": "#111111"})[0]
+        "ember: light member 'ember-light' has --bg #111111, which measures dark"
+    """
     failures = []
-    for theme, bg in theme_bgs.items():
-        expected = "light" if luminance(bg) > 0.35 else "dark"
-        got = kinds.get(theme)
-        if got is None:
-            failures.append(f"{theme}: NO kind in THEMES (bg {bg} reads as {expected})")
-        elif got != expected:
-            failures.append(f"{theme}: kind '{got}' contradicts --bg {bg} (luminance says {expected})")
+    families = _families_from_registry()
+    paired = set()
+    for fam, dark_id, light_id in families:
+        for slot, tid in (("dark", dark_id), ("light", light_id)):
+            paired.add(tid)
+            bg = theme_bgs.get(tid)
+            if bg is None:
+                failures.append(f"{fam}: {slot} member '{tid}' has NO :root[data-theme] block in app.css")
+                continue
+            measured = "light" if luminance(bg) > LIGHT_LUMINANCE_MIN else "dark"
+            if measured != slot:
+                failures.append(f"{fam}: {slot} member '{tid}' has --bg {bg}, which measures {measured}")
+        if dark_id == light_id:
+            failures.append(f"{fam}: both poles are the same theme '{dark_id}' — the toggle would be a no-op")
+    # Rule 4's converse: a styled theme nobody's family claims is unreachable by
+    # the toggle and invisible in a family-grouped picker.
+    for tid in theme_bgs:
+        if tid not in paired:
+            failures.append(f"{tid}: has a CSS block but belongs to NO family (unreachable by the dark/light toggle)")
+    # A theme id may not sit in two families, or the sibling lookup is ambiguous.
+    seen = {}
+    for fam, dark_id, light_id in families:
+        for tid in (dark_id, light_id):
+            if tid in seen:
+                failures.append(f"{tid}: claimed by BOTH families '{seen[tid]}' and '{fam}'")
+            seen[tid] = fam
     return failures
 
 
@@ -189,15 +257,22 @@ def main():
     for name, decls in themes.items():
         resolved = {**base, **decls}  # unset tokens inherit from :root
         all_fails += check(name, resolved)
-    all_fails += check_kinds({n: {**base, **d}["--bg"] for n, d in themes.items()})
+    family_fails = check_families({n: {**base, **d}["--bg"] for n, d in themes.items()})
+    all_fails += family_fails
+    families = _families_from_registry()
     print(f"\n{'=' * 60}")
+    print(f"FAMILY STRUCTURE: {len(families)} families, {len(themes)} themes")
+    for fam, dark_id, light_id in families:
+        print(f"  {fam:12} dark={dark_id:18} light={light_id}")
     if all_fails:
-        print(f"FAILURES ({len(all_fails)}):")
+        print(f"\nFAILURES ({len(all_fails)}):")
         for f in all_fails:
             print(f"  {f}")
         sys.exit(1)
-    print(f"ALL {len(themes)} THEMES PASS "
+    print(f"\nALL {len(themes)} THEMES PASS "
           f"(fg-dim >= {FG_DIM_MIN}:1, chroma >= {CHROMA_MIN}:1, vs --bg AND --a-panel-bg)")
+    print(f"ALL {len(families)} FAMILIES PASS "
+          f"(both poles present, each member's slot matches its measured --bg)")
 
 
 if __name__ == "__main__":

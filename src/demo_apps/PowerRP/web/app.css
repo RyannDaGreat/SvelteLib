@@ -735,26 +735,14 @@
   --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
 }
 
-:root[data-theme="black"] {
-  --bg: #000000;
-  --control-bg: #161616;
-  --a-panel-bg: #0a0a0a;
-  --a-canvas-bg: #000000;
-  --a-canvas-solid: #000000; /* flat twin of --a-canvas-bg (color-mix consumers) */
-  --border: rgba(255, 255, 255, 0.14);
-}
-
-:root[data-theme="warm"] {
-  --bg: #201d1a;
-  --fg: #e8e2d9;
-  --fg-dim: #94897b;
-  --control-bg: #2a2622;
-  --border: rgba(255, 240, 220, 0.1);
-  --a-panel-bg: #1e1b18;
-  --a-canvas-bg: #171513;
-  --a-canvas-solid: #171513; /* flat twin of --a-canvas-bg (color-mix consumers) */
-  --a-hover-bg: rgba(255, 240, 220, 0.1);
-}
+/* CULLED, and deliberately not replaced: `black` and `warm` both lived here.
+   They were PARTIAL overrides of Graphite (a background-brightness knob and a
+   background-warmth knob) sharing Graphite's chroma tokens byte for byte —
+   measured 5.16 and 2.10 CIELAB away over the surfaces plus identity chroma,
+   and indistinguishable from it in the shipped screenshots. Per the user's
+   ruling to "eliminate near-duplicates that arent super creative", both now
+   alias to `graphite` in THEME_ALIASES (web/app.svelte.js), which migrates a
+   saved preference loudly rather than booting into an unstyled data-theme. */
 
 /* ── 14.11 MORE COLOR THEMES (user: "some VARIETY could be nice, with taste
    of course") — five new moods, each a FULL override (like "light" above,
@@ -970,30 +958,13 @@
   --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
 }
 
-/* Tokyo Night (folke/tokyonight) — deep navy stage, cornflower-blue selection,
-   purple keywords, warm-gold diamonds, sky-cyan anchors, rose danger. */
-:root[data-theme="tokyonight"] {
-  --bg: #1a1b26;
-  --fg: #c0caf5;
-  --fg-dim: #8b95c4;
-  --accent: #7aa2f7;
-  --border: rgba(192, 202, 245, 0.14);
-  --control-bg: #24283b;
-  --a-panel-bg: #16161e;
-  --a-canvas-bg: #101018;
-  --a-canvas-solid: #101018; /* flat twin of --a-canvas-bg (color-mix consumers) */
-  --a-hover-bg: rgba(192, 202, 245, 0.1);
-  --a-selection: #7aa2f7;
-  --a-guide: #f7768e;
-  --a-keyed: #e0af68;
-  --a-anchor: #7dcfff;
-  --a-modifier: #bb9af7; /* Tokyo Night purple — keywords */
-  --a-scrollbar: rgba(192, 202, 245, 0.18);
-  --a-scrollbar-hover: rgba(192, 202, 245, 0.32);
-  --a-split-handle: #2a2e42;
-  --a-split-handle-hover: #414868;
-  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
-}
+/* CULLED: `tokyonight` lived here. It measured 3.56 CIELAB from Nocturne with
+   --a-selection (#7aa2f7) and --a-keyed (#e0af68) IDENTICAL — the same deep
+   blue-navy stage and the same warm-gold diamonds. Nocturne is that palette
+   PLUS the glass material, so Tokyo Night was strictly the lesser of the two
+   and its identity survives intact in the Nocturne family. Aliased to
+   `nocturne` in THEME_ALIASES (web/app.svelte.js) so a saved preference
+   migrates loudly. */
 
 /* Catppuccin Mocha (catppuccin.com) — soft pastel dark. Blue selection, mauve
    keywords, pastel-yellow diamonds, teal anchors, pink danger. */
@@ -1707,6 +1678,643 @@
   --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.72);
   --a-canvas-bg: #120d0b; /* the unlit end of what was the gradient — see the header */
   --a-canvas-solid: #120d0b; /* flat twin of --a-canvas-bg (color-mix consumers) */
+}
+
+/* ── THE SIBLINGS: every family's missing pole ───────────────────────────────
+   USER RULING: "maybe we can make every theme have a twin — a sibling — a
+   dark/light sibling with common prefix for both."
+
+   THE DESIGN RULE FOR EVERY BLOCK BELOW, learned from Daybreak (see its header):
+   AN INVERSION IS NOT A NEGATION. Flipping a dark theme's values produces the
+   washed-out light theme nobody wants, because darkness was silently doing work
+   that light does not do for free. So each sibling re-earns its family's
+   identity rather than mirroring its numbers, and each block records WHICH cue
+   it had to rebuild. Three failures recur often enough to name:
+     1. CONTRAST FROM DEPTH, NOT DARKNESS. On a dark field, surfaces separate by
+        getting lighter; there is a lot of headroom. On a light field there is
+        almost none, so light siblings separate surfaces by a SMALL, deliberate
+        value step plus a stronger border, not by a big value jump.
+     2. A GLOW CANNOT BE INVERTED, ONLY TRANSLATED. Dark themes spend saturated
+        light tokens (neon, phosphor, ember) that read as EMISSION. The same hue
+        at the same saturation on a bright page reads as highlighter ink. Light
+        siblings take those hues DOWN in value and UP in density — pigment where
+        the dark member had light.
+     3. THE IDENTITY MARK MUST SURVIVE. Every family is nameable from the
+        Inspector's keyframe diamonds (--a-keyed) alone. A sibling that lets that
+        token drift to a generic amber has changed families, so each block below
+        states what its diamonds are and why. */
+
+/* Slate Light — the strictly-neutral thesis, printed. Slate's identity is that
+   its SURFACES carry no hue at all (pure greys) so the all-sky-blue accent
+   system is the only chroma in the app. That transfers to light unchanged, and
+   is the rare case where the palette really is the same idea at another value.
+   What does NOT transfer is the accent VALUE: Slate's #38a8f5 on white is a
+   4.4:1 wash, so the blue family is taken down to a true azure and the diamonds
+   go DEEPER than the selection (on dark they were lighter than it) — the
+   diamond must stay the most emphatic mark in the Inspector either way, and on
+   paper emphasis is weight, not brightness. */
+:root[data-theme="slate-light"] {
+  --bg: #f0f0f0;
+  --fg: #101010;
+  --fg-dim: #5c5c5c;
+  --accent: #0069c2;
+  --border: rgba(0, 0, 0, 0.18); /* neutral, definite — no blue cast in the chrome */
+  --control-bg: #e2e2e2;
+  --a-panel-bg: #f8f8f8; /* panels above the page: the one step this theme spends */
+  --a-canvas-bg: #cfcfcf;
+  --a-canvas-solid: #cfcfcf; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(0, 0, 0, 0.08);
+  --a-selection: #0069c2;
+  --a-guide: #c2185b; /* red-pink danger, exactly as the dark member keeps it */
+  --a-keyed: #00468c; /* deepest blue: on paper the emphatic mark is the DARKEST one */
+  --a-anchor: #3d6a94;
+  --a-modifier: #005a9e;
+  --a-scrollbar: rgba(0, 0, 0, 0.24);
+  --a-scrollbar-hover: rgba(0, 0, 0, 0.4);
+  --a-split-handle: #c8c8c8;
+  --a-split-handle-hover: #8f8f8f;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.22);
+}
+
+/* Nord Light — Nord's own "Snow Storm" tier, which is the honest sibling: the
+   palette ships one, so this is a translation rather than an invention. Frost
+   cyan is the accent identity and stays, but #88c0d0 is a 1.9:1 ghost on snow,
+   so the frost tokens move to their deep-water end while keeping the hue.
+   Aurora GREEN diamonds survive as the identity mark (never gold — the dark
+   member's round-2 rule), taken to a forest value that holds on white.
+   Surfaces keep Nord's characteristic BLUE-GREY cast rather than going neutral;
+   a neutral-grey Nord is just Light with a cyan accent. */
+:root[data-theme="nord-light"] {
+  --bg: #e5e9f0; /* Snow Storm nord5 — the page */
+  --fg: #2e3440; /* Polar Night nord0 — Nord's own ink */
+  --fg-dim: #4c566a; /* nord3, the palette's own muted tier */
+  --accent: #2b6f83; /* frost, at a value that holds on snow */
+  --border: rgba(46, 52, 64, 0.2);
+  --control-bg: #d8dee9; /* nord4 — the bars, pressed into the page */
+  --a-panel-bg: #f2f4f8; /* the lit sheet, a small deliberate step over the page */
+  --a-canvas-bg: #c8d0de; /* the desk: a slide reads as ON it, not as more page */
+  --a-canvas-solid: #c8d0de; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(46, 52, 64, 0.09);
+  --a-selection: #2b6f83; /* frost cyan, deep-water end */
+  --a-guide: #a3364b; /* aurora rose, taken to pigment */
+  --a-keyed: #4a6b32; /* aurora GREEN diamonds — the identity mark, forest value */
+  --a-anchor: #43698c; /* frost blue */
+  --a-modifier: #7a4b78; /* Nord purple — still no amber anywhere */
+  --a-scrollbar: rgba(46, 52, 64, 0.24);
+  --a-scrollbar-hover: rgba(46, 52, 64, 0.4);
+  --a-split-handle: #cbd3e1;
+  --a-split-handle-hover: #8fa0b8;
+  --a-palette-shadow: 0 12px 40px rgba(46, 52, 64, 0.2);
+}
+
+/* Gruvbox Light — gruvbox ships a light mode and this is it: the same warm
+   retro identity on its cream stock. The MUSTARD/ORANGE chroma is gruvbox's
+   whole personality and it is the rare accent family that survives the flip
+   almost intact, because gruvbox's light palette already darkened its own
+   accents for paper (#b57614, #af3a03) rather than reusing the dark ones.
+   Surfaces stay VISIBLY warm — the dark member's round-2 fix was that its
+   panels had gone so dark the warmth vanished, and the light twin can lose it
+   the same way by drifting to neutral cream. */
+:root[data-theme="gruvbox-light"] {
+  --bg: #ebdbb2; /* gruvbox light bg0 — the cream stock */
+  --fg: #3c3836; /* gruvbox dark0, its own ink */
+  --fg-dim: #665c54;
+  /* Gruvbox's own light-mode yellow is #b57614, and it MISSES the graphical
+     floor on gruvbox's own cream stock (2.75:1 vs --bg — measured). Faithful to
+     the palette would be illegible, so the mustard is taken one step deeper
+     while staying unmistakably gruvbox's yellow rather than becoming a brown. */
+  --accent: #8a5a06;
+  --border: rgba(60, 56, 54, 0.22);
+  --control-bg: #e0cfa9; /* the bars, pressed into the stock */
+  --a-panel-bg: #fbf1c7; /* bg0_h, the brightest sheet */
+  --a-canvas-bg: #d5c4a1; /* bg2 — the desk under the page */
+  --a-canvas-solid: #d5c4a1; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(60, 56, 54, 0.1);
+  --a-selection: #af3a03; /* gruvbox light orange — the unmistakable selection */
+  --a-guide: #9d0006; /* light red */
+  --a-keyed: #8a5a06; /* mustard diamonds: gruvbox identity, at the legible depth */
+  --a-anchor: #79740e; /* avocado */
+  --a-modifier: #8f3f71; /* light purple — eq `self` / keywords */
+  --a-scrollbar: rgba(60, 56, 54, 0.24);
+  --a-scrollbar-hover: rgba(60, 56, 54, 0.42);
+  --a-split-handle: #d5c4a1;
+  --a-split-handle-hover: #a89984;
+  --a-palette-shadow: 0 12px 40px rgba(80, 60, 30, 0.24);
+}
+
+/* Aurora Light — the hard case, and worth stating why. Aurora is the set's
+   deliberately LOUD theme: saturated magenta diamonds and teal selection on
+   clearly-purple panels, and the loudness comes from SATURATED LIGHT ON DARK.
+   That is failure mode 2 above in its purest form — the same magenta on a white
+   page is a highlighter, not an aurora.
+   So this sibling translates the phenomenon rather than the palette: an aurora
+   seen at DAWN rather than against night. Panels keep an unmistakable violet
+   cast (a neutral-grey Aurora would not be Aurora), the ink is deep aubergine
+   rather than black, and the chroma set moves to PIGMENT versions of the same
+   three hues — magenta diamonds stay magenta, just dense enough to read as ink.
+   The gold third accent survives at a bronze value. This is the closest honest
+   sibling; a literal light Aurora is not possible, and pretending otherwise
+   would ship the parody the brief warns about. */
+:root[data-theme="aurora-light"] {
+  --bg: #efe6fa; /* pale violet page — the cast is the identity */
+  --fg: #2a1846; /* deep aubergine ink, never neutral black */
+  --fg-dim: #5c4a7d;
+  --accent: #6b3fa0;
+  --border: rgba(42, 24, 70, 0.2);
+  --control-bg: #e2d4f5;
+  --a-panel-bg: #f8f3ff; /* the lit sheet, clearly violet-white */
+  --a-canvas-bg: #cfc0e4; /* the desk */
+  --a-canvas-solid: #cfc0e4; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(107, 63, 160, 0.13);
+  --a-selection: #00736b; /* teal, taken to pigment — still the cool counterweight */
+  --a-guide: #c2185b; /* red-pink danger, distinct from the magenta diamonds */
+  --a-keyed: #a3007a; /* MAGENTA diamonds — the loud identity mark, as ink */
+  --a-anchor: #6b3fa0; /* violet */
+  --a-modifier: #8a5a00; /* bronze — the rare third accent, gold's paper value */
+  --a-scrollbar: rgba(42, 24, 70, 0.24);
+  --a-scrollbar-hover: rgba(42, 24, 70, 0.42);
+  --a-split-handle: #d6c8ea;
+  --a-split-handle-hover: #9d84bd;
+  --a-palette-shadow: 0 12px 40px rgba(60, 30, 100, 0.22);
+}
+
+/* Dracula Light — Dracula has no official light mode, so this is a design
+   rather than a port, and the design question is what Dracula IS minus the
+   dark. The answer taken here: the CAST. Dracula's surfaces are never neutral —
+   they are blue-violet (#282a36), and every light theme that forgets this ends
+   up as Light with purple text. So the page is a violet-tinted white and the
+   ink is Dracula's own #282a36, which makes the theme recognizable before any
+   accent is drawn.
+   The famous five (purple/pink/cyan/yellow/red) are pastels designed to GLOW on
+   dark. Each moves to its pigment value here, keeping the hue relationships
+   that make the scheme read as Dracula: purple selection, PINK keywords (the
+   one everybody recognizes), cyan anchors, red danger. The yellow diamonds are
+   the exception that proves rule 3 — Dracula's #f1fa8c is unusable on white at
+   any density that still reads as yellow, so the diamonds go to a dark amber
+   which is the honest paper translation of "the pale yellow one". */
+:root[data-theme="dracula-light"] {
+  --bg: #eeeef7; /* violet-tinted page — the cast IS the identity */
+  --fg: #282a36; /* Dracula's own background colour, used as ink */
+  --fg-dim: #575a72;
+  --accent: #6f42c1; /* purple, at pigment density */
+  --border: rgba(40, 42, 54, 0.2);
+  --control-bg: #e0e0ee;
+  --a-panel-bg: #f8f8fd;
+  --a-canvas-bg: #c9c9dc; /* the desk */
+  --a-canvas-solid: #c9c9dc; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(40, 42, 54, 0.09);
+  --a-selection: #6f42c1; /* purple */
+  --a-guide: #c11f2f; /* Dracula red as pigment */
+  --a-keyed: #96690a; /* dark amber diamonds — see the header on the yellow */
+  --a-anchor: #0f6f8a; /* cyan, deep-water */
+  --a-modifier: #b2166b; /* DRACULA PINK — the most recognizable token, kept loud */
+  --a-scrollbar: rgba(40, 42, 54, 0.24);
+  --a-scrollbar-hover: rgba(40, 42, 54, 0.42);
+  --a-split-handle: #d2d2e2;
+  --a-split-handle-hover: #9a9ab4;
+  --a-palette-shadow: 0 12px 40px rgba(40, 42, 70, 0.22);
+}
+
+/* Catppuccin Latte — the official light flavour, so like Nord this is a
+   translation and not an invention: Latte's own base/mantle/crust and its own
+   accent values, which the palette authors already tuned for paper.
+   Kept faithful because the family's identity is the SOFT PASTEL relationship
+   between surfaces, and Latte preserves it: a warm-grey page rather than a
+   white one, panels a small step apart, and accents that are muted rather than
+   saturated. Mauve keywords are Catppuccin's signature and stay. */
+:root[data-theme="catppuccin-light"] {
+  --bg: #eff1f5; /* Latte base */
+  --fg: #4c4f69; /* Latte text — a soft ink, deliberately not black */
+  --fg-dim: #6c6f85; /* subtext0 */
+  --accent: #8839ef; /* Latte mauve */
+  --border: rgba(76, 79, 105, 0.2);
+  --control-bg: #e6e9ef; /* mantle */
+  --a-panel-bg: #f7f8fa;
+  --a-canvas-bg: #ccd0da; /* surface0 — the desk */
+  --a-canvas-solid: #ccd0da; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(76, 79, 105, 0.09);
+  --a-selection: #1e66f5; /* Latte blue */
+  --a-guide: #d20f39; /* Latte red */
+  --a-keyed: #8c6a00; /* Latte yellow, deepened: #df8e1d misses the graphical floor */
+  --a-anchor: #0f6f74; /* Latte teal, deepened: #179299 measures 3.31:1 on Latte base */
+  --a-modifier: #8839ef; /* Latte mauve — keywords, the signature */
+  --a-scrollbar: rgba(76, 79, 105, 0.22);
+  --a-scrollbar-hover: rgba(76, 79, 105, 0.4);
+  --a-split-handle: #ccd0da;
+  --a-split-handle-hover: #9ca0b0;
+  --a-palette-shadow: 0 12px 40px rgba(76, 79, 105, 0.2);
+}
+
+/* Rosé Pine Dawn — again the official light flavour. Dawn's identity is that it
+   is MUTED and warm-neutral: an unsaturated rose page, ink that is brown-violet
+   rather than black, and accents that never shout. The dark member's structural
+   quirk is preserved deliberately — Rosé Pine's surface tier sits ABOVE the
+   base, so --a-panel-bg is lighter than --bg here too, and the canvas is the
+   darkest. That elevation order is part of the palette's own design. */
+:root[data-theme="rosepine-light"] {
+  --bg: #faf4ed; /* Dawn base */
+  --fg: #575279; /* Dawn text — brown-violet, the palette's own ink */
+  --fg-dim: #6e6a86; /* subtle */
+  --accent: #907aa9; /* iris */
+  --border: rgba(87, 82, 121, 0.2);
+  --control-bg: #f2e9e1; /* surface */
+  --a-panel-bg: #fffaf3; /* Dawn's surface tier, ABOVE the base — kept as on dark */
+  --a-canvas-bg: #dfd7ce; /* the desk, darkest as in the dark member */
+  --a-canvas-solid: #dfd7ce; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(87, 82, 121, 0.08);
+  --a-selection: #286983; /* Dawn pine — the foam-cyan role, at Dawn's value */
+  --a-guide: #b4637a; /* love */
+  --a-keyed: #8a6410; /* gold diamonds, deepened past Dawn's #ea9d34 for the floor */
+  --a-anchor: #907aa9; /* iris */
+  --a-modifier: #a8425c; /* rose — keywords */
+  --a-scrollbar: rgba(87, 82, 121, 0.22);
+  --a-scrollbar-hover: rgba(87, 82, 121, 0.4);
+  --a-split-handle: #e6dcd2;
+  --a-split-handle-hover: #b8ab9e;
+  --a-palette-shadow: 0 12px 40px rgba(87, 82, 121, 0.18);
+}
+
+/* Monokai Light — Monokai's two signature loud hues (LIME and MAGENTA) are pure
+   failure mode 2: #a6e22e is a highlighter on white. But the SPLIT is the
+   identity — lime for selection, magenta for danger, never the other way — and
+   a split survives a value change even when the values cannot survive it.
+   So both go to pigment: an olive-lime that is still unmistakably the green
+   role, and a magenta-crimson still unmistakably the danger one. The stage
+   keeps Monokai's warm olive-black cast, translated to a warm olive-cream page
+   rather than a neutral one — the warmth is what separates this from a generic
+   light theme with a green accent. */
+:root[data-theme="monokai-light"] {
+  --bg: #f3f2e7; /* warm olive-cream — the stage's own cast, inverted in value */
+  --fg: #272822; /* Monokai's own background, used as ink */
+  --fg-dim: #5c5c4e;
+  --accent: #5c8a00; /* olive-lime: the green role at pigment density */
+  --border: rgba(39, 40, 34, 0.22);
+  --control-bg: #e7e6d8;
+  --a-panel-bg: #fbfaf2;
+  --a-canvas-bg: #d2d1c0; /* the desk */
+  --a-canvas-solid: #d2d1c0; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(39, 40, 34, 0.09);
+  --a-selection: #5c8a00; /* LIME's paper value — the split's first half */
+  --a-guide: #c2185b; /* MAGENTA's paper value — the split's second half */
+  --a-keyed: #8a7000; /* yellow diamonds, deepened from #e6db74 */
+  --a-anchor: #0f6f80; /* cyan */
+  --a-modifier: #7239c9; /* Monokai purple (constants), kept off the magenta */
+  --a-scrollbar: rgba(39, 40, 34, 0.24);
+  --a-scrollbar-hover: rgba(39, 40, 34, 0.42);
+  --a-split-handle: #dbdac8;
+  --a-split-handle-hover: #a8a693;
+  --a-palette-shadow: 0 12px 40px rgba(60, 60, 40, 0.22);
+}
+
+/* Synthwave Daylight — the hardest flip in the set, and the one where the
+   honest answer is a GENRE SHIFT rather than a palette shift.
+   Synthwave '84 is neon: its entire effect is emitted light against a
+   deep-purple night, and neon has no light-mode equivalent — a glowing cyan on
+   white is not "daytime synthwave", it is an eyesore. But the aesthetic the
+   theme belongs to does have a daylight half, and it is well known: MIAMI /
+   vaporwave sunset — the same hot pink and cyan, printed on a bleached
+   sun-faded page instead of glowing on black.
+   So this sibling keeps the family's two identity hues exactly where they were
+   (pink is the keyword/`self` colour, cyan is selection) and changes only what
+   light does to them: pigment on paper rather than emission in the dark. The
+   page keeps a pink-lilac cast so it never reads as a neutral light theme. */
+:root[data-theme="synthwave-light"] {
+  --bg: #f6ecf5; /* sun-bleached pink-lilac — the faded poster stock */
+  --fg: #2b1b3d; /* deep purple ink, the night's colour used as pigment */
+  --fg-dim: #5f4a75;
+  --accent: #c2187a; /* the hot pink, as ink */
+  --border: rgba(43, 27, 61, 0.2);
+  --control-bg: #e9d5e8;
+  /* MEASURED FIX, not a preference: at #fdf6fc this panel was 1.5% off white,
+     and since the Inspector is almost entirely panel, the pink-lilac cast that
+     IS this theme's identity vanished exactly where the eye spends its time —
+     it screenshotted as a generic light theme. Held clearly tinted instead. */
+  --a-panel-bg: #faeef8;
+  --a-canvas-bg: #d8c4d9; /* the desk */
+  --a-canvas-solid: #d8c4d9; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(194, 24, 122, 0.12); /* the retro glow, kept as the hover tint */
+  --a-selection: #00707a; /* neon cyan's pigment value — still the selection role */
+  --a-guide: #d0212f; /* hot red danger */
+  /* NOT the bronze this first shipped as. Bronze is what every other warm light
+     theme's diamonds are, and the diamonds are the mark repeated down every
+     Inspector row — so a bronze here made the theme read as generic at exactly
+     the moment it should be most recognizable. Magenta is one of the family's
+     two identity hues, so the diamonds now say Synthwave from any corner. */
+  --a-keyed: #a5106e;
+  --a-anchor: #7a4b9c; /* orchid */
+  --a-modifier: #c2187a; /* THE PINK — keywords / eq `self`, the identity mark */
+  --a-scrollbar: rgba(43, 27, 61, 0.24);
+  --a-scrollbar-hover: rgba(43, 27, 61, 0.42);
+  --a-split-handle: #e0cee0;
+  --a-split-handle-hover: #a888ad;
+  --a-palette-shadow: 0 12px 40px rgba(80, 30, 90, 0.22);
+}
+
+/* Blueprint Light — the WHITEPRINT, and this one is a genuine historical pair
+   rather than a designed inversion, which is why it is the most satisfying
+   sibling in the set. Cyanotype (white lines on blue) was superseded by the
+   diazo whiteprint (blue lines on white) for exactly the reason a light theme
+   exists: it is easier to read in a bright room and cheaper to mark up.
+   THE LINE-WORK THESIS TRANSFERS EXACTLY, which is the point: --control-bg
+   still sits a hair off --a-panel-bg and --border is still OPAQUE, so chrome is
+   still DRAWN rather than filled. Only the ink and stock swap roles. The
+   drafting-pencil accents survive unchanged in role: vermilion guides and a
+   red-pencil selection are still the one warm thing on the sheet, and they need
+   no value change because a red pencil was always drawn on white.
+   The diamonds invert honestly: on the cyanotype they were chalk (the print's
+   own line colour, scribed into the sheet); here they are the PRINT'S OWN BLUE,
+   the same "made of the drawing" logic on reversed stock. */
+:root[data-theme="blueprint-light"] {
+  --bg: #eef4f8; /* the whiteprint stock — cool, faintly blue paper */
+  --fg: #0a2438; /* Prussian ink: the dark member's page colour, used as line */
+  --fg-dim: #4a6f89;
+  --accent: #17567d;
+  --border: #7ba8c4; /* OPAQUE, not an alpha wash — the line IS the chrome here */
+  --control-bg: #e6eef4; /* barely off the panel: fields are outlined, not filled */
+  --a-panel-bg: #f7fafc;
+  --a-canvas-bg: #cddbe6; /* the drafting board under the sheet */
+  --a-canvas-solid: #cddbe6; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  /* Stronger than a usual light wash, for the dark member's reason: with fills
+     this flat, hover is the ONLY thing separating the palette's active row. */
+  --a-hover-bg: rgba(23, 86, 125, 0.14);
+  --a-selection: #c4441f; /* red drafting pencil — unchanged in role */
+  --a-guide: #c0392b; /* vermilion ruling line */
+  --a-keyed: #17567d; /* the print's OWN blue: diamonds are made of the drawing */
+  --a-anchor: #2b7ba8;
+  --a-modifier: #1d6b8f; /* eq `self` / code keywords stay line-work */
+  --a-scrollbar: rgba(23, 86, 125, 0.3);
+  --a-scrollbar-hover: rgba(23, 86, 125, 0.5);
+  --a-split-handle: #b8cfdd;
+  --a-split-handle-hover: #6f9cb8;
+  --a-palette-shadow: 0 12px 40px rgba(20, 60, 90, 0.2);
+}
+
+/* Sunset — Sunrise's dark twin, and the family where the pair is literal: the
+   same horizon, an hour the other side of the sun. Sunrise grades from lit sky
+   down to unlit ground; Sunset grades the other way, from a sky that has
+   already gone to the last band of light at the horizon.
+   THE GRADE ORDER IS PRESERVED AND RE-EARNED. Sunrise's round-1 failure was
+   putting control LIGHTER than panel, which flattened the horizon; the fix was
+   bars=deepest, page above, panes=lit sky. Here the same three surfaces keep
+   the same RELATIVE order (bars deepest, panes highest) while every value moves
+   into night — so the horizon still reads as a horizon.
+   Indigo carried Sunrise's ink so the warmth never turned mushy; on dark that
+   job inverts — the ink is a warm cream and INDIGO becomes the deep end of the
+   grade. Coral stays the accent, and the diamonds stay "first sun", now the
+   LAST sun: a hot amber that is the brightest thing in the theme. */
+:root[data-theme="sunset"] {
+  --bg: #2a1830; /* the sky, already gone violet */
+  --fg: #ffeede; /* warm cream ink — the light that is left */
+  --fg-dim: #bda2a8;
+  --accent: #ff7043;
+  --border: rgba(255, 220, 200, 0.15);
+  --control-bg: #22132a; /* the bars: deepest, exactly as Sunrise's are */
+  --a-panel-bg: #3a2140; /* the panes: the highest band of sky, still lit */
+  --a-canvas-bg: #180d1f; /* the ground, fully in shadow */
+  --a-canvas-solid: #180d1f; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(255, 140, 90, 0.16);
+  --a-selection: #ff7043; /* coral — the accent identity, unchanged in role */
+  --a-guide: #ff4d84; /* rose-magenta, distinct from the coral selection */
+  --a-keyed: #ffb74d; /* LAST sun — the brightest mark, as amber as first sun was */
+  --a-anchor: #9d8ec9; /* indigo, now the cool counterweight rather than the ink */
+  --a-modifier: #ffa0c9; /* mulberry taken up into the light — eq `self` / keywords */
+  --a-scrollbar: rgba(255, 220, 200, 0.2);
+  --a-scrollbar-hover: rgba(255, 220, 200, 0.36);
+  --a-split-handle: #3d2445;
+  --a-split-handle-hover: #ff7043;
+  --a-palette-shadow: 0 12px 40px rgba(20, 5, 25, 0.7);
+}
+
+/* Desert Night — the mineral thesis after dark, and a different theme from
+   Sunset for the same reason Desert is a different theme from Sunrise: this
+   family is about MATERIAL (dry, flat, hard-edged), not about atmosphere.
+   So there is no grade here. The surfaces are flat slabs at distinct values —
+   the same "bone panel laid on darker ground" structure the light member uses,
+   which is what makes a slide read as an object sitting on the desert floor.
+   The desert at night is genuinely COLD, and that is the honest translation of
+   "sun-bleached": the stock goes blue-slate rather than staying brown, because
+   sand under moonlight is not brown. TERRACOTTA survives as the identity mark
+   (the light member's round-1 lesson was that an amber here reads as Sunrise),
+   now as the one warm thing in a cold theme — the last heat in the rock. Sage
+   guides stay, because the flora is still the only living thing out here. */
+:root[data-theme="desert-night"] {
+  --bg: #1c1f24; /* cold slate — sand under moonlight, not brown */
+  --fg: #ece4d6; /* bone, now the ink rather than the panel */
+  --fg-dim: #9a9384;
+  --accent: #e0653c;
+  --border: rgba(236, 228, 214, 0.15);
+  --control-bg: #262a30; /* the bars, a flat slab — no gradient anywhere */
+  --a-panel-bg: #212429;
+  --a-canvas-bg: #131518; /* the ground, darkest */
+  --a-canvas-solid: #131518; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(224, 101, 60, 0.16);
+  --a-selection: #e0653c; /* terracotta */
+  --a-guide: #86b06f; /* sage — still never confusable with the terracotta */
+  --a-keyed: #ff8a5c; /* burnt terracotta diamonds — the last heat in the rock */
+  --a-anchor: #8fa3b8; /* weathered slate, now the cool mid-tone */
+  --a-modifier: #d18ac4; /* prickly-pear bloom */
+  --a-scrollbar: rgba(236, 228, 214, 0.2);
+  --a-scrollbar-hover: rgba(236, 228, 214, 0.36);
+  --a-split-handle: #2e333a;
+  --a-split-handle-hover: #e0653c;
+  --a-palette-shadow: 0 8px 24px rgba(0, 0, 0, 0.7); /* hard, short — noon's shadow after dark */
+}
+
+/* Sepia Dark — warm paper's other half: not paper at all, but the LAMP that
+   used to light it. Sepia is an annotated printed figure; its sibling is that
+   same figure read at night under a warm bulb, which is the honest way to keep
+   "warm, absorbent, ink-on-stock" when the stock can no longer be bright.
+   The distinction from Ember matters and is deliberate: Ember is firelight
+   TEMPERATURE as a palette (its accents are what a fire produces at different
+   heats). This is not a fire, it is old paper and umber ink in low light — the
+   chroma set is Sepia's own (umber, brick, olive, slate-blue), lifted just far
+   enough to hold on a dark ground. Umber stays the accent; the olive diamonds
+   stay olive, which is what keeps this in Sepia's family rather than drifting
+   into the generic amber every warm dark theme falls into. */
+:root[data-theme="sepia-dark"] {
+  --bg: #211c15; /* the room, warm brown-black */
+  --fg: #f0e4cc; /* aged paper, now the ink */
+  --fg-dim: #a8977f;
+  --accent: #d99a5b; /* umber, lifted to hold on dark */
+  --border: rgba(240, 228, 204, 0.13);
+  --control-bg: #2b241b;
+  --a-panel-bg: #251f18;
+  --a-canvas-bg: #191410; /* the desk in shadow */
+  --a-canvas-solid: #191410; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(240, 228, 204, 0.1);
+  --a-selection: #d99a5b; /* umber — the accent identity, unchanged in role */
+  --a-guide: #e0736a; /* brick red */
+  --a-keyed: #a8bd6b; /* OLIVE diamonds — Sepia's own, not a generic amber */
+  --a-anchor: #8fa8b8; /* slate blue */
+  --a-modifier: #d9a06b; /* umber for eq `self` / keywords, in-family */
+  --a-scrollbar: rgba(240, 228, 204, 0.18);
+  --a-scrollbar-hover: rgba(240, 228, 204, 0.32);
+  --a-split-handle: #362c21;
+  --a-split-handle-hover: #d99a5b;
+  --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.66);
+}
+
+/* E-Ink Dark — the SAME REFLECTIVE DEVICE with its frontlight off, which is the
+   only honest dark sibling for a theme whose thesis is "nothing glows".
+   This is the one family where the taste rule bites hardest: an emissive dark
+   e-ink theme is a contradiction, so nothing here glows either. The surfaces
+   stay COLD and, crucially, stay CLOSE TOGETHER in value — the light member's
+   defining move is that real E Ink has a narrow reflective range, and a dark
+   sibling that opens that range up into a normal dark theme has thrown away the
+   thesis. So the whole theme lives in a ~10-point band, and the chrome is
+   defined by its BORDER rather than by surface separation.
+   ONE chroma, nearly monochrome, exactly as the light member: the ink is now a
+   pale slate, the diamonds ARE that same ink (a monochrome device does not do
+   amber, in either polarity), and the proofreader's red stays the single genuine
+   colour — the one mark a reader adds to a page they did not print. */
+:root[data-theme="eink-dark"] {
+  --bg: #1b1c1e; /* the unlit panel — cold, and never black */
+  --fg: #dcdcd8; /* the light member's page colour, now the ink */
+  --fg-dim: #9a9da3;
+  --accent: #b8c2d0; /* pale slate — a value, not a hue */
+  --border: rgba(220, 220, 216, 0.24); /* definite: the chrome IS the rule */
+  --control-bg: #222326; /* a few points off, never a raised slab */
+  --a-panel-bg: #1f2022;
+  --a-canvas-bg: #161719; /* the tray under the sheet — the deepest of the narrow band */
+  --a-canvas-solid: #161719; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(220, 220, 216, 0.1);
+  --a-selection: #b8c2d0;
+  --a-guide: #d97a70; /* the proofreader's red — the one true colour, lifted */
+  --a-keyed: #dcdcd8; /* ink diamonds: monochrome in this polarity too */
+  --a-anchor: #97a3b0;
+  --a-modifier: #b9a3c9; /* a faint plum — still nearly ink */
+  --a-scrollbar: rgba(220, 220, 216, 0.22);
+  --a-scrollbar-hover: rgba(220, 220, 216, 0.4);
+  --a-split-handle: #2a2c2f;
+  --a-split-handle-hover: #6f747a;
+  /* Hard and tight, as on the light member: a sheet on a sheet casts a short,
+     sharp edge. It does not float, so a soft 40px throw would be a lie. */
+  --a-palette-shadow: 0 3px 10px rgba(0, 0, 0, 0.55);
+}
+
+/* Phosphor Light — a P1 tube is an emissive device and cannot be inverted, so
+   this sibling changes the DEVICE while keeping the family's real identity,
+   which is MONOCHROME BY CONSTRUCTION. That constraint is what made Phosphor
+   not-kitsch ("a green terminal with a blue selection is a themed website"), and
+   it is the part that transfers.
+   The honest light counterpart of a glowing green tube is the printout that came
+   off it: GREEN-BAR paper, the fanfold stock line-printers used, which is
+   monochrome-green on white for exactly the same reason. So the chroma system is
+   still ONE hue at different intensities — selection darkest, diamonds a hair
+   under, anchors and modifier dimmer — just as pigment rather than beam.
+   The single period-honest exception survives too: the guide is amber, the OTHER
+   phosphor that actually existed. And the chrome is still defined by its BORDER
+   rather than by filled slabs, because a line-printer's UI was box characters
+   whichever way round the ink went. NO bloom here — paper does not halate — so
+   the shadow is the hard, tight one a stack of fanfold casts. */
+:root[data-theme="phosphor-light"] {
+  --bg: #eef2e8; /* green-bar stock — never white, faintly green */
+  --fg: #12301a; /* the impression: dark green, not black */
+  --fg-dim: #46664e;
+  --accent: #1c6b2e;
+  --border: rgba(18, 48, 26, 0.26); /* the chrome IS the line-work */
+  --control-bg: #e4ebdc; /* barely off the panel: a printout has no raised buttons */
+  --a-panel-bg: #f5f8f1;
+  --a-canvas-bg: #d2dcca; /* the bar — the alternating band on fanfold paper */
+  --a-canvas-solid: #d2dcca; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(18, 48, 26, 0.1);
+  --a-selection: #14561f; /* the darkest strike — the beam's inverse */
+  --a-guide: #8a5a00; /* P3 AMBER: the other real phosphor, kept as the exception */
+  --a-keyed: #1c6b2e; /* diamonds one notch under selection — same hue, as ink */
+  --a-anchor: #3f7a4a;
+  --a-modifier: #2f6b3f; /* eq `self` / keywords: still the one hue */
+  --a-scrollbar: rgba(18, 48, 26, 0.24);
+  --a-scrollbar-hover: rgba(18, 48, 26, 0.42);
+  --a-split-handle: #cddac6;
+  --a-split-handle-hover: #6f8a72;
+  /* Hard and tight — paper does not bloom. This is the one token that refuses
+     to translate: the dark member's identity spend is a green halation, and
+     reproducing it here would be a glow on paper. */
+  --a-palette-shadow: 0 3px 10px rgba(18, 48, 26, 0.24);
+}
+
+/* Platinum Dark — "Graphite", the real one: System 7's own dark appearance was
+   never shipped, but the BEVEL is the identity here and a bevel is a lighting
+   model, not a colour. That is what makes this sibling honest — it transfers the
+   thesis exactly while every colour changes.
+   THE BEVEL INVERTS PROPERLY, which is the whole design and the one thing a
+   naive flip gets wrong. On the light member the lit edge is a WHITE inset top
+   rim over a hard dark drop: light comes from above, so the top edge catches it.
+   Light still comes from above here — so the rim stays on TOP and stays LIGHTER
+   than the surface, just far less bright (a blown-white rim on a dark panel
+   reads as neon piping, not as metal). The relationship is preserved; the
+   values are re-earned.
+   Raised-vs-recessed is preserved too, and it is the part that carried
+   information: --control-bg stays ABOVE --a-panel-bg (controls are raised,
+   hence clickable) even though both are now dark. Still SQUARE at all three
+   radius levers, still opaque, still no pinstripes — brushed metal in a dark
+   room is metal, and this family's restraint is the point. */
+:root[data-theme="platinum-dark"] {
+  --bg: #3a3a38; /* the stamped panel, in a dark room — warm-neutral, low chroma */
+  --fg: #eceae5;
+  --fg-dim: #a8a49c;
+  --accent: #7aa8dd;
+  --border: #16161a; /* OPAQUE hard rule — the stamped edge, now the dark side */
+  --control-bg: #464642; /* controls sit ABOVE the page — raised, hence LIGHTER */
+  --a-panel-bg: #323230; /* panes sit BELOW it — recessed, hence darker */
+  --a-canvas-bg: #232322; /* the desktop the windows sit on */
+  --a-canvas-solid: #232322; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(236, 234, 229, 0.1);
+  --a-selection: #7aa8dd; /* the classic highlight blue, used ONLY for highlight */
+  --a-guide: #e0736a;
+  --a-keyed: #e8b44a; /* ochre that survives on a dark grey panel */
+  --a-anchor: #93a8bd;
+  --a-modifier: #c497d4;
+  --a-scrollbar: rgba(236, 234, 229, 0.2);
+  --a-scrollbar-hover: rgba(236, 234, 229, 0.36);
+  --a-split-handle: #4a4a46;
+  --a-split-handle-hover: #8a8a82;
+  --a-palette-shadow: 0 4px 0 rgba(10, 10, 12, 0.6), 0 5px 14px rgba(0, 0, 0, 0.5);
+  /* THE BEVEL, inverted correctly: still an inset hairline on the TOP edge,
+     still LIGHTER than the surface it sits on — light comes from above in both
+     members. Far less bright than the light member's near-white, because a
+     blown rim on a dark panel reads as piping rather than as a stamped edge.
+     NOT translucent and NOT blurred: --a-glass-blur stays `none`, because metal
+     is opaque whichever room it is in. */
+  --a-glass-rim: rgba(255, 255, 255, 0.3);
+}
+
+/* Ember Light — the fire is out and the room is daylight; what is left is the
+   HEARTH. This is the family the user named in the bug report, so it is worth
+   being explicit about what identity means here: Ember's thesis is "firelight
+   temperature as a palette", and temperature is a hue relationship (hottest =
+   palest gold, ember orange, cooler flame edge, smoke as the one cool token)
+   rather than a set of values. That relationship is what transfers.
+   The inversion that is NOT a negation: on dark, hotter = LIGHTER (the pale
+   gold selection is the hottest part of the fire). On paper that is backwards —
+   a pale gold on white is invisible, and hotter must mean DENSER. So the
+   temperature scale is preserved but its direction flips: the hottest token is
+   now the deepest, most saturated one, and the diamonds stay ember orange as
+   the identity mark repeated down every Inspector row.
+   The stock is warm terracotta-cream, not white — the wall the fire used to lie
+   on. SMOKE survives as the one cool token, so anchors stay findable among all
+   that warmth exactly as they do on the dark member. */
+:root[data-theme="ember-light"] {
+  --bg: #f7ece2; /* the hearth wall in daylight — warm, never neutral white */
+  --fg: #2b1a12; /* soot-brown ink */
+  --fg-dim: #6b5548;
+  --accent: #b8501a;
+  --border: rgba(43, 26, 18, 0.2);
+  --control-bg: #eddfd1;
+  --a-panel-bg: #fdf6ef;
+  --a-canvas-bg: #dcc8b6; /* the darkest surface — a slide reads as ON the hearth */
+  --a-canvas-solid: #dcc8b6; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(184, 80, 26, 0.14);
+  --a-selection: #9c3d00; /* the HOTTEST part — deepest and densest, not palest */
+  --a-guide: #c0392b; /* the cooler edge of the flame */
+  --a-keyed: #b8501a; /* EMBER ORANGE — the identity mark, repeated down the Inspector */
+  --a-anchor: #5a6b7d; /* smoke: the ONE cool token, so anchors stay findable */
+  --a-modifier: #8a6a00; /* old gold for eq `self` / keywords */
+  --a-scrollbar: rgba(43, 26, 18, 0.24);
+  --a-scrollbar-hover: rgba(43, 26, 18, 0.42);
+  --a-split-handle: #e2d0c0;
+  --a-split-handle-hover: #b8501a;
+  --a-palette-shadow: 0 12px 40px rgba(90, 45, 20, 0.24);
 }
 
 html,
