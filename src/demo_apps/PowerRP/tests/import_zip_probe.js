@@ -53,6 +53,9 @@ import { launchBrowser } from "./puppeteerLaunch.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, "..");
+// web/ IS the Vite root, so core/ sits ABOVE it and needs the /@fs/ prefix Vite
+// serves out-of-root files under (the static_canvas_src_probe.js precedent).
+const ASSET_REF_URL = `/@fs${resolve(APP_DIR, "core/asset_ref.js")}`;
 // `uv run`, never a hardcoded interpreter: the asset_ux_probe.js rule (a pinned
 // /opt/homebrew path made that probe permanently red on Linux).
 const PY = "uv";
@@ -208,7 +211,11 @@ try {
   const stagedAssets = await page.evaluate(async () => {
     const app = window.__powerrp_app;
     const list = await app.listProjectAssets(); // defaults to projectName() = the draft key
-    const blob = list.length ? await window.__powerrp_storage.assetStore().get(app.projectName(), list[0].name) : null;
+    // assetStoreFor, NOT the bare assetStore(): the draft key must read through the
+    // LOCAL store even under HTTP mode (web/storageMode.js) — this probe runs a
+    // real server.py, so the bare mode-blind store would 500 here exactly like it
+    // did on listProjectAssets before the mode-routing fix.
+    const blob = list.length ? await window.__powerrp_storage.assetStoreFor(app.projectName()).get(app.projectName(), list[0].name) : null;
     const bytes = blob ? [...new Uint8Array(await blob.arrayBuffer())] : null;
     return { names: list.map((a) => a.name), bytes };
   });
@@ -216,6 +223,32 @@ try {
     `the .zip carried its asset library into the draft staging (${stagedAssets.names.join(", ") || "nothing"})`);
   check(stagedAssets.bytes !== null && Buffer.from(stagedAssets.bytes).equals(Buffer.from(PROBE_PNG_B64, "base64")),
     "the staged asset is byte-identical to what the archive carried");
+
+  // ── 3b. THE CANVAS PAINTS THE DRAFT'S ASSET — in REAL HTTP mode ────────────
+  // The mode-routing fix's other half: NOT ONLY the asset-CRUD seam
+  // (listProjectAssets/get, just checked) but the PIXEL-CONSUMER seam
+  // (core/asset_ref.js's installed project-name resolver, which every derived
+  // node's `src` goes through) must resolve the draft key locally too. Before
+  // the fix, an HTTP-mode boot installed NO resolver, so a relative ref under
+  // the draft key resolved to the plain grammar's "/asset/~draft%2Fcurrent/
+  // seed.png" — a path the Vite proxy forwards straight to server.py's
+  // `_SAFE_NAME` guard, i.e. the SAME defect wearing the paint call site
+  // instead of the CRUD one.
+  //
+  // Asked THROUGH THE INSTALLED RESOLVER directly (core/asset_ref.js's
+  // resolveStateAssetRefs, the exact seam core/derive.js's deriveRenderTree
+  // calls), NOT by committing a document mutation: an inserted item would
+  // persist into the SECOND drop's document too (drafts replace bytes, not the
+  // in-memory doc the caller is mid-mutating), which raced the Asset
+  // Explorer's own re-list of a DIFFERENT project's listing and produced an
+  // unrelated console error. Reading the resolver leaves app.doc untouched.
+  const painted = await page.evaluate(async (refUrl) => {
+    const { resolveStateAssetRefs } = await import(refUrl);
+    const project = window.__powerrp_app.projectName();
+    return resolveStateAssetRefs({ src: "seed.png" }, ["src"], project).src;
+  }, ASSET_REF_URL);
+  check(typeof painted === "string" && painted.startsWith("blob:"),
+    `a draft's canvas ref resolves LOCALLY even under HTTP mode, never a dead server path (got ${JSON.stringify(painted)})`);
 
   // ── 4. A SECOND DROP replaces the working copy, still writing nothing ──────
   // The old scenario proved a "free" name opened under the dropped file's name

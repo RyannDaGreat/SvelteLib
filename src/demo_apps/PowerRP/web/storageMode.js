@@ -44,6 +44,7 @@
  */
 
 import { httpAssetStore, httpProjectStore, localAssetStore, localProjectStore } from "./assetStore.js";
+import { isDraftKey } from "./draftKeys.js";
 
 /** How long the boot probe waits before calling the backend absent. Short
  *  because it gates the first paint, and a real backend is same-origin (the Vite
@@ -202,40 +203,64 @@ export async function detectStorageMode(search = typeof location === "undefined"
   // six production call sites derive with the bare project NAME and never reach
   // web/cameraFrame.js (app.svelte.js nodes()/PDF/SVG/copy, CanvasView, PresentMode
   // — see setProjectNameResolver). Installing it here makes all of them agree.
+  //
+  // INSTALLED IN BOTH MODES (not just local), for the SAME reason `assetStoreFor`
+  // exists: a DRAFT's bytes live in the browser regardless of storageMode(), so
+  // the pixel-consumer path needs the same draft/ordinary split the asset-CRUD
+  // path gets. Without this, an HTTP-mode draft's canvas painted `src="/asset/
+  // ~draft%2Fcurrent/…"` straight into an <img>/<video> element, which the Vite
+  // dev proxy forwards to the SAME server.py `_SAFE_NAME` guard the asset-listing
+  // 500 came from — the draft key reaching the server through the paint path
+  // instead of the CRUD path is the identical bug wearing a different call site.
+  // For an ORDINARY project this resolver is BYTE-IDENTICAL to the null default
+  // (draftAwareRefResolverFactory falls through to assetStoreFor, which is
+  // assetStore() for any non-draft name, and httpAssetStore.resolveUrl is a
+  // same-origin no-op when unprefixed) — so this install changes nothing for the
+  // overwhelming majority case and only takes effect for the draft keyspace.
+  //
   // A DYNAMIC import so bare node never loads this module: cli/render.js imports
   // the render path, and assetStore.js → projectApi.js reads `location` at module
   // scope. The browser boot is the one place a DOM is guaranteed.
   const { setProjectNameResolver } = await import("../core/asset_ref.js");
-  setProjectNameResolver(mode === "local" ? await staticRefResolverFactory() : null);
+  setProjectNameResolver(await draftAwareRefResolverFactory());
   return mode;
 }
 
 /**
- * Query (reads the live asset store). THE local-mode resolver FACTORY:
- * `(project) => (ref) => url`, the thing a bare project NAME means when there is
- * no server. Every ref — relative or absolute — becomes a `blob:` object URL from
- * browser storage, or the LOUD missing sentinel.
+ * Query (reads the live asset store). THE PROJECT-NAME RESOLVER installed in
+ * EVERY mode: `(project) => (ref) => url`, generalized from what used to be a
+ * LOCAL-only mapping. Every ref — relative or absolute — resolves through
+ * `assetStoreFor(project)`, which is `assetStore()` for an ordinary project (a
+ * `blob:` object URL in local mode, a same-origin string in HTTP mode — BYTE-
+ * IDENTICAL to the old null-resolver default there) and ALWAYS `localAssetStore`
+ * for the draft keyspace, in EITHER mode.
+ *
+ * RENAMED FROM `staticRefResolverFactory` (which it replaces one-for-one) when
+ * the draft/ordinary split moved here: a "static-mode resolver" name would have
+ * been a lie once this installs unconditionally — see detectStorageMode's call
+ * site for why an HTTP-mode install is now load-bearing too, not just harmless.
  *
  * A NAMED EXPORT rather than the inline closure it started as, so the exact
  * mapping the app installs is the one a probe can reinstall. A probe that must
- * impersonate an HTTP boot uninstalls the resolver, and reaching for a hand-rolled
- * copy to restore it afterwards would let the test's idea of local mode drift away
- * from the app's — which is the whole class of bug the single-seam design exists
- * to prevent.
+ * impersonate a DIFFERENT mode uninstalls the resolver, and reaching for a
+ * hand-rolled copy to restore it afterwards would let the test's idea of that
+ * mode drift away from the app's — which is the whole class of bug the
+ * single-seam design exists to prevent.
  *
  * @returns {function} `(project) => (ref) => url`
  *
  * @example
- * >>> setProjectNameResolver(await staticRefResolverFactory())
- * >>> // now derive() turns "clip.mp4" into "blob:http://…" everywhere
+ * >>> setProjectNameResolver(await draftAwareRefResolverFactory())
+ * >>> // now derive() turns "clip.mp4" into "blob:http://…" for a LOCAL/draft
+ * >>> // project, and leaves an ORDINARY HTTP project's ref exactly as it was
  */
-export async function staticRefResolverFactory() {
+export async function draftAwareRefResolverFactory() {
   // Dynamic import so BARE NODE never loads this: cli/render.js imports the render
   // path, and assetStore.js → projectApi.js reads `location` at module scope. The
   // browser boot is the one place a DOM is guaranteed.
   const { resolveAssetRef } = await import("../core/asset_ref.js");
   return (project) => {
-    const store = assetStore();
+    const store = assetStoreFor(project);
     // Lift RELATIVE → ABSOLUTE first: resolveUrl's memo is keyed on the absolute
     // form (primeUrls mints `assetRef(project, file)` keys), so a relative ref and
     // a legacy own-project absolute ref — the user's real RobotSim.zip, and every
@@ -266,6 +291,48 @@ export function storageModeReason() {
 /** Query. The asset store for this page's mode. */
 export function assetStore() {
   return storageMode() === "local" ? localAssetStore : httpAssetStore;
+}
+
+/**
+ * Query. THE MODE-ROUTING SEAM FOR DRAFTS: the asset store that owns `project`'s
+ * bytes right now, which is `assetStore()` for an ordinary project but ALWAYS
+ * `localAssetStore` for the draft keyspace — in EVERY storage mode.
+ *
+ * WHY THIS EXISTS. web/projectDraft.js's invariant is "a draft's bytes live in
+ * the browser regardless of storageMode() — the server has no folder for a
+ * project the user has not decided to keep". `stageDraftAssets` already honors
+ * that by writing straight to `localAssetStore`, but every READER that keys off
+ * `app.projectName()` (which answers the draft key while a draft is open) was
+ * still calling the bare `assetStore()` — which is `httpAssetStore` in HTTP
+ * mode. That sent `~draft/current` to the SERVER: `GET /api/assets/~draft%2Fcurrent/`,
+ * which server.py's `_SAFE_NAME` guard 500s on ("unsafe name") because the key
+ * contains "/" BY DESIGN (draftKeys.js clause 3 — a real project name never can).
+ * The guard was working; the bug was a draft path reaching it at all.
+ *
+ * THE FIX IS AT THIS SEAM, not in the guard: `_SAFE_NAME` must stay strict
+ * (loosening it to admit "/" would make a draft folder URL-reachable on the
+ * server, defeating the entire point of an impossible-name draft key). So the
+ * routing has to happen on the CLIENT side, before a draft key ever becomes part
+ * of a URL — exactly what this function is for. Every call site in
+ * web/app.svelte.js that resolves assets for a possibly-draft project (uploads,
+ * listing, delete, plugin-asset read/write, font sync, localize, the canvas
+ * paint's `#resolvedSrc`) routes through THIS instead of the bare `assetStore()`.
+ *
+ * A NON-DRAFT NAME IS UNCHANGED: `assetStoreFor("RobotSim")` is byte-identical
+ * to `assetStore()` in both modes, so ordinary project editing is not touched by
+ * this seam at all — only the draft keyspace is special-cased.
+ *
+ * @param {string} project - a project name OR the draft key (DRAFT_KEY)
+ * @returns {object} an asset store (see assetStore.js's httpAssetStore/localAssetStore)
+ *
+ * @example
+ * >>> assetStoreFor("RobotSim") === assetStore()   // an ordinary project: unchanged
+ * true
+ * >>> assetStoreFor("~draft/current") === localAssetStore   // a draft: ALWAYS local
+ * true
+ */
+export function assetStoreFor(project) {
+  return isDraftKey(project) ? localAssetStore : assetStore();
 }
 
 /** Query. The project (document) store for this page's mode. */

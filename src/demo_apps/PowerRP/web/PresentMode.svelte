@@ -20,7 +20,10 @@
   import { cameraFrameIR, evaluatedStateAt, evaluationAt } from "./cameraFrame.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
   import { paintIsAnimated } from "../render_gpu/skia/materials.js"; // an animated MATERIAL fill/stroke/background must also keep the loop alive
-  import { assetStore } from "./storageMode.js"; // resolves a sound ref for THIS page's storage
+  // assetStoreFor, NOT the bare assetStore(): a transition sound can belong to an
+  // OPEN DRAFT, whose bytes live in the LOCAL store regardless of storageMode()
+  // (web/storageMode.js) — the bare seam sent the draft key to the server.
+  import { assetStoreFor } from "./storageMode.js"; // resolves a sound ref for THIS page's storage
   import { assetRef } from "./assetRef.js"; // the one "/asset/<project>/<file>" spelling
   import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
@@ -148,9 +151,9 @@
     // transition sound plays from the backend in server mode and from a blob:
     // object URL in browser-local mode. Previously this always built a server
     // path, so a static-mode deck's transition sounds silently 404'd.
-    if (sound.startsWith("/")) return assetStore().resolveUrl(sound); // served path → this page's storage
+    if (sound.startsWith("/")) return assetStoreFor(app.projectName()).resolveUrl(sound); // served path → this page's storage
     if (/^[a-z][a-z0-9+.-]*:/i.test(sound)) return sound; // has a URI scheme (data:/http:/https:/blob:) → use verbatim
-    return assetStore().resolveUrl(assetRef(app.projectName(), sound)); // bare filename → project asset
+    return assetStoreFor(app.projectName()).resolveUrl(assetRef(app.projectName(), sound)); // bare filename → project asset
   }
 
   /** Command. Plays a transition's sound ONCE, at transition start. No sound

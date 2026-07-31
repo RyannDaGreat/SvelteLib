@@ -278,7 +278,10 @@ test("download reads bytes through the STORE seam, so it works in both storage m
   // returns the bytes in BOTH modes.
   const fn = explorerSrc.slice(explorerSrc.indexOf("async function downloadAsset"));
   const body = fn.slice(0, fn.indexOf("\n  }") + 4);
-  assert.match(body, /assetStore\(\)\.get\(/, "the bytes must come through the storage seam");
+  // assetStoreFor(...), not the bare assetStore(): a tile can belong to an open
+  // DRAFT, which must read through the LOCAL store regardless of storageMode()
+  // (web/storageMode.js) — the download must not go through the mode-blind seam.
+  assert.match(body, /assetStoreFor\(.*\)\.get\(/, "the bytes must come through the storage seam");
   assert.doesNotMatch(body, /projectApi\.assetUrl|fetch\(/, "never a direct fetch or served-path link");
   assert.match(body, /URL\.createObjectURL/, "a blob: URL is what an <a download> can save");
   assert.match(body, /link\.download = a\.name/, "the saved filename is the asset's basename");

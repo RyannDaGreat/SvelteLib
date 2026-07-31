@@ -26,9 +26,21 @@
  *   3. STATIC: an ABSENT ref derives to the LOUD sentinel, never a dead /asset/
  *      path. A missing asset must look missing.
  *   4. STATIC: a non-ref src (https:, data:) is passed through byte-identically.
- *   5. HTTP-MODE REGRESSION: with no resolver installed, a relative ref still
- *      derives to the ABSOLUTE "/asset/<project>/…" form and NOTHING becomes a
- *      blob. The static fix must not touch the server deployment.
+ *   5. HTTP-MODE REGRESSION: with no resolver installed (the plain grammar
+ *      `resolveAssetRef` alone — what an ordinary HTTP boot's resolution reduces
+ *      to for any name that is not the draft key), a relative ref still derives
+ *      to the ABSOLUTE "/asset/<project>/…" form and NOTHING becomes a blob. The
+ *      static fix must not touch the ordinary server deployment.
+ *
+ *      THE DRAFT-IN-HTTP-MODE CASE (a draft's canvas paint must resolve LOCALLY
+ *      even when storageMode() is "http" — see web/storageMode.js's
+ *      `assetStoreFor`/`draftAwareRefResolverFactory`) is NOT provable from a
+ *      page that is genuinely booted `?static=1`: `assetStoreFor` reads the
+ *      REAL storageMode() singleton, so simulating "HTTP mode" here by
+ *      installing the resolver alone would make an ORDINARY project's ref also
+ *      resolve local (this page's true mode), which is not the claim under
+ *      test. That claim needs a REAL HTTP boot and is pinned instead by
+ *      tests/import_zip_probe.js, which runs a real server.py + Vite proxy.
  *
  * Kinds are swept from the REGISTRY (every plugin with an asset-ref prop), not
  * from a hand-listed set, so a widget added later is covered the day it declares
@@ -214,13 +226,16 @@ try {
   assert(badRel.length === 0, `STATIC: EVERY kind resolves a RELATIVE ref to a blob (bad: ${badRel.join(", ") || "none"})`);
   assert(badAbs.length === 0, `STATIC: EVERY kind resolves an ABSOLUTE ref to a blob (bad: ${badAbs.join(", ") || "none"})`);
 
-  // ── 6. HTTP-MODE REGRESSION: the server deployment is untouched ────────────
-  // Uninstall the resolver (what a non-static boot leaves) and re-ask. A relative
-  // ref must become the ABSOLUTE served path, and nothing may become a blob.
+  // ── 5. HTTP-MODE REGRESSION: the ORDINARY server deployment is untouched ────
+  // Uninstall the resolver (the plain grammar `resolveAssetRef` alone — what
+  // resolution reduces to for any non-draft name) and re-ask. A relative ref
+  // must become the ABSOLUTE served path, and nothing may become a blob. The
+  // draft-in-HTTP-mode case is pinned separately in import_zip_probe.js (see
+  // the module docblock for why it cannot be simulated honestly from here).
   const http = await page.evaluate(async (asset, refUrl) => {
     const { setProjectNameResolver, resolveStateAssetRefs } = await import(refUrl);
     const project = window.__powerrp_app.projectName();
-    setProjectNameResolver(null); // HTTP mode installs none
+    setProjectNameResolver(null); // the plain-grammar case every non-draft HTTP name reduces to
     const rel = resolveStateAssetRefs({ src: asset }, ["src"], project).src;
     const foreign = resolveStateAssetRefs({ src: "/asset/Shared/bg.png" }, ["src"], project).src;
     const remote = resolveStateAssetRefs({ src: "https://x.com/a.png" }, ["src"], project).src;
@@ -231,8 +246,8 @@ try {
   // otherwise resolve against the wrong mode and report a phantom failure.
   await page.evaluate(async (refUrl, factoryUrl) => {
     const { setProjectNameResolver } = await import(refUrl);
-    const { staticRefResolverFactory } = await import(factoryUrl);
-    setProjectNameResolver(staticRefResolverFactory());
+    const { draftAwareRefResolverFactory } = await import(factoryUrl);
+    setProjectNameResolver(await draftAwareRefResolverFactory());
   }, ASSET_REF_URL, STORAGE_MODE_URL);
   assert(http.rel === http.expected, `HTTP MODE: a relative ref still becomes the ABSOLUTE served path (${http.rel})`);
   assert(!http.rel.startsWith("blob:"), "HTTP MODE: nothing becomes a blob: URL — the server deployment is unchanged");

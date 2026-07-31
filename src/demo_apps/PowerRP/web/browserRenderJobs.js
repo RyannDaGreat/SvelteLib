@@ -206,7 +206,7 @@ async function buildEncoder(kind, job) {
 async function deliver(kind, job, product) {
   if (kind === "upload") return product; // already the finished job record
   live[job.id] = { ...live[job.id], phase: "uploading" };
-  return renderRecordStore().postRenderJobOutput(job.project, job.id, product.bytes, product.frames);
+  return renderRecordStore(job.project).postRenderJobOutput(job.project, job.id, product.bytes, product.frames);
 }
 
 /**
@@ -239,7 +239,7 @@ export async function submitBrowserRenderJob({ project, name, params, doc, regis
   const docJson = JSON.stringify(doc);
   const plan = planForParams(doc, params);
   const framesTotal = frameCount(plan.duration, params.fps);
-  const job = await renderRecordStore().submitRenderJob(project, {
+  const job = await renderRecordStore(project).submitRenderJob(project, {
     name, backend: "client", framesTotal, params, doc: JSON.parse(docJson),
   });
   const record = await putBrowserJob({
@@ -355,7 +355,7 @@ export async function driveBrowserJob(record, registry, signal = undefined) {
       .catch((err) => console.error(`Could not record the failure on browser render job ${job.id}:`, err));
     // An abort is a user action; the job record becomes "cancelled" either way,
     // and the local resume record stays so the user can see why.
-    await renderRecordStore().cancelRenderJob(job.project, job.id)
+    await renderRecordStore(job.project).cancelRenderJob(job.project, job.id)
       .catch((err) => console.error(`Could not mark render job ${job.id} cancelled:`, err));
     throw e;
   } finally {
@@ -456,7 +456,7 @@ export async function forgetBrowserRenderJob(jobId) {
  * @returns {Promise<string[]>}
  */
 export async function pruneFinishedBrowserJobs(project) {
-  const [stored, jobs] = await Promise.all([listBrowserJobs(project), renderRecordStore().listRenderJobs(project)]);
+  const [stored, jobs] = await Promise.all([listBrowserJobs(project), renderRecordStore(project).listRenderJobs(project)]);
   const active = new Set(jobs.filter((j) => ACTIVE_STATES.includes(j.state)).map((j) => j.id));
   const dropped = [];
   for (const job of stored) {

@@ -189,8 +189,11 @@ test("app.svelte.js saves an edited plugin through replace, never put", () => {
   const src = fs.readFileSync(new URL("../web/app.svelte.js", import.meta.url), "utf8");
   const commit = src.slice(src.indexOf("async commitPluginAssetCode"));
   const body = commit.slice(0, commit.indexOf("\n  }\n") + 4);
-  assert.match(body, /assetStore\(\)\.replace\(/, "the save must overwrite in place");
-  assert.doesNotMatch(body, /assetStore\(\)\.put\(/, "put de-collides and cannot save an edit");
+  // assetStoreFor(...), not the bare assetStore(): a plugin asset can belong to
+  // an open DRAFT, whose bytes are always LOCAL regardless of storageMode()
+  // (web/storageMode.js) — the store selection changed, the verb did not.
+  assert.match(body, /assetStoreFor\([^)]*\)\.replace\(/, "the save must overwrite in place");
+  assert.doesNotMatch(body, /assetStoreFor\([^)]*\)\.put\(/, "put de-collides and cannot save an edit");
 });
 
 // ── EDITING A BUILT-IN: read-only + copy-on-save (the 404 repro) ─────────────
@@ -352,7 +355,9 @@ test("retypedPluginSource rewrites the type WITHOUT touching the author's text",
 
 test("app.svelte.js reads a BUILT-IN's source from the catalog, never from the store", () => {
   // The 404 itself. pluginAssetSource must answer a built-in from the bundled entry;
-  // asking assetStore().get for it is the live-repro bug.
+  // asking the store for it is the live-repro bug. assetStoreFor(...), not the bare
+  // assetStore(): the project asset may belong to an open DRAFT, which must read
+  // through the LOCAL store regardless of storageMode() (web/storageMode.js).
   const src = fs.readFileSync(new URL("../web/app.svelte.js", import.meta.url), "utf8");
   const fn = src.slice(src.indexOf("async pluginAssetSource"));
   const body = fn.slice(0, fn.indexOf("\n  }\n") + 4);
@@ -360,7 +365,7 @@ test("app.svelte.js reads a BUILT-IN's source from the catalog, never from the s
   assert.match(body, /return builtin\.source/, "a built-in's bytes are already in hand");
   // …and the built-in branch must come BEFORE the store read, or the 404 still happens.
   assert.ok(
-    body.indexOf("builtin.source") < body.indexOf("assetStore().get"),
+    body.indexOf("builtin.source") < body.indexOf("assetStoreFor("),
     "the built-in branch must return before the store is asked",
   );
 });
@@ -384,8 +389,8 @@ test("a built-in opens READ-ONLY with the copy note, and Save routes to the copy
   // no existing asset of that name to overwrite).
   const copy = src.slice(src.indexOf("async copyBuiltinPluginAssetIntoProject"));
   const copyBody = copy.slice(0, copy.indexOf("\n  }\n") + 4);
-  assert.match(copyBody, /assetStore\(\)\.put\(/, "a copy is an ADD, not an overwrite");
-  assert.doesNotMatch(copyBody, /assetStore\(\)\.replace\(/);
+  assert.match(copyBody, /assetStoreFor\([^)]*\)\.put\(/, "a copy is an ADD, not an overwrite");
+  assert.doesNotMatch(copyBody, /assetStoreFor\([^)]*\)\.replace\(/);
   assert.match(copyBody, /uniquePluginAssetName\(/, "the filename must be de-collided");
   assert.match(copyBody, /uniquePluginType\(/, "the type must be de-collided");
   assert.match(copyBody, /loadPluginAsset\(retyped/, "and validated BEFORE the write");

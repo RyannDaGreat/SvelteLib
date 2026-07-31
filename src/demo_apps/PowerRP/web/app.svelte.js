@@ -46,7 +46,7 @@ import * as projectApi from "./projectApi.js";
 // mode). projectApi is still imported for the calls that are inherently
 // server-only (clipboard, render jobs, ffprobe duration) — those refuse loudly
 // in static mode rather than fetching a URL that cannot exist.
-import { assetStore, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason } from "./storageMode.js";
+import { assetStore, assetStoreFor, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason } from "./storageMode.js";
 // localAssetStore DIRECTLY (not through the storageMode seam): a DRAFT always
 // stages in the browser, in both storage modes, because the server has no folder
 // for a project the user has not decided to keep. See web/projectDraft.js.
@@ -59,7 +59,7 @@ import { fetchZipBytes, validatedZipUrl, zipFileNameFromUrl } from "./projectUrl
 // THE WORKING-COPY MODEL: a zip or share link opens a DRAFT, not a library
 // entry. web/projectDraft.js states the invariant — read it before touching
 // projectName(), which is the seam the whole model turns on.
-import { DRAFT_KEY, DRAFT_STATE_KEY, UNTITLED_NAME, draftFromZipBytes, draftStateFromJson, isUnsavedDraft, openNeedsConfirm, shareUrl, validProjectName } from "./projectDraft.js";
+import { DRAFT_KEY, DRAFT_STATE_KEY, UNTITLED_NAME, draftFromZipBytes, draftStateFromJson, isDraftKey, isUnsavedDraft, openNeedsConfirm, shareUrl, validProjectName } from "./projectDraft.js";
 // A REPO IS A TRANSPORT, exactly as a URL is: this supplies the fetch and the
 // `?repo=` share-link shape, and hands `{doc, assets}` to the SAME draft
 // pipeline a zip goes through (githubProject.js's header states the invariant).
@@ -2243,7 +2243,7 @@ export class PowerRPApp {
   async pluginAssetSource(filename, project = this.projectName()) {
     const builtin = this.builtinPluginAsset(filename);
     if (builtin) return builtin.source;
-    const blob = await assetStore().get(project, filename);
+    const blob = await assetStoreFor(project).get(project, filename);
     return blob.text();
   }
 
@@ -2327,7 +2327,7 @@ export class PowerRPApp {
     // untouched: the dialog closed, the widget did not change, and the library grew a
     // numbered copy per save. `replace` overwrites in place and is LOUD if the asset
     // has gone (web/assetStore.js).
-    await assetStore().replace(t.project, new Blob([source], { type: "text/javascript" }), t.filename);
+    await assetStoreFor(t.project).replace(t.project, new Blob([source], { type: "text/javascript" }), t.filename);
     // Re-register: the registry is per-project and REBUILT, never mutated in place
     // (reloadPluginAssets' header explains why), so every instance of the edited
     // type derives from the new code on the next pass.
@@ -2358,7 +2358,7 @@ export class PowerRPApp {
   async copyBuiltinPluginAssetIntoProject(source) {
     const t = this.codeModal;
     const project = this.projectName();
-    const existingNames = (await assetStore().list(project)).map((a) => a.name);
+    const existingNames = (await assetStoreFor(project).list(project)).map((a) => a.name);
     const filename = uniquePluginAssetName(t.filename, existingNames);
     const taken = new Set(this.registry.all().map((p) => p.type));
     // The built-in's own type is the BASE to number from, read from the source the
@@ -2387,7 +2387,7 @@ export class PowerRPApp {
     // PUT, not replace: this is a NEW file in the library (the add-a-file verb), the
     // exact opposite of the edit-in-place case above. The name is already de-collided,
     // so put's own de-collision has nothing left to do.
-    await assetStore().put(project, new Blob([retyped], { type: "text/javascript" }), filename);
+    await assetStoreFor(project).put(project, new Blob([retyped], { type: "text/javascript" }), filename);
     await this.reloadPluginAssets(project);
     this.assetsVersion++; // the Asset Explorer re-lists (a new tile appears)
     this.codeModal = null;
@@ -4083,7 +4083,7 @@ export class PowerRPApp {
   async reloadPluginAssets(name = this.projectName()) {
     this.registry = createRegistry();
     registerPlugins(this.registry); // types only — commands are process-lifetime (see above)
-    const result = await loadProjectPluginAssets(this.registry, assetStore(), name);
+    const result = await loadProjectPluginAssets(this.registry, assetStoreFor(name), name);
     printPluginAssetReports(result, name);
     this.pluginAssetTypes = result.loaded; // what the Insert menu offers (App.svelte)
     // The FILE→TYPE map, for acting on one asset by its filename (the canvas
@@ -4139,7 +4139,7 @@ export class PowerRPApp {
    *  (loadProject path). Fire-and-forget; errors surface loudly. */
   async syncFontAssets(name = this.projectName()) {
     try {
-      this.registerFontAssets(await assetStore().list(name));
+      this.registerFontAssets(await assetStoreFor(name).list(name));
     } catch (e) {
       console.error(`syncFontAssets: could not list assets for "${name}":`, e);
     }
@@ -4242,7 +4242,7 @@ export class PowerRPApp {
    * @returns {Promise<{moved: Array<{from: string, to: string}>, warnings: string[]}>}
    */
   async localizeForeignAssets(name = this.projectName()) {
-    const store = assetStore();
+    const store = assetStoreFor(name);
     const listing = await store.list(name);
     const plan = localizationPlan(
       documentAssetRefs(this.doc),
@@ -4594,9 +4594,17 @@ export class PowerRPApp {
    * persist it until later" half of the ruling.
    *
    * Called from the boot path right after `loadAutosave`, which has already put
-   * the draft's DOCUMENT back (autosave persists on every commit and knows
-   * nothing about drafts). What is left is to remember that the restored doc IS
-   * a draft, and to prime the staged assets so the first paint resolves them.
+   * the draft's DOCUMENT back AND set `draftMode` from the same DRAFT_STATE_KEY
+   * read done here (autosave persists on every commit and knows nothing about
+   * drafts itself, so `loadAutosave` reads the marker directly — that duplicate
+   * read is what makes ITS OWN `primeUrls(projectName())` call prime the draft
+   * keyspace instead of the empty `doc.meta.name` one; see loadAutosave's
+   * comment for the regression this closed). Re-deriving `state` and
+   * re-assigning `draftMode` here is therefore a harmless no-op on the reload
+   * path; what this function actually still contributes is the ASYNC half
+   * `loadAutosave` cannot do inline — priming plugin assets — plus being the
+   * only path that runs when a draft is opened WITHOUT a preceding autosave
+   * load (there is none today, but nothing here assumes one).
    *
    * Returns whether a draft was restored, so the boot path can skip its ordinary
    * prime rather than doing both.
@@ -4820,7 +4828,13 @@ export class PowerRPApp {
    *  swaps in the real tile via reconcileUploads) or "error" on ANY failure —
    *  a loud, visible error tile, AND the error is re-thrown so direct-gesture
    *  callers (AssetField) still surface their inline message (NO SILENT
-   *  FALLBACK). Saves the project first so the folder exists server-side. */
+   *  FALLBACK). Saves the project first so the folder exists server-side —
+   *  SKIPPED for a draft: a draft has no server-side folder to pre-create (it
+   *  stages in the browser regardless of storageMode(), see web/projectDraft.js),
+   *  and `saveToServer(DRAFT_KEY)` would try to write a project literally named
+   *  "~draft/current", hitting the same `_SAFE_NAME` guard the asset-routing fix
+   *  exists to avoid — uploading INTO an open draft must touch the server not at
+   *  all until Save. */
   async uploadAsset(file, filename = file.name, name = this.projectName()) {
     const id = `upload_${++this.#uploadSeq}`;
     this.uploads = [
@@ -4828,8 +4842,8 @@ export class PowerRPApp {
       { id, name: filename, kind: assetKindForFile(file), loaded: 0, total: file.size ?? 0, status: "uploading", error: null },
     ];
     try {
-      await this.saveToServer(name);
-      const res = await assetStore().put(name, file, filename, (loaded, total) =>
+      if (!isDraftKey(name)) await this.saveToServer(name);
+      const res = await assetStoreFor(name).put(name, file, filename, (loaded, total) =>
         this.#patchUpload(id, total ? { loaded, total } : { loaded })
       );
       // Final de-collided basename + full bar; the done tile lingers only until
@@ -4865,14 +4879,14 @@ export class PowerRPApp {
    *  assets/ folder on disk — a manual drop appears after a refresh). This is
    *  the refresh-button data source for the future Asset Explorer pane. */
   async listProjectAssets(name = this.projectName()) {
-    return assetStore().list(name);
+    return assetStoreFor(name).list(name);
   }
 
   /** Command. Delete one asset from the current project (the server removes
    *  the file AND its cached filmstrip frames). Throws loudly on failure —
    *  the Asset Explorer's trash-can flow surfaces it. */
   async deleteProjectAsset(filename, name = this.projectName()) {
-    await assetStore().delete(name, filename);
+    await assetStoreFor(name).delete(name, filename);
     this.assetsVersion++;
   }
 
@@ -4954,7 +4968,7 @@ export class PowerRPApp {
    *  by contract (derive/paint call it and cannot await), which is why the local
    *  adapter primes a project's URLs when it opens — see assetStore.js. */
   #resolvedSrc(url) {
-    return assetStore().resolveUrl(url);
+    return assetStoreFor(this.projectName()).resolveUrl(url);
   }
 
   /** Query. `#resolvedSrc`'s OPPOSITE NUMBER: the string that belongs in the
@@ -5076,7 +5090,7 @@ export class PowerRPApp {
     // folder drop, or an upload from another tab). Re-read once. Idempotent: an
     // already-registered type is REFUSED by the collision rule and reported, never
     // double-registered.
-    const result = await loadProjectPluginAssets(this.registry, assetStore(), this.projectName());
+    const result = await loadProjectPluginAssets(this.registry, assetStoreFor(this.projectName()), this.projectName());
     printPluginAssetReports(result, this.projectName());
     this.pluginAssetTypes = [...(this.pluginAssetTypes ?? []), ...result.loaded];
     this.pluginAssetTypeByFile = { ...this.pluginAssetTypeByFile, ...result.types };
@@ -5397,13 +5411,33 @@ export class PowerRPApp {
       // repairedDocument now, so no separate withBindingsMigrated wrap.
       this.doc = this.repaired(deserialize(json));
       this.undoLog = createUndo(this.snapshot(this.doc));
+      // THE REGRESSED SEAM: projectName() reads `this.draftMode` to choose
+      // between DRAFT_KEY and doc.meta.name, but `draftMode` used to still be
+      // null here — restoreDraft(), the one thing that sets it, is called by
+      // App.svelte AFTER loadAutosave(), because it also needs the document
+      // loadAutosave just restored. So a reloaded DRAFT primed its human-name
+      // keyspace (empty) instead of DRAFT_KEY (where the assets actually are),
+      // and every ref failed resolveUrl. draftStateFromJson is a pure sync
+      // localStorage read — nothing stops doing it here too, before the prime,
+      // so projectName() already answers correctly on the very first call.
+      // restoreDraft() still runs afterwards for the async half (plugin assets,
+      // the boot log); re-assigning the same value there is a harmless no-op.
+      this.draftMode = draftStateFromJson(localStorage.getItem(DRAFT_STATE_KEY));
       // Prime the object-URL memo for THIS project at the boot path itself. A
       // reload restores from autosave without ever calling loadProject, so the
       // sync resolveUrl memo used to stay empty until the Explorer's refresh
       // primed it — one transient 404 per canvas asset on every static reload
       // (2abe36d put the reachable fix in the Explorer; this is the
       // architectural home it named). Fire-and-forget: a repaint follows.
-      assetStore().primeUrls(this.projectName()).catch((e) => console.error(`PowerRP boot: primeUrls failed — ${e}`));
+      //
+      // assetStoreFor, NOT the bare assetStore(): `draftMode` is now set (just
+      // above) BEFORE this runs, so `this.projectName()` may already answer the
+      // draft key on a reloaded draft. In HTTP mode, `assetStore()` would be
+      // `httpAssetStore`, whose `primeUrls` is a no-op — silently leaving the
+      // reloaded draft's assets unprimed (every ref then reads as the MISSING
+      // sentinel instead of the loud 500 the CRUD seam used to give — a quieter
+      // but equally wrong failure of the same underlying routing gap).
+      assetStoreFor(this.projectName()).primeUrls(this.projectName()).catch((e) => console.error(`PowerRP boot: primeUrls failed — ${e}`));
     }
   }
 
@@ -5443,6 +5477,7 @@ export class PowerRPApp {
       registry: this.registry,
       width: Math.round(rect.w),
       height: Math.round(rect.h),
+      project: this.projectName(),
     });
     const a = document.createElement("a");
     a.href = canvas.toDataURL("image/png");

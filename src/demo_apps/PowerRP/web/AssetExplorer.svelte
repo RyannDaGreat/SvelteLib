@@ -289,7 +289,10 @@
   import { quotaLine, quotaPercent } from "./assetStore.js";
   import { libraryTotalsLine, relativeAssetRef } from "./assetRef.js";
   import { builtinWidgetAssets } from "./builtinAssets.js";
-  import { assetStore } from "./storageMode.js"; // resolves an asset ref for THIS page's storage
+  // assetStoreFor, NOT the bare assetStore(): the Explorer can be showing an OPEN
+  // DRAFT, whose bytes live in the LOCAL store regardless of storageMode() (see
+  // web/storageMode.js) — a bare mode-blind seam sent the draft key to the server.
+  import { assetStoreFor } from "./storageMode.js"; // resolves an asset ref for THIS page's storage
   import { copyText } from "./clipboard.js";
 
   let { app } = $props();
@@ -441,7 +444,7 @@
    *  as a server path unconditionally is how the preview modal 404'd in static
    *  mode against a file the browser was in fact holding. */
   function urlOf(a) {
-    return assetStore().resolveUrl(a.url);
+    return assetStoreFor(app.projectName()).resolveUrl(a.url);
   }
 
   /**
@@ -488,7 +491,7 @@
       //
       // A NO-OP IN HTTP MODE (httpAssetStore.primeUrls is empty) — there a ref
       // resolves by string rewrite alone, so this costs one already-resolved promise.
-      await assetStore().primeUrls(app.projectName());
+      await assetStoreFor(app.projectName()).primeUrls(app.projectName());
       assets = await app.listProjectAssets();
       // A finished ("done") optimistic tile is dropped here — once, and only
       // once its REAL tile is present in this fresh listing — so the swap has
@@ -666,7 +669,7 @@
       // download path below is identical for both origins.
       const blob = a.builtin
         ? new Blob([a.source], { type: "text/javascript" })
-        : await assetStore().get(app.projectName(), a.name);
+        : await assetStoreFor(app.projectName()).get(app.projectName(), a.name);
       const href = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = href;
@@ -810,7 +813,7 @@
     previewText = null;
     previewTextError = null;
     try {
-      const blob = await assetStore().get(app.projectName(), a.name);
+      const blob = await assetStoreFor(app.projectName()).get(app.projectName(), a.name);
       previewText = await blob.text();
     } catch (e) {
       previewTextError = String(e?.message ?? e);

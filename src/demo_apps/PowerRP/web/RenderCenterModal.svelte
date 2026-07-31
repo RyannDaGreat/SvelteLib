@@ -432,9 +432,10 @@
     // change. This used to short-circuit to a pink "Render jobs need the PowerRP
     // project server" — which was TRUE OF SERVER JOBS and false of this list. The
     // renderings live in browser storage in static mode, so asking for them is the
-    // same call it always was; renderRecordStore() decides who answers it.
+    // same call it always was; renderRecordStore(project) decides who answers it
+    // (and always answers locally for an open draft — see its docblock).
     try {
-      jobs = await renderRecordStore().listRenderJobs(project);
+      jobs = await renderRecordStore(project).listRenderJobs(project);
       browserStatus = await browserJobStatuses(project);
       listError = null;
     } catch (e) {
@@ -490,7 +491,7 @@
     const next = !expanded(job);
     overrides = { ...overrides, [job.id]: next };
     if (next && !job.seen && !jobIsActive(job)) {
-      renderRecordStore().markRenderJobSeen(project, job.id).then(refresh).catch((e) => (listError = String(e?.message ?? e)));
+      renderRecordStore(project).markRenderJobSeen(project, job.id).then(refresh).catch((e) => (listError = String(e?.message ?? e)));
     }
   }
 
@@ -567,7 +568,7 @@
    *  offer to continue. */
   async function cancel(job) {
     try {
-      await renderRecordStore().cancelRenderJob(project, job.id);
+      await renderRecordStore(project).cancelRenderJob(project, job.id);
       if (job.backend === "client") await forgetBrowserRenderJob(job.id);
       await refresh();
     } catch (e) {
@@ -584,7 +585,7 @@
       // movie in memory for the life of the page (the exact leak
       // localAssetStore's revokeUrl exists to prevent, in the same shape).
       dropLocalUrl(job.id);
-      await renderRecordStore().deleteRenderJob(project, job.id);
+      await renderRecordStore(project).deleteRenderJob(project, job.id);
       if (job.backend === "client") await forgetBrowserRenderJob(job.id);
       await refresh();
     } catch (e) {

@@ -37,6 +37,7 @@
 import { isStatic } from "./storageMode.js";
 import * as projectApi from "./projectApi.js";
 import * as localRenderStore from "./localRenderStore.js";
+import { isDraftKey } from "./draftKeys.js";
 import { BROWSER_ENCODERS } from "./browserJobView.js";
 
 /**
@@ -44,13 +45,35 @@ import { BROWSER_ENCODERS } from "./browserJobView.js";
  * submitRenderJob / listRenderJobs / cancelRenderJob / postRenderJobOutput /
  * deleteRenderJob / markRenderJobSeen.
  *
- * @returns {object} projectApi (http) or localRenderStore (local)
+ * `project`, WHEN GIVEN, is the SAME draft-routing check `web/storageMode.js`'s
+ * `assetStoreFor` makes: a DRAFT's render records live under the draft key in
+ * IndexedDB in EVERY mode (this module's own docblock already says so for the
+ * LOCAL branch — "the record and the movie live in IndexedDB under the project
+ * (or draft) key" — but HTTP mode ignored that and asked the server for
+ * `~draft/current`'s jobs anyway). `GET /api/render-jobs/~draft%2Fcurrent/`
+ * 500s on server.py's `_SAFE_NAME` guard for the identical reason the asset
+ * listing did: the draft key is a real project name's opposite by design, and
+ * it must never reach a server URL. Every caller here passes its own `project`
+ * (App.svelte's badge, RenderCenterModal, browserRenderJobs' orchestrator), so
+ * threading it through costs nothing and fixes all of them at once.
+ *
+ * OMITTING `project` keeps the OLD mode-only answer, for the one caller
+ * (browserRenderJobs' render loop) that only ever targets the project a render
+ * was submitted against — which is never the draft key mid-render, because
+ * commitDraft leaves draft mode before anything server-bound can start.
+ *
+ * @param {string} [project] - the project (or draft key) the record belongs to
+ * @returns {object} projectApi (http) or localRenderStore (local, or ANY mode for a draft)
  *
  * @example
- * >>> renderRecordStore().submitRenderJob("RobotSim", {name: "Take 1", backend: "client", framesTotal: 12, params})
+ * >>> renderRecordStore("RobotSim").submitRenderJob("RobotSim", {name: "Take 1", backend: "client", framesTotal: 12, params})
  * {id: "r-9f3a…", state: "rendering", …}
+ * @example
+ * >>> renderRecordStore("~draft/current") === localRenderStore   // a draft: ALWAYS local
+ * true
  */
-export function renderRecordStore() {
+export function renderRecordStore(project) {
+  if (project !== undefined && isDraftKey(project)) return localRenderStore;
   return isStatic() ? localRenderStore : projectApi;
 }
 

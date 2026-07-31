@@ -11,7 +11,7 @@ import { bootDone, bootFailed, bootStage } from "./bootProgress.js";
 // rule). Kicked at module load so BOTH the editor mount and the CLI render hook
 // share one memoized promise; each awaits it before its first frame.
 const fontsLoaded = loadFonts();
-import { assetStore, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
+import { assetStore, assetStoreFor, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
 import { REPO_PARAM } from "./githubProject.js";
 import { isOnline, offlineMessage, startConnectivityWatch } from "./connectivity.js";
 import { registerServiceWorker } from "./registerServiceWorker.js";
@@ -137,7 +137,11 @@ window.__powerrp_videoV5ScrubState = videoV5ScrubState;
 // layout, and that a re-import lands as a new project — WITHOUT test-only methods
 // being added to the app class. Same zero-prod-effect convention as the video
 // diagnostics above.
-window.__powerrp_storage = { storageMode, isStatic, assetStore, projectStore, buildProjectZip, parseProjectZip };
+// `assetStoreFor` is exposed alongside the mode-blind `assetStore` so a probe
+// can assert the DRAFT-ROUTING seam directly — the draft keyspace's bytes must
+// read through the LOCAL store even when storageMode() is "http"
+// (web/storageMode.js's docblock states why).
+window.__powerrp_storage = { storageMode, isStatic, assetStore, assetStoreFor, projectStore, buildProjectZip, parseProjectZip };
 
 /**
  * Browser render hook (a few in-browser pixel-parity probes await it via
