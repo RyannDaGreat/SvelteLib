@@ -37,6 +37,7 @@
   import GridSizePicker from "./GridSizePicker.svelte";
   import RenderCenterModal from "./RenderCenterModal.svelte";
   import CodeEditorModal from "./CodeEditorModal.svelte";
+  import DebugConsole, { DEBUG_PAGES } from "./DebugConsole.svelte";
   import { renderBadgeCount } from "./renderJobView.js";
   // The record store, not projectApi: in static mode the toolbar badge counts
   // renderings held in IndexedDB (see pollRenderBadge).
@@ -452,6 +453,27 @@
     renderCenterVisible = !renderCenterVisible;
   };
 
+  // DEBUG CONSOLE — the debug submenu's shell (web/DebugConsole.svelte). Its own
+  // "which page" state lives INSIDE that component (persisted to localStorage);
+  // this wrapper only owns whether the modal is open and, when a per-page
+  // palette child opened it, WHICH page to jump straight to. `debugConsolePage`
+  // is reset to undefined on close so the console's own last-viewed persistence
+  // (not a stale prop from the previous open) decides next time the bare
+  // "Debug" parent is used.
+  let debugConsoleVisible = $state(false);
+  let debugConsolePage = $state(undefined);
+  app.openDebugConsole = (pageId = undefined) => {
+    debugConsolePage = pageId;
+    debugConsoleVisible = true;
+  };
+  app.toggleDebugConsole = () => {
+    if (debugConsoleVisible) {
+      debugConsoleVisible = false;
+      return;
+    }
+    app.openDebugConsole();
+  };
+
   // THE TOOLBAR BADGE. Polled here rather than inside the modal because the whole
   // point is to be visible WHILE THE MODAL IS CLOSED — a render running in the
   // background is exactly the thing the old design let you forget about. Counts
@@ -464,7 +486,7 @@
   let renderBadge = $state(0);
   async function pollRenderBadge() {
     try {
-      renderBadge = renderBadgeCount(await renderRecordStore().listRenderJobs(app.projectName()));
+      renderBadge = renderBadgeCount(await renderRecordStore(app.projectName()).listRenderJobs(app.projectName()));
     } catch {
       renderBadge = 0;
     }
@@ -1435,6 +1457,38 @@
     // rendering for this project is listed. It TOGGLES, because it is surfaced as
     // a persistent toolbar button rather than a one-shot menu action.
     { id: "render-center", title: "Render Center (Video)…", icon: "mdi:movie-open-outline", help: "Submit a video render and watch every rendering for this project. A Server job keeps going if you close the dialog, refresh the page, or shut the laptop — come back any time.", run: (a) => a.toggleRenderCenter() },
+    // THE DEBUG SUBMENU — a container-with-children parent (same shape as
+    // Color Theme / Add Shape: a registry entry is `run` XOR `children`
+    // (core/commands.js enforces it), so — exactly like a theme FAMILY row —
+    // this is a pure CONTAINER and cannot also run an action of its own.
+    // Its children are GENERATED from DEBUG_PAGES (web/DebugConsole.svelte)
+    // rather than hand-written one per tool, so a future debug page needs ONE
+    // new table row there and nothing here.
+    //
+    // "THE PARENT ALONE OPENS THE CONSOLE AT THE LAST-VIEWED PAGE" (the
+    // viewer-preference behavior asked for) is therefore satisfied by a LEADING
+    // CHILD rather than the parent row itself running anything: "Debug Console"
+    // resumes wherever the user left off (openDebugConsole() with no argument
+    // — see resolveInitialPage/LAST_DEBUG_PAGE_KEY), and each page-specific
+    // child below it jumps straight to that one page. Drilling into "Debug"
+    // and pressing Enter on its first row is the fuzzy-search-friendly
+    // equivalent of a runnable parent, without breaking the run-XOR-children
+    // invariant every other submenu in this file already honors.
+    {
+      id: "debug",
+      title: "Debug",
+      icon: "mdi:bug-outline",
+      help: "Diagnostics for this browser's own storage and internals — not part of the presentation you are editing.",
+      children: [
+        { id: "debug-console", title: "Debug Console (resume last page)", icon: "mdi:bug-outline", run: (a) => a.openDebugConsole() },
+        ...DEBUG_PAGES.map((page) => ({
+          id: `debug-${page.id}`,
+          title: `Debug: ${page.title}`,
+          icon: page.icon,
+          run: (a) => a.openDebugConsole(page.id),
+        })),
+      ],
+    },
     { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, requires: "at least one selected widget to copy", help: "Copies TWICE, on purpose: the element itself (as deltas, on the server clipboard) and a rendered PNG onto the system clipboard. Pasting back into PowerRP round-trips the real widget; pasting into another app gets the picture.", run: (a) => a.copySelection() },
     { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the last copied element or property. Identical to Ctrl+V: an image or file copied from ANOTHER app is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
     // 14.9: Duplicate = clone the selection in place (new UUIDs, one undo unit),
@@ -2513,6 +2567,17 @@
   >
     {#if renderCenterVisible}
       <RenderCenterModal {app} />
+    {/if}
+  </Modal>
+
+  <!-- THE DEBUG CONSOLE — near-full-viewport (size="large", the same reason
+       Render Center asks for it: a slim nav column beside a data-dense page has
+       no usable intrinsic width to shrink-wrap). `initialPage` is set only when
+       a per-page palette child opened it; the bare "Debug Console" entry leaves
+       it undefined, so DebugConsole.svelte resumes its own last-viewed page. -->
+  <Modal bind:open={debugConsoleVisible} title="Debug" titleIcon="mdi:bug-outline" size="large">
+    {#if debugConsoleVisible}
+      <DebugConsole {app} initialPage={debugConsolePage} />
     {/if}
   </Modal>
 

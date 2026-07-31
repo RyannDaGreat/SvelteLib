@@ -8574,3 +8574,247 @@ audio.ae-preview-media {
   background: var(--a-selection);
   border-color: var(--a-selection);
 }
+
+/* ── DEBUG CONSOLE (web/DebugConsole.svelte) ──────────────────────────────────
+   The debug submenu's shell: a slim left nav (DEBUG_PAGES) beside one active
+   page. Sized to fill the "large" Modal it lives in — see the size="large"
+   note on RenderCenterModal's usage above for why a two-region layout needs
+   that variant rather than the default content-sized one. */
+.debug-console {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  gap: var(--a-sp-4);
+}
+
+.debug-nav {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: var(--a-debug-nav-w, 180px);
+  gap: var(--a-sp-1);
+  border-right: var(--a-hairline) solid var(--border);
+  padding-right: var(--a-sp-3);
+  overflow-y: auto;
+}
+
+.debug-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-2) var(--a-sp-3);
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+}
+.debug-nav-item:hover {
+  background: var(--a-hover-bg);
+}
+.debug-nav-item.is-active {
+  background: var(--a-hover-bg);
+  border-color: var(--a-selection);
+}
+
+.debug-nav-label {
+  font-size: var(--a-font-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-page {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* ── DEBUG STORAGE PAGE (web/DebugStoragePage.svelte) ─────────────────────────
+   One section per web/debugStorage.js STORAGE_GROUPS entry, rows sorted
+   biggest-first within each — the point of the page is finding the pigs. */
+.debug-storage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-4);
+}
+
+.debug-storage-status {
+  padding: var(--a-sp-4);
+  opacity: var(--a-quota-text-opacity);
+}
+
+.debug-storage-error {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  color: var(--a-quota-full-fill);
+}
+
+.debug-storage-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--a-sp-4);
+  padding-bottom: var(--a-sp-3);
+  border-bottom: var(--a-hairline) solid var(--border);
+}
+
+.debug-storage-grandtotal {
+  font-size: var(--a-font-md);
+}
+
+.debug-storage-delta {
+  flex: 1 1 auto;
+  font-size: var(--a-font-sm);
+  opacity: var(--a-quota-text-opacity);
+}
+
+.debug-storage-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+}
+
+.debug-storage-group-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0;
+  padding: var(--a-sp-1) 0;
+  font-size: var(--a-font-md);
+  font-weight: 600;
+  border-bottom: var(--a-hairline) solid var(--border);
+}
+
+.debug-storage-subtotal {
+  font-weight: 400;
+  opacity: var(--a-quota-text-opacity);
+}
+
+.debug-storage-empty {
+  padding: var(--a-sp-2) 0;
+  font-size: var(--a-font-sm);
+  opacity: var(--a-quota-text-opacity);
+}
+
+.debug-storage-keyspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  padding-top: var(--a-sp-2);
+}
+
+.debug-storage-keyspace-title {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--a-font-sm);
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.debug-storage-row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-1) var(--a-sp-2);
+}
+.debug-storage-row:hover {
+  background: var(--a-hover-bg);
+}
+
+.debug-storage-row-plain {
+  padding-left: 0;
+}
+
+.debug-storage-row-file {
+  padding-left: var(--a-sp-4); /* nested under its keyspace title */
+}
+
+.debug-storage-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--a-font-sm);
+}
+
+.debug-storage-row-meta {
+  flex: none;
+  font-size: var(--a-font-sm);
+  opacity: var(--a-quota-text-opacity);
+}
+
+.debug-storage-row-bytes {
+  flex: none;
+  font-size: var(--a-font-sm);
+  font-variant-numeric: tabular-nums;
+  opacity: var(--a-quota-text-opacity);
+}
+
+.debug-storage-fold {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  width: 100%;
+  padding: var(--a-sp-1) var(--a-sp-2);
+  background: transparent;
+  color: var(--fg);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+.debug-storage-fold:hover {
+  background: var(--a-hover-bg);
+}
+
+.debug-storage-cache-entries {
+  display: flex;
+  flex-direction: column;
+  padding-left: var(--a-sp-5);
+  max-height: var(--a-debug-cache-fold-h, 220px);
+  overflow-y: auto;
+}
+
+.debug-storage-cache-entry {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-1) var(--a-sp-2);
+  font-size: var(--a-font-sm);
+}
+
+.debug-storage-cache-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: var(--a-quota-text-opacity);
+}
+
+.debug-storage-preview {
+  padding: var(--a-sp-2) var(--a-sp-2) var(--a-sp-2) var(--a-sp-5);
+}
+
+.debug-storage-preview-image {
+  max-width: var(--a-debug-preview-max, 320px);
+  max-height: var(--a-debug-preview-max, 320px);
+}
+
+.debug-storage-preview-video {
+  max-width: var(--a-debug-preview-max, 320px);
+  max-height: var(--a-debug-preview-max, 320px);
+}
+
+.debug-storage-preview-text {
+  max-height: var(--a-debug-cache-fold-h, 220px);
+  overflow: auto;
+  padding: var(--a-sp-2);
+  background: var(--a-canvas-solid);
+  border: var(--a-hairline) solid var(--border);
+  font-size: var(--a-font-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
