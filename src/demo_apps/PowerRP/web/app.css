@@ -228,6 +228,13 @@
      about 32, so the field scrolls only past what a published coordinate quotes. */
   --a-canvas-toolbar-field-wide: 232px;
   --a-canvas-toolbar-field-narrow: 66px;
+  /* GALLERY POPUP (web/GalleryPopup.svelte — the Inspector row-gutter picker,
+     e.g. "gallery" row aspect on plugins/iconify.js's icon row). Sibling of the
+     canvas toolbar above: same tile/search visual language, different anchor
+     (a fixed-position portal under a row button, not the canvas). The corner
+     grip is a right-triangle wedge sized off its own token so its hit area and
+     its drawn triangle never drift apart. */
+  --a-gallery-grip-size: 14px;
   /* Trailing keyframe-controls column: fixes the value column's RIGHT edge so it
      aligns across every row, INCLUDING rows without controls (the Name row, the
      add row). Property rows carry 3 buttons (‹◆›); Variables rows carry 4 (‹◆›+✕),
@@ -3134,6 +3141,96 @@ textarea {
   white-space: nowrap;
 }
 
+/* GALLERY POPUP (web/GalleryPopup.svelte) — the Inspector row-gutter picker's
+   floating panel. Fixed-position portal (document.body), so it escapes the
+   Inspector panel's own scroll/overflow the same way Modal's backdrop does;
+   the search input and tile grid reuse .canvas-toolbar-* skins verbatim
+   (.canvas-toolbar-tile, .canvas-toolbar-thumb, .canvas-toolbar-tile-label) so
+   a fix to one surface's tile look never has to be repeated on the other. */
+.gallery-popup {
+  position: fixed;
+  z-index: 2147483647; /* same ceiling as Modal — a portal must win every stack */
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  padding: var(--a-sp-2);
+  background: var(--a-glass-bg-panel);
+  border: var(--a-hairline) solid var(--border);
+  box-shadow: var(--a-glass-shadow);
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
+  overflow: hidden; /* the GRID scrolls internally; the popup box itself never does */
+}
+
+/* Resize highlights the popup's own edge — "nobody would know unless the UI
+   highlights the edge" (user). A visible border-color shift is enough; it is
+   NOT a layout change (border-width is constant), so it cannot nudge the grid
+   underneath mid-drag. */
+.gallery-popup.resizing {
+  border-color: var(--a-selection);
+}
+
+.gallery-popup-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  flex: none;
+}
+
+.gallery-popup-search-input {
+  width: 100%;
+  height: var(--a-control-h);
+  padding: 0 var(--a-sp-2);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: var(--a-hairline) solid var(--border);
+  font-family: var(--a-ui-font); /* prose (a query), not a literal — canvas-toolbar's rule */
+}
+
+.gallery-popup-status {
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+
+.gallery-popup-grid {
+  flex: 1;
+  min-height: 0; /* let the flex child actually shrink and scroll */
+  display: grid;
+  grid-template-columns: repeat(var(--a-canvas-toolbar-cols), var(--a-canvas-toolbar-tile));
+  align-content: start;
+  gap: var(--a-sp-1);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* THE CORNER GRIPS — a right-triangle wedge (clip-path), not a plain square
+   handle, so it visually reads as "drag this corner" rather than as stray
+   chrome (user: "a grabbable-looking triangle on the corners"). Both sit on
+   the BOTTOM edge only; the top edge tracks the anchor button and must never
+   move under a drag (see GalleryPopup.svelte's reposition()). */
+.gallery-popup-grip {
+  position: absolute;
+  bottom: 0;
+  width: var(--a-gallery-grip-size);
+  height: var(--a-gallery-grip-size);
+  background: var(--border);
+  opacity: 0.6;
+  cursor: nwse-resize;
+}
+.gallery-popup-grip:hover {
+  background: var(--a-selection);
+  opacity: 1;
+}
+.gallery-popup-grip-left {
+  left: 0;
+  cursor: nesw-resize;
+  clip-path: polygon(0 100%, 0 0, 100% 100%);
+}
+.gallery-popup-grip-right {
+  right: 0;
+  clip-path: polygon(100% 100%, 100% 0, 0 100%);
+}
+
 /* ── Canvas ──────────────────────────────────────────────────────────────── */
 
 .canvas-wrap {
@@ -5266,13 +5363,16 @@ audio.ae-preview-media {
 .inspector .row-label-chrome:has(.copy-path-btn):has(.help-btn) {
   padding-left: calc(2 * var(--a-row-label-gutter));
 }
-/* THE THIRD SLOT (web/lightPositionPin.js): only the two light-position rows in
-   the whole app carry `.pin-light-btn`, so this only ever widens the gutter for
-   them — every other row's :has() above is unaffected. Generalizes the SAME
-   rule one slot further rather than a new mechanism: N affordances reserve N
-   gutter widths. */
+/* THE THIRD SLOT: web/lightPositionPin.js's `.pin-light-btn` (the two
+   light-position rows) and web/GalleryPopup.svelte's `.gallery-btn` (the icon
+   row) share this slot — the two aspects never co-occur on the same row (a
+   light-position pair is never icon-valued), so one rule set covers both
+   without a fourth combinatorial tier. Generalizes the SAME rule one slot
+   further rather than a new mechanism: N affordances reserve N gutter widths. */
 .inspector .row-label-chrome:has(.pin-light-btn):has(.copy-path-btn),
-.inspector .row-label-chrome:has(.pin-light-btn):has(.help-btn) {
+.inspector .row-label-chrome:has(.pin-light-btn):has(.help-btn),
+.inspector .row-label-chrome:has(.gallery-btn):has(.copy-path-btn),
+.inspector .row-label-chrome:has(.gallery-btn):has(.help-btn) {
   padding-left: calc(3 * var(--a-row-label-gutter));
 }
 
@@ -5290,7 +5390,8 @@ audio.ae-preview-media {
    click or the tooltip hover meant for the label underneath it. */
 .inspector .copy-path-btn,
 .inspector .help-btn,
-.inspector .pin-light-btn {
+.inspector .pin-light-btn,
+.inspector .gallery-btn {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
@@ -5314,7 +5415,8 @@ audio.ae-preview-media {
    the outer slot, so the icons of adjacent rows line up down the panel
    regardless of which affordances each row happens to have. */
 .inspector .copy-path-btn,
-.inspector .pin-light-btn {
+.inspector .pin-light-btn,
+.inspector .gallery-btn {
   left: 0;
   cursor: pointer;
 }
@@ -5329,22 +5431,27 @@ audio.ae-preview-media {
 .inspector .row-label-chrome:has(.copy-path-btn) .help-btn {
   left: var(--a-row-label-gutter);
 }
-/* pin-light takes the OUTER slot on a row that has it (only lightWorldX/Y do,
-   and neither carries copy-path today — this is future-proofing the same
-   generalization the padding rule above already made), pushing whichever of
-   the other two are present one slot inward. */
-.inspector .row-label-chrome:has(.pin-light-btn) .copy-path-btn {
+/* pin-light / gallery take the OUTER slot on a row that has one (neither
+   carries copy-path today — this is future-proofing the same generalization
+   the padding rule above already made), pushing whichever of the other two
+   are present one slot inward. The two never co-occur on the same row (see
+   the padding-rule comment above), so one set of :has() selectors serves both. */
+.inspector .row-label-chrome:has(.pin-light-btn) .copy-path-btn,
+.inspector .row-label-chrome:has(.gallery-btn) .copy-path-btn {
   left: var(--a-row-label-gutter);
 }
-.inspector .row-label-chrome:has(.pin-light-btn) .help-btn {
+.inspector .row-label-chrome:has(.pin-light-btn) .help-btn,
+.inspector .row-label-chrome:has(.gallery-btn) .help-btn {
   left: var(--a-row-label-gutter);
 }
-.inspector .row-label-chrome:has(.pin-light-btn):has(.copy-path-btn) .help-btn {
+.inspector .row-label-chrome:has(.pin-light-btn):has(.copy-path-btn) .help-btn,
+.inspector .row-label-chrome:has(.gallery-btn):has(.copy-path-btn) .help-btn {
   left: calc(2 * var(--a-row-label-gutter));
 }
 .inspector .copy-path-btn:hover,
 .inspector .help-btn:hover,
-.inspector .pin-light-btn:hover {
+.inspector .pin-light-btn:hover,
+.inspector .gallery-btn:hover {
   color: var(--fg);
 }
 /* THE REVEAL — opacity and hit-testing ONLY. No width, no margin, nothing that
@@ -5353,11 +5460,14 @@ audio.ae-preview-media {
    invariant is asserted by tests/equation_discoverability_probe.js, which
    measures the label's rect before and during hover. pin-light additionally
    stays visible while its mode is LIVE (aria-pressed) — an active takeover must
-   stay discoverable as a thing to cancel even after the pointer leaves the row. */
+   stay discoverable as a thing to cancel even after the pointer leaves the row.
+   gallery-btn gets the same treatment while its popup is open. */
 .inspector .row:hover .copy-path-btn,
 .inspector .row:hover .help-btn,
 .inspector .row:hover .pin-light-btn,
-.inspector .pin-light-btn[aria-pressed="true"] {
+.inspector .row:hover .gallery-btn,
+.inspector .pin-light-btn[aria-pressed="true"],
+.inspector .gallery-btn[aria-pressed="true"] {
   opacity: 1;
   pointer-events: auto;
 }

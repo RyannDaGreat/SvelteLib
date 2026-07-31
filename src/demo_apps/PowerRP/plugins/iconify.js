@@ -120,10 +120,24 @@ import { isOnline, offlineMessage, reportFailure } from "../web/connectivity.js"
  * endpoint (`/search?query=`) both live here. */
 const ICONIFY_API = "https://api.iconify.design";
 
-/** How many results one palette search asks for — 2 columns beyond a full
- * 5-row screen of PALETTE_COLS, so scrolling is obviously available without
- * fetching a whole set. */
-const SEARCH_LIMIT = 50;
+/** How many results one palette search asks for. User ruling: "at least 100
+ * results for any iconify search — I know not all results come up for arrow —
+ * but we don't want to crash it, so pagination." MEASURED live against the real
+ * API (2026-07-31, `?query=arrow&limit=N`): `limit` is honoured verbatim up to
+ * a hard server-side ceiling of 999 (a request for 1000+ silently clamps to
+ * 999), and there is NO offset/`start` parameter — `/search` is one ranked list
+ * capped at `limit`, not a paged endpoint. So "pagination" is a CLIENT concern:
+ * fetch the 100-result list in one round trip (comfortably under the 999
+ * ceiling, and confirmed to return exactly 100 for a broad term like "arrow"),
+ * then reveal it incrementally — see PAGE_SIZE / GalleryPopup's windowed
+ * rendering, which is what keeps 100 tiles from jank without a second request. */
+const SEARCH_LIMIT = 100;
+
+/** How many of a search's results are appended to the grid per reveal step —
+ * GalleryPopup's "load more" / scroll-near-bottom trigger. Keeps the DOM at a
+ * few screens of tiles instead of all SEARCH_LIMIT at once, so a 100-result
+ * grid never lays out or paints more than this many new tiles in one frame. */
+export const PAGE_SIZE = 24;
 
 /** The palette grid's column count — the user spec: a 5-wide scrollable
  * palette under the search bar. */
@@ -486,8 +500,40 @@ export async function searchIconifyCells(query) {
   return cells.filter(Boolean);
 }
 
+/**
+ * Pure function. The `gallery` row-aspect spec for the icon id row: the SAME
+ * {grid, search} shape `floatingToolbar()` returns (both are consumed by the
+ * shared tile-grid/search rendering — CanvasToolbar for the canvas popup,
+ * web/GalleryPopup.svelte for the Inspector row's gutter button), so a search
+ * fix or a rendering fix made once benefits both surfaces.
+ *
+ * WHY A ROW ASPECT AND NOT A ONE-OFF: precedent is web/lightPositionPin.js's
+ * `pinLight: {xKey, yKey}` — a plugin declares one extra key on its row and the
+ * Inspector renders the gutter affordance for it, rather than every gallery-
+ * worthy row being hand-wired into web/Inspector.svelte. `icon` is the first
+ * (and, at this writing, only) icon-VALUED row in the plugin roster (grepped);
+ * the aspect is on `core/properties.js`'s customProps-row object itself so a
+ * future icon-valued property (a plugin's own custom row) opts in with the
+ * same one line: `gallery: iconifyGallerySpec`.
+ *
+ * @param {object} state - the item's current folded state (only `.icon` is read)
+ * @returns {{label: string, grid: object, search: object}}
+ *
+ * @example iconifyGallerySpec({icon: "tabler:star"}).grid.value // "tabler:star"
+ * @example iconifyGallerySpec({}).grid.value // "tabler:star" (DEFAULT_ICON)
+ */
+export function iconifyGallerySpec(state) {
+  return {
+    label: "Iconify icons",
+    grid: { property: "icon", value: state.icon ?? DEFAULT_ICON, cells: [], cols: PALETTE_COLS, labelKind: "id" },
+    search: { placeholder: "Search all of Iconify…", run: searchIconifyCells },
+  };
+}
+
 // The icon id — the ONE piece of iconify-specific document state. A text row
-// round-trips it; the floating-toolbar search palette is the real picker.
+// round-trips it; the floating-toolbar search palette is the real picker
+// (double-click) and the gutter gallery button is the row-level picker (the
+// `gallery` aspect below — same spec, same search, different affordance).
 const CUSTOM = customProps([
   {
     name: "icon",
@@ -495,7 +541,14 @@ const CUSTOM = customProps([
     default: DEFAULT_ICON,
     label: "Icon",
     category: "formatting",
-    help: 'The Iconify icon id, "set:name" — e.g. "tabler:database" or "logos:openai-icon". Double-click the widget for a searchable palette over the whole Iconify catalog. Loaded from api.iconify.design, so first render needs network; use an SVG widget with a project asset for fully-offline decks.',
+    help: 'The Iconify icon id, "set:name" — e.g. "tabler:database" or "logos:openai-icon". Double-click the widget for a searchable palette over the whole Iconify catalog, or click the gallery icon beside this row. Loaded from api.iconify.design, so first render needs network; use an SVG widget with a project asset for fully-offline decks.',
+    // THE GALLERY ROW ASPECT (user ask: "a gallery icon on the far left where an
+    // eyedropper would have been... opens the SAME iconify gallery UI"). A
+    // FUNCTION, not the spec itself: the spec's `grid.value` must read the
+    // CURRENT state (which item is selected, what icon it holds today), and
+    // Inspector.svelte calls it with the row's live state the same way
+    // floatingToolbar(state) is called on double-click.
+    gallery: iconifyGallerySpec,
   },
 ]);
 
@@ -601,13 +654,14 @@ export const iconifyPlugin = {
    * the hover tip in the app's identifier font (--a-mono) rather than the UI font
    * — the same voice as an equation or a variable name. The cursor palette, whose
    * labels are human titles ("Spinning"), omits it and gets the UI font.
+   *
+   * Identical to the `gallery` row aspect's spec (iconifyGallerySpec, above) —
+   * ONE spec, TWO affordances that open it (double-click the widget, or the
+   * Inspector row's gutter button), so search/grid behavior can never diverge
+   * between them.
    */
   floatingToolbar(state) {
-    return {
-      label: "Iconify icons",
-      grid: { property: "icon", value: state.icon ?? DEFAULT_ICON, cells: [], cols: PALETTE_COLS, labelKind: "id" },
-      search: { placeholder: "Search all of Iconify…", run: searchIconifyCells },
-    };
+    return iconifyGallerySpec(state);
   },
   commands: [
     { id: "add-iconify", title: "Add Iconify Icon", icon: "simple-icons:iconify", run: (app) => app.armCrosshairPlacement(iconifyPlugin) },
