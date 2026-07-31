@@ -13,8 +13,13 @@
  *   - releasing commits exactly ONE undo unit (one undo restores the pre-drag value);
  *   - Escape mid-drag cancels (reverts the preview, no commit, no undo unit);
  *   - the two handles do NOT fight: with the light dead-centre, dragging "scale"
- *     leaves lightX/lightY alone, and dragging "light" leaves flareScale alone;
- *   - all of it holds IDENTICALLY at 45° rotation (the manifest's correctness bar).
+ *     leaves lightWorldX/lightWorldY alone, and dragging "light" leaves flareScale
+ *     alone;
+ *   - all of it holds IDENTICALLY at 45° rotation (the manifest's correctness bar);
+ *   - WORLD-PINNING: lightWorldX/Y is a WORLD point — moving the widget's x/y with
+ *     lightWorldX/Y held fixed leaves the light handle at the SAME world position
+ *     (core/derive.worldTransform's local→world map, inverted the other way by
+ *     plugins/demo/lens_flare.js lightLocal).
  *
  * Run from SvelteLib root: node src/demo_apps/PowerRP/tests/lens_flare_scale_probe.js
  */
@@ -169,16 +174,35 @@ try {
 
   // ── 4. The two handles do not fight (light dead-centre) ───────────────────────
   {
-    const s = await setup(0, { lightX: 0.5, lightY: 0.5 });
+    // The box's own WORLD centre — lightWorldX/Y is absolute now, so "dead-centre"
+    // is a concrete world point, not a fraction.
+    const CENTRE_X = BOX.x + BOX.w / 2, CENTRE_Y = BOX.y + BOX.h / 2;
+    const s = await setup(0, { lightWorldX: CENTRE_X, lightWorldY: CENTRE_Y });
     await dragModifier(s, "scale", 50, 0, "up");
-    ok(await docVal(s.id, "lightX") === 0.5 && await docVal(s.id, "lightY") === 0.5,
-      `scale drag left the light alone (${await docVal(s.id, "lightX")}, ${await docVal(s.id, "lightY")})`);
+    ok(await docVal(s.id, "lightWorldX") === CENTRE_X && await docVal(s.id, "lightWorldY") === CENTRE_Y,
+      `scale drag left the light alone (${await docVal(s.id, "lightWorldX")}, ${await docVal(s.id, "lightWorldY")})`);
     const scaleAfter = await docVal(s.id, "flareScale");
-    const s2 = await setup(0, { lightX: 0.5, lightY: 0.5 });
+    const s2 = await setup(0, { lightWorldX: CENTRE_X, lightWorldY: CENTRE_Y });
     await dragModifier(s2, "light", 90, -70, "up");
     ok(await docVal(s2.id, "flareScale") === START_SCALE, `light drag left flareScale alone (${await docVal(s2.id, "flareScale")})`);
-    ok(await docVal(s2.id, "lightX") !== 0.5, "light drag actually moved the light");
+    ok(await docVal(s2.id, "lightWorldX") !== CENTRE_X, "light drag actually moved the light");
     ok(scaleAfter > START_SCALE, "…and the scale drag before it had really taken effect");
+  }
+
+  // ── 5. WORLD-PINNING: move the WIDGET, light stays put in the document ────────
+  // The manifest's whole point: fixed lightWorldX/Y must be the SAME point on the
+  // canvas whether the widget sits here or somewhere else. Moving x/y (not
+  // touching lightWorldX/Y) must move the LOCAL light handle by the OPPOSITE
+  // delta, so its WORLD position (node.world applied to it) is unchanged.
+  {
+    const WORLD_X = 500, WORLD_Y = 300;
+    const s1 = await setup(0, { x: 100, y: 100, lightWorldX: WORLD_X, lightWorldY: WORLD_Y });
+    const s2 = await setup(0, { x: 400, y: 250, lightWorldX: WORLD_X, lightWorldY: WORLD_Y });
+    const w1 = worldOf(s1, "light"), w2 = worldOf(s2, "light");
+    ok(Math.abs(w1.x - WORLD_X) < 1e-6 && Math.abs(w1.y - WORLD_Y) < 1e-6,
+      `pose 1: light handle world position IS lightWorldX/Y (${w1.x},${w1.y} vs ${WORLD_X},${WORLD_Y})`);
+    ok(Math.abs(w2.x - WORLD_X) < 1e-6 && Math.abs(w2.y - WORLD_Y) < 1e-6,
+      `pose 2 (widget moved): light handle STILL at the same world point (${w2.x},${w2.y} vs ${WORLD_X},${WORLD_Y})`);
   }
 
   ok(liveErrors.length === 0, `no console errors during the drags (${JSON.stringify(liveErrors)})`);

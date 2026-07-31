@@ -37,11 +37,13 @@
 import { blendApplied, copied, copiedDeep, deepEqual, getPath, isTree, setPath, deletePath, leaves } from "./deltas.js";
 import { defaultTransition, withDurationMigrated } from "./transitions.js";
 import {
-  withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue,
+  withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue, evaluateState,
 } from "./expressions.js";
 import { withRichTextMigrated } from "./richtext.js";
 import { withPaletteRampMigrated, rampMigrationReports } from "./ramp_migration.js";
 import { bundleDefaults, linearEndpointsToAngle } from "./properties.js";
+import { worldTransform } from "./derive.js";
+import * as T from "./transform.js";
 
 /** Query (reads crypto). Random 8-char id — short but collision-safe at presentation scale. */
 export function uuid() {
@@ -1286,6 +1288,173 @@ export function withFancyArrowFillMigrated(doc, registry) {
   return { doc: out, migrated };
 }
 
+/**
+ * Pure function. The lens-flare light-position WORLD point a legacy RELATIVE
+ * pair (rel·w, rel·h fractions of the box) corresponds to, given the item's
+ * fully-evaluated numeric geometry at the moment of conversion (manifest
+ * "world = item transform applied to rel·w, rel·h — mind anchor and
+ * rotation"). Reuses core/derive.worldTransform (the SAME local→world map
+ * lens_flare.js's own lightLocal/modifierPoints use) rather than
+ * reimplementing rotation/anchor math — the house rule against re-deriving a
+ * similarity transform by hand.
+ *
+ * Args:
+ *   relX, relY (number): the OLD lightX/lightY fractions
+ *   geom (object): evaluated numeric item state {x, y, w, h, rotation?, scale?, rotationAnchor?}
+ *
+ * Returns:
+ *   {x, y}: world coordinates
+ *
+ * @example // Unrotated 1280x720 box at the origin: world == local fraction*extent.
+ * @example flareLightRelativeToWorld(0.72, 0.3, {x: 0, y: 0, w: 1280, h: 720}) // {x: 921.6, y: 216}
+ * @example // The SAME box moved to (100, 50): the world point shifts with it — this is
+ * @example // the exact reason a per-slide box move needs a per-slide conversion.
+ * @example flareLightRelativeToWorld(0.72, 0.3, {x: 100, y: 50, w: 1280, h: 720}) // {x: 1021.6, y: 266}
+ */
+export function flareLightRelativeToWorld(relX, relY, geom) {
+  const w = geom.w ?? 0, h = geom.h ?? 0;
+  return T.apply(worldTransform(geom), relX * w, relY * h);
+}
+
+/**
+ * Pure function. Lens-flare light-position migrations the document needs: the
+ * widget's light source used to be stored as lightX/lightY, a [0,1] FRACTION of
+ * the widget's own box (relative coordinates); it is now lightWorldX/lightWorldY,
+ * an ABSOLUTE point in world/document space (user ruling: "we should just have
+ * absolute values... in global coordinate space... if we want to bind those
+ * positions to some other object, that's the only way we can really do this
+ * easily" — a relative fraction cannot be equation-bound to another item's
+ * position). RENAMED, not reinterpreted in place (the fancyArrowFillMigrations
+ * precedent: a stored 0.5 meaning "half the box" must never be silently reread
+ * as 0.5 world units), so old and new fields never collide and a half-migrated
+ * document cannot exist.
+ *
+ * EVERY CANDIDATE IS A SLIDE-DELTA KEYFRAME, not an item — unlike the fancy-arrow
+ * migration's per-ITEM gate, a per-slide conversion is CORRECT here (not data
+ * loss) because this is a genuine VALUE migration at each point in time: the
+ * widget's box may differ slide to slide (it can move, rotate, resize — even
+ * animate via `= camera.*` equations that track a moving camera), so "the world
+ * point this fraction names" is itself a function of the slide. Converting once
+ * from creation-slide geometry, the fancy-arrow way, would be WRONG the moment a
+ * later slide also wrote lightX/lightY against a since-moved box.
+ *
+ * AN EQUATION ON THE OLD FIELD CANNOT BE UNIT-CONVERTED (manifest requirement):
+ * `"= self.w/1000"` names a FORMULA in box-fraction units with no general inverse
+ * into world units, so such a keyframe is reported but left ON THE OLD FIELD
+ * NAME as-is, renamed nowhere — the field itself no longer exists on the plugin
+ * post-migration, so the author sees their equation immediately (an unknown-key
+ * report, or simply a look that stopped moving) and fixes it knowingly, rather
+ * than the migration guessing and silently producing the wrong light position.
+ * isEquationValue(plugin, path, value) is the SAME predicate every other
+ * equation-aware migration in this file uses.
+ *
+ * Args:
+ *   doc (object): document
+ *   registry (object): plugin registry (looks up demo_lens_flare's own plugin
+ *     object, needed by evaluateState/isEquationValue, and to fold the item's
+ *     equations at each candidate slide)
+ *
+ * Returns:
+ *   {plain: {id, slideIndex, worldX, worldY}[], equation: {id, slideIndex, key, value}[]}
+ *   (both empty when nothing needs migrating)
+ *
+ * @example // A plain relative keyframe at rotation 0: converts to the box's absolute point.
+ * @example // Stub registry: a bbox plugin with no lightX/lightY default (today's schema).
+ * @example flareLightMigrations({slides: [{delta: {items: {a: {type: "demo_lens_flare", x: 0, y: 0, w: 1000, h: 500, lightX: 0.72, lightY: 0.3}}}}]}, {all: () => [{type: "demo_lens_flare", defaults: {}}], get: () => ({type: "demo_lens_flare", defaults: {}})}).plain
+ * [{"id":"a","slideIndex":0,"worldX":720,"worldY":150}]
+ * @example // An equation on the old field is reported, not converted.
+ * @example flareLightMigrations({slides: [{delta: {items: {a: {type: "demo_lens_flare", x: 0, y: 0, w: 1000, h: 500, lightX: "= self.w/1000"}}}}]}, {all: () => [{type: "demo_lens_flare", defaults: {}}], get: () => ({type: "demo_lens_flare", defaults: {}})}).equation
+ * [{"id":"a","slideIndex":0,"key":"lightX","value":"= self.w/1000"}]
+ */
+export function flareLightMigrations(doc, registry) {
+  const typeOf = itemCreationTypes(doc);
+  // registry.get() THROWS on an unknown type (a loud guard for a real lookup);
+  // a registry without the lens-flare plugin is legitimate here (a focused test
+  // registers a handful of plugins, a document with no flare needs no schema
+  // check), same "ask the roster" idiom the filmstrip migration above uses.
+  const plugin = registry.all().find((p) => p.type === "demo_lens_flare") ?? null;
+  const plain = [], equation = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!(item && typeof item === "object") || typeOf.get(id) !== "demo_lens_flare") continue;
+      if (!plugin) continue; // no lens-flare plugin registered: nothing to migrate against
+      const hasX = "lightX" in item, hasY = "lightY" in item;
+      if (!hasX && !hasY) continue;
+      // An EQUATION on the field THIS SLIDE WRITES cannot be unit-converted (a
+      // formula in box-fraction units has no general inverse into world units)
+      // — report it and leave that one field's write out of the plain
+      // conversion below entirely, per field, not per slide: a slide writing a
+      // plain lightX alongside an equation lightY still converts the X half
+      // using the OTHER half's current folded value (both cases exercised by
+      // the migration fixtures).
+      const xIsEq = hasX && isEquationValue(plugin, ["lightX"], item.lightX);
+      const yIsEq = hasY && isEquationValue(plugin, ["lightY"], item.lightY);
+      if (xIsEq) equation.push({ id, slideIndex, key: "lightX", value: item.lightX });
+      if (yIsEq) equation.push({ id, slideIndex, key: "lightY", value: item.lightY });
+      // Nothing left to convert this slide: every field it wrote is an equation.
+      if ((hasX ? xIsEq : true) && (hasY ? yIsEq : true)) continue;
+      // A slide that keyframes only one plain half still needs the OTHER
+      // half's CURRENT value to know the full relative point — read from the
+      // FOLD (evaluateState over slideState), not the delta alone, exactly
+      // like the fancy-arrow migration reads the item's whole state rather
+      // than one leaf. If that other half is itself governed by an equation
+      // (written on an earlier, un-migrated slide), evaluateState resolves it
+      // to the number that equation names AT THIS SLIDE — the correct rel
+      // value for this conversion's moment in time, not a case this rule's
+      // "no automatic unit conversion" applies to (only a keyframe writing an
+      // equation ON THE FIELD BEING MIGRATED is exempted).
+      const folded = evaluateState(slideState(doc, slideIndex), registry, doc.meta?.script ?? "").state;
+      const geom = folded.items?.[id];
+      if (!geom || typeof geom.lightX !== "number" || typeof geom.lightY !== "number") continue;
+      const world = flareLightRelativeToWorld(geom.lightX, geom.lightY, geom);
+      plain.push({
+        id, slideIndex,
+        worldX: xIsEq ? undefined : world.x,
+        worldY: yIsEq ? undefined : world.y,
+      });
+    }
+  });
+  return { plain, equation };
+}
+
+/**
+ * Pure function. Document with every flareLightMigrations plain conversion
+ * applied: each candidate slide gets lightWorldX/lightWorldY keyframed to the
+ * converted world point, and lightX/lightY removed from that slide's delta —
+ * INCLUDING an equation-carrying field's slide (the equation stays reachable
+ * only through the caller's report; the migrated document can no longer write
+ * a field the plugin no longer declares). REPORTING IS THE CALLER'S JOB, same
+ * convention as withFancyArrowFillMigrated.
+ *
+ * @example withFlareLightMigrated({slides: [{delta: {items: {a: {type: "demo_lens_flare", x: 0, y: 0, w: 1000, h: 500, lightX: 0.72, lightY: 0.3}}}}]}, {all: () => [{type: "demo_lens_flare", defaults: {}}], get: () => ({type: "demo_lens_flare", defaults: {}})}).doc.slides[0].delta.items.a.lightWorldX
+ * 720
+ * @example withFlareLightMigrated({slides: [{delta: {items: {a: {type: "demo_lens_flare", x: 0, y: 0, w: 1000, h: 500, lightX: 0.72, lightY: 0.3}}}}]}, {all: () => [{type: "demo_lens_flare", defaults: {}}], get: () => ({type: "demo_lens_flare", defaults: {}})}).doc.slides[0].delta.items.a.lightX
+ * undefined
+ */
+export function withFlareLightMigrated(doc, registry) {
+  const { plain, equation } = flareLightMigrations(doc, registry);
+  let out = doc;
+  for (const { id, slideIndex, worldX, worldY } of plain) {
+    // worldX/worldY is `undefined` for the HALF of the pair that was an equation
+    // this slide (flareLightMigrations) — that half is handled entirely by the
+    // `equation` loop below (dropped, reported), so writing `undefined` here
+    // would plant a literal undefined value on the new field instead of leaving
+    // it unwritten.
+    if (worldX !== undefined) out = keyframed(out, slideIndex, ["items", id, "lightWorldX"], worldX);
+    if (worldY !== undefined) out = keyframed(out, slideIndex, ["items", id, "lightWorldY"], worldY);
+    out = unkeyframed(out, slideIndex, ["items", id, "lightX"]);
+    out = unkeyframed(out, slideIndex, ["items", id, "lightY"]);
+  }
+  for (const { id, slideIndex, key } of equation) {
+    // The equation stays reported forever otherwise (the plugin no longer
+    // declares lightX/lightY, so a left-behind equation would silently become
+    // an inert, unknown key) — drop it too, LOUDLY, via the caller's report;
+    // this only removes the KEY, never converts or invents a replacement value.
+    out = unkeyframed(out, slideIndex, ["items", id, key]);
+  }
+  return { doc: out, plain, equation };
+}
+
 /** Pure function. True iff `p` is an objectBoundingBox point {x, y} (finite
  * numbers) — the shape a linear gradient's from/to endpoints have. */
 function isBBoxPoint(p) {
@@ -1596,6 +1765,16 @@ export function legacyBindings(doc) {
  *  2c. antialias boolean→select — the camera's `antialias` boolean became a
  *      quality SELECT (true→"standard", false→"off"). A VALUE migration; the key
  *      is present either way so its order vs defaults-fill is not load-bearing.
+ * 2c2. lens-flare light RELATIVE→WORLD — lightX/lightY (a [0,1] fraction of the
+ *      widget's box) renamed AND reinterpreted as lightWorldX/lightWorldY (an
+ *      absolute world/document point), converted per-slide through the item's
+ *      OWN transform at that slide (core/derive.worldTransform) so a moved,
+ *      rotated, or per-slide-resized flare converts correctly at every
+ *      keyframe. MUST precede defaults-fill (below) for the filmstrip step's
+ *      exact reason: filling first would inject the new fields' equation
+ *      default before this step could read the user's old fraction. An old
+ *      field carrying an EQUATION cannot be unit-converted and is reported,
+ *      not rewritten.
  *  2d. meta.script normalized  — THE PROJECT SCRIPT is filled to "" when absent
  *      (quietly — an old deck has no library and an empty one means the same) and
  *      DISCARDED loudly when it is not a string. meta-only, order-free.
@@ -1654,6 +1833,19 @@ export function repairedDocument(doc, registry) {
   for (const m of antialiasMigrated)
     reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy boolean antialias (${m.from}) → "${m.to}"`);
 
+  // Lens-flare light position RELATIVE → WORLD (user ruling: absolute-only, so
+  // an equation can bind it to another item's position). A VALUE migration with
+  // a RENAME (lightX/lightY → lightWorldX/lightWorldY — never reinterpreted in
+  // place, the fancyArrowFillMigrations precedent), so it belongs with its value-
+  // migration peers here; MUST precede defaults-fill below for the identical
+  // reason the filmstrip step does — filling first would inject the new fields'
+  // equation DEFAULT before this step could read the user's old fraction.
+  const { doc: flareDoc, plain: flareMigrated, equation: flareEquations } = withFlareLightMigrated(aaMigratedDoc, registry);
+  for (const m of flareMigrated)
+    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy relative lens-flare light position → lightWorldX/lightWorldY (${m.worldX}, ${m.worldY})`);
+  for (const m of flareEquations)
+    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy lens-flare "${m.key}" carries an EQUATION (${JSON.stringify(m.value)}) — cannot auto-convert a formula's units; fix it by hand, it no longer has an effect`);
+
   // Filmstrip `frames` COUNT → the frame LIST (same length), and the dead server-era
   // keys dropped. A VALUE migration, so it sits with its peers above — but it MUST
   // precede the defaults-fill below for the rich-text hazard's exact reason: filling
@@ -1667,8 +1859,8 @@ export function repairedDocument(doc, registry) {
   // roster instead of catching.
   const framesListOf = registry.all().find((p) => p.type === "filmstrip")?.defaultFrameList ?? null;
   const { doc: framesDoc, migrated: framesMigrated } = framesListOf
-    ? withFilmstripFramesMigrated(aaMigratedDoc, framesListOf)
-    : { doc: aaMigratedDoc, migrated: [] };
+    ? withFilmstripFramesMigrated(flareDoc, framesListOf)
+    : { doc: flareDoc, migrated: [] };
   for (const m of framesMigrated) {
     if (m.count !== null)
       reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy filmstrip frame COUNT (${m.count}) → a ${m.count}-element frame list, each frame's time an equation across Video start → Video end`);

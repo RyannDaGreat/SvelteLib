@@ -38,15 +38,17 @@
  *
  * Every look knob is a CUSTOM self.* property (core/properties.js customProps): a
  * literal, an expression, or a `= …` equation, with ZERO evaluation-engine changes —
- * so e.g. a keyframed `starburstRotation` or `lightX = self.w/1000` is free.
+ * so e.g. a keyframed `starburstRotation` or `lightWorldX = someItem.x` (see below,
+ * light-position section) is free.
  *
  * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). DOM-free /
  * bare-node-safe at import time.
  */
 
-import { standardBBoxAnchors } from "../../core/derive.js";
+import { standardBBoxAnchors, worldTransform } from "../../core/derive.js";
 import { closestPointOnAxisRange } from "../../core/outline.js";
-import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../../core/properties.js";
+import { bundle, bundleNestedDefaults, CUSTOM_CATEGORY, customProps, defaults, props } from "../../core/properties.js";
+import * as T from "../../core/transform.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
 // THE LOOK KNOBS AND THEIR schema→uniform MAPPING live in the shader entry now
@@ -73,21 +75,61 @@ import { LENS_FLARE_FILL_PARAMS, lensFlareUniformParams } from "../../render_gpu
 const SCALE_HANDLE_REF_RADIUS = 0.45;
 
 /**
- * Pure function. The light source in the widget's LOCAL px frame: the lightX/lightY
- * fractions scaled by the box extent (w, h). Shared by the light anchor, the snap
- * feature, and the draggable modifier point so they never drift. The fractions are
- * NOT clamped to [0,1] — a light outside the box is the whole point of an off-frame
- * sun, so this returns local px outside [0,w]×[0,h] just as happily.
+ * Pure function. The light source in the widget's LOCAL px frame: the stored WORLD
+ * point (lightWorldX/lightWorldY) brought into local space through the INVERSE of
+ * this item's own local→world similarity transform (core/derive.worldTransform —
+ * the SAME map every other local-space hook in this widget already lives in:
+ * anchors, snapFeatures, modifierPoints). This is the ONE seam that makes the
+ * light genuinely pinned in world/document space rather than in the widget's own
+ * box: move or rotate the widget and this function returns a DIFFERENT local
+ * point for the SAME stored world coordinates, so the flare's glow stays put
+ * on the canvas. Shared by the light anchor, the snap feature, and the draggable
+ * modifier point so they never drift. NOT clamped — a light outside the box is
+ * the whole point of an off-frame sun, so this returns local px outside
+ * [0,w]×[0,h] just as happily; a world point behind a rotated/scaled widget maps
+ * to whatever local point invert(world) says, which may also lie outside the box.
  *
- * @param {{lightX?: number, lightY?: number, w?: number, h?: number}} s - evaluated item state
+ * The `?? 0` fallback is a TECHNICAL guard for a state missing the properties
+ * entirely (e.g. a hand-built test fixture) — the real defaults live in the
+ * plugin's `defaults` block below (equations resolving to the box's own frame
+ * at insert time), so a document loaded through the ordinary fold never hits it.
+ *
+ * @param {object} s - evaluated item state ({lightWorldX?, lightWorldY?, x, y, w, h, rotation?, scale?, rotationAnchor?})
  * @returns {{x: number, y: number}} local px
  *
- * @example lightLocal({lightX: 0.5, lightY: 0.5, w: 1280, h: 720}) // {x: 640, y: 360}
- * @example lightLocal({lightX: 0.72, lightY: 0.3, w: 1000, h: 500}) // {x: 720, y: 150}
- * @example lightLocal({lightX: -0.4, lightY: 1.8, w: 1000, h: 500}) // {x: -400, y: 900} (off-box sun)
+ * @example // A widget at the origin, unrotated, unit scale: world == local.
+ * @example lightLocal({lightWorldX: 640, lightWorldY: 360, x: 0, y: 0, w: 1280, h: 720}) // {x: 640, y: 360}
+ * @example // The SAME world light, widget moved 200px right: local shifts left by 200 to compensate.
+ * @example lightLocal({lightWorldX: 640, lightWorldY: 360, x: 200, y: 0, w: 1280, h: 720}) // {x: 440, y: 360}
+ * @example // Off-box sun: a world point outside the widget's world-space footprint.
+ * @example lightLocal({lightWorldX: -400, lightWorldY: 900, x: 0, y: 0, w: 1000, h: 500}) // {x: -400, y: 900}
  */
 function lightLocal(s) {
-  return { x: (s.lightX ?? 0.5) * (s.w ?? 0), y: (s.lightY ?? 0.5) * (s.h ?? 0) };
+  const inv = T.invert(worldTransform(s));
+  return T.apply(inv, s.lightWorldX ?? 0, s.lightWorldY ?? 0);
+}
+
+/**
+ * Pure function. The light source as the [0,1]-of-the-box FRACTION the SHADER
+ * uniform expects (render_gpu/skia/lens_flare_shader.js LENS_FLARE_FILL_PARAMS'
+ * lightX/lightY — a fraction of WHATEVER region a material paints into, shared
+ * with the generic fill-material path). This widget's own light position is
+ * WORLD-space (lightWorldX/lightWorldY); this is the one place that fraction is
+ * reconstructed, immediately before packing the shader's params, so the shader's
+ * contract stays exactly what it always was and only this widget's document-facing
+ * schema changed. Division guard mirrors the rest of this file's `w/h > 0` guards:
+ * a zero-extent box has no fraction to compute.
+ *
+ * @param {object} s - evaluated item state
+ * @returns {{x: number, y: number}} shader-space fraction (UNCLAMPED — see lightLocal)
+ *
+ * @example lightFraction({lightWorldX: 640, lightWorldY: 360, x: 0, y: 0, w: 1280, h: 720}) // {x: 0.5, y: 0.5}
+ * @example lightFraction({lightWorldX: 0, lightWorldY: 0, x: 0, y: 0, w: 0, h: 0}) // {x: 0, y: 0} (degenerate box)
+ */
+function lightFraction(s) {
+  const w = s.w ?? 0, h = s.h ?? 0;
+  const l = lightLocal(s);
+  return { x: w > 0 ? l.x / w : 0, y: h > 0 ? l.y / h : 0 };
 }
 
 /**
@@ -107,14 +149,23 @@ function scaleHandleArm(s) {
   return SCALE_HANDLE_REF_RADIUS * (s.h ?? 0) / 2;
 }
 
-// The look knobs come from the shader entry (LENS_FLARE_FILL_PARAMS) — the ONE
-// declaration the widget and the fill-material UI share. Widget GEOMETRY (the
-// camera-bound box) and the effects bundle stay in this plugin's defaults below; the
-// schema carries only look. All 22 knobs are dimensionless field values normalized to
-// the widget's own extent (so the look holds at any zoom/size), except the light
-// position, which is a fraction of the widget but is NOT confined to it. The defaults
-// are a tasteful warm cinematic flare; the Presets pane offers twelve further looks.
-const CUSTOM = customProps(LENS_FLARE_FILL_PARAMS);
+// The LOOK knobs come from the shader entry (LENS_FLARE_FILL_PARAMS) — the ONE
+// declaration the widget and the generic fill-material UI share (paint_skia's
+// handleMaterialPaintShape resolves that SAME schema against an arbitrary shape's
+// own local bbox, entirely independent of this widget). `lightX`/`lightY` in that
+// shared schema are — and remain — a [0,1] fraction of WHATEVER region the material
+// is painting into: for a generic shape-fill that region is the shape's own bbox, and
+// there is no "document" for a fill paint to be absolute IN. This WIDGET's light
+// position is document-facing and therefore excluded from the spread below and
+// declared separately as `lightWorldX`/`lightWorldY` (world/document units) — emit()
+// converts world → the widget's local box → the shared schema's fraction right before
+// calling lensFlareUniformParams, so the shader-facing contract above is untouched.
+//
+// All 20 REMAINING knobs are dimensionless field values normalized to the widget's own
+// extent (so the look holds at any zoom/size). The defaults are a tasteful warm
+// cinematic flare; the Presets pane offers twelve further looks.
+const LOOK_PARAMS = LENS_FLARE_FILL_PARAMS.filter((def) => def.name !== "lightX" && def.name !== "lightY");
+const CUSTOM = customProps(LOOK_PARAMS);
 
 /**
  * A PRESET: `{name, description?, props}`. `props` is a flat map of item-state keys
@@ -139,11 +190,12 @@ const CUSTOM = customProps(LENS_FLARE_FILL_PARAMS);
  * silently erase the first — precisely what that rule exists to forbid. The ORDER
  * below is also information a split would destroy: see the coating-era run at its head.
  *
- * NO PRESET CARRIES `lightX`/`lightY` (user request, complained about directly): a
- * preset changes the LOOK, it never teleports a light the user already positioned.
- * The light position is COMPOSITION — it is placed on the canvas by dragging the
- * yellow handle, or keyframed, or driven by an equation — while the ~20 other knobs
- * are all look. Nothing is lost by leaving it out: the shader is aspect-correct and
+ * NO PRESET CARRIES `lightWorldX`/`lightWorldY` (user request, complained about
+ * directly): a preset changes the LOOK, it never teleports a light the user already
+ * positioned. The light position is COMPOSITION — it is placed on the canvas by
+ * dragging the yellow handle, or keyframed, or driven by an equation (now bindable
+ * to another item, since it is a WORLD coordinate) — while the ~20 other knobs are
+ * all look. Nothing is lost by leaving it out: the shader is aspect-correct and
  * every knob here is normalized to the widget, so each look holds identically at any
  * light position, on-box or off. (Before this, applying a preset to a flare whose sun
  * had been dragged off-frame yanked it back inside the box.)
@@ -349,6 +401,33 @@ export const lensFlarePlugin = {
     x: "= camera.x", y: "= camera.y", w: "= camera.w", h: "= camera.h",
     z: 200, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
+    // LIGHT POSITION IN WORLD/DOCUMENT COORDINATES (user ruling: absolute-only, so
+    // "= someItem.x" binding works directly — a relative fraction cannot be bound to
+    // another item's position without a widget-specific unbinding step). These
+    // equations reproduce the OLD lightX:0.72/lightY:0.3 defaults' exact on-canvas
+    // position at insert time (rotation 0, scale 1: local == world), expressed in
+    // this item's own frame so a freshly-inserted flare looks identical to before.
+    //
+    // BARE "self."-prefixed form (no leading "="), matching rotationAnchor's own
+    // default two lines up: isNumericSlot's self.-prefix branch is what makes the
+    // evaluator expect a NUMBER result here — a leading "=" is the UNIVERSAL
+    // any-type marker (core/expressions.js EQ_PREFIX_RE) and would make
+    // resultKindForSlot fall through to inspecting this literal default STRING's
+    // own shape (not a hex color, so "string") instead of the row's declared
+    // numeric kind, rejecting the equation's own numeric result at evaluation.
+    //
+    // BUILT FROM self.anchors.tl/br, NOT self.x/self.w DIRECTLY: a raw self.w/self.h
+    // PROP read (core/expressions.js refValue) hands back the STORED, possibly
+    // NEGATIVE extent (a Flip) with no unsigning — only an ANCHOR read
+    // (core/expressions.js anchorValue) enters THE FLIP SEAM (unsignedState) before
+    // computing a world point, which is exactly the negative-size CONTRACT
+    // (core/registry.js, tests/negative_size_test.js): every sign spelling of the
+    // same footprint must derive identically. tl/br span the box corner-to-corner in
+    // WORLD units, so (br − tl) is the unsigned w/h and tl is the unsigned origin —
+    // this default is therefore flip-safe by construction, the same way rotationAnchor's
+    // self.anchors.center default is.
+    lightWorldX: "self.anchors.tl.x + 0.72 * (self.anchors.br.x - self.anchors.tl.x)",
+    lightWorldY: "self.anchors.tl.y + 0.3 * (self.anchors.br.y - self.anchors.tl.y)",
     ...defaults("opacity"), // opacity:1
     // The EFFECTS BUNDLE gives the additive composite: default blendMode "screen"
     // (overrides the registry's "normal") so the flare adds light to the scene; the
@@ -356,11 +435,19 @@ export const lensFlarePlugin = {
     // a vector-glow substrate, distinct from this flare's own in-shader bloom knob.
     ...bundleNestedDefaults("effects"),
     blendMode: "screen",
-    ...CUSTOM.defaults, // the look knobs (self.*)
+    ...CUSTOM.defaults, // the look knobs (self.*), lightX/lightY EXCLUDED (see LOOK_PARAMS)
   },
   inspector: [
     ...bundle("positioning"),
     ...props("opacity"),
+    {
+      key: "lightWorldX", label: "Light X", kind: "number", category: CUSTOM_CATEGORY,
+      help: "Light-source horizontal position in WORLD (document) coordinates — the same units as the widget's own X. Absolute, not a fraction of the box, so it can be bound to another item's position (e.g. \"= someItem.x\") to pin the flare's source to it. Move or rotate the widget and the light stays put in the document; drag the yellow handle, keyframe it, or type an equation.",
+    },
+    {
+      key: "lightWorldY", label: "Light Y", kind: "number", category: CUSTOM_CATEGORY,
+      help: "Light-source vertical position in WORLD (document) coordinates — the same units as the widget's own Y. Absolute, exactly like Light X: bindable to another item, unaffected by this widget's own position/rotation/scale.",
+    },
     ...CUSTOM.rows, // the look knobs (Inspector "Custom" region)
     ...bundle("effects"), // blend mode + (unused-by-default) shadow/bloom/inner-shadow
   ],
@@ -370,16 +457,27 @@ export const lensFlarePlugin = {
    * the default blendMode "screen" composites the flare additively over the scene.
    * The bbox (w, h) IS the region (local space; sceneIR wraps it in the node's
    * world). The look knobs pass through as the op's `params`; the SkSL packer
-   * clamps/parses them. `world` (emit's 3rd arg) is required by applyEffects.
+   * clamps/parses them. `world` (emit's 3rd arg) is required by applyEffects AND is
+   * THE WORLD→LOCAL SEAM for the light: this widget's stored light position is a
+   * WORLD point (lightWorldX/lightWorldY), so it is brought into the widget's own
+   * local box (lightFraction, via lightLocal's invert(worldTransform(s))) right here,
+   * immediately before packing — the shader/generic-fill-material params object
+   * still only ever sees a [0,1] box fraction, unchanged. This is also the whole
+   * point of the feature: moving/rotating the WIDGET changes `world`, which changes
+   * the RECOVERED fraction, which is exactly what keeps a fixed lightWorldX/Y
+   * pinned to the same point in the document while the widget moves under it.
    */
   emit(s, _targetWorldIR, world) {
+    const frac = lightFraction(s);
     const op = materialFill({
       material: "lens_flare",
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       cornerRadius: 0,
       // The SAME schema→uniform mapping the fill-material path uses (one declaration):
-      // renames the schema's `glow` to the shader's `bloom`, everything else identity.
-      params: lensFlareUniformParams(s),
+      // renames the schema's `glow` to the shader's `bloom`, everything else identity;
+      // lightX/lightY are overlaid here since CUSTOM/`s` no longer carries them (they
+      // live in `s` as lightWorldX/lightWorldY, in world units).
+      params: lensFlareUniformParams({ ...s, lightX: frac.x, lightY: frac.y }),
       opacity: s.opacity ?? 1,
     });
     return applyEffects([op], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
@@ -396,7 +494,9 @@ export const lensFlarePlugin = {
   },
   /**
    * Pure function. Standard bbox anchors PLUS a live "light" anchor at the light
-   * source (lightX/lightY → local px). The id is underscore-free so the reference
+   * source (lightWorldX/lightWorldY brought into LOCAL px via lightLocal — this hook's
+   * contract, like every other in this file, is local space; core/derive.nodeAnchors
+   * wraps it back to world for consumers). The id is underscore-free so the reference
    * grammar (`@item_anchor.x`, split at the LAST underscore) parses it — other
    * widgets can bind to where the flare's light is via `@<slug>_light.x/.y`.
    */
@@ -412,13 +512,17 @@ export const lensFlarePlugin = {
    * These two are the protocol's (core/derive.js) contrast case: one handle is
    * genuinely UNCONSTRAINED and one is genuinely constrained, in the same widget.
    *
-   * "light" — at the light source. Dragging it writes lightX/lightY = the drag's
-   * LOCAL point ÷ the box extent, UNCLAMPED: the handle follows the cursor anywhere,
-   * including far outside the widget, because an off-box light source is the entire
-   * point of an off-frame sun. (It used to clamp the fractions to [0,1], which pinned
-   * the handle to the border and silently discarded the drag.) It mirrors the analog
-   * clock's hand-tip handles. It therefore declares NO `constrain` — the whole plane
-   * is allowed, so the identity default is the truthful declaration, not an omission.
+   * "light" — at the light source. CanvasView drags/hit-tests in WORLD space and
+   * inverts through node.world before calling `apply` (THE HANDLE-CONSTRAINT
+   * PROTOCOL, core/derive.js), so `apply` here receives a LOCAL point; it maps that
+   * BACK to world through this item's OWN worldTransform (the exact inverse of
+   * lightLocal) and writes lightWorldX/lightWorldY — the stored WORLD point,
+   * UNCLAMPED: the handle follows the cursor anywhere, including far outside the
+   * widget, because an off-box light source is the entire point of an off-frame sun.
+   * (It used to clamp the fractions to [0,1], which pinned the handle to the border
+   * and silently discarded the drag.) It mirrors the analog clock's hand-tip handles.
+   * It therefore declares NO `constrain` — the whole plane is allowed, so the
+   * identity default is the truthful declaration, not an omission.
    *
    * "scale" — the FEATURE SCALE, a RADIAL control on the optical centre (the widget
    * centre, which is what every scaled feature is measured from). It sits at 3
@@ -449,11 +553,8 @@ export const lensFlarePlugin = {
       id: "light",
       x: l.x, y: l.y,
       apply(state, localPoint) {
-        const ww = state.w ?? 0, hh = state.h ?? 0;
-        return {
-          lightX: ww > 0 ? localPoint.x / ww : (state.lightX ?? 0.5),
-          lightY: hh > 0 ? localPoint.y / hh : (state.lightY ?? 0.5),
-        };
+        const p = T.apply(worldTransform(state), localPoint.x, localPoint.y);
+        return { lightWorldX: p.x, lightWorldY: p.y };
       },
     }, {
       id: "scale",

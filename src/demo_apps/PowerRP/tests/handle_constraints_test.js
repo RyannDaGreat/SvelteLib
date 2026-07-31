@@ -116,11 +116,27 @@ const ELLIPSE_NORMALIZED = new Set(["ss_radialSweep", "ss_polygonStar", "ss_gear
 // is where a normalized-frame projection differs from a local-space one) — the
 // DEGENERATE zero-extent cases are deliberately not here: a zero-extent widget
 // declares no handles at all, or declares one whose allowed set is a single point.
+//
+// x/y are ALSO concretized here, exactly like w/h: a plugin's own `defaults` may
+// leave x/y as an EQUATION (e.g. lens_flare's `"= camera.x"`), which is normal —
+// in the real app `modifierPoints` only ever sees a state that has already been
+// through evaluateState, never a raw default. Most widgets' apply()/constrain()
+// never read x/y at all (COORDINATE SPACE: LOCAL units, always — core/derive.js),
+// so this went unnoticed until a widget that maps to WORLD space internally
+// (lens_flare's light handle, via core/derive.worldTransform) needed a real
+// number there; overriding x/y here closes that gap for every plugin at once
+// rather than special-casing one.
+//
+// lens_flare's OWN lightWorldX/lightWorldY default is likewise an equation (it
+// must resolve against ITS box, which only the real app's fold knows) — given a
+// concrete world point here, exactly like the `from`/`to` override below gives
+// the two-point widgets a concrete pair.
 const ENDPOINTS = { from: { x: 120, y: 200 }, to: { x: 420, y: 340 } };
+const FLARE_LIGHT = { lightWorldX: 620, lightWorldY: 240 };
 const STATE_VARIANTS = [
-  (defaults) => ({ ...defaults, w: 240, h: 180, ...(defaults.from ? ENDPOINTS : {}) }),
-  (defaults) => ({ ...defaults, w: 200, h: 200, ...(defaults.from ? { from: { x: 60, y: 60 }, to: { x: 260, y: 60 } } : {}) }),
-  (defaults) => ({ ...defaults, w: 90, h: 300, ...(defaults.from ? { from: { x: 400, y: 90 }, to: { x: 120, y: 300 } } : {}) }),
+  (defaults) => ({ ...defaults, x: 0, y: 0, w: 240, h: 180, ...(defaults.from ? ENDPOINTS : {}), ...(defaults.lightWorldX !== undefined ? FLARE_LIGHT : {}) }),
+  (defaults) => ({ ...defaults, x: 50, y: -30, w: 200, h: 200, ...(defaults.from ? { from: { x: 60, y: 60 }, to: { x: 260, y: 60 } } : {}), ...(defaults.lightWorldX !== undefined ? FLARE_LIGHT : {}) }),
+  (defaults) => ({ ...defaults, x: -100, y: 40, w: 90, h: 300, ...(defaults.from ? { from: { x: 400, y: 90 }, to: { x: 120, y: 300 } } : {}), ...(defaults.lightWorldX !== undefined ? FLARE_LIGHT : {}) }),
 ];
 
 /** Pure function. Every (plugin, state, handle) triple in the registry that
