@@ -273,18 +273,33 @@ float runDrop(float colF, float rowF, float lxc, float ly, float cellRatio, floa
 
 // Near-pure (reads uniforms). One RUNNER layer's height at field uv∈[0,1]^2 (y-down).
 // Samples the 3 horizontal NEIGHBOUR columns so a head that wandered toward a column
-// edge is drawn whole from both sides — the layer is SEAMLESS across column edges.
+// edge is drawn whole from both sides, AND the 3 vertical NEIGHBOUR rows so a head
+// or trail near a row's own top/bottom is drawn whole from both sides too — the
+// layer is SEAMLESS across BOTH column and row edges. A drop's head has radius R in
+// ly units (R times cellRatio, up to ~0.08-0.16 of a cell height across the phase
+// range) centred at yh = ph squared; near spawn (small ph) or wrap (ph near 1) that
+// circle geometrically crosses ly=0 or ly=1 while life (a function of ph alone) is
+// already > 0 — so without this neighbour-row loop the head is hard-clipped FLAT
+// exactly at the row boundary (the reported seam: a drop sliced by a horizontal
+// line, or a trail spike terminating abruptly). Each neighbour row is queried with
+// ITS OWN drop id (rowF+dr) at the LOCAL ly that row would see this sample at
+// (ly - dr: one row up shifts the sample DOWN by a full cell in that row's frame,
+// symmetric with the column loop's colF+dc / lxc pairing).
 float runningLayer(float2 uv, float aspect, float cols, float rate, float salt, float sizeMul, float presence) {
   float rows = max(1.0, cols * CELL_WH / max(aspect, EPS)); // tall cells at any aspect
   float cellRatio = CELL_WH;
   float gx = uv.x * cols;
-  float rowF = floor(uv.y * rows);
-  float ly = fract(uv.y * rows);
+  float rowBase = floor(uv.y * rows);
+  float lyBase = fract(uv.y * rows);
   float h = 0.0;
   for (float dc = -1.0; dc <= 1.0; dc += 1.0) {
     float colF = floor(gx) + dc;
     float lxc = gx - (colF + 0.5);                // sample x relative to this column's centre
-    h = uni(h, runDrop(colF, rowF, lxc, ly, cellRatio, rate, salt, sizeMul, presence));
+    for (float dr = -1.0; dr <= 1.0; dr += 1.0) {
+      float rowF = rowBase + dr;
+      float ly = lyBase - dr;                     // this row's OWN local y for the same sample
+      h = uni(h, runDrop(colF, rowF, lxc, ly, cellRatio, rate, salt, sizeMul, presence));
+    }
   }
   return h;
 }
