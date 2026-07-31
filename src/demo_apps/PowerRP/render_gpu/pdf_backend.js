@@ -1481,18 +1481,27 @@ async function emitCrop(cmd, world, region, out, ctx) {
     // path string. Before this, cmd.strokeOffset was stamped onto the op
     // (render_gpu/ir.js applyStrokeOffset) but never read here — every
     // decorateStrokedBox consumer's PDF-exported border ignored it.
+    //
+    // SILHOUETTE (render_gpu/decorate.js decorateSilhouetteBorder, svg/iconify
+    // only): `cmd.borderPath`, when stamped by the export pre-pass
+    // (render_gpu/skia/silhouette.js resolveSilhouetteBorders), is the widget's
+    // own glyph-outline `d` string — used in place of `rectPath(local)`
+    // everywhere below, a plain string swap (native path stroke, no new clip
+    // machinery). `null` (no traceable shape ops) falls back to the ordinary
+    // rect path, matching paint_skia.js handleCropSubtree's own fallback.
+    const geometryD = cmd.silhouette ? (cmd.borderPath ?? rectPath(local)) : rectPath(local);
     if (opStrokeIsOffset(cmd)) {
       out.push("q", cmSimilarity(world));
       out.push(...(strokeIsDetached(cmd.strokeOffset)
-        ? detachedContourStrokePdfOps({ ...cmd, strokeWidth: strokeW }, { kind: "rect", ...local }, ctx)
-        : offsetStrokePdfOps(cmd, rectPath(local), ctx)));
+        ? detachedContourStrokePdfOps({ ...cmd, strokeWidth: strokeW }, cmd.silhouette && cmd.borderPath ? { kind: "path" } : { kind: "rect", ...local }, ctx)
+        : offsetStrokePdfOps(cmd, geometryD, ctx)));
       out.push("Q");
     } else {
       const gs = ctx.gsAlphaPair(1, cmd.stroke[3] * cmd.opacity);
       out.push("q", cmSimilarity(world), ...(gs ? [gs] : []));
       out.push(`${pdfNum(cmd.stroke[0])} ${pdfNum(cmd.stroke[1])} ${pdfNum(cmd.stroke[2])} RG`);
       out.push(`${pdfNum(strokeW)} w`);
-      out.push(rectPath(local), "S", "Q");
+      out.push(geometryD, "S", "Q");
     }
   }
 }

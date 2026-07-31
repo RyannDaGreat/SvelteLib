@@ -1003,10 +1003,17 @@ export async function emitCropSVG(cmd, world, region, ctx) {
     // outline. Before this, cmd.strokeOffset was stamped onto the op
     // (render_gpu/ir.js applyStrokeOffset) but never read here — every
     // decorateStrokedBox consumer's SVG-exported border ignored it.
-    const geometryD = roundedRectPathD(local);
+    //
+    // SILHOUETTE (render_gpu/decorate.js decorateSilhouetteBorder, svg/iconify
+    // only): `cmd.borderPath`, when stamped by the export pre-pass
+    // (render_gpu/skia/silhouette.js resolveSilhouetteBorders), replaces the
+    // rounded-rect `d` everywhere below — a plain string swap. `null` (no
+    // traceable shape ops) falls back to the ordinary rect path, matching
+    // paint_skia.js handleCropSubtree's own fallback.
+    const geometryD = cmd.silhouette ? (cmd.borderPath ?? roundedRectPathD(local)) : roundedRectPathD(local);
     const strokeEl = (w, d = geometryD) => `<path d="${d}" fill="none" stroke="${paintRef(ctx, cmd.stroke, cmd.opacity)}" stroke-width="${fmt(w)}"/>`;
     const border = strokeIsDetached(cmd.strokeOffset)
-      ? detachedContourStrokeSVG({ ...cmd, strokeWidth: strokeW }, { kind: "rect", ...local }, strokeEl)
+      ? detachedContourStrokeSVG({ ...cmd, strokeWidth: strokeW }, cmd.silhouette && cmd.borderPath ? { kind: "path" } : { kind: "rect", ...local }, strokeEl)
       : opStrokeIsOffset(cmd) ? offsetStrokeSVG(cmd, geometryD, strokeEl, ctx) : strokeEl(strokeW);
     parts.push(groupWrap(boxT, border));
   }

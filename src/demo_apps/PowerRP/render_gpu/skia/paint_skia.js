@@ -54,6 +54,7 @@ import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints
 import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
 import { isPatternMaterial, patternCellFor, patternMatrix, shapeColor } from "./pattern_material.js";
 import { getShapeSdf, makeShapeSdfChild } from "./shape_sdf.js"; // the silhouette signed-distance child that makes a material fill conform to its shape
+import { silhouettePathD } from "./silhouette.js"; // the glyph-outline union path for an SVG/iconify decorated border (decorateSilhouetteBorder's cmd.silhouette)
 import { getStrokeMaterial } from "./stroke_materials.js";
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
@@ -1365,16 +1366,23 @@ function shapeOpLocalPath(CanvasKit, cmd) {
  * offset stroke gradient-maps identically to a centered one. `drawShape` strokes
  * the op's own geometry with a supplied paint (the caller's drawRRect/drawOval/
  * drawPath closure), so this helper stays shape-agnostic.
+ *
+ * `pathOverride`, when given, is used as the clip/fill geometry INSTEAD of
+ * `shapeOpLocalPath(CanvasKit, cmd)` — the silhouette-border generalization
+ * (handleCropSubtree's `cmd.silhouette` case passes the widget's own glyph-union
+ * Path here instead of the plain rect `cmd` would otherwise build). The caller
+ * retains ownership of an override (not deleted here); every existing call site
+ * omits it and is byte-identical to before this parameter existed.
  */
-function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawShape) {
+function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawShape, pathOverride = null) {
   const width = cmd.strokeWidth;
   if (!(width > 0) || !cmd.stroke) return;
   if (strokeIsDetached(cmd.strokeOffset)) {
-    drawDetachedContourStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
+    drawDetachedContourStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, pathOverride);
     return;
   }
   const inside = strokeInsideFraction(cmd.strokeOffset);
-  const clip = shapeOpLocalPath(CanvasKit, cmd);
+  const clip = pathOverride ?? shapeOpLocalPath(CanvasKit, cmd);
   // Each side: a centered stroke of twice the depth, clipped to its own side of
   // the outline. Intersect keeps the interior half; Difference keeps the exterior.
   for (const [depth, clipOp] of [[inside, CanvasKit.ClipOp.Intersect], [1 - inside, CanvasKit.ClipOp.Difference]]) {
@@ -1384,7 +1392,7 @@ function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawSha
     withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, 2 * depth * width, opacity, bounds, aa), drawShape);
     canvas.restore();
   }
-  clip.delete();
+  if (!pathOverride) clip.delete();
 }
 
 /**
@@ -1438,16 +1446,20 @@ function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawSha
  * (verified: it does NOT for any closed shape this op family emits) — that is
  * reported, not silently skipped, since it would mean the geometry itself is
  * malformed rather than merely small.
+ *
+ * `pathOverride`, when given, replaces `shapeOpLocalPath(CanvasKit, cmd)` as the
+ * shape whose parallel contour is computed — the silhouette-border case (see
+ * drawOffsetOpStroke's docblock). Not deleted here; caller retains ownership.
  */
-function drawDetachedContourStroke(CanvasKit, canvas, cmd, bounds, opacity, aa) {
+function drawDetachedContourStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, pathOverride = null) {
   const width = cmd.strokeWidth;
   const o = cmd.strokeOffset;
   const centerDistance = Math.abs(o) * (width / 2);
-  const fillPath = shapeOpLocalPath(CanvasKit, cmd);
+  const fillPath = pathOverride ?? shapeOpLocalPath(CanvasKit, cmd);
   const outline = fillPath.makeStroked({ width: 2 * centerDistance, join: CanvasKit.StrokeJoin.Miter, cap: CanvasKit.StrokeCap.Butt });
   const op = o > 0 ? CanvasKit.PathOp.Union : CanvasKit.PathOp.Difference;
   const contour = CanvasKit.Path.MakeFromOp(fillPath, outline, op);
-  fillPath.delete();
+  if (!pathOverride) fillPath.delete();
   outline.delete();
   if (!contour) throw new Error(`paintIR(skia): the detached-contour offset ${o} produced no path — a malformed op pair (report, do not swallow)`);
   if (!contour.isEmpty())
@@ -3188,8 +3200,26 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belo
     // stamped by applyStrokeOffset (ports.js) but never READ here — every
     // decorateStrokedBox consumer's border (image/video/latex/svg/iconify/…) drew
     // a plain centered stroke regardless of the widget's strokeOffset.
-    if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, { ...cmd, op: "rect" }, bounds, opacity, ctx.antialias, (p) => canvas.drawRRect(rr, p));
-    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias), (p) => canvas.drawRRect(rr, p));
+    //
+    // SILHOUETTE (render_gpu/decorate.js decorateSilhouetteBorder, svg/iconify
+    // only): the border traces the widget's own glyph outline — the UNION of its
+    // content ops' filled paths (render_gpu/skia/silhouette.js) — instead of the
+    // plain rrect every other decorateStrokedBox consumer draws. `null`/empty (no
+    // shape ops in the content — e.g. a GHOST svg with only an error/warning
+    // affordance) falls back to the ordinary rrect ring, matching a widget with
+    // no traceable ink.
+    let silPath = null;
+    if (cmd.silhouette) {
+      const d = silhouettePathD(CanvasKit, cmd.silhouetteContent);
+      if (d) silPath = CanvasKit.Path.MakeFromSVGString(d);
+      if (silPath && silPath.isEmpty()) { silPath.delete(); silPath = null; }
+    }
+    const strokeShape = silPath
+      ? (p) => canvas.drawPath(silPath, p)
+      : (p) => canvas.drawRRect(rr, p);
+    if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, { ...cmd, op: "rect" }, bounds, opacity, ctx.antialias, strokeShape, silPath);
+    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias), strokeShape);
+    if (silPath) silPath.delete();
     canvas.restore();
   }
 }

@@ -92,7 +92,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { decorateStrokedBox } from "../render_gpu/decorate.js";
+import { decorateSilhouetteBorder } from "../render_gpu/decorate.js";
 import { errorAffordance, warningLabel, warningAffordance } from "../render_gpu/affordances.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { svgToIRWithWarnings, svgIsEmpty, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint, svgOverrideSlotPaint } from "../render_gpu/gpu/svg_raster.js";
@@ -228,7 +228,7 @@ export const svgPlugin = {
         // A FAILED url draws the loud error box (never a silent blank); an
         // in-flight one draws nothing — onSvgSourceLoad repaints when it lands.
         if (svgSourceStatus(s.svgUrl) === "error")
-          return applyEffects(decorateStrokedBox(errorAffordance(w, h, `failed to load ${s.svgUrl}: ${svgSourceError(s.svgUrl)}`), style, world), s, world, { x: 0, y: 0, w, h });
+          return applyEffects(decorateSilhouetteBorder(errorAffordance(w, h, `failed to load ${s.svgUrl}: ${svgSourceError(s.svgUrl)}`), style, world), s, world, { x: 0, y: 0, w, h });
         return [];
       }
     } else {
@@ -253,7 +253,7 @@ export const svgPlugin = {
       // Malformed SVG → LOUD in-widget error affordance (the latex precedent).
       ops = errorAffordance(w, h, e instanceof Error ? e.message : String(e));
     }
-    return applyEffects(decorateStrokedBox(ops, style, world), s, world, { x: 0, y: 0, w, h });
+    return applyEffects(decorateSilhouetteBorder(ops, style, world), s, world, { x: 0, y: 0, w, h });
   },
   cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,

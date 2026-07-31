@@ -5508,6 +5508,8 @@ export class PowerRPApp {
     const { getImage } = await import("../render_gpu/gpu/image_registry.js");
     const { ensurePdfPageVector } = await import("../render_gpu/gpu/pdf_page_vector.js");
     const { clampPage, pdfPageCount } = await import("../render_gpu/gpu/pdf_page_raster.js");
+    const { resolveSilhouetteBorders } = await import("../render_gpu/skia/silhouette.js");
+    const { ensureCanvasKit } = await import("../render_gpu/skia/browser_canvaskit.js");
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
     const rect = cameraRect(state, this.doc.meta);
 
@@ -5561,7 +5563,13 @@ export class PowerRPApp {
     // measureText is the RICH-TEXT layout seam (Round 13.4) — without it the PDF
     // backend degrades a multi-run text box to its first run (and outline/
     // highlight never emit); passing it makes exported rich text match the editor.
-    const bytes = await irToPDF(sceneIR(deriveRenderTree(state, this.registry, this.projectName())), {
+    // SILHOUETTE BORDER STAMPING (render_gpu/skia/silhouette.js): the ONE
+    // CanvasKit-consuming pre-pass over the flat IR, before the DOM-free/
+    // CanvasKit-free PDF backend ever sees it — see resolveSilhouetteBorders'
+    // docblock for why this cannot live inside sceneIR itself.
+    const CanvasKit = await ensureCanvasKit();
+    const irWithBorders = resolveSilhouetteBorders(sceneIR(deriveRenderTree(state, this.registry, this.projectName())), CanvasKit);
+    const bytes = await irToPDF(irWithBorders, {
       width: rect.w,
       height: rect.h,
       view: fitRectView(rect, rect.w, rect.h, 1),
@@ -5598,6 +5606,8 @@ export class PowerRPApp {
     const { irToSVG } = await import("../render_gpu/svg_backend.js");
     const { loadFontBytes, measureTextAscent, measureText } = await import("./pdfFonts.js");
     const { getVideo } = await import("../render_gpu/gpu/video_registry.js");
+    const { resolveSilhouetteBorders } = await import("../render_gpu/skia/silhouette.js");
+    const { ensureCanvasKit } = await import("../render_gpu/skia/browser_canvaskit.js");
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
     const rect = cameraRect(state, this.doc.meta);
 
@@ -5630,7 +5640,10 @@ export class PowerRPApp {
       return { mime: "image/png", bytes: new Uint8Array(await blob.arrayBuffer()) };
     };
 
-    const svg = await irToSVG(sceneIR(deriveRenderTree(state, this.registry, this.projectName())), {
+    // SILHOUETTE BORDER STAMPING — see exportPdf's identical pre-pass comment.
+    const CanvasKit = await ensureCanvasKit();
+    const irWithBorders = resolveSilhouetteBorders(sceneIR(deriveRenderTree(state, this.registry, this.projectName())), CanvasKit);
+    const svg = await irToSVG(irWithBorders, {
       width: rect.w,
       height: rect.h,
       view: fitRectView(rect, rect.w, rect.h, 1),

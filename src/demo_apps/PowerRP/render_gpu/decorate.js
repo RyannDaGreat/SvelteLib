@@ -289,3 +289,51 @@ export function decorateStrokedBox(content, style, world) {
     content: [pushTransform(world), ...content, popTransform()],
   })];
 }
+
+/**
+ * Pure function. The SVG/iconify SIBLING of decorateStrokedBox: SAME rounded-
+ * corner clip + fill + border-ring machinery (identical cropSubtree op, identical
+ * pass-through-when-undecorated contract), but the border traces the widget's own
+ * GLYPH SILHOUETTE — the union of its content ops' filled outlines — instead of
+ * the plain rect ring every OTHER decorateStrokedBox consumer draws. This is the
+ * ONLY difference: the returned op is `{...cropSubtree(...), silhouette: true}`,
+ * a plain sibling tag a painter/exporter reads to pick the silhouette-tracing
+ * border path instead of the rect at PAINT time (paint_skia.js handleCropSubtree)
+ * or EXPORT-STAMP time (a resolveSilhouetteBorders pre-pass — this module stays
+ * DOM-free/CanvasKit-free, so it cannot compute the union itself).
+ *
+ * Called ONLY from plugins/svg.js and plugins/iconify.js — every other
+ * decorateStrokedBox consumer (image, video, filmstrip, latex, mermaid, pdf_page,
+ * video_scrub, video_time_scrub, video_v2, video_v5_scrub) is UNTOUCHED, since
+ * their own content ops are already rectangular and a rect border is already
+ * correct for them (byte-identical by construction: decorateStrokedBox's body is
+ * not edited by this function's existence).
+ *
+ * @param {object[]} content - the widget's own content ops (LOCAL space) — an
+ *   SVG/iconify flatten's shape ops (rect/ellipse/polygon/path), possibly mixed
+ *   with non-shape ops (the error/warning affordance's `text`) that the
+ *   silhouette builder skips
+ * @param {object} style - see decorateStrokedBox
+ * @param {object} world - see decorateStrokedBox
+ *
+ * @returns {object[]} either `content` unchanged, or [{...cropSubtree, silhouette: true}]
+ *
+ * `silhouetteContent` carries the RAW, pre-wrap local-space content ops onto the
+ * returned op (as `cmd.silhouetteContent`) alongside the usual absolute-world-
+ * wrapped `cmd.content` cropSubtree already carries for re-rendering. The
+ * silhouette builder (render_gpu/skia/silhouette.js, called from paint_skia.js
+ * and the export pre-pass) needs the ops in their OWN local space to union their
+ * geometry directly — unwrapping `cmd.content`'s push/popTransform pair at paint
+ * time would work too (the wrapped world equals the box's own world here, since
+ * decorateStrokedBox always calls cropSubtree with the SAME `world` for both),
+ * but carrying the plain array is simpler than teaching every consumer to strip
+ * a known transform pair back off.
+ *
+ * @example decorateSilhouetteBorder([{op: "path", d: "M0 0h10v10h-10z"}], {w: 10, h: 10}, {x: 0, y: 0, rotation: 0, scale: 1}) // [{op: "path", d: "M0 0h10v10h-10z"}] (no decoration -> pass-through, same as decorateStrokedBox)
+ * @example decorateSilhouetteBorder([{op: "path", d: "M0 0h10v10h-10z"}], {w: 10, h: 10, strokeWidth: 2, stroke: "#000"}, {x: 0, y: 0, rotation: 0, scale: 1})[0].silhouette // true
+ */
+export function decorateSilhouetteBorder(content, style, world) {
+  const decorated = decorateStrokedBox(content, style, world);
+  if (decorated === content) return content; // isUndecorated pass-through, unchanged
+  return [{ ...decorated[0], silhouette: true, silhouetteContent: content }];
+}

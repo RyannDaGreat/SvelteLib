@@ -108,7 +108,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { decorateStrokedBox } from "../render_gpu/decorate.js";
+import { decorateSilhouetteBorder } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { errorAffordance, warningAffordance } from "../render_gpu/affordances.js";
 import { svgToIRWithWarnings, SVG_FILL_ROW, SVG_FILL_OFF, SVG_INK_HELP, svgOverridePaint, svgOverrideSlotPaint } from "../render_gpu/gpu/svg_raster.js";
@@ -602,7 +602,7 @@ export const iconifyPlugin = {
     if (w <= 0 || h <= 0) return [];
     if (!s.icon) return []; // GHOST — no icon authored
     const style = { x: 0, y: 0, w, h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
-    const finish = (ops) => applyEffects(decorateStrokedBox(ops, style, world), s, world, { x: 0, y: 0, w, h });
+    const finish = (ops) => applyEffects(decorateSilhouetteBorder(ops, style, world), s, world, { x: 0, y: 0, w, h });
     let url;
     try {
       url = iconifyIconUrl(s.icon);
