@@ -3109,7 +3109,15 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belo
   if (cmd.stroke && cmd.strokeWidth > 0) {
     canvas.save();
     applyView(canvas, view, world);
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias), (p) => canvas.drawRRect(rr, p));
+    // THE SAME STROKE-ALIGNMENT KNOB the plain shape ops honor (drawOffsetOpStroke):
+    // a decorated box's border is geometrically a rounded rect, so it reuses that
+    // construction verbatim by handing it a `rect`-shaped cmd (addOpGeometry only
+    // reads x/y/w/h/cornerRadius for that op). Before this, cmd.strokeOffset was
+    // stamped by applyStrokeOffset (ports.js) but never READ here — every
+    // decorateStrokedBox consumer's border (image/video/latex/svg/iconify/…) drew
+    // a plain centered stroke regardless of the widget's strokeOffset.
+    if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, { ...cmd, op: "rect" }, bounds, opacity, ctx.antialias, (p) => canvas.drawRRect(rr, p));
+    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias), (p) => canvas.drawRRect(rr, p));
     canvas.restore();
   }
 }

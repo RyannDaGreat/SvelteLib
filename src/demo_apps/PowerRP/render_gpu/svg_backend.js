@@ -945,7 +945,16 @@ export async function emitCropSVG(cmd, world, region, ctx) {
 
   const strokeW = cmd.strokeWidth ?? 0;
   if (cmd.stroke && strokeW > 0) {
-    parts.push(groupWrap(boxT, `<path d="${roundedRectPathD(local)}" fill="none" stroke="${paintRef(ctx, cmd.stroke, cmd.opacity)}" stroke-width="${fmt(strokeW)}"/>`));
+    // THE SAME two-clipped-strokes construction the plain vector shapes use
+    // (offsetStrokeSVG): a decorated box's border is geometrically a rounded
+    // rect, so an offset cropSubtree border reuses it against the crop's own
+    // outline. Before this, cmd.strokeOffset was stamped onto the op
+    // (render_gpu/ir.js applyStrokeOffset) but never read here — every
+    // decorateStrokedBox consumer's SVG-exported border ignored it.
+    const geometryD = roundedRectPathD(local);
+    const strokeEl = (w) => `<path d="${geometryD}" fill="none" stroke="${paintRef(ctx, cmd.stroke, cmd.opacity)}" stroke-width="${fmt(w)}"/>`;
+    const border = opStrokeIsOffset(cmd) ? offsetStrokeSVG(cmd, geometryD, strokeEl, ctx) : strokeEl(strokeW);
+    parts.push(groupWrap(boxT, border));
   }
   return parts.join("");
 }

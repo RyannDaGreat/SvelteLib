@@ -1475,11 +1475,23 @@ async function emitCrop(cmd, world, region, out, ctx) {
 
   const strokeW = cmd.strokeWidth ?? 0;
   if (cmd.stroke && strokeW > 0) {
-    const gs = ctx.gsAlphaPair(1, cmd.stroke[3] * cmd.opacity);
-    out.push("q", cmSimilarity(world), ...(gs ? [gs] : []));
-    out.push(`${pdfNum(cmd.stroke[0])} ${pdfNum(cmd.stroke[1])} ${pdfNum(cmd.stroke[2])} RG`);
-    out.push(`${pdfNum(strokeW)} w`);
-    out.push(rectPath(local), "S", "Q");
+    // THE SAME two-clipped-strokes construction the plain vector ops use
+    // (offsetStrokePdfOps): a decorated box's border is geometrically a rounded
+    // rect, so an offset cropSubtree border reuses it against the crop's own
+    // path string. Before this, cmd.strokeOffset was stamped onto the op
+    // (render_gpu/ir.js applyStrokeOffset) but never read here — every
+    // decorateStrokedBox consumer's PDF-exported border ignored it.
+    if (opStrokeIsOffset(cmd)) {
+      out.push("q", cmSimilarity(world));
+      out.push(...offsetStrokePdfOps(cmd, rectPath(local), ctx));
+      out.push("Q");
+    } else {
+      const gs = ctx.gsAlphaPair(1, cmd.stroke[3] * cmd.opacity);
+      out.push("q", cmSimilarity(world), ...(gs ? [gs] : []));
+      out.push(`${pdfNum(cmd.stroke[0])} ${pdfNum(cmd.stroke[1])} ${pdfNum(cmd.stroke[2])} RG`);
+      out.push(`${pdfNum(strokeW)} w`);
+      out.push(rectPath(local), "S", "Q");
+    }
   }
 }
 

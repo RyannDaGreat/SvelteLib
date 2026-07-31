@@ -2014,6 +2014,7 @@ export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke 
     stroke: stroke === null ? null : parseColor(stroke),
     strokeWidth, opacity, content,
     ...normalizeStrokeTrim("cropSubtree", trim), // a crop/media FRAME's border trims too
+    ...normalizeStrokeOffset("cropSubtree", trim), // ditto the alignment field: absent = centered
   };
 }
 
