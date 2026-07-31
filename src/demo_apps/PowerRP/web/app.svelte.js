@@ -348,6 +348,55 @@ export function siblingTheme(id, families = THEME_FAMILIES) {
 }
 
 /**
+ * Pure function. THE POLARITY LOCK: the member of `id`'s family that sits on
+ * `kind`'s pole. This is the rule the hover PREVIEW selects with, and it is what
+ * makes browsing themes non-destructive.
+ *
+ * USER RULING (2026-07-30, verbatim): "When I hover over the different themes —
+ * even if I'm hovering over the menu for that theme — it should preview it. If
+ * we're dark, it previews as dark; if we're light, it previews as light."
+ *
+ * So a preview target is a FAMILY plus the pole you are already working in,
+ * never the literal entry under the cursor. Two things follow, and both are the
+ * ruling's "even if":
+ *   - A FAMILY row (the container) is a previewable target, because a family
+ *     plus the current pole names exactly one theme.
+ *   - Hovering the WRONG-pole member ("Ember — Light" while dark) still previews
+ *     the dark member. Skimming a list must not strobe the app between poles;
+ *     which pole you sit on is the toggle's job, and a hover is not a decision.
+ * The COMMIT (`run` = setTheme) is unaffected — clicking "Ember — Light" is a
+ * decision, and it applies the light member exactly as it says.
+ *
+ * An id outside the catalog resolves to itself: a stale preference previews as
+ * the no-op it already is rather than throwing mid-hover.
+ *
+ * Args:
+ *     id (string): any theme id, or a FAMILY id (THEME_FAMILIES[].id).
+ *     kind ("dark" | "light"): the pole to stay on — the CURRENT theme's.
+ *     families (Array): THEME_FAMILIES-shaped entries.
+ *
+ * Returns:
+ *     string: the theme id to apply.
+ *
+ * Examples:
+ *     >>> familyMemberForKind("ember-light", "dark", THEME_FAMILIES)
+ *     'ember'
+ *     >>> familyMemberForKind("ember", "light", THEME_FAMILIES)
+ *     'ember-light'
+ *     >>> familyMemberForKind("ember", "dark", THEME_FAMILIES)
+ *     'ember'
+ *     >>> familyMemberForKind("graphite", "light", THEME_FAMILIES)
+ *     'light'
+ *     >>> familyMemberForKind("no-such-theme", "light", THEME_FAMILIES)
+ *     'no-such-theme'
+ */
+export function familyMemberForKind(id, kind, families = THEME_FAMILIES) {
+  const fam = families.find((f) => f.id === id || f.dark === id || f.light === id);
+  if (!fam) return id;
+  return kind === "light" ? fam.light : fam.dark;
+}
+
+/**
  * Pure function. Which luminance pole a theme sits on — the one lookup every
  * kind-following consumer shares (Monaco's vs-dark/vs choice, the toolbar
  * toggle's glyph). Unknown ids read as "dark", the app's default pole.
@@ -1534,17 +1583,31 @@ export class PowerRPApp {
 
   /**
    * Command (viewer-preference preview — NOT persisted, NOT undoable). The
-   * previewable-command hook the palette calls when a theme entry is hovered/
-   * arrow-focused: applies theme `id` LIVE and returns a `revert` closure that
-   * restores whatever theme was applied before. Unlike setTheme it never writes
-   * localStorage — only a COMMITTED setTheme (the entry's `run`) persists, so
-   * scrubbing through themes leaves the saved preference untouched until the
-   * user actually picks one. See the general preview protocol in
+   * previewable-command hook the palette calls when a theme/family entry is
+   * hovered or arrow-focused: applies the entry's family LIVE and returns a
+   * `revert` closure restoring whatever was applied before. Unlike setTheme it
+   * never writes localStorage — only a COMMITTED setTheme (the entry's `run`)
+   * persists, so scrubbing leaves the saved preference untouched until the user
+   * actually picks one. See the general preview protocol in
    * CommandPalette.svelte.
+   *
+   * POLARITY-LOCKED (see familyMemberForKind for the ruling): `id` names a
+   * family, and the member actually applied is the one on the pole we are
+   * ALREADY on. So `id` may be a family id or either member's theme id, and all
+   * three preview the same thing.
+   *
+   * THE POLE IS READ FROM `prev`, NOT from this.theme mid-hover, and that is
+   * load-bearing rather than incidental. The palette reverts the outgoing
+   * preview BEFORE previewing the incoming one, so in normal use the two agree —
+   * but if that order ever changed, reading the live field would let each hover
+   * pick its pole from the PREVIOUS hover's preview and ratchet the app across
+   * poles one row at a time, with nothing persisted to show where it started.
+   * Anchoring to the theme this call is responsible for restoring makes a
+   * preview idempotent under repetition by construction.
    */
   previewTheme(id) {
     const prev = this.theme;
-    this.applyThemeVisual(id);
+    this.applyThemeVisual(familyMemberForKind(id, themeKind(prev)));
     return () => this.applyThemeVisual(prev);
   }
 

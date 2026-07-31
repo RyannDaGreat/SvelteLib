@@ -1225,10 +1225,22 @@
         id: `theme-family-${f.id}`,
         title: f.title,
         icon: THEME_ICONS[f.id],
+        // A CONTAINER THAT PREVIEWS. `preview` is orthogonal to the registry's
+        // run-XOR-children rule (core/commands.js validates only those two), so
+        // the family row stages its theme LIVE without becoming runnable —
+        // Enter still drills in. This row is the one the ruling is actually
+        // about: "even if I'm hovering over the menu for that theme, it should
+        // preview it". Before this it previewed NOTHING, which made browsing
+        // families — the primary way to shop for a theme — show you no themes.
+        preview: (a) => a.previewTheme(f.id),
         children: [
           // Previewable-command hook (see CommandPalette.svelte): hovering/
-          // arrowing applies the theme LIVE; moving off restores the previously
+          // arrowing applies the family LIVE; moving off restores the previously
           // applied theme; selecting commits via `run` (which persists).
+          // PREVIEW IS POLARITY-LOCKED AND `run` IS NOT, deliberately: hovering
+          // either pole previews the pole you are ALREADY on (app.previewTheme →
+          // familyMemberForKind), while CLICKING one applies exactly the member
+          // it names. A hover is browsing; a click is a decision.
           { id: `theme-${f.dark}`, title: `${f.title} — Dark`, icon: "mdi:weather-night", run: (a) => a.setTheme(f.dark), preview: (a) => a.previewTheme(f.dark) },
           { id: `theme-${f.light}`, title: `${f.title} — Light`, icon: "mdi:weather-sunny", run: (a) => a.setTheme(f.light), preview: (a) => a.previewTheme(f.light) },
         ],

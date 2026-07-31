@@ -86,17 +86,20 @@ try {
 
   // ── 1. ARROW-FOCUS previews LIVE (typing filters to one row → row 0 is the
   //      arrow/keyboard-focused entry → the effect previews it). ──────────────
-  // THEMES ARE GROUPED BY FAMILY NOW, so "synthwave" inside the Color Theme
-  // submenu highlights the Synthwave FAMILY row — a container with no `run` and
-  // no `preview` (the registry's run-XOR-children rule), so nothing previews on
-  // it, correctly. Enter drills in; the highlighted child is then a real member
-  // and previewing resumes. That extra Enter is the only behavioural change
-  // grouping makes to this flow, and asserting it here is what pins it.
+  // THEMES ARE GROUPED BY FAMILY, and A FAMILY ROW NOW PREVIEWS — it declares
+  // `preview` without `run`, which the registry permits (it validates only run
+  // XOR children). This assertion is INVERTED from what it said before: the row
+  // used to preview nothing, which is exactly the bug the polarity ruling names
+  // ("even if I'm hovering over the menu for that theme, it should preview it").
+  // Arrow-focusing the family row is also the KEYBOARD half of that ruling: the
+  // palette's one preview effect keys off `highlighted`, which hover and the
+  // arrow keys both drive, so proving it here proves both inputs.
   await openPalette();
   await enterThemeSubmenu();
   await typeQuery("synthwave");
   let s = await applied();
-  assert(s.attr === ORIGINAL, `a FAMILY row previews nothing (attr=${s.attr})`);
+  assert(s.attr === "synthwave", `a FAMILY row previews its CURRENT-POLE member (attr=${s.attr})`);
+  assert(s.stored === ORIGINAL, `a family-row preview does NOT persist (stored=${s.stored})`);
   await pressKey("Enter"); // into the Synthwave family; row 0 = its dark member
   s = await applied();
   assert(s.attr === "synthwave" && s.field === "synthwave", `arrow-focus previews LIVE (attr=${s.attr}, field=${s.field})`);
@@ -150,7 +153,11 @@ try {
   assert(s.attr === "monokai", `HOVER previews LIVE (attr=${s.attr})`);
   await hoverRow("Monokai — Light");
   s = await applied();
-  assert(s.attr === "monokai-light", `hovering the SIBLING row switches preview (attr=${s.attr})`);
+  // INVERTED, and this is the ruling's sharp edge: hovering the WRONG-POLE
+  // member from a dark theme keeps previewing the DARK one. Skimming a list is
+  // browsing, not a decision, and it must not strobe the app between poles.
+  // Clicking that same row still commits light — see step 6.
+  assert(s.attr === "monokai", `hovering the WRONG-POLE sibling still previews the current pole (attr=${s.attr})`);
   assert(s.stored === ORIGINAL, `hover previews still do NOT persist (stored=${s.stored})`);
 
   // ── 5. SELECT commits: click the hovered row → change stays AND persists. ───
@@ -168,9 +175,77 @@ try {
   assert(s.attr === "catppuccin" && s.field === "catppuccin", `select COMMITS the applied theme (attr=${s.attr})`);
   assert(s.stored === "catppuccin", `commit PERSISTS to localStorage (stored=${s.stored})`);
 
+  // ── 6. THE POLARITY LOCK, both poles, on the PINNED family (Ember). ─────────
+  // USER RULING: "When I hover over the different themes — even if I'm hovering
+  // over the menu for that theme — it should preview it. If we're dark, it
+  // previews as dark; if we're light, it previews as light."
+  //
+  // So the SAME three hover targets (the family row, the dark member, the light
+  // member) must all preview ONE theme: the member on the pole we are already
+  // on. Run the whole set from a dark base and again from a light base — the
+  // matrix is the assertion, since a rule that only holds from dark is the bug
+  // this replaces, just facing the other way.
+  // EMBER is named explicitly rather than looped over: it is the family whose
+  // toggle regression the user reported (see tests/theme_family_probe.js), so a
+  // failure here must say "Ember", not "family 20".
+  for (const [base, pole, want] of [["graphite", "dark", "ember"], ["light", "light", "ember-light"]]) {
+    await page.evaluate((t) => (window.__powerrp_app.paletteOpen = false), null);
+    await page.evaluate((t) => window.__powerrp_app.setTheme(t), base);
+    await openPalette();
+    await enterThemeSubmenu();
+    await typeQuery("ember");
+
+    // (a) the FAMILY row — arrow-focused by the filter, i.e. the KEYBOARD path.
+    s = await applied();
+    assert(s.attr === want, `[${pole}] family row previews "${want}" (attr=${s.attr})`);
+
+    // (b) HOVER the family row: same answer through the pointer path.
+    await hoverRow("Ember");
+    s = await applied();
+    assert(s.attr === want, `[${pole}] HOVERING the family row previews "${want}" (attr=${s.attr})`);
+
+    // (c) both MEMBER rows, including the wrong-pole one — still `want`.
+    await pressKey("Enter"); // drill into Ember
+    s = await applied();
+    assert(s.attr === want, `[${pole}] drilling in previews "${want}" (attr=${s.attr})`);
+    for (const row of ["Ember — Dark", "Ember — Light"]) {
+      await hoverRow(row);
+      s = await applied();
+      assert(s.attr === want, `[${pole}] hovering "${row}" previews "${want}" (attr=${s.attr})`);
+    }
+    assert(s.stored === base, `[${pole}] none of that persisted (stored=${s.stored})`);
+
+    // (d) ESCAPE / close reverts all the way to the REAL theme — no leak.
+    await page.evaluate(() => (window.__powerrp_app.paletteOpen = false));
+    await sleep(180);
+    s = await applied();
+    assert(s.attr === base && s.field === base, `[${pole}] closing reverts to the real theme "${base}" (attr=${s.attr})`);
+    assert(s.stored === base, `[${pole}] the persisted preference never moved (stored=${s.stored})`);
+  }
+
+  // ── 7. A CLICK IS A DECISION: committing the wrong-pole member APPLIES it. ──
+  // The lock is on hovering only. From a DARK theme, clicking "Ember — Light"
+  // must cross the pole and persist — otherwise the two member rows would be
+  // unreachable by the only gesture that names them.
+  await page.evaluate(() => window.__powerrp_app.setTheme("graphite"));
+  await openPalette();
+  await enterThemeSubmenu();
+  await typeQuery("ember");
+  await pressKey("Enter");
+  const emberLightRow = await (async () => { const i = await rowIndex("Ember — Light"); return (await page.$$(".palette-item"))[i]; })();
+  await emberLightRow.hover();
+  await sleep(120);
+  s = await applied();
+  assert(s.attr === "ember", `pre-click hover still polarity-locked (attr=${s.attr})`);
+  await emberLightRow.click();
+  await sleep(180);
+  s = await applied();
+  assert(s.attr === "ember-light" && s.field === "ember-light", `CLICKING the light member crosses the pole (attr=${s.attr})`);
+  assert(s.stored === "ember-light", `and persists it (stored=${s.stored})`);
+
   if (errors.length) fails.push(...errors.map((e) => `unexpected error: ${e}`));
   if (fails.length) { console.error(`\nTHEME PREVIEW PROBE FAILED (${fails.length}):\n` + fails.join("\n")); process.exit(1); }
-  console.log("\nTHEME PREVIEW PROBE PASSED — hover/arrow previews live, move-off & close revert, select commits + persists.");
+  console.log("\nTHEME PREVIEW PROBE PASSED — hover/arrow previews live and POLARITY-LOCKED (family row + both members, from either pole), move-off & close revert, select commits + persists.");
 } finally {
   await browser.close();
   await server.close();
