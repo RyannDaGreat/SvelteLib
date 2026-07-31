@@ -1145,6 +1145,13 @@
   {@const isAction = rowKind(row) === ACTION_ROW_KIND}
   {@const pathText = isAction ? null : pathTooltipText(pathState ?? state, itemId, writeKey(row))}
   {@const helpText = row.help ?? null}
+  <!-- THE LIGHT-POSITION EYEDROPPER (web/lightPositionPin.js): a row declaring
+       `pinLight: {xKey, yKey}` (lens_flare/god_rays' Light X row) gets this
+       button instead of every world-position pair being hand-wired — the next
+       one just declares the same aspect. ITEM MODE ONLY, single selection: a
+       not-yet-created row has no live item to enter a canvas mode ON, and a
+       multi-selection has no single "the" item to pin FROM. -->
+  {@const pinLight = itemMode && !multi ? row.pinLight : null}
   <!-- DYNAMIC BOUNDS (general mechanism): a row's `max` may be a STATE-DERIVED
        FUNCTION `(state) => number` (e.g. pdf_page's page cap = pageCount for the
        current src), not just a static number. Resolved here so the numeric field
@@ -1199,7 +1206,7 @@
          row) still gets the (?), and a row with path-but-no-help still gets
          copy. A row with neither falls back to a plain label span (no echo
          tooltip — banned). -->
-    {#if pathText != null || helpText != null}
+    {#if pathText != null || helpText != null || pinLight}
       <span class="row-label-chrome">
         {#if pathText != null}
           {@const copied = justCopiedKey === row.key}
@@ -1217,6 +1224,19 @@
           <Tooltip text={helpText}>
             <button class="help-btn" aria-label={`Help: ${row.label}`}>
               <iconify-icon icon="mdi:help-circle-outline" width="13" height="13"></iconify-icon>
+            </button>
+          </Tooltip>
+        {/if}
+        {#if pinLight}
+          {@const pinning = app.canvasMode?.handlerId === "pin_light_position" && app.canvasMode.itemId === itemId}
+          <Tooltip text={pinning ? "Cancel — pick an object to pin to" : "Pin to an object's center: click, then click the object"}>
+            <button
+              class="pin-light-btn"
+              aria-label={pinning ? "Cancel pinning" : `${row.label}: pin to an object's center`}
+              aria-pressed={pinning}
+              onclick={() => (pinning ? app.exitCanvasMode() : app.enterCanvasMode("pin_light_position", itemId))}
+            >
+              <iconify-icon icon="mdi:eyedropper-variant" width="13" height="13"></iconify-icon>
             </button>
           </Tooltip>
         {/if}

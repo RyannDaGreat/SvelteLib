@@ -231,7 +231,11 @@ export const godRaysPlugin = {
     ...bundle("positioning"),
     // THE LIGHT — world coordinates, so an equation can bind them to a sun widget.
     { key: "lightWorldX", label: "Light X", kind: "number", category: "positioning",
-      help: "The light's X in DOCUMENT coordinates — not a position inside this box. Bind it to a sun widget with an equation (e.g. = sun.anchors.center.x) and the beams follow it anywhere, including off the edge of the slide." },
+      // See plugins/demo/lens_flare.js's own lightWorldX row for what this
+      // aspect does (web/lightPositionPin.js) — the same eyedropper, the same
+      // property family, declared identically on the sibling widget.
+      pinLight: { xKey: "lightWorldX", yKey: "lightWorldY" },
+      help: "The light's X in DOCUMENT coordinates — not a position inside this box. Bind it to a sun widget with an equation (e.g. = sun.anchors.center.x), or click the eyedropper and pick the sun, and the beams follow it anywhere, including off the edge of the slide." },
     { key: "lightWorldY", label: "Light Y", kind: "number", category: "positioning",
       help: "The light's Y in DOCUMENT coordinates. A value above the region (a smaller Y than the box's top) is the normal case for a high sun; the rays fade out as the light travels well past the region." },
     ...props("cornerRadius", "stroke", "strokeWidth", "opacity", {

@@ -442,7 +442,15 @@ export const lensFlarePlugin = {
     ...props("opacity"),
     {
       key: "lightWorldX", label: "Light X", kind: "number", category: CUSTOM_CATEGORY,
-      help: "Light-source horizontal position in WORLD (document) coordinates — the same units as the widget's own X. Absolute, not a fraction of the box, so it can be bound to another item's position (e.g. \"= someItem.x\") to pin the flare's source to it. Move or rotate the widget and the light stays put in the document; drag the yellow handle, keyframe it, or type an equation.",
+      // pinLight: the declarative row aspect (web/lightPositionPin.js) that gets
+      // this pair the Inspector's eyedropper button — click it, then click another
+      // item, and BOTH lightWorldX/Y become "= <that item>.cx"/".cy" as one undo
+      // unit (a LIVE pin: the flare tracks the target if it moves). Declared once,
+      // on the X row only — Inspector reads it from either row of the pair via
+      // core/properties.js "aspect on one row of a pair" convention (cx/cy's own
+      // writeKey/centerAxis do the same).
+      pinLight: { xKey: "lightWorldX", yKey: "lightWorldY" },
+      help: "Light-source horizontal position in WORLD (document) coordinates — the same units as the widget's own X. Absolute, not a fraction of the box, so it can be bound to another item's position (e.g. \"= someItem.x\") to pin the flare's source to it. Move or rotate the widget and the light stays put in the document; drag the yellow handle, keyframe it, type an equation, or click the eyedropper and pick an item to pin to its center.",
     },
     {
       key: "lightWorldY", label: "Light Y", kind: "number", category: CUSTOM_CATEGORY,
