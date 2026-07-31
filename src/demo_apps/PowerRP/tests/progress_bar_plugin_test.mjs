@@ -61,8 +61,12 @@ const bar = loadPluginAsset(SOURCE, "progress_bar.plugin.js", new Set());
  *  it passes the ops through untouched. */
 const WORLD = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 
-/** Query (calls the jailed emit). State overrides → the display list. */
-const emit = (overrides) => bar.emit({ ...bar.defaults, ...overrides }, null, WORLD);
+/** Query (calls the jailed emit). State overrides → the display list.
+ *  Injects DISTINCTIVE paints (pure red fill, pure green track) so the two
+ *  clipped path ops can be told apart from their parsed RGBA without
+ *  reimplementing the color parser; geometry is color-independent, so every
+ *  geometric claim in this file is unaffected. */
+const emit = (overrides) => bar.emit({ ...bar.defaults, fillColor: "#ff0000", trackColor: "#00ff00", ...overrides }, null, WORLD);
 
 /** The fractions swept. The ends are where the geometry changes kind. */
 const SWEEP = [0, 0.01, 0.05, 0.5, 0.99, 1];
@@ -108,10 +112,14 @@ function roundedRectSDF(px, py, w, h, r) {
   return outside + Math.min(Math.max(qx, qy), 0) - rad;
 }
 
-/** Pure function. The fill op of a display list, or null when none was emitted. */
-const fillOp = (ops) => ops.find((o) => o.op === "path") ?? null;
-/** Pure function. The track op — the widget's first op, always present. */
-const trackOp = (ops) => ops.find((o) => o.op === "rect");
+// Since the two-material split (ff561e8) BOTH regions are clipped `path` ops —
+// "the path op" no longer names the fill, and no `rect` op exists at all. The
+// ops are told apart by the distinctive paints `emit` injects above (parsed to
+// RGBA by the op constructor: red → [1,0,0,1], green → [0,1,0,1]).
+/** Pure function. The fill-region op of a display list, or null when none was emitted. */
+const fillOp = (ops) => ops.find((o) => o.op === "path" && o.fill?.[0] === 1) ?? null;
+/** Pure function. The track-region op — null when the bar is fully filled. */
+const trackOp = (ops) => ops.find((o) => o.op === "path" && o.fill?.[1] === 1) ?? null;
 
 // TWO tolerances, and they are different KINDS of thing — collapsing them into
 // one fudge factor is how a containment test stops meaning anything.
@@ -130,15 +138,29 @@ const EPS = 1e-9;
 // magnitude, loose enough that rounding alone cannot manufacture a failure.
 const PATH_QUANTUM = 5e-4;
 
-// ── the track is always there, and is the full bbox ──────────────────────────
-test("track is the full bbox at every fraction", () => {
+// ── the track is the UNFILLED REMAINDER, not a base coat ─────────────────────
+// REWRITTEN for the two-material split (ff561e8). This test used to pin the
+// track as an always-present full-bbox rect the fill painted OVER; the user
+// ruling "separate materials for each half... instead of having one on top of
+// the other" made the track a clipped region BESIDE the fill — a translucent
+// fill must not double-darken over a base coat. Partition exactness (no gap,
+// no overlap) is progress_bar_two_materials_test.js's job; this file keeps the
+// claims that survive the model change: the track exists exactly while some
+// bar is unfilled, and its ink never leaves the rounded rim.
+test("track is the unfilled remainder: present below fraction 1, absent at 1, rim-contained", () => {
   for (const fraction of SWEEP) {
     const t = trackOp(emit({ w: W, h: H, cornerRadius: R, fraction }));
-    assert.deepEqual(
-      { x: t.x, y: t.y, w: t.w, h: t.h, cornerRadius: t.cornerRadius },
-      { x: 0, y: 0, w: W, h: H, cornerRadius: R },
-      `fraction ${fraction}: the track must be the untouched w x h bbox`,
-    );
+    if (fraction === 1) {
+      assert.equal(t, null, "fraction 1: a full bar has no track ink left");
+      continue;
+    }
+    assert.ok(t, `fraction ${fraction}: an unfilled bar must draw its track`);
+    for (const [x, y] of pathVerts(t.d)) {
+      assert.ok(
+        roundedRectSDF(x, y, W, H, R) <= PATH_QUANTUM,
+        `fraction ${fraction}: track vertex (${x}, ${y}) lies outside the rounded rim`,
+      );
+    }
   }
 });
 
