@@ -4632,6 +4632,28 @@ textarea {
   text-align: center;
 }
 
+/* QUOTA TOOLTIP (user ruling, verbatim: the old essay tooltip "doesn't explain
+   that [the number is] the whole offline app — it should be Total Storage:
+   then website code 69mb, assets 4mb, projects 3mb etc"). Same bold-header +
+   stacked-lines shape as the asset tile tip (.ae-tip-name/.ae-tip-meta above),
+   reusing its tokens rather than inventing new ones for an identical pattern. */
+.ae-quota-tip-title {
+  font-weight: 700;
+}
+
+.ae-quota-tip-row {
+  color: var(--a-tile-tip-meta);
+}
+
+.ae-quota-tip-title + .ae-quota-tip-row,
+.ae-quota-tip-row + .ae-quota-tip-note {
+  margin-top: var(--a-tile-tip-gap);
+}
+
+.ae-quota-tip-note {
+  color: var(--fg-dim);
+}
+
 /* LIBRARY TOTALS LINE ("12 assets · 187MB"). Deliberately the same type size and
    muted weight as .ae-quota-text: the two are peer readouts stacked above the grid,
    and one shouting over the other would imply a hierarchy neither has. It carries no

@@ -141,6 +141,42 @@ export function inventoryReport(rowsByGroup) {
   return { groups, grandTotal: groups.reduce((sum, g) => sum + g.subtotal, 0) };
 }
 
+/** The quota tooltip's four display categories, in the order the tooltip lists
+ *  them, each naming which STORAGE_GROUPS id(s) it totals. `caches` is labeled
+ *  "website code" there rather than "CacheStorage" — the Asset Explorer tooltip
+ *  is read by a user who has never opened the Debug console, and "website code"
+ *  is what explains the big number: it is the app itself (the service worker's
+ *  shell + icon caches), cached so the editor works offline. `other` (stray
+ *  IndexedDB databases this module has no specific reader for) is intentionally
+ *  OMITTED from the tooltip — it is a debug-page concern, not a category a user
+ *  put bytes into. */
+export const QUOTA_TOOLTIP_CATEGORIES = Object.freeze([
+  { id: "caches", label: "website code" },
+  { id: "documents", label: "projects" },
+  { id: "assets", label: "assets" },
+  { id: "renderings", label: "renders" },
+]);
+
+/**
+ * Pure function. The quota tooltip's category breakdown: one `{label, bytes}`
+ * per QUOTA_TOOLTIP_CATEGORIES entry, in that fixed order, read off an
+ * inventoryReport-shaped `groups` array. Kept separate from `other` (see
+ * QUOTA_TOOLTIP_CATEGORIES) so the tooltip's total-of-categories need not equal
+ * `report.grandTotal` — the caller states that honestly rather than this
+ * function papering over it.
+ *
+ * @param {{id: string, subtotal: number}[]} groups - inventoryReport(...).groups
+ * @returns {{label: string, bytes: number}[]}
+ *
+ * @example
+ * >>> quotaTooltipCategories([{id: "documents", subtotal: 3000}, {id: "assets", subtotal: 4000000}, {id: "renderings", subtotal: 0}, {id: "caches", subtotal: 69000000}, {id: "other", subtotal: 0}])
+ * [{label: 'website code', bytes: 69000000}, {label: 'projects', bytes: 3000}, {label: 'assets', bytes: 4000000}, {label: 'renders', bytes: 0}]
+ */
+export function quotaTooltipCategories(groups) {
+  const byId = Object.fromEntries(groups.map((g) => [g.id, g.subtotal]));
+  return QUOTA_TOOLTIP_CATEGORIES.map(({ id, label }) => ({ label, bytes: byId[id] ?? 0 }));
+}
+
 /**
  * Pure function. The honest COMPARISON line between the inventory's own count
  * and the browser's `navigator.storage.estimate()` — "browsers round

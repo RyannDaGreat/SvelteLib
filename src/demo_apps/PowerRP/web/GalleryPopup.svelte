@@ -442,6 +442,7 @@
     style:width="{size.width}px"
     style:height="{size.height}px"
     onkeydown={onKeydown}
+    data-hint-popover="gallery"
   >
     <div class="gallery-popup-search">
       <input

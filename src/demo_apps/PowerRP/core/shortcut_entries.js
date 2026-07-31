@@ -619,6 +619,12 @@ export const POPOVER_HINTS = Object.freeze({
   // taught with its own wording rather than combobox's plain "Close".
   search: [{ keys: ["Enter"], label: "Choose" }, { keys: ["Escape"], label: "Clear / Close" }],
   grid: [{ keys: ["Enter"], label: "Select size" }, { keys: ["Space"], label: "Select size", hidden: true }], // GridSizePicker (Space is the alias)
+  // GalleryPopup's Enter does NOT choose a cell (only a click does — icons/etc.
+  // are picked by clicking a tile, never by keyboard) — it reruns the search
+  // NOW, skipping the debounce, exactly like CanvasToolbar's own gallery search
+  // box. Reusing "search"'s "Choose" label here would be a lie about what Enter
+  // does, so this is its own kind rather than a forced fit into an existing one.
+  gallery: [{ keys: ["Enter"], label: "Search now" }, { keys: ["Escape"], label: "Close" }],
 });
 
 /**

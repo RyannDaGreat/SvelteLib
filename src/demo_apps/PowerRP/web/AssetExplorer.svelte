@@ -294,6 +294,13 @@
   // web/storageMode.js) — a bare mode-blind seam sent the draft key to the server.
   import { assetStoreFor } from "./storageMode.js"; // resolves an asset ref for THIS page's storage
   import { copyText } from "./clipboard.js";
+  import { inventoryReport, quotaTooltipCategories } from "./debugStorage.js";
+  // gatherDebugStorageData: the SAME origin-wide gathering the Debug console's
+  // Storage page uses (web/DebugStoragePage.svelte) — reused rather than a
+  // second enumeration, per the one-source-of-truth rule in debugStorage.js's
+  // docblock. It is HTTP-mode-safe (branches on isStatic() internally) but the
+  // tooltip only ever calls it when quotaText is non-null, i.e. already local-mode.
+  import { gatherDebugStorageData } from "./DebugStoragePage.svelte";
 
   let { app } = $props();
 
@@ -370,25 +377,44 @@
     quota = await app.storageQuota();
   }
 
-  /** Query. The quota tooltip's detail sentence: the exact percent, whether the
-   *  browser has granted PERSISTENT storage, and what to do about it. The line
-   *  itself is deliberately short ("4.6MB of 2.0GB used"); the reason a user
-   *  cares — that non-persistent storage can be EVICTED — belongs in the detail
-   *  rather than the pane's one visible row. */
-  function quotaDetail() {
-    // The line already SAYS "4.6MB of 2.0GB used", so the tip does not repeat
-    // it — it opens on the percent (the same figure, told the other way) and
-    // spends its length on the eviction warning, which is the whole reason a
-    // user reads this. "Estimate, and browsers round it" was retired: a hedge
-    // about a figure nobody is going to act on to the byte.
-    const parts = [];
-    if (quotaPct !== null) parts.push(`${quotaPct}% of the browser's budget for this origin.`);
-    parts.push(
-      quota?.persisted
-        ? "Storage is PERSISTENT — the browser will not evict your projects."
-        : "Storage is BEST-EFFORT: the browser may evict it under storage pressure. Export a .zip for a durable copy.",
-    );
-    return parts.join(" ");
+  // ── QUOTA TOOLTIP CATEGORY BREAKDOWN (user ruling, verbatim: the old essay
+  // tooltip "doesn't explain that [the number is] the whole offline app — it
+  // should be Total Storage: then website code 69mb, assets 4mb, projects 3mb
+  // etc") ───────────────────────────────────────────────────────────────────
+  // null = not yet gathered; [] would be a real (if unlikely) all-zero answer.
+  // Gathered LAZILY on first hover rather than alongside refreshQuota(): the
+  // origin-wide inventory (web/debugStorage.js, shared with the Debug console's
+  // Storage page) walks every project's docs/assets/renderings/caches, which is
+  // too much work to redo on every upload/delete — the number only needs to be
+  // fresh when a user is actually looking at it.
+  let quotaCategories = $state(null);
+  let quotaCategoriesPending = false; // dedupe concurrent hovers; not $state (no render depends on it)
+
+  /** Command (reads IndexedDB + CacheStorage). Loads quotaCategories once, on
+   *  the tooltip's first reveal. Mutates quotaCategories; a failure leaves it
+   *  null so the tooltip falls back to the bare total rather than showing a
+   *  wrong breakdown. */
+  async function loadQuotaCategories() {
+    if (quotaCategories !== null || quotaCategoriesPending) return;
+    quotaCategoriesPending = true;
+    try {
+      const { rowsByGroup } = await gatherDebugStorageData(app);
+      quotaCategories = quotaTooltipCategories(inventoryReport(rowsByGroup).groups);
+    } catch (e) {
+      console.error("AssetExplorer: could not gather the quota tooltip's category breakdown:", e);
+    } finally {
+      quotaCategoriesPending = false;
+    }
+  }
+
+  /** Query. The quota tooltip's eviction-warning line — kept as its own
+   *  sentence (rather than folded into the category list) because it is a
+   *  warning about the WHOLE total, not one category, and the essay-trim
+   *  ruling explicitly kept it: "that clause was deliberately kept". */
+  function quotaEvictionNote() {
+    return quota?.persisted
+      ? "Storage is PERSISTENT — the browser will not evict your projects."
+      : "Storage is BEST-EFFORT: the browser may evict it under storage pressure. Export a .zip for a durable copy.";
   }
 
   /** Query. The built-in toggle's hover sentence. It states the CURRENT state and
@@ -940,15 +966,35 @@
        ABSENT in server mode, where there is no per-browser quota to be near
        (quotaText is null then, so this whole block does not render). The visible
        row is deliberately one short sentence plus a fill bar; the tooltip carries
-       the detail (exact percent, persistent-vs-evictable, and the estimate
-       caveat). Immediate Tooltip: a storage warning must answer on hover, not
-       after a delay. -->
+       the CATEGORY BREAKDOWN (user ruling — see loadQuotaCategories' docblock):
+       bold "Total Storage:" then one terse line per category, replacing the old
+       essay. Immediate Tooltip: a storage warning must answer on hover, not
+       after a delay. onpointerenter/onfocus kick off the (lazy, cached)
+       category fetch independent of Tooltip's own show timer, so the numbers
+       are ready by the time the tip's delay (0 here) elapses. -->
   {#if quotaText}
-    <Tooltip text={quotaDetail()}>
+    <Tooltip>
+      {#snippet tip()}
+        <div class="ae-quota-tip-title">Total Storage: {quotaText}</div>
+        {#if quotaCategories}
+          {#each quotaCategories as cat (cat.label)}
+            <div class="ae-quota-tip-row">{cat.label}: {humanReadableFileSize(cat.bytes)}</div>
+          {/each}
+        {/if}
+        {#if quotaNearlyFull}
+          <div class="ae-quota-tip-note">{quotaEvictionNote()}</div>
+        {/if}
+      {/snippet}
       <!-- TEXT ONLY (user ruling: "I don't need the bar… just the text is good
            enough"): the percent still lives in the hover detail and the
            nearly-full tint still warns — the fill graph is gone. -->
-      <div class="ae-quota" class:ae-quota-nearly-full={quotaNearlyFull} aria-label={`Storage: ${quotaText}`}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="ae-quota"
+        class:ae-quota-nearly-full={quotaNearlyFull}
+        aria-label={`Storage: ${quotaText}`}
+        onpointerenter={loadQuotaCategories}
+      >
         <div class="ae-quota-text">{quotaText}</div>
       </div>
     </Tooltip>

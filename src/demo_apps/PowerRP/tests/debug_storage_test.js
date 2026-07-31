@@ -9,7 +9,7 @@
  */
 
 import assert from "node:assert/strict";
-import { assetsByKeyspace, biggestFirst, documentRowsFromLocalDocs, estimateDeltaLine, inventoryReport, resolveInitialPage, rowLabel, STORAGE_GROUPS, summarizeGroup } from "../web/debugStorage.js";
+import { assetsByKeyspace, biggestFirst, documentRowsFromLocalDocs, estimateDeltaLine, inventoryReport, quotaTooltipCategories, resolveInitialPage, rowLabel, STORAGE_GROUPS, summarizeGroup } from "../web/debugStorage.js";
 import { humanReadableFileSize } from "../web/fileSize.js";
 
 let passed = 0;
@@ -116,6 +116,28 @@ test("resolveInitialPage falls back to the first page for a removed/unknown stor
 
 test("resolveInitialPage falls back to the first page when nothing is stored yet", () => {
   assert.equal(resolveInitialPage(null, [{ id: "storage" }]), "storage");
+});
+
+test("quotaTooltipCategories maps groups to the tooltip's four labels, website code first", () => {
+  const inv = inventoryReport({
+    documents: [{ name: "RobotSim", bytes: 3000 }],
+    assets: [{ name: "RobotSim/clip.mp4", bytes: 4000000 }],
+    caches: [{ name: "powerrp-shell-v3", bytes: 69000000 }],
+    other: [{ name: "mystery-db", bytes: 999 }],
+  });
+  const cats = quotaTooltipCategories(inv.groups);
+  assert.deepEqual(cats, [
+    { label: "website code", bytes: 69000000 },
+    { label: "projects", bytes: 3000 },
+    { label: "assets", bytes: 4000000 },
+    { label: "renders", bytes: 0 },
+  ]);
+});
+
+test("quotaTooltipCategories omits 'other' — a debug-page concern, not a user category", () => {
+  const inv = inventoryReport({ other: [{ name: "mystery-db", bytes: 500 }] });
+  const cats = quotaTooltipCategories(inv.groups);
+  assert.ok(!cats.some((c) => c.label.includes("other") || c.label.includes("mystery")));
 });
 
 console.log(`\ndebug_storage_test: ${passed} passed`);
