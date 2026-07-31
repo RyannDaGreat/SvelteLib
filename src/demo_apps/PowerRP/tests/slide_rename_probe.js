@@ -42,22 +42,29 @@ try {
   const nameOf = (i) => page.evaluate((n) => window.__powerrp_app.doc.slides[n].name, i);
   const before = await nameOf(0);
 
-  // dblclick the first slide's name → inline input appears, seeded
+  // dblclick the first slide's name → inline input appears, seeded.
+  // THE INPUT IS `.inline-rename-input`, NOT the `.name-edit` this probe was
+  // written against: SlideNav no longer hand-rolls its rename editor, it renders
+  // src/lib/InlineRename.svelte, whose input carries that class. The dblclick
+  // target below is still `.slide .name` and still correct — InlineRename listens
+  // on its own `.inline-rename-display` wrapper and the event bubbles up to it —
+  // so only the class the assertions look for moved. Asserting the old name made
+  // a landed, working migration read as a broken rename.
   await page.evaluate(() => {
     const el = document.querySelector(".slidenav .slide .name");
     el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   });
   await sleep(150);
-  const seeded = await page.evaluate(() => document.querySelector(".slidenav .name-edit")?.value ?? null);
+  const seeded = await page.evaluate(() => document.querySelector(".slidenav .inline-rename-input")?.value ?? null);
   ok(seeded === before, `double-click opens the inline editor seeded with the current name; got ${JSON.stringify(seeded)}`);
 
   // type a new name, Enter commits one undo unit
-  await page.evaluate(() => { const inp = document.querySelector(".slidenav .name-edit"); inp.value = ""; });
-  await page.type(".slidenav .name-edit", "Grand Opening");
+  await page.evaluate(() => { const inp = document.querySelector(".slidenav .inline-rename-input"); inp.value = ""; });
+  await page.type(".slidenav .inline-rename-input", "Grand Opening");
   await page.keyboard.press("Enter");
   await sleep(200);
   ok((await nameOf(0)) === "Grand Opening", "Enter commits the typed name to the doc");
-  ok(await page.evaluate(() => !document.querySelector(".slidenav .name-edit")), "the editor closes on commit");
+  ok(await page.evaluate(() => !document.querySelector(".slidenav .inline-rename-input")), "the editor closes on commit");
   await page.evaluate(() => window.__powerrp_app.undo());
   await sleep(150);
   ok((await nameOf(0)) === before, `the rename was ONE undo unit (undo restores ${JSON.stringify(before)})`);
@@ -67,7 +74,7 @@ try {
     document.querySelector(".slidenav .slide .name").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
   });
   await sleep(150);
-  await page.type(".slidenav .name-edit", "XXX");
+  await page.type(".slidenav .inline-rename-input", "XXX");
   await page.keyboard.press("Escape");
   await sleep(150);
   ok((await nameOf(0)) === before, "Escape cancels without committing");
