@@ -186,7 +186,7 @@ const CUSTOM = customProps([
     help: `The slippy-map zoom: 0 is the whole world, and each unit DOUBLES the scale (about 11 degrees of longitude at 5, a city block at 17). TWEEN THIS for a fly-in — it is the one property a zoom animation should touch. The globe crossfades to the flat map around ${GLOBE_FLAT_CROSSOVER}. Tiles are fetched at whatever depth the CAMERA justifies, so zooming the canvas into the widget sharpens it further without touching this.` },
   { name: "style", kind: "select", default: DEFAULT_TILE_STYLE, options: TILE_PROVIDER_IDS,
     optionLabels: Object.fromEntries(TILE_PROVIDER_IDS.map((id) => [id, TILE_PROVIDERS[id].title])), label: "Basemap",
-    help: "Which tile provider draws the surface. Streets is OpenStreetMap (deepest zoom, good at every scale); Satellite is NASA's MODIS true-colour mosaic (beautiful on the globe, but a ~250 m/px instrument, so it stops getting sharper around zoom 9); Terrain is OpenTopoMap's relief and contours. Each provider's REQUIRED attribution is drawn on the map. NOTE ON SATELLITE: the MODIS mosaic is assembled from ONE DAY of polar orbits, so it carries BLACK WEDGES where the satellite's swaths did not overlap — most visible near the equator. Those gaps are in NASA's data, not in the rendering (verified by downloading the raw tile), and they are the honest picture of what was actually imaged. Use Streets or Terrain for a deck that needs unbroken coverage. POLES ON THE GLOBE: Satellite samples NASA's separate geographic tile pyramid there, so its poles are REAL imagery, all the way to 90°. Streets and Terrain have no such pyramid to draw from, so their globe still shows a shaded ice cap past 85.05° — the honest gap those two providers genuinely have." },
+    help: "Which tile provider draws the surface. Streets is OpenStreetMap (deepest zoom, good at every scale); Satellite is NASA's MODIS true-colour mosaic (beautiful on the globe, but a ~250 m/px instrument, so it stops getting sharper around zoom 9); Terrain is OpenTopoMap's relief and contours. Attribution is drawn only when Show attribution is on (off by default). NOTE ON SATELLITE: the MODIS mosaic is assembled from ONE DAY of polar orbits, so it carries BLACK WEDGES where the satellite's swaths did not overlap — most visible near the equator. Those gaps are in NASA's data, not in the rendering (verified by downloading the raw tile), and they are the honest picture of what was actually imaged. Use Streets or Terrain for a deck that needs unbroken coverage. POLES ON THE GLOBE: Satellite samples NASA's separate geographic tile pyramid there, so its poles are REAL imagery, all the way to 90°. Streets and Terrain have no such pyramid to draw from, so their globe still shows a shaded ice cap past 85.05° — the honest gap those two providers genuinely have." },
   // ONE BOOLEAN PER OVERLAY (web/tile_providers.TILE_OVERLAYS) — transparent
   // reference layers composited ABOVE the base, the Google "hybrid" look. Each is
   // an ordinary tweenable/equation-bindable property, same as `style`, rendered
@@ -206,8 +206,8 @@ const CUSTOM = customProps([
   ...ATMOSPHERE_FILL_PARAMS,
   { name: "attributionColor", kind: "color", default: "rgba(255,255,255,0.82)", label: "Attribution colour",
     help: "Ink of the provider credit. It is a knob because legibility is the point: white reads over satellite imagery and the dark globe, but a light street map at street zoom needs a dark value. An unreadable credit does not satisfy the licence it exists for." },
-  { name: "showAttribution", kind: "boolean", default: true, label: "Show attribution",
-    help: "Draws the credit line(s) for every ACTIVE layer (basemap + any overlays on) on the map, tiny, in the corner. The default follows what each layer's licence actually requires — off for NASA's own satellite imagery (public domain, no credit required), on for OpenStreetMap/OpenTopoMap and for the three GIBS overlays (OSM-derived, ODbL: \"OSM's tile terms ask for this credit; hiding it is your call\"). This switch is always yours to flip either way — it never re-locks itself when you change the basemap." },
+  { name: "showAttribution", kind: "boolean", default: false, label: "Show attribution",
+    help: "OFF by default everywhere (user ruling). Turning it on draws the credit line(s) for every ACTIVE layer, tiny, in the corner. OSM/OpenTopoMap's tile terms ask for that credit when their tiles are used; showing it is your call — the switch never re-locks itself when you change the basemap." },
 ]);
 
 /** The attribution's type size and inset, in world px. Small enough to stay out of
@@ -719,9 +719,9 @@ const PRESETS = [
   },
   {
     name: "Hybrid (satellite + labels + borders)",
-    description: "The Google Maps \"hybrid\" look: NASA satellite imagery with place labels and political borders composited on top, both from the same keyless GIBS source. Coastlines stays off here — the satellite base already shows a sharp coastline of its own. NASA's imagery needs no credit; the two OVERLAYS are OSM-derived and keep their own attribution shown, which is why the corner line still reads even though the base's default is off.",
+    description: "The Google Maps \"hybrid\" look: NASA satellite imagery with place labels and political borders composited on top, both from the same keyless GIBS source. Coastlines stays off here — the satellite base already shows a sharp coastline of its own. NASA's imagery needs no credit; the two OVERLAYS are OSM-derived — flip Show attribution on if you want their credit line drawn.",
     props: {
-      centerLon: 12, centerLat: 42, zoom: 3.4, style: "satellite", showAttribution: true,
+      centerLon: 12, centerLat: 42, zoom: 3.4, style: "satellite", showAttribution: false,
       overlayLabels: true, overlayFeatures: true, overlayCoastlines: false,
     },
   },
@@ -737,7 +737,7 @@ const PRESETS = [
   },
   {
     name: "Terrain (the Alps)",
-    description: "OpenTopoMap's contour and relief rendering over the Alps, where topography is the whole point. A different provider entirely, with its own CC-BY-SA attribution drawn on the map.",
+    description: "OpenTopoMap's contour and relief rendering over the Alps, where topography is the whole point. A different provider entirely (CC-BY-SA; Show attribution draws its credit if you turn it on).",
     props: { centerLon: 7.66, centerLat: 45.98, zoom: 11, style: "terrain" },
   },
 ];

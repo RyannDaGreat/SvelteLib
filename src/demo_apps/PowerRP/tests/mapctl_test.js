@@ -60,16 +60,16 @@ test("overlayPropName is the ONE naming rule, shared by the widget and the pre-p
 
 // ── ATTRIBUTION DEFAULTS PER PROVIDER (the user ruling) ────────────────────
 
-test("NASA satellite defaults attribution OFF; OSM and terrain default it ON", () => {
-  assert.equal(TILE_PROVIDERS.satellite.defaultShowAttribution, false, "public domain: nothing required");
-  assert.equal(TILE_PROVIDERS.osm.defaultShowAttribution, true, "ODbL requires the credit");
-  assert.equal(TILE_PROVIDERS.terrain.defaultShowAttribution, true, "CC-BY-SA requires the credit");
+test("every provider defaults attribution OFF (user ruling: off everywhere; the toggle draws it on demand)", () => {
+  assert.equal(TILE_PROVIDERS.satellite.defaultShowAttribution, false);
+  assert.equal(TILE_PROVIDERS.osm.defaultShowAttribution, false);
+  assert.equal(TILE_PROVIDERS.terrain.defaultShowAttribution, false);
 });
 
-test("a fresh widget (default style osm) shows attribution by default, matching osm's own default", () => {
+test("a fresh widget shows NO attribution by default", () => {
   const s = stateAt();
   assert.equal(s.style, "osm");
-  assert.equal(s.showAttribution, true);
+  assert.equal(s.showAttribution, false);
 });
 
 test("satellite-only presets (no overlays active) explicitly turn attribution off", () => {
@@ -82,10 +82,10 @@ test("satellite-only presets (no overlays active) explicitly turn attribution of
     assert.equal(preset.props.showAttribution, false, `preset "${preset.name}" (satellite, no overlays) shows nothing by default`);
 });
 
-test("the hybrid preset (satellite + OSM-derived overlays) explicitly keeps attribution ON", () => {
+test("the hybrid preset shows no attribution by default either — no preset does", () => {
   const hybrid = globeMapPlugin.presets.find((p) => p.props.style === "satellite" && (p.props.overlayLabels || p.props.overlayFeatures));
   assert.ok(hybrid, "a hybrid (satellite base + overlay) preset exists, demonstrating the Google 'hybrid' look");
-  assert.equal(hybrid.props.showAttribution, true, "the OSM-derived overlays require credit even though the satellite base does not");
+  assert.ok(!hybrid.props.showAttribution, "off in every preset (user ruling)");
 });
 
 test("the toggle is always the user's — showAttribution never re-locks when style changes", () => {
@@ -105,11 +105,13 @@ test("ACCEPTANCE: NASA satellite base shows NO attribution text at its own defau
   assert.ok(!ops.some((o) => o.op === "text"), "no attribution op at all when the default is honoured");
 });
 
-test("ACCEPTANCE: OSM base shows the attribution line by default", () => {
-  const s = stateAt({ style: "osm" });
+test("ACCEPTANCE: no provider draws attribution by default; the toggle draws it on demand", () => {
+  const bare = globeMapPlugin.emit(stateAt({ style: "osm" }), null, null, null);
+  assert.ok(!bare.some((o) => o.op === "text"), "OSM draws nothing by default (user ruling)");
+  const s = stateAt({ style: "osm", showAttribution: true });
   const ops = globeMapPlugin.emit(s, null, null, null);
   const textOp = ops.find((o) => o.op === "text");
-  assert.ok(textOp, "OSM draws its credit by default");
+  assert.ok(textOp, "flipping the toggle on draws the credit");
   assert.ok(textOp.text.includes("OpenStreetMap"));
 });
 
@@ -123,10 +125,10 @@ test("ACCEPTANCE: toggling showAttribution off hides it, and the property persis
 // ── OVERLAY COMPOSITING ─────────────────────────────────────────────────────
 
 test("no overlay on: emit draws exactly the base surface, no extra image ops beyond it", () => {
-  const off = globeMapPlugin.emit(stateAt(), null, null, null);
-  const on = globeMapPlugin.emit(stateAt({ overlayLabels: true }), null, null, null);
-  // Both are camera-free (no registry), so image ops are 0 either way — but the
-  // ATTRIBUTION line must differ: an active overlay's credit joins the union.
+  // Attribution defaults OFF everywhere, so the union is only observable with
+  // the toggle on: an active overlay's credit then joins the base's line.
+  const off = globeMapPlugin.emit(stateAt({ showAttribution: true }), null, null, null);
+  const on = globeMapPlugin.emit(stateAt({ showAttribution: true, overlayLabels: true }), null, null, null);
   const attrOff = off.find((o) => o.op === "text")?.text ?? "";
   const attrOn = on.find((o) => o.op === "text")?.text ?? "";
   assert.ok(!attrOff.includes("Labels:"), "no overlay credit when the overlay is off");

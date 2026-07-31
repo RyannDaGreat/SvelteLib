@@ -118,10 +118,9 @@ export const TILE_PROVIDERS = Object.freeze({
     maxZoom: 19,
     attribution: "© OpenStreetMap contributors",
     tileSize: 256,
-    // ODbL REQUIRES this credit ("Show OpenStreetMap licence attribution clearly
-    // on the map") — on by default, but the TOGGLE is still the user's to flip
-    // (showAttributionHelp on the widget states the trade-off; see its docblock).
-    defaultShowAttribution: true,
+    // ODbL asks for on-map credit; the widget defaults it OFF everywhere (user
+    // ruling) and the showAttribution toggle draws it for whoever wants it.
+    defaultShowAttribution: false,
     // NO `geographic` TWIN — OpenStreetMap publishes no EPSG:4326 service at all
     // (only the Mercator "standard" tile layer this entry already points at), so
     // there is nothing to add here. See "THE GEOGRAPHIC TWIN" below: the globe path
@@ -181,7 +180,7 @@ export const TILE_PROVIDERS = Object.freeze({
     // CC-BY-SA 3.0 REQUIRES naming both the data source and the style's author.
     attribution: "© OpenStreetMap contributors, SRTM | © OpenTopoMap (CC-BY-SA)",
     tileSize: 256,
-    defaultShowAttribution: true,
+    defaultShowAttribution: false,
     // NO `geographic` TWIN — OpenTopoMap is itself Mercator-only (it renders from
     // OSM + SRTM through the same {z}/{x}/{y} pyramid as the streets entry); no
     // EPSG:4326 relief/contour service exists to point at. Same asymmetry as OSM
