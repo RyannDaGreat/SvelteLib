@@ -173,6 +173,20 @@ default-branch load.
   500` from nothing listening. Probes do not *listen* on the fixed backend port, but
   each one's self-spun Vite *proxies* to `BACKEND_URL` — so without one they report
   an absent dependency as if the app were broken.
+- **BEFORE BELIEVING A BROWSER RED, CHECK THE HOST CAN SCREENSHOT AT ALL**:
+  `node src/demo_apps/PowerRP/tests/browser_capture_preflight.mjs`
+  64 of the 166 browser probes call `page.screenshot`, and a host whose Chrome
+  cannot capture turns every one of them into a `Page.captureScreenshot timed
+  out` ProtocolError — a puppeteer stack with NO assertion text, which reads
+  exactly like a PowerRP regression and is not one. This is not hypothetical: a
+  whole triage session attributed 22 reds to the app before measuring the host,
+  and the measurement showed `page.screenshot` hanging forever on a page
+  containing one `<h1>` — no canvas, no WebGL, no Vite — under SwiftShader flags,
+  under `--no-sandbox`, and under bare defaults alike, while `page.evaluate` on
+  the same connection answered in 1 ms. It is also SLOW to discover the wrong
+  way: each probe burns its full 180 s protocolTimeout before dying. The
+  preflight is deliberately NOT named `*_probe` so the collector never runs it —
+  a broken host must produce ONE sentence, not a 167th red.
 - Core tests only (iterating): `node src/demo_apps/PowerRP/tests/core_test.js`
 - Server lifecycle: `bash src/demo_apps/PowerRP/tests/server_launcher_test.sh`
 - Editor smoke: `node src/demo_apps/PowerRP/tests/editor_smoke.js <shot_dir>`
