@@ -49,6 +49,7 @@
   import KeyframeControls from "./KeyframeControls.svelte";
   import ItemVariablesPanel from "./ItemVariablesPanel.svelte";
   import LabelDivider from "./LabelDivider.svelte";
+  import GalleryPopup from "./GalleryPopup.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import {
@@ -70,6 +71,51 @@
   const COPY_FLASH_MS = 1200;
   // The row `key` whose copy button is currently flashing "Copied!", or null.
   let justCopiedKey = $state(null);
+
+  // ── THE GALLERY ROW ASPECT (web/GalleryPopup.svelte) ──────────────────────
+  // A row declaring `gallery: (state) => spec` (plugins/iconify.js's
+  // iconifyGallerySpec, the pinLight-precedent shape) gets a gutter button that
+  // opens the SAME {grid, search} spec CanvasToolbar renders on double-click,
+  // anchored under this button instead of the canvas. AT MOST ONE open at a
+  // time (a single popup instance, not one per row), keyed by {itemId, key} so
+  // switching rows or items closes any popup that was open elsewhere.
+  let galleryOpenFor = $state(null); // {itemId, key} | null
+  let galleryAnchorEl = $state(null);
+  let gallerySpec = $state(null);
+  // Plain mirror of `galleryOpenFor !== null`, because GalleryPopup's `open` is
+  // $bindable(false) (the ordinary Modal/AssetField bind:open shape) rather
+  // than a derived value — bind: needs a plain assignable local, not an
+  // expression. Kept in sync by toggleGallery(); the $effect below closes
+  // galleryOpenFor when the popup reports itself closed (Escape, outside
+  // click, or a pick — see GalleryPopup.svelte's close()).
+  let galleryPopupOpen = $state(false);
+  $effect(() => {
+    if (!galleryPopupOpen) galleryOpenFor = null;
+  });
+
+  /** Command. Opens (or, on a repeat click, closes) the gallery popup for one
+   * row. `state` is the row's CURRENT folded state, so the spec's grid.value
+   * always reflects what the item holds right now — the same call shape
+   * floatingToolbar(state) receives on double-click. */
+  function toggleGallery(row, state, itemId, anchorEl) {
+    const isThisRow = galleryOpenFor?.itemId === itemId && galleryOpenFor?.key === row.key;
+    if (isThisRow) {
+      galleryPopupOpen = false;
+      return;
+    }
+    galleryAnchorEl = anchorEl;
+    gallerySpec = row.gallery(state);
+    galleryOpenFor = { itemId, key: row.key };
+    galleryPopupOpen = true;
+  }
+
+  /** Command. Commits the popup's picked value onto the row's property as ONE
+   * undo unit — the standard preview→commit seam (AssetField's oncommit, the
+   * CanvasToolbar grid's pick(), same pattern). */
+  function commitGalleryPick(row, itemId, value) {
+    app.setPreview([[["items", itemId, row.key], value]]);
+    app.commitPreview();
+  }
 
   // ── Selection-target dispatch (item | transition | none) ─────────────────────
   // app.selectionTarget is the agreed cross-target shape (owned by the app
@@ -232,13 +278,24 @@
    * [{id, title, rows}]. Preserves row order within a category; known
    * categories sort by CATEGORY_ORDER, unknown ones append in first-seen order.
    *
+   * A row declaring `visibleWhen(state)` is DROPPED (not just disabled) when it
+   * returns false against `state` — the row-visibility aspect (manifest:
+   * "the width row shouldn't even show while stroke material is off"). `state`
+   * is optional: omitting it (or a row with no `visibleWhen`) keeps every row,
+   * so every pre-existing call site and every visibleWhen-less row is unaffected.
+   * A category left with zero rows after filtering is dropped entirely, so an
+   * all-conditional section (none today) would not render an empty accordion.
+   *
    * Examples:
    *     >>> // rows [{key:"x",category:"positioning"},{key:"fill",category:"fillMaterial"}]
    *     >>> // → [{id:"positioning",title:"Positioning",rows:[…x]},{id:"fillMaterial",…}]
+   *     >>> // groupRows([{key:"strokeWidth",category:"strokeMaterial",visibleWhen:(s)=>!isPaintOff(s.stroke)}], {stroke:{type:"none"}})
+   *     >>> // → [] (the row is hidden; the now-empty strokeMaterial bucket is dropped)
    */
-  function groupRows(rows) {
+  function groupRows(rows, state = null) {
     const buckets = new Map();
     for (const row of rows) {
+      if (state && typeof row.visibleWhen === "function" && !row.visibleWhen(state)) continue;
       const cat = row.category ?? DEFAULT_CATEGORY;
       if (!buckets.has(cat)) buckets.set(cat, []);
       buckets.get(cat).push(row);
@@ -331,9 +388,9 @@
     return runs;
   }
 
-  let itemCategories = $derived(sel ? groupRows(sel.plugin.inspector ?? []) : []);
+  let itemCategories = $derived(sel ? groupRows(sel.plugin.inspector ?? [], sel.state) : []);
   let creationCategories = $derived(
-    creationState ? groupRows(app.registry.get(creationState.type)?.inspector ?? []) : []
+    creationState ? groupRows(app.registry.get(creationState.type)?.inspector ?? [], creationState) : []
   );
 
   // Collapsed categories persist as a BROWSER setting (viewer-local; manifest
@@ -1152,6 +1209,14 @@
        not-yet-created row has no live item to enter a canvas mode ON, and a
        multi-selection has no single "the" item to pin FROM. -->
   {@const pinLight = itemMode && !multi ? row.pinLight : null}
+  <!-- THE GALLERY ROW ASPECT (web/GalleryPopup.svelte, plugins/iconify.js's
+       `gallery` declaration): a row naming a spec-factory function gets a
+       gutter button that opens the shared tile-grid/search picker anchored
+       under it. Same ITEM-MODE-ONLY, single-selection gate as pinLight, for
+       the same reasons (a not-yet-created row has nothing live to open a
+       picker ON; a multi-selection has no single "the" item's current icon
+       to seed the grid's selected tile). -->
+  {@const gallery = itemMode && !multi ? row.gallery : null}
   <!-- DYNAMIC BOUNDS (general mechanism): a row's `max` may be a STATE-DERIVED
        FUNCTION `(state) => number` (e.g. pdf_page's page cap = pageCount for the
        current src), not just a static number. Resolved here so the numeric field
@@ -1206,7 +1271,7 @@
          row) still gets the (?), and a row with path-but-no-help still gets
          copy. A row with neither falls back to a plain label span (no echo
          tooltip — banned). -->
-    {#if pathText != null || helpText != null || pinLight}
+    {#if pathText != null || helpText != null || pinLight || gallery}
       <span class="row-label-chrome">
         {#if pathText != null}
           {@const copied = justCopiedKey === row.key}
@@ -1237,6 +1302,19 @@
               onclick={() => (pinning ? app.exitCanvasMode() : app.enterCanvasMode("pin_light_position", itemId))}
             >
               <iconify-icon icon="mdi:eyedropper-variant" width="13" height="13"></iconify-icon>
+            </button>
+          </Tooltip>
+        {/if}
+        {#if gallery}
+          {@const galleryOpen = galleryOpenFor?.itemId === itemId && galleryOpenFor?.key === row.key}
+          <Tooltip text={galleryOpen ? "Close gallery" : `${row.label}: browse a gallery`}>
+            <button
+              class="gallery-btn"
+              aria-label={galleryOpen ? "Close gallery" : `${row.label}: browse a gallery`}
+              aria-pressed={galleryOpen}
+              onclick={(e) => toggleGallery(row, state, itemId, e.currentTarget)}
+            >
+              <iconify-icon icon="mdi:view-grid-outline" width="13" height="13"></iconify-icon>
             </button>
           </Tooltip>
         {/if}
@@ -2108,3 +2186,15 @@
     <div class="empty">Nothing selected</div>
   {/if}
 </div>
+
+<!-- ONE popup instance for the whole panel (not one per row): galleryOpenFor
+     names which row owns it, so switching rows/items or a repeat click on the
+     same button closes it via toggleGallery — see the script section above. -->
+{#if galleryOpenFor && gallerySpec}
+  <GalleryPopup
+    spec={gallerySpec}
+    anchorEl={galleryAnchorEl}
+    bind:open={galleryPopupOpen}
+    onpick={(value) => commitGalleryPick({ key: galleryOpenFor.key }, galleryOpenFor.itemId, value)}
+  />
+{/if}

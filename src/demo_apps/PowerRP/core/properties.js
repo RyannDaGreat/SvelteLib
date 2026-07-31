@@ -699,6 +699,35 @@ function checkOptionGroups(key, def) {
  * keys contain a dot ("rotationAnchor.x") — the Inspector's valueAt/keyframe
  * paths already split on ".", so a dotted registry key round-trips unchanged.
  */
+/**
+ * Pure function. Is a widget's `stroke` paint anything other than the OFF tag?
+ * The row-visibility test for every stroke-ONLY row (width, offset, trim, caps —
+ * PROPS' `visibleWhen`, read by web/Inspector.svelte's groupRows): while stroke
+ * is Off there is nothing for those knobs to modify, so they hide rather than sit
+ * there doing nothing (user ruling: "I still have stroke width options even when
+ * stroke material is off, which is kind of dumb").
+ *
+ * A local re-implementation of render_gpu/ir.js's isPaintOff, not an import of
+ * it: ir.js imports FROM this module (STROKE_TRIM_KEYS, the gradient defaults),
+ * so the reverse import would cycle. The OFF tag's shape ({type:"none"}) is the
+ * one piece of contract duplicated here, same as render_gpu/decorate.js's
+ * independent fillIsVisible does for the fill slot.
+ *
+ * Args:
+ *   state (object): the widget's evaluated state (only `.stroke` is read)
+ *
+ * Returns:
+ *   boolean — true when the stroke-only rows should show
+ *
+ * @example strokeMaterialIsOn({ stroke: "#000000" }) // true
+ * @example strokeMaterialIsOn({ stroke: { type: "none" } }) // false
+ * @example strokeMaterialIsOn({}) // true (absent = a pre-row document's plain solid; never hide by default)
+ */
+export function strokeMaterialIsOn(state) {
+  const stroke = state?.stroke;
+  return !(stroke && typeof stroke === "object" && !Array.isArray(stroke) && stroke.type === "none");
+}
+
 export const PROPS = {
   // ── positioning (bbox) ──────────────────────────────────────────────────────
   x: { label: "X", kind: "number", category: "positioning", help: "Horizontal position of the widget's top-left corner, in canvas units (right is positive)." },
@@ -771,7 +800,7 @@ export const PROPS = {
   // {type,stops,from/to|center/r} object the render/export backends understand.
   fill: { label: "Fill", kind: "color", paint: true, category: "fillMaterial", help: "The color or gradient that fills the widget's interior. Lower a color's alpha for a translucent fill, pick a linear/radial gradient, or set it fully transparent for outline-only." },
   stroke: { label: "Stroke", kind: "color", paint: true, category: "strokeMaterial", help: "The color or gradient of the outline drawn around the widget's edge. Only visible when stroke width is above zero." },
-  strokeWidth: { label: "Stroke width", kind: "number", min: 0, category: "strokeMaterial", default: 0, help: "Thickness of the outline in canvas units. Zero means no outline." },
+  strokeWidth: { label: "Stroke width", kind: "number", min: 0, category: "strokeMaterial", default: 0, help: "Thickness of the outline in canvas units. Zero means no outline.", visibleWhen: strokeMaterialIsOn },
   // THE STROKE ALIGNMENT knob (user ruling: "-1 means completely inner, 1 means
   // completely outer, 0 means the default, which is in the middle... for every
   // stroke thing"). CONTINUOUS, not a three-way select, so it keyframes and takes
@@ -811,7 +840,7 @@ export const PROPS = {
   // "SCRUB RANGE vs HARD BOUNDS" note. Was min:-8/max:8 (a round-18 guess at
   // "far enough to be useless past it" that clamped typing and equations too,
   // the wrong half of the fix once detachment made every finite value real).
-  strokeOffset: { label: "Stroke offset", kind: "number", scrubMin: -1, scrubMax: 1, category: "strokeMaterial", help: "Which side of the edge the outline sits on: -1 draws it fully inside the shape, 0 straddles the edge, +1 draws it fully outside. Beyond ±1 the outline DETACHES into a parallel contour floating past the edge — inward beyond -1, outward beyond +1. Drag is limited to -1..1; type or bind any finite value to place a detached ring." },
+  strokeOffset: { label: "Stroke offset", kind: "number", scrubMin: -1, scrubMax: 1, category: "strokeMaterial", help: "Which side of the edge the outline sits on: -1 draws it fully inside the shape, 0 straddles the edge, +1 draws it fully outside. Beyond ±1 the outline DETACHES into a parallel contour floating past the edge — inward beyond -1, outward beyond +1. Drag is limited to -1..1; type or bind any finite value to place a detached ring.", visibleWhen: strokeMaterialIsOn },
   cornerRadius: { label: "Corner radius", kind: "number", min: 0, category: "formatting", default: 0, help: "Rounds the widget's corners by this radius in canvas units. Zero is a sharp square corner; larger values round more." },
 
   // ── formatting: THE STROKE-TRIM framework (manifest E.12-15) ─────────────────
@@ -831,8 +860,8 @@ export const PROPS = {
   // with the knobs (a `trim:false` while strokeEnd=0.5 would be meaningless state).
   // render_gpu/ir.js drops any identity field at the op boundary and paint_skia
   // keeps its direct-draw fast path when none are active.
-  strokeStart: { label: "Stroke start", kind: "number", min: 0, max: 1, category: "strokeMaterial", help: "Where the drawn outline BEGINS, as a fraction of its total length (0 = the very start, 1 = the very end). Raise it to reveal the stroke from its end inward; keyframe it for a draw-on animation." },
-  strokeEnd: { label: "Stroke end", kind: "number", min: 0, max: 1, category: "strokeMaterial", help: "Where the drawn outline ENDS, as a fraction of its total length (1 = fully drawn). Lower it to leave the tail undrawn; keyframe 0 → 1 to draw the stroke on over time." },
+  strokeStart: { label: "Stroke start", kind: "number", min: 0, max: 1, category: "strokeMaterial", help: "Where the drawn outline BEGINS, as a fraction of its total length (0 = the very start, 1 = the very end). Raise it to reveal the stroke from its end inward; keyframe it for a draw-on animation.", visibleWhen: strokeMaterialIsOn },
+  strokeEnd: { label: "Stroke end", kind: "number", min: 0, max: 1, category: "strokeMaterial", help: "Where the drawn outline ENDS, as a fraction of its total length (1 = fully drawn). Lower it to leave the tail undrawn; keyframe 0 → 1 to draw the stroke on over time.", visibleWhen: strokeMaterialIsOn },
   // AN ANGLE PROPERTY (user ruling: "phase can be represented as an angle
   // property") — the rotation DIAL, stored in DEGREES exactly as the commit
   // that introduced it says ("Storage is degrees"): render_gpu/ir.js
@@ -849,9 +878,9 @@ export const PROPS = {
   // own docstring names the right precedent: "gradient angle/particleAngle
   // store raw degrees and pass nothing (identity)" — strokePhase is that same
   // shape (dial shows what is stored, no conversion), not the rotation shape.
-  strokePhase: { label: "Stroke phase", kind: "angle", category: "strokeMaterial", help: "Rotates where position 0 sits along the outline, in degrees — and where a dashed/dotted pattern starts and collapses. Keyframe 0° → 360° and the pattern marches once around the shape like a train on a loop of track; it wraps seamlessly, so 370° looks exactly like 10°." },
-  strokeCapStart: { label: "Start cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the START of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point like a lifted brush. No effect on a closed shape drawn at full length (it has no free end)." },
-  strokeCapEnd: { label: "End cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the END of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point. No effect on a closed shape drawn at full length (it has no free end)." },
+  strokePhase: { label: "Stroke phase", kind: "angle", category: "strokeMaterial", help: "Rotates where position 0 sits along the outline, in degrees — and where a dashed/dotted pattern starts and collapses. Keyframe 0° → 360° and the pattern marches once around the shape like a train on a loop of track; it wraps seamlessly, so 370° looks exactly like 10°.", visibleWhen: strokeMaterialIsOn },
+  strokeCapStart: { label: "Start cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the START of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point like a lifted brush. No effect on a closed shape drawn at full length (it has no free end).", visibleWhen: strokeMaterialIsOn },
+  strokeCapEnd: { label: "End cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the END of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point. No effect on a closed shape drawn at full length (it has no free end).", visibleWhen: strokeMaterialIsOn },
 
   // ── formatting: opacity ─────────────────────────────────────────────────────
   // Bounded [0,1] → NumericField range-scales its scrub automatically (the fix

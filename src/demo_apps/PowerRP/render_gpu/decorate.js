@@ -121,12 +121,22 @@ export function hasNoCrop(insets = {}) {
 
 /**
  * Pure function. Is a stroked-box style visually a no-op (nothing to decorate)?
- * True iff there is no border (strokeWidth <= 0) AND no rounding (cornerRadius
- * <= 0) AND no visible fill. Fully-transparent fills ("#00000000", rgba alpha 0,
- * or an [r,g,b,0] array) count as no fill — they paint nothing, so they must not
- * force the (more expensive, offscreen) crop path. A widget with a visible fill
- * but square/borderless still needs the crop path to paint that fill behind its
+ * True iff there is no border (strokeWidth <= 0, OR a strokeWidth with no live
+ * paint to draw it in) AND no rounding (cornerRadius <= 0) AND no visible fill.
+ * Fully-transparent fills ("#00000000", rgba alpha 0, or an [r,g,b,0] array)
+ * count as no fill — they paint nothing, so they must not force the (more
+ * expensive, offscreen) crop path. A widget with a visible fill but
+ * square/borderless still needs the crop path to paint that fill behind its
  * content, so a visible fill alone is enough to decorate.
+ *
+ * A `stroke` of `null`/`undefined` is "no paint chosen" and a NON-null OFF tag
+ * ({type:"none"} — render_gpu/ir.js isPaintOff) is "a paint chosen, then turned
+ * off" — both mean the same thing here: nothing draws. The bug this guards (user
+ * ruling: "when stroke material is off, you should have nothing — even if
+ * stroke width is non-zero") was `stroke != null` alone, which is true for the
+ * OFF tag (it IS a non-null object), so a nonzero width kept drawing a border
+ * ring after the user turned the material off. strokeIsVisible below is the
+ * fillIsVisible of this slot, checked the same way.
  *
  * Args:
  *   style ({cornerRadius?, stroke?, strokeWidth?, fill?}): the stroked-box style
@@ -136,15 +146,36 @@ export function hasNoCrop(insets = {}) {
  *
  * @example isUndecorated({}) // true
  * @example isUndecorated({strokeWidth: 2, stroke: "#000"}) // false
+ * @example isUndecorated({strokeWidth: 5, stroke: {type: "none"}}) // true (OFF material, any width)
  * @example isUndecorated({cornerRadius: 8}) // false
  * @example isUndecorated({fill: "#ff0000"}) // false (visible fill paints behind)
  * @example isUndecorated({fill: "#00000000"}) // true (transparent fill paints nothing)
  */
 export function isUndecorated({ cornerRadius = 0, stroke = null, strokeWidth = 0, fill = null } = {}) {
-  const hasBorder = (strokeWidth ?? 0) > 0 && stroke != null;
+  const hasBorder = (strokeWidth ?? 0) > 0 && strokeIsVisible(stroke);
   const hasRounding = (cornerRadius ?? 0) > 0;
   const hasFill = fillIsVisible(fill);
   return !hasBorder && !hasRounding && !hasFill;
+}
+
+/**
+ * Pure function. Does a stroke paint value paint anything? Same rule as
+ * fillIsVisible with one addition: the tagged OFF paint ({type:"none"}, the
+ * PaintField "Off" tab every paint:true row can be set to — render_gpu/ir.js
+ * PAINT_NONE_TYPE/isPaintOff) is not visible. null/undefined (no paint chosen)
+ * is also not visible — decorateStrokedBox's callers pass `null` for an
+ * unauthored stroke, and that must keep meaning "nothing", exactly as before
+ * this OFF check existed.
+ *
+ * @example strokeIsVisible(null) // false
+ * @example strokeIsVisible("#000000") // true
+ * @example strokeIsVisible({ type: "none" }) // false (the OFF tag)
+ * @example strokeIsVisible({ type: "linearGradient", stops: [] }) // true
+ */
+export function strokeIsVisible(stroke) {
+  if (stroke == null) return false;
+  if (typeof stroke === "object" && !Array.isArray(stroke) && stroke.type === "none") return false;
+  return fillIsVisible(stroke);
 }
 
 /**
@@ -244,7 +275,12 @@ export function decorateStrokedBox(content, style, world) {
     // valid parseColor input, but leaving it null keeps the op minimal and
     // matches "no fill behind the media" semantics for image/video).
     fill: fillIsVisible(fill) ? fill : null,
-    stroke: (strokeWidth ?? 0) > 0 ? stroke : null,
+    // strokeIsVisible (not a bare `!= null`) is what makes an OFF-tagged stroke
+    // ({type:"none"}) null out here too: a rounded/filled box with strokeWidth
+    // > 0 but its material switched OFF still takes the cropSubtree path (for
+    // the rounding/fill), and must not forward the raw OFF tag as `cmd.stroke`
+    // — the painters expect a real paint or null, never the tag object itself.
+    stroke: (strokeWidth ?? 0) > 0 && strokeIsVisible(stroke) ? stroke : null,
     strokeWidth: strokeWidth ?? 0,
     // WRAPPER opacity forced to 1 (the OPACITY CONTRACT): the widget opacity
     // rides on `content` so it fades identically on GPU and PDF; opacity here
