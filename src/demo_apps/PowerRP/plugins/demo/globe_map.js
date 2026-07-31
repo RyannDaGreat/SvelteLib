@@ -80,7 +80,7 @@ import { image, materialFill, polygon, rect, text } from "../../render_gpu/ir.js
  * that is half a pixel, i.e. below the resolution at which a straight edge can be
  * told from a curved one. Doubling it quadruples the op count for no visible gain.
  */
-const GLOBE_SUBDIVISIONS = 8;
+const GLOBE_SUBDIVISIONS = 16;
 
 /** The tile-grid resolution used when NO render context is present (export,
  *  thumbnails, the CLI). The camera is unknown there, so `devicePerWorld` is 1 and
@@ -158,7 +158,7 @@ const CUSTOM = customProps([
     help: `The slippy-map zoom: 0 is the whole world, and each unit DOUBLES the scale (about 11 degrees of longitude at 5, a city block at 17). TWEEN THIS for a fly-in — it is the one property a zoom animation should touch. The globe crossfades to the flat map around ${GLOBE_FLAT_CROSSOVER}. Tiles are fetched at whatever depth the CAMERA justifies, so zooming the canvas into the widget sharpens it further without touching this.` },
   { name: "style", kind: "select", default: DEFAULT_TILE_STYLE, options: TILE_PROVIDER_IDS,
     optionLabels: Object.fromEntries(TILE_PROVIDER_IDS.map((id) => [id, TILE_PROVIDERS[id].title])), label: "Basemap",
-    help: "Which tile provider draws the surface. Streets is OpenStreetMap (deepest zoom, good at every scale); Satellite is NASA's MODIS true-colour mosaic (beautiful on the globe, but a ~250 m/px instrument, so it stops getting sharper around zoom 9); Terrain is OpenTopoMap's relief and contours. Each provider's REQUIRED attribution is drawn on the map." },
+    help: "Which tile provider draws the surface. Streets is OpenStreetMap (deepest zoom, good at every scale); Satellite is NASA's MODIS true-colour mosaic (beautiful on the globe, but a ~250 m/px instrument, so it stops getting sharper around zoom 9); Terrain is OpenTopoMap's relief and contours. Each provider's REQUIRED attribution is drawn on the map. NOTE ON SATELLITE: the MODIS mosaic is assembled from ONE DAY of polar orbits, so it carries BLACK WEDGES where the satellite's swaths did not overlap — most visible near the equator. Those gaps are in NASA's data, not in the rendering (verified by downloading the raw tile), and they are the honest picture of what was actually imaged. Use Streets or Terrain for a deck that needs unbroken coverage." },
   ...ATMOSPHERE_FILL_PARAMS,
   { name: "attributionColor", kind: "color", default: "rgba(255,255,255,0.82)", label: "Attribution colour",
     help: "Ink of the provider credit. It is a knob because legibility is the point: white reads over satellite imagery and the dark globe, but a light street map at street zoom needs a dark value. An unreadable credit does not satisfy the licence it exists for." },
@@ -292,6 +292,15 @@ function globeQuadRect(corners, s) {
   // even when all four sphere points are safely inside it. Checking the points would
   // pass while ink still escaped — measured: a quad whose corners were all on the
   // sphere still bounded a box reaching (148, 4) on a disc of radius 200.
+  //
+  // THE TOLERANCE IS A SUB-PIXEL SLACK AND NOTHING MORE. It was briefly widened to
+  // half the quad's diagonal, on the theory that rejected limb quads explained the
+  // black wedges in the satellite globe. THAT THEORY WAS WRONG, and the way it was
+  // settled is worth recording: the wedges are in NASA'S OWN TILE. Downloading the
+  // raw z2 tile and looking at it shows the same black strips — they are MODIS
+  // ORBITAL GAPS, swaths the satellite had not imaged that day. The renderer was
+  // faithful the whole time. Widening the slack did not remove them (they are data,
+  // not geometry) and did let tiles overshoot the limb, so it was reverted.
   const boxInsideDisc = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]
     .every(([x, y]) => Math.hypot(x - cx, y - cy) <= r + DISC_EPSILON_PX);
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, visible: pts.every((p) => p.visible) && boxInsideDisc };

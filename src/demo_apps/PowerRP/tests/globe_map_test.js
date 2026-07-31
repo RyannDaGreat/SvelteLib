@@ -343,6 +343,10 @@ test("GLOBE: no tile ink is ever drawn OUTSIDE the planet's disc", () => {
     for (const [x, y] of [[op.x, op.y], [op.x + op.w, op.y], [op.x, op.y + op.h], [op.x + op.w, op.y + op.h]])
       assert.ok(Math.hypot(x - cx, y - cy) <= r + SLACK,
         `a tile quad reaches (${x.toFixed(1)}, ${y.toFixed(1)}), which is outside the disc of radius ${r} — tile ink is escaping into space`);
+  // AND NO RUNAWAY BOXES: the original defect's shape was a quad whose bounding box
+  // spanned a large fraction of the planet, so bound the size directly too.
+  const biggest = Math.max(...images.map((o) => Math.max(o.w, o.h)));
+  assert.ok(biggest < r, `the largest quad is ${biggest.toFixed(1)} px on a disc of radius ${r} — a quad that big is a ballooned bounding box, not a piece of sphere`);
 });
 
 test("GLOBE: the POLAR CAPS fill the hole Mercator cannot reach", () => {
