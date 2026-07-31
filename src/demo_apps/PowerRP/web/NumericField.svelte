@@ -40,8 +40,27 @@
 
   Props: app, path (full state path, e.g. ["items", id, "x"] or
   ["vars", name]), label, min/max (DraggableNumber bounds, in STORED units),
-  display (display-unit name, e.g. "degrees"; null = identity).
+  display (display-unit name, e.g. "degrees"; null = identity), centerAxis
+  ("x" | "y" | null — the cx/cy shortcut; see below).
   Styling lives in app.css (.numfield / .eq-*; app convention: no <style>).
+
+  CENTER SHORTCUT (cx/cy, core/properties.js positioning bundle): `centerAxis`
+  is a SECOND, ITEM-AWARE unit transform alongside `display` — necessarily
+  separate, because every `displayUnits.js` transform (degrees, cycles) is a
+  pure scalar function of the STORED value alone, while cx/cy's conversion
+  needs the SAME item's w/h/scale too (core/geometry.js boxCenter /
+  xForBoxCenterX / yForBoxCenterY — the identical base-frame-center math
+  core/derive.js worldTransform's own default pivot already uses, so a
+  render-time pivot and this field's number can never disagree). `path` still
+  points at the REAL stored slot (x or y) — cx/cy is NEVER itself a stored
+  path (core/expressions.js resolves `self.cx`/`@slug.cx` in equations by
+  computing, not reading), so keyframing/undo/equation-editing all operate on
+  x/y exactly as if the row were labeled "X"/"Y": typing a plain NUMBER into a
+  cx row inverts it to the x that makes the center land there; typing `=expr`
+  stores that equation on x VERBATIM (no inversion possible on a general
+  equation — same as any other numeric row), and the field's EVALUATED BADGE
+  still shows the resulting center, not the raw x, because the badge reads
+  through `unit.toDisplay` like a display-unit row's badge always has.
 
   AUTOCOMPLETE (manifest "EQUATION DISCOVERABILITY"): while typing in the
   equation input, EquationSuggest.svelte renders a ranked dropdown (core/
@@ -62,12 +81,16 @@
     displayToStored, storedToDisplay, compiled, evalAst,
     classifyEquation, equationTokenSpans, resolveRef, slugMap,
   } from "../core/expressions.js";
+  import { boxCenter, xForBoxCenterX, yForBoxCenterY } from "../core/geometry.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { decimalPlaces, resolveScrub } from "../../../lib/numberStep.js";
   import { displayUnit } from "./displayUnits.js";
   import { fanOutPairs } from "../core/multiselect.js";
 
-  let { app, path, paths = null, label, min = null, max = null, display = null, scrub = null, step = null } = $props();
+  let {
+    app, path, paths = null, label, min = null, max = null, display = null, scrub = null, step = null,
+    centerAxis = null,
+  } = $props();
 
   /**
    * THE WRITE TARGETS. Reads stay on the singular `path` (the PRIMARY item — in a
@@ -164,7 +187,31 @@
   // Display-unit transform (rotation edits in degrees though core stores
   // radians; identity for every other field). DISPLAY ONLY — never migrates
   // storage. See ./displayUnits.js.
-  let unit = $derived(displayUnit(display));
+  //
+  // centerAxis (cx/cy): an ITEM-AWARE sibling of the same seam — see the
+  // header comment. It reads the OTHER folded box dimension (h for a cx row,
+  // w for a cy row) plus scale off the SAME item every render, so it always
+  // matches the item's CURRENT box even mid-drag (evaluated, not raw — a
+  // width equation is settled the same way the paint path settles it).
+  // `path` is ["items", id, "x"] or ["items", id, "y"]; `path[1]` is the
+  // owning item, exactly the `selfId` derivation above already uses.
+  // MULTI-SELECTION CAVEAT: `writePaths` fans the SAME converted number out to
+  // every selected item (the Tier-1 multi-select contract — see Inspector.svelte
+  // propRow), but this unit is built from ONLY the PRIMARY item's w/h/scale
+  // (`path[1]`). Two selected items of different widths given the same typed cx
+  // will NOT land at the same visual center on both — an existing class of
+  // imprecision shared with any item-aware (non-scalar) unit, not introduced
+  // by this row alone; a scalar `display` unit (degrees) has no such gap since
+  // it needs no sibling state.
+  let centerUnit = $derived.by(() => {
+    if (centerAxis == null) return null;
+    const itemState = app.state().items?.[path[1]] ?? {};
+    const scale = itemState.scale ?? 1;
+    return centerAxis === "x"
+      ? { toDisplay: (x) => boxCenter({ x, w: itemState.w, scale }).x, fromDisplay: (cx) => xForBoxCenterX(cx, itemState.w ?? 0, scale), suffix: "" }
+      : { toDisplay: (y) => boxCenter({ y, h: itemState.h, scale }).y, fromDisplay: (cy) => yForBoxCenterY(cy, itemState.h ?? 0, scale), suffix: "" };
+  });
+  let unit = $derived(centerUnit ?? displayUnit(display));
 
   let stored = $derived(getPath(app.rawState(), path));
   let isEquation = $derived(typeof stored === "string");

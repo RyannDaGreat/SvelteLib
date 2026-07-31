@@ -41,7 +41,7 @@
 
 import * as T from "./transform.js";
 import { reportOnce } from "./report.js";
-import { unmirroredLocal, unsignedState } from "./geometry.js";
+import { boxCenter, unmirroredLocal, unsignedState } from "./geometry.js";
 import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 
 /**
@@ -76,7 +76,7 @@ export function worldTransform(itemState) {
   if (ra && typeof ra.x === "number" && typeof ra.y === "number")
     return T.aboutPivot(base, ra.x, ra.y);
   if (itemState.w == null || itemState.h == null) return base; // no bbox: top-left pivot
-  const c = T.apply({ ...base, rotation: 0 }, itemState.w / 2, itemState.h / 2);
+  const c = boxCenter(itemState);
   return T.aboutPivot(base, c.x, c.y);
 }
 

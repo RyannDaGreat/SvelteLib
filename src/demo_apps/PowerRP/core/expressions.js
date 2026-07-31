@@ -92,7 +92,7 @@
 import { isTree, copied, copiedDeep, getPath, setPath, leaves } from "./deltas.js";
 import * as T from "./transform.js";
 import { worldTransform, composedMemberInfluence, memberOwnerGroups } from "./derive.js";
-import { unsignedState } from "./geometry.js";
+import { boxCenter, unsignedState } from "./geometry.js";
 import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
 import { isHexColor } from "./interpolators.js";
@@ -1741,13 +1741,19 @@ export function listResultProblem(decl, value) {
  * rather than a live item's state, so it lists what EVERY instance of the
  * type offers, independent of any particular item's current values.
  *
- * @example numericPropertyPaths(rectPlugin) // ["x", "y", "w", "h", "z", "rotation", "scale", "rotation_anchor.x", "rotation_anchor.y", "stroke_width", "corner_radius", "opacity"]
- * @example numericPropertyPaths(fancyArrowPlugin) // [..., "start_width", "end_width"] (camelCase startWidth/endWidth shown as snake_case)
+ * @example numericPropertyPaths(rectPlugin) // ["x", "y", "w", "h", "z", "rotation", "scale", "rotation_anchor.x", "rotation_anchor.y", "stroke_width", "corner_radius", "opacity", "cx", "cy"]
+ * @example numericPropertyPaths(fancyArrowPlugin) // [..., "start_width", "end_width"] (camelCase startWidth/endWidth shown as snake_case; no cx/cy — an endpoint-pair widget has no box)
  */
 export function numericPropertyPaths(plugin) {
   const out = [];
   for (const [path] of leaves(plugin.defaults))
     if (isNumericSlot(plugin, path)) out.push(pathToDisplay(path).join("."));
+  // cx/cy: DERIVED, so they own no plugin.defaults leaf for the loop above to
+  // find (refValue's dedicated branch answers them; see its comment) — appended
+  // here so the "referenceable ⟹ discoverable" law this function exists to
+  // enforce still holds. Only for a BBOX plugin (declares both w and h): a
+  // two-point widget (arrow/line) has no box and thus no center.
+  if (typeof plugin.defaults.w === "number" && typeof plugin.defaults.h === "number") out.push("cx", "cy");
   return out;
 }
 
@@ -2518,6 +2524,25 @@ function computeEvaluatedState(state, registry, script = "") {
     }
     if (d.kind === "prop") {
       if (!out.items?.[d.itemId]) throw new Error(`Unknown item "@${d.itemId}" in "${token}"`);
+      // cx/cy: THE DERIVED CENTER PAIR, not a stored slot — no plugin's defaults
+      // ever declares one (properties.js's row entries are display-only; see
+      // its "computed, no default" note), so a raw getPath below would always
+      // read undefined and throw "has no property". Caught here, ahead of that
+      // generic path, and answered from the SAME base-frame math worldTransform
+      // already uses for its own default pivot (core/geometry.js boxCenter) —
+      // one formula, read by both the render seam and the equation seam. Only a
+      // BARE `self.cx` / `@slug.cx` qualifies (d.path.length === 1): "cx.foo"
+      // is not a thing, and falls through to the ordinary prop lookup below,
+      // which reports it as the unknown property it is.
+      if (d.path.length === 1 && (d.path[0] === "cx" || d.path[0] === "cy")) {
+        requireItemGeometry(d.itemId, false); // settle x/y/w/h/scale first
+        // NOT requireGroups/world here: cx/cy lives in the SAME (local, stored)
+        // frame as x/y themselves — a group's world influence is exactly the
+        // thing this pair is NOT (that is what worldTransform/anchors are for).
+        const target = unsignedState(out.items[d.itemId]); // enter THE FLIP SEAM, same as every other pre-derivation reader
+        const c = boxCenter(target);
+        return d.path[0] === "cx" ? c.x : c.y;
+      }
       // display snake_case → stored camelCase (idempotent on camel), then a
       // DECLARED-LIST element field's canonical NAME → its storage key
       // (`points.3.x` → points[3][0] for a tuple element; a no-op otherwise).

@@ -685,6 +685,28 @@ export const PROPS = {
   // ── positioning (bbox) ──────────────────────────────────────────────────────
   x: { label: "X", kind: "number", category: "positioning", help: "Horizontal position of the widget's top-left corner, in canvas units (right is positive)." },
   y: { label: "Y", kind: "number", category: "positioning", help: "Vertical position of the widget's top-left corner, in canvas units (down is positive)." },
+  // cx/cy: a DERIVED shortcut for the box's center — x/y's own bundle-mate, not
+  // a stored field of its own (no plugin default; core/expressions.js resolves
+  // `self.cx`/`@slug.cx` by computing core/geometry.js boxCenter, never by
+  // reading a stored slot, and this row NEVER appears in a saved document —
+  // see the doctest at PROPS' bottom).
+  //
+  // `key` stays "cx"/"cy" — UNIQUE within a plugin's `.inspector` array, same as
+  // every other row (core/multiselect.js intersectRows' own comment: "a key
+  // declared twice by one plugin is a plugin defect"; a cx row sharing "x"
+  // with the real x row broke exactly that invariant on first landing — a
+  // plugin's inspector array is a LOOKUP TABLE by key elsewhere, e.g.
+  // Inspector.svelte's multiByKey). `writeKey` ("x"/"y") is the SEPARATE
+  // aspect naming the REAL stored slot: Inspector.svelte's own `writeKey(row)`
+  // helper resolves it (falling back to `key` for every ordinary row) and uses
+  // THAT — never `row.key` — to build every path/keyframe/equation call, so
+  // NumericField's `path` prop already points at x/y by the time it gets
+  // there; NumericField itself only needs `centerAxis` for its item-aware
+  // inverse (core/geometry.js xForBoxCenterX/yForBoxCenterY). Typing "=" on
+  // the row stores the equation on that same real path verbatim (same as any
+  // other numeric row, no inversion attempted on a general equation).
+  cx: { label: "Center X", kind: "number", category: "positioning", writeKey: "x", centerAxis: "x", help: "Horizontal position of the widget's CENTER, in canvas units — a shortcut for x + width/2. Typing a value here moves x so the center lands exactly there; equivalent to reading self.cx in an equation." },
+  cy: { label: "Center Y", kind: "number", category: "positioning", writeKey: "y", centerAxis: "y", help: "Vertical position of the widget's CENTER, in canvas units — a shortcut for y + height/2. Typing a value here moves y so the center lands exactly there; equivalent to reading self.cy in an equation." },
   // NO `min` ON w/h — a NEGATIVE size is meaningful: it is a FLIP (core/geometry.js
   // "THE FLIP"; the Flip Content commands write exactly this, and dragging a resize
   // handle past the opposite edge produces it). A `min: 0` here would have made the
@@ -1326,7 +1348,7 @@ export const STROKE_TRIM_KEYS = ["strokeStart", "strokeEnd", "strokePhase", "str
 export const STROKE_OFFSET_KEYS = ["strokeOffset"];
 
 export const BUNDLES = {
-  positioning: ["x", "y", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"],
+  positioning: ["x", "y", "cx", "cy", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"],
   // The endpoint-pair positioning every arrow-family widget shares (from/to
   // coordinates + z). Distinct from `positioning` — arrows have no bbox/rotation
   // of their own; their geometry IS the two endpoints (core/endpoints.js).
@@ -1446,8 +1468,9 @@ export function props(...args) {
 
 /**
  * Pure function. Expands a named BUNDLE to a row array, with the same trailing
- * {key: overrides} map as props(). `bundle("positioning")` is the nine shared
- * bbox rows; `bundle("strokedBox")` the four box-style rows.
+ * {key: overrides} map as props(). `bundle("positioning")` is the shared bbox
+ * rows (x/y, the cx/cy center shortcut, w/h, rotation + its anchor, z);
+ * `bundle("strokedBox")` the four box-style rows.
  *
  * Args:
  *   name (string): a BUNDLES key
@@ -1458,8 +1481,13 @@ export function props(...args) {
  *
  * @example bundle("strokedBorder").map((r) => r.key)
  * ["stroke","strokeWidth","strokeOffset","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd"]
- * @example bundle("positioning").length
- * 8
+ * @example bundle("positioning").map((r) => r.key)
+ * ["x","y","cx","cy","w","h","rotation","rotationAnchor.x","rotationAnchor.y","z"]
+ * @example // cx/cy keep their OWN unique key (never collide with x/y — a
+ * @example // repeated key is a plugin defect per core/multiselect.js
+ * @example // intersectRows) but carry `writeKey` naming the REAL stored slot:
+ * @example bundle("positioning")[2]
+ * {"key":"cx","label":"Center X","kind":"number","category":"positioning","writeKey":"x","centerAxis":"x","help":"Horizontal position of the widget's CENTER, in canvas units — a shortcut for x + width/2. Typing a value here moves x so the center lands exactly there; equivalent to reading self.cx in an equation."}
  */
 export function bundle(name, overrides = {}) {
   const keys = BUNDLES[name];

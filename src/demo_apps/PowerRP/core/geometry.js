@@ -345,6 +345,73 @@ export function unsignedState(state) {
 }
 
 /**
+ * Pure function. A box's CENTER in the ROTATION-ZEROED base frame — the same
+ * frame x/y themselves live in (core/transform.js fromState pivots rotation
+ * about the local origin; a base-frame point ignores rotation entirely). This
+ * is `core/derive.js worldTransform`'s own default-pivot math
+ * (`T.apply({...base, rotation: 0}, w/2, h/2)`), pulled out so BOTH the
+ * pivot fallback and the cx/cy equation read (core/expressions.js) share one
+ * formula instead of two hand-copies drifting apart.
+ *
+ * SIGN-INDEPENDENT BY CONSTRUCTION — no `unsignedState` call needed. A flip
+ * (core/geometry.js "THE FLIP") writes {x: x+scale·w, w: -w}; substituting
+ * into `x + scale·w/2` gives `x + scale·w - scale·w/2 = x + scale·w/2`, the
+ * SAME value. THE FLIP repositions the box so it occupies the same footprint,
+ * so of course its center doesn't move — this is that fact, checked by the
+ * doctest below rather than asserted in prose.
+ *
+ * A widget with no w/h (an arrow, a two-point line) has no box and thus no
+ * center; callers with such an item must not call this (the same "no bbox"
+ * exclusion `pointInNodeBox` and `worldTransform`'s own pivot fallback use).
+ *
+ * @example boxCenter({x: 10, y: 20, w: 100, h: 50, scale: 1}) // {x: 60, y: 45}
+ * @example // a flipped box (negative w) has the IDENTICAL center — same footprint:
+ * @example boxCenter({x: 110, y: 20, w: -100, h: 50, scale: 1}) // {x: 60, y: 45}
+ * @example // scale multiplies the half-extent, same as worldTransform's own pivot:
+ * @example boxCenter({x: 10, y: 20, w: 100, h: 50, scale: 2}) // {x: 110, y: 70}
+ * @example // rotation contributes NOTHING — this IS the rotation-zeroed frame:
+ * @example boxCenter({x: 10, y: 20, w: 100, h: 50, scale: 1, rotation: Math.PI / 3}) // {x: 60, y: 45}
+ */
+export function boxCenter(state) {
+  const scale = state.scale ?? 1;
+  return {
+    x: (state.x ?? 0) + (scale * (state.w ?? 0)) / 2,
+    y: (state.y ?? 0) + (scale * (state.h ?? 0)) / 2,
+  };
+}
+
+/**
+ * Pure function. The INVERSE of `boxCenter` for x: given a desired center
+ * cx and the box's w/scale, the stored x that makes `boxCenter` read back
+ * exactly cx. This is what a cx WRITE solves — "type a center, store the
+ * top-left" — mirroring `stateXYForCenterPivotWorld`'s back-solve shape but
+ * for the plain (unrotated) base-frame center rather than a rotated pivot.
+ *
+ * ROUND-TRIP: `boxCenter({...state, x: xForBoxCenterX(cx, state.w, state.scale)}).x === cx`
+ * for any state (including a flipped, negative w) — the two are exact
+ * algebraic inverses, not an approximation.
+ *
+ * @example xForBoxCenterX(60, 100, 1) // 10
+ * @example xForBoxCenterX(110, 100, 2) // 10
+ * @example // inverse of boxCenter: solving for the read-back value is a no-op
+ * @example xForBoxCenterX(boxCenter({x: 10, y: 20, w: 100, h: 50, scale: 1}).x, 100, 1) // 10
+ */
+export function xForBoxCenterX(cx, w, scale = 1) {
+  return cx - (scale * w) / 2;
+}
+
+/**
+ * Pure function. The INVERSE of `boxCenter` for y — see `xForBoxCenterX` for
+ * the full rationale (identical shape, the other axis).
+ *
+ * @example yForBoxCenterY(45, 50, 1) // 20
+ * @example yForBoxCenterY(70, 50, 2) // 20
+ */
+export function yForBoxCenterY(cy, h, scale = 1) {
+  return cy - (scale * h) / 2;
+}
+
+/**
  * Pure function. Reflects a LOCAL point back through a node's mirror flags, so a
  * point expressed in the widget's on-screen (mirrored) frame lands in the
  * UNMIRRORED frame every plugin's own geometry is written in. The mirror is a

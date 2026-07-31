@@ -423,6 +423,26 @@
   }
 
   /**
+   * Pure function. The REAL state key a row reads/writes/keyframes through —
+   * `row.key` for every ordinary row, `row.writeKey` for one that displays
+   * under a DIFFERENT name than it stores (currently only cx/cy: displayed as
+   * "cx", written through "x" — core/properties.js PROPS.cx). Deliberately
+   * separate from `row.key` itself: `row.key` stays UNIQUE within a plugin's
+   * `.inspector` array (core/multiselect.js intersectRows treats a repeated
+   * key as a plugin defect, and Inspector's own multiByKey/eqOpenKey/
+   * justCopiedKey bookkeeping is keyed by it too — a cx row sharing "x" broke
+   * both on first landing). Every path/keyframe/equation call site in this
+   * file reads THROUGH this, never `row.key` directly, so cx/cy's writes land
+   * on x/y exactly like a same-named row would.
+   *
+   * @example writeKey({key: "x"}) // "x"
+   * @example writeKey({key: "cx", writeKey: "x"}) // "x"
+   */
+  function writeKey(row) {
+    return row.writeKey ?? row.key;
+  }
+
+  /**
    * Query. The element an insert into an EMPTY list row should create: the FIRST
    * element of the owning plugin's own default for that property. It exists
    * because core/lists.insertedElement refuses an empty list — "there is nothing
@@ -618,7 +638,8 @@
   function equationCapable(row, itemMode) {
     if (!itemMode || sel == null || pickedItemId == null) return false;
     if (!EQUATION_KINDS.has(rowKind(row)) || row.paint) return false;
-    return row.key in PROPS || getPath(sel.plugin.defaults, row.key.split(".")) !== undefined;
+    const k = writeKey(row);
+    return k in PROPS || getPath(sel.plugin.defaults, k.split(".")) !== undefined;
   }
 
   /** Query. The RAW stored value at a row's item path — an `=` string when the
@@ -627,7 +648,7 @@
    * so this raw read is the only way to see the equation itself. Mirrors
    * NumericField's stored/evaluated split. */
   function rowStored(row) {
-    return getPath(app.rawState(), ["items", pickedItemId, ...row.key.split(".")]);
+    return getPath(app.rawState(), ["items", pickedItemId, ...writeKey(row).split(".")]);
   }
 
   /** Query. Is the row SHOWING the equation field — because the document stores
@@ -636,7 +657,7 @@
    * THIS item (see eqOwnerId)? */
   function equationActive(row, stored) {
     if (eqOpenKey === row.key && eqOwnerId === pickedItemId) return true;
-    return isEquationValue(sel.plugin, row.key.split("."), stored);
+    return isEquationValue(sel.plugin, writeKey(row).split("."), stored);
   }
 
   /**
@@ -1122,7 +1143,7 @@
        are withheld here rather than inside valueControl, because both live in
        THIS snippet's grid cells. -->
   {@const isAction = rowKind(row) === ACTION_ROW_KIND}
-  {@const pathText = isAction ? null : pathTooltipText(pathState ?? state, itemId, row.key)}
+  {@const pathText = isAction ? null : pathTooltipText(pathState ?? state, itemId, writeKey(row))}
   {@const helpText = row.help ?? null}
   <!-- DYNAMIC BOUNDS (general mechanism): a row's `max` may be a STATE-DERIVED
        FUNCTION `(state) => number` (e.g. pdf_page's page cap = pageCount for the
@@ -1143,7 +1164,7 @@
        this row's own set state is looked up by key, so there is no per-row options
        object to build and nothing to keep in step. -->
   {@const multiRow = multi ? multiByKey.get(row.key) : null}
-  {@const writePaths = multi ? multiPaths(row.key) : null}
+  {@const writePaths = multi ? multiPaths(writeKey(row)) : null}
   {@const ctx = { itemMode, disabled, onpreview, oncommit, itemId, resolvedMax, hoverPreview, writePaths }}
   <!-- TIER 0 (manifest field-resolution rule): does this row get the universal
        `=` fallback, is it showing it, and what does it actually STORE (the raw
@@ -1152,7 +1173,7 @@
   {@const eqCapable = equationCapable(row, itemMode)}
   {@const eqStored = eqCapable ? rowStored(row) : null}
   {@const eqActive = eqCapable && equationActive(row, eqStored)}
-  {@const eqRowPaths = eqCapable ? (multi ? multiPaths(row.key) : [["items", pickedItemId, ...row.key.split(".")]]) : null}
+  {@const eqRowPaths = eqCapable ? (multi ? multiPaths(writeKey(row)) : [["items", pickedItemId, ...writeKey(row).split(".")]]) : null}
   <!-- A LIST row (core/lists.js) keeps the label + keyframe line in the shared
        grid but gives the LIST ITSELF the panel's full width on a second line: one
        element row carries an index, a visibility eye, several field controls, the
@@ -1186,7 +1207,7 @@
             <button
               class="copy-path-btn"
               aria-label={copied ? `Copied path for ${row.label}` : `Copy equation path for ${row.label}`}
-              onclick={() => copyPath(pathState ?? state, itemId, row.key)}
+              onclick={() => copyPath(pathState ?? state, itemId, writeKey(row))}
             >
               <iconify-icon icon={copied ? "mdi:check" : "mdi:content-copy"} width="12" height="12"></iconify-icon>
             </button>
@@ -1264,7 +1285,7 @@
          aligned. -->
     {#if keyframes && !disabled && !isAction}
       <span class="kf-controls">
-        <KeyframeControls {app} path={["items", itemId, ...row.key.split(".")]} paths={writePaths} />
+        <KeyframeControls {app} path={["items", itemId, ...writeKey(row).split(".")]} paths={writePaths} />
       </span>
     {:else}
       <span class="kf-controls" aria-hidden="true"></span>
@@ -1348,10 +1369,19 @@
            moves it into the plugin's defaults), so `row.default ?? null` was null
            at every one of the 1507 numeric rows. NumericField reads the default
            from the owning plugin instead — the same `sel.plugin.defaults` lookup
-           equationCapable() above already uses. -->
+           equationCapable() above already uses.
+
+           `row.centerAxis` (cx/cy, core/properties.js positioning bundle): the
+           row DISPLAYS as "cx"/"cy" (row.key — unique, so multiByKey/undo/
+           multiselect bookkeeping never collide with the real x/y row) but
+           READS/WRITES through `writeKey(row)`, which PROPS.cx/.cy set to the
+           real stored slot ("x"/"y") — that is why `path` below is built from
+           writeKey, not row.key. The only extra wiring beyond an ordinary
+           number row is `centerAxis`, the item-aware unit transform. See
+           NumericField's header. -->
       <NumericField
         {app}
-        path={["items", pickedItemId, ...row.key.split(".")]}
+        path={["items", pickedItemId, ...writeKey(row).split(".")]}
         paths={writePaths}
         label={row.label}
         min={row.min ?? null}
@@ -1359,6 +1389,7 @@
         display={row.display ?? null}
         scrub={row.scrub ?? null}
         step={row.step ?? null}
+        centerAxis={row.centerAxis ?? null}
       />
     {:else if disabled}
       <!-- Grayed display of a not-yet-created item: read the value straight
