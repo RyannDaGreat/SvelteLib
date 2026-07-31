@@ -1016,12 +1016,28 @@ export function missingDefaults(doc, registry) {
     const nulls = nulled.get(id);
     const missing = [];
     for (const [path, value] of leaves(plugin.defaults)) {
-      // COMPUTED defaults (self.-equations, e.g. rotationAnchor) are supplied
-      // by the derivation stage's fallback (derive.worldTransform) — they
-      // must NEVER be materialized into documents (Opus1 review finding #1:
-      // injecting them contradicts the defaults-fallback migration design
-      // and rewrites every pre-round-11 doc on load).
-      if (typeof value === "string" && value.startsWith("self.")) continue;
+      // COMPUTED defaults (self.-equations) are skipped here ONLY for the two
+      // keys that have a genuine DERIVATION-STAGE fallback reproducing the same
+      // equation's own value when the key is absent — rotationAnchor.{x,y}
+      // (core/derive.js worldTransform falls back to boxCenter(itemState), the
+      // literal `self.anchors.center` computation) and magnifier's origin.{x,y}
+      // (plugins/magnifier.js originLocal falls back to the lens centre, same
+      // reasoning). For those, injecting the equation would rewrite every
+      // pre-round-11 document on load for no behavioural gain (Opus1 review
+      // finding #1) — the fallback already produces byte-identical output.
+      //
+      // god_rays/lens_flare's lightWorldX/Y are self.-prefixed too but do NOT
+      // qualify: nothing outside evaluateState knows what "the light position"
+      // should be if the key is absent, so lightLocal's `?? 0` is a bare
+      // technical null-guard (world ORIGIN), not a semantic reconstruction of
+      // the widget's own default. An item created during the leading-"="
+      // window (the shipped bug this file's fix accompanies) is missing these
+      // keys entirely and must have them FILLED, or it stays broken forever —
+      // the general string-shape test used to skip them by accident, which is
+      // why that test is now an explicit allowlist instead of a shape guess.
+      const DERIVATION_BACKED_SELF_KEYS = new Set(["rotationAnchor.x", "rotationAnchor.y", "origin.x", "origin.y"]);
+      if (typeof value === "string" && value.startsWith("self.") && DERIVATION_BACKED_SELF_KEYS.has(path.join(".")))
+        continue;
       // A scalar default key is ALSO covered when the item wrote a nested OBJECT
       // there (e.g. default `background: "#fff"` but the item holds a gradient
       // PAINT object → the written set has `background.type`/`background.stops…`

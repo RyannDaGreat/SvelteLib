@@ -50,7 +50,7 @@ import { closestPointOnAxisRange } from "../../core/outline.js";
 import { bundle, bundleNestedDefaults, CUSTOM_CATEGORY, customProps, defaults, props } from "../../core/properties.js";
 import * as T from "../../core/transform.js";
 import { materialFill } from "../../render_gpu/ir.js";
-import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
+import { applyEffects, effectsCullMargin, finiteGuardedParams } from "../../render_gpu/effects.js";
 // THE LOOK KNOBS AND THEIR schema→uniform MAPPING live in the shader entry now
 // (LENS_FLARE_FILL_PARAMS + lensFlareUniformParams — the fill-material framework's
 // single-declaration rule: "custom properties become material properties"). This
@@ -452,23 +452,38 @@ export const lensFlarePlugin = {
     ...bundle("effects"), // blend mode + (unused-by-default) shadow/bloom/inner-shadow
   ],
   /**
-   * Pure function. State → display-list: ONE materialFill op naming the "lens_flare"
-   * material, WRAPPED in the effects bundle (render_gpu/effects.js applyEffects) so
-   * the default blendMode "screen" composites the flare additively over the scene.
-   * The bbox (w, h) IS the region (local space; sceneIR wraps it in the node's
-   * world). The look knobs pass through as the op's `params`; the SkSL packer
-   * clamps/parses them. `world` (emit's 3rd arg) is required by applyEffects AND is
-   * THE WORLD→LOCAL SEAM for the light: this widget's stored light position is a
-   * WORLD point (lightWorldX/lightWorldY), so it is brought into the widget's own
-   * local box (lightFraction, via lightLocal's invert(worldTransform(s))) right here,
+   * Pure function (see render_gpu/effects.js finiteGuardedParams — logs on a
+   * genuinely broken input, never on an ordinary one). State → display-list: ONE
+   * materialFill op naming the "lens_flare" material, WRAPPED in the effects
+   * bundle (render_gpu/effects.js applyEffects) so the default blendMode "screen"
+   * composites the flare additively over the scene. The bbox (w, h) IS the region
+   * (local space; sceneIR wraps it in the node's world). The look knobs pass
+   * through as the op's `params`; the SkSL packer clamps/parses them. `world`
+   * (emit's 3rd arg) is required by applyEffects AND is THE WORLD→LOCAL SEAM for
+   * the light: this widget's stored light position is a WORLD point
+   * (lightWorldX/lightWorldY), so it is brought into the widget's own local box
+   * (lightFraction, via lightLocal's invert(worldTransform(s))) right here,
    * immediately before packing — the shader/generic-fill-material params object
    * still only ever sees a [0,1] box fraction, unchanged. This is also the whole
    * point of the feature: moving/rotating the WIDGET changes `world`, which changes
    * the RECOVERED fraction, which is exactly what keeps a fixed lightWorldX/Y
    * pinned to the same point in the document while the widget moves under it.
+   *
+   * THE LANDING BAR (the god_rays sibling's own fix, applied here too since this
+   * widget shares the same structural hole: a NaN lightWorldX/Y — from a stale
+   * item, a hand-edited document, or any future regression — reaches
+   * materialFill's own strict validator as `lightX`/`lightY` NaN and throws,
+   * measured directly against this file's OWN emit()). An unresolvable light
+   * falls back to fraction (0.5, 0.5) — the box's own centre, the same "no
+   * position is a worse guess than the middle of the box" reasoning god_rays
+   * uses — and any other broken knob falls back to its own plugin default, each
+   * logged once by name.
    */
   emit(s, _targetWorldIR, world) {
     const frac = lightFraction(s);
+    const rawParams = lensFlareUniformParams({ ...s, lightX: frac.x, lightY: frac.y });
+    const fallback = lensFlareUniformParams({ ...lensFlarePlugin.defaults, lightX: 0.5, lightY: 0.5 });
+    const params = finiteGuardedParams(rawParams, fallback, `demo_lens_flare ${s.id ?? "?"}`);
     const op = materialFill({
       material: "lens_flare",
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
@@ -477,7 +492,7 @@ export const lensFlarePlugin = {
       // renames the schema's `glow` to the shader's `bloom`, everything else identity;
       // lightX/lightY are overlaid here since CUSTOM/`s` no longer carries them (they
       // live in `s` as lightWorldX/lightWorldY, in world units).
-      params: lensFlareUniformParams({ ...s, lightX: frac.x, lightY: frac.y }),
+      params,
       opacity: s.opacity ?? 1,
     });
     return applyEffects([op], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });

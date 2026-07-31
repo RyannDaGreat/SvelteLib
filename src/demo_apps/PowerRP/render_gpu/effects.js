@@ -308,6 +308,50 @@ export function effectsCullMargin(state) {
 }
 
 /**
+ * Pure function (LOGS via the injected `warn` — diagnostic only, never read
+ * back, so this is near-pure in the same sense a reportOnce call is). THE
+ * LANDING BAR for any material-emitting plugin whose params can carry a
+ * WORLD-COORDINATE knob (a light position bound by equation to another item,
+ * e.g. god_rays/lens_flare's lightWorldX/Y): every numeric param is checked
+ * finite before it reaches materialBackdrop/materialFill's own validator
+ * (render_gpu/ir.js), which THROWS on the first non-finite param it finds —
+ * correctly so (that check stays strict for every OTHER widget's genuine bugs;
+ * this function's job is to make sure a plugin never hands it a value that
+ * SHOULDN'T be non-finite in the first place). A non-finite entry is replaced
+ * by `fallback[key]` (or 0 if that key has no declared fallback) and logged
+ * ONCE per call, naming the item and the field, so the cause is findable
+ * instead of a red box with no history.
+ *
+ * Home: here, not in either plugin, because "no plugin may import another
+ * plugin" (manifest) and both god_rays and lens_flare need the identical
+ * guard — this module is already the shared render-half every material-
+ * composing widget imports (effectsCullMargin's same reasoning).
+ *
+ * @param {object} params - a plugin's evaluated numeric knob map (as passed to materialBackdrop/materialFill's `params`)
+ * @param {object} fallback - same-shaped map of replacement values for a non-finite entry
+ * @param {string} itemLabel - names the item in the console.warn (e.g. `"demo_god_rays a1"`)
+ * @param {(msg: string) => void} [warn] - injected for testability; defaults to console.warn
+ * @returns {object} same keys as `params`, every numeric value finite
+ *
+ * @example finiteGuardedParams({lightOffsetX: NaN, density: 0.9}, {lightOffsetX: 0}, "demo_god_rays a1", () => {}) // {lightOffsetX: 0, density: 0.9}
+ * @example finiteGuardedParams({exposure: 0.4}, {}, "demo_god_rays a1", () => {}) // {exposure: 0.4} (already finite: untouched, no warning)
+ * @example finiteGuardedParams({tint: "#ffffff", weight: Infinity}, {weight: 0.1}, "demo_god_rays a1", () => {}).tint // "#ffffff" (non-numbers pass through — the packer parses color strings itself)
+ */
+export function finiteGuardedParams(params, fallback, itemLabel, warn = console.warn) {
+  const out = {};
+  for (const [key, v] of Object.entries(params)) {
+    if (typeof v === "number" && !Number.isFinite(v)) {
+      const replacement = fallback[key] ?? 0;
+      warn(`PowerRP "${itemLabel}": param "${key}" was ${v} (non-finite) — falling back to ${replacement}. Check the item's light position / knob equations.`);
+      out[key] = replacement;
+    } else {
+      out[key] = v;
+    }
+  }
+  return out;
+}
+
+/**
  * Pure function. The PER-SIDE-inflated effect SOURCE rect (in device px) that a
  * backend must re-render the widget into, so the effect passes have valid source
  * texels on every side and an OFFSET silhouette's own body is captured.

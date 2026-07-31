@@ -60,7 +60,7 @@ import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../.
 import * as T from "../../core/transform.js";
 import { GOD_RAYS_FILL_PARAMS, godRaysUniformParams } from "../../render_gpu/skia/god_rays_shader.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
-import { effectsCullMargin } from "../../render_gpu/effects.js";
+import { effectsCullMargin, finiteGuardedParams } from "../../render_gpu/effects.js";
 
 // The look knobs live in the SHADER entry (the fill-material framework's
 // single-declaration rule — comic.js/crt.js are the exemplars). The light position
@@ -183,7 +183,38 @@ export const godRaysPlugin = {
     // its own box (where a sun usually is) while the STORED form is already the
     // absolute, equation-bindable one the sun coupling needs — retarget it with
     // `= sun.x` and nothing else changes.
-    lightWorldX: "= self.x + 0.5 * self.w", lightWorldY: "= self.y + 0.18 * self.h",
+    //
+    // BARE "self."-prefixed form (NO leading "="), matching the flare's own default
+    // two properties down its file: isNumericSlot's self.-prefix branch is what makes
+    // the evaluator expect a NUMBER result here. A leading "=" is the UNIVERSAL
+    // any-type marker (core/expressions.js EQ_PREFIX_RE) and sends resultKindForSlot
+    // past isNumericSlot entirely — it then inspects THIS DEFAULT STRING's own shape
+    // (not a hex color, so "string") instead of ever seeing that the string is itself
+    // a self.-prefixed computed default, and validates the equation's numeric result
+    // against kind "string". That rejects every insert: the shipped bug had this
+    // exact leading "=", so a freshly-inserted god-rays widget failed its OWN
+    // light-position equations on the very first evaluation, fell back to
+    // fallbackFor(path) — which returns the plugin's default AT THAT PATH, i.e. this
+    // string ITSELF, unresolved — and state.lightWorldX became the literal text
+    // "= self.x + 0.5 * self.w" flowing as a string into arithmetic. Proven (not
+    // guessed): resultKindForSlot(godRaysPlugin, ["lightWorldX"], defaultString) fired
+    // "string" for the old leading-"=" form.
+    //
+    // BUILT FROM self.anchors.tl/br, NOT self.x/self.w/self.h DIRECTLY — the flare's
+    // OWN precedent two files over, and not optional: a raw self.w/self.h PROP read
+    // (core/expressions.js refValue) hands back the STORED, possibly NEGATIVE extent
+    // (a Flip) with no unsigning, while an ANCHOR read (core/expressions.js
+    // anchorValue) enters THE FLIP SEAM (unsignedState) first. The first attempt at
+    // this fix used self.x + 0.5*self.w directly and passed every hand-built fixture
+    // test (which never flips a box) while FAILING tests/negative_size_test.js's
+    // sweep: a -w+h god-rays widget derived a DIFFERENT lightWorldX than the +w+h
+    // spelling of the identical footprint, because self.w carried the sign straight
+    // into the default equation. tl/br span the box corner-to-corner in WORLD units
+    // and are already unsigned, so (br - tl) is the unsigned w/h and tl is the
+    // unsigned origin — this default is flip-safe by construction, like
+    // rotationAnchor's own self.anchors.center default just above it.
+    lightWorldX: "self.anchors.tl.x + 0.5 * (self.anchors.br.x - self.anchors.tl.x)",
+    lightWorldY: "self.anchors.tl.y + 0.18 * (self.anchors.br.y - self.anchors.tl.y)",
     cornerRadius: 0,
     // No rim by default: rays are light, and a box drawn around light looks like a
     // mistake. The knob stays for anyone framing a deliberate "window".
@@ -212,12 +243,28 @@ export const godRaysPlugin = {
     ...CUSTOM.rows, // the grouped look knobs (march / mask / look)
   ],
   /**
-   * Pure function. State → display-list: ONE `materialBackdrop` op naming the
-   * "god_rays" material. The bbox (w, h) IS the region the rays render over (local
-   * space; sceneIR wraps it in the node's world). The light rides as a CENTRE-
-   * RELATIVE LOCAL OFFSET (godRaysLightOffset) which the material's packer converts
-   * to device px — see the seam note there for why the conversion happens at the
-   * packer and not here (emit() cannot see the camera).
+   * Pure function (see finiteGuardedParams — logs on a genuinely broken input,
+   * never on an ordinary one; the fixture-deck suite and every hand-built test
+   * pass a well-formed state and log nothing). State → display-list: ONE
+   * `materialBackdrop` op naming the "god_rays" material. The bbox (w, h) IS the
+   * region the rays render over (local space; sceneIR wraps it in the node's
+   * world). The light rides as a CENTRE-RELATIVE LOCAL OFFSET (godRaysLightOffset)
+   * which the material's packer converts to device px — see the seam note there
+   * for why the conversion happens at the packer and not here (emit() cannot see
+   * the camera).
+   *
+   * THE LANDING BAR: every numeric param is finite-guarded (finiteGuardedParams)
+   * before it reaches materialBackdrop's own strict validator (render_gpu/ir.js —
+   * that check stays a THROW, on purpose: it is the last line of defense for
+   * every material, not just this one, and weakening it would let a genuinely
+   * broken OTHER widget through silently). This widget's job is to never hand it
+   * a bad value in the first place: an unresolvable light degrades to the box's
+   * own centre (offset 0,0) and a broken look-knob degrades to that knob's own
+   * plugin default, each logged once by name so the cause is findable instead of
+   * a red box with no history. This is what makes a STALE item (missing the
+   * light keys outright — repairedDocument now fills them, see core/document.js
+   * missingDefaults) render something sane even in the one frame before a
+   * reload/repair pass has run.
    *
    * `blurRadius: 0` is deliberate and not a default left unset: the material
    * declares `usesBlurredBackdrop: false`, so no blurred child is built at all, and
@@ -226,15 +273,15 @@ export const godRaysPlugin = {
   emit(s) {
     const strokeW = s.strokeWidth ?? 0;
     const off = godRaysLightOffset(s);
+    const rawParams = { lightOffsetX: off.x, lightOffsetY: off.y, ...godRaysUniformParams(s) };
+    const fallback = { lightOffsetX: 0, lightOffsetY: 0, ...godRaysUniformParams(godRaysPlugin.defaults) };
+    const params = finiteGuardedParams(rawParams, fallback, `demo_god_rays ${s.id ?? "?"}`);
     return [materialBackdrop({
       material: "god_rays",
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2,
       cornerRadius: s.cornerRadius ?? 0,
       blurRadius: 0,
-      params: {
-        lightOffsetX: off.x, lightOffsetY: off.y,
-        ...godRaysUniformParams(s),
-      },
+      params,
       stroke: strokeW > 0 ? s.stroke : null,
       strokeWidth: strokeW,
       opacity: s.opacity ?? 1,
