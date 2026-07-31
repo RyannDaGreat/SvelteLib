@@ -53,7 +53,7 @@ import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname, resolve, relative, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { freePort } from "./free_port.js";
+import { withFreePort } from "./free_port.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, "..");
@@ -139,11 +139,25 @@ const BACKEND_READY_MS = 90_000;
 // the child is `uv run server.py` with an interpreter to boot. Probes run three
 // at a time, each spawning its own backend, so two could be handed the same
 // number and the loser died with `Errno 48 Address already in use`.
+//
+// RE-VERIFYING THE PORT IS NOT ENOUGH, and this file learned that the expensive
+// way a SECOND time: `freePort()` alone re-checks the port at ALLOCATION time,
+// which says nothing about who binds it during the interpreter boot that follows.
+// A whole 26-probe batch was lost to exactly that — the gate's own backend died
+// with `Errno 48` on a port freePort had just certified, and because the backend
+// is started BEFORE the lanes, zero probes ran and the log showed no test names
+// at all. free_port.js already shipped `withFreePort` for this case (its whole
+// point is a caller whose CHILD does the binding); startBackend simply never
+// used it. Now it does: the port is a parameter, and losing the race costs one
+// retry on a fresh number instead of the entire run.
 
 /**
- * Command. Starts the project backend and resolves {url, stop}. Throws LOUDLY with
- * the server's own output if it never answers — an unavailable prerequisite must not
- * masquerade as 93 failing probes.
+ * Command. Starts the project backend on `port` and resolves {url, stop}. Throws
+ * LOUDLY with the server's own output if it never answers — an unavailable
+ * prerequisite must not masquerade as 93 failing probes. Rejects with the child's
+ * own EADDRINUSE text when it loses the port race, which is what lets the
+ * `withFreePort` wrapper in `startBackendWithRetry` tell that case apart from a
+ * real failure and retry it.
  *
  * `uv run` IS A WRAPPER THAT EXECS A PYTHON GRANDCHILD, so killing the pid we hold
  * kills `uv` and leaves the server running, reparented to init, still holding its
@@ -152,9 +166,11 @@ const BACKEND_READY_MS = 90_000;
  * GROUP (`detached`) and teardown signals the NEGATIVE pid to take the grandchild
  * with it. Orphaned server fleets are exactly what this file's own header blames for
  * a ~50% flake elsewhere; the gate must not manufacture them.
+ *
+ * @param {number} port
+ * @returns {Promise<{url: string, stop: () => void}>}
  */
-async function startBackend() {
-  const port = await freePort();
+async function startBackend(port) {
   const url = `http://localhost:${port}`;
   const child = spawn("uv", ["run", "server.py", "serve", `--port=${port}`], {
     cwd: resolve(appRoot, "server"),
@@ -194,6 +210,24 @@ async function startBackend() {
     await new Promise((r) => setTimeout(r, 300));
   }
   return { url, stop };
+}
+
+/**
+ * Command. `startBackend` on a free port, retrying only when the child LOSES THE
+ * PORT RACE.
+ *
+ * Why this exists as its own function rather than inline: the gate starts its
+ * backend BEFORE any lane runs, so a lost race here is not one flaky probe, it is
+ * the entire run — every probe reports an absent dependency and the log contains
+ * no test names at all. `withFreePort` re-runs only on the EADDRINUSE signature
+ * (`defaultIsPortRace`); a backend that boots and then genuinely fails still
+ * throws on the first attempt, so a real breakage is never retried into a
+ * confusing loop.
+ *
+ * @returns {Promise<{url: string, stop: () => void}>}
+ */
+function startBackendWithRetry() {
+  return withFreePort((port) => startBackend(port));
 }
 
 /** Command (spawns a child). Runs one test file; resolves {ok, ms, tail}. Never throws
@@ -295,7 +329,7 @@ let backend = null;
 try {
   if (kinds.includes("browser") && !backendUrl && select("browser").length) {
     process.stdout.write("backend ");
-    backend = await startBackend();
+    backend = await startBackendWithRetry();
     backendUrl = backend.url;
     console.log(`up on ${backendUrl}`);
   } else if (backendUrl) {
