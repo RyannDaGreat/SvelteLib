@@ -98,6 +98,15 @@
     return { itemId: target.itemId, type: state.type, state, plugin: app.registry.get(state.type) };
   });
 
+  // THE RETYPE MENU for the selected item: eligible target types, each carrying
+  // the coercion preview computed against this item's LIVE folded state (so the
+  // warnings re-render as the values change — the "real-time" half of the
+  // ruling). Empty means "not retypeable", and the header falls back to the
+  // plain caption. Derived, not cached: app.retypeChoices() reads app.state(),
+  // which is itself a rune-tracked derivation, so an edit to a warned-about
+  // property updates the tooltip on the very next frame.
+  let retypeMenu = $derived(app.retypeChoices());
+
   // Picker: items visible on this slide first (render-tree order, as before),
   // then every OTHER document item — not yet created here, or active:false — at
   // the BOTTOM, flagged `invisible` for the red style (manifest, round 11).
@@ -1008,14 +1017,66 @@
   <LabelDivider {app} />
 {/snippet}
 
-<!-- THE WIDGET-TYPE CAPTION — "what kind of widget is this", sitting between the
+<!-- ONE ROW of the retype menu. A clean target renders as its bare title; a
+     COERCING target carries a warning triangle on the LEFT of the name and a
+     tooltip listing exactly what it would take away.
+
+     Verbatim ruling: "it would be rather dangerous if something is coerced
+     without the user knowing… highlighting it red in the dropdown and putting
+     them at the very bottom with a mouse hover that says WARNING — types will be
+     coerced, in bold, followed by bullet points for every property that will be
+     coerced, from what to what, giving the values… with a warning sign on the
+     left side of the name."
+
+     The bullets come from core/retype.coercionPreview, which is the SAME
+     function retypePlan feeds the write from — so the list cannot promise one
+     thing and the command do another. The house Tooltip (immediate by default,
+     never a native title=) renders them through its `tip` snippet, since the
+     content is markup rather than a string. -->
+{#snippet retypeItem(it)}
+  {#if it.coercions.length === 0}
+    <span>{it.label}</span>
+  {:else}
+    <Tooltip placement="bottom">
+      {#snippet tip()}
+        <strong>Warning — types will be coerced</strong>
+        <ul class="retype-warn-list">
+          {#each it.coercions as c (c.key)}
+            <li>{c.label}: {c.from} → {c.to}</li>
+          {/each}
+        </ul>
+      {/snippet}
+      <span class="retype-coerces">
+        <iconify-icon icon="mdi:alert" width="13" height="13"></iconify-icon>
+        {it.label}
+      </span>
+    </Tooltip>
+  {/if}
+{/snippet}
+
+<!-- THE WIDGET-TYPE CONTROL — "what kind of widget is this", sitting between the
      item dropdown and the Name row. A snippet because BOTH item branches (the
      created item and the not-yet-created one) render it and must render it the
      same way; a plugin with no registered title falls back to nothing rather
-     than printing "undefined". Small and dim by design: it is orientation, not
-     an affordance — the type is fixed for an item's whole life. -->
+     than printing "undefined".
+
+     It is a DROPDOWN when the item can become something else, and the same small
+     dim CAPTION it has always been when it cannot. The empty-choices case is not
+     a special branch here — app.retypeChoices() already returns [] for the
+     camera, a group, a scene-structural type and a multi-selection, so "no menu"
+     and "not retypeable" are one condition read in one place. A caption is right
+     for those: offering a menu that refuses every choice is a lie. -->
 {#snippet widgetType(plugin)}
-  {#if plugin?.title}
+  {#if retypeMenu.length > 0}
+    <div class="widget-type-picker">
+      <Dropdown
+        items={retypeMenu}
+        value={plugin?.type ?? null}
+        onchange={(v) => app.retypeSelection(v)}
+        item={retypeItem}
+      />
+    </div>
+  {:else if plugin?.title}
     <div class="widget-type">{plugin.title}</div>
   {/if}
 {/snippet}

@@ -32,6 +32,7 @@ import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefN
 // JS resolves it correctly.
 import { projectScriptProblem, projectScriptExports as compiledScriptExports } from "../core/project_script.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
+import { retypeChoices, retypeEligible, retypedItem } from "../core/retype.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
 import { multiSelectPanel, unifyPairs } from "../core/multiselect.js";
@@ -3184,6 +3185,50 @@ export class PowerRPApp {
       }
     }
     this.commit(doc);
+  }
+
+  /**
+   * Command (ONE undo unit). Turns the selected item into widget type
+   * `newType`, keeping its id, name, z, other slides' keyframes and every
+   * equation that names it — core/retype.js owns every rule about WHICH values
+   * survive, and this method owns only the document plumbing.
+   *
+   * Writes the type keyframe plus the fills and coercions on the CURRENT slide,
+   * so undo puts back both the old type AND every value the retype overwrote in
+   * one press. Committing the pending edit first is deleteSelection's rule
+   * (ROUND 15.2): commit() writes `this.doc` and does not know about a live
+   * previewDelta, so an in-progress text edit on the retyped item would be lost.
+   *
+   * Refuses LOUDLY on an ineligible source or target (retypeEligible — the
+   * camera, groups, scene-structural types): the dropdown never offers one, so
+   * reaching here with one is a caller bug, not a user mistake.
+   */
+  retypeSelection(newType) {
+    const id = this.selectedIds()[0];
+    if (id === undefined) return;
+    const folded = this.state().items?.[id];
+    if (!folded) throw new Error(`retypeSelection: item "${id}" is not on slide ${this.slideIndex}`);
+    if (folded.type === newType) return;
+    for (const [role, type] of [["source", folded.type], ["target", newType]])
+      if (!retypeEligible(this.registry.get(type)))
+        throw new Error(`retypeSelection: "${type}" is not a retype ${role} — it is structurally fixed (camera/group/scene-structural)`);
+    this.dismissEdit();
+    this.commit(retypedItem(this.doc, this.slideIndex, id, newType, folded, this.registry));
+  }
+
+  /**
+   * Query. The retype menu for the selected item — every eligible target with
+   * its coercion preview computed against this item's LIVE folded state, clean
+   * types first and coercing types last. Empty when nothing is selected, when
+   * several things are (a retype is single-item: an intersection menu would have
+   * to promise one type change means the same thing to a rect and a video), or
+   * when the selected item is itself ineligible — which is how the camera's
+   * Inspector header stays plain text.
+   */
+  retypeChoices() {
+    if (this.selectedIds().length !== 1) return [];
+    const folded = this.state().items?.[this.selectedIds()[0]];
+    return folded ? retypeChoices(this.registry, folded) : [];
   }
 
   /** Query. An item's folded state as of its ORIGINAL creation slide (the

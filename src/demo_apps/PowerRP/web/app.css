@@ -4924,12 +4924,19 @@ audio.ae-preview-media {
 /* ── THE WIDGET-TYPE CAPTION ────────────────────────────────────────────────
    "right above the name and below the drop down in small text tell me what kind
    of widget it is" (user, verbatim). The plugin's `title`, rendered as a
-   CAPTION rather than a property row: a widget's type is fixed for its whole
-   life, so it must not look editable — no row grid, no keyframe column, no
-   control. It therefore borrows the app's existing caption vocabulary (the
-   .cat-header treatment: --fg-dim, --a-font-sm, uppercase at
-   --a-caption-tracking) so it reads as a section label rather than a value,
-   and cannot drift from the panel's other small dim text.
+   CAPTION rather than a property row.
+
+   THIS IS THE FALLBACK FORM, used for a type that CANNOT be retyped — the
+   camera, a group, a scene-structural widget, and a multi-selection
+   (core/retype.retypeEligible decides, and an empty menu is the one condition
+   the Inspector reads). For those the type really is fixed, so a caption is the
+   honest control: no row grid, no keyframe column, nothing that looks clickable.
+   Everything else renders .widget-type-picker below instead.
+
+   It borrows the app's existing caption vocabulary (the .cat-header treatment:
+   --fg-dim, --a-font-sm, uppercase at --a-caption-tracking) so it reads as a
+   section label rather than a value, and cannot drift from the panel's other
+   small dim text.
 
    Indented by --a-sp-1 to line up with the category headers below it, which
    carry the same padding — the caption and the headers form one left edge. */
@@ -4940,6 +4947,44 @@ audio.ae-preview-media {
   font-size: var(--a-font-sm);
   text-transform: uppercase;
   letter-spacing: var(--a-caption-tracking);
+}
+
+/* ── THE WIDGET-TYPE PICKER ─────────────────────────────────────────────────
+   The retype menu, occupying the caption's slot for a type that CAN become
+   something else. It keeps the caption's left edge and top gap so the header
+   block's rhythm is identical whichever form renders, and it borrows the item
+   picker's square-corner override for the same reason that one exists: the
+   Dropdown's own --dd-radius would otherwise round a control every other field
+   in this panel leaves square. */
+.inspector .widget-type-picker {
+  padding: 0 var(--a-sp-1);
+  margin-top: var(--a-sp-2);
+}
+
+.inspector .widget-type-picker .dd {
+  --dd-radius: var(--a-radius-control);
+}
+
+/* A COERCING TARGET — one whose selection would reset properties this item
+   holds. Red is the app's standing signal for "this takes something away"
+   (.btn.danger, .picker-invisible), and the warning triangle carries the same
+   meaning without relying on hue, which a colour-blind reader cannot read.
+   These rows are ALSO sorted to the bottom of the menu — core/retype.retypeChoices
+   does that, since ordering is a fact about the data, not about the stylesheet. */
+.inspector .retype-coerces {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  color: var(--a-guide);
+}
+
+/* The warning bullets inside the tooltip. Tight leading and a small hanging
+   indent so a long list of coerced properties stays scannable at tooltip width;
+   the bold first line is the Tooltip's own <strong>, not styled here. */
+.retype-warn-list {
+  margin: var(--a-sp-1) 0 0;
+  padding-left: var(--a-sp-3);
+  list-style: disc;
 }
 
 .inspector .item-actions {
