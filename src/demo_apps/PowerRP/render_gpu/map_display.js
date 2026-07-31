@@ -60,7 +60,7 @@ import { rectsIntersect, rotatedBBoxAABB } from "../core/view.js";
 import {
   TILE_BUDGET, mapWorldWindow, tileZoomFor, tilesForWindow,
 } from "../core/geo_tiles.js";
-import { providerFor } from "../web/tile_providers.js";
+import { OVERLAY_IDS, overlayFor, overlayPropName, providerFor } from "../web/tile_providers.js";
 import { ensureTile, markTileFailed, tileRef, tileStatus, trimTileCache } from "./gpu/tile_registry.js";
 
 /** The widget `type` this pass serves. Named once so a rename cannot leave the
@@ -156,6 +156,12 @@ export function prepareMapTiles(nodes, view, viewW, viewH) {
     if (!descriptor) continue;
     map.set(node.itemId, descriptor);
     for (const tile of descriptor.tiles) needed.add(tile.ref);
+    // Overlay tiles are protected from eviction exactly like the base's — an
+    // active overlay's tiles are just as much "what this frame needs" as the
+    // basemap's, and skipping them here would let trimTileCache evict a label
+    // tile the SAME frame just fetched it.
+    for (const layer of Object.values(descriptor.overlays ?? {}))
+      for (const tile of layer.tiles) needed.add(tile.ref);
   }
   // Bound the resident set AFTER every map has stated its needs, protecting
   // exactly this frame's tiles (see trimTileCache: a budget bounds history, never
@@ -175,8 +181,40 @@ function worldRectOf(view, viewW, viewH) {
 }
 
 /**
+ * Query (kicks fetches). The tile list for ONE provider-shaped descriptor (a base
+ * provider OR an overlay — both are TILE_PROVIDERS-shaped: {url, subdomains,
+ * maxZoom}) over a given window, at the DEEPEST zoom that provider's own maxZoom
+ * allows. Factored out of describeMapNode so the base layer and every active
+ * overlay share one fetch path — an overlay is not a second implementation, it is
+ * the same tile mechanics run again with a different provider and its OWN
+ * (typically shallower) zoom ceiling.
+ *
+ * @param {object} provider - a TILE_PROVIDERS or TILE_OVERLAYS entry
+ * @param {{x: number, y: number, w: number, h: number}} cropped - the visible window
+ * @param {number} devicePerWorld - camera device px per world unit
+ * @param {number} widgetPx - the widget's box width, world units
+ * @param {number} widgetZoom - the widget's own continuous zoom property
+ * @returns {{z: number, tiles: object[]}}
+ */
+function layerTilePlan(provider, cropped, devicePerWorld, widgetPx, widgetZoom) {
+  const z = tileZoomFor(widgetZoom, widgetPx, devicePerWorld, provider.maxZoom);
+  const tiles = tilesForWindow(cropped, z, TILE_BUDGET).map((tile) => {
+    const ref = tileRef(provider, tile);
+    ensureTile(ref);
+    const status = tileStatus(ref);
+    if (status === "error") markTileFailed(ref);
+    return { ...tile, ref, ready: status === "ready" };
+  });
+  return { z, tiles };
+}
+
+/**
  * Query (kicks fetches). One map node's descriptor, or null when it has no
- * drawable window this frame.
+ * drawable window this frame. Carries the BASE layer's tile plan at top level
+ * (unchanged shape, so a consumer written before overlays existed keeps working)
+ * plus `overlays: {id: {z, tiles}}` for every overlay property the widget has
+ * switched on — same window, same crop, each at ITS OWN provider's zoom ceiling
+ * (the three shipped overlays cap at 9, independent of the base's own ceiling).
  *
  * @param {object} node - a derived render node of MAP_WIDGET_TYPE
  * @param {object} view - the live camera mapping
@@ -188,7 +226,6 @@ export function describeMapNode(node, view, viewW, viewH) {
   const s = node.state;
   const provider = providerFor(s.style);
   const devicePerWorld = devicePerWorldUnit(view, node.world?.scale ?? 1);
-  const z = tileZoomFor(s.zoom, s.w, devicePerWorld, provider.maxZoom);
   const window = mapWorldWindow(s.centerLon, s.centerLat, s.zoom, s.w, s.h);
 
   // THE VISIBLE CROP. The shared primitive (the PDF path's own) answers "what
@@ -205,12 +242,18 @@ export function describeMapNode(node, view, viewW, viewH) {
   if (!vis.visible || !(vis.sourceRect.sw > 0) || !(vis.sourceRect.sh > 0)) return null;
   const cropped = croppedWindow(window, vis.sourceRect);
 
-  const tiles = tilesForWindow(cropped, z, TILE_BUDGET).map((tile) => {
-    const ref = tileRef(provider, tile);
-    ensureTile(ref);
-    const status = tileStatus(ref);
-    if (status === "error") markTileFailed(ref);
-    return { ...tile, ref, ready: status === "ready" };
-  });
-  return { z, tiles, window, cropped, devicePerWorld, provider: provider.id, attribution: provider.attribution };
+  const { z, tiles } = layerTilePlan(provider, cropped, devicePerWorld, s.w, s.zoom);
+
+  // OVERLAYS — one tile plan per property the widget has switched on, same
+  // window/crop as the base, each at its OWN provider's zoom ceiling. A widget
+  // with no overlays on (the common case) does the same work as before this
+  // feature existed: an empty object, no extra fetches, no extra tiles.
+  const overlays = {};
+  for (const id of OVERLAY_IDS) {
+    if (!s[overlayPropName(id)]) continue;
+    const layer = overlayFor(id);
+    overlays[id] = { ...layerTilePlan(layer, cropped, devicePerWorld, s.w, s.zoom), attribution: layer.attribution };
+  }
+
+  return { z, tiles, window, cropped, devicePerWorld, provider: provider.id, attribution: provider.attribution, overlays };
 }

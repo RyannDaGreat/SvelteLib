@@ -1,6 +1,8 @@
 /**
  * THE TILE PROVIDER TABLE — which raster basemaps this app may fetch, the URL
- * template for each, and the ATTRIBUTION each one's licence REQUIRES.
+ * template for each, and the ATTRIBUTION each one's licence REQUIRES. See
+ * TILE_OVERLAYS below for the transparent REFERENCE layers (labels, borders,
+ * coastlines) a base may composite with — the Google "hybrid" look.
  *
  * This is a DATA table with a legal research record attached, because "which map
  * can I use" is a licensing question before it is a technical one, and the answer
@@ -8,13 +10,20 @@
  * against each provider's own published policy; the rejected ones are kept with
  * their reasons so nobody re-adds them on a hunch.
  *
- * ── ATTRIBUTION IS A LICENCE TERM, NOT DECORATION ─────────────────────────────
- * Every entry carries an `attribution` string and the widget RENDERS IT on the
- * map, always, at a legible size. It is not a toggle and there is no "hide
- * attribution" property, because for OSM ("Show OpenStreetMap licence attribution
- * clearly on the map") and for OpenTopoMap's CC-BY-SA it is the CONDITION under
- * which the tiles may be used at all. A knob to turn it off would be a knob that
- * silently breaks the licence for anyone who touched it.
+ * ── ATTRIBUTION IS A LICENCE TERM WITH A DEFAULT, NOT A FIXED DECORATION ──────
+ * Every entry carries an `attribution` string; whether it draws is the widget's
+ * `showAttribution` BOOLEAN PROPERTY, tweenable/equation-bindable like every other
+ * knob. It is not a per-provider constant because the licences genuinely differ:
+ * NASA's own MODIS imagery is public domain (full-and-open-sharing — no credit
+ * REQUIRED), while OSM ("Show OpenStreetMap licence attribution clearly on the
+ * map") and OpenTopoMap's CC-BY-SA make the credit a CONDITION of use. So each
+ * entry's `defaultShowAttribution` encodes what the licence actually requires —
+ * true for osm/terrain, false for satellite — and the property starts there on
+ * insert, but the toggle is always the USER'S to flip (user ruling, verbatim:
+ * "I don't need to see their logo on my presentations. Get rid of it."). A row's
+ * help carries one sentence naming the trade-off; there is no lecture, no
+ * on-canvas nagging, and no modal gate — the user's call to make, not this
+ * table's to enforce past the honest default.
  *
  * ── ADOPTED ───────────────────────────────────────────────────────────────────
  *   osm        — OpenStreetMap standard raster. THE reference street map, free,
@@ -105,6 +114,10 @@ export const TILE_PROVIDERS = Object.freeze({
     maxZoom: 19,
     attribution: "© OpenStreetMap contributors",
     tileSize: 256,
+    // ODbL REQUIRES this credit ("Show OpenStreetMap licence attribution clearly
+    // on the map") — on by default, but the TOGGLE is still the user's to flip
+    // (showAttributionHelp on the widget states the trade-off; see its docblock).
+    defaultShowAttribution: true,
   }),
   satellite: Object.freeze({
     id: "satellite",
@@ -129,6 +142,13 @@ export const TILE_PROVIDERS = Object.freeze({
     maxZoom: 9,
     attribution: "Imagery: NASA EOSDIS GIBS",
     tileSize: 256,
+    // NASA's own MODIS imagery is public domain — full and open sharing, no
+    // licence term requiring a credit. User ruling, verbatim: "I don't need to
+    // see their logo on my presentations. Get rid of it." — so a satellite-only
+    // slide shows NOTHING by default. (The three OVERLAY layers below are a
+    // DIFFERENT case even when paired with this same base — they are OSM-derived
+    // and default to shown; see TILE_OVERLAYS's header.)
+    defaultShowAttribution: false,
   }),
   terrain: Object.freeze({
     id: "terrain",
@@ -140,6 +160,7 @@ export const TILE_PROVIDERS = Object.freeze({
     // CC-BY-SA 3.0 REQUIRES naming both the data source and the style's author.
     attribution: "© OpenStreetMap contributors, SRTM | © OpenTopoMap (CC-BY-SA)",
     tileSize: 256,
+    defaultShowAttribution: true,
   }),
 });
 
@@ -229,4 +250,133 @@ export function tileUrl(provider, x, y, z) {
  */
 export function allAttributions() {
   return [...new Set(Object.values(TILE_PROVIDERS).map((p) => p.attribution))];
+}
+
+/**
+ * ── THE OVERLAY TABLE — transparent REFERENCE layers drawn ABOVE a base, the
+ * Google "hybrid" look (labels/borders/coastlines over satellite imagery). ──────
+ *
+ * ── RESEARCH RECORD ───────────────────────────────────────────────────────────
+ * The brief asked specifically for a NASA GIBS keyless source pairing with the
+ * satellite base, since Google's hybrid overlay is barred by the same ToS clause
+ * that rejected their tiles as a base layer (web/tile_providers.js's ADOPTED/
+ * REJECTED header), Esri needs a licence, and Carto needs a key. GIBS ships three
+ * candidates, and all three were VERIFIED against the live service (2026-07-31),
+ * not inferred from the capabilities document alone:
+ *
+ *   Reference_Labels    — place-name labels (cities, countries, oceans).
+ *   Reference_Features  — political borders + roads (Worldview calls the same
+ *                          data "Borders and Roads"; GIBS's own layer name is
+ *                          the more general "Features").
+ *   Coastlines           — coastline linework alone, for a base (like the
+ *                          satellite) that has no vector coastline of its own.
+ *
+ * ALL THREE ARE OSM-DERIVED, NOT NASA-DERIVED — this is the finding that
+ * decides their attribution default below. Confirmed against imagico.de's
+ * write-up of GIBS's own OSM ingestion pipeline: Coastlines is built from OSM
+ * ways tagged `natural=coastline`, and Reference_Labels/Reference_Features are
+ * OSM place/boundary/highway data restyled for global raster display. GIBS
+ * merely HOSTS these tiles; the data underneath is ODbL, exactly like the OSM
+ * street basemap. "NASA GIBS ⇒ public domain ⇒ no attribution" (true for the
+ * MODIS satellite base) does NOT extend to these three layers, and shipping
+ * them attribution-free on that false generalization would be the same mistake
+ * the manifest's attribution ruling exists to prevent.
+ *
+ * A `_15m` (higher-resolution, GoogleMapsCompatible_Level13) variant of each
+ * exists in GIBS's own GetCapabilities document but is NOT shipped here:
+ * `Reference_Labels_15m` returned HTTP 404 at every zoom level and every tile
+ * tested (equator, NYC, z0 through z9) despite matching its own published
+ * ResourceURL template exactly — a catalog entry for tiles GIBS has not
+ * actually published. `Reference_Features_15m` and `Coastlines_15m` DID
+ * resolve, but were left unshipped for the same reason Carto was rejected
+ * elsewhere in this file: a table entry that silently 404s for one of its three
+ * siblings is a worse default than a matched trio that all work, and the base
+ * (Level9) trio's ~5 km resolution is already finer than anything meaningful at
+ * the zoom range these overlays are useful at (labels and borders, not terrain
+ * detail). If GIBS ever publishes the missing `_15m` labels tile, upgrading the
+ * pair is a two-line change here, not a redesign.
+ *
+ * maxZoom 9 for all three — MEASURED the same way the satellite base's ceiling
+ * was: the GoogleMapsCompatible_Level9 TileMatrixSet in the live GetCapabilities
+ * document, cross-checked with a 200 at z9 and a 400 at z10 against the actual
+ * NYC tile. No `{time}` segment: unlike the MODIS satellite base, these three
+ * layers carry no Dimension/TIME element in GetCapabilities — they are a single
+ * static snapshot, not a daily mosaic, so there is no GIBS_IMAGERY_DATE analogue
+ * to pin.
+ *
+ * Every entry decoded to a genuinely TRANSPARENT PNG (spot-checked: 95%,  82%
+ * and 94% transparent pixels respectively over a NYC tile), which is the
+ * precondition for compositing as an overlay at all — an opaque "overlay" would
+ * simply replace the base rather than annotate it.
+ */
+export const TILE_OVERLAYS = Object.freeze({
+  labels: Object.freeze({
+    id: "labels",
+    title: "Place labels",
+    url: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Reference_Labels/default/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png",
+    subdomains: "",
+    maxZoom: 9,
+    attribution: "Labels: © OpenStreetMap contributors",
+    tileSize: 256,
+    help: "City, country and ocean names, from OpenStreetMap data hosted by NASA GIBS. Pairs with any basemap — this is the Google Maps \"hybrid\" look over satellite imagery.",
+  }),
+  features: Object.freeze({
+    id: "features",
+    title: "Borders & roads",
+    url: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Reference_Features/default/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png",
+    subdomains: "",
+    maxZoom: 9,
+    attribution: "Borders & roads: © OpenStreetMap contributors",
+    tileSize: 256,
+    help: "Political borders and major roads, from OpenStreetMap data hosted by NASA GIBS. Most useful over Satellite, which has no vector borders of its own.",
+  }),
+  coastlines: Object.freeze({
+    id: "coastlines",
+    title: "Coastlines",
+    url: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/Coastlines/default/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png",
+    subdomains: "",
+    maxZoom: 9,
+    attribution: "Coastlines: © OpenStreetMap contributors",
+    tileSize: 256,
+    help: "Coastline linework, from OpenStreetMap data hosted by NASA GIBS. Sharpens the Satellite basemap's shoreline, which MODIS's own imagery leaves soft.",
+  }),
+});
+
+/** The stored per-overlay boolean property names, in Inspector/popup order — the
+ *  ONE place an overlay's `id` becomes its item-state key, so the widget and the
+ *  table can never name one differently.
+ *  @example OVERLAY_IDS // ["labels", "features", "coastlines"] */
+export const OVERLAY_IDS = Object.freeze(Object.keys(TILE_OVERLAYS));
+
+/**
+ * Pure function. The overlay descriptor for a stored overlay id, or undefined for
+ * an unknown one — undefined rather than a default substitution (unlike
+ * providerFor) because an overlay is optional by nature: a caller iterates
+ * OVERLAY_IDS and skips what does not resolve, rather than a document depending on
+ * exactly one basemap always resolving to something drawable.
+ *
+ * @param {string} id - a stored overlay id
+ * @returns {object|undefined}
+ * @example overlayFor("labels").title // "Place labels"
+ * @example overlayFor("nonesuch") // undefined
+ */
+export function overlayFor(id) {
+  return TILE_OVERLAYS[id];
+}
+
+/**
+ * Pure function. The stored item-state key for one overlay's boolean property —
+ * the ONE place `overlay<Id>` is spelled, so the widget's Inspector row, its
+ * popup toggle button and the tile pre-pass's compositor (render_gpu/map_display.js
+ * — which cannot import a plugin, so it reaches this naming rule here instead)
+ * all read the identical key. Declared here rather than in the widget because the
+ * naming rule is a property OF the overlay table, not of any one consumer.
+ *
+ * @param {string} id - a TILE_OVERLAYS key
+ * @returns {string}
+ * @example overlayPropName("labels") // "overlayLabels"
+ * @example overlayPropName("coastlines") // "overlayCoastlines"
+ */
+export function overlayPropName(id) {
+  return `overlay${id.charAt(0).toUpperCase()}${id.slice(1)}`;
 }

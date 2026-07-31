@@ -6,8 +6,10 @@
   no-transform rule). This file owns only WHAT IS IN the panel.
 
   DECLARATIVE, GENERAL MECHANISM: a plugin returns a toolbar SPEC — analogous to
-  how it declares inspector rows — and this component renders it. There are two
-  content kinds, and a spec may carry either:
+  how it declares inspector rows — and this component renders it. There are three
+  content kinds, and a spec may carry any combination of them (the globe/map popup
+  uses `toggles` AND `fields` together — layer buttons above, coordinate entry
+  below, in the SAME panel):
 
     { grid: { property, value, cells: [{value, label, svg}], labelKind } }
         A visual PICKER. Each cell is its own SVG thumbnail; clicking one writes
@@ -29,20 +31,38 @@
         decimal sum of a coarse+fine SPLIT coordinate and take a 30-digit paste
         back apart losslessly, which a raw per-leaf row cannot do.
 
-  A field is DISABLED when any of the stored leaves it names in `keys` holds an `=`
-  equation. That is the ruling interior explore already makes for the same
-  situation (interiorNav's equationBoundInteriorProps): committing would overwrite
-  the equation with the number it currently evaluates to, so the bar refuses and
-  says where to edit it instead. Silently clobbering a binding is not an option.
+    { toggles: { groups: [{ label, buttons: [{id, label, active, keys}] }] } }
+        TEXT-LABELED BUTTON ROWS — the general mechanism for "several mutually
+        exclusive or independent on/off choices, mirrored from the Inspector onto
+        the canvas". Each GROUP renders as its own row (an optional `label` reads
+        as a small caption to its left); each BUTTON in a group commits through
+        `toggleWrites(state, id)` exactly the way a field commits through
+        `fieldWrites` — the plugin owns what clicking a button MEANS (write one
+        property, write several, flip a boolean), the toolbar only renders `active`
+        and dispatches the click. This is what lets the globe/map popup mirror its
+        Inspector's basemap SELECT and its per-overlay BOOLEAN rows through the
+        exact same command path with no parallel state: `active` is computed from
+        the SAME folded state the Inspector reads, and `toggleWrites` returns the
+        SAME shape `fieldWrites` does.
+        A button's `keys` (like a field's) names the stored leaves it would write;
+        BOUND-TO-EQUATION disables it with the same tooltip sentence a field shows,
+        for the same reason (clicking would silently overwrite the binding).
+
+  A field or toggle button is DISABLED when any of the stored leaves it names in
+  `keys` holds an `=` equation. That is the ruling interior explore already makes
+  for the same situation (interiorNav's equationBoundInteriorProps): committing
+  would overwrite the equation with the number it currently evaluates to, so the
+  bar refuses and says where to edit it instead. Silently clobbering a binding is
+  not an option.
 
   HOVERING a grid cell LIVE-PREVIEWS it on the widget: preview() stages the same
   property write into app.previewDelta (the viewport re-renders it; the document is
   untouched and no undo entry is created), each pointerenter overwrites the last,
   and leaving the GRID reverts via app.cancelPreview(). This is the ToolsPane preset
   card-grid contract applied to a cell grid — the house rule that a palette
-  selection previews under the pointer before you commit to it. FIELDS do not
-  preview: there is no hover to preview from, and a half-typed coordinate is not a
-  value anyone wants to see rendered.
+  selection previews under the pointer before you commit to it. FIELDS and TOGGLES
+  do not preview: there is no meaningful hover for a text field, and a toggle
+  button's whole point is a single decisive click, not a hover-scrub.
 
   Styling lives in app.css (.canvas-toolbar-*; the app convention: NO <style>
   block, every color/size from an --a-* token).
@@ -199,11 +219,23 @@
     previewing = false;
   }
 
-  /** Query. The stored leaves of `field` that hold an `=` equation, as keys.
-   * Empty when the field is free to edit. The stored value is read (never the
-   * derived one) because that is where an equation still IS an equation. */
+  /** Query. The stored leaves of `field` (a field OR a toggle button — both
+   * shapes carry `.keys`) that hold an `=` equation, as keys. Empty when it is
+   * free to activate. The stored value is read (never the derived one) because
+   * that is where an equation still IS an equation. */
   function boundKeys(field) {
     return (field.keys ?? []).filter((key) => isEquationValue(node.plugin, [key], app.storedItemValue(node.itemId, [key])));
+  }
+
+  /** Command. Commits a toggle button's click as ONE undo unit, through the
+   * plugin's own `toggleWrites(state, id)` — the same shape `fieldWrites` returns,
+   * so a button is exactly "a field whose typed text is fixed to its own id". No
+   * preview: a toggle's whole point is a single decisive click. */
+  function commitToggle(button) {
+    const writes = node.plugin.toggleWrites?.(node.state, button.id);
+    if (!writes) return;
+    app.setPreview(Object.entries(writes).map(([key, value]) => [["items", node.itemId, key], value]));
+    app.commitPreview();
   }
 
   /** Command. Commits a field's typed text as ONE undo unit, through the plugin's
@@ -264,7 +296,7 @@
   });
 </script>
 
-{#if spec?.grid || spec?.fields}
+{#if spec?.grid || spec?.fields || spec?.toggles}
   <FloatingCanvasPanel x={anchor.x} topY={anchor.topY} bottomY={anchor.bottomY} label={spec.label ?? "Widget toolbar"}>
     {#snippet children()}
       {#if spec.search}
@@ -328,6 +360,34 @@
                 <img class="canvas-toolbar-thumb" src={dataUri(cell.svg, ink)} alt={cell.label} draggable="false" />
               </button>
             </Tooltip>
+          {/each}
+        </div>
+      {/if}
+      {#if spec.toggles}
+        <!-- One row per group (base style, each overlay, view mode, …). A group's
+             own `label` is an optional small caption — omitted for a self-evident
+             row (there is only one basemap row; a per-overlay row is one button
+             wide and needs no caption of its own). -->
+        <div class="canvas-toolbar-toggles">
+          {#each spec.toggles.groups as group, gi (group.label ?? gi)}
+            <div class="canvas-toolbar-row">
+              {#if group.label}<span class="canvas-toolbar-field-label">{group.label}</span>{/if}
+              {#each group.buttons as button (button.id)}
+                {@const bound = boundKeys(button)}
+                <Tooltip text={bound.length ? `${bound.join(", ")} ${bound.length === 1 ? "is an" : "are"} = equation — edit it in the Inspector; clicking here would overwrite it with its current value.` : button.help}>
+                  <button
+                    type="button"
+                    class="btn"
+                    class:active={button.active}
+                    aria-pressed={button.active}
+                    disabled={bound.length > 0}
+                    onclick={() => commitToggle(button)}
+                  >
+                    {button.label}
+                  </button>
+                </Tooltip>
+              {/each}
+            </div>
           {/each}
         </div>
       {/if}

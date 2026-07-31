@@ -3051,6 +3051,17 @@ textarea {
   gap: var(--a-sp-1);
 }
 
+/* Fourth sibling content shape: TEXT-LABELED button ROWS (spec.toggles — the
+   globe/map popup's basemap/overlay/view-mode quick-switches). One
+   .canvas-toolbar-row per group, stacked; buttons are the app's standard .btn,
+   toggled-on state via .btn.active below (never a background fill — the same
+   rule .btn-icon.active states). */
+.canvas-toolbar-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+}
+
 /* A floating panel whose content is a row of EDITABLE READOUTS rather than tiles
    or icon buttons (the Mandelbrot's Re/Im/Zoom/Iter/Bands bar). Third sibling of
    .canvas-toolbar-grid and .canvas-toolbar-row inside the SAME .canvas-toolbar
@@ -5255,6 +5266,15 @@ audio.ae-preview-media {
 .inspector .row-label-chrome:has(.copy-path-btn):has(.help-btn) {
   padding-left: calc(2 * var(--a-row-label-gutter));
 }
+/* THE THIRD SLOT (web/lightPositionPin.js): only the two light-position rows in
+   the whole app carry `.pin-light-btn`, so this only ever widens the gutter for
+   them — every other row's :has() above is unaffected. Generalizes the SAME
+   rule one slot further rather than a new mechanism: N affordances reserve N
+   gutter widths. */
+.inspector .row-label-chrome:has(.pin-light-btn):has(.copy-path-btn),
+.inspector .row-label-chrome:has(.pin-light-btn):has(.help-btn) {
+  padding-left: calc(3 * var(--a-row-label-gutter));
+}
 
 /* Row-label hover affordances, LEFT of the label, HOVER-ONLY — mirror
    .numfield .eq-open (round-11 field-chrome minimalism: "it goes on the LEFT...
@@ -5269,7 +5289,8 @@ audio.ae-preview-media {
    pointer-events are off while hidden so an invisible button can never eat the
    click or the tooltip hover meant for the label underneath it. */
 .inspector .copy-path-btn,
-.inspector .help-btn {
+.inspector .help-btn,
+.inspector .pin-light-btn {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
@@ -5287,11 +5308,13 @@ audio.ae-preview-media {
   pointer-events: none;
   transition: opacity var(--a-row-chrome-fade) ease;
 }
-/* The two gutter SLOTS, in markup order: copy-path outermost, (?) beside it. A
-   row carrying only one affordance still puts it in the outer slot, so the
-   icons of adjacent rows line up down the panel regardless of which affordances
-   each row happens to have. */
-.inspector .copy-path-btn {
+/* The gutter SLOTS. Positioning is absolute `left` on every icon (not flow
+   order), so each :has() rule below places its icon explicitly rather than
+   relying on markup order. A row carrying only one affordance still puts it in
+   the outer slot, so the icons of adjacent rows line up down the panel
+   regardless of which affordances each row happens to have. */
+.inspector .copy-path-btn,
+.inspector .pin-light-btn {
   left: 0;
   cursor: pointer;
 }
@@ -5306,17 +5329,35 @@ audio.ae-preview-media {
 .inspector .row-label-chrome:has(.copy-path-btn) .help-btn {
   left: var(--a-row-label-gutter);
 }
+/* pin-light takes the OUTER slot on a row that has it (only lightWorldX/Y do,
+   and neither carries copy-path today — this is future-proofing the same
+   generalization the padding rule above already made), pushing whichever of
+   the other two are present one slot inward. */
+.inspector .row-label-chrome:has(.pin-light-btn) .copy-path-btn {
+  left: var(--a-row-label-gutter);
+}
+.inspector .row-label-chrome:has(.pin-light-btn) .help-btn {
+  left: var(--a-row-label-gutter);
+}
+.inspector .row-label-chrome:has(.pin-light-btn):has(.copy-path-btn) .help-btn {
+  left: calc(2 * var(--a-row-label-gutter));
+}
 .inspector .copy-path-btn:hover,
-.inspector .help-btn:hover {
+.inspector .help-btn:hover,
+.inspector .pin-light-btn:hover {
   color: var(--fg);
 }
 /* THE REVEAL — opacity and hit-testing ONLY. No width, no margin, nothing that
    participates in layout: the buttons already occupy their gutter slots at rest,
    so the row's geometry on hover is byte-identical to its geometry at rest. That
    invariant is asserted by tests/equation_discoverability_probe.js, which
-   measures the label's rect before and during hover. */
+   measures the label's rect before and during hover. pin-light additionally
+   stays visible while its mode is LIVE (aria-pressed) — an active takeover must
+   stay discoverable as a thing to cancel even after the pointer leaves the row. */
 .inspector .row:hover .copy-path-btn,
-.inspector .row:hover .help-btn {
+.inspector .row:hover .help-btn,
+.inspector .row:hover .pin-light-btn,
+.inspector .pin-light-btn[aria-pressed="true"] {
   opacity: 1;
   pointer-events: auto;
 }
@@ -6973,6 +7014,15 @@ audio.ae-preview-media {
    be transparent the same way that it always was"). */
 .btn-icon.active {
   color: var(--a-selection);
+}
+
+/* The labeled-button twin of .btn-icon.active above, for TEXT toggle rows
+   (spec.toggles — canvas-toolbar-toggles): same rule, same token, so a labeled
+   quick-switch and an icon quick-switch read as ONE toggled-on language rather
+   than two. Border stays the plain .btn border — only the ink changes. */
+.btn.active {
+  color: var(--a-selection);
+  border-color: var(--a-selection);
 }
 
 .btn-icon.snap-engaged {

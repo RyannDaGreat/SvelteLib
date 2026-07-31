@@ -262,9 +262,13 @@ test("the floating bar's typed fields wrap, clamp and refuse nonsense", () => {
   assert.deepEqual(globeMapPlugin.fieldWrites(s, "zoom", "13"), { zoom: 13 });
   assert.equal(globeMapPlugin.fieldWrites(s, "lat", "banana"), null, "nonsense is refused, not guessed");
   assert.equal(globeMapPlugin.fieldWrites(s, "lon", ""), null);
-  // Every field the bar declares must be writable, or a typed value silently vanishes.
-  for (const field of globeMapPlugin.floatingToolbar(s).fields)
-    assert.notEqual(globeMapPlugin.fieldWrites(s, field.id, "1"), null, `field "${field.id}" accepts a value`);
+  // Every field the bar declares must be writable, or a typed value silently
+  // vanishes. "coords" is a PAIR parser (core/geo_tiles.parseLatLon), so a lone
+  // "1" is correctly refused — it gets its own valid input instead.
+  for (const field of globeMapPlugin.floatingToolbar(s).fields) {
+    const sample = field.id === "coords" ? "0, 0" : "1";
+    assert.notEqual(globeMapPlugin.fieldWrites(s, field.id, sample), null, `field "${field.id}" accepts a value`);
+  }
 });
 
 // ── EMIT + DETERMINISM ──────────────────────────────────────────────────────
