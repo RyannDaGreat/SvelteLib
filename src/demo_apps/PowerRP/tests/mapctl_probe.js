@@ -23,7 +23,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(here, "..", "web");
@@ -163,7 +163,7 @@ const HOST_PATTERNS = [
 const requested = [];
 const failedUrls = [];
 
-const browser = await puppeteer.launch({ headless: "new", args: CHROME_ARGS });
+const browser = await launchBrowser({ args: CHROME_ARGS });
 const errors = [];
 let failures = 0;
 

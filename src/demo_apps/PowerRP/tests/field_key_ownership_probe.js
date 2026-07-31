@@ -36,7 +36,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 // Paths resolve from THIS file, never process.cwd() — a cwd-relative path
 // silently doubles when the suite is run from the repo root.
@@ -68,7 +68,7 @@ const DRAG_PX = 40;
 const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1", hmr: false } });
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
-const browser = await puppeteer.launch({ headless: "new", args: LAUNCH_ARGS });
+const browser = await launchBrowser({ args: LAUNCH_ARGS });
 
 const shotDir = process.argv[2] ?? null;
 if (shotDir) await mkdir(shotDir, { recursive: true });

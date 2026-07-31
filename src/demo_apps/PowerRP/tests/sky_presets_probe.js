@@ -48,7 +48,7 @@ import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import { skyPlugins } from "../plugins/demo/sky.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -97,10 +97,7 @@ const port = server.httpServer.address().port;
 
 // The scene rasterizes on Skia over WebGL2, which headless Chrome only has through
 // SwiftShader — the same flags every other editor probe uses (tests/boot_probe.js).
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"],
-});
+const browser = await launchBrowser();
 const failures = [];
 const errors = [];
 /** Command. Records one check's outcome and prints it. */

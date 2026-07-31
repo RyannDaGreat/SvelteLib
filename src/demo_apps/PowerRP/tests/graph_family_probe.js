@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import { PNG } from "pngjs";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
@@ -68,7 +68,7 @@ const inkNear = (png, cx, cy, r = 4) => {
 const server = await createServer({ configFile: resolve(HERE, "../web/vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null } });
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}`;
-const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+const browser = await launchBrowser();
 
 const fails = [];
 const ok = (cond, msg) => { if (!cond) { fails.push(msg); console.log(`  FAIL ${msg}`); } else { console.log(`  ok   ${msg}`); } };

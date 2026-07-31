@@ -36,7 +36,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const repo = process.cwd();
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
@@ -61,10 +61,7 @@ const port = server.httpServer.address().port;
 
 // Same GL flags every other editor probe uses: the scene rasterizes on Skia over
 // WebGL2, which headless Chrome only has via SwiftShader (tests/boot_probe.js).
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"],
-});
+const browser = await launchBrowser();
 const failures = [];
 const errors = [];
 try {

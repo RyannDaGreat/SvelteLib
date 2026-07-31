@@ -33,7 +33,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const repo = process.cwd();
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
@@ -57,10 +57,7 @@ await server.listen();
 const port = server.httpServer.address().port;
 const url = `http://127.0.0.1:${port}/`;
 
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"],
-});
+const browser = await launchBrowser();
 const failures = [];
 const errors = [];
 try {

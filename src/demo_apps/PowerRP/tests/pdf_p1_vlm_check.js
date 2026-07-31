@@ -98,8 +98,8 @@ await page.render({canvasContext: ctx, canvas, viewport: vp}).promise;
 window.__done = true;
 </script></body></html>`;
 
-const { default: puppeteer } = await import("puppeteer");
-const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox"] });
+const { launchBrowser } = await import("./puppeteerLaunch.js");
+const browser = await launchBrowser({ args: ["--no-sandbox"] });
 try {
   const page = await browser.newPage();
   const errs = [];

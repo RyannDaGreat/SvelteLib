@@ -14,7 +14,7 @@
  * Run (dev server must be up):
  *   node tests/pdf_surface_guard_probe.js [http://localhost:3637]
  */
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -26,7 +26,7 @@ const SURF = `/@fs${path.join(POWERRP, "render_gpu/skia/browser_surface.js")}`;
 const GSVC = "/gpuService.js";
 
 async function main() {
-  const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle","--use-angle=swiftshader","--enable-unsafe-swiftshader","--no-sandbox","--ignore-gpu-blocklist"] });
+  const browser = await launchBrowser();
   const page = await browser.newPage();
   const clampReports = [];
   page.on("console", (m) => { if (m.type() === "error") { const s = m.text(); if (/clamp|MAX_SURFACE_DIM|heap overrun/i.test(s)) clampReports.push(s); } });

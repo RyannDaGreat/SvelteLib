@@ -23,7 +23,7 @@ import { freePort } from "./free_port.js";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import { newDocument, serialize } from "../core/document.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -87,7 +87,7 @@ async function main() {
     await waitFor("backend", async () => (await fetch(`http://localhost:${bePort}/api/projects/`)).ok);
     await waitFor("vite", async () => (await fetch(url)).ok, { tries: 120 });
 
-    browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+    browser = await launchBrowser();
     const page = await browser.newPage();
     await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
     const consoleErrors = [];

@@ -88,11 +88,8 @@ const port = server.httpServer.address().port;
 // boot in the wrong mode — the documented reason that flag exists.
 const url = `http://127.0.0.1:${port}${BASE}?static=1`;
 
-const { default: puppeteer } = await import("puppeteer");
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"],
-});
+const { launchBrowser } = await import("./puppeteerLaunch.js");
+const browser = await launchBrowser();
 
 try {
   const page = await browser.newPage();

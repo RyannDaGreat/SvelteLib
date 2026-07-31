@@ -49,7 +49,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, "..");
@@ -142,7 +142,7 @@ try {
   const zipBytes = Buffer.from(await dl.arrayBuffer());
   check(dl.ok && zipBytes.subarray(0, 2).toString() === "PK", `exported .zip is a real archive (${zipBytes.length} bytes)`);
 
-  browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+  browser = await launchBrowser();
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
   const pageErrors = [];

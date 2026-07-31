@@ -112,8 +112,8 @@ try {
   fails.push(`BrushPalette.svelte failed to compile: ${e.message}`);
 }
 
-const { default: puppeteer } = await import("puppeteer");
-const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+const { launchBrowser } = await import("./puppeteerLaunch.js");
+const browser = await launchBrowser();
 
 try {
   const page = await browser.newPage();

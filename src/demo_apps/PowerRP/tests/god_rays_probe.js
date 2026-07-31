@@ -33,7 +33,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import { PNG } from "pngjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -211,7 +211,7 @@ const server = await createServer({
 });
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
-const browser = await puppeteer.launch({ headless: "new", args: CHROME_ARGS });
+const browser = await launchBrowser({ args: CHROME_ARGS });
 const errors = [];
 try {
   const page = await browser.newPage();

@@ -10,7 +10,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOG = path.join(HERE, "..", "..", "..", "..", "..", ".claude_logs", "devserver.log");
@@ -21,7 +21,7 @@ const fail = (m) => { console.error("EXPORT QA FAIL:", m); process.exit(2); };
 
 (async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
-  const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox"] });
+  const browser = await launchBrowser({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox"] });
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
   await page.evaluateOnNewDocument(() => {

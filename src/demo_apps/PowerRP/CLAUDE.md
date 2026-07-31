@@ -187,6 +187,12 @@ default-branch load.
   way: each probe burns its full 180 s protocolTimeout before dying. The
   preflight is deliberately NOT named `*_probe` so the collector never runs it —
   a broken host must produce ONE sentence, not a 167th red.
+  `tests/puppeteerLaunch.js` is the ONE seam every probe's `puppeteer.launch`
+  goes through (`POWERRP_HEADLESS=shell` swaps old-headless in when a host's
+  new-headless capture path is the thing that's broken, per above). That
+  override is DIAGNOSTIC ONLY — a run under it measures whether the APP passes
+  once capture stops hanging, it is never itself "passing"; the canonical gate
+  stays new-headless (the default, unset).
 - Core tests only (iterating): `node src/demo_apps/PowerRP/tests/core_test.js`
 - Server lifecycle: `bash src/demo_apps/PowerRP/tests/server_launcher_test.sh`
 - Editor smoke: `node src/demo_apps/PowerRP/tests/editor_smoke.js <shot_dir>`

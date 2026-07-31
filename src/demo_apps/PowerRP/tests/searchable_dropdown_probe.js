@@ -23,7 +23,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import { fillCapableMaterialIds, getMaterial } from "../render_gpu/skia/materials.js";
 import { rankItems } from "../../../lib/fuzzyMatch.js";
 
@@ -57,7 +57,7 @@ if (!target) { console.error("could not pick a filtering (target, query) from th
 const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null } });
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
-const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+const browser = await launchBrowser();
 
 const errors = [];
 const checks = [];

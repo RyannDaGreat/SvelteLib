@@ -29,7 +29,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 // Paths resolve from THIS FILE, never process.cwd() — a cwd-relative path silently
 // doubles its prefix when the suite is run from anywhere but the repo root (the
@@ -67,10 +67,7 @@ const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
 // Same launch flags as boot_probe.js: software GL so the Skia compositor comes
 // up headless, and --no-sandbox because the container runs as root.
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"],
-});
+const browser = await launchBrowser();
 const errors = [];
 const checks = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };

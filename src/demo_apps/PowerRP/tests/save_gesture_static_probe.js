@@ -60,8 +60,8 @@ const { zipSync } = await import("fflate");
 // the draft half of the gate says, without pinning what the rename half of the
 // app happens to leave the working copy's cleanliness at.
 const { quickSaveBlocker } = await import("../web/draftKeys.js");
-const { default: puppeteer } = await import("puppeteer");
-const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+const { launchBrowser } = await import("./puppeteerLaunch.js");
+const browser = await launchBrowser();
 
 const errors = [];
 const fails = [];

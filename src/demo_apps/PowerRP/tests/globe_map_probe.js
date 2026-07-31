@@ -38,7 +38,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(here, "..", "web");
@@ -219,7 +219,7 @@ const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 // request ever reaches OpenStreetMap, which is the policy requirement.
 const TILE_HOST_RE = /^https:\/\/[abc]\.tile\.openstreetmap\.org\/(\d+)\/(\d+)\/(\d+)\.png/;
 
-const browser = await puppeteer.launch({ headless: "new", args: CHROME_ARGS });
+const browser = await launchBrowser({ args: CHROME_ARGS });
 const errors = [];
 let failures = 0;
 

@@ -35,7 +35,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import * as T from "../core/transform.js";
 
 // Resolved from THIS FILE, never from process.cwd() (the lens_flare_scale_probe
@@ -50,10 +50,7 @@ const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
 // Software GL so Skia comes up headless, --no-sandbox because this container runs
 // as root — the launch args every recent in-repo browser probe uses.
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"],
-});
+const browser = await launchBrowser();
 const checks = [];
 const errors = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };

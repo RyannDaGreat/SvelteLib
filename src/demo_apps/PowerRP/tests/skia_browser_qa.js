@@ -15,7 +15,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import { STILL_VIDEO_MP4_DATA_URI } from "./fixtures/still_video.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -40,7 +40,7 @@ async function clickByTitle(page, title) {
 
 (async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
-  const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+  const browser = await launchBrowser();
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
   page.on("console", (m) => { if (m.type() === "error") errors.push("console.error: " + m.text()); });

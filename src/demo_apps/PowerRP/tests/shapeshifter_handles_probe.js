@@ -12,7 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOG = path.join(HERE, "..", "..", "..", "..", "..", ".claude_logs", "devserver.log");
@@ -27,7 +27,7 @@ const results = [];
 
 (async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
-  const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+  const browser = await launchBrowser();
   const page = await browser.newPage();
   await page.setViewport({ width: 1200, height: 800, deviceScaleFactor: 1 });
   page.on("pageerror", (e) => errors.push("pageerror: " + e.message));

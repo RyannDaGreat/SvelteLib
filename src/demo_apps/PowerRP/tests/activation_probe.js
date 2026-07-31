@@ -44,7 +44,7 @@
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 // Every path resolves from THIS FILE, never process.cwd(): the probe must run
 // correctly from any directory, and a cwd-relative root silently pointed at the
@@ -77,10 +77,7 @@ const server = await createServer({
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"],
-});
+const browser = await launchBrowser();
 const checks = [];
 const errors = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };

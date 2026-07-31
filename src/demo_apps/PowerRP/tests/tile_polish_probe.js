@@ -35,7 +35,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, "..");
@@ -135,10 +135,7 @@ try {
   await viteServer.listen();
   const pageBase = `http://127.0.0.1:${viteServer.httpServer.address().port}`;
 
-  browser = await puppeteer.launch({
-    headless: "new",
-    args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"],
-  });
+  browser = await launchBrowser();
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));

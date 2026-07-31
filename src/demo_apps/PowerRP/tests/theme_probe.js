@@ -15,7 +15,7 @@
 import { readFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const repo = process.cwd();
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
@@ -64,7 +64,7 @@ const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 // protocolTimeout raised past puppeteer's 30s default: this probe now captures
 // 40 themes (one per family pole) on a SOFTWARE GL surface, where a single
 // screenshot of the Skia canvas can take several seconds under load.
-const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"], protocolTimeout: 180000 });
+const browser = await launchBrowser({ protocolTimeout: 180000 });
 const errors = [];
 try {
   const page = await browser.newPage();

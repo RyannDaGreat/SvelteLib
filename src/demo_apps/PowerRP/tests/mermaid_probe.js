@@ -32,7 +32,7 @@
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(HERE, "..", "web", "vite.config.js");
@@ -144,7 +144,7 @@ async function setDefinitionViaInspector(page, def) {
   const asserts = [];
   const ok = (name, pass, detail) => { asserts.push({ name, pass, detail }); };
 
-  const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+  const browser = await launchBrowser();
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
   page.on("console", (m) => { if (m.type() === "error") errors.push("console.error: " + m.text()); });

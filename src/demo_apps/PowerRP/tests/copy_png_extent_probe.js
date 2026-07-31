@@ -93,8 +93,8 @@ try {
   await viteServer.listen();
   const pageUrl = `http://127.0.0.1:${viteServer.httpServer.address().port}/`;
 
-  const { default: puppeteer } = await import("puppeteer");
-  browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+  const { launchBrowser } = await import("./puppeteerLaunch.js");
+  browser = await launchBrowser();
 
   for (const dpr of [1, 2]) {
     console.log(`\n=== deviceScaleFactor ${dpr} ===`);

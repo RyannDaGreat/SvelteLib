@@ -43,13 +43,9 @@ const CAPTURE_BUDGET_MS = 20_000;
  *  application. */
 const TRIVIAL_PAGE = "<h1 style='background:#c00;width:200px;height:200px;margin:0'>preflight</h1>";
 
-const { default: puppeteer } = await import("puppeteer");
+const { launchBrowser } = await import("./puppeteerLaunch.js");
 
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--no-sandbox"],
-  protocolTimeout: CAPTURE_BUDGET_MS,
-});
+const browser = await launchBrowser({ args: ["--no-sandbox"], protocolTimeout: CAPTURE_BUDGET_MS });
 
 let ok = false;
 let detail = "";

@@ -252,16 +252,11 @@ export async function bootProbe({ viewportWidth = 1000, viewportHeight = 700 } =
   await vite.listen();
   const baseUrl = `http://${ip}:${vite.httpServer.address().port}`;
 
-  const { default: puppeteer } = await import("puppeteer");
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-      "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
-      "--no-sandbox", "--ignore-gpu-blocklist",
-      // Chrome treats some ranges as trustworthy; nothing here does that for a
+  const { launchBrowser } = await import("./puppeteerLaunch.js");
+  const browser = await launchBrowser({ args: [
+      "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist", // Chrome treats some ranges as trustworthy; nothing here does that for a
       // LAN IP, and the assertion below is what actually proves it.
-    ],
-  });
+    ] });
   const page = await browser.newPage();
   await page.setViewport({ width: viewportWidth, height: viewportHeight });
 

@@ -26,7 +26,7 @@ import { readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 import { isWebGpuAbsenceNoise } from "./webgpu_absence_noise.js";
 
 // Anchored to this file, not the cwd — see the same note in eq_highlight_ref_probe.js:
@@ -40,7 +40,7 @@ const server = await createServer({ configFile: resolve(webRoot, "vite.config.js
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
-const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+const browser = await launchBrowser();
 const checks = [];
 const errors = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };

@@ -55,7 +55,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { createServer } from "vite";
-import puppeteer from "puppeteer";
+import { launchBrowser } from "./puppeteerLaunch.js";
 
 // Paths resolve from THIS FILE, never process.cwd().
 const here = dirname(fileURLToPath(import.meta.url));
@@ -109,7 +109,7 @@ const server = await createServer({
 });
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
-const browser = await puppeteer.launch({ headless: "new", args: LAUNCH_ARGS });
+const browser = await launchBrowser({ args: LAUNCH_ARGS });
 
 const failures = [];
 const rows = [];

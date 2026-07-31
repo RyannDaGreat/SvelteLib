@@ -106,11 +106,11 @@ try {
   await viteServer.listen();
   const pageUrl = `http://127.0.0.1:${viteServer.httpServer.address().port}/`;
 
-  const { default: puppeteer } = await import("puppeteer");
+  const { launchBrowser } = await import("./puppeteerLaunch.js");
   // SwiftShader flags so the compositor inits headless (the editor renders through
   // it, and copySelection rasterizes its PNG through it); --no-sandbox is required
   // to launch as root. Same flag set the repo's other GPU probes use.
-  browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
+  browser = await launchBrowser();
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
   // EXPECTED, correctly-reported headless noise — both are loud reports of
