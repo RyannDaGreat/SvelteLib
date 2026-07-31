@@ -51,12 +51,15 @@
   --a-sp-4: 12px;
   --a-sp-5: 16px;
 
-  /* STRUCTURAL, THEME-PROOF (user ruling): command-palette row height. Themes
-     swap fonts, font metrics change the line box, and the palette previews
-     themes LIVE as you browse — a font-driven height would jitter the very
-     list being read. No theme block may redefine this; theme_contrast_test.py
-     enforces it. See .palette-results .palette-item. */
-  --a-palette-row-h: 32px;
+  /* STRUCTURAL, THEME-PROOF (user rulings): command-palette part heights.
+     Themes swap fonts, font metrics change the line box, and the palette
+     previews themes LIVE as you browse — a font-driven height would jitter
+     the very surface being read ("all parts of the command palette should be
+     forced to be the standard size — the top part changes size too"). No
+     theme block may redefine these; theme_contrast_test.py enforces it. */
+  --a-palette-row-h: 32px;    /* .palette-results .palette-item */
+  --a-palette-crumbs-h: 24px; /* .palette-crumbs breadcrumb bar */
+  --a-palette-input-h: 40px;  /* .palette input search row */
 
   /* Type */
   --a-font-sm: 0.72rem;
@@ -6723,7 +6726,12 @@ audio.ae-preview-media {
 }
 
 .palette-crumbs {
-  padding: var(--a-sp-2) var(--a-sp-4);
+  /* Structural height + matching line-height (keeps the inline crumb flow and
+     centers the text) — see --a-palette-crumbs-h in :root for the ruling. */
+  height: var(--a-palette-crumbs-h);
+  line-height: var(--a-palette-crumbs-h);
+  padding: 0 var(--a-sp-4);
+  overflow: hidden;
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
   background: var(--control-bg);
@@ -6739,7 +6747,9 @@ audio.ae-preview-media {
 .palette input {
   width: 100%;
   box-sizing: border-box;
-  padding: var(--a-sp-4);
+  /* Structural height — see --a-palette-input-h in :root for the ruling. */
+  height: var(--a-palette-input-h);
+  padding: 0 var(--a-sp-4);
   background: var(--control-bg);
   color: var(--fg);
   border: 0;

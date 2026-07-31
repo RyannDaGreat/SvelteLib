@@ -256,7 +256,7 @@ def check_families(theme_bgs):
 # previews themes LIVE as you browse, so a font-metric-driven row height would
 # jitter the very list being read. A theme block redefining one of these
 # tokens fails the gate BY NAME. The list grows only by explicit user ruling.
-STRUCTURAL_TOKENS = ["--a-palette-row-h"]
+STRUCTURAL_TOKENS = ["--a-palette-row-h", "--a-palette-crumbs-h", "--a-palette-input-h"]
 
 
 def check_structural_tokens(css):
