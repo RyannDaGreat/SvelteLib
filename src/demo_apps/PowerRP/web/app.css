@@ -4961,8 +4961,16 @@ audio.ae-preview-media {
   margin-top: var(--a-sp-2);
 }
 
+/* FULL WIDTH, and not merely for looks: Dropdown constrains its MENU to the
+   trigger's width so the two pieces line up (src/lib/Dropdown.svelte). A trigger
+   shrink-wrapped to the current type's title would therefore open a menu that
+   narrow, and the roster's longer names ("Rectangle", "Iconify Icon") would
+   ellipsize into "Recta…" / "Iconif…" — measured in the probe's screenshot.
+   Spanning the header makes the menu as wide as the panel, which is what the
+   item picker directly above it already does. */
 .inspector .widget-type-picker .dd {
   --dd-radius: var(--a-radius-control);
+  width: 100%;
 }
 
 /* A COERCING TARGET — one whose selection would reset properties this item
