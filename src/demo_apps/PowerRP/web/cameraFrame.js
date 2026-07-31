@@ -30,6 +30,7 @@ import { evaluateState } from "../core/expressions.js";
 import { canSkipNode } from "../core/view.js";
 import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
 import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
+import { prepareMapTiles } from "../render_gpu/map_display.js";
 import { rect as rectCmd } from "../render_gpu/ir.js";
 /**
  * Query (memoized fold + evaluate). THE evaluated folded state for
@@ -150,7 +151,14 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
   const rect = cameraRect(state, meta);
   let nodes = deriveRenderTree(state, registry, project || meta?.name || "");
   if (cullRect) nodes = nodes.filter((n) => !canSkipNode(n, cullRect));
-  const pdfDisplay = view && viewW > 0 && viewH > 0 ? preRasterizePdfPages(nodes, view, viewW, viewH) : null;
+  const liveView = view && viewW > 0 && viewH > 0;
+  const pdfDisplay = liveView ? preRasterizePdfPages(nodes, view, viewW, viewH) : null;
+  // The MAP tile pre-pass, the twin of the PDF one and for the same reason: emit()
+  // is camera-free, so the tile DEPTH (which follows the camera's device px per
+  // world unit) and the tile LIST (which follows the visible crop) are decided
+  // here, in the one layer that knows the view. No live view — export, thumbnails,
+  // the CLI — means no descriptor and the widget takes its camera-free fallback.
+  const mapTiles = liveView ? prepareMapTiles(nodes, view, viewW, viewH) : null;
   return [
     // resolvedBackgroundFill (NOT bare parsePaint): the camera background is a
     // full PAINT prop — Solid / Linear / Radial / MATERIAL / `=` equation — and
@@ -159,6 +167,6 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
     // painter every frame — the camera-background freeze). A plain "#rrggbb"
     // string is still a solid, byte-identically.
     rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: resolvedBackgroundFill(rect.background, nodes) }),
-    ...sceneIR(nodes, { pdfDisplay }),
+    ...sceneIR(nodes, { pdfDisplay, mapTiles }),
   ];
 }

@@ -22,7 +22,7 @@ import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, app
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { reportOnce } from "../core/report.js";
-import { errorAffordanceArgs, errorBoxExtent, errorMessage } from "../core/paint_containment.js";
+import { errorAffordanceArgs, errorBoxExtent, errorMessage, describeOwner, throwMessage, isConfigurationError, configurationError } from "../core/paint_containment.js";
 
 /**
  * Pure function (the report sink aside). Ops with every MATERIAL fill paint
@@ -177,7 +177,10 @@ export function videoIR(s) {
  * `pdfDisplay` — a Map<itemId, descriptor> built by the PDF re-raster pre-pass
  * (render_gpu/pdf_display.preRasterizePdfPages). sceneIR looks up THIS node's
  * descriptor and hands it to emit() as a 4th argument (a per-node render
- * context `{pdfDisplay}`). This is the ONLY view-derived data emit ever sees,
+ * context `{pdfDisplay, mapTiles}`). The MAP tile pre-pass
+ * (render_gpu/map_display.prepareMapTiles) rides the same seam for the same
+ * reason: a map's tile DEPTH follows the camera and its tile LIST follows the
+ * visible crop, neither of which emit() may see. This is the ONLY view-derived data emit ever sees,
  * and only pdf_page reads it (to draw the crisp visible-region raster instead of
  * a whole-page bitmap); every other plugin ignores the 4th arg. Surfaces with no
  * pre-pass (export, thumbnails, CLI, tests) pass nothing → emit takes its
@@ -187,7 +190,7 @@ export function videoIR(s) {
  *
  * Args:
  *   nodes (object[]): deriveRenderTree output (nodes carry .plugin)
- *   ctx ({pdfDisplay?: Map}): optional render-time display context (see above)
+ *   ctx ({pdfDisplay?: Map, mapTiles?: Map}): optional render-time display context (see above)
  *
  * Returns:
  *   object[]: IR commands (z-ordered because nodes are)
@@ -197,6 +200,7 @@ export function videoIR(s) {
  */
 export function sceneIR(nodes, ctx = {}) {
   const pdfDisplay = ctx.pdfDisplay ?? null;
+  const mapTiles = ctx.mapTiles ?? null;
   const byId = new Map(nodes.map((n) => [n.itemId, n]));
   const out = [];
   for (const node of nodes) {
@@ -205,7 +209,7 @@ export function sceneIR(nodes, ctx = {}) {
     // composited subtree (built by emitNode below), so the group's shadow/bloom/
     // blend/crop wraps it as one unit. Every non-folded node draws normally.
     if (node.foldedBy) continue;
-    out.push(...emitNode(node, byId, pdfDisplay));
+    out.push(...emitNode(node, byId, pdfDisplay, mapTiles));
   }
   return out;
 }
@@ -267,7 +271,8 @@ export function nonFiniteAffordanceIR(node, fields) {
 }
 
 /**
- * Pure function. Emits ONE render node's IR (its emitted ops wrapped in its world
+ * Near-pure function (reportOnce logs to console on failure — see below).
+ * Emits ONE render node's IR (its emitted ops wrapped in its world
  * transform), resolving the two cross-node subtree seams sceneIR owns:
  *
  *   CROP BOX — the target's own IR (wrapped in the target's ABSOLUTE world), or
@@ -286,9 +291,73 @@ export function nonFiniteAffordanceIR(node, fields) {
  * @param {Map} byId - itemId → node, for folded-member lookup
  * @param {Map|null} pdfDisplay - per-node PDF re-raster descriptors (or null)
  * @returns {object[]} IR (empty when the node emits nothing — a pure ghost)
+ *
+ * ── THE EMIT-TIME CONTAINMENT BOUNDARY ──────────────────────────────────────
+ * The paint-time boundary (render_gpu/skia/paint_skia.js paintNodeRun) stops a
+ * throw at the PAINTER; this is its twin one seam EARLIER, at the point a
+ * plugin's own emit() runs. Both are needed: paintNodeRun cannot catch a throw
+ * that never reaches paint at all, because emitNode's own return value (the IR
+ * list) is what feeds paintFlat, sceneIR's PDF/SVG callers, and every
+ * cameraFrame consumer alike — a throw HERE, before any of them, used to take
+ * the whole scene down with it (a plugin's emit() calling a validator that
+ * rejects a NaN param, e.g. "materialBackdrop: param lightOffsetX is a
+ * non-finite number", live in demo_god_rays). One try wraps this node's WHOLE
+ * contribution — its own emit(), the material-fill resolution, and (for a crop
+ * box) its target's inline emit() — because all of it is one node's ops from
+ * the caller's point of view, exactly the run paintNodeRun already treats as
+ * the unit. A GROUP's folded members recurse through emitNode itself, so each
+ * member gets its OWN boundary for free — a poisoned member costs itself, not
+ * its siblings or the group.
+ *
+ * Reported ONCE per node+message (reportOnce — this runs every frame). A
+ * BACKEND-CONFIGURATION failure (isConfigurationError) is the caller's wiring,
+ * broken for the whole surface, and escapes untouched — the same line
+ * paintNodeRun draws, applied at the seam one step earlier.
  */
-function emitNode(node, byId, pdfDisplay) {
-  if (!node.plugin?.emit) throw new Error(`sceneIR: plugin "${node.type}" has no emit()`);
+function emitNode(node, byId, pdfDisplay, mapTiles = null) {
+  try {
+    return emitNodeBody(node, byId, pdfDisplay, mapTiles);
+  } catch (e) {
+    if (isConfigurationError(e)) throw e;
+    const msg = throwMessage(e);
+    const who = describeOwner({ itemId: node.itemId, type: node.type, state: node.state });
+    if (reportOnce(
+      `ports:emit:${node.itemId}:${msg}`,
+      `PowerRP: item ${who} failed to EMIT — ${msg}. It is drawn as an error box; the rest of the scene still paints. Delete or fix that item to clear it.`,
+    )) console.error(e); // the real stack, once — a determinism bug must stay diagnosable
+    const a = errorAffordanceArgs(errorBoxExtent(node.state?.w), errorBoxExtent(node.state?.h), errorMessage(who, `failed to emit — ${msg}`));
+    const owner = ownerTag(node);
+    // THE MIRROR STILL APPLIES. Unlike node.world (which the non-finite branch
+    // above must draw at IDENTITY because the world itself may be the poison),
+    // mirrorPush only reads node.mirror/state.w/h — never anything the throwing
+    // emit() touched — so it is safe here, and skipping it would make a flipped
+    // widget's own error box fail the sign-blindness contract every other
+    // affordance honours (tests/negative_size_test.js: "the signed spellings
+    // must emit a REFLECTED transform").
+    const mirror = mirrorPush(node);
+    return mirror
+      ? [{ ...pushTransform(node.world), owner }, mirror, rect(a.rect), text(a.text), popTransform(), popTransform()]
+      : [{ ...pushTransform(node.world), owner }, rect(a.rect), text(a.text), popTransform()];
+  }
+}
+
+/**
+ * Near-pure function (reportOnce logs to console and remembers the key —
+ * see core/report.js). emitNode's happy path, split out so the boundary above
+ * can wrap the WHOLE thing in one try without the try itself hiding in the
+ * middle of the logic it protects.
+ *
+ * @param {object} node - a derive render node (carries .plugin/.state/.world)
+ * @param {Map} byId - itemId → node, for folded-member lookup
+ * @param {Map|null} pdfDisplay - per-node PDF re-raster descriptors (or null)
+ * @returns {object[]} IR (empty when the node emits nothing — a pure ghost)
+ */
+function emitNodeBody(node, byId, pdfDisplay, mapTiles = null) {
+  // A plugin registered with no emit() is a BROKEN REGISTRY ENTRY, not document
+  // poison — no document authored the missing method, so no red box on one item
+  // describes it honestly. Branded so the emit-time boundary below rethrows it,
+  // exactly like the "no rasterize callback" case at export time.
+  if (!node.plugin?.emit) throw configurationError(new Error(`sceneIR: plugin "${node.type}" has no emit()`));
   // ── THE NON-FINITE CONTAINMENT SEAM ────────────────────────────────────────
   // A BROKEN WIDGET COSTS ITSELF, NEVER THE FRAME — the plugin-emit red-box rule
   // (50a50bc), applied to the other way a node can be unpaintable: its numbers.
@@ -317,12 +386,20 @@ function emitNode(node, byId, pdfDisplay) {
   }
   // GROUP SUBTREE: build the folded members' absolute-world IR (recursively).
   const subtreeIR = node.type === "group" && Array.isArray(node.subtreeMemberIds) && node.subtreeMemberIds.length
-    ? node.subtreeMemberIds.flatMap((id) => (byId.has(id) ? emitNode(byId.get(id), byId, pdfDisplay) : []))
+    ? node.subtreeMemberIds.flatMap((id) => (byId.has(id) ? emitNode(byId.get(id), byId, pdfDisplay, mapTiles) : []))
     : null;
   const targetWorldIR = node.type === "cropbox" && node.cropTarget
     ? [pushTransform(node.cropTarget.world), ...node.cropTarget.plugin.emit(node.cropTarget.state), popTransform()]
     : null;
-  const renderCtx = pdfDisplay ? { pdfDisplay: pdfDisplay.get(node.itemId) ?? null } : null;
+  // The per-node RENDER CONTEXT: each view-aware pre-pass's descriptor FOR THIS
+  // NODE. Null when no pre-pass ran (export, thumbnails, the CLI, tests), which is
+  // the signal every consuming plugin reads to take its camera-free fallback.
+  const renderCtx = pdfDisplay || mapTiles
+    ? {
+        pdfDisplay: pdfDisplay?.get(node.itemId) ?? null,
+        mapTiles: mapTiles?.get(node.itemId) ?? null,
+      }
+    : null;
   // emit() gets a subtree as arg 2 (a group's members' IR, or a crop box's target
   // IR — mutually exclusive) and its ABSOLUTE world as arg 3 (the SHARED
   // STROKED-BOX BUNDLE seam — manifest "SHARED STYLE BUNDLES"): a box-like media

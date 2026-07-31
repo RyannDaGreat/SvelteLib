@@ -212,5 +212,5 @@ export function describeMapNode(node, view, viewW, viewH) {
     if (status === "error") markTileFailed(ref);
     return { ...tile, ref, ready: status === "ready" };
   });
-  return { z, tiles, window, cropped, provider: provider.id, attribution: provider.attribution };
+  return { z, tiles, window, cropped, devicePerWorld, provider: provider.id, attribution: provider.attribution };
 }
