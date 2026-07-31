@@ -738,6 +738,7 @@ export function normalizeStrokeTrim(cmdName, src = {}) {
  * @example applyStrokeTrim({}, [{op: "rect", stroke: [0,0,0,1]}]) // [{op: "rect", stroke: [0,0,0,1]}]
  * @example applyStrokeTrim({strokeEnd: 0.5}, [{op: "rect", stroke: [0,0,0,1], strokeWidth: 2}])[0].strokeEnd // 0.5
  * @example applyStrokeTrim({strokeEnd: 0.5}, [{op: "rect", fill: [1,0,0,1]}])[0].strokeEnd // undefined (no stroke to trim)
+ * @example applyStrokeTrim({strokePhase: 360}, [{op: "rect", stroke: [0,0,0,1], strokeWidth: 2}])[0].strokePhase // 1 (360 stored DEGREES / 360 = 1 turn — a full loop; trimSegments' mod1 renders it identical to phase 0, but the op field itself is not identity-dropped)
  */
 export function applyStrokeTrim(state, cmds) {
   // STORED strokePhase is an ANGLE IN DEGREES (an angle-kind row — the rotation

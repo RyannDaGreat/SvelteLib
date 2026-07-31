@@ -779,11 +779,22 @@ export const PROPS = {
   strokeStart: { label: "Stroke start", kind: "number", min: 0, max: 1, category: "strokeMaterial", help: "Where the drawn outline BEGINS, as a fraction of its total length (0 = the very start, 1 = the very end). Raise it to reveal the stroke from its end inward; keyframe it for a draw-on animation." },
   strokeEnd: { label: "Stroke end", kind: "number", min: 0, max: 1, category: "strokeMaterial", help: "Where the drawn outline ENDS, as a fraction of its total length (1 = fully drawn). Lower it to leave the tail undrawn; keyframe 0 → 1 to draw the stroke on over time." },
   // AN ANGLE PROPERTY (user ruling: "phase can be represented as an angle
-  // property") — the rotation dial, stored in DEGREES, unbounded and periodic
-  // (370° == 10°; render_gpu/ir.js applyStrokeTrim converts to turns and every
-  // consumer wraps via mod1). Keyframing 0° → 360° marches the pattern once
-  // around the outline "like a choo-choo train" — the user's spec, verbatim.
-  strokePhase: { label: "Stroke phase", kind: "angle", display: "degrees", category: "strokeMaterial", help: "Rotates where position 0 sits along the outline, in degrees — and where a dashed/dotted pattern starts and collapses. Keyframe 0° → 360° and the pattern marches once around the shape like a train on a loop of track; it wraps seamlessly, so 370° looks exactly like 10°." },
+  // property") — the rotation DIAL, stored in DEGREES exactly as the commit
+  // that introduced it says ("Storage is degrees"): render_gpu/ir.js
+  // applyStrokeTrim divides by 360 once at the state->op seam, and every
+  // consumer wraps via mod1, so a 0° → 360° keyframe marches the pattern once
+  // around the outline "like a choo-choo train" (the user's spec, verbatim).
+  // display IS ABSENT (identity), not "degrees": web/displayUnits.js's
+  // "degrees" name means "stored value is RADIANS" (the ROTATION convention —
+  // AngleField/NumericField's dial divides a typed value by 180/π before
+  // storing). Naming it here made a typed 90° store as ~1.571, which the /360
+  // seam above then read as 1.571 RAW DEGREES-OF-LOOP — a full loop needed a
+  // typed value in the TENS OF THOUSANDS (the reported bug, verbatim: "I have
+  // to go through an absurdly high number, like in the thousands"). AngleField's
+  // own docstring names the right precedent: "gradient angle/particleAngle
+  // store raw degrees and pass nothing (identity)" — strokePhase is that same
+  // shape (dial shows what is stored, no conversion), not the rotation shape.
+  strokePhase: { label: "Stroke phase", kind: "angle", category: "strokeMaterial", help: "Rotates where position 0 sits along the outline, in degrees — and where a dashed/dotted pattern starts and collapses. Keyframe 0° → 360° and the pattern marches once around the shape like a train on a loop of track; it wraps seamlessly, so 370° looks exactly like 10°." },
   strokeCapStart: { label: "Start cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the START of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point like a lifted brush. No effect on a closed shape drawn at full length (it has no free end)." },
   strokeCapEnd: { label: "End cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the END of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point. No effect on a closed shape drawn at full length (it has no free end)." },
 
