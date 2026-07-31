@@ -1,14 +1,27 @@
 /**
- * Preset-shape widget (Wave 2 — unified path shapes). A bbox widget whose render
- * is ONE `path` IR op: the preset generator (core/shapes.js) turns the widget's
- * {shape, w, h, points, innerRatio} into an SVG path `d` in bbox-local space,
- * which paint_skia rasterizes and svg_backend/pdf_backend export as real vector.
- * Shadow / glow / border ride the SHARED effects bundle exactly like rect — the
- * whole point of the path op is that effects operate on the rendered silhouette,
- * so every one of the ~17 presets is shadow/bloom/blend-complete for free.
+ * THE FROZEN LEGACY SHAPE WIDGET. A bbox widget whose render is ONE `path` IR op:
+ * the preset generator (core/shapes.js) turns the widget's {shape, w, h, points,
+ * innerRatio} into an SVG path `d` in bbox-local space, which paint_skia
+ * rasterizes and svg_backend/pdf_backend export as real vector. Shadow / glow /
+ * border ride the SHARED effects bundle exactly like rect, so all 17 presets are
+ * shadow/bloom/blend-complete.
  *
- * This is the additive Wave 2 deliverable: it does NOT touch rect/circle/arrow —
- * they keep their own ops. It just adds "many more shapes" on one path system.
+ * ── RETIRED, NOT REMOVED ──────────────────────────────────────────────────────
+ * This widget is NO LONGER INSERTABLE. The shapeshifter families
+ * (plugins/shapeshifter.js) subsume every silhouette here and are genuinely
+ * parametric, whereas 15 of these 17 presets IGNORE the shapePoints /
+ * shapeInnerRatio knobs they advertise — an octagon at points 8 and points 5 is
+ * byte-identical — and none has an on-canvas handle. That mismatch between what
+ * the Inspector offered and what the geometry did is the defect the consolidation
+ * closes, so `commands` is empty and web/ShapePicker.svelte no longer lists these
+ * presets.
+ *
+ * It stays REGISTERED and byte-for-byte unchanged because OLD DECKS KEEP THEIR
+ * INK: a document written before the split still carries `type: "shape"` items,
+ * and those are entitled to draw exactly what they always drew. Stored documents
+ * are NOT rewritten and these items are NOT re-rendered through a near-equivalent
+ * family. tests/shape_legacy_freeze_test.js pins every preset's path bytes and
+ * asserts the not-insertable half in the same file.
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
@@ -76,10 +89,11 @@ export const shapePlugin = {
     const local = T.apply(T.invert(world), wx, wy);
     return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, 0, local.x, local.y);
   },
-  commands: [
-    // Arms crosshair placement at the DEFAULT preset (star). The visual Shape
-    // grid (web/ShapePicker.svelte) arms specific presets; this single command
-    // keeps the palette/keyboard surfacing (command-architecture invariant).
-    { id: "add-shape", title: "Add Shape", icon: "mdi:shape-outline", run: (app) => app.armCrosshairPlacement(shapePlugin) },
-  ],
+  // NO COMMANDS — this widget is RETIRED, not removed. It declares no Add entry,
+  // so nothing in the palette, the toolbar or a keybinding can create a new one;
+  // `insert-shape` (the shapeshifter families) is the only way to add a shape.
+  // Everything above stays exactly as it was so a document that already contains
+  // a `type: "shape"` item keeps loading, rendering, hit-testing and exporting
+  // unchanged — see this file's header and tests/shape_legacy_freeze_test.js.
+  commands: [],
 };

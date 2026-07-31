@@ -34,6 +34,7 @@
 
 import { builtinCursorAssets } from "../render_gpu/gpu/svg_raster.js";
 import { builtinPluginAssetSources } from "../core/builtin_plugin_assets.js";
+import { builtinClipartAssets } from "./builtinClipart.js";
 import { assetKindForName } from "./assetRef.js";
 
 /**
@@ -110,6 +111,14 @@ const CATEGORY_DEFS = [
     description:
       "Tier-1 vector widgets that ship as plugin ASSETS rather than source files — the same sandboxed format a user's own custom widget uses. Drag one onto the canvas to add it.",
     load: builtinWidgetAssets,
+  },
+  {
+    id: "clipart",
+    label: "Clip Art",
+    icon: "mdi:image-filter-vintage",
+    description:
+      "Ready-made vector drawings with no parameter worth turning — a lightning bolt is one good zigzag, not a family of them. Drag one in as an SVG widget; it scales, recolours and exports as real vector like any other.",
+    load: builtinClipartAssets,
   },
 ];
 

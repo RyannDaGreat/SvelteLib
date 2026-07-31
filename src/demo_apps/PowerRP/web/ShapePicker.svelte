@@ -1,38 +1,37 @@
 <!--
-  ShapePicker — a visual GRID of preset shapes beside "Add Rectangle" (Wave 2).
-  The headline "shapeshifter" family tiles are a PROJECTION of the command
-  registry's `insert-shape` submenu (its `children`, built from FAMILIES in
-  web/App.svelte) — so this toolbar popover and the command palette read the
-  SAME single source of truth. Each tile previews the child's `shapePreview`
-  (the family generator at its default seed) and clicking it runs the child
-  command (MRU-tracked, exactly like the palette). The legacy fixed presets
-  below still come from the local `shape` plugin. No <style> block — all styling
-  is in app.css via --a-* tokens (annotator convention).
+  ShapePicker — a visual GRID of shape families beside "Add Rectangle".
+
+  ONE PICKER, ONE SYSTEM. Every tile is a PROJECTION of the command registry's
+  `insert-shape` submenu (its `children`, built from FAMILIES in web/App.svelte),
+  so this toolbar popover and the command palette read the SAME single source of
+  truth. Each tile previews the child's `shapePreview` (the family generator at
+  its default seed) and clicking it runs the child command (MRU-tracked, exactly
+  like the palette).
+
+  This grid USED TO carry a second row of tiles for the legacy `shape` plugin's
+  17 baked presets, and that row was the bug: 15 of those presets ignored their
+  own shapePoints/shapeInnerRatio knobs (an octagon at points=8 and points=5 were
+  byte-identical), and none of them had on-canvas handles. A user clicking a tile
+  had no way to tell which of the two systems they had just inserted — the
+  parameters simply did nothing. The families cover every one of those
+  silhouettes and are genuinely parametric, so the legacy row is gone and the
+  legacy type is no longer insertable. Documents that already contain one still
+  load and render it unchanged (tests/shape_legacy_freeze_test.js).
+
+  No <style> block — all styling is in app.css via --a-* tokens (annotator
+  convention).
 -->
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import { SHAPE_NAMES, SHAPE_LABELS, shapePath } from "../core/shapes.js";
 
   let { app } = $props();
   let open = $state(false);
 
-  // SHAPESHIFTER families first (the headline power shapes): the children of the
-  // single `insert-shape` submenu command. Lazily read (only when the popover
-  // opens) so it stays loud-if-missing without gating boot on registration.
+  // The shapeshifter families: the children of the single `insert-shape` submenu
+  // command. Lazily read (only when the popover opens) so it stays loud-if-missing
+  // without gating boot on registration.
   let familyItems = $derived(app.commands.get("insert-shape").children);
-
-  // Legacy fixed presets (the original shape widget) below the families.
-  const previews = SHAPE_NAMES.map((name) => ({ name, label: SHAPE_LABELS[name], d: shapePath(name, 100, 100) }));
-
-  /** Command. Arms crosshair placement for `name`. A defaults-override copy of
-   * the registered shape plugin — the SAME plugin surface CanvasView.placementUp
-   * reads (.defaults + .placement) — so placement is fully generic. */
-  function pick(name) {
-    const plugin = app.registry.get("shape");
-    app.armCrosshairPlacement({ ...plugin, defaults: { ...plugin.defaults, shape: name } });
-    open = false;
-  }
 
   // Lightweight popover: close on outside pointerdown — a press we are not the
   // target of is only visible from a global listener, so this one stays at the
@@ -82,19 +81,6 @@
             <path d={c.shapePreview.d} fill-rule={c.shapePreview.fillRule} />
           </svg>
           <span class="shape-tile-label">{c.title}</span>
-        </button>
-      {/each}
-      {#each previews as s}
-        <button
-          class="shape-tile"
-          role="menuitem"
-          aria-label={"Add " + s.label}
-          onclick={() => pick(s.name)}
-        >
-          <svg class="shape-tile-svg" viewBox="-6 -6 112 112" aria-hidden="true">
-            <path d={s.d} />
-          </svg>
-          <span class="shape-tile-label">{s.label}</span>
         </button>
       {/each}
     </div>
