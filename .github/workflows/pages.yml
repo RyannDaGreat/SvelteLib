@@ -93,6 +93,21 @@ jobs:
             || { echo "::error::built index.html does not reference ${BASE}assets/ — POWERRP_BASE did not apply"; exit 1; }
           ls dist-powerrp/assets/*.wasm >/dev/null \
             || { echo "::error::no .wasm in the bundle — canvaskit would fail to load"; exit 1; }
+          # THE PWA ARTIFACTS. Same reasoning as the wasm check above: these are
+          # emitted by a plugin (web/swBuildPlugin.js), so a bundler or config
+          # change could silently drop them and the ONLY symptom would be a
+          # deployed site that quietly stopped working offline — which nobody
+          # notices until they are on a plane. Assert they exist, and that the
+          # worker really carries a precache manifest INCLUDING the wasm: an
+          # empty or wasm-less list installs happily and then strands the user
+          # at the boot splash on their first offline visit.
+          test -f dist-powerrp/sw.js && test -f dist-powerrp/manifest.webmanifest \
+            || { echo "::error::sw.js or manifest.webmanifest missing — the deploy would not be an installable/offline PWA"; exit 1; }
+          grep -q "__POWERRP_PRECACHE" dist-powerrp/sw.js \
+            || { echo "::error::sw.js has no precache manifest — the build plugin did not substitute it"; exit 1; }
+          grep -q '"[^"]*\.wasm"' dist-powerrp/sw.js \
+            || { echo "::error::canvaskit.wasm is not precached — an offline boot would hang at the splash"; exit 1; }
+          echo "PWA OK: sw.js precaches $(grep -c '^  "' dist-powerrp/sw.js) entries incl. the wasm"
           echo "bundle OK: $(du -sh dist-powerrp | cut -f1), $(ls dist-powerrp/assets | wc -l) assets"
 
       - uses: actions/configure-pages@v5

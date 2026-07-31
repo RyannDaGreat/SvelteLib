@@ -7,6 +7,8 @@ exports like a print shop.
 full editor, no install (projects live in your browser; export/import zips to
 move them).
 
+It's a full offline-capable PWA: visit once, then edit, save and present with no internet at all.
+
 ## Saving & loading
 
 - **Browser storage** — on the web version, projects live in the browser you opened it in.
