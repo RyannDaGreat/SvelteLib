@@ -1332,6 +1332,10 @@
         { id: "add-tangent-lines", title: "Tangent Lines (two external tangents between two shapes)", icon: "mdi:vector-line", run: (a) => a.addItem(a.registry.get("tangent_lines").defaults) },
         { id: "demo-insert-raycast-dither", title: "Raycast Dither (animated grain gradient)", icon: "mdi:gradient-vertical", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_raycast_dither")) },
         { id: "demo-insert-mandelbrot", title: "Mandelbrot (deep-zoom fractal — double-click to explore inside)", icon: "mdi:fingerprint", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_mandelbrot")) },
+        // Placed with the crosshair like the Mandelbrot, and for the same reason: both
+        // are square-ish panels whose position matters to the composition, and both are
+        // explored by DOUBLE-CLICK afterwards (the shared interiorNav handler).
+        { id: "demo-insert-globe-map", title: "Globe / Map (real world map — a lit globe with atmosphere, double-click to explore inside)", icon: "mdi:earth", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_globe_map")) },
         // Lens Flare inserts CAMERA-FILLING via addItem (its default x/y/w/h are `=
         // camera.*` equations; the crosshair click-places-default path does arithmetic
         // on defaults.w, which is an equation here — so it must NOT use crosshair).
