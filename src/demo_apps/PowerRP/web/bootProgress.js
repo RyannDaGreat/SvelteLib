@@ -90,11 +90,19 @@ export function bootFailed(message) {
 export async function fetchWithProgress(url, id, label) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`fetchWithProgress: ${url} → HTTP ${res.status} ${res.statusText}`);
-  // Content-Length is the honest denominator when present. It is absent for a
-  // compressed response (the header then describes the COMPRESSED size and the
-  // browser strips it) — treated as unknown, never guessed.
+  // Content-Length is only an honest denominator for an UNENCODED body: the
+  // header counts WIRE bytes while reader.read() yields DECODED bytes. This
+  // comment used to claim browsers STRIP the header on compressed responses —
+  // FALSE in Chromium, which happily exposes the gzipped size (the splash once
+  // read "3.8 MB / 2.8 MB": decompressed bytes racing past the compressed
+  // total). Two guards, because content-encoding is not always readable and a
+  // SW-cache-served response can carry stale headers: trust the header only
+  // when the response declares itself unencoded, and in the read loop below,
+  // the moment loaded exceeds total the header is proven a lie and the meter
+  // degrades to the indeterminate display for the rest of the download.
+  const encoding = res.headers.get("content-encoding");
   const header = res.headers.get("content-length");
-  const total = header ? Number(header) : 0;
+  let total = encoding && encoding !== "identity" ? 0 : header ? Number(header) : 0;
   // No streaming body (an opaque or already-buffered response): fall back to
   // arrayBuffer() and report the one final number. Still honest — just coarse.
   if (!res.body?.getReader) {
@@ -111,6 +119,7 @@ export async function fetchWithProgress(url, id, label) {
     if (done) break;
     chunks.push(value);
     loaded += value.byteLength;
+    if (total > 0 && loaded > total) total = 0; // header proven a lie (compressed wire size) — go indeterminate
     bootStage(id, label, { loaded, total: total > 0 ? total : undefined });
   }
   // Concatenate once at the end — CanvasKitInit wants one contiguous buffer.
