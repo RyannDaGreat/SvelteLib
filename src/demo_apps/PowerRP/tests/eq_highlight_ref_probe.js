@@ -21,11 +21,23 @@
  * console error. Run from the worktree root: node <this>.
  */
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
+import { requireBackendOrSkip } from "./backend_precondition.js";
 
-const repo = process.cwd();
+// This probe boots the real editor, whose load calls /api/projects/. Say so
+// before spending a browser on it — see backend_precondition.js.
+await requireBackendOrSkip("eq_highlight_ref_probe");
+
+// ANCHORED TO THIS FILE, NOT THE CWD. `process.cwd()` made the probe runnable
+// ONLY from the worktree root: run it from tests/ and it built
+// <root>/src/demo_apps/PowerRP/src/demo_apps/PowerRP/examples/... and died on
+// ENOENT before a single assertion. The gate happens to cd to the root, so this
+// was invisible there and broke exactly when triage re-runs one probe ALONE —
+// the moment the path matters most. Same shape as code_modal_probe.js.
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
 const demoJson = await readFile(resolve(repo, "src/demo_apps/PowerRP/examples/demo.powerrp.json"), "utf8");
 
@@ -41,7 +53,10 @@ const errors = [];
 const checks = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };
 
-const IGNORE_BOOT = [/PowerRP repair:/, /was missing/, /duration.*transition|transition.*duration/i];
+// Last entry: the WEBGPU-ABSENCE line — an environment report from videoV7Gpu.js,
+// not an equation-highlighting defect. See tests/webgpu_absence_noise.js.
+const IGNORE_BOOT = [/PowerRP repair:/, /was missing/, /duration.*transition|transition.*duration/i,
+  /VideoV7: WebGPU init failed — using 2D drawImage fallback/];
 const isBootNoise = (s) => IGNORE_BOOT.some((re) => re.test(s));
 // Live-typing evaluation feedback (mid-fragment unknown refs) is EXPECTED — the
 // error affordance exists to surface it (same rationale as the SA5 probe).
@@ -78,6 +93,20 @@ try {
   // to speed — the reference special form); expr = "speed * 2 + ghost" (a general
   // equation exercising var/op/num/error highlight classes). All keyframed on
   // slide 0 through the same addVariable/commit path the panel uses.
+  // THE GLOBAL VARIABLES PANEL IS HIDDEN BY DEFAULT (core/panels.js:
+  // `defaultVisible: false`, set in 73d6aee), and every assertion below reads
+  // rows out of `.varspanel`. This probe predates that default, so it queried a
+  // panel that was not mounted: `hl` came back null and the run died on a
+  // TypeError at the first `hl.toks` deref — BEFORE the `ok(hl, …)` line that
+  // would have named the real problem. Open it through the registry's own
+  // toggle command rather than poking the DOM, so the probe exercises the same
+  // path a user does and stays correct if the panel's markup moves.
+  await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    if (!app.panelVisible.globalVariables) app.commands.get("toggle-panel-globalVariables").run(app);
+  });
+  await new Promise((r) => setTimeout(r, 150));
+
   await page.evaluate(() => {
     const app = window.__powerrp_app;
     app.slideIndex = 0;

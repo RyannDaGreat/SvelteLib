@@ -48,7 +48,9 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 2 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error/i;
+  // The last alternative is the WEBGPU-ABSENCE line: an environment report from
+  // videoV7Gpu.js, not a glass/backdrop defect. See tests/webgpu_absence_noise.js.
+  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error|VideoV7: WebGPU init failed — using 2D drawImage fallback/i;
   page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });

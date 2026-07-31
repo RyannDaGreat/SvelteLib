@@ -39,6 +39,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
+import { isWebGpuAbsenceNoise } from "./webgpu_absence_noise.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, "..");
@@ -111,7 +112,9 @@ try {
 
     const consoleErrors = [];
     page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
-    page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(`console.error: ${m.text()}`); });
+    // WebGPU absence is an ENVIRONMENT report, not a PNG-extent defect (see
+    // webgpu_absence_noise.js). This probe is about capture rects and dpr.
+    page.on("console", (m) => { if (m.type() === "error" && !isWebGpuAbsenceNoise(m.text())) consoleErrors.push(`console.error: ${m.text()}`); });
 
     // Intercept navigator.clipboard.write BEFORE the app module loads: this
     // probe cares about the RENDERED BYTES (rasterizeIrPng's output), not

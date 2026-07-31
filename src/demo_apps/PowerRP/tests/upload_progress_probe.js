@@ -24,6 +24,7 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { tmpdir } from "node:os";
+import { isWebGpuAbsenceNoise } from "./webgpu_absence_noise.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_DIR = resolve(HERE, "..");
@@ -100,7 +101,9 @@ try {
   await page.setViewport({ width: 1280, height: 800 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => {
-    if (m.type() === "error") errors.push(`console.error: ${m.text()}`);
+    // WebGPU absence is an ENVIRONMENT report, not an upload defect (see
+    // webgpu_absence_noise.js). This probe is about byte counters and tiles.
+    if (m.type() === "error" && !isWebGpuAbsenceNoise(m.text())) errors.push(`console.error: ${m.text()}`);
     if (m.type() === "warning") console.log(`[page.warn] ${m.text()}`);
   });
 

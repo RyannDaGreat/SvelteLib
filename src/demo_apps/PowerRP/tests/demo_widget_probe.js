@@ -48,7 +48,10 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error/i;
+  // The last alternative is the WEBGPU-ABSENCE line: an environment report from
+  // videoV7Gpu.js, not a widget defect. See tests/webgpu_absence_noise.js for why
+  // it is this one sentence and not /WebGPU/.
+  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error|VideoV7: WebGPU init failed — using 2D drawImage fallback/i;
   page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
@@ -60,13 +63,31 @@ try {
     const app = window.__powerrp_app;
     const entry = app.commands.get("insert-demo-widget");
     const topHit = app.commands.search("add demo").some((c) => c.id === "insert-demo-widget"); // title says "Add Demo Widget" now; the id stays
-    // Each child must resolve a REAL registered plugin type (loud get() would throw).
-    const childTypes = { "demo-insert-showcase": "demo_showcase", "demo-insert-magnifier": "magnifier" };
+    // TWO SEPARATE CLAIMS, because they have different shelf lives.
+    //
+    // (a) EVERY child must carry a callable run(). That is checkable for all of
+    //     them and cannot go stale as widgets are added.
+    // (b) A NAMED SAMPLE must resolve a real registered plugin type. The type a
+    //     child arms lives inside its run() closure (App.svelte builds these as
+    //     literal entries calling armCrosshairPlacement(registry.get("…"))), so
+    //     it is not readable from the entry — only a by-id map can assert it.
+    //
+    // WHY THE MAP IS A SAMPLE AND NOT A ROSTER: it was written in 02b1918 when
+    // this submenu had exactly these two children, and `.every()` over the map
+    // silently became UNSATISFIABLE as 37 more demo widgets landed without
+    // anyone extending it — a lookup miss scored as `resolves: false`, so the
+    // check could not pass at any commit since. It was red for years while
+    // saying nothing about the app. A roster that must be hand-edited on every
+    // widget is the bug; the sweep in (a) is what actually covers the roster,
+    // and registry coverage per se belongs to the protocol-sweep tests.
+    const SAMPLE_CHILD_TYPES = { "demo-insert-showcase": "demo_showcase", "demo-insert-magnifier": "magnifier" };
     const childResolves = entry.children.map((c) => {
-      const t = childTypes[c.id];
-      let ok = false;
-      try { ok = !!app.registry.get(t); } catch { ok = false; }
-      return { id: c.id, hasRun: typeof c.run === "function", resolves: ok };
+      const t = SAMPLE_CHILD_TYPES[c.id];
+      // Not in the sample => this child only owes us a run(); `resolves` is n/a,
+      // recorded as true so it does not masquerade as a registry failure.
+      let ok = true;
+      if (t) { try { ok = !!app.registry.get(t); } catch { ok = false; } }
+      return { id: c.id, hasRun: typeof c.run === "function", resolves: ok, sampled: !!t };
     });
     return {
       hasChildren: Array.isArray(entry.children),
@@ -79,8 +100,12 @@ try {
   assert(submenu.isTopLevelSearchable, "submenu is reachable via a top-level palette search (like color-theme)");
   assert(submenu.childIds.includes("demo-insert-showcase") && submenu.childIds.includes("demo-insert-magnifier"),
     `children include the showcase + magnifier (${submenu.childIds.join(", ")})`);
-  assert(submenu.childResolves.every((c) => c.hasRun && c.resolves),
-    "every child has a run() that arms a real registered plugin type");
+  // Named separately so a failure says WHICH child and WHICH claim broke.
+  const noRun = submenu.childResolves.filter((c) => !c.hasRun).map((c) => c.id);
+  const unresolved = submenu.childResolves.filter((c) => c.sampled && !c.resolves).map((c) => c.id);
+  assert(noRun.length === 0, `every child carries a callable run() (missing: ${noRun.join(", ") || "none"})`);
+  assert(unresolved.length === 0,
+    `the sampled children arm a real registered plugin type (unresolved: ${unresolved.join(", ") || "none"})`);
 
   // ── Inject a doc with ONE demo_showcase item + the camera; select it.
   await page.evaluate((boxW) => {

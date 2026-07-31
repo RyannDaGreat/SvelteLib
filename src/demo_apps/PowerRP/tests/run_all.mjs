@@ -274,9 +274,16 @@ const only = args.find((a) => a.startsWith("--only="))?.slice("--only=".length);
 const kinds = only ? [only] : ["node", "python", "shell", "browser"]; // browser last: slowest
 /** Substring filter on the file's basename, for iterating on one failure without
  *  paying for the other 180. NOT a way to report a passing gate — the gate is the
- *  unfiltered run. */
-const filter = args.find((a) => a.startsWith("--filter="))?.slice("--filter=".length) ?? "";
-const select = (kind) => collect(kind).filter((f) => basename(f).includes(filter));
+ *  unfiltered run.
+ *
+ *  COMMA-SEPARATED = OR, because triage works in CLASSES, not single files. A
+ *  sweep that finds nine probes red for one shared cause needs to re-run exactly
+ *  those nine to prove the cause; without this it was one run per probe (nine
+ *  backend spin-ups) or the full 154. Empty string keeps matching everything. */
+const filterTerms = (args.find((a) => a.startsWith("--filter="))?.slice("--filter=".length) ?? "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const select = (kind) => collect(kind).filter((f) =>
+  filterTerms.length === 0 || filterTerms.some((t) => basename(f).includes(t)));
 
 if (args.includes("--list")) {
   for (const k of kinds) console.log(`${k.padEnd(8)} ${select(k).length}\n  ${select(k).map((f) => basename(f)).join("\n  ")}`);

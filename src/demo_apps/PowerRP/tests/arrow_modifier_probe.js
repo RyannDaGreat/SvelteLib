@@ -23,11 +23,16 @@
  * Run from SvelteLib root: node src/demo_apps/PowerRP/tests/arrow_modifier_probe.js
  */
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
+import { isWebGpuAbsenceNoise } from "./webgpu_absence_noise.js";
 
-const repo = process.cwd();
+// Anchored to this file, not the cwd — see the same note in eq_highlight_ref_probe.js:
+// a cwd-relative fixture path makes the probe runnable only from the worktree root,
+// which breaks re-running it alone during triage.
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
 const demoJson = await readFile(resolve(repo, "src/demo_apps/PowerRP/examples/demo.powerrp.json"), "utf8");
 
@@ -49,6 +54,12 @@ try {
   const liveErrors = [];
   page.on("console", (m) => {
     if (m.type() !== "error") return;
+    // The WEBGPU-ABSENCE line is an environment report, not a fixture-migration
+    // symptom (see webgpu_absence_noise.js). This check exists to prove the demo
+    // fixture's stroke/strokeWidth/headMode migration is not re-firing; a missing
+    // WebGPU adapter says nothing about that, and swallowing only this one
+    // sentence leaves a real repair log still able to fail the check below.
+    if (isWebGpuAbsenceNoise(m.text())) return;
     (afterBoot.on ? liveErrors : bootErrors).push(`console.error: ${m.text()}`);
   });
   await page.evaluateOnNewDocument((json) => localStorage.setItem("powerrp.autosave", json), demoJson);

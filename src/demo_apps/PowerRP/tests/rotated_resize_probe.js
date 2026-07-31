@@ -38,7 +38,26 @@ const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle
 const errors = [];
 const checks = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };
-const IGNORE_BOOT = [/PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i];
+// BOOT NOISE THIS PROBE IS NOT ABOUT. The last entry is the WEBGPU-ABSENCE line,
+// and it is an ENVIRONMENT fact, not a defect: `plugins/demo/video_v7.js` asks for
+// a WebGPU adapter, headless Chromium on SwiftShader has none, and videoV7Gpu.js
+// REPORTS the fallback it took instead of failing silently — which is correct
+// behaviour that this probe was counting as a boot error. It is why this probe
+// was red at a pristine HEAD while every one of its five rotated-resize
+// assertions passed (west drift 0.0000px, east exactly 40px, rotationAnchor left
+// as the self.anchors.center equation). Ignoring it here matches what eight other
+// probes already do (creation_flows_probe, keyframe_freeze_probe,
+// panel_visibility_probe, browser_render_harness, …).
+//
+// NARROW ON PURPOSE: it matches the ONE sentence videoV7Gpu.js emits when there is
+// no adapter, not /WebGPU/ generally — a broad pattern would also swallow a real
+// WebGPU regression, which is the failure mode this whole file exists to catch.
+const IGNORE_BOOT = [
+  /PowerRP repair:/,
+  /was missing font/,
+  /duration.*transition|transition.*duration/i,
+  /VideoV7: WebGPU init failed — using 2D drawImage fallback/,
+];
 const isBootNoise = (s) => IGNORE_BOOT.some((re) => re.test(s));
 const applyWorld = (world, lx, ly) => T.apply(world, lx, ly);
 

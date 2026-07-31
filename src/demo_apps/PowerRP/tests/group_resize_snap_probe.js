@@ -23,6 +23,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
+import { isWebGpuAbsenceNoise } from "./webgpu_absence_noise.js";
 
 const repo = process.cwd();
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
@@ -45,7 +46,9 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
   page.on("pageerror", (e) => fail(`pageerror: ${e.message}`));
-  page.on("console", (m) => { if (m.type() === "error") fail(`console.error: ${m.text()}`); });
+  // WebGPU absence is an ENVIRONMENT report, not a defect in group resize/snap
+  // (see webgpu_absence_noise.js). Every other assertion here is about geometry.
+  page.on("console", (m) => { if (m.type() === "error" && !isWebGpuAbsenceNoise(m.text())) fail(`console.error: ${m.text()}`); });
   await page.goto(url, { waitUntil: "networkidle0" });
   await new Promise((r) => setTimeout(r, 600));
   if (errors.length) { console.error("PAGE ERRORS AT BOOT:\n" + errors.join("\n")); process.exit(1); }
