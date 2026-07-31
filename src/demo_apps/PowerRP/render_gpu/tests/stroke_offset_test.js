@@ -107,9 +107,15 @@ test("a non-identity offset DOES ride along on all three stroked op kinds", () =
   assert.equal(pathOp({ d: "M0 0 L10 0", stroke: "#000", strokeWidth: 2, strokeOffset: 0.5 }).strokeOffset, 0.5);
 });
 
-test("an out-of-range or non-finite offset fails LOUDLY (no silent clamp)", () => {
-  assert.throws(() => rect({ x: 0, y: 0, w: 1, h: 1, strokeOffset: 5 }), /\[-1,1\]/);
-  assert.throws(() => rect({ x: 0, y: 0, w: 1, h: 1, strokeOffset: -3 }), /\[-1,1\]/);
+test("beyond ±1 is ACCEPTED (the DETACHED parallel contour, not an error) — the [-1,1] range check OPENED", () => {
+  // Superseded law (user ruling: "Stroke contour beyond plus or minus one —
+  // yeah, I'd like that"). Was a throw pinned to /\[-1,1\]/; now these values
+  // ride the op exactly like any other non-identity offset.
+  assert.equal(rect({ x: 0, y: 0, w: 1, h: 1, strokeOffset: 5 }).strokeOffset, 5);
+  assert.equal(rect({ x: 0, y: 0, w: 1, h: 1, strokeOffset: -3 }).strokeOffset, -3);
+});
+
+test("a non-finite offset still fails LOUDLY (no silent clamp) — that half of the guard is UNCHANGED", () => {
   assert.throws(() => rect({ x: 0, y: 0, w: 1, h: 1, strokeOffset: NaN }), /finite/);
   assert.throws(() => rect({ x: 0, y: 0, w: 1, h: 1, strokeOffset: "inner" }), /finite/);
 });
@@ -139,8 +145,11 @@ test("the stamp recurses a self-effect wrapper but NOT foreign crop content", ()
 // ── the DECLARATION: one row, inherited by every stroked box ──────────────────
 test("strokeOffset is declared ONCE and both stroke bundles inherit it", () => {
   assert.equal(PROPS.strokeOffset.kind, "number");
-  assert.equal(PROPS.strokeOffset.min, -1);
-  assert.equal(PROPS.strokeOffset.max, 1);
+  // The row's range OPENED beyond ±1 (detached parallel contour, stroke_offset_detached_test.js) —
+  // still SYMMETRIC and still comfortably wider than the ±1 attached range it supersedes.
+  assert.ok(PROPS.strokeOffset.min <= -1, "the row must still admit the fully-inner attached value");
+  assert.ok(PROPS.strokeOffset.max >= 1, "the row must still admit the fully-outer attached value");
+  assert.ok(PROPS.strokeOffset.min < -1 && PROPS.strokeOffset.max > 1, "and now admits values beyond ±1 — the detached range");
   assert.ok(!("default" in PROPS.strokeOffset), "no default — absent IS centered, so no document's state changes");
   for (const b of ["strokedBox", "strokedBorder"])
     assert.ok(BUNDLES[b].includes("strokeOffset"), `${b} must inherit the alignment row`);

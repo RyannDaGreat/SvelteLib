@@ -814,28 +814,6 @@ export function opStrokeIsOffset(cmd) {
 }
 
 /**
- * Pure function. How far a stroke of width `w` at offset `o` reaches OUTSIDE the
- * outline: (1−a)·w. This is what BOUNDS must grow by — a centered stroke reaches
- * w/2 (the historical `strokeWidth / 2`), a fully OUTER stroke reaches the whole
- * w, and a fully INNER one reaches 0 because all its ink is within the geometry.
- *
- * Args:
- *   width (number): the stroke width in local units
- *   offset (number): the stroke offset, -1 .. +1
- *
- * Returns:
- *   number: the outward reach in local units
- *
- * @example strokeOutwardReach(12, 0) // 6   (centered: the legacy half-width)
- * @example strokeOutwardReach(12, 1) // 12  (fully outer: the whole width is outside)
- * @example strokeOutwardReach(12, -1) // 0  (fully inner: no ink outside the box)
- * @example strokeOutwardReach(12, 0.5) // 9
- */
-export function strokeOutwardReach(width, offset) {
-  return (1 - strokeInsideFraction(offset)) * width;
-}
-
-/**
  * Near-pure helper (throws on bad input — the normalizeStrokeTrim discipline).
  * Validates a raw strokeOffset and returns it ONLY when non-identity, so a
  * centered/absent offset returns {} and the op stays byte-identical.
@@ -847,15 +825,92 @@ export function strokeOutwardReach(width, offset) {
  * @example normalizeStrokeOffset("rect", {}) // {}
  * @example normalizeStrokeOffset("rect", {strokeOffset: 0}) // {}
  * @example normalizeStrokeOffset("rect", {strokeOffset: -1}) // {strokeOffset: -1}
+ * @example normalizeStrokeOffset("rect", {strokeOffset: 2.5}) // {strokeOffset: 2.5} (beyond ±1: a DETACHED parallel contour, not an error)
  */
 export function normalizeStrokeOffset(cmdName, src = {}) {
   const v = src.strokeOffset;
   if (v == null) return {};
   if (typeof v !== "number" || !Number.isFinite(v))
     throw new Error(`${cmdName}: strokeOffset must be a finite number, got ${JSON.stringify(v)}`);
-  if (v < -1 || v > 1)
-    throw new Error(`${cmdName}: strokeOffset is an alignment in [-1,1] (-1 inner, 0 centered, 1 outer), got ${JSON.stringify(v)}`);
   return v === STROKE_OFFSET_CENTER ? {} : { strokeOffset: v };
+}
+
+// ── BEYOND ±1: THE DETACHED PARALLEL CONTOUR ─────────────────────────────────
+// |o| ≤ 1 is the ATTACHED case above: the band still touches the outline, and
+// strokeInsideFraction/drawOffsetOpStroke's two-clipped-strokes construction is
+// exact and untouched (byte-stable regression). |o| > 1 (user ruling: "Stroke
+// contour beyond plus or minus one — yeah, I'd like that") DETACHES the band into
+// a parallel contour ring floating at a distance from the edge — inside the
+// outline for o < -1, outside it for o > 1 — continuous with the attached case
+// at exactly ±1 because both describe the SAME quantity, the band's center
+// distance from the edge: |o|·w/2.
+
+/**
+ * Pure function. True once the offset pushes the stroke BAND fully off the
+ * outline — the band's near edge has cleared the path, so it floats as a
+ * separate parallel contour rather than straddling the outline.
+ *
+ * @example strokeIsDetached(1) // false (boundary case: still attached, the o=1 fast path)
+ * @example strokeIsDetached(1.5) // true
+ * @example strokeIsDetached(-1.5) // true
+ * @example strokeIsDetached(0.9) // false
+ */
+export function strokeIsDetached(offset) {
+  return Math.abs(offset ?? STROKE_OFFSET_CENTER) > 1;
+}
+
+/**
+ * Pure function. For a DETACHED band (|o| > 1), the offset distance from the
+ * path edge to the band's NEAR side. Zero exactly at the detach boundary
+ * (|o| = 1), growing linearly beyond it — this is what step 1 of the parallel-
+ * contour construction strokes the shape's own outline BY, before re-stroking
+ * that contour with the ordinary width `w`.
+ *
+ * Args:
+ *   width (number): the stroke width in local units
+ *   offset (number): the stroke offset; only |offset| > 1 is meaningful here
+ *
+ * Returns:
+ *   number: the near-side offset distance `d`, ≥ 0
+ *
+ * @example strokeDetachedNearDistance(12, 1) // 0    (the seam: touches, doesn't float yet)
+ * @example strokeDetachedNearDistance(12, 2) // 6    (one full width further out)
+ * @example strokeDetachedNearDistance(12, -1.5) // 3
+ */
+export function strokeDetachedNearDistance(width, offset) {
+  return (Math.abs(offset) - 1) * (width / 2);
+}
+
+/**
+ * Pure function. The full outward reach of a stroke — from the path edge to the
+ * FARTHEST ink — for ANY offset, attached or detached. This SUPERSEDES
+ * strokeOutwardReach's domain past ±1: at |o| ≤ 1 the two formulas agree
+ * exactly (both give (1−a)·w there), so every existing bounds/cull call site
+ * stays correct without a branch. Detached ink reaches |o|·w/2 (the band
+ * center) plus w/2 (its own half-width) past the edge on the far side; an
+ * INNER detached band (o < -1) still only affects INWARD reach, which bounds
+ * do not track (a widget's local bbox is not shrunk by an inner border), so
+ * this function keeps returning the OUTWARD number and is 0 for any o ≤ 1.
+ *
+ * Args:
+ *   width (number): the stroke width in local units
+ *   offset (number): the stroke offset, any finite value
+ *
+ * Returns:
+ *   number: the outward reach in local units
+ *
+ * @example strokeOutwardReach(12, 0) // 6   (centered: the legacy half-width)
+ * @example strokeOutwardReach(12, 1) // 12  (fully outer: the whole width is outside — the seam)
+ * @example strokeOutwardReach(12, -1) // 0  (fully inner: no ink outside the box)
+ * @example strokeOutwardReach(12, 0.5) // 9
+ * @example strokeOutwardReach(12, 2) // 18  (detached ring one width out: 2·6 + 6)
+ * @example strokeOutwardReach(12, -2) // 0  (a detached INNER ring never reaches outward)
+ */
+export function strokeOutwardReach(width, offset) {
+  const o = offset ?? STROKE_OFFSET_CENTER;
+  if (o >= -1 && o <= 1) return (1 - strokeInsideFraction(o)) * width;
+  if (o > 1) return o * (width / 2) + width / 2;
+  return 0; // a detached INNER ring (o < -1): all its ink is inward, none outward
 }
 
 /**
@@ -887,6 +942,73 @@ function stampStrokeOffset(cmd, off) {
   if (cmd.op === "effectSubtree" && Array.isArray(cmd.content))
     out = { ...out, content: cmd.content.map((c) => stampStrokeOffset(c, off)) };
   return out;
+}
+
+// ── DETACHED CONTOUR, CLOSED FORM (the vector exporters' path) ───────────────
+// paint_skia builds the detached contour via CanvasKit's boolean path ops
+// (Path.MakeFromOp) — general, but unavailable to svg_backend.js/pdf_backend.js,
+// which are deliberately CanvasKit-free pure string builders (manifest: DOM-free,
+// bare-node testable). A rect/rrect and an ellipse both have an EXACT closed-form
+// parallel offset (grow/shrink the corner radius and half-extents by the same
+// distance a boolean op would), so the exporters use these instead of a general
+// path-offset algorithm this codebase has no other use for. An arbitrary `path`
+// op's `d` string has no such closed form — offsetting it exactly needs the same
+// boolean-op machinery paint_skia uses, so the exporters REFUSE that case loudly
+// (buildDetachedPathContourD throws) rather than approximate a wrong curve.
+
+/**
+ * Pure function. The parallel offset of a rounded rect at distance `d` from its
+ * own outline — the closed-form equivalent of paint_skia's
+ * Path.MakeFromOp(fillPath, strokeOutlineOf(path, 2d), Union|Difference) for
+ * this one shape family. Growing a rect by `d` on every side while growing its
+ * corner radius by the same `d` traces exactly the same curve a boolean-op
+ * offset would (both are the Minkowski sum of the rect with a disk of radius
+ * d); shrinking is the same with negated `d`, clamped so the box and its radius
+ * never go negative — CanvasKit's own equivalent (a stroke-outline Difference)
+ * degrades to an EMPTY path past that point, and this returns `null` to mean
+ * the same "nothing to draw" rather than a negative-size rect.
+ *
+ * Args:
+ *   box ({x,y,w,h,cornerRadius}): the shape's own geometry, local units
+ *   d (number): signed offset distance — positive grows (outward), negative shrinks (inward)
+ *
+ * Returns:
+ *   {x,y,w,h,cornerRadius}|null - the offset rect, or null if it would vanish
+ *
+ * @example detachedRectContour({x: 100, y: 60, w: 200, h: 140, cornerRadius: 18}, 12) // {x: 88, y: 48, w: 224, h: 164, cornerRadius: 30}
+ * @example detachedRectContour({x: 100, y: 60, w: 200, h: 140, cornerRadius: 18}, -12) // {x: 112, y: 72, w: 176, h: 116, cornerRadius: 6}
+ * @example detachedRectContour({x: 0, y: 0, w: 20, h: 140, cornerRadius: 0}, -8) // {x: 8, y: 8, w: 4, h: 124, cornerRadius: 0}
+ * @example detachedRectContour({x: 0, y: 0, w: 20, h: 140, cornerRadius: 0}, -12) // null (shrunk past zero width: no room for an inward ring)
+ */
+export function detachedRectContour(box, d) {
+  const w = box.w + 2 * d, h = box.h + 2 * d;
+  if (w <= 0 || h <= 0) return null;
+  return { x: box.x - d, y: box.y - d, w, h, cornerRadius: Math.max(0, (box.cornerRadius ?? 0) + d) };
+}
+
+/**
+ * Pure function. The parallel offset of an ellipse at distance `d` — growing or
+ * shrinking each radius by `d` is EXACT for an ellipse's own offset curve only
+ * along its two axes (a true constant-distance offset of a general ellipse is
+ * not itself an ellipse, but PowerRP's ellipse op is axis-aligned and its
+ * ATTACHED construction already treats strokeInsideFraction·w as a per-axis
+ * radius delta — this keeps the same convention rather than introducing a
+ * different curve at the seam).
+ *
+ * Args:
+ *   ell ({cx,cy,rx,ry}): the shape's own geometry, local units
+ *   d (number): signed offset distance
+ *
+ * Returns:
+ *   {cx,cy,rx,ry}|null - the offset ellipse, or null if a radius would vanish
+ *
+ * @example detachedEllipseContour({cx: 200, cy: 130, rx: 100, ry: 70}, 12) // {cx: 200, cy: 130, rx: 112, ry: 82}
+ * @example detachedEllipseContour({cx: 200, cy: 130, rx: 100, ry: 70}, -80) // null (ry shrinks past zero: no room for an inward ring)
+ */
+export function detachedEllipseContour(ell, d) {
+  const rx = ell.rx + d, ry = ell.ry + d;
+  if (rx <= 0 || ry <= 0) return null;
+  return { cx: ell.cx, cy: ell.cy, rx, ry };
 }
 
 /**

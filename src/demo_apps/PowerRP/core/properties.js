@@ -757,15 +757,23 @@ export const PROPS = {
   // THE STROKE ALIGNMENT knob (user ruling: "-1 means completely inner, 1 means
   // completely outer, 0 means the default, which is in the middle... for every
   // stroke thing"). CONTINUOUS, not a three-way select, so it keyframes and takes
-  // an equation like any other number; bounded [-1,1] so NumericField range-scales
-  // its scrub. NO `default` — absent IS centered (the strokeStart/End
-  // absent-is-legacy precedent): nothing bakes it into a widget's state and every
-  // existing document renders byte-identically.
+  // an equation like any other number; the row's [-8,8] range is wider than the
+  // MEANINGFUL range (below) so NumericField's scrub has room without clamping a
+  // deliberately large drag. NO `default` — absent IS centered (the strokeStart/
+  // End absent-is-legacy precedent): nothing bakes it into a widget's state and
+  // every existing document renders byte-identically.
   //
-  // THE SEMANTICS, once, here: at offset o the ink covers a·w INSIDE the outline
-  // and (1−a)·w OUTSIDE it, where a = (1−o)/2. So o=0 ⇒ a=1/2 (half in, half out —
-  // exactly Skia's centered stroke), o=−1 ⇒ a=1 (all inside), o=+1 ⇒ a=0 (all
-  // outside). render_gpu/ir.js strokeInsideFraction is that formula, single-sourced.
+  // THE SEMANTICS, once, here: the band's CENTER sits at distance |o|·w/2 from the
+  // path edge. |o| ≤ 1 (the ORIGINAL range) the band still touches the edge — the
+  // ink covers a·w INSIDE the outline and (1−a)·w OUTSIDE it, a = (1−o)/2. So o=0 ⇒
+  // a=1/2 (half in, half out — Skia's centered stroke), o=−1 ⇒ a=1 (all inside),
+  // o=+1 ⇒ a=0 (all outside). render_gpu/ir.js strokeInsideFraction is that
+  // formula, single-sourced. |o| > 1 (user ruling: "Stroke contour beyond plus or
+  // minus one — yeah, I'd like that") DETACHES the band into a PARALLEL CONTOUR
+  // ring floating past the edge — inside for o < -1, outside for o > 1 —
+  // continuous with the attached case at exactly ±1 (both describe the same
+  // center distance). render_gpu/ir.js strokeOutwardReach/detachedRectContour/
+  // detachedEllipseContour carry that half of the law.
   //
   // CLOSED SHAPES ONLY, and that is not a caveat this row has to apologise for:
   // "inside" is only defined for a closed outline, and EVERY widget that composes
@@ -778,7 +786,7 @@ export const PROPS = {
   // particleFade need `step: 0.01` only because their integer default 1 would
   // otherwise snap them to 0/1 — the tests/default_step_test.js rule, which pins
   // those two as the ONLY number props that may declare one.
-  strokeOffset: { label: "Stroke offset", kind: "number", min: -1, max: 1, category: "strokeMaterial", help: "Which side of the edge the outline sits on: -1 draws it fully inside the shape, 0 straddles the edge, +1 draws it fully outside." },
+  strokeOffset: { label: "Stroke offset", kind: "number", min: -8, max: 8, category: "strokeMaterial", help: "Which side of the edge the outline sits on: -1 draws it fully inside the shape, 0 straddles the edge, +1 draws it fully outside. Beyond ±1 the outline DETACHES into a parallel contour floating past the edge — inward beyond -1, outward beyond +1." },
   cornerRadius: { label: "Corner radius", kind: "number", min: 0, category: "formatting", default: 0, help: "Rounds the widget's corners by this radius in canvas units. Zero is a sharp square corner; larger values round more." },
 
   // ── formatting: THE STROKE-TRIM framework (manifest E.12-15) ─────────────────

@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
 // paintNodeRun for the doctrine and core/paint_containment.js for why it exists.
@@ -239,6 +239,46 @@ export function offsetStrokeSVG(cmd, geometryD, element, ctx) {
 }
 
 /**
+ * Command (may register a <defs> gradient via `element`). |strokeOffset| > 1:
+ * the SVG twin of paint_skia's drawDetachedContourStroke — a plain stroke of the
+ * PARALLEL CONTOUR at the band's own center distance, staying fully VECTOR.
+ *
+ * SVG has no boolean path ops (no Path.MakeFromOp equivalent), so this uses the
+ * CLOSED-FORM offset instead (ir.js detachedRectContour/detachedEllipseContour):
+ * exact for the rect/rrect and ellipse geometry this op family emits, which is
+ * why `shape` is a tagged descriptor rather than a `d` string — the offset must
+ * be computed from the shape's own numeric geometry, not traced from its path.
+ * A `path` op's arbitrary `d` has no such closed form (offsetting it exactly
+ * needs the same boolean-op machinery paint_skia uses, which this file
+ * deliberately has no access to — manifest: DOM-free, CanvasKit-free), so that
+ * case REFUSES loudly rather than emit a wrong curve.
+ *
+ * EMPTY INNER CONTOUR: when the offset shrinks a dimension to zero or past it,
+ * the closed-form helper returns `null` — this draws nothing, matching
+ * paint_skia's `contour.isEmpty()` skip (same law, no boolean-op emptiness
+ * check needed because the closed form fails the same way arithmetically).
+ *
+ * @param {object} cmd - the stroked op (reads strokeOffset/strokeWidth/stroke)
+ * @param {{kind: "rect"|"ellipse", [key]: number}} shape - the op's own geometry
+ * @param {function} element - (strokeWidth: number, geometryD: string) => SVG element string
+ * @returns {string} the SVG fragment for the detached ring (local space), or "" if empty
+ */
+export function detachedContourStrokeSVG(cmd, shape, element) {
+  const o = cmd.strokeOffset;
+  const centerDistance = Math.abs(o) * (cmd.strokeWidth / 2);
+  const d = o > 0 ? centerDistance : -centerDistance;
+  if (shape.kind === "rect") {
+    const contour = detachedRectContour(shape, d);
+    return contour ? element(cmd.strokeWidth, roundedRectPathD(contour)) : "";
+  }
+  if (shape.kind === "ellipse") {
+    const contour = detachedEllipseContour(shape, d);
+    return contour ? element(cmd.strokeWidth, ellipsePathD(contour)) : "";
+  }
+  throw new Error(`svg_backend: a detached strokeOffset (${o}) has no closed-form contour for a "${shape.kind}" path — only rect/ellipse are supported (no boolean path ops in this DOM-free backend)`);
+}
+
+/**
  * Command (may register a <defs> gradient on `ctx`). A fill/stroke Paint → an SVG
  * paint value: a SOLID returns an rgba() string (byte-identical to the old
  * rgbaToCss path); a GRADIENT registers a <linearGradient>/<radialGradient> def
@@ -412,17 +452,24 @@ export function vectorCommandToSVG(cmd, world, ctx) {
       const rectEl = (attrs) => `<rect x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"` +
         (cmd.cornerRadius > 0 ? ` rx="${fmt(cmd.cornerRadius)}"` : "") + ` ${attrs}/>`;
       if (!opStrokeIsOffset(cmd)) return g(rectEl(paintAttrs(cmd, ctx)));
-      // OFFSET STROKE: the fill draws once as usual, then the stroke is rebuilt as
+      const fillOnce = rectEl(paintAttrs({ ...cmd, stroke: null }, ctx));
+      // DETACHED (|o| > 1): a plain <path> traces the closed-form offset rect —
+      // <rect rx> cannot express an arbitrary contour, so the ring draws as a
+      // path even though the shape's own fill above stays a <rect>.
+      if (strokeIsDetached(cmd.strokeOffset))
+        return g(fillOnce + detachedContourStrokeSVG(cmd, { kind: "rect", ...cmd }, (w, d) => `<path d="${d}" ${strokeOnlyAttrs(cmd, w, ctx)}/>`));
+      // ATTACHED: the fill draws once as usual, then the stroke is rebuilt as
       // two clipped strokes over the rect's own outline (offsetStrokeSVG).
-      return g(rectEl(paintAttrs({ ...cmd, stroke: null }, ctx)) +
-        offsetStrokeSVG(cmd, roundedRectPathD(cmd), (w) => rectEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
+      return g(fillOnce + offsetStrokeSVG(cmd, roundedRectPathD(cmd), (w) => rectEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
     }
     case "ellipse": {
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
       const ellEl = (attrs) => `<ellipse cx="${fmt(cmd.cx)}" cy="${fmt(cmd.cy)}" rx="${fmt(cmd.rx)}" ry="${fmt(cmd.ry)}" ${attrs}/>`;
       if (!opStrokeIsOffset(cmd)) return g(ellEl(paintAttrs(cmd, ctx)));
-      return g(ellEl(paintAttrs({ ...cmd, stroke: null }, ctx)) +
-        offsetStrokeSVG(cmd, ellipsePathD(cmd), (w) => ellEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
+      const fillOnce = ellEl(paintAttrs({ ...cmd, stroke: null }, ctx));
+      if (strokeIsDetached(cmd.strokeOffset))
+        return g(fillOnce + detachedContourStrokeSVG(cmd, { kind: "ellipse", ...cmd }, (w, d) => `<path d="${d}" ${strokeOnlyAttrs(cmd, w, ctx)}/>`));
+      return g(fillOnce + offsetStrokeSVG(cmd, ellipsePathD(cmd), (w) => ellEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
     }
     case "polyline":
       return g(`<polyline points="${pointsAttr(cmd.points)}" fill="none" ` +
@@ -446,8 +493,13 @@ export function vectorCommandToSVG(cmd, world, ctx) {
         const rule = cmd.fillRule === "evenodd" ? ` fill-rule="evenodd"` : "";
         const pathEl = (attrs) => `<path d="${xmlEscape(cmd.d)}" ${attrs}${rule}/>`;
         if (!opStrokeIsOffset(cmd)) return g(pathEl(paintAttrs(cmd, ctx)));
-        // A `path`'s own `d` IS the clip geometry, so the construction generalizes
-        // to any outline the shape library or an svg import produces.
+        // A `path`'s own `d` IS the clip geometry for the ATTACHED (|o| ≤ 1)
+        // construction, so it generalizes to any outline the shape library or an
+        // svg import produces. DETACHED (|o| > 1) has no such generalization — an
+        // arbitrary path's true offset curve needs boolean path ops this DOM-free
+        // backend does not have — so it refuses loudly (detachedContourStrokeSVG's
+        // own guard) rather than draw a wrong ring.
+        if (strokeIsDetached(cmd.strokeOffset)) detachedContourStrokeSVG(cmd, { kind: "path" }, () => "");
         return g(pathEl(paintAttrs({ ...cmd, stroke: null }, ctx)) +
           offsetStrokeSVG(cmd, xmlEscape(cmd.d), (w) => pathEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
       }
@@ -952,8 +1004,10 @@ export async function emitCropSVG(cmd, world, region, ctx) {
     // (render_gpu/ir.js applyStrokeOffset) but never read here — every
     // decorateStrokedBox consumer's SVG-exported border ignored it.
     const geometryD = roundedRectPathD(local);
-    const strokeEl = (w) => `<path d="${geometryD}" fill="none" stroke="${paintRef(ctx, cmd.stroke, cmd.opacity)}" stroke-width="${fmt(w)}"/>`;
-    const border = opStrokeIsOffset(cmd) ? offsetStrokeSVG(cmd, geometryD, strokeEl, ctx) : strokeEl(strokeW);
+    const strokeEl = (w, d = geometryD) => `<path d="${d}" fill="none" stroke="${paintRef(ctx, cmd.stroke, cmd.opacity)}" stroke-width="${fmt(w)}"/>`;
+    const border = strokeIsDetached(cmd.strokeOffset)
+      ? detachedContourStrokeSVG({ ...cmd, strokeWidth: strokeW }, { kind: "rect", ...local }, strokeEl)
+      : opStrokeIsOffset(cmd) ? offsetStrokeSVG(cmd, geometryD, strokeEl, ctx) : strokeEl(strokeW);
     parts.push(groupWrap(boxT, border));
   }
   return parts.join("");

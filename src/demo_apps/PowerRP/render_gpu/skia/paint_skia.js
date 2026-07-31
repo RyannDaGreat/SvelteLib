@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, strokeInsideFraction, strokeOutwardReach, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, strokeInsideFraction, strokeOutwardReach, strokeIsDetached, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 // THE PER-NODE PAINT BOUNDARY's two halves: the shared error affordance, and the
 // ERROR-level report. Deliberately NOT this file's local `reportOnce` further
 // down — that one is a console.WARN for unreachable depth caps and returns
@@ -1369,6 +1369,10 @@ function shapeOpLocalPath(CanvasKit, cmd) {
 function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawShape) {
   const width = cmd.strokeWidth;
   if (!(width > 0) || !cmd.stroke) return;
+  if (strokeIsDetached(cmd.strokeOffset)) {
+    drawDetachedContourStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
+    return;
+  }
   const inside = strokeInsideFraction(cmd.strokeOffset);
   const clip = shapeOpLocalPath(CanvasKit, cmd);
   // Each side: a centered stroke of twice the depth, clipped to its own side of
@@ -1381,6 +1385,74 @@ function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawSha
     canvas.restore();
   }
   clip.delete();
+}
+
+/**
+ * Command (draws on `canvas`, local space under the CTM). THE DETACHED
+ * PARALLEL CONTOUR: |strokeOffset| > 1, where the band has floated clear of
+ * the outline (drawOffsetOpStroke dispatches here; the attached |o| ≤ 1
+ * two-clipped-strokes construction above is untouched and byte-stable).
+ *
+ * THE CONTOUR TO STROKE SITS AT THE BAND'S OWN CENTER, distance |o|·w/2 from
+ * the edge — NOT at the near-side distance d. Stroking a `d`-distant contour
+ * with a CENTERED stroke of the full width `w` would straddle THAT contour,
+ * landing the band's near half back across the original edge (an early version
+ * of this function did exactly that, verified wrong by a scanline: the band
+ * OVERLAPPED the shape's own edge instead of floating past it). The correct
+ * two-step offset is:
+ *   1. `strokeOutlineOf(path, 2·(|o|·w/2))` — the path's own stroke-outline at
+ *      width twice the CENTER distance, i.e. the filled region a band of that
+ *      width running along the path would occupy.
+ *   2. Path.MakeFromOp(fillPath, strokeOutlineOf, Union) grows the shape by
+ *      |o|·w/2 on every side (the OUTWARD contour, o > 1); Difference shrinks
+ *      it by the same amount (the INWARD contour, o < -1). Either result's
+ *      BOUNDARY is the parallel curve at the band's center distance — the
+ *      standard "offset curve via stroke-then-boolean" trick, not a per-shape
+ *      formula, which is why it generalizes to every op the shape family can
+ *      express exactly like the attached construction does.
+ * Stroking THAT contour, centered, at the ordinary width `w` puts the band
+ * exactly where it belongs: near edge at d = (|o|−1)·w/2, far edge at
+ * strokeOutwardReach(w, o) — both formulas agree with this construction at the
+ * seam o = ±1 (d = 0, so step 1's outline has zero width and the contour IS
+ * the original outline, recovering the attached fully-outer/-inner case).
+ *
+ * JOINS/CAPS: `strokeOutlineOf` uses Miter/Butt — the same default `strokePaint`
+ * leaves in effect for every plain stroke in this file (no `setStrokeJoin` call
+ * there either), so a sharp corner detaches into a sharp corner, matching what a
+ * centered stroke on the same shape already looks like. The final ring stroke
+ * likewise takes the caller's implicit default (Miter/Butt) via `strokePaint`.
+ * MEASURED CAVEAT: `canvas.drawRRect`'s native stroking and a generic `Path`
+ * stroke of the same rounded-rect geometry disagree by ~1px of antialiasing at
+ * the exact tangent break between a straight edge and a corner arc (a
+ * pre-existing CanvasKit quirk, not introduced here) — negligible next to the
+ * band's own width and confined to that single transition point per corner.
+ *
+ * EMPTY INNER CONTOUR: for a large enough negative offset (the center distance
+ * ≥ the shape's own inradius, e.g. a thin rect or a star's inner notches)
+ * `MakeFromOp(..., Difference)` legitimately returns an EMPTY path — CanvasKit
+ * reports this as `isEmpty()`, never null or a throw. `canvas.drawPath` on an
+ * empty path draws nothing, which is exactly correct: there is no room left
+ * for an inward ring, and the widget must render blank there, not error.
+ *
+ * `MakeFromOp` can legitimately return `null` on a genuinely degenerate op pair
+ * (verified: it does NOT for any closed shape this op family emits) — that is
+ * reported, not silently skipped, since it would mean the geometry itself is
+ * malformed rather than merely small.
+ */
+function drawDetachedContourStroke(CanvasKit, canvas, cmd, bounds, opacity, aa) {
+  const width = cmd.strokeWidth;
+  const o = cmd.strokeOffset;
+  const centerDistance = Math.abs(o) * (width / 2);
+  const fillPath = shapeOpLocalPath(CanvasKit, cmd);
+  const outline = fillPath.makeStroked({ width: 2 * centerDistance, join: CanvasKit.StrokeJoin.Miter, cap: CanvasKit.StrokeCap.Butt });
+  const op = o > 0 ? CanvasKit.PathOp.Union : CanvasKit.PathOp.Difference;
+  const contour = CanvasKit.Path.MakeFromOp(fillPath, outline, op);
+  fillPath.delete();
+  outline.delete();
+  if (!contour) throw new Error(`paintIR(skia): the detached-contour offset ${o} produced no path — a malformed op pair (report, do not swallow)`);
+  if (!contour.isEmpty())
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa), (p) => canvas.drawPath(contour, p));
+  contour.delete();
 }
 
 /**

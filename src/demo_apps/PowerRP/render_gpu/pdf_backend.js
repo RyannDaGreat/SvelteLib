@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
@@ -1483,7 +1483,9 @@ async function emitCrop(cmd, world, region, out, ctx) {
     // decorateStrokedBox consumer's PDF-exported border ignored it.
     if (opStrokeIsOffset(cmd)) {
       out.push("q", cmSimilarity(world));
-      out.push(...offsetStrokePdfOps(cmd, rectPath(local), ctx));
+      out.push(...(strokeIsDetached(cmd.strokeOffset)
+        ? detachedContourStrokePdfOps({ ...cmd, strokeWidth: strokeW }, { kind: "rect", ...local }, ctx)
+        : offsetStrokePdfOps(cmd, rectPath(local), ctx)));
       out.push("Q");
     } else {
       const gs = ctx.gsAlphaPair(1, cmd.stroke[3] * cmd.opacity);
@@ -1542,6 +1544,43 @@ function offsetStrokePdfOps(cmd, pathStr, ctx) {
   return ops;
 }
 
+/**
+ * Command (returns PDF operators; registers alpha ExtGStates via ctx).
+ * |strokeOffset| > 1: THE PDF twin of paint_skia's drawDetachedContourStroke and
+ * svg_backend's detachedContourStrokeSVG — a plain stroke of the PARALLEL
+ * CONTOUR at the band's own center distance, staying fully VECTOR.
+ *
+ * PDF has no boolean path ops either, so this uses the same CLOSED-FORM offset
+ * (ir.js detachedRectContour/detachedEllipseContour) the SVG backend does:
+ * exact for rect/rrect and ellipse, refused loudly for anything else — see
+ * detachedContourStrokeSVG's docblock for the full reasoning (both backends
+ * share it verbatim; DOM-free/CanvasKit-free is this file's own manifest rule
+ * too, not only svg_backend's).
+ *
+ * @param {object} cmd - the stroked op (reads strokeOffset/strokeWidth/stroke/opacity)
+ * @param {{kind: "rect"|"ellipse", [key]: number}} shape - the op's own geometry
+ * @param {object} ctx - the pdf assembly (paintSetup registers alpha states on it)
+ * @returns {string[]} PDF content-stream operators, or [] if the contour is empty
+ */
+function detachedContourStrokePdfOps(cmd, shape, ctx) {
+  const o = cmd.strokeOffset;
+  const centerDistance = Math.abs(o) * (cmd.strokeWidth / 2);
+  const d = o > 0 ? centerDistance : -centerDistance;
+  let pathStr;
+  if (shape.kind === "rect") {
+    const contour = detachedRectContour(shape, d);
+    if (!contour) return [];
+    pathStr = rectPath(contour);
+  } else if (shape.kind === "ellipse") {
+    const contour = detachedEllipseContour(shape, d);
+    if (!contour) return [];
+    pathStr = ellipsePath(contour);
+  } else {
+    throw new Error(`pdf_backend: a detached strokeOffset (${o}) has no closed-form contour for a "${shape.kind}" path — only rect/ellipse are supported (no boolean path ops in this DOM-free backend)`);
+  }
+  return [...paintSetup(null, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx), pathStr, "S"];
+}
+
 /** Command (appends operators, registers resources via ctx). One vector drawable. */
 function emitVector(cmd, world, out, ctx) {
   const ops = [];
@@ -1559,12 +1598,16 @@ function emitVector(cmd, world, out, ctx) {
       }
       if (opStrokeIsOffset(cmd)) {
         // OFFSET STROKE: fill once through the ordinary path (stroke nulled so
-        // paintOp emits `f`, not `B`), then rebuild the stroke as two clipped halves.
+        // paintOp emits `f`, not `B`), then rebuild the stroke as two clipped
+        // halves (ATTACHED, |o| ≤ 1) or a plain stroke of the closed-form
+        // parallel contour (DETACHED, |o| > 1).
         if (cmd.fill) {
           ops.push(...paintSetup(cmd.fill, null, 0, cmd.opacity, ctx));
           ops.push(pathStr, paintOp(cmd.fill, null, 0));
         }
-        ops.push(...offsetStrokePdfOps(cmd, pathStr, ctx));
+        ops.push(...(strokeIsDetached(cmd.strokeOffset)
+          ? detachedContourStrokePdfOps(cmd, { kind: cmd.op, ...cmd }, ctx)
+          : offsetStrokePdfOps(cmd, pathStr, ctx)));
         break;
       }
       ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
@@ -1608,7 +1651,9 @@ function emitVector(cmd, world, out, ctx) {
           ops.push(...paintSetup(cmd.fill, null, 0, cmd.opacity, ctx));
           ops.push(pd, cmd.fillRule === "evenodd" ? "f*" : "f");
         }
-        ops.push(...offsetStrokePdfOps(cmd, pd, ctx));
+        // DETACHED (|o| > 1) has no closed form for an arbitrary path — refuses
+        // loudly, same law as svg_backend (see detachedContourStrokePdfOps).
+        ops.push(...(strokeIsDetached(cmd.strokeOffset) ? detachedContourStrokePdfOps(cmd, { kind: "path" }, ctx) : offsetStrokePdfOps(cmd, pd, ctx)));
         break;
       }
       ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
@@ -2039,6 +2084,24 @@ function gradientShapeOps(pathStr, bounds, cmd, ctx, evenOdd) {
       // A gradient-FILLED shape reaches this branch instead of emitVector's, so the
       // alignment knob has to be honoured here too or an offset stroke would be
       // silently centered on exactly the shapes that have a gradient fill.
+      if (strokeIsDetached(cmd.strokeOffset)) {
+        // DETACHED (|o| > 1): the SAME closed-form contour construction, solidified
+        // (this branch already degrades a gradient stroke to `stroke`'s first-stop
+        // solid, above) — only rect/ellipse have a closed form; a gradient-filled
+        // arbitrary path refuses loudly, same law as the plain (non-gradient) path.
+        if (cmd.op !== "rect" && cmd.op !== "ellipse")
+          throw new Error(`pdf_backend: a detached strokeOffset (${cmd.strokeOffset}) has no closed-form contour for a "${cmd.op}" path — only rect/ellipse are supported (no boolean path ops in this DOM-free backend)`);
+        const o = cmd.strokeOffset;
+        const centerDistance = Math.abs(o) * (cmd.strokeWidth / 2);
+        const d = o > 0 ? centerDistance : -centerDistance;
+        const contour = cmd.op === "rect" ? detachedRectContour(cmd, d) : detachedEllipseContour(cmd, d);
+        if (!contour) return ops; // empty inner contour: nothing left to stroke
+        const contourPath = cmd.op === "rect" ? rectPath(contour) : ellipsePath(contour);
+        ops.push("q");
+        if (gs) ops.push(gs);
+        ops.push(rg, `${pdfNum(cmd.strokeWidth)} w`, contourPath, "S", "Q");
+        return ops;
+      }
       const inside = strokeInsideFraction(cmd.strokeOffset);
       const COVER = 1e6;
       const coverRect = `${pdfNum(-COVER)} ${pdfNum(-COVER)} ${pdfNum(2 * COVER)} ${pdfNum(2 * COVER)} re`;
