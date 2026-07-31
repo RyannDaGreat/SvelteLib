@@ -58,6 +58,17 @@ import { fetchZipBytes, validatedZipUrl, zipFileNameFromUrl } from "./projectUrl
 // entry. web/projectDraft.js states the invariant — read it before touching
 // projectName(), which is the seam the whole model turns on.
 import { DRAFT_KEY, DRAFT_STATE_KEY, UNTITLED_NAME, draftFromZipBytes, draftStateFromJson, isUnsavedDraft, openNeedsConfirm, shareUrl, validProjectName } from "./projectDraft.js";
+// A REPO IS A TRANSPORT, exactly as a URL is: this supplies the fetch and the
+// `?repo=` share-link shape, and hands `{doc, assets}` to the SAME draft
+// pipeline a zip goes through (githubProject.js's header states the invariant).
+import { fetchProjectFromRepo, parseRepoSlug, shareLink as repoShareLink } from "./githubProject.js";
+// The ONE grammar decision behind the single "open from…" field: is this string
+// a repo slug or a URL? Pure and doctested, so the routing rule is executable in
+// bare node rather than only observable through a modal.
+import { projectSourceKind } from "./draftKeys.js";
+// Synthesizing the in-memory archive a fetched repo becomes — a repo IS a
+// differently-fetched zip, so it joins the ONE draft pipeline here.
+import { strToU8, zipSync } from "fflate";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
 import { assetRef, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
@@ -4356,9 +4367,14 @@ export class PowerRPApp {
    * @param {string} sourceUrl The URL it came from, or "" for a local file.
    * @returns {Promise<{name: string, assetCount: number}>}
    */
-  async openDraftFromZipBytes(bytes, requested, sourceUrl = "") {
+  async openDraftFromZipBytes(bytes, requested, sourceUrl = "", { repoSlug = "" } = {}) {
     const { doc, name, assetCount } = await draftFromZipBytes(bytes, requested);
-    this.draftMode = { name, sourceUrl };
+    // `repoSlug` is the draft's ADDRESS when the transport was a repo — the one
+    // fact `sourceUrl` cannot carry, because a repo's bytes never came from a
+    // single URL (they are assembled from N contents-API responses). It is what
+    // lets Copy Share Link emit `?repo=owner/name@branch` instead of nothing. It
+    // rides the persisted marker below, so it survives a reload like the rest.
+    this.draftMode = repoSlug ? { name, sourceUrl, repoSlug } : { name, sourceUrl };
     // OUT of correspondence with the library: whatever was open before, THIS deck
     // has never been in it. Redundant while draftMode is set (isDraft() short-
     // circuits on it), and NOT redundant the moment commitDraft clears draftMode —
@@ -4481,9 +4497,19 @@ export class PowerRPApp {
    *  shareable — a draft that came from a local file, or an ordinary saved
    *  project, has no URL a recipient could fetch. This is the `when` clause
    *  behind the Copy Share Link command: a command that cannot do its job must
-   *  be disabled, not pretend. */
+   *  be disabled, not pretend.
+   *
+   *  TWO TRANSPORTS, TWO PARAMS. A draft fetched from a repo shares as
+   *  `?repo=owner/name@branch` and NOT as a `?zip=` of some archive URL, because
+   *  that is the address the deck actually lives at — and it is the form that
+   *  keeps pointing at whatever the branch says tomorrow, which is the whole
+   *  reason a repo beats a zip (githubProject.js's header). THE REF IS CARRIED,
+   *  because a link that drops it silently hands the recipient a DIFFERENT deck
+   *  (the default branch) while looking like it worked. */
   shareLink() {
-    if (!this.draftMode?.sourceUrl || typeof location === "undefined") return null;
+    if (typeof location === "undefined") return null;
+    if (this.draftMode?.repoSlug) return repoShareLink(parseRepoSlug(this.draftMode.repoSlug), location.href);
+    if (!this.draftMode?.sourceUrl) return null;
     return shareUrl(location.href, this.draftMode.sourceUrl);
   }
 
@@ -4543,6 +4569,70 @@ export class PowerRPApp {
     }, `the project at ${url}`);
     if (!ran) return { cancelled: true };
     return opened;
+  }
+
+  /**
+   * Command. Fetch a project from a GITHUB REPO and open it as a DRAFT — the
+   * repo twin of `openProjectFromUrl`, and deliberately its mirror image.
+   *
+   * A REPO IS A DIFFERENTLY-FETCHED ZIP (main.js's `?repo=` path established
+   * this, and this shares its synthesis): the contents API's files are packed
+   * into an in-memory archive and handed to `openDraftFromZipBytes`, so archive
+   * adoption, ref healing, draft staging and the whole save flow apply unchanged.
+   * There is no second importer, and adding one would be the mistake.
+   *
+   * `slug` may be `owner/name`, `owner/name@ref`, or a github.com URL —
+   * `parseRepoSlug` is the one grammar, and `@ref` is a BRANCH, tag or commit.
+   * Guarded like every other open, and asked BEFORE the fetch so a declined open
+   * costs no network.
+   *
+   * @param {string} slug As typed, or as read from `?repo=`.
+   * @param {(p: {loaded: number, total: number, message?: string}) => void} [onProgress]
+   * @returns {Promise<{name: string, assetCount: number}|{cancelled: true}>}
+   */
+  async openProjectFromRepo(slug, onProgress = () => {}) {
+    const target = parseRepoSlug(slug); // refuses loudly, before any request
+    const canonical = target.ref ? `${target.owner}/${target.repo}@${target.ref}` : `${target.owner}/${target.repo}`;
+    let opened = null;
+    const ran = await this.guardedOpen(async () => {
+      const { root, doc, assets } = await fetchProjectFromRepo(canonical, { onProgress });
+      const name = (root || target.repo).trim();
+      const members = { [`${name}/doc.json`]: strToU8(JSON.stringify(doc)) };
+      for (const a of assets) members[`${name}/assets/${a.name}`] = a.bytes;
+      // sourceUrl stays "" — a repo's bytes never came from ONE url, so there is
+      // no honest value for it. `repoSlug` is the address instead, and it is what
+      // the share link is built from (see shareLink()).
+      opened = await this.openDraftFromZipBytes(zipSync(members), name, "", { repoSlug: canonical });
+    }, `the GitHub project ${canonical}`);
+    if (!ran) return { cancelled: true };
+    return opened;
+  }
+
+  /**
+   * Command. THE ONE INPUT, BOTH GRAMMARS (user ruling: "it should support
+   * branches too", on a field whose label already promised "a zip from anywhere
+   * or a github repository/branch").
+   *
+   * Routes on `projectSourceKind` — the pure, doctested grammar decision — and
+   * then hands off to the transport that owns the string. It does NOT parse:
+   * each loader validates strictly and refuses loudly, and a second weaker
+   * validator here would disagree with them silently.
+   *
+   * An unrecognized string is refused HERE with a sentence about the INPUT,
+   * rather than being pushed at a loader to fail as a confusing network error.
+   *
+   * @param {string} raw As typed into the Open-from-URL field.
+   * @param {Function} [onProgress]
+   * @returns {Promise<{name: string, assetCount: number}|{cancelled: true}>}
+   */
+  async openProjectFromAnySource(raw, onProgress = () => {}) {
+    const text = String(raw ?? "").trim();
+    const kind = projectSourceKind(text);
+    if (kind === "repo") return this.openProjectFromRepo(text, onProgress);
+    if (kind === "url") return this.openProjectFromUrl(text, onProgress);
+    throw new Error(
+      `"${text}" is neither a link nor a GitHub repository. Give a full URL to a project .zip (https://example.com/deck.zip), or a repository as owner/name — optionally with a branch, as owner/name@branch.`,
+    );
   }
 
   // ── Assets: upload / delete / insert / filmstrip frames (one region) ────────

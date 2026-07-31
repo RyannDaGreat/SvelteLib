@@ -38,6 +38,24 @@ const EXPECTED_ASSET = "Video_20260726_224007_045.mp4";
 const EXPECTED_ASSET_BYTES = 1229177; // over the 1 MB inline limit, on purpose
 const EXPECTED_DOC_NAME = "RobotSim";
 
+/** THE STANDING BRANCH FIXTURE — user ruling: "it should support branches too."
+ *
+ *  `parseRepoSlug` has always PARSED `@ref`, and `repoContents` has always put it
+ *  in the query string. Neither fact proves a non-default branch actually loads:
+ *  a dropped ref, a query string GitHub ignores, or a default-branch fallback
+ *  would all look exactly like success against a repo with one branch. So the
+ *  demo repo carries a second branch that differs from `main` BY ONE FIELD —
+ *  doc.json's `meta.name` — and loading it must yield that name and not the
+ *  default one. The difference is deliberately minimal: anything larger could
+ *  pass for a different reason.
+ *
+ *  DO NOT DELETE THE BRANCH. It is a fixture, not a work in progress; the branch
+ *  IS the assertion, and without it this check silently reduces to a rerun of the
+ *  default-branch load above. It was created with the doc's own history intact
+ *  (branched from main, one commit) so it stays trivially re-derivable. */
+const FIXTURE_BRANCH = "branch-fixture";
+const FIXTURE_DOC_NAME = "RobotSim (branch-fixture)";
+
 /** Exit 0 with a REASON. A silent skip is indistinguishable from a pass, which
  *  is the failure mode that makes people stop trusting a suite. */
 function skip(reason) {
@@ -68,8 +86,10 @@ if (!preflight.ok) {
   process.exit(1);
 }
 const remaining = Number(preflight.headers.get("x-ratelimit-remaining") ?? "60");
-// The load below makes ~4 more calls. Skipping now beats failing halfway.
-if (remaining < 6) skip(`only ${remaining} anonymous GitHub requests left this hour — not enough to load the demo`);
+// The default-branch load makes ~4 more calls and the branch-fixture load ~4
+// again (it re-walks the same layout at a different ref). Skipping now beats
+// failing halfway through either.
+if (remaining < 10) skip(`only ${remaining} anonymous GitHub requests left this hour — not enough to load the demo at two refs`);
 
 const checks = [];
 const errors = [];
@@ -145,6 +165,33 @@ try {
 
   const assetProgress = (result.progress ?? []).filter((p) => p.stage === "assets" && p.total > 0);
   ok(assetProgress.length > 0, "real byte progress was reported while downloading");
+
+  // ── @ref REALLY REACHES GITHUB (user ruling: "it should support branches too")
+  // The SAME call, one `@branch` longer, must come back with the branch's
+  // document. This is the check that cannot be faked by a parser: if the ref were
+  // dropped anywhere between parseRepoSlug and the query string, GitHub would
+  // serve `main` and the name below would be the default one.
+  const branch = await page.evaluate(async (slug) => {
+    const mod = await import("/githubProject.js");
+    try {
+      const project = await mod.fetchProjectFromRepo(slug);
+      return { docName: project.doc?.meta?.name, ref: project.target?.ref, slides: project.doc?.slides?.length ?? -1 };
+    } catch (e) {
+      return { error: String(e?.message ?? e) };
+    }
+  }, `${DEMO_REPO}@${FIXTURE_BRANCH}`);
+
+  if (branch.error && /rate limit/i.test(branch.error)) skip(`ran into the rate limit loading the branch fixture: ${branch.error}`);
+  ok(!branch.error, `owner/name@${FIXTURE_BRANCH} loads live (${branch.error ?? "no error"})`);
+  ok(branch.ref === FIXTURE_BRANCH, `…and the parsed ref survived to the request (got ${JSON.stringify(branch.ref)})`);
+  ok(
+    branch.docName === FIXTURE_DOC_NAME,
+    `…and GitHub served THE BRANCH'S doc.json, not the default branch's: expected ${JSON.stringify(FIXTURE_DOC_NAME)}, got ${JSON.stringify(branch.docName)}`,
+  );
+  // The negative half, stated separately so a failure says WHICH way it broke:
+  // getting `main`'s name back means the ref was silently ignored.
+  ok(branch.docName !== EXPECTED_DOC_NAME, `…and specifically NOT ${JSON.stringify(EXPECTED_DOC_NAME)}, which is what a dropped @ref would return`);
+  ok(branch.slides > 0, `…and it is a real deck, not an empty shell (got ${branch.slides} slides)`);
 } finally {
   await browser.close();
   await server.close();

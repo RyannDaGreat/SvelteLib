@@ -201,6 +201,60 @@ try {
   assert(after.shareLink !== null && new URL(after.shareLink).searchParams.get("zip") === zipUrl,
     `while the draft was open the share link round-tripped the source URL (got "${after.shareLink}")`);
 
+  // ── 6. ONE INPUT, BOTH GRAMMARS — the field says so, and the router routes ──
+  // User ruling: "Open Project from URL should have a github link example in it —
+  // literally the one we have now — saying it can be a zip from anywhere or a
+  // github repository/branch", plus "it should support branches too". Checked in
+  // the RENDERED modal, because a hint that exists only in the source helps
+  // nobody, and checked ROUTE-ONLY (no network) so the gate stays offline-safe —
+  // the live half is github_live_probe.js's branch fixture.
+  await page.evaluate(() => window.__powerrp_app.runCommand("open-project-url"));
+  await sleep(400);
+  const hint = await page.evaluate(() => ({
+    placeholder: document.querySelector(".name-modal-input")?.placeholder ?? "",
+    label: document.querySelector(".name-modal-label")?.textContent?.trim() ?? "",
+    notes: [...document.querySelectorAll(".name-modal-note")].map((n) => n.textContent.replace(/\s+/g, " ").trim()),
+  }));
+  const noteText = hint.notes.join(" | ");
+  assert(/github|repository/i.test(hint.label), `the LABEL says a repository is accepted, not just a link (got "${hint.label}")`);
+  assert(/RyannDaGreat\/PowerRP-RobotSim-Demo/.test(hint.placeholder + noteText), `the hint shows the REAL demo repo, not an invented placeholder (placeholder "${hint.placeholder}", notes ${JSON.stringify(hint.notes)})`);
+  assert(/@main|@branch/.test(hint.placeholder + noteText), "…and shows the @branch form, which is the half the user had to ask for twice");
+  assert(/\.zip/.test(hint.placeholder + noteText), "…while still showing a .zip example, since both are accepted");
+  assert(hint.notes.length <= 3, `the hint stays SHORT — two lines plus the draft note (got ${hint.notes.length}: ${JSON.stringify(hint.notes)})`);
+
+  // THE FOUR INPUT SHAPES, routed by the real app method with the loaders stubbed
+  // so nothing leaves the machine. What is measured is WHICH loader each string
+  // reaches — the routing decision — and that garbage is refused before either.
+  const routed = await page.evaluate(async () => {
+    const app = window.__powerrp_app;
+    const realUrl = app.openProjectFromUrl.bind(app);
+    const realRepo = app.openProjectFromRepo.bind(app);
+    const out = [];
+    for (const input of [
+      "http://127.0.0.1:1/Deck.zip",
+      "RyannDaGreat/PowerRP-RobotSim-Demo",
+      "RyannDaGreat/PowerRP-RobotSim-Demo@branch-fixture",
+      "not a deck at all",
+    ]) {
+      let went = null;
+      app.openProjectFromUrl = async (u) => { went = `url:${u}`; };
+      app.openProjectFromRepo = async (s) => { went = `repo:${s}`; };
+      try { await app.openProjectFromAnySource(input); out.push({ input, went, error: null }); }
+      catch (e) { out.push({ input, went, error: String(e?.message ?? e) }); }
+    }
+    app.openProjectFromUrl = realUrl;
+    app.openProjectFromRepo = realRepo;
+    return out;
+  });
+  const routeOf = (input) => routed.find((r) => r.input === input);
+  assert(routeOf("http://127.0.0.1:1/Deck.zip")?.went?.startsWith("url:"), `a .zip URL routes to the zip fetcher (got ${JSON.stringify(routeOf("http://127.0.0.1:1/Deck.zip"))})`);
+  assert(routeOf("RyannDaGreat/PowerRP-RobotSim-Demo")?.went === "repo:RyannDaGreat/PowerRP-RobotSim-Demo", `a bare slug routes to the GitHub loader (got ${JSON.stringify(routeOf("RyannDaGreat/PowerRP-RobotSim-Demo"))})`);
+  assert(routeOf("RyannDaGreat/PowerRP-RobotSim-Demo@branch-fixture")?.went === "repo:RyannDaGreat/PowerRP-RobotSim-Demo@branch-fixture",
+    `a slug WITH A BRANCH routes there too, branch intact (got ${JSON.stringify(routeOf("RyannDaGreat/PowerRP-RobotSim-Demo@branch-fixture"))})`);
+  const garbage = routeOf("not a deck at all");
+  assert(garbage?.went === null, "garbage reaches NEITHER loader — it must not fail as a confusing network error");
+  assert(/neither a link nor a GitHub repository/i.test(garbage?.error ?? ""), `…it is refused LOUDLY with a sentence about the input (got ${JSON.stringify(garbage?.error)})`);
+
   console.log(fails.length ? `\nopen_url_modal_probe: ${fails.length} FAILED` : "\nopen_url_modal_probe: all checks passed");
 } finally {
   await browser.close();

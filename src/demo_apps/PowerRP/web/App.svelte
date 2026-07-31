@@ -15,9 +15,9 @@
   import Toolbar from "./Toolbar.svelte";
   import SlideNav from "./SlideNav.svelte";
   import { isStatic } from "./storageMode.js";
-  // The quick-Save gate's REASON string lives with the gate's rule (draftKeys.js)
-  // so the two cannot drift — see SAVE_NEEDS_SAVE_AS.
-  import { SAVE_NEEDS_SAVE_AS, saveCommandFor } from "./draftKeys.js";
+  // The quick-Save gate and its REASON are ONE pure function (draftKeys.js) so
+  // they cannot drift — see quickSaveBlocker, which answers both.
+  import { quickSaveBlocker, saveCommandFor } from "./draftKeys.js";
   import AssetExplorer from "./AssetExplorer.svelte";
   import BuiltinAssetBrowser from "./BuiltinAssetBrowser.svelte";
   import CanvasView from "./CanvasView.svelte";
@@ -398,7 +398,12 @@
     urlError = null;
     urlProgress = { loaded: 0, total: 0 };
     try {
-      await app.openProjectFromUrl(url, (p) => (urlProgress = p));
+      // ONE INPUT, BOTH GRAMMARS. openProjectFromAnySource routes on
+      // draftKeys.projectSourceKind — a repo slug (with an optional @branch) goes
+      // to the GitHub loader, anything else to the zip fetcher, and a string that
+      // is neither is refused with a sentence about the INPUT rather than being
+      // pushed at a loader to fail as a confusing network error.
+      await app.openProjectFromAnySource(url, (p) => (urlProgress = p));
       urlModalVisible = false;
     } catch (e) {
       // A ZipFetchBlockedError carries STRUCTURED help so the message can render
@@ -1112,8 +1117,20 @@
     // historical id `save-to-server` (see the note on that entry), so this one
     // line is where the concept meets the registry — deliberately the ONLY place,
     // rather than teaching the pure helper about a legacy id.
-    { id: "save-dispatch", title: "Save", icon: "mdi:content-save-outline", aliases: ["cmd s", "ctrl s"], help: "Saves. On a project that is already in the library this writes straight back to it; on an unsaved draft it opens Save As… to name it first.", run: (a) => a.runCommand(saveCommandFor(a.isDraft()) === "save-project" ? "save-project" : "save-to-server") },
-    { id: "save-project", title: "Save Project", icon: "mdi:content-save-outline", aliases: ["quick save", "save now", "write"], when: (a) => !a.isDraft(), requires: SAVE_NEEDS_SAVE_AS, help: `Writes this project straight back to the ${isStatic() ? "browser's" : "server's"} copy it came from — no dialog, no questions. Unavailable until the project has been saved once under a name.`, run: (a) => a.quickSave() },
+    //
+    // CMD+S ON AN ALREADY-SAVED PROJECT IS A DELIBERATE NO-OP, not an oversight:
+    // it routes to `save-project`, whose clean-state gate declines, and
+    // runCommand's disabled-command semantics make that silent. That is the right
+    // answer — the user asked for a save and the file is already saved, so the
+    // postcondition they wanted already holds. It is stated here because a silent
+    // branch that nobody wrote down reads as a bug to the next person.
+    { id: "save-dispatch", title: "Save", icon: "mdi:content-save-outline", aliases: ["cmd s", "ctrl s"], help: "Saves. On a project that is already in the library this writes straight back to it; on an unsaved draft it opens Save As… to name it first. Pressing it when nothing has changed does nothing — there is nothing to write.", run: (a) => a.runCommand(saveCommandFor(a.isDraft()) === "save-project" ? "save-project" : "save-to-server") },
+    // TWO GATES, ONE FUNCTION. quickSaveBlocker answers BOTH "may it run" and
+    // "why not", so the button's enablement and its sentence cannot disagree —
+    // and the second gate is the user's ruling "should the save button be enabled
+    // when there are no changes?" (no: a lit Save with nothing to save invites a
+    // click that does nothing AND withholds the fact it was asked for).
+    { id: "save-project", title: "Save Project", icon: "mdi:content-save-outline", aliases: ["quick save", "save now", "write"], when: (a) => quickSaveBlocker(a.isDraft(), a.saveState()) === null, requires: (a) => quickSaveBlocker(a.isDraft(), a.saveState()), help: `Writes this project straight back to the ${isStatic() ? "browser's" : "server's"} copy it came from — no dialog, no questions. Unavailable until the project has been saved once under a name, and again once it matches its saved copy — a Save with nothing to save is not offered.`, run: (a) => a.quickSave() },
     { id: "save-to-server", title: isStatic() ? "Save Project As… (to Browser)" : "Save Project As… (to Server)", icon: isStatic() ? "mdi:database-arrow-up-outline" : "mdi:cloud-upload-outline", aliases: ["save as", "save a copy", "name this", "first save"], help: "Names the project and saves it, warning first if that name is taken. For an unsaved draft — a new document, or one opened from a .zip or a link — this is the FIRST save, and it is what puts it in the library.", run: (a) => a.saveProjectAs() },
     { id: "open-project", title: isStatic() ? "Open Project from Browser…" : "Open Project from Server…", icon: isStatic() ? "mdi:database-arrow-down-outline" : "mdi:folder-network-outline", run: (a) => a.openProject() },
     // Open a .zip over the NETWORK — the receiving half of a share link, and the
@@ -1121,11 +1138,11 @@
     // enters the library until the user saves, so following someone's link costs
     // them nothing. Titled with the transport ("from URL") to sit beside the
     // other two Open verbs, which name theirs (Browser / Server).
-    { id: "open-project-url", title: "Open Project from URL…", icon: "mdi:link-variant", aliases: ["share link", "zip url", "download project", "open link", "remote"], help: "Downloads a project .zip over the network and opens it as an unsaved draft. Works with any direct link to an exported project — a GitHub release, an S3 bucket, your own web server. The project library is untouched until you save.", run: (a) => a.openProjectFromUrlModal() },
+    { id: "open-project-url", title: "Open Project from URL…", icon: "mdi:link-variant", aliases: ["share link", "zip url", "download project", "open link", "remote", "github", "repo", "branch"], help: "Opens a project from the network as an unsaved draft — either a direct link to an exported .zip (a GitHub release, an S3 bucket, your own web server) or a GitHub repository as owner/name, with @branch for a specific branch, tag or commit. The project library is untouched until you save.", run: (a) => a.openProjectFromUrlModal() },
     // Gated to URL-SOURCED DRAFTS: a locally-dropped zip or a saved project has
     // no address a recipient could fetch, so there is nothing honest to copy and
     // the command must be disabled rather than hand over a link that 404s.
-    { id: "copy-share-link", title: "Copy Share Link", icon: "mdi:share-variant-outline", aliases: ["share", "copy link", "send deck"], when: (a) => a.shareLink() !== null, requires: "a project opened from a URL", help: "Copies a link that reopens THIS deck: the page address plus the .zip's URL. Anyone who opens it gets their own unsaved draft of it.", run: (a) => a.copyShareLink() },
+    { id: "copy-share-link", title: "Copy Share Link", icon: "mdi:share-variant-outline", aliases: ["share", "copy link", "send deck"], when: (a) => a.shareLink() !== null, requires: "a project opened from a URL or a GitHub repository", help: "Copies a link that reopens THIS deck: the page address plus where the deck came from — the .zip's URL, or the repository and the branch it was opened at. Anyone who opens it gets their own unsaved draft of it.", run: (a) => a.copyShareLink() },
     // ph:file-zip / ph:file-zip-fill: the ONE candidate pair whose glyph carries
     // literal "ZIP" lettering (user ruling 2026-07-30: the zip icon should SAY
     // Zip) while keeping the outline=export / filled=import distinction.
@@ -2342,19 +2359,34 @@
        look hung. Enter loads, Escape cancels (Modal owns Escape). -->
   <Modal bind:open={urlModalVisible} title="Open Project from URL" size="compact">
     <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmOpenUrl(); }}>
+      <!-- ONE FIELD, BOTH GRAMMARS (user ruling: "Open Project from URL should
+           have a github link example in it — literally the one we have now —
+           saying it can be a zip from anywhere or a github repository/branch",
+           and "it should support branches too"). The examples are the REAL demo
+           repo, not a placeholder invention, so what the hint shows is something
+           the reader can paste and watch work. TWO SHORT LINES, per the
+           tooltip-brevity ruling: the label states the two things accepted, the
+           hint shows one of each. -->
       <label class="name-modal-field">
-        <span class="name-modal-label">Link to a project .zip</span>
+        <span class="name-modal-label">A project .zip link, or a GitHub repository</span>
         <input
           class="name-modal-input"
           type="text"
           bind:value={urlValue}
-          placeholder="https://example.com/deck.zip"
+          placeholder="https://example.com/deck.zip — or RyannDaGreat/PowerRP-RobotSim-Demo@main"
           autocomplete="off"
           spellcheck="false"
           disabled={urlBusy}
           use:selectAllOnMount
         />
       </label>
+      <div class="name-modal-note">
+        A .zip from anywhere: <code class="url-fix">https://example.com/deck.zip</code>
+      </div>
+      <div class="name-modal-note">
+        Or a repo — add <code class="url-fix">@branch</code> for a branch, tag or commit:
+        <code class="url-fix">RyannDaGreat/PowerRP-RobotSim-Demo@main</code>
+      </div>
       {#if urlBusy}
         <div class="url-progress">
           <!-- Indeterminate when there is no denominator: the bar animates and

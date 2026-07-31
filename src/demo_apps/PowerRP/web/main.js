@@ -12,18 +12,25 @@ import { bootDone, bootFailed, bootStage } from "./bootProgress.js";
 // share one memoized promise; each awaits it before its first frame.
 const fontsLoaded = loadFonts();
 import { assetStore, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
-import { REPO_PARAM, fetchProjectFromRepo } from "./githubProject.js";
-import { zipSync, strToU8 } from "fflate";
+import { REPO_PARAM } from "./githubProject.js";
 
 /**
- * Command (network + app mutation). ?repo=<owner>/<name> BOOT WIRING — opens a
- * GitHub-hosted project as an UNSAVED DRAFT through the ONE zip pipeline: the
- * fetched repo files are synthesized into an in-memory archive and handed to
- * app.openDraftFromZipBytes, so a repo is literally a differently-fetched zip —
- * archive-ref healing, draft staging, and the save flow all apply unchanged.
- * A revisit rebuilds the draft fresh (a half-downloaded earlier visit can never
- * be sticky — the flaw the previous direct-import shape had). Every failure is
- * LOUD — a share link that silently does nothing is how this shipped broken once.
+ * Command (network + app mutation). `?repo=owner/name[@ref]` BOOT WIRING — reads
+ * the query parameter and hands it to app.openProjectFromRepo, which is the ONE
+ * repo-open path (the modal's "open from…" field lands there too).
+ *
+ * `@ref` IS A BRANCH, tag or commit and it is carried the whole way: the slug
+ * reaches parseRepoSlug intact, the contents API is asked with `?ref=`, and the
+ * opened draft remembers the slug so Copy Share Link reproduces the branch rather
+ * than silently handing a recipient the default one.
+ *
+ * Behind that call: the fetched repo files are synthesized into an in-memory
+ * archive and opened as an UNSAVED DRAFT through the ONE zip pipeline — a repo is
+ * literally a differently-fetched zip, so archive-ref healing, draft staging and
+ * the save flow all apply unchanged. A revisit rebuilds the draft fresh (a
+ * half-downloaded earlier visit can never be sticky — the flaw the original
+ * direct-import shape had). Every failure is LOUD: a share link that silently
+ * does nothing is how this shipped broken once.
  */
 async function openRepoParamProject() {
   const slug = new URLSearchParams(location.search).get(REPO_PARAM);
@@ -37,21 +44,15 @@ async function openRepoParamProject() {
     throw new Error("?repo=: the app never mounted");
   })();
   try {
-    // GUARDED, LIKE EVERY OTHER OPEN (user ruling: "Can opening a link break my
-    // project?"). A boot param is the case the ruling literally names — the user
-    // has live work and a URL arrives — so it waits for Save / Discard / Cancel
-    // instead of overwriting, and Cancel means the repo simply does not load. The
-    // gate is asked BEFORE the fetch so a declined open costs no network.
-    const opened = await app.guardedOpen(async () => {
-      const { root, doc, assets } = await fetchProjectFromRepo(slug, {
-        onProgress: ({ message }) => console.info(`PowerRP ?repo=: ${message}`),
-      });
-      const name = (root || slug.split("/").pop() || "Imported Project").trim();
-      const members = { [`${name}/doc.json`]: strToU8(JSON.stringify(doc)) };
-      for (const a of assets) members[`${name}/assets/${a.name}`] = a.bytes;
-      await app.openDraftFromZipBytes(zipSync(members), name, "");
-    }, `the GitHub project ${slug}`);
-    if (!opened) console.info(`PowerRP ?repo=${slug}: cancelled — kept the project that was already open.`);
+    // ONE CODE PATH WITH THE MODAL. The fetch, the archive synthesis, the guard
+    // (user ruling: "Can opening a link break my project?" — a boot param is the
+    // case that ruling literally names) and the repoSlug that gates the share
+    // link all live on app.openProjectFromRepo now. This boot path's whole job is
+    // to read the query parameter and report; it used to duplicate the body, and
+    // the duplicate is how `?repo=` came to lack the branch-aware share link the
+    // modal path has. `@ref` rides along untouched — parseRepoSlug reads it there.
+    const result = await app.openProjectFromRepo(slug, ({ message }) => console.info(`PowerRP ?repo=: ${message}`));
+    if (result?.cancelled) console.info(`PowerRP ?repo=${slug}: cancelled — kept the project that was already open.`);
   } catch (e) {
     console.error(`PowerRP: could not open ?repo=${slug} — ${e?.message ?? e}`);
     throw e;

@@ -82,7 +82,7 @@ import { mimeForAsset, parseProjectZip } from "./projectZip.js";
 // The pure key/name/share helpers are re-exported so a consumer needs ONE import
 // for the whole model and does not have to know which half a given name lives
 // in (the same convention assetStore.js uses for assetRef.js).
-export { DRAFT_KEY, DRAFT_KEY_PREFIX, DRAFT_STATE_KEY, SAVE_NEEDS_SAVE_AS, UNTITLED_NAME, draftDisplayName, draftStateFromJson, isDraftKey, isUnsavedDraft, openNeedsConfirm, saveCommandFor, saveText, shareUrl, validProjectName } from "./draftKeys.js";
+export { DRAFT_KEY, DRAFT_KEY_PREFIX, DRAFT_STATE_KEY, SAVE_NEEDS_CHANGES, SAVE_NEEDS_FLIGHT_DONE, SAVE_NEEDS_SAVE_AS, UNTITLED_NAME, draftDisplayName, draftStateFromJson, isDraftKey, isUnsavedDraft, openNeedsConfirm, projectSourceKind, quickSaveBlocker, saveCommandFor, saveText, shareUrl, validProjectName } from "./draftKeys.js";
 
 /**
  * Command (mutates IndexedDB). STAGE a parsed archive's assets into the draft

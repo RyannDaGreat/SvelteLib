@@ -36,6 +36,10 @@ import { dirname, resolve } from "node:path";
 const powerRP = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const toolbar = readFileSync(resolve(powerRP, "web/Toolbar.svelte"), "utf8");
 const appSvelte = readFileSync(resolve(powerRP, "web/App.svelte"), "utf8");
+// The save-indicator MERGE (test 5) spans markup and stylesheet: the dot must be
+// gone from BOTH, and its successor present in both, or the toolbar renders an
+// unstyled empty span where a state light should be.
+const appCss = readFileSync(resolve(powerRP, "web/app.css"), "utf8");
 
 let passed = 0;
 function test(name, fn) {
@@ -115,16 +119,24 @@ test("only the four documented buttons still name their own glyphs", () => {
 // Naming each allowance makes the exception set readable and makes adding to it a
 // deliberate edit that says which affordance and why.
 //
-// The two allowed tips are the only Tooltips here whose target is not a command:
-//   doc-name        — a double-click RENAME gesture on the title
-//   save-indicator  — a STATUS READOUT (server save state); it runs nothing at all,
-//                     and its sentence is derived with its own dot state so the two
-//                     cannot disagree (Toolbar.svelte: saveIndicator/saveText)
+// ONE allowed tip now, down from two. The save-indicator left the list because
+// THE INDICATOR ITSELF LEFT THE TOOLBAR (user ruling: "the unsaved-changes dot is
+// kind of the same thing as the save button — the same state"). Its sentence did
+// not disappear; it MOVED onto the Save button, where it renders through the
+// shared commandTip snippet like every other button's tip — which is to say the
+// exception this list existed to grant is no longer needed, because the thing it
+// covered stopped being an exception. Shrinking the list is therefore the
+// correct edit, not a loosening: the invariant ("no BUTTON words its own tip
+// instead of reading the registry") is now defended over strictly more of the
+// file than before.
+//
+//   doc-name — a single-click RENAME gesture on the title; not a command, so it
+//              has no registry entry to read a tip from.
 test("a hardcoded tooltip survives only where no command entry exists", () => {
   // Each <Tooltip text=…> paired with the class of the element it wraps.
   const wrapped = [...toolbar.matchAll(/<Tooltip text=[^>]*>\s*<(?:span|button|div)\s+[^>]*class="([^"{]*)/g)]
     .map((m) => m[1].trim().split(/\s+/)[0]);
-  const ALLOWED = ["doc-name", "save-indicator"];
+  const ALLOWED = ["doc-name"];
   assert.deepEqual(
     wrapped.slice().sort(),
     ALLOWED.slice().sort(),
@@ -170,6 +182,45 @@ test("every Toolbar-surfaced command with a `when` also declares a `requires`", 
     "Add a `requires` sentence that completes \"Unavailable — requires …\" (the wording rule core/registry.js TOOL_POOL states); " +
     "web/Toolbar.svelte and web/ToolsPane.svelte already render it with no change needed."
   );
+});
+
+// ── (5) THE SAVE INDICATOR IS THE SAVE BUTTON ───────────────────────────────
+// User ruling: "The unsaved-changes [dot] is kind of the same thing as the save
+// button — the same state." A standalone readout beside a control describing the
+// same fact is two things to learn and two chances to disagree, so the dot
+// retired into the button.
+//
+// PINNED IN BOTH DIRECTIONS, because either half alone would pass while the
+// feature was broken: the dot must be GONE (a re-added one would silently
+// resurrect the divergence) AND the button must actually carry the state (a
+// deletion with no replacement would lose the indicator the user asked for in
+// the first place — "an indicator … which when I hover over it tells me whether
+// or not it's saved").
+test("the save-indicator dot is retired and its state rides the Save button", () => {
+  assert.doesNotMatch(toolbar, /class="save-indicator/, "the standalone save-indicator dot is back in Toolbar.svelte — its state belongs on the Save button (the ruling), not on a second control beside it");
+  assert.doesNotMatch(appCss, /\.save-indicator\b/, "app.css still styles .save-indicator — the dot's rules moved to .btn-save-mark when the dot itself retired");
+
+  // The button's half of the merge, all three parts:
+  assert.match(toolbar, /function saveMarkFor\(id\)/, "saveMarkFor is gone — nothing decides which button carries the save state mark");
+  assert.match(toolbar, /class="btn-save-mark \{saveMarkFor\(id\)\}"/, "the Save button no longer renders its state mark, so the retired dot left no successor");
+  assert.match(toolbar, /return id === "save-project" \? saveIndicator\.state : null/, "the state mark is no longer derived from app.saveState() via saveIndicator — the mark and the button's own gate could then disagree");
+  // And the SENTENCE, which is the part the mark alone cannot carry (a draft and
+  // a dirty saved project are both a ring; only the text tells them apart).
+  assert.match(toolbar, /if \(id === "save-project"\) return saveIndicator\.text;/, "the Save button's tip no longer carries saveText's sentence — the four save states would collapse to three glyphs with no words");
+  assert.match(appCss, /\.btn-save-mark\b/, "app.css does not style .btn-save-mark, so the state mark renders as an unstyled empty span");
+});
+
+// ── (6) A DISABLED SAVE BUTTON MUST STILL BE HOVERABLE AND FOCUSABLE ─────────
+// The clean-state gate (user: "should the save button be enabled when there are
+// no changes?" — no) means the Save button spends most of its life DISABLED, and
+// its tip is now the only place the save state is written down. A natively
+// `disabled` button is not in the tab order, so a keyboard user could never
+// reach that sentence. The Inspector/CommandPalette precedent — aria-disabled
+// plus a guard in the handler — is therefore mandatory here, not stylistic.
+test("Toolbar buttons use aria-disabled with a handler guard, not the native attribute", () => {
+  assert.match(toolbar, /aria-disabled=\{unavailable\(id\)\}/, "the toolbar's buttons no longer use aria-disabled — a natively disabled Save button is unfocusable, so its state sentence becomes unreachable by keyboard");
+  assert.doesNotMatch(toolbar, /\n\s*disabled=\{unavailable\(id\)\}/, "the native `disabled` attribute is back on the toolbar's command buttons; it removes them from the tab order (see above)");
+  assert.match(toolbar, /onclick=\{\(\) => \{ if \(!unavailable\(id\)\) app\.runCommand\(id\); \}\}/, "aria-disabled does not stop a click by itself — the guard must live in the handler, as CommandPalette's activate() does");
 });
 
 console.log(`\n${passed} toolbar-surfacing tests passed`);

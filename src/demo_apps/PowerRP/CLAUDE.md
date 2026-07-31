@@ -109,6 +109,45 @@ surfacings of the same entries. The shortcut registry is the single source of
 truth for inputs: it BOTH dispatches keydowns AND feeds the bottom HintBar —
 a shortcut that isn't registered there does not exist.
 
+An entry's `requires` (the clause completing "Unavailable — requires …") MAY BE A
+FUNCTION of the app, not only a string. Most gates have one reason and a literal
+says it best; a gate with SEVERAL disqualifying conditions has several true
+sentences, and a fixed string would be a confident wrong answer for all but one.
+`save-project` is why this exists. ALWAYS read it through
+`core/commands.commandUnavailableReason`, never `cmd.requires` directly — reading
+the field raw renders a function's source text (that mistake is why
+`tests/palette_probe.js` and `web/ToolsPane.svelte` both resolve it).
+
+THE SAVE BUTTON IS THE SAVE INDICATOR (user ruling: "the unsaved-changes dot is
+kind of the same thing as the save button — the same state"). There is no
+standalone status dot; `web/Toolbar.svelte`'s `saveMarkFor`/`tipNoteFor` put the
+dot's three glyphs (ring / half / solid, `.btn-save-mark`) and `saveText`'s four
+sentences on the quick-Save button itself. Its gate is `draftKeys.quickSaveBlocker`,
+which answers BOTH "may it run" and "why not" from one call, and blocks on THREE
+conditions: an unsaved draft, a CLEAN working copy (user: "should the save button
+be enabled when there are no changes?" — no), and a save in flight. Because a
+clean project's Save is disabled and its tip is then the only place the save state
+is written down, the toolbar's buttons use `aria-disabled` + a handler guard, NOT
+the native attribute — a natively disabled button is not focusable, so the
+keyboard could never reach that sentence. The earlier anti-affordance ruling ("a
+control that looks clickable but only reports is a lie") is SATISFIED by this
+merge: the readout moved onto a real control, rather than a readout being dressed
+as one.
+
+OPENING A PROJECT FROM THE NETWORK IS ONE FIELD WITH TWO GRAMMARS.
+`draftKeys.projectSourceKind` decides repo-slug vs URL and `app.openProjectFromAnySource`
+routes to `openProjectFromRepo` or `openProjectFromUrl`; anything matching neither
+is refused there with a sentence about the input rather than pushed at a loader to
+fail as a network error. A repo slug is `owner/name[@ref]` or a github.com URL, and
+`@ref` is a branch, tag or commit that must survive all the way to the contents
+API's `?ref=` AND into the `?repo=` share link (`githubProject.shareLink` carries
+it; a repo draft stores `draftMode.repoSlug`, which is what `app.shareLink()`
+branches on). `tests/github_live_probe.js` proves the ref really lands, against a
+STANDING BRANCH on the demo repo — `RyannDaGreat/PowerRP-RobotSim-Demo@branch-fixture`,
+which differs from `main` by `doc.meta.name` alone. Do not delete that branch: it
+IS the assertion, and without it the check silently degrades to a second
+default-branch load.
+
 ## Running
 
 - Editor + project backend: `bash src/demo_apps/PowerRP/run_server.sh`, then use

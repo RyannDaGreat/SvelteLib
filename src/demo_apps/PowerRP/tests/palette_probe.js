@@ -240,10 +240,24 @@ try {
     // the entry's own `run` source rather than declared anywhere: that is what
     // makes it impossible to add a selection command and forget.
     const READS_SELECTION = /Selection|selectedIds|selectedNode|\.selection\b/;
+    // `requires` IS RESOLVED, NOT READ RAW. It may be a FUNCTION of the app — a
+    // gate with several disqualifying conditions has several true sentences, and
+    // one fixed string would be a confident wrong answer for all but one of them
+    // (core/commands.js commandUnavailableReason; `save-project` is the case).
+    // Resolving it here means (a) below still measures THE SENTENCE A USER SEES,
+    // which is the invariant, rather than the field's storage shape — reading the
+    // field raw would have flagged every multi-reason gate as mute, which is the
+    // exact opposite of the truth about it.
+    const resolveRequires = (c) => {
+      if (typeof c.requires !== "function") return c.requires ?? null;
+      // Evaluated in the state the probe happens to be in; any of its branches is
+      // a legitimate answer, and all it has to be for (a) is a real sentence.
+      return c.requires(app) ?? null;
+    };
     const rows = app.commands.all().map((c) => ({
       id: c.id,
       hasWhen: typeof c.when === "function",
-      requires: c.requires ?? null,
+      requires: resolveRequires(c),
       help: c.help ?? null,
       title: c.title,
       readsSelection: typeof c.run === "function" && READS_SELECTION.test(String(c.run)),

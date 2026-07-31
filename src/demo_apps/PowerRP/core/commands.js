@@ -174,15 +174,29 @@ export function commandUnavailable(cmd, app) {
  * Null on a runnable command is what makes the sentence read as the live reason
  * rather than a standing caveat.
  *
+ * `requires` MAY BE A FUNCTION of the app, not only a string. Most gates have one
+ * reason and a literal says it best. But a gate with SEVERAL disqualifying
+ * conditions has several true sentences, and a fixed string would have to pick
+ * one and be wrong the rest of the time — which is worse than silence, because it
+ * is a confident wrong answer. `save-project` is the case that forced this: it is
+ * unavailable on an unsaved draft ("use Save As…"), on a clean working copy
+ * ("nothing to save") and mid-flight ("wait"), and telling a user with unsaved
+ * work that there is nothing to save would be a lie the UI states out loud.
+ * The function is called ONLY when the gate already said no, so it never has to
+ * answer for a runnable command.
+ *
  * @param {object} cmd - a command-registry entry
  * @param {object} app - the app instance the gate is evaluated against
  * @returns {string|null}
  *
  * @example commandUnavailableReason({id: "u", requires: "a selection"}, app) // null (ungated: it can run)
  * @example commandUnavailableReason({id: "c", when: () => false, requires: "a selection"}, app) // "a selection"
+ * @example // a multi-reason gate states the LIVE reason:
+ * commandUnavailableReason({id: "s", when: () => false, requires: (a) => a.blocker}, {blocker: "changes to save"}) // "changes to save"
  */
 export function commandUnavailableReason(cmd, app) {
-  return commandUnavailable(cmd, app) ? (cmd.requires ?? null) : null;
+  if (!commandUnavailable(cmd, app)) return null;
+  return (typeof cmd.requires === "function" ? cmd.requires(app) : cmd.requires) ?? null;
 }
 
 /**

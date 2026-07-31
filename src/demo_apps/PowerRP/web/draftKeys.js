@@ -15,12 +15,13 @@
  * loudly instead of silently making a draft saveable.
  *
  * IT ALSO OWNS THE SAVE-GESTURE RULES, for the same reason: `isUnsavedDraft`,
- * `saveCommandFor`, `saveText` and `openNeedsConfirm` are the four decisions
- * behind "which Save is available", "what does Cmd+S do", "what does the dot
- * say" and "must this open ask first". Each is a pure function of state a test
- * can hand it, so the gate executes the RULE rather than a browser's rendering
- * of it — and the four surfaces (command gate, keybinding, indicator, guard)
- * read one definition instead of four agreeing copies.
+ * `saveCommandFor`, `saveText`, `quickSaveBlocker` and `openNeedsConfirm` are the
+ * decisions behind "which Save is available", "what does Cmd+S do", "what does
+ * the Save button say and show" and "must this open ask first". Each is a pure
+ * function of state a test can hand it, so the gate executes the RULE rather than
+ * a browser's rendering of it — and the surfaces (command gate, keybinding,
+ * button state mark, tooltip, guard) read one definition instead of five agreeing
+ * copies.
  */
 
 /**
@@ -192,14 +193,21 @@ export function saveCommandFor(draft) {
 }
 
 /**
- * Pure function. The save indicator's hover sentence.
+ * Pure function. The SAVE BUTTON's hover sentence — what the working copy's
+ * relationship to its stored copy is, in one truthful line.
  *
  * FOUR SENTENCES, NOT THREE, because "unsaved" was answering two different
  * questions with one string. "Unsaved changes" is a true statement about a
  * project that EXISTS in the library and has drifted from it; it is a misleading
  * one about a draft, which has no library copy at all — there are no "changes",
- * there is nothing there. The dot is the same in both cases (a ring), so the
- * sentence is the only place the difference can be told.
+ * there is nothing there. The state MARK is the same in both cases (a ring), so
+ * the sentence is the only place the difference can be told.
+ *
+ * IT USED TO BE THE DOT'S SENTENCE (user ruling: "the unsaved-changes dot is kind
+ * of the same thing as the save button — the same state"), and moving it changed
+ * nothing about the text, only its anchor. That is the point of the merge: one
+ * control, one state, one sentence, instead of a readout beside a button both
+ * describing the same fact.
  *
  * @param {"saving"|"saved"|"unsaved"} state From app.saveState().
  * @param {number|null} at Epoch ms of the last successful save, or null.
@@ -236,13 +244,82 @@ export function saveText(state, at, draft, noun) {
  * "Unavailable — requires <this>".
  *
  * IT LIVES HERE, NOT IN THE COMMAND ENTRY, because the gate and the reason are
- * two halves of one rule: `when: (a) => !a.isDraft()` and this sentence must
- * never drift apart, and the browser probe asserts on the exact text.
+ * two halves of one rule — see `quickSaveBlocker`, which now returns BOTH, so
+ * they are not merely kept in sync but are literally the same call. The browser
+ * probe asserts on the exact text.
  *
  * @example SAVE_NEEDS_SAVE_AS
  * 'a saved project — this one is not saved yet, so use Save As…'
  */
 export const SAVE_NEEDS_SAVE_AS = "a saved project — this one is not saved yet, so use Save As…";
+
+/**
+ * WHY quick-Save is unavailable on a CLEAN working copy — worded as the same
+ * "requires <this>" clause the other two are.
+ *
+ * @example SAVE_NEEDS_CHANGES
+ * 'changes to save — this project already matches its saved copy'
+ */
+export const SAVE_NEEDS_CHANGES = "changes to save — this project already matches its saved copy";
+
+/**
+ * WHY quick-Save is unavailable while a save is IN FLIGHT. Named alongside the
+ * other two rather than left inline: all three are the same kind of thing (a
+ * clause a surfacing renders after "Unavailable — requires"), and one of them
+ * hiding in a function body is how the set stops being reviewable as a set.
+ *
+ * @example SAVE_NEEDS_FLIGHT_DONE
+ * 'the save in flight to finish'
+ */
+export const SAVE_NEEDS_FLIGHT_DONE = "the save in flight to finish";
+
+/**
+ * Pure function. WHY quick-Save cannot run right now, or `null` when it can —
+ * the WHOLE gate for `save-project`, in one place.
+ *
+ * ====== THE SECOND GATE (user ruling) ======================================
+ *
+ * "Should the save button be enabled when there are no changes?" — NO. A Save
+ * that is lit while there is nothing to save is a button that lies twice: it
+ * invites a click that will do nothing, and it withholds the one fact the user
+ * actually asked it for (am I safe?). So a CLEAN working copy disables it, and
+ * the reason says so.
+ *
+ * ORDER MATTERS, and draft loses to clean deliberately. A draft is ALWAYS dirty
+ * (`saveState()` reports "unsaved" for a never-written document, because nothing
+ * of it is stored), so the two conditions can only collide in the direction where
+ * the draft reason is the true one — but stating the order makes that an
+ * intention rather than an accident of evaluation.
+ *
+ * A SAVE IN FLIGHT IS NOT CLEAN AND NOT AVAILABLE. "saving" means the outcome is
+ * unknown, so neither answer is honest: the working copy may or may not match
+ * what is being written. Re-issuing a save on top of an unresolved one is what a
+ * lit button would invite, so it is blocked with its own reason rather than
+ * folded into either of the others.
+ *
+ * @param {boolean} draft From isUnsavedDraft.
+ * @param {"saving"|"saved"|"unsaved"} state From app.saveState().
+ * @returns {string|null} The `requires` clause, or null when quick-Save may run.
+ *
+ * @example // the case the whole gate is for: dirty, saved project — Save works
+ * quickSaveBlocker(false, "unsaved")
+ * null
+ * @example // THE RULING: nothing to save, so the button is not lit
+ * quickSaveBlocker(false, "saved")
+ * 'changes to save — this project already matches its saved copy'
+ * @example // a draft has no library entry at all — Save As… first
+ * quickSaveBlocker(true, "unsaved")
+ * 'a saved project — this one is not saved yet, so use Save As…'
+ * @example // an in-flight save has an unknown outcome — do not invite a second one
+ * quickSaveBlocker(false, "saving")
+ * 'the save in flight to finish'
+ */
+export function quickSaveBlocker(draft, state) {
+  if (draft) return SAVE_NEEDS_SAVE_AS;
+  if (state === "saving") return SAVE_NEEDS_FLIGHT_DONE;
+  if (state === "saved") return SAVE_NEEDS_CHANGES;
+  return null;
+}
 
 /**
  * Pure function. Does an OPEN — one that REPLACES the working copy — need to ask
@@ -286,6 +363,93 @@ export const SAVE_NEEDS_SAVE_AS = "a saved project — this one is not saved yet
  */
 export function openNeedsConfirm(draft, state) {
   return draft || state !== "saved";
+}
+
+/**
+ * Pure function. WHICH TRANSPORT a typed "open a project from…" string names —
+ * the one grammar decision behind the single input field.
+ *
+ * ====== ONE INPUT, TWO GRAMMARS (user ruling) ==============================
+ *
+ * "Open Project from URL should have a github link example in it — literally the
+ * one we have now — saying it can be a zip from anywhere or a github
+ * repository/branch", and "it should support branches too".
+ *
+ * So the field accepts BOTH of the things a person actually has on their
+ * clipboard, and decides between them rather than making the user pick a mode
+ * first. A radio pair would be a question the app can answer itself: the two
+ * grammars are not ambiguous with each other.
+ *
+ * THE RULE, and why it is this way round:
+ *   · ANYTHING WITH A SCHEME IS A URL. `https://…/deck.zip` is a zip; and
+ *     `https://github.com/owner/name` is ALSO routed to the repo loader, because
+ *     parseRepoSlug accepts that form and it is what the repo page's address bar
+ *     says. Scheme-first means a URL is never mistaken for a slug.
+ *   · OTHERWISE, `owner/name` WITH EXACTLY ONE SLASH IS A REPO, optionally
+ *     `@ref` for a branch, tag or commit. This shape cannot be a URL — it has no
+ *     scheme and no host — so nothing is stolen from the zip path by claiming it.
+ *   · EVERYTHING ELSE IS NEITHER, and says so. A bare word, three slashes, an
+ *     empty string: the caller reports it rather than guessing, because guessing
+ *     here means a confusing network error instead of a sentence about the input.
+ *
+ * RETURNS THE KIND ONLY, not a parsed value: the two loaders each do their own
+ * strict parsing (`parseRepoSlug`, `validatedZipUrl`) and both refuse loudly.
+ * Duplicating either one here would create a second, weaker validator whose
+ * disagreements with the real one would be silent.
+ *
+ * @param {string} raw The text as typed into the field.
+ * @returns {"repo"|"url"|"unknown"}
+ *
+ * @example // the demo repo, as the modal's hint shows it
+ * projectSourceKind("RyannDaGreat/PowerRP-RobotSim-Demo")
+ * 'repo'
+ * @example // …and a non-default BRANCH of it
+ * projectSourceKind("RyannDaGreat/PowerRP-RobotSim-Demo@main")
+ * 'repo'
+ * @example // a zip anywhere on the web
+ * projectSourceKind("https://example.com/decks/RobotSim.zip")
+ * 'url'
+ * @example // a github WEB url is a repo, not a zip — parseRepoSlug reads this form
+ * projectSourceKind("https://github.com/RyannDaGreat/PowerRP-RobotSim-Demo")
+ * 'repo'
+ * @example // …including with a branch in the github tree form
+ * projectSourceKind("https://github.com/owner/name@release/1.2")
+ * 'repo'
+ * @example // neither grammar: refused with a sentence, never guessed at
+ * projectSourceKind("robot sim deck")
+ * 'unknown'
+ * @example // a colon means a scheme was intended; an unsupported one is not a slug
+ * projectSourceKind("data:text/html,x")
+ * 'unknown'
+ * @example projectSourceKind("")
+ * 'unknown'
+ */
+export function projectSourceKind(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return "unknown";
+  const scheme = text.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  if (scheme) {
+    // A github.com URL is the repo grammar wearing its web address; anything
+    // else with a scheme is a plain fetch, and validatedZipUrl judges the scheme.
+    const host = text.slice(scheme[0].length).split("/")[0].toLowerCase();
+    return host === "github.com" || host === "www.github.com" ? "repo" : "url";
+  }
+  // Scheme-less. Exactly one slash, and a non-empty side each way, is owner/name.
+  // The @ref is stripped first because a ref may itself contain "/" (release/1.2),
+  // exactly as parseRepoSlug does it — the two must agree about what a slug is.
+  const at = text.indexOf("@");
+  const path = at >= 0 ? text.slice(0, at) : text;
+  // A COLON DISQUALIFIES IT, and this line is not decoration. `data:text/html,x`
+  // has no "://" and exactly one slash, so without this it read as the repo
+  // `data:text/html,x` — routed at parseRepoSlug, which refuses it (a colon is
+  // not in GitHub's name grammar) but refuses it while TALKING ABOUT GITHUB
+  // OWNER NAMES, which tells a user who pasted a data: URL nothing useful. A
+  // colon means the author meant a scheme; if it is not one we take, saying so
+  // here is the honest answer.
+  if (path.includes(":")) return "unknown";
+  const parts = path.split("/");
+  if (parts.length === 2 && parts[0].trim() && parts[1].trim()) return "repo";
+  return "unknown";
 }
 
 /** Filenames that name a FORMAT rather than a deck. A URL ending in "/deck.zip"
@@ -369,11 +533,20 @@ export function shareUrl(pageUrl, sourceUrl) {
  * hand-edited or half-written localStorage value must cost at most the share
  * link, never a boot. It is the ONLY forgiving parse in this file.
  *
+ * `repoSlug` is the REPO transport's half of the same fact `sourceUrl` carries
+ * for the zip transport: the address the draft came from, and therefore what its
+ * share link can be built out of. It is omitted from the returned object when
+ * absent rather than set to "", so a zip draft and a repo draft are told apart
+ * by the KEY's presence — which is exactly the test `shareLink()` makes.
+ *
  * @param {string|null} rawJson The stored string, or null when unset.
- * @returns {{name: string, sourceUrl: string}|null}
+ * @returns {{name: string, sourceUrl: string, repoSlug?: string}|null}
  *
  * @example draftStateFromJson('{"name":"RobotSim","sourceUrl":"https://x.dev/a.zip"}')
  * {name: 'RobotSim', sourceUrl: 'https://x.dev/a.zip'}
+ * @example // a REPO draft survives a reload with the branch it was opened at:
+ * draftStateFromJson('{"name":"RobotSim","sourceUrl":"","repoSlug":"o/n@main"}')
+ * {name: 'RobotSim', sourceUrl: '', repoSlug: 'o/n@main'}
  * @example draftStateFromJson(null)
  * null
  * @example draftStateFromJson("{{ not json")
@@ -388,5 +561,7 @@ export function draftStateFromJson(rawJson) {
     return null; // a corrupt marker costs the share link, never the boot
   }
   if (!parsed || typeof parsed !== "object" || typeof parsed.name !== "string" || !parsed.name) return null;
-  return { name: parsed.name, sourceUrl: typeof parsed.sourceUrl === "string" ? parsed.sourceUrl : "" };
+  const state = { name: parsed.name, sourceUrl: typeof parsed.sourceUrl === "string" ? parsed.sourceUrl : "" };
+  if (typeof parsed.repoSlug === "string" && parsed.repoSlug) state.repoSlug = parsed.repoSlug;
+  return state;
 }

@@ -59,7 +59,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import { commandUnavailable } from "../core/commands.js";
+  import { commandUnavailable, commandUnavailableReason } from "../core/commands.js";
   import { presetsForMaterial, materialDisplayName } from "../render_gpu/skia/material_presets.js";
 
   let { app } = $props();
@@ -179,9 +179,16 @@
    * and `when` belongs to the entry — so once web/App.svelte's entries carry their
    * own `requires` (the handback patch), every surfacing gets it and the pool's
    * copies can be deleted with no change here.
+   *
+   * THE ENTRY'S HALF GOES THROUGH commandUnavailableReason, not `.requires`
+   * directly, because a `requires` MAY BE A FUNCTION of the app (a gate with
+   * several disqualifying conditions has several true sentences — see that
+   * function's note, and `save-project`). Reading the field raw would render a
+   * function's source text into the pane.
    */
   function unavailableReason(row) {
-    return unavailable(row) ? (entryOf(row).requires ?? row.requires ?? null) : null;
+    if (!unavailable(row)) return null;
+    return commandUnavailableReason(entryOf(row), app) ?? row.requires ?? null;
   }
 
   /**

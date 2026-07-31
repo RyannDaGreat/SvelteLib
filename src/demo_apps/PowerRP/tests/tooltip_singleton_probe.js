@@ -39,8 +39,15 @@ try {
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
   await sleep(2500);
 
-  // Two REAL toolbar anchors: the save indicator and the project title — both
+  // Two REAL toolbar anchors: the SAVE BUTTON and the project title — both
   // Tooltip-wrapped in Toolbar.svelte, always present.
+  //
+  // THE FIRST ANCHOR USED TO BE `.save-indicator`, the standalone save dot. That
+  // dot RETIRED into the Save button (user ruling: "the unsaved-changes dot is
+  // kind of the same thing as the save button — the same state"), so the anchor
+  // moved with it. Nothing about what this probe tests changed: it needs two
+  // always-present Tooltip anchors in the toolbar to collide, and the Save button
+  // is one — indeed it is the very element the dot's tip now hangs off.
   const tips = () => page.evaluate(() => [...document.querySelectorAll(".tt-tip")].map((t) => t.textContent.trim()));
 
   /** Command (in-page). pointerenter on the anchor WRAPPING `sel`, cursor-ish coords. */
@@ -55,7 +62,8 @@ try {
     document.querySelector(sel)?.closest(".tt-anchor")?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: false }));
   }, sel);
 
-  assert(await enter(".save-indicator"), "first anchor found (save indicator)");
+  const SAVE_BTN = 'button[aria-label="Save Project"]'; // the merged control (see the note above)
+  assert(await enter(SAVE_BTN), "first anchor found (the Save button)");
   await sleep(120);
   const one = await tips();
   assert(one.length === 1, `one tip after first enter (got ${one.length}: ${JSON.stringify(one)})`);
@@ -71,7 +79,7 @@ try {
   await leave(".doc-name");
   await sleep(80);
   assert((await tips()).length === 0, "leave closes the tip");
-  await enter(".save-indicator");
+  await enter(SAVE_BTN);
   await sleep(120);
   assert((await tips()).length === 1, "fresh hover after the collision still works");
 } finally {

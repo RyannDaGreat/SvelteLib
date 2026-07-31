@@ -120,7 +120,8 @@ try {
         gated: !!cmd.when,
         unavailable: !!cmd.when && !cmd.when(app),
         rendered: !!el,
-        disabled: el ? el.disabled : null,
+        // Either spelling — see the note at the selection-gated check below.
+        disabled: el ? el.disabled || el.getAttribute("aria-disabled") === "true" : null,
         glyphs,
         keys: app.shortcuts.commandKeys(id),
       };
@@ -189,10 +190,18 @@ try {
   // ── (3) a disabled button explains itself ─────────────────────────────────
   await page.evaluate(() => { window.__powerrp_app.selection = null; });
   await settle();
+  // EITHER SPELLING COUNTS, because "disabled" is a fact about what the user
+  // sees and can do, not about which attribute expresses it. The toolbar moved
+  // from the native `disabled` to `aria-disabled` (+ a handler guard) when the
+  // Save button absorbed the save-state indicator: a natively disabled button is
+  // NOT FOCUSABLE, and Save's tip is now the only place the save state is
+  // written down, so a keyboard user could never have reached it. app.css styles
+  // the two identically for exactly this reason, and this check follows suit —
+  // it was reading `b.disabled` alone and would otherwise have gone quiet about
+  // every gated button in the toolbar while reporting success.
   const gated = await page.evaluate(() => {
-    const app = window.__powerrp_app;
     return [...document.querySelectorAll(".toolbar button")]
-      .filter((b) => b.disabled)
+      .filter((b) => b.disabled || b.getAttribute("aria-disabled") === "true")
       .map((b) => b.getAttribute("aria-label"));
   });
   check("clearing the selection disables the selection-gated buttons", gated.length >= 3, gated.join(", "));

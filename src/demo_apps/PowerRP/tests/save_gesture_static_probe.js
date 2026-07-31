@@ -56,6 +56,10 @@ await server.listen();
 const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`;
 
 const { zipSync } = await import("fflate");
+// The quick-Save gate's RULE, imported rather than restated: step 5 asks it what
+// the draft half of the gate says, without pinning what the rename half of the
+// app happens to leave the working copy's cleanliness at.
+const { quickSaveBlocker } = await import("../web/draftKeys.js");
 const { default: puppeteer } = await import("puppeteer");
 const browser = await puppeteer.launch({ headless: "new", args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--no-sandbox", "--ignore-gpu-blocklist"] });
 
@@ -95,11 +99,20 @@ function buildDeckZip(name) {
 /** Query (in-page). Every fact the save gestures turn on, in one round trip.
  *  `saveAvailable` asks the COMMAND'S OWN `when` gate rather than re-deriving it,
  *  so this measures what the button/palette actually do — the drift a re-derived
- *  copy would hide is the entire reason the gate lives in the registry. */
+ *  copy would hide is the entire reason the gate lives in the registry.
+ *
+ *  `quickReason` is RESOLVED, not read raw, and it must be: quick-Save's gate has
+ *  three disqualifying conditions (unsaved draft / clean / save in flight) with
+ *  three different true sentences, so its `requires` is a FUNCTION of the app.
+ *  Reading the field would hand this probe a function's source text, and asserting
+ *  on that would pass while the UI showed nothing useful. `null` when it can run,
+ *  matching what commandUnavailableReason renders. */
 const saveState = (page) => page.evaluate(async () => {
   const app = window.__powerrp_app;
   const quick = app.commands.get("save-project");
   const saveAs = app.commands.get("save-to-server");
+  const quickBlocked = quick.when ? !quick.when(app) : false;
+  const quickReason = !quickBlocked ? null : (typeof quick.requires === "function" ? quick.requires(app) : quick.requires) ?? null;
   return {
     isDraft: app.isDraft(),
     everSaved: app.everSaved,
@@ -107,13 +120,72 @@ const saveState = (page) => page.evaluate(async () => {
     projectName: app.projectName(),
     displayName: app.projectDisplayName(),
     saveState: app.saveState(),
-    quickAvailable: quick.when ? quick.when(app) : true,
-    quickReason: quick.requires ?? null,
+    quickAvailable: !quickBlocked,
+    quickReason,
     saveAsAvailable: saveAs.when ? saveAs.when(app) : true,
     projects: (await app.listProjects()).map((p) => p.name),
     title: document.querySelector(".doc-name")?.textContent?.trim() ?? null,
   };
 });
+
+/** Query (in-page). WHAT THE SAVE BUTTON LOOKS LIKE AND SAYS, from the rendered
+ *  DOM — the merged control's half of the ruling ("the unsaved-changes dot is
+ *  kind of the same thing as the save button — the same state").
+ *
+ *  Read off the real toolbar, not off app state, because the whole claim being
+ *  tested is that the STATE REACHES THE PIXELS. The tip is opened by a real
+ *  pointerenter, since Tooltip renders its body only while hovered.
+ *
+ *  `markBox` is the mark's rendered SIZE plus the button's own width. The
+ *  no-layout-shift rule is a claim about the CONTROL — pressing Save must not
+ *  make the toolbar jump — so what has to be constant is the mark's footprint and
+ *  the button it sits in, NOT the mark's absolute x. Absolute x legitimately
+ *  moves between these states for a reason that has nothing to do with the mark:
+ *  the project TITLE sits to the left of the buttons and gets longer when the
+ *  deck is renamed, sliding the whole group. Pinning x would fail on a rename,
+ *  which is not the defect this guards. */
+const saveButton = async (page) => {
+  await page.evaluate(() => {
+    const btn = document.querySelector('.toolbar button[aria-label="Save Project"]');
+    const anchor = btn?.closest(".tt-anchor");
+    const r = btn.getBoundingClientRect();
+    anchor?.dispatchEvent(new PointerEvent("pointerenter", { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: false }));
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const read = await page.evaluate(() => {
+    const btn = document.querySelector('.toolbar button[aria-label="Save Project"]');
+    const mark = btn?.querySelector(".btn-save-mark");
+    const box = mark?.getBoundingClientRect();
+    const cs = mark ? getComputedStyle(mark) : null;
+    return {
+      present: !!btn,
+      ariaDisabled: btn?.getAttribute("aria-disabled"),
+      nativeDisabled: btn?.disabled ?? null,
+      focusable: btn ? btn.tabIndex >= 0 : null,
+      markState: mark?.dataset.state ?? null,
+      markBox: box ? { w: Math.round(box.width), h: Math.round(box.height), btnW: Math.round(btn.getBoundingClientRect().width) } : null,
+      markBackground: cs?.backgroundColor ?? null,
+      markBorder: cs?.borderTopWidth ?? null,
+      // EFFECTIVE opacity of the mark, i.e. multiplied down every ancestor. A
+      // parent's opacity composites its whole subtree and a child cannot escape
+      // it, so this is the only honest way to ask "is the mark still legible?"
+      // while the button is disabled — which is the state it matters most in.
+      markOpacity: (() => {
+        if (!mark) return null;
+        let o = 1;
+        for (let n = mark; n && n !== document.body; n = n.parentElement) o *= parseFloat(getComputedStyle(n).opacity);
+        return Math.round(o * 100) / 100;
+      })(),
+      tip: document.querySelector(".tt-tip")?.textContent?.replace(/\s+/g, " ").trim() ?? null,
+    };
+  });
+  await page.evaluate(() => {
+    document.querySelector('.toolbar button[aria-label="Save Project"]')?.closest(".tt-anchor")
+      ?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+  });
+  await new Promise((r) => setTimeout(r, 120));
+  return read;
+};
 
 /** Query (in-page). Which command Cmd+S would run right now — asked of the SAME
  *  dispatcher the keybinding invokes, by stubbing runCommand for one call, so
@@ -180,6 +252,32 @@ try {
   assert(s1.saveAsAvailable === true, "Save As… is ALWAYS available — it is the gesture that gets you out of this state");
   assert(await cmdSTarget(page) === "save-to-server", "CMD+S on a draft dispatches to SAVE AS…, never to a silent write");
 
+  // ── 1b. THE MERGED BUTTON, STATE 1 OF 3: unsaved draft ────────────────────
+  // User ruling: "the unsaved-changes dot is kind of the same thing as the save
+  // button — the same state." The dot retired; the BUTTON carries the mark and
+  // the sentence. Asserted from the rendered DOM, because the claim is that the
+  // state reaches the pixels, not merely that app.saveState() knows it.
+  const noDot = await page.evaluate(() => document.querySelectorAll(".save-indicator").length);
+  assert(noDot === 0, `the standalone save-indicator dot is GONE from the rendered toolbar (found ${noDot}) — two controls for one state is what the merge removed`);
+  const b1 = await saveButton(page);
+  assert(b1.present, "the Save button is in the toolbar");
+  assert(b1.markState === "unsaved", `…wearing the UNSAVED mark (got ${JSON.stringify(b1.markState)})`);
+  assert(b1.markBackground === "rgba(0, 0, 0, 0)", `…which is the hollow RING: no fill, border only (got background ${b1.markBackground})`);
+  assert(parseFloat(b1.markBorder) > 0, `…and the ring itself is drawn (border ${b1.markBorder})`);
+  // The retired dot's SENTENCE, on the button's tip. The mark cannot tell a draft
+  // from a dirty saved project — both ring — so the words are the only place the
+  // difference lives, which is exactly why they had to come along.
+  assert(/not saved yet/i.test(b1.tip ?? ""), `the tip carries the DRAFT sentence (got ${JSON.stringify(b1.tip)})`);
+  assert(/Save As/i.test(b1.tip ?? ""), "…and the disabled reason names the gesture that works instead");
+  // THE ANTI-AFFORDANCE RULING IS SATISFIED, NOT VIOLATED. The old dot argued it
+  // must not look clickable because it only reported. This is the reverse: a real
+  // control that always could be clicked now shows what it already knew. And
+  // because a clean project's Save is disabled, the button must stay FOCUSABLE or
+  // the sentence becomes unreachable by keyboard — hence aria-disabled.
+  assert(b1.ariaDisabled === "true", `a blocked Save says so via aria-disabled (got ${JSON.stringify(b1.ariaDisabled)})`);
+  assert(b1.nativeDisabled === false, "…and NOT via the native attribute, which would drop it out of the tab order");
+  assert(b1.focusable === true, "…so the keyboard can still reach the sentence saying why it is dead");
+
   // ── 2. RENAMING A DRAFT DOES NOT SAVE IT ──────────────────────────────────
   // The subtlest half of the ruling, and the one an earlier design got wrong by
   // treating the NAME as part of the draft test: typing a title must not promote
@@ -205,23 +303,71 @@ try {
     `Save As… put it in the library ONCE, under the renamed name (found: ${JSON.stringify(s3.projects)})`);
   assert(s3.isDraft === false, "it is no longer a draft");
   assert(s3.everSaved === true, "everSaved flipped on the successful write");
-  assert(s3.saveState === "saved", `the indicator reads SAVED (got "${s3.saveState}")`);
-  assert(s3.quickAvailable === true, "…and quick-Save is NOW AVAILABLE — the state change the whole gate exists to express");
+  assert(s3.saveState === "saved", `the save state reads SAVED (got "${s3.saveState}")`);
+  // THE SECOND GATE (user: "should the save button be enabled when there are no
+  // changes?" — no). This assertion USED TO READ `=== true`, and flipping it is
+  // the point of that ruling rather than a regression: immediately after Save
+  // As… the working copy MATCHES its stored copy, so there is nothing for quick-
+  // Save to write. The draft gate has opened (isDraft is false — step 4 proves
+  // quick-Save comes alive the instant an edit lands); what holds it shut now is
+  // cleanliness, and the reason says so instead of the draft's sentence.
+  assert(s3.quickAvailable === false, "quick-Save is unavailable on a CLEAN working copy — there is nothing to write");
+  assert(/nothing|already matches|changes to save/i.test(s3.quickReason ?? ""),
+    `…and the reason is about CHANGES, not about being unsaved — the gate has two conditions and must name the live one (got: ${JSON.stringify(s3.quickReason)})`);
+  assert(s3.quickReason !== s1.quickReason, "…and it is a DIFFERENT sentence from the draft's; a single fixed `requires` string would have lied here");
   assert(await cmdSTarget(page) === "save-project", "CMD+S now dispatches to QUICK SAVE — the same key, a different meaning, decided by one flag");
+
+  // ── 3b. THE MERGED BUTTON, STATE 2 OF 3: saved and clean ──────────────────
+  const b3 = await saveButton(page);
+  assert(b3.markState === "saved", `the mark is now SOLID — the disc is full, nothing outstanding (got ${JSON.stringify(b3.markState)})`);
+  assert(b3.markBackground !== "rgba(0, 0, 0, 0)", `…i.e. it actually has ink, unlike the ring (got ${b3.markBackground})`);
+  assert(/saved to (browser|server)/i.test(b3.tip ?? ""), `the tip states WHERE it is saved (got ${JSON.stringify(b3.tip)})`);
+  assert(/\d/.test(b3.tip ?? ""), "…and WHEN — the saved-at time, which is the fact a user hovers a dead Save button to learn");
+  assert(b3.ariaDisabled === "true", "the button is disabled, because there is nothing to save (THE clean-state ruling)");
+  assert(/nothing|already matches|changes to save/i.test(b3.tip ?? ""), "…and says so, rather than repeating the draft's reason");
+  // THE MARK MUST SURVIVE THE DISABLED DIMMING. This is the state where the merge
+  // is load-bearing: the button is dead, and the mark is the only thing still
+  // reporting. The naive implementation fades the whole button and takes the mark
+  // with it (a child cannot be lifted back out of a parent's opacity — the
+  // subtree is composited as one), so app.css moves the dimming onto the ICON.
+  assert(b3.markOpacity === 1, `the mark stays at FULL contrast while the button is disabled (effective opacity ${b3.markOpacity}) — a dimmed status light on a dead button reports nothing`);
+  // NO LAYOUT SHIFT — the whole reason all three marks are one absolutely
+  // positioned box. A control that twitches every time you press it reads as
+  // broken even when it is right.
+  assert(JSON.stringify(b3.markBox) === JSON.stringify(b1.markBox),
+    `the mark's FOOTPRINT and its button's width are identical in every state — no twitch when a save lands (unsaved ${JSON.stringify(b1.markBox)} vs saved ${JSON.stringify(b3.markBox)})`);
 
   // ── 4. QUICK SAVE writes IN PLACE, with no prompt and no second entry ─────
   await makeEdit(page);
   const dirty = await saveState(page);
   assert(dirty.saveState === "unsaved", "an edit makes the saved project dirty");
-  assert(dirty.quickAvailable === true, "…quick-Save stays available while dirty (that is when it is FOR)");
+  assert(dirty.quickAvailable === true, "…and THAT is when quick-Save lights up — dirty + in the library is the one state it is FOR");
+  assert(dirty.quickReason === null, "…with no reason, because it can actually run");
+
+  // ── 4b. THE MERGED BUTTON, STATE 3 OF 3: saved but dirty ──────────────────
+  // The fourth SENTENCE — and the reason there are four sentences for three
+  // glyphs. This state and state 1 wear the SAME hollow ring, because in both
+  // there is work not in storage; only the words distinguish "no stored copy at
+  // all" from "a stored copy that has drifted".
+  const b4 = await saveButton(page);
+  assert(b4.markState === "unsaved", `a dirty saved project wears the same hollow RING as a draft (got ${JSON.stringify(b4.markState)})`);
+  assert(b4.markState === b1.markState, "…identical to the draft's mark — which is precisely why the sentence has to carry the difference");
+  assert(/unsaved changes/i.test(b4.tip ?? ""), `…and the sentence says CHANGES, not "not saved yet" (got ${JSON.stringify(b4.tip)})`);
+  assert(!/not saved yet/i.test(b4.tip ?? ""), "…so it is NOT the draft's sentence: this project does have a stored copy, it has merely drifted from it");
+  assert(b4.ariaDisabled === "false" || b4.ariaDisabled === null, `…and NOW the button is live (aria-disabled ${JSON.stringify(b4.ariaDisabled)})`);
+  assert(JSON.stringify(b4.markBox) === JSON.stringify(b1.markBox), "…still the identical footprint: the third state does not shift the layout either");
 
   await page.evaluate(async () => { await window.__powerrp_app.quickSave(); });
   await sleep(1000);
 
   const s4 = await saveState(page);
-  assert(s4.saveState === "saved", `quick-Save wrote it (indicator: "${s4.saveState}")`);
+  assert(s4.saveState === "saved", `quick-Save wrote it (save state: "${s4.saveState}")`);
   assert(s4.projects.length === 1, `…IN PLACE: still exactly one project, no fork, no "Draft ideas 2" (found: ${JSON.stringify(s4.projects)})`);
   assert(s4.displayName === "Draft ideas", "…under the same name — quick-Save never renames");
+  // THE FULL CYCLE, which is what makes the clean gate observable as a behaviour
+  // rather than a static fact: dirty → available → press it → clean → unavailable.
+  // A user's Save button therefore goes out the moment it has done its job.
+  assert(s4.quickAvailable === false, "…and quick-Save GOES DARK again, because the working copy now matches what was just written");
 
   // The refusal is real, not decorative: bypassing the gate must throw LOUDLY
   // rather than writing under the draft key.
@@ -244,7 +390,13 @@ try {
   assert(s5.projects[0] === "Robot Talk", `…and it is the NEW name; the old folder is gone (found: ${JSON.stringify(s5.projects)})`);
   assert(s5.displayName === "Robot Talk", "the document's name followed the folder");
   assert(s5.isDraft === false, "a renamed SAVED project is still saved");
-  assert(s5.quickAvailable === true, "…and quick-Save still available");
+  // THE DRAFT GATE IS OPEN — that is what this step is about, and it is asserted
+  // directly rather than through quickAvailable, which now ALSO answers to
+  // cleanliness. Whether a rename happens to leave the working copy dirty is an
+  // implementation detail of renameProject, and pinning it here would make this
+  // step fail for a reason that has nothing to do with renaming.
+  assert(quickSaveBlocker(s5.isDraft, "unsaved") === null,
+    "…and nothing about being renamed blocks quick-Save: with an edit outstanding it would be available");
 
   // ── 6. AN IMPORTED DRAFT BEHAVES IDENTICALLY — the unification ────────────
   // Same gate, same reason, same Cmd+S. If these two states ever diverged, one of
