@@ -25,6 +25,45 @@
  * DOMException message; a browser with IndexedDB disabled (private mode in some
  * browsers, a hardened profile) fails at open() with a message that says so,
  * rather than silently behaving like an empty library.
+ *
+ * ── WHY THERE IS NO ORPHANED-RECORD BOOT SWEEP, AND MUST NOT BE A NAIVE ONE ──
+ *
+ * A stale `assets` record was once observed surviving under a project key with no
+ * `docs` entry, which raises the obvious question: should boot delete asset
+ * records whose project is absent from the project index? THE ANSWER IS NO — the
+ * tempting rule is WRONG, and wrong in the direction that destroys user data.
+ *
+ * THE RULE'S FATAL CASE IS THE UNSAVED DRAFT. A draft stages its assets under the
+ * `~draft/current/` prefix in THIS store, but its document is deliberately NOT in
+ * `docs` — that is the entire point of the working-copy model (a draft must not
+ * appear in the library until the user saves). The draft's identity lives in
+ * localStorage (`powerrp.draft`), a store this module cannot see. So "assets whose
+ * project is not in the project index" MATCHES THE OPEN DRAFT EXACTLY, and a sweep
+ * written to that rule would silently delete every asset of the unsaved work the
+ * user has open, on boot, before they touch anything. `~draft/` must be excluded
+ * from any future sweep — see web/draftKeys.js, which owns that keyspace.
+ *
+ * ORPHANS ARE ALSO NOT A NORMAL-USE ACCUMULATION, which is the other half of the
+ * argument for doing nothing. Both writers put the `docs` record FIRST and the
+ * assets after (projectZip.importProjectZipLocal; the retired ?repo= direct import
+ * that produced the observed record), so an interrupted import strands a DOC, not
+ * assets — visible in the library and deletable by the user. `delete` removes the
+ * asset range before the doc. The one ordinary action with a genuine orphan window
+ * is `localProjectStore.rename`, which re-keys assets to `to/` BEFORE saving the
+ * `to` doc: a tab killed inside that window leaves assets under a name the library
+ * does not list. That is a narrow crash window, not a leak that grows with use.
+ *
+ * SO: no sweep. A stale record costs quota; a wrong sweep costs work. If one is
+ * ever written, the safe shape is NOT "absent from the index" but an explicit
+ * allowlist check performed at a well-defined moment, excluding `~draft/`, and it
+ * should report what it removed rather than removing quietly.
+ *
+ * (Unrelated but adjacent, found while checking the above: `deleteByPrefix`'s
+ * upper bound is `prefix + "￿"`, so an asset filename BEGINNING with U+FFFF
+ * sorts above the range and survives its project's deletion. Nothing sanitizes
+ * filenames, so it is reachable in principle — but only by deliberately crafting
+ * such a name, never by normal use, which is why it is recorded here rather than
+ * fixed as part of an unrelated change.)
  */
 
 const DB_NAME = "powerrp";
