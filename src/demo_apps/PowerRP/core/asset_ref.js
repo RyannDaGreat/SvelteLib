@@ -66,6 +66,43 @@ export const ASSET_REF_PREFIX = "/asset/";
 const NON_ASSET_SCHEMES = ["http://", "https://", "data:", "blob:", "builtin:", "//"];
 
 /**
+ * What a resolver returns for a reference the store has never heard of — the
+ * LOUD MISSING SENTINEL. Defined HERE, in the DOM-free half, for the same reason
+ * the grammar is (see the docblock): the media registries under render_gpu/ must
+ * recognize it, and NO render_gpu or core module may import from web/.
+ * web/assetStore.js re-exports it, so its existing importers are unchanged.
+ *
+ * IT IS A `data:` URI ON PURPOSE — not "" and not the ref itself — so a consumer
+ * that ignores it fails VISIBLY and the console names the sentinel instead of a
+ * mystery 404 against the app origin.
+ *
+ * THE TRAP THAT MAKES `isMissingAssetUrl` NECESSARY: this URI is a well-formed,
+ * FETCHABLE resource. `fetch()` resolves it 200 with 21 bytes of `text/plain`.
+ * So a consumer that just passes it along does NOT get a clean "missing asset"
+ * failure — an <img>/createImageBitmap reports an image DECODE error and a
+ * <video> reports "MediaError code 4: Format error", both of which describe a
+ * corrupt file rather than an absent one. The registries therefore test for the
+ * sentinel BEFORE they touch it, and report the real cause. */
+export const MISSING_ASSET_URL = "data:,powerrp-missing-asset";
+
+/**
+ * Pure function. True when `url` is the loud MISSING sentinel — i.e. a resolver
+ * already decided this ref names nothing, so loading it can only fail, and would
+ * fail with a misleading decode/format error (see MISSING_ASSET_URL).
+ *
+ * @param {*} url - a resolved src, as handed to a media registry
+ * @returns {boolean}
+ *
+ * @example isMissingAssetUrl("data:,powerrp-missing-asset")  // true
+ * @example isMissingAssetUrl("blob:http://x/1234")           // false (resolved)
+ * @example isMissingAssetUrl("/asset/Deck/clip.mp4")         // false (unresolved ref)
+ * @example isMissingAssetUrl("")                             // false
+ */
+export function isMissingAssetUrl(url) {
+  return String(url ?? "") === MISSING_ASSET_URL;
+}
+
+/**
  * Pure function. Build the ABSOLUTE in-document reference for one asset.
  * Percent-encodes each segment the way the server does, so a project or file
  * with a space or a slash-unsafe character round-trips through a URL path.

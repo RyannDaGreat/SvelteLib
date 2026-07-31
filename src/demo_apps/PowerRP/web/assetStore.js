@@ -44,12 +44,15 @@
 import * as projectApi from "./projectApi.js";
 import { ASSET_REF_PREFIX, assetKindForName, assetRef, parseAssetRef, plainDoc, quotaLine, quotaPercent, uniqueAssetName, uniqueProjectName } from "./assetRef.js";
 import { ASSET_STORE, DOC_STORE, assetKey, deleteByPrefix, getAllByPrefix, promisify, requestPersistence, storageBudget, withStore } from "./localDb.js";
+import { MISSING_ASSET_URL } from "../core/asset_ref.js"; // the re-export below is not a local binding
 
-/** What resolveUrl returns for a reference the local store has never heard of.
- *  A data: URI (not "" and not the ref itself) so an <img> fails VISIBLY and the
- *  console shows the sentinel rather than a mystery 404 against the app origin —
- *  a missing asset is a reportable state, never a blank tile. */
-export const MISSING_ASSET_URL = "data:,powerrp-missing-asset";
+// What resolveUrl returns for a reference the local store has never heard of.
+// DEFINED IN core/asset_ref.js, not here: the media registries under render_gpu/
+// must recognize the sentinel before they hand it to an <img>/<video>, and no
+// render_gpu or core module may import from web/. Re-exported so this seam stays
+// the public face for web/ consumers (the same "one definition, re-exported"
+// arrangement the ref grammar itself uses).
+export { MISSING_ASSET_URL, isMissingAssetUrl } from "../core/asset_ref.js";
 
 // ── HTTP adapter: today's server behavior, forwarded verbatim ────────────────
 

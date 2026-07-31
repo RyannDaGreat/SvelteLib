@@ -67,6 +67,9 @@
  * the number to do it. */
 export const BYTES_PER_PIXEL = 4;
 
+import { isMissingAssetUrl } from "../../core/asset_ref.js";
+import { registerMissing } from "./missing_media.js";
+
 /** src → {status: "loading"|"ready"|"error", bitmap: ImageBitmap|null, error: Error|null} */
 const registry = new Map();
 
@@ -150,6 +153,18 @@ export function ensureImage(src) {
     throw new Error(`ensureImage: src must be a non-empty string, got ${JSON.stringify(src)}`);
   const existing = registry.get(src);
   if (existing) return existing.promise;
+
+  // THE SAME HOLE THE VIDEO REGISTRY HAD. The sentinel is a fetchable data: URI,
+  // so without this the fetch below SUCCEEDS (200, 21 bytes of text/plain) and
+  // createImageBitmap then fails on those bytes — reporting a decode error for a
+  // file that is simply absent. Refuse before the fetch: the entry latches to
+  // "error" (so this is reported once and getImage answers null, the paint path's
+  // existing "not decoded" contract) and the promise resolves null, which is what
+  // the awaiting callers — the CLI and parity harnesses — already handle.
+  if (isMissingAssetUrl(src)) {
+    registerMissing(registry, src, "ensureImage");
+    return registry.get(src).promise;
+  }
 
   const entry = { status: "loading", bitmap: null, error: null, promise: null };
   entry.promise = (async () => {

@@ -57,6 +57,9 @@
  * The PDF backend does its own frame grab and does NOT depend on this module.
  */
 
+import { isMissingAssetUrl } from "../../core/asset_ref.js";
+import { registerMissing } from "./missing_media.js";
+
 /** src → {status, el, error, listeners:Set, onFrame:fn|null} */
 const registry = new Map();
 
@@ -393,6 +396,15 @@ export function ensureVideo(src, { autoplay = true, loop = true, muted = true } 
   const existing = registry.get(src);
   if (existing) return existing.el;
 
+  // THE RESOLVER ALREADY SAID THIS NAMES NOTHING. Registering it as "error"
+  // WITHOUT an element is the point: the sentinel is a fetchable data: URI, so
+  // assigning it to el.src loads FINE and then fails decode as "MediaError code
+  // 4: Format error" — a sentence about a corrupt clip, for a clip that is
+  // simply absent. Reported once (the entry latches, and ensureVideo returns
+  // early ever after) and getVideo() answers null, which is already the paint
+  // path's "no frame" contract, so the missing-media affordance draws normally.
+  if (isMissingAssetUrl(src)) return registerMissing(registry, src, "ensureVideo");
+
   const el = document.createElement("video");
   // muted BEFORE src/play so the autoplay policy sees a muted element.
   el.muted = !!muted;
@@ -646,6 +658,21 @@ function ensureScrubElement(src) {
     throw new Error(`ensureScrubElement: src must be a non-empty string, got ${JSON.stringify(src)}`);
   const existing = scrubRegistry.get(src);
   if (existing) return existing;
+
+  // The player's refusal (ensureVideo), applied to the SCRUB decoder. Both of
+  // this function's consumers already `await entry.ready` and then bail on
+  // `status === "error"`, so a refusal entry whose `ready` is already resolved
+  // takes exactly that existing path — no new branch at either call site, and
+  // the seek mutex (`chain`) is never armed for a clip that cannot decode.
+  if (isMissingAssetUrl(src)) {
+    registerMissing(scrubRegistry, src, "ensureVideo (scrub)");
+    const entry = scrubRegistry.get(src);
+    entry.ready = Promise.resolve();
+    entry.chain = Promise.resolve();
+    entry.live = null;
+    entry.pumpQueued = false;
+    return entry;
+  }
 
   const el = document.createElement("video");
   el.muted = true;          // no audio on a scrubber (it is not playing)
