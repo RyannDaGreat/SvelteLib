@@ -4551,6 +4551,9 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Centered (user ruling): these are status READOUTS, not rows in the left-aligned
+     asset list — centering separates the two roles visually. Peer rule below matches. */
+  text-align: center;
 }
 
 /* LIBRARY TOTALS LINE ("12 assets · 187MB"). Deliberately the same type size and
@@ -4565,6 +4568,7 @@ textarea {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: center; /* centered with its peer .ae-quota-text — see the note there */
 }
 
 /* Indeterminate ring: shown only when the browser can't report total bytes. */
