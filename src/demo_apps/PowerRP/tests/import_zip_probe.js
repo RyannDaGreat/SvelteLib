@@ -181,7 +181,10 @@ try {
   const drafted = await page.evaluate(() => ({
     key: window.__powerrp_app.projectName(),
     display: window.__powerrp_app.projectDisplayName(),
-    draftMode: window.__powerrp_app.draftMode,
+    // FLATTENED IN-PAGE, never returned raw: draftMode is Svelte $state, i.e. a
+    // proxy, and the house rule (app.svelte.js selectedIds, "the concerns.md
+    // proxy gotcha") is that proxies do not survive puppeteer serialization.
+    draftMode: window.__powerrp_app.draftMode ? { ...window.__powerrp_app.draftMode } : null,
     everSaved: window.__powerrp_app.everSaved,
     slides: window.__powerrp_app.doc.slides.length,
   }));
