@@ -31,7 +31,16 @@ const demoJson = await readFile(resolve(repo, "src/demo_apps/PowerRP/examples/de
 // repair correctly fills/renames them. The fixture-regen interleave concerns.md
 // records repeatedly; a repair report firing PROVES the pipeline runs. ANY
 // NON-repair console.error still fails the probe.
-const IGNORE_BOOT = /PowerRP repair:/;
+// The SECOND alternative is an ENVIRONMENT FACT, not a defect, and it is the
+// fallback WORKING: this probe launches with --use-angle=swiftshader, which is
+// software GL and exposes NO WebGPU adapter, so VideoV7 cannot get one. It says
+// so and drops to its 2D drawImage path — the loud-report-then-degrade behaviour
+// the codebase requires. Counting it as a boot error made a headless run
+// (where WebGPU is never available) permanently red for doing the right thing,
+// and would have masked any REAL error arriving alongside it. Narrow on purpose:
+// it matches VideoV7's adapter-absence line only, so a WebGPU error that is NOT
+// "no adapter" still fails, as does every other console.error.
+const IGNORE_BOOT = /PowerRP repair:|VideoV7: WebGPU init failed — using 2D drawImage fallback/;
 
 const server = await createServer({
   configFile: resolve(webRoot, "vite.config.js"),
@@ -89,6 +98,17 @@ try {
   check("KeyframeControls: Property Panel has ‹ › jumpbtns (2 per row)", inspectorJumpbtns >= 2);
 
   // Variables Panel: add a variable, confirm its KeyframeControls render.
+  // THE PANEL MUST BE OPENED FIRST, and that is not a workaround — core/panels.js
+  // gives globalVariables `defaultVisible: false` by a user ruling (2026-07-30,
+  // same call that hid the Keyframe panel). This probe predates that ruling and
+  // queried `.varspanel` on a boot where the panel is deliberately not mounted,
+  // so it read a shipped product decision as two missing KeyframeControls.
+  // Toggling here keeps the ORIGINAL assertions intact — the question "does the
+  // Variables Panel render its ◆ and ‹ › controls" is still asked and still
+  // answered, now against a panel that is actually on screen.
+  await page.evaluate(() => {
+    if (!window.__powerrp_app.panelVisible.globalVariables) window.__powerrp_app.togglePanel("globalVariables");
+  });
   await page.evaluate(() => window.__powerrp_app.addVariable("probe_var"));
   await new Promise((r) => setTimeout(r, 300));
   const varsKeybtns = await page.$$eval(".varspanel .keybtn", (els) => els.length);
