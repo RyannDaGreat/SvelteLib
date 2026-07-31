@@ -50,10 +50,16 @@
  * The alternative — a bespoke SkSL shader sampling tile textures — was rejected,
  * and the reason is recorded in atmosphere_shader.js's header: the material
  * contract has no child-image mechanism, so it would have meant a framework change
- * for one widget AND re-earning three things `image` already provides (PDF/SVG
- * export, the CLI's loud media-omission count, and image_registry's pendingRefs
- * gate that stops the render-job worker shipping a holed frame). The ATMOSPHERE is
+ * for one widget AND re-earning what `image` already provides — PDF/SVG export, the
+ * CLI's media-omission count, and image_registry's pendingRefs gate that stops the
+ * render-job worker shipping a frame with tiles still in flight. The ATMOSPHERE is
  * a material because it is pure math over the disc with no texture at all.
+ *
+ * ONE OF THOSE INHERITED GUARANTEES TURNED OUT TO HAVE A HOLE, and it is worth
+ * stating precisely rather than leaving the claim above to over-promise. The CLI's
+ * warning counts EMITTED media ops — but a map that fetched no tiles emits none, so
+ * the count is 0 and the warning never fires, while the map still draws no surface.
+ * `tilePlan` therefore reports that condition itself; see the reportOnce there.
  *
  * DOM-free / bare-node-safe at import: it imports only pure core modules and the
  * IR builders. The tile REGISTRY is reached exclusively through the render context
