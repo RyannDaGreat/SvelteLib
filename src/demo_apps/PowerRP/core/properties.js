@@ -322,6 +322,22 @@ export const GRADIENT_DEFAULT_WAVELENGTH = 1;
  * on <= 0 / non-finite. */
 export const GRADIENT_MIN_WAVELENGTH = 0.05;
 
+// THE LINEAR-GRADIENT PHASE (user ruling: "the gradients have a wavelength option,
+// but they don't have a phase option. All gradients should have a phase option.").
+// PHASE is in WAVELENGTH UNITS: it shifts `center` along the axis by
+// phase·wavelength·half (render_gpu/ir.js linearGradientRender folds it in beside
+// wavelength, the SAME seam every backend already calls). phase=0 is the identity
+// — an ABSENT phase is byte-identical to before this feature, the same
+// absent-is-legacy precedent as center/wavelength. Because the mirror-tiled ramp
+// (wavelength ≠ 1) repeats with period = one ramp segment, shifting by exactly one
+// wavelength (phase = 1) maps the pattern onto itself: "phase 1.0 = shifted one
+// full wavelength = identical" (user ruling). For an untiled ramp (wavelength = 1,
+// Clamp tiling) phase still shifts the centered ramp along the axis, same as
+// moving `center`, but there is no periodicity to return the picture to identical
+// — Clamp has no repeat to return to.
+/** Default phase: no shift (today's behaviour). */
+export const GRADIENT_DEFAULT_PHASE = 0;
+
 /** Fewest stops a gradient can describe — one colour is a solid, so
  *  render_gpu/ir.js normalizeStops throws below this. It is the list
  *  declaration's `minLength`, so the purge affordance refuses to go under it. */

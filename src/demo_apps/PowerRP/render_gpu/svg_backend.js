@@ -273,11 +273,12 @@ export function gradientDefSVG(paint, id, opacity = 1) {
     return `<stop offset="${fmt(s.offset)}" stop-color="rgb(${byte(r)},${byte(g)},${byte(b)})" stop-opacity="${fmt(a * opacity)}"/>`;
   }).join("");
   if (paint.type === "linearGradient") {
-    // CENTER + WAVELENGTH fold in via linearGradientRender: the axis endpoints
-    // move to the centered, wavelength-scaled ramp and a mirror-tiled ramp
-    // (wavelength ≠ 1) becomes spreadMethod="reflect" — SVG expresses the tiling
-    // vectorially, no raster fallback needed. A default/legacy paint returns the
-    // untouched from/to with mirror false, so its def string is byte-identical.
+    // CENTER + WAVELENGTH + PHASE fold in via linearGradientRender: the axis
+    // endpoints move to the centered (phase-shifted), wavelength-scaled ramp and a
+    // mirror-tiled ramp (wavelength ≠ 1) becomes spreadMethod="reflect" — SVG
+    // expresses the tiling vectorially, no raster fallback needed. A default/legacy
+    // paint returns the untouched from/to with mirror false, so its def string is
+    // byte-identical.
     const { from, to, mirror } = linearGradientRender(paint);
     const spread = mirror ? ` spreadMethod="reflect"` : "";
     return `<linearGradient id="${id}" x1="${fmt(from.x)}" y1="${fmt(from.y)}" x2="${fmt(to.x)}" y2="${fmt(to.y)}"${spread}>${stops}</linearGradient>`;

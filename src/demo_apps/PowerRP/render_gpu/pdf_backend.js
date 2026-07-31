@@ -2147,10 +2147,11 @@ class PdfAssembly {
     if (this._shadings.has(key)) return this._shadings.get(key);
     const ctx = this.doc.context;
     const fnRef = this._gradientColorFn(paint.stops);
-    // A linear shading folds in the CENTER (and, for wavelength === 1, only the
-    // center — a wavelength ≠ 1 mirror-tiled fill never reaches here, it routes to
-    // the raster fallback via opHasMirrorLinearFill). The centered endpoints come
-    // from linearGradientRender; Extend clamps both ends (= Skia Clamp).
+    // A linear shading folds in the CENTER + PHASE (and, for wavelength === 1, only
+    // those — a wavelength ≠ 1 mirror-tiled fill never reaches here, it routes to
+    // the raster fallback via opHasMirrorLinearFill). The centered, phase-shifted
+    // endpoints come from linearGradientRender; Extend clamps both ends (= Skia
+    // Clamp).
     const axis = paint.type === "linearGradient" ? linearGradientRender(paint) : null;
     const dict = paint.type === "radialGradient"
       ? { ShadingType: 3, ColorSpace: "DeviceRGB", Coords: [paint.center.x, paint.center.y, 0, paint.center.x, paint.center.y, paint.r], Function: fnRef, Extend: [true, true] }

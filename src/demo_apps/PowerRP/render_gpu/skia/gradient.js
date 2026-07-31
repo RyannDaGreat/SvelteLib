@@ -43,10 +43,11 @@ export function skShaderForPaint(CanvasKit, paint, bounds, opacity = 1) {
     CanvasKit.Matrix.scaled(bounds.w || 1e-6, bounds.h || 1e-6),
   );
   if (paint.type === "linearGradient") {
-    // CENTER + WAVELENGTH fold in here (ir.js linearGradientRender): the ramp is
-    // centered at `center` and spans wavelength·axis, tiling with a MIRROR repeat
-    // when wavelength ≠ 1. A default/legacy paint returns the untouched axis with
-    // `mirror` false, so its Clamp shader is byte-identical to before the feature.
+    // CENTER + WAVELENGTH + PHASE fold in here (ir.js linearGradientRender): the
+    // ramp is centered at `center` (shifted by `phase` of the mirror period) and
+    // spans wavelength·axis, tiling with a MIRROR repeat when wavelength ≠ 1. A
+    // default/legacy paint returns the untouched axis with `mirror` false, so its
+    // Clamp shader is byte-identical to before the feature.
     const { from, to, mirror } = linearGradientRender(paint);
     return CanvasKit.Shader.MakeLinearGradient(
       [from.x, from.y], [to.x, to.y],

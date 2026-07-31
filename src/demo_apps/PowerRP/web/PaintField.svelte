@@ -88,7 +88,7 @@
    * prop below). */
   const DEFAULT_FILL_MATERIAL = fillCapableMaterialIds()[0] ?? "comic";
   const DEFAULT_STROKE_MATERIAL = strokeMaterialIds()[0] ?? "alongGradient";
-  import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_WAVELENGTH } from "../core/properties.js";
+  import { linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE } from "../core/properties.js";
   const DEFAULT_SOLID = "#7aa2f7";
   const NEW_STOP_COLOR = "#ffffff";
 
@@ -150,19 +150,21 @@
    * from/to is stored here.
    *
    * `wavelength` (GRADIENT_DEFAULT_WAVELENGTH = 1: one ramp spans the whole axis)
-   * is stored explicitly, like `angle`, so the Inspector's Wavelength scrubber
-   * shows it; w=1 renders byte-identically to a gradient that omits it (render_gpu
-   * /ir.js linearGradientRender returns the untouched axis at w=1). `center` is
+   * and `phase` (GRADIENT_DEFAULT_PHASE = 0: no shift) are stored explicitly, like
+   * `angle`, so the Inspector's Wavelength and Phase scrubbers show them; w=1/p=0
+   * render byte-identically to a gradient that omits them (render_gpu/ir.js
+   * linearGradientRender returns the untouched axis at w=1, p=0). `center` is
    * NOT seeded — its absence is the box-center default, surfaced by the on-canvas
    * center bead once dragged.
    *
    * @example freshLinear("#f00").stops.length // 2
    * @example freshLinear("#f00").angle // 0
    * @example freshLinear("#f00").wavelength // 1
+   * @example freshLinear("#f00").phase // 0
    * @example freshLinear("#f00").from // undefined (endpoints derived from angle at render time)
    */
   export function freshLinear(seed) {
-    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], angle: GRADIENT_DEFAULT_ANGLE, wavelength: GRADIENT_DEFAULT_WAVELENGTH };
+    return { stops: [{ offset: 0, color: seed }, { offset: 1, color: NEW_STOP_COLOR }], angle: GRADIENT_DEFAULT_ANGLE, wavelength: GRADIENT_DEFAULT_WAVELENGTH, phase: GRADIENT_DEFAULT_PHASE };
   }
 
   /**
@@ -918,6 +920,19 @@
         <span class="paint-sub-label">Wavelength</span>
         <span class="paint-sub-control">
           <NumericField {app} path={[...path, "linear", "wavelength"]} paths={writePaths.map((p) => [...p, "linear", "wavelength"])} label={`${label} wavelength`} min={GRADIENT_MIN_WAVELENGTH} scrub={FRACTION_SCRUB} />
+        </span>
+      </div>
+      <!-- PHASE — shifts where the ramp's cycle starts, in WAVELENGTH UNITS (user
+           ruling: "all gradients should have a phase option"). 0 = no shift
+           (today's behaviour, byte-identical); 1 = shifted a whole mirror period,
+           which renders IDENTICALLY to 0 under wavelength-tiling (render_gpu/ir.js
+           linearGradientRender). No min/max: unlike wavelength (which must stay
+           positive so the axis can't collapse), a phase shift is well-defined for
+           any finite number — it wraps through the mirror period either way. -->
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Phase</span>
+        <span class="paint-sub-control">
+          <NumericField {app} path={[...path, "linear", "phase"]} paths={writePaths.map((p) => [...p, "linear", "phase"])} label={`${label} phase`} scrub={FRACTION_SCRUB} />
         </span>
       </div>
     {:else}

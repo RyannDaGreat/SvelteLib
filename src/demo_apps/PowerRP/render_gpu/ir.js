@@ -50,7 +50,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS } from "../core/properties.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
@@ -432,21 +432,24 @@ function linearAxis(g) {
 }
 
 /**
- * Pure function. A linear paint's CENTER (objectBoundingBox) and WAVELENGTH, the
- * two gradient-handle fields (core/paint_handles.js). Both default to the "today"
- * values (box-center / whole-axis), so an ABSENT pair is byte-identical to before
- * the feature (linearGradientRender returns the untouched axis in that case).
- * Validates loudly: a present center must be a finite point and a present
- * wavelength a positive finite number (a zero/negative axis is degenerate).
+ * Pure function. A linear paint's CENTER (objectBoundingBox), WAVELENGTH and PHASE
+ * — the gradient-handle fields (core/paint_handles.js) plus the phase option beside
+ * wavelength (user ruling: "all gradients should have a phase option"). All three
+ * default to the "today" values (box-center / whole-axis / no shift), so an ABSENT
+ * triple is byte-identical to before either feature (linearGradientRender returns
+ * the untouched axis in that case). Validates loudly: a present center must be a
+ * finite point, a present wavelength a positive finite number (a zero/negative axis
+ * is degenerate), and a present phase any finite number (a phase shift has no sign
+ * or magnitude restriction — it wraps through the mirror period).
  *
  * Args:
- *   g (object): the linear sub-state — {center?, wavelength?, ...}
+ *   g (object): the linear sub-state — {center?, wavelength?, phase?, ...}
  *
  * Returns:
- *   {center: {x, y}, wavelength: number}
+ *   {center: {x, y}, wavelength: number, phase: number}
  *
- * @example linearCenterWavelength({})  // {center: {x: 0.5, y: 0.5}, wavelength: 1}  (absent → defaults)
- * @example linearCenterWavelength({center: {x: 0.2, y: 0.8}, wavelength: 0.25})  // {center: {x: 0.2, y: 0.8}, wavelength: 0.25}
+ * @example linearCenterWavelength({})  // {center: {x: 0.5, y: 0.5}, wavelength: 1, phase: 0}  (absent → defaults)
+ * @example linearCenterWavelength({center: {x: 0.2, y: 0.8}, wavelength: 0.25, phase: 0.5})  // {center: {x: 0.2, y: 0.8}, wavelength: 0.25, phase: 0.5}
  */
 function linearCenterWavelength(g) {
   const center = g.center != null ? requirePoint("linearGradient.center", g.center) : { ...GRADIENT_DEFAULT_CENTER };
@@ -456,26 +459,43 @@ function linearCenterWavelength(g) {
       throw new Error(`parsePaint: linearGradient "wavelength" must be a positive finite number, got ${JSON.stringify(g.wavelength)}`);
     wavelength = g.wavelength;
   }
-  return { center, wavelength };
+  let phase = GRADIENT_DEFAULT_PHASE;
+  if (g.phase != null) {
+    if (typeof g.phase !== "number" || !Number.isFinite(g.phase))
+      throw new Error(`parsePaint: linearGradient "phase" must be a finite number, got ${JSON.stringify(g.phase)}`);
+    phase = g.phase;
+  }
+  return { center, wavelength, phase };
 }
 
 /**
  * Pure function. THE render endpoints + tile mode of a parsed linear paint, once
- * its CENTER and WAVELENGTH are folded in. Every backend goes through this so the
- * Skia shader, the SVG <linearGradient> and the PDF axial shading agree.
+ * its CENTER, WAVELENGTH and PHASE are folded in. Every backend goes through this
+ * so the Skia shader, the SVG <linearGradient> and the PDF axial shading agree.
  *
  * The parsed `from`/`to` are the whole-box axis (the chord through the box).
  * `half = (to − from)/2` is the axis half-vector; one full ramp of wavelength `w`
- * centered at `c` spans `w·half` each side:
- *   from' = c − w·half,   to' = c + w·half
+ * centered at `c` spans `w·half` each side, so its SEGMENT LENGTH is `2·w·half`.
+ * A Skia/SVG mirror-tiled ramp reflects there-and-back, so its repeat PERIOD along
+ * the axis is TWICE that segment — `4·w·half` — one "there" ramp plus one
+ * reflected "back" ramp. PHASE shifts the center along the axis by `phase` of that
+ * full period before the ramp is built:
+ *   c' = c + phase·(4·w·half)
+ *   from' = c' − w·half,   to' = c' + w·half
  * `mirror` is true iff w ≠ 1 (the ramp then tiles with a mirror repeat outside
- * [from', to']). When c is the box center AND w = 1 the untouched `from`/`to` are
- * returned by IDENTITY (mirror false), so a default/legacy paint renders
- * BYTE-IDENTICALLY to before the center/wavelength feature — the endpoints and
- * clamp tile mode are the same objects/values it always used.
+ * [from', to']). Shifting by one whole period (phase = 1) maps the pattern onto
+ * itself — "phase 1.0 = shifted one full wavelength = identical" (user ruling),
+ * true whenever mirror tiling is active (verified against Skia's mirror-tile
+ * semantics: a half-period shift, phase = 0.5, instead produces the MAXIMALLY
+ * different pattern — the reflected mirror image — which is why the period, not
+ * the single-segment length, is the phase unit). When c is the box center AND
+ * w = 1 AND phase = 0 the untouched `from`/`to` are returned by IDENTITY (mirror
+ * false), so a default/legacy paint renders BYTE-IDENTICALLY to before the
+ * center/wavelength/phase features — the endpoints and clamp tile mode are the
+ * same objects/values it always used.
  *
  * Args:
- *   paint (object): a parsed linearGradient paint (carries from, to, center?, wavelength?)
+ *   paint (object): a parsed linearGradient paint (carries from, to, center?, wavelength?, phase?)
  *
  * Returns:
  *   {from: {x, y}, to: {x, y}, mirror: boolean}
@@ -483,16 +503,23 @@ function linearCenterWavelength(g) {
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}})  // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, mirror: false}  (default: untouched axis)
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, mirror: true}  (half-length ramp, mirror-tiled)
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.25, y: 0.5}, wavelength: 1}).from  // {x: -0.25, y: 0.5}  (center shifted, w=1 → clamp)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5, phase: 1})  // {from: {x: 1.25, y: 0.5}, to: {x: 1.75, y: 0.5}, mirror: true}  (phase 1 = axis shifted by one whole mirror period — a DIFFERENT axis position that renders the IDENTICAL picture, since the mirror pattern repeats every period)
  */
 export function linearGradientRender(paint) {
   const w = paint.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH;
+  const p = paint.phase ?? GRADIENT_DEFAULT_PHASE;
   const c = paint.center ?? GRADIENT_DEFAULT_CENTER;
-  if (w === 1 && c.x === GRADIENT_DEFAULT_CENTER.x && c.y === GRADIENT_DEFAULT_CENTER.y)
+  if (w === 1 && p === 0 && c.x === GRADIENT_DEFAULT_CENTER.x && c.y === GRADIENT_DEFAULT_CENTER.y)
     return { from: paint.from, to: paint.to, mirror: false };
   const hx = (paint.to.x - paint.from.x) / 2, hy = (paint.to.y - paint.from.y) / 2;
+  // The mirror period is 4·w·half (there-and-back over one wavelength each way);
+  // phase is a fraction OF THAT PERIOD, so phase=1 shifts the center by a whole
+  // period and reproduces the identical picture under mirror tiling.
+  const shiftX = 4 * p * w * hx, shiftY = 4 * p * w * hy;
+  const cx = c.x + shiftX, cy = c.y + shiftY;
   return {
-    from: { x: c.x - w * hx, y: c.y - w * hy },
-    to: { x: c.x + w * hx, y: c.y + w * hy },
+    from: { x: cx - w * hx, y: cy - w * hy },
+    to: { x: cx + w * hx, y: cy + w * hy },
     mirror: w !== 1,
   };
 }
