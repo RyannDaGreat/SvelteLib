@@ -141,7 +141,7 @@ test("every overlay's boolean property defaults false — hybrid is opt-in, not 
 });
 
 test("attribution is the DEDUPLICATED UNION of the base plus every active overlay", () => {
-  const s = stateAt({ style: "osm", overlayLabels: true, overlayCoastlines: true });
+  const s = stateAt({ style: "osm", overlayLabels: true, overlayCoastlines: true, showAttribution: true });
   const ops = globeMapPlugin.emit(s, null, null, null);
   const text = ops.find((o) => o.op === "text").text;
   assert.ok(text.includes("OpenStreetMap contributors") && !text.includes("Labels: © OpenStreetMap contributors, Labels"), "base credit present, not duplicated verbatim");

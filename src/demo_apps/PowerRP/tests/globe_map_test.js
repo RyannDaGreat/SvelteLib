@@ -278,7 +278,7 @@ test("emit produces a display list with no render context (the export/CLI path)"
   assert.ok(ops.length > 0, "a camera-free consumer still gets a picture");
   assert.equal(ops[0].op, "rect", "space is drawn first");
   assert.ok(ops.some((o) => o.op === "materialFill" && o.material === "atmosphere"), "the globe carries its air");
-  assert.ok(ops.some((o) => o.op === "text"), "and the licence-required attribution");
+  assert.ok(!ops.some((o) => o.op === "text"), "and NO attribution text by default (off everywhere; the toggle draws it)");
 });
 
 test("DETERMINISM: two emits of one state are structurally identical", () => {
@@ -400,9 +400,9 @@ test("every provider carries a non-empty attribution — it is a LICENCE TERM", 
   }
 });
 
-test("the attribution of the ACTIVE provider is what gets drawn", () => {
+test("the attribution of the ACTIVE provider is what gets drawn (with the toggle on)", () => {
   for (const id of TILE_PROVIDER_IDS) {
-    const ops = globeMapPlugin.emit(stateAt({ style: id }), null, null, null);
+    const ops = globeMapPlugin.emit(stateAt({ style: id, showAttribution: true }), null, null, null);
     const label = ops.find((o) => o.op === "text");
     assert.equal(label.text, TILE_PROVIDERS[id].attribution, `"${id}" draws its own credit`);
   }
