@@ -1,22 +1,40 @@
 /**
- * ══ OFF THE ROSTER: THIS IS THE PARITY BASELINE, NOT THE SHIPPED WIDGET ══════
+ * ══ DEAD CODE. NOT THE SHIPPED WIDGET, AND NO LONGER THE PARITY BASELINE ═════
  *
- * The `progress_bar` widget now SHIPS as a built-in plugin ASSET —
+ * The `progress_bar` widget SHIPS as a built-in plugin ASSET —
  * `assets/builtin/library/progress_bar.plugin.js`, registered through the sandbox by
- * core/builtin_plugin_assets.js. This module is no longer on plugins/index.js's
- * roster, so the object it exports is NOT what the editor, the CLI or a render job
- * uses. Read core/builtin_plugin_assets.js for why the migration happened.
+ * core/builtin_plugin_assets.js. This module is not on plugins/index.js's roster, so
+ * the object it exports is NOT what the editor, the CLI or a render job uses.
  *
- * IT IS KEPT ON PURPOSE, for exactly two jobs:
- *   1. THE PARITY BASELINE. tests/builtin_plugin_assets_test.js drives THIS emit
- *      and the registered ASSET's emit over the same fixed states and asserts the
- *      display lists are deep-equal. Deleting this file would leave the migration
- *      unpinned: the asset could drift and nothing would notice, because "it draws
- *      something" is not the same claim as "it draws what it used to".
- *   2. Its pure helper exports, which other suites already import by name.
+ * THIS HEADER USED TO CLAIM TWO JOBS KEPT IT ALIVE. BOTH ARE NOW FALSE, and the
+ * correction matters more than the file does — a stale justification is what stops
+ * dead code from ever being removed:
  *
- * SO: A CHANGE HERE IS NOT A CHANGE TO THE WIDGET. Edit the asset; then edit this
- * file to match, or the parity test fails — which is the point.
+ *   1. "THE PARITY BASELINE" — NO. It named tests/builtin_plugin_assets_test.js,
+ *      A FILE THAT DOES NOT EXIST. The real gate is the PARITY roster in
+ *      tests/builtin_asset_library_test.js, and `progress_bar` was DELIBERATELY
+ *      REMOVED from it (that file states the removal and why): the fill
+ *      was redrawn on a user report ("looks a little bit weird" at low progress —
+ *      it painted as a detached pill outside the track's rounded cap), so the asset
+ *      is now the INTERSECTION of the progress rect with the track's rim, emitting
+ *      no fill op at all at fraction 0. THIS MODULE STILL DRAWS THE OLD SECOND BOX,
+ *      i.e. it is the side carrying the defect. Pinning the asset to it would pin
+ *      the bug — which is exactly why that roster dropped it.
+ *   2. "ITS PURE HELPER EXPORTS, WHICH OTHER SUITES ALREADY IMPORT" — NO. Exactly
+ *      one file imports them (tests/progress_bar_test.js), and the asset does not
+ *      and cannot: a sandboxed plugin asset has no import, so it defines its OWN
+ *      clamp01/fillRect. The helpers here are shared with nothing.
+ *
+ * WHAT ACTUALLY KEEPS THE FILE ON DISK, for now: tests/progress_bar_test.js imports
+ * it, and that suite's other six assertions are LIVE and valuable — they cover
+ * video_scrub's referenceable exports and the `= @clip.progress` binding end to end.
+ * Deleting this module means rehoming those first, and its own two helper tests plus
+ * the "emit is two boxes" test (which asserts the SUPERSEDED geometry) go with it.
+ * That is a small piece of real work, not a delete, so it is left as a named task
+ * rather than done halfway here.
+ *
+ * DO NOT "fix" this file to match the asset. It is not a baseline any more; making
+ * the two agree would restore the illusion that something is checking them.
  * ═════════════════════════════════════════════════════════════════════════════
  */
 

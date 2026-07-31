@@ -18,13 +18,20 @@
  *       the toggle defaults OFF (the user's ruling, and the one detail of it a
  *       refactor could quietly flip).
  *
- * WHY PARITY IS TESTED AGAINST THE STILL-PRESENT MODULES: plugins/progress_bar.js,
- * donut.js, clock_digital.js and clock_analog.js are OFF the roster (plugins/index.js
- * no longer imports them) but still on disk. That is deliberate for exactly this
- * test's sake — a parity test needs both sides. They are dead weight the moment this
- * suite stops needing them, and this comment is the record of why they may be deleted
- * (delete this test's parity half at the same time, or it silently degrades into
- * comparing the asset against itself).
+ * WHY PARITY IS TESTED AGAINST THE STILL-PRESENT MODULES: donut.js and
+ * clock_digital.js are OFF the roster (plugins/index.js no longer imports them) but
+ * still on disk. That is deliberate for exactly this test's sake — a parity test
+ * needs both sides. They are dead weight the moment this suite stops needing them,
+ * and this comment is the record of why they may be deleted (delete this test's
+ * parity half at the same time, or it silently degrades into comparing the asset
+ * against itself).
+ *
+ * progress_bar.js and clock_analog.js USED TO BE NAMED HERE TOO, and no longer are:
+ * both LEFT the PARITY roster below when their widgets were deliberately changed
+ * after migration, so neither is a baseline for anything any more. See the roster's
+ * own comment for each removal's justification and its replacement coverage. Those
+ * two modules are therefore dead weight ALREADY, not "the moment this suite stops
+ * needing them" — this suite stopped needing them when they left the list.
  */
 
 import assert from "node:assert/strict";
