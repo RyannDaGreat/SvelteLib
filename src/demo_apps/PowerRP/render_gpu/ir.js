@@ -2127,20 +2127,40 @@ export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom =
  * Unbalanced pops throw; unclosed pushes throw (a widget that forgets a pop
  * would corrupt everything after it — fail loudly instead).
  *
+ * THE OWNER TAG (`owner`, the per-node paint boundary's half of the contract).
+ * render_gpu/ports.js stamps each node's OUTER pushTransform with `owner`
+ * ({itemId, type}); this walk carries the innermost such tag down onto every
+ * command emitted under it. That is what survives flattening: `world` is
+ * RECOMPUTED at each level (T.compose / signedCompose build fresh objects), so a
+ * tag hung on the transform would be lost the moment a node nested one push
+ * inside another, while a parallel stack of owners cannot be. Ops emitted
+ * outside any owned push (a hand-assembled background rect) carry `owner: null`,
+ * which is honest — nothing to blame but the caller.
+ *
  * Args:
  *   commands (object[]): raw IR command list
  *
  * Returns:
- *   object[]: commands (originals, not copies) wrapped as {cmd, world}
+ *   object[]: commands (originals, not copies) wrapped as {cmd, world, owner}
  *
  * @example flattenIR([rect({x: 0, y: 0, w: 1, h: 1, fill: "#fff"})])[0].world // {x: 0, y: 0, rotation: 0, scale: 1}
  * @example flattenIR([pushTransform({x: 10, scale: 2}), rect({x: 0, y: 0, w: 1, h: 1, fill: "#fff"}), popTransform()])[0].world // {x: 10, y: 0, rotation: 0, scale: 2}
+ * @example flattenIR([rect({x: 0, y: 0, w: 1, h: 1, fill: "#fff"})])[0].owner // null
+ * @example // a node's push carries its identity down to every op it emitted:
+ * flattenIR([{...pushTransform({}), owner: {itemId: "a1", type: "text"}}, rect({x: 0, y: 0, w: 1, h: 1, fill: "#fff"}), popTransform()])[0].owner
+ * { itemId: 'a1', type: 'text' }
  */
 export function flattenIR(commands) {
   const stack = [T.identity()];
+  // The owner stack shadows the transform stack exactly: same depth, pushed and
+  // popped by the same two ops. An inner push with no `owner` of its own INHERITS
+  // the enclosing one (a node's mirror push, a plugin's internal frame) — the op
+  // still belongs to that node.
+  const owners = [null];
   const out = [];
   for (const cmd of commands) {
     if (cmd.op === "pushTransform") {
+      owners.push(cmd.owner ?? owners[owners.length - 1]);
       // A scene with NO flip in it takes core/transform.js's plain compose, so its
       // flattened frames keep the exact {x, y, rotation, scale} shape (and the exact
       // float results) they always had; signedCompose is entered only once a
@@ -2150,8 +2170,9 @@ export function flattenIR(commands) {
     } else if (cmd.op === "popTransform") {
       if (stack.length === 1) throw new Error("flattenIR: popTransform without matching push");
       stack.pop();
+      owners.pop();
     } else {
-      out.push({ cmd, world: stack[stack.length - 1] });
+      out.push({ cmd, world: stack[stack.length - 1], owner: owners[owners.length - 1] });
     }
   }
   if (stack.length !== 1) throw new Error(`flattenIR: ${stack.length - 1} unclosed pushTransform(s)`);

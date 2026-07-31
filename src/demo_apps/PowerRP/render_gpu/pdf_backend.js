@@ -48,7 +48,13 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, pushTransform, popTransform, effectSubtree, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+// THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
+// form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
+// which is a console.warn for expressible-degradation notices (a gradient stroke
+// that becomes solid); an item that cannot be exported at all is not that.
+import { reportOnce as reportExportFailureOnce } from "../core/report.js";
+import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, configurationError, isConfigurationError } from "../core/paint_containment.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -1000,7 +1006,41 @@ async function emitRegion(commands, region, out, ctx) {
     }, out);
   }
 
-  for (let i = lastBlurFlat + 1; i < flat.length; i++) {
+  // THE PER-NODE EXPORT BOUNDARY (the skia paintFlat boundary's exporter twin —
+  // see render_gpu/skia/paint_skia.js paintNodeRun for the doctrine, and
+  // core/paint_containment.js for why it exists at all). An EXPORT of a poisoned
+  // deck must produce the deck with a red box on the broken item, never a thrown
+  // export: a user whose document contains one bad widget still needs their other
+  // forty slides out, and a failed export tells them nothing about which item to
+  // fix. Wrapped per OWNER RUN, exactly as the painter is, so a widget's ops
+  // succeed or fail together and the report can name the item.
+  let runStart = lastBlurFlat + 1;
+  while (runStart < flat.length) {
+    const runEnd = ownerRunEnd(flat, runStart);
+    try {
+      await emitOpRange(flat, runStart, runEnd, commands, rawIndexOf, region, out, ctx);
+    } catch (e) {
+      // A BACKEND-CONFIGURATION failure is the caller's, not the item's: it is
+      // broken for the whole export, so it escapes untouched (the tests pin both
+      // directions). Only DOCUMENT poison is contained.
+      if (isConfigurationError(e)) throw e;
+      const owner = flat[runStart].owner;
+      const msg = throwMessage(e);
+      if (reportExportFailureOnce(
+        `pdf_backend:node:${owner?.itemId ?? "unowned"}:${msg}`,
+        `PowerRP PDF export: item ${describeOwner(owner)} failed to render — ${msg}. It is exported as an error box; every other item exports normally.`,
+      )) console.error(e);
+      emitContainmentBox(flat, runStart, runEnd, out, ctx);
+    }
+    runStart = runEnd;
+  }
+}
+
+/** Command (async; appends operators for flat[start..end) — THE ORIGINAL per-op
+ *  walk, unchanged, now called once per owner run. No try/catch here: the
+ *  boundary is the caller's. */
+async function emitOpRange(flat, start, end, commands, rawIndexOf, region, out, ctx) {
+  for (let i = start; i < end; i++) {
     const { cmd, world } = flat[i];
     if (cmd.op === "magnifyBackdrop") {
       await emitLens(cmd, world, commands, rawIndexOf[i], region, out, ctx);
@@ -2022,6 +2062,34 @@ function reportOncePdf(key, msg) {
   console.warn(msg);
 }
 
+/**
+ * Command (appends the red error-box operators for a failed owner run). The PDF
+ * half of the containment affordance: the SAME two ops the painter and the SVG
+ * exporter draw (core/paint_containment.errorAffordanceOps), pushed through this
+ * backend's ordinary vector path — so a contained item looks identical in the
+ * editor, the PDF and the SVG, and needs no special reader support.
+ *
+ * Drawn at the run's own world when that world is usable, at IDENTITY when it is
+ * not — the ba25b39 lesson: the transform may be the poison, and composing
+ * through it inside the recovery would rethrow.
+ *
+ * Its own try is deliberate and is NOT a silent swallow: the failure was already
+ * reported by the caller, and an affordance that could itself abort the export
+ * would defeat the boundary it belongs to.
+ */
+function emitContainmentBox(flat, start, end, out, ctx) {
+  try {
+    const owner = flat[start].owner;
+    const box = containmentBoxSize(flat, start, end);
+    const world = isPaintableFrame(flat[start].world) ? flat[start].world : { x: 0, y: 0, rotation: 0, scale: 1 };
+    const a = errorAffordanceArgs(box.w, box.h, errorMessage(describeOwner(owner), "failed to export"));
+    for (const op of [rect(a.rect), text(a.text)]) emitVector(op, world, out, ctx);
+  } catch {
+    // Already reported; a backend that cannot append a rect has a problem no
+    // affordance can express, and the remaining items still deserve their turn.
+  }
+}
+
 /** Command (may register an ExtGState via ctx). Color + alpha + width setup ops. */
 function paintSetup(fill, stroke, strokeWidth, opacity, ctx) {
   const ops = [];
@@ -2368,8 +2436,11 @@ class PdfAssembly {
    * convention; see regionOverBackground for the measurement that required it.
    */
   async emitRasterRegion(rawCmds, { placeRect, srcRect = placeRect, srcView, background }, out, gs = "") {
+    // BRANDED so the per-node export boundary (emitRegion) RETHROWS it instead of
+    // containing it: a missing rasterizer is the CALLER's wiring, broken for the
+    // whole export, not one item's poison. See core/paint_containment.js.
     if (!this.rasterize)
-      throw new Error("pdf_backend: scene needs a raster region (blur / deep lens / effects) but no rasterize callback was provided");
+      throw configurationError(new Error("pdf_backend: scene needs a raster region (blur / deep lens / effects) but no rasterize callback was provided"));
     const density = srcView.zoom * this.rasterScale; // px per world unit at the placed location
     const wPx = Math.max(1, Math.round(placeRect.w * density));
     const hPx = Math.max(1, Math.round(placeRect.h * density));

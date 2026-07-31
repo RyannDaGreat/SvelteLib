@@ -58,7 +58,11 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, pushTransform, popTransform, signedApply, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+// THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
+// paintNodeRun for the doctrine and core/paint_containment.js for why it exists.
+import { reportOnce as reportExportFailureOnce } from "../core/report.js";
+import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, configurationError, isConfigurationError } from "../core/paint_containment.js";
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
@@ -328,6 +332,29 @@ export const SVG_VECTOR_OPS = new Set(["rect", "ellipse", "polyline", "polygon",
  * fallback BEFORE reaching here, so this `default` is a defensive guard (it still
  * fires for a direct call, e.g. the render_gpu_test unknown-op check).
  */
+/**
+ * Command (pushes the red error-box fragments for a failed owner run onto
+ * `out`). The SVG half of the containment affordance — the SAME two ops the
+ * painter and the PDF exporter draw (core/paint_containment.errorAffordanceOps),
+ * pushed through this backend's own vector path, so a contained item looks the
+ * same in the editor, the PDF and the SVG.
+ *
+ * Its own try mirrors the other two backends' and is NOT a silent swallow: the
+ * caller has already reported the real failure, and an affordance that could
+ * abort the export would defeat the boundary it belongs to.
+ */
+function emitContainmentBoxSVG(flat, start, end, out, ctx) {
+  try {
+    const owner = flat[start].owner;
+    const box = containmentBoxSize(flat, start, end);
+    const world = isPaintableFrame(flat[start].world) ? flat[start].world : { x: 0, y: 0, rotation: 0, scale: 1 };
+    const a = errorAffordanceArgs(box.w, box.h, errorMessage(describeOwner(owner), "failed to export"));
+    for (const op of [rect(a.rect), text(a.text)]) out.push(vectorCommandToSVG(op, world, ctx));
+  } catch {
+    // Already reported; the remaining items still deserve their turn.
+  }
+}
+
 export function vectorCommandToSVG(cmd, world, ctx) {
   const g = (inner) => groupWrap(similarityTransform(world), inner);
   switch (cmd.op) {
@@ -574,7 +601,37 @@ export async function emitRegionSVG(commands, region, out, ctx) {
     }));
   }
 
-  for (let i = lastBlurFlat + 1; i < flat.length; i++) {
+  // THE PER-NODE EXPORT BOUNDARY — identical in intent and shape to
+  // pdf_backend.emitRegion's (and to the painter's, which is the original; see
+  // render_gpu/skia/paint_skia.js paintNodeRun and core/paint_containment.js).
+  // An SVG export of a poisoned deck yields the deck with a red box on the one
+  // broken item, never a thrown export.
+  let runStart = lastBlurFlat + 1;
+  while (runStart < flat.length) {
+    const runEnd = ownerRunEnd(flat, runStart);
+    try {
+      await emitOpRangeSVG(flat, runStart, runEnd, commands, rawIndexOf, region, out, ctx);
+    } catch (e) {
+      // The caller's wiring escapes; only document poison is contained (see the
+      // PDF twin and core/paint_containment.configurationError).
+      if (isConfigurationError(e)) throw e;
+      const owner = flat[runStart].owner;
+      const msg = throwMessage(e);
+      if (reportExportFailureOnce(
+        `svg_backend:node:${owner?.itemId ?? "unowned"}:${msg}`,
+        `PowerRP SVG export: item ${describeOwner(owner)} failed to render — ${msg}. It is exported as an error box; every other item exports normally.`,
+      )) console.error(e);
+      emitContainmentBoxSVG(flat, runStart, runEnd, out, ctx);
+    }
+    runStart = runEnd;
+  }
+}
+
+/** Command (async; pushes SVG fragments for flat[start..end) — THE ORIGINAL
+ *  per-op walk, unchanged, now called once per owner run. No try/catch here:
+ *  the boundary is the caller's. */
+async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, out, ctx) {
+  for (let i = start; i < end; i++) {
     const { cmd, world } = flat[i];
     if (cmd.op === "magnifyBackdrop") {
       out.push(await emitLensSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
@@ -1094,8 +1151,10 @@ class SvgAssembly {
    * so the placeRect maps 1:1 (top-left origin, no flip).
    */
   async rasterRegion(rawCmds, { placeRect, srcRect = placeRect, srcView, background }) {
+    // BRANDED so the per-node export boundary (emitRegionSVG) RETHROWS it instead
+    // of containing it — the PDF twin's reasoning, verbatim.
     if (!this.rasterize)
-      throw new Error("svg_backend: scene needs a raster region (blur / deep lens) but no rasterize callback was provided");
+      throw configurationError(new Error("svg_backend: scene needs a raster region (blur / deep lens) but no rasterize callback was provided"));
     const density = srcView.zoom * this.rasterScale; // px per world unit at the placed location
     const wPx = Math.max(1, Math.round(placeRect.w * density));
     const hPx = Math.max(1, Math.round(placeRect.h * density));

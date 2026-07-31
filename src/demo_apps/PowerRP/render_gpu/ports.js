@@ -22,6 +22,7 @@ import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, app
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { reportOnce } from "../core/report.js";
+import { errorAffordanceArgs, errorBoxExtent, errorMessage } from "../core/paint_containment.js";
 
 /**
  * Pure function (the report sink aside). Ops with every MATERIAL fill paint
@@ -209,21 +210,6 @@ export function sceneIR(nodes, ctx = {}) {
   return out;
 }
 
-/** Error-affordance colors for a node whose WORLD is not paintable — the same
- *  loud red treatment render_gpu/affordances.js documents. Restated here rather
- *  than imported because `errorAffordance` hardcodes an "SVG error: " prefix,
- *  and this box must name the ITEM and the PROPERTY instead. */
-const NONFINITE_BG = "#f6c9c4";
-const NONFINITE_BORDER = "#c0392b";
-const NONFINITE_TEXT = "#7a1210";
-const NONFINITE_BORDER_WIDTH = 3;
-const NONFINITE_PADDING = 8;
-const NONFINITE_TEXT_FRACTION = 0.16;
-/** The affordance is drawn at the node's LAST-KNOWN-GOOD frame — the identity —
- *  because the node's own world is exactly what is unusable. This is the box it
- *  occupies there, in world units, when the state carries no usable w/h either. */
-const NONFINITE_FALLBACK_SIZE = 160;
-
 /**
  * Pure function. The names of the transform fields that are NOT finite, in the
  * order `pushTransform` validates them — what the error affordance and the report
@@ -269,18 +255,15 @@ export function nonFiniteFrameFields(t) {
  */
 export function nonFiniteAffordanceIR(node, fields) {
   const s = node.state ?? {};
-  const w = Number.isFinite(s.w) && s.w > 0 ? s.w : NONFINITE_FALLBACK_SIZE;
-  const h = Number.isFinite(s.h) && s.h > 0 ? s.h : NONFINITE_FALLBACK_SIZE;
-  const who = s.name || s.type || node.itemId;
-  return [
-    rect({ x: 0, y: 0, w, h, cornerRadius: 0, fill: NONFINITE_BG, stroke: NONFINITE_BORDER, strokeWidth: NONFINITE_BORDER_WIDTH }),
-    text({
-      text: `"${who}": ${fields.join("/")} is not a finite number`,
-      x: NONFINITE_PADDING, y: NONFINITE_PADDING,
-      size: Math.max(1, h * NONFINITE_TEXT_FRACTION), color: NONFINITE_TEXT,
-      boxW: Math.max(1, w - 2 * NONFINITE_PADDING), boxH: Math.max(1, h - 2 * NONFINITE_PADDING),
-    }),
-  ];
+  // Built through the REAL IR builders, never as raw literals: every backend
+  // requires parsePaint'd colours, and a hand-written "#c0392b" produces an op
+  // that silently draws NOTHING (measured — see core/paint_containment.js).
+  const a = errorAffordanceArgs(
+    errorBoxExtent(s.w),
+    errorBoxExtent(s.h),
+    errorMessage(s.name || s.type || node.itemId, `${fields.join("/")} is not a finite number`),
+  );
+  return [rect(a.rect), text(a.text)];
 }
 
 /**
@@ -383,7 +366,33 @@ function emitNode(node, byId, pdfDisplay) {
   // the trim fields are, and is likewise absent-when-centered — so this line adds
   // nothing to any existing document's ops.
   const body = applyStrokeOffset(node.state, applyStrokeTrim(node.state, applyNodeEffects(node, cmds)));
+  // THE OWNER TAG — this node's identity, hung on the ONE push that opens its op
+  // run, so the PAINT-TIME boundary can name the item it had to contain
+  // (render_gpu/skia/paint_skia.js paintFlat; flattenIR carries the tag down onto
+  // every op emitted under it). It rides the push rather than each op because
+  // that is O(1) per node instead of O(ops), and because a node's ops are
+  // EXACTLY the run between its push and its matching pop — the grouping the
+  // boundary needs is already in the structure.
+  const owner = ownerTag(node);
   return mirror
-    ? [pushTransform(node.world), mirror, ...body, popTransform(), popTransform()]
-    : [pushTransform(node.world), ...body, popTransform()];
+    ? [{ ...pushTransform(node.world), owner }, mirror, ...body, popTransform(), popTransform()]
+    : [{ ...pushTransform(node.world), owner }, ...body, popTransform()];
+}
+
+/**
+ * Pure function. The minimal identity a paint-time error report needs: WHO the
+ * ops belong to. Deliberately not the node itself — the tag is copied onto the
+ * flattened op stream, and holding a whole render node there would keep its
+ * entire evaluated state alive for the life of the display list.
+ *
+ * @param {object} node - a derive render node
+ * @returns {{itemId: string, type: string, name: string|undefined}}
+ *
+ * @example ownerTag({itemId: "a1", type: "text", state: {name: "Title"}})
+ * { itemId: 'a1', type: 'text', name: 'Title' }
+ * @example ownerTag({itemId: "b2", type: "rect", state: {}})
+ * { itemId: 'b2', type: 'rect', name: undefined }
+ */
+export function ownerTag(node) {
+  return { itemId: node.itemId, type: node.type, name: node.state?.name };
 }

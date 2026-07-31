@@ -40,7 +40,14 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, strokeInsideFraction, strokeOutwardReach, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, strokeInsideFraction, strokeOutwardReach, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+// THE PER-NODE PAINT BOUNDARY's two halves: the shared error affordance, and the
+// ERROR-level report. Deliberately NOT this file's local `reportOnce` further
+// down — that one is a console.WARN for unreachable depth caps and returns
+// nothing. A widget that cannot paint is an error, and the boundary needs the
+// canonical sink's "did it actually log?" answer to print the stack exactly once.
+import { reportOnce as reportPaintFailureOnce } from "../../core/report.js";
+import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, isConfigurationError } from "../../core/paint_containment.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
@@ -369,8 +376,13 @@ function belowContext(target, belowFlat, dx, dy) {
  *     one), and — inside an effect scratch — the `below` context that names the
  *     OUTER composite surface, its device offset, and the outer below-LIST
  *     (see handleEffectSubtree).
- *   flat (object[]): flattenIR output — [{cmd, world}]
+ *   flat (object[]): flattenIR output — [{cmd, world, owner}]
  *   depth ({lens, subtree}): re-render nesting levels (the two budgets above)
+ *
+ * THE PER-NODE PAINT BOUNDARY lives here (paintNodeRun below): the ops of ONE
+ * derived node are painted inside one try, so a throw anywhere in that node's
+ * paint path costs that node its pixels and nothing else. See paintNodeRun for
+ * why the run — and not the op, and not the whole list — is the right unit.
  */
 function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
   const canvas = target.canvas;
@@ -379,7 +391,120 @@ function paintFlat(CanvasKit, target, flat, view, ctx, depth) {
   // before it AT THIS LEVEL, prefixed — inside an effect scratch — by the outer
   // below-list, because the scratch itself holds nothing but the effected widget.
   const belowOf = (i) => (target.below ? [...target.below.flat, ...flat.slice(0, i)] : flat.slice(0, i));
-  for (let i = 0; i < flat.length; i++) {
+  // Walk OWNER RUNS, not ops: each iteration paints every consecutive op sharing
+  // one owner under a single try. On the happy path this adds one try block per
+  // NODE per frame (a handful, not thousands) and no per-op cost at all — the
+  // inner loop below is byte-for-byte the loop that was here before.
+  let i = 0;
+  while (i < flat.length) {
+    const end = ownerRunEnd(flat, i);
+    paintNodeRun(CanvasKit, target, flat, i, end, view, ctx, depth, belowOf, canvas, proxy);
+    i = end;
+  }
+}
+
+/**
+ * Command (draws flat[start..end) on target.canvas; on failure draws the error
+ * affordance there instead and reports once).
+ *
+ * ── THE PER-NODE PAINT BOUNDARY ─────────────────────────────────────────────
+ *
+ * WHY A BOUNDARY EXISTS AT ALL. Three separate live crashes have now taken the
+ * whole canvas down over ONE widget: a plugin emit that threw (50a50bc), a
+ * non-finite world transform (ba25b39), and a fill-only material pushed into a
+ * stroke slot, where getStrokeMaterial threw inside the PAINTER on every frame
+ * (d545ddc). The third proved the first two fixes were too narrow — they guarded
+ * emit, and this one threw downstream of emit. Worse, autosave restored the
+ * poisoned document on every boot, so the app was bricked across reloads until
+ * localStorage was cleared by hand. A brick is the QUIETEST failure of all: the
+ * user cannot even read the error. Containment is what makes it loud.
+ *
+ * WHY THE RUN IS THE UNIT — narrower than the frame, wider than the op:
+ *
+ *   NOT THE FRAME. That is the status quo being fixed: one bad widget must not
+ *     cost the other forty their pixels.
+ *   NOT THE OP. An op-level try would (a) put a try/catch in the hot inner loop
+ *     of every frame, and (b) be WRONG — a node's ops are not independent. A
+ *     shape op and its stroke op are one widget; catching between them paints
+ *     half a widget and calls it success, which is a silent partial failure.
+ *   THE RUN. It is exactly one derived node's contribution, it is the unit the
+ *     user can see and select and DELETE (which is the recovery path), and it is
+ *     the smallest unit that carries an ITEM ID to name in the report.
+ *
+ * CANVAS STATE IS RESTORED BY DEPTH, not by hope. A throw can leave the canvas
+ * mid-save (a handler that saved and threw before its restore), so the save
+ * count is captured before the run and unwound after a failure. Without this the
+ * containment would itself corrupt every later node's CTM and clip — trading a
+ * blank canvas for a scrambled one.
+ *
+ * THE AFFORDANCE DRAWS AT IDENTITY, deliberately (the ba25b39 lesson): the
+ * node's own transform may be exactly what is poisonous, so drawing the error
+ * box through it could rethrow inside the catch.
+ *
+ * WHAT THIS DOES NOT DO: it does not swallow anything outside per-node paint.
+ * Registry, boot, storage and IR-construction failures are untouched and still
+ * throw. And it does not mask a determinism bug — the report carries the real
+ * error, with its stack, exactly once.
+ */
+function paintNodeRun(CanvasKit, target, flat, start, end, view, ctx, depth, belowOf, canvas, proxy) {
+  const saveCount = canvas.getSaveCount();
+  try {
+    paintOpRange(CanvasKit, target, flat, start, end, view, ctx, depth, belowOf, canvas, proxy);
+  } catch (e) {
+    // Unwind whatever the failed handler left on the save stack, so the NEXT
+    // node inherits the CTM and clip it would have had if this one never ran.
+    // Done BEFORE the rethrow below too: a configuration error propagates, but it
+    // must not also leave the caller's canvas in a half-saved state.
+    while (canvas.getSaveCount() > saveCount) canvas.restore();
+    // A BACKEND-CONFIGURATION failure is the caller's wiring, broken for the whole
+    // surface — it escapes untouched. Only DOCUMENT poison is contained.
+    if (isConfigurationError(e)) throw e;
+    const owner = flat[start].owner;
+    const msg = throwMessage(e);
+    const who = describeOwner(owner);
+    if (reportPaintFailureOnce(
+      `paint_skia:node:${owner?.itemId ?? "unowned"}:${msg}`,
+      `PowerRP: item ${who} failed to PAINT — ${msg}. It is drawn as an error box; the rest of the scene still paints. Delete or fix that item to clear it.`,
+    )) console.error(e); // the real stack, once — a determinism bug must stay diagnosable
+    drawContainmentBox(CanvasKit, canvas, flat, start, end, view, ctx);
+  }
+}
+
+/**
+ * Command (draws the red error box for a failed run on `canvas`). Sized from the
+ * run's own ops where they are usable, at IDENTITY — see paintNodeRun.
+ *
+ * Wrapped in its own try because THE AFFORDANCE ITSELF MUST NOT BE ABLE TO
+ * BRICK THE FRAME. If the surface is so broken that even a plain red rect
+ * throws, the report above has already been printed and the remaining nodes are
+ * still worth attempting — a second throw here would defeat the entire boundary.
+ * This is the one place a swallow is correct, and it is not silent: the failure
+ * it would report was already reported one frame-op earlier.
+ */
+function drawContainmentBox(CanvasKit, canvas, flat, start, end, view, ctx) {
+  try {
+    const box = containmentBoxSize(flat, start, end);
+    const a = errorAffordanceArgs(box.w, box.h, errorMessage(describeOwner(flat[start].owner), "failed to paint"));
+    const identity = { x: 0, y: 0, rotation: 0, scale: 1 };
+    const world = isPaintableFrame(flat[start].world) ? flat[start].world : identity;
+    for (const op of [rect(a.rect), text(a.text)]) {
+      canvas.save();
+      applyView(canvas, view, world);
+      drawLeafOp(CanvasKit, canvas, op, 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
+      canvas.restore();
+    }
+  } catch {
+    // Already reported by the caller; a scene that cannot draw a rect has a
+    // problem no affordance can express, and the remaining nodes still deserve
+    // their turn.
+  }
+}
+
+/** Command (draws flat[start..end) — THE ORIGINAL per-op walk, unchanged, now
+ *  called once per owner run instead of once per list. No try/catch here: the
+ *  boundary is the caller's, so the hot path carries zero extra cost per op. */
+function paintOpRange(CanvasKit, target, flat, start, end, view, ctx, depth, belowOf, canvas, proxy) {
+  for (let i = start; i < end; i++) {
     const { cmd, world } = flat[i];
     // PROXY: replace every backdrop sampler with a cheap stand-in over the
     // already-composited canvas (proxy forces the fast direct path, so the
