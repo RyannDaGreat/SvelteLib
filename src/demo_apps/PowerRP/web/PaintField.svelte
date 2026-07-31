@@ -581,16 +581,27 @@
 
   // The mode strip. "Off" leads, because it is the ABSENCE of paint and reads as
   // the zero of the row (the user ruling: "Fill materials should have an option of
-  // off … which basically just means nothing, there is no fill"). Its tooltip is
-  // slot-specific, because what "nothing" MEANS depends on what the slot paints:
-  // on a shape it is hollow, on an SVG it is "keep the artwork's own colours".
-  // `offMeans` (a prop) is how the declaring row says which; the generic sentence
-  // is the fallback.
+  // off … which basically just means nothing, there is no fill"). What "nothing"
+  // MEANS depends on what the slot paints: on a shape it is hollow, on an SVG it
+  // is "keep the artwork's own colours". `offMeans` (a prop) is how the declaring
+  // row says which; the generic sentence is the fallback.
   /** What OFF means when the declaring row does not say — the shape case, which is
    * what every paint row that existed before OFF did is. */
   const OFF_MEANS_GENERIC = "nothing is painted here";
   let offText = $derived(offMeans ?? OFF_MEANS_GENERIC);
 
+  // EVERY tab carries a tip, and every tip is ONE SHORT LINE (user ruling: the
+  // mode tabs "should all have real-time tooltips, just like Off — which by the
+  // way is pretty self-explanatory, it doesn't need to be that large, just say
+  // 'off'"). The abbreviated labels ("Mat", "= Eq") are the reason a tip earns
+  // its place at all; the tip spells the label out and stops there.
+  //
+  // Off is the ONE tip that is not a fixed string, because its consequence
+  // differs by slot — hollow on a shape, "keep the artwork's own colours" on an
+  // SVG — and the row's `offMeans` is what makes it accurate rather than a hedge.
+  // It is now that clause ALONE: the retired second sentence (that the other
+  // modes' colours survive the round trip) was reassurance about state the user
+  // has not lost yet, which is exactly the throat-clearing the ruling cuts.
   const TYPES = [
     { id: "none", label: "Off" },
     { id: "solid", label: "Solid" },
@@ -600,37 +611,28 @@
     { id: "equation", label: "= Eq" },
   ];
 
-  // ONLY the Off tab carries a tooltip, and deliberately: the other five name
-  // themselves (a "Linear" paint tab is a linear gradient), while "Off" is the one
-  // whose consequence is not in its label and DIFFERS by slot — hollow on a shape,
-  // "keep the artwork's own colours" on an SVG. The row's `offMeans` is the whole
-  // reason the tip can be accurate rather than a hedge.
-  let offTip = $derived(`Paint nothing — ${offText}. The other modes' colours are kept, so turning this back on restores them.`);
+  let tabTips = $derived({
+    none: `Off — ${offText}`,
+    solid: "Solid color",
+    linearGradient: "Linear gradient",
+    radialGradient: "Radial gradient",
+    material: strokeMaterials ? "Stroke material" : "Material fill",
+    equation: "Equation",
+  });
 </script>
 
 <div class="paintfield">
   <div class="paint-type-tabs">
     {#each TYPES as t}
-      {#if t.id === "none"}
-        <!-- The one tab whose meaning is slot-dependent gets the tip (see offTip). -->
-        <Tooltip text={offTip}>
-          <button
-            type="button"
-            class="paint-type-tab"
-            {disabled}
-            aria-pressed={mode === t.id}
-            onclick={() => setMode(t.id)}
-          >{t.label}</button>
-        </Tooltip>
-      {:else}
-      <button
-        type="button"
-        class="paint-type-tab"
-        {disabled}
-        aria-pressed={mode === t.id}
-        onclick={() => setMode(t.id)}
-      >{t.label}</button>
-      {/if}
+      <Tooltip text={tabTips[t.id]}>
+        <button
+          type="button"
+          class="paint-type-tab"
+          {disabled}
+          aria-pressed={mode === t.id}
+          onclick={() => setMode(t.id)}
+        >{t.label}</button>
+      </Tooltip>
     {/each}
   </div>
 
@@ -693,7 +695,9 @@
       <!-- Header names the MATERIAL, not the slot: this fold now lives INSIDE
            the top-level "Fill Material"/"Stroke Material" Inspector section
            (Round 2 #26), so repeating the slot name would read twice. -->
-      <Tooltip text={matCollapsed ? `Show ${matEntry.title ?? matSub.id} knobs (${matSummary})` : `Fold ${matEntry.title ?? matSub.id} knobs away (${matSummary})`}>
+      <!-- The header LINE already reads "<material> · <summary>", so the tip
+           says only which way the click goes. -->
+      <Tooltip text={matCollapsed ? "Show these knobs" : "Fold these knobs away"}>
         <button
           type="button"
           class="cat-header"

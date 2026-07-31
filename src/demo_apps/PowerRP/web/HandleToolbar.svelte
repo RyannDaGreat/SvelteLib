@@ -105,7 +105,7 @@
                the same one-undo-unit-per-flip contract) the Inspector's item-level
                visibility toggle uses. -->
           {#if allVisible}
-            <Tooltip text="Hide (draws straight past it; keeps its place, so nothing is renumbered)">
+            <Tooltip text="Hide — draws straight past it, keeping its number">
               <button class="btn-icon" aria-label="Hide selected points" onclick={() => app.setHandleSelectionActive(false)}>
                 <iconify-icon icon="mdi:eye-off" width={ICON} height={ICON}></iconify-icon>
               </button>
@@ -120,7 +120,7 @@
           <!-- PURGE: the destructive half, with the renumbering consequence stated
                in the tooltip rather than hidden (see the header). Same
                mdi:delete-forever-outline glyph as the item-level Purge command. -->
-          <Tooltip text="Purge (removes it for good and renumbers the later points, so equations referring to them shift)">
+          <Tooltip text="Purge — removes it for good and renumbers the later points, shifting equations bound to them">
             <button class="btn-icon" aria-label="Purge selected points" onclick={() => app.purgeHandleSelection()}>
               <iconify-icon icon="mdi:delete-forever-outline" width={ICON} height={ICON}></iconify-icon>
             </button>

@@ -352,7 +352,7 @@
                    line in the row — that is what keeps a whole family on screen in
                    a right-column pane, and it is how the gradient library labels
                    its swatches. -->
-              <Tooltip text={row.preset.description ?? `Apply the ${row.preset.name} preset to the current frame`}>
+              <Tooltip text={row.preset.description ?? `Apply the ${row.preset.name} preset`}>
                 <button
                   class="btn tool-action tool-preset"
                   onpointerenter={() => previewRow(row)}

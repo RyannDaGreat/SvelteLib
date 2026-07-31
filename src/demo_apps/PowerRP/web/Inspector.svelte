@@ -535,8 +535,12 @@
   // The VISIBLE row's meaning, shared by the two branches that render it (the
   // created-item row's `help`, and the not-yet-created row's label tip) so one
   // property cannot end up explained two different ways.
+  // KEEPS the per-slide consequence (an item can be on some slides and not
+  // others) — that IS the property, and a reader who does not know it will
+  // misread the checkbox. What went is the restatement of that same fact in
+  // implementation terms ("keyframes active: false here"), which said it twice.
   const VISIBLE_ROW_HELP =
-    "Whether this item shows on THIS slide. It is a keyframeable boolean like any other property — hiding it keyframes active: false here, so the item can appear on some slides and not others.";
+    "Whether this item shows on THIS slide. Keyframeable like any other property, so an item can appear on some slides and not others.";
 
   // The one ROW_KIND that is NOT a value slot: it triggers a registry command
   // (core/properties.js "action → a command trigger, not a value slot"). Named
@@ -1694,7 +1698,7 @@
     <div class="multi-select">
       <div class="multi-count">{selCount} items selected</div>
       <div class="item-actions">
-        <Tooltip text="Hide every selected item on this slide (keyframes active: false)">
+        <Tooltip text="Hide every selected item on this slide">
           <button class="btn" onclick={() => app.runCommand("delete-item")}>
             <iconify-icon icon="mdi:eye-off" width="16" height="16"></iconify-icon>
             Hide all
@@ -1704,7 +1708,7 @@
              (user ruling: "hide all... didn't turn into show all"). Show all
              activates every selected item here; not-yet-created items follow
              the ratified creation-state-copy semantics. -->
-        <Tooltip text="Keyframe active: true here for every selected item (not-yet-created items are created here)">
+        <Tooltip text="Show every selected item here — a not-yet-created one is created here">
           <button class="btn" onclick={() => app.runCommand("show-item")}>
             <iconify-icon icon="mdi:eye" width="16" height="16"></iconify-icon>
             Show all
@@ -1713,7 +1717,7 @@
         <!-- Leads with the WORD: "purge" is this app's specific term for
              destroy-everywhere, the counterpart to Delete's deactivate-on-this-
              slide. A tooltip that only paraphrases it never teaches it. -->
-        <Tooltip text="Purge — remove every selected item from existence (all slides)">
+        <Tooltip text="Purge — remove every selected item from every slide">
           <button class="btn danger" aria-label="Purge selected" onclick={() => app.runCommand("purge-item")}>
             <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
           </button>
@@ -1836,7 +1840,7 @@
       />
       <span class="kf-controls name-actions">
         {#if purgeable}
-          <Tooltip text="Purge — remove from existence (all keyframes, all slides)">
+          <Tooltip text="Purge — remove from every slide, keyframes and all">
             <button class="btn-icon danger" aria-label="Purge item" onclick={() => app.runCommand("purge-item")}>
               <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
             </button>
@@ -1930,7 +1934,7 @@
       />
       <span class="kf-controls name-actions">
         {#if purgeable}
-          <Tooltip text="Purge — remove from existence (all keyframes, all slides)">
+          <Tooltip text="Purge — remove from every slide, keyframes and all">
             <button class="btn-icon danger" aria-label="Purge item" onclick={() => app.runCommand("purge-item")}>
               <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
             </button>
@@ -1951,8 +1955,8 @@
           <Tooltip text={VISIBLE_ROW_HELP}><span class="label">Visible</span></Tooltip>
           <div class="boolfield">
             <Tooltip text={creationIndex != null
-              ? `Not created until slide ${creationIndex + 1} — click to show it here (copies its properties onto this slide)`
-              : "Click to show this item on this slide"}>
+              ? `Not created until slide ${creationIndex + 1} — click to show it here, copying its properties onto this slide`
+              : "Show this item on this slide"}>
               <button class="boolbtn" aria-label="Visible" aria-pressed="false" onclick={activateNotYetCreated}>
                 <iconify-icon icon="mdi:eye-off" width="16" height="16"></iconify-icon>
               </button>

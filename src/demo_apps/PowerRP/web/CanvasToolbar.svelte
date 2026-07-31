@@ -317,7 +317,10 @@
         <div class="canvas-toolbar-fields">
           {#each spec.fields as field (field.id)}
             {@const bound = boundKeys(field)}
-            <Tooltip text={bound.length ? `${field.label}: ${bound.join(", ")} ${bound.length === 1 ? "is an" : "are"} = equation — edit it in the Inspector. Typing here would overwrite the equation with its current value.` : field.help}>
+            <!-- KEEPS the "typing here would overwrite it" clause — that is why
+                 the field is inert, and without it the control looks broken —
+                 but as a clause rather than a second sentence. -->
+            <Tooltip text={bound.length ? `${bound.join(", ")} ${bound.length === 1 ? "is an" : "are"} = equation — edit it in the Inspector; typing here would overwrite it with its current value.` : field.help}>
               <label class="canvas-toolbar-field" class:narrow={field.size === "narrow"}>
                 <span class="canvas-toolbar-field-label">{field.label}</span>
                 <input

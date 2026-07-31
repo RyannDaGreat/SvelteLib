@@ -226,9 +226,14 @@
    * // deleteTip("logo.png", 1) // => '… — 1 widget uses it, so you will be asked to confirm first.'
    */
   export function deleteTip(name, users) {
-    if (users === 0)
-      return `Delete "${name}" — nothing in this deck uses it, so it goes immediately. This cannot be undone.`;
-    return `Delete "${name}" — ${users} ${users === 1 ? "widget uses" : "widgets use"} it, so you will be asked to confirm first.`;
+    // TWO load-bearing phrasings here, both pinned by tests/asset_ux_probe.js:
+    // "nothing in this deck uses it" AND, on that same branch, "cannot be
+    // undone". The brevity sweep initially cut the second as boilerplate — it
+    // is not. This branch deletes with NO confirmation dialog, so the tip is
+    // the only warning the user ever gets; the OTHER branch can afford silence
+    // about it precisely because a dialog follows. Shortened, never dropped.
+    if (users === 0) return `Delete "${name}" — nothing in this deck uses it, so it goes immediately. Cannot be undone.`;
+    return `Delete "${name}" — ${users} ${users === 1 ? "widget uses" : "widgets use"} it, so you'll confirm first.`;
   }
 
   /**
@@ -368,14 +373,18 @@
    *  cares — that non-persistent storage can be EVICTED — belongs in the detail
    *  rather than the pane's one visible row. */
   function quotaDetail() {
-    const parts = [`Browser storage for this site: ${quotaText}.`];
-    if (quotaPct !== null) parts.push(`That is ${quotaPct}% of the browser's budget for this origin.`);
+    // The line already SAYS "4.6MB of 2.0GB used", so the tip does not repeat
+    // it — it opens on the percent (the same figure, told the other way) and
+    // spends its length on the eviction warning, which is the whole reason a
+    // user reads this. "Estimate, and browsers round it" was retired: a hedge
+    // about a figure nobody is going to act on to the byte.
+    const parts = [];
+    if (quotaPct !== null) parts.push(`${quotaPct}% of the browser's budget for this origin.`);
     parts.push(
       quota?.persisted
-        ? "Storage is PERSISTENT — the browser will not evict your projects under storage pressure."
+        ? "Storage is PERSISTENT — the browser will not evict your projects."
         : "Storage is BEST-EFFORT: the browser may evict it under storage pressure. Export a .zip for a durable copy.",
     );
-    parts.push("The figure is an estimate covering everything this site stores, and browsers round it deliberately.");
     return parts.join(" ");
   }
 
@@ -384,9 +393,14 @@
    *  names the one thing a user could otherwise get wrong: hiding built-ins is a
    *  list filter, not an uninstall, so a deck using one keeps working. */
   function builtinToggleTip() {
+    // KEEPS the "view filter, not an uninstall" clause — that is the thing a
+    // user could get wrong, and the docblock above says so. What went is the
+    // state-then-action throat-clearing ("Built-in assets are SHOWN. Click to
+    // hide them and…"): the button's tint already says which state it is in,
+    // and one imperative says the rest.
     return app.showBuiltinAssets
-      ? `Built-in assets are SHOWN (${builtinAssets.length} in the widget library). Click to hide them and list only this project's own assets. Hiding is a view filter — built-in widgets stay available either way.`
-      : "Built-in assets are HIDDEN. Click to also list the widget library that ships with the app — tier-1 vector widgets you can drag onto the canvas.";
+      ? `Hide the ${builtinAssets.length} built-in widgets — a view filter only; they stay available.`
+      : "Also list the built-in widgets that ship with the app — drag one onto the canvas.";
   }
 
   /** Query. The totals line's detail sentence: what the count covers, and — when
@@ -394,10 +408,14 @@
    *  than stored in the project, since otherwise the figure looks like it contradicts
    *  the storage line right above it. */
   function totalsDetail() {
-    const parts = [`This library lists ${totalsText}.`];
+    // Opens on the reconciling clause rather than restating the visible line.
+    // The count only LOOKS like it contradicts the storage row above when
+    // built-ins are in it, so that sentence is the tip's whole job; without
+    // built-ins there is nothing to reconcile and the size note suffices.
+    const parts = [];
     if (builtinAssets.length)
-      parts.push(`${builtinAssets.length} of those are BUILT-IN widgets that ship inside the app — they travel with every project and cost you no storage.`);
-    parts.push("Sizes are the assets' own bytes; a built-in widget's size is the length of its source.");
+      parts.push(`${builtinAssets.length} of these are BUILT-IN widgets bundled with the app — they cost you no storage.`);
+    parts.push("Sizes are the assets' own bytes; a built-in's size is the length of its source.");
     return parts.join(" ");
   }
 
@@ -671,8 +689,8 @@
    *  bytes come from the app rather than from the project. */
   function downloadTip(a) {
     const size = a.size != null ? ` (${humanReadableFileSize(a.size)})` : "";
-    if (a.builtin) return `Download “${a.name}”${size} — the built-in widget's source, as shipped with the app.`;
-    return `Download “${a.name}”${size} to your computer.`;
+    if (a.builtin) return `Download “${a.name}”${size} — the built-in widget's source.`;
+    return `Download “${a.name}”${size}`;
   }
 
   /** Display label for a using item — the Inspector picker's convention:
@@ -869,7 +887,9 @@
          two toggles in this one header row read as one family; aria-pressed carries
          the state, and the aria-expanded/aria-controls pair says WHAT it toggles
          (the filter area is a sibling, not a child, so a reader needs the link). -->
-    <Tooltip text="Search this project's assets by path (fuzzy — the command palette's matcher). Escape clears and closes.">
+    <!-- Names the MATCHER (fuzzy, not substring) because that is the
+         non-obvious half; "search" is the button. -->
+    <Tooltip text="Fuzzy-search this project's assets by path">
       <button
         class="btn-icon"
         class:active={searchOpen}
@@ -904,7 +924,7 @@
         onkeydown={onSearchKeydown}
       />
       {#if searchQuery}
-        <Tooltip text="Clear the filter (Escape also closes the search box)">
+        <Tooltip text="Clear the filter (Escape also closes the box)">
           <button class="btn-icon ae-search-clear" aria-label="Clear asset filter" onclick={() => (searchQuery = "")}>
             <iconify-icon icon="mdi:close" width="14" height="14"></iconify-icon>
           </button>

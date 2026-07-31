@@ -382,14 +382,14 @@
       <!-- EQUATION-BOUND: the ƒ mark + the expression itself, in place of a name
            that would be a slice of the expression. No Browse / Upload / Clear —
            each writes a literal over the equation. -->
-      <Tooltip text={`${label} is bound to an equation — edit it in the row's ƒ equation field`}>
+      <Tooltip text={`${label} is an equation — edit it in the row's ƒ field`}>
         <span class="assetfield-name">
           <iconify-icon icon="mdi:function-variant" width="13" height="13"></iconify-icon>
           {value}
         </span>
       </Tooltip>
     {:else}
-    <Tooltip text={displayName ? `${label}: ${displayName}` : `${label}: not set — drag an asset here, or use Browse/Upload`}>
+    <Tooltip text={displayName ? `${label}: ${displayName}` : `${label}: not set — drag an asset here, or Browse/Upload`}>
       <span class="assetfield-name" class:empty={!displayName}>{displayName ?? "(none)"}</span>
     </Tooltip>
     <div class="assetfield-actions">

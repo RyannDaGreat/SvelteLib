@@ -160,6 +160,44 @@ try {
   assert(f.type === "linearGradient" && f.linear.stops[0].offset === 0.42, "back to Linear: offset 0.42 NEVER forgotten");
   await page.screenshot({ path: resolve(SHOTS, "paintfield_2_linear.png") });
 
+  // (1c) EVERY MODE TAB CARRIES AN IMMEDIATE TOOLTIP, and each is ONE SHORT
+  // LINE (user ruling: they "should all have real-time tooltips, just like Off
+  // — which by the way is pretty self-explanatory, it doesn't need to be that
+  // large, just say 'off'"). Five of the six tabs had NO tip at all before this
+  // check existed, and Off's was three clauses long.
+  //
+  // Asserts the SHAPE, not the prose: every tab has a non-empty tip, no tip
+  // runs long, and each names its own mode. Pinning exact sentences would make
+  // this fail on a copy edit — which is precisely the churn that put the
+  // shortening pass into a test-fixing loop in the first place.
+  {
+    const TAB_MODE_WORD = { Off: /^off/i, Solid: /solid/i, Linear: /linear/i, Radial: /radial/i, Mat: /material/i, "= Eq": /equation/i };
+    const TIP_MAX_CHARS = 60; // "one short line" — the longest shipped tip is Off's slot sentence
+    const seen = await page.evaluate(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const row = [...document.querySelectorAll(".row")].find((r) => r.querySelector(".label")?.textContent.trim() === "Fill");
+      const out = [];
+      for (const btn of row.querySelectorAll(".paint-type-tab")) {
+        // The Tooltip opens on the wrapping .tt-anchor's pointerenter, the same
+        // way tests/list_ui_probe.js drives it.
+        btn.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+        btn.closest(".tt-anchor")?.dispatchEvent(new PointerEvent("pointerenter", { bubbles: true }));
+        await sleep(120);
+        out.push([btn.textContent.trim(), document.querySelector(".tt-tip")?.textContent?.trim() ?? ""]);
+        btn.closest(".tt-anchor")?.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+        await sleep(60);
+      }
+      return out;
+    });
+    assert(seen.length === 6, `all six paint mode tabs are present (got ${seen.length})`);
+    for (const [label, tip] of seen) {
+      assert(tip.length > 0, `the "${label}" tab has an immediate tooltip (got ${JSON.stringify(tip)})`);
+      assert(tip.length <= TIP_MAX_CHARS, `the "${label}" tip is ONE SHORT LINE, <=${TIP_MAX_CHARS} chars (got ${tip.length}: ${JSON.stringify(tip)})`);
+      const want = TAB_MODE_WORD[label];
+      if (want) assert(want.test(tip), `the "${label}" tip names its own mode (got ${JSON.stringify(tip)})`);
+    }
+  }
+
   // (1b) EQUATION mode: the whole fill becomes a "=" color expression that
   // evaluateState resolves + validates as a color (the any-type UNIFICATION).
   await page.evaluate(() => {

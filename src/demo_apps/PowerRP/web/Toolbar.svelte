@@ -45,7 +45,11 @@
   // carrying this note. Storage mode is a boot constant, so this is render-time
   // static, not reactive state.
   const isBrowserStorageCmd = (id) => isStatic() && (id === "save-to-server" || id === "open-project");
-  const BROWSER_STORAGE_NOTE = "No project server here — projects live in THIS browser's storage, private to it; clearing site data deletes them. Export a .zip for a durable copy.";
+  // KEEPS ITS SUBSTANCE — this is the note the brevity sweep is not allowed to
+  // gut, because everything in it is a consequence a user cannot infer: which
+  // machine the project is on, and what destroys it. What went was "private to
+  // it", which only restates "THIS browser's storage".
+  const BROWSER_STORAGE_NOTE = "No project server here — projects live in THIS browser's storage, and clearing site data deletes them. Export a .zip for a durable copy.";
   const STORAGE_NOUN = isStatic() ? "browser" : "server";
 
   // `renderBadge` is the count of renders still working plus finished ones not
@@ -407,7 +411,7 @@
     </button>
   </Tooltip>
   <Tooltip>
-    {#snippet tip()}{@render commandTip("toggle-snap-size", "Dimension indicators appear when a size matches another widget's.")}{/snippet}
+    {#snippet tip()}{@render commandTip("toggle-snap-size", "Indicators appear when a size matches another widget's.")}{/snippet}
     <button
       class="btn-icon"
       class:active={app.snapSizeEnabled}
@@ -420,7 +424,7 @@
     </button>
   </Tooltip>
   <Tooltip>
-    {#snippet tip()}{@render commandTip("toggle-anchors", "Anchors are the endpoint binding targets an arrow can attach to.")}{/snippet}
+    {#snippet tip()}{@render commandTip("toggle-anchors", "Anchors are the points an arrow's endpoint can bind to.")}{/snippet}
     <button
       class="btn-icon"
       class:active={app.anchorsVisible}
@@ -478,7 +482,7 @@
        is banned. The note is the clause the command title cannot carry, and it is
        the one thing a first-time reader needs: WHERE the functions come out. -->
   <Tooltip>
-    {#snippet tip()}{@render commandTip("edit-project-script", "Functions and values you assign to `exports` become callable from any property equation in this project.")}{/snippet}
+    {#snippet tip()}{@render commandTip("edit-project-script", "Anything you assign to `exports` is callable from any property equation in this project.")}{/snippet}
     <button
       class="btn-icon"
       aria-label={app.commands.get("edit-project-script").title}

@@ -434,7 +434,11 @@ try {
   {
     const tip = await page.evaluate(() => document.querySelector(".tt-tip")?.textContent ?? "");
     ok(/^Purge/.test(tip), `the purge tooltip LEADS WITH THE WORD "Purge" (the item-level register): ${JSON.stringify(tip.slice(0, 80))}`);
-    ok(/minimum of 2/.test(tip), `and names the declared floor as the reason: ${JSON.stringify(tip.slice(0, 120))}`);
+    // Matches the NUMBER, not the phrasing around it. This used to require the
+    // literal "minimum of 2", which pinned prose rather than the assertion's
+    // actual subject — the tooltip brevity sweep reworded it to "needs at least
+    // 2 entries", identical in meaning, and the check failed on style alone.
+    ok(/at least 2 entr/.test(tip), `and names the declared floor as the reason: ${JSON.stringify(tip.slice(0, 120))}`);
   }
 
   // ── PIXEL PROOF: a HIDDEN stop == never having authored it ──────────────────

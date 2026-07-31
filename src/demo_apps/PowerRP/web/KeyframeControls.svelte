@@ -63,7 +63,7 @@
   const TRI_ICONS = { all: "mdi:rhombus", some: "mdi:rhombus-split", none: "mdi:rhombus-outline" };
   const TRI_TIPS = {
     all: "Remove keyframe on this slide",
-    some: "Only SOME of the selected items are keyed here — insert on all of them",
+    some: "Only SOME selected items are keyed here — insert on all of them",
     none: "Insert keyframe on this slide",
   };
 

@@ -374,10 +374,14 @@
    *  folded, WHY it is refusing, which is the same say-the-reason discipline the
    *  eye and the purge button already follow instead of going quietly inert. */
   function collapseTip() {
-    if (suppressed)
-      return `Folded while something previews the whole list (${summary}), so the rows cannot move under the pointer as you sweep it. It reopens to your own setting when the preview ends.`;
-    if (collapsed) return `Folded — ${summary}. Click to open it.`;
-    return `Open — ${summary}. Click to fold it away; the choice is remembered for this property.`;
+    // The suppressed branch KEEPS BOTH of its clauses. The fold is not the
+    // user's doing here, so it owes them a reason AND the promise that their
+    // own setting comes back — tests/list_ui_probe.js pins both, and the
+    // brevity sweep was wrong to read the promise as implied by "while".
+    // Only the trailing "when the preview ends" went, which "while" does imply.
+    if (suppressed) return `Folded while something previews the whole list (${summary}), so the rows cannot move under your pointer. It reopens to your own setting after.`;
+    if (collapsed) return `Folded — ${summary}. Click to open.`;
+    return `Open — ${summary}. Click to fold away; remembered for this property.`;
   }
 
   /** Command. Toggles the USER's collapse choice and persists it. Re-READS the
@@ -416,9 +420,11 @@
    *  tooltip can never disagree with the result. */
   function insertTip(index) {
     const summary = elementSummary(insertedElement(decl, value.list, index));
-    if (index === 0) return `Insert before 1 — extrapolated outward from the first two: ${summary}`;
-    if (index === value.list.length) return `Insert after ${index} — extrapolated outward from the last two: ${summary}`;
-    return `Insert between ${index} and ${index + 1} — the midpoint of the two: ${summary}`;
+    // "extrapolated outward from the first two" → "extrapolated from the first
+    // two": outward is the only direction an extrapolation off the end can go.
+    if (index === 0) return `Insert before 1 — extrapolated from the first two: ${summary}`;
+    if (index === value.list.length) return `Insert after ${index} — extrapolated from the last two: ${summary}`;
+    return `Insert between ${index} and ${index + 1} — their midpoint: ${summary}`;
   }
 
   /**
@@ -455,9 +461,12 @@
    *  that is what makes it different from hide rather than a stronger hide. At the
    *  declared floor it says why it is refusing instead of silently doing nothing. */
   function purgeTip(index) {
+    // Both branches keep their SUBSTANCE (the floor; the renumbering) and lose
+    // the trailing pointer to the eye — the eye is the button beside this one,
+    // and the hide tip already says what it does.
     if (value.list.length <= floor)
-      return `Purge — unavailable: this list declares a minimum of ${floor} entr${floor === 1 ? "y" : "ies"}, so ${index + 1} cannot be removed. Hide it instead.`;
-    return `Purge entry ${index + 1} — removes it for good and renumbers the later entries, so equations referring to them shift. Hide (the eye) keeps its place.`;
+      return `Purge — unavailable: this list needs at least ${floor} entr${floor === 1 ? "y" : "ies"}. Hide it instead.`;
+    return `Purge entry ${index + 1} — renumbers the later entries, shifting equations bound to them.`;
   }
 
   /** Command. Commits a LIST VALUE whose ELEMENT LIST moved (insert / purge) as
@@ -593,7 +602,7 @@
          the property's default (or a plain report when there is none). -->
     <div class="list-empty">No entries</div>
     {#if seedElement}
-      <Tooltip text={`Add the first entry, from this property's default: ${elementSummary(seedElement)}`}>
+      <Tooltip text={`Add the first entry, from the default: ${elementSummary(seedElement)}`}>
         <button type="button" class="list-insert" {disabled} aria-label={`${label}: add the first entry`} onclick={seed}>
           <span class="list-insert-line"></span>
           <span class="list-insert-chip"><iconify-icon icon="mdi:plus" width={SEAM_ICON} height={SEAM_ICON}></iconify-icon></span>

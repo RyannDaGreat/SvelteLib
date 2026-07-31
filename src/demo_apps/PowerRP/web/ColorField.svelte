@@ -179,7 +179,7 @@
   // false the eyedropper button is shown disabled with an explanatory tooltip.
   const eyedropperSupported = typeof window !== "undefined" && typeof window.EyeDropper === "function";
   const EYEDROPPER_TIP = "Pick a color from anywhere on screen";
-  const EYEDROPPER_UNSUPPORTED_TIP = "Screen eyedropper needs Chrome or Edge on a secure (HTTPS/localhost) page";
+  const EYEDROPPER_UNSUPPORTED_TIP = "Needs Chrome or Edge on an HTTPS/localhost page";
 
   // Display readouts derived from the raw stored value.
   let equation = $derived(isEquationColor(value)); // an `=` expression, not a literal
@@ -246,7 +246,7 @@
            readout a hex uses (an expression reads as code too). No swatch (there
            is no literal to swatch), no eyedropper and no picker — every one of
            them would overwrite the equation with a color. -->
-      <Tooltip text={`${label} is bound to an equation — edit it in the row's ƒ equation field`}>
+      <Tooltip text={`${label} is an equation — edit it in the row's ƒ field`}>
         <span class="colorfield-hex">
           <iconify-icon icon="mdi:function-variant" width="13" height="13"></iconify-icon>
           {value}
