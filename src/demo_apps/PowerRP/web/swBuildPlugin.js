@@ -178,6 +178,46 @@ export function swVersion(urls) {
  *
  * @returns {import("vite").Plugin}
  */
+/**
+ * The DEV twin: serves `manifest.webmanifest` and `icon.svg` on the dev server.
+ *
+ * index.html links the manifest UNCONDITIONALLY, and in dev the build-only
+ * plugin above emits nothing — so the SPA fallback answered the manifest URL
+ * with HTML and every dev boot logged "Manifest: Line 1, column 1, Syntax
+ * error", which poisoned every probe that counts boot console errors. Serving
+ * the two static assets is harmless in dev and makes the link truthful; the
+ * WORKER stays build-only — this middleware must never grow an sw.js route
+ * (sw.js's static-mode-only rule).
+ *
+ * @returns {import("vite").Plugin}
+ */
+export function powerrpManifestDev() {
+  let base = "/";
+  return {
+    name: "powerrp-manifest-dev",
+    apply: "serve",
+    configResolved(config) {
+      base = config.base.endsWith("/") ? config.base : `${config.base}/`;
+    },
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const path = (req.url ?? "").split("?")[0];
+        if (path === `${base}manifest.webmanifest`) {
+          res.setHeader("Content-Type", "application/manifest+json");
+          res.end(JSON.stringify(webAppManifest(base)));
+          return;
+        }
+        if (path === `${base}icon.svg`) {
+          res.setHeader("Content-Type", "image/svg+xml");
+          res.end(ICON_SVG);
+          return;
+        }
+        next();
+      });
+    },
+  };
+}
+
 export function powerrpServiceWorker() {
   let base = "/";
   return {

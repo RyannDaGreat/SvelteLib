@@ -1,6 +1,6 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig } from "vite";
-import { powerrpServiceWorker } from "./swBuildPlugin.js";
+import { powerrpServiceWorker, powerrpManifestDev } from "./swBuildPlugin.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
@@ -49,7 +49,7 @@ export default defineConfig({
   // powerrpServiceWorker is `apply: "build"`, so the dev server never emits a
   // worker at all — the static-mode-only rule is a build-graph fact here, not a
   // runtime check that could be wrong (see web/sw.js and registerServiceWorker.js).
-  plugins: [svelte(), powerrpServiceWorker()],
+  plugins: [svelte(), powerrpServiceWorker(), powerrpManifestDev()],
   build: {
     // Emitted at the REPO ROOT (next to the existing dist/), not inside the app
     // folder: a build must never land in the source tree it was built from, and
