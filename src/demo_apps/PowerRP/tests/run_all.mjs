@@ -239,7 +239,17 @@ function runOne(kind, file) {
   });
 }
 
-/** Command. Runs a kind at its own concurrency; returns {pass, fail, failures[]}. */
+/** Command. Runs a kind at its own concurrency; returns {pass, fail, failures[]}.
+ *
+ *  A FAILURE NAMES ITSELF THE MOMENT IT HAPPENS, not only in the summary. The
+ *  progress dots are anonymous by design (154 names would bury the shape of the
+ *  run), but the summary used to be the ONLY place a failing probe's NAME was
+ *  ever written down — so a run that stalled before printing it lost every bit
+ *  of attribution, and the operator was left with "11 F" and no idea which. That
+ *  is not hypothetical: the browser lane has stalled near the summary twice, and
+ *  each time the triage had to be restarted from zero. The interleaved line
+ *  costs one row per failure (only failures) and makes the log harvestable with
+ *  `grep FAIL` while the run is still going. */
 async function runKind(kind, files) {
   const queue = [...files];
   const failures = [];
@@ -249,7 +259,10 @@ async function runKind(kind, files) {
       const r = await runOne(kind, f);
       const name = basename(f);
       if (r.ok) { pass++; process.stdout.write("."); }
-      else { failures.push({ name, path: relative(repoRoot, f), ms: r.ms, tail: r.tail }); process.stdout.write("F"); }
+      else {
+        failures.push({ name, path: relative(repoRoot, f), ms: r.ms, tail: r.tail });
+        process.stdout.write(`\nFAIL [${kind}] ${name} (${(r.ms / 1000).toFixed(0)}s)\n`);
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY[kind], files.length) }, worker));
