@@ -20,8 +20,15 @@ import puppeteer from "puppeteer";
 const repo = process.cwd();
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
 const demoJson = await readFile(resolve(repo, "src/demo_apps/PowerRP/examples/demo.powerrp.json"), "utf8");
+// THE SHOT DIR IS OPTIONAL, and that is a BUG FIX, not a convenience.
+// This was `await mkdir(process.argv[2])` unconditionally — and run_all.mjs
+// invokes every probe with NO arguments, so mkdir(undefined) threw at import
+// time and this probe failed in 0s in EVERY gate run it has ever been part of.
+// It passed when a human ran it by hand with a directory, which is exactly how
+// a permanently-red gate entry goes unnoticed. The token checks below are the
+// probe's actual job; the screenshots are a side product for taste review.
 const shots = process.argv[2];
-await mkdir(shots, { recursive: true });
+if (shots) await mkdir(shots, { recursive: true });
 
 // Tokens every theme must resolve to a non-empty value (base :root declares
 // all of these; a theme override block must never shadow one with an empty/
@@ -115,14 +122,15 @@ try {
     if (result.missing.length) errors.push(`[${id}] missing/empty tokens: ${result.missing.join(", ")}`);
 
     // Screenshot: inspector open (selected arrow, equation row visible) + hint bar.
-    await page.screenshot({ path: `${shots}/theme_${id}.png` });
+    // Only when a shot dir was asked for — see the note at `const shots`.
+    if (shots) await page.screenshot({ path: `${shots}/theme_${id}.png` });
   }
 
   if (errors.length) {
     console.error("THEME PROBE FAILURES:\n" + errors.join("\n"));
     process.exit(1);
   }
-  console.log(`Theme probe passed for all ${themeIds.length} themes. Screenshots written to ${shots}`);
+  console.log(`Theme probe passed for all ${themeIds.length} themes.${shots ? ` Screenshots written to ${shots}` : ""}`);
 } finally {
   await browser.close();
   await server.close();
