@@ -62,6 +62,7 @@
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
+import { reportOnce } from "../../core/report.js";
 import { CUSTOM_CATEGORY, bundle, customProps, defaults, props } from "../../core/properties.js";
 import {
   GLOBE_FLAT_CROSSOVER, MAX_MERCATOR_LAT, clampLat, globeWeight, lonLatToWorld,
@@ -72,13 +73,19 @@ import { ATMOSPHERE_FILL_PARAMS } from "../../render_gpu/skia/atmosphere_shader.
 import { image, materialFill, polygon, rect, text } from "../../render_gpu/ir.js";
 
 /**
- * How many quads each tile is split into per axis when drawn on the GLOBE. 8 gives
- * 64 quads per tile, which is where the visible facetting disappears: measured by
- * the geometry rather than by eye — at the crossover zoom one tile spans at most
- * ~45° of arc, so an 8-way split leaves ~5.6° per quad, whose sagitta (the gap
- * between the chord and the arc) is r·(1-cos(2.8°)) ≈ 0.0012·r. On a 400-px globe
- * that is half a pixel, i.e. below the resolution at which a straight edge can be
- * told from a curved one. Doubling it quadruples the op count for no visible gain.
+ * How many quads each tile is split into per axis when drawn on the GLOBE: 16, so
+ * 256 quads per tile.
+ *
+ * The curvature argument alone is satisfied by 8 — at the crossover zoom a tile
+ * spans at most ~45° of arc, so an 8-way split leaves ~5.6° per quad, whose sagitta
+ * (chord-to-arc gap) is r·(1−cos 2.8°) ≈ 0.0012·r, half a pixel on a 400-px globe.
+ * THE LIMB IS WHAT ASKS FOR 16. Each quad is drawn as an AXIS-ALIGNED rect, and a
+ * quad whose bounding box escapes the disc must be dropped (globeQuadRect); the
+ * further from the view centre, the more the projection rotates a quad and the more
+ * its box overshoots, so near the limb whole quads are lost. Halving the quad
+ * halves that overshoot, which measurably narrows the sliver dropped at the edge.
+ * Past 16 the cost (4x the ops per doubling) buys less than the atmosphere's own
+ * rim glow already covers.
  */
 const GLOBE_SUBDIVISIONS = 16;
 
@@ -205,6 +212,18 @@ function tilePlan(s, ctx) {
   const provider = providerFor(s.style);
   const window = mapWindow(s);
   const z = tileZoomFor(s.zoom, s.w, FALLBACK_DEVICE_PER_WORLD, provider.maxZoom);
+  // THE WIDGET ANNOUNCES ITS OWN OMISSION, because nothing else can. cli/render.js
+  // counts MEDIA OPS to warn that a bare-node PNG has holes where images belong —
+  // but a map with no fetched tiles emits ZERO image ops, so that count is 0 and the
+  // warning never fires. The map would then render as bare space plus attribution
+  // and exit 0: precisely the "holed picture while exiting 0" that file's header
+  // exists to prevent, just arriving through a gap in how it measures. Reported ONCE
+  // per style/zoom (reportOnce), so a 900-frame render says it once rather than 900
+  // times, and it names the renderer that CAN draw it.
+  reportOnce(
+    `globe_map-no-tiles:${provider.id}:${z}`,
+    `PowerRP globe_map: no map tiles are available to this renderer, so the map draws its background, polar caps and attribution but NO SURFACE at zoom ${z} of "${provider.id}". This is expected in bare node (cli/render.js has no image decoder) and in any consumer that runs no tile pre-pass; it is NOT what the editor shows. For a faithful render use cli/render_job.js, which draws it in a real headless browser.`,
+  );
   // No registry reachable from a DOM-free plugin, so refs are left null and every
   // tile reports not-ready: a camera-free consumer that has not run the pre-pass
   // draws the ocean base and the graticule, which is the honest picture of "no
