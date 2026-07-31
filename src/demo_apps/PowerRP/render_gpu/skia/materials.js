@@ -57,6 +57,7 @@ import { getStrokeMaterial, hasStrokeMaterial, strokeMaterialIds } from "./strok
 import { COMIC_MATERIAL } from "./comic_shader.js"; // comic-book Ben-Day halftone (CMYK/RGB/duotone/mono dots)
 import { GLITCH_MATERIAL } from "./glitch_shader.js"; // animated sci-fi datamosh / broken-signal glitch
 import { MANDELBROT_MATERIAL } from "./mandelbrot_shader.js"; // deep-zoom Mandelbrot (perturbation + rebasing, orbit-average colouring)
+import { ATMOSPHERE_MATERIAL } from "./atmosphere_shader.js"; // the globe's air: Fresnel limb glow + terminator + limb darkening (the cheap trick, not volumetrics)
 import { BRIGHTNESS_CONTRAST_MATERIAL } from "./brightness_contrast_shader.js"; // tone adjustment (non-clipping logistic-gain contrast / linear-light exposure / naive sRGB)
 import { METAL_MATERIAL } from "./metal_shader.js"; // physically-plausible analytic metal (brass/copper/steel/…; brushing, fake-env reflection, crevice-coupled patina/rust)
 import { METAL_STAMP_MATERIAL } from "./metal_stamp_shader.js"; // backdrop engraver/embosser (relights the metal behind; crevice-coupled aging in the groove)
@@ -124,7 +125,7 @@ export const MAGNIFY_MATERIAL = { id: "magnify", sampler: true, op: "magnifyBack
 //     darkening preset stands in LIGHTER, the exact defect the hook exists to end.
 // The legacy `glassBackdrop` op (the glass WIDGET, plugins/demo/glass.js) never went
 // through this registry at all and is untouched either way.
-const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, GOD_RAYS_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL, PATTERN_MATERIAL];
+const BUILTIN_MATERIALS = [CRT_MATERIAL, METABALLS_MATERIAL, FROSTED_MATERIAL, NOTE_MATERIAL, TACK_MATERIAL, RAYCAST_DITHER_MATERIAL, SKY_MATERIAL, SKY_SUN_MATERIAL, SKY_MOON_MATERIAL, SKY_CLOUDS_MATERIAL, LENS_FLARE_MATERIAL, GOD_RAYS_MATERIAL, MAGNIFY_MATERIAL, COMIC_MATERIAL, GLITCH_MATERIAL, MANDELBROT_MATERIAL, ATMOSPHERE_MATERIAL, BRIGHTNESS_CONTRAST_MATERIAL, METAL_MATERIAL, METAL_STAMP_MATERIAL, PATTERN_MATERIAL];
 
 const MATERIALS = Object.fromEntries(BUILTIN_MATERIALS.map((m) => [m.id, m]));
 
