@@ -11,12 +11,26 @@
  * the true ones — nothing kept rendering while the tab was shut.
  *
  * ── ONE JOB LIST, TWO BACKENDS, AND WHO KNOWS WHAT ────────────────────────────
- * There is exactly one job record per render and it lives on the SERVER, so the
- * Render Center lists both backends together with the same cancel/delete/play
- * affordances. But for a browser job the server cannot know the progress — the
- * frames are being made in a tab it has no handle on — so this module keeps the
- * live truth and the modal reads it from here. That is not a second system; it is
- * the honest answer to "who knows how far along this is".
+ * There is exactly one job record per render, so the Render Center lists both
+ * backends together with the same cancel/delete/play affordances. But for a browser
+ * job the RECORD's keeper cannot know the progress — the frames are being made in a
+ * tab it has no handle on — so this module keeps the live truth and the modal reads
+ * it from here. That is not a second system; it is the honest answer to "who knows
+ * how far along this is".
+ *
+ * ── WHERE THE RECORD LIVES (and the ONLY thing static mode changes) ───────────
+ * The frames have ALWAYS been made in this page. What used to require a server was
+ * the RECORD — the row, its state, its finished movie — and that made a whole
+ * working in-browser renderer unreachable on the static site, which showed the
+ * pipeline and then refused to run it (the user: "We spent a long time creating an
+ * in-browser rendering system. When we're on a static site, why not just hook up
+ * that file system and only have the Browser option?").
+ *
+ * So the record's home is now a boot-time choice — web/renderBackend.js, HTTP →
+ * projectApi, static → an IndexedDB renderings keyspace — and NOTHING in this file
+ * knows which it got. The five calls have the same names, arguments and record
+ * shape on both sides. There is no static branch in the frame walk, deliberately:
+ * one would be a second definition of what a render IS.
  *
  * ── THE SNAPSHOT ──────────────────────────────────────────────────────────────
  * The document is serialized ONCE at submit. That exact string is POSTed to the
@@ -85,7 +99,11 @@ import { deserialize, repairedDocument, printRepairReports } from "../core/docum
 import { planForParams, frameCount, exportVideo } from "./videoExport.js";
 import { createLetterboxFrameRenderer } from "./transitionRender.js";
 import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
-import { submitRenderJob, cancelRenderJob, postRenderJobOutput, listRenderJobs } from "./projectApi.js";
+// THE RECORD BACKEND, not projectApi directly. A browser render's frames have
+// always been made HERE; only the job RECORD was server-shaped, and that is now a
+// one-line choice (web/renderBackend.js) between the server and IndexedDB. Nothing
+// below this line knows which it got — see the header's "WHERE THE RECORD LIVES".
+import { renderRecordStore, selectableEncoders, defaultEncoderForMode } from "./renderBackend.js";
 import { ACTIVE_STATES } from "./renderJobView.js";
 import { createJobFrameEncoder, framesOnServer } from "./serverMp4Encoder.js";
 import { createWasmMp4Encoder, segmentFrames } from "./mp4Encoder.js";
@@ -176,7 +194,9 @@ async function buildEncoder(kind, job) {
  *
  * The upload encoder's finalize already did this (the server ran ffmpeg over the
  * PNGs and returned the record); the wasm encoder produced BYTES in the page, so
- * they are POSTed as the job's output.
+ * they are handed to the record store as the job's output. In HTTP mode that is a
+ * POST and the movie lands in renders/; in static mode it is an IndexedDB write and
+ * the movie lands in the renderings keyspace. Same call, same returned record.
  *
  * @param {string} kind Encoder kind.
  * @param {object} job Stored browser job.
@@ -186,7 +206,7 @@ async function buildEncoder(kind, job) {
 async function deliver(kind, job, product) {
   if (kind === "upload") return product; // already the finished job record
   live[job.id] = { ...live[job.id], phase: "uploading" };
-  return postRenderJobOutput(job.project, job.id, product.bytes, product.frames);
+  return renderRecordStore().postRenderJobOutput(job.project, job.id, product.bytes, product.frames);
 }
 
 /**
@@ -203,17 +223,23 @@ async function deliver(kind, job, product) {
  * @param {object} o.params width/height/fps/crf/samples/range/background/…
  * @param {object} o.doc The LIVE document; serialized here, once (the snapshot).
  * @param {object} o.registry Plugin registry, for rendering.
- * @param {string} [o.encoder] "upload" | "wasm" (default DEFAULT_BROWSER_ENCODER).
- * @returns {Promise<object>} the submitted server job record
+ * @param {string} [o.encoder] "upload" | "wasm" — must be one this MODE offers
+ *   (defaultEncoderForMode(); static mode has only "wasm").
+ * @returns {Promise<object>} the submitted job record
  */
-export async function submitBrowserRenderJob({ project, name, params, doc, registry, encoder = DEFAULT_BROWSER_ENCODER }) {
-  if (!BROWSER_ENCODERS.some((e) => e.value === encoder))
-    throw new Error(`browserRenderJobs: unknown encoder ${JSON.stringify(encoder)}`);
+export async function submitBrowserRenderJob({ project, name, params, doc, registry, encoder = defaultEncoderForMode() }) {
+  // CHECKED AGAINST THIS MODE, not against the full list. "upload" is a TRANSPORT —
+  // it POSTs a PNG per frame and asks a server to run ffmpeg — so in static mode it
+  // is not a slower option, it is an impossible one. Caught here, at submit, rather
+  // than at frame zero: the alternative is a job record, a lease and a wasm worker
+  // all created for a render whose first frame cannot go anywhere.
+  if (!selectableEncoders().some((e) => e.value === encoder))
+    throw new Error(`browserRenderJobs: encoder ${JSON.stringify(encoder)} is not available here — this page offers ${selectableEncoders().map((e) => e.value).join(", ")}.`);
   // ONE serialization, used for BOTH snapshots — see the header.
   const docJson = JSON.stringify(doc);
   const plan = planForParams(doc, params);
   const framesTotal = frameCount(plan.duration, params.fps);
-  const job = await submitRenderJob(project, {
+  const job = await renderRecordStore().submitRenderJob(project, {
     name, backend: "client", framesTotal, params, doc: JSON.parse(docJson),
   });
   const record = await putBrowserJob({
@@ -327,9 +353,9 @@ export async function driveBrowserJob(record, registry, signal = undefined) {
     const message = String(e?.message ?? e);
     await updateBrowserJob(job.id, { driverId: null, heartbeatAt: 0, error: message })
       .catch((err) => console.error(`Could not record the failure on browser render job ${job.id}:`, err));
-    // An abort is a user action; the server record becomes "cancelled" either way,
-    // and the local record stays so the user can see why.
-    await cancelRenderJob(job.project, job.id)
+    // An abort is a user action; the job record becomes "cancelled" either way,
+    // and the local resume record stays so the user can see why.
+    await renderRecordStore().cancelRenderJob(job.project, job.id)
       .catch((err) => console.error(`Could not mark render job ${job.id} cancelled:`, err));
     throw e;
   } finally {
@@ -413,10 +439,16 @@ export async function forgetBrowserRenderJob(jobId) {
 }
 
 /**
- * Command (async). Drop local progress for browser jobs the server no longer has
- * as active — a job that finished, was cancelled or was deleted elsewhere has no
- * use for resume data, and keeping it would let the UI offer to resume something
- * that is over.
+ * Command (async). Drop local RESUME data for browser jobs the record store no
+ * longer has as active — a job that finished, was cancelled or was deleted has no
+ * use for a document snapshot and half-encoded segments, and keeping them would let
+ * the UI offer to resume something that is over.
+ *
+ * Note the two databases this straddles, because they are easy to confuse: the
+ * RESUME data (snapshot + segments + lease) is web/browserJobStore.js's
+ * `powerrp-browser-renders`; the JOB RECORD is the server's, or in static mode
+ * web/localRenderStore.js's `powerrp-renderings`. This drops the former against the
+ * latter's verdict, in either mode.
  *
  * Returns the ids it dropped, so a caller can report rather than guess.
  *
@@ -424,8 +456,8 @@ export async function forgetBrowserRenderJob(jobId) {
  * @returns {Promise<string[]>}
  */
 export async function pruneFinishedBrowserJobs(project) {
-  const [stored, serverJobs] = await Promise.all([listBrowserJobs(project), listRenderJobs(project)]);
-  const active = new Set(serverJobs.filter((j) => ACTIVE_STATES.includes(j.state)).map((j) => j.id));
+  const [stored, jobs] = await Promise.all([listBrowserJobs(project), renderRecordStore().listRenderJobs(project)]);
+  const active = new Set(jobs.filter((j) => ACTIVE_STATES.includes(j.state)).map((j) => j.id));
   const dropped = [];
   for (const job of stored) {
     if (active.has(job.id)) continue;

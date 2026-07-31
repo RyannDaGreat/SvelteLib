@@ -156,7 +156,12 @@ export function settingsFromJob(job, slideCount, camW, camH) {
  *  clamp; the deck-relative range clamps against slideCount at LOAD time (the
  *  deck may have shrunk since the settings were saved). */
 const FIELD_RULES = {
-  backend: (v, d) => (["server", "browser"].includes(v) ? v : d),
+  // THE BACKENDS ARE PASSED IN, exactly as the encoders are, and for the same
+  // reason: which ones exist depends on the STORAGE MODE, and this module is leaf-
+  // pure so it cannot ask. In static mode only "browser" is offered, and a "server"
+  // persisted by an HTTP session must fall back rather than arm a submit that has
+  // nowhere to go. A hardcoded ["server", "browser"] here would have let it through.
+  backend: (v, d, _slideCount, _encoders, backends) => (backends.includes(v) ? v : d),
   resolution: (v, d) =>
     (v === "camera" || v === "custom" || STANDARD_RESOLUTIONS.some((r) => r.value === v) ? v : d),
   customW: (v, d) => (Number.isFinite(v) ? evenDim(v) : d),
@@ -188,6 +193,9 @@ const FIELD_RULES = {
  *   slideCount (number): current deck's slide count (bounds the range fields)
  *   encoders (string[]): valid browserEncoder values (browserJobView's list —
  *     passed in, not imported, to keep this module leaf-pure)
+ *   backends (string[]): valid backend values for THIS STORAGE MODE — both in
+ *     HTTP mode, only ["browser"] on a static site. Defaults to both so an
+ *     existing caller that has not been told about modes behaves as before.
  *
  * Returns:
  *   object — same keys as `defaults`
@@ -195,10 +203,14 @@ const FIELD_RULES = {
  * @example sanitizeSettings(null, {fps: 30}, 5, []) // {fps: 30}
  * @example sanitizeSettings({fps: 9999, junk: 1}, {fps: 30}, 5, []) // {fps: 120}
  * @example sanitizeSettings({backend: "cloud"}, {backend: "server"}, 5, []) // {backend: "server"}
+ * @example
+ * // STATIC MODE: a "server" backend persisted by an HTTP session falls back to the
+ * // only one that exists here, instead of arming a submit with no server behind it.
+ * sanitizeSettings({backend: "server"}, {backend: "browser"}, 5, ["wasm"], ["browser"]) // {backend: "browser"}
  * @example sanitizeSettings({rangeTo: 99}, {rangeTo: 5}, 5, []) // {rangeTo: 5}
  * @example sanitizeSettings({name: 7}, {name: "Render", fps: 30}, 5, []) // {name: "Render", fps: 30}
  */
-export function sanitizeSettings(raw, defaults, slideCount, encoders) {
+export function sanitizeSettings(raw, defaults, slideCount, encoders, backends = ["server", "browser"]) {
   const out = {};
   for (const [key, dflt] of Object.entries(defaults)) {
     const rule = FIELD_RULES[key];
@@ -206,7 +218,7 @@ export function sanitizeSettings(raw, defaults, slideCount, encoders) {
     if (key === "name") {
       out[key] = typeof value === "string" && value.trim() ? value : dflt;
     } else if (rule) {
-      out[key] = value === undefined ? dflt : rule(value, dflt, slideCount, encoders);
+      out[key] = value === undefined ? dflt : rule(value, dflt, slideCount, encoders, backends);
     } else {
       out[key] = dflt; // unknown-to-the-sanitizer field: fail safe to the default
     }
@@ -223,21 +235,22 @@ export function sanitizeSettings(raw, defaults, slideCount, encoders) {
  * @param {object} defaults - see sanitizeSettings
  * @param {number} slideCount - see sanitizeSettings
  * @param {string[]} encoders - see sanitizeSettings
+ * @param {string[]} [backends] - see sanitizeSettings
  * @returns {object} A complete settings object
  *
  * @example loadSettings({getItem: () => null}, {fps: 30}, 5, []) // {fps: 30}
  * @example loadSettings({getItem: () => '{"fps": 24}'}, {fps: 30}, 5, []) // {fps: 24}
  */
-export function loadSettings(storage, defaults, slideCount, encoders) {
+export function loadSettings(storage, defaults, slideCount, encoders, backends = ["server", "browser"]) {
   const text = storage.getItem(SETTINGS_KEY);
-  if (text === null) return sanitizeSettings(null, defaults, slideCount, encoders);
+  if (text === null) return sanitizeSettings(null, defaults, slideCount, encoders, backends);
   let raw = null;
   try {
     raw = JSON.parse(text);
   } catch (e) {
     console.error(`Render Center: persisted settings are not JSON (${e.message}) — using defaults.`);
   }
-  return sanitizeSettings(raw, defaults, slideCount, encoders);
+  return sanitizeSettings(raw, defaults, slideCount, encoders, backends);
 }
 
 /**

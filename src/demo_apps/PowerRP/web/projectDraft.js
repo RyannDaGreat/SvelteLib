@@ -74,6 +74,9 @@
 import { adoptedArchiveRefs } from "./assetLocalize.js";
 import { localAssetStore } from "./assetStore.js";
 import { DRAFT_KEY, draftDisplayName } from "./draftKeys.js";
+// A draft's finished RENDERS are keyed by the same project key its assets are, so
+// re-staging must clear them for the same reason — see stageDraftAssets.
+import { clearProjectRenderings } from "./localRenderStore.js";
 import { mimeForAsset, parseProjectZip } from "./projectZip.js";
 
 // The pure key/name/share helpers are re-exported so a consumer needs ONE import
@@ -89,11 +92,36 @@ export { DRAFT_KEY, DRAFT_KEY_PREFIX, DRAFT_STATE_KEY, SAVE_NEEDS_SAVE_AS, UNTIT
  * the same key would make the new draft's Asset Explorer show a union of two
  * decks, and Save would then commit files the user never opened.
  *
+ * ITS RENDERINGS GO WITH THEM, for exactly that reason. A finished movie is keyed
+ * by the project key too (web/localRenderStore.js), so the previous draft's renders
+ * would otherwise be listed in the Render Center under a DIFFERENT DECK — with the
+ * new draft's name at the top of the pane and someone else's movie under it. They
+ * are also the largest thing in this keyspace by far, so not clearing them would
+ * accumulate gigabytes across drafts the user has long since closed.
+ *
+ * BUT IT IS NOT AWAITED, and that is a measured decision rather than a shortcut.
+ * The renderings live in a SECOND IndexedDB database, so awaiting the clear puts a
+ * database OPEN on the critical path between "the user dropped a zip" and "the deck
+ * is on screen" — and this function is already the slowest thing there. Adding it
+ * was enough to make two draft-open probes flaky against their timings, which is a
+ * real user-facing slowdown, not merely a test artifact.
+ *
+ * NOTHING DEPENDS ON THE ORDER. The renderings are read by ONE surface, the Render
+ * Center, which the user cannot have open at this instant (opening a draft closes
+ * the modal) and which re-reads the list on a 1 s poll when they do. So a clear that
+ * lands a few hundred milliseconds late is invisible; a clear that blocks the first
+ * paint is not. The failure is REPORTED, never swallowed — a stale render surviving
+ * into the next draft is a real (if cosmetic) wrong, and silence about it would let
+ * the keyspace grow forever with no trace of why.
+ *
  * @param {Array<{name: string, bytes: Uint8Array}>} assets From parseProjectZip.
  * @returns {Promise<number>} How many assets are staged.
  */
 export async function stageDraftAssets(assets) {
   await localAssetStore.clearProject(DRAFT_KEY);
+  clearProjectRenderings(DRAFT_KEY)
+    .then((n) => { if (n) console.info(`PowerRP: dropped ${n} rendering(s) belonging to the previous draft — they were that deck's movies, not this one's.`); })
+    .catch((e) => console.error("PowerRP: could not drop the previous draft's renderings; they may still be listed in the Render Center:", e));
   for (const a of assets) await localAssetStore.put(DRAFT_KEY, new Blob([a.bytes], { type: mimeForAsset(a.name) }), a.name);
   // Object URLs must exist BEFORE the first paint: resolveUrl is synchronous by
   // contract (assetStore.js), so an unprimed draft renders every image as the

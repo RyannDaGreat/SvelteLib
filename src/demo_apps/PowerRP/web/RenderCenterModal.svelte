@@ -20,15 +20,50 @@
   WHY THIS REPLACED "Export as MP4". The old dialog WAS the render: it held the
   frame loop and the progress in component state, so closing it, refreshing, or an
   editor hot-reload destroyed an in-flight export with no way to find it again —
-  a five-hour render lost to a stray reload. A render is now a JOB THE SERVER
-  OWNS. Submitting hands over a snapshot and returns; this dialog then knows
-  nothing the server cannot re-tell it, which is exactly why it can be closed and
-  reopened (or opened in a different tab tomorrow) and show the same truth.
-  Everything on the right is POLLED, never remembered.
+  a five-hour render lost to a stray reload. A render is now a JOB WITH A RECORD
+  OUTSIDE THIS COMPONENT. Submitting hands over a snapshot and returns; this dialog
+  then knows nothing the record store cannot re-tell it, which is exactly why it can
+  be closed and reopened (or opened in a different tab tomorrow) and show the same
+  truth. Everything on the right is POLLED, never remembered.
 
-  BACKENDS. `backend` is a FIELD on one job rather than a second system, because the
-  only thing that differs is WHO PRODUCES THE PIXELS — both end in the same job
-  record, the same renders/ folder and this same list:
+  ── TWO MODES, AND STATIC MODE IS NOT A DEGRADED ONE ────────────────────────────
+  THE RULING (user, looking at the static site showing "Encoded by: Upload frames",
+  a pink "Render jobs need the PowerRP project server" and a dead "Submit Render Job
+  — needs a server" button): "We spent a long time creating an in-browser rendering
+  system. When we're on a static site, why not just hook up that file system and only
+  have the Browser option? Why even have the upload-frames option and why force a
+  renderings list if we could just do it all in the browser? The storage here should
+  be capable of holding such videos, right?"
+
+  It is. The frames were ALWAYS made in this page for a Browser render; the only
+  server-shaped thing was the RECORD, and that now has an IndexedDB home
+  (web/localRenderStore.js) chosen at boot by web/renderBackend.js. So in static mode
+  this dialog is not a reduced version of itself — it is the browser pipeline, whole:
+
+    Rendered by  — fixed to Browser. Shown as a STATED FACT, not a one-option
+                   dropdown: a picker you cannot pick from is furniture that looks
+                   like a control, and the user's objection was precisely to being
+                   offered choices that are not choices.
+    Encoded by   — "Encode in page" only. "Upload frames" is a TRANSPORT (a PNG per
+                   frame POSTed to a server that then runs ffmpeg), so with no server
+                   it cannot work at all — it is not a slower alternative here, it is
+                   an absent one. renderBackend.selectableEncoders() is the authority.
+    Render       — a real button that runs the pipeline. Not "Submit Render Job":
+                   nothing is being submitted anywhere, and the word promised a
+                   detachment this mode does not have.
+    Renderings   — read from browser storage, per project (or draft) key. The pink
+                   error is GONE, and it should never have been shown: it was the
+                   truth about server JOBS, but the LIST had no business asking a
+                   server in a mode where the renders are local.
+
+  What does NOT change in static mode: the frame walk, the motion blur, the letterbox
+  composite, the encoder, pause/resume across a closed tab. Those are the same modules
+  either way, which is the whole reason this was plumbing and not a new renderer.
+
+  BACKENDS (HTTP mode; static mode has only the second). `backend` is a FIELD on one
+  job rather than a second system, because the only thing that differs is WHO
+  PRODUCES THE PIXELS — both end in the same job record, the same renders/ folder and
+  this same list:
     Server  — detached; survives a closed laptop, a refresh, even a server
               restart. It renders in a headless browser running THIS app, so it
               draws everything this page draws (media, LaTeX, Mermaid, motion
@@ -71,7 +106,7 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { cameraRectAt } from "./cameraFrame.js";
   import { humanReadableFileSize } from "./fileSize.js";
-  import { DEFAULT_FPS, DEFAULT_HOLD_SECONDS, DEFAULT_SAMPLES } from "./videoExport.js";
+  import { DEFAULT_FPS, DEFAULT_HOLD_SECONDS, DEFAULT_SAMPLES, planForParams, frameCount } from "./videoExport.js";
   // The form's pure vocabulary: bounds, codec constants, the job→settings
   // mapping and the persisted-settings sanitizer live in one doctested module.
   import {
@@ -79,8 +114,12 @@
     MIN_DIM, MAX_DIM, MIN_FPS, MAX_FPS, MAX_HOLD_SECONDS, MIN_SAMPLES, MAX_SAMPLES,
     STANDARD_RESOLUTIONS, evenDim, settingsFromJob, sanitizeSettings, loadSettings, saveSettings,
   } from "./renderCenterSettings.js";
-  import { listRenderJobs, cancelRenderJob, deleteRenderJob, markRenderJobSeen, renderUrl } from "./projectApi.js";
-  import { UNAVAILABLE_IN_STATIC } from "./storageMode.js"; // the by-name reason render jobs need a server
+  // THE RECORD STORE, not projectApi directly — HTTP mode gets the server, static
+  // mode gets IndexedDB, and every call below is identical either way. See the
+  // header's "TWO MODES" and web/renderBackend.js.
+  import { renderRecordStore, rendersAreLocal, selectableEncoders, defaultEncoderForMode, usableEncoder } from "./renderBackend.js";
+  import { renderUrl } from "./projectApi.js";
+  import { renderingBlob, renderQuotaWarning } from "./localRenderStore.js";
   // The job vocabulary (active? unseen? how far? what does this state MEAN?)
   // lives in one pure module because the toolbar badge reads the same
   // predicates — two copies would be two chances to disagree about what the
@@ -89,8 +128,7 @@
   // A browser job's progress and its paused/rendering distinction come from the
   // browser, not the server — see the header's "WHO KNOWS THE PROGRESS".
   import {
-    BROWSER_ENCODERS, DEFAULT_BROWSER_ENCODER, browserJobStatuses,
-    forgetBrowserRenderJob, pruneFinishedBrowserJobs,
+    browserJobStatuses, forgetBrowserRenderJob, pruneFinishedBrowserJobs,
   } from "./browserRenderJobs.js";
   import { browserJobStatusLine, browserJobProgress, canResume } from "./browserJobView.js";
 
@@ -168,7 +206,20 @@
   const camW = evenDim(cam.w);
   const camH = evenDim(cam.h);
   const slideCount = untrack(() => app.doc.slides.length);
+  // THE PROJECT KEY, and it is what keys the renderings too. For a saved project it
+  // is its name; for an UNSAVED DRAFT it is the reserved draft key, so a draft's
+  // renders live with the draft exactly the way its assets do (see
+  // web/localRenderStore.js's keying note).
   const project = untrack(() => app.projectName());
+  // The deck's HUMAN name for the heading. `project` is a storage key and for a
+  // draft it reads "~draft/current", which is not what to put in front of a user.
+  const projectLabel = untrack(() => app.projectDisplayName());
+
+  // ── MODE: a BOOT CONSTANT, read once, exactly as the rest of the app reads
+  // isStatic(). Not $derived: the storage mode cannot change while the page is
+  // open, and a reactive read would invite a half-server, half-local dialog.
+  const LOCAL_RENDERS = rendersAreLocal();
+  const ENCODERS = selectableEncoders();
 
   const RESOLUTIONS = [
     { value: "camera", label: `Camera size — ${camW}×${camH}`, w: camW, h: camH },
@@ -202,7 +253,14 @@
   // row is where this dialog already puts consequences (see the CRF, motion-blur
   // and letterbox rows), it is readable without hovering anything, and it can say
   // more than a row ever could.
-  const BACKENDS = [
+  //
+  // IN STATIC MODE THE SERVER ENTRY IS ABSENT, not disabled: there is no detached
+  // process to hand a snapshot to, and "Browser" then stops being a choice at all
+  // (see the header's TWO MODES). The Browser entry's hint changes with it, because
+  // the sentence "rather than the server's" compares against something that does not
+  // exist here — and because the thing a user most needs to know in this mode is
+  // where the finished movie goes.
+  const ALL_BACKENDS = [
     {
       value: "server",
       label: "Server",
@@ -211,9 +269,13 @@
     {
       value: "browser",
       label: "Browser",
-      hint: "THIS PAGE renders the frames, so the render uses your GPU rather than the server's.",
+      hint: LOCAL_RENDERS
+        ? "THIS PAGE renders and encodes the whole movie — no server is involved at any point. The finished .mp4 is kept in this browser's storage, listed on the right, and downloadable from there. Closing the tab PAUSES a render; reopen this deck and press Resume to continue."
+        : "THIS PAGE renders the frames, so the render uses your GPU rather than the server's.",
     },
   ];
+  const BACKENDS = LOCAL_RENDERS ? ALL_BACKENDS.filter((b) => b.value === "browser") : ALL_BACKENDS;
+  const BACKEND_VALUES = BACKENDS.map((b) => b.value);
 
   // The form's initial share of the dialog's width, and the pixel floor the
   // divider may not squash either pane past.
@@ -239,8 +301,11 @@
   // the form's persistence across close/reopen — and across reloads — is the
   // localStorage round-trip below, sanitized on the way back in.
   const FORM_DEFAULTS = {
-    name: project,
-    backend: "server",
+    name: projectLabel,
+    // "server" is not a choice in static mode and not even a stored one — the whole
+    // pipeline is this page. A persisted "server" from an HTTP session opened on the
+    // static site would otherwise sit in the form and submit into nothing.
+    backend: LOCAL_RENDERS ? "browser" : "server",
     resolution: "camera",
     customW: camW,
     customH: camH,
@@ -254,10 +319,13 @@
     holdSeconds: DEFAULT_HOLD_SECONDS,
     background: "#000000",
     samples: DEFAULT_SAMPLES, // temporal subsamples (1 = no motion blur)
-    browserEncoder: DEFAULT_BROWSER_ENCODER,
+    browserEncoder: defaultEncoderForMode(),
   };
-  const ENCODER_VALUES = BROWSER_ENCODERS.map((e) => e.value);
-  const savedSettings = loadSettings(localStorage, FORM_DEFAULTS, slideCount, ENCODER_VALUES);
+  // The sanitizer is handed the encoders THIS MODE offers, so a settings blob
+  // written by an HTTP session ("upload") resolves to the one that works here
+  // instead of arming a submit that cannot encode a frame.
+  const ENCODER_VALUES = ENCODERS.map((e) => e.value);
+  const savedSettings = loadSettings(localStorage, FORM_DEFAULTS, slideCount, ENCODER_VALUES, BACKEND_VALUES);
 
   let jobName = $state(savedSettings.name);
   let backend = $state(savedSettings.backend);
@@ -317,7 +385,7 @@
    *  values). Flashes the row's button as feedback, like copyPath. */
   let copiedSettings = $state(null);
   function copySettings(job) {
-    applySettings(sanitizeSettings(settingsFromJob(job, slideCount, camW, camH), currentSettings(), slideCount, ENCODER_VALUES));
+    applySettings(sanitizeSettings(settingsFromJob(job, slideCount, camW, camH), currentSettings(), slideCount, ENCODER_VALUES, BACKEND_VALUES));
     copiedSettings = job.id;
     setTimeout(() => { if (copiedSettings === job.id) copiedSettings = null; }, COPY_FLASH_MS);
   }
@@ -360,18 +428,13 @@
    *  backend that has gone away must be visible, not a list that silently stops
    *  updating. */
   async function refresh() {
-    // STATIC MODE: render jobs are a server-owned noun, so there is no list to
-    // read. The pane says WHY, by name, instead of showing the fetch error a
-    // request to a nonexistent route would produce — "a visible notice, not a
-    // 404". The sentence is UNAVAILABLE_IN_STATIC's, so the refusal the code
-    // would raise and the text the user reads are the same string.
-    if (app.isStatic()) {
-      jobs = [];
-      listError = UNAVAILABLE_IN_STATIC.renderJobs;
-      return;
-    }
+    // NO STATIC BRANCH, and its removal is the user-visible half of this whole
+    // change. This used to short-circuit to a pink "Render jobs need the PowerRP
+    // project server" — which was TRUE OF SERVER JOBS and false of this list. The
+    // renderings live in browser storage in static mode, so asking for them is the
+    // same call it always was; renderRecordStore() decides who answers it.
     try {
-      jobs = await listRenderJobs(project);
+      jobs = await renderRecordStore().listRenderJobs(project);
       browserStatus = await browserJobStatuses(project);
       listError = null;
     } catch (e) {
@@ -380,21 +443,18 @@
   }
 
   refresh();
-  // Resume data for a job the server has already finished (or lost) is dead weight
-  // AND a lie — it would let the dialog offer to resume something that is over. One
-  // sweep per open, reported rather than silent.
-  // Skipped in static mode: pruning compares local resume data against the
-  // SERVER's job list, and with no server there is no list to compare against —
-  // asking would just log a 404 for a route that cannot exist here.
-  if (!app.isStatic()) {
-    pruneFinishedBrowserJobs(project)
-      .then((dropped) => { if (dropped.length) console.info(`Render Center: dropped local resume data for ${dropped.length} finished render job(s).`); })
-      .catch((e) => console.error("Render Center: could not prune finished browser render jobs:", e));
-  }
-  // No poll in static mode: refresh() is a constant there (the same
-  // unavailability notice every time), so re-running it on a timer would only
-  // burn wakeups. The unavailability is stated once, on open.
-  if (!app.isStatic()) poll = setInterval(refresh, POLL_MS);
+  // Resume data for a job the record store has already finished (or lost) is dead
+  // weight AND a lie — it would let the dialog offer to resume something that is
+  // over. One sweep per open, reported rather than silent. It runs in BOTH modes
+  // now: it compares local resume data against a job list, and static mode has one.
+  pruneFinishedBrowserJobs(project)
+    .then((dropped) => { if (dropped.length) console.info(`Render Center: dropped local resume data for ${dropped.length} finished render job(s).`); })
+    .catch((e) => console.error("Render Center: could not prune finished browser render jobs:", e));
+  // POLLED IN BOTH MODES. In HTTP mode the poll is how server progress arrives; in
+  // static mode the frames are being made in this very page and `live` is updated
+  // between them, so the poll is what moves the bar. Same interval, same reason:
+  // this dialog holds nothing and re-asks for everything.
+  poll = setInterval(refresh, POLL_MS);
   onDestroy(() => clearInterval(poll));
 
   // ── Derived effective params ──────────────────────────────────────────────
@@ -404,6 +464,16 @@
   let crf = $derived(codecQuality === "custom" ? clampCrf(customCrf) : presetCrf(codecQuality));
   let startIndex = $derived(rangeMode === "all" ? 0 : clampSlide(rangeFrom) - 1);
   let endIndex = $derived(rangeMode === "all" ? slideCount - 1 : clampSlide(rangeTo) - 1);
+  // THE TIMELINE'S LENGTH, from the SAME pure planner the render itself walks
+  // (videoExport.planForParams). Not an approximation of it: the summary line, the
+  // storage estimate and the frames the pipeline actually produces must agree, and
+  // re-deriving "range x hold plus transitions" by hand here would be a second
+  // definition of how long a render is. The doc is read untracked-at-mount (`cam`
+  // and `slideCount` above are too) — this modal remounts on every open.
+  let estimatedDuration = $derived(
+    planForParams(app.doc, { startIndex, endIndex, includeTransitions, holdSeconds }).duration,
+  );
+  let estimatedFrames = $derived(frameCount(estimatedDuration, fps));
   // (Motion blur used to be Browser-backend-only: the server rendered in bare node
   // with no canvas to average sub-frames on. The server worker now drives the SAME
   // frame sampler in a real headless browser, so both backends blur identically and
@@ -420,9 +490,41 @@
     const next = !expanded(job);
     overrides = { ...overrides, [job.id]: next };
     if (next && !job.seen && !jobIsActive(job)) {
-      markRenderJobSeen(project, job.id).then(refresh).catch((e) => (listError = String(e?.message ?? e)));
+      renderRecordStore().markRenderJobSeen(project, job.id).then(refresh).catch((e) => (listError = String(e?.message ?? e)));
     }
   }
+
+  // ── QUOTA HONESTY (static mode only) ──────────────────────────────────────
+  // A long 1080p render is a real number of megabytes and browser storage is not a
+  // disk. The user must hear the estimate BEFORE spending twenty minutes producing
+  // it — not as a refused write afterwards, which in this mode loses the movie
+  // outright (there are no frames on a server to finish from).
+  //
+  // IT WARNS AND NEVER REFUSES. The estimate is a generous guess over content whose
+  // real H.264 rate varies by more than 10x, and browsers granularize their quota
+  // numbers to resist fingerprinting — so a hard block would stop legitimate
+  // renders on the strength of a number that is admittedly approximate. The
+  // sentence is localRenderStore.quotaWarning's; the Render button beside it stays
+  // live. Recomputed as the form changes, so it tracks resolution/fps/range edits.
+  let quotaNotice = $state(null);
+  $effect(() => {
+    if (!LOCAL_RENDERS) return;
+    // Read every dependency BEFORE the await — an $effect only tracks what it
+    // touches synchronously, and reading these after it would make the notice stop
+    // updating when the form changed.
+    const shape = { width, height, fps, durationSeconds: estimatedDuration };
+    let live = true;
+    renderQuotaWarning(shape)
+      .then((text) => { if (live) quotaNotice = text; })
+      // A diagnostic readout must not break the dialog it sits in, but it must not
+      // vanish silently either: the console gets the reason and the pane says the
+      // check could not be made rather than implying it passed.
+      .catch((e) => {
+        console.error("Render Center: could not estimate storage headroom:", e);
+        if (live) quotaNotice = `Could not check whether this render will fit in browser storage: ${String(e?.message ?? e)}`;
+      });
+    return () => { live = false; };
+  });
 
   /** Command (async). Submit the form as a job. On success the right pane picks
    *  it up on the next poll — this dialog holds nothing. */
@@ -436,7 +538,11 @@
         // The dropdown says "browser" because that is what the user is choosing;
         // the wire word is "client".
         backend: backend === "browser" ? "client" : "server",
-        encoder: browserEncoder, // ignored by the server backend
+        // SUBSTITUTED, not passed through, for the one case the sanitizer cannot
+        // cover: settings persisted while the form was mounted in an HTTP session,
+        // then reused here. The user asked for "encode this render", and in static
+        // mode there is exactly one way to do that — the row above says which.
+        encoder: usableEncoder(browserEncoder, ENCODERS, defaultEncoderForMode()), // ignored by the server backend
         // NO `quality` FIELD HERE. One used to be sent as "full" and read by
         // NOBODY — not server.py, not renderJobPage.js, not browserRenderJobs.js.
         // A dead field that looks live is a trap: the next person adding a
@@ -461,7 +567,7 @@
    *  offer to continue. */
   async function cancel(job) {
     try {
-      await cancelRenderJob(project, job.id);
+      await renderRecordStore().cancelRenderJob(project, job.id);
       if (job.backend === "client") await forgetBrowserRenderJob(job.id);
       await refresh();
     } catch (e) {
@@ -473,7 +579,12 @@
    *  browser job, any resume data still held here). */
   async function remove(job) {
     try {
-      await deleteRenderJob(project, job.id);
+      // Revoke the row's object URL BEFORE the record goes: it is minted from a
+      // blob that is about to stop existing, and a leaked blob: URL pins the whole
+      // movie in memory for the life of the page (the exact leak
+      // localAssetStore's revokeUrl exists to prevent, in the same shape).
+      dropLocalUrl(job.id);
+      await renderRecordStore().deleteRenderJob(project, job.id);
       if (job.backend === "client") await forgetBrowserRenderJob(job.id);
       await refresh();
     } catch (e) {
@@ -499,6 +610,80 @@
     copiedPath = job.id;
     setTimeout(() => { if (copiedPath === job.id) copiedPath = null; }, COPY_FLASH_MS);
   }
+
+  // ── A LOCAL RENDERING'S URL ───────────────────────────────────────────────
+  // In HTTP mode a finished movie has a URL the server serves (renderUrl). A
+  // rendering in browser storage has none until one is MINTED from its blob, so
+  // this mints one per row, lazily and exactly once, and revokes it on delete and
+  // on close.
+  //
+  // WHY LAZILY, AND ONLY FOR AN EXPANDED ROW: a blob: URL pins its blob for as long
+  // as it lives, so minting one per finished render on open would hold every movie
+  // in the project in memory at once — the same reason rows collapse by default
+  // (see the header). Memoized rather than minted per read because a `src` is read
+  // on every re-render of the row, and a fresh URL each time would restart the
+  // <video> element's load a second at a time.
+
+  /** jobId → blob: URL for renderings in browser storage. Page-lifetime memo,
+   *  cleared on delete (dropLocalUrl) and on unmount. */
+  const localUrls = new Map();
+  /** jobIds whose blob is currently being fetched, so the poll's re-render cannot
+   *  start a second read of the same movie while the first is in flight. */
+  const localUrlPending = new Set();
+  /** A $state counter bumped when a URL lands, so the row re-renders and picks it
+   *  up. The Map itself is deliberately NOT $state — a reactive Map holding blob:
+   *  URLs would be a proxy around values the <video> src reads on every frame. */
+  let localUrlEpoch = $state(0);
+
+  /**
+   * Query (async on a miss; reads IndexedDB and mints an object URL). The URL for a
+   * finished rendering's movie, or null while it is still being read. A null return
+   * is a transient state, not an error: the row shows the meta line without a
+   * <video> until the next epoch bump, milliseconds later.
+   */
+  function localUrl(jobId) {
+    const url = localUrls.get(jobId);
+    if (url) return url;
+    if (localUrlPending.has(jobId)) return null;
+    localUrlPending.add(jobId);
+    renderingBlob(project, jobId)
+      .then((blob) => {
+        localUrls.set(jobId, URL.createObjectURL(blob));
+        localUrlPending.delete(jobId);
+        localUrlEpoch += 1;
+      })
+      .catch((e) => {
+        localUrlPending.delete(jobId);
+        // A finished row whose bytes cannot be read is a real failure the user must
+        // see — the movie is gone, and silence would leave a Download button that
+        // does nothing.
+        listError = `Could not read the finished render from browser storage: ${String(e?.message ?? e)}`;
+      });
+    return null;
+  }
+
+  /**
+   * Query. `localUrl(jobId)`, with the epoch taken as an argument so the template's
+   * read of it is a real, visible dependency rather than a comma-expression trick.
+   * The epoch's VALUE is unused — its only job is to be read, so that bumping it
+   * re-runs the row.
+   */
+  function localUrlAt(_epoch, jobId) {
+    return localUrl(jobId);
+  }
+
+  /** Command. Revoke and forget one rendering's object URL. */
+  function dropLocalUrl(jobId) {
+    const url = localUrls.get(jobId);
+    if (!url) return;
+    URL.revokeObjectURL(url);
+    localUrls.delete(jobId);
+  }
+
+  // EVERY minted URL is revoked when the dialog closes. The modal remounts on each
+  // open, so without this a user who opened the Render Center five times would be
+  // holding five copies of every movie they looked at.
+  onDestroy(() => { for (const id of [...localUrls.keys()]) dropLocalUrl(id); });
 </script>
 
 <div class="render-center">
@@ -531,7 +716,17 @@
          in this dialog; the Inspector's rows are plain <div>s and never had it. -->
     <div class="render-center-row">
       <span class="render-center-label">Rendered by</span>
-      <span class="render-center-control"><Dropdown items={BACKENDS} bind:value={backend} /></span>
+      <!-- ONE OPTION IS STATED, NOT OFFERED. In static mode the browser is the only
+           renderer, and a dropdown with a single entry is furniture that looks like a
+           control — the user's objection ("only have the Browser option") was to
+           exactly that kind of decoration. So the value is printed. -->
+      <span class="render-center-control">
+        {#if BACKENDS.length === 1}
+          <span class="render-center-fixed">{BACKENDS[0].label}</span>
+        {:else}
+          <Dropdown items={BACKENDS} bind:value={backend} />
+        {/if}
+      </span>
     </div>
     <!-- The chosen backend's consequence, in prose, where the row could not say
          it. Always visible: "will this still be going when I come back" is the
@@ -540,12 +735,21 @@
     {#if backend === "browser"}
       <div class="render-center-row">
         <span class="render-center-label">Encoded by</span>
-        <span class="render-center-control"><Dropdown items={BROWSER_ENCODERS} bind:value={browserEncoder} /></span>
+        <!-- Same rule as the row above. In static mode the ONLY encoder is the
+             in-page one: "Upload frames" is a transport to a server, not a slower
+             alternative, so it is absent rather than disabled. -->
+        <span class="render-center-control">
+          {#if ENCODERS.length === 1}
+            <span class="render-center-fixed">{ENCODERS[0].label}</span>
+          {:else}
+            <Dropdown items={ENCODERS} bind:value={browserEncoder} />
+          {/if}
+        </span>
       </div>
       <p class="render-center-hint">
         Closing this tab PAUSES a browser render — it does not keep going. Reopen the
         project and press Resume to continue from
-        {BROWSER_ENCODERS.find((e) => e.value === browserEncoder)?.resume} .
+        {ENCODERS.find((e) => e.value === usableEncoder(browserEncoder, ENCODERS, defaultEncoderForMode()))?.resume} .
       </p>
     {/if}
 
@@ -641,31 +845,41 @@
       </span>
     </label>
 
+    <!-- The FRAME COUNT is here because it is the number that makes a render's cost
+         concrete, and in static mode it is also the one this page is about to spend
+         its own time on. Both numbers come from videoExport's own planner, so they
+         cannot disagree with what gets rendered. -->
     <p class="render-center-summary">
-      Output: {width}×{height} · {fps} fps · CRF {crf} (lower = higher quality)
+      Output: {width}×{height} · {fps} fps · CRF {crf} (lower = higher quality) ·
+      {estimatedFrames} frames ({estimatedDuration.toFixed(1)}s)
     </p>
 
+    <!-- THE QUOTA WARNING. Static mode only, and it NEVER blocks the button beside
+         it — see the `quotaNotice` effect for why a hard refusal on an admittedly
+         rough estimate would be the wrong trade. -->
+    {#if quotaNotice}
+      <p class="render-center-warning-text render-center-quota">
+        <iconify-icon icon="mdi:database-alert-outline" width="14" height="14"></iconify-icon>
+        {quotaNotice}
+      </p>
+    {/if}
+
     {#if submitError}
-      <p class="render-center-error">Submit failed: {submitError}</p>
+      <p class="render-center-error">
+        {LOCAL_RENDERS ? "Render failed" : "Submit failed"}: {submitError}
+      </p>
     {/if}
 
     <div class="render-center-actions">
-      <!-- DISABLED in static mode, with the reason on hover. A live Submit that
-           could only fail is worse than an honestly dead one: it invites someone
-           to configure a whole render before finding out. -->
-      {#if app.isStatic()}
-        <Tooltip text={UNAVAILABLE_IN_STATIC.renderJobs}>
-          <button type="button" class="btn" disabled>
-            <iconify-icon icon="mdi:movie-off-outline" width="16" height="16"></iconify-icon>
-            Submit Render Job — needs a server
-          </button>
-        </Tooltip>
-      {:else}
-        <button type="button" class="btn" disabled={submitting} onclick={submit}>
-          <iconify-icon icon="mdi:movie-play-outline" width="16" height="16"></iconify-icon>
-          Submit Render Job
-        </button>
-      {/if}
+      <!-- ONE LIVE BUTTON IN BOTH MODES. This used to be DISABLED in static mode
+           ("Submit Render Job — needs a server"), which was the visible face of the
+           whole defect: the in-browser renderer existed and was unreachable. The WORD
+           changes with the mode because the deed does — nothing is submitted anywhere
+           in static mode; this page renders it. -->
+      <button type="button" class="btn" disabled={submitting} onclick={submit}>
+        <iconify-icon icon="mdi:movie-play-outline" width="16" height="16"></iconify-icon>
+        {LOCAL_RENDERS ? "Render" : "Submit Render Job"}
+      </button>
     </div>
     <!-- (The paragraph that used to sit here — "A Server job keeps rendering if
          you close this dialog…" — has moved into BACKENDS' server `hint`, up
@@ -689,12 +903,27 @@
 
   <!-- ── RIGHT: this project's renderings ────────────────────────────────── -->
   <div class="render-center-list">
-    <h3 class="render-center-heading">Renderings — {project}</h3>
+    <!-- The HUMAN name, not the storage key: for a draft `project` reads
+         "~draft/current", which is where the renders live but not what to call the
+         deck. -->
+    <h3 class="render-center-heading">Renderings — {projectLabel}</h3>
+    {#if LOCAL_RENDERS}
+      <!-- WHERE THESE LIVE, said once. It matters: they are in this browser, not on
+           a disk the user can browse to, and they travel with the deck's storage key
+           — including a draft's, which is why an unsaved deck's renders are here at
+           all and still here after a reload. -->
+      <p class="render-center-hint">
+        Kept in this browser's storage, with this deck. They survive a reload; Download
+        saves one to your computer.
+      </p>
+    {/if}
     {#if listError}
       <p class="render-center-error">Could not read the job list: {listError}</p>
     {/if}
     {#if jobs.length === 0}
-      <p class="render-center-empty">No renders yet. Submit one on the left.</p>
+      <p class="render-center-empty">
+        No renders yet. {LOCAL_RENDERS ? "Press Render on the left." : "Submit one on the left."}
+      </p>
     {/if}
     <div class="render-center-scroll">
       {#each jobs as job (job.id)}
@@ -795,24 +1024,43 @@
           {/if}
 
           {#if open && job.state === "done" && job.output}
+            <!-- ONE URL, TWO ORIGINS. A server-stored render has one the server
+                 serves; a browser-stored one has none until it is minted from its
+                 blob (localUrl, which reads IndexedDB once and memoizes). Both feed
+                 the same <video> and the same Download link below, so the row's shape
+                 does not fork with the mode. `localUrlEpoch` is read so the row
+                 re-renders when a lazily-minted URL lands. -->
+            {@const movieUrl = job.storage === "browser" ? localUrlAt(localUrlEpoch, job.id) : renderUrl(project, job.output)}
             <!-- Mounted ONLY while expanded — that is the whole reason rows
                  collapse by default (see the header). -->
-            <!-- svelte-ignore a11y_media_has_caption -->
-            <video class="render-center-video" src={renderUrl(project, job.output)} controls preload="metadata"></video>
+            {#if movieUrl}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video class="render-center-video" src={movieUrl} controls preload="metadata"></video>
+            {/if}
             <div class="render-center-meta">
               <span>{humanReadableFileSize(job.bytes)}</span>
               <span>{job.params.width}×{job.params.height} · {job.params.fps} fps</span>
+              {#if job.durationSeconds}<span>{job.durationSeconds.toFixed(1)}s</span>{/if}
             </div>
-            <div class="render-center-path">
-              <code class="render-center-pathtext">{job.outputPath}</code>
-              <Tooltip text={copiedPath === job.id ? "Copied" : "Copy the full path"}>
-                <button type="button" class="btn-icon" aria-label="Copy the full file path" onclick={() => copyPath(job)}>
-                  <iconify-icon icon={copiedPath === job.id ? "mdi:check" : "mdi:content-copy"} width="16" height="16"></iconify-icon>
-                </button>
-              </Tooltip>
-            </div>
+            {#if job.outputPath}
+              <!-- ONLY WHEN THERE IS A PATH. A browser-stored rendering has none, and
+                   web/localRenderStore.js deliberately does not invent one — a fake
+                   path is a lie the copy button would then put on the clipboard. -->
+              <div class="render-center-path">
+                <code class="render-center-pathtext">{job.outputPath}</code>
+                <Tooltip text={copiedPath === job.id ? "Copied" : "Copy the full path"}>
+                  <button type="button" class="btn-icon" aria-label="Copy the full file path" onclick={() => copyPath(job)}>
+                    <iconify-icon icon={copiedPath === job.id ? "mdi:check" : "mdi:content-copy"} width="16" height="16"></iconify-icon>
+                  </button>
+                </Tooltip>
+              </div>
+            {/if}
             <div class="render-center-job-actions">
-              <a class="btn" href={renderUrl(project, job.output)} download={job.output}>
+              <!-- `download` names the FILE the user gets. For a blob: URL it is the
+                   only thing that does — without it the browser saves the object-URL
+                   uuid with no extension, and the user is handed a file their player
+                   refuses to open. -->
+              <a class="btn" href={movieUrl} download={job.output} class:is-disabled={!movieUrl}>
                 <iconify-icon icon="mdi:download" width="16" height="16"></iconify-icon>
                 Download
               </a>

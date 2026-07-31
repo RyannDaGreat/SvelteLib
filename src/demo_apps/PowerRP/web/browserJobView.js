@@ -91,6 +91,36 @@ export const BROWSER_ENCODERS = [
 export const DEFAULT_BROWSER_ENCODER = "upload";
 
 /**
+ * Pure function. The encoder a form should USE, given what the user last chose and
+ * what THIS PAGE'S STORAGE MODE offers (web/renderBackend.js selectableEncoders).
+ *
+ * IT SUBSTITUTES, and that is legitimate rather than a silent failure. The one case
+ * it exists for: settings persisted while the Render Center was open against a
+ * BACKEND ("upload"), then reopened on the STATIC site, where "upload" is not a
+ * slower option but an impossible one — it POSTs a PNG per frame to a server that
+ * is not there. The user asked for "encode this render", and in static mode there is
+ * exactly one way to do that; the dialog states which encoder it is, always, and
+ * web/browserRenderJobs.js still REFUSES an unusable encoder loudly if one reaches
+ * a submit anyway.
+ *
+ * @param {string} chosen - the persisted/selected encoder value
+ * @param {{value: string}[]} available - the encoders this mode offers
+ * @param {string} fallback - the encoder to use when `chosen` is not among them
+ * @returns {string}
+ *
+ * @example
+ * // Static mode: an "upload" left over from an HTTP session becomes the in-page one.
+ * usableEncoder("upload", [{value: "wasm"}], "wasm") // "wasm"
+ * @example
+ * // HTTP mode: an available choice is left completely alone.
+ * usableEncoder("wasm", [{value: "upload"}, {value: "wasm"}], "upload") // "wasm"
+ * @example usableEncoder("nonsense", [{value: "wasm"}], "wasm") // "wasm"
+ */
+export function usableEncoder(chosen, available, fallback) {
+  return available.some((e) => e.value === chosen) ? chosen : fallback;
+}
+
+/**
  * Pure function. The one-line status for a browser job, given the server record and
  * this browser's status entry (or null/undefined when this browser has none).
  *

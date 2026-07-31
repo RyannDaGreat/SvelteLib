@@ -35,7 +35,9 @@
   import RenderCenterModal from "./RenderCenterModal.svelte";
   import CodeEditorModal from "./CodeEditorModal.svelte";
   import { renderBadgeCount } from "./renderJobView.js";
-  import { listRenderJobs } from "./projectApi.js";
+  // The record store, not projectApi: in static mode the toolbar badge counts
+  // renderings held in IndexedDB (see pollRenderBadge).
+  import { renderRecordStore } from "./renderBackend.js";
   // Opening a project from a URL: the "?zip=" boot param and the modal are one
   // pipeline (web/projectUrlImport.js), and both land as a DRAFT
   // (web/projectDraft.js) rather than a library entry.
@@ -454,21 +456,24 @@
   let renderBadge = $state(0);
   async function pollRenderBadge() {
     try {
-      renderBadge = renderBadgeCount(await listRenderJobs(app.projectName()));
+      renderBadge = renderBadgeCount(await renderRecordStore().listRenderJobs(app.projectName()));
     } catch {
       renderBadge = 0;
     }
   }
-  // NOT POLLED IN STATIC MODE. Render jobs are a SERVER-OWNED noun (a detached
-  // process running ffmpeg), so with no backend there is nothing to count and the
-  // badge stays 0 — polling a route that cannot exist every 4 seconds forever
-  // would be a network error every 4 seconds forever. The absence is stated
-  // LOUDLY instead, by the static-mode notice below and by the Render Center's
-  // own unavailability panel — never as a silent zero.
-  if (!app.isStatic()) {
-    pollRenderBadge();
-    setInterval(pollRenderBadge, RENDER_BADGE_POLL_MS);
-  }
+  // POLLED IN BOTH MODES, through the record store (web/renderBackend.js).
+  //
+  // THIS USED TO BE SKIPPED IN STATIC MODE, on the reasoning that "render jobs are a
+  // SERVER-OWNED noun, so with no backend there is nothing to count". That was true
+  // when the browser renderer could not reach a job record without a server; it is
+  // not any more. A static-mode render is a real job whose record lives in IndexedDB,
+  // so the badge has something to count and a hardcoded 0 would be a SILENT LIE about
+  // a render happening in this very page — which is exactly what the badge exists to
+  // prevent you from forgetting. The original objection (a network error every 4
+  // seconds against a route that cannot exist) does not apply: in static mode the
+  // poll is a local read, no request at all.
+  pollRenderBadge();
+  setInterval(pollRenderBadge, RENDER_BADGE_POLL_MS);
   app.loadAutosave();
   app.loadTheme();
   window.__powerrp_app = app; // dev/test hook (headless smoke tests introspect via this)

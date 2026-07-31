@@ -458,6 +458,13 @@
   --a-render-bar-sweep-w: 34%;
   --a-render-bar-sweep-period: 1.1s;
   --a-render-video-h: 200px;
+  /* The quota warning's 14px icon sits on a --a-font-sm line; a 14px box against a
+     ~13px cap height reads one pixel high next to the first word without this. */
+  --a-quota-icon-nudge: 1px;
+  /* A Download link whose blob: URL has not been minted yet (static mode reads it
+     from IndexedDB). Dimmed to the app's standard disabled strength, not hidden —
+     the row's shape must not jump when the URL lands a moment later. */
+  --a-render-pending-opacity: 0.5;
   /* The list scrolls past this height rather than growing the dialog. */
   --a-render-list-h: 560px;
   /* Left edge that marks a job active/failed, and the unseen dot. */
@@ -7664,6 +7671,52 @@ audio.ae-preview-media {
   margin: 0;
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
+}
+
+/* A SETTING THAT IS STATED, NOT CHOSEN — static mode's "Rendered by: Browser" and
+   "Encoded by: Encode in page". Full-strength ink and the control row's height, so
+   it reads as the row's VALUE (which it is) rather than as help text: a dimmed
+   value in a control cell reads as a DISABLED control, which is precisely the
+   "dead affordance" impression this replaced. No border and no background — there
+   is nothing to click, and chrome would re-suggest that there is. */
+.render-center-fixed {
+  display: flex;
+  align-items: center;
+  min-height: var(--a-control-h);
+  color: var(--fg);
+  font-size: var(--a-font-md);
+}
+
+/* THE STORAGE-HEADROOM WARNING.
+   NOT error ink (--a-eq-error), deliberately: the render is still going to run —
+   the button beside it stays live — and painting a caution in the same red as a
+   failure teaches the user to discount the colour by the time a real one appears.
+   It takes full-strength --fg instead, which is exactly what the job-warning fold
+   above it does, and distinguishes itself by ICON the same way. Flex with
+   flex-start alignment so a two-line warning wraps beside its icon rather than
+   hanging under it. */
+.render-center-quota {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--a-sp-2);
+  color: var(--fg);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+
+/* The icon must not be squeezed by a long warning — it is a fixed-size glyph. */
+.render-center-quota iconify-icon {
+  flex: 0 0 auto;
+  margin-top: var(--a-quota-icon-nudge);
+}
+
+/* An <a> cannot be `disabled`, so the Download link for a rendering whose blob:
+   URL is still being read from IndexedDB is neutered here instead: no pointer
+   events (a click on an href-less anchor would navigate to the page itself) and a
+   dimmed look that says "not yet" without changing the row's size. */
+.render-center-job-actions .btn.is-disabled {
+  pointer-events: none;
+  opacity: var(--a-render-pending-opacity);
 }
 
 .render-center-text {
