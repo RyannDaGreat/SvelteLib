@@ -122,6 +122,63 @@
     resultsEl?.querySelectorAll(".palette-item")[highlighted]?.scrollIntoView({ block: "nearest" });
   }
 
+  // ── Scroll-follows-cursor (GENERAL protocol, not special-cased to preview) ──
+  // Browsers fire NO pointermove while content scrolls under a stationary
+  // cursor, so `highlighted` (set by pointermove above) goes stale the moment
+  // the list scrolls without the mouse moving — the user's report ("what's
+  // under my cursor should update... instead of having to move my mouse every
+  // time"). Fix: remember the last real pointer position over the list, and on
+  // scroll re-derive the row under that point via elementFromPoint, setting
+  // `highlighted` through the exact same variable a real hover would — so the
+  // preview effect above (which only watches `current`/`highlighted`) composes
+  // for free: a previewable row scrolling under the cursor previews, same as
+  // if the mouse had moved to it.
+  //
+  // THE SUBTLETY: arrow keys scroll the list PROGRAMMATICALLY
+  // (scrollHighlightedIntoView -> scrollIntoView), and that scroll must NOT
+  // let the stationary mouse steal the highlight back — otherwise arrowing
+  // past the cursor's row would snap highlight back to the mouse mid-keypress.
+  // So we only re-hit-test after a scroll we can attribute to the USER: wheel
+  // or touchmove on the list stamps `lastUserScrollAt`, and the scroll handler
+  // only acts within a short window after that stamp. A programmatic
+  // scrollIntoView fires the scroll event too, but with no recent wheel/touch
+  // to justify it, so it is ignored.
+  let pointerX = null; // last known real pointer position over the list, or null
+  let pointerY = null;
+  let lastUserScrollAt = -Infinity; // timestamp of the last wheel/touchmove on the list
+  const USER_SCROLL_WINDOW_MS = 150; // generous over one scroll-animation frame, tight enough that an unrelated later scroll can't misattribute
+
+  function notePointer(e) {
+    pointerX = e.clientX;
+    pointerY = e.clientY;
+  }
+
+  function noteUserScroll() {
+    lastUserScrollAt = performance.now();
+  }
+
+  function pointerInsideList() {
+    if (pointerX === null || !resultsEl) return false;
+    const r = resultsEl.getBoundingClientRect();
+    return pointerX >= r.left && pointerX <= r.right && pointerY >= r.top && pointerY <= r.bottom;
+  }
+
+  /** Re-hit-tests the row under the last known pointer position and, if it
+   * differs from the current highlight, adopts it — exactly what a real hover
+   * would have done, had the browser fired one. No-ops when the scroll wasn't
+   * user-driven (see USER_SCROLL_WINDOW_MS) or the pointer isn't over the list,
+   * so a keyboard-driven scrollIntoView never steals highlight from the arrow
+   * keys. */
+  function followPointerAfterScroll() {
+    if (performance.now() - lastUserScrollAt > USER_SCROLL_WINDOW_MS) return;
+    if (!pointerInsideList()) return;
+    const el = document.elementFromPoint(pointerX, pointerY)?.closest(".palette-item");
+    if (!el) return;
+    const id = el.dataset.commandId;
+    const i = rows.findIndex((c) => c.id === id);
+    if (i >= 0 && i !== highlighted) highlighted = i;
+  }
+
   $effect(() => {
     if (app.paletteOpen && inputEl) {
       query = "";
@@ -239,7 +296,14 @@
         placeholder={parent ? `${parent.title}…` : "Type a command…"}
         spellcheck="false"
       />
-      <div class="palette-results" bind:this={resultsEl}>
+      <div
+        class="palette-results"
+        bind:this={resultsEl}
+        onpointermove={notePointer}
+        onwheel={noteUserScroll}
+        ontouchmove={noteUserScroll}
+        onscroll={followPointerAfterScroll}
+      >
         {#each rows as cmd, i (cmd.id)}
           <!-- Hover-highlight keys on pointerMOVE, not pointerenter: keyboard
                navigation scrolls the list, which slides rows UNDER a stationary
@@ -267,7 +331,10 @@
             class:highlighted={i === highlighted}
             class:unavailable={off}
             aria-disabled={off}
-            onpointermove={() => (highlighted = i)}
+            onpointermove={(e) => {
+              notePointer(e);
+              highlighted = i;
+            }}
             onclick={() => activate(cmd)}
           >
             <!-- Fixed-width icon slot (same width whether filled or blank, so
