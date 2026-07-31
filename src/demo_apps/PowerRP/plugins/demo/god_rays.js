@@ -130,7 +130,7 @@ const PRESETS = [
     name: "Subtle Morning",
     description: "Early low sun through a window: short, soft, barely-there shafts that read as atmosphere rather than as an effect. Low exposure, quick decay, a warm-white tint.",
     props: {
-      samples: 48, density: 0.55, decay: 0.9, weight: 0.3, exposure: 0.22,
+      samples: 48, density: 0.55, decay: 0.955, weight: 0.05, exposure: 0.05,
       threshold: 0.68, maskSoftness: 0.22, maskStrength: 1, dither: 1, tint: "#fff3df",
     },
   },
@@ -138,7 +138,7 @@ const PRESETS = [
     name: "Cinematic Beams",
     description: "The full anamorphic-trailer look: long beams carrying right across the frame, hot enough to bloom, keyed tightly so only the sun and the sky nearest it feed them. The default answer to 'make it look cinematic'.",
     props: {
-      samples: 96, density: 0.95, decay: 0.975, weight: 0.4, exposure: 0.5,
+      samples: 96, density: 0.95, decay: 0.982, weight: 0.13, exposure: 0.13,
       threshold: 0.6, maskSoftness: 0.16, maskStrength: 1, dither: 1, tint: "#ffffff",
     },
   },
@@ -146,7 +146,7 @@ const PRESETS = [
     name: "Dusty Window",
     description: "Hard shafts through a dusty interior: a high threshold so ONLY the window opening itself is a source, slow decay so the beams stay parallel and solid, and a slightly warm cast from the dust.",
     props: {
-      samples: 80, density: 0.85, decay: 0.97, weight: 0.5, exposure: 0.38,
+      samples: 80, density: 0.85, decay: 0.978, weight: 0.14, exposure: 0.11,
       threshold: 0.76, maskSoftness: 0.08, maskStrength: 1, dither: 1, tint: "#ffe6bd",
     },
   },
@@ -154,7 +154,7 @@ const PRESETS = [
     name: "Underwater Caustics",
     description: "Light shafts falling through water: cool blue-green, quite long, and a LOW threshold so the whole bright upper water column contributes rather than a single disc. Pair with a blue-tinted sky.",
     props: {
-      samples: 88, density: 0.9, decay: 0.965, weight: 0.34, exposure: 0.4,
+      samples: 88, density: 0.9, decay: 0.972, weight: 0.10, exposure: 0.12,
       threshold: 0.44, maskSoftness: 0.3, maskStrength: 1, dither: 1, tint: "#b6ecff",
     },
   },
@@ -162,7 +162,7 @@ const PRESETS = [
     name: "Storm Break",
     description: "The one hole in a heavy overcast: very high threshold and a tight knee, so only the blown-out gap in the cloud is a source and everything else is an occluder — which is exactly what makes a single dramatic shaft instead of a general glow.",
     props: {
-      samples: 96, density: 1, decay: 0.98, weight: 0.55, exposure: 0.45,
+      samples: 96, density: 1, decay: 0.986, weight: 0.16, exposure: 0.12,
       threshold: 0.82, maskSoftness: 0.06, maskStrength: 1, dither: 1, tint: "#f4f8ff",
     },
   },

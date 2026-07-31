@@ -274,16 +274,27 @@ half4 main(float2 p) {
     decay *= uDecay;
   }
 
-  // ADDITIVE OUTPUT. The rays are LIGHT: they are added over the scene, never a
-  // replacement for it, so the alpha carries the ray's own luminance rather than the
-  // region's coverage — a pixel the march found nothing at stays fully transparent
-  // and the artwork beneath shows through untouched. (The plugin additionally
-  // defaults the effects bundle's blendMode to "screen"; this premultiplied-additive
-  // shape is what makes that composite correct instead of a grey wash.)
-  float3 rays = accum * uExposure * uTint * edgeFade;
-  rays = max(rays, float3(0.0));
-  float a = clamp(dot(rays, REC709), 0.0, 1.0) * cov;
-  return half4(half3(clamp(rays, 0.0, 1.0)) * half(a), half(a));
+  // ADDITIVE OUTPUT, IN THE ONE FORM THAT IS ACTUALLY ADDITIVE UNDER SOURCE-OVER.
+  // The rays are LIGHT: they must be ADDED to the scene, never substituted for it.
+  // Skia composites this shader's result with source-over, which computes
+  // dst' = src.rgb + dst.rgb·(1 − src.a). So returning ALPHA ZERO with a nonzero
+  // PREMULTIPLIED rgb makes the term (1 − a) exactly 1 and the result exactly
+  // dst + rays: true addition, with the scene beneath preserved intact.
+  //
+  // THE OBVIOUS-LOOKING ALTERNATIVE IS WRONG, and wrong in a way that inverts the
+  // whole effect. Deriving the alpha from the ray's own brightness (a = luma(rays),
+  // rgb = rays·a) means the BRIGHTEST rays are the most OPAQUE — so exactly where
+  // the beams are strongest they stop adding and start REPLACING, flattening the
+  // scene toward the ray colour. Measured on the slat fixture: the sun disc came out
+  // DIMMER than its own white (255 → 200) and a shadowed patch read BRIGHTER than the
+  // unoccluded patch beside it, i.e. the occlusion contrast came out NEGATIVE. Light
+  // that dims a light source and brightens a shadow is not light.
+  //
+  // The coverage term still multiplies, so the region's antialiased edge fades it out
+  // rather than cutting it; a pixel the march found nothing at adds exactly nothing
+  // and the artwork beneath is untouched, which is why this needs no blend mode.
+  float3 rays = max(accum * uExposure * uTint * edgeFade, float3(0.0));
+  return half4(half3(clamp(rays, 0.0, 1.0)) * half(cov), 0.0);
 }
 `;
 
@@ -387,7 +398,14 @@ export function packGodRaysUniforms(u) {
     num("maskSoftness", u.maskSoftness),
     num("maskStrength", u.maskStrength),
     num("dither", u.dither),
-    tint.r / 255, tint.g / 255, tint.b / 255,
+    // parseColor returns [r, g, b, a] ALREADY IN 0..1 — not a {r, g, b} object in
+    // 0..255. Reading it the other way produced three NaN uniforms, and since one
+    // NaN poisons every arithmetic path it touches, the assembled rays multiplied
+    // to nothing: the effect rendered as a perfectly invisible no-op, on a shader
+    // that compiled and ran fine, with no error raised anywhere. Hence num() on
+    // each channel — this file's own header says a NaN uniform silently blackens a
+    // region, and the tint was the one uniform not going through that check.
+    num("tintR", tint[0]), num("tintG", tint[1]), num("tintB", tint[2]),
   ]);
   if (out.length !== GOD_RAYS_UNIFORM_FLOATS)
     throw new Error(`packGodRaysUniforms: packed ${out.length} floats, expected ${GOD_RAYS_UNIFORM_FLOATS} (shader uniform block changed?)`);
@@ -407,11 +425,11 @@ export const GOD_RAYS_FILL_PARAMS = [
     help: `How many taps each ray takes toward the light. More is smoother and slower; ${MAX_SAMPLES} is the ceiling (past it a tap cannot change an 8-bit pixel). Lower this first if the frame rate suffers.` },
   { name: "density", kind: "number", default: 0.9, min: 0, max: 1, scrub: UNIT_SPAN_SCRUB, category: "march",
     help: "What fraction of the distance to the light each ray covers. Lower = short, bright shafts hugging the light; 1 = the beam reaches all the way back to the pixel." },
-  { name: "decay", kind: "number", default: 0.96, min: 0, max: 1, scrub: UNIT_SPAN_SCRUB, category: "march",
+  { name: "decay", kind: "number", default: 0.975, min: 0, max: 1, scrub: UNIT_SPAN_SCRUB, category: "march",
     help: "How fast a ray dims per step. Below ~0.9 the beams stay short and stubby; near 1 they carry right across the frame." },
-  { name: "weight", kind: "number", default: 0.34, min: 0, scrub: UNIT_SPAN_SCRUB, category: "march",
+  { name: "weight", kind: "number", default: 0.10, min: 0, scrub: UNIT_SPAN_SCRUB, category: "march",
     help: "How much each individual tap contributes. Raises overall beam intensity without changing their length." },
-  { name: "exposure", kind: "number", default: 0.42, min: 0, scrub: UNIT_SPAN_SCRUB, category: "march",
+  { name: "exposure", kind: "number", default: 0.10, min: 0, scrub: UNIT_SPAN_SCRUB, category: "march",
     help: "Master brightness of the finished rays. The knob to reach for when the effect is right but too strong or too faint." },
   { name: "threshold", kind: "number", default: 0.62, min: 0, max: 1, scrub: UNIT_SPAN_SCRUB, category: "mask",
     help: "How bright a pixel must be to count as light rather than as an obstacle. Raise it if ordinary slide content is streaking; lower it to let a dimmer sky glow." },
@@ -487,3 +505,11 @@ if (GOD_RAYS_MATERIAL.usesBlurredBackdrop === false && /\bblurredBackdrop\s*\.\s
   throw new Error("god_rays_shader: GOD_RAYS_MATERIAL declares usesBlurredBackdrop:false but GOD_RAYS_SKSL evals blurredBackdrop — the handler skips building that child, so the march would read a SHARP texture where it expects a blurred one. Remove the flag or stop evaluating the child.");
 if (!/\bsharpBackdrop\s*\.\s*eval\b/.test(GOD_RAYS_SKSL))
   throw new Error("god_rays_shader: GOD_RAYS_SKSL never evaluates sharpBackdrop — a screen-space ray march with no backdrop sample has nothing to scatter and nothing to be occluded by.");
+// THE ADDITIVE-OUTPUT INVARIANT, asserted on the source text because it is the one
+// property of this shader that is both essential and silently losable. `main` must
+// return alpha 0.0 — that is what makes source-over compute dst + rays instead of
+// blending toward the ray colour (see the note at the return). An edit that gives
+// the return a nonzero alpha inverts the effect rather than breaking it: the sun
+// dims, shadows brighten, and every pixel test still "renders something".
+if (!/return\s+half4\([^;]*,\s*0\.0\s*\)\s*;/.test(GOD_RAYS_SKSL))
+  throw new Error("god_rays_shader: GOD_RAYS_SKSL's main() no longer returns alpha 0 — god rays composite by ADDING under source-over, which requires a zero alpha with premultiplied rgb. A nonzero alpha makes bright rays REPLACE the scene instead of lighting it (measured: the sun disc came out dimmer than its own white and occlusion contrast went negative).");
