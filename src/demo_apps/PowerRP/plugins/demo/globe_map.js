@@ -71,29 +71,43 @@ import { standardBBoxAnchors } from "../../core/derive.js";
 import { reportOnce } from "../../core/report.js";
 import { CUSTOM_CATEGORY, bundle, customProps, defaults, props } from "../../core/properties.js";
 import {
-  GLOBE_FLAT_CROSSOVER, MAX_MERCATOR_LAT, clampLat, globeWeight, lonLatToWorld,
-  mapWorldWindow, sphereProject, tileNorthWest, tileZoomFor, tilesForWindow, worldToLonLat, wrapLon,
+  GLOBE_FLAT_CROSSOVER, MAX_MERCATOR_LAT, clampLat, discCoverageFraction, globeSubdivisionsFor,
+  globeWeight, lonLatToWorld, mapWorldWindow, parseLatLon, sphereProject, tileNorthWest, tileZoomFor,
+  tilesForWindow, worldToLonLat, wrapLon,
 } from "../../core/geo_tiles.js";
-import { DEFAULT_TILE_STYLE, TILE_PROVIDERS, TILE_PROVIDER_IDS, providerFor } from "../../web/tile_providers.js";
+import {
+  DEFAULT_TILE_STYLE, OVERLAY_IDS, TILE_OVERLAYS, TILE_PROVIDERS, TILE_PROVIDER_IDS,
+  overlayFor, overlayPropName, providerFor,
+} from "../../web/tile_providers.js";
 import { ATMOSPHERE_FILL_PARAMS } from "../../render_gpu/skia/atmosphere_shader.js";
 import { image, materialFill, polygon, rect, text } from "../../render_gpu/ir.js";
 
 /**
- * How many quads each tile is split into per axis when drawn on the GLOBE: 16, so
- * 256 quads per tile.
+ * How many quads each tile is split into per axis when drawn on the GLOBE — NO
+ * LONGER A FIXED CONSTANT. `core/geo_tiles.globeSubdivisionsFor` reads the
+ * globe's actual ON-SCREEN radius (device px) and scales quad density with it,
+ * the CesiumJS screen-space-error principle applied without a patch quadtree
+ * (see that function's docblock and the RESEARCH section atop core/geo_tiles.js).
  *
- * The curvature argument alone is satisfied by 8 — at the crossover zoom a tile
- * spans at most ~45° of arc, so an 8-way split leaves ~5.6° per quad, whose sagitta
- * (chord-to-arc gap) is r·(1−cos 2.8°) ≈ 0.0012·r, half a pixel on a 400-px globe.
- * THE LIMB IS WHAT ASKS FOR 16. Each quad is drawn as an AXIS-ALIGNED rect, and a
- * quad whose bounding box escapes the disc must be dropped (globeQuadRect); the
- * further from the view centre, the more the projection rotates a quad and the more
- * its box overshoots, so near the limb whole quads are lost. Halving the quad
- * halves that overshoot, which measurably narrows the sliver dropped at the edge.
- * Past 16 the cost (4x the ops per doubling) buys less than the atmosphere's own
- * rim glow already covers.
+ * WHY THIS REPLACED A FIXED 16: a fixed count is right at exactly one on-screen
+ * size and wrong everywhere else. At the size it was tuned for (a ~200px-radius
+ * globe) 16 hides the facets; at presentation size (900px+) it visibly facets —
+ * the faceted, "coerced-2D" look the user's critique points at is 16 subdivisions
+ * stretched over 4-8x the pixels it was measured against. The curvature argument
+ * for a FLOOR still holds at any size: even the smallest globe needs >= 4 quads
+ * per edge or a single facet is a large enough fraction of the diameter to read
+ * as a flat polygon regardless of pixel count (GLOBE_SUBDIVISIONS_MIN in
+ * geo_tiles.js). What is NEW is the ceiling growing with size instead of staying
+ * fixed, and the reason a fixed ceiling was wrong to begin with: quad loss at the
+ * limb (globeQuadRect) scales with a quad's OWN angular size, and a quad's own
+ * angular size is tile-arc/subdivisions — so more subdivisions narrows the limb
+ * loss the same way at any globe size, but a bigger globe needs more of them to
+ * reach the SAME angular quad size in the first place.
  */
-const GLOBE_SUBDIVISIONS = 16;
+function globeSubdivisions(s, devicePerWorld) {
+  const radiusPx = (Math.min(s.w, s.h) / 2) * devicePerWorld;
+  return globeSubdivisionsFor(radiusPx);
+}
 
 /** The tile-grid resolution used when NO render context is present (export,
  *  thumbnails, the CLI). The camera is unknown there, so `devicePerWorld` is 1 and
@@ -172,11 +186,27 @@ const CUSTOM = customProps([
   { name: "style", kind: "select", default: DEFAULT_TILE_STYLE, options: TILE_PROVIDER_IDS,
     optionLabels: Object.fromEntries(TILE_PROVIDER_IDS.map((id) => [id, TILE_PROVIDERS[id].title])), label: "Basemap",
     help: "Which tile provider draws the surface. Streets is OpenStreetMap (deepest zoom, good at every scale); Satellite is NASA's MODIS true-colour mosaic (beautiful on the globe, but a ~250 m/px instrument, so it stops getting sharper around zoom 9); Terrain is OpenTopoMap's relief and contours. Each provider's REQUIRED attribution is drawn on the map. NOTE ON SATELLITE: the MODIS mosaic is assembled from ONE DAY of polar orbits, so it carries BLACK WEDGES where the satellite's swaths did not overlap — most visible near the equator. Those gaps are in NASA's data, not in the rendering (verified by downloading the raw tile), and they are the honest picture of what was actually imaged. Use Streets or Terrain for a deck that needs unbroken coverage." },
+  // ONE BOOLEAN PER OVERLAY (web/tile_providers.TILE_OVERLAYS) — transparent
+  // reference layers composited ABOVE the base, the Google "hybrid" look. Each is
+  // an ordinary tweenable/equation-bindable property, same as `style`, rendered
+  // through the SAME tile registry/compositor as the base (emit()'s layer 2b).
+  // Declared as `overlay<Id>` (overlayLabels/overlayFeatures/overlayCoastlines)
+  // rather than a single list property: a fixed, small, named set reads better as
+  // named booleans in the Inspector than as list rows, and it is what lets the
+  // popup mirror each one as its own quick-switch button (globe_map.js's
+  // floatingToolbar) through the exact same stored key `toggleWrites` writes.
+  ...OVERLAY_IDS.map((id) => ({
+    name: overlayPropName(id), kind: "boolean", default: false, label: TILE_OVERLAYS[id].title,
+    help: TILE_OVERLAYS[id].help,
+  })),
+  { name: "viewMode", kind: "select", default: "auto", options: ["auto", "globe", "flat"],
+    optionLabels: { auto: "Auto (zoom crossfade)", globe: "Globe", flat: "Flat" }, label: "View mode",
+    help: `Pins the globe/flat crossfade instead of letting zoom decide it. "Auto" is the shipped zoom-threshold crossfade (globeWeight — a globe below zoom ${GLOBE_FLAT_CROSSOVER}, flat above it) and stays the default; "Globe" pins the sphere rendering at ANY zoom (a full-frame city on a curved globe, if that is the look you want); "Flat" pins the mercator rectangle at any zoom, including the whole world. The underlying blend is CONTINUOUS either way — this only selects/pins where on that blend the render sits, so a slide tween from "Globe" to "Flat" (or across a zoom range in "Auto") animates the unroll rather than popping.` },
   ...ATMOSPHERE_FILL_PARAMS,
   { name: "attributionColor", kind: "color", default: "rgba(255,255,255,0.82)", label: "Attribution colour",
     help: "Ink of the provider credit. It is a knob because legibility is the point: white reads over satellite imagery and the dark globe, but a light street map at street zoom needs a dark value. An unreadable credit does not satisfy the licence it exists for." },
   { name: "showAttribution", kind: "boolean", default: true, label: "Show attribution",
-    help: "Draws the basemap provider's credit line on the map. Leave it on: for OpenStreetMap and OpenTopoMap this credit is a CONDITION OF THE LICENCE, not decoration — it is the term under which the tiles may be used at all. The switch exists for a slide that credits the provider elsewhere (a sources slide), which satisfies the same requirement a different way." },
+    help: "Draws the credit line(s) for every ACTIVE layer (basemap + any overlays on) on the map, tiny, in the corner. The default follows what each layer's licence actually requires — off for NASA's own satellite imagery (public domain, no credit required), on for OpenStreetMap/OpenTopoMap and for the three GIBS overlays (OSM-derived, ODbL: \"OSM's tile terms ask for this credit; hiding it is your call\"). This switch is always yours to flip either way — it never re-locks itself when you change the basemap." },
 ]);
 
 /** The attribution's type size and inset, in world px. Small enough to stay out of
@@ -198,6 +228,36 @@ const ATTRIBUTION_INSET = 6;
  */
 function devicePerWorldOf(ctx) {
   return ctx?.mapTiles?.devicePerWorld ?? FALLBACK_DEVICE_PER_WORLD;
+}
+
+/**
+ * Pure function. THE GLOBE WEIGHT `viewMode` ACTUALLY RENDERS AT — `globeWeight`
+ * pinned to an endpoint when the property asks for one, else passed straight
+ * through. "auto" (the default) is the shipped zoom-threshold crossfade,
+ * unchanged. "globe"/"flat" PIN the number rather than special-casing the
+ * renderer: emit() and every helper below it (globeTileOps, polarCapOps, the
+ * flat-tile loop) already branch on `gw` alone, so pinning it to 1 or 0 reuses
+ * every one of those branches exactly as the crossfade does mid-transition —
+ * there is no second code path to keep in sync. This is also what makes a slide
+ * tween from `viewMode: "globe"` to `viewMode: "flat"` animate the unroll:
+ * `viewMode` is a SELECT (a discrete keyframe, switching at alpha > 0 per the
+ * document model), but the surface it feeds is the same continuous blend, so a
+ * timeline that tweens `zoom` across a `viewMode` switch still crossfades smoothly
+ * through whatever `gw` the switched-to mode pins.
+ *
+ * @param {object} s - folded state
+ * @returns {number} globe weight in [0, 1]
+ *
+ * @example effectiveGlobeWeight({viewMode: "auto", zoom: 0}) // 1 (auto at planetary zoom: all globe)
+ * @example effectiveGlobeWeight({viewMode: "auto", zoom: 15}) // 0 (auto at street zoom: all flat)
+ * @example effectiveGlobeWeight({viewMode: "globe", zoom: 15}) // 1 (pinned to a sphere even at street zoom)
+ * @example effectiveGlobeWeight({viewMode: "flat", zoom: 0}) // 0 (pinned to the flat rectangle even for the whole world)
+ * @example effectiveGlobeWeight({viewMode: undefined, zoom: 0}) // 1 (undeclared reads as "auto" — an old document without this property)
+ */
+function effectiveGlobeWeight(s) {
+  if (s.viewMode === "globe") return 1;
+  if (s.viewMode === "flat") return 0;
+  return globeWeight(s.zoom);
 }
 
 /**
@@ -234,7 +294,17 @@ function tilePlan(s, ctx) {
   // tile reports not-ready: a camera-free consumer that has not run the pre-pass
   // draws the ocean base and the graticule, which is the honest picture of "no
   // pixels were fetched" rather than a blank rectangle.
-  return { z, window, cropped: window, tiles: tilesForWindow(window, z).map((t) => ({ ...t, ref: null, ready: false })) };
+  const overlays = {};
+  for (const id of OVERLAY_IDS) {
+    if (!s[overlayPropName(id)]) continue;
+    const layer = overlayFor(id);
+    const oz = tileZoomFor(s.zoom, s.w, FALLBACK_DEVICE_PER_WORLD, layer.maxZoom);
+    overlays[id] = { z: oz, tiles: tilesForWindow(window, oz).map((t) => ({ ...t, ref: null, ready: false })) };
+  }
+  return {
+    z, window, cropped: window, overlays,
+    tiles: tilesForWindow(window, z).map((t) => ({ ...t, ref: null, ready: false })),
+  };
 }
 
 /**
@@ -265,38 +335,59 @@ export function flatTileRect(tile, window, w, h) {
 
 /**
  * Pure function. The GLOBE placement of one sub-quad of a tile: the local-px rect
- * bounding the quad's four projected corners, plus whether it may be drawn.
+ * bounding the quad's four projected corners, plus a COVERAGE FRACTION in [0, 1]
+ * (not a boolean) saying how much of that quad the shader-quality limb feather
+ * (core/geo_tiles.discCoverageFraction) says should actually be drawn.
  *
  * A quad is drawn as an axis-aligned `image` with the tile's matching sub-rect, so
  * the curvature is carried by the GRID of quads rather than by any one of them —
- * see GLOBE_SUBDIVISIONS for why 8 is enough to hide the facets.
+ * see globeSubdivisions for how many are used at the globe's current on-screen size.
  *
- * ── ALL FOUR CORNERS MUST FACE THE VIEWER, AND THAT IS A FIX ─────────────────
- * This used to draw a quad when ANY corner faced the viewer, reasoning that
- * dropping a limb-straddling quad would bite a chunk out of the planet's edge.
- * The screenshot said otherwise: because the quad is drawn as an AXIS-ALIGNED
- * rect bounding its corners, a quad with one corner round the back has a bounding
- * box that BALLOONS — the far corner projects to the opposite side of the disc, so
- * the box spans most of the planet and the tile's pixels were smeared across space
- * OUTSIDE the limb. (Visible in .claude_logs/globemap as coloured blocks floating
- * off the globe's top-right.)
+ * ── COVERAGE, NOT A HARD CULL: THE FIX FOR THE FACETED SILHOUETTE ────────────
+ * This used to return a BOOLEAN `visible`, all-or-nothing per quad. That is
+ * precisely a one-quad-wide staircase at the limb — every dropped quad leaves a
+ * hard straight edge where its neighbour is still fully opaque, which is the
+ * "cookie-cutter"/faceted look the user's critique points at (visible in the
+ * baseline screenshot's ragged colour-block edge). The fix keeps the same
+ * corner-projection geometry but converts the `cosC` (angular-distance cosine)
+ * the four corners span into a coverage fraction via the closed form in
+ * discCoverageFraction: a quad whose corners straddle the true limb (cosC = 0)
+ * gets a FRACTIONAL opacity proportional to how much of its own angular extent
+ * is actually on the visible hemisphere, instead of being fully drawn or fully
+ * dropped. globeTileOps multiplies this into the quad's opacity, so the very
+ * last ring of quads at the limb feathers smoothly rather than snapping off.
+ * This is the ANALYTIC antialiasing this file's header describes — no `fwidth`,
+ * because `cosC` is already known exactly at the quad's own four corners.
  *
- * Requiring all four corners fixes it exactly, and costs nothing visible: the
- * dropped quads are 1/GLOBE_SUBDIVISIONS of a tile wide — at the crossover zoom
- * under a degree of arc — so the silhouette loses at most a sliver far narrower
- * than the atmosphere's own rim, which is drawn over that boundary anyway.
+ * WHY cosC AND NOT rho (a correction — this fix's first draft used rho and was
+ * WRONG): see discCoverageFraction's own docblock for the full derivation. In
+ * short, rho = hypot(u, v) looks like the natural feather variable but is not a
+ * reliable per-corner limb signal — the back hemisphere's near-limb geometry can
+ * project to a SMALLER rho than the front hemisphere's true limb, which a rho-
+ * only feather cannot tell apart from a legitimate straddle. cosC is the
+ * geometrically correct, monotonic signal (sphereProject's `visible` is exactly
+ * `cosC >= 0`), and it has the same exact linearity property near its own
+ * boundary that made rho attractive in the first place.
  *
- * A quad is ALSO dropped when its box escapes the disc, which catches the same
- * ballooning from the other side: near the limb the projection compresses
- * enormously (dv/dlat → 0), so a numerically-visible quad can still bound a box
- * wider than the planet. The disc test is the geometric truth — nothing on a
- * sphere of radius r can project outside radius r — so it is the honest guard.
+ * ── THE BALLOONING-BOX GUARD STILL APPLIES, UNCHANGED IN INTENT ──────────────
+ * A quad whose bounding BOX escapes the disc by more than a hair is still
+ * rejected outright (coverage forced to 0), for the reason recorded here before:
+ * because the quad is drawn as an axis-aligned rect bounding rotated corners, a
+ * quad with one corner round the back can bound a box that BALLOONS across most
+ * of the planet — a real bug this codebase hit and fixed (see the git history
+ * this docblock used to carry in full; .claude_logs/globemap shows the artifact).
+ * The box test catches that; the coverage fraction below is an independent,
+ * additional refinement for the ORDINARY case of a quad legitimately straddling
+ * the limb, which the box test alone always treated as a hard yes/no.
  *
  * @param {object} corners - {lon0, lat0, lon1, lat1} the quad's geographic extent
  * @param {object} s - state (centerLon, centerLat, w, h)
- * @returns {{x: number, y: number, w: number, h: number, visible: boolean}} local px
+ * @returns {{x: number, y: number, w: number, h: number, coverage: number}} local px + [0,1] opacity weight
+ *
+ * Exported (alongside flatTileRect) so the limb feather is directly testable
+ * against a chosen quad without reconstructing a whole tile plan.
  */
-function globeQuadRect(corners, s) {
+export function globeQuadRect(corners, s) {
   const r = Math.min(s.w, s.h) / 2;
   const cx = s.w / 2, cy = s.h / 2;
   const pts = [
@@ -318,17 +409,29 @@ function globeQuadRect(corners, s) {
   // pass while ink still escaped — measured: a quad whose corners were all on the
   // sphere still bounded a box reaching (148, 4) on a disc of radius 200.
   //
-  // THE TOLERANCE IS A SUB-PIXEL SLACK AND NOTHING MORE. It was briefly widened to
-  // half the quad's diagonal, on the theory that rejected limb quads explained the
-  // black wedges in the satellite globe. THAT THEORY WAS WRONG, and the way it was
-  // settled is worth recording: the wedges are in NASA'S OWN TILE. Downloading the
-  // raw z2 tile and looking at it shows the same black strips — they are MODIS
-  // ORBITAL GAPS, swaths the satellite had not imaged that day. The renderer was
-  // faithful the whole time. Widening the slack did not remove them (they are data,
-  // not geometry) and did let tiles overshoot the limb, so it was reverted.
+  // THE BALLOONING GUARD IS UNCHANGED — still the exact strict sub-pixel bound
+  // this file's history fought to keep strict (see the paragraph above): a box
+  // that escapes the disc by more than DISC_EPSILON_PX is rejected OUTRIGHT,
+  // coverage forced to 0, full stop. Loosening this guard to "let the feather
+  // see straddling quads" was tried and reverted — it also re-admitted quads
+  // whose box balloons for an UNRELATED reason (a wide-longitude quad near a
+  // pole, where u is non-monotonic in longitude, produces the same kind of
+  // escaping box as the recorded back-of-sphere ballooning, and the two are not
+  // distinguishable from the box alone). The box test is therefore left exactly
+  // as strict as it always was; the feather below reads the CORNERS' OWN cosC
+  // values instead, which are meaningful even when the box would be rejected —
+  // discCoverageFraction's docblock explains why cosC (not rho) is the correct
+  // per-corner signal.
   const boxInsideDisc = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]
     .every(([x, y]) => Math.hypot(x - cx, y - cy) <= r + DISC_EPSILON_PX);
-  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, visible: pts.every((p) => p.visible) && boxInsideDisc };
+  // NO PRE-FILTER ON `visible` HERE — that boolean IS the thing being replaced.
+  // A quad gets a coverage fraction from the corners' cosC band whenever the box
+  // itself did not balloon; a ballooned box's corner values are meaningless as a
+  // feather signal regardless of cosC (the wide-longitude polar case above), so
+  // that case alone is dropped outright rather than fed into the feather.
+  const cosCs = pts.map((p) => p.cosC);
+  const coverage = boxInsideDisc ? discCoverageFraction(Math.min(...cosCs), Math.max(...cosCs)) : 0;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, coverage };
 }
 
 /** Slack on the disc containment test, in local px. A corner ON the limb is
@@ -344,35 +447,107 @@ const POLAR_CAP_COLOR = "#dfe8f2";
 
 /**
  * Pure function. Filled polygons covering the two POLAR CAPS the Mercator tile
- * pyramid cannot reach — the region poleward of ±MAX_MERCATOR_LAT.
+ * pyramid cannot reach — the region poleward of ±MAX_MERCATOR_LAT — shaded as a
+ * ring stack so the cap reads as CONTINUING CURVATURE rather than a flat sticker.
  *
- * Each cap is the ring of points at exactly the cut latitude, projected through the
- * same orthographic map the tiles use and filled as one polygon, so the cap meets
- * the topmost tile row exactly at the seam with no gap and no overlap. A cap facing
- * away from the viewer projects no visible points and is skipped.
+ * ── WHY RINGS, AND WHY NOT REAL IMAGERY (the deferred fix, named) ────────────
+ * NASA GIBS also serves true GEOGRAPHIC (EPSG:4326) tiles that cover the poles
+ * (this file's header, "POLES: MERCATOR'S CUT vs GIBS GEOGRAPHIC TILES") — the
+ * technically correct fix is real polar pixels from that pyramid. That is
+ * deliberately NOT done here: it needs a second tile geometry wired into
+ * web/tile_providers.js, which is a concurrently-landing sibling change
+ * (mapctl_) this fix must not race. What IS in scope and fixed here is the
+ * PRESENTATION of the honest gap: a single flat-colour disc (the old rendering)
+ * reads as a hole plugged with a sticker — visibly flat against a sphere whose
+ * every other pixel is doing real orthographic shading. A single fill colour
+ * cannot be a gradient here without threading the polygon op through the
+ * gradient-paint machinery (parsePaint's radial branch) for a widget-specific
+ * one-off, so instead the SAME shading law the atmosphere shader already applies
+ * to the ground (limb darkening from the orthographic normal, nz = sqrt(1-r²))
+ * is approximated by drawing the cap as CONCENTRIC RINGS, each one ring's-worth
+ * darker toward the pole — the same idea as a computer-graphics ramp texture,
+ * built from polygons this renderer's three backends (Skia/PDF/SVG) already
+ * draw identically, so no new exporter code is needed anywhere.
+ *
+ * Each ring is the area between two parallels at the cut latitude and a slightly
+ * higher one, projected through the same orthographic map the tiles use, so the
+ * OUTERMOST ring meets the topmost tile row exactly at the seam with no gap and
+ * no overlap — unchanged from the original single-polygon cap. A cap facing away
+ * from the viewer projects no visible points and is skipped.
  *
  * @param {object} s - folded state (centerLon, centerLat, w, h)
  * @param {number} opacity - the globe's crossfade weight
- * @returns {object[]} polygon ops (0, 1 or 2)
+ * @returns {object[]} polygon ops (0 to 2*POLAR_CAP_RINGS)
  */
 function polarCapOps(s, opacity) {
   const r = Math.min(s.w, s.h) / 2;
   const cx = s.w / 2, cy = s.h / 2;
   const ops = [];
-  for (const lat of [MAX_MERCATOR_LAT, -MAX_MERCATOR_LAT]) {
-    const points = [];
-    for (let i = 0; i <= POLAR_CAP_SEGMENTS; i++) {
-      const lon = -180 + (360 * i) / POLAR_CAP_SEGMENTS;
-      const p = sphereProject(lon, lat, s.centerLon, s.centerLat);
-      if (!p.visible) continue;
-      points.push([cx + p.u * r, cy - p.v * r]);
+  for (const sign of [1, -1]) {
+    for (let ring = 0; ring < POLAR_CAP_RINGS; ring++) {
+      // Ring k spans the parallel at t=k/N to t=(k+1)/N, where t=0 is the cut
+      // latitude (equator-ward edge, seamed to the tiles) and t=1 is the pole.
+      const t0 = ring / POLAR_CAP_RINGS, t1 = (ring + 1) / POLAR_CAP_RINGS;
+      const lat0 = sign * (MAX_MERCATOR_LAT + (90 - MAX_MERCATOR_LAT) * t0);
+      const lat1 = sign * (MAX_MERCATOR_LAT + (90 - MAX_MERCATOR_LAT) * t1);
+      const points = [];
+      for (let i = 0; i <= POLAR_CAP_SEGMENTS; i++) {
+        const lon = -180 + (360 * i) / POLAR_CAP_SEGMENTS;
+        const p = sphereProject(lon, lat0, s.centerLon, s.centerLat);
+        if (p.visible) points.push([cx + p.u * r, cy - p.v * r]);
+      }
+      // The pole-ward edge collapses toward a single point as t1 -> 1; walking it
+      // in REVERSE closes the ring into one simple polygon instead of two fans.
+      for (let i = POLAR_CAP_SEGMENTS; i >= 0; i--) {
+        const lon = -180 + (360 * i) / POLAR_CAP_SEGMENTS;
+        const p = sphereProject(lon, lat1, s.centerLon, s.centerLat);
+        if (p.visible) points.push([cx + p.u * r, cy - p.v * r]);
+      }
+      // Under three points there is no polygon to fill — the ring is entirely
+      // round the back, which is the ordinary case for whichever pole faces away.
+      if (points.length < 3) continue;
+      // Darken toward the pole by the SAME nz-style falloff the atmosphere uses
+      // for limb darkening on the rest of the sphere, so the cap's own shading
+      // law matches the ground it is seamed to instead of introducing a new one.
+      const shade = 1 - POLAR_CAP_DARKEN * ((t0 + t1) / 2);
+      ops.push(polygon({ points, fill: shadeHexColor(POLAR_CAP_COLOR, shade), opacity }));
     }
-    // Under three points there is no polygon to fill — the cap is entirely round
-    // the back, which is the ordinary case for whichever pole is facing away.
-    if (points.length < 3) continue;
-    ops.push(polygon({ points, fill: POLAR_CAP_COLOR, opacity }));
   }
   return ops;
+}
+
+/** How many concentric rings approximate the cap's shading gradient. 6 is enough
+ *  that adjacent rings' colour step is imperceptible as banding at any globe size
+ *  this widget draws (checked at both the thumbnail and presentation sizes in
+ *  .claude_logs/globequal) while adding only 12 polygon ops worst case (both
+ *  poles visible) — negligible next to a tile's own subdivision count. */
+const POLAR_CAP_RINGS = 6;
+
+/** How much the cap darkens from its equator-ward edge (shade=1, matching the
+ *  seamed tile row exactly) to the pole itself (shade = 1-this). 0.35 mirrors the
+ *  atmosphere's own default limbDarken (atmosphere_shader.ATMOSPHERE_FILL_PARAMS)
+ *  so the cap's falloff visually matches the sphere it is drawn on rather than
+ *  inventing an unrelated constant. */
+const POLAR_CAP_DARKEN = 0.35;
+
+/**
+ * Pure function. Multiplies a "#rrggbb" hex colour's RGB channels by `shade`,
+ * clamped to a valid byte per channel. Used to approximate the cap's toward-pole
+ * darkening with plain solid-fill polygons (see polarCapOps) rather than
+ * threading a one-off radial gradient through the paint pipeline.
+ *
+ * @param {string} hex - "#rrggbb"
+ * @param {number} shade - multiplier, typically in (0, 1]
+ * @returns {string} "#rrggbb"
+ *
+ * @example shadeHexColor("#dfe8f2", 1) // "#dfe8f2" (no change at full shade)
+ * @example shadeHexColor("#dfe8f2", 0.5) // "#707479" (halfway to black)
+ * @example shadeHexColor("#ffffff", 0.65) // "#a6a6a6" (the pole-most ring at the default darken amount)
+ */
+function shadeHexColor(hex, shade) {
+  const n = parseInt(hex.slice(1), 16);
+  const chan = (byte) => Math.max(0, Math.min(255, Math.round(byte * shade))).toString(16).padStart(2, "0");
+  return `#${chan((n >> 16) & 0xff)}${chan((n >> 8) & 0xff)}${chan(n & 0xff)}`;
 }
 
 /** How finely the cut-latitude ring is sampled when building a polar cap. 48
@@ -381,36 +556,74 @@ function polarCapOps(s, opacity) {
 const POLAR_CAP_SEGMENTS = 48;
 
 /**
- * Pure function. The image ops for one tile drawn on the GLOBE: a
- * GLOBE_SUBDIVISIONS² grid of quads, each carrying its own sub-rect of the tile
- * texture, back-face-culled.
+ * Pure function. The image ops for one tile drawn on the GLOBE: an adaptive
+ * subdivisions² grid of quads (globeSubdivisions — scales with the globe's
+ * on-screen size, see its docblock), each carrying its own sub-rect of the tile
+ * texture, back-face-culled and FEATHERED at the limb by its coverage fraction.
  *
  * @param {object} tile - {x, y, z, ref}
  * @param {object} s - folded state
  * @param {number} opacity - the globe's crossfade weight
+ * @param {number} devicePerWorld - camera device px per world unit, for adaptive subdivision
  * @returns {object[]} image ops
  */
-function globeTileOps(tile, s, opacity) {
+function globeTileOps(tile, s, opacity, devicePerWorld) {
   if (!tile.ref || !tile.ready) return [];
   const nw = tileNorthWest(tile.x, tile.y, tile.z);
   const se = tileNorthWest(tile.x + 1, tile.y + 1, tile.z);
+  const n = globeSubdivisions(s, devicePerWorld);
   const ops = [];
-  for (let iy = 0; iy < GLOBE_SUBDIVISIONS; iy++) {
-    for (let ix = 0; ix < GLOBE_SUBDIVISIONS; ix++) {
-      const f0 = ix / GLOBE_SUBDIVISIONS, f1 = (ix + 1) / GLOBE_SUBDIVISIONS;
-      const g0 = iy / GLOBE_SUBDIVISIONS, g1 = (iy + 1) / GLOBE_SUBDIVISIONS;
+  for (let iy = 0; iy < n; iy++) {
+    for (let ix = 0; ix < n; ix++) {
+      const f0 = ix / n, f1 = (ix + 1) / n;
+      const g0 = iy / n, g1 = (iy + 1) / n;
       const rect = globeQuadRect({
         lon0: nw.lon + (se.lon - nw.lon) * f0, lon1: nw.lon + (se.lon - nw.lon) * f1,
         lat0: nw.lat + (se.lat - nw.lat) * g0, lat1: nw.lat + (se.lat - nw.lat) * g1,
       }, s);
-      if (!rect.visible || !(rect.w > 0) || !(rect.h > 0)) continue;
+      // COVERAGE, NOT A BOOLEAN: the quad's opacity is weighted by how much of its
+      // own footprint the analytic limb feather says is actually inside the disc
+      // (globeQuadRect's docblock) — this is what turns the old hard-edged cutoff
+      // into a smooth falloff at the silhouette.
+      if (!(rect.coverage > 0) || !(rect.w > 0) || !(rect.h > 0)) continue;
       ops.push(image({
         ref: tile.ref, x: rect.x, y: rect.y, w: rect.w, h: rect.h,
         sx: f0, sy: g0, sw: f1 - f0, sh: g1 - g0,
-        opacity, sampling: "bilinear",
+        opacity: opacity * rect.coverage, sampling: "bilinear",
       }));
     }
   }
+  return ops;
+}
+
+/**
+ * Pure function. THE SURFACE OPS for ONE LAYER — base or overlay, they are the
+ * same shape ({z, tiles, window}) and get IDENTICAL treatment: flat `image` ops
+ * below the crossfade weight, globe quad ops above it, both near the crossover
+ * so the transition dissolves rather than pops. This is what makes an overlay a
+ * genuine "second basemap" rather than a special case: emit() calls this once
+ * for the base and once per active overlay (see its docblock), and neither call
+ * knows or cares which one it is.
+ *
+ * @param {{z: number, tiles: object[], window: object}} plan - one layer's tile plan
+ * @param {object} s - folded state (centerLon, centerLat, w, h)
+ * @param {number} gw - the globe weight (effectiveGlobeWeight)
+ * @param {number} devicePerWorld - camera device px per world unit, for adaptive subdivision
+ * @param {number} opacity - the widget's own opacity (multiplied in, not the layer's own — an
+ *   overlay has no separate opacity property; showing it is the boolean, not a fade)
+ * @returns {object[]} image ops
+ */
+function layerSurfaceOps(plan, s, gw, devicePerWorld, opacity) {
+  const ops = [];
+  if (gw < 1) {
+    for (const tile of plan.tiles) {
+      if (!tile.ref || !tile.ready) continue;
+      const r = flatTileRect(tile, plan.window, s.w, s.h);
+      if (!(r.w > 0) || !(r.h > 0)) continue;
+      ops.push(image({ ref: tile.ref, x: r.x, y: r.y, w: r.w, h: r.h, opacity: (1 - gw) * opacity, sampling: "bilinear" }));
+    }
+  }
+  if (gw > 0) for (const tile of plan.tiles) ops.push(...globeTileOps(tile, s, gw * opacity, devicePerWorld));
   return ops;
 }
 
@@ -420,12 +633,24 @@ const PRESETS = [
   {
     name: "The Blue Marble",
     description: "The whole Earth as a lit globe with its atmosphere — the view this widget exists for. Satellite imagery at planetary zoom, where the globe rendering is at full strength and the flat map is nowhere in sight. Tween Zoom up from here for a fly-in.",
-    props: { centerLon: 8, centerLat: 24, zoom: 0.6, style: "satellite", rimStrength: 0.9, nightAmount: 0.72 },
+    // showAttribution: false is EXPLICIT here rather than relied-on-by-default:
+    // NASA's own imagery needs no credit (web/tile_providers.js), and a preset
+    // is exactly the kind of starting point that should demonstrate the honest
+    // default rather than depend on nobody having changed it since.
+    props: { centerLon: 8, centerLat: 24, zoom: 0.6, style: "satellite", rimStrength: 0.9, nightAmount: 0.72, showAttribution: false },
   },
   {
     name: "Daylight Globe (no terminator)",
     description: "The same globe lit evenly, with no day/night boundary — a cleaner read for a diagram where the terminator would be a distraction rather than a feature. Night darkness at 0 is what removes it.",
-    props: { centerLon: 0, centerLat: 20, zoom: 0.6, style: "satellite", nightAmount: 0, limbDarken: 0.25 },
+    props: { centerLon: 0, centerLat: 20, zoom: 0.6, style: "satellite", nightAmount: 0, limbDarken: 0.25, showAttribution: false },
+  },
+  {
+    name: "Hybrid (satellite + labels + borders)",
+    description: "The Google Maps \"hybrid\" look: NASA satellite imagery with place labels and political borders composited on top, both from the same keyless GIBS source. Coastlines stays off here — the satellite base already shows a sharp coastline of its own. NASA's imagery needs no credit; the two OVERLAYS are OSM-derived and keep their own attribution shown, which is why the corner line still reads even though the base's default is off.",
+    props: {
+      centerLon: 12, centerLat: 42, zoom: 3.4, style: "satellite", showAttribution: true,
+      overlayLabels: true, overlayFeatures: true, overlayCoastlines: false,
+    },
   },
   {
     name: "Continental (the crossover)",
@@ -465,19 +690,47 @@ export const globeMapPlugin = {
     writes: mapWrites,
   },
   /**
-   * Pure function. THE FLOATING BAR (web/CanvasToolbar.svelte's `fields` spec) —
-   * the on-canvas readout explore mode puts above the widget, so a user zooming
-   * around can SEE and TYPE the coordinates rather than guessing. The same
-   * affordance the Mandelbrot's coordinate bar provides, with the fields a map
-   * wants: a place is a longitude, a latitude and a zoom.
+   * Pure function. THE FLOATING BAR (web/CanvasToolbar.svelte's `toggles` +
+   * `fields` specs) — the on-canvas popup explore mode puts above the widget.
+   * THREE TOGGLE ROWS mirror the Inspector's basemap/overlay/view-mode rows
+   * exactly (same stored keys, same command path, via toggleWrites below — no
+   * parallel state), plus a coordinate PASTE field ahead of the existing
+   * lon/lat/zoom readout: "importing geographic coordinates is simple" (the
+   * user's own reasoning for choosing coordinates over a search box) is exactly
+   * what core/geo_tiles.parseLatLon exists to make true — paste "40.7128,
+   * -74.0060" (or any of the forms its doctests cover) and the map recentres.
    *
    * @param {object} s - folded, EVALUATED item state
-   * @returns {{fields: object[]}}
+   * @returns {{toggles: object, fields: object[]}}
    */
   floatingToolbar(s) {
     return {
       label: "Map view",
+      toggles: {
+        groups: [
+          {
+            buttons: TILE_PROVIDER_IDS.map((id) => ({
+              id: `style:${id}`, label: TILE_PROVIDERS[id].title, active: s.style === id, keys: ["style"],
+              help: `Switch the basemap to "${TILE_PROVIDERS[id].title}".`,
+            })),
+          },
+          {
+            buttons: OVERLAY_IDS.map((id) => ({
+              id: `overlay:${id}`, label: TILE_OVERLAYS[id].title, active: !!s[overlayPropName(id)], keys: [overlayPropName(id)],
+              help: TILE_OVERLAYS[id].help,
+            })),
+          },
+          {
+            buttons: ["auto", "globe", "flat"].map((mode) => ({
+              id: `viewMode:${mode}`, label: mode === "auto" ? "Auto" : mode === "globe" ? "Globe" : "Flat",
+              active: (s.viewMode ?? "auto") === mode, keys: ["viewMode"],
+              help: mode === "auto" ? "The shipped zoom-threshold crossfade." : mode === "globe" ? "Pin the sphere rendering at any zoom." : "Pin the flat mercator rendering at any zoom.",
+            })),
+          },
+        ],
+      },
       fields: [
+        { id: "coords", label: "Go to", value: "", keys: [], size: "wide", help: "Paste coordinates to fly there: \"40.7128, -74.0060\", with N/S/E/W suffixes, or with ° marks — see the field's own parser." },
         { id: "lon", label: "Lon", value: String(round6(s.centerLon)), keys: ["centerLon"], size: "wide", help: "Longitude of the view centre, degrees east. Paste a coordinate here to fly to it." },
         { id: "lat", label: "Lat", value: String(round6(s.centerLat)), keys: ["centerLat"], size: "wide", help: "Latitude of the view centre, degrees north." },
         { id: "zoom", label: "Zoom", value: String(round6(s.zoom)), keys: ["zoom"], size: "narrow", help: "Slippy-map zoom: 0 is the whole world and each unit doubles the scale. Tween this for a fly-in." },
@@ -491,21 +744,68 @@ export const globeMapPlugin = {
    *
    * Longitude wraps and latitude clamps here exactly as they do for a drag, so a
    * typed 200 means 160°W rather than being refused or stored as an impossible
-   * coordinate.
+   * coordinate. The "coords" field is a WRITE-ONLY paste target — it always
+   * displays empty (floatingToolbar's `value: ""`) and its typed text is parsed
+   * by core/geo_tiles.parseLatLon into the SAME centerLon/centerLat keys "lon"
+   * and "lat" write individually, so pasting one string moves the view exactly
+   * as typing both fields would. A LOUD REFUSAL (returning null, never throwing)
+   * is what the brief asks for on unparseable text: the host leaves the field
+   * alone rather than silently discarding a typo, and the field's own `help`
+   * documents the accepted grammar so the refusal is not a mystery.
    *
    * @example globeMapPlugin.fieldWrites({}, "lon", "-74.006") // {centerLon: -74.006}
    * @example globeMapPlugin.fieldWrites({}, "lon", "200") // {centerLon: -160} (wraps past the date line)
    * @example globeMapPlugin.fieldWrites({}, "lat", "95") // {centerLat: 85.05112877980659} (clamped to the Mercator limit)
    * @example globeMapPlugin.fieldWrites({}, "zoom", "13") // {zoom: 13}
    * @example globeMapPlugin.fieldWrites({}, "lat", "banana") // null
+   * @example globeMapPlugin.fieldWrites({}, "coords", "40.7128, -74.0060") // {centerLat: 40.7128, centerLon: -74.00599999999997}
+   * @example globeMapPlugin.fieldWrites({}, "coords", "33.5S 151.2E") // {centerLat: -33.5, centerLon: 151.20000000000005}
+   * @example globeMapPlugin.fieldWrites({}, "coords", "not a place") // null (loud refusal: the host leaves the field alone rather than guessing)
    */
   fieldWrites(s, id, text) {
+    if (id === "coords") {
+      const parsed = parseLatLon(text);
+      return parsed ? { centerLat: parsed.lat, centerLon: parsed.lon } : null;
+    }
     const n = Number(String(text).trim());
     if (String(text).trim() === "" || !Number.isFinite(n)) return null;
     if (id === "lon") return { centerLon: wrapLon(n) };
     if (id === "lat") return { centerLat: clampLat(n) };
     if (id === "zoom") return { zoom: Math.max(MIN_MAP_ZOOM, Math.min(MAX_MAP_ZOOM, n)) };
-    throw new Error(`globe_map fieldWrites: unknown field "${id}" (declared: lon, lat, zoom)`);
+    throw new Error(`globe_map fieldWrites: unknown field "${id}" (declared: coords, lon, lat, zoom)`);
+  },
+  /**
+   * Pure function. A popup toggle button's id → the property writes it commits,
+   * exactly the shape fieldWrites returns — the SAME command path CanvasToolbar
+   * uses for both, so a popup click and an Inspector edit are indistinguishable
+   * to app.setPreview/commitPreview. Three id families, one per toggle group in
+   * floatingToolbar: "style:<id>" picks a basemap (like the grid picker other
+   * widgets use, but as a button since there are only three), "overlay:<id>"
+   * FLIPS that overlay's boolean (clicking an already-active one turns it back
+   * off — the popup mirrors the Inspector checkbox, which is a toggle, not a
+   * radio), "viewMode:<mode>" pins the crossfade.
+   *
+   * @example globeMapPlugin.toggleWrites({}, "style:satellite") // {style: "satellite"}
+   * @example globeMapPlugin.toggleWrites({overlayLabels: false}, "overlay:labels") // {overlayLabels: true}
+   * @example globeMapPlugin.toggleWrites({overlayLabels: true}, "overlay:labels") // {overlayLabels: false}
+   * @example globeMapPlugin.toggleWrites({}, "viewMode:globe") // {viewMode: "globe"}
+   */
+  toggleWrites(s, id) {
+    const [kind, value] = id.split(":");
+    if (kind === "style") {
+      if (!TILE_PROVIDER_IDS.includes(value)) throw new Error(`globe_map toggleWrites: unknown basemap id "${value}" in "${id}"`);
+      return { style: value };
+    }
+    if (kind === "overlay") {
+      if (!OVERLAY_IDS.includes(value)) throw new Error(`globe_map toggleWrites: unknown overlay id "${value}" in "${id}"`);
+      const key = overlayPropName(value);
+      return { [key]: !s[key] };
+    }
+    if (kind === "viewMode") {
+      if (!["auto", "globe", "flat"].includes(value)) throw new Error(`globe_map toggleWrites: unknown view mode "${value}" in "${id}"`);
+      return { viewMode: value };
+    }
+    throw new Error(`globe_map toggleWrites: unknown toggle id "${id}" (declared families: style:, overlay:, viewMode:)`);
   },
   defaults: {
     type: "demo_globe_map", x: 140, y: 120, w: 420, h: 420, z: 100, rotation: 0, scale: 1,
@@ -529,14 +829,24 @@ export const globeMapPlugin = {
   ],
   presets: PRESETS,
   /**
-   * Pure function. State → display list. Four layers, in z order:
+   * Pure function. State → display list. FIVE layers, in z order:
    *   1. SPACE — the box fill, which the atmosphere's halo fades into.
    *   2. THE SURFACE — one `image` op per tile (flat) or per sub-quad (globe),
-   *      crossfaded by globeWeight so both are drawn near the crossover and the
-   *      transition is a dissolve between two renderings OF THE SAME TILES.
-   *   3. THE AIR — one `materialFill` naming the "atmosphere" material, drawn only
-   *      when there is globe to put air around.
-   *   4. THE ATTRIBUTION — the provider's licence-required credit.
+   *      crossfaded by effectiveGlobeWeight so both are drawn near the crossover
+   *      and the transition is a dissolve between two renderings OF THE SAME
+   *      TILES.
+   *   2b. THE OVERLAYS — every active reference layer (web/tile_providers
+   *      TILE_OVERLAYS: labels/borders/coastlines), composited ABOVE the surface
+   *      through the identical tile mechanics as the base — same registry, same
+   *      flat/globe placement math, same crossfade weight — because an overlay
+   *      IS a basemap, just a transparent one with its own maxZoom. This is the
+   *      Google "hybrid" look: reference linework over satellite imagery.
+   *   3. THE AIR — one `materialFill` naming the "atmosphere" material, drawn
+   *      only when there is globe to put air around, and ABOVE the overlays so
+   *      limb darkening/the terminator fall across labels exactly as they do
+   *      across the base surface.
+   *   4. THE ATTRIBUTION — the UNION of every active layer's required credit
+   *      (base + overlays), deduplicated, tiny, in the corner.
    *
    * `ctx` (sceneIR's 4th arg) carries the pre-pass's tile plan when a live view
    * ran one. Without it emit takes the camera-free fallback — see tilePlan. emit
@@ -544,7 +854,7 @@ export const globeMapPlugin = {
    */
   emit(s, _subtree, _world, ctx = null) {
     const plan = tilePlan(s, ctx);
-    const gw = globeWeight(s.zoom);
+    const gw = effectiveGlobeWeight(s);
     const provider = providerFor(s.style);
     const ops = [];
 
@@ -556,15 +866,16 @@ export const globeMapPlugin = {
       opacity: s.opacity ?? 1,
     }));
 
-    // 2. THE SURFACE. Both renderings are emitted near the crossover, each at its
-    //    own weight; away from it one of them has weight 0 and contributes nothing.
-    if (gw < 1) {
-      for (const tile of plan.tiles) {
-        if (!tile.ref || !tile.ready) continue;
-        const r = flatTileRect(tile, plan.window, s.w, s.h);
-        if (!(r.w > 0) || !(r.h > 0)) continue;
-        ops.push(image({ ref: tile.ref, x: r.x, y: r.y, w: r.w, h: r.h, opacity: (1 - gw) * (s.opacity ?? 1), sampling: "bilinear" }));
-      }
+    const devicePerWorld = devicePerWorldOf(ctx);
+    // 2 + 2b. THE SURFACE, then every active OVERLAY on top of it — same plan
+    // shape ({z, tiles, window}), same placement math, one extra loop per active
+    // overlay. layerSurfaceOps is shared by the base and every overlay so the
+    // two can never drift (see its docblock).
+    ops.push(...layerSurfaceOps(plan, s, gw, devicePerWorld, s.opacity ?? 1));
+    for (const id of OVERLAY_IDS) {
+      const layerPlan = plan.overlays?.[id];
+      if (!s[overlayPropName(id)] || !layerPlan) continue;
+      ops.push(...layerSurfaceOps(layerPlan, s, gw, devicePerWorld, s.opacity ?? 1));
     }
     if (gw > 0) {
       // THE POLAR CAPS, and they are not decoration — they are the honest treatment
@@ -581,7 +892,6 @@ export const globeMapPlugin = {
       // else. Both real caps ARE ice, so a flat polar disc is the truthful picture
       // — and the atmosphere's limb darkening falls across it like anywhere else.
       for (const op of polarCapOps(s, gw * (s.opacity ?? 1))) ops.push(op);
-      for (const tile of plan.tiles) ops.push(...globeTileOps(tile, s, gw * (s.opacity ?? 1)));
     }
 
     // 3. THE AIR. Only where there is a globe — on a flat street map there is no
@@ -601,11 +911,16 @@ export const globeMapPlugin = {
       }));
     }
 
-    // 4. THE ATTRIBUTION — a LICENCE TERM (see web/tile_providers.js). Drawn last
-    //    so nothing can cover it.
+    // 4. THE ATTRIBUTION — the UNION of every ACTIVE layer's licence-required
+    //    credit (see web/tile_providers.js), deduplicated, drawn last so nothing
+    //    can cover it. TINY, corner text — the Google-Maps-corner idiom (user
+    //    ruling: "I don't need to see their logo on my presentations. Get rid of
+    //    it." — this is the smallest legible size, not a badge).
     if (s.showAttribution !== false) {
+      const lines = [provider.attribution];
+      for (const id of OVERLAY_IDS) if (s[overlayPropName(id)]) lines.push(overlayFor(id).attribution);
       ops.push(text({
-        text: provider.attribution,
+        text: [...new Set(lines)].join("  ·  "),
         x: ATTRIBUTION_INSET, y: s.h - ATTRIBUTION_INSET - ATTRIBUTION_SIZE,
         size: ATTRIBUTION_SIZE, color: s.attributionColor,
         opacity: s.opacity ?? 1,

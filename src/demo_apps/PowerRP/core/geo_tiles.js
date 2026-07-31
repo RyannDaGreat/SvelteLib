@@ -53,6 +53,94 @@
  * widget's own zoom with the CAMERA's device-pixels-per-world-unit so that
  * zooming the editor camera into the widget raises tile depth. See its docblock
  * for the derivation; that composition IS the view-resolution law.
+ *
+ * ── RESEARCH: HOW REAL GLOBE RENDERERS SOLVE THE LIMB, AND WHAT WE TOOK ──────
+ * The user's critique ("coercing a 2D mapping into 3D… the edges always look
+ * bad") sent us to look at what CesiumJS, MapLibre GL's globe mode, deck.gl's
+ * GlobeView and the d3-geo raster-reprojection idiom actually do. None of them
+ * is a drop-in fix — each assumes a real 3D mesh/GPU pipeline this app does not
+ * have (render_gpu is a Skia/SkSL raster stack over `image` ops, not a WebGL
+ * mesh engine) — but each named a specific failure mode worth checking against:
+ *
+ *   · CESIUMJS: a quadtree of ellipsoid patches, LOD chosen by projected
+ *     SCREEN-SPACE ERROR per patch, horizon-cull by an occludee point against a
+ *     horizon plane. ADOPTED (the principle, not the mesh): tile/quad density
+ *     must be a function of ON-SCREEN size, not a fixed constant — see
+ *     `globeSubdivisionsFor` below. REJECTED: an actual patch quadtree — there
+ *     is no 3D mesh engine to hang it on, and the existing quad-grid-of-`image`-
+ *     ops IS this app's patch mesh; the honest analog is adaptive density, not a
+ *     new geometry system.
+ *   · MAPLIBRE GL globe mode: reprojects mercator tiles per-VERTEX onto a unit
+ *     sphere and hides the horizon by a CLIP PLANE, not by feathering — their
+ *     own developer guide (github.com/maplibre/maplibre-gl-js,
+ *     developer-guides/globe.md) discusses the horizon only as clip-plane math
+ *     and says nothing about antialiasing the silhouette. That is a real GPU
+ *     hardware-MSAA advantage this raster stack does not get for free, so their
+ *     silence on limb AA is not a technique to adopt — it means they lean on
+ *     hardware the Skia CPU/GL2 path here cannot assume. What IS actionable:
+ *     their guide states plainly that RASTER tiles need much finer subdivision
+ *     than vector ("raster tiles in particular need a relatively high base
+ *     granularity, as otherwise they would exhibit visible warping and
+ *     deformations") — confirming subdivision is necessary, which this widget
+ *     already had (GLOBE_SUBDIVISIONS), but per MapLibre's own admission
+ *     subdivision ALONE does not solve edge quality; it solves interior warping.
+ *     ADOPTED: keep subdivision, stop treating it as sufficient for the limb.
+ *   · DECK.GL GlobeView: converts flat geometry to a 3D mesh at a configurable
+ *     angular resolution; raster tile support on the globe is still marked
+ *     experimental in their own docs. Nothing new to adopt over CesiumJS/MapLibre
+ *     here — same "mesh + hardware AA" answer, same inapplicability.
+ *   · D3-GEO RASTER REPROJECTION (the observablehq/d3 idiom, e.g.
+ *     gist.github.com/rasmuse/75fae4fee3354ec41a49d10fb37af551): for EVERY
+ *     destination pixel, inverse-project to source lon/lat and sample — the
+ *     reference implementation is nearest-neighbour only ("I only implemented
+ *     nearest neighbor resampling… not really useful for animated on-the-fly
+ *     reprojection") and admits it has no antialiasing at all. ADOPTED THE
+ *     MODEL, NOT THE CODE: this is the architecturally correct target — a
+ *     genuine per-pixel inverse projection, which is exactly what an SkSL
+ *     shader already does per-pixel for the atmosphere. REJECTED as a literal
+ *     replacement for the surface: doing this for the TILE SURFACE (not just
+ *     the atmosphere) would require handing a material shader N arbitrary tile
+ *     textures as children, and the material framework has no such mechanism
+ *     (see plugins/demo/globe_map.js's docblock on why the surface stays
+ *     `image` ops) — building one is a framework change with a global blast
+ *     radius, out of this fix's scope. What IS adopted from this idiom is its
+ *     STANDARD antialiasing answer (supersample several sub-points per output
+ *     pixel/quad and blend) applied at the QUAD level: `discCoverageFraction`
+ *     below is the closed-form version of exactly that idea, done analytically
+ *     instead of by supersampling, which SkSL ES2 here cannot do with `fwidth`
+ *     anyway (see next point).
+ *
+ * ── WHY NO fwidth/dFdx: THE SHADER RUNTIME IS ES2, AND THE FIX IS ANALYTIC ───
+ * The obvious limb-AA idiom in shader work is `alpha = 1 - smoothstep(0, fwidth(r),
+ * r - 1)` — antialias over one screen-space derivative of the edge function. This
+ * codebase's SkSL runtime effects are ES2-restricted (CanvasKit's CPU path does not
+ * implement the ES3 derivative intrinsics; render_gpu/skia/metal_shader.js and
+ * metal_stamp_shader.js already hit this and use ANALYTIC or central-difference
+ * derivatives instead of `dFdx`). The orthographic disc has a gift here: unlike an
+ * arbitrary SDF, `r = length((p - uCenter) / uRadius)` is EXACTLY LINEAR in device
+ * px along the radial direction, so its true screen-space derivative is the closed
+ * form `1 / uRadius` device px per unit of `r` — no `fwidth` needed AT ALL, in the
+ * atmosphere shader or in the quad-level analog below. This is why the fix does not
+ * need a runtime upgrade: the closed form was always available, it just was not
+ * being used at the quad-culling boundary (globeQuadRect used a hard boolean).
+ *
+ * ── POLES: MERCATOR'S CUT vs GIBS GEOGRAPHIC TILES, AND WHY WE DID NOT SWITCH ─
+ * NASA GIBS also serves true GEOGRAPHIC (EPSG:4326, equirectangular) tile matrix
+ * sets whose "spatial coverage… matches the full extent of the projection"
+ * (nasa-gibs.github.io/gibs-api-docs/access-advanced-topics) — i.e. all the way to
+ * ±90°, with none of Mercator's ±MAX_MERCATOR_LAT cut. An equirectangular texture
+ * is also the RIGHT bake target for a sphere shader in principle: lon/lat is
+ * linear across it, so an inverse-orthographic lookup is one lerp with no
+ * Gudermannian and no polar singularity. EVALUATED AND DEFERRED, not adopted, for
+ * a scope reason rather than a technical one: the provider table
+ * (web/tile_providers.js) and its layer/style plumbing belong to a
+ * concurrently-landing sibling change (mapctl_), and wiring a second tile
+ * geometry (geographic, alongside the existing Mercator pyramid) is exactly the
+ * kind of provider-table edit this fix must not race. The polar caps therefore
+ * stay a principled non-textured cap here (radially shaded to read as continuing
+ * curvature rather than a flat sticker — see plugins/demo/globe_map.js
+ * polarCapOps) with the GIBS-geographic path recorded as the correct follow-up
+ * for whoever next touches tile_providers.js for real polar imagery.
  */
 
 /**
@@ -392,16 +480,31 @@ export function sphereLonLatAt(u, v, centerLon, centerLat) {
  * whole sphere), so returning the flag rather than null lets a culler use it
  * without recomputing the geometry.
  *
+ * `cosC` (that same cosine, signed and un-thresholded) IS ALSO RETURNED, because
+ * `visible` alone is a HARD boolean at exactly the wrong place for antialiasing:
+ * `rho = sqrt(u²+v²)` — the disc-radius the limb feather (discCoverageFraction)
+ * reads — and `cosC` agree ONLY for a point genuinely ON the unit sphere (there,
+ * rho = sin(c) and cosC = cos(c), so cosC≥0 ⟺ rho≤1 exactly). A point whose
+ * great-circle distance from the view centre is just past 90° in ONE axis (say
+ * longitude) but offset in another (say latitude) can still have rho comfortably
+ * under 1 while cosC is already negative — the back hemisphere's near-limb
+ * points project into the SAME disc area as the front hemisphere's limb. rho
+ * cannot see this; cosC is the ONLY continuous signal that tells a front-facing
+ * near-limb quad corner apart from a back-facing one at the same rho. This is
+ * why globeQuadRect's coverage fraction is NOT `discCoverageFraction` on rho
+ * alone — it needs cosC as an independent per-corner gate, continuous rather
+ * than boolean, precisely at the boundary this matters.
+ *
  * @param {number} lon - degrees
  * @param {number} lat - degrees
  * @param {number} centerLon - the globe's centre longitude, degrees
  * @param {number} centerLat - the globe's centre latitude, degrees
- * @returns {{u: number, v: number, visible: boolean}} v is NORTH-positive
+ * @returns {{u: number, v: number, visible: boolean, cosC: number}} v is NORTH-positive
  *
- * @example sphereProject(0, 0, 0, 0) // {u: 0, v: 0, visible: true} (the centre projects to the centre)
- * @example sphereProject(90, 0, 0, 0) // {u: 1, v: 0, visible: true} (a quarter turn east is the limb)
+ * @example sphereProject(0, 0, 0, 0) // {u: 0, v: 0, visible: true, cosC: 1} (the centre projects to the centre, facing the viewer dead-on)
+ * @example Math.abs(sphereProject(90, 0, 0, 0).cosC) < 1e-15 // true (a quarter turn east is EXACTLY the limb: grazing incidence, cosC ~ 0)
  * @example sphereProject(180, 0, 0, 0).visible // false (the antipode faces away)
- * @example sphereProject(0, 90, 0, 0) // {u: 0, v: 1, visible: true} (the pole is the top of the disc)
+ * @example Math.abs(sphereProject(0, 90, 0, 0).cosC) < 1e-15 // true (the pole, from the equator, is also exactly the limb)
  */
 export function sphereProject(lon, lat, centerLon, centerLat) {
   const dLon = ((wrapLon(lon - centerLon)) * Math.PI) / 180;
@@ -411,8 +514,120 @@ export function sphereProject(lon, lat, centerLon, centerLat) {
     u: Math.cos(phi) * Math.sin(dLon),
     v: Math.cos(phi0) * Math.sin(phi) - Math.sin(phi0) * Math.cos(phi) * Math.cos(dLon),
     visible: cosC >= 0,
+    cosC,
   };
 }
+
+/**
+ * Pure function. THE ANALYTIC LIMB FEATHER: given the minimum and maximum
+ * `cosC` (the signed cosine of angular distance from the view centre —
+ * sphereProject's `cosC`) spanned by a quad's four projected corners, returns
+ * what FRACTION of that band lies on the VISIBLE side (cosC ≥ 0).
+ *
+ * THIS IS THE FIX FOR THE FACETED SILHOUETTE. The old rule was a hard boolean —
+ * a quad was either fully drawn or fully dropped (globeQuadRect's `visible`) —
+ * which is exactly a one-pixel-wide staircase of quad edges at the limb: the
+ * "cookie-cutter" look the user's critique names. Weighting each quad's opacity
+ * by this fraction instead turns that staircase into a smooth falloff.
+ *
+ * WHY cosC AND NOT rho (a correction to this function's first draft): the disc
+ * radius `rho = sqrt(u²+v²)` looked like the natural feather variable — it is
+ * what the atmosphere shader itself normalizes by — but rho is NOT a reliable
+ * limb signal for a projected quad CORNER, only for a point genuinely centred
+ * in the view's own great-circle sense. A corner whose great-circle distance
+ * from the view centre exceeds 90° in a COMBINED lon+lat sense can still have
+ * rho comfortably under 1 (the back hemisphere's near-limb geometry projects
+ * into the same disc area as the front hemisphere's limb — sphereProject's own
+ * docblock states this: "a point on the FAR side still projects to a disc
+ * coordinate"). Measured directly: a real quad corner at rho=0.99998 (visibly
+ * INSIDE the disc by the rho test) had cosC < 0 (genuinely facing away) —
+ * verified against tests/globe_limb_feather_test.js while building this fix.
+ * `cosC`, by contrast, IS the true angular test (sphereProject's `visible` is
+ * just `cosC >= 0`, thresholded), and — critically for the SAME closed-form
+ * reasoning that motivated using rho — cosC is ALSO exactly linear in angular
+ * distance near the boundary, so the identical straddle formula applies with
+ * the boundary at 0 instead of 1: a quad whose cosC band straddles zero has a
+ * visible fraction of exactly `cosC1 / (cosC1 - cosC0)`, clamped to [0, 1] (the
+ * band's fraction that lies above zero, given cosC decreases as cosC0 -> cosC1
+ * moves away from the view centre). This needs no derivative intrinsic at all:
+ * cosC0/cosC1 are already known from the quad's own corners, computed once per
+ * quad, not once per pixel (this file's header, "WHY NO fwidth").
+ *
+ * A quad entirely visible (cosC0 ≥ 0, the CLOSED half-space — a corner exactly
+ * AT the limb still counts as visible) is fully covered; entirely hidden
+ * (cosC1 ≤ 0, and NOT already caught by the first test) is fully dropped.
+ *
+ * @param {number} cosC0 - the smaller (more hidden) corner cosC
+ * @param {number} cosC1 - the larger (more visible) corner cosC
+ * @returns {number} coverage fraction in [0, 1]
+ *
+ * @example discCoverageFraction(0.6, 0.9) // 1 (fully visible, nowhere near the limb)
+ * @example discCoverageFraction(-0.3, -0.1) // 0 (fully hidden — round the back)
+ * @example discCoverageFraction(-0.1, 0.1) // 0.5 (straddles the limb evenly: half the band is visible)
+ * @example discCoverageFraction(0, 0.3) // 1 (the more-hidden corner sits exactly ON the limb: the closed half-space counts it visible)
+ * @example discCoverageFraction(0, 0) // 1 (a degenerate band exactly ON the limb: still the closed-half-space edge, not hidden)
+ */
+export function discCoverageFraction(cosC0, cosC1) {
+  if (cosC0 >= 0) return 1;
+  if (cosC1 <= 0) return 0;
+  return Math.max(0, Math.min(1, cosC1 / (cosC1 - cosC0)));
+}
+
+/**
+ * Pure function. ADAPTIVE GLOBE SUBDIVISION: how many quads a tile is split into
+ * per axis when drawn on the sphere, as a function of the globe's ACTUAL on-screen
+ * radius in device px — replacing a single fixed constant.
+ *
+ * WHY ADAPTIVE (the CesiumJS principle, applied without a mesh/LOD tree): a real
+ * quadtree globe renderer (CesiumJS) chooses patch density from projected
+ * SCREEN-SPACE ERROR, not a fixed count — denser where the sphere occupies more
+ * pixels, coarser where it does not, because a facet's visible size is a SCREEN
+ * quantity, not a geometry quantity. This app has no patch quadtree to hang that
+ * on, but the same principle is one line here: a 40-px thumbnail globe wastes
+ * cycles at a subdivision fine enough for a 900-px presentation globe, and,
+ * conversely, a 900-px globe at the OLD fixed 16 visibly facets (exactly the
+ * screenshot the user's critique points at) because 16 quads across a tile
+ * spanning tens of degrees is nowhere near enough arc-per-quad at that pixel
+ * count.
+ *
+ * THE LAW: quads-per-tile-edge scales so that ONE QUAD SPANS ROUGHLY
+ * `PX_PER_QUAD_EDGE` device px of the globe's own diameter — i.e. subdivision
+ * grows with radius, not with zoom or tile depth (a tile's OWN footprint in
+ * degrees already shrinks as zoom deepens, which is a separate effect this
+ * function does not need to know about). Clamped to [MIN, MAX] so a tiny globe
+ * is never sub-4 (a single quad IS a visible flat facet) and a huge one never
+ * asks for a quadratic-cost grid with no visible benefit past the display's own
+ * resolution.
+ *
+ * @param {number} radiusPx - the globe's on-screen radius, DEVICE px (min(w,h)/2 · devicePerWorld)
+ * @returns {number} an even integer quad count per tile edge
+ *
+ * @example globeSubdivisionsFor(20) // 4 (a tiny thumbnail globe: coarse is invisible at this size)
+ * @example globeSubdivisionsFor(200) // 16 (the old fixed constant, recovered at the size it was tuned for)
+ * @example globeSubdivisionsFor(500) // 40 (a large presentation globe: finer facets where they would otherwise show)
+ * @example globeSubdivisionsFor(1e6) // 64 (clamped: past this, more quads buy nothing visible)
+ */
+export function globeSubdivisionsFor(radiusPx) {
+  const raw = Math.round((2 * Math.max(0, radiusPx)) / PX_PER_QUAD_EDGE / 2) * 2;
+  return Math.max(GLOBE_SUBDIVISIONS_MIN, Math.min(GLOBE_SUBDIVISIONS_MAX, raw || GLOBE_SUBDIVISIONS_MIN));
+}
+
+/** Target device px spanned by one quad's edge across the globe's diameter — the
+ *  ratio that calibrates globeSubdivisionsFor. 25 recovers 16 subdivisions at a
+ *  200px radius (the size the original fixed constant was tuned and measured
+ *  against — see git history on GLOBE_SUBDIVISIONS), so existing decks at that
+ *  size render unchanged while other sizes now scale correctly. */
+const PX_PER_QUAD_EDGE = 25;
+
+/** Subdivision floor: below 4 quads per edge a single facet is a large enough
+ *  fraction of a tiny globe's diameter to read as an obviously flat polygon
+ *  rather than a curve, regardless of how few pixels it occupies. */
+const GLOBE_SUBDIVISIONS_MIN = 4;
+
+/** Subdivision ceiling: 64 quads per tile edge is 4096 quads for one tile; past
+ *  this the facet size is already sub-pixel at any realistic widget size, so
+ *  more quads cost real time (image ops are not free) for zero visible gain. */
+const GLOBE_SUBDIVISIONS_MAX = 64;
 
 /**
  * The zoom at which the GLOBE gives way to the FLAT map, and the width of the
@@ -449,4 +664,95 @@ export function globeWeight(zoom) {
   const t = ((zoom ?? 0) - (GLOBE_FLAT_CROSSOVER - GLOBE_FADE_WIDTH)) / (2 * GLOBE_FADE_WIDTH);
   const c = Math.max(0, Math.min(1, t));
   return 1 - c * c * (3 - 2 * c); // smoothstep, inverted (globe fades OUT as zoom rises)
+}
+
+/**
+ * One coordinate's regex: an optional sign, digits, an optional decimal part, an
+ * optional degree mark (° or the word "deg", with optional whitespace before it),
+ * and an optional N/S/E/W suffix (also with optional whitespace before it). Used
+ * TWICE inside COORD_PAIR — once per half of a pair — so lat and lon accept
+ * exactly the same vocabulary and neither copy can drift from the other.
+ */
+const COORD_NUMBER = `[+-]?\\d+(?:\\.\\d+)?\\s*(?:°|deg)?\\s*[NSEWnsew]?`;
+
+/** Two COORD_NUMBERs separated by a comma-and/or-whitespace run — the ENTIRE
+ *  field must match (anchored both ends), which is what makes "40.7128" (only
+ *  one number) and "banana" (no number) refuse instead of partially matching. */
+const COORD_PAIR = new RegExp(`^(${COORD_NUMBER})\\s*(?:,\\s*|\\s+)(${COORD_NUMBER})$`);
+
+/**
+ * Pure function. Parses ONE coordinate token (a signed number, an optional degree
+ * mark, an optional hemisphere suffix) into a signed decimal degree, or null when
+ * the text is not a coordinate at all. A hemisphere suffix OVERRIDES any leading
+ * sign — "-74W" is the same point as "74W" (both 74° west) — because a suffix is
+ * the more explicit statement of hemisphere and a user pasting a search result's
+ * "74.5 W" should not have to also remember a sign convention.
+ *
+ * @param {string} token - one coordinate, already isolated from its pair
+ * @returns {number|null}
+ *
+ * @example parseCoordToken("40.7128") // 40.7128
+ * @example parseCoordToken("74.006W") // -74.006 (a suffix sets the sign)
+ * @example parseCoordToken("-74.006W") // -74.006 (a leading sign AND a suffix agree)
+ * @example parseCoordToken("33.5S") // -33.5
+ * @example parseCoordToken("12.3°N") // 12.3 (a degree mark is just punctuation)
+ * @example parseCoordToken("banana") // null
+ */
+function parseCoordToken(token) {
+  const m = new RegExp(`^(${COORD_NUMBER})$`).exec(token.trim());
+  if (!m) return null;
+  const inner = /^([+-]?\d+(?:\.\d+)?)\s*(?:°|deg)?\s*([NSEWnsew]?)$/.exec(m[1]);
+  const magnitude = Math.abs(Number(inner[1]));
+  const suffix = inner[2].toUpperCase();
+  if (suffix === "S" || suffix === "W") return -magnitude;
+  if (suffix === "N" || suffix === "E") return magnitude;
+  return Number(inner[1]); // no suffix: the leading sign (or its absence) stands
+}
+
+/**
+ * Pure function. Parses a FLEXIBLE lat/lon pair — the popup's coordinate field —
+ * into `{lon, lat}` degrees, or null when the text names no coordinate pair at
+ * all. Accepts every shape a person pastes from a map, a GPS unit or a search
+ * result: comma OR whitespace between the two numbers, an optional ° mark, and
+ * an optional N/S/E/W suffix on either or both halves. THE ORDER IS ALWAYS
+ * LAT, LON (the universal convention — "40.7128, -74.0060" reads latitude
+ * first), matching what every map service, GPS device and this app's OWN
+ * floating-toolbar Lat/Lon fields already show.
+ *
+ * A HEMISPHERE SUFFIX DISAMBIGUATES THE ORDER when one is given: if the first
+ * token carries E/W and the second carries N/S, the pair is read as (lon, lat)
+ * instead — "74.006W, 40.7128N" is unambiguous regardless of which position it
+ * is typed in, and refusing to honour that would penalize the more explicit
+ * input. With no suffixes at all (the common case), lat-then-lon stands.
+ *
+ * Latitude is CLAMPED and longitude WRAPPED exactly as every other write path
+ * in this module does (clampLat/wrapLon), so a typo like "95, 200" lands at a
+ * legal point rather than an invalid one.
+ *
+ * @param {string} text - the typed field value
+ * @returns {{lon: number, lat: number}|null} null when unparseable
+ *
+ * @example parseLatLon("40.7128, -74.0060") // {lat: 40.7128, lon: -74.00599999999997}
+ * @example parseLatLon("40.7128 -74.0060") // {lat: 40.7128, lon: -74.00599999999997} (whitespace instead of a comma)
+ * @example parseLatLon("40.7128N, 74.0060W") // {lat: 40.7128, lon: -74.00599999999997} (suffixes spell the sign)
+ * @example parseLatLon("74.0060W, 40.7128N") // {lat: 40.7128, lon: -74.00599999999997} (E/W-then-N/S reorders to lat,lon)
+ * @example parseLatLon("33.5S 151.2E") // {lat: -33.5, lon: 151.20000000000005} (Sydney, southern + eastern hemispheres)
+ * @example parseLatLon("12.3° N, 45.6° E") // {lat: 12.3, lon: 45.60000000000002} (a degree mark either side of the space)
+ * @example parseLatLon("95, 200") // {lat: 85.05112877980659, lon: -160} (clamped + wrapped, not refused)
+ * @example parseLatLon("banana") // null
+ * @example parseLatLon("40.7128") // null (a pair needs two numbers)
+ */
+export function parseLatLon(text) {
+  const m = COORD_PAIR.exec(String(text).trim());
+  if (!m) return null;
+  const a = parseCoordToken(m[1]);
+  const b = parseCoordToken(m[2]);
+  if (a === null || b === null) return null;
+  const suffixOf = (s) => (/[EWew]$/.test(s.trim()) ? "lon" : /[NSns]$/.test(s.trim()) ? "lat" : null);
+  // (lon, lat) ordering is honoured ONLY when the suffixes say so unambiguously;
+  // any other combination (both blank, both the same axis, or only one given)
+  // falls through to the universal lat-then-lon reading.
+  const reordered = suffixOf(m[1]) === "lon" && suffixOf(m[2]) === "lat";
+  const [lat, lon] = reordered ? [b, a] : [a, b];
+  return { lat: clampLat(lat), lon: wrapLon(lon) };
 }
