@@ -53,6 +53,46 @@
  * (rendered UNMASKED), <use>/<image>/<text>, inline `style=` (attributes only),
  * and crammed arc-flag syntax ("A20 20 0 0120 0" — flags must be their own
  * tokens; transformPathD throws rather than misreading geometry).
+ *
+ * ── STROKE-LINECAP ON DEGENERATE SUBPATHS (the round-dot idiom) ───────────────
+ * render_gpu/ir.js's `path` op carries no cap/join fields at all — Skia strokes
+ * every path with its own default (BUTT cap, MITER join), and that default is
+ * off-limits to change here (ir.js/paint_skia.js are a live sibling's). Most
+ * stroked art never notices: a real (non-degenerate) open segment looks the
+ * same with a butt cap as SVG's own default butt cap. But stroke-based icon
+ * sets (tabler, and the "outline" style generally) draw a DOT as a
+ * near-zero-length subpath — the idiomatic `M12 16h.01` — which is a round
+ * disc ONLY because `stroke-linecap="round"` extends a half-stroke-width cap
+ * past each of its two (coincident) ends. Under Skia's default butt cap a
+ * zero-length segment has no length to paint and disappears entirely (measured:
+ * a tabler dot goes from ~330px of native ink to 0px).
+ *
+ * A SEPARATE symptom was also reported and investigated: a faint diagonal
+ * hairline near a near-closed rounded outline's seam (e.g. alert-triangle's
+ * apex, drawn as one OPEN subpath whose start/end points coincide almost
+ * exactly, relying on `stroke-linejoin="round"`'s two overlapping end-caps to
+ * read as a smooth corner). MEASURED (tests/svg_stroke_cap_oracle_probe.js,
+ * the apex/join region checks) against the browser's own rasterizer at several
+ * sizes: no stray-ink discrepancy versus native was found once the dot fix
+ * above landed — Skia's own default miter join already closes that seam
+ * acceptably at every size tested. `stroke-linejoin` is therefore NOT parsed
+ * or acted on here; only `stroke-linecap` is. If a genuine linejoin artifact
+ * turns up later (a different icon, a different size), re-run that probe
+ * first — it is the oracle this conclusion rests on, not a guess.
+ *
+ * THE FIX, at this layer (no ir.js change): `stroke-linecap` is read like any
+ * other inherited presentation attribute. A drawn shape's `d` is split into its
+ * subpaths (splitSubpaths); any subpath whose extent from its own start point
+ * is below a small FRACTION of the stroke width (a genuinely zero-or-near-zero
+ * -length dot, not a small-but-real segment — DEGENERATE_EXTENT_FRACTION) is
+ * pulled OUT of the stroked path and reissued as its own FILLED circle (round
+ * cap) or square (square cap) op sized to the stroke width —
+ * capExtendsPastEndpoint + degenerateCapShapeD do the geometry; the remaining
+ * non-degenerate subpaths keep stroking exactly as before, UNCHANGED (the
+ * original `d` string, not a re-serialized equivalent, when nothing in it was
+ * degenerate — see degenerateCapSplit). A "butt" cap (the SVG default) leaves a
+ * degenerate subpath alone: butt-on-zero-length is legitimately invisible, and
+ * that is what plain unstyled strokes have always done here.
  */
 
 import { num } from "./shapes.js";
@@ -72,8 +112,9 @@ const NON_RENDERING_TAGS = new Set([
 ]);
 
 /** SVG paint defaults at the document root (spec): fill BLACK, no stroke, unit
- * stroke width, nonzero winding, full opacity. Inherited down the tree. */
-const ROOT_PAINT = { fill: "#000000", stroke: "none", strokeWidth: 1, fillRule: "nonzero", opacity: 1 };
+ * stroke width, nonzero winding, full opacity, BUTT cap (no cap ink at all —
+ * see the module header's stroke-linecap section). Inherited down the tree. */
+const ROOT_PAINT = { fill: "#000000", stroke: "none", strokeWidth: 1, fillRule: "nonzero", opacity: 1, strokeLinecap: "butt" };
 
 // ── matrices (SVG/DOMMatrix convention: x' = a·x + c·y + e, y' = b·x + d·y + f) ─
 
@@ -315,6 +356,238 @@ export function tokenizePathD(d) {
     else toks.push(Number(match[2]));
   }
   return toks;
+}
+
+// ── degenerate-subpath cap handling (the round-dot idiom, see module header) ──
+
+/** The two-letter tag counts as "M"/"m" (a new subpath) — everything else is a
+ * drawing command that belongs to the CURRENT subpath. */
+const MOVE_COMMANDS = new Set(["M", "m"]);
+
+/**
+ * Pure function. Splits a path `d` (any grammar — an original authored string
+ * OR transformPathD's baked M L C Q Z output; splitting only ever looks for
+ * "M"/"m" boundaries, so it is agnostic to which other commands appear between
+ * them) into one `d` string per subpath, each starting at its own "M"/"m". A
+ * `d` with no leading "M" (malformed upstream) returns it as a single subpath
+ * unchanged.
+ *
+ * @example splitSubpaths("M0 0L1 1M5 5L6 6") // ["M0 0L1 1", "M5 5L6 6"]
+ * @example splitSubpaths("M0 0L1 1") // ["M0 0L1 1"]
+ * @example splitSubpaths("M0 0L1 1Z") // ["M0 0L1 1Z"] (Z stays with its subpath)
+ */
+export function splitSubpaths(d) {
+  const toks = tokenizePathD(d);
+  const subpaths = [];
+  let current = [];
+  for (const t of toks) {
+    if (MOVE_COMMANDS.has(t) && current.length) { subpaths.push(current); current = []; }
+    current.push(t);
+  }
+  if (current.length) subpaths.push(current);
+  return subpaths.map(tokensToPathD);
+}
+
+/** Pure helper. Re-renders a token array (as tokenizePathD would have produced
+ * it) back into a `d` string — the exact inverse, used only to hand a subpath's
+ * slice back to callers as ordinary path data. */
+function tokensToPathD(toks) {
+  let out = "", lastWasNum = false;
+  for (const t of toks) {
+    if (typeof t === "number") {
+      out += (lastWasNum && t >= 0 ? " " : "") + num(t);
+      lastWasNum = true;
+    } else {
+      out += t;
+      lastWasNum = false;
+    }
+  }
+  return out;
+}
+
+/**
+ * Pure function. The subpath's own start point (its "M"/"m" coordinate) — the
+ * center a degenerate dot collapses to. Throws if `d` does not start with M/m
+ * (every subpath splitSubpaths produces does).
+ *
+ * @example subpathStart("M12 16L12.01 16") // {x: 12, y: 16}
+ * @example subpathStart("M3 4") // {x: 3, y: 4}
+ */
+export function subpathStart(d) {
+  const toks = tokenizePathD(d);
+  if (!MOVE_COMMANDS.has(toks[0]))
+    throw new Error(`subpathStart: expected a subpath starting with M/m, got ${JSON.stringify(d).slice(0, 40)}`);
+  return { x: toks[1], y: toks[2] };
+}
+
+/**
+ * Pure function. The subpath's total EXTENT: the largest distance from its own
+ * start point reached by any point ON it — every visited endpoint AND control
+ * point (a curve can bow away from a start/end that are themselves coincident,
+ * though the dot idiom in practice is always a straight `h`/`l`). A subpath
+ * consisting of ONLY its initial "M" (no drawn segment at all) has extent 0.
+ *
+ * Walks the FULL path grammar (M L H V C S Q T Z A, absolute + relative,
+ * exactly transformPathD's command loop) rather than scanning raw number pairs
+ * — H/V/S/T/A do not write plain (x,y) pairs (H/V write ONE coordinate; S/T
+ * reflect an implicit control point; A's radii/flags are not coordinates at
+ * all), so this MUST track the running current point like a real renderer
+ * would, not assume every two numbers are a point. This is what lets it run on
+ * a shape's ORIGINAL authored `d` (arbitrary grammar, any casing) rather than
+ * only on transformPathD's post-bake M/L/C/Q/Z output — which matters because
+ * an identity-CTM shape (the common case: preserveAspect ON, no element
+ * transform) is never baked at all (see the module's `matIsIdentity` fast
+ * path), so a raw `v6` or `h.01` reaches this function verbatim.
+ *
+ * This is what tells a genuine short segment (e.g. a 3px tick mark, extent 3)
+ * apart from the SVG "dot" idiom (`M12 16h.01`, extent 0.01) — the caller
+ * compares it to a fraction of the stroke width, not to a fixed epsilon (see
+ * DEGENERATE_EXTENT_FRACTION), because the idiom is authored independent of
+ * how thick the stroke drawing it happens to be.
+ *
+ * @example subpathExtent("M12 16L12.01 16") // 0.01
+ * @example subpathExtent("M0 0L10 0") // 10
+ * @example subpathExtent("M5 5") // 0
+ * @example subpathExtent("M12 7v6") // 6 (V writes one coordinate — a raw, unbaked idiom)
+ * @example subpathExtent("M12 16h.01") // 0.01 (the exact tabler dot, unbaked)
+ */
+export function subpathExtent(d) {
+  const toks = tokenizePathD(d);
+  const { x: sx, y: sy } = subpathStart(d);
+  let maxD = 0;
+  const visit = (x, y) => { maxD = Math.max(maxD, Math.hypot(x - sx, y - sy)); };
+  let cx = sx, cy = sy;
+  let i = 0;
+  while (i < toks.length) {
+    const cmd = toks[i++];
+    const rel = cmd === cmd.toLowerCase();
+    const C = cmd.toUpperCase();
+    if (C === "M" || C === "L") {
+      while (typeof toks[i] === "number") { cx = toks[i++] + rx0(rel, cx); cy = toks[i++] + rx0(rel, cy); visit(cx, cy); }
+    } else if (C === "H") {
+      while (typeof toks[i] === "number") { cx = toks[i++] + rx0(rel, cx); visit(cx, cy); }
+    } else if (C === "V") {
+      while (typeof toks[i] === "number") { cy = toks[i++] + rx0(rel, cy); visit(cx, cy); }
+    } else if (C === "C") {
+      while (typeof toks[i] === "number") {
+        visit(toks[i] + rx0(rel, cx), toks[i + 1] + rx0(rel, cy)); i += 2;
+        visit(toks[i] + rx0(rel, cx), toks[i + 1] + rx0(rel, cy)); i += 2;
+        cx = toks[i++] + rx0(rel, cx); cy = toks[i++] + rx0(rel, cy); visit(cx, cy);
+      }
+    } else if (C === "S" || C === "Q") {
+      while (typeof toks[i] === "number") {
+        visit(toks[i] + rx0(rel, cx), toks[i + 1] + rx0(rel, cy)); i += 2;
+        cx = toks[i++] + rx0(rel, cx); cy = toks[i++] + rx0(rel, cy); visit(cx, cy);
+      }
+    } else if (C === "T") {
+      while (typeof toks[i] === "number") { cx = toks[i++] + rx0(rel, cx); cy = toks[i++] + rx0(rel, cy); visit(cx, cy); }
+    } else if (C === "A") {
+      while (typeof toks[i] === "number") {
+        i += 3; // rx, ry, x-axis-rotation are not coordinates
+        i += 2; // large-arc-flag, sweep-flag are not coordinates
+        cx = toks[i++] + rx0(rel, cx); cy = toks[i++] + rx0(rel, cy); visit(cx, cy);
+      }
+    } else if (C === "Z") {
+      cx = sx; cy = sy; // Z returns to the subpath start — no new extent
+    } else {
+      throw new Error(`subpathExtent: unknown path command "${cmd}"`);
+    }
+  }
+  return maxD;
+}
+
+/** Fraction of the stroke width below which a subpath's extent counts as "the
+ * SVG dot idiom" rather than a genuine short segment. RELATIVE to strokeWidth,
+ * not an absolute coordinate epsilon, because `d`'s own units vary with
+ * flattenSvgTree's preserveAspect: ON leaves `d` in viewBox space (a `pushTransform`
+ * applies the uniform scale later) while OFF bakes the box→box affine directly
+ * into `d` — the SAME two modes strokeWidth is computed in (matScale(ctm) *
+ * boxScale), so comparing extent to a strokeWidth fraction stays correct in
+ * both. Tabler's idiom (`h.01` against `stroke-width="2"`) has extent/width =
+ * 0.005; a real short tick mark is drawn at LEAST comparable to the stroke that
+ * draws it (extent/width tends to be >= ~1), so 0.1 sits in the wide gap
+ * between the two and is not a knife-edge tuned to one icon set. */
+const DEGENERATE_EXTENT_FRACTION = 0.1;
+
+/** Pure function. True iff a `stroke-linecap` value renders extra ink past a
+ * bare endpoint (the SVG default, "butt", does not — a butt cap ends exactly at
+ * the path's own point, so a zero-length segment is legitimately invisible,
+ * same as this pipeline's un-capped default).
+ * @example capExtendsPastEndpoint("round") // true
+ * @example capExtendsPastEndpoint("square") // true
+ * @example capExtendsPastEndpoint("butt") // false
+ * @example capExtendsPastEndpoint(undefined) // false (the spec default)
+ */
+export function capExtendsPastEndpoint(cap) {
+  return cap === "round" || cap === "square";
+}
+
+/**
+ * Pure function. The filled `d` for a degenerate stroked subpath's cap: a
+ * circle of radius `strokeWidth/2` (round cap) or an axis-aligned square of
+ * side `strokeWidth` (square cap) centered on the subpath's single point — the
+ * exact shape stroke-linecap paints past a zero-length endpoint per the SVG
+ * spec (a round cap is a half-disc at EACH end; two coincident ends' half-discs
+ * union into one full disc, and likewise two half-squares into one square).
+ *
+ * Args:
+ *   cx, cy (number): the degenerate subpath's point, box-local
+ *   strokeWidth (number): the artwork's (already CTM-scaled) stroke width
+ *   cap ("round"|"square"): which shape to build
+ *
+ * Returns:
+ *   string: a `d` path (ellipsePathD for round, a rectPathD-equivalent square
+ *   for square)
+ *
+ * @example degenerateCapShapeD(12, 16, 2, "round").startsWith("M13 16") // true (ellipsePathD at r=1)
+ * @example degenerateCapShapeD(0, 0, 4, "square") // "M-2 -2H2V2H-2Z" (a 4x4 square, half-width 2, centered)
+ */
+export function degenerateCapShapeD(cx, cy, strokeWidth, cap) {
+  const r = strokeWidth / 2;
+  if (cap === "round") return ellipsePathD(cx, cy, r, r);
+  if (cap === "square") return rectPathD(cx - r, cy - r, strokeWidth, strokeWidth, 0, 0);
+  throw new Error(`degenerateCapShapeD: cap must be "round" or "square", got ${JSON.stringify(cap)}`);
+}
+
+/**
+ * Pure function. One drawn shape's `d`, stroke cap and stroke width →
+ * `{strokeD, capOps}`: `strokeD` is the `d` for the subpaths that should still
+ * be STROKED (joined back into one `d`, or null if none remain), and `capOps`
+ * is an array of `{d}` fill shapes for every degenerate subpath the cap turns
+ * into a disc/square (see the module header — this is the whole fix). When the
+ * cap does not extend past an endpoint (`capExtendsPastEndpoint` false) or the
+ * stroke has no width, every subpath is left alone: `{strokeD: d, capOps: []}`,
+ * byte-identical to pre-fix behaviour.
+ *
+ * When NO subpath is degenerate, `strokeD` is `d` BY IDENTITY (the original
+ * string, not a re-serialized equivalent) — splitSubpaths/tokensToPathD never
+ * runs on the common case, so the overwhelming majority of stroked art (real
+ * segments only) stays byte-identical down to formatting, not just geometry
+ * (measured: without this, `d`s like "M14 12 L14 48" round-tripped to
+ * "M14 12L14 48" — the SAME path, but a needless diff against every existing
+ * document and export).
+ *
+ * @example degenerateCapSplit("M0 0L10 0", "round", 2) // {strokeD: "M0 0L10 0", capOps: []} (a real segment, untouched)
+ * @example degenerateCapSplit("M12 16L12.01 16", "round", 2).strokeD // null (the WHOLE d was one dot)
+ * @example degenerateCapSplit("M12 16L12.01 16", "round", 2).capOps.length // 1
+ * @example degenerateCapSplit("M12 16L12.01 16", "butt", 2) // {strokeD: "M12 16L12.01 16", capOps: []} (butt: no extra ink, left as a real stroke)
+ * @example degenerateCapSplit("M0 0L10 0M12 16L12.01 16", "round", 2).capOps.length // 1 (mixed: one real segment kept, one dot pulled out)
+ */
+export function degenerateCapSplit(d, cap, strokeWidth) {
+  if (!capExtendsPastEndpoint(cap) || !(strokeWidth > 0)) return { strokeD: d, capOps: [] };
+  const eps = strokeWidth * DEGENERATE_EXTENT_FRACTION;
+  const subpaths = splitSubpaths(d);
+  const kept = [], capOps = [];
+  for (const sub of subpaths) {
+    if (subpathExtent(sub) < eps) {
+      const { x, y } = subpathStart(sub);
+      capOps.push({ d: degenerateCapShapeD(x, y, strokeWidth, cap) });
+    } else {
+      kept.push(sub);
+    }
+  }
+  if (capOps.length === 0) return { strokeD: d, capOps: [] }; // untouched: original string, not a re-join
+  return { strokeD: kept.length ? kept.join("") : null, capOps };
 }
 
 /**
@@ -797,6 +1070,7 @@ function walkSvgNode(node, parentCTM, inherited, ctx, ops, isRoot) {
     stroke: attrs.stroke !== undefined ? attrs.stroke : inherited.stroke,
     strokeWidth: attrs["stroke-width"] !== undefined ? parseFloat(attrs["stroke-width"]) : inherited.strokeWidth,
     fillRule: attrs["fill-rule"] !== undefined ? attrs["fill-rule"] : inherited.fillRule,
+    strokeLinecap: attrs["stroke-linecap"] !== undefined ? attrs["stroke-linecap"] : inherited.strokeLinecap,
     // Group opacity COMPOUNDS down the tree (a v1 approximation of true group
     // compositing: exact for non-overlapping content, which covers the cursors).
     opacity: inherited.opacity * (attrs.opacity !== undefined ? clamp01(parseFloat(attrs.opacity)) : 1),
@@ -824,28 +1098,48 @@ function walkSvgNode(node, parentCTM, inherited, ctx, ops, isRoot) {
   // guard only catches an explicit empty fill="" → no paint.
   const ownFill = fill === undefined ? null : fill;
   const ownStroke = stroke === undefined ? null : stroke;
-  ops.push({
-    d,
-    // THE FILL OVERRIDE (flattenSvgTree's `overridePaint`): a monochrome recolour of
-    // this op's fill AND stroke. `overridePaintOf` keeps an UNPAINTED slot unpainted,
-    // so the override never invents ink the artwork did not have (see the flatten
-    // docblock), and returns the own paint UNCHANGED — by identity — when there is
-    // no override, which is why an off/absent override is byte-identical.
-    fill: overridePaintOf(ownFill, ctx.overridePaint),
-    // The STROKE slot takes `overrideStrokePaint`, which is the same paint as the fill's
-    // in every ordinary case and DIFFERS in exactly one: a fill-only MATERIAL, which the
-    // stroke registry cannot paint at all (see svg_raster.svgOverrideStrokePaint). The
-    // split lives at the call site, not here, so this flatten stays a pure substitution
-    // and knows nothing about either material registry.
-    stroke: overridePaintOf(ownStroke, ctx.overrideStrokePaint),
-    // The stroke WIDTH is a property of the artwork, not of the paint, so it is
-    // decided by whether the ARTWORK stroked this shape — the override changes the
-    // colour of an existing outline, never its thickness (and never turns a
-    // fill-only shape into a stroked one).
-    strokeWidth: ownStroke === null ? 0 : strokeWidth,
-    fillRule: paint.fillRule === "evenodd" ? "evenodd" : "nonzero",
-    opacity: Number.isFinite(paint.opacity) ? paint.opacity : 1,
-  });
+  const fillRule = paint.fillRule === "evenodd" ? "evenodd" : "nonzero";
+  const opacity = Number.isFinite(paint.opacity) ? paint.opacity : 1;
+  // STROKE-LINECAP on degenerate subpaths (the round-dot idiom — module header).
+  // Only meaningful when this shape is actually stroked; an unstroked shape's
+  // `d` is never split, so a fill-only path is untouched (byte-identical).
+  const { strokeD, capOps } = ownStroke === null
+    ? { strokeD: d, capOps: [] }
+    : degenerateCapSplit(d, paint.strokeLinecap, strokeWidth);
+  // THE FILL OVERRIDE (flattenSvgTree's `overridePaint`): a monochrome recolour of
+  // this op's fill AND stroke. `overridePaintOf` keeps an UNPAINTED slot unpainted,
+  // so the override never invents ink the artwork did not have (see the flatten
+  // docblock), and returns the own paint UNCHANGED — by identity — when there is
+  // no override, which is why an off/absent override is byte-identical.
+  const paintedFill = overridePaintOf(ownFill, ctx.overridePaint);
+  // The STROKE slot takes `overrideStrokePaint`, which is the same paint as the fill's
+  // in every ordinary case and DIFFERS in exactly one: a fill-only MATERIAL, which the
+  // stroke registry cannot paint at all (see svg_raster.svgOverrideStrokePaint). The
+  // split lives at the call site, not here, so this flatten stays a pure substitution
+  // and knows nothing about either material registry.
+  const paintedStroke = overridePaintOf(ownStroke, ctx.overrideStrokePaint);
+  if (strokeD !== null) {
+    ops.push({
+      d: strokeD,
+      fill: paintedFill,
+      stroke: paintedStroke,
+      // The stroke WIDTH is a property of the artwork, not of the paint, so it is
+      // decided by whether the ARTWORK stroked this shape — the override changes the
+      // colour of an existing outline, never its thickness (and never turns a
+      // fill-only shape into a stroked one).
+      strokeWidth: ownStroke === null ? 0 : strokeWidth,
+      fillRule,
+      opacity,
+    });
+  }
+  // Every degenerate subpath the cap pulled out becomes its own FILLED disc/
+  // square op — a stroke-linecap dot is filled ink, not a stroked line, so it
+  // paints with the STROKE's own (possibly overridden) colour and no stroke of
+  // its own. `d` was ALREADY baked (degenerateCapSplit runs on the post-CTM
+  // `d`), so no further transform applies here.
+  for (const capOp of capOps) {
+    ops.push({ d: capOp.d, fill: paintedStroke, stroke: null, strokeWidth: 0, fillRule: "nonzero", opacity });
+  }
 }
 
 /**
