@@ -53,7 +53,7 @@ import { readdirSync, existsSync, readFileSync } from "node:fs";
 import { dirname, resolve, relative, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { createServer as createNetServer } from "node:net";
+import { freePort } from "./free_port.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, "..");
@@ -133,17 +133,12 @@ function drivesBrowser(file) {
  *  start answers in well under a second, a cold one can take tens. */
 const BACKEND_READY_MS = 90_000;
 
-/** Query. A free TCP port, from the OS, by binding 0 and reading it back. */
-function freePort() {
-  return new Promise((done, fail) => {
-    const s = createNetServer();
-    s.on("error", fail);
-    s.listen(0, "127.0.0.1", () => {
-      const { port } = s.address();
-      s.close(() => done(port));
-    });
-  });
-}
+// freePort comes from ./free_port.js (imported at the top). The naive version
+// that used to live here — bind 0, read the port, close, return — leaves a TOCTOU
+// window between the close and the child's bind, and that window is LONG because
+// the child is `uv run server.py` with an interpreter to boot. Probes run three
+// at a time, each spawning its own backend, so two could be handed the same
+// number and the loser died with `Errno 48 Address already in use`.
 
 /**
  * Command. Starts the project backend and resolves {url, stop}. Throws LOUDLY with

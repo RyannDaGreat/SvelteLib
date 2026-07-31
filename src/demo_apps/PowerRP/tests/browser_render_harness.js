@@ -26,6 +26,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { freePort } from "./free_port.js";
 import { networkInterfaces } from "node:os";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -134,22 +135,12 @@ function installExitHooks() {
   }
 }
 
-/**
- * Query (async; binds and releases a socket). A port the OS considers free right
- * now. Inherently advisory — see BACKEND_PORT_ATTEMPTS.
- * @returns {Promise<number>}
- */
-async function freePort() {
-  const { createServer: createNetServer } = await import("node:net");
-  return new Promise((resolveP, reject) => {
-    const s = createNetServer();
-    s.once("error", reject);
-    s.listen(0, "127.0.0.1", () => {
-      const { port } = s.address();
-      s.close(() => resolveP(port));
-    });
-  });
-}
+// freePort comes from ./free_port.js. This harness ALREADY retried on a lost
+// port (startBackend's BACKEND_PORT_ATTEMPTS loop), so the shared allocator adds
+// the other half of the fix: the number is re-verified as still bindable before
+// it is returned, so most collisions never reach the retry at all. It remains
+// inherently advisory — the backend binds hundreds of milliseconds later, which
+// is why the retry loop stays.
 
 /**
  * Command (async; spawns a process, creates a temp dir). Start the project

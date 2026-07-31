@@ -19,7 +19,7 @@
  */
 import fs from "node:fs";
 import os from "node:os";
-import net from "node:net";
+import { freePort } from "./free_port.js";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -34,13 +34,13 @@ const PROJECT = "ProbeDeck";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const s = net.createServer();
-    s.on("error", reject);
-    s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => resolve(port)); });
-  });
-}
+// freePort now comes from ./free_port.js, which RE-VERIFIES the port is still
+// bindable before handing it back. The copy that used to live here bound port 0,
+// read the number, closed, and returned — leaving a TOCTOU window that stays open
+// until the spawned backend binds. Under the gate's x3 probe concurrency two
+// probes could draw the same number, and the loser died with `Errno 48 Address
+// already in use` -> `server never became ready`: a red that said nothing about
+// what this probe tests.
 
 async function waitFor(label, fn, { tries = 60, gap = 500 } = {}) {
   for (let i = 0; i < tries; i++) {

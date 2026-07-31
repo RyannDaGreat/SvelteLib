@@ -45,7 +45,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { createServer as createNetServer } from "node:net";
+import { freePort } from "./free_port.js";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
@@ -63,16 +63,13 @@ const UV = process.env.POWERRP_UV || "uv";
 // The paste offset the clone home applies (app.svelte.js #cloneStatesIntoSlide).
 const PASTE_OFFSET = 16;
 
-function freePort() {
-  return new Promise((res, rej) => {
-    const srv = createNetServer();
-    srv.on("error", rej);
-    srv.listen(0, "127.0.0.1", () => {
-      const p = srv.address().port;
-      srv.close(() => res(p));
-    });
-  });
-}
+// freePort now comes from ./free_port.js, which RE-VERIFIES the port is still
+// bindable before handing it back. The copy that used to live here bound port 0,
+// read the number, closed, and returned — leaving a TOCTOU window that stays open
+// until the spawned backend binds. Under the gate's x3 probe concurrency two
+// probes could draw the same number, and the loser died with `Errno 48 Address
+// already in use` -> `server never became ready`: a red that said nothing about
+// what this probe tests.
 
 async function waitFor(url, tries = 240) {
   for (let i = 0; i < tries; i++) {

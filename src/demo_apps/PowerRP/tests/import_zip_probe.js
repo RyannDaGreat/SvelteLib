@@ -43,7 +43,7 @@
  *   node src/demo_apps/PowerRP/tests/import_zip_probe.js
  */
 import { spawn } from "node:child_process";
-import { createServer as createNetServer } from "node:net";
+import { freePort } from "./free_port.js";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -67,13 +67,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // a too-short wait here reports a slow machine as a broken feature.
 const IMPORT_SETTLE_MS = 6000;
 
-function freePort() {
-  return new Promise((res, rej) => {
-    const srv = createNetServer();
-    srv.on("error", rej);
-    srv.listen(0, "127.0.0.1", () => { const p = srv.address().port; srv.close(() => res(p)); });
-  });
-}
+// freePort is shared (./free_port.js) and RE-VERIFIES the port before returning
+// it. This probe spawns its own backend, so it used to lose the allocate/bind
+// race against a sibling probe under the gate's x3 concurrency and die with
+// `Errno 48 Address already in use` -> `server never became ready` — a red that
+// said nothing about zip import. That is the EADDRINUSE flake.
 
 async function waitFor(url, tries = 80) {
   for (let i = 0; i < tries; i++) {

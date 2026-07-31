@@ -26,7 +26,7 @@
  *   node src/demo_apps/PowerRP/tests/asset_ux_probe.js
  */
 import { spawn } from "node:child_process";
-import { createServer as createNetServer } from "node:net";
+import { freePort } from "./free_port.js";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -54,16 +54,13 @@ const PROJECT = "assetux_probe";
 // not pixel content, so identical bytes are fine.
 const PROBE_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP4z8DwHwAFAAH/VscvDQAAAABJRU5ErkJggg==";
 
-function freePort() {
-  return new Promise((res, rej) => {
-    const srv = createNetServer();
-    srv.on("error", rej);
-    srv.listen(0, "127.0.0.1", () => {
-      const p = srv.address().port;
-      srv.close(() => res(p));
-    });
-  });
-}
+// freePort now comes from ./free_port.js, which RE-VERIFIES the port is still
+// bindable before handing it back. The copy that used to live here bound port 0,
+// read the number, closed, and returned — leaving a TOCTOU window that stays open
+// until the spawned backend binds. Under the gate's x3 probe concurrency two
+// probes could draw the same number, and the loser died with `Errno 48 Address
+// already in use` -> `server never became ready`: a red that said nothing about
+// what this probe tests.
 
 async function waitFor(url, tries = 60) {
   for (let i = 0; i < tries; i++) {
