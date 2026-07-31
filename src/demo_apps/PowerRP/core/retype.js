@@ -19,11 +19,21 @@
  *
  * MEASURED over all 8190 ordered pairs of the 91 RETYPE-ELIGIBLE types
  * (tests/retype_sweep_test.js, which sweeps the menu's own space): filling the
- * new type's defaults for absent keys — what this module does — leaves 8057
- * pairs drawing cleanly and 133 red-boxed, and NOTHING escapes the emit
- * containment. The 133 are rule 2 working as designed (see below): a shared key
- * whose KIND agrees but whose VALUE the new type rejects rides along and
- * red-boxes with the reason on it, one undo away.
+ * new type's defaults for absent keys — what this module does — leaves the
+ * overwhelming majority drawing cleanly, a small tail red-boxed, and ZERO
+ * escaping the emit containment.
+ *
+ * ONLY THE ZERO IS ASSERTED, deliberately. The red-box count is a fact about the
+ * WIDGETS, not about this module: it moved 133 -> 43 in one afternoon while other
+ * work hardened individual plugins, without a line of retype.js changing. Pinning
+ * it here would make this file wrong every time someone else fixed a widget, and
+ * pinning it in the test would fail the gate for an IMPROVEMENT. The invariant
+ * that belongs to retype is that nothing THROWS — a pair that escapes containment
+ * is a ports.js bug the sweep must catch.
+ *
+ * The tail is rule 2 working as designed (see below): a shared key whose KIND
+ * agrees but whose VALUE the new type rejects rides along and red-boxes with the
+ * reason on it, one undo away.
  *
  * ── THE THREE RULES (user ruling, verbatim) ─────────────────────────────────
  * "It's okay if they share keys, just let it be. Live and let live. If they
