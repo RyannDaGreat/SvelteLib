@@ -169,12 +169,266 @@ function numberIsEmpty(value) {
   return !Number.isFinite(Number(value));
 }
 
+/**
+ * NUMBER READOUTS — one real instrument per row.
+ *
+ * ONE FLAT FAMILY, not a format/look split, and the reason is the completeness test
+ * rather than taste: a real instrument's digit count is NOT separable from its face.
+ * A fuel pump's third decimal and its display technology are one specification; a
+ * three-and-a-half-digit meter's four-cell field IS its segment panel. Splitting
+ * would generate a "3 decimals" row that composes with a "display serif" row into
+ * something that has never existed — and both halves would then be knob readings
+ * rather than recognisable things, which is what the presets bar forbids.
+ *
+ * ORDERED BY WHAT THE READOUT IS MADE OF: mechanical register, emissive segment
+ * display, instrument, then printed/typographic. That puts the four segment-face
+ * rows adjacent — which is where the glyph constraint below applies — and sweeps
+ * from the most rigid fixed-width field to the freest.
+ *
+ * THE SEGMENT FACE CANNOT DRAW $ % , + OR / — measured off the shipped
+ * DSEG7Classic-Regular.ttf cmap, which carries 69 codepoints: 0-9, A-Z, a-z, space,
+ * and of the punctuation only `.`, `-`, `:`, `°`, `_`. A missing glyph does not draw
+ * as tofu; it resolves through the Skia fallback chain, so a PROPORTIONAL comma
+ * appears in the middle of the segment digits — a plausible-looking wrong picture,
+ * which is worse. So every segment row here sets `group: false` and keeps its
+ * prefix/suffix to letters and a space, and Fuel Pump Price — a segment display in
+ * real life — is set in a proportional face here, because `$` and `/` are
+ * unreachable in the segment font. That face also has cap height = x-height =
+ * 1.000 em, so it draws about 83% larger than any other at the same `size`; the
+ * segment rows are sized for that.
+ *
+ * ZERO-PAD VERSUS BLANK IS A REAL DISTINCTION, NOT A PREFERENCE. Registers, clocks,
+ * odometers and flight levels SHOW leading zeros because the field width is the
+ * semantic and a shrinking field is unreadable. Meters, calculators and scales BLANK
+ * them, because a leading zero implies precision the instrument does not have —
+ * that is what ripple-blanking exists for. `pad: "space"` is how you blank them
+ * while holding the layout still, which is what Lab Balance uses.
+ *
+ * FIXED-PITCH FOR ANYTHING THAT MOVES: this app exposes no tabular-figure feature,
+ * so a live counter set in a proportional face shifts horizontally as its digits
+ * change. The counter and timer rows use a monospace or the segment face; the
+ * display faces appear only on static figures.
+ *
+ * EVERY ROW WRITES EVERY LOOK KNOB, INCLUDING THE INERT ONES (`padWidth` under
+ * `pad: "none"`, an off `bloom` on every printed row) — the whole-look completeness
+ * rule, and it is unusually concrete here because application is an OVERLAY: omit
+ * `group` and a fuel-pump price inherits a thousands comma from the previous hover;
+ * omit `padWidth` and a three-wide flight level inherits an eight-wide balance
+ * field; omit `prefix` and a scientific quantity inherits a dollar sign; omit
+ * `bloom` and a printed page glows like an LED. Nested effect objects are written
+ * COMPLETE, because a partial one MERGES rather than replacing.
+ *
+ * NO PRESET WRITES `value`. It is the slot this widget exists for, and it is
+ * usually an equation — writing a literal there silently converts a live binding
+ * into a dead number.
+ */
+const NUMBER_READOUTS = [
+  {
+    name: "Odometer",
+    description: "A mechanical drum register: six digits, leading zeros shown because the field width is the odometer's capacity, cream numerals sunk slightly into their window.",
+    props: {
+      decimals: 0, pad: "zero", padWidth: 6, group: false, prefix: "", suffix: "",
+      font: "jetbrains-mono", size: 64, bold: true, align: "center", valign: "middle",
+      fill: "#f2efe6", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 1, blur: 2, color: "#000000", opacity: 0.6 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Meter Register",
+    description: "The five-digit kilowatt-hour register a utility meter is required to show, zero-padded to its full capacity with the unit spelled out after a space.",
+    props: {
+      decimals: 0, pad: "zero", padWidth: 5, group: false, prefix: "", suffix: " kWh",
+      font: "jetbrains-mono", size: 44, bold: false, align: "center", valign: "middle",
+      fill: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Red LED Panel",
+    description: "A red seven-segment panel at full brightness — one decimal, a five-wide zero-padded field, and the bloom an emitter bleeds into its own window. Digits only.",
+    props: {
+      decimals: 1, pad: "zero", padWidth: 5, group: false, prefix: "", suffix: "",
+      font: "seg7", size: 72, bold: false, align: "right", valign: "middle",
+      fill: "#ff2a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 16, strength: 0.8 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Green VFD",
+    description: "A vacuum fluorescent display: the cyan-green of its 505-nanometre phosphor, six digits to two places, and the softest, widest glow of any readout here.",
+    props: {
+      decimals: 2, pad: "zero", padWidth: 6, group: false, prefix: "", suffix: "",
+      font: "seg7", size: 64, bold: false, align: "right", valign: "middle",
+      fill: "#12f0c8", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 18, strength: 0.9 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Bench Multimeter",
+    description: "A three-and-a-half-digit meter reading volts: three decimals, leading zeros BLANKED because a meter must not imply precision it does not have, unit after a space.",
+    props: {
+      decimals: 3, pad: "none", padWidth: 0, group: false, prefix: "", suffix: " V",
+      font: "seg7", size: 56, bold: false, align: "right", valign: "middle",
+      fill: "#ff2a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 12, strength: 0.6 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Lap Timer",
+    description: "Motorsport timing to the thousandth on a white segment panel, six cells wide. A minutes-and-seconds clock needs a second widget — this field cannot carry a colon of its own.",
+    props: {
+      decimals: 3, pad: "zero", padWidth: 6, group: false, prefix: "", suffix: "",
+      font: "seg7", size: 64, bold: false, align: "right", valign: "middle",
+      fill: "#ffffff", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0.5 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Flight Level",
+    description: "Altitude in hundreds of feet, written the way it is spoken: three digits with leading zeros and the FL prefix, in the green a glass cockpit uses for a normal condition.",
+    props: {
+      decimals: 0, pad: "zero", padWidth: 3, group: false, prefix: "FL", suffix: "",
+      font: "jetbrains-mono", size: 48, bold: true, align: "center", valign: "middle",
+      fill: "#00e64d", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 8, strength: 0.35 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Lab Balance",
+    description: "An analytical balance reading to a tenth of a milligram — four decimals, space-padded to a fixed eight-character field so the number never shifts as the mass settles.",
+    props: {
+      decimals: 4, pad: "space", padWidth: 8, group: false, prefix: "", suffix: " g",
+      font: "jetbrains-mono", size: 44, bold: false, align: "right", valign: "middle",
+      fill: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Dollar Amount",
+    description: "Ordinary money: two decimals and thousands separators, symbol in front, ranged right so a column of them aligns on the decimal.",
+    props: {
+      decimals: 2, pad: "none", padWidth: 0, group: true, prefix: "$", suffix: "",
+      font: "inter", size: 56, bold: false, align: "right", valign: "middle",
+      fill: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Zero-Decimal Currency",
+    description: "Money in a currency with no minor unit — sixteen of them, including the yen and the won — so the decimals go away entirely and only the grouping remains.",
+    props: {
+      decimals: 0, pad: "none", padWidth: 0, group: true, prefix: "¥", suffix: "",
+      font: "inter", size: 56, bold: false, align: "right", valign: "middle",
+      fill: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Fuel Pump Price",
+    description: "A unit price to the mill — the third decimal pumps have carried since a tenth-of-a-cent excise in 1932. Set in a proportional face because the segment font has no dollar sign and no slash.",
+    props: {
+      decimals: 3, pad: "none", padWidth: 0, group: false, prefix: "$", suffix: "/gal",
+      font: "inter", size: 56, bold: true, align: "right", valign: "middle",
+      fill: "#c0392b", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Percentage",
+    description: "One decimal and a percent sign. The widget does NOT multiply by a hundred — bind the value to an already-scaled figure, or scale it in the equation.",
+    props: {
+      decimals: 1, pad: "none", padWidth: 0, group: false, prefix: "", suffix: "%",
+      font: "inter", size: 56, bold: true, align: "right", valign: "middle",
+      fill: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Scientific Quantity",
+    description: "A measured value with its unit after a space, in a text serif — and deliberately UNGROUPED, because the metric convention separates digits with a thin space and forbids the comma outright.",
+    props: {
+      decimals: 2, pad: "none", padWidth: 0, group: false, prefix: "", suffix: " mm",
+      font: "source-serif", size: 44, bold: false, align: "right", valign: "middle",
+      fill: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "KPI Callout",
+    description: "The one huge figure a dashboard slide is built around — two significant digits and a magnitude letter, because 3.8M is read at a glance and 3,848,306 is not.",
+    props: {
+      decimals: 1, pad: "none", padWidth: 0, group: false, prefix: "", suffix: "M",
+      font: "montserrat", size: 150, bold: true, align: "center", valign: "middle",
+      fill: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Vote Tally",
+    description: "A large exact integer, grouped and ranged right — a count nobody rounds, in the condensed face that keeps seven digits inside a box.",
+    props: {
+      decimals: 0, pad: "none", padWidth: 0, group: true, prefix: "", suffix: "",
+      font: "oswald", size: 120, bold: true, align: "right", valign: "middle",
+      fill: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Ticker Delta",
+    description: "A gain, in the green Western markets use for one — note the plus sign is literal, so this row is for positive moves only, and the colour convention is reversed across East Asia.",
+    props: {
+      decimals: 2, pad: "none", padWidth: 0, group: false, prefix: "+", suffix: "%",
+      font: "inter", size: 48, bold: true, align: "right", valign: "middle",
+      fill: "#26a69a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+];
+
 return {
   type: "number",
   title: "Number",
   // resizable:true → the standard 8 resize handles (same machinery as plaintext);
   // w constrains the box width the text aligns within, h gives valign its room.
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // A plugin ASSET can carry a preset table (clock_analog.plugin.js already does),
+  // and it must be a literal const in THIS file: an asset cannot `import`, and
+  // HOST_MODULES hands out no preset machinery — so the "shared *_presets.js data
+  // module" option is structurally unavailable here whatever the sibling text
+  // widgets do.
+  presets: NUMBER_READOUTS,
   /**
    * Pure function. Is this box a GHOST (nothing finite to draw)? STATE-dependent,
    * shared with emit()'s short-circuit (numberIsEmpty); core/derive.isGhostNode
