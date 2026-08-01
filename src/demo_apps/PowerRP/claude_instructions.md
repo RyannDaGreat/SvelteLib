@@ -81,6 +81,89 @@ code exists.
 - **Manifest / Concerns** — this file / `concerns.md` (append-only history of
   mistakes + progress). "Manifest that" = record it here.
 
+## CONVENTIONS — THE CANONICAL REGISTRY
+
+**USER RULING, 2026-08-01:** *"Conventions, conventions — if solidified should be listed in
+the manifest in the conventions area. That's what the manifest is for, really. Well, the
+manifest is for many things, but that's one of them."*
+
+So: **a settled convention lives HERE.** This section is its permanent home and the place a
+fresh session or a new agent looks first.
+
+### The graduation path — scratch, then settled
+
+`.frenzy/round6/CONVENTION_LEDGER.md` is the IN-FLIGHT staging area, not a rival registry.
+While many agents run in parallel, an agent that needs a name, a constant or an idiom must
+(1) hunt for precedent, (2) read the ledger, (3) ask the lead — who knows what every other
+agent has proposed and can say whether it has been heard before. The lead records the
+ruling in the ledger immediately so the next agent inherits it within minutes.
+
+**A ruling GRADUATES from the ledger to this section once it has survived being applied.**
+The ledger is a round artifact and dies with the round; this section is permanent. Anything
+still only in the ledger at the end of a round is either promoted here or was never a
+convention.
+
+**DRY APPLIES TO THIS DOCUMENT TOO.** Do not restate a rule that already has a home — point
+at it. A convention written twice will drift exactly like code written twice, and then the
+manifest itself becomes a Tower of Babel, which is the worst possible place for one.
+
+### Where the existing bodies of convention live (pointers, NOT copies)
+
+- **The CLAUDE.md chain** — four nested files (`~/.claude`, `CleanCode`, `SvelteLib`,
+  `PowerRP`). Docstring/CQS labelling, the no-silent-fallback law, no magic numbers, no
+  trailing comma after a last argument, SymPy-only equation art, `uv run` for Python,
+  dump portability. These are the FLOOR; nothing here may contradict them.
+- **`core/registry.js`'s docblock** — the de-facto widget base class. BOUNDS, NEGATIVE
+  EXTENTS, HANDLE CONSTRAINTS, LIST PROPERTIES. Read before adding a widget.
+- **`web/app.css`'s header and inline `/* … */` rules** — app-shell styling doctrine
+  (square chrome, `--a-*` tokens only, no `<style>` blocks in `web/*.svelte`). Those
+  comments ARE manifest-level rules, not decoration.
+- **R6-25 TIER-0 STANDARDS** (this file) — the shared conventions the preset swarm was
+  blocked on. Still the authority for what it covers.
+- **R6-22 CONVENTION CONFORMANCE** (this file) — the STANDING OBLIGATION on every agent to
+  fix violations it passes and record them.
+- **R6-24 CONVENTION SWEEP RESULT** (this file) — the measured state of drift, wave 1.
+
+### The two laws that generate most of the rest
+
+1. **PRECEDENCE.** The manifest is supreme. Where the manifest is silent and two patterns
+   compete, **the OLDER one wins** — established with `git log --follow --diff-filter=A`,
+   `git blame`, `git log -S`, never by taste. A decision that feels arbitrary is a decision
+   that has not been researched yet.
+
+   **REFINEMENT — "older wins" arbitrates between NAMED conventions only** (agent W3-A,
+   2026-08-01, CLAUDE-ORIGINATED; the case that produced it is R6-29). **An unnamed local
+   spelling is not a convention — it is an implementation, and it loses to the vocabulary
+   that named the concept, regardless of age.**
+
+   The worked example, because the mechanical reading gives the WRONG answer here and the
+   next agent will hit the same shape. `doX`/`doY` axis suppression (`5d3d8c1`,
+   2026-07-15) predates `constrain(state, desired) -> allowed` (`b967325`, 2026-07-28) by
+   13 days. But `doX`/`doY` are two local booleans in one file: they never named a
+   function, never declared a protocol, and never invited anything else to speak them.
+   `constrain` named the concept — `constrain` / `desired` / `allowed` — and a named
+   protocol is a claim on the future in a way two booleans are not. Decisive corroboration:
+   B's OWN founding commit already describes its booleans as "axis constraints" and its
+   factor as "diagonal-PROJECTED", so it was reaching for A's vocabulary before A existed.
+   The two were never lexically disjoint competitors; B is an unnamed spelling of A.
+
+   **WHY THE REFINEMENT MATTERS:** without it, "older wins" is a fossilization rule that
+   would freeze every early expedient into doctrine and forbid ever naming anything. With
+   it, the rule does what it was for — stopping *taste* from relitigating settled
+   vocabulary — while still letting a concept be named once someone recognises it.
+2. **NO TOWER OF BABEL** (user, 2026-08-01). One concept gets ONE expression. The failure
+   mode is not ugliness, it is that a reader must learn which dialect applies where. Its
+   commonest concrete form in this codebase — found five-plus times in Round 6 alone — is
+   **a hand-maintained list, map or switch mirroring another module's shape.** Derive it;
+   if it cannot be derived, gate it so drift turns something red.
+
+### CLAUDE-ORIGINATED vs USER-REQUESTED
+
+Conventions we propose are marked **CLAUDE-ORIGINATED** so the user can tell his own
+requirements apart from ours (his explicit instruction, 2026-08-01: *"just make sure that
+you distinguish that you were the one that came up with them"*). An unmarked convention is
+one the user asked for.
+
 ## THE REQUIREMENTS (user round, 2026-07-28 — verbatim spirit, numbered for grinding)
 
 ### A. Inspector structure
@@ -917,7 +1000,14 @@ is the actual rule.
   not. Each preset carries a human-recognisable name and one line on what it models.
 - **R6-3.4 Aperture** — model SPECIFIC REAL CAMERAS AND LENSES: blade count, blade
   curvature, resulting bokeh polygon. 6-blade, 8-blade cine prime, circular-aperture
-  portrait, 5-blade vintage rangefinder.
+  portrait, ~~5-blade vintage rangefinder~~ — **CORRECTED, see below.**
+  - **"5-BLADE VINTAGE RANGEFINDER" IS REFUTED (agent W3-D, 2026-08-01; CLAUDE-ORIGINATED
+    correction to a user-authored example).** Every sourceable rangefinder lens carries six
+    or more blades. The genuine 5-blade iris belongs to a **TLR**, so the preset survives —
+    the camera type attached to it did not. Corrected rather than deleted, because the
+    point of R6-3.4 is that each preset models a REAL instrument; an unsourceable one fails
+    its own premise. This is the kind of error the sourcing requirement exists to catch, so
+    it is recorded rather than quietly fixed.
 - **R6-3.5 Lens flare** — model NAMED REAL LENSES AND CONDITIONS: anamorphic
   streak, coated modern zoom's faint ghost chain, uncoated vintage veiling haze,
   sun-through-windshield. Ghost spacing/count derive from element groups.
@@ -2875,7 +2965,68 @@ pre-pass `renderCtx` is hand-wired in 3 places (record it, do not generalise thi
 four more angle rows; `FRAME_KEYS` and the category titles are still duplicated (both
 marked HANDBACK PENDING); and `canSkip` is documented with zero implementors.
 
-### R6-28 EQUATION LOCK ("constrained" mode) — user, 2026-08-01. NEEDS FLESHING OUT BEFORE BUILD.
+### R6-29 UNIFY THE HANDLE-CONSTRAINT PROTOCOL — PREREQUISITE, ORDERED BEFORE R6-28
+
+**USER RULING, 2026-08-01:** *"If there was a proper fix that needs to be done before the smaller
+thing I asked, then we have to add the proper fix and devote large amounts of agent effort to
+that on an earlier part of the dependency chain and then get to it after."* So this is now an
+EARLIER node in the chain and R6-28 waits on it.
+
+**WHAT IS ACTUALLY TRUE TODAY (measured, and it vindicates the earlier refactor).**
+`constrain(state, desired) -> allowed` is called from ONE seam — `core/derive.js:865` and `:882`,
+with `:933` defaulting it to `UNCONSTRAINED` (the identity) so every consumer may call it
+unconditionally. Eight plugins implement it and all are invoked identically. **There are NOT
+competing implementations.** `core/registry.js:157-168` records the original purpose verbatim:
+constraints used to live imperatively inside `apply`, "so nothing could ASK where a handle was
+allowed to be without also committing a write — and therefore only a mouse could drive one.
+Declaring the projection makes any source of a desired point a valid driver: a drag, an equation,
+or a binding to another anchor."
+
+**THE GAP IS A SECOND HANDLE FAMILY THAT NEVER JOINED THE PROTOCOL.** The protocol is scoped to
+`modifierPoints[].constrain` — the per-widget yellow squares, whose semantics only the plugin
+knows. **The bbox MOVE/RESIZE handles are not modifier points at all**: their semantics are
+UNIFORM across every bbox widget, so there was nothing per-plugin to override, and they live once
+in `web/canvas/dragKinds.js` with their own axis machinery (`doX`/`doY` at `:346-347`; the modal's
+constrained axis "pinned to 1 and its writes suppressed" at `:341`). Both designs are defensible
+in isolation; the cost is that there are now TWO answers to "where may this handle go".
+
+**THE UNIFICATION INSIGHT: AXIS SUPPRESSION *IS* A CLOSEST-TO PROJECTION.** "Height is locked"
+means: project the desired `(w, h)` onto the nearest allowed point in
+`{(w, h0) : any w}` — a projection onto a line. `doX`/`doY` are that same projection expressed as
+booleans rather than as a function. **So the two mechanisms are the same mathematical object
+written twice, and the bbox path can JOIN the protocol rather than parallel it.**
+
+**WHY THIS MUST PRECEDE R6-28, stated honestly:** equation lock *would* work wired into two
+seams. It is not blocked. But (a) the second implementation would then exist forever, and the
+worst recurring defect in this repo — recorded 6+ times in this round alone — is precisely "the
+same idea implemented twice, drifting"; and (b) at least THREE further constraint sources are
+queued that would each need double-wiring — R6-28 equation lock, R6-14 groups scale-children, and
+aspect-ratio / chain-link. One answer pays for itself immediately.
+
+**THE FOOTPRINT IS SMALLER THAN IT SOUNDS: THE EIGHT PLUGINS ALREADY CONFORM AND DO NOT CHANGE.**
+What changes is that the bbox path gains a projection. Core files only: `core/derive.js`,
+`core/registry.js`, `web/canvas/dragKinds.js`.
+
+**A CONVENTION THAT BECOMES LOAD-BEARING.** `core/registry.js:167` records that *"nearest allowed"
+is a documented CONVENTION rather than an enforced law* — nothing stops a plugin returning a
+non-nearest point. Once the bbox path joins, that convention carries weight it did not before, so
+it needs a test rather than a comment.
+
+**MUST NOT REGRESS:** the minimal-delta discipline (`dragKinds.js:94` — a pure-horizontal drag
+writes `x` alone and leaves any equation on `y` untouched) and the modal G/S axis constraint must
+come out behaviourally identical. Byte-identical drag outcomes are the bar.
+
+**THE ACCEPTANCE CRITERION, IN THE USER'S OWN FRAME — NO TOWER OF BABEL.** *"We have to make sure
+that it's universal for all widgets so that there's no Tower of Babel problem where they all speak
+in different ways and do it different ways."* So the deliverable is NOT "we converted the call
+sites" — it is that **a widget CANNOT have its own dialect.** That means an EXHAUSTIVE,
+REGISTRY-DRIVEN test: enumerate every registered widget from the roster (never a hardcoded list —
+a hardcoded list would itself be the mirror defect this round keeps finding) and assert that every
+draggable affordance it exposes resolves through the ONE projection. A widget that bypasses it must
+turn the gate RED, not merely be absent from a checklist. If some widget genuinely cannot conform,
+that is a finding to report with its reason — not a silent exemption.
+
+### R6-28 EQUATION LOCK ("constrained" mode) — user, 2026-08-01. **BLOCKED ON R6-29.** NEEDS FLESHING OUT BEFORE BUILD.
 
 **THE ASK.** A toolbar toggle, in the same group as the snap magnets and the ghost-objects
 toggle, with an icon meaning "constrained". While ON, **any property governed by an equation
