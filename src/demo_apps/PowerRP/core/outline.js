@@ -365,6 +365,58 @@ export function closestPointOnCircle(c, rad, qx, qy) {
 }
 
 /**
+ * Pure function. The closest point on a SUBPATH SET — the outline generators'
+ * own output shape, `[[[x, y], …], …]`, one CLOSED point list per subpath. Every
+ * leg of every subpath is considered including each one's closing leg, so a
+ * hole's rim (a donut's inner edge, a frame's window) is as reachable as the
+ * outer silhouette.
+ *
+ * THE THIRD CLOSEST-POINT MAP, and the general one. `closestPointOnCircle` and
+ * `closestPointOnRoundedRect` answer for a shape stated as a FORMULA;
+ * this one answers for a shape stated as its own tessellated INK, which is what
+ * every parametric family in plugins/shapeshifter.js already computes to draw
+ * itself. Using the rounded-rect map for those gives the bounding box's answer —
+ * identical for a diamond and for the rectangle around it, which is exactly the
+ * defect this exists to remove.
+ *
+ * Args:
+ *   subpaths (number[][][]): closed point lists, LOCAL coords
+ *   px (number): query x, LOCAL
+ *   py (number): query y, LOCAL
+ *   fallback ({x, y}): the answer when there is no geometry at all — the
+ *     explicit-fallback convention closestPointOnChain / closestPointInAnnulus
+ *     use, so a degenerate shape returns the caller's own choice rather than an
+ *     arbitrary house default
+ *
+ * Returns:
+ *   {x, y}: the closest point, LOCAL coords
+ *
+ * @example closestPointOnOutlines([[[0, 0], [10, 0], [10, 10], [0, 10]]], 5, 20, {x: 0, y: 0}) // {x: 5, y: 10}
+ * @example // A 200x120 DIAMOND. Its bbox corner (200, 0) is empty space; the nearest INK is a point on the upper-right edge — NOT that edge's midpoint, which is the intuition to distrust here:
+ * @example closestPointOnOutlines([[[100, 0], [200, 60], [100, 120], [0, 60]]], 200, 0, {x: 0, y: 0}) // {x: 173.52941176470588, y: 44.117647058823536}
+ * @example closestPointOnOutlines([[[3, 4]]], 0, 0, {x: 9, y: 9}) // {x: 3, y: 4} (a lone vertex IS the closest point)
+ * @example closestPointOnOutlines([], 3, 4, {x: 9, y: 9}) // {x: 9, y: 9}
+ */
+export function closestPointOnOutlines(subpaths, px, py, fallback) {
+  const q = { x: px, y: py };
+  let best = null;
+  let bestD = Infinity;
+  const consider = (p) => {
+    const d = (p.x - px) * (p.x - px) + (p.y - py) * (p.y - py);
+    if (d < bestD) { bestD = d; best = p; }
+  };
+  for (const pts of subpaths) {
+    if (pts.length === 0) continue;
+    if (pts.length === 1) { consider({ x: pts[0][0], y: pts[0][1] }); continue; }
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      consider(closestPointOnSegment({ x: a[0], y: a[1] }, { x: b[0], y: b[1] }, q));
+    }
+  }
+  return best ?? fallback;
+}
+
+/**
  * Pure function. The nearest PAIR of points between TWO circles (centers cA/cB,
  * radii rA/rB), solved in ONE closed form: both points lie on the center line,
  * on the sides FACING each other — pA = cA + rA·u, pB = cB − rB·u where

@@ -633,10 +633,14 @@ return {
   // Anchors sit on the bbox rim (the shared standard anchors) — the bar's
   // selectable frame IS its track bounding box.
   anchors: standardBBoxAnchors,
+  // The bbox border, square corners (the rect convention). It used to CLAMP the
+  // query into the box, which is a different map: a clamp returns an INTERIOR
+  // query unchanged, so closest_to_rim against an overlapping widget answered
+  // with a point inside the bar instead of on its edge. G.closestPointOnRectBorder
+  // is the projection the comment already claimed, and it is the same one five
+  // source widgets call. Pinned by tests/anchor_ink_test.js section 7.
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);
-    const w = state.w ?? 0, h = state.h ?? 0;
-    // Clamp the target to the bbox border (the rect convention, square corners).
-    return { x: Math.max(0, Math.min(w, local.x)), y: Math.max(0, Math.min(h, local.y)) };
+    return G.closestPointOnRectBorder({ x: 0, y: 0, w: state.w ?? 0, h: state.h ?? 0 }, local.x, local.y);
   },
 };

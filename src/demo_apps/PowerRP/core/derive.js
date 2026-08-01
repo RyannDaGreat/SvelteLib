@@ -1082,6 +1082,88 @@ export function standardBBoxAnchors(state) {
 }
 
 /**
+ * The one standard anchor that is NOT a rim point: the box CENTRE. Named here
+ * because the ink rule below is stated in terms of "every standard anchor except
+ * this one", and that exception must be written down exactly once.
+ */
+export const BBOX_CENTER_ANCHOR = "cm";
+
+/**
+ * Pure function. The eight standard anchor ids that lie on the box's RIM —
+ * standardBBoxAnchors minus the centre. DERIVED from that function rather than
+ * listed, so a tenth standard anchor joins the ink rule by being added there and
+ * nowhere else.
+ *
+ * @example standardRimAnchorIds() // ["tl", "tm", "tr", "ml", "mr", "bl", "bm", "br"]
+ */
+export function standardRimAnchorIds() {
+  return standardBBoxAnchors({ w: 0, h: 0 }).map((a) => a.id).filter((id) => id !== BBOX_CENTER_ANCHOR);
+}
+
+/** The LOCAL→LOCAL frame: closestAnchor takes a WORLD query and returns a LOCAL
+ *  point, so asking it about a point that is ALREADY local means handing it the
+ *  identity world. */
+const IDENTITY_WORLD = { x: 0, y: 0, rotation: 0, scale: 1 };
+
+/**
+ * Near-pure function (constructs a plugin object; no I/O). THE INK RULE:
+ * AN ANCHOR LANDS ON THE INK. Returns the plugin with its eight standard RIM
+ * anchors projected through the widget's OWN closest-point-on-rim map — the
+ * same `closestAnchor` the equation function `closest_to_rim` uses, so a named
+ * anchor and a live rim solve can never disagree about where the shape is.
+ * `cm` is the CENTRE, not a rim point, and is never projected: the middle of a
+ * donut's hole is exactly where a label belongs. A plugin-specific anchor
+ * (`light`, `hotspot`, `staple`, `f0tl`) is left alone — the plugin put it
+ * somewhere deliberate.
+ *
+ * WHY THIS EXISTS. Nine anchors derived from the BOUNDING BOX are correct for a
+ * rectangle and wrong for everything else: a 200x120 diamond's `tr` sat at
+ * (200, 0), which is empty space outside the shape, so anything bound there
+ * floated off the ink. The user found it by shattering a Mermaid flowchart —
+ * "it's just that diamonds don't have anchors in the right place."
+ *
+ * IT IS A GENERALISATION, NOT A NEW IDEA. plugins/rect.js already did exactly
+ * this for ONE widget in Round 12 — "for a rounded rect the four corner anchors
+ * slide onto their arcs … so arrows meet the painted rounded corner instead of
+ * the empty square corner" — by mapping standardBBoxAnchors through
+ * core/outline.js roundedRectAnchorPoint, which IS closestPointOnRoundedRect
+ * applied to the anchor. That fix was one file away from every other widget with
+ * the same defect for a whole round. This is the same map, applied by the
+ * registry to every plugin that declares a rim, so the NEXT widget added gets it
+ * with no edit and rect's own override is retired in the same commit.
+ *
+ * IT COSTS NOTHING WHERE IT IS NOT NEEDED. The projection is IDEMPOTENT: an
+ * anchor already on the rim is a fixed point of it. So a rect, an image, a text
+ * box or a bare rounded rect at r=0 is byte-identical, and only shapes whose
+ * silhouette differs from their box move at all.
+ *
+ * A plugin with no `closestAnchor` has no rim to project onto and is returned
+ * unchanged — a group, a text box and the camera keep their box anchors, which
+ * is right: their "ink" is a layout box, not a silhouette.
+ *
+ * @param {object} plugin - a plugin, before registration
+ * @returns {object} the plugin, or a copy whose `anchors` is ink-true
+ *
+ * @example withInkAnchors({type: "x", anchors: standardBBoxAnchors}).anchors === standardBBoxAnchors // true (no rim declared -> untouched)
+ * @example // A widget whose rim is the unit circle inscribed in its box: `tl` leaves the empty corner and lands on the arc.
+ * @example withInkAnchors({type: "c", anchors: standardBBoxAnchors, closestAnchor: (s, x, y) => ({x: 1 + Math.SQRT1_2 * Math.sign(x - 1), y: 1 + Math.SQRT1_2 * Math.sign(y - 1)})}).anchors({w: 2, h: 2}).find((a) => a.id === "tl") // {id: "tl", x: 0.2928932188134524, y: 0.2928932188134524}
+ * @example withInkAnchors({type: "c", anchors: standardBBoxAnchors, closestAnchor: () => ({x: 99, y: 99})}).anchors({w: 2, h: 2}).find((a) => a.id === "cm") // {id: "cm", x: 1, y: 1} (the centre is never projected)
+ */
+export function withInkAnchors(plugin) {
+  if (!plugin.anchors || !plugin.closestAnchor) return plugin;
+  const declared = plugin.anchors;
+  const rim = new Set(standardRimAnchorIds());
+  return {
+    ...plugin,
+    anchors(state) {
+      return declared(state).map((a) => (rim.has(a.id)
+        ? { ...a, ...plugin.closestAnchor(state, a.x, a.y, IDENTITY_WORLD) }
+        : a));
+    },
+  };
+}
+
+/**
  * Pure function. Does a world point hit this node? Converts to local space
  * and asks the plugin's hitTest, falling back to the bbox. Plugins may
  * instead define hitTestWorld(node, wx, wy, nodesById) for widgets whose

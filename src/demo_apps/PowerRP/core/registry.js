@@ -18,9 +18,27 @@
  *     emit(state) → commands                // THE render API: display-list IR in
  *                                           // LOCAL coords (render_gpu/ir.js);
  *                                           // sceneIR wraps in the world transform
- *     anchors(state) → [{id, x, y}]         // preset anchor points, LOCAL coords
+ *     anchors(state) → [{id, x, y}]         // preset anchor points, LOCAL coords.
+ *                                           // THE INK RULE (core/derive.js
+ *                                           // withInkAnchors): registration
+ *                                           // projects the eight standard RIM
+ *                                           // anchors through this plugin's own
+ *                                           // closestAnchor, so they land on the
+ *                                           // silhouette rather than on the box
+ *                                           // around it. `cm` (the centre) and
+ *                                           // any plugin-specific id are left
+ *                                           // exactly where declared. Idempotent,
+ *                                           // so a box-shaped widget is
+ *                                           // unchanged; declare `closestAnchor`
+ *                                           // and a non-box silhouette follows
+ *                                           // for free.
  *     closestAnchor?(state, wx, wy)         // computed anchor: closest point on
- *                                           // outline to a WORLD point (local out)
+ *                                           // outline to a WORLD point (local out).
+ *                                           // ALSO the rim the ink rule above
+ *                                           // projects onto — one declaration, so
+ *                                           // a named anchor and a live
+ *                                           // closest_to_rim solve cannot
+ *                                           // disagree about where the shape is
  *     snapFeatures?(state) → [...]          // extra snap features (LOCAL); bbox
  *                                           // widgets get standard ones for free
  *     localBounds?(state) → {x,y,w,h}       // BOUNDS protocol (core/view.js
@@ -203,6 +221,17 @@
  */
 
 import { BUNDLES, bundle, bundleNestedDefaults } from "./properties.js";
+import { LIST_ROW_KIND } from "./lists.js";
+// The Shatter tool's applicability predicate, taken from the module that DEFINES
+// what "shatterable" means rather than re-spelled here as a second copy of the
+// same three conditions (core/shatter.js imports document/retype only, so this
+// edge introduces no cycle).
+import { shatterEligible } from "./shatter.js";
+// THE INK RULE, applied at registration like the two wraps below it. It lives in
+// core/derive.js beside standardBBoxAnchors and nodeAnchors — the whole anchor
+// story reads in one place there — and derive.js imports nothing that reaches
+// back here, so this edge introduces no cycle.
+import { withInkAnchors } from "./derive.js";
 // core/view.js already imports this module's cull-margin half (the established
 // core → render_gpu/effects.js edge: effects.js is DOM-free bare-node JS, the
 // same layer core is), so the fourth hand-copied line can be injected too.
@@ -779,19 +808,40 @@ export function withToolGroups(plugin) {
  */
 export const REGISTRY_DERIVED_KEYS = ["effectsInjected", "toolGroups"];
 
+/**
+ * The authored keys `register()` REPLACES rather than adds — the third category
+ * the note above already described without naming: an authored hook whose
+ * registered form is a DERIVED wrapper around it.
+ *
+ * `anchors` is one because of THE INK RULE (core/derive.js withInkAnchors): the
+ * registered hook calls the authored one and then projects the eight standard rim
+ * anchors onto the widget's own silhouette. Note this holds even where the
+ * projection is the IDENTITY — a plain box's anchor POSITIONS are unchanged, but
+ * the function object is a different one, so an equality check against the
+ * authored plugin sees a difference with no difference in behaviour. That is
+ * exactly the false alarm this constant exists to let a test spell out
+ * (tests/qrcode_test.js is the whole-object comparison in question).
+ *
+ * Kept SEPARATE from REGISTRY_DERIVED_KEYS because the two ask different
+ * questions of a registered plugin — "what appeared?" versus "what was wrapped?" —
+ * and a test that conflated them could not assert either one exactly.
+ */
+export const REGISTRY_REWRITTEN_KEYS = ["anchors"];
+
 export function createRegistry() {
   const plugins = new Map();
   return {
     /** Command. Registers a plugin, resolved into its registered form: the
      *  universal effects bundle injected when it is eligible and did not compose
      *  it itself (withUniversalEffects), then its Tools-pane groups resolved from
-     *  the tool pool + its own declarations (withToolGroups). Loud on collision
-     *  or malformed plugin. */
+     *  the tool pool + its own declarations (withToolGroups), and its standard
+     *  rim anchors projected onto its own silhouette (withInkAnchors — THE INK
+     *  RULE). Loud on collision or malformed plugin. */
     register(plugin) {
       for (const field of ["type", "title", "capabilities", "defaults", "emit"])
         if (!(field in plugin)) throw new Error(`Plugin missing "${field}": ${plugin.type ?? "?"}`);
       if (plugins.has(plugin.type)) throw new Error(`Duplicate plugin type "${plugin.type}"`);
-      plugins.set(plugin.type, withToolGroups(withUniversalEffects(plugin)));
+      plugins.set(plugin.type, withToolGroups(withUniversalEffects(withInkAnchors(plugin))));
     },
     /** Query. Plugin by type; loud when unknown. */
     get(type) {

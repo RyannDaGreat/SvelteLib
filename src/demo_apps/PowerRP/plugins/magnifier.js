@@ -97,69 +97,6 @@ export function lensSourceRect(cwx, cwy, r, m) {
   return { x: cwx - half, y: cwy - half, w: half * 2, h: half * 2 };
 }
 
-/**
- * THE TEN LENSES, IN ORDER OF POWER — one FLAT family.
- *
- * ONE FLAT `presets`. These are alternative WHOLE instruments over the same six
- * keys, not composable aspects: a "silhouette" family and an "optics" family would
- * both have to name `strokeWidth` and `magnification` for the overlay rule to hold,
- * so the split is the kind core/registry.js's disjointness requirement forbids.
- * (plugins/demo/glass.js IS a legal two-family split — material against silhouette,
- * genuinely disjoint keys. This widget has too few knobs to divide that way.)
- *
- * THE ORDER IS THE CONTENT: magnification runs 1.5x -> 20x down the pane, because
- * power is what a magnifier IS. The sourced anchors on that ladder are 2-6x for a
- * handheld reading glass, ~5x for judging a 35 mm slide, 10x as the gemological
- * clarity-grading standard (above which depth of field and field of view stop being
- * instructive), and ~25x as the ceiling before a microscope is the right tool. The
- * values between them are interpolated, not claimed.
- *
- * SILHOUETTE IS NOT DECORATION. A box lens is here because ONE researched instrument
- * genuinely has a square field: the linen tester, whose cheap form is a square
- * opening in the foot with a scale along its edges. The other box presets are
- * software and paper artefacts — a screenshot crop, a chart magnifier, a sheet
- * magnifier — which are rectangular for the same reason a page is.
- *
- * `supersample: false` IS A LOOK, not a performance setting, and two presets use it
- * that way: a thick simple lens really is soft at the edge of its resolving power,
- * and a sheet magnifier really does lose detail between its concentric rings.
- * Everything else re-renders crisp.
- *
- * `cornerRadius` IS INERT ON EVERY CIRCLE PRESET AND IS WRITTEN ANYWAY. Application
- * is an overlay, so omitting it would leave a circle picked after "Screenshot Inset"
- * carrying a 12-unit radius that does nothing today and surfaces the moment the user
- * switches the shape to box.
- *
- * NO PRESET SETS `origin`. That is the world point the author retargeted the lens
- * to — the same class as a dragged light position — and a preset must not move it.
- * NO PRESET SETS AN EFFECT either: the registry injects the whole effects bundle
- * here, and render_gpu/ports.js would apply it even though emit() never calls
- * applyEffects, but a magnifier is a BACKDROP SAMPLER and what the effect substrate
- * does to an op whose entire content is "the composite so far" is unverified.
- * Shipping that blind across ten presets — the overlay rule makes it
- * all-or-nothing — is not a risk worth taking; a loupe with a drop shadow is a good
- * idea awaiting one render check.
- *
- * SIBLING PAIRING (core/registry.js's cross-widget answer is to share the NAME, not
- * the mechanism): nine of these names are carried verbatim by plugins/demo/magnify.js.
- * If either table is edited, edit both. "Map Reader" is this widget's alone because
- * it needs `cornerRadius`, which the sibling has not got, and "Screenshot Inset"
- * renders ROUNDED here and sharp there — its description says so rather than letting
- * the two silently diverge.
- */
-const PRESETS = [
-  { name: "Fresnel Sheet", description: "The flat page magnifier: concentric ring lenses spread over a whole paragraph — wide, weak, frameless, and soft the way a sheet lens really is.", props: { shape: "box", magnification: 1.5, supersample: false, stroke: "#000000", strokeWidth: 0, cornerRadius: 0 } },
-  { name: "Map Reader", description: "The chart magnifier laid flat across a map: a wide, low-power window with lightly rounded corners and a dark plastic edge.", props: { shape: "box", magnification: 1.8, supersample: true, stroke: "#2a2f36", strokeWidth: 3, cornerRadius: 6 } },
-  { name: "Reading Glass", description: "The handheld reading glass at the bottom of the 2-6x range, in the thick horn-coloured frame those are always mounted in.", props: { shape: "circle", magnification: 2, supersample: true, stroke: "#3b2f2a", strokeWidth: 10, cornerRadius: 0 } },
-  { name: "Screenshot Inset", description: "The software zoom callout: a rounded rectangular crop of the pixels beneath it, held by a hairline light rim.", props: { shape: "box", magnification: 3, supersample: true, stroke: "#e6e8ec", strokeWidth: 2, cornerRadius: 12 } },
-  { name: "Comic Zoom", description: "The comic-panel blow-up: a fat white ring punched over the artwork, at the modest power a printed panel can stand.", props: { shape: "circle", magnification: 3.5, supersample: true, stroke: "#ffffff", strokeWidth: 14, cornerRadius: 0 } },
-  { name: "Soft Loupe", description: "A thick simple lens worked at the edge of what it can resolve: rimless, and deliberately sampled rather than re-rendered, so it goes soft the way cheap glass does.", props: { shape: "circle", magnification: 4, supersample: false, stroke: "#000000", strokeWidth: 0, cornerRadius: 0 } },
-  { name: "Watchmaker's Eyeglass", description: "The eyeglass a movement is assembled under: mid power in a brass cylinder, and sharp, because the whole point is seeing the jewel.", props: { shape: "circle", magnification: 5, supersample: true, stroke: "#b08d3f", strokeWidth: 8, cornerRadius: 0 } },
-  { name: "Linen Tester", description: "The thread counter on its folding stand — the one instrument here whose field of view is genuinely SQUARE, in a thin steel frame.", props: { shape: "box", magnification: 6, supersample: true, stroke: "#8a9099", strokeWidth: 3, cornerRadius: 0 } },
-  { name: "Jeweller's Loupe", description: "The 10x triplet a stone is graded through: the standard clarity-grading power, in a plain black barrel, above which depth of field stops being useful.", props: { shape: "circle", magnification: 10, supersample: true, stroke: "#101012", strokeWidth: 5, cornerRadius: 0 } },
-  { name: "Microscope Field", description: "The top of what a head-worn loupe manages before a microscope is the right tool: very high power behind a thin dark ring.", props: { shape: "circle", magnification: 20, supersample: true, stroke: "#1a1a1a", strokeWidth: 3, cornerRadius: 0 } },
-];
-
 export const magnifierPlugin = {
   type: "magnifier",
   title: "Magnifier",
@@ -218,7 +155,6 @@ export const magnifierPlugin = {
     // from item state. (Found by the universal-effects sweep.)
     ...props("opacity"),
   ],
-  presets: PRESETS,
   /**
    * Pure function. One shaped-lens op — the backend samples or re-renders its
    * own backdrop per `supersample`, clipped to the circle | box region and

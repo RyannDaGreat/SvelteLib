@@ -53,7 +53,7 @@ import * as T from "../core/transform.js";
 import {
   ringSectorOutline, polygonStarOutline, cornerRectOutline, quadWedgeOutline,
   crossPlusOutline, frameOutline, gearOutline, calloutOutline, bannerOutline,
-  bracketOutline, arrowOutline, pointInOutlines, closestPointOnRoundedRect,
+  bracketOutline, arrowOutline, pointInOutlines, closestPointOnOutlines,
   closestPointOnSegment, closestPointOnAxisRange, cloudOutline, heartOutline,
   boltOutline, screwOutline, screwHeadOutline,
   scrollOutline, scrollPairOutline, ironFinialOutline,
@@ -950,9 +950,22 @@ export function makeFamilyPlugin(fam) {
       return pointInOutlines(fam.outline(s), lx, ly);
     },
     anchors: standardBBoxAnchors,
+    // THE RIM IS THE INK, not the box around it. This used to be
+    // closestPointOnRoundedRect(w, h, 0, …) — the bounding box — which returns
+    // the SAME answer for a diamond as for the rectangle around it, so an arrow
+    // bound with `closest` met a 200x120 diamond at (200, 0): an empty corner.
+    // The family already computes its exact silhouette to draw and to hit-test
+    // itself, so the rim is that same outline read through the general
+    // closest-point map. Every family is fixed by this one line and so is the
+    // next one added, because nothing here names a shape.
+    //
+    // The `cm` fallback is the box centre: a family whose params collapse it to
+    // no geometry at all has no rim to answer with, and the centre is the point
+    // every other consumer of a degenerate box already uses.
     closestAnchor(state, wx, wy, world) {
       const local = T.apply(T.invert(world), wx, wy);
-      return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, 0, local.x, local.y);
+      const centre = { x: (state.w ?? 0) / 2, y: (state.h ?? 0) / 2 };
+      return closestPointOnOutlines(fam.outline(state), local.x, local.y, centre);
     },
     // The family's OWN parametric handles, PLUS the gradient FILL beads
     // (core/paint_handles.js) when the fill is a gradient — additive, the

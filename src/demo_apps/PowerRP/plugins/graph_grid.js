@@ -30,6 +30,7 @@
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, tickValues, minorTickValues, minorSubdivisions, easedReveal, clamp01 } from "../core/graph_scale.js";
+import { closestPointOnRectBorder } from "../core/geometry.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
@@ -170,9 +171,15 @@ export const graphGridPlugin = {
   },
   cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,
+  // The plot FRAME's border. This used to CLAMP the query into the box, which is
+  // not the same map: a clamp returns an INTERIOR query unchanged, so
+  // closest_to_rim against an overlapping widget answered with a point inside the
+  // chart instead of on its edge. closestPointOnRectBorder is the projection —
+  // five widgets now share the one spelling of it. Pinned by
+  // tests/anchor_ink_test.js section 7.
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);
-    return { x: Math.max(0, Math.min(state.w ?? 0, local.x)), y: Math.max(0, Math.min(state.h ?? 0, local.y)) };
+    return closestPointOnRectBorder({ x: 0, y: 0, w: state.w ?? 0, h: state.h ?? 0 }, local.x, local.y);
   },
   presetFamilies: [{ id: "grids", title: "Grid presets", presets: GRAPH_GRID_PRESETS }],
   commands: [

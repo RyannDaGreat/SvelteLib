@@ -20,7 +20,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
+import { closestPointOnRoundedRect } from "../core/outline.js";
 import { bundle, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { cropSubtree } from "../render_gpu/ir.js";
@@ -83,11 +83,11 @@ export const cropboxPlugin = {
       content: targetWorldIR ?? [],
     })];
   },
-  anchors(state) {
-    const r = state.cornerRadius ?? 0;
-    return standardBBoxAnchors(state).map((a) =>
-      ({ id: a.id, ...roundedRectAnchorPoint(state.w ?? 0, state.h ?? 0, r, a.id, a.x, a.y) }));
-  },
+  // The corner anchors slide onto a rounded rim — THE INK RULE, applied to every
+  // widget with a rim at registration (core/derive.js withInkAnchors) through
+  // the closestAnchor below. This file used to carry its own copy of it; rect
+  // and codeblock carried the same five lines.
+  anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);
     return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, state.cornerRadius ?? 0, local.x, local.y);

@@ -51,6 +51,7 @@ import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { parseRange, dataToLocal, breakSubpaths, polylinePathD } from "../core/graph_scale.js";
 import { sampleCurve, errorAffordance, DEFAULT_NUM_POINTS } from "../core/graph_equation.js";
+import { closestPointOnRectBorder } from "../core/geometry.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
@@ -254,9 +255,16 @@ export const graphLinePlugin = {
     return false;
   },
   anchors: standardBBoxAnchors,
+  // The plot FRAME's border. This used to CLAMP the query into the box, which is
+  // not the same map: a clamp returns an INTERIOR query unchanged, so
+  // closest_to_rim against an overlapping widget answered with a point inside the
+  // chart rather than on its edge. closestPointOnRectBorder is the projection the
+  // old comment already claimed ("the rect convention"). The plotted CURVE, not
+  // the frame, would be the truer rim here — see W4-L's report; the frame is at
+  // least a rim.
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);
-    return { x: Math.max(0, Math.min(state.w ?? 0, local.x)), y: Math.max(0, Math.min(state.h ?? 0, local.y)) };
+    return closestPointOnRectBorder({ x: 0, y: 0, w: state.w ?? 0, h: state.h ?? 0 }, local.x, local.y);
   },
   presetFamilies: [{ id: "zoo", title: "Equation zoo", presets: GRAPH_LINE_PRESETS }],
   commands: [

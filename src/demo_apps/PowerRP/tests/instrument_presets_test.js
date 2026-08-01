@@ -174,29 +174,6 @@ async function frameOf(subject, props, label) {
 }
 
 // ── the subjects ─────────────────────────────────────────────────────────────
-// A LENS OVER A FLAT COLOUR IS THE SAME PICTURE AT EVERY POWER, so a magnifier
-// family scored over one would come back "all identical" for a reason that has
-// nothing to do with the presets. This backdrop carries the three things a lens
-// preset acts on: SMALL TYPE under the lens centre (a frequency ramp — at 1.5x a
-// 9-unit glyph is 13 units and at 20x it is 180, so every rung of the power ladder
-// lands on a visibly different crop), a BRIGHT half and a DARK half so a rim colour
-// and the soft-versus-crisp sampling both read, and saturated hues so a chroma-only
-// difference is not lost.
-const LENS_FRAME = { x: 340, y: 130, w: 280, h: 280 };
-const LENS_SPECIMEN_SIZE = 9;
-function lensBackdrop() {
-  return [
-    { type: "rect", x: 0, y: 0, w: CAM.w / 2, h: CAM.h, z: 1, fill: "#f2efe6", strokeWidth: 0 },
-    { type: "rect", x: CAM.w / 2, y: 0, w: CAM.w / 2, h: CAM.h, z: 1, fill: "#12141c", strokeWidth: 0 },
-    { type: "circle", x: 90, y: 60, w: 150, h: 150, z: 2, fill: "#e5484d", strokeWidth: 0 },
-    { type: "circle", x: 690, y: 330, w: 150, h: 150, z: 2, fill: "#30a46c", strokeWidth: 0 },
-    {
-      type: "plaintext", x: 300, y: 150, w: 360, h: 240, z: 3,
-      text: "the quick brown fox jumps over the lazy dog ".repeat(40),
-      size: LENS_SPECIMEN_SIZE, fill: "#7b61ff", align: "left", valign: "top",
-    },
-  ];
-}
 // An afternoon hour so `hour12` changes the digits (17 -> 5), and a single-digit
 // minute so `leadingZero` changes the MM:SS form (04:56 -> 4:56). A reading where
 // neither moved would hide two of the digital family's axes from the pixel check.
@@ -224,20 +201,6 @@ const SUBJECTS = [
       shadow: "an effect changes the local luminance around the modules, which is the one property decoding depends on",
       bloom: "as above — a family carrying a scannability claim leaves the effects bundle alone",
       innerShadow: "as above",
-    },
-  },
-  {
-    type: "magnifier",
-    frame: LENS_FRAME,
-    backdrop: lensBackdrop(),
-    excluded: {
-      "origin": "THE TARGET the author retargeted the lens to — the same class as a dragged light position",
-      "strokeOffset": "a stroke-trim row the registry sweep offers with NO default; whether the magnify paint handler honours a trimmed rim is unverified, so writing one risks a dead property",
-      "strokeStart": "as strokeOffset", "strokeEnd": "as strokeOffset", "strokePhase": "as strokeOffset",
-      "strokeCapStart": "as strokeOffset", "strokeCapEnd": "as strokeOffset",
-      "strokeJoin": "as strokeOffset", "strokeMiter": "as strokeOffset",
-      "shadow": "a magnifier is a BACKDROP SAMPLER and what the effect substrate does to an op whose content is the composite-so-far is unverified",
-      "bloom": "as shadow", "innerShadow": "as shadow",
     },
   },
 ];

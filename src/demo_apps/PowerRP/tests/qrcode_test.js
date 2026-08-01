@@ -28,7 +28,7 @@ import { renderToPng } from "../render_gpu/skia/node_render.js";
 import { renderDocToPng } from "../cli/render.js";
 import { irToSVG } from "../render_gpu/svg_backend.js";
 import { fitRectView } from "../core/view.js";
-import { createRegistry, REGISTRY_DERIVED_KEYS } from "../core/registry.js";
+import { createRegistry, REGISTRY_DERIVED_KEYS, REGISTRY_REWRITTEN_KEYS } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 
@@ -128,8 +128,19 @@ for (const { data, ecLevel } of CASES) {
   // composes that bundle itself, and broke the moment tool groups arrived.
   const registered = registry.get("qrcode");
   assert.equal(registered.type, "qrcode", "plugin registers under type 'qrcode'");
-  for (const [key, value] of Object.entries(qrcodePlugin))
+  for (const [key, value] of Object.entries(qrcodePlugin)) {
+    // A REWRITTEN key is a hook the registry wraps rather than adds (THE INK
+    // RULE wraps `anchors`), so it is a different function object even when it
+    // computes the identical points — which it does here, this widget being a
+    // plain box. Its BEHAVIOUR is asserted instead, which is the thing worth
+    // pinning; core/registry.js REGISTRY_REWRITTEN_KEYS is the one place the
+    // category is named, so the next wrap needs one line changed in one file.
+    if (REGISTRY_REWRITTEN_KEYS.includes(key)) {
+      assert.deepEqual(registered[key](qrcodePlugin.defaults), value(qrcodePlugin.defaults), `registration changed what the authored "${key}" computes`);
+      continue;
+    }
     assert.deepEqual(registered[key], value, `registration altered the authored "${key}"`);
+  }
   assert.deepEqual(
     Object.keys(registered).filter((k) => !(k in qrcodePlugin)),
     REGISTRY_DERIVED_KEYS.filter((k) => k in registered),

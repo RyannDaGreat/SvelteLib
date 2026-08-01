@@ -2,7 +2,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { paintModifierPoints } from "../core/paint_handles.js";
-import { closestPointOnRoundedRect, roundedRectAnchorPoint } from "../core/outline.js";
+import { closestPointOnRoundedRect } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { rect } from "../render_gpu/ir.js";
@@ -54,16 +54,15 @@ export const rectPlugin = {
   // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
   // defaultCanSkip's cullMargin hook.
   cullMargin: effectsCullMargin,
-  // Anchors sit on the VISIBLE rim: for a rounded rect the four corner anchors
-  // slide onto their arcs (the 45° rim point), so arrows meet the painted
-  // rounded corner instead of the empty square corner (Round 12 bug). Edge
-  // midpoints/center are on straight edges/interior — unchanged by rounding.
-  // r=0 → byte-identical to standardBBoxAnchors.
-  anchors(state) {
-    const r = state.cornerRadius ?? 0;
-    return standardBBoxAnchors(state).map((a) =>
-      ({ id: a.id, ...roundedRectAnchorPoint(state.w ?? 0, state.h ?? 0, r, a.id, a.x, a.y) }));
-  },
+  // Anchors sit on the VISIBLE rim: for a rounded rect the corner anchors slide
+  // onto their arcs, so arrows meet the painted rounded corner instead of the
+  // empty square corner (Round 12 bug). That is no longer written here — it is
+  // THE INK RULE, applied to EVERY widget with a rim at registration
+  // (core/derive.js withInkAnchors), by projecting the standard rim anchors
+  // through the plugin's own closestAnchor below. This file's private version of
+  // it was the general rule's only instance for a whole round; a second spelling
+  // of a rule that now has a general one is how the general one dies.
+  anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);
     // Closest point on the ROUNDED rim (arcs at the corners) — not the square
