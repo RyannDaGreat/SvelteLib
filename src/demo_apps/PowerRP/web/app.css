@@ -154,6 +154,23 @@
   /* ── STANDARDIZED CONTROLS (manifest rule: a few standards, reused
      everywhere — never invent one-off button styles) ── */
   --a-control-h: 26px; /* THE control height: buttons, inputs, rows */
+  /* THE PHONE BREAKPOINT. Below this the app is being held in one hand, and the
+     user's ruling for that case is unambiguous: "most of the time somebody's on
+     the phone, they're going to be presenting."
+     640px rather than a device width: above every current iPhone in portrait
+     (430 is the widest) and below any tablet in landscape, so it separates "one
+     thumb" from "two hands" rather than tracking a model number.
+     A CUSTOM PROPERTY CANNOT BE USED IN A MEDIA QUERY — `@media (max-width:
+     var(--a-phone-max))` is invalid and silently never matches — so the literal
+     is repeated in each phone `@media` below. That mirror is GATED, not trusted:
+     tests/phone_breakpoint_test.js parses this stylesheet and fails if any of
+     them disagrees with this token. The token stays the one place the number is
+     DECIDED. */
+  --a-phone-max: 640px;
+  /* The iOS Human Interface Guidelines minimum tap target. Named because "44" in
+     a rule would be unexplainable — it is a platform floor, not a taste, and
+     --a-control-h's 26px is 59% of it. */
+  --a-tap-min: 44px;
   --a-input-w: 90px; /* THE value-field MIN width: number, text, color, equation.
      Value controls GROW past this to fill the panel (round-11 ruling) — the row
      grid gives the value column minmax(--a-input-w, 1fr) so every value control
@@ -663,6 +680,37 @@
      that is one shared by all of them. Anything that opens on top of the app
      reads this token; nothing invents its own. */
   --a-z-popover: 1000;
+
+  /* ── THE Z LADDER, written down once ─────────────────────────────────────
+     W5-MOBILE asked for a rung and observed, correctly, that "one documented
+     ladder would be worth more than my one extra rung". This app has exactly
+     FIVE app-wide tiers, and until now four of them were bare literals scattered
+     across 4000 lines, so every new author had to rediscover the scale by grep:
+
+       50   --a-z-dock       a permanent on-canvas control (the phone Present dock)
+       100  --a-z-backdrop   a full-screen scrim that dismisses on click
+       200  --a-z-present    present mode: the app disappears behind one slide
+       300  --a-fps-z        the FPS readout, deliberately over present mode
+       1000 --a-z-popover    anything that OPENS on top of the app
+
+     Above all five: Tooltip and Modal at 2147483647, which is their own ceiling
+     inside src/lib and not ours to name.
+     A LOCAL z-index IS STILL FINE and most of the ones in this file are: the
+     1/2/5 values inside a component order that component's own children within
+     its own stacking context. This ladder is only for boxes that claim a
+     position against THE WHOLE APP, which is the claim you cannot make with a
+     small local number (see --a-z-popover's note above for the bug that proves
+     it).
+     WHY THE DOCK IS 50 AND NOT 100, which is what was proposed: measured,
+     .palette-backdrop is ALREADY 100. A dock at the same number would tie, and a
+     tie is resolved by DOM order — so a control that is permanently on screen
+     would paint over an OPEN COMMAND PALETTE, or not, depending on where its
+     component happened to be mounted. That contradicts the dock's own stated
+     rule that a permanent control must never cover a modal surface, and it would
+     have been invisible until someone opened the palette on a phone. */
+  --a-z-dock: 50;
+  --a-z-backdrop: 100;
+  --a-z-present: 200;
 
   /* Scrollbars */
   --a-scrollbar-w: 8px;
@@ -3033,6 +3081,42 @@ textarea {
   padding: 0 var(--a-sp-4);
   background: var(--control-bg);
   border-bottom: var(--a-hairline) solid var(--border);
+}
+
+/* ON A PHONE THE TOOLBAR SCROLLS ITSELF, because right now it silently does not
+   scroll at all. Measured by W5-MOBILE in a booted editor at three iPhone
+   viewports: `.toolbar` scrollWidth 1107 against clientWidth 393 — 714px of
+   overflow — with `overflow-x: visible` inside an `.app` that is
+   `overflow: hidden`, and NO user-scrollable ancestor anywhere in the chain
+   (document.scrollingElement's scrollWidth equals its clientWidth). So roughly
+   forty controls, Play among them, were not "hard to reach" but UNREACHABLE BY
+   ANY TAP.
+   IT ALSO KILLS A SECOND, QUIETER BUG. An `overflow: hidden` box whose
+   scrollWidth exceeds its clientWidth is STILL a scroll container: the user
+   cannot scroll it, but the browser can and does, whenever focus lands on an
+   off-screen descendant. Focusing anything past the fold therefore slid the
+   whole app sideways with no gesture available to bring it back. Making the
+   toolbar own the scroll collapses `.app`'s scrollWidth to its clientWidth, so
+   that hidden region stops existing. */
+@media (max-width: 640px) { /* --a-phone-max; pinned by tests/phone_breakpoint_test.js */
+  .toolbar {
+    overflow-x: auto;
+    overflow-y: hidden;
+    /* nowrap rather than wrapping to several rows: the toolbar's groups are
+       ORDERED, and rows would eat vertical space, the scarcest thing on a
+       phone. */
+    flex-wrap: nowrap;
+    /* The horizontal track would otherwise eat into a 40px bar, and the content
+       is reachable by touch drag. The one place in this app where a visible
+       scrollbar costs more than it informs. */
+    scrollbar-width: none;
+  }
+  /* Controls scroll rather than squeeze — a shrunk 26px control is worse than
+     one that is off-screen but reachable. */
+  .toolbar > *,
+  .toolbar .tt-anchor {
+    flex: 0 0 auto;
+  }
 }
 
 /* ONE control height everywhere — no toolbar exception (standardization rule). */
@@ -7562,7 +7646,7 @@ audio.ae-preview-media {
 .palette-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--a-z-backdrop);
 }
 
 .palette {
@@ -7578,6 +7662,33 @@ audio.ae-preview-media {
   backdrop-filter: var(--a-glass-blur);
   -webkit-backdrop-filter: var(--a-glass-blur);
   overflow: hidden;
+}
+
+/* THE PALETTE'S LIT RIM, drawn as an overlay because on THIS surface — and only
+   this one — the box-shadow above cannot deliver it. --a-glass-shadow's first
+   layer is an `inset 0 <rim-w> 0`, which paints on the element's own background
+   and therefore UNDER its children; `.palette input` (and `.palette-crumbs`
+   before it) is a full-width child with an opaque --control-bg starting at y=0,
+   so it covered the rim completely. Measured on the shipped Nocturne: the top
+   two device rows of the pane were the BORDER's colour, with no rim
+   contribution at all.
+   That matters more than a missing hairline. Nocturne's own block names three
+   cues — "the blur, the rim and the shadow" — and Nocturne is the default theme,
+   so the cue that failed was failing on the first surface a new user opens.
+   Every padded floating surface (.canvas-toolbar, .shape-picker-grid, the
+   modals) shows the inset rim correctly and needs nothing.
+   A NO-OP OUTSIDE THE GLASS THEMES, by construction: --a-glass-rim is
+   `transparent` at :root and --a-glass-rim-w is a hairline, so a non-glass theme
+   paints a transparent hairline over its own top edge. */
+.palette::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--a-glass-rim-w);
+  background: var(--a-glass-rim);
+  pointer-events: none; /* a decoration may never eat the click meant for the field */
 }
 
 .palette-crumbs {
@@ -7765,12 +7876,65 @@ audio.ae-preview-media {
   --minimap-viewport-fill: transparent;
 }
 
+/* ── The phone Present dock (web/PresentDock.svelte) ─────────────────────────
+   "The play button needs to be easily accessible no matter what" (user ruling,
+   2026-08-01). On a desktop it is not needed — the toolbar's own Play button is
+   on screen and reachable — so the dock DOES NOT EXIST there. The `display:
+   none` default is the load-bearing half of that sentence and the media query is
+   the exception; without the default the component renders as an unstyled
+   in-flow row at the bottom of the app on desktop too, so this rule is what
+   makes the component CORRECT, not what makes it pretty.
+   It pairs with `viewport-fit=cover` in web/index.html, which is what makes
+   env(safe-area-inset-bottom) non-zero so the dock clears the home indicator. */
+.present-dock {
+  display: none;
+}
+
+@media (max-width: 640px) { /* --a-phone-max; pinned by tests/phone_breakpoint_test.js */
+  .present-dock {
+    display: flex;
+    position: fixed;
+    /* BOTTOM-RIGHT, not the top bar. The top bar is where Play failed, and the
+       bottom-right is the one region a thumb reaches without regripping a phone
+       held in either hand. */
+    right: var(--a-sp-4);
+    bottom: calc(var(--a-sp-4) + env(safe-area-inset-bottom, 0px));
+    z-index: var(--a-z-dock);
+  }
+
+  /* Square, like all app chrome — this is chrome, not a floating surface, so it
+     takes --a-radius-control (0) and never --a-radius-floating. Sized to the
+     platform tap floor rather than --a-control-h, which is a pointer-era height
+     and 59% of what a thumb needs. */
+  .present-dock-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--a-tap-min);
+    height: var(--a-tap-min);
+    padding: 0;
+    color: var(--fg);
+    background: var(--control-bg);
+    border: var(--a-hairline) solid var(--border);
+    border-radius: var(--a-radius-control);
+    cursor: pointer;
+  }
+
+  /* The same treatment every other aria-disabled control gets, so the dock can
+     never look available while it is inert. `present` declares no gate today, so
+     this is unreachable now and correct the day one is added. */
+  .present-dock-btn[aria-disabled="true"] {
+    opacity: var(--a-disabled-opacity);
+    cursor: default;
+  }
+}
+
 /* ── Present mode ────────────────────────────────────────────────────────── */
 
 .present {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: var(--a-z-present);
   background: black;
 }
 
