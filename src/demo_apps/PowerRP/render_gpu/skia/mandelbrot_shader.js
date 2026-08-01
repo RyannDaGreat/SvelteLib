@@ -835,6 +835,73 @@ if (MANDELBROT_MAX_FINE_EXPONENT + COARSE_DECIMALS > MAX_TO_FIXED_DECIMALS)
   throw new Error(`mandelbrot_shader: fine exponent ${MANDELBROT_MAX_FINE_EXPONENT} needs ${MANDELBROT_MAX_FINE_EXPONENT + COARSE_DECIMALS} decimal places, beyond the ${MAX_TO_FIXED_DECIMALS} toFixed accepts — splitCentreFixed could not sum the centre at all.`);
 
 /**
+ * THE DEEPEST VIEW THE SPLIT CENTRE CAN NAME AT ALL — centreResolutionDecades at
+ * the largest fine exponent the widget offers, i.e. the best the pair does at ANY
+ * setting (that function saturates, so no other exponent beats it). Past this the
+ * frame is centred on a QUANTIZED NEIGHBOUR of the requested point, which the
+ * widget's emit() already reports out loud.
+ *
+ * @example MANDELBROT_MAX_RESOLVABLE_DECADES // 30
+ */
+export const MANDELBROT_MAX_RESOLVABLE_DECADES = centreResolutionDecades(MANDELBROT_MAX_FINE_EXPONENT);
+
+/**
+ * THE ORBIT'S RESOURCE BUDGET: the widest fixed-point the reference orbit is ever
+ * built at, however deep a document claims to zoom. Named and exported for the same
+ * reason globe_map's TILE_BUDGET is — a per-frame cost that a pathological document
+ * could otherwise drive without bound is only safe if the bound has a name a test
+ * can assert against.
+ *
+ * @example MANDELBROT_MAX_ORBIT_BITS // 164
+ */
+export const MANDELBROT_MAX_ORBIT_BITS = bitsForDepth(MANDELBROT_MAX_RESOLVABLE_DECADES);
+
+/**
+ * Pure function. THE FIXED-POINT WIDTH ONE WIDGET STATE'S REFERENCE ORBIT RUNS AT.
+ *
+ * ONE DEFINITION, because there were two: referenceOrbitFor computed
+ * `bitsForDepth(s.zoomExponent)` to BUILD the orbit and the widget's cachedOrbit
+ * recomputed the same expression to KEY it. Two copies of a derivation is how they
+ * come to disagree — and here disagreement is silent, because a stale key returns a
+ * correct-looking orbit built at the wrong precision.
+ *
+ * ── WHY IT IS CAPPED, AND WHY THE CAP CANNOT CHANGE A PICTURE ────────────────
+ * `zoomExponent` has a floor and NO CEILING (it is an ordinary keyframable number,
+ * so an equation or a paste reaches any value), while bitsForDepth grows linearly in
+ * it and the orbit is MANDELBROT_REF_LEN BigInt squarings at that width. Measured on
+ * this repo's own hardware, ONE emit() of a single mandelbrot widget:
+ *
+ *     zoomExponent      1e3      1e4      1e5      1e6
+ *     orbit bits       3386    33284   332257  3321993
+ *     one emit()      0.01 s   0.04 s   0.63 s   7.15 s
+ *
+ * That work is synchronous inside the editor's render effect, so it is not a slow
+ * frame, it is a FROZEN EDITOR — and unlike a throw it cannot be contained (a
+ * try/catch does not interrupt a running loop; render_gpu/ports.js emitNode catches
+ * the crash class and is powerless against this one).
+ *
+ * The cap is MANDELBROT_MAX_RESOLVABLE_DECADES, which makes it free by construction:
+ * past that depth the centre itself is quantized, so the extra bits compute the exact
+ * orbit of a point that is not the requested one. Any view whose centre CAN resolve
+ * its own zoom is bit-for-bit unaffected, and every view the cap does bind on has
+ * already raised the widget's centre-resolution report.
+ *
+ * @param {object} s - folded item state (zoomExponent)
+ * @returns {number} fractional bits, at most MANDELBROT_MAX_ORBIT_BITS
+ *
+ * @example orbitBitsFor({zoomExponent: 0}) // 64 (guard bits only — a whole-set view)
+ * @example orbitBitsFor({zoomExponent: 10.5}) // 99 (the deepest shipped preset, uncapped)
+ * @example orbitBitsFor({zoomExponent: 1e6}) // 164 (capped: 3321993 bits of a centre known to 1e-30)
+ * @example orbitBitsFor({}) // 64 (an absent zoom is the whole-set default)
+ */
+export function orbitBitsFor(s) {
+  const z = s.zoomExponent ?? 0;
+  if (!Number.isFinite(z))
+    throw new Error(`orbitBitsFor: zoomExponent is ${z}, not a finite number — the reference orbit's precision is derived from it, so there is no orbit to build. Check the Mandelbrot widget's "Zoom exponent" (an = equation that divides by zero reads exactly like this).`);
+  return bitsForDepth(Math.min(z, MANDELBROT_MAX_RESOLVABLE_DECADES));
+}
+
+/**
  * Pure function. A finite number as an EXACT BigInt numerator over 10^decimals.
  * This is the only place a float64 coordinate becomes a long number, and it is
  * exact because `toFixed` is exact for the decimal places it accepts.
@@ -1242,7 +1309,7 @@ export const MANDELBROT_FILL_PARAMS = [
  */
 export function referenceOrbitFor(s) {
   const fineExponent = Math.max(0, Math.round(s.fineExponent ?? 0));
-  const bits = bitsForDepth(s.zoomExponent ?? 0);
+  const bits = orbitBitsFor(s);
   return referenceOrbit(
     splitCentreFixed(s.centerX ?? 0, s.centerFineX ?? 0, fineExponent, bits),
     splitCentreFixed(s.centerY ?? 0, s.centerFineY ?? 0, fineExponent, bits),

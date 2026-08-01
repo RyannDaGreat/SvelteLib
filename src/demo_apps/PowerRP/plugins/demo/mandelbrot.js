@@ -80,10 +80,11 @@ import { cyclicRampStops, evenlySpacedRampStops } from "../../core/ramps.js";
 import { reportOnce } from "../../core/report.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import {
-  MANDELBROT_FILL_PARAMS, MANDELBROT_MAX_FINE_EXPONENT, MANDELBROT_MAX_ITERATIONS, MANDELBROT_REF_LEN,
+  MANDELBROT_FILL_PARAMS, MANDELBROT_MAX_FINE_EXPONENT, MANDELBROT_MAX_ITERATIONS,
+  MANDELBROT_MAX_RESOLVABLE_DECADES, MANDELBROT_REF_LEN,
   MIN_PALETTE_SCALE, MIN_ZOOM_EXPONENT,
-  approxCentre, bakeMandelbrotRamp, bitsForDepth, centreResolutionDecades,
-  mandelbrotUniformParams, referenceOrbitFor, scaledDecimal,
+  approxCentre, bakeMandelbrotRamp, centreResolutionDecades,
+  mandelbrotUniformParams, orbitBitsFor, referenceOrbitFor, scaledDecimal,
 } from "../../render_gpu/skia/mandelbrot_shader.js";
 
 // approxCentre now lives beside the split-centre helpers in mandelbrot_shader.js (the
@@ -182,7 +183,10 @@ const _paletteCache = new Map();
  */
 export function cachedOrbit(s) {
   const fineExponent = Math.max(0, Math.round(s.fineExponent ?? 0));
-  const bits = bitsForDepth(s.zoomExponent ?? 0);
+  // orbitBitsFor is THE derivation referenceOrbitFor builds with, not a second copy
+  // of it — a key that disagreed with the value would hand back an orbit built at a
+  // precision the state never asked for, and nothing would say so.
+  const bits = orbitBitsFor(s);
   const key = `${s.centerX}|${s.centerY}|${s.centerFineX}|${s.centerFineY}|${fineExponent}|${bits}`;
   const hit = _orbitCache.get(key);
   if (hit) return hit;
@@ -1354,9 +1358,16 @@ export const mandelbrotPlugin = {
     if (fineExponent > MANDELBROT_MAX_FINE_EXPONENT) {
       reportOnce(`mandelbrot-fine-exponent-${fineExponent}`, `PowerRP mandelbrot: fine exponent ${fineExponent} is past the ${MANDELBROT_MAX_FINE_EXPONENT} two plain numbers can use — the centre resolves to about 1e-${centreResolutionDecades(fineExponent)} either way, and every fine-slot write scales its delta by 10^${fineExponent}, which passes the exact-decimal formatter's limit after only 1e${21 - fineExponent} complex units of panning. TO KEEP THIS COORDINATE: lower Fine exponent to ${MANDELBROT_MAX_FINE_EXPONENT}, then re-enter the coordinate in the floating bar. The exponent change alone MOVES THE VIEW (the fine offsets change units); a typed coordinate is re-split losslessly and puts it back.`);
     }
+    // NO PER-FRAME NUMBER IN THIS LINE, for the reason REFERENCE_EXHAUSTION_REPORT
+    // spells out at length: `zoomExponent` changes on every frame of a zoom tween and
+    // a render job runs N BROWSERS, so quoting the instantaneous value puts one
+    // paragraph per worker in the job's warning, each naming a different frame. The
+    // fine exponent and the resolution it buys are DOCUMENT-level facts, so this text
+    // is one line however many frames trip it. It also names the cost consequence,
+    // because a bound that is applied and not mentioned is a silent degradation.
     const resolvable = centreResolutionDecades(fineExponent);
     if ((s.zoomExponent ?? 0) > resolvable) {
-      reportOnce(`mandelbrot-centre-resolution-${fineExponent}`, `PowerRP mandelbrot: zoom exponent ${s.zoomExponent} is deeper than the centre can resolve at fine exponent ${fineExponent} (good to about 1e-${resolvable}). The view is centred on a quantized neighbour of the requested point. Raise "Fine exponent" (16 is the usual deep-zoom setting) and move the extra digits into "Centre X/Y fine".`);
+      reportOnce(`mandelbrot-centre-resolution-${fineExponent}`, `PowerRP mandelbrot: this view zooms deeper than the centre can resolve at fine exponent ${fineExponent} (good to about 1e-${resolvable}). The view is centred on a quantized neighbour of the requested point, and past 1e-${MANDELBROT_MAX_RESOLVABLE_DECADES} the reference orbit stops gaining precision with the zoom (orbitBitsFor's cap — deeper digits would be exact digits of the WRONG point). Raise "Fine exponent" (${MANDELBROT_MAX_FINE_EXPONENT} is the usual deep-zoom setting) and move the extra digits into "Centre X/Y fine".`);
     }
     // A SHORT reference is the widget's one silent-wrong-image risk. Running past
     // the reference's end is normal and measured-safe at the shipped full length

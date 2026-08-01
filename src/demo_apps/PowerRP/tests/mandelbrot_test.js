@@ -55,10 +55,11 @@ import {
 import {
   MANDELBROT_ESCAPE_RADIUS,
   MANDELBROT_MATERIAL, MANDELBROT_REF_LEN, MANDELBROT_PALETTE_STOPS, MANDELBROT_MAX_ITERATIONS,
-  MANDELBROT_MAX_FINE_EXPONENT,
+  MANDELBROT_MAX_FINE_EXPONENT, MANDELBROT_MAX_ORBIT_BITS, MANDELBROT_MAX_RESOLVABLE_DECADES,
   MANDELBROT_ORBIT_ROWS, MANDELBROT_UNIFORM_ROWS, MANDELBROT_UNIFORM_ROW_BUDGET,
+  MIN_ZOOM_EXPONENT,
   bitsForDepth, scaledDecimal, splitCentreFixed, centreResolutionDecades, fixedToFloat, referenceOrbit,
-  bakeMandelbrotRamp, packMandelbrot, mandelbrotProxyFill,
+  bakeMandelbrotRamp, orbitBitsFor, packMandelbrot, mandelbrotProxyFill, referenceOrbitFor,
 } from "../render_gpu/skia/mandelbrot_shader.js";
 import {
   CYCLIC_RAMPS, cyclicRampStops, evenlySpacedRampStops, srgbToLinear,
@@ -1190,6 +1191,95 @@ test("THE OVERFLOW THAT FROZE THE EDITOR IS UNREACHABLE — the pan, the tween, 
     try { mandelbrotPlugin.emit(s); } catch { threw = true; }
   }
   assert.ok(threw, `the same transition at fine exponent ${LEGACY_CEILING} did NOT overflow — then the ceiling is not what fixes it and this test is wrong`);
+});
+
+// ── THE OTHER FREEZE: UNBOUNDED WORK, WHICH NO CONTAINMENT CAN CATCH ─────────
+//
+// The overflow above is a THROW, and a throw is now contained: render_gpu/ports.js
+// emitNode turns it into a red box and the rest of the scene paints (measured, and
+// pinned by tests/emit_containment_test.js). So the crash no longer freezes anything.
+//
+// What DOES still freeze the editor is the opposite failure — emit() that never
+// finishes. `zoomExponent` is an ordinary keyframable number with a floor and NO
+// ceiling, bitsForDepth grows linearly in it, and the reference orbit is
+// MANDELBROT_REF_LEN BigInt squarings at that width. Measured on this repo's own
+// hardware, ONE emit() of ONE widget before the cap existed:
+//
+//     zoomExponent      1e3      1e4      1e5      1e6
+//     orbit bits       3386    33284   332257  3321993
+//     one emit()      0.01 s   0.04 s   0.63 s   7.15 s
+//
+// A try/catch cannot interrupt a running loop, so containment is powerless here; the
+// only fix is a bound. MANDELBROT_MAX_ORBIT_BITS is that bound and these tests are
+// what keep it real. The budget is a RESOURCE, not a wall clock — globe_map's
+// TILE_BUDGET precedent (tests/globe_map_test.js "the tile list is BUDGETED").
+
+test("THE ORBIT IS BUDGETED, so one frame can never grind — at ANY claimed zoom", () => {
+  // The absurd values are the point: they are what an `=` equation, a paste or a
+  // runaway keyframe can put in an unbounded numeric row.
+  for (const zoomExponent of [1e3, 1e4, 1e5, 1e6, 1e9, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(orbitBitsFor({ zoomExponent }), MANDELBROT_MAX_ORBIT_BITS,
+      `a claimed zoom of 1e-${zoomExponent} built the orbit at ${orbitBitsFor({ zoomExponent })} bits, past the ${MANDELBROT_MAX_ORBIT_BITS}-bit budget`);
+    assert.ok(bitsForDepth(zoomExponent) > MANDELBROT_MAX_ORBIT_BITS,
+      `1e-${zoomExponent} is not past the budget uncapped, so it proves nothing — pick a deeper probe`);
+  }
+});
+
+test("AND THE BUDGET IS FREE: every view the centre CAN resolve is bit-for-bit unaffected", () => {
+  // The cap would be a silent degradation if it ever bound on a view the split centre
+  // can actually name. It cannot, by construction — but "by construction" is what the
+  // fineExponent-80 ceiling was said to be too, so it is swept rather than asserted.
+  const STEPS = 400;
+  for (let i = 0; i <= STEPS; i++) {
+    const zoomExponent = MIN_ZOOM_EXPONENT + (MANDELBROT_MAX_RESOLVABLE_DECADES - MIN_ZOOM_EXPONENT) * (i / STEPS);
+    assert.equal(orbitBitsFor({ zoomExponent }), bitsForDepth(zoomExponent),
+      `the cap bound at 1e-${zoomExponent}, which the centre resolves`);
+  }
+  for (const p of family("location")) {
+    const s = evaluatedPreset(p);
+    assert.equal(orbitBitsFor(s), bitsForDepth(s.zoomExponent), `"${p.name}" is inside the resolvable range and must be untouched`);
+  }
+});
+
+test("THE BUDGET NEVER BINDS SILENTLY: wherever it bites, the centre-resolution report has already fired", () => {
+  // The one thing that makes the cap honest rather than a quiet quality drop. The
+  // report's condition is zoomExponent > centreResolutionDecades(fineExponent); the
+  // cap's is zoomExponent > MANDELBROT_MAX_RESOLVABLE_DECADES, which is that same
+  // function at its MAXIMUM. So the cap's condition implies the report's, at every
+  // fine exponent — checked here rather than argued, since either bound could move.
+  for (let fineExponent = 0; fineExponent <= MANDELBROT_MAX_FINE_EXPONENT; fineExponent++)
+    assert.ok(centreResolutionDecades(fineExponent) <= MANDELBROT_MAX_RESOLVABLE_DECADES,
+      `at fine exponent ${fineExponent} the centre resolves 1e-${centreResolutionDecades(fineExponent)}, past the cap — then the cap can bind with nothing reported`);
+  // And the report really does fire there, through emit(), not merely in principle.
+  const s = stateOf({ fineExponent: MANDELBROT_MAX_FINE_EXPONENT, zoomExponent: 1e6 });
+  const orig = console.error;
+  const seen = [];
+  console.error = (...args) => seen.push(args.join(" "));
+  try { mandelbrotPlugin.emit(s); } finally { console.error = orig; }
+  assert.ok(seen.some((l) => /quantized neighbour/.test(l)), `a capped view said nothing: ${JSON.stringify(seen)}`);
+});
+
+test("ONE DERIVATION, NOT TWO: the orbit CACHE KEY and the orbit itself read the same width", () => {
+  // cachedOrbit used to recompute bitsForDepth(zoomExponent) for its key while
+  // referenceOrbitFor recomputed it for the value. Two copies of a derivation is how
+  // they come to disagree, and here disagreement is silent — a stale key hands back an
+  // orbit built at a precision the state never asked for. Two states that differ ONLY
+  // in an unresolvable zoom must therefore be ONE cache entry.
+  const deep = { ...stateOf({ centerX: -0.7435669, centerY: 0.1314023, fineExponent: MANDELBROT_MAX_FINE_EXPONENT }), zoomExponent: 1e5 };
+  const deeper = { ...deep, zoomExponent: 1e6 };
+  assert.equal(cachedOrbit(deep), cachedOrbit(deeper), "same orbit, two cache entries — the key is not the width the value was built at");
+  assert.deepEqual(cachedOrbit(deep).orbit, referenceOrbitFor(deeper).orbit, "the memo and the direct build disagree");
+});
+
+test("A NON-FINITE ZOOM IS A NAMED ERROR, not `cannot be converted to a BigInt`", () => {
+  // `= 0/0` on the Zoom exponent row used to surface as a raw V8 RangeError from
+  // inside the BigInt shift, naming nothing a user could act on. Contained by
+  // emitNode either way, so the only thing at stake is whether the red box says
+  // which knob to look at.
+  for (const zoomExponent of [NaN, Infinity, -Infinity]) {
+    assert.throws(() => orbitBitsFor({ zoomExponent }), /Zoom exponent/, `${zoomExponent} produced an unnamed failure`);
+    assert.throws(() => mandelbrotPlugin.emit(stateOf({ zoomExponent })), /Zoom exponent/);
+  }
 });
 
 test("A STORED FINE EXPONENT PAST THE CEILING IS REPORTED, NOT REWRITTEN", () => {
