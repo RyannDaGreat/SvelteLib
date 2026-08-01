@@ -85,6 +85,20 @@ for (let m; (m = mediaRe.exec(css)) !== null; ) {
   queries.push({ value: Number(m[1]), line, annotated: rawLine.includes("--a-phone-max") });
 }
 
+// A DERIVED SET MUST REPORT ITS SIZE, or a wrong set is silent (W4-P, measured:
+// a comment-blind derivation gave them 14 families where 13 ship, and every
+// assertion passed against the phantom — the only thing that surfaced it was the
+// printed count disagreeing with a grep by one).
+//
+// The concrete hole here: `mediaRe` sees `(max-width: Npx)` and NOT the range
+// form `(width <= Npx)`. A phone block written that way would be invisible, and
+// without this line the gate would go on reporting five green checks while
+// silently policing fewer queries than exist. Printing the count does not close
+// the blind spot — nothing short of a CSS parser would — but it makes a DROP
+// visible to whoever reads the output, which is the difference between a gate
+// that is wrong and a gate that is wrong in silence.
+console.log(`  ..  derived ${queries.length} phone @media block(s) from ${CSS_PATH}`);
+
 test("at least one phone @media block exists (the gate cannot pass vacuously)", () => {
   assert.ok(
     queries.length > 0,
