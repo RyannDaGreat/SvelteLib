@@ -18,7 +18,11 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { customProps, defaultLabel, CUSTOM_CATEGORY, bundle } from "../core/properties.js";
+import { allPlugins } from "../plugins/index.js";
 import { isEquationValue, numericPropertyPaths, evaluateState } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { demoShowcasePlugin } from "../plugins/demo/showcase.js";
@@ -189,6 +193,41 @@ test("metaball emit: over-cap ball set is CLAMPED + reported LOUD (no silent dro
     assert.equal(leader[0].params.ballCount, MAX_METABALLS);   // clamped to the shader budget
   } finally { console.error = orig; }
   assert.ok(errs.some((l) => /exceed the shader cap/.test(l)), "cap overflow must be reported loudly");
+});
+
+// ── R6-5: the custom section is named after its WIDGET, never "Custom" ───────
+// The user's rule, verbatim: "Custom is supposed to be reserved for what people
+// make, or not at all", and "Lens Flare settings" as the worked example. The
+// Inspector DERIVES the title as `${plugin.title} settings` rather than listing
+// 24 names beside a 96-plugin roster (ledger C-8). Two things can break that:
+// the derivation being reverted to a literal, and a plugin arriving with custom
+// rows but no title — which would render "undefined settings" with nothing
+// saying so, because `title` is NOT mandatory at registration.
+
+test("R6-5: every plugin with a custom section has a `title` to name it with", () => {
+  const withCustom = allPlugins.filter((p) => (p.inspector ?? []).some((r) => r.category === CUSTOM_CATEGORY));
+  assert.ok(withCustom.length > 0, "no plugin has a custom section — this gate has lost its subject");
+  for (const p of withCustom)
+    assert.ok(typeof p.title === "string" && p.title.trim(),
+      `plugin "${p.type}" declares custom (self.*) rows but no \`title\`, so the Inspector would head that section "undefined settings" (web/Inspector.svelte customCategoryTitle)`);
+});
+
+test("R6-5: web/Inspector.svelte titles the custom category by DERIVATION, not a literal", () => {
+  // A text pin, the idiom tests/tool_groups_test.js already uses for
+  // CATEGORY_TITLES: the map lives inside a .svelte <script> and cannot be
+  // imported in bare node. Comments are stripped first (ledger C-14) — this file
+  // explains the old name in prose in several places, and a comment-blind grep
+  // would fail on the explanation rather than on a regression.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(resolve(here, "../web/Inspector.svelte"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").filter((l) => !/^[ \t]*(\/\/|<!--)/.test(l)).join("\n");
+  assert.ok(!/custom:\s*"Custom"/.test(src),
+    'web/Inspector.svelte has gone back to a literal `custom: "Custom"` CATEGORY_TITLES entry — R6-5 replaced it with customCategoryTitle(plugin.title)');
+  assert.ok(src.includes("customCategoryTitle"),
+    "web/Inspector.svelte no longer calls customCategoryTitle — the per-widget section name is gone");
+  assert.ok(src.includes('`${widgetTitle ?? "Widget"} settings`'),
+    'customCategoryTitle no longer builds "<widget> settings" — R6-5.1 quotes the user asking for exactly "Lens Flare settings"');
 });
 
 console.log(`\n${passed} tests passed`);
