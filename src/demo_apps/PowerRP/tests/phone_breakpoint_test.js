@@ -38,42 +38,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { stripCssComments } from "./cssComments.js";
 
 // Paths resolve from THIS FILE, never process.cwd().
 const powerRP = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CSS_PATH = "web/app.css";
 const cssRaw = readFileSync(resolve(powerRP, CSS_PATH), "utf8");
 
-/**
- * Pure function. CSS with every block comment blanked out, LINE COUNT AND LINE
- * NUMBERS PRESERVED — newlines inside a comment survive, everything else in it
- * becomes a space.
- *
- * Preserving the newlines is the whole point: a stripper that deletes comments
- * outright shifts every subsequent line number, and a sweep that cites wrong
- * lines costs the reader more than the finding saves.
- *
- * @param {string} css - stylesheet source
- * @returns {string} same length in lines, comment bodies blanked
- *
- * The examples below write a comment terminator as `*!/` because a literal one
- * would close THIS docblock — the usual hazard of documenting a comment parser.
- * Read `*!/` as `*` followed by `/`.
- *
- * Examples:
- *   >>> stripCssComments("a{}/* x *!/b{}")   // the 7-char comment becomes 7 spaces
- *   'a{}       b{}'
- *   >>> // newlines survive, so line numbers downstream stay true:
- *   >>> stripCssComments("a{}\n/* x\ny *!/\nb{}").split("\n").length
- *   4
- *   >>> // the case this gate actually needs: prose quoting a media query is
- *   >>> // blanked, so it cannot be mistaken for a real one
- *   >>> stripCssComments("@media (max-width: 640px){} /* @media (max-width: 1px) *!/").includes("1px")
- *   false
- */
-export function stripCssComments(css) {
-  return css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
-}
+/* Comment-stripping comes from the ONE shared home; this file carried a
+   byte-identical fourth copy of it. See tests/cssComments.js. */
 
 const css = stripCssComments(cssRaw);
 

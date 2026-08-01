@@ -50,6 +50,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, relative, basename } from "node:path";
+import { stripCssComments } from "./cssComments.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP = resolve(HERE, "..");
@@ -64,21 +65,8 @@ const GLASS_TOKENS = ["--a-glass-bg-panel", "--a-glass-bg", "--a-glass-tip-bg"];
  *  cyclic declaration from spinning. */
 const MAX_VAR_DEPTH = 3;
 
-/**
- * Pure function. Strips CSS comments, PRESERVING LINE COUNT, so prose that merely
- * names a token is not read as a use and reported line numbers stay true.
- *
- * @param {string} css raw CSS source
- * @returns {string}
- *
- * @example stripCssComments("a { color: red; } /* b { x: 1; } *\/ c {}").includes("b {")
- * // false
- * @example stripCssComments("a{}\n/* p *\/\nb{}").split("\n").length
- * // 3 — line numbers survive
- */
-export function stripCssComments(css) {
-  return css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
-}
+/* Comment-stripping comes from the ONE shared home; this file carried a
+   byte-identical fourth copy of it. See tests/cssComments.js. */
 
 /**
  * Pure function. The CSS inside a `.svelte` file's `<style>` blocks, blanked

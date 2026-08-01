@@ -40,6 +40,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripCssComments } from "./cssComments.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP = resolve(HERE, "..");
@@ -73,24 +74,8 @@ const PHANTOM_DEBT = {
     ".ae-quota-bar-fill override.",
 };
 
-/**
- * Pure function. Blanks CSS comment bodies, PRESERVING LINE COUNT.
- *
- * Line preservation is not cosmetic: a stripper spelled `^\s*` eats the blank
- * line above a comment (because `\s` matches `\n`) and every subsequent citation
- * is wrong, which costs a reader more than the finding saves.
- *
- * @param {string} css
- * @returns {string}
- *
- * @example stripCssComments("a{} /* var(--x, 1px) *\/ b{}").includes("--x")
- * // false
- * @example stripCssComments("a{}\n/* p *\/\nb{}").split("\n").length
- * // 3
- */
-export function stripCssComments(css) {
-  return css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
-}
+/* Comment-stripping comes from the ONE shared home; this file carried a
+   byte-identical fourth copy of it. See tests/cssComments.js. */
 
 /**
  * Pure function. Blanks HTML comment bodies, PRESERVING LINE COUNT.
