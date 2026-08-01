@@ -1661,6 +1661,110 @@ contract does not hold; `map_display.js`'s own report misdirects blame to
 `cli/render_job.js`, which has the same defect; `plugins/filmstrip.js:550,600`
 triangulates plain rectangles for no reason.
 
+#### R6-11 LANDED — DONUT + FANCY ARROW (wave 2, agent W2-A; commits `6c38dd9`, `a7d51b9`; measurement harnesses + PNGs in `.frenzy/round6/W2-A-work/` and `.frenzy/round6/W2-A-shots/`)
+
+**CANDIDATE (a) WON, ON PIXELS.** The donut emits the EXISTING keyhole point list as
+ONE `path` op with `fillRule: "nonzero"`; the fancy arrow emits its 7-point outline
+the same way. Both rules were rendered and censused: (a) keyhole+nonzero, (b) two
+subpaths+evenodd, and a control (two subpaths+NONZERO, which also works and is the
+direct proof that donutOutline's rims are oppositely wound). All three give **zero
+seam pixels at 100/200/400/600 px** and their silhouettes are **identical to 0 px**.
+So the tie-break is (a)'s: `donutRingOutline` stays ONE flat point list, which
+`hitTest`'s `pointInPolygon` reads unchanged — picture and hit region cannot drift.
+**THE BRIDGE HAIRLINE RISK DID NOT MATERIALIZE** and was checked rather than assumed.
+
+**BEFORE → AFTER, through `paintIR` on `CanvasKit.MakeSurface` (the software surface
+`cli/render.js` uses), interior census of the solid body:**
+
+| widget | size | ops before | min/seam before | ops after | min/seam after |
+|---|---|---|---|---|---|
+| donut (BOTH copies) | 100 | 128 | 163, 2 629/4 476 | 1 | 255, **0** |
+| donut (BOTH copies) | 600 | 128 | 158, 29 123/203 560 | 1 | 255, **0** |
+| fancy arrow | 600 | 5 | 191, 185/4 160 | 1 | 255, **0** |
+
+**R6-11.4 MEASURED, NOT JUST ARGUED.** A donut filled with a horizontal black→white
+linear gradient, walked along a chord through the ring: **before, 31 local maxima**
+(the ramp restarts inside every triangle it crosses, and the endpoints read 211→114
+— scrambled). **After, 0 maxima, monotone 47→209.** One op, one gradient frame.
+
+**DO NOT TOUCH `paint_skia.js`'s `pointsBounds` — that would be the wrong fix, and
+this reverses the scoping note's implication.** Per-op bounds is the CORRECT
+semantics for the `polygon` op as specified: the op IS a shape. The defect was never
+`pointsBounds`; it was ONE LOGICAL SHAPE EMITTED AS N OPS. For every remaining
+producer the op is a whole shape and the frame is right. So the op-count fix closes
+R6-11.4 completely, and a `pointsBounds` change would break the arrowheads.
+
+**THE `polygon` OP IS NOT RETIRABLE — 13 live producers across 9 files remain**, and
+12 of them are legitimate (one op = one shape): `plugins/arrow.js:123-124`,
+`curved_arrow.js:127-128`, `elbow_arrow.js:135-136` (arrow heads),
+`plugins/line.js:185` (caps), `plugins/demo/globe_map.js:552` (polar cap),
+`plugins/demo/video_v7.js:119` + `video_v8.js:111` (play glyphs),
+`assets/builtin/library/clock_analog.plugin.js:807,812` (hands + bezel). Keep the op;
+retire the PATTERN of splitting a shape across it.
+
+**THE 13TH IS `plugins/filmstrip.js:851`, AND IT IS THE SAME BUG AT A LARGER SCALE —
+NOT the "plain rectangles" wart the scoping note described. MEASURED:** a default
+480x90 strip's two perforated bands emit **480 `polygon` ops** and show **1 405
+partial-coverage pixels out of 3 332** in the band interior; even the degenerate
+SOLID branch (`:550`, `:600` — the plain rectangles) cracks at min 191 with 299
+pixels, because a 2-triangle rect still has a diagonal. **LEFT ALONE DELIBERATELY,
+with a reason:** `perforatedBandPolygons` and `cellWithHole` return a TRIANGLE LIST
+by contract, and `cellWithHole`'s whole four-sector machinery exists only to tile the
+annulus around a hole. Converting the two degenerate lines alone would fix 299 of
+1 405 pixels while FORKING the return contract (some calls triangles, some IR ops).
+**THE RIGHT FIX, sized for a sibling task:** return SUBPATHS — the band rect plus one
+closed rounded-rect loop per hole — and emit one `path` op with `fillRule: "evenodd"`.
+That deletes `cellWithHole` entirely. Touches `filmBandOps`, both generators' doctests
+and `tests/filmstrip_test.js`.
+
+**THE GATE: `tests/widget_fill_seam_test.js`** (bare node, no browser — the software
+surface reproduces the defect faithfully; `tests/vector_pattern_seam_test.js`
+precedent). **VERIFIED TO FAIL ON PRE-FIX CODE** (2 629 ≠ 0 at the first size). It
+asserts the seam property on BOTH donut copies — the parity baseline AND the SHIPPED
+asset resolved through the real registry — which is a different claim from
+`tests/builtin_asset_library_test.js`'s deep-equal, not a duplicate of it. It also
+asserts the shape is still RIGHT (hole empty, no spill, area within 2% of the
+analytic annulus, arrow tip inked), because a blank frame passes a seam check
+trivially. Its erosion margin is DERIVED, not picked: 1 px of antialiased edge +
+the polygonal rim's chord sagitta `r·(1 − cos(π/segments))` + 1 px of margin.
+
+**STALE DOCTRINE FIXED IN FOUR PLACES, not the two the scoping note listed.** The
+claim "no evenodd/fillRule anywhere in render_gpu (verified)" was ALSO in
+`core/outline.js`'s `DONUT_SEGMENTS` comment — which both donut copies CITED BY NAME
+as their evidence — and its consequence was restated in `core/plugin_assets.js` ("the
+IR's polygon op is convex-only, so any concave shape must go through `triangulated`",
+in the sandbox API docblock, i.e. instructions to every future plugin author) and in
+`core/builtin_plugin_assets.js`. Also corrected: `fancyArrowOutline`'s docblock said
+the plugin "degrades loudly" on a self-intersecting corner (it no longer can — see
+below), and `donutOutline`'s said the slit exists so `triangulated()` can ear-clip it.
+
+**A REPORT WAS RETIRED AND THAT IS NOT A SILENCING.** `fancy_arrow.emit`'s
+`try { triangulated() } catch { reportOnce(); return [] }` existed because the
+ear-clipper THROWS on the generator's residual self-intersecting parameter corners,
+and the widget then drew nothing. A winding rule has no such limit — a
+self-intersecting outline is a well-defined figure under non-zero and all three
+backends fill it identically — so the configuration STOPPED BEING A FAILURE rather
+than stopping being reported. `fancyArrowOutline` returns null or exactly 7 points,
+so `polygonPathD`'s `>= 3` guard is unreachable and nothing downstream can throw.
+Both emits are now plainly `Pure function`, not `Near-pure`.
+
+**`DONUT_ANGLE_JITTER` IS NOW VESTIGIAL** (`core/outline.js`) — it existed solely to
+break exact collinearity for the ear-clipper. Left in place and labelled: removing it
+would move every donut vertex by ~1e-5 units for no rendering benefit, and
+`tests/outline_test.js` still ear-clips `donutOutline`. Retiring it belongs with
+retiring that test, not with the render fix.
+
+**PRE-EXISTING GATE FAILURES CONFIRMED NOT MINE** (each reproduced on a clean
+worktree at `6c38dd9^`): `crosshair_probe.js` fails identically at baseline;
+`histogram_plugin_test.mjs`, `plugin_asset_doctest_test.js` and
+`relative_ref_cli_test.js` all ENOENT on `projects/Imitations/assets`, **a directory
+that does not exist — three canonical-gate tests depend on user project data being
+present, which is a portability defect in the gate**; `connectivity_seam_test.js`
+scans `.frenzy/round6/W1-F-work/deps/.vite/deps/`, another agent's Vite cache, and
+should exclude `.frenzy/`. `multiresize_place_probe.js` fails ONLY in the live
+working tree (passes on clean worktrees at both `6c38dd9` and `a7d51b9`) — an
+uncommitted concurrent edit, with a doubled `src/demo_apps/PowerRP/` path segment.
+
 ### R6-12 VIDEO
 
 - **R6-12.1** The video widget DOES NOT APPEAR in Render Center output at all,
