@@ -687,30 +687,41 @@ function ensureScrubElement(src) {
   const entry = { status: "loading", el, error: null, ready: null, chain: Promise.resolve(), live: null, pumpQueued: false };
   scrubRegistry.set(src, entry);
 
+  // `ready` SETTLES ON EITHER OUTCOME — loaded OR failed. A FAILURE IS AN ANSWER,
+  // NOT AN ABSENCE. It used to resolve only from `loadeddata`, so any src the
+  // <video> rejects left `await entry.ready` in requestScrubFrame pending
+  // FOREVER: measured as a render job blocked at 150 s having emitted zero
+  // frames, with the `status === "error"` guard on the line right after that
+  // await sitting unreachable. Worse, the default `BLANK_SRC` is a PNG data URI
+  // that a <video> refuses outright (MediaError code 4), so an unsourced
+  // scrubber was enough to hang a render — the deadlock was reachable without
+  // any bad input from the author at all.
+  let settleReady;
+  entry.ready = new Promise((resolve) => { settleReady = resolve; });
+
   el.addEventListener("error", () => {
     entry.status = "error";
     const mediaErr = el.error;
     entry.error = new Error(mediaErr ? `MediaError code ${mediaErr.code}: ${mediaErr.message || "(no message)"}` : "unknown video error");
     console.error(`PowerRP video_registry (scrub): failed to load "${truncate(src)}" — ${entry.error.message}`);
     notify(src);
+    settleReady();
   });
 
-  entry.ready = new Promise((resolve) => {
-    el.addEventListener("loadeddata", async () => {
-      if (entry.status !== "error") entry.status = "ready";
-      // WARM-UP: prime the cold decoder with one throwaway seek to a NON-ZERO
-      // time (guaranteed to fire `seeked`, unlike re-seeking to the current 0),
-      // so every real grab below is frame-accurate rather than black.
-      try {
-        const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
-        await seekTo(el, dur > 0 ? dur / 2 : 0);
-      } catch (e) {
-        console.error(`PowerRP video_registry (scrub): warm-up seek of "${truncate(src)}" failed — ${e?.message ?? e}`);
-      }
-      notify(src);
-      resolve();
-    }, { once: true });
-  });
+  el.addEventListener("loadeddata", async () => {
+    if (entry.status !== "error") entry.status = "ready";
+    // WARM-UP: prime the cold decoder with one throwaway seek to a NON-ZERO
+    // time (guaranteed to fire `seeked`, unlike re-seeking to the current 0),
+    // so every real grab below is frame-accurate rather than black.
+    try {
+      const dur = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
+      await seekTo(el, dur > 0 ? dur / 2 : 0);
+    } catch (e) {
+      console.error(`PowerRP video_registry (scrub): warm-up seek of "${truncate(src)}" failed — ${e?.message ?? e}`);
+    }
+    notify(src);
+    settleReady();
+  }, { once: true });
   el.src = src;
   el.load();
   return entry;
