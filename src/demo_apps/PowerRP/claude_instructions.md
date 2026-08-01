@@ -1517,6 +1517,56 @@ its return value as an id.
 
 - **R6-8.1** Every sub-section gets the draggable label/value divider, identical to
   the top-level one.
+
+#### R6-8.1a THE DIVIDER RULE, FULLY SPECIFIED BY THE USER (2026-08-01) — supersedes the one-line R6-8.1 above
+
+**"IDENTICAL" MEANS THE SAME KIND OF UI, NOT THE SAME LINE.** Same vertical drag handle,
+same CSS, same hover-to-reveal, same occlusion and hiding behaviour — but a DIFFERENT
+instance controlling a DIFFERENT number. The existing one governs the regular property rows;
+this one governs **VARIABLE PROPERTIES** (gradients and the like).
+
+**THE MECHANISM ALREADY EXISTS — this is a second instance of a shipped pattern, not new
+machinery.** `web/LabelDivider.svelte` is the component, and its docblock already records the
+user's original wording. Its shape: **one instance per rows BLOCK, each spanning only its own
+block (that is the "multiple lines"), but every instance positioned from ONE app-level
+fraction** (`app.labelFrac`, published as `--a-label-frac` on the app root). Dragging any one
+moves all of them **because they are readouts of one number, not N independent handles.**
+Existing consumers: `web/Inspector.svelte`, `web/VariablesPanel.svelte`, `web/PaintField.svelte`.
+
+**THE KEY IS (NESTING LEVEL, DIVIDER TYPE).** User, verbatim in substance:
+- *"Within a level and a type of divider it will be synchronized across all of them"* — which
+  is why dragging the regular-property divider today moves fill material, stroke and position
+  together: same level, all declared the same type.
+- *"If there was a second level that second level would not be synced with the first level,
+  because then that would make them collide visually."* **Depths are INDEPENDENT.** The reason
+  is sound and worth recording: two vertical lines a few pixels apart read as BROKEN
+  ALIGNMENT rather than as two deliberate handles, so each depth needs its own number in order
+  to be placed clearly apart.
+- **PROPORTIONALITY IS WHAT MAKES NESTING FREE:** *"they're proportional so the dividing line
+  is fine even when we have nested sections, because it's just a smaller proportion, it's
+  closer to the right of the screen."* A nested block is narrower, so the same fraction lands
+  further right in absolute terms with no special-casing. **Nesting therefore needs only a
+  per-depth key, not new layout logic.**
+
+**PERSISTENCE — the user hedged ("I think") and he was RIGHT; the precedent is verbatim in the
+code.** `web/FontPicker.svelte`'s `<script module>` block: *"MODULE scope so it survives the
+picker closing + reopening within a session … a full page reload resets it."* So: **module-level
+session state. It survives clicking off a widget and back on; a browser reload resets it. NOT
+localStorage, NOT the document.** A divider fraction is editor chrome — putting it in the
+document would make it keyframe, tween and appear in renders.
+
+**SCOPE NOTE FOR IMPLEMENTATION:** nesting is DEFERRED by the user's own instruction
+("don't worry about nested yet"), so with one flat variable-property fraction the "same level"
+question does not yet arise — but the fraction MUST be keyed from the start so that adding
+depth later is a key change and not a rewrite.
+
+**A LIKELY SHORTCUT, TO BE CHECKED BEFORE BUILDING:** `web/PaintField.svelte` is ALREADY a
+`LabelDivider` consumer, and its comment at `:753` mentions "divider drags and their labels
+truncate under the ƒ gutter". So variable properties may already be wired to the SINGLE
+existing fraction — in which case this work is **SPLITTING one fraction into two keyed ones**,
+not adding a mechanism, and the diff is much smaller than R6-8.1 implies. **File-ownership
+warning: `web/PaintField.svelte` is held by the equations agent and `web/Inspector.svelte` by
+the Inspector-UI agent, so the split must be coordinated between them rather than raced.**
 - **R6-8.2** GENERALISE nested sections into ONE reusable, arbitrarily-deep
   component: "we will have many nested drop downs in the future, including for
   example having an entirely second widget in a nested drop down." Large refactor;
