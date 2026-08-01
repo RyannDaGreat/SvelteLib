@@ -1678,8 +1678,70 @@ argument, async settling, and device bounds (the last measured at zero effect so
 `web/cameraFrame.js:20-24` already admits "one code path" is not yet true. That is the
 gap to close, and R6-11.6's principle is the standard to hold it to.
 
-**LEAD IMPLEMENTATION NOTES for R6-11 (found while scoping; saves the implementer a
-rediscovery, and NARROWS the fix's shape):**
+#### R6-11 FINAL RESULT — AND IT REVERSES TWO THINGS THE LEAD ASSERTED
+
+**MEASURED, BOTH PATHS, RING INTERIOR** (`.frenzy/round6/W2-A-shots/`; `sampleCnt()` re-read
+as 4 vs 1 at each size, two real surfaces):
+
+| path | 400x225 | 800x450 | 1280x720 | 1920x1080 |
+|---|---|---|---|---|
+| editor (4-sample) | 0 -> **0** | 0 -> **0** | 0 -> **0** | 0 -> **0** |
+| offscreen (1-sample) | 5555 -> **0** | 12308 -> **0** | 20603 -> **0** | 31876 -> **0** |
+
+Interiors are now perfectly flat (min == max). Software surface: donut **128 ops / min 158 -> 1
+op / min 255**; arrow **5 / 191 -> 1 / 255**. **R6-11.4 measured directly:** a gradient walk
+along the ring went from **31 local maxima to 0**, monotone. SVG emits one `<path>` with no `A`;
+PDF emits `f` only — zero `f*`, zero `B` — and stays vector. Test proven to fail pre-fix
+(`2629 !== 0` at the first size with the edits stashed). **Full gate A/B on clean worktrees at
+`6c38dd9^` vs `a7d51b9`: ZERO regressions**, every delta re-run individually and shown
+pre-existing or a load-flake.
+
+**`fillRule: "nonzero"` — DECIDED BY PIXELS, NOT REASONING.** `donutOutline` walks the inner rim
+BACKWARD, so the rims are oppositely wound and nonzero punches the hole with NO change to the
+point list. All three candidates measured 0 seam px at every size — keyhole+nonzero, two
+subpaths+evenodd, and a control of two subpaths+*nonzero* which is the direct proof of the
+winding — with silhouettes identical to 0 px. The tie-break was therefore option (a)'s property:
+`donutRingOutline` stays ONE flat list that `emit` and `hitTest` both read. **The bridge-hairline
+risk I flagged did NOT materialise — it was checked, not assumed.**
+
+**REVERSAL 1 — THE `polygon` OP MUST NOT BE RETIRED, AND `pointsBounds` MUST NOT BE TOUCHED.**
+I told the user the opposite: that retiring the op was "the step that makes it structural" and
+that the per-triangle material frame would become unreachable. **Both are wrong.** There are
+**13 live producers across 9 files** (arrow/curved/elbow heads, `line.js` caps, the globe polar
+cap, video v7/v8 glyphs, clock hands + bezel, filmstrip), and **per-op bounds is CORRECT for the
+op — one op is one shape.** The defect was ever emitting ONE SHAPE AS N OPS, so the op-count fix
+closes R6-11.4 completely; changing `pointsBounds` would BREAK the arrowheads for nothing.
+**THE RULE IS THEREFORE: a lone polygon per shape is fine; fan-emitting one shape as many
+adjacent polygons is the sin.** That is the thing to hunt, not the op.
+
+**REVERSAL 2 — FILMSTRIP IS NOT THE "PLAIN RECTANGLES" WART.** I called it "the least defensible
+case". Measured: two perforated bands are **480 polygon ops with 1405 of 3332 partial-coverage
+pixels**, and the plain-rect degenerate branch is only **299** of that.
+`perforatedBandPolygons`/`cellWithHole` return triangles **BY CONTRACT**, so converting just
+`:550,:600` forks that contract for a fifth of the benefit. **Correct fix, sized as a sibling
+task:** return SUBPATHS (band rect + one loop per hole), emit one `evenodd` path op, delete
+`cellWithHole`.
+
+**THE STALE DOCTRINE COMMENT WAS IN FOUR PLACES, NOT TWO — and one was actively manufacturing
+the bug.** Beyond both donut copies: `core/outline.js`'s `DONUT_SEGMENTS` comment they cited as
+evidence, and — worst — **`core/plugin_assets.js`'s sandbox docblock was INSTRUCTING EVERY FUTURE
+PLUGIN AUTHOR TO EAR-CLIP CONCAVE SHAPES.** All four fixed, plus `core/builtin_plugin_assets.js`,
+`fancyArrowOutline`'s "degrades loudly" claim, `donutOutline`'s slit rationale,
+`fancy_arrow.js:7`, and 8 scene comments. Two `emit`s were relabelled `Near-pure` -> `Pure`
+(now true), and `DONUT_ANGLE_JITTER` labelled vestigial (removing it would move geometry for no
+benefit).
+
+**VIOLATIONS FOUND, NOT FIXED — two are gate integrity problems:**
+- **`render_gpu/tests/svg_scenes.js` HAS NO IMPORTER** — dead since `67ffcd0`, so its load-time
+  drift guard has NEVER RUN.
+- **Three gate tests ENOENT on `projects/Imitations/assets`, a directory that does not exist** —
+  i.e. **the canonical gate depends on the user's own project data.** That is a portability
+  defect of the same family as R6-24.2's absolute path.
+- W1-A's `seams_work.mjs` measurement harness corrupts tail renders past ~20 surfaces per page;
+  its BEFORE numbers still reproduce on fresh pages.
+
+**LEAD IMPLEMENTATION NOTES for R6-11 (written while scoping — SUPERSEDED in part by the
+reversals above; kept because the geometry facts stand):**
 - `donutRingOutline` is **local to `plugins/donut.js:84`**, not in `core/outline.js`, and it
   returns **ONE FLAT KEYHOLE POLYGON** — outer loop, a zero-width bridge, then the inner
   loop reversed — which is precisely why it is ear-clipped. Its doctest at `:82` confirms a
