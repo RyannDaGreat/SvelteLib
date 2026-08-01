@@ -2336,6 +2336,46 @@ function segsToToken(segs) {
 }
 
 /**
+ * Pure function. A WORLD point expressed in the frame the READING item's own
+ * stored coordinates live in — i.e. with the reader's group influence removed.
+ *
+ * WHY THIS EXISTS. An anchor reference evaluates to a point in PAINTED world
+ * space, group influence included (derive.js composedMemberInfluence). But the
+ * number is then stored in a slot on the reading item, and derivation composes
+ * THAT item's own group influence onto its world a second time
+ * (derive.js applyGroupParenting). For a reader that is itself a member, the
+ * influence therefore landed TWICE and the reader tore away from the anchor it
+ * was bound to — measured at 54 world units for a group translated (50, 20), and
+ * 269 for one also scaled and rotated. Mapping the point back through the
+ * reader's own influence makes it land exactly once.
+ *
+ * Three cases, and the first two are why this is a correction rather than a
+ * behaviour change:
+ *   reader ungrouped         → influence null → the point is returned unchanged,
+ *                              BYTE-IDENTICAL to before this function existed
+ *                              (this is the case tests/group_anchor_probe.js
+ *                              pins, and it does not move).
+ *   reader in the SAME group → the reader's influence equals the target's, so
+ *                              the two cancel exactly and the read reduces to the
+ *                              un-influenced anchor, which applyGroupParenting
+ *                              then re-applies once.
+ *   reader in a DIFFERENT    → the target's painted anchor, re-expressed in the
+ *   group than the target      reader's frame; correct for the first time.
+ *
+ * @param {{x: number, y: number}} point - the anchor's painted world point
+ * @param {{x, y, rotation, scale}|null} readerInfluence - the reading item's own
+ *   composed group influence, or null when it belongs to no group
+ * @returns {{x: number, y: number}} the point in the reader's stored frame
+ *
+ * @example inReaderFrame({x: 200, y: 150}, null) // {x: 200, y: 150} (ungrouped reader: unchanged)
+ * @example inReaderFrame({x: 200, y: 150}, {x: 50, y: 20, rotation: 0, scale: 1}) // {x: 150, y: 130}
+ * @example inReaderFrame({x: 300, y: 200}, {x: 0, y: 0, rotation: 0, scale: 2}) // {x: 150, y: 100}
+ */
+export function inReaderFrame(point, readerInfluence) {
+  return readerInfluence ? T.apply(T.invert(readerInfluence), point.x, point.y) : point;
+}
+
+/**
  * Near-pure function (memoized on state identity; console.errors each NEW
  * error message once — never silently). THE derivation-stage expression
  * pass: folded state → same-shaped state with every equation slot replaced
@@ -2396,6 +2436,7 @@ function segsToToken(segs) {
  * @example evaluateState({vars: {speed: 5}, items: {}}, registry).clock // null (no equation read the clock)
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
  */
+
 export function evaluateState(state, registry, script = "") {
   const memo = evalMemo.get(state);
   // A CLOCK-FREE result is cached forever (the overwhelming majority — this is the
@@ -2655,7 +2696,14 @@ function computeEvaluatedState(state, registry, script = "") {
       if (influence) world = T.compose(influence, world);
     }
     const anchor = plugin.anchors(target).find((a) => a.id === d.anchorId);
-    return T.apply(world, anchor.x, anchor.y)[d.coord];
+    const point = T.apply(world, anchor.x, anchor.y);
+    if (d.selfBase) return point[d.coord]; // base-frame pivot: no reader frame to enter
+    // THE READER'S FRAME. The world point above is about to be stored in a slot on
+    // the READING item, and derivation will re-influence THAT item by its own
+    // groups. Un-apply the reader's influence so it lands once, not twice.
+    const readerId = slot.path[0] === "items" ? slot.path[1] : null;
+    if (readerId != null) requireGroups(readerId);
+    return inReaderFrame(point, readerId == null ? null : composedMemberInfluence(ownerGroups.get(readerId), out))[d.coord];
   };
 
   /** Query→value (records deps; may recurse). The `@id_closest` sugar → the rim
