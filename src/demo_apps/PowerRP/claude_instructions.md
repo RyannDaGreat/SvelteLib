@@ -2510,6 +2510,65 @@ count taken by grepping for `presets:` was always low. Do not hand-count this ag
   every grep-based audit ever run on this codebase has been silently incomplete.** Use
   `grep -a` or `rg`. Strip the NUL bytes as the FIRST Wave-2 action.
 
+#### R6-24 OUTCOMES — LANDED (agent W2-F; commits `3b8e0a6`, `a1764f1`, `c1a678c`)
+
+**THE GATE'S TRUE SIZE, MEASURED AT LAST: `node tests/run_all.mjs --list` -> 347 SUITES**
+— node 167, browser 168, python 11, shell 1. The repo CLAUDE.md says `--list` is the authority
+and never to quote a number from a file; this is that measurement. (Host preflight OK: capture
+in 52 ms.)
+
+**R6-24.1 CORRECTED — THE NULs WERE INTENTIONAL VALUES, NOT CORRUPTION.** I framed them as raw
+bytes blinding `grep`, which was true, but implied accidental damage. They were **deliberate
+NUL string values**, merely spelled the dangerous way. So the fix is a RESPELLING to the escape
+`\0` — which `web/draftKeys.js:94` and `tests/draft_keys_test.js:55` **already do** (the
+precedent existed). Verified byte-for-byte: each literal still evaluates to codepoint 0,
+length 1, so no behaviour changed. **The R6-24.1 demonstration now inverts as it should:**
+`grep -c 'process.exit' tests/lens_flare_presets_probe.js` was **0** against `grep -ac`'s 1;
+both are now **1**, and the two agree on every probe string in all three files. **Zero raw NULs
+remain in tracked source.**
+
+**R6-24.4 / R6-24.4a — ALL THREE PROBES NOW FAIL, EACH WITH ITS FAILURE PROVEN.**
+- `rotation_probe.js`: the prescription applied verbatim — tables kept, worst-offset
+  accumulated, one assert at **1e-6 px**. **And the tolerance was NOT invented after all:**
+  `tests/align_mirror_probe.js:31` and `tests/crosshair_probe.js:57` (both 2026-07-15) already
+  use that exact name (`EPS`) and value for geometry, so house precedent beat my derivation.
+  Worst real measurement: **6.4e-14 px**. Two upgrades beyond the brief: the `[#1]` naive drift
+  is now pinned to its CLOSED FORM `dx * sin(theta/2)` — which matches
+  10.35 / 15.31 / 18.16 / 28.28 / 40.00 exactly — **so that section can never decay into
+  comparing two zeroes**; and the `errors.size` / `[#3]` / `tm` branches are FATAL instead of
+  printed-and-ignored.
+- `magnify_byteid_probe.js`: KEPT with assertions rather than renamed, on a precedent worth
+  recording — it was the one-shot before/after print for `86b5f0f`, and the comparison moved
+  INSIDE one run because **every sha256 in this repo compares renders to each other, never to a
+  stored golden** (a pinned digest would be machine-specific). Two assertions, the second of
+  which closes a VACUITY hole: the first would still pass on a build that ignored the per-axis
+  params entirely.
+- `fontpicker_probe.js`: the guard at `:135` plus three siblings (`:141`, `:150`, `:197`) are
+  now asserted before being kept as cascade suppressors — the pattern the same file already
+  used elsewhere.
+- **THE SHARPEST DEMONSTRATION OF THE FALSE-GREEN CLASS:** the IDENTICAL perturbation (breaking
+  the `.fp-preview` selector) exited **0 pre-fix while silently losing 14 checks (93 -> 79)**,
+  and exits **1 post-fix with two named failures.**
+
+**R6-24.5 — FOUR SILENT FALLBACKS FIXED, and the reasoning confirmed at the source.**
+`localAssetStore.list` -> `getAllByPrefix` and `listRenderJobs` are both prefix `getAll`s that
+resolve `[]` and never reject, so `.catch(() => [])` **could only ever swallow a real fault**.
+Removed; `reload()`'s existing loud handler catches them, as it already does for the page's
+other five sources. Both downloads now set the pane error line as well as logging, per
+`AssetExplorer.downloadAsset`. **A bonus catch: the error line moved OUT of the
+`{#if loading}{:else if error}` chain, so reporting a failure no longer ERASES the inventory.**
+Proved in-browser: both faults RESOLVED (swallowed) pre-fix and REJECTED post-fix, and a failed
+download now names the file while all five inventory groups stay on screen.
+
+**Also green after the work:** `core_test` 53, `expressions_test` 94, **`doctest_test` 3371**,
+`debug_storage_test` 18, `debug_storage_probe` 14, `lens_flare_presets_probe` 12/12,
+`fontpicker_probe` 93. `npx vite build` exit 0.
+
+**Still open in files W2-F did not own** (reported, correctly not touched): three copies of the
+download logic (one self-documented as a copy), two inline-preview implementations,
+`libraryTotalsLine` hardcoding the noun "asset", and `web/App.svelte:490`'s silent swallow
+(which does carry a written justification — lead ruling still pending).
+
 - **R6-24.2 THE THEME WCAG GATE HAS NEVER RUN HERE, AND CLAIMED OTHERWISE.**
   `tests/theme_contrast_test.py:21` hardcodes an absolute path from a DIFFERENT
   machine (`/Users/ryan/CleanCode/Sandbox/...`). Running it gives `FileNotFoundError`.
