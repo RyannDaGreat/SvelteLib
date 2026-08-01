@@ -1414,6 +1414,82 @@ sibling, not a someday.
   lighting and scenes are now in scope, a splat-only renderer is DISQUALIFIED. The
   library must be a real 3D engine that also does splats.
 
+#### R6-1/R6-23 LIBRARY SURVEY — MEASURED, NOT ARGUED (wave 1, agent W1-I; report `.frenzy/round6/W1-I.md` + `W1-I-mkkellogg.md`, `W1-I-playcanvas-babylon.md`)
+
+**RECOMMENDATION: three.js 0.180 (MIT) + `@sparkjsdev/spark` 2.1.0 (MIT).** WebGL2-only:
+no WebGPU, no SharedArrayBuffer, no separate WASM asset (its Rust wasm is base64-inlined).
+Its ONLY runtime dependency is `fflate`, which is already declared in `package.json`.
+
+- **A NEW ARCHITECTURAL CONSTRAINT, AND IT GENERALISES BEYOND SPLATS:**
+  SharedArrayBuffer requires `crossOriginIsolated`, which requires a SECURE CONTEXT — so
+  **on plain HTTP, SAB is unavailable for exactly the same reason WebGPU is.** That kills
+  the classic splat libraries' fast sort outright. Record this beside the
+  HTTPS-independence tenet; it will decide future library choices too.
+- **ELIMINATED:** `@mkkellogg/GaussianSplats3D` is **abandoned by its own author** (its
+  README now points at Spark). `gsplat.js` and `antimatter15/splat` are splat-only, so
+  they die on R6-23.7.
+- **RUNNER-UP: PlayCanvas (MIT), and the gap is NARROW, not a landslide.** It wins on
+  bundle — **592 KB gzip for the whole engine vs ~1.9 MB** for three+Spark — and on
+  activity (100+ commits/30d vs ~3). It loses on determinism ergonomics: `frame:ready`
+  does not go false on camera-only movement, so an exporter would need a hand-rolled
+  converge loop. Babylon third (Apache-2.0, experimental determinism API, largest bundle).
+- **THE AGENT'S OWN CAVEAT, WHICH THE LEAD ACCEPTS: before any code, run the same three
+  assertions against PlayCanvas.** Spark leads partly because it is the only one probed;
+  if PlayCanvas passes determinism, its 3x size and 30x activity advantages are hard to
+  argue with and the choice should flip.
+
+**COMPOSITING — PROBED ON THIS REPO'S OWN CANVASKIT, NOT THEORISED.**
+`surface.makeImageFromTextureSource(foreignWebGL2Canvas)` **works** on canvaskit 0.41.1,
+**right-side-up**, and `updateTextureFromSource` refreshes in place. At 1920x1080,
+hard-synced, on SwiftShader: **16.5 ms update + 4.3 ms draw**, against 30.2 ms for the
+old CPU-readback path. So: TWO GL contexts, upload the canvas. Zero-copy
+`Surface.makeImageFromTexture` exists but needs a shared context plus the private
+`_resetContext` — speculative, no precedent, do NOT. A DOM overlay is rejected outright:
+it forfeits z-order, every Skia effect, the lens, and all exporters.
+
+**THE CARDINAL CONTRACT (R6-1.6) IS SATISFIED, AND VERIFIED IN THE SHADER.**
+Mapping is `renderer.setSize(deviceRect)` + `camera.setViewOffset(deviceRect.w/sourceRect.sw, ...)`.
+Verified inside Spark's own shader: `clipCenter = projectionMatrix * vec4(viewCenter,1)`
+and the covariance Jacobian reads `projectionMatrix[0][0]/[1][1]`, so off-axis frusta are
+correct for BOTH splat centres AND ellipse sizes — not just positions.
+
+**END-TO-END PROOF** (three+Spark, 177k-splat scene plus a lit mesh and lights, headless
+SwiftShader): repeated render at the same pose is **byte-identical** (determinism holds);
+a `setViewOffset` frame differs and is **itself byte-identical**; covered pixels go
+**18,375 -> 89,032**, i.e. a genuine re-render at higher density rather than a magnified
+raster — which is precisely what the user asked for; `clearViewOffset` restores exactly.
+`await spark.update()` is the seam that closes the async sort.
+
+- **R6-1.8's PRECEDENT IS EXACT — COPY IT, DO NOT INVENT.** `pdf_page`'s
+  `renderMode: "live"|"raster"` plus `rasterWidth`/`rasterHeight`/`rasterDPI`
+  (`render_gpu/pdf_display.js:82`) IS the user's "720x840 regardless of widget size".
+- **R6-1.7** maps onto the static material raster cache's `retained` rule, with loud
+  `noteRasterRefusal` and `materialRasterStats()` so a probe can PROVE a cache hit.
+- **`cli/render.js`: CONFIRMED IMPOSSIBLE.** Software surface, no GL, no DOM. Splats join
+  its loud omission list beside images/video/PDF/LaTeX/Mermaid. `headless-gl` is WebGL1
+  plus a system dependency, which would forfeit that renderer's entire reason to exist.
+- **RENDER-JOB WORKER: WORKS, BUT THE COST MOVED.** Measured: the render itself is
+  **0-1 ms even at 1080p**; the whole cost is `await update()` at **~2.0-2.2 s and
+  RESOLUTION-INDEPENDENT** (readback + LoD traverse + sort). The agent's earlier
+  fill-rate model predicted the opposite and it CORRECTED ITSELF — noted because that is
+  the standard. Untested levers: `enableLod:false`, gating `update()` on a real pose
+  change, and the existing `--use-angle=vulkan` flags.
+- **BIGGEST RISK CHANGED: no longer determinism (that passed) but ~2 s/frame on a
+  GPU-less host** — about 30 minutes per 900-frame fly-through per widget. Secondary: the
+  1.9 MB must be LAZILY imported, exactly as `pdfjs-dist` / MathJax / Mermaid already are
+  (`web/vite.config.js` `optimizeDeps.include` is the precedent for pre-bundling it).
+
+**R6-23.4 LICENCE GATE — THREE MODELS THIS MANIFEST NAMED ARE FAILURES. CORRECTED HERE:**
+**Sponza (Crytek EULA) and the Stanford Bunny (non-commercial) are HARD FAILS. Damaged
+Helmet is UNSAFE (CC BY-NC ancestor). Duck is SCEA-licensed.** All four were listed as
+candidates in R6-23.4 and must NOT be shipped. **Safe CC0:** Suzanne, SciFiHelmet,
+Lantern, WaterBottle, ToyCar, plus a procedurally generated Utah teapot.
+
+**Convention note from the survey:** canvaskit's `TextureSource` type omits
+`HTMLCanvasElement` although the runtime accepts it — any module relying on that MUST say
+so in its docstring, or a future reader will "fix" working code. No violations found in
+app code.
+
 ### R6-22 CONVENTION CONFORMANCE — A STANDING OBLIGATION ON EVERY AGENT
 
 User ruling, 2026-08-01, verbatim in spirit: "it's hyper duper critical that every
