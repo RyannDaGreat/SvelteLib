@@ -1241,6 +1241,31 @@ argument, async settling, and device bounds (the last measured at zero effect so
 `web/cameraFrame.js:20-24` already admits "one code path" is not yet true. That is the
 gap to close, and R6-11.6's principle is the standard to hold it to.
 
+**LEAD IMPLEMENTATION NOTES for R6-11 (found while scoping; saves the implementer a
+rediscovery, and NARROWS the fix's shape):**
+- `donutRingOutline` is **local to `plugins/donut.js:84`**, not in `core/outline.js`, and it
+  returns **ONE FLAT KEYHOLE POLYGON** — outer loop, a zero-width bridge, then the inner
+  loop reversed — which is precisely why it is ear-clipped. Its doctest at `:82` confirms a
+  flat point list (`[0]` is `[20, 10]`, a single point), NOT an array of subpaths. So the
+  `ringSectorOutline` "already returns [outer, inner]" note does NOT apply here; that is a
+  different function.
+- **`hitTest` SHARES that geometry** (`plugins/donut.js:154` calls
+  `pointInPolygon(donutRingOutline(...))`), so whatever is done must keep the hit test
+  correct — changing the outline's return shape has a second consumer.
+- **Therefore two candidate fixes, and the choice must be MEASURED, not reasoned:**
+  (a) emit the EXISTING keyhole point list as ONE `path` with `fillRule:"nonzero"` — the
+  inner loop is already counter-wound (that is what makes it ear-clippable), so nonzero
+  should punch the hole; minimal diff, hit test untouched. RISK: the zero-width bridge's
+  coincident edges can leave a hairline in some rasterizers, which is exactly the class of
+  artefact being fixed, so it MUST be pixel-checked, not assumed.
+  (b) return TWO subpaths (outer, inner) and use `fillRule:"evenodd"` — geometrically
+  cleaner and bridge-free, but changes the outline's contract and so requires updating the
+  `pointInPolygon` hit test too.
+  **Decide by rendering both at 1 sample and counting seam pixels**, the same method W1-A
+  used. Prefer (a) if it measures clean, because it does not disturb the hit test.
+- `subpathsPathD` is NOT in `core/outline.js`; find its real home before importing it
+  (`plugins/shapeshifter.js` uses it, so trace that import).
+
 **Violations recorded:** `web/gpuService.js:111-113`'s comment asserts that coverage-AA
 is equivalent to MSAA — FALSIFIED, and it is the written rationale FOR the bug;
 donut's stale "no evenodd anywhere" claim in both copies; `paint_skia.js:708`
@@ -1442,6 +1467,22 @@ is function-local with its justification 16 lines away and re-declared in two te
   rounded. **The rule's own comment claims the opposite.** Landed in `f8c2c3a`, whose
   message records that "both agents [were] killed by API 529 mid-verification" — i.e.
   it shipped unverified. Fix is a one-selector specificity bump; ship it WITH a probe.
+
+- **R6-24.4a `rotation_probe.js` — LEAD INVESTIGATED, PRESCRIPTION RECORDED, NOT YET
+  APPLIED.** It is not accidentally assertionless: its docblock declares it a QUANTIFIED
+  REPRO instrument and states "the registry expects ~0px after the fixes". Lead ran it —
+  **every invariant now measures 0.00px** across 30/45/54/90/180 degrees (preset anchor,
+  circle rim, ellipse rim, rounded-rect rim, rounded+rotated rim), and the `[#1]` section
+  shows the naive 10.35-40.00px drifts collapsing to 0.00 while the dragged edge still
+  moves exactly 40.00. So the rotation-fix wave DID land and holds. **Therefore assertions
+  here would lock in a currently-correct invariant, not paper over a bug.** PRESCRIPTION:
+  keep every printed table (that is the diagnostic value), accumulate a worst-offset, and
+  assert once at the end with `import assert from "node:assert/strict"` (the house pattern
+  — 2 of 3 bare-node tests use `/strict`). **TOLERANCE, DERIVED NOT PICKED: 1e-6 px.**
+  These are float64 ops on 100-600px magnitudes, so accumulated rounding is ~1e-12, while
+  any real regression is >= 0.01px (the naive drifts are 10-40px) — so 1e-6 is six orders
+  of magnitude clear of noise and still catches everything. Note `[#3]` is NOT empty; it
+  reports finiteness in prose, which a filtering grep hides.
 
 - **R6-24.4 THREE GATE PROBES CANNOT FAIL — more false greens.**
   `tests/rotation_probe.js` (191 lines, ZERO assertions), `magnify_byteid_probe.js`
