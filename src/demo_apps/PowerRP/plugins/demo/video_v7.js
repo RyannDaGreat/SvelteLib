@@ -43,6 +43,7 @@
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, defaults, props } from "../../core/properties.js";
+import { videoSrcRow } from "../../core/video_sampling.js";
 import * as T from "../../core/transform.js";
 import { rect, polygon } from "../../render_gpu/ir.js";
 
@@ -97,7 +98,7 @@ export const videoV7Plugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    ...props("src", { src: { assetKinds: ["video"] } }),
+    videoSrcRow("Source"),
     ...props("autoplay", "loop", "muted"),
     ...bundle("strokedBorder"),
     ...props("opacity"),

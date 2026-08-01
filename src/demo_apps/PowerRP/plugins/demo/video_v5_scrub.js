@@ -60,6 +60,7 @@
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props, SECONDS_SCRUB } from "../../core/properties.js";
+import { videoSrcRow } from "../../core/video_sampling.js";
 import * as T from "../../core/transform.js";
 import { videoV5Frame } from "../../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../../render_gpu/decorate.js";
@@ -118,7 +119,7 @@ export const videoV5ScrubPlugin = {
   inspector: [
     ...bundle("positioning"),
     // The video source — VIDEO assets (same picker/drop as the player).
-    ...props("src", { src: { assetKinds: ["video"] } }),
+    videoSrcRow("Source"),
     // THE scrub controls: the keyframable/equation-bindable time + wrap mode.
     ...props("scrubTime", "scrubWrap"),
     // Clip DURATION (seconds) — a user-supplied INPUT (the real duration is only

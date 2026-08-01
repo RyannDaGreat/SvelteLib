@@ -39,6 +39,7 @@
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../../core/properties.js";
+import { videoSrcRow } from "../../core/video_sampling.js";
 import * as T from "../../core/transform.js";
 import { videoV2 } from "../../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../../render_gpu/decorate.js";
@@ -74,7 +75,7 @@ export const videoV2Plugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    ...props("src", { src: { assetKinds: ["video"] } }),
+    videoSrcRow("Source"),
     ...props("autoplay", "loop", "muted", "animated"),
     ...bundle("strokedBorder"),
     ...bundle("cropInsets"),

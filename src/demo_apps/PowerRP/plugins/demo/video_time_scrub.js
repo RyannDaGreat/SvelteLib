@@ -61,6 +61,7 @@
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props, SECONDS_SCRUB } from "../../core/properties.js";
+import { videoSrcRow } from "../../core/video_sampling.js";
 import * as T from "../../core/transform.js";
 import { videoFrame } from "../../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../../render_gpu/decorate.js";
@@ -197,7 +198,7 @@ export const videoTimeScrubPlugin = {
   inspector: [
     ...bundle("positioning"),
     // The video source — VIDEO assets (same picker/drop as the player).
-    ...props("src", { src: { assetKinds: ["video"] } }),
+    videoSrcRow("Source"),
     // THE scrub controls: the keyframable/equation-bindable time (presets write it)
     // + wrap mode, then the clip length the presets divide by.
     ...props("scrubTime", "scrubWrap"),

@@ -44,6 +44,7 @@
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, defaults, props } from "../../core/properties.js";
+import { videoSrcRow } from "../../core/video_sampling.js";
 import * as T from "../../core/transform.js";
 import { rect, polygon } from "../../render_gpu/ir.js";
 
@@ -88,7 +89,7 @@ export const videoV8Plugin = {
     ...bundle("positioning"),
     // Video source — filtered to VIDEO assets in the AssetField picker/drop,
     // exactly like the stock player's src row.
-    ...props("src", { src: { assetKinds: ["video"] } }),
+    videoSrcRow("Source"),
     ...props("autoplay", "loop", "muted"),
     ...props("opacity"),
   ],

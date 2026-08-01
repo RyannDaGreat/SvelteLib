@@ -72,6 +72,7 @@
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
+import { videoSrcRow } from "../core/video_sampling.js";
 import * as T from "../core/transform.js";
 import { video } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
@@ -131,7 +132,7 @@ export const videoPlugin = {
     // VIDEO assets in the AssetField picker/drop (assetForm stays "url", the
     // registry default: video.src stores the served /asset/<project>/<file>
     // path, unlike filmstrip's bare-filename form).
-    ...props("src", { src: { assetKinds: ["video"] } }),
+    videoSrcRow("Source"),
     // Boolean playback rows + the animated flag (BooleanField — the keyframeable
     // boolean control), all from the registry so their help texts are shared.
     ...props("autoplay", "loop", "muted", "animated"),
