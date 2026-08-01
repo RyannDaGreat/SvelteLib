@@ -360,21 +360,50 @@ export function alongGradientStops(p) {
 
 /**
  * Near-pure builder (allocates a Skia Paint; caller deletes). A stroke paint with
- * the given rgba (alpha folded with `opacity`), width, caps and joins.
+ * the given rgba (alpha folded with `opacity`), width and cap.
+ *
+ * THE JOIN IS ROUND AND IS NOT A KNOB, deliberately. Every material that reaches
+ * this builder strokes a RESAMPLED contour, not the author's outline: `wavy`
+ * rebuilds the path at WAVY_SAMPLE_SPACING and `alongGradient` chops it into
+ * GRADIENT_SEGMENT_SPACING bands, so the vertices Skia joins here are sampling
+ * artefacts a few units apart, not the corners the author drew. A Miter on those
+ * would grow a spike at every wave crest. The widget-level strokeJoin property
+ * (core/properties.js) therefore does NOT reach a material stroke, and the
+ * Inspector hides the row while one is selected rather than offering a control
+ * that changes nothing.
+ *
+ * This used to take a seventh `join` argument defaulting to Round with `??`. No
+ * caller ever passed it, in any of the three call sites, so the fallback was the
+ * only live branch — a knob that looked settable and was not. Removed rather than
+ * wired: the paragraph above is why it should never be wired here.
  */
-function strokePaintOf(CanvasKit, rgba, width, opacity, aa, cap, join) {
+function strokePaintOf(CanvasKit, rgba, width, opacity, aa, cap) {
   const p = new CanvasKit.Paint();
   p.setStyle(CanvasKit.PaintStyle.Stroke);
   p.setStrokeWidth(width);
   p.setAntiAlias(aa);
   p.setStrokeCap(cap ?? CanvasKit.StrokeCap.Round);
-  p.setStrokeJoin(join ?? CanvasKit.StrokeJoin.Round);
+  p.setStrokeJoin(CanvasKit.StrokeJoin.Round);
   p.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], (rgba[3] ?? 1) * opacity));
   return p;
 }
 
-/** Query. Maps a cap knob string to the CanvasKit enum (default round). */
-function capEnum(CanvasKit, cap) {
+/**
+ * Query. Maps a cap knob string to the CanvasKit enum (default round). THE ONLY
+ * cap-id → StrokeCap map in this codebase; exported because paint_skia.js's
+ * polyline case needs the same translation for the op's POLYLINE_CAP contract,
+ * and a second copy of a three-line switch is how two spellings of one fact
+ * begin. Its join twin (skJoin) lives in paint_skia.js, which is its only
+ * consumer — a material stroke never takes a join id (see strokePaintOf above).
+ *
+ * @param {object} CanvasKit - the CanvasKit module (its StrokeCap enum)
+ * @param {string} cap - "butt" | "square" | "round" (the SVG stroke-linecap words)
+ * @returns {object} the CanvasKit.StrokeCap member
+ *
+ * @example capEnum(CanvasKit, "butt") // CanvasKit.StrokeCap.Butt
+ * @example capEnum(CanvasKit, "round") // CanvasKit.StrokeCap.Round
+ */
+export function capEnum(CanvasKit, cap) {
   if (cap === "butt") return CanvasKit.StrokeCap.Butt;
   if (cap === "square") return CanvasKit.StrokeCap.Square;
   return CanvasKit.StrokeCap.Round;

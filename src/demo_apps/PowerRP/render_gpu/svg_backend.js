@@ -58,7 +58,8 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { STROKE_MITER_LIMIT } from "../core/properties.js"; // the identity limit this exporter may omit BECAUSE SVG's own initial value is the same number (pdf_backend cannot — see joinAttrs)
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
 // paintNodeRun for the doctrine and core/paint_containment.js for why it exists.
@@ -169,9 +170,35 @@ export function paintAttrs(cmd, ctx) {
   const a = [];
   a.push(cmd.fill ? `fill="${paintRef(ctx, cmd.fill)}"` : `fill="none"`);
   if (cmd.stroke && cmd.strokeWidth > 0)
-    a.push(`stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(cmd.strokeWidth)}"`);
+    a.push(`stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(cmd.strokeWidth)}"${joinAttrs(cmd)}`);
   if ((cmd.opacity ?? 1) !== 1) a.push(`opacity="${fmt(cmd.opacity)}"`);
   return a.join(" ");
+}
+
+/**
+ * Pure function. The CORNER-TREATMENT attributes for a stroked element, or "" at
+ * the identity. A PASS-THROUGH, not a translation: core/properties.js chose the
+ * join ids to BE the `stroke-linejoin` values, so there is no mapping table here
+ * that could drift from the painter's.
+ *
+ * Identity is omitted rather than written out, and that is safe HERE in a way it
+ * is not in the PDF exporter: SVG's own initial values are `miter` and 4, the
+ * exact pair ir.js calls the identity, so silence and statement render the same
+ * picture. (PDF's initial miter limit is 10, which is why pdf_backend states it
+ * unconditionally — see this file's twin comment there.) Omitting also keeps
+ * every pre-feature deck's SVG export byte-identical.
+ *
+ * @param {object} cmd - a stroked display-list op
+ * @returns {string} "" or a leading-space attribute string
+ *
+ * @example joinAttrs({stroke: [0,0,0,1], strokeWidth: 2}) // "" (the identity, byte-identical legacy)
+ * @example joinAttrs({strokeJoin: "bevel"}) // ' stroke-linejoin="bevel"'
+ * @example joinAttrs({strokeMiter: 10}) // ' stroke-miterlimit="10"'
+ */
+function joinAttrs(cmd) {
+  const join = opStrokeJoin(cmd), miter = opStrokeMiter(cmd);
+  return (join === STROKE_JOIN_DEFAULT ? "" : ` stroke-linejoin="${join}"`) +
+    (miter === STROKE_MITER_LIMIT ? "" : ` stroke-miterlimit="${fmt(miter)}"`);
 }
 
 /**
@@ -182,7 +209,7 @@ export function paintAttrs(cmd, ctx) {
  * double-apply it).
  */
 function strokeOnlyAttrs(cmd, width, ctx) {
-  return `fill="none" stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(width)}"` +
+  return `fill="none" stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(width)}"${joinAttrs(cmd)}` +
     ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "");
 }
 
@@ -474,8 +501,13 @@ export function vectorCommandToSVG(cmd, world, ctx) {
       return g(fillOnce + offsetStrokeSVG(cmd, ellipsePathD(cmd), (w) => ellEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
     }
     case "polyline":
+      // POLYLINE_CAP/POLYLINE_JOIN are the OP's own contract (ir.js), not a widget
+      // knob — read from there so this exporter, the painter and pdf_backend cannot
+      // spell it three ways. The values ARE the SVG attribute words, so this stays
+      // a pass-through. No joinAttrs() here: a stamped strokeJoin must not reach an
+      // op whose corners the op itself fixes.
       return g(`<polyline points="${pointsAttr(cmd.points)}" fill="none" ` +
-        `stroke="${rgbaToCss(cmd.color)}" stroke-width="${fmt(cmd.width)}" stroke-linecap="round" stroke-linejoin="round"` +
+        `stroke="${rgbaToCss(cmd.color)}" stroke-width="${fmt(cmd.width)}" stroke-linecap="${POLYLINE_CAP}" stroke-linejoin="${POLYLINE_JOIN}"` +
         ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + `/>`);
     case "polygon":
       // A polygon is FILL-ONLY (it has no stroke slot at all), so an OFF fill —

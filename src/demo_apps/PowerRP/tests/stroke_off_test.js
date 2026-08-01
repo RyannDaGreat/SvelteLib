@@ -35,7 +35,7 @@
  */
 import assert from "assert";
 import { isUndecorated, strokeIsVisible, decorateStrokedBox } from "../render_gpu/decorate.js";
-import { PROPS, strokeMaterialIsOn, BUNDLES } from "../core/properties.js";
+import { PROPS, strokeMaterialIsOn, strokeJoinApplies, strokeJoinIsMiter, BUNDLES, STROKE_TRIM_KEYS, STROKE_OFFSET_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { svgPlugin } from "../plugins/svg.js";
 import { iconifyPlugin } from "../plugins/iconify.js";
 import { rectPlugin } from "../plugins/rect.js";
@@ -139,9 +139,31 @@ test("every stroke-ONLY row declares visibleWhen: strokeMaterialIsOn — stroke 
   assert.equal(PROPS.cornerRadius.visibleWhen, undefined, "cornerRadius shapes fill/clip too, not stroke-only");
 });
 
-test("BUNDLES.strokedBorder / strokedBox still carry exactly the same KEYS as before — visibleWhen is a per-row flag, not a bundle-shape change", () => {
-  assert.deepEqual(BUNDLES.strokedBorder, ["stroke", "strokeWidth", "strokeOffset", "cornerRadius", "strokeStart", "strokeEnd", "strokePhase", "strokeCapStart", "strokeCapEnd"]);
-  assert.deepEqual(BUNDLES.strokedBox, ["fill", "stroke", "strokeWidth", "strokeOffset", "cornerRadius", "strokeStart", "strokeEnd", "strokePhase", "strokeCapStart", "strokeCapEnd"]);
+test("the two JOIN rows hide for a STRICTER reason, and the list above must not quietly absorb them", () => {
+  // strokeJoin/strokeMiter are stroke-only too, but strokeMaterialIsOn is not
+  // enough for them: a stroke MATERIAL draws its own resampled geometry, so a
+  // join id cannot reach the author's corners at all. They therefore compose
+  // strokeMaterialIsOn inside a narrower predicate rather than sharing it, and
+  // pinning that here stops someone "fixing" the list above by adding them to it.
+  assert.equal(PROPS.strokeJoin.visibleWhen, strokeJoinApplies, "hides behind a material as well as an Off stroke");
+  assert.equal(PROPS.strokeMiter.visibleWhen, strokeJoinIsMiter, "and the limit hides unless the join is Miter");
+  assert.notEqual(PROPS.strokeJoin.visibleWhen, strokeMaterialIsOn);
+  // Each is still at least as strict as the shared one, so the Off-stroke
+  // complaint that produced strokeMaterialIsOn stays answered for them too.
+  for (const key of ["strokeJoin", "strokeMiter"])
+    assert.equal(PROPS[key].visibleWhen({ stroke: OFF }), false, `${key}: an Off stroke has nothing to join`);
+});
+
+test("BUNDLES.strokedBorder / strokedBox are exactly their named key lists, in order", () => {
+  // DERIVED, not restated. This assertion used to be two hardcoded literals that
+  // had to be edited in lockstep with core/properties.js — the mirror-that-rots
+  // shape. Written this way it still catches a bundle-shape change (visibleWhen is
+  // a per-row flag and must not move a key), but a legitimately added universal
+  // stroke option lands in one place instead of three.
+  assert.deepEqual(BUNDLES.strokedBorder,
+    ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS]);
+  assert.deepEqual(BUNDLES.strokedBox, ["fill", ...BUNDLES.strokedBorder],
+    "the filled box IS the border slice with a fill in front — the two cannot drift apart");
 });
 
 /** The Inspector's groupRows filter, reproduced verbatim (bare node cannot

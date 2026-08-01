@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
@@ -1505,7 +1505,7 @@ function offsetStrokePdfOps(cmd, pathStr, ctx) {
     if (depth <= 0) continue; // a fully inner/outer stroke has no ink on the other side
     ops.push("q");
     ops.push(isInside ? `${pathStr} W n` : `${coverRect} ${pathStr} W* n`);
-    ops.push(...paintSetup(null, cmd.stroke, 2 * depth * cmd.strokeWidth, cmd.opacity, ctx));
+    ops.push(...paintSetup(null, cmd.stroke, 2 * depth * cmd.strokeWidth, cmd.opacity, ctx, cmd));
     ops.push(pathStr, "S");
     ops.push("Q");
   }
@@ -1546,7 +1546,7 @@ function detachedContourStrokePdfOps(cmd, shape, ctx) {
   } else {
     throw new Error(`pdf_backend: a detached strokeOffset (${o}) has no closed-form contour for a "${shape.kind}" path — only rect/ellipse are supported (no boolean path ops in this DOM-free backend)`);
   }
-  return [...paintSetup(null, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx), pathStr, "S"];
+  return [...paintSetup(null, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx, cmd), pathStr, "S"];
 }
 
 /** Command (appends operators, registers resources via ctx). One vector drawable. */
@@ -1578,14 +1578,18 @@ function emitVector(cmd, world, out, ctx) {
           : offsetStrokePdfOps(cmd, pathStr, ctx)));
         break;
       }
-      ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
+      ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx, cmd));
       ops.push(pathStr);
       ops.push(paintOp(cmd.fill, cmd.stroke, cmd.strokeWidth));
       break;
     }
     case "polyline": {
+      // The op's OWN contract, not a widget knob — the same two names the painter
+      // and svg_backend read, so the three cannot spell it differently. No `cmd` to
+      // paintSetup: a stamped strokeJoin must not reach an op that fixes its own
+      // corners (paintSetup's identity `j` is then immediately overridden here).
       ops.push(...paintSetup(null, cmd.color, cmd.width, cmd.opacity, ctx));
-      ops.push("1 J 1 j"); // round caps + joins (the IR polyline contract)
+      ops.push(`${pdfCapCode(POLYLINE_CAP)} J ${pdfJoinCode(POLYLINE_JOIN)} j`);
       ops.push(pointsPath(cmd.points), "S");
       break;
     }
@@ -1624,7 +1628,7 @@ function emitVector(cmd, world, out, ctx) {
         ops.push(...(strokeIsDetached(cmd.strokeOffset) ? detachedContourStrokePdfOps(cmd, { kind: "path" }, ctx) : offsetStrokePdfOps(cmd, pd, ctx)));
         break;
       }
-      ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx));
+      ops.push(...paintSetup(cmd.fill, cmd.stroke, cmd.strokeWidth, cmd.opacity, ctx, cmd));
       ops.push(svgPathToPdfOps(cmd.d));
       let po = paintOp(cmd.fill, cmd.stroke, cmd.strokeWidth);
       if (cmd.fillRule === "evenodd" && (po === "f" || po === "B")) po += "*";
@@ -2137,8 +2141,23 @@ function emitContainmentBox(flat, start, end, out, ctx) {
   }
 }
 
-/** Command (may register an ExtGState via ctx). Color + alpha + width setup ops. */
-function paintSetup(fill, stroke, strokeWidth, opacity, ctx) {
+/**
+ * Command (may register an ExtGState via ctx). Color + alpha + width + CORNER
+ * setup ops. `cmd` is the op the stroke belongs to, read only for its join
+ * (ir.js opStrokeJoin/opStrokeMiter); omit it for a stroke that is not a widget's
+ * own ink and takes the identity.
+ *
+ * THE MITER LIMIT IS STATED, NEVER INHERITED, and that is a bug fix rather than
+ * tidiness. PDF's own initial miter limit is 10 (ISO 32000-1 table 52) where
+ * Skia's and SVG's is 4, so a PDF export that said nothing rendered a DIFFERENT
+ * PICTURE from the editor and from the SVG export for every corner between about
+ * 11.5° and 29°. Measured before the fix, on the same 24-unit-wide 20° chevron:
+ * poppler drew the PDF's miter tip 66px past the vertex while Chrome drew the SVG
+ * bevelled flat at 2px, and the painter agreed with the SVG. The join operator is
+ * emitted for the same reason even though PDF's default 0 does happen to agree —
+ * three backends agreeing by coincidence is not agreement.
+ */
+function paintSetup(fill, stroke, strokeWidth, opacity, ctx, cmd = null) {
   const ops = [];
   const fillA = fill ? fill[3] * (opacity ?? 1) : 1;
   const strokeA = stroke && strokeWidth > 0 ? stroke[3] * (opacity ?? 1) : 1;
@@ -2148,8 +2167,54 @@ function paintSetup(fill, stroke, strokeWidth, opacity, ctx) {
   if (stroke && strokeWidth > 0) {
     ops.push(`${pdfNum(stroke[0])} ${pdfNum(stroke[1])} ${pdfNum(stroke[2])} RG`);
     ops.push(`${pdfNum(strokeWidth)} w`);
+    ops.push(`${pdfJoinCode(opStrokeJoin(cmd ?? {}))} j`);
+    ops.push(`${pdfNum(opStrokeMiter(cmd ?? {}))} M`);
   }
   return ops;
+}
+
+/**
+ * Pure function. THE join-id → PDF line-join code, and the only such map here.
+ * The codes are ISO 32000-1 table 52's: 0 miter, 1 round, 2 bevel.
+ *
+ * An EXPLICIT map rather than `STROKE_JOIN_MODES.indexOf(join)`, even though that
+ * index happens to give the same three numbers today: the coincidence is not a
+ * law, and a future reorder of the mode list for Inspector reasons would silently
+ * swap every exported corner. It throws on an unknown id for the same reason
+ * skJoin does — an id this map has not heard of means the two lists drifted, and
+ * a fallback would export the wrong corner in silence.
+ *
+ * @param {string} join - a core/properties.js STROKE_JOIN_MODES id
+ * @returns {number} the PDF `j` operand
+ *
+ * @example pdfJoinCode("miter") // 0
+ * @example pdfJoinCode("bevel") // 2
+ */
+function pdfJoinCode(join) {
+  const code = { miter: 0, round: 1, bevel: 2 }[join];
+  if (code === undefined)
+    throw new Error(`pdf_backend: unknown stroke join "${join}" — core/properties.js STROKE_JOIN_MODES and this table have drifted`);
+  return code;
+}
+
+/**
+ * Pure function. THE cap-id → PDF line-cap code (ISO 32000-1 table 51: 0 butt,
+ * 1 round, 2 projecting square). Its only caller today is the polyline op's
+ * POLYLINE_CAP contract; it exists so that contract is spelled by name in all
+ * three backends rather than as a bare `1` here.
+ *
+ * @param {string} cap - "butt" | "round" | "square" (the SVG stroke-linecap words,
+ *   the same vocabulary render_gpu/skia/stroke_materials.js capEnum reads)
+ * @returns {number} the PDF `J` operand
+ *
+ * @example pdfCapCode("round") // 1
+ * @example pdfCapCode("butt") // 0
+ */
+function pdfCapCode(cap) {
+  const code = { butt: 0, round: 1, square: 2 }[cap];
+  if (code === undefined)
+    throw new Error(`pdf_backend: unknown stroke cap "${cap}" — the cap vocabulary and this table have drifted`);
+  return code;
 }
 
 /**

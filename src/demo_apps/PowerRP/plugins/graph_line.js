@@ -47,7 +47,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, defaults, props, STROKE_TRIM_KEYS } from "../core/properties.js";
+import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { parseRange, dataToLocal, breakSubpaths, polylinePathD } from "../core/graph_scale.js";
 import { sampleCurve, errorAffordance, DEFAULT_NUM_POINTS } from "../core/graph_equation.js";
@@ -180,7 +180,7 @@ export const graphLinePlugin = {
     { key: "jumpThreshold", label: "Break at jumps", kind: "number", min: 0, category: CAT_FMT, help: "Break the line where consecutive points jump farther than this many pixels — the pragmatic way to stop a tan-style asymptote from streaking across the frame. 0 never breaks (for continuous curves)." },
     ...props("fill", { fill: { label: "Fill", help: "Fill under a closed curve (transparent by default — most graphs are stroke-only). Also paints an area when Closed is on." } }),
     ...props("stroke", "strokeWidth"),
-    ...props(...STROKE_TRIM_KEYS),
+    ...props(...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
     ...props("opacity"),
   ],
   /**

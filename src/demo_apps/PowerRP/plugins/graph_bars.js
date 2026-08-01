@@ -35,7 +35,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, props, STROKE_TRIM_KEYS } from "../core/properties.js";
+import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, easedReveal, clamp01 } from "../core/graph_scale.js";
 import { sampleIndexed, errorAffordance } from "../core/graph_equation.js";
 import * as T from "../core/transform.js";
@@ -314,7 +314,7 @@ export const graphBarsPlugin = {
     { key: "growEase", label: "Grow ease", kind: "select", options: EASES, category: CAT, help: "Easing applied to each bar's grow-up." },
     { key: "growDirection", label: "Grow order", kind: "select", options: GROW_DIRS, optionLabels: GROW_DIR_LABELS, category: CAT, help: "The order bars grow in when staggered." },
     { key: "labelSize", label: "Label size", kind: "number", min: 1, category: CAT, help: "Font size of the bar labels." },
-    ...props(...STROKE_TRIM_KEYS),
+    ...props(...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
     ...props("opacity"),
   ],
   /**

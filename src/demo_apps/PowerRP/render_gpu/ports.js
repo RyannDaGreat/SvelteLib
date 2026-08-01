@@ -18,7 +18,7 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, applyStrokeOffset, parsePaint, isPaintableFrame, rect, text } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text } from "./ir.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { reportOnce } from "../core/report.js";
@@ -442,7 +442,12 @@ function emitNodeBody(node, byId, pdfDisplay, mapTiles = null) {
   // inner/outer knob (strokeOffset) is stamped for every stroked box exactly as
   // the trim fields are, and is likewise absent-when-centered — so this line adds
   // nothing to any existing document's ops.
-  const body = applyStrokeOffset(node.state, applyStrokeTrim(node.state, applyNodeEffects(node, cmds)));
+  // THE UNIVERSAL STROKE-JOIN SEAM, the third on the same choke point: how a
+  // stroke turns a CORNER (strokeJoin + strokeMiter), stamped for every stroked
+  // box exactly as the two above are, and likewise absent at the identity
+  // (miter, STROKE_MITER_LIMIT) — so this line too adds nothing to any existing
+  // document's ops.
+  const body = applyStrokeJoin(node.state, applyStrokeOffset(node.state, applyStrokeTrim(node.state, applyNodeEffects(node, cmds))));
   // THE OWNER TAG — this node's identity, hung on the ONE push that opens its op
   // run, so the PAINT-TIME boundary can name the item it had to contain
   // (render_gpu/skia/paint_skia.js paintFlat; flattenIR carries the tag down onto

@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, strokeInsideFraction, strokeOutwardReach, strokeIsDetached, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeOutwardReach, strokeIsDetached, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 // THE PER-NODE PAINT BOUNDARY's two halves: the shared error affordance, and the
 // ERROR-level report. The alias survives its original reason — this file used to
 // carry a PRIVATE console.warn helper also called `reportOnce`, and the import had
@@ -57,7 +57,7 @@ import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, 
 import { isPatternMaterial, patternCellFor, patternMatrix, shapeColor } from "./pattern_material.js";
 import { getShapeSdf, makeShapeSdfChild } from "./shape_sdf.js"; // the silhouette signed-distance child that makes a material fill conform to its shape
 import { silhouettePathD } from "./silhouette.js"; // the glyph-outline union path for an SVG/iconify decorated border (decorateSilhouetteBorder's cmd.silhouette)
-import { getStrokeMaterial } from "./stroke_materials.js";
+import { getStrokeMaterial, capEnum } from "./stroke_materials.js"; // capEnum = THE cap-id → CanvasKit.StrokeCap map, already this codebase's only one (the join twin, skJoin, lives below with its only consumer)
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
@@ -649,7 +649,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       if (cmd.stroke && cmd.strokeWidth > 0) {
         if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
         else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, (p) => canvas.drawRRect(rr, p));
-        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
+        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd), (p) => canvas.drawRRect(rr, p));
       }
       break;
     }
@@ -660,15 +660,19 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       if (cmd.stroke && cmd.strokeWidth > 0) {
         if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
         else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, (p) => canvas.drawOval(oval, p));
-        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
+        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd), (p) => canvas.drawOval(oval, p));
       }
       break;
     }
     case "polyline": {
       const path = buildPath(CanvasKit, cmd.points, false);
       const p = strokePaint(CanvasKit, cmd.color, cmd.width, opacity, null, aa);
-      p.setStrokeCap(CanvasKit.StrokeCap.Round);
-      p.setStrokeJoin(CanvasKit.StrokeJoin.Round);
+      // THE POLYLINE OP'S OWN CONTRACT, not a widget knob — read from ir.js so the
+      // SVG and PDF exporters cannot spell it differently (they read the same two
+      // names). No `cmd` is passed to strokePaint above for the same reason: this
+      // op's corners are fixed by the op, so a stamped strokeJoin must not reach it.
+      p.setStrokeCap(capEnum(CanvasKit, POLYLINE_CAP));
+      p.setStrokeJoin(skJoin(CanvasKit, POLYLINE_JOIN));
       canvas.drawPath(path, p);
       path.delete(); p.delete();
       break;
@@ -956,7 +960,7 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true) {
     // combination; the fill above still carries it).
     if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
     else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawWith);
-    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa), drawWith);
+    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd), drawWith);
   }
   if (maskBlur) maskBlur.delete();
   skPath.delete();
@@ -1391,7 +1395,7 @@ function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawSha
     if (depth <= 0) continue; // a fully inner/outer stroke has no ink on the other side
     canvas.save();
     canvas.clipPath(clip, clipOp, aa);
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, 2 * depth * width, opacity, bounds, aa), drawShape);
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, 2 * depth * width, opacity, bounds, aa, cmd), drawShape);
     canvas.restore();
   }
   if (!pathOverride) clip.delete();
@@ -1426,11 +1430,21 @@ function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawSha
  * seam o = ±1 (d = 0, so step 1's outline has zero width and the contour IS
  * the original outline, recovering the attached fully-outer/-inner case).
  *
- * JOINS/CAPS: `strokeOutlineOf` uses Miter/Butt — the same default `strokePaint`
- * leaves in effect for every plain stroke in this file (no `setStrokeJoin` call
- * there either), so a sharp corner detaches into a sharp corner, matching what a
- * centered stroke on the same shape already looks like. The final ring stroke
- * likewise takes the caller's implicit default (Miter/Butt) via `strokePaint`.
+ * JOINS/CAPS — AND THE ONE PLACE IN THIS FILE WHERE A HARDCODED JOIN IS
+ * DELIBERATE. `strokeOutlineOf` uses Miter/Butt because it is not drawing INK: its
+ * result is consumed by MakeFromOp below and deleted, and only its BOUNDARY
+ * survives as the parallel contour. Miter is what makes that boundary the true
+ * offset curve at `centerDistance`; a Round join would round the offset contour's
+ * corners, changing the GEOMETRY rather than the styling. So it must stay Miter
+ * whatever the widget's own join says.
+ *
+ * This comment used to justify the choice as "the same default strokePaint leaves
+ * in effect for every plain stroke in this file" — that coupling was true only
+ * while the join was nobody's decision, and it is now false: strokePaint applies
+ * the widget's own strokeJoin/strokeMiter. The FINAL ring stroke at the end of
+ * this function does follow the widget (it is real ink, and a detached ring should
+ * turn its corners the way the attached stroke would); only this construction step
+ * is pinned.
  * MEASURED CAVEAT: `canvas.drawRRect`'s native stroking and a generic `Path`
  * stroke of the same rounded-rect geometry disagree by ~1px of antialiasing at
  * the exact tangent break between a straight edge and a corner arc (a
@@ -1465,7 +1479,7 @@ function drawDetachedContourStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, 
   outline.delete();
   if (!contour) throw new Error(`paintIR(skia): the detached-contour offset ${o} produced no path — a malformed op pair (report, do not swallow)`);
   if (!contour.isEmpty())
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa), (p) => canvas.drawPath(contour, p));
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa, cmd), (p) => canvas.drawPath(contour, p));
   contour.delete();
 }
 
@@ -1767,7 +1781,7 @@ function drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa) {
   if (capStart === "taper" || capEnd === "taper") {
     fillTaperedRibbon(CanvasKit, canvas, strokePath, cmd, bounds, opacity, aa, capStart, capEnd);
   } else {
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa), (p) => {
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa, cmd), (p) => {
       p.setStrokeCap(CanvasKit.StrokeCap.Butt);
       canvas.drawPath(strokePath, p);
     });
@@ -1809,7 +1823,7 @@ function drawLensBorder(CanvasKit, canvas, cmd, view, world, opacity, aa = true)
   if (!color || !(width > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, color, width, opacity, null, aa);
+  const p = strokePaint(CanvasKit, color, width, opacity, null, aa, cmd);
   if (cmd.shape === "box") {
     const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
     canvas.drawRRect(rr, p);
@@ -2235,7 +2249,7 @@ function drawGlassOutlineBorder(CanvasKit, canvas, cmd, view, world, opacity, aa
   if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd);
   const path = glassOutlinePath(CanvasKit, cmd.cx, cmd.cy, cmd.halfW, cmd.halfH, cmd.cornerRadius, cmd.squircle, cmd.surfaceTension, unitScale);
   canvas.drawPath(path, p);
   path.delete();
@@ -2250,7 +2264,7 @@ function drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa = true
   if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd);
   const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
   canvas.drawRRect(rr, p);
   p.delete();
@@ -3220,7 +3234,7 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belo
       ? (p) => canvas.drawPath(silPath, p)
       : (p) => canvas.drawRRect(rr, p);
     if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, { ...cmd, op: "rect" }, bounds, opacity, ctx.antialias, strokeShape, silPath);
-    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias), strokeShape);
+    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias, cmd), strokeShape);
     if (silPath) silPath.delete();
     canvas.restore();
   }
@@ -3984,16 +3998,50 @@ function fillPaint(CanvasKit, paint, opacity, bounds = null, aa = true) {
   return p;
 }
 
-/** Helper. A stroked Paint for a solid rgba OR a gradient Paint. `bounds` frames
+/**
+ * Helper. A stroked Paint for a solid rgba OR a gradient Paint. `bounds` frames
  * a gradient stroke's objectBoundingBox (see fillPaint); `aa` is the camera's
- * coverage-AA flag. Caller deletes. */
-function strokePaint(CanvasKit, paint, width, opacity, bounds = null, aa = true) {
+ * coverage-AA flag. Caller deletes.
+ *
+ * `cmd` is the OP the stroke belongs to, read ONLY for its corner treatment
+ * (ir.js opStrokeJoin/opStrokeMiter). THIS IS THE ONE SEAM the universal join
+ * property reaches the painter through, and it covers solid and gradient
+ * identically because applyPaint below touches only the shader/colour — never
+ * style, width, cap or join. Passing no `cmd` (the internal geometry strokes:
+ * the offset ring, the proxy stand-in, the error affordance) means "the
+ * identity", which is what those call sites drew before this argument existed.
+ */
+function strokePaint(CanvasKit, paint, width, opacity, bounds = null, aa = true, cmd = null) {
   const p = new CanvasKit.Paint();
   p.setStyle(CanvasKit.PaintStyle.Stroke);
   p.setStrokeWidth(width);
   p.setAntiAlias(aa);
+  p.setStrokeJoin(skJoin(CanvasKit, opStrokeJoin(cmd ?? {})));
+  p.setStrokeMiter(opStrokeMiter(cmd ?? {}));
   applyPaint(CanvasKit, p, paint, opacity, bounds);
   return p;
+}
+
+/**
+ * Pure function (given CanvasKit's enum table). THE join-id → CanvasKit.StrokeJoin
+ * translation, and the only one in this codebase. Throws on an unknown id rather
+ * than defaulting: ir.js normalizeStrokeJoin already rejects anything outside
+ * STROKE_JOIN_MODES at the op boundary, so a value arriving here that this switch
+ * does not know means the two lists have drifted, and a silent fallback would
+ * paint the wrong corner forever without saying so.
+ *
+ * @param {object} CanvasKit - the CanvasKit module (its StrokeJoin enum)
+ * @param {string} join - a core/properties.js STROKE_JOIN_MODES id
+ * @returns {object} the CanvasKit.StrokeJoin member
+ *
+ * @example skJoin(CanvasKit, "miter") // CanvasKit.StrokeJoin.Miter
+ * @example skJoin(CanvasKit, "bevel") // CanvasKit.StrokeJoin.Bevel
+ */
+function skJoin(CanvasKit, join) {
+  if (join === "miter") return CanvasKit.StrokeJoin.Miter;
+  if (join === "round") return CanvasKit.StrokeJoin.Round;
+  if (join === "bevel") return CanvasKit.StrokeJoin.Bevel;
+  throw new Error(`paintIR(skia): unknown stroke join "${join}" — core/properties.js STROKE_JOIN_MODES and this translation have drifted`);
 }
 
 /** Command (mutates `p`). Sets a solid color OR a gradient shader on a Paint. A

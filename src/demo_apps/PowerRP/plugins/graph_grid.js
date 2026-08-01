@@ -28,7 +28,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, props, STROKE_TRIM_KEYS } from "../core/properties.js";
+import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, tickValues, minorTickValues, minorSubdivisions, easedReveal, clamp01 } from "../core/graph_scale.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
@@ -102,7 +102,7 @@ export const graphGridPlugin = {
     { key: "growLagRatio", label: "Stagger", kind: "number", min: 0, max: 1, category: CAT, help: "How staggered the snake-in is: 0 draws every line together, 1 draws them strictly one after another." },
     { key: "growEase", label: "Grow ease", kind: "select", options: EASES, category: CAT, help: "Easing applied to each line's draw-on." },
     { key: "growDirection", label: "Grow order", kind: "select", options: GROW_DIRS, optionLabels: GROW_DIR_LABELS, category: CAT, help: "The order lines snake in: verticals-then-horizontals (the classic), reversed, from the center out, or from the edges in." },
-    ...props(...STROKE_TRIM_KEYS),
+    ...props(...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
     ...props("opacity"),
   ],
   /**

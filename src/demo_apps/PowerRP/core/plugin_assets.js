@@ -217,6 +217,10 @@ const HOST_MODULES = Object.freeze({
   defaults: properties.defaults,
   customProps: properties.customProps,
   STROKE_TRIM_KEYS: properties.STROKE_TRIM_KEYS,
+  // The two lists travel TOGETHER — a plugin asset that splices the trim rows
+  // splices these too, exactly as the nine in-repo plugins do
+  // (tests/stroke_join_keys_test.js gates that pairing rather than trusting it).
+  STROKE_JOIN_KEYS: properties.STROKE_JOIN_KEYS,
   // ANGLE arithmetic, shared with the Inspector's angle dial so a widget that
   // wraps a heading wraps it the SAME way the dial draws it (core/properties.js
   // is the one home for that convention — a plugin asset restating `((d%360)+360)%360`

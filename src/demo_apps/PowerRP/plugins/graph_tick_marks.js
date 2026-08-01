@@ -25,7 +25,7 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
-import { bundle, props, STROKE_TRIM_KEYS } from "../core/properties.js";
+import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, tickValues, minorTickValues, minorSubdivisions, formatTick } from "../core/graph_scale.js";
 import * as T from "../core/transform.js";
 import { path, text } from "../render_gpu/ir.js";
@@ -178,7 +178,7 @@ export const graphTickMarksPlugin = {
     { key: "labelSuffix", label: "Label suffix", kind: "text", category: CAT, help: "Text appended to every label (e.g. '°' or 'ms')." },
     { key: "skipEveryN", label: "Label every N", kind: "number", min: 1, category: CAT, help: "Draw a label only every Nth major tick — the pragmatic way to thin dense labels (matplotlib has no auto collision-avoidance)." },
     { key: "excludeOriginTick", label: "Hide origin tick", kind: "boolean", category: CAT, help: "Suppress the redundant '0' where the axes cross." },
-    ...props(...STROKE_TRIM_KEYS),
+    ...props(...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
     ...props("opacity"),
   ],
   /**

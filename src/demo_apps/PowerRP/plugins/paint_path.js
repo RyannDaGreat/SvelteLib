@@ -85,7 +85,7 @@
 import { standardBBoxAnchors } from "../core/derive.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num } from "../core/shapes.js";
-import { bundle, defaults, props, STROKE_TRIM_KEYS } from "../core/properties.js";
+import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { elementActive, visibleElements, visibleIndices, withElementFieldValue, withElementInserted } from "../core/lists.js";
 import { path } from "../render_gpu/ir.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
@@ -634,7 +634,7 @@ export const paintPathPlugin = {
     // strokeMaterial, so they land in the Stroke Material Inspector section right
     // beside stroke/strokeWidth — the SAME rows every stroked box inherits. `= t`
     // on strokeEnd animates the stroke drawing itself on across a slide.
-    ...props(...STROKE_TRIM_KEYS),
+    ...props(...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS),
     ...props("fill", { fill: { help: "The color or gradient that fills the path's closed subpaths (only when Closed is on). Leave it transparent for a stroke-only path." } }),
     ...props("opacity"),
   ],

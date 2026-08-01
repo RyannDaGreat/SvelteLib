@@ -182,6 +182,58 @@ export const STROKE_CAP_LABELS = { flat: "Flat", round: "Round", taper: "Taper" 
 export const STROKE_CAP_FLAT = "flat";
 
 /**
+ * THE STROKE-JOIN modes: how a stroke turns a CORNER. The sibling of the caps —
+ * a cap finishes a free END, a join finishes an interior VERTEX — and unlike the
+ * caps it applies to every stroke, trimmed or not, closed or open.
+ *
+ * The ids are the SVG `stroke-linejoin` attribute values verbatim, which is not a
+ * naming choice but a discovery: the exporter is then a pass-through with no
+ * translation layer, and a translation layer is where two spellings drift apart.
+ * The same three words are Skia's `StrokeJoin` members lowercased and PDF's three
+ * line-join codes, so all three backends already speak this vocabulary.
+ *
+ * "miter" extends both outer edges until they meet in a point — the sharp corner,
+ * and today's rendering everywhere; "round" arcs a disc of radius width/2 across
+ * the corner; "bevel" cuts straight across between the two outer edge ends.
+ *
+ * Single-sourced here so the property rows, the op validation and the three
+ * backends agree on the exact ids (the STROKE_CAP_MODES precedent, which says the
+ * same); render_gpu/ir.js imports this list for its op validation.
+ */
+export const STROKE_JOIN_MODES = ["miter", "round", "bevel"];
+export const STROKE_JOIN_LABELS = { miter: "Miter (sharp)", round: "Round", bevel: "Bevel (flat)" };
+/** The join id that is today's rendering everywhere — the ABSENT default, so a
+ *  document authored before this row renders byte-identically. */
+export const STROKE_JOIN_MITER = "miter";
+
+/**
+ * THE MITER LIMIT: the ratio past which a miter joint gives up and renders as a
+ * bevel, so an ever-sharper corner cannot grow an ever-longer spike.
+ *
+ * For a corner of interior angle θ the miter tip reaches (width/2)/sin(θ/2) past
+ * the vertex, i.e. a multiple 1/sin(θ/2) of the half-width — and THAT ratio is
+ * what the limit bounds. So a limit L gives up at θ = 2·asin(1/L): L = 4 keeps
+ * the point down to about 29°, L = 10 down to about 11.5°, L = 1 never miters.
+ *
+ * 4 IS NOT AN ARBITRARY PICK AND IT IS NOT COPIED FROM ONE BACKEND. It is Skia's
+ * SkPaint default AND SVG's `stroke-miterlimit` initial value, so it is what every
+ * pixel this app has ever drawn to a screen or an SVG already used — choosing
+ * anything else would silently restyle every existing deck. PDF's own default is
+ * 10, which is the ONE backend that disagreed; render_gpu/pdf_backend.js therefore
+ * STATES this number rather than inheriting its own (measured: a 20° corner at
+ * width 24 spiked 66px past the vertex in the PDF export while the SVG export and
+ * the painter both bevelled it flat).
+ *
+ * The row has no hard max — a huge limit is a legitimate "never give up" — but a
+ * limit below 1 is geometrically meaningless (no corner can beat a ratio of 1),
+ * which is where the row's `min` comes from.
+ */
+export const STROKE_MITER_LIMIT = 4;
+/** The smallest meaningful limit: the miter tip always reaches at least the
+ *  half-width, so a ratio under 1 can never be satisfied and means "never miter". */
+export const STROKE_MITER_LIMIT_MIN = 1;
+
+/**
  * THE WIDGET-COMPOSITE BLEND MODES (manifest Round 12D "BLEND MODES", whose
  * spec reads "normal/add/multiply/screen/..." — this is the "..."): how a
  * widget's own draw combines with the backdrop. The user ruling was "everything
@@ -728,6 +780,67 @@ export function strokeMaterialIsOn(state) {
   return !(stroke && typeof stroke === "object" && !Array.isArray(stroke) && stroke.type === "none");
 }
 
+/**
+ * Pure function. Should the MITER LIMIT row show? Only when the stroke is on AND
+ * its join is Miter — the limit is a knob ON the miter, meaningless for round or
+ * bevel (neither can grow a spike, so neither has a length to cap). This is the
+ * "subcategory for the dropdown" the miter-limit request asked for, expressed the
+ * way this Inspector already expresses conditional rows.
+ *
+ * It COMPOSES strokeMaterialIsOn rather than re-testing the stroke: a bare join
+ * check would leave the limit row sitting under an Off stroke, which is the exact
+ * complaint that produced strokeMaterialIsOn in the first place.
+ *
+ * Args:
+ *   state (object): the widget's evaluated state (`.stroke` and `.strokeJoin`)
+ *
+ * Returns:
+ *   boolean — true when the miter-limit row should show
+ *
+ * @example strokeJoinIsMiter({ stroke: "#000", strokeJoin: "miter" }) // true
+ * @example strokeJoinIsMiter({ stroke: "#000", strokeJoin: "round" }) // false
+ * @example strokeJoinIsMiter({ stroke: "#000" }) // true (absent join IS miter)
+ * @example strokeJoinIsMiter({ stroke: { type: "none" } }) // false (nothing to join)
+ */
+export function strokeJoinIsMiter(state) {
+  return strokeJoinApplies(state) && (state?.strokeJoin ?? STROKE_JOIN_MITER) === STROKE_JOIN_MITER;
+}
+
+/**
+ * Pure function. Can a JOIN reach this widget's stroke at all? Only a PLAIN
+ * stroke — solid or gradient — is drawn by stroking the author's own outline with
+ * a Skia Paint, which is the only thing a join setting acts on. A stroke MATERIAL
+ * (wavy, dashes, along-gradient, the brushes) rebuilds or resamples that outline
+ * and draws its own geometry, so a join id would either land on sampling
+ * artefacts or on nothing (render_gpu/skia/stroke_materials.js strokePaintOf says
+ * which, per material).
+ *
+ * So the two join rows hide behind a material rather than sitting there inert —
+ * the same reason strokeMaterialIsOn hides the whole stroke block behind an Off
+ * stroke, and the same standing rule that a control which looks settable and
+ * changes nothing is a lie.
+ *
+ * A local re-implementation of render_gpu/ir.js's isMaterialPaint for the same
+ * reason strokeMaterialIsOn re-implements isPaintOff: ir.js imports FROM this
+ * module, so the reverse import would cycle.
+ *
+ * Args:
+ *   state (object): the widget's evaluated state (only `.stroke` is read)
+ *
+ * Returns:
+ *   boolean — true when the join rows should show
+ *
+ * @example strokeJoinApplies({ stroke: "#000000" }) // true (a plain solid stroke)
+ * @example strokeJoinApplies({ stroke: { type: "linear", stops: [] } }) // true (a gradient strokes the same way)
+ * @example strokeJoinApplies({ stroke: { type: "material", material: { id: "wavy" } } }) // false
+ * @example strokeJoinApplies({ stroke: { type: "none" } }) // false (no stroke to join)
+ */
+export function strokeJoinApplies(state) {
+  const stroke = state?.stroke;
+  const isMaterial = !!(stroke && typeof stroke === "object" && !Array.isArray(stroke) && stroke.type === "material");
+  return strokeMaterialIsOn(state) && !isMaterial;
+}
+
 export const PROPS = {
   // ── positioning (bbox) ──────────────────────────────────────────────────────
   x: { label: "X", kind: "number", category: "positioning", help: "Horizontal position of the widget's top-left corner, in canvas units (right is positive)." },
@@ -881,6 +994,31 @@ export const PROPS = {
   strokePhase: { label: "Stroke phase", kind: "angle", category: "strokeMaterial", help: "Rotates where position 0 sits along the outline, in degrees — and where a dashed/dotted pattern starts and collapses. Keyframe 0° → 360° and the pattern marches once around the shape like a train on a loop of track; it wraps seamlessly, so 370° looks exactly like 10°.", visibleWhen: strokeMaterialIsOn },
   strokeCapStart: { label: "Start cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the START of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point like a lifted brush. No effect on a closed shape drawn at full length (it has no free end).", visibleWhen: strokeMaterialIsOn },
   strokeCapEnd: { label: "End cap", kind: "select", options: STROKE_CAP_MODES, optionLabels: STROKE_CAP_LABELS, category: "strokeMaterial", help: "How the END of a trimmed/open stroke is finished: Flat cuts it flush, Round adds a half-disc, Taper narrows it to a point. No effect on a closed shape drawn at full length (it has no free end).", visibleWhen: strokeMaterialIsOn },
+
+  // ── formatting: THE STROKE-JOIN pair ─────────────────────────────────────────
+  // Where the caps above finish a stroke's free ENDS, these two finish its
+  // CORNERS — so unlike the caps they bite on every stroke, closed or open,
+  // trimmed or full. Same ABSENT-IS-LEGACY discipline as the whole block: neither
+  // carries a `default`, an absent join IS miter and an absent limit IS
+  // STROKE_MITER_LIMIT, and render_gpu/ir.js drops either at the op boundary when
+  // it holds the identity, so no existing document's state or rendering moves.
+  //
+  // strokeMiter's row hides unless the join is Miter (strokeJoinIsMiter) — it is
+  // the miter's own sub-option, and a limit row beside a Round join would be a
+  // control that reports nothing and changes nothing. Both rows hide behind a
+  // stroke MATERIAL too (strokeJoinApplies): a material draws its own resampled
+  // geometry, so a join id cannot reach the author's corners.
+  //
+  // NO `step`, deliberately: the strokeOffset note above applies verbatim — no
+  // `default` means defaultStep's precision fallback gives continuous scrubbing,
+  // and tests/default_step_test.js pins opacity/particleFade as the ONLY two
+  // number props allowed to declare one.
+  // `min` but no `max`: a ratio under 1 is geometrically unsatisfiable (see
+  // STROKE_MITER_LIMIT_MIN), while a huge limit is the legitimate "never give up
+  // on the point" — the SCRUB RANGE vs HARD BOUNDS split, landing on a hard floor
+  // and no ceiling.
+  strokeJoin: { label: "Stroke join", kind: "select", options: STROKE_JOIN_MODES, optionLabels: STROKE_JOIN_LABELS, category: "strokeMaterial", help: "How the outline turns a CORNER: Miter runs both outer edges out to a sharp point, Round arcs across it, Bevel cuts straight across. A sharp enough corner would give Miter an arbitrarily long spike, so it falls back to a bevel past the miter limit below.", visibleWhen: strokeJoinApplies },
+  strokeMiter: { label: "Miter limit", kind: "number", min: STROKE_MITER_LIMIT_MIN, category: "strokeMaterial", help: "How long a mitered point may get before it gives up and bevels, measured in multiples of the half stroke width. 4 (the standard) keeps the point down to about a 29° corner, 10 down to about 11°, and 1 bevels every corner. Only applies to the Miter join.", visibleWhen: strokeJoinIsMiter },
 
   // ── formatting: opacity ─────────────────────────────────────────────────────
   // Bounded [0,1] → NumericField range-scales its scrub automatically (the fix
@@ -1409,6 +1547,13 @@ export const STROKE_TRIM_KEYS = ["strokeStart", "strokeEnd", "strokePhase", "str
  *  offset is a modifier OF the width, so the two read as one thought. */
 export const STROKE_OFFSET_KEYS = ["strokeOffset"];
 
+/** THE STROKE-JOIN keys, single-sourced for the same reason the two lists above
+ *  are. Order = Inspector row order: the corner treatment, then the one knob that
+ *  modifies it. They travel as a PAIR and they travel WITH STROKE_TRIM_KEYS —
+ *  every widget that splices the trim rows standalone splices these too, which
+ *  tests/stroke_join_keys_test.js turns from a convention into a gate. */
+export const STROKE_JOIN_KEYS = ["strokeJoin", "strokeMiter"];
+
 export const BUNDLES = {
   positioning: ["x", "y", "cx", "cy", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"],
   // The endpoint-pair positioning every arrow-family widget shares (from/to
@@ -1423,9 +1568,9 @@ export const BUNDLES = {
   // in strokedBox) so EVERY stroked box inherits drawing-on/caps for free; they
   // carry no default (absent-is-legacy), so composing them changes no widget's
   // stored state or rendering until a knob moves.
-  strokedBorder: ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS],
+  strokedBorder: ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
   // The full filled-and-stroked box: fill + the border slice (trim keys included).
-  strokedBox: ["fill", "stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS],
+  strokedBox: ["fill", "stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
   // EDGE-CROP INSETS (manifest "Edge-crop insets"): the four per-edge source
   // trims. Media widgets (image/video) compose this; groups will too (their
   // subtree-crop consumption is a follow-up — the bundle is defined once here).
@@ -1542,7 +1687,7 @@ export function props(...args) {
  *   object[]: resolved rows
  *
  * @example bundle("strokedBorder").map((r) => r.key)
- * ["stroke","strokeWidth","strokeOffset","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd"]
+ * ["stroke","strokeWidth","strokeOffset","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd","strokeJoin","strokeMiter"]
  * @example bundle("positioning").map((r) => r.key)
  * ["x","y","cx","cy","w","h","rotation","rotationAnchor.x","rotationAnchor.y","z"]
  * @example // cx/cy keep their OWN unique key (never collide with x/y — a

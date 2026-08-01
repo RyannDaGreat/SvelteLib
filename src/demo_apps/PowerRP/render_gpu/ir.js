@@ -17,7 +17,7 @@
  *
  *   {op:"rect", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity}
  *   {op:"ellipse", cx, cy, rx, ry, fill, stroke, strokeWidth, opacity}
- *   {op:"polyline", points:[[x,y],...], width, color, opacity}   // round caps/joins
+ *   {op:"polyline", points:[[x,y],...], width, color, opacity}   // round caps/joins — POLYLINE_CAP/POLYLINE_JOIN, fixed by the op
  *   {op:"polygon", points:[[x,y],...], fill, opacity}            // CONVEX fill (fan-triangulated)
  *   {op:"text", text, x, y, size, color, bold, opacity, font}    // top-left origin, single run; font = registry id (fonts.js)
  *   {op:"image", ref, x, y, w, h, opacity}                       // ref → media registry key
@@ -50,7 +50,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS } from "../core/properties.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
@@ -766,6 +766,132 @@ function stampStrokeTrim(cmd, trim) {
   return out;
 }
 
+// ── THE STROKE-JOIN framework (strokeJoin + strokeMiter) ─────────────────────
+// A universal stroke option, declared in core/properties.js and stamped on at the
+// SAME ports seam as the trim and offset fields. It says HOW A STROKE TURNS A
+// CORNER, so unlike the caps it bites on every stroke — closed or open, trimmed
+// or full.
+//
+// THIS BLOCK IS THE ONE PLACE THAT ANSWERS "WHAT JOIN DOES THIS STROKE USE".
+// Before it existed the answer was six hardcoded constants across three files in
+// three spellings (CanvasKit.StrokeJoin.Round, stroke-linejoin="round", "1 j"),
+// with the plain-stroke case answered by NOBODY — every backend silently
+// inheriting its OWN default, which is how the PDF exporter came to draw a 20°
+// corner with a 66px spike that neither the painter nor the SVG export had.
+// Every backend now reads opStrokeJoin/opStrokeMiter and states the answer.
+//
+// ABSENT-IS-LEGACY, the whole block's discipline: the identity is (miter,
+// STROKE_MITER_LIMIT) — what Skia and SVG already did — and the identity is
+// ABSENT from the op, so a document authored before this feature produces a
+// byte-identical op and a byte-identical picture.
+
+/** Identity join — both outer edges run out to a sharp point. Skia's SkPaint
+ *  default and SVG's initial value, i.e. what every existing deck already draws. */
+export const STROKE_JOIN_DEFAULT = STROKE_JOIN_MITER;
+
+/**
+ * THE POLYLINE OP'S OWN CONTRACT, single-sourced. `polyline` is documented at the
+ * top of this file as "round caps/joins" — a fixed property of the OP, not of the
+ * widget, because it is the primitive the arrow family draws its shafts with and a
+ * mitered shaft tip is not what an arrow means. That contract used to be restated
+ * in three dialects (paint_skia's `StrokeJoin.Round`, svg_backend's
+ * `stroke-linejoin="round"`, pdf_backend's `1 j`); all three now read these two
+ * names, so the op cannot mean one thing on screen and another in an export.
+ */
+export const POLYLINE_JOIN = "round";
+export const POLYLINE_CAP = "round";
+
+/**
+ * Pure function. THE join this op's stroke turns its corners with — the single
+ * reader every backend calls. An absent field is the identity (miter), which is
+ * what every stroke in every pre-feature document renders as.
+ *
+ * @example opStrokeJoin({strokeJoin: "round"}) // "round"
+ * @example opStrokeJoin({strokeJoin: "bevel"}) // "bevel"
+ * @example opStrokeJoin({}) // "miter" (absent = the identity, byte-identical legacy)
+ */
+export function opStrokeJoin(cmd) {
+  return cmd.strokeJoin ?? STROKE_JOIN_DEFAULT;
+}
+
+/**
+ * Pure function. THE miter limit this op's stroke gives up at, as a multiple of
+ * the half stroke width (see core/properties.js STROKE_MITER_LIMIT for the
+ * 1/sin(θ/2) relation). The single reader every backend calls, and the reason
+ * pdf_backend can stop inheriting PDF's own default of 10.
+ *
+ * @example opStrokeMiter({strokeMiter: 10}) // 10
+ * @example opStrokeMiter({strokeMiter: 1}) // 1 (never miter — bevel every corner)
+ * @example opStrokeMiter({}) // 4 (absent = Skia's and SVG's own default)
+ */
+export function opStrokeMiter(cmd) {
+  return cmd.strokeMiter ?? STROKE_MITER_LIMIT;
+}
+
+/**
+ * Near-pure helper (throws on bad input — the normalizeStrokeOffset discipline).
+ * Validates the raw join aspects and returns ONLY the non-identity ones, so an
+ * identity/absent pair returns {} and the op stays byte-identical.
+ *
+ * @param {string} cmdName - the op name, for error messages
+ * @param {object} src - {strokeJoin?, strokeMiter?}
+ * @returns {object} {} or a subset of {strokeJoin, strokeMiter}
+ *
+ * @example normalizeStrokeJoin("rect", {}) // {}
+ * @example normalizeStrokeJoin("rect", {strokeJoin: "miter", strokeMiter: 4}) // {}
+ * @example normalizeStrokeJoin("rect", {strokeJoin: "bevel"}) // {strokeJoin: "bevel"}
+ * @example normalizeStrokeJoin("rect", {strokeMiter: 10}) // {strokeMiter: 10}
+ */
+export function normalizeStrokeJoin(cmdName, src = {}) {
+  const out = {};
+  const join = src.strokeJoin;
+  if (join != null) {
+    if (!STROKE_JOIN_MODES.includes(join))
+      throw new Error(`${cmdName}: strokeJoin must be one of ${JSON.stringify(STROKE_JOIN_MODES)}, got ${JSON.stringify(join)}`);
+    if (join !== STROKE_JOIN_DEFAULT) out.strokeJoin = join;
+  }
+  const miter = src.strokeMiter;
+  if (miter != null) {
+    if (typeof miter !== "number" || !Number.isFinite(miter))
+      throw new Error(`${cmdName}: strokeMiter must be a finite number, got ${JSON.stringify(miter)}`);
+    if (miter < STROKE_MITER_LIMIT_MIN)
+      throw new Error(`${cmdName}: strokeMiter is a ratio of the half stroke width and cannot be below ${STROKE_MITER_LIMIT_MIN} (a miter tip always reaches at least that far), got ${JSON.stringify(miter)}`);
+    if (miter !== STROKE_MITER_LIMIT) out.strokeMiter = miter;
+  }
+  return out;
+}
+
+/**
+ * Pure function. Stamps a widget's UNIVERSAL STROKE JOIN (read from its STATE)
+ * onto the stroked ops it emitted — the exact ports-seam twin of applyStrokeTrim
+ * and applyStrokeOffset, sharing their OWNERSHIP RULE (a node's own stroke and its
+ * own effect wrapper's content, never a cropSubtree's foreign content). A widget
+ * at the identity — every existing document — returns `cmds` UNCHANGED.
+ *
+ * @param {object} state - the widget's evaluated state
+ * @param {object[]} cmds - the node's emitted IR
+ * @returns {object[]} cmds, with the join stamped onto stroked ops (or unchanged)
+ *
+ * @example applyStrokeJoin({}, [{op: "rect", stroke: [0,0,0,1]}]) // [{op: "rect", stroke: [0,0,0,1]}]
+ * @example applyStrokeJoin({strokeJoin: "bevel"}, [{op: "rect", stroke: [0,0,0,1], strokeWidth: 2}])[0].strokeJoin // "bevel"
+ * @example applyStrokeJoin({strokeJoin: "bevel"}, [{op: "rect", fill: [1,0,0,1]}])[0].strokeJoin // undefined (no stroke to join)
+ */
+export function applyStrokeJoin(state, cmds) {
+  const join = normalizeStrokeJoin("applyStrokeJoin", state ?? {});
+  if (Object.keys(join).length === 0) return cmds;
+  return cmds.map((cmd) => stampStrokeJoin(cmd, join));
+}
+
+/** Pure helper for applyStrokeJoin: the stampStrokeTrim recursion, same
+ *  ownership rule (own stroke + own effect wrapper, never foreign crop content). */
+function stampStrokeJoin(cmd, join) {
+  let out = cmd;
+  if (cmd.stroke != null) out = { ...out, ...join };
+  if (cmd.op === "effectSubtree" && Array.isArray(cmd.content))
+    out = { ...out, content: cmd.content.map((c) => stampStrokeJoin(c, join)) };
+  return out;
+}
+
 // ── THE STROKE-ALIGNMENT framework (strokeOffset) ────────────────────────────
 // A universal stroke option, declared in core/properties.js and stamped on at the
 // SAME ports seam as the trim fields. `strokeOffset` ∈ [-1, 1] says WHICH SIDE of
@@ -1098,6 +1224,7 @@ export function rect({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null,
     strokeWidth, opacity,
     ...normalizeStrokeTrim("rect", trim), // stroke-trim fields ride along only when non-identity (absent-is-legacy)
     ...normalizeStrokeOffset("rect", trim), // ditto the alignment field: absent = centered
+    ...normalizeStrokeJoin("rect", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
   };
 }
 
@@ -1115,6 +1242,7 @@ export function ellipse({ cx, cy, rx, ry, fill = null, stroke = null, strokeWidt
     strokeWidth, opacity,
     ...normalizeStrokeTrim("ellipse", trim),
     ...normalizeStrokeOffset("ellipse", trim),
+    ...normalizeStrokeJoin("ellipse", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
   };
 }
 
@@ -1598,6 +1726,7 @@ export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule 
     stroke: stroke === null ? null : parsePaint(stroke),
     ...normalizeStrokeTrim("path", trim),
     ...normalizeStrokeOffset("path", trim),
+    ...normalizeStrokeJoin("path", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
     // `blur` (optional): a Gaussian MASK-blur radius in LOCAL units — a general
     // soft-path enhancement any consumer can reuse (the corkboard YARN uses it for
     // its soft cast shadow, a blurred stroke, avoiding a heavier effectSubtree
@@ -2151,6 +2280,7 @@ export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke 
     strokeWidth, opacity, content,
     ...normalizeStrokeTrim("cropSubtree", trim), // a crop/media FRAME's border trims too
     ...normalizeStrokeOffset("cropSubtree", trim), // ditto the alignment field: absent = centered
+    ...normalizeStrokeJoin("cropSubtree", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
   };
 }
 
