@@ -1356,6 +1356,82 @@ consumers of one renderer.
   that I edit should be contained inside the properties. And yet I don't see any
   property that actually contains this rich text... huh, what the fuck is
   happening." Then reconcile it with the core invariant.
+#### R6-13 ANSWER + DIAGNOSIS (wave 1, agent W1-H; report `.frenzy/round6/W1-H.md`, measurements `.frenzy/round6/W1-H-measurements.json`)
+
+**WHERE RICH-TEXT STATE LIVES — AND THE ANSWER IS REASSURING.**
+`doc.slides[i].delta.items.<id>.text = {runs, paras}`. **It is an ORDINARY PROPERTY. Nothing
+is hidden and nothing is privileged.** What is missing is the Inspector **ROW**, not the
+property — `plugins/text.js:113-116` omits it deliberately. The write seam is identical to
+every other row: `TextEditController:199` -> `web/app.svelte.js:1839`
+`setPreview(["items",id,"text"])` -> `commitPreview`. Confirmed against the user's REAL data
+(`projects/Untitled cheese/doc.json`, slide 3, item `14ko31ovsn`).
+
+**THE CORE INVARIANT IS SATISFIED.** It is property state folded generically
+(`core/deltas.js:30-36` — arrays are leaves, so `runs`/`paras` are two leaves), and it
+**keyframes by editing on a slide — measured**. The only things absent are the keyframe
+diamond, multi-select entry, and `=`, and **all three are downstream of the missing row**,
+not of the storage design. W1-F's finding is confirmed and sharpened: the deciding line is
+`core/expressions.js:1798-1801`, where the refusal lives in the WALK rather than the
+predicate — `isEquationValue` would happily accept a `text.runs.0.size` path, but nothing
+ever generates one.
+
+**THE DOCUMENTED TWEEN BEHAVIOUR IS FALSE, AND THE CODE IS BETTER THAN ITS DOCS.**
+`core/richtext.js:32-34` and the dump manifest at `:3293` both say rich text "snaps
+discretely". It does not: it **interpolates per-run, per-key** whenever run count and key
+sets match — proven both bare-node and live (size 48/18 -> 54/24 at alpha 0.5). **This is a
+DOC defect, not a code defect**, and both places must be corrected.
+
+**R6-13.1 — WHY +/- FLATTENS.** `web/TextFormatToolbar.svelte:338 sizeDelta` returns ONE
+ABSOLUTE `{size:N}`, and `applyRunStyle:1013` spreads it across every covered run. Measured
+on a 48+18 selection, select-all, one step: the toolbar yields **one run at 38**, the
+keyboard path (`TextEditController:406` — different code, different base) yields **one run at
+50**. So **the two entry points disagree with each other**, and runs also MERGE, destroying
+the boundary. A UNIFORM 36->38 is correct, so this is a mixed-selection-only defect.
+**FIX:** add a pure `adjustRunSize(runs,start,end,delta,inherited)` to `core/richtext.js`
+(precedent: every op there is a named pure primitive; there is no function-delta pattern to
+imitate), route BOTH entry points through the controller's `stepSize`, and delete the
+toolbar's duplicate `sizeDelta`/`SIZE_STEP`/`DEFAULT_SIZE`. On the resolved/unresolved seam:
+it MUST read resolved and write explicit, which is legal here because a click is a user
+choice and only selected runs get stamped.
+
+**R6-13.2 — THE SCRUBBABLE SIZE READOUT: use the BARE `src/lib/DraggableNumber.svelte`, NOT
+`NumericField`** — because `NumericField`'s `ƒ` would be **a lie**: a run size cannot hold an
+equation. Precedent is explicit at `web/app.css:8346` ("a material knob's scrubber is a BARE
+DraggableNumber") plus RenderCenterModal. All three hazards were measured clear: pointer-lock
+`movementY` is immune to the toolbar's `scale(1/boxScale)`; `onPointerDown` already
+preventDefaults and `textEditing` stays true while FontPicker's input takes focus; and the
+slot fits (toolbar 516x32, readout 22x24, buttons 26x26). Step needs no declaration —
+`defaultStep(36)` = 1 is already right. **It must be RELATIVE, so it builds ON the R6-13.1
+fix, not before it.**
+
+**R6-13.4 — THE DEAD DROPDOWNS: the user's claim is TRUE for his actual data, and it is SIX
+rows, not two.** Pixel-diffed: a bare run -> the rows work; one styled run -> they work;
+**ALL runs styled -> byte-identical output**; the user's real run -> **byte-identical**. **All
+three of his decks are that case.** Worse, `Untitled cheese` shows box `36/system/#1a1a2e`
+while the glyphs render `76/futura/#000000` — **the rows display a value the canvas
+contradicts**. `paras` is materialised too, hence six dead rows. And R6-13.1's flatten bug
+MANUFACTURES this state. **PRECEDENT-BACKED ANSWER: HIDE them via `visibleWhen`**
+(`web/Inspector.svelte:281-298`), resting on the user's OWN analogous ruling at
+`core/properties.js:702-708` — *"I still have stroke width options even when stroke material
+is off, which is kind of dumb"* — with 7 rows already doing exactly this and pinned by
+`tests/stroke_off_test.js`. **Correctly ruled OUT: `commandUnavailableReason` governs
+COMMANDS, not rows — do not invent a row equivalent.** Caveat to accept: `visibleWhen` drops
+the `ƒ` along with the row (the same gap R6-7 records).
+
+**Violations recorded:** `SIZE_STEP` is mirrored in two files and **its fallback has ALREADY
+DRIFTED** (38 vs 50) — the hand-maintained-mirror class again; `DEFAULT_PARA_SIZE` is `const`
+not `export const` (`core/richtext.js:793`), producing **12 re-declarations, one of which
+documents itself as a mirror**; stale tween doctrine in two places (above);
+`core/document.js:1936` reads a `richText` capability **no plugin declares**; **three text
+probes bake in the SHADOWED 11-key run they exist to catch**; magic numbers in
+`TextFormatToolbar.svelte:281`'s range input; an un-actioned self-TODO at
+`core/expressions.js:1487`; and pervasive `-webkit-` prefixes (15x, codebase-wide, not this
+item's fault).
+
+**Process note, to the agent's credit:** its first probe run was contaminated (reused item ids
+left a stale edit session); it caught that, fixed it, and re-ran. The numbers above are from
+the clean run.
+
 - **R6-13.4** The text widget's size/font dropdowns DO NOTHING for rich text. Rich
   and plain text are fundamentally different; stop offering controls that do not apply.
 
