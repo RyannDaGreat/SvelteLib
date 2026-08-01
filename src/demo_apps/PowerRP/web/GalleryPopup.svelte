@@ -70,6 +70,15 @@
 -->
 <script module>
   import { browserNumberSetting } from "./settings.js";
+  // The viewport clamp and its margin MOVED to web/popoverPlacement.js when
+  // ContextMenu became a second consumer (it had none, and put its menu
+  // off-screen on a right-click near an edge). Re-exported here because this
+  // component authored the math and outside callers already reach for it by this
+  // name. Moving it also caught that TWO of its four @examples were WRONG —
+  // `web/` is outside tests/doctest_test.js's SEARCH_DIRS, so they had never been
+  // executed; tests/popover_placement_test.js now pins all five.
+  import { popupPosition, VIEWPORT_MARGIN } from "./popoverPlacement.js";
+  export { popupPosition, VIEWPORT_MARGIN };
 
   /** The popup's DEFAULT content box, before any user resize — a bit taller
    * than CanvasToolbar's grid cap (--a-canvas-toolbar-max-h) since this surface
@@ -82,11 +91,6 @@
    * would no longer fit inside the popup, leaving no way to grow it back. */
   const MIN_WIDTH = 220;
   const MIN_HEIGHT = 180;
-
-  /** Gap kept between the popup and the viewport edge (the Dropdown.svelte
-   * VIEWPORT_MARGIN precedent, same value, same purpose — a hairline so the
-   * "never clipped" invariant has slack for sub-pixel rounding). */
-  const VIEWPORT_MARGIN = 6;
 
   /** How many result tiles are visible before the FIRST reveal grows the
    * window — plugins/iconify.js's PAGE_SIZE, imported by the caller and passed
@@ -101,56 +105,6 @@
   const WIDTH_SETTING = browserNumberSetting("powerrp.galleryPopup.width", DEFAULT_WIDTH, MIN_WIDTH, 900);
   const HEIGHT_SETTING = browserNumberSetting("powerrp.galleryPopup.height", DEFAULT_HEIGHT, MIN_HEIGHT, 900);
 
-  /**
-   * Pure function. The popup's fixed-position CSS box for one anchor rect,
-   * clamped so it never spills past the viewport: below the anchor by default,
-   * flipped above when there is no room below and above has more; horizontally
-   * clamped to keep its right edge on-screen.
-   *
-   * @param {{left:number, right:number, top:number, bottom:number}} anchorRect
-   * @param {number} width - requested popup width
-   * @param {number} height - requested popup height
-   * @param {number} viewportW
-   * @param {number} viewportH
-   * @returns {{left:number, top:number}}
-   *
-   * @example popupPosition({left:100, right:120, top:50, bottom:70}, 320, 360, 1200, 800)
-   * // {left: 100, top: 70} — plain case: below-left of the anchor, everything fits
-   * @example popupPosition({left:1000, right:1020, top:50, bottom:70}, 320, 360, 1200, 800)
-   * // {left: 874, top: 70} — right edge clamped to viewportW - VIEWPORT_MARGIN
-   * @example popupPosition({left:100, right:120, top:750, bottom:770}, 320, 360, 1200, 800)
-   * // {left: 100, top: 384} — no room below (800-770=30 < 360); flips above the anchor
-   * @example popupPosition({left:100, right:120, top:700, bottom:720}, 320, 500, 1200, 800)
-   * // {left: 100, top: 294} — NEITHER side has 500px (below: 80, above: 700); still
-   * // clamped so the bottom edge (top + height) never exceeds the viewport, rather
-   * // than flipping (which would only trade a bottom overflow for a top one).
-   */
-  export function popupPosition(anchorRect, width, height, viewportW, viewportH) {
-    const spaceBelow = viewportH - anchorRect.bottom;
-    const spaceAbove = anchorRect.top;
-    const flipUp = spaceBelow < height && spaceAbove > spaceBelow;
-    const rawTop = flipUp
-      ? anchorRect.top - height
-      : anchorRect.bottom;
-    // VERTICAL CLAMP — the horizontal clamp's missing twin. Flipping alone only
-    // picks the side with MORE room; when neither side actually holds the full
-    // height (a popup taller than the viewport, or an anchor with little room on
-    // either side), the un-clamped math still placed a box whose bottom edge ran
-    // past viewportH — MEASURED: an anchor near mid-viewport with height=360
-    // rendered a popup extending 84px past the bottom, taking its resize grips
-    // off-screen where no pointer event could ever reach them (the corner grips'
-    // whole reason to exist). Clamping BOTH edges is what "attempt to fill to
-    // that size" (user) means for a size the viewport genuinely cannot hold.
-    const top = Math.min(
-      Math.max(VIEWPORT_MARGIN, rawTop),
-      Math.max(VIEWPORT_MARGIN, viewportH - height - VIEWPORT_MARGIN),
-    );
-    const left = Math.min(
-      Math.max(VIEWPORT_MARGIN, anchorRect.left),
-      viewportW - width - VIEWPORT_MARGIN,
-    );
-    return { left, top };
-  }
 
   /**
    * Pure function. The clamped {width, height} a drag may settle on: never

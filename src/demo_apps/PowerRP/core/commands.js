@@ -200,6 +200,49 @@ export function commandUnavailableReason(cmd, app) {
 }
 
 /**
+ * Pure function. THE refusal sentence a surfacing shows for a gated command —
+ * the `requires` clause with its frame attached, and the ONLY place that frame
+ * is spelled.
+ *
+ * WHY THIS EXISTS (W3-C, round 6; CLAUDE-ORIGINATED, not a user request). The
+ * clause corpus was already perfect — MEASURED: 61 `requires` declarations, ~35
+ * distinct sentences, every one a lowercase noun phrase with no terminal period,
+ * i.e. all of them correctly complete "Unavailable — requires …". The DRIFT was
+ * entirely in the frame, which four panes had each transcribed by hand
+ * (web/Toolbar.svelte, web/ToolsPane.svelte, web/CommandPalette.svelte,
+ * web/Inspector.svelte) while two more had grown different frames for the same
+ * speech act. Four hand-copies of one sentence is four chances to disagree, and
+ * web/app.css:5463's claim that this is "one sentence style" was FALSE while they
+ * were separate — a comment asserting a uniformity that does not exist is worse
+ * than no comment, because it tells the next reader not to check.
+ *
+ * The shape is `offlineMessage()`'s (web/connectivity.js:248): one exported
+ * function, one condition, one sentence, pinned by a test so the app cannot grow
+ * a second wording. That precedent is named in the round's own doctrine
+ * (tests/connectivity_seam_test.js §3).
+ *
+ * THROWS on an empty reason rather than emitting "Unavailable — requires ." —
+ * `offlineMessage` throws on a headless sentence for the same reason, and the
+ * registry already treats a `when` without a `requires` as a defect the palette
+ * probe fails on. A caller with no reason must render nothing, not a stub.
+ *
+ * @param {string} reason - the clause completing the frame (a lowercase noun phrase)
+ * @returns {string}
+ *
+ * @example unavailableMessage("a selection")
+ * 'Unavailable — requires a selection'
+ * @example unavailableMessage("changes to save")
+ * 'Unavailable — requires changes to save'
+ * @example // composes with the resolved reason, never the raw field:
+ * // unavailableMessage(commandUnavailableReason(cmd, app))
+ */
+export function unavailableMessage(reason) {
+  const clause = String(reason ?? "").trim();
+  if (!clause) throw new Error("unavailableMessage: needs a reason clause");
+  return `Unavailable — requires ${clause}`;
+}
+
+/**
  * Query. Splits already-ranked `entries` into the ones that can run now and the
  * ones that cannot, each keeping its incoming relative order. A surfacing that
  * renders a LIST concatenates them (available first) — user ruling: "you can

@@ -31,7 +31,7 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import KeyCombo from "../../../lib/KeyCombo.svelte";
   import ShapePicker from "./ShapePicker.svelte";
-  import { commandUnavailable, commandUnavailableReason } from "../core/commands.js";
+  import { commandUnavailable, commandUnavailableReason, unavailableMessage } from "../core/commands.js";
   import { isStatic } from "./storageMode.js";
   // The save indicator's sentence — pure and doctested, so the four save states
   // are executed by the bare-node gate rather than read off a screenshot.
@@ -244,7 +244,7 @@
   <!-- The WHY, beneath the what — rendered only while the button is actually
        disabled, so it reads as the live reason and not a standing caveat (the
        Tools pane's rule, and its class). -->
-  {#if reason}<div class="tool-tip-requires">Unavailable — requires {reason}</div>{/if}
+  {#if reason}<div class="tool-tip-requires">{unavailableMessage(reason)}</div>{/if}
 {/snippet}
 
 <div class="toolbar">

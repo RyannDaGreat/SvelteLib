@@ -37,7 +37,7 @@
   import "iconify-icon";
   import KeyCombo from "../../../lib/KeyCombo.svelte";
   import { rpFuzzyMatchIndices } from "../core/fuzzy.js";
-  import { commandUnavailable, commandUnavailableReason, partitionByAvailability } from "../core/commands.js";
+  import { commandUnavailable, commandUnavailableReason, partitionByAvailability, unavailableMessage } from "../core/commands.js";
 
   let { app } = $props();
 
@@ -369,7 +369,7 @@
       {#if currentHelp || currentReason}
         <div class="palette-help">
           {#if currentHelp}<div class="palette-help-text">{currentHelp}</div>{/if}
-          {#if currentReason}<div class="tool-tip-requires">Unavailable — requires {currentReason}</div>{/if}
+          {#if currentReason}<div class="tool-tip-requires">{unavailableMessage(currentReason)}</div>{/if}
         </div>
       {/if}
     </div>

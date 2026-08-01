@@ -59,7 +59,7 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
-  import { commandUnavailable, commandUnavailableReason } from "../core/commands.js";
+  import { commandUnavailable, commandUnavailableReason, unavailableMessage } from "../core/commands.js";
   import { presetsForMaterial, materialDisplayName } from "../render_gpu/skia/material_presets.js";
 
   let { app } = $props();
@@ -333,7 +333,7 @@
                   <!-- The WHY, beneath the what. Rendered only when the row is
                        actually disabled, so it reads as the live reason rather
                        than a standing caveat. -->
-                  {#if reason}<div class="tool-tip-requires">Unavailable — requires {reason}</div>{/if}
+                  {#if reason}<div class="tool-tip-requires">{unavailableMessage(reason)}</div>{/if}
                 {/snippet}
                 <button
                   class="btn tool-action"

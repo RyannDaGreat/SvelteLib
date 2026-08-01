@@ -42,6 +42,7 @@
 -->
 <script>
   import "iconify-icon";
+  import { popupPosition } from "./popoverPlacement.js";
 
   let { x, y, entries = [], onclose } = $props();
 
@@ -50,6 +51,30 @@
 
   /** @type {HTMLDivElement|undefined} The menu panel, focused on open. */
   let menuEl = $state(undefined);
+
+  /** The VIEWPORT-CLAMPED position, once the menu has been measured. Null until
+   *  then, and the raw pointer point is used meanwhile — which is what the menu
+   *  did unconditionally before, and is correct for every click that is not near
+   *  an edge. @type {{left:number, top:number}|null} */
+  let pos = $state(null);
+
+  // CLAMP TO THE VIEWPORT. Until 2026-08-01 this menu wrote the raw pointer
+  // clientX/clientY straight into left/top, so a right-click near the right or
+  // bottom edge put it PARTLY OFF-SCREEN — entries unreachable, and on the bottom
+  // edge the whole menu could be. A pointer is the DEGENERATE anchor rect (zero
+  // size, at the cursor), which is exactly what popupPosition already handles:
+  // open down-right by default, flip up near the bottom, slide left near the
+  // right edge. Measured rather than assumed because the menu's height is its
+  // entry count and its width is its longest label — neither is known here.
+  // The size can only be read AFTER layout, so this runs in an effect and the
+  // first paint may use the raw point; Svelte flushes effects before the browser
+  // paints, so in practice the clamped value is what lands on screen.
+  $effect(() => {
+    if (!menuEl) return;
+    const r = menuEl.getBoundingClientRect();
+    pos = popupPosition({ left: x, right: x, top: y, bottom: y },
+      r.width, r.height, window.innerWidth, window.innerHeight);
+  });
   // Move focus INTO the menu on open. Two jobs at once: standard menu a11y, AND the
   // signal App.svelte's focusContext reads to raise the `popoverOpen` axis — so the
   // registry announces this menu's Escape "Close" (item 61, the HintBar Completeness
@@ -87,7 +112,7 @@
   role="menu"
   tabindex="-1"
   data-hint-popover="menu"
-  style={`left: ${x}px; top: ${y}px;`}
+  style={`left: ${pos ? pos.left : x}px; top: ${pos ? pos.top : y}px;`}
   onpointerdown={(e) => e.stopPropagation()}
 >
   {#each entries as entry (entry.label)}
