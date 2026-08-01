@@ -3089,7 +3089,7 @@ textarea {
   height: var(--a-gradient-swatch-h);
   padding: 0;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: var(--a-radius-control); /* app chrome is square */
   background: var(--gp-swatch);
   cursor: pointer;
 }
@@ -9012,7 +9012,7 @@ audio.ae-preview-media {
   color: var(--fg-dim);
   background: var(--a-hover-bg);
   border: 0;
-  border-radius: var(--radius);
+  border-radius: var(--a-radius-control); /* app chrome is square */
   cursor: pointer;
   text-transform: capitalize;
 }
@@ -9038,7 +9038,7 @@ audio.ae-preview-media {
   height: var(--a-brush-swatch-h);
   padding: 0;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: var(--a-radius-control); /* app chrome is square */
   cursor: pointer;
   background:
     var(--bp-swatch) center / contain no-repeat,
@@ -9134,7 +9134,7 @@ audio.ae-preview-media {
   color: var(--fg);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--a-radius-control); /* app chrome is square */
   cursor: pointer;
 }
 .code-modal-btn:hover {
@@ -9176,7 +9176,7 @@ audio.ae-preview-media {
   background: transparent;
   color: var(--fg);
   border: 1px solid transparent;
-  border-radius: var(--radius);
+  border-radius: var(--a-radius-control); /* app chrome is square */
   cursor: pointer;
   text-align: left;
 }
