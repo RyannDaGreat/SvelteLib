@@ -31,6 +31,21 @@
  *       This is the bare-node shadow of the pixel-level pairwise-distinctness
  *       rule (R6-3.13): two presets with the same property-set are provably the
  *       same picture, and proving it needs no renderer.
+ *   (5) NO PLACEMENT KEY — a preset changes the LOOK, it never moves something
+ *       the user already put somewhere (SPEC.md §5).
+ *   (6) EVERY VALUE IS LEGAL FOR ITS OWN INSPECTOR ROW — in range, in the
+ *       option list, of the right type.
+ *
+ * (5) AND (6) WERE HOISTED, NOT INVENTED. They were checks (2) and (4) of
+ * tests/frosted_presets_test.js, copied into tests/metaball_presets_test.js, and
+ * about to be copied once per family forever. Neither has anything
+ * widget-specific in it — one reads a fixed key set, the other reads the
+ * plugin's OWN registered rows — so a per-family copy is exactly the
+ * hand-maintained-mirror defect this file was written to kill, reproducing
+ * itself in the tooling for the second time. Frosted's check (1), "every preset
+ * sets every look knob", is NOT hoisted and must stay per-family: SPEC.md §4
+ * makes a SPARSE geometry family legal (shapeshifter's cloud presets write three
+ * keys and never touch fill), so a universal version would be a false gate.
  *
  * WHAT IT DELIBERATELY DOES NOT PROVE: that a preset LOOKS different, or that a
  * knob it advertises is visible. Those are pixel questions (R6-25.3, R6-25.4)
@@ -45,6 +60,7 @@ import assert from "node:assert/strict";
 import { builtinRoster } from "../plugins/index.js";
 import { presetFamiliesOf } from "../core/registry.js";
 import { compiled, isEquationValue, isNumericSlot, resolveRef, resultKindForSlot, slugMap } from "../core/expressions.js";
+import { parseColor } from "../render_gpu/ir.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -224,6 +240,182 @@ test("no two presets in a family carry identical props", () => {
         seen.set(signature, preset.name);
       }
     }
+});
+
+// ── (5) no placement key ─────────────────────────────────────────────────────
+// SPEC.md §5, restated at plugins/demo/lens_flare.js:193-208 and
+// plugins/demo/sky.js:69-75: "A preset changes the LOOK, it never moves something
+// the user already placed."
+//
+// THE UNIVERSAL SET IS NARROWER THAN ANY PER-FAMILY SET, AND THAT IS THE POINT.
+// Only keys with no legitimate exception anywhere in the roster may be banned
+// here; a gate that fails a correct shipped table is worse than no gate.
+//   `w`/`h` are NOT here. SPEC.md §5's own sentence ends "...unless the whole
+//     point of the family is a layout", and the layout wave exercised it: a crop
+//     aspect family writes exactly ONE key, `h`, as an "=" equation on `self.w`,
+//     so the ratio stays live-locked on resize. Whether a family has earned that
+//     is a judgement its own suite makes.
+//   The EFFECTS bundle and `opacity` are NOT here either, though
+//     tests/frosted_presets_test.js forbids them — correctly, for that widget.
+//     plugins/graph_presets.js writes a whole `bloom` bundle ("The Valentine
+//     Curve") and all twelve plugins/demo/lens_flare.js presets write
+//     `blendMode`, so hoisting the stricter list would take two shipped, correct
+//     tables red.
+// `type` is included because a preset that rewrites an item's widget TYPE is
+// incoherent — and it would pass check (1), since `type` IS in every plugin's
+// defaults.
+const PLACEMENT_KEYS = ["type", "x", "y", "z", "rotation", "scale", "rotationAnchor"];
+
+/**
+ * Pure function. The placement keys a props map writes, in PLACEMENT_KEYS order.
+ * Empty is the passing answer.
+ *
+ * @param {object} props - a preset's props map
+ * @returns {string[]} offending keys
+ *
+ * @example placementViolations({bumps: 5, lobeDepth: 0.34}) // []
+ * @example placementViolations({tint: "#fff", rotation: 45}) // ["rotation"]
+ * @example // w and h are deliberately legal — a crop-aspect family writes h:
+ * placementViolations({h: "= self.w * 9 / 16"}) // []
+ */
+function placementViolations(props) {
+  return PLACEMENT_KEYS.filter((k) => k in (props ?? {}));
+}
+
+test("no preset writes a placement key", () => {
+  for (const entry of ALL) {
+    const illegal = placementViolations(entry.preset.props);
+    assert.deepEqual(illegal, [],
+      `${where(entry)} writes ${illegal.join(", ")} — applying it would undo framing the author had already done by hand`);
+  }
+});
+
+// ── (6) every value is legal for its own Inspector row ───────────────────────
+/**
+ * Pure function. Whether the shipped parser accepts this string as a colour.
+ *
+ * `parseColor` signals refusal by THROWING ("parseColor: unsupported color …",
+ * render_gpu/ir.js:146), which is the right severity for a renderer and the wrong
+ * shape for a sweep that must name every bad value rather than die on the first.
+ * The catch is for that ONE documented condition and it does not swallow the
+ * outcome — the caller turns `false` into a named complaint.
+ *
+ * @param {string} value - a candidate colour literal
+ * @returns {boolean}
+ *
+ * @example parsesAsColour("#ff2a1a") // true
+ * @example parsesAsColour("rgba(0, 0, 0, 0.7)") // true
+ * @example parsesAsColour("not a colour") // false
+ */
+function parsesAsColour(value) {
+  try {
+    return parseColor(value)?.length >= 3;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pure function. Complaints about values that their OWN registered Inspector row
+ * would refuse. Reads `plugin.inspector`, so a knob whose range changes tomorrow
+ * re-checks every preset with no edit here.
+ *
+ * A key with NO row is SKIPPED rather than failed, and that is load-bearing: this
+ * codebase has at least three legitimate classes of writable state declared in
+ * neither `defaults` nor `inspector` — trim keys (absent-is-legacy,
+ * core/properties.js:1424), list companions (`pointsActive`, core/lists.js:62)
+ * and undeclared structural lists (`bento.spans`, plugins/bento.js:35). The
+ * presets wave's own mechanical validator flagged one of each and was wrong all
+ * three times. Invented keys are caught by check (1) against `defaults`.
+ * An equation value is skipped too — its result kind is checked above, and its
+ * VALUE is not knowable without evaluating it against a document.
+ *
+ * @param {object} plugin - a registered (resolved) plugin
+ * @param {object} props - a preset's props map
+ * @returns {string[]} one sentence per illegal value
+ *
+ * @example // rowViolations(registry.get("demo_god_rays"), {threshold: 0.62}) // []
+ * @example // A number past its row's declared max:
+ * // rowViolations(registry.get("demo_god_rays"), {threshold: 1.4})
+ * // ['"threshold" = 1.4 is above the row max 1']
+ */
+function rowViolations(plugin, props) {
+  const rows = new Map((plugin.inspector ?? []).filter((r) => r.key).map((r) => [r.key, r]));
+  const out = [];
+  for (const [key, value] of Object.entries(props ?? {})) {
+    const row = rows.get(key);
+    if (!row || isEquationValue(plugin, [key], value)) continue;
+    if (row.kind === "number" || row.kind === "angle") {
+      if (typeof value !== "number" || !Number.isFinite(value)) { out.push(`"${key}" = ${JSON.stringify(value)} is not a finite number`); continue; }
+      if (row.min !== undefined && value < row.min) out.push(`"${key}" = ${value} is below the row min ${row.min}`);
+      if (row.max !== undefined && value > row.max) out.push(`"${key}" = ${value} is above the row max ${row.max}`);
+    } else if (row.kind === "color") {
+      // An OBJECT is a full paint slot (gradient/material), not a colour literal,
+      // and its own shape is not this check's business.
+      if (typeof value !== "object" && !parsesAsColour(value))
+        out.push(`"${key}" = ${JSON.stringify(value)} does not parse as a colour`);
+    } else if (row.kind === "select" && Array.isArray(row.options)) {
+      if (!row.options.includes(value))
+        out.push(`"${key}" = ${JSON.stringify(value)} is not one of ${row.options.join("/")}`);
+    } else if (row.kind === "boolean") {
+      if (typeof value !== "boolean") out.push(`"${key}" = ${JSON.stringify(value)} is not a boolean`);
+    }
+  }
+  return out;
+}
+
+test("every preset value is legal for its own Inspector row", () => {
+  for (const entry of ALL) {
+    const bad = rowViolations(entry.plugin, entry.preset.props);
+    assert.deepEqual(bad, [],
+      `${where(entry)}: ${bad.join("; ")} — the Inspector would refuse this value, so the preset writes state the user cannot then edit`);
+  }
+});
+
+// ── (7) THE TWO HOISTED GATES MUST BE ABLE TO FAIL ───────────────────────────
+// Four gates were found this round that could not fail, each proving only the
+// case its author pictured. tests/square_chrome_test.js's answer is the house
+// form and this copies it: run the gate's own logic against fixtures of every
+// shape it claims to handle, rather than asserting its own correctness. These
+// two now guard every preset in the roster, so a vacuous version would be a
+// standing false green over the whole program.
+const SELF_CHECK_PLUGIN = {
+  type: "__self_check__",
+  defaults: { count: 3, hue: "#ff0000", cap: "flat", on: true, label: "hi", span: 1 },
+  inspector: [
+    { key: "count", kind: "number", min: 1, max: 8 },
+    { key: "span", kind: "number", min: 0 },
+    { key: "hue", kind: "color" },
+    { key: "cap", kind: "select", options: ["flat", "round", "taper"] },
+    { key: "on", kind: "boolean" },
+    { key: "label", kind: "text" }
+  ]
+};
+
+test("(self-check) the two hoisted gates catch what they claim to and pass what they must", () => {
+  const cases = [
+    ["a placement key is caught", () => placementViolations({ tint: "#fff", rotation: 45 }).length === 1],
+    ["every placement key is caught", () => placementViolations(Object.fromEntries(PLACEMENT_KEYS.map((k) => [k, 0]))).length === PLACEMENT_KEYS.length],
+    ["a pure look map is passed", () => placementViolations({ bumps: 5, lobeDepth: 0.34 }).length === 0],
+    ["w/h are deliberately NOT placement", () => placementViolations({ w: 100, h: "= self.w * 9 / 16" }).length === 0],
+    ["effects are deliberately NOT placement", () => placementViolations({ blendMode: "screen", bloom: { radius: 14 } }).length === 0],
+    ["a number above its max is caught", () => rowViolations(SELF_CHECK_PLUGIN, { count: 9 }).length === 1],
+    ["a number below its min is caught", () => rowViolations(SELF_CHECK_PLUGIN, { count: 0 }).length === 1],
+    ["a one-sided range checks only its declared side", () => rowViolations(SELF_CHECK_PLUGIN, { span: 1e6 }).length === 0],
+    // NOT `"3"`: a bare string on a slot whose default is a number IS an equation
+    // (core/expressions.isNumericSlot), so it is skipped here and caught instead
+    // by the "=" marker check above. A non-string non-number has no such reading.
+    ["a non-number on a number row is caught", () => rowViolations(SELF_CHECK_PLUGIN, { count: true }).length === 1],
+    ["an unparseable colour is caught", () => rowViolations(SELF_CHECK_PLUGIN, { hue: "not a colour" }).length === 1],
+    ["a paint OBJECT on a colour row is passed", () => rowViolations(SELF_CHECK_PLUGIN, { hue: { kind: "gradient" } }).length === 0],
+    ["a value outside a select's options is caught", () => rowViolations(SELF_CHECK_PLUGIN, { cap: "bevel" }).length === 1],
+    ["a non-boolean on a boolean row is caught", () => rowViolations(SELF_CHECK_PLUGIN, { on: 1 }).length === 1],
+    ["a legal map is passed", () => rowViolations(SELF_CHECK_PLUGIN, { count: 4, hue: "#0f0", cap: "round", on: false, label: "x" }).length === 0],
+    ["a key with no row is skipped, never failed", () => rowViolations(SELF_CHECK_PLUGIN, { pointsActive: [true, false] }).length === 0],
+    ["a text row is not type-checked", () => rowViolations(SELF_CHECK_PLUGIN, { label: 42 }).length === 0]
+  ];
+  const broken = cases.filter(([, fn]) => !fn()).map(([name]) => name);
+  assert.deepEqual(broken, [], `the gate does not do what it says: ${broken.join("; ")}`);
 });
 
 console.log(`\n${passed} preset contract tests passed`);

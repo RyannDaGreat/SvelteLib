@@ -41,7 +41,6 @@ import { cameraRect } from "../core/derive.js";
 import { fitRectView } from "../core/view.js";
 import { cameraFrameIR, evaluatedStateAt } from "../web/cameraFrame.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
-import { parseColor } from "../render_gpu/ir.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SHOT_DIR = path.resolve(here, "../.claude_vlm_checks/frosted_presets_test");
@@ -101,6 +100,13 @@ test("(1) every preset sets EVERY look knob", () => {
   }
 });
 
+// The PLACEMENT subset of the two sets above (type/x/y/z/rotation/scale/
+// rotationAnchor) is now gated for EVERY plugin in tests/preset_contract_test.js
+// and is not restated here. What stays is the part that is a judgement about THIS
+// widget rather than a law: w/h (a layout family may legitimately write one — the
+// crop-aspect ruling), opacity and the effects bundle (plugins/graph_presets.js
+// writes a `bloom` bundle and every lens_flare preset writes `blendMode`, so
+// neither can be banned globally), and this panel's own cornerRadius/stroke.
 test("(2) no preset writes a COMPOSITION key (geometry, border, transform, opacity, effects)", () => {
   for (const preset of plugin.presets) {
     const illegal = Object.keys(preset.props).filter((k) => EXCLUDED.has(k) || NOT_LOOK.has(k));
@@ -122,22 +128,16 @@ test("(3) every preset has a unique name and its own description (the pane's hov
   }
 });
 
-test("(4) every preset value is legal for its own Inspector row", () => {
-  const rows = new Map((plugin.inspector ?? []).map((r) => [r.key, r]));
-  for (const preset of plugin.presets)
-    for (const [key, value] of Object.entries(preset.props)) {
-      const row = rows.get(key);
-      assert.ok(row, `"${preset.name}" writes "${key}", which is not an Inspector row`);
-      if (row.kind === "color") {
-        const c = parseColor(value);
-        assert.ok(Array.isArray(c) && c.length >= 3, `"${preset.name}".${key} = ${value} does not parse as a colour`);
-      } else if (row.kind === "number") {
-        assert.ok(typeof value === "number" && Number.isFinite(value), `"${preset.name}".${key} = ${value} is not a finite number`);
-        if (row.min !== undefined) assert.ok(value >= row.min, `"${preset.name}".${key} = ${value} is below the row's min ${row.min}`);
-        if (row.max !== undefined) assert.ok(value <= row.max, `"${preset.name}".${key} = ${value} is above the row's max ${row.max}`);
-      }
-    }
-});
+// ── (4) WAS HERE, AND IT IS NOW UNIVERSAL ────────────────────────────────────
+// "every preset value is legal for its own Inspector row" had nothing
+// frosted-specific in it: it read the plugin's OWN registered rows, so the same
+// twelve lines were correct for every widget in the roster — and had already been
+// copied once, into tests/metaball_presets_test.js. That is the
+// hand-maintained-mirror defect reproducing itself in the tooling. It now lives
+// ONCE, in tests/preset_contract_test.js, which sweeps every registered plugin
+// through builtinRoster() and checks number ranges, colour parsing, select
+// membership and boolean type — so this widget is still covered, along with the
+// 500-odd presets this copy could never see.
 
 // ── the RENDER rig, shared by checks (5) and (6) ─────────────────────────────
 const require = createRequire(import.meta.url);
