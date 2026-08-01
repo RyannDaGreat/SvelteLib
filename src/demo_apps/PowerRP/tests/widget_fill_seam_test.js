@@ -40,6 +40,13 @@
  *      real registry. tests/builtin_asset_library_test.js already deep-equals
  *      their display lists; this asserts the seam PROPERTY on each, so a future
  *      drift cannot land the crack back in the widget users actually get.
+ *   4. THE PICTURE AND THE HIT REGION AGREE, pixel for pixel. This is the
+ *      property that DECIDED the fix's shape and it would otherwise be pinned
+ *      nowhere. Two winding rules were measured and both gave zero seams and
+ *      identical silhouettes, so the tie-break was that the keyhole form leaves
+ *      `donutRingOutline` ONE flat point list which `emit` and `hitTest` both
+ *      read — splitting it into [outer, inner] subpaths under even-odd would
+ *      have made them two derivations of the same shape, free to drift.
  */
 
 import assert from "node:assert/strict";
@@ -240,6 +247,27 @@ test("DONUT — the hole is EMPTY, nothing spills past the rim, and the area is 
     assert.ok(area <= ideal, `${px}px: inked ${area} > analytic annulus ${Math.round(ideal)} — the fill escaped its outline`);
     assert.ok(area > ideal * 0.98, `${px}px: inked only ${area} of an analytic ${Math.round(ideal)} — the ring lost body`);
   }
+});
+
+test("DONUT — the picture and the HIT REGION agree pixel for pixel (why the keyhole form was kept)", () => {
+  const plugin = registry.get("donut");
+  const px = 300;
+  const s = donutState(px);
+  const bytes = renderPixels(plugin.emit(s, null, { x: 0, y: 0, rotation: 0, scale: 1 }), px);
+  // Only FULLY covered and FULLY uncovered pixels are compared. The antialiased
+  // rim is where a boolean boundary test is entitled to differ from a coverage
+  // measurement, so including it would assert something untrue about both.
+  let disagreed = 0, decided = 0;
+  for (let y = 0; y < px; y++) {
+    for (let x = 0; x < px; x++) {
+      const r = bytes[(y * px + x) * 4];
+      if (r !== 0 && r !== FULL_COVERAGE) continue;
+      decided++;
+      if ((r === FULL_COVERAGE) !== plugin.hitTest(s, x + 0.5, y + 0.5)) disagreed++;
+    }
+  }
+  assert.ok(decided > px * px * 0.9, `only ${decided}/${px * px} pixels were fully decided — the probe is measuring rim, not body`);
+  assert.equal(disagreed, 0, `${disagreed}/${decided} pixels are inked-but-unclickable or clickable-but-blank — emit and hitTest have stopped reading the same geometry`);
 });
 
 // ── FANCY ARROW ──────────────────────────────────────────────────────────────
