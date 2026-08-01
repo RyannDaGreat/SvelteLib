@@ -278,6 +278,9 @@ export function irisOpeningOutline(s) {
 export const irisBladesPlugin = {
   type: "iris_blades",
   title: "Iris Blades",
+  // A SHAPE, declared by the widget (core/registry.js INSERT_MENUS): it joins the
+  // Add Shape grid without any central list learning its name.
+  insertMenu: "shape",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   /**
    * EVERY ROW'S GEOMETRY IS MEASURED, and the two logo rows are measured off the

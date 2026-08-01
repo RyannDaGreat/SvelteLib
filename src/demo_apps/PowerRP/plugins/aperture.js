@@ -287,6 +287,9 @@ export function apodizedPupilPaint(paint, apodization) {
 export const aperturePlugin = {
   type: "aperture",
   title: "Aperture",
+  // A SHAPE, declared by the widget (core/registry.js INSERT_MENUS): it joins the
+  // Add Shape grid without any central list learning its name.
+  insertMenu: "shape",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   /**
    * FOURTEEN LENSES, AND EVERY BLADE COUNT IS SOURCED. Not one count is an

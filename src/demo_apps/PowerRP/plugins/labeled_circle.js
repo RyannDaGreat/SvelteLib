@@ -147,6 +147,9 @@ const VALIGN_LABELS = { top: "Top", middle: "Middle", bottom: "Bottom" };
 export const labeledCirclePlugin = {
   type: "labeled_circle",
   title: "Labeled Circle",
+  // A SHAPE, declared by the widget (core/registry.js INSERT_MENUS): it joins the
+  // Add Shape grid without any central list learning its name.
+  insertMenu: "shape",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {
     type: "labeled_circle", x: 200, y: 200, z: 0, rotation: 0, scale: 1,

@@ -873,16 +873,22 @@ export const TOOL_POOL = [
       // with no edit here. This is the applicability axis doing its job: a Shatter
       // row on a rectangle is a control that can never work, which is the defect
       // `applies` exists to make unrepresentable.
-      // THE ID IS `convert-to-widgets`, AND "shatter" IS ONE OF ITS ALIASES — a
-      // distinction that cost a broken HEAD, so it is written down here. The
-      // command was renamed in 68d5e08 and the old word survives everywhere as
-      // prose, in the title's parenthetical and in the alias list; an agent
-      // building against a working tree where a PEER was mid-rename back to
-      // `shatter` saw the old id on disk, shipped it, and left the pool naming a
-      // command HEAD does not register. The ghost gate in tests/tool_groups_test.js
-      // caught it. Read the id from `git show HEAD:web/App.svelte`, never from the
-      // file on disk.
-      { kind: "command", command: "convert-to-widgets", applies: shatterEligible },
+      // THE ID IS `shatter`, AND "convert to widgets" IS ONE OF ITS ALIASES — the
+      // user's own ruling ("why is the tool not called shatter? I asked for it to
+      // be called shatter"), after an agent renamed it to Convert to Widgets on
+      // PowerPoint-parity grounds. The synonym survives where a synonym belongs,
+      // in the palette's search aliases.
+      //
+      // THIS LINE HAS NOW BEEN WRONG IN BOTH DIRECTIONS IN ONE DAY, which is why
+      // it is commented at all. It named `shatter` while HEAD registered
+      // `convert-to-widgets`, because the rename back was sitting UNCOMMITTED in
+      // the shared working tree and `git grep` reads the working tree: the pool
+      // shipped naming a command HEAD did not register, and the ghost gate in
+      // tests/tool_groups_test.js caught it one commit later. Ask
+      // `git show HEAD:web/App.svelte`, never the file on disk — and land a
+      // registration and its consumer in the SAME commit, which is what this one
+      // finally does.
+      { kind: "command", command: "shatter", applies: shatterEligible },
     ],
   },
   {

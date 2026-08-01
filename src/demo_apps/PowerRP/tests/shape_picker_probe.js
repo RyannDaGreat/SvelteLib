@@ -76,12 +76,69 @@ try {
   const tiles = await page.evaluate(() =>
     [...document.querySelectorAll(".shape-picker-grid .shape-tile")].map((b) => b.getAttribute("aria-label")));
   check("picker-has-tiles", tiles.length > 0, "the grid rendered no tiles");
-  // The submenu's children ARE the families; the grid must match them exactly.
-  const familyTitles = await page.evaluate(() =>
-    window.__powerrp_app.commands.get("insert-shape").children.map((c) => c.title));
-  check("every-tile-is-a-family-tile",
-    JSON.stringify(tiles) === JSON.stringify(familyTitles),
-    `grid=${JSON.stringify(tiles)}\n    families=${JSON.stringify(familyTitles)}`);
+
+  // ── THE REVERSE GATE: every widget that CLAIMS to be a shape has a tile ────
+  // The direction that was missing, and the reason the user could not find
+  // `aperture` or `iris_blades`: the grid used to be "the shapeshifter FAMILIES",
+  // so a standalone shape plugin was unreachable no matter what anyone did. The
+  // expectation is DERIVED from the live roster — every registered plugin
+  // declaring `insertMenu: "shape"` — never from a list restated here, which
+  // would be the same mirror one file further out.
+  const declared = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    return app.registry.all()
+      .filter((p) => p.insertMenu === "shape")
+      .map((p) => {
+        const own = (p.commands ?? []).find((c) => c.id.startsWith("add-"));
+        return { type: p.type, title: app.commands.get(own?.id ?? `add-${p.type}`).title };
+      });
+  });
+  check("every-declared-shape-has-a-tile",
+    declared.every((d) => tiles.includes(d.title)),
+    `missing=${JSON.stringify(declared.filter((d) => !tiles.includes(d.title)))}`);
+  check("no-tile-without-a-declaration",
+    tiles.every((t) => declared.some((d) => d.title === t)),
+    `extra=${JSON.stringify(tiles.filter((t) => !declared.some((d) => d.title === t)))}`);
+  // VACUITY GUARD, and the user's actual complaint stated as an assertion: the
+  // roster must contain shapes that are NOT shapeshifter families, or the check
+  // above passes for exactly the reason the old rule did.
+  const standalone = declared.filter((d) => !d.type.startsWith("ss_"));
+  check("the-roster-has-non-family-shapes-to-catch", standalone.length > 0,
+    "every declared shape is a shapeshifter family — this gate cannot tell the new rule from the old one");
+  for (const d of standalone)
+    check(`standalone-shape-tile-${d.type}`, tiles.includes(d.title), `"${d.title}" declares insertMenu:"shape" but has no tile`);
+
+  // A FALLBACK TILE MUST ACTUALLY DRAW, AT THE TILE'S ART SIZE. A shape with no
+  // silhouette generator gets its command's icon instead of a path, and that
+  // fallback was silently wrong first time: `iconify-icon` renders an inner <svg>
+  // at 1em, so CSS width/height sized the HOST box and left a ~14px glyph
+  // top-aligned in a correct-looking 40x40 square. Measuring only the host would
+  // have passed. Measure the GLYPH, and compare it against a path tile rather than
+  // against a number, so the two kinds of tile are pinned to one art size.
+  await new Promise((r) => setTimeout(r, 1200)); // iconify fetches its glyphs
+  const art = await page.evaluate(() => {
+    const box = (el) => { const r = el?.getBoundingClientRect(); return r ? Math.round(r.width) : null; };
+    return [...document.querySelectorAll(".shape-picker-grid .shape-tile")].map((b) => {
+      const svg = b.querySelector("svg.shape-tile-svg");
+      const ico = b.querySelector("iconify-icon");
+      return {
+        label: b.getAttribute("aria-label"),
+        kind: svg ? "path" : "icon",
+        size: box(svg ?? ico?.shadowRoot?.querySelector("svg")),
+        drawn: svg ? true : /<(path|circle|rect|g)\b/.test(ico?.shadowRoot?.innerHTML ?? ""),
+      };
+    });
+  });
+  const pathSize = art.find((t) => t.kind === "path")?.size;
+  const iconTiles = art.filter((t) => t.kind === "icon");
+  check("there-are-icon-fallback-tiles-to-check", iconTiles.length > 0,
+    "no tile fell back to an icon — this check cannot see the defect it exists for");
+  check("every-fallback-tile-draws-a-real-glyph",
+    iconTiles.every((t) => t.drawn),
+    JSON.stringify(iconTiles.filter((t) => !t.drawn)));
+  check("fallback-glyphs-are-the-same-art-size-as-a-path-tile",
+    !!pathSize && iconTiles.every((t) => t.size === pathSize),
+    `path=${pathSize} icons=${JSON.stringify(iconTiles.map((t) => [t.label, t.size]))}`);
   // The legacy row's tiles were labelled "Add <Legacy Label>"; none may remain.
   for (const dead of ["Add Octagon", "Add Hexagon", "Add Pentagon", "Add Lightning", "Add Block Arrow"])
     check(`legacy-tile-gone-${dead.replace(/\W+/g, "-")}`, !tiles.includes(dead), `"${dead}" is still in the grid`);

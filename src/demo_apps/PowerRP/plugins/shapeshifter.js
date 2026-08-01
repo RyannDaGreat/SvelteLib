@@ -906,6 +906,27 @@ export function makeFamilyPlugin(fam) {
   const plugin = {
     type: fam.type,
     title: fam.title,
+    // IT IS A SHAPE, AND IT SAYS SO ITSELF (core/registry.js INSERT_MENUS). The
+    // Add Shape grid used to be defined as "the shapeshifter families", so this
+    // line changes nothing about which families appear — what it changes is that
+    // the menu now asks the widget rather than the module, which is what lets a
+    // standalone shape plugin join without being a family.
+    insertMenu: "shape",
+    // A family declares no `commands` of its own (see the note where this factory
+    // returns), so web/App.svelte SYNTHESIZES its insert entry — which needs a
+    // glyph, and the glyph is the family's. `icon` is only meaningful on a plugin
+    // whose insert command is synthesized; every widget that writes its own
+    // command puts the icon there instead.
+    icon: fam.icon,
+    // THE TILE. Optional everywhere: a shape that cannot draw its own silhouette
+    // gets its command's icon in the grid instead, which is how `aperture` and
+    // `iris_blades` join without owning a path generator. Taking it from the
+    // PLUGIN rather than from FAMILIES is the whole point — the picker asks the
+    // widget, so a future non-family shape can answer too.
+    shapePreview: (dim) => ({
+      d: subpathsPathD(fam.outline({ ...fam.defaults, w: dim, h: dim })),
+      fillRule: fam.fillRule ?? "nonzero",
+    }),
     // GEOMETRY PRESETS (the presets mantra, manifest item 70): a family may
     // declare `presets: [{name, description, props}]` — passed through so
     // core/registry.presetFamiliesOf surfaces them in the Tools pane exactly
@@ -974,10 +995,13 @@ export function makeFamilyPlugin(fam) {
     modifierPoints: (s) => [...(fam.modifierPoints?.(s) ?? []), ...paintModifierPoints(s, "fill")],
   };
   // No per-family top-level command: the `add-ss_*` ids are surfaced ONLY as
-  // children of the single `insert-shape` submenu (web/App.svelte), built from
-  // FAMILIES — one source of truth for both the palette and the toolbar
-  // ShapePicker. Re-adding a `plugin.commands` here would register each id
-  // twice (top-level AND submenu child) and registerFlat throws on a duplicate.
+  // children of the single `insert-shape` submenu, which web/App.svelte
+  // SYNTHESIZES for every registered plugin that declares `insertMenu: "shape"`
+  // and no insert command of its own. Re-adding a `plugin.commands` here would
+  // register each id twice (top-level AND submenu child) and registerFlat throws
+  // on a duplicate — which is also exactly why a plugin that DOES write its own
+  // add command (aperture, iris_blades) keeps it top-level and is only added to
+  // the GRID: one action, one id, one home.
   return plugin;
 }
 

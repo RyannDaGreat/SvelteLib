@@ -90,9 +90,7 @@
   // The camera-bind pair's sentences live beside `frameBindable`, the predicate
   // they explain, so the Tools pane's pool row and these command entries show the
   // same words without either transcribing the other's (core/registry.js).
-  import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES, LIGHT_PIN_HELP, LIGHT_PIN_REQUIRES, MAKE_STATIC_HELP, MAKE_STATIC_REQUIRES, SLIDE_KEYFRAMES_HELP, SLIDE_KEYFRAMES_REQUIRES, lightPinnable } from "../core/registry.js";
-  import { FAMILIES } from "../plugins/shapeshifter.js";
-  import { subpathsPathD } from "../core/shapes.js";
+  import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES, LIGHT_PIN_HELP, LIGHT_PIN_REQUIRES, MAKE_STATIC_HELP, MAKE_STATIC_REQUIRES, SLIDE_KEYFRAMES_HELP, SLIDE_KEYFRAMES_REQUIRES, lightPinnable, shapeInsertable } from "../core/registry.js";
 
   const app = new PowerRPApp();
 
@@ -798,9 +796,49 @@
     cranberry: "mdi:glass-wine", // colloidal-gold glass, historically stemware
     obsidian: "mdi:volcano", // obsidian IS volcanic glass
   };
-  // Local box the `insert-shape` family tile previews are generated in; matches
+  // Local box the `insert-shape` tile previews are generated in; matches
   // ShapePicker's 100-unit tile viewBox content area (`-6 -6 112 112`).
   const SHAPE_PREVIEW_DIM = 100;
+
+  /**
+   * Query. THE ADD-SHAPE MENU, derived from the registered roster: one entry per
+   * plugin that declares `insertMenu: "shape"` (core/registry.js), in registration
+   * order. The palette submenu and the toolbar grid are two surfacings of this one
+   * list, so a new shape reaches both by declaring itself in its own file.
+   *
+   * `commandId` is the plugin's OWN insert command when it writes one, and a
+   * SYNTHESIZED `add-<type>` otherwise — which is the shapeshifter families, who
+   * deliberately declare none. `synthesized` says which, because only the
+   * synthesized ones become `children` of the submenu: registering an id both
+   * top-level and as a child throws, and demoting a top-level entry into a submenu
+   * would cost it palette findability for nothing (search is pool-scoped).
+   *
+   * `shapePreview` is the tile's path when the widget can draw its own silhouette
+   * and null otherwise — the grid falls back to the command's icon, which is how a
+   * shape with no path generator joins.
+   *
+   * LOUD ON AN AMBIGUOUS PLUGIN rather than picking one: a shape declaring two
+   * `add-*` commands has no single "the" insert action, and guessing would put an
+   * arbitrary one in the menu with nothing saying so.
+   *
+   * @returns {Array<{type, title, icon, commandId, synthesized, shapePreview}>}
+   */
+  function shapeMenuTiles() {
+    return app.registry.all().filter(shapeInsertable).map((p) => {
+      const own = (p.commands ?? []).filter((c) => c.id.startsWith("add-"));
+      if (own.length > 1)
+        throw new Error(`Plugin "${p.type}" is in the shape menu but declares ${own.length} add-* commands — the menu cannot tell which one inserts it`);
+      return {
+        type: p.type,
+        title: p.title,
+        icon: own[0]?.icon ?? p.icon,
+        commandId: own[0]?.id ?? `add-${p.type}`,
+        synthesized: own.length === 0,
+        shapePreview: p.shapePreview?.(SHAPE_PREVIEW_DIM) ?? null,
+      };
+    });
+  }
+  const shapeMenu = shapeMenuTiles();
 
   // ── BIND TO CAMERA (a GENERAL tool, surfaced in the Tools pane) ─────────────
   // "Bind to camera" writes the four frame properties of the SELECTION as
@@ -1504,29 +1542,35 @@
         { id: "demo-insert-brightness-contrast", title: "Brightness / Contrast (tone adjustment — backdrop material shader)", icon: "mdi:brightness-6", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_brightness_contrast")) },
       ],
     },
-    // INSERT SHAPE — ONE submenu collecting the arbitrary parametric
-    // shapeshifter families (star, gear, callout, banner, …); everyday
-    // primitives (rect/circle/text/arrow) stay top-level. FAMILIES is the single
-    // source of truth: these children feed BOTH the palette drill-down AND the
-    // toolbar ShapePicker grid (which reads this command's children). Each child
-    // arms generic crosshair placement for its family plugin (resolved lazily).
-    // `shapePreview` is opaque tile metadata (registry ignores it; only
-    // ShapePicker consumes it). Removing the per-family plugin.commands makes
-    // these children the ONLY registration of each add-ss_* id.
+    // INSERT SHAPE — ONE submenu for the parametric shapes; everyday primitives
+    // (rect/circle/text/arrow) stay top-level.
+    //
+    // ITS MEMBERSHIP IS NOW THE WIDGET'S OWN CLAIM. It used to be "the
+    // shapeshifter FAMILIES", read off that module's table — genuinely derived,
+    // and still the wrong rule: being a shapeshifter family is how a shape happens
+    // to be BUILT, not what it IS, so `aperture` and `iris_blades` could never
+    // reach this grid however diligently anyone maintained anything. The user
+    // found it the way he found the Tools pane: "New shapes that we add can go
+    // into the shape menu — Add Shape menu — but I don't see them there."
+    //
+    // `shapeMenu` is the ONE list both surfacings read, and `children` is the part
+    // of it this command has to OWN — the shapes with no insert command of their
+    // own. A widget that already writes its own `add-*` entry keeps it top-level
+    // and appears in the grid only: one action, one id, one home, and no loss of
+    // palette findability (a submenu child is only reachable by drilling in).
+    // Both fields are opaque to the registry; only ShapePicker reads shapeMenu.
     {
-      id: "insert-shape", // id is a stable reference (ShapePicker reads this command's children); only the TITLE says "Add"
+      id: "insert-shape", // a stable reference (ShapePicker reads this entry); only the TITLE says "Add"
       title: "Add Shape",
       icon: "mdi:shape-plus",
-      children: FAMILIES.map((fam) => ({
-        id: `add-${fam.type}`,
-        title: `Add ${fam.title}`,
-        icon: fam.icon,
-        shapePreview: {
-          d: subpathsPathD(fam.outline({ ...fam.defaults, w: SHAPE_PREVIEW_DIM, h: SHAPE_PREVIEW_DIM })),
-          fillRule: fam.fillRule ?? "nonzero",
-        },
-        run: (a) => a.armCrosshairPlacement(a.registry.get(fam.type)),
+      children: shapeMenu.filter((t) => t.synthesized).map((t) => ({
+        id: t.commandId,
+        title: `Add ${t.title}`,
+        icon: t.icon,
+        shapePreview: t.shapePreview,
+        run: (a) => a.armCrosshairPlacement(a.registry.get(t.type)),
       })),
+      shapeMenu,
     },
     // BENTO GRID — a layout scaffold whose value is its rich anchor set (cell
     // centers/corners/edge-mids + grid-line intersections) that other widgets

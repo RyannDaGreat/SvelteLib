@@ -1,12 +1,25 @@
 <!--
   ShapePicker — a visual GRID of shape families beside "Add Rectangle".
 
-  ONE PICKER, ONE SYSTEM. Every tile is a PROJECTION of the command registry's
-  `insert-shape` submenu (its `children`, built from FAMILIES in web/App.svelte),
-  so this toolbar popover and the command palette read the SAME single source of
-  truth. Each tile previews the child's `shapePreview` (the family generator at
-  its default seed) and clicking it runs the child command (MRU-tracked, exactly
-  like the palette).
+  ONE PICKER, ONE SYSTEM. Every tile is a PROJECTION of the `insert-shape` entry's
+  `shapeMenu` — the list web/App.svelte DERIVES from the registered roster, one
+  entry per plugin that declares `insertMenu: "shape"` (core/registry.js). This
+  popover and the palette read that same list, so a new shape reaches both by
+  saying so in its own plugin file.
+
+  WHAT THAT REPLACED, because the old rule looked derived and was not the right
+  one. The grid used to be the `insert-shape` submenu's `children`, built from
+  `plugins/shapeshifter.js`'s FAMILIES table. That table IS derived — nobody was
+  hand-listing tiles — but "is it a shapeshifter family" describes how a shape is
+  BUILT, not what it is, so `aperture` and `iris_blades` (standalone plugins that
+  draw shapes) could never appear here. The user's report: "New shapes that we add
+  can go into the shape menu — Add Shape menu — but I don't see them there."
+
+  TWO TILE KINDS, one row of markup. A widget that can draw its own silhouette
+  supplies `shapePreview` and gets a path tile; one that cannot gets its command's
+  ICON. That is what lets a shape join without owning a path generator, and it is
+  why the fallback is not a placeholder box — the icon is a real, chosen glyph.
+  Titles and icons come from the COMMAND entry in both cases, never transcribed.
 
   This grid USED TO carry a second row of tiles for the legacy `shape` plugin's
   17 baked presets, and that row was the bug: 15 of those presets ignored their
@@ -28,10 +41,15 @@
   let { app } = $props();
   let open = $state(false);
 
-  // The shapeshifter families: the children of the single `insert-shape` submenu
-  // command. Lazily read (only when the popover opens) so it stays loud-if-missing
-  // without gating boot on registration.
-  let familyItems = $derived(app.commands.get("insert-shape").children);
+  // Every shape the roster offers, each paired with the command that inserts it.
+  // Lazily read (only when the popover opens) so it stays loud-if-missing without
+  // gating boot on registration.
+  let tiles = $derived(app.commands.get("insert-shape").shapeMenu);
+
+  /** Query. The command entry a tile surfaces — its title and, for a tile with no
+   *  silhouette, its glyph. Loud on an unknown id: a tile naming an unregistered
+   *  command would draw a blank, unclickable square. */
+  const entryOf = (tile) => app.commands.get(tile.commandId);
 
   // Lightweight popover: close on outside pointerdown — a press we are not the
   // target of is only visible from a global listener, so this one stays at the
@@ -70,17 +88,43 @@
   </Tooltip>
   {#if open}
     <div class="shape-picker-grid" role="menu" aria-label="Preset shapes">
-      {#each familyItems as c}
+      {#each tiles as tile (tile.commandId)}
+        {@const cmd = entryOf(tile)}
         <button
           class="shape-tile"
           role="menuitem"
-          aria-label={c.title}
-          onclick={() => { app.runCommand(c.id); open = false; }}
+          aria-label={cmd.title}
+          onclick={() => { app.runCommand(tile.commandId); open = false; }}
         >
-          <svg class="shape-tile-svg" viewBox="-6 -6 112 112" aria-hidden="true">
-            <path d={c.shapePreview.d} fill-rule={c.shapePreview.fillRule} />
-          </svg>
-          <span class="shape-tile-label">{c.title}</span>
+          {#if tile.shapePreview}
+            <svg class="shape-tile-svg" viewBox="-6 -6 112 112" aria-hidden="true">
+              <path d={tile.shapePreview.d} fill-rule={tile.shapePreview.fillRule} />
+            </svg>
+          {:else}
+            <!-- No silhouette of its own: the command's own glyph, at the tile's
+                 own art size, so the two kinds of tile are the same control.
+                 SIZED INLINE OFF THE SAME TOKEN rather than through .shape-tile-svg,
+                 which also sets fill/stroke/stroke-width — correct for a bare <path>
+                 and wrong for a glyph (it would embolden every icon tile).
+                 FONT-SIZE, NOT width/height — MEASURED, because the obvious way is
+                 wrong here. `iconify-icon` renders an inner <svg> at 1em, so CSS
+                 width/height sizes only the HOST box: the tiles measured a correct
+                 40x40 while the glyph inside them drew at ~14px, top-aligned in an
+                 empty square. Sizing by font-size makes the glyph itself the tile's
+                 art size, which is what the path tiles do.
+                 HANDBACK, web/app.css: this wants a `.shape-tile-icon { font-size:
+                 var(--a-shape-tile-icon); }` beside .shape-tile-svg — it cannot
+                 reuse that class, which also sets fill/stroke/stroke-width (right
+                 for a bare <path>, and it would embolden every glyph). The inline
+                 read is a token read, not a hardcoded size, and it is here only
+                 because that file is contended. -->
+            <iconify-icon
+              icon={cmd.icon}
+              aria-hidden="true"
+              style="font-size: var(--a-shape-tile-icon)"
+            ></iconify-icon>
+          {/if}
+          <span class="shape-tile-label">{cmd.title}</span>
         </button>
       {/each}
     </div>
