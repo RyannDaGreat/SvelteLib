@@ -273,6 +273,57 @@ says introducing the one true home without a sweep never collects them in the fi
 **Both failures are silent, and both leave a codebase that looks unified in the docs and is
 not in the code.**
 
+### `@id.x` / `@id.w` FOR A **BOX**; `@id_tl` FOR **INK**
+
+THE INK RULE (`e78a4ce`: the eight standard rim anchors are projected through the widget's own
+closest-point-on-rim map) made anchors land on the silhouette instead of the bounding rectangle.
+**That is correct, and it silently changed the meaning of every equation that was using an
+anchor as a stand-in for the box.**
+
+**It caused exactly one regression and it is the instructive one — in `plugins/mermaid.js`,
+i.e. inside SHATTER, on the very shape that motivated the rule.** Labels were bound with
+`@key_tl.x + dx` and sized `@key_tr.x - @key_tl.x`. Both are exact **only while anchors sit on
+the bounding rectangle**. On a diamond node the label would have been shifted and shrunk. Fixed
+in the same commit by reading the stored box (`@key.x` / `.y` / `.w` / `.h`) and gated.
+
+**So the division is now load-bearing, and it is the only real cost of the ink rule:**
+- **Want the BOX** — extent, span, a corner of the frame? Read `@id.x`, `@id.y`, `@id.w`,
+  `@id.h`. These are stored state and mean what they always meant.
+- **Want the INK** — where something should ATTACH? Read an anchor: `@id_tl`, `@id_closest`.
+  These now follow the silhouette, which is the point.
+
+Writing `@id_tr.x - @id_tl.x` to mean "width" is the trap: it is right for a rectangle and
+wrong for every other shape, and it fails quietly by a few percent rather than visibly.
+
+### WHEN A DEFECT IS A FUNCTION OF AN ENVIRONMENT YOU DO NOT HAVE, DO NOT TEST THE ENVIRONMENT — PARAMETERISE IT AND TEST THE FUNCTION
+
+**The case that produced this (#188, `28c80e7`).** Materials vanish when they exceed a device's
+uniform limit: `RuntimeEffect.Make` and `makeShader` only build Skia objects, the GL program is
+compiled at DRAW time inside Ganesh, and a driver refusal DROPS THE DRAW with no exception —
+so the existing `if (!shader) throw` could never fire. The obvious test is a browser probe.
+**It would pass forever on a broken build**, because this host reports
+`MAX_FRAGMENT_UNIFORM_VECTORS = 4096` and compiles a deliberately over-limit shader with
+`COMPILE_STATUS true`. Measured baseline of the real defect on this machine: **byte-identical
+pixels and zero console output.** A green probe here says nothing whatsoever about a laptop.
+
+**The remedy is to move the environment into an argument.** The refusal became a pure function
+of `(material, ceiling)`, `node_render.renderToPng` grew a two-line ceiling parameter, and the
+behaviour was then proven END TO END BY PIXELS on a software Skia surface for both handlers —
+on a host that cannot reproduce the bug at all. The ceiling defaults to `Infinity` (no ceiling
+known = nothing refused), so node and the CLI stay byte-identical.
+
+**The same shape had already appeared once that day** in the metaball clamp, where the fix was
+to derive both the allocated surface AND the sample matrix from one fit-corrected scale rather
+than trusting the size that was ASKED for. Both are "a limit the code cannot see from where it
+is standing"; both became testable the moment the limit became a value rather than a fact about
+the machine.
+
+**So: if you catch yourself writing "we can't gate this, it only happens on real hardware",
+that is the signal, not the conclusion.** Ask what single value the behaviour actually depends
+on and thread it. The corollary matters too — **a gate that can only pass on your host is not a
+gate**, and "it passed for me" about an environment-dependent defect is the same class of
+non-evidence as a green build over a missing named import.
+
 ### MEASURE DISTINCTNESS OVER THE LIT SET, NEVER OVER THE WHOLE FRAME
 
 When you compare two renders to decide whether they are meaningfully different — preset
