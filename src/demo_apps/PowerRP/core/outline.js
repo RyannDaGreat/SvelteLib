@@ -765,6 +765,37 @@ const DONUT_ANGLE_JITTER = 1e-7;
  * @example donutOutline({cx: 0, cy: 0, outerR: 10, inner: 0.5})[0] // [10, 0] (outer rim starts at angle 0)
  * @example donutOutline({cx: 5, cy: 5, outerR: 0, inner: 0.5}) // [] (zero radius: no geometry)
  */
+/**
+ * Pure function. A closed outline on an ellipse's rim, scaled radially by
+ * `radiusOf(theta)` — the sampler for a shape defined as a RADIAL FUNCTION about
+ * an ellipse's centre rather than as a vertex list. Both iris widgets go through
+ * it, which is what keeps their tessellation identical: the same angles, the same
+ * mapping, so the opening one draws and the leaves the other draws land on the
+ * same points.
+ *
+ * The caller supplies the angles, because a radial shape's interesting angles are
+ * its own (a polygon corner must be sampled exactly — see
+ * core/optics.cornerBoundaryAngles).
+ *
+ * Args:
+ *   g ({cx, cy, rx, ry}): the ellipse
+ *   angles (number[]): sample angles, radians
+ *   radiusOf (function): theta → radius as a FRACTION of the ellipse's radii
+ *
+ * Returns:
+ *   number[][]: closed point list [[x, y], ...] in LOCAL coords, one per angle
+ *
+ * @example radialOutline({cx: 0, cy: 0, rx: 10, ry: 10}, [0, Math.PI / 2], () => 1) // [[10, 0], [6.123233995736766e-16, 10]]
+ * @example radialOutline({cx: 5, cy: 5, rx: 4, ry: 4}, [0], () => 0.5) // [[7, 5]]
+ * @example radialOutline({cx: 0, cy: 0, rx: 10, ry: 5}, [0], (a) => 0.5 + 0.5 * Math.cos(a)) // [[10, 0]]
+ */
+export function radialOutline(g, angles, radiusOf) {
+  return angles.map((a) => {
+    const r = radiusOf(a);
+    return [g.cx + g.rx * r * Math.cos(a), g.cy + g.ry * r * Math.sin(a)];
+  });
+}
+
 export function donutOutline({ cx, cy, outerR, inner }) {
   if (outerR <= 0) return [];
   const r = Math.max(0, Math.min(inner, 1 - 1e-9)) * outerR;

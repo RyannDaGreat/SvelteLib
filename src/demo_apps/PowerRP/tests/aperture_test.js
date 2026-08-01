@@ -23,10 +23,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { MIN_POLYGON_BLADES, NO_IRIS_BLADES, starburstRayAngles, starburstRayCount } from "../core/optics.js";
 import {
-  aperturePlugin, bladeRadialLimit, bodySubpaths, boundaryAngles, openingOutline,
-  openingRadius, pupilGeom, reuleauxRadialLimit, apodizedPupilPaint,
+  MIN_POLYGON_BLADES, NO_IRIS_BLADES, bladeRadialLimit, pupilGeom, starburstRayAngles, starburstRayCount,
+} from "../core/optics.js";
+import {
+  aperturePlugin, bodySubpaths, boundaryAngles, openingOutline,
+  openingRadius, reuleauxRadialLimit, apodizedPupilPaint,
 } from "../plugins/aperture.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
