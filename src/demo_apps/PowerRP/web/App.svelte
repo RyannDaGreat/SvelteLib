@@ -709,6 +709,18 @@
   const REQUIRES_PURGEABLE = "a selected widget that may be removed (THE camera is mandatory, so it can be neither hidden nor purged)";
   const REQUIRES_MULTI_BBOX = "at least two selected widgets that have a box — a lone widget has no second one to line up against";
   const REQUIRES_THREE_BBOX = "at least three selected widgets — distributing spaces the ones BETWEEN the two extremes, so two is already evenly spaced";
+  // QUARANTINE (R6-10.1, user: the map widget is "a hot mess right now"). The command
+  // stays REGISTERED and stays VISIBLE, greyed, with this as its reason — which is the
+  // pane's own rule for an unavailable action (core/registry.js: "Rendered DISABLED,
+  // never hidden, with `requires` as the tooltip's reason — hiding it would make the
+  // tool unlearnable"). Deleting the entry would have been the arbitrary choice: it
+  // silently shrinks the palette, and tests/palette_probe.js could not tell a
+  // quarantine from an accidental deletion.
+  //
+  // ONLY INSERTION IS BLOCKED. The plugin is still registered, so a document that
+  // already holds a map still folds, still renders and still exports — a quarantine
+  // that broke saved decks would be a data-loss bug wearing a safety label.
+  const REQUIRES_MAP_UNQUARANTINED = "the map widget to come out of quarantine — it is withheld deliberately while its known defects are fixed (it renders in the editor and in a presentation but NOT to MP4). Maps already in a document are untouched: they still open, render and export";
 
   // ── HELP shared by a family of commands ─────────────────────────────────────
   // The optional `help` a surfacing shows on hover (core/commands.js): the
@@ -1357,7 +1369,8 @@
         // Placed with the crosshair like the Mandelbrot, and for the same reason: both
         // are square-ish panels whose position matters to the composition, and both are
         // explored by DOUBLE-CLICK afterwards (the shared interiorNav handler).
-        { id: "demo-insert-globe-map", title: "Globe / Map (real world map — a lit globe with atmosphere, double-click to explore inside)", icon: "mdi:earth", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_globe_map")) },
+        // QUARANTINED (R6-10.1) — greyed, not deleted; see REQUIRES_MAP_UNQUARANTINED.
+        { id: "demo-insert-globe-map", title: "Globe / Map (real world map — a lit globe with atmosphere, double-click to explore inside)", icon: "mdi:earth", when: () => false, requires: REQUIRES_MAP_UNQUARANTINED, run: (a) => a.armCrosshairPlacement(a.registry.get("demo_globe_map")) },
         // Lens Flare inserts CAMERA-FILLING via addItem (its default x/y/w/h are `=
         // camera.*` equations; the crosshair click-places-default path does arithmetic
         // on defaults.w, which is an equation here — so it must NOT use crosshair).
