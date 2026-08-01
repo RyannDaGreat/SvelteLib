@@ -115,6 +115,7 @@ import {
   telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
 } from "../plugins/tangent_lines.js";
 import { browserSetting, browserNumberSetting } from "./settings.js";
+import { LABEL_DIVIDER_KEYS, LABEL_FRAC_BOUNDS, LABEL_FRAC_DEFAULT, labelFracSettingKey } from "./labelFrac.js";
 // THE panel inventory (core/panels.js) — one declaration behind the layout, the
 // per-panel visibility settings here, and the "Toggle Visibility: …" commands.
 import { PANELS, panelSettingKey } from "../core/panels.js";
@@ -200,18 +201,23 @@ const SETTINGS = {
   // cannot be deleted, and costs the user no storage, so listing it by default would
   // bury a two-file project under the shipped set.
   showBuiltinAssets: browserSetting("powerrp.showBuiltinAssets", false),
-  // THE label/value split shared by the Property + Variables panels, as a
-  // FRACTION of the row's width rather than a pixel column — the user's ruling:
-  // "it should be a constant proportion based on the width of that panel", so
-  // widening the pane widens the label zone with it instead of leaving labels
-  // ("Rot anchor X", "Stroke phase") truncated beside a 480px-wide value field.
-  // The default reproduces the pre-divider look: the retired --a-label-w was
-  // 84px against a 362px default row, i.e. 0.2318 → 0.23 (a ~0.6px shift, below
-  // the alignment probe's tolerance). Clamps keep BOTH sides usable — 0.15 still
-  // shows a short label, 0.55 still leaves the value column wider than the
-  // labels beside it (the row grid's minmax floor guards the rest).
-  labelFrac: browserNumberSetting("powerrp.labelFrac", 0.23, 0.15, 0.55),
 };
+
+// THE label/value splits, ONE PER DIVIDER FAMILY — the user's ruling that a
+// nested "variable properties" divider is "the same kind of UI, not the same
+// line". Derived from LABEL_DIVIDER_KEYS rather than hand-written per family,
+// exactly as PANEL_SETTINGS below is derived from PANELS: a family is one entry
+// in web/labelFrac.js, not four scattered edits. The default, clamps and the key
+// grammar all live in that module, because they are facts about the split rather
+// than about the settings repo. Kept OUT of the SETTINGS literal above for the
+// same reason PANEL_SETTINGS is — that object is hand-named settings, and this
+// is a derived family.
+const LABEL_FRAC_SETTINGS = Object.fromEntries(
+  LABEL_DIVIDER_KEYS.map((k) => [
+    k,
+    browserNumberSetting(labelFracSettingKey(k), LABEL_FRAC_DEFAULT, LABEL_FRAC_BOUNDS.min, LABEL_FRAC_BOUNDS.max),
+  ]),
+);
 
 // PER-PANEL VISIBILITY, one descriptor per dockable panel, keyed by panel id and
 // derived from core/panels.js's PANELS rather than transcribed — a new panel gets
@@ -224,12 +230,6 @@ const SETTINGS = {
 const PANEL_SETTINGS = Object.fromEntries(
   PANELS.map((p) => [p.id, browserSetting(panelSettingKey(p.id), p.defaultVisible)]),
 );
-
-/** The label⟷value split's clamp bounds, re-exported for the divider drag so it
- *  clamps with the SAME numbers the persist path does rather than restating
- *  them (two clamps that can drift is how a drag ends up writing a value the
- *  store then silently rewrites, making the divider stick). */
-export const LABEL_FRAC_BOUNDS = { min: SETTINGS.labelFrac.min, max: SETTINGS.labelFrac.max };
 
 /** THE THEME FAMILIES — viewer preference (localStorage), NOT document state.
  *
@@ -753,11 +753,16 @@ export class PowerRPApp {
   // lines that must be edited together every time a panel is added — the exact
   // four-scattered-edits defect the SETTINGS repo removed for flags.
   panelVisible = $state(Object.fromEntries(PANELS.map((p) => [p.id, PANEL_SETTINGS[p.id].initial])));
-  // Property/Variables panel label⟷value split, as a fraction of row width.
-  // Published as --a-label-frac on the app root (App.svelte) so BOTH panels read
-  // ONE number and their columns stay in x-sync across panes — the round-11
-  // "columns line up" ruling, now under user control.
-  labelFrac = $state(SETTINGS.labelFrac.initial);
+  // The label⟷value splits, {dividerKey: fraction} — one number per divider
+  // FAMILY (web/labelFrac.js). The PROPERTY family is published as
+  // --a-label-frac on the app root (App.svelte) so the Property and Variables
+  // panels read ONE number and their columns stay in x-sync across panes (the
+  // round-11 "columns line up" ruling); the VARIABLE family is re-published by
+  // each nested block that belongs to it. ONE deep-reactive record rather than a
+  // field per family, for the same reason panelVisible below is one: the families
+  // are a derived set, so a named field each would be lines that must be edited
+  // together every time one is added.
+  labelFrac = $state(Object.fromEntries(LABEL_DIVIDER_KEYS.map((k) => [k, LABEL_FRAC_SETTINGS[k].initial])));
   // Master snap toggle (gates ALL snapping — move AND resize) and the
   // snap-size / matching-dimension toggle. Both default ON.
   snapEnabled = $state(SETTINGS.snap.initial);
@@ -857,19 +862,22 @@ export class PowerRPApp {
     this.fpsVisible = SETTINGS.fps.persist(!this.fpsVisible);
   }
 
-  /** Command. Sets the Property/Variables label⟷value split fraction (clamped
-   *  + persisted by the SETTINGS descriptor). Called live during a divider drag,
-   *  so it must stay a plain assignment — no undo entry: this is a BROWSER
-   *  setting, not document state. */
-  setLabelFrac(frac) {
-    this.labelFrac = SETTINGS.labelFrac.persist(frac);
+  /** Command. Sets ONE divider family's label⟷value split fraction (clamped +
+   *  persisted by that family's setting descriptor). Called live during a divider
+   *  drag, so it must stay a plain assignment — no undo entry: this is a BROWSER
+   *  setting, not document state. Throws on an unknown key rather than writing a
+   *  stray property nothing reads. */
+  setLabelFrac(key, frac) {
+    if (!(key in LABEL_FRAC_SETTINGS)) throw new Error(`setLabelFrac: unknown divider key "${key}"`);
+    this.labelFrac[key] = LABEL_FRAC_SETTINGS[key].persist(frac);
   }
 
-  /** Command. Returns the label⟷value split to its default (the divider's
+  /** Command. Returns ONE divider family's split to its default (the divider's
    *  double-click), clearing the stored preference rather than writing the
    *  default over it — so a later change to the default reaches this user. */
-  resetLabelFrac() {
-    this.labelFrac = SETTINGS.labelFrac.reset();
+  resetLabelFrac(key) {
+    if (!(key in LABEL_FRAC_SETTINGS)) throw new Error(`resetLabelFrac: unknown divider key "${key}"`);
+    this.labelFrac[key] = LABEL_FRAC_SETTINGS[key].reset();
   }
 
   togglePanelNames() {

@@ -51,6 +51,7 @@
   import { bootFailed, bootStage } from "./bootProgress.js";
   import { humanReadableFileSize } from "./fileSize.js";
   import { PowerRPApp, THEME_FAMILIES } from "./app.svelte.js";
+  import { LABEL_DIVIDER_PROPERTY } from "./labelFrac.js";
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
   import { cameraRectAt } from "./cameraFrame.js";
@@ -2392,8 +2393,13 @@
      the Global Variables Panel are separate subtrees in separate panes, and the
      round-11 ruling is that their columns LINE UP. One variable on their nearest
      common ancestor is what makes that structural instead of a coincidence two
-     independent drags would have to keep re-establishing. -->
-<div class="app" style:--a-label-frac={app.labelFrac}>
+     independent drags would have to keep re-establishing.
+
+     The root carries the PROPERTY family's fraction. A nested block belonging to
+     another family (PaintField's variable-property rows) re-publishes the token
+     with its own number, and the cascade does the rest — which is why adding a
+     family needs no second token here. See web/labelFrac.js. -->
+<div class="app" style:--a-label-frac={app.labelFrac[LABEL_DIVIDER_PROPERTY]}>
   <Toolbar {app} {renderBadge} />
   <!-- ONE pane body for both columns: which PANEL a pane index maps to is read
        from the VISIBLE subset (`visiblePanels(column)[row]`), never from a literal
