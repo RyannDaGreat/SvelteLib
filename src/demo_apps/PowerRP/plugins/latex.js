@@ -176,10 +176,264 @@ export function errorAffordance(w, h, message) {
   return [box, label];
 }
 
+/**
+ * EQUATION LIBRARY — the LaTeX source IS the whole payload, the way mermaid's demo
+ * presets write `definition`. A content preset is legitimate exactly where the
+ * content is FORMAL PUBLIC VOCABULARY the author would otherwise have to look up,
+ * and illegitimate where it is their own writing: nobody remembers the LaTeX for
+ * the Dirac equation, and that is the whole difference between this table and the
+ * sibling text widgets, none of which get a content preset.
+ *
+ * A TITLED FAMILY rather than the flat form, for mermaid's stated reason: the group
+ * heading is the ONLY signal a user gets that these presets REPLACE what is in the
+ * field. Hovering shows the replacement live before any commit, and a click is one
+ * undo — but nothing in the preset descriptor marks a family as destructive, so the
+ * name of the group is doing that work.
+ *
+ * ORDERED BY DISCIPLINE, elementary to specialised: identities and geometry,
+ * calculus, linear algebra, probability and information, then physics. That is the
+ * order the material is taught in, and it keeps the one genuinely tall four-line
+ * block among the physics rows instead of stranded mid-list. The comment on each
+ * row is its MEASURED aspect ratio, which matters because a preset cannot resize
+ * the box and an author picking by SHAPE needs it.
+ *
+ * THREE MACRO CLASSES ARE UNUSABLE HERE AND NONE APPEARS BELOW:
+ *   AUTOLOAD-ONLY macros (\boldsymbol, \color, \cancel, \braket, \bm, and the whole
+ *     `physics` package) make MathJax throw from the SYNCHRONOUS tex2svg call this
+ *     widget makes, and latex_raster latches that key as an error and never
+ *     retries — so such a preset is permanently broken, not intermittently.
+ *   UNDEFINED macros are worse, because they are SILENT. \oiint does not exist, so
+ *     the textbook form of the divergence theorem is unreachable; MathJax emits the
+ *     macro's own name as ordinary glyphs inside a perfectly well-formed,
+ *     correctly-sized SVG and produces NO merror node, so latexErrorFor returns
+ *     null and the loud red affordance never fires. Measured in the booted editor:
+ *     it renders as the literal text "\oiint" — and in the widget's OWN ink, since
+ *     the tint is applied to every glyph, so even MathJax's red is painted over.
+ *     Every source below was rendered and LOOKED AT for that reason, and
+ *     tests/latex_presets_probe.js re-checks all of them through the page's own
+ *     MathJax on every run.
+ *   \tag{} makes MathJax emit width="100%" instead of an ex value, which breaks
+ *     parseExAttr and therefore the widget's aspect. Nothing here is numbered,
+ *     which also matches the style guidance: AMS and IEEE disagree on where an
+ *     equation number even goes, so it is a cross-reference device rather than a
+ *     legibility one, and a slide figure has nothing to cross-reference.
+ * `\\` does nothing outside an environment — MathJax 3 has no automatic line
+ * breaker — so every multi-line entry below uses `aligned`.
+ *
+ * THE QUADRATIC FORMULA IS ABSENT ON PURPOSE: it is already DEFAULT_LATEX, so a
+ * preset for it would be byte-identical to the un-hovered baseline — a dead row by
+ * the distinctness rule's own definition.
+ *
+ * FIVE FAMOUS EQUATIONS WERE CUT ON SHAPE ALONE, not on interest: the Drake
+ * equation, Hardy-Weinberg, the covariance definition, the Big-O definition and the
+ * one-line Standard Model Lagrangian all measure between 13:1 and 23:1, and at
+ * those proportions they are ribbons that need the full slide width. Several have
+ * `aligned` variants that would fit; those are a second pass.
+ */
+const LATEX_EQUATIONS = [
+  { name: "Euler's Identity", description: "The five constants in one relation — e, i, pi, one and zero — and the most quoted equation in mathematics.",
+    props: { latex: "e^{i\\pi} + 1 = 0" } }, // 4.9:1
+  { name: "The Pythagorean Theorem", description: "The right triangle, in fifteen characters: the oldest equation most audiences can read without being told what it is.",
+    props: { latex: "a^2 + b^2 = c^2" } }, // 5.4:1
+  { name: "The Golden Ratio", description: "Phi as the positive root of x squared minus x minus one — a radical over a fraction, and a good demonstration that the typesetting stacks.",
+    props: { latex: "\\varphi = \\frac{1 + \\sqrt{5}}{2} \\approx 1.618" } }, // 3.9:1
+  { name: "The Definition Of The Derivative", description: "The limit of the difference quotient — the first real definition in calculus, and the one slide that explains what a derivative IS.",
+    props: { latex: "f'(x) = \\lim_{h \\to 0}\\frac{f(x+h) - f(x)}{h}" } }, // 5.6:1
+  { name: "The Gaussian Integral", description: "The Euler-Poisson integral: the bell curve's total area is the square root of pi, which is why pi appears in the normal distribution at all.",
+    props: { latex: "\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}" } }, // 3.4:1
+  { name: "The Basel Problem", description: "The sum of the reciprocal squares equals pi squared over six — Euler's 1734 result, and a compact, nearly square block.",
+    props: { latex: "\\sum_{n=1}^{\\infty}\\frac{1}{n^{2}} = \\frac{\\pi^{2}}{6}" } }, // 2.1:1
+  { name: "A Three-By-Three Matrix", description: "A general square matrix with subscripted entries — the structural preset, for when the slide is about the SHAPE rather than a particular result.",
+    props: { latex: "A = \\begin{pmatrix} a_{11} & a_{12} & a_{13} \\\\ a_{21} & a_{22} & a_{23} \\\\ a_{31} & a_{32} & a_{33} \\end{pmatrix}" } }, // 2.6:1
+  { name: "A Piecewise Definition", description: "The absolute value written as two cases — the brace-and-cases layout every piecewise function on a slide needs.",
+    props: { latex: "|x| = \\begin{cases} x & x \\ge 0 \\\\ -x & x < 0 \\end{cases}" } }, // 3.3:1
+  { name: "The Normal Distribution", description: "The Gaussian density in full: the normalising constant, the squared standardised deviation, and every piece of notation a statistics talk needs on one line.",
+    props: { latex: "f(x) = \\frac{1}{\\sigma\\sqrt{2\\pi}}\\, e^{-\\frac{1}{2}\\left(\\frac{x-\\mu}{\\sigma}\\right)^{2}}" } }, // 4.3:1
+  { name: "Bayes' Theorem", description: "How a belief updates on evidence — the likelihood times the prior over the marginal, in the conditional-bar notation.",
+    props: { latex: "P(A \\mid B) = \\frac{P(B \\mid A)\\,P(A)}{P(B)}" } }, // 4.9:1
+  { name: "Shannon Entropy", description: "The average information content of a source, in bits — the equation information theory is built on.",
+    props: { latex: "H(X) = -\\sum_{i=1}^{n} p(x_i)\\log_2 p(x_i)" } }, // 4.6:1
+  { name: "The Fourier Transform", description: "The ordinary-frequency, unitary form: a signal decomposed into complex exponentials. The angular-frequency convention differs by a factor of two pi.",
+    props: { latex: "\\hat{f}(\\xi) = \\int_{-\\infty}^{\\infty} f(x)\\,e^{-2\\pi i x\\xi}\\,dx" } }, // 4.8:1
+  { name: "Scaled Dot-Product Attention", description: "The transformer's attention operation — queries against keys, scaled by the square root of the key dimension, softmaxed onto values.",
+    props: { latex: "\\operatorname{Attention}(Q,K,V) = \\operatorname{softmax}\\!\\left(\\frac{QK^{\\top}}{\\sqrt{d_k}}\\right)V" } }, // 7.2:1
+  { name: "Mass-Energy Equivalence", description: "Ten characters, and the most recognisable equation in physics. Its short, wide shape makes it the best row for checking how a box reads before you commit to a layout.",
+    props: { latex: "E = mc^{2}" } }, // 4.0:1
+  { name: "The Lorentz Factor", description: "The relativistic stretch factor — a nested fraction inside a radical, and the TALLEST single-line equation here, so it is the one that tests a short box.",
+    props: { latex: "\\gamma = \\frac{1}{\\sqrt{1 - \\dfrac{v^{2}}{c^{2}}}}" } }, // 1.7:1
+  { name: "The Schrodinger Equation", description: "The time-dependent form in operator notation: how a quantum state evolves, with the reduced Planck constant out front.",
+    props: { latex: "i\\hbar\\frac{\\partial}{\\partial t}\\Psi(\\mathbf{r},t) = \\hat{H}\\Psi(\\mathbf{r},t)" } }, // 4.8:1
+  { name: "The Dirac Equation", description: "Relativistic quantum mechanics in one line, gamma matrices and all — the equation that predicted antimatter.",
+    props: { latex: "\\left(i\\hbar\\gamma^{\\mu}\\partial_{\\mu} - mc\\right)\\psi = 0" } }, // 8.4:1
+  { name: "Maxwell's Equations", description: "All four in differential form, in metric units — the only genuinely TALL preset here, so give it a box that is nearly as high as it is wide.",
+    props: { latex: "\\begin{aligned} \\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\varepsilon_0} \\\\ \\nabla \\cdot \\mathbf{B} &= 0 \\\\ \\nabla \\times \\mathbf{E} &= -\\frac{\\partial \\mathbf{B}}{\\partial t} \\\\ \\nabla \\times \\mathbf{B} &= \\mu_0\\left(\\mathbf{J} + \\varepsilon_0 \\frac{\\partial \\mathbf{E}}{\\partial t}\\right) \\end{aligned}" } }, // 1.4:1
+];
+
+/**
+ * EQUATION TREATMENT — how the typeset equation is PRESENTED, independent of what
+ * it says. Key-disjoint from LATEX_EQUATIONS above, so a formula and a treatment
+ * compose in either order.
+ *
+ * `fontSize` IS NOT IN THIS TABLE, AND THAT IS THE MOST IMPORTANT THING ON THIS
+ * PAGE, because the obvious design writes it and would be writing a knob that
+ * CANNOT MOVE A PIXEL. Read off emit() below: the quad is placed at the WIDGET BOX
+ * (c.w x c.h) and drawn with preserveAspect, so the glyph paths are fit to the box;
+ * fontSize reaches only the raster density bucket the bitmap is cached under, and
+ * `naturalSize` — the hook that WOULD grow the box from it — has no caller anywhere
+ * in web/ or core/. Measured in the booted editor at a fixed 900x420 box, one
+ * equation, fontSize 22 against 200: maxAbs 0, BYTE-IDENTICAL, while the ink
+ * control over the same pair of frames moved 175. So a size-ordered treatment
+ * library would have been ordered by an axis nothing can see, and every "at display
+ * scale" / "sized to be read only if you go looking" clause would have been a
+ * confident false claim. Recorded as a product defect in its own right: the Font
+ * size row's own help text promises "the box grows to fit", and it does not.
+ *
+ * TEN, AND THAT IS THE HONEST NUMBER once size is gone. What is left is the ink,
+ * the frame (colour, width, corner), the opacity and the effects — and ten
+ * recognisable presentations is what those axes hold. Padding past it would only
+ * add rows separated by a hex value.
+ *
+ * ORDERED FROM THE LEAST INTERVENTION TO THE MOST: the unframed inks first, from
+ * the scholarly baseline outward through the quiet aside, the correction and the
+ * two light-ground treatments; then the three framed ones; then the row that takes
+ * the equation out of the reading order entirely.
+ *
+ * NO BLOOM ANYWHERE, and it is written off in every row rather than omitted. An
+ * equation is TYPESET MATHEMATICS, not an instrument and not a sign: it has no
+ * emission to model, and neither AMS nor IEEE style has anything resembling a
+ * glowing equation, so a glowing row would be decoration with no referent. `shadow`
+ * earns its one appearance on a different ground — it is the caption-legibility
+ * device, which is a real thing an equation over footage needs. The remaining
+ * effects are written off for the overlay reason, not because they are ornamental.
+ *
+ * THE LIGHT-INK ROWS ASSUME A DARK SLIDE and say so, because this widget has no
+ * fill of its own — it composes the stroked BORDER slice, not the box — so a pale
+ * ink is simply invisible on a pale ground and nothing can check it.
+ */
+const LATEX_TREATMENT = [
+  {
+    name: "Printed Black",
+    description: "The default scholarly setting: a true printing black, unframed, fully opaque. The baseline every other row here is measured against.",
+    props: {
+      ink: "#111111", stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 1,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Quiet Aside",
+    description: "A muted grey with no frame — for the inline identity or the unit check that has to be present without competing with the result it supports.",
+    props: {
+      ink: "#4b5563", stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 1,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Red Correction",
+    description: "Marked in red, unframed — the derivation step being challenged, or the term the talk is about to fix.",
+    props: {
+      ink: "#c0392b", stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 1,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Board Chalk",
+    description: "Warm off-white at just under full opacity, unframed, the way an equation is written on a board. FOR A DARK SLIDE — this widget has no background of its own, so a pale ink vanishes on a pale ground.",
+    props: {
+      ink: "#f2ede4", stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 0.95,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Projected White",
+    description: "White with a tight solid shade all round and no frame — the subtitle treatment applied to mathematics, so the equation survives whatever photograph or footage is behind it.",
+    props: {
+      ink: "#ffffff", stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 1,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 5, color: "#000000", opacity: 1 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Boxed Theorem",
+    description: "A ruled box around the result, square-cornered and in the same ink as the mathematics — the way a textbook fences off a statement worth remembering.",
+    props: {
+      ink: "#111111", stroke: "#111111", strokeWidth: 2, cornerRadius: 0, opacity: 1,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Rounded Callout",
+    description: "A navy ink inside a soft blue rounded frame — a note pulled out of the flow rather than a theorem stated.",
+    props: {
+      ink: "#1a3a6b", stroke: "#9fb8dd", strokeWidth: 2, cornerRadius: 12, opacity: 1,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Blueprint Line",
+    description: "A cold near-white equation in a thin steel-blue rule, square-cornered. FOR A DARK OR CYANOTYPE GROUND.",
+    props: {
+      ink: "#e8f1ff", stroke: "#7fa8d8", strokeWidth: 1, cornerRadius: 0, opacity: 0.95,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Gold Frame",
+    description: "An old-gold equation inside a matching three-unit frame with a small corner — the presentation an award or a title plate would give a formula. FOR A DARK SLIDE.",
+    props: {
+      ink: "#c9a227", stroke: "#c9a227", strokeWidth: 3, cornerRadius: 4, opacity: 1,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Ghost Equation",
+    description: "Eight percent black, unframed — the formula sitting behind the content as texture rather than as something anyone is asked to read.",
+    props: {
+      ink: "#000000", stroke: "#000000", strokeWidth: 0, cornerRadius: 0, opacity: 0.08,
+      blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+];
+
 export const latexPlugin = {
   type: "latex",
   title: "LaTeX Equation",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // TWO key-DISJOINT families: the source and its presentation compose in either
+  // order. The equation family is TITLED (the mermaid form) because that heading is
+  // the only signal a user gets that picking one REPLACES the source they typed.
+  presetFamilies: [
+    { id: "equations", title: "Equation library", presets: LATEX_EQUATIONS },
+    { id: "treatment", title: "Equation treatment", presets: LATEX_TREATMENT },
+  ],
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the
   // WYSIWYG equation editor (a MathLive DOM overlay plus canvas suppression —
   // MathJax has no caret to self-draw, so unlike text this one is NOT Skia-owned).
