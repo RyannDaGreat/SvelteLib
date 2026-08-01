@@ -13,12 +13,21 @@ from :root, so each block is resolved over the :root defaults before checking.
 Run with no args; pass -v/--verbose for the full per-theme ratio table (a
 failing theme prints its table either way — that is where the diagnosis is).
 """
+import os
 import re
 import sys
 
 VERBOSE = any(a in ("-v", "--verbose") for a in sys.argv[1:])
 
-CSS = "/Users/ryan/CleanCode/Sandbox/RP_Dumps/PowerRP/SvelteLib/src/demo_apps/PowerRP/web/app.css"
+# Resolved from THIS file, never from the cwd and never absolute: the dump is
+# portable and may be renamed or moved at any time. This gate previously
+# hardcoded an absolute path from a different machine, so it raised
+# FileNotFoundError on every other checkout while run_all.mjs still collected it
+# -- a green suite that had never once parsed a stylesheet. Same shape as
+# tests/frames_endpoint_test.py:45 and tests/asset_thumbnail_test.py:31.
+HERE = os.path.dirname(os.path.abspath(__file__))
+CSS = os.path.join(HERE, "..", "web", "app.css")
+assert os.path.isfile(CSS), f"stylesheet under test is missing: {CSS}"
 
 FG_DIM_MIN = 4.3   # smallest-text token
 CHROMA_MIN = 3.4   # graphical/accent tokens
