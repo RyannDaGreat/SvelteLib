@@ -2942,15 +2942,44 @@ double-click areas. That only holds if the refusal lives at the **constraint/com
 (point 2 above), because a per-handler implementation will be missed somewhere. `interiorNav` is
 the existing proof that a double-click area can honour it.
 
-**OPEN QUESTIONS FOR THE USER — do not guess these:**
-1. **Default state.** He said "only when that option is enabled", so OFF. But today's default
-   silently overwrites an authored equation with a literal (`dragKinds.js:95`), which is the kind
-   of silent destruction this project otherwise forbids. Is the toggle really "protect my work",
-   and if so should protection be the default?
-2. **Chain-link direction:** is refusing the dependent handle acceptable for v1, or is
-   two-way (inversion) essential to the feel he wants?
-3. **Does the lock also apply to the Inspector's own fields**, or only to canvas gestures? (A
-   locked property typed into directly is a different affordance question.)
+**SETTLED BY THE USER, 2026-08-01:**
+1. **DEFAULT: OFF.** "The protection is not on by default."
+2. **ICON: THE CHAIN LINK** — he considered a grabbing-hand-plus-equation-plus-no-sign and
+   converged on the chain link himself ("Actually, yeah, that's it"), which also matches the
+   chain-link metaphor he used for the `width = height * 2` case. **AND BOTH GLYPHS ARE ALREADY
+   IN USE IN THIS CODEBASE: `mdi:link-variant` and `mdi:link-variant-off`** — so an armed/unarmed
+   toggle needs no new icon vocabulary at all, and should follow however the existing snap and
+   ghost toggles express their two states.
+3. **SCOPE: CANVAS GESTURES ONLY, not the Inspector's own fields** — his reason: *"we'll be
+   seeing equations there anyway"*, i.e. the Inspector already displays the equation, so a lock
+   adds nothing there. **This also means the tooltip/greying work is confined to canvas
+   affordances, which is a smaller surface than R6-28 first implied.**
+
+**THE ANSWER TO HIS QUESTION "is every handle constrained that way?" IS NO — AND THERE ARE TWO
+INDEPENDENT MECHANISMS, SO A SINGLE-SEAM FIX WOULD SILENTLY MISS RESIZE.** Measured:
+- **`constrain` is the MODIFIER-POINT protocol only.** `core/registry.js:154` scopes it verbatim:
+  "THE HANDLE-CONSTRAINT PROTOCOL (**`modifierPoints[].constrain`**)", and `:157` says it "is
+  what kept modifier points DRAG-ONLY". Declared by **8 plugins** (`clock_analog`, `donut`,
+  `elbow_arrow`, `curved_arrow`, `paper_peacock`, and three more). These are the yellow-square
+  edit handles.
+- **THE BBOX MOVE/RESIZE PATH DOES NOT CALL `constrain` AT ALL.** It has its own axis machinery
+  in `web/canvas/dragKinds.js`: `doX`/`doY` at `:346-347` ("x-axis constraint (or unconstrained)
+  touches x/w"), plus the G/S modal's axis constraint where *"the constrained axis's factor
+  [is] pinned to 1 and its writes suppressed"* (`:341`).
+- **SO EQUATION LOCK MUST FEED TWO SEAMS:** `modifierPoints[].constrain` for the yellow squares,
+  and `dragKinds`'s `doX`/`doY` suppression for move, resize and the modal transforms. **That is
+  where `height`/`width` locking actually bites, so the resize seam is the MORE important of the
+  two — and it is the one a naive "just add it to constrain" would miss.**
+- **THE GOOD NEWS: neither mechanism needs inventing, and `doX`/`doY` is ALREADY exactly the
+  right shape** — "suppress this axis's writes and pin its factor to 1" IS "height is locked, so
+  only resize width". The work is wiring a lock predicate into two existing gates, not building
+  a constraint system.
+
+**STILL OPEN — the only remaining design question:**
+- **Chain-link direction.** Is refusing the DEPENDENT handle acceptable for v1 (drag height to
+  drive `width = height * 2`, but refuse dragging width), or does the feel he wants require
+  two-way numeric inversion? Inversion is permitted by the determinism rules but is a much larger
+  feature and can feel unpredictable.
 
 ### R6-22 CONVENTION CONFORMANCE — A STANDING OBLIGATION ON EVERY AGENT
 
