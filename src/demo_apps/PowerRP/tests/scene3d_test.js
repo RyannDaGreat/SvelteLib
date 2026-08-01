@@ -60,6 +60,7 @@ import {
   scene3dRasterStats, scene3dRef,
 } from "../render_gpu/gpu/scene3d_raster.js";
 import { sceneIR } from "../render_gpu/ports.js";
+import { cameraFrameIR } from "../web/cameraFrame.js";
 import { NAVIGATE_SCENE_HANDLER, dollyedPose, fovedPose, orbitedPose } from "../web/sceneNav.js";
 
 let passed = 0;
@@ -462,6 +463,34 @@ test("sceneIR's `live` reaches emit(), and its ABSENCE is byte-identical to befo
   assert.equal(seen[1], null, "no pre-pass and no live flag ⇒ NO render context at all, exactly as before");
   sceneIR([node], { live: false });
   assert.equal(seen[2], null, "an explicit live:false is the same nothing — an exporter changes no behaviour by being explicit");
+});
+
+test("cameraFrameIR does NOT infer `live` from the view — the presenter would freeze a wrong pose", () => {
+  // THE DEFECT THIS PINS, caught before it shipped. `view` and `live` are
+  // different questions: a view says "I know where the camera is", `live` says "I
+  // WILL REPAINT when an async raster lands". web/PresentMode.svelte passes a view
+  // and repaints on navigation, tweens and animated widgets — never on image load.
+  // Inferring `live` from `view` handed it the stale-frame hold, so a presented
+  // slide could sit indefinitely showing a scene at the WRONG POSE: worse than a
+  // hole, because it looks right. A capture plugin is what makes this assertable
+  // without a browser — it records the 4th argument it was handed.
+  const seen = [];
+  const registry = createRegistry();
+  registry.register({
+    type: "live_probe",
+    title: "Live probe",
+    capabilities: { bbox: true },
+    defaults: { type: "live_probe", x: 0, y: 0, w: 10, h: 10, z: 0, rotation: 0, scale: 1 },
+    inspector: [],
+    emit: (_s, _sub, _w, ctx) => { seen.push(ctx); return [{ op: "rect", x: 0, y: 0, w: 1, h: 1 }]; },
+  });
+  const state = { items: { i1: { ...registry.get("live_probe").defaults } }, vars: {} };
+  const meta = { slideW: 400, slideH: 300 };
+  const view = { zoom: 1, panX: 0, panY: 0, dpr: 1 };
+  cameraFrameIR(state, meta, registry, { view, viewW: 400, viewH: 300 });
+  assert.notEqual(seen[0]?.live, true, "a VIEW alone must never turn the hold on");
+  cameraFrameIR(state, meta, registry, { view, viewW: 400, viewH: 300, live: true });
+  assert.equal(seen[1]?.live, true, "…and an explicit opt-in must still reach the widget");
 });
 
 // ── 9. THE ENGINE STAYS CONFINED ─────────────────────────────────────────────

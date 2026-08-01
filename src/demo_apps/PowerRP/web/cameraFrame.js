@@ -149,14 +149,16 @@ export function cameraRectAt(doc, slideIndex, alpha, registry) {
  * @param {object} state EVALUATED folded state (equations already numbers).
  * @param {object} meta doc.meta ({slideW, slideH}) — the camera-rect fallback.
  * @param {object} registry Plugin registry.
- * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number, project?: string}} [opts]
+ * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number, project?: string, live?: boolean}} [opts]
  *   Optional world-space cull rect + live view (view + device-px canvas size) to
  *   drive the PDF display re-raster, and the owning project for ref resolution.
+ *   `live` declares that the CALLER repaints when an async raster lands — see the
+ *   note at the sceneIR call below; it is deliberately NOT inferred from `view`.
  * @returns {Array} IR command list: [cameraBgRect, ...sceneIR(nodes)].
  *
  * @example // cameraFrameIR(evaluatedState, doc.meta, registry, {project: doc.meta.name}) // [rectCmd(bg), ...scene]
  */
-export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0, project = "" } = {}) {
+export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0, project = "", live = false } = {}) {
   const rect = cameraRect(state, meta);
   let nodes = deriveRenderTree(state, registry, project || meta?.name || "");
   if (cullRect) nodes = nodes.filter((n) => !canSkipNode(n, cullRect));
@@ -182,12 +184,18 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
     // painter every frame — the camera-background freeze). A plain "#rrggbb"
     // string is still a solid, byte-identically.
     rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: resolvedBackgroundFill(rect.background, nodes) }),
-    // `live: liveView` — a caller that supplied a view is a SURFACE THAT
-    // REPAINTS (the editor canvas, the presenter), so a widget whose async raster
-    // is not ready may show its previous frame rather than a hole. The one-shot
-    // consumers (thumbnails, PNG/SVG/PDF export, the CLI) supply no view and get
-    // `false`, which is byte-identical to this function's behaviour before the
-    // flag existed. See render_gpu/ports.sceneIR for the full reasoning.
-    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, live: liveView }),
+    // `live` IS AN EXPLICIT OPT-IN AND IS NOT DERIVED FROM `view`. The two are
+    // different questions and conflating them was a real defect, caught before it
+    // shipped: a view says "I know where the camera is", `live` says "I WILL
+    // REPAINT when an asynchronous raster arrives". web/PresentMode.svelte passes
+    // a view and does NOT repaint on image load — it repaints on navigation, on a
+    // tween, and on a slide holding an animated widget, and subscribes to
+    // image_registry not at all. Handing it `live` would let a stale frame be
+    // drawn and then never replaced, so a presented slide could sit indefinitely
+    // showing a 3D scene at the WRONG POSE: strictly worse than a hole, because it
+    // looks right. The pre-passes above are still driven by `view`, because a
+    // resolution decision does not depend on repainting and the presenter should
+    // get its scenes at presentation resolution.
+    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, live }),
   ];
 }
