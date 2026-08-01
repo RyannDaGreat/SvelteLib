@@ -45,7 +45,8 @@ const STACK = { x: 60, y: 30, w: 300, h: 300 };
 const FRAME_COUNT = 3;              // one card per fixture colour band
 const SHIFT = 0.45;                 // fraction of the box; leaves each card 2/3 of it
 const CLIP_SECONDS = 3;
-const BOOT_MS = 4000;               // Skia wasm + fonts + first paint
+const BOOT_TIMEOUT_MS = 90000;      // how long the app is GIVEN to appear (a cold Vite re-optimize is slow)
+const BOOT_SETTLE_MS = 2500;        // Skia wasm + fonts + first paint, AFTER the app object exists
 const DECODE_TIMEOUT_MS = 25000;    // every card decoded (one seek per card, serialized)
 const POLL_MS = 200;
 const SETTLE_MS = 1200;
@@ -168,7 +169,13 @@ try {
   page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
   await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
-  await sleep(BOOT_MS);
+  // WAIT FOR THE APP, do not GUESS at it. A fixed sleep is what makes a probe flaky on
+  // a cold dev server: Vite re-optimizing its dependency graph pushes first paint well
+  // past any constant, and the probe then reports a boot failure that is really a
+  // stopwatch failure. Measured here — one run in five went silent that way, on a
+  // freshly re-optimized cache, and passed on every warm run.
+  await page.waitForFunction(() => window.__powerrp_app != null, { timeout: BOOT_TIMEOUT_MS, polling: POLL_MS });
+  await sleep(BOOT_SETTLE_MS);
   if (errors.length) { console.error("BOOT ERRORS:\n" + errors.join("\n")); process.exit(1); }
 
   /** Command (async). Loads a doc, fits the camera, returns the scene-canvas box. */
