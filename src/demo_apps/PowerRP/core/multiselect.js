@@ -139,16 +139,56 @@ export const MIXED_MARK = "…";
  *   step / scrub — drag granularity and drag sensitivity. They change how a
  *     GESTURE feels, never which values are representable nor how one is stored.
  *   onIcon / offIcon / onText / offText — a boolean toggle's iconography.
+ *   visibleWhen — a `(state) => boolean` deciding whether the row is SHOWN at
+ *     all. It is the most literally presentational aspect there is, and it
+ *     passes the partition's own test cleanly: two rows differing only in
+ *     `visibleWhen` accept exactly the same values, in the same unit, at the
+ *     same path, and a value written to both means the same thing. Whether a
+ *     control is on screen is not a claim about what it can express. See the
+ *     note below for why the classification does NOT rest on how the panel
+ *     happens to call groupRows today.
  *
  * @example PRESENTATIONAL_ROW_ASPECTS.includes("label") // true
  * @example PRESENTATIONAL_ROW_ASPECTS.includes("min") // false (a bound is a contract)
  * @example PRESENTATIONAL_ROW_ASPECTS.includes("display") // false (a UNIT is a contract)
+ * @example PRESENTATIONAL_ROW_ASPECTS.includes("visibleWhen") // true (shown-or-not is not expressible-or-not)
  */
 export const PRESENTATIONAL_ROW_ASPECTS = [
   "label", "help", "category",
   "step", "scrub",
   "onIcon", "offIcon", "onText", "offText",
+  "visibleWhen",
 ];
+
+// WHY `visibleWhen` IS HERE, AND THE ARGUMENT THAT DOES *NOT* JUSTIFY IT.
+//
+// It was added when e3caa3a gave plugins/text.js's eight box-level style rows a
+// `visibleWhen` (they hide once per-run/per-paragraph twins exist) and
+// plugins/plaintext.js's identical rows kept none. MEASURED consequence before
+// this entry: selecting a text + a plaintext turned font / size / bold / align
+// into CONFLICTS carrying aspect "visibleWhen" — four rows that are the same
+// property in every way that matters, surfaced as un-editable.
+//
+// THE DENYLIST DID ITS JOB, and that is the point worth keeping. A new row
+// aspect appeared, defaulted to CONTRACT, and produced a visible, named,
+// diagnosable conflict — not two widgets silently disagreeing about what a
+// written value means. The polarity described above is exactly what made a
+// third-party change land as a reported symptom instead of as data loss.
+//
+// THE WEAK ARGUMENT, recorded so nobody promotes it: web/Inspector.svelte's
+// multi panel calls `groupRows(rows)` with NO state (`:190`), and groupRows only
+// consults `visibleWhen` when state is passed (`:295-298`) — so the predicate is
+// inert in that panel today. TRUE, and useful, but it proves only that the
+// CURRENT panel is unaffected. If it were the whole justification, then passing
+// state to groupRows would silently re-break this. It is not: the entry rests on
+// the CONTRACT/PRESENTATIONAL partition above, which is a statement about the
+// property, not about a call site.
+//
+// WHAT IS GENUINELY OPEN is a DISPLAY question, and it is not this one: if a
+// future set panel does resolve `visibleWhen`, it must decide WHOSE state to
+// resolve it against, since a row can be visible on one selected item and hidden
+// on another. That question does not reach here — the two rows are still the
+// same row and a joint write to both is still well defined.
 
 /**
  * Row kinds a joint (N-item) edit can DRIVE, because a control exists that fans

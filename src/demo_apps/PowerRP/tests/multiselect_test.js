@@ -185,6 +185,38 @@ test("REAL row-kind conflict is REPORTED, not silently dropped", () => {
   assert.ok(reported.aspects.includes("options"), `the report names the differing aspect: ${JSON.stringify(reported.aspects)}`);
 });
 
+test("`visibleWhen` is PRESENTATIONAL — text + plaintext still share their style rows", () => {
+  // THE REGRESSION THIS PINS (e3caa3a, found and reported by W2-G against its own
+  // change): plugins/text.js gave its eight box-level style rows a `visibleWhen`
+  // (they hide once per-run/per-paragraph twins exist); plugins/plaintext.js's
+  // identical rows have none. With `visibleWhen` treated as CONTRACT, font / size
+  // / bold / align became CONFLICTS on a text+plaintext selection — four rows that
+  // are the same property in every way that decides what a written value MEANS.
+  //
+  // Note what the denylist's polarity bought here, because that is the design
+  // claim and not just a bug story: a brand-new row aspect defaulted to CONTRACT
+  // and surfaced a NAMED, diagnosable conflict, rather than silently unifying two
+  // rows that might have disagreed. The failure mode was over-exclusion, which is
+  // visible; the alternative polarity's failure mode is data loss, which is not.
+  const { rows, conflicts } = intersectRows([entry("t", "text", { type: "text" }), entry("p", "plaintext", { type: "plaintext" })]);
+  const shared = rows.map((r) => r.key);
+  for (const key of ["font", "size", "bold", "align"])
+    assert.ok(shared.includes(key), `${key} must stay jointly editable across text + plaintext (shared: ${JSON.stringify(shared)})`);
+  assert.deepEqual(conflicts.filter((c) => c.aspects.includes("visibleWhen")), [],
+    "no row may be excluded for differing on `visibleWhen` alone");
+
+  // DERIVED, not restated: read the two REAL rows and assert that `visibleWhen` is
+  // the only thing between them. If a future edit makes them genuinely differ,
+  // this says so precisely instead of the blanket check above quietly passing for
+  // the wrong reason — and if text.js drops `visibleWhen`, it fails as vacuous.
+  const fontRow = (type) => registry.get(type).inspector.find((r) => r.key === "font");
+  assert.ok(typeof fontRow("text").visibleWhen === "function",
+    "precondition: text's font row still declares visibleWhen — without it this test gates nothing");
+  assert.equal(fontRow("plaintext").visibleWhen, undefined, "precondition: plaintext's does not");
+  assert.deepEqual(contractDifferences(fontRow("text"), fontRow("plaintext")), [],
+    "`visibleWhen` is the ONLY difference, and it is presentational");
+});
+
 test("a key merely ABSENT on some item is not shared and not a conflict", () => {
   // `fill` exists on rect, not on video. That is not a conflict — reporting every
   // unshared property would bury the real conflicts.
