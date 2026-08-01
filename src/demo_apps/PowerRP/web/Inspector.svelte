@@ -628,6 +628,21 @@
   const VISIBLE_ROW_HELP =
     "Whether this item shows on THIS slide. Keyframeable like any other property, so an item can appear on some slides and not others.";
 
+  // The other two UNIVERSAL rows' meanings. Same rule as VISIBLE_ROW_HELP: the
+  // help is the property's MEANING, never an echo of the label (a label-echo
+  // tooltip is banned in this file), and it says the one thing a first-time
+  // reader cannot guess.
+  // WIDGET TYPE names what a retype DOES rather than what a type IS, because the
+  // surprising half is that the values come with you — core/retype's plan carries
+  // a property across when the two types agree on its row kind, and only resets
+  // the ones that disagree (the menu's warning triangles list exactly those).
+  const WIDGET_TYPE_ROW_HELP =
+    "What kind of widget this is. Changing it keeps every property the two types agree on and resets only the ones they do not — the menu marks those with a warning and lists them.";
+  // NAME says where the name SHOWS UP, which is the reason to set one; that it is
+  // optional, and what fills the gap when it is not set.
+  const NAME_ROW_HELP =
+    "What this widget is called in the item picker, the outline and equations. Optional — left blank it is called by its type and a number.";
+
   // The one ROW_KIND that is NOT a value slot: it triggers a registry command
   // (core/properties.js "action → a command trigger, not a value slot"). Named
   // rather than spelled inline because three separate decisions key off it — no
@@ -1019,6 +1034,118 @@
     return app.registry.get(type)?.capabilities.purgeable !== false;
   });
 
+  // ── THE UNIVERSAL SECTION (R6-6.6) ──────────────────────────────────────────
+  // "Order Type / Name / Visible as three ordinary properties in ONE section,
+  // since every widget has them" (user). So they ARE ordinary rows now — same
+  // propRow, same grid, same label column, same value track — instead of the
+  // caption + loose name div + loose Visible row they were, which is why the
+  // Name label used to sit 30px (two gutter slots) LEFT of every other label in
+  // the panel: it rendered a bare <span class="label"> with none of the row's
+  // label chrome. Measured before/after in tests/inspector_row_uniformity_probe.js.
+  //
+  // "UNIVERSAL" IS THE CODEBASE'S OWN WORD for exactly this set, and it is the
+  // oldest one available: core/derive.js:230 "`active` is a universal widget
+  // property", from the V1 commit; AUTHORING.md:99 "`active` is a universal
+  // property that every widget has" — the same sentence R6-6.6 justifies the
+  // section with; and this file already calls the Visible row "a UNIVERSAL
+  // boolean row". Runner-up "Widget" loses three ways: it would repeat the
+  // first row's own dictated label ("Widget type"), it names the OWNER where
+  // every other section title names a TOPIC, and its user-facing use is ten days
+  // younger. (R6-22.3: where the manifest is silent, the older pattern wins.)
+  //
+  // THE ID IS `__`-PREFIXED for the reason the Variables accordion's is: a
+  // hard-coded section must own an id no plugin can declare, or a plugin filing
+  // rows under it would render a second block with the same title.
+  const UNIVERSAL_CATEGORY_ID = "__universal";
+
+  /** The three rows every widget has, in the ruled order. A category shape
+   * ({id, title, rows}) so it renders through the SAME `category` snippet the
+   * plugin sections do — which is also how it inherits the collapse memory and
+   * the label⟷value divider without either being restated here.
+   *
+   * `keyframes: false` on type and name is the honest current state, not a
+   * design bound: a name is not per-slide state at all, while R6-6.7 ruled that
+   * widget type IS keyframeable and is blocked only on the retype command
+   * writing at the CURRENT slide (web/app.svelte.js #creationState). See the
+   * propRow header — flipping that one flag is the whole UI half of it. */
+  /** True while the picked item exists in the document but NOT on this slide —
+   * the Round 12B branch. Its Universal rows differ in exactly two ways, both
+   * about `active`: the item is not visible here whatever its creation slide
+   * says, and turning it on CREATES it here rather than keyframing a boolean. */
+  let notYetCreated = $derived(!sel && creationState != null);
+
+  let universalCategory = $derived({
+    id: UNIVERSAL_CATEGORY_ID,
+    title: "Universal",
+    rows: [
+      { key: "type", label: "Widget type", kind: "select", optionsFrom: "retype",
+        keyframes: false, help: WIDGET_TYPE_ROW_HELP },
+      { key: "name", label: "Name", kind: "text", keyframes: false,
+        placeholder: app.displayName(pickedItemId), purge: purgeable, help: NAME_ROW_HELP },
+      // The camera is mandatory (purgeable:false) and has no visibility to
+      // keyframe, exactly as before this section existed.
+      ...(purgeable
+        ? [{ key: "active", label: "Visible", kind: "boolean",
+            // NOT-YET-CREATED keeps its own OFF sentence — the click does
+            // something bigger there (it copies the creation-slide state onto
+            // this slide), and a tooltip that said "keyframes active: true"
+            // would describe the wrong write.
+            keyframes: !notYetCreated,
+            onIcon: "mdi:eye", offIcon: "mdi:eye-off",
+            onText: "Visible on this slide — click to hide (keyframes active: false)",
+            offText: notYetCreated
+              ? (creationIndex != null
+                ? `Not created until slide ${creationIndex + 1} — click to show it here, copying its properties onto this slide`
+                : "Show this item on this slide")
+              : "Hidden on this slide — click to show (keyframes active: true)",
+            help: VISIBLE_ROW_HELP }]
+        : []),
+    ],
+  });
+
+  /** The state the Universal rows READ. For a created item that is just its
+   * folded state. For a NOT-YET-CREATED one, two corrections: the fold stops at
+   * the creation slide, so a name set on a LATER slide is not in it
+   * (allDocumentItems scans every slide, which is where that branch has always
+   * read the name from), and `active` is FALSE here regardless of what the
+   * creation slide keyed — the item is not on this slide, which is the whole
+   * meaning of the branch. Kept as one derived rather than two call sites so the
+   * two branches cannot drift. */
+  let universalState = $derived.by(() => {
+    if (sel) return sel.state;
+    if (!creationState) return null;
+    const doc = allDocumentItems(app.doc).find((it) => it.id === pickedItemId);
+    return { ...creationState, name: doc?.name, active: false };
+  });
+
+  /** Command. The Universal section's COMMIT seam. Only one of its three rows is
+   * an ordinary property write; the other two go through commands:
+   *   type → app.retypeSelection, which runs core/retype's coercion PLAN as one
+   *          undo unit (a bare `type` keyframe would leave the old type's values
+   *          in slots the new plugin cannot read).
+   *   name → app.renameSelection, which writes the item's name where a name
+   *          lives (its creation slide), not as a per-slide keyframe here.
+   *   active, while NOT YET CREATED → activateNotYetCreated, the only write that
+   *          means anything before the item exists here. On a created item it is
+   *          the plain keyframe every plugin row uses. */
+  function commitUniversal(key, kind, raw) {
+    if (key === "type") app.retypeSelection(raw);
+    else if (key === "name") app.renameSelection(raw);
+    else if (notYetCreated) activateNotYetCreated();
+    else commitField(key, kind, raw);
+  }
+
+  /** Command. The Universal section's PREVIEW seam. Type and name have no
+   * preview: both commit through a command rather than through a keyframe, so
+   * there is no staged value for setPreview to hold and no revert for
+   * cancelPreview to perform — previewing a retype would have to run the whole
+   * coercion plan against the live document, which is a write wearing a
+   * preview's clothes. Visible previews exactly as it always has. */
+  function previewUniversal(key, kind, raw) {
+    if (key === "type" || key === "name") return;
+    previewField(key, kind, raw);
+  }
+
   /** Toggles visibility of a CREATED item on this slide: keyframes `active`
    * true/false (upsert), one undo unit; keeps the selection so a hidden item
    * (red picker row) toggles right back. This IS the boolean-property row's
@@ -1132,40 +1259,14 @@
   {/if}
 {/snippet}
 
-<!-- THE WIDGET-TYPE CONTROL — "what kind of widget is this", sitting between the
-     item dropdown and the Name row. A snippet because BOTH item branches (the
-     created item and the not-yet-created one) render it and must render it the
-     same way; a plugin with no registered title falls back to nothing rather
-     than printing "undefined".
-
-     It is a DROPDOWN when the item can become something else, and the same small
-     dim CAPTION it has always been when it cannot. The empty-choices case is not
-     a special branch here — app.retypeChoices() already returns [] for the
-     camera, a group, a scene-structural type and a multi-selection, so "no menu"
-     and "not retypeable" are one condition read in one place. A caption is right
-     for those: offering a menu that refuses every choice is a lie.
-
-     THE NOT-YET-CREATED CALL SITE gets the caption for free, and deliberately:
-     retypeChoices reads app.state().items[id], which does not hold an item that
-     is not on THIS slide, so the menu is empty there. That is the right answer
-     rather than a missing feature — retyping writes a keyframe on the current
-     slide, and an item with no state here has nothing to retype FROM. -->
-
-{#snippet widgetType(plugin)}
-  {#if retypeMenu.length > 0}
-    <div class="widget-type-picker">
-      <Dropdown
-        items={retypeMenu}
-        value={plugin?.type ?? null}
-        onchange={(v) => app.retypeSelection(v)}
-        item={retypeItem}
-      />
-    </div>
-  {:else if plugin?.title}
-    <div class="widget-type">{plugin.title}</div>
-  {/if}
-{/snippet}
-
+<!-- (THE WIDGET-TYPE CONTROL used to be a `widgetType` SNIPPET here — a
+     panel-wide Dropdown, or a small dim caption when the type was fixed, both
+     sitting OUTSIDE the row grid between the item picker and the Name row.
+     R6-6 folded it into the Universal section as an ordinary select row, which
+     is what makes it the same width as every other property editor; its
+     not-retypeable form is now the row grid's own `.disabled-val`. See
+     universalCategory in the script and the `optionsFrom: "retype"` branch of
+     valueControl — between them they say everything that comment said.) -->
 <!-- ONE generic property row: label + control-by-kind + optional keyframe
      controls. Consumed by item categories (keyframes: true) AND transition rows
      (keyframes: false — transitions are config, not keyframable). When
@@ -1194,7 +1295,20 @@
        created item's grayed display (disabled) or a transition's config rows
        (keyframes:false) — plain inputs committing directly via onpreview/oncommit,
        no equations, no diamonds. -->
-  {@const itemMode = keyframes && !disabled}
+  <!-- KEYFRAMABILITY IS PER ROW AS WELL AS PER CONTEXT. `keyframes` (the opts
+       flag) says whether this CONTEXT keyframes at all — a transition's config
+       rows and a not-yet-created item's grayed rows do not. `row.keyframes:
+       false` says this ONE ROW does not, inside a context that otherwise does:
+       the Universal section holds Visible (keyframeable) beside Widget type and
+       Name (not, today), and one opts object serves all three.
+       R6-6.7 RULED THAT WIDGET TYPE *IS* A KEYFRAMEABLE PROPERTY — `type` is
+       already carried per-slide by the fold, and only web/app.svelte.js's
+       #creationState treats it as identity. So this flag is exactly the seam
+       that ruling needs: dropping `keyframes: false` from the type row, once
+       the retype command writes at the CURRENT slide, is the whole UI change.
+       Nothing else here special-cases the row. -->
+  {@const rowKeyframes = keyframes && row.keyframes !== false}
+  {@const itemMode = rowKeyframes && !disabled}
   <!-- An ACTION row is a command trigger, not a property: it owns no state, so
        it has no equation path to copy and nothing to keyframe. Both affordances
        are withheld here rather than inside valueControl, because both live in
@@ -1381,9 +1495,27 @@
          full ["items", id, ...] path. Transitions and grayed rows have no
          diamonds; the empty span still reserves the column so value edges stay
          aligned. -->
-    {#if keyframes && !disabled && !isAction}
+    {#if rowKeyframes && !disabled && !isAction}
       <span class="kf-controls">
         <KeyframeControls {app} path={["items", itemId, ...writeKey(row).split(".")]} paths={writePaths} />
+      </span>
+    <!-- THE PURGE TRASH-CAN, on the row that declares `purge` (the Universal
+         section's Name row, and only it). Manifest Round 12: "trash can icon…
+         same row as the name… so that we don't confuse them with properties".
+         It takes the trailing cell rather than a new one, exactly as it did
+         while the Name row was a loose div — that cell is the row's TRAILING
+         CONTROLS column (app.css: "the trailing controls are auto"), which
+         holds the keyframe triad on a keyframeable row and is otherwise empty
+         air. A row cannot declare both: `purge` only reaches here when the row
+         is not keyframing, which is the Name row's permanent condition (a name
+         is not per-slide state). -->
+    {:else if row.purge}
+      <span class="kf-controls name-actions">
+        <Tooltip text="Purge — remove from every slide, keyframes and all">
+          <button class="btn-icon danger" aria-label="Purge item" onclick={() => app.runCommand("purge-item")}>
+            <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
+          </button>
+        </Tooltip>
       </span>
     {:else}
       <span class="kf-controls" aria-hidden="true"></span>
@@ -1551,11 +1683,17 @@
          core/properties.js selectRowItems from the SAME declaration the option
          order is flattened from. Captions are Dropdown `insert` entries, so they
          are unselectable, skipped by the arrow keys, and never previewed. -->
-    <!-- optionsFrom:"items" is an UNBOUNDED object/target list (every eligible
-         widget in the doc), so it types-to-filter (Round 2 #29). Enum/grouped
-         selects (blendMode's liked family sections, curve, …) stay the plain
-         Dropdown: they are short and `optionGroups` caption inserts don't survive
-         a flat fuzzy filter. Both branches share every other prop. -->
+    <!-- `optionsFrom` names a set this row's options are DERIVED from rather than
+         declared with — an unbounded list the plugin cannot enumerate. Both such
+         sets type-to-filter through the SAME src/lib/SearchableDropdown (Round 2
+         #29), which is also the only reason the retype roster is usable: it is
+         the whole widget registry, and R6-26 will grow the same shape into
+         "morph from widget" over every property at arbitrary depth.
+           "items"  — every eligible widget in the doc (a bento/telescope target).
+           "retype" — every type THIS widget can become (core/retype.retypeChoices).
+         Enum/grouped selects (blendMode's liked family sections, curve, …) stay
+         the plain Dropdown: they are short and `optionGroups` caption inserts
+         don't survive a flat fuzzy filter. Every branch shares every other prop. -->
     {#if row.optionsFrom === "items"}
       <SearchableDropdown
         onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
@@ -1566,6 +1704,30 @@
         value={valueAt(state, row.key)}
         onchange={(v) => oncommit(row.key, "select", v)}
       />
+    {:else if row.optionsFrom === "retype"}
+      <!-- THE WIDGET-TYPE ROW. `retypeMenu` is app.retypeChoices() — clean types
+           first, coercing types last, each carrying the coercion list its
+           `retypeItem` row renders as a warning.
+           NO HOVER PREVIEW, deliberately, and it is the one select row without
+           one: previewing a retype would have to run the whole coercion plan
+           against the live document on every pointer move, which is a WRITE
+           shaped like a preview. Every other select stages one property.
+           AN EMPTY MENU IS NOT AN EMPTY DROPDOWN. retypeChoices() returns [] for
+           the camera, a group and the scene-structural types — the type really is
+           fixed there — so the row shows the plugin's title as an inert grayed
+           value, the same `.disabled-val` idiom a not-yet-created item's rows and
+           an inert list field already use. Offering a menu that refuses every
+           choice is a lie; showing an empty one is the same lie with no options. -->
+      {#if retypeMenu.length > 0}
+        <SearchableDropdown
+          items={retypeMenu}
+          value={valueAt(state, row.key)}
+          onchange={(v) => oncommit(row.key, "select", v)}
+          item={retypeItem}
+        />
+      {:else}
+        <input type="text" class="disabled-val" value={app.registry.get(valueAt(state, row.key))?.title ?? ""} disabled />
+      {/if}
     {:else}
       <Dropdown
         onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
@@ -1703,26 +1865,45 @@
         {disabled}
       />
     {:else}
-      <!-- Plain boolean (grayed item display / transition config): a simple
-           toggle committing directly (no keyframe path). -->
+      <!-- Plain boolean (grayed item display / transition config / a boolean whose
+           write is a COMMAND rather than a keyframe): a simple toggle committing
+           directly through oncommit.
+           `onText`/`offText` are honoured HERE TOO, not only in itemMode's
+           BooleanField: the tooltip says what CLICKING DOES in the state the
+           control is currently in, and that sentence is a fact about the row, not
+           about which write path renders it. Withholding it here was how the
+           not-yet-created Visible row ended up hand-built outside the row grid
+           just to keep its "click to show it here, copying its properties onto
+           this slide" tip. A row that declares neither gets no tooltip, exactly
+           as before — the label-echo tooltip stays banned. -->
+      {@const boolOn = Boolean(valueAt(state, row.key))}
+      <!-- "" (not null) is the no-tooltip value: Tooltip gates on text.length. -->
+      {@const boolTip = (boolOn ? row.onText : row.offText) ?? ""}
       <div class="boolfield">
-        <button
-          class="boolbtn"
-          class:on={Boolean(valueAt(state, row.key))}
-          aria-label={row.label}
-          aria-pressed={Boolean(valueAt(state, row.key))}
-          {disabled}
-          onclick={() => oncommit(row.key, "boolean", !valueAt(state, row.key))}
-        >
-          <iconify-icon icon={valueAt(state, row.key) ? (row.onIcon ?? "mdi:check") : (row.offIcon ?? "mdi:checkbox-blank-outline")} width="16" height="16"></iconify-icon>
-        </button>
+        <Tooltip text={boolTip}>
+          <button
+            class="boolbtn"
+            class:on={boolOn}
+            aria-label={row.label}
+            aria-pressed={boolOn}
+            {disabled}
+            onclick={() => oncommit(row.key, "boolean", !boolOn)}
+          >
+            <iconify-icon icon={boolOn ? (row.onIcon ?? "mdi:check") : (row.offIcon ?? "mdi:checkbox-blank-outline")} width="16" height="16"></iconify-icon>
+          </button>
+        </Tooltip>
       </div>
     {/if}
   {:else}
+    <!-- `placeholder` is what the row shows when it stores NOTHING and something
+         else supplies the value — the Name row's positional fallback name
+         (app.displayName), which is what the item picker and the outline call an
+         unnamed widget. Absent on every other text row, where empty means empty. -->
     <input
       type="text"
       data-hint-scope="revert"
       value={state[row.key] ?? ""}
+      placeholder={row.placeholder ?? null}
       {disabled}
       oninput={(e) => onpreview(row.key, kind, e.target.value)}
       onchange={(e) => oncommit(row.key, kind, e.target.value)}
@@ -2014,64 +2195,36 @@
       <div class="empty">Transition unavailable</div>
     {/if}
   {:else if sel}
-    <!-- WHAT KIND OF WIDGET THIS IS, verbatim: "it should somewhere perhaps
-         right above the name and below the drop down in small text tell me what
-         kind of widget it is". The plugin's own `title` ("Rectangle", "Iconify
-         Icon") — the SAME string the item picker builds its fallback names from
-         (itemFallbackName), so the type a row is named after and the type named
-         here cannot disagree. It is a CAPTION, not a property row: a widget's
-         type is not editable and has no keyframes, so putting it in the row grid
-         would promise an affordance that does not exist. -->
-    {@render widgetType(sel.plugin)}
-    <!-- CREATED item. Name row + Purge trash-can share ONE row (manifest Round
-         12: "trash can icon… same row as the name… so that we don't confuse them
-         with properties"). The trash sits at the name row's RIGHT, occupying the
-         trailing keyframe-controls column the row already reserves for alignment
-         — so it needs no new grid geometry and sits where destructive/kf
-         controls sit on every other row. -->
-    <div class="row name-row">
-      <span class="label">Name</span>
-      <input
-        type="text"
-        placeholder={app.displayName(sel.itemId)}
-        value={sel.state.name ?? ""}
-        onchange={(e) => app.renameSelection(e.target.value)}
-      />
-      <span class="kf-controls name-actions">
-        {#if purgeable}
-          <Tooltip text="Purge — remove from every slide, keyframes and all">
-            <button class="btn-icon danger" aria-label="Purge item" onclick={() => app.runCommand("purge-item")}>
-              <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
-            </button>
-          </Tooltip>
-        {/if}
-      </span>
-    </div>
     <div class="rows">
-      <!-- VISIBILITY is a property row like all the others (manifest Round 12) —
-           a keyframeable boolean with the ‹ ◆ › controls, ABOVE the categories
-           so it is ALWAYS reachable (also the actionable row for not-yet-created
-           items). Eye iconography per the SlideNav slide-toggle visual language.
-           Camera (purgeable:false) shows no visibility row — it is mandatory. -->
-      {#if purgeable}
-        {@render propRow(
-          { key: "active", label: "Visible", kind: "boolean",
-            onIcon: "mdi:eye", offIcon: "mdi:eye-off",
-            onText: "Visible on this slide — click to hide (keyframes active: false)",
-            offText: "Hidden on this slide — click to show (keyframes active: true)",
-            // `help` proves the (?) affordance on a UNIVERSAL boolean row (the
-            // Visible row is defined inline, not from the shared registry). Once
-            // `active` moves into core/properties.js this inline help is
-            // superseded by the registry's (row.help flows through unchanged).
-            help: VISIBLE_ROW_HELP },
-          sel.state,
-          // hoverPreview: this CREATED-item context previews without committing,
-          // so its select rows may preview the option under the pointer. (The
-          // Visible row itself is a boolean and has no active-row notion; the
-          // field is threaded here so both created-item contexts are identical.)
-          { keyframes: true, disabled: false, onpreview: previewField, oncommit: commitField, itemId: sel.itemId, pathState: app.rawState(), hoverPreview: previewField }
-        )}
-      {/if}
+      <!-- THE UNIVERSAL SECTION — Widget type, Name, Visible, in that order, as
+           three ORDINARY rows in ONE accordion (R6-6.6), FIRST because they are
+           the properties every widget has and the plugin's sections are what it
+           adds to them.
+           It replaces three different shapes doing the same job: a small dim
+           CAPTION for the type, a loose `.row.name-row` div outside the sections,
+           and a loose Visible propRow. That mix is exactly what the user reported
+           — the type control was panel-wide where every property editor is value-
+           column-wide, and the Name label sat two gutter slots left of every
+           other label in the panel because it rendered a bare span with none of
+           the row's label chrome. Going through `category` also hands the section
+           its collapse memory and its label⟷value divider for free.
+           The camera keeps its old behaviour without a branch here: it is
+           purgeable:false, so `universalCategory` drops the Visible row and the
+           Name row's purge, and retypeChoices() is empty for it so the type row
+           renders its title inert. -->
+      {@render category(universalCategory, universalState, {
+        keyframes: true,
+        disabled: false,
+        onpreview: previewUniversal,
+        oncommit: commitUniversal,
+        itemId: sel.itemId,
+        pathState: app.rawState(),
+        // hoverPreview: this CREATED-item context previews without committing.
+        // (Neither Visible nor the two command-backed rows uses it — Widget type
+        // opts out inside valueControl for a reason of its own — but the field is
+        // threaded so both created-item contexts are identical.)
+        hoverPreview: previewField,
+      })}
       {#each itemCategories as cat (cat.id)}
         {@render category(cat, sel.state, {
           keyframes: true,
@@ -2118,52 +2271,27 @@
          runs activateNotYetCreated() — writes the item's creation-slide state +
          active:true onto THIS slide (lead ruling). The visibility row shows OFF
          (the item does not exist here yet). Name + Purge still act. -->
-    <!-- Type caption here too: an item that does not exist on THIS slide still
-         has a type, and it is read off the SAME registry lookup the creation
-         rows already use — so both branches label a widget identically and
-         neither can be the one that forgets. -->
-    {@render widgetType(app.registry.get(creationState.type))}
-    <div class="row name-row">
-      <span class="label">Name</span>
-      <input
-        type="text"
-        placeholder={app.displayName(pickedItemId)}
-        value={allDocumentItems(app.doc).find((it) => it.id === pickedItemId)?.name ?? ""}
-        onchange={(e) => app.renameSelection(e.target.value)}
-      />
-      <span class="kf-controls name-actions">
-        {#if purgeable}
-          <Tooltip text="Purge — remove from every slide, keyframes and all">
-            <button class="btn-icon danger" aria-label="Purge item" onclick={() => app.runCommand("purge-item")}>
-              <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
-            </button>
-          </Tooltip>
-        {/if}
-      </span>
-    </div>
     <div class="rows">
-      {#if purgeable}
-        <!-- Actionable visibility row: OFF here; clicking activates the item on
-             this slide (creation-state copy + active:true, one undo unit). -->
-        <div class="row">
-          <!-- The label carries the property's MEANING, never an echo of itself
-               ("hovering a row just repeating its own label is BANNED as
-               useless" — this file's own rule, above). Same sentence the
-               created-item Visible row's `help` uses, so one property reads the
-               same whichever branch renders it. -->
-          <Tooltip text={VISIBLE_ROW_HELP}><span class="label">Visible</span></Tooltip>
-          <div class="boolfield">
-            <Tooltip text={creationIndex != null
-              ? `Not created until slide ${creationIndex + 1} — click to show it here, copying its properties onto this slide`
-              : "Show this item on this slide"}>
-              <button class="boolbtn" aria-label="Visible" aria-pressed="false" onclick={activateNotYetCreated}>
-                <iconify-icon icon="mdi:eye-off" width="16" height="16"></iconify-icon>
-              </button>
-            </Tooltip>
-          </div>
-          <span class="kf-controls" aria-hidden="true"></span>
-        </div>
-      {/if}
+      <!-- THE SAME UNIVERSAL SECTION the created branch renders, and that is the
+           point: an item that does not exist on THIS slide still has a type, a
+           name and a visibility, and both branches must label them identically or
+           one of them is the branch that forgets. It stays LIVE (disabled:false)
+           while the plugin categories below are grayed, exactly as the loose Name
+           row and the actionable Visible button it replaces did — those two are
+           the whole reason this branch exists ("otherwise it's useless").
+           keyframes:false because nothing here can be keyframed yet: the type row
+           has no menu (retypeChoices reads state this item has none of), the name
+           is not per-slide, and the Visible toggle CREATES the item rather than
+           keying a boolean — universalCategory/commitUniversal own those three
+           differences so this call site states none of them. -->
+      {@render category(universalCategory, universalState, {
+        keyframes: false,
+        disabled: false,
+        onpreview: previewUniversal,
+        oncommit: commitUniversal,
+        itemId: pickedItemId,
+        pathState: allItemsState,
+      })}
       {#each creationCategories as cat (cat.id)}
         {@render category(cat, creationState, {
           keyframes: false,

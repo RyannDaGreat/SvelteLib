@@ -5051,57 +5051,12 @@ audio.ae-preview-media {
   color: var(--a-guide);
 }
 
-/* ── THE WIDGET-TYPE CAPTION ────────────────────────────────────────────────
-   "right above the name and below the drop down in small text tell me what kind
-   of widget it is" (user, verbatim). The plugin's `title`, rendered as a
-   CAPTION rather than a property row.
-
-   THIS IS THE FALLBACK FORM, used for a type that CANNOT be retyped — the
-   camera, a group, a scene-structural widget, and a multi-selection
-   (core/retype.retypeEligible decides, and an empty menu is the one condition
-   the Inspector reads). For those the type really is fixed, so a caption is the
-   honest control: no row grid, no keyframe column, nothing that looks clickable.
-   Everything else renders .widget-type-picker below instead.
-
-   It borrows the app's existing caption vocabulary (the .cat-header treatment:
-   --fg-dim, --a-font-sm, uppercase at --a-caption-tracking) so it reads as a
-   section label rather than a value, and cannot drift from the panel's other
-   small dim text.
-
-   Indented by --a-sp-1 to line up with the category headers below it, which
-   carry the same padding — the caption and the headers form one left edge. */
-.inspector .widget-type {
-  padding: 0 var(--a-sp-1);
-  margin-top: var(--a-sp-2);
-  color: var(--fg-dim);
-  font-size: var(--a-font-sm);
-  text-transform: uppercase;
-  letter-spacing: var(--a-caption-tracking);
-}
-
-/* ── THE WIDGET-TYPE PICKER ─────────────────────────────────────────────────
-   The retype menu, occupying the caption's slot for a type that CAN become
-   something else. It keeps the caption's left edge and top gap so the header
-   block's rhythm is identical whichever form renders, and it borrows the item
-   picker's square-corner override for the same reason that one exists: the
-   Dropdown's own --dd-radius would otherwise round a control every other field
-   in this panel leaves square. */
-.inspector .widget-type-picker {
-  padding: 0 var(--a-sp-1);
-  margin-top: var(--a-sp-2);
-}
-
-/* FULL WIDTH, and not merely for looks: Dropdown constrains its MENU to the
-   trigger's width so the two pieces line up (src/lib/Dropdown.svelte). A trigger
-   shrink-wrapped to the current type's title would therefore open a menu that
-   narrow, and the roster's longer names ("Rectangle", "Iconify Icon") would
-   ellipsize into "Recta…" / "Iconif…" — measured in the probe's screenshot.
-   Spanning the header makes the menu as wide as the panel, which is what the
-   item picker directly above it already does. */
-.inspector .widget-type-picker .dd {
-  --dd-radius: var(--a-radius-control);
-  width: 100%;
-}
+/* (THE WIDGET-TYPE CAPTION and the panel-wide `.widget-type-picker` that used to
+   live here are GONE: R6-6 made widget type an ordinary select row in the
+   Universal section, so its trigger takes the shared value-column geometry from
+   `.inspector .row .dd` — which is precisely R6-6.4's "no bigger or smaller than
+   any other property" — and its not-retypeable form is the row grid's own
+   `.disabled-val`.) */
 
 /* A COERCING TARGET — one whose selection would reset properties this item
    holds. Red is the app's standing signal for "this takes something away"
@@ -5187,9 +5142,11 @@ audio.ae-preview-media {
   min-height: var(--a-control-h);
 }
 
-.inspector .name-row {
-  margin-top: var(--a-sp-3);
-}
+/* (`.inspector .name-row` — a top margin that separated the loose Name row from
+   the widget-type caption above it — is GONE with the row itself: R6-6.6 moved
+   Name into the Universal section, where the section's own rhythm spaces it and
+   a bespoke margin would push it off the run's grid. `.name-actions` below still
+   holds the Purge trash-can, now in that row's trailing cell.) */
 
 /* Label sits in the first column; truncate (never wrap) so long labels
    ("Magnification") keep the value column's left edge aligned — the full text
@@ -6721,6 +6678,44 @@ audio.ae-preview-media {
 .inspector .row .dd {
   width: 100%;
   --dd-radius: var(--a-radius-control);
+}
+
+/* A VALUE-COLUMN MENU ROW WRAPS INSTEAD OF ELLIPSIZING, and this is the one
+   place in the panel where wrapping is right.
+
+   Dropdown sizes its menu to the TRIGGER so the two line up, and a value-column
+   trigger is one column wide — so these menus are narrow by construction. Its
+   rows ellipsize by default, which turned R6-6.4 (widget type becomes an
+   ordinary property-width row) into a readability regression the moment it
+   landed: measured on the 91-entry retype roster at a 1440px window, SIX titles
+   clipped — "Video V5 Scrubber (OffscreenCanvas/worker)", "Brightness /
+   Contrast", "Corkboard Thumbtack" and three more. A user cannot pick a type
+   they cannot read.
+
+   WHY NOT WIDEN THE MENU, which is what the old panel-wide picker did: the menu
+   is `position: fixed` at the trigger's `left`, and positionMenu clamps its
+   HEIGHT to the viewport but never its WIDTH. This panel is flush against the
+   window's right edge, so growing a menu from that `left` runs straight off
+   screen — the longest roster title needs several times the headroom there is.
+   Growing LEFTWARD instead would mean anchoring the menu by its right edge,
+   which only src/lib/Dropdown can do (it owns the inline position). Wrapping
+   needs none of that and cannot overflow anything.
+
+   IT DOES NOT CONTRADICT the panel's "truncate, never wrap" label rule. That
+   rule exists to hold the value column's left edge at one x; a floating menu row
+   has no column to keep aligned, and its whole job is to be read once.
+
+   `.dd-item-body` is scoped by the library to (0,2,0); the panel prefix takes
+   this to (0,3,0) so it wins — the same idiom as --dd-radius / --dn-radius. */
+.inspector .row .dd .dd-item-body {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  /* `normal` alone still clipped two rows: it breaks at SPACES, and
+     "Video V5 Scrubber (OffscreenCanvas/worker)" ends in a 24-character
+     unbreakable token. Same reason and same remedy as .cmd-tip-url above, which
+     wraps a URL for being one unbreakable word. */
+  overflow-wrap: anywhere;
 }
 
 /* A SELECT ROW IS --a-control-h TALL, like every other value control. Dropdown's
@@ -8344,14 +8339,33 @@ audio.ae-preview-media {
 }
 
 /* A material knob's scrubber is a BARE DraggableNumber — no .numfield wrapper —
-   so the `.numfield .dn` height/radius standards one level up never reached it,
-   and it sat at DraggableNumber's own 30.4px next to 26px colour and select
-   knobs in the same list. Same defect as the mode strip's, one level deeper, and
-   the same fix: state the standard where the control actually is. Specificity
-   0,2,0 targeting `.dn` directly is what clears the library's own scoped
-   `.dn.svelte-hash` rule — see the `--dn-radius` comment for the full reasoning. */
-.paint-material-control .dn {
+   so the `.numfield .dn` standards one level up never reached it. It sat at
+   DraggableNumber's own 30.4px next to 26px colour and select knobs in the same
+   list. Same defect as the mode strip's, one level deeper, and the same fix:
+   state the standard where the control actually is.
+
+   THE PREFIX IS LOAD-BEARING, and its absence was a shipped bug. This rule used
+   to read `.paint-material-control .dn` — specificity (0,2,0), which only TIES
+   DraggableNumber's own scoped `.dn.svelte-hash` (also (0,2,0), and injected
+   LATER), so `--dn-radius` lost the tie on source order and stayed at the
+   library's `var(--radius, 4px)`. Measured on the atmosphere material: every
+   scrubber rendered a 4px radius beside 0px colour/select knobs in the same
+   list, while the comment here claimed the opposite. It was the SOLE (0,2,0)
+   selector among the seven --dn-/--dd-radius overrides in this file; the other
+   six all carry a panel prefix. `.inspector` restores the (0,3,0) the sibling
+   `.inspector .numfield .dn` rule has always had, for the identical reason.
+
+   FLEX, likewise from `.numfield .dn`: .paint-sub-control is a flex container,
+   so a child at the default `flex: 0 1 auto` shrink-wraps its content. Measured
+   on atmosphere: eight knobs in one 122px column at 44.7 / 58.2 / 66.3px — the
+   user's "just tiny numbers, mismatched widths" — while the ColorField and
+   Dropdown beside them (both width:100% in their own libraries) filled the
+   column. Growing to the track is what puts every knob's right edge on the same
+   x as every top-level row's. */
+.inspector .paint-material-control .dn {
   --dn-radius: var(--a-radius-control); /* like every other field control */
+  flex: 1 1 auto; /* fill the value track, exactly as .numfield .dn does */
+  min-width: 0;
   height: var(--a-control-h);
   box-sizing: border-box;
 }

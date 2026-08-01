@@ -81,8 +81,34 @@ try {
   const typeOf = (itemId) => page.evaluate((id) => window.__powerrp_app.state().items[id].type, itemId);
   /** Query. The Inspector's rendered property-row labels — the "rows swapped" evidence. */
   const rowLabels = () => page.evaluate(() => [...document.querySelectorAll(".inspector .row .label")].map((e) => e.textContent.trim()));
-  const headerPickerCount = () => page.evaluate(() => document.querySelectorAll(".inspector .widget-type-picker").length);
-  const headerCaption = () => page.evaluate(() => document.querySelector(".inspector .widget-type")?.textContent?.trim() ?? null);
+  // THE WIDGET-TYPE CONTROL IS AN ORDINARY PROPERTY ROW (R6-6.6): the panel-wide
+  // `.widget-type-picker` div and the `.widget-type` caption it used to be are
+  // gone, folded into the Universal section as a select row whose two forms are
+  // the shared Dropdown and the row grid's own inert `.disabled-val`. These three
+  // queries therefore find the ROW BY ITS LABEL and read what is inside it —
+  // everything they assert is unchanged, and the label is the one thing R6-6.3
+  // fixes in place ("Rename it 'Widget type'").
+  const TYPE_ROW_LABEL = "Widget type";
+  /** Query. The Widget type row's dropdown count — 1 when retypeable, 0 when not. */
+  const headerPickerCount = () => page.evaluate((lbl) => {
+    const row = [...document.querySelectorAll(".inspector .row")].find((r) => r.querySelector(".label")?.textContent?.trim() === lbl);
+    return row ? row.querySelectorAll(".dd").length : 0;
+  }, TYPE_ROW_LABEL);
+  /** Query. The inert form's text — the plugin title shown when nothing can be
+   *  retyped into. null when the row is a live dropdown instead. */
+  const headerCaption = () => page.evaluate((lbl) => {
+    const row = [...document.querySelectorAll(".inspector .row")].find((r) => r.querySelector(".label")?.textContent?.trim() === lbl);
+    return row?.querySelector(".disabled-val")?.value ?? null;
+  }, TYPE_ROW_LABEL);
+  /** Query. A clickable handle on that row's dropdown trigger, or null. */
+  const typeRowTrigger = async () => {
+    const rows = await page.$$(".inspector .row");
+    for (const row of rows) {
+      const label = await row.$eval(".label", (e) => e.textContent.trim()).catch(() => null);
+      if (label === TYPE_ROW_LABEL) return row.$(".dd-trigger");
+    }
+    return null;
+  };
 
   // The demo deck's first non-camera, retypeable item.
   const { rectId, camId } = await page.evaluate(() => {
@@ -96,7 +122,7 @@ try {
 
   // ── 1. THE HEADER IS A DROPDOWN — except where it structurally cannot be ──
   await select(rectId);
-  check("retypeable-header-is-a-picker", (await headerPickerCount()) === 1, `found ${await headerPickerCount()} .widget-type-picker`);
+  check("retypeable-header-is-a-picker", (await headerPickerCount()) === 1, `the Widget type row holds ${await headerPickerCount()} dropdowns`);
   check("retypeable-header-has-no-caption", (await headerCaption()) === null, `caption was ${JSON.stringify(await headerCaption())}`);
 
   await select(camId);
@@ -115,8 +141,8 @@ try {
 
   // Drive it through the DOM, not the app method — the point is that the CONTROL
   // is wired, which an app.retypeSelection() call would bypass entirely.
-  const trigger = await page.$(".inspector .widget-type-picker .dd-trigger, .inspector .widget-type-picker button");
-  check("picker-has-a-trigger", !!trigger, "no clickable trigger inside .widget-type-picker");
+  const trigger = await typeRowTrigger();
+  check("picker-has-a-trigger", !!trigger, "no clickable trigger inside the Widget type row");
   if (trigger && cleanTarget) {
     await trigger.click();
     await settle();
@@ -185,18 +211,28 @@ try {
       "a clean target sorted BELOW a coercing one — the ruling puts coercing types at the very bottom",
     );
 
-    const trigger2 = await page.$(".inspector .widget-type-picker .dd-trigger, .inspector .widget-type-picker button");
+    const trigger2 = await typeRowTrigger();
     await trigger2.click();
     await settle();
 
     // NO ROW MAY BE ELLIPSIZED. Dropdown constrains the menu to the trigger's
-    // width, so a shrink-wrapped trigger opens a menu too narrow for the roster's
-    // longer titles and they render as "Recta…" / "Iconif…". A user cannot pick a
-    // type they cannot read, and every assertion above still passed while that was
+    // width, so a narrow trigger opens a menu too narrow for the roster's longer
+    // titles and they render as "Recta…" / "Iconif…". A user cannot pick a type
+    // they cannot read, and every assertion above still passed while that was
     // happening — it was only visible in the screenshot, which is exactly why it
-    // is pinned here now.
+    // is pinned here.
+    //
+    // IT IS MEASURED ON `.dd-item-body`, NOT `.dd-item`, AND THAT IS THE WHOLE
+    // ASSERTION. `.dd-item` is the row's flex CONTAINER; the ellipsis lives on
+    // `.dd-item-body` inside it (overflow:hidden + text-overflow), so a container
+    // whose content overflows a child never reports scrollWidth > clientWidth
+    // itself. Measured against the value-column-width menu R6-6.4 produces: the
+    // `.dd-item` form returned 0 clipped rows while `.dd-item-body` returned SIX
+    // ("Video V5 Scrubber (OffscreenCanvas/worker)", "Brightness / Contrast", …).
+    // So this check could not fail for the entire time it was in the gate — the
+    // R6-24.4 class, found by giving it something real to catch.
     const clipped = await page.evaluate(() =>
-      [...document.querySelectorAll(".dd-item")]
+      [...document.querySelectorAll(".dd-item-body")]
         .filter((e) => e.scrollWidth > e.clientWidth + 1)
         .map((e) => e.textContent.trim()),
     );
