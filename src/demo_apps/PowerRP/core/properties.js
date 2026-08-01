@@ -596,7 +596,7 @@ export function linearEndpointsToAngle(from, to) {
  * @example ROW_KINDS.includes("checkbox") // false (retired — see RETIRED_ROW_KINDS)
  * @example ROW_KINDS.includes("list") // true
  */
-export const ROW_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "action", LIST_ROW_KIND];
+export const ROW_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "richtext", "action", LIST_ROW_KIND];
 
 /**
  * The row kinds that edit a NUMBER, so a value stored under them has an ORDERING

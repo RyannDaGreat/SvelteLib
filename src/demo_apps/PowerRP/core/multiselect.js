@@ -212,6 +212,13 @@ export const JOINT_EDITABLE_KINDS = ["number", "angle", "color", "boolean", "sel
  */
 export const JOINT_UNEDITABLE_KINDS = {
   [LIST_ROW_KIND]: "Lists are edited one item at a time — elements are identified by INDEX, so two lists of different lengths have no shared element to write.",
+  // The joint seam is `oncommit(key, kind, value)` — ONE already-computed value
+  // fanned out to N paths. A richtext write is a SPLICE against the item's OWN
+  // current runs (core/richtext.withPlainTextReplaced), so the one value it
+  // produces carries that item's whole run structure; fanning it out would stamp
+  // A's styling onto B. Two text items with different content therefore show
+  // MIXED and refuse the write, which is the honest answer.
+  richtext: "Rich text is edited one item at a time — a write here is a SPLICE against that item's own runs, so one result cannot be shared without stamping its whole run structure onto the others.",
 };
 
 // LOUD IMPORT-TIME GATE (the core/registry.js effects-gate doctrine, and

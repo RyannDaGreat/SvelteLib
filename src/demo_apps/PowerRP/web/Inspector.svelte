@@ -1977,6 +1977,50 @@
         </Tooltip>
       </div>
     {/if}
+  {:else if kind === "richtext"}
+    <!-- A STRUCTURED value with a PLAIN-TEXT surface (R6-13.3). The row exists
+         because the property is perfectly ordinary — items.<id>.text is
+         {runs, paras} like any other stored value — and the user simply could not
+         SEE it: text was the only content-bearing widget with no content row,
+         while mermaid, latex, codeblock, graph_line and graph_bars all ship one.
+
+         WHY IT CANNOT BE kind:"text". The catch-all below writes e.target.value
+         straight through, so an OBJECT-valued row would render "[object Object]"
+         and the first keystroke would replace {runs, paras} with a bare string.
+         That is why this branch and `richtext`'s entry in ROW_KINDS are one
+         commit: the kind existing without the branch is strictly worse than the
+         row not existing at all.
+
+         THE WRITE IS A MINIMAL SPLICE, not a flatten. core/richtext.js's
+         withPlainTextReplaced diffs old plain against new plain in CODE POINTS
+         and routes the difference through deleteRange + insertText, so every run
+         style OUTSIDE the changed span survives — editing "Big small" to
+         "Bigger small" keeps 48pt on "Bigger" and 18pt on "small". Its one
+         documented bound: replacing a run's text ENTIRELY leaves no character to
+         carry that run's style, so the replacement inherits the splice-point
+         neighbour's — the same thing selecting that word on the canvas and
+         retyping it does.
+
+         SPLICING AGAINST THE PREVIEW-BLENDED `state` IS CORRECT, and the reason
+         is worth stating because it looks like a bug. `valueAt` is re-read per
+         keystroke, so the base advances with the gesture — but `e.target.value`
+         is always the WHOLE new text, and the diff is minimal-prefix/suffix, so a
+         base that is stale by a keystroke yields a wider splice with the same
+         result. Both a stable and an advancing base project to exactly what the
+         input shows; no focus-time capture is needed.
+
+         NO ƒ. `richtext` is deliberately out of EQUATION_KINDS because
+         core/expressions.js refuses equations on text values, so an equation
+         affordance here would be a control lying about what it is. -->
+    <input
+      type="text"
+      data-hint-scope="revert"
+      value={richTextToPlain(valueAt(state, row.key))}
+      {disabled}
+      oninput={(e) => onpreview(row.key, kind, withPlainTextReplaced(valueAt(state, row.key), e.target.value))}
+      onchange={(e) => oncommit(row.key, kind, withPlainTextReplaced(valueAt(state, row.key), e.target.value))}
+      onkeydown={fieldKeydown}
+    />
   {:else}
     <!-- `placeholder` is what the row shows when it stores NOTHING and something
          else supplies the value — the Name row's positional fallback name
