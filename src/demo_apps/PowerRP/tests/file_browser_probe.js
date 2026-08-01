@@ -55,10 +55,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Console noise this probe ignores, each for a stated reason:
 //  · backend-absent chatter: this Vite is frontend-only on purpose (?static=1).
 //  · WebGPU fallback: measured harmless boot-time notice on every headless run.
-//  · storageTree.listPath: assertion 7 DELIBERATELY drives a failing root and the
-//    seam reports it on the console as well as in the returned errors[]. Silencing
-//    that report would be the very defect this probe exists to prevent.
-const EXPECTED_NOISE = /Failed to load resource|\/api\/|WebGPU|no WebGPU adapter|storageTree\.listPath/;
+//  · storageTree.listPath: assertion 7 DELIBERATELY drives a failing listing and
+//    the seam reports it on the console as well as in the returned errors[].
+//    Silencing that report would be the very defect this probe exists to prevent.
+//  · "PowerRP repair:": the fixture deck below is deliberately MINIMAL (one camera,
+//    the fields the invariant needs and nothing else), so repairedDocument fills the
+//    plugin defaults and says so. That sentence is the repair pipeline working
+//    loudly, which is the contract; enumerating every plugin default in the fixture
+//    would make this probe fail every time a widget gains a property.
+const EXPECTED_NOISE = /Failed to load resource|\/api\/|WebGPU|no WebGPU adapter|storageTree\.listPath|PowerRP repair:/;
 
 try {
   const page = await browser.newPage();
@@ -67,7 +72,17 @@ try {
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => { if (m.type() === "error" && !EXPECTED_NOISE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
 
-  await page.goto(`${baseUrl}/?static=1`, { waitUntil: "networkidle0" });
+  // WAITS FOR THE APP HOOK, NOT `networkidle0` — and that is a correction, not a
+  // shortcut. `networkidle0` was MEASURED to time out at its 30 s default on this
+  // host whenever another Vite server is running, because concurrent servers share
+  // `node_modules/.vite` and force a dependency re-optimization that takes longer
+  // than the window (the same contention the manifest already records as the reason
+  // a render job uses ONE dev server and N browsers). It also asks a weaker
+  // question: "no requests for 500 ms" is a proxy for "the app is up", while
+  // `window.__powerrp_app` IS the app being up.
+  const BOOT_TIMEOUT_MS = 120000;
+  await page.goto(`${baseUrl}/?static=1`, { waitUntil: "domcontentloaded", timeout: BOOT_TIMEOUT_MS });
+  await page.waitForFunction(() => window.__powerrp_app !== undefined, { timeout: BOOT_TIMEOUT_MS });
   await sleep(3500); // Skia wasm + fonts + first paint
   if (errors.length) {
     console.error("BOOT ERRORS:\n" + errors.join("\n"));
@@ -185,18 +200,26 @@ try {
   });
   assert(afterCrumb.length === 1, `clicking the root crumb navigates to the root (crumbs: ${JSON.stringify(afterCrumb)})`);
 
-  // ── 7. A FAILING ROOT REPORTS — IT DOES NOT READ AS EMPTY ──────────────────
-  // Driven for real, not simulated: in static mode there is no backend, so the
-  // SERVER root's listing genuinely fails. The contract is that listPath returns
-  // {entries: [], errors: [...]} rather than swallowing into a bare [].
+  // ── 7. A FAILING LISTING REPORTS — IT DOES NOT READ AS EMPTY ───────────────
+  // Driven for real, not simulated: naming a cache this origin does not have makes
+  // the CacheStorage lister throw, and the contract is that listPath returns
+  // {entries: [], errors: [{path, message}]} rather than swallowing into a bare [].
+  //
+  // AN EARLIER VERSION OF THIS ASSERTION POINTED AT `server:/` IN STATIC MODE, on
+  // the reasoning that there is no backend there. It was WRONG and it measured as
+  // wrong: this repo's Vite config PROXIES /api, so whenever anyone on the host has
+  // a project server up, the "absent" backend answers and the assertion passes for
+  // the wrong reason (measured: 10 entries, 0 errors). A gate whose verdict depends
+  // on whether a peer left a server running is not a gate. This one cannot be
+  // rescued by the environment.
   const failing = await page.evaluate(async () => {
     const { listPath } = await import("/storageTree.js");
-    const res = await listPath("server:/");
+    const res = await listPath("local:/~storage/caches/definitely-not-a-cache");
     return { entries: res.entries.length, errors: res.errors.length, message: res.errors[0]?.message ?? null, path: res.errors[0]?.path ?? null };
   });
-  assert(failing.errors === 1, `a root that cannot be read reports an error rather than an empty folder (errors=${failing.errors}, entries=${failing.entries})`);
-  assert(failing.path === "server:/", `the reported error names the PATH it belongs to (got ${JSON.stringify(failing.path)})`);
-  assert(typeof failing.message === "string" && failing.message.length > 0, `the reported error carries a sentence (got ${JSON.stringify(failing.message)})`);
+  assert(failing.errors === 1 && failing.entries === 0, `a listing that cannot be read reports an error rather than an empty folder (errors=${failing.errors}, entries=${failing.entries})`);
+  assert(failing.path === "local:/~storage/caches/definitely-not-a-cache", `the reported error names the PATH it belongs to (got ${JSON.stringify(failing.path)})`);
+  assert(/definitely-not-a-cache/.test(failing.message ?? ""), `the reported error carries a sentence naming what was missing (got ${JSON.stringify(failing.message)})`);
 
   // ── 8. UNAVAILABLE OPERATIONS CARRY THEIR SENTENCE ─────────────────────────
   const caps = await page.evaluate(async () => {
@@ -229,11 +252,16 @@ try {
     await new Promise((r) => setTimeout(r, 300));
     return {
       note: document.querySelector(".file-browser-detail-note")?.textContent.trim() ?? null,
-      disabled: [...document.querySelectorAll('.file-browser-detail-actions button[aria-disabled="true"]')].map((b) => b.textContent.trim()),
+      limits: [...document.querySelectorAll(".file-browser-limits-list li")].map((b) => b.textContent.trim()),
+      // The anti-affordance rule: "a control that looks clickable but only
+      // reports is a lie". A refusal must not be dressed as a disabled button.
+      fakeButtons: document.querySelectorAll('.file-browser-limits button').length,
     };
   });
   assert(typeof shownSentences.note === "string" && shownSentences.note.length > 20, `the selected node states WHAT BACKS IT (note: "${shownSentences.note}")`);
-  assert(shownSentences.disabled.length > 0, `unavailable operations render as disabled affordances, not missing buttons (got ${JSON.stringify(shownSentences.disabled)})`);
+  assert(shownSentences.limits.length > 0, `the operations this root refuses are STATED, not silently absent (got ${shownSentences.limits.length} sentences)`);
+  assert(shownSentences.limits.every((s) => s.length > 20), `each refusal is a real sentence, not an operation key (got ${JSON.stringify(shownSentences.limits.map((s) => s.slice(0, 40)))})`);
+  assert(shownSentences.fakeButtons === 0, "a refusal is never dressed as a disabled button — a control that looks clickable but only reports is a lie");
   await page.screenshot({ path: resolve(shotDir, "04-selected-file.png") });
 
   // ── 9. DOWNLOAD PRODUCES THE RIGHT BYTES ───────────────────────────────────

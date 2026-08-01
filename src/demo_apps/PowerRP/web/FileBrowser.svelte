@@ -298,15 +298,22 @@
             Download
           </button>
         </div>
-        <!-- The operations this root does NOT perform, each with the sentence
-             saying why and what to use instead — a DISABLED affordance carrying
-             its reason, never a missing button and never a silent no-op. -->
-        <div class="file-browser-detail-actions">
-          {#each Object.entries(root.capabilities.unavailable) as [op, why] (op)}
-            <Tooltip text={why}>
-              <button type="button" class="btn" aria-disabled="true" onclick={() => {}}>{op}</button>
-            </Tooltip>
-          {/each}
+        <!-- WHAT THIS ROOT DOES NOT DO, stated as SENTENCES rather than as a row
+             of greyed-out buttons. That was the first shape and it was wrong twice
+             over: the house rule is that "a control that looks clickable but only
+             reports is a lie", and buttons labelled with raw operation keys
+             ("write", "nest") are not vocabulary a user has ever been taught.
+             Each sentence already names its own subject and what to use instead,
+             so no second label table is needed — and a label table would be a
+             hand-maintained mirror of UNAVAILABLE_HERE's keys, which is the worst
+             recurring defect in this codebase. -->
+        <div class="file-browser-limits">
+          <div class="file-browser-limits-title">Not done here</div>
+          <ul class="file-browser-limits-list">
+            {#each Object.entries(root.capabilities.unavailable) as [op, why] (op)}
+              <li>{why}</li>
+            {/each}
+          </ul>
         </div>
         {#if preview}
           <div class="file-browser-preview">

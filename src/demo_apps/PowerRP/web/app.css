@@ -56,6 +56,29 @@
   --a-sp-4: 12px;
   --a-sp-5: 16px;
 
+  /* THE FILE BROWSER's five structural sizes. Named because none of them is
+     self-explaining as a literal: "why 320px" and "why 60vh" are real questions
+     a reader would otherwise have to answer by reading the layout. */
+
+  /* The detail pane's width. Wide enough for a filename plus the honest
+     one-sentence `note` every node carries (that sentence is the point of the
+     surface), narrow enough that the listing keeps the majority of a "large"
+     modal. */
+  --a-file-browser-detail-w: 320px;
+  /* The scrolling region's height. A share of the VIEWPORT rather than of the
+     dialog, because src/lib/Modal's "large" panel is itself viewport-relative
+     and a percentage of a percentage stops being predictable. */
+  --a-file-browser-body-h: 60vh;
+  /* An inline preview never grows past this. A preview is a PEEK — the same
+     reasoning as storageTree's PREVIEW_TEXT_BYTES, applied to pixels. */
+  --a-file-browser-preview-max: 280px;
+  /* The filter box. Sized to the longest thing usefully typed into it (a
+     project name plus a partial filename), not to the bar. */
+  --a-file-browser-search-w: 180px;
+  /* The kind glyph's column, so every row's name starts on the same x whether
+     its glyph is a folder, a film reel or a question mark. */
+  --a-file-browser-glyph-w: 20px;
+
   /* STRUCTURAL, THEME-PROOF (user rulings): command-palette part heights.
      Themes swap fonts, font metrics change the line box, and the palette
      previews themes LIVE as you browse — a font-driven height would jitter
@@ -9446,4 +9469,224 @@ audio.ae-preview-media {
      opened by double-clicking a filmstrip, transparent with no blur in Nocturne). */
   backdrop-filter: var(--a-glass-blur);
   -webkit-backdrop-filter: var(--a-glass-blur);
+}
+
+/* ── FILE BROWSER (web/FileBrowser.svelte) ────────────────────────────────────
+   One navigable view of every store this editor can reach. Structurally a
+   sibling of the .debug-storage-* page above: a data-dense modal page whose
+   rows are storage, not document content. It borrows that block's spacing and
+   type scale on purpose — two surfaces listing the same bytes should not read
+   as two different applications. */
+
+.file-browser {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-3);
+}
+
+.file-browser-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  flex-wrap: wrap;
+  padding-bottom: var(--a-sp-2);
+  border-bottom: var(--a-hairline) solid var(--border);
+}
+
+/* A root CHIP, not a tab: the roots are separate stores rather than views of
+   one tree, so the active one is marked and the others stay equally reachable. */
+.file-browser-root.active {
+  background: var(--a-hover-bg);
+}
+
+.file-browser-search {
+  flex: none;
+  width: var(--a-file-browser-search-w);
+  margin-left: auto;
+  padding: var(--a-sp-1) var(--a-sp-2);
+  background: var(--a-canvas-solid);
+  color: var(--fg);
+  border: var(--a-hairline) solid var(--border);
+  border-radius: var(--a-radius-control);
+  font-size: var(--a-font-sm);
+}
+
+.file-browser-crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+  flex-wrap: wrap;
+  font-size: var(--a-font-sm);
+}
+
+.file-browser-crumb {
+  padding: var(--a-sp-1) var(--a-sp-2);
+  background: none;
+  color: inherit;
+  border: none;
+  border-radius: var(--a-radius-control);
+  font: inherit;
+  cursor: pointer;
+}
+.file-browser-crumb:hover {
+  background: var(--a-hover-bg);
+}
+
+.file-browser-crumb-sep {
+  opacity: var(--a-quota-text-opacity);
+}
+
+.file-browser-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-3);
+  font-size: var(--a-font-sm);
+  opacity: var(--a-quota-text-opacity);
+}
+
+/* THE DANGER COLOUR IS --a-guide (ledger C-3; app.css:422 states it, and
+   .btn.danger already uses it). Full opacity: an error that failed to be read
+   is an error that did not report. */
+.file-browser-error {
+  color: var(--a-guide);
+  opacity: 1;
+}
+
+.file-browser-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--a-file-browser-detail-w));
+  gap: var(--a-sp-4);
+  height: var(--a-file-browser-body-h);
+}
+
+.file-browser-list {
+  overflow: auto;
+  border: var(--a-hairline) solid var(--border);
+}
+
+.file-browser-row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-1) var(--a-sp-2);
+  cursor: default;
+}
+.file-browser-row:hover {
+  background: var(--a-hover-bg);
+}
+/* The selection ring is a BACKGROUND, not a border: a border would reflow every
+   row by its own width the moment one is picked. */
+.file-browser-row.selected {
+  background: color-mix(in srgb, var(--a-selection) 24%, transparent);
+}
+
+.file-browser-glyph {
+  flex: none;
+  width: var(--a-file-browser-glyph-w);
+  opacity: var(--a-quota-text-opacity);
+}
+
+.file-browser-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--a-font-sm);
+}
+
+.file-browser-detail {
+  flex: none;
+  font-size: var(--a-font-sm);
+  font-variant-numeric: tabular-nums;
+  opacity: var(--a-quota-text-opacity);
+}
+
+.file-browser-detail-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+  overflow: auto;
+  padding-left: var(--a-sp-3);
+  border-left: var(--a-hairline) solid var(--border);
+}
+
+.file-browser-detail-name {
+  font-size: var(--a-font-md);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.file-browser-detail-meta {
+  font-size: var(--a-font-sm);
+  font-variant-numeric: tabular-nums;
+  opacity: var(--a-quota-text-opacity);
+}
+
+/* THE HONEST SENTENCE. Every node states what actually backs it, because the
+   directory illusion is only partly true — this is the paragraph that says
+   which part, and it must not be styled as decoration. */
+.file-browser-detail-note {
+  margin: 0;
+  font-size: var(--a-font-sm);
+  line-height: 1.4;
+  opacity: var(--a-quota-text-opacity);
+}
+
+.file-browser-detail-actions {
+  display: flex;
+  gap: var(--a-sp-2);
+  flex-wrap: wrap;
+}
+
+/* WHAT THIS ROOT DOES NOT DO. Sentences, deliberately not a row of greyed-out
+   buttons — the house rule is that a control which looks clickable but only
+   reports is a lie, and an operation KEY ("write", "nest") is not vocabulary a
+   user has been taught. Styled as a quiet note, because it answers a question
+   that is only asked when someone goes looking for a verb that is not there. */
+.file-browser-limits {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  padding-top: var(--a-sp-2);
+  border-top: var(--a-hairline) solid var(--border);
+}
+
+.file-browser-limits-title {
+  font-size: var(--a-font-sm);
+  font-weight: 600;
+  opacity: var(--a-quota-text-opacity);
+}
+
+.file-browser-limits-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-1);
+  margin: 0;
+  padding-left: var(--a-sp-4);
+  font-size: var(--a-font-sm);
+  line-height: 1.4;
+  opacity: var(--a-quota-text-opacity);
+}
+
+.file-browser-preview {
+  padding-top: var(--a-sp-2);
+}
+
+.file-browser-preview-media {
+  max-width: 100%;
+  max-height: var(--a-file-browser-preview-max);
+}
+
+.file-browser-preview-text {
+  max-height: var(--a-file-browser-preview-max);
+  overflow: auto;
+  margin: 0;
+  padding: var(--a-sp-2);
+  background: var(--a-canvas-solid);
+  border: var(--a-hairline) solid var(--border);
+  font-size: var(--a-font-sm);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
