@@ -20,8 +20,12 @@
       panel-body scroll (a real, frequent gesture here, not a rare edge case)
       would tear the popup down on every scroll instead of tracking the button.
     - The GUTTER AFFORDANCE ITSELF (icon button left of the row label, only on
-      hover): web/lightPositionPin.js's `pinLight` aspect + Inspector.svelte's
-      row-label-chrome — `gallery` is the same shape, see plugins/iconify.js.
+      hover): Inspector.svelte's row-label-chrome, which also carries copy-path
+      and the (?) help button — see plugins/iconify.js for the declaration.
+      `gallery` is now the ONLY row aspect in that gutter: the light-position
+      eyedropper that shared it entered a canvas MODE and is therefore a tool,
+      moved to the Tools pane by manifest R6-4.5. A gallery stays because it
+      enters no mode and writes only its own row's key.
     - RESIZE PERSISTENCE: web/settings.js's browserNumberSetting — a VIEWER
       preference (the popup's chosen size), never document state, exactly like
       the label-divider fraction and the panel visibility flags.

@@ -56,7 +56,7 @@
     canonicalPropPath, compiled, displayToStored, storedToDisplay, equationTokenSpans, isEquationValue,
   } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
-  import { PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
+  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
   import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
@@ -74,7 +74,7 @@
 
   // ── THE GALLERY ROW ASPECT (web/GalleryPopup.svelte) ──────────────────────
   // A row declaring `gallery: (state) => spec` (plugins/iconify.js's
-  // iconifyGallerySpec, the pinLight-precedent shape) gets a gutter button that
+  // iconifyGallerySpec) gets a gutter button that
   // opens the SAME {grid, search} spec CanvasToolbar renders on double-click,
   // anchored under this button instead of the canvas. AT MOST ONE open at a
   // time (a single popup instance, not one per row), keyed by {itemId, key} so
@@ -187,7 +187,16 @@
   // key → {row, mixed, value, seed, problem}, so grouping can stay row-shaped
   // (groupRows is reused verbatim) while each row still finds its own set state.
   let multiByKey = $derived(new Map((multiPanel?.rows ?? []).map((r) => [r.row.key, r])));
-  let multiCategories = $derived(multiPanel ? groupRows(multiPanel.rows.map((r) => r.row)) : []);
+  // THE SUBJECT of a multi-selection panel, for the one section that names its
+  // widget (customCategoryTitle). Selecting three lens flares has a subject —
+  // "Lens Flare settings" is exactly right and saying "Widget settings" there
+  // would be a needless downgrade. Selecting a flare and a rect does not, and
+  // null is how that is said.
+  let sharedWidgetTitle = $derived.by(() => {
+    const plugins = app.selectedNodes().map((n) => n.plugin);
+    return plugins.length && plugins.every((p) => p.type === plugins[0].type) ? plugins[0].title ?? null : null;
+  });
+  let multiCategories = $derived(multiPanel ? groupRows(multiPanel.rows.map((r) => r.row), null, sharedWidgetTitle) : []);
 
   /** Query. Every selected item's state path for one row key — the fan-out write
    * targets a Tier-1 field receives as `paths` (the primary FIRST, so the field's
@@ -266,13 +275,39 @@
     lens: "Lens",
     blur: "Blur",
     effects: "Effects",
-    // CUSTOM per-widget "self.*" properties (core/properties.js CUSTOM_CATEGORY):
-    // a widget's own declared knobs, grouped in a dedicated "Custom" region
-    // (Blender's "Custom Properties" panel) rather than the start-cased fallback.
-    custom: "Custom",
+    // NOTE: there is deliberately NO `custom:` entry — see customCategoryTitle().
     other: "Other",
   };
   const CATEGORY_ORDER = ["positioning", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
+
+  /**
+   * Pure function. The display title for the CUSTOM_CATEGORY bucket — a widget's
+   * own declared "self.*" knobs (core/properties.js).
+   *
+   * THIS SECTION USED TO BE CALLED "Custom", ON EVERY WIDGET (manifest R6-5). The
+   * user's ruling: *"Custom is supposed to be reserved for what people make, or
+   * not at all"* — a lens flare's ghost count is not something the user made, it
+   * is what a lens flare IS. So the section is named after the widget, verbatim
+   * per R6-5.1 (*"Lens Flare settings"*), and the name is DERIVED from the
+   * plugin's own `title` rather than listed per widget: 24 of the 96 plugins have
+   * such a section, and a hand-kept table of 24 names is the mirror-drift shape
+   * this round exists to remove.
+   *
+   * `widgetTitle` is null when the panel has no single subject — a HETEROGENEOUS
+   * multi-selection, whose intersection really can contain custom rows (Liquid
+   * Glass and Frosted Glass share `blurRadius`, `tint`, `cornerRadius`). There is
+   * no one widget to name then, so the section says what it generically is.
+   *
+   * @param {string|null} widgetTitle - the selected plugin's `title`, or null
+   * @returns {string}
+   *
+   * @example customCategoryTitle("Lens Flare") // "Lens Flare settings"
+   * @example customCategoryTitle("Corkboard Note") // "Corkboard Note settings"
+   * @example customCategoryTitle(null) // "Widget settings"
+   */
+  function customCategoryTitle(widgetTitle) {
+    return `${widgetTitle ?? "Widget"} settings`;
+  }
 
   /** Pure function. Groups plugin inspector rows into ordered category buckets:
    * [{id, title, rows}]. Preserves row order within a category; known
@@ -286,13 +321,19 @@
    * A category left with zero rows after filtering is dropped entirely, so an
    * all-conditional section (none today) would not render an empty accordion.
    *
+   * `widgetTitle` names the panel's subject widget, and the ONLY category that
+   * reads it is CUSTOM_CATEGORY — see customCategoryTitle(). Null (the default)
+   * is honest for the transition panel, which has no widget and no custom rows.
+   *
    * Examples:
    *     >>> // rows [{key:"x",category:"positioning"},{key:"fill",category:"fillMaterial"}]
    *     >>> // → [{id:"positioning",title:"Positioning",rows:[…x]},{id:"fillMaterial",…}]
    *     >>> // groupRows([{key:"strokeWidth",category:"strokeMaterial",visibleWhen:(s)=>!isPaintOff(s.stroke)}], {stroke:{type:"none"}})
    *     >>> // → [] (the row is hidden; the now-empty strokeMaterial bucket is dropped)
+   *     >>> // groupRows([{key:"ghostCount",category:"custom"}], null, "Lens Flare")
+   *     >>> // → [{id:"custom",title:"Lens Flare settings",rows:[…ghostCount]}]
    */
-  function groupRows(rows, state = null) {
+  function groupRows(rows, state = null, widgetTitle = null) {
     const buckets = new Map();
     for (const row of rows) {
       if (state && typeof row.visibleWhen === "function" && !row.visibleWhen(state)) continue;
@@ -307,7 +348,9 @@
     ];
     return ordered.map((id) => ({
       id,
-      title: CATEGORY_TITLES[id] ?? (id.charAt(0).toUpperCase() + id.slice(1)),
+      title: id === CUSTOM_CATEGORY
+        ? customCategoryTitle(widgetTitle)
+        : CATEGORY_TITLES[id] ?? (id.charAt(0).toUpperCase() + id.slice(1)),
       rows: buckets.get(id),
     }));
   }
@@ -388,9 +431,9 @@
     return runs;
   }
 
-  let itemCategories = $derived(sel ? groupRows(sel.plugin.inspector ?? [], sel.state) : []);
+  let itemCategories = $derived(sel ? groupRows(sel.plugin.inspector ?? [], sel.state, sel.plugin.title ?? null) : []);
   let creationCategories = $derived(
-    creationState ? groupRows(app.registry.get(creationState.type)?.inspector ?? [], creationState) : []
+    creationState ? groupRows(app.registry.get(creationState.type)?.inspector ?? [], creationState, app.registry.get(creationState.type)?.title ?? null) : []
   );
 
   // Collapsed categories persist as a BROWSER setting (viewer-local; manifest
@@ -1338,20 +1381,21 @@
   {@const isAction = rowKind(row) === ACTION_ROW_KIND}
   {@const pathText = isAction ? null : pathTooltipText(pathState ?? state, itemId, writeKey(row))}
   {@const helpText = row.help ?? null}
-  <!-- THE LIGHT-POSITION EYEDROPPER (web/lightPositionPin.js): a row declaring
-       `pinLight: {xKey, yKey}` (lens_flare/god_rays' Light X row) gets this
-       button instead of every world-position pair being hand-wired — the next
-       one just declares the same aspect. ITEM MODE ONLY, single selection: a
-       not-yet-created row has no live item to enter a canvas mode ON, and a
-       multi-selection has no single "the" item to pin FROM. -->
-  {@const pinLight = itemMode && !multi ? row.pinLight : null}
   <!-- THE GALLERY ROW ASPECT (web/GalleryPopup.svelte, plugins/iconify.js's
        `gallery` declaration): a row naming a spec-factory function gets a
        gutter button that opens the shared tile-grid/search picker anchored
-       under it. Same ITEM-MODE-ONLY, single-selection gate as pinLight, for
-       the same reasons (a not-yet-created row has nothing live to open a
-       picker ON; a multi-selection has no single "the" item's current icon
-       to seed the grid's selected tile). -->
+       under it. ITEM MODE ONLY, single selection: a not-yet-created row has
+       nothing live to open a picker ON, and a multi-selection has no single
+       "the" item's current icon to seed the grid's selected tile.
+
+       THIS IS THE ONLY REMAINING GUTTER AFFORDANCE OF ITS KIND, and it stays
+       (manifest R6-4's audit result). A gallery is a PER-PROPERTY PICKER: it
+       enters no canvas mode and writes only `row.key`, so it edits this row's
+       stored value the way every other field control does. Its former
+       neighbour, the light-position eyedropper, entered a sustained canvas
+       mode and wrote a PAIR of keys — a tool, not a property — and is now the
+       Tools pane's "Pin Light Position to an Object" (manifest R6-4.5). If a
+       future row aspect wants this gutter, that is the test it has to pass. -->
   {@const gallery = itemMode && !multi ? row.gallery : null}
   <!-- DYNAMIC BOUNDS (general mechanism): a row's `max` may be a STATE-DERIVED
        FUNCTION `(state) => number` (e.g. pdf_page's page cap = pageCount for the
@@ -1414,7 +1458,7 @@
          row) still gets the (?), and a row with path-but-no-help still gets
          copy. A row with neither falls back to a plain label span (no echo
          tooltip — banned). -->
-    {#if pathText != null || helpText != null || pinLight || gallery}
+    {#if pathText != null || helpText != null || gallery}
       <span class="row-label-chrome">
         {#if pathText != null}
           {@const copied = justCopiedKey === row.key}
@@ -1432,19 +1476,6 @@
           <Tooltip text={helpText}>
             <button class="help-btn" aria-label={`Help: ${row.label}`}>
               <iconify-icon icon="mdi:help-circle-outline" width="13" height="13"></iconify-icon>
-            </button>
-          </Tooltip>
-        {/if}
-        {#if pinLight}
-          {@const pinning = app.canvasMode?.handlerId === "pin_light_position" && app.canvasMode.itemId === itemId}
-          <Tooltip text={pinning ? "Cancel — pick an object to pin to" : "Pin to an object's center: click, then click the object"}>
-            <button
-              class="pin-light-btn"
-              aria-label={pinning ? "Cancel pinning" : `${row.label}: pin to an object's center`}
-              aria-pressed={pinning}
-              onclick={() => (pinning ? app.exitCanvasMode() : app.enterCanvasMode("pin_light_position", itemId))}
-            >
-              <iconify-icon icon="mdi:eyedropper-variant" width="13" height="13"></iconify-icon>
             </button>
           </Tooltip>
         {/if}

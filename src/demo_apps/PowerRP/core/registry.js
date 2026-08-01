@@ -439,6 +439,51 @@ export const CAMERA_FREEZE_HELP = "Replace equation-bound x / y / w / h with the
 export const CAMERA_FREEZE_REQUIRES = "at least one of x / y / w / h to actually hold an equation — nothing here is bound, they are all plain numbers already";
 
 /**
+ * The two properties that make a widget's LIGHT POSITION — the world-space point
+ * a lit widget takes its illumination from (plugins/demo/lens_flare.js,
+ * plugins/demo/god_rays.js). The FRAME_KEYS shape, one dimension over: a
+ * structural key list, so the tool's gate is "does the plugin DECLARE both",
+ * never a type list.
+ *
+ * WHY THESE ARE KEYS AND NOT A ROW ASPECT ANY MORE (manifest R6-4.5). They used
+ * to be named by a `pinLight: {xKey, yKey}` field on the widget's Light X
+ * inspector row, which put a MODE-ENTERING BUTTON in the property gutter — a tool
+ * wearing a property's clothes. The pair is a property OF THE WIDGET, not of one
+ * row, so it is declared where the widget's other structural facts are.
+ */
+export const LIGHT_KEYS = ["lightWorldX", "lightWorldY"];
+
+/**
+ * Pure function. May this plugin's light position be PINNED to another item's
+ * center (the "Pin Light Position to an Object" tool)? It needs both LIGHT_KEYS,
+ * and — exactly as `frameBindable` excludes THE camera from binding to its own
+ * frame — nothing else: a lit widget with no frame of its own is still a fine
+ * pinner, because the pin writes the LIGHT pair, not x/y/w/h.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example lightPinnable({defaults: {lightWorldX: 0, lightWorldY: 0}}) // true
+ * @example lightPinnable({defaults: {lightWorldX: 0}}) // false (half a light position is not one)
+ * @example lightPinnable({defaults: {x: 0, y: 0, w: 1, h: 1}}) // false (a frame is not a light)
+ */
+export function lightPinnable(plugin) {
+  return LIGHT_KEYS.every((key) => plugin.defaults?.[key] !== undefined);
+}
+
+/**
+ * The light-pin tool's HELP and REQUIRES sentences, beside `lightPinnable` for the
+ * same reason the camera-bind pair's live beside `frameBindable`: the pool row
+ * below and the command ENTRY in web/App.svelte both need the same words.
+ *
+ * The help says PICK, not "click the eyedropper", because the affordance is now a
+ * tool in the Tools pane and naming a button that no longer exists is how the old
+ * row's help text went stale.
+ */
+export const LIGHT_PIN_HELP = "Write this widget's light position as equations reading ANOTHER item's centre, then keep them: pick the object and the light tracks it wherever it moves, instead of holding the coordinates it had when you picked.";
+export const LIGHT_PIN_REQUIRES = "exactly one selected widget that HAS a light position (lens flare, god rays) — a light is pinned FROM one widget onto one object, so a multi-selection has no single widget to pin from";
+
+/**
  * Pure function. Can this widget's state be keyframed at all — i.e. does it
  * declare any state for a slide delta to address? THE gate on the Keyframes
  * tools, and it is deliberately the WHOLE condition: animation is universal in
@@ -525,6 +570,20 @@ export const TOOL_POOL = [
         applies: frameBindable,
         help: CAMERA_FREEZE_HELP,
         requires: CAMERA_FREEZE_REQUIRES,
+      },
+      {
+        // THE LIGHT PIN (manifest R6-4.5). Filed under Positioning with the
+        // camera-bind pair because it is the same operation on a different pair
+        // of coordinates: write one item's position keys as equations reading
+        // another item's, so the first tracks the second. `lightPinnable` is
+        // narrower than `frameBindable`, so the row simply does not appear on the
+        // 94 widgets with no light — which is what a pool `applies` is for, and
+        // is why god_rays inherits this with ZERO edits of its own.
+        kind: "command",
+        command: "pin-light-to-object",
+        applies: lightPinnable,
+        help: LIGHT_PIN_HELP,
+        requires: LIGHT_PIN_REQUIRES,
       },
     ],
   },

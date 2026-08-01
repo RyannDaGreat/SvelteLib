@@ -334,4 +334,24 @@ test("FRAME_KEYS matches web/App.svelte's CAMERA_BIND_KEYS (the pending handback
     assert.ok(line.includes(`"${key}"`), `CAMERA_BIND_KEYS does not include "${key}" but core/registry.js FRAME_KEYS does`);
 });
 
+test("every TOOL_POOL command id is a REGISTERED command (the pool cannot name a ghost)", () => {
+  // A pool row is a SURFACING of a command registry entry — web/ToolsPane.svelte's
+  // entryOf(row) looks the id up and renders its title and icon. A pool row naming
+  // an id nobody registered therefore draws a blank, unclickable button, and
+  // nothing anywhere says so: the pool is a hand-written mirror of the command
+  // list, which is the drift shape ledger C-8 is about. This is the cheap half —
+  // the fix is not deferrable, but neither is the gate.
+  //
+  // COMMENTS ARE STRIPPED FIRST (ledger C-14): `bind-to-camera` appears in this
+  // codebase's prose as often as in its code, and a comment-blind grep would pass
+  // on a command that exists only in a sentence explaining it.
+  const src = readFileSync(resolve(here, "../web/App.svelte"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").filter((l) => !/^[ \t]*\/\//.test(l)).join("\n");
+  for (const group of TOOL_POOL)
+    for (const row of group.rows)
+      assert.ok(src.includes(`id: "${row.command}"`),
+        `TOOL_POOL group "${group.id}" surfaces command "${row.command}", but web/App.svelte registers no entry with that id — the Tools pane would draw a titleless dead button`);
+});
+
 console.log(`\n${passed} tests passed`);

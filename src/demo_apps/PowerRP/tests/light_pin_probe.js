@@ -1,25 +1,37 @@
 /**
- * LIGHT-POSITION EYEDROPPER probe (web/lightPositionPin.js) — the feature in the
- * REAL editor, driven with REAL pointer gestures (page.mouse — CanvasView's
- * handlers call setPointerCapture, so a synthetic dispatchEvent would not route
- * through them; the bento_bind_probe.js technique).
+ * LIGHT PIN probe (web/lightPositionPin.js) — the feature in the REAL editor,
+ * driven with REAL pointer gestures (page.mouse — CanvasView's handlers call
+ * setPointerCapture, so a synthetic dispatchEvent would not route through them;
+ * the bento_bind_probe.js technique).
+ *
+ * IT IS A TOOL, NOT A PROPERTY ROW (manifest R6-4.5), and this probe is where
+ * that is PROVEN in pixels rather than asserted in prose. It used to drive an
+ * eyedropper button in the Inspector's property gutter; it now drives the Tools
+ * pane's "Pin Light Position to an Object" row, and it checks that NO eyedropper
+ * is left behind in the Inspector — a migration that adds the tool without
+ * removing the row would leave two ways to do one thing, which is the defect.
  *
  * THE ONE ASSERTION THE FEATURE IS: insert a rect (the "sun") and a lens flare,
- * click the eyedropper, click the rect — both fields become equations and the
- * flare's light jumps to the rect's center — then DRAG THE RECT and the light
- * TRACKS (the live-pin proof, not a snapshot). Everything else here is the
- * boundary around it:
+ * run the tool, click the rect — both fields become equations and the flare's
+ * light jumps to the rect's center — then DRAG THE RECT and the light TRACKS
+ * (the live-pin proof, not a snapshot). Everything else here is the boundary
+ * around it:
  *
- *   - the eyedropper button exists on the Light X row (only once an item with
- *     the pinLight aspect is selected);
- *   - clicking it enters the mode: the HintBar narrates the click gesture, the
- *     cursor changes, Escape (and a second eyedropper click) cancels with the
- *     document byte-identical;
+ *   - the tool appears in the Tools pane for a lens flare and NOT for a rect
+ *     (core/registry.js `lightPinnable`, which reads the plugin's defaults);
+ *   - running it enters the mode: the HintBar narrates the click gesture, the
+ *     cursor changes, Escape cancels with the document byte-identical;
  *   - hovering an object highlights it before any click, and clicking empty
  *     canvas cancels quietly (no write, mode exits);
  *   - the write is ONE undo unit and ONE undo reverts BOTH fields;
  *   - self-pick is refused with a sentence, nothing written;
- *   - the same flow works on god_rays (smoke-checked, not the full sequence).
+ *   - god_rays gets the tool with ZERO declarations of its own — the whole point
+ *     of fixing this at the tool layer (smoke-checked, not the full sequence).
+ *
+ * WHAT IS NO LONGER CHECKED, and why that is not a loss: "a second eyedropper
+ * click cancels". A toggle button could report and reverse its own mode; a Tools
+ * row is a one-way command like every other, so the cancel paths are Escape and
+ * a click on empty canvas, both still checked below.
  *
  * Run from SvelteLib root:
  *   node src/demo_apps/PowerRP/tests/light_pin_probe.js [shot_dir]
@@ -44,6 +56,9 @@ const DRAG_TO = { x: 780, y: 220 }; // where the sun is dragged AFTER pinning �
 const EMPTY_CANVAS = { x: 40, y: 620 }; // clear of every widget above
 const SETTLE_MS = 220;
 const EPS = 0.5;
+// The command's own title (web/App.svelte `pin-light-to-object`) — the ONE string
+// the Tools pane renders for this row, so the probe finds it the way a reader does.
+const PIN_TOOL_TITLE = "Pin Light Position to an Object";
 
 const server = await createServer({
   configFile: fileURLToPath(new URL("../web/vite.config.js", import.meta.url)),
@@ -136,26 +151,27 @@ try {
   // directly through app.addItem (as spawn() already does for "rect"), which is the
   // same entry point that submenu uses; the type string is the plugin's own.
   const select = (id) => page.evaluate((id) => { window.__powerrp_app.selection = id; }, id);
-  const pinButtonSelector = () => page.evaluate(() => {
-    const btn = document.querySelector(".inspector .pin-light-btn");
+  // THE TOOL ROW, found by its rendered TITLE rather than a class or an index:
+  // ToolsPane draws every command row as one `.tool-action` and the title comes
+  // from the command entry, so matching the text is matching what a person reads.
+  const pinToolRect = () => page.evaluate((title) => {
+    const btn = [...document.querySelectorAll(".toolspane .tool-action")]
+      .find((b) => b.textContent.trim() === title);
     if (!btn) return null;
     btn.scrollIntoView({ block: "center" });
     const r = btn.getBoundingClientRect();
-    return { x: r.x, y: r.y, width: r.width, height: r.height };
-  });
-  const clickPinButton = async () => {
-    const r = await pinButtonSelector();
-    if (!r) return false;
-    // The button is HOVER-ONLY revealed (opacity 0 / pointer-events none at rest,
-    // app.css .inspector .row:hover .pin-light-btn) — the same chrome copy-path/help
-    // use. A real pointer must hover the ROW first, exactly as a person would, or the
-    // synthetic click lands on a zero-opacity, unclickable target.
-    await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
-    await sleep(SETTLE_MS);
+    return { x: r.x, y: r.y, width: r.width, height: r.height, disabled: btn.disabled };
+  }, PIN_TOOL_TITLE);
+  const clickPinTool = async () => {
+    const r = await pinToolRect();
+    if (!r || r.disabled) return false;
     await page.mouse.click(r.x + r.width / 2, r.y + r.height / 2);
     await sleep(SETTLE_MS);
     return true;
   };
+  // The Inspector gutter must be CLEAN of the affordance this replaced.
+  const inspectorEyedroppers = () => page.evaluate(() =>
+    document.querySelectorAll(".inspector .pin-light-btn").length);
 
   // ── Set the scene ─────────────────────────────────────────────────────────
   const sunId = await spawn("rect", SUN);
@@ -164,13 +180,23 @@ try {
   await sleep(SETTLE_MS);
   ok(sunId && flareId, `sun ${sunId} + lens flare ${flareId} created`);
 
-  // ── DISCOVERABILITY: the eyedropper exists on the Light X row ─────────────
-  const buttonRect = await pinButtonSelector();
-  ok(buttonRect !== null, "the eyedropper button renders on the Light X row for a selected lens flare");
-  await page.screenshot({ path: `${shots}/1_button_visible.png` });
+  // ── R6-4.5: the tool is in the TOOLS PANE, and NOT in the property gutter ──
+  const toolRect = await pinToolRect();
+  ok(toolRect !== null, `the "${PIN_TOOL_TITLE}" tool renders in the Tools pane for a selected lens flare`);
+  ok(toolRect && !toolRect.disabled, "…and is enabled (exactly one lens flare is selected)");
+  ok(await inspectorEyedroppers() === 0,
+    "…while the Inspector's Light X row carries NO eyedropper: the tool moved, it was not duplicated");
+  await page.screenshot({ path: `${shots}/1_tool_visible.png` });
 
-  // ── ENTER: click the eyedropper ────────────────────────────────────────────
-  ok(await clickPinButton(), "clicking the eyedropper is possible");
+  // ── THE `applies` GATE: a rect has no light position, so it gets no tool ───
+  await select(sunId);
+  await sleep(SETTLE_MS);
+  ok(await pinToolRect() === null, "a plain rect is offered no light-pin tool at all (lightPinnable reads its defaults)");
+  await select(flareId);
+  await sleep(SETTLE_MS);
+
+  // ── ENTER: run the tool ────────────────────────────────────────────────────
+  ok(await clickPinTool(), "clicking the tool is possible");
   ok(await modeId() === "pin_light_position", `the mode is entered (got ${await modeId()})`);
   const modeLabels = await hintLabels();
   ok(modeLabels.some((l) => /click the object/i.test(l)), `the bar narrates the click gesture (got ${JSON.stringify(modeLabels)})`);
@@ -184,22 +210,15 @@ try {
   ok(await modeId() === null, "Escape leaves the mode");
   ok(await docJson() === preEscapeDoc, "…with the document byte-identical (nothing written)");
 
-  // ── SECOND-CLICK CANCEL: entering then clicking the eyedropper again exits ──
-  await clickPinButton();
-  ok(await modeId() === "pin_light_position", "re-entered for the second-click test");
-  await clickPinButton();
-  ok(await modeId() === null, "a second eyedropper click cancels the mode");
-  ok(await docJson() === preEscapeDoc, "…and writes nothing");
-
   // ── EMPTY-CANVAS CANCEL: a quiet hint, no write ────────────────────────────
-  await clickPinButton();
+  await clickPinTool();
   ok(await modeId() === "pin_light_position", "re-entered for the empty-canvas test");
   await clickAt(EMPTY_CANVAS.x, EMPTY_CANVAS.y);
   ok(await modeId() === null, "clicking empty canvas exits the mode");
   ok(await docJson() === preEscapeDoc, "…quietly: no write");
 
   // ── SELF-PICK REFUSAL: clicking the flare itself is refused ────────────────
-  await clickPinButton();
+  await clickPinTool();
   await clickAt(FLARE.x + 10, FLARE.y + 10); // inside the flare's own box
   ok(await modeId() === null, "self-pick exits the mode (refused, not a silent no-op)");
   ok(await docJson() === preEscapeDoc, "…and writes nothing");
@@ -207,7 +226,7 @@ try {
     "…the light position's own default equation is untouched");
 
   // ── HOVER previews the target before the click ─────────────────────────────
-  await clickPinButton();
+  await clickPinTool();
   await moveTo(SUN_CENTRE.x, SUN_CENTRE.y);
   const hoverChains = await page.evaluate(() => document.querySelectorAll("polyline.place-rect").length);
   ok(hoverChains >= 1, `hovering the sun highlights it before any click (got ${hoverChains} outline(s))`);
@@ -261,7 +280,7 @@ try {
   const godRaysId = await spawn("demo_god_rays", { x: 60, y: 40, w: 260, h: 160 });
   await select(godRaysId);
   await sleep(SETTLE_MS);
-  ok(await clickPinButton(), "the eyedropper also renders for god_rays");
+  ok(await clickPinTool(), "god_rays gets the SAME tool with no declaration of its own");
   ok(await modeId() === "pin_light_position", "…and enters the same mode");
   await clickAt(sunCentreAfterDrag.x, sunCentreAfterDrag.y);
   const godRaysX = await stored(godRaysId, "lightWorldX");
@@ -278,4 +297,4 @@ if (errors.length) {
   console.error(`\n${errors.length} check(s) failed:\n${errors.join("\n")}`);
   process.exit(1);
 }
-console.log(`\n${checks.length}/${checks.length} light-pin eyedropper checks passed. Shots in ${shots}`);
+console.log(`\n${checks.length}/${checks.length} light-pin tool checks passed. Shots in ${shots}`);

@@ -20,8 +20,9 @@ import { evaluateState } from "../core/expressions.js";
 import { deriveRenderTree } from "../core/derive.js";
 import {
   centerPinExpr, centerPinPairs, currentHoverId, lightPinRefusal, mergedOverlay,
-  nodeBoxMarks, pinLightAspect, LIGHT_POSITION_PIN_HANDLER,
+  nodeBoxMarks, LIGHT_PIN_PAIR, LIGHT_POSITION_PIN_HANDLER,
 } from "../web/lightPositionPin.js";
+import { LIGHT_KEYS, lightPinnable } from "../core/registry.js";
 import { canvasModes, handlerIds } from "../web/widget_handlers.js";
 
 let passed = 0;
@@ -94,10 +95,20 @@ test("the pairs land on NUMERIC slots, so the bare string IS the equation (no le
   }
 });
 
-test("pinLightAspect finds the declared {xKey, yKey} on both widgets, and null elsewhere", () => {
-  assert.deepEqual(pinLightAspect(flarePlugin), { xKey: "lightWorldX", yKey: "lightWorldY" });
-  assert.deepEqual(pinLightAspect(godRaysPlugin), { xKey: "lightWorldX", yKey: "lightWorldY" });
-  assert.equal(pinLightAspect(registry.get("rect")), null);
+test("lightPinnable gates on the DEFAULTS, so both widgets qualify and a rect does not", () => {
+  // Manifest R6-4.5: the tool is offered by core/registry.js's structural
+  // predicate over LIGHT_KEYS, NOT by a `pinLight` aspect a plugin had to
+  // declare on one of its rows. Neither plugin says anything about the pin now.
+  assert.ok(lightPinnable(flarePlugin));
+  assert.ok(lightPinnable(godRaysPlugin));
+  assert.equal(lightPinnable(registry.get("rect")), false);
+  for (const plugin of [flarePlugin, godRaysPlugin])
+    assert.ok(!(plugin.inspector ?? []).some((row) => row.pinLight),
+      `${plugin.type} still declares a pinLight row aspect — the tool reads defaults now, and a leftover aspect is a second, silent declaration`);
+});
+
+test("the keys the tool is OFFERED for are the keys it WRITES (no second list)", () => {
+  assert.deepEqual([LIGHT_PIN_PAIR.xKey, LIGHT_PIN_PAIR.yKey], LIGHT_KEYS);
 });
 
 // ── refusals ──────────────────────────────────────────────────────────────────
@@ -126,7 +137,7 @@ test("ALLOWED: an ordinary bbox item, and the CAMERA — no special case, it jus
 test("THE FEATURE: pinned, evaluateState resolves the light to the target's box center", () => {
   const { doc, flareId, sunId } = docWithFlareAndSun();
   let out = doc;
-  for (const [path, value] of centerPinPairs(flareId, pinLightAspect(flarePlugin), sunId))
+  for (const [path, value] of centerPinPairs(flareId, LIGHT_PIN_PAIR, sunId))
     out = keyframed(out, 0, path, value);
   const { state, errors } = evaluateState(foldState(out, 0, 1), registry);
   assert.equal(errors.size, 0, `expression errors: ${[...errors.values()].join("; ")}`);
@@ -138,7 +149,7 @@ test("THE FEATURE: pinned, evaluateState resolves the light to the target's box 
 test("THE LIVE-PIN PROOF: dragging the target moves the resolved light with it", () => {
   const { doc, flareId, sunId } = docWithFlareAndSun();
   let pinned = doc;
-  for (const [path, value] of centerPinPairs(flareId, pinLightAspect(flarePlugin), sunId))
+  for (const [path, value] of centerPinPairs(flareId, LIGHT_PIN_PAIR, sunId))
     pinned = keyframed(pinned, 0, path, value);
   const before = evaluateState(foldState(pinned, 0, 1), registry).state;
   assert.equal(before.items[flareId].lightWorldX, 520);
@@ -153,7 +164,7 @@ test("THE LIVE-PIN PROOF: dragging the target moves the resolved light with it",
 test("clearing the equation un-pins that axis (an ordinary literal write)", () => {
   const { doc, flareId, sunId } = docWithFlareAndSun();
   let pinned = doc;
-  for (const [path, value] of centerPinPairs(flareId, pinLightAspect(flarePlugin), sunId))
+  for (const [path, value] of centerPinPairs(flareId, LIGHT_PIN_PAIR, sunId))
     pinned = keyframed(pinned, 0, path, value);
   const unpinnedX = keyframed(pinned, 0, ["items", flareId, "lightWorldX"], 42);
   const state = evaluateState(foldState(unpinnedX, 0, 1), registry).state;
@@ -212,7 +223,7 @@ test("THE GESTURE: hover stages a candidate, pick writes ONE undo unit and exits
   assert.equal(app.previews.length, 1, "ONE setPreview → ONE undo unit");
   assert.equal(app.commits, 1);
   assert.equal(app.exits, 1, "the mode always exits after a completed pick");
-  assert.deepEqual(app.previews[0], centerPinPairs(flareId, pinLightAspect(flarePlugin), sunId));
+  assert.deepEqual(app.previews[0], centerPinPairs(flareId, LIGHT_PIN_PAIR, sunId));
   assert.equal(currentHoverId(), null, "the hover candidate is spent");
 });
 

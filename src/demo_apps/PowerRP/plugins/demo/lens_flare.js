@@ -442,15 +442,13 @@ export const lensFlarePlugin = {
     ...props("opacity"),
     {
       key: "lightWorldX", label: "Light X", kind: "number", category: CUSTOM_CATEGORY,
-      // pinLight: the declarative row aspect (web/lightPositionPin.js) that gets
-      // this pair the Inspector's eyedropper button — click it, then click another
-      // item, and BOTH lightWorldX/Y become "= <that item>.cx"/".cy" as one undo
-      // unit (a LIVE pin: the flare tracks the target if it moves). Declared once,
-      // on the X row only — Inspector reads it from either row of the pair via
-      // core/properties.js "aspect on one row of a pair" convention (cx/cy's own
-      // writeKey/centerAxis do the same).
-      pinLight: { xKey: "lightWorldX", yKey: "lightWorldY" },
-      help: "Light-source horizontal position in WORLD (document) coordinates — the same units as the widget's own X. Absolute, not a fraction of the box, so it can be bound to another item's position (e.g. \"= someItem.x\") to pin the flare's source to it. Move or rotate the widget and the light stays put in the document; drag the yellow handle, keyframe it, type an equation, or click the eyedropper and pick an item to pin to its center.",
+      // NO `pinLight` ROW ASPECT ANY MORE (manifest R6-4.5). This row used to
+      // carry one, which put a MODE-ENTERING eyedropper in the property gutter —
+      // a tool wearing a property's clothes. The pin is now the "Pin Light
+      // Position to an Object" tool in the Tools pane, gated by
+      // core/registry.js's `lightPinnable` over LIGHT_KEYS, so this widget
+      // declares nothing to get it and neither does the next lit widget.
+      help: "Light-source horizontal position in WORLD (document) coordinates — the same units as the widget's own X. Absolute, not a fraction of the box, so it can be bound to another item's position (e.g. \"= someItem.x\") to pin the flare's source to it. Move or rotate the widget and the light stays put in the document; drag the yellow handle, keyframe it, type an equation, or use the Tools pane's Pin Light Position to an Object to pin it to an item's centre.",
     },
     {
       key: "lightWorldY", label: "Light Y", kind: "number", category: CUSTOM_CATEGORY,

@@ -89,7 +89,7 @@
   // The camera-bind pair's sentences live beside `frameBindable`, the predicate
   // they explain, so the Tools pane's pool row and these command entries show the
   // same words without either transcribing the other's (core/registry.js).
-  import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES, MAKE_STATIC_HELP, MAKE_STATIC_REQUIRES, SLIDE_KEYFRAMES_HELP, SLIDE_KEYFRAMES_REQUIRES } from "../core/registry.js";
+  import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES, LIGHT_PIN_HELP, LIGHT_PIN_REQUIRES, MAKE_STATIC_HELP, MAKE_STATIC_REQUIRES, SLIDE_KEYFRAMES_HELP, SLIDE_KEYFRAMES_REQUIRES, lightPinnable } from "../core/registry.js";
   import { FAMILIES } from "../plugins/shapeshifter.js";
   import { subpathsPathD } from "../core/shapes.js";
 
@@ -695,6 +695,16 @@
   // Goes through flipTargetIds so a selected GROUP counts via its bbox members
   // (the group itself has no flippable box — see there).
   const needsFlippable = (a) => flipTargetIds(a).ids.length > 0;
+  // THE LIGHT-PIN TARGET: the ONE selected widget the pin would be written onto,
+  // or null. `lightPinnable` (core/registry.js) is the structural half, shared
+  // verbatim with the Tools pool row's `applies`; the "exactly one" half lives
+  // here because it is about the SELECTION, not the plugin. A pin writes ONE
+  // widget's light pair onto ONE object, so a multi-selection has no "the" pinner
+  // — the same reasoning that gated the row this replaced to `!multi`.
+  const lightPinTarget = (a) => {
+    const nodes = a.selectedNodes();
+    return nodes.length === 1 && lightPinnable(nodes[0].plugin) ? nodes[0].itemId : null;
+  };
 
   // ── THE REASONS a gated command is greyed out ───────────────────────────────
   // Each completes the sentence "Unavailable — requires …" (core/registry.js
@@ -1011,6 +1021,27 @@
         a.setPreview(cameraFreezeWrite(a)); // preview-free derivation; see documentState
         a.commitPreview();
       },
+    },
+    {
+      // THE LIGHT PIN (manifest R6-4.5), beside the camera-bind pair because it is
+      // the same act on a different pair of coordinates. It used to be an
+      // eyedropper button jammed into the lens flare's Light X PROPERTY ROW; a
+      // property row shows and edits a stored value, and this one entered a canvas
+      // MODE, which is a tool. Moving it here is what lets god_rays — and any
+      // future lit widget — inherit it with no plugin edit at all.
+      //
+      // NO `preview`, unlike its two neighbours: there is nothing to show until an
+      // object has been picked, and the mode's own hover overlay
+      // (web/lightPositionPin.js) is that feedback. NO ELLIPSIS either — the
+      // storage-vocabulary rule below reserves "…" for a dialog, explicitly not
+      // for "a mode with a visible cursor", which is exactly what this arms.
+      id: "pin-light-to-object",
+      title: "Pin Light Position to an Object",
+      icon: "mdi:eyedropper-variant",
+      when: (a) => lightPinTarget(a) !== null,
+      requires: LIGHT_PIN_REQUIRES,
+      help: LIGHT_PIN_HELP,
+      run: (a) => a.enterCanvasMode("pin_light_position", lightPinTarget(a)),
     },
     // GROUPS (manifest rough draft): Group Selection needs ≥2 groupable items;
     // Ungroup is enabled when any selected node is a group. Both operate on the

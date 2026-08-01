@@ -24,12 +24,17 @@
  * numeric slots" in core/expressions.js's isNumericSlot (any string is already
  * an equation there) — the same convention x/y and bind-to-camera use.
  *
- * ── THE DECLARATIVE ROW ASPECT ────────────────────────────────────────────────
- * A widget opts a light-position PAIR into the eyedropper by adding one field to
- * its X row: `pinLight: {xKey, yKey}` (see plugins/demo/lens_flare.js /
- * god_rays.js). web/Inspector.svelte reads it to render the eyedropper button
- * beside the pair — one declaration, so the next world-position pair a widget
- * adds gets the affordance for free rather than being hand-wired.
+ * ── IT IS A TOOL, NOT A PROPERTY ROW (manifest R6-4.5) ────────────────────────
+ * This used to be reached from a `pinLight: {xKey, yKey}` aspect on the widget's
+ * Light X inspector row, which drew an eyedropper in the property gutter. That
+ * was a category error: a property row shows and edits a STORED VALUE, and this
+ * button entered a sustained canvas MODE — browser-measured at the time as
+ * collapsing the HintBar from 36 chips to 2, which is the signature of a mode.
+ * It is now the `pin-light-to-object` command, surfaced as a Tools-pane row in
+ * the `positioning` pool group (core/registry.js TOOL_POOL) and in the palette
+ * like every other tool. A widget qualifies by DECLARING core/registry.js's
+ * LIGHT_KEYS in its defaults (`lightPinnable`) — it opts in by having a light
+ * position at all, so the next lit widget needs no declaration whatsoever.
  *
  * ── SELF-PICK AND THE CAMERA ──────────────────────────────────────────────────
  * Picking the widget itself is refused (self.cx / self.cx would cycle: the
@@ -52,8 +57,16 @@
  * covers the whole write in bare node.
  */
 
+import { LIGHT_KEYS } from "../core/registry.js";
 import { reportAction } from "../core/report.js";
 import * as T from "../core/transform.js";
+
+/**
+ * The `{xKey, yKey}` pair every pin writes, named once from core/registry.js's
+ * LIGHT_KEYS — the same list `lightPinnable` gates the tool on, so the keys the
+ * tool is OFFERED for and the keys it WRITES cannot drift apart.
+ */
+export const LIGHT_PIN_PAIR = { xKey: LIGHT_KEYS[0], yKey: LIGHT_KEYS[1] };
 
 /**
  * Pure function. The stored equation for one axis of a center-pin: the DERIVED
@@ -91,24 +104,6 @@ export function centerPinPairs(itemId, pin, targetId) {
     [["items", itemId, pin.xKey], centerPinExpr(targetId, "cx")],
     [["items", itemId, pin.yKey], centerPinExpr(targetId, "cy")],
   ];
-}
-
-/**
- * Pure function. The `pinLight: {xKey, yKey}` row aspect declared on one of a
- * plugin's inspector rows (plugins/demo/lens_flare.js / god_rays.js's Light X
- * row), or null when the plugin declares none. A QUERY over the plugin's own
- * shape rather than a hardcoded key list, so a future widget's light-position
- * pair is found the same way its Inspector row already is.
- *
- * @param {{inspector?: object[]}} plugin
- * @returns {{xKey: string, yKey: string}|null}
- *
- * @example pinLightAspect({inspector: [{key: "lightWorldX", pinLight: {xKey: "lightWorldX", yKey: "lightWorldY"}}]})
- * // {xKey: "lightWorldX", yKey: "lightWorldY"}
- * @example pinLightAspect({inspector: [{key: "x"}]}) // null
- */
-export function pinLightAspect(plugin) {
-  return plugin.inspector?.find((row) => row.pinLight)?.pinLight ?? null;
 }
 
 /**
@@ -198,11 +193,13 @@ export const LIGHT_POSITION_PIN_HANDLER = {
   phase: "activate",
   label: "Pin light to object",
   // No `claims`: this mode is never entered through the double-click dispatch
-  // (web/widget_handlers.js activationContext.enterMode) — the Inspector's
-  // eyedropper button calls app.enterCanvasMode(id, itemId) directly, since the
-  // gesture starts on a PROPERTY ROW, not on the widget itself. So there is
-  // nothing for widget_handlers.migrationPlan to ever flag here, correctly:
-  // lens_flare/god_rays declare no `activate` string and need none.
+  // (web/widget_handlers.js activationContext.enterMode) — the
+  // `pin-light-to-object` COMMAND calls app.enterCanvasMode(id, itemId) directly,
+  // because the gesture starts in the Tools pane (or the palette), not on the
+  // widget itself. So there is nothing for widget_handlers.migrationPlan to ever
+  // flag here, correctly: lens_flare/god_rays declare no `activate` string and
+  // need none. Adding `claims` would make double-click start pinning, which is
+  // not what a double-click on a lens flare should do.
   mode: {
     label: "Pin light to object",
     hints: [{ keys: ["mouse_left"], label: "Click the object to pin the light to" }],
@@ -259,7 +256,7 @@ export const LIGHT_POSITION_PIN_HANDLER = {
         app.exitCanvasMode();
         return;
       }
-      app.setPreview(centerPinPairs(node.itemId, pinLightAspect(node.plugin), pick.node.itemId));
+      app.setPreview(centerPinPairs(node.itemId, LIGHT_PIN_PAIR, pick.node.itemId));
       app.commitPreview();
       app.exitCanvasMode();
     },
