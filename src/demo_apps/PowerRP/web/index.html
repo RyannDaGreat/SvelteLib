@@ -17,7 +17,9 @@
       that sweep, which is what makes "your drafts are still here" true on iOS.
     -->
     <link rel="manifest" href="./manifest.webmanifest" />
-    <meta name="theme-color" content="#1b1b1b" />
+    <!-- Mirrors Nocturne's --bg, the DEFAULT_THEME (web/app.svelte.js). Must be
+         re-derived if that default changes, along with the boot splash below. -->
+    <meta name="theme-color" content="#0e1117" />
     <title>PowerRP</title>
     <!--
       THE BOOT SPLASH — inline HTML + inline CSS + inline JS, deliberately.
@@ -30,9 +32,19 @@
       paint before it loads, so the splash cannot live in a component.
 
       It cannot read app.css's --a-* tokens (that stylesheet arrives with the
-      bundle), so the few colours it needs are inlined and mirror the Graphite
-      default dark (--bg #1b1b1b / --fg #e6e6e6 / --fg-dim #8c8c8c) and the
-      light theme (--bg #f4f4f4 / --fg #1a1a1a) via prefers-color-scheme.
+      bundle), so the few colours it needs are inlined and mirror the DEFAULT
+      THEME's dark member — Nocturne (--bg #0e1117 / --fg #e4e8f0 / --fg-dim
+      #98a3b8) — and its light twin Daybreak (--bg #dce3ec / --fg #1a2230 /
+      --fg-dim #55617a) via prefers-color-scheme.
+
+      THESE FOUR NUMBERS ARE A HAND-COPY OF app.css AND THERE IS NO GATE ON THEM.
+      That is not laziness: the splash must paint before any stylesheet loads, so
+      it structurally cannot read the token it mirrors. The cost is that changing
+      DEFAULT_THEME (web/app.svelte.js) silently leaves this backdrop showing the
+      OLD theme for the length of a cold boot — which is precisely the flash the
+      next paragraph forbids. They were Graphite's until 2026-08-01, when the user
+      made Nocturne the default. If you move the default again, move these too,
+      and the theme-color meta above with them.
 
       WARM LOADS MUST NOT FLASH. The backdrop covers the gray box from the first
       paint, but the progress UI (title, bar, stage list) stays at opacity 0
@@ -64,11 +76,11 @@
       }
       @media (prefers-color-scheme: light) {
         :root {
-          --boot-bg: #f4f4f4;
-          --boot-fg: #1a1a1a;
-          --boot-dim: #666666;
+          --boot-bg: #dce3ec;
+          --boot-fg: #1a2230;
+          --boot-dim: #55617a;
           --boot-track: rgba(0, 0, 0, 0.14);
-          --boot-bar: #1a1a1a;
+          --boot-bar: #1a2230;
           --boot-error: #c02626;
         }
       }

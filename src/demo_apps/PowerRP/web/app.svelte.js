@@ -263,8 +263,9 @@ export const LABEL_FRAC_BOUNDS = { min: SETTINGS.labelFrac.min, max: SETTINGS.la
  * reads (the Monaco editor picks vs-dark/vs from `kind`). */
 export const THEME_FAMILIES = [
   // ── The neutrals ────────────────────────────────────────────────────────────
-  // Graphite is the app default and Light was always its opposite; the pairing
-  // is a marriage, not a design. ABSORBED: `warm` and `black`, which measured
+  // Light was always Graphite's opposite; the pairing is a marriage, not a
+  // design. Graphite was ALSO the app default until 2026-08-01 — see
+  // DEFAULT_THEME, which is now Nocturne. ABSORBED: `warm` and `black`, which measured
   // 2.10 and 5.16 CIELAB from Graphite with byte-identical chroma tokens — a
   // background-warmth knob and a brightness knob, not identities.
   { id: "graphite", title: "Graphite", dark: "graphite", light: "light" },
@@ -335,6 +336,24 @@ export const THEME_ALIASES = {
   black: "graphite",
   tokyonight: "nocturne",
 };
+
+/**
+ * THE DEFAULT THEME — what a first-run user sees, and where a saved preference
+ * falls back to when this build has never shipped it.
+ *
+ * Nocturne, by user ruling (2026-08-01): "make Nocturne the default theme, it's
+ * the best looking one we have right now." It was Graphite from the start, on
+ * no stronger grounds than being first.
+ *
+ * IT IS A CONSTANT BECAUSE IT WAS FOUR LITERALS. The string `"graphite"`
+ * appeared at the `theme` state initialiser, twice in `loadTheme` (the
+ * no-saved-preference path and the unknown-id path) and once more inside that
+ * path's warning text — so changing the default meant finding all four, and the
+ * warning could disagree with the behaviour without anything failing. Its light
+ * twin needs no entry here: `siblingTheme` reads THEME_FAMILIES, where Nocturne
+ * is paired with Daybreak.
+ */
+export const DEFAULT_THEME = "nocturne";
 
 /**
  * Pure function. Flattens THEME_FAMILIES into the one-entry-per-theme list the
@@ -715,7 +734,7 @@ export class PowerRPApp {
    * (both are Computer-Modern lineage — close, not identical); the `closing`
    * crossfade (see commitLatexEdit) masks it as much as this design allows. */
   latexEditing = $state(null);
-  theme = $state("graphite");
+  theme = $state(DEFAULT_THEME);
   // BROWSER settings below: each = a SETTINGS descriptor's .initial (the
   // localStorage-or-default value) and a toggle*() using .persist. See the
   // SETTINGS repo above.
@@ -1706,15 +1725,15 @@ export class PowerRPApp {
    * localStorage holds something this build has never shipped. */
   loadTheme() {
     const saved = localStorage.getItem(THEME_KEY);
-    if (saved == null) return this.setTheme("graphite");
+    if (saved == null) return this.setTheme(DEFAULT_THEME);
     if (THEMES.some((t) => t.id === saved)) return this.setTheme(saved);
     const alias = THEME_ALIASES[saved];
     if (alias) {
       console.warn(`[theme] "${saved}" was retired and is now "${alias}" — migrating your saved preference.`);
       return this.setTheme(alias);
     }
-    console.warn(`[theme] saved theme "${saved}" is not in this build's catalog — falling back to graphite.`);
-    this.setTheme("graphite");
+    console.warn(`[theme] saved theme "${saved}" is not in this build's catalog — falling back to ${DEFAULT_THEME}.`);
+    this.setTheme(DEFAULT_THEME);
   }
 
   /** Command. THE dark/light toggle (toolbar + palette): flips to the sibling
@@ -3312,7 +3331,7 @@ export class PowerRPApp {
   }
 
 
-  // ── Shatter (core/shatter.js — "Convert to Widgets") ────────────────────────
+  // ── Shatter (core/shatter.js) ────────────────────────
 
   /**
    * Query. WHY the selection cannot be shattered, or null when it can. ONE call
@@ -3368,7 +3387,7 @@ export class PowerRPApp {
   }
 
   /**
-   * Command (one undo unit). "Convert to Widgets": the selected widget BECOMES a
+   * Command (one undo unit). "Shatter": the selected widget BECOMES a
    * group whose members are the editable widgets it was drawing, wired to each
    * other by equations so a label follows the box it names and an arrow
    * re-routes when either end moves.
@@ -3381,7 +3400,7 @@ export class PowerRPApp {
   shatterSelection() {
     const blocker = this.shatterBlocker();
     if (blocker !== null) {
-      console.warn(`Convert to Widgets: needs ${blocker} — nothing was converted.`);
+      console.warn(`Shatter: needs ${blocker} — nothing was converted.`);
       return;
     }
     const id = this.selectedIds()[0];
@@ -3391,12 +3410,12 @@ export class PowerRPApp {
     // is reported LOUDLY and converts nothing — never a silent no-op.
     const plan = this.#shatterPlan(id, folded);
     if (typeof plan === "string") {
-      this.shatterReport = `Convert to Widgets: ${plan}`;
+      this.shatterReport = `Shatter: ${plan}`;
       console.warn(this.shatterReport);
       return;
     }
     if (plan.parts.length === 0) {
-      this.shatterReport = "Convert to Widgets: this widget draws no recoverable parts, so there is nothing to convert.";
+      this.shatterReport = "Shatter: this widget draws no recoverable parts, so there is nothing to convert.";
       console.warn(this.shatterReport);
       return;
     }
@@ -3407,7 +3426,7 @@ export class PowerRPApp {
     this.commit(withNormalizedZ(doc));
     this.selection = id; // the group — the thing the user now has a handle on
     this.shatterReport = `${shatterDisclosure(plan.parts, this.registry, plan.notes)} (${Math.round(vectorRecovery(plan.parts) * 100)}% recovered as vector.)`;
-    console.info(`Convert to Widgets: ${this.shatterReport}`);
+    console.info(`Shatter: ${this.shatterReport}`);
   }
 
   /**
