@@ -1125,6 +1125,51 @@ is the actual rule.
   2058-line family was researched single-handed. The ceiling — not willingness to spend compute —
   is the binding limit on swarm width in this session.
 
+- **R6-3.16 PRESETS PROGRAM RESULT: 721 designed presets validated, ZERO invented keys**
+  (coordinator W1-N; `.frenzy/round6/presets/PLAN.md` is the index, `topup_treatment.md` alone is
+  2912 lines with 73 proof PNGs; 13 of 14 families complete, `topup_atmospheric` still running).
+  The self-validation discipline of R6-3.14 held at scale: every family diffed its keys against
+  the live plugin defaults, and the only residual flags were the validator's own known
+  misattributions, each hand-checked.
+
+  **(a) A SHIPPED PRESET ADVERTISES AN AXIS THE VIEWER CANNOT SEE — LEAD-VERIFIED.**
+  `demo_crt`'s `sourceTVL` moves **0.62 mean code values across its ENTIRE 120->1000 range**, and
+  is byte-identical above 1024 because the floor bites at **1.707 x device width** — so on a
+  600px picture the knob does essentially nothing. And `plugins/demo/crt.js:89-92` ships
+  **"Sony BVM"** whose description opens *"The broadcast reference Trinitron: **the sharpest tube
+  (~1000 TVL)**"* with `sourceTVL: 1000`; `:76-79`'s "Sony PVM (RGB)" likewise leads with
+  "sharp (~600 TVL)". **Both descriptions lead with the one axis a viewer cannot distinguish.**
+  This is the FOURTH near-inert knob this round (CRT flicker/persistence R6-24.6, video
+  autoplay/loop/muted R6-12, raycast_dither's zoom-kills-colour R6-3.14, now this) — enough to
+  treat "is this knob observable at realistic sizes?" as a standing check when authoring presets,
+  not an afterthought.
+
+  **(b) THE DISTINCTNESS GATE MUST BE COLOUR-AWARE — THIS REFINES R6-3.13.** I recorded the
+  pairwise-different-images probe as the enforcement arm of the anti-duplicate rule. It needs one
+  correction: shipped "Punch" and "Punch, Hue Locked" measure **0.0000 apart on the grey axis**,
+  and that is CORRECT, because their difference is chroma. **A naive pixel/grey digest therefore
+  produces FALSE REDS on a correct table.** So the rule stands but the metric must compare colour,
+  not luminance — flagged for `brightness_contrast_browser_probe.js`. Both halves belong together:
+  the gate is right to exist AND wrong if it is colour-blind.
+
+  **(c) A TEST PINS PRESET PROPS AND BLOCKS SIX RESEARCHED PRESETS — BUT ITS INTENT IS RIGHT, SO
+  WIDEN IT, DO NOT DELETE IT.** `tests/filmstrip_test.js:460` asserts verbatim
+  `assert.deepEqual(Object.keys(p.props).sort(), ["filmColor", "perfFamily"], 'preset "..." writes
+  a key no preset should')`, so filmstrip cannot exceed two prop keys and six researched gauges
+  are stuck behind new `core/film.js` rows. **Read the comment two lines below it:** presets must
+  "differ on the axes that are REAL (gauge/type), not on manufacturer" — i.e. this pin is a
+  DELIBERATE guard against exactly the fake-distinctness failure R6-3.12(b) warns about. **The
+  correct move is to widen the allowed key set in the SAME commit that adds the real gauge rows,
+  keeping the guard intact.** (The agent framed this as "blocked by a test"; the truer framing is
+  that the test encodes a rule we agree with.)
+
+  **(d) A COORDINATION FAILURE THE COORDINATOR CAUGHT AND RECORDED RATHER THAN ERASED.** Its
+  family table double-assigned `clock_analog` to two agents. Instruments produced it (4 -> 13);
+  the treatment agent read the plan critically, noticed the overlap, and **declined to author a
+  competing second table rather than silently duplicating**. PLAN.md is corrected with the mistake
+  kept on the record. That is the concerns.md philosophy — append the wrong turn, never delete it
+  — applied by a subagent unprompted, and it is the behaviour to reward.
+
 - **R6-3.11 CROSS-WIDGET PHYSICAL CONSISTENCY.** Aperture blade count, flare
   starburst ray count and bokeh polygon must AGREE where they describe the same
   lens. A swarm authoring independently will contradict itself unless coordinated.
