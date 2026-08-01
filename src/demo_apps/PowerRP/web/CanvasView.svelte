@@ -2910,7 +2910,17 @@
     // PERIOD", manifest Anchor UX). Live bind feedback flows through
     // hoverAnchor + dynamicAnchor, set per-move in endpointDrag.
     hoverAnchor = null; // pre-drag hover tip must not linger stale
-    drag = { kind: "endpoint", itemId: node.itemId, which };
+    // The RESOLVED start pose, FLATTENED to the dotted keys the geometry seam is
+    // defined over ("from.x", not a nested {from: {x}}) — the same minimal-delta
+    // basis modifierDrag freezes at grab, and what lets the equation lock name the
+    // exact coordinate it refused. It must be the state at GRAB rather than the
+    // live node.state for modifierDrag's reason: the live one already contains this
+    // drag's own preview, so diffing against it would find nothing changed.
+    const ep = node.state[which] ?? {};
+    drag = {
+      kind: "endpoint", itemId: node.itemId, which, plugin: node.plugin,
+      startState: { [`${which}.x`]: ep.x, [`${which}.y`]: ep.y },
+    };
     app.dragging = true;
     // ANNOUNCED like every other drag kind (cleared by onPointerUp /
     // cancelPointDrag with the rest of the bookkeeping). An endpoint drag has no
@@ -2966,10 +2976,51 @@
         }
       }
     }
-    app.setPreview([
-      [["items", drag.itemId, drag.which, "x"], xy.x],
-      [["items", drag.itemId, drag.which, "y"], xy.y],
-    ]);
+    // THE SAME ONE SEAM every other drag writes through (geometryPairs). This
+    // branch used to call setPreview with a hand-built path pair, and that is
+    // exactly why R6-28's equation lock never reached it: five of the six drag
+    // kinds ask dragConstraint and this one did not, so with the lock ON you could
+    // still drag an endpoint whose coordinate was an `=` equation and replace it,
+    // with no refusal and no cursor saying so.
+    //
+    // IT IS THE WORST GESTURE TO HAVE MISSED. This function is the one that WRITES
+    // anchor bindings — the `@<id>_<anchor>.x` strings a few lines up. So the
+    // single gesture capable of AUTHORING an equation was the single gesture that
+    // could silently destroy one, which is how a user found it.
+    //
+    // Routing through the seam also brings the minimal delta: a purely horizontal
+    // endpoint drag now writes x alone and leaves an equation on y untouched,
+    // instead of rewriting both coordinates every frame.
+    const written = { [`${drag.which}.x`]: xy.x, [`${drag.which}.y`]: xy.y };
+    app.setPreview(geometryPairs(
+      drag.itemId, drag.startState, written, dragConstraint(drag.itemId, drag.plugin)));
+  }
+
+  /**
+   * Query (reads the document through `app`). The equation-lock affordance for one
+   * ENDPOINT handle: `locked` when BOTH of its coordinates are refused, plus the
+   * sentence saying which and why. `{}` when the lock is off or this endpoint is
+   * free, so an unlocked canvas is untouched.
+   *
+   * PROBES BOTH AXES, for moveAffordance's reason: a one-axis probe would answer
+   * "nothing is locked" for an endpoint whose `y` alone is bound. The probe values
+   * must DIFFER from the start pose or refusedCoordinates correctly reports that
+   * the gesture never moved the coordinate and so nothing was refused.
+   *
+   * This function did not exist, and its absence is the second half of the defect:
+   * tests/equation_lock_test.js's divergence gate asserts that every affordance
+   * function calls equationLockNote, but it can only check the functions that
+   * EXIST — a gate over a roster cannot see an empty chair.
+   */
+  function endpointAffordance(node, which) {
+    const lock = dragConstraint(node.itemId, node.plugin);
+    if (lock === UNCONSTRAINED) return {};
+    const keys = [`${which}.x`, `${which}.y`];
+    const ep = node.state[which] ?? {};
+    const start = { [keys[0]]: ep.x, [keys[1]]: ep.y };
+    const refused = refusedCoordinates(lock, start, { [keys[0]]: ep.x + 1, [keys[1]]: ep.y + 1 });
+    if (!refused.length) return {};
+    return { locked: refused.length === keys.length, lockNote: equationLockNote(refused, "drag this point") };
   }
 
   // ── Modifier point drag (manifest ARCHITECTURE PLAN #1) ───────────────────
@@ -3857,7 +3908,7 @@
     if (selectedIds.length <= 1 && sel?.plugin.editPoints) {
       const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
       for (const p of sel.plugin.editPoints(sel, byId))
-        endpoints.push({ which: p.key, ...actions.worldToScreen(p.x, p.y) });
+        endpoints.push({ which: p.key, ...actions.worldToScreen(p.x, p.y), ...endpointAffordance(sel, p.key) });
     }
 
     // MODIFIER POINTS (manifest ARCHITECTURE PLAN #1): the SELECTED item's
@@ -4295,11 +4346,16 @@
         <ResizeHandles handles={overlay.handles} onstart={startResize} />
         {#each overlay.endpoints as ep}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <!-- The lock skin is the SAME two elements a yellow square wears
+               (lockedGlyphStyle + a <title>), because an endpoint refused by the
+               equation lock and a modifier point refused by it are one condition
+               and must not grow two appearances or two wordings. -->
           <circle
             class="endpoint"
             cx={ep.x} cy={ep.y} r="6"
+            style={lockedGlyphStyle(ep)}
             onpointerdown={(e) => startEndpoint(ep.which, e)}
-          />
+          >{#if ep.lockNote}<title>{ep.lockNote}</title>{/if}</circle>
         {/each}
         <!-- GHOST STEM LINES (F.16): a thin dashed tether from a curve handle to its
              anchor, so which anchor a bezier handle belongs to is visible. Drawn

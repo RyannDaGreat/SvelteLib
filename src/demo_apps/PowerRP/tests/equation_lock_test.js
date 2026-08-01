@@ -565,10 +565,21 @@ const LOCK_SURFACE = {
   // SELECTION, not a write. A band changes what is selected and touches no
   // geometry.
   band: null,
-  // R6-29's own declared exemption, unchanged: the arrow endpoint grab writes
-  // outside geometryPairs, so the lock does not reach it and a note here would
-  // describe a restriction that is not being imposed.
-  endpoint: null,
+  // WAS R6-29's declared exemption — "the arrow endpoint grab writes outside
+  // geometryPairs, so the lock does not reach it and a note here would describe a
+  // restriction that is not being imposed" — and that reason was TRUE when it was
+  // written and stayed true until the endpoint branch was moved onto the seam.
+  //
+  // WORTH KEEPING THE HISTORY, because this sheet did its job and the exemption
+  // still cost a user a bug report ("when the equation lock is on, why am I able to
+  // move the handles of an arrow that has been bound to anchors?"). The entry was
+  // honest and complete; what it lacked was any pressure to ever be revisited. A
+  // null with a good reason reads as settled, and this one described a CONDITION
+  // ("writes outside geometryPairs") that a later commit could falsify silently —
+  // nothing failed when the premise changed, because a null entry asserts nothing.
+  // So: an exemption justified by a fact about the code should be phrased so the
+  // fact is checkable, or it becomes a permanent excuse. This one now isn't one.
+  endpoint: "endpointAffordance",
 };
 
 test("COVERAGE: every drag kind is answered — the sheet is complete against DRAG_KINDS", () => {
@@ -600,6 +611,7 @@ test("COVERAGE: a computed note that never reaches the markup is the R6-28 defec
   const resizeHandles = readFileSync(resolve(appRoot, "web/ResizeHandles.svelte"), "utf8");
   assert.ok(/<title>\{h\.lockNote\}<\/title>/.test(resizeHandles), "the resize handle's note is not rendered");
   assert.ok(/<title>\{m\.lockNote\}<\/title>/.test(canvasView), "the modifier point's note is not rendered");
+  assert.ok(/<title>\{ep\.lockNote\}<\/title>/.test(canvasView), "the endpoint's note is not rendered");
   assert.ok(/\{#each overlay\.lockTips as t\}/.test(canvasView), "the body drag's note is not rendered");
   assert.ok(/<tspan[^>]*>\{line\}<\/tspan>/.test(canvasView), "the body-drag tip element carries no text");
   assert.ok(canvasView.includes("lockNote.split("), "the body-drag tip no longer derives its lines from the one sentence — a hand-written second wording is the defect this whole section is about");

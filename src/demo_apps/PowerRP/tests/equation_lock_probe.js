@@ -284,6 +284,70 @@ try {
     ok(quiet === false, "with the lock OFF the canvas says nothing about it");
   }
 
+  // ── THE ARROW ENDPOINT HANDLE, the user's own case ────────────────────────
+  // "When the equation lock toggle is on, why am I able to move the handles of an
+  // arrow that has been bound to anchors?" — because `endpoint` was one of six
+  // drag kinds and the only one that never asked dragConstraint. LOCK_SURFACE
+  // carried it as a justified null ("writes outside geometryPairs"), which was
+  // TRUE, so nothing was lying; the exemption simply outlived its premise.
+  //
+  // ASSERTED IN BOTH DIRECTIONS. A test that only checks the equation survives
+  // would also pass against an endpoint handle that had stopped working entirely,
+  // which is the more likely way to break this while "fixing" it.
+  {
+    const arrow = await page.evaluate(() => {
+      const app = window.__powerrp_app;
+      app.addItem(app.registry.get("arrow").defaults);
+      const id = app.selection;
+      app.setPreview([
+        [["items", id, "from", "x"], 300], [["items", id, "from", "y"], 400],
+        [["items", id, "to", "x"], 500], [["items", id, "to", "y"], 400],
+      ]);
+      app.commitPreview();
+      // `from.x` becomes an EQUATION — the shape an anchor binding leaves behind.
+      app.setPreview([[["items", id, "from", "x"], "= 300 + 0"]]);
+      app.commitPreview();
+      return { id };
+    });
+    const storedLeaf = (id, a, b) => page.evaluate((id, a, b) =>
+      window.__powerrp_app.storedItemValue(id, [a, b]), id, a, b);
+    ok((await storedLeaf(arrow.id, "from", "x")) === "= 300 + 0",
+      "setup: the arrow's from.x really is stored as an equation");
+
+    const handleAt = () => page.evaluate((id) => {
+      const app = window.__powerrp_app;
+      const n = app.nodes().find((x) => x.itemId === id);
+      const s = app.canvasActions.worldToScreen(n.state.from.x, n.state.from.y);
+      const r = document.querySelector(".overlay").getBoundingClientRect();
+      return { x: r.left + s.x, y: r.top + s.y };
+    }, arrow.id);
+
+    await setLock(true);
+    await new Promise((r) => setTimeout(r, 80));
+    const from = await handleAt();
+    await drag(from, { x: from.x + 90, y: from.y + 60 });
+    ok((await storedLeaf(arrow.id, "from", "x")) === "= 300 + 0",
+      "LOCK ON: dragging the endpoint handle does NOT overwrite the equation on from.x");
+
+    // The handle must also SAY so, in the one shared sentence — a silent refusal
+    // is the #240 defect, not a fix for it.
+    const tip = await page.evaluate(() =>
+      [...document.querySelectorAll(".overlay circle.endpoint title")]
+        .map((t) => t.textContent).find((t) => t.startsWith("Cannot drag this point:")) ?? null);
+    ok(typeof tip === "string" && tip.includes('"from.x"') && tip.includes("Equation Lock is on"),
+      `…and the handle explains itself in the shared voice (got ${JSON.stringify(tip)})`);
+
+    // THE OTHER DIRECTION: with the lock off the same drag must still work, or
+    // this "fix" has merely broken the endpoint handle.
+    await setLock(false);
+    await new Promise((r) => setTimeout(r, 80));
+    const free = await handleAt();
+    await drag(free, { x: free.x + 90, y: free.y + 60 });
+    const after = await storedLeaf(arrow.id, "from", "x");
+    ok(after !== "= 300 + 0" && typeof after === "number",
+      `LOCK OFF: the same drag still moves the endpoint and replaces the equation (got ${JSON.stringify(after)})`);
+  }
+
   ok(liveErrors.length === 0, `zero console errors during all interactions (${JSON.stringify(liveErrors)})`);
 
   console.log(checks.map(([p, l]) => `  ${p ? "ok " : "FAIL"} ${l}`).join("\n"));
