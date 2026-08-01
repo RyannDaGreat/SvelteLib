@@ -66,8 +66,15 @@ registerAll(registry, createCommands());
 // the dome FITS its box and `cornerRadius` is geometry, so both are composition, not
 // look — the same exclusion plugins/demo/lens_flare.js makes for lightX/lightY/
 // flareScale, for the same complaint (a pick must not undo a framing the user chose).
+//
+// `starSize` (R6-9.1) joins them, and its reason is the one the Bortle ladder gives:
+// naked-eye star images are SEEING-limited, so their apparent size is a property of
+// the atmosphere and the optics rather than of how dark the site is, and every rung
+// of the ladder would carry the same number. It is also the knob an author reaches
+// for to stylise a sky, which is exactly what the exclusion protects. See the STAR
+// SIZE paragraph in plugins/demo/sky.js's preset doctrine.
 const MEMBERS = ["sky", "skySun", "skyMoon", "skyClouds"];
-const EXCLUDED = new Set(["horizon", "cornerRadius"]);
+const EXCLUDED = new Set(["horizon", "cornerRadius", "starSize"]);
 // State the Inspector shows for every widget alike; a preset is a LOOK, so none of it
 // belongs in one. The five universal EFFECTS are in here too — a preset must not switch
 // a user's shadow or feather on — with ONE exception, below.

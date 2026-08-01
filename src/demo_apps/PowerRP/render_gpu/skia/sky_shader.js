@@ -42,8 +42,8 @@ import { particleTime } from "../particle_clock.js";
 export const SKY_MAX_SUNS = 4;
 export const SKY_MAX_MOONS = 2;
 
-// geometry 8 + scalars 9 + float3 tints 12 + float2[4] suns 8 + float4[4] sunColor 16
-const SKY_UNIFORM_FLOATS = 8 + 9 + 12 + 8 + 16; // = 53
+// geometry 8 + scalars 10 + float3 tints 12 + float2[4] suns 8 + float4[4] sunColor 16
+const SKY_UNIFORM_FLOATS = 8 + 10 + 12 + 8 + 16; // = 54
 
 export const SKY_SKSL = `
 // ── structural constants (the physics; only CHARACTER knobs are uniforms) ─────
@@ -63,6 +63,19 @@ const float  AZ_SPAN   = 1.65;    // radians of azimuth the box half-width spans
 const float  STAR_THRESHOLD = 0.86; // per-cell hash cutoff: higher = fewer stars
 const float  STAR_MAG_POW = 3.2;  // magnitude distribution: high power = rare bright stars
 const float  MW_SIGMA  = 0.24;    // Milky-Way band half-width (in sin-galactic-latitude)
+// Milky-Way noise frequencies, in noise cells per unit of DIRECTION (≈ per radian of
+// arc on the unit sphere). They replace the old per-axis (2.2, 3.0) / (5.0, 6.0)
+// pairs of the azimuth/elevation domain with one isotropic figure each, because a
+// direction has no preferred axis: 2.6 is the coarse mottling that gives the band its
+// clumps, 5.5 the finer dust that bites lanes out of it.
+const float  MW_MOTTLE_FREQ = 2.6;
+const float  MW_DUST_FREQ   = 5.5;
+// The world-px span uStarDensity counts star-lattice cells across. It is the sky
+// widget's DEFAULT WIDTH (plugins/demo/sky.js defaults w: 1000), so at the default box
+// the knob still reads as "cells across the box" exactly as it did while the lattice
+// was box-relative — the number keeps its old intuition after losing its old
+// dependence on the box. See starField for why that dependence had to go.
+const float  STAR_SPAN_PX = 1000.0;
 const float  EDGE_AA   = 1.0;     // rounded-rect coverage AA half-width (device px)
 const float  EPS       = 1e-3;
 // DIVIDE GUARD for the closed-form single-scatter ratio scatterCoef/betaTot below.
@@ -85,14 +98,15 @@ uniform float2 uCenter;
 uniform float2 uHalfSize;
 uniform float  uCornerRadius;
 uniform float  uAngle;
-uniform float  uScale;         // device px per world unit (unused here; contract slot)
+uniform float  uScale;         // device px per world unit (the star lattice's own frame)
 uniform float  uTime;          // ambient animation seconds (frozen in editor/CLI)
 // ── user knobs (self.* custom props) ──────────────────────────────────────────
 uniform float  uHorizon;       // horizon height in box frame (up units; 0 = middle, <0 = lower)
 uniform float  uTurbidity;     // haze: scales Mie (2 = clear, 8 = hazy)
 uniform float  uAtmosphere;    // overall atmosphere thickness (scales all scattering)
 uniform float  uExposure;      // HDR tone-map exposure
-uniform float  uStarDensity;   // star grid resolution (more = more stars)
+uniform float  uStarDensity;   // star lattice cells across STAR_SPAN_PX world px
+uniform float  uStarSize;      // star core radius, world px (independent of density)
 uniform float  uMilkyWay;      // Milky-Way band strength (0 = off)
 uniform float  uTimeOfDay;     // 0..1 — rotates the star sphere / Milky Way
 uniform float  uMoonlight;     // night ambient lift from moon(s) illuminated fraction
@@ -117,18 +131,38 @@ float2 hash22(float2 p) {
   float n = hash21(p);
   return float2(n, hash21(p + n));
 }
-// Pure. Value noise (smoothstep-interpolated hashed lattice) for fbm.
-float vnoise(float2 x) {
-  float2 i = floor(x), f = fract(x);
-  float a = hash21(i), b = hash21(i + float2(1.0, 0.0));
-  float c = hash21(i + float2(0.0, 1.0)), d = hash21(i + float2(1.0, 1.0));
-  float2 u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+// Pure. Sine-free 3D hash -> [0,1), hash21's sibling (same construction, one more axis).
+float hash31(float3 p) {
+  p = fract(p * float3(233.34, 851.73, 419.21));
+  p += dot(p, p.yzx + 23.45);
+  return fract((p.x + p.y) * p.z);
 }
-// Pure. 5-octave fbm (lacunarity 2, gain 0.5) for the Milky-Way mottling.
-float fbm(float2 p) {
+// Pure. 3D value noise (trilinear over a smoothstepped hashed lattice).
+float vnoise3(float3 x) {
+  float3 i = floor(x), f = fract(x);
+  float3 u = f * f * (3.0 - 2.0 * f);
+  float n00 = mix(hash31(i), hash31(i + float3(1.0, 0.0, 0.0)), u.x);
+  float n10 = mix(hash31(i + float3(0.0, 1.0, 0.0)), hash31(i + float3(1.0, 1.0, 0.0)), u.x);
+  float n01 = mix(hash31(i + float3(0.0, 0.0, 1.0)), hash31(i + float3(1.0, 0.0, 1.0)), u.x);
+  float n11 = mix(hash31(i + float3(0.0, 1.0, 1.0)), hash31(i + float3(1.0, 1.0, 1.0)), u.x);
+  return mix(mix(n00, n10, u.y), mix(n01, n11, u.y), u.z);
+}
+// Pure. 5-octave fbm over a DIRECTION. THE SEAM FIX (R6-9.2): the Milky-Way mottling
+// used to be 2D fbm over (atan(rd.x, rd.z), asin(rd.y)), and atan2's branch cut at
+// ±PI is a HARD DISCONTINUITY in that domain. The cut is invisible while the sky
+// looks straight ahead — the box spans only ±AZ_SPAN = ±1.65 rad of azimuth — but
+// uTimeOfDay ROTATES the direction before the projection, so the cut SWEEPS ACROSS
+// THE BOX. Measured at 900x500: a vertical step 60-170x the median column-to-column
+// difference, its column tracking uTimeOfDay exactly (tod 0.25 -> col 21, 0.35 ->
+// 192, 0.5 -> 449, 0.6 -> 620, 0.7 -> 792, 0.75 -> 877, each within 1 px of the
+// predicted phi = uTimeOfDay*TWO_PI - PI), i.e. present for roughly HALF the
+// uTimeOfDay range — including the 0.7 that five of the six shipped sky presets use.
+// Noising the 3-vector itself has no branch cut and no pole to compress, so it is
+// seamless by construction rather than by tuning; the widget stays FULLY PROCEDURAL,
+// which is the precedent remedy (rainy-window v2, task #104).
+float fbm3(float3 p) {
   float v = 0.0, a = 0.5;
-  for (int i = 0; i < 5; i++) { v += a * vnoise(p); p = p * 2.0 + 19.7; a *= 0.5; }
+  for (int i = 0; i < 5; i++) { v += a * vnoise3(p); p = p * 2.0 + 19.7; a *= 0.5; }
   return v;
 }
 // Pure. Rotate a 2-vector by angle.
@@ -160,14 +194,36 @@ float3 starTint(float h) {
   float3 cool = float3(0.75, 0.85, 1.0), warm = float3(1.0, 0.75, 0.45);
   return mix(float3(1.0), mix(cool, warm, h), 0.6);
 }
-// Query-like. The star-field contribution for a view direction (time-rotated grid).
-float3 starField(float3 rd, float density, float amount) {
+// Query-like. The star-field contribution at a point of the box, in WORLD PX.
+//
+// THE STRETCH FIX (R6-9.1). This lattice used to live in the dome's (azimuth,
+// elevation) parameter plane, which sounds angular but is not: the box→dome map is
+// AFFINE in both axes (atan2 of domeDir's own sin/cos returns phi exactly, asin of
+// its sin returns theta exactly), so the grid was really an ANISOTROPIC lattice in
+// BOX coordinates whose per-axis pitch ratio is AZ_SPAN·(1−uHorizon)·halfH/(PI·halfW).
+// Stars therefore came out as ELLIPSES whose eccentricity was the box's aspect, and
+// resizing the widget restretched every one of them. Measured, night sky, default
+// knobs, median star blob w/h: 1.50 in a square box, 5.00 in a 3:1 box (predicted
+// 4.97), 0.67 in a 1:3 box — the user's "stars STRETCH when the sky is stretched".
+//
+// The grid is now a SQUARE lattice in WORLD PX (the widget's own local plane,
+// centred on the box, y-up), so a star is round at every aspect and keeps its size
+// and spacing when the box is resized: pw is a length, and the box only decides how
+// much of the lattice you can see. WORLD px and not DEVICE px deliberately — device
+// px would make the star field a function of zoom and dpr, so a 1080p and a 4K export
+// of one document would not be the same picture, which the editor-vs-renderer law
+// forbids. uHorizon no longer moves the stars either; it used to slide AND rescale
+// them, since it set the vertical origin and pitch.
+//
+// cellPx is the lattice pitch and sizePx the star core radius, both world px, and
+// they are now INDEPENDENT: the old form had one grid doing both jobs, so the only
+// way to enlarge a star was to remove stars.
+float3 starField(float2 pw, float cellPx, float sizePx, float amount) {
   if (amount <= 0.0) return float3(0.0);
-  // project to (azimuth, elevation) and wheel by time-of-day
-  float2 g = float2(atan(rd.x, rd.z) / PI, asin(clamp(rd.y, -1.0, 1.0)) / HALF_PI);
-  g = rot2(g, uTimeOfDay * TWO_PI) * density;
+  float2 g = rot2(pw / max(cellPx, EPS), uTimeOfDay * TWO_PI); // wheel by time-of-day
   float2 cell = floor(g), fpos = fract(g);
   float3 acc = float3(0.0);
+  float rel = max(sizePx, 0.0) / max(cellPx, EPS); // core radius in CELL units
   // sample the 3x3 cell neighbourhood so a star's glow crosses cell borders
   for (int dy = -1; dy <= 1; dy++) {
     for (int dx = -1; dx <= 1; dx++) {
@@ -175,8 +231,8 @@ float3 starField(float3 rd, float density, float amount) {
       float present = hash21(c + 7.1);
       if (present < STAR_THRESHOLD) continue;
       float2 star = float2(float(dx), float(dy)) + hash22(c) - fpos;
-      float mag = pow(hash21(c + 3.7), STAR_MAG_POW);      // rare bright stars
-      float glow = mag / (dot(star, star) * 240.0 + EPS);  // inverse-square core+halo
+      float mag = pow(hash21(c + 3.7), STAR_MAG_POW);        // rare bright stars
+      float glow = mag * rel * rel / (dot(star, star) + EPS); // inverse-square core+halo
       float twinkle = 0.7 + 0.3 * sin(uTime * (1.5 + 4.0 * hash21(c + 1.3)) + hash21(c) * TWO_PI);
       acc += starTint(hash21(c + 9.2)) * glow * twinkle;
     }
@@ -224,13 +280,31 @@ half4 main(float2 fragCoord) {
   // ── stars + Milky Way (night, above the horizon) ────────────────────────────
   float aboveHorizon = smoothstep(uHorizon - 0.02, uHorizon + 0.04, up);
   float nightAmt = (1.0 - dayF) * aboveHorizon;
-  float3 stars = starField(dirV, max(uStarDensity, EPS), nightAmt);
+  // The star lattice lives in the box's own WORLD-px plane (y-up, centred), which is
+  // what makes it isotropic and box-size independent — see starField.
+  float2 pw = float2(pl.x, -pl.y) / max(uScale, EPS);
+  float3 stars = starField(pw, STAR_SPAN_PX / max(uStarDensity, EPS), uStarSize, nightAmt);
   float2 rdXZ = rot2(dirV.xz, uTimeOfDay * TWO_PI);      // wheel the galaxy with the stars
   float3 rdR = float3(rdXZ.x, dirV.y, rdXZ.y);
   float3 galAxis = normalize(float3(0.35, 0.55, 0.75));
-  float band = exp(-pow(dot(normalize(rdR), galAxis), 2.0) / (2.0 * MW_SIGMA * MW_SIGMA));
-  float mott = fbm(float2(atan(rdR.x, rdR.z) * 2.2, asin(clamp(rdR.y, -1.0, 1.0)) * 3.0) + 4.0);
-  float dust = fbm(float2(atan(rdR.x, rdR.z) * 5.0, asin(clamp(rdR.y, -1.0, 1.0)) * 6.0) + 11.0);
+  float3 rdN = normalize(rdR);
+  // gLat is the SINE OF GALACTIC LATITUDE and it is SIGNED — the band straddles its
+  // own great circle, so half the sky has gLat < 0. This line used to read
+  // pow(dot(rdN, galAxis), 2.0), and pow(x, y) IS UNDEFINED FOR x < 0 in SkSL: the
+  // entire negative-latitude half of the sky came out with NO Milky Way at all,
+  // bounded by a HARD ARC where gLat crosses zero — which is the biggest thing R6-9.2
+  // ("the galaxy is not seamless") is actually about, bigger than the atan2 seam.
+  // Squaring by MULTIPLICATION has no undefined region. MEASURED at 720x200 with the
+  // band cranked, largest luma gradient over the frame's 99th percentile: 51-63 with
+  // the pow, 1.8-3.1 without it, at every timeOfDay whose arc crosses the box.
+  // ANY pow() IN A SHADER NEEDS ITS BASE PROVED NON-NEGATIVE — the other four in this
+  // file are (a hash in [0,1), and three wrapped in max(…, EPS)).
+  float gLat = dot(rdN, galAxis);
+  float band = exp(-(gLat * gLat) / (2.0 * MW_SIGMA * MW_SIGMA));
+  // Noised on the DIRECTION, not on (azimuth, elevation) — see fbm3 for the seam
+  // this removes. The two offsets decorrelate the mottling from the dust lanes.
+  float mott = fbm3(rdN * MW_MOTTLE_FREQ + 4.0);
+  float dust = fbm3(rdN * MW_DUST_FREQ + 11.0);
   float mw = band * mott * (1.0 - 0.55 * dust) * uMilkyWay * nightAmt;
   float3 mwCol = mix(uGalaxyTint, float3(1.0, 0.92, 0.8), mott) * mw;
 
@@ -264,14 +338,14 @@ function rgb(name, v) { const c = parseColor(v); return [num(name + ".r", c[0]),
  * [-1,1] frame: [{sx, sy, color, intensity}]; it is padded to SKY_MAX_SUNS.
  *
  * @param {object} u geometry + {time, horizon, turbidity, atmosphere, exposure,
- *   starDensity, milkyWay, timeOfDay, moonlight, zenith, ground, night, galaxyTint,
+ *   starDensity, starSize, milkyWay, timeOfDay, moonlight, zenith, ground, night, galaxyTint,
  *   suns:[{sx,sy,color,intensity}]}
- * @returns {Float32Array} length 53
+ * @returns {Float32Array} length 54
  *
  * @example packSky({cx:0,cy:0,halfW:640,halfH:360,cornerRadius:0,angle:0,scale:1,
- *   time:0,horizon:-0.15,turbidity:3,atmosphere:1,exposure:1.1,starDensity:40,
+ *   time:0,horizon:-0.15,turbidity:3,atmosphere:1,exposure:1.1,starDensity:40,starSize:0.82,
  *   milkyWay:1,timeOfDay:0.5,moonlight:0,zenith:"#8ab4ff",ground:"#0b0d12",
- *   night:"#05070f",galaxyTint:"#3a4a6a",suns:[{sx:0.2,sy:-0.5,color:"#fff",intensity:1}]}).length // 53
+ *   night:"#05070f",galaxyTint:"#3a4a6a",suns:[{sx:0.2,sy:-0.5,color:"#fff",intensity:1}]}).length // 54
  */
 export function packSky(u) {
   const suns = Array.isArray(u.suns) ? u.suns : [];
@@ -295,7 +369,8 @@ export function packSky(u) {
     num("cornerRadius", u.cornerRadius), num("angle", u.angle), num("scale", u.scale),
     num("time", u.time),
     num("horizon", u.horizon), num("turbidity", u.turbidity), num("atmosphere", u.atmosphere),
-    num("exposure", u.exposure), num("starDensity", u.starDensity), num("milkyWay", u.milkyWay),
+    num("exposure", u.exposure), num("starDensity", u.starDensity), num("starSize", u.starSize),
+    num("milkyWay", u.milkyWay),
     num("timeOfDay", u.timeOfDay), num("moonlight", u.moonlight), count,
     ze[0], ze[1], ze[2], gr[0], gr[1], gr[2], ni[0], ni[1], ni[2], ga[0], ga[1], ga[2],
     ...sunPos, ...sunCol,
@@ -461,7 +536,24 @@ export const SKY_FILL_PARAMS = [
   // skies — at a star-sphere rotation where the coarse grid actually lands a star). 0 IS
   // THE TECHNICAL FLOOR: the SkSL passes max(uStarDensity, EPS) into starField, so
   // anything below silently becomes EPS — measured, −46 and −100 are byte-identical to 0.
-  { name: "starDensity", kind: "number", default: 46, min: 0, help: "Star-field grid resolution — more = more stars (visible at night); no upper cap. Below ~1 the grid is coarser than the whole sky, so stars thin out to none. 0 is the floor because the shader's own guard would silently swallow anything under it." },
+  //
+  // DEFAULT 46 → 79 WITH THE R6-9.1 STRETCH FIX, and the two numbers describe the SAME
+  // sky. The lattice used to be box-relative and anisotropic; it is now a square lattice
+  // of STAR_SPAN_PX/starDensity world px (starField says why). 79 is the density that
+  // puts the same cell COUNT in the default 1000×620 box as 46 did — old count
+  // 2·(AZ_SPAN/PI)·(2/(1−horizon))·D² = 1.827·D², new count 0.62·D², so
+  // D' = 46·√(1.827/0.62) = 78.96. Every shipped preset is scaled by the same 79/46, so
+  // the Bortle-class RATIOS its descriptions cite are exactly preserved.
+  { name: "starDensity", kind: "number", default: 79, min: 0, help: "How many star-lattice cells fit across 1000 px of the slide — more = more, tighter-packed stars (visible at night); no upper cap. It is a density in PAGE px, not in box fractions, so stretching or resizing the sky does not restretch or rescale the stars; it just shows more or less of the same field. Below ~1 one cell is wider than the whole widget, so stars thin out to none. 0 is the floor because the shader's own guard would silently swallow anything under it." },
+  // A LENGTH, NOT A MULTIPLIER, and independent of starDensity — which is the whole point
+  // (R6-9.1: "they need their own scale, controllable with respect to pixel space"). The
+  // old grid did both jobs with one number, so the only way to enlarge a star was to
+  // delete stars. DEFAULT 0.82 = the old coupled radius at the old default box and
+  // density: the glow was mag/(240·r_cell²), i.e. a core radius of pitch/√240 = 12.66/15.49
+  // world px, so the default sky is unchanged by the decoupling itself. WORLD px, not
+  // device px: a device-px star would be a function of zoom and dpr, so one document
+  // would export differently at 1080p and 4K.
+  { name: "starSize", kind: "number", default: 0.82, min: 0, help: "Star core radius in page px — the radius at which the brightest stars reach full brightness. Its inverse-square halo reaches several times further, so this reads as overall star SIZE. Independent of Star density: raise it for fat soft stars at the same count, lower it for a fine sharp dusting. 0 is the floor and switches the stars off entirely." },
   // NO BOUNDS (both were ARBITRARY). Past the old max:2 the band keeps brightening —
   // 8 and 100 are distinct, ever more blazing galaxies — and NEGATIVE values are honoured
   // too (−1 and −5 render distinct night skies, mean luma 9.46 vs 8.05): the band is
@@ -604,14 +696,14 @@ export function skySceneParams(node, nodesById) {
  * @param {object} p - resolved params (every SKY_FILL_PARAMS knob + suns + moonlight)
  * @returns {object} packSky-shaped params
  *
- * @example skyUniformParams({horizon: -0.15, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 46, milkyWay: 1, timeOfDay: 0.2, zenith: "#ffffff", ground: "#0d1017", night: "#04060e", galaxyTint: "#46567c", suns: [], moonlight: 0}).horizon // -0.15
- * @example skyUniformParams({horizon: 0, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 46, milkyWay: 1, timeOfDay: 0.2, zenith: "#fff", ground: "#000", night: "#000", galaxyTint: "#000", suns: [], moonlight: 0}).suns.length // 0
+ * @example skyUniformParams({horizon: -0.15, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 79, starSize: 0.82, milkyWay: 1, timeOfDay: 0.2, zenith: "#ffffff", ground: "#0d1017", night: "#04060e", galaxyTint: "#46567c", suns: [], moonlight: 0}).horizon // -0.15
+ * @example skyUniformParams({horizon: 0, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 79, starSize: 0.82, milkyWay: 1, timeOfDay: 0.2, zenith: "#fff", ground: "#000", night: "#000", galaxyTint: "#000", suns: [], moonlight: 0}).suns.length // 0
  */
 export function skyUniformParams(p) {
   return {
     time: particleTime(),
     horizon: p.horizon, turbidity: p.turbidity, atmosphere: p.atmosphere, exposure: p.exposure,
-    starDensity: p.starDensity, milkyWay: p.milkyWay, timeOfDay: p.timeOfDay,
+    starDensity: p.starDensity, starSize: p.starSize, milkyWay: p.milkyWay, timeOfDay: p.timeOfDay,
     moonlight: p.moonlight ?? 0,
     zenith: p.zenith, ground: p.ground, night: p.night, galaxyTint: p.galaxyTint,
     suns: p.suns ?? [],

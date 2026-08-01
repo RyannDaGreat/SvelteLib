@@ -106,18 +106,32 @@
  * ATMOSPHERE — the air column, so the US Standard Atmosphere pressure ratio:
  *   701.1 hPa / 1013.25 hPa = 0.69 at 3000 m, the one non-unit value used below.
  * STAR DENSITY — the knob is a GRID RESOLUTION and the star count goes as its
- *   SQUARE (the shader lays 2·d² cells over the visible hemisphere and
+ *   SQUARE (the shader lays d² cells over a 1000×1000 px patch of the slide and
  *   STAR_THRESHOLD leaves ~14% of them occupied), while the number of stars brighter
  *   than magnitude m goes as 10^(0.4m). So density ∝ 10^(0.2m), and anchoring the
- *   EXISTING default 46 to a suburban Bortle 5 sky (naked-eye limiting magnitude
- *   5.6–6.0, midpoint 5.8) fixes the whole ladder:
- *       density(m) = 46 · 10^(0.2·(m − 5.8))
- *   Bortle 8 city (NELM 4.3) → 23; Bortle 5 suburban (5.8) → 46; Bortle 3 rural
- *   (6.8) → 73; Bortle 1 excellent dark site (7.8) → 116; nautical twilight
- *   (NELM ≈ 3.75) → 18. Measured on 640×360 renders, bright local maxima came out
- *   34 / 140 / 233 / 337 for 23 / 46 / 73 / 116 — the d² law at the sparse end
- *   (46²/23² = 4.0 vs the counted 4.1) and an undercount at the dense end, where
- *   cells fall below one pixel and neighbouring stars merge.
+ *   default to a suburban Bortle 5 sky (naked-eye limiting magnitude 5.6–6.0,
+ *   midpoint 5.8) fixes the whole ladder:
+ *       density(m) = 79 · 10^(0.2·(m − 5.8))
+ *   Bortle 8 city (NELM 4.3) → 40; Bortle 5 suburban (5.8) → 79; Bortle 3 rural
+ *   (6.8) → 125; Bortle 1 excellent dark site (7.8) → 199; nautical twilight
+ *   (NELM ≈ 3.75) → 31.
+ *   THE ANCHOR WAS 46 AND IS NOW 79, AND THE LADDER IS THE SAME SKY. R6-9.1 made the
+ *   lattice a square one in PAGE px instead of an anisotropic one in box fractions
+ *   (render_gpu/skia/sky_shader.js starField), which changes how many cells a given
+ *   density puts in a given box; 79 = 46·√(1.827/0.62) is the density that restores
+ *   the count in the DEFAULT 1000×620 box exactly, and every rung was multiplied by
+ *   that same 79/46, so every RATIO the paragraph above depends on is untouched.
+ *   Measured on 640×360 renders BEFORE the change, bright local maxima came out
+ *   34 / 140 / 233 / 337 for the then-rungs 23 / 46 / 73 / 116 — the d² law at the
+ *   sparse end (46²/23² = 4.0 vs the counted 4.1) and an undercount at the dense end,
+ *   where cells fall below one pixel and neighbouring stars merge.
+ * STAR SIZE — NOT in the ladder, and deliberately not in any preset: it is the
+ *   instrument, not the sky. Naked-eye star images are seeing-limited, so their
+ *   apparent size is a property of the ATMOSPHERE AND THE OPTICS rather than of the
+ *   site's darkness, and every Bortle rung above would carry the same value. It is
+ *   also the knob an author reaches for to make a stylised sky, which is the
+ *   `lightAngle` exclusion's reasoning (a preset must not overwrite a compositional
+ *   choice).
  * MILKY WAY — the Bortle scale's own text: "nearly or totally invisible" from class
  *   7 up, so the city presets carry 0; visible and structured at class 1–3.
  * SUN COLOUR — colour temperature through the HOUSE Kelvin fit (the KELVIN_TABLE in
@@ -238,7 +252,7 @@ const SKY_PRESETS = [
     description: "A 3000 m sky: pure-air turbidity with a third of the air column removed, so the deepest, most saturated blue this model makes — and, at night, a Bortle 1 dark-site star field. Pair with the Sky Sun 'High Mountain Air' preset and put the sun high.",
     props: {
       turbidity: 1, atmosphere: 0.69, exposure: 2.8, zenith: "#ffffff",
-      starDensity: 116, milkyWay: 0.6, timeOfDay: 0.95, night: "#02040a", galaxyTint: "#46567c",
+      starDensity: 199, milkyWay: 0.6, timeOfDay: 0.95, night: "#02040a", galaxyTint: "#46567c",
       ground: "#232a2e",
     },
   },
@@ -247,7 +261,7 @@ const SKY_PRESETS = [
     description: "Preetham's 'very clear' sky at sea level, exposed so nothing clips: a clean blue zenith fading to a pale horizon. Pair with the Sky Sun 'Clear Blue Noon' preset, put the sun high, and add Sky Clouds 'Fair-Weather Cumulus'.",
     props: {
       turbidity: 2, atmosphere: 1, exposure: 2.0, zenith: "#ffffff",
-      starDensity: 46, milkyWay: 0.5, timeOfDay: 0.7, night: "#080e1c", galaxyTint: "#46567c",
+      starDensity: 79, milkyWay: 0.5, timeOfDay: 0.7, night: "#080e1c", galaxyTint: "#46567c",
       ground: "#1c2a22",
     },
   },
@@ -256,7 +270,7 @@ const SKY_PRESETS = [
     description: "The atmosphere of the paper's own 'half hour before sunset' figure — turbidity 6, so the long horizon airmass strips the blue out of the sunlight and spreads amber across the whole dome. Pair with the Sky Sun 'Golden Hour' preset and DRAG THE SUN DOWN onto the horizon line; that placement is the time of day and no preset can set it.",
     props: {
       turbidity: 6, atmosphere: 1, exposure: 1.2, zenith: "#ffffff",
-      starDensity: 46, milkyWay: 0.4, timeOfDay: 0.7, night: "#0e1526", galaxyTint: "#46567c",
+      starDensity: 79, milkyWay: 0.4, timeOfDay: 0.7, night: "#0e1526", galaxyTint: "#46567c",
       ground: "#241a10",
     },
   },
@@ -265,7 +279,7 @@ const SKY_PRESETS = [
     description: "Urban aerosol at the turbidity the paper uses for overcast: the blue is scattered away into a flat grey-white wash with a broad soft sun. Its night is a sodium-lit Bortle 8 sky. Pair with the Sky Sun 'City Haze' preset and Sky Clouds 'Overcast Stratus' for a real cloud deck — this dome has no clouds of its own.",
     props: {
       turbidity: 10, atmosphere: 1, exposure: 1.2, zenith: "#ffffff",
-      starDensity: 23, milkyWay: 0, timeOfDay: 0.7, night: "#2a2114", galaxyTint: "#46567c",
+      starDensity: 40, milkyWay: 0, timeOfDay: 0.7, night: "#2a2114", galaxyTint: "#46567c",
       ground: "#1a1a18",
     },
   },
@@ -274,7 +288,7 @@ const SKY_PRESETS = [
     description: "The thin-fog end of the turbidity ladder — the aerosol load of a dust storm. Mie scattering dominates completely, so the sky is one warm orange field and the sun is a soft blown disc in it. Pair with the Sky Sun 'Dust Haze' preset and keep the sun low.",
     props: {
       turbidity: 32, atmosphere: 1, exposure: 1.1, zenith: "#ffffff",
-      starDensity: 23, milkyWay: 0, timeOfDay: 0.7, night: "#1c1610", galaxyTint: "#46567c",
+      starDensity: 40, milkyWay: 0, timeOfDay: 0.7, night: "#1c1610", galaxyTint: "#46567c",
       ground: "#2a1e12",
     },
   },
@@ -283,7 +297,7 @@ const SKY_PRESETS = [
     description: "Nautical twilight: an even deep blue with only the brightest stars out (naked-eye limit ~3.75). Use it with NO sun above the horizon — the sky's night branch is a flat colour, so this is the blue, not a bright horizon glow. Its day half is a clear sea-level sky, so keyframing a sun up through the horizon lands on one.",
     props: {
       turbidity: 3, atmosphere: 1, exposure: 1.4, zenith: "#ffffff",
-      starDensity: 18, milkyWay: 0, timeOfDay: 0.7, night: "#1d3050", galaxyTint: "#46567c",
+      starDensity: 31, milkyWay: 0, timeOfDay: 0.7, night: "#1d3050", galaxyTint: "#46567c",
       ground: "#101826",
     },
   },
@@ -292,7 +306,7 @@ const SKY_PRESETS = [
     description: "A Bortle 8 city sky: sodium skyglow, a quarter of the suburban star count, and no Milky Way at all — the scale's own text calls it invisible from class 7 up. Add a Sky Moon preset if you want anything else in it.",
     props: {
       turbidity: 8, atmosphere: 1, exposure: 1.2, zenith: "#ffffff",
-      starDensity: 23, milkyWay: 0, timeOfDay: 0.7, night: "#2a2114", galaxyTint: "#46567c",
+      starDensity: 40, milkyWay: 0, timeOfDay: 0.7, night: "#2a2114", galaxyTint: "#46567c",
       ground: "#14100c",
     },
   },
@@ -301,7 +315,7 @@ const SKY_PRESETS = [
     description: "A Bortle 1 site: two and a half times the suburban star count on a near-black sky, with the galaxy pulled back to a faint glow (the band does not read as a band in a wide box — see this file's dropped-presets note). Pair with the Sky Moon 'Earthshine Crescent' preset; a full moon washes the faint stars out.",
     props: {
       turbidity: 1, atmosphere: 1, exposure: 2.4, zenith: "#ffffff",
-      starDensity: 116, milkyWay: 0.6, timeOfDay: 0.95, night: "#02040a", galaxyTint: "#46567c",
+      starDensity: 199, milkyWay: 0.6, timeOfDay: 0.95, night: "#02040a", galaxyTint: "#46567c",
       ground: "#05070c",
     },
   },
@@ -333,7 +347,7 @@ export const skyPlugin = {
       params: {
         time: particleTime(),
         horizon: s.horizon, turbidity: s.turbidity, atmosphere: s.atmosphere, exposure: s.exposure,
-        starDensity: s.starDensity, milkyWay: s.milkyWay, timeOfDay: s.timeOfDay, moonlight,
+        starDensity: s.starDensity, starSize: s.starSize, milkyWay: s.milkyWay, timeOfDay: s.timeOfDay, moonlight,
         zenith: s.zenith, ground: s.ground, night: s.night, galaxyTint: s.galaxyTint,
         suns,
       },
