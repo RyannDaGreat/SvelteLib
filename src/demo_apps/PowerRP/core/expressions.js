@@ -660,6 +660,95 @@ function evalCall(ast, lookup, callFn) {
   return pt;
 }
 
+// ── Deterministic math host ──────────────────────────────────────────────────
+//
+// Declared ABOVE the function library because the library derives its math half
+// from it (a `const` is not hoisted). See the breadcrumb beside BLOCKED_GLOBALS,
+// which is where this used to live.
+
+/** Math with NO random (determinism): every Math member except `random`.
+ *  EXPORTED for the graph* family's per-sample equation evaluator
+ *  (core/graph_equation.js), which reuses this exact host rather than
+ *  re-deriving a Math-sans-random (duplicating the excision risks drift). */
+export const SAFE_MATH = Object.freeze(Object.fromEntries(
+  Object.getOwnPropertyNames(Math)
+    .filter((k) => k !== "random")
+    .map((k) => [k, typeof Math[k] === "function" ? Math[k].bind(Math) : Math[k]]),
+));
+
+/** The SAFE_MATH members that accept ANY number of arguments while reporting
+ *  `.length === 2`, so their arity CANNOT be derived. Named explicitly because a
+ *  purely derived table would refuse `max(a, b, c)` — measured: `Math.max(1,2,3)`
+ *  is 3 while `Math.max.length` is 2. This is the one place a math name is
+ *  hand-written, and it is hand-written about JS's own reporting, not about which
+ *  functions exist. */
+const VARIADIC_MATH = new Set(["min", "max", "hypot"]);
+
+/** Circle constant τ = 2π. The ONE math constant JavaScript does not carry, kept
+ *  because core/graph_equation.js already exposed it to hand-authored curve
+ *  equations and the two evaluators must agree on the whole vocabulary. */
+const TAU = Math.PI * 2;
+
+/**
+ * Pure function. The MATH half of the function library — every SAFE_MATH member
+ * that is a function, callable UNQUALIFIED (`sin(x)`, not just `Math.sin(x)`).
+ *
+ * DERIVED, never listed. The rule a user can hold is "if `Math` has it, an
+ * equation has it", and a derived table is the only way that stays true: a
+ * hand-kept list silently omits whatever JS adds next, which is the standing
+ * mirror-drift violation this codebase keeps rediscovering. `impl` is a
+ * REFERENCE into SAFE_MATH, never a reimplementation, so `sin(x)` and
+ * `Math.sin(x)` cannot diverge — and `random` is excised upstream by SAFE_MATH,
+ * so determinism needs no separate guard here.
+ *
+ * Arity comes from `Function.length`, which is exact for all but the three
+ * VARIADIC_MATH members; those declare a 1-argument minimum plus a `rest` kind.
+ *
+ * @returns {object} name → {doc, overloads, impl}, ready to spread into FUNCTIONS
+ *
+ * @example mathFunctionEntries().sin.overloads[0].params // ["number"]
+ * @example mathFunctionEntries().atan2.overloads[0].params // ["number", "number"]
+ * @example mathFunctionEntries().max.overloads[0].rest // "number" (variadic)
+ * @example mathFunctionEntries().sin.impl(0) // 0
+ * @example "random" in mathFunctionEntries() // false (SAFE_MATH excised it)
+ */
+export function mathFunctionEntries() {
+  const entries = {};
+  for (const [name, member] of Object.entries(SAFE_MATH)) {
+    if (typeof member !== "function") continue;
+    const variadic = VARIADIC_MATH.has(name);
+    const arity = variadic ? 1 : member.length;
+    entries[name] = {
+      doc: `Math.${name} — the standard JavaScript function, callable unqualified.`,
+      overloads: [{
+        params: Array(arity).fill("number"),
+        ...(variadic ? { rest: "number" } : {}),
+      }],
+      impl: member,
+    };
+  }
+  return entries;
+}
+
+/**
+ * Pure function. The math CONSTANTS a bare identifier may name — SAFE_MATH's
+ * non-function members (PI, E, LN2, …) plus TAU. Values, not calls, so they are
+ * NOT part of FUNCTIONS; the scope resolver reads them directly.
+ *
+ * @returns {object} name → number
+ *
+ * @example mathConstants().PI // 3.141592653589793
+ * @example mathConstants().TAU // 6.283185307179586
+ * @example mathConstants().SQRT2 // 1.4142135623730951
+ * @example typeof mathConstants().sin // "undefined" (a function, not a constant)
+ */
+export function mathConstants() {
+  const consts = { TAU };
+  for (const [name, member] of Object.entries(SAFE_MATH))
+    if (typeof member !== "function") consts[name] = member;
+  return consts;
+}
+
 // ── Function library (dynamic-anchor equation functions) ─────────────────────
 //
 // The FUNCTIONS table is the registry-driven function library (manifest
@@ -698,7 +787,18 @@ function evalCall(ast, lookup, callFn) {
  * truth for autocomplete (equationFunctionNames) — nothing else enumerates
  * function names.
  */
-export const FUNCTIONS = {
+const MATH_FUNCTIONS = mathFunctionEntries();
+
+/** The math CONSTANTS as bare identifiers. Values, not calls, so they are NOT
+ *  FUNCTIONS entries — the scope resolver returns them directly. Frozen because
+ *  the evaluator hands this object's members straight to user code. */
+const MATH_CONSTANTS = Object.freeze(mathConstants());
+
+/** The DOMAIN half of the library: the functions this app has that JavaScript
+ *  does not. Kept SEPARATE from the math half because the two take different
+ *  scope precedence (see scopeGet) — a domain name is unshadowable, a math name
+ *  yields to a document variable or item slug that already claims it. */
+const DOMAIN_FUNCTIONS = {
   closest_to_rim: {
     doc: "The point on a widget's rim nearest a point, or the nearest-pair point between two rims.",
     overloads: [
@@ -736,6 +836,13 @@ export const FUNCTIONS = {
   },
 };
 
+/** THE function library both halves compose into — the derived math names, then
+ *  the domain ones. Domain last so it would win a collision; there is none today
+ *  (no Math member is called closest_to_rim / text_* / direction2). This is what
+ *  resolveOverload, the autocomplete surface and project_script's reserved-name
+ *  set all read, so a name absent here does not exist to an equation. */
+export const FUNCTIONS = { ...MATH_FUNCTIONS, ...DOMAIN_FUNCTIONS };
+
 /**
  * Pure function. The HEADING IN DEGREES from (fromX, fromY) to (toX, toY), in the
  * app's ONE angle convention: 0° is +x (right), 90° is +y (screen DOWN), wrapped
@@ -770,7 +877,14 @@ function direction2(fromX, fromY, toX, toY) {
  * for equationSuggest"). Each entry is a ready-to-type stub with its first
  * overload's arity, e.g. "closest_to_rim(" — the caller appends args.
  *
- * @example equationFunctionNames() // ["closest_to_rim", "text_dissolve", "text_type", "text_scramble", "direction2"]
+ * The list is the DERIVED math half (mathFunctionEntries) followed by the five
+ * domain functions, so it is too long to spell out; the examples pin the two
+ * halves separately rather than freezing a 40-name literal that every future
+ * JS release would break.
+ *
+ * @example equationFunctionNames().includes("sin") // true (the derived math half)
+ * @example equationFunctionNames().filter((n) => !(n in mathFunctionEntries())) // ["closest_to_rim", "text_dissolve", "text_type", "text_scramble", "direction2"]
+ * @example equationFunctionNames().includes("random") // false — seeded `random` is a scope value, not a library function
  */
 export function equationFunctionNames() {
   return Object.keys(FUNCTIONS);
@@ -781,20 +895,95 @@ export function equationFunctionNames() {
  * throwing loudly (unknown function / bad arity) — the entry-time and eval-time
  * guard. `name` is the function name; `argCount` the number of args supplied.
  *
+ * A VARIADIC overload (`rest`) matches any count at or above its declared
+ * minimum — `max(a, b, c)` is legal because Math.max really is variadic, even
+ * though `Math.max.length` reports 2.
+ *
  * @example resolveOverload("closest_to_rim", 3).params // ["widget", "number", "number"]
  * @example resolveOverload("closest_to_rim", 2).params // ["widget", "widget"]
+ * @example resolveOverload("sin", 1).params // ["number"]
+ * @example resolveOverload("max", 5).rest // "number" (variadic: any count ≥ 1)
  * @example // resolveOverload("nope", 1) throws: Unknown function "nope"
  * @example // resolveOverload("closest_to_rim", 5) throws: "closest_to_rim" has no 5-argument form
  */
 export function resolveOverload(name, argCount) {
   const fn = FUNCTIONS[name];
-  if (!fn) throw new Error(`Unknown function "${name}"`);
-  const overload = fn.overloads.find((o) => o.params.length === argCount);
+  if (!fn) throw new Error(unknownFunctionMessage(name));
+  const overload = fn.overloads.find((o) =>
+    o.rest ? argCount >= o.params.length : o.params.length === argCount);
   if (!overload) {
-    const arities = fn.overloads.map((o) => o.params.length).join(" or ");
+    const arities = fn.overloads
+      .map((o) => (o.rest ? `${o.params.length} or more` : String(o.params.length)))
+      .join(" or ");
     throw new Error(`"${name}" has no ${argCount}-argument form (takes ${arities})`);
   }
   return overload;
+}
+
+/** The shortest query worth prefix-matching. One character matches a third of the
+ *  registry and would suggest noise; two is the point where a guess is a guess
+ *  about a particular name. */
+const SUGGEST_MIN_PREFIX = 2;
+
+/** How many prefix candidates to name. Past three the sentence stops being a
+ *  hint and becomes the list the last clause already points at. */
+const SUGGEST_MAX = 3;
+
+/**
+ * Pure function. The message an unknown function name fails with: the name, plus
+ * the closest thing the registry actually has.
+ *
+ * A bare `Unknown function "sin"` is a DEAD END — it names what is wrong and
+ * nothing a next attempt could use, which is precisely how a user went
+ * `sin` → `math.sin` → give up on a registry that has neither spelling but does
+ * have the function. Three cheap readings recover almost every real miss:
+ * a different CASE, a qualified spelling (the last dotted segment), and a
+ * truncation (a shared opening prefix).
+ *
+ * @param {string} name - the name that was called
+ * @returns {string} the full error message
+ *
+ * @example unknownFunctionMessage("math.sin") // 'Unknown function "math.sin" — did you mean sin?'
+ * @example unknownFunctionMessage("SIN") // 'Unknown function "SIN" — did you mean sin?'
+ * @example unknownFunctionMessage("text_dis") // 'Unknown function "text_dis" — did you mean text_dissolve?'
+ * @example unknownFunctionMessage("zzzz") // 'Unknown function "zzzz" — no function by that name; start typing in a field to see the list.'
+ */
+export function unknownFunctionMessage(name) {
+  const names = Object.keys(FUNCTIONS);
+  const lower = String(name).toLowerCase();
+  const tail = lower.slice(lower.lastIndexOf(".") + 1);
+  const exact = names.find((n) => n.toLowerCase() === lower)
+    ?? names.find((n) => n.toLowerCase() === tail);
+  const hits = exact ? [exact]
+    : tail.length >= SUGGEST_MIN_PREFIX
+      ? names.filter((n) => n.toLowerCase().startsWith(tail)).slice(0, SUGGEST_MAX)
+      : [];
+  return hits.length
+    ? `Unknown function "${name}" — did you mean ${hits.join(" or ")}?`
+    : `Unknown function "${name}" — no function by that name; start typing in a field to see the list.`;
+}
+
+/**
+ * Pure function. The declared KIND of argument `i` of an overload: `params[i]`,
+ * or — past the end of a VARIADIC overload's fixed params — its `rest` kind.
+ *
+ * Exists so the three readers of an overload's parameter kinds (widgetArgSpans,
+ * and both arms of the eval-time call handler) cannot disagree about what a
+ * variadic tail argument is. Reading `overload.params[i]` raw was correct while
+ * every overload was fixed-arity and became a silent `undefined` the moment one
+ * was not.
+ *
+ * @param {object} overload - a FUNCTIONS overload, {params, rest?}
+ * @param {number} i - the zero-based argument index
+ * @returns {string|null} the kind, or null past a non-variadic overload's end
+ *
+ * @example paramKindAt({params: ["widget", "number"]}, 0) // "widget"
+ * @example paramKindAt({params: ["widget", "number"]}, 1) // "number"
+ * @example paramKindAt({params: ["widget", "number"]}, 2) // null (no such argument)
+ * @example paramKindAt({params: ["number"], rest: "number"}, 7) // "number" (variadic tail)
+ */
+export function paramKindAt(overload, i) {
+  return overload.params[i] ?? overload.rest ?? null;
 }
 
 /**
@@ -857,7 +1046,7 @@ export function widgetArgSpans(ast) {
     if (n.kind === "call") {
       const overload = resolveOverload(n.name, n.args.length); // throws loudly
       n.args.forEach((arg, i) => {
-        if (overload.params[i] === "widget") {
+        if (paramKindAt(overload, i) === "widget") {
           const tok = widgetArgToken(arg);
           if (tok === null) throw new Error(`Argument ${i + 1} of "${n.name}" must be a widget name, not an expression`);
           if (arg.start != null) spans.add(`${arg.start}:${arg.end}`);
@@ -2216,15 +2405,11 @@ const SELF_ANCHOR_DEP_PROPS = new Set(["x", "y", "w", "h", "scale"]);
 const REF_SEGS = Symbol("refSegs");
 const IS_REF = Symbol("isRef");
 
-/** Math with NO random (determinism): every Math member except `random`.
- *  EXPORTED for the graph* family's per-sample equation evaluator
- *  (core/graph_equation.js), which reuses this exact host rather than
- *  re-deriving a Math-sans-random (duplicating the excision risks drift). */
-export const SAFE_MATH = Object.freeze(Object.fromEntries(
-  Object.getOwnPropertyNames(Math)
-    .filter((k) => k !== "random")
-    .map((k) => [k, typeof Math[k] === "function" ? Math[k].bind(Math) : Math[k]]),
-));
+// SAFE_MATH used to be declared HERE, beside BLOCKED_GLOBALS, because both are
+// the evaluator's jail constants and they read as a pair. It now lives up in
+// "Deterministic math host", above the function library, because the library
+// DERIVES its math half from it and a `const` is not hoisted. The pair is split;
+// this breadcrumb is the seam.
 
 // Ambient globals that MUST stay unreachable (determinism + sandboxing). They
 // resolve to undefined so any member use (Date.now(), window.x) throws loudly;
@@ -2885,7 +3070,7 @@ function computeEvaluatedState(state, registry, script = "") {
     // result-kind validation (a string impl is valid in a string slot).
     if (spec.impl) {
       const argv = args.map((arg, i) => {
-        const kind = overload.params[i];
+        const kind = paramKindAt(overload, i);
         if (kind === "number") return Number(arg);
         if (kind === "string") return String(arg);
         throw new Error(`Argument ${i + 1} of "${name}" has unsupported kind "${kind}"`);
@@ -2942,15 +3127,33 @@ function computeEvaluatedState(state, registry, script = "") {
       case "time": return readClock(); // the ONE presentation clock (see readClock)
       case "random": return seededRandom; // seeded, deterministic
     }
-    if (name in FUNCTIONS) return makeFn(name, slot, selfId);
+    if (name in DOMAIN_FUNCTIONS) return makeFn(name, slot, selfId);
     if (BLOCKED_GLOBALS.has(name)) return undefined; // Date/window/… → undefined → member use throws loud
-    // PROJECT SCRIPT EXPORTS sit BELOW every built-in above (a colliding export was
-    // already refused at compile time, so this order can never silently shadow one)
-    // and BELOW document references (a slug or variable wins — it names a thing on
-    // the canvas). An export therefore fills exactly the gap where a bare
-    // identifier would otherwise have become an "Unknown variable" failure.
-    if (name in projectScript.exports && !isDocumentRefHead(name))
-      return projectScript.exports[name];
+    // THREE THINGS SIT BELOW DOCUMENT REFERENCES, and for one reason: a slug or a
+    // variable names something the author can point at on the canvas, so it wins.
+    //
+    // MATH IS DOWN HERE AND THE DOMAIN LIBRARY IS NOT, which is the one asymmetry
+    // in this function and is deliberate. `closest_to_rim` was minted by this app
+    // and no document predates it; `min`, `max`, `sign`, `round` and `log` are
+    // ORDINARY WORDS that documents written before today may already use as
+    // variable names. Resolving those to functions would silently change what an
+    // existing equation computes — the worst failure this file can produce, since
+    // the document still loads and still renders, just differently. Yielding costs
+    // nothing: `Math.min` is always reachable, and a variable is not callable, so
+    // `min(1, 2)` against a document variable `min` fails loudly as a TypeError
+    // rather than quietly. core/graph_equation.js already ruled this way for the
+    // same names ("an author var may intentionally shadow a bare-math alias") and
+    // two evaluators must not disagree about precedence.
+    //
+    // PROJECT SCRIPT EXPORTS are last. A colliding export was already refused at
+    // compile time against FUNCTIONS, so this order can never silently shadow a
+    // built-in; an export fills exactly the gap where a bare identifier would
+    // otherwise have become an "Unknown variable" failure.
+    if (!isDocumentRefHead(name)) {
+      if (name in MATH_FUNCTIONS) return makeFn(name, slot, selfId);
+      if (name in MATH_CONSTANTS) return MATH_CONSTANTS[name];
+      if (name in projectScript.exports) return projectScript.exports[name];
+    }
     return makeRef([name], slot); // a reference HEAD
   };
   const makeScope = (slot) => {

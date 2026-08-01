@@ -46,7 +46,7 @@
  * error — it becomes a `null` gap the polyline breaks across.
  */
 
-import { compileEquationFn, SAFE_MATH, BLOCKED_GLOBALS } from "./expressions.js";
+import { compileEquationFn, SAFE_MATH, BLOCKED_GLOBALS, mathFunctionEntries, mathConstants } from "./expressions.js";
 import { randUnit } from "./particles.js";
 import { particleTime } from "../render_gpu/particle_clock.js";
 import { rect, text } from "../render_gpu/ir.js";
@@ -101,8 +101,19 @@ export const DEFAULT_NUM_POINTS = 256;
 /** Bare math names exposed for hand-authoring convenience — each a REFERENCE
  *  into SAFE_MATH (never a second implementation, so no divergence), so `sin(t)`
  *  and `Math.sin(t)` are the same function. `random` and `Math.random` are NOT
- *  here: randomness must be the seeded, order-independent draw below. */
-const BARE_MATH = ["sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sqrt", "cbrt", "abs", "exp", "expm1", "log", "log2", "log10", "pow", "sign", "floor", "ceil", "round", "trunc", "min", "max", "hypot", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh"];
+ *  here: randomness must be the seeded, order-independent draw below.
+ *
+ *  DERIVED FROM THE ONE LIBRARY, not listed. This was a hand-written array of 30
+ *  names, and the drift it invites is not hypothetical — it already happened, in
+ *  the direction that costs the most. Because the list lived HERE, bare `sin(t)`
+ *  worked in a graph curve while the document-wide property evaluator refused
+ *  `sin(x)` outright ('Unknown function "sin"'), so the same app answered the same
+ *  question two ways depending on which field you typed into. The names now come
+ *  from core/expressions.js's derived math half, which is also what the property
+ *  evaluator reads, so the two CANNOT disagree again. It widens this scope by the
+ *  five SAFE_MATH members the old array omitted (clz32, f16round, fround, imul,
+ *  log1p) — purely additive, and the price of a rule with no exceptions list. */
+const BARE_MATH = Object.keys(mathFunctionEntries());
 
 /**
  * Pure function. A deterministic uint32 seed from a source string (FNV-1a) — the
@@ -155,9 +166,11 @@ export function buildScope(vars, seed, clock, N) {
   for (const g of BLOCKED_GLOBALS) scope[g] = undefined;
   scope.Math = SAFE_MATH;
   for (const k of BARE_MATH) scope[k] = SAFE_MATH[k];
-  scope.PI = Math.PI;
-  scope.TAU = Math.PI * 2;
-  scope.E = Math.E;
+  // The math CONSTANTS, from the same one library as BARE_MATH above. Was three
+  // hand-set members (PI, TAU, E); deriving picks up the five SAFE_MATH constants
+  // they omitted (LN2, LN10, LOG2E, LOG10E, SQRT1_2, SQRT2) and — the point —
+  // guarantees a bare `PI` means the same thing here as in a property equation.
+  Object.assign(scope, mathConstants());
   scope.N = N;
   scope.time = clock;
   scope.i = 0;
