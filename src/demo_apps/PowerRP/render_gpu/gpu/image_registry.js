@@ -69,7 +69,8 @@ export const BYTES_PER_PIXEL = 4;
 
 import { isMissingAssetUrl } from "../../core/asset_ref.js";
 import { registerMissing } from "./missing_media.js";
-import { truncate } from "../../core/report.js"; // THE shared log elision (this file held the original copy; core/report.js is where the copies ended)
+import { truncate, reportOnce } from "../../core/report.js"; // THE shared log elision (this file held the original copy; core/report.js is where the copies ended)
+import { rasterFitFactor, MAX_SURFACE_DIM } from "../../core/clip.js"; // THE surface ceiling — reused, never a second one
 
 /** src → {status: "loading"|"ready"|"error", bitmap: ImageBitmap|null, error: Error|null} */
 const registry = new Map();
@@ -118,13 +119,63 @@ export function getImage(src) {
  * @param CanvasKit the shared browser CanvasKit module (Images bind to it)
  * @example // getSkiaImage(CK, dataUri) // null until decoded, then a CanvasKit.Image
  */
+/**
+ * Query (allocates a scratch OffscreenCanvas only when it must downscale).
+ * Converts a ready bitmap into a CanvasKit Image, DOWNSCALED FIRST if either edge
+ * exceeds `maxEdge`. The one door between a decoded source and the wasm heap.
+ *
+ * THIS IS THE OTHER HALF OF #213, WHICH ONLY EVER GUARDED SURFACES. core/clip.js's
+ * MAX_SURFACE_DIM docblock already spells out the consequence of getting an
+ * oversized allocation into CanvasKit: "memory access out of bounds at MakeSurface,
+ * which then CORRUPTS the whole CanvasKit instance (every later frame throws
+ * `table index is out of bounds`)". That is exactly the user's report — not one
+ * broken widget but the entire app dying — and the IMAGE path had no such guard at
+ * all: getSkiaImage handed any bitmap straight to MakeImageFromCanvasImageSource.
+ *
+ * MEASURED, AND THE MEASUREMENT IS WHY THIS IS PARAMETERISED. On this container
+ * MakeImageFromCanvasImageSource happily returned a 20000x20000 image — ~1.6 GB of
+ * RGBA — on a host whose WebGL2 MAX_TEXTURE_SIZE is 8192, because SwiftShader
+ * allocates it CPU-side and never complains. So the defect is INVISIBLE here and
+ * fatal on a real GPU, which is the repo's standing "parameterise the environment
+ * you do not have" case: the refusal is a pure function of (w, h, maxEdge), so it
+ * can be proven on a machine that cannot reproduce the crash.
+ *
+ * DOWNSCALE RATHER THAN REFUSE, via rasterFitFactor — the same primitive the PDF
+ * and backdrop paths use, so aspect is preserved by construction and this cannot
+ * become a third opinion about what "too big" means. A shrunken picture is a far
+ * better outcome than a dead CanvasKit instance, and the clamp is REPORTED, never
+ * silent: clip.js's own ask-vs-got law records two shipped defects whose whole
+ * cause was a clamp nobody was told about.
+ *
+ * @param {object} CanvasKit - the shared browser CanvasKit instance
+ * @param {ImageBitmap} bitmap - the ready decoded source
+ * @param {string} ref - the registry ref, for the report only
+ * @param {number} maxEdge - the per-edge ceiling; defaults to the surface one
+ * @returns {object|null} a CanvasKit Image, or null exactly as the raw call would
+ *
+ * @example // skiaImageWithin(ck, bmp1024, "a.png") // the raw call — no scratch canvas
+ * @example // skiaImageWithin(ck, bmp20000, "scene3d:model:…") // 8192-wide image + one report
+ */
+function skiaImageWithin(CanvasKit, bitmap, ref, maxEdge = MAX_SURFACE_DIM) {
+  const k = rasterFitFactor(bitmap.width, bitmap.height, maxEdge);
+  if (k === 1) return CanvasKit.MakeImageFromCanvasImageSource(bitmap);
+  const w = Math.max(1, Math.floor(bitmap.width * k));
+  const h = Math.max(1, Math.floor(bitmap.height * k));
+  reportOnce(`skia-image-clamp:${truncate(ref)}`,
+    `getSkiaImage: source ${bitmap.width}×${bitmap.height} for ref "${truncate(ref)}" exceeds max ${maxEdge} — ` +
+    `downscaled to ${w}×${h} to avoid a CanvasKit heap overrun, which corrupts the whole instance rather than one widget.`);
+  const scratch = new OffscreenCanvas(w, h);
+  scratch.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+  return CanvasKit.MakeImageFromCanvasImageSource(scratch);
+}
+
 export function getSkiaImage(CanvasKit, ref) {
   const cached = skiaImages.get(ref);
   if (cached) return cached;
   ensureImage(ref); // idempotent: kicks a data:/URL decode, no-op for reserved synthetic refs
   const bitmap = getImage(ref); // ImageBitmap once ready, else null (loading/error)
   if (!bitmap) return null; // undecoded/error → draw nothing; onImageLoad nudges a repaint on load
-  const img = CanvasKit.MakeImageFromCanvasImageSource(bitmap);
+  const img = skiaImageWithin(CanvasKit, bitmap, ref);
   if (!img) throw new Error(`getSkiaImage: MakeImageFromCanvasImageSource returned null for ref "${truncate(ref)}"`);
   skiaImages.set(ref, img);
   return img;
