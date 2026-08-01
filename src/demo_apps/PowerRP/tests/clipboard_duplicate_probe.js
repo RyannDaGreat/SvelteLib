@@ -410,6 +410,39 @@ try {
   note(arrowPaste.cloneId !== arrowDup.origId, "paste inserted a NEW arrow item");
   poseReport("paste", arrowPaste.before, arrowPaste.after);
 
+  // ── B''. R6-18.2 DUPLICATE IN PLACE ─────────────────────────────────────────
+  // The sibling entry is the SAME clone with a different number, so it is checked
+  // on BOTH branches of the translation rule: an arrow (moveBy — its endpoints
+  // must not move) and a rect (plain x/y — a zero delta must write neither axis,
+  // which is also what keeps an equation-valued x from being replaced by its
+  // resolved literal just because a copy was made).
+  console.log("B''. R6-18.2 duplicate in place (no offset), both translation branches");
+  const inPlace = JSON.parse(await page.evaluate((origId) => {
+    const app = window.__powerrp_app;
+    app.selection = origId;
+    const before = window.__probeArrowPose(origId);
+    app.commands.get("duplicate-in-place").run(app);
+    const cloneId = app.selection;
+    const after = window.__probeArrowPose(cloneId);
+
+    app.addItem({ ...app.registry.get("rect").defaults, x: 250, y: 150, w: 100, h: 80 });
+    const rectId = app.selection;
+    const rectBefore = app.doc.slides[app.slideIndex].delta.items[rectId];
+    const orig = { x: rectBefore.x, y: rectBefore.y };
+    app.commands.get("duplicate-in-place").run(app);
+    const rectClone = app.doc.slides[app.slideIndex].delta.items[app.selection];
+    return JSON.stringify({ cloneId, before, after, orig, clone: { x: rectClone.x, y: rectClone.y } });
+  }, arrowDup.origId));
+  note(inPlace.cloneId !== arrowDup.origId, "duplicate-in-place inserted a NEW item");
+  note(inPlace.after.from.x === inPlace.before.from.x && inPlace.after.from.y === inPlace.before.from.y,
+    `duplicate-in-place: the arrow's endpoints did NOT move (from ${inPlace.after.from.x},${inPlace.after.from.y})`);
+  note(inPlace.after.ink.x === inPlace.before.ink.x && inPlace.after.ink.y === inPlace.before.ink.y,
+    "duplicate-in-place: the arrow copy's ink lands exactly on the original");
+  note(!inPlace.after.storedKeys.includes("x") && !inPlace.after.storedKeys.includes("y"),
+    `duplicate-in-place: still no invented x/y (stored: ${inPlace.after.storedKeys.join(", ")})`);
+  note(inPlace.clone.x === inPlace.orig.x && inPlace.clone.y === inPlace.orig.y,
+    `duplicate-in-place: a BBOX widget's copy lands on the original too (${inPlace.orig.x},${inPlace.orig.y} → ${inPlace.clone.x},${inPlace.clone.y})`);
+
   // ── C. 14.8 SHADOW GATE ─────────────────────────────────────────────────────
   console.log("C. 14.8 shadow default + gate");
   const shadow = await page.evaluate(() => {

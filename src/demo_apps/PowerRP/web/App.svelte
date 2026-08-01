@@ -1491,9 +1491,22 @@
     },
     { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, requires: "at least one selected widget to copy", help: "Copies TWICE, on purpose: the element itself (as deltas, on the server clipboard) and a rendered PNG onto the system clipboard. Pasting back into PowerRP round-trips the real widget; pasting into another app gets the picture.", run: (a) => a.copySelection() },
     { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the last copied element or property. Identical to Ctrl+V: an image or file copied from ANOTHER app is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
-    // 14.9: Duplicate = clone the selection in place (new UUIDs, one undo unit),
-    // reusing the copy/paste serialize→insert path locally (no clipboard trip).
+    // 14.9: Duplicate = clone the selection LOCALLY (new UUIDs, one undo unit),
+    // reusing the copy/paste serialize→insert path without a clipboard trip.
+    // (This comment used to say "in place" for that — a different meaning of the
+    // same words from the entry directly below it, which is a genuine collision
+    // now that R6-18.2's variant exists and the user's own phrase for it is
+    // "duplicate in place". The user's vocabulary wins; this one is reworded.)
     { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", aliases: ["duplicate object", "duplicate widget", "duplicate item", "clone", "copy item"], when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Each copy gets a NEW id and the SAME raw state, equations verbatim — but a reference INTO the duplicated set is rerouted to the new copy, so duplicating two linked widgets gives you a linked pair, not two widgets pointing at the originals.", run: (a) => a.duplicateSelection() },
+    // R6-18.2: DUPLICATE IN PLACE. A SIBLING ENTRY, not a parameter on the one
+    // above — palette commands take no args (see the arrange-grid note), so a mode
+    // of one verb becomes `base-id + discriminator` (band-select-inner,
+    // new-blank-slide), placed immediately adjacent to its base. PALETTE-ONLY, no
+    // chord: the dominant pattern is base keyed / variant palette-only, and
+    // inventing a binding needs the user's say-so (Cmd+D is itself unratified).
+    // The offset is a PARAMETER of the one clone home, so this is the same
+    // behaviour with a different number rather than a second cloning path.
+    { id: "duplicate-in-place", title: "Duplicate in Place (no offset — the copy lands exactly on the original)", icon: "mdi:layers-plus", when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Useful when the copy's position is about to be driven by something else — an equation, a group, or a drag you are about to make — and the usual one-step nudge would just be something to undo. The copy is selected, so it is the one you move.", run: (a) => a.duplicateSelection(0) },
     // Copy selection region to the SYSTEM clipboard (manifest Round 12B
     // "Palette / selection commands"): renders the selection's world AABB,
     // not the whole slide (unlike Export Slide as PNG/PDF above). when: selection
