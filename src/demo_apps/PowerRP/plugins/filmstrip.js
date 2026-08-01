@@ -32,43 +32,24 @@
  * as the slide tweens. There is deliberately NO autoplay clock: time is document
  * state (the core invariant), never a wall clock.
  *
- * ── THE FRAME LIST + ITS DEFAULT EQUATIONS ────────────────────────────────────
- * `frames` is a LIST property (core/lists.js, declared in core/properties.js PROPS
- * .frames): a SEQUENCE of TUPLE elements whose one field is `time` in seconds, with
- * the universal per-element `active` companion (`framesActive`) giving hide-vs-purge.
- * So the frame COUNT is the list's length — no second source of truth — and every
- * frame is individually keyframable, hideable and equation-bindable.
+ * ── THE FRAME LIST + ITS DEFAULT EQUATIONS (core/video_sampling.js) ───────────
+ * THE SOURCE HALF OF THIS WIDGET IS NOT DECLARED HERE. `src`, `videoStart`,
+ * `videoEnd`, the `frames` LIST, `scrubWrap` and `preserveAspect` are ONE shared
+ * declaration in core/video_sampling.js, spread by this widget and by the IMAGE
+ * STACK (plugins/image_stack.js), which samples the same frames out of the same
+ * clip and piles them up instead of laying them in a row. That module's header
+ * carries the reasoning — including why the sharing is a USER REQUIREMENT (retyping
+ * between the two widgets must carry the source across losslessly) rather than a
+ * tidiness pass, and why the default frame equations index i/N rather than i/(N-1).
  *
- * Element i of a fresh N-frame strip defaults to the EQUATION
- *
- *     self.video_start + i/N * (self.video_end - self.video_start)
- *
- * (frameTimeEquation below), so ONE edit — `videoEnd` — spreads the whole strip
- * across a clip, and any single frame can still be overridden by typing over its own
- * equation. That is the list foundation's per-element-equation feature, used as a
- * DECLARATION rather than as special-case code.
- *
- * WHY i/N AND NOT i/(N-1) (i.e. frame 0 sits AT the start, and no frame sits exactly
- * at the end):
- *   - it reproduces what this widget already documented and did ("N frames sampled
- *     evenly, first→last"): the first cell shows the clip's opening frame, which is
- *     what a contact sheet is for;
- *   - i/(N-1) would ask for EXACTLY `videoEnd`, and seeking exactly to a clip's
- *     duration is undefined (past the last frame) — the reason the scrub path carries
- *     a SCRUB_END_EPSILON at all. i/N never requests the endpoint;
- *   - i/(N-1) divides by zero at N = 1, while i/N degenerates cleanly to a
- *     one-frame strip showing `videoStart`.
- * The span is therefore divided into N equal slots and each cell samples the START of
- * its slot.
- *
- * THE EQUATIONS BAKE i AND N, and that is deliberate. Re-deriving them from the live
- * list length would mean adding one frame silently RE-TIMES every existing frame,
- * which is exactly the override-ability the equations exist to provide. Insert/purge
- * therefore leave the other frames' times alone (an inserted element copies its
- * neighbour's equation — core/lists.insertedElement's documented behaviour for a
- * non-numeric field), and the `filmstrip-respace-frames` command rewrites every
- * element's equation for the CURRENT length in ONE undo unit when you do want them
- * evened out again.
+ * What matters here: the frame COUNT is the list's length — no second source of
+ * truth — every frame is individually keyframable, hideable and equation-bindable,
+ * and the default equations BAKE i and N so that inserting a frame does not silently
+ * re-time the others. Insert/purge therefore leave the other frames' times alone (an
+ * inserted element copies its neighbour's equation — core/lists.insertedElement's
+ * documented behaviour for a non-numeric field), and the `filmstrip-respace-frames`
+ * command rewrites every element's equation for the CURRENT length in ONE undo unit
+ * when you do want them evened out again.
  *
  * ── HOLE RENDERING (the WHY, per backend) ─────────────────────────────────────
  * The perforation holes must read as TRANSPARENT windows in all three backends
@@ -207,8 +188,11 @@
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { PERF_FAMILIES, FILM_BASE_COLORS, DEFAULT_PERF_FAMILY, PITCH_BASES } from "../core/film.js";
-import { visibleIndices } from "../core/lists.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
+import {
+  VIDEO_SAMPLING_ROWS, defaultFrameList, emptySpanReport, preserveAspectRow,
+  spanIsEmpty, videoSamplingDefaults, visibleFrames,
+} from "../core/video_sampling.js";
 import { reportOnce } from "../core/report.js";
 import * as T from "../core/transform.js";
 import { subpathsPathD } from "../core/shapes.js";
@@ -400,60 +384,6 @@ export const PERF_FLOOR_PIXELS = 1;
 function appendAll(target, items) {
   for (const item of items) target.push(item);
   return target;
-}
-
-/**
- * Pure function. The default `time` EQUATION for element `i` of an `n`-frame strip:
- * the point i/n of the way across the `videoStart` → `videoEnd` span. See the module
- * header for why i/n (frame 0 at the start; no frame at the exact end; total at
- * n = 1). Display (snake_case) property spellings, which is what the equation grammar
- * reads (core/expressions.js pathToStored maps them to videoStart/videoEnd).
- *
- * @example frameTimeEquation(0, 6) // "self.video_start"
- * @example frameTimeEquation(1, 4) // "self.video_start + 1 / 4 * (self.video_end - self.video_start)"
- * @example frameTimeEquation(0, 1) // "self.video_start"
- */
-export function frameTimeEquation(i, n) {
-  if (i === 0) return "self.video_start";
-  return `self.video_start + ${i} / ${n} * (self.video_end - self.video_start)`;
-}
-
-/**
- * Pure function. The DEFAULT frame list for an `n`-frame strip: one TUPLE element
- * per frame holding that frame's default time EQUATION. This is the value the plugin
- * default carries and the value `filmstrip-respace-frames` rewrites.
- *
- * @example defaultFrameList(1) // [["self.video_start"]]
- * @example defaultFrameList(2) // [["self.video_start"], ["self.video_start + 1 / 2 * (self.video_end - self.video_start)"]]
- * @example defaultFrameList(6).length // 6
- */
-export function defaultFrameList(n) {
-  const count = Math.max(1, Math.round(n));
-  return Array.from({ length: count }, (_, i) => [frameTimeEquation(i, count)]);
-}
-
-/**
- * Pure function. The VISIBLE frames of a filmstrip state, as {index, time} pairs —
- * `index` the STORED element index (what an anchor id is keyed on, so hiding never
- * rebinds), `time` the evaluated seconds (equations are already numbers by the time
- * emit/anchors see state; a non-number reads as 0 rather than throwing, since a
- * half-typed equation must not crash the paint).
- *
- * Hidden elements are simply ABSENT — core/lists.js's "acts like it's not there"
- * rule, read through visibleIndices so this widget holds no second copy of the
- * absent-means-visible convention.
- *
- * @example visibleFrames({frames: [[0], [1.5]]}) // [{index: 0, time: 0}, {index: 1, time: 1.5}]
- * @example visibleFrames({frames: [[0], [1], [2]], framesActive: [true, false, true]}) // [{index: 0, time: 0}, {index: 2, time: 2}]
- * @example visibleFrames({frames: [["self.video_start"]]}) // [{index: 0, time: 0}] (an unevaluated equation reads as 0)
- * @example visibleFrames({}) // []
- */
-export function visibleFrames(state) {
-  const list = Array.isArray(state.frames) ? state.frames : [];
-  return visibleIndices({ list, active: state.framesActive }).map((index) => {
-    const time = list[index]?.[0];
-    return { index, time: Number.isFinite(time) ? time : 0 };
-  });
 }
 
 /**
@@ -934,21 +864,6 @@ export function filmstripAnchors(state) {
   return [...standardBBoxAnchors(state), ...filmstripFrameAnchors(state)];
 }
 
-/**
- * Pure function. Is the sampled span EMPTY — i.e. has the clip length not been
- * supplied? Then every default frame time collapses onto `videoStart` and the strip
- * shows N copies of one frame, which emit() REPORTS rather than letting pass silently
- * (the no-silent-fallback rule; the real duration is not derivable from pure state).
- *
- * @example spanIsEmpty({videoStart: 0, videoEnd: 0}) // true
- * @example spanIsEmpty({videoStart: 0, videoEnd: 3}) // false
- * @example spanIsEmpty({videoStart: 5, videoEnd: 2}) // true (an inverted span samples nothing)
- * @example spanIsEmpty({}) // true
- */
-export function spanIsEmpty(state) {
-  return !((state.videoEnd ?? 0) > (state.videoStart ?? 0));
-}
-
 export const filmstripPlugin = {
   type: "filmstrip",
   title: "Filmstrip",
@@ -990,23 +905,11 @@ export const filmstripPlugin = {
     type: "filmstrip", x: 100, y: 100, w: 480, h: 90, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation).
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    // `src` = the video ASSET URL (the served /asset/<project>/<file> path every
-    // other media widget stores — the former bare-FILENAME storage existed only so a
-    // server endpoint could resolve it). EMPTY until picked, which is both what makes
-    // a fresh strip a ghost and what the two-step creation gesture's empty-source
-    // guard reads (web/widget_handlers.js bbox_then_asset).
-    src: "",
-    // THE FRAME LIST + its visibility companion. Each element's default time is an
-    // EQUATION across videoStart→videoEnd (see the header), so ONE edit re-times the
-    // whole strip. The companion is absent (absent means visible — core/lists.js), so
-    // a fresh strip mints no state nobody asked for.
-    frames: defaultFrameList(DEFAULT_FRAME_COUNT),
-    // The sampled window into the clip. videoEnd 0 = "the clip length has not been
-    // supplied" (it is only knowable at decode time), which the widget SAYS.
-    ...defaults("videoStart", "videoEnd"),
-    // Past-the-end behavior for a frame whose time runs past the clip, shared with
-    // the scrubbers ("clamp" holds the last frame, "loop" wraps modulo the duration).
-    ...defaults("scrubWrap"),
+    // THE SHARED SOURCE HALF (core/video_sampling.js): the video asset URL, the
+    // sampled window, the frame LIST with its per-element time equations, the
+    // past-the-end wrap and preserveAspect — the SAME declaration the image stack
+    // spreads, so retyping between the two carries all of it across.
+    ...videoSamplingDefaults(DEFAULT_FRAME_COUNT),
     // Orientation, the perforation family (the film gauge + sprocket geometry, whose
     // published millimetre dimensions live in core/film.js PERF_FAMILIES), and the film
     // base colour.
@@ -1015,9 +918,6 @@ export const filmstripPlugin = {
     // Blank film before the first frame and after the last, in INTER-FRAME GAPS, so a
     // strip does not end flush on a picture (header: LEADER AND TAIL).
     leader: DEFAULT_LEADER_GAPS,
-    // Letterbox each frame in its cell instead of squashing it to the cell's shape
-    // (header: PRESERVE ASPECT). ON by default, the latex/svg/mermaid/cursor default.
-    preserveAspect: true,
     // stroke COLOR default matches every stroked shape; paints only once
     // strokeWidth > 0 (0 by default). The border/rounding here frames the WHOLE
     // strip (all cells) — per-frame rounding/outline is intrinsic to the look.
@@ -1027,12 +927,12 @@ export const filmstripPlugin = {
   },
   inspector: [
     ...bundle("positioning"),
-    // The video asset — VIDEO assets, stored as the served URL (same picker/drop as
-    // the player and the scrubbers).
-    ...props("src", { src: { label: "Video", assetKinds: ["video"] } }),
-    // THE sampled window, then THE frame list (the window first: it is what the
-    // list's default equations read, so the reading order matches the causal one).
-    ...props("videoStart", "videoEnd", "frames", "scrubWrap"),
+    // THE SHARED SOURCE ROWS (core/video_sampling.js VIDEO_SAMPLING_ROWS): the video
+    // asset (VIDEO assets, stored as the served URL — same picker/drop as the player
+    // and the scrubbers), the sampled window, THE frame list, and the past-the-end
+    // wrap. One declaration, shared with the image stack, so a retype between them
+    // carries every one of these values.
+    ...VIDEO_SAMPLING_ROWS,
     ...props("vertical", "perfFamily", "filmColor"),
     // The two plugin-LOCAL formatting rows, declared inline (the donut `inner`
     // precedent: a property only this widget has does not belong in the shared
@@ -1040,7 +940,7 @@ export const filmstripPlugin = {
     // (min: 0 alone gives NO fine scrub — an unbounded-above row has no span to scale,
     // so it would fall back to 1/px).
     { key: "leader", label: "Leader / tail", kind: "number", min: 0, scrub: 0.01, category: "formatting", help: "Blank film before the first frame and after the last one, measured in gaps between frames — 1 (the default) leaves the same run at each end as there is between two frames, 0 ends flush on a picture, larger gives a longer head and tail. The sprocket-hole bands run right through it, which is what makes the ends read as film." },
-    { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Fit each frame inside its cell without distorting it (centered, letterboxed against the film base). Turn off to stretch every frame to its cell's exact shape, which squashes them when you resize the strip." },
+    preserveAspectRow("Fit each frame inside its cell without distorting it (centered, letterboxed against the film base). Turn off to stretch every frame to its cell's exact shape, which squashes them when you resize the strip."),
     // The stroked-BORDER bundle frames the WHOLE strip (all cells together).
     ...bundle("strokedBorder"),
     ...props("opacity"),
@@ -1151,14 +1051,11 @@ export const filmstripPlugin = {
       appendAll(content, decorateStrokedBox([cell], cellStyle, world));
     }
     // EMPTY SPAN: report it (the Inspector's "Video end (s)" row is the affordance);
-    // do NOT paint a notice onto the artwork.
+    // do NOT paint a notice onto the artwork. The SENTENCE is shared with the image
+    // stack (core/video_sampling.emptySpanReport) — one condition, one voice.
     if (spanIsEmpty(s)) {
-      reportOnce(
-        "PowerRP filmstrip: the sampled span is empty (Video end is not set)",
-        `PowerRP filmstrip: "Video end (s)" is ${s.videoEnd ?? 0} and "Video start (s)" is ${s.videoStart ?? 0}, so the sampled span is ` +
-        "EMPTY and every frame's default equation collapses onto the start — the strip is showing one frame N times. " +
-        "Set Video end (s) to the clip's length (it is only knowable once the video decodes, so it is a value you supply).",
-      );
+      const notice = emptySpanReport(filmstripPlugin.title, s);
+      reportOnce(notice.key, notice.message);
     }
     return applyEffects(decorateStrokedBox(content, style, world), s, world, { x: 0, y: 0, w: style.w, h: style.h });
   },

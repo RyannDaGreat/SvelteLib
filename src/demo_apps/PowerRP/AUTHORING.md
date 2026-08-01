@@ -238,6 +238,8 @@ documentation — open it to see its exact knobs.
 
 - `rect` — Rectangle. Corner radius, stroke, fill, gradients.
 - `circle` — Circle.
+- `labeled_circle` — Labeled Circle. A disc with a rim and one centred label
+  (the numbered callout of a figure).
 - `polygon` — Polygon. N-sided regular polygon.
 - `shape` — Shape. The parametric shape family (stars, arcs, sectors, …).
 - `donut` — Donut. A ring/annulus with an angular sweep.
@@ -274,6 +276,10 @@ documentation — open it to see its exact knobs.
 - `video_scrub` — Video Scrubber. Frame chosen by tweened state, so it *is*
   deterministic and exports correctly.
 - `filmstrip` — Filmstrip. A strip of frames from a video.
+- `image_stack` — Image Stack. The same sampled frames as `filmstrip`, piled up
+  and fading back. It shares the filmstrip's whole source declaration
+  (`core/video_sampling.js`), so retyping between the two keeps the clip, the
+  sampled window and every frame time.
 - `svg` — SVG. A vector asset, drawn as vectors.
 - `iconify` — Iconify Icon. An icon by name from the Iconify set.
 - `pdf_page` — PDF Page. One page of a PDF asset.

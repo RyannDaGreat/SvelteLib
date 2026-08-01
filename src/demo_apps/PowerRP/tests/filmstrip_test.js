@@ -41,12 +41,15 @@ import { listSlotKind } from "../core/expressions.js";
 import { repairedDocument } from "../core/document.js";
 import { flattenIR } from "../render_gpu/ir.js";
 import {
-  DEFAULT_FRAME_COUNT, DEFAULT_LEADER_GAPS, PERF_FLOOR_PIXELS, defaultFrameList,
+  DEFAULT_FRAME_COUNT, DEFAULT_LEADER_GAPS, PERF_FLOOR_PIXELS,
   filmBandOps, filmstripAnchors, filmstripFrameAnchors, filmstripGeom, filmstripPlugin,
-  frameTimeEquation, minPerforatedCross, perforatedBandPolygons, perforationPixels,
-  perforationsOverlap, perforationsResolve,
-  roundedRectBoundaryPoint, spanIsEmpty, visibleFrames,
+  minPerforatedCross, perforatedBandPolygons, perforationPixels,
+  perforationsOverlap, perforationsResolve, roundedRectBoundaryPoint,
 } from "../plugins/filmstrip.js";
+// THE SOURCE HALF MOVED to the declaration the filmstrip now SHARES with the image
+// stack (core/video_sampling.js) — the frame list, its default equations and the
+// empty-span predicate belong to both widgets, not to the strip.
+import { defaultFrameList, frameTimeEquation, spanIsEmpty, visibleFrames } from "../core/video_sampling.js";
 
 let passed = 0;
 function test(name, fn) {
