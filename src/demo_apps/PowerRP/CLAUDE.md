@@ -118,21 +118,34 @@ sentences, and a fixed string would be a confident wrong answer for all but one.
 the field raw renders a function's source text (that mistake is why
 `tests/palette_probe.js` and `web/ToolsPane.svelte` both resolve it).
 
-THE SAVE BUTTON IS THE SAVE INDICATOR (user ruling: "the unsaved-changes dot is
-kind of the same thing as the save button — the same state"). There is no
-standalone status dot; `web/Toolbar.svelte`'s `saveMarkFor`/`tipNoteFor` put the
-dot's three glyphs (ring / half / solid, `.btn-save-mark`) and `saveText`'s four
-sentences on the quick-Save button itself. Its gate is `draftKeys.quickSaveBlocker`,
-which answers BOTH "may it run" and "why not" from one call, and blocks on THREE
-conditions: an unsaved draft, a CLEAN working copy (user: "should the save button
-be enabled when there are no changes?" — no), and a save in flight. Because a
-clean project's Save is disabled and its tip is then the only place the save state
-is written down, the toolbar's buttons use `aria-disabled` + a handler guard, NOT
-the native attribute — a natively disabled button is not focusable, so the
-keyboard could never reach that sentence. The earlier anti-affordance ruling ("a
-control that looks clickable but only reports is a lie") is SATISFIED by this
-merge: the readout moved onto a real control, rather than a readout being dressed
-as one.
+THE SAVE DOT AND THE SAVE BUTTON ARE ONE STATE IN TWO ELEMENTS (user ruling,
+2026-07-31: "I said they share the same state, not the same element" — commit
+`d595e95`, reverting `aba0aa9`). Both read `app.saveState()`, so they cannot
+disagree. THE DOT REPORTS: a standalone `role="status"` span beside the title
+(`web/Toolbar.svelte:263`) carrying `saveText`'s four sentences as its tooltip,
+focusable so the information is not pointer-only, and deliberately NOT a button —
+"a control that looks clickable but only reports would be a lie about its own
+affordance" is why it stayed SEPARATE, not something a merge satisfied. THE BUTTON
+ACTS: its gate is `draftKeys.quickSaveBlocker`, which answers BOTH "may it run" and
+"why not" from one call, and blocks on THREE conditions — an unsaved draft, a CLEAN
+working copy (user: "should the save button be enabled when there are no changes?"
+— no), and a save in flight. Because a clean project's Save is disabled and its tip
+is the only place that gate's reason is written down, the toolbar's buttons use
+`aria-disabled` + a handler guard, NOT the native attribute — a natively disabled
+button is not focusable, so the keyboard could never reach that sentence.
+`tests/toolbar_surfacing_test.js:188-190` pins the dot present in markup AND css;
+`:192-194` make the merged form INEXPRESSIBLE (`saveMarkFor` and `.btn-save-mark`
+asserted absent).
+
+**THIS PARAGRAPH WAS WRONG FOR A DAY AND THE REASON IS INSTRUCTIVE** (found by an
+audit agent, 2026-08-01, which caught it only by going to the code). `aba0aa9`
+wrote both the merged design AND the paragraph describing it; `d595e95` reverted
+the CODE seven hours later and re-pinned the tests both directions, but did not
+touch this file. So doctrine went on teaching a design the user had overruled —
+in the very passage agents are pointed at for the `aria-disabled` ruling. **When a
+commit reverts a design, the same commit must revert its doctrine**; a revert that
+leaves the prose standing installs a confident lie in the one file every
+contributor is told to trust.
 
 OPENING A PROJECT FROM THE NETWORK IS ONE FIELD WITH TWO GRAMMARS.
 `draftKeys.projectSourceKind` decides repo-slug vs URL and `app.openProjectFromAnySource`
