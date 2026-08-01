@@ -711,6 +711,36 @@
      at USE time, not at declaration time, so the order is free and grouping the
      rim with the prose that explains it beats grouping it with its consumer. */
   --a-glass-rim: transparent;
+
+  /* ── src/lib/Modal INTO THE GLASS SYSTEM ────────────────────────────────────
+     THE FOURTEEN DIALOGS WERE ON THE WRONG SIDE OF THE SPLIT app.css:1263 CALLS
+     "THE ENTIRE DESIGN" — "the floating surfaces are the only things made of
+     MATERIAL … Everything docked stays flat, square and opaque." A dialog is a
+     floating surface by every test that section applies: body-level, elevated,
+     floating over arbitrary content. It was rendering flat, square and opaque
+     anyway, because this app declared NO --modal-* overrides at all (measured
+     2026-08-01: `grep -c -- "--modal-" web/app.css` -> 0), so Modal's own
+     deliberately-neutral library defaults shipped as the app's look. That is not
+     a Modal defect: a src/lib component MUST ship host-independent defaults and
+     publish an override contract (Modal.svelte:89-103). PowerRP simply never
+     adopted it.
+
+     ONLY THE FOUR MATERIAL PROPERTIES ARE REMAPPED — surface, corner, elevation,
+     scrim — because those are what the docked/floating split is ABOUT. Geometry
+     and typography (--modal-padding, --modal-title-size, the per-size width
+     caps) are deliberately LEFT ALONE: they are Modal's own layout contract, not
+     material, and remapping them would be changing the dialogs' shape under the
+     guise of theming them. */
+  --modal-bg: var(--a-glass-bg); /* the palette's surface — the same one .palette reads */
+  --modal-radius: var(--a-radius-floating); /* the one rounded family, at its 4px cap */
+  --modal-shadow: var(--a-glass-shadow); /* elevation + lit rim, per theme */
+  /* The scrim. Every theme already tunes --a-palette-shadow's alpha for its own
+     lightness; a dialog's backdrop is the same judgement, so it is derived from
+     the canvas colour rather than being a fifth hardcoded black. --a-canvas-solid
+     (never --a-canvas-bg) because color-mix() on an image is invalid at
+     computed-value time and the effect would vanish with NO error — the exact
+     silent failure that token exists to prevent (see its declaration). */
+  --modal-backdrop: color-mix(in srgb, var(--a-canvas-solid) 72%, transparent);
   /* THE TOOLTIP'S SURFACE TINT — the third member of the --a-glass-bg family,
      and the token that decides whether tooltips are glass at all.
      A tip is a floating surface by every test this section applies: it is
