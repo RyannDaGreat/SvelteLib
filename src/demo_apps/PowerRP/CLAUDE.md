@@ -206,6 +206,22 @@ default-branch load.
   override is DIAGNOSTIC ONLY — a run under it measures whether the APP passes
   once capture stops hanging, it is never itself "passing"; the canonical gate
   stays new-headless (the default, unset).
+- **BUILDING POWERRP — `npx vite build` FROM THE REPO ROOT DOES NOT BUILD THIS APP.**
+  Measured 2026-08-01. The SvelteLib root `vite.config.js` takes exactly two kinds of
+  entry — `index.html` and `src/demos/*/demo.html` — and **PowerRP is neither.** It has
+  its OWN config and entry at `web/vite.config.js` + `web/index.html`, emitting to
+  `dist-powerrp`. So a root build exits 0 with PowerRP completely broken, and several
+  agents have cited that exit 0 as proof their PowerRP work compiles. It proves nothing.
+  Build it as `npx vite build --config <app>/web/vite.config.js`, or from inside `web/`.
+- **A MISSING NAMED IMPORT IS SILENT HERE — NEITHER ERROR NOR WARNING.** Also measured
+  2026-08-01, on a real instance: `web/CanvasView.svelte` imported `itemGeometryPairs`
+  after it had been un-exported from `web/canvas/dragKinds.js`; the PowerRP build ran to
+  completion in 51.6 s, exit 0, with **zero** hits for `not exported` / `Missing export`
+  in its output. Rollup binds the name to `undefined` and ships it, so the failure
+  surfaces as `X is not a function` in the user's hands, on a green build. **Therefore a
+  green build is NOT evidence that the module graph is sound**, and any change that
+  removes or renames an export must land its call-site fixes IN THE SAME COMMIT — the
+  intermediate state is caught by nothing we have.
 - Core tests only (iterating): `node src/demo_apps/PowerRP/tests/core_test.js`
 - Server lifecycle: `bash src/demo_apps/PowerRP/tests/server_launcher_test.sh`
 - Editor smoke: `node src/demo_apps/PowerRP/tests/editor_smoke.js <shot_dir>`
@@ -223,8 +239,15 @@ default-branch load.
 ## Known bounds (deliberate)
 
 Multi-selection, box selection, drag-all/multi-resize, alignment, and grouping
-exist; the heterogeneous multi-selection Inspector intersection is being built
-now. Groups are flat-membership derivation parents, not nested object trees,
+exist, and so does the heterogeneous multi-selection Inspector intersection —
+it SHIPPED 2026-07-28 (`26dd94f`, `3e68e99`): `core/multiselect.js`, plus
+`tests/multiselect_test.js` and `tests/multiselect_inspector_probe.js`. This line
+said "being built now" for four days after it landed, and a lead briefed an agent
+from it; read `core/multiselect.js`'s header for the actual contract. The
+intersection is by row name AND CONTRACT (`sameRowContract`, with a DENYLIST of
+presentational aspects so a NEW row aspect defaults to contract and fails loud);
+disagreeing values render `MIXED_MARK` "…"; unify is one undo unit via
+`app.unifySelection` -> `setPreview` -> `commitPreview`. Groups are flat-membership derivation parents, not nested object trees,
 and retain FOUR of the five Round 18 frozen-baseline defects — this line used to
 say all five were group defects, which was WRONG: #1 was never one. It was
 `fancyArrowFillMigrations()` silently rewriting a valid current-schema
