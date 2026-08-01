@@ -209,6 +209,11 @@ const NON_DRAGGABLE_HOOKS = new Set([
   // future shatter ever gained an interactive "drag to split here" gesture, that
   // gesture would be a new hook and would land red here, which is correct.
   "shatter",
+  // `shatterNotReady` is `shatter`'s CHEAP companion — one string or null,
+  // answering "is this widget ready to be shattered right now" without planning.
+  // Same classification for the same reason, and it is even further from a drag:
+  // it is read by a command's `when`, never by a pointer.
+  "shatterNotReady",
   "snapFeatures", "title", "toggleWrites", "toolGroups", "type",
 ]);
 /** Capability keys, same partition, same reason. */

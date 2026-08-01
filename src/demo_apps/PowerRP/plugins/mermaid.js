@@ -914,6 +914,21 @@ export const mermaidPlugin = {
    * @param {{box: {x, y, w, h}}} ctx - the host's WORLD box; parts are placed in it
    * @returns {{parts: Array<{key: string, state: object, raster?: boolean}>, notes: string[]}}
    */
+  /**
+   * Pure function (one Map lookup). Why this diagram cannot be shattered YET, or
+   * null. The flatten is ASYNC — `mermaidVectorGeom` is null until the render
+   * lands, and stays null for a diagram that could not be vectorized at all
+   * (a foreignObject diagram; mermaid_raster warned about it loudly at the time).
+   * Cheap because it is a command GATE: see core/shatter.js shatterNotReadyReason.
+   *
+   * @example mermaidPlugin.shatterNotReady({definition: "flowchart TD\n A-->B"})
+   * 'a diagram that has finished rendering (this one has no vector geometry yet, or could not be vectorized)'
+   */
+  shatterNotReady(s) {
+    return mermaidVectorGeom(s.definition, s.theme ?? DEFAULT_MERMAID_THEME)
+      ? null
+      : "a diagram that has finished rendering (this one has no vector geometry yet, or could not be vectorized)";
+  },
   shatter(s, ctx) {
     const theme = s.theme ?? DEFAULT_MERMAID_THEME;
     const geom = mermaidVectorGeom(s.definition, theme);

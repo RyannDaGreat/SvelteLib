@@ -37,7 +37,7 @@ import { equationBoundKeys } from "./canvas/equationBinding.js";
 import { projectScriptProblem, projectScriptExports as compiledScriptExports } from "../core/project_script.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
 import { retypeChoices, retypeEligible, retypedItem } from "../core/retype.js";
-import { shatterEligible, shatteredDocument, shatterIds, shatterDisclosure, vectorRecovery } from "../core/shatter.js";
+import { shatterEligible, shatterNotReadyReason, shatteredDocument, shatterIds, shatterDisclosure, vectorRecovery } from "../core/shatter.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
 import { multiSelectPanel, unifyPairs } from "../core/multiselect.js";
@@ -3344,9 +3344,10 @@ export class PowerRPApp {
     if (ids.length > 1) return "one widget selected, not several — shatter makes one group at a time";
     const folded = this.state().items?.[ids[0]];
     if (!folded) return "a widget on this slide";
-    if (!shatterEligible(this.registry.get(folded.type)))
-      return `a widget that can be shattered — ${this.registry.get(folded.type).title} does not declare a decomposition`;
-    return null;
+    const plugin = this.registry.get(folded.type);
+    if (!shatterEligible(plugin))
+      return `a widget that can be shattered — ${plugin.title} does not declare a decomposition`;
+    return shatterNotReadyReason(plugin, folded);
   }
 
   /** Query. The plugin's decomposition of one item, or the REASON it refused as

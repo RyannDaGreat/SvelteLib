@@ -168,6 +168,38 @@ export function partKey(text) {
 }
 
 /**
+/**
+ * Pure function. Is this widget READY to be shattered right now, or the sentence
+ * saying why not? A plugin MAY declare `shatterNotReady(state)` returning a
+ * reason string; absent, a shatterable widget is always ready.
+ *
+ * WHY THIS EXISTS AS A SEPARATE, CHEAP HOOK rather than the command simply asking
+ * the plugin to plan: a command's `when` is re-evaluated on every palette render
+ * and availability pass, and planning a mermaid diagram regroups every path and
+ * text in it. Measured — a plan-based gate ran a full decomposition many times a
+ * second for a command nobody had invoked, and it slowed the app enough to break
+ * a timing-sensitive probe. So readiness is a CHEAP question (mermaid's is one
+ * Map lookup) and planning happens once, when the user actually runs it.
+ *
+ * The sentence comes from the WIDGET because only the widget knows it — "the
+ * diagram has not finished rendering" is not something the command layer could
+ * phrase, and a generic "not ready" would be the confident-wrong-answer shape
+ * `commandUnavailableReason` exists to avoid.
+ *
+ * @param {object} plugin - a registered plugin
+ * @param {object} state - the item's folded state
+ * @returns {string|null} the reason it is not ready, or null when it is
+ *
+ * @example shatterNotReadyReason({shatter: () => ({parts: []})}, {})
+ * null
+ * @example shatterNotReadyReason({shatter: () => ({parts: []}), shatterNotReady: () => "a diagram that has finished rendering"}, {})
+ * 'a diagram that has finished rendering'
+ */
+export function shatterNotReadyReason(plugin, state) {
+  return plugin.shatterNotReady?.(state) ?? null;
+}
+
+/**
  * Pure function. The reference token a part uses to name a SIBLING part before
  * any itemId exists — the part key in the document's own stored `@id` form, so
  * it flows through the existing rewriter untouched.
