@@ -1,25 +1,52 @@
 /**
- * Fuzzy ranking — a JavaScript port of rp's completion ranking algorithm
+ * Fuzzy ranking — a JavaScript adaptation of rp's completion ranking algorithm
  * (rp/rp_ptpython/completion_ranker.py: calculate_match_score), the engine
- * behind rp's IDE autocomplete. Ported per manifest; verified against live rp
- * output on 10 ranking scenarios before adoption. LOWER score = better match
- * (opposite of the naive scorer this replaced).
+ * behind rp's IDE autocomplete. LOWER score = better match (opposite of the
+ * naive scorer this replaced).
  *
  * Deliberately not ported (python-REPL-specific, per the port analysis):
  * the REPL-history frequency boost (the palette's MRU ordering covers
  * recency), the literal 'mro' filter, and dunder/underscore prefix staging.
  *
- * ── SPACES ARE NOT WORD BOUNDARIES (measured, and user-visible) ──────────────
- * A skipped '_' costs a flat 0.1 because word-boundary skips are cheap; every
- * OTHER skipped character costs 1.0, and ' ' is every other character. So a
- * multi-word command title pays for the whole of its first word before a second
- * initial can match, and the ACRONYM reading of a query ranks LAST: for "dh",
- * "Dashed thing" scores 2.0011 and "Distribute Horizontally" 10.0012. That is
- * faithful to the python original, where candidates are identifiers and have no
- * spaces — but the palette's candidates are titled commands, so the port inherits
- * a discount it can never earn. The doctests below now STATE this; the one they
- * replace asserted the opposite, and nothing executed it.
+ * ── ONE DELIBERATE DIVERGENCE FROM rp: EVERY SEPARATOR IS A WORD BOUNDARY ────
+ * This file used to promise a FAITHFUL port, "verified against live rp output on
+ * 10 ranking scenarios". It no longer is one, and saying so is the point: a
+ * promise quietly broken is worse than one retracted.
+ *
+ * THE DIVERGENCE, in one line: a skipped WORD_BOUNDARY character costs a flat
+ * 0.1 instead of 1.0. rp gives that discount to '_' alone, which is correct in
+ * python where every candidate is an identifier and none contains a space. Our
+ * candidates are titled commands, hyphenated icon ids and slash-separated paths,
+ * so under rp's rule a multi-word title had to pay for the WHOLE of its first
+ * word before a second initial could match — and the ACRONYM reading of a query,
+ * the single commonest way anyone drives a command palette, therefore ranked
+ * LAST. The port inherited a discount it could never earn.
+ *
+ * MEASURED, over all 48 registered command titles: typing a command's own
+ * acronym ranks that command FIRST in 23/48 under rp's rule and 31/48 under this
+ * one. Ten titles change and nine of them improve; the tenth is a genuine
+ * ambiguity ("app" is the acronym of both "Add PDF Page" and "Add Paper
+ * Peacock", so one must lose). Concretely, "aea" used to surface "Add Rectangle"
+ * above "Add Elbow Arrow", and "agl" surfaced "Add Digital Clock" above "Add
+ * Graph Line".
+ *
+ * WHY NO OPTION. The choice was tested against every consumer class before being
+ * made: no call site can state why it would want boundary-BLINDNESS. The path
+ * consumers, the ones with an apparent claim to it, barely notice — 1 of 6
+ * realistic path queries reorders. An option nobody can justify is a second
+ * dialect, so there is one behaviour and no flag.
+ *
+ * The 10 rp scenarios were never encoded as assertions, only claimed in this
+ * prose, so there was no baseline to re-record — the executable statements of
+ * behaviour are the doctests below and tests/core_test.js.
  */
+
+/** Characters whose skipping is CHEAP, because crossing one means arriving at
+ *  the start of a word rather than landing in the middle of one. Same class the
+ *  component library's scorer uses for its boundary bonus
+ *  (src/lib/fuzzyMatch.js SEPARATOR) — two scorers still ship, deliberately, and
+ *  they must at least agree on what a word boundary IS. */
+const WORD_BOUNDARY = /[\s\-_/.]/;
 
 /**
  * Pure function. rp's subsequence match score. Lower = better; null = no match.
@@ -28,15 +55,16 @@
  * - Walk candidate left→right consuming query chars in order (case-insensitive).
  * - score starts at 0.001; each match adds the skip distance accumulated since
  *   the last match (+0.0001 first if the case differs), then resets it.
- * - '_' while not matching: reset skip distance, add flat 0.1 (word-boundary
- *   skips are cheap). Any other unmatched char: skip distance += 1.
+ * - A WORD_BOUNDARY char while not matching: reset skip distance, add flat 0.1
+ *   (arriving at the start of a word is cheap). Any other unmatched char: skip
+ *   distance += 1.
  * - Afterwards add 2.0 × (index of the first matched char) — earlier is better.
  * - Case-insensitive prefix match divides the whole score by 1000.
  *
  * @example rpFuzzyScore("d", "dict") // 0.000001 (prefix: tiny = best)
  * @example rpFuzzyScore("xyz", "abc") // null (no match)
- * @example rpFuzzyScore("dh", "Dashed thing") // 2.0011 (the 'h' is 3 chars in: 2 skipped, +0.0001 for matching 'd' against 'D')
- * @example rpFuzzyScore("dh", "Distribute Horizontally") // 10.0012 (10 chars skipped to reach the 'H', so the word-initial match scores WORSE — see the header)
+ * @example rpFuzzyScore("dh", "Dashed thing") // 2.0011 (the 'h' is 3 chars in: 2 letters skipped, +0.0001 for matching 'd' against 'D')
+ * @example rpFuzzyScore("dh", "Distribute Horizontally") // 0.1012 (the space resets the skip, so the ACRONYM reading wins — the divergence from rp, see the header)
  */
 export function rpFuzzyScore(query, candidate) {
   const isPrefixMatch = candidate.toLowerCase().startsWith(query.toLowerCase());
@@ -56,7 +84,7 @@ export function rpFuzzyScore(query, candidate) {
       if (queryChar !== candidateChar) skipDistance += 0.0001;
       score += skipDistance;
       skipDistance = 0;
-    } else if (candidateChar === "_") {
+    } else if (WORD_BOUNDARY.test(candidateChar)) {
       skipDistance = 0;
       score += 0.1;
     } else {

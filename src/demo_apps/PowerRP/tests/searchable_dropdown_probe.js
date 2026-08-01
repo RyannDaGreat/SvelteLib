@@ -25,7 +25,14 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { launchBrowser } from "./puppeteerLaunch.js";
 import { fillCapableMaterialIds, getMaterial } from "../render_gpu/skia/materials.js";
-import { rankItems } from "../../../lib/fuzzyMatch.js";
+// THE APP's ranker, not the library's. src/lib/fuzzyMatch.js `rankItems` is
+// SearchableDropdown's DEFAULT; every mount in this app overrides it with
+// `rankFn={appRankItems}` so one app has one ranking (web/searchRank.js,
+// tests/one_ranking_ban_test.js). Computing the expectation with the library's
+// scorer would assert the wrong order the moment the two rankings diverge —
+// and they diverge by design: measured, they agree on what MATCHES but not on
+// how it sorts.
+import { appRankItems } from "../web/searchRank.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
@@ -46,7 +53,7 @@ for (const o of OPTIONS) {
   if (o.value === FILL_DEFAULT) continue;
   const q = o.label.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 3);
   if (q.length < 3) continue;
-  const ranked = rankItems(q, OPTIONS);
+  const ranked = appRankItems(q, OPTIONS);
   const ids = ranked.map((r) => r.value);
   if (ids.includes(o.value) && ids.length < OPTIONS.length && !ids.includes(FILL_DEFAULT)) {
     target = o; query = q; break;
