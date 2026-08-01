@@ -701,8 +701,11 @@ const CUSTOM = customProps([
  * `= self.w / @id.w`); this is the same mechanism inside a preset, and it stays a
  * pure function of document state, keyframable and editable like any other value.
  *
- * NOT for the screen-distance axis, whose scale is OCTAVES of estimated distance per
- * cycle — a small plain number with nothing to do with the iteration count.
+ * NOT FOR EITHER OF THE OTHER TWO AXES, whose scale is not in iterations at all: the
+ * screen-distance axis reads OCTAVES of estimated distance per cycle, and the
+ * log-iteration axis reads OCTAVES of iteration (the shader's `log2(1 + nu)`). Both
+ * take a small plain number with nothing to do with the budget — which is the point
+ * of those axes, since a scale in octaves does not need retuning as the view deepens.
  *
  * @param {number} cycles - colour cycles across the whole iteration budget
  * @returns {string} an equation value for `paletteScale`
@@ -751,6 +754,14 @@ const LOCATION_PRESETS = [
     },
   },
   {
+    name: "Feigenbaum Cascade",
+    description: "The period-doubling cascade on the real axis, ending at the Myrberg-Feigenbaum point c = -1.401155189092050: the published accumulation of the 1, 2, 4, 8, ... bulb sequence, each bulb smaller than the last by the universal ratio delta = 4.669201609. The one view here that is a CASCADE rather than a spiral or a rosette, and the only one centred on a constant that appears outside this subject at all. 96 iterations per pixel, 25% of the frame interior. THE TIGHTEST LOCATION HERE against the under-iteration gate (0.67% of a probe frame unfinished against the 1% budget) — the cascade's n-th bulb needs about 2^n iterations to certify, so there is always a little of it the budget cannot finish; move the frame rather than raise the budget if that margin ever has to grow.",
+    props: {
+      centerX: -1.401155189092050, centerY: 0, centerFineX: 0, centerFineY: 0, fineExponent: 0,
+      zoomExponent: 1.1, maxIterations: 2048,
+    },
+  },
+  {
     name: "Period-4 Island (the needle)",
     description: "A miniature copy of the whole set strung on the western antenna, inside a dark starburst of filaments. Its centre is the exact period-4 nucleus (Z_4(c) = 0, found by Newton here and matching the published -1.9407998065294847). 25 iterations per pixel — the cheapest view in the set, and a full-length reference orbit, because a nucleus never escapes.",
     props: {
@@ -763,6 +774,14 @@ const LOCATION_PRESETS = [
     description: "The chain of heads-and-trunks marching out of the cardioid cusp at c = 1/4, framed OFF the cusp where it is renderable. 114 iterations per pixel. Munafo's Elephant Valley 3, widened and mirrored; the cusp itself is not shippable at any budget this widget has.",
     props: {
       centerX: 0.2925755, centerY: 0.0149977, centerFineX: 0, centerFineY: 0, fineExponent: 0,
+      zoomExponent: 2.6, maxIterations: 2048,
+    },
+  },
+  {
+    name: "Seahorse Valley",
+    description: "The valley itself, not one of its tails: a whole row of seahorses at once, each a spiral wound on the filament between the cardioid and the period-2 disc. The valley hangs off the PARABOLIC root c = -3/4 (exact — it is where the disc |c + 1| = 1/4 touches the cardioid), and the frame is deliberately off that root, because dwell beside a parabolic point goes as pi/eps and a root-centred frame needs thousands of times this budget. 143 iterations per pixel; the frame was placed by measurement, not quoted. Its companion \"Seahorse Tail\" is one tail of this same valley, three decades further in.",
+    props: {
+      centerX: -0.7463, centerY: 0.1102, centerFineX: 0, centerFineY: 0, fineExponent: 0,
       zoomExponent: 2.6, maxIterations: 2048,
     },
   },
@@ -780,6 +799,14 @@ const LOCATION_PRESETS = [
     props: {
       centerX: -0.15625, centerY: 0.653411, centerFineX: 0, centerFineY: 0, fineExponent: 0,
       zoomExponent: 3.3116, maxIterations: 1500,
+    },
+  },
+  {
+    name: "Scepter Valley",
+    description: "A branching scepter: a straight spine of filament with paired side-branches and a minibrot strung on it, which is what the set does at a bond point of ODD internal angle instead of the spirals it makes at even ones. Munafo's Scepter Valley, hanging off the root c = -5/4 where the period-4 bulb meets the period-2 disc (exact — the disc is |c + 1| = 1/4). Framed off the root by measurement for the same parabolic-dwell reason as Seahorse Valley. 137 iterations per pixel at 1500.",
+    props: {
+      centerX: -1.2505, centerY: 0.0201, centerFineX: 0, centerFineY: 0, fineExponent: 0,
+      zoomExponent: 3.4, maxIterations: 1500,
     },
   },
   {
@@ -1023,6 +1050,33 @@ const COLOUR_PRESETS = [
       ...cyclicRampProps(["#071a2b", "#1e5f8f", "#cfe8ff", "#1e5f8f"]), paletteScale: paletteCycles(30), colorAxis: "iteration",
       stripeAmount: 0, stripeDensity: 4, triangleAmount: 0, shadeAmount: 0, lightAngle: -45, lightHeight: 1.5,
       glowAmount: 0.55, glowWidth: 1.4, bandLimit: true, boundaryAA: false, interiorColor: "#04101c",
+    },
+  },
+  {
+    name: "Contour Map",
+    description: "Smooth magma contours banded on the DISTANCE to the set instead of on the iteration count, so the picture reads as a relief map rather than as escape time. This is the one look here that never needs retuning as you zoom: the distance estimate in pixels is distributed identically at every depth, so its scale is octaves rather than iterations and 1.15 is 1.15 at 1e-2 and at 1e-10 alike. Verified at 1e-2.9 and 1e-10.5 side by side — the band density is visibly the same in both. THE COLOUR PRESET TO REACH FOR WHEN TWEENING A ZOOM, since an iteration-axis palette drifts under one and this cannot.",
+    props: {
+      ...namedRampProps("magma"), paletteScale: 1.15, colorAxis: "distance",
+      stripeAmount: 0, stripeDensity: 4, triangleAmount: 0, shadeAmount: 0.35, lightAngle: -45, lightHeight: 1.5,
+      glowAmount: 0.2, glowWidth: 1.6, bandLimit: true, boundaryAA: false, interiorColor: "#05030a",
+    },
+  },
+  {
+    name: "Verdigris Octave",
+    description: "Oxidised copper: pale mint lace over patina green, banded on the LOG of the iteration count, where n..2n is one cycle. That axis is the middle ground between the other two — it still follows the escape time, but its bands hold their density as the view deepens instead of crowding, so a slow zoom keeps its texture. The only green in the set, and deliberately so: it has to be told apart from Ice Porcelain at a glance, which shares its lace but not its hue.",
+    props: {
+      ...cyclicRampProps(["#101a14", "#1f6f5c", "#7fd6b4", "#e8f7ee", "#7fd6b4", "#1f6f5c"]), paletteScale: 0.42, colorAxis: "logIteration",
+      stripeAmount: 0.35, stripeDensity: 5, triangleAmount: 0.2, shadeAmount: 0.4, lightAngle: -45, lightHeight: 1.5,
+      glowAmount: 0.3, glowWidth: 1, bandLimit: true, boundaryAA: false, interiorColor: "#0a120e",
+    },
+  },
+  {
+    name: "Etched Plate",
+    description: "Ink on laid paper: the only look here that turns EDGE COVERAGE BLEND on, so the set's boundary is blended by what the distance estimate says the set covers of each pixel — the physically-motivated antialias, which the widget's own help says overstates coverage. That is a defect on a cream lace filament field and exactly right here, where the overstatement is what thickens the ink and makes the plate read as a print rather than as a render. Raking light at -120 degrees and a low lamp do the rest. Rendered against Brushed Chrome at the same location to confirm it is a second monochrome and not the same one: chrome is satin on a dark ground, this is black on a light one.",
+    props: {
+      ...cyclicRampProps(["#f4efe4", "#1b1a17", "#f4efe4", "#8a8478"]), paletteScale: paletteCycles(60), colorAxis: "iteration",
+      stripeAmount: 0.25, stripeDensity: 6, triangleAmount: 0.15, shadeAmount: 0.6, lightAngle: -120, lightHeight: 0.9,
+      glowAmount: 0.2, glowWidth: 1, bandLimit: true, boundaryAA: true, interiorColor: "#1b1a17",
     },
   },
   {
