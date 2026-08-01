@@ -399,9 +399,7 @@ export const textPlugin = {
   // content-bearing widget already ships: mermaid `definition`, latex `latex`,
   // codeblock `code`, graph_line `source`, graph_bars `valueEquation` — and
   // plaintext's own `text` row, which is why the plain widget showed its content in
-  // the panel while the rich one showed nothing. The action row below is that pair's
-  // second half and lands first; the content row needs an Inspector `richtext` kind
-  // (an object-valued property has no control today) and lands with it.
+  // the panel while the rich one showed nothing.
   inspector: [
     // The eight shared bbox rows, COMPOSED from the registry rather than
     // re-typed. They used to be hand-copied literals here — byte-identical to
@@ -410,6 +408,16 @@ export const textPlugin = {
     // KIND that put the rotary dial on `rotation` reached every other bbox widget
     // through the bundle and would have skipped this one.
     ...bundle("positioning"),
+    // THE CONTENT ITSELF, first among this widget's own rows because it IS the
+    // widget. `richtext` is the row kind for a structured value with a plain-text
+    // surface (core/properties.js ROW_KINDS): it shows richTextToPlain and writes a
+    // MINIMAL SPLICE, so it is a real editor for the content and not a readout —
+    // and it carries the KEYFRAME DIAMOND, which is the first place a user can see
+    // that rich text keyframes and tweens per run, per key (it always did; nothing
+    // rendered the fact). Deliberately NO `ƒ`: `richtext` is out of EQUATION_KINDS
+    // because core/expressions.js refuses equations on this value, and an escape
+    // hatch that does not exist is the lie this round is removing.
+    { key: "text", label: "Text", kind: "richtext", category: "text", help: "The words in the box, as one line. This is the SAME property the canvas editor writes — editing here splices only what you changed, so run styles either side of the edit survive. Newlines already in the text are kept; to add one, or to style part of the text, use the in-place editor below." },
     // THE WAY IN TO THE CONTENT, from the panel rather than from knowing to
     // double-click. Same `action`-row-plus-command idiom mermaid/latex/codeblock
     // use for their code editors, but pointed at the IN-CANVAS rich editor, which

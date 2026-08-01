@@ -28,13 +28,16 @@
  *      destroy, and what it CANNOT preserve is a deterministic documented rule
  *      rather than an accident.
  *
- *   2. THE WAY IN. The action row and its command, gated on the widget's own
- *      `activate` DECLARATION rather than on the type name.
+ *   2. THE SURFACE. The content row + action row pair as this WIDGET declares it,
+ *      and the command behind the action, gated on the widget's own `activate`
+ *      DECLARATION rather than on the type name.
  *
- * NOT LOCKED HERE: the content row itself. It needs an Inspector `richtext` kind
- * (an object-valued property has no control today) and lands with that kind, in one
- * commit with core/properties.js ROW_KINDS and core/multiselect.js's classification
- * gate — see .frenzy/round6/W5-F.md for the contract.
+ * WHERE THE LINE BETWEEN THIS SUITE AND tests/richtext_row_test.js FALLS, so the two
+ * are not one fact asserted twice: that one owns the KIND — its registration in
+ * ROW_KINDS, its joint-uneditable classification, the Inspector's dispatch branch,
+ * its absence from EQUATION_KINDS, and that a `text`-path keyframe reads back. This
+ * one owns the MODEL and the widget's DECLARATION. Neither asserts the other's
+ * subject, so a failure names the file that would have to change.
  *
  * Bare node, no framework (suite conventions).
  * Run: node src/demo_apps/PowerRP/tests/text_content_row_test.js
@@ -161,10 +164,43 @@ test("it never mutates its input", () => {
   assert.equal(JSON.stringify(MIXED), before);
 });
 
-// ── 2. THE WAY IN ─────────────────────────────────────────────────────────────
+// ── 2. THE SURFACE ────────────────────────────────────────────────────────────
 
 const rowsByKey = new Map(textPlugin.inspector.map((r) => [r.key, r]));
 const commandsById = new Map(textPlugin.commands.map((c) => [c.id, c]));
+const rowIndex = (key) => textPlugin.inspector.findIndex((r) => r.key === key);
+
+test("THE CONTENT HAS A ROW, and it is the property the canvas editor writes", () => {
+  // The whole of R6-13.3: the user could not see the property because nothing
+  // rendered it. `key` must be the REAL stored key — a mirror property would be the
+  // hand-maintained-mirror defect, and the row would then not be the thing the
+  // editor writes.
+  const row = rowsByKey.get("text");
+  assert.ok(row, "the rich-text content must appear in the panel as its own property");
+  assert.equal(row.key, "text", "the row writes items.<id>.text, not a mirror of it");
+  assert.equal(row.kind, "richtext", "an object-valued property needs the structured kind, not the plain `text` one");
+  assert.equal(row.category, "text");
+  assert.ok(row.help && row.help.length > 40, "the row explains that editing here splices rather than clobbers");
+});
+
+test("the content row KEYFRAMES — that is the only place a user can see that rich text animates", () => {
+  // W5-G measured that the ◆ reads correctly on the ["items", id, "text"] path (the
+  // delta is a nested tree, so getPath finds the object the two leaves live in), and
+  // W1-H measured that rich text really does interpolate per run, per key. So the
+  // diamond is not decoration: it is the surfacing of a capability that has existed
+  // and been invisible. `keyframes: false` here would hide it again.
+  assert.notEqual(rowsByKey.get("text").keyframes, false);
+  // …and it is never hidden. visibleWhen exists for a row a run can SHADOW; the
+  // content row is the run's own text and has no lower-precedence layer to lose to.
+  assert.equal(rowsByKey.get("text").visibleWhen, undefined);
+});
+
+test("CONTENT ROW THEN ACTION ROW — the pair, in the order every other widget uses", () => {
+  // mermaid/latex/codeblock all put the value first and "…in code editor" beneath
+  // it, so the panel reads "here is the content; here is the fuller way to edit it".
+  assert.ok(rowIndex("text") >= 0 && rowIndex("__edittext") > rowIndex("text"),
+    "the action row is the pair's SECOND half — a button above the value it edits inverts the reading order");
+});
 
 test("the panel offers a way into the editor, as an ACTION row on a real command", () => {
   const row = rowsByKey.get("__edittext");
