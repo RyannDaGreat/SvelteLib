@@ -776,7 +776,21 @@
      propagates into form controls — restated here rather than referenced so a
      theme overriding this token reaches BOTH paths from one place. --a-mono is
      deliberately NOT chained to it: equations and coordinates read as code in
-     every theme, including a typographic one. */
+     every theme, including a typographic one.
+     NAME THE BUNDLED FAMILY, NOT THE OS ONE — this is the single way to get this
+     lever wrong and it has already happened. Every face this app ships is
+     registered under a UNIQUE `PowerRP <name>` cssFamily (render_gpu/fonts.js),
+     deliberately, so a local @font-face can never collide with a same-named OS
+     font. THE COROLLARY IS THE TRAP: asking for the OS name never reaches the
+     bundled file. The Futura themes shipped `Futura, Jost, "Century Gothic"` and
+     rendered in the LAST-RESORT face on every platform for five days while the
+     real Renner Futura sat loaded in document.fonts — measured in this app's own
+     browser against a family name that certainly does not exist, all three OS
+     names came back byte-identical to that control and `"PowerRP Futura"` did
+     not. `document.fonts.check()` will not catch this; it only tracks FontFace
+     objects and answers true for an absent system family. Write
+     `"PowerRP <name>"` first and keep OS names after it as a courtesy, never as
+     the plan. */
   --a-ui-font: system-ui, -apple-system, sans-serif;
 
   /* GLASS, for FLOATING SURFACES ONLY — the SEVEN that both carry an elevation
