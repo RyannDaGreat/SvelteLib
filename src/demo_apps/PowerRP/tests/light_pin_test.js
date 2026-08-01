@@ -111,6 +111,24 @@ test("the keys the tool is OFFERED for are the keys it WRITES (no second list)",
   assert.deepEqual([LIGHT_PIN_PAIR.xKey, LIGHT_PIN_PAIR.yKey], LIGHT_KEYS);
 });
 
+test("the tool REACHES the Tools pane, on the two lit widgets and nowhere else", () => {
+  // toolGroupsOf is ToolsPane's entire input, so this is where "the tool is
+  // offered" is decided. It rides the EXISTING `positioning` group rather than
+  // opening a group of its own — a widget with one light tool and no camera-bind
+  // pair would be a section of one, and the pool's whole point is that a tool that
+  // writes coordinates lives beside the other tools that write coordinates.
+  // `registry.get()` returns the REGISTERED form, which already carries its
+  // resolved `toolGroups` — re-running toolGroupsOf on it would re-resolve an
+  // already-resolved plugin and trip the pool's own malformed-row gate on the
+  // preset groups it has since gained.
+  const commandsIn = (type) =>
+    (registry.get(type).toolGroups.find((g) => g.id === "positioning")?.rows ?? []).map((r) => r.command);
+  for (const type of ["demo_lens_flare", "demo_god_rays"])
+    assert.deepEqual(commandsIn(type), ["bind-to-camera", "unbind-from-camera", "pin-light-to-object"], type);
+  assert.deepEqual(commandsIn("rect"), ["bind-to-camera", "unbind-from-camera"],
+    "a rect has no light position, so the pool's applies() must withhold the tool entirely");
+});
+
 // ── refusals ──────────────────────────────────────────────────────────────────
 
 test("REFUSED: the widget cannot pin its own light to itself", () => {
