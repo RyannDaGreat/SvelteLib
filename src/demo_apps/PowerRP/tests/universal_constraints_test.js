@@ -193,7 +193,23 @@ const NON_DRAGGABLE_HOOKS = new Set([
   "handleToggles", "hitTest", "hitTestWorld", "inlineTextEdit", "insertPointAt", "inspector",
   "interiorView", "interpolateState", "isGhost", "itemRefs", "legacyKeys", "localBalls",
   "localBounds", "naturalSize", "placement", "placementAnchor", "presetFamilies", "presets",
-  "primaryAsset", "snapFeatures", "title", "toggleWrites", "toolGroups", "type",
+  "primaryAsset",
+  // `shatter` (core/shatter.js) is COMMAND-TIME, not drag-time, and this gate is
+  // the right place to say so out loud. It runs once, from a palette entry,
+  // returns a PLAN of whole item states, and never sees a pointer: no handle, no
+  // preview, no per-frame write. Its output is ordinary items which then expose
+  // their OWN affordances through this very census — a shattered box is an svg
+  // widget and is constrained as one — so there is nothing here for the
+  // projection to reach that it does not already reach.
+  //
+  // Worth contrasting with `armature` above, which IS classified draggable
+  // despite adding no affordance of its own, because it changes what the
+  // existing resize seam WRITES. `shatter` changes what EXISTS, before any drag
+  // begins, and changes nothing about how anything is dragged afterwards. If a
+  // future shatter ever gained an interactive "drag to split here" gesture, that
+  // gesture would be a new hook and would land red here, which is correct.
+  "shatter",
+  "snapFeatures", "title", "toggleWrites", "toolGroups", "type",
 ]);
 /** Capability keys, same partition, same reason. */
 // `armature` is DRAGGABLE even though it adds no new affordance of its own: it
