@@ -113,7 +113,15 @@ try {
         id,
         title: cmd.title,
         icon: cmd.icon,
-        requires: cmd.requires ?? null,
+        // RESOLVED, never read raw. `requires` MAY BE A FUNCTION of the app
+        // (core/commands.js commandUnavailableReason; `save-project` is THE case,
+        // web/App.svelte). Read raw it does not survive CDP's returnByValue at all
+        // — a function serializes to nothing, the key vanishes, and the (gated, no
+        // `requires` yet) line below printed `save-project` as REASON-LESS: the one
+        // command the function form exists for, reported as the one lacking a
+        // reason. Same resolution, and same wording for why, as
+        // tests/palette_probe.js:252 `resolveRequires`.
+        requires: (typeof cmd.requires === "function" ? cmd.requires(app) : cmd.requires) ?? null,
         gated: !!cmd.when,
         unavailable: !!cmd.when && !cmd.when(app),
         rendered: !!el,

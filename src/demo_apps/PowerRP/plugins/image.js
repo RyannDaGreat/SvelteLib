@@ -48,6 +48,18 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 export const BLANK_SRC =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
+/** THE sampling default — "nearest" is the long-standing pre-Round-3 behaviour, so
+ *  it is what keeps an untouched image byte-identical. ONE constant because the
+ *  value has TWO readers that must never disagree: `defaults` (what a NEW item
+ *  gets) and emit's `??` (what an item saved BEFORE this row existed falls back
+ *  to). It used to be three literals — the row also carried `default: "nearest"`,
+ *  which was INERT: `defaults()` reads the shared PROPS registry
+ *  (core/properties.js:1584), and nothing in core/, web/ or render_gpu/ reads
+ *  `.default` off an inspector row. `sampling` is not a PROPS key (measured: 86
+ *  keys, no `sampling`), so that declaration looked authoritative and did nothing,
+ *  and a new item's `sampling` was simply absent. Now it is a real default. */
+export const DEFAULT_SAMPLING = "nearest";
+
 export const imagePlugin = {
   type: "image",
   title: "Image",
@@ -73,6 +85,7 @@ export const imagePlugin = {
     // stroke COLOR default matches every other stroked shape (rect/circle/donut
     // all use INK #000000); it only paints once strokeWidth > 0 (0 by default).
     stroke: "#000000",
+    sampling: DEFAULT_SAMPLING,
     ...defaults("strokeWidth", "cornerRadius", "opacity"), // strokeWidth:0, cornerRadius:0, opacity:1
     ...defaults("cropTop", "cropLeft", "cropRight", "cropBottom"), // all 0 → no crop
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
@@ -87,7 +100,9 @@ export const imagePlugin = {
     // legacy draw call measures hard-edged on upscale (the user's premise was
     // right); Bilinear is the NEW smooth option. Absent/default renders
     // byte-identically.
-    { key: "sampling", label: "Sampling", kind: "select", options: ["nearest", "bilinear"], optionLabels: { nearest: "Nearest (crisp)", bilinear: "Bilinear (smooth)" }, category: "formatting", default: "nearest", help: "How the image's pixels are enlarged or shrunk. Nearest (the default, and the long-standing behavior) keeps every source pixel a crisp square — right for pixel art, QR codes, screenshots. Bilinear blends neighbouring pixels — right for photos that shouldn't look blocky when scaled." },
+    // No `default:` on this row — a row-level `default` is INERT (see
+    // DEFAULT_SAMPLING). The real default is in `defaults` above.
+    { key: "sampling", label: "Sampling", kind: "select", options: ["nearest", "bilinear"], optionLabels: { nearest: "Nearest (crisp)", bilinear: "Bilinear (smooth)" }, category: "formatting", help: "How the image's pixels are enlarged or shrunk. Nearest (the default, and the long-standing behavior) keeps every source pixel a crisp square — right for pixel art, QR codes, screenshots. Bilinear blends neighbouring pixels — right for photos that shouldn't look blocky when scaled." },
     // The stroked-BORDER bundle (manifest "SHARED STYLE BUNDLES — images and
     // videos inherit stroke/rounding at once"). No `fill` row: an image's own
     // pixels ARE its interior. The default INK stroke color is in `defaults`
@@ -129,7 +144,7 @@ export const imagePlugin = {
     const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
     if (c.w <= 0 || c.h <= 0) return []; // fully cropped away → nothing to draw
     const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
-    const quad = image({ ref: s.src, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh, sampling: s.sampling ?? "nearest" });
+    const quad = image({ ref: s.src, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh, sampling: s.sampling ?? DEFAULT_SAMPLING });
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): the shadow/bloom silhouette the FRAMED image, border included.
     // The effect bbox is the CROPPED (drawn) rect — what the widget paints.
