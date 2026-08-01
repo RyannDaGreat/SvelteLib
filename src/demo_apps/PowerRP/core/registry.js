@@ -480,7 +480,7 @@ export function lightPinnable(plugin) {
  * tool in the Tools pane and naming a button that no longer exists is how the old
  * row's help text went stale.
  */
-export const LIGHT_PIN_HELP = "Write this widget's light position as equations reading ANOTHER item's centre, then keep them: pick the object and the light tracks it wherever it moves, instead of holding the coordinates it had when you picked.";
+export const LIGHT_PIN_HELP = "Write this widget's light position as equations reading ANOTHER item's center, then keep them: pick the object and the light tracks it wherever it moves, instead of holding the coordinates it had when you picked.";
 export const LIGHT_PIN_REQUIRES = "exactly one selected widget that HAS a light position (lens flare, god rays) — a light is pinned FROM one widget onto one object, so a multi-selection has no single widget to pin from";
 
 /**

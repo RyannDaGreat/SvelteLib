@@ -448,7 +448,7 @@ export const lensFlarePlugin = {
       // Position to an Object" tool in the Tools pane, gated by
       // core/registry.js's `lightPinnable` over LIGHT_KEYS, so this widget
       // declares nothing to get it and neither does the next lit widget.
-      help: "Light-source horizontal position in WORLD (document) coordinates — the same units as the widget's own X. Absolute, not a fraction of the box, so it can be bound to another item's position (e.g. \"= someItem.x\") to pin the flare's source to it. Move or rotate the widget and the light stays put in the document; drag the yellow handle, keyframe it, type an equation, or use the Tools pane's Pin Light Position to an Object to pin it to an item's centre.",
+      help: "Light-source horizontal position in WORLD (document) coordinates — the same units as the widget's own X. Absolute, not a fraction of the box, so it can be bound to another item's position (e.g. \"= someItem.x\") to pin the flare's source to it. Move or rotate the widget and the light stays put in the document; drag the yellow handle, keyframe it, type an equation, or use the Tools pane's Pin Light Position to an Object to pin it to an item's center.",
     },
     {
       key: "lightWorldY", label: "Light Y", kind: "number", category: CUSTOM_CATEGORY,

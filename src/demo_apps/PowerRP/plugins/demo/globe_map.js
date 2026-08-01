@@ -204,7 +204,7 @@ const CUSTOM = customProps([
     optionLabels: { auto: "Auto (zoom crossfade)", globe: "Globe", flat: "Flat" }, label: "View mode",
     help: `Pins the globe/flat crossfade instead of letting zoom decide it. "Auto" is the shipped zoom-threshold crossfade (globeWeight — a globe below zoom ${GLOBE_FLAT_CROSSOVER}, flat above it) and stays the default; "Globe" pins the sphere rendering at ANY zoom (a full-frame city on a curved globe, if that is the look you want); "Flat" pins the mercator rectangle at any zoom, including the whole world. The underlying blend is CONTINUOUS either way — this only selects/pins where on that blend the render sits, so a slide tween from "Globe" to "Flat" (or across a zoom range in "Auto") animates the unroll rather than popping.` },
   ...ATMOSPHERE_FILL_PARAMS,
-  { name: "attributionColor", kind: "color", default: "rgba(255,255,255,0.82)", label: "Attribution colour",
+  { name: "attributionColor", kind: "color", default: "rgba(255,255,255,0.82)", label: "Attribution color",
     help: "Ink of the provider credit. It is a knob because legibility is the point: white reads over satellite imagery and the dark globe, but a light street map at street zoom needs a dark value. An unreadable credit does not satisfy the licence it exists for." },
   { name: "showAttribution", kind: "boolean", default: false, label: "Show attribution",
     help: "OFF by default everywhere (user ruling). Turning it on draws the credit line(s) for every ACTIVE layer, tiny, in the corner. OSM/OpenTopoMap's tile terms ask for that credit when their tiles are used; showing it is your call — the switch never re-locks itself when you change the basemap." },
@@ -894,8 +894,8 @@ export const globeMapPlugin = {
   inspector: [
     ...bundle("positioning"),
     ...props("fill", "stroke", "strokeWidth", "opacity", {
-      fill: { label: "Space colour" },
-      stroke: { label: "Edge colour" },
+      fill: { label: "Space color" },
+      stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },
     }),
     ...CUSTOM.rows,
