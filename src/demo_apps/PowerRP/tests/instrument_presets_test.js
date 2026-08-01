@@ -191,6 +191,18 @@ const SUBJECTS = [
       innerShadow: "an engraved LCD would want it, but its behaviour on a text op's glyph interiors is unverified",
     },
   },
+  {
+    type: "qrcode",
+    // Square and large: the grid is drawn into min(w, h), so a non-square box would
+    // waste the check's resolution on empty margin.
+    frame: { x: 280, y: 30, w: 480, h: 480 },
+    excluded: {
+      data: "THE PAYLOAD — the author's content, the purest case of a preset refusing to overwrite the reading",
+      shadow: "an effect changes the local luminance around the modules, which is the one property decoding depends on",
+      bloom: "as above — a family carrying a scannability claim leaves the effects bundle alone",
+      innerShadow: "as above",
+    },
+  },
 ];
 
 // ── (1) THE OVERLAY RULE ─────────────────────────────────────────────────────
