@@ -240,7 +240,26 @@ const SUBJECTS = [
       "bloom": "as shadow", "innerShadow": "as shadow",
     },
   },
+  {
+    type: "demo_magnify",
+    frame: LENS_FRAME,
+    backdrop: lensBackdrop(),
+    excluded: {
+      "origin": "THE TARGET — as on the canonical magnifier",
+      "shadow": "a backdrop sampler's effect substrate is unverified — as on the canonical magnifier",
+      "bloom": "as shadow", "innerShadow": "as shadow",
+    },
+  },
 ];
+
+// Widget pairs whose preset libraries are coordinated BY NAME, because a preset
+// applies to one item and the mechanism is deliberately not extended to reach
+// siblings. A hand-maintained correspondence across two files is the single
+// highest-risk pattern in this codebase, so it gets a gate rather than a comment.
+const PAIRED_FAMILIES = [["magnifier", "demo_magnify"]];
+// Both magnifier tables carry nine names verbatim. A floor, so the pairing cannot
+// silently collapse to nothing while every other check still passes.
+const MIN_SHARED_NAMES = 8;
 
 // ── (1) THE OVERLAY RULE ─────────────────────────────────────────────────────
 test("(1) every preset sets EVERY look knob of its family", () => {
@@ -269,7 +288,46 @@ test("(2) no preset writes a composition key or a key its family excluded", () =
   }
 });
 
-// ── (3) DISTINCTNESS IN PIXELS, DEFAULTS INCLUDED ────────────────────────────
+// ── (3) SIBLING PAIRING, DERIVED RATHER THAN LISTED ──────────────────────────
+test("(3) a preset name unique to one sibling is one the OTHER's schema cannot express", () => {
+  for (const [a, b] of PAIRED_FAMILIES) {
+    const of = (type) => new Map((registry.get(type).presets ?? []).map((p) => [p.name, p]));
+    const [A, B] = [of(a), of(b)];
+    const shared = [...A.keys()].filter((n) => B.has(n));
+    assert.ok(shared.length >= MIN_SHARED_NAMES,
+      `${a} and ${b} share only ${shared.length} preset names (${shared.join(", ")}) — the by-name pairing has drifted apart`);
+    // The derivation: a name is allowed to be unpaired ONLY because the sibling
+    // genuinely cannot say it. Asked of the LIVE schemas rather than restated as a
+    // list that would rot beside them.
+    //
+    // AND THE VALUE MUST BE DOING WORK. The first form of this check asked only
+    // "does any prop name a key the sibling lacks", which is VACUOUS here: the
+    // overlay rule makes EVERY magnifier preset write `cornerRadius` and EVERY
+    // demo_magnify preset write the per-axis zooms, so every name in both families
+    // was "justified" and no drift could ever fail it. So a key the sibling lacks
+    // counts only when the preset sets it AWAY FROM ITS OWN DEFAULT — that is what
+    // distinguishes "this row exists because it uses a capability the sibling has
+    // not got" from "this row mentions that capability because the overlay rule
+    // makes it". A select value the sibling's own row does not offer counts
+    // unconditionally, since that IS the capability.
+    for (const [mine, theirs, mineType, theirsType] of [[A, B, a, b], [B, A, b, a]]) {
+      const own = registry.get(mineType).defaults ?? {};
+      const sibling = registry.get(theirsType);
+      const options = new Map((sibling.inspector ?? []).filter((r) => r.options).map((r) => [r.key, new Set(r.options)]));
+      for (const [name, preset] of mine) {
+        if (theirs.has(name)) continue;
+        const reasons = Object.entries(preset.props).filter(([key, value]) =>
+          (options.has(key) && !options.get(key).has(value)) ||
+          (!(key in (sibling.defaults ?? {})) && value !== own[key]));
+        assert.ok(reasons.length > 0,
+          `${mineType} ships "${name}" and ${theirsType} does not, but it uses no capability ${theirsType} lacks — every prop it moves off its own default is expressible there too. An unpaired name with no schema reason is drift between two tables meant to read alike: either pair it, or make it use the capability its absence claims.`);
+      }
+    }
+    console.log(`      ${a} <-> ${b}: ${shared.length} names shared, ${A.size - shared.length}+${B.size - shared.length} justified by schema`);
+  }
+});
+
+// ── (4) DISTINCTNESS IN PIXELS, DEFAULTS INCLUDED ────────────────────────────
 // The bar is the ONE bound derivable without judgement: `indistinguishable` is true
 // when no colour channel anywhere differs by a full 8-bit code value, i.e. when no
 // display can show the pair apart. A family whose narrowest margin sits near it is
@@ -280,7 +338,7 @@ for (const subject of SUBJECTS) {
   for (const preset of plugin.presets)
     frames.push({ name: preset.name, png: await frameOf(subject, preset.props, `${subject.type}__${preset.name.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}`) });
 
-  test(`(3) ${subject.type}: all ${plugin.presets.length} presets AND the widget defaults render pairwise distinct`, () => {
+  test(`(4) ${subject.type}: all ${plugin.presets.length} presets AND the widget defaults render pairwise distinct`, () => {
     for (let i = 0; i < frames.length; i++)
       for (let j = i + 1; j < frames.length; j++)
         assert.ok(!indistinguishable(imageDistance(frames[i].png, frames[j].png)),

@@ -127,6 +127,73 @@ export function pointInPolygon(x, y, verts) {
   return inside;
 }
 
+/**
+ * THE TWELVE LENSES: NINE ON THE POWER LADDER, THEN THREE THIS WIDGET ALONE CAN DO.
+ * One FLAT family.
+ *
+ * PAIRED BY NAME WITH plugins/magnifier.js. A preset applies to ONE item and the
+ * mechanism is deliberately not extended to reach siblings, so the house answer for
+ * a look that spans two widgets is to give the matching rows THE SAME NAME and say
+ * so in the description. The first nine here run the same 1.5x -> 20x ladder under
+ * the same nine names, so the two panes read alike. Two names are deliberately
+ * handled differently and BOTH say so rather than diverging in silence: "Map Reader"
+ * is absent because it needs a rounded box and this widget has no `cornerRadius`,
+ * and "Screenshot Inset" is here with SHARP corners for the same reason.
+ * tests/instrument_presets_test.js gates that pairing — a name unique to one family
+ * must be justified by a key or an enum value the sibling's schema cannot express.
+ *
+ * A SEPARATE SHARED PRESET MODULE IS NOT JUSTIFIED, even with nine shared names. A
+ * shared data module is for several plugins sharing THE SAME ROWS
+ * (plugins/graph_presets.js serves four graph widgets identical rows); these two
+ * share no row at all — every entry differs in `cornerRadius` present-vs-absent,
+ * `box` vs `square`, and the per-axis keys — so a shared module would be nine pairs
+ * of near-duplicates plus a divergence, which is worse than two honest tables.
+ *
+ * ONE FLAT FAMILY, and the mechanical test is not the reason. A split into
+ * "silhouette" (shape/points/innerRatio) and "optics" (magnification/X/Y/supersample)
+ * WOULD pass the disjointness gate, unlike on the sibling. It is still wrong: these
+ * presets are named INSTRUMENTS, not composable aspects. "Jeweller's Loupe" is a
+ * circle AND 10x; splitting it would let someone pick that from one family and
+ * "Sunburst Seal" from the other and get a 10x twelve-pointed star that models
+ * nothing. plugins/demo/glass.js's legal material/silhouette split works because a
+ * glass panel genuinely IS a material on a silhouette and every combination is
+ * meaningful. That is not true of instruments.
+ *
+ * THE LAST THREE ARE THIS WIDGET'S OWN VOCABULARY, and the two stars differ by a
+ * DETERMINED number rather than by taste: a regular pentagram's inner vertices sit
+ * at cos(2pi/5)/cos(pi/5) = 0.382 of the outer radius (that is 1/phi^2), which is
+ * derivable straight from starVerts above, so 0.382 is the TRUE five-pointed star
+ * and the familiar 0.5 badge star is a fattened one. Twelve points notched at 0.72
+ * stops reading as a star at all and becomes the rosette a wax seal is. Neither is
+ * optics, and neither description pretends it is.
+ *
+ * EVERY PRESET SETS `points`, `innerRatio` AND BOTH PER-AXIS ZOOMS even where they
+ * are inert, because application is an OVERLAY: without it, a circle picked after
+ * "Sunburst Seal" would carry points:12 in its state, invisible until someone
+ * switched the shape and got a dodecagram they never asked for. This is the widget
+ * where that rule does the most work — the two star knobs are inert on ten of twelve
+ * rows and the per-axis zooms on eleven.
+ *
+ * NO PRESET SETS `origin` (the world point the author retargeted the lens to) and
+ * NO PRESET SETS AN EFFECT, for the same unverified backdrop-sampler reason recorded
+ * on the sibling. If effects are ever cleared for a sampler, BOTH families should
+ * gain them together so the paired names keep matching.
+ */
+const PRESETS = [
+  { name: "Fresnel Sheet", description: "The flat page magnifier: concentric ring lenses spread over a whole paragraph — wide, weak, frameless, and soft the way a sheet lens really is.", props: { shape: "square", magnification: 1.5, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: false, stroke: "#000000", strokeWidth: 0 } },
+  { name: "Reading Glass", description: "The handheld reading glass at the bottom of the 2-6x range, in the thick horn-coloured frame those are always mounted in.", props: { shape: "circle", magnification: 2, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: true, stroke: "#3b2f2a", strokeWidth: 10 } },
+  { name: "Screenshot Inset", description: "The software zoom callout: a rectangular crop of the pixels beneath, held by a hairline light rim — sharp-cornered here, where the canonical magnifier rounds it.", props: { shape: "square", magnification: 3, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: true, stroke: "#e6e8ec", strokeWidth: 2 } },
+  { name: "Comic Zoom", description: "The comic-panel blow-up: a fat white ring punched over the artwork, at the modest power a printed panel can stand.", props: { shape: "circle", magnification: 3.5, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: true, stroke: "#ffffff", strokeWidth: 14 } },
+  { name: "Soft Loupe", description: "A thick simple lens worked at the edge of what it can resolve: rimless, and deliberately sampled rather than re-rendered, so it goes soft the way cheap glass does.", props: { shape: "circle", magnification: 4, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: false, stroke: "#000000", strokeWidth: 0 } },
+  { name: "Watchmaker's Eyeglass", description: "The eyeglass a movement is assembled under: mid power in a brass cylinder, and sharp, because the whole point is seeing the jewel.", props: { shape: "circle", magnification: 5, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: true, stroke: "#b08d3f", strokeWidth: 8 } },
+  { name: "Linen Tester", description: "The thread counter on its folding stand — the one instrument here whose field of view is genuinely SQUARE, in a thin steel frame.", props: { shape: "square", magnification: 6, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: true, stroke: "#8a9099", strokeWidth: 3 } },
+  { name: "Jeweller's Loupe", description: "The 10x triplet a stone is graded through: the standard clarity-grading power, in a plain black barrel, above which depth of field stops being useful.", props: { shape: "circle", magnification: 10, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: true, stroke: "#101012", strokeWidth: 5 } },
+  { name: "Microscope Field", description: "The top of what a head-worn loupe manages before a microscope is the right tool: very high power behind a thin dark ring.", props: { shape: "circle", magnification: 20, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.5, supersample: true, stroke: "#1a1a1a", strokeWidth: 3 } },
+  { name: "Pentagram Lens", description: "The true five-pointed star: notches cut to one over phi squared of the outer radius, which is where a regular pentagram's inner vertices actually fall — sharper than the star anyone draws freehand.", props: { shape: "star", magnification: 4, magnificationX: 0, magnificationY: 0, points: 5, innerRatio: 0.382, supersample: true, stroke: "#1b1b22", strokeWidth: 4 } },
+  { name: "Sunburst Seal", description: "The twelve-pointed rosette of a wax seal or a certificate mark: so many points, notched so shallowly, that it stops reading as a star and becomes a sun.", props: { shape: "star", magnification: 3, magnificationX: 0, magnificationY: 0, points: 12, innerRatio: 0.72, supersample: true, stroke: "#a8862c", strokeWidth: 6 } },
+  { name: "Anamorphic Squeeze", description: "The only anisotropic lens in the set: twice the zoom across as down, so the field beneath is stretched sideways instead of enlarged evenly.", props: { shape: "square", magnification: 2, magnificationX: 2, magnificationY: 1, points: 5, innerRatio: 0.5, supersample: true, stroke: "#101010", strokeWidth: 3 } },
+];
+
 export const magnifyPlugin = {
   type: "demo_magnify",
   title: "Magnifier",
@@ -155,6 +222,7 @@ export const magnifyPlugin = {
     ...props("opacity"),
     ...CUSTOM.rows, // the lens knobs (Inspector "Custom" region)
   ],
+  presets: PRESETS,
   /**
    * Pure function. State → display-list: ONE magnifyBackdrop op, its silhouette
    * chosen by `shape`. square → the box path with sharp corners; star → the star
