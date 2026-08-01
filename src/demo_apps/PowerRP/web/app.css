@@ -1700,7 +1700,20 @@
    11-12px. Playfair Display is the more period-glamorous answer and would be
    unreadable at that size, which would make the theme a costume rather than a
    theme. The mono token is deliberately NOT chained: equations and coordinates
-   read as code in every theme, including this one (see --a-ui-font in :root). */
+   read as code in every theme, including this one (see --a-ui-font in :root).
+   AND VERDIGRIS AND OBSIDIAN/MOONSTONE DELIBERATELY DO NOT SET A FONT — that is
+   a decision, not an unfinished set. The user did invite it ("you can even
+   MODULATE THE FONT"), so the omission reads like an oversight and is not one:
+   Cranberry has a real typographic argument (a Victorian object, a period text
+   serif) and the other two do not, and a font swapped in to complete a pattern
+   is decoration, which is the thing the brief warns against. UNTESTED, and said
+   so plainly: Oswald was CONSIDERED for Verdigris on an engraved-signage
+   reading and declined WITHOUT rendering it, on the ground that a condensed
+   display face in a 26px-row Inspector is at least as likely to read cramped as
+   characterful. That reasoning is worth exactly what an untested opinion is
+   worth — if you want it, render it at 375/393 and judge, and if it looks good
+   this note is not an objection. What it is here to prevent is the OTHER move:
+   adding fonts to both families to make the set look symmetrical. */
 :root[data-theme="cranberry"] {
   --bg: #1d0a10;
   --fg: #f3dbe0;
