@@ -47,7 +47,8 @@ async function renderCameraFrame(...args) {
 }
 
 /**
- * Query (async). The render quality for the fade's endpoint snapshots.
+ * Query (async). The render quality for ANY transition frame — both the fade's
+ * endpoint snapshots and every tween frame.
  *
  * A crossfade needs TWO completed-state camera frames at present resolution.
  * On the GPU that is two ordinary frames, so the fade renders at FULL quality
@@ -57,8 +58,28 @@ async function renderCameraFrame(...args) {
  * so the fade drops to the existing cheap PROXY stand-ins instead. Degraded
  * pixels for one transient blend beat a frozen presentation, and gpuService has
  * already reported the missing context loudly.
+ *
+ * IT WAS NAMED `snapshotQuality` AND SERVED THE FADE ALONE, WHICH IS WHY THE
+ * TWEEN NEVER GOT IT. The reasoning above is about a transition being short and
+ * a CPU shader being slow — neither of which is specific to a snapshot — so the
+ * name described its one caller rather than its subject, and the second caller
+ * that needed it was written without it. The tween path passed no `quality` at
+ * all, and `renderCameraFrame` defaults to `"full"` (gpuService.js:313).
+ *
+ * THE TWEEN NEEDS THIS MORE THAN THE FADE DOES, not less. The fade's two
+ * endpoints are alpha-independent and therefore MEMOIZED — one render for the
+ * whole transition (see fadeSnapshots). A tween frame is a function of alpha,
+ * so it cannot be memoized: every emitted frame is a fresh full render, and
+ * without a GL context every one of them pays the CPU shader cost.
+ *
+ * WHAT THIS DOES NOT FIX, stated because a measurement was read as implicating
+ * it: on a host that HAS a GL context — including a software one like
+ * SwiftShader, which `gpuAccelerated()` counts — this returns "full" and
+ * changes nothing. The measured 452 ms/frame tween on a six-material deck is
+ * the honest cost of rendering that frame, not a missing argument, and no
+ * quality flag or worker removes it (see the #84 measurement).
  */
-async function snapshotQuality() {
+async function transitionQuality() {
   return (await (await gpuService()).gpuAccelerated()) ? "full" : "proxy";
 }
 
@@ -99,7 +120,7 @@ function fadeSnapshots(doc, index, registry, width, height) {
   const key = `${index}|${width}|${height}`;
   let promise = byKey.get(key);
   if (!promise) {
-    promise = snapshotQuality().then((quality) => Promise.all([
+    promise = transitionQuality().then((quality) => Promise.all([
       renderCameraFrame(doc, { slideIndex: index - 1, alpha: 1, registry, width, height, quality }),
       renderCameraFrame(doc, { slideIndex: index, alpha: 1, registry, width, height, quality }),
     ]));
@@ -163,8 +184,15 @@ export function isFadeFrame(doc, index, alpha) {
 export async function renderTransitionFrame(doc, index, alpha, registry, width, height) {
   if (!isFadeFrame(doc, index, alpha))
     // TWEEN (or a fade at an endpoint / slide 0): the existing delta-tween
-    // camera render at exactly this (index, alpha).
-    return renderCameraFrame(doc, { slideIndex: index, alpha, registry, width, height });
+    // camera render at exactly this (index, alpha). It takes the SAME quality
+    // policy as the fade's endpoints — see transitionQuality for why the tween
+    // needs it more, not less: a tween frame is a function of alpha, so unlike
+    // those endpoints it cannot be memoized and every emitted frame is a fresh
+    // render. On a GL host this is "full" and nothing changes.
+    return renderCameraFrame(doc, {
+      slideIndex: index, alpha, registry, width, height,
+      quality: await transitionQuality(),
+    });
 
   // FADE: crossfade the two COMPLETED-state snapshots. Both endpoints render at
   // alpha 1 (fully-applied states) — the crossfade lives in the layer opacity,

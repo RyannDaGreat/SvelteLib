@@ -2,7 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      viewport-fit=cover — REQUIRED for `env(safe-area-inset-*)` to be anything
+      but 0. Without it those values are zero on every device, so the phone
+      Present dock (web/PresentDock.svelte, `.present-dock` in app.css) would sit
+      UNDER the home indicator on a notched iPhone with no way to express the
+      clearance. This is the enabling half of a pair: the padding that USES the
+      insets lives in app.css's phone block, and the two belong together — cover
+      alone lets content extend into the unsafe strip, which is only correct once
+      something is reading the insets back out.
+
+      NOT ADDED, deliberately: `interactive-widget=resizes-content`. It is the
+      right lever for the software keyboard resizing the LAYOUT viewport instead
+      of only the visual one, and it is what Chrome honours — but this session
+      could not verify iOS Safari support, and iOS is the stated target. Shipping
+      an unverified key into the file that boots the app, with a comment claiming
+      it fixes the reported bounce, would be a confident wrong answer. The
+      remedy that IS well-established on iOS is `window.visualViewport`; see the
+      W5-MOBILE report for the measured-vs-reasoned split on that bug.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <link rel="icon" href="data:," />
     <!--
       INSTALLABILITY. The manifest and icon are emitted at the bundle root by
@@ -58,11 +77,11 @@
     -->
     <style>
       :root {
-        --boot-bg: #1b1b1b;
-        --boot-fg: #e6e6e6;
-        --boot-dim: #8c8c8c;
+        --boot-bg: #0e1117;
+        --boot-fg: #e4e8f0;
+        --boot-dim: #98a3b8;
         --boot-track: rgba(255, 255, 255, 0.1);
-        --boot-bar: #e6e6e6;
+        --boot-bar: #e4e8f0;
         --boot-error: #ff6b6b;
         --boot-reveal-ms: 400ms; /* progress UI fade-in; must match REVEAL_DELAY_MS */
         --boot-lift-ms: 220ms;   /* splash fade-out once the first frame exists */
