@@ -2875,6 +2875,83 @@ pre-pass `renderCtx` is hand-wired in 3 places (record it, do not generalise thi
 four more angle rows; `FRAME_KEYS` and the category titles are still duplicated (both
 marked HANDBACK PENDING); and `canSkip` is documented with zero implementors.
 
+### R6-28 EQUATION LOCK ("constrained" mode) — user, 2026-08-01. NEEDS FLESHING OUT BEFORE BUILD.
+
+**THE ASK.** A toolbar toggle, in the same group as the snap magnets and the ghost-objects
+toggle, with an icon meaning "constrained". While ON, **any property governed by an equation
+becomes READ-ONLY FROM THE GUI** — no drag, resize or rotate may overwrite it — and the canvas
+shows greyed affordances with a hover tooltip explaining WHY. Copy shape the user specified:
+*"Cannot move because of [lock icon]"*, then **bold**, then a newline, then the LIST of
+properties locked by equations that govern it. Partial constraint is the point:
+- `y` equation-locked -> dragging moves in **x only**.
+- `height` locked -> dragging a corner resizes **width only**.
+- `width = height * 2` -> the two move together, *"almost like a chain link"*, so height and
+  width stay constrained and the GUI respects it.
+- *"Every canvas type thing, including double click areas, might have to respect that."*
+- Only while the toggle is enabled. User: *"We might need to flesh this idea out a bit so that
+  it's not janky feeling to use inside the UI."*
+
+**THREE OF THE FOUR PIECES ALREADY EXIST — this is mostly a generalisation, not new machinery.**
+1. **A loud refusal on equation-bound drags is already shipped**: `web/interiorNav.js:173`
+   `equationBoundInteriorProps(app, node)`, consumed at `:225`. And crucially
+   `web/CanvasToolbar.svelte:53` **already cites it as the precedent "for the same situation"** —
+   i.e. the toolbar the user wants the button on already knows about this concept. Generalise
+   that function from interior-pose keys to any property; do NOT write a second one.
+2. **The projection protocol is already declared**: `core/registry.js:157` documents
+   `constrain(state, desired) -> allowed`, implemented by `clock_analog`, `donut`,
+   `elbow_arrow`, `curved_arrow`, `paper_peacock`. **Equation lock is a NEW INPUT to that same
+   projector, not a new interaction layer** — which is the anti-jank answer: one place decides
+   where a handle is allowed to land.
+3. **The single translation seam exists**: `web/canvas/dragKinds.js` `translationPairs`, "the ONE
+   translation rule", which drag, drag-all, modal grab and nudge all route through.
+
+**AND ONE OF THE USER'S ASSUMPTIONS IS ALREADY HALF-TRUE, DELIBERATELY.** `dragKinds.js:94-95`
+documents today's behaviour verbatim: *"pure-horizontal drag (dy === 0) writes x alone and leaves
+any equation stored on y untouched. **Grabbing an axis that DID move replaces its equation**"*
+with a literal. So the UNTOUCHED-axis case is already protected (that was the minimal-delta
+work); the TOUCHED-axis case **silently replaces authored work with a literal, by design**.
+Recorded as a design choice the user is now revising, not as a bug — but note it sits awkwardly
+beside this repo's no-silent-destruction instincts, which is an argument about the DEFAULT (see
+below).
+
+**THE HARD PART, AND IT IS NOT SYMMETRIC — the chain link.** Given `width = height * 2`:
+- Dragging the **height** handle is FREE: height is the independent variable, and width follows
+  because it is derived rather than stored.
+- Dragging the **width** handle is NOT: honouring it would require **INVERTING AN ARBITRARY
+  EXPRESSION** (`height = width / 2` here, but in general unsolvable).
+**THEREFORE THE HONEST RULE: a locked property may only be driven by dragging its INDEPENDENT
+VARIABLE; dragging the dependent handle refuses (greyed, with the reason).** Numeric inversion
+by fixed-step search would be permitted by the determinism rules, but it is a much larger
+feature and can feel unpredictable — explicitly OUT of the first version.
+
+**A DESIGN REFINEMENT THE LEAD FLAGS: GREY PER DEGREE OF FREEDOM, NOT PER HANDLE.** A corner
+handle drives BOTH w and h. If only `h` is locked, that corner is **not dead** — it must still
+resize width. Greying the whole corner would read as broken. So a corner with one axis locked
+should render as a single-axis affordance (cursor + visual cue), not as disabled.
+
+**THE TOOLTIP REASON MUST BE A FUNCTION, NOT A STRING** — and there is a precedent ruling for
+exactly this in this manifest: `requires` MAY BE A FUNCTION because *"a gate with SEVERAL
+disqualifying conditions has several true sentences, and a fixed string would be a confident
+wrong answer for all but one."* Identical logic: the sentence must be computed from WHICH
+properties are locked. **But do NOT reuse `commandUnavailableReason`** — that governs COMMANDS,
+and R6-13.4 already ruled against inventing a row equivalent; a canvas affordance needs its own
+reason function.
+
+**SCOPE WARNING:** the user wants *every* canvas interaction to respect it, including
+double-click areas. That only holds if the refusal lives at the **constraint/commit seam**
+(point 2 above), because a per-handler implementation will be missed somewhere. `interiorNav` is
+the existing proof that a double-click area can honour it.
+
+**OPEN QUESTIONS FOR THE USER — do not guess these:**
+1. **Default state.** He said "only when that option is enabled", so OFF. But today's default
+   silently overwrites an authored equation with a literal (`dragKinds.js:95`), which is the kind
+   of silent destruction this project otherwise forbids. Is the toggle really "protect my work",
+   and if so should protection be the default?
+2. **Chain-link direction:** is refusing the dependent handle acceptable for v1, or is
+   two-way (inversion) essential to the feel he wants?
+3. **Does the lock also apply to the Inspector's own fields**, or only to canvas gestures? (A
+   locked property typed into directly is a different affordance question.)
+
 ### R6-22 CONVENTION CONFORMANCE — A STANDING OBLIGATION ON EVERY AGENT
 
 User ruling, 2026-08-01, verbatim in spirit: "it's hyper duper critical that every
