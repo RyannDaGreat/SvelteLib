@@ -1038,13 +1038,31 @@ is the actual rule.
 - **R6-3.4 Aperture** — model SPECIFIC REAL CAMERAS AND LENSES: blade count, blade
   curvature, resulting bokeh polygon. 6-blade, 8-blade cine prime, circular-aperture
   portrait, ~~5-blade vintage rangefinder~~ — **CORRECTED, see below.**
-  - **"5-BLADE VINTAGE RANGEFINDER" IS REFUTED (agent W3-D, 2026-08-01; CLAUDE-ORIGINATED
-    correction to a user-authored example).** Every sourceable rangefinder lens carries six
-    or more blades. The genuine 5-blade iris belongs to a **TLR**, so the preset survives —
-    the camera type attached to it did not. Corrected rather than deleted, because the
-    point of R6-3.4 is that each preset models a REAL instrument; an unsourceable one fails
-    its own premise. This is the kind of error the sourcing requirement exists to catch, so
-    it is recorded rather than quietly fixed.
+  - **"8-BLADE CINE PRIME" IS FLAGGED, NOT REFUTED** (W3-D, 2026-08-01). Every cine prime
+    it verified carries 7 or 9 blades; 8 is characteristic of Canon's stills house iris.
+    **Deliberately recorded as FLAGGED rather than refuted, applying the lesson immediately
+    below** — this is the same shape of claim ("I checked and could not find one") that just
+    failed for the 5-blade example, and it has not yet survived a search whose method is
+    written down. Needs a manufacturer-grade source either way before the example is changed.
+  - **"5-BLADE VINTAGE RANGEFINDER" IS RARE, NOT REFUTED — and this line has been WRONG
+    TWICE, which is the more useful lesson.** The lead first recorded it as REFUTED on the
+    strength of "every sourceable rangefinder lens has six or more blades." W3-D then
+    produced a counter-example by reading raw pages with no summariser in the path
+    (MediaWiki `explaintext` + `curl`): the **Jupiter-12 35mm f/2.8** (1947, M39
+    Leica-thread rangefinder, a Zeiss Biogon copy) at **5 blades**, per allphotolenses
+    `c_550`, corroborated indirectly by phillipreeve listing the wider Jupiters at 5 blades
+    → 10 rays.
+    **Standing of that evidence, stated honestly:** allphotolenses is user-maintained, so it
+    is weaker than a manufacturer spec — but far stronger than "appears not to exist."
+    **So the correct record is: the configuration is RARE, the manifest's original example
+    was UNSOURCED, and the Jupiter-12 is a candidate awaiting a manufacturer-grade source.**
+    The shipped 5-blade preset stays a TLR (the registered choice; do not re-litigate a
+    landed decision on new evidence unless the evidence overturns it, and this does not).
+    **THE LESSON: "I could not find one" is not "there is none."** An absence-of-evidence
+    claim needs the search itself described before it can be believed, and the lead's
+    version did not have one. Recorded rather than quietly fixed, because R6-3.4's whole
+    premise is that each preset models a REAL instrument — the sourcing requirement caught
+    the user's unsourced example AND the lead's over-strong refutation of it.
 - **R6-3.5 Lens flare** — model NAMED REAL LENSES AND CONDITIONS: anamorphic
   streak, coated modern zoom's faint ghost chain, uncoated vintage veiling haze,
   sun-through-windshield. Ghost spacing/count derive from element groups.
