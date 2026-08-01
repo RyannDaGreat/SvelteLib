@@ -2179,10 +2179,15 @@
       kind: "resize",
       itemId: node.itemId,
       handleId,
-      // A GROUP resizes by driving its own SIMILARITY `scale` (which members
+      // An ARMATURE resizes by driving its own SIMILARITY `scale` (which members
       // inherit through applyGroupParenting), never w/h — so it needs its start
       // scale. Members follow with zero writes (manifest 15.7 GROUP RESIZE).
-      group: node.type === "group",
+      // Read off the DECLARED capability, not `node.type === "group"`, per
+      // core/registry.js: "tools/UI dispatch on these — NEVER on type". The same
+      // declaration is what routes the S modal and the multi-resize
+      // (dragKinds.scaleMemberPairs), so all three cannot disagree about which
+      // widgets scale by their similarity.
+      group: !!node.plugin.capabilities.armature,
       startScale: node.state.scale ?? 1,
       startState: { x: node.state.x, y: node.state.y, w: node.state.w, h: node.state.h },
       world: node.world,

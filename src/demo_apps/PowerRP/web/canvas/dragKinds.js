@@ -423,14 +423,17 @@ export function resizedBox(base, d, edges, mods) {
   const { gx, gy, fx, fy, cx, cy, xActive, yActive } = resizeAnchors(base, edges, mods);
 
   if (mods.uniform) {
-    const ux = gx - fx, uy = gy - fy;
-    const len2 = xActive && yActive ? ux * ux + uy * uy : xActive ? ux * ux : uy * uy;
-    if (len2 > 0) {
-      // K is SIGNED — see the flip note in the docstring. A negative K reflects the
-      // box through the anchor rather than clamping onto it.
-      const K = (xActive && yActive
-        ? (gx + d.x - fx) * ux + (gy + d.y - fy) * uy
-        : xActive ? (gx + d.x - fx) * ux : (gy + d.y - fy) * uy) / len2;
+    // K is SIGNED — see the flip note in the docstring. A negative K reflects the
+    // box through the anchor rather than clamping onto it. AN AXIS WITH NO GRABBED
+    // EDGE CONTRIBUTES ZERO TO THE DRIVE VECTOR, which is how "an edge handle
+    // drives K from its own axis" is said — the projection then reads that axis's
+    // factor alone, with no branch. (The three-way conditional this replaced said
+    // the same thing by enumerating cases.)
+    const K = uniformFactorFor(
+      { x: gx + d.x - fx, y: gy + d.y - fy },
+      { x: xActive ? gx - fx : 0, y: yActive ? gy - fy : 0 },
+    );
+    if (K !== null) {
       const ax = xActive ? fx : cx, ay = yActive ? fy : cy;
       return [ax + K * (bx0 - ax), ay + K * (by0 - ay), ax + K * (bx1 - ax), ay + K * (by1 - ay)];
     }
@@ -523,6 +526,44 @@ export function scaledBoxAboutPoint(member, kx, ky, ax, ay) {
  * @example scaleMemberPairs({itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startX:10, startY:20, startW:100, startH:50}, 2, 1, 0, 0, axisPinning("x")) // [[["items","r","x"],20],[["items","r","w"],200]]
  */
 export function scaleMemberPairs(member, kx, ky, ax, ay, constrain = UNCONSTRAINED) {
+  // AN ARMATURE SCALES BY ITS SIMILARITY, NOT BY ITS BOX (see armatureScaledState).
+  // Checked FIRST because it is the most specific branch and because getting it
+  // wrong is SILENT: a group whose w/h grew while its members stood still shows a
+  // bigger outline around unchanged contents, with no error anywhere.
+  if (member.plugin.capabilities?.armature) {
+    // AN EQUATION-BOUND `scale` PINS THE WHOLE GESTURE, not just its own key. On a
+    // bbox widget x/y are driven independently of w/h, so a held w still lets the
+    // item move; here x/y are pure COMPENSATION for the scale (the back-solve that
+    // keeps the grabbed anchor fixed), so with the factor held there is nothing to
+    // compensate for. K = 1 makes that fall out of the arithmetic rather than
+    // needing a second branch, and diffState then drops all three keys.
+    const held = typeof (member.rawItem ?? {}).scale !== "number";
+    // AN EXPLICIT AXIS CONSTRAINT REFUSES THE GESTURE ENTIRELY, and this is the two
+    // allowed sets COMPOSED rather than a special case: the armature's own set is
+    // {kx === ky}, a uniform scale moves it on BOTH axes, so a projection that pins
+    // either axis leaves the IDENTITY as the only common point. `S X` is a refusal
+    // of the other axis, and answering it with a uniform scale would grow exactly
+    // the dimension the user just excluded. Asked of the PROJECTION, not of the
+    // gesture, so a per-item lock the gesture knows nothing about counts the same.
+    // (A handle drag is NOT this: dragging one edge asks for a width, it does not
+    // forbid a height — which is why groupResizeState answers an edge grab with a
+    // uniform scale and has always been right to.)
+    const free = constrain({ x: 0, y: 0 }, { x: 1, y: 1 });
+    // FACTOR SPACE: the drive vector is the armature's own box, the target is the
+    // box the gesture asked for. A ZERO-EXTENT armature (null) has no shape to
+    // weight the two factors by, so it too lands on the identity — the same answer
+    // for the same reason, that the similarity has nothing to express.
+    const projected = uniformFactorFor(
+      { x: kx * member.startW, y: ky * member.startH },
+      { x: member.startW, y: member.startH },
+    );
+    const refused = held || free.x !== 1 || free.y !== 1 || projected === null;
+    const K = refused ? 1 : projected;
+    const g = { w: member.startW, h: member.startH, scale: member.startWorld.scale };
+    const desired = armatureScaledState(g, member.startWorld, K, scaledOrigin(member.startWorld, K, ax, ay));
+    const start = { scale: g.scale, x: member.startX, y: member.startY };
+    return geometryPairs(member.itemId, start, desired, constrain);
+  }
   if (member.plugin.moveBy) {
     const s = member.rawItem ?? {};
     const start = {}, desired = {};
@@ -666,6 +707,127 @@ export function scalePairs(member, factor, c, axis = null) {
 }
 
 /**
+ * Pure function. THE UNIFORM FACTOR: the single scale K that best takes the
+ * DRIVE vector `u` to the requested `target`, i.e. the scalar projection
+ * (target·u)/(u·u). `null` when `u` has no length — there is then no direction
+ * to measure a factor along, and each caller says what it does about that.
+ *
+ * IT IS A PROJECTION, NOT A COMPROMISE — the same "nearest allowed" law the
+ * handle-constraint protocol enforces everywhere else (core/derive.js), applied
+ * to the curve kx == ky instead of to an axis-aligned subspace. Minimising
+ * |target − K·u|² over K gives exactly this quotient, so "the nearest uniform
+ * scaling to what the gesture asked for" and "the projection onto the diagonal"
+ * are one statement, not two that happen to agree.
+ *
+ * TWO CALLERS, ONE FUNCTION, AND THEY ARE THE SAME OBJECT SEEN IN TWO SPACES:
+ *   - `resizedBox`'s `uniform` branch, in POSITION space: `u` is the vector from
+ *     the fixed anchor to the grabbed corner, `target` is where the pointer put
+ *     it. An axis with no grabbed edge contributes ZERO to `u`, which is how
+ *     "an edge handle drives K from its own axis" is expressed — not as a branch.
+ *   - `scaleMemberPairs`'s armature branch, in FACTOR space: `u` is the box
+ *     (w, h) and `target` is (kx·w, ky·h), which expands to
+ *     K = (kx·w² + ky·h²) / (w² + h²) — the box-weighted mean of the two
+ *     requested factors. Substituting u = (w, h) into the quotient IS that
+ *     formula; it is not a second derivation.
+ * So a group dragged by its own handles and one caught in a multi-resize agree
+ * by construction rather than by two authors reaching the same answer.
+ *
+ * AN ALREADY-UNIFORM REQUEST COMES BACK EXACT AT THE IDENTITY: target = u gives
+ * (u·u)/(u·u) = 1 exactly, which matters because a gesture that moved nothing
+ * must write nothing — a K one ulp off 1 would stamp a literal over a stored
+ * `scale` equation. (A non-identity uniform request can land one ulp away; that
+ * is invisible and cannot disturb an equation, because the coordinate is being
+ * written either way.)
+ *
+ * @param {{x: number, y: number}} target - where the drive vector should end up
+ * @param {{x: number, y: number}} u - the drive vector, from the anchor
+ * @returns {number|null}
+ *
+ * @example uniformFactorFor({x: 200, y: 100}, {x: 100, y: 50}) // 2 (target is exactly 2u)
+ * @example // an EDGE grab: the passive axis contributes nothing, so K is its own axis's factor
+ * @example uniformFactorFor({x: 180, y: 999}, {x: 100, y: 0}) // 1.8
+ * @example // FACTOR space — kx=3, ky=1 on a 200x100 box leans toward the wide axis:
+ * @example uniformFactorFor({x: 3 * 200, y: 1 * 100}, {x: 200, y: 100}) // 2.6
+ * @example uniformFactorFor({x: 5, y: 5}, {x: 0, y: 0}) // null (no drive direction)
+ */
+export function uniformFactorFor(target, u) {
+  const len2 = u.x * u.x + u.y * u.y;
+  return len2 > 0 ? (target.x * u.x + target.y * u.y) / len2 : null;
+}
+
+/**
+ * Pure function. Where a transform's world ORIGIN (its local 0,0) lands when the
+ * whole scene it sits in is scaled by K about world point (ax, ay). The one line
+ * that turns "scale everything about this point" into the target an armature
+ * back-solves its stored x/y from.
+ *
+ * WRITTEN AS origin + (1 − K)·(anchor − origin), NOT anchor + K·(origin − anchor),
+ * because the two are algebraically equal and NOT equal in floating point at the
+ * identity: the second form leaves a + (b − a), which need not be b, so a gesture
+ * with K === 1 would write an x that differs in the last bits — and diffState
+ * compares EXACTLY, so that write would silently replace a stored equation with a
+ * literal. This is the same hazard rotationPairs documents at its own back-solve.
+ *
+ * @param {{x: number, y: number}} world - the transform whose origin is being moved
+ * @param {number} k - the uniform scale factor
+ * @param {number} ax - the world x the scale is about
+ * @param {number} ay - the world y the scale is about
+ * @returns {{x: number, y: number}}
+ *
+ * @example scaledOrigin({x: 100, y: 100}, 2, 0, 0) // {x: 200, y: 200}
+ * @example scaledOrigin({x: 100, y: 100}, 2, 50, 50) // {x: 150, y: 150} (the anchor stays put)
+ * @example scaledOrigin({x: 100, y: 100}, 1, 7, 9) // {x: 100, y: 100} (identity is EXACT)
+ */
+export function scaledOrigin(world, k, ax, ay) {
+  return { x: world.x + (1 - k) * (ax - world.x), y: world.y + (1 - k) * (ay - world.y) };
+}
+
+/**
+ * Pure function. THE ARMATURE SCALE: the stored {scale, x, y} that puts an
+ * armature's world origin at `worldOrigin` with its similarity scaled by
+ * `signedK`. Shared by BOTH ways an armature can be scaled — its own resize
+ * handles (groupResizeState) and any gesture that scales it alongside other
+ * items (scaleMemberPairs' armature branch) — so the two cannot disagree.
+ *
+ * AN ARMATURE SCALES BY ITS SIMILARITY, NEVER BY ITS w/h. Its members follow its
+ * {x, y, rotation, scale} through core/derive.applyGroupParenting, and
+ * `groupInfluence` is a pure delta-from-bind over exactly those four; w/h never
+ * enters a transform. So growing w/h enlarges the outline and moves NOTHING
+ * inside it — visible as contents that slide around inside a box that grew
+ * without them.
+ *
+ * `signedK` IS CLAMPED NON-NEGATIVE HERE, AND ONLY HERE — a TECHNICAL bound with
+ * a derivation, not an arbitrary limit. A single item resizes by its BOX, so a
+ * negative extent there is a reflection (core/geometry.js "THE FLIP"). An
+ * armature resizes by its similarity's SCALAR `scale`, and a scalar has no
+ * handedness: negating it is a π-rotation, not a mirror, so it would silently
+ * rotate the subtree instead of flipping it. Worse, `world.scale` is the
+ * MAGNITUDE every length consumer multiplies by (blur sigma, stroke widths,
+ * material half-extents — render_gpu/skia/paint_skia.js), and a negative one
+ * puts negative lengths into the painter. To flip an armature's CONTENTS, flip
+ * its members (flip-h/flip-v recurse into a group for exactly this reason).
+ *
+ * @param {{w: number, h: number, scale: number}} gState - the armature's start box + scale
+ * @param {object} gWorld - its start world transform (rotation-pivoted)
+ * @param {number} signedK - the requested uniform factor (may be negative)
+ * @param {{x: number, y: number}} worldOrigin - where its local (0,0) must land
+ * @returns {{scale: number, x: number, y: number}}
+ *
+ * @example // an unrotated 200x100 armature at (100,100) scale 1, doubled about its own top-left:
+ * @example armatureScaledState({w: 200, h: 100, scale: 1}, {x: 100, y: 100, rotation: 0, scale: 1}, 2, {x: 100, y: 100}) // {scale: 2, x: 100, y: 100}
+ * @example // the same armature doubled about the world origin: its own origin doubles away too
+ * @example armatureScaledState({w: 200, h: 100, scale: 1}, {x: 100, y: 100, rotation: 0, scale: 1}, 2, {x: 200, y: 200}) // {scale: 2, x: 200, y: 200}
+ * @example // a negative factor is a reflection a scalar cannot express — clamped to 0:
+ * @example armatureScaledState({w: 200, h: 100, scale: 1}, {x: 0, y: 0, rotation: 0, scale: 1}, -2, {x: 0, y: 0}).scale // 0
+ */
+export function armatureScaledState(gState, gWorld, signedK, worldOrigin) {
+  const newScale = (gState.scale ?? 1) * Math.max(0, signedK);
+  const target = { x: worldOrigin.x, y: worldOrigin.y, rotation: gWorld.rotation, scale: newScale };
+  const { x, y } = stateXYForCenterPivotWorld(target, gState.w, gState.h);
+  return { scale: newScale, x, y };
+}
+
+/**
  * Pure function. The group's own {scale, x, y} for a handle resize (manifest
  * 15.7 GROUP RESIZE). A GROUP is an armature: its members follow its
  * {x, y, rotation, scale} SIMILARITY through core/derive.applyGroupParenting —
@@ -717,22 +879,12 @@ export function groupResizeState(gState, gWorld, edges, mods, dLocal) {
   const box = resizedBox([0, 0, gState.w, gState.h], dLocal, edges, { ...mods, uniform: true });
   const signedK = gState.w > 1e-9 ? (box[2] - box[0]) / gState.w
     : gState.h > 1e-9 ? (box[3] - box[1]) / gState.h : 1;
-  // K IS CLAMPED NON-NEGATIVE HERE, AND ONLY HERE — a TECHNICAL bound with a
-  // derivation, not the arbitrary kind resizedBox just shed. A single item resizes
-  // by its BOX, so a negative extent there is a reflection (core/geometry.js "THE
-  // FLIP"). A group resizes by its similarity's SCALAR `scale`, and a scalar has no
-  // handedness: negating it is a π-rotation, not a mirror, so it would silently
-  // rotate the group instead of flipping it. Worse, `world.scale` is the MAGNITUDE
-  // every length consumer multiplies by (blur sigma, stroke widths, material
-  // half-extents — render_gpu/skia/paint_skia.js), and a negative one puts negative
-  // lengths into the painter. To flip a group's CONTENTS, flip its members (the
-  // flip-h/flip-v commands recurse into a group for exactly this reason).
-  const K = Math.max(0, signedK);
-  const newScale = (gState.scale ?? 1) * K;
-  const worldOrigin = T.apply(gWorld, box[0], box[1]); // where local (0,0) lands
-  const targetWorld = { x: worldOrigin.x, y: worldOrigin.y, rotation: gWorld.rotation, scale: newScale };
-  const xy = stateXYForCenterPivotWorld(targetWorld, gState.w, gState.h);
-  return { scale: newScale, x: xy.x, y: xy.y };
+  // The non-negative clamp, the scale multiply and the x/y back-solve all live in
+  // armatureScaledState — this function's only remaining job is the HANDLE half
+  // (which box the drag produced, and hence K and where local (0,0) lands). The
+  // S-modal / multi-resize half of the same feature reaches the identical math
+  // through scaleMemberPairs, so the two cannot drift.
+  return armatureScaledState(gState, gWorld, signedK, T.apply(gWorld, box[0], box[1]));
 }
 
 /**

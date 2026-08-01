@@ -102,7 +102,23 @@ export const groupPlugin = {
   // chrome shown under Show Ghosts (core/derive.isGhostNode via this capability).
   // transform + bbox + resizable so a selected group moves/resizes/rotates like
   // any bbox widget; the derivation stage propagates that to members.
-  capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, ghost: true },
+  //
+  // armature:true — THIS WIDGET PARENTS OTHER ITEMS THROUGH ITS SIMILARITY, so
+  // every scale-shaped gesture must drive its `scale` and never its w/h (user,
+  // 2026-08-01: "When the group is scaled everything inside should scale with
+  // it"). It is a capability rather than a `type === "group"` test because
+  // core/registry.js states the rule in as many words — "tools/UI dispatch on
+  // these — NEVER on type" — and because the fact now has FOUR readers: the
+  // handle resize, the S modal, the multi-resize, and the drag-kind announcement.
+  // The word is the manifest's own for this mechanism ("THE ARMATURE MECHANISM",
+  // groups rough draft), not a new coinage.
+  //
+  // WHY IT CANNOT BE DERIVED FROM `members`. A widget could hold item ids without
+  // parenting them (a crop box targets an item; an arrow binds to two). What makes
+  // a group an armature is that core/derive.applyGroupParenting composes its
+  // {x, y, rotation, scale} onto those items' worlds — a fact about the
+  // DERIVATION, invisible in the state. The capability is where that gets said.
+  capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, ghost: true, armature: true },
   defaults: {
     type: "group", x: 0, y: 0, w: 0, h: 0, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },

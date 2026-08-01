@@ -60,7 +60,13 @@ test("groupBindWorld: reads flat bind through worldTransform (doctest)", () => {
   assert.deepEqual(
     groupBindWorld({ bind: { x: 100, y: 100, rotation: 0, scale: 1 }, w: 200, h: 100 }),
     { x: 100, y: 100, rotation: 0, scale: 1 });
-  assert.deepEqual(groupBindWorld({ w: 200, h: 100 }), { x: 0, y: 0, rotation: 0, scale: 1 });
+  // A MISSING BIND IS REFUSED, not silently treated as the identity. This
+  // assertion used to say the opposite (identity was documented as "the safe
+  // default"); an identity bind makes the influence the group's WHOLE world, so a
+  // group minted away from the origin teleports its members by that whole offset
+  // with nothing reported. Both halves are pinned: absent, and structurally wrong.
+  assert.throws(() => groupBindWorld({ w: 200, h: 100 }), /group has no bind pose/);
+  assert.throws(() => groupBindWorld({ bind: { rotation: 0, scale: 1 }, w: 200, h: 100 }), /group has no bind pose/);
 });
 
 // ── applyGroupParenting doctests + behavior ──────────────────────────────────

@@ -364,16 +364,27 @@ export function groupInfluence(current, bind) {
  * time — see web/app.svelte.js groupSelection); this reads it through the SAME
  * worldTransform pivot machinery the CURRENT pose uses (passing the group's
  * live w/h/rotationAnchor so both poses pivot about the same anchor), so
- * influence measures a pure current-vs-bind delta. Missing bind ⇒ identity
- * (a group with no bind never moves its members — the safe default; a
- * freshly-created group always has one).
+ * influence measures a pure current-vs-bind delta.
+ *
+ * A MISSING BIND THROWS, and this used to return the identity and call that "the
+ * safe default". It is not safe, it is the loudest possible wrong answer said
+ * quietly: influence = current ∘ invert(bind), so an identity bind makes the
+ * influence the group's FULL world instead of its delta from bind — a group minted
+ * at (500, 300) teleports every member by (500, 300) the moment it appears, and
+ * nothing anywhere reports it. `bind` is part of the group SCHEMA
+ * (plugins/group.js defaults), so its absence is a MALFORMED ITEM, categorically
+ * unlike applyGroupParenting's tolerance for a member that is merely absent from
+ * this slide — that is a scene condition and has a correct answer (skip); this has
+ * none. Every real writer supplies one: the defaults, groupSelection, and
+ * core/retype.js (which fills a new type's defaults for absent keys).
  *
  * @example groupBindWorld({bind: {x: 100, y: 100, rotation: 0, scale: 1}, w: 200, h: 100}) // {x: 100, y: 100, rotation: 0, scale: 1}
- * @example groupBindWorld({w: 200, h: 100}) // {x: 0, y: 0, rotation: 0, scale: 1}
+ * @example // groupBindWorld({w: 200, h: 100}) throws: group has no bind pose (bind: undefined) — …
  */
 export function groupBindWorld(groupState) {
   const b = groupState.bind;
-  if (!b) return T.identity();
+  if (!b || typeof b.x !== "number" || typeof b.y !== "number")
+    throw new Error(`group has no bind pose (bind: ${JSON.stringify(b)}) — a group's bind is its creation pose and is what its influence is measured against, so without one every member would be re-posed by the group's whole world transform`);
   // Re-pose the bind pose through worldTransform using the group's CURRENT box
   // geometry + rotation anchor (bind pose differs only in x/y/rotation/scale).
   return worldTransform({ ...groupState, x: b.x, y: b.y, rotation: b.rotation, scale: b.scale });

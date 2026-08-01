@@ -196,7 +196,14 @@ const NON_DRAGGABLE_HOOKS = new Set([
   "primaryAsset", "snapFeatures", "title", "toggleWrites", "toolGroups", "type",
 ]);
 /** Capability keys, same partition, same reason. */
-const DRAGGABLE_CAPABILITIES = new Set(["transform", "bbox", "resizable"]);
+// `armature` is DRAGGABLE even though it adds no new affordance of its own: it
+// changes what the EXISTING resize/scale seams WRITE (a similarity `scale`
+// instead of w/h — web/canvas/dragKinds.js scaleMemberPairs), so it is read by
+// the seam and a future author must not read it as unrelated to drags. The
+// per-widget REFUSE-ALL / REDIRECT / minimal-delta sweeps below therefore cover
+// its branch for free, which is the point of classifying it here rather than
+// parking it with the render-only capabilities.
+const DRAGGABLE_CAPABILITIES = new Set(["transform", "bbox", "resizable", "armature"]);
 const NON_DRAGGABLE_CAPABILITIES = new Set([
   "backdrop", "docVars", "ghost", "metaball", "purgeable", "skyLight", "skyReader",
 ]);
