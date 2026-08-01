@@ -677,7 +677,13 @@
       // resolvedBackgroundFill: a MATERIAL background must resolve here — this
       // rect never passes sceneIR (the camera-background freeze).
       rectCmd({ x: camRect.x, y: camRect.y, w: camRect.w, h: camRect.h, fill: resolvedBackgroundFill(camRect.background, nodes) }),
-      ...sceneIR(nodes, { pdfDisplay, mapTiles: prepareMapTiles(nodes, view, canvasEl.width, canvasEl.height) }),
+      // `live: true` — THIS surface repaints when an async raster lands (the
+      // imageEpoch / onImageLoad wake above), so a widget mid-render may draw its
+      // PREVIOUS frame instead of a transparent hole; the swap happens on the
+      // repaint. It is the editor canvas that earns the flag, not the app: a
+      // thumbnail or an export of the same scene captures once and must never be
+      // handed a stale picture. render_gpu/ports.sceneIR states the contract.
+      ...sceneIR(nodes, { pdfDisplay, mapTiles: prepareMapTiles(nodes, view, canvasEl.width, canvasEl.height), live: true }),
     ];
     // THE camera's dither settings drive the whole-frame final pass (scatters
     // 8-bit banding into grain). Read from the SAME folded state the scene came
