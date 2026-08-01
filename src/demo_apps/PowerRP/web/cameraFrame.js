@@ -31,6 +31,7 @@ import { canSkipNode } from "../core/view.js";
 import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
 import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
 import { prepareMapTiles } from "../render_gpu/map_display.js";
+import { prepareScene3dViews } from "../render_gpu/scene3d_display.js";
 import { rect as rectCmd } from "../render_gpu/ir.js";
 /**
  * Query (memoized fold + evaluate). THE evaluated folded state for
@@ -167,6 +168,12 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
   // here, in the one layer that knows the view. No live view — export, thumbnails,
   // the CLI — means no descriptor and the widget takes its camera-free fallback.
   const mapTiles = liveView ? prepareMapTiles(nodes, view, viewW, viewH) : null;
+  // The 3D VIEWPORT pre-pass, the third of the same shape (todo #257): a scene's
+  // render RESOLUTION follows the camera and its sub-frustum follows the visible
+  // crop, so neither can be decided in emit(). No live view — export, thumbnails,
+  // the CLI — means no descriptor, and the widget renders its whole self at its
+  // own world scale exactly as it did before this pre-pass existed.
+  const scene3d = liveView ? prepareScene3dViews(nodes, view, viewW, viewH) : null;
   return [
     // resolvedBackgroundFill (NOT bare parsePaint): the camera background is a
     // full PAINT prop — Solid / Linear / Radial / MATERIAL / `=` equation — and
@@ -181,6 +188,6 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
     // consumers (thumbnails, PNG/SVG/PDF export, the CLI) supply no view and get
     // `false`, which is byte-identical to this function's behaviour before the
     // flag existed. See render_gpu/ports.sceneIR for the full reasoning.
-    ...sceneIR(nodes, { pdfDisplay, mapTiles, live: liveView }),
+    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, live: liveView }),
   ];
 }

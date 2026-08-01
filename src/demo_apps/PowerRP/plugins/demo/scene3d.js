@@ -72,15 +72,19 @@
  * plugins/pdf_page.js:205's, deliberately: two widgets with the same control must
  * not have two names for it).
  *
- * NOT DONE, AND SAY SO PLAINLY: `renderMode: "live"` here means "resolution
- * follows the widget's OWN world scale", which is the latex/mermaid rasterization
- * rule — NOT pdf_page's live mode, which re-renders the on-screen visible CROP at
- * the CANVAS zoom. That needs a render PRE-PASS (the third, after
- * render_gpu/pdf_display.js and render_gpu/map_display.js), and a pre-pass has to
- * be threaded through render_gpu/ports.js, web/cameraFrame.js and
- * web/CanvasView.svelte. Those three edits are a HAND-BACK, not an omission that
- * was overlooked. Until they land, zooming the canvas into a 3D viewport
- * magnifies its raster instead of re-rendering it denser.
+ * AND `renderMode: "viewport"` IS NOW THE DEFAULT, which closes the gap this
+ * paragraph used to describe as open (todo #257). It re-renders the on-screen
+ * visible CROP at the CANVAS zoom, through an asymmetric sub-frustum, so zooming
+ * in shows more detail instead of magnifying pixels and the cost stays bounded by
+ * the screen. The pre-pass is render_gpu/scene3d_display.js — the third, after
+ * pdf_display and map_display — threaded through render_gpu/ports.js,
+ * web/cameraFrame.js and web/CanvasView.svelte.
+ *
+ * `renderMode: "live"` remains, and it is no longer a shortfall but a CHOICE: the
+ * resolution follows the widget's OWN world scale and ignores the canvas zoom, so
+ * a deck reads identically at every magnification. That is the latex/mermaid rule,
+ * and it is what every camera-free consumer (export, thumbnails, the CLI) uses
+ * whatever the mode says, because none of them has a canvas zoom to follow.
  *
  * ── HOW THE PIXELS REACH THE SCENE: THE `image` OP, NOT A NEW ONE ────────────
  * emit() draws ONE ordinary `image` op naming a ref in the shared image registry
@@ -114,6 +118,7 @@ import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
 import {
   SCENE3D_RASTER_DENSITY, roundScene3dScale, scene3dDrawRef, scene3dErrorFor,
 } from "../../render_gpu/gpu/scene3d_raster.js";
+import { SCENE3D_VIEWPORT_MODE } from "../../render_gpu/scene3d_display.js";
 
 /** Degrees per radian, for the few places a literal angle is easier to read in
  *  degrees than as a fraction of pi (the defaults table below). */
@@ -272,6 +277,12 @@ export function scene3dWrites(_s, pose) {
  * Pure function. The DEVICE SIZE one member should render at, given its folded
  * state and its own world scale. Two modes, and the mode is a property:
  *
+ *   "viewport" — the DEFAULT, and the only mode whose size this function does not
+ *              decide: render_gpu/scene3d_display.js sizes it from the visible
+ *              crop at screen resolution, and emit() uses that descriptor. With NO
+ *              descriptor (export, thumbnails, the CLI, a bare-node test) it falls
+ *              through to the "live" rule below, which is the camera-free answer
+ *              and is byte-identical to what those consumers already got.
  *   "live"   — follow the widget's own world scale at SCENE3D_RASTER_DENSITY
  *              device px per canvas unit, quantized onto the raster-scale grid so
  *              a resize drag reuses one raster across small changes. This is the
@@ -293,7 +304,7 @@ export function scene3dWrites(_s, pose) {
  */
 export function scene3dRasterSize(s, worldScale) {
   const boxW = Math.max(1, s.w ?? 1), boxH = Math.max(1, s.h ?? 1);
-  if ((s.renderMode ?? RENDER_MODE_DEFAULT) === "raster") {
+  if (isFixedRaster(s)) {
     const dpiFactor = (s.rasterDPI > 0 ? s.rasterDPI : RASTER_DEFAULT_DPI) / CSS_REFERENCE_DPI;
     return {
       w: Math.max(1, Math.round((s.rasterWidth > 0 ? s.rasterWidth : boxW * SCENE3D_RASTER_DENSITY) * dpiFactor)),
@@ -304,10 +315,35 @@ export function scene3dRasterSize(s, worldScale) {
   return { w: Math.max(1, Math.round(boxW * scale)), h: Math.max(1, Math.round(boxH * scale)) };
 }
 
-/** The two render modes, spelled exactly as plugins/pdf_page.js spells them so a
- *  reader who knows one widget's control knows the other's. */
-const RENDER_MODES = ["live", "raster"];
-const RENDER_MODE_DEFAULT = "live";
+/** THE THREE RENDER MODES. "live" and "raster" are spelled exactly as
+ *  plugins/pdf_page.js spells them, so a reader who knows one widget's control
+ *  knows the other's; "viewport" is the third and it is the DEFAULT.
+ *
+ *  WHY THE DEFAULT MOVED (todo #257, and it is a behaviour change to every
+ *  existing 3D widget, so it is stated rather than slipped in). The user's ruling
+ *  makes screen-resolution rendering a GENERAL PRINCIPLE — "whatever my
+ *  screen-space resolution is when I view it is what it should render… so I can
+ *  never see the pixels" — and a principle that has to be switched on per widget
+ *  is a principle nobody gets. The two older modes remain, and each is now the
+ *  right answer to a question "viewport" is the wrong answer to: "live" pins the
+ *  raster to the widget's own size so a deck looks identical at every canvas zoom,
+ *  and "raster" pins the COST of a heavy scene to a number the author chooses. */
+const RENDER_MODES = [SCENE3D_VIEWPORT_MODE, "live", "raster"];
+const RENDER_MODE_DEFAULT = SCENE3D_VIEWPORT_MODE;
+
+/** Pure function. Is this widget in Fixed mode? The predicate behind the Fixed
+ *  rows' `visibleWhen`, so the three rows and the branch in scene3dRasterSize
+ *  cannot come to disagree about what "Fixed" means.
+ *
+ *  @param {object} s folded state
+ *  @returns {boolean}
+ *
+ *  @example isFixedRaster({renderMode: "raster"}) // true
+ *  @example isFixedRaster({}) // false (the default is Viewport)
+ *  @example isFixedRaster({renderMode: "viewport"}) // false */
+export function isFixedRaster(s) {
+  return (s.renderMode ?? RENDER_MODE_DEFAULT) === "raster";
+}
 /** Fixed mode's default density. 96 is the CSS reference pixel density (1 CSS px
  *  = 1/96"), the same default pdf_display.PDF_RASTER_DEFAULT_DPI picks and for the
  *  same reason: a scene rasters at roughly screen resolution unless asked
@@ -417,14 +453,23 @@ export function cameraRows() {
  */
 export function resolutionRows() {
   return [
+    // A MODE SELECTOR: the rows that belong to ONE mode are HIDDEN under the
+    // others rather than shown inert. That is the house rule for this shape
+    // (`visibleWhen`, read by web/Inspector.svelte groupRows; the user's own
+    // ruling behind it is "I still have stroke width options even when stroke
+    // material is off, which is kind of dumb"), and he named this instance
+    // himself: "fixed height and fixed width should NOT be available options when
+    // we have that." ACCEPTED COST, the same one plugins/text.js records: hiding a
+    // row hides its equation marker with it. A row that reports a number the
+    // render ignores is worse.
     {
       key: "renderMode", label: "Resolution", kind: "select", options: RENDER_MODES,
-      optionLabels: { live: "Follow widget size", raster: "Fixed" }, category: "rendering",
-      help: "Follow widget size: the scene renders at this widget's own scale, so making the widget bigger renders it bigger. Fixed: render once at the exact pixel size below whatever the widget's size, then scale that one image — use it when a scene is slow and you want its cost pinned. KNOWN BOUND: zooming the CANVAS in does not yet re-render either mode at a higher density; that needs the render pre-pass this widget has not been wired to.",
+      optionLabels: { viewport: "Screen resolution", live: "Follow widget size", raster: "Fixed" }, category: "rendering",
+      help: "Screen resolution (default): the scene re-renders at whatever resolution it occupies on YOUR screen, cropped to the part that is actually visible — so zooming the canvas in shows more detail instead of magnifying pixels, and the cost stays bounded by the screen rather than by the zoom. Follow widget size: the resolution follows the widget's own scale and ignores the canvas zoom, so the deck looks the same at every magnification. Fixed: render once at the exact pixel size below, then scale that one image — use it to pin the cost of a heavy scene.",
     },
-    { key: "rasterWidth", label: "Fixed width", kind: "number", min: 0, category: "rendering", help: "Fixed mode only: the render width in pixels. 0 derives it from the widget's box. NOTE: this bounds the PIXEL cost, which is the small half — most of a splat frame's time is the sort, which is resolution-independent, so halving this will not halve the render time." },
-    { key: "rasterHeight", label: "Fixed height", kind: "number", min: 0, category: "rendering", help: "Fixed mode only: the render height in pixels. 0 derives it from the widget's box." },
-    { key: "rasterDPI", label: "Fixed density", kind: "number", min: 1, category: "rendering", help: "Fixed mode only: multiplies the fixed width and height. 96 renders at roughly screen resolution; 192 is the crisp-on-a-retina-display choice." },
+    { key: "rasterWidth", label: "Fixed width", kind: "number", min: 0, category: "rendering", visibleWhen: isFixedRaster, help: "The render width in pixels. 0 derives it from the widget's box. NOTE: this bounds the PIXEL cost, which is the small half — most of a splat frame's time is the sort, which is resolution-independent, so halving this will not halve the render time." },
+    { key: "rasterHeight", label: "Fixed height", kind: "number", min: 0, category: "rendering", visibleWhen: isFixedRaster, help: "The render height in pixels. 0 derives it from the widget's box." },
+    { key: "rasterDPI", label: "Fixed density", kind: "number", min: 1, category: "rendering", visibleWhen: isFixedRaster, help: "Multiplies the fixed width and height. 96 renders at roughly screen resolution; 192 is the crisp-on-a-retina-display choice." },
   ];
 }
 
@@ -633,6 +678,13 @@ function makeScene3dPlugin(member) {
     title: member.title,
     capabilities: { bbox: true, transform: true, resizable: true },
 
+    // THE PRE-PASS OPT-IN (todo #257). render_gpu/scene3d_display.js selects the
+    // nodes it sizes by THIS flag rather than by a list of type names, so a third
+    // member of the family is opted in by the factory that builds it and cannot be
+    // forgotten. pdf_page is selected by its type string, which is correct for a
+    // widget that is one of a kind and would be a drifting mirror for a family.
+    viewportRaster: true,
+
     // CREATION: drag a box, then choose the source (web/widget_handlers.js's
     // "bbox_then_asset"). A viewport's size is a composition decision and its
     // source is a content decision, and the create phase is where both belong —
@@ -800,18 +852,39 @@ function makeScene3dPlugin(member) {
       if (failure)
         return framed(shifted(messageAffordance(c.w, c.h, `Could not load this scene — ${failure}`, { bg: ERROR_BG, ink: ERROR_INK, border: ERROR_BORDER })));
 
-      const size = scene3dRasterSize(s, world?.scale ?? 1);
+      // THE VIEWPORT DESCRIPTOR (todo #257), when a surface that knows the camera
+      // supplied one. It carries BOTH halves of "render what is on screen": the
+      // device size to render at, and the sub-frustum that restricts the camera to
+      // the visible window. Without it — export, thumbnails, the CLI, a bare-node
+      // test — everything below is exactly the camera-free path that shipped
+      // before, which is what keeps those consumers byte-identical.
+      const win = ctx?.scene3d ?? null;
+      const size = win ? { w: win.deviceW, h: win.deviceH } : scene3dRasterSize(s, world?.scale ?? 1);
       const pose = scene3dPose(s);
-      const ref = scene3dDrawRef({
+      // A RASTER REMEMBERS WHERE IT GOES. `place` is where THIS render belongs —
+      // the visible window under a viewport crop, the whole cropped box otherwise
+      // — and scene3dDrawRef hands it straight back, EXCEPT when it substitutes a
+      // stale frame, where it returns that frame's own place instead. Without
+      // this, a held frame of the whole object would be drawn into the current
+      // crop window and read as a wrongly-zoomed scene rather than a slightly old
+      // one; measured mid-zoom while building tests/scene3d_zoom_probe.js. The
+      // source sub-rect rides along for the same reason: a whole-box raster is
+      // sampled through the crop insets, a window raster is used entire, and the
+      // two must not be mixed.
+      const place = win
+        ? { x: win.x, y: win.y, w: win.w, h: win.h, source: null }
+        : { x: c.x, y: c.y, w: c.w, h: c.h, source: { sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh } };
+      const drawn = scene3dDrawRef({
         kind: member.kind, src: s.src, pose, look: scene3dLook(s),
         lit: member.lit, exposure: s.exposure ?? 1,
-        w: size.w, h: size.h,
+        w: size.w, h: size.h, viewOffset: win?.viewOffset ?? null, place,
         near: Math.max(pose.distance * NEAR_FRACTION, Number.EPSILON),
         far: Math.max(pose.distance * FAR_MULTIPLE, 1),
       }, { hold: ctx?.live === true });
+      const at = drawn.place ?? place;
       const quad = image({
-        ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1,
-        sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh, sampling: "bilinear",
+        ref: drawn.ref, x: at.x, y: at.y, w: at.w, h: at.h, opacity: s.opacity ?? 1,
+        ...(at.source ?? {}), sampling: "bilinear",
       });
       return framed([quad]);
     },

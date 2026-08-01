@@ -39,6 +39,7 @@
   // hand-assembles its own IR (the standing TODO in cameraFrame.js's header) — a
   // map would otherwise get no descriptor in the editor and fetch nothing.
   import { prepareMapTiles } from "../render_gpu/map_display.js";
+  import { prepareScene3dViews } from "../render_gpu/scene3d_display.js";
   import { rect as rectCmd } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { bootDone, bootFailed } from "./bootProgress.js";
@@ -683,7 +684,15 @@
       // repaint. It is the editor canvas that earns the flag, not the app: a
       // thumbnail or an export of the same scene captures once and must never be
       // handed a stale picture. render_gpu/ports.sceneIR states the contract.
-      ...sceneIR(nodes, { pdfDisplay, mapTiles: prepareMapTiles(nodes, view, canvasEl.width, canvasEl.height), live: true }),
+      // scene3d: the viewport pre-pass (todo #257) — the resolution and the
+      // sub-frustum a 3D scene renders at, both of which follow THIS canvas's
+      // zoom and pan and so cannot be decided inside a camera-free emit().
+      ...sceneIR(nodes, {
+        pdfDisplay,
+        mapTiles: prepareMapTiles(nodes, view, canvasEl.width, canvasEl.height),
+        scene3d: prepareScene3dViews(nodes, view, canvasEl.width, canvasEl.height),
+        live: true,
+      }),
     ];
     // THE camera's dither settings drive the whole-frame final pass (scatters
     // 8-bit banding into grain). Read from the SAME folded state the scene came

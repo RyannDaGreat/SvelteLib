@@ -132,10 +132,17 @@ try {
   const statsOf = () => page.evaluate(() => window.__stale3d.raster.scene3dRasterStats());
 
   // ── 1. THE FIXTURE RENDERS, AND THE MODULES ARE THE APP'S OWN ─────────────
+  // `live: false` — THE EXACT REF, NEVER A HOLD. This is the baseline the
+  // convergence check below compares against, so it has to be the raster the
+  // DOCUMENT asks for. Asking with the hold on would take whatever happened to be
+  // ready, and since todo #257 the canvas renders a CROPPED raster of the same
+  // scene, so "whatever is ready" is routinely a different picture. Measured: the
+  // baseline came back carrying the canvas's sub-frustum suffix and the
+  // convergence check then failed against a ref that was never wrong.
   const deadline = Date.now() + RASTER_TIMEOUT_MS;
   let first = null;
   while (Date.now() < deadline) {
-    first = await drawn(splatId, true);
+    first = await drawn(splatId, false);
     if (first?.status === "ready") break;
     await sleep(200);
   }
@@ -219,7 +226,7 @@ try {
   const settleDeadline = Date.now() + RASTER_TIMEOUT_MS;
   let after = null;
   while (Date.now() < settleDeadline) {
-    after = await drawn(splatId, true);
+    after = await drawn(splatId, false); // the exact ref, for the same reason as the baseline
     if (after?.status === "ready") break;
     await sleep(200);
   }

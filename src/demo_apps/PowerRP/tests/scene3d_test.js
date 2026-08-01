@@ -50,9 +50,10 @@ import { fileURLToPath } from "node:url";
 import { createRegistry } from "../core/registry.js";
 import { allPlugins } from "../plugins/index.js";
 import {
-  MAX_PITCH, cameraRows, resolutionRows, scene3dIsEmpty, scene3dLook, scene3dPlugins,
-  scene3dPose, scene3dRasterSize, scene3dWrites,
+  MAX_PITCH, cameraRows, isFixedRaster, resolutionRows, scene3dIsEmpty, scene3dLook,
+  scene3dPlugins, scene3dPose, scene3dRasterSize, scene3dWrites,
 } from "../plugins/demo/scene3d.js";
+import { prepareScene3dViews, scene3dViewDescriptor } from "../render_gpu/scene3d_display.js";
 import {
   SCENE3D_RASTER_DENSITY, digest32, ensureScene3dRasterized, orbitEye, orbitUp,
   roundScene3dScale, scene3dAvailable, scene3dDrawRef, scene3dHoldKey,
@@ -203,10 +204,109 @@ test("a raster scale quantizes, so a resize drag reuses one raster across small 
 test("the resolution rows are spelled the way pdf_page spells the identical control", () => {
   const [mode] = resolutionRows();
   assert.equal(mode.key, "renderMode");
-  assert.deepEqual(mode.options, ["live", "raster"]);
+  // "viewport" is ours and FIRST because it is the default; the other two keep
+  // pdf_page's spelling exactly, because two widgets with the same control must
+  // not grow two names for it.
+  assert.deepEqual(mode.options, ["viewport", "live", "raster"]);
   const src = readFileSync(join(here, "..", "plugins", "pdf_page.js"), "utf8");
   for (const key of ["rasterWidth", "rasterHeight", "rasterDPI"])
     assert.ok(src.includes(`key: "${key}"`), `pdf_page no longer declares "${key}" — the shared vocabulary drifted`);
+  assert.deepEqual(Object.keys(mode.optionLabels).sort(), [...mode.options].sort(),
+    "every mode must have a label — an unlabelled option shows its raw id in the select");
+});
+
+// ── 5b. THE MODE SELECTOR AND THE VIEWPORT PRE-PASS (todo #257) ──────────────
+
+test("the Fixed rows exist ONLY in Fixed mode — a mode selector hides, never disables", () => {
+  // The user's own words: "fixed height and fixed width should NOT be available
+  // options when we have that." Asserted through the SAME predicate the sizing
+  // branch reads, so a row cannot come to disagree with the render about what
+  // Fixed means.
+  const fixedRows = resolutionRows().filter((r) => r.key.startsWith("raster"));
+  assert.equal(fixedRows.length, 3, "Fixed width, Fixed height, Fixed density");
+  for (const row of fixedRows) {
+    assert.equal(typeof row.visibleWhen, "function", `${row.key} must declare visibleWhen`);
+    assert.equal(row.visibleWhen({ renderMode: "raster" }), true, `${row.key} belongs to Fixed`);
+    for (const mode of ["viewport", "live"])
+      assert.equal(row.visibleWhen({ renderMode: mode }), false, `${row.key} must be HIDDEN in ${mode}`);
+    assert.equal(row.visibleWhen({}), false, "…and hidden by DEFAULT, which is no longer Fixed");
+  }
+  assert.equal(isFixedRaster({ renderMode: "raster" }), true);
+  assert.equal(isFixedRaster({}), false);
+});
+
+test("the pre-pass selects by DECLARATION, so a third family member cannot be forgotten", () => {
+  for (const p of scene3dPlugins)
+    assert.equal(p.viewportRaster, true, `${p.type} must opt into the viewport pre-pass`);
+  // And the flag genuinely gates it: an identical node whose plugin lacks the
+  // declaration gets no descriptor. Without this half the check above would pass
+  // on a pre-pass that simply sized every node in the scene.
+  const world = { x: 0, y: 0, rotation: 0, scale: 1 };
+  const view = { zoom: 1, panX: 0, panY: 0, dpr: 1 };
+  const state = { w: 100, h: 100, renderMode: "viewport" };
+  assert.equal(prepareScene3dViews([{ itemId: "a", state, world, plugin: {} }], view, 400, 400).size, 0);
+  assert.equal(prepareScene3dViews([{ itemId: "a", state, world, plugin: { viewportRaster: true } }], view, 400, 400).size, 1);
+  // …and only in the mode it serves. The other two keep the sizing they had.
+  for (const mode of ["live", "raster"])
+    assert.equal(prepareScene3dViews(
+      [{ itemId: "a", state: { ...state, renderMode: mode }, world, plugin: { viewportRaster: true } }], view, 400, 400,
+    ).size, 0, `${mode} must take no descriptor`);
+});
+
+test("THE BOUND THAT IS THE WHOLE POINT: the raster follows the SCREEN, not the zoom", () => {
+  const node = { itemId: "a", state: { w: 100, h: 100 }, world: { x: 0, y: 0, rotation: 0, scale: 1 } };
+  const at = (zoom) => scene3dViewDescriptor(node, { zoom, panX: 0, panY: 0, dpr: 1 }, 400, 400);
+  // At zoom 1 the whole widget fits and the raster is its on-screen size at the
+  // app-wide 2x supersample — the SAME density "Follow widget size" uses, so
+  // switching modes at rest cannot make a scene softer.
+  assert.deepEqual([at(1).deviceW, at(1).deviceH], [200, 200]);
+  // Zoomed 8x, 32x, 128x the widget is far bigger than the canvas, so the raster
+  // is the CANVAS — constant. A whole-object raster would have wanted 64x, 1024x
+  // and 16384x the pixels of the zoom-1 one, which is the defect being fixed.
+  for (const zoom of [8, 32, 128]) {
+    const d = at(zoom);
+    assert.deepEqual([d.deviceW, d.deviceH], [800, 800], `zoom ${zoom} must still raster one canvas-worth (at 2x density)`);
+    // …and the DETAIL is real, not magnification: the same 400x400 surface now
+    // covers a smaller and smaller LOCAL window, which is more device px per
+    // local unit every time. That is "I can never see the pixels".
+    assert.ok(near(d.w, 400 / zoom), `zoom ${zoom}: the window is the canvas back-projected — expected ${400 / zoom} local units, got ${d.w}`);
+    // …and the DETAIL is real rather than magnification: the same 400x400 surface
+    // now covers 400/zoom local units, so the VIRTUAL image it is a window into
+    // grows with the zoom. That number is projection arithmetic, never an
+    // allocation, which is why it is allowed to be enormous.
+    assert.ok(near(d.viewOffset.fullW, 100 * zoom * 2), `the virtual image must be the whole box at raster scale (got ${d.viewOffset.fullW})`);
+  }
+});
+
+test("the sub-frustum's window is placed where the widget actually is", () => {
+  // Pan the camera so only the widget's RIGHT half is on screen: the offset must
+  // move to the middle of the virtual image, not stay at the origin. An offset
+  // stuck at 0 would draw the left half everywhere and read as a shifted scene
+  // rather than as a bug — which is exactly why this is asserted separately from
+  // the size.
+  const node = { itemId: "a", state: { w: 100, h: 100 }, world: { x: 0, y: 0, rotation: 0, scale: 1 } };
+  const whole = scene3dViewDescriptor(node, { zoom: 1, panX: 0, panY: 0, dpr: 1 }, 400, 400);
+  assert.deepEqual([whole.viewOffset.x, whole.viewOffset.y], [0, 0]);
+  const right = scene3dViewDescriptor(node, { zoom: 1, panX: -50, panY: 0, dpr: 1 }, 40, 400);
+  assert.ok(right.viewOffset.x > 0, `a panned-off left edge must offset the frustum (got ${right.viewOffset.x})`);
+  assert.ok(near(right.viewOffset.x, right.x * 2), "the offset is the window's local origin at the raster scale");
+  assert.equal(scene3dViewDescriptor(node, { zoom: 1, panX: -9000, panY: 0, dpr: 1 }, 400, 400), null,
+    "a widget entirely off screen takes no descriptor at all");
+});
+
+test("a viewport-cropped emit draws the WINDOW at the window, and an uncropped one draws the box", () => {
+  const state = { ...splat.defaults, src: "scene.ply" };
+  const world = { x: 0, y: 0, rotation: 0, scale: 1 };
+  const win = { x: 10, y: 20, w: 30, h: 40, deviceW: 60, deviceH: 80, viewOffset: { fullW: 200, fullH: 200, x: 20, y: 40 } };
+  const [cropped] = splat.emit(state, null, world, { scene3d: win, live: false }).filter((o) => o.op === "image");
+  assert.deepEqual([cropped.x, cropped.y, cropped.w, cropped.h], [10, 20, 30, 40],
+    "the raster IS the window, so it is drawn at the window's rect");
+  assert.equal(cropped.sw, undefined, "…and carries its whole self: no source sub-rect");
+  // No descriptor ⇒ the camera-free path, unchanged. This is the assertion that
+  // keeps every export, thumbnail and CLI frame byte-identical to before #257.
+  const [whole] = splat.emit(state, null, world).filter((o) => o.op === "image");
+  assert.deepEqual([whole.x, whole.y, whole.w, whole.h], [0, 0, state.w, state.h]);
+  assert.notEqual(cropped.ref, whole.ref, "two different pictures may never share one cache slot");
 });
 
 // ── 6. THE POSE MATH ─────────────────────────────────────────────────────────
@@ -338,8 +438,13 @@ test("with no engine there is no hold, so the true ref is drawn whatever the cal
   // cli/render.js's lane. A hold can only ever name a raster this process
   // produced, and this process produces none — so `hold` must be inert here
   // rather than reaching for something that cannot exist.
-  assert.equal(scene3dDrawRef(SPEC, { hold: true }), scene3dRef(SPEC));
-  assert.equal(scene3dDrawRef(SPEC), scene3dRef(SPEC), "hold defaults to OFF — the safe answer for an unknown caller");
+  assert.equal(scene3dDrawRef(SPEC, { hold: true }).ref, scene3dRef(SPEC));
+  assert.equal(scene3dDrawRef(SPEC).ref, scene3dRef(SPEC), "hold defaults to OFF — the safe answer for an unknown caller");
+  // AND THE PLACE COMES BACK UNCHANGED when the true ref is used, which is what
+  // makes the return value safe to draw at unconditionally. A hold that could
+  // silently null a caller's own placement would move every widget it touched.
+  const placed = { x: 3, y: 4, w: 5, h: 6, source: null };
+  assert.deepEqual(scene3dDrawRef({ ...SPEC, place: placed }, { hold: true }).place, placed);
 });
 
 test("sceneIR's `live` reaches emit(), and its ABSENCE is byte-identical to before it existed", () => {

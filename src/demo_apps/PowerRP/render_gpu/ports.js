@@ -180,7 +180,10 @@ export function videoIR(s) {
  * context `{pdfDisplay, mapTiles}`). The MAP tile pre-pass
  * (render_gpu/map_display.prepareMapTiles) rides the same seam for the same
  * reason: a map's tile DEPTH follows the camera and its tile LIST follows the
- * visible crop, neither of which emit() may see. This is the ONLY view-derived data emit ever sees,
+ * visible crop, neither of which emit() may see. The THIRD, `scene3d`
+ * (render_gpu/scene3d_display.prepareScene3dViews), is the same shape once more:
+ * a 3D viewport's render RESOLUTION follows the camera and its sub-frustum follows
+ * the visible crop. This is the ONLY view-derived data emit ever sees,
  * and only pdf_page reads it (to draw the crisp visible-region raster instead of
  * a whole-page bitmap); every other plugin ignores the 4th arg. Surfaces with no
  * pre-pass (export, thumbnails, CLI, tests) pass nothing → emit takes its
@@ -201,7 +204,7 @@ export function videoIR(s) {
  *
  * Args:
  *   nodes (object[]): deriveRenderTree output (nodes carry .plugin)
- *   ctx ({pdfDisplay?: Map, mapTiles?: Map, live?: boolean}): optional render-time display context (see above)
+ *   ctx ({pdfDisplay?: Map, mapTiles?: Map, scene3d?: Map, live?: boolean}): optional render-time display context (see above)
  *
  * Returns:
  *   object[]: IR commands (z-ordered because nodes are)
@@ -219,6 +222,7 @@ export function sceneIR(nodes, ctx = {}) {
   const display = {
     pdfDisplay: ctx.pdfDisplay ?? null,
     mapTiles: ctx.mapTiles ?? null,
+    scene3d: ctx.scene3d ?? null,
     live: ctx.live === true,
   };
   const byId = new Map(nodes.map((n) => [n.itemId, n]));
@@ -418,10 +422,11 @@ function emitNodeBody(node, byId, display) {
   // `live` participates in that test so a surface that repaints but happens to
   // hold no PDF and no map still reaches its widgets — without it, the flag would
   // silently evaporate on exactly the scenes it matters for.
-  const renderCtx = display.pdfDisplay || display.mapTiles || display.live
+  const renderCtx = display.pdfDisplay || display.mapTiles || display.scene3d || display.live
     ? {
         pdfDisplay: display.pdfDisplay?.get(node.itemId) ?? null,
         mapTiles: display.mapTiles?.get(node.itemId) ?? null,
+        scene3d: display.scene3d?.get(node.itemId) ?? null,
         live: display.live,
       }
     : null;

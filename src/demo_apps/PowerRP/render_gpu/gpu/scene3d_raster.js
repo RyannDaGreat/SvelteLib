@@ -159,13 +159,19 @@ const rasters = new Map();
  *  frame would dominate everything else in this file. */
 const sources = new Map();
 
-/** holdKey -> the ref of the most recently COMPLETED raster of that (kind, src) —
+/** holdKey -> {ref, place} for the most recently COMPLETED raster of that (kind, src) —
  *  the frame scene3dDrawRef hands a LIVE consumer while a newer pose is still
  *  rendering (see the header's HOLD section). A pin is a REFERENCE into `rasters`,
  *  never a second owner: trimScene3dCache skips pinned refs so the outgoing frame
  *  stays alive until a newer render replaces it as the pin, exactly as
  *  video_registry's evictScrubFrames treats its own holds. */
 const held = new Map();
+
+/** The refs any consumer has ASKED FOR since the last trim — the keep-set,
+ *  gathered at the one place that can know it (ensureScene3dRasterized) and
+ *  consumed by trimScene3dCache. pdf_page_raster.requestedSinceTrim, verbatim and
+ *  for the reason it gives. */
+let requestedSinceTrim = new Set();
 
 /** The single engine context, built on first use (see engine()). */
 let enginePromise = null;
@@ -232,8 +238,22 @@ export function scene3dRef(spec) {
   const posed = [p.targetX, p.targetY, p.targetZ, p.yaw, p.pitch, p.roll, p.distance, p.fov]
     .map((v) => (Number.isFinite(v) ? v.toFixed(POSE_DIGITS) : "0"))
     .join(",");
-  return `scene3d:${spec.kind}:${digest32(`${spec.src} ${spec.look ?? ""}`)}:${digest32(posed)}:${spec.w}x${spec.h}`;
+  const base = `scene3d:${spec.kind}:${digest32(`${spec.src}\u0000${spec.look ?? ""}`)}:${digest32(posed)}:${spec.w}x${spec.h}`;
+  // A VIEWPORT CROP IS PART OF THE KEY, appended only when there IS one so that
+  // every ref spelled before sub-frustum rendering existed still spells the same
+  // string. Two crops of one pose are two different pictures; sharing one slot
+  // between them would draw half of a scene where the other half belongs.
+  const v = spec.viewOffset;
+  return v
+    ? `${base}@${digest32([v.fullW, v.fullH, v.x, v.y].map((n) => n.toFixed(VIEW_OFFSET_DIGITS)).join(","))}`
+    : base;
 }
+
+/** How finely a sub-frustum's placement is keyed. The quantities are DEVICE
+ *  PIXELS of the virtual full-size image, so two decimals is a hundredth of a
+ *  pixel — below anything visible, and coarse enough that the float noise a pan
+ *  produces does not mint a fresh ref for a view that has not actually moved. */
+const VIEW_OFFSET_DIGITS = 2;
 
 /** How many decimals of a pose scalar survive into the cache key. Six is finer
  *  than a 4K pixel subtends at any plausible camera distance, so two poses that
@@ -364,13 +384,25 @@ const counters = { renders: 0, hits: 0, holds: 0 };
  * `keepRefs` names the refs the calling frame is ABOUT TO PAINT; they are never
  * evicted whatever the budget says, because a CanvasKit Image is used
  * synchronously during paint and freeing one the next paint needs draws a hole.
- * That is pdf_page_raster.trimPdfRegionCache's rule, applied unchanged.
+ * OMIT IT and the keep-set is everything ASKED FOR since the last trim, which is
+ * pdf_page_raster.trimPdfRasterCache's mechanism and its stated reason: the
+ * per-frame caller knows the refs IT computed but cannot know the ones a plugin's
+ * emit() derived, and a pre-pass that recomputed that formula would be a
+ * hand-maintained mirror of the plugin. Asking the module what it was asked for
+ * needs no mirror.
  *
- * @param {Set<string>|string[]} keepRefs refs the current frame needs
+ * THIS FUNCTION HAD NO CALLER AT ALL until the render pre-pass arrived, so the
+ * 256 MB budget it documents was never enforced and a fly-through grew the cache
+ * unbounded toward CanvasKit's 2 GiB wasm ceiling. Recorded rather than quietly
+ * fixed, because "the eviction exists" and "the eviction runs" read identically
+ * in a diff and only one of them was true of the code that shipped.
+ *
+ * @param {Set<string>|string[]} [keepRefs] refs the current frame needs; omit for the asked-for set
  * @returns {number} bytes freed
  */
 export function trimScene3dCache(keepRefs) {
-  const keep = keepRefs instanceof Set ? keepRefs : new Set(keepRefs ?? []);
+  const keep = keepRefs instanceof Set ? keepRefs : new Set(keepRefs ?? requestedSinceTrim);
+  requestedSinceTrim = new Set();
   let bytes = 0;
   for (const entry of rasters.values()) bytes += entry.bytes;
   const pinned = new Set(held.values());
@@ -448,6 +480,7 @@ export function scene3dStatus(ref) {
  */
 export function ensureScene3dRasterized(spec) {
   const ref = scene3dRef(spec);
+  requestedSinceTrim.add(ref); // this frame wants it — never evict it out from under the paint
   if (!scene3dAvailable()) {
     // BARE NODE (cli/render.js, the node test lane). There is no DOM and no GL
     // context, so this cannot draw — and it must say THAT rather than let a
@@ -483,7 +516,14 @@ export function ensureScene3dRasterized(spec) {
       // success branch. The outgoing pin's raster is released by the ordinary LRU
       // once it is no longer pinned (trimScene3dCache), so replacing a pin leaks
       // nothing and dropping one frees a frame that is now genuinely dead.
-      held.set(scene3dHoldKey(spec.kind, spec.src), ref);
+      // THE PLACE TRAVELS WITH THE PIN, and that is not bookkeeping. Once a
+      // viewport crop exists, two rasters of one scene cover DIFFERENT parts of
+      // the widget, so a stale frame drawn at the CURRENT frame's rect would be
+      // the whole object squeezed into a window — which does not read as "a
+      // slightly old picture", it reads as a wrongly-zoomed one. Measured while
+      // building the zoom gate: mid-zoom the widget showed the entire scene
+      // stretched across the visible window. A raster remembers where it goes.
+      held.set(scene3dHoldKey(spec.kind, spec.src), { ref, place: spec.place ?? null });
       return bitmap;
     })
     .catch((e) => {
@@ -539,17 +579,25 @@ export function ensureScene3dRasterized(spec) {
  * the same category as "the raster has not landed yet" — which this path already
  * had. It adds no new dependency on history that outlives a render.
  *
- * @param {object} spec see ensureScene3dRasterized
+ * IT RETURNS THE PLACE AS WELL AS THE REF, because a stale frame of a CROPPED
+ * render covers a different part of the widget than the frame being waited for.
+ * The caller draws at the returned `place`, so a held frame lands exactly where
+ * its pixels belong and the swap is a change of detail rather than a lurch. When
+ * the true ref is used, `place` is the caller's own — an identity pass-through.
+ *
+ * @param {object} spec see ensureScene3dRasterized; `place` is opaque here and is
+ *   simply carried, so the raster module never learns what a local rect is
  * @param {{hold?: boolean}} [opts] hold: this consumer repaints, so prefer a stale frame to a hole
- * @returns {string} the ref to put in the `image` op
+ * @returns {{ref: string, place: object|null}} the ref to draw and where to draw it
  */
 export function scene3dDrawRef(spec, { hold = false } = {}) {
   const ref = ensureScene3dRasterized(spec);
-  if (!hold || scene3dStatus(ref) === "ready") return ref;
+  const place = spec.place ?? null;
+  if (!hold || scene3dStatus(ref) === "ready") return { ref, place };
   const stale = held.get(scene3dHoldKey(spec.kind, spec.src));
-  if (!stale || scene3dStatus(stale) !== "ready") return ref;
+  if (!stale || scene3dStatus(stale.ref) !== "ready") return { ref, place };
   counters.holds++;
-  return stale;
+  return { ref: stale.ref, place: stale.place ?? place };
 }
 
 /**
@@ -638,7 +686,7 @@ function engine() {
  * @returns {Promise<object>} a three.js Object3D
  */
 function ensureSource(src, kind) {
-  const key = `${kind} ${src}`;
+  const key = `${kind}\u0000${src}`;
   const cached = sources.get(key);
   if (cached) return cached;
   const promise = (async () => {
@@ -791,7 +839,32 @@ async function renderSpecNow(spec) {
 
   renderer.setSize(size.w, size.h, false);
   camera.fov = (spec.pose.fov * 180) / Math.PI; // three takes vertical FOV in DEGREES
-  camera.aspect = size.w / size.h;
+  // ── THE SUB-FRUSTUM (todo #257): RENDER ONLY WHAT IS ON SCREEN ─────────────
+  // `viewOffset` says "this surface is the (x, y) window of a virtual fullW x
+  // fullH image of the whole widget". setViewOffset shears the projection to draw
+  // exactly that window, so a viewport re-renders at SCREEN resolution however far
+  // the canvas is zoomed in, at a cost bounded by the screen rather than by the
+  // zoom. It is the asymmetric-frustum device a tiled offline renderer uses, and
+  // it is why this is a CROP OF THE RENDER rather than a crop of a finished
+  // bitmap — the latter cannot add detail, which is the whole complaint.
+  //
+  // `aspect` MUST DESCRIBE THE FULL IMAGE, not the window: three derives the base
+  // frustum width from aspect x height and THEN applies the offset, so feeding it
+  // the window's aspect would distort every cropped frame. Pinned by asserting a
+  // cropped render matches the corresponding REGION of the uncropped one, rather
+  // than by reading three's source and believing it.
+  //
+  // AND THE CLEAR IS NOT OPTIONAL. One camera serves every widget in the process,
+  // so a viewport left set by the previous render would silently crop the next.
+  // W3-E measured that clearViewOffset restores the original frame EXACTLY.
+  if (spec.viewOffset) {
+    const v = spec.viewOffset;
+    camera.aspect = v.fullW / v.fullH;
+    camera.setViewOffset(v.fullW, v.fullH, v.x, v.y, size.w, size.h);
+  } else {
+    camera.clearViewOffset();
+    camera.aspect = size.w / size.h;
+  }
   camera.near = spec.near;
   camera.far = spec.far;
   const eye = orbitEye(spec.pose);
