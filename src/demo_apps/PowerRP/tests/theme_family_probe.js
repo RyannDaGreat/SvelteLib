@@ -36,9 +36,26 @@ if (shots) await mkdir(shots, { recursive: true });
 
 const server = await createServer({
   configFile: resolve(webRoot, "vite.config.js"),
-  server: { port: 0, open: false, host: "127.0.0.1" },
   // HMR OFF: a concurrent agent editing app code mid-probe reloads the page and
-  // kills the run — the same reason cli/render_job.js disables it.
+  // kills the run — the same reason cli/render_job.js disables it, and the same
+  // flag theme_probe.js sets.
+  // THIS COMMENT USED TO BE FALSE. It sat above `optimizeDeps: { force: false }`
+  // while the server block did NOT set `hmr: false`, so the probe claimed a
+  // protection it did not have — and it is the probe most exposed to the hazard,
+  // since it drives 46 theme switches over one long page session. Measured
+  // 2026-08-01: two consecutive failures in the shared tree on
+  // `window.__powerrp_app != null`, against 3/3 passes in an isolated worktree
+  // carrying the same diff and 2/2 at clean HEAD. A comment asserting a live
+  // hazard is handled, where it is not, costs more than no comment at all.
+  // IT IS NOT A CURE, and saying so here is the point of the fix. A controlled
+  // A/B in one worktree, three interleaved runs per side under a busy fleet,
+  // measured 2/3 with the flag and 3/3 without — no consistent difference, which
+  // is exactly what the shared agent brief already records: a peer's save
+  // invalidates the SHARED node_modules/.vite cache and full-reloads the page
+  // whatever this flag says. What the flag removes is one real reload source and
+  // one false claim; the remaining flakiness needs worktree isolation with a
+  // private node_modules, not a vite option.
+  server: { port: 0, open: false, host: "127.0.0.1", hmr: false },
   optimizeDeps: { force: false },
 });
 await server.listen();

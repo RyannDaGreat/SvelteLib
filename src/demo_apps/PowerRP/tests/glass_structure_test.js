@@ -46,6 +46,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripCssComments } from "./cssComments.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CSS = join(HERE, "..", "web", "app.css");
@@ -59,36 +60,10 @@ const GROUPS = {
   weight: ["--a-palette-shadow"],
 };
 
-/**
- * Pure function. Blanks CSS comment bodies, preserving line count so any line
- * number derived afterwards still points at the real line.
- *
- * COMMENTS ARE NOT CODE. This file's own subject matter makes the point: the
- * Obsidian block's prose contains the literal text `--a-radius-floating: 0`
- * inside a sentence explaining why, and a comment-blind parse would read that
- * sentence as a declaration. Getting this wrong breaks a grep gate in BOTH
- * directions and has done so twice in this repo (convention ledger C-14).
- *
- * THIS IS THE SIXTH COPY of this helper in `tests/` and that is a known defect,
- * not an oversight — see the hand-back in `.frenzy/round6/W4-P.md`. The five
- * existing ones (`square_chrome_test.js`, `orphan_class_test.js`,
- * `one_ranking_ban_test.js`, `popover_reinvention_ban_test.js`,
- * `native_tooltip_ban_test.js`, `equation_lock_test.js`) have DIVERGED — some
- * strip HTML comments, some strip JS line comments, some do not preserve line
- * count, and the two that export it do so from files that run assertions at
- * import scope, so importing one would run another gate as a side effect.
- * Consolidating them is a cross-owner change and is handed back rather than
- * done here.
- *
- * @param {string} css
- * @returns {string} same text, comment bodies blanked, LINE COUNT PRESERVED
- *
- * @example stripCssComments("a { /* --x: 1px; *\/ }").includes("--x") // false
- * @example stripCssComments("a\n/* x *\/\nb").split("\n").length // 3
- */
-function stripCssComments(css) {
-  return css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
-}
+/* COMMENTS ARE NOT CODE, and this file's own subject matter makes the point:
+   the Obsidian block's prose contains the literal text `--a-radius-floating: 0`
+   inside a sentence explaining why, so a comment-blind parse would read that
+   sentence as a declaration. Stripper lives in `tests/cssComments.js`. */
 
 /**
  * Pure function. Every `:root` / `:root[data-theme="…"]` block in a stylesheet,

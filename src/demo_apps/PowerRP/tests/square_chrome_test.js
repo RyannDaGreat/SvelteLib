@@ -35,6 +35,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripCssComments } from "./cssComments.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CSS = join(HERE, "..", "web", "app.css");
@@ -43,26 +44,9 @@ const CSS = join(HERE, "..", "web", "app.css");
  *  Everything else in app.css must go through a named `--a-radius-*` token. */
 const ALLOWED = /^\s*--a-radius-floating:\s*var\(--radius\)/;
 
-/**
- * Pure function. Strips CSS comments so prose that merely NAMES a token is not
- * counted as a use.
- *
- * COMMENTS ARE NOT CODE, and getting this wrong breaks the gate in BOTH
- * directions — measured twice in one hour on 2026-08-01. An orphan-class gate
- * counted commented class names as definitions and so passed while a real
- * selector was renamed out from under it; a duplicate-sentence sweep counted
- * commented mentions as copies and reported 19 where there was 1. app.css
- * explains itself heavily, which is a virtue everywhere except inside a grep.
- *
- * @param {string} css
- * @returns {string} the same text with comment bodies blanked, LINE COUNT PRESERVED
- *
- * @example stripComments("a{} /* --radius *\/ b{}").includes("--radius") // false
- * @example stripComments("a\n/* x *\/\nb").split("\n").length // 3 — line numbers survive
- */
-function stripComments(css) {
-  return css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
-}
+/* COMMENTS ARE NOT CODE — prose that merely NAMES a token must not count as a
+   use of it. The stripper is `tests/cssComments.js`, the one shared home; this
+   file carried the sixth copy of it until that module existed. */
 
 /**
  * Pure function. Every line that reads `--radius` directly and is not the one
@@ -86,7 +70,7 @@ function violations(css) {
 }
 
 const raw = readFileSync(CSS, "utf8");
-const css = stripComments(raw);
+const css = stripCssComments(raw);
 const failures = [];
 
 // ── 1. THE RULE ──────────────────────────────────────────────────────────────
@@ -111,7 +95,7 @@ if (violations("  border-radius: var(--radius);").length !== 1) {
 if (violations("--a-radius-floating: var(--radius);").length !== 0) {
   failures.push("SELF-CHECK: the gate rejects the one ALLOWED definition");
 }
-if (stripComments("/* var(--radius) */").includes("--radius")) {
+if (stripCssComments("/* var(--radius) */").includes("--radius")) {
   failures.push("SELF-CHECK: comments are being counted as uses — the gate will cry wolf");
 }
 if (violations("  border-radius: var(--a-radius-control);").length !== 0) {

@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripCssComments } from "./cssComments.js";
 
 const WEB = resolve(dirname(fileURLToPath(import.meta.url)), "../web");
 const CLASS_RE = /\.(-?[_a-zA-Z][\w-]*)/g;
@@ -86,9 +87,8 @@ const EXEMPT = new Map([
  *  those made the gate unfalsifiable: a self-test that renamed a real selector still
  *  passed, because the rule's own comment kept the old name alive. Strip comments
  *  from BOTH stylesheets and scoped blocks before extracting. */
-const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, " ");
 
-const css = stripComments(readFileSync(resolve(WEB, "app.css"), "utf8"));
+const css = stripCssComments(readFileSync(resolve(WEB, "app.css"), "utf8"));
 const defined = new Set([...css.matchAll(CLASS_RE)].map((m) => m[1]));
 
 const files = readdirSync(WEB).filter((f) => f.endsWith(".svelte"));
@@ -106,7 +106,7 @@ for (const file of files) {
   // A component's own scoped <style> DEFINES names (and is itself rare here — the
   // house rule is that app components carry no <style>).
   for (const sm of src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g))
-    for (const m of stripComments(sm[1]).matchAll(CLASS_RE)) defined.add(m[1]);
+    for (const m of stripCssComments(sm[1]).matchAll(CLASS_RE)) defined.add(m[1]);
 
   src.split("\n").forEach((text, i) => {
     const where = `${file}:${i + 1}`;
