@@ -119,6 +119,7 @@
   // header's "TWO MODES" and web/renderBackend.js.
   import { renderRecordStore, rendersAreLocal, selectableEncoders, defaultEncoderForMode, usableEncoder } from "./renderBackend.js";
   import { renderUrl } from "./projectApi.js";
+  import { projectCategoryPath } from "./storageTree.js";
   import { renderingBlob, renderQuotaWarning } from "./localRenderStore.js";
   // The job vocabulary (active? unseen? how far? what does this state MEAN?)
   // lives in one pure module because the toolbar badge reads the same
@@ -606,6 +607,18 @@
   /** Command (async). Copy a job's absolute output path to the clipboard. */
   let copiedPath = $state(null);
   const COPY_FLASH_MS = 1200;
+  /** Command (closes this modal, opens the File Browser at the renders folder).
+   *  R6-19.6's "Open in file browser" from Renderings. It CLOSES the Render Center
+   *  on the way rather than stacking two large modals: both are src/lib/Modal, and
+   *  a second one over the first leaves the user with a dialog they cannot see
+   *  behind a dialog they did not open from the toolbar. Toggling is safe here
+   *  because this component only exists while the modal is open. */
+  function revealRendersInFileBrowser() {
+    const path = projectCategoryPath(app, "renders");
+    app.toggleRenderCenter();
+    app.openFileBrowser(path);
+  }
+
   async function copyPath(job) {
     await navigator.clipboard.writeText(job.outputPath);
     copiedPath = job.id;
@@ -907,7 +920,27 @@
     <!-- The HUMAN name, not the storage key: for a draft `project` reads
          "~draft/current", which is where the renders live but not what to call the
          deck. -->
-    <h3 class="render-center-heading">Renderings — {projectLabel}</h3>
+    <div class="render-center-heading-row">
+      <h3 class="render-center-heading">Renderings — {projectLabel}</h3>
+      <!-- OPEN IN FILE BROWSER (R6-19.6). The Render Center shows this project's
+           renderings; the File Browser shows them beside the assets, documents and
+           caches of every store the editor can reach, which is the question "where
+           did my render actually go" usually turns into. Reuses the heading row the
+           left pane's Reset button already sits in, so no new chrome is introduced.
+           The path comes from projectCategoryPath — never spelled here, because
+           only that function knows a DRAFT's renders are browser-local in every
+           storage mode, which is exactly the case this pane is most asked about. -->
+      <Tooltip text="Open this project's renders folder in the File Browser">
+        <button
+          type="button"
+          class="btn-icon"
+          aria-label="Open renders in the File Browser"
+          onclick={() => revealRendersInFileBrowser()}
+        >
+          <iconify-icon icon="mdi:folder-search-outline" width="16" height="16"></iconify-icon>
+        </button>
+      </Tooltip>
+    </div>
     {#if LOCAL_RENDERS}
       <!-- WHERE THESE LIVE, said once. It matters: they are in this browser, not on
            a disk the user can browse to, and they travel with the deck's storage key

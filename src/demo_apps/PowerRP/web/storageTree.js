@@ -59,7 +59,6 @@
  * capability sentences send the user to the surface that has them.
  */
 
-import { assetTilePresentation } from "./assetThumbnail.js";
 import { assetRef } from "./assetRef.js";
 import { builtinCategories, BUILTIN_URL_PREFIX } from "./builtinAssets.js";
 import { DRAFT_KEY, isDraftKey } from "./draftKeys.js";
@@ -138,39 +137,25 @@ export function refuseOperation(operation) {
  * @param {string} [fields.kind] - an asset kind (image/video/pdf/…) for preview dispatch
  * @param {?number} [fields.bytes] - null = unknown, never 0-as-unknown
  * @param {?number} [fields.mtime] - SECONDS (both stores already normalise; assetStore.js:176)
- * @param {?string} [fields.url] - a loadable/portable ref for preview, or null
+ * @param {?string} [fields.url] - a RESOLVED, directly loadable URL for preview, or null
+ * @param {?string} [fields.thumbnail] - a cached preview bitmap's URL (a rasterized PDF page 1), or null
  * @param {?string} [fields.badge] - corner text (a PDF page count)
  * @param {string} fields.note - ONE honest sentence naming what actually backs this node
  * @returns {object}
  *
+ * `thumbnail` IS PART OF THE RECORD because the tile layer reads it
+ * (web/AssetThumb.svelte, through assetThumbnail.js's tile presentation). It was
+ * missing from this destructure while the reader already looked for it, so a
+ * server-cached PDF page-1 bitmap was gathered, passed in, and dropped on the
+ * floor — the tile fell back to rasterizing it again, or to a glyph, silently. A
+ * field a consumer reads must exist on the object the constructor mints.
+ *
  * @example
  * >>> entry({path: "server:/D/assets/a.png", name: "a.png", type: "file", kind: "image", bytes: 812, mtime: 1769800000, url: "/asset/D/a.png", note: "A file in this project's assets/ folder on the server."})
- * {path: 'server:/D/assets/a.png', name: 'a.png', type: 'file', kind: 'image', bytes: 812, mtime: 1769800000, url: '/asset/D/a.png', badge: null, note: "A file in this project's assets/ folder on the server."}
+ * {path: 'server:/D/assets/a.png', name: 'a.png', type: 'file', kind: 'image', bytes: 812, mtime: 1769800000, url: '/asset/D/a.png', thumbnail: null, badge: null, note: "A file in this project's assets/ folder on the server."}
  */
-export function entry({ path, name, type, kind = "other", bytes = null, mtime = null, url = null, badge = null, note }) {
-  return { path, name, type, kind, bytes, mtime, url, badge, note };
-}
-
-/**
- * Pure function. The tile presentation for one entry — DELEGATED WHOLE to
- * web/assetThumbnail.js's `assetTilePresentation`, whose input is already exactly
- * this subset of an entry. There is no second thumbnailer in this app and there
- * must not be one: that module's own docblock says "New kinds slot in by
- * extending ONE switch here".
- *
- * @param {object} e - an entry()
- * @returns {{mode: string, src: ?string, icon: ?string, badge: ?string, badgeIcon: ?string, needsClientThumbnail: boolean}}
- *
- * @example
- * >>> entryPresentation(entry({path: "p", name: "a.png", type: "file", kind: "image", url: "/asset/D/a.png", note: "n"})).mode
- * 'image'
- * @example // a directory is a folder glyph, never an asset kind's icon:
- * >>> entryPresentation(entry({path: "p", name: "assets", type: "dir", note: "n"})).icon
- * 'mdi:folder-outline'
- */
-export function entryPresentation(e) {
-  if (e.type === "dir") return { mode: "icon", src: null, icon: "mdi:folder-outline", badge: null, badgeIcon: null, needsClientThumbnail: false };
-  return assetTilePresentation({ kind: e.kind, url: e.url, thumbnail: e.thumbnail, badge: e.badge });
+export function entry({ path, name, type, kind = "other", bytes = null, mtime = null, url = null, thumbnail = null, badge = null, note }) {
+  return { path, name, type, kind, bytes, mtime, url, thumbnail, badge, note };
 }
 
 // ── THE ROOTS ────────────────────────────────────────────────────────────────
@@ -446,16 +431,26 @@ export async function downloadEntry(e) {
   downloadBytes(await readPath(e.path), e.name);
 }
 
-/** How much of a non-media file an inline preview reads. A PREVIEW IS A PEEK, not
- *  a second copy of a multi-megabyte asset held in component state. Module-top and
- *  EXPORTED per core/endpoints.js:23's precedent for a named constant with a
- *  justification — it was function-local in web/DebugStoragePage.svelte, which is
- *  how a second surface could have picked a different number. */
+/** How much of a non-media file an inline preview reads BY DEFAULT. A PREVIEW IS A
+ *  PEEK, not a second copy of a multi-megabyte asset held in component state.
+ *  Module-top and EXPORTED per core/endpoints.js:23's precedent for a named
+ *  constant with a justification — it was function-local in
+ *  web/DebugStoragePage.svelte, which is how a second surface could have picked a
+ *  different number. */
 export const PREVIEW_TEXT_BYTES = 4096;
+
+/** The budget a caller passes when a peek is not good enough and the WHOLE file is
+ *  the preview. Exactly one class of file qualifies: a TABLE. web/CsvTable.svelte
+ *  is a virtual scroller built for a 100,000-row file, so it wants the real thing —
+ *  and it is the one consumer for which a peek is not merely partial but WRONG (see
+ *  `truncated` below). Named rather than written as a bare Infinity at the call
+ *  site, because "why is this one unbounded" is the question a reader will have. */
+export const PREVIEW_WHOLE_FILE = Number.POSITIVE_INFINITY;
 
 /**
  * Query (may create an object URL). THE inline preview for one file's bytes:
- * images and video get an object URL, everything else a short UTF-8 peek.
+ * images and video get an object URL, everything else a UTF-8 read bounded by
+ * `maxTextBytes`.
  *
  * ONE DEFINITION, because there were two — web/AssetExplorer.svelte's
  * `loadPreviewText` and web/DebugStoragePage.svelte's `togglePreview` were the
@@ -463,21 +458,42 @@ export const PREVIEW_TEXT_BYTES = 4096;
  * made it three. The caller owns the returned object's lifetime and MUST hand it
  * to `releasePreview` when the preview closes.
  *
+ * THAT PARAGRAPH WAS FALSE FOR ITS FIRST DAY, and the correction is worth keeping.
+ * Only the Debug console's copy was actually converted; `loadPreviewText` went on
+ * reading `blob.text()` itself, under a docblock here asserting it had stopped.
+ * It could not have been converted as this function was first written, because a
+ * table needs the WHOLE file — which is why `maxTextBytes` exists and why all
+ * three surfaces can now share one definition. A prose claim about a sweep is only
+ * true if the sweep is in the same commit.
+ *
+ * TRUNCATION IS RETURNED, NOT DRAWN INTO THE TEXT. The first version appended a
+ * "\n…" marker to `text`, which is fine in a <pre> and CORRUPTING in a table: the
+ * File Browser hands a `data` preview to CsvTable, so a 4 KB peek of a CSV
+ * arrived as a mangled final row (the cut lands mid-line) followed by a phantom
+ * "…" row, with nothing on screen saying either was an artefact. A flag the
+ * caller must render is the same information without the forgery — and it is why
+ * `maxTextBytes` exists at all: a table's honest answer is to read the file.
+ *
  * @param {Blob} blob - the bytes
  * @param {string} kind - an asset kind (web/assetRef.js assetKindForName)
- * @returns {Promise<{kind: string, url?: string, text?: string}>}
+ * @param {number} maxTextBytes - byte budget for the text branch; PREVIEW_WHOLE_FILE reads it all
+ * @returns {Promise<{kind: string, url?: string, text?: string, truncated?: boolean}>}
  *
  * @example
  * >>> await previewOfBlob(pngBlob, "image")
  * {kind: 'image', url: 'blob:http://…'}
- * @example // anything not media is peeked at as text, with a truncation marker:
- * >>> await previewOfBlob(csvBlob, "data")
- * {kind: 'text', text: 'a,b,c\n1,2,3\n…'}
+ * @example // anything not media is peeked at as text, and SAYS when there is more:
+ * >>> await previewOfBlob(bigCsvBlob, "data")
+ * {kind: 'text', text: 'a,b,c\n1,2,3\n4,5', truncated: true}
+ * @example // a table asks for the file itself, and is told it got all of it:
+ * >>> await previewOfBlob(bigCsvBlob, "data", PREVIEW_WHOLE_FILE)
+ * {kind: 'text', text: 'a,b,c\n1,2,3\n4,5,6\n', truncated: false}
  */
-export async function previewOfBlob(blob, kind) {
+export async function previewOfBlob(blob, kind, maxTextBytes = PREVIEW_TEXT_BYTES) {
   if (kind === "image" || kind === "video") return { kind, url: URL.createObjectURL(blob) };
-  const text = await blob.slice(0, PREVIEW_TEXT_BYTES).text();
-  return { kind: "text", text: text + (blob.size > PREVIEW_TEXT_BYTES ? "\n…" : "") };
+  const truncated = blob.size > maxTextBytes;
+  const text = await (truncated ? blob.slice(0, maxTextBytes) : blob).text();
+  return { kind: "text", text, truncated };
 }
 
 /**
@@ -513,6 +529,37 @@ export function homePath(app) {
   const project = app.projectName();
   if (isDraftKey(project)) return joinPath("local", project);
   return joinPath(isStatic() ? "local" : "server", project);
+}
+
+/**
+ * Query (reads the app's current project). WHERE A "REVEAL" AFFORDANCE POINTS
+ * (R6-19.6: "Open in file browser from Renderings and from the asset panel") —
+ * one of the open project's category folders, under whichever root actually holds
+ * it. Its two callers are the Asset Explorer's toolbar and the Render Center's,
+ * and neither may spell the path itself: `homePath` is the only place that knows
+ * a draft lives under `local:` in EVERY storage mode, and re-deriving that in a
+ * pane is how the two would eventually disagree.
+ *
+ * The category is CHECKED against PROJECT_CATEGORIES rather than concatenated, so
+ * a typo is a thrown sentence here instead of an empty folder in the browser.
+ *
+ * @param {object} app - the live PowerRPApp
+ * @param {"document"|"assets"|"renders"} category
+ * @returns {string} a canonical storage path
+ * @throws {Error} if `category` is not one of PROJECT_CATEGORIES
+ *
+ * @example
+ * >>> projectCategoryPath(appInHttpModeOnRobotSim, "renders")
+ * 'server:/RobotSim/renders'
+ * @example // a draft's bytes are browser-local whatever the mode, so its path is too:
+ * >>> projectCategoryPath(appWithDraftOpen, "assets")
+ * 'local:/~draft/current/assets'
+ */
+export function projectCategoryPath(app, category) {
+  if (!PROJECT_CATEGORIES.includes(category)) {
+    throw new Error(`storageTree: "${category}" is not a project category (${PROJECT_CATEGORIES.join(", ")})`);
+  }
+  return childPath(homePath(app), category);
 }
 
 /**
@@ -606,11 +653,25 @@ async function listLocalDocumentNodes(keyspace) {
     })];
 }
 
-/** Query (reads an asset store). One keyspace's assets, through the SAME listing
- *  call the Asset Explorer uses — `localAssetEntry` already mints the server's
- *  own listing shape, which is the whole reason one lister serves both roots. */
+/**
+ * Query (reads an asset store; mints object URLs in the local adapter). One
+ * keyspace's assets, through the SAME listing call the Asset Explorer uses —
+ * `localAssetEntry` already mints the server's own listing shape, which is the
+ * whole reason one lister serves both roots.
+ *
+ * IT RESOLVES `url` HERE, and that is the seam doing its job rather than the
+ * view doing storage. `assetRef(keyspace, name)` is a REF, not something an
+ * `<img>` can load, and the local adapter's `resolveUrl` is a synchronous map
+ * lookup that answers only for a project it has PRIMED — so a view that resolved
+ * refs itself would `console.error` once per row and render the loud
+ * missing-asset sentinel the moment you browsed a project other than the open
+ * one. `primeUrls` is idempotent, is one transaction, and is a documented no-op
+ * on the HTTP adapter, so one call per folder visit makes every row's URL true
+ * in both modes.
+ */
 async function listAssetNodes(rootId, keyspace, store) {
   const assets = await store.list(keyspace);
+  await store.primeUrls(keyspace);
   return assets.map((a) =>
     entry({
       path: joinPath(rootId, keyspace, "assets", a.name),
@@ -619,7 +680,8 @@ async function listAssetNodes(rootId, keyspace, store) {
       kind: a.kind,
       bytes: a.size ?? null,
       mtime: a.mtime ?? null,
-      url: a.url ?? assetRef(keyspace, a.name),
+      url: store.resolveUrl(a.url ?? assetRef(keyspace, a.name)),
+      thumbnail: a.thumbnail ? store.resolveUrl(a.thumbnail) : null,
       badge: a.badge ?? null,
       note: rootId === "server"
         ? "A file in this project's assets/ folder on the server, which is the source of truth for the library."

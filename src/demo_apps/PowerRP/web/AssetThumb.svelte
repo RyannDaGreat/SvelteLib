@@ -1,7 +1,10 @@
 <!--
   AssetThumb — the MEDIA layer of an asset tile (manifest #25): the generalized
-  {thumbnail?, badge?} renderer shared by the Asset Explorer grid AND the
-  AssetField picker, so "how an asset previews" lives in ONE place.
+  {thumbnail?, badge?} renderer shared by the Asset Explorer grid, the AssetField
+  picker AND the File Browser's row list, so "how an asset previews" lives in ONE
+  place. The third consumer is why `project` is a prop rather than an assumption
+  (see below): it is the only one that can be pointed at a project other than the
+  open one.
 
   Per the pure decision in assetThumbnail.js (assetTilePresentation):
     - image  → a real <img> thumbnail (SvelteLib Thumbnail, cover-fit).
@@ -37,8 +40,19 @@
 
   // app — the controller (for ensureAssetThumbnail); asset — {name,kind,url,mtime,thumbnail?,badge?};
   // onclick — tile click (the field's pick; a no-op in the Explorer, which owns dblclick separately).
-  let { app, asset, onclick = () => {} } = $props();
+  //
+  // `project` — WHICH PROJECT THE ASSET BELONGS TO, defaulting to the open one.
+  // The two original consumers (Asset Explorer grid, AssetField picker) only ever
+  // show the OPEN project's library, so `app.projectName()` was correct and was
+  // hardcoded twice below. The File Browser is the third consumer and can be
+  // pointed at ANY keyspace, where that assumption is wrong in two ways at once:
+  // `resolveUrl` is a per-project map lookup in the local adapter (a foreign ref
+  // returns the loud missing sentinel), and `ensureAssetThumbnail`'s cache WRITE
+  // is keyed by project (it would file another project's PDF thumbnail under
+  // this one). One prop, defaulted, fixes both without touching either caller.
+  let { app, asset, project = null, onclick = () => {} } = $props();
 
+  let ownerProject = $derived(project ?? app.projectName());
   let pres = $derived(assetTilePresentation(asset));
 
   // Client-rendered {thumbnail, badge} for a PDF with no server-cached thumb.
@@ -54,7 +68,7 @@
     requestedKey = key;
     rendered = null;
     failed = null;
-    app.ensureAssetThumbnail(asset).then(
+    app.ensureAssetThumbnail(asset, ownerProject).then(
       (r) => (rendered = r),
       (e) => {
         failed = e?.message ?? String(e);
@@ -65,7 +79,7 @@
 
   // The bitmap URL actually shown: a server-cached thumbnail (already absolute
   // via the /asset seam) or the freshly client-rendered data URL.
-  let imgSrc = $derived(pres.mode === "thumbnail" ? assetStoreFor(app.projectName()).resolveUrl(pres.src) : rendered?.thumbnail ?? null);
+  let imgSrc = $derived(pres.mode === "thumbnail" ? assetStoreFor(ownerProject).resolveUrl(pres.src) : rendered?.thumbnail ?? null);
   // Badge: the freshly-rendered page count wins over the server-cached one.
   let badge = $derived(rendered?.badge ?? pres.badge);
 </script>
@@ -77,9 +91,9 @@
        read as "this tile has no name" rather than "this app does not use that
        affordance". The asset's name is shown by the Asset Explorer's own label and
        its hover tip, both of which use the immediate Tooltip. -->
-  <Thumbnail src={assetStoreFor(app.projectName()).resolveUrl(pres.src)} {onclick} />
+  <Thumbnail src={assetStoreFor(ownerProject).resolveUrl(pres.src)} {onclick} />
 {:else if pres.mode === "video"}
-  <VideoThumbnail src={assetStoreFor(app.projectName()).resolveUrl(pres.src)} {onclick} />
+  <VideoThumbnail src={assetStoreFor(ownerProject).resolveUrl(pres.src)} {onclick} />
 {:else if imgSrc}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <img class="ae-thumb-img" src={imgSrc} alt="" loading="lazy" {onclick} onkeydown={(e) => e.key === "Enter" && onclick(e)} />

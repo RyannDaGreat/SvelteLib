@@ -81,6 +81,10 @@
      category symbol — and small enough that a folder of renders still reads as a
      list rather than as a grid. */
   --a-file-browser-thumb-w: 32px;
+  /* A SYMBOL drawn inside that column — a folder, or the kind glyph for a file
+     with no picture. One value so the two never disagree by a few pixels in the
+     same column, which reads as a layout bug rather than as a distinction. */
+  --a-file-browser-glyph-w: 18px;
 
   /* STRUCTURAL, THEME-PROOF (user rulings): command-palette part heights.
      Themes swap fonts, font metrics change the line box, and the palette
@@ -9946,6 +9950,23 @@ audio.ae-preview-media {
   align-items: center;
   justify-content: center;
 }
+/* .ae-tile is `aspect-ratio: 1/1` with no intrinsic size, and everything
+   AssetThumb draws inside it is sized at 100% — so in a fixed-size row cell it
+   must be told to fill, or a thumbnail collapses to the picture's own pixel
+   dimensions (measured: a 2x2 PNG rendered as a 2px dot). */
+.file-browser-thumb .ae-tile {
+  width: 100%;
+  height: 100%;
+}
+/* AssetThumb draws its kind glyph at a TILE's size. In a row it sits beside the
+   folder glyph, and two symbols in one column that disagree about size read as a
+   layout bug, so BOTH are --a-file-browser-glyph-w — the folder directly, the
+   kind glyph through the .ae-kind box AssetThumb wraps it in. */
+.file-browser-thumb > iconify-icon,
+.file-browser-thumb .ae-kind iconify-icon {
+  width: var(--a-file-browser-glyph-w);
+  height: var(--a-file-browser-glyph-w);
+}
 
 .file-browser-name {
   flex: 1 1 auto;
@@ -10037,6 +10058,15 @@ audio.ae-preview-media {
 .file-browser-preview-media {
   max-width: 100%;
   max-height: var(--a-file-browser-preview-max);
+}
+
+/* "Showing the first 4.0KB" — the truncation sentence that replaced an "…"
+   appended INTO the previewed text, which was indistinguishable from an "…" the
+   file actually contained. */
+.file-browser-preview-note {
+  margin: var(--a-sp-1) 0 0;
+  font-size: var(--a-font-sm);
+  opacity: var(--a-quota-text-opacity);
 }
 
 .file-browser-preview-text {

@@ -21,6 +21,13 @@
   which for an unsaved draft is `local:/~draft/current` in EVERY storage mode,
   because that is where its bytes actually are.
 
+  PREVIEW (R6-19.3): a row draws the FILE — AssetThumb, the app's one thumbnail
+  layer, the same one the Asset Explorer grid and the AssetField picker use.
+  POINTING at a row describes it in the detail pane (todo #165's hover-to-preview,
+  and it is free here: selection reads no bytes). CLICKING a file reads its bytes
+  and shows the inline preview; that is the one gesture that costs anything, and
+  it stays deliberate.
+
   HONESTY (the point of the whole exercise): every row carries a `note` naming
   what actually backs it, shown on hover, because the directory illusion is only
   partly true — root→keyspace and category→file are real enumerations, while
@@ -34,11 +41,12 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import AssetThumb from "./AssetThumb.svelte";
   import CsvTable from "./CsvTable.svelte";
   import { humanReadableFileSize } from "./fileSize.js";
   import { relativeMtime } from "./projectPreviews.js";
   import { breadcrumbs, filterEntries, parentPath, parsePath, sortEntries } from "./storagePath.js";
-  import { activeRoots, downloadEntry, entryPresentation, homePath, listPath, previewOfBlob, readPath, releasePreview, rootFor } from "./storageTree.js";
+  import { activeRoots, downloadEntry, homePath, listPath, PREVIEW_TEXT_BYTES, PREVIEW_WHOLE_FILE, previewOfBlob, readPath, releasePreview, rootFor } from "./storageTree.js";
 
   // `at` is where a REVEAL affordance wants this opened (a Render Center row, an
   // asset tile). It seeds the initial path ONCE; navigating from there is the
@@ -52,7 +60,14 @@
   let query = $state("");
   /** The selected entry's path, or null. Selection is what the detail panel and
    *  the download affordance read; it survives a re-list only if the row is
-   *  still there (see refresh). */
+   *  still there (see refresh).
+   *
+   *  HOVER SETS IT (todo #165 — hover-to-preview is this app's default trope for
+   *  every picker, and a browser whose whole purpose is "what IS this file" is
+   *  the surface it helps most). Hover is free here BY CONSTRUCTION: selecting
+   *  reads no bytes, only the listing metadata that is already in memory, so
+   *  sweeping the list costs one object-URL revoke per row and nothing else.
+   *  Reading the bytes is still a deliberate act — see `loadPreview`. */
   let selectedPath = $state(null);
   /** previewOfBlob's output for the selected file, or null when it has none yet.
    *  Released (object URL revoked) whenever the selection changes. */
@@ -97,8 +112,10 @@
   }
 
   /** Command (mutates `selectedPath`/`preview`). Select one row, releasing the
-   *  previous row's object URL. A directory has no preview to load. */
+   *  previous row's object URL. Re-selecting the SAME row is a no-op, so moving
+   *  the pointer within a row never discards a preview it already loaded. */
   function select(entryPath) {
+    if (entryPath === selectedPath) return;
     releasePreview(preview);
     preview = null;
     selectedPath = entryPath;
@@ -106,12 +123,19 @@
 
   /** Command (reads bytes; mutates `preview`/`actionError`). Load the selected
    *  file's inline preview. Not automatic on selection: reading a multi-gigabyte
-   *  rendering because a row was clicked is exactly the cost this browser should
-   *  not impose on a glance. */
+   *  rendering because the pointer crossed a row is exactly the cost this browser
+   *  should not impose on a glance.
+   *
+   *  A TABLE GETS THE WHOLE FILE, everything else a peek. CsvTable is a virtual
+   *  scroller written for a 100,000-row file, and a peek handed to it is not
+   *  merely partial — the cut lands mid-line, so the last row is MANGLED and
+   *  nothing on screen says so. The peek's own truncation is reported by
+   *  `preview.truncated`, which the markup renders as a sentence. */
   async function loadPreview(e) {
     actionError = null;
     try {
-      preview = await previewOfBlob(await readPath(e.path), e.kind);
+      const budget = e.kind === "data" ? PREVIEW_WHOLE_FILE : PREVIEW_TEXT_BYTES;
+      preview = await previewOfBlob(await readPath(e.path), e.kind, budget);
     } catch (err) {
       actionError = `Couldn't read “${e.name}” — ${err?.message ?? err}`;
       console.error(`FileBrowser: could not read "${e.path}":`, err);
@@ -132,12 +156,20 @@
     }
   }
 
-  /** Command (mutates `path` or the selection). A row's primary gesture: a
-   *  folder descends, a file selects. Matching the Asset Explorer's split, where
-   *  a single click never opens anything. */
+  /** Command (mutates `path`, or selects and reads bytes). A row's primary
+   *  gesture: a folder DESCENDS, a file SELECTS and opens its inline preview.
+   *
+   *  IT SELECTS EVEN THOUGH HOVER ALREADY DID. Hover is an ACCELERATOR, never the
+   *  only route — a touch screen has no hover at all, so a click-only device would
+   *  otherwise be able to open a preview of a file the detail pane never admitted
+   *  was chosen. (Measured, not theorised: tests/file_browser_probe.js clicks rows
+   *  without a pointer ever entering them, and three of its assertions went red the
+   *  moment selection depended on hovering.) `select` is a no-op on the row that is
+   *  already selected, so the common pointer path costs nothing extra. */
   function activate(e) {
-    if (e.type === "dir") goTo(e.path);
-    else select(e.path === selectedPath ? null : e.path);
+    if (e.type === "dir") return goTo(e.path);
+    select(e.path);
+    loadPreview(e);
   }
 
   /** Pure function. One row's detail line: size and age, each omitted when
@@ -256,7 +288,6 @@
         <div class="file-browser-notice">This folder is empty.</div>
       {:else}
         {#each shown as e (e.path)}
-          {@const pres = entryPresentation(e)}
           <Tooltip text={e.note}>
             <div
               class="file-browser-row"
@@ -264,10 +295,38 @@
               role="option"
               aria-selected={e.path === selectedPath}
               tabindex="0"
+              onpointerenter={() => select(e.path)}
+              onfocus={() => select(e.path)}
               onclick={() => activate(e)}
               onkeydown={(ev) => ev.key === "Enter" && activate(e)}
             >
-              <iconify-icon class="file-browser-glyph" icon={pres.icon ?? "mdi:file-outline"} width="18" height="18"></iconify-icon>
+              <!-- A ROW SHOWS THE FILE, NOT A GENERIC PAGE GLYPH (R6-19.3: "preview
+                   files in it, like the asset explorer does"). It used to draw
+                   `entryPresentation(e).icon`, which is null for exactly the two
+                   kinds that HAVE a picture — so an image and a video were the only
+                   rows in the browser rendered as an anonymous `mdi:file-outline`,
+                   while a font got its proper glyph. AssetThumb is the app's ONE
+                   thumbnail layer and already dispatches on that presentation;
+                   `project` points its URL resolution and its PDF thumbnail-cache
+                   write at the keyspace being browsed rather than at the open
+                   project, which is the only reason it could not simply be reused
+                   before. `url` arrives already resolved from the seam, and
+                   resolveUrl is idempotent in both adapters (the local one passes
+                   through anything that is not an "/asset/" ref; the HTTP one
+                   prefixes a BACKEND that leaves the result no longer starting with
+                   "/" unless BACKEND is empty, in which case prefixing is identity). -->
+              <div class="file-browser-thumb">
+                {#if e.type === "dir"}
+                  <iconify-icon icon="mdi:folder-outline" width="18" height="18"></iconify-icon>
+                {:else}
+                  <!-- .ae-tile is the box AssetThumb's children fill (100%/100%);
+                       reused rather than re-declared so a row's media and a grid
+                       tile's media are the same thing at two sizes. -->
+                  <div class="ae-tile">
+                    <AssetThumb {app} asset={e} project={parsed.keyspace} />
+                  </div>
+                {/if}
+              </div>
               <span class="file-browser-name">{e.name}</span>
               {#if e.type === "file"}
                 <span class="file-browser-detail">{detailLine(e)}</span>
@@ -283,7 +342,7 @@
          it would make an invented grouping look like a real folder. -->
     <aside class="file-browser-detail-pane">
       {#if selected === null}
-        <div class="file-browser-notice">Select a file to see what it is, preview it, or save it.</div>
+        <div class="file-browser-notice">Point at a row to see what it is; click it to preview it.</div>
       {:else}
         <div class="file-browser-detail-name">{selected.name}</div>
         <div class="file-browser-detail-meta">{detailLine(selected)}</div>
@@ -298,6 +357,38 @@
             Download
           </button>
         </div>
+        <!-- THE PREVIEW SITS ABOVE THE REFUSALS, and that ordering was
+             measured rather than guessed: with five long "not done here"
+             sentences first, a CSV table opened by a click rendered BELOW the
+             fold of the detail pane, so the content the gesture asked for was
+             the one thing not on screen. The refusals are context; the preview
+             is the answer. -->
+        {#if preview}
+          <div class="file-browser-preview">
+            {#if preview.kind === "image"}
+              <img class="file-browser-preview-media" src={preview.url} alt={selected.name} />
+            {:else if preview.kind === "video"}
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <video class="file-browser-preview-media" src={preview.url} controls></video>
+            {:else if selected.kind === "data"}
+              <!-- The table gets the WHOLE file (loadPreview's budget), so no
+                   truncation sentence belongs here — and that is the point: a
+                   peek fed to a table renders a mangled final row that reads as
+                   real data. If the budget ever changes, `truncated` is what
+                   would have to be surfaced, not hidden. -->
+              <CsvTable text={preview.text} filename={selected.name} />
+            {:else}
+              <pre class="file-browser-preview-text">{preview.text}</pre>
+              {#if preview.truncated}
+                <!-- SAID, NOT DRAWN INTO THE TEXT. An "…" appended to the string
+                     is indistinguishable from an "…" that was in the file. -->
+                <p class="file-browser-preview-note">
+                  Showing the first {humanReadableFileSize(PREVIEW_TEXT_BYTES)} — download the file to read the rest.
+                </p>
+              {/if}
+            {/if}
+          </div>
+        {/if}
         <!-- WHAT THIS ROOT DOES NOT DO, stated as SENTENCES rather than as a row
              of greyed-out buttons. That was the first shape and it was wrong twice
              over: the house rule is that "a control that looks clickable but only
@@ -315,20 +406,6 @@
             {/each}
           </ul>
         </div>
-        {#if preview}
-          <div class="file-browser-preview">
-            {#if preview.kind === "image"}
-              <img class="file-browser-preview-media" src={preview.url} alt={selected.name} />
-            {:else if preview.kind === "video"}
-              <!-- svelte-ignore a11y_media_has_caption -->
-              <video class="file-browser-preview-media" src={preview.url} controls></video>
-            {:else if selected.kind === "data"}
-              <CsvTable text={preview.text} filename={selected.name} />
-            {:else}
-              <pre class="file-browser-preview-text">{preview.text}</pre>
-            {/if}
-          </div>
-        {/if}
       {/if}
     </aside>
   </div>

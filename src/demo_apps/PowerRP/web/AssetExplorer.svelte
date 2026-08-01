@@ -291,6 +291,7 @@
   // web/storageMode.js) — a bare mode-blind seam sent the draft key to the server.
   import { assetStoreFor } from "./storageMode.js"; // resolves an asset ref for THIS page's storage
   import { copyText } from "./clipboard.js";
+  import { PREVIEW_WHOLE_FILE, previewOfBlob, projectCategoryPath } from "./storageTree.js";
   import { downloadBytes } from "./fileDownload.js";
   import { inventoryReport, quotaTooltipCategories } from "./debugStorage.js";
   // gatherDebugStorageData: the SAME origin-wide gathering the Debug console's
@@ -828,13 +829,21 @@
 
   /** Command. Loads a data asset's text for the preview table. A failure is shown
    *  IN THE DIALOG (previewTextError) rather than leaving an empty table that a
-   *  reader would take for an empty file. */
+   *  reader would take for an empty file.
+   *
+   *  THROUGH web/storageTree.js's `previewOfBlob`, which is THE one inline-preview
+   *  definition. That function's docblock has claimed since it was written that it
+   *  replaced this one; it had not — it replaced the Debug console's copy only, and
+   *  this stayed a second implementation under a docblock asserting it was gone.
+   *  PREVIEW_WHOLE_FILE, because CsvTable is a virtual scroller built for the whole
+   *  file and a peek handed to a table is not partial but WRONG: the cut lands
+   *  mid-line, so the last row is mangled and reads as data. */
   async function loadPreviewText(a) {
     previewText = null;
     previewTextError = null;
     try {
       const blob = await assetStoreFor(app.projectName()).get(app.projectName(), a.name);
-      previewText = await blob.text();
+      previewText = (await previewOfBlob(blob, "data", PREVIEW_WHOLE_FILE)).text;
     } catch (e) {
       previewTextError = String(e?.message ?? e);
       console.error(`AssetExplorer: could not read "${a.name}" for the table preview:`, e);
@@ -923,6 +932,21 @@
         onclick={toggleSearch}
       >
         <iconify-icon icon="mdi:magnify" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
+    <!-- OPEN IN FILE BROWSER (R6-19.6). PANE-level, not per-tile: the requirement
+         is "'Open in file browser' from Renderings and from the asset panel", and
+         a fourth icon in the tile's action row would have to overlap the three
+         the row's own comment already argues are the maximum a square tile holds.
+         The path is `projectCategoryPath`'s, never spelled here — only that
+         function knows a DRAFT's assets are browser-local in every storage mode. -->
+    <Tooltip text="Open this project's assets in the File Browser — the one view of every store, including the renderings and caches this pane does not show">
+      <button
+        class="btn-icon"
+        aria-label="Open assets in the File Browser"
+        onclick={() => app.openFileBrowser(projectCategoryPath(app, "assets"))}
+      >
+        <iconify-icon icon="mdi:folder-search-outline" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>
     <!-- Hidden file input drives the Upload button. -->
