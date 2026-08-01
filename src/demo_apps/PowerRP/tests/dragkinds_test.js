@@ -17,7 +17,8 @@ import { registerAll } from "../plugins/index.js";
 import { createCommands } from "../core/commands.js";
 import {
   translationPairs, resizeAnchors, resizedBox,
-  scaledBoxAboutPoint, scaleMemberPairs, scalePairs, groupResizeState,
+  scaledBoxAboutPoint, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState,
+  geometryPairs, axisPinning, AXIS_COORDINATES,
   creationRect, creationEndpoint,
 } from "../web/canvas/dragKinds.js";
 
@@ -166,12 +167,27 @@ test("scaledBoxAboutPoint: per-axis (kx≠ky) unrotated maps corners about the a
     approx(after[i].y, ay + ky * (before[i].y - ay));
   }
 });
-test("scaleMemberPairs: bbox writes x/y/w/h; touch suppresses an axis", () => {
+test("scaleMemberPairs: bbox writes x/y/w/h; the axis projection suppresses an axis", () => {
+  // The 6th argument used to be `touch` ({x, y} booleans). It is now the protocol
+  // projection (R6-29) — axisPinning("x") says the same thing in the vocabulary
+  // every other constrained handle in the app already speaks.
   const m = member({ rotation: 0, scale: 1, x: 10, y: 20, w: 100, h: 50 });
   eq(scaleMemberPairs(m, 2, 2, 0, 0),
     [[["items", "r", "x"], 20], [["items", "r", "y"], 40], [["items", "r", "w"], 200], [["items", "r", "h"], 100]]);
-  eq(scaleMemberPairs(m, 2, 1, 0, 0, { x: true, y: false }),
+  eq(scaleMemberPairs(m, 2, 1, 0, 0, axisPinning("x")),
     [[["items", "r", "x"], 20], [["items", "r", "w"], 200]]);
+});
+test("geometryPairs: THE seam — project, then keep only what changed", () => {
+  // An east-only stretch writes w alone (the minimal-delta discipline)…
+  eq(geometryPairs("r", { x: 10, y: 20, w: 100, h: 50 }, { x: 10, y: 20, w: 120, h: 50 }),
+    [[["items", "r", "w"], 120]]);
+  // …and a constraint that forbids an axis produces the SAME shape of answer,
+  // because "did not move" and "may not move" are dropped by one rule.
+  eq(geometryPairs("r", { y: 20, w: 100, h: 50 }, { y: 99, w: 120, h: 999 }, axisPinning("x")),
+    [[["items", "r", "w"], 120]]);
+  // A dotted key is a path WITHIN the item — an arrow's endpoint coordinate.
+  eq(geometryPairs("a", { "from.x": 0 }, { "from.x": 5 }), [[["items", "a", "from", "x"], 5]]);
+  eq(geometryPairs("r", { x: 10 }, { x: 10 }), []);
 });
 test("scaleMemberPairs: single-axis multi-resize (ky=1) on an unrotated member writes x/w ONLY", () => {
   // Dragging only the east edge of a multi-selection ⇒ kx≠1, ky===1. The still
@@ -184,8 +200,59 @@ test("scaleMemberPairs: single-axis multi-resize (ky=1) on an unrotated member w
 test("scaleMemberPairs: moveBy scales free endpoints about the anchor", () => {
   const plugin = { moveBy: () => [] }; // presence of moveBy selects the endpoint branch
   const m = { itemId: "a", plugin, rawItem: { from: { x: 0, y: 0 }, to: { x: 100, y: 0 } } };
-  eq(scaleMemberPairs(m, 2, 2, 0, 0),
-    [[["items", "a", "from", "x"], 0], [["items", "a", "from", "y"], 0], [["items", "a", "to", "x"], 200], [["items", "a", "to", "y"], 0]]);
+  // Anchored AWAY from the endpoints: every coordinate moves, so every one is written.
+  eq(scaleMemberPairs(m, 2, 2, -50, -50),
+    [[["items", "a", "from", "x"], 50], [["items", "a", "from", "y"], 50], [["items", "a", "to", "x"], 250], [["items", "a", "to", "y"], 50]]);
+});
+// R6-29, THE ONE DELIBERATE BEHAVIOUR CHANGE of the constraint unification, pinned
+// here so it cannot be mistaken later for drift. The endpoint (moveBy) branch used
+// to write EVERY coordinate the plugin hook returned, including ones the gesture
+// left exactly where they were; the bbox branch has dropped those since the
+// minimal-delta work, and translationPairs' own docstring already claimed the rule
+// universally. Now both branches go through geometryPairs, so both obey it.
+// It matters beyond tidiness: a redundant write is a KEYFRAME on the current slide,
+// which pins a coordinate the user never touched and stops it tweening.
+test("scaleMemberPairs: an endpoint the gesture did NOT move is not rewritten", () => {
+  const plugin = { moveBy: () => [] };
+  const m = { itemId: "a", plugin, rawItem: { from: { x: 0, y: 0 }, to: { x: 100, y: 0 } } };
+  // Anchored ON `from` with a flat arrow: only to.x can change, so only to.x is written.
+  eq(scaleMemberPairs(m, 2, 2, 0, 0), [[["items", "a", "to", "x"], 200]]);
+});
+test("rotationPairs: a bbox member turns AND orbits; an arrow turns its endpoints", () => {
+  // Quarter turn about the origin of a 100x50 box whose world origin is (10, 20):
+  // rotation is written, and x/y are back-solved so the box lands on the orbit.
+  const m = { itemId: "r", plugin: {}, rawItem: { rotation: 0 }, startWorld: { x: 10, y: 20, rotation: 0, scale: 1 }, startX: 10, startY: 20, startW: 100, startH: 50, startRotation: 0 };
+  const pairs = rotationPairs(m, Math.PI / 2, { x: 0, y: 0 });
+  approx(pairs.find(([p]) => p[2] === "rotation")[1], Math.PI / 2);
+  // The world CENTRE must land exactly where the plane rotation puts it.
+  const st = { x: pairs.find(([p]) => p[2] === "x")[1], y: pairs.find(([p]) => p[2] === "y")[1], w: 100, h: 50, rotation: Math.PI / 2, scale: 1 };
+  const c = T.apply(worldTransform(st), 50, 25);
+  approx(c.x, -(20 + 25)); // (60, 45) rotated a quarter turn about the origin
+  approx(c.y, 10 + 50);
+  // An arrow has no `rotation`: its free endpoints orbit instead.
+  const arrow = { itemId: "a", plugin: { moveBy: () => [] }, rawItem: { from: { x: 10, y: 0 }, to: { x: 0, y: 10 } } };
+  eq(rotationPairs(arrow, Math.PI / 2, { x: 0, y: 0 }).map(([p]) => p.slice(2).join(".")).sort(),
+    ["from.x", "from.y", "to.x", "to.y"]);
+});
+test("rotationPairs: an EQUATION-valued rotation is pinned, an ABSENT one is written", () => {
+  // The asymmetry with scaleMemberPairs' w/h is deliberate: no stored `w` means the
+  // widget has no width, but no stored `rotation` means rotation 0 (worldTransform
+  // reads `?? 0`), so the turn must land somewhere.
+  const base = { itemId: "r", plugin: {}, startWorld: { x: 0, y: 0, rotation: 0, scale: 1 }, startX: 0, startY: 0, startW: 100, startH: 50, startRotation: 0 };
+  const bound = rotationPairs({ ...base, rawItem: { rotation: "= a.rotation" } }, 0.3, { x: 0, y: 0 });
+  assert.equal(bound.find(([p]) => p[2] === "rotation"), undefined, "an equation-bound rotation must survive the turn");
+  const absent = rotationPairs({ ...base, rawItem: {} }, 0.3, { x: 0, y: 0 });
+  approx(absent.find(([p]) => p[2] === "rotation")[1], 0.3);
+});
+test("AXIS_COORDINATES: the table each axis constraint reads, matched by LEAF", () => {
+  // A table, not a comment (the DRAG_KIND_MODIFIERS precedent in the same file):
+  // this fact used to live as `doX`/`doY` in one function and `touch` in another.
+  eq([...AXIS_COORDINATES.x.leaves], ["x", "w"]);
+  eq([...AXIS_COORDINATES.y.leaves], ["y", "h"]);
+  assert.equal(AXIS_COORDINATES.x.factor, "kx");
+  // `scale` belongs to NEITHER axis — a scalar has no handedness, so a group's
+  // uniform scale is never suppressed by an axis constraint.
+  assert.ok(!AXIS_COORDINATES.x.leaves.includes("scale") && !AXIS_COORDINATES.y.leaves.includes("scale"));
 });
 test("scalePairs: adapter — uniform about c, axis constraint suppresses the other axis", () => {
   const m = member({ rotation: 0, scale: 1, x: 10, y: 20, w: 100, h: 50 });

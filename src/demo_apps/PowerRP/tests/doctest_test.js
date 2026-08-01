@@ -87,8 +87,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, "..");
 
-/** The trees whose examples are DOM-free by contract, so bare node can run them. */
-const SEARCH_DIRS = ["core", "plugins", "render_gpu", "cli"];
+/** The trees whose examples are DOM-free by contract, so bare node can run them.
+ *  `web/canvas` is in the list even though `web/` at large is not: that directory
+ *  holds exactly one module (dragKinds.js), its own header declares it DOM-free
+ *  ("imports only core/transform + core/derive … so this module runs in bare
+ *  node"), and while it was outside this scan its ~30 examples were the only
+ *  doctests in the app that nothing executed — tests/dragkinds_test.js calls
+ *  itself a "mirror of the module's doctests", and a hand-maintained mirror is
+ *  the defect this round keeps finding. */
+const SEARCH_DIRS = ["core", "plugins", "render_gpu", "cli", "web/canvas"];
 /** Files that name a host in their filename: they cannot import without one. */
 const BROWSER_ONLY_FILE = /^browser_|worker/;
 /** Coverage floor — see THE THRESHOLD POLICY. Measured 2183 at introduction. */

@@ -151,7 +151,7 @@
  * and closing that means adding a handedness uniform to the material contract, not
  * relaxing this one.
  *
- * ── THE HANDLE-CONSTRAINT PROTOCOL (`modifierPoints[].constrain`) ─────────────
+ * ── THE HANDLE-CONSTRAINT PROTOCOL (`constrain(state, desired) → allowed`) ────
  *
  * A constrained handle answers TWO separable questions, and welding them together
  * is what kept modifier points DRAG-ONLY: `constrain(state, desired) → allowed`
@@ -161,11 +161,33 @@
  * a handle was allowed to be without also committing a write — and therefore only
  * a mouse could drive one. Declaring the projection makes any source of a desired
  * point a valid driver: a drag, an equation, or a binding to another anchor
- * (commit 2a81b95). Optional, LOCAL units, defaulted to UNCONSTRAINED (the
- * identity) by core/derive.js nodeModifierPoints, so a widget with no restricted
- * handle needs nothing and every consumer may call it unconditionally. Full
- * reasoning, including why "nearest allowed" is a documented CONVENTION rather
- * than an enforced law, lives at THE HANDLE-CONSTRAINT PROTOCOL in core/derive.js.
+ * (commit b967325 — this line used to cite 2a81b95, which is not an ancestor of
+ * HEAD and whose live twin 169abe4 contains none of the protocol; the code landed
+ * under a commit about selectable handles). Optional, defaulted to UNCONSTRAINED
+ * (the identity) by core/derive.js nodeModifierPoints, so a widget with no
+ * restricted handle needs nothing and every consumer may call it unconditionally.
+ *
+ * IT IS NO LONGER SCOPED TO `modifierPoints[]`, and this heading used to say it
+ * was. The bbox MOVE / RESIZE handles are not modifier points — their semantics
+ * are uniform across every bbox widget, so there was nothing per-plugin to
+ * override — and they used to express their restrictions as a pair of booleans
+ * (`doX`/`doY`) in web/canvas/dragKinds.js. That is the SAME mathematical object
+ * written twice: "height is locked" IS "project the desired (w, h) onto the
+ * nearest point of the line {(w, h₀)}". They now share this one projection
+ * through core/derive.js `pinning`, so there is one answer to "where may this
+ * handle go" instead of two, and a new constraint source (an equation lock, a
+ * chain-linked aspect ratio, a group scaling its children) is wired ONCE.
+ *
+ * SO A WIDGET CANNOT HAVE ITS OWN DIALECT, and that is enforced rather than
+ * asked for: web/canvas/dragKinds.js `geometryPairs` is the only exported way to
+ * turn a desired geometry into item writes, and tests/universal_constraints_test.js
+ * sweeps the whole registered roster to prove every draggable affordance a widget
+ * exposes resolves through it.
+ *
+ * LOCAL units for the modifier-point family. Full reasoning — including that
+ * "nearest allowed" is a LAW WITH DECLARED EXEMPTIONS (this line used to call it
+ * an unenforced convention, which was already stale) — lives at THE
+ * HANDLE-CONSTRAINT PROTOCOL in core/derive.js.
  *
  * THE UNIVERSAL EFFECTS BUNDLE is injected HERE (see withUniversalEffects): a
  * plugin does not opt in, it opts OUT by being ineligible. That is why the

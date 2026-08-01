@@ -810,26 +810,55 @@ export function nodeAnchors(node) {
 // a desired point a valid driver — a drag, an equation, or a BINDING TO ANOTHER
 // ANCHOR (the reason this protocol exists) — exactly the move the activation
 // registry made: take something imperative and buried, declare it, and N
-// consumers become possible.
+// consumers become possible. (The protocol landed in commit b967325, whose
+// SUBJECT is about selectable handles; the design essay that describes it rode a
+// later commit. The SHA this file used to cite, 2a81b95, is not an ancestor of
+// HEAD at all — a dangling pre-rebase object — and its live twin 169abe4 changes
+// only list UI. Recorded because a citation nobody can resolve is worse than none.)
 //
-// CONVENTION (the documented reading, not something the mechanism enforces):
-// `constrain` returns the NEAREST point of the handle's allowed set, so it is a
-// metric projection and therefore IDEMPOTENT — which is what licenses composing
-// it with an `apply` that constrains again internally, and what makes
-// constraintPull below a free second consumer instead of a second declaration.
-// The signature is deliberately GENERIC (a point → a point in the same space),
-// so a future non-projection use is a new convention, not a violation.
+// ── ONE PROTOCOL, TWO RECORDS ────────────────────────────────────────────────
+// `desired` and `allowed` are a COORDINATE RECORD: a flat object of named
+// numbers, and NOT necessarily a two-dimensional point. Two families speak it:
 //
-// COORDINATE SPACE: LOCAL units, always. nodeModifierPoints wraps a handle's
-// position local→world and CanvasView inverts the SAME world back before calling
-// either hook, so rotation and scale are correct BY CONSTRUCTION and no plugin
-// reasons about them. One consequence to state out loud because it is a design
-// choice and not an oversight: under NON-UNIFORM scale, nearest-in-local is not
-// nearest-in-world. The constraint is a statement about the widget's own
-// parameters (a donut's inner radius runs along ITS x axis), so LOCAL is where it
-// is meaningful and where "nearest" is defined. Do not "fix" this into world
-// space — that would make a squashed donut's handle answer a question nobody
-// asked.
+//   MODIFIER POINTS   the record is a LOCAL {x, y} — the yellow square's own
+//                     position. Eight plugins declare one.
+//   BBOX DRAGS        the record is the item's STORED GEOMETRY, keyed by the
+//                     path within the item: {x, y, w, h}, a group's {scale,x,y},
+//                     an arrow's {"from.x", …}. See web/canvas/dragKinds.js
+//                     geometryPairs, THE one seam every drag writes through.
+//
+// The bbox family used to express its restrictions as a pair of booleans
+// (`doX`/`doY`) instead, which is the same mathematical object written twice:
+// "height is locked" IS "project the desired (w, h) onto the nearest point of
+// the line {(w, h₀)}". `pinning` below is that projection, and it is why there
+// is now one answer to "where may this handle go" rather than two.
+//
+// NEAREST IS A LAW WITH DECLARED EXEMPTIONS, NOT AN UNCHECKED CONVENTION. This
+// comment used to say the opposite ("the documented reading, not something the
+// mechanism enforces"), and that was already stale when it was read for R6-29:
+// tests/handle_constraints_test.js sweeps EVERY handle of EVERY registered
+// widget for PURE / IDEMPOTENT / FIXED POINT / ROUND TRIP / NEAREST / PULL, and
+// its NOT_NEAREST table holds the handles that are honestly RETRACTIONS rather
+// than projections, each with its reason. tests/universal_constraints_test.js
+// does the same for the bbox family. So: `constrain` returns the NEAREST point
+// of the allowed set — hence a metric projection, hence IDEMPOTENT, which is
+// what licenses composing it with an `apply` that constrains again internally
+// and makes constraintPull a free second consumer rather than a second
+// declaration. A map that is not nearest is allowed to exist, but it must be
+// declared in one of those tables with a reason, and it fails the gate otherwise.
+//
+// COORDINATE SPACE: LOCAL units, always, for the modifier-point family.
+// nodeModifierPoints wraps a handle's position local→world and CanvasView
+// inverts the SAME world back before calling either hook, so rotation and scale
+// are correct BY CONSTRUCTION and no plugin reasons about them. One consequence
+// to state out loud because it is a design choice and not an oversight: under
+// NON-UNIFORM scale, nearest-in-local is not nearest-in-world. The constraint is
+// a statement about the widget's own parameters (a donut's inner radius runs
+// along ITS x axis), so LOCAL is where it is meaningful and where "nearest" is
+// defined. Do not "fix" this into world space — that would make a squashed
+// donut's handle answer a question nobody asked. The bbox family's record is
+// STORED state, which is that item's own frame by definition, so the same
+// sentence holds there for the same reason.
 
 /**
  * Pure function. THE DEFAULT constraint: the identity map — a handle with no
@@ -841,6 +870,47 @@ export function nodeAnchors(node) {
  */
 export function UNCONSTRAINED(state, desired) {
   return desired;
+}
+
+/**
+ * Pure function. THE AXIS-SUPPRESSION PROJECTION: builds a `constrain` that
+ * holds the named coordinates at the values `state` already has and lets every
+ * other coordinate through untouched. "Height is locked" is `pinning(["h"])`;
+ * the G/S modal's X-axis constraint is `pinning(["y", "h"])`.
+ *
+ * THIS IS WHAT LETS THE BBOX DRAG FAMILY SPEAK THE PROTOCOL instead of
+ * paralleling it. A boolean pair (the old `doX`/`doY`) says the same thing —
+ * "this axis's writes are suppressed" — in a vocabulary exactly one call site
+ * understands. As a projection it composes with every other constraint, and a
+ * consumer that has never heard of axis locking can still ask where a drag is
+ * allowed to land.
+ *
+ * IT IS PROVABLY THE NEAREST ALLOWED POINT, not merely a convenient one, so it
+ * satisfies the protocol's law rather than needing an exemption. The allowed set
+ * {v : v_k = state_k for every pinned k} is an axis-aligned affine subspace, and
+ * squared Euclidean distance over a coordinate record is a SUM of independent
+ * per-coordinate terms — so minimising the sum minimises each term alone: a
+ * pinned coordinate has exactly one legal value and a free one keeps `desired`.
+ * Nothing is traded off, which is why this needs no search, why it is trivially
+ * idempotent, and why COMPOSING two pinnings (the union of their keys) is still
+ * the nearest point.
+ *
+ * Pinning a coordinate the state does not carry is VACUOUS rather than an error:
+ * the coordinate does not exist, so holding it still writes nothing downstream.
+ *
+ * @param {string[]} keys - the coordinates that may not move
+ * @returns {function} a `constrain(state, desired) → allowed`
+ *
+ * @example pinning(["h"])({w: 100, h: 50}, {w: 300, h: 999}) // {w: 300, h: 50} (the height drag is refused, the width drag is not)
+ * @example pinning(["y", "h"])({x: 0, y: 20, w: 100, h: 50}, {x: 7, y: 8, w: 300, h: 999}) // {x: 7, y: 20, w: 300, h: 50}
+ * @example pinning([])({x: 1}, {x: 9}) // {x: 9} (nothing pinned — the identity, exactly UNCONSTRAINED)
+ */
+export function pinning(keys) {
+  return (state, desired) => {
+    const allowed = { ...desired };
+    for (const key of keys) allowed[key] = state[key];
+    return allowed;
+  };
 }
 
 /**
@@ -866,21 +936,37 @@ export function modifierWrite(mp, state, desired) {
 }
 
 /**
- * Pure function. How far the constraint PULLED a desired point: the distance
- * from `desired` to the nearest allowed point, |p − constrain(p)|. Zero exactly
- * when the point was already allowed.
+ * Pure function. How far the constraint PULLED a desired record: the distance
+ * from `desired` to the nearest allowed record, |p − constrain(p)|. Zero exactly
+ * when the record was already allowed.
  *
  * This is the projection's free second consumer — the same declaration answers
  * "how far did the constraint drag my pointer" (a resisted drag) and "which
  * handle is nearest what I am pointing at" (hit-testing among handles), with no
  * second thing for a widget to declare or keep in sync.
  *
+ * THE METRIC IS OVER `desired`'s OWN COORDINATES, not over a hardcoded x and y.
+ * That is not generality for its own sake: the protocol's record is {x, y} for a
+ * modifier point but {x, y, w, h} for a bbox drag (see ONE PROTOCOL, TWO RECORDS
+ * above), and a pull that only knew x/y would report 0 for a constraint that
+ * moved `h` — a silent wrong answer in exactly the family that just joined.
+ * A coordinate the projection ADDS is not measured: it was not asked for.
+ *
+ * `mp` is anything carrying a `constrain`, so the bbox family passes
+ * `{constrain: pinning([…])}` rather than needing a second function.
+ *
  * @example constraintPull({constrain: (s, p) => ({x: p.x, y: 0})}, {}, {x: 5, y: 3}) // 3
  * @example constraintPull({constrain: UNCONSTRAINED}, {}, {x: 5, y: 3}) // 0
+ * @example constraintPull({constrain: pinning(["h"])}, {h: 50}, {w: 300, h: 53}) // 3 (the height was held 3 short of the drag)
  */
 export function constraintPull(mp, state, desired) {
   const allowed = mp.constrain(state, desired);
-  return Math.hypot(desired.x - allowed.x, desired.y - allowed.y);
+  let sum = 0;
+  for (const key of Object.keys(desired)) {
+    const d = desired[key] - allowed[key];
+    sum += d * d;
+  }
+  return Math.sqrt(sum);
 }
 
 /**

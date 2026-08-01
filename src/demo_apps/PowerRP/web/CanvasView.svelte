@@ -58,8 +58,10 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, groupResizeState, creationRect, creationEndpoint, itemGeometryPairs } from "./canvas/dragKinds.js";
-  import { diffState } from "../core/deltas.js";
+  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, creationEndpoint, geometryPairs } from "./canvas/dragKinds.js";
+  // diffState is no longer imported here: the two direct calls it had (the single
+  // resize and the group resize) now go through canvas/dragKinds.js geometryPairs,
+  // which is where the minimal delta and the constraint projection are one step.
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js"; // asset-tile drop payload type + the one .zip-is-a-project rule (drop-handler region)
   import { assetDropKind } from "./pluginAssetLoader.js"; // what a dropped asset DOES: "widget" (*.plugin.js) | "media" | "none" — declared + bare-node tested
@@ -2152,7 +2154,17 @@
     };
     hoverAnchor = null; // a hover tip must not linger frozen through the drag
     app.dragging = true;
-    app.dragKind = "resize";
+    // A GROUP resize ANNOUNCES ITSELF AS ITS OWN KIND, because it reads only one
+    // of resize's two modifiers (groupResizeState forces `uniform` on, so Shift
+    // changes nothing — see DRAG_KIND_MODIFIERS.groupresize). `drag.kind` stays
+    // "resize": that is the local dispatch key, and the group branch lives inside
+    // resizeDrag. Two LITERAL assignments rather than one ternary, deliberately —
+    // tests/shortcut_registry_test.js scans this file for a literal drag-kind
+    // assignment, and a ternary would match neither, silently dropping both kinds
+    // out of the guard. (That scan is also why this note names no example string:
+    // it matched the placeholder in an earlier draft of this very comment.)
+    if (drag.group) app.dragKind = "groupresize";
+    else app.dragKind = "resize";
   }
 
   function resizeDrag(e, w) {
@@ -2259,11 +2271,16 @@
       y = solved.y;
     }
 
-    // Commit ONLY the geometry keys that actually changed vs the resolved
-    // start pose (drag.startState) — an east-only stretch writes just `w`, so a
-    // stored equation on x/y/h survives untouched (interaction-commit rule).
-    // Grabbing an axis that DID move overrides its equation with the literal.
-    app.setPreview(itemGeometryPairs(drag.itemId, diffState(s, { x, y, w: ww, h: hh }, ["x", "y", "w", "h"])));
+    // THE ONE GEOMETRY-WRITE SEAM (canvas/dragKinds.js geometryPairs): project
+    // the desired box onto what the constraint allows, then commit ONLY the keys
+    // that actually changed vs the resolved start pose (drag.startState) — an
+    // east-only stretch writes just `w`, so a stored equation on x/y/h survives
+    // untouched (interaction-commit rule). Grabbing an axis that DID move
+    // overrides its equation with the literal. The resize handles have no
+    // per-gesture constraint of their own today, so this passes none and gets
+    // the protocol's UNCONSTRAINED default — the point is that a future one (an
+    // equation lock, a chain-linked aspect ratio) enters HERE and nowhere else.
+    app.setPreview(geometryPairs(drag.itemId, s, { x, y, w: ww, h: hh }));
   }
 
   /**
@@ -2297,7 +2314,7 @@
     // x/y) — a pure Cmd-symmetric scale, say, leaves x/y put, so their stored
     // equations survive (interaction-commit rule).
     const start = { scale: drag.startScale, x: drag.startState.x, y: drag.startState.y };
-    app.setPreview(itemGeometryPairs(drag.itemId, diffState(start, { scale: gs.scale, x: gs.x, y: gs.y }, ["scale", "x", "y"])));
+    app.setPreview(geometryPairs(drag.itemId, start, { scale: gs.scale, x: gs.x, y: gs.y }));
   }
 
   // ── Multi-resize (manifest UNDEFERRAL SWEEP: handles on a multi-selection ────
@@ -2738,6 +2755,31 @@
   }
 
   /**
+   * Query. The anchor ids item `itemId`'s plugin PUBLISHES right now — the
+   * second argument core/snap.js provenanceAnchorId requires, because "which
+   * anchors exist" is a question only the source plugin can answer (a bento grid
+   * publishes 54 cell anchors; the hardcoded 15-name table it replaced declined
+   * every one of them).
+   *
+   * BOTH CALLERS USED TO OMIT IT AND provenanceAnchorId THROWS ON THAT, so the
+   * whole anchor-snap-to-equation release (holding A through a snapped move or
+   * resize) died with a TypeError out of the pointerup handler. Nothing caught
+   * it because tests/silent_promises_test.js exercises the pure function with
+   * two arguments of its own making — a correct-by-construction imitation of a
+   * call path that was wrong. tests/anchor_snap_release_test.js now drives THIS
+   * function's contract instead.
+   *
+   * An item purged mid-drag publishes nothing, which provenanceAnchorId reads as
+   * "not bindable" and the callers already handle by leaving the plain number —
+   * the same partial-equation outcome the docs above describe, not a swallowed
+   * failure.
+   */
+  function publishedAnchorIds(itemId) {
+    const node = app.nodes().find((n) => n.itemId === itemId);
+    return node ? nodeAnchors(node).map((a) => a.id) : [];
+  }
+
+  /**
    * Command. Rewrites drag.itemId's x/y as anchor-snap EQUATIONS for a MOVE
    * release (manifest: "move point/edge snaps"). `drag.snapProvenance` is
    * either ONE "both"-axis entry (a point snap — pins x AND y to the SAME
@@ -2765,7 +2807,7 @@
     const pairs = drag.members.flatMap((m) => translationPairs(m, drag.lastDx, drag.lastDy));
     const overrides = new Map(); // "x"|"y" → equation string, for drag.itemId only
     for (const p of prov) {
-      const anchorId = provenanceAnchorId(p.sourceAnchorId);
+      const anchorId = provenanceAnchorId(p.sourceAnchorId, publishedAnchorIds(p.sourceItemId));
       if (!anchorId) continue; // non-standard source feature — no anchor to bind; numeric stands
       for (const coord of p.axis === "both" ? ["x", "y"] : [p.axis]) {
         const grabbed = pairs.find(([path]) => path[1] === drag.itemId && path[2] === coord);
@@ -2808,7 +2850,7 @@
     const current = app.previewDelta?.items?.[drag.itemId] ?? {};
     const overrides = new Map(); // "w"|"h" → equation string
     for (const p of prov) {
-      const anchorId = provenanceAnchorId(p.sourceAnchorId);
+      const anchorId = provenanceAnchorId(p.sourceAnchorId, publishedAnchorIds(p.sourceItemId));
       if (!anchorId) continue;
       const coord = p.axis; // resize edge provenance is always single-axis (x or y — never "both")
       const sizeKey = coord === "x" ? "w" : "h";

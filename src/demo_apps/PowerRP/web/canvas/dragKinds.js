@@ -20,11 +20,32 @@
  *
  * DOM-free: imports only core/transform + core/derive (also DOM-free), so this
  * module runs in bare node and is covered by tests/dragkinds_test.js.
+ *
+ * ── THE ONE GEOMETRY-WRITE SEAM (R6-29) ──────────────────────────────────────
+ * `geometryPairs` is the ONLY exported way to turn a desired geometry into item
+ * writes, and every drag in the app goes through it: body drag, drag-all, nudge,
+ * clone home, single resize, group resize, multi-resize, and all three modal
+ * transforms. It does three things in a fixed order — PROJECT the desired record
+ * onto what the constraint allows, keep only what actually CHANGED, then scope
+ * the surviving keys to the item — and the first of those is THE HANDLE-CONSTRAINT
+ * PROTOCOL (core/derive.js), the same `constrain(state, desired) → allowed` the
+ * yellow-square modifier points have always declared.
+ *
+ * THE PROJECTION AND THE MINIMAL DELTA ARE THE SAME LAW, which is why they live
+ * in one function rather than two. `diffState` drops a coordinate that HAPPENED
+ * not to move, so its stored equation survives; `pinning` holds a coordinate at
+ * its start value so it CANNOT move, and `diffState` then drops it for exactly
+ * the same reason. Discovered stillness and imposed stillness are one mechanism.
+ *
+ * `itemGeometryPairs` is deliberately NOT exported. Enforcement by module
+ * boundary is the difference between "we converted the call sites" and "a widget
+ * cannot have its own dialect": a future call site physically cannot skip the
+ * projection, rather than being trusted not to.
  */
 
 import * as T from "../../core/transform.js";
-import { stateXYForCenterPivotWorld } from "../../core/derive.js";
-import { diffState } from "../../core/deltas.js";
+import { stateXYForCenterPivotWorld, UNCONSTRAINED, pinning } from "../../core/derive.js";
+import { diffState, getPath } from "../../core/deltas.js";
 
 /**
  * THE drag-kind vocabulary: every value CanvasView may assign to `app.dragKind`,
@@ -54,6 +75,17 @@ import { diffState } from "../../core/deltas.js";
 export const DRAG_KIND_MODIFIERS = Object.freeze({
   move: Object.freeze(["axisLock"]),
   resize: Object.freeze(["uniform", "symmetric"]),
+  // A GROUP resize is its own kind because it reads ONE of resize's two
+  // modifiers, not both. groupResizeState forces `uniform` on — a group's
+  // influence is a single scalar `scale`, and a per-axis group resize would
+  // SHEAR its members, which the similarity contract forbids — so Shift is
+  // already the only behaviour and a "Uniform scale" chip beside it announces a
+  // key that changes nothing. Cmd (scale about the group centre) is real and
+  // keeps its chip. Announcing resize's pair here was a HintBar lie of exactly
+  // the kind this table exists to prevent, and it is the same defect the
+  // multiresize omission was, one axis over: a kind whose true modifier set
+  // differs from the kind it borrowed its announcement from.
+  groupresize: Object.freeze(["symmetric"]),
   multiresize: Object.freeze(["uniform", "symmetric"]),
   place: Object.freeze(["uniform", "symmetric"]),
   band: Object.freeze(["bandAdd", "bandRemove", "bandInvert"]),
@@ -66,22 +98,128 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
  * from DRAG_KIND_MODIFIERS so the two can never disagree.
  *
  * @example DRAG_KINDS.includes("multiresize") // true
- * @example DRAG_KINDS.length // 7
+ * @example DRAG_KINDS.length // 8
  */
 export const DRAG_KINDS = Object.freeze(Object.keys(DRAG_KIND_MODIFIERS));
 
 /**
+ * THE AXIS-SUPPRESSION TABLE: which stored coordinates each gesture axis owns.
+ *
+ * WHY IT IS A TABLE AND NOT A COMMENT — the same reason DRAG_KIND_MODIFIERS
+ * above it is one. "The x axis touches x and w" used to be spelled as two
+ * booleans in `scalePairs` and as a `touch` object in `scaleMemberPairs`, so the
+ * fact lived in two places and in neither of them by name. Declaring it once
+ * means a fourth constraint source (equation lock, chain-linked aspect ratio,
+ * a group scaling its children) reads the mapping instead of restating it.
+ *
+ * MATCHING IS BY THE COORDINATE'S LAST PATH SEGMENT, which is what lets ONE
+ * table cover both record shapes the seam sees: a bbox widget's flat `w` and an
+ * arrow's nested `from.y` are both decided by their leaf. `scale` (a group's
+ * similarity factor) appears under NO axis, and that is correct rather than an
+ * omission — a scalar has no handedness and no axis, which is the same reason
+ * groupResizeState clamps it non-negative instead of letting it reflect.
+ *
+ * `factor` is the same axis in the gesture's OWN parameterization: a modal scale
+ * constrained to x is a scale of (factor, 1), which is that axis's factor pinned
+ * to its identity. Both suppressions are one projection applied in two spaces —
+ * see scalePairs for why the record-space one alone is not sufficient.
+ */
+export const AXIS_COORDINATES = Object.freeze({
+  x: Object.freeze({ leaves: Object.freeze(["x", "w"]), factor: "kx" }),
+  y: Object.freeze({ leaves: Object.freeze(["y", "h"]), factor: "ky" }),
+});
+
+/** The scale factors a gesture starts from — the identity, one per axis. Pinning
+ *  an axis's factor HERE is what "this axis does not scale" means in factor
+ *  space, exactly as pinning its coordinates means it in record space. */
+const IDENTITY_FACTORS = Object.freeze({ kx: 1, ky: 1 });
+
+/**
+ * Pure function. The projection a gesture AXIS CONSTRAINT imposes: every
+ * coordinate belonging to the OTHER axis is pinned, so only the constrained
+ * axis's coordinates can be written. `null` (unconstrained) is UNCONSTRAINED
+ * itself, the protocol's own default.
+ *
+ * This IS the old `doX`/`doY` pair, and the equality is exact rather than
+ * approximate: "suppress this axis's writes" and "hold this axis's coordinates
+ * at their start values" produce the same delta, because a coordinate held at
+ * its start value is dropped by the same minimal-delta rule that drops one which
+ * merely did not move. Expressing it as a projection is what lets it COMPOSE
+ * with a per-item constraint the gesture knows nothing about.
+ *
+ * The pinned key set is read off the record it is handed, so a bbox record and
+ * an arrow's endpoint record are both covered with no branch here.
+ *
+ * @param {("x"|"y"|null)} axis - the axis the gesture is constrained to
+ * @returns {function} a `constrain(state, desired) → allowed`
+ *
+ * @example axisPinning("x")({y: 20, h: 50}, {x: 7, y: 8, w: 300, h: 999}) // {x: 7, y: 20, w: 300, h: 50}
+ * @example axisPinning("y")({x: 1, w: 100}, {x: 9, y: 8, w: 300, h: 99}) // {x: 1, y: 8, w: 100, h: 99}
+ * @example // a nested leaf obeys the same table — an arrow's y coordinates are its endpoints':
+ * @example axisPinning("x")({"from.y": 6}, {"from.x": 5, "from.y": 99}) // {"from.x": 5, "from.y": 6}
+ * @example axisPinning(null)({x: 1}, {x: 9}) // {x: 9} (unconstrained is the protocol's own identity)
+ */
+export function axisPinning(axis) {
+  const off = axis === "x" ? "y" : axis === "y" ? "x" : null;
+  if (!off) return UNCONSTRAINED;
+  const owned = AXIS_COORDINATES[off].leaves;
+  return (state, desired) =>
+    pinning(Object.keys(desired).filter((k) => owned.includes(k.split(".").pop())))(state, desired);
+}
+
+/**
  * Pure function. Turns a flat geometry delta {key: value, …} (as diffState
  * returns) into the item-scoped [path, value] preview pairs CanvasView commits
- * — the bridge from a MINIMAL delta to app.setPreview's pair list. Each key maps
- * to a flat state path ["items", itemId, key]; an EMPTY delta yields no pairs
- * (nothing changed → nothing to write, so no stored equation is disturbed).
+ * — the bridge from a MINIMAL delta to app.setPreview's pair list. A key is a
+ * DOTTED PATH within the item, so "w" scopes to ["items", id, "w"] and "from.x"
+ * to ["items", id, "from", "x"]; an EMPTY delta yields no pairs (nothing changed
+ * → nothing to write, so no stored equation is disturbed).
  *
- * @example itemGeometryPairs("r", {x: 15, w: 120}) // [[["items","r","x"],15],[["items","r","w"],120]]
- * @example itemGeometryPairs("r", {}) // []
+ * NOT EXPORTED, deliberately: geometryPairs is the only door, so a call site
+ * cannot reach the writes without passing the projection. See THE ONE
+ * GEOMETRY-WRITE SEAM in this file's header.
+ *
+ * @example // itemGeometryPairs("r", {x: 15, w: 120})
+ * @example //   → [[["items","r","x"],15],[["items","r","w"],120]]
+ * @example // itemGeometryPairs("a", {"from.x": 5}) → [[["items","a","from","x"],5]]
  */
-export function itemGeometryPairs(itemId, delta) {
-  return Object.entries(delta).map(([k, v]) => [["items", itemId, k], v]);
+function itemGeometryPairs(itemId, delta) {
+  return Object.entries(delta).map(([k, v]) => [["items", itemId, ...k.split(".")], v]);
+}
+
+/**
+ * Pure function. THE ONE GEOMETRY-WRITE SEAM: project a DESIRED stored geometry
+ * onto what the constraint allows, keep only the coordinates that actually
+ * changed, and scope those to the item. Every drag in the app ends here.
+ *
+ * `start` is the RESOLVED start pose (what the coordinate SHOWED at grab time),
+ * `desired` is what the gesture asks for, and the keys compared are `desired`'s
+ * own — a gesture that does not mention a coordinate cannot write it, which is
+ * how a group resize touches {scale, x, y} and nothing else with no key list to
+ * maintain.
+ *
+ * Args:
+ *   itemId    (string): the item being written
+ *   start     (object): resolved start values, keyed by dotted path within the item
+ *   desired   (object): the gesture's requested values, same keys
+ *   constrain (function): THE HANDLE-CONSTRAINT PROTOCOL projection
+ *     (core/derive.js), defaulted to UNCONSTRAINED so an unrestricted gesture
+ *     needs to say nothing — the same defaulting nodeModifierPoints does for
+ *     the yellow squares.
+ *
+ * Returns:
+ *   [path, value][]: the preview pairs app.setPreview takes
+ *
+ * @example // an east-only stretch writes w ALONE, so equations on x/y/h survive:
+ * @example geometryPairs("r", {x: 10, y: 20, w: 100, h: 50}, {x: 10, y: 20, w: 120, h: 50}) // [[["items","r","w"],120]]
+ * @example // the SAME drag constrained to the x axis writes w and refuses h:
+ * @example geometryPairs("r", {y: 20, w: 100, h: 50}, {y: 99, w: 120, h: 999}, axisPinning("x")) // [[["items","r","w"],120]]
+ * @example // a gesture that changed nothing writes nothing:
+ * @example geometryPairs("r", {x: 10}, {x: 10}) // []
+ */
+export function geometryPairs(itemId, start, desired, constrain = UNCONSTRAINED) {
+  const allowed = constrain(start, desired);
+  return itemGeometryPairs(itemId, diffState(start, allowed, Object.keys(desired)));
 }
 
 /**
@@ -105,23 +243,41 @@ export function itemGeometryPairs(itemId, delta) {
  * endpointMoveBy already applies on the other branch, which is what makes the two
  * one rule rather than two.
  *
+ * `constrain` is THE HANDLE-CONSTRAINT PROTOCOL projection (geometryPairs), and
+ * it is where a PER-MEMBER restriction enters. The gesture-level axis lock does
+ * not need it — moveDrag zeroes the suppressed component before calling, which
+ * is the identical projection applied one space earlier (translation is a
+ * bijection between delta space and position space, so pinning the delta and
+ * pinning the coordinate agree exactly; tests/universal_constraints_test.js pins
+ * that equality). A per-member restriction cannot be expressed that way, because
+ * a drag-all shares ONE delta across members that may be locked differently.
+ *
  * @example // dragged on both axes → both written:
  * @example translationPairs({itemId: "r", plugin: {}, startX: 10, startY: 20}, 5, 3) // [[["items","r","x"], 15], [["items","r","y"], 23]]
  * @example // pure-horizontal drag → only x (y OMITTED, its equation survives):
  * @example translationPairs({itemId: "r", plugin: {}, startX: 10, startY: 20}, 5, 0) // [[["items","r","x"], 15]]
+ * @example // the SAME two-axis drag with the y coordinate constrained away:
+ * @example translationPairs({itemId: "r", plugin: {}, startX: 10, startY: 20}, 5, 3, axisPinning("x")) // [[["items","r","x"], 15]]
  * @example // a widget with no x/y gains none — no phantom transform:
  * @example translationPairs({itemId: "a", plugin: {}, rawItem: {}}, 16, 16) // []
  */
-export function translationPairs(member, dx, dy) {
-  if (member.plugin.moveBy)
-    return member.plugin.moveBy(member.rawItem, dx, dy)
-      .map(([p, v]) => [["items", member.itemId, ...p], v]);
+export function translationPairs(member, dx, dy, constrain = UNCONSTRAINED) {
+  if (member.plugin.moveBy) {
+    const moved = member.plugin.moveBy(member.rawItem, dx, dy);
+    const start = {}, desired = {};
+    for (const [path, value] of moved) {
+      const key = path.join(".");
+      start[key] = getPath(member.rawItem, path);
+      desired[key] = value;
+    }
+    return geometryPairs(member.itemId, start, desired, constrain);
+  }
   const start = { x: member.startX, y: member.startY };
-  const next = {
+  const desired = {
     x: typeof start.x === "number" ? start.x + dx : start.x,
     y: typeof start.y === "number" ? start.y + dy : start.y,
   };
-  return itemGeometryPairs(member.itemId, diffState(start, next, ["x", "y"]));
+  return geometryPairs(member.itemId, start, desired, constrain);
 }
 
 /**
@@ -289,63 +445,156 @@ export function scaledBoxAboutPoint(member, kx, ky, ax, ay) {
 
 /**
  * Pure function. Preview pairs that scale one member by PER-AXIS world factors
- * (kx, ky) about world point (ax, ay). `touch` ({x, y} booleans) selects which
- * axes are written (a constrained modal or an edge-only resize leaves the
- * untouched axis alone), and of those, only the keys that actually CHANGED
- * (diffState) — so a single-axis scale on an unrotated member never clobbers
- * the still axis's stored equation. A bbox/transform widget scales its w/h AND
- * repositions its x/y — EXACTLY, including rotated / non-unit-scale members
+ * (kx, ky) about world point (ax, ay). A bbox/transform widget scales its w/h
+ * AND repositions its x/y — EXACTLY, including rotated / non-unit-scale members
  * (scaledBoxAboutPoint). A moveBy widget (arrow) scales each FREE numeric
  * endpoint about (ax, ay) per axis; equation-bound endpoints stay put. THE ONE
  * scale rule shared by the S-modal and multi-resize-by-handles.
  *
+ * `constrain` REPLACES the old `touch` ({x, y} booleans) parameter, which said
+ * "these axes may be written" in a vocabulary only this file spoke. It is the
+ * protocol's projection (geometryPairs), so a constrained modal passes
+ * axisPinning(axis) and a per-item lock passes its own — and the axis case comes
+ * out byte-identical, because a coordinate held at its start value is dropped by
+ * the same minimal-delta rule that dropped an untouched one.
+ *
  * @example // a rect member {itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startW:100, startH:50} scaled x2 about (0,0):
  * @example scaleMemberPairs({itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startW:100, startH:50}, 2, 2, 0, 0) // [[["items","r","x"],20],[["items","r","y"],40],[["items","r","w"],200],[["items","r","h"],100]]
+ * @example // the same member scaled in x only: y/h are pinned, so only x/w are written
+ * @example scaleMemberPairs({itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startX:10, startY:20, startW:100, startH:50}, 2, 1, 0, 0, axisPinning("x")) // [[["items","r","x"],20],[["items","r","w"],200]]
  */
-export function scaleMemberPairs(member, kx, ky, ax, ay, touch = { x: true, y: true }) {
+export function scaleMemberPairs(member, kx, ky, ax, ay, constrain = UNCONSTRAINED) {
   if (member.plugin.moveBy) {
     const s = member.rawItem ?? {};
-    const pairs = [];
+    const start = {}, desired = {};
     for (const end of ["from", "to"])
       for (const coord of ["x", "y"]) {
-        if (coord === "x" ? !touch.x : !touch.y) continue;
         const v = s[end]?.[coord];
-        if (typeof v === "number") {
-          const k = coord === "x" ? kx : ky;
-          const a = coord === "x" ? ax : ay;
-          pairs.push([["items", member.itemId, end, coord], a + k * (v - a)]);
-        }
+        const k = coord === "x" ? kx : ky;
+        const a = coord === "x" ? ax : ay;
+        start[`${end}.${coord}`] = v;
+        // NOT A FREE NUMBER ⇒ PINNED, by construction: an equation-bound endpoint
+        // keeps its binding, which is the same "only a free number is
+        // transformed" rule translationPairs states on its own branch.
+        desired[`${end}.${coord}`] = typeof v === "number" ? a + k * (v - a) : v;
       }
-    return pairs;
+    return geometryPairs(member.itemId, start, desired, constrain);
   }
   const rawItem = member.rawItem ?? {};
-  const hasW = typeof rawItem.w === "number";
-  const hasH = typeof rawItem.h === "number";
   const nb = scaledBoxAboutPoint(member, kx, ky, ax, ay);
-  // Only the touched axes are candidates; of those, only the keys whose value
-  // actually changed are written (diffState) — a single-axis multi-resize
-  // (ky === 1 on an unrotated member) leaves that axis's stored equation intact.
-  const keys = [];
-  if (touch.x) keys.push("x");
-  if (touch.y) keys.push("y");
-  if (touch.x && hasW) keys.push("w");
-  if (touch.y && hasH) keys.push("h");
   const start = { x: member.startX, y: member.startY, w: member.startW, h: member.startH };
-  return itemGeometryPairs(member.itemId, diffState(start, nb, keys));
+  // A w/h the item does not STORE as a number is likewise pinned rather than
+  // omitted from a key list — same rule, said once. (An item whose w is an
+  // equation keeps it: scaling drives the equation's inputs, not its result.)
+  const desired = {
+    x: nb.x,
+    y: nb.y,
+    w: typeof rawItem.w === "number" ? nb.w : start.w,
+    h: typeof rawItem.h === "number" ? nb.h : start.h,
+  };
+  return geometryPairs(member.itemId, start, desired, constrain);
+}
+
+/**
+ * Pure function. Preview pairs that ROTATE one member by `angle` radians about
+ * world point `c` — the R-modal's per-member write, and the exact sibling of
+ * scalePairs. A bbox/transform widget adds `angle` to its own `rotation` AND
+ * orbits its position about `c`; a moveBy widget (arrow) orbits each FREE
+ * numeric endpoint, since it has no `rotation` of its own to turn.
+ *
+ * NO AXIS CONSTRAINT, and that is a fact about the plane rather than a missing
+ * feature: Blender's `R X` picks one of three rotation axes, and in 2D there is
+ * exactly one (the screen normal), so an X/Y constraint on rotate would have
+ * nothing to choose between. Numeric entry does apply — an angle is a single
+ * number — and it is entered in DEGREES, the unit every angle row in the app
+ * shows (core/properties.js ROW_KINDS "angle"), converted at the one call site.
+ *
+ * AN ABSENT `rotation` IS WRITTEN, unlike an absent `w` in scaleMemberPairs, and
+ * the asymmetry is real rather than an oversight: a widget with no `w` has no
+ * width, so writing one would invent a property it does not have — but a widget
+ * with no stored `rotation` is at rotation 0 (worldTransform reads `?? 0`), so
+ * writing the turn is the only way to honour the gesture. An EQUATION-valued
+ * rotation is still pinned, exactly as an equation-valued w is.
+ *
+ * Like scaledBoxAboutPoint it works in the member's FOLDED world frame and
+ * back-solves the stored x/y with stateXYForCenterPivotWorld, so a rotated or
+ * group-parented member lands exactly and keeps its clean center-pivot equation.
+ *
+ * @example // a 100x50 box at (10,20) turned a quarter turn about the origin:
+ * @example rotationPairs({itemId: "r", plugin: {}, rawItem: {rotation: 0}, startWorld: {x: 10, y: 20, rotation: 0, scale: 1}, startW: 100, startH: 50, startRotation: 0}, Math.PI / 2, {x: 0, y: 0}).length // 3
+ */
+export function rotationPairs(member, angle, c, constrain = UNCONSTRAINED) {
+  if (member.plugin.moveBy) {
+    const s = member.rawItem ?? {};
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const start = {}, desired = {};
+    for (const end of ["from", "to"]) {
+      const px = s[end]?.x, py = s[end]?.y;
+      const free = typeof px === "number" && typeof py === "number";
+      // BOTH coordinates or NEITHER: a rotation mixes x and y, so turning a point
+      // whose other half is anchored to an equation would move it off the circle.
+      start[`${end}.x`] = px;
+      start[`${end}.y`] = py;
+      desired[`${end}.x`] = free ? c.x + cos * (px - c.x) - sin * (py - c.y) : px;
+      desired[`${end}.y`] = free ? c.y + sin * (px - c.x) + cos * (py - c.y) : py;
+    }
+    return geometryPairs(member.itemId, start, desired, constrain);
+  }
+  const W = member.startWorld, w = member.startW, h = member.startH;
+  const oldCenter = T.apply(W, w / 2, h / 2); // world center (pivot-folded)
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const ncx = c.x + cos * (oldCenter.x - c.x) - sin * (oldCenter.y - c.y);
+  const ncy = c.y + sin * (oldCenter.x - c.x) + cos * (oldCenter.y - c.y);
+  // Target world transform: same scale, rotation turned by `angle`, center orbited.
+  const theta = W.rotation + angle;
+  const ct = Math.cos(theta), st = Math.sin(theta), k = W.scale;
+  const target = {
+    x: ncx - k * (ct * (w / 2) - st * (h / 2)),
+    y: ncy - k * (st * (w / 2) + ct * (h / 2)),
+    rotation: theta,
+    scale: W.scale,
+  };
+  const xy = stateXYForCenterPivotWorld(target, w, h);
+  const rawItem = member.rawItem ?? {};
+  const held = rawItem.rotation !== undefined && typeof rawItem.rotation !== "number";
+  const start = { rotation: member.startRotation, x: member.startX, y: member.startY };
+  const desired = {
+    rotation: held ? start.rotation : member.startRotation + angle,
+    x: xy.x,
+    y: xy.y,
+  };
+  return geometryPairs(member.itemId, start, desired, constrain);
 }
 
 /**
  * Pure function. Preview pairs that scale one member by `factor` about world
- * center `c`, optionally constrained to one `axis` (the G/S modal's scale). Thin
- * adapter over scaleMemberPairs: a uniform factor on both axes about `c`, with
- * the constrained axis's factor pinned to 1 and its writes suppressed.
+ * center `c`, optionally constrained to one `axis` (the S modal's scale). Thin
+ * adapter over scaleMemberPairs.
+ *
+ * THE AXIS CONSTRAINT IS ONE PROJECTION APPLIED IN TWO SPACES, and it has to be,
+ * because the gesture and the stored record are different spaces that only
+ * coincide when the member is unrotated:
+ *   FACTOR SPACE — the constrained axis's factor is pinned to its IDENTITY (1),
+ *     so the gesture asks for (factor, 1) rather than (factor, factor).
+ *   RECORD SPACE — that axis's stored coordinates are pinned to their start
+ *     values (axisPinning), so nothing on it is written.
+ * On an unrotated member the second is implied by the first (the coordinates
+ * simply do not change, and diffState drops them). On a ROTATED member it is
+ * not: scaling the local width alone still moves the stored y, because the box's
+ * origin swings, so without the record-space pin an x-constrained scale would
+ * write a y. Both pins are `pinning` — the same function, once per space — which
+ * is what makes "one mechanism" a fact about the code rather than a slogan.
+ * This reproduces the old doX/doY pair exactly; the A/B grid in
+ * tests/universal_constraints_test.js is the evidence.
  *
  * @example scalePairs({itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startW:100, startH:50}, 2, {x:0,y:0}) // [[["items","r","x"],20],[["items","r","y"],40],[["items","r","w"],200],[["items","r","h"],100]]
+ * @example // constrained to x: the height and the y position are both refused
+ * @example scalePairs({itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startX:10, startY:20, startW:100, startH:50}, 2, {x:0,y:0}, "x") // [[["items","r","x"],20],[["items","r","w"],200]]
  */
 export function scalePairs(member, factor, c, axis = null) {
-  const doX = axis !== "y"; // x-axis constraint (or unconstrained) touches x/w
-  const doY = axis !== "x"; // y-axis constraint (or unconstrained) touches y/h
-  return scaleMemberPairs(member, doX ? factor : 1, doY ? factor : 1, c.x, c.y, { x: doX, y: doY });
+  const off = axis === "x" ? "y" : axis === "y" ? "x" : null;
+  const k = pinning(off ? [AXIS_COORDINATES[off].factor] : [])(IDENTITY_FACTORS, { kx: factor, ky: factor });
+  return scaleMemberPairs(member, k.kx, k.ky, c.x, c.y, axisPinning(axis));
 }
 
 /**
