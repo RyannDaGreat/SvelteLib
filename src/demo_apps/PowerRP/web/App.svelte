@@ -79,7 +79,7 @@
     canvasModeStepAxis,
     unsatisfiableEntries,
   } from "../core/shortcut_entries.js";
-  import { DRAG_KIND_MODIFIERS, DRAG_KINDS } from "./canvas/dragKinds.js";
+  import { DRAG_KIND_MODIFIERS, DRAG_KINDS, MODAL_TRANSFORM_KINDS, MODAL_KINDS } from "./canvas/dragKinds.js";
   // Widget-owned editor behaviour (see web/widget_handlers.js): every handler that
   // declares a sustained canvas mode — an activation's interior explore, a
   // creation's multi-step placement — contributes its own registry entries.
@@ -1812,10 +1812,18 @@
   /**
    * Pure function. The HintBar label for a live modal transform — mode, active
    * axis, and typed numeric buffer, joined by " · " (spec: "Scale · X · 2.5").
-   * A grab with no axis carries the "pick an axis (X/Y) to type a distance"
-   * prompt (the G-numeric-requires-axis ruling — a grab number needs an axis;
-   * the digit keystroke is a no-op until one is chosen). Absent axis/buffer
-   * segments are simply omitted.
+   * Absent axis/buffer segments are simply omitted.
+   *
+   * THE WORDING COMES FROM MODAL_TRANSFORM_KINDS (web/canvas/dragKinds.js), which
+   * is also what generates the G/S/R registry entries. This used to be a
+   * two-branch ternary — `kind === "scale" ? "Scale" : "Grab"` — plus a second one
+   * for the prompt, i.e. a hand-written mirror of the kind list living in a
+   * different file from it. It answered "Grab" for any kind it had not heard of,
+   * so adding ROTATE would have announced the wrong mode while looking finished.
+   * A grab still carries the "pick an axis (X/Y) to type a distance" prompt (the
+   * G-numeric-requires-axis ruling — a distance needs a direction, so the digit
+   * keystroke is a no-op until an axis is chosen); that sentence is now declared
+   * beside the kind rather than inferred from it here.
    *
    * @param {{kind:string, axis:(null|"x"|"y"), buffer:string}} m — modalXform
    * @returns {string}
@@ -1826,16 +1834,21 @@
    * // "Scale · X · 2.5"
    * @example modalAnnouncement({ kind: "grab", axis: null, buffer: "" })
    * // "Grab · pick an axis (X/Y) to type a distance"
+   * @example modalAnnouncement({ kind: "rotate", axis: null, buffer: "" })
+   * // "Rotate · type an angle in degrees"
+   * @example modalAnnouncement({ kind: "rotate", axis: null, buffer: "45" })
+   * // "Rotate · 45"
    * @example modalAnnouncement({ kind: "grab", axis: "x", buffer: "2" })
    * // "Grab · X · 2"
    * @example modalAnnouncement({ kind: "scale", axis: "y", buffer: "" })
    * // "Scale · Y"
    */
   function modalAnnouncement(m) {
-    const parts = [m.kind === "scale" ? "Scale" : "Grab"];
+    const kind = MODAL_TRANSFORM_KINDS[m.kind];
+    const parts = [kind.label];
     if (m.axis) parts.push(m.axis.toUpperCase());
     if (m.buffer) parts.push(m.buffer);
-    else if (!m.axis) parts.push(m.kind === "grab" ? "pick an axis (X/Y) to type a distance" : "type a factor");
+    else if (!m.axis) parts.push(kind.numericPrompt);
     return parts.join(" · ");
   }
 
@@ -1871,6 +1884,9 @@
     app,
     canvasModes: canvasModes(),
     dragKindModifiers: DRAG_KIND_MODIFIERS,
+    // The G/S/R entries are GENERATED from this table, not typed out here — see
+    // MODAL_TRANSFORM_KINDS (web/canvas/dragKinds.js) for why.
+    modalTransformKinds: MODAL_TRANSFORM_KINDS,
     activations: activations(),
   });
 
@@ -1892,6 +1908,7 @@
       canvasModeIds: [null, ...canvasModes().map((m) => m.handlerId)],
       canvasModeSteps: canvasModeStepAxis(canvasModes()),
       activationIds: activations().map((a) => a.handlerId),
+      modalKinds: MODAL_KINDS,
       app,
     });
     for (const e of unsatisfiableEntries(entries, contexts))
@@ -2051,7 +2068,12 @@
       // Resolved from the plugin's declaration, so it is the SAME resolution
       // CanvasView's onDblClick performs to run the behaviour.
       activation: handlerFor("activate", app.selectedNode()?.plugin ?? {})?.id ?? null,
-      modalActive: app.modalXform !== null, // a live G/S transform locks input (Blender modal)
+      modalActive: app.modalXform !== null, // a live G/S/R transform locks input (Blender modal)
+      // …and WHICH one. The discriminator inside `modalActive`, exactly as
+      // `activation` sits inside `hasSelection` and `dragKind` inside `dragging`:
+      // it is what lets a chip be scoped to the kinds it is true for, which is how
+      // rotate withholds the X/Y axis keys that have no meaning in the plane.
+      modalKind: app.modalXform?.kind ?? null,
       snapEngaged: app.snapEngaged, // manifest ARCHITECTURE PLAN #4: a drag has an active snap CORRECTION (what the guides and the toolbar tint read)
       // ...and whether that correction is one the A release can actually BIND. The two
       // are not the same, which is the defect: applyResizeSnap raises snapEngaged from

@@ -1,6 +1,6 @@
 /**
- * Modal transform round-2 probe: axis constraints + numeric entry for the
- * Blender-style G (grab) / S (scale) modals. Boots the PowerRP editor headless
+ * Modal transform probe: axis constraints + numeric entry for the Blender-style
+ * G (grab) / S (scale) / R (rotate) modals, plus the cursor->pivot line. Boots the PowerRP editor headless
  * with the demo deck, selects the demo rect, and drives G/S with X/Y axis keys
  * and typed digit buffers — asserting the COMMITTED document matches the exact
  * arithmetic, and that Escape reverts with no undo unit. Fails loudly on any
@@ -64,6 +64,21 @@ try {
     return m ? { kind: m.kind, axis: m.axis, buffer: m.buffer } : null;
   });
   const previewNull = () => page.evaluate(() => window.__powerrp_app.previewDelta === null);
+  const rectRotation = () => page.evaluate((id) => {
+    const n = window.__powerrp_app.nodes().find((n) => n.itemId === id);
+    return n.state.rotation ?? 0;
+  }, RECT);
+  /** The stored (raw) keys the CURRENT preview writes for the rect — what the
+   *  minimal-delta discipline is actually about, and invisible to rectState(). */
+  const previewKeys = () => page.evaluate((id) =>
+    Object.keys(window.__powerrp_app.previewDelta?.items?.[id] ?? {}).sort(), RECT);
+  /** How many cursor->pivot lines the overlay is drawing (R6-2.2). */
+  const pivotLines = () => page.evaluate(() => document.querySelectorAll(".overlay line.guide-dashed").length);
+  /** The one cursor->pivot line's endpoints, or null. */
+  const pivotLine = () => page.evaluate(() => {
+    const l = document.querySelector(".overlay line.guide-dashed");
+    return l && { x1: +l.getAttribute("x1"), y1: +l.getAttribute("y1"), x2: +l.getAttribute("x2"), y2: +l.getAttribute("y2") };
+  });
   const check = (name, cond, detail = "") => { if (!cond) failures.push(`${name}: ${detail}`); };
 
   // Select the rect and park the pointer over it (so a grab starts at ~0 delta).
@@ -203,6 +218,109 @@ try {
   await page.keyboard.press("Digit5"); // no axis yet → ignored
   await new Promise((r) => setTimeout(r, 40));
   check("G-numeric-needs-axis", (await modalState())?.buffer === "", `buffer=${(await modalState())?.buffer}`);
+  await page.keyboard.press("Escape");
+  await new Promise((r) => setTimeout(r, 60));
+
+  // ── Scenario 9: R 90 — the ROTATE modal (R6-2.1) ──────────────────────────
+  // A single selection's collective centre IS its own centre, so a 90-degree turn
+  // must write `rotation` and NOTHING ELSE: the box does not move. That is the
+  // minimal-delta discipline at the one place it is easiest to break — the stored
+  // x/y come out of a back-solve, and computing them the obvious way lands ~1e-13
+  // off, which `diffState` (an EXACT comparison) reads as a change and writes,
+  // silently replacing any equation on x with a literal.
+  await page.mouse.move(rectScreen.x, rectScreen.y);
+  await page.keyboard.press("KeyR");
+  await new Promise((r) => setTimeout(r, 50));
+  check("R-modal-live", (await modalState())?.kind === "rotate", `modal=${JSON.stringify(await modalState())}`);
+  await page.keyboard.press("Digit9");
+  await page.keyboard.press("Digit0");
+  await new Promise((r) => setTimeout(r, 50));
+  check("R-buffer90", (await modalState())?.buffer === "90", `buffer=${(await modalState())?.buffer}`);
+  const rKeys = await previewKeys();
+  check("R-writes-rotation-alone", JSON.stringify(rKeys) === JSON.stringify(["rotation"]),
+    `preview keys=${JSON.stringify(rKeys)} (a self-centre turn must not move x/y)`);
+  await page.screenshot({ path: `${shots}/modal_R90.png` });
+  await page.keyboard.press("Enter");
+  await new Promise((r) => setTimeout(r, 100));
+  // The number is typed in DEGREES; `rotation` stores RADIANS (web/displayUnits.js).
+  check("R90-rotation", approx(await rectRotation(), Math.PI / 2), `rotation=${await rectRotation()} (expected ${Math.PI / 2})`);
+  const afterR = await rectState();
+  check("R90-box-unmoved", JSON.stringify(afterR) === JSON.stringify(base), `after=${JSON.stringify(afterR)}`);
+  await page.evaluate(() => window.__powerrp_app.undo());
+  await new Promise((r) => setTimeout(r, 80));
+  check("R90-undone", approx(await rectRotation(), 0), `rotation=${await rectRotation()}`);
+
+  // ── Scenario 10: ROTATE HAS NO AXIS (R6-2.4) ──────────────────────────────
+  // The plane has ONE rotation axis, so X/Y have nothing to choose between. The
+  // registry withholds the chips (MODAL_TRANSFORM_KINDS.rotate.axisConstrainable
+  // is false) and CanvasView refuses the command, so the key cannot act by any
+  // route. Asserting the STATE, because a chip that is hidden while the key still
+  // works is the same lie one way round.
+  await page.mouse.move(rectScreen.x, rectScreen.y);
+  await page.keyboard.press("KeyR");
+  await page.keyboard.press("KeyX");
+  await new Promise((r) => setTimeout(r, 50));
+  check("R-no-axis", (await modalState())?.axis === null, `axis=${(await modalState())?.axis}`);
+  await page.keyboard.press("Escape");
+  await new Promise((r) => setTimeout(r, 60));
+
+  // ── Scenario 11: THE CURSOR→PIVOT LINE, on R and S but not G (R6-2.2) ─────
+  // Blender's visual proof of what the gesture measures against. A grab has no
+  // pivot — the selection just follows the cursor — so drawing one there would be
+  // a line about a fiction.
+  check("no-pivot-line-idle", (await pivotLines()) === 0, `idle lines=${await pivotLines()}`);
+  for (const [key, kind] of [["KeyR", "rotate"], ["KeyS", "scale"]]) {
+    await page.mouse.move(box.x + 340, box.y + 300);
+    await page.keyboard.press(key);
+    await new Promise((r) => setTimeout(r, 60));
+    check(`pivot-line-${kind}`, (await pivotLines()) === 1, `${kind} lines=${await pivotLines()}`);
+    await page.screenshot({ path: `${shots}/modal_pivotline_${kind}.png` });
+    await page.keyboard.press("Escape");
+    await new Promise((r) => setTimeout(r, 60));
+    check(`pivot-line-${kind}-cleared`, (await pivotLines()) === 0, `after Escape lines=${await pivotLines()}`);
+  }
+  await page.mouse.move(rectScreen.x, rectScreen.y);
+  await page.keyboard.press("KeyG");
+  await new Promise((r) => setTimeout(r, 60));
+  check("no-pivot-line-grab", (await pivotLines()) === 0, `grab lines=${await pivotLines()}`);
+  await page.keyboard.press("Escape");
+  await new Promise((r) => setTimeout(r, 60));
+
+  // It is a CURSOR→PIVOT line, not merely "a line": one END follows the pointer
+  // and the other stays pinned. Asserted as a DIFFERENCE between two cursor
+  // positions, so it holds whatever the overlay's coordinate frame is — a probe
+  // that recomputed the mapping itself would be testing its own arithmetic.
+  await page.mouse.move(box.x + 340, box.y + 300);
+  await page.keyboard.press("KeyR");
+  await new Promise((r) => setTimeout(r, 60));
+  const segA = await pivotLine();
+  const CURSOR_STEP = 60;
+  await page.mouse.move(box.x + 340 + CURSOR_STEP, box.y + 300, { steps: 4 });
+  await new Promise((r) => setTimeout(r, 60));
+  const segB = await pivotLine();
+  check("pivot-line-endpoint-pinned", segA && segB && approx(segA.x2, segB.x2) && approx(segA.y2, segB.y2),
+    `pivot moved: ${JSON.stringify(segA)} → ${JSON.stringify(segB)}`);
+  check("pivot-line-tracks-cursor", segA && segB && Math.abs((segB.x1 - segA.x1) - CURSOR_STEP) < 1 && Math.abs(segB.y1 - segA.y1) < 1,
+    `cursor end moved ${segB ? segB.x1 - segA.x1 : "?"},${segB ? segB.y1 - segA.y1 : "?"} (expected ${CURSOR_STEP},0)`);
+  await page.keyboard.press("Escape");
+  await new Promise((r) => setTimeout(r, 60));
+
+  // ── Scenario 12: R is REGISTERED, so the HintBar announces it ─────────────
+  // "A shortcut that isn't in the registry does not exist" — and one that
+  // dispatches without a chip is the same defect wearing the other face.
+  await page.mouse.move(rectScreen.x, rectScreen.y);
+  await page.keyboard.press("KeyR");
+  await new Promise((r) => setTimeout(r, 80));
+  const hintText = await page.evaluate(() => document.querySelector(".hintbar, .hint-bar")?.textContent ?? "");
+  check("R-announced", /Rotate/.test(hintText), `HintBar text did not mention the mode: ${hintText.slice(0, 200)}`);
+  check("R-no-axis-chips", !/X axis|Y axis/.test(hintText), `HintBar offered an axis chip during rotate: ${hintText.slice(0, 200)}`);
+  await page.keyboard.press("Escape");
+  await new Promise((r) => setTimeout(r, 60));
+  // …and the SCALE modal still offers them, so the gate is scoped, not blanket.
+  await page.keyboard.press("KeyS");
+  await new Promise((r) => setTimeout(r, 80));
+  const scaleHint = await page.evaluate(() => document.querySelector(".hintbar, .hint-bar")?.textContent ?? "");
+  check("S-has-axis-chips", /X axis/.test(scaleHint), `scale lost its axis chips: ${scaleHint.slice(0, 200)}`);
   await page.keyboard.press("Escape");
   await new Promise((r) => setTimeout(r, 60));
 

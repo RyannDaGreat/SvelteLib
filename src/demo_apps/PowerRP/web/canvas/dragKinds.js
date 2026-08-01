@@ -103,6 +103,50 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
 export const DRAG_KINDS = Object.freeze(Object.keys(DRAG_KIND_MODIFIERS));
 
 /**
+ * THE BLENDER-STYLE MODAL TRANSFORMS — every `app.modalXform.kind`, with the key
+ * that starts it, the word the HintBar announces it with, whether an X/Y axis
+ * constraint means anything for it, and the prompt shown before a number is typed.
+ *
+ * WHY IT IS A TABLE, and it is the DRAG_KIND_MODIFIERS lesson applied one gesture
+ * family over. G and S were two hand-written registry entries, and the HintBar's
+ * label came from a hand-written `kind === "scale" ? "Scale" : "Grab"` ternary in
+ * App.svelte — a two-branch mirror that answers "Grab" for any third kind. Adding
+ * R by editing both would have made the announcement wrong for the new mode while
+ * looking finished. Both are now GENERATED from here, so declaring a kind gets it
+ * a key, a chip, a label and a probe, and forgetting one is impossible.
+ *
+ * `axisConstrainable: false` ON ROTATE IS GEOMETRY, NOT AN UNBUILT FEATURE.
+ * Blender's `R X` picks one of THREE rotation axes; the plane has exactly one (the
+ * screen normal), so an X/Y constraint on a 2D turn has nothing to choose between.
+ * The X and Y entries read this flag, so no chip offers a key that would do
+ * nothing — which is the HintBar's own law, not a nicety.
+ *
+ * NUMERIC ENTRY applies to all three, but a grab needs an axis FIRST (a distance
+ * has no meaning without a direction — the standing G-numeric-requires-axis
+ * ruling), which is why its prompt asks for one and the other two do not.
+ * A rotate's number is in DEGREES, converted through the same display transform
+ * the Inspector's rotation dial uses (web/displayUnits.js).
+ *
+ * @example MODAL_TRANSFORM_KINDS.rotate.key // "R"
+ * @example MODAL_TRANSFORM_KINDS.rotate.axisConstrainable // false
+ * @example Object.keys(MODAL_TRANSFORM_KINDS) // ["grab", "scale", "rotate"]
+ */
+export const MODAL_TRANSFORM_KINDS = Object.freeze({
+  grab: Object.freeze({ key: "G", label: "Grab", axisConstrainable: true, numericPrompt: "pick an axis (X/Y) to type a distance" }),
+  scale: Object.freeze({ key: "S", label: "Scale", axisConstrainable: true, numericPrompt: "type a factor" }),
+  rotate: Object.freeze({ key: "R", label: "Rotate", axisConstrainable: false, numericPrompt: "type an angle in degrees" }),
+});
+
+/**
+ * Every legal `app.modalXform.kind`, derived from MODAL_TRANSFORM_KINDS so the two
+ * can never disagree — the DRAG_KINDS shape, for the same reason.
+ *
+ * @example MODAL_KINDS.includes("rotate") // true
+ * @example MODAL_KINDS.length // 3
+ */
+export const MODAL_KINDS = Object.freeze(Object.keys(MODAL_TRANSFORM_KINDS));
+
+/**
  * THE AXIS-SUPPRESSION TABLE: which stored coordinates each gesture axis owns.
  *
  * WHY IT IS A TABLE AND NOT A COMMENT — the same reason DRAG_KIND_MODIFIERS
@@ -543,18 +587,27 @@ export function rotationPairs(member, angle, c, constrain = UNCONSTRAINED) {
   const W = member.startWorld, w = member.startW, h = member.startH;
   const oldCenter = T.apply(W, w / 2, h / 2); // world center (pivot-folded)
   const cos = Math.cos(angle), sin = Math.sin(angle);
+  const k = W.scale;
   const ncx = c.x + cos * (oldCenter.x - c.x) - sin * (oldCenter.y - c.y);
   const ncy = c.y + sin * (oldCenter.x - c.x) + cos * (oldCenter.y - c.y);
-  // Target world transform: same scale, rotation turned by `angle`, center orbited.
-  const theta = W.rotation + angle;
-  const ct = Math.cos(theta), st = Math.sin(theta), k = W.scale;
-  const target = {
-    x: ncx - k * (ct * (w / 2) - st * (h / 2)),
-    y: ncy - k * (st * (w / 2) + ct * (h / 2)),
-    rotation: theta,
-    scale: W.scale,
-  };
-  const xy = stateXYForCenterPivotWorld(target, w, h);
+  // THE STORED x/y FOR A BOX WHOSE WORLD CENTRE IS (ncx, ncy). This is
+  // stateXYForCenterPivotWorld — the same documented inverse resize and scale use
+  // — WITH ITS ROTATION TERMS CANCELLED, which they always do here:
+  //   target.x = ncx − k·(cosθ·w/2 − sinθ·h/2)     (the world translation)
+  //   x        = target.x − k·w/2 + k·(cosθ·w/2 − sinθ·h/2)   (the inverse)
+  //            = ncx − k·w/2
+  // i.e. under a CENTRE pivot the world centre is (x + k·w/2, y + k·h/2) whatever
+  // the rotation, which is the whole content of that inverse for this case.
+  //
+  // IT IS COMPUTED THIS WAY FOR EXACTNESS, NOT BREVITY, and the difference is
+  // load-bearing. Going through the two-step composition adds and subtracts the
+  // same trigonometric term in two different associations, so it lands ~1e-13 off
+  // — and `diffState` compares EXACTLY. A pure rotation about an item's OWN centre
+  // moves nothing, so it must write `rotation` alone; through the composition it
+  // also wrote an x that differed in the last bits, and that write would silently
+  // replace a stored equation on x with a literal. Measured agreement with
+  // stateXYForCenterPivotWorld over rotations, scales and box shapes: 2.3e-13.
+  const xy = { x: ncx - (k * w) / 2, y: ncy - (k * h) / 2 };
   const rawItem = member.rawItem ?? {};
   const held = rawItem.rotation !== undefined && typeof rawItem.rotation !== "number";
   const start = { rotation: member.startRotation, x: member.startX, y: member.startY };

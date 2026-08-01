@@ -401,7 +401,16 @@
   // announces the live mode/axis/buffer. World-space scale pivot for the overlay
   // (a guide-point during scale) — cleared with the modal.
   let modal = null;
-  let modalCenter = $state(null); // {x, y} world — the scale pivot dot, or null
+  // {x, y} world — the PIVOT the gesture measures against (scale and rotate), or
+  // null for grab, which has none. It is what draws the cursor→pivot line.
+  let modalCenter = $state(null);
+  // How far the cursor must start from the pivot for the gesture to have a
+  // direction to measure. Below it, a scale's start distance is 0 (its ratio is
+  // undefined) and a rotate's start ray has no heading (atan2(0,0) is a
+  // convention, not an answer) — so both hold at identity until the cursor moves
+  // away. Named because BOTH pivoted modals read it and it is a numerical bound
+  // on a ratio and an angle, not a screen distance a user could ever notice.
+  const MODAL_PIVOT_EPS = 1e-9;
 
   // VIDEO V6 (fresh WebGPU external-texture overlay): the POST-CULL visible
   // video_v6 nodes + the current view + the scene canvas's device size, handed to
@@ -1420,6 +1429,10 @@
         startWorld: n.world,
         startW: n.state.w ?? 0,
         startH: n.state.h ?? 0,
+        // The R modal adds its turn to this. `?? 0` because an absent rotation IS
+        // rotation 0 — the same reading worldTransform uses — unlike an absent w,
+        // which means the widget has no width at all (see rotationPairs).
+        startRotation: n.state.rotation ?? 0,
       }));
   }
 
@@ -3033,9 +3046,14 @@
   /**
    * Command. Starts a modal transform: captures the cursor start point, the
    * translatable members (with start poses), and the collective center. Called
-   * by the effect below when app.modalXform is set (the G/S shortcut). If the
+   * by the effect below when app.modalXform is set (the G/S/R shortcut). If the
    * cursor is off-canvas the start point falls back to the center, so a grab
-   * begins at zero delta and a scale at factor 1.
+   * begins at zero delta, a scale at factor 1 and a rotate at zero turn.
+   *
+   * `modalCenter` is set for the two PIVOTED kinds (scale and rotate) and not for
+   * grab, which has no pivot — the selection simply follows the cursor. It is what
+   * draws the cursor→pivot line (R6-2.2), so setting it for a kind that measures
+   * nothing against a centre would draw a line about a fiction.
    */
   function beginModal(kind) {
     const nodes = app.nodes();
@@ -3044,7 +3062,7 @@
     if (!center || members.length === 0) { app.modalXform = null; return; } // nothing to transform
     const start = mouseWorld ?? center;
     modal = { kind, startWorld: start, members, center, axis: null, buffer: "" };
-    modalCenter = kind === "scale" ? center : null;
+    modalCenter = kind === "grab" ? null : center;
     // Paint the initial (zero-delta) preview immediately so the selection is
     // visibly "grabbed"/"scaling" before the first mouse move.
     modalMove(start);
@@ -3062,8 +3080,17 @@
 
   /** Command. Sets or toggles the axis constraint (Blender X/Y): the same axis
    * again clears it, the other axis switches. Re-derives the preview + axis
-   * guide and mirrors the state to the HintBar. */
+   * guide and mirrors the state to the HintBar.
+   *
+   * ROTATE HAS NO AXIS, and that is geometry rather than an unbuilt feature:
+   * Blender's `R X` picks one of THREE rotation axes, and the plane has exactly
+   * one (the screen normal), so an X/Y constraint on a 2D turn has nothing to
+   * choose between. The X/Y entries are gated off for rotate in
+   * core/shortcut_entries.js so no chip offers it; this guard is the second half
+   * of that — a key that cannot be announced must also not act if it arrives by
+   * another route. */
   function modalSetAxis(axis) {
+    if (modal.kind === "rotate") return;
     modal.axis = modal.axis === axis ? null : axis;
     syncModalXform();
     applyModal();
@@ -3133,6 +3160,25 @@
       // grab (initial paint, or a return to origin) yields no pairs and must
       // still set the (empty) preview to hold the committed pose (see moveDrag).
       app.setPreview(modal.members.flatMap((m) => translationPairs(m, dx, dy)));
+    } else if (modal.kind === "rotate") {
+      // ROTATE (R6-2.1): the turn is the ANGLE THE CURSOR HAS SWEPT about the
+      // collective centre since the gesture began — the Blender reading, and the
+      // one the cursor→pivot line makes literal on screen. A typed value is in
+      // DEGREES, converted through the SAME display transform the Inspector's
+      // rotation dial uses so the two cannot disagree about what "45" means.
+      let angle;
+      if (typed) angle = displayUnit(PROPS.rotation.display).fromDisplay(num);
+      else {
+        const w = modal.lastWorld ?? modal.startWorld;
+        // Degenerate start (the cursor began ON the pivot) → no turn until it
+        // moves away, the same guard the scale branch's zero start distance takes:
+        // a ray from a point to itself has no direction to measure a sweep from.
+        const d0 = Math.hypot(modal.startWorld.x - c.x, modal.startWorld.y - c.y);
+        angle = d0 > MODAL_PIVOT_EPS
+          ? Math.atan2(w.y - c.y, w.x - c.x) - Math.atan2(modal.startWorld.y - c.y, modal.startWorld.x - c.x)
+          : 0;
+      }
+      app.setPreview(modal.members.flatMap((m) => rotationPairs(m, angle, c)));
     } else {
       // SCALE: factor = typed buffer, else current/initial cursor distance from
       // the collective center (Blender precedent). Degenerate start distance
@@ -3143,7 +3189,7 @@
         const w = modal.lastWorld ?? modal.startWorld;
         const d0 = Math.hypot(modal.startWorld.x - c.x, modal.startWorld.y - c.y);
         const d1 = Math.hypot(w.x - c.x, w.y - c.y);
-        factor = d0 > 1e-9 ? d1 / d0 : 1;
+        factor = d0 > MODAL_PIVOT_EPS ? d1 / d0 : 1;
       }
       app.setPreview(modal.members.flatMap((m) => scalePairs(m, factor, c, modal.axis)));
     }
@@ -3328,7 +3374,7 @@
 
   let overlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
-    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], scalePivot: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
+    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -3466,10 +3512,20 @@
       return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
     });
 
-    // The S-modal scale pivot (the selection's collective center) — a small
-    // dot marking what the scale grows/shrinks about (reuses the guide-point
-    // affordance; no new styling).
-    const scalePivot = modalCenter ? actions.worldToScreen(modalCenter.x, modalCenter.y) : null;
+    // THE CURSOR→PIVOT LINE (R6-2.2), on BOTH the R and S modals: the red dashed
+    // segment from the cursor to the collective centre, which is Blender's visual
+    // proof of what the gesture is measuring — a rotation's swept ray, a scale's
+    // distance ratio. It REPLACES the bare pivot dot that used to mark the same
+    // point for scale alone ("the dot becomes a line"), and it is drawn through
+    // the SAME world→screen mapping as every other overlay decoration rather than
+    // a second geometry path. Null when there is no pivot (grab) or no cursor.
+    const modalPivotSeg = modalCenter && mouseWorld
+      ? (() => {
+          const a = actions.worldToScreen(mouseWorld.x, mouseWorld.y);
+          const b = actions.worldToScreen(modalCenter.x, modalCenter.y);
+          return { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+        })()
+      : null;
 
     // CROSSHAIR MODE (manifest ARCHITECTURE PLAN #5 — "one mechanism, two
     // skins"): while a mode is ARMED (before the gesture starts — `drag` is
@@ -3541,7 +3597,7 @@
       placeDots = placePreview.dots.map((d) => ({ ...pt(d.x, d.y), hot: d.hot }));
     }
 
-    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, scalePivot, ghostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
+    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
@@ -3682,9 +3738,14 @@
             <circle class="guide-point" cx={g.x} cy={g.y} r="4" />
           {/if}
         {/each}
-        {#if overlay.scalePivot}
-          <!-- The S-modal scale pivot (selection's collective center). -->
-          <circle class="guide-point" cx={overlay.scalePivot.x} cy={overlay.scalePivot.y} r="4" />
+        {#if overlay.modalPivotSeg}
+          <!-- R6-2.2: the red dashed cursor→pivot line, on BOTH the R and S
+               modals — the visual proof of what the gesture measures against.
+               `guide` is the red overlay stroke every other guide uses;
+               `guide-dashed` is its dashed variant (guide colour + selection
+               dash, the combination .band-rect and .crosshair-band already
+               share). It replaces the bare pivot dot this block used to draw. -->
+          <line class="guide guide-dashed" x1={overlay.modalPivotSeg.x1} y1={overlay.modalPivotSeg.y1} x2={overlay.modalPivotSeg.x2} y2={overlay.modalPivotSeg.y2} />
         {/if}
         {#each overlay.sizeArrows as s}
           <line

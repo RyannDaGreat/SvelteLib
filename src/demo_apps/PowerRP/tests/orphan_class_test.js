@@ -67,6 +67,23 @@ const EXEMPT = new Map([
   //        <select>". This exemption covers the missing RULE only; it does not
   //        bless the control. Removing the <select> removes this entry.
   ["code-edit-template", "native <select>, unstyled on purpose — but see R6-24.8, the control itself is a violation"],
+
+  // ── (e) A PENDING HAND-BACK, and the only entry here that is DEBT rather than
+  //        a design choice. R6-2.2's cursor→pivot line needs three lines in
+  //        app.css:
+  //            .overlay .guide-dashed { stroke-dasharray: var(--a-selection-dash); }
+  //        No new token: --a-guide is already the red the `.guide` base applies and
+  //        --a-selection-dash is already the dash, so this DRYs a combination
+  //        .band-rect and .crosshair-band already share rather than inventing a
+  //        skin. It is not in app.css because that file had ANOTHER agent's
+  //        uncommitted hunks in it when the line landed, and a pathspec commit
+  //        takes the whole file — the lead ruled hand-back over sweeping their
+  //        work into someone else's commit. Until it lands the line renders SOLID
+  //        red, which is visibly wrong rather than invisibly missing.
+  //        REMOVE THIS ENTRY WITH THE RULE. It is the only thing keeping the debt
+  //        visible, and an exemption nobody has to delete is how debt becomes
+  //        design.
+  ["guide-dashed", "PENDING HAND-BACK: the 3-line app.css rule is written (see above) and blocked on another agent's uncommitted hunks in that file"],
 ]);
 
 /** COMMENTS ARE NOT DEFINITIONS. app.css is heavily commented and its prose names

@@ -50,7 +50,7 @@ import {
   SUPPRESSED_AXES, DRAG_MODIFIER_HINTS, ESC_CANCELABLE_DRAG_KINDS,
 } from "../core/shortcut_entries.js";
 import { MOUSE_ICONS } from "../../../lib/keyicons.js";
-import { DRAG_KINDS, DRAG_KIND_MODIFIERS } from "../web/canvas/dragKinds.js";
+import { DRAG_KINDS, DRAG_KIND_MODIFIERS, MODAL_TRANSFORM_KINDS, MODAL_KINDS } from "../web/canvas/dragKinds.js";
 import { activations, canvasModes } from "../web/widget_handlers.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -71,7 +71,7 @@ const acts = activations();
 const kb = createKeybindings(KEYBINDING_DEFAULTS);
 const bound = kb.toShortcutEntries(KEYBINDING_LABELS, WHEN_RESOLVERS)
   .map((e) => (e.command === "paste" ? { ...e, nativeEvent: true } : e));
-const hand = handShortcutEntries({ app, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, activations: acts });
+const hand = handShortcutEntries({ app, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, modalTransformKinds: MODAL_TRANSFORM_KINDS, activations: acts });
 const registry = createShortcuts();
 for (const e of [...bound, ...hand]) registry.add(e); // add() validates tokens (1)
 const entries = registry.all();
@@ -85,6 +85,7 @@ const contexts = hintProbeContexts({
   // DERIVED from the ACTIVATE handler registry, same rule: a new double-click
   // behaviour is probed without an edit here.
   activationIds: acts.map((a) => a.handlerId),
+  modalKinds: MODAL_KINDS,
   app,
 });
 

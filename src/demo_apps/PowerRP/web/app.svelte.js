@@ -81,7 +81,7 @@ import { createShortcuts } from "../core/shortcuts.js";
 // DRAG_KINDS = the dragKind setter's allowlist. translationPairs = THE ONE
 // translation rule (a drag, a drag-all, the modal grab, a nudge — and the clone
 // home's offset, which used to be its sole bypass).
-import { DRAG_KINDS, translationPairs } from "./canvas/dragKinds.js";
+import { DRAG_KINDS, MODAL_KINDS, translationPairs } from "./canvas/dragKinds.js";
 import { createUndo } from "../core/undo.js";
 import { registerAll, registerPlugins } from "../plugins/index.js"; // registerPlugins = types only (a project switch rebuilds the plugin registry, NOT the commands)
 import { loadProjectPluginAssets, printPluginAssetReports } from "./pluginAssetLoader.js"; // widgets delivered as project assets (*.plugin.js), sandboxed by core/plugin_assets.js
@@ -637,9 +637,9 @@ export class PowerRPApp {
       throw new Error(`app.dragKind = ${JSON.stringify(kind)} is not a declared drag kind — add it to DRAG_KIND_MODIFIERS in web/canvas/dragKinds.js (with the held modifiers it reads) so its HintBar chips and the shortcut reachability prober cover it. Legal: null, ${DRAG_KINDS.join(", ")}.`);
     this.#dragKind = kind;
   }
-  // Active Blender-style MODAL transform (manifest "G/S modal transforms round
-  // 2": G grab / S scale + axis constraints + numeric entry), or null. Shape:
-  // { kind: "grab"|"scale", axis: null|"x"|"y", buffer: string }. The geometry
+  // Active Blender-style MODAL transform (G grab / S scale / R rotate + axis
+  // constraints + numeric entry), or null. Shape:
+  // { kind: one of MODAL_KINDS, axis: null|"x"|"y", buffer: string }. The geometry
   // (start cursor, per-member start states, collective center) is captured and
   // driven entirely in CanvasView, which owns pointer/preview; this reactive
   // record is only the shared context the shortcut registry reads (to gate
@@ -1448,14 +1448,24 @@ export class PowerRPApp {
   }
 
   /**
-   * Command. Enters a Blender-style modal transform ("grab" | "scale") over the
-   * current selection (manifest Round 12). No-op with nothing selected. Only the
-   * KIND is stored here; CanvasView (which owns pointer + preview) watches this
-   * flag, captures the start geometry (cursor, member poses, collective center),
-   * and drives the live preview. Confirm/cancel go through the callbacks below,
-   * which CanvasView installs — the same seam pattern as canvasActions.
+   * Command. Enters a Blender-style modal transform (one of MODAL_KINDS: "grab" |
+   * "scale" | "rotate") over the current selection. No-op with nothing selected.
+   * Only the KIND is stored here; CanvasView (which owns pointer + preview)
+   * watches this flag, captures the start geometry (cursor, member poses,
+   * collective centre), and drives the live preview. Confirm/cancel go through the
+   * callbacks below, which CanvasView installs — the same seam pattern as
+   * canvasActions.
+   *
+   * THROWS ON AN UNDECLARED KIND, exactly as the `dragKind` setter above does and
+   * for the same reason: the HintBar's label, its numeric prompt, its X/Y chips
+   * and the reachability prober are all DERIVED from MODAL_TRANSFORM_KINDS, so a
+   * kind entered here but missing there would run with the wrong announcement and
+   * never be probed. Failing at the entry point makes that state unreachable — you
+   * cannot add a modal transform without declaring it.
    */
   beginModalTransform(kind) {
+    if (!MODAL_KINDS.includes(kind))
+      throw new Error(`app.beginModalTransform(${JSON.stringify(kind)}) is not a declared modal transform — add it to MODAL_TRANSFORM_KINDS in web/canvas/dragKinds.js (with its key, label and whether an X/Y axis constraint means anything for it) so its shortcut, its HintBar announcement and the reachability prober all cover it. Legal: ${MODAL_KINDS.join(", ")}.`);
     if (this.selectedIds().length === 0) return;
     this.modalXform = { kind, axis: null, buffer: "" };
   }

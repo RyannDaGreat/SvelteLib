@@ -131,6 +131,20 @@ export const editBase = (c) => editorInput(c) && !c.modalActive;
  * @example modalTransform({mode: "edit", modalActive: true}) // true
  * @example modalTransform({mode: "edit", modalActive: true, typingTarget: true}) // false */
 export const modalTransform = (c) => editorInput(c) && c.modalActive;
+/** Pure function. A live modal transform WHOSE KIND CAN TAKE AN X/Y CONSTRAINT.
+ * `modalKind` is the discriminator inside `modalActive`, the same shape
+ * `activation` is inside `hasSelection` and `dragKind` is inside `dragging`:
+ * one field answers "is anything live" and also "which one", so a chip can be
+ * scoped to the kind it is true for instead of to the whole family.
+ * @example modalAxisConstraint({mode: "edit", modalActive: true, modalKind: "scale"}) // true
+ * @example modalAxisConstraint({mode: "edit", modalActive: true, modalKind: "rotate"}) // false — the plane has one rotation axis
+ * @example modalAxisConstraint({mode: "edit", modalActive: false, modalKind: null}) // false */
+export const modalAxisConstraint = (c) => modalTransform(c) && MODAL_KINDS_WITHOUT_AXIS.indexOf(c.modalKind) === -1;
+/** The modal kinds for which an X/Y constraint is meaningless. Kept as a NAMED
+ *  list rather than inline so the predicate reads as a rule and not as a special
+ *  case; it mirrors MODAL_TRANSFORM_KINDS' `axisConstrainable: false`, and
+ *  handShortcutEntries cross-checks the two so they cannot drift. */
+const MODAL_KINDS_WITHOUT_AXIS = ["rotate"];
 /** Pure function. Ordinary editor input: editBase, and no one-shot/mode takeover.
  * @example editMode({mode: "edit"}) // true
  * @example editMode({mode: "edit", paletteOpen: true}) // false */
@@ -649,7 +663,7 @@ export const POPOVER_HINTS = Object.freeze({
  *
  * Returns: the entry array, ready for shortcuts.add() in order.
  */
-export function handShortcutEntries({ app, canvasModes, dragKindModifiers, activations }) {
+export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modalTransformKinds, activations }) {
   // Loud cross-check (house idiom: core/properties.js BLEND_MODES ↔ LABELS): a
   // drag kind declaring a modifier this module has no wording for would silently
   // announce nothing, which is the exact defect the table exists to prevent.
@@ -657,6 +671,14 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, activ
     for (const id of ids)
       if (!DRAG_MODIFIER_HINTS[id])
         throw new Error(`shortcut_entries: drag kind "${kind}" declares modifier "${id}" but DRAG_MODIFIER_HINTS has no keys/label for it — add one, or the modifier would work with no chip (the multiresize defect).`);
+  // The SAME loud cross-check for the modal kinds: `axisConstrainable` is declared
+  // in web/canvas/dragKinds.js and the X/Y entries gate on MODAL_KINDS_WITHOUT_AXIS
+  // here, so the two are a mirror — and a mirror that cannot be derived (this
+  // module deliberately imports nothing from web/, which is why the table is passed
+  // in) gets a gate that fails the moment they disagree.
+  for (const [kind, m] of Object.entries(modalTransformKinds))
+    if (m.axisConstrainable === (MODAL_KINDS_WITHOUT_AXIS.indexOf(kind) !== -1))
+      throw new Error(`shortcut_entries: modal kind "${kind}" declares axisConstrainable: ${m.axisConstrainable} but MODAL_KINDS_WITHOUT_AXIS ${MODAL_KINDS_WITHOUT_AXIS.indexOf(kind) !== -1 ? "lists" : "omits"} it — the X/Y chips would then be offered for a gesture that ignores them, or withheld from one that honours them.`);
   // A CREATION-MODE STEP reads modifiers too (a "box" step runs the same
   // creationRect math a "place" drag does; a polygon vertex axis-locks against the
   // previous one), and it is the SAME table, checked the same way — a step that
@@ -766,14 +788,20 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, activ
     //   band        — the selection verbs (Cmd add / Shift subtract / Alt invert).
     ...Object.entries(dragKindModifiers).flatMap(([kind, ids]) =>
       ids.map((id) => ({ ...DRAG_MODIFIER_HINTS[id], when: dragModifierContext(kind) }))),
-    // Blender-style MODAL transforms (manifest "G/S modal transforms round 2"):
-    // G grabs the selection (it follows the mouse with no button held), S scales
-    // it about its collective center. Available with a selection in edit mode
-    // (editSelection already excludes an active modal, so G/S don't re-enter).
+    // Blender-style MODAL transforms: G grabs the selection (it follows the mouse
+    // with no button held), S scales it about its collective centre, R turns it
+    // about the same centre (R6-2.1). Available with a selection in edit mode
+    // (editSelection already excludes an active modal, so they don't re-enter).
     // These START the modal via the app; CanvasView captures the geometry and
     // drives the preview.
-    { keys: ["G"], label: "Grab", when: editSelection, run: () => app.beginModalTransform("grab") },
-    { keys: ["S"], label: "Scale", when: editSelection, run: () => app.beginModalTransform("scale") },
+    //
+    // GENERATED from MODAL_TRANSFORM_KINDS (web/canvas/dragKinds.js), not typed
+    // out — the DRAG_MODIFIER_HINTS rule one gesture family over. G and S were two
+    // hand-written entries and R would have been a third, in a file where the
+    // matching HintBar label lived in a two-branch ternary somewhere else; a kind
+    // now cannot exist without its key, its chip and its announcement.
+    ...Object.entries(modalTransformKinds).map(([kind, m]) =>
+      ({ keys: [m.key], label: m.label, when: editSelection, run: () => app.beginModalTransform(kind) })),
     // While a modal transform is live, ONLY its own inputs are active (editBase
     // excludes modalActive). Enter or a left click CONFIRMS (one undo unit);
     // Escape CANCELS (reverts the preview). The click is display-only here —
@@ -789,8 +817,12 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, activ
     // AXIS CONSTRAINTS (Blender X/Y): during a live modal, X constrains to the
     // x-axis, Y to the y-axis; same key clears, other key switches. CanvasView
     // toggles the constraint + draws the infinite axis guide through the center.
-    { keys: ["X"], label: "X axis", when: modalTransform, run: () => app.modalSetAxis("x") },
-    { keys: ["Y"], label: "Y axis", when: modalTransform, run: () => app.modalSetAxis("y") },
+    // NOT for ROTATE, which has no axis to choose (the plane has ONE rotation
+    // axis, so `R X` would constrain to the only option) — hence the predicate
+    // reads the live modal's KIND rather than merely "a modal is open". A chip
+    // for a key that would do nothing is the HintBar lie this registry forbids.
+    { keys: ["X"], label: "X axis", when: modalAxisConstraint, run: () => app.modalSetAxis("x") },
+    { keys: ["Y"], label: "Y axis", when: modalAxisConstraint, run: () => app.modalSetAxis("y") },
     // NUMERIC ENTRY: digits / "." / "-" build a value buffer applied EXACTLY
     // (S 2 = factor 2; G X 2 = +2 world units along X). Backspace edits it. The
     // twelve key entries DISPATCH but are hidden, because twelve chips reading
@@ -1040,7 +1072,11 @@ export const HINT_PROBE_FLAGS = Object.freeze([
   {},
   { hasSelection: true },
   { paletteOpen: true },
-  { modalActive: true },
+  // NOTE: the live-modal flag sets are NOT here. They are DERIVED per modal kind
+  // and appended by hintProbeContexts, for the same reason the activation ones are:
+  // a hand-written `{ modalActive: true }` probes a modal with no KIND, which is a
+  // state the app cannot be in, and it would make a kind-scoped chip (the X/Y axis
+  // keys, which rotate must not offer) unprobeable in either direction.
   { dragging: true },
   { dragging: true, snapEngaged: true },
   { hasSelection: true, dragging: true, snapEngaged: true },
@@ -1126,18 +1162,30 @@ export const HINT_PROBE_CROSSHAIRS = Object.freeze([null, "band", "place"]);
  *
  * @example
  * // The grid is the full cross product of its axes; nothing is dropped or deduped.
- * hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], app: {}}).length
+ * hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], modalKinds: [], app: {}}).length
  *   === HINT_PROBE_MODES.length * 1 * HINT_PROBE_CROSSHAIRS.length * 1 * 1 * HINT_PROBE_FLAGS.length  // true
  * @example
  * // Each activation id adds ONE flag set (it rides the flag axis, not a loop axis).
- * hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: ["insert_point"], app: {}}).length
- *   - hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], app: {}}).length
+ * hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: ["insert_point"], modalKinds: [], app: {}}).length
+ *   - hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], modalKinds: [], app: {}}).length
  *   === HINT_PROBE_MODES.length * HINT_PROBE_CROSSHAIRS.length  // true
+ * @example
+ * // …and so does each MODAL KIND, for the same reason: one flag set, not a loop.
+ * hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], modalKinds: ["grab", "rotate"], app: {}}).length
+ *   - hintProbeContexts({dragKinds: [], canvasModeIds: [null], canvasModeSteps: [0], activationIds: [], modalKinds: [], app: {}}).length
+ *   === 2 * HINT_PROBE_MODES.length * HINT_PROBE_CROSSHAIRS.length  // true
  */
-export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, activationIds, app }) {
+export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, activationIds, modalKinds, app }) {
   // One extra flag set per activation: the selected widget declares it. Derived, so
   // a new activate handler is probed with no edit here.
-  const flagSets = [...HINT_PROBE_FLAGS, ...activationIds.map((id) => ({ hasSelection: true, activation: id }))];
+  const flagSets = [
+    ...HINT_PROBE_FLAGS,
+    ...activationIds.map((id) => ({ hasSelection: true, activation: id })),
+    // A live modal ALWAYS has a kind, so it is probed per kind — which is what lets
+    // a chip be scoped to one (rotate's missing X/Y) and still be provably live for
+    // the others.
+    ...modalKinds.map((kind) => ({ modalActive: true, modalKind: kind })),
+  ];
   const out = [];
   for (const mode of HINT_PROBE_MODES)
     for (const dragKind of [null, ...dragKinds])
@@ -1147,7 +1195,7 @@ export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, a
             for (const flags of flagSets)
               out.push({
                 mode, dragKind, crosshairArmed, canvasMode, canvasModeStep,
-                paletteOpen: false, hasSelection: false, handlesSelected: false, dragging: false, modalActive: false,
+                paletteOpen: false, hasSelection: false, handlesSelected: false, dragging: false, modalActive: false, modalKind: null,
                 snapEngaged: false, textEditing: false, textEditingRich: false,
                 latexEditing: false, codeEditing: false,
                 typingTarget: false, dialogOpen: false,

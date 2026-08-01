@@ -34,7 +34,7 @@ import { createShortcuts, MOUSE_DOUBLE_TOKEN } from "../core/shortcuts.js";
 import {
   handShortcutEntries, hintProbeContexts, canvasModeStepAxis,
 } from "../core/shortcut_entries.js";
-import { DRAG_KINDS, DRAG_KIND_MODIFIERS } from "../web/canvas/dragKinds.js";
+import { DRAG_KINDS, DRAG_KIND_MODIFIERS, MODAL_TRANSFORM_KINDS, MODAL_KINDS } from "../web/canvas/dragKinds.js";
 import { activations, canvasModes, findHandler, handlerFor, handlerIds, phaseNames } from "../web/widget_handlers.js";
 import { CREATION_GESTURES, creationPointer, currentStepIndex, validatedSteps } from "../web/creationSteps.js";
 import { POLYGON_CHAIN_HANDLER, closesLoop, constrainedVertex, repeatsLastVertex } from "../web/polygonDraw.js";
@@ -300,13 +300,14 @@ test("telescopic finalize: one box ABANDONS — half a rig is not a rig", () => 
 // ── (4) THE HINTBAR NARRATES EACH STEP, AND ONLY ITS OWN STEP ────────────────
 const modes = canvasModes();
 const registry = createShortcuts();
-for (const e of handShortcutEntries({ app: {}, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, activations: activations() }))
+for (const e of handShortcutEntries({ app: {}, canvasModes: modes, dragKindModifiers: DRAG_KIND_MODIFIERS, modalTransformKinds: MODAL_TRANSFORM_KINDS, activations: activations() }))
   registry.add(e);
 const contexts = hintProbeContexts({
   dragKinds: DRAG_KINDS,
   canvasModeIds: [null, ...modes.map((m) => m.handlerId)],
   canvasModeSteps: canvasModeStepAxis(modes),
   activationIds: activations().map((a) => a.handlerId),
+  modalKinds: MODAL_KINDS,
   app: {},
 });
 /** Query. The visible [combo, label] pairs in the plain in-mode context for a
