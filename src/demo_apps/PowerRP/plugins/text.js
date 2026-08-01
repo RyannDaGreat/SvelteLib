@@ -22,6 +22,271 @@ import { text } from "../render_gpu/ir.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
+/**
+ * TYPE ROLES — the type SYSTEM half of this widget's presets: face, size, weight,
+ * alignment and spacing. The other half (colour, opacity and the effects) is
+ * INK_LOOKS below; the two key sets are DISJOINT, so one pick from each composes
+ * rather than clobbers (core/registry.js's family rule, enforced over every plugin
+ * by tests/tool_groups_test.js). The split is legal here and NOT on the sibling
+ * text widgets for a measured reason: this is the only one of them with nine
+ * type-system knobs. plaintext and the morph trio pass a boxStyle of {align,
+ * valign} only, so a role family there would differ in nothing but face and size.
+ *
+ * ORDERED BY DESCENDING SIZE, because here the order IS the scale: 220 / 150 / 114
+ * / 72 / 64 / 48 / 40 / 34 / 32 / 28 / 27 / 22 / 18 is the perfect-fourth ramp from
+ * a 36u base (20 / 27 / 36 / 48 / 64 / 85 / 114) with the idiom sizes interleaved.
+ * Running down the list reads like a type-specimen sheet.
+ *
+ * `size` IS A LOOK HERE AND A COMPOSITION KEY ON THE LATEX WIDGET, and the same
+ * measurement decides both. SPEC's exclusion is "how it FITS its box" (the flare's
+ * flareScale). emit() below passes boxW/boxH for WRAP and VERTICAL-ALIGN ROOM only
+ * — there is no fit-to-box scaling anywhere in the text path — so `size` is the
+ * absolute ink height, the same category as the strokeWidth graph_presets.js
+ * already writes. plugins/latex.js fits its equation INTO the box (preserveAspect),
+ * so its fontSize is the other answer. One fact, two rulings, no taste.
+ *
+ * TWO CONVERSIONS GOVERN EVERY NUMBER HERE, and getting either backwards shifts the
+ * whole table silently:
+ *   charSpacing = tracking_in_em x size   (core/richtext.js spacedMeasure adds it
+ *     PER CHARACTER in canvas units — an ABSOLUTE offset, not em tracking, so it
+ *     must travel with the size it was chosen for and does not survive a later
+ *     size change).
+ *   lineSpacing = css_line_height / 1.2   (core/richtext.js NATURAL_LINE_HEIGHT).
+ *
+ * TRACKING FOLLOWS ONE RULE, visible as the shape of the charSpacing column:
+ * NEGATIVE at display sizes, ZERO through the text band, POSITIVE and rising as
+ * size falls — and always POSITIVE for caps at any size. Display magnitudes come
+ * from Inter's published dynamic-metrics curve (asymptote -0.0223em); caps
+ * magnitudes from the 0.05-0.12em band Butterick specifies for all-caps setting.
+ * wordSpacing compensates tracked caps at about 1.5x the character value, because
+ * tracking widens the letters far more than it widens the word gap.
+ *
+ * NO PRESET CAN CAPITALISE TEXT — there is no case transform in the schema, and
+ * none of the 14 registered faces has an italic or a weight axis. The caps idioms
+ * below are the SETTING around caps; their descriptions say to type in caps.
+ *
+ * NO PRESET WRITES THE CONTENT. `text` is a two-leaf rich value {runs, paras} and a
+ * props key is one path segment, so a preset could only write the WHOLE value —
+ * obliterating every run style the in-canvas editor put there. The widget does not
+ * even offer an Inspector row for it, for the same reason (see below).
+ */
+const TYPE_ROLES = [
+  { name: "Watermark Caps", description: "Enormous, airy, wide-tracked capitals laid across the slide — type in caps, and pair it with the Watermark Wash ink to sink it behind the content.",
+    props: { font: "jost", size: 220, bold: false, align: "center", valign: "middle", lineSpacing: 0.833, charSpacing: 44, wordSpacing: 66 } },
+  { name: "Film Title Card", description: "The main-title setting: a geometric sans in bold caps, opened out to a fifth of an em and set solid so a two-word title locks into a block. Type in caps.",
+    props: { font: "futura", size: 150, bold: true, align: "center", valign: "middle", lineSpacing: 0.833, charSpacing: 22.5, wordSpacing: 34 } },
+  { name: "Title Slide", description: "The deck's opening line — display size with the light negative tracking display type wants, centred and set just under solid so a two-line title still reads as one object.",
+    props: { font: "montserrat", size: 114, bold: true, align: "center", valign: "middle", lineSpacing: 0.875, charSpacing: -2.5, wordSpacing: -2.5 } },
+  { name: "Pull Quote", description: "The magazine pull quote: a high-contrast display serif at roughly twice body size, leading tighter than body, hanging at the middle of its box.",
+    props: { font: "playfair-display", size: 72, bold: false, align: "left", valign: "middle", lineSpacing: 1.042, charSpacing: -1.1, wordSpacing: 0 } },
+  { name: "Broadcast Caption", description: "The subtitle setting, to broadcast spec: a plain sans at 7% of frame height, untracked because a caption is read once and fast, on 120% leading, parked at the bottom.",
+    props: { font: "system", size: 72, bold: false, align: "center", valign: "bottom", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 } },
+  { name: "Section Header", description: "The divider slide's line — one scale step under the title, ranged left and vertically centred so it sits alone on the slide with nothing else needed.",
+    props: { font: "inter", size: 64, bold: true, align: "left", valign: "middle", lineSpacing: 0.917, charSpacing: -1.4, wordSpacing: -1.4 } },
+  { name: "Monument Inscription", description: "Roman inscriptional capitals — a text serif, no bold, letters opened an eighth of an em and given generous leading, the way a plaque or a memorial is cut. Type in caps.",
+    props: { font: "source-serif", size: 64, bold: false, align: "center", valign: "middle", lineSpacing: 1.125, charSpacing: 5.1, wordSpacing: 7.7 } },
+  { name: "Slide Headline", description: "The working headline for a content slide: bold sans at the ten-foot-readable title size, ranged left at the top of its box, tracked in a hair.",
+    props: { font: "inter", size: 48, bold: true, align: "left", valign: "top", lineSpacing: 1, charSpacing: -1.1, wordSpacing: 0 } },
+  { name: "Reading Column", description: "Long-form prose sized to hit the 66-character measure across a full-width box — a sturdy screen serif on open leading, untracked, for the slide people actually read.",
+    props: { font: "merriweather", size: 48, bold: false, align: "left", valign: "top", lineSpacing: 1.208, charSpacing: 0, wordSpacing: 0 } },
+  { name: "Deck Subtitle", description: "The line under the title: a geometric sans set larger than it looks because this face has a small x-height, centred, with a touch of display tightening.",
+    props: { font: "jost", size: 40, bold: false, align: "center", valign: "top", lineSpacing: 1.083, charSpacing: -0.9, wordSpacing: 0 } },
+  { name: "Billing Block", description: "The credit block under a title card — the only condensed face, at 30% of the title's cap height, lightly opened and set tight, exactly as a poster's billing is specified.",
+    props: { font: "oswald", size: 34, bold: false, align: "center", valign: "bottom", lineSpacing: 0.958, charSpacing: 1, wordSpacing: 1.5 } },
+  { name: "Body Copy", description: "Plain running text at the smallest size that still projects — untracked, on one-and-a-half leading, ranged left from the top. The default every other role is measured against.",
+    props: { font: "inter", size: 32, bold: false, align: "left", valign: "top", lineSpacing: 1.25, charSpacing: 0, wordSpacing: 0 } },
+  { name: "Screenplay Slug", description: "A scene heading: monospace set solid, twelve on twelve, untracked because the grid is the point. Type in caps.",
+    props: { font: "jetbrains-mono", size: 28, bold: false, align: "left", valign: "top", lineSpacing: 0.833, charSpacing: 0, wordSpacing: 0 } },
+  { name: "Kicker", description: "The small tracked-caps eyebrow that sits above a headline — condensed, bold, opened a tenth of an em with the word gaps widened to match. Type in caps.",
+    props: { font: "oswald", size: 27, bold: true, align: "left", valign: "top", lineSpacing: 1, charSpacing: 2.7, wordSpacing: 4.1 } },
+  { name: "Photo Caption", description: "The line under a figure: small, positively tracked the way small type needs, and led TIGHTER than body — which is what real caption specs do, not looser.",
+    props: { font: "inter", size: 22, bold: false, align: "left", valign: "top", lineSpacing: 1.083, charSpacing: 0.7, wordSpacing: 0 } },
+  { name: "Legal Fine Print", description: "The bottom-of-the-slide disclaimer at the size regulation actually permits — a text serif, justified, nearly solid, with the extra letterspacing tiny type needs to stay legible.",
+    props: { font: "source-serif", size: 18, bold: false, align: "justify", valign: "bottom", lineSpacing: 0.958, charSpacing: 0.6, wordSpacing: 0 } },
+];
+
+/**
+ * INK AND LIGHT — the MATERIAL half: what the glyphs are made of. Disjoint from
+ * TYPE_ROLES above, so a role and an ink compose in either order.
+ *
+ * ORDERED BY HOW MUCH LIGHT THE INK ADDS: flat, then dimensional (a cast or cut
+ * shadow), then luminous (bloom), then the two transparencies. The list sweeps
+ * matte to glowing to absent, which is the comparison being made.
+ *
+ * EVERY PRESET WRITES EVERY KEY, INCLUDING THE OFF STATES, and every nested object
+ * is COMPLETE. Both rules are load-bearing rather than tidy: application is an
+ * OVERLAY, so an omitted `bloom` leaves the previously hovered preset's glow
+ * behind; and a PARTIAL nested object MERGES rather than replacing (measured
+ * against core/deltas.js applied()), so `shadow: {opacity: 0}` alone would keep the
+ * last preset's blur and colour. A stale glow is the most visible form of that bug.
+ * The off states, spelled once: shadow and innerShadow are off at opacity 0 (their
+ * declared render gate, core/properties.js); bloom is off at strength 0, with the
+ * registry's own radius 10 carried so the row is complete.
+ *
+ * `softEdges` IS 0 EVERYWHERE BUT ONE ROW, and the reason is measured rather than
+ * cautious. featherEdges (render_gpu/skia/paint_skia.js) ERODES the widget's alpha
+ * silhouette by that many units before blurring it, and on text the silhouette is
+ * the GLYPHS — so it eats the strokes from both sides. A value that reads as chalk
+ * on a 114u title erases an 18u caption, and because this family is orthogonal to
+ * TYPE_ROLES it cannot know which size it landed on. The one row that uses it says
+ * in its own description that it wants display type.
+ *
+ * Each description names the ground it assumes. The two halves of an idiom that
+ * spans both families share a NAME: "Watermark Wash" pairs with "Watermark Caps".
+ */
+const INK_LOOKS = [
+  {
+    name: "Paper Black",
+    description: "Ink on paper — a true printing black rather than pure black, no shadow, no glow: the flat setting, and the row that takes every effect back off.",
+    props: {
+      color: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Risograph Overprint",
+    description: "Fluorescent duplicator ink multiplied into whatever it crosses, so overlaps darken instead of hiding — the risograph's whole character, and it needs something underneath to show it.",
+    props: {
+      color: "#ff5c39", opacity: 0.9, blendMode: "multiply", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Soft Lift",
+    description: "Interface elevation — a short, wide, quarter-strength shadow straight down, enough to lift dark type off a light slide without reading as a drop shadow.",
+    props: {
+      color: "#1a1a1a", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 2, blur: 8, color: "#000000", opacity: 0.28 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Poster Shadow",
+    description: "The hard offset shadow of screen-printed poster type — no blur at all, full strength, thrown down and to the right so the letters read as cut paper.",
+    props: {
+      color: "#ffffff", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 4, dy: 5, blur: 0, color: "#000000", opacity: 1 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Caption Shade",
+    description: "The subtitle treatment: white type with a tight, solid, unoffset shadow all round, which is how a caption stays legible over an image it cannot control.",
+    props: {
+      color: "#ffffff", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 4, color: "#000000", opacity: 1 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Cinema Title",
+    description: "Warm film white over a wide, half-strength halo — the way a main title is graded so it sits on a dark frame without a visible edge.",
+    props: {
+      color: "#f5f2ea", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 18, color: "#000000", opacity: 0.5 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Letterpress",
+    description: "Type pressed into the sheet — warm near-black with a single unblurred WHITE line beneath each stroke, which is the whole trick: the highlight is the lip of the impression.",
+    props: {
+      color: "#23201c", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 1.5, blur: 0, color: "#ffffff", opacity: 0.75 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Debossed Metal",
+    description: "Letters stamped into a grey plate: a dark inner shadow from above inside the strokes, a thin white catch-light below them, and no colour of its own.",
+    props: {
+      color: "#8a8f98", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 1, blur: 0, color: "#ffffff", opacity: 0.5 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 2, blur: 3, color: "#000000", opacity: 0.85 },
+    },
+  },
+  {
+    name: "Gold Leaf",
+    description: "Beaten gold on a dark ground — an old-gold ink, a short brown shadow to seat it on the surface, and just enough bloom to suggest the metal catching light.",
+    props: {
+      color: "#c9a227", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 1, dy: 1.5, blur: 1.5, color: "#3a2c05", opacity: 0.6 },
+      bloom: { radius: 8, strength: 0.3 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Chalk Dust",
+    description: "Warm off-white at slightly less than full opacity with a faint halo — chalk on a board never reaches paper-white and always leaves a little dust around the stroke.",
+    props: {
+      color: "#f2ede4", opacity: 0.92, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 6, strength: 0.25 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Airbrushed",
+    description: "Sprayed rather than drawn — the stroke edges feathered inward under a soft halo. THE ONE ROW THAT FEATHERS: the feather erodes the glyph, so it wants display type and will eat anything under about 40 units.",
+    props: {
+      color: "#ffffff", opacity: 0.9, blendMode: "normal", softEdges: 1.4,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0.35 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Amber Phosphor",
+    description: "The amber monochrome monitor — the 602-nanometre phosphor, with the moderate bloom a long-persistence tube gives every lit stroke.",
+    props: {
+      color: "#ffb000", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 12, strength: 0.6 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Green Phosphor",
+    description: "The green screen — the 525-nanometre willemite phosphor of an oscilloscope or an early monochrome monitor, glowing harder than the amber tube because it is a brighter emitter.",
+    props: {
+      color: "#33ff33", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 14, strength: 0.75 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Neon Tube",
+    description: "Cold-cathode cyan at full overdrive: a wide bloom for the tube's own light plus a dark teal shadow for the colour it throws onto the wall behind it.",
+    props: {
+      color: "#2bf3ff", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 10, color: "#0a4a55", opacity: 0.6 },
+      bloom: { radius: 28, strength: 1.2 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Watermark Wash",
+    description: "Barely there — flat black at seven percent, no effects, for the giant ghosted word behind the content. Pairs with the Watermark Caps type role.",
+    props: {
+      color: "#000000", opacity: 0.07, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+];
+
 export const textPlugin = {
   type: "text",
   title: "Text",
@@ -29,6 +294,14 @@ export const textPlugin = {
   // machinery as rect — capabilities.bbox && capabilities.resizable; NO special
   // case). w/h are real box dimensions; w constrains word wrap.
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  // TWO ORTHOGONAL preset families, key-DISJOINT so a role and an ink compose in
+  // either order (the glass material/silhouette split, not the lens_flare
+  // alternative-whole-looks case). Titled, so the pane reads "Type roles" and "Ink
+  // and light" rather than one generic "Presets" heading over 31 rows.
+  presetFamilies: [
+    { id: "type", title: "Type roles", presets: TYPE_ROLES },
+    { id: "ink", title: "Ink and light", presets: INK_LOOKS },
+  ],
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the
   // Skia-owned in-place RICH editor — it edits a {runs, paras} value with the
   // floating format toolbar, which is what distinguishes it from the plain
@@ -110,10 +383,25 @@ export const textPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // `category` groups rows into the Inspector's collapsible accordion regions.
-  // NO `text` CONTENT row: rich content/run-style editing is the SET-2 in-canvas
-  // editor + floating PPT toolbar (and the SET-2 dblclick stopgap); a plain text
-  // input here can't represent runs and would clobber them. SET-1 exposes the
-  // box/paragraph props only (the MODEL already supports per-run style).
+  //
+  // WHERE THE TEXT LIVES, AND WHY THE PANEL USED TO SAY NOTHING ABOUT IT (R6-13.3).
+  // The content is an ORDINARY property — `items.<id>.text = {runs, paras}` — folded,
+  // keyframed, tweened and undone by exactly the generic machinery every other
+  // property uses. Nothing here is hidden or privileged. What was missing was a ROW,
+  // and this comment used to be the reason: "a plain text input here can't represent
+  // runs and would clobber them." The premise was right and the conclusion was too
+  // strong. A plain input CLOBBERS only if it writes `{runs: [{text: typed}]}`; a
+  // MINIMAL SPLICE (core/richtext.withPlainTextReplaced) writes only the span that
+  // actually changed, so every run outside it keeps its style — the same two
+  // primitives the canvas editor reaches when you type the same edit.
+  //
+  // The surface is therefore the CONTENT ROW + ACTION ROW PAIR every other
+  // content-bearing widget already ships: mermaid `definition`, latex `latex`,
+  // codeblock `code`, graph_line `source`, graph_bars `valueEquation` — and
+  // plaintext's own `text` row, which is why the plain widget showed its content in
+  // the panel while the rich one showed nothing. The action row below is that pair's
+  // second half and lands first; the content row needs an Inspector `richtext` kind
+  // (an object-valued property has no control today) and lands with it.
   inspector: [
     // The eight shared bbox rows, COMPOSED from the registry rather than
     // re-typed. They used to be hand-copied literals here — byte-identical to
@@ -122,6 +410,12 @@ export const textPlugin = {
     // KIND that put the rotary dial on `rotation` reached every other bbox widget
     // through the bundle and would have skipped this one.
     ...bundle("positioning"),
+    // THE WAY IN TO THE CONTENT, from the panel rather than from knowing to
+    // double-click. Same `action`-row-plus-command idiom mermaid/latex/codeblock
+    // use for their code editors, but pointed at the IN-CANVAS rich editor, which
+    // is this widget's real one: `edit-code-source` opens Monaco on a STRING
+    // property, and {runs, paras} is not one.
+    { key: "__edittext", label: "Edit text in place…", kind: "action", command: "edit-text-content", category: "text", help: "Puts the caret in the text box on the canvas, with the formatting toolbar above it — the same editor a double-click opens. Style applies to the SELECTED characters, so one box can hold several sizes, fonts and colors." },
     // Default typography for the box (runs inherit these; SET-2 sets them per-run).
     //
     // EVERY ROW BELOW THAT UNDERLIES A RUN OR A PARAGRAPH DECLARES `visibleWhen`,
@@ -215,5 +509,26 @@ export const textPlugin = {
   anchors: standardBBoxAnchors,
   commands: [
     { id: "add-text", title: "Add Text", icon: "mdi:format-text", run: (app) => app.armCrosshairPlacement(textPlugin) },
+    // ENTERING THE EDITOR IS AN ACTION, SO IT IS A COMMAND. Until now the ONLY way
+    // in was a double-click on the canvas — an activation hook (web/widget_handlers.js
+    // "rich_text_edit"), which the palette cannot search, the keyboard cannot bind
+    // and the Inspector cannot offer. The house rule is that the palette, the
+    // shortcuts, the toolbar and the panel are all surfacings of ONE action layer,
+    // and `edit-code-source` is the standing precedent: the same activation, also
+    // published as a command, also surfaced as an Inspector action row.
+    //
+    // THE GATE READS THE DECLARATION, NOT THE TYPE NAME (widget_handlers.js:
+    // "resolution is the declaration and NOTHING else"), so a second widget that
+    // ever declares `activate: "rich_text_edit"` is offered this with no edit here —
+    // and a plaintext box, whose editor is the plain-string one, is not.
+    {
+      id: "edit-text-content",
+      title: "Edit Text in Place",
+      icon: "mdi:cursor-text",
+      when: (app) => app.selectedNode()?.plugin?.activate === "rich_text_edit",
+      requires: "a selected rich-text box — this puts the caret inside that box's own runs",
+      help: "Puts the caret in the selected text box on the canvas, with the formatting toolbar above it. The characters you select are what bold/size/font/color apply to, which is why one box can hold several styles.",
+      run: (app) => app.beginTextEdit(app.selection),
+    },
   ],
 };
