@@ -449,7 +449,7 @@ export function cameraRows() {
  * @returns {object[]} inspector rows
  *
  * @example resolutionRows()[0].key // "renderMode"
- * @example resolutionRows()[0].options // ["live", "raster"]
+ * @example resolutionRows()[0].options // ["viewport", "live", "raster"]
  */
 export function resolutionRows() {
   return [
