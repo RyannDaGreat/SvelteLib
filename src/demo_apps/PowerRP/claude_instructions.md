@@ -1078,6 +1078,51 @@ files) — disposable; this manifest copy is canonical.
 - **R6-21.2** Optional: cherry-pick `a7e6964` from `render-rewrite-skia` (the
   takeover button), the one commit that branch has and `powerrp` lacks.
 
+### R6-23 THE 3D VIEWER FAMILY — R6-1 IS ONE MEMBER, NOT THE WHOLE THING
+
+Added by the user 2026-08-01, AFTER R6-1 was written. It SUPERSEDES R6-1.5's
+"ideally a 3D engine" and makes that a HARD requirement: meshes are a first-class
+sibling, not a someday.
+
+- **R6-23.1 THE GENERALISATION.** "That Gaussian Splat viewer could maybe be more
+  general. We'd like to be able to subclass that into a 3D viewer. So I'd like to be
+  able to have meshes that I can preview too with variable lighting and scenes and
+  stuff... So this will just be one of many. Maybe it will be the three.js widget or
+  something." So: ONE 3D-viewer substrate; the splat viewer and the mesh viewer are
+  members of it.
+- **R6-23.2 REPRESENTATION IS AN OPEN QUESTION.** "I'm not sure the best way to
+  represent that right now." So this needs a DESIGN PROPOSAL before code. The
+  archetype precedent in this codebase is the `sky` family (R6-9 / task #100 — a
+  prefix-shared family whose members read each other) and the corkboard family
+  (task #72). Whichever is chosen must be justified from precedent, not invented
+  (R6-22.2).
+- **R6-23.3 MESHES WITH VARIABLE LIGHTING AND SCENES.** Lights and scene setup are
+  properties, which by the core invariant makes them keyframable and tweenable —
+  the same reasoning as R6-1.3 for the splat camera. A light's direction is exactly
+  the kind of thing the existing `angle` property kind (task #79) already expresses.
+- **R6-23.4 DEFAULT 3D OBJECTS, REAL ONES.** "You can grab some default objects you
+  can find on the web so that they can be referenced by whoever uses them. You know,
+  some 3D objects that will never go out of style that are real assets that are made
+  by real people." So: ship a small set of canonical, permanently-recognisable
+  models. The obvious candidates are the classics (Utah teapot, Stanford bunny/dragon,
+  Suzanne) and the Khronos glTF sample models (Damaged Helmet, Lantern, Sponza).
+  LICENCE IS A HARD GATE — the dump must stay redistributable, so record the exact
+  licence and attribution for every asset shipped, and prefer CC0.
+- **R6-23.5 OBJAVERSE AS A SOURCE, AND MAYBE A BROWSER.** "Maybe Objaverse is a good
+  place to start. Maybe we could even have a search bar where I double click it and it
+  goes through different Objaverse assets or something." Note the double-click framing
+  again — the `activate` phase (see R6-1.2). RESEARCH REQUIRED: does Objaverse expose
+  a usable search API, what are the per-object licences (they VARY, which is a real
+  problem for shipping), and what formats does it serve? An asset browser that pulls
+  from the network at author time is a different animal from a shipped library —
+  decide which, and say why.
+- **R6-23.6 IT MUST OBEY THE SAME CARDINAL CONTRACT** as R6-1.6/.7/.8: render
+  `f(x,y,w,h)` at a given resolution via `core/clip.js visibleSourceRect`, cache when
+  nothing changed, and offer the fixed-resolution override.
+- **R6-23.7 CONSEQUENCE FOR THE LIBRARY CHOICE (R6-1.11).** Because meshes,
+  lighting and scenes are now in scope, a splat-only renderer is DISQUALIFIED. The
+  library must be a real 3D engine that also does splats.
+
 ### R6-22 CONVENTION CONFORMANCE — A STANDING OBLIGATION ON EVERY AGENT
 
 User ruling, 2026-08-01, verbatim in spirit: "it's hyper duper critical that every
