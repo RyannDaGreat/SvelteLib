@@ -186,6 +186,20 @@
      Inspector — it scrolls internally). */
   --a-gradient-swatch-h: 22px;
   --a-gradient-swatch-min-w: 46px;
+  /* VISUAL STOP BAR (web/GradientStopBar.svelte): the ramp track, one draggable
+     bead, and the gap between the two rows. Neither size is a taste call — both
+     are LINKED to the size the same idea already has elsewhere, so the bar reads
+     as part of the app rather than as its own dialect:
+       the TRACK is a swatch of the ramp being edited, at the height of the
+         swatches in the preset library right above it, so "the ramp you have"
+         and "the ramps you could pick" are one size;
+       a BEAD is a control-sized square chip, the square ColorField's own swatch
+         is — and the smallest that still seats the ƒ mark an equation-bound
+         position wears. (The canvas modifier point it is skinned after is an 8px
+         <rect>; a DOM button that small is not grabbable, which is why this is a
+         link to the swatch and not to the glyph.) */
+  --a-stopbar-track-h: var(--a-gradient-swatch-h);
+  --a-stopbar-bead: var(--a-color-swatch);
   /* The scroll cap is QUANTIZED to a whole number of rows (rows × tile + gaps +
      the grid's own padding, which counts because everything is border-box) so
      the bottom row is never sliced in half at rest — the user's "the way
@@ -5597,6 +5611,159 @@ audio.ae-preview-media {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+/* ── THE VISUAL STOP BAR (web/GradientStopBar.svelte) ─────────────────────────
+   Two rows sharing ONE column so a bead's x IS its position on the ramp above
+   it: the ramp TRACK, then the BEAD LANE, with the purge button in a second
+   column spanning both (outside the aligned column, so it cannot shift the
+   mapping). The column is padded by half a bead, because a bead at position 0 or
+   1 is centred on the track's very edge and overhangs it by half its width —
+   clipping that would put the two end stops off-centre, i.e. would make the
+   control lie about where they are. */
+.stopbar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  /* The gap is HALF A BEAD, not a spacing step, and the padding is the same:
+     a bead at position 0 or 1 is centred on the track's very edge, so it
+     overhangs the column by half its width at both ends. The padding stops the
+     left one being clipped and the gap stops the right one colliding with the
+     purge button — a spacing step happens to be smaller than the overhang, which
+     is measured (tests/gradient_stop_bar_probe.js asserts the two never overlap). */
+  column-gap: calc(var(--a-stopbar-bead) / 2);
+  row-gap: var(--a-sp-1);
+  align-items: center;
+  padding: var(--a-sp-1) calc(var(--a-stopbar-bead) / 2);
+  min-width: 0;
+}
+
+.stopbar-disabled {
+  opacity: var(--a-disabled-opacity);
+}
+
+/* The ramp itself, over the transparency checkerboard — the two-layer recipe
+   .colorfield-swatch uses, because a stop's colour carries ALPHA and a ramp that
+   fades out must read as fading out rather than as fading to black. --sb-ramp is
+   DATA (the gradient being edited), passed in by the component exactly as
+   --gp-swatch and --cf-swatch are, never a token. */
+.stopbar-track {
+  position: relative;
+  grid-column: 1;
+  height: var(--a-stopbar-track-h);
+  cursor: copy; /* the pointer states the offer: a click here ADDS a stop */
+  background:
+    var(--sb-ramp, none),
+    repeating-conic-gradient(var(--a-checker-dark) 0% 25%, var(--a-checker-light) 0% 50%);
+  background-size: auto, var(--a-checker-size) var(--a-checker-size);
+}
+
+.stopbar-disabled .stopbar-track {
+  cursor: default;
+}
+
+.stopbar-lane {
+  position: relative;
+  grid-column: 1;
+  height: var(--a-stopbar-bead);
+}
+
+/* WHERE A CLICK WOULD LAND — a HOLLOW bead at the pointer, the shape of the thing
+   the click will create. DASHED and in the selection colour is this app's spelling
+   for a CANDIDATE rather than a selection (.band-candidate), and hollow is its
+   spelling for a handle that is not participating yet. It sits in the LANE rather
+   than on the ramp because a rule ON the ramp is what this was first, and one
+   device pixel of dashes over a saturated gradient measured as invisible.
+   It is pure UI: nothing is staged, so the rows below cannot resize under the
+   pointer (see the component header on why the hover-PREVIEW trope is withheld). */
+.stopbar-ghost {
+  position: absolute;
+  top: 0;
+  width: var(--a-stopbar-bead);
+  height: var(--a-stopbar-bead);
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  border: var(--a-selection-stroke) dashed var(--a-selection);
+  pointer-events: none;
+}
+
+/* ONE BEAD. It wears the canvas MODIFIER POINT's skin (.overlay .modifier) —
+   the same gold fill and white rim — because it is that handle on another
+   surface: both drag the same gradient state, and core/paint_handles.js already
+   puts modifier beads on the widget itself for the same paint. The rim is a
+   box-shadow rather than a border so it costs no layout, and rather than an
+   outline so :focus-visible still has one to use. Square, like all app chrome. */
+.stopbar-bead {
+  position: absolute;
+  top: 0;
+  width: var(--a-stopbar-bead);
+  height: var(--a-stopbar-bead);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--a-modifier);
+  box-shadow: 0 0 0 var(--a-handle-stroke) var(--a-handle-rim);
+  color: var(--a-modifier);
+  cursor: grab;
+}
+
+.stopbar-bead.dragging {
+  cursor: grabbing;
+}
+
+/* SELECTED — the rim alone is recoloured, which is exactly how the canvas skins
+   a handle in the inner selection scope: no new colour is minted, so every
+   theme's --a-selection override applies for free. */
+.stopbar-bead.selected {
+  box-shadow: 0 0 0 var(--a-selection-stroke) var(--a-selection);
+}
+
+/* HIDDEN (its visibility companion flag is false): HOLLOW, exactly as the canvas
+   draws a hidden handle — present and grabbable, reading as "not part of the
+   ramp". Fill only, so a hidden bead that is also selected still shows the rim. */
+.stopbar-bead.stopbar-bead-hidden {
+  background: transparent;
+}
+
+/* AN EQUATION-BOUND POSITION: the bead becomes the ƒ mark instead of a chip. It
+   is drawn where the expression evaluates but does not move, so it must not
+   advertise a grab it will refuse — the say-the-reason discipline, with the
+   sentence in its tooltip. Same glyph ColorField shows on an equation-bound
+   colour; one mark, one meaning. */
+.stopbar-bead.stopbar-bead-bound {
+  background: transparent;
+  cursor: default;
+}
+
+.stopbar-bead:focus-visible {
+  outline: var(--a-selection-stroke) solid var(--a-selection);
+  outline-offset: var(--a-sp-1);
+}
+
+/* Purge spans both rows in the trailing column, so it never enters the position
+   mapping. `aria-disabled`, not the native attribute (a natively disabled button
+   is unfocusable, and while it refuses, its tooltip is the only place the reason
+   is written) — so the refusing look has to be named here rather than coming
+   from :disabled. */
+.stopbar-purge {
+  grid-column: 2;
+  grid-row: 1 / 3;
+}
+
+.stopbar-purge[aria-disabled="true"] {
+  opacity: var(--a-disabled-opacity);
+  cursor: default;
+}
+
+/* The row the STOP BAR has selected. Same device the canvas toolbar's selected
+   tile uses (the hover wash plus the selection colour), as an inset left rule so
+   it marks the row without moving anything in it. */
+.listfield .list-el-selected {
+  background: var(--a-hover-bg);
+  box-shadow: inset var(--a-selection-stroke) 0 0 0 var(--a-selection);
 }
 
 .listfield {

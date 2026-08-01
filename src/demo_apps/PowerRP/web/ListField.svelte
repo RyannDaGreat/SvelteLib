@@ -206,8 +206,10 @@
   import AngleField from "./AngleField.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import GradientPresetPicker from "./GradientPresetPicker.svelte";
+  import GradientStopBar from "./GradientStopBar.svelte";
   import { getPath } from "../core/deltas.js";
   import { COLOR_RAMP_LIBRARY } from "../core/ramps.js";
+  import { RAMP_STOP_ELEMENT } from "../core/properties.js";
   import {
     ACTIVE_FIELD, activeListPath, elementActive, elementFieldValue, elementStorageKey,
     insertedElement, withElementActive, withElementInserted, withElementPurged,
@@ -223,6 +225,18 @@
   // whole reason no other property could have a library and the reason the
   // Mandelbrot palette had to be a `select` over six hard-coded names.
   let hasPresets = $derived(decl.presets === COLOR_RAMP_LIBRARY);
+  // ── THE VISUAL STOP BAR, MOUNTED THE SAME WAY, FOR THE SAME REASON ─────────
+  // A list whose element IS the shared RAMP_STOP_ELEMENT (core/properties.js —
+  // both the gradient paint's `stops` and the top-level `rampStops` reference the
+  // one object, which is why an identity test cannot drift) gets the draggable
+  // ramp bar above its rows. Mounted here rather than in web/PaintField.svelte
+  // for the reason the preset library moved here: PaintField reaches two of the
+  // three ramp mount points, and the Mandelbrot ramp — which comes through the
+  // Inspector's own list row — would silently not have got one.
+  let hasStopBar = $derived(decl.element === RAMP_STOP_ELEMENT);
+  // Which stop the BAR has selected, so its row can say so. View state: it changes
+  // nothing that renders, so it neither keyframes nor belongs in a delta.
+  let selectedElement = $state(null);
   // IS THE LIBRARY OPEN? Folds the rows from the CLICK, not from the first swatch
   // hovered, so nothing about the list moves for the whole session (the user's
   // "preset selection for gradients should collapse that for us upon clicking the
@@ -565,6 +579,16 @@
       onopenchange={(open) => (presetsOpen = open)}
     />
   {/if}
+  {#if hasStopBar && value.list.length > 0}
+    <!-- THE VISUAL STOP BAR — the ramp drawn as a track with a draggable bead per
+         stop (web/GradientStopBar.svelte). ABOVE the rows, like the library and
+         for a sharper version of its reason: a bead drag stages a WHOLE-LIST
+         preview, which is exactly the shape `listPreviewStaged` folds these rows
+         on, so from below the bar would jump out from under the pointer on the
+         first pointermove. An EMPTY list has no ramp to draw and no stop to drag,
+         so it gets the seed insert below and no bar. -->
+    <GradientStopBar {app} {decl} {path} {label} {disabled} onselect={(i) => (selectedElement = i)} />
+  {/if}
   <div class="listfield">
   <!-- THE COLLAPSE HEADER — web/Inspector.svelte's category accordion, class for
        class: the app's ONE section-heading device, which app.css keeps DELIBERATELY
@@ -614,7 +638,10 @@
     {@render insertSlice(0)}
     {#each value.list as el, index (index)}
       {@const visible = elementActive(value.active, index)}
-      <div class="list-el" class:list-el-hidden={!visible}>
+      <!-- `list-el-selected` is set by the STOP BAR above: picking a bead lights
+           up the row that edits that stop, which is how the bar answers "select
+           one to edit its colour" without growing a second colour control. -->
+      <div class="list-el" class:list-el-hidden={!visible} class:list-el-selected={selectedElement === index}>
         <span class="list-index">{index + 1}</span>
         <!-- VISIBILITY: the app's ONE boolean control, but the WRITE is ours —
              it is not a single scalar (the whole canonicalized companion array

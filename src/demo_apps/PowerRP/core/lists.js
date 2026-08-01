@@ -104,15 +104,19 @@
  * index-preserving way to take an element out of the picture, exactly as
  * keyframing item `active` off is the id-preserving way to take an item out.
  *
- * PURGE AND INSERT ARE THE ONLY RENUMBERING OPERATIONS, and they shift every
- * later element's address by one — so an equation bound to a later element's
- * field silently comes to mean its neighbour. (This is the same hazard that made
- * per-vertex ANCHORS a rejected design: plugins/polygon.js records that
- * index-keyed vertex anchors would rebind every attached arrow on insert.)
- * `indexAfterPurge` / `indexAfterInsert` are the pure remaps a document-wide
- * equation rewrite needs; wiring that rewrite (the core/expressions.js
- * withVariableRenamed shape — walk every slide delta, rewrite matching reference
- * tokens) is the follow-up that makes purge safe rather than merely loud.
+ * PURGE, INSERT AND REORDER ARE THE RENUMBERING OPERATIONS. Purge and insert
+ * shift every later element's address by one; a REORDER (only a "sorted" list
+ * has one — moving an element's order key past a neighbour's) permutes them. So
+ * an equation bound to another element's field silently comes to mean its
+ * neighbour. (This is the same hazard that made per-vertex ANCHORS a rejected
+ * design: plugins/polygon.js records that index-keyed vertex anchors would
+ * rebind every attached arrow on insert.) `indexAfterPurge` / `indexAfterInsert`
+ * are the pure remaps a document-wide equation rewrite needs — and for a reorder
+ * the remap cannot be computed from an index alone (it depends on the VALUES),
+ * so `withElementsOrderedBy` returns it. Wiring that rewrite (the
+ * core/expressions.js withVariableRenamed shape — walk every slide delta,
+ * rewrite matching reference tokens) is the follow-up that makes these safe
+ * rather than merely loud.
  *
  * ── THE TWO ELEMENT STORAGE FORMS, and why both exist ─────────────────────────
  * "record" — one element is a plain object keyed by field name:
@@ -575,7 +579,7 @@ export function visibleIndices(value) {
   return value.list.map((_, i) => i).filter((i) => elementActive(value.active, i));
 }
 
-// ── INSERT / PURGE (the two RENUMBERING operations) ──────────────────────────
+// ── INSERT / PURGE / REORDER (the RENUMBERING operations) ────────────────────
 
 /**
  * Pure function. The LIST VALUE with a new interpolated element inserted at
@@ -626,6 +630,64 @@ export function withElementPurged(decl, value, index) {
   return {
     list: list.filter((_, i) => i !== index),
     active: value.active ? value.active.filter((_, i) => i !== index) : undefined,
+  };
+}
+
+/**
+ * Pure function. The LIST VALUE reordered so its elements ascend by `keys` — the
+ * PAIR-level counterpart of canonicalOrder, which sorts the element list ALONE
+ * and leaves the visibility companion where it was. Stable (equal keys keep their
+ * relative order), and the input is returned BY IDENTITY when it is already in
+ * that order, so "did anything move" is a reference compare.
+ *
+ * `indices[i]` is where the element that WAS at i ended up — the reorder's member
+ * of the indexAfterPurge / indexAfterInsert family. It comes back with the result
+ * rather than being a function of an index, because a reorder's remap depends on
+ * the VALUES: a caller that is mid-gesture (a gradient stop being DRAGGED along
+ * its bar) has to keep pointing at the element it is moving as that element
+ * changes address underneath it.
+ *
+ * WHY THE KEYS ARE SUPPLIED rather than read off the elements the way
+ * canonicalOrder reads them — this is the whole reason the function exists:
+ * an element's order key MAY BE AN "=" EQUATION, which is a string and has no
+ * ordering, while the order the RENDER consumes is the one the EVALUATED
+ * positions describe (a stop's offset can be bound, and render_gpu/ir.js
+ * normalizeStops reads the array's order as authoritative). What must be written
+ * BACK is the RAW element with its expression intact. Sorting by supplied
+ * EVALUATED keys while permuting RAW elements is the only combination that
+ * satisfies both, and no version that reads the key off the element can express
+ * it.
+ *
+ * Args:
+ *   value ({list: Array, active?: Array}): the list value pair
+ *   keys (number[]): one sort key per element, in the list's CURRENT order
+ *
+ * Returns:
+ *   {list, active, indices} — the reordered pair plus the old→new index map
+ *
+ * @example withElementsOrderedBy({list: [{offset: 0.8}, {offset: 0.2}]}, [0.8, 0.2]).list // [{offset: 0.2}, {offset: 0.8}]
+ * @example withElementsOrderedBy({list: [{offset: 0.8}, {offset: 0.2}]}, [0.8, 0.2]).indices // [1, 0]
+ * @example withElementsOrderedBy({list: [{offset: 0}, {offset: 1}]}, [0, 1]).indices // [0, 1] (already ordered)
+ * @example withElementsOrderedBy({list: [{offset: 0.7}, {offset: 0.5}], active: [false, true]}, [0.7, 0.5]).active // [true, false] (the companion follows its own element)
+ * @example withElementsOrderedBy({list: [{offset: "=t"}, {offset: 0.1}]}, [0.9, 0.1]).list // [{offset: 0.1}, {offset: "=t"}] (RAW elements permuted, ordered by the SUPPLIED evaluated keys)
+ * @example withElementsOrderedBy({list: [{offset: 0.5}, {offset: 0.5}]}, [0.5, 0.5]).indices // [0, 1] (a tie is stable: nothing moves)
+ */
+export function withElementsOrderedBy(value, keys) {
+  const { list, active } = value;
+  if (keys.length !== list.length)
+    throw new Error(`lists.withElementsOrderedBy: ${keys.length} sort keys for a ${list.length}-element list`);
+  const order = list.map((_, i) => i).sort((a, b) => (keys[a] === keys[b] ? a - b : keys[a] - keys[b]));
+  const indices = [];
+  for (let at = 0; at < order.length; at++) indices[order[at]] = at;
+  if (order.every((from, at) => from === at)) return { list, active, indices };
+  // The companion is read through elementActive, so BOTH stored encodings permute
+  // correctly — a flags array and the numeric-keyed object a sparse per-index
+  // keyframe folds to (core/deltas.js setPath) — and the result canonicalizes to
+  // a full array, exactly as withElementActive's does.
+  return {
+    list: order.map((from) => list[from]),
+    active: active ? order.map((from) => elementActive(active, from)) : undefined,
+    indices,
   };
 }
 
