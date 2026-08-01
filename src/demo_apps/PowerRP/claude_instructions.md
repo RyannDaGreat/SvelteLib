@@ -157,6 +157,30 @@ manifest itself becomes a Tower of Babel, which is the worst possible place for 
    **a hand-maintained list, map or switch mirroring another module's shape.** Derive it;
    if it cannot be derived, gate it so drift turns something red.
 
+### A REVERT MUST REVERT ITS DOCTRINE, IN THE SAME COMMIT
+
+**CLAUDE-ORIGINATED, 2026-08-01, from a measured instance.** `aba0aa9` wrote both the
+"save button IS the save indicator" design AND the `CLAUDE.md` paragraph describing it.
+`d595e95` reverted the CODE seven hours later — quoting the user, *"I said they share the
+same state, not the same element"* — and re-pinned the tests in both directions, but never
+touched the doc. For a day, `CLAUDE.md` taught a design the user had explicitly overruled,
+**in the exact passage agents are pointed at for the `aria-disabled` ruling.**
+
+**Why this failure mode is worse than an ordinary stale comment:** it is invisible from
+both sides. The doc reads as settled, the code reads as correct, and nothing connects them.
+Two audit agents read that paragraph this round; only the one that went to the code caught
+it. Every other agent inherited a confident lie from the one file they are told to trust.
+
+**The rule:** a commit that reverts, replaces or overrules a design updates the manifest,
+`CLAUDE.md` and any docblock stating the old design **in that same commit**. Not as a
+follow-up, not as a TODO. Prose that outlives its code is not documentation, it is
+misinformation with a credible byline.
+
+Corollary already earned separately: **a comment asserting a uniformity that does not exist
+is worse than no comment** — it tells the next reader not to check. (`web/app.css:5463`
+claims the `requires` frames are "one sentence style"; measured, there are six grammars
+across six panes.)
+
 ### CLAUDE-ORIGINATED vs USER-REQUESTED
 
 Conventions we propose are marked **CLAUDE-ORIGINATED** so the user can tell his own
