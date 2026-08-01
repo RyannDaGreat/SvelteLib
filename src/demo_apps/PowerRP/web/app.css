@@ -5175,6 +5175,26 @@ textarea {
   overflow: hidden;
 }
 
+/* DO NOT "FIX" --ae-quota-fill BY DECLARING IT. It reads as the phantom-token
+   defect — `var(--nonexistent, <literal>)`, which this codebase bans as the CSS
+   form of a silent fallback — and a sweep for that shape will find it. It is a
+   different thing: the token was never missing, its DRIVER was removed. The
+   component used to set `--ae-quota-fill` inline from the measured quota;
+   eec6819 took that out, so this bar is dead UI that renders at the fallback
+   forever. Declaring the token in :root would not repair anything — it would
+   ENSHRINE a bar permanently 0% wide and make it look deliberate, which is
+   strictly worse than the honest phantom, because the next reader would stop
+   asking.
+   THE OPEN QUESTION IS WHETHER THE BAR SHOULD EXIST AT ALL, and that is
+   user-visible, so it is not a sweep's call: either restore the driver or delete
+   the three rules. Left as-is pending that decision.
+   THIS NOTE IS IN THE FILE BECAUSE THE COMMIT MESSAGE WAS NOT DURABLE. The
+   decision not to declare it was recorded only in a commit that no longer
+   exists — a peer's revert took it and a third agent restored the CONTENT, which
+   keeps the tree and discards the log. A DELIBERATE NEGATIVE leaves no trace in
+   code by construction, so a message is the worst possible home for one: nothing
+   in the file contradicts a well-meaning "fix", and the reasoning against it can
+   be deleted by an accident that touches none of this. */
 .asset-explorer .ae-quota-bar-fill {
   height: 100%;
   width: var(--ae-quota-fill, 0%);
