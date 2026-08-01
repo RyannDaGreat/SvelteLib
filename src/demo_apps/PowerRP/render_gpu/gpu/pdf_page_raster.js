@@ -346,8 +346,7 @@ export function ensurePdfPageRasterized(src, page, scale) {
     // mint a giant canvas + bitmap → a CanvasKit heap overrun when the bitmap
     // uploads as a texture (the unbounded-allocation class this task fixes).
     const requested = roundPdfScale(scale);
-    const fitScale = Math.min(PDF_MAX_RASTER_DIM / unit.width, PDF_MAX_RASTER_DIM / unit.height);
-    const effScale = Math.min(requested, fitScale);
+    const effScale = requested * rasterFitFactor(unit.width * requested, unit.height * requested, PDF_MAX_RASTER_DIM);
     if (effScale < requested) reportOnce(`pdf_page_raster:cap:${key}`, `PowerRP pdf_page_raster: whole-page raster for "${truncate(src)}" page ${page} @${requested}x would exceed ${PDF_MAX_RASTER_DIM}px/edge — capped to ${effScale.toFixed(3)}x (page shown at lower resolution).`);
     const viewport = pdfPage.getViewport({ scale: effScale });
     const canvas = document.createElement("canvas");
@@ -603,13 +602,27 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
     // Full-page viewport at the (capped) display scale, shifted so the sub-rect's
     // top-left sits at the canvas origin (pdf.js viewport is already y-down,
     // top-left origin — the same frame our normalized sourceRect uses).
+    // ONE scale drives BOTH the pdf.js viewport and the output canvas. They used to
+    // be derived separately — viewport at deviceScale, canvas at clampDim(...) — so
+    // whenever the canvas clamp bit, pdf.js kept drawing at full device scale into a
+    // canvas too small to hold the result and the region came out CLIPPED at its
+    // right and bottom rather than downscaled, then stretched across the widget's
+    // whole box at draw time. Reachable from the Inspector alone, with no zoom: a
+    // 612x792pt page in "raster" mode at rasterDPI 600 asks for 5080x6574 px and
+    // loses 19% of its width and 38% of its height. See rasterFitFactor.
+    const rasterScale = deviceScale * rasterFitFactor(
+      sourceRect.sw * point.w * deviceScale, sourceRect.sh * point.h * deviceScale, PDF_MAX_RASTER_DIM);
+    if (rasterScale < deviceScale)
+      reportOnce(`pdf_page_raster:regioncap:${src}|${page}`, `PowerRP pdf_page_raster: the requested region raster for "${truncate(src)}" page ${page} exceeds ${PDF_MAX_RASTER_DIM}px/edge — rendering it at ${rasterScale.toFixed(2)}x instead of ${deviceScale.toFixed(2)}x (the page is shown whole, at lower resolution). Lower rasterDPI, or reduce the widget's size, to get the resolution you asked for.`);
     const viewport = pdfPage.getViewport({
-      scale: deviceScale,
-      offsetX: -sourceRect.sx * point.w * deviceScale,
-      offsetY: -sourceRect.sy * point.h * deviceScale,
+      scale: rasterScale,
+      offsetX: -sourceRect.sx * point.w * rasterScale,
+      offsetY: -sourceRect.sy * point.h * rasterScale,
     });
-    const canvasW = clampDim(Math.round(sourceRect.sw * point.w * deviceScale));
-    const canvasH = clampDim(Math.round(sourceRect.sh * point.h * deviceScale));
+    // clampDim is a backstop here (rasterScale already fits) against a NaN/negative
+    // edge ever reaching canvas.width, not the sizing policy it used to be.
+    const canvasW = clampDim(Math.round(sourceRect.sw * point.w * rasterScale));
+    const canvasH = clampDim(Math.round(sourceRect.sh * point.h * rasterScale));
     const canvas = document.createElement("canvas");
     canvas.width = canvasW;
     canvas.height = canvasH;
@@ -726,10 +739,45 @@ export function trimPdfRasterCache() {
   return { evicted, freedBytes, bytes };
 }
 
+/**
+ * Pure function. The largest factor ≤ 1 by which a requested raster size must be
+ * multiplied so that NEITHER edge exceeds `maxEdge` — exactly 1 when it already
+ * fits. Aspect is preserved by construction (one factor, both edges).
+ *
+ * WHY THIS EXISTS RATHER THAN A CLAMP AT THE CANVAS. Clamping the output canvas
+ * does not make an oversized raster smaller, it makes it SHORTER: pdf.js draws
+ * through the transform its viewport was built with, so a canvas clamped
+ * independently of that viewport receives the page's top-left corner and nothing
+ * else. The region bitmap is then STRETCHED into the widget's box at draw time, so
+ * the visible result is a fraction of the page blown up to fill the whole frame —
+ * silently, since a clamp is not an error. Whoever sizes a canvas must derive the
+ * render scale from THE SAME number; this is that number.
+ *
+ * Args:
+ *   wantW, wantH (number): the requested raster size, device px.
+ *   maxEdge (number): the hard per-edge ceiling.
+ *
+ * Returns:
+ *   number in (0, 1].
+ *
+ * @example rasterFitFactor(800, 600, 4096) // 1 (already fits)
+ * @example rasterFitFactor(6330, 8192, 4096) // 0.5 (a 612x792pt page asked for at rasterDPI 1200)
+ * @example rasterFitFactor(8192, 1000, 4096) // 0.5 (the WIDE edge decides)
+ */
+export function rasterFitFactor(wantW, wantH, maxEdge) {
+  const largest = Math.max(wantW, wantH);
+  return largest > maxEdge ? maxEdge / largest : 1;
+}
+
 /** Pure function. Clamps a raster canvas edge into [1, PDF_MAX_RASTER_DIM],
  * flooring any non-finite (NaN/±∞) input to 1 — a NaN edge would otherwise pass
  * through `Math.min(4096, NaN) === NaN` straight into canvas.width and produce a
  * broken (0-area or heap-overrunning) raster. Rounds fractional edges.
+ *
+ * A BACKSTOP, NOT A SIZING POLICY: every caller now derives its canvas from a
+ * rasterFitFactor-corrected scale, so this should never actually reduce anything.
+ * It stays because a NaN or negative edge reaching canvas.width must still be
+ * impossible.
  * @example clampDim(0) // 1
  * @example clampDim(9000) // 4096
  * @example clampDim(300) // 300
