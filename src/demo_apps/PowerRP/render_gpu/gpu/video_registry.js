@@ -361,6 +361,42 @@ export function pendingVideoSrcs() {
 }
 
 /**
+ * Query. Every video src — PLAYER or SCRUBBER — whose load PERMANENTLY FAILED.
+ * The COUNTERPART of pendingVideoSrcs, and the reason it has to exist separately:
+ * "pending" answers "wait longer", and an errored src is precisely the one that
+ * will never resolve, so it is deliberately excluded there.
+ *
+ * WHAT IT IS FOR (R6-12.1, measured). A one-shot render used those two answers as
+ * a partition — nothing pending ⇒ the frame is whole — and an errored src falls in
+ * neither half. `sceneMedia` therefore left the ref out of the media map,
+ * `paint_skia`'s `if (!img) break;` skipped the quad, and the worker wrote a frame
+ * with a hole in it and EXITED 0. Reproduced: a `video` + `video_scrub` deck whose
+ * src 404s renders to bare camera background, twice, at exit 0
+ * (.frenzy/round6/W5A-shots/badsrc_hole.png). That is the whole of "the video
+ * widget does not appear in Render Center output": not a missing await, a missing
+ * FAILURE. `web/renderJobPage.js settledFrame` reads this and refuses the frame.
+ *
+ * BOTH registries in one answer, because the caller must not have to know there
+ * are two — a hand-maintained union at the call site is the mirror that rots. The
+ * forward reference to `scrubRegistry` (declared in the scrubber section below) is
+ * the same shape `disposeUploaderScope` already uses.
+ *
+ * @returns {string[]} the failed srcs; a src used by BOTH a player and a scrubber
+ *   is listed once
+ *
+ * @example // nothing requested yet
+ * failedVideoSrcs() // []
+ * @example // after ensureVideo("/asset/Gone/nope.mp4") errors
+ * // failedVideoSrcs() // ["/asset/Gone/nope.mp4"]
+ */
+export function failedVideoSrcs() {
+  const srcs = new Set();
+  for (const [src, entry] of registry) if (entry.status === "error") srcs.add(src);
+  for (const [src, entry] of scrubRegistry) if (entry.status === "error") srcs.add(src);
+  return [...srcs];
+}
+
+/**
  * Query. A player element's live playback state — {paused, currentTime,
  * presentedFrames} — or null if `src` has no element yet. A diagnostic (like
  * videoUploadCount) so a probe can assert the off-view playback gate actually

@@ -2,18 +2,28 @@
  * Video PLAYER widget — a sampled-texture quad of a video the user drops in or
  * picks from the project's assets, playing back via a plain HTML `<video>`
  * element. THE second media widget (after image), and the proof the render
- * cornerstone holds for MOVING raster content: it renders through the WebGPU
- * compositor (as an external-texture quad, current frame imported each render)
- * AND through the PDF backend (as a CURRENT-FRAME embedded image XObject).
+ * cornerstone holds for MOVING raster content: it renders through the Skia
+ * raster path (the element's CURRENT frame uploaded to a texture each paint —
+ * render_gpu/gpu/video_registry.getSkiaVideoFrame) AND through the PDF backend
+ * (as a CURRENT-FRAME embedded image XObject).
  *
  * ── PLAYER, NOT SCRUBBER (manifest glossary) ──────────────────────────────────
  * This is the video *player*: playback runs as ordinary HTML `<video>` playback
  * and does NOT touch document/tween state — a looping clip never fights the
- * delta/alpha system. (The *scrubber*, whose current-time IS tweened
- * deterministic state, is a distinct future widget.) So this plugin's state
- * holds only PARAMETERS (src + playback flags), never frames — the sparkler
- * rule: a headless/CLI render shows the video's poster/first frame, which is
- * deterministic and legitimate (a live clip has no single "correct" frame).
+ * delta/alpha system. The *scrubber* (plugins/video_scrub.js), whose current-time
+ * IS tweened deterministic state, is the sibling widget; it exists. So this
+ * plugin's state holds only PARAMETERS (src + playback flags), never frames.
+ *
+ * AND THAT COSTS DETERMINISM — MEASURED, not conceded in the abstract. This
+ * docblock used to call the headless result "the poster/first frame, which is
+ * deterministic". It is neither: the element keeps playing while the worker
+ * renders, so which clip frame lands on which output frame depends on decode and
+ * buffering timing. The same job, the same frame index, two runs, different md5
+ * (wave-1 measurement, recorded at claude_instructions.md R6-12). Δt = 0 does NOT
+ * leave this widget unchanged, so it is not recordable state under the law in
+ * CLAUDE.md — it is the one place in the app that is EPHEMERAL, which is why
+ * server/server.py attaches a warning naming this type on every render. R6-12.3
+ * removes the category by collapsing onto the scrubber's model.
  *
  * ── NO PLAYBACK-PROGRESS EXPORTS (deliberate) ─────────────────────────────────
  * Unlike the SCRUBBER, the player exposes NO seconds/progress/duration exports.
@@ -67,13 +77,19 @@ import { video } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
-/** A tiny 1×1 transparent PNG data URI — the default `src` so a freshly added
- * video widget is a valid (invisible-until-sourced) item rather than a broken
- * ref (an image src is fine: it decodes to one transparent frame, so the widget
- * simply draws nothing until a real video is dropped/picked). Mirrors the image
- * widget's BLANK_SRC. */
-export const BLANK_SRC =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** THE UNSOURCED DEFAULT IS THE EMPTY STRING, and it used to be a 1×1 transparent
+ * PNG data URI copied from the image widget's BLANK_SRC. The justification written
+ * beside that copy — "an image src is fine: it decodes to one transparent frame" —
+ * is FALSE for a `<video>`, which refuses a PNG outright with `MediaError code 4:
+ * Unable to load URL due to content type` (measured). So every freshly added,
+ * not-yet-sourced video widget logged a load failure on the paint that created its
+ * element, and once a failed source FAILS the render (web/renderJobPage.js
+ * settledFrame) that default would have made an unsourced widget refuse the whole
+ * job. `emit` already draws nothing for an empty src, so the empty string is both
+ * the honest representation of "not sourced yet" and the one that reaches no
+ * decoder. Precedent: plugins/demo/video_v8.js:84 `src: ""` — "empty → poster only,
+ * no element, no load error". */
+const UNSOURCED = "";
 
 export const videoPlugin = {
   type: "video",
@@ -90,7 +106,7 @@ export const videoPlugin = {
     // Rotation pivots about this WORLD point; default = own center (an equation
     // — manifest Round 11). Absent on old docs → derive falls back to center.
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    src: BLANK_SRC,
+    src: UNSOURCED,
     // Playback + animated flags all default true — sourced from the SHARED
     // PROPERTY REGISTRY (core/properties.js): autoplay/loop/muted/animated each
     // declare `default: true` there, so this stays in sync with the rows below.
@@ -134,10 +150,25 @@ export const videoPlugin = {
    * API. The `ref` IS the source string: raster backends resolve it (the GPU
    * compositor through gpu/video_registry.js, the PDF backend by grabbing the
    * element's current frame). Returns nothing for an empty/missing src (a broken
-   * widget draws nothing rather than emitting an invalid op). The playback flags
-   * are NOT part of the op: they configure the `<video>` element (the registry
-   * reads them off state), not the per-frame draw — the op is just "this frame
-   * of this source over this quad".
+   * widget draws nothing rather than emitting an invalid op) — which is also what
+   * a freshly added, not-yet-sourced widget does, since its default src is the
+   * empty string (see UNSOURCED).
+   *
+   * THE PLAYBACK FLAGS ARE NOT IN THE OP, AND TODAY THAT MEANS THEY DO NOTHING.
+   * This docblock used to say the registry "reads them off state". It does not:
+   * `ensureVideo(src, flags)` has exactly ONE production call site,
+   * render_gpu/gpu/video_registry.js:255, and it passes NO flags, so every element
+   * is created with that function's own defaults (autoplay/loop/muted all true).
+   * The Inspector's autoplay / loop / muted rows above are therefore INERT —
+   * setting muted:false or autoplay:false changes the document and nothing else.
+   * The sibling `videoV2` op DOES carry the three flags (render_gpu/ir.js:1570),
+   * which is the shape this one needs; making them real is a two-line change to
+   * `ir.js video()` plus the read in render_gpu/skia/browser_media.js sceneMedia,
+   * and it is deliberately not bundled here because R6-12.3 (collapse every video
+   * widget into one, on the deterministic scrubber model) decides whether a
+   * wall-clock playback flag survives at all. Written down rather than left
+   * implied: a control that reports nothing is exactly the defect class this app
+   * keeps finding.
    *
    * EDGE-CROP INSETS + BORDER + ROUNDED CORNERS: identical to the image widget
    * (cropInsetsToSource shrinks the quad + crops the source; decorateStrokedBox

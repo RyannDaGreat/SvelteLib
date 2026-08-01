@@ -52,9 +52,9 @@
  *
  * Not a plugin import of any other plugin (the fence): it composes only shared
  * capabilities + core property helpers + the additive `videoV5Frame` IR op. The
- * three shared default STRINGS (BLANK_SRC + the two export equations) are repeated
+ * three shared default STRINGS (the unsourced src + the two export equations) are repeated
  * locally — they are constants, not behavior — exactly as video_v5.js repeats
- * BLANK_SRC rather than importing it from video.js.
+ * that constant rather than importing it from video.js.
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
@@ -67,9 +67,14 @@ import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
 
 /** A 1×1 transparent PNG data URI — the default `src` (a valid, invisible-until-
  *  sourced widget rather than a broken ref). Mirrors video_scrub.js/video_v5.js
- *  BLANK_SRC; repeated here because a plugin may not import another plugin. */
-export const BLANK_SRC =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** THE UNSOURCED DEFAULT IS THE EMPTY STRING — see plugins/video.js's UNSOURCED
+ *  for the full reasoning. This widget's op reaches an HTMLMediaElement decoder,
+ *  and a `<video>` refuses a PNG data URI (`MediaError code 4`), so the copied
+ *  image-widget default logged a load failure on every unsourced insert. `emit`
+ *  already draws nothing for an empty src. Pinned by tests/unsourced_media_test.js,
+ *  which DERIVES its subjects from the registry so a new video widget joins the law
+ *  by existing. Precedent: plugins/demo/video_v8.js:84. */
+const UNSOURCED = "";
 
 // PLAYBACK-PROGRESS EXPORTS (derived, read-only PROPS — see the header). Bare
 // `self.`-equations so they are isNumericSlot leaves: discoverable in the equation
@@ -92,7 +97,7 @@ export const videoV5ScrubPlugin = {
     type: "video_v5_scrub", x: 100, y: 100, w: 320, h: 180, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation).
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    src: BLANK_SRC,
+    src: UNSOURCED,
     // The deterministic scrub state: time (seconds) + past-end behavior, both from
     // the shared property registry. scrubTime defaults to 0 (first frame); scrubWrap
     // to "clamp". NO playback flags — a scrubber never plays; its time is doc state.

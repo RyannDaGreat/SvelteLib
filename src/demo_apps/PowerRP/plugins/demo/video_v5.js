@@ -33,9 +33,14 @@ import * as T from "../../core/transform.js";
 import { videoV5 } from "../../render_gpu/ir.js";
 
 /** A 1×1 transparent PNG data URI — the default `src` (a valid, invisible-until-
- *  sourced widget rather than a broken ref). Mirrors video.js/image.js BLANK_SRC. */
-export const BLANK_SRC =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** THE UNSOURCED DEFAULT IS THE EMPTY STRING — see plugins/video.js's UNSOURCED
+ *  for the full reasoning. This widget's op reaches an HTMLMediaElement decoder,
+ *  and a `<video>` refuses a PNG data URI (`MediaError code 4`), so the copied
+ *  image-widget default logged a load failure on every unsourced insert. `emit`
+ *  already draws nothing for an empty src. Pinned by tests/unsourced_media_test.js,
+ *  which DERIVES its subjects from the registry so a new video widget joins the law
+ *  by existing. Precedent: plugins/demo/video_v8.js:84. */
+const UNSOURCED = "";
 
 export const videoV5Plugin = {
   type: "video_v5",
@@ -49,7 +54,7 @@ export const videoV5Plugin = {
   defaults: {
     type: "video_v5", x: 100, y: 100, w: 320, h: 180, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    src: BLANK_SRC,
+    src: UNSOURCED,
     // autoplay/loop/muted/animated/opacity from the SHARED property registry (each
     // defaults true, opacity 1). muted:true is required for autoplay to actually
     // play; `animated` keeps the presenter rendering a looping clip every rAF.

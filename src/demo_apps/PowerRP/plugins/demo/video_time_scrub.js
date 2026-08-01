@@ -22,8 +22,8 @@
  * video_registry — deterministic, headlessly awaited by browser_media.prepare-
  * SceneScrubFrames). It composes only shared capabilities + core property helpers
  * + the additive things it OWNS (the `length` prop, the clock presets, the probe
- * command). The three shared default STRINGS (BLANK_SRC + the export equations)
- * are repeated locally — they are constants, not behaviour.
+ * command). The three shared default STRINGS (the unsourced src + the export
+ * equations) are repeated locally — they are constants, not behaviour.
  *
  * ── WHAT THIS WIDGET ADDS OVER THE CORE SCRUBBER ──────────────────────────────
  *  1. `length` (seconds) — the clip's INTRINSIC duration, the `self.length` the
@@ -66,11 +66,13 @@ import { videoFrame } from "../../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
 
-/** A 1×1 transparent PNG data URI — the default `src` (a valid, invisible-until-
- *  sourced widget rather than a broken ref). Mirrors video_scrub.js/video_v5_-
- *  scrub.js BLANK_SRC; repeated here because a plugin may not import another. */
-export const BLANK_SRC =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** THE UNSOURCED DEFAULT IS THE EMPTY STRING — see plugins/video.js's UNSOURCED
+ *  for the reasoning. This widget emits the same `videoFrame` op as the core
+ *  scrubber and therefore reaches the same `<video>` decoder, which refuses a PNG
+ *  data URI (`MediaError code 4`), so it carried the same defect and gets the same
+ *  fix. `emit` already draws nothing for an empty src. Precedent:
+ *  plugins/demo/video_v8.js:84. */
+const UNSOURCED = "";
 
 // PLAYBACK-PROGRESS EXPORTS (derived, read-only PROPS — bare `self.`-equations so
 // they are isNumericSlot leaves: discoverable in the equation autocomplete AND real
@@ -169,7 +171,7 @@ export const videoTimeScrubPlugin = {
     type: "demo_video_time_scrub", x: 100, y: 100, w: 320, h: 180, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation).
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    src: BLANK_SRC,
+    src: UNSOURCED,
     // The deterministic scrub state: time (seconds) + past-end behavior. scrubTime
     // defaults to a plain 0 (first frame, STATIC) — NOT a preset — so a freshly
     // added widget never evaluates `time % 0`. Apply a preset to make it clock-driven.

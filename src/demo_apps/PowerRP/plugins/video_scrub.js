@@ -98,14 +98,15 @@ import { videoFrame } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
-/** A 1×1 transparent PNG data URI — the default `src` so a freshly added
- * scrubber is a valid (invisible-until-sourced) item rather than a broken ref
- * (it decodes to one transparent frame, so the widget draws nothing until a real
- * video is picked/dropped). Mirrors image/video's BLANK_SRC — a plugin may not
- * import another plugin, so the shared default value is repeated here (it is a
- * constant, not behavior). */
-export const BLANK_SRC =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** THE UNSOURCED DEFAULT IS THE EMPTY STRING — see plugins/video.js's UNSOURCED
+ * for the full reasoning; the scrubber carried the same 1×1 PNG copy with the same
+ * false justification, and it was the WORSE of the two: an unloadable scrub source
+ * left `await entry.ready` pending forever, so inserting a scrubber and not
+ * choosing a source hung a render job at zero frames (fixed separately in
+ * render_gpu/gpu/video_registry.js, but the bad default is why it was reachable
+ * with no bad input at all). `emit` already draws nothing for an empty src.
+ * Precedent: plugins/demo/video_v8.js:84. */
+const UNSOURCED = "";
 
 // ── PLAYBACK-PROGRESS EXPORTS (derived, read-only PROPS — see the header) ─────
 // Bare `self.`-equations so they are isNumericSlot leaves: discoverable in the
@@ -133,7 +134,7 @@ export const videoScrubPlugin = {
     type: "video_scrub", x: 100, y: 100, w: 320, h: 180, z: 0, rotation: 0, scale: 1,
     // Rotation pivots about this WORLD point; default = own center (an equation).
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    src: BLANK_SRC,
+    src: UNSOURCED,
     // The deterministic scrub state: time (seconds) + past-end behavior, both
     // from the shared property registry (core/properties.js). scrubTime defaults
     // to 0 (first frame); scrubWrap to "clamp".

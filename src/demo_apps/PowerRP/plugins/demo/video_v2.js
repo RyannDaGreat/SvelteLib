@@ -32,7 +32,7 @@
  *
  * ── NO PLUGIN IMPORTS ANOTHER PLUGIN ──────────────────────────────────────────
  * This file imports only shared core/render modules (never plugins/video.js) — it
- * carries its own BLANK_SRC and its own defaults/inspector composed from the
+ * carries its own unsourced default and its own defaults/inspector composed from the
  * shared property registry, exactly like the V1 player does independently.
  */
 
@@ -46,9 +46,14 @@ import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
 
 /** A 1×1 transparent PNG data URI — the default `src` so a freshly added widget is
  * a valid (invisible-until-sourced) item rather than a broken ref. Mirrors the
- * image/video widgets' BLANK_SRC; carried locally (no cross-plugin import). */
-export const BLANK_SRC =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+/** THE UNSOURCED DEFAULT IS THE EMPTY STRING — see plugins/video.js's UNSOURCED
+ *  for the full reasoning. This widget's op reaches an HTMLMediaElement decoder,
+ *  and a `<video>` refuses a PNG data URI (`MediaError code 4`), so the copied
+ *  image-widget default logged a load failure on every unsourced insert. `emit`
+ *  already draws nothing for an empty src. Pinned by tests/unsourced_media_test.js,
+ *  which DERIVES its subjects from the registry so a new video widget joins the law
+ *  by existing. Precedent: plugins/demo/video_v8.js:84. */
+const UNSOURCED = "";
 
 export const videoV2Plugin = {
   type: "video_v2",
@@ -57,7 +62,7 @@ export const videoV2Plugin = {
   defaults: {
     type: "video_v2", x: 100, y: 100, w: 320, h: 180, z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
-    src: BLANK_SRC,
+    src: UNSOURCED,
     // Playback + animated flags, all default true — from the SHARED registry
     // (core/properties.js). muted:true is REQUIRED for autoplay to actually play;
     // animated:true keeps the presenter repainting so the V2 path plays live.
