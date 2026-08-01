@@ -302,9 +302,93 @@ export function bentoAnchors(state) {
   return [...standardBBoxAnchors(state), ...bentoGridAnchors(state)];
 }
 
+// An unmerged grid, written EXPLICITLY and never omitted — see the completeness
+// note in BENTO_GRIDS below.
+const NO_SPANS = [];
+
+// BENTO GRID SYSTEMS — real, named layout grids, each expressed in the five numeric
+// knobs plus the merged-cell list. Ordered by BASE cell count (rows x cols)
+// ascending, so running the list sweeps from a two-panel spread to a dense lattice.
+//
+// EVERY PRESET WRITES ALL SIX KEYS, INCLUDING `spans: []`. Application is an overlay
+// (plugins/demo/lens_flare.js:180-182), so a preset that omitted `spans` would
+// inherit the previously hovered preset's merges — a rule-of-thirds grid wearing a
+// hero tile's 2x2 merge, which is not a grid system at all. The same argument
+// applies to the gaps: a gapless grid picked after a gutter-bearing one must
+// actually remove the gutters, or the comparison the list exists for is a lie.
+//
+// WHAT THE SCHEMA CANNOT SAY, so no row attempts it: all cells on an axis are EQUAL
+// (bentoAxisTracks above), so an unequal split has to be built on a fine base grid
+// and merged — which is exactly what Golden Split and Van de Graaf Canon do; and
+// `spans` MERGES, it cannot punch HOLES, so Periodic Table gives that table's shape
+// and not its famous gaps, and says so.
+//
+// GUTTERS ARE LITERALS IN CANVAS UNITS, at the widget's default 480x320. The gap and
+// padding rows are plain draggable numbers the user sets by hand, so binding them to
+// an equation would install a different KIND of state than the user asked for
+// (SPEC.md §5b). Where a source gives the gutter as a RATIO, the ratio is named in
+// the comment so the intent survives a resize even though the number does not.
+const BENTO_GRIDS = [
+  { name: "Diptych", description: "The hinged two-panel work — a pair of equal fields with one wide gutter between them, where the gap is the hinge rather than a margin.",
+    props: { rows: 1, cols: 2, rowGap: 0, colGap: 24, padding: 24, spans: NO_SPANS } },
+  { name: "Triptych", description: "The altarpiece: a double-width centre panel with a narrow wing on each side, built as four columns with the middle two merged.",
+    props: { rows: 1, cols: 4, rowGap: 0, colGap: 18, padding: 20, spans: [{ r: 0, c: 1, rowSpan: 1, colSpan: 2 }] } },
+  // The four-part lacquer box this widget's name comes from. Its maker's own account
+  // (Yawata City's municipal history, in Shokado Shojo's voice): boxes "with
+  // cross-shaped parting strips", copied from peasants' seed boxes, because the
+  // dividers "prevent the flavors and aromas of ingredients from affecting each
+  // other" — so the gutter here is a thin partition, not a margin.
+  { name: "Shokado Bento", description: "The four-part lacquer box with cross-shaped parting strips — four equal compartments divided just enough that neither flavour reaches the next.",
+    props: { rows: 2, cols: 2, rowGap: 8, colGap: 8, padding: 16, spans: NO_SPANS } },
+  { name: "Rule Of Thirds", description: "The 1797 composition guide: nine equal parts split by two evenly spaced lines each way, with no gutter and no padding at all, because these are guide LINES and not cells.",
+    props: { rows: 3, cols: 3, rowGap: 0, colGap: 0, padding: 0, spans: NO_SPANS } },
+  // ONE uniform gutter in both axes is the actual comic convention; the 9-unit value
+  // comes from a measured printed page (a 1/8 in gutter on a 6.625 x 10.25 in trim),
+  // scaled here. It is a reader's ruler, not a published spec.
+  { name: "Nine-Panel Page", description: "Three tiers of three panels under one uniform gutter — the strict page grid, where the even spacing is what gives the sequence its authority.",
+    props: { rows: 3, cols: 3, rowGap: 9, colGap: 9, padding: 16, spans: NO_SPANS } },
+  // colGap:column = 10:30 = 1:3 and padding = colGap/2, both taken from the
+  // documented twelve-column convention rather than chosen. Twelve because it is
+  // highly composite: halves, thirds, quarters and sixths all land on a column edge.
+  { name: "Twelve Column", description: "The column grid at its documented proportions — twelve columns, because twelve divides into halves, thirds, quarters and sixths, with a gutter one third of a column.",
+    props: { rows: 1, cols: 12, rowGap: 0, colGap: 10, padding: 5, spans: NO_SPANS } },
+  { name: "Bento Hero", description: "The compartment tray as a page: one large feature square anchoring the corner, with the smaller dishes filling in around two of its sides.",
+    props: { rows: 3, cols: 4, rowGap: 16, colGap: 16, padding: 16, spans: [{ r: 0, c: 0, rowSpan: 2, colSpan: 2 }] } },
+  { name: "Feature Mosaic", description: "A picture wall of mixed sizes hung on one lattice — a four-by-four base with a large square and a tall panel merged out of it.",
+    props: { rows: 4, cols: 4, rowGap: 10, colGap: 10, padding: 10, spans: [{ r: 0, c: 2, rowSpan: 2, colSpan: 2 }, { r: 2, c: 0, rowSpan: 2, colSpan: 1 }] } },
+  // The Swiss school's twenty-field grid: four columns of five fields. Its author
+  // fixes the ROW gutter to a whole number of text lines ("the vertical distance
+  // between the fields is 1, 2 or more lines of text") and deliberately leaves the
+  // COLUMN gutter to judgement — the two are equal here only for want of a type size
+  // to derive the second from.
+  { name: "Swiss Twenty-Field", description: "The four-column, five-row field grid of the Swiss school — fields deep enough to hold a run of text, separated by the height of one blank line.",
+    props: { rows: 5, cols: 4, rowGap: 5, colGap: 5, padding: 16, spans: NO_SPANS } },
+  { name: "Golden Split", description: "The golden section landed exactly on cell boundaries — twenty-one columns merged into thirteen and eight, consecutive Fibonacci numbers whose ratio sits 0.4% from phi.",
+    props: { rows: 1, cols: 21, rowGap: 0, colGap: 0, padding: 0, spans: [{ r: 0, c: 0, rowSpan: 1, colSpan: 13 }, { r: 0, c: 13, rowSpan: 1, colSpan: 8 }] } },
+  // THE ASYMMETRIC GUTTER IS THE POINT and it is derived from the film, not chosen:
+  // along a strip the 8-perf pitch is 38.1 mm against a 36 mm image, leaving 2.1 mm;
+  // between strips the stock is 35 mm against a 24 mm image, leaving 11 mm. So rowGap
+  // is about eight times colGap, which is why this grid looks like film and no other
+  // row here does.
+  { name: "Contact Sheet", description: "Six strips of six — a whole roll proofed at one size, with the wide rebate between strips and only a sliver between frames.",
+    props: { rows: 6, cols: 6, rowGap: 17, colGap: 4, padding: 8, spans: NO_SPANS } },
+  { name: "Calendar Month", description: "Seven day-columns by the six rows a month needs when it is long and starts late in the week — the layout a wall calendar must hold in every case.",
+    props: { rows: 6, cols: 7, rowGap: 4, colGap: 4, padding: 8, spans: NO_SPANS } },
+  // THE BOOK-PAGE CANON, EXACTLY. A ninth-based lattice with the type block merged
+  // out of it puts the margins at 1/9 inner and head, 2/9 outer and foot — the
+  // canon's 2:3:4:6 on a 2:3 page — and the block at 4/9 of the page area. Exact at
+  // ANY box aspect, because each margin is a ninth of its own dimension. The cost is
+  // the 45 scaffold cells left around the block, which the canon does not have.
+  { name: "Van de Graaf Canon", description: "The book-page canon: a text block inset by one ninth at the spine and head and two ninths at the fore-edge and foot, so the block echoes the page's own proportions.",
+    props: { rows: 9, cols: 9, rowGap: 0, colGap: 0, padding: 0, spans: [{ r: 1, c: 1, rowSpan: 6, colSpan: 6 }] } },
+  { name: "Periodic Table", description: "Eighteen groups by seven periods — the shape of the densest named grid in common use, though not its two detached f-block rows.",
+    props: { rows: 7, cols: 18, rowGap: 3, colGap: 3, padding: 8, spans: NO_SPANS } },
+];
+
 export const bentoPlugin = {
   type: "bento",
   title: "Bento Grid",
+  presets: BENTO_GRIDS,
   // A bbox scaffold: body-drag moves it, resize handles resize the whole grid.
   // Not a ghost — it emits its own faint grid guides (a ghost would only get a
   // plain bbox outline, hiding the grid structure).
@@ -340,6 +424,16 @@ export const bentoPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     // A 2-row x 3-col landscape starter with even gutters + a matching inset.
     rows: 2, cols: 3, rowGap: 16, colGap: 16, padding: 16,
+    // `spans` IS DECLARED HERE even though it has no Inspector row, and the reason
+    // is the preset library above: five of its fourteen grids ARE a merge, and
+    // tests/preset_contract_test.js refuses a preset key that no seam declares —
+    // correctly, since an undeclared key is indistinguishable from a typo. An empty
+    // list is semantically identity (bentoCellRects already reads `?? []`), so this
+    // changes no picture; it changes the SCHEMA, which is the honest half. On an
+    // existing document core/document.withMissingDefaultsFilled backfills it once
+    // and reports it, the same designed version-skew path plugins/camera.js:29-34
+    // documents for the rendering bundle.
+    spans: [],
     ...defaults("opacity"),
   },
   inspector: [

@@ -95,9 +95,90 @@ export function groupFoldsSubtree(s) {
   return groupCropRect(s) !== null || !effectsOff(s);
 }
 
+// GROUP ASSEMBLY TREATMENTS — the effects bundle wraps a group's WHOLE MEMBER
+// SUBTREE as one composite (see SUBTREE EFFECTS above, and groupFoldsSubtree), so
+// these model how a COLLECTION of separate objects is made to read as ONE physical
+// thing. The identical numbers on a rect would be an ordinary drop shadow; here the
+// shadow is cast by a silhouette made of many objects, which is a different picture
+// and the only reason a family over universal keys belongs on this widget at all.
+//
+// Ordered by how much of the subtree the treatment consumes: outside the silhouette
+// (1-2), eating into it (3-4), emitting from it (5-6), rewriting every pixel (7-8),
+// then removing the edge entirely (9).
+//
+// FULL — all five knobs in every row including the identities, because application
+// is an overlay (plugins/demo/sky.js:63-66): without them, hovering "Ink Stamp"
+// after "Neon Glass" would leave the bloom on.
+//
+// EVERY ROW MUST MAKE groupFoldsSubtree TRUE or it renders NOTHING. An effect-free,
+// uncropped group is a pure ghost, so a preset that left every knob at its identity
+// would not be a dull row, it would be a BLANK one. That is a one-line bare-node
+// check and the family's own suite makes it.
+const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const BLOOM_OFF = { radius: 10, strength: 0 };
+const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+
+const GROUP_TREATMENTS = [
+  { name: "Cut Paper", description: "A paper cut-out lying flat on the page — one tight, close shadow under the whole assembly's outline rather than under each piece of it.",
+    props: { shadow: { dx: 0, dy: 3, blur: 6, color: "#000000", opacity: 0.35 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0 } },
+  { name: "Lifted Card", description: "The same assembly held well above the page: a long, soft, low-contrast shadow that says height rather than contact.",
+    props: { shadow: { dx: 0, dy: 18, blur: 36, color: "#000000", opacity: 0.32 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0 } },
+  { name: "Pressed Into The Page", description: "A debossed impression — a tight inner shadow all round the composite silhouette, so the assembly reads as stamped INTO the surface instead of resting on it.",
+    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 8, color: "#000000", opacity: 0.55 }, softEdges: 0 } },
+  { name: "Vignette Well", description: "A deep recess: the same inner shadow taken to a very wide blur, darkening far into the assembly so the whole group sits at the bottom of a well.",
+    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 64, color: "#000000", opacity: 0.45 }, softEdges: 0 } },
+  { name: "Backlit Sign", description: "A lit sign face — a broad bloom leaving the composite silhouette, so the assembly glows outward as ONE shape rather than as a crowd of glowing parts.",
+    props: { shadow: SHADOW_OFF, bloom: { radius: 26, strength: 0.6 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0 } },
+  { name: "Neon Glass", description: "Glow plus additive compositing: a wide strong bloom over a screen blend, so the assembly stops reflecting the backdrop and starts emitting into it.",
+    props: { shadow: SHADOW_OFF, bloom: { radius: 34, strength: 0.85 }, blendMode: "screen", innerShadow: INNER_OFF, softEdges: 0 } },
+  { name: "Ink Stamp", description: "Ink soaking into the backdrop — a multiply blend over the whole composite, so the assembly can only darken what is behind it and never lighten it.",
+    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "multiply", innerShadow: INNER_OFF, softEdges: 0 } },
+  { name: "Light Leak", description: "Film fogged by stray light: a faint bloom under a screen blend, washing the assembly pale into the backdrop instead of sitting on top of it.",
+    props: { shadow: SHADOW_OFF, bloom: { radius: 12, strength: 0.25 }, blendMode: "screen", innerShadow: INNER_OFF, softEdges: 0 } },
+  { name: "Fog Edge", description: "The assembly dissolving at its own boundary — a wide soft-edge falloff on the composite, so the group has no border anywhere, only a fade.",
+    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 34 } },
+];
+
+// GROUP MATTES — the cropInsets bundle trims the group's own bbox and CLIPS the
+// whole member composite (groupCropRect above). Key-disjoint from GROUP_TREATMENTS,
+// and unlike most claimed orthogonality the RENDERER proves this pair composes:
+// emit() nests the cropSubtree INSIDE applyEffects, so a matte plus a treatment
+// stacks in one draw rather than fighting.
+//
+// A LAYOUT FAMILY, which is SPEC.md §5's own stated condition for touching extents:
+// the four insets are stored in ABSOLUTE canvas units, so a literal would be right
+// at exactly one group size and wrong at every other. They are written as EQUATIONS
+// on the group's own extents, `=`-marked per R6-25.1 — the relation IS the preset's
+// content, which is the case §5b calls correct and precedented.
+//
+// Math.abs IS NOT DECORATION: a stored w/h MAY BE NEGATIVE (that is how Flip is
+// stored) and core/expressions.js reads the RAW extent for a plain `self.` prop, so
+// a bare `self.h * 0.12` on a flipped group yields a negative inset that
+// groupCropRect clamps to zero — a matte that silently does nothing. The absolute
+// value is the loud-by-construction form.
+//
+// Ordered by weight, lightest to heaviest. Every row leaves at least one inset
+// non-zero, so groupFoldsSubtree is true and the crop actually renders.
+const GROUP_MATTES = [
+  { name: "Hairline Trim", description: "The printer's bleed trim — a two-percent bite off every edge, just enough to cut a clean boundary through whatever overhangs it.",
+    props: { cropTop: "= Math.abs(self.h) * 0.02", cropLeft: "= Math.abs(self.w) * 0.02", cropRight: "= Math.abs(self.w) * 0.02", cropBottom: "= Math.abs(self.h) * 0.02" } },
+  { name: "Letterbox", description: "The projection matte: bars across the top and bottom with the full width kept, the shape a wide film takes on a squarer frame.",
+    props: { cropTop: "= Math.abs(self.h) * 0.12", cropLeft: 0, cropRight: 0, cropBottom: "= Math.abs(self.h) * 0.12" } },
+  { name: "Pillarbox", description: "The opposite matte — bars down each side with the full height kept, the shape a tall image takes in a wide frame.",
+    props: { cropTop: 0, cropLeft: "= Math.abs(self.w) * 0.12", cropRight: "= Math.abs(self.w) * 0.12", cropBottom: 0 } },
+  { name: "Caption Plate", description: "A lantern-slide plate: thin even margins on three sides and a deep foot left clear at the bottom for a caption to sit in.",
+    props: { cropTop: "= Math.abs(self.h) * 0.04", cropLeft: "= Math.abs(self.w) * 0.04", cropRight: "= Math.abs(self.w) * 0.04", cropBottom: "= Math.abs(self.h) * 0.22" } },
+  { name: "Gallery Mat", description: "The framer's mat, cut with a heavier bottom margin than top — the asymmetry that makes a hung picture read as optically centred rather than geometrically so.",
+    props: { cropTop: "= Math.abs(self.h) * 0.1", cropLeft: "= Math.abs(self.w) * 0.1", cropRight: "= Math.abs(self.w) * 0.1", cropBottom: "= Math.abs(self.h) * 0.14" } },
+];
+
 export const groupPlugin = {
   type: "group",
   title: "Group",
+  presetFamilies: [
+    { id: "treatment", title: "Assembly treatments", presets: GROUP_TREATMENTS },
+    { id: "matte", title: "Matte and trim", presets: GROUP_MATTES },
+  ],
   // ghost:true — no rendered volume (emit() → []); its outline is editor-only
   // chrome shown under Show Ghosts (core/derive.isGhostNode via this capability).
   // transform + bbox + resizable so a selected group moves/resizes/rotates like
