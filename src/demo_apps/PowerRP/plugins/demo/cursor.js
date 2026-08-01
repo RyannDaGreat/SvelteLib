@@ -144,8 +144,173 @@ const CUSTOM = customProps([
   },
 ]);
 
+// ── POINTER PRESETS ──────────────────────────────────────────────────────────
+// Order is content: the four plain-arrow treatments from NOTHING to MOST effect, then the
+// two transparency cases, then six glyph presets.
+//
+// WHERE THE NUMBERS COME FROM (sourced, not nudged)
+// UNITS — shadow.blur and bloom.radius are Gaussian SIGMAS (paint_skia.js:2944 feeds
+//   shadow.blur straight into MaskFilter.MakeBlur), so the measured sigmas transfer with
+//   no radius conversion. Every distance is a figure measured on a 32-unit nominal glyph
+//   box multiplied by 3, because this widget's shipped box is 96 px.
+// THE SHADOW — measured off two shipping vector pointers, and both bake in a CONTACT
+//   shadow with essentially zero offset rather than a floating-object one. A desktop
+//   theme's arrow: offset (0, +1), two blur passes at sigma 1.0 and 0.6, opacities 0.20
+//   and 0.30. A screen recorder's redrawn arrow: no offset at all, sigma 1.5, opacity
+//   0.60. Normalised to the 32-unit box that is offset 0..+1, sigma 1.0..2.7, opacity
+//   0.20..0.60 — hence 0/3/sigma 3/0.30 for the desktop look and 0/0/sigma 8/0.60 for the
+//   recording look. The recorder pushes to 0.60 because a recorded pointer must survive
+//   arbitrary video AND chroma subsampling, which can partly destroy a one-unit outline.
+// THE HALO — a shipping pointer utility publishes HighlightRadius 30 with a left-click
+//   colour of #a6FFFF00, i.e. alpha 0xA6 = 0.651; its wider spotlight is radius 100 at
+//   #80FFFFFF = alpha 0.50 over 500 ms. bloom is a blurred COPY of the glyph rather than a
+//   filled disc, so radius 30 here is an approximation of that circle's reach, not the
+//   circle itself.
+// THE SPIN — 1.06 rev/s, measured: a current scalable cursor theme's blocking wait
+//   indicator is 59 frames at 16 ms each = 944 ms per revolution, and its secondary busy
+//   indicator is authored at exactly the same rate. Cross-checks land in the same band: a
+//   web framework's ring spinner at 0.75 s per turn = 1.33 rev/s, a mobile toolkit's
+//   indeterminate circular indicator at 1520 deg / 5400 ms = 0.78 rev/s constant. The
+//   widget's own 0.75 default sits in the band but is not sourced to anything.
+// SPIN RATES ALIAS AT THE EDITOR FREEZE — particleTime() is pinned to EDITOR_FREEZE_TIME
+//   = 2 s outside the presenter and the angle is t*revs*2*PI, so the frozen angle is
+//   4*PI*revs and TWO RATES 0.5 rev/s APART RENDER IDENTICALLY. Only one spinning preset
+//   ships here; a second must not sit a multiple of 0.5 away from 1.06.
+// GHOSTING — 0.75 is a real shipped constant (a browser engine's drag-image alpha). The
+//   0.35 idle value is NOT: every shipping product HIDES an idle pointer rather than
+//   dimming it (at 2.0 s), so no fade end-state is published anywhere. 0.35 is chosen.
+// THE INVERTING POINTER — the historical monochrome cursor is a two-plane AND/XOR bitmap
+//   whose fourth per-pixel state is literally "reverse screen". A difference blend is the
+//   closest this widget has, and it is NOT equivalent: difference(a,b) = |a-b|, so white
+//   ink inverts exactly (1-B) while black ink vanishes (|0-B| = B). The description says so.
+// THE CROSSHAIR — a shipping crosshair overlay ships at opacity 75%, which is where that
+//   value comes from; it carries no shadow because any softness on a reticle is a defect.
+//
+// preserveAspect is EXCLUDED from every preset: it is the "how the glyph FITS its box"
+// knob, which is what flareScale is to the lens flare (SPEC section 5). Position, size and
+// rotation are excluded for the same reason. The glyph's COLOUR is not a knob at all — the
+// built-in artwork carries its own black-and-white ink.
+const MEASURED_SHADOW_BLACK = "#000000"; // every measured pointer shadow is plain black
+const NO_SHADOW = { dx: 0, dy: 0, blur: 0, color: MEASURED_SHADOW_BLACK, opacity: 0 };
+const NO_INNER_SHADOW = { dx: 0, dy: 0, blur: 0, color: MEASURED_SHADOW_BLACK, opacity: 0 };
+const NO_BLOOM = { radius: 10, strength: 0 }; // radius is the shipped default; strength 0 is the gate
+// The two measured shadows, at the shipped 96 px box (3x the 32-unit nominal):
+const CONTACT_SHADOW = { dx: 0, dy: 3, blur: 3, color: MEASURED_SHADOW_BLACK, opacity: 0.3 };
+const RECORDING_SHADOW = { dx: 0, dy: 0, blur: 8, color: MEASURED_SHADOW_BLACK, opacity: 0.6 };
+const MEASURED_SPIN_REVS_PER_SEC = 0.75; // the widget's own default, kept where spin is inert
+
+const PRESETS = [
+  // ── ONE ROW WAS CUT HERE BY MEASUREMENT, AND THE REASON GENERALISES ─────────
+  // "Highlight Halo" modelled the coloured circle a screencast tool draws behind
+  // the pointer, as a wide bloom OVER the recording shadow. It was shipped in the
+  // design table on the strength of differing from "Recording Pointer" in a whole
+  // effect. Rendered, the two are FOUR code values apart at maximum — the same
+  // picture. TWO separate reasons, both measured, and neither is "bloom is dead":
+  //   COMPOSITIONAL SATURATION. Swept alone against a shadowless pointer, bloom
+  //     at radius 30 / strength 0.65 moves maxAbs 38 and mean 2.1 — MORE than
+  //     shadow.opacity 0 -> 0.6 moves (maxAbs 40, mean 1.3). But `bloom` is a
+  //     blurred copy of the glyph, and this glyph's ink is BLACK, so it is a
+  //     black soft spread laid over a black soft spread that has already darkened
+  //     those same pixels. Stacking the second is nearly a no-op.
+  //   AND THE COLOUR WAS NEVER AVAILABLE. A bloom of black ink cannot be the
+  //     "coloured circle" the description leads with, at any strength. R6-25.4:
+  //     a description may not lead with an axis the family's probe cannot separate.
+  // The general lesson is about the design table, not this row: cursor's
+  // distinctness section reasoned from a KNOB matrix ("each differs in at least
+  // one whole effect") where every other family in that wave rendered. The one
+  // pair certified that way is the one that collided.
+  {
+    name: "Crisp Pointer",
+    description: "The arrow exactly as a compositor draws it with the system shadow switched off: no shadow, no glow, no feather. This is also the documentation convention — an inline pointer glyph used as a noun in a sentence carries no effects at all.",
+    props: {
+      cursorKind: "default", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
+      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+  {
+    name: "Contact Shadow Pointer",
+    description: "The shadow real desktop pointer artwork bakes in: a one-unit drop and a tight blur at 30% — a contact shadow for figure-ground separation, not a floating object. Measured off a shipping vector cursor and scaled to this widget's 96 px box.",
+    props: {
+      cursorKind: "default", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+  {
+    name: "Recording Pointer",
+    description: "A screen recorder's redrawn pointer: no offset at all, a much wider blur, and double the opacity — because a recorded pointer has to survive arbitrary video and chroma subsampling, which can eat the one-pixel outline a desktop pointer relies on.",
+    props: {
+      cursorKind: "default", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
+      shadow: RECORDING_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+  {
+    name: "Idle Ghost Pointer",
+    description: "A pointer part-way through the idle fade, for a still where it should be present but recessive. The two-second idle TIMING is a documented convention; the 35% opacity is not — every shipping product hides an idle pointer rather than dimming it, so no fade value exists to copy.",
+    props: {
+      cursorKind: "default", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 0.35,
+      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 1.5, blendMode: "normal",
+    },
+  },
+  {
+    name: "Drag Ghost Pointer",
+    description: "The closed grabbing hand at the exact alpha a browser engine uses for a drag preview — 0.75, a shipped constant rather than a guess — over the desktop contact shadow.",
+    props: {
+      cursorKind: "handgrabbing", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 0.75,
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+  {
+    name: "Inverting Pointer",
+    description: "The historical monochrome cursor's fourth state, reverse-screen — visible on any background by construction, and the reason the classic I-beam was readable over black text and white page alike. A difference blend is not identical to it: the white ink inverts exactly, the black ink disappears.",
+    props: {
+      cursorKind: "textcursor", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
+      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "difference",
+    },
+  },
+  {
+    name: "Text Editing Pointer",
+    description: "The I-beam over selectable text, with a soft shadow at zero offset in both axes so the top and bottom crossbeams stay symmetric — an offset shadow makes a thin glyph look bent.",
+    props: {
+      cursorKind: "textcursor", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
+      shadow: { dx: 0, dy: 0, blur: 3, color: MEASURED_SHADOW_BLACK, opacity: 0.25 }, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+  {
+    name: "Link Finger",
+    description: "The pointing hand, which means one thing only — this target is a link — and by convention must never be used for anything else. Carries the desktop contact shadow.",
+    props: {
+      cursorKind: "handpointing", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+  {
+    name: "Busy Disc",
+    description: "The blocking wait indicator, spinning at a measured 1.06 revolutions per second — 59 frames at 16 ms is what a shipping cursor theme authors, and independent spinners cluster in the same 0.7-1.35 band. It appears after about two seconds of an unserviced event loop, and while it shows nothing is clickable.",
+    props: {
+      cursorKind: "beachball", spin: true, spinRevsPerSec: 1.06, animated: true, opacity: 1,
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+  {
+    name: "Precision Crosshair",
+    description: "A reticle for two-dimensional work at the 75% opacity a shipping crosshair overlay ships with, and with nothing soft on it at all — a shadow or a feather on a reticle destroys the thing it is for. Its hotspot is dead centre, unlike the arrow's.",
+    props: {
+      cursorKind: "cross", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 0.75,
+      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+  {
+    name: "Resize Grip",
+    description: "The double-headed diagonal resize arrow, one of twelve resize forms in the built-in set (four edges, four corners, and four double-headed axes), over the desktop contact shadow.",
+    props: {
+      cursorKind: "resizenorthwestsoutheast", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+    },
+  },
+];
 export const cursorPlugin = {
   type: "cursor",
+  presets: PRESETS,
   title: "macOS Cursor",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): mount this
