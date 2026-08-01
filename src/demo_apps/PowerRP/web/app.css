@@ -712,35 +712,6 @@
      rim with the prose that explains it beats grouping it with its consumer. */
   --a-glass-rim: transparent;
 
-  /* ── src/lib/Modal INTO THE GLASS SYSTEM ────────────────────────────────────
-     THE FOURTEEN DIALOGS WERE ON THE WRONG SIDE OF THE SPLIT app.css:1263 CALLS
-     "THE ENTIRE DESIGN" — "the floating surfaces are the only things made of
-     MATERIAL … Everything docked stays flat, square and opaque." A dialog is a
-     floating surface by every test that section applies: body-level, elevated,
-     floating over arbitrary content. It was rendering flat, square and opaque
-     anyway, because this app declared NO --modal-* overrides at all (measured
-     2026-08-01: `grep -c -- "--modal-" web/app.css` -> 0), so Modal's own
-     deliberately-neutral library defaults shipped as the app's look. That is not
-     a Modal defect: a src/lib component MUST ship host-independent defaults and
-     publish an override contract (Modal.svelte:89-103). PowerRP simply never
-     adopted it.
-
-     ONLY THE FOUR MATERIAL PROPERTIES ARE REMAPPED — surface, corner, elevation,
-     scrim — because those are what the docked/floating split is ABOUT. Geometry
-     and typography (--modal-padding, --modal-title-size, the per-size width
-     caps) are deliberately LEFT ALONE: they are Modal's own layout contract, not
-     material, and remapping them would be changing the dialogs' shape under the
-     guise of theming them. */
-  --modal-bg: var(--a-glass-bg); /* the palette's surface — the same one .palette reads */
-  --modal-radius: var(--a-radius-floating); /* the one rounded family, at its 4px cap */
-  --modal-shadow: var(--a-glass-shadow); /* elevation + lit rim, per theme */
-  /* The scrim. Every theme already tunes --a-palette-shadow's alpha for its own
-     lightness; a dialog's backdrop is the same judgement, so it is derived from
-     the canvas colour rather than being a fifth hardcoded black. --a-canvas-solid
-     (never --a-canvas-bg) because color-mix() on an image is invalid at
-     computed-value time and the effect would vanish with NO error — the exact
-     silent failure that token exists to prevent (see its declaration). */
-  --modal-backdrop: color-mix(in srgb, var(--a-canvas-solid) 72%, transparent);
   /* THE TOOLTIP'S SURFACE TINT — the third member of the --a-glass-bg family,
      and the token that decides whether tooltips are glass at all.
      A tip is a floating surface by every test this section applies: it is
@@ -8966,4 +8937,54 @@ audio.ae-preview-media {
   font-size: var(--a-font-sm);
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ── src/lib/Modal INTO THE GLASS SYSTEM ──────────────────────────────────────
+   THE FOURTEEN DIALOGS WERE ON THE WRONG SIDE OF THE SPLIT :1263 CALLS "THE
+   ENTIRE DESIGN" — "the floating surfaces are the only things made of MATERIAL …
+   Everything docked stays flat, square and opaque." A dialog is a floating
+   surface by every test that section applies: body-level, elevated, floating
+   over arbitrary content. It rendered flat, square and opaque anyway, because
+   this file declared NO --modal-* override at all (measured 2026-08-01:
+   `grep -c -- "--modal-" web/app.css` -> 0), so Modal's deliberately-neutral
+   LIBRARY defaults shipped as the app's look. Not a Modal defect: a src/lib
+   component must ship host-independent defaults and publish an override
+   contract (Modal.svelte:89-103). PowerRP never adopted it.
+
+   WHY THESE SELECTORS AND NOT `:root` — I TRIED `:root` FIRST AND MEASURED IT
+   DOING NOTHING. Modal declares its own token defaults ON the elements
+   (`.modal-backdrop` at Modal.svelte:359, `.modal-panel` at :372), and a custom
+   property set on the element WINS over one inherited from an ancestor, so a
+   :root override is shadowed. Proven rather than reasoned: with the :root
+   version in place the panel's computed background / radius / shadow were
+   byte-identical to before in both Graphite and Nocturne, and the two
+   screenshots were the same file size to the byte. This is the SAME ROOT CAUSE
+   already documented at :5072 for --dd-radius and for DraggableNumber's
+   --dn-radius, and it takes the same cure: set the tokens ON the element and
+   out-specify the library's own scoped rule. Svelte scoping makes those rules
+   (0,2,0), and a TIE loses to the later-injected scoped sheet (:5869), so these
+   repeat the class to reach (0,3,0).
+
+   ONLY THE FOUR MATERIAL PROPERTIES ARE REMAPPED — surface, corner, elevation,
+   scrim — because those are what the docked/floating split is ABOUT. Geometry
+   and typography (--modal-padding, --modal-title-size, the per-size width caps)
+   are deliberately LEFT ALONE: they are Modal's layout contract, not material,
+   and remapping them would reshape every dialog under the guise of theming it.
+   --modal-border already chains to --border and MEASURED as matching .palette in
+   both themes, so it needs nothing. */
+.modal-backdrop.modal-backdrop {
+  /* The scrim, derived from the canvas colour so it tracks each theme's
+     lightness the way --a-palette-shadow's alpha already does, instead of being
+     a fifth hardcoded black. --a-canvas-solid, NEVER --a-canvas-bg: the latter is
+     consumed as a `background` shorthand a theme may legally set to a gradient,
+     and color-mix() on an image is invalid at computed-value time — the scrim
+     would vanish with NO error, the exact silent failure that token exists to
+     prevent (see its declaration). */
+  --modal-backdrop: color-mix(in srgb, var(--a-canvas-solid) 72%, transparent);
+}
+
+.modal-backdrop .modal-panel.modal-panel {
+  --modal-bg: var(--a-glass-bg); /* the palette's surface — the one .palette reads */
+  --modal-radius: var(--a-radius-floating); /* the one rounded family, at its 4px cap */
+  --modal-shadow: var(--a-glass-shadow); /* elevation + lit rim, per theme */
 }
