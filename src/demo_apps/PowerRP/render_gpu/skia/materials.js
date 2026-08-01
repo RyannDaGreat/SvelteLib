@@ -230,12 +230,72 @@ export function materialIds() {
 //
 // A material OPTS IN by declaring `fillParams`: its knob SCHEMA, an array of
 // rows in the customProps shape ({name, kind, default, min?, max?, step?,
-// options?, optionLabels?, help}) — the ONE declaration both the PaintField's
-// generic param rows AND the (interim) demo widget's customProps derive from.
+// options?, optionLabels?, help, hidden?, visibleWhen?}) — the ONE declaration
+// both the PaintField's generic param rows AND the (interim) demo widget's
+// customProps derive from.
 // Stored paint params are SPARSE (only written knobs — no state until touched);
 // resolveMaterialPaint folds schema defaults + stored + the optional
 // `sceneParams(node, nodesById)` hook (sky reads its sibling suns there) into
 // `resolvedParams` at scene-build time, so painters stay scene-blind.
+//
+// RESOLUTION IS BLIND TO VISIBILITY, and must stay that way: the whole schema
+// is folded into `resolvedParams` whether or not the panel draws a row for it,
+// so a knob the panel hides still resolves, still renders, and still keeps a
+// stored value or "=" equation. Hiding is a PANEL decision (visibleKnobRows);
+// it is never a decision about the document.
+
+/**
+ * Pure function. The knob rows a paint panel RENDERS, from a material's declared
+ * schema and the knob values it is rendering them against. The ONE filter
+ * web/PaintField.svelte and the UI probes that count its rows share, so the panel
+ * and its gates cannot drift apart.
+ *
+ * TWO ASPECTS HIDE A ROW, AND THEY ARE DIFFERENT SITUATIONS:
+ *   `hidden: true`        — schema-only forever: a knob resolved for
+ *                           back-compatibility (alongGradient's legacy colours) or
+ *                           a companion (a stops list's `stopsActive`).
+ *   `visibleWhen(params)` — a MODE SELECTOR has made this knob inapplicable RIGHT
+ *                           NOW. Same aspect name, same polarity and same
+ *                           `(record) => boolean` shape as the PROPERTY-row
+ *                           `visibleWhen` core/properties.js and plugins/text.js
+ *                           declare (born 76f968e, when the stroke material's OFF
+ *                           mode hid its width/trim rows). The argument differs
+ *                           because the record differs: a property row is resolved
+ *                           against the item's state, a knob row against the knob
+ *                           map its own value lives in.
+ *
+ * A MODE SELECTOR is a knob whose VALUE decides which of its siblings are read at
+ * all — vector_pattern's `generator` is the worked example. Its inapplicable
+ * siblings are HIDDEN rather than shown inert because this codebase already ruled
+ * that a control which looks usable but does nothing is a lie about its own
+ * affordance (web/Toolbar.svelte's save button, and the `aria-disabled` rule that
+ * came with it). KEEP THE TWO CASES APART: inapplicable BY MODE hides, because
+ * there is nothing to say about it and no action that would bring it back except
+ * changing the mode, which is a control already on screen; temporarily unavailable
+ * BY STATE stays visible and disabled WITH A REASON (the
+ * core/commands.commandUnavailableReason / TOOL_POOL rule), because there the
+ * control is about to become usable and the user needs to be told what for.
+ *
+ * `params` is OPTIONAL, following web/Inspector.svelte's groupRows precedent: a
+ * caller with no values (a census of the schema itself) keeps every non-hidden row
+ * rather than resolving a predicate against nothing.
+ *
+ * @param {Array} schema - a material's fillParams or strokeParams
+ * @param {object} [params] - the knob values the panel is rendering
+ * @returns {Array} the subset of `schema` to render, in declaration order
+ *
+ * @example visibleKnobRows([{name: "gain"}, {name: "legacy", hidden: true}]).map((r) => r.name) // ["gain"]
+ * @example visibleKnobRows([{name: "brickW", visibleWhen: (p) => p.generator === "brick"}], {generator: "stripes"}) // []
+ * @example visibleKnobRows([{name: "brickW", visibleWhen: (p) => p.generator === "brick"}], {generator: "brick"}).length // 1
+ * @example visibleKnobRows([{name: "brickW", visibleWhen: (p) => p.generator === "brick"}]).length // 1 (no values: a schema census keeps it)
+ */
+export function visibleKnobRows(schema, params = null) {
+  return (schema ?? []).filter((row) => {
+    if (row.hidden) return false;
+    if (params && typeof row.visibleWhen === "function") return row.visibleWhen(params);
+    return true;
+  });
+}
 
 /**
  * Pure function. Has this material opted into being a FILL (declared its knob

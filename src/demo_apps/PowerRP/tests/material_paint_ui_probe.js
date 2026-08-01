@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { createServer } from "vite";
 import { launchBrowser } from "./puppeteerLaunch.js";
-import { fillCapableMaterialIds, getMaterial } from "../render_gpu/skia/materials.js";
+import { fillCapableMaterialIds, getMaterial, visibleKnobRows } from "../render_gpu/skia/materials.js";
 import { strokeMaterialIds, getStrokeMaterial } from "../render_gpu/skia/stroke_materials.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -55,13 +55,18 @@ const FILL_IDS = fillCapableMaterialIds();
 const STROKE_IDS = strokeMaterialIds();
 const FILL_DEFAULT = FILL_IDS[0];
 const STROKE_DEFAULT = STROKE_IDS[0];
-// The number of `.paint-material-row` knob rows PaintField renders = the schema rows
-// that are neither HIDDEN (back-compat/companion knobs, resolved but not shown) nor a
-// kind:"stops" LIST (which mounts a full-width ListField, not a knob row). Registry-
-// driven, so it stays correct as materials add or hide knobs.
-const visibleKnobRows = (schema) => (schema ?? []).filter((r) => !r.hidden && r.kind !== "stops");
-const fillRowCount = visibleKnobRows(getMaterial(FILL_DEFAULT).fillParams).length;
-const strokeRowCount = visibleKnobRows(getStrokeMaterial(STROKE_DEFAULT).strokeParams).length;
+// The number of `.paint-material-row` knob rows PaintField renders = the rows the
+// SHARED filter keeps (materials.visibleKnobRows — hidden back-compat/companion
+// knobs out, and any row a mode selector has made inapplicable out), minus the
+// kind:"stops" LIST, which mounts a full-width ListField rather than a knob row.
+// The filter is IMPORTED, not restated: a local copy of PaintField's rule was a
+// mirror that would silently stop matching the panel it is asserting about — the
+// dedup that promoted this very name to materials.js. Values are omitted here, so
+// this is the schema census (every non-hidden row); a mode-gated material is
+// counted by its own suite, which knows which mode it is in.
+const knobRowsOf = (schema) => visibleKnobRows(schema).filter((r) => r.kind !== "stops");
+const fillRowCount = knobRowsOf(getMaterial(FILL_DEFAULT).fillParams).length;
+const strokeRowCount = knobRowsOf(getStrokeMaterial(STROKE_DEFAULT).strokeParams).length;
 // Does the stroke default declare a kind:"stops" ramp list (alongGradient does)?
 // Its Mat row must then mount the gradient stops editor + the ramp preset library.
 const strokeHasStops = (getStrokeMaterial(STROKE_DEFAULT).strokeParams ?? []).some((r) => r.kind === "stops");
@@ -74,7 +79,7 @@ const isNumericKnob = (r) => r.kind === "number" || r.kind === "angle" || !r.kin
 // witness that the scrub is calibrated: at 1 unit/px a tiny-range knob clamps to a
 // bound in ≤1px, so a partial mid-range landing PROVES resolveScrub is wired
 // (crt's convergence, 0..0.2, is exactly the audit's example).
-const fillKnobRows = visibleKnobRows(getMaterial(FILL_DEFAULT).fillParams);
+const fillKnobRows = knobRowsOf(getMaterial(FILL_DEFAULT).fillParams);
 const boundedKnobs = fillKnobRows.filter((r) => isNumericKnob(r) && Number.isFinite(r.min) && Number.isFinite(r.max));
 const boundedKnob = boundedKnobs.reduce((a, b) => (b.max - b.min < a.max - a.min ? b : a), boundedKnobs[0]);
 const boundedIdx = fillKnobRows.indexOf(boundedKnob);

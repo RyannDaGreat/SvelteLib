@@ -246,7 +246,7 @@
   import { resolveScrub } from "../../../lib/numberStep.js";
   import { GRADIENT_STOPS_LIST, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
-  import { getMaterial, fillCapableMaterialIds as fillIds, materialFillParamDefaults } from "../render_gpu/skia/materials.js";
+  import { getMaterial, fillCapableMaterialIds as fillIds, materialFillParamDefaults, visibleKnobRows } from "../render_gpu/skia/materials.js";
   import { getStrokeMaterial, strokeMaterialIds as strokeIds } from "../render_gpu/skia/stroke_materials.js";
 
   // `strokeMaterials` (Inspector passes true for the `stroke` row): the "Mat" mode
@@ -400,15 +400,27 @@
     return { id: matDefaultId, params: stored?.params ?? {} };
   });
   let matEntry = $derived(matGet(matSub.id));
-  // HIDDEN rows (`hidden: true`) are part of the SCHEMA for resolution but render no
-  // Inspector row: the alongGradient legacy colour knobs (kept so a pre-stops-list
-  // document still resolves its stored colours) and a stops list's `stopsActive`
-  // visibility companion. Everything else — scalars, selects, and the kind:"stops"
-  // list — is an editable row.
-  let matRows = $derived(((strokeMaterials ? matEntry.strokeParams : matEntry.fillParams) ?? []).filter((r) => !r.hidden));
+  let matSchema = $derived((strokeMaterials ? matEntry.strokeParams : matEntry.fillParams) ?? []);
+  /** The knob values this panel is showing — each row's stored value, else its
+   *  schema default. Exactly what the controls render, and therefore the right
+   *  record to resolve a MODE SELECTOR's `visibleWhen` against (materials.js
+   *  carries that contract). Read from `raw`, so a knob bound to an "=" equation
+   *  is the equation STRING here — which is precisely the case
+   *  pattern_material.generatorReadsKnob answers by showing every row.
+   *  In a MULTI-selection this is the PRIMARY's, and that is unambiguous rather
+   *  than a guess: the Inspector only mounts a non-mixed multi paint row, so every
+   *  selected item stores an equal paint and therefore an equal mode. */
+  let matKnobValues = $derived(Object.fromEntries(matSchema.map((r) => [r.name, matSub.params?.[r.name] ?? r.default])));
+  // Which rows the panel draws — the ONE filter materials.visibleKnobRows owns, so
+  // this and the probes that count these rows cannot drift. It drops `hidden: true`
+  // rows (schema-only: the alongGradient legacy colour knobs, a stops list's
+  // `stopsActive` companion) AND rows a mode selector has made inapplicable (the
+  // vector pattern's per-generator knobs). Everything else — scalars, selects, and
+  // the kind:"stops" list — is an editable row.
+  let matRows = $derived(visibleKnobRows(matSchema, matKnobValues));
   /** Query. A knob's DISPLAY value: stored when written, else its schema default. */
   function matValue(row) {
-    return matSub.params?.[row.name] ?? row.default;
+    return matKnobValues[row.name];
   }
 
   /**

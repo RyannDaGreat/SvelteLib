@@ -230,14 +230,21 @@ export function ginghamCell({ period = 10, ratio = 0.5 } = {}) {
  * seamless: a lone centred diamond tiles as isolated diamonds, whereas the corner
  * quarters reassemble across the seam into the offset row a harlequin needs.
  *
- * @param {{period: number, ratio: number}} params
+ * `size` is the diamond's extent as a FRACTION of its cell — the same quantity
+ * star8 calls `size`, NOT the inked-fraction stripes and gingham call `ratio`.
+ * It was spelled `ratio` until the flat pattern schema started deriving its rows
+ * from these declarations and refused the name for carrying two quantities:
+ * gingham's ratio tops out at 0.95 while a diamond at 1 is the harlequin's whole
+ * point, so one leaf could not serve both.
+ *
+ * @param {{period: number, size: number}} params - `size` as a fraction of the cell
  * @returns {{w: number, h: number, shapes: Array}}
  *
- * @example diamondsCell({period: 10, ratio: 1}).shapes.length // 6 (bg + centre + 4 corners)
+ * @example diamondsCell({period: 10, size: 1}).shapes.length // 6 (bg + centre + 4 corners)
  */
-export function diamondsCell({ period = 10, ratio = 1 } = {}) {
+export function diamondsCell({ period = 10, size = 1 } = {}) {
   const w = clampParam("period", period, 0.01, 1e6);
-  const k = clampParam("ratio", ratio, 0, 1) / 2;
+  const k = clampParam("size", size, 0, 1) / 2;
   const cx = w / 2, hw = w * k;
   const centre = inkPolygon([[cx, cx - hw], [cx + hw, cx], [cx, cx + hw], [cx - hw, cx]]);
   // The four corner quarters: the same diamond centred on each corner. Together
@@ -745,17 +752,25 @@ export function brickCell({ brickW = 20, brickH = 10, mortar = 0.08 } = {}) {
  * half a scallop is expressed as TWO rows in the domain (the same half-drop
  * idiom svgTileCell documents), so plain x/y repetition still suffices.
  *
- * @param {{radius: number, overlap: number}} params - `overlap` as a fraction of radius
+ * THE SCALE RADIUS IS SPELLED `period` because it is an ABSOLUTE length in
+ * pattern units, like every other generator's spacing knob — it was `radius`
+ * until the flat pattern schema started deriving its rows from these
+ * declarations and refused the name: every other `radius` in the roster is a
+ * FRACTION of a spacing (0.01–0.5 for dots), and one document leaf cannot be
+ * both a fraction and a length. Its 0.5–400 range and 0.5 step were already
+ * byte-identical to the `period` family it now joins.
+ *
+ * @param {{period: number, overlap: number}} params - `overlap` as a fraction of the scale radius
  * @returns {{w: number, h: number, shapes: Array}}
  *
- * @example scallopCell({radius: 10}).h // 16 (2 rows of 0.8*radius each)
+ * @example scallopCell({period: 10}).h // 16 (2 rows of 0.8*radius each)
  */
-export function scallopCell({ radius = 10, overlap = 0.15 } = {}) {
-  const R = clampParam("radius", radius, 0.5, 1e6);
+export function scallopCell({ period = 10, overlap = 0.15 } = {}) {
+  const R = clampParam("period", period, 0.5, 1e6);
   const ov = clampParam("overlap", overlap, 0, 0.5);
-  const period = R * 2 * (1 - ov * 0.5);
+  const stride = R * 2 * (1 - ov * 0.5);
   const rowH = R * 0.8;
-  const w = period, h = rowH * 2;
+  const w = stride, h = rowH * 2;
   const shapes = [backgroundShape(w, h)];
   // A half-disc: flat diameter along the baseline, arc bulging DOWN into the
   // row (a "scale" hanging from the course above). In this y-DOWN space,
@@ -793,6 +808,12 @@ export function scallopCell({ radius = 10, overlap = 0.15 } = {}) {
  * rubblestone); `count`/`domain` set how coarse (few big stones) or fine
  * (many small ones, granules) the aggregate reads.
  *
+ * THE STONE EXTENT IS SPELLED `stoneSize`, not `size`: a stone's fraction of the
+ * domain (0.05–0.6, a stone at 0.85 is a blob) is not star8's fraction of its
+ * cell (0.2–1, a star at 0.85 is a star), and while the flat pattern schema
+ * merged them under one name the shared default made every fresh cobble
+ * degenerate. Two ranges that disagree about what is sane are two knobs.
+ *
  * Each stone is a jittered-radius polygon around a scattered centre — the
  * same hashUnit scatter randomDotsCell uses, so it is PROPERTY STATE (a pure
  * function of seed) for the same reason. SEAMLESS BY THE SAME CONSTRUCTION
@@ -805,11 +826,11 @@ export function scallopCell({ radius = 10, overlap = 0.15 } = {}) {
  * @example cobbleCell({count: 4, domain: 1, seed: 3}).shapes.length // 37 (bg + 4 stones x 9 translates)
  * @example cobbleCell({seed: 3}).shapes[1].d === cobbleCell({seed: 3}).shapes[1].d // true (deterministic)
  */
-export function cobbleCell({ count = 10, seed = 1, domain = 3, size = 0.28, roundness = 0.6, sides = 7 } = {}) {
+export function cobbleCell({ count = 10, seed = 1, domain = 3, stoneSize = 0.28, roundness = 0.6, sides = 7 } = {}) {
   const unit = 10; // pattern-unit scale, matching the other generators' "period ~10" convention
   const n = Math.round(clampParam("domain", domain, 1, 8));
   const w = unit * n;
-  const baseR = unit * clampParam("size", size, 0.05, 0.6);
+  const baseR = unit * clampParam("stoneSize", stoneSize, 0.05, 0.6);
   const round = clampParam("roundness", roundness, 0, 1);
   const nSides = Math.round(clampParam("sides", sides, 4, 12));
   const many = Math.round(clampParam("count", count, 1, 200));
@@ -992,7 +1013,7 @@ export const PATTERN_GENERATORS = Object.freeze({
     title: "Diamonds", generate: diamondsCell,
     params: [
       { name: "period", kind: "number", default: 14, min: 0.5, max: 400, step: 0.5, help: "Diamond repeat" },
-      { name: "ratio", kind: "number", default: 1, min: 0.05, max: 1, step: 0.01, help: "Diamond size within its cell" },
+      { name: "size", kind: "number", default: 1, min: 0.05, max: 1, step: 0.01, help: "Diamond size within its cell" },
     ],
   },
   polka_dots: {
@@ -1103,7 +1124,7 @@ export const PATTERN_GENERATORS = Object.freeze({
   scallop: {
     title: "Scallop / Fan", generate: scallopCell,
     params: [
-      { name: "radius", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "Scale radius" },
+      { name: "period", kind: "number", default: 10, min: 0.5, max: 400, step: 0.5, help: "Scale radius, in pattern units" },
       { name: "overlap", kind: "number", default: 0.15, min: 0, max: 0.5, step: 0.01, help: "How much each scale overlaps its neighbour" },
     ],
   },
@@ -1113,7 +1134,7 @@ export const PATTERN_GENERATORS = Object.freeze({
       { name: "count", kind: "number", default: 10, min: 1, max: 200, step: 1, help: "Stones per fundamental domain" },
       { name: "seed", kind: "number", default: 1, min: 0, max: 99999, step: 1, help: "Scatter seed — the same seed always lays out the same stones" },
       { name: "domain", kind: "number", default: 3, min: 1, max: 8, step: 1, help: "Domain size in cells — larger hides the repeat" },
-      { name: "size", kind: "number", default: 0.28, min: 0.05, max: 0.6, step: 0.01, help: "Stone size" },
+      { name: "stoneSize", kind: "number", default: 0.28, min: 0.05, max: 0.6, step: 0.01, help: "Stone size, as a fraction of the domain" },
       { name: "roundness", kind: "number", default: 0.6, min: 0, max: 1, step: 0.01, help: "0 = hard squared masonry, 1 = lumpy rounded pebbles" },
       { name: "sides", kind: "number", default: 7, min: 4, max: 12, step: 1, help: "Polygon sides per stone" },
     ],
