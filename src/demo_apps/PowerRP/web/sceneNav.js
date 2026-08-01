@@ -242,8 +242,40 @@ export const NAVIGATE_SCENE_HANDLER = {
       { keys: ["Ctrl", "mouse_scroll"], label: "Field of view" },
     ],
     /**
+     * THE POINTER IS CAPTURED FOR THE LENGTH OF A LOOK (todo #254 — "it didn't
+     * capture my mouse and didn't let me go into mouse lock"). One boolean; the
+     * host (web/CanvasView.svelte modePointerDown) takes the lock on press and
+     * gives it back on release, and converts the travel from movementX/Y because
+     * a locked pointer's client coordinates are frozen.
+     *
+     * WHY THE CAPTURE IS PER-DRAG AND NOT A PERSISTENT FPS-STYLE LOCK, which is
+     * the other reading of "mouse lock" and is a real fork rather than an
+     * oversight. A persistent lock hides the cursor for the WHOLE PAGE until
+     * Escape, which would make this mode's own floating camera bar — the fields
+     * that read out and edit the pose, and the only visible sign the mode is live
+     * — unreachable without leaving the mode first. It would also put a second
+     * meaning on Escape inside one mode (release the pointer, then exit the
+     * mode), and an Escape that does two things at two moments is a defect this
+     * app has shipped twice. Per-drag capture delivers the part that was actually
+     * missing: the look no longer stops at the edge of the window and the cursor
+     * no longer walks away from the widget it is steering. The persistent variant
+     * is a deliberate open question, recorded rather than silently decided.
+     *
+     * NO NEW HINT CHIP, AND THAT IS THE CORRECT CALL RATHER THAN AN OMISSION. The
+     * HintBar announces INPUTS, and this adds none: `mouse_left → Look around` is
+     * still the whole gesture and is still exactly true. A chip reading "pointer
+     * captured" would announce a STATE, and would be a lie in the one case that
+     * matters — a browser is allowed to refuse the lock, and does so routinely
+     * right after an Escape. The refusal is reported instead, in the console,
+     * where a condition the user cannot act on visually belongs.
+     */
+    pointerLock: true,
+    /**
      * Command. THE DRAG — orbit. Deltas arrive already converted to the widget's
      * LOCAL px frame, so a rotated or scaled viewport flies along its own axes.
+     * They arrive in that frame whether the pointer is CAPTURED or not (see
+     * `pointerLock` above): the host does the conversion, so this function cannot
+     * tell the two apart and has no reason to.
      *
      * Reads the pose from the node's CURRENT state (preview included), so
      * successive ticks of one drag accumulate into ONE undo unit.

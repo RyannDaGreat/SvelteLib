@@ -77,7 +77,7 @@
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js"; // asset-tile drop payload type + the one .zip-is-a-project rule (drop-handler region)
   import { assetDropKind } from "./pluginAssetLoader.js"; // what a dropped asset DOES: "widget" (*.plugin.js) | "media" | "none" — declared + bare-node tested
-  import { reportAction } from "../core/report.js"; // a refused DROP is one user act — reportAction, never the deduped reportOnce
+  import { reportAction, warnOnce } from "../core/report.js"; // a refused DROP is one user act — reportAction, never a deduped one. A refused POINTER LOCK is the opposite on both axes: repeated clicks, so deduped; and the gesture still works by a worse route, which is warnOnce's stated remit rather than reportOnce's
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
   import "./latexEditor.js"; // PRE-WARM MathLive at app boot (register <math-field> + load offline fonts) so first edit isn't janky
@@ -1173,7 +1173,56 @@
     e.currentTarget.setPointerCapture(e.pointerId);
     modeDrag = { lastWorld: worldPoint(e) };
     app.dragging = true; // the shared "a gesture is in flight" gate (thumbnails hold)
+    // A mode that declares `pointerLock` wants the POINTER ITSELF for the length
+    // of the drag (web/sceneNav.js is the first). Requested HERE because a lock
+    // needs a real user gesture and a pointerdown handler is one; released in
+    // modePointerUp. setPointerCapture already routes the events, so this buys
+    // the two things capture cannot: the travel stops being bounded by the window,
+    // and the cursor stops sliding away from the thing it is steering.
+    if (active.mode.pointerLock) requestModePointerLock(e.currentTarget);
     return true;
+  }
+
+  /** Command (async, fire-and-forget). Asks for the pointer, and REPORTS a refusal
+   *  rather than leaving the user clicking at a widget that does not respond.
+   *
+   *  A REFUSAL IS EXPECTED, NOT EXCEPTIONAL, which is why this is caught at all:
+   *  the API requires a transient user activation and a focused document, a
+   *  sandboxed or cross-origin frame may forbid it outright, and a browser
+   *  rate-limits a re-request made too soon after the user pressed Escape to
+   *  leave — that last one is a deliberate anti-abuse rule and it fires during
+   *  ordinary use. The mode stays fully usable when it happens: the drag path
+   *  below falls back to plain client coordinates, which is exactly how this mode
+   *  worked before pointer lock existed. So the failure costs a sentence, not the
+   *  gesture.
+   *
+   *  Chrome returns a Promise here; older engines return undefined and signal
+   *  failure through a `pointerlockerror` event instead — `await undefined`
+   *  resolves, so the listener below is what covers those. */
+  async function requestModePointerLock(el) {
+    if (document.pointerLockElement === el) return;
+    try {
+      await el.requestPointerLock();
+    } catch (e) {
+      reportPointerLockRefusal(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** Command. The ONE sentence a refused pointer lock produces, so the promise
+   *  rejection and the legacy `pointerlockerror` event cannot grow two wordings
+   *  for one condition.
+   *
+   *  warnOnce, NOT reportOnce, and core/report.js states the test verbatim:
+   *  reportOnce says something is WRONG, warnOnce says "the app did the right
+   *  thing by a worse route and the author should know". A refused capture is the
+   *  second — the look still happens, bounded by the window and with the cursor
+   *  visible. Deduped because a user who cannot get the lock will click again, and
+   *  a line per click is the same flood by another name. */
+  function reportPointerLockRefusal(why) {
+    warnOnce(
+      `canvas:pointerlock:${why}`,
+      `PowerRP: this browser refused to capture the pointer for the canvas mode — ${why}. The gesture still works by dragging, but the pointer stays visible and the drag stops at the edge of the window. A refusal is normal right after pressing Escape to release a previous capture; click again in a moment.`
+    );
   }
 
   /** Command. Pointer-move inside a live mode pan: hands the handler the pointer
@@ -1182,18 +1231,36 @@
   function modePointerMove(e) {
     const active = activeMode();
     if (!modeDrag || !active?.mode.onPan) return;
-    const w = worldPoint(e);
-    const a = localPointOf(active.node, modeDrag.lastWorld.x, modeDrag.lastWorld.y);
-    const b = localPointOf(active.node, w.x, w.y);
-    modeDrag.lastWorld = w;
+    // UNDER POINTER LOCK THE POINTER DOES NOT MOVE. clientX/clientY are frozen at
+    // the position the lock was taken, so the two-point difference below yields
+    // (0, 0) forever and the gesture silently does nothing — the exact shape of
+    // failure this codebase forbids. The travel is `movementX/movementY` instead,
+    // and it is converted through the SAME screenToWorld the frozen path uses so
+    // one mapping law serves both: screenToWorld is affine, so a DIFFERENCE of two
+    // screen points is origin-independent and the frozen origin does not matter.
+    const s = screenPoint(e);
+    const locked = document.pointerLockElement !== null;
+    const fromWorld = locked ? actions.screenToWorld(s.x - e.movementX, s.y - e.movementY) : modeDrag.lastWorld;
+    const toWorld = locked ? actions.screenToWorld(s.x, s.y) : worldPoint(e);
+    const a = localPointOf(active.node, fromWorld.x, fromWorld.y);
+    const b = localPointOf(active.node, toWorld.x, toWorld.y);
+    // Only the UNLOCKED path advances the origin: locked, `lastWorld` is the point
+    // the pointer was captured at and stays the anchor a released drag resumes
+    // from, while each locked step is self-contained (its own from/to pair).
+    if (!locked) modeDrag.lastWorld = toWorld;
     active.mode.onPan(modeContext(active), { dLocalX: b.x - a.x, dLocalY: b.y - a.y });
   }
 
-  /** Command. Release ends the pan gesture (one undo unit). */
+  /** Command. Release ends the pan gesture (one undo unit) and gives the pointer
+   *  back. The release is unconditional rather than gated on which mode took it:
+   *  a lock this component did not request cannot exist (nothing else in the app
+   *  calls requestPointerLock), and leaving one held after the gesture that owns
+   *  it has ended would strand the user with an invisible cursor. */
   function modePointerUp() {
     if (!modeDrag) return;
     modeDrag = null;
     app.dragging = false;
+    if (document.pointerLockElement) document.exitPointerLock();
     endModeGesture();
   }
 
@@ -1201,8 +1268,25 @@
   // the presenter, closing the document) would otherwise let it commit into a doc
   // nobody is looking at any more. app.exitCanvasMode() commits whatever was staged
   // at the boundary itself, which is the honest place for it.
+  //
+  // NEITHER MAY A HELD POINTER. Unmounting mid-drag (the presenter opening on a
+  // keystroke while a look gesture is live) would otherwise leave the document
+  // with no cursor and no element left to release it — the one failure of this
+  // feature a user could not talk their way out of.
   $effect(() => () => {
     if (modeZoomIdle !== null) clearTimeout(modeZoomIdle);
+    if (document.pointerLockElement) document.exitPointerLock();
+  });
+
+  // THE LEGACY REFUSAL CHANNEL. Chrome rejects requestPointerLock's promise;
+  // engines that predate that return undefined and fire this instead, so without
+  // the listener a refusal there would be the silent failure the request path is
+  // careful to avoid. Same sentence either way (reportPointerLockRefusal), because
+  // one condition gets one voice.
+  $effect(() => {
+    const onError = () => reportPointerLockRefusal("the browser raised pointerlockerror");
+    document.addEventListener("pointerlockerror", onError);
+    return () => document.removeEventListener("pointerlockerror", onError);
   });
 
   // ── MULTI-STEP CREATION MODE (web/creationSteps.js) ─────────────────────────
