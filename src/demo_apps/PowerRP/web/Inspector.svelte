@@ -36,6 +36,7 @@
   import "iconify-icon";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
+  import { appRankItems } from "./searchRank.js";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import NumericField from "./NumericField.svelte";
@@ -1786,6 +1787,7 @@
          don't survive a flat fuzzy filter. Every branch shares every other prop. -->
     {#if row.optionsFrom === "items"}
       <SearchableDropdown
+        rankFn={appRankItems}
         onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
         oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
         items={allDocumentItems(app.doc)
@@ -1810,6 +1812,7 @@
            choice is a lie; showing an empty one is the same lie with no options. -->
       {#if retypeMenu.length > 0}
         <SearchableDropdown
+          rankFn={appRankItems}
           items={retypeMenu}
           value={valueAt(state, row.key)}
           onchange={(v) => oncommit(row.key, "select", v)}
@@ -2148,6 +2151,7 @@
          invisible-on-this-slide danger styling), which opts out of the built-in
          match highlight. -->
     <SearchableDropdown
+      rankFn={appRankItems}
       items={itemChoices}
       value={pickedItemId}
       placeholder="— select item —"
