@@ -1047,6 +1047,80 @@ manifest, which is the only durable, agent-visible record.
 - **R6-11.7 HYPOTHESIS worth testing:** one root cause here may also explain R6-12.1
   (video absent from Render Center) and R6-10.2/R6-11.5 (maps wrong to MP4).
 
+#### R6-11 DIAGNOSIS — PROVEN, WITH PIXEL MEASUREMENTS (wave 1, agent W1-A; report `.frenzy/round6/W1-A.md`, 54 PNGs in `.frenzy/round6/W1-A-shots/`)
+
+**THE USER WAS RIGHT ON EVERY POINT, INCLUDING "IT'S THE GEOMETRY".**
+
+- **YES, THE SHAPES ARE GENUINELY TRIANGULATED.** Donut and fancy arrow emit **one
+  `polygon` IR op PER TRIANGLE** — 133 ops in the test fixture, 128 of them the donut.
+  `plugins/donut.js:125-127`, `plugins/fancy_arrow.js:223-232`,
+  `assets/builtin/library/donut.plugin.js:114`. Each is painted as its own `drawPath`
+  with AA on at `render_gpu/skia/paint_skia.js:674-683`. Two abutting antialiased fills
+  conflate to **192/255** — exactly the predicted 0.5 + 0.25 + 0.25 double-blend. That
+  is the visible crack.
+- **THE EDITOR/THUMBNAIL DIVERGENCE IS THE SURFACE SAMPLE COUNT, AND NOTHING ELSE.**
+  Editor: `web/CanvasView.svelte:425` -> `browser_surface.js:57` context
+  `antialias:1` -> `:123` `MakeOnScreenGLSurface` = **sampleCnt 4** (measured 4 at six
+  sizes and across five resizes). Thumbnails, minimap, PNG export, PDF raster, slide
+  fades and **EVERY MP4 FRAME**: `web/gpuService.js:113` context `antialias:0` ->
+  `:160` `MakeRenderTarget` = **1 sample**. The IR is IDENTICAL: with AA off, renders
+  from the two paths are **byte-identical, max diff 0**.
+- **MEASURED:** same document at the same 800x450 — editor **0 seam pixels**,
+  thumbnail **12,308**. Scale and DPR ruled out (editor stays clean 400x225 ->
+  1920x1080). Proxy render quality ruled out (full vs proxy diff **max 0**), so
+  task #83's proxy path is NOT implicated.
+- **WHY A SHADOW REVEALS SEAMS IN THE EDITOR:** `shadow.opacity > 0` alone wraps the
+  node in `effectSubtree` (`render_gpu/effects.js:168,217`) whose scratch surface is
+  `paint_skia.js:3324` -> `MakeRenderTarget` = **1 sample**. The shadow itself is drawn
+  ONCE from the composited silhouette (`:3338`, `:3381`), not per triangle — so the
+  seams come from the 1-sample scratch, not from the shadow. AA off => hard coverage
+  tiles exactly => 0 seams.
+- **R6-11.4 PROVEN AND IT SHARES THE FIX:** `paint_skia.js:679` passes
+  `pointsBounds(cmd.points)` — the **individual triangle's** bounds — as the
+  gradient/material frame, whereas `drawPathOp:938-940` correctly uses whole-path
+  bounds. So one change closes R6-11.1 through R6-11.4 together.
+- **THE FIX IS DICTATED BY PRECEDENT, NOT CHOSEN.** The convex-only `polygon` op is a
+  **FOSSIL of the retired WebGPU mesh renderer** (`5eb60d3`, 2026-07-14;
+  `render_gpu/FINDINGS.md:185`). The `path` op WITH `fillRule` landed in `c0646a5`,
+  2026-07-23, in all three backends. `plugins/donut.js:48` literally says *"revisit
+  if/when an IR path op with fill-rule support lands"* — the condition was met and
+  never actioned. `core/outline.js:678` already names the donut as the leftover,
+  `plugins/shapeshifter.js:936-945` is the working template, and `ringSectorOutline`
+  already returns `[outer, inner]`. MEASURED: one outline op gives **zero seams at 1
+  sample at every size**. Change BOTH donut copies together and pin with a parity test.
+  Gate it with a BARE-NODE test — the software surface reproduces the defect (min 192);
+  precedent `tests/vector_pattern_seam_test.js`.
+- **DO NOT "FIX" IT BY FLIPPING `gpuService` TO `antialias:1`.** Measured:
+  `MakeRenderTarget` on an MSAA context is still 1 sample. An MSAA drop-in exists but
+  only MASKS the double-blend and leaves `cli/render.js` (software, min 166) worse.
+
+**R6-11.7 IS ANSWERED: NO. MY UNIFICATION HYPOTHESIS WAS WRONG — there are THREE
+independent mechanisms, and they must be fixed separately.**
+1. **Triangulation + sample count** (above) — the donut/arrow/gradient family.
+2. **MAPS: `web/gpuService.js:320` calls `cameraFrameIR` with NO `view` argument**, so
+   `web/cameraFrame.js:162,169` skips the tile pre-pass and **zero tiles are ever
+   requested**. BONUS, PREVIOUSLY UNREPORTED: the same line also kills **PDF
+   re-raster** in every one-shot pixel consumer.
+3. **VIDEO: only `web/renderJobPage.js:150` has `settledFrame`.**
+   `web/browserRenderJobs.js:297` and `web/app.svelte.js:5733` ship COLD frames, and a
+   latched `status:"error"` **removes itself from the pending set**, so the hole is
+   silent and the job exits 0 — a loud-failure violation on top of the bug.
+4. Metaball (R6-15.1) **did not reproduce** — 0 of 921,600 pixels. W1-D must re-scope.
+
+**THE REAL THEME IS BROADER AND MORE USEFUL THAN THE HYPOTHESIS:** the editor and the
+one-shot pixel path are different renderers in FOUR ways — multisampling, the `view`
+argument, async settling, and device bounds (the last measured at zero effect so far).
+`web/cameraFrame.js:20-24` already admits "one code path" is not yet true. That is the
+gap to close, and R6-11.6's principle is the standard to hold it to.
+
+**Violations recorded:** `web/gpuService.js:111-113`'s comment asserts that coverage-AA
+is equivalent to MSAA — FALSIFIED, and it is the written rationale FOR the bug;
+donut's stale "no evenodd anywhere" claim in both copies; `paint_skia.js:708`
+`if (!img) break;` is a silent failure in one-shot contexts where its excusing
+contract does not hold; `map_display.js`'s own report misdirects blame to
+`cli/render_job.js`, which has the same defect; `plugins/filmstrip.js:550,600`
+triangulates plain rectangles for no reason.
+
 ### R6-12 VIDEO
 
 - **R6-12.1** The video widget DOES NOT APPEAR in Render Center output at all,
