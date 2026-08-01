@@ -832,7 +832,17 @@ export function resolvePaint(value, ink, gradients, warnings) {
     warnings.add(g ? `svg: gradient "${url[1]}" (${g.type ?? "unknown"}) approximated as its first-stop solid color (v1 supports objectBoundingBox linearGradient only)` : `svg: gradient reference "url(#${url[1]})" not found — filled with no paint`);
     return solid;
   }
-  return v; // a plain CSS color string (hex / rgb() / named) — parsePaint validates it
+  // A plain CSS color string, validated downstream by render_gpu/ir.js parsePaint.
+  // ONLY #hex and rgb()/rgba() get through: parseColor REFUSES a CSS NAMED colour
+  // ("red", "cornflowerblue") on purpose, and two suites pin that refusal
+  // (render_gpu/tests/render_gpu_test.js:66, paint_gradient_test.js:140). So an SVG
+  // that spells a paint the way half the web does makes the WHOLE widget throw and
+  // draw the red error affordance — measured on skill-icons:fediverse-light, which is
+  // `fill="red"`, and it fails in the editor exactly as it fails in an export. This
+  // line used to claim named colours were accepted; that comment was the only place
+  // the capability existed. Widening it is a ruling about where a CSS-name table
+  // lives (here, or in parseColor for every property row), not a local fix.
+  return v;
 }
 
 /**

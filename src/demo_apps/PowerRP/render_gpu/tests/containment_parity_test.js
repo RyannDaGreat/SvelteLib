@@ -28,6 +28,7 @@ import assert from "node:assert/strict";
 import { irToPDF } from "../pdf_backend.js";
 import { irToSVG } from "../svg_backend.js";
 import { rect, pushTransform, popTransform } from "../ir.js";
+import { errorMessage } from "../../core/paint_containment.js";
 
 let passed = 0;
 async function atest(name, fn) {
@@ -93,6 +94,21 @@ await atest("PDF: the poisoned item becomes a RED BOX naming it", async () => {
   const s = latin1(await irToPDF(poisonedScene(), VIEW));
   // the affordance's border colour (#c0392b) as a PDF stroke operator
   assert.match(s, /0\.75\d* 0\.22\d* 0\.16\d* RG/, "the red error border must be drawn");
+  // AND THE NAME, which is the half this file used to assert on the SVG side only —
+  // and the half that was MISSING. Fonts are embedded by irToPDF's pre-scan of the
+  // command list, and this text op is created after the failure, so on a slide with
+  // no other text `ctx.font()` threw "not embedded", emitContainmentBox's catch ate
+  // it, and the export got a BLANK red box. That is what todo #226's reporter saw:
+  // "the big red box", with nothing in it to say which widget or why, so he bisected
+  // by hand. A box that names nothing is the silent failure the affordance exists to
+  // prevent, wearing its costume — the same shape of mistake as the hex-vs-parsed
+  // colour bug recorded in core/paint_containment.js's palette docblock.
+  //
+  // The expectation is DERIVED: the exporter writes text as one hex Tj, so the
+  // oracle is errorMessage()'s own output hex-encoded, not a transcribed literal.
+  const label = errorMessage("Bad Icon", "failed to export");
+  assert.ok(s.includes(Buffer.from(label, "latin1").toString("hex").toUpperCase()),
+    `the box must NAME the item — that is how the user finds what to fix. Expected the Tj hex for ${JSON.stringify(label)}`);
 });
 
 await atest("PDF: BACKEND CONFIGURATION still throws — containment has a limit", async () => {

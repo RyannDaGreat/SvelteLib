@@ -525,7 +525,15 @@ export function svgPathToPdfOps(d) {
     } else if (up === "Z") {
       out.push("h"); cx = sx; cy = sy; qpx = qpy = null;
     } else {
-      throw new Error(`svgPathToPdfOps: unsupported SVG path command "${cmd}" (MathJax uses M L H V Q T Z)`);
+      // UNREACHABLE FROM ANY `d`, and kept as the seam's guard rather than deleted.
+      // `normalizedRuns` runs every input through core/svg_paths.js transformPathD,
+      // whose output grammar is exactly absolute M L C Q Z — so this fires only if
+      // that normalizer grows a command this writer has no branch for, which is a
+      // contract break between two files and must be loud. The message used to say
+      // "MathJax uses M L H V Q T Z", which named the ONE caller the retired local
+      // tokenizer was written for; that hint sent the todo #226 debugger looking at
+      // LaTeX while the failing input was an ordinary minified icon.
+      throw new Error(`svgPathToPdfOps: no branch for path command "${cmd}" after normalization — core/svg_paths.js transformPathD must emit only absolute M L C Q Z, so its output grammar and this writer have drifted`);
     }
     // Reflection state (qpx/qpy) is maintained inside each branch: quads set it,
     // every other command clears it — so a T after a non-quad reflects nothing.
@@ -1055,7 +1063,7 @@ async function emitRegion(commands, region, out, ctx) {
         `pdf_backend:node:${owner?.itemId ?? "unowned"}:${msg}`,
         `PowerRP PDF export: item ${describeOwner(owner)} failed to render — ${msg}. It is exported as an error box; every other item exports normally.`,
       )) console.error(e);
-      emitContainmentBox(flat, runStart, runEnd, out, ctx);
+      await emitContainmentBox(flat, runStart, runEnd, out, ctx);
     }
     runStart = runEnd;
   }
@@ -2159,20 +2167,47 @@ function pdfTextInk(color) {
  * not — the ba25b39 lesson: the transform may be the poison, and composing
  * through it inside the recovery would rethrow.
  *
- * Its own try is deliberate and is NOT a silent swallow: the failure was already
- * reported by the caller, and an affordance that could itself abort the export
- * would defeat the boundary it belongs to.
+ * ── WHY IT EMBEDS ITS OWN FONT, AND WHY THAT IS A BUG FIX ────────────────────
+ * The box carries a LABEL, and the label is the whole point: it is how the user
+ * learns which of forty items to look at. Fonts, though, are embedded ONCE by
+ * irToPDF's pre-scan over the command list (`ensureFonts(textFaces(commands))`),
+ * and this text op does not exist yet when that scan runs. So on a slide with no
+ * other text — a deck of icons and shapes, the common case — `ctx.font()` threw
+ * "not embedded", the catch below ate it, and the export got a BLANK RED BOX
+ * naming nothing. Measured on the todo #226 report: the user saw "the big red
+ * box", could not tell which widget or why, and bisected it by hand. The SVG
+ * exporter never had this failure (it embeds no fonts), which is exactly why
+ * render_gpu/tests/containment_parity_test.js asserted the NAME on the SVG side
+ * only. Embedding HERE rather than seeding the pre-scan keeps a healthy export
+ * byte-identical: nothing is added to a PDF that never fails.
+ *
+ * The face is derived from the op through `textFaces`, not spelled as a literal,
+ * so it cannot drift from the one `emitVector` will ask `ctx.font()` for.
+ *
+ * Its own try is deliberate — an affordance that could itself abort the export
+ * would defeat the boundary it belongs to — and it now REPORTS. It used to
+ * swallow in silence on the grounds that the caller had already reported the
+ * original failure, which is true and is a different claim: a SECOND, separate
+ * failure in here is news, and the blank box above is what its absence cost.
  */
-function emitContainmentBox(flat, start, end, out, ctx) {
+async function emitContainmentBox(flat, start, end, out, ctx) {
   try {
     const owner = flat[start].owner;
     const box = containmentBoxSize(flat, start, end);
     const world = isPaintableFrame(flat[start].world) ? flat[start].world : { x: 0, y: 0, rotation: 0, scale: 1 };
     const a = errorAffordanceArgs(box.w, box.h, errorMessage(describeOwner(owner), "failed to export"));
-    for (const op of [rect(a.rect), text(a.text)]) emitVector(op, world, out, ctx);
-  } catch {
-    // Already reported; a backend that cannot append a rect has a problem no
-    // affordance can express, and the remaining items still deserve their turn.
+    // THE BOX FIRST, and that order is load-bearing: it needs no font, so a
+    // failure in the label step below still leaves a visible affordance rather
+    // than nothing at all. (It is also the order the pre-font-embed code had.)
+    emitVector(rect(a.rect), world, out, ctx);
+    const label = text(a.text);
+    await ctx.ensureFonts(textFaces([label]));
+    emitVector(label, world, out, ctx);
+  } catch (e) {
+    reportExportFailureOnce(
+      `pdf_backend:affordance:${throwMessage(e)}`,
+      `PowerRP PDF export: the error box for a failed item could not be drawn in full — ${throwMessage(e)}. That item's own failure was reported above; this is a second, separate problem inside the affordance.`,
+    );
   }
 }
 
