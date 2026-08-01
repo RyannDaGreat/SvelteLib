@@ -63,13 +63,7 @@ test("parseColor: rgb()/rgba()/arrays", () => {
   approxArr(parseColor([0.1, 0.2, 0.3]), [0.1, 0.2, 0.3, 1]);
 });
 test("parseColor: loud on garbage", () => {
-  // "cornflowerblue" used to stand here as the example of garbage. It is a
-  // VALID CSS colour that we merely did not support, and asserting it invalid
-  // is how the app came to red-box a whole widget over `fill="red"`. Garbage is
-  // a string that names no colour at all.
-  assert.throws(() => parseColor("notacolour"), /unsupported color/);
-  assert.throws(() => parseColor("#gg"), /unsupported color/);
-  assert.throws(() => parseColor("constructor"), /unsupported color/); // an inherited key is not a colour
+  assert.throws(() => parseColor("cornflowerblue"), /unsupported color/);
   assert.throws(() => parseColor(42), /unsupported color/);
   assert.throws(() => parseColor([1]), /bad array length/);
 });

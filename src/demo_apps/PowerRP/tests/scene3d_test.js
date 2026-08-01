@@ -55,10 +55,8 @@ import {
 } from "../plugins/demo/scene3d.js";
 import {
   SCENE3D_RASTER_DENSITY, digest32, ensureScene3dRasterized, orbitEye, orbitUp,
-  roundScene3dScale, scene3dAvailable, scene3dDrawRef, scene3dHoldKey,
-  scene3dRasterStats, scene3dRef,
+  roundScene3dScale, scene3dAvailable, scene3dRasterStats, scene3dRef,
 } from "../render_gpu/gpu/scene3d_raster.js";
-import { sceneIR } from "../render_gpu/ports.js";
 import { NAVIGATE_SCENE_HANDLER, dollyedPose, fovedPose, orbitedPose } from "../web/sceneNav.js";
 
 let passed = 0;
@@ -311,52 +309,6 @@ test("bare node reports that it cannot render rather than letting three.js throw
   const ref = ensureScene3dRasterized(SPEC);
   assert.equal(ref, scene3dRef(SPEC), "the ref is still produced, so the image op still counts as omitted media");
   assert.equal(scene3dRasterStats().renders, before.renders, "nothing may be scheduled with no context");
-});
-
-// ── 8b. THE STALE-FRAME HOLD (todo #255) ─────────────────────────────────────
-// The pixel half is tests/scene3d_stale_frame_probe.js — flicker cannot be shown
-// in a still, so the gate that matters is a screenshot burst mid-gesture. What
-// belongs HERE is the part that needs no GPU: the hold's IDENTITY rule, and the
-// live/one-shot switch that keeps a stale frame out of an export.
-
-test("a hold key names the SUBJECT, never the view — that is what makes it survive a pose change", () => {
-  const key = scene3dHoldKey("splat", "room.ply");
-  assert.equal(key, scene3dHoldKey("splat", "room.ply"), "the key must be a pure function of its inputs");
-  // Every quantity a live gesture sweeps must be ABSENT from the key, or the hold
-  // misses on exactly the frames it exists to cover.
-  for (const swept of ["0.4", "512", "384", "exposure"])
-    assert.ok(!key.includes(swept), `a hold key must not mention ${swept}`);
-  // …and the two things that would make a stale frame a LIE must both be in it.
-  assert.notEqual(scene3dHoldKey("splat", "a.ply"), scene3dHoldKey("splat", "b.ply"),
-    "a stale frame must never outlive its source — two sources, two keys");
-  assert.notEqual(scene3dHoldKey("splat", "x"), scene3dHoldKey("model", "x"),
-    "the two members read the same bytes through different loaders");
-});
-
-test("with no engine there is no hold, so the true ref is drawn whatever the caller asks for", () => {
-  assert.equal(scene3dAvailable(), false, "this suite must run with no DOM");
-  // cli/render.js's lane. A hold can only ever name a raster this process
-  // produced, and this process produces none — so `hold` must be inert here
-  // rather than reaching for something that cannot exist.
-  assert.equal(scene3dDrawRef(SPEC, { hold: true }), scene3dRef(SPEC));
-  assert.equal(scene3dDrawRef(SPEC), scene3dRef(SPEC), "hold defaults to OFF — the safe answer for an unknown caller");
-});
-
-test("sceneIR's `live` reaches emit(), and its ABSENCE is byte-identical to before it existed", () => {
-  // The flag is a property of the SURFACE, so the plugin can only learn it from
-  // the walker. A capture plugin is the honest way to assert that: it records the
-  // 4th argument it was handed instead of trusting the walker's source text.
-  const seen = [];
-  const node = {
-    itemId: "i1", type: "probe", state: { type: "probe" }, world: { x: 0, y: 0, rotation: 0, scale: 1 },
-    plugin: { type: "probe", emit: (_s, _sub, _w, ctx) => { seen.push(ctx); return [{ op: "rect", x: 0, y: 0, w: 1, h: 1 }]; } },
-  };
-  sceneIR([node], { live: true });
-  assert.equal(seen[0]?.live, true, "a live surface must be able to tell a widget so");
-  sceneIR([node]);
-  assert.equal(seen[1], null, "no pre-pass and no live flag ⇒ NO render context at all, exactly as before");
-  sceneIR([node], { live: false });
-  assert.equal(seen[2], null, "an explicit live:false is the same nothing — an exporter changes no behaviour by being explicit");
 });
 
 // ── 9. THE ENGINE STAYS CONFINED ─────────────────────────────────────────────

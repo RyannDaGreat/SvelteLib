@@ -131,14 +131,13 @@ await test("REGRESSION: a SINGLE-COLOR consumer (magnifier border) renders when 
   // polymorphic multi-sub-state paint object flowed into parseColor (which only
   // knew strings/arrays) and threw "unsupported color". parseColor must now
   // RESOLVE a paint object to its representative solid color; a plain string
-  // must still work; genuine garbage must still throw. ("cornflowerblue" used to
-  // be the garbage example here — it is a valid CSS colour, now accepted.)
+  // must still work; genuine garbage must still throw.
   const paintObj = { type: "linearGradient", solid: "#1a1a2e", linear: { stops: [{ offset: 0, color: "#111111" }, { offset: 1, color: "#fff" }], from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }, radial: { stops: [{ offset: 0, color: "#f00" }, { offset: 1, color: "#00f" }], center: { x: 0.5, y: 0.5 }, r: 0.5 } };
   assert.deepEqual(parseColor(paintObj), parseColor("#1a1a2e"), "paint object → its remembered solid");
   assert.deepEqual(parseColor("#00ff00"), [0, 1, 0, 1], "plain string still parses");
   assert.deepEqual(parseColor([0.5, 0.5, 0.5]), [0.5, 0.5, 0.5, 1], "array still parses");
   assert.equal(paintSolidColor({ type: "linearGradient", stops: [{ offset: 0, color: "#0000ff" }] }), "#0000ff", "legacy inline → first stop");
-  assert.throws(() => parseColor("notacolour"), /unsupported color/, "genuine garbage still throws");
+  assert.throws(() => parseColor("cornflowerblue"), /unsupported color/, "genuine garbage still throws");
   assert.throws(() => parseColor({ nope: 1 }), /cannot resolve a solid color/, "unreducible object throws loudly");
   // FULL PATH: magnifier.emit with a paint-object stroke → magnifyBackdrop op
   // renders (no throw), border resolved to the paint's solid color.

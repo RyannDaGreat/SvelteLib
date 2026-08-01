@@ -185,74 +185,6 @@ export function qrDataIsEmpty(data) {
   return data === null || data === undefined || String(data).trim() === "";
 }
 
-// Two quiet zones above the spec minimum, expressed as multiples of it because the
-// multiple IS the explanation. Half again wider survives a scuffed printed edge;
-// double is what a TRANSPARENT background needs, since with no light rect drawn the
-// clear margin has to be bought as blank MODULES of grid instead of as paint.
-const WIDE_QUIET_ZONE_MODULES = QR_SPEC_QUIET_ZONE_MODULES * 1.5;
-const TRANSPARENT_QUIET_ZONE_MODULES = QR_SPEC_QUIET_ZONE_MODULES * 2;
-
-/**
- * THE TEN CODES: SAFE ROWS FIRST, CAVEATED ROWS LAST — one FLAT family.
- *
- * ONE FLAT `presets`. With four look knobs there is no disjoint split that
- * composes, and a split would be worse than merely stylistic here: these presets
- * carry a SCANNABILITY claim, and letting two families compose into a third state
- * neither of them vouched for turns a taste question into a correctness one.
- *
- * EVERY PRESET SETS ALL FOUR LOOK KNOBS (`ecLevel`, `dark`, `light`,
- * `quietModules`) — application is an overlay, and this is the one family in the
- * instruments set with no inert value anywhere: all four move pixels in all ten.
- *
- * THE ORDER IS THE CONTENT, and here it is a SAFETY ordering as much as an
- * aesthetic one: three neutral codes by rising error correction, then five coloured
- * ones, then the two whose scannability carries a condition. The rows an author
- * reaches for without thinking are the ones at the top.
- *
- * WHY COLOUR IS FREE AND BRIGHTNESS IS NOT. A decoder takes only the BRIGHTNESS
- * information from the image, so a code's hue is unconstrained while its LUMINANCE
- * GAP is the whole ballgame. That is why "Oxblood" is a very dark red rather than a
- * bright one, and why "Signal Yellow" puts the near-black on the yellow rather than
- * the other way round: yellow is a HIGH-luminance colour, so it belongs on the light
- * side of the pair however saturated it looks.
- *
- * WHY NO PRESET GOES BELOW FOUR QUIET-ZONE MODULES. The format requires a
- * four-module margin on all four sides. A tighter margin is a real design temptation
- * and it is deliberately not offered — an unscannable code is worse than no preset —
- * and a one-module row drafted for this table was dropped rather than shipped. The
- * Inspector row still allows it for an author who knows what they are giving up.
- *
- * NO NUMERIC CONTRAST THRESHOLD IS CLAIMED. No citable reflectance or symbol-contrast
- * figure could be sourced for this table, so every contrast judgement below rests on
- * the luminance-only decoding rule plus a visibly large brightness gap, and no
- * description quotes a number it cannot support.
- *
- * NO PRESET SETS `data` — the payload is the author's content, the purest case of a
- * preset refusing to overwrite the reading. AND NO PRESET SETS AN EFFECT: a shadow
- * or a bloom changes the local luminance around and inside the modules, which is the
- * one property decoding actually depends on, so a family carrying a scannability
- * claim leaves the effects bundle alone. That is a decision, not an omission.
- */
-const PRESETS = [
-  { name: "Screen Minimum", description: "The lightest encoding, for a code on a screen where nothing can damage it: 7% recovery and the smallest grid the payload allows, so the modules stay as large as possible.", props: { ecLevel: "L", dark: "#000000", light: "#ffffff", quietModules: QR_SPEC_QUIET_ZONE_MODULES } },
-  { name: "Sticker Quartile", description: "The code for a printed sticker that will get scuffed: quartile recovery at 25%, on a margin half again wider than the format's minimum.", props: { ecLevel: "Q", dark: "#000000", light: "#ffffff", quietModules: WIDE_QUIET_ZONE_MODULES } },
-  { name: "Label Print", description: "Maximum recovery for a label that will be creased, wet or partly covered: 30% of codewords restorable, at the cost of the densest grid in the set.", props: { ecLevel: "H", dark: "#000000", light: "#ffffff", quietModules: QR_SPEC_QUIET_ZONE_MODULES } },
-  { name: "Ink Navy", description: "A printed code in navy ink on cream stock: the hue costs nothing, because a decoder takes only brightness from the image and navy on cream is still a wide gap.", props: { ecLevel: "M", dark: "#10233f", light: "#f7f3e8", quietModules: QR_SPEC_QUIET_ZONE_MODULES } },
-  { name: "Deep Forest", description: "The same trick in bottle green, at quartile recovery, for packaging that has to survive being handled before anyone points a camera at it.", props: { ecLevel: "Q", dark: "#0f3d2e", light: "#ffffff", quietModules: QR_SPEC_QUIET_ZONE_MODULES } },
-  { name: "Oxblood", description: "A dark red code — dark being the operative word: the modules are near-black wine, because a bright red is not a dark module to a decoder no matter how red it looks.", props: { ecLevel: "M", dark: "#5a0f14", light: "#ffffff", quietModules: QR_SPEC_QUIET_ZONE_MODULES } },
-  { name: "Ultraviolet", description: "Deep violet on pale lilac at the lightest encoding: a screen-only code that only has to work once, so it spends its budget on the largest possible modules.", props: { ecLevel: "L", dark: "#2a1348", light: "#f0eaff", quietModules: QR_SPEC_QUIET_ZONE_MODULES } },
-  { name: "Signal Yellow", description: "The high-visibility signage pair: near-black modules on saturated yellow, which belongs on the LIGHT side of the pair because yellow is a high-luminance colour however loud it is.", props: { ecLevel: "M", dark: "#1a1400", light: "#ffd400", quietModules: QR_SPEC_QUIET_ZONE_MODULES } },
-  // The two caveated rows, last on purpose. INVERSION is not something every reader
-  // is known to handle and no source settled it either way, so this one spends
-  // maximum error correction buying back the margin and sits second-to-last.
-  { name: "Negative", description: "The inverted code for a dark slide — light modules on black. Inversion is not something every reader handles, so this spends maximum error correction buying back the margin.", props: { ecLevel: "H", dark: "#ffffff", light: "#000000", quietModules: QR_SPEC_QUIET_ZONE_MODULES } },
-  // TRANSPARENT `light`: the widget draws no background rect at all (see
-  // isTransparentColor), so the quiet zone becomes whatever is behind the widget.
-  // The doubled margin buys SPACING only — it cannot buy contrast, which is exactly
-  // why this row is conditional on the backdrop and is placed last.
-  { name: "Overlay", description: "No background at all: the code drops straight onto the slide behind it, with a doubled quiet zone and maximum recovery, so it only holds over a light and uncluttered backdrop.", props: { ecLevel: "H", dark: "#000000", light: "#ffffff00", quietModules: TRANSPARENT_QUIET_ZONE_MODULES } },
-];
-
 export const qrcodePlugin = {
   type: "qrcode",
   title: "QR Code",
@@ -300,7 +232,6 @@ export const qrcodePlugin = {
     ...props("opacity"),
     ...bundle("effects"),
   ],
-  presets: PRESETS,
   /** Near-pure function (delegates matrix generation to qrMatrix → the qrcode
    * library; deterministic). State → display-list commands (local space).
    * GHOST short-circuit: empty/blank data draws NOTHING (returns []) via

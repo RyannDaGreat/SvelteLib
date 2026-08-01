@@ -833,12 +833,15 @@ export function resolvePaint(value, ink, gradients, warnings) {
     return solid;
   }
   // A plain CSS color string, validated downstream by render_gpu/ir.js parsePaint.
-  // #hex, rgb()/rgba() AND the CSS NAMED colours all get through — the name table
-  // lives in ir.js CSS_NAMED_COLORS, the general home where the other two spellings
-  // already live, so `red` resolves identically here and when typed into a colour
-  // row. It used to be refused, which made the WHOLE widget throw and draw the red
-  // error affordance in the EDITOR (measured on skill-icons:fediverse-light, which
-  // is `fill="red"`). An unrecognized string still throws there, loudly.
+  // ONLY #hex and rgb()/rgba() get through: parseColor REFUSES a CSS NAMED colour
+  // ("red", "cornflowerblue") on purpose, and two suites pin that refusal
+  // (render_gpu/tests/render_gpu_test.js:66, paint_gradient_test.js:140). So an SVG
+  // that spells a paint the way half the web does makes the WHOLE widget throw and
+  // draw the red error affordance — measured on skill-icons:fediverse-light, which is
+  // `fill="red"`, and it fails in the editor exactly as it fails in an export. This
+  // line used to claim named colours were accepted; that comment was the only place
+  // the capability existed. Widening it is a ruling about where a CSS-name table
+  // lives (here, or in parseColor for every property row), not a local fix.
   return v;
 }
 
