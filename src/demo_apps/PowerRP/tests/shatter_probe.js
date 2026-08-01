@@ -58,7 +58,14 @@ const SHOTS = path.join(HERE, "..", ".claude_vlm_checks");
  * that single pixel as total failure.
  */
 const FLOORS = {
-  mermaid: { maxMeanAbs: 12, minVectorRecovery: 0.9 },
+  // MEASURED, not chosen. Four runs of the flowchart case gave meanAbs 0.21,
+  // 0.21, 0.23 and 0.23 over the clipped canvas — under a quarter of one code
+  // value out of 255, on under 1% of pixels — and vector recovery 100% every
+  // time. The floor is set an order of magnitude above the observed spread,
+  // which is loose enough that antialiasing jitter cannot trip it and tight
+  // enough that a real regression (a node falling back to raster, a label
+  // reflowing, an edge losing its head) moves it by far more than 10x.
+  mermaid: { maxMeanAbs: 2.5, minVectorRecovery: 1 },
 };
 
 /**
