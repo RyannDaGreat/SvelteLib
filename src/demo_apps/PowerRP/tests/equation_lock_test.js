@@ -58,10 +58,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { UNCONSTRAINED } from "../core/derive.js";
 import {
-  geometryPairs, translationPairs, scaleMemberPairs, scalePairs, rotationPairs,
-  resizedBox, resizeStoredState, refusedCoordinates, deltaWithoutRefused,
+  geometryPairs, translationPairs, translationRecord, scaleMemberPairs, scalePairs, rotationPairs,
+  resizedBox, resizeStoredState, refusedCoordinates, deltaWithoutRefused, DRAG_KINDS,
 } from "../web/canvas/dragKinds.js";
-import { equationBoundKeys, equationPinning } from "../web/canvas/equationBinding.js";
+import { equationBoundKeys, equationPinning, equationLockNote } from "../web/canvas/equationBinding.js";
 // builtinRoster(), NOT allPlugins — the same reason tests/universal_constraints_test.js
 // gives: allPlugins is only the source-module half, and the five widgets that moved to
 // the built-in plugin-asset library silently left every sweep that used it.
@@ -443,6 +443,173 @@ test("every pre-existing consumer was rewired, not merely joined by a new one", 
     const src = stripComments(readFileSync(resolve(appRoot, file), "utf8"));
     assert.ok(src.includes("equationBoundKeys("), `${file} does not call equationBoundKeys — the ${symbol} rewiring was lost`);
   }
+});
+
+// ── (8) THE REFUSAL IS LEGIBLE (todo #240) ───────────────────────────────────
+//
+// "An equation-bound coordinate silently refuses a drag — no widget says why."
+// R6-28 answered that for ONE affordance. `equationLockNote` lived inside
+// web/CanvasView.svelte with exactly one caller (the resize-handle probe), so a
+// body drag and a yellow square refused in total silence while the same condition
+// on a corner explained itself. Two consequences worth stating as measurements
+// rather than as prose:
+//   · tests/doctest_test.js:629 collects `.js` files ONLY, so the function's two
+//     `@example` records had never been executed by anything, in any run. One of
+//     them exercised the verb "move" — a code path with NO caller. An example
+//     certifying a feature that does not exist is worse than no example.
+//   · The sentence is DOMAIN logic (which of this item's leaves are bound), not
+//     VIEW logic, which is why it now sits beside the query it is about — the same
+//     reason core/commands.js keeps commandUnavailableReason out of the palette.
+
+test("equationLockNote: ONE voice, and it is the voice this condition already had", () => {
+  // Word for word the sentence web/app.svelte.js beginTextEdit, web/interiorNav.js
+  // and web/CanvasToolbar.svelte already use for the identical condition, plus the
+  // clause only a TOGGLE can offer: there is a second way out.
+  const one = equationLockNote(["h"], "resize");
+  assert.ok(one.includes(`"h" is an = equation`), one);
+  assert.ok(one.includes("Edit it in the Inspector"), one);
+  assert.ok(one.includes("switch the lock off"), one);
+  // PLURAL AGREEMENT IS COMPUTED, not glued on: three separate words change.
+  const many = equationLockNote(["x", "w"], "move");
+  assert.ok(many.includes(`"x", "w" are = equations`), many);
+  assert.ok(many.includes("Edit them in the Inspector"), many);
+  // THE VERB IS THE GESTURE'S OWN. The same keys refuse different gestures, so a
+  // sentence inferred from the keys alone would name the wrong one half the time.
+  assert.ok(equationLockNote(["y"], "move").startsWith("Cannot move:"));
+  assert.ok(equationLockNote(["y"], "drag this point").startsWith("Cannot drag this point:"));
+});
+
+test("equationLockNote: the sentence names EXACTLY the refused keys, in gesture order", () => {
+  // Not "some properties are locked" — the user asked for the LIST, and a
+  // paraphrase would be the confident-wrong-answer failure the `requires`-as-a-
+  // function ruling exists to prevent.
+  const note = equationLockNote(["w", "x"], "resize");
+  assert.ok(note.indexOf(`"w"`) < note.indexOf(`"x"`), `order not preserved: ${note}`);
+  assert.ok(!note.includes(`"y"`) && !note.includes(`"h"`), `named a key the lock did not refuse: ${note}`);
+});
+
+test("translationRecord: the probe and the live drag read the SAME record", () => {
+  // The affordance may not rebuild what the gesture asks for — that would be a
+  // mirror of translationPairs and would rot against it (ledger C-8). Proven by
+  // deriving the gesture's own pairs from the record and comparing.
+  const bbox = { itemId: "r", plugin: {}, startX: 10, startY: 20 };
+  const { start, desired } = translationRecord(bbox, 5, 3);
+  assert.deepEqual(start, { x: 10, y: 20 });
+  assert.deepEqual(desired, { x: 15, y: 23 });
+  assert.deepEqual(geometryPairs("r", start, desired), translationPairs(bbox, 5, 3));
+
+  // A moveBy widget's record is its PLUGIN's write set, keyed by dotted path.
+  const arrow = { itemId: "a", plugin: { moveBy: (raw, dx) => [[["from", "x"], raw.from.x + dx]] }, rawItem: { from: { x: 2 } } };
+  const rec = translationRecord(arrow, 5, 0);
+  assert.deepEqual(rec, { start: { "from.x": 2 }, desired: { "from.x": 7 } });
+  assert.deepEqual(geometryPairs("a", rec.start, rec.desired), translationPairs(arrow, 5, 0));
+
+  // AN EQUATION COORDINATE IS ASKED FOR VERBATIM, which is what makes the body
+  // drag's own affordance honest: the record says "y wants 23, x wants its
+  // equation back", so refusedCoordinates has something to refuse.
+  const bound = translationRecord({ itemId: "r", plugin: {}, startX: "= a.x", startY: 20 }, 5, 3);
+  assert.equal(bound.desired.x, "= a.x");
+  assert.equal(bound.desired.y, 23);
+});
+
+test("the body drag's affordance is derivable AT ALL — a locked x leaves a refused key to name", () => {
+  // The mechanism CanvasView.moveAffordance runs, exercised here where a node test
+  // can reach it: the record from the live rule, the lock from the document, and
+  // refusedCoordinates between them. Without this, "nothing moves and nothing
+  // explains" is unfixable, because there is nothing to put in the sentence.
+  const app = fakeApp({ x: "= circle.x", y: 20 });
+  const lock = equationPinning(app, "r", BOX_PLUGIN);
+  const { start, desired } = translationRecord({ itemId: "r", plugin: {}, startX: 100, startY: 20 }, 7, 7);
+  assert.deepEqual(refusedCoordinates(lock, start, desired), ["x"]);
+  assert.equal(equationLockNote(refusedCoordinates(lock, start, desired), "move"),
+    `Cannot move: "x" is an = equation — Equation Lock is on. Edit it in the Inspector, or switch the lock off.`);
+  // And the free axis is genuinely still free — the user's own headline example.
+  assert.deepEqual(translationPairs({ itemId: "r", plugin: {}, startX: 100, startY: 20 }, 7, 7, lock),
+    [[["items", "r", "y"], 27]]);
+});
+
+// ── (9) COVERAGE: EVERY REFUSABLE GESTURE HAS A SURFACE THAT SAYS SO ─────────
+
+/**
+ * THE ANSWER SHEET, checked for COMPLETENESS against its producer rather than
+ * mirroring it. Every key of web/canvas/dragKinds.js DRAG_KIND_MODIFIERS must
+ * appear here exactly once, so declaring a new drag kind turns this red until
+ * someone answers "and what does it say when the lock refuses it?". That is the
+ * shape ledger C-8 prescribes and the shape R6-29's own NOT_PROJECTED table uses:
+ * a hardcoded LIST would drift in silence; a hardcoded list whose completeness is
+ * derived from the producer cannot.
+ *
+ * A value is the CanvasView function that produces the sentence, or null with a
+ * reason the kind needs none.
+ */
+const LOCK_SURFACE = {
+  move: "moveAffordance",
+  resize: "resizeAffordance",
+  modifier: "modifierAffordance",
+  // A group resizes through the SAME eight handles as a single item — the single
+  // selection branch that calls resizeAffordance — so its refusal is already said
+  // by that surface rather than by a second one.
+  groupresize: "resizeAffordance",
+  // OPEN, AND DELIBERATELY NOT FAKED. A multi-resize drives N members that may be
+  // locked DIFFERENTLY through one collective box, so "is this handle refused" has
+  // no single answer; the collective handles are built without an affordance
+  // (web/CanvasView.svelte, the selectedIds.length > 1 branch). Reported rather
+  // than answered with a sentence that would be true for one member and wrong for
+  // the rest — which is the confident-wrong-answer failure this whole feature's
+  // reason-as-a-function ruling exists to prevent.
+  multiresize: null,
+  // CREATION, not modification: a widget that does not exist yet has no stored
+  // leaf to be bound, so there is nothing for the lock to hold.
+  place: null,
+  placesegment: null,
+  // SELECTION, not a write. A band changes what is selected and touches no
+  // geometry.
+  band: null,
+  // R6-29's own declared exemption, unchanged: the arrow endpoint grab writes
+  // outside geometryPairs, so the lock does not reach it and a note here would
+  // describe a restriction that is not being imposed.
+  endpoint: null,
+};
+
+test("COVERAGE: every drag kind is answered — the sheet is complete against DRAG_KINDS", () => {
+  assert.deepEqual([...DRAG_KINDS].sort(), Object.keys(LOCK_SURFACE).sort(),
+    "a drag kind exists with no entry in LOCK_SURFACE (or vice versa). Adding a kind means answering " +
+    "what the canvas says when the equation lock refuses it — name its affordance, or null with a reason.");
+});
+
+test("COVERAGE: every named surface EXISTS and reaches the one sentence", () => {
+  const canvasView = stripComments(readFileSync(resolve(appRoot, "web/CanvasView.svelte"), "utf8"));
+  assert.ok(canvasView.includes(`from "./canvas/equationBinding.js"`),
+    "CanvasView no longer imports the shared refusal vocabulary — a local copy of the sentence is the defect this replaced");
+  for (const fn of new Set(Object.values(LOCK_SURFACE).filter(Boolean))) {
+    assert.ok(new RegExp(`function ${fn}\\b`).test(canvasView), `web/CanvasView.svelte declares no ${fn}`);
+    // The function must reach the SHARED sentence, not compose its own.
+    const body = canvasView.slice(canvasView.indexOf(`function ${fn}`));
+    assert.ok(body.slice(0, body.indexOf("\n  }")).includes("equationLockNote("),
+      `${fn} does not call equationLockNote — a second wording of one condition is the Tower of Babel defect`);
+  }
+});
+
+test("COVERAGE: a computed note that never reaches the markup is the R6-28 defect repeated", () => {
+  // MEASURED, not hypothetical. R6-28 computed a per-degree-of-freedom affordance
+  // AND added a class directive for the greyed look — with no rule in web/app.css,
+  // so the greying rendered nothing and tests/orphan_class_test.js was RED at HEAD.
+  // A note nobody can read is the same failure one step earlier, so each surface's
+  // output is asserted present in the markup that draws it.
+  const canvasView = readFileSync(resolve(appRoot, "web/CanvasView.svelte"), "utf8");
+  const resizeHandles = readFileSync(resolve(appRoot, "web/ResizeHandles.svelte"), "utf8");
+  assert.ok(/<title>\{h\.lockNote\}<\/title>/.test(resizeHandles), "the resize handle's note is not rendered");
+  assert.ok(/<title>\{m\.lockNote\}<\/title>/.test(canvasView), "the modifier point's note is not rendered");
+  assert.ok(/\{#each overlay\.lockTips as t\}/.test(canvasView), "the body drag's note is not rendered");
+  assert.ok(/<tspan[^>]*>\{line\}<\/tspan>/.test(canvasView), "the body-drag tip element carries no text");
+  assert.ok(canvasView.includes("lockNote.split("), "the body-drag tip no longer derives its lines from the one sentence — a hand-written second wording is the defect this whole section is about");
+});
+
+test("COVERAGE: the markup gate can actually fail", () => {
+  // The three assertions above are regexes over real files; prove the shape is
+  // discriminating rather than matching anything.
+  assert.ok(!/<title>\{h\.lockNote\}<\/title>/.test("<rect />"), "the title probe matches markup with no title");
+  assert.ok(/<title>\{h\.lockNote\}<\/title>/.test("<rect>{#if h.lockNote}<title>{h.lockNote}</title>{/if}</rect>"));
 });
 
 console.log(`\n${passed} equation-lock tests passed over ${roster.length} registered widgets`);

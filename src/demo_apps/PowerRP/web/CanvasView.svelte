@@ -66,12 +66,16 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, resizeAnchors, resizedBox, resizeStoredState, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, refusedCoordinates, deltaWithoutRefused, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS } from "./canvas/dragKinds.js";
+  import { translationPairs, translationRecord, resizeAnchors, resizedBox, resizeStoredState, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, refusedCoordinates, deltaWithoutRefused, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS } from "./canvas/dragKinds.js";
   // R6-28 EQUATION LOCK. `equationPinning` is the per-ITEM projection that holds
   // every equation-bound coordinate still; it enters at the SAME `constrain`
   // parameter the modal axis lock uses, so there is one answer to "where may this
   // drag land" and not a second interaction layer. See dragConstraint below.
-  import { equationPinning } from "./canvas/equationBinding.js";
+  // `equationLockNote` is the SENTENCE that condition explains itself with, and it
+  // lives beside the query for the reason commandUnavailableReason lives in
+  // core/commands.js: three canvas surfaces have to say it, so none of them may own
+  // it (todo #240 — it used to be a local here, reachable from one caller).
+  import { equationPinning, equationLockNote } from "./canvas/equationBinding.js";
   // diffState is no longer imported here: the two direct calls it had (the single
   // resize and the group resize) now go through canvas/dragKinds.js geometryPairs,
   // which is where the minimal delta and the constraint projection are one step.
@@ -249,6 +253,29 @@
   const ANCHOR_COPY_CHIP_W = 24; // one chip's width
   const ANCHOR_COPY_CHIP_H = 16; // one chip's height
   const ANCHOR_COPY_CHIP_GAP = 4; // gap between the .x and .y chips
+  // Baseline of the EQUATION-LOCK tip above a selected item's outline: far enough
+  // clear of the dashed stroke to read, in the same screen-px chrome space every
+  // other overlay glyph is measured in. Negative because the tip sits ABOVE the
+  // box's top edge, where nothing else on the overlay draws.
+  const LOCK_TIP_Y = -8;
+  // Line spacing of the lock tip, screen px. The block grows UPWARD from LOCK_TIP_Y
+  // (see the tspan dy below), so adding a line never pushes text over the widget.
+  const LOCK_TIP_LINE_H = 14;
+  /**
+   * The EQUATION-LOCK tip's skin: the anchor tip's, declaration for declaration —
+   * body text with a background-coloured halo behind it (paint-order: stroke) so a
+   * sentence stays readable over arbitrary art, and pointer-transparent like every
+   * other overlay mark.
+   *
+   * INLINE, AND ONLY BECAUSE web/app.css IS ANOTHER AGENT'S FILE THIS ROUND. The
+   * right home is a `.overlay .lock-tip` rule sharing a selector list with
+   * `.overlay .anchor-tip > text`, and that is filed as a hand-back. It is NOT
+   * shipped as a bare class here: R6-28 did exactly that with ResizeHandles'
+   * `.locked`, no rule ever landed, and the greying the user asked for silently
+   * did nothing (tests/orphan_class_test.js red at HEAD). A visible duplicate
+   * beats an invisible feature; an ORPHAN class is neither.
+   */
+  const LOCK_TIP_STYLE = "fill: var(--fg); font-size: var(--a-font-sm); paint-order: stroke; stroke: var(--bg); stroke-width: var(--a-text-halo-stroke); pointer-events: none;";
   // {itemId, anchorId, coord} of the chip currently flashing its "copied" check,
   // or null. Identity-checked so a stale timeout never clears a newer flash.
   let justCopiedAnchor = $state(null);
@@ -1621,31 +1648,99 @@
   }
 
   /**
-   * Pure function. The sentence a locked canvas affordance explains itself with.
+   * Query. WHAT A BODY DRAG CAN STILL DO under the equation lock, as
+   * `{lockNote}` — or nothing at all when the drag is unrestricted.
    *
-   * IT IS COMPUTED, NOT A CONSTANT, for the reason core/commands.js already
-   * records for a command's `requires`: a gate with several disqualifying
-   * conditions has several true sentences, and one fixed string would be a
-   * confident wrong answer for all but one. Here the variable part is WHICH
-   * properties are bound — which is exactly what the user asked the tip to say.
+   * THE BODY IS THE THIRD SURFACE OF ONE CONDITION, and it was the silent one
+   * (todo #240: "an equation-bound coordinate silently refuses a drag — no widget
+   * says why"). A corner explained itself and a body drag did not, for no reason
+   * anyone chose: `equationLockNote` had exactly one caller.
    *
-   * THE VOICE IS THE ONE THIS CONDITION ALREADY HAS. "`x` is an = equation — edit
-   * it in the Inspector" is beginTextEdit's refusal, interiorNav's refusal and the
-   * CanvasToolbar's disabled-field tip, word for word; one condition, one voice.
-   * What is added is the clause only this feature can say: the lock is a TOGGLE,
-   * so switching it off is a second way out that those three do not have.
+   * IT ASKS THE REAL GESTURE, exactly as resizeAffordance does. `translationRecord`
+   * (web/canvas/dragKinds.js) is the record `translationPairs` itself builds, so
+   * this probe cannot disagree with the drag it describes — and it covers a moveBy
+   * widget's endpoints as well as a bbox widget's x/y with no branch here.
    *
-   * @param {string[]} keys - the stored keys the lock refused
-   * @param {string} verb - what the gesture would have done ("move", "resize", …)
-   * @returns {string}
+   * A TRIAL DRAG MOVES ON BOTH AXES, because the question is "what would this
+   * gesture be refused", and a drag the user has not started yet has no direction.
+   * A one-axis probe would answer "nothing is locked" for an item whose `y` is
+   * bound, which is the exact case the user named first.
    *
-   * @example equationLockNote(["h"], "resize") // 'Cannot resize: "h" is an = equation — Equation Lock is on. Edit it in the Inspector, or switch the lock off.'
-   * @example equationLockNote(["x", "w"], "move") // 'Cannot move: "x", "w" are = equations — Equation Lock is on. Edit them in the Inspector, or switch the lock off.'
+   * NO PER-AXIS FLAGS, unlike a resize handle, and that is a fact about the
+   * affordance rather than a simplification: the eight handles are eight separate
+   * elements, so a half-locked corner can degrade to a one-axis cursor; the body
+   * is ONE region whose drag stays useful as long as any axis survives. So the
+   * body reports the sentence and nothing else, and a fully-locked item is still
+   * only reported, never disabled — the drag simply has no degrees of freedom left.
    */
-  function equationLockNote(keys, verb) {
-    const one = keys.length === 1;
-    const named = keys.map((k) => `"${k}"`).join(", ");
-    return `Cannot ${verb}: ${named} ${one ? "is an" : "are"} = equation${one ? "" : "s"} — Equation Lock is on. Edit ${one ? "it" : "them"} in the Inspector, or switch the lock off.`;
+  function moveAffordance(node) {
+    const lock = dragConstraint(node.itemId, node.plugin);
+    if (lock === UNCONSTRAINED) return {};
+    const raw = app.rawState().items ?? {};
+    const member = { itemId: node.itemId, plugin: node.plugin, rawItem: raw[node.itemId], startX: node.state.x ?? 0, startY: node.state.y ?? 0 };
+    const { start, desired } = translationRecord(member, AFFORDANCE_PROBE_UNITS, AFFORDANCE_PROBE_UNITS);
+    const refused = refusedCoordinates(lock, start, desired);
+    return refused.length ? { lockNote: equationLockNote(refused, "move") } : {};
+  }
+
+  /**
+   * Query. WHAT A MODIFIER POINT CAN STILL DO under the equation lock, as
+   * `{locked, lockNote}` — the yellow-square sibling of resizeAffordance.
+   *
+   * `mp` is a nodeModifierPoints entry, so it already carries the pair the
+   * protocol is defined over (`constrain` then `apply`) and its x/y are WORLD;
+   * the probe inverts through the same `node.world` modifierDrag inverts through,
+   * which is why rotation and scale need no thought here.
+   *
+   * IT RUNS `modifierWrite`, THE REAL DRIVER, so the write set is the plugin's own
+   * — the only way to know which parameters this handle touches, since a plugin's
+   * `apply` is opaque and no table could name them. `drag.startState` for this
+   * gesture IS `node.state` (see modifierDrag), so the start record here is the
+   * one the live drag will compare against, not an approximation of it.
+   *
+   * `locked` MEANS "EVERY PARAMETER THIS HANDLE WRITES IS REFUSED" — the same
+   * per-degree-of-freedom doctrine the corner follows, read in the handle's own
+   * parameter space instead of in x/y. A handle that still writes something is
+   * NOT drawn dead; it keeps its grab cursor and only carries the sentence.
+   */
+  function modifierAffordance(node, mp) {
+    const lock = dragConstraint(node.itemId, node.plugin);
+    if (lock === UNCONSTRAINED || !mp.apply) return {};
+    const local = T.apply(T.invert(node.world), mp.x, mp.y);
+    const written = modifierWrite(mp, node.state, { x: local.x + AFFORDANCE_PROBE_UNITS, y: local.y + AFFORDANCE_PROBE_UNITS });
+    const keys = Object.keys(written);
+    const start = Object.fromEntries(keys.map((key) => [key, node.state[key]]));
+    const refused = refusedCoordinates(lock, start, written);
+    if (!refused.length) return {};
+    return { locked: refused.length === keys.length, lockNote: equationLockNote(refused, "drag this point") };
+  }
+
+  /**
+   * Pure function. The inline style a modifier glyph wears when the lock has taken
+   * everything it writes — `null` (no style at all) otherwise, so an unlocked
+   * handle renders byte-identically to before.
+   *
+   * IT IS THE SAME TWO SIGNALS THE RESIZE HANDLE USES, said the same way: the
+   * app-wide --a-disabled-opacity for "greyed", and `not-allowed` for the cursor.
+   * A handle with SOME freedom left keeps its grab cursor and full opacity and
+   * carries only the sentence, which is the per-degree-of-freedom doctrine read in
+   * the handle's own parameter space.
+   *
+   * INLINE RATHER THAN A CLASS, deliberately, and R6-28 is the cautionary case: it
+   * added a `.locked` class to ResizeHandles with no rule in web/app.css, so the
+   * greying silently did nothing (tests/orphan_class_test.js was red at HEAD for
+   * exactly that). The overlay's ghost stem lines a few lines below already style
+   * themselves inline from --a-* tokens for the same reason.
+   *
+   * @param {{locked?: boolean}} m - an overlay modifier record
+   * @returns {string|null}
+   *
+   * @example lockedGlyphStyle({locked: true}) // "opacity: var(--a-disabled-opacity); cursor: not-allowed;"
+   * @example lockedGlyphStyle({locked: false}) // null
+   * @example lockedGlyphStyle({}) // null (a widget with no lock in play declares nothing)
+   */
+  function lockedGlyphStyle(m) {
+    return m.locked ? "opacity: var(--a-disabled-opacity); cursor: not-allowed;" : null;
   }
 
   // translationPairs / resizeAnchors / resizedBox / scaleMemberPairs / scalePairs
@@ -3670,7 +3765,7 @@
 
   let overlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
-    if (!actions || !containerEl) return { outlines: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
+    if (!actions || !containerEl) return { outlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -3698,7 +3793,44 @@
     // world AABB (manifest UNDEFERRAL SWEEP: "multi-resize via handles" — the
     // grabbed handle drags the collective box, members scale proportionally).
     const selSet = new Set(selectedIds);
-    const outlines = nodes.filter((n) => selSet.has(n.itemId) && n.plugin.capabilities.bbox).map(outlineOf);
+    const selectedBboxNodes = nodes.filter((n) => selSet.has(n.itemId) && n.plugin.capabilities.bbox);
+    const outlines = selectedBboxNodes.map(outlineOf);
+    // THE BODY DRAG'S REFUSAL, SAID ON THE CANVAS (todo #240). The selection
+    // outline is `pointer-events: none` (app.css .overlay .selection) — as all
+    // overlay decoration is, so a click reaches the item beneath it — so it cannot
+    // host an SVG <title> the way a resize handle or a yellow square can: a hover
+    // hint on a shape the pointer passes straight through would never appear. The
+    // canvas's own answer to "say something here" is the anchor tip, an SVG <text>
+    // with a halo (.overlay .anchor-tip > text), and this is that idiom reused.
+    //
+    // IT IS NOT NOISE, because it cannot appear unless the user armed the lock —
+    // OFF by default, by his ruling — and the item he selected actually has a
+    // coordinate the lock is holding. Both conditions are the affordance's own:
+    // moveAffordance returns nothing at all otherwise.
+    //
+    // IT FLIPS ON THE CANVAS MIDLINE, which is how a long sentence stays on
+    // screen without anyone estimating how wide it is. An item on the LEFT half
+    // gets the tip anchored at its top-left and reading rightwards; an item on the
+    // RIGHT half gets it anchored at its top-RIGHT and reading leftwards. A
+    // measured width would be the alternative, and SVG can only give one AFTER
+    // layout — too late for a derived value, and a per-character estimate would be
+    // a magic number that is wrong for the first proportional font that changes.
+    const lockTips = selectedBboxNodes.flatMap((n) => {
+      const { lockNote } = moveAffordance(n);
+      if (!lockNote) return [];
+      const w = n.state.w ?? 0;
+      const left = T.apply(n.world, 0, 0), right = T.apply(n.world, w, 0);
+      const a = actions.worldToScreen(left.x, left.y), b = actions.worldToScreen(right.x, right.y);
+      const pastMidline = a.x > rect.width / 2;
+      // TWO LINES, SPLIT AT THE SENTENCE'S OWN EM DASH — a layout decision, not a
+      // second wording: the string is the identical one the handles carry, and the
+      // dash is exactly the clause boundary a line break replaces. Measured reason:
+      // the whole sentence is ~110 characters and ran off the canvas at 1280px even
+      // flipped, so a one-line tip was legible only for short property names. It is
+      // also closer to the shape the user asked for — a "cannot move" line, then the
+      // detail beneath it — than the single run it replaces.
+      return [{ ...(pastMidline ? b : a), anchor: pastMidline ? "end" : "start", lines: lockNote.split(" — ") }];
+    });
     let handles = [], endpoints = [], multiBoxOutline = null;
     if (selectedIds.length === 1 && sel?.plugin.capabilities.bbox && sel.plugin.capabilities.resizable) {
       const w = sel.state.w ?? 0, h = sel.state.h ?? 0;
@@ -3750,6 +3882,11 @@
         shape: m.shape,
         stem: m.stem ? actions.worldToScreen(m.stem.x, m.stem.y) : null,
         hasElement: !!m.element,
+        // {locked, lockNote} — the R6-28 affordance, per handle, and the second of
+        // the three surfaces that speak the one refusal sentence (todo #240). A
+        // yellow square could refuse in total silence before this: the lock reached
+        // it through the seam, and nothing on the glyph said so.
+        ...modifierAffordance(sel, m),
         ...actions.worldToScreen(m.x, m.y),
       }))
       : [];
@@ -3893,7 +4030,7 @@
       placeDots = placePreview.dots.map((d) => ({ ...pt(d.x, d.y), hot: d.hot }));
     }
 
-    return { outlines, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
+    return { outlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
@@ -4063,6 +4200,23 @@
         {#each overlay.outlines as o}
           <polygon class="selection" points={o} />
         {/each}
+        <!-- THE EQUATION LOCK'S SENTENCE FOR A BODY DRAG (todo #240). The third
+             surface of one condition: a resize handle and a yellow square can each
+             carry an SVG <title>, because the pointer reaches them; the selection
+             outline is pointer-events:none like all overlay decoration, so a hover
+             hint on it could never fire. The canvas's own way of saying something
+             in place is the anchor tip — an SVG <text> with a halo over the art —
+             and .lock-tip reuses that skin rather than minting a second one.
+             It appears only with the lock ARMED (off by default) and only for an
+             item that actually has a held coordinate, so it cannot be ambient
+             noise; moveAffordance returns nothing in every other case. -->
+        {#each overlay.lockTips as t}
+          <text style={LOCK_TIP_STYLE} text-anchor={t.anchor} x={t.x} y={t.y + LOCK_TIP_Y}>
+            {#each t.lines as line, i}
+              <tspan x={t.x} dy={i === 0 ? -(t.lines.length - 1) * LOCK_TIP_LINE_H : LOCK_TIP_LINE_H}>{line}</tspan>
+            {/each}
+          </text>
+        {/each}
         {#if overlay.multiBoxOutline}
           <!-- The collective AABB a multi-selection resizes (manifest UNDEFERRAL
                SWEEP: multi-resize via handles). A SOLID half-opacity rectangle
@@ -4178,9 +4332,10 @@
               class:selected={m.selected}
               class:hidden-element={m.hidden}
               points={`${m.x},${m.y - 5} ${m.x + 5},${m.y + 4} ${m.x - 5},${m.y + 4}`}
+              style={lockedGlyphStyle(m)}
               onpointerdown={(e) => startModifier(m.id, e)}
               oncontextmenu={(e) => openPointMenu(m, e)}
-            />
+            >{#if m.lockNote}<title>{m.lockNote}</title>{/if}</polygon>
           {:else}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <rect
@@ -4188,9 +4343,10 @@
               class:selected={m.selected}
               class:hidden-element={m.hidden}
               x={m.x - 4} y={m.y - 4} width="8" height="8"
+              style={lockedGlyphStyle(m)}
               onpointerdown={(e) => startModifier(m.id, e)}
               oncontextmenu={(e) => openPointMenu(m, e)}
-            />
+            >{#if m.lockNote}<title>{m.lockNote}</title>{/if}</rect>
           {/if}
         {/each}
         {#each overlay.anchors as a}

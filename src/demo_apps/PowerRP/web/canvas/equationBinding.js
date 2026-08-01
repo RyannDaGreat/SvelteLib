@@ -1,6 +1,7 @@
 /**
- * WHICH OF AN ITEM'S STORED LEAVES HOLD AN `=` EQUATION — the one query, and the
- * projection built from it.
+ * WHICH OF AN ITEM'S STORED LEAVES HOLD AN `=` EQUATION — the one query, the
+ * projection built from it, and the SENTENCE a refused gesture explains itself
+ * with.
  *
  * ── WHY THIS MODULE EXISTS ───────────────────────────────────────────────────
  * "Is this stored leaf an equation, and would my gesture overwrite it?" is asked
@@ -20,7 +21,11 @@
  * They agree today. Nothing made them agree, and the ledger's measured lesson is
  * that a fifth copy appears while the fourth is being written
  * (CONVENTION_LEDGER C-10). So the expression lives here once, every caller reads
- * it, and tests/equation_binding_test.js fails when a new copy appears.
+ * it, and the DIVERGENCE GATE in tests/equation_lock_test.js fails when a new copy
+ * appears. (This line used to name `tests/equation_binding_test.js`, a file that
+ * has never existed in any commit — a citation to a nonexistent gate is worse than
+ * none, because it tells the next reader the invariant is protected while nothing
+ * checks that claim.)
  *
  * ── THE MODULE IS NAMED FOR THE QUERY, NOT FOR THE FEATURE ───────────────────
  * Lead ruling, 2026-08-01: the R6-28 equation LOCK prompted the extraction, but
@@ -30,6 +35,20 @@
  * is a one-line consequence of the query (the keys it finds, handed to
  * core/derive.pinning) and because a module with one consumer is the speculative
  * generality ledger C-1 forbids.
+ *
+ * ── AND THE REFUSAL SENTENCE, BECAUSE IT IS DOMAIN LOGIC, NOT VIEW LOGIC ──────
+ * `equationLockNote` shipped inside web/CanvasView.svelte and was reachable from
+ * exactly one caller there — the resize-handle affordance — so a body drag and a
+ * yellow square refused in silence while the same condition on a corner explained
+ * itself. That is todo #240. It sits here for the reason core/commands.js keeps
+ * `commandUnavailableReason` out of the palette: a refusal is a statement about
+ * the DOCUMENT, and every surface that has to make one must be able to reach the
+ * same words, or "one condition, one voice" is a hope rather than a fact.
+ *
+ * It being here also puts it inside a gate. tests/doctest_test.js:629 collects
+ * `.js` files ONLY, so the two `@example` records this function carried in a
+ * `.svelte` file had never been executed by anything, in any run — an example
+ * exercising a path with no caller, certifying a feature that did not exist.
  *
  * DOM-free: imports core/expressions + core/derive only, so it runs in bare node
  * and its behaviour is pinned by a node suite rather than by a browser probe.
@@ -100,4 +119,41 @@ export function equationBoundKeys(app, itemId, plugin, keys) {
 export function equationPinning(app, itemId, plugin) {
   return (state, desired) =>
     pinning(equationBoundKeys(app, itemId, plugin, Object.keys(desired)))(state, desired);
+}
+
+/**
+ * Pure function. The sentence a locked canvas affordance explains itself with.
+ *
+ * IT IS COMPUTED, NOT A CONSTANT, for the reason core/commands.js already records
+ * for a command's `requires`: a gate with several disqualifying conditions has
+ * several true sentences, and one fixed string would be a confident wrong answer
+ * for all but one. Here the variable parts are WHICH properties are bound and
+ * WHICH gesture was refused — which is exactly what the user asked the tip to say.
+ *
+ * THE VOICE IS THE ONE THIS CONDITION ALREADY HAS. "`x` is an = equation — edit it
+ * in the Inspector" is web/app.svelte.js beginTextEdit's refusal, web/interiorNav.js's
+ * refusal and web/CanvasToolbar.svelte's disabled-field tip, word for word; one
+ * condition, one voice. What is added is the clause only this feature can say: the
+ * lock is a TOGGLE, so switching it off is a second way out that those three do not
+ * have.
+ *
+ * `verb` IS THE GESTURE'S OWN WORD, and every surface passes its own: "move" for a
+ * body drag, "resize" for a bbox handle, "drag this point" for a modifier point
+ * (the noun the point commands use — hide-points / purge-points). It is a parameter
+ * rather than derived from the keys because the SAME key set refuses different
+ * gestures — a bound `x` stops a move and leaves an east-edge resize alone — so a
+ * sentence inferred from the keys would name the wrong gesture half the time.
+ *
+ * @param {string[]} keys - the stored keys the lock refused, in the gesture's order
+ * @param {string} verb - what the gesture would have done ("move", "resize", …)
+ * @returns {string}
+ *
+ * @example equationLockNote(["h"], "resize") // 'Cannot resize: "h" is an = equation — Equation Lock is on. Edit it in the Inspector, or switch the lock off.'
+ * @example equationLockNote(["x", "w"], "move") // 'Cannot move: "x", "w" are = equations — Equation Lock is on. Edit them in the Inspector, or switch the lock off.'
+ * @example equationLockNote(["innerRadius"], "drag this point") // 'Cannot drag this point: "innerRadius" is an = equation — Equation Lock is on. Edit it in the Inspector, or switch the lock off.'
+ */
+export function equationLockNote(keys, verb) {
+  const one = keys.length === 1;
+  const named = keys.map((k) => `"${k}"`).join(", ");
+  return `Cannot ${verb}: ${named} ${one ? "is an" : "are"} = equation${one ? "" : "s"} — Equation Lock is on. Edit ${one ? "it" : "them"} in the Inspector, or switch the lock off.`;
 }

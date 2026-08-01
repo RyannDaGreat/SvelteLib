@@ -8,6 +8,19 @@
   This file only RENDERS it, and renders it PER DEGREE OF FREEDOM: a corner whose
   height is locked still resizes the width, so it takes the one-axis cursor rather
   than a disabled look. Only a handle with nothing left to do reads as dead.
+
+  "DEAD" IS AN OPACITY, INLINE, AND THAT IS A CORRECTION. R6-28 shipped a "locked"
+  class directive here with NO rule anywhere in web/app.css, so the user's own ask —
+  "the canvas shows GREYED affordances" — rendered exactly like a live handle and
+  the cursor was the whole signal. tests/orphan_class_test.js says so in one line
+  and was RED at HEAD because of it. (The class NAME is spelled around rather than
+  quoted in this comment on purpose: that gate strips CSS comments but not markup
+  ones, so prose naming a class reads to it as a USE — ledger C-14's third
+  instance, reported with a plan rather than patched from here, since the shared
+  stripper deliberately owns the CSS case alone.) The grey is now the app-wide
+  --a-disabled-opacity, set beside the cursor it belongs with, which is the same
+  inline-from-tokens form CanvasView's ghost stem lines already use for overlay
+  chrome while web/app.css is another agent's file.
 -->
 <script>
   let { handles = [], onstart } = $props();
@@ -53,15 +66,16 @@
 </script>
 
 {#each handles as h}
+  {@const cursor = cursorFor(h)}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <rect
     class="handle"
-    class:locked={cursorFor(h) === "not-allowed"}
     x={h.x - 4}
     y={h.y - 4}
     width="8"
     height="8"
-    style:cursor={cursorFor(h)}
+    style:cursor={cursor}
+    style:opacity={cursor === "not-allowed" ? "var(--a-disabled-opacity)" : null}
     onpointerdown={(e) => onstart(h.id, e)}
   >
     <!-- SVG-native hover hint. The HTML Tooltip component cannot mount inside an

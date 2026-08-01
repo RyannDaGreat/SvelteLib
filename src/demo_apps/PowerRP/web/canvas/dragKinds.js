@@ -416,22 +416,56 @@ export function geometryPairs(itemId, start, desired, constrain = UNCONSTRAINED)
  * @example translationPairs({itemId: "a", plugin: {}, rawItem: {}}, 16, 16) // []
  */
 export function translationPairs(member, dx, dy, constrain = UNCONSTRAINED) {
+  const { start, desired } = translationRecord(member, dx, dy);
+  return geometryPairs(member.itemId, start, desired, constrain);
+}
+
+/**
+ * Pure function. WHAT A TRANSLATION ASKS FOR: the `{start, desired}` coordinate
+ * records a move of (dx, dy) hands to the seam, before any projection. Both
+ * branches of the rule above live here — a moveBy widget's plugin hook, and a
+ * bbox widget's plain x/y — so there is one statement of "which coordinates a
+ * drag mentions and what it wants them to be".
+ *
+ * TWO CALLERS, WHICH IS WHY IT IS SEPARATE, and it is exactly the split
+ * `resizeStoredState` already documents for the resize family: the LIVE gesture
+ * (translationPairs, immediately above) and the PROBE that asks what a candidate
+ * drag WOULD write — web/CanvasView.svelte's `moveAffordance`, which runs a trial
+ * translation through `refusedCoordinates` to grey a body drag per degree of
+ * freedom (R6-28 / todo #240). Rebuilding the record at the probe would be a
+ * mirror of this function and would rot against it the day a widget family
+ * changes which coordinates a move mentions — ledger C-8, the same reasoning that
+ * kept the resize affordance off a hand-written edge→coordinate table.
+ *
+ * @param {object} member - a translate member ({itemId, plugin, rawItem, startX, startY})
+ * @param {number} dx - world x travel
+ * @param {number} dy - world y travel
+ * @returns {{start: object, desired: object}} keyed by dotted path within the item
+ *
+ * @example translationRecord({plugin: {}, startX: 10, startY: 20}, 5, 3) // {start: {x: 10, y: 20}, desired: {x: 15, y: 23}}
+ * @example // an EQUATION coordinate is asked for VERBATIM, so diffState drops it and the binding survives:
+ * @example translationRecord({plugin: {}, startX: "= a.x", startY: 20}, 5, 3) // {start: {x: "= a.x", y: 20}, desired: {x: "= a.x", y: 23}}
+ * @example // a moveBy widget's record is its plugin's own write set, keyed by dotted path:
+ * @example translationRecord({plugin: {moveBy: () => [[["from", "x"], 7]]}, rawItem: {from: {x: 2}}}, 5, 0) // {start: {"from.x": 2}, desired: {"from.x": 7}}
+ */
+export function translationRecord(member, dx, dy) {
   if (member.plugin.moveBy) {
-    const moved = member.plugin.moveBy(member.rawItem, dx, dy);
     const start = {}, desired = {};
-    for (const [path, value] of moved) {
+    for (const [path, value] of member.plugin.moveBy(member.rawItem, dx, dy)) {
       const key = path.join(".");
       start[key] = getPath(member.rawItem, path);
       desired[key] = value;
     }
-    return geometryPairs(member.itemId, start, desired, constrain);
+    return { start, desired };
   }
   const start = { x: member.startX, y: member.startY };
-  const desired = {
-    x: typeof start.x === "number" ? start.x + dx : start.x,
-    y: typeof start.y === "number" ? start.y + dy : start.y,
+  return {
+    start,
+    desired: {
+      x: typeof start.x === "number" ? start.x + dx : start.x,
+      y: typeof start.y === "number" ? start.y + dy : start.y,
+    },
   };
-  return geometryPairs(member.itemId, start, desired, constrain);
 }
 
 /**

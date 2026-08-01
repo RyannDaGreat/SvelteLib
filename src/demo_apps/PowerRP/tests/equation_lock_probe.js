@@ -220,17 +220,25 @@ try {
       // The overlay's own <title> is the SVG-native hover hint; reading it back is
       // reading exactly what a user hovers. `handle` rects are in document order,
       // which is the order CanvasView builds them: tl tm tr mr br bm bl ml.
+      //
+      // "DEAD" IS READ AS THE RENDERED OPACITY, NOT AS A MARKER CLASS, and the
+      // correction is the whole reason this line changed. This check used to read
+      // `classList.contains("locked")` — and passed, on a build where that class
+      // matched NO rule in web/app.css, so the greyed look the user asked for
+      // rendered exactly like a live handle. A probe that asserts the marker
+      // certifies the intent; only the computed style can certify the pixel.
+      const dead = (el) => Number(getComputedStyle(el).opacity) < 1;
       return [...document.querySelectorAll("rect.handle")].map((el) => ({
         cursor: el.style.cursor,
-        locked: el.classList.contains("locked"),
+        locked: dead(el),
         note: el.querySelector("title")?.textContent ?? null,
       }));
     });
     ok(handles.length === 8, `the selected rect shows its eight resize handles (got ${handles.length})`);
     const [tl, tm, tr, mr, br, bm, bl, ml] = handles;
     ok(br.cursor === "ew-resize", `BR corner with h locked degrades to the WIDTH cursor, not to disabled (got ${br?.cursor})`);
-    ok(br.locked === false, "…and is not marked dead, because it can still do something");
-    ok(bm.cursor === "not-allowed" && bm.locked === true, `the BOTTOM-EDGE handle, whose only axis is h, IS dead (got ${bm?.cursor})`);
+    ok(br.locked === false, "…and is not GREYED, because it can still do something");
+    ok(bm.cursor === "not-allowed" && bm.locked === true, `the BOTTOM-EDGE handle, whose only axis is h, IS dead AND VISIBLY GREY (cursor ${bm?.cursor}, dimmed ${bm?.locked})`);
     ok(mr.cursor === "ew-resize" && mr.locked === false && mr.note === null, "the RIGHT-EDGE handle is untouched — it never wrote h");
     ok(typeof br.note === "string" && br.note.includes('"h"') && br.note.includes("Equation Lock is on"),
       `a locked affordance says WHICH property and WHY (got ${JSON.stringify(br?.note)})`);
@@ -241,6 +249,39 @@ try {
     const unlocked = await page.evaluate(() => [...document.querySelectorAll("rect.handle")].map((el) => ({ cursor: el.style.cursor, note: el.querySelector("title")?.textContent ?? null })));
     ok(unlocked.every((h) => h.note === null), "with the lock OFF no handle claims a restriction — the indicator reports the LOCK and nothing else");
     ok(unlocked[4].cursor === "nwse-resize", `…and the BR corner is its ordinary diagonal again (got ${unlocked[4]?.cursor})`);
+  }
+
+  // ── 6. THE BODY DRAG SAYS WHY (todo #240) ──────────────────────────────────
+  // "An equation-bound coordinate silently refuses a drag — no widget says why."
+  // A resize handle explained itself from the first commit; the BODY did not,
+  // because the one sentence had one caller. The selection outline is
+  // pointer-events:none like all overlay decoration, so it cannot host a hover
+  // <title> — the canvas says this one in place, as text, the way it already says
+  // an anchor's name.
+  {
+    await setLock(true);
+    const rect = await setupRect({ y: Y_EQUATION });
+    await page.evaluate((id) => { window.__powerrp_app.selection = id; }, rect.id);
+    await new Promise((r) => setTimeout(r, 80));
+    // WHITESPACE-NORMALISED, because the tip is two <tspan> lines and the template's
+    // own indentation lands between them as text nodes. The user reads two lines; the
+    // assertion reads the one sentence they spell.
+    const tip = await page.evaluate(() =>
+      [...document.querySelectorAll(".overlay text")]
+        .map((el) => el.textContent.replace(/\s+/g, " ").trim())
+        .find((t) => t.startsWith("Cannot move:")) ?? null);
+    ok(typeof tip === "string", `the canvas states the body drag's refusal in place (got ${JSON.stringify(tip)})`);
+    ok(tip.includes('"y"') && tip.includes("Equation Lock is on") && tip.includes("switch the lock off"),
+      "…and it is the SAME sentence the resize handle uses — one condition, one voice");
+
+    // AND IT IS NOT AMBIENT. The tip exists only because the lock is armed; with
+    // the lock off the identical selection must say nothing, or a default-off
+    // feature would be shouting at every user who never turned it on.
+    await setLock(false);
+    await new Promise((r) => setTimeout(r, 80));
+    const quiet = await page.evaluate(() =>
+      [...document.querySelectorAll(".overlay text")].some((el) => el.textContent.replace(/\s+/g, " ").trim().startsWith("Cannot ")));
+    ok(quiet === false, "with the lock OFF the canvas says nothing about it");
   }
 
   ok(liveErrors.length === 0, `zero console errors during all interactions (${JSON.stringify(liveErrors)})`);
