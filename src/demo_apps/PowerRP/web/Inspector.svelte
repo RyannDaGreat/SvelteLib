@@ -857,14 +857,36 @@
 
   /** Command. Enters equation mode on a row that holds a LITERAL: seeds the
    * draft with an equation evaluating to the current value and opens the input
-   * (nothing is written until commit). */
+   * (nothing is written until commit).
+   *
+   * The seed is read from `paths[0]` — the PRIMARY, the same path `eqPath`
+   * takes and the same one `equationEntry` reads its error and evaluated badge
+   * from. Over a SET the primary's value IS the seed by the same rule
+   * core/multiselect.js `rowMixedState` already uses, so opening entry on a
+   * mixed row proposes the primary's value rather than an arbitrary one.
+   * (It read a bare `path` until this line was fixed — an undeclared
+   * identifier, so every ƒ click on a color/boolean/select/asset/text row threw
+   * ReferenceError AFTER eqOpenKey was set, i.e. entry opened UNSEEDED.
+   * tests/multiselect_equation_probe.js pins it, and reproduced the live
+   * `PAGEERROR path is not defined` before the fix.)
+   *
+   * AN EQUATION THE PRIMARY ALREADY HOLDS IS KEPT, not re-seeded from its
+   * evaluated value. In a SINGLE selection this branch is unreachable (the ƒ
+   * toggle calls dropEquation when the row already renders as an equation), but
+   * over a SET it is reachable the moment the row is MIXED: the primary can hold
+   * `= expr` while another item holds a literal. Re-seeding from app.state()
+   * there would silently substitute the expression's CURRENT NUMBER for the
+   * expression — the row would look unchanged and commit a frozen literal. */
   function beginEquation(row, paths) {
     eqOpenKey = row.key;
     eqOwnerId = pickedItemId;
     eqFocusKey = row.key;
     eqPath = paths[0];
     eqPaths = paths;
-    eqDraft = equationSeed(getPath(app.state(), path));
+    const stored = getPath(app.rawState(), paths[0]);
+    eqDraft = isEquationValue(sel.plugin, writeKey(row).split("."), stored)
+      ? equationDisplay(stored, app.rawState())
+      : equationSeed(getPath(app.state(), paths[0]));
     eqInvalid = false;
     eqSuggestOpen = false;
   }
@@ -1360,6 +1382,13 @@
   {@const eqStored = eqCapable ? rowStored(row) : null}
   {@const eqActive = eqCapable && equationActive(row, eqStored)}
   {@const eqRowPaths = eqCapable ? (multi ? multiPaths(writeKey(row)) : [["items", pickedItemId, ...writeKey(row).split(".")]]) : null}
+  <!-- IS THE ƒ ENTRY OPEN ON THIS ROW, from the button rather than from a stored
+       equation? Only this half of `equationActive` may outrank the MIXED mark: a
+       mixed row whose PRIMARY happens to store an equation is still MIXED and
+       must keep saying so, but a row the user just clicked ƒ on must show the
+       field they asked for. Same (key, owner) pair equationActive tests, named
+       once so the two readers cannot drift. -->
+  {@const eqEntryOpen = eqCapable && eqOpenKey === row.key && eqOwnerId === pickedItemId}
   <!-- A LIST row (core/lists.js) keeps the label + keyframe line in the shared
        grid but gives the LIST ITSELF the panel's full width on a second line: one
        element row carries an index, a visibility eye, several field controls, the
@@ -1464,18 +1493,40 @@
       <Tooltip text={multiRow.problem}>
         <span class="mixed-blocked">{MIXED_MARK}</span>
       </Tooltip>
-    {:else if multiRow?.mixed}
+    {:else if multiRow?.mixed && !eqEntryOpen}
       <!-- MIXED. The user's spec: "a dot dot dot in the parts that are different.
            And then when I click them, it would have to unify them all to the same
            value." The mark sits IN the value cell — the field's own footprint —
            rather than as an extra button beside it, because a per-field mode
            BUTTON was built once and vetoed. One click unifies (ONE undo unit) and
-           the real field takes over, already editing all N together. -->
-      <Tooltip text={`${multiPanel.itemIds.length} selected items differ here — click to set them all to ${multiValueLabel(multiRow.seed)}`}>
-        <button class="mixed-unify" aria-label={`${row.label}: differs across the selection — unify to ${multiValueLabel(multiRow.seed)}`} onclick={() => unifyRow(multiRow)}>
-          {MIXED_MARK}
-        </button>
-      </Tooltip>
+           the real field takes over, already editing all N together.
+
+           IT SITS INSIDE .numfield, WITH THE ƒ, because Tier 0 admits no
+           exceptions and a set is not one — this file says so at eqPaths above
+           ("a multi-selection keeps the universal `=` affordance instead of
+           losing it"), and until this branch was wrapped it said it while doing
+           the opposite: the mark short-circuited the `eqCapable` branch, so ƒ was
+           unreachable on a mixed row of EVERY kind and the only way to bind a set
+           to an expression was to unify to a LITERAL first and then replace it —
+           two undo units, the first one destroying whatever the items held.
+           `eqRowPaths` is already every selected item's path, and commitEquation
+           fans out over it in ONE commit, so writing the equation to all N needs
+           no machinery beyond letting the button render.
+
+           THE TOGGLE IS UNPRESSED HERE whatever the primary stores. `aria-pressed`
+           is a claim about the ROW, and a mixed row is by definition not on one
+           equation; pressing it would also mean the click ran dropEquation —
+           stamping the primary's evaluated literal over the others — which is a
+           unify wearing an equation button's clothes. Unpressed, the click is
+           beginEquation, which writes nothing until commit. -->
+      <div class="numfield">
+        {#if eqCapable}{@render eqToggle(row, eqRowPaths, false)}{/if}
+        <Tooltip text={`${multiPanel.itemIds.length} selected items differ here — click to set them all to ${multiValueLabel(multiRow.seed)}`}>
+          <button class="mixed-unify" aria-label={`${row.label}: differs across the selection — unify to ${multiValueLabel(multiRow.seed)}`} onclick={() => unifyRow(multiRow)}>
+            {MIXED_MARK}
+          </button>
+        </Tooltip>
+      </div>
     {:else if eqCapable}
       <div class="numfield">
         {@render eqToggle(row, eqRowPaths, eqActive)}
