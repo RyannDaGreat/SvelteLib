@@ -15,7 +15,7 @@
   import ResizeHandles from "./ResizeHandles.svelte";
   import VideoV7Overlay from "./VideoV7Overlay.svelte"; // per-widget WebGPU video canvases stacked over the Skia scene (video_v7)
   import { videoV7Descriptors } from "./videoV7Placement.js";
-  import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
+  import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // The R modal types its angle in DEGREES and `rotation` stores RADIANS. The
@@ -70,7 +70,7 @@
   // every equation-bound coordinate still; it enters at the SAME `constrain`
   // parameter the modal axis lock uses, so there is one answer to "where may this
   // drag land" and not a second interaction layer. See dragConstraint below.
-  import { equationPinning, equationBoundKeys } from "./canvas/equationBinding.js";
+  import { equationPinning } from "./canvas/equationBinding.js";
   // diffState is no longer imported here: the two direct calls it had (the single
   // resize and the group resize) now go through canvas/dragKinds.js geometryPairs,
   // which is where the minimal delta and the constraint projection are one step.
