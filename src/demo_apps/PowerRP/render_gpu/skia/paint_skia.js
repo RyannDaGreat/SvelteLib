@@ -53,7 +53,7 @@ import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRu
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
-import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach } from "./materials.js";
+import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach, materialUnavailableReason } from "./materials.js";
 import { isPatternMaterial, patternCellFor, patternMatrix, shapeColor } from "./pattern_material.js";
 import { getShapeSdf, makeShapeSdfChild } from "./shape_sdf.js"; // the silhouette signed-distance child that makes a material fill conform to its shape
 import { silhouettePathD } from "./silhouette.js"; // the glyph-outline union path for an SVG/iconify decorated border (decorateSilhouetteBorder's cmd.silhouette)
@@ -174,7 +174,7 @@ const COVERAGE_AA_SLOP_PX = 2;
  *     at least a device pixel stay), and image/video ops sample through a mip
  *     chain. Invisible quality loss at ~100px.
  */
-export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null, antialias = true, quality = "full" } = {}) {
+export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null, antialias = true, quality = "full", maxUniformRows = Infinity } = {}) {
   if (!fontCollection) throw new Error("paintIR(skia): a fontCollection is required (committed families + Noto fallback chain)");
   const flat = flattenIR(commands);
   const bg = parseColor(background);
@@ -200,7 +200,12 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // coverage-AA setting without re-threading it through each helper signature.
   // bgColor rides on ctx because the backdrop RE-RENDER branch has to reproduce
   // the composite it is standing in for, and a composite starts with THE CLEAR.
-  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality, bgColor };
+  // `maxUniformRows` is this GL context's MAX_FRAGMENT_UNIFORM_VECTORS, supplied by
+  // whoever owns the context (browser_surface.js). Infinity — the default — means NO
+  // CEILING IS KNOWN, so nothing is refused and the node/CLI software path is
+  // byte-identical. It rides on ctx for the same reason bgColor does: the material
+  // handlers are several frames down and must not each re-thread it.
+  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality, bgColor, maxUniformRows };
   // THE FRAME's pixel count, fixed here and inherited by every nested scratch's ctx
   // copy: the unit the material raster cache's memory budget is expressed in
   // (rasterCacheBudget). Nested passes shrink deviceW/deviceH; the frame does not.
@@ -2327,10 +2332,37 @@ function drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa = true
  * handleGlassBackdrop exactly; `scale` (= sd) is handed to the material's packer
  * for any world-unit knob it exposes.
  */
+/**
+ * Command (throws when this GL context cannot compile the material's shader).
+ *
+ * THE ONLY LOUD MOMENT THIS FAILURE HAS. Ganesh links the fragment program at
+ * DRAW time; a driver that refuses it drops the draw and returns normally, so the
+ * `if (!shader) throw` guards further down can never fire for a capability
+ * overrun and the widget simply comes out blank. Comparing the material's declared
+ * cost against the context's ceiling BEFORE any of that is what converts the
+ * quietest failure in the renderer into the loudest one available.
+ *
+ * IT THROWS RATHER THAN DRAWING ITS OWN AFFORDANCE, deliberately. The per-node
+ * paint boundary (paintNodeRun) already reports once with the ITEM NAMED and draws
+ * core/paint_containment.js's red box, and it already unwinds the canvas save
+ * stack — this is exactly the "widget that cannot be painted" case it was
+ * generalized for (see that file's doctrine). A second affordance here would be a
+ * fifth copy of one rect-and-text, in a codebase that already has four.
+ *
+ * NOT a configurationError: the backend is wired correctly and every other widget
+ * on the surface still paints, so a red box on this one item is an honest
+ * description of what happened — which is the line isConfigurationError draws.
+ */
+function refuseUnrenderableMaterial(material, ctx) {
+  const reason = materialUnavailableReason(material, ctx.maxUniformRows);
+  if (reason) throw new Error(`paintIR(skia): ${reason}`);
+}
+
 function handleMaterialBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx, depth) {
   const canvas = target.canvas;
   const opacity = cmd.opacity ?? 1;
   const material = getMaterial(cmd.material);
+  refuseUnrenderableMaterial(material, ctx);
 
   // Device-space region geometry (a similarity transform), identical to glass.
   const ds = view.zoom * view.dpr;
@@ -2450,6 +2482,7 @@ function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
   const material = getMaterial(cmd.material);
   if (isBackdropMaterial(material))
     throw new Error(`paintIR(skia): materialFill names BACKDROP material "${cmd.material}" — use materialBackdrop (foreground materials carry backdrop:false)`);
+  refuseUnrenderableMaterial(material, ctx);
 
   // A PATTERN material tiles VECTOR GEOMETRY through a picture shader rather than
   // running SkSL over a raster, so it takes its own path entirely (no uniform pack,

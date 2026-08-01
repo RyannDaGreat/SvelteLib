@@ -804,6 +804,16 @@ export function elementToPathD(tag, attrs) {
  * caller built); a missing/unsupported gradient falls back to its first-stop
  * solid (or null) and pushes a `warnings` note — never a silent blank.
  *
+ * THE KEYWORDS ARE ASCII CASE-INSENSITIVE; THE GRADIENT ID IS NOT. A paint
+ * attribute is parsed as a CSS value, so `NONE`, `CURRENTCOLOR` and `URL(#g)` are
+ * all legal and a browser honours them (measured against getComputedStyle: `NONE`
+ * computes to `none`, and `currentcolor` — the CSS Color 4 canonical spelling —
+ * computes to the `color`). An SVG **id** is case-SENSITIVE, so the fold is
+ * applied per comparison rather than to the whole value: lowercasing `v` outright
+ * would make `url(#GradA)` miss a def named `GradA`. Before this, `fill="NONE"`
+ * fell through as a colour string and threw in parseColor, i.e. "paint nothing"
+ * became "kill the widget" — the worst possible reading of the two.
+ *
  * Args:
  *   value (string|undefined): the raw attribute value
  *   ink (string): the widget ink color for "currentColor"
@@ -815,15 +825,18 @@ export function elementToPathD(tag, attrs) {
  *
  * @example resolvePaint("#fff", "#000", {}, new Set()) // "#fff"
  * @example resolvePaint("none", "#000", {}, new Set()) // null
+ * @example resolvePaint("NONE", "#000", {}, new Set()) // null (a CSS keyword is case-insensitive)
  * @example resolvePaint("currentColor", "#e11", {}, new Set()) // "#e11"
+ * @example resolvePaint("currentcolor", "#e11", {}, new Set()) // "#e11" (the CSS Color 4 spelling)
  * @example resolvePaint(undefined, "#000", {}, new Set()) // undefined (inherit — caller supplies)
  */
 export function resolvePaint(value, ink, gradients, warnings) {
   if (value === undefined || value === null) return undefined; // inherit
   const v = String(value).trim();
-  if (v === "" || v === "none") return v === "none" ? null : undefined;
-  if (v === "currentColor") return ink;
-  const url = v.match(/^url\(\s*#([^)\s]+)\s*\)/);
+  const keyword = v.toLowerCase();
+  if (v === "" || keyword === "none") return keyword === "none" ? null : undefined;
+  if (keyword === "currentcolor") return ink;
+  const url = v.match(/^url\(\s*#([^)\s]+)\s*\)/i); // the FUNCTION name folds, the id does not
   if (url) {
     const g = gradients[url[1]];
     if (g && g.type === "linearGradient") return g;

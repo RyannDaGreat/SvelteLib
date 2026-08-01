@@ -1,6 +1,12 @@
 /**
- * CSS NAMED COLOUR guard — plain node, no framework.
+ * CSS COLOUR SPELLING guard — plain node, no framework.
  * Run: node src/demo_apps/PowerRP/tests/named_color_test.js
+ *
+ * THE ONE QUESTION THIS FILE ANSWERS: which colour spellings does PowerRP accept,
+ * and does it refuse only what a browser would also refuse? Two defects of the
+ * identical shape have shipped here — a VALID CSS colour treated as garbage — and
+ * each one red-boxed a whole widget out of the paint path, in the EDITOR. So the
+ * vocabulary and its case rule are pinned together.
  *
  * WHY THIS EXISTS. `render_gpu/ir.js parseColor` accepted `#hex` and `rgb()`
  * and refused everything else, and TWO suites pinned that refusal using
@@ -24,7 +30,23 @@
  *   (5) THE MEASURED REGRESSION: an SVG whose only paint is `fill="red"`
  *       flattens, emits and resolves to red — no throw, no error affordance,
  *       and no flatten WARNING either (a named colour is not a degrade, so it
- *       must not borrow the first-stop-solid band's voice).
+ *       must not borrow the first-stop-solid band's voice);
+ *   (6) EVERY spelling is ASCII case-insensitive, swept over the whole
+ *       vocabulary rather than a hand-picked sample — because the second defect
+ *       was `RGB(255,0,0)` throwing while `#FF0000` and `RED` did not, i.e. two
+ *       of three spellings had remembered the rule and one had not;
+ *   (7) but an SVG **id** is case-SENSITIVE, so `url(#GradA)` must NOT find a
+ *       def named `grada`. A blanket lowercase would have broken that, and it is
+ *       the reason resolvePaint folds per comparison instead of folding `v`.
+ *
+ * THE ORACLE for (6) and (7) is a real browser, not the CSS spec as I read it:
+ * `.frenzy/round6/scratchpad_W4S_cssoracle.mjs` renders each spelling as an SVG
+ * presentation attribute and reads getComputedStyle. Measured there —
+ * `fill="NONE"` computes to `none`, `fill="RGB(255,0,0)"` and `fill="RED"` to
+ * `rgb(255, 0, 0)`, and all three of `currentcolor` / `currentColor` /
+ * `CURRENTCOLOR` to the element's `color`. (It also showed `fill="notacolour"`
+ * computing to BLACK — a browser's silent fallback. We throw instead, and keep
+ * throwing: that is the one place we deliberately differ.)
  */
 
 import assert from "node:assert/strict";
@@ -36,6 +58,8 @@ import { svgPlugin } from "../plugins/svg.js";
 const BOX = 200; // the widget box these checks emit into
 const IDENTITY_WORLD = { x: 0, y: 0, rotation: 0, scale: 1 };
 const INK = "#000000"; // resolvePaint's currentColor ink; irrelevant to a named colour
+// A minimal collectGradients-shaped def, for the url(#id) case checks.
+const LINEAR_GRADIENT = { type: "linearGradient", stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }], from: { x: 0, y: 0 }, to: { x: 1, y: 0 } };
 
 // The measured failure: skill-icons:fediverse-light spells its paint `fill="red"`.
 const NAMED_FILL_SVG = '<svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="20" fill="red"/></svg>';
@@ -89,9 +113,25 @@ test("the spec's SPELLING ALIASES are the same colour", () => {
 
 // ── (3) case-insensitivity ────────────────────────────────────────────────────
 
-test("keywords are ASCII case-insensitive, as CSS requires", () => {
-  for (const spelling of ["Red", "RED", "CornflowerBlue"])
-    assert.deepEqual(parseColor(spelling), parseColor(spelling.toLowerCase()), spelling);
+/** Pure function. "cornflowerblue" -> "CoRnFlOwErBlUe" — the spelling most likely
+ * to catch a comparison that folded only one side.
+ * @example alternatingCase("rgb(1,2,3)") // "RgB(1,2,3)"
+ */
+function alternatingCase(s) {
+  return [...s].map((c, i) => (i % 2 ? c.toLowerCase() : c.toUpperCase())).join("");
+}
+
+test("EVERY accepted spelling is ASCII case-insensitive — swept, not sampled", () => {
+  // The whole vocabulary plus one instance of each non-name spelling. The sweep
+  // is the point: "cornflowerblue" and "#FF0000" both worked while
+  // "RGB(255,0,0)" threw, so any hand-picked sample can miss the one that drifted.
+  const corpus = [...cssNamedColorKeywords(), "#f00", "#f00c", "#ff0000", "#ff0000cc",
+    "rgb(255,0,0)", "rgba(255,0,0,0.5)", "rgb( 12 , 34 , 56 )"];
+  for (const spelling of corpus) {
+    const canonical = parseColor(spelling);
+    for (const variant of [spelling.toUpperCase(), spelling.toLowerCase(), alternatingCase(spelling)])
+      assert.deepEqual(parseColor(variant), canonical, `${variant} must equal ${spelling}`);
+  }
 });
 
 // ── (4) the refusal survives ──────────────────────────────────────────────────
@@ -131,4 +171,30 @@ test("resolvePaint hands a named colour straight through, with no warning", () =
   assert.deepEqual([...warnings], [], "no punt notice — the colour is honoured exactly");
 });
 
-console.log(`\n${passed} CSS named colour tests passed.`);
+test("resolvePaint's KEYWORDS fold too — `fill=\"NONE\"` is paint-nothing, not a dead widget", () => {
+  // Before the fold, "NONE" fell through as a colour string and threw in
+  // parseColor: the worst reading of the two, since it turned "paint nothing"
+  // into "kill the widget". Every case of every keyword, derived by folding.
+  for (const spelling of ["none", "NONE", "None", alternatingCase("none")])
+    assert.equal(resolvePaint(spelling, INK, {}, new Set()), null, spelling);
+  // `currentcolor` is the CSS Color 4 canonical spelling; `currentColor` is the
+  // historical SVG one. Both, and any case, resolve to the ink.
+  for (const spelling of ["currentColor", "currentcolor", "CURRENTCOLOR", alternatingCase("currentcolor")])
+    assert.equal(resolvePaint(spelling, INK, {}, new Set()), INK, spelling);
+  for (const spelling of ["url(#g)", "URL(#g)", "Url( #g )"])
+    assert.equal(resolvePaint(spelling, INK, { g: LINEAR_GRADIENT }, new Set()), LINEAR_GRADIENT, spelling);
+});
+
+test("but an SVG **id** is case-SENSITIVE — the fold is per keyword, never on the whole value", () => {
+  // This is why resolvePaint does not simply lowercase `v`. If it did, this
+  // lookup would succeed and an author's two distinct gradients would collide.
+  const warnings = new Set();
+  assert.equal(resolvePaint("url(#GradA)", INK, { grada: LINEAR_GRADIENT }, warnings), null,
+    "a lowercase def must NOT answer for an uppercase reference");
+  assert.equal([...warnings].length, 1, "and the miss is reported, not silent");
+  assert.match([...warnings][0], /not found/);
+  assert.equal(resolvePaint("url(#GradA)", INK, { GradA: LINEAR_GRADIENT }, new Set()), LINEAR_GRADIENT,
+    "the exactly-spelled def is found");
+});
+
+console.log(`\n${passed} CSS colour spelling tests passed.`);

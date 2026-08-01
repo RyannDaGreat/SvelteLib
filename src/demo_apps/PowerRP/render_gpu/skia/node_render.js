@@ -88,11 +88,18 @@ function buildFontCollection(CanvasKit) {
  *     to minutes on this SOFTWARE surface. It must stay a caller's decision: "full"
  *     is the only default a headless renderer can honestly have, since a proxy PNG is
  *     not what the editor shows (see cli/render.js's header).
+ *   opts.maxUniformRows (number): a MAX_FRAGMENT_UNIFORM_VECTORS ceiling to hold
+ *     materials to. Infinity by default and in the CLI, which is correct here — a
+ *     software surface has no GL driver to refuse a program, so nothing may be
+ *     refused. It is threaded so the device-capability refusal can be exercised
+ *     END TO END on a real surface (render_gpu/tests/material_device_limit_test.js)
+ *     rather than asserted about by reading source text; the machine this runs on
+ *     reports 4096, so a test that could only use the real ceiling could not fail.
  *
  * Returns:
  *   Promise<Uint8Array>: encoded PNG bytes
  */
-export async function renderToPng(commands, view, { width, height, background = "#ffffff", media = {}, dither = null, antialias = true, quality = "full" } = {}) {
+export async function renderToPng(commands, view, { width, height, background = "#ffffff", media = {}, dither = null, antialias = true, quality = "full", maxUniformRows = Infinity } = {}) {
   const CanvasKit = await ensureCanvasKit();
   const surface = CanvasKit.MakeSurface(width, height);
   if (!surface) throw new Error("node_render: MakeSurface returned null");
@@ -100,7 +107,7 @@ export async function renderToPng(commands, view, { width, height, background = 
   // (when dither is active) and de-bands on the downconvert to this 8-bit
   // surface; "off" paints straight in, byte-identical to before.
   renderWithDither(CanvasKit, surface, width, height, dither, (canvas) =>
-    paintIR(CanvasKit, canvas, commands, view, { media, background, fontCollection: _fontCollection, antialias, quality }));
+    paintIR(CanvasKit, canvas, commands, view, { media, background, fontCollection: _fontCollection, antialias, quality, maxUniformRows }));
   const img = surface.makeImageSnapshot();
   if (!img) throw new Error("node_render: makeImageSnapshot returned null");
   const png = img.encodeToBytes();

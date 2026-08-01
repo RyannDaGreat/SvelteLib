@@ -77,9 +77,9 @@ import { visibleElements } from "../core/lists.js";
 /**
  * Pure function. Parses a color to an [r,g,b,a] float array (0..1 channels).
  * Accepts #rgb, #rrggbb, #rrggbbaa, rgb(...)/rgba(...), a CSS NAMED color
- * ("red", "cornflowerblue", "transparent" — CSS_NAMED_COLORS, matched
- * case-insensitively), or an already-parsed array (returned as a copy).
- * Anything else throws — no silent fallback.
+ * ("red", "cornflowerblue", "transparent" — CSS_NAMED_COLORS), or an
+ * already-parsed array (returned as a copy). EVERY string spelling is ASCII
+ * CASE-INSENSITIVE, as CSS requires. Anything else throws — no silent fallback.
  *
  * Args:
  *   color (string|number[]): CSS-ish color or [r,g,b,a?] array
@@ -91,6 +91,7 @@ import { visibleElements } from "../core/lists.js";
  * @example parseColor("#0f8")              // [0, 1, 0.5333] (#0f8 → #00ff88), alpha 1
  * @example parseColor("rgba(255,0,0,0.5)") // [1, 0, 0, 0.5]
  * @example parseColor("red")               // [1, 0, 0, 1] (a CSS named color)
+ * @example parseColor("RGB(255,0,0)")      // [1, 0, 0, 1] (every spelling is case-insensitive)
  * @example parseColor([0.1, 0.2, 0.3])     // [0.1, 0.2, 0.3, 1]
  */
 export function parseColor(color) {
@@ -119,9 +120,22 @@ export function parseColor(color) {
 
 const PARSE_COLOR_CACHE = new Map();
 
-/** Pure function. The actual string parsing behind parseColor's memo. */
+/**
+ * Pure function. The actual string parsing behind parseColor's memo.
+ *
+ * CASE IS FOLDED ONCE, HERE, FOR THE WHOLE VOCABULARY. Every spelling this
+ * function accepts is ASCII case-insensitive in CSS — `#FF0000`, `RGB(255,0,0)`
+ * and `Red` are all legal, and the browser resolves all three (measured against
+ * getComputedStyle). Nothing a colour string can contain is case-SIGNIFICANT, so
+ * one fold at the entrance beats three case-insensitive comparisons that a fourth
+ * spelling would have to remember to join. The hex regex already spelled both
+ * cases out by hand and the `rgb(` prefix did not, which is exactly the drift a
+ * single fold prevents. The THROW quotes the caller's original text, not the
+ * folded copy, so an error names what was actually written.
+ */
 function parseColorUncached(color) {
-  const hex = color.match(/^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/);
+  const lower = color.toLowerCase();
+  const hex = lower.match(/^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/);
   if (hex) {
     const h = hex[1];
     // Shorthand #rgb / #rgba: every digit doubles ("#f08c" → "#ff0088cc").
@@ -134,15 +148,14 @@ function parseColorUncached(color) {
       : h.match(/../g).map((b) => parseInt(b, 16) / 255);
     return bytes.length === 3 ? [...bytes, 1] : bytes;
   }
-  const fn = color.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/);
+  const fn = lower.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/);
   if (fn) return [+fn[1] / 255, +fn[2] / 255, +fn[3] / 255, fn[4] === undefined ? 1 : +fn[4]];
   // A CSS NAMED color is spelled through the SAME hex parser above, so there is
   // one channel-decoding implementation and the table is verifiable by eye
-  // against the spec. Keywords are ASCII case-insensitive in CSS ("Red" is legal).
-  // hasOwn, not a bare index: "constructor" and "toString" are truthy on any
-  // plain object, and would reach the hex parser as a function instead of throwing.
-  const key = color.toLowerCase();
-  if (Object.hasOwn(CSS_NAMED_COLORS, key)) return parseColorUncached(CSS_NAMED_COLORS[key]);
+  // against the spec. hasOwn, not a bare index: "constructor" and "toString" are
+  // truthy on any plain object, and would reach the hex parser as a function
+  // instead of throwing.
+  if (Object.hasOwn(CSS_NAMED_COLORS, lower)) return parseColorUncached(CSS_NAMED_COLORS[lower]);
   throw new Error(`parseColor: unsupported color "${color}"`);
 }
 

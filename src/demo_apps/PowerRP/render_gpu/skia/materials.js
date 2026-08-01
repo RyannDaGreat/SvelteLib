@@ -220,6 +220,92 @@ export function materialIds() {
   return Object.keys(MATERIALS);
 }
 
+// ── THE DEVICE-CAPABILITY GATE ────────────────────────────────────────────────
+//
+// WHY THIS EXISTS, AND WHY IT CANNOT LIVE IN THE MATERIAL. `RuntimeEffect.Make`
+// and `makeShaderWithChildren` only build Skia objects. THE GL PROGRAM IS
+// COMPILED AT DRAW TIME INSIDE GANESH, and when the driver refuses it — because
+// the fragment program declares more uniform vectors than MAX_FRAGMENT_UNIFORM_
+// VECTORS, say — Skia DROPS THE DRAW AND RETURNS NORMALLY. No exception, no null,
+// no console line. So paint_skia's `if (!shader) throw` guards can never fire for
+// this class, and a material past a device limit renders as NOTHING: the quietest
+// failure this codebase has, and the one core/paint_containment.js's doctrine
+// exists to forbid.
+//
+// A material cannot answer this about itself: the limit is a property of the GL
+// context, and a material file must not be able to see one, because appearance
+// must not depend on the machine (mandelbrot_shader.js states this rule at its
+// MANDELBROT_MATERIAL docblock). So the material DECLARES its cost and the
+// PAINTER, which has the context, compares.
+
+/**
+ * Uniform rows Skia adds to EVERY runtime-effect program regardless of the
+ * material: `sk_RTAdjust` (one row) and the `umatrix` mat3 (three). Measured by
+ * link-probing Skia's emitted declaration list — see MANDELBROT_FIXED_UNIFORM_ROWS,
+ * which is this plus that shader's own scalars.
+ */
+const SKIA_RUNTIME_EFFECT_FIXED_ROWS = 4;
+
+/**
+ * WebGL2's SPEC MINIMUM for MAX_FRAGMENT_UNIFORM_VECTORS. A conformant context may
+ * report exactly this and no less, so it is the line above which a material's cost
+ * is a real portability question rather than a theoretical one — used by the gate
+ * that decides which materials must declare an exact `uniformRows`.
+ */
+export const WEBGL2_MIN_FRAGMENT_UNIFORM_VECTORS = 224;
+
+/**
+ * Pure function. The uniform rows a material's compiled fragment program costs a
+ * GL driver — the material's own DECLARED figure when it has one, else a derived
+ * FLOOR from its packed uniform footprint.
+ *
+ * THE DECLARED FIGURE IS EXACT AND THE FLOOR IS NOT, deliberately. GLSL ES packs
+ * scalars into the gaps of earlier rows, so a float count cannot be turned into a
+ * row count by arithmetic — only measured (mandelbrot_shader.js link-probed its
+ * own). The floor therefore UNDER-estimates, which is the safe direction for a
+ * refusal (it can miss a marginal case; it can never refuse a material that would
+ * have drawn). Every material is covered either way, so absence of a declaration
+ * is not a blind spot — which is the whole reason this is a `??` and not a lookup
+ * in a hand-kept list of "the big ones".
+ *
+ * @param {{uniformRows?: number, uniformFloats?: number}} material - a descriptor
+ * @returns {number} rows, or 0 for a material with no SkSL at all (sampler/pattern)
+ *
+ * @example materialUniformRows({uniformRows: 574, uniformFloats: 2178}) // 574 (declared wins)
+ * @example materialUniformRows({uniformFloats: 368}) // 96 (ceil(368/4) + 4 fixed)
+ * @example materialUniformRows({id: "magnify", sampler: true}) // 0 (no shader, no cost)
+ */
+export function materialUniformRows(material) {
+  if (Number.isFinite(material?.uniformRows)) return material.uniformRows;
+  if (!Number.isFinite(material?.uniformFloats)) return 0;
+  return Math.ceil(material.uniformFloats / 4) + SKIA_RUNTIME_EFFECT_FIXED_ROWS;
+}
+
+/**
+ * Pure function. Why this material cannot be drawn on a device with this uniform
+ * ceiling — or null when it can.
+ *
+ * ONE SENTENCE, ONE VOICE. It is phrased for core/paint_containment.js's
+ * errorMessage(who, what) seam, which the per-node paint boundary already uses for
+ * every other unpaintable widget, so a device refusal reads like every other
+ * failure rather than inventing a second dialect for the same event.
+ *
+ * @param {object} material - a descriptor from getMaterial()
+ * @param {number} maxUniformRows - the context's MAX_FRAGMENT_UNIFORM_VECTORS;
+ *   Infinity when no GL context is in play (node/CLI), which never refuses
+ * @returns {string | null}
+ *
+ * @example materialUnavailableReason({id: "mandelbrot", uniformRows: 574}, 4096) // null
+ * @example materialUnavailableReason({id: "mandelbrot", uniformRows: 574}, 256)
+ * 'the "mandelbrot" material needs 574 uniform rows and this GPU allows 256, so its shader cannot be compiled on this device'
+ * @example materialUnavailableReason({id: "frosted", uniformFloats: 11}, 224) // null
+ */
+export function materialUnavailableReason(material, maxUniformRows) {
+  const rows = materialUniformRows(material);
+  if (!Number.isFinite(maxUniformRows) || rows <= maxUniformRows) return null;
+  return `the "${material.id}" material needs ${rows} uniform rows and this GPU allows ${maxUniformRows}, so its shader cannot be compiled on this device`;
+}
+
 // ── THE FILL-MATERIAL CONTRACT (materials as PAINT on any shape) ──────────────
 // A fill paint {type: "material", material: {id, params?}} shades a SHAPE op
 // (rect/ellipse/polygon/path) with a registered material: the painter clips to

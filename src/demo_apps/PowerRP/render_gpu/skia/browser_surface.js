@@ -79,6 +79,19 @@ export class SkiaSurface {
     gl2?.getExtension("OES_texture_float_linear");
     const maxTex = gl2 ? gl2.getParameter(gl2.MAX_TEXTURE_SIZE) : 0;
     this.maxDim = Math.max(MAX_SURFACE_DIM, Number.isFinite(maxTex) ? maxTex : 0);
+    // THE per-instance MATERIAL capability ceiling, queried off the SAME context
+    // as MAX_TEXTURE_SIZE above and for the same reason: a limit is a property of
+    // this GL context, and only this file can see one.
+    //
+    // A material's fragment program declares uniform rows; when it declares more
+    // than the driver allows, the program fails to link at DRAW time inside Ganesh
+    // and SKIA DROPS THE DRAW WITH NO EXCEPTION — the widget is simply blank. That
+    // is why this number has to travel to the painter (render_gpu/skia/materials.js
+    // materialUnavailableReason) instead of being discovered by a null check that
+    // can never fire. Infinity when there is no context to ask: no ceiling known
+    // means no refusal, so the node/CLI software path is byte-identical.
+    const maxUniformVectors = gl2 ? gl2.getParameter(gl2.MAX_FRAGMENT_UNIFORM_VECTORS) : 0;
+    this.maxUniformRows = Number.isFinite(maxUniformVectors) && maxUniformVectors > 0 ? maxUniformVectors : Infinity;
     // GPU-backed offscreen factory for paintIR's backdrop/lens/effect surfaces —
     // keeps the magnifier/blur/effects/materials on the GPU (MakeRenderTarget)
     // instead of a software surface (the old per-frame killer).
@@ -167,7 +180,7 @@ export class SkiaSurface {
       // and de-bands on the downconvert to this 8-bit GL surface (when dither is
       // active); "off" paints straight in + flushes, byte-identical to before.
       renderWithDither(this.CanvasKit, this.surface, this._w, this._h, dither, (canvas) =>
-        paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface, antialias }));
+        paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface, antialias, maxUniformRows: this.maxUniformRows }));
     } finally {
       built.release(); // free per-paint video frame Images even if paint throws (review MED)
     }
