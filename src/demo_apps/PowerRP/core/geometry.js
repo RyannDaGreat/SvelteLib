@@ -103,6 +103,26 @@ export function unionRect(rects) {
 }
 
 /**
+ * Pure function. `r` grown by `m` on every side — the effect-halo primitive: an
+ * ink rect grown by a shadow/bloom reach before it is culled, captured or placed.
+ *
+ * A NON-POSITIVE `m` returns `r` ITSELF, not a shrunken copy. That is deliberate
+ * and is the behaviour promoted verbatim from the Skia painter, where every caller
+ * passes a reach that is zero when the widget has no effects: the identity
+ * short-circuit keeps a no-effect widget's bounds byte-identical to its ink rather
+ * than round-tripping them through arithmetic. It is a HALO function, so "grow by
+ * nothing" is the meaningful reading of m = 0 and there is no caller that means
+ * "erode".
+ *
+ * @example inflateRect({x: 10, y: 20, w: 4, h: 6}, 1) // {x: 9, y: 19, w: 6, h: 8}
+ * @example inflateRect({x: 0, y: 0, w: 10, h: 10}, 0) // {x: 0, y: 0, w: 10, h: 10} (the same object)
+ * @example inflateRect({x: 0, y: 0, w: 4, h: 4}, -1) // {x: 0, y: 0, w: 4, h: 4} (non-positive = no halo)
+ */
+export function inflateRect(r, m) {
+  return m > 0 ? { x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m } : r;
+}
+
+/**
  * Pure function. The bbox {x, y, w, h} of a list of [x, y] points — a polygon's
  * gradient objectBoundingBox frame. An EMPTY list returns a zero rect rather
  * than an infinite one, so a caller may divide by w/h after a finite check.

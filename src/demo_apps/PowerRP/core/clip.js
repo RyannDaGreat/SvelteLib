@@ -123,20 +123,38 @@ export function intersectRect(a, b) {
 }
 
 /**
- * Pure function. The LOCAL-space axis-aligned bounding box of a world rect
- * mapped through `inv` (a world→local inverse transform): maps the four corners
- * and takes their AABB. Exact when `inv` has no rotation; conservative (never
+ * Pure function. The axis-aligned bounding box of `rect`'s four corners mapped
+ * through the transform `xf`. Exact when `xf` has no rotation; conservative (never
  * smaller than the true footprint) when it does — the same rotation-conservative
  * discipline as core/view.rotatedBBoxAABB.
  *
+ * DIRECTION IS THE CALLER'S. Named for its first caller, which passes a world→local
+ * INVERSE, but the fold is direction-agnostic: the PDF and SVG backends pass a
+ * forward local→world frame to place an effect region on the page.
+ *
+ * `apply` EXISTS BECAUSE A BACKEND FRAME MAY BE REFLECTED. The default is the plain
+ * similarity map; an IR pushTransform inside a backend that draws at the device root
+ * can carry signX/signY, and only render_gpu/ir.js signedApply reads those. Passing
+ * it in keeps this module free of any dependency on the IR while letting the ONE fold
+ * serve both — before this parameter existed the signed variant was written out by
+ * hand three more times (pdf_backend emitEffect + rasterOpPlaceRect, svg_backend
+ * emitEffectSVG), two of them byte-identical.
+ *
+ * Args:
+ *   rect ({x,y,w,h}): the rect whose corners are mapped
+ *   xf (transform): the similarity to map through
+ *   apply (fn): (xf, x, y) → {x, y}; defaults to core/transform.js apply
+ *
  * @example aabbOfMappedRect({x: 0, y: 0, w: 10, h: 20}, {x: 0, y: 0, rotation: 0, scale: 1}) // {x: 0, y: 0, w: 10, h: 20}
  * @example aabbOfMappedRect({x: 0, y: 0, w: 10, h: 20}, {x: -5, y: 0, rotation: 0, scale: 0.5}) // {x: -5, y: 0, w: 5, h: 10}
+ * @example // a quarter turn about the origin swaps the extents:
+ * aabbOfMappedRect({x: 0, y: 0, w: 10, h: 20}, {x: 0, y: 0, rotation: Math.PI / 2, scale: 1}).w // 20
  */
-export function aabbOfMappedRect(rect, inv) {
+export function aabbOfMappedRect(rect, xf, apply = T.apply) {
   const corners = [
     [rect.x, rect.y], [rect.x + rect.w, rect.y],
     [rect.x, rect.y + rect.h], [rect.x + rect.w, rect.y + rect.h],
-  ].map(([px, py]) => T.apply(inv, px, py));
+  ].map(([px, py]) => apply(xf, px, py));
   const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
   const minX = Math.min(...xs), minY = Math.min(...ys);
   return { x: minX, y: minY, w: Math.max(...xs) - minX, h: Math.max(...ys) - minY };

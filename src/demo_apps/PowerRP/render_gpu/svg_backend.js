@@ -67,7 +67,8 @@ import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRu
 import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
-import { fitBox } from "../core/geometry.js";
+import { fitBox, inflateRect } from "../core/geometry.js";
+import { aabbOfMappedRect } from "../core/clip.js"; // THE declared four-corner fold; this file folded it by hand, byte-identically to pdf_backend's copy
 import { DEFAULT_TEXT_SIZE } from "./skia/text_layout.js";
 import { richTextDraws } from "../core/richtext.js";
 
@@ -800,16 +801,7 @@ async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, ou
  */
 export async function emitEffectSVG(cmd, world, region, ctx) {
   if (blendNeedsBelowRaster(cmd.blend)) throw new Error(`svg_backend: a "${cmd.blend}"-blend effectSubtree must be consumed by emitRegionSVG's raster split — an isolated raster cannot reproduce a composite with no vector-blend spelling (blendNeedsBelowRaster)`);
-  const m = cmd.margin;
-  const corners = [
-    [cmd.x - m, cmd.y - m], [cmd.x + cmd.w + m, cmd.y - m],
-    [cmd.x - m, cmd.y + cmd.h + m], [cmd.x + cmd.w + m, cmd.y + cmd.h + m],
-  ].map(([lx, ly]) => signedApply(world, lx, ly));
-  const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
-  const placeRect = {
-    x: Math.min(...xs), y: Math.min(...ys),
-    w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys),
-  };
+  const placeRect = aabbOfMappedRect(inflateRect({ x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }, cmd.margin), world, signedApply);
   // Blend NEUTRALIZED inside the isolated raster: multiply/screen against a
   // TRANSPARENT raster background would blacken/blow out the widget (the GPU
   // would blend against zeros); the divergence-vs-page note is in the header.

@@ -60,8 +60,8 @@ import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { richTextDraws } from "../core/richtext.js";
-import { fitBox, pointsBounds } from "../core/geometry.js";
-import { intersectRect } from "../core/clip.js"; // THE declared clip primitive — this file carried a byte-identical copy for a day after clip.js unified it
+import { fitBox, pointsBounds, inflateRect } from "../core/geometry.js";
+import { intersectRect, aabbOfMappedRect } from "../core/clip.js"; // THE declared clip primitives — this file carried a byte-identical intersectRect for a day after clip.js unified it, and folded four mapped corners by hand in two more places
 
 /**
  * Lens re-emit recursion cap — re-exported from ir.js (the single source shared
@@ -1122,16 +1122,7 @@ async function emitEffect(cmd, world, region, out, ctx) {
   // The effect region's WORLD AABB: the local bbox inflated by the op's
   // margin (blur spill + shadow offset — ir.js computes it), through the four
   // rotated corners (conservative under rotation, exact unrotated).
-  const m = cmd.margin;
-  const corners = [
-    [cmd.x - m, cmd.y - m], [cmd.x + cmd.w + m, cmd.y - m],
-    [cmd.x - m, cmd.y + cmd.h + m], [cmd.x + cmd.w + m, cmd.y + cmd.h + m],
-  ].map(([lx, ly]) => signedApply(world, lx, ly));
-  const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
-  const placeRect = {
-    x: Math.min(...xs), y: Math.min(...ys),
-    w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys),
-  };
+  const placeRect = aabbOfMappedRect(inflateRect({ x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h }, cmd.margin), world, signedApply);
   // Raster ops re-render through the GPU (the SAME effect substrate the
   // editor uses — pixel-identical shadows/blooms) over TRANSPARENT background
   // so the PNG's alpha composites onto the page.
@@ -1253,13 +1244,7 @@ export function rasterOpPlaceRect(cmd, world, region) {
   }
   if (!local) return region.worldRect; // no footprint → whole-region raster (page-level backdrop)
   const m = spill * RASTER_OP_SPILL_FRAC + (cmd.margin ?? 0);
-  const corners = [
-    [local.x - m, local.y - m], [local.x + local.w + m, local.y - m],
-    [local.x - m, local.y + local.h + m], [local.x + local.w + m, local.y + local.h + m],
-  ].map(([lx, ly]) => signedApply(world, lx, ly));
-  const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
-  const worldAABB = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
-  return intersectRect(worldAABB, region.worldRect);
+  return intersectRect(aabbOfMappedRect(inflateRect(local, m), world, signedApply), region.worldRect);
 }
 
 /**

@@ -60,7 +60,7 @@ import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_mod
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
 import { MAX_SURFACE_DIM } from "../../core/clip.js"; // the edge below which no surface factory clamps a request
-import { fitBox, pointsBounds } from "../../core/geometry.js";
+import { fitBox, pointsBounds, inflateRect } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
 import { drawVideoV2 } from "./video_v2.js"; // V2 direct-upload video op ("videoV2") — self-resolving frame registry (additive; import-safe in node)
 import { turnPose, curlMesh, castShadowOutline } from "../page_curl.js"; // the paperCurl op's pure geometry (DOM-free)
@@ -3461,13 +3461,6 @@ function glassShadowReach(cmd) {
 function materialShadowReach(shadow) {
   if (!shadow || !(shadow.alpha > 0)) return 0;
   return shadow.grow + Math.hypot(shadow.dx, shadow.dy) + shadow.blur * BLUR_SUPPORT_SIGMAS;
-}
-
-/** Pure function. `r` grown by `m` on every side.
- * @example inflateRect({x: 10, y: 20, w: 4, h: 6}, 1) // {x: 9, y: 19, w: 6, h: 8}
- */
-function inflateRect(r, m) {
-  return m > 0 ? { x: r.x - m, y: r.y - m, w: r.w + 2 * m, h: r.h + 2 * m } : r;
 }
 
 // INK HEADROOM around laid-out glyph geometry, in ems of the largest font size in
