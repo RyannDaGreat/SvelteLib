@@ -186,16 +186,35 @@ test("REFUSED: a widget with no x/y (an endpoint widget) — the plugin's own de
   assert.ok(arrow && /has no x \/ y to bind/.test(arrow), arrow);
 });
 
-test("REFUSED: a GROUP MEMBER — measured off by the group's influence, so never written", () => {
+test("REFUSED: a GROUP MEMBER — the refusal still stands, but its stated reason no longer holds", () => {
   const refusal = bindRefusal({ itemId: "w1", plugin: registry.get("rect") }, new Map([["w1", "g1"]]), "Box");
   assert.ok(refusal && /group member/.test(refusal), refusal);
-  // The measurement the refusal exists for: bind it anyway and it lands wrong.
+  // ── THIS ASSERTION USED TO MEASURE A DEFECT, AND THE DEFECT IS FIXED ────────
+  // It read `{x: 410}` — "60px past the cell" — and that overshoot WAS the
+  // refusal's whole justification: web/bentoBind.js bindRefusal says verbatim
+  // "a grouped widget's x / y are read in its group's frame, while a cell anchor
+  // evaluates in world, so it would land off by the group's influence."
+  //
+  // The 60 was the group's influence being applied TWICE: core/expressions.js
+  // anchorValue composed it into the cell-anchor read, and core/derive.js
+  // applyGroupParenting composed it again onto the reading member's own world.
+  // core/expressions.js inReaderFrame (89e1ca8) removes the second application,
+  // so a bound group member now lands EXACTLY on its cell.
+  //
+  // HANDED BACK, NOT DECIDED HERE: whether the refusal should now be lifted is a
+  // change to bento's user-visible behaviour and belongs to whoever owns
+  // web/bentoBind.js. The refusal is still shipped and its first assertion above
+  // still passes; only the claim that it is justified by a miscalculation has
+  // stopped being true, and a test asserting a wrong number to defend a refusal
+  // is exactly the ratification trap. So this measures what is TRUE now and says
+  // plainly that the premise is gone.
   const { doc, bentoId, itemId } = docWith("rect");
   let b = bound(doc, itemId, "rect", bentoId, { r: 1, c: 2 });
   let gid;
   [b, gid] = withNewItem(b, 0, { ...registry.get("group").defaults, x: 0, y: 0, w: 10, h: 10, members: [itemId], active: true });
   b = keyframed(b, 0, ["items", gid, "x"], 60);
-  assert.deepEqual(worldCentre(b, itemId), { x: 410, y: 250 }, "60px past the cell — hence the refusal");
+  assert.deepEqual(worldCentre(b, itemId), { x: 350, y: 250 },
+    "a bound group member now lands ON its cell — the influence is applied once, not twice");
 });
 
 // ── the declaration wiring ───────────────────────────────────────────────────
