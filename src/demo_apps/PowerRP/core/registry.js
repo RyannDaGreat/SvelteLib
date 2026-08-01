@@ -672,6 +672,36 @@ export function codeEditable(plugin) {
 }
 
 /**
+ * The ACTIVATION handler id (web/widget_handlers.js) that means "this widget's
+ * content is edited as rich text, in place, with a caret". Declared as a plugin's
+ * `activate`, and read here so the Edit Text tool's applicability is the same
+ * declaration the double-click resolves through — plugins/text.js's own words:
+ * "the gate reads the declaration, not the type name".
+ *
+ * HANDBACK, plugins/text.js + web/widget_handlers.js: this token is now spelled in
+ * three places and should be exported from ONE. It is a literal here because
+ * core/ may not import web/, and inventing a core home for a handler name while
+ * two other agents hold those files would be a third spelling, not a second.
+ */
+export const RICH_TEXT_ACTIVATION = "rich_text_edit";
+
+/**
+ * Pure function. Is this widget's content edited as RICH TEXT in place — the
+ * precondition for the Edit Text tool? A plaintext box is excluded on purpose: its
+ * editor is the plain-string one, a different activation.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example richTextEditable({activate: "rich_text_edit"}) // true
+ * @example richTextEditable({activate: "plaintext_edit"}) // false (a different editor)
+ * @example richTextEditable({capabilities: {bbox: true}}) // false (nothing to edit)
+ */
+export function richTextEditable(plugin) {
+  return plugin.activate === RICH_TEXT_ACTIVATION;
+}
+
+/**
  * Pure function. Are this widget's HANDLES the elements of a list property — the
  * precondition for hiding, showing and purging individual points? Both halves are
  * needed and neither alone is enough: `modifierPoints` alone is a rect's eight
@@ -690,6 +720,47 @@ export function codeEditable(plugin) {
 export function pointListEditable(plugin) {
   return typeof plugin.modifierPoints === "function"
     && (plugin.inspector ?? []).some((row) => row.kind === LIST_ROW_KIND);
+}
+
+/**
+ * THE ADD-MENU a widget's insert command belongs in, declared BY THE WIDGET.
+ * `"shape"` is the only value today (web/ShapePicker.svelte's grid and the
+ * palette's "Add Shape" submenu); a plugin that declares nothing is inserted from
+ * the top level, which is where most widgets belong.
+ *
+ * WHY IT IS A DECLARATION AND NOT A DERIVATION (CLAUDE-ORIGINATED; the user's
+ * report was "New shapes that we add can go into the shape menu — Add Shape menu —
+ * but I don't see them there"). The grid's membership rule USED to be "is this a
+ * shapeshifter FAMILY" — read off `plugins/shapeshifter.js`'s FAMILIES table,
+ * which is genuinely derived and was never a hand-kept list. The defect was one
+ * level up: being a shapeshifter family is an IMPLEMENTATION detail, and it was
+ * standing in for the user-facing category "is this a shape". So `aperture` and
+ * `iris_blades` — standalone plugins that draw shapes — could never reach that
+ * grid however diligently anyone maintained anything. A menu whose membership rule
+ * describes how its members are built rather than what they are is the same defect
+ * as a control that lies about what it is.
+ *
+ * Nothing structural distinguishes a shape from a QR code or a video: both are
+ * bbox widgets that draw. So there is no honest derivation, and the choice is only
+ * WHERE the declaration lives. It lives on the plugin, beside the widget's other
+ * facts, so a new shape joins the menu in its own file and no central list has to
+ * be remembered — the same reasoning that made `lightPinnable` a read of the
+ * plugin's own defaults rather than a roster of lit widgets.
+ */
+export const INSERT_MENUS = ["shape"];
+
+/**
+ * Pure function. Does this plugin belong in the Add Shape menu — the grid AND the
+ * palette submenu, which are two surfacings of this one answer?
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example shapeInsertable({type: "ss_heart", insertMenu: "shape"}) // true
+ * @example shapeInsertable({type: "qrcode"}) // false (declares no menu — inserted from the top level)
+ */
+export function shapeInsertable(plugin) {
+  return plugin.insertMenu === "shape";
 }
 
 /**
@@ -802,7 +873,16 @@ export const TOOL_POOL = [
       // with no edit here. This is the applicability axis doing its job: a Shatter
       // row on a rectangle is a control that can never work, which is the defect
       // `applies` exists to make unrepresentable.
-      { kind: "command", command: "shatter", applies: shatterEligible },
+      // THE ID IS `convert-to-widgets`, AND "shatter" IS ONE OF ITS ALIASES — a
+      // distinction that cost a broken HEAD, so it is written down here. The
+      // command was renamed in 68d5e08 and the old word survives everywhere as
+      // prose, in the title's parenthetical and in the alias list; an agent
+      // building against a working tree where a PEER was mid-rename back to
+      // `shatter` saw the old id on disk, shipped it, and left the pool naming a
+      // command HEAD does not register. The ghost gate in tests/tool_groups_test.js
+      // caught it. Read the id from `git show HEAD:web/App.svelte`, never from the
+      // file on disk.
+      { kind: "command", command: "convert-to-widgets", applies: shatterEligible },
     ],
   },
   {
@@ -826,6 +906,12 @@ export const TOOL_POOL = [
       { kind: "command", command: "copy-as-png", applies: hasFrame },
       { kind: "command", command: "copy-as-pdf", applies: hasFrame },
       { kind: "command", command: "edit-code-source", applies: codeEditable },
+      // ADDED BY THE GATE, NOT BY A PERSON. plugins/text.js published this command
+      // hours after the pane was derived, and tests/tool_surfacing_probe.js failed
+      // on the next run with "1 unreachable: edit-text-content" — which is the
+      // whole point of writing the reverse direction down. Beside Edit Source
+      // because they are the same act on different content.
+      { kind: "command", command: "edit-text-content", applies: richTextEditable },
       // A PLUGIN's command in the pool, and it belongs here rather than in
       // plugins/elbow_arrow.js's own toolGroups: elbow_arrow DECLARES it, but its
       // gate reads the SELECTED box, so declaring it plugin-side would offer it
@@ -1077,6 +1163,12 @@ export function createRegistry() {
       for (const field of ["type", "title", "capabilities", "defaults", "emit"])
         if (!(field in plugin)) throw new Error(`Plugin missing "${field}": ${plugin.type ?? "?"}`);
       if (plugins.has(plugin.type)) throw new Error(`Duplicate plugin type "${plugin.type}"`);
+      // A MISSPELLED MENU IS A WIDGET NOBODY CAN INSERT, and it fails silently:
+      // `insertMenu: "shapes"` reads as deliberate and puts the widget in no menu
+      // at all. Refuse it at registration, the same doctrine as the tool pool's
+      // import gate.
+      if (plugin.insertMenu !== undefined && !INSERT_MENUS.includes(plugin.insertMenu))
+        throw new Error(`Plugin "${plugin.type}" declares insertMenu "${plugin.insertMenu}" — the menus are: ${INSERT_MENUS.join(", ")}`);
       plugins.set(plugin.type, withToolGroups(withUniversalEffects(withInkAnchors(plugin))));
     },
     /** Query. Plugin by type; loud when unknown. */

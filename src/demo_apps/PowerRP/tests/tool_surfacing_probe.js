@@ -194,9 +194,16 @@ try {
       if (cmd.when && cmd.requires === undefined) surfacedNoReason.push(id);
     }
 
+    // The words the user reached for, resolved the way HIS keystrokes are: the
+    // palette's own top-level search, which ranks over title AND aliases.
+    const searchHits = {};
+    for (const word of ["shatter", "duplicate", "delete"])
+      searchHits[word] = app.commands.search(word)[0]?.id ?? null;
+
     setNone();
     if (original.length) app.selectMany(original);
     return {
+      searchHits,
       surfaced: [...surfaced].sort(),
       selectionScoped: selectionScoped.sort(),
       surfacedNoReason,
@@ -236,8 +243,19 @@ try {
   // The three the user named by hand. Named explicitly BECAUSE they are what he
   // asked for: a rule can be satisfied in the abstract and still miss the case
   // that prompted it.
-  for (const id of ["shatter", "duplicate", "delete-item"])
-    check(`the user's named tool "${id}" is surfaced`, result.surfaced.includes(id));
+  //
+  // BY THE WORD HE USED, NOT BY A COMMAND ID. He said "shatter"; the command's id
+  // is `convert-to-widgets` and "shatter" is one of its search ALIASES. Asserting
+  // the id would (a) have to be rewritten every time a command is renamed, which
+  // has already happened once to this exact entry, and (b) test something the user
+  // never said. Resolving through the registry's own fuzzy search — the same path
+  // his typing takes — asserts the thing that actually matters: the word he reaches
+  // for lands on a command, and that command is in the pane.
+  for (const word of ["shatter", "duplicate", "delete"]) {
+    const hit = result.searchHits[word];
+    check(`"${word}" resolves to a command at all`, !!hit, "the palette's own search finds nothing for it");
+    if (hit) check(`the user's named tool "${word}" (${hit}) is surfaced`, result.surfaced.includes(hit));
+  }
 } finally {
   await browser.close();
   await server.close();
