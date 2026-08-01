@@ -41,6 +41,35 @@
  *     this variable to pick a specific Chrome/Chromium binary. Documented here
  *     only so both knobs for "which browser, which mode" are described in one
  *     place; passing it through `env` before running a probe is sufficient.
+ *
+ * ── IF YOUR PROBE TAPS OR CLICKS: WAIT FOR THE BOOT SPLASH TO LIFT ──────────
+ *
+ * This file does not launch the splash and cannot wait for you, but it is the
+ * one module every probe here imports, so the warning lives where the next
+ * probe author is standing rather than only in the probes that already learned
+ * it the hard way.
+ *
+ * `#boot-splash` (web/index.html) is `position: fixed; inset: 0; z-index: 9999`
+ * and is removed at the FIRST REAL CANVAS PAINT — which is strictly LATER than
+ * the two conditions probes conventionally wait on:
+ *
+ *     await page.waitForSelector(".app .toolbar button");          // too early
+ *     await page.waitForFunction(() => window.__powerrp_app);      // too early
+ *     await page.waitForFunction(                                  // THIS one
+ *       () => document.getElementById("boot-splash") === null);
+ *
+ * Wait on only the first two and your synthetic tap lands on the SPLASH, not on
+ * your control — and it does so INTERMITTENTLY, because whether the splash has
+ * lifted is a race with the first frame. MEASURED (W5-MOBILE, present_reachable
+ * _probe): with the splash up, `document.elementFromPoint` at the target's
+ * centre returns the splash <div>; across eight runs the one where it had
+ * already lifted was the one where the tap landed. It presented as a 1-in-3
+ * flake and the first, plausible diagnosis — "the sleep after the tap is too
+ * short" — was WRONG, so a longer wait did not fix it.
+ *
+ * This is also the honest model of a real user, who likewise cannot tap a
+ * control the app is deliberately covering while it boots. A probe that taps
+ * through the splash is not measuring the app.
  */
 
 const VALID_HEADLESS_MODES = new Set(["new", "shell"]);
