@@ -362,6 +362,62 @@ function ringDoubleArea(ring) {
  * @example regionPathD(0, 0, 0, {x: 0, y: 0, w: 0, h: 0}) // null (a zero-size bar has no interior)
  * @example regionPathD(200, 20, 10, {x: 0, y: 0, w: 2, h: 20}).includes("A") // false (arcs are pre-sampled — PDF-export-safe)
  */
+// The stroke-style keys the outline forwards verbatim to the IR: the trim window,
+// the offset, and the join framework (#215). They are declared as Inspector rows
+// with NO default ON PURPOSE (core/properties.js:1568 — "absent-is-legacy, so
+// composing them changes no widget's stored state or rendering until a knob
+// moves"), and the IR treats each as ABSENT AT ITS IDENTITY (render_gpu/ir.js:46).
+// So this list must forward only the keys actually present: writing `undefined`
+// is not the same as omitting, and a widget that materialises identities here
+// would stop being byte-identical to one that never touched the knobs.
+const STROKE_STYLE_KEYS = [
+  "strokeOffset",
+  "strokeStart", "strokeEnd", "strokePhase", "strokeCapStart", "strokeCapEnd",
+  "strokeJoin", "strokeMiter",
+];
+
+/**
+ * Pure function. The subset of `s`'s stroke-style keys that are actually set,
+ * ready to spread into an IR op.
+ *
+ * Args:
+ *   s (object): the folded item state
+ *
+ * Returns:
+ *   object: {} when no knob has moved
+ *
+ * @example strokeStyleFields({strokeWidth: 4}) // {} — width is not a STYLE key, and nothing else is set
+ * @example strokeStyleFields({strokeJoin: "round", strokeMiter: 6}) // {"strokeJoin":"round","strokeMiter":6}
+ * @example strokeStyleFields({strokeStart: 0.25, strokeEnd: 0.75}) // {"strokeStart":0.25,"strokeEnd":0.75}
+ */
+function strokeStyleFields(s) {
+  const out = {};
+  for (const k of STROKE_STYLE_KEYS) if (s[k] !== undefined) out[k] = s[k];
+  return out;
+}
+
+/**
+ * Pure function. The SVG path data for the bar's OUTLINE — its whole rounded rim,
+ * as one closed figure.
+ *
+ * This is deliberately NOT either region's path. The fill and the track PARTITION
+ * the bar, so stroking them would draw the progress cut down the middle of the bar
+ * as a second visible line; a border belongs to the BAR, not to its two halves.
+ *
+ * Args:
+ *   w, h (number): the track box in local units
+ *   r (number): corner radius, capped to the bar's half-thickness upstream
+ *
+ * Returns:
+ *   string: SVG path data
+ *
+ * @example outlinePathD(200, 20, 0).startsWith("M") // true
+ * @example outlinePathD(200, 20, 0) === outlinePathD(200, 20, 0) // true (pure)
+ */
+function outlinePathD(w, h, r) {
+  return shapes.polygonPathD(roundedRectRing(w, h, r, CORNER_SEGMENTS));
+}
+
 function regionPathD(w, h, r, box) {
   const ring = clipRingToRect(
     roundedRectRing(w, h, r, CORNER_SEGMENTS),
@@ -682,7 +738,11 @@ return {
     orientation: "horizontal",
     trackColor: DEFAULT_TRACK_COLOR,
     fillColor: DEFAULT_FILL_COLOR,
-    ...defaults("cornerRadius", "opacity"), // cornerRadius:0 (square), opacity:1
+    // cornerRadius:0 (square), opacity:1, stroke:#000000, strokeWidth:0.
+    // strokeWidth 0 IS "no outline", so every document written before the bar had
+    // one renders byte-identically. The other stroke-style keys (trim/offset/join)
+    // deliberately get NO default — see STROKE_STYLE_KEYS.
+    ...defaults("cornerRadius", "opacity", "stroke", "strokeWidth"),
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
@@ -698,7 +758,18 @@ return {
     // — only the widening is new, not the storage.
     { key: "fillColor", label: "Fill material", kind: "color", paint: true, category: CAT, help: "What paints the FILLED portion of the bar — solid, gradient, or a material (matte/shader/pattern). Lower a color's alpha for translucency; the fill never overdraws the track, so a translucent fill shows the camera/backdrop behind it, not a double-darkened track." },
     { key: "trackColor", label: "Track material", kind: "color", paint: true, category: CAT, help: "What paints the UNFILLED remainder of the bar — the empty groove behind the fill. Takes the same paint options as Fill material. The two regions are clipped to partition the bar exactly, so nothing here is ever drawn UNDER the fill." },
-    ...props("cornerRadius", { cornerRadius: { label: "Corner radius", category: CAT, help: "Rounds the corners of both the track and the fill — set it near half the bar's thickness for a pill." } }),
+    // THE OUTLINE ROWS, as the shared `strokedBorder` bundle rather than a
+    // hand-written stroke/strokeWidth pair — the same eleven rows rect and the
+    // shapeshifters get, so join/miter (#215), the trim window and the offset all
+    // arrive at once and spell "stroke" exactly one way across the app. The bundle
+    // OWNS cornerRadius (an outline follows the rim it traces), so this replaces
+    // the standalone row rather than sitting beside it; its label and help are
+    // carried over verbatim so nothing the user reads changes.
+    ...bundle("strokedBorder", {
+      cornerRadius: { label: "Corner radius", category: CAT, help: "Rounds the corners of both the track and the fill — set it near half the bar's thickness for a pill." },
+      stroke: { category: CAT, help: "Colour of the outline drawn around the WHOLE bar. It traces the track's rim once, over both the filled and unfilled regions, so it never draws a line down the middle at the progress cut. Set Stroke width above zero to see it." },
+      strokeWidth: { category: CAT, help: "Thickness of the bar's outline in canvas units. Zero (the default) means no outline at all, and emits nothing." },
+    }),
     ...props("opacity"),
     ...bundle("effects"),
   ],
@@ -745,6 +816,18 @@ return {
     if (trackD !== null) ops.push(path({ d: trackD, fill: s.trackColor, opacity }));
     const fillD = fillPathD(w, h, cornerRadius, s.fraction, orientation);
     if (fillD !== null) ops.push(path({ d: fillD, fill: s.fillColor, opacity }));
+    // THE OUTLINE, once and LAST. Once, because a border belongs to the BAR and
+    // stroking the two partition halves would also ink the progress cut as a line
+    // down the middle. Last, so neither region's antialiased edge lies over it.
+    // strokeWidth defaults to 0, so a document that has never touched these knobs
+    // emits exactly the ops it emitted before.
+    const strokeWidth = s.strokeWidth ?? 0;
+    if (strokeWidth > 0 && s.stroke)
+      ops.push(path({
+        d: outlinePathD(w, h, cornerRadius),
+        fill: null, stroke: s.stroke, strokeWidth, opacity,
+        ...strokeStyleFields(s),
+      }));
     return applyEffects(ops, s, world, { x: 0, y: 0, w, h });
   },
   /**
