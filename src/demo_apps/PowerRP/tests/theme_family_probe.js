@@ -117,7 +117,14 @@ try {
 
   // ── 4. Glass is OPT-IN per theme: a non-glass theme must have no tip blur.
   // Nocturne/Daybreak opt in via --a-glass-tip-bg; Ember and its sibling do not.
-  for (const [theme, wantGlass] of [["nocturne", true], ["daybreak", true], ["ember", false], ["ember-light", false], ["platinum", false]]) {
+  // Verdigris/Cranberry/Obsidian/Moonstone (round 6) are the newer glass pairs.
+  for (const [theme, wantGlass] of [
+    ["nocturne", true], ["daybreak", true],
+    ["verdigris", true], ["verdigris-light", true],
+    ["cranberry", true], ["cranberry-light", true],
+    ["obsidian", true], ["moonstone", true],
+    ["ember", false], ["ember-light", false], ["platinum", false],
+  ]) {
     const tip = await page.evaluate((t) => {
       window.__powerrp_app.setTheme(t);
       const cs = getComputedStyle(document.documentElement);

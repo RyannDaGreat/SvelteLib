@@ -50,7 +50,7 @@ const webRoot = resolve(HERE, "../web");
 // it sets --a-glass-rim to a white bevel, so any implementation that inferred
 // "is glass" from the rim or from a non-default shadow instead of from the
 // opt-in token would hand it a blurred tooltip. Its metal is opaque.
-const GLASS_THEMES = ["nocturne", "daybreak"];
+const GLASS_THEMES = ["nocturne", "daybreak", "verdigris", "verdigris-light", "cranberry", "cranberry-light", "obsidian", "moonstone"];
 const OPAQUE_THEMES = ["graphite", "light", "platinum", "eink", "ember"];
 
 const { createServer } = await import("vite");

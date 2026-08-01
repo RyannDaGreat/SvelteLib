@@ -62,8 +62,10 @@ const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 // (skia_browser_qa.js / caret_accuracy_qa.js) — a headless bare launch has no
 // GPU and, as root, refuses to start without --no-sandbox.
 // protocolTimeout raised past puppeteer's 30s default: this probe now captures
-// 40 themes (one per family pole) on a SOFTWARE GL surface, where a single
-// screenshot of the Skia canvas can take several seconds under load.
+// EVERY theme (one per family pole, read live off THEMES rather than a count
+// pinned here — see claude_instructions.md's warning about stale counts) on a
+// SOFTWARE GL surface, where a single screenshot of the Skia canvas can take
+// several seconds under load.
 const browser = await launchBrowser({ protocolTimeout: 180000 });
 const errors = [];
 try {

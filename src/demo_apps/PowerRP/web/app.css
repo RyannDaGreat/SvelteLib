@@ -1427,6 +1427,245 @@
   --a-glass-tip-radius: 6px; /* the pane corner at tip scale — see Nocturne's note */
 }
 
+/* Verdigris — oxidised copper, the one real-world colour source that is a
+   CHEMICAL PROCESS rather than a pigment: brochantite/copper-carbonate patina
+   forms over decades as copper metal weathers, moving from bright pinkish
+   metal through browns to the stable blue-green everyone actually calls
+   "verdigris" (ISCC-NBS's own name for the family's anchor hue is literally
+   "brilliant bluish green", close to #43B3AE — this theme's accent sits near
+   that same swatch). Two real minerals commonly form side by side in that
+   same copper chemistry — malachite (green) and azurite (blue) — which is
+   where --a-modifier's blue and --a-guide/--a-keyed's warm rust/gold come
+   from: not arbitrary accent slots, but the other colours patina actually
+   throws while it forms. GLASS CUE: the rim is a pale MINT highlight, the
+   sheen on a patinated surface caught at a grazing angle, not a generic white
+   edge — matching the family's chemistry rather than genericising it. */
+:root[data-theme="verdigris"] {
+  --bg: #0d1917;
+  --fg: #dce9e6;
+  --fg-dim: #8fada5;
+  --accent: #3ecfc0;
+  --border: rgba(160, 220, 205, 0.14);
+  --control-bg: #16241f;
+  --a-panel-bg: #101d1a;
+  --a-canvas-bg: #070c0b;
+  --a-canvas-solid: #070c0b; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(80, 210, 190, 0.13);
+  --a-selection: #3ecfc0;
+  --a-guide: #ff8c4b; /* raw copper's own warm colour, showing through the patina */
+  --a-keyed: #d9a552; /* patina's brown understory — the one warm mark, keeps diamonds findable */
+  --a-anchor: #7fa89c;
+  --a-modifier: #6fa8dc; /* azurite blue — the mineral that forms alongside malachite green */
+  --a-scrollbar: rgba(140, 220, 205, 0.2);
+  --a-scrollbar-hover: rgba(140, 220, 205, 0.36);
+  --a-split-handle: #1f322c;
+  --a-split-handle-hover: #3ecfc0;
+  --a-palette-shadow: 0 16px 48px rgba(0, 0, 0, 0.66);
+
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(13, 25, 23, 0.72);
+  --a-glass-bg-panel: rgba(16, 29, 26, 0.78);
+  --a-glass-blur: blur(18px) saturate(140%);
+  --a-glass-rim: rgba(180, 235, 215, 0.16); /* the mint sheen patina catches at a grazing angle */
+  --a-glass-tip-bg: rgba(16, 29, 26, 0.82);
+  --a-glass-tip-radius: 6px;
+}
+
+/* Verdigris-light — the SAME patina in full sun, not an inverted palette (the
+   Daybreak lesson applies again: flip Verdigris's numbers and the pane washes
+   out against a light page). The pane sits brighter than the page, the rim
+   flips from lit-mint to a DEFINING dark-green edge, and the shadow carries
+   the elevation cue — the same three moves Daybreak makes against Nocturne,
+   because a light glass pane earns its edge from depth and contrast, not
+   from darkness it no longer has. */
+:root[data-theme="verdigris-light"] {
+  --bg: #dcece7;
+  --fg: #142420;
+  --fg-dim: #4c6b62;
+  --accent: #187a6b;
+  --border: rgba(20, 60, 50, 0.22);
+  --control-bg: #cbe0da;
+  --a-panel-bg: #eef7f4;
+  --a-canvas-bg: #b8d2c9;
+  --a-canvas-solid: #b8d2c9; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(24, 122, 107, 0.12);
+  --a-selection: #187a6b;
+  --a-guide: #b1502a;
+  --a-keyed: #8a5a1c;
+  --a-anchor: #4f6f66;
+  --a-modifier: #35618f;
+  --a-scrollbar: rgba(20, 60, 50, 0.26);
+  --a-scrollbar-hover: rgba(20, 60, 50, 0.44);
+  --a-split-handle: #c0d7cf;
+  --a-split-handle-hover: #187a6b;
+  --a-palette-shadow: 0 16px 44px rgba(20, 55, 46, 0.26);
+
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(244, 251, 249, 0.72);
+  --a-glass-bg-panel: rgba(240, 249, 246, 0.78);
+  --a-glass-blur: blur(18px) saturate(150%);
+  --a-glass-rim: rgba(20, 60, 50, 0.14); /* a defining edge, not a lit one */
+  --a-glass-tip-bg: rgba(242, 250, 247, 0.86);
+  --a-glass-tip-radius: 6px;
+}
+
+/* Cranberry — Victorian "cranberry glass"/gold-ruby glass, whose colour is a
+   REAL, DOCUMENTED FUNCTION OF THICKNESS: colloidal gold suspended in molten
+   glass reads deep ruby-red in a thick vase wall and pale rose held up thin to
+   the light, the same nanoparticle chemistry both times. That gives the
+   dark/light split an actual physical mechanism instead of an arbitrary
+   colour swap — the dark pole is the thick pane by candlelight, the light
+   pole the thin pane in daylight. THE RIM IS THE OTHER HALF OF THE CITATION:
+   the same colloidal-metal glass chemistry, at its most famous, is the
+   Lycurgus Cup (British Museum, 4th c. Roman) — genuinely DICHROIC, reading
+   red in transmitted light and green in reflected light. So the glass rim
+   here is a green-gold glint against the red body, not a generic bright edge:
+   it is that reflected-light colour, literally. */
+:root[data-theme="cranberry"] {
+  --bg: #1d0a10;
+  --fg: #f3dbe0;
+  --fg-dim: #c79aa3;
+  --accent: #d43f6a;
+  --border: rgba(230, 150, 170, 0.14);
+  --control-bg: #2a121a;
+  --a-panel-bg: #200d14;
+  --a-canvas-bg: #120609;
+  --a-canvas-solid: #120609; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(212, 63, 106, 0.14);
+  --a-selection: #d43f6a;
+  --a-guide: #8fbf5a; /* the Lycurgus Cup's own reflected-light green */
+  --a-keyed: #d9a441; /* colloidal GOLD is the literal pigment here */
+  --a-anchor: #a488a0;
+  --a-modifier: #a768c9;
+  --a-scrollbar: rgba(230, 150, 170, 0.2);
+  --a-scrollbar-hover: rgba(230, 150, 170, 0.36);
+  --a-split-handle: #331620;
+  --a-split-handle-hover: #d43f6a;
+  --a-palette-shadow: 0 16px 48px rgba(0, 0, 0, 0.66);
+
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(29, 10, 16, 0.72);
+  --a-glass-bg-panel: rgba(32, 13, 20, 0.78);
+  --a-glass-blur: blur(18px) saturate(140%);
+  --a-glass-rim: rgba(190, 225, 150, 0.16); /* dichroic green-gold against the red body */
+  --a-glass-tip-bg: rgba(32, 13, 20, 0.82);
+  --a-glass-tip-radius: 6px;
+}
+
+/* Cranberry-light — the thin pane, held to daylight: the same colloidal-gold
+   glass, less of it in the light's path, reading pale rose instead of deep
+   ruby. Brighter-than-page pane, defining (not lit) rim, depth-carried shadow
+   — the same three light-glass moves as Daybreak and Verdigris-light. */
+:root[data-theme="cranberry-light"] {
+  --bg: #f7e3e8;
+  --fg: #2c0f18;
+  --fg-dim: #7a4552;
+  --accent: #b8225a;
+  --border: rgba(90, 20, 40, 0.22);
+  --control-bg: #f0d2da;
+  --a-panel-bg: #fbedf0;
+  --a-canvas-bg: #e3bcc6;
+  --a-canvas-solid: #e3bcc6; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(184, 34, 90, 0.12);
+  --a-selection: #b8225a;
+  --a-guide: #5f7f2e;
+  --a-keyed: #8a621c;
+  --a-anchor: #7a5866;
+  --a-modifier: #7a3f96;
+  --a-scrollbar: rgba(90, 20, 40, 0.26);
+  --a-scrollbar-hover: rgba(90, 20, 40, 0.44);
+  --a-split-handle: #ecd4da;
+  --a-split-handle-hover: #b8225a;
+  --a-palette-shadow: 0 16px 44px rgba(90, 20, 40, 0.26);
+
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(253, 244, 247, 0.72);
+  --a-glass-bg-panel: rgba(251, 240, 244, 0.78);
+  --a-glass-blur: blur(18px) saturate(150%);
+  --a-glass-rim: rgba(90, 20, 40, 0.14);
+  --a-glass-tip-bg: rgba(252, 242, 246, 0.86);
+  --a-glass-tip-radius: 6px;
+}
+
+/* Obsidian — genuine volcanic glass, not a metaphor: rapidly cooled lava with
+   no time to crystallise. "Sheen obsidian" is a real, named variety whose
+   aligned gas-bubble inclusions throw a metallic gold or silver sheen across
+   the surface at a grazing angle; "rainbow obsidian" gets an iridescent band
+   from nanoscale crystallite layering. This theme's --a-glass-rim IS that
+   sheen — a warm gold glint on near-black glass — rather than a generic
+   bright edge, and --a-modifier's violet stands in for the rainbow variety's
+   other band colour. Paired with Moonstone (below) as TWO INDEPENDENT NAMES,
+   like Nocturne/Daybreak: these are different minerals, not one lightened. */
+:root[data-theme="obsidian"] {
+  --bg: #0a0a0c;
+  --fg: #e7e5e8;
+  --fg-dim: #a9a6b0;
+  --accent: #c9a24e;
+  --border: rgba(220, 215, 230, 0.12);
+  --control-bg: #17171b;
+  --a-panel-bg: #101012;
+  --a-canvas-bg: #050506;
+  --a-canvas-solid: #050506; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(201, 162, 78, 0.13);
+  --a-selection: #c9a24e;
+  --a-guide: #8f9cf0; /* rainbow obsidian's cool band, set against the gold sheen */
+  --a-keyed: #d97a52; /* the sheen's coppery register — distinct from the gold accent */
+  --a-anchor: #8f8a9c;
+  --a-modifier: #9a6fd0; /* rainbow obsidian's violet band */
+  --a-scrollbar: rgba(220, 215, 230, 0.2);
+  --a-scrollbar-hover: rgba(220, 215, 230, 0.36);
+  --a-split-handle: #201f24;
+  --a-split-handle-hover: #c9a24e;
+  --a-palette-shadow: 0 16px 48px rgba(0, 0, 0, 0.7); /* deepest throw — true black glass */
+
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(10, 10, 12, 0.72);
+  --a-glass-bg-panel: rgba(16, 16, 18, 0.78);
+  --a-glass-blur: blur(18px) saturate(140%);
+  --a-glass-rim: rgba(230, 200, 140, 0.18); /* sheen obsidian's gold glint, literally */
+  --a-glass-tip-bg: rgba(16, 16, 18, 0.82);
+  --a-glass-tip-radius: 6px;
+}
+
+/* Moonstone — Obsidian's light-pole pair, but a genuinely different mineral
+   (orthoclase/adularia feldspar), not the same glass lightened. Its optical
+   signature is ADULARESCENCE — a billowy blue-white glow that drifts across
+   the stone as the angle changes, caused by light scattering between
+   alternating feldspar layers grown inside it. --a-glass-rim is that glow,
+   not a generic light-theme edge, which is why it is COOL rather than the
+   warm defining rims Daybreak/Verdigris-light/Cranberry-light use — the
+   citation dictates the hue here, not the light-pole convention. */
+:root[data-theme="moonstone"] {
+  --bg: #e7ecf2;
+  --fg: #1c2230;
+  --fg-dim: #5c6478;
+  --accent: #4a6fb0;
+  --border: rgba(30, 45, 70, 0.2);
+  --control-bg: #d7dfe9;
+  --a-panel-bg: #f2f5f9;
+  --a-canvas-bg: #c6d0dd;
+  --a-canvas-solid: #c6d0dd; /* flat twin of --a-canvas-bg (color-mix consumers) */
+  --a-hover-bg: rgba(74, 111, 176, 0.12);
+  --a-selection: #4a6fb0;
+  --a-guide: #8452b8;
+  --a-keyed: #a8552f;
+  --a-anchor: #5c6478;
+  --a-modifier: #6a4fae;
+  --a-scrollbar: rgba(30, 45, 70, 0.24);
+  --a-scrollbar-hover: rgba(30, 45, 70, 0.42);
+  --a-split-handle: #d0d9e4;
+  --a-split-handle-hover: #4a6fb0;
+  --a-palette-shadow: 0 16px 44px rgba(30, 45, 70, 0.24);
+
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(246, 249, 252, 0.72);
+  --a-glass-bg-panel: rgba(243, 247, 251, 0.78);
+  --a-glass-blur: blur(18px) saturate(150%);
+  --a-glass-rim: rgba(180, 200, 230, 0.2); /* adularescence's drifting blue sheen */
+  --a-glass-tip-bg: rgba(245, 248, 252, 0.86);
+  --a-glass-tip-radius: 6px;
+}
+
 /* Futura Dark — TYPOGRAPHY-LED, and the proof that --a-ui-font is a real lever.
    The type IS the theme: a geometric sans (Futura where the OS has it, Jost and
    Century Gothic as the geometric fallbacks) over a near-monochrome palette, so
