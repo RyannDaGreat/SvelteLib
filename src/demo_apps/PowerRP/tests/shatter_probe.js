@@ -86,6 +86,17 @@ const DRAG_WORLD_UNITS = 120;
  * type mermaid's identity markup covers best, so a failure here is ours. */
 const FLOWCHART = "flowchart TD\n  A[Start] --> B{Decision}\n  B -->|Yes| C[Do it]\n  B -->|No| D[Skip]";
 
+/** The two families that are NOT the flowchart, measured for fidelity and for
+ * producing at least one anchored connector. `sequence` exercises Mermaid's
+ * SECOND renderer (participants and messages, keyed by `data-et`, the one family
+ * that names an edge's two ends outright); `class` exercises a compartmented box
+ * whose single node carries several stacked text runs, which is the case a
+ * centring label equation would silently mis-place. */
+const OTHER_DIAGRAMS = {
+  sequence: "sequenceDiagram\n  participant U as User\n  participant S as Server\n  U->>S: Login\n  S-->>U: Token",
+  class: "classDiagram\n  Animal <|-- Dog\n  Animal <|-- Cat\n  Animal : +int age\n  class Dog{\n    +String breed\n    +fetch()\n  }",
+};
+
 const DANGER = /uncaught|paintir|is not a function|cannot read|closest.*anchor/i;
 
 async function spinServer() {
@@ -306,6 +317,52 @@ if (!ready) {
       console.log("  ANCHORING  no arrow is bound to the dragged box; re-routing not exercised on this diagram");
     }
   }
+}
+
+// ── THE OTHER DIAGRAM FAMILIES ──────────────────────────────────────────────
+// One diagram type is a toy. Mermaid has two renderers with materially different
+// markup — the unified one (flowchart, class, state, ER) keys nodes by a composed
+// `id`, while sequence keys participants and messages by `data-et` and is the ONLY
+// family that names an edge's two ends outright. A shatter that works on a
+// flowchart says nothing about either the second renderer or the compartmented
+// class box, so both are measured here.
+for (const [name, def] of Object.entries(OTHER_DIAGRAMS)) {
+  const p2 = await browser.newPage();
+  await p2.setViewport({ width: 1400, height: 900 });
+  p2.on("pageerror", (e) => pageErrors.push(`${name}: ${e.message}`));
+  await p2.goto(url, { waitUntil: "domcontentloaded" });
+  await p2.waitForFunction(() => window.__powerrp_app, { timeout: 60000 });
+  const clip = await p2.evaluate(() => {
+    const r = document.querySelector("canvas").getBoundingClientRect();
+    return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) };
+  });
+  await p2.evaluate((d) => {
+    const a = window.__powerrp_app;
+    a.addItem({ ...a.registry.get("mermaid").defaults, x: 260, y: 90, w: 420, h: 540, definition: d });
+    a.runCommand("reset-view");
+  }, def);
+  const up = await p2.waitForFunction(() => window.__powerrp_app.shatterBlocker() === null, { timeout: 60000 }).then(() => true).catch(() => false);
+  if (!up) { fail(`${name}: never became shatterable`); await p2.close(); continue; }
+  await p2.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const b = readPng(await p2.screenshot({ encoding: "binary", clip }));
+  const r2 = await p2.evaluate(() => {
+    const a = window.__powerrp_app;
+    const id = a.selection;
+    a.shatterSelection();
+    const st = a.state().items;
+    const m = [...(st[id].members ?? [])];
+    return { n: m.length, anchored: m.filter((x) => st[x].type === "arrow").length, errs: [...(a.evalInfo?.().errors?.keys?.() ?? [])].slice(0, 3) };
+  });
+  await p2.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const a2 = readPng(await p2.screenshot({ encoding: "binary", clip }));
+  const d2 = imageDistance(b, a2);
+  console.log(`  ${name}: ${r2.n} children, ${r2.anchored} rim-bound arrows, fidelity meanAbs=${d2.meanAbs.toFixed(2)}`);
+  if (r2.n > 0) ok(`${name} decomposes into ${r2.n} widgets`); else fail(`${name} produced no widgets`);
+  if (r2.anchored > 0) ok(`${name} produced ${r2.anchored} rim-bound arrows`); else fail(`${name} produced no anchored connector`);
+  if (d2.meanAbs <= FLOORS.mermaid.maxMeanAbs) ok(`${name} holds fidelity (meanAbs ${d2.meanAbs.toFixed(2)})`);
+  else fail(`${name} fidelity REGRESSED: meanAbs ${d2.meanAbs.toFixed(2)} exceeds ${FLOORS.mermaid.maxMeanAbs}`);
+  if (r2.errs.length === 0) ok(`${name} produced no equation errors`); else fail(`${name} equation errors: ${JSON.stringify(r2.errs)}`);
+  await p2.close();
 }
 
 if (pageErrors.length > 0) fail(`page errors: ${JSON.stringify(pageErrors.slice(0, 4))}`);
