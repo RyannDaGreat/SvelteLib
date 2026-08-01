@@ -62,6 +62,7 @@
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder, fitBox } from "../core/geometry.js";
 import { partKey, partRef } from "../core/shatter.js";
+import { connectorPathAnchors } from "../core/endpoints.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { image, mermaidVector, rect, text } from "../render_gpu/ir.js";
@@ -612,13 +613,11 @@ export function pathsToSvgSrc(paths, viewBox) {
  */
 export function pathsBounds(paths) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of paths) {
-    const nums = (p.d.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? []).map(Number);
-    for (let i = 0; i + 1 < nums.length; i += 2) {
-      minX = Math.min(minX, nums[i]); maxX = Math.max(maxX, nums[i]);
-      minY = Math.min(minY, nums[i + 1]); maxY = Math.max(maxY, nums[i + 1]);
+  for (const p of paths)
+    for (const pt of pathPoints(p.d)) {
+      minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x);
+      minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y);
     }
-  }
   if (!Number.isFinite(minX)) return null;
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
@@ -722,6 +721,127 @@ function textPartState(t, geometry, toWorld, map) {
 function edgeLabelFor(bucket) {
   const own = bucket.texts.length > 0 ? bucket.texts[0].text : "";
   return `${own || bucket.origin.id} edge`;
+}
+
+/**
+ * MERMAID'S MARKER VOCABULARY → THE CONNECTOR HEAD SHAPES (core/endpoints.js
+ * HEAD_SHAPES). Mermaid names each marker after the glyph it means, so its own
+ * id is a statement of INTENT — which is why the flatten carries the id rather
+ * than the shatter trying to recognise a hollow triangle from baked geometry.
+ *
+ * Keyed by the marker's BASE name with mermaid's diagram prefix and its
+ * Start/End suffix stripped (`markerBaseName`), so one entry covers
+ * `flowchart-pointEnd`, `flowchart-v2-pointStart` and any future prefix. The
+ * mapping is W4-G's, from the audit that built these shapes against the pinned
+ * mermaid build (.frenzy/round6/W4-G.md); it is transcribed here rather than
+ * derived because only a human can say that UML `extension` MEANS a hollow
+ * triangle.
+ *
+ * A marker absent from this table is NOT silently dropped: shatterHeadShape
+ * returns null and the caller counts it and names it in the disclosure.
+ *
+ * THIS IS A HAND-MAINTAINED MIRROR of core/endpoints.js HEAD_SHAPES and cannot be
+ * derived — only a human knows that UML `extension` means a hollow triangle. So
+ * it gets the treatment a non-derivable mirror is owed: tests/shatter_test.js
+ * fails if any value here stops being a real head shape. The gate lives in the
+ * test rather than at import scope deliberately (ledger C-19): a module that
+ * refuses to load takes every suite that transitively reaches paint_skia with it.
+ */
+export const MERMAID_MARKER_HEADS = {
+  point: "triangle",
+  barb: "dart",
+  dependency: "dart",
+  extension: "triangleOpen",
+  composition: "diamond",
+  aggregation: "diamondOpen",
+  circle: "circleOpen",
+  lollipop: "circleOpen",
+  cross: "cross",
+  requirement_arrow: "open",
+  requirement_contains: "crossedCircle",
+  onlyOne: "onlyOne",
+  zeroOrOne: "zeroOrOne",
+  oneOrMore: "oneOrMore",
+  zeroOrMore: "zeroOrMore",
+};
+
+/**
+ * Pure function. A mermaid marker id reduced to the base glyph name the head
+ * table is keyed by: the diagram prefix and the Start/End suffix removed.
+ *
+ * @param {string} markerId - e.g. "flowchart-pointEnd"
+ * @returns {string} e.g. "point"
+ *
+ * @example markerBaseName("flowchart-pointEnd")
+ * 'point'
+ * @example markerBaseName("classDiagram-extensionStart")
+ * 'extension'
+ * @example markerBaseName("erDiagram-zeroOrMoreEnd")
+ * 'zeroOrMore'
+ * @example markerBaseName("requirementDiagram-requirement_containsStart")
+ * 'requirement_contains'
+ * @example markerBaseName("")
+ * ''
+ */
+export function markerBaseName(markerId) {
+  const afterPrefix = String(markerId ?? "").split("-").pop();
+  return afterPrefix.replace(/(?:Start|End)$/, "");
+}
+
+/**
+ * Pure function. The connector head shape a mermaid marker means, or null when
+ * this build emits a marker the table does not know.
+ *
+ * NULL IS A REAL ANSWER AND MUST STAY ONE. Defaulting an unknown marker to a
+ * filled triangle would draw a plausible arrow with the wrong meaning — a UML
+ * aggregation silently becoming a plain arrow is exactly the "looks fine, says
+ * something else" failure the no-silent-fallback rule exists for. The caller
+ * counts these and names them.
+ *
+ * @param {string|undefined} markerId - the marker id from the flatten, if any
+ * @returns {string|null} a HEAD_SHAPES value, or null
+ *
+ * @example shatterHeadShape("flowchart-pointEnd")
+ * 'triangle'
+ * @example shatterHeadShape("classDiagram-aggregationStart")
+ * 'diamondOpen'
+ * @example shatterHeadShape(undefined)
+ * null
+ * @example shatterHeadShape("flowchart-somethingNewEnd")
+ * null
+ */
+export function shatterHeadShape(markerId) {
+  if (!markerId) return null;
+  const shape = MERMAID_MARKER_HEADS[markerBaseName(markerId)];
+  return shape ?? null;
+}
+
+/**
+ * Pure function. Every coordinate PAIR in a path `d`, as points — the polyline
+ * reading of a baked path.
+ *
+ * An APPROXIMATION for curves, deliberately and knowingly: a cubic's control
+ * points are read as vertices, so a curved route's polyline bulges toward its
+ * handles. Both consumers here tolerate that — a bounding rect only has to
+ * contain the ink, and a label offset only has to be near the route's middle —
+ * and the alternative is a full path flattener for two callers that do not need
+ * one.
+ *
+ * @param {string} d - an SVG path data string
+ * @returns {Array<{x: number, y: number}>}
+ *
+ * @example pathPoints("M10 20L30 60")
+ * [ { x: 10, y: 20 }, { x: 30, y: 60 } ]
+ * @example pathPoints("M0,0 L10,0 L10,10").length
+ * 3
+ * @example pathPoints("")
+ * []
+ */
+export function pathPoints(d) {
+  const nums = (String(d ?? "").match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? []).map(Number);
+  const out = [];
+  for (let i = 0; i + 1 < nums.length; i += 2) out.push({ x: nums[i], y: nums[i + 1] });
+  return out;
 }
 
 export const mermaidPlugin = {
@@ -972,6 +1092,10 @@ export const mermaidPlugin = {
     const notes = [];
     let straightened = 0;
     let unanchored = 0;
+    let boundEdgeLabels = 0;
+    let truncatedDashes = 0;
+    const unknownHeads = new Set();
+    const anchoredEdgeKeys = new Set();
 
     // 3. EDGES FIRST so their z lands UNDER the boxes - Mermaid draws them that
     //    way, and core/shatter.js writes parts in order with rising z.
@@ -992,13 +1116,29 @@ export const mermaidPlugin = {
         // text widget does not, and a `closest` ref against one throws.
         const shaft = b.paths.find((p) => !p.marker) ?? b.paths[0];
         straightened++;
+        // HEADS, PER END, from mermaid's own marker ids (#231). `none` where
+        // mermaid declared no marker; an UNKNOWN marker keeps `none` and is
+        // counted, because drawing a plausible-but-wrong glyph is worse than
+        // drawing none and saying so.
+        const headStart = shatterHeadShape(shaft?.markerStart);
+        const headEnd = shatterHeadShape(shaft?.markerEnd);
+        for (const [id, shape] of [[shaft?.markerStart, headStart], [shaft?.markerEnd, headEnd]])
+          if (id && !shape) unknownHeads.add(markerBaseName(id));
+        // DASH (#232), in world units. mermaid's `-.->`, a class `..>`
+        // dependency and an ER `..` are all just this.
+        const dash = shaft?.dash;
+        if (shaft?.dashTruncated) truncatedDashes++;
         parts.push({ key, label: edgeLabelFor(b), state: {
           type: "arrow",
           from: { x: `= ${partRef(fromKey)}_closest.x`, y: `= ${partRef(fromKey)}_closest.y` },
           to: { x: `= ${partRef(toKey)}_closest.x`, y: `= ${partRef(toKey)}_closest.y` },
           stroke: shaft && shaft.stroke ? shaft.stroke : DEFAULT_EDGE_STROKE,
           strokeWidth: (shaft && shaft.strokeWidth > 0 ? shaft.strokeWidth : 1) * map.sx,
+          headStart: headStart ?? "none",
+          headEnd: headEnd ?? "none",
+          ...(dash ? { dashed: true, dashLength: dash[0] * map.sx, dashGap: dash[1] * map.sx } : {}),
         } });
+        anchoredEdgeKeys.add(key);
       } else {
         // NOT ANCHORED. Mermaid named this edge only by index (stateDiagram's
         // `edge0`), so there is nothing to bind to. Keep its exact path.
@@ -1007,10 +1147,33 @@ export const mermaidPlugin = {
         unanchored++;
         parts.push({ key, label: edgeLabelFor(b), state: { type: "svg", ...toWorld(bounds), svgSrc: pathsToSvgSrc(b.paths, bounds), preserveAspect: false } });
       }
-      // An edge LABEL sits where Mermaid put it: the five connector plugins
-      // declare no anchors, so there is no midpoint to bind it to.
-      for (const t of b.texts)
-        parts.push({ key: partKeyFor(`${t.text} label`, b.origin.id, taken), label: `${t.text} label`, state: textPartState(t, null, toWorld, map) });
+      // AN EDGE LABEL NOW BINDS TO ITS EDGE (#233). All five connectors publish
+      // start/mid/end on the DRAWN path, so a label rides the connector's own
+      // arc-length midpoint and travels with it when either box moves.
+      //
+      // OFFSET FROM `mid`, NOT PLACED ON IT. Mermaid does not centre a label on
+      // its route midpoint — it lifts it clear of the line — so the offset is
+      // measured from mermaid's own geometry and preserved. `mid` is read
+      // through core/endpoints.js connectorPathAnchors, the SAME function the
+      // arrow's `anchors` hook uses, so the two cannot disagree about what the
+      // midpoint of a path is.
+      //
+      // Only an ANCHORED edge gets this: an unanchored one is an svg widget,
+      // which publishes bbox anchors, not path anchors, and `_mid` on it would
+      // be an equation error rather than a label.
+      const routeMid = anchoredEdgeKeys.has(key)
+        ? connectorPathAnchors(pathPoints((b.paths.find((p) => !p.marker) ?? b.paths[0])?.d ?? "")).find((a) => a.id === "mid")
+        : null;
+      for (const t of b.texts) {
+        const geometry = routeMid ? (() => {
+          const w = toWorld({ x: t.x, y: t.y, w: 0, h: 0 });
+          const midW = toWorld({ x: routeMid.x, y: routeMid.y, w: 0, h: 0 });
+          return { x: `= ${partRef(key)}_mid.x + ${round2(w.x - midW.x)}`, y: `= ${partRef(key)}_mid.y + ${round2(w.y - midW.y)}` };
+        })() : null;
+        parts.push({ key: partKeyFor(`${t.text} label`, b.origin.id, taken), label: `${t.text} label`,
+          state: { ...textPartState(t, null, toWorld, map), ...(geometry ?? {}) } });
+        if (geometry) boundEdgeLabels++;
+      }
     }
 
     // 4. BOXES, then the labels bound to them.
@@ -1045,7 +1208,13 @@ export const mermaidPlugin = {
     // not anchored" and can do nothing at all with "approximate".
     const plural = (n) => (n === 1 ? "" : "s");
     if (straightened > 0)
-      notes.push(`${straightened} edge${plural(straightened)} became straight arrows bound to the boxes' rims, so they re-route when a box moves; where Mermaid routed an edge with bends, those bends are not reproduced. Arrowheads are all filled triangles - Mermaid's hollow, diamond, dart and crow's-foot heads have no equivalent here.`);
+      notes.push(`${straightened} edge${plural(straightened)} became arrows bound to the boxes' rims, so they re-route when a box moves; where Mermaid routed an edge with bends, those bends are not reproduced.`);
+    if (boundEdgeLabels > 0)
+      notes.push(`${boundEdgeLabels} edge label${plural(boundEdgeLabels)} ${boundEdgeLabels === 1 ? "is" : "are"} bound to ${boundEdgeLabels === 1 ? "its" : "their"} edge's midpoint, so ${boundEdgeLabels === 1 ? "it travels" : "they travel"} with the edge.`);
+    if (unknownHeads.size > 0)
+      notes.push(`${unknownHeads.size} arrowhead${plural(unknownHeads.size)} (${[...unknownHeads].join(", ")}) ${unknownHeads.size === 1 ? "is" : "are"} not in this build's head vocabulary, so ${unknownHeads.size === 1 ? "that end was" : "those ends were"} left bare rather than given a plausible wrong glyph.`);
+    if (truncatedDashes > 0)
+      notes.push(`${truncatedDashes} edge${plural(truncatedDashes)} used a dash pattern with more than two lengths; only the first drawn/gap pair is reproduced.`);
     if (unanchored > 0)
       notes.push(`${unanchored} edge${plural(unanchored)} kept Mermaid's exact path and ${unanchored === 1 ? "is" : "are"} NOT anchored: Mermaid names ${unanchored === 1 ? "it" : "them"} only by index, so there is nothing to bind to.`);
     if (leftovers.length > 0)

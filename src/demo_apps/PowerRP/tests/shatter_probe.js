@@ -84,7 +84,7 @@ const DRAG_WORLD_UNITS = 120;
 
 /** A flowchart with branches, an edge label, and two node shapes — the diagram
  * type mermaid's identity markup covers best, so a failure here is ours. */
-const FLOWCHART = "flowchart TD\n  A[Start] --> B{Decision}\n  B -->|Yes| C[Do it]\n  B -->|No| D[Skip]";
+const FLOWCHART = "flowchart TD\n  A[Start] --> B{Decision}\n  B -->|Yes| C[Do it]\n  B -.->|No| D[Skip]";
 
 /** The two families that are NOT the flowchart, measured for fidelity and for
  * producing at least one anchored connector. `sequence` exercises Mermaid's
@@ -214,6 +214,9 @@ if (!ready) {
       childTypes: members.map((m) => st[m].type),
       childNames: members.map((m) => st[m].name),
       arrowChildren: members.filter((m) => st[m].type === "arrow").length,
+      heads: members.filter((m) => st[m].type === "arrow").map((m) => `${st[m].headStart}->${st[m].headEnd}`),
+      dashedArrows: members.filter((m) => st[m].type === "arrow" && st[m].dashed === true).length,
+      midBoundLabels: members.filter((m) => st[m].type === "plaintext" && /_mid\./.test(JSON.stringify(stored[m] ?? {}))).length,
       equationChildren: members.filter((m) => JSON.stringify(stored[m] ?? {}).includes("= @")).length,
       errors: [...(app.evalInfo?.().errors?.keys?.() ?? [])].slice(0, 6),
     };
@@ -248,6 +251,17 @@ if (!ready) {
   const FLOWCHART_EDGES = 3;
   if (report.arrowChildren === FLOWCHART_EDGES) ok(`all ${FLOWCHART_EDGES} flowchart edges came back as rim-bound arrows`);
   else fail(`${report.arrowChildren} of ${FLOWCHART_EDGES} flowchart edges became arrows — the rest silently degraded to unanchored paths`);
+
+  console.log(`  heads: ${JSON.stringify(report.heads)}  dashed: ${report.dashedArrows}  mid-bound labels: ${report.midBoundLabels}`);
+  // #231: mermaid's marker ids become real head SHAPES, not one filled triangle.
+  if (report.heads.every((h) => h === "none->triangle")) ok("every flowchart edge carries a real head shape read from Mermaid's marker id");
+  else fail(`unexpected head shapes: ${JSON.stringify(report.heads)}`);
+  // #232: `-.->` becomes a real dash, not a solid line.
+  if (report.dashedArrows === 1) ok("the `-.->` edge came back DASHED, not silently solidified");
+  else fail(`${report.dashedArrows} dashed arrows, expected 1 (the diagram has one \`-.->\`)`);
+  // #233: an edge label rides its connector's own arc-length midpoint.
+  if (report.midBoundLabels >= 2) ok(`${report.midBoundLabels} edge labels are bound to their edge's \`mid\` anchor`);
+  else fail(`only ${report.midBoundLabels} edge labels bound to \`mid\` — they are back to baked coordinates`);
 
   if (report.errors.length === 0) ok("no equation errors after the conversion");
   else fail(`equation errors after the conversion: ${JSON.stringify(report.errors)}`);

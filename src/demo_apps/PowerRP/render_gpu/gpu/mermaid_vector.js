@@ -314,6 +314,11 @@ function resolveMarkerDef(svg, cssMarker) {
   const vbW = vb.length === 4 && vb[2] > 0 ? vb[2] : parseFloat(def.getAttribute("markerWidth") || "3");
   const vbH = vb.length === 4 && vb[3] > 0 ? vb[3] : parseFloat(def.getAttribute("markerHeight") || "3");
   return {
+    // The marker's own DOM id ("flowchart-pointEnd", "classDiagram-extensionStart",
+    // "erDiagram-onlyOneStart"). Mermaid names its markers after the GLYPH, so this
+    // is the one place its output states which arrowhead it meant — recovering the
+    // shape from the baked path geometry would be reverse-engineering a picture.
+    id: m[1],
     child,
     vbW, vbH,
     mw: parseFloat(def.getAttribute("markerWidth") || "3"),
@@ -323,6 +328,45 @@ function resolveMarkerDef(svg, cssMarker) {
     orient: def.getAttribute("orient") || "0",
     units: def.getAttribute("markerUnits") || "strokeWidth",
   };
+}
+
+/**
+ * Query (DOM). The edge's declared MARKER IDS and DASH pattern, as the fields a
+ * consumer needs and only when they exist — so a plain shape adds nothing to its
+ * path record and a solid undecorated line is byte-identical to before.
+ *
+ * The dash array is mapped into viewBox units by the same `matScale(m)` the
+ * stroke width uses, because a dash is a length along the same path.
+ *
+ * Args:
+ *   svg (SVGSVGElement): the diagram root (for marker lookup)
+ *   cs (CSSStyleDeclaration): the element's computed style
+ *   m ({a,b,c,d,e,f}): the element's local → viewBox matrix
+ *
+ * Returns:
+ *   {markerStart?, markerEnd?, dash?} — marker fields are mermaid's marker ids;
+ *   `dash` is [drawn, gap] in viewBox units. Absent keys mean "not declared".
+ */
+function markerIntentOf(svg, cs, m) {
+  const out = {};
+  const start = resolveMarkerDef(svg, cs.markerStart);
+  const end = resolveMarkerDef(svg, cs.markerEnd);
+  if (start) out.markerStart = start.id;
+  if (end) out.markerEnd = end.id;
+  // "none" and "" are the CSS spellings of "solid"; anything else is a run of
+  // lengths, of which the first two are the drawn/gap pair every consumer here
+  // can express. A longer pattern is TRUNCATED, which is a real approximation —
+  // the shatter says so rather than pretending it reproduced a 4-value dash.
+  const raw = (cs.strokeDasharray || "").trim();
+  if (raw && raw !== "none") {
+    const nums = raw.split(/[\s,]+/).map(parseFloat).filter((v) => Number.isFinite(v) && v > 0);
+    if (nums.length > 0) {
+      const scale = matScale(m);
+      out.dash = [nums[0] * scale, (nums[1] ?? nums[0]) * scale];
+      if (nums.length > 2) out.dashTruncated = nums.length;
+    }
+  }
+  return out;
 }
 
 /** Query (DOM). Builds the arrowhead path ops for one edge element's markers
@@ -428,7 +472,8 @@ function clampOpacity(css) {
  *
  * Returns:
  *   {
- *     paths: [{d, fill, stroke, strokeWidth, fillRule, opacity, origin, marker?}],
+ *     paths: [{d, fill, stroke, strokeWidth, fillRule, opacity, origin, marker?,
+ *              markerStart?, markerEnd?, dash?, dashTruncated?}],
  *     texts: [{text, x, y, size, color, bold, font, origin}],
  *     // both in viewBox space (texts at their glyph-box TOP-LEFT); `origin` is
  *     // the SEMANTIC identity (originOf) — which diagram node or edge this ink
@@ -485,6 +530,14 @@ export function flattenMermaidSvg(svg) {
         fillRule: cs.fillRule === "evenodd" ? "evenodd" : "nonzero",
         opacity: clampOpacity(cs.opacity),
         origin,
+        // WHICH ARROWHEAD AND WHICH DASH mermaid asked for, as mermaid states
+        // them — the marker's own id and the CSS dash array — rather than as the
+        // baked picture shows them. The painter ignores both (it draws the marker
+        // instance as its own path); a consumer rebuilding the edge as a native
+        // connector needs the INTENT, because a filled triangle and a hollow one
+        // are the same `d` with a different paint and recovering "this meant UML
+        // inheritance" from geometry is guesswork.
+        ...markerIntentOf(svg, cs, m),
       });
     }
     // Instanced arrowhead markers draw ON TOP of their edge (appended after it).
