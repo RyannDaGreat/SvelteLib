@@ -29,6 +29,16 @@
  * Bare node, no DOM, no GPU — the whole widget is pure over its state, which is
  * exactly the property that lets it be tested this way (CLAUDE.md's three kinds of
  * state: this widget is property state throughout).
+ *
+ * ── AND WHY IT SKIPS RATHER THAN RUNS, TODAY ─────────────────────────────────
+ * The asset it reads lives under `projects/`, which is GITIGNORED user data. No
+ * commit in this repository ever added a file there (`git ls-files projects/` is
+ * `.gitkeep` and nothing else), so this suite has never been runnable on a clone
+ * — and the Imitations project is absent from the author's working copy too, so
+ * it has stopped being runnable anywhere. It died with a bare ENOENT stack, which
+ * reads exactly like a regression and cost several agents time to rule out.
+ * `requireFixtureOrSkip` turns that into one counted sentence. The suite itself is
+ * unchanged and runs in full wherever the asset exists.
  */
 
 import assert from "node:assert/strict";
@@ -40,9 +50,17 @@ import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { ROW_KINDS } from "../core/properties.js";
+import { requireFixtureOrSkip } from "./fixture_precondition.js";
+
+/** App-relative path of the widget under test. It is USER DATA under the
+ *  gitignored projects/ tree and was never committed, so this suite cannot be a
+ *  precondition of the gate — see fixture_precondition.js for the full record.
+ *  The skip is LOUD and run_all.mjs counts it in its own column. */
+const PLUGIN_PATH = "projects/Imitations/assets/histogram.plugin.js";
+requireFixtureOrSkip("histogram_plugin_test", PLUGIN_PATH);
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SOURCE = readFileSync(resolve(here, "../projects/Imitations/assets/histogram.plugin.js"), "utf8");
+const SOURCE = readFileSync(resolve(here, "..", PLUGIN_PATH), "utf8");
 
 let passed = 0;
 function test(name, fn) {

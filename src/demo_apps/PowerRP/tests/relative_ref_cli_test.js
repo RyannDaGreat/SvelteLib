@@ -29,17 +29,51 @@
  * omission counter is the thing that would flag a hole. What is asserted is that
  * RESOLUTION HAPPENED: the render exits 0, reports no svg-source failure, and writes
  * a PNG. That is the claim this file is responsible for.
+ *
+ * ── THE FIXTURE IS BUILT, NOT BORROWED ───────────────────────────────────────
+ * This suite used to name a real project in the author's working copy
+ * ("Imitations") and a real nested asset in it. `projects/` is GITIGNORED — a
+ * project is a folder of user data, not source, and `git ls-files projects/` is
+ * `.gitkeep` and nothing else — so the suite could never run on a clone, and once
+ * that project was deleted it stopped running anywhere: three assertions failed at
+ * once with no hint that the cause was a missing directory.
+ *
+ * The registry's disk path is fixed (`projects/<Project>/assets/<file>`, resolved
+ * off its own module URL), so the fixture cannot live somewhere else — it must be
+ * MATERIALISED at that path and removed again. The SVG is committed under
+ * tests/fixtures/, which is source; the project directory around it exists only
+ * for the length of this suite and is torn down in a `finally`.
  */
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP = dirname(HERE);
+
+/** The throwaway project the fixture is materialised into. Named so that a leak
+ *  (a crash between setup and teardown) is unmistakable in a project listing
+ *  rather than looking like someone's deck. */
+const FIXTURE_PROJECT = "__relative_ref_cli_fixture__";
+/** The NESTED asset path inside it — nested on purpose; see the header. */
+const FIXTURE_ASSET = "icons/database.svg";
+const FIXTURE_DIR = join(APP, "projects", FIXTURE_PROJECT);
+
+/**
+ * Command. Copies the committed SVG to
+ * projects/<FIXTURE_PROJECT>/assets/<FIXTURE_ASSET>, creating the tree.
+ *
+ * @returns {void}
+ */
+function installFixture() {
+  const dest = join(FIXTURE_DIR, "assets", FIXTURE_ASSET);
+  mkdirSync(dirname(dest), { recursive: true });
+  cpSync(join(HERE, "fixtures", "relative_ref_icon.svg"), dest);
+}
 
 let passed = 0;
 function test(name, fn) {
@@ -87,39 +121,41 @@ function render(doc) {
   return { status: res.status, out: `${res.stdout}${res.stderr}`, png };
 }
 
-// "Imitations" is a real project in this repo and icons/database.svg a real nested
-// asset in it — the fixture must exist on disk for the disk-reading registry to have
-// anything to resolve.
-test("cli/render.js resolves a NESTED relative ref against the document's project", () => {
-  const { status, out, png } = render(svgDoc("Imitations", "icons/database.svg"));
-  assert.equal(status, 0, `render exited ${status}:\n${out}`);
-  assert.ok(png && png.subarray(0, 4).equals(PNG_MAGIC), "no PNG was written");
-  // The unresolved-ref failure is LOUD by construction (svg_source_registry throws
-  // on a non-/asset/ url in bare node), so its absence is the proof of resolution.
-  assert.ok(!/bare node can only load/.test(out), `the ref reached the registry UNRESOLVED:\n${out}`);
-  assert.ok(!/svg_source_registry: failed to load/.test(out), `the resolved ref did not read off disk:\n${out}`);
-  // Specifically NOT the single-segment encoding, which would name a missing file.
-  assert.ok(!/icons%2Fdatabase\.svg/.test(out), `the nested path was encoded as ONE segment:\n${out}`);
-});
+installFixture();
+try {
+  test("cli/render.js resolves a NESTED relative ref against the document's project", () => {
+    const { status, out, png } = render(svgDoc(FIXTURE_PROJECT, FIXTURE_ASSET));
+    assert.equal(status, 0, `render exited ${status}:\n${out}`);
+    assert.ok(png && png.subarray(0, 4).equals(PNG_MAGIC), "no PNG was written");
+    // The unresolved-ref failure is LOUD by construction (svg_source_registry throws
+    // on a non-/asset/ url in bare node), so its absence is the proof of resolution.
+    assert.ok(!/bare node can only load/.test(out), `the ref reached the registry UNRESOLVED:\n${out}`);
+    assert.ok(!/svg_source_registry: failed to load/.test(out), `the resolved ref did not read off disk:\n${out}`);
+    // Specifically NOT the single-segment encoding, which would name a missing file.
+    assert.ok(!/icons%2Fdatabase\.svg/.test(out), `the nested path was encoded as ONE segment:\n${out}`);
+  });
 
-test("cli/render.js still renders the ABSOLUTE form byte-for-byte as before", () => {
-  // No migration: the form every pre-existing deck holds must keep working on this
-  // path exactly as it did, so the two renders agree.
-  const relative = render(svgDoc("Imitations", "icons/database.svg"));
-  const absolute = render(svgDoc("Imitations", "/asset/Imitations/icons/database.svg"));
-  assert.equal(absolute.status, 0, absolute.out);
-  assert.ok(absolute.png.equals(relative.png),
-    "the relative and absolute spellings of the SAME asset rendered DIFFERENT pixels");
-});
+  test("cli/render.js still renders the ABSOLUTE form byte-for-byte as before", () => {
+    // No migration: the form every pre-existing deck holds must keep working on this
+    // path exactly as it did, so the two renders agree.
+    const relative = render(svgDoc(FIXTURE_PROJECT, FIXTURE_ASSET));
+    const absolute = render(svgDoc(FIXTURE_PROJECT, `/asset/${FIXTURE_PROJECT}/${FIXTURE_ASSET}`));
+    assert.equal(absolute.status, 0, absolute.out);
+    assert.ok(absolute.png.equals(relative.png),
+      "the relative and absolute spellings of the SAME asset rendered DIFFERENT pixels");
+  });
 
-test("cli/render.js reports a relative ref that names no such asset — never a silent blank", () => {
-  // The failure mode this whole change exists to kill is a silently missing picture.
-  // A ref that resolves correctly but points at nothing must still be reported.
-  const { status, out } = render(svgDoc("Imitations", "icons/there_is_no_such_icon.svg"));
-  assert.equal(status, 0, `a missing asset must not abort the render: ${out}`);
-  assert.ok(/there_is_no_such_icon\.svg/.test(out), `the missing asset was NOT named:\n${out}`);
-  // And it was looked for in the right place — i.e. resolution ran before the lookup.
-  assert.ok(!/bare node can only load/.test(out), `it failed as an UNRESOLVED ref, not a missing file:\n${out}`);
-});
+  test("cli/render.js reports a relative ref that names no such asset — never a silent blank", () => {
+    // The failure mode this whole change exists to kill is a silently missing picture.
+    // A ref that resolves correctly but points at nothing must still be reported.
+    const { status, out } = render(svgDoc(FIXTURE_PROJECT, "icons/there_is_no_such_icon.svg"));
+    assert.equal(status, 0, `a missing asset must not abort the render: ${out}`);
+    assert.ok(/there_is_no_such_icon\.svg/.test(out), `the missing asset was NOT named:\n${out}`);
+    // And it was looked for in the right place — i.e. resolution ran before the lookup.
+    assert.ok(!/bare node can only load/.test(out), `it failed as an UNRESOLVED ref, not a missing file:\n${out}`);
+  });
+} finally {
+  rmSync(FIXTURE_DIR, { recursive: true, force: true });
+}
 
 console.log(`\n${passed} relative-ref CLI tests passed.`);

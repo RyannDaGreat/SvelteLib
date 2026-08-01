@@ -32,25 +32,55 @@ import assert from "node:assert/strict";
 import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { evaluatePluginSource } from "../core/plugin_assets.js";
+import { optionalFixturePresent } from "./fixture_precondition.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, "..");
 const verbose = process.argv.includes("--verbose");
 
-/** Where plugin-asset sources live in-repo (built-in library + checked-in project assets). */
-const PLUGIN_DIRS = ["assets/builtin/library", "projects/Imitations/assets"];
-const MIN_EXECUTED = 240; // floor: raise as coverage grows; lowering needs a stated reason
+/** Where plugin-asset sources live IN THE REPO. This is the corpus the floors
+ *  below are measured against, because it is the only one every clone has. */
+const PLUGIN_DIRS = ["assets/builtin/library"];
+/** Directories of plugin assets that are USER DATA, swept when present and
+ *  reported when absent. `projects/*` is gitignored (a project is a folder of
+ *  user data, not source) and nothing under it was ever committed, so a floor
+ *  that counted these described exactly one machine — and then stopped being
+ *  true even there. See tests/fixture_precondition.js for the full record. */
+const OPTIONAL_PLUGIN_DIRS = ["projects/Imitations/assets"];
+
+/** Floor: raise as coverage grows; lowering needs a stated reason.
+ *
+ *  LOWERED 240 → 161 on 2026-08-01, and here is the reason. 240 was measured with
+ *  `projects/Imitations/assets` in the sweep — six plugin assets that are not in
+ *  this repository and never were. On a clone the suite did not fall short of 240,
+ *  it died with ENOENT before counting anything. 161 is the measured yield of the
+ *  COMMITTED corpus alone; the optional directories add to it wherever they exist. */
+const MIN_EXECUTED = 161;
 /** Floor on the CORPUS itself, beside the doctest floor. The two catch different
  *  regressions: MIN_EXECUTED catches a parser that stopped finding examples, this
  *  catches an ASSET that stopped being discovered (a renamed directory, a migration
- *  reverted). 14 = the built-in library + the Imitations project assets. */
-const MIN_ASSETS = 14;
+ *  reverted). 8 = the built-in library, which is what a clone contains. */
+const MIN_ASSETS = 8;
 
-const files = PLUGIN_DIRS.flatMap((d) => {
-  const dir = resolve(appRoot, d);
-  return readdirSync(dir).filter((f) => f.endsWith(".plugin.js")).map((f) => resolve(dir, f));
-});
-assert.ok(files.length >= 10, `expected the known plugin-asset corpus, found ${files.length} files`);
+/**
+ * Query (reads the filesystem). Every `*.plugin.js` in `dir`, as absolute paths.
+ *
+ * @param {string} dir App-relative directory
+ * @returns {string[]}
+ */
+const pluginsIn = (dir) => readdirSync(resolve(appRoot, dir))
+  .filter((f) => f.endsWith(".plugin.js")).map((f) => resolve(appRoot, dir, f));
+
+const files = PLUGIN_DIRS.flatMap(pluginsIn);
+/** Present optional dirs are swept too — the coverage is real where it exists. An
+ *  ABSENT one is NAMED on stdout, never dropped silently: this suite's own
+ *  checkability rule ("every record lands in exactly one printed bucket, so the
+ *  number can't lie") applies to the corpus as much as to the records. */
+for (const dir of OPTIONAL_PLUGIN_DIRS) {
+  if (optionalFixturePresent(dir)) files.push(...pluginsIn(dir));
+  else console.log(`  CORPUS   ${dir} absent (gitignored user data) — not swept`);
+}
+assert.ok(files.length >= MIN_ASSETS, `expected the known plugin-asset corpus, found ${files.length} files`);
 
 /**
  * Pure function. Rewrites a plugin-asset source so its top-level declarations

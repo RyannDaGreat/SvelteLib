@@ -24,6 +24,14 @@
  *              python; the dump's rule, so a wiped container still works).
  *   SHELL      tests/*_test.sh — server lifecycle.
  *
+ * ── AND A THIRD OUTCOME: SKIP ────────────────────────────────────────────────
+ * A suite whose PREREQUISITE is absent (no internet, no fixture clip, no user-data
+ * project) exits 0 and prints `SKIP — <reason>`. That contract predates this file;
+ * what did not exist was any accounting for it, so a skipped suite was counted as
+ * a PASS. Every one now lands in its own column and is NAMED in the summary. It
+ * still does not redden the run — a missing prerequisite is not a defect — but it
+ * can no longer inflate the number the whole file exists to make honest.
+ *
  * ── THE GATE PROVIDES ITS OWN PREREQUISITES ──────────────────────────────────
  * First real sweep: 12 failures, and NINE were the same HTTP 500 — `listAssets:
  * 500 Internal Server Error` — because no project backend was listening. The
@@ -230,9 +238,28 @@ function startBackendWithRetry() {
   return withFreePort((port) => startBackend(port));
 }
 
-/** Command (spawns a child). Runs one test file; resolves {ok, ms, tail}. Never throws
- *  — a crashed child is a FAILING TEST, not an error in the runner, and its output is
- *  kept so the report can show why rather than just that. */
+/**
+ * THE SKIP CONTRACT. A suite whose PREREQUISITE is absent exits 0 and prints a
+ * line-start `SKIP — <reason>`. github_live_probe.js set it (an offline machine
+ * must not redden the gate), backend_precondition.js and video_perf_probe.js
+ * adopted it verbatim, and fixture_precondition.js now uses it for user-data
+ * fixtures.
+ *
+ * IT HAD TO BE COUNTED, because until it was, a skip WAS A PASS. Exit 0 is exit
+ * 0: the totals said "N pass" and N included every suite that had quietly proved
+ * nothing. That is the exact defect this file's own header blames for a session
+ * of false confidence, one level down. A skip is not a failure and must not
+ * redden the run — but it must be visible, named, and in its own column.
+ *
+ * Deliberately anchored to line start with the em dash: `video_v5_scrub_live_probe`
+ * prints `── HEAVY CLIP: SKIPPED — …` for a PHASE it skipped while the rest of the
+ * suite ran, and that is not a skipped suite.
+ */
+const SKIP_LINE = /^SKIP — .*/m;
+
+/** Command (spawns a child). Runs one test file; resolves {ok, skip, ms, tail}. Never
+ *  throws — a crashed child is a FAILING TEST, not an error in the runner, and its
+ *  output is kept so the report can show why rather than just that. */
 function runOne(kind, file) {
   // `uv run <file>` — NOT `uv run python <file>`. Only the former reads the file's
   // PEP 723 inline `# /// script` dependency block; adding an explicit `python`
@@ -262,9 +289,10 @@ function runOne(kind, file) {
     const killer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT_MS[kind]);
     child.on("close", (code) => {
       clearTimeout(killer);
-      done({ ok: code === 0, ms: Date.now() - started, tail: buf.trimEnd().split("\n").slice(-3).join("\n") });
+      const skip = code === 0 ? (buf.match(SKIP_LINE)?.[0] ?? null) : null;
+      done({ ok: code === 0, skip, ms: Date.now() - started, tail: buf.trimEnd().split("\n").slice(-3).join("\n") });
     });
-    child.on("error", (e) => { clearTimeout(killer); done({ ok: false, ms: Date.now() - started, tail: String(e) }); });
+    child.on("error", (e) => { clearTimeout(killer); done({ ok: false, skip: null, ms: Date.now() - started, tail: String(e) }); });
   });
 }
 
@@ -282,12 +310,14 @@ function runOne(kind, file) {
 async function runKind(kind, files) {
   const queue = [...files];
   const failures = [];
+  const skips = [];
   let pass = 0;
   const worker = async () => {
     for (let f = queue.shift(); f !== undefined; f = queue.shift()) {
       const r = await runOne(kind, f);
       const name = basename(f);
-      if (r.ok) { pass++; process.stdout.write("."); }
+      if (r.skip) { skips.push({ name, reason: r.skip }); process.stdout.write("s"); }
+      else if (r.ok) { pass++; process.stdout.write("."); }
       else {
         failures.push({ name, path: relative(repoRoot, f), ms: r.ms, tail: r.tail });
         process.stdout.write(`\nFAIL [${kind}] ${name} (${(r.ms / 1000).toFixed(0)}s)\n`);
@@ -295,7 +325,7 @@ async function runKind(kind, files) {
     }
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY[kind], files.length) }, worker));
-  return { pass, fail: failures.length, failures };
+  return { pass, fail: failures.length, failures, skips };
 }
 
 const args = process.argv.slice(2);
@@ -319,8 +349,9 @@ if (args.includes("--list")) {
   process.exit(0);
 }
 
-const totals = { pass: 0, fail: 0 };
+const totals = { pass: 0, fail: 0, skip: 0 };
 const allFailures = [];
+const allSkips = [];
 const started = Date.now();
 /** Read by runOne for every child. Set once, only if the browser kind will run and
  *  the caller has not supplied a backend of their own. */
@@ -340,16 +371,23 @@ try {
     if (!files.length) { console.log(`${kind}: no files`); continue; }
     process.stdout.write(`${kind} (${files.length}, x${Math.min(CONCURRENCY[kind], files.length)}) `);
     const r = await runKind(kind, files);
-    console.log(`  ${r.pass} pass / ${r.fail} fail`);
-    totals.pass += r.pass; totals.fail += r.fail;
+    console.log(`  ${r.pass} pass / ${r.fail} fail${r.skips.length ? ` / ${r.skips.length} skip` : ""}`);
+    totals.pass += r.pass; totals.fail += r.fail; totals.skip += r.skips.length;
     allFailures.push(...r.failures.map((x) => ({ ...x, kind })));
+    allSkips.push(...r.skips.map((x) => ({ ...x, kind })));
   }
 } finally {
   backend?.stop();
 }
 
 console.log(`\n${"=".repeat(64)}`);
-console.log(`TOTAL: ${totals.pass} pass / ${totals.fail} fail   (${((Date.now() - started) / 1000).toFixed(0)}s)`);
+console.log(`TOTAL: ${totals.pass} pass / ${totals.fail} fail / ${totals.skip} skip   (${((Date.now() - started) / 1000).toFixed(0)}s)`);
+if (allSkips.length) {
+  // NAMED, always. A skip is a suite that proved nothing; folding it into the
+  // pass column is how a gate stops meaning what it says.
+  console.log(`\nSKIPPED (${allSkips.length}) — prerequisite absent, not a failure:`);
+  for (const s of allSkips) console.log(`  [${s.kind}] ${s.name}\n    ${s.reason}`);
+}
 if (allFailures.length) {
   console.log(`\nFAILING (${allFailures.length}):`);
   for (const f of allFailures) console.log(`\n  [${f.kind}] ${f.name}  (${(f.ms / 1000).toFixed(0)}s)\n    ${f.tail.replace(/\n/g, "\n    ")}`);
