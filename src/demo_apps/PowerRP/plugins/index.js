@@ -20,6 +20,7 @@ import { shapePlugin } from "./shape.js";
 import { svgPlugin } from "./svg.js";
 import { iconifyPlugin } from "./iconify.js"; // the whole Iconify catalog as a widget: icon id → API URL → the shared SVG flatten (search palette in the canvas toolbar)
 import { circlePlugin } from "./circle.js";
+import { labeledCirclePlugin } from "./labeled_circle.js"; // a disc with a rim and one centred label (refs/Figures/labeled_circle)
 import { textPlugin } from "./text.js";
 import { arrowPlugin } from "./arrow.js";
 import { linePlugin } from "./line.js"; // arrow-family: a straight stroke, no head
@@ -31,6 +32,7 @@ import { imagePlugin } from "./image.js";
 import { videoPlugin } from "./video.js";
 import { videoScrubPlugin } from "./video_scrub.js";
 import { filmstripPlugin } from "./filmstrip.js";
+import { imageStackPlugin } from "./image_stack.js"; // the same sampled frames as the filmstrip, PILED UP and fading back (refs/Figures/image_stack) — shares its source declaration, core/video_sampling.js
 import { magnifierPlugin } from "./magnifier.js";
 import { blurPlugin } from "./blur.js";
 import { cameraPlugin } from "./camera.js";
@@ -89,7 +91,7 @@ import { globeMapPlugin } from "./demo/globe_map.js"; // slippy map + lit globe 
 import { brightnessContrastPlugin } from "./demo/brightness_contrast.js"; // tone-adjustment region filter (non-clipping logistic-gain contrast / linear-light exposure / naive sRGB + hue lock)
 import { scene3dPlugins } from "./demo/scene3d.js"; // THE 3D VIEWPORT FAMILY: scene3d_splat (Gaussian splats, working) + scene3d_model (glTF, loader not wired) — camera pose is keyframable property state, double-click flies it
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, polygonPlugin, paintPathPlugin, aperturePlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, polygonPlugin, paintPathPlugin, aperturePlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins];
 
 /**
  * Command. Registers every plugin TYPE into `registry`, and nothing else.
