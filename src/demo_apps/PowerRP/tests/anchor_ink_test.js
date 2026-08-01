@@ -39,13 +39,17 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
+import { newDocument, withNewItem, foldState } from "../core/document.js";
+import { evaluateState } from "../core/expressions.js";
 import { registerAll, allPlugins } from "../plugins/index.js";
 import {
   standardBBoxAnchors, standardRimAnchorIds, BBOX_CENTER_ANCHOR, withInkAnchors,
 } from "../core/derive.js";
-import { closestPointOnRoundedRect, roundedRectAnchorPoint, closestPointOnOutlines } from "../core/outline.js";
+import { closestPointOnRoundedRect, closestPointOnOutlines, pathDPolylines } from "../core/outline.js";
+import { closestPointOnRectBorder } from "../core/geometry.js";
 import { rectPlugin } from "../plugins/rect.js";
 
 let passed = 0;
@@ -167,20 +171,29 @@ test("3b. the projection is IDEMPOTENT on every rim widget — applying the rule
 
 // ── 4. RECT'S ROUNDED CORNERS: the Round 12 behaviour survives its own deletion ─
 
-test("4. a ROUNDED rect's corner anchors still slide onto their arcs — the general rule reproduces rect's retired override", () => {
+test("4. a ROUNDED rect's corner anchors still slide onto their arcs — the Round 12 behaviour, now delivered by the general rule", () => {
+  // THIS SECTION CARRIES A DELETED TEST. `roundedRectAnchorPoint` was rect's (and
+  // cropbox's, and codeblock's) private way of doing this and had no consumer left
+  // once the ink rule landed, so it and its block in tests/outline_test.js are
+  // gone. Its assertions are restated here against GEOMETRY rather than against
+  // the retired helper's output — which is the stronger form anyway: a corner
+  // anchor is ON the rounded rim, and is pulled in from the square corner by
+  // exactly r·(√2−1), the 45° arc point.
   const R = 30;
   const state = { ...rectPlugin.defaults, w: W, h: H, cornerRadius: R };
   const got = registry.get("rect").anchors(state);
-  // The expectation is computed with the helper rect.js used to call, so this
-  // asserts EQUIVALENCE with the deleted code rather than restating its output.
-  for (const a of standardBBoxAnchors(state)) {
-    const want = roundedRectAnchorPoint(W, H, R, a.id, a.x, a.y);
-    const mine = got.find((g) => g.id === a.id);
-    assert.ok(near(mine, want) <= EPS, `rect r=${R} anchor ${a.id}: got (${mine.x}, ${mine.y}), the retired override gave (${want.x}, ${want.y})`);
+  const CORNERS = { tl: { x: 0, y: 0 }, tr: { x: W, y: 0 }, bl: { x: 0, y: H }, br: { x: W, y: H } };
+  for (const [id, square] of Object.entries(CORNERS)) {
+    const a = got.find((g) => g.id === id);
+    assert.ok(near(a, closestPointOnRoundedRect(W, H, R, a.x, a.y)) <= EPS, `rect r=${R} anchor ${id} is not ON the rounded rim`);
+    assert.ok(Math.abs(near(a, square) - R * (Math.SQRT2 - 1)) <= 1e-9, `rect r=${R} anchor ${id} is not the 45° arc point (should be r·(√2−1) in from the square corner)`);
   }
-  // And it really did move: a corner is not where the bounding box says.
-  const tr = got.find((g) => g.id === "tr");
-  assert.ok(near(tr, { x: W, y: 0 }) > 1, "premise: a 30px corner radius must actually move `tr`");
+  // Edge midpoints and the centre are on straight edges / the interior, so
+  // rounding must not move them at all.
+  for (const id of ["tm", "mr", "bm", "ml", "cm"])
+    assert.deepEqual(got.find((g) => g.id === id), standardBBoxAnchors(state).find((g) => g.id === id), `rounding moved ${id}`);
+  // r = 0 is the square rect verbatim — the no-rounding case, unaffected.
+  assert.deepEqual(registry.get("rect").anchors({ ...state, cornerRadius: 0 }), standardBBoxAnchors(state));
 });
 
 // ── 5. THE DIAMOND — the reported bug, by coordinates ────────────────────────
@@ -272,6 +285,134 @@ test("8. the rule is applied by the REGISTRY, so a plugin gets it without declar
   assert.deepEqual(tl, { id: "tl", x: INSET, y: INSET }, "the registry did not apply the ink rule to a freshly registered plugin");
   const cm = reg.get("w4l_probe").anchors({ w: W, h: H }).find((a) => a.id === "cm");
   assert.deepEqual(cm, { id: "cm", x: W / 2, y: H / 2 }, "the registry projected the centre");
+});
+
+// ── 9. THE SVG WIDGET — the user's LITERAL case ──────────────────────────────
+
+/** The rhombus a shattered Mermaid node becomes: `plugins/mermaid.js` emits a
+ *  `type: "svg"` part carrying that node's own paths, and binds every anchored
+ *  edge with `@<key>_closest`. So this IS the widget from the bug report. */
+const RHOMBUS_SVG = `<svg viewBox="0 0 ${W} ${H}"><path d="M${W / 2} 0L${W} ${H / 2}L${W / 2} ${H}L0 ${H / 2}Z" fill="#eeeeee" stroke="#333333"/></svg>`;
+/** Is a box-local point inside that rhombus? |x-w/2|/(w/2) + |y-h/2|/(h/2) <= 1. */
+const inRhombus = (p) => Math.abs(p.x - W / 2) / (W / 2) + Math.abs(p.y - H / 2) / (H / 2) <= 1 + 1e-6;
+
+test("9. an svg widget's rim follows its ARTWORK — a shattered Mermaid diamond meets its edge, not its bbox corner", () => {
+  const svg = registry.get("svg");
+  const state = { ...svg.defaults, w: W, h: H, svgSrc: RHOMBUS_SVG, preserveAspect: false };
+  // THE REPORTED BUG, by coordinates: a neighbour far RIGHT and ABOVE used to be
+  // answered with (200, 0) — a corner of empty space outside the diamond.
+  const p = svg.closestAnchor(state, 1000, 0, IDENTITY_WORLD);
+  assert.ok(inRhombus(p), `the rim answered (${p.x}, ${p.y}), which is not on the diamond`);
+  assert.ok(near(p, { x: W, y: 0 }) > 1, "the rim still answers with the empty bbox corner");
+  // And every rim ANCHOR follows, through the ink rule, with no svg-side code.
+  for (const a of svg.anchors(state))
+    if (RIM_IDS.has(a.id)) assert.ok(inRhombus(a), `svg anchor ${a.id} at (${a.x.toFixed(2)}, ${a.y.toFixed(2)}) is off the artwork`);
+});
+
+test("9b. preserveAspect LETTERBOXES the artwork, and the rim goes with it", () => {
+  // The flatten wraps the art in one pushTransform when aspect is preserved. If
+  // that frame were dropped, the rim would sit at the un-letterboxed coordinates
+  // — right shape, wrong place, and nothing else would notice.
+  const svg = registry.get("svg");
+  const square = `<svg viewBox="0 0 100 100"><path d="M50 0L100 50L50 100L0 50Z" fill="#eeeeee"/></svg>`;
+  const state = { ...svg.defaults, w: W, h: H, svgSrc: square, preserveAspect: true };
+  // A 100x100 viewBox in a 200x120 box fits to 120x120, centred: x from 40 to 160.
+  const p = svg.closestAnchor(state, 1000, H / 2, IDENTITY_WORLD);
+  assert.ok(Math.abs(p.x - 160) < 1e-6 && Math.abs(p.y - H / 2) < 1e-6, `letterboxed right vertex should be (160, 60), got (${p.x}, ${p.y})`);
+});
+
+test("9c. a widget with NO artwork falls back to the box border — the states that really do draw a box", () => {
+  const svg = registry.get("svg");
+  const box = { x: 0, y: 0, w: W, h: H };
+  for (const [why, extra] of [
+    ["an empty source (a ghost)", { svgSrc: "" }],
+    ["a source that will not parse (draws the red error BOX)", { svgSrc: "<svg><path d=" }],
+    ["a url with nothing behind it yet", { svgSource: "url", svgUrl: "/asset/Nope/missing.svg" }],
+  ]) {
+    const p = svg.closestAnchor({ ...svg.defaults, w: W, h: H, ...extra }, 1000, 0, IDENTITY_WORLD);
+    assert.deepEqual(p, closestPointOnRectBorder(box, 1000, 0), `${why}: should answer with the box border`);
+  }
+});
+
+test("9d. the svg rim's one-entry cache cannot return another widget's geometry", () => {
+  // The cache is keyed by value and holds one entry, so interleaving two widgets
+  // must give each its own answer every time. A cache that returned the previous
+  // widget's outline would be a SILENT wrong picture, which is the worst failure
+  // this file could miss.
+  const svg = registry.get("svg");
+  const a = { ...svg.defaults, w: W, h: H, svgSrc: RHOMBUS_SVG, preserveAspect: false };
+  const b = { ...svg.defaults, w: W, h: H, svgSrc: `<svg viewBox="0 0 ${W} ${H}"><path d="M0 0L${W} 0L${W} ${H}L0 ${H}Z" fill="#eeeeee"/></svg>`, preserveAspect: false };
+  const soloA = svg.closestAnchor(a, 1000, 0, IDENTITY_WORLD);
+  const soloB = svg.closestAnchor(b, 1000, 0, IDENTITY_WORLD);
+  assert.ok(near(soloA, soloB) > 1, "premise: the two sources must disagree, or this proves nothing");
+  for (let i = 0; i < 3; i++) {
+    assert.deepEqual(svg.closestAnchor(a, 1000, 0, IDENTITY_WORLD), soloA, "interleaving changed A's rim");
+    assert.deepEqual(svg.closestAnchor(b, 1000, 0, IDENTITY_WORLD), soloB, "interleaving changed B's rim");
+  }
+});
+
+// ── 10. pathDPolylines — the sampler the svg rim is built on ─────────────────
+
+test("10. pathDPolylines samples the five-command normal form, and arcs arrive as cubics", () => {
+  assert.deepEqual(pathDPolylines("M0 0L10 0L10 10Z"), [[[0, 0], [10, 0], [10, 10]]]);
+  assert.equal(pathDPolylines("M0 0L10 0M20 20L30 20").length, 2, "two subpaths");
+  // Relative and shorthand commands are resolved by transformPathD before this
+  // function sees them — which is the whole reason it is not a second parser.
+  assert.deepEqual(pathDPolylines("M0 0h10v10", 2), [[[0, 0], [10, 0], [10, 10]]]);
+  // An arc is converted to cubics upstream, so it arrives as sampled curve points
+  // rather than throwing on an unknown command.
+  assert.ok(pathDPolylines("M0 0A50 50 0 0 1 100 0", 2)[0].length > 2, "the arc produced curve samples");
+  // A sampled curve really follows the curve: the quadratic's midpoint.
+  assert.deepEqual(pathDPolylines("M0 0Q50 100 100 0", 2)[0][1], [50, 50]);
+});
+
+test("10b. a sampled rhombus is the rhombus — the sampler feeds closestPointOnOutlines correctly", () => {
+  const subpaths = pathDPolylines(`M${W / 2} 0L${W} ${H / 2}L${W / 2} ${H}L0 ${H / 2}Z`);
+  const p = closestPointOnOutlines(subpaths, W, 0, { x: NaN, y: NaN });
+  assert.ok(inRhombus(p), `sampled rhombus answered (${p.x}, ${p.y})`);
+  assert.deepEqual(subpaths, [[[100, 0], [200, 60], [100, 120], [0, 60]]], "no spurious points, no dropped closing leg");
+});
+
+// ── 11. LAYOUT READS THE BOX; ATTACHMENT READS THE INK ───────────────────────
+
+test("11. a shattered node's LABEL is bound to the stored box, not to corner anchors", () => {
+  // THE REGRESSION THIS PINS IS ONE THE INK RULE ITSELF CREATED. plugins/mermaid.js
+  // used to reconstruct a node's box from `@key_tl` / `@key_tr` / `@key_bl` — an
+  // exact reading only while every anchor sat on the bounding rectangle. Once rim
+  // anchors moved onto the SILHOUETTE, a diamond node's label would have been
+  // offset from a point on its upper-left EDGE and sized to the gap between two
+  // inset edges: shifted and shrunk, on the very shape that motivated the change.
+  //
+  // The division the fix encodes, and the reason this test exists rather than a
+  // comment: read `@id.x/.y/.w/.h` to lay something out against a BOX; read
+  // `@id_tl` to attach something to INK.
+  const src = readFileSync(new URL("../plugins/mermaid.js", import.meta.url), "utf8");
+  const label = src.slice(src.indexOf("AN OFFSET FROM THE BOX'S TOP-LEFT"), src.indexOf("}, toWorld, map) });", src.indexOf("AN OFFSET FROM THE BOX'S TOP-LEFT")));
+  assert.ok(label.length > 0, "premise: the label-binding block must be findable");
+  const code = label.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  for (const anchorRef of ["_tl.x", "_tl.y", "_tr.x", "_bl.y"])
+    assert.ok(!code.includes(anchorRef), `the label binding still reads the corner anchor "${anchorRef}" — under the ink rule that is not the box`);
+  for (const boxRef of [")}.x", ")}.y", ")}.w", ")}.h"])
+    assert.ok(code.includes(boxRef), `the label binding should read the stored box "${boxRef}"`);
+});
+
+test("11b. the stored box IS equation-readable, which is what makes 11 possible", () => {
+  // If `@id.w` did not resolve, the fix above would be a silent breakage rather
+  // than a correction — so the alternative is proven here, not assumed.
+  const diamond = { ...registry.get("ss_polygonStar").defaults, w: W, h: H, points: 4, innerRatio: 1, cornerRadius: 0, startAngle: 0, x: 100, y: 50 };
+  let doc = newDocument();
+  const [withShape, shapeId] = withNewItem(doc, 0, diamond);
+  const [withProbe, probeId] = withNewItem(withShape, 0, {
+    ...registry.get("circle").defaults,
+    x: `= @${shapeId}.x`, y: `= @${shapeId}.y`, w: `= @${shapeId}.w`, h: `= @${shapeId}.h`,
+  });
+  const ev = evaluateState(foldState(withProbe, 0), registry, "");
+  assert.deepEqual(Object.keys(ev.errors ?? {}), [], "reading the stored box must not error");
+  const p = ev.state.items[probeId];
+  assert.deepEqual([p.x, p.y, p.w, p.h], [100, 50, W, H], "the stored box is exact and is NOT moved by the ink rule");
+  // And the ink anchor really has moved away from it, or this proves nothing.
+  const tl = registry.get("ss_polygonStar").anchors(diamond).find((a) => a.id === "tl");
+  assert.ok(near(tl, { x: 0, y: 0 }) > 1, "premise: the diamond's `tl` must have left the box corner");
 });
 
 console.log(`\nanchor_ink_test: ${passed} passed`);

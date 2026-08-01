@@ -50,6 +50,13 @@
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
 
+// THE ONE IMPORT, and its direction is the point: OUTLINE CONSUMES GRAMMAR.
+// `pathDPolylines` below turns an SVG path `d` into subpaths, and the `d`
+// grammar lives in core/svg_paths.js — so this module reads that one and never
+// the reverse. No cycle: svg_paths.js imports only shapes.js and geometry.js,
+// neither of which imports anything at all.
+import { transformPathD, tokenizePathD, matIdentity } from "./svg_paths.js";
+
 /**
  * Pure function. Shoelace signed area of a closed polygon. Positive when the
  * vertex order is counterclockwise in y-up math coordinates (equivalently,
@@ -306,34 +313,6 @@ export function closestPointOnRoundedRect(w, h, r, px, py) {
   if (m === dr) return { x: w, y: py };
   if (m === dt) return { x: px, y: 0 };
   return { x: px, y: h };
-}
-
-/**
- * Pure function. The rim point for a STANDARD bbox anchor id on a ROUNDED rect
- * (top-left 0,0, size w×h, radius r). Edge-midpoint and center anchors are on
- * straight edges / interior and DON'T move with rounding; the four CORNER
- * anchors (tl/tr/bl/br) slide onto the arc — the 45° outermost rim point of
- * each rounded corner (computed as the closest rim point to the SQUARE corner).
- * When r ≤ 0 every anchor is its square-bbox position (byte-identical to
- * standardBBoxAnchors), so unrounded rects are unaffected.
- *
- * Args:
- *   w, h (number): rect size
- *   r (number): corner radius
- *   id (string): one of tl tm tr ml cm mr bl bm br
- *   sx, sy (number): the square-bbox anchor position for `id`
- *
- * Returns:
- *   {x, y}: the anchor point ON the rounded rim
- *
- * @example roundedRectAnchorPoint(200, 120, 30, "tr", 200, 0) // {x: 191.21320343559643, y: 8.786796564403573}
- * @example roundedRectAnchorPoint(200, 120, 30, "tm", 100, 0) // {x: 100, y: 0} (edge midpoint — unchanged)
- * @example roundedRectAnchorPoint(200, 120, 0, "tr", 200, 0) // {x: 200, y: 0} (no rounding — square corner)
- */
-export function roundedRectAnchorPoint(w, h, r, id, sx, sy) {
-  const CORNERS = new Set(["tl", "tr", "bl", "br"]);
-  if (r <= 0 || !CORNERS.has(id)) return { x: sx, y: sy };
-  return closestPointOnRoundedRect(w, h, r, sx, sy);
 }
 
 // ── Dynamic-anchor rim solvers (nearest point / nearest pair) ─────────────────
@@ -1117,6 +1096,105 @@ export function quadraticBezierPoint(p0, c, p1, t) {
     x: u * u * p0.x + 2 * u * t * c.x + t * t * p1.x,
     y: u * u * p0.y + 2 * u * t * c.y + t * t * p1.y,
   };
+}
+
+/**
+ * Pure function. Point on a CUBIC bezier at parameter t — the standard
+ * (1−t)³P0 + 3(1−t)²t·C1 + 3(1−t)t²·C2 + t³P1 form. The quadratic's sibling
+ * above, and here rather than anywhere else for that reason: splitting the two
+ * across modules is how one concept ends up with two homes.
+ *
+ * @example cubicBezierPoint({x: 0, y: 0}, {x: 0, y: 100}, {x: 100, y: 100}, {x: 100, y: 0}, 0.5) // {x: 50, y: 75}
+ * @example cubicBezierPoint({x: 0, y: 0}, {x: 0, y: 100}, {x: 100, y: 100}, {x: 100, y: 0}, 0) // {x: 0, y: 0}
+ * @example cubicBezierPoint({x: 0, y: 0}, {x: 30, y: 0}, {x: 70, y: 0}, {x: 100, y: 0}, 0.25) // {x: 24.0625, y: 0} (even a STRAIGHT cubic is not uniform in t — t is not arc length)
+ */
+export function cubicBezierPoint(p0, c1, c2, p1, t) {
+  const u = 1 - t;
+  const a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+  return {
+    x: a * p0.x + b * c1.x + c * c2.x + d * p1.x,
+    y: a * p0.y + b * c1.y + c * c2.y + d * p1.y,
+  };
+}
+
+/**
+ * Samples per curve segment when an SVG path `d` is turned into polylines for
+ * GEOMETRY QUERIES (nearest point on the rim), NOT for painting — the painter
+ * takes the `d` itself and rasterizes it exactly. So this trades accuracy for
+ * cost on a query, and 16 is CURVE_SEGMENTS halved for that reason: a rim point
+ * on a widget-sized curve lands within a fraction of a pixel, which is finer
+ * than the pointer that asked. Same "no stronger numeric precedent exists"
+ * caveat as CURVE_SEGMENTS and DONUT_SEGMENTS above.
+ */
+const PATH_QUERY_SEGMENTS = 16;
+
+/**
+ * Pure function. An SVG path `d` string → SUBPATHS, the outline currency this
+ * module speaks: `[[[x, y], …], …]`, one point list per subpath, curves sampled.
+ *
+ * WHY IT IS NOT A SECOND PATH PARSER. It consumes `transformPathD`'s output
+ * rather than the raw `d`, and that output is already NORMALISED: absolute
+ * coordinates, one command letter per segment, no implicit repeats, H/V/S/T
+ * resolved, and **arcs converted to cubics** (`arcToCubics`). So the grammar
+ * this function handles is five commands — M L C Q Z — and the full SVG path
+ * grammar continues to live in exactly one place, core/svg_paths.js. Outline
+ * consumes grammar; grammar does not consume outline.
+ *
+ * A subpath is returned whether or not it was closed with `Z`, because the
+ * consumers here are closed-shape queries (`closestPointOnOutlines` treats every
+ * subpath as closed). An OPEN path's true nearest point is a different question
+ * and this is not the function for it — see closestPointOnChain in
+ * plugins/polygon.js, which takes an explicit `closed` flag.
+ *
+ * Args:
+ *   d (string): an SVG path data string, any valid grammar
+ *   samples (number): points per curve segment; defaults to PATH_QUERY_SEGMENTS
+ *
+ * Returns:
+ *   number[][][]: subpaths as [[[x, y], …], …], in the `d`'s own coordinates
+ *
+ * @example pathDPolylines("M0 0L10 0L10 10Z") // [[[0, 0], [10, 0], [10, 10]]]
+ * @example pathDPolylines("M0 0L10 0M20 20L30 20").length // 2 (two subpaths)
+ * @example pathDPolylines("M0 0h10v10", 2) // [[[0, 0], [10, 0], [10, 10]]] (relative H/V resolved by transformPathD)
+ * @example pathDPolylines("M0 0Q50 100 100 0", 2).map(([, mid]) => mid) // [[50, 50]] (the quadratic's midpoint)
+ * @example pathDPolylines("M0 0A50 50 0 0 1 100 0", 2)[0].length // 5 (the arc became cubics before sampling)
+ */
+export function pathDPolylines(d, samples = PATH_QUERY_SEGMENTS) {
+  const toks = tokenizePathD(transformPathD(d, matIdentity()));
+  const subpaths = [];
+  let cur = null;
+  let cx = 0, cy = 0;
+  const at = (i) => ({ x: toks[i], y: toks[i + 1] });
+  const move = (p) => { cur = [[p.x, p.y]]; subpaths.push(cur); cx = p.x; cy = p.y; };
+  const line = (p) => { cur.push([p.x, p.y]); cx = p.x; cy = p.y; };
+  const curve = (pointAt) => {
+    // t = 0 is the current point, which is already the last point pushed.
+    for (let s = 1; s <= samples; s++) {
+      const p = pointAt(s / samples);
+      cur.push([p.x, p.y]);
+    }
+    cx = cur[cur.length - 1][0]; cy = cur[cur.length - 1][1];
+  };
+  let i = 0;
+  while (i < toks.length) {
+    const cmd = toks[i++];
+    if (cmd === "M") { move(at(i)); i += 2; }
+    else if (cmd === "L") { line(at(i)); i += 2; }
+    else if (cmd === "C") {
+      const p0 = { x: cx, y: cy }, c1 = at(i), c2 = at(i + 2), p1 = at(i + 4);
+      curve((t) => cubicBezierPoint(p0, c1, c2, p1, t)); i += 6;
+    } else if (cmd === "Q") {
+      const p0 = { x: cx, y: cy }, c = at(i), p1 = at(i + 2);
+      curve((t) => quadraticBezierPoint(p0, c, p1, t)); i += 4;
+    } else if (cmd === "Z") {
+      // The closing leg is IMPLICIT in an outline (see this module's header), so
+      // Z adds no point; it only returns the pen to the subpath start.
+      if (cur && cur.length > 0) { cx = cur[0][0]; cy = cur[0][1]; }
+    } else {
+      throw new Error(`pathDPolylines: transformPathD emitted "${cmd}", which is outside its documented M L C Q Z normal form — the two have drifted`);
+    }
+  }
+  return subpaths.filter((s) => s.length > 0);
 }
 
 // Sample count for a quadratic bezier's rendered/hit-tested polyline. No

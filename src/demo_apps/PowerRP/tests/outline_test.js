@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import {
   signedArea, pointInPolygon, distToSegment, triangulated, fancyArrowOutline,
-  closestPointOnRoundedRect, roundedRectAnchorPoint, donutOutline,
+  closestPointOnRoundedRect, donutOutline,
   elbowRoute, elbowHandle, bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline,
   axisNormalFrame, projectOntoAxis, projectOntoNormal,
   closestPointOnCircle, nearestPairCircleCircle, nearestRimPair, NEAREST_PAIR_MAX_ITERS,
@@ -185,17 +185,12 @@ test("closestPointOnRoundedRect: INTERIOR point projects to the nearest straight
   const c = closestPointOnRoundedRect(RW, RH, ON_RIM_R, 100, 50);
   assert.deepEqual(c, { x: 100, y: 0 }); // 50 to top edge (nearest), stays on straight edge
 });
-test("roundedRectAnchorPoint: corners slide to the rim, edges/center stay, r=0 is square", () => {
-  // Corner tr → arc rim; the square corner is 12.43px (r·(√2−1)) away.
-  const tr = roundedRectAnchorPoint(RW, RH, ON_RIM_R, "tr", RW, 0);
-  approx(distFromRoundedRim(RW, RH, ON_RIM_R, tr.x, tr.y), 0); // ON the rim
-  approx(Math.hypot(tr.x - RW, tr.y - 0), ON_RIM_R * (Math.SQRT2 - 1)); // pulled in
-  // Edge midpoint unchanged.
-  assert.deepEqual(roundedRectAnchorPoint(RW, RH, ON_RIM_R, "tm", 100, 0), { x: 100, y: 0 });
-  assert.deepEqual(roundedRectAnchorPoint(RW, RH, ON_RIM_R, "cm", 100, 60), { x: 100, y: 60 });
-  // r=0 → the square corner verbatim.
-  assert.deepEqual(roundedRectAnchorPoint(RW, RH, 0, "tr", RW, 0), { x: RW, y: 0 });
-});
+// roundedRectAnchorPoint's block lived here. The helper is GONE (W4-L, todo
+// #253): rect / cropbox / codeblock each called it to slide their corner anchors
+// onto a rounded rim, and all three retired those copies when THE INK RULE made
+// the projection universal (core/derive.js withInkAnchors). What it asserted is
+// not lost — tests/anchor_ink_test.js section 4 pins that a rounded rect's
+// corners still slide, through the general rule, at the same coordinates.
 
 // ── donutOutline (GENERATOR #2: the DONUT widget's annulus) ──────────────────
 

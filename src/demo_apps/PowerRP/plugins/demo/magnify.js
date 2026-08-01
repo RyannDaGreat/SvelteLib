@@ -30,6 +30,8 @@
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { ellipsePoints } from "../../core/shapes.js";
+import { closestPointOnCircle, closestPointOnOutlines } from "../../core/outline.js";
+import { closestPointOnRectBorder } from "../../core/geometry.js";
 import * as T from "../../core/transform.js";
 import { magnifyBackdrop } from "../../render_gpu/ir.js";
 
@@ -259,6 +261,20 @@ export const magnifyPlugin = {
   snapFeatures(s) {
     const { cx, cy } = lensGeom(s);
     return [{ kind: "point", x: cx, y: cy, id: "center" }];
+  },
+  // THE LENS RIM, case for case with hitTest above and from the same geometry,
+  // so the two cannot disagree about where this widget is. It also puts this
+  // widget's bbox corner anchors on the lens instead of in the empty corners
+  // around it, through THE INK RULE (core/derive.js withInkAnchors) — a star
+  // lens is the sharpest case, since seven of its nine used to be off the ink.
+  closestAnchor(state, wx, wy, world) {
+    const local = T.apply(T.invert(world), wx, wy);
+    const g = lensGeom(state);
+    if (state.shape === "square")
+      return closestPointOnRectBorder({ x: 0, y: 0, w: state.w ?? 0, h: state.h ?? 0 }, local.x, local.y);
+    if (state.shape === "star")
+      return closestPointOnOutlines([starVerts(state.w, state.h, state.points, state.innerRatio)], local.x, local.y, { x: g.cx, y: g.cy });
+    return closestPointOnCircle({ x: g.cx, y: g.cy }, g.r, local.x, local.y);
   },
   anchors: standardBBoxAnchors,
   // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.

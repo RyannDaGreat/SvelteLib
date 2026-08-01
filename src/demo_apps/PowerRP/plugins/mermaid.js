@@ -1187,11 +1187,24 @@ export const mermaidPlugin = {
         // reproduces Mermaid's own layout exactly - which centring could not do
         // for a class box's three stacked compartments - and it still tracks the
         // box when the box moves, which is what was asked for.
+        //
+        // IT READS THE BOX DIRECTLY (`@key.x/.y/.w/.h`), NOT ITS CORNER ANCHORS.
+        // It used to say `@key_tl.x`, `@key_tr.x - @key_tl.x` and so on, which was
+        // an exact reading of the box only while every anchor sat on the bounding
+        // rectangle. It does not any more: THE INK RULE (core/derive.js
+        // withInkAnchors) puts a widget's rim anchors on its SILHOUETTE, so a
+        // DIAMOND node's `tl` is a point on its upper-left edge - and this label
+        // would have been offset from there and sized to the gap between two
+        // inset edges, i.e. shifted and shrunk, on exactly the diamond that
+        // motivated all of this. The stored box is what this code always meant,
+        // it is first-class and equation-readable, and it is four references
+        // instead of six. THE DIVISION WORTH REMEMBERING: read `@id.x/.w` to lay
+        // something out against a BOX, read `@id_tl` to attach something to INK.
         parts.push({ key: partKeyFor(`${t.text} label`, b.origin.id, taken), label: `${t.text} label`, state: textPartState(t, {
-          x: `= ${partRef(key)}_tl.x + ${round2(tw.x - w.x)}`,
-          y: `= ${partRef(key)}_tl.y + ${round2(tw.y - w.y)}`,
-          w: `= ${partRef(key)}_tr.x - ${partRef(key)}_tl.x`,
-          h: `= ${partRef(key)}_bl.y - ${partRef(key)}_tl.y`,
+          x: `= ${partRef(key)}.x + ${round2(tw.x - w.x)}`,
+          y: `= ${partRef(key)}.y + ${round2(tw.y - w.y)}`,
+          w: `= ${partRef(key)}.w`,
+          h: `= ${partRef(key)}.h`,
         }, toWorld, map) });
       }
     }

@@ -44,6 +44,8 @@
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
+import { closestPointOnCircle } from "../core/outline.js";
+import { closestPointOnRectBorder } from "../core/geometry.js";
 import * as T from "../core/transform.js";
 import { bundle, defaults, props } from "../core/properties.js";
 import { magnifyBackdrop } from "../render_gpu/ir.js";
@@ -257,6 +259,20 @@ export const magnifierPlugin = {
   snapFeatures(s) {
     const { cx, cy } = lensGeom(s);
     return [{ kind: "point", x: cx, y: cy, id: "center" }];
+  },
+  // THE LENS RIM, case for case with hitTest above — which is the point: the two
+  // answer the same question about the same silhouette, so they are written from
+  // the same lensGeom and cannot drift into disagreeing about where this widget
+  // is. Declaring it does two things at once: `closest_to_rim` accepts a
+  // magnifier for the first time, and THE INK RULE (core/derive.js
+  // withInkAnchors) moves the four bbox CORNER anchors off the empty corners of
+  // a round lens and onto its rim — six of nine were off the ink before this.
+  closestAnchor(state, wx, wy, world) {
+    const local = T.apply(T.invert(world), wx, wy);
+    const g = lensGeom(state);
+    if (state.shape === "box")
+      return closestPointOnRectBorder({ x: g.cx - g.halfW, y: g.cy - g.halfH, w: g.halfW * 2, h: g.halfH * 2 }, local.x, local.y);
+    return closestPointOnCircle({ x: g.cx, y: g.cy }, g.r, local.x, local.y);
   },
   anchors: standardBBoxAnchors,
   commands: [

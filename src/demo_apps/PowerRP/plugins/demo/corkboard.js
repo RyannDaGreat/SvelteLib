@@ -31,6 +31,8 @@
  */
 
 import { standardBBoxAnchors } from "../../core/derive.js";
+import { closestPointOnRoundedRect } from "../../core/outline.js";
+import * as T from "../../core/transform.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { materialFill, path, parseColor, BLUR_SUPPORT_SIGMAS } from "../../render_gpu/ir.js";
 // THE LOOK KNOBS LIVE IN THE SHADER ENTRY now (corkboard_shader.CORK_FILL_PARAMS /
@@ -143,6 +145,28 @@ function makeMaterialWidget(cfg) {
     },
     snapFeatures(s) {
       return [{ kind: "point", x: s.w / 2, y: s.h / 2, id: "center" }];
+    },
+    // THE RIM OF WHAT emit() PAINTS — a disk's ellipse, or the ROUNDED region the
+    // materialFill above draws with cfg.cornerRadius. Declaring it here gives all
+    // three of this file's widgets a rim at once: `closest_to_rim` accepts them
+    // for the first time, and THE INK RULE (core/derive.js withInkAnchors) slides
+    // their bbox CORNER anchors onto the painted silhouette instead of leaving
+    // them in the empty corners around a round thumbtack head — four of nine were
+    // off the ink there.
+    //
+    // It reads cornerRadius where hitTest above does not, and that is deliberate,
+    // not drift: an anchor's job is to be ON THE INK, and the ink has rounded
+    // corners because emit() rounds them. (hitTest's square test at those corners
+    // is a pre-existing looseness in the GRAB region, which is a different
+    // question — a slightly generous grab is kind; a misplaced anchor is a lie.)
+    // The disk case uses the ellipse convention circle.js documents: radial in the
+    // normalized frame, exact when w === h.
+    closestAnchor(s, wx, wy, world) {
+      const local = T.apply(T.invert(world), wx, wy);
+      const rx = (s.w ?? 0) / 2, ry = (s.h ?? 0) / 2;
+      if (!cfg.disk) return closestPointOnRoundedRect(s.w ?? 0, s.h ?? 0, cfg.cornerRadius(s), local.x, local.y);
+      const theta = Math.atan2((local.y - ry) / ry, (local.x - rx) / rx);
+      return { x: rx + rx * Math.cos(theta), y: ry + ry * Math.sin(theta) };
     },
     anchors: cfg.anchors ?? standardBBoxAnchors,
     // NO top-level `commands`: reached ONLY via the "Add Demo Widget" submenu.

@@ -90,6 +90,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { closestPointOnOutlines, pathDPolylines } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { decorateSilhouetteBorder } from "../render_gpu/decorate.js";
@@ -129,6 +130,94 @@ const CUSTOM = customProps([
 // plugins/iconify.js can draw the identical chrome without a plugin→plugin
 // import); re-exported here so this widget's public surface is unchanged.
 export { errorAffordance, warningLabel, warningAffordance };
+
+// ── THE RIM IS THE ARTWORK, NOT THE FRAME AROUND IT ──────────────────────────
+//
+// THIS IS THE WIDGET THE USER'S BUG LANDED ON. He shattered a Mermaid flowchart;
+// a shattered node becomes one of these (plugins/mermaid.js), and every anchored
+// edge binds `@<node>_closest`. With the rim defined as the bounding rectangle,
+// an edge approaching a DIAMOND from above-right met (w, 0) — a corner of empty
+// space — which is exactly what he saw: "one end of the arrow is not connected
+// to the other node… it's just that diamonds don't have anchors in the right
+// place." Every NATIVE shape was fixed by THE INK RULE (core/derive.js
+// withInkAnchors); this widget was the one that still lied, because the rule can
+// only be as true as the rim a widget declares.
+//
+// COST, MEASURED, because it is what decides the shape of this code. The ink
+// rule asks a widget's rim for EIGHT points inside one `anchors()` call, and
+// `anchors()` runs per node per pointermove while the anchor overlay is on. One
+// flatten costs 10 us for a Mermaid rhombus, 34 us for this widget's default
+// source and 98 us for a twelve-petal curve graphic — so eight of them is
+// 81-786 us per widget per mouse move, which on a shattered flowchart of twenty
+// nodes is milliseconds of jank for a query nobody sees.
+//
+// A CACHE OF ONE IS THE WHOLE FIX, and it is worth saying why it is not the
+// hazardous kind. Those eight calls are CONSECUTIVE, so a single-entry cache
+// turns eight flattens into one and seven hits — the "compute it once per
+// anchors() call" the cost demands, with no protocol change. It is keyed BY
+// VALUE (the source text and the box), not by a state object's identity, so it
+// cannot go stale the way a document-keyed memo can; and it holds exactly one
+// entry, so a resize drag (which changes the key every frame) cannot grow it.
+let rimCacheKey = null;
+let rimCacheOutlines = null;
+
+/**
+ * Query (reads the SVG source registry; memoized in a one-entry cache — see the
+ * block comment above for why that cache is safe). The widget's ARTWORK as
+ * outline subpaths in BOX-LOCAL coordinates, or null when there is no artwork to
+ * take a rim from.
+ *
+ * Null is returned — rather than an empty outline — for the three states in
+ * which this widget genuinely has no drawn silhouette: an empty source (a
+ * GHOST), a url still in flight or failed, and a source that will not parse
+ * (which draws the red error BOX, whose rim really is the rectangle). The caller
+ * falls back to the box border for exactly those, which is not a silent fallback
+ * papering over a failure: it is the honest rim of the rectangle those states
+ * actually draw. A source that parses with PUNTS keeps its art, so it keeps its
+ * real rim.
+ *
+ * @param {object} state - the folded item state
+ * @returns {number[][][]|null} subpaths [[[x, y], …], …] in box-local coords
+ */
+function svgRimOutlines(state) {
+  const w = state.w ?? 0, h = state.h ?? 0;
+  if (w <= 0 || h <= 0) return null;
+  const src = state.svgSource === "url" ? (state.svgUrl ? getSvgSource(state.svgUrl) : null) : state.svgSrc;
+  if (src === null || src === undefined || svgIsEmpty(src)) return null;
+  const preserveAspect = state.preserveAspect !== false;
+  const key = `${w}|${h}|${preserveAspect}|${state.ink ?? ""}|${src}`;
+  if (key === rimCacheKey) return rimCacheOutlines;
+  let outlines = null;
+  try {
+    // The SAME flatten emit() draws through, so the rim cannot disagree with the
+    // ink. Paint is irrelevant to geometry, so the recolour overrides are not
+    // passed — that also keeps the cache key free of the paint rows.
+    const flat = svgToIRWithWarnings(src, w, h, { ink: state.ink ?? SVG_DEFAULT_INK, preserveAspect, opacity: 1 });
+    // preserveAspect wraps the art in ONE pushTransform (a similarity) to
+    // letterbox it; without it the map is baked into the coordinates and the ops
+    // arrive bare. Track it so both cases land in the same box-local frame.
+    let frame = null;
+    outlines = [];
+    for (const op of flat.ops) {
+      if (op.op === "pushTransform") { frame = op; continue; }
+      if (op.op === "popTransform") { frame = null; continue; }
+      if (op.op !== "path" || !op.d) continue;
+      for (const sub of pathDPolylines(op.d))
+        outlines.push(frame ? sub.map(([x, y]) => { const p = T.apply(frame, x, y); return [p.x, p.y]; }) : sub);
+    }
+    if (outlines.length === 0) outlines = null;
+  } catch {
+    // A source that will not parse draws the red error BOX (see emit), whose rim
+    // IS the rectangle — so this is not swallowing the error, it is agreeing with
+    // what the widget actually paints. emit() reports the same failure loudly, in
+    // the widget, on every backend; reporting it a second time from a geometry
+    // query the user never invoked would be noise, not information.
+    outlines = null;
+  }
+  rimCacheKey = key;
+  rimCacheOutlines = outlines;
+  return outlines;
+}
 
 export const svgPlugin = {
   type: "svg",
@@ -257,9 +346,18 @@ export const svgPlugin = {
   },
   cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,
+  // THE ARTWORK'S rim, falling back to the box border only for the states that
+  // genuinely draw a box (ghost / url in flight or failed / unparseable source —
+  // see svgRimOutlines). THE INK RULE then puts this widget's eight standard rim
+  // anchors on the artwork too, with no further code: one declaration, both
+  // consumers. This is the last mile of todo #253 — a shattered Mermaid diamond
+  // is one of these.
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);
-    return closestPointOnRectBorder({ x: 0, y: 0, w: state.w, h: state.h }, local.x, local.y);
+    const box = { x: 0, y: 0, w: state.w ?? 0, h: state.h ?? 0 };
+    const outlines = svgRimOutlines(state);
+    if (!outlines) return closestPointOnRectBorder(box, local.x, local.y);
+    return closestPointOnOutlines(outlines, local.x, local.y, { x: box.w / 2, y: box.h / 2 });
   },
   commands: [
     { id: "add-svg", title: "Add SVG", icon: "mdi:svg", run: (app) => app.armCrosshairPlacement(svgPlugin) }, // crosshair bbox placement, matching image/latex's add command
