@@ -585,6 +585,30 @@ const NO_SHADOW = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
 const NO_BLOOM = { radius: 10, strength: 0 };
 const FLAT = { shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_SHADOW };
 
+// NO OUTLINE — spread into every look preset, and it is not decoration.
+//
+// `applyPreset` is an OVERLAY, so a look knob a preset OMITS keeps whatever the
+// previously hovered row left there (SPEC §4). The moment this widget composed
+// bundle("strokedBorder") for the user's outline request, `strokeWidth` became a
+// look knob — and ten presets designed before it existed suddenly said nothing
+// about it. Hover an outlined preset, then hover "System Track", and the outline
+// would have stayed. Every one of the ten was designed WITHOUT a border, so each
+// now says so explicitly rather than inheriting an answer.
+//
+// SEPARATE FROM `FLAT` DELIBERATELY: FLAT means "no DEPTH" (shadow/bloom/inner
+// shadow) and three presets opt out of it to draw a recess, a lift or a glow.
+// None of them wants an outline, so folding these two keys into FLAT would have
+// made the three spell out a border they do not have — the same completeness
+// problem one level down.
+//
+// THE GENERAL LESSON, because this cost a red gate: ADDING A ROW BUNDLE TO A
+// WIDGET THAT ALREADY SHIPS PRESETS INVALIDATES EVERY ONE OF ITS PRESETS. The
+// roster-wide suites cannot catch it — a universal completeness check would be a
+// false gate for the sparse families SPEC §4 also permits — so only the family's
+// OWN suite knows, and the author growing the schema has no reason to run it.
+// Top up the presets in the SAME commit as the bundle.
+const NO_OUTLINE = { stroke: "#000000", strokeWidth: 0 };
+
 /**
  * THE TEN BARS, FLATTEST FIRST — the "Bar looks" family.
  *
@@ -614,15 +638,15 @@ const FLAT = { shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_SHADOW };
  * collapse on a freshly-placed bar. Every trackColor below is therefore unique too.
  */
 const PRESETS = [
-  { name: "System Track", description: "The current system determinate indicator: a fully-rounded bar over a low-contrast container track, flat, with no depth of any kind.", props: { fillColor: "#6750a4", trackColor: "#e8def8", cornerRadius: PILL_RADIUS, ...FLAT } },
-  { name: "Page Loader", description: "The thin strip that crawls across the top of a loading page: one saturated accent, square ends, and no track behind it at all.", props: { fillColor: "#29d398", trackColor: "#ffffff00", cornerRadius: 0, ...FLAT } },
-  { name: "Media Scrubber", description: "The playback bar over a video: white played time on a translucent white remainder, fully rounded, with the frame showing through the track.", props: { fillColor: "#ffffff", trackColor: "#ffffff33", cornerRadius: PILL_RADIUS, ...FLAT } },
-  { name: "Buffering", description: "The buffered-ahead tone: a half-transparent level over a dark scrim, so the two regions read as two states of one stream rather than as ink on a groove.", props: { fillColor: "#ffffff66", trackColor: "#00000080", cornerRadius: PILL_RADIUS, ...FLAT } },
-  { name: "Sunken Groove", description: "The desktop download bar: square ends and a pale track cut into the dialog, its recess drawn by a hard inner shadow along the top-left edge.", props: { fillColor: "#2f6fd0", trackColor: "#c9ccd1", cornerRadius: 0, shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: { dx: 1, dy: 1, blur: 2, color: "#000000", opacity: 0.45 } } },
-  { name: "Battery Meter", description: "The charge cell: a green level sitting in a dark hollow behind a slightly rounded case, flat and unlit the way a printed indicator is.", props: { fillColor: "#3ddc84", trackColor: "#1b1f23", cornerRadius: 3, ...FLAT } },
-  { name: "Skill Bar", description: "The stat bar off a game overlay or a resume card: a saturated amber level in a dark slot, lifted clear of the card by a soft drop shadow.", props: { fillColor: "#f2b134", trackColor: "#2b2f38", cornerRadius: 4, shadow: { dx: 0, dy: 2, blur: 4, color: "#000000", opacity: 0.35 }, bloom: NO_BLOOM, innerShadow: NO_SHADOW } },
-  { name: "Neon Charge", description: "The energy meter: a cyan level blooming hard against a near-black channel, fully rounded, so the bar reads as lit rather than painted.", props: { fillColor: "#00e5ff", trackColor: "#0a1014", cornerRadius: PILL_RADIUS, shadow: NO_SHADOW, bloom: { radius: 18, strength: 0.9 }, innerShadow: NO_SHADOW } },
-  { name: "Blueprint Gauge", description: "The technical-drawing readout: a pale cyan level on deep drafting blue, square-ended, with no shadow, no glow and no rounding.", props: { fillColor: "#7fd7ff", trackColor: "#0b2545", cornerRadius: 0, ...FLAT } },
+  { name: "System Track", description: "The current system determinate indicator: a fully-rounded bar over a low-contrast container track, flat, with no depth of any kind.", props: { fillColor: "#6750a4", trackColor: "#e8def8", cornerRadius: PILL_RADIUS, ...FLAT, ...NO_OUTLINE } },
+  { name: "Page Loader", description: "The thin strip that crawls across the top of a loading page: one saturated accent, square ends, and no track behind it at all.", props: { fillColor: "#29d398", trackColor: "#ffffff00", cornerRadius: 0, ...FLAT, ...NO_OUTLINE } },
+  { name: "Media Scrubber", description: "The playback bar over a video: white played time on a translucent white remainder, fully rounded, with the frame showing through the track.", props: { fillColor: "#ffffff", trackColor: "#ffffff33", cornerRadius: PILL_RADIUS, ...FLAT, ...NO_OUTLINE } },
+  { name: "Buffering", description: "The buffered-ahead tone: a half-transparent level over a dark scrim, so the two regions read as two states of one stream rather than as ink on a groove.", props: { fillColor: "#ffffff66", trackColor: "#00000080", cornerRadius: PILL_RADIUS, ...FLAT, ...NO_OUTLINE } },
+  { name: "Sunken Groove", description: "The desktop download bar: square ends and a pale track cut into the dialog, its recess drawn by a hard inner shadow along the top-left edge.", props: { fillColor: "#2f6fd0", trackColor: "#c9ccd1", cornerRadius: 0, shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: { dx: 1, dy: 1, blur: 2, color: "#000000", opacity: 0.45 }, ...NO_OUTLINE } },
+  { name: "Battery Meter", description: "The charge cell: a green level sitting in a dark hollow behind a slightly rounded case, flat and unlit the way a printed indicator is.", props: { fillColor: "#3ddc84", trackColor: "#1b1f23", cornerRadius: 3, ...FLAT, ...NO_OUTLINE } },
+  { name: "Skill Bar", description: "The stat bar off a game overlay or a resume card: a saturated amber level in a dark slot, lifted clear of the card by a soft drop shadow.", props: { fillColor: "#f2b134", trackColor: "#2b2f38", cornerRadius: 4, shadow: { dx: 0, dy: 2, blur: 4, color: "#000000", opacity: 0.35 }, bloom: NO_BLOOM, innerShadow: NO_SHADOW, ...NO_OUTLINE } },
+  { name: "Neon Charge", description: "The energy meter: a cyan level blooming hard against a near-black channel, fully rounded, so the bar reads as lit rather than painted.", props: { fillColor: "#00e5ff", trackColor: "#0a1014", cornerRadius: PILL_RADIUS, shadow: NO_SHADOW, bloom: { radius: 18, strength: 0.9 }, innerShadow: NO_SHADOW, ...NO_OUTLINE } },
+  { name: "Blueprint Gauge", description: "The technical-drawing readout: a pale cyan level on deep drafting blue, square-ended, with no shadow, no glow and no rounding.", props: { fillColor: "#7fd7ff", trackColor: "#0b2545", cornerRadius: 0, ...FLAT, ...NO_OUTLINE } },
   {
     name: "Sunrise Gradient",
     description: "The widget's two-material headline: a warm gradient running the length of the fill against a flat brown channel, so the level changes colour as it grows.",
@@ -639,7 +663,7 @@ const PRESETS = [
         solid: "#ffb347",
         linear: { stops: [{ offset: 0, color: "#ffb347" }, { offset: 1, color: "#ff5e62" }], angle: 0 },
       },
-      trackColor: "#3a2b1f", cornerRadius: PILL_RADIUS, ...FLAT,
+      trackColor: "#3a2b1f", cornerRadius: PILL_RADIUS, ...FLAT, ...NO_OUTLINE,
     },
   },
 ];
