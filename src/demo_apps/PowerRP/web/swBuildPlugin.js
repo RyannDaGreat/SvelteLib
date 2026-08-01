@@ -169,20 +169,10 @@ export function swVersion(urls) {
 }
 
 /**
- * The vite plugin. Emits `sw.js`, `manifest.webmanifest` and `icon.svg` at the
- * bundle root, and injects the precache manifest into the worker source.
- *
- * BUILD ONLY (`apply: "build"`): the dev server must never serve a worker, per
- * sw.js's static-mode-only rule. There is nothing to disable at runtime because
- * the file is never emitted in dev at all.
- *
- * @returns {import("vite").Plugin}
- */
-/**
  * The DEV twin: serves `manifest.webmanifest` and `icon.svg` on the dev server.
  *
  * index.html links the manifest UNCONDITIONALLY, and in dev the build-only
- * plugin above emits nothing — so the SPA fallback answered the manifest URL
+ * plugin below emits nothing — so the SPA fallback answered the manifest URL
  * with HTML and every dev boot logged "Manifest: Line 1, column 1, Syntax
  * error", which poisoned every probe that counts boot console errors. Serving
  * the two static assets is harmless in dev and makes the link truthful; the
@@ -218,6 +208,20 @@ export function powerrpManifestDev() {
   };
 }
 
+/**
+ * The vite plugin. Emits `sw.js`, `manifest.webmanifest` and `icon.svg` at the
+ * bundle root, and injects the precache manifest into the worker source.
+ *
+ * BUILD ONLY (`apply: "build"`): the dev server must never serve a worker, per
+ * sw.js's static-mode-only rule. There is nothing to disable at runtime because
+ * the file is never emitted in dev at all.
+ *
+ * (This block used to sit 50 lines up, stacked directly on top of the DEV twin's
+ * own docblock with no function between them — so it documented nothing and the
+ * function it describes had no docblock at all.)
+ *
+ * @returns {import("vite").Plugin}
+ */
 export function powerrpServiceWorker() {
   let base = "/";
   return {

@@ -3,13 +3,25 @@
  *
  * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
  * The house convention says every pure function carries examples and that those
- * examples ARE its specification. There are ~2660 `@example` records checked in
- * across core/, plugins/, render_gpu/ and cli/, and until this file NOTHING ran
- * one of them. They were prose, and prose rots in the direction that misleads:
+ * examples ARE its specification. Some 5000 `@example` records are checked in
+ * across core/, plugins/, render_gpu/, cli/ and web/, and until this file NOTHING
+ * ran one of them. They were prose, and prose rots in the direction that misleads:
  * the first sweep found 18 executable examples that disagree with the code, some
  * stale by a nameable commit (core/registry.js's tool-group examples were written
  * before the Keyframes pool group existed — 7e3df60), and one, core/fuzzy.js's
  * ranking claim, asserting the exact OPPOSITE of what the algorithm does.
+ *
+ * TWO LATER WIDENINGS, both of which found more of the same (todo #216):
+ *   `web/` — the app shell, ~24k lines — was outside SEARCH_DIRS entirely. Adding
+ *     it turned up four false doctests in four files, among them a roster of canvas
+ *     modes frozen at three entries while the registry had grown to seven, and two
+ *     id minters whose examples pinned a literal random hex string and so could
+ *     never have passed on any run, ever.
+ *   The PARSER itself was blind to ` *  @example` (two spaces, the spelling used
+ *     when the tag aligns under a `/** Query. …` opener). 73 records app-wide, 53
+ *     of them in trees this suite was already reporting green. selfCheck could not
+ *     catch it because every fixture in it used the one-space spelling — the
+ *     checker was checked only against what it already handled.
  *
  * ── THE CHECKABILITY RULE (declared, because the alternative is a lie) ───────
  * Not every example can be executed, and a runner that silently dropped the ones
@@ -20,11 +32,13 @@
  * An example is EXECUTED when all of these hold:
  *   1. Its file is importable in bare node. Files whose NAME promises a host
  *      (browser_*, *worker*) are excluded up front, by name — not by catching an
- *      import error, which would also swallow a genuine breakage. Every one of
- *      the other ~149 files imports clean, so one that stops doing so is a HARD
- *      FAILURE here, never a skip. That is not hypothetical: this suite caught a
- *      backtick inside a shader comment closing the template literal it lived in,
- *      minutes after it was written.
+ *      import error, which would also swallow a genuine breakage. Beyond those,
+ *      exactly four files are excused, each named in HOST_BOUND with the Vite-only
+ *      specifier that stops node PINNED, so a listed module failing for any other
+ *      reason is still a hard failure. Every other file imports clean, so one that
+ *      stops doing so is a HARD FAILURE here, never a skip. That is not
+ *      hypothetical: this suite caught a backtick inside a shader comment closing
+ *      the template literal it lived in, minutes after it was written.
  *   2. It states an EXPRESSION and an EXPECTED RESULT. Three checked-in shapes
  *      count: `expr // result`, `expr` then a `// result` line, and `expr` then a
  *      bare result line (the python-doctest shape). A comment-only `@example`
@@ -87,19 +101,23 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, "..");
 
-/** The trees whose examples are DOM-free by contract, so bare node can run them.
- *  `web/canvas` is in the list even though `web/` at large is not: that directory
- *  holds exactly one module (dragKinds.js), its own header declares it DOM-free
- *  ("imports only core/transform + core/derive … so this module runs in bare
- *  node"), and while it was outside this scan its ~30 examples were the only
- *  doctests in the app that nothing executed — tests/dragkinds_test.js calls
- *  itself a "mirror of the module's doctests", and a hand-maintained mirror is
- *  the defect this round keeps finding. */
-const SEARCH_DIRS = ["core", "plugins", "render_gpu", "cli", "web/canvas"];
+/** The trees swept for examples. `web` — the app shell — was outside this list
+ *  until todo #216, so ~24k lines of it had NEVER executed an example; the sweep
+ *  that added it found four false doctests in four different files, one of them a
+ *  stale roster of canvas modes that had drifted from three entries to seven.
+ *  Most of web/ is DOM-free in practice: 54 of its 73 modules import clean in bare
+ *  node. The 19 that do not are the reason HOST_BOUND below exists.
+ *
+ *  `web/canvas` used to be listed separately, back when `web/` at large was not —
+ *  it is now reached by the same walk and needs no entry of its own. */
+const SEARCH_DIRS = ["core", "plugins", "render_gpu", "cli", "web"];
 /** Files that name a host in their filename: they cannot import without one. */
 const BROWSER_ONLY_FILE = /^browser_|worker/;
-/** Coverage floor — see THE THRESHOLD POLICY. Measured 2183 at introduction. */
-const MIN_EXECUTED = 2100;
+/** Coverage floor — see THE THRESHOLD POLICY. Measured 2183 at introduction, 3961
+ *  once `web` joined the sweep; the margin below the measurement is the same ~4%
+ *  the original floor left, so ordinary churn does not trip it but a parser
+ *  regression does. */
+const MIN_EXECUTED = 3800;
 /** Float slack, in units of the last representable bit, for arithmetic that is
  *  mathematically equal but not bit-equal (0.001 / 1000 !== 0.000001). */
 const ULP_SLACK = 8;
@@ -138,8 +156,82 @@ const BUCKETS = {
   HOST_GLOBAL: "needs a browser host global",
   BROWSER_MODULE: "file names a host in its filename",
   ASYNC: "awaits — a hung promise would outlive the gate",
+  HOST_MODULE: "the module's file is a declared HOST_BOUND (a Vite-only specifier)",
   SYNTAX: "not parseable as a JS expression (HARD FAIL)",
 };
+
+/**
+ * Modules that BARE NODE CANNOT PARSE, each with the specifier that stops it.
+ * Shrink, never grow — and see below for why the list is only four entries long
+ * rather than the eleven the first `web/` sweep produced.
+ *
+ * TWO DIFFERENT CAUSES, and only one of them belongs here. `web/` is the app
+ * shell, so its modules fail to import in bare node for two unrelated reasons, and
+ * the codebase's own module headers already name the distinction (see
+ * `render_gpu/gpu/pdf_page_vector.js:19` and `render_gpu/gpu/latex_raster.js`'s
+ * BARE-NODE SAFETY note — "a Vite-only specifier a bare-node import cannot parse
+ * at all"):
+ *
+ *   A BROWSER GLOBAL read at module scope. `web/projectApi.js:14` does
+ *     `new URLSearchParams(location.search)` for the `?backend=` override, and
+ *     seven modules inherit it transitively. This is NOT exempted — it is STUBBED,
+ *     one line, exactly as tests/project_list_draft_filter_test.js:42-47 already
+ *     does it, with that file's reasoning: a test never sets `?backend=`, so
+ *     BACKEND resolves to "" precisely as an ordinary same-origin production boot
+ *     resolves it. The stub exists so the import does not throw, not to change
+ *     behaviour. It buys ~30 examples that would otherwise have been exempted
+ *     wholesale, which is the whole argument for preferring a stub to an entry.
+ *
+ *   A VITE-ONLY SPECIFIER. `?url`, a `.ttf`/`.css` import, `import.meta.glob`.
+ *     No stub reaches these: node rejects the specifier before any code runs, so
+ *     the module is genuinely unreadable without a bundler. Those are the four
+ *     below, and they are the only kind of entry this list may hold.
+ *
+ * SHAPE follows the house's per-source-file exemption tables — ACCOUNTED
+ * (tests/shortcut_sweep_test.js:177, the oldest, 2026-07-27) and the terser
+ * ALLOWED (tests/triangulated_paint_ban_test.js:166): keyed by repo-relative
+ * source path, every entry carrying a REASON. It is spelled as an array of objects
+ * rather than a Map to match QUARANTINE in this same file, which needs the same
+ * pinning discipline: `signature` is a stable SUBSTRING of the real import error,
+ * so an entry excuses only the failure it recorded and a module that starts
+ * failing for a NEW reason is a hard failure rather than something hiding behind
+ * an old excuse. A substring and not a prefix because these messages embed
+ * absolute paths, which differ per checkout.
+ *
+ * The polarity is safe, which is what earns a hand-list its place here (the
+ * argument is tests/log_elision_singleton_test.js:27-32's): a stale entry makes
+ * this suite PRINT and name the file, never pass and hide one. A file NOT listed
+ * that fails to import remains a HARD FAILURE, exactly as before.
+ */
+const HOST_BOUND = [
+  {
+    file: "web/app.svelte.js",
+    signature: "canvaskit.wasm?url",
+    why: "reaches render_gpu/skia/browser_canvaskit.js, which imports the wasm binary by Vite `?url`",
+  },
+  {
+    file: "web/gpuService.js",
+    signature: "canvaskit.wasm?url",
+    why: "the shared offscreen compositor — same `?url` wasm specifier, via browser_canvaskit.js",
+  },
+  {
+    file: "web/renderJobPage.js",
+    signature: "canvaskit.wasm?url",
+    why: "the render-job worker's page half — same `?url` wasm specifier, via browser_canvaskit.js",
+  },
+  {
+    file: "web/mermaidRenderer.js",
+    signature: 'Unknown file extension ".ttf"',
+    why: "statically imports a font file, which only a bundler can turn into a module",
+  },
+];
+
+/**
+ * The ONE host global this suite supplies, and the reason it is a stub rather than
+ * four more HOST_BOUND entries. See HOST_BOUND's docblock, cause A. Set before the
+ * sweep because every module import below is dynamic and therefore later.
+ */
+globalThis.location = { search: "" };
 
 /**
  * Known-false doctests in files owned by other concurrent work. Each excuses ONE
@@ -313,7 +405,15 @@ export function examplesInSource(src) {
   const out = [];
   for (const [blockStart, blockEnd] of docBlockRanges(lines)) {
     for (let n = blockStart; n <= blockEnd; n += 1) {
-      const tag = stripDocLine(lines[n]).match(/^@example\s*(.*)$/);
+      // TRIM before matching. stripDocLine removes ONE space after the star, but
+      // this codebase also writes ` *  @example` (two spaces, aligning the tag
+      // under a `/** Query. …` opener), and without the trim `^@example` failed to
+      // anchor on every one of them — 73 records app-wide, 53 of them in trees
+      // this suite was already sweeping and reporting green. That is precisely the
+      // "parser quietly stops recognising examples and reports a green nothing"
+      // failure WHO CHECKS THE CHECKER exists to prevent, and selfCheck missed it
+      // because every fixture there is written in the one-space spelling.
+      const tag = stripDocLine(lines[n]).trim().match(/^@example\s*(.*)$/);
       if (!tag) continue;
       let text = tag[1];
       let end = n;
@@ -591,6 +691,11 @@ function selfCheck() {
   check(() => assert.equal(examplesInSource(block("@example f(1)", "2")).at(0).result, "2", "the python-doctest shape"));
   check(() => assert.equal(examplesInSource(block("@example f(1)", "// 2")).at(0).result, "2", "the next-line comment shape"));
   check(() => assert.equal(examplesInSource(block("@example f(1)")).at(0).result, "", "the closer must not leak into a result"));
+  // The two-space tag spelling. Its absence here is why 73 records went unseen:
+  // every other fixture writes ` * @example`, so the parser was only ever checked
+  // against the spelling it could already handle.
+  check(() => assert.equal(examplesInSource(["/**", " *  @example f(1) // 2", " " + closer].join("\n")).length, 1, "` *  @example` (two spaces) is still an example"));
+  check(() => assert.equal(examplesInSource(["/** Query. One-liner.", " *  @example f(1) // 2 " + closer].join("\n")).at(0).text, "f(1) // 2", "and on a one-line block whose closer trails the example"));
   check(() => assert.equal(examplesInSource(block("@example f({a: 1,", "  b: 2}) // 3")).at(0).text, "f({a: 1, b: 2}) // 3", "unbalanced lines join into ONE example"));
   check(() => assert.equal(splitAtComment(examplesInSource(block("@example f({a: 1,", "  b: 2}) // 3")).at(0).text).result, "3", "and the joined example still states its result"));
   check(() => assert.deepEqual(docBlockRanges(["/**", " * hi", " " + closer, "code"]), [[0, 2]]));
@@ -647,6 +752,7 @@ const skip = (bucket, note) => skipped.get(bucket).push(note);
 const failures = [];
 const quarantined = [];
 const quarantineHits = new Set();
+const hostBoundHits = new Set();
 let executed = 0;
 /** Records in a module that would not import: neither executed nor skipped, so the
  *  headline must name them separately rather than lose them out of the total. */
@@ -668,11 +774,26 @@ for (const file of sourceFiles(appRoot)) {
   // it lived in). Reported ONCE per file, then the sweep carries on, because one
   // broken module must not hide the rest of the audit. Importing eagerly rather
   // than on first need is what makes "these trees run in bare node" a gate.
+  //
+  // The ONE exception is a declared HOST_BOUND file, and it is still not a catch-
+  // and-shrug: the entry must have PINNED the specifier that stops node, so a
+  // listed module failing for any OTHER reason is a hard failure like everything
+  // else. A listed module that imports FINE is stale and gets printed.
+  const listed = HOST_BOUND.find((h) => h.file === shortPath);
   let exported = null;
   try { exported = { ...(await import(pathToFileURL(file).href)) }; }
   catch (e) {
+    const message = e.message.split("\n")[0];
+    if (listed && message.includes(listed.signature)) {
+      hostBoundHits.add(listed);
+      for (const r of records) skip("HOST_MODULE", `${shortPath}:${r.line} needs a bundler: ${listed.why}`);
+      continue;
+    }
     unreachable += records.length;
-    failures.push({ at: shortPath, code: `${records.length} example(s) unreachable`, why: `MODULE WILL NOT IMPORT in bare node: ${e.message.split("\n")[0]}` });
+    const note = listed
+      ? `HOST_BOUND FOR A DIFFERENT REASON — pinned "${listed.signature}", got: `
+      : "MODULE WILL NOT IMPORT in bare node. If a Vite-only specifier is the cause, add it to HOST_BOUND above WITH ITS REASON; anything else is a real breakage: ";
+    failures.push({ at: shortPath, code: `${records.length} example(s) unreachable`, why: note + message });
     continue;
   }
 
@@ -721,12 +842,16 @@ for (const file of sourceFiles(appRoot)) {
 }
 
 const stale = QUARANTINE.filter((q) => !quarantineHits.has(q));
+/** A HOST_BOUND entry that excused nothing: the module now imports in bare node, or
+ *  it no longer carries examples to excuse. Like a stale quarantine this can only
+ *  ever conceal a FIX, so it prints loudly and does not fail the run. */
+const staleHostBound = HOST_BOUND.filter((h) => !hostBoundHits.has(h));
 const totalSkipped = [...skipped.values()].reduce((n, list) => n + list.length, 0);
 const totalRecords = executed + totalSkipped + unreachable;
 
 console.log(`\n${"=".repeat(78)}`);
 console.log(`DOCTESTS   ${totalRecords} records   ${executed} executed   ${totalSkipped} skipped   ${failures.length} failed${unreachable ? `   ${unreachable} unreachable (module will not import)` : ""}`);
-console.log(`           parser self-checks: ${selfChecks}   quarantined: ${quarantined.length}   stale quarantine: ${stale.length}`);
+console.log(`           parser self-checks: ${selfChecks}   quarantined: ${quarantined.length}   stale quarantine: ${stale.length}   stale host-bound: ${staleHostBound.length}`);
 console.log("=".repeat(78));
 console.log("\nSKIPPED, by declared bucket (nothing is dropped silently):");
 for (const [bucket, list] of [...skipped].sort((a, b) => b[1].length - a[1].length)) {
@@ -743,6 +868,10 @@ if (quarantined.length) {
 if (stale.length) {
   console.log(`\nSTALE QUARANTINE (${stale.length}) — these now pass or no longer exist. REMOVE THEM:`);
   for (const q of stale) console.log(`  ${q.file}  ${q.code.slice(0, 120)}`);
+}
+if (staleHostBound.length) {
+  console.log(`\nSTALE HOST_BOUND (${staleHostBound.length}) — these import in bare node now, or have no examples left. REMOVE THEM:`);
+  for (const h of staleHostBound) console.log(`  ${h.file}  pinned "${h.signature}"`);
 }
 if (failures.length) {
   console.log(`\nFAILED (${failures.length}):`);

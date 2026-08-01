@@ -128,17 +128,19 @@ export function renderingKey(projectKey, jobId) {
 }
 
 /**
- * Pure function. A fresh render-job id. `crypto.randomUUID` is SECURE-CONTEXT ONLY
- * and measured absent on the plain-HTTP origins this app must run on (see
- * web/browserJobStore.js newDriverId), so this is built from
- * `crypto.getRandomValues`, which is not gated. In HTTP mode the SERVER mints ids;
- * this is the static-mode twin of that.
+ * Query (reads crypto). A fresh render-job id, `"r-"` followed by 8 random bytes as
+ * hex. `crypto.randomUUID` is SECURE-CONTEXT ONLY and measured absent on the
+ * plain-HTTP origins this app must run on (see web/browserJobStore.js newDriverId),
+ * so this is built from `crypto.getRandomValues`, which is not gated. In HTTP mode
+ * the SERVER mints ids; this is the static-mode twin of that.
  *
- * Near-pure: consumes randomness.
+ * The examples assert the SHAPE, not a value — the return is random, so an example
+ * pinning one literal id could never pass.
  *
  * @returns {string}
  *
- * @example newRenderId() // "r-9f3a1c2e8b7d4056"
+ * @example newRenderId().startsWith("r-") // true
+ * @example newRenderId().length // 18 (the "r-" tag plus 8 bytes as 16 hex digits)
  */
 export function newRenderId() {
   const bytes = new Uint8Array(8);

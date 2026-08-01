@@ -147,13 +147,17 @@ const live = {};
 const cancelled = new Set();
 
 /** Query. A snapshot of this tab's live browser-render progress, by job id.
- *  @example liveBrowserProgress() // {"ab12": {framesDone: 40, framesTotal: 120, phase: "rendering"}} */
+ *  @example liveBrowserProgress() // {} (a tab that has not started a render)
+ *  @example // with one render in flight, keyed by job id:
+ *  @example //   {"ab12": {framesDone: 40, framesTotal: 120, phase: "rendering"}} */
 export function liveBrowserProgress() {
   return { ...live };
 }
 
-/** Query. This tab's lease identity. Exposed so the UI can say "this tab".
- *  @example thisDriverId() // "d-3f9a1c2e8b7d4056" */
+/** Query (reads crypto, via DRIVER_ID). This tab's lease identity. Exposed so the
+ *  UI can say "this tab". The id is random, so the example asserts its SHAPE — see
+ *  web/browserJobStore.js newDriverId, which mints it.
+ *  @example thisDriverId().startsWith("d-") // true */
 export function thisDriverId() {
   return DRIVER_ID;
 }

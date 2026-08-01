@@ -272,11 +272,10 @@ export function centreOnAnchorPairs(itemId, plugin, targetId, anchorId) {
  * @param {string} name - the widget's display name (for the message)
  * @returns {string|null}
  *
- * @example bindRefusal({itemId: "w1", plugin: {defaults: {x: 0, y: 0}}}, new Map(), "Box") // null
- * @example // bindRefusal({itemId: "a1", plugin: {type: "arrow", defaults: {from: {}}}}, new Map(), "Arrow")
- * @example //   → 'Arrow has no x / y to bind — this widget is positioned by its endpoints…'
- * @example // bindRefusal({itemId: "w1", plugin: {defaults: {x: 0, y: 0}}}, new Map([["w1", "g1"]]), "Box")
- * @example //   → 'Box is a member of a group…'
+ * @example bindRefusal({itemId: "w1", plugin: {defaults: {x: 0, y: 0}, capabilities: {}}}, new Map(), "Box") // null
+ * @example bindRefusal({itemId: "a1", plugin: {defaults: {from: {}}, capabilities: {}}}, new Map(), "Arrow").startsWith("Arrow has no x / y to bind") // true
+ * @example bindRefusal({itemId: "w1", plugin: {defaults: {x: 0, y: 0}, capabilities: {}}}, new Map([["w1", "g1"]]), "Box").startsWith("Box is a group member") // true
+ * @example bindRefusal({itemId: "c1", plugin: {defaults: {x: 0, y: 0}, capabilities: {purgeable: false}}}, new Map(), "Camera").startsWith("Camera is the view") // true
  */
 export function bindRefusal(node, membership, name) {
   const missing = ["x", "y"].filter((key) => node.plugin.defaults[key] === undefined);

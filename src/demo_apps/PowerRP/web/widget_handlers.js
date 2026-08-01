@@ -585,9 +585,14 @@ export function activations() {
  * Reading it off the registry is what makes a new mode arrive with its shortcuts
  * already registered.
  *
- * `steps` is `[]` for an activate mode (a sustained gesture has no sequence) and the
- * declared step list for a creation mode, whose per-step `hint` is what narrates a
- * multi-step placement. `finish` is the mode's own finalize KEY, or null;
+ * `steps` is the mode's declared step list, or `[]` when it asks no ordered question.
+ * Every CREATION mode has one; so does an activate mode that asks in sequence —
+ * `bento_bind_cell` aims at a cell, then picks the widget for it (web/bentoBind.js's
+ * own comment calls its steps "the same declaration a multi-step CREATION makes").
+ * This used to say `steps` is always `[]` for an activate mode, which that handler
+ * has refuted since it was written. Each step's `hint` is what narrates it, and that
+ * is what scopes a mouse_left chip to the CURRENT step rather than to the whole mode.
+ * `finish` is the mode's own finalize KEY, or null;
  * `finishGesture` is its finalize POINTER GESTURE (a double-click), or null. The two
  * are separate fields because they are delivered by different machinery — the key
  * through the registry's own dispatch, the gesture by CanvasView's dblclick handler,
@@ -597,7 +602,8 @@ export function activations() {
  *
  * @returns {{handlerId: string, phase: string, label: string, hints: object[], steps: object[], finish: object|null, finishGesture: object|null}[]}
  *
- * @example canvasModes().map((m) => m.handlerId) // ["polygon_chain", "telescopic_rig", "navigate_interior"]
+ * @example canvasModes().map((m) => m.handlerId).includes("polygon_chain") // true
+ * @example canvasModes().every((m) => m.steps.every((s) => s.hint)) // true (a step that narrates nothing leaves the bar blank mid-gesture)
  * @example canvasModes().find((m) => m.handlerId === "navigate_interior").hints.length // 3 (wheel pans, Ctrl+wheel zooms, a plain drag still moves the widget)
  * @example canvasModes().find((m) => m.handlerId === "telescopic_rig").steps.length // 2 (drag the source box, then the lens box)
  * @example canvasModes().find((m) => m.handlerId === "telescopic_rig").finishGesture // null (a FIXED-length sequence finalizes itself)

@@ -368,16 +368,20 @@ export function driverState(job, thisDriverId, now, drivingHere) {
 }
 
 /**
- * Pure function. A per-tab driver id. `crypto.randomUUID` is SECURE-CONTEXT ONLY
- * and measured absent on the plain-HTTP origins this app must run on, so the id is
- * built from `crypto.getRandomValues` (which is not gated) — the same reason the
- * server, not the client, mints render-job ids.
+ * Query (reads crypto). A per-tab driver id, `"d-"` followed by 8 random bytes as
+ * hex. `crypto.randomUUID` is SECURE-CONTEXT ONLY and measured absent on the
+ * plain-HTTP origins this app must run on, so the id is built from
+ * `crypto.getRandomValues` (which is not gated) — the same reason the server, not
+ * the client, mints render-job ids.
  *
- * Near-pure: consumes randomness.
+ * The examples assert the SHAPE, not a value: the return is random, so an example
+ * pinning one literal id could never pass. (It did not — that literal was checked
+ * in as documentation and was false from the day it was written.)
  *
  * @returns {string}
  *
- * @example newDriverId() // "d-3f9a1c2e8b7d4056"
+ * @example newDriverId().startsWith("d-") // true
+ * @example newDriverId().length // 18 (the "d-" tag plus 8 bytes as 16 hex digits)
  */
 export function newDriverId() {
   const bytes = new Uint8Array(8);

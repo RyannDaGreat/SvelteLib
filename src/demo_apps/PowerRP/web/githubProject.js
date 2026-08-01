@@ -240,8 +240,8 @@ export function shareLink({ owner, repo, ref = null }, appUrl) {
   return `${base.href}?${new URLSearchParams({ [REPO_PARAM]: slug })}`;
 }
 
-/** The repo's human-facing page — what we SHOW on a successful save, and what
- *  the toolbar logo opens for this deployment.
+/** Pure function. The repo's human-facing page — what we SHOW on a successful
+ *  save, and what the toolbar logo opens for this deployment.
  *
  *  @example repoWebUrl({owner: "a", repo: "b"})
  *  'https://github.com/a/b'
