@@ -49,8 +49,15 @@ const GUARD = "tests/connectivity_seam_test.js";
 
 /** Directories excluded from the sweep: build outputs and vendored code are not
  *  ours to hold to this rule, and `dist` in particular contains the minified
- *  bundle where the seam's OWN read reappears. */
-const SKIP_DIRS = new Set(["node_modules", "dist", ".git", "__pycache__"]);
+ *  bundle where the seam's OWN read reappears.
+ *
+ *  `.frenzy` and `.vite` were added after this gate cried wolf: an agent's
+ *  scratch tree held a Vite dep cache, and the sweep reported
+ *  `.frenzy/…/deps/.vite/deps/svelte_reactivity_window.js` — VENDORED Svelte
+ *  internals — as an app violation. Same reason as node_modules: not ours to
+ *  hold to this rule. A gate that reports code we do not own is worse than no
+ *  gate, because the next reader learns to ignore it. */
+const SKIP_DIRS = new Set(["node_modules", "dist", ".git", "__pycache__", ".frenzy", ".vite"]);
 
 /** Source extensions the rule applies to. */
 const EXTS = [".js", ".mjs", ".svelte", ".html"];
