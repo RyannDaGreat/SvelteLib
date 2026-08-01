@@ -10,14 +10,23 @@
  * the field reads the literal string "[object Object]" and the first keystroke
  * replaces the whole structured value with a bare string.
  *
- * WHY IT INJECTS ITS OWN ROW instead of waiting for plugins/text.js to declare
- * one. The row declaration and the renderer are owned by two agents and land in
- * two commits, and the SAFE order is renderer-first. A probe that needed the
- * declaration could therefore only be written after the thing it gates was
- * already shipped. Injecting the row makes this gate independent: it asks "does
- * a richtext row render correctly", which is answerable today. It deliberately
- * does NOT assert that plugins/text.js ships one — that is the other half's gate,
- * and asserting it here would make this file red for a reason it cannot fix.
+ * IT MEASURES THE SHIPPED ROW WHEN THERE IS ONE, AND INJECTS ONE WHEN THERE IS
+ * NOT. The row declaration (plugins/text.js) and the renderer (web/Inspector.svelte)
+ * are owned by two agents and land in two commits, renderer-first — so a probe
+ * that REQUIRED the declaration could only be written after the thing it gates
+ * had already shipped. The fallback keeps this gate independent of that ordering.
+ * It still does not ASSERT that plugins/text.js ships a row: that is the other
+ * half's gate, and asserting it here would make this file red for something it
+ * cannot fix.
+ *
+ * THE FALLBACK HAD A BUG WORTH KEEPING IN VIEW, found by W5-F the moment the real
+ * row landed. The label was hardcoded on the lookup side, so when the injection
+ * was correctly SKIPPED nothing carried that label, and the probe both false-red
+ * AND — the worse half — passed two checks VACUOUSLY: `undefined !== "[object
+ * Object]"` is true, and a row that is not in the DOM has no ƒ button. The
+ * central assertion was unfalsifiable in exactly the state it exists to catch.
+ * Hence the label is now RESOLVED from the same condition that decides whether to
+ * inject, and a missing row is a hard exit rather than a run of assertions.
  *
  * Spawns its own isolated Vite + headless Chromium. Frontend-only.
  */
@@ -63,7 +72,7 @@ try {
   // A text item whose content carries TWO run styles, so a flatten is visible in
   // the document and not merely suspected.
   const STYLED = { runs: [{ text: "Big ", size: 48 }, { text: "small", size: 18 }], paras: [{}] };
-  await page.evaluate((styled) => {
+  const rowLabel = await page.evaluate((styled) => {
     const app = window.__powerrp_app;
     const def = (type) => ({ ...app.registry.get(type).defaults, type });
     const cam = { ...def("camera"), name: "Camera", x: 0, y: 0, w: 1000, h: 500, z: 1000, active: true, background: "#101014" };
@@ -75,11 +84,18 @@ try {
     app.slideIndex = 0;
     app.selection = "t1";
 
-    // INJECT the row (see header): the declaration is another agent's commit.
+    // PREFER THE REAL DECLARATION; inject only if the widget has none (see
+    // header). Returns the LABEL to look the row up by, so the two can never
+    // disagree — the first version hardcoded "Probe Text" on the lookup side and
+    // false-red the moment plugins/text.js shipped a real row, because the
+    // injection was correctly skipped and nothing carried that label any more.
     const plugin = app.registry.get("text");
-    if (!plugin.inspector.some((r) => r.kind === "richtext"))
-      plugin.inspector = [...plugin.inspector, { key: "text", label: "Probe Text", kind: "richtext", category: "custom" }];
+    const real = plugin.inspector.find((r) => r.kind === "richtext");
+    if (real) return real.label;
+    plugin.inspector = [...plugin.inspector, { key: "text", label: "Probe Text", kind: "richtext", category: "custom" }];
+    return "Probe Text";
   }, STYLED);
+  console.log(`  (measuring the row labelled "${rowLabel}" — ${rowLabel === "Probe Text" ? "INJECTED, no real declaration present" : "the SHIPPED declaration"})`);
   await sleep(900);
   await page.evaluate(() => {
     for (const h of document.querySelectorAll(".cat-header[aria-expanded='false']")) h.click();
@@ -87,16 +103,24 @@ try {
   await sleep(500);
 
   /** Query. The richtext row's <input>, by its label. */
-  const rowInput = () => page.evaluate(() => {
+  const rowInput = () => page.evaluate((label) => {
     const row = [...document.querySelectorAll(".inspector .row")]
-      .find((r) => r.querySelector(".label")?.textContent.trim() === "Probe Text");
+      .find((r) => r.querySelector(".label")?.textContent.trim() === label);
     if (!row) return { found: false };
     const input = row.querySelector("input[type='text']");
     return { found: true, hasInput: !!input, value: input?.value ?? null, hasEqButton: !!row.querySelector(".eq-open") };
-  });
+  }, rowLabel);
 
   const before = await rowInput();
-  assert(before.found, "the injected richtext row renders in the Inspector");
+  // A HARD STOP, NOT AN ASSERTION. If the row is not in the DOM, every check
+  // below it passes VACUOUSLY — `undefined !== "[object Object]"` is true, and a
+  // row that does not exist has no ƒ button. The central assertion would then be
+  // unfalsifiable in exactly the state it exists to catch. Found by W5-F running
+  // this file at HEAD; it is the false-GREEN half of that bug and the worse half.
+  if (!before.found) {
+    console.error(`  FATAL: no row labelled "${rowLabel}" in the Inspector — refusing to run checks that would pass vacuously`);
+    process.exit(1);
+  }
   assert(before.hasInput, "it renders a text input");
   // THE CENTRAL ASSERTION. This is what the catch-all would produce.
   assert(before.value !== "[object Object]",
@@ -116,16 +140,16 @@ try {
 
   // TYPE INTO IT. `oninput` previews and `onchange` commits, so the probe sets
   // the value and dispatches both — the same pair a real keystroke + blur sends.
-  await page.evaluate(() => {
+  await page.evaluate((label) => {
     const row = [...document.querySelectorAll(".inspector .row")]
-      .find((r) => r.querySelector(".label")?.textContent.trim() === "Probe Text");
+      .find((r) => r.querySelector(".label")?.textContent.trim() === label);
     const input = row.querySelector("input[type='text']");
     input.focus();
     input.value = "Big smaller";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
     input.blur();
-  });
+  }, rowLabel);
   await sleep(700);
 
   const stored = await page.evaluate(() => {
