@@ -7902,6 +7902,24 @@ audio.ae-preview-media {
     z-index: var(--a-z-dock);
   }
 
+  /* NO, THIS DOES NOT COLLIDE WITH THE MINIMAP, and the reason is worth the
+     lines because reading the CSS suggests it does. `.minimap-dock` carries the
+     SAME right/bottom offsets — but it is `position: absolute`, so they resolve
+     against the CANVAS box, while this is `position: fixed` and resolves against
+     the VIEWPORT. On a phone the canvas is inset by both side panels, so the two
+     land ~40-50px apart horizontally. Measured independently by W5-MOBILE and
+     again here, with the dock's markup injected at HEAD: overlap area 0 at both
+     393x852 (dock x 337-381, minimap x 142-294) and 375x667 (dock x 319-363,
+     minimap x 128-280). A hide rule today would be CSS defending against a
+     collision that does not exist — the shared-corner reading is right about the
+     stylesheet and wrong about the pixels.
+     THE CONDITION THAT FLIPS IT: if the side panels ever become off-canvas
+     drawers on a phone, the canvas goes full-width, the minimap's absolute box
+     then resolves against the viewport too, and the two DO land in the same
+     corner. At that point the minimap needs to hide below --a-phone-max, or
+     move. Recorded here rather than in a report because the person who widens
+     the canvas will be standing in this file, not reading that one. */
+
   /* Square, like all app chrome — this is chrome, not a floating surface, so it
      takes --a-radius-control (0) and never --a-radius-floating. Sized to the
      platform tap floor rather than --a-control-h, which is a pointer-era height
