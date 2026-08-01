@@ -110,6 +110,7 @@
 
 import { BENTO_BIND_HANDLER } from "./bentoBind.js";
 import { NAVIGATE_INTERIOR_HANDLER } from "./interiorNav.js";
+import { NAVIGATE_SCENE_HANDLER } from "./sceneNav.js";
 import { LIGHT_POSITION_PIN_HANDLER } from "./lightPositionPin.js";
 import { POLYGON_CHAIN_HANDLER } from "./polygonDraw.js";
 import { PAINT_PATH_CHAIN_HANDLER } from "./paintPathDraw.js";
@@ -305,6 +306,7 @@ const ACTIVATE_HANDLERS = [
     },
   },
   NAVIGATE_INTERIOR_HANDLER,
+  NAVIGATE_SCENE_HANDLER,
   INSERT_POINT_HANDLER,
   BENTO_BIND_HANDLER,
   LIGHT_POSITION_PIN_HANDLER,

@@ -362,6 +362,11 @@ const ACCOUNTED = {
     modifiers: true,
     coverage: "registry: the modifier read is Ctrl on the WHEEL — Ctrl+scroll zooms, plain scroll pans — which is the pair of pointer hints core/shortcut_entries.js registers as 'Zoom' ({keys: ['Ctrl','mouse_scroll']}) and 'Pan' ({keys: ['mouse_scroll']}) under editMode. Display-only there, dispatched here: the registered-but-externally-dispatched case. No keydown listener at all; this container is also the element a canvas gesture moves focus TO (div[role=application], tabindex=-1), which is the fact fieldFocus's docstring cites.",
   },
+  "web/sceneNav.js": {
+    keys: [],
+    modifiers: true,
+    coverage: "registry: the modifier read is Ctrl on the WHEEL inside the `navigate_scene` mode — plain wheel dollies the 3D camera, Ctrl+wheel changes its field of view — and BOTH are declared in the mode's own `hints` ({keys:['mouse_scroll']} 'Move closer / further' and {keys:['Ctrl','mouse_scroll']} 'Field of view'), which web/widget_handlers.canvasModes() feeds to core/shortcut_entries.handShortcutEntries. Display-only there, dispatched here: the registered-but-externally-dispatched case ../../lib/PanZoom.svelte's entry describes, one frame down — this mode deliberately takes the canvas's own wheel vocabulary and applies it to the camera inside the widget. The mode's Escape is generated from the same declaration and needs no entry of its own. NOTE FOR A FUTURE READER: web/interiorNav.js reads `ctrlKey` from the identical payload and has NO entry here, because MODIFIER_RE requires a LEADING DOT (`.ctrlKey`) and both files read it out of a DESTRUCTURED argument. That is a hole in the scanner, not an exemption interiorNav earned; it is recorded in W3-E's report as a hand-back rather than widened here mid-round.",
+  },
   "../../lib/AnnotateBar.svelte": {
     keys: ["Enter", "Escape", "c", "t", "x"],
     modifiers: true,

@@ -1366,6 +1366,12 @@
         { id: "add-tangent-lines", title: "Tangent Lines (two external tangents between two shapes)", icon: "mdi:vector-line", run: (a) => a.addItem(a.registry.get("tangent_lines").defaults) },
         { id: "demo-insert-raycast-dither", title: "Raycast Dither (animated grain gradient)", icon: "mdi:gradient-vertical", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_raycast_dither")) },
         { id: "demo-insert-mandelbrot", title: "Mandelbrot (deep-zoom fractal — double-click to explore inside)", icon: "mdi:fingerprint", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_mandelbrot")) },
+        // THE 3D VIEWPORT FAMILY (R6-1 / R6-23). Both members drag a box and then
+        // ask for a source ("bbox_then_asset"), so they are inserted with the
+        // crosshair like the Mandelbrot and the map — and, like both of those, the
+        // DOUBLE-CLICK afterwards is what flies the camera (web/sceneNav.js).
+        { id: "demo-insert-scene3d-splat", title: "Gaussian Splat (a photo-captured 3D scene — double-click to fly the camera)", icon: "mdi:blur-radial", run: (a) => a.armCrosshairPlacement(a.registry.get("scene3d_splat")) },
+        { id: "demo-insert-scene3d-model", title: "3D Model (glTF viewport — camera and lights are keyframable; the loader is not wired yet)", icon: "mdi:cube-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("scene3d_model")) },
         // Placed with the crosshair like the Mandelbrot, and for the same reason: both
         // are square-ish panels whose position matters to the composition, and both are
         // explored by DOUBLE-CLICK afterwards (the shared interiorNav handler).
