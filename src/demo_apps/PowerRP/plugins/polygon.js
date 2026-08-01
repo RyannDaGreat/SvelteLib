@@ -614,9 +614,55 @@ export function polygonInkRect(state) {
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
+// THE STARTING SHAPES — fourteen straight-edged silhouettes a user would otherwise
+// spend a minute clicking out. Vertices are FRACTIONS of the bbox, so every one of
+// them stretches with a resize and none of them writes a placement key.
+//
+// ORDER IS CONTENT: the filled outlines run from the direction marks (arrow,
+// chevron, bolt) through the object silhouettes (banner, tag, house, cube, wedge,
+// block) to the data shapes (steps, peaks, pointer), and the two OPEN polylines
+// come last because they are the only rows that advertise `closed: false` exists —
+// nothing else in the UI hints that this widget draws unfilled chains.
+//
+// FULL over the family's own two keys. `closed` is in EVERY row, including the
+// twelve that set it true: application is an overlay, so a filled shape picked
+// after "Check Mark" must actively re-close the loop or it draws as a line.
+//
+// WHY NO `pointsActive`, THOUGH THE OVERLAY ARGUMENT SEEMS TO DEMAND ONE. A
+// companion flag list left over from an earlier hide will hide the NEW shape's
+// vertex at the same index (core/lists.js elementActive), so the tidy answer looks
+// like writing `pointsActive: []` in every preset. IT IS REFUSED, MEASURED:
+// tests/polygon_test.js:759 pins "no companion is minted when nothing was hidden",
+// and declaring the companion in `defaults` to satisfy the preset contract takes
+// that assertion red. The residual hazard is real but narrow — it needs the user to
+// have hidden a vertex first — and it is not preset-specific: any wholesale
+// rewrite of `points` has it. Recorded rather than papered over.
+//
+// TWEENING, worth knowing before authoring a fifteenth: two presets with the SAME
+// vertex count interpolate per point between slides; two with different counts
+// switch discretely, because core/interpolators.js returns the target outright when
+// two arrays differ in length.
+const PRESETS = [
+  { name: "Right Arrow", description: "The block arrow — a square shaft running into a head twice its width.", props: { points: [[0, 0.3], [0.6, 0.3], [0.6, 0], [1, 0.5], [0.6, 1], [0.6, 0.7], [0, 0.7]], closed: true } },
+  { name: "Chevron", description: "The double-angle direction mark: an arrowhead with the same notch cut out of its back.", props: { points: [[0, 0], [0.5, 0], [1, 0.5], [0.5, 1], [0, 1], [0.5, 0.5]], closed: true } },
+  { name: "Lightning Bolt", description: "The zigzag power symbol — two offset strokes meeting at a shared waist.", props: { points: [[0.58, 0], [0.12, 0.56], [0.42, 0.56], [0.3, 1], [0.82, 0.4], [0.5, 0.4]], closed: true } },
+  { name: "Swallowtail Banner", description: "A ribbon with a V cut into each end — the heraldic banner, notched at both sides rather than one.", props: { points: [[0, 0], [1, 0], [0.8, 0.5], [1, 1], [0, 1], [0.2, 0.5]], closed: true } },
+  { name: "Speech Tag", description: "A rectangle drawn out to a point at one end: the label flag, or a price tag on its string.", props: { points: [[0, 0], [0.8, 0], [1, 0.5], [0.8, 1], [0, 1]], closed: true } },
+  { name: "House", description: "A rectangle under a gable roof, the five-vertex house every child draws.", props: { points: [[0.5, 0], [1, 0.4], [1, 1], [0, 1], [0, 0.4]], closed: true } },
+  { name: "Iso Cube Hex", description: "The hexagon a cube casts when seen isometrically — the silhouette alone, not its three faces.", props: { points: [[0.5, 0], [1, 0.25], [1, 0.75], [0.5, 1], [0, 0.75], [0, 0.25]], closed: true } },
+  { name: "Right Triangle", description: "The half-square set square, with the right angle at the foot.", props: { points: [[0, 0], [1, 1], [0, 1]], closed: true } },
+  { name: "L Block", description: "The four-cell L tetromino: a two-by-three grid with two cells taken out.", props: { points: [[0, 0], [0.5, 0], [0.5, 0.667], [1, 0.667], [1, 1], [0, 1]], closed: true } },
+  { name: "Step Chart", description: "A rising staircase in four equal treads, closed along the baseline so it fills.", props: { points: [[0, 1], [0, 0.7], [0.25, 0.7], [0.25, 0.45], [0.5, 0.45], [0.5, 0.25], [0.75, 0.25], [0.75, 0], [1, 0], [1, 1]], closed: true } },
+  { name: "Mountain Range", description: "Three peaks of unequal height on a flat base — a skyline, or a terrain profile.", props: { points: [[0, 1], [0.18, 0.35], [0.32, 0.62], [0.5, 0.1], [0.68, 0.55], [0.82, 0.3], [1, 1]], closed: true } },
+  { name: "Cursor", description: "The arrow pointer with its angled tail, aimed at the top-left corner.", props: { points: [[0, 0], [0, 1], [0.28, 0.76], [0.45, 1], [0.6, 0.9], [0.44, 0.68], [0.75, 0.66]], closed: true } },
+  { name: "Check Mark", description: "An open two-stroke tick — one of only two rows here that leaves the loop unclosed, so it draws as a stroked line with no fill.", props: { points: [[0.05, 0.55], [0.38, 0.9], [0.95, 0.12]], closed: false } },
+  { name: "Zigzag", description: "An open five-segment sawtooth, for a spring, a tear line or a signal trace.", props: { points: [[0, 0.2], [0.2, 0.8], [0.4, 0.2], [0.6, 0.8], [0.8, 0.2], [1, 0.8]], closed: false } },
+];
+
 export const polygonPlugin = {
   type: "polygon",
   title: "Polygon",
+  presets: PRESETS,
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // THE CREATION GESTURE, declared exactly like every other widget's (the create
   // phase of web/widget_handlers.js): click each corner, Shift to axis-lock the

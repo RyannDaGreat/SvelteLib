@@ -87,9 +87,55 @@ function donutRingOutline(geom, inner) {
   return outline.donutOutline({ cx: 0, cy: 0, outerR: 1, inner }).map(([x, y]) => [cx + x * rx, cy + y * ry]);
 }
 
+// THE RING PROPORTIONS — ten real objects, ordered by RISING HOLE SIZE, from a
+// record spindle to the sliver left at an annular eclipse.
+//
+// SPARSE, one key (SPEC.md §4's geometry case, the shapeshifter cloud precedent):
+// the ring proportion is the model and the colour is the user's, so nothing here
+// touches fill/stroke/effects. With one key there is no overlay hazard and nothing
+// to split into families.
+//
+// WHY A ONE-NUMBER PRESET IS WORTH HAVING. The value of each row is that the
+// number is a MEASUREMENT nobody can guess: a compact disc's hole is 15 mm in a
+// 120 mm disc (0.125), a forty-five's jukebox hole is 1.504 in on a 6.875 in disc
+// (0.219), a disc's programme area starts at 25 mm of a 60 mm radius (0.417), and a
+// 205/55R16 tyre puts a 406 mm rim inside a 631.5 mm overall diameter (0.643).
+// THE FIVE THIN-END VALUES ARE PROPORTIONED, NOT MEASURED, and are labelled below;
+// they exist because the thin half of the axis is a completely different picture
+// and leaving it empty would be worse than saying where the numbers came from.
+//
+// TWO ROWS WERE CUT AND BOTH CUTS ARE MEASUREMENTS, not taste.
+//   `inner: 0.5` — the charting default 50% cutout — IS THIS WIDGET'S OWN DEFAULT,
+//     so a preset for it renders byte-identically to an untouched donut (measured
+//     0.0000). Ledger C-16's remedy is to move the DEFAULT rather than the sourced
+//     preset; here the default IS the sourced value, so moving it would swap a
+//     meaningful default for an arbitrary one in order to make room for a row that
+//     names the number the default already is. The row goes instead.
+//   `inner: 0.2` (a bagel, unsourced) sat 1.095x from the forty-five's 0.219 and the
+//     two are one picture on the contact sheet.
+const PRESETS = [
+  { name: "Record Spindle", description: "The 7.26 mm spindle hole of a twelve-inch record — a pinprick against the disc.", props: { inner: 0.024 } },
+  { name: "Compact Disc", description: "A fifteen-millimetre hole in a hundred-and-twenty-millimetre disc, sized after a coin.", props: { inner: 0.125 } },
+  { name: "Seven-Inch Single", description: "The wide jukebox hole of a forty-five: thirty-eight millimetres in a seven-inch record.", props: { inner: 0.219 } },
+  // PROPORTIONED: a four-inch label on a twelve-inch disc is the trade nominal, but
+  // I could not source it, so this is a third rather than a measurement.
+  { name: "Record Label", description: "The paper label at the centre of a twelve-inch record — about a third of the way out.", props: { inner: 0.331 } },
+  { name: "Disc Data Ring", description: "Where a compact disc's programme area actually begins, twenty-five millimetres from the centre.", props: { inner: 0.417 } },
+  { name: "Tyre Sidewall", description: "A sixteen-inch rim inside a fitted tyre — the band is the sidewall, drawn from a real size code.", props: { inner: 0.643 } },
+  // The four below are PROPORTIONED, NOT MEASURED. They spread the thin-ring half
+  // of the axis, where the picture is governed by the RING WIDTH rather than by the
+  // hole; each is at least 1.3x the next one's ring width, which is why they read
+  // apart despite their `inner` values sitting within a tenth of each other.
+  { name: "O-Ring", description: "A rubber seal: a thin cord bent into a circle, so most of the disc is hole.", props: { inner: 0.78 } },
+  { name: "Progress Track", description: "The thin track a circular progress indicator sweeps around.", props: { inner: 0.833 } },
+  { name: "Filter Ring", description: "The threaded rim of a lens filter — a hairline of metal around a lot of glass.", props: { inner: 0.92 } },
+  { name: "Eclipse Annulus", description: "The sliver of sun still showing at annular totality, the thinnest ring worth drawing.", props: { inner: 0.965 } },
+];
+
 return {
   type: "donut",
   title: "Donut",
+  presets: PRESETS,
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {
     type: "donut", x: 460, y: 200, w: 140, h: 140, z: 0, rotation: 0, scale: 1,
