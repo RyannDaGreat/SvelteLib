@@ -76,12 +76,235 @@ export function plaintextIsEmpty(value) {
   return value === null || value === undefined || String(value).trim() === "";
 }
 
+/**
+ * PLAINTEXT LOOKS — whole looks for the app's "just some text" primitive: a
+ * caption, a label, a sign, a readout.
+ *
+ * ONE FLAT FAMILY, not the two-family split plugins/text.js gets, and the reason is
+ * measured rather than stylistic: that widget has NINE type-system knobs (it adds
+ * lineSpacing / charSpacing / wordSpacing) and can carry a type-role family on its
+ * own. This one has five, because emit() below passes a boxStyle of {align, valign}
+ * ONLY — there is no tracking and no leading here at all. A role family over five
+ * knobs would produce rows differing in nothing but face and size. Every caps idiom
+ * that is DEFINED by its tracking therefore lives on the rich text widget instead.
+ *
+ * ORDERED BY KIND, then by descending size within a kind: display signs, labels,
+ * screen readouts, annotation. Kind leads because these are alternative WHOLE looks
+ * and the question a reader is asking is "what sort of thing is this text", not
+ * "how big" — the opposite of the rich widget's type-specimen ordering, on purpose.
+ *
+ * `fill` IS THE INK HERE, not a box fill — this widget has no box. It is the
+ * paint-capable registry prop, so a gradient would be legal too; every row below is
+ * a solid, because a gradient's angle and stops are a decision about one particular
+ * slide's palette rather than a reusable look.
+ *
+ * A WHOLE-LOOK FAMILY WRITES EVERY LOOK KNOB IN EVERY ROW, INCLUDING THE OFF STATES
+ * — the rule stated at plugins/demo/lens_flare.js and plugins/demo/sky.js, and it
+ * is the reason the five universal EFFECTS appear here even though only four rows
+ * use one. Application is an OVERLAY: a key a preset omits keeps whatever the
+ * PREVIOUSLY hovered row left there, so without `bloom` spelled out, hovering Neon
+ * Sign and then clicking Footnote gives you a glowing footnote. A PARTIAL nested
+ * object MERGES rather than replacing, so each nested effect is written COMPLETE
+ * (all five shadow keys, both bloom keys) — `shadow: {opacity: 0}` alone would keep
+ * the last row's blur and colour. The off states: shadow and innerShadow are off at
+ * opacity 0 (their declared render gate, core/properties.js), bloom at strength 0.
+ *
+ * NO PRESET WRITES `text`. It is the user's own words, and it may hold an `=`
+ * equation — overwriting one with a literal is exactly what beginTextEdit already
+ * refuses to do (see `activate` below), so a preset must not do it either.
+ *
+ * THE FEATHER IS USABLE HERE AND IS ALL BUT UNUSABLE ON THE RICH TEXT WIDGET, for a
+ * structural reason worth knowing: `softEdges` ERODES the glyph silhouette before
+ * blurring it (render_gpu/skia/paint_skia.js featherEdges), so a value that reads as
+ * chalk at 44 units erases 22-unit type. This is one FLAT family, so the same row
+ * sets both `size` and `softEdges` and can keep the feather under the stem width.
+ * The rich widget's two families are orthogonal, so its ink half cannot know the
+ * size — one measured fact, two different answers.
+ *
+ * "Broadcast Caption" deliberately shares its name with the rich text widget's type
+ * role of the same name: same idiom, two widgets, one name (the sibling-naming
+ * convention — a preset applies to ONE item, so a look that spans widgets is paired
+ * by NAME rather than by a cross-item mechanism).
+ */
+const PLAINTEXT_LOOKS = [
+  // ── display signs ──────────────────────────────────────────────────────────
+  {
+    name: "Watermark",
+    description: "The giant ghosted word behind the content — flat black at seven percent in a light geometric sans, centred and filling its box.",
+    props: {
+      font: "jost", size: 200, bold: false, align: "center", valign: "middle",
+      fill: "#000000", opacity: 0.07, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Poster Headline",
+    description: "Screen-printed poster type: heavy condensed caps with a hard, unblurred amber shadow thrown down and to the right, so the letters read as cut paper. Type in caps.",
+    props: {
+      font: "oswald", size: 120, bold: true, align: "center", valign: "top",
+      fill: "#111111", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 5, dy: 6, blur: 0, color: "#f2c14e", opacity: 1 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Slide Title",
+    description: "The plain opening line of a deck — a geometric sans at display size, bold, centred in its box, in a near-black that is softer than pure ink.",
+    props: {
+      font: "montserrat", size: 96, bold: true, align: "center", valign: "middle",
+      fill: "#12161c", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Neon Sign",
+    description: "Cold-cathode cyan: a mono-line geometric face, which is what a bent glass tube actually looks like, under a wide bloom plus the teal it throws on the wall behind it. For a dark slide.",
+    props: {
+      font: "jost", size: 88, bold: false, align: "center", valign: "middle",
+      fill: "#2bf3ff", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 12, color: "#0a4a55", opacity: 0.6 },
+      bloom: { radius: 28, strength: 1.2 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Gold Plate",
+    description: "Engraved gold on a dark ground — a high-contrast display serif in old gold, seated by a short brown shadow and lifted by just enough bloom to catch the light.",
+    props: {
+      font: "playfair-display", size: 64, bold: false, align: "center", valign: "middle",
+      fill: "#c9a227", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 1, dy: 1.5, blur: 1.5, color: "#3a2c05", opacity: 0.6 },
+      bloom: { radius: 8, strength: 0.3 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  // ── labels ─────────────────────────────────────────────────────────────────
+  {
+    name: "Broadcast Caption",
+    description: "The subtitle setting to broadcast spec: a plain sans at seven percent of frame height, white with a tight solid shade all round so it survives any footage behind it.",
+    props: {
+      font: "system", size: 72, bold: false, align: "center", valign: "bottom",
+      fill: "#ffffff", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 4, color: "#000000", opacity: 1 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Price Tag",
+    description: "The number on the shelf edge — heavy condensed type ranged hard right in a retail red, so the figure sits at the edge of its ticket.",
+    props: {
+      font: "oswald", size: 72, bold: true, align: "right", valign: "middle",
+      fill: "#c0392b", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Rubber Stamp",
+    description: "Inked and pressed: condensed bold in a dull brick red at slightly less than full opacity, because a stamp never lays ink down evenly. Type in caps.",
+    props: {
+      font: "oswald", size: 56, bold: true, align: "center", valign: "middle",
+      fill: "#b5322b", opacity: 0.85, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Lower Third Name",
+    description: "The name strap: bold sans ranged left at the bottom of its box, white with a soft dark halo so it holds against whatever is behind the lower third.",
+    props: {
+      font: "inter", size: 50, bold: true, align: "left", valign: "bottom",
+      fill: "#ffffff", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 6, color: "#000000", opacity: 0.85 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Deck Caption",
+    description: "The small grey line under a figure — plain sans, no effects, in the muted ink a caption uses so it never competes with the thing it describes.",
+    props: {
+      font: "inter", size: 22, bold: false, align: "left", valign: "top",
+      fill: "#5c6370", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Footnote",
+    description: "The credit or source line at the very bottom of the slide: a text serif at the smallest readable size, in a soft grey, parked against the bottom of its box.",
+    props: {
+      font: "source-serif", size: 18, bold: false, align: "left", valign: "bottom",
+      fill: "#6b7280", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  // ── screen readouts ────────────────────────────────────────────────────────
+  {
+    name: "Green Terminal",
+    description: "The green screen, at exactly the size that gives eighty monospace columns across a full-width slide — the 525-nanometre phosphor with the glow a lit stroke has. For a dark slide.",
+    props: {
+      font: "jetbrains-mono", size: 36, bold: false, align: "left", valign: "top",
+      fill: "#33ff33", opacity: 1, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 14, strength: 0.7 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Amber Terminal",
+    description: "The amber monitor, smaller and softer than the green one: the 602-nanometre phosphor, and a slight feather on the strokes for the longer persistence that tube has.",
+    props: {
+      font: "jetbrains-mono", size: 26, bold: false, align: "left", valign: "top",
+      fill: "#ffb000", opacity: 1, blendMode: "normal", softEdges: 0.3,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0.45 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  {
+    name: "Blueprint Annotation",
+    description: "A dimension note on a cyanotype: small monospace in a cold near-white at slightly under full opacity, ranged left, with nothing added. For a dark or cyanotype ground.",
+    props: {
+      font: "jetbrains-mono", size: 24, bold: false, align: "left", valign: "top",
+      fill: "#e8f1ff", opacity: 0.95, blendMode: "normal", softEdges: 0,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 10, strength: 0 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+  // ── annotation ─────────────────────────────────────────────────────────────
+  {
+    name: "Chalk Note",
+    description: "Written on a board — a warm off-white that never reaches paper-white, a little dust around each stroke, and the stroke edges feathered because chalk has no clean edge.",
+    props: {
+      font: "lora", size: 44, bold: false, align: "left", valign: "top",
+      fill: "#f2ede4", opacity: 0.92, blendMode: "normal", softEdges: 0.8,
+      shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      bloom: { radius: 6, strength: 0.25 },
+      innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+    },
+  },
+];
+
 export const plaintextPlugin = {
   type: "plaintext",
   title: "Plain Text",
   // resizable:true → the standard 8 resize handles (same machinery as rect/text);
   // w constrains word-wrap, h gives the vertical-align stack its room.
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+  presets: PLAINTEXT_LOOKS,
   // ── INLINE WYSIWYG EDITING (opt-in; REUSES the rich text widget's editor) ─────
   // Double-clicking a plaintext box on the canvas enters the SAME Skia-owned
   // in-place editor the rich text widget uses (web/TextEditController), but in
