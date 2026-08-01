@@ -1271,9 +1271,17 @@
      snippet makes the divider a property of the group, so it appears and
      disappears with the group rather than being maintained alongside it.
 
-     The Variables Panel mounts its own from web/VariablesPanel.svelte against
-     the SAME app.labelFrac, which is what keeps the two panels' columns in
-     x-sync. -->
+     These are the PROPERTY family (web/labelFrac.js LABEL_DIVIDER_PROPERTY),
+     which is the component's default, so the snippet passes no key.
+
+     The Variables Panel mounts its own from web/VariablesPanel.svelte on that
+     SAME family, deliberately: the round-11 "columns line up" ruling is that the
+     two PANELS share one boundary x, and dragging either must move both. It is
+     NOT the "variable properties" family despite the name — that one is the rows
+     NESTED inside a composite editor (PaintField's gradient geometry and material
+     knobs), which read their own number so a nested strip does not stack on top
+     of these. Do not "fix" the apparent inconsistency; splitting the two panels
+     would regress a shipped ruling. -->
 {#snippet labelDivider()}
   <LabelDivider {app} />
 {/snippet}

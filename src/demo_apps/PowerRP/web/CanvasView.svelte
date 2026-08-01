@@ -661,8 +661,10 @@
     // (one `videoV5Frame` op per cell — plugins/filmstrip.js), so each cell's decode
     // notifies through onVideoV5Frame and the strip fills in cell by cell. Omitting it
     // would leave a freshly sourced strip showing its first-decoded frame in every cell
-    // until an unrelated repaint happened.
-    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub", "video_v5", "video_v5_scrub", "filmstrip");
+    // until an unrelated repaint happened. "image_stack" is the SECOND widget built on
+    // that op (plugins/image_stack.js — one videoV5Frame per stacked card), so it needs
+    // the wake for the same reason and by the same mechanism.
+    currentMediaRefs = videoSourcesOf(nodes, "video", "video_scrub", "video_v5", "video_v5_scrub", "filmstrip", "image_stack");
     // VIDEO V6 OVERLAY FEED (additive): the post-cull visible video_v6 nodes + the
     // view + scene device size for VideoV6Overlay (its own WebGPU/WebGL2 canvas
     // above the scene). It gates + draws its own <video> elements; Skia draws only
