@@ -77,16 +77,27 @@
     projectsSeen.add(DRAFT_KEY);
 
     // ── ASSETS — per file, grouped by keyspace ──────────────────────────────
+    // NEITHER LIST BELOW IS CAUGHT, and the absent-keyspace worry that used to
+    // justify catching into [] was never real: both are PREFIX getAlls
+    // (assetStore.localAssetStore.list -> getAllByPrefix, localRenderStore.
+    // listRenderJobs -> getAll(IDBKeyRange.bound)), and a prefix getAll over a
+    // range with no records RESOLVES `[]`. It never rejects. So a catch here
+    // could only ever swallow a genuine fault — a broken database, a revoked
+    // origin, a server that stopped answering — and turn it into a SMALLER
+    // grand total, silently, on the one page whose entire job is to state that
+    // total truthfully. `reload()` below already has the loud handler; every
+    // other source on this page (the DOC_STORE read, gatherCacheRows,
+    // gatherOtherDatabaseRows, storageBudget) already reports through it.
     const assetRows = [];
     for (const projectName of projectsSeen) {
-      const assets = await assetStoreFor(projectName).list(projectName).catch(() => []); // an unlisted/absent keyspace is a real empty answer
+      const assets = await assetStoreFor(projectName).list(projectName);
       for (const a of assets) assetRows.push({ project: projectName, name: a.name, bytes: a.size ?? 0, kind: a.kind });
     }
     rowsByGroup.assets = assetsByKeyspace(assetRows);
 
     // ── RENDERINGS — always browser-local, in EITHER storage mode ───────────
     for (const projectKey of projectsSeen) {
-      const jobs = await listRenderJobs(projectKey).catch(() => []); // an absent renderings DB is a real empty answer, not a page-breaking error
+      const jobs = await listRenderJobs(projectKey);
       for (const job of jobs) rowsByGroup.renderings.push({ project: projectKey, name: `${rowLabel(projectKey)} / ${job.name}`, jobId: job.id, bytes: job.bytes ?? 0, state: job.state });
     }
 
@@ -105,7 +116,15 @@
 
   let { app } = $props();
 
+  // A preview is a PEEK, not a second copy of a multi-MB asset held in
+  // component state. Module-top per core/endpoints.js:23's precedent.
+  const PREVIEW_TEXT_BYTES = 4096;
+
   let loading = $state(true);
+  /** The one visible error line, for BOTH a failed gather and a failed row
+   *  action — AssetExplorer.svelte keeps a single `error` the same way. It
+   *  renders ABOVE the inventory rather than instead of it, so a download that
+   *  failed says so without throwing away the list the user is reading. */
   let error = $state(null);
   let report = $state(null);
   let estimate = $state(null);
@@ -116,6 +135,8 @@
   /** Row key ("project/file") -> {kind, url|text}. Populated lazily on preview click. */
   let previews = $state({});
 
+  /** Command (mutates this component's state; reads every storage seam).
+   *  Re-gather the whole inventory and rebuild the report. */
   async function reload() {
     loading = true;
     error = null;
@@ -138,6 +159,8 @@
   }
   reload();
 
+  /** Command (mutates `expandedCaches`). Fold or unfold one cache's per-entry
+   *  detail. A NEW Set each time, because Svelte 5 tracks the reference. */
   function toggleCache(name) {
     const next = new Set(expandedCaches);
     if (next.has(name)) next.delete(name);
@@ -145,15 +168,29 @@
     expandedCaches = next;
   }
 
+  /**
+   * Pure function. The `previews` map key for one file. Joined on NUL, the one
+   * byte a project name cannot contain (draftKeys.validProjectName rejects it,
+   * mirroring server.py's _SAFE_NAME), so no two files can collide on it.
+   *
+   * @param {string} project - keyspace / project name
+   * @param {string} name - the file's basename
+   * @returns {string}
+   *
+   * @example rowKey("RobotSim", "arm.png") // "RobotSim\0arm.png"
+   */
   function rowKey(project, name) {
     return `${project}\0${name}`;
   }
 
-  /** Command (downloads a file; mutates nothing in the app). Save one asset's
-   *  bytes to disk — the exact objectURL + a[download] + revoke pattern
+  /** Command (downloads a file; mutates `error`). Save one asset's bytes to
+   *  disk — the exact objectURL + a[download] + revoke pattern
    *  web/AssetExplorer.svelte's downloadAsset uses, so a debug download and a
-   *  library download behave identically. */
+   *  library download behave identically, INCLUDING the failure: the sentence
+   *  lands on the pane's own error line as well as the console, because a
+   *  download that did not happen must never look like one that did. */
   async function downloadAsset(project, name) {
+    error = null;
     try {
       const blob = await assetStoreFor(project).get(project, name);
       const href = URL.createObjectURL(blob);
@@ -165,14 +202,17 @@
       link.remove();
       URL.revokeObjectURL(href);
     } catch (e) {
+      error = `Couldn't download "${rowLabel(project)} / ${name}" — ${e?.message ?? e}`;
       console.error(`DebugStoragePage: could not download "${project}/${name}":`, e);
     }
   }
 
-  /** Command (downloads a file). The renderings twin of downloadAsset — reads
-   *  through localRenderStore.renderingBlob, the same seam the Render Center
-   *  modal's own download button uses. */
+  /** Command (downloads a file; mutates `error`). The renderings twin of
+   *  downloadAsset — reads through localRenderStore.renderingBlob, the same
+   *  seam the Render Center modal's own download button uses, and reports a
+   *  failure the same visible way. */
   async function downloadRendering(project, jobId, name) {
+    error = null;
     try {
       const blob = await renderingBlob(project, jobId);
       const href = URL.createObjectURL(blob);
@@ -184,6 +224,7 @@
       link.remove();
       URL.revokeObjectURL(href);
     } catch (e) {
+      error = `Couldn't download the rendering "${name}" — ${e?.message ?? e}`;
       console.error(`DebugStoragePage: could not download rendering "${project}/${jobId}":`, e);
     }
   }
@@ -207,7 +248,6 @@
       if (kind === "image" || kind === "video") {
         previews = { ...previews, [key]: { kind, url: URL.createObjectURL(blob) } };
       } else {
-        const PREVIEW_TEXT_BYTES = 4096; // a peek, not a second copy of the file
         const text = await blob.slice(0, PREVIEW_TEXT_BYTES).text();
         previews = { ...previews, [key]: { kind: "text", text: text + (blob.size > PREVIEW_TEXT_BYTES ? "\n…" : "") } };
       }
@@ -220,13 +260,17 @@
 </script>
 
 <div class="debug-storage">
-  {#if loading}
-    <div class="debug-storage-status">Gathering storage inventory…</div>
-  {:else if error}
+  <!-- The error line is NOT in the loading/report chain: a gather failure still
+       leaves it alone on the page (report is null), while a row action that
+       failed reports ABOVE the inventory instead of erasing it. -->
+  {#if error}
     <div class="debug-storage-status debug-storage-error">
       <iconify-icon icon="mdi:alert-circle-outline" width="16" height="16"></iconify-icon>
       {error}
     </div>
+  {/if}
+  {#if loading}
+    <div class="debug-storage-status">Gathering storage inventory…</div>
   {:else if report}
     <div class="debug-storage-header">
       <div class="debug-storage-grandtotal">
