@@ -187,6 +187,26 @@ export function pendingTextAssets() {
 }
 
 /**
+ * Query. Every one of the CSV/JSON data assets whose fetch PERMANENTLY FAILED — the counterpart of pendingTextAssets.
+ *
+ * NOT A PARTITION WITH IT, deliberately: "pending" means wait longer, so a
+ * permanently failed entry is excluded there and, until this existed, belonged to
+ * NEITHER set. A one-shot render read "nothing pending" as "the frame is whole"
+ * and wrote a hole at exit 0 — the R6-12.1 mechanism, which was fixed for video
+ * only. Added alongside failedImageRefs so all four registries answer the same
+ * two questions.
+ *
+ * @returns {string[]} entries whose status is "error"
+ *
+ * @example failedTextAssets() // [] on a clean registry
+ */
+export function failedTextAssets() {
+  const urls = [];
+  for (const [url, entry] of texts) if (entry.status === "error") urls.push(url);
+  return urls;
+}
+
+/**
  * Command. Subscribes to load-resolution events (a url became ready or errored);
  * returns an unsubscribe function. The editor's paint loop is reactive, so text
  * that arrives after the frame that requested it needs this to trigger a repaint.

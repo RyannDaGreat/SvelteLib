@@ -317,6 +317,39 @@ export function pendingImageRefs() {
 }
 
 /**
+ * Query. Every image ref whose decode PERMANENTLY FAILED — the counterpart of
+ * pendingImageRefs, and the half that was missing.
+ *
+ * THESE TWO ARE NOT A PARTITION, which is the entire point. "Pending" means WAIT
+ * LONGER, so an errored ref is deliberately excluded from it — and with no query
+ * on this side, an errored ref belonged to NEITHER set. A one-shot render used
+ * "nothing pending" as "the frame is whole", `paint_skia`'s `if (!img) break;`
+ * skipped the quad, and the worker wrote a frame with a hole in it and EXITED 0.
+ *
+ * R6-12.1 DIAGNOSED EXACTLY THIS AND FIXED IT FOR VIDEO ALONE
+ * (`video_registry.failedVideoSrcs`, consumed by renderJobPage's `failedRasters`).
+ * The same gap stayed open in the registry that backs PDF PAGES, LaTeX, Mermaid,
+ * plain images and scene3d rasters — which is the likeliest reason a PDF goes
+ * missing from an mp4 while looking right in the editor: the editor gets a later
+ * repaint through onImageLoad, and a one-shot render has no later. Generalising
+ * the fix rather than repeating it a fourth time is the whole of this change.
+ *
+ * `registerMissing` does NOT cover this: it records the failure for reporting, and
+ * `render_gpu/skia/paint_skia.js` never consults it, so nothing is drawn in the
+ * hole's place.
+ *
+ * @returns {string[]} refs whose status is "error"
+ *
+ * @example failedImageRefs() // [] on a clean registry
+ * @example // failedImageRefs() // ["pdfpage:…"] once that page's raster has failed
+ */
+export function failedImageRefs() {
+  const refs = [];
+  for (const [ref, entry] of registry) if (entry.status === "error") refs.push(ref);
+  return refs;
+}
+
+/**
  * Command. Subscribes to decode-resolution events (a src became ready or
  * errored). The editor's paint loop is reactive, so a bitmap that arrives
  * after the frame that requested it needs this to trigger a repaint. Returns

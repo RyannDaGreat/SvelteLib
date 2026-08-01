@@ -58,10 +58,10 @@ import { loadFonts } from "./fontLoader.js";
 import { timelinePlan, frameCount, createFrameSampler, DEFAULT_HOLD_SECONDS } from "./videoExport.js";
 import { createLetterboxFrameRenderer } from "./transitionRender.js";
 import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
-import { pendingImageRefs, onImageLoad } from "../render_gpu/gpu/image_registry.js";
+import { pendingImageRefs, failedImageRefs, onImageLoad } from "../render_gpu/gpu/image_registry.js";
 import { pendingVideoSrcs, failedVideoSrcs, onVideoFrame, resetVideoRegistry } from "../render_gpu/gpu/video_registry.js";
-import { pendingSvgSources, onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
-import { pendingTextAssets, onTextAssetLoad } from "../render_gpu/gpu/text_asset_registry.js"; // CSV/JSON data assets a plugin-asset widget charts (core/plugin_assets.js assetText)
+import { pendingSvgSources, failedSvgSources, onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
+import { pendingTextAssets, failedTextAssets, onTextAssetLoad } from "../render_gpu/gpu/text_asset_registry.js"; // CSV/JSON data assets a plugin-asset widget charts (core/plugin_assets.js assetText)
 import { gpuAccelerated } from "./gpuService.js";
 import { truncate } from "../core/report.js"; // THE shared log elision (a tenth private copy lived here, with drifted constants)
 
@@ -145,7 +145,17 @@ function pendingRasters() {
  * failedRasters() // []
  */
 function failedRasters() {
-  return [...failedVideoSrcs()];
+  // ALL FOUR REGISTRIES, not just video. This returned failedVideoSrcs() alone,
+  // which meant R6-12.1's fix — "nothing pending has never meant the frame is
+  // whole" — held only for the registry it was found in. The image registry backs
+  // PDF PAGES, LaTeX, Mermaid, plain images and scene3d rasters, and an errored ref
+  // there was in neither set: not pending (pendingImageRefs selects "loading"
+  // only), not failed (no query existed). So the frame was declared whole,
+  // paint_skia's `if (!img) break;` skipped the quad, and the job exited 0 having
+  // written a hole — which is the likeliest reason a PDF is missing from an mp4
+  // while looking correct in the editor, where onImageLoad supplies the later
+  // repaint that a one-shot render does not have.
+  return [...failedVideoSrcs(), ...failedImageRefs(), ...failedSvgSources(), ...failedTextAssets()];
 }
 
 /**
