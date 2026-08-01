@@ -66,8 +66,10 @@ const allRows = (plugin) => (plugin.toolGroups ?? []).flatMap((g) => g.rows);
  * from TOOL_POOL, never transcribed, so the order/merge assertions below survive
  * the next generic tool being added to the pool instead of pinning today's list.
  *
- * @example poolIdsFor({defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}) // ["positioning", "keyframes"]
- * @example poolIdsFor({defaults: {blur: 4}, capabilities: {}}) // ["keyframes"] (no frame → no Positioning)
+ * @example poolIdsFor({defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}})
+ * // ["positioning", "arrange", "grouping", "edit", "keyframes"]
+ * @example poolIdsFor({defaults: {blur: 4}, capabilities: {}})
+ * // ["grouping", "edit", "keyframes"]   (no frame → no camera-bind rows, no layout rows)
  */
 const poolIdsFor = (plugin) =>
   TOOL_POOL.filter((g) => g.rows.some((r) => r.applies(plugin))).map((g) => g.id);
@@ -113,18 +115,30 @@ test("a widget with no presets gets NO preset group; one with presets gets one p
   }
 });
 
-test("a widget with no FRAME gets no Positioning group (the camera-bind tools' gate)", () => {
+test("a widget with no FRAME gets no camera-bind ROWS (the tools' gate)", () => {
+  // THE CLAIM IS ABOUT THE ROWS, NOT THE SECTION, and it used to be written the
+  // other way round — "a frameless widget shows no Positioning group" — which was
+  // true only while the group's every row needed a frame. It stopped being true
+  // the moment the nudges joined it (an arrow has no x/y/w/h and moves via
+  // `moveBy`, so it is nudgeable and correctly keeps the section). A proxy
+  // assertion that happens to hold is a gate that fails for the wrong reason
+  // later; this asks the real question.
   const frameless = registered.filter((p) => !hasFrame(p));
   assert.ok(frameless.length > 0, "no frameless plugin in the roster — this assertion would be vacuous");
-  for (const p of frameless)
-    assert.ok(!p.toolGroups.some((g) => g.id === "positioning"),
-      `${p.type}: has no x/y/w/h yet shows a Positioning group`);
-  // And the converse: a widget WITH a frame (that is not THE camera) does get it.
+  const CAMERA_ROWS = ["bind-to-camera", "unbind-from-camera"];
+  for (const p of frameless) {
+    const cmds = allRows(p).filter((r) => r.kind === "command").map((r) => r.command);
+    for (const id of CAMERA_ROWS)
+      assert.ok(!cmds.includes(id), `${p.type}: has no x/y/w/h yet is offered "${id}"`);
+  }
+  // And the converse: a widget WITH a frame (that is not THE camera) does get them.
   const bindable = registered.filter(frameBindable);
   assert.ok(bindable.length > 0, "no frame-bindable plugin in the roster");
-  for (const p of bindable)
-    assert.ok(p.toolGroups.some((g) => g.id === "positioning"),
-      `${p.type}: has a bindable frame but no Positioning group`);
+  for (const p of bindable) {
+    const cmds = allRows(p).filter((r) => r.kind === "command").map((r) => r.command);
+    for (const id of CAMERA_ROWS)
+      assert.ok(cmds.includes(id), `${p.type}: has a bindable frame but is not offered "${id}"`);
+  }
 });
 
 test("THE CAMERA is not frame-bindable (binding it to its own frame is a cycle)", () => {
@@ -132,35 +146,49 @@ test("THE CAMERA is not frame-bindable (binding it to its own frame is a cycle)"
   assert.ok(camera, "no purgeable:false plugin — THE camera is mandatory");
   assert.ok(hasFrame(camera), "the camera does have x/y/w/h");
   assert.equal(frameBindable(camera), false);
-  assert.ok(!camera.toolGroups.some((g) => g.id === "positioning"), "the camera must not offer Bind to Camera");
+  const cmds = allRows(camera).filter((r) => r.kind === "command").map((r) => r.command);
+  assert.ok(!cmds.includes("bind-to-camera"), "the camera must not offer Bind to Camera");
+  // The camera is also the ONE widget that may not be removed or duplicated, so
+  // the Edit group's purgeable-gated rows must not reach it either.
+  for (const id of ["duplicate", "delete-item", "purge-item", "group"])
+    assert.ok(!cmds.includes(id), `the camera must not offer "${id}" — purgeable:false is what that means`);
 });
 
 // ── (3) every disable-able row can explain itself ────────────────────────────
-test("every command row anywhere declares a non-empty help AND requires", () => {
+test("a pool row carries only WHICH command and WHICH widgets — never a copy of its words", () => {
+  // THE WORDS MOVED, AND THAT IS THE POINT. `title`, `icon`, `help` and the
+  // "Unavailable — requires …" clause are the command ENTRY's, and every
+  // surfacing reads them from there. A row that also carried them would be a
+  // second copy free to disagree — which is exactly how this pool became a
+  // partial mirror of the command list in the first place.
+  //
+  // The mandate that a GATED command actually have a `requires` did not
+  // disappear, it moved to tests/tool_surfacing_probe.js, which asks the live
+  // registry rather than a transcription of it. This half asserts the transcription
+  // is gone; that half asserts the original is present.
   for (const p of registered)
     for (const g of p.toolGroups)
       for (const row of g.rows) {
         if (row.kind !== "command") continue;
-        for (const field of ["help", "requires"]) {
-          assert.equal(typeof row[field], "string", `${p.type}/${g.id}/${row.command}: ${field} is not a string`);
-          assert.ok(row[field].length > 0, `${p.type}/${g.id}/${row.command}: empty ${field} — a disabled tool that will not say why is the defect this suite exists for`);
-        }
+        for (const field of ["help", "requires", "title", "icon"])
+          assert.equal(row[field], undefined,
+            `${p.type}/${g.id}/${row.command}: carries its own "${field}" — that string belongs to the command entry, and a copy here is a copy that can drift`);
       }
 });
 
-test("the pool's import gate rejects a tool with no requires / no applies", () => {
+test("the pool's import gate rejects a row with no command id / no applies", () => {
   // The gate itself runs at import of core/registry.js over TOOL_POOL, so it
   // cannot be re-invoked here; assert the SHAPE it guarantees instead, then prove
   // the same contract is enforced for a PLUGIN-declared group (the other path in).
   for (const g of TOOL_POOL)
     for (const row of g.rows) {
       assert.equal(typeof row.applies, "function", `pool ${g.id}/${row.command}: applies must be a predicate`);
-      assert.ok(row.requires && row.help, `pool ${g.id}/${row.command}: help + requires are mandatory`);
+      assert.ok(row.command, `pool ${g.id}: a row with no command id`);
     }
   const base = { type: "synthetic", defaults: { x: 0, y: 0, w: 1, h: 1 }, capabilities: {} };
   assert.throws(
-    () => toolGroupsOf({ ...base, toolGroups: [{ id: "own", title: "Own", rows: [{ kind: "command", command: "c", help: "h" }] }] }),
-    /missing the mandatory "requires"/,
+    () => toolGroupsOf({ ...base, toolGroups: [{ id: "own", title: "Own", rows: [{ kind: "command" }] }] }),
+    /has a row with no command id/,
   );
   assert.throws(
     () => toolGroupsOf({ ...base, toolGroups: [{ id: "own", title: "Own", rows: [{ kind: "preset", preset: {} }] }] }),
@@ -342,16 +370,44 @@ test("every TOOL_POOL command id is a REGISTERED command (the pool cannot name a
   // list, which is the drift shape ledger C-8 is about. This is the cheap half —
   // the fix is not deferrable, but neither is the gate.
   //
-  // COMMENTS ARE STRIPPED FIRST (ledger C-14): `bind-to-camera` appears in this
-  // codebase's prose as often as in its code, and a comment-blind grep would pass
-  // on a command that exists only in a sentence explaining it.
-  const src = readFileSync(resolve(here, "../web/App.svelte"), "utf8")
+  // TWO SOURCES, because a command has two homes and the pool may name either.
+  // A PLUGIN's entries are read from the plugin OBJECTS — they are right here in
+  // `allPlugins`, so grepping for them would be reading a transcription when the
+  // original is in hand. `add-self-loop` is the live case: elbow_arrow declares
+  // it, the pool surfaces it, and web/App.svelte has never heard of it.
+  //
+  // The CORE entries still need the text scan (they are inside a .svelte component
+  // this file cannot import), and there COMMENTS ARE STRIPPED FIRST (ledger C-14):
+  // `bind-to-camera` appears in this codebase's prose as often as in its code, and
+  // a comment-blind grep would pass on a command that exists only in a sentence
+  // explaining it.
+  const coreSrc = readFileSync(resolve(here, "../web/App.svelte"), "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .split("\n").filter((l) => !/^[ \t]*\/\//.test(l)).join("\n");
+  const pluginIds = new Set(allPlugins.flatMap((p) => (p.commands ?? []).map((c) => c.id)));
   for (const group of TOOL_POOL)
     for (const row of group.rows)
-      assert.ok(src.includes(`id: "${row.command}"`),
-        `TOOL_POOL group "${group.id}" surfaces command "${row.command}", but web/App.svelte registers no entry with that id — the Tools pane would draw a titleless dead button`);
+      assert.ok(pluginIds.has(row.command) || coreSrc.includes(`id: "${row.command}"`),
+        `TOOL_POOL group "${group.id}" surfaces command "${row.command}", but neither web/App.svelte nor any plugin registers an entry with that id — the Tools pane would draw a titleless dead button`);
+});
+
+test("a plugin's OWN tool rows name commands that plugin (or the core) registers", () => {
+  // The same ghost check for the OTHER declaration path. A plugin group is
+  // resolved from the plugin object, so its rows are checked against the objects
+  // too — no text scan, no comment stripping, no drift.
+  const coreSrc = readFileSync(resolve(here, "../web/App.svelte"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").filter((l) => !/^[ \t]*\/\//.test(l)).join("\n");
+  const pluginIds = new Set(allPlugins.flatMap((p) => (p.commands ?? []).map((c) => c.id)));
+  let checked = 0;
+  for (const p of allPlugins)
+    for (const g of p.toolGroups ?? [])
+      for (const row of g.rows) {
+        checked++;
+        assert.ok(pluginIds.has(row.command) || coreSrc.includes(`id: "${row.command}"`),
+          `${p.type} tool group "${g.id}" surfaces command "${row.command}", which nothing registers`);
+      }
+  assert.ok(checked > 0, "no plugin declares its own tool rows — this assertion is vacuous, so delete it or find out why");
 });
 
 console.log(`\n${passed} tests passed`);

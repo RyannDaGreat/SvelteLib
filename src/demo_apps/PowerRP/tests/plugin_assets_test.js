@@ -479,7 +479,11 @@ test("proof shapes: both register into a full built-in registry and inherit the 
     assert.equal(plugin.effectsInjected, true, `${type} must inherit the universal effects bundle`);
     assert.equal(typeof plugin.defaults.softEdges, "number");
     assert.equal(typeof plugin.cullMargin, "function");
-    assert.deepEqual(plugin.toolGroups.map((g) => g.id), ["positioning", "keyframes"]);
+    // The claim is PARITY WITH A BUILT-IN, derived from one — not a transcription
+    // of today's pool, which would have to be re-typed every time a generic tool
+    // is added and says nothing about asset plugins when it is.
+    assert.deepEqual(plugin.toolGroups.map((g) => g.id), registry.get("rect").toolGroups.map((g) => g.id),
+      `${type}: an asset plugin must inherit exactly the tool groups a native bbox widget does`);
     assert.equal(plugin.anchors(plugin.defaults).length, 9, "the nine standard anchors");
   }
   // The TEMPLATE composes the effects bundle itself (it declares the rows and

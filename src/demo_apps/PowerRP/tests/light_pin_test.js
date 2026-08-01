@@ -123,10 +123,19 @@ test("the tool REACHES the Tools pane, on the two lit widgets and nowhere else",
   // preset groups it has since gained.
   const commandsIn = (type) =>
     (registry.get(type).toolGroups.find((g) => g.id === "positioning")?.rows ?? []).map((r) => r.command);
-  for (const type of ["demo_lens_flare", "demo_god_rays"])
-    assert.deepEqual(commandsIn(type), ["bind-to-camera", "unbind-from-camera", "pin-light-to-object"], type);
-  assert.deepEqual(commandsIn("rect"), ["bind-to-camera", "unbind-from-camera"],
+  for (const type of ["demo_lens_flare", "demo_god_rays"]) {
+    // MEMBERSHIP, not the whole array. This used to pin the section's exact
+    // contents, which made it fail the next time ANY tool joined Positioning —
+    // a gate that reports an unrelated addition as a light-pin regression costs
+    // more than it protects. Both halves of the real claim are still here: the
+    // pin is offered on a lit widget, and it is withheld from one with no light.
+    assert.ok(commandsIn(type).includes("pin-light-to-object"), `${type}: not offered the light pin`);
+    assert.ok(commandsIn(type).includes("bind-to-camera"),
+      `${type}: no camera-bind row — the section would be vacuous and this test would pass for the wrong reason`);
+  }
+  assert.ok(!commandsIn("rect").includes("pin-light-to-object"),
     "a rect has no light position, so the pool's applies() must withhold the tool entirely");
+  assert.ok(commandsIn("rect").includes("bind-to-camera"), "a rect DOES have a Positioning section to withhold it from");
 });
 
 // ── refusals ──────────────────────────────────────────────────────────────────

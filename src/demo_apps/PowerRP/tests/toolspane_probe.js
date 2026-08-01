@@ -107,9 +107,14 @@ try {
       empty: !!pane.querySelector(".empty"),
       groups: [...pane.querySelectorAll(".prop-category")].map((g) => ({
         title: g.querySelector(".cat-title")?.textContent?.trim(),
+        // aria-disabled, NOT the native attribute: a natively disabled button is
+        // not focusable, so a keyboard user could never reach the tip explaining
+        // why the row is dead (the app's standing rule, and it matters more here
+        // than anywhere — most rows are unavailable for most selections).
         tools: [...g.querySelectorAll(".cat-rows .tool-action:not(.tool-preset)")].map((b) => ({
           label: b.querySelector(".tool-action-label")?.textContent?.trim(),
-          disabled: b.disabled,
+          disabled: b.getAttribute("aria-disabled") === "true",
+          nativelyDisabled: b.disabled,
         })),
         presets: [...g.querySelectorAll(".cat-rows .tool-preset")].map((b) => b.textContent.trim()),
         // A toggle INSIDE the rows that is neither a tool nor a preset card is
@@ -147,8 +152,16 @@ try {
   // Guard against the vacuous pass: the assertion below only means anything if
   // the arrow is a LIVE selected node whose plugin was actually consulted.
   check("arrow-is-a-live-selected-node", await page.evaluate(() => !!window.__powerrp_app.selectedNode()));
-  check("frameless-widget-has-no-positioning-group", !arrow.groups.some((g) => g.title === "Positioning"),
-    arrow.groups.map((g) => g.title).join(","));
+  // THE CAMERA-BIND ROWS, not the section. An arrow has no x/y/w/h so it cannot be
+  // bound to the camera — but it CAN be nudged (it declares `moveBy`), so it keeps
+  // the Positioning section. This check used to look at the section, which was a
+  // proxy that happened to hold while every row in it needed a frame.
+  const arrowRows = arrow.groups.flatMap((g) => g.tools.map((t) => t.label));
+  check("frameless-widget-is-offered-no-camera-bind-row",
+    !arrowRows.some((l) => /to Camera|Unbind Position/.test(l)), arrowRows.join(" | "));
+  check("frameless-widget-is-still-offered-what-it-CAN-do",
+    arrowRows.some((l) => /Nudge Left/.test(l)) && arrowRows.some((l) => /Duplicate$/.test(l)),
+    arrowRows.join(" | "));
 
   const flare = await insert("demo_lens_flare");
   await select(flare);
@@ -229,7 +242,7 @@ try {
   // scrolled into view before its rect means anything to page.mouse.
   const centerOf = (sel, pick = "") => page.evaluate((s, p) => {
     const all = [...document.querySelectorAll(s)];
-    const el = p === "disabled" ? all.find((x) => x.disabled) : all[0];
+    const el = p === "disabled" ? all.find((x) => x.getAttribute("aria-disabled") === "true") : all[0];
     if (!el) return null;
     el.scrollIntoView({ block: "nearest" });
     const r = el.getBoundingClientRect();
@@ -238,6 +251,11 @@ try {
 
   const disabled = await centerOf(".toolspane .tool-action", "disabled");
   check("a-disabled-tool-is-present-to-explain", !!disabled, "no disabled tool found");
+  // The keyboard half of the same rule, swept over the whole pane: no row may use
+  // the NATIVE disabled attribute, or its explanation is unreachable by tab.
+  check("no-tool-row-uses-the-native-disabled-attribute",
+    withPresets.groups.every((g) => g.tools.every((t) => !t.nativelyDisabled)),
+    withPresets.groups.flatMap((g) => g.tools.filter((t) => t.nativelyDisabled).map((t) => t.label)).join(", "));
   if (disabled) {
     await page.mouse.move(disabled.x, disabled.y);
     await settle();

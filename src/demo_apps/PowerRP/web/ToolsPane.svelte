@@ -33,13 +33,20 @@
   PRESET row surfaces app.applyPreset the same way.
 
   A DISABLED ROW EXPLAINS ITSELF. `when` says only THAT a command cannot run, so
-  the tool declares `requires` — the sentence completing "Unavailable — requires …"
-  — and the tooltip shows it beneath the help. Mandatory on every pool tool (the
-  import gate in core/registry.js throws otherwise), so a mystery gray button is
-  not expressible. A row whose command has no gate simply never shows a reason.
-  The same sentence, the same class and the same precedence now appear on
-  web/Toolbar.svelte's buttons, so a disabled control explains itself the same way
-  wherever it is surfaced.
+  the ENTRY declares `requires` — the sentence completing "Unavailable — requires …"
+  — and the tooltip shows it beneath the help. A row whose command has no gate
+  simply never shows a reason. The same sentence, the same class and the same
+  precedence appear on web/Toolbar.svelte's buttons, so a disabled control explains
+  itself the same way wherever it is surfaced.
+
+  EVERY WORD A ROW RENDERS COMES FROM THE COMMAND ENTRY — title, icon, help,
+  requires. The pool row carries only which command and which widgets it suits, so
+  there is one copy of each sentence and nothing to keep in sync; the mandate that
+  a gated command HAVE a `requires` moved to tests/tool_surfacing_probe.js, which
+  asks the live registry. `help` is optional on an entry (core/commands.js: "absent
+  on the obvious ones"), so a row with neither help nor a live reason renders with
+  NO tooltip rather than an empty one — the palette's rule, that the help section
+  is absent rather than empty.
 
   HOVER LIVE-PREVIEWS, the house trope for pickers (the preset cards established
   it): hovering a preset row, or a command row whose entry declares
@@ -160,10 +167,9 @@
    * declared the presets, and there is a selection to apply them to.
    *
    * SEPARATE FROM THE REASON, deliberately: whether a control is disabled must not
-   * depend on whether anyone wrote prose for it. The pool's import gate makes
-   * `requires` mandatory, so the two answers agree today — but a command surfaced
-   * from elsewhere with a `when` and no sentence would otherwise render ENABLED
-   * and no-op on click. web/Toolbar.svelte splits them the same way.
+   * depend on whether anyone wrote prose for it, or a gated command with no
+   * sentence would render ENABLED and no-op on click. web/Toolbar.svelte splits
+   * them the same way.
    */
   function unavailable(row) {
     if (row.kind !== "command") return false;
@@ -171,24 +177,32 @@
   }
 
   /**
-   * Query. WHY this row cannot run right now, or null when it can (or when
-   * nothing declares a reason).
+   * Query. Everything the markup needs to know about one command row, resolved in
+   * ONE pass: its entry, whether it is disabled, and the live reason if so.
    *
-   * The reason comes from the COMMAND when the entry declares one and from the
-   * tool otherwise. Precedence that way round because `requires` explains `when`,
-   * and `when` belongs to the entry — so once web/App.svelte's entries carry their
-   * own `requires` (the handback patch), every surfacing gets it and the pool's
-   * copies can be deleted with no change here.
+   * IT EXISTS TO ASK EACH GATE EXACTLY ONCE PER RENDER. The markup used to call
+   * `unavailable(row)` for the disabled attribute and `unavailableReason(row)`
+   * for the tip, and the latter asked the gate again — three evaluations per row.
+   * That was survivable while the pane offered five tools; it is not now that it
+   * offers ~40, because a `when` is not free. Six Arrange rows share
+   * `needsMultiBbox`, which derives the whole render tree, so the old shape would
+   * have derived it eighteen times for one paint of one section. (The lesson is
+   * already written down against `shatterBlocker`: an expensive gate re-evaluated
+   * on every availability pass once pushed a probe over its budget.)
    *
-   * THE ENTRY'S HALF GOES THROUGH commandUnavailableReason, not `.requires`
-   * directly, because a `requires` MAY BE A FUNCTION of the app (a gate with
-   * several disqualifying conditions has several true sentences — see that
-   * function's note, and `save-project`). Reading the field raw would render a
-   * function's source text into the pane.
+   * THE REASON GOES THROUGH commandUnavailableReason, not `.requires` directly,
+   * because a `requires` MAY BE A FUNCTION of the app (a gate with several
+   * disqualifying conditions has several true sentences — see that function's
+   * note, and `save-project`). Reading the field raw would render a function's
+   * source text into the pane.
+   *
+   * @param {{kind: string, command: string}} row - a resolved command tool row
+   * @returns {{cmd: object, disabled: boolean, reason: string|null}}
    */
-  function unavailableReason(row) {
-    if (!unavailable(row)) return null;
-    return commandUnavailableReason(entryOf(row), app) ?? row.requires ?? null;
+  function commandRow(row) {
+    const cmd = entryOf(row);
+    const disabled = commandUnavailable(cmd, app);
+    return { cmd, disabled, reason: disabled ? commandUnavailableReason(cmd, app) : null };
   }
 
   /**
@@ -326,23 +340,29 @@
         <div class="cat-rows" onpointerleave={revertPreview}>
           {#each group.rows as row, i (row.kind === "command" ? row.command : `${row.preset.name}-${i}`)}
             {#if row.kind === "command"}
-              {@const reason = unavailableReason(row)}
+              {@const { cmd, disabled, reason } = commandRow(row)}
               <Tooltip>
                 {#snippet tip()}
-                  <div>{row.help}</div>
+                  <!-- ABSENT, NOT EMPTY: an entry's `help` is optional, so a row
+                       whose command needs none contributes no line here. -->
+                  {#if cmd.help}<div>{cmd.help}</div>{/if}
                   <!-- The WHY, beneath the what. Rendered only when the row is
                        actually disabled, so it reads as the live reason rather
                        than a standing caveat. -->
                   {#if reason}<div class="tool-tip-requires">{unavailableMessage(reason)}</div>{/if}
+                  <!-- Neither: the row's own title is all there is to say, and the
+                       button already shows it. Naming it again is the throat-
+                       clearing the app's tips were pruned of. -->
+                  {#if !cmd.help && !reason}<div>{cmd.title}</div>{/if}
                 {/snippet}
                 <button
                   class="btn tool-action"
-                  disabled={unavailable(row)}
+                  aria-disabled={disabled}
                   onpointerenter={() => previewRow(row)}
-                  onclick={() => runRow(row)}
+                  onclick={() => { if (!disabled) runRow(row); }}
                 >
-                  <iconify-icon icon={entryOf(row).icon} width="16" height="16"></iconify-icon>
-                  <span class="tool-action-label">{entryOf(row).title}</span>
+                  <iconify-icon icon={cmd.icon} width="16" height="16"></iconify-icon>
+                  <span class="tool-action-label">{cmd.title}</span>
                 </button>
               </Tooltip>
             {:else}

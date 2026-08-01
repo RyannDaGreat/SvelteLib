@@ -456,11 +456,14 @@ export function frameBindable(plugin) {
 
 /**
  * The camera-bind pair's HELP and REQUIRES sentences, beside `frameBindable` —
- * the predicate they explain — because two surfacings need the same words. The
- * pool row below renders them in the Tools pane; the command ENTRIES in
- * web/App.svelte declare them too, so the Toolbar and the command palette's help
- * section get the same sentence without transcribing it. One string, one meaning,
- * however many places show it.
+ * the predicate they explain. The command ENTRIES in web/App.svelte declare them,
+ * and EVERY surfacing (Toolbar, palette, Tools pane) reads them from the entry.
+ *
+ * THEY NOW HAVE ONE CONSUMER, which is a change from why they were hoisted here:
+ * the pool row below used to carry a second copy, and that copy is gone (see
+ * TOOL_POOL). By ledger C-1 a shared home wants two consumers, so these belong
+ * inline in App.svelte now — HANDBACK PENDING, deferred only because moving them
+ * means editing that file's import line while another agent holds it.
  */
 export const CAMERA_BIND_HELP = "Write x / y / w / h as equations reading THE camera's frame, so this widget covers the view and keeps tracking it when the camera moves, resizes or zooms.";
 export const CAMERA_BIND_REQUIRES = "a selected widget with its own position and size (x / y / w / h) — the camera itself cannot be bound to its own frame";
@@ -502,8 +505,8 @@ export function lightPinnable(plugin) {
 
 /**
  * The light-pin tool's HELP and REQUIRES sentences, beside `lightPinnable` for the
- * same reason the camera-bind pair's live beside `frameBindable`: the pool row
- * below and the command ENTRY in web/App.svelte both need the same words.
+ * same reason the camera-bind pair's live beside `frameBindable` — and with the
+ * same one-consumer handback now that the pool no longer carries a copy.
  *
  * The help says PICK, not "click the eyedropper", because the affordance is now a
  * tool in the Tools pane and naming a button that no longer exists is how the old
@@ -538,9 +541,8 @@ export function keyframable(plugin) {
 
 /**
  * The Keyframes tools' HELP and REQUIRES sentences, beside `keyframable` for the
- * same reason the camera-bind pair's live beside `frameBindable`: the pool rows
- * below and the command ENTRIES in web/App.svelte both need the same words, and a
- * sentence transcribed twice is a sentence that can drift.
+ * same reason the camera-bind pair's live beside `frameBindable` — and with the
+ * same one-consumer handback now that the pool no longer carries a copy.
  *
  * THE PAIR DIFFERS BY SCOPE, NOT BY REVERSIBILITY (user: "remove animation
  * keyframes is not supposed to remove it on every slide, it's just supposed to
@@ -563,15 +565,158 @@ export const SLIDE_KEYFRAMES_HELP = "THIS SLIDE ONLY: deletes everything this sl
 export const SLIDE_KEYFRAMES_REQUIRES = "a selected widget that THIS slide actually keyframes and that is not created on it — nothing selected here writes anything on this slide, or this is the slide that brings it into existence (clearing that would delete the widget, which is what Purge Item is for)";
 
 /**
+ * Pure function. Applies to EVERY widget — the honest predicate for a tool with
+ * no structural precondition at all, rather than a stand-in that happens to be
+ * universal today (Copy is the case: every item, the camera included, can be put
+ * on the clipboard; `clipboard.js` merges a pasted camera rather than refusing
+ * one).
+ *
+ * IT IS A NAMED CLAIM, NOT AN OMISSION. The pool's import gate requires an
+ * `applies` on every row so that a tool cannot silently claim universality by
+ * leaving the field out; `grep everyWidget` then lists exactly which tools DO
+ * claim it, which is the review question worth asking.
+ *
+ * @returns {boolean} always true
+ *
+ * @example everyWidget({type: "rect", defaults: {}}) // true
+ * @example everyWidget({type: "camera", capabilities: {purgeable: false}}) // true
+ */
+export function everyWidget() {
+  return true;
+}
+
+/**
+ * Pure function. May this widget be removed, hidden, duplicated or grouped — i.e.
+ * is it anything other than THE camera? `purgeable: false` is how the mandatory
+ * singleton is identified everywhere else in core (see effectsInjectable and
+ * frameBindable), and app.svelte.js's own duplicate/group selection filters
+ * already read exactly this key to exclude it.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example purgeableWidget({capabilities: {}}) // true
+ * @example purgeableWidget({capabilities: {purgeable: false}}) // false (THE camera)
+ */
+export function purgeableWidget(plugin) {
+  return plugin.capabilities?.purgeable !== false;
+}
+
+/**
+ * Pure function. Can this widget be MOVED by a translation the app applies for
+ * you (the arrow-key nudges)? Either it carries the standard transform, or it
+ * declares the `moveBy` protocol the endpoint widgets use because they have no
+ * x/y to offset. Measured over the registered roster: 94 of 96 — the two that
+ * are neither are the blur layer (no geometry) and tangent_lines (its position
+ * is wholly derived from the circles it touches).
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example movable({capabilities: {transform: true}}) // true
+ * @example movable({capabilities: {}, moveBy: () => ({})}) // true (an arrow: from/to, no x/y)
+ * @example movable({capabilities: {backdrop: true}}) // false (the blur layer)
+ */
+export function movable(plugin) {
+  return plugin.capabilities?.transform === true || typeof plugin.moveBy === "function";
+}
+
+/**
+ * Pure function. Does this widget sit in the z stack — i.e. does it declare the
+ * universal `z` property the reorder tools rewrite? Every registered plugin
+ * passes it today, and it is still written as a structural read rather than
+ * `everyWidget` for the reason `keyframable`'s docstring gives: the tool's real
+ * precondition is the key, so a future widget without one drops the rows instead
+ * of showing four that do nothing.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example stackable({defaults: {z: 0}}) // true
+ * @example stackable({defaults: {blur: 4}}) // false (nothing to reorder)
+ */
+export function stackable(plugin) {
+  return plugin.defaults?.z !== undefined;
+}
+
+/**
+ * Pure function. IS this widget a group — the one thing Ungroup can act on?
+ * Asked as "does it fold its member subtree", the capability groups are
+ * identified by everywhere else in the codebase (core/shatter.js reads the same
+ * field), never as `type === "group"`: the registry's rule is that tools dispatch
+ * on capabilities, never on a type string.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example ungroupable({foldsSubtree: () => true}) // true
+ * @example ungroupable({capabilities: {bbox: true}}) // false (an ordinary widget)
+ */
+export function ungroupable(plugin) {
+  return typeof plugin.foldsSubtree === "function";
+}
+
+/**
+ * Pure function. Does this widget have SOURCE TEXT a code editor can open
+ * (codeblock, LaTeX, Mermaid, the two graph widgets)? The plugin declares the
+ * editor itself, so the tool's gate is the presence of that declaration.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example codeEditable({codeEditor: {language: "latex"}}) // true
+ * @example codeEditable({capabilities: {bbox: true}}) // false
+ */
+export function codeEditable(plugin) {
+  return !!plugin.codeEditor;
+}
+
+/**
+ * Pure function. Are this widget's HANDLES the elements of a list property — the
+ * precondition for hiding, showing and purging individual points? Both halves are
+ * needed and neither alone is enough: `modifierPoints` alone is a rect's eight
+ * resize grips (nothing to hide), and a list row alone is a filmstrip's frames or
+ * a Mandelbrot's palette stops (no handle to select one with). Measured over the
+ * registered roster the intersection is exactly polygon and paint_path, which is
+ * the set those three commands were written for.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example pointListEditable({modifierPoints: () => [], inspector: [{key: "points", kind: "list"}]}) // true
+ * @example pointListEditable({modifierPoints: () => [], inspector: [{key: "w", kind: "number"}]}) // false (resize grips)
+ * @example pointListEditable({inspector: [{key: "frames", kind: "list"}]}) // false (a list with no handles)
+ */
+export function pointListEditable(plugin) {
+  return typeof plugin.modifierPoints === "function"
+    && (plugin.inspector ?? []).some((row) => row.kind === LIST_ROW_KIND);
+}
+
+/**
  * THE TOOL POOL — the generic tools, declared ONCE, composed into every widget
  * that is structurally eligible. Ordered: a resolved plugin lists its own groups
  * first, then these in this order.
  *
- * `help` is the hover tip and `requires` is the reason shown when the command's
- * `when` gate says no. Both are MANDATORY (the import gate below throws
- * otherwise): a tool nobody can explain, or a disabled tool that will not say
- * why, is the defect this round exists to remove — so it is not possible to add
- * one here. `requires` completes the sentence "Unavailable — requires …".
+ * A ROW IS TWO FACTS AND NOTHING ELSE: which command, and which widgets it makes
+ * sense on. Everything a person READS — the title, the icon, the hover help, the
+ * "Unavailable — requires …" clause — is the COMMAND ENTRY's, and every surfacing
+ * reads it from there. It used to be copied into the row as well, which is how
+ * this pool came to be a partial hand-written mirror of the command list; the
+ * mirror is what let the pane offer FIVE of the app's ~40 widget-scoped commands
+ * while the user could reach every one of them from the palette ("Why do I have to
+ * open the command palette to find these things?"). Copying 40 more help
+ * sentences in would have fixed today and guaranteed tomorrow (ledger C-8), so the
+ * copies are gone instead and the mandate moved to where it can be checked against
+ * the real registry: tests/tool_surfacing_probe.js asserts, on a live app, that
+ * every command surfaced here declares a `requires`, AND — the direction nothing
+ * checked before — that every command whose availability depends on the SELECTION
+ * is surfaced here or in a plugin's own group.
+ *
+ * `applies(plugin)` is the STRUCTURAL half and is mandatory (the import gate below
+ * throws otherwise): it is evaluated once, at registration, and decides whether the
+ * row EXISTS on this widget at all. The command's own `when(app)` is the transient
+ * half and only greys the row. A tool with genuinely no structural precondition
+ * says so out loud with `everyWidget`.
  */
 export const TOOL_POOL = [
   {
@@ -586,34 +731,125 @@ export const TOOL_POOL = [
     // drift in the meantime.
     title: "Positioning",
     rows: [
-      {
-        kind: "command",
-        command: "bind-to-camera",
-        applies: frameBindable,
-        help: CAMERA_BIND_HELP,
-        requires: CAMERA_BIND_REQUIRES,
-      },
-      {
-        kind: "command",
-        command: "unbind-from-camera",
-        applies: frameBindable,
-        help: CAMERA_FREEZE_HELP,
-        requires: CAMERA_FREEZE_REQUIRES,
-      },
-      {
-        // THE LIGHT PIN (manifest R6-4.5). Filed under Positioning with the
-        // camera-bind pair because it is the same operation on a different pair
-        // of coordinates: write one item's position keys as equations reading
-        // another item's, so the first tracks the second. `lightPinnable` is
-        // narrower than `frameBindable`, so the row simply does not appear on the
-        // 94 widgets with no light — which is what a pool `applies` is for, and
-        // is why god_rays inherits this with ZERO edits of its own.
-        kind: "command",
-        command: "pin-light-to-object",
-        applies: lightPinnable,
-        help: LIGHT_PIN_HELP,
-        requires: LIGHT_PIN_REQUIRES,
-      },
+      { kind: "command", command: "bind-to-camera", applies: frameBindable },
+      { kind: "command", command: "unbind-from-camera", applies: frameBindable },
+      // THE LIGHT PIN (manifest R6-4.5). Filed under Positioning with the
+      // camera-bind pair because it is the same operation on a different pair of
+      // coordinates: write one item's position keys as equations reading another
+      // item's, so the first tracks the second. `lightPinnable` is narrower than
+      // `frameBindable`, so the row simply does not appear on the 94 widgets with
+      // no light — which is what a pool `applies` is for, and is why god_rays
+      // inherits this with ZERO edits of its own.
+      { kind: "command", command: "pin-light-to-object", applies: lightPinnable },
+      // THE NUDGES are here rather than in Arrange because they write the same
+      // x/y the camera-bind pair does — the Inspector files those rows under
+      // Positioning, and a tool belongs beside the property it rewrites (this
+      // group's own founding argument). They are keyboard-first and stay on the
+      // arrow keys; a pointer-only user had no way to reach them at all.
+      { kind: "command", command: "nudge-left", applies: movable },
+      { kind: "command", command: "nudge-right", applies: movable },
+      { kind: "command", command: "nudge-up", applies: movable },
+      { kind: "command", command: "nudge-down", applies: movable },
+    ],
+  },
+  {
+    id: "arrange",
+    // A TOOLS-ONLY group, and its vocabulary is not invented here: this app is
+    // "PowerPoint-like" by charter, and Arrange is what PowerPoint (and Slides,
+    // and Keynote) call the menu holding order, align, distribute and flip. Every
+    // row below writes x / y / z, so the Inspector would file them all under
+    // Positioning — which is exactly why they are NOT there: seventeen layout
+    // rows would bury the three tools that section is about.
+    title: "Arrange",
+    // ORDER, then ALIGN, then DISTRIBUTE, then MIRROR/FLIP — coarsest first, and
+    // the two easily-confused pairs are adjacent on purpose: "Mirror Layout
+    // Horizontal" reflects a SET about its collective centre, "Flip Content
+    // Horizontal" reflects ONE widget about its own, and reading the two titles
+    // next to each other is the cheapest way to learn the difference.
+    rows: [
+      { kind: "command", command: "put-on-top", applies: stackable },
+      { kind: "command", command: "bring-forward", applies: stackable },
+      { kind: "command", command: "send-backward", applies: stackable },
+      { kind: "command", command: "put-on-bottom", applies: stackable },
+      { kind: "command", command: "align-left", applies: hasFrame },
+      { kind: "command", command: "align-center-h", applies: hasFrame },
+      { kind: "command", command: "align-right", applies: hasFrame },
+      { kind: "command", command: "align-top", applies: hasFrame },
+      { kind: "command", command: "align-center-v", applies: hasFrame },
+      { kind: "command", command: "align-bottom", applies: hasFrame },
+      { kind: "command", command: "distribute-h", applies: hasFrame },
+      { kind: "command", command: "distribute-v", applies: hasFrame },
+      { kind: "command", command: "arrange-grid", applies: hasFrame },
+      { kind: "command", command: "mirror-h", applies: hasFrame },
+      { kind: "command", command: "mirror-v", applies: hasFrame },
+      { kind: "command", command: "flip-h", applies: hasFrame },
+      { kind: "command", command: "flip-v", applies: hasFrame },
+    ],
+  },
+  {
+    id: "grouping",
+    // A TOOLS-ONLY group. Shatter lives here and not under Edit because what it
+    // PRODUCES is a group — "this widget becomes a group of its editable parts"
+    // is its own title — so Group / Ungroup / Shatter are the three ways a group
+    // comes into or goes out of existence, and a user who has found one has found
+    // all three.
+    title: "Grouping",
+    rows: [
+      { kind: "command", command: "group", applies: purgeableWidget },
+      { kind: "command", command: "ungroup", applies: ungroupable },
+      // SHATTER APPEARS ONLY ON WIDGETS THAT DECLARE A DECOMPOSITION — today that
+      // is Mermaid alone, and it will be however many declare `shatter` tomorrow
+      // with no edit here. This is the applicability axis doing its job: a Shatter
+      // row on a rectangle is a control that can never work, which is the defect
+      // `applies` exists to make unrepresentable.
+      { kind: "command", command: "shatter", applies: shatterEligible },
+    ],
+  },
+  {
+    id: "edit",
+    // A TOOLS-ONLY group: the operations on the ITEM ITSELF rather than on any of
+    // its properties — put it on the clipboard, make another, stop it appearing,
+    // remove it outright, open its source. The classic Edit menu, and the reason
+    // it is not split into "Clipboard" and "Visibility" is that Duplicate belongs
+    // to neither and the user asked for these by name in one breath ("if there's
+    // anything that I can do — like duplicate or delete or something").
+    title: "Edit",
+    // NON-DESTRUCTIVE FIRST, PURGE LAST — the Keyframes group's rule, for the same
+    // reason: the irreversible one must not be the first thing a hand reaches for.
+    rows: [
+      { kind: "command", command: "copy-item", applies: everyWidget },
+      { kind: "command", command: "duplicate", applies: purgeableWidget },
+      { kind: "command", command: "duplicate-in-place", applies: purgeableWidget },
+      // The two capture-to-clipboard exports need something with a BOX to capture;
+      // the blur layer has no bounds of its own, which is the same fact hasFrame
+      // reads for the camera-bind pair.
+      { kind: "command", command: "copy-as-png", applies: hasFrame },
+      { kind: "command", command: "copy-as-pdf", applies: hasFrame },
+      { kind: "command", command: "edit-code-source", applies: codeEditable },
+      // A PLUGIN's command in the pool, and it belongs here rather than in
+      // plugins/elbow_arrow.js's own toolGroups: elbow_arrow DECLARES it, but its
+      // gate reads the SELECTED box, so declaring it plugin-side would offer it
+      // only when an elbow arrow is selected — precisely when it is useless. Which
+      // module wrote a command has no bearing on which widget it acts upon.
+      { kind: "command", command: "add-self-loop", applies: hasFrame },
+      { kind: "command", command: "show-item", applies: purgeableWidget },
+      { kind: "command", command: "delete-item", applies: purgeableWidget },
+      { kind: "command", command: "purge-item", applies: purgeableWidget },
+    ],
+  },
+  {
+    id: "points",
+    // A TOOLS-ONLY group, and the ONE group scoped to the INNER selection: its
+    // rows act on the selected HANDLES, not on the item. Named for what they act
+    // on, exactly as the commands themselves are ("Hide Points", "Purge Points").
+    title: "Points",
+    // Hide before Purge, again: the index-stable one first, the renumbering one
+    // last (core/lists.js — purging shifts every later element's address, so an
+    // equation bound to `points.4.x` comes to mean what was `points.5.x`).
+    rows: [
+      { kind: "command", command: "hide-points", applies: pointListEditable },
+      { kind: "command", command: "show-points", applies: pointListEditable },
+      { kind: "command", command: "purge-points", applies: pointListEditable },
     ],
   },
   {
@@ -628,28 +864,23 @@ export const TOOL_POOL = [
     // thing a hand reaches for. Same reason the Inspector puts a widget's own rows
     // above the universal ones: the local edit is the common case.
     rows: [
-      {
-        kind: "command",
-        command: "remove-slide-keyframes",
-        applies: keyframable,
-        help: SLIDE_KEYFRAMES_HELP,
-        requires: SLIDE_KEYFRAMES_REQUIRES,
-      },
-      {
-        kind: "command",
-        command: "make-static",
-        applies: keyframable,
-        help: MAKE_STATIC_HELP,
-        requires: MAKE_STATIC_REQUIRES,
-      },
+      { kind: "command", command: "remove-slide-keyframes", applies: keyframable },
+      { kind: "command", command: "make-static", applies: keyframable },
     ],
   },
 ];
 
 // IMPORT-TIME CONSISTENCY GATE, the same doctrine as the effects gate above (and
-// render_settings.js's precedent): a tool that cannot explain itself must fail at
-// boot, never ship as a mystery button. This is what makes rule 5 —
-// "a disabled control explains itself" — structurally impossible to forget.
+// render_settings.js's precedent): a malformed tool must fail at boot, never ship
+// as a mystery button.
+//
+// WHAT IT NO LONGER CHECKS, and where that check went. It used to demand a `help`
+// and a `requires` STRING on every row. Both now live on the command entry, which
+// is the only copy any surfacing reads — so demanding them here would be
+// demanding a second copy, and a check that can only see the copy cannot tell you
+// the original is missing. The mandate moved to tests/tool_surfacing_probe.js,
+// which asks the LIVE registry, and which also checks the direction nothing ever
+// checked: that a widget-scoped command reaches the pane at all.
 {
   const groupIds = new Set();
   const commandIds = new Set();
@@ -661,11 +892,10 @@ export const TOOL_POOL = [
     for (const row of group.rows) {
       if (row.kind !== "command")
         throw new Error(`core/registry TOOL_POOL: group "${group.id}" row kind "${row.kind}" — the pool holds command tools only (preset rows come from a plugin's own families)`);
-      for (const field of ["command", "help", "requires"])
-        if (typeof row[field] !== "string" || !row[field])
-          throw new Error(`core/registry TOOL_POOL: group "${group.id}" row "${row.command ?? "?"}" is missing the mandatory "${field}" string — a tool with no help, or a gated tool that will not say what it requires, must not reach the user`);
+      if (typeof row.command !== "string" || !row.command)
+        throw new Error(`core/registry TOOL_POOL: group "${group.id}" has a row with no command id — a tool row is a SURFACING of a registry entry and has nothing to render without one`);
       if (typeof row.applies !== "function")
-        throw new Error(`core/registry TOOL_POOL: group "${group.id}" row "${row.command}" needs an applies(plugin) predicate — a pool tool that applies to everything would put dead controls on widgets that cannot use it`);
+        throw new Error(`core/registry TOOL_POOL: group "${group.id}" row "${row.command}" needs an applies(plugin) predicate — a row that quietly omits one is claiming universality without saying so; use everyWidget when that claim is genuinely true`);
       if (commandIds.has(row.command)) throw new Error(`core/registry TOOL_POOL: command "${row.command}" appears twice — a tool must be defined once`);
       commandIds.add(row.command);
     }
@@ -721,19 +951,23 @@ export function presetFamiliesOf(plugin) {
  *
  * Merging is BY GROUP ID, so a widget that declares its own "positioning" tool
  * gets it beside the two frame-bind tools in ONE Positioning section rather than
- * a second section with the same heading.
+ * a second section with the same heading. A plugin joining a POOL group may
+ * therefore OMIT the title and inherit the pool's — re-spelling "Edit" in every
+ * plugin that adds a row to it would be a heading free to disagree with itself,
+ * and it is only a title a plugin needs when it is opening a section of its own.
  *
  * @param {object} plugin - a widget plugin
  * @returns {Array<{id: string, title: string, rows: Array}>}
  *
  * @example toolGroupsOf({type: "blur", defaults: {blur: 4}, capabilities: {}}).map((g) => g.id)
- * // ["keyframes"] (no frame → no camera-bind rows → Positioning drops; ANY state is keyframable)
- * @example toolGroupsOf({type: "blur", defaults: {}, capabilities: {}})
- * // [] (no frame AND no state: every pool group loses all its rows and none is created)
+ * // ["grouping", "edit", "keyframes"]   (no frame → no Positioning, no Arrange;
+ * //                                      but it can still be grouped, copied and keyed)
+ * @example toolGroupsOf({type: "blur", defaults: {}, capabilities: {}}).map((g) => g.id)
+ * // ["grouping", "edit"]   (nothing to key either — only the item-level tools survive)
  * @example toolGroupsOf({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).map((g) => g.title)
- * // ["Positioning", "Keyframes"]
+ * // ["Positioning", "Arrange", "Grouping", "Edit", "Keyframes"]
  * @example toolGroupsOf({type: "flare", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}, presets: [{name: "Cinematic", props: {}}]}).map((g) => g.id)
- * // ["presets", "positioning", "keyframes"]   (plugin-owned first, inherited last)
+ * // ["presets", "positioning", "arrange", "grouping", "edit", "keyframes"]  (plugin-owned first, inherited last)
  */
 export function toolGroupsOf(plugin) {
   const groups = [];
@@ -750,16 +984,18 @@ export function toolGroupsOf(plugin) {
     add(fam.id, fam.title, fam.presets.map((preset) => ({ kind: "preset", preset })));
 
   for (const group of plugin.toolGroups ?? []) {
-    if (!group.id || !group.title || !Array.isArray(group.rows))
-      throw new Error(`Plugin "${plugin.type}" tool group is malformed (need id, title, rows): ${JSON.stringify(group).slice(0, 120)}`);
+    // A title is inherited when the group JOINS a pool section and mandatory when
+    // it opens a new one — an unnamed section nobody else named has no heading.
+    const title = group.title ?? TOOL_POOL.find((g) => g.id === group.id)?.title;
+    if (!group.id || !title || !Array.isArray(group.rows))
+      throw new Error(`Plugin "${plugin.type}" tool group is malformed (need id, rows, and a title unless it joins a pool group): ${JSON.stringify(group).slice(0, 120)}`);
     for (const row of group.rows) {
       if (row.kind !== "command")
         throw new Error(`Plugin "${plugin.type}" tool group "${group.id}" row kind "${row.kind}" — a plugin declares command rows; preset rows come from its preset families`);
-      for (const field of ["command", "help", "requires"])
-        if (typeof row[field] !== "string" || !row[field])
-          throw new Error(`Plugin "${plugin.type}" tool group "${group.id}" row "${row.command ?? "?"}" is missing the mandatory "${field}" string (see TOOL_POOL's gate for why)`);
+      if (typeof row.command !== "string" || !row.command)
+        throw new Error(`Plugin "${plugin.type}" tool group "${group.id}" has a row with no command id (see TOOL_POOL's gate for why)`);
     }
-    add(group.id, group.title, group.rows.filter((row) => !row.applies || row.applies(plugin)));
+    add(group.id, title, group.rows.filter((row) => !row.applies || row.applies(plugin)));
   }
 
   for (const group of TOOL_POOL)
@@ -778,7 +1014,7 @@ export function toolGroupsOf(plugin) {
  * @returns {object} an augmented copy of it
  *
  * @example withToolGroups({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).toolGroups[0].id // "positioning"
- * @example withToolGroups({type: "blur", defaults: {blur: 4}, capabilities: {}}).toolGroups.map((g) => g.id) // ["keyframes"]
+ * @example withToolGroups({type: "blur", defaults: {blur: 4}, capabilities: {}}).toolGroups.map((g) => g.id) // ["grouping", "edit", "keyframes"]
  */
 export function withToolGroups(plugin) {
   return { ...plugin, toolGroups: toolGroupsOf(plugin) };

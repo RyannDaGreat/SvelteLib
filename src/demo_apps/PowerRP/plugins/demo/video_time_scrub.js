@@ -263,4 +263,16 @@ export const videoTimeScrubPlugin = {
       run: probeClipLength,
     },
   ],
+  // …AND IT REACHES THE TOOLS PANE. A gate is only half of an affordance: the
+  // command above was findable in the palette and nowhere else, which is the exact
+  // complaint that produced tests/tool_surfacing_probe.js ("Why do I have to open
+  // the command palette to find these things?"). It rides the pool's EXISTING Edit
+  // section — a one-row section of its own would be the "section of one" the light
+  // pin was talked out of — and inherits that section's title rather than
+  // re-spelling it. No `applies` is needed: a plugin's own group is already scoped
+  // to this widget, which is what makes THIS the right home for a type-specific
+  // tool and the pool the right home for a general one.
+  toolGroups: [
+    { id: "edit", rows: [{ kind: "command", command: "probe-video-time-scrub-length" }] },
+  ],
 };
