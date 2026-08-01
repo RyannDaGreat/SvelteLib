@@ -726,6 +726,383 @@ widget is the scrubber-with-time-presets.
   mapping other graph widgets share (axes as a coordinate frame), or is each
   graph widget independently placed? (Design question for the research round.)
 
+## ROUND 6 (user, 2026-08-01): THE RECOVERY + PRESETS ROUND
+
+THE CANONICAL FULL RECORD of the round. `.claude_todo.md` is the operational
+tracker and holds ONLY ids + status — it points here, it does not restate this.
+Ids are `R6-n` and are stable; agents cite them.
+
+### Why this round exists
+
+The user believed two features had been lost with an old computer: a Blender-style
+modal-transform guide line, and a Gaussian-splat viewer. An eight-agent forensic
+sweep (all ~85 branches, every tag/remote, 46 unreachable stash commits, 4 sibling
+repos, both transcript corpora — 498 current + 1292 pre-migration snapshot files —
+the complete 1759-prompt user history, all 27 recorded cwds, the filesystem, shell
+history, Chrome history) established:
+- **The R/rotate guide line was never built here.** `853e597` shipped G/S only, and
+  its own message lists the rotation sweep as an unimplemented follow-up. No ref
+  anywhere has an `R` binding, a `rotateMode`, or a `guideLine` symbol.
+- **The splat viewer was never built at all.** Three splat mentions exist in the
+  entire user history, two of them explicitly deferring it ("if we do splats later
+  we can defer, we gonna overhaul the rendering system"). The interactive viewer the
+  user remembers was a live third-party demo surfaced during renderer research
+  (`https://jatentaki.github.io/portfolio/gaussian-splatting/`), plus a PowerRP
+  vision doc promising the widget as future work.
+- **Nothing on `nuno` is worth merging** — 2 commits: a 31-line `.gitignore` of
+  scratchpad litter, and an ALTERNATIVE CRT implementation whose shader is 358 lines
+  SHORTER than the one on `powerrp` (merging it would regress). `render-rewrite-skia`
+  has exactly one unique commit, `a7e6964` (the takeover button).
+So both are NEW CONSTRUCTION, recorded here as requirements rather than recoveries.
+Full archaeology archives: `.frenzy/reqmine/agent_*.md` (1091 harvested items, 8
+files) — disposable; this manifest copy is canonical.
+
+### R6-1 GAUSSIAN SPLAT VIEWER WIDGET
+
+- **R6-1.1** A gaussian splat scene as an insertable widget: position, rotate,
+  group, keyframe, export, like any other. The user's framing: "splat viewer
+  included — dropped in as widgets you position, rotate, group, keyframe, and
+  export."
+- **R6-1.2 DOUBLE-CLICK ENTERS MOUSE-LOOK.** Double-click the widget and you are
+  inside the scene, flying with the mouse. This is the `activate` phase of
+  `web/widget_handlers.js`, the same seam `latex_edit` / `inline_text_edit` /
+  `rich_text_edit` / `asset_picker` / `code_modal` use. PRECEDENT TO FOLLOW:
+  `plugins/demo/mandelbrot.js` already does exactly this — "DOUBLE-CLICK
+  ACTIVATION (web/widget_handlers.js, phase 'activate'): INTERIOR ..." — the user
+  named Mandelbrot as the model. Escape must exit, and it MUST register in the
+  shortcut registry or the three existing Escape handlers will steal it (#195).
+- **R6-1.3 CAMERA POSE IS PROPERTY STATE.** Position / orientation / FOV are
+  ordinary keyframable properties, so a fly-through tweens across slides and
+  renders deterministically in both exporters. It must NOT read a wall clock nor
+  carry frame-to-frame state — that would make it ephemeral and break frame-range
+  sharding (see THE THREE KINDS OF STATE in the repo CLAUDE.md).
+- **R6-1.4 DO NOT WRITE OUR OWN SPLAT RASTERISER.** User ruling, verbatim: "Do not
+  make your own janky little Splat viewer. We want to actually use other people's
+  Splat viewers, like a real one that's very fast, and we can integrate it into our
+  widget. It needs to look professional and look good." Integrate a real, fast,
+  maintained library.
+- **R6-1.5 PREFER A LIBRARY THAT ALSO HAS A 3D ENGINE**, so splats can be mixed
+  with meshes later: "Ideally something that can have a 3D engine too, so that you
+  can mix it with meshes and stuff too."
+- **R6-1.6 THE RESOLUTION CONTRACT — THE CARDINAL RENDER LAW.** The widget renders
+  `f(x, y, w, h)` at a GIVEN RESOLUTION: zoom into the canvas and it re-renders at
+  HIGHER resolution over a SMALLER CROP, not a magnified stale raster. Any
+  magnifier sitting on top of it composes the same way. THE SEAM ALREADY EXISTS:
+  `core/clip.js visibleSourceRect(box, cropInsets, view, opts) ->
+  {visible, deviceRect, sourceRect, scale, localRect}` (its doctests show the
+  device-rect bound holding at 50x zoom — "a window, not the whole zoomed page").
+  The dump manifest states the unified principle at
+  `claude_instructions.md:5432`: "this three-way crop should be standard practice
+  among ALL widgets where it can possibly make sense."
+- **R6-1.7 CACHE WHEN NOTHING CHANGES.** If neither the scene nor the view
+  changed, reuse the last raster and move on. Precedent: the static material
+  raster cache (task #208).
+- **R6-1.8 FIXED-RESOLUTION OVERRIDE.** An option to render at a chosen fixed
+  resolution (the user's example: 720x840) REGARDLESS of the widget's on-canvas
+  size, for when the scene is too slow and the author wants to bound cost
+  explicitly. This is a deliberate, documented technical control, not an arbitrary
+  cap (see the no-Nintendo-guardrails rule, task #71).
+- **R6-1.9 REAL EXAMPLE SCENES ARE MANDATORY.** "You need to find real examples of
+  Gaussian Splats, otherwise nobody can play with the demo widget." Ship at least
+  one in the BUILT-IN asset library (task #68), never in the user's Asset Explorer.
+- **R6-1.10 INSTRUCTIONS ON THE WIDGET.** "There needs to be instructions on the
+  widget somewhere too, so people need to understand — I don't even know how to
+  make Gaussian Splats. I don't even know how to upload those. Like, is there some
+  standard for how people upload them?" So the research must answer, and the widget
+  must SAY: what a splat file is, which formats are standard (`.ply` / `.splat` /
+  `.ksplat` / `.spz`), how a person captures/trains one, and how to get one in here.
+- **R6-1.11 RESEARCH FIRST, heavily.** Library survey (speed, licence, quality,
+  3D-engine story, WebGL2-vs-WebGPU need), format survey, capture/training
+  pipelines, and sourceable example scenes with licences.
+- **R6-1.12 OPEN DESIGN QUESTION (needs the user).** The runtime raster backend is
+  Skia/CanvasKit on WebGL2, deliberately avoiding `navigator.gpu` so the app works
+  on plain HTTP. A splat rasteriser is a sorted-billboard GPU pipeline Skia cannot
+  express. Decide: offscreen GL/WebGPU target composited by Skia as a texture, and
+  what happens in `cli/render.js` (no GL at all) and in the render-job worker
+  (ANGLE, possibly SwiftShader).
+
+### R6-2 BLENDER MODAL TRANSFORMS: R, AND THE DASHED LINE ON R AND S
+
+- **R6-2.1** `R` enters a modal ROTATE about the selection's collective centre —
+  the missing third mode. Today only `G` and `S` exist
+  (`core/shortcut_entries.js:775`; `modalXform.kind` is typed `"grab"|"scale"` at
+  `web/app.svelte.js:622`).
+- **R6-2.2 A RED DASHED LINE FROM THE CURSOR TO THE CENTRE, ON BOTH R AND S.**
+  Today there is only an axis-constraint line, drawn only after `X`/`Y`
+  (`web/CanvasView.svelte:3104` computes, `:3396` paints into `guideSegs`, `:3629`
+  renders), plus a bare pivot DOT for scale (`:3419`, `:3636`). The dot becomes a
+  line. Blender parity.
+- **R6-2.3** Wire it exactly like the existing modes: registry entries so the
+  HintBar announces the mode, the modal input lock, `commitPreview` as ONE undo
+  unit, `cancelPreview` on Escape. Modal geometry lives at
+  `web/CanvasView.svelte:2984-3160` and `web/app.svelte.js:621-644,1425-1432`.
+- **R6-2.4** Decide whether axis constraints and numeric entry (dump manifest
+  `claude_instructions.md:3093-3100`) extend to rotate.
+
+### R6-3 THE PRESETS PROGRAM — RESEARCH-DRIVEN, EVERY WIDGET
+
+- **R6-3.1 THE THESIS.** "Presets are how we get inspiration. We need those." Each
+  preset is a designed, inspiring starting point that teaches what the widget can do.
+- **R6-3.2 MEASURED GAP: 14 of 73 plugins declare `presets`.** Present:
+  `brightness_contrast`, `comic`, `crt`, `frosted_glass`, `glitch`, `globe_map`,
+  `god_rays`, `lens_flare`, `sky`, `video_time_scrub`, `filmstrip`,
+  `paper_peacock`, `pdf_packet`, `shapeshifter`. The other 59 have none.
+- **R6-3.3 NOT STUPID PRESETS.** "Not just stupid presets, every single one needs
+  to have sub-agents that really think it out and do tons of research." Physical
+  grounding where physics applies, graphic-design/cultural grounding where it does
+  not. Each preset carries a human-recognisable name and one line on what it models.
+- **R6-3.4 Aperture** — model SPECIFIC REAL CAMERAS AND LENSES: blade count, blade
+  curvature, resulting bokeh polygon. 6-blade, 8-blade cine prime, circular-aperture
+  portrait, 5-blade vintage rangefinder.
+- **R6-3.5 Lens flare** — model NAMED REAL LENSES AND CONDITIONS: anamorphic
+  streak, coated modern zoom's faint ghost chain, uncoated vintage veiling haze,
+  sun-through-windshield. Ghost spacing/count derive from element groups.
+- **R6-3.6 God rays** — atmospheric conditions: cathedral dust shafts, forest
+  canopy, underwater caustics, stage haze, sunset through a cloud break.
+- **R6-3.7 Arrows** — graphic-design idioms: technical-drawing leader, comic-book
+  action, hand-drawn marker, presentation callout, UML relation, sketch curve.
+- **R6-3.8 Shape widgets** — user was explicit that "even shape widgets could have
+  presets": gear by real tooth profile/module, star by point count and inner-radius
+  ratio, callout/bubble by comic-vs-corporate-vs-thought, banner/ribbon by
+  heraldic-vs-sale-tag, polygon by regular-solid families.
+- **R6-3.9 The rest of the 59** — text, plaintext, number, clocks, bento, line, QR,
+  SVG, iconify, metaball, rainy window, corkboard family, magnifier, telescopic
+  rig, progress bar, Mandelbrot (a preset IS location + palette + zoom), video
+  scrub, group, camera render settings.
+- **R6-3.10 MECHANICS.** Reuse the existing `presets` protocol and Tools pane
+  (task #99); presets apply to the current frame. Hover-preview is the house
+  default for pickers (#165), so preset hover must live-preview.
+- **R6-3.11 CROSS-WIDGET PHYSICAL CONSISTENCY.** Aperture blade count, flare
+  starburst ray count and bokeh polygon must AGREE where they describe the same
+  lens. A swarm authoring independently will contradict itself unless coordinated.
+
+### R6-4 TOOLS MASQUERADING AS PROPERTY ROWS
+
+- **R6-4.1 THE PATTERN.** `web/Inspector.svelte` honours declarative ROW ASPECTS.
+  One, `pinLight: {xKey, yKey}`, draws an eyedropper that enters a canvas picking
+  mode and writes `@id.cx`/`@id.cy`. `web/lightPositionPin.js` implements it and its
+  own docblock advertises the pattern as a feature.
+- **R6-4.2 CONFIRMED SITES.** `plugins/demo/lens_flare.js:445` AND
+  `plugins/demo/god_rays.js:235` (the same eyedropper — the user's "another element
+  that does that too"); `plugins/iconify.js:546`, whose comment says "eyedropper
+  would have been... opens the SAME iconify gallery UI"; `web/bentoBind.js` /
+  `BENTO_BIND_HANDLER` (cited precedent, entered by double-click); the
+  `asset_picker` activate handler with `assetKinds`/`assetForm`.
+- **R6-4.3 FULL ROW-ASPECT VOCABULARY to audit:** `pinLight`, `gallery`, `command`,
+  `paint`, `scrub`, `assetKinds`, `assetForm`, `optionsFrom`, `centerAxis`,
+  `visibleWhen`, `onIcon`/`offIcon`/`onText`/`offText`, `writeKey`, `nullable`,
+  `display`.
+- **R6-4.4** Decide the rule: which affordances legitimately belong on a property
+  row, and which are tools wearing a property's clothes. Hunt for others.
+- **R6-4.5** Build the lens-flare light-position tool properly IN THE TOOLS PANEL;
+  god rays inherits it at the tool layer. Remove the misplaced row eyedropper.
+  User's complaint: the agent "didn't understand what tools are, even though the
+  tools panel is well exposed. It jammed a stupid edge case bullshit eyedropper
+  into the actual properties tab."
+
+### R6-5 THE "CUSTOM" NAMING SWEEP
+
+- **R6-5.1** Lens flare's "Custom" becomes "Lens Flare settings" — "These are lens
+  flare settings."
+- **R6-5.2** Audit EVERY widget for a "Custom" section; each becomes its own
+  widget-specific name. Rationale, verbatim: "not because they could be composed
+  with other widgets."
+- **R6-5.3** "Custom is supposed to be reserved for what people make, or not at
+  all." The variables section may become "Custom variables."
+
+### R6-6 INSPECTOR HEADER ROWS
+
+- **R6-6.1** Widget-selection dropdown must be SEARCHABLE.
+- **R6-6.2** Type selector must be SEARCHABLE.
+- **R6-6.3** Rename it "Widget type."
+- **R6-6.4** Its dropdown must be "no bigger or smaller than any other property" —
+  the same field as Name and Visible.
+- **R6-6.5** Name is indented differently from Visible; put them at the same level.
+- **R6-6.6** Order Type / Name / Visible as three ordinary properties in one
+  section, since every widget has them.
+
+### R6-7 EQUATIONS ON EVERY PROPERTY
+
+- **R6-7.1** "Basically every property should support equations." Reproduction:
+  material -> atmosphere, type `=time`, refused.
+- **R6-7.2 ROOT CAUSE, TRACED.** "Atmosphere" is `ATMOSPHERE_FILL_PARAMS`
+  (`render_gpu/skia/atmosphere_shader.js:163`), spread into
+  `plugins/demo/globe_map.js:206`. The params are declared CORRECTLY — `kind:
+  "number"` / `"angle"` / `"color"`, with min/max/step, and `lightAngle`'s help even
+  says "KEYFRAME THIS". So the defect is the `fillParams` -> Inspector row BRIDGE
+  not threading the `=` affordance.
+- **R6-7.3 SCOPE.** A whole CLASS: every material's shader params on every material
+  widget. Task #149 closed a sweep over "six field kinds" and missed this path.
+
+### R6-8 NESTED SECTIONS / SUB-DROPDOWNS
+
+- **R6-8.1** Every sub-section gets the draggable label/value divider, identical to
+  the top-level one.
+- **R6-8.2** GENERALISE nested sections into ONE reusable, arbitrarily-deep
+  component: "we will have many nested drop downs in the future, including for
+  example having an entirely second widget in a nested drop down." Large refactor;
+  must be clean.
+- **R6-8.3** Properties under Atmosphere are MISALIGNED — "just tiny numbers,
+  mismatched widths" instead of stretching to the right edge like every other row.
+- **R6-8.4** The Atmosphere knobs have ROUNDED CORNERS — "a big no no... probably
+  just X-ray CSS that could be deleted." They must inherit square styling
+  (`app.css:22`: `--radius` is for `src/lib` components only; app chrome is square).
+
+### R6-9 SKY MATERIAL
+
+- **R6-9.1** Stars STRETCH when the sky is stretched. They need their own scale,
+  controllable with respect to PIXEL SPACE, independent of the widget box.
+- **R6-9.2** Galaxy textures are NOT SEAMLESS — investigate the seams. Precedent
+  remedy: rainy-window v2 went fully procedural to kill seams (task #104).
+
+### R6-10 MAP WIDGET
+
+- **R6-10.1** QUARANTINE it — "a hot mess right now."
+- **R6-10.2** Recorded symptom: renders correctly in editor and presentation, NOT
+  to MP4.
+
+### R6-11 RENDERER != EDITOR — THE RED FLAG (highest priority)
+
+- **R6-11.1** Fancy arrow + dark drop shadow shows LINES BETWEEN ALL THE TRIANGLES,
+  in the editor. Without a shadow they do not appear. Turning anti-aliasing OFF
+  makes the gaps GO AWAY — so it is the GEOMETRY, not the shading.
+- **R6-11.2** "Why is it triangulated like this? Doesn't Skia allow us to paint
+  entire surfaces? Are we rendering individual triangles? Because I can see gaps
+  between them."
+- **R6-11.3 THE ACTUAL RED FLAG.** The donut shows triangles in the SLIDE
+  THUMBNAILS but NOT in the editor. "Why is there a disconnect between the renderer
+  there and the renderer that I see on my screen in the editor? I thought they were
+  supposed to be the same back end. This is a red flag for me." Thumbnails go
+  through `gpuService`'s offscreen compositor, the editor through `CanvasView`;
+  both are meant to be the same Skia painter over the same display list.
+- **R6-11.4** Gradients and pattern materials apply PER TRIANGLE — "It's not the
+  way it's supposed to work, like I'm not supposed to know about the triangles."
+- **R6-11.5** Maps render wrong to MP4 (same family as R6-10.2).
+- **R6-11.6 GOVERNING PRINCIPLE:** "this should always be rendering the same way,
+  wherever possible." Cf. the repo CLAUDE.md's "THE RENDERER IS ONE CODE PATH".
+- **R6-11.7 HYPOTHESIS worth testing:** one root cause here may also explain R6-12.1
+  (video absent from Render Center) and R6-10.2/R6-11.5 (maps wrong to MP4).
+
+### R6-12 VIDEO
+
+- **R6-12.1** The video widget DOES NOT APPEAR in Render Center output at all,
+  though it looks right in preview. The scrubber does appear.
+- **R6-12.2** Add a universal `reveal_time` — the time an item first became visible
+  / was first rendered.
+- **R6-12.3** COLLAPSE EVERY VIDEO WIDGET INTO ONE, with scrub position defaulting
+  to `time - self.reveal_time`, so a video starts when revealed and plays on. The
+  scrubber becomes that same widget with a different default. "Get rid of all the
+  other video widgets and only have one from now on."
+- **R6-12.4** Context: a player's current frame is NOT deterministic today
+  (`gpu/video_registry.js` has no time-override seam; the `<video>` element runs on
+  the browser's own clock). Unifying on the scrubber's model is what makes video
+  renderable at all.
+
+### R6-13 RICH TEXT
+
+- **R6-13.1** Font +/- must shift every selected run BY THE SAME DELTA, preserving
+  relative differences. Today it flattens everything to one size.
+- **R6-13.2** The size number in the floating toolbar must be a SCRUBBABLE number
+  widget, draggable like any numeric value.
+- **R6-13.3** ANSWER WHERE RICH-TEXT STATE LIVES: "there's the rule that all things
+  that I edit should be contained inside the properties. And yet I don't see any
+  property that actually contains this rich text... huh, what the fuck is
+  happening." Then reconcile it with the core invariant.
+- **R6-13.4** The text widget's size/font dropdowns DO NOTHING for rich text. Rich
+  and plain text are fundamentally different; stop offering controls that do not apply.
+
+### R6-14 GROUPS
+
+- **R6-14.1** A SCALE-CHILDREN TOGGLE: whether objects in a group scale when the
+  group scales. "Right now, there's no way to make that happen." USER WANTS TO
+  DISCUSS THIS ONE before implementation.
+
+### R6-15 METABALL
+
+- **R6-15.1** SCREEN-SPACE BUG: move it toward the edge and only a fraction
+  renders; looks correct in view but cuts off wrongly on render. Investigate the
+  shader's screen-space assumptions.
+
+### R6-16 EXPRESSIONS AND MATH
+
+- **R6-16.1** Add `direction2` / angle-between so a material can aim at another
+  item: "angle2 of self position, flare.x, flare.y."
+- **R6-16.2** x/y AS A REAL VECTOR PRIMITIVE — `self.position.x` rather than
+  `self.position_x`, anchors included. "This would be a major refactoring though,
+  so it needs to be considered carefully and planned thoroughly." PLAN ONLY, no code
+  until the plan is reviewed.
+
+### R6-17 NEW WIDGETS
+
+- **R6-17.1 APERTURE** — parameterised, with handles. Feeds R6-3.4 and must stay
+  consistent with lens-flare starbursts (R6-3.11).
+- **R6-17.2 2D SIDE-SCROLLER** — "ask me about it." BLOCKED on the user's
+  description.
+
+### R6-18 DUPLICATE
+
+- **R6-18.1** Duplicating a FANCY ARROW leaves its endpoint handles at the original
+  position while the arrow moves; the handles end up detached from the new copy.
+  "This is not the first time this happened." Likely the endpoint-pair handle state
+  not being remapped to the new item id.
+- **R6-18.2** Add DUPLICATE IN PLACE — no offset.
+
+### R6-19 FILE BROWSER
+
+- **R6-19.1** Build or adopt a GENERAL FILE BROWSER for renderings, cache and
+  assets across the real and front-end stores. "It is getting rather annoying how
+  many things there are to keep track of."
+- **R6-19.2** EXPLAIN HOW THE FRONT-END STORE ACTUALLY WORKS: "this file system,
+  well it's not a file system, is it? How does it work? I don't really know."
+- **R6-19.3** PREVIEW files in it, like the asset explorer does.
+- **R6-19.4** Up a directory, down a directory, Home = the project directory.
+- **R6-19.5** RE-IMPLEMENT THE ASSET EXPLORER ON TOP OF IT so there is no duplicate
+  logic — or expand the asset explorer into it.
+- **R6-19.6** "Open in file browser" from Renderings and from the asset panel.
+
+### R6-20 MANIFEST MIGRATION
+
+- **R6-20.1** Migrate everything living ONLY in the top-level dump manifest into
+  THIS in-repo manifest. Sizes: dump `claude_instructions.md` 6423 lines,
+  `concerns.md` 3998 lines. Rationale, verbatim: "a lot of issues stemmed working on
+  my old computer because it didn't have access to the manifest on the top level and
+  I didn't know that." The in-repo manifest is where everything gets recorded from
+  now on.
+
+### R6-21 HOUSEKEEPING
+
+- **R6-21.1** DESTROY THE SPURIOUS AGENT WORKTREES — 80 under `.claude/worktrees/`,
+  of which 67 carry unmerged commits and 69 have uncommitted files. BLOCKED on the
+  user's call: delete directories but keep branches (recoverable — recommended), or
+  delete both.
+- **R6-21.2** Optional: cherry-pick `a7e6964` from `render-rewrite-skia` (the
+  takeover button), the one commit that branch has and `powerrp` lacks.
+
+### R6-22 CONVENTION CONFORMANCE — A STANDING OBLIGATION ON EVERY AGENT
+
+User ruling, 2026-08-01, verbatim in spirit: "it's hyper duper critical that every
+single agent follows every single part of the code's conventions. If there's
+precedent that could possibly be set, the agents are responsible for looking for
+precedent. Any decision that it wants to make that's arbitrary should always be
+researched in our codebase, whether it uses a subagent to do it or not. That
+includes formatting... There is cruft in this codebase. It's not perfect, because
+agents clobbered each other and did stupid shit. If you see any violations, fix
+them along the way. Any precedent being broken, fix it along the way, and then
+record that."
+
+- **R6-22.1** Every agent reads the CLAUDE.md chain (dump root, SvelteLib, PowerRP),
+  BOTH manifests (dump-level and this one), and the doctrine comments in
+  `web/app.css` — whose header and inline `/* ... */` rules ARE manifest-level rules.
+- **R6-22.2** NO ARBITRARY DECISIONS. Any choice not dictated by the manifest —
+  including formatting, naming, ordering, spacing — must be settled by RESEARCHING
+  PRECEDENT in this codebase, delegating to a subagent if needed.
+- **R6-22.3 PRECEDENCE DOCTRINE.** The manifest is supreme. Where it is silent and
+  two patterns compete, THE OLDER ONE WINS; establish age with git (`git log
+  --follow --diff-filter=A`, `git blame`, `git log -S`).
+- **R6-22.4** Violations found along the way get FIXED, and each fix is REPORTED in
+  the round's final report.
+- **R6-22.5** Everything is recorded in THIS manifest, not the dump-level one.
+
 ## Verification strategy
 
 - UI structure/behavior items (1, 4, 5, 7, 10, 11, 16–21): extend
