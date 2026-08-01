@@ -79,11 +79,22 @@ export const REFERENCE = {
   ink: "#000000",          // text_color="black"
 };
 
-/** The `size` DEFAULT: an EQUATION, so the label keeps the reference's
- *  diameter·0.65 proportion when the disc is resized instead of freezing at
- *  whatever the disc measured when it was placed. Typing a number over it pins the
- *  size, which is the ordinary equation-slot behaviour. */
-export const LABEL_SIZE_EQ = `self.h * ${REFERENCE.fontSizeFraction}`;
+/**
+ * The `size` DEFAULT: an EQUATION, so the label keeps the reference's diameter·0.65
+ * proportion when the disc is resized instead of freezing at whatever the disc measured
+ * when it was placed. Typing a number over it pins the size, which is the ordinary
+ * equation-slot behaviour.
+ *
+ * `Math.abs` IS LOAD-BEARING, and this is the one place in this widget where the
+ * NEGATIVE-EXTENTS contract is visible. A stored `h` may be negative — that is how a
+ * vertical FLIP is stored (core/registry.js) — and while no plugin HOOK ever sees the
+ * sign, an equation does: core/expressions.js runs before any node exists and `self.h`
+ * reads the raw stored value. Without the abs a flipped circle asked for a NEGATIVE
+ * font size, so the four sign spellings of one footprint stopped deriving to the same
+ * state. Caught by tests/negative_size_test.js, which sweeps the roster for exactly
+ * this and named the two offending spellings.
+ */
+export const LABEL_SIZE_EQ = `Math.abs(self.h) * ${REFERENCE.fontSizeFraction}`;
 
 // The alignment vocabularies, mirroring plugins/plaintext.js and
 // plugins/clock_digital.js so every text-bearing widget offers the same controls.
@@ -167,7 +178,7 @@ export const labeledCirclePlugin = {
       ops.push(text({
         text: label,
         x: 0, y: 0,
-        size: s.size ?? h * REFERENCE.fontSizeFraction,
+        size: s.size ?? h * REFERENCE.fontSizeFraction, // h here is already UNSIGNED (the hook contract)
         color: s.labelColor ?? REFERENCE.ink,
         bold: s.bold ?? false,
         font: s.font ?? DEFAULT_FONT,

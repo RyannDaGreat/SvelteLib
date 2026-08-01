@@ -55,7 +55,12 @@ test("the reference's NEGATIVE rim_width is strokeOffset -1, not a signed width"
 
 test("the label size DEFAULT is an equation, so it keeps its proportion under a resize", () => {
   assert.equal(labeledCirclePlugin.defaults.size, LABEL_SIZE_EQ);
-  assert.equal(LABEL_SIZE_EQ, `self.h * ${REFERENCE.fontSizeFraction}`, "the reference's font_size = diameter*.65");
+  assert.equal(LABEL_SIZE_EQ, `Math.abs(self.h) * ${REFERENCE.fontSizeFraction}`, "the reference's font_size = diameter*.65");
+  // Math.abs is not decoration: a stored h may be NEGATIVE (that is how a vertical flip
+  // is stored), and an equation — unlike a plugin hook — reads the raw signed value. A
+  // flipped circle asking for a negative font size is what tests/negative_size_test.js
+  // caught, so the abs is pinned here too, beside the reason.
+  assert.ok(LABEL_SIZE_EQ.includes("Math.abs"), "a flipped disc must not ask for a negative font size");
   // A number typed over it pins the size — the ordinary equation-slot behaviour.
   const [, label] = labeledCirclePlugin.emit({ ...RESOLVED, size: 40 }, null, WORLD);
   assert.equal(label.size, 40);
