@@ -92,6 +92,19 @@
  * accumulators above; the mechanism is narrow, and every suite that trips it
  * should hard-stop on absence whether its fabrication is conditional or not. The
  * cost of that choice is the blind spot the self-check at the bottom exists for.
+ *
+ * THE SHARPER STATEMENT OF THAT TRADE, and it is the reason to be confident in it
+ * rather than merely resigned to it: **keying on the MECHANISM leaves a BOUNDED
+ * blind spot that a self-check can cover; keying on the CONDITIONAL leaves an
+ * UNBOUNDED false-hit rate that nothing can.** The conditional-keyed attempt
+ * returned 59 hits, all noise, and only reached zero by hand-tuning an absence
+ * regex against the very corpus it was measuring — fitting the detector to the
+ * sample, which does not survive the 20th new suite. The mechanism-keyed version
+ * fails loudly the moment it stops seeing anything, which is a failure a reader
+ * can act on. (Raised by the agent who had argued for the conditional, against
+ * its own earlier advice, after watching the self-check fire. Conditionality is
+ * the right account of the defect's NATURE and the wrong place to put the SENSOR;
+ * those are separate questions.)
  */
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -221,6 +234,18 @@ ok(`${fabricators.length} fabricating suite(s), each hard-exiting on a missing s
 // a helper, or into a form the regex does not model) than that the pattern has
 // genuinely disappeared. If the last fabricator is ever legitimately removed,
 // this is the line to update, deliberately, with that fact recorded.
+//
+// VERIFIED IN BOTH MUTATIONS, independently by two agents, and the second is the
+// one that counts. (A) fabrication re-routed through a helper, hard stop KEPT —
+// benign, detector blind. (B) the same, hard stop ALSO REMOVED — i.e. the real
+// defect, now invisible to the scan above. Both go RED here.
+//
+// Be precise about WHY, because it is not what it looks like: in (B) this gate
+// does not DETECT the defect. It cannot — that is the blind spot. What it does is
+// refuse to be GREEN while it cannot see its subject, which converts an
+// undetectable defect into a visible one. That distinction is the whole value of
+// a self-check, and it is why "the scan found nothing" must be a failure and
+// never a quiet pass.
 assert.ok(fabricators.length >= 1,
   "the fabrication scan matched NOTHING across " + all.length + " suites. Either the last fabricating suite was removed — in which case update this assertion and say so — or the detector has gone blind and this gate is now passing vacuously, which is the very defect it was written for.");
 ok(`the detector still sees its subject (${all.length} suites scanned)`);
