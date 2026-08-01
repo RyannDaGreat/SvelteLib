@@ -226,12 +226,32 @@ const HOST_BOUND = [
   },
 ];
 
+/** Vite build output: a checked-in copy of third-party bundles, not source we own.
+ *  Same constant and same sentence as tests/shortcut_sweep_test.js:97 and
+ *  tests/probe_artifact_path_test.js:42, which sweep `web` and skip it for exactly
+ *  this reason. 79 built .js files live there; none carries an `@example` today, so
+ *  skipping them changes no count — but a bundle that ever did would send this
+ *  suite off to `await import()` a minified third-party chunk in bare node. */
+const SKIP_PREFIXES = ["web/dist/"];
+
 /**
  * The ONE host global this suite supplies, and the reason it is a stub rather than
  * four more HOST_BOUND entries. See HOST_BOUND's docblock, cause A. Set before the
  * sweep because every module import below is dynamic and therefore later.
+ *
+ * It THROWS on any property but `search`, which is the only one an import-scope
+ * read needs (web/projectApi.js:14). A plain `{search: ""}` would be a lie in the
+ * silent direction: `web/githubProject.js:882` reads `location.href` behind a
+ * `typeof location !== "undefined"` guard, so a bare object turns a correct
+ * fallback into a silent `undefined` — the exact shape the no-silent-fallback rule
+ * bans. Bare node genuinely has no page URL; saying so loudly is the honest stub.
  */
-globalThis.location = { search: "" };
+globalThis.location = new Proxy({ search: "" }, {
+  get(target, key) {
+    if (key in target) return target[key];
+    throw new Error(`doctest_test stub: bare node has no page URL, so location.${String(key)} does not exist. Guard on the property you need, not on \`typeof location\`, or move the pure part to a module this sweep can import.`);
+  },
+});
 
 /**
  * Known-false doctests in files owned by other concurrent work. Each excuses ONE
@@ -608,7 +628,8 @@ function sourceFiles(root) {
     if (statSync(path).isDirectory()) return name === "tests" ? [] : walk(path);
     return name.endsWith(".js") ? [path] : [];
   });
-  return SEARCH_DIRS.flatMap((dir) => walk(resolve(root, dir))).sort();
+  const skipped = (path) => SKIP_PREFIXES.some((prefix) => relative(root, path).startsWith(prefix));
+  return SEARCH_DIRS.flatMap((dir) => walk(resolve(root, dir))).filter((path) => !skipped(path)).sort();
 }
 
 /**
