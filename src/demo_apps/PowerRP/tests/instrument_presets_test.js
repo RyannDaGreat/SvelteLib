@@ -53,13 +53,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { newDocument } from "../core/document.js";
-import { createRegistry } from "../core/registry.js";
+import { createRegistry, presetFamiliesOf } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { cameraRect } from "../core/derive.js";
 import { fitRectView } from "../core/view.js";
 import { cameraFrameIR, evaluatedStateAt } from "../web/cameraFrame.js";
 import { renderToPng } from "../render_gpu/skia/node_render.js";
+import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
 import { closestPair, imageDistance, indistinguishable, readPng } from "./imageDistinctness.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -139,16 +140,23 @@ function lookKeys(plugin, excluded) {
  * ONE subject widget at its plugin defaults with `props` overlaid. Slide 0's delta
  * creates everything, which is the document model's own rule.
  *
+ * `reading` is the value a LOOK family needs on screen to be comparable at all — a
+ * progress bar at fraction 0 emits no fill op, so ten looks would be ten tracks. It
+ * is applied ONLY to the look family: a family that OWNS the reading key must be
+ * scored against the widget's GENUINE untouched default, or the C-16 baseline is a
+ * value this test invented rather than one the widget ships.
+ *
  * @param {object} subject - a SUBJECTS entry
  * @param {object} props - the preset's props (empty for the defaults baseline)
+ * @param {boolean} withReading - apply the subject's `reading` override
  * @returns {object} a PowerRP document
  */
-function docOf(subject, props) {
+function docOf(subject, props, withReading) {
   const doc = newDocument();
   const items = doc.slides[0].delta.items;
   Object.assign(items[Object.keys(items)[0]], CAM, { background: BACKGROUND });
   (subject.backdrop ?? []).forEach((spec, i) => { items[`bg${i}`] = { ...registry.get(spec.type).defaults, ...spec }; });
-  items.subject = { ...registry.get(subject.type).defaults, type: subject.type, ...subject.frame, ...subject.reading, ...props };
+  items.subject = { ...registry.get(subject.type).defaults, type: subject.type, ...subject.frame, ...(withReading ? subject.reading : {}), ...props };
   return doc;
 }
 
@@ -160,10 +168,17 @@ function docOf(subject, props) {
  * @param {object} subject - a SUBJECTS entry
  * @param {object} props - the preset's props
  * @param {string} label - PNG basename
+ * @param {number|null} atSeconds - presentation-clock override; null = the editor freeze
+ * @param {boolean} withReading - see docOf
  * @returns {Promise<{width: number, height: number, data: Buffer}>} the decoded frame
  */
-async function frameOf(subject, props, label) {
-  const doc = docOf(subject, props);
+async function frameOf(subject, props, label, atSeconds, withReading) {
+  // A TIMING preset is a function of the presentation clock, and the editor's clock
+  // is FROZEN — so scoring one family at one instant would call two different
+  // behaviours the same picture. setParticleTimeOverride is the seam the determinism
+  // probes already use to render an exact frame; null restores the freeze.
+  setParticleTimeOverride(atSeconds);
+  const doc = docOf(subject, props, withReading);
   const state = evaluatedStateAt(doc, 0, 1, registry);
   const rect = cameraRect(state, doc.meta);
   const png = await renderToPng(cameraFrameIR(state, doc.meta, registry), fitRectView(rect, RENDER_W, RENDER_H, 1),
@@ -205,6 +220,7 @@ const SAMPLE_TIME_SECONDS = 17 * 3600 + 4 * 60 + 56;
 const SUBJECTS = [
   {
     type: "clock_digital",
+    lookFamily: "presets",
     frame: { x: 80, y: 170, w: 800, h: 200, size: 120 },
     reading: { time: SAMPLE_TIME_SECONDS },
     excluded: {
@@ -216,6 +232,7 @@ const SUBJECTS = [
   },
   {
     type: "qrcode",
+    lookFamily: "presets",
     // Square and large: the grid is drawn into min(w, h), so a non-square box would
     // waste the check's resolution on empty margin.
     frame: { x: 280, y: 30, w: 480, h: 480 },
@@ -228,6 +245,7 @@ const SUBJECTS = [
   },
   {
     type: "magnifier",
+    lookFamily: "presets",
     frame: LENS_FRAME,
     backdrop: lensBackdrop(),
     excluded: {
@@ -242,6 +260,7 @@ const SUBJECTS = [
   },
   {
     type: "demo_magnify",
+    lookFamily: "presets",
     frame: LENS_FRAME,
     backdrop: lensBackdrop(),
     excluded: {
@@ -249,6 +268,59 @@ const SUBJECTS = [
       "shadow": "a backdrop sampler's effect substrate is unverified — as on the canonical magnifier",
       "bloom": "as shadow", "innerShadow": "as shadow",
     },
+  },
+  {
+    type: "progress_bar",
+    frame: { x: 80, y: 235, w: 800, h: 70 },
+    // At fraction 0 the widget emits NO fill op at all, so a look family scored on a
+    // freshly-placed bar would be comparing ten TRACKS. A mid reading puts both
+    // regions on screen. A timing preset overrides it, which is the point of that
+    // family; the baseline keeps it.
+    reading: { fraction: 0.62 },
+    // core/registry.js NAMESPACES a declared family as "presets.<id>", so a family
+    // cannot collide with a pool group; this is that resolved id, not the raw one.
+    lookFamily: "presets.looks",
+    // A timing preset is a function of the presentation clock, so one instant cannot
+    // tell two of them apart. Three: the editor's own freeze (2s, the only instant an
+    // author ever hover-previews at), one mid-run, and one past the short spans.
+    sampleTimes: { "presets.timing": [2, 6, 12] },
+    excluded: {
+      fraction: "THE READING, and the TIMING family's whole content — usually bound to a scrubber's progress export",
+      orientation: "not a look but an AXIS, and the axis is meaningless without the box aspect the author dragged (a preset cannot set w/h)",
+    },
+  },
+  {
+    type: "clock_analog",
+    // ONE look key, `preset`: see the excluded map below for why that is correct here.
+    minLookKeys: 1,
+    // Square: the dial is inscribed in min(w, h), so a wide box would just add margin.
+    frame: { x: 250, y: 20, w: 500, h: 500 },
+    // A time whose three hands point in three clearly different directions, so a
+    // hand-width or taper difference between two dials is not hidden by overlap.
+    reading: { time: 10 * 3600 + 8 * 60 + 32 },
+    lookFamily: "presets",
+    // `classic` IS DEFAULT_PRESET and the byte-frozen baseline, so its card renders
+    // exactly the untouched widget — declared here so check (5) ASSERTS that rather
+    // than reporting it as a dead row. See BASELINE_ROW.
+    restoresDefaults: "Classic",
+    // THIS WIDGET IS THE ODD ONE OUT and its excluded map is nearly the whole
+    // schema: its presets write ONE key, `preset`, and the twelve style values
+    // follow by DERIVATION (resolveStyle, re-run every render) rather than by being
+    // splatted into state. That is not a violation of the overlay rule, it is
+    // immune to it — with one key there is no key left over for a hover to strand.
+    // So the look-key derivation must be told that everything else is out, and the
+    // reason is one shipped decision rather than twelve separate judgements.
+    excluded: Object.fromEntries([
+      ["time", "THE READING — the whole point of the widget, usually bound `= time`"],
+      ...["numerals", "numeralInset", "numeralFont", "numeralSize", "numeralColor", "showTicks",
+        "majorTickWidth", "majorTickLength", "showMinorTicks", "minorTickWidth", "minorTickLength",
+        "tickColor", "handBezel", "showSecondHand", "secondHandTaper",
+        "hourHandColor", "hourHandWidth", "hourHandLength",
+        "minuteHandColor", "minuteHandWidth", "minuteHandLength",
+        "secondHandColor", "secondHandWidth", "secondHandLength",
+        "fill", "stroke", "strokeWidth", "shadow", "bloom", "innerShadow",
+      ].map((k) => [k, "derived from `preset`, not written by a card — the widget's own model, and its rule that a preset restyles the DIAL without repainting a chosen palette"]),
+    ]),
   },
 ];
 
@@ -262,36 +334,63 @@ const PAIRED_FAMILIES = [["magnifier", "demo_magnify"]];
 const MIN_SHARED_NAMES = 8;
 
 // ── (1) THE OVERLAY RULE ─────────────────────────────────────────────────────
-test("(1) every preset sets EVERY look knob of its family", () => {
+test("(1) within every family, all presets write the IDENTICAL key set", () => {
+  // The overlay rule stated exactly, and it is universal — it holds for a
+  // whole-look family and a one-key sub-aspect family alike. Derived from the
+  // family itself, so it needs no per-widget list and cannot go stale.
+  for (const subject of SUBJECTS)
+    for (const family of presetFamiliesOf(registry.get(subject.type))) {
+      const signature = (preset) => Object.keys(preset.props).sort().join(", ");
+      const first = family.presets[0];
+      for (const preset of family.presets)
+        assert.equal(signature(preset), signature(first),
+          `${subject.type}/${family.id}: "${preset.name}" writes {${signature(preset)}} but "${first.name}" writes {${signature(first)}} — application is an OVERLAY, so the key one of them omits keeps whatever the previously HOVERED row left there and these two rows' renders become hover-order dependent`);
+    }
+});
+
+test("(2) the WHOLE-LOOK family covers every look knob the widget offers", () => {
+  // The stronger half, and the one that keeps working as the widget grows: the look
+  // set is DERIVED from the live inspector minus the subject's EXCLUDED map, so a
+  // knob added tomorrow joins the demand with no edit here and the excluded map is
+  // where each family's judgements are written down and pinned.
   for (const subject of SUBJECTS) {
     const plugin = registry.get(subject.type);
     const want = lookKeys(plugin, subject.excluded);
-    assert.ok(want.length >= 4, `${subject.type}: only ${want.length} look keys derived — lookKeys is mis-deriving, so the check below would be near-vacuous`);
-    for (const preset of plugin.presets) {
+    // A floor, so a derivation bug that returned nothing could not pass as a
+    // satisfied demand. Most widgets carry many look knobs; a subject that
+    // legitimately has one declares so with its reason (clock_analog, whose cards
+    // write the single `preset` key and derive the rest).
+    const floor = subject.minLookKeys ?? 4;
+    assert.ok(want.length >= floor, `${subject.type}: only ${want.length} look keys derived (floor ${floor}) — lookKeys is mis-deriving, so this check would be near-vacuous`);
+    const family = presetFamiliesOf(plugin).find((f) => f.id === subject.lookFamily);
+    assert.ok(family, `${subject.type} declares no family "${subject.lookFamily}" — the subject's lookFamily id and the plugin's declaration disagree`);
+    for (const preset of family.presets) {
       const missing = want.filter((k) => !(k in preset.props));
-      assert.deepEqual(missing, [],
-        `${subject.type} "${preset.name}" omits ${missing.join(", ")} — an incomplete overlay makes this row's render depend on which row was hovered before it`);
+      assert.deepEqual(missing, [], `${subject.type} "${preset.name}" omits ${missing.join(", ")}`);
     }
-    console.log(`      ${subject.type}: ${plugin.presets.length} presets x ${want.length} look knobs (${want.join(", ")})`);
+    console.log(`      ${subject.type}: ${presetFamiliesOf(plugin).map((f) => `${f.id}:${f.presets.length}`).join(" ")} — ${want.length} look knobs (${want.join(", ")})`);
   }
 });
 
-// ── (2) NO COMPOSITION KEY ───────────────────────────────────────────────────
-test("(2) no preset writes a composition key or a key its family excluded", () => {
-  for (const subject of SUBJECTS) {
-    const plugin = registry.get(subject.type);
-    for (const preset of plugin.presets) {
-      const illegal = Object.keys(preset.props).filter((k) => COMPOSITION_KEYS.has(k) || k in subject.excluded);
-      assert.deepEqual(illegal, [],
-        `${subject.type} "${preset.name}" writes ${illegal.map((k) => `${k} (${subject.excluded[k] ?? "composition"})`).join("; ")}`);
-    }
-  }
+// ── (3) NO COMPOSITION KEY ───────────────────────────────────────────────────
+test("(3) no preset writes a composition key, and no LOOK preset writes an excluded one", () => {
+  for (const subject of SUBJECTS)
+    for (const family of presetFamiliesOf(registry.get(subject.type)))
+      for (const preset of family.presets) {
+        // Composition is forbidden everywhere; the excluded map governs the look
+        // family alone, since a sub-aspect family exists precisely to own a key the
+        // look family gave up (progress_bar's `fraction` is the case).
+        const illegal = Object.keys(preset.props).filter((k) =>
+          COMPOSITION_KEYS.has(k) || (family.id === subject.lookFamily && k in subject.excluded));
+        assert.deepEqual(illegal, [],
+          `${subject.type}/${family.id} "${preset.name}" writes ${illegal.map((k) => `${k} (${subject.excluded[k] ?? "composition"})`).join("; ")}`);
+      }
 });
 
-// ── (3) SIBLING PAIRING, DERIVED RATHER THAN LISTED ──────────────────────────
-test("(3) a preset name unique to one sibling is one the OTHER's schema cannot express", () => {
+// ── (4) SIBLING PAIRING, DERIVED RATHER THAN LISTED ──────────────────────────
+test("(4) a preset name unique to one sibling is one the OTHER's schema cannot express", () => {
   for (const [a, b] of PAIRED_FAMILIES) {
-    const of = (type) => new Map((registry.get(type).presets ?? []).map((p) => [p.name, p]));
+    const of = (type) => new Map(presetFamiliesOf(registry.get(type)).flatMap((f) => f.presets).map((p) => [p.name, p]));
     const [A, B] = [of(a), of(b)];
     const shared = [...A.keys()].filter((n) => B.has(n));
     assert.ok(shared.length >= MIN_SHARED_NAMES,
@@ -327,25 +426,73 @@ test("(3) a preset name unique to one sibling is one the OTHER's schema cannot e
   }
 });
 
-// ── (4) DISTINCTNESS IN PIXELS, DEFAULTS INCLUDED ────────────────────────────
+// ── (5) DISTINCTNESS IN PIXELS, DEFAULTS INCLUDED ────────────────────────────
+// THE BASELINE IS ROW 0 of every table (see `rows` below), and a subject may name
+// ONE preset that is ALLOWED to equal it — `restoresDefaults`.
+//
+// C-16 says a preset rendering identically to the untouched widget is a dead row
+// and the DEFAULT should move, never the sourced preset. That remedy has an
+// exception and clock_analog is it: its `classic` preset IS the widget's default
+// look BY CONTRACT — the plugin's own comment forbids tidying those numbers, and
+// tests/clock_analog_test.js gates all-defaults emit as byte-identical to the
+// frozen pre-preset geometry. Moving that default would change every existing
+// document. And the row is not dead: application is an OVERLAY, so without a row
+// that puts the dial back there is no way out of a preset through the pane at all
+// (the same argument as progress_bar's literal "Half Full").
+//
+// So the exemption is written as a STRONGER assertion, not a hole: the named row
+// must BE the untouched widget. Change `classic`'s values and this fails; name a
+// row that is not the default and this fails; it cannot hide a real duplicate,
+// because it names exactly one row against exactly one baseline.
+const BASELINE_ROW = 0;
 // The bar is the ONE bound derivable without judgement: `indistinguishable` is true
 // when no colour channel anywhere differs by a full 8-bit code value, i.e. when no
 // display can show the pair apart. A family whose narrowest margin sits near it is
 // reported by number, so a reader sees two rows converging before they collide.
-for (const subject of SUBJECTS) {
-  const plugin = registry.get(subject.type);
-  const frames = [{ name: "(widget defaults)", png: await frameOf(subject, {}, `${subject.type}__defaults`) }];
-  for (const preset of plugin.presets)
-    frames.push({ name: preset.name, png: await frameOf(subject, preset.props, `${subject.type}__${preset.name.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}`) });
+//
+// TWO PRESETS ARE THE SAME IFF THEY AGREE AT EVERY TIME, so a family whose content
+// is a function of the clock is scored at SEVERAL clock times and a pair counts as
+// distinct when it differs at ANY of them. A look family declares no sample times
+// and is scored once at the editor's own freeze, which is exactly the old rule.
+for (const subject of SUBJECTS)
+  for (const family of presetFamiliesOf(registry.get(subject.type))) {
+    const times = subject.sampleTimes?.[family.id] ?? [null];
+    const withReading = family.id === subject.lookFamily;
+    const label = (name, t) => `${subject.type}__${family.id}__${name.replace(/[^a-z0-9]+/gi, "_").toLowerCase()}${t === null ? "" : `__t${t}`}`;
+    const rows = [{ name: "(widget defaults)", props: {} }, ...family.presets.map((p) => ({ name: p.name, props: p.props }))];
+    // frames[timeIndex] is the whole table photographed at one clock time. Rendered
+    // SEQUENTIALLY on purpose: the clock override is module state, so concurrent
+    // renders would be racing one global.
+    const frames = [];
+    for (const t of times) {
+      const shot = [];
+      for (const r of rows) shot.push({ name: r.name, png: await frameOf(subject, r.props, label(r.name, t), t, withReading) });
+      frames.push(shot);
+    }
 
-  test(`(4) ${subject.type}: all ${plugin.presets.length} presets AND the widget defaults render pairwise distinct`, () => {
-    for (let i = 0; i < frames.length; i++)
-      for (let j = i + 1; j < frames.length; j++)
-        assert.ok(!indistinguishable(imageDistance(frames[i].png, frames[j].png)),
-          `${subject.type}: "${frames[i].name}" and "${frames[j].name}" render as the SAME picture — one preset wearing two names, or (if one of them is the widget defaults) a dead row. Move the DEFAULT, never the sourced preset.`);
-    const closest = closestPair(frames);
-    console.log(`      narrowest margin: "${closest.a}" vs "${closest.b}" — meanAbs ${closest.distance.meanAbs.toFixed(3)}, maxAbs ${closest.distance.maxAbs}, area ${(closest.distance.fraction * 100).toFixed(1)}%`);
-  });
-}
+    test(`(5) ${subject.type}/${family.id}: all ${family.presets.length} presets AND the widget defaults render pairwise distinct${times.length > 1 ? ` (over ${times.length} clock times)` : ""}`, () => {
+      for (let i = 0; i < rows.length; i++)
+        for (let j = i + 1; j < rows.length; j++) {
+          const same = frames.every((shot) => indistinguishable(imageDistance(shot[i].png, shot[j].png)));
+          // THE ONE LEGITIMATE COLLISION, and it is asserted rather than excused.
+          // See RESTORES_DEFAULTS above: the named row must BE the untouched
+          // widget, so the exemption is a stronger claim than the rule it lifts.
+          if (i === BASELINE_ROW && rows[j].name === subject.restoresDefaults) {
+            assert.ok(same,
+              `${subject.type}/${family.id}: "${rows[j].name}" is declared the RESTORE row but does NOT render as the untouched widget — either its values drifted off the default, or the declaration is stale`);
+            continue;
+          }
+          assert.ok(!same,
+            `${subject.type}/${family.id}: "${rows[i].name}" and "${rows[j].name}" render as the SAME picture at every sampled time — one preset wearing two names, or (if one of them is the widget defaults) a dead row. Move the DEFAULT, never the sourced preset; the sole exception is a declared RESTORE row.`);
+        }
+      // The narrowest margin is reported per clock time, because a timing family's
+      // rows legitimately converge at some instants and the interesting number is
+      // how close they get where they are meant to be apart.
+      frames.forEach((shot, k) => {
+        const closest = closestPair(shot);
+        console.log(`      narrowest margin${times[k] === null ? "" : ` at t=${times[k]}s`}: "${closest.a}" vs "${closest.b}" — meanAbs ${closest.distance.meanAbs.toFixed(3)}, maxAbs ${closest.distance.maxAbs}, area ${(closest.distance.fraction * 100).toFixed(1)}%`);
+      });
+    });
+  }
 
 console.log(`\n${passed} checks passed over ${SUBJECTS.length} widgets; shots in ${SHOT_DIR.replace(path.resolve(here, "../../../.."), ".")}`);

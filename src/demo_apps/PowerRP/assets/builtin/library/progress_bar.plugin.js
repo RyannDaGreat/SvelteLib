@@ -510,6 +510,163 @@ function constrainHandle(w, h, desired, orientation) {
   );
 }
 
+// A corner radius the widget is GUARANTEED to clamp down to half the shorter side
+// (effectiveRadius above), which is what makes a pill at EVERY bar size instead of
+// at one. Four times the default slide's long edge, so no bar that fits on a slide
+// has a half-side anywhere near it. A literal rather than an equation, on purpose:
+// binding a knob the user sets by hand to an equation installs a kind of state they
+// did not ask for, and a value the renderer is guaranteed to clamp gets the same
+// picture with none of that.
+const PILL_RADIUS = 4000;
+
+// The effect-OFF values, spelled once. Every preset in the look family names all
+// three effects because on THIS widget they constitute the look (a sunken groove IS
+// an inner shadow, a lit channel IS a bloom, a card-mounted stat bar IS a drop
+// shadow), and the overlay rule then forces the ones that do NOT use an effect to
+// switch it off explicitly. Naming the off-values once keeps that from being nine
+// hand-copied object literals that can silently disagree.
+const NO_SHADOW = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+const NO_BLOOM = { radius: 10, strength: 0 };
+const FLAT = { shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_SHADOW };
+
+/**
+ * THE TEN BARS, FLATTEST FIRST — the "Bar looks" family.
+ *
+ * THE ORDER IS THE CONTENT: it runs from the contemporary system indicator (flat,
+ * fully rounded, no depth) through the media and desktop bars to the physically
+ * modelled ones (a cell, a slot, a lit channel), and ends on the single gradient.
+ *
+ * TWO KNOBS DECIDE THE ERA AND THEY MOVE TOGETHER. A pill radius over a
+ * low-contrast container track is the current system look; radius 0 over a visible
+ * groove is the older desktop one. That is not taste — the mainstream component
+ * library's own determinate indicator defaults changed from a square-ended 4dp bar
+ * to a 50%-radius track with a gap and a stop indicator, and it now marks the square
+ * form legacy and not recommended. So a square-ended preset here is DATED ON PURPOSE.
+ *
+ * EVERY PRESET SETS ALL SIX LOOK KNOBS — fillColor, trackColor, cornerRadius and the
+ * three effects — because application is an overlay. `orientation` is NOT among
+ * them: it is not a look, it is an AXIS, and the axis is meaningless without the box
+ * (this widget's own docblock: "a horizontal bar is wide-and-short, a vertical one
+ * tall-and-narrow"). A preset cannot set w/h, so writing `vertical` onto a
+ * wide-and-short bar produces a wide band filling upward — the "someone who sized a
+ * box then lost that fit" complaint exactly. Cost: no thermometer, no VU meter, no
+ * rising level. `fraction` is NOT among them either: that is the READING, usually
+ * bound to a scrubber's progress export, and a literal write would unbind it.
+ *
+ * THE TRACK CARRIES THE WHOLE FAMILY AT fraction 0. At the default reading the fill
+ * emits NOTHING (see the header), so a set separated only by fill colour would
+ * collapse on a freshly-placed bar. Every trackColor below is therefore unique too.
+ */
+const PRESETS = [
+  { name: "System Track", description: "The current system determinate indicator: a fully-rounded bar over a low-contrast container track, flat, with no depth of any kind.", props: { fillColor: "#6750a4", trackColor: "#e8def8", cornerRadius: PILL_RADIUS, ...FLAT } },
+  { name: "Page Loader", description: "The thin strip that crawls across the top of a loading page: one saturated accent, square ends, and no track behind it at all.", props: { fillColor: "#29d398", trackColor: "#ffffff00", cornerRadius: 0, ...FLAT } },
+  { name: "Media Scrubber", description: "The playback bar over a video: white played time on a translucent white remainder, fully rounded, with the frame showing through the track.", props: { fillColor: "#ffffff", trackColor: "#ffffff33", cornerRadius: PILL_RADIUS, ...FLAT } },
+  { name: "Buffering", description: "The buffered-ahead tone: a half-transparent level over a dark scrim, so the two regions read as two states of one stream rather than as ink on a groove.", props: { fillColor: "#ffffff66", trackColor: "#00000080", cornerRadius: PILL_RADIUS, ...FLAT } },
+  { name: "Sunken Groove", description: "The desktop download bar: square ends and a pale track cut into the dialog, its recess drawn by a hard inner shadow along the top-left edge.", props: { fillColor: "#2f6fd0", trackColor: "#c9ccd1", cornerRadius: 0, shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: { dx: 1, dy: 1, blur: 2, color: "#000000", opacity: 0.45 } } },
+  { name: "Battery Meter", description: "The charge cell: a green level sitting in a dark hollow behind a slightly rounded case, flat and unlit the way a printed indicator is.", props: { fillColor: "#3ddc84", trackColor: "#1b1f23", cornerRadius: 3, ...FLAT } },
+  { name: "Skill Bar", description: "The stat bar off a game overlay or a resume card: a saturated amber level in a dark slot, lifted clear of the card by a soft drop shadow.", props: { fillColor: "#f2b134", trackColor: "#2b2f38", cornerRadius: 4, shadow: { dx: 0, dy: 2, blur: 4, color: "#000000", opacity: 0.35 }, bloom: NO_BLOOM, innerShadow: NO_SHADOW } },
+  { name: "Neon Charge", description: "The energy meter: a cyan level blooming hard against a near-black channel, fully rounded, so the bar reads as lit rather than painted.", props: { fillColor: "#00e5ff", trackColor: "#0a1014", cornerRadius: PILL_RADIUS, shadow: NO_SHADOW, bloom: { radius: 18, strength: 0.9 }, innerShadow: NO_SHADOW } },
+  { name: "Blueprint Gauge", description: "The technical-drawing readout: a pale cyan level on deep drafting blue, square-ended, with no shadow, no glow and no rounding.", props: { fillColor: "#7fd7ff", trackColor: "#0b2545", cornerRadius: 0, ...FLAT } },
+  {
+    name: "Sunrise Gradient",
+    description: "The widget's two-material headline: a warm gradient running the length of the fill against a flat brown channel, so the level changes colour as it grows.",
+    props: {
+      // The ONE paint OBJECT in this table, and it is here because two materials are
+      // this widget's headline capability — a library that never exercised it would
+      // fail to teach the widget. `angle: 0` runs the axis left to right, i.e. along
+      // a horizontal bar's length. The `solid` sibling is not decoration: a paint
+      // slot stores a MULTI-SUB-STATE object remembering every mode at once, so
+      // without it a user who switched this slot back to solid would find no
+      // remembered colour waiting (parsePaint's solid branch reads exactly this key).
+      fillColor: {
+        type: "linearGradient",
+        solid: "#ffb347",
+        linear: { stops: [{ offset: 0, color: "#ffb347" }, { offset: 1, color: "#ff5e62" }], angle: 0 },
+      },
+      trackColor: "#3a2b1f", cornerRadius: PILL_RADIUS, ...FLAT,
+    },
+  },
+];
+
+/**
+ * Pure function. The equation for a bar that fills ONCE over `seconds` and then
+ * holds full — the standard loading beat for a slide making one point.
+ *
+ * @param {number} seconds - how long the single sweep takes
+ * @returns {string} an "="-marked equation over the presentation clock
+ *
+ * @example sweepOver(5) // "= Math.min(time / 5, 1)"   (0.4 at t=2, 1 from t=5 on)
+ */
+function sweepOver(seconds) {
+  return `= Math.min(time / ${seconds}, 1)`;
+}
+
+/**
+ * Pure function. The equation for a bar that fills over `seconds`, snaps back to
+ * empty and repeats — a sawtooth.
+ *
+ * @param {number} seconds - the period
+ * @returns {string} an "="-marked equation over the presentation clock
+ *
+ * @example loopOver(3) // "= (time % 3) / 3"   (0.667 at t=2, 0 at t=3)
+ */
+function loopOver(seconds) {
+  return `= (time % ${seconds}) / ${seconds}`;
+}
+
+/**
+ * Pure function. The equation for a bar that fills over `seconds` then DRAINS over
+ * `seconds`, forever, turning smoothly at both ends instead of snapping — a
+ * triangle wave of period 2·seconds. Written as a helper rather than inline because
+ * the doubled period is a relationship between two of the four numbers in the
+ * expression, and a hand-typed version can get it wrong invisibly.
+ *
+ * @param {number} seconds - the time for ONE direction (half the period)
+ * @returns {string} an "="-marked equation over the presentation clock
+ *
+ * @example pingPongOver(6) // "= 1 - Math.abs(((time % 12) - 6) / 6)"   (0.333 at t=2, 1 at t=6)
+ */
+function pingPongOver(seconds) {
+  return `= 1 - Math.abs(((time % ${2 * seconds}) - ${seconds}) / ${seconds})`;
+}
+
+/**
+ * TIMING: what DRIVES the level, as opposed to what it looks like.
+ *
+ * A preset here IS an equation the author could have typed, which is the pattern the
+ * video scrubber's eleven presets already ship (ready-made equations over the
+ * presentation clock written verbatim onto a numeric row) and the one case where an
+ * equation is genuinely a preset's whole content rather than a knob being silently
+ * rebound. `fraction` is DISJOINT from all six look keys, so a look and a timing
+ * COMPOSE instead of clobbering — which is what makes two families legal here and
+ * illegal within the looks.
+ *
+ * EVERY VALUE CARRIES THE "=" MARKER. The bare form is correct only because
+ * `fraction` happens to be a numeric slot; on any other row it would store a silent
+ * literal — no error, no equation, the bar simply never binds. The marked form has
+ * no silent failure mode at all.
+ *
+ * "Half Full" is a LITERAL on purpose and it is not filler: application is an
+ * overlay, so once a timing equation is on the item there is otherwise no row in the
+ * pane that gets you back to a static bar. A family that can only be entered is a
+ * trap.
+ *
+ * THE FOUR SPANS ARE STAGE TIMINGS, not sourced numbers, and they are deliberately
+ * ALL DIFFERENT rather than variations on one beat. That is a legibility
+ * requirement, not decoration: the editor's clock is FROZEN at a fixed time, so an
+ * author only ever hover-previews these at ONE instant, and four presets sharing a
+ * five-second beat produced three IDENTICAL bars at that instant (measured: 0.4,
+ * 0.4, 0.4). At 5 / 15 / 3 / 6 they read 0.400 / 0.133 / 0.667 / 0.333 against Half
+ * Full's 0.500 — five different bars in the pane.
+ */
+const TIMING_PRESETS = [
+  { name: "Slide Timer", description: "Fills once over five seconds and holds full — the standard loading beat for a slide that is making one point.", props: { fraction: sweepOver(5) } },
+  { name: "Long Hold", description: "The same single sweep paced over fifteen seconds, for a bar that has to last as long as somebody is talking over it.", props: { fraction: sweepOver(15) } },
+  { name: "Looping Fill", description: "Fills over three seconds, snaps back to empty and repeats — the scrubber's Loop applied to a level rather than to a clip.", props: { fraction: loopOver(3) } },
+  { name: "Ping-Pong", description: "Fills over six seconds then drains over six, forever, turning smoothly at both ends instead of snapping back.", props: { fraction: pingPongOver(6) } },
+  { name: "Half Full", description: "Not time-driven at all — a plain half. The way back to a static bar once a timing preset has bound the level to the clock.", props: { fraction: 0.5 } },
+];
+
 return {
   type: "progress_bar",
   title: "Progress Bar",
@@ -544,6 +701,17 @@ return {
     ...props("cornerRadius", { cornerRadius: { label: "Corner radius", category: CAT, help: "Rounds the corners of both the track and the fill — set it near half the bar's thickness for a pill." } }),
     ...props("opacity"),
     ...bundle("effects"),
+  ],
+  // TWO families, not one flat table, because their key sets are DISJOINT — the ten
+  // looks write {fillColor, trackColor, cornerRadius, shadow, bloom, innerShadow}
+  // and the five timings write {fraction} — so picking one from each COMPOSES
+  // rather than clobbers, which is the only split core/registry.js permits. It also
+  // buys the two real headings a generic "Presets" would not. The ten looks
+  // themselves CANNOT be split: they are alternative whole looks over the same six
+  // keys, and any division of them would overlap on every one.
+  presetFamilies: [
+    { id: "looks", title: "Bar looks", presets: PRESETS },
+    { id: "timing", title: "Timing", presets: TIMING_PRESETS },
   ],
   /**
    * Pure function. State → display-list commands (local space): the FILL region
