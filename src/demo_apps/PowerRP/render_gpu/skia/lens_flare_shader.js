@@ -132,6 +132,14 @@ import { parseColor } from "../ir.js";
 // this shader file (the fill-material single-declaration rule) — rainy_window_shader.js
 // imports the same constant for the same reason. core/ is DOM-free / bare-node-safe.
 import { UNIT_SPAN_SCRUB } from "../../core/properties.js";
+// MIN_POLYGON_BLADES (core/optics.js) is the SAME fact as this file's own
+// MIN_BLADES: the fewest leaves that enclose a polygon. R6-3.11 requires the
+// flare and plugins/aperture.js to agree about what a blade count MEANS, and a
+// floor written out twice is the hand-maintained-mirror defect — so the row's
+// bound is imported rather than transcribed. The SkSL copy below cannot import
+// anything, so it stays a literal and tests/aperture_test.js gates it against
+// this constant by reading the shader's own source text.
+import { MIN_POLYGON_BLADES } from "../../core/optics.js";
 
 // uCenter 2 + uHalfSize 2 + uAngle 1 = 5 (framework geometry)
 //   + uLight 2 + 17 scalar knobs + uStreakColor 3 + uTempTint 3 + uTint 3
@@ -631,7 +639,7 @@ export const LENS_FLARE_FILL_PARAMS = [
   { name: "halo", kind: "number", default: 0.45, min: 0, help: "Intensity of the halo ring around the optical centre. 0 = off; floor 0 as above." },
   { name: "haloRadius", kind: "number", default: 0.45, min: 0, help: "Radius of the halo ring (normalized to widget height, measured from the centre). No upper cap — a huge ring simply passes outside the box. Floor 0 because a radius cannot be negative." },
   { name: "starburst", kind: "number", default: 0.4, min: 0, help: "Intensity of the diffraction starburst (the radial spikes from the aperture blades). 0 = off; floor 0 as above." },
-  { name: "blades", kind: "number", default: 8, min: 3, step: 1, help: "Aperture blade count. Diffraction physics: an EVEN count gives that many spikes; an ODD count gives twice as many (e.g. 9 blades → 18 spikes). Also shapes the ghost iris polygon. Floor 3 is geometric (an iris polygon needs three sides) and matches the shader's own MIN_BLADES — below it the shader would silently clamp." },
+  { name: "blades", kind: "number", default: 8, min: MIN_POLYGON_BLADES, step: 1, help: "Aperture blade count. Diffraction physics: an EVEN count gives that many spikes; an ODD count gives twice as many (e.g. 9 blades → 18 spikes). Also shapes the ghost iris polygon. Floor 3 is geometric (an iris polygon needs three sides) and matches the shader's own MIN_BLADES — below it the shader would silently clamp." },
   { name: "starburstSharp", kind: "number", default: 18, min: 0, scrub: 0.1, help: "Spike thinness (exponent). Higher = razor-thin spikes; lower = soft, fat rays; 0 = no spikes at all, just an even radial glow. No upper cap — a huge exponent is simply a hairline star." },
   { name: "starburstRotation", kind: "angle", display: "degrees", default: 0.2, help: "Rotation of the starburst spikes — keyframe it (or bind an equation) to make the spikes swim as a camera turns. Uncapped: past 360° keeps counting, so a keyframed 720° spins twice." },
   { name: "chromatic", kind: "number", default: 0.02, help: "Chromatic dispersion amount: how far the red/blue channels split at each iris/halo edge (spectral fringing). Tiny is realistic; a negative value disperses the other way (blue outside instead of red)." },

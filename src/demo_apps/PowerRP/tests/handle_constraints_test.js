@@ -85,6 +85,10 @@ const NOT_NEAREST = {
   // nearest allowed COUNT rather than the nearest allowed ANGLE. The two differ
   // only in a thin band around each half-integer count.
   "ss_polygonStar/points": "nearest allowed COUNT, not nearest allowed angle",
+  // The same discrete set, for the same reason: an iris's blade count is read
+  // from the angular gap between two adjacent blade normals and rounded in
+  // COUNT, so the rim point chosen is the nearest allowed COUNT.
+  "aperture/blades": "nearest allowed COUNT, not nearest allowed angle",
 };
 
 /**
@@ -109,7 +113,7 @@ const NOT_ROUND_TRIP = {
  * (the same convention donut/circle closestAnchor use: exact when rx === ry), so
  * their NEAREST check runs on SQUARE boxes only. Stated, not skipped.
  */
-const ELLIPSE_NORMALIZED = new Set(["ss_radialSweep", "ss_polygonStar", "ss_gear"]);
+const ELLIPSE_NORMALIZED = new Set(["ss_radialSweep", "ss_polygonStar", "ss_gear", "aperture"]);
 
 // ── The states every handle is exercised against ──────────────────────────────
 // Each entry: an item state. Sizes are ordinary, plus a non-square variant (which
