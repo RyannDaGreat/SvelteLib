@@ -33,7 +33,7 @@ import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline, axisNormalFrame, projectOntoNormal, closestPointOnAxisRange } from "../core/outline.js";
-import { endpointPairHooks, arrowHeads, ARROW_HEAD_ROWS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, arrowHeads, connectorPathAnchors, walkPolyline, ARROW_HEAD_ROWS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The bezier generator's params for a state.
  * @example bendParams({from: {x: 0, y: 0}, to: {x: 100, y: 0}, bend: 0.3}) // {x0: 0, y0: 0, x1: 100, y1: 0, bend: 0.3}
@@ -136,6 +136,10 @@ export const curvedArrowPlugin = {
   // IS this widget's width and height, so it band-selects and culls like any box
   // widget despite having no w/h state and no resize handles.
   localBounds: curvedArrowInkRect,
+  // THE ANCHOR PROTOCOL: start / mid / end on the SAMPLED curve, by ARC LENGTH.
+  // This widget is exactly why that qualifier matters — the chord midpoint the
+  // old workaround used misses the visible arc by bend*span/2 along the normal.
+  anchors: (s) => connectorPathAnchors(curvedArrowPolyline(bendParams(s))),
   // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
   // defaultCanSkip's cullMargin hook. MANDATORY now that this widget HAS an AABB
   // to be culled by: without it a shadowed curve just off-view loses its halo.
@@ -204,17 +208,12 @@ export const curvedArrowPlugin = {
  * @example trimPolylineEnds([{x: 0, y: 0}, {x: 10, y: 0}], 0, 0).map((p) => p.x) // [0, 10]
  */
 function trimPolylineEnds(pts, startDist, endDist) {
+  // ONE arc-length traversal for the whole codebase (core/endpoints.js
+  // walkPolyline). This function used to carry its own copy of the walk — the
+  // only one that existed — so the path anchors would have made it the second.
   const walk = (arr, dist) => {
-    let remaining = dist;
-    for (let i = 0; i < arr.length - 1; i++) {
-      const segLen = Math.hypot(arr[i + 1].x - arr[i].x, arr[i + 1].y - arr[i].y);
-      if (remaining <= segLen) {
-        const t = segLen === 0 ? 0 : remaining / segLen;
-        return [{ x: arr[i].x + (arr[i + 1].x - arr[i].x) * t, y: arr[i].y + (arr[i + 1].y - arr[i].y) * t }, ...arr.slice(i + 1)];
-      }
-      remaining -= segLen;
-    }
-    return [arr[arr.length - 1]]; // trimmed past the whole polyline
+    const { point, index } = walkPolyline(arr, dist);
+    return index >= arr.length - 1 ? [point] : [point, ...arr.slice(index + 1)];
   };
   const fromStart = startDist > 0 ? walk(pts, startDist) : pts;
   const reversed = [...fromStart].reverse();

@@ -57,7 +57,7 @@ import { bundle, bundleNestedDefaults, defaults, props } from "../core/propertie
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { fancyArrowOutline, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal, closestPointOnSegment } from "../core/outline.js";
 import { polygonPathD } from "../core/shapes.js";
-import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
+import { endpointPairHooks, hitsShaft, connectorPathAnchors } from "../core/endpoints.js";
 
 /** Pure function. The generator params for a state (evaluated OR raw — only
  * the caller knows; emit/hit-test pass evaluated states).
@@ -246,6 +246,12 @@ export const fancyArrowPlugin = {
   // this widget's width and height, so it band-selects and culls like any box
   // widget despite having no w/h state and no resize handles.
   localBounds: fancyArrowInkRect,
+  // THE ANCHOR PROTOCOL: start / mid / end on the arrow's SPINE — the from→to axis
+  // the tapered outline is built around — so this widget binds a mid-edge label
+  // exactly like its four thinner siblings (core/endpoints.js connectorPathAnchors).
+  // The spine, not the outline hull: the hull is a closed loop, so an arc-length
+  // fraction of it would walk down one side and back up the other.
+  anchors: (s) => connectorPathAnchors([s.from, s.to]),
   // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
   // defaultCanSkip's cullMargin hook. MANDATORY now that this widget HAS an AABB
   // to be culled by: without it a shadowed arrow just off-view loses its halo.

@@ -124,6 +124,121 @@ export function hitsPolylineShaft(points, wx, wy, radius) {
 }
 
 /**
+ * Pure function. The total arc length of a polyline, in world units.
+ *
+ * @example polylineLength([{x: 0, y: 0}, {x: 3, y: 4}]) // 5
+ * @example polylineLength([{x: 0, y: 0}, {x: 10, y: 0}, {x: 10, y: 10}]) // 20
+ * @example polylineLength([{x: 5, y: 5}]) // 0 (a single point has no extent)
+ */
+export function polylineLength(points) {
+  let total = 0;
+  for (let i = 0; i < points.length - 1; i++) total += Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+  return total;
+}
+
+/**
+ * Pure function. Walk `dist` along a polyline's arc length from its first point.
+ * Returns the point reached AND the index of the segment it fell in, so a caller
+ * that needs the remaining VERTICES (a trim) and one that needs only the POINT
+ * (a path anchor) share one traversal instead of writing it twice.
+ *
+ * Walking past the end clamps to the last vertex — an over-long trim collapses
+ * rather than running off the array.
+ *
+ * Args:
+ *   points ({x,y}[]): at least one vertex
+ *   dist (number): arc length from points[0]
+ *
+ * Returns:
+ *   {point: {x, y}, index: number} — `index` is the segment the point lies on
+ *     (its start vertex), or points.length - 1 when clamped to the end
+ *
+ * @example walkPolyline([{x: 0, y: 0}, {x: 10, y: 0}], 4) // {point: {x: 4, y: 0}, index: 0}
+ * @example walkPolyline([{x: 0, y: 0}, {x: 10, y: 0}, {x: 10, y: 10}], 15) // {point: {x: 10, y: 5}, index: 1}
+ * @example walkPolyline([{x: 0, y: 0}, {x: 10, y: 0}], 99) // {point: {x: 10, y: 0}, index: 1}
+ */
+export function walkPolyline(points, dist) {
+  let remaining = dist;
+  for (let i = 0; i < points.length - 1; i++) {
+    const segLen = Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y);
+    if (remaining <= segLen) {
+      const t = segLen === 0 ? 0 : remaining / segLen; // a zero-length segment has no direction to walk along
+      return { point: { x: points[i].x + (points[i + 1].x - points[i].x) * t, y: points[i].y + (points[i + 1].y - points[i].y) * t }, index: i };
+    }
+    remaining -= segLen;
+  }
+  return { point: points[points.length - 1], index: points.length - 1 };
+}
+
+/**
+ * Pure function. The point at fraction `t` of a polyline's ARC LENGTH — not of
+ * its parameter, which is a different point on anything but a straight line.
+ * t=0 is the first vertex, t=1 the last, t=0.5 the halfway point BY DISTANCE.
+ *
+ * This is the primitive behind the connector path anchors, and arc length is the
+ * whole reason it exists: a curved arrow's bezier is sampled uniformly in the
+ * bezier PARAMETER, so its middle sample is not its middle point, and an elbow
+ * route's three legs have three different lengths.
+ *
+ * @example pointAtPolylineFraction([{x: 0, y: 0}, {x: 10, y: 0}], 0.5) // {x: 5, y: 0}
+ * @example pointAtPolylineFraction([{x: 0, y: 0}, {x: 10, y: 0}, {x: 10, y: 10}], 0.5) // {x: 10, y: 0} (the corner: 10 of the 20 total)
+ * @example pointAtPolylineFraction([{x: 4, y: 7}, {x: 4, y: 7}], 0.5) // {x: 4, y: 7} (zero length: every fraction is the same point)
+ */
+export function pointAtPolylineFraction(points, t) {
+  return walkPolyline(points, polylineLength(points) * t).point;
+}
+
+/**
+ * The three path anchor ids a connector publishes, and the arc-length fraction
+ * each sits at. Exported so a test names them from here rather than restating
+ * three string literals (and so a fourth is added in ONE place).
+ *
+ * @example CONNECTOR_PATH_ANCHORS.map((a) => a.id) // ["start", "mid", "end"]
+ */
+export const CONNECTOR_PATH_ANCHORS = [{ id: "start", t: 0 }, { id: "mid", t: 0.5 }, { id: "end", t: 1 }];
+
+/**
+ * Pure function. A connector's preset anchors: three points ON ITS DRAWN PATH,
+ * at arc-length fractions 0 / 0.5 / 1. World == identity for every connector, so
+ * these local coordinates are also its world ones.
+ *
+ * ── WHY THESE THREE AND NOT THE STANDARD NINE ────────────────────────────────
+ * plugins/tangent_lines.js — the one other `bbox: false` widget with anchors —
+ * publishes the nine standardBBoxAnchors over its ink rect, and this deliberately
+ * does not follow it. For a CONNECTOR the ink rect is an artifact of the route
+ * rather than a feature of it: an elbow route hugs two sides of its own AABB, so
+ * that box's `cm` sits in empty space the connector never passes through, and a
+ * label bound there is placed by a point the user cannot see. A curved arrow is
+ * worse — its bbox centre misses the visible curve by bend·span/2 along the
+ * normal. Every anchor here is ON the ink, which is the property that makes
+ * binding a mid-edge label to one of them mean what it looks like it means.
+ *
+ * ── WHY MID IS BY ARC LENGTH ─────────────────────────────────────────────────
+ * "Halfway along" is a distance, not a parameter. The chord midpoint
+ * (from + to) / 2 is the workaround this replaces, and it is simply wrong for
+ * both curved widgets.
+ *
+ * Anchor ids contain NO underscore, as the equation reference grammar requires
+ * (plugins/bento.js's docblock explains why: the head splits on an underscore).
+ *
+ * Args:
+ *   points ({x,y}[]): the connector's DRAWN path, as its emit() computes it
+ *
+ * Returns:
+ *   {id, x, y}[] — the registry's anchors() contract
+ *
+ * @example connectorPathAnchors([{x: 0, y: 0}, {x: 100, y: 0}]) // [{id: "start", x: 0, y: 0}, {id: "mid", x: 50, y: 0}, {id: "end", x: 100, y: 0}]
+ * @example connectorPathAnchors([{x: 0, y: 0}, {x: 10, y: 0}, {x: 10, y: 10}])[1] // {id: "mid", x: 10, y: 0}
+ */
+export function connectorPathAnchors(points) {
+  const total = polylineLength(points);
+  return CONNECTOR_PATH_ANCHORS.map(({ id, t }) => {
+    const p = walkPolyline(points, total * t).point;
+    return { id, x: p.x, y: p.y };
+  });
+}
+
+/**
  * Pure function (factory returning pure hooks). The three plugin hooks an
  * endpoint-pair widget spreads into its definition — editPoints(node),
  * moveBy(state, dx, dy), closestToward(state, path) — all delegating to the

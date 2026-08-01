@@ -43,7 +43,7 @@ import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { elbowRoute, elbowHandle, closestPointOnSegment } from "../core/outline.js";
-import { endpointPairHooks, arrowHeads, ARROW_HEAD_ROWS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, arrowHeads, connectorPathAnchors, ARROW_HEAD_ROWS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The route generator's params for a state.
  * @example routeParams({from: {x: 0, y: 0}, to: {x: 100, y: 50}, elbow: 0.5}) // {x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5, orient: undefined, bulge: undefined}
@@ -141,6 +141,10 @@ export const elbowArrowPlugin = {
   // widget's width and height, so it band-selects and culls like any box widget
   // despite having no w/h state and no resize handles.
   localBounds: elbowArrowInkRect,
+  // THE ANCHOR PROTOCOL: start / mid / end along the 4-point ROUTE, by arc length
+  // — so `mid` lands on the middle leg (where a flowchart label belongs) rather
+  // than at the centre of a bounding box the route only ever hugs two sides of.
+  anchors: (s) => connectorPathAnchors(elbowRoute(routeParams(s)).map(([x, y]) => ({ x, y }))),
   // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
   // defaultCanSkip's cullMargin hook. MANDATORY now that this widget HAS an AABB
   // to be culled by: without it a shadowed route just off-view loses its halo.

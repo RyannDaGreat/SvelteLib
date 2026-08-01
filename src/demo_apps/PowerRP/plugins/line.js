@@ -31,7 +31,7 @@ import { polyline, path } from "../render_gpu/ir.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { endpointPairHooks, hitsShaft, ARROW_STROKE_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, hitsShaft, connectorPathAnchors, ARROW_STROKE_WIDTH } from "../core/endpoints.js";
 
 /**
  * Line end-cap kinds. "round" is the display-list `polyline`'s native cap (a
@@ -217,6 +217,9 @@ export const linePlugin = {
   // are just the min/max of its endpoints, so it band-selects and culls like any
   // box widget despite having no w/h state and no resize handles.
   localBounds: lineInkRect,
+  // THE ANCHOR PROTOCOL: start / mid / end on the drawn segment (core/endpoints.js
+  // connectorPathAnchors — the whole connector family publishes the same three).
+  anchors: (s) => connectorPathAnchors([s.from, s.to]),
   // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
   // defaultCanSkip's cullMargin hook. MANDATORY now that a line HAS an AABB to
   // be culled by: without it a shadowed line just off-view loses its halo.

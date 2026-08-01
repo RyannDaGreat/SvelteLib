@@ -43,7 +43,7 @@
 import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { endpointPairHooks, hitsShaft, arrowHeads, ARROW_HEAD_ROWS, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, hitsShaft, arrowHeads, connectorPathAnchors, ARROW_HEAD_ROWS, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /**
  * Pure function. The LOCAL rect the arrow's INK occupies: the AABB of its two
@@ -137,6 +137,11 @@ export const arrowPlugin = {
   // are just the min/max of its endpoints, so it band-selects and culls like any
   // box widget despite having no w/h state and no resize handles.
   localBounds: arrowInkRect,
+  // THE ANCHOR PROTOCOL (core/registry.js): start / mid / end ON the drawn shaft,
+  // so a mid-edge label has something to bind to. Connectors published NO anchors
+  // at all until this — see core/endpoints.js connectorPathAnchors for why they
+  // are path points rather than the standard nine over a bounding box.
+  anchors: (s) => connectorPathAnchors([s.from, s.to]),
   // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
   // defaultCanSkip's cullMargin hook. MANDATORY now that an arrow HAS an AABB to
   // be culled by: without it a shadowed arrow just off-view loses its halo.
