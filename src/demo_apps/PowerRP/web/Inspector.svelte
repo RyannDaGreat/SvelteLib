@@ -57,6 +57,8 @@
     canonicalPropPath, compiled, displayToStored, storedToDisplay, equationTokenSpans, isEquationValue,
   } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
+  import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
+  import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
   import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
@@ -1048,33 +1050,21 @@
     eqInvalid = false;
   }
 
-  /** Keyboard for the equation input, autocomplete-aware — NumericField's
-   * handler, unchanged in behavior:
-   *   Up/Down    move the suggestion highlight (only while open)
-   *   Tab/Enter  accept the highlighted suggestion while the list is open;
-   *              Enter with it closed commits the field
-   *   Escape     dismisses an OPEN list first (field untouched); a second
-   *              Escape reverts the field. */
-  function onEqKeydown(e) {
-    const hasSuggestions = eqSuggestOpen && eqCandidates.length > 0;
-    if (hasSuggestions && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-      eqHighlighted = (eqHighlighted + (e.key === "ArrowDown" ? 1 : -1) + eqCandidates.length) % eqCandidates.length;
-      e.preventDefault();
-    } else if (hasSuggestions && (e.key === "Tab" || e.key === "Enter")) {
-      acceptEqCandidate(eqCandidates[eqHighlighted]);
-      e.preventDefault();
-    } else if (e.key === "Enter") {
-      commitEquation();
-      e.target.blur();
-    } else if (e.key === "Escape" && hasSuggestions) {
-      eqSuggestOpen = false;
-      e.stopPropagation(); // dismiss-only: don't bubble into Deselect
-    } else if (e.key === "Escape") {
-      cancelEquation();
-      e.target.blur();
-      e.stopPropagation();
-    }
-  }
+  /** Command. Keyboard for the universal `=` row's equation input — the shared
+   *  equation-suggest keyboard (web/equationSuggestKeys.js), which AngleField and
+   *  NumericField wire identically. The behaviour is documented there; this is
+   *  only the wiring. This docblock used to read "NumericField's handler,
+   *  unchanged in behavior" above a verbatim copy of it — now it IS that handler. */
+  const onEqKeydown = makeEquationSuggestKeydown({
+    isOpen: () => eqSuggestOpen,
+    candidates: () => eqCandidates,
+    highlighted: () => eqHighlighted,
+    setHighlighted: (i) => (eqHighlighted = i),
+    setOpen: (open) => (eqSuggestOpen = open),
+    accept: acceptEqCandidate,
+    commit: commitEquation,
+    revert: cancelEquation,
+  });
 
   /** Blur commits, but only when there is something to commit: an untouched
    * draft (clicking the ƒ button to drop the equation, or tabbing away) must

@@ -157,6 +157,7 @@
   import { getPath } from "../core/deltas.js";
   import { equationTokenSpans } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
+  import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { displayUnit } from "./displayUnits.js";
   import { fanOutPairs } from "../core/multiselect.js";
 
@@ -552,34 +553,25 @@
     endTextEntry();
   }
 
-  /** Command. Keyboard for the ONE text-entry path, autocomplete-aware:
-   *   Up/Down   — move the suggestion highlight (only while open)
-   *   Tab/Enter — accept the highlighted suggestion IF the dropdown is open (it
-   *               does not commit the field); Enter with the dropdown CLOSED
-   *               commits
-   *   Escape    — closes an OPEN dropdown first (field untouched); a SECOND
-   *               Escape reverts the field. Gated on candidates.length so
-   *               Escape reverts IMMEDIATELY when nothing is showing. */
-  function onTextKeydown(e) {
-    const hasSuggestions = suggestionsOpen && candidates.length > 0;
-    if (hasSuggestions && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-      highlighted = (highlighted + (e.key === "ArrowDown" ? 1 : -1) + candidates.length) % candidates.length;
-      e.preventDefault();
-    } else if (hasSuggestions && (e.key === "Tab" || e.key === "Enter")) {
-      acceptCandidate(candidates[highlighted]);
-      e.preventDefault();
-    } else if (e.key === "Enter") {
-      commitText();
-      e.target.blur();
-    } else if (e.key === "Escape" && hasSuggestions) {
-      suggestionsOpen = false;
-      e.stopPropagation(); // dismiss-only: field/draft untouched, don't bubble into Deselect
-    } else if (e.key === "Escape") {
-      revertDraft();
-      e.target.blur();
-      e.stopPropagation(); // don't let Escape bubble into Deselect
-    }
-  }
+  /** Command. Keyboard for the ONE text-entry path, autocomplete-aware — the
+   *  shared equation-suggest keyboard (web/equationSuggestKeys.js), which
+   *  NumericField and the Inspector's universal `=` row wire identically. The
+   *  behaviour is documented there; this is only the wiring.
+   *
+   *  NOTE it is attached to BOTH of this field's inputs — the equation input and
+   *  the plain degrees input (only onEqInput ever sets suggestionsOpen, so on the
+   *  degrees input the same handler degrades to plain Enter-commit /
+   *  Escape-revert, which is exactly what that input wants). */
+  const onTextKeydown = makeEquationSuggestKeydown({
+    isOpen: () => suggestionsOpen,
+    candidates: () => candidates,
+    highlighted: () => highlighted,
+    setHighlighted: (i) => (highlighted = i),
+    setOpen: (open) => (suggestionsOpen = open),
+    accept: acceptCandidate,
+    commit: commitText,
+    revert: revertDraft,
+  });
 
   /** Command. Settles the field on blur — but ONLY if something actually
    * changed, so tabbing through a field never writes a no-op undo entry. */

@@ -86,6 +86,7 @@
   } from "../core/expressions.js";
   import { boxCenter, xForBoxCenterX, yForBoxCenterY } from "../core/geometry.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
+  import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { decimalPlaces, resolveScrub } from "../../../lib/numberStep.js";
   import { displayUnit } from "./displayUnits.js";
   import { fanOutPairs } from "../core/multiselect.js";
@@ -499,38 +500,21 @@
     endTextEntry();
   }
 
-  /** Keyboard for the ONE text-entry path, autocomplete-aware:
-   *   Up/Down     — move the suggestion highlight (only while open)
-   *   Tab/Enter   — accept the highlighted suggestion IF the dropdown is
-   *                 open (does not commit the field — see acceptCandidate);
-   *                 Enter with the dropdown CLOSED still commits as before
-   *   Escape      — closes an OPEN dropdown first (one keystroke, field
-   *                 untouched); a SECOND Escape (dropdown already closed)
-   *                 falls through to the pre-existing revert-the-field
-   *                 behavior, UNCHANGED. Gated on candidates.length (not just
-   *                 suggestionsOpen) so Escape reverts IMMEDIATELY when
-   *                 nothing is actually showing — no invisible "eaten"
-   *                 keystroke. */
-  function onEqKeydown(e) {
-    const hasSuggestions = suggestionsOpen && candidates.length > 0;
-    if (hasSuggestions && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-      highlighted = (highlighted + (e.key === "ArrowDown" ? 1 : -1) + candidates.length) % candidates.length;
-      e.preventDefault();
-    } else if (hasSuggestions && (e.key === "Tab" || e.key === "Enter")) {
-      acceptCandidate(candidates[highlighted]);
-      e.preventDefault();
-    } else if (e.key === "Enter") {
-      commitText();
-      e.target.blur();
-    } else if (e.key === "Escape" && hasSuggestions) {
-      suggestionsOpen = false;
-      e.stopPropagation(); // dismiss-only: field/draft untouched, don't bubble into Deselect
-    } else if (e.key === "Escape") {
-      revertDraft();
-      e.target.blur();
-      e.stopPropagation(); // don't let Escape bubble into Deselect
-    }
-  }
+  /** Command. Keyboard for the ONE text-entry path, autocomplete-aware — the
+   *  shared equation-suggest keyboard (web/equationSuggestKeys.js), which
+   *  AngleField and the Inspector's universal `=` row wire identically. The
+   *  behaviour is documented there; this is only the wiring. Distinct from
+   *  onWrapKeydown below, which is the outer wrapper's own keyboard. */
+  const onEqKeydown = makeEquationSuggestKeydown({
+    isOpen: () => suggestionsOpen,
+    candidates: () => candidates,
+    highlighted: () => highlighted,
+    setHighlighted: (i) => (highlighted = i),
+    setOpen: (open) => (suggestionsOpen = open),
+    accept: acceptCandidate,
+    commit: commitText,
+    revert: revertDraft,
+  });
 
   /** Settles the field on blur — but ONLY if something actually changed, so
    * tabbing through a field (or the blur that FOLLOWS an Enter/Escape, which
