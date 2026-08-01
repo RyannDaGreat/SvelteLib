@@ -1,5 +1,6 @@
 /** Rectangle widget — the canonical bbox plugin. */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { paintModifierPoints } from "../core/paint_handles.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
@@ -10,6 +11,7 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 export const rectPlugin = {
   type: "rect",
+  ephemeral: EPHEMERAL.NONE,
   title: "Rectangle",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):

@@ -45,6 +45,7 @@
  * bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors, worldTransform } from "../../core/derive.js";
 import { closestPointOnAxisRange } from "../../core/outline.js";
 import { bundle, bundleNestedDefaults, CUSTOM_CATEGORY, customProps, defaults, props } from "../../core/properties.js";
@@ -386,6 +387,7 @@ const PRESETS = [
 
 export const lensFlarePlugin = {
   type: "demo_lens_flare",
+  ephemeral: EPHEMERAL.NONE,
   title: "Lens Flare",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   presets: PRESETS,

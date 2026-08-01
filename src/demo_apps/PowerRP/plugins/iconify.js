@@ -104,6 +104,7 @@
  * console.warn — never a silent narrowing of results.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../core/properties.js";
@@ -577,6 +578,7 @@ const CUSTOM = customProps([
 
 export const iconifyPlugin = {
   type: "iconify",
+  ephemeral: EPHEMERAL.NONE,
   title: "Iconify Icon",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // Double-click mounts the canvas-overlay palette (the cursor precedent);

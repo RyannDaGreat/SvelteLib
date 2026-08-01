@@ -108,6 +108,7 @@
  * is glue, not geometry, and everything it decides is testable from bare node.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { paintModifierPoints } from "../core/paint_handles.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
@@ -661,6 +662,7 @@ const PRESETS = [
 
 export const polygonPlugin = {
   type: "polygon",
+  ephemeral: EPHEMERAL.NONE,
   title: "Polygon",
   presets: PRESETS,
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },

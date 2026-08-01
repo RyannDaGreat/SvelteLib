@@ -28,6 +28,7 @@
  * bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { materialBackdrop } from "../../render_gpu/ir.js";
@@ -49,6 +50,7 @@ const CUSTOM = customProps([
 
 export const rainyWindowPlugin = {
   type: "demo_rainy_window",
+  ephemeral: EPHEMERAL.NONE,
   title: "Rainy Window",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   defaults: {

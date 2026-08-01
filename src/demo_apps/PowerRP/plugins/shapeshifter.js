@@ -46,6 +46,7 @@
  * function of state), so only the relevant yellow squares ever appear.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { paintModifierPoints } from "../core/paint_handles.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
@@ -906,6 +907,12 @@ export function makeFamilyPlugin(fam) {
   const plugin = {
     type: fam.type,
     title: fam.title,
+    // Declared ONCE for the whole family, in the factory that mints them: a
+    // shapeshifter is parametric vector geometry with no cheap tier and no async
+    // source, so it is correct on its first frame. Putting it here rather than on
+    // each FAMILIES entry means a family added tomorrow inherits the right answer
+    // instead of being caught by the registration gate.
+    ephemeral: EPHEMERAL.NONE,
     // IT IS A SHAPE, AND IT SAYS SO ITSELF (core/registry.js INSERT_MENUS). The
     // Add Shape grid used to be defined as "the shapeshifter families", so this
     // line changes nothing about which families appear — what it changes is that

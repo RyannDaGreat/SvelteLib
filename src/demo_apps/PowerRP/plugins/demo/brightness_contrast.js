@@ -54,6 +54,7 @@
  * bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { BRIGHTNESS_CONTRAST_FILL_PARAMS, brightnessContrastUniformParams } from "../../render_gpu/skia/brightness_contrast_shader.js";
@@ -137,6 +138,7 @@ export function isNeutralTone(s) {
 
 export const brightnessContrastPlugin = {
   type: "demo_brightness_contrast",
+  ephemeral: EPHEMERAL.NONE,
   title: "Brightness / Contrast",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   defaults: {

@@ -271,7 +271,7 @@ test("8. the rule is applied by the REGISTRY, so a plugin gets it without declar
   const INSET = 10;
   const reg = createRegistry();
   reg.register({
-    type: "w4l_probe", title: "Probe", capabilities: { bbox: true }, defaults: { w: W, h: H },
+    type: "w4l_probe", ephemeral: "none", title: "Probe", capabilities: { bbox: true }, defaults: { w: W, h: H },
     emit: () => [],
     anchors: standardBBoxAnchors,
     // A rim that is the box INSET by 10 on every side: nothing like the bbox, so

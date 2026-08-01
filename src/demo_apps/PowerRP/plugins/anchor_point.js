@@ -27,6 +27,7 @@
  * PENDING USER RATIFICATION (arbitrary-constants rule).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 
 // The default grab-box size for a new anchor point. No numeric precedent exists
@@ -40,6 +41,7 @@ const ANCHOR_GRAB_H = 20;
 
 export const anchorPointPlugin = {
   type: "anchor_point",
+  ephemeral: EPHEMERAL.NONE,
   title: "Anchor Point",
   // ghost:true → no rendered volume (isGhostNode), so its phantom outline is
   // drawn for selection like a crop box. transform → body-drag moves x/y.

@@ -27,6 +27,7 @@
  * convention only.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, tickValues, minorTickValues, minorSubdivisions, easedReveal, clamp01 } from "../core/graph_scale.js";
@@ -75,6 +76,7 @@ export function gridLineSegment(orient, pos, w, h, factor) {
 
 export const graphGridPlugin = {
   type: "graph_grid",
+  ephemeral: EPHEMERAL.NONE,
   title: "Graph Grid",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

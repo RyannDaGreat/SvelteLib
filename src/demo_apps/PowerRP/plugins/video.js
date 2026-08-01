@@ -69,6 +69,7 @@
  * the registry (console.error), never swallowed.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
@@ -94,6 +95,10 @@ const UNSOURCED = "";
 
 export const videoPlugin = {
   type: "video",
+  // NEVER settles, and says so rather than poisoning an export silently:
+  // the <video> element runs on the BROWSER's clock deliberately (a player's playing is not document state), so it never reaches a fixed point.
+  // NEVER is a DEFECT, not a design option (core/ephemeral.js) — grandfathered.
+  ephemeral: EPHEMERAL.NEVER,
   title: "Video",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the asset

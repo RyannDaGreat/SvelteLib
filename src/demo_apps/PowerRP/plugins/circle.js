@@ -5,6 +5,7 @@
  * radial approximation for ellipses).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { paintModifierPoints } from "../core/paint_handles.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
@@ -77,6 +78,7 @@ const ARC_PRESETS = [
 
 export const circlePlugin = {
   type: "circle",
+  ephemeral: EPHEMERAL.NONE,
   title: "Circle",
   presetFamilies: [
     { id: "ring", title: "Ring weight", presets: RING_PRESETS },

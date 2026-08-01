@@ -69,6 +69,7 @@
  * operator.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
@@ -107,6 +108,7 @@ export function donutRingOutline(geom, inner) {
 
 export const donutPlugin = {
   type: "donut",
+  ephemeral: EPHEMERAL.NONE,
   title: "Donut",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

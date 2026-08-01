@@ -110,6 +110,8 @@
  * pulls three.js into the node test lane or into the main bundle.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
+import { convergesOnRefs } from "../../render_gpu/gpu/settled.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../../core/properties.js";
 import { image, rect, text } from "../../render_gpu/ir.js";
@@ -677,6 +679,42 @@ function makeScene3dPlugin(member) {
     type: member.type,
     title: member.title,
     capabilities: { bbox: true, transform: true, resizable: true },
+
+    // CONVERGES, and this family is the clearest illustration of what the word
+    // means — it is the user's own example generalised. scene3dDrawRef
+    // (gpu/scene3d_raster.js:593) returns the IDEAL raster when it is ready and
+    // otherwise substitutes a STALE HELD frame, which is exactly a cheap tier
+    // standing in while the expensive one is computed. Settled therefore means the
+    // ideal ref has arrived and no substitution is happening: another frame at the
+    // same state would be identical.
+    //
+    // The predicate calls scene3dRef(spec) — the SAME ref builder the draw path
+    // uses — rather than remembering a ref, because a remembered one is a mirror
+    // that drifts the moment the spec gains a field. "error" counts as settled for
+    // gpu/settled.js's reason: a broken file will not decode, and waiting on it
+    // would turn a visible failure into an invisible stall.
+    // DELIBERATELY COARSE, AND COARSE IN THE SAFE DIRECTION. The exact predicate
+    // is "the ideal ref for THIS widget's spec has arrived", but that spec is
+    // built inside emit from `pose`, `size`, `win`, `place` and the crop insets —
+    // it needs `world` and the viewport descriptor, which `settled(state, ctx)`
+    // does not receive. Rebuilding it here would be a MIRROR of emit that drifts
+    // the moment the spec gains a field, and a drifted settle predicate is worse
+    // than none because it reports READY for a frame that is not.
+    //
+    // So this asks the coarser question the raster registry can answer honestly:
+    // is ANY scene3d raster still in flight. It can over-wait (another scene3d
+    // widget's render delays this one) and it can never under-wait, which is the
+    // asymmetry that matters — over-waiting costs milliseconds, under-waiting
+    // ships the held frame into an export and is the whole defect.
+    //
+    // TO MAKE IT EXACT, emit's spec construction has to become a shared builder
+    // both halves call. That is a real refactor of this file, it belongs with the
+    // scene3d overhaul (#270/#257), and it is written down rather than quietly
+    // approximated.
+    ephemeral: {
+      kind: EPHEMERAL.CONVERGES,
+      settled: () => scene3dRasterStats().loading === 0,
+    },
 
     // THE PRE-PASS OPT-IN (todo #257). render_gpu/scene3d_display.js selects the
     // nodes it sizes by THIS flag rather than by a list of type names, so a third

@@ -41,6 +41,7 @@
  * the core Add menus clean. DOM-free / bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { FROSTED_FILL_PARAMS, frostedUniformParams } from "../../render_gpu/skia/frosted_shader.js";
@@ -180,6 +181,7 @@ const PRESETS = [
 
 export const frostedGlassPlugin = {
   type: "demo_frosted_glass",
+  ephemeral: EPHEMERAL.NONE,
   title: "Frosted Glass",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   presets: PRESETS,

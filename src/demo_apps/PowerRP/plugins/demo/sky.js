@@ -170,6 +170,7 @@
  *     what the name now says.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import * as T from "../../core/transform.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { UNIT_SPAN_SCRUB, bundle, bundleNestedDefaults, customProps, defaults, props } from "../../core/properties.js";
@@ -323,6 +324,7 @@ const SKY_PRESETS = [
 
 export const skyPlugin = {
   type: "sky",
+  ephemeral: EPHEMERAL.NONE,
   title: "Sky",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, skyReader: true },
   presets: SKY_PRESETS,
@@ -482,6 +484,7 @@ const SUN_PRESETS = [
 
 export const skySunPlugin = {
   type: "skySun",
+  ephemeral: EPHEMERAL.NONE,
   title: "Sky Sun",
   // skyLight:"sun" marks it a LIGHT SOURCE the sky/clouds read (core/derive.collectSkyScene).
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, skyLight: "sun" },
@@ -654,6 +657,7 @@ const MOON_PRESETS = [
 
 export const skyMoonPlugin = {
   type: "skyMoon",
+  ephemeral: EPHEMERAL.NONE,
   title: "Sky Moon",
   // BOTH a moon LIGHT SOURCE (sky reads it) AND a reader (it reads suns for the limb).
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, skyLight: "moon", skyReader: true },
@@ -821,6 +825,7 @@ const CLOUD_PRESETS = [
 
 export const skyCloudsPlugin = {
   type: "skyClouds",
+  ephemeral: EPHEMERAL.NONE,
   title: "Sky Clouds",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, skyReader: true },
   presets: CLOUD_PRESETS,

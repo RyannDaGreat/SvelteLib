@@ -42,10 +42,10 @@ function registryWithPoisonPlugin() {
   const registry = createRegistry();
   registerPlugins(registry);
   registry.register({
-    type: "poison_emit_export",
+    type: "poison_emit_export", ephemeral: "none",
     title: "Poison Export (test-only)",
     capabilities: { bbox: true, transform: true, resizable: true },
-    defaults: { type: "poison_emit_export", x: 0, y: 0, w: 80, h: 60, z: 0, rotation: 0, scale: 1 },
+    defaults: { type: "poison_emit_export", ephemeral: "none", x: 0, y: 0, w: 80, h: 60, z: 0, rotation: 0, scale: 1 },
     inspector: [],
     emit(state) {
       // The live shape: a plugin calls a validating IR builder with a bad number.
@@ -72,7 +72,7 @@ function poisonedDoc(registry) {
         items: {
           cam: CAM,
           good: { type: "rect", x: 20, y: 20, w: 100, h: 60, z: 1, rotation: 0, scale: 1, active: true, fill: "#22aa55" },
-          poison: { type: "poison_emit_export", name: "Poisoned Widget", x: 200, y: 20, w: 80, h: 60, z: 2, rotation: 0, scale: 1, active: true },
+          poison: { type: "poison_emit_export", ephemeral: "none", name: "Poisoned Widget", x: 200, y: 20, w: 80, h: 60, z: 2, rotation: 0, scale: 1, active: true },
         },
       },
     }],

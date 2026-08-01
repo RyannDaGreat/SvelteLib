@@ -24,6 +24,7 @@
  * asserts the not-insertable half in the same file.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
@@ -34,6 +35,7 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 export const shapePlugin = {
   type: "shape",
+  ephemeral: EPHEMERAL.NONE,
   title: "Shape",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // Composes the SHARED PROPERTY REGISTRY like rect/circle: positioning + the

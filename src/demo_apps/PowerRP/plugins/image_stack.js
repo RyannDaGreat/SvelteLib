@@ -93,6 +93,8 @@
  * the filmstrip, so it composites under magnifiers/blur and culls for free.
  */
 
+import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
@@ -274,6 +276,9 @@ export function shadowReach(cardW, shift, blur) {
 
 export const imageStackPlugin = {
   type: "image_stack",
+  // CONVERGES: it draws an async raster (each stacked card’s decode). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.src]),
   title: "Image Stack",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // CREATION GESTURE (web/widget_handlers.js, phase "create"): drag a box, then

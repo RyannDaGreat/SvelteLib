@@ -30,6 +30,7 @@
  * DOM-free / bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRoundedRect } from "../../core/outline.js";
 import * as T from "../../core/transform.js";
@@ -110,6 +111,10 @@ function makeMaterialWidget(cfg) {
   return {
     type: cfg.type,
     title: cfg.title,
+    // Declared in the FACTORY so all four corkboard widgets inherit it and a
+    // fifth cannot be added without one. These are SkSL material fills evaluated
+    // per pixel from their own knobs — no cheap tier, no async source.
+    ephemeral: EPHEMERAL.NONE,
     capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
     defaults: {
       type: cfg.type, ...cfg.positioning, rotation: 0, scale: 1,
@@ -339,6 +344,9 @@ function yarnInkRect(s) {
 
 const corkboardYarnPlugin = {
   type: "corkboardYarn",
+  // A LITERAL, not made by makeMaterialWidget — so it declares for itself. Sagging
+  // yarn is a catenary drawn as vector strokes: no cheap tier, no async source.
+  ephemeral: EPHEMERAL.NONE,
   title: "Corkboard Yarn",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
   defaults: {

@@ -27,6 +27,7 @@
  * / bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { COMIC_FILL_PARAMS, comicUniformParams } from "../../render_gpu/skia/comic_shader.js";
@@ -91,6 +92,7 @@ const PRESETS = [
 
 export const comicPlugin = {
   type: "demo_comic",
+  ephemeral: EPHEMERAL.NONE,
   title: "Comic Halftone",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   defaults: {

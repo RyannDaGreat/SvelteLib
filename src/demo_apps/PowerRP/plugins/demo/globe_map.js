@@ -67,6 +67,8 @@
  * loadable in the bare-node test lane.
  */
 
+import { convergesOnRefs } from "../../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { reportOnce } from "../../core/report.js";
 import { CUSTOM_CATEGORY, bundle, customProps, defaults, props } from "../../core/properties.js";
@@ -744,6 +746,9 @@ const PRESETS = [
 
 export const globeMapPlugin = {
   type: "demo_globe_map",
+  // CONVERGES: it draws an async raster (the map tiles). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.src]),
   title: "Globe / Map",
   capabilities: { bbox: true, transform: true, resizable: true },
   // DOUBLE-CLICK ACTIVATION — the SAME handler the Mandelbrot uses

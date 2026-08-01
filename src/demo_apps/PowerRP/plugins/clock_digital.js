@@ -70,6 +70,7 @@
  * #88 merges, new clocks automatically default to the real seven-segment face.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { text } from "../render_gpu/ir.js";
@@ -210,6 +211,7 @@ export function formatClock(seconds, { showHours = false, showSeconds = true, se
 
 export const clockDigitalPlugin = {
   type: "clock_digital",
+  ephemeral: EPHEMERAL.NONE,
   title: "Digital Clock",
   // resizable:true → the standard 8 resize handles (same machinery as plaintext);
   // w gives the centered readout room, h gives the vertical-align stack its room.

@@ -11,6 +11,7 @@
  * never see it.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { defaultCameraState } from "../core/document.js";
 import { props, bundle, bundleDefaults } from "../core/properties.js";
@@ -81,6 +82,7 @@ const RENDER_PROFILES = [
 
 export const cameraPlugin = {
   type: "camera",
+  ephemeral: EPHEMERAL.NONE,
   title: "Camera",
   presetFamilies: [{ id: "rendering", title: "Render profiles", presets: RENDER_PROFILES }],
   // purgeable:false — the camera is mandatory: exactly one, cannot be deleted

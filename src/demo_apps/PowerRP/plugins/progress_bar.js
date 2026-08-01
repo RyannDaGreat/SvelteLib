@@ -66,6 +66,7 @@
  * the fill is emitted as a second `rect` op here, NOT by delegating to rect.js.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
@@ -131,6 +132,7 @@ const CAT = "formatting"; // groups the bar knobs in the Inspector accordion
 
 export const progressBarPlugin = {
   type: "progress_bar",
+  ephemeral: EPHEMERAL.NONE,
   title: "Progress Bar",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

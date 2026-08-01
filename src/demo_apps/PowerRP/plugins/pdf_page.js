@@ -102,6 +102,8 @@
  * loudly by pdf_page_raster.js (console.error), never swallowed.
  */
 
+import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
@@ -131,6 +133,9 @@ export const NO_SRC = "";
 
 export const pdfPagePlugin = {
   type: "pdf_page",
+  // CONVERGES: it draws an async raster (the page raster AT the requested tier). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.__pdfRef]),
   title: "PDF Page",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the

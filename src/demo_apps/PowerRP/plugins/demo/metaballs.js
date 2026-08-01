@@ -40,6 +40,7 @@
  * the core Add menus clean. DOM-free / bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import * as T from "../../core/transform.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
@@ -398,6 +399,7 @@ export function metaballRegion(worldBalls, world, pad) {
 
 export const metaballsPlugin = {
   type: "metaball",
+  ephemeral: EPHEMERAL.NONE,
   title: "Metaball",
   // `metaball: true` marks this widget a fusion PARTICIPANT for the derive-time
   // sibling query (core/derive.collectMetaballScene reads `localBalls` off it).

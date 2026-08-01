@@ -82,6 +82,7 @@
  * it moved to the universal ContourMeasure preprocessing in paint_skia.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num } from "../core/shapes.js";
@@ -586,6 +587,7 @@ export function pathInkRect(state) {
 
 export const paintPathPlugin = {
   type: "paint_path",
+  ephemeral: EPHEMERAL.NONE,
   title: "Paint Path",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // THE CREATION GESTURE (web/paintPathDraw.js): click each anchor, Shift to

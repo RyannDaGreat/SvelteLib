@@ -27,6 +27,7 @@
  * DOM-free / bare-node-safe at import time (mirrors glass.js / crt.js).
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { ellipsePoints } from "../../core/shapes.js";
@@ -198,6 +199,7 @@ const PRESETS = [
 
 export const magnifyPlugin = {
   type: "demo_magnify",
+  ephemeral: EPHEMERAL.NONE,
   title: "Magnifier",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   defaults: {

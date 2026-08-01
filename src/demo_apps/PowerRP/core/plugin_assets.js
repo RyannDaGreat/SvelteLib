@@ -726,7 +726,20 @@ const PLUGIN_KINDS = {
     nameField: "type",
     problem: pluginShapeProblem,
     nameOf: (p) => p.type,
-    register: (registry, p) => registry.register(p),
+    // EPHEMERALITY IS SUPPLIED, NOT DEMANDED, AND THAT IS A FACT ABOUT THE JAIL
+    // RATHER THAN A CONVENIENCE. core/registry.js requires every widget to declare
+    // it (see core/ephemeral.js for why a default would defeat the whole point) —
+    // but a plugin ASSET is evaluated inside this file's sandbox, where
+    // BLOCKED_GLOBALS makes `fetch`, `XMLHttpRequest`, `WebSocket`, `Date`,
+    // `setTimeout` and `queueMicrotask` all unreachable. It is therefore
+    // STRUCTURALLY INCAPABLE of a cheap tier or an async source: there is no
+    // mechanism by which its output could differ between two frames at the same
+    // state. NONE is not assumed here, it is the only reachable answer, which is
+    // why supplying it does not reintroduce the silent-default hazard.
+    //
+    // An author's OWN declaration wins if they write one, so the day the sandbox
+    // gains an async capability the vocabulary is already there to describe it.
+    register: (registry, p) => registry.register({ ephemeral: "none", ...p }),
   },
 };
 

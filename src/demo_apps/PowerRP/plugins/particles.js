@@ -53,6 +53,7 @@
  * magnifier/blur above samples the composited canvas (they magnify correctly).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
@@ -142,6 +143,7 @@ export function particleOps(particles, color, opacity) {
 
 export const particlesPlugin = {
   type: "particles",
+  ephemeral: EPHEMERAL.NONE,
   title: "Particles",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

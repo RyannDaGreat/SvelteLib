@@ -29,6 +29,7 @@
  * core/document.js, not per plugin).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
@@ -116,6 +117,7 @@ const PRESETS = [
 
 export const curvedArrowPlugin = {
   type: "curved_arrow",
+  ephemeral: EPHEMERAL.NONE,
   title: "Curved Arrow",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
   presets: PRESETS,

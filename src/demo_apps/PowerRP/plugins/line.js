@@ -29,6 +29,7 @@
  * registry throws on a duplicate id, so a single owner is mandatory.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { polyline, path } from "../render_gpu/ir.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
@@ -145,6 +146,7 @@ const PRESETS = [
 
 export const linePlugin = {
   type: "line",
+  ephemeral: EPHEMERAL.NONE,
   title: "Line",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
   presets: PRESETS,

@@ -29,6 +29,7 @@
  * importable under `node tests/core_test.js`.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../../core/properties.js";
 import { text } from "../../render_gpu/ir.js";
@@ -519,6 +520,11 @@ function makeTextMorphPlugin({ type, title, wordProps, morph, presets }) {
   return {
     type,
     title,
+    // Declared in the FACTORY, so all three variants inherit it and a fourth
+    // cannot be added without one. A text morph is a pure string transition
+    // (core/text_transitions.js), deterministic in alpha — no cheap tier, no
+    // async source, correct on its first frame.
+    ephemeral: EPHEMERAL.NONE,
     capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
     presets,
     defaults: {

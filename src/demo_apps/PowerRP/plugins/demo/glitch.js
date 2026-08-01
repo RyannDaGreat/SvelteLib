@@ -35,6 +35,7 @@
  * / bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { GLITCH_FILL_PARAMS, glitchUniformParams } from "../../render_gpu/skia/glitch_shader.js";
@@ -84,6 +85,7 @@ const PRESETS = [
 
 export const glitchPlugin = {
   type: "demo_glitch",
+  ephemeral: EPHEMERAL.NONE,
   title: "Digital Glitch",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   defaults: {

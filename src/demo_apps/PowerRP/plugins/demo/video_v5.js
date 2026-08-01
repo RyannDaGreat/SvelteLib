@@ -26,6 +26,7 @@
  * capabilities + core property helpers + the additive `videoV5` IR op.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, defaults, props } from "../../core/properties.js";
@@ -45,6 +46,10 @@ const UNSOURCED = "";
 
 export const videoV5Plugin = {
   type: "video_v5",
+  // NEVER settles, and says so rather than poisoning an export silently:
+  // a player, not a scrubber — same browser clock.
+  // NEVER is a DEFECT, not a design option (core/ephemeral.js) — grandfathered.
+  ephemeral: EPHEMERAL.NEVER,
   title: "Video V5 (OffscreenCanvas/worker)",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the

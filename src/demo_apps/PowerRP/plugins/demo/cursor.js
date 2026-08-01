@@ -40,6 +40,7 @@
  * CURSOR_NAMES is a static list), so plugins/index.js stays node-importable.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder, fitBox } from "../../core/geometry.js";
 import { tokenizePathD } from "../../core/svg_paths.js";
@@ -310,6 +311,7 @@ const PRESETS = [
 ];
 export const cursorPlugin = {
   type: "cursor",
+  ephemeral: EPHEMERAL.NONE,
   presets: PRESETS,
   title: "macOS Cursor",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },

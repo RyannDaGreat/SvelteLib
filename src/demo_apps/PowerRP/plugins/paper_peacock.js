@@ -48,6 +48,8 @@
  * No clock, no randomness, no frame-to-frame carry.
  */
 
+import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
@@ -368,6 +370,9 @@ export function stateLayout(s) {
 
 export const paperPeacockPlugin = {
   type: "paper_peacock",
+  // CONVERGES: it draws an async raster (the fanned page rasters). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.__pdfRef]),
   title: "Paper Peacock",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION: open the asset picker on `src`, exactly like

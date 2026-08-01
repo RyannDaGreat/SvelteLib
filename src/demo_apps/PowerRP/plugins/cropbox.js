@@ -19,6 +19,7 @@
  * selectable either way.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
 import { bundle, defaults, props } from "../core/properties.js";
@@ -27,6 +28,7 @@ import { cropSubtree } from "../render_gpu/ir.js";
 
 export const cropboxPlugin = {
   type: "cropbox",
+  ephemeral: EPHEMERAL.NONE,
   title: "Crop Box",
   // ghost: true is redundant with core/derive.isGhostNode's `type === "cropbox"`
   // special case (a crop box is ALWAYS a ghost, unconditionally) but declared

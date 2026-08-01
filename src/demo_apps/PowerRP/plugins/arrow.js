@@ -40,6 +40,7 @@
  * nothing in this plugin needs to report anything itself.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
@@ -133,6 +134,7 @@ const PRESETS = [
 
 export const arrowPlugin = {
   type: "arrow",
+  ephemeral: EPHEMERAL.NONE,
   title: "Arrow",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
   presets: PRESETS,

@@ -25,6 +25,8 @@
  * path: whole-page rasters via render_gpu/gpu/pdf_page_raster.js refs.
  */
 
+import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { image, rect, paperCurl, pushTransform, popTransform, SUPERSAMPLE_DENSITY } from "../render_gpu/ir.js";
@@ -167,6 +169,9 @@ export function stapleOps(at, len, angleDeg) {
 
 export const pdfPacketPlugin = {
   type: "pdf_packet",
+  // CONVERGES: it draws an async raster (the page rasters). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.__pdfRef]),
   title: "PDF Packet",
   capabilities: { bbox: true, transform: true, resizable: true },
   defaults: {

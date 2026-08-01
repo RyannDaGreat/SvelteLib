@@ -34,6 +34,8 @@
  * swallowed.
  */
 
+import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
@@ -62,6 +64,9 @@ export const DEFAULT_SAMPLING = "nearest";
 
 export const imagePlugin = {
   type: "image",
+  // CONVERGES: it draws an async raster (the decoded bitmap). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.src]),
   title: "Image",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the

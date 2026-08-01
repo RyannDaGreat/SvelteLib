@@ -88,6 +88,7 @@
  *      they can merely touch).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import {
   BOUNDARY_CHORD_DEGREES, IRIS_SHARED_DEFAULTS, MIN_POLYGON_BLADES, NO_IRIS_BLADES,
@@ -372,6 +373,7 @@ export function irisOpeningOutline(s) {
 
 export const irisBladesPlugin = {
   type: "iris_blades",
+  ephemeral: EPHEMERAL.NONE,
   title: "Iris Blades",
   // A SHAPE, declared by the widget (core/registry.js INSERT_MENUS): it joins the
   // Add Shape grid without any central list learning its name.

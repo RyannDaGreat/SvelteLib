@@ -25,6 +25,7 @@
  * math lives in the pure helpers below, emit() stays thin.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
@@ -255,6 +256,7 @@ const PRESETS = [
 
 export const qrcodePlugin = {
   type: "qrcode",
+  ephemeral: EPHEMERAL.NONE,
   title: "QR Code",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   /**

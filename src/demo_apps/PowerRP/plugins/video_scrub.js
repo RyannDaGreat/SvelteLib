@@ -90,6 +90,8 @@
  * stays 0. Deterministic by construction, and honest about what it does not know.
  */
 
+import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props, SECONDS_SCRUB } from "../core/properties.js";
@@ -124,6 +126,9 @@ export const PROGRESS_EXPORT_EQ =
 
 export const videoScrubPlugin = {
   type: "video_scrub",
+  // CONVERGES: it draws an async raster (the parked decoder frame). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.src]),
   title: "Video Scrubber",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the

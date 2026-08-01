@@ -63,6 +63,7 @@
  * ellipse/polyline/text ops (parity across GPU raster + SVG + PDF backends).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointInAnnulus } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, defaults, props, wrapDegrees, FULL_TURN_DEG } from "../core/properties.js";
@@ -306,6 +307,7 @@ const FONT = (key, label, help) => ({ key, label, kind: "select", category: CAT,
 
 export const clockAnalogPlugin = {
   type: "clock_analog",
+  ephemeral: EPHEMERAL.NONE,
   title: "Analog Clock",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

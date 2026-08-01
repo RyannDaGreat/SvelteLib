@@ -34,6 +34,7 @@
  * DOM-free / bare-node-safe at import time (mirrors line.js / the demo widgets).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { polyline } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { standardBBoxAnchors } from "../core/derive.js";
@@ -376,6 +377,7 @@ export function tangentLinesAnchors(s) {
 
 export const tangentLinesPlugin = {
   type: "tangent_lines",
+  ephemeral: EPHEMERAL.NONE,
   title: "Tangent Lines",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
   defaults: {

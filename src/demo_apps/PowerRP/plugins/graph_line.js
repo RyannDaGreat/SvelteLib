@@ -46,6 +46,7 @@
  * holed or blank curve.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
@@ -140,6 +141,7 @@ export function curveLocal(state) {
 
 export const graphLinePlugin = {
   type: "graph_line",
+  ephemeral: EPHEMERAL.NONE,
   title: "Graph Line",
   capabilities: { docVars: true,  bbox: true, transform: true, resizable: true, backdrop: false },
   // The full-screen Monaco editor for the equation — double-click OR the "</>"

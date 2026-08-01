@@ -185,6 +185,8 @@
  * so it composites under magnifiers/blur and culls for free.
  */
 
+import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { PERF_FAMILIES, FILM_BASE_COLORS, DEFAULT_PERF_FAMILY, PITCH_BASES } from "../core/film.js";
@@ -866,6 +868,9 @@ export function filmstripAnchors(state) {
 
 export const filmstripPlugin = {
   type: "filmstrip",
+  // CONVERGES: it draws an async raster (the decoded video frames). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.src]),
   title: "Filmstrip",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // CREATION GESTURE (web/widget_handlers.js, phase "create"): drag a box, then

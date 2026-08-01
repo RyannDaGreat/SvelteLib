@@ -60,6 +60,7 @@ function registryWithPoisonPlugin() {
   registerPlugins(registry);
   registry.register({
     type: "poison_emit",
+    ephemeral: "none", // a test fixture draws vector ops only
     title: "Poison (test-only)",
     capabilities: { bbox: true, transform: true, resizable: true },
     defaults: { type: "poison_emit", x: 0, y: 0, w: 80, h: 60, z: 0, rotation: 0, scale: 1, shouldThrow: false },

@@ -75,6 +75,7 @@
  * which this file implements rather than re-deriving.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import {
   IRIS_SHARED_DEFAULTS, MIN_POLYGON_BLADES, NO_IRIS_BLADES, bladeAngle, boreGeom, clampKnob,
@@ -286,6 +287,7 @@ export function apodizedPupilPaint(paint, apodization) {
 
 export const aperturePlugin = {
   type: "aperture",
+  ephemeral: EPHEMERAL.NONE,
   title: "Aperture",
   // A SHAPE, declared by the widget (core/registry.js INSERT_MENUS): it joins the
   // Add Shape grid without any central list learning its name.

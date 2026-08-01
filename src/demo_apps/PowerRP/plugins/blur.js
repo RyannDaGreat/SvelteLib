@@ -5,11 +5,13 @@
  * magnifier above it magnifies the blurred result).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { blurBackdrop } from "../render_gpu/ir.js";
 import { props } from "../core/properties.js";
 
 export const blurPlugin = {
   type: "blur",
+  ephemeral: EPHEMERAL.NONE,
   title: "Blur Layer",
   // backdrop:true also makes this widget uncullable — the renderer never
   // skips a backdrop sampler (it may read pixels anywhere on the canvas), so

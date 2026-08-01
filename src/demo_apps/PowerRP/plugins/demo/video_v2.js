@@ -36,6 +36,7 @@
  * shared property registry, exactly like the V1 player does independently.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../../core/properties.js";
@@ -58,6 +59,10 @@ const UNSOURCED = "";
 
 export const videoV2Plugin = {
   type: "video_v2",
+  // NEVER settles, and says so rather than poisoning an export silently:
+  // a player, not a scrubber — same browser clock.
+  // NEVER is a DEFECT, not a design option (core/ephemeral.js) — grandfathered.
+  ephemeral: EPHEMERAL.NEVER,
   title: "Video V2",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

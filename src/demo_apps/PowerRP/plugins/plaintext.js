@@ -35,6 +35,7 @@
  * never crashes.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { text } from "../render_gpu/ir.js";
@@ -300,6 +301,7 @@ const PLAINTEXT_LOOKS = [
 
 export const plaintextPlugin = {
   type: "plaintext",
+  ephemeral: EPHEMERAL.NONE,
   title: "Plain Text",
   // resizable:true → the standard 8 resize handles (same machinery as rect/text);
   // w constrains word-wrap, h gives the vertical-align stack its room.

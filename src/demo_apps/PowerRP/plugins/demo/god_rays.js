@@ -55,6 +55,7 @@
  * bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors, worldTransform } from "../../core/derive.js";
 import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../../core/properties.js";
 import * as T from "../../core/transform.js";
@@ -330,6 +331,7 @@ const PRESETS = [
 
 export const godRaysPlugin = {
   type: "demo_god_rays",
+  ephemeral: EPHEMERAL.NONE,
   title: "God Rays",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   presets: PRESETS,

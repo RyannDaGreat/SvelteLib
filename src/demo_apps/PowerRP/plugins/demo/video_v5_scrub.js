@@ -57,6 +57,8 @@
  * that constant rather than importing it from video.js.
  */
 
+import { convergesOnRefs } from "../../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props, SECONDS_SCRUB } from "../../core/properties.js";
@@ -87,6 +89,9 @@ export const PROGRESS_EXPORT_EQ =
 
 export const videoV5ScrubPlugin = {
   type: "video_v5_scrub",
+  // CONVERGES: it draws an async raster (the worker-decoded frame). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.src]),
   title: "Video V5 Scrubber (OffscreenCanvas/worker)",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the

@@ -58,6 +58,8 @@
  * gpu/video_registry's wall-clock playback path (user ruling: player stays as-is).
  */
 
+import { convergesOnRefs } from "../../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props, SECONDS_SCRUB } from "../../core/properties.js";
@@ -161,6 +163,9 @@ async function probeClipLength(app) {
 
 export const videoTimeScrubPlugin = {
   type: "demo_video_time_scrub",
+  // CONVERGES: it draws an async raster (the parked decoder frame). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.src]),
   title: "Video Time Scrubber (clock presets)",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the

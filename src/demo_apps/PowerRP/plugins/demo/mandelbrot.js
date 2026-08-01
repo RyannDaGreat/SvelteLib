@@ -74,6 +74,7 @@
  * DOM-free / bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { CUSTOM_CATEGORY, bundle, bundleDefaults, customProps, defaults, props } from "../../core/properties.js";
 import { cyclicRampStops, evenlySpacedRampStops } from "../../core/ramps.js";
@@ -1154,6 +1155,7 @@ const PRESET_FAMILIES = [
 
 export const mandelbrotPlugin = {
   type: "demo_mandelbrot",
+  ephemeral: EPHEMERAL.NONE,
   title: "Mandelbrot",
   capabilities: { bbox: true, transform: true, resizable: true },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): INTERIOR

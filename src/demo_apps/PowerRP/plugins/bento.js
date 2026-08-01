@@ -49,6 +49,7 @@
  * - `spans` has no Inspector editor (see above).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, defaults, props } from "../core/properties.js";
 import { rect } from "../render_gpu/ir.js";
@@ -387,6 +388,7 @@ const BENTO_GRIDS = [
 
 export const bentoPlugin = {
   type: "bento",
+  ephemeral: EPHEMERAL.NONE,
   title: "Bento Grid",
   presets: BENTO_GRIDS,
   // A bbox scaffold: body-drag moves it, resize handles resize the whole grid.

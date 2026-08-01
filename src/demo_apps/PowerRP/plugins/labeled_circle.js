@@ -74,6 +74,7 @@
  * Property state only: no clock, no randomness, no history.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { paintModifierPoints } from "../core/paint_handles.js";
 import {
@@ -146,6 +147,7 @@ const VALIGN_LABELS = { top: "Top", middle: "Middle", bottom: "Bottom" };
 
 export const labeledCirclePlugin = {
   type: "labeled_circle",
+  ephemeral: EPHEMERAL.NONE,
   title: "Labeled Circle",
   // A SHAPE, declared by the widget (core/registry.js INSERT_MENUS): it joins the
   // Add Shape grid without any central list learning its name.

@@ -45,6 +45,7 @@
  * precedent where cross-item orchestration lives in the app, not the plugin.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { borderBandHit } from "../core/geometry.js";
 import { bundle, bundleDefaults, bundleNestedDefaults } from "../core/properties.js";
@@ -174,6 +175,7 @@ const GROUP_MATTES = [
 
 export const groupPlugin = {
   type: "group",
+  ephemeral: EPHEMERAL.NONE,
   title: "Group",
   presetFamilies: [
     { id: "treatment", title: "Assembly treatments", presets: GROUP_TREATMENTS },

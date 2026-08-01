@@ -24,6 +24,7 @@
  * and the shared data-window convention, never a cross-plugin import.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, tickValues, minorTickValues, minorSubdivisions, formatTick } from "../core/graph_scale.js";
@@ -136,6 +137,7 @@ function majorStepOf(range) {
 
 export const graphTickMarksPlugin = {
   type: "graph_tick_marks",
+  ephemeral: EPHEMERAL.NONE,
   title: "Graph Ticks",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

@@ -22,6 +22,7 @@
  * plugins/index.js stays importable under `node tests/core_test.js`.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, bundleNestedDefaults, customProps, defaults, props } from "../../core/properties.js";
 import { rect } from "../../render_gpu/ir.js";
@@ -42,6 +43,7 @@ const CUSTOM = customProps([
 
 export const demoShowcasePlugin = {
   type: "demo_showcase",
+  ephemeral: EPHEMERAL.NONE,
   title: "Demo Showcase",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // Composes from the SHARED PROPERTY REGISTRY exactly as rect does (positioning

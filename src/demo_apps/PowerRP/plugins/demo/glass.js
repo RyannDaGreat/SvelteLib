@@ -30,6 +30,7 @@
  * at import time (mirrors showcase.js's import set).
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { glassBackdrop } from "../../render_gpu/ir.js";
@@ -287,6 +288,7 @@ const SILHOUETTE_PRESETS = [
 
 export const glassPlugin = {
   type: "demo_glass",
+  ephemeral: EPHEMERAL.NONE,
   title: "Liquid Glass",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   presetFamilies: [

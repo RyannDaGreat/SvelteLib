@@ -15,6 +15,7 @@
  * (core/richtext.withRichTextMigrated, wired in the app repair path).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { UNIT_SPAN_SCRUB, bundle, bundleNestedDefaults } from "../core/properties.js";
 import { normalizeRichText, richTextIsEmpty, boxStyleRowVisibility, DEFAULT_PARA_SIZE } from "../core/richtext.js";
@@ -289,6 +290,7 @@ const INK_LOOKS = [
 
 export const textPlugin = {
   type: "text",
+  ephemeral: EPHEMERAL.NONE,
   title: "Text",
   // resizable:true → CanvasView shows the standard 8 resize handles (same
   // machinery as rect — capabilities.bbox && capabilities.resizable; NO special

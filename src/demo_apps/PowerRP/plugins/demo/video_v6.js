@@ -29,6 +29,7 @@
  * <video> (zero cost off-view).
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { closestPointOnRectBorder } from "../../core/geometry.js";
 import { bundle, defaults, props } from "../../core/properties.js";
@@ -52,6 +53,10 @@ const BACKING_FILL = "#0b0b12";
 
 export const videoV6Plugin = {
   type: "video_v6",
+  // NEVER settles, and says so rather than poisoning an export silently:
+  // a player, not a scrubber — same browser clock.
+  // NEVER is a DEFECT, not a design option (core/ephemeral.js) — grandfathered.
+  ephemeral: EPHEMERAL.NEVER,
   title: "Video V6",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

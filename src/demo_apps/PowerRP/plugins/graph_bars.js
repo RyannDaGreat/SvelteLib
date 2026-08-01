@@ -34,6 +34,7 @@
  * SECOND item the author overlays (composition in the document), not an import.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, easedReveal, clamp01 } from "../core/graph_scale.js";
@@ -264,6 +265,7 @@ export function barGeometry(state) {
 
 export const graphBarsPlugin = {
   type: "graph_bars",
+  ephemeral: EPHEMERAL.NONE,
   title: "Graph Bars",
   capabilities: { docVars: true,  bbox: true, transform: true, resizable: true, backdrop: false },
   // codeEditor + its REQUIRED double-click declaration (see graph_line.js / the

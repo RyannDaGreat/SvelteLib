@@ -56,6 +56,7 @@
  * it deliberately omits plaintext's `inlineTextEdit` opt-in.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { text } from "../render_gpu/ir.js";
@@ -198,6 +199,7 @@ export function numberIsEmpty(value) {
 
 export const numberPlugin = {
   type: "number",
+  ephemeral: EPHEMERAL.NONE,
   title: "Number",
   // resizable:true → the standard 8 resize handles (same machinery as plaintext);
   // w constrains the box width the text aligns within, h gives valign its room.

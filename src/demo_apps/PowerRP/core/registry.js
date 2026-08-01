@@ -222,6 +222,7 @@
 
 import { BUNDLES, bundle, bundleNestedDefaults } from "./properties.js";
 import { LIST_ROW_KIND } from "./lists.js";
+import { EPHEMERAL, isEphemeralDecl } from "./ephemeral.js"; // the sixth required field — see register()
 // The Shatter tool's applicability predicate, taken from the module that DEFINES
 // what "shatterable" means rather than re-spelled here as a second copy of the
 // same three conditions (core/shatter.js imports document/retype only, so this
@@ -1166,8 +1167,23 @@ export function createRegistry() {
      *  rim anchors projected onto its own silhouette (withInkAnchors — THE INK
      *  RULE). Loud on collision or malformed plugin. */
     register(plugin) {
-      for (const field of ["type", "title", "capabilities", "defaults", "emit"])
+      for (const field of ["type", "title", "capabilities", "defaults", "emit", "ephemeral"])
         if (!(field in plugin)) throw new Error(`Plugin missing "${field}": ${plugin.type ?? "?"}`);
+      // EPHEMERALITY IS THE SIXTH THING A WIDGET MUST SAY ABOUT ITSELF (user
+      // ruling: "not just a convention but structurally part of the definition of
+      // a widget"). It is in the required list rather than defaulted because a
+      // default of NONE is exactly how the defect arrived: waiting was OPT-IN,
+      // two families opted in, and every other async widget silently shipped a
+      // hole into every export. A consumer cannot wait for what it has not heard
+      // of, so the widget must speak. See core/ephemeral.js for what settling is
+      // and why there are three answers.
+      if (!isEphemeralDecl(plugin.ephemeral))
+        throw new Error(
+          `Plugin "${plugin.type}" has a malformed \`ephemeral\` declaration: ${JSON.stringify(plugin.ephemeral)}. ` +
+          `Say "${EPHEMERAL.NONE}" (no cheap tier — correct on the first frame, which is every vector shape), ` +
+          `{kind: "${EPHEMERAL.CONVERGES}", settled(state, ctx)} (a cheap tier or async source that reaches a fixed point — PDF, image, LaTeX, scene3d), ` +
+          `or "${EPHEMERAL.NEVER}" (genuinely non-converging, like the video player's own clock). ` +
+          `CONVERGES must carry settled(): declaring convergence without saying how a consumer knows is the opt-in failure this field replaces.`);
       if (plugins.has(plugin.type)) throw new Error(`Duplicate plugin type "${plugin.type}"`);
       // A MISSPELLED MENU IS A WIDGET NOBODY CAN INSERT, and it fails silently:
       // `insertMenu: "shapes"` reads as deliberate and puts the widget in no menu

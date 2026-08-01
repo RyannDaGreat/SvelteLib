@@ -30,6 +30,7 @@
  * bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { materialFill } from "../../render_gpu/ir.js";
@@ -51,6 +52,7 @@ const CUSTOM = customProps([
 
 export const raycastDitherPlugin = {
   type: "demo_raycast_dither",
+  ephemeral: EPHEMERAL.NONE,
   title: "Raycast Dither",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   defaults: {

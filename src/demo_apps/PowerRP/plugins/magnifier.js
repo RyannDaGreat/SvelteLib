@@ -43,6 +43,7 @@
  *     prototype backend took that file with it; see render_gpu/FINDINGS.md).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnCircle } from "../core/outline.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -164,6 +165,7 @@ const PRESETS = [
 
 export const magnifierPlugin = {
   type: "magnifier",
+  ephemeral: EPHEMERAL.NONE,
   title: "Magnifier",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   defaults: {

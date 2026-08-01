@@ -52,6 +52,7 @@
  * NOT here (plugins hold no migration logic beyond declarative legacyKeys).
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { path, polyline } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
@@ -186,6 +187,7 @@ const PRESETS = [
 
 export const fancyArrowPlugin = {
   type: "fancy_arrow",
+  ephemeral: EPHEMERAL.NONE,
   title: "Fancy Arrow",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
   presets: PRESETS,

@@ -59,6 +59,8 @@
  * reported loudly by mermaid_raster (console.error), never swallowed.
  */
 
+import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder, fitBox } from "../core/geometry.js";
 import { partKey, partRef } from "../core/shatter.js";
@@ -846,6 +848,9 @@ export function pathPoints(d) {
 
 export const mermaidPlugin = {
   type: "mermaid",
+  // CONVERGES: it draws an async raster (the Mermaid raster). settled.js owns what
+  // “ready” means so this cannot drift from its thirteen siblings.
+  ephemeral: convergesOnRefs((s) => [s.__mermaidRef]),
   title: "Mermaid Diagram",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the

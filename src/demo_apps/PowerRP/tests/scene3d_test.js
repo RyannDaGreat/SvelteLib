@@ -478,6 +478,7 @@ test("cameraFrameIR does NOT infer `live` from the view — the presenter would 
   const registry = createRegistry();
   registry.register({
     type: "live_probe",
+    ephemeral: "none", // a test fixture draws vector ops only
     title: "Live probe",
     capabilities: { bbox: true },
     defaults: { type: "live_probe", x: 0, y: 0, w: 10, h: 10, z: 0, rotation: 0, scale: 1 },

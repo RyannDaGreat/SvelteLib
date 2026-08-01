@@ -46,6 +46,7 @@
  * light palette for light backgrounds.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
 import { bundle, defaults, props } from "../core/properties.js";
@@ -204,6 +205,7 @@ export function layoutCodeDraws(lines, opts) {
 
 export const codeblockPlugin = {
   type: "codeblock",
+  ephemeral: EPHEMERAL.NONE,
   title: "Code Block",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK + code button open the reusable full-screen Monaco editor on the

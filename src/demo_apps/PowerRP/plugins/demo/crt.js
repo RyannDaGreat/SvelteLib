@@ -28,6 +28,7 @@
  * free / bare-node-safe at import time.
  */
 
+import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
 import { CRT_FILL_PARAMS, crtUniformParams } from "../../render_gpu/skia/crt_shader.js";
@@ -167,6 +168,7 @@ const PRESETS = [
 
 export const crtPlugin = {
   type: "demo_crt",
+  ephemeral: EPHEMERAL.NONE,
   title: "CRT",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
   presets: PRESETS,

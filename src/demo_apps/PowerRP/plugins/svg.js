@@ -88,6 +88,7 @@
  * url-mode icons in one pass — the one media type that renderer CAN draw.
  */
 
+import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { closestPointOnOutlines, pathDPolylines } from "../core/outline.js";
@@ -221,6 +222,7 @@ function svgRimOutlines(state) {
 
 export const svgPlugin = {
   type: "svg",
+  ephemeral: EPHEMERAL.NONE,
   title: "SVG",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   /**
