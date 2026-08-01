@@ -87,6 +87,11 @@ const VIEW = { zoom: 1, panX: 0, panY: 0, dpr: 1 };
 const INK = "#ffffff";
 const BACKGROUND = "#000000";
 const FULL_COVERAGE = 255;
+// A sanity floor for the hit-agreement census, not a tolerance on the result: only
+// fully-inked and fully-blank pixels can be compared against a boolean hit test, and
+// if the antialiased rim ever grew to more than a tenth of the frame the comparison
+// would be measuring almost nothing. Measured at 300px: 98.2% decided.
+const MIN_DECIDED_FRACTION = 0.9;
 
 // ── THE THRESHOLD, DERIVED ───────────────────────────────────────────────────
 // An interior pixel must be EXACTLY FULL_COVERAGE — no slack. That is a measured
@@ -99,26 +104,31 @@ const FULL_COVERAGE = 255;
 // the bug back in.
 const SEAM_LEVEL = FULL_COVERAGE;
 
+// The two flat terms of the census margin below. A single antialiased fill spreads
+// its edge over at most ONE pixel, and one more pixel of slack means the gate can
+// never fail on a boundary pixel it had no business examining. Both are widths, not
+// tuning knobs — neither trades accuracy for pass rate, because a seam is 190-odd
+// levels deep in the middle of a solid body, nowhere near an edge.
+const ANTIALIASED_EDGE_PX = 1;
+const CENSUS_SAFETY_PX = 1;
+
 /**
  * Pure function. How far inside the shape's mathematical boundary a pixel must
  * sit before its coverage is guaranteed complete, in device px, for a rim of
  * radius `r` sampled as `segments` chords.
  *
- * Three terms, all real:
- *   1 px  — the antialiased edge itself is at most one pixel wide.
- *   sagitta = r·(1 − cos(π/segments)) — the polygonal rim cuts INSIDE the ideal
- *     circle between vertices, so the true ink boundary is that much further in
- *     than the analytic radius the census uses.
- *   1 px  — margin, so the gate never fails on a boundary pixel it should not
- *     have been looking at in the first place.
- * A straight edge has no sagitta term, so `segments` is omitted there.
+ * Three terms, all real: ANTIALIASED_EDGE_PX, plus the chord SAGITTA
+ * `r·(1 − cos(π/segments))` — the polygonal rim cuts INSIDE the ideal circle
+ * between vertices, so the true ink boundary is that much further in than the
+ * analytic radius the census uses — plus CENSUS_SAFETY_PX. A straight edge has no
+ * sagitta term, so `segments` is omitted there.
  *
- * @example interiorMarginPx(0) // 2 (a straight edge: the AA pixel plus margin)
+ * @example interiorMarginPx(0) // 2 (a straight edge: the AA pixel plus safety)
  * @example interiorMarginPx(300, 64) // 3 (a 300px rim in 64 chords bows ~0.36px inward)
  */
 export function interiorMarginPx(r, segments = 0) {
   const sagitta = segments > 0 ? r * (1 - Math.cos(Math.PI / segments)) : 0;
-  return Math.ceil(1 + sagitta + 1);
+  return Math.ceil(ANTIALIASED_EDGE_PX + sagitta + CENSUS_SAFETY_PX);
 }
 
 /** Query (allocates a surface). Paints `cmds` on the SOFTWARE surface and
@@ -188,6 +198,13 @@ const DONUT_INNER = 0.5;
 // margin below only needs an UPPER bound on the chord bow: a finer real rim bows
 // less, so the margin stays valid if that constant ever rises.
 const DONUT_RIM_SEGMENTS = 64;
+// How much of the ANALYTIC annulus the drawn ring must cover. It can never exceed
+// it: both polygonal rims INSCRIBE their circles, so the drawn ring is a little
+// smaller and never larger. One chord's bow bounds the shortfall at
+// 1 − cos(π/64) ≈ 0.12% of the radius per rim, so 2% is that bound with two
+// orders of magnitude of room — loose enough never to fail on tessellation, tight
+// enough to refuse a ring that lost or gained a visible fraction of its body.
+const MIN_RING_AREA_FRACTION = 0.98;
 
 /** Pure function. A centred, stroke-free donut state filling a `px` frame.
  *
@@ -237,15 +254,10 @@ test("DONUT — the hole is EMPTY, nothing spills past the rim, and the area is 
     assert.equal(hole.min, 0, `${px}px: the hole is not empty (brightest interior sample ${hole.min}) — the winding rule stopped punching it`);
     assert.equal(at(1, 1), 0, `${px}px: ink outside the outer rim — the outline's bridge or its close is leaking`);
 
-    // The polygonal rims inscribe their circles, so the drawn ring is slightly
-    // SMALLER than the ideal annulus and never larger. One chord's bow at each
-    // rim bounds the shortfall; 2% is that bound with room to spare at 64
-    // segments (the bow is ~0.12% of the radius), and it still refuses a shape
-    // that lost or gained a visible fraction of its body.
     const ideal = Math.PI * (rx ** 2 - rIn ** 2);
     const area = inkedArea(bytes, px);
     assert.ok(area <= ideal, `${px}px: inked ${area} > analytic annulus ${Math.round(ideal)} — the fill escaped its outline`);
-    assert.ok(area > ideal * 0.98, `${px}px: inked only ${area} of an analytic ${Math.round(ideal)} — the ring lost body`);
+    assert.ok(area >= ideal * MIN_RING_AREA_FRACTION, `${px}px: inked only ${area} of an analytic ${Math.round(ideal)} — the ring lost body`);
   }
 });
 
@@ -266,7 +278,7 @@ test("DONUT — the picture and the HIT REGION agree pixel for pixel (why the ke
       if ((r === FULL_COVERAGE) !== plugin.hitTest(s, x + 0.5, y + 0.5)) disagreed++;
     }
   }
-  assert.ok(decided > px * px * 0.9, `only ${decided}/${px * px} pixels were fully decided — the probe is measuring rim, not body`);
+  assert.ok(decided >= px * px * MIN_DECIDED_FRACTION, `only ${decided}/${px * px} pixels were fully decided — the probe is measuring rim, not body`);
   assert.equal(disagreed, 0, `${disagreed}/${decided} pixels are inked-but-unclickable or clickable-but-blank — emit and hitTest have stopped reading the same geometry`);
 });
 
