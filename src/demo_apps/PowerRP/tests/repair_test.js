@@ -469,7 +469,7 @@ test("repairedDocument: an OLD fancy arrow (stroke-as-fill) migrates to fill + s
   // with strokeWidth 0, emits NO outline polyline — same op list, same color.
   const world = { x: 0, y: 0, rotation: 0, scale: 1 };
   const migratedOps = fancyArrowPlugin.emit(item, null, world);
-  assert.ok(migratedOps.every((op) => op.op === "polygon"), "strokeWidth 0 must emit zero outline ops");
+  assert.ok(migratedOps.every((op) => op.op === "path"), "strokeWidth 0 must emit zero outline ops");
   const preMigrationFillColor = [1, 0, 0, 1]; // parseColor("#ff0000")
   assert.deepEqual(migratedOps[0].fill, preMigrationFillColor);
   // And the full strict-IR pipeline survives (fold → evaluate → derive → sceneIR).
