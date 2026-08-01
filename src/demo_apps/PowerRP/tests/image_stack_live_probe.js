@@ -53,11 +53,20 @@ const BACKDROP = "#222222";
 const BACKDROP_RGB = [0x22, 0x22, 0x22];
 const BACKDROP_TOLERANCE = 6;
 const SATURATION_MIN = 40;          // channel spread separating the fixture's bands from any grey
-// How far outside the widget's box the shadow probe samples, in world units. The
-// deepest card's shadow is offset shadowShift·cardW ≈ 7.8 units past that card's own
-// bottom-right corner, which IS the box's corner, and its blur spreads further still —
-// so 4 units out is inside the shadow and clear of the card's own edge antialiasing.
-const SHADOW_PROBE_OUT = 4;
+// THE SHADOW PHASE RUNS ITS OWN DOCUMENT, deliberately loud. At the SHIPPED defaults
+// the pixel this samples really is only ~1/255 darker than the backdrop, and that is
+// CORRECT rather than a bug: the shadow that reaches outside the box belongs to the
+// DEEPEST card, so it is multiplied by that card's own place in the fade and then
+// spread by a blur wider than the offset. A gate on a one-level difference would be a
+// coin flip. So the question "is the shadow drawn outside the box at all" is asked with
+// the fade off, the shadow opaque, and the blur small against the offset — where the
+// answer is unambiguous — and the shipped-default value is PRINTED beside it rather
+// than asserted.
+const SHADOW_PROBE_OUT = 4;      // world units past the box's bottom-right corner
+const SHADOW_TEST_OPACITY = 1;   // no fade, no translucency: the shadow is the only ink there
+const SHADOW_TEST_SHIFT = 0.06;  // offset ≈ 12.6 units — the probe point sits well inside it
+const SHADOW_TEST_BLUR = 0.02;   // ≈ 4.2 units, so the offset dominates the spread
+const SHADOW_LUMA_DROP = 20;     // measured ≈ 30 at these settings; a shadow that vanished would drop 0
 
 const mp4 = await readFile(resolve(HERE, "fixtures/scrub_video.mp4"));
 const SRC = `data:video/mp4;base64,${mp4.toString("base64")}`;
@@ -65,7 +74,7 @@ const SRC = `data:video/mp4;base64,${mp4.toString("base64")}`;
 /** Pure function. The probe document: THE camera + one image stack whose three cards
  *  default-equation their way across the whole clip.
  *  @example doc(0).slides[0].delta.items.st.type // "image_stack" */
-const doc = (alphaExponent, shadowOpacity) => ({
+const doc = (alphaExponent, shadowOpacity, shadow = {}) => ({
   meta: { name: "image-stack-live", slideW: W, slideH: H },
   slides: [{
     id: "s0", name: "A", transition: { type: "fade", seconds: 1 },
@@ -84,7 +93,7 @@ const doc = (alphaExponent, shadowOpacity) => ({
             ["self.video_start + 2 / 3 * (self.video_end - self.video_start)"],
           ],
           shiftX: SHIFT, shiftY: SHIFT, alphaExponent,
-          cardRadius: 0.04, shadowShift: 0.026, shadowBlur: 0.12, shadowColor: "#000000", shadowOpacity,
+          cardRadius: 0.04, shadowShift: 0.026, shadowBlur: 0.12, ...shadow, shadowColor: "#000000", shadowOpacity,
           preserveAspect: false, // the fixture is 4:3 and so are the cards here; a stretch keeps every sample inside picture
           scrubWrap: "clamp", opacity: 1,
         },
@@ -254,16 +263,23 @@ try {
     const at = toCanvas(view, STACK.x + STACK.w + SHADOW_PROBE_OUT, STACK.y + STACK.h + SHADOW_PROBE_OUT);
     return pixelAt(png, at.x, at.y);
   };
+  const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
   const noShadow = await cornerProbe(box); // still the shadowOpacity-0 document
+  // FIRST, on the record and not asserted: what the SHIPPED defaults put there.
   box = await load(doc(0.5, 0.35));
   await sleep(SETTLE_MS);
-  const withShadow = await cornerProbe(box);
+  const atDefaults = await cornerProbe(box);
   await writeFile(resolve(SHOTS, "image_stack_shadows.png"), PNG.sync.write(await shoot(box)));
-  const luma = ([r, g, b]) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  console.log(`  ${SHADOW_PROBE_OUT} units past the box's bottom-right corner: no shadow ${noShadow} → shadow ${withShadow}`);
+  console.log(`  at the shipped look: ${noShadow} → ${atDefaults} (a faint edge, by design — see SHADOW_PROBE_OUT)`);
+  // THEN the gate, with the shadow made unambiguous.
+  const strong = { shadowShift: SHADOW_TEST_SHIFT, shadowBlur: SHADOW_TEST_BLUR };
+  box = await load(doc(0, SHADOW_TEST_OPACITY, strong));
+  await sleep(SETTLE_MS);
+  const withShadow = await cornerProbe(box);
+  console.log(`  ${SHADOW_PROBE_OUT} units past the box's bottom-right corner: no shadow ${noShadow} → opaque shadow ${withShadow}`);
   assert(isBackdrop(noShadow), `with shadows off that pixel is the bare backdrop (${noShadow})`);
-  assert(luma(withShadow) < luma(noShadow) - 2,
-    `with shadows on it is DARKER — the card's shadow really is drawn outside the widget's box (${luma(noShadow).toFixed(1)} → ${luma(withShadow).toFixed(1)})`);
+  assert(luma(withShadow) < luma(noShadow) - SHADOW_LUMA_DROP,
+    `with an opaque shadow it is far DARKER — the card's shadow really is drawn outside the widget's box, which is why localBounds inflates (${luma(noShadow).toFixed(1)} → ${luma(withShadow).toFixed(1)})`);
 
   if (errors.length) { console.error("\nPAGE ERRORS:\n" + errors.join("\n")); process.exit(1); }
 } finally {
