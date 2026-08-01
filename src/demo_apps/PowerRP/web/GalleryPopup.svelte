@@ -70,15 +70,16 @@
 -->
 <script module>
   import { browserNumberSetting } from "./settings.js";
-  // The viewport clamp and its margin MOVED to web/popoverPlacement.js when
-  // ContextMenu became a second consumer (it had none, and put its menu
-  // off-screen on a right-click near an edge). Re-exported here because this
-  // component authored the math and outside callers already reach for it by this
-  // name. Moving it also caught that TWO of its four @examples were WRONG —
-  // `web/` is outside tests/doctest_test.js's SEARCH_DIRS, so they had never been
-  // executed; tests/popover_placement_test.js now pins all five.
-  import { popupPosition, VIEWPORT_MARGIN } from "./popoverPlacement.js";
-  export { popupPosition, VIEWPORT_MARGIN };
+  // The viewport clamp and its margin now live in src/lib/popover.js, the
+  // headless popover kit — this component authored the math, it moved app-side
+  // when ContextMenu became a second consumer, and it moved into the library so
+  // a src/lib component could reach it at all (the standalone contract forbids
+  // the other direction). The instance script imports it from there.
+  //
+  // A RE-EXPORT OF IT LIVED HERE and is deleted rather than repointed: it was
+  // justified by "outside callers already reach for it by this name", and there
+  // were none — nothing imported popupPosition or VIEWPORT_MARGIN from this
+  // component. A second name for one thing, with zero speakers.
 
   /** The popup's DEFAULT content box, before any user resize — a bit taller
    * than CanvasToolbar's grid cap (--a-canvas-toolbar-max-h) since this surface
@@ -182,17 +183,15 @@
 
 <script>
   import Tooltip from "../../../lib/Tooltip.svelte";
+  /* THE HEADLESS POPOVER KIT — placement, the reparent action, and the while-open
+   * listener lifecycle. All three used to be local here: `popupPosition` came
+   * from the app-side module this kit absorbed, `portal` was a BYTE-IDENTICAL
+   * copy of Modal.svelte's (this file's own comment cited it as precedent), and
+   * the listener trio below was hand-copied from Dropdown.svelte — WITH A PHASE
+   * BUG the kit now makes unrepresentable. See onWindowScroll's removal note. */
+  import { popupPosition, portal, trackAnchoredSurface, VIEWPORT_MARGIN } from "../../../lib/popover.js";
 
   let { spec, anchorEl, open = $bindable(false), onpick } = $props();
-
-  /** Command. Svelte action: reparents `node` to document.body — the Modal.svelte
-   * portal precedent, for the same reason (escape the Inspector panel's own
-   * overflow/scroll clipping, which would otherwise cut the popup at the pane
-   * edge exactly like an un-portaled tooltip would). */
-  function portal(node) {
-    document.body.appendChild(node);
-    return { destroy() { node.remove(); } };
-  }
 
   let popupEl = $state(null);
   let pos = $state({ left: 0, top: 0 });
@@ -217,28 +216,37 @@
     pos = popupPosition(r, size.width, size.height, window.innerWidth, window.innerHeight);
   }
 
+  /* THE WHILE-OPEN LISTENER LIFECYCLE, now the kit's. What was here before was a
+     hand copy of Dropdown.svelte's three listeners registered through
+     `<svelte:window onscroll onresize onpointerdown>` — and the scroll one WAS
+     DEAD CODE. Svelte compiles `<svelte:window onscroll>` to
+     `window.addEventListener("scroll", h)` with no capture option, i.e. BUBBLE
+     phase, and a scroll event fired by an element does not bubble (measured:
+     bubble 0 hits, capture 1 hit, for one inner pane scroll). So the handler
+     could only ever see the DOCUMENT scrolling, and this app scrolls panes, not
+     the document. Follow-the-anchor-through-the-Inspector's-scroll — the
+     behaviour this file's own docblock lists as precedent it was built from —
+     never fired once. Dropdown had written the reason for capture phase down in
+     a comment; this file was written from that code and lost it.
+
+     The dismiss listener also moves from bubble to capture, which is a genuine
+     (small) behaviour change and the right one: a press whose handler calls
+     stopPropagation — routine on the canvas's drag surfaces — used to leave this
+     popup open over a UI the user had already moved on from.
+
+     ownsScroll is the popup subtree (its tile grid scrolling itself must not
+     move the popup). ownsPress adds the anchor, because the popup is PORTALLED
+     to the body and the gutter button that toggles it is nowhere inside. */
   $effect(() => {
     if (!open) return;
-    reposition();
+    return trackAnchoredSurface({
+      anchor: () => anchorEl,
+      ownsScroll: (t) => !!popupEl?.contains(t),
+      ownsPress: (t) => !!popupEl?.contains(t) || t === anchorEl,
+      reposition,
+      dismiss: close
+    });
   });
-
-  function onWindowScroll(e) {
-    if (!open) return;
-    // The popup's OWN internal scroll (the tile grid) must not reposition the
-    // whole popup — only an ancestor of the ANCHOR scrolling does.
-    if (popupEl && popupEl.contains(e.target)) return;
-    const scroller = e.target === document ? document.documentElement : e.target;
-    if (scroller?.contains?.(anchorEl)) reposition();
-  }
-
-  function onWindowResize() {
-    if (open) reposition();
-  }
-
-  function onDocPointerDown(e) {
-    if (!open) return;
-    if (popupEl && !popupEl.contains(e.target) && e.target !== anchorEl) close();
-  }
 
   function onKeydown(e) {
     if (e.key === "Escape") {
@@ -379,8 +387,6 @@
     close();
   }
 </script>
-
-<svelte:window onscroll={onWindowScroll} onresize={onWindowResize} onpointerdown={onDocPointerDown} />
 
 {#if open}
   <div

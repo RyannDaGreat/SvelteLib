@@ -1,10 +1,12 @@
 /**
- * web/popoverPlacement.js — the shared viewport clamp for floating surfaces.
+ * src/lib/popover.js — the headless popover kit's viewport clamp.
  *
  * WHY THIS FILE EXISTS RATHER THAN RELYING ON THE DOCTESTS. tests/doctest_test.js
- * scans SEARCH_DIRS = ["core", "plugins", "render_gpu", "cli"] (:91). `web/` is NOT
- * in that list, so no @example under web/ has ever been executed — and this
- * function proved what that costs: two of the four examples it shipped with were
+ * scans SEARCH_DIRS = ["core", "plugins", "render_gpu", "cli"] (:91). Neither
+ * `web/` nor `src/lib/` is in that list — src/lib is outside the app tree
+ * entirely — so no @example on this function has ever been executed by a runner,
+ * and this function proved what that costs: two of the four examples it shipped
+ * with were
  * WRONG (`top: 384` for a case that yields 390, and `top: 294` for a case that
  * yields 200 and whose stated premise "NEITHER side has 500px (below: 80, above:
  * 700)" was arithmetically false). They read as authoritative for as long as they
@@ -14,7 +16,7 @@
  * recorded at manifest R6-24.4a).
  */
 import assert from "node:assert/strict";
-import { popupPosition, VIEWPORT_MARGIN } from "../web/popoverPlacement.js";
+import { popupPosition, VIEWPORT_MARGIN } from "../../../lib/popover.js";
 
 let checks = 0;
 const eq = (got, exp, what) => { assert.deepEqual(got, exp, what); checks++; };

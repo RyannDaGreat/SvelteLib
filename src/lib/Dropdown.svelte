@@ -116,6 +116,14 @@
      item) that use it. Our own built-in glyphs below do NOT — see next note. */
   import "iconify-icon";
 
+  /* The headless popover kit. VIEWPORT_MARGIN was declared here first and copied
+     twice into the host app, which could not import it back (a src/lib component
+     may not depend on a host app, so the app kept its own). Promoting the kit
+     into src/lib is what retires those copies. trackAnchoredSurface is this
+     component's own while-open listener lifecycle, extracted because a second
+     surface hand-copied it and got the scroll PHASE wrong — see the kit. */
+  import { VIEWPORT_MARGIN, trackAnchoredSurface } from "./popover.js";
+
   /* Built-in glyphs (caret, checkmark) render as inline <svg>, NOT via the
      iconify-icon web component. Reason: iconify-icon's mutation observer
      re-scans and re-renders all instances when the DOM changes; opening a
@@ -131,9 +139,9 @@
   /* Floating-menu placement (positionMenu). DEFAULT_MENU_MAX_H mirrors the CSS
      `--dd-menu-max-height` default so the list still caps + scrolls at the usual
      height; the fixed-position box only shrinks BELOW it when the viewport is
-     tight. VIEWPORT_MARGIN is the sliver kept between the menu and the edge. */
+     tight. The sliver kept between the menu and the edge is the kit's
+     VIEWPORT_MARGIN, imported above — same value, same purpose, one home. */
   const DEFAULT_MENU_MAX_H = 240;
-  const VIEWPORT_MARGIN = 6;
 
   /**
    * Pure function. True if `it` is an insert entry (decoration between rows)
@@ -406,11 +414,6 @@
     }
   }
 
-  function handleDocPointer(e) {
-    if (!open) return;
-    if (rootEl && !rootEl.contains(e.target)) closeMenu();
-  }
-
   /* Command. Positions the open menu as a FIXED box at the trigger's viewport
      rect, flipping ABOVE when there is no room below and capping its height to
      the space available on the chosen side. Fixed positioning is what lets the
@@ -441,31 +444,6 @@
       : { left: r.left, top: r.bottom, width: r.width, maxHeight, placement: "down" };
   }
 
-  /* Command. Responds to an OUTSIDE scroll that moves the anchor by REPOSITIONING
-     the fixed menu to follow the trigger — it stays glued to the anchor through
-     any scroll. The menu list's OWN scroll instead re-hovers (onListScroll);
-     scroll events don't bubble, so this capture-phase listener sees every scroll
-     and discriminates by target.
-
-     Why follow rather than CLOSE-on-scroll (the textbook behavior): opening the
-     fixed menu itself perturbs the ancestor panel's scroll (measured: the
-     Inspector panel-body bounced 584→714→584 px as the menu mounted, briefly
-     scrolling the trigger's rect off-screen). A close on that SPURIOUS scroll
-     tore the menu down mid-hover and wiped the live material preview — and it is
-     not distinguishable from a genuine scroll at the event. Following the anchor
-     (the Floating-UI/Radix default) survives the spurious scroll and keeps the
-     menu correct through a genuine one; an outside pointerdown / Escape / pick
-     still closes it. */
-  function handleWindowScroll(e) {
-    if (!open) return;
-    if (e.target === listEl || (menuEl && menuEl.contains(e.target))) {
-      onListScroll();
-      return;
-    }
-    const scroller = e.target === document ? document.documentElement : e.target;
-    if (scroller?.contains?.(triggerEl)) positionMenu();
-  }
-
   /* Command. Re-hit-test what the (stationary) pointer is now over after the list
      scrolled, and make THAT row active — a scroll fires no mousemove, so the
      previewed row must be recomputed from the pointer position by hand. */
@@ -485,19 +463,37 @@
   /* One effect owns every while-open document/window listener + the initial
      placement. It reads `open` only; the listeners it installs write menuPos /
      activeIndex / lastPointer, none of which it reads — so it never re-runs
-     itself (the FontPicker effect-depth precedent). */
+     itself (the FontPicker effect-depth precedent).
+
+     Three of the four listeners ARE the popover kit's trackAnchoredSurface —
+     follow-the-anchor on an outside scroll, reposition on resize, dismiss on an
+     outside press, all in the phases the kit documents. Why follow rather than
+     CLOSE-on-scroll (the textbook behavior): opening the fixed menu itself
+     perturbs the ancestor panel's scroll (measured: the Inspector panel-body
+     bounced 584→714→584 px as the menu mounted, briefly scrolling the trigger's
+     rect off-screen). A close on that SPURIOUS scroll tore the menu down
+     mid-hover and wiped the live material preview — and it is not
+     distinguishable from a genuine scroll at the event.
+
+     `pointermove` stays local: it feeds onListScroll's re-hit-test, which is this
+     component's live-preview behaviour and not something a popover needs. The
+     ownsPress set is rootEl (which holds BOTH the trigger and the in-tree menu),
+     while the ownsScroll set is menuEl alone — genuinely two different questions,
+     which is why the kit takes two predicates instead of guessing one. */
   $effect(() => {
     if (!open) return;
-    document.addEventListener("pointerdown", handleDocPointer, true);
-    window.addEventListener("scroll", handleWindowScroll, true);
-    window.addEventListener("resize", positionMenu);
     window.addEventListener("pointermove", trackPointer, true);
-    positionMenu();
+    const untrack = trackAnchoredSurface({
+      anchor: () => triggerEl,
+      ownsScroll: (t) => t === listEl || !!menuEl?.contains(t),
+      ownsPress: (t) => !!rootEl?.contains(t),
+      reposition: positionMenu,
+      dismiss: closeMenu,
+      onOwnScroll: onListScroll
+    });
     return () => {
-      document.removeEventListener("pointerdown", handleDocPointer, true);
-      window.removeEventListener("scroll", handleWindowScroll, true);
-      window.removeEventListener("resize", positionMenu);
       window.removeEventListener("pointermove", trackPointer, true);
+      untrack();
     };
   });
 

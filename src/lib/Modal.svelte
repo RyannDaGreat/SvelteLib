@@ -174,25 +174,14 @@
 
 <script>
   import "iconify-icon";
-
-  /**
-   * Command. Svelte action: reparents `node` to `document.body` on mount and
-   * removes it on destroy, so the modal escapes any ancestor's
-   * `overflow:hidden`/`transform`/`filter` stacking context (see the portal
-   * note in the file header). Placement in `document.body` is append-only —
-   * we don't need to restore a sibling position because the node is created
-   * fresh by the `{#if open}` block and destroyed with it.
-   *
-   * @param {HTMLElement} node Element to move to document.body.
-   */
-  function portal(node) {
-    document.body.appendChild(node);
-    return {
-      destroy() {
-        node.remove();
-      },
-    };
-  }
+  /* The reparent-to-body action, so the modal escapes any ancestor's
+     `overflow:hidden`/`transform`/`filter` stacking context (see the portal note
+     in the file header). It used to be declared here and BYTE-IDENTICALLY again
+     in a host app's gallery popup, which cited this copy as its precedent; both
+     now read the one home. Placement in `document.body` is append-only — no
+     sibling position to restore, because the node is created fresh by the
+     `{#if open}` block and destroyed with it. */
+  import { portal } from "./popover.js";
 
   let {
     /** @type {boolean} Whether the modal is shown. Bindable. */

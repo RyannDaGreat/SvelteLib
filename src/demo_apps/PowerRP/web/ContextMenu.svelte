@@ -42,7 +42,11 @@
 -->
 <script>
   import "iconify-icon";
-  import { popupPosition } from "./popoverPlacement.js";
+  /* The clamp moved from web/popoverPlacement.js into src/lib/popover.js, the
+     headless popover kit — a src/lib component cannot import from a host app, so
+     the library is the only home both sides can reach. Same function, same
+     doctests, same tests/popover_placement_test.js pinning them. */
+  import { popupPosition } from "../../../lib/popover.js";
 
   let { x, y, entries = [], onclose } = $props();
 
@@ -149,6 +153,12 @@
     border: var(--a-hairline) solid var(--border);
     border-radius: var(--a-radius-floating); /* the one rounded family, at its cap */
     box-shadow: var(--a-glass-shadow);
+    /* Also missing from the header's "what was wrong" list above: the panel is
+       translucent (--a-glass-bg-panel) but had no backdrop-filter at all, so it
+       could never blur — the same defect class as the Modal mapping in
+       app.css (todo #235's sweep). */
+    backdrop-filter: var(--a-glass-blur);
+    -webkit-backdrop-filter: var(--a-glass-blur);
     display: flex;
     flex-direction: column;
   }
