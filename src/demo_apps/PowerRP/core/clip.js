@@ -107,6 +107,45 @@ export function clampSurfaceSize(w, h, max = MAX_SURFACE_DIM) {
 }
 
 /**
+ * Pure function. The largest factor ≤ 1 by which a requested raster size must be
+ * multiplied so that NEITHER edge exceeds `maxEdge` — exactly 1 when it already
+ * fits. Aspect is preserved by construction (one factor, both edges).
+ *
+ * THE ASK-VS-GOT LAW, and why this lives beside clampSurfaceSize rather than at
+ * either call site. Clamping the ALLOCATION does not make an oversized raster
+ * smaller, it makes it SHORTER: whoever draws into it is still working through a
+ * transform built for the size that was ASKED for, so the surface receives the
+ * top-left corner of the picture and the rest falls off the edge. Whoever sizes a
+ * surface must derive the render scale from THE SAME number; this is that number,
+ * and clampSurfaceSize then only ever acts as the NaN/negative backstop it
+ * describes itself as. Two independent instances of the defect have shipped:
+ *   · pdf.js drew a page through a viewport built at the uncapped scale into a
+ *     canvas capped independently — the page came out truncated and then stretched
+ *     across the widget's whole box (render_gpu/gpu/pdf_page_raster.js).
+ *   · a backdrop material asked for deviceW·backdropScale px and built its
+ *     sampleMatrix from `backdropScale` regardless of what it got — past the cap
+ *     the texture does not exist and TileMode.Clamp smears one column across the
+ *     rest (render_gpu/skia/paint_skia.js glassBackdropImages).
+ * Both are silent, because a clamp is not an error.
+ *
+ * Args:
+ *   wantW, wantH (number): the requested raster size, device px.
+ *   maxEdge (number): the hard per-edge ceiling.
+ *
+ * Returns:
+ *   number in (0, 1].
+ *
+ * @example rasterFitFactor(800, 600, 4096) // 1 (already fits)
+ * @example rasterFitFactor(6330, 8192, 4096) // 0.5 (a 612x792pt page asked for at rasterDPI 1200)
+ * @example rasterFitFactor(8192, 1000, 4096) // 0.5 (the WIDE edge decides)
+ * @example rasterFitFactor(8400, 300, 8192) // 0.9752380952380952 (a 5600px-wide frame at backdropScale 1.5)
+ */
+export function rasterFitFactor(wantW, wantH, maxEdge) {
+  const largest = Math.max(wantW, wantH);
+  return largest > maxEdge ? maxEdge / largest : 1;
+}
+
+/**
  * Pure function. The axis-aligned intersection of two rects (x,y,w,h), or null
  * when they do not overlap (touching edges count as no interior overlap — a
  * zero-area intersection is "not visible").

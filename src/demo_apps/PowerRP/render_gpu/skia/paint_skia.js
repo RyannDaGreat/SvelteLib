@@ -61,7 +61,7 @@ import { getStrokeMaterial, capEnum } from "./stroke_materials.js"; // capEnum =
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
-import { MAX_SURFACE_DIM } from "../../core/clip.js"; // the edge below which no surface factory clamps a request
+import { MAX_SURFACE_DIM, rasterFitFactor } from "../../core/clip.js"; // the edge below which no surface factory clamps a request, + the ask-vs-got fit law
 import { fitBox, pointsBounds, inflateRect } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
 import { drawVideoV2 } from "./video_v2.js"; // V2 direct-upload video op ("videoV2") — self-resolving frame registry (additive; import-safe in node)
@@ -2062,9 +2062,16 @@ function backdropRegion(cxDev, cyDev, halfWDev, halfHDev, marginDev, deviceW, de
  * recursion guard).
  *
  * `sampleMatrix` maps an image texel to its DEVICE coordinate: translate(x0,y0)·
- * scale(1/scale) (texel t → region origin + t/scale) for the region paths, null
+ * scale(1/eff) (texel t → region origin + t/eff) for the region paths, null
  * (identity, device px) for the whole-surface fallback. Caller deletes sharp +
  * blurred (blurred may be null — see below).
+ *
+ * `eff` is `scale` CORRECTED so the surface it implies can actually be allocated
+ * (core/clip.js rasterFitFactor). The surface, the blur sigma, the re-render's dpr
+ * and the sampleMatrix all read `eff` and never `scale`, because a factory silently
+ * clamps an oversized request: the ask and the got must be one number or the shader
+ * samples off the end of a texture that is smaller than its matrix claims. See the
+ * comment at the branch for the size at which this is reachable.
  *
  * `needBlur` (default true) is the OPT-OUT for a material that declares it never
  * samples the blurred child (materials carry `usesBlurredBackdrop: false`; see
@@ -2096,9 +2103,24 @@ function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, sca
     return { sharp, blurred, sampleMatrix };
   }
   if (depth.lens < MAX_SUPERSAMPLE_DEPTH) {
-    const sw = Math.max(1, Math.round((x1 - x0) * scale));
-    const sh = Math.max(1, Math.round((y1 - y0) * scale));
+    // THE ASK-VS-GOT LAW (core/clip.js rasterFitFactor). Every surface factory
+    // CLAMPS an oversized request instead of failing it, so the resolution factor
+    // has to be corrected to what will actually be allocated BEFORE sw/sh and the
+    // sampleMatrix are derived from it — they must come from one number. When they
+    // did not, the shader was handed a texture narrower than the matrix claimed and
+    // TileMode.Clamp smeared its last column across everything past the cap.
+    // Reached with no zoom and no unusual document: `metaballs` is the one material
+    // that both declares no maxSampleReach (so its region is the WHOLE surface) and
+    // defaults backdropScale to 1.5, i.e. it asks for deviceW·1.5 px, which passes
+    // MAX_SURFACE_DIM at 5461 device px — an ordinary maximised HiDPI window.
+    const eff = scale * rasterFitFactor((x1 - x0) * scale, (y1 - y0) * scale, MAX_SURFACE_DIM);
+    if (eff < scale) noteBackdropFit(scale, eff, x1 - x0, y1 - y0);
+    const sw = Math.max(1, Math.round((x1 - x0) * eff));
+    const sh = Math.max(1, Math.round((y1 - y0) * eff));
     let sharp;
+    // The branch is keyed on the REQUESTED scale, not the fitted one, so a fit
+    // correction never silently moves a widget from the re-render path to the crop
+    // path: it changes the resolution the same path runs at, and nothing else.
     if (scale <= 1 && !full && target.surface) {
       // CROP the minimal region out of the composite-so-far (exact for a covering
       // backdrop; downsampled when scale < 1). No below-content re-render.
@@ -2127,14 +2149,14 @@ function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, sca
       // composite reads (clearing it to the background would turn every shadow into
       // a solid rect).
       sub.getCanvas().clear(ctx.bgColor);
-      const shiftedView = { ...view, dpr: view.dpr * scale, panX: view.panX - x0 / view.dpr, panY: view.panY - y0 / view.dpr };
+      const shiftedView = { ...view, dpr: view.dpr * eff, panX: view.panX - x0 / view.dpr, panY: view.panY - y0 / view.dpr };
       paintFlat(CanvasKit, { canvas: sub.getCanvas(), surface: sub }, belowFlat, shiftedView, ctx, deeperLens(depth));
       sub.flush();
       sharp = sub.makeImageSnapshot();
       sub.dispose();
     }
-    const blurred = needBlur ? blurredImageOf(CanvasKit, ctx, sharp, blurSigma * scale, sw, sh) : null;
-    const sampleMatrix = CanvasKit.Matrix.multiply(CanvasKit.Matrix.translated(x0, y0), CanvasKit.Matrix.scaled(1 / scale, 1 / scale));
+    const blurred = needBlur ? blurredImageOf(CanvasKit, ctx, sharp, blurSigma * eff, sw, sh) : null;
+    const sampleMatrix = CanvasKit.Matrix.multiply(CanvasKit.Matrix.translated(x0, y0), CanvasKit.Matrix.scaled(1 / eff, 1 / eff));
     return { sharp, blurred, sampleMatrix };
   }
   // Fallback (nested beyond the re-render cap): sample the surface we draw into.
@@ -2143,6 +2165,17 @@ function glassBackdropImages(CanvasKit, target, belowFlat, view, ctx, depth, sca
   const sharp = target.surface.makeImageSnapshot();
   const blurred = needBlur ? blurredImageOf(CanvasKit, ctx, sharp, blurSigma, ctx.deviceW, ctx.deviceH) : null;
   return { sharp, blurred, sampleMatrix: null }; // null ⇒ identity local space (device px)
+}
+
+/**
+ * Command (counts nothing; reports once per requested/fitted pair). A backdrop that
+ * asked for more resolution than any surface may hold gets LESS, and says so — the
+ * clamp used to be silent, which is exactly how the smeared-edge defect survived.
+ * Keyed on the numbers rather than on a widget id, so a deck full of droplets on one
+ * oversized canvas produces one sentence, and resizing the window produces another.
+ */
+function noteBackdropFit(requested, fitted, regionW, regionH) {
+  warnOnce(`backdrop-scale-fit:${requested}:${fitted.toFixed(4)}`, `paintIR(skia): a backdrop material asked for its ${regionW}×${regionH} region at ${requested}× (${Math.round(regionW * requested)}×${Math.round(regionH * requested)} px), which exceeds the ${MAX_SURFACE_DIM} px surface ceiling — rendering it at ${fitted.toFixed(3)}× instead. The refraction is slightly softer than requested; lower the widget's Backdrop scale, or use a smaller canvas, to get the resolution you asked for.`);
 }
 
 /**

@@ -175,6 +175,12 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
     // painter every frame — the camera-background freeze). A plain "#rrggbb"
     // string is still a solid, byte-identically.
     rectCmd({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, fill: resolvedBackgroundFill(rect.background, nodes) }),
-    ...sceneIR(nodes, { pdfDisplay, mapTiles }),
+    // `live: liveView` — a caller that supplied a view is a SURFACE THAT
+    // REPAINTS (the editor canvas, the presenter), so a widget whose async raster
+    // is not ready may show its previous frame rather than a hole. The one-shot
+    // consumers (thumbnails, PNG/SVG/PDF export, the CLI) supply no view and get
+    // `false`, which is byte-identical to this function's behaviour before the
+    // flag existed. See render_gpu/ports.sceneIR for the full reasoning.
+    ...sceneIR(nodes, { pdfDisplay, mapTiles, live: liveView }),
   ];
 }

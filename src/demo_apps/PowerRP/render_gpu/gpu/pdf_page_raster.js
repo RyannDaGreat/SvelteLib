@@ -80,6 +80,10 @@ import {
   reserveImageSlot, registerRasterizedBitmap, releaseImage, abandonImageSlot, BYTES_PER_PIXEL,
 } from "./image_registry.js";
 import { reportOnce, truncate } from "../../core/report.js";
+// rasterFitFactor lives with clampSurfaceSize/MAX_SURFACE_DIM: it is the ask-vs-got
+// law for EVERY raster this app allocates, not a PDF-only concern (the backdrop
+// materials in render_gpu/skia/paint_skia.js hit the identical defect).
+import { rasterFitFactor } from "../../core/clip.js";
 
 // pdfjs-dist is loaded LAZILY (dynamic import, at first use inside
 // loadPdfjs() below) — NEVER as a static top-level import. WHY: a static
@@ -737,36 +741,6 @@ export function trimPdfRasterCache() {
   if (bytes > PDF_RASTER_CACHE_BYTES)
     reportOnce("pdf_page_raster:budget", `PowerRP pdf_page_raster: the PDF rasters ONE frame needs total ${(bytes / 1048576).toFixed(0)} MB, over the ${(PDF_RASTER_CACHE_BYTES / 1048576).toFixed(0)} MB raster-cache budget — keeping them all (a frame must paint), but this deck is running close to CanvasKit's 2 GiB wasm heap ceiling. Reduce the number of co-visible PDF pages, their size, or their zoom.`);
   return { evicted, freedBytes, bytes };
-}
-
-/**
- * Pure function. The largest factor ≤ 1 by which a requested raster size must be
- * multiplied so that NEITHER edge exceeds `maxEdge` — exactly 1 when it already
- * fits. Aspect is preserved by construction (one factor, both edges).
- *
- * WHY THIS EXISTS RATHER THAN A CLAMP AT THE CANVAS. Clamping the output canvas
- * does not make an oversized raster smaller, it makes it SHORTER: pdf.js draws
- * through the transform its viewport was built with, so a canvas clamped
- * independently of that viewport receives the page's top-left corner and nothing
- * else. The region bitmap is then STRETCHED into the widget's box at draw time, so
- * the visible result is a fraction of the page blown up to fill the whole frame —
- * silently, since a clamp is not an error. Whoever sizes a canvas must derive the
- * render scale from THE SAME number; this is that number.
- *
- * Args:
- *   wantW, wantH (number): the requested raster size, device px.
- *   maxEdge (number): the hard per-edge ceiling.
- *
- * Returns:
- *   number in (0, 1].
- *
- * @example rasterFitFactor(800, 600, 4096) // 1 (already fits)
- * @example rasterFitFactor(6330, 8192, 4096) // 0.5 (a 612x792pt page asked for at rasterDPI 1200)
- * @example rasterFitFactor(8192, 1000, 4096) // 0.5 (the WIDE edge decides)
- */
-export function rasterFitFactor(wantW, wantH, maxEdge) {
-  const largest = Math.max(wantW, wantH);
-  return largest > maxEdge ? maxEdge / largest : 1;
 }
 
 /** Pure function. Clamps a raster canvas edge into [1, PDF_MAX_RASTER_DIM],

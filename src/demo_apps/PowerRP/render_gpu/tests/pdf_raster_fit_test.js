@@ -25,8 +25,12 @@
  */
 import { rasterModeScale } from "../pdf_display.js";
 import {
-  rasterFitFactor, clampDim, roundPdfScale, PDF_MAX_RASTER_DIM, PDF_MAX_DEVICE_DIM,
+  clampDim, roundPdfScale, PDF_MAX_RASTER_DIM, PDF_MAX_DEVICE_DIM,
 } from "../gpu/pdf_page_raster.js";
+// The fit factor moved to core/clip.js when a SECOND consumer appeared — the backdrop
+// materials, whose surfaces hit the identical ask-vs-got defect against MAX_SURFACE_DIM
+// (render_gpu/tests/backdrop_fit_test.js is the other half of this law).
+import { rasterFitFactor } from "../../core/clip.js";
 
 let failures = 0;
 const check = (ok, what) => {

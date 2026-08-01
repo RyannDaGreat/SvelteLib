@@ -984,12 +984,73 @@ export function canonicalPropPath(state, itemId, key) {
 // ── Reference resolution ─────────────────────────────────────────────────────
 
 /**
+ * THE STORED-ID INVARIANT — an itemId contains no "_".
+ *
+ * The stored head "@<itemId>[_<anchorId>]" carries no delimiter of its own, so
+ * exactly one of the two namespaces has to give up the underscore for the split
+ * to be decidable. It is the ITEM ID that gives it up, because an itemId is
+ * machine-minted and opaque (uuid() emits base-16/base-36 characters and nothing
+ * else) while an anchorId is an author-facing plugin identifier that may
+ * legitimately want to read `top_left`. That is why the split below takes the
+ * FIRST underscore: everything after it belongs to the anchor.
+ *
+ * The invariant used to be a sentence in a docstring, enforced nowhere, and the
+ * failure was SILENT: displayToStored would happily mint "@Do_it_tl.x" for an
+ * item whose id was "Do_it" (the display grammar splits a SLUG at its LAST
+ * underscore, because slugs are snake_case and DO contain them), and every
+ * stored-side reader then resolved that token to a different item named "Do" —
+ * measured, both directions, in core/shatter.js's PART_KEY_PATTERN docblock.
+ * Nothing today can produce such an id; shatter's synthetic part keys were the
+ * first thing that nearly did, and dodged it by banning the character locally.
+ * storedItemRef is where the ban stops being local.
+ */
+const STORED_ITEM_ID_SEPARATOR = "_";
+
+/**
+ * Pure function. Splits a STORED reference HEAD (the text between "@" and the
+ * first ".") into its itemId and its optional anchorId, per the stored-id
+ * invariant above. THE one place that rule is spelled out — parseStoredRef and
+ * storedRefItemId used to hand-roll it separately, which is two chances to drift.
+ *
+ * @example splitStoredRefHead("ab12cd34") // {itemId: "ab12cd34", anchorId: null}
+ * @example splitStoredRefHead("ab12cd34_tm") // {itemId: "ab12cd34", anchorId: "tm"}
+ * @example splitStoredRefHead("ab12cd34_top_left") // {itemId: "ab12cd34", anchorId: "top_left"} (the ANCHOR keeps the rest)
+ */
+export function splitStoredRefHead(head) {
+  const us = head.indexOf(STORED_ITEM_ID_SEPARATOR);
+  if (us === -1) return { itemId: head, anchorId: null };
+  return { itemId: head.slice(0, us), anchorId: head.slice(us + 1) };
+}
+
+/**
+ * Pure function. Writes a STORED "@" reference for an item, REFUSING an itemId
+ * that violates the stored-id invariant — because such a token reads back as a
+ * different item, silently, everywhere.
+ *
+ * Args:
+ *   itemId (string): the item's id
+ *   suffix (string): what follows the id verbatim — "_<anchorId>.x", ".w", or ""
+ *
+ * Returns:
+ *   string: the stored token
+ *
+ * @example storedItemRef("ab12cd34", ".w") // "@ab12cd34.w"
+ * @example storedItemRef("ab12cd34", "_tm.x") // "@ab12cd34_tm.x"
+ * @example storedItemRef("ab12cd34") // "@ab12cd34" (a bare widget argument)
+ * @example // storedItemRef("Do_it", ".x") throws: the id would read back as "Do"
+ */
+export function storedItemRef(itemId, suffix = "") {
+  if (typeof itemId !== "string" || itemId === "" || itemId.includes(STORED_ITEM_ID_SEPARATOR))
+    throw new Error(`Item id ${JSON.stringify(itemId)} cannot be referenced: a stored "@" reference splits at the first "${STORED_ITEM_ID_SEPARATOR}", so an id containing one resolves to a different item`);
+  return `@${itemId}${suffix}`;
+}
+
+/**
  * Pure function. Parses a STORED "@"-form reference token.
  *
  * Forms: "@<itemId>.<prop...>" (item property) and "@<itemId>_<anchorId>.x|y"
- * (anchor coordinate). Item ids never contain "_", so the split is
- * unambiguous. Returns {kind: "prop", itemId, path} or
- * {kind: "anchor", itemId, anchorId, coord}.
+ * (anchor coordinate), split by splitStoredRefHead per the stored-id invariant.
+ * Returns {kind: "prop", itemId, path} or {kind: "anchor", itemId, anchorId, coord}.
  *
  * @example parseStoredRef("@ab12cd34.x") // {kind: "prop", itemId: "ab12cd34", path: ["x"]}
  * @example parseStoredRef("@ab12cd34_tm.y") // {kind: "anchor", itemId: "ab12cd34", anchorId: "tm", coord: "y"}
@@ -997,14 +1058,12 @@ export function canonicalPropPath(state, itemId, key) {
 export function parseStoredRef(token) {
   const dot = token.indexOf(".");
   if (dot === -1) throw new Error(`Item reference needs a property: "${token}"`);
-  const head = token.slice(1, dot);
   const path = token.slice(dot + 1).split(".");
-  const us = head.indexOf("_");
-  if (us === -1) return { kind: "prop", itemId: head, path };
-  const anchorId = head.slice(us + 1);
+  const { itemId, anchorId } = splitStoredRefHead(token.slice(1, dot));
+  if (anchorId === null) return { kind: "prop", itemId, path };
   if (path.length !== 1 || (path[0] !== "x" && path[0] !== "y"))
     throw new Error(`Anchor reference must end in .x or .y: "${token}"`);
-  return { kind: "anchor", itemId: head.slice(0, us), anchorId, coord: path[0] };
+  return { kind: "anchor", itemId, anchorId, coord: path[0] };
 }
 
 /** "center" reads far better than the internal "cm" anchor id in the default
@@ -1269,7 +1328,7 @@ export function displayToStored(src, state) {
     if (wSpans.has(`${tok.start}:${tok.end}`)) {
       if (token === "self") return token;
       const id = resolveWidgetArg(token, slugs); // throws on unknown widget
-      return `@${id}`;
+      return storedItemRef(id);
     }
     if (token === "self" || token.startsWith("self.")) {
       const shape = selfRefShape(token); // throws "needs a property" on bare "self"
@@ -1284,9 +1343,9 @@ export function displayToStored(src, state) {
     }
     if (d.kind === "prop") {
       checkCanonicalPath(d.path, token);
-      return `@${d.itemId}.${pathToStored(d.path).join(".")}`;
+      return storedItemRef(d.itemId, `.${pathToStored(d.path).join(".")}`);
     }
-    return `@${d.itemId}_${d.anchorId}.${d.coord}`;
+    return storedItemRef(d.itemId, `_${d.anchorId}.${d.coord}`);
   });
 }
 
@@ -3194,10 +3253,10 @@ export function withItemVariableRenamed(doc, itemId, oldName, newName, registry)
  * when the token is not an item reference at all (a variable, a function name,
  * a `self.` reference).
  *
- * Mirrors parseStoredRef's split rule — "item ids never contain '_', so the
- * split is unambiguous" — but WITHOUT its property requirement, so it also
- * answers for a bare WIDGET-ARGUMENT token (`closest_to_rim(@a, @b)`, where the
- * id carries no ".<prop>" suffix and parseStoredRef therefore throws).
+ * SHARES parseStoredRef's split (splitStoredRefHead, the stored-id invariant)
+ * but drops its property requirement, so it also answers for a bare
+ * WIDGET-ARGUMENT token (`closest_to_rim(@a, @b)`, where the id carries no
+ * ".<prop>" suffix and parseStoredRef therefore throws).
  *
  * @example storedRefItemId("@ab12cd34.x") // "ab12cd34"
  * @example storedRefItemId("@ab12cd34_tm.y") // "ab12cd34" (anchor form: id, then _anchor)
@@ -3210,8 +3269,7 @@ export function storedRefItemId(token) {
   const dot = token.indexOf(".");
   const head = dot === -1 ? token.slice(1) : token.slice(1, dot);
   if (!head) return null; // a lone "@" names nothing
-  const us = head.indexOf("_");
-  return us === -1 ? head : head.slice(0, us);
+  return splitStoredRefHead(head).itemId;
 }
 
 /**
@@ -3249,15 +3307,22 @@ export function storedRefItemId(token) {
  * @example withItemRefsRemapped("@a.x + @c.x", new Map([["a", "z"]])) // {src: "@z.x + @c.x", external: ["c"]} (c is outside the set)
  * @example withItemRefsRemapped("closest_to_rim(@a, @c).x", new Map([["a", "z"]])) // {src: "closest_to_rim(@z, @c).x", external: ["c"]}
  * @example withItemRefsRemapped("speed * 2", new Map([["a", "z"]])) // {src: "speed * 2", external: []}
+ * @example // withItemRefsRemapped("@Do_it.x", new Map([["Do_it", "z"]])) throws: an underscored id is unreadable (storedItemRef)
  */
 export function withItemRefsRemapped(src, idMap) {
   const external = new Set();
+  // The stored-id invariant is checked HERE, before the try, and on BOTH sides
+  // of the map: a KEY that breaks it is an existing item no stored reference can
+  // name, and a VALUE that breaks it is a clone id no reference could be written
+  // to. Inside the try it would be swallowed by the not-an-equation catch below,
+  // which is exactly how this would go back to failing silently.
+  for (const [from, to] of idMap) { storedItemRef(from); storedItemRef(to); }
   try {
     const out = mapRefTokens(src, (token) => {
       const id = storedRefItemId(token);
       if (id === null) return token;
       if (!idMap.has(id)) { external.add(id); return token; }
-      return `@${idMap.get(id)}${token.slice(1 + id.length)}`;
+      return storedItemRef(idMap.get(id), token.slice(1 + id.length));
     });
     return { src: out, external: [...external] };
   } catch {

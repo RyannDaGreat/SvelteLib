@@ -149,13 +149,34 @@ const PALETTE_COLS = 5;
  * a search to a handful of round trips. */
 const MAX_MATCHED_SETS = 2;
 
-/** The worst rpFuzzyScore a set match may have and still be believed. Scores are
- * "lower is better" and a case-insensitive PREFIX match is divided by 1000, so
- * anything under 1 is essentially "the query is a prefix of, or an early
- * subsequence in, this set's prefix or name". Above it the match is an accident
- * of letters scattered through a long title, and expanding a whole set on that
- * evidence would bury the plain-search hits the user actually asked for. */
-const SET_MATCH_MAX_SCORE = 1.0;
+/** The worst rpFuzzyScore a set match may have and still be believed: DERIVED
+ * from the scorer, not asserted against it.
+ *
+ * The rule this encodes is "the query is a prefix of, or an early subsequence
+ * in, this set's prefix or name". Past that the match is an accident of letters
+ * scattered through a long title, and expanding a whole set on that evidence
+ * would bury the plain-search hits the user actually asked for — each admitted
+ * set costs a network request (MAX_MATCHED_SETS caps how many).
+ *
+ * It used to be the literal `1.0`, and that was a latent defect rather than a
+ * tidiness problem. A bare threshold on a score's MAGNITUDE silently re-tunes
+ * itself whenever the scorer's scale moves, in a file that has no reason to know
+ * this one exists. Measured when core/fuzzy.js was about to change: "gi" would
+ * have gone from admitting 0 sets to 2 and "fas" from 0 to 1 — more requests, no
+ * error, nothing to notice. Nobody would have found it; it turned up only
+ * because someone happened to be editing the scorer.
+ *
+ * So the boundary is CALIBRATED against rpFuzzyScore itself. "ab" vs "axb" is
+ * the cheapest match that has skipped one ORDINARY (non-word-boundary)
+ * character, which is exactly the line the prose above draws: word-boundary
+ * skips stay believable, a skipped letter does not. Whatever the scorer's scale,
+ * the meaning survives.
+ *
+ * Equivalent to the old literal for every realistic input — it accepts
+ * score < 1.001 where the literal accepted score <= 1.0, and reaching the gap
+ * between them needs nine word-boundary skips plus ~991 case-mismatched
+ * characters, i.e. a query longer than any icon set name. */
+const SET_MATCH_MAX_SCORE = rpFuzzyScore("ab", "axb");
 
 /**
  * Pure function. Splits a palette query into a SET filter and a NAME query on
@@ -230,7 +251,9 @@ export function matchIconSets(catalog, setQuery) {
     const scores = candidates.map((c) => rpFuzzyScore(q, c)).filter((s) => s !== null);
     if (!scores.length) continue;
     const score = Math.min(...scores);
-    if (score <= SET_MATCH_MAX_SCORE) scored.push({ prefix, name, score });
+    // STRICTLY below: SET_MATCH_MAX_SCORE is the first REJECTED score (one
+    // ordinary character skipped), not the last accepted one.
+    if (score < SET_MATCH_MAX_SCORE) scored.push({ prefix, name, score });
   }
   return scored.sort((a, b) => a.score - b.score || a.prefix.localeCompare(b.prefix));
 }
