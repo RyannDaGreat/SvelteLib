@@ -740,7 +740,7 @@
      floating surface's content by a pixel the moment a theme lit the rim, and
      "the lever is a no-op until pulled" has to hold for GEOMETRY too, not just
      colour. Inert by default: the rim layer is `transparent`. */
-  --a-glass-shadow: inset 0 var(--a-hairline) 0 var(--a-glass-rim), var(--a-palette-shadow);
+  --a-glass-shadow: inset 0 var(--a-glass-rim-w) 0 var(--a-glass-rim), var(--a-palette-shadow);
   /* The hairline a glass pane catches on its top edge — a lit rim, the one cue
      that reads "pane made of material" rather than "pane made of paint".
      `transparent` by default, so the shadow layer above that consumes it draws
@@ -748,6 +748,20 @@
      at USE time, not at declaration time, so the order is free and grouping the
      rim with the prose that explains it beats grouping it with its consumer. */
   --a-glass-rim: transparent;
+  /* THE RIM'S THICKNESS, as its own lever — because "how wide is the lit edge"
+     is a property OF THE MATERIAL and not of the palette. A hairline is what a
+     hard, flat, brittle edge catches: a cut pane, a knapped obsidian blade, an
+     oxidised metal plate. It is the wrong answer for a stone whose optical
+     signature is a BILLOWY sheen (Moonstone's adularescence), where the glow is
+     a band rather than a line, and stating that band as a wider rim is the
+     honest encoding — the alternative is faking width with alpha, which just
+     makes a hairline brighter.
+     Default is --a-hairline, so this is a NO-OP until a theme pulls it: the
+     contract every lever in this section is held to. Kept SEPARATE from
+     --a-glass-rim rather than folded into it because a colour and a geometry are
+     two decisions, and a theme that wants a wider rim in the same hue would
+     otherwise have to restate the hue to say so. */
+  --a-glass-rim-w: var(--a-hairline);
 
   /* THE TOOLTIP'S SURFACE TINT — the third member of the --a-glass-bg family,
      and the token that decides whether tooltips are glass at all.
@@ -1462,7 +1476,33 @@
    from: not arbitrary accent slots, but the other colours patina actually
    throws while it forms. GLASS CUE: the rim is a pale MINT highlight, the
    sheen on a patinated surface caught at a grazing angle, not a generic white
-   edge — matching the family's chemistry rather than genericising it. */
+   edge — matching the family's chemistry rather than genericising it.
+
+   THE MATERIAL IS NOT A LIFTED PANE, and the levers now say so. This block used
+   to be Nocturne's numbers with green in them — same 18px blur, same 140%
+   saturate, same 10px corner, same 16/48 shadow — which made "verdigris" a hue
+   and nothing else. Patina is a THIN, HARD, MATTE CRUST bonded to metal, and
+   each of the four moves below is that sentence in one lever:
+     1. THE BLUR DESATURATES (80%), and it is the only one in the set that does.
+        Every other glass theme pushes saturate ABOVE 100% to recover the chroma
+        a blur averages away — that is what sells TRANSMISSIVE glass. An oxide
+        layer is the opposite kind of surface: matte, scattering, chalky. What
+        you see through it should come back DULLER than it went in, and 80% is
+        that, measured against the 140-190% the transmissive themes use.
+     2. LITTLE OF IT, AND ALMOST OPAQUE (6px / 0.92). A crust is microns thick
+        and you cannot see through it. The small blur is not a weaker version of
+        Nocturne's — it is the difference between looking through a pane and
+        looking at a coating that has scattered nearly everything.
+     3. THE CORNER IS CUT, NOT BLOWN (3px). Copper sheet is sheared and folded;
+        it has an edge with a small radius from the brake, not the generous
+        curvature of a formed object. Cranberry (blown vessel, 16px) is the
+        other end of that same axis.
+     4. IT LIES ON THE SURFACE (0 2px 8px). Nocturne's 16/48 throw says "held
+        well above the page"; a bonded plate casts a tight, hard, short shadow
+        because there is barely any air under it. This is the lever that reads
+        first at a glance, before any colour does.
+   And the rim goes to a full 1px at higher alpha: a crust edge is a hard bright
+   line where the coating stops, not a soft highlight rolling over a curve. */
 :root[data-theme="verdigris"] {
   --bg: #0d1917;
   --fg: #dce9e6;
@@ -1483,24 +1523,36 @@
   --a-scrollbar-hover: rgba(140, 220, 205, 0.36);
   --a-split-handle: #1f322c;
   --a-split-handle-hover: #3ecfc0;
-  --a-palette-shadow: 0 16px 48px rgba(0, 0, 0, 0.66);
+  --a-palette-shadow: 0 2px 8px rgba(0, 0, 0, 0.55); /* bonded to the surface — see move 4 */
 
-  --a-radius-floating: 10px;
-  --a-glass-bg: rgba(13, 25, 23, 0.72);
-  --a-glass-bg-panel: rgba(16, 29, 26, 0.78);
-  --a-glass-blur: blur(18px) saturate(140%);
-  --a-glass-rim: rgba(180, 235, 215, 0.16); /* the mint sheen patina catches at a grazing angle */
-  --a-glass-tip-bg: rgba(16, 29, 26, 0.82);
-  --a-glass-tip-radius: 6px;
+  --a-radius-floating: 3px; /* sheared sheet, not blown glass — move 3 */
+  --a-glass-bg: rgba(13, 25, 23, 0.92);
+  --a-glass-bg-panel: rgba(16, 29, 26, 0.93);
+  --a-glass-blur: blur(6px) saturate(80%); /* the DESATURATING blur — moves 1 and 2 */
+  --a-glass-rim: rgba(180, 235, 215, 0.3); /* the mint sheen patina catches at a grazing angle */
+  --a-glass-rim-w: 1px; /* a hard crust edge, not a soft rolled highlight */
+  --a-glass-tip-bg: rgba(16, 29, 26, 0.95);
+  --a-glass-tip-radius: 2px;
 }
 
 /* Verdigris-light — the SAME patina in full sun, not an inverted palette (the
    Daybreak lesson applies again: flip Verdigris's numbers and the pane washes
-   out against a light page). The pane sits brighter than the page, the rim
-   flips from lit-mint to a DEFINING dark-green edge, and the shadow carries
-   the elevation cue — the same three moves Daybreak makes against Nocturne,
-   because a light glass pane earns its edge from depth and contrast, not
-   from darkness it no longer has. */
+   out against a light page). The pane sits brighter than the page and the rim
+   flips from lit-mint to a DEFINING dark-green edge — two of the three moves
+   Daybreak makes against Nocturne.
+   THE THIRD MOVE IS DELIBERATELY REFUSED HERE, and that is the interesting
+   part. Daybreak answers "a light pane has lost the value separation that was
+   its edge" with DEPTH: a wide soft throw standing the pane off the page. This
+   theme cannot borrow that answer, because a bonded oxide crust standing 16px
+   off its substrate is not the same object any more — the tight shadow IS the
+   material claim, and trading it for elevation would be trading the identity
+   for a convention. So the edge is re-earned in the two places that do not
+   contradict the material: a defining dark-green rim at a full 1px (thicker
+   than Daybreak's hairline, because a dark line on a bright pane is the ONE
+   cue left and it has to carry more), and a --border with real presence.
+   The structural levers otherwise track the dark pole exactly — the same 3px
+   cut corner, the same small desaturating blur, the same near-opaque tint —
+   because it is the same crust, and only the light on it has changed. */
 :root[data-theme="verdigris-light"] {
   --bg: #dcece7;
   --fg: #142420;
@@ -1521,15 +1573,16 @@
   --a-scrollbar-hover: rgba(20, 60, 50, 0.44);
   --a-split-handle: #c0d7cf;
   --a-split-handle-hover: #187a6b;
-  --a-palette-shadow: 0 16px 44px rgba(20, 55, 46, 0.26);
+  --a-palette-shadow: 0 2px 8px rgba(20, 55, 46, 0.4); /* bonded, not lifted — the refused move */
 
-  --a-radius-floating: 10px;
-  --a-glass-bg: rgba(244, 251, 249, 0.72);
-  --a-glass-bg-panel: rgba(240, 249, 246, 0.78);
-  --a-glass-blur: blur(18px) saturate(150%);
-  --a-glass-rim: rgba(20, 60, 50, 0.14); /* a defining edge, not a lit one */
-  --a-glass-tip-bg: rgba(242, 250, 247, 0.86);
-  --a-glass-tip-radius: 6px;
+  --a-radius-floating: 3px;
+  --a-glass-bg: rgba(244, 251, 249, 0.92);
+  --a-glass-bg-panel: rgba(240, 249, 246, 0.93);
+  --a-glass-blur: blur(6px) saturate(85%); /* the crust dulls what is behind it, in sun too */
+  --a-glass-rim: rgba(20, 60, 50, 0.24); /* a defining edge, not a lit one */
+  --a-glass-rim-w: 1px; /* carries more here: it is the only edge cue left */
+  --a-glass-tip-bg: rgba(242, 250, 247, 0.95);
+  --a-glass-tip-radius: 2px;
 }
 
 /* Cranberry — Victorian "cranberry glass"/gold-ruby glass, whose colour is a
@@ -1543,7 +1596,35 @@
    Lycurgus Cup (British Museum, 4th c. Roman) — genuinely DICHROIC, reading
    red in transmitted light and green in reflected light. So the glass rim
    here is a green-gold glint against the red body, not a generic bright edge:
-   it is that reflected-light colour, literally. */
+   it is that reflected-light colour, literally.
+
+   THICKNESS IS ALREADY THIS FAMILY'S THESIS, so the levers are just that thesis
+   applied to something other than hue. Colour-as-a-function-of-thickness is not
+   the only thing a thick wall does — it also DIFFUSES more, TRANSMITS a
+   longer optical path, and comes from a vessel that was BLOWN rather than cut:
+     · blur 34px, the largest in the set (Nocturne 18, Verdigris 6). A thick
+       wall scatters; that is the same physics as the colour, read off a
+       different axis.
+     · saturate 180%, also the largest. Colloidal gold is a chroma-pushing
+       filter, and a pane you can genuinely see through must return the art
+       behind it RICHER, or the "transmissive" claim is decoration.
+     · tint 0.66 — the most transparent surface in the app, on purpose. Held to
+       a candle, cranberry glass is a colour you look THROUGH. Nocturne's 0.72
+       is a pane you look AT.
+     · corner 16px. A blown vessel has no straight edge and no sheared corner
+       anywhere on it; the radius is where the forming process shows. Verdigris
+       (3px, sheared sheet) is the far end of that same axis.
+     · shadow 0 26px 64px — a heavy object standing clear of the surface.
+
+   AND THE TYPE, because a Victorian object may speak with a Victorian voice.
+   This is the second theme in the app to pull --a-ui-font (Futura is the first),
+   and the first to pull it toward a SERIF. Source Serif is the pick rather than
+   any of the display serifs in the registry for one measurable reason: it is a
+   text face drawn for small sizes and screens, and this app sets UI labels at
+   11-12px. Playfair Display is the more period-glamorous answer and would be
+   unreadable at that size, which would make the theme a costume rather than a
+   theme. The mono token is deliberately NOT chained: equations and coordinates
+   read as code in every theme, including this one (see --a-ui-font in :root). */
 :root[data-theme="cranberry"] {
   --bg: #1d0a10;
   --fg: #f3dbe0;
@@ -1564,21 +1645,31 @@
   --a-scrollbar-hover: rgba(230, 150, 170, 0.36);
   --a-split-handle: #331620;
   --a-split-handle-hover: #d43f6a;
-  --a-palette-shadow: 0 16px 48px rgba(0, 0, 0, 0.66);
+  --a-palette-shadow: 0 26px 64px rgba(0, 0, 0, 0.62); /* a heavy vessel, standing clear */
 
-  --a-radius-floating: 10px;
-  --a-glass-bg: rgba(29, 10, 16, 0.72);
-  --a-glass-bg-panel: rgba(32, 13, 20, 0.78);
-  --a-glass-blur: blur(18px) saturate(140%);
-  --a-glass-rim: rgba(190, 225, 150, 0.16); /* dichroic green-gold against the red body */
-  --a-glass-tip-bg: rgba(32, 13, 20, 0.82);
-  --a-glass-tip-radius: 6px;
+  --a-radius-floating: 16px; /* blown, never sheared */
+  --a-glass-bg: rgba(29, 10, 16, 0.66); /* the most transparent surface in the app */
+  --a-glass-bg-panel: rgba(32, 13, 20, 0.72);
+  --a-glass-blur: blur(34px) saturate(180%); /* a thick wall: most diffusion, most chroma */
+  --a-glass-rim: rgba(190, 225, 150, 0.18); /* dichroic green-gold against the red body */
+  --a-glass-tip-bg: rgba(32, 13, 20, 0.8);
+  --a-glass-tip-radius: 9px; /* the vessel's corner at tip scale — Nocturne's 6/10 ratio */
+  --a-ui-font: "PowerRP Source Serif", Georgia, "Times New Roman", serif;
 }
 
 /* Cranberry-light — the thin pane, held to daylight: the same colloidal-gold
    glass, less of it in the light's path, reading pale rose instead of deep
    ruby. Brighter-than-page pane, defining (not lit) rim, depth-carried shadow
-   — the same three light-glass moves as Daybreak and Verdigris-light. */
+   — the three light-glass moves Daybreak established.
+   THINNER IS A STRUCTURAL FACT HERE, not only a colour one, and this is the
+   one place in the set where the light pole's levers legitimately differ from
+   its dark pole's. Less glass in the path means LESS SCATTERING: 14px of blur
+   against the dark pole's 34px. The chroma push stays high (190%) because that
+   is the gold, which does not thin out of existence, and the tint lifts to 0.74
+   because dark glyphs on a bright translucent pane lose more to a busy backdrop
+   than pale glyphs on a dark one do — the same correction Daybreak's tooltip
+   makes, applied to the pane. The 16px corner and the serif are unchanged: it
+   is the same vessel and the same century. */
 :root[data-theme="cranberry-light"] {
   --bg: #f7e3e8;
   --fg: #2c0f18;
@@ -1599,15 +1690,16 @@
   --a-scrollbar-hover: rgba(90, 20, 40, 0.44);
   --a-split-handle: #ecd4da;
   --a-split-handle-hover: #b8225a;
-  --a-palette-shadow: 0 16px 44px rgba(90, 20, 40, 0.26);
+  --a-palette-shadow: 0 20px 56px rgba(90, 20, 40, 0.24); /* lighter object, shallower stand */
 
-  --a-radius-floating: 10px;
-  --a-glass-bg: rgba(253, 244, 247, 0.72);
+  --a-radius-floating: 16px; /* the same vessel */
+  --a-glass-bg: rgba(253, 244, 247, 0.74);
   --a-glass-bg-panel: rgba(251, 240, 244, 0.78);
-  --a-glass-blur: blur(18px) saturate(150%);
+  --a-glass-blur: blur(14px) saturate(190%); /* thin pane: little scatter, all the gold */
   --a-glass-rim: rgba(90, 20, 40, 0.14);
   --a-glass-tip-bg: rgba(252, 242, 246, 0.86);
-  --a-glass-tip-radius: 6px;
+  --a-glass-tip-radius: 9px;
+  --a-ui-font: "PowerRP Source Serif", Georgia, "Times New Roman", serif;
 }
 
 /* Obsidian — genuine volcanic glass, not a metaphor: rapidly cooled lava with
@@ -1618,7 +1710,33 @@
    sheen — a warm gold glint on near-black glass — rather than a generic
    bright edge, and --a-modifier's violet stands in for the rainbow variety's
    other band colour. Paired with Moonstone (below) as TWO INDEPENDENT NAMES,
-   like Nocturne/Daybreak: these are different minerals, not one lightened. */
+   like Nocturne/Daybreak: these are different minerals, not one lightened —
+   and that pre-existing ruling is what licenses the two poles to differ in
+   GEOMETRY as well as hue, which no other family in the app does.
+
+   TWO MATERIAL FACTS, TWO LEVERS, and neither is available to any other theme:
+     1. CONCHOIDAL FRACTURE ⟹ --a-radius-floating: 0. Obsidian has no cleavage
+        planes; it breaks in smooth curved shells and leaves an edge sharp
+        enough that it is still used for scalpel blades. A knapped edge has no
+        corner radius at all, and 0 is the only honest number. It also makes
+        this the one floating surface in the app that is square — which is not
+        a violation of the corner policy but a theme exercising the ONE family
+        that policy leaves themeable, in the conservative direction. The app's
+        chrome is square; here the palette agrees with it.
+     2. IT IS A MIRROR, SO THE BACKDROP DARKENS. Polished obsidian was worked
+        into mirrors long before glass was silvered — the British Museum's
+        obsidian mirror (Aztec-made, later owned by John Dee) is the famous
+        one. That is a surface that gives back LESS light than it receives, so
+        this is the only theme whose backdrop-filter carries `brightness()`
+        below 1: the slide behind the palette is dimmed, not merely blurred.
+        Nothing else in the set does this, and it is instantly legible — the
+        pane visibly casts a pool of shade on the artwork behind it.
+   Because brightness() does the darkening, the tint can stay comparatively
+   thin (0.68) and you can still SEE the dimmed art through the pane, which is
+   the difference between smoked glass and paint. The rim goes to a full 1px at
+   0.34 alpha: a knapped edge catches a hard, bright specular line, and the
+   sheen this theme is named for is exactly that. The throw is the deepest in
+   the app (0 30px 72px, near-black) — the brief's "deep throw, hard rim". */
 :root[data-theme="obsidian"] {
   --bg: #0a0a0c;
   --fg: #e7e5e8;
@@ -1639,15 +1757,16 @@
   --a-scrollbar-hover: rgba(220, 215, 230, 0.36);
   --a-split-handle: #201f24;
   --a-split-handle-hover: #c9a24e;
-  --a-palette-shadow: 0 16px 48px rgba(0, 0, 0, 0.7); /* deepest throw — true black glass */
+  --a-palette-shadow: 0 30px 72px rgba(0, 0, 0, 0.8); /* deepest throw — true black glass */
 
-  --a-radius-floating: 10px;
-  --a-glass-bg: rgba(10, 10, 12, 0.72);
-  --a-glass-bg-panel: rgba(16, 16, 18, 0.78);
-  --a-glass-blur: blur(18px) saturate(140%);
-  --a-glass-rim: rgba(230, 200, 140, 0.18); /* sheen obsidian's gold glint, literally */
-  --a-glass-tip-bg: rgba(16, 16, 18, 0.82);
-  --a-glass-tip-radius: 6px;
+  --a-radius-floating: 0; /* conchoidal fracture: a knapped edge has no radius — fact 1 */
+  --a-glass-bg: rgba(10, 10, 12, 0.68);
+  --a-glass-bg-panel: rgba(16, 16, 18, 0.74);
+  --a-glass-blur: blur(12px) brightness(0.55) saturate(90%); /* the mirror dims it — fact 2 */
+  --a-glass-rim: rgba(240, 214, 150, 0.34); /* sheen obsidian's gold glint, literally */
+  --a-glass-rim-w: 1px; /* a hard specular line on a knapped edge */
+  --a-glass-tip-bg: rgba(16, 16, 18, 0.84);
+  --a-glass-tip-radius: 0;
 }
 
 /* Moonstone — Obsidian's light-pole pair, but a genuinely different mineral
@@ -1657,7 +1776,30 @@
    alternating feldspar layers grown inside it. --a-glass-rim is that glow,
    not a generic light-theme edge, which is why it is COOL rather than the
    warm defining rims Daybreak/Verdigris-light/Cranberry-light use — the
-   citation dictates the hue here, not the light-pole convention. */
+   citation dictates the hue here, not the light-pole convention.
+
+   THE SAME CITATION DICTATES THE GEOMETRY, and it is the opposite of Obsidian's
+   in every lever, which is the point of pairing two minerals rather than one
+   material at two brightnesses:
+     · CORNER 20px, the roundest surface in the app. Moonstone is cut EN
+       CABOCHON — a domed, unfaceted polish — and that is not a stylistic
+       preference of the trade: adularescence is a subsurface scattering effect
+       and a curved dome is what lets the sheen roll across the stone as the
+       angle changes. Facets would chop it into flashes. So the dome is the
+       optical property, and the corner radius is the only place a rectangle
+       can say "dome". Obsidian's 0 and this 20 are the two ends of the app's
+       whole radius axis, held by one family.
+     · RIM 2px, not a hairline — the ONLY theme that pulls --a-glass-rim-w
+       upward. Adularescence is billowy: a soft BAND of blue-white light, not a
+       line. A hairline at higher alpha would say "brighter edge", which is a
+       different claim and the wrong one. This is why that lever exists.
+     · BLUR 30px at saturate 115%. Heavy scattering with only a mild chroma
+       push: the sheen is a white-blue glow, and a strong saturate would tint
+       it toward whatever the artwork behind happens to be, which is exactly
+       the thing adularescence does not do.
+     · SHADOW 0 12px 40px, soft and near. A cabochon is a small stone sitting
+       ON something. Cranberry's 26/64 vessel and Obsidian's 30/72 slab are
+       heavy objects; this one is not, and the throw says so. */
 :root[data-theme="moonstone"] {
   --bg: #e7ecf2;
   --fg: #1c2230;
@@ -1678,15 +1820,16 @@
   --a-scrollbar-hover: rgba(30, 45, 70, 0.42);
   --a-split-handle: #d0d9e4;
   --a-split-handle-hover: #4a6fb0;
-  --a-palette-shadow: 0 16px 44px rgba(30, 45, 70, 0.24);
+  --a-palette-shadow: 0 12px 40px rgba(30, 45, 70, 0.22); /* a small stone, resting */
 
-  --a-radius-floating: 10px;
-  --a-glass-bg: rgba(246, 249, 252, 0.72);
-  --a-glass-bg-panel: rgba(243, 247, 251, 0.78);
-  --a-glass-blur: blur(18px) saturate(150%);
-  --a-glass-rim: rgba(180, 200, 230, 0.2); /* adularescence's drifting blue sheen */
+  --a-radius-floating: 20px; /* cut en cabochon — the dome IS the optical property */
+  --a-glass-bg: rgba(246, 249, 252, 0.7);
+  --a-glass-bg-panel: rgba(243, 247, 251, 0.76);
+  --a-glass-blur: blur(30px) saturate(115%); /* billowy scatter, deliberately mild chroma */
+  --a-glass-rim: rgba(190, 210, 240, 0.55); /* adularescence's drifting blue sheen */
+  --a-glass-rim-w: 2px; /* a BAND, not a line — the reason this lever exists */
   --a-glass-tip-bg: rgba(245, 248, 252, 0.86);
-  --a-glass-tip-radius: 6px;
+  --a-glass-tip-radius: 12px;
 }
 
 /* Futura Dark — TYPOGRAPHY-LED, and the proof that --a-ui-font is a real lever.
@@ -1702,14 +1845,27 @@
    softened rectangles, and the app's square chrome is already that. Pulling the
    radius lever here would have been decoration for its own sake — the exact
    thing the brief warns against.
-   FONT AVAILABILITY IS EXPLICIT, not hopeful: Futura ships on macOS and on
-   basically nothing else. The stack degrades through Jost (the free geometric
-   revival, if a user has installed it), then Century Gothic (the common Windows
-   geometric), then the generic sans. On a headless Linux CI box this renders as
-   whatever the fontconfig default is — which is why the screenshots of this
-   theme were taken on-device, and why the theme's identity does not depend on
-   the font ALONE: the monochrome palette and the single accent carry it even
-   when the geometric face is unavailable. */
+   FONT AVAILABILITY IS NOT A HOPE, BECAUSE THE APP SHIPS THE FACE. This block
+   used to read `Futura, Jost, "Century Gothic", "Avenir Next", system-ui` —
+   every one of those an OS family name — and explained at length that the theme
+   degrades gracefully where they are absent. It degrades EVERYWHERE. Measured
+   in this app's own browser (canvas measureText against a family name that
+   certainly does not exist, which is the only reliable control): bare `Futura`,
+   bare `Jost` and bare `"Century Gothic"` ALL measure byte-identical to the
+   nonexistent control, i.e. they resolve to nothing, while `"PowerRP Futura"`
+   measures a clearly different face. So the typography-led theme was rendering
+   in the last-resort font while the real Paul Renner Futura sat in `fonts/`,
+   loaded into document.fonts at boot by `web/fontLoader.js`.
+   The cause is a naming rule stated in `render_gpu/fonts.js`: a committed face
+   is registered under a UNIQUE cssFamily (`PowerRP <name>`) precisely so a local
+   @font-face can never collide with a same-named OS font. That uniqueness cuts
+   both ways — asking for the OS name never reaches the bundled file. The stack
+   below therefore names the bundled families first and keeps the OS names after
+   them as a courtesy, not as the plan. Futura-Regular.ttf/Futura-Bold.ttf were
+   committed on 2026-07-24, five days BEFORE this theme was written, so the face
+   was available the whole time.
+   The theme's identity still does not depend on the font ALONE — the monochrome
+   palette and the single accent carry it — but it no longer has to. */
 :root[data-theme="futura-dark"] {
   --bg: #141414;
   --fg: #f0efec;
@@ -1731,7 +1887,7 @@
   --a-split-handle: #3a3a3a;
   --a-split-handle-hover: #d8543a;
   --a-palette-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
-  --a-ui-font: Futura, Jost, "Century Gothic", "Avenir Next", system-ui, sans-serif;
+  --a-ui-font: "PowerRP Futura", "PowerRP Jost", Futura, "Century Gothic", system-ui, sans-serif;
 }
 
 /* Futura Light — the same geometry printed rather than projected. Warm paper
@@ -1764,7 +1920,7 @@
   --a-split-handle: #cfcbc2;
   --a-split-handle-hover: #c1442a;
   --a-palette-shadow: 0 12px 40px rgba(60, 50, 35, 0.2);
-  --a-ui-font: Futura, Jost, "Century Gothic", "Avenir Next", system-ui, sans-serif;
+  --a-ui-font: "PowerRP Futura", "PowerRP Jost", Futura, "Century Gothic", system-ui, sans-serif;
 }
 
 /* ── MATERIAL SET III: four more levered themes ──────────────────────────────
