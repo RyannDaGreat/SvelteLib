@@ -229,11 +229,13 @@ for (let i = 0; i < glass.length; i++) {
 // The rim-width lever must stay INERT by default: every lever in app.css's
 // MATERIAL LEVERS section promises to be a no-op until a theme pulls it, and
 // a default that is anything but the hairline would silently re-edge every
-// floating surface in all 46 themes.
+// floating surface in all 46 themes. Kept OUT of `failures`, which counts
+// cross-family collisions and nothing else — a summary line that lumps two
+// different kinds of red together reports a wrong number for both.
 const RIM_W_DEFAULT = "var(--a-hairline)";
-if (base["--a-glass-rim-w"] !== RIM_W_DEFAULT) {
-  failures.push(`:root --a-glass-rim-w is "${base["--a-glass-rim-w"]}", must be ${RIM_W_DEFAULT} — the lever has to be a no-op until a theme pulls it`);
-}
+const leverFailures = base["--a-glass-rim-w"] === RIM_W_DEFAULT
+  ? []
+  : [`:root --a-glass-rim-w is "${base["--a-glass-rim-w"]}", must be ${RIM_W_DEFAULT} — the lever has to be a no-op until a theme pulls it`];
 
 // ── Self-test: the checker can actually fail. A gate that cannot go red is not
 // a gate, and two were found in this repo that could not.
@@ -252,10 +254,11 @@ if (stillSame.length !== 0) {
   throw new Error(`glass_structure self-test: a materially different theme must collide on nothing, collided on ${stillSame.join(",")}`);
 }
 
-if (failures.length) {
+if (failures.length || leverFailures.length) {
   console.error("GLASS STRUCTURE — a glass family is a MATERIAL, not a hue:");
   for (const f of failures) console.error(`  ${f}`);
-  console.error(`\n${failures.length} cross-family collision(s). Two families must differ in SHAPE, MATTER and WEIGHT — see this file's header.`);
+  for (const f of leverFailures) console.error(`  ${f}`);
+  console.error(`\n${failures.length} cross-family collision(s), ${leverFailures.length} lever default violation(s). Two families must differ in SHAPE, MATTER and WEIGHT — see this file's header.`);
   process.exit(1);
 }
 
