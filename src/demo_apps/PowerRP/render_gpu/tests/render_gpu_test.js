@@ -188,22 +188,28 @@ test("arrowIR: dangling reference falls back loudly upstream, still draws", () =
   assert.equal(typeof evaluated.items.c.to.x, "number"); // fallback, not NaN
   assert.deepEqual(arrowPlugin.emit(evaluated.items.c).map((c) => c.op), ["polyline", "polygon"]);
 });
-test("fancyArrowIR: outline triangulates to convex polygons (the parameterized-geometry path)", () => {
+test("fancyArrowIR: the outline is ONE path op (the parameterized-geometry path)", () => {
   // Reference params = the Figures-library defaults on a 100px arrow
   // (core/outline.js fancyArrowOutline; area cross-checked in outline_test).
   // `fill` is the body color (Round 17.4 — `stroke` is now the OUTLINE, left
   // unset here since strokeWidth defaults to 0 / undefined → no outline op).
+  // ONE op, not five triangles: R6-11 — abutting antialiased fills conflate along
+  // their shared edge, so the ear-clip diagonals were visible cracks on every
+  // surface that is not multisampled (plugins/donut.js's RENDER note has the
+  // measurements). The count is the assertion that keeps it one op.
   const s = {
     from: { x: 0, y: 0 }, to: { x: 100, y: 0 },
     tipLength: 15, tipWidth: 30, tipDimple: 5, startWidth: 3, endWidth: 5,
     fill: "#000", opacity: 0.5,
   };
   const cmds = fancyArrowPlugin.emit(s);
-  assert.equal(cmds.length, 5); // 7-vertex simple outline → n-2 triangles
-  assert.ok(cmds.every((c) => c.op === "polygon" && c.points.length === 3));
-  assert.ok(cmds.every((c) => c.opacity === 0.5));
-  // The tip vertex survives triangulation verbatim (watertight shared points).
-  assert.ok(cmds.some((c) => c.points.some(([x, y]) => x === 100 && y === 0)));
+  assert.equal(cmds.length, 1);
+  assert.equal(cmds[0].op, "path");
+  assert.equal(cmds[0].fillRule, "nonzero"); // the rule a self-intersecting corner fills under
+  assert.equal(cmds[0].stroke, null); // strokeWidth 0 ⇒ fill only; the rim rides its own polyline
+  assert.equal(cmds[0].opacity, 0.5);
+  // The 7 outline vertices reach the backend verbatim, tip included.
+  assert.equal(cmds[0].d, "M90 -2.5 L0 -1.5 L0 1.5 L90 2.5 L85 15 L100 0 L85 -15 Z");
 });
 test("fancyArrowIR: strokeWidth > 0 additionally emits ONE closed outline polyline (Round 17.4)", () => {
   const s = {
@@ -212,7 +218,7 @@ test("fancyArrowIR: strokeWidth > 0 additionally emits ONE closed outline polyli
     fill: "#000", stroke: "#fff", strokeWidth: 3, opacity: 1,
   };
   const cmds = fancyArrowPlugin.emit(s);
-  assert.equal(cmds.length, 6); // 5 fill triangles + 1 outline polyline
+  assert.equal(cmds.length, 2); // 1 fill path + 1 outline polyline
   const outline = cmds[cmds.length - 1];
   assert.equal(outline.op, "polyline");
   assert.equal(outline.width, 3);

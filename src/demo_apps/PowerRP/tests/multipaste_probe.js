@@ -60,9 +60,6 @@ const SHOT_DIR = resolve(APP_DIR, ".claude_vlm_checks");
 // interpreter path. Override with POWERRP_UV if uv is not on PATH.
 const UV = process.env.POWERRP_UV || "uv";
 
-// The paste offset the clone home applies (app.svelte.js #cloneStatesIntoSlide).
-const PASTE_OFFSET = 16;
-
 // freePort now comes from ./free_port.js, which RE-VERIFIES the port is still
 // bindable before handing it back. The copy that used to live here bound port 0,
 // read the number, closed, and returned — leaving a TOCTOU window that stays open
@@ -133,6 +130,14 @@ try {
   await page.goto(pageUrl, { waitUntil: "networkidle0" });
   await new Promise((r) => setTimeout(r, 400));
   if (consoleErrors.length) throw new Error("PAGE ERRORS AT BOOT:\n" + consoleErrors.join("\n"));
+
+  // The offset the clone home applies, IMPORTED from the module that applies it
+  // (web/app.svelte.js CLONE_OFFSET) rather than re-declared here — this probe
+  // carried its own `PASTE_OFFSET = 16` and clipboard_duplicate_probe.js a bare
+  // 16, two mirrors of one number. app.svelte.js is a runes module, so it cannot
+  // be imported in bare node; the page already has it loaded.
+  const PASTE_OFFSET = await page.evaluate(async () => (await import("/app.svelte.js")).CLONE_OFFSET);
+  if (typeof PASTE_OFFSET !== "number") throw new Error(`web/app.svelte.js must export CLONE_OFFSET (got ${PASTE_OFFSET})`);
 
   // ── Small helpers over the live app ────────────────────────────────────────
   /** Query. The current slide-0 delta's item ids. */

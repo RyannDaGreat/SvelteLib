@@ -1283,6 +1283,88 @@ manifest, which is the only durable, agent-visible record.
 - **R6-6.6** Order Type / Name / Visible as three ordinary properties in one
   section, since every widget has them.
 
+#### R6-6.7 WIDGET TYPE IS A KEYFRAMEABLE PROPERTY — USER CORRECTION, 2026-08-01
+
+**This corrects R6-6, which recorded Type only as a row placement. The user's ruling:
+"It IS a keyframeable property. You may have to correct the manifest on that."**
+
+- **THE ARCHITECTURE ALREADY ALLOWS IT.** `core/derive.js:248` resolves the plugin with
+  `registry.get(itemState.type)` from **FOLDED** state, and there is no separate item table —
+  items exist only through slide deltas. So `type` is already carried per-slide like any other
+  key. Nothing structural forbids a rect on slide 1 and a circle on slide 3.
+- **WHAT TODAY'S CODE DOES INSTEAD, and it is the ONLY thing standing in the way:**
+  `web/app.svelte.js:3277` `#creationState(id)` resolves an item back to "its ORIGINAL creation
+  slide (**the first slide keying its type**)" and coerces from there — i.e. it treats type as
+  IDENTITY. **The fix is not new machinery; it is applying the existing plan at the CURRENT
+  slide instead of the creation slide.**
+- **THE COERCION MECHANISM THE USER DESCRIBED ALREADY EXISTS, and it is the exact right
+  shape.** `core/retype.js` computes a PLAN:
+  `Array<{path: string[], value: *, why: "fill"|"coerce"}>` — **RULE 1** carries a value when
+  the two types' row kinds AGREE, **RULE 2** coerces to the new type's default when they
+  DISAGREE (`:215`, `:257-260`). `retypeChoices` returns `[]` for non-retypeable items (the
+  camera), which is why its Inspector header stays plain text.
+- **SO THE USER'S RULE MAPS ONE-TO-ONE ONTO EXISTING OUTPUT:** a retype at slide N writes a
+  `type` keyframe at slide N, **plus a keyframe at slide N for every entry in the coercion
+  plan**. Verbatim: *"the new type would be keyframed, and whatever types are coerced would
+  also suddenly become keyframed too. It would just do it at whatever slide we're at."*
+- **AND THE WARNINGS FALL OUT OF `why` FOR FREE.** `why:"coerce"` is the LOSSY case (a value
+  was discarded); `why:"fill"` is merely a new-type default being supplied. The Inspector
+  already orders the menu "clean types first and coercing types last", so the lossless/lossy
+  distinction is computed — it only needs surfacing. **NOTE: the user asked whether we had
+  discussed coercion warnings. We had NOT; this machinery was found by reading the code, and
+  the user observed he could not think of an example that would actually have a coercion
+  problem.**
+- **A PROPERTY THAT NEEDS NO COERCION MUST NOT BE KEYFRAMED** — that is the minimal-delta
+  discipline already in force (write ONLY changed props). Consequence, and it is a nice one:
+  retyping a rect to a circle keeps x/y/w/h TWEENING smoothly across the change and cuts only
+  the shape.
+- **PROPERTIES BELONGING ONLY TO THE OLD TYPE SHOULD BE LEFT IN PLACE, NOT DELETED.** The new
+  plugin simply does not read them, and leaving them makes the retype REVERSIBLE — retype back
+  and the old values are still there. Same spirit as `active:false` (hide, do not purge).
+- **TWEENING IS A HARD CUT, AND THAT IS WHAT IS WANTED FIRST.** Discrete values switch at
+  alpha > 0, so a keyframed type is a cut, not a morph. User: *"Morphing is something that will
+  come later, but first we need to have the hard cuts."*
+- **OPEN QUESTION TO SETTLE DURING IMPLEMENTATION:** `#creationState`'s definition ("the first
+  slide keying its type") stops being unique once type is keyed on several slides. Decide what
+  it means then — most likely the NEAREST PRECEDING type keyframe, which is what the fold
+  already implies.
+
+#### R6-26 MORPH — THE FUTURE PLAN (NOT BEING IMPLEMENTED NOW; recorded at the user's request)
+
+User, 2026-08-01, explicitly flagged as unfinished: *"My plan is not fully realized yet. It
+needs work. That's why we're not implementing that right now."* Recorded so the hard-cut work
+above is built in a way that does not preclude it.
+
+- **THE SHAPE:** a SECOND dropdown, **"morph from widget"**, plus an **alpha**, plus a **morph
+  method** (fading, or true morphing).
+- **`morphFrom` MAY BE AN EQUATION, and the default is `previous`.** So the common case needs no
+  authoring at all.
+- **THE MECHANISM the user described:** on morphing A into B, **flip the current state into the
+  "prev" slot immediately, drive the alphas to zero immediately**, set the morph method, then
+  **animate alpha 0 -> 1** to produce the animation. In this codebase that is a COMMAND writing
+  several keyframes in one undo unit — precedent exists for multi-property keyframe commands.
+- **WHY THIS IS ARCHITECTURALLY CHEAP, and worth stating:** `morphFrom`, `morphAlpha` and
+  `morphMethod` are ordinary PROPERTIES. So morph keyframes, tweens, folds and renders
+  deterministically like everything else — **it introduces NO new kind of state**, and needs
+  nothing from the recordable/ephemeral taxonomy.
+- **THIS IS THE REAL JUSTIFICATION FOR R6-8.2 (arbitrary-depth structural submenus).** The
+  "from widget" dropdown is not a short list: *"all the submenus, all the properties, all the
+  assets, all the fill menus, all the material menus, are going to literally be under a from
+  widget."* So R6-8.2 is not tidiness — **it is a prerequisite for morph**, and it must handle
+  hundreds of entries at arbitrary depth without hiccuping. It also makes R6-6's SEARCHABLE
+  dropdown a hard requirement rather than a nicety: a menu that large is unusable without
+  search. **R6-6, R6-8.2 and R6-26 are therefore ONE dependency chain, not three independent
+  items.**
+- **QUESTIONS THE LEAD FLAGS AS STILL OPEN** (the user invited fleshing-out):
+  1. `previous` means the previous slide's FOLDED state of this same item — that value is
+     already computed by the fold, so it is cheap; confirm that is the intended reading.
+  2. A morph between types with different property sets needs the METHOD to decide: fading is
+     trivial (render both, cross-dissolve), whereas true geometric morph needs an outline
+     CORRESPONDENCE — which is why `core/outline.js` and `plugins/shapeshifter.js` are the
+     natural substrate for it.
+  3. Whether `morphAlpha` should default to an equation of slide alpha (so a morph animates
+     across a transition for free) or stay independent.
+
 ### R6-7 EQUATIONS ON EVERY PROPERTY
 
 - **R6-7.1** "Basically every property should support equations." Reproduction:

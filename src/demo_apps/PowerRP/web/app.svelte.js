@@ -78,7 +78,10 @@ import { documentAssetRefs, foreignAssetRefs, localizationPlan, relativizedOwnRe
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
-import { DRAG_KINDS } from "./canvas/dragKinds.js"; // the dragKind setter's allowlist
+// DRAG_KINDS = the dragKind setter's allowlist. translationPairs = THE ONE
+// translation rule (a drag, a drag-all, the modal grab, a nudge — and the clone
+// home's offset, which used to be its sole bypass).
+import { DRAG_KINDS, translationPairs } from "./canvas/dragKinds.js";
 import { createUndo } from "../core/undo.js";
 import { registerAll, registerPlugins } from "../plugins/index.js"; // registerPlugins = types only (a project switch rebuilds the plugin registry, NOT the commands)
 import { loadProjectPluginAssets, printPluginAssetReports } from "./pluginAssetLoader.js"; // widgets delivered as project assets (*.plugin.js), sandboxed by core/plugin_assets.js
@@ -133,6 +136,22 @@ const LEGACY_CLIPBOARD_SOURCE_ID = "legacy-clipboard-payload";
 // the mirror keeps ELEMENT paste working when the backend is unreachable, so a
 // dead server never downgrades a widget copy into a flattened image paste).
 const CLIPBOARD_MIRROR_KEY = "powerrp.clipboardMirror";
+
+// How far a CLONE lands from the thing it was cloned from, in world px — one
+// spacing step, so the copy reads as a second object instead of hiding exactly
+// behind the original (the rationale in full sits on #cloneStatesIntoSlide,
+// which is the one place it is applied).
+//
+// MODULE-TOP AND EXPORTED because its lifetime is not one function's: BOTH clone
+// entrances (paste and Duplicate) land on it, and the probes that assert where a
+// copy lands need the same number. It used to be `const OFFSET = 16` inside
+// #cloneStatesIntoSlide with its justification 16 lines away, and two test files
+// had grown their own copies of the literal — the hand-maintained-mirror shape
+// this codebase keeps getting bitten by. House precedent for a value whose
+// concept crosses files is module-top-and-exported with the WHY on it
+// (core/endpoints.js SHAFT_GRAB_PAD), and AUTHORING.md's rule is "name it, at a
+// scope matching its lifetime".
+export const CLONE_OFFSET = 16;
 
 // What the code editor tells the author when it opens a BUILT-IN widget's source:
 // the buffer is read-only (those bytes are in the app bundle, not in any project),
@@ -2991,6 +3010,17 @@ export class PowerRPApp {
    *     coordinates are left VERBATIM — offsetting a string would concatenate
    *     ("circle.x + 10" + 16); such a copy keeps its binding and lands wherever
    *     the equation says.
+   *     THE OFFSET GOES THROUGH THE ONE TRANSLATION RULE (canvas/dragKinds.js
+   *     translationPairs) — the same seam a body drag, a drag-all, the modal grab
+   *     and an arrow-key nudge use. This was the ONE bypass of that rule, and the
+   *     bypass was the bug: it wrote `x: (clone.x ?? 0) + 16`, which FABRICATES an
+   *     x/y on a widget that has none. An arrow keeps its position in from/to, so
+   *     the invented x/y became a non-identity `world` (core/derive.js builds one
+   *     from whatever x/y is in state): the painted ink moved a step while the
+   *     WORLD-space endpoint handles stayed on the original, the hit test resolved
+   *     on the original, and the phantom key had no Inspector row to remove it
+   *     with and survived save. Asking the plugin first (moveBy) puts the offset on
+   *     the properties the position actually lives in.
    *   • z stacked above the current max, preserving relative order; active: true
    *     on the creation slide (the visibility model — creation is where an item
    *     switches on).
@@ -2999,10 +3029,11 @@ export class PowerRPApp {
    * paste) and it must not land silently.
    *
    * @param {object} states - {sourceItemId: rawItemState}
+   * @param {number} [offset] - the spacing step each copy is moved by, on both
+   *   axes. A PARAMETER rather than a second cloning path, so "Duplicate in
+   *   Place" (offset 0) is this same clone with a different number.
    */
-  #cloneStatesIntoSlide(states) {
-    const OFFSET = 16;
-    const bump = (v) => (typeof v === "number" ? v + OFFSET : v);
+  #cloneStatesIntoSlide(states, offset = CLONE_OFFSET) {
     // ONE camera per document: partitioned out BEFORE ids are minted.
     const existingCamera = this.nodes().find((n) => n.type === "camera") ?? null;
     const cloneable = {};
@@ -3020,10 +3051,15 @@ export class PowerRPApp {
     this.#reportDanglingRefs(external);
     let nextZ = (this.nodes().map((n) => n.state.z ?? 0).reduce((a, b) => Math.max(a, b), 0)) + 1;
     let doc = this.doc;
-    for (const [newId, clone] of Object.entries(clones))
-      doc = keyframed(doc, this.slideIndex, ["items", newId], {
-        ...clone, active: true, z: nextZ++, x: bump(clone.x ?? 0), y: bump(clone.y ?? 0),
-      });
+    for (const [newId, clone] of Object.entries(clones)) {
+      const state = { ...clone, active: true, z: nextZ++ };
+      doc = keyframed(doc, this.slideIndex, ["items", newId], state);
+      // The same [path, value] pairs CanvasView hands to setPreview for a drag,
+      // written straight into the delta instead — one item, one rigid translation.
+      const member = { itemId: newId, plugin: this.registry.get(state.type), rawItem: state, startX: state.x, startY: state.y };
+      for (const [path, value] of translationPairs(member, offset, offset))
+        doc = keyframed(doc, this.slideIndex, path, value);
+    }
     for (const s of cameras)
       for (const key of ["x", "y", "w", "h"])
         doc = keyframed(doc, this.slideIndex, ["items", existingCamera.itemId, key], s[key]);
@@ -3081,14 +3117,19 @@ export class PowerRPApp {
    * current max. All the new items commit together (one snapshot = one undo) and
    * become the new selection. No-op (reported) when nothing duplicable is
    * selected.
+   *
+   * @param {number} [offset] - how far each copy lands from its source, on both
+   *   axes. The "Duplicate in Place" palette entry passes 0; that is the ONLY
+   *   difference between the two entries, so they stay one behaviour with one
+   *   number rather than two commands that could drift apart.
    */
-  duplicateSelection() {
+  duplicateSelection(offset = CLONE_OFFSET) {
     const ids = this.#cloneSet(this.#duplicableSelection());
     if (ids.length === 0) {
       console.warn("Duplicate: nothing duplicable is selected (the camera cannot be duplicated).");
       return;
     }
-    this.#cloneStatesIntoSlide(this.#cloneStates(ids));
+    this.#cloneStatesIntoSlide(this.#cloneStates(ids), offset);
   }
 
   // ── Paste-to-upload (manifest 13.3): an EXTERNAL image/video/file on the OS

@@ -50,6 +50,24 @@ test("translationPairs: pure-horizontal move writes x ONLY (y's equation survive
     [[["items", "r", "y"], 27]]);
   eq(translationPairs({ itemId: "r", plugin: {}, startX: 10, startY: 20 }, 0, 0), []);
 });
+// ── R6-18.1: a coordinate that is NOT A FREE NUMBER is not translated ────────
+// The clone home (paste + Duplicate) routes its offset through THIS rule, and it
+// hands over the RAW stored state, where a coordinate may be ABSENT (an arrow
+// stores its position in from/to and has no x at all) or an EQUATION STRING. The
+// drag callers only ever pass resolved numbers (CanvasView's `n.state.x ?? 0`),
+// so this is invisible to them — but the old rule answered `undefined + 16` =
+// NaN and `"circle.x + 10" + 16` = a concatenated string, and the clone home's
+// private `x: clone.x ?? 0` bypass turned the first of those into a FABRICATED
+// x/y that gave an arrow a non-identity `world` (ink +16, handles +0 — the
+// reported detached-handles bug).
+test("translationPairs: an ABSENT coordinate is not invented (no phantom x/y)", () => {
+  eq(translationPairs({ itemId: "a", plugin: {}, rawItem: {} }, 16, 16), []);
+});
+test("translationPairs: an EQUATION coordinate stays verbatim (never concatenated)", () => {
+  eq(translationPairs({ itemId: "r", plugin: {}, startX: "circle.x + 10", startY: 20 }, 16, 16),
+    [[["items", "r", "y"], 36]]);
+});
+
 test("resize commit (east handle): delta has w ONLY — not x/y/h (their equations survive)", () => {
   // Replays resizeDrag's UNROTATED geometry math, then diffs vs the resolved
   // start (drag.startState) exactly as the commit does. Start x/y/h may hold

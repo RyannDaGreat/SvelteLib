@@ -21,6 +21,15 @@
  *     offset by one spacing step, ONE undo unit, clone selected. Multi-select
  *     duplicates all.
  *
+ *  B'. R6-18.1 ENDPOINT-PAIR CLONE. B uses a filmstrip — a bbox widget that
+ *     really does keep its position in x/y — so it could never see the reported
+ *     bug. An ARROW keeps its position in from/to and has no x/y, and the clone
+ *     home bumped `clone.x ?? 0`: the copy gained a phantom x/y, hence a
+ *     non-identity world, so its INK moved one step while its WORLD-space
+ *     endpoint HANDLES stayed on the original. Both entrances (Duplicate and the
+ *     older PASTE) are measured, and the copy's stored keys are read to prove no
+ *     invisible, uneditable, save-surviving x/y was invented.
+ *
  *  C. 14.8 SHADOW GATE. A fresh rect has shadow.opacity 0 and emits NO
  *     effectSubtree; opacity 1 + blur 0 makes it emit a hard-edged shadow.
  *
@@ -86,6 +95,11 @@ const TRANSPARENT_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 const RED_PX = `data:image/png;base64,${RED_B64}`;
 const decodeB64 = (b64) => Uint8Array.from(Buffer.from(b64, "base64"));
 
+// How many frames the fixture strip carries. The exact number is arbitrary; what
+// matters is that ONE number drives the frame LIST and the frameUrls leaf array
+// together, since the payload-survives-verbatim assertions read the second.
+const FIXTURE_FRAME_COUNT = 18;
+
 // The manifest 14.10 clipboard payload SHAPE: a filmstrip with 18 frameUrls (a
 // leaf array), a nested shadow object, and an equation-valued rotationAnchor.
 function filmstripFixture() {
@@ -95,8 +109,16 @@ function filmstripFixture() {
     // src EMPTY on purpose: with frameUrls already present, the app's frame-fetch
     // effect skips, so the probe exercises the CLIPBOARD path without async
     // re-extraction — the payload shape (frameUrls/shadow/rotationAnchor) is intact.
-    src: "", frames: 18,
-    frameUrls: Array.from({ length: 18 }, () => RED_PX),
+    src: "",
+    // `frames` is a LIST property (one TUPLE element per frame, field `time`) —
+    // core/properties.js PROPS.frames, plugins/filmstrip.js defaultFrameList. This
+    // fixture carried the PRE-LIST schema, a bare count of 18, and the Inspector's
+    // ListField reported it correctly and loudly on every render: `ListField:
+    // "items.<id>.frames" is not an array (delta/fold bug) — got 18`. That report
+    // failed this probe's zero-console-error gate at baseline, so the suite was red
+    // before anything in it was wrong — a stale fixture reading as an app defect.
+    frames: Array.from({ length: FIXTURE_FRAME_COUNT }, (_, i) => [i / FIXTURE_FRAME_COUNT]),
+    frameUrls: Array.from({ length: FIXTURE_FRAME_COUNT }, () => RED_PX),
     shadow: { dx: 4, dy: 4, blur: 6, color: "#000000", opacity: 0.5 },
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
   };
@@ -169,6 +191,15 @@ try {
   await new Promise((r) => setTimeout(r, 400));
   if (consoleErrors.length) throw new Error("PAGE ERRORS AT BOOT:\n" + consoleErrors.join("\n"));
 
+  // THE clone offset, IMPORTED from the module that applies it rather than
+  // re-declared here (this probe used a bare `16` and multipaste_probe.js kept a
+  // `PASTE_OFFSET` of its own — two hand-maintained mirrors of one number). The
+  // module is already loaded in the page, so this dynamic import hands back the
+  // very binding the app is using; a bare-node import is impossible because
+  // app.svelte.js is a runes module.
+  const CLONE_OFFSET = await page.evaluate(async () => (await import("/app.svelte.js")).CLONE_OFFSET);
+  if (typeof CLONE_OFFSET !== "number") throw new Error(`web/app.svelte.js must export CLONE_OFFSET (got ${CLONE_OFFSET})`);
+
   // Seed a named project + a filmstrip item matching the manifest payload.
   await page.evaluate((fx) => {
     const app = window.__powerrp_app;
@@ -192,7 +223,7 @@ try {
   let clipItem = null;
   try { clipItem = Object.values(JSON.parse(serverClip).powerrp_items)[0]; } catch { /* handled below */ }
   note(clipItem?.type === "filmstrip", "server clipboard holds the filmstrip item");
-  note(Array.isArray(clipItem?.frameUrls) && clipItem.frameUrls.length === 18, "18-frame frameUrls leaf array survived verbatim");
+  note(Array.isArray(clipItem?.frameUrls) && clipItem.frameUrls.length === FIXTURE_FRAME_COUNT, `${FIXTURE_FRAME_COUNT}-frame frameUrls leaf array survived verbatim`);
   note(clipItem?.shadow && clipItem.shadow.opacity === 0.5, "nested shadow object survived verbatim");
   note(clipItem?.rotationAnchor?.x === "self.anchors.center.x", "equation-valued rotationAnchor survived verbatim");
 
@@ -221,8 +252,9 @@ try {
     const it = items[id];
     return { id, x: it.x, y: it.y, frames: (it.frameUrls || []).length, anchorX: it.rotationAnchor?.x, selection: app.selection };
   });
-  note(pasted.frames === 18, "pasted filmstrip kept its 18 frameUrls");
-  note(pasted.x === 116 && pasted.y === 96, `pasted item is offset by 16 (x=${pasted.x}, y=${pasted.y})`);
+  note(pasted.frames === FIXTURE_FRAME_COUNT, `pasted filmstrip kept its ${FIXTURE_FRAME_COUNT} frameUrls`);
+  const seeded = filmstripFixture(); // where the pasted copy is measured FROM
+  note(pasted.x === seeded.x + CLONE_OFFSET && pasted.y === seeded.y + CLONE_OFFSET, `pasted item is offset by ${CLONE_OFFSET} (x=${pasted.x}, y=${pasted.y})`);
   note(pasted.anchorX === "self.anchors.center.x", "pasted item kept its equation rotationAnchor");
   note(pasted.selection === pasted.id, "pasted item is selected");
 
@@ -270,8 +302,8 @@ try {
   });
   note(dup.after === dup.before + 1, `duplicate added one item (${dup.before} → ${dup.after})`);
   note(dup.newId !== dup.origId, "the duplicate has a NEW id");
-  note(dup.cloneX === dup.origX + 16 && dup.cloneY === dup.origY + 16, `the duplicate is offset (x ${dup.origX}→${dup.cloneX}, y ${dup.origY}→${dup.cloneY})`);
-  note(dup.cloneFrames === 18, "the duplicate kept the filmstrip's 18 frameUrls (same clone path)");
+  note(dup.cloneX === dup.origX + CLONE_OFFSET && dup.cloneY === dup.origY + CLONE_OFFSET, `the duplicate is offset (x ${dup.origX}→${dup.cloneX}, y ${dup.origY}→${dup.cloneY})`);
+  note(dup.cloneFrames === FIXTURE_FRAME_COUNT, `the duplicate kept the filmstrip's ${FIXTURE_FRAME_COUNT} frameUrls (same clone path)`);
   note(dup.afterUndo === dup.before, `ONE undo removed the duplicate (${dup.after} → ${dup.afterUndo}) — one undo unit`);
 
   const multi = await page.evaluate(() => {
@@ -291,6 +323,92 @@ try {
   note(multi.picked === 2 && multi.after === multi.before + 2, `multi-select duplicated all ${multi.picked} (${multi.before} → ${multi.after})`);
   note(multi.selCount === 2, "both duplicates are selected");
   note(multi.afterUndo === multi.before, "one undo removed BOTH duplicates (one undo unit)");
+
+  // ── B'. R6-18.1 ENDPOINT-PAIR CLONE — the ink and the handles move TOGETHER ──
+  // Section B duplicates a FILMSTRIP: a bbox widget that really does store its
+  // position in x/y. An ENDPOINT-PAIR widget (the arrow family) does not — it
+  // stores from/to and has no x/y at all — and the clone home used to bump
+  // `clone.x ?? 0`, FABRICATING an x/y that gave the copy a non-identity `world`.
+  // The painted ink moved by the offset while the endpoint handles (WORLD-space
+  // by contract, core/registry.js) stayed on the ORIGINAL: the user's report.
+  // BOTH clone entrances are measured, because both run #cloneStatesIntoSlide and
+  // PASTE is the older of the two (692101d) — a fix that only reached Duplicate
+  // would leave the reference entrance broken.
+  console.log("B'. R6-18.1 endpoint-pair clone (fancy arrow) — duplicate AND paste");
+  const ARROW_FROM = { x: 420, y: 300 };
+  const ARROW_TO = { x: 640, y: 300 };
+  await page.evaluate((root) => { window.__powerrp_probeRoot = root; }, APP_DIR);
+  // ONE in-page pose measurement, installed once and used by BOTH scenarios: if
+  // duplicate and paste were measured by two hand-copied blocks, a divergence
+  // between the entrances could hide in the measurement instead of the app.
+  // rotatedBBoxAABB is the SAME world-AABB band-select and culling read (it
+  // applies node.world, so it follows the INK); editPoints is what the canvas
+  // draws the handles from.
+  await page.evaluate(async () => {
+    const { rotatedBBoxAABB } = await import("/@fs" + window.__powerrp_probeRoot + "/core/view.js");
+    window.__probeArrowPose = (itemId) => {
+      const app = window.__powerrp_app;
+      const nodes = app.nodes();
+      const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
+      const node = nodes.find((n) => n.itemId === itemId);
+      const ink = rotatedBBoxAABB(node);
+      const handle = node.plugin.editPoints(node, byId)[0];
+      // The DELTA is what serialize() writes, so reading the phantom key here is
+      // exactly the "does it survive save" question.
+      const stored = app.doc.slides[app.slideIndex].delta.items[itemId];
+      return {
+        ink: { x: ink.x, y: ink.y },
+        handle: { x: handle.x, y: handle.y },
+        world: { x: node.world.x, y: node.world.y },
+        storedKeys: Object.keys(stored),
+        from: stored.from,
+      };
+    };
+  });
+
+  // `run(app)` through the real registry entry, not the method — the palette,
+  // the shortcut and the toolbar all dispatch that way.
+  const arrowDup = JSON.parse(await page.evaluate((pts) => {
+    const app = window.__powerrp_app;
+    app.addItem({ ...app.registry.get("fancy_arrow").defaults, from: pts.from, to: pts.to });
+    const origId = app.selection;
+    const before = window.__probeArrowPose(origId);
+    app.commands.get("duplicate").run(app);
+    const cloneId = app.selection;
+    const after = window.__probeArrowPose(cloneId);
+    return JSON.stringify({ origId, cloneId, before, after });
+  }, { from: ARROW_FROM, to: ARROW_TO }));
+
+  const poseReport = (label, before, after) => {
+    // A pure translation of integer coordinates, so these deltas are exact.
+    const moved = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
+    const ink = moved(after.ink, before.ink), handle = moved(after.handle, before.handle);
+    const fmt = (d) => `(${d.x}, ${d.y})`;
+    note(ink.x === handle.x && ink.y === handle.y,
+      `${label}: the ink and the handles moved by the SAME delta (ink ${fmt(ink)}, handles ${fmt(handle)})`);
+    note(ink.x === CLONE_OFFSET && ink.y === CLONE_OFFSET, `${label}: the copy landed one spacing step away ${fmt(ink)}`);
+    note(!after.storedKeys.includes("x") && !after.storedKeys.includes("y"),
+      `${label}: NO x/y was invented on a widget that has none — such a key has no Inspector row, cannot be edited away, and survives save (stored: ${after.storedKeys.join(", ")})`);
+    note(after.world.x === 0 && after.world.y === 0,
+      `${label}: the copy's world stays IDENTITY, which is what an endpoint-pair widget's geometry assumes (core/view.js) — got (${after.world.x}, ${after.world.y})`);
+    note(after.from.x === before.from.x + CLONE_OFFSET && after.from.y === before.from.y + CLONE_OFFSET,
+      `${label}: the offset landed on the ENDPOINTS, the properties this widget's position actually lives in (from ${before.from.x},${before.from.y} → ${after.from.x},${after.from.y})`);
+  };
+  poseReport("duplicate", arrowDup.before, arrowDup.after);
+
+  // PASTE — the older entrance, through the same clone home.
+  const arrowPaste = JSON.parse(await page.evaluate(async (origId) => {
+    const app = window.__powerrp_app;
+    app.selection = origId;
+    const before = window.__probeArrowPose(origId);
+    await app.copySelection();
+    await app.pasteClipboard();
+    const cloneId = app.selection;
+    const after = window.__probeArrowPose(cloneId);
+    return JSON.stringify({ cloneId, before, after });
+  }, arrowDup.origId));
+  note(arrowPaste.cloneId !== arrowDup.origId, "paste inserted a NEW arrow item");
+  poseReport("paste", arrowPaste.before, arrowPaste.after);
 
   // ── C. 14.8 SHADOW GATE ─────────────────────────────────────────────────────
   console.log("C. 14.8 shadow default + gate");

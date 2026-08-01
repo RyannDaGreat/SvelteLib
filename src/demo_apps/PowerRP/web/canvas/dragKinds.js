@@ -86,25 +86,41 @@ export function itemGeometryPairs(itemId, delta) {
 
 /**
  * Pure function. The path/value preview pairs that translate one member by a
- * world delta (dx, dy) — the ONE translation rule shared by DRAG-ALL body drags
- * and the modal grab. A moveBy widget (arrow) translates only its FREE numeric
- * coordinates via its plugin hook (bound endpoints stay anchored); a
- * bbox/transform widget writes plain numeric x/y, but ONLY on the axis that
- * actually moved (diffState) — a pure-horizontal drag (dy === 0) writes x alone
- * and leaves any equation stored on y untouched. Grabbing an axis that DID move
- * replaces its equation with the new literal (the established body-drag rule).
+ * world delta (dx, dy) — the ONE translation rule shared by DRAG-ALL body drags,
+ * the modal grab, arrow-key nudge AND the clone home (paste + Duplicate). A
+ * moveBy widget (arrow) translates only its FREE numeric coordinates via its
+ * plugin hook (bound endpoints stay anchored); a bbox/transform widget writes
+ * plain numeric x/y, but ONLY on the axis that actually moved (diffState) — a
+ * pure-horizontal drag (dy === 0) writes x alone and leaves any equation stored
+ * on y untouched. Grabbing an axis that DID move replaces its equation with the
+ * new literal (the established body-drag rule).
+ *
+ * ONLY A FREE NUMBER IS TRANSLATED, on both branches. A drag never sees anything
+ * else (CanvasView resolves `n.state.x ?? 0` before building the member), but the
+ * CLONE home hands over RAW stored state, where a coordinate can be an EQUATION
+ * STRING or simply ABSENT — an arrow keeps its position in from/to and has no x
+ * at all. Arithmetic on those answers `"circle.x + 10" + 16` (a concatenation)
+ * and `undefined + 16` (NaN), so both are left exactly as they are and emit no
+ * pair. This is the same `typeof v === "number"` gate core/endpoints.js
+ * endpointMoveBy already applies on the other branch, which is what makes the two
+ * one rule rather than two.
  *
  * @example // dragged on both axes → both written:
  * @example translationPairs({itemId: "r", plugin: {}, startX: 10, startY: 20}, 5, 3) // [[["items","r","x"], 15], [["items","r","y"], 23]]
  * @example // pure-horizontal drag → only x (y OMITTED, its equation survives):
  * @example translationPairs({itemId: "r", plugin: {}, startX: 10, startY: 20}, 5, 0) // [[["items","r","x"], 15]]
+ * @example // a widget with no x/y gains none — no phantom transform:
+ * @example translationPairs({itemId: "a", plugin: {}, rawItem: {}}, 16, 16) // []
  */
 export function translationPairs(member, dx, dy) {
   if (member.plugin.moveBy)
     return member.plugin.moveBy(member.rawItem, dx, dy)
       .map(([p, v]) => [["items", member.itemId, ...p], v]);
   const start = { x: member.startX, y: member.startY };
-  const next = { x: member.startX + dx, y: member.startY + dy };
+  const next = {
+    x: typeof start.x === "number" ? start.x + dx : start.x,
+    y: typeof start.y === "number" ? start.y + dy : start.y,
+  };
   return itemGeometryPairs(member.itemId, diffState(start, next, ["x", "y"]));
 }
 
