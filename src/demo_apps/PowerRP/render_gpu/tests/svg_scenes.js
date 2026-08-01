@@ -43,7 +43,7 @@ export const SVG_SCENE_NAMES = [
   "image-under-magnifier",  // image replays inside the vector lens
   "video-basic",            // video CURRENT-FRAME <image> embed
   "donut-basic",            // ONE keyhole path op (nonzero) + stroke polylines
-  "filmstrip-look",         // 14.1 faithful look: triangulated perforation bands + per-cell rounded-clip <image> frames
+  "filmstrip-look",         // 14.1 faithful look: ONE even-odd path op for both perforated bands + per-cell rounded-clip <image> frames
   "cropbox-basic",          // rounded-rect <clipPath> + re-emit (incl. 45° rotated)
   "elbow-curved-arrows",    // arbitrary-length polyline routes
   "fancy-arrow-basic",      // Round 17.4: the FILL + a real OUTLINE stroke polyline around the outer hull (donut's fill+stroke-polyline class, this widget specifically). The fill was 5 triangles until R6-11; it is ONE path op now.
@@ -83,8 +83,10 @@ export const SVG_PSNR_FLOORS = {
   "donut-basic": 32,            // measured 37.03 — WHEN THE RING WAS TRIANGLE SOUP (R6-11). It is now
   // ONE path op, so this floor is stale in the direction that cannot fail: the seam-free
   // fill can only raise the dB. Re-measure when a runner exists (see the header note).
-  // 14.1 filmstrip faithful look: triangulated perforation bands (donut class,
-  // 37.03) + per-cell rounded <clipPath> <image> frames (cropbox class, 23.50).
+  // 14.1 filmstrip faithful look: perforation bands (donut class, 37.03 — and since
+  // R6-11 literally the donut's construction, ONE even-odd path op where they were
+  // ~480 triangulated polygons, so this floor too is stale upward-only) + per-cell
+  // rounded <clipPath> <image> frames (cropbox class, 23.50).
   // The rounded-clip image cells dominate the delta, so it lands near the
   // cropbox class. measured 31.07 dB (2026-07-15 live SVG parity run) — floor =
   // measured − ~5, the SVG margin class (shapes 45.54→40, richtext 38.62→34).

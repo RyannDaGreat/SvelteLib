@@ -43,7 +43,8 @@ import { flattenIR } from "../render_gpu/ir.js";
 import {
   DEFAULT_FRAME_COUNT, DEFAULT_LEADER_GAPS, PERF_FLOOR_PIXELS, defaultFrameList,
   filmBandOps, filmstripAnchors, filmstripFrameAnchors, filmstripGeom, filmstripPlugin,
-  frameTimeEquation, minPerforatedCross, perforationPixels, perforationsResolve,
+  frameTimeEquation, minPerforatedCross, perforatedBandPolygons, perforationPixels,
+  perforationsOverlap, perforationsResolve,
   roundedRectBoundaryPoint, spanIsEmpty, visibleFrames,
 } from "../plugins/filmstrip.js";
 
@@ -253,9 +254,11 @@ test("the frame ops carry the STRIP's world, not identity (the pictures move wit
   assert.equal(frames.length, 3, "one scrub op per visible frame");
   for (const f of frames)
     assert.deepEqual(f.world, world, `a frame op is pinned at ${JSON.stringify(f.world)} instead of the strip's world — the pictures would stay at the canvas origin while the strip moves`);
-  // The bands moved too, and always did — the defect was that ONLY they did.
-  const bands = drawn.filter((d) => d.cmd.op === "polygon");
-  assert.ok(bands.length > 0);
+  // The bands moved too, and always did — the defect was that ONLY they did. They are
+  // ONE even-odd `path` op since R6-11 (they were hundreds of `polygon` ops, which is
+  // why this used to filter on that); the world claim is unchanged.
+  const bands = drawn.filter((d) => d.cmd.op === "path");
+  assert.equal(bands.length, 1, "both perforated bands ride ONE path op");
   for (const b of bands) assert.deepEqual(b.world, world);
 });
 
@@ -360,24 +363,62 @@ test("PERF_FLOOR_PIXELS: below one document pixel a hole is refused, and the bou
   assert.ok(near(minPerforatedCross("BH", 4), minPerforatedCross("BH", 1) / 4), "the threshold scales inversely, exactly");
 });
 
-test("below the floor the bands are SOLID and the op count stops diverging (the crash is gone)", () => {
+test("below the floor the bands are SOLID and the geometry stops diverging (the crash is gone)", () => {
   const world = { x: 0, y: 0, rotation: 0, scale: 1 };
   const strip = (h) => ({ ...filmstripPlugin.defaults, src: "clip.mp4", videoEnd: 6, w: 400, h });
   const opCount = (list) => list.reduce((n, c) => n + 1 + (Array.isArray(c.content) ? opCount(c.content) : 0), 0);
+  // THE OP COUNT IS NOW FLAT BY CONSTRUCTION — both bands are ONE `path` op at every
+  // size (R6-11), where they used to be one convex `polygon` per tessellated quad and a
+  // 400x0.5 strip built ~190k of them and threw "RangeError: Maximum call stack size
+  // exceeded". So the quantity that can still diverge is the SUBPATH count inside that
+  // one op's `d`, and that is what the floor governs now. Both are asserted: the op
+  // count because a future emit() could reintroduce a per-piece op, the subpath count
+  // because it is what the floor actually decides.
+  // Read through emit(), not filmBandOps directly: the floor is emit()'s decision (it is
+  // the half that can REPORT), so a probe that hands filmBandOps `perforate: true` would
+  // be measuring the generator's obedience rather than the floor.
+  const bandSubpaths = (h) => {
+    const bands = drawablesWithWorld(filmstripPlugin.emit(strip(h), null, world)).map((d) => d.cmd).filter((c) => c.op === "path");
+    assert.equal(bands.length, 1, `a 400x${h} strip must draw its bands as ONE path op, got ${bands.length}`);
+    return bands[0].d.split("M").length - 1;
+  };
   const healthy = opCount(filmstripPlugin.emit(strip(90), null, world));
-  assert.ok(healthy > 500 && healthy < 2000, `a healthy 400x90 strip emits ~1000 ops (got ${healthy})`);
-  // These three SIZES all threw or hung before the floor: 400x0.5 built ~190k polygon
-  // ops and threw RangeError: Maximum call stack size exceeded.
+  assert.ok(bandSubpaths(90) > 2, "above the floor the band op carries the two band rects PLUS a loop per hole");
   for (const h of [2, 0.5, 0.05, 1e-6]) {
     const ops = opCount(filmstripPlugin.emit(strip(h), null, world));
-    assert.ok(ops < healthy, `a 400x${h} strip must emit FEWER ops than a healthy one, not more (got ${ops})`);
+    assert.equal(ops, healthy, `a 400x${h} strip must emit the same op count as a healthy one, not more (got ${ops} vs ${healthy})`);
+    assert.equal(bandSubpaths(h), 2, `a 400x${h} strip must draw two bare band rectangles`);
   }
-  // Solid means literally 2 triangles per band, from the same generator, so there is no
-  // second code path that could disagree with the perforated one.
+  // Solid means literally the two band rectangles, from the same generator, so there is
+  // no second code path that could disagree with the perforated one.
   const g = filmstripGeom({ w: 400, h: 0.5, perfFamily: "BH" }, 6);
-  assert.equal(filmBandOps(g, "#000000", 1, false).length, 4, "two bands, two triangles each");
-  assert.ok(filmBandOps(filmstripGeom({ w: 400, h: 90, perfFamily: "BH" }, 6), "#000000", 1, true).length > 400,
-    "and above the floor it still punches the real published pitch");
+  assert.equal(filmBandOps(g, "#000000", 1, false).length, 1, "one op");
+  assert.equal(filmBandOps(g, "#000000", 1, false)[0].d.split("M").length - 1, 2, "two bands, one rectangle each");
+});
+
+test("perforations that would RUN INTO EACH OTHER are declined, not merged into slots", () => {
+  // The drawn pitch divides the FRAME STEP (the holes lock to the pictures), so enough
+  // frames on a short strip squeezes the step below one hole's own length. The retired
+  // cellWithHole dropped such holes SILENTLY, per cell; even-odd would instead nest two
+  // overlapping loops to depth three and fill their intersection back in as a lens.
+  const roomy = filmstripGeom({ w: 480, h: 90, perfFamily: "KS" }, 6).perf;
+  const crowded = filmstripGeom({ w: 480, h: 90, perfFamily: "KS" }, 24).perf;
+  assert.equal(perforationsOverlap(roomy), false, "six frames leave the published land between holes");
+  assert.equal(perforationsOverlap(crowded), true, `24 frames put the pitch (${crowded.pitch.toFixed(2)}) under the hole (${crowded.along.toFixed(2)})`);
+  // The generator alone is honest about it, so a caller that forgets to ask still gets a
+  // drawable band rather than a self-intersecting one.
+  const band = { x: 0, y: 0, w: 480, h: 12 };
+  assert.equal(perforatedBandPolygons(band, crowded, crowded.pitch, crowded.phase).length, 1, "the band rectangle, and no hole loops");
+  // And it is REPORTED rather than silently dropped, which is the whole difference.
+  const said = [];
+  const realError = console.error;
+  console.error = (...a) => said.push(a.join(" "));
+  try {
+    filmstripPlugin.emit({ ...filmstripPlugin.defaults, src: "clip.mp4", videoEnd: 6, w: 480, h: 90, perfFamily: "KS", frames: Array.from({ length: 24 }, (_, i) => [i]) }, null, { x: 0, y: 0, rotation: 0, scale: 1 });
+  } finally {
+    console.error = realError;
+  }
+  assert.ok(said.some((m) => /overlap|run into each other/i.test(m)), `nothing was reported about the overlap: ${JSON.stringify(said).slice(0, 200)}`);
 });
 
 // ── (5c) PRESERVE ASPECT (default ON) ────────────────────────────────────────

@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { linePlugin, dashSpans, capRect, LINE_CAPS } from "../plugins/line.js";
+import { subpathsPathD } from "../core/shapes.js";
 import { distToSegment } from "../core/outline.js";
 
 let passed = 0;
@@ -40,7 +41,7 @@ test("line: emit solid round cap → one round-capped polyline shaft (no head)",
   assert.equal(cmds.length, 1);
   assert.equal(cmds[0].op, "polyline");
   assert.deepEqual(cmds[0].points, [[200, 300], [420, 300]]);
-  assert.equal(cmds.filter((c) => c.op === "polygon").length, 0); // NO arrowhead
+  assert.equal(cmds.filter((c) => c.op === "polygon" || c.op === "path").length, 0); // NO arrowhead
 });
 
 test("line: emit dashed → several polyline sub-segments", () => {
@@ -52,14 +53,31 @@ test("line: emit dashed → several polyline sub-segments", () => {
   assert.deepEqual(cmds[0].points, [[0, 0], [12, 0]]); // first dash: 0..12
 });
 
-test("line: emit flat caps → filled rectangles (butt flush, square extended)", () => {
+test("line: emit flat caps → ONE filled path (butt flush, square extended)", () => {
+  // A flat-capped run is ONE `path` op carrying a subpath per dash, not one op per
+  // dash (R6-11's generalization). capRect still supplies the four corners; only the
+  // packaging changed, which is why the coordinates below are the same as ever.
   const butt = linePlugin.emit({ ...linePlugin.defaults, from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, strokeWidth: 10, cap: "butt" }, null, WORLD);
   assert.equal(butt.length, 1);
-  assert.equal(butt[0].op, "polygon");
-  assert.equal(butt[0].points.length, 4);
-  assert.equal(butt[0].points[0][0], 0); // butt: flush at x=0
+  assert.equal(butt[0].op, "path");
+  assert.equal(butt[0].fillRule, "nonzero", "consistent winding UNIONs overlapping dashes; even-odd would punch each overlap out");
+  assert.equal(butt[0].d, subpathsPathD([capRect({ x: 0, y: 0 }, { x: 100, y: 0 }, 10, "butt")]), "butt: flush at x=0");
   const square = linePlugin.emit({ ...linePlugin.defaults, from: { x: 0, y: 0 }, to: { x: 100, y: 0 }, strokeWidth: 10, cap: "square" }, null, WORLD);
-  assert.equal(square[0].points[0][0], -5); // square: extended half-width (10/2) past x=0
+  assert.ok(square[0].d.startsWith("M-5 "), `square: extended half-width (10/2) past x=0, got ${square[0].d.slice(0, 12)}`);
+});
+
+test("line: a DASHED flat-capped run is still ONE op, however many dashes", () => {
+  // THE DEFECT THIS PINS, measured: a "square" cap pushes each dash out by half the
+  // stroke width, so a gap shorter than the stroke makes consecutive dashes OVERLAP.
+  // One op per dash composited every overlap TWICE — on a 40-wide opacity-0.5 line
+  // with dashLength 30 / dashGap 14 the centre row carried levels 128 AND 192 instead
+  // of one flat 128, i.e. visible bright bands. One op composites once.
+  const s = { ...linePlugin.defaults, from: { x: 0, y: 0 }, to: { x: 280, y: 0 }, strokeWidth: 40, cap: "square", dashed: true, dashLength: 30, dashGap: 14, opacity: 0.5 };
+  const cmds = linePlugin.emit(s, null, WORLD);
+  assert.equal(cmds.length, 1, "however many dashes, one fill op");
+  const dashes = dashSpans(s.from, s.to, s.dashLength, s.dashGap).length;
+  assert.ok(dashes > 1, "the probe needs an actually-dashed line");
+  assert.equal(cmds[0].d.split("M").length - 1, dashes, "one subpath per drawn dash");
 });
 
 test("dashSpans: dashed count + solid fallback", () => {

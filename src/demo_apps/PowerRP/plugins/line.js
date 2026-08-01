@@ -27,7 +27,8 @@
  * registry throws on a duplicate id, so a single owner is mandatory.
  */
 
-import { polyline, polygon } from "../render_gpu/ir.js";
+import { polyline, path } from "../render_gpu/ir.js";
+import { subpathsPathD } from "../core/shapes.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { endpointPairHooks, hitsShaft, ARROW_STROKE_WIDTH } from "../core/endpoints.js";
@@ -82,9 +83,13 @@ export function dashSpans(a, b, dashLength, dashGap) {
 /**
  * Pure function. The 4 corner points of a rectangular stroke piece for the A→B
  * sub-segment at `width`, for a FLAT cap. "butt" ends flush at A and B; "square"
- * pushes each end outward by half the width along the axis. Corners wind around
- * the rectangle so polygon() (which fan-triangulates a convex polygon) fills it
- * solid. Only used for the flat caps — a round cap uses polyline instead.
+ * pushes each end outward by half the width along the axis. Only used for the flat
+ * caps — a round cap uses polyline instead.
+ *
+ * EVERY RECT WINDS THE SAME WAY, and that is load-bearing rather than incidental:
+ * emit() joins a dash run's rects into ONE `path` op, where consistent winding is
+ * what makes overlapping pieces UNION under the non-zero rule. See emit() for why
+ * they are one op and what happens when they are not.
  *
  * @param {{x:number,y:number}} a - sub-segment start
  * @param {{x:number,y:number}} b - sub-segment end
@@ -168,6 +173,22 @@ export const linePlugin = {
    * a flat cap, a filled rectangle (capRect) — the display-list polyline is
    * round-only, so flat caps are drawn as geometry.
    *
+   * THE FLAT-CAP DASHES ARE ONE `path` OP, NOT ONE PER DASH, and this was measured
+   * (R6-11's generalization: a shape split across N ops composites N times). A
+   * "square" cap pushes each dash outward by half the stroke width, so whenever
+   * `dashGap` is under the stroke width consecutive dashes OVERLAP — and one op per
+   * dash composited that overlap TWICE. On a translucent line the overlaps read as
+   * bright bands: measured along the centre of a 40-wide, opacity-0.5 line with
+   * dashLength 30 / dashGap 14, the row carried TWO levels, 128 and 192, where it
+   * should carry one. Widen the gap past the cap extension and the second level
+   * disappears — which is what identifies the cause as the op split rather than the
+   * geometry. One op composites once: 128 everywhere, at every gap.
+   *
+   * NON-ZERO, AND THE WINDING IS WHY. capRect winds every rect the same way, so
+   * overlapping pieces UNION under non-zero. Even-odd was rendered too and does the
+   * opposite — it punches a HOLE through each overlap, turning the bright bands into
+   * gaps. So the rule is read off the geometry, not defaulted to.
+   *
    * @param {object} s - evaluated item state
    * @param {object} _targetWorldIR - unused (bbox widgets' resolved target)
    * @param {object} world - world transform (for the effects pass)
@@ -179,10 +200,12 @@ export const linePlugin = {
     const width = s.strokeWidth ?? ARROW_STROKE_WIDTH;
     const cap = s.cap ?? "round";
     const spans = s.dashed ? dashSpans(from, to, s.dashLength, s.dashGap) : [[from, to]];
-    const cmds = spans.map(([p, q]) =>
-      cap === "round"
-        ? polyline({ points: [[p.x, p.y], [q.x, q.y]], width, color: s.stroke, opacity })
-        : polygon({ points: capRect(p, q, width, cap), fill: s.stroke, opacity }));
+    const cmds = cap === "round"
+      ? spans.map(([p, q]) => polyline({ points: [[p.x, p.y], [q.x, q.y]], width, color: s.stroke, opacity }))
+      // fillRule is spelled out even though "nonzero" is the op's default: here it is a
+      // LOAD-BEARING claim about capRect's consistent winding, not a shrug (donut.js and
+      // fancy_arrow.js state theirs for the same reason).
+      : [path({ d: subpathsPathD(spans.map(([p, q]) => capRect(p, q, width, cap))), fill: s.stroke, fillRule: "nonzero", opacity })];
     // Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE) wrap the finished
     // op list; all-off = pass-through. The line has no bbox state (world ==
     // identity), so the effect region is its ink rect — the SAME rect

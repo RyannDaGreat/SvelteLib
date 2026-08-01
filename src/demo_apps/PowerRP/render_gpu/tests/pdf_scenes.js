@@ -325,15 +325,18 @@ export function scenes() {
     })(), 25), // image-class parity: same edge-AA divergence as image-basic (GPU bilinear vs poppler step). floor PENDING USER RATIFICATION
 
     // ── FILMSTRIP FAITHFUL LOOK parity (manifest 14.1) ─────────────────────────
-    // The REAL filmstripPlugin.emit() — perforation bands (triangulated polygon
-    // ops around round holes, the donut technique), a filmColor content strip,
-    // and per-frame rounded corners + gray outlines (per-cell decorateStrokedBox
-    // → cropSubtree). Built exactly like donut-basic/cropbox-basic (real emit(),
-    // not hand IR) so it exercises the actual widget glue through BOTH backends.
-    // emit() takes (state, null, world) — filmColor is a NON-BLACK gray here so
-    // the perforation holes read as WHITE page (transparent) against it, exactly
-    // the demo's "dots visible over a non-black background" check. The bands' many
-    // polygon tris are the same parity class as donut-basic (triangulated fill).
+    // The REAL filmstripPlugin.emit() — the perforation bands (ONE even-odd `path`
+    // op: both band rectangles plus a loop per hole, the donut technique), a
+    // filmColor content strip, and per-frame rounded corners + gray outlines
+    // (per-cell decorateStrokedBox → cropSubtree). Built exactly like donut-basic/
+    // cropbox-basic (real emit(), not hand IR) so it exercises the actual widget
+    // glue through BOTH backends. emit() takes (state, null, world) — filmColor is
+    // a NON-BLACK gray here so the perforation holes read as WHITE page
+    // (transparent) against it, exactly the demo's "dots visible over a non-black
+    // background" check. Same parity class as donut-basic, and for the same reason
+    // now that both are one path op: the whole shape is one `d` string, so the two
+    // backends cannot disagree about where its edges are. (The bands were ~480
+    // triangulated `polygon` ops until R6-11.)
     s("filmstrip-look", (() => {
       const W = 320, H = 96;
       const world = { x: 40, y: 100, rotation: 0, scale: 1 };

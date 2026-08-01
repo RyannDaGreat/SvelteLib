@@ -72,19 +72,29 @@
  *
  * ── HOLE RENDERING (the WHY, per backend) ─────────────────────────────────────
  * The perforation holes must read as TRANSPARENT windows in all three backends
- * (GPU + PDF + SVG). NONE of the three has a native even-odd / mask / knockout
- * primitive (verified — see plugins/donut.js and core/outline.js: the raster crop
- * clip is a single rounded-rect SDF, the PDF backend only emits nonzero-winding
- * "W n"/"f", and the SVG backend emits a single-path <clipPath> with no fill-rule
- * hole). So — the same principle the DONUT widget uses for the identical "colored
- * shape with a transparent circular hole" — each film band is emitted as `polygon`
- * (triangle) ops that go AROUND the holes: the band is sliced into one column per
- * hole, and each column (rect minus one circle) is tessellated into quads between
- * the circle arc and the rect edges (perforatedBandPolygons/cellWithHole below — a
- * robust 4-sector split that avoids ear-clipper degeneracies). Because both raster
- * and vector backends consume the SAME `polygon` op vertex-for-vertex, they render
- * the SAME triangles — parity by construction, no shader/backend change, holes are
- * transparent because no triangle covers them.
+ * (GPU + PDF + SVG). All three fill a MULTI-SUBPATH `path` op under an explicit
+ * winding rule — Skia's `setFillType(EvenOdd)`, PDF's `f*`, SVG's
+ * `fill-rule="evenodd"` — so both bands and every hole in them are ONE op:
+ * `perforatedBandPolygons` returns the band's own rectangle followed by one closed
+ * loop per hole, `filmBandOps` joins them with `subpathsPathD`, and even-odd reads
+ * each hole (a loop nested inside the band's) as empty. Parity is by construction:
+ * one `d` string, three backends, no hole geometry computed twice.
+ *
+ * THIS USED TO BE ~480 TRIANGLES FOR A DEFAULT STRIP, AND THAT WAS THE R6-11 BUG.
+ * The docblock here asserted that "NONE of the three has a native even-odd / mask /
+ * knockout primitive (verified)" — true when written and false from 2026-07-23
+ * (c0646a5), which is when the `path` op landed with `fillRule` in all three. On
+ * that stale premise each band was sliced into one COLUMN per hole and every column
+ * tessellated into quads between the hole's boundary and the column's edges, so each
+ * band shipped as hundreds of separate convex `polygon` ops. Two abutting
+ * ANTIALIASED fills conflate to ~192/255 along their shared edge instead of tiling
+ * to 255, so every internal tessellation edge was a visible crack on any surface
+ * that is not multisampled — which is every surface in this app except the editor
+ * viewport (thumbnails, minimap, PNG/PDF export, every exported video frame, the
+ * bare-node CLI). MEASURED on the 1-sample software surface: a default 480x90
+ * strip's bands went from 1 405 partial-coverage pixels out of 3 332 in the band
+ * interior to ZERO. It also gave every gradient or material fill a PER-TRIANGLE
+ * frame; one op means one frame.
  *
  * ── PER-FRAME ANCHORS (so an arrow can point at one cell) ─────────────────────
  * Beyond the widget's own bbox 9, EVERY visible frame exposes its own 9 anchors,
@@ -201,8 +211,8 @@ import { visibleIndices } from "../core/lists.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { reportOnce } from "../core/report.js";
 import * as T from "../core/transform.js";
-import { triangulated } from "../core/outline.js";
-import { polygon, rect, videoV5Frame } from "../render_gpu/ir.js";
+import { subpathsPathD } from "../core/shapes.js";
+import { path, rect, videoV5Frame } from "../render_gpu/ir.js";
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
@@ -352,10 +362,16 @@ export const STRIP_LOOK = {
  * pitchMm) — a pure ASPECT-RATIO quantity, and physically right: a 35 mm strip ten
  * times longer than it is wide really does carry ~74 perforations. But it DIVERGES as
  * cross → 0, and the divergence is unbounded, not large: measured on a 400-unit strip,
- * cross 90 emits 1084 display-list ops, cross 2 emits 47296, and cross 0.5 emits ~190k
- * polygons and THROWS RangeError. Every one of those holes is far below one pixel, so
- * the cost buys no ink whatsoever. Refusing them is not a cap on the drawing; it is
+ * cross 90 emitted 1084 display-list ops, cross 2 emitted 47296, and cross 0.5 built
+ * ~190k polygons and THREW RangeError. Every one of those holes is far below one pixel,
+ * so the cost buys no ink whatsoever. Refusing them is not a cap on the drawing; it is
  * declining to compute a picture that is identical to a cheaper one.
+ *
+ * THOSE OP COUNTS ARE HISTORY AND THE REASON IS NOT. Since R6-11 both bands are ONE
+ * `path` op at every size, so the display list itself no longer diverges and the crash
+ * cannot recur. What still diverges is the SUBPATH count inside that op's `d` — the
+ * hole count is the same aspect-ratio quantity it always was — and the argument above
+ * is about holes, not ops: sub-pixel perforations buy no ink at any op count.
  *
  * WHY THE DOCUMENT'S RESOLUTION AND NOT THE VIEWPORT'S. The core invariant is
  * RenderTree = pure(document, [[slide, alpha]]). A floor read off the live zoom would
@@ -370,11 +386,13 @@ export const PERF_FLOOR_PIXELS = 1;
 /**
  * Command (mutates `target`). Appends every element of `items` to `target` and returns
  * `target`. NOT `target.push(...items)`: a spread becomes one ARGUMENT PER ELEMENT, and
- * this widget's band tessellation can produce six figures of them — measured, a 400x0.5
- * strip built ~190k polygon ops and `push(...)` threw RangeError: Maximum call stack
- * size exceeded, which is the crash the perforation floor now prevents upstream. The
- * floor makes that list small, but the append must not be the thing that decides how
- * large a display list this widget is allowed to build.
+ * this widget's band tessellation once produced six figures of them — measured, a
+ * 400x0.5 strip built ~190k polygon ops and `push(...)` threw RangeError: Maximum call
+ * stack size exceeded. TWO separate changes now stand between this and that crash: the
+ * perforation floor upstream, and (R6-11) the bands being ONE `path` op rather than one
+ * per tessellated quad. Kept anyway, and this is not superstition — the append must not
+ * be the thing that decides how large a display list this widget is allowed to build,
+ * and a per-frame op list still grows with the frame count.
  *
  * @example appendAll([1], [2, 3]) // [1, 2, 3]
  * @example appendAll([], []) // []
@@ -512,22 +530,24 @@ export function roundedRectBoundaryPoint(hx, hy, r, angle) {
 
 /**
  * Pure function. A rectangle [x0,y0]..[x0+w,y0+h] with a ROW of rounded-rectangle holes
- * punched out, returned as a triangle list (each triangle a 3-point polygon) so the
- * region can be drawn with the convex-only IR `polygon` op — the SAME "colored shape
- * with transparent holes" technique the donut uses (core/outline.donutOutline),
- * generalized from one circle to a row of perforations.
+ * punched out, returned as SUBPATHS: the band's own rectangle first, then one closed
+ * loop per hole. `filmBandOps` joins them into ONE `path` op under `fillRule: "evenodd"`,
+ * where a loop nested inside the band's reads as empty — the SAME "colored shape with
+ * transparent holes" technique the donut uses (core/outline.donutOutline), generalized
+ * from one hole to a row of perforations.
  *
- * Each hole gets its OWN cell rectangle (the band sliced into one column per hole), and
- * each column is tessellated as quads between the hole's boundary and the column's rect
- * edges (cellWithHole). Slicing per hole keeps every sub-region simple, and no triangle
- * covers a hole, so the canvas behind shows through in all three backends.
+ * IT USED TO RETURN A TRIANGLE LIST, and that was the R6-11 bug — see this module's
+ * HOLE RENDERING note for the measurement and for the stale premise that caused it.
+ * The band was sliced into one COLUMN per hole and each column tessellated into quads
+ * around its hole; the whole four-sector machinery that did it (`cellWithHole`) existed
+ * only because the convex-only `polygon` op could not express a hole, and went with it.
  *
  * Holes are centered across the band and spaced by `pitch`, the FIRST one `phase` in
  * from the band's start. Phase is what lets the row line up with the FRAMES rather than
  * with the strip's edge: filmstripGeom hands it the first frame cell's own offset plus a
  * half pitch, so a leader/tail carries the perforations along with the pictures instead
- * of leaving them behind. A band too thin for a whole hole returns one solid rect
- * (2 triangles) rather than a clipped perforation.
+ * of leaving them behind. A band too thin for a whole hole returns the band rectangle
+ * ALONE rather than a clipped perforation.
  *
  * Args:
  *   band ({x, y, w, h}): the band rectangle (local space, top-left origin)
@@ -537,22 +557,28 @@ export function roundedRectBoundaryPoint(hx, hy, r, angle) {
  *   phase (number): the FIRST hole's center, as a distance in from the band's start
  *
  * Returns:
- *   number[][][]: array of triangles, each [[x,y],[x,y],[x,y]]
+ *   number[][][]: closed subpaths [[[x,y], …], …] — band rectangle, then one per hole
  *
  * @example perforatedBandPolygons({x: 0, y: 0, w: 100, h: 10}, {along: 0, across: 0, radius: 0}, 20, 10).length
- * 2
- * @example perforatedBandPolygons({x: 0, y: 0, w: 40, h: 10}, {along: 4, across: 6, radius: 1}, 20, 10).length > 2
- * true
+ * 1
+ * @example perforatedBandPolygons({x: 0, y: 0, w: 100, h: 10}, {along: 0, across: 0, radius: 0}, 20, 10)[0]
+ * [[0, 0], [100, 0], [100, 10], [0, 10]]
+ * @example perforatedBandPolygons({x: 0, y: 0, w: 40, h: 10}, {along: 4, across: 6, radius: 1}, 20, 10).length
+ * 3
  */
 export function perforatedBandPolygons(band, hole, pitch, phase) {
   const { x, y, w, h } = band;
   if (w <= 0 || h <= 0) return [];
-  const solidBand = () => triangulated([[x, y], [x + w, y], [x + w, y + h], [x, y + h]]);
+  const bandLoop = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
   const halfAlong = (hole.along ?? 0) / 2, halfAcross = (hole.across ?? 0) / 2;
-  // No room for a WHOLE hole → one solid rectangle (still parity-safe: 2 triangles).
-  // A clipped perforation would be a different shape than the one declared, so the
-  // honest degenerate is an unperforated band.
-  if (halfAlong <= 0 || halfAcross <= 0 || pitch <= 0 || 2 * halfAcross >= h) return solidBand();
+  // No room for a WHOLE hole, or holes that would RUN INTO EACH OTHER (2·halfAlong >
+  // pitch) → the bare band rectangle. A clipped or self-intersecting perforation would
+  // be a different shape than the one declared, so the honest degenerate is an
+  // unperforated band. emit() tests the overlap case too (perforationsOverlap) and
+  // REPORTS it; this guard is here so the generator alone is still honest, because
+  // under even-odd two overlapping hole loops would nest to depth three and fill their
+  // intersection back in as a lens-shaped island.
+  if (halfAlong <= 0 || halfAcross <= 0 || pitch <= 0 || 2 * halfAcross >= h || 2 * halfAlong > pitch) return [bandLoop];
   const cy = y + h / 2;
   // Hole centers: the first at `phase`, stepping by pitch, keeping the whole hole inside.
   // The phase is wound back to the first WHOLE pitch inside the band so a phase larger
@@ -563,66 +589,40 @@ export function perforatedBandPolygons(band, hole, pitch, phase) {
   for (let cx = x + first; cx <= x + w - halfAlong; cx += pitch) {
     if (cx - halfAlong >= x) centers.push(cx);
   }
-  if (centers.length === 0) return solidBand();
-  // One column per hole; the column spans from the previous column boundary to the
-  // midpoint to the next hole (so columns tile the band with no gaps/overlap).
-  const tris = [];
-  const bounds = centers.map((cx, i) => {
-    const left = i === 0 ? x : (centers[i - 1] + cx) / 2;
-    const right = i === centers.length - 1 ? x + w : (cx + centers[i + 1]) / 2;
-    return { left, right, cx };
-  });
-  for (const { left, right, cx } of bounds) {
-    tris.push(...cellWithHole(left, y, right - left, h, cx, cy, halfAlong, halfAcross, hole.radius ?? 0));
-  }
-  return tris;
+  if (centers.length === 0) return [bandLoop];
+  return [bandLoop, ...centers.map((cx) => roundedRectLoop(cx, cy, halfAlong, halfAcross, hole.radius ?? 0))];
 }
 
 /**
- * Pure function. One rectangle cell [rx,ry,rw,rh] with a single ROUNDED-RECTANGLE hole
- * removed (centre cx,cy, half-extents hx/hy, corner radius r), as a triangle list.
- * Instead of ear-clipping a rect-with-a-hole polygon (whose straight edges + duplicated
- * bridge vertex stall the strict ear-clipper), the annular region is split into FOUR
- * SECTORS by the rays from the hole centre to the four rect corners. Each sector's outer
- * boundary is exactly ONE flat rect edge (no corner between its two bounding rays), so
- * quads between the hole's boundary and that edge tile the sector with no corner-cutting.
- * The hole's boundary stays ANGLE-monotone and convex (roundedRectBoundaryPoint), which
- * is what makes the sector pairing valid for a rounded rect exactly as it was for a
- * circle. A hole that doesn't fit degenerates to the solid rect (2 triangles). Not
- * exported — internal to perforatedBandPolygons.
+ * Pure function. One perforation's boundary as a closed loop of
+ * `STRIP_LOOK.perfSegments` points, sampled at EQUAL ANGLES about (cx, cy) through
+ * roundedRectBoundaryPoint — which returns an exact point on the rounded rect for any
+ * ray, so the loop inscribes the true shape.
  *
- * @example cellWithHole(0, 0, 20, 10, 10, 5, 0, 0, 0).length
- * 2
- * @example cellWithHole(0, 0, 20, 10, 10, 5, 3, 2, 1).length > 8
- * true
+ * Equal angles is the same sampling the retired `cellWithHole` did; what is gone is its
+ * split into four sectors, which existed to pair each hole-boundary step with a piece of
+ * ONE flat cell edge. With the hole a subpath of its own there is no outer boundary to
+ * pair with, so the budget is simply spent around the turn. Not exported — internal to
+ * perforatedBandPolygons.
+ *
+ * @param {number} cx - hole centre x
+ * @param {number} cy - hole centre y
+ * @param {number} hx - half-extent along the band
+ * @param {number} hy - half-extent across the band
+ * @param {number} r - corner radius
+ * @returns {number[][]} a closed [[x, y], …] loop, perfSegments points long
+ *
+ * @example roundedRectLoop(10, 5, 4, 2, 0).length // 8 (STRIP_LOOK.perfSegments)
+ * @example roundedRectLoop(10, 5, 4, 2, 0)[0] // [14, 5] (angle 0: the right edge)
  */
-function cellWithHole(rx, ry, rw, rh, cx, cy, hx, hy, r) {
-  const solid = () => triangulated([[rx, ry], [rx + rw, ry], [rx + rw, ry + rh], [rx, ry + rh]]);
-  if (hx <= 0 || hy <= 0 || cx - hx < rx || cx + hx > rx + rw || cy - hy < ry || cy + hy > ry + rh) return solid();
-  const corners = [
-    [rx + rw, ry], [rx + rw, ry + rh], [rx, ry + rh], [rx, ry], // TR, BR, BL, TL
-  ];
-  const ang = corners.map((c) => Math.atan2(c[1] - cy, c[0] - cx));
-  const onHole = (a) => {
-    const [px, py] = roundedRectBoundaryPoint(hx, hy, r, a);
-    return [cx + px, cy + py];
-  };
-  const tris = [];
-  for (let e = 0; e < 4; e++) {
-    let a0 = ang[e], a1 = ang[(e + 1) % 4];
-    while (a1 <= a0) a1 += 2 * Math.PI; // increasing arc (CCW on a y-down screen)
-    const c0 = corners[e], c1 = corners[(e + 1) % 4];
-    const steps = Math.max(2, Math.round((STRIP_LOOK.perfSegments * (a1 - a0)) / (2 * Math.PI)));
-    for (let i = 0; i < steps; i++) {
-      const t0 = i / steps, t1 = (i + 1) / steps;
-      const in0 = onHole(a0 + (a1 - a0) * t0);
-      const in1 = onHole(a0 + (a1 - a0) * t1);
-      const out0 = [c0[0] + (c1[0] - c0[0]) * t0, c0[1] + (c1[1] - c0[1]) * t0];
-      const out1 = [c0[0] + (c1[0] - c0[0]) * t1, c0[1] + (c1[1] - c0[1]) * t1];
-      tris.push([in0, in1, out1], [in0, out1, out0]);
-    }
+function roundedRectLoop(cx, cy, hx, hy, r) {
+  const n = STRIP_LOOK.perfSegments;
+  const loop = [];
+  for (let i = 0; i < n; i++) {
+    const [px, py] = roundedRectBoundaryPoint(hx, hy, r, (2 * Math.PI * i) / n);
+    loop.push([cx + px, cy + py]);
   }
-  return tris;
+  return loop;
 }
 
 /**
@@ -792,6 +792,37 @@ export function perforationsResolve(perf, scale) {
 }
 
 /**
+ * Pure function. Would this strip's perforations RUN INTO EACH OTHER — is one hole
+ * longer along the band than the whole centre-to-centre step? Real film's cannot: the
+ * pitch is a whole number of hole-lengths plus land. But the drawn pitch divides the
+ * FRAME STEP (perforationPitch — the holes lock to the pictures), and the frame step
+ * shrinks with frame COUNT, so it is reachable from the Inspector: 24 frames on a
+ * 480-unit KS strip already puts the pitch under the hole length.
+ *
+ * SECOND HALF OF THE SAME DECISION `perforationsResolve` makes, and emit() reports it
+ * the same way: below the floor, or overlapping, the honest picture is an unperforated
+ * band and the widget SAYS why. It is a separate predicate because it is a separate
+ * fact — one is about output PIXELS and goes away when you scale the strip up, this one
+ * is about LOCAL geometry and does not.
+ *
+ * IT USED TO BE HANDLED SILENTLY, and that is why this exists as a named thing. The
+ * retired `cellWithHole` tested the same condition per cell (a hole wider than its
+ * column) and quietly returned the cell solid, so a strip with too many frames simply
+ * lost its perforations with no word — a silent fallback. Even-odd cannot inherit that
+ * behaviour by accident either: two overlapping hole loops inside the band nest to
+ * depth three, which fills their intersection back in as a lens-shaped island.
+ *
+ * @param {object} perf - a filmstripGeom perf record ({along, pitch, …}, local units)
+ * @returns {boolean} true when the holes would collide
+ *
+ * @example perforationsOverlap(filmstripGeom({w: 480, h: 90, perfFamily: "KS"}, 6).perf) // false
+ * @example perforationsOverlap(filmstripGeom({w: 480, h: 90, perfFamily: "KS"}, 24).perf) // true (pitch 4.99 < hole 5.09)
+ */
+export function perforationsOverlap(perf) {
+  return perf.pitch > 0 && perf.along > perf.pitch;
+}
+
+/**
  * Pure function. The smallest CROSS dimension (in local units, at world scale `scale`)
  * at which family `famId`'s perforations still clear PERF_FLOOR_PIXELS — the number the
  * sub-pixel report tells the user to reach. Inverts perforationPixels: the hole's
@@ -808,25 +839,35 @@ export function minPerforatedCross(famId, scale) {
 }
 
 /**
- * Pure function. Emits the filmColor strip's two bands (top+bottom) as triangulated
- * polygon ops. For a VERTICAL strip the bands run along the left/right edges and the
- * perforation row runs vertically; a per-axis swap of (x↔y, w↔h) reuses the same
- * horizontal band generator. Returns [] when the bands are degenerate.
+ * Pure function. Emits the filmColor strip's BOTH bands, holes and all, as exactly ONE
+ * even-odd `path` op — see this module's HOLE RENDERING note for why one op and not the
+ * ~480 triangles this used to be. For a VERTICAL strip the bands run along the left/
+ * right edges and the perforation row runs vertically; a per-axis swap of (x↔y, w↔h)
+ * reuses the same horizontal band generator. Returns [] when both bands are degenerate.
  *
- * `perforate` false draws the bands SOLID (2 triangles each). The caller decides —
- * emit() does, from perforationsResolve, and REPORTS when it says no — so this stays
- * pure and both answers stay testable.
+ * BOTH BANDS RIDE ONE OP because they carry the same paint, and disjoint subpaths do not
+ * interact under even-odd — the same economy plugins/graph_tick_marks.js uses to draw a
+ * whole row of tick marks as one `path`. It is not merely tidier: one op is ONE gradient
+ * or material frame for the film base, where N ops re-anchored the frame per piece
+ * (R6-11.4, "I'm not supposed to know about the triangles").
+ *
+ * `perforate` false draws the bands SOLID. The caller decides — emit() does, from
+ * perforationsResolve, and REPORTS when it says no — so this stays pure and both answers
+ * stay testable.
  *
  * SINGLE-PERF STOCK (`perf.sides` 1 — 16 mm 1R) punches bandA only and leaves bandB
- * blank film. That is not a special case in the tessellator: the second band simply is
+ * blank film. That is not a special case in the generator: the second band simply is
  * not asked for holes, exactly as the below-the-floor case is not.
  *
- * @example filmBandOps(filmstripGeom({w: 480, h: 90, vertical: false}, 3), "#000000", 1, true).length > 0
- * true
- * @example filmBandOps(filmstripGeom({w: 480, h: 90, vertical: false}, 3), "#000000", 1, false).length
- * 4
- * @example // 16 mm 1R: one band of holes, one band of two solid triangles
- * @example filmBandOps(filmstripGeom({w: 480, h: 90, perfFamily: "R16S"}, 3), "#000000", 1, true).length > 2
+ * @example filmBandOps(filmstripGeom({w: 480, h: 90, vertical: false}, 3), "#000000", 1, true).length
+ * 1
+ * @example filmBandOps(filmstripGeom({w: 480, h: 90, vertical: false}, 3), "#000000", 1, true)[0].fillRule
+ * 'evenodd'
+ * @example // unperforated: two band rectangles and nothing else
+ * @example filmBandOps(filmstripGeom({w: 480, h: 90, vertical: false}, 3), "#000000", 1, false)[0].d.split("M").length - 1
+ * 2
+ * @example // 16 mm 1R: one perforated band plus one blank one, still a single op
+ * @example filmBandOps(filmstripGeom({w: 480, h: 90, perfFamily: "R16S"}, 3), "#000000", 1, true)[0].d.split("M").length - 1 > 2
  * true
  */
 export function filmBandOps(geom, filmColor, opacity, perforate) {
@@ -834,21 +875,23 @@ export function filmBandOps(geom, filmColor, opacity, perforate) {
   const bandFor = (band, holed) => {
     // BELOW THE FLOOR, or the blank edge of a SINGLE-PERF stock: no holes at all.
     // Handing perforatedBandPolygons a zero-size hole is its own documented degenerate
-    // (one solid rect), so this needs no second code path — it just declines to ask.
+    // (the bare band rectangle), so this needs no second code path — it just declines
+    // to ask.
     if (!perforate || !holed) return perforatedBandPolygons(band, { along: 0, across: 0, radius: 0 }, 0, 0);
     if (perf.axis === "y") {
       // Vertical strip: TRANSPOSE the band (x↔y, w↔h) so the shared along-the-band
-      // generator runs holes down the Y axis, then transpose the triangles back — one
+      // generator runs holes down the Y axis, then transpose the subpaths back — one
       // generator serves both orientations. The hole record needs no swap: `along` and
       // `across` are named RELATIVE to the band, not to x/y. The PHASE needs none
       // either: it is measured along the band, which is the axis being transposed onto.
       const t = { x: band.y, y: band.x, w: band.h, h: band.w };
-      return perforatedBandPolygons(t, perf, perf.pitch, perf.phase).map((tri) => tri.map(([px, py]) => [py, px]));
+      return perforatedBandPolygons(t, perf, perf.pitch, perf.phase).map((loop) => loop.map(([px, py]) => [py, px]));
     }
     return perforatedBandPolygons(band, perf, perf.pitch, perf.phase);
   };
-  const tris = [...bandFor(bandA, true), ...bandFor(bandB, perf.sides === 2)];
-  return tris.map((tri) => polygon({ points: tri, fill: filmColor, opacity }));
+  const subpaths = [...bandFor(bandA, true), ...bandFor(bandB, perf.sides === 2)];
+  if (subpaths.length === 0) return [];
+  return [path({ d: subpathsPathD(subpaths), fill: filmColor, fillRule: "evenodd", opacity })];
 }
 
 /**
@@ -1039,9 +1082,11 @@ export const filmstripPlugin = {
     // diverges as the strip's cross dimension shrinks. Decline, and SAY SO — the key
     // omits the live size so a resize drag reports once, not once per frame.
     const scale = world?.scale ?? 1;
-    const perforate = perforationsResolve(geom.perf, scale);
-    if (!perforate) {
-      const famId = PERF_FAMILIES[s.perfFamily] ? s.perfFamily : DEFAULT_PERF_FAMILY;
+    const belowFloor = !perforationsResolve(geom.perf, scale);
+    const overlapping = perforationsOverlap(geom.perf);
+    const perforate = !belowFloor && !overlapping;
+    const famId = PERF_FAMILIES[s.perfFamily] ? s.perfFamily : DEFAULT_PERF_FAMILY;
+    if (belowFloor) {
       const axis = s.vertical ? "width" : "height";
       const long = (s.vertical ? s.h : s.w) ?? 0;
       const declined = geom.perf.pitch > 0 ? Math.round(long / geom.perf.pitch) : 0;
@@ -1051,6 +1096,21 @@ export const filmstripPlugin = {
         `${PERF_FLOOR_PIXELS}-pixel floor, so the sprocket bands are drawn UNPERFORATED — ${declined} holes per band were declined because ` +
         "not one of them could clear a single pixel, which makes the perforated band and a solid band the same picture. " +
         `Give the strip a ${axis} of at least ${minPerforatedCross(famId, scale).toFixed(1)} units, or scale it up, to get them back.`,
+      );
+    }
+    // THE SECOND WAY THE PERFORATIONS CANNOT BE DRAWN, reported in the same shape and
+    // for the same reason (perforationsOverlap): the drawn pitch divides the FRAME STEP,
+    // so enough frames on a short strip squeeze the step below one hole's own length and
+    // the holes would run into each other. Same key discipline — no live size in it, so a
+    // resize drag reports once rather than once per frame.
+    if (overlapping) {
+      reportOnce(
+        `PowerRP filmstrip: ${famId} perforations overlap at this frame count`,
+        `PowerRP filmstrip: at ${frames.length} frames a ${famId} perforation is ${geom.perf.along.toFixed(3)} units long but the pitch is only ` +
+        `${geom.perf.pitch.toFixed(3)}, so consecutive holes would run into each other — real film's cannot, and the drawn pitch divides the ` +
+        "FRAME STEP so that the holes stay locked to the pictures. The sprocket bands are drawn UNPERFORATED rather than as a chain of merged " +
+        `slots. Use fewer frames, a longer strip, or a coarser-pitched format to get them back: the pitch has to reach ${geom.perf.along.toFixed(3)} ` +
+        `units, which is ${(geom.perf.pitch / geom.perf.along).toFixed(2)}x what this layout gives it.`,
       );
     }
     // The film bands (with perforation holes) sit UNDER the frames so the frames

@@ -47,6 +47,20 @@
  *      `donutRingOutline` ONE flat point list which `emit` and `hitTest` both
  *      read — splitting it into [outer, inner] subpaths under even-odd would
  *      have made them two derivations of the same shape, free to drift.
+ *   5. THE FILMSTRIP's perforated bands, which were the SAME defect at a larger
+ *      scale and were left for a sibling task when 1-4 landed: a default 480x90
+ *      strip emitted 480 `polygon` ops for two bands and cracked over 1 405 of
+ *      3 332 band-interior pixels. They are now ONE even-odd `path` op.
+ *
+ * THE `polygon` OP IS NOT THE DEFECT AND IS NOT BANNED — that was measured, and
+ * this note is here because the opposite conclusion is the obvious wrong one to
+ * draw from these tests. One op is one shape: a LONE convex polygon has no
+ * neighbour to conflate with, and per-op bounds is the correct gradient frame for
+ * an op that IS a shape. Arrow heads, line caps, the video play glyphs and the
+ * clock hands are each one polygon for one shape and are correct as they stand.
+ * The sin is FAN-EMITTING ONE SHAPE ACROSS N OPS, which is what 1-5 above pin.
+ * The structural companion to this file is tests/triangulated_paint_ban_test.js:
+ * the ear-clipper that made those fans is no longer reachable from any paint path.
  */
 
 import assert from "node:assert/strict";
@@ -57,6 +71,7 @@ import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { donutPlugin, ringGeom } from "../plugins/donut.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
+import { filmBandOps, filmstripGeom } from "../plugins/filmstrip.js";
 import { fancyArrowOutline } from "../core/outline.js";
 
 const require = createRequire(import.meta.url);
@@ -183,6 +198,90 @@ function inkedArea(bytes, px) {
   let n = 0;
   for (let i = 0; i < px * px; i++) if (bytes[i * 4] >= FULL_COVERAGE / 2) n++;
   return n;
+}
+
+/**
+ * Pure function. The brightest red level over the pixels `inside` accepts — the
+ * complement of `census`'s `min`, for asserting a region is BARE rather than solid.
+ *
+ * @param {Uint8Array} bytes - RGBA8888 pixels, `px` square
+ * @param {number} px - frame size
+ * @param {(x: number, y: number) => boolean} inside - pixel-centre predicate
+ * @returns {number} 0 when no pixel in the region carries any ink at all
+ *
+ * @example // brightest(allBlack, 2, () => true) // 0
+ */
+function brightest(bytes, px, inside) {
+  let max = 0;
+  for (let y = 0; y < px; y++)
+    for (let x = 0; x < px; x++)
+      if (inside(x + 0.5, y + 0.5)) max = Math.max(max, bytes[(y * px + x) * 4]);
+  return max;
+}
+
+/**
+ * Pure function. The pixels strictly INSIDE the ink, by MORPHOLOGICAL EROSION: a
+ * pixel qualifies when every pixel within Chebyshev distance `margin` of it carries
+ * some ink at all. Returns a `px`-square 0/1 mask.
+ *
+ * WHY EROSION RATHER THAN AN ANALYTIC REGION, which is what the donut and arrow
+ * censuses above use. Both are correct; they suit different shapes. A donut's census
+ * region is two radii and a subtraction, so stating it analytically is short and
+ * exact. A perforated film band's is a rectangle minus a row of rounded rectangles
+ * whose count and pitch the geometry derives — restating that here would be a
+ * HAND-MAINTAINED MIRROR of the code under test, free to drift from it, and the one
+ * thing a mirror cannot catch is the case where both copies are wrong together.
+ * Eroding the rendered ink asks the picture instead: it needs no geometry at all.
+ *
+ * The margin does the same job the analytic one does, by the same two terms — a
+ * single antialiased fill spreads its edge over at most ANTIALIASED_EDGE_PX, plus
+ * CENSUS_SAFETY_PX. There is no sagitta term because there is no analytic boundary
+ * being approximated: the mask is derived from the ink that was actually laid down,
+ * so a polygonal rim's inward bow is already in it.
+ *
+ * ANY INK (> 0) COUNTS AS INK, not half coverage. A seam is a shallow ~192/255 dip,
+ * so a half-coverage threshold would keep seam pixels in the mask either way — but
+ * an AA edge pixel at 250 would ALSO survive, and fail the census for being an edge.
+ * Thresholding at "> 0" makes the erosion strictly wider than the shape's true
+ * boundary, so every AA pixel is eroded away and only body is examined.
+ *
+ * @param {Uint8Array} bytes - RGBA8888 pixels, `px` square
+ * @param {number} px - frame size
+ * @param {number} margin - erosion radius in pixels
+ * @returns {Uint8Array} `px * px` mask, 1 where the pixel is interior ink
+ *
+ * @example // a 4x4 frame fully inked, eroded by 1, leaves the middle 2x2:
+ * @example // interiorInkMask(allWhite16px, 4, 1).reduce((a, b) => a + b) // 4
+ */
+function interiorInkMask(bytes, px, margin) {
+  const inked = new Uint8Array(px * px);
+  for (let i = 0; i < px * px; i++) inked[i] = bytes[i * 4] > 0 ? 1 : 0;
+  // Separable: erode along x into `rows`, then along y. A square structuring element
+  // is the product of its two 1-D passes, so this is the same result as the naive
+  // (2·margin+1)² scan at a fraction of the work.
+  const rows = new Uint8Array(px * px);
+  for (let y = 0; y < px; y++) {
+    for (let x = 0; x < px; x++) {
+      let all = 1;
+      for (let d = -margin; d <= margin && all; d++) {
+        const xx = x + d;
+        if (xx < 0 || xx >= px || !inked[y * px + xx]) all = 0;
+      }
+      rows[y * px + x] = all;
+    }
+  }
+  const out = new Uint8Array(px * px);
+  for (let y = 0; y < px; y++) {
+    for (let x = 0; x < px; x++) {
+      let all = 1;
+      for (let d = -margin; d <= margin && all; d++) {
+        const yy = y + d;
+        if (yy < 0 || yy >= px || !rows[yy * px + x]) all = 0;
+      }
+      out[y * px + x] = all;
+    }
+  }
+  return out;
 }
 
 // ── DONUT ────────────────────────────────────────────────────────────────────
@@ -315,6 +414,82 @@ test(`FANCY ARROW — no seam across the shaft at ${SIZES.join("/")} px`, () => 
     // And it still draws an arrow: the tip is inked, the corner is not.
     assert.ok(bytes[(Math.round(px / 2) * px + Math.round(ends.x1 - 2)) * 4] > 0, `${px}px: the tip is blank`);
     assert.equal(bytes[(1 * px + 1) * 4], 0, `${px}px: ink in the corner — the fill escaped its outline`);
+  }
+});
+
+// ── FILMSTRIP ────────────────────────────────────────────────────────────────
+// The same defect as the donut's, at a larger scale and with a real hole pattern
+// rather than one bridge. `filmBandOps` used to slice each band into one COLUMN per
+// perforation and tessellate every column into quads around its hole: 480 `polygon`
+// ops for a default 480x90 strip. It is now ONE `path` op — the band rectangles plus
+// one closed loop per hole, filled even-odd.
+//
+// THE BANDS ARE PAINTED ALONE, not through filmstripPlugin.emit. emit() lays a
+// contentRect of the SAME filmColor between the bands and per-frame media on top,
+// and a same-coloured neighbour would fill the very cracks this measures — testing
+// through emit() would be the WEAKER test, not the more realistic one.
+const FILM_SIZES = [[240, 45], [480, 90], [960, 180]];
+// A frame count for the probe strips. The perforation PITCH is derived from the frame
+// step (perforationPitch: the holes lock to the pictures), so the count is part of the
+// geometry under test rather than decoration; three is the smallest count that gives a
+// leader, interior frames and a tail.
+const FILM_PROBE_FRAMES = 3;
+// What fraction of the UNPERFORATED band pair's ink must survive perforation. The
+// reference is the widget's own `perforate: false` render rather than the analytic
+// rectangle area, because a band is a few pixels tall and the analytic area is not a
+// whole number of them: at 240x45 the bands are 5.65 px, so pixel quantization alone
+// puts the solid render 0.6% ABOVE the arithmetic — an analytic ceiling read that as
+// "the holes stopped being holes". Comparing render to render cancels that exactly.
+// Bounded below by "the band did not vanish" and above by "the holes were not filled
+// in"; measured 0.87-0.97 of solid across the three sizes, the smaller strip losing
+// proportionally less because its holes shrink faster than its band.
+const BAND_INK_MIN_FRACTION = 0.5;
+const BAND_INK_MAX_FRACTION = 0.99;
+
+test(`FILMSTRIP — the perforated bands have no interior seam at ${FILM_SIZES.map(([w]) => w).join("/")} px`, () => {
+  const margin = interiorMarginPx(0);
+  for (const [w, h] of FILM_SIZES) {
+    const geom = filmstripGeom({ w, h, vertical: false }, FILM_PROBE_FRAMES);
+    const ops = filmBandOps(geom, INK, 1, true);
+    const bytes = renderPixels(ops, w);
+    const mask = interiorInkMask(bytes, w, margin);
+    const band = census(bytes, w, (x, y) => mask[Math.floor(y) * w + Math.floor(x)] === 1);
+    assert.ok(band.n > 0, `${w}x${h}: the census region is empty — the probe, not the widget, is broken`);
+    assert.equal(
+      band.below, 0,
+      `${w}x${h}: ${band.below}/${band.n} band-interior pixels below full coverage (darkest ${band.min}). ` +
+      "That is the abutting-antialiased-fill signature — the bands are being emitted as more than one fill op again.",
+    );
+  }
+});
+
+test("FILMSTRIP — the holes are still punched, the film between the bands is still bare", () => {
+  // Assertion 1 is satisfied by a solid band AND by a blank frame; these are what make
+  // it mean something. A wrong winding rule is the specific failure they catch: under
+  // non-zero with same-wound loops the holes fill in, and the seam census would pass.
+  for (const [w, h] of FILM_SIZES) {
+    const geom = filmstripGeom({ w, h, vertical: false }, FILM_PROBE_FRAMES);
+    const bytes = renderPixels(filmBandOps(geom, INK, 1, true), w);
+    const solid = inkedArea(renderPixels(filmBandOps(geom, INK, 1, false), w), w);
+    const area = inkedArea(bytes, w);
+    assert.ok(solid > 0, `${w}x${h}: the unperforated reference render is blank — the probe is broken`);
+    assert.ok(
+      area >= solid * BAND_INK_MIN_FRACTION,
+      `${w}x${h}: inked only ${area} of the unperforated band pair's ${solid} — the bands lost body`,
+    );
+    assert.ok(
+      area < solid * BAND_INK_MAX_FRACTION,
+      `${w}x${h}: inked ${area} of the unperforated band pair's ${solid} — the perforations stopped being holes, ` +
+      "which is exactly what a non-zero fill rule does to loops that share the band's winding",
+    );
+    // Nothing between the bands: that gap is where emit() puts the frames, and film
+    // spilling into it would put band ink under every picture.
+    const inGap = (x, y) => y > geom.bandA.y + geom.bandA.h + 1 && y < geom.bandB.y - 1;
+    assert.ok(census(bytes, w, inGap).n > 0, `${w}x${h}: no gap between the bands to measure — the probe is misconfigured`);
+    assert.equal(
+      brightest(bytes, w, inGap), 0,
+      `${w}x${h}: the strip's middle is inked — a band subpath escaped its rectangle`,
+    );
   }
 });
 

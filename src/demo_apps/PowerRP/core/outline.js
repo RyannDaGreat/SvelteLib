@@ -11,13 +11,37 @@
  * data, no classes, so outlines can live in documents, cross the IR seam,
  * and be diffed/tested trivially.
  *
+ * AN OUTLINE REACHES PIXELS AS ONE `path` OP, NEVER AS TRIANGLES. Hand the point
+ * list to core/shapes.js's polygonPathD (one loop) or subpathsPathD (a shape with
+ * holes) and emit a single IR `path` with the `fillRule` the winding calls for.
+ * That op takes arbitrary topology — concave, self-intersecting, multi-subpath,
+ * holed — and has done in all three backends since 2026-07-23 (c0646a5).
+ *
+ * THIS PARAGRAPH USED TO SAY THE OPPOSITE, and saying it was the bug. It read
+ * "triangulated() bridges outlines to today's CONVEX-only IR polygon op; when the
+ * vector track adds an IR path op, generators are unchanged — emit() swaps N
+ * triangles for one path command." The op landed and the swap never happened, so a
+ * design note describing a temporary bridge went on instructing every widget
+ * written after it to ear-clip. The donut fanned into 128 convex ops, the fancy
+ * arrow into 5, a default filmstrip's two perforated bands into 480 — and two
+ * abutting ANTIALIASED fills conflate to ~192/255 along their shared edge instead
+ * of tiling to 255, so every one of those internal edges was a visible crack on
+ * every surface in this app except the (uniquely multisampled) editor viewport.
+ * That is R6-11, the user's "why is there a disconnect between the renderer and
+ * what I see on my screen". A stale doctrine comment is a defect here, not a nit.
+ *
+ * triangulated() itself is UNRETIRED and correct — as GEOMETRY. A hit test, an
+ * area, a point-in-shape query may use it freely. It is only the route from an
+ * outline to PIXELS that is closed, and tests/triangulated_paint_ban_test.js is
+ * what keeps it closed. Note also what is NOT implied: the convex `polygon` op is
+ * fine and stays. One op per SHAPE has no neighbour to conflate with, which is why
+ * arrow heads and line caps are correct exactly as they are. The sin was ever
+ * splitting ONE shape across N ops.
+ *
  * The intended growth path (design, not yet built):
  *   - GENERATORS (pure param → outline functions; fancyArrowOutline is #1):
  *     each new parametric shape is data + a generator here, not bespoke
  *     plugin geometry code.
- *   - triangulated() bridges outlines to today's CONVEX-only IR polygon op;
- *     when the vector track adds an IR `path` op, generators are unchanged —
- *     emit() swaps N triangles for one path command.
  *   - Borders: stroke GEOMETRY (offset/tessellate an outline) lands here as
  *     more pure functions over the same type.
  *   - Dynamic-anchor rims: closest-point / nearest-pair solvers over the same
@@ -426,10 +450,17 @@ export function nearestRimPair(projA, projB, { seedA, seedB } = {}) {
 
 /**
  * Pure function. Ear-clipping triangulation of a SIMPLE closed polygon
- * (concave allowed, either winding) into triangles — the bridge from
- * arbitrary outlines to the IR's CONVEX-only polygon op (fan-triangulated
- * backends render each triangle exactly; shared edges are watertight under
- * GPU fill rules because vertices are shared verbatim).
+ * (concave allowed, either winding) into triangles.
+ *
+ * NOT A PAINT PATH — see the module header. This was written as "the bridge from
+ * arbitrary outlines to the IR's CONVEX-only polygon op", and the claim it rested
+ * on ("shared edges are watertight because vertices are shared verbatim") is FALSE
+ * for an antialiased rasterizer: two abutting antialiased fills conflate along
+ * their shared edge to ~192/255 rather than tiling to 255, so every internal
+ * diagonal shows as a crack. That was R6-11, measured. An outline reaches pixels as
+ * ONE `path` op with a `fillRule`; tests/triangulated_paint_ban_test.js keeps this
+ * function out of that route. It remains correct and useful as GEOMETRY — areas,
+ * point-in-shape, anything that wants convex pieces rather than ink.
  *
  * Exactly-collinear middle vertices are dropped (a zero-area ear — removing
  * it is exact, not an approximation), so degenerate zero-width outlines
