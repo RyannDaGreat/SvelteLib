@@ -230,6 +230,7 @@
   import ColorField from "./ColorField.svelte";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
+  import { appRankItems } from "./searchRank.js";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
@@ -680,6 +681,7 @@
          same Dropdown contract — hover still previews LIVE, a pick still drops the
          transient revert then commits. -->
     <SearchableDropdown
+      rankFn={appRankItems}
       items={MATERIAL_OPTIONS}
       value={matSub.id}
       onchange={(id) => { app.transientPreview = null; commitMaterial(id); }}
