@@ -29,6 +29,25 @@
  * for now, and even just that some tooltip tells us why it's grayed out").
  * So `search()` returns unavailable entries and every surfacing marks them.
  *
+ * **`when` MUST BE O(CHEAP). IT RUNS ON A HOT PATH, ONCE PER ENTRY, EVERY TIME
+ * ANY SURFACING IS DRAWN OR RE-RANKED** — the palette on every keystroke, the
+ * toolbar and the tool pane on every app-state change. There is no memo and no
+ * debounce, deliberately: a cached availability is a control that lies for a
+ * frame, which is the defect the greying rule exists to remove.
+ *
+ * So a gate may read app state, compare a couple of fields, and check a
+ * selection's length. It may NOT walk the document, fold slides, evaluate
+ * equations, touch the filesystem or the network, or allocate per call. Where a
+ * gate genuinely needs derived data the cost is already paid elsewhere and must
+ * be READ, not recomputed — `needsMultiBbox` derives the render tree, which is
+ * exactly why `partitionByAvailability` (below) returns BOTH halves from one
+ * pass rather than letting each caller ask every gate a second time.
+ *
+ * This is stated HERE, at the definition, and not only at that call site,
+ * because the author of a new command reads this block and never reads
+ * `partitionByAvailability` — a performance contract recorded only at the
+ * consumer is a contract the producer never sees.
+ *
  * `requires` is the sentence completing "Unavailable — requires …" — the reason
  * a surfacing shows while the gate says no. MANDATORY beside a `when` (a grey
  * control that will not say why is the defect this rule removes; the palette
