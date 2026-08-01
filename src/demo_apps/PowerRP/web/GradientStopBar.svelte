@@ -93,7 +93,7 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { fieldOwnsKeydown } from "../../../lib/fieldKeys.js";
-  import { fractionAt } from "./LabelDivider.svelte";
+  import { fractionAt } from "./labelFrac.js";
   import { cssRampSwatch } from "./GradientPresetPicker.svelte";
   import { getPath } from "../core/deltas.js";
   import { DEFAULT_RAMP_SPACE, sampleRampHex } from "../core/ramps.js";
@@ -231,8 +231,8 @@
 
   /** Query (reads the track's box). The pointer's position as a fraction of the
    *  track, clamped to the position field's DECLARED bounds — through the app's
-   *  own track arithmetic (web/LabelDivider.svelte fractionAt), not a third copy
-   *  of it. The rect is re-read per event so a drag stays correct if the panel
+   *  own track arithmetic (web/labelFrac.js fractionAt), not a third copy of it.
+   *  The rect is re-read per event so a drag stays correct if the panel
    *  resizes underneath it (that helper's own rule). */
   function fractionOf(clientX) {
     const r = trackEl.getBoundingClientRect();

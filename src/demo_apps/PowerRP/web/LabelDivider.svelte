@@ -48,9 +48,24 @@
   .cat-rows in the first place, one level deeper, and it has the same fix: mount
   on the smallest block that is all boundary rows. web/Inspector.svelte splits a
   category into runs (rowRuns) and PaintField mounts one around its own geometry
-  sub-rows and its material knobs. Every segment reads the one app.labelFrac, so
-  they stay in x-sync — the user's "multiple lines, in synchronized x position",
-  now at two nesting depths.
+  sub-rows and its material knobs.
+
+  WHICH NUMBER A SEGMENT READS IS THE `dividerKey` PROP, and it is the ONE thing
+  that is not shared. Every segment in a FAMILY reads that family's fraction, so
+  they stay in x-sync — the user's "multiple lines, in synchronized x position".
+  Segments in DIFFERENT families deliberately do not: "if there was a second
+  level that second level would not be synced with the first level, because then
+  that would make them collide visually." That sentence used to read "every
+  segment reads the one app.labelFrac … at two nesting depths", which described
+  the design the 2026-08-01 ruling overturned. See web/labelFrac.js for the key
+  vocabulary and for the measurement (six overlapping strips at one x) that says
+  the collision is real and not hypothetical.
+
+  A SEGMENT DOES NOT PUBLISH ITS FAMILY'S FRACTION — THE BLOCK AROUND IT DOES.
+  `left` here is `calc(var(--a-label-frac) * 100% …)`, the same token the row
+  grids use, so a nested block sets `--a-label-frac` on itself and the cascade
+  reaches its rows AND the divider inside it with one assignment and no new CSS.
+  This component only needs to know which key its DRAG writes.
 
   A DOM-MEASURING VERSION WAS BUILT AND REVERTED. It published the offsetTop of
   the first full-width child as a CSS variable and ended the strip there. It kept
@@ -61,46 +76,17 @@
   was still racy. The row defs already know which rows are full-width, so
   measuring the DOM to rediscover it was the wrong layer.
 
-  Props: app (the PowerRPApp — owns labelFrac and its persistence).
+  Props:
+    app        — the PowerRPApp; owns the fractions and their persistence.
+    dividerKey — which divider FAMILY this segment belongs to (a
+                 LABEL_DIVIDER_KEYS member). Defaults to the property rows,
+                 which is every caller but the nested paint blocks.
   Styling lives in app.css (.label-divider; app convention: no <style>).
 -->
-<script module>
-  /**
-   * Pure function. The label fraction a pointer at client-x `clientX` names, for
-   * a rows block whose content box spans [left, left + width], clamped to
-   * `bounds`.
-   *
-   * The pointer's x is read against the ROWS BLOCK, not the panel: the block is
-   * the row grid's containing box, so `calc(fraction * 100%)` resolves against
-   * exactly this width. Measuring the panel instead would be off by its padding,
-   * and the divider would settle a few pixels away from where it was dropped.
-   *
-   * In `<script module>` so the drag arithmetic is importable by a bare-node
-   * test without a DOM — the component around it is the only part that needs one.
-   *
-   * @param {number} clientX Pointer x in client coordinates
-   * @param {number} left Rows-block content-box left edge, client coordinates
-   * @param {number} width Rows-block content-box width in px
-   * @param {{min: number, max: number}} bounds Clamp bounds for the fraction
-   * @returns {number} The clamped fraction
-   *
-   * @example fractionAt(140, 20, 400, {min: 0.15, max: 0.55})
-   * 0.3
-   * @example fractionAt(0, 20, 400, {min: 0.15, max: 0.55})
-   * 0.15
-   * @example fractionAt(1000, 20, 400, {min: 0.15, max: 0.55})
-   * 0.55
-   */
-  export function fractionAt(clientX, left, width, bounds) {
-    if (!(width > 0)) return bounds.min; // a zero-width block names no fraction
-    return Math.min(bounds.max, Math.max(bounds.min, (clientX - left) / width));
-  }
-</script>
-
 <script>
-  import { LABEL_FRAC_BOUNDS } from "./app.svelte.js";
+  import { fractionAt, LABEL_DIVIDER_PROPERTY, LABEL_FRAC_BOUNDS } from "./labelFrac.js";
 
-  let { app } = $props();
+  let { app, dividerKey = LABEL_DIVIDER_PROPERTY } = $props();
 
   /** The element, for measuring the rows block this divider belongs to. */
   let el = $state(null);
@@ -113,15 +99,16 @@
     return el?.offsetParent ?? null;
   }
 
-  /** Command. Writes the fraction this pointer position names (clamped +
-   *  persisted through app.setLabelFrac). Reads the rows block's live geometry
-   *  every move rather than caching it at press, so a drag stays correct if the
-   *  panel resizes underneath it (an equation row growing the block, say). */
+  /** Command. Writes the fraction this pointer position names into THIS
+   *  segment's family (clamped + persisted through app.setLabelFrac). Reads the
+   *  rows block's live geometry every move rather than caching it at press, so a
+   *  drag stays correct if the panel resizes underneath it (an equation row
+   *  growing the block, say). */
   function applyPointer(clientX) {
     const block = rowsBlock();
     if (!block) return;
     const r = block.getBoundingClientRect();
-    app.setLabelFrac(fractionAt(clientX, r.left, r.width, LABEL_FRAC_BOUNDS));
+    app.setLabelFrac(dividerKey, fractionAt(clientX, r.left, r.width, LABEL_FRAC_BOUNDS));
   }
 
   /** Command. Begins a divider drag: captures the pointer on this element so the
@@ -161,5 +148,5 @@
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
   onpointercancel={onPointerUp}
-  ondblclick={() => app.resetLabelFrac()}
+  ondblclick={() => app.resetLabelFrac(dividerKey)}
 ></div>

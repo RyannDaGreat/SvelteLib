@@ -239,10 +239,15 @@
   import ListField, { collapseKeyFor } from "./ListField.svelte";
   import BrushPalette from "./BrushPalette.svelte";
   // The paint stack's own label⟷value divider segments — one per nested run of
-  // boundary rows (the geometry rows, the material knobs). Same component and the
-  // same app.labelFrac the Inspector's category dividers use, which is what keeps
-  // every segment at one x. See the .paint-sub-rows group comment below.
+  // boundary rows (the geometry rows, the material knobs). Same component as the
+  // Inspector's category dividers, DIFFERENT NUMBER: these are the VARIABLE
+  // PROPERTIES family (user ruling 2026-08-01), so they carry the LABEL_DIVIDER_
+  // VARIABLE key and their blocks re-publish --a-label-frac for their own rows.
+  // This paragraph used to say "the same app.labelFrac … which is what keeps
+  // every segment at one x"; being at one x with the panel's dividers is now the
+  // defect, not the feature. See web/labelFrac.js.
   import LabelDivider from "./LabelDivider.svelte";
+  import { LABEL_DIVIDER_VARIABLE } from "./labelFrac.js";
   import { makeHoverPreview } from "./hoverPreview.js";
   import { resolveScrub } from "../../../lib/numberStep.js";
   import { GRADIENT_STOPS_LIST, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
@@ -724,14 +729,22 @@
         </button>
       </Tooltip>
       {#if !matCollapsed}
-        <div class="cat-rows">
+        <!-- --a-label-frac IS RE-PUBLISHED HERE, and that is the whole of the
+             nesting mechanism. Every row grid in the app reads
+             `calc(var(--a-label-frac) * 100%)`, so setting the VARIABLE family's
+             number on the block carries it to these knob rows AND to the divider
+             inside them by plain inheritance — no new token, no new selector, no
+             app.css change at all. The user's own reason for why nesting is free:
+             "they're proportional so the dividing line is fine even when we have
+             nested sections, because it's just a smaller proportion". -->
+        <div class="cat-rows" style:--a-label-frac={app.labelFrac[LABEL_DIVIDER_VARIABLE]}>
           <!-- The knob list is its own divider group, for the same reason the
                geometry rows are: it is a contiguous run of label⟷value rows, and
                the category strip above it now stops before this full-width editor.
                (A `stops` knob row mounts a ListField, which is full-width and has
                no boundary — app.css ends this segment above one, exactly as it
                does for the category strip.) -->
-          <LabelDivider {app} />
+          <LabelDivider {app} dividerKey={LABEL_DIVIDER_VARIABLE} />
           {#each matRows as mrow (mrow.name)}
             {#if mrow.kind === "stops"}
               <!-- STOPS — THE REAL GRADIENT EDITOR, mounted for a material colour ramp
@@ -933,11 +946,19 @@
          such region. The fix is the same shape too: the divider belongs to the
          smallest block that is all boundary rows. So these geometry rows form one,
          and app.css ends the category strip above a restacked paint editor. Both
-         segments read the one --a-label-frac, which is what keeps them in x-sync —
-         the user's "multiple lines, but in synchronized x position", now at two
-         nesting depths. -->
-    <div class="paint-sub-rows">
-      <LabelDivider {app} />
+         segments are positioned from --a-label-frac, which is what keeps a FAMILY
+         in x-sync — the user's "multiple lines, but in synchronized x position".
+
+         BUT NOT ACROSS DEPTHS, and that is the 2026-08-01 correction to this
+         paragraph, which used to end "…now at two nesting depths". These nested
+         rows are VARIABLE PROPERTIES and read their own number, because a nested
+         segment sharing the panel's fraction lands on the panel's x: measured at
+         HEAD, a rect with a gradient stroke put all SIX of its dividers on one
+         client x (1252.2), so the strips stacked and the topmost swallowed the
+         others' pointer events. Re-publishing --a-label-frac on the block below is
+         the entire implementation; see web/labelFrac.js. -->
+    <div class="paint-sub-rows" style:--a-label-frac={app.labelFrac[LABEL_DIVIDER_VARIABLE]}>
+      <LabelDivider {app} dividerKey={LABEL_DIVIDER_VARIABLE} />
     {#if mode === "linearGradient"}
       <!-- DIRECTION — a continuous rotary dial (AngleField) in place of the old
            four ↑↓ preset buttons. It writes the paint's authoritative `angle`
