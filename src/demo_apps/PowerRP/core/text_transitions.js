@@ -200,8 +200,8 @@ export function textDissolve(from, to, alpha) {
   if (t >= 1) return b;
   const len = Math.max(a.length, b.length);
   const committed = Math.floor(t * len);
-  // " " separates the two operands so "ab"+"c" and "a"+"bc" seed differently.
-  const order = shuffledOrder(len, hashText(a + " " + b));
+  // "\0" separates the two operands so "ab"+"c" and "a"+"bc" seed differently.
+  const order = shuffledOrder(len, hashText(a + "\0" + b));
   const showsTo = new Array(len).fill(false);
   for (let k = 0; k < committed; k++) showsTo[order[k]] = true;
   let out = "";

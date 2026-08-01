@@ -189,7 +189,7 @@ try {
     check(`${preset.name}: hover leaves the document untouched`, staged.doc === docBefore);
     // (2) The row's own sentence, not the pane's fallback.
     check(`${preset.name}: tip is the preset's description`,
-      staged.tip.includes(preset.description ?? " "),
+      staged.tip.includes(preset.description ?? "\0"),
       staged.tip === GENERIC_TIP(preset.name) ? "showing ToolsPane's generic fallback — the preset declares no description" : JSON.stringify(staged.tip.slice(0, 90)));
 
     // (3) It rendered, and it rendered something no other row produced.
