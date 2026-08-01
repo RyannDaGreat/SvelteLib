@@ -1007,6 +1007,65 @@ is the actual rule.
   "correct" a surprising-but-sourced value.** Odd blade counts are real; the impossible thing
   is an odd RAY count.
 
+- **R6-3.14 MATERIALS FAMILY: 64 presets, SELF-VALIDATED — and a method worth copying**
+  (`.frenzy/round6/presets/materials.md`; metaball 12, rainy_window 12, raycast_dither 12,
+  particles 12, demo_showcase 8, blur 8).
+
+  **THE ANTI-DRIFT METHOD, AND IT ANSWERS THE REPO'S WORST RECURRING DEFECT.** The agent wrote
+  `scratch_materials.mjs` which **imports the six real plugins and diffs every designed key
+  against `Object.keys(plugin.defaults)`** — 57 distinct keys, all present, all six
+  `plugin.type` values matched — and recomputed every saturation bound it quoted. That is the
+  cure for the hand-maintained-mirror class (R6-24.7, and the material probe fixtures that
+  "drift silently"): **a preset table should VALIDATE ITSELF against the plugin rather than
+  mirror it by hand.** Every future preset family must ship such a check.
+
+  **MEASURED SATURATION POINTS — real, undocumented, and two of them are silent:**
+  - `metaball.threshold` **hard-clips above 0.6**: the region pad is 0.6 x reach, so the
+    isosurface reaches the region edge and the droplet is **cut square**. Presets capped 0.45.
+  - `demo_raycast_dither.zoom` **silently truncates the palette above ~0.6** — the five colour
+    spots sit at fixed positions while the field spans +/-0.5/zoom, so **at 0.85 two of five
+    colour knobs are DEAD**. A knob that silently disables other knobs; the tightest constraint
+    in the family, and its help text says nothing.
+  - `rainy_window.rain` saturates its static layer at 0.35 and runner-1 at 0.75, so above 0.75
+    only one layer still moves — which is why two presets had to differ on GRANULARITY
+    (columns 4 vs 14) rather than amount. `dropSize` sheets at 1.7 and clips at 4.2; `shine`
+    clips near 2; `streakiness` flattens near 6.
+  - `particles`: **the editor freeze clock is 2 s**, so `lifetime <= 2` or the pane shows a
+    still-filling emitter.
+
+  **`metaball.smoothK` IS PROVABLY INERT ON A LONE WIDGET** — the smin seed cancels and
+  `f = d` exactly. **This matters for R6-3.12: the Ohnesorge-derived `smoothK` ladder only
+  expresses anything with TWO OR MORE metaball widgets**, so that mapping needs a two-widget
+  fixture to verify and cannot carry distinctness in a single-widget preview.
+
+  **BLUR IS NOT PRESET-LESS — 8, honestly.** `handleBlurBackdrop` composites the blurred
+  snapshot OVER the sharp one at `opacity`, so opacity is a partial-VEIL strength, not
+  transparency: (44, 0.45) and (36, 1.0) are the same scattering scale and completely different
+  pictures. Without opacity the honest count is 4 (a radius ladder). **No shipped preset writes
+  `opacity` at all** — flagged for a ruling.
+
+  **AN UNRESOLVED CONTRADICTION BETWEEN TWO OF MY OWN AGENTS — DO NOT PICK A SIDE WITHOUT
+  MEASURING.** The metaball substance researcher derived `bulge` from sessile-drop height and
+  concluded **small bulge = tall bead** (mercury, theta 140 deg) and **max bulge = spread film**
+  (water on clean glass). The materials agent reports that `bulge`'s **help text AND its shader
+  comment are BOTH backwards**, meaning **small = flat puddle, large = round dome** — the exact
+  opposite convention. One of the two is wrong, and both cite reasoning rather than a rendered
+  pixel. **RESOLVE BY RENDERING the widget at bulge min and max and looking at it**, then fix
+  whichever of {help text, shader comment, the Ohnesorge/sessile mapping} disagrees. Recorded
+  unresolved on purpose; a coin-flip here would silently invert a dozen presets.
+
+  **Also recorded:** `demo_raycast_dither` is named for ORDERED dithering it does not implement
+  (white noise, no matrix, no quantizer) — a misleading name in a shipped widget;
+  `plugins/graph_presets.js` is now the divergent table on THREE counts, being also the only one
+  writing an effects bundle; and `demo_showcase` is honestly a MECHANISM TOUR (eight bindings of
+  its `inset` custom prop) rather than a look book, because a look library there would duplicate
+  `rect`.
+
+  **ENVIRONMENT FACT FOR ALL RESEARCH AGENTS: `WebSearch` is erroring in this environment**
+  (`output_config.effort 'xhigh' not supported`) while **`WebFetch` works**. That is why one
+  agent reported search "down all session". Research must go through WebFetch of specific
+  pages — which is also what forced the verbatim-verification discipline in R6-3.12(a).
+
 - **R6-3.11 CROSS-WIDGET PHYSICAL CONSISTENCY.** Aperture blade count, flare
   starburst ray count and bokeh polygon must AGREE where they describe the same
   lens. A swarm authoring independently will contradict itself unless coordinated.
