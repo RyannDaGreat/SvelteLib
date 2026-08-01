@@ -363,7 +363,8 @@ export function scenes() {
     // Neither backend has a native ring/even-odd primitive (see
     // core/outline.js's DONUT_SEGMENTS comment), so donutPlugin.emit() ear-
     // clips the annulus into convex triangles (core/outline.js donutOutline +
-    // triangulated) — the SAME polygon op fancy_arrow.js already proves
+    // triangulated) — the SAME polygon op fancy_arrow.js used to prove before R6-11
+    // moved that widget to a single path op; the head triangles below are still polygons
     // through both backends. Because both backends consume the IDENTICAL
     // triangle list from ONE emit() call, this scene tests real widget glue
     // (defaults, inner proportions, stroke, rotation, overlap), not
@@ -386,7 +387,7 @@ export function scenes() {
       pushTransform({ x: 260, y: 235 }),
       ...donutPlugin.emit({ ...donutPlugin.defaults, w: 110, h: 110, inner: 0.15, fill: "#f7768e", opacity: 0.85 }),
       popTransform(),
-    ], 32), // measured 37.42 dB (2026-07 run) — pure vector triangulated-polygon fill + stroke polylines, same class as arrows-crossing (37 floor, 41.32 measured); floor = measured − ~5.4 dB (the arrows-crossing scene's own measured-to-floor margin) for AA/rotation/translucency headroom. PENDING USER RATIFICATION (same convention as every other scene's floor in this file).
+    ], 32), // measured 37.42 dB (2026-07 run) — pure vector fill + stroke polylines, same class as arrows-crossing (37 floor, 41.32 measured); floor = measured − ~5.4 dB (the arrows-crossing scene's own measured-to-floor margin) for AA/rotation/translucency headroom. The fill was a triangulated polygon when this was measured and is ONE keyhole path op since R6-11, which can only RAISE the dB — the floor is stale in the direction that cannot fail. PENDING USER RATIFICATION (same convention as every other scene's floor in this file).
 
     // ── CROP BOX parity (SA2 — manifest ARCHITECTURE PLAN #3) ─────────────────
     // Built the SAME way as donut-basic above: real cropboxPlugin.emit() calls
@@ -830,7 +831,7 @@ export function scenes() {
     // ── FANCY ARROW: fill + outline stroke parity (Round 17.4) ────────────────
     // Built the SAME way as donut-basic above: REAL fancyArrowPlugin.emit()
     // calls (not hand-written IR), so this exercises actual widget glue — the
-    // triangulated fill AND (Round 17.4's new bit) the outline polyline drawn
+    // fill (ONE path op since R6-11, 5 triangles before) AND (Round 17.4's new bit) the outline polyline drawn
     // around the outer hull when strokeWidth > 0. Both backends consume the
     // SAME triangle list AND the SAME closed-polyline points from ONE emit()
     // call, so parity holds by construction (the donut-basic precedent).
