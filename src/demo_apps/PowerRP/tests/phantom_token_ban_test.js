@@ -22,9 +22,15 @@
  * `style:--x` / `style="--x: …"` binding in any component's markup.
  *
  * WHY IT EXISTS AS A GATE, in the ledger's own words: "Sweep for the shape, not
- * just this instance." Nobody had. The sweep found EIGHT more sites across four
- * tokens, listed in PHANTOM_DEBT below — which is also the argument for the gate
- * over the sweep, because the next one will be written next week.
+ * just this instance." Nobody had. The sweep found EIGHT sites across four tokens.
+ *
+ * AND THEN THE GATE EARNED ITSELF INSIDE THE HOUR. Three of those tokens
+ * (--a-debug-nav-w, --a-debug-cache-fold-h, --a-debug-preview-max, seven sites) were
+ * declared by the agent who owns web/app.css while this file was being written, and
+ * the EXACT-SET rule below turned that into three failures reading "the debt is PAID.
+ * Delete its entry." A floor would have gone quiet; an exact set made the repayment
+ * visible. That is also why the ledger is keyed by NAME: app.css moved ~150 lines
+ * twice during this one investigation.
  *
  * PRECEDENT: tests/square_chrome_test.js — one forbidden shape, named exemptions
  * with reasons, a self-check proving the gate can fail, a non-vacuity floor.
@@ -58,9 +64,6 @@ const inventory = process.argv.includes("--inventory");
  * broke this fleet's tree twice today. Ledger C-19: the assertion follows the fix.
  */
 const PHANTOM_DEBT = {
-  "--a-debug-nav-w": "declare `--a-debug-nav-w: 180px;` with the other --a-debug-* tokens, then drop the fallback. Owner: W4-P (web/app.css).",
-  "--a-debug-cache-fold-h": "declare `--a-debug-cache-fold-h: 220px;` with the other --a-debug-* tokens, then drop both fallbacks. Owner: W4-P (web/app.css).",
-  "--a-debug-preview-max": "declare `--a-debug-preview-max: 320px;` with the other --a-debug-* tokens, then drop all four fallbacks. Owner: W4-P (web/app.css).",
   "--ae-quota-fill":
     "DO NOT DECLARE THIS ONE — the fix is DELETION. `.asset-explorer .ae-quota-bar-fill` reads it, and " +
     "web/AssetExplorer.svelte no longer renders `.ae-quota-bar` or `.ae-quota-bar-fill` at all (eec6819: " +
@@ -202,7 +205,13 @@ assert.equal(stripCssComments("a{}\n/* p */\nb{}").split("\n").length, 3, "SELF-
 // ── NON-VACUITY ──────────────────────────────────────────────────────────────
 assert.ok(scanned.length >= 50, `only ${scanned.length} sources scanned — app.css plus every web/ component was expected`);
 assert.ok(declared.size >= 200, `only ${declared.size} tokens found declared — the declaration scan is broken and everything would read as phantom`);
-assert.ok(uses.length >= 15, `only ${uses.length} var() fallbacks seen — the use scan is broken (18 measured on 2026-08-01)`);
+// NOT A COUNT FLOOR ON `uses`, and that was a design error caught within the hour:
+// the first version demanded >= 15 var() fallbacks, and W4-P paid seven of the debts
+// while this file was being written, taking the tree to 11. A floor on a number the
+// codebase is SUPPOSED to drive down turns paying the debt into a red gate. What has
+// to be non-vacuous is the SCANNER, so that is what is pinned: it must resolve at
+// least one live token through a fallback (both halves working at once).
+assert.ok(uses.some((u) => declared.has(u.name)), "no var() fallback resolved to a LIVE token — the use scan or the declaration scan is broken");
 assert.ok(declared.has("--cf-swatch"), "the Svelte-bound token --cf-swatch is not recognised as declared — the inline-binding branch is unexercised");
 
 if (failures.length) {
@@ -212,9 +221,14 @@ if (failures.length) {
 }
 // A LEDGERED DEBT THAT PRINTS NOTHING IS A DEBT NOBODY PAYS. On every green run
 // this names each frozen phantom, its site count, its fix and its owner.
-console.log(`KNOWN DEBT — ${Object.keys(PHANTOM_DEBT).length} phantom tokens at ${phantoms.length} sites, frozen so the count can only go down:`);
+/** Pure function. "1 token" / "4 tokens" — a debt report that says "1 tokens" reads
+ *  as machine noise, and a debt report nobody reads is a debt nobody pays.
+ *  @example plural(1, "token") // "1 token"
+ *  @example plural(4, "site")  // "4 sites" */
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+console.log(`KNOWN DEBT — ${plural(Object.keys(PHANTOM_DEBT).length, "phantom token")} at ${plural(phantoms.length, "site")}, frozen so the count can only go down:`);
 for (const [name, fix] of Object.entries(PHANTOM_DEBT)) {
   const sites = phantoms.filter((p) => p.name === name).map((p) => `${p.file}:${p.line}`);
   console.log(`  ${name}  (${sites.length}: ${sites.join(", ")})\n    ${fix}`);
 }
-console.log(`PASS phantom_token_ban_test — ${uses.length} var() fallbacks across ${scanned.length} sources; ${phantoms.length} phantom, all ledgered.`);
+console.log(`PASS phantom_token_ban_test — ${plural(uses.length, "var() fallback")} across ${plural(scanned.length, "source")}; ${phantoms.length} phantom, all ledgered.`);
