@@ -59,7 +59,7 @@
   import { PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
-  import { commandUnavailableReason } from "../core/commands.js";
+  import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
   import { isHexColor } from "../core/interpolators.js";
   import { getPath } from "../core/deltas.js";
   import { copyText } from "./clipboard.js";
@@ -1624,8 +1624,16 @@
         {#if row.help ?? entry.help}<div>{row.help ?? entry.help}</div>{/if}
         <!-- The WHY beneath the what, rendered only while it is actually
              unavailable so it reads as the live reason and not a standing
-             caveat — the Toolbar / Tools pane / palette wording and class. -->
-        {#if reason}<div class="tool-tip-requires">Unavailable — requires {reason}</div>{/if}
+             caveat. THE FRAME COMES FROM core/commands.unavailableMessage, which
+             is the only place it is spelled: this row was the FOURTH pane to have
+             hand-transcribed "Unavailable — requires {reason}" (Toolbar,
+             ToolsPane and CommandPalette were the other three), and four copies
+             of one sentence are four chances to disagree. Same shape as
+             connectivity's offlineMessage — one function, one condition, one
+             sentence, pinned by a test. The clause still comes from
+             commandUnavailableReason and never from `cmd.requires`, which may be
+             a FUNCTION whose source text would render verbatim. -->
+        {#if reason}<div class="tool-tip-requires">{unavailableMessage(reason)}</div>{/if}
       {/snippet}
       <button
         class="btn"
