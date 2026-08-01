@@ -132,12 +132,19 @@ try {
   const popHandle = await page.$(".fp-pop");
   if (popHandle) await popHandle.screenshot({ path: resolve(SHOTS, "fontpicker_1_popover.png") });
 
+  // ASSERT THE GUARD, then keep it as a cascade suppressor — the pattern this
+  // file already uses for the divider at "a .fp-divider element exists" below.
+  // Unasserted, a picker that failed to open took all seven checks below with it
+  // and the probe still exited 0.
+  assert(!!(m0.pop && m0.list && m0.preview),
+    `the open picker has a .fp-pop, .fp-list and .fp-preview to measure (pop=${!!m0.pop} list=${!!m0.list} preview=${!!m0.preview})`);
   if (m0.pop && m0.list && m0.preview) {
     // Divider spans full height ⟺ list bottom == preview bottom == pop bottom (±1px subpixel).
     const near = (a, b, tol = 1.5) => Math.abs(a - b) <= tol;
     assert(near(m0.list.bottom, m0.pop.bottom), `list column reaches pop bottom (list=${m0.list.bottom} pop=${m0.pop.bottom})`);
     assert(near(m0.preview.bottom, m0.pop.bottom), `preview column reaches pop bottom (preview=${m0.preview.bottom} pop=${m0.pop.bottom})`);
     assert(near(m0.list.bottom, m0.preview.bottom), `columns are equal height — divider full (Δ=${Math.abs(m0.list.bottom - m0.preview.bottom)}px)`);
+    assert(!!m0.divider, ".fp-divider is in the open popover (the drag section below requires it too)");
     if (m0.divider) assert(near(m0.divider.bottom, m0.pop.bottom) && near(m0.divider.top, m0.pop.top), `.fp-divider spans full pop height (top=${m0.divider.top}/${m0.pop.top} bottom=${m0.divider.bottom}/${m0.pop.bottom})`);
     // Pangram CONTAINED: not clipped below pop, AND no horizontal overflow past
     // the preview box (each line's right edge within the box; scrollWidth==clientWidth).
@@ -147,6 +154,7 @@ try {
     assert(overRight.length === 0, `no pangram line overflows the preview's RIGHT edge (over-right lines: ${overRight.length}; lineRights=${m0.lineRights.join(",")} previewRight=${m0.preview.right})`);
     assert(m0.previewOverflowX != null && m0.previewOverflowX <= 1, `preview has NO horizontal overflow (scrollWidth−clientWidth=${m0.previewOverflowX}px)`);
     // List actually scrolls (many fonts).
+    assert(!!m0.scroll, ".fp-menu is in the open popover (the wheel section below queries it unguarded)");
     if (m0.scroll) assert(m0.scroll.canScroll, `option list is scrollable (scrollH=${m0.scroll.scrollHeight} > clientH=${m0.scroll.clientHeight})`);
   }
 
@@ -194,6 +202,8 @@ try {
   const mFew = await measure();
   console.log("MEASURE (few results / query=system):", JSON.stringify(mFew, null, 2));
   await page.screenshot({ path: resolve(SHOTS, "fontpicker_2_fewresults.png") });
+  assert(!!(mFew.pop && mFew.list && mFew.preview),
+    `the picker still has all three columns after filtering to one result (pop=${!!mFew.pop} list=${!!mFew.list} preview=${!!mFew.preview})`);
   if (mFew.pop && mFew.list && mFew.preview) {
     const near = (a, b, tol = 1.5) => Math.abs(a - b) <= tol;
     assert(near(mFew.list.bottom, mFew.preview.bottom), `few-results: columns still equal height — divider full (Δ=${Math.abs(mFew.list.bottom - mFew.preview.bottom)}px)`);
