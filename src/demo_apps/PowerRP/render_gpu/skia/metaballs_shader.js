@@ -120,7 +120,19 @@ uniform float uLightAngle;       // in-plane direction TO the light (radians; -P
 uniform float uSpecular;         // Blinn-Phong glint strength (the water sparkle)
 uniform float uShininess;        // Blinn-Phong exponent: higher = a tighter, sharper glint
 uniform float uFresnel;          // strength of the bright grazing rim
-uniform float uBulge;            // dome thickness (fraction of the MEAN BALL RADIUS): small = tall peaked beads, large = flat puddles
+// uBulge is the dome's CAP HEIGHT as a fraction of the MEAN BALL RADIUS, so the
+// dome stands exactly uBulge·unit tall (domeDepth in main(): omega falls from 1 at
+// the rim to 0 once the surface is that deep, and the cap's rise integrates to
+// exactly that depth). SMALL = A FLAT SPREAD FILM, LARGE = A TALL DOME — the
+// direction this comment asserted for a long time, and its Inspector help with it,
+// was BACKWARDS, and so was the sessile-drop physical derivation offered as a
+// correction; all three were settled by rendering the bead over a line grid and
+// counting pixels (.frenzy/round6/bulge, .frenzy/round6/W2-H-shots). At 0.05 the
+// bead's interior is 100% pixel-identical to the bare backdrop — a hairline rim ring,
+// the grid dead straight through it, no glint at all; the undisturbed fraction then
+// falls monotonically to 18% by 3.0. 1.0 is a hemisphere; above 1 the apex over-domes
+// into a pinched spike.
+uniform float uBulge;            // dome CAP HEIGHT (fraction of the MEAN BALL RADIUS)
 uniform float uAmbient;          // contact shading on the unlit rim (0 = flat, higher = a rounder, seated bead)
 
 // Pure. Signed distance to a disk. <0 inside.
@@ -569,7 +581,7 @@ export const METABALLS_FILL_PARAMS = [
   // ── the field (merge + surface) — GLOBAL (leader-wide) ────────────────────────
   { name: "smoothK", kind: "number", default: 0.90, min: 0, label: "Merge (smooth-k)", help: "Smooth-union merge amount (fraction of the MEAN BALL RADIUS). 0 = a hard union of separate shapes; larger fuses neighbours (including balls from other metaball widgets) into one bulging blob with a smooth neck — THE metaball merge." },
   { name: "threshold", kind: "number", default: 0.08, min: 0, label: "Threshold", help: "Isosurface level (fraction of the mean ball radius): raises the fluid 'level' so every blob fattens and gaps close. Higher = plumper, more-merged droplets." },
-  { name: "bulge", kind: "number", default: 0.80, min: 0.05, label: "Bulge", help: "Dome thickness (fraction of the mean ball radius): small = tall, sharply-curved beads (strong refraction); large = flatter puddles." },
+  { name: "bulge", kind: "number", default: 0.80, min: 0.05, label: "Bulge", help: "Dome CAP HEIGHT as a fraction of the mean ball radius — the bead stands exactly bulge × mean ball radius tall. SMALL = a flat spread film that barely bends the content beneath it (at 0.05 the interior is pixel-identical to the backdrop: a hairline rim, no glint, no refraction at all); LARGE = a tall rounded bead with a broad glint and strong refraction. 1.0 is a hemisphere; above 1 the apex over-domes into a pinched spike." },
   // ── the water look (reuses the glass refraction + lighting math) — GLOBAL ─────
   { name: "chromatic", kind: "number", default: 0.05, min: 0, label: "Chromatic", help: "Chromatic dispersion at the rim: the R/B channels refract slightly more/less than G. A tiny value gives a real colored-edge fringe; too much makes a rainbow swirl at each bead's core." },
   { name: "lightAngle", kind: "angle", display: "degrees", default: LIGHT_ANGLE_DEFAULT, label: "Light angle", help: "Direction TO the light (screen space; -90° is straight above, 0° is from the right). The upper face of each bead catches the specular glint." },
