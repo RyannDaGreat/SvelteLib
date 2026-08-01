@@ -92,10 +92,50 @@ import { visibleIndices } from "./lists.js";
 export const VIDEO_SAMPLING_KEYS = ["src", "videoStart", "videoEnd", "frames", "scrubWrap"];
 
 /**
+ * THE VIDEO NARROWING OF `src`, as ONE object. `PROPS.src` declares IMAGE assets
+ * (the image widget is its oldest consumer), so every video widget has to narrow it
+ * — and `assetKinds` is a CONTRACT aspect, so two widgets that narrow it differently
+ * stop being the same row for retype and for joint editing. This constant is the one
+ * place the narrowing is written; `videoSrcRow` and VIDEO_SAMPLING_ROWS both read it.
+ *
+ * Module-private on purpose: a consumer wants a ROW, not an override fragment, and
+ * exporting both spellings would be two ways to say one thing.
+ */
+const VIDEO_SRC_NARROWING = { label: "Video", assetKinds: ["video"] };
+
+/**
+ * Pure function. THE `src` ROW NARROWED TO VIDEO ASSETS, on its own — for a widget
+ * that takes a clip but does NOT sample a set of stills out of it, and therefore
+ * cannot spread the all-or-nothing VIDEO_SAMPLING_ROWS block.
+ *
+ * It exists because the block is all-or-nothing and the narrowing is not: a plain
+ * video PLAYER draws ONE frame at one time, so `videoStart`/`videoEnd`/`frames` would
+ * be a category error in it, while `src` is the identical row. Six video plugins
+ * currently re-type the narrowing by hand. This is the same shape as
+ * `preserveAspectRow` below — a shared CONTRACT with a per-widget presentational
+ * argument — which is the precedent it is deliberately copied from.
+ *
+ * The `label` is a parameter because it is PRESENTATIONAL and the existing widgets
+ * genuinely disagree about it (this module says "Video", plugins/video.js:134 leaves
+ * PROPS.src's "Source"); core/multiselect.js PRESENTATIONAL_ROW_ASPECTS ignores it,
+ * so both spellings are still THE SAME ROW for retype.
+ *
+ * @param {string} [label] - this widget's own label for the row
+ * @returns {object} one resolved inspector row
+ *
+ * @example videoSrcRow().key // "src"
+ * @example videoSrcRow().assetKinds // ["video"]
+ * @example videoSrcRow().label // "Video"
+ * @example videoSrcRow("Source").label // "Source"
+ * @example videoSrcRow("Source").assetKinds // ["video"] (the narrowing is not the caller's to change)
+ */
+export function videoSrcRow(label = VIDEO_SRC_NARROWING.label) {
+  return props("src", { src: { ...VIDEO_SRC_NARROWING, label } })[0];
+}
+
+/**
  * THE SHARED INSPECTOR ROWS — resolved once, spread by every widget that samples
- * frames out of a clip. `PROPS.src` declares IMAGE assets (the image widget is its
- * oldest consumer), so the video narrowing is applied here, in the one place both
- * widgets read, rather than re-typed at each call site.
+ * frames out of a clip.
  *
  * These row OBJECTS are shared by reference across the consuming plugins, which is
  * deliberate and is the `GRADIENT_STOPS_LIST` / `RAMP_STOP_ELEMENT` precedent in
@@ -106,9 +146,7 @@ export const VIDEO_SAMPLING_KEYS = ["src", "videoStart", "videoEnd", "frames", "
  * @example VIDEO_SAMPLING_ROWS[0].assetKinds // ["video"]
  * @example VIDEO_SAMPLING_ROWS[0].label // "Video"
  */
-export const VIDEO_SAMPLING_ROWS = props(...VIDEO_SAMPLING_KEYS, {
-  src: { label: "Video", assetKinds: ["video"] },
-});
+export const VIDEO_SAMPLING_ROWS = props(...VIDEO_SAMPLING_KEYS, { src: VIDEO_SRC_NARROWING });
 
 /**
  * Pure function. THE `preserveAspect` ROW, with this widget's own help sentence.

@@ -12,13 +12,39 @@
  *                                      → `font`, `size`, `bold`, `labelColor`
  *   font_size default = diameter·0.65  → the `size` DEFAULT, evaluated once (see
  *                                        DEFAULT_LABEL_SIZE for why not an equation)
- *   padding, with_checkerboard, crop_zeros
- *                                      → dropped, deliberately. `padding` only
- *     grew the reference's output raster around the disc; here the disc IS the
- *     widget's box and a caller who wants room around it moves the box. The
- *     checkerboard is a transparency PREVIEW (this app has a canvas behind the
- *     widget already) and `crop_zeros` is an artefact of stamping one raster into
- *     another, which a display list does not do.
+ *   padding, with_checkerboard, scale → dropped, deliberately. `padding` only grew
+ *     the reference's output raster around the disc; here the disc IS the widget's
+ *     box and a caller who wants room around it moves the box. The checkerboard is a
+ *     transparency PREVIEW (this app has a canvas behind the widget already). `scale`
+ *     multiplied diameter/padding/rim_width/font_size together, which is what
+ *     resizing the box does to the disc — but NOT to `strokeWidth` or `size`, which
+ *     are stored lengths here; a caller who wants the reference's coupling types
+ *     `= abs(self.h) * 20/257` and `= abs(self.h) * 0.65` into those two rows.
+ *   crop_zeros                         → NOT expressible, and it is the one place
+ *     this widget can visibly differ from the reference. See the note below.
+ *
+ * ── HOW THE LABEL IS CENTRED, AND WHERE THAT DIVERGES (measured) ──────────────
+ * The reference crops the text raster's transparent margin (`crop_zeros`, default
+ * ON) and only then stamps it centre-on-centre, so what it centres is the GLYPH INK.
+ * PowerRP centres the laid-out LINE BOX (core/richtext.js valignOffset), whose height
+ * is the font's ascent + descent and is therefore the same whatever the label says.
+ * The two agree exactly for a string whose ink is cap-height — which is what a
+ * numbered callout is — and diverge by the descender for anything lower.
+ *
+ * MEASURED, rendering this widget at its shipped defaults through cli/render.js and
+ * taking the ink bounding box out of the PNG (offset of ink centre below disc centre,
+ * positive = low; the disc is 257 px and the label 167.05 px):
+ *
+ *     "42"  ->  -0.5 px   (-0.2% of the diameter)   the shipped default: FAITHFUL
+ *     "Ag"  ->  22.5 px   ( 8.8%)
+ *     "gy"  ->  41.5 px   (16.1%)                   a descender-only label: OFF
+ *
+ * So the widget is faithful for what it is FOR, and a lowercase word label sits low.
+ * It is recorded rather than worked around because the fix does not belong here: emit()
+ * is DOM-free and cannot measure a glyph, so ink-centring has to be a text-layout
+ * capability (a `valign` that resolves against the ink box), which would serve
+ * plaintext, number and both clocks at the same time. A per-widget nudge would be one
+ * more spelling of a feature five widgets already want.
  *
  * ── THE INWARD RIM IS `strokeOffset`, NOT A SIGNED WIDTH ──────────────────────
  * The reference stores the rim as a SIGNED width (negative = drawn inward). PowerRP
