@@ -182,6 +182,65 @@ manifest itself becomes a Tower of Babel, which is the worst possible place for 
    **a hand-maintained list, map or switch mirroring another module's shape.** Derive it;
    if it cannot be derived, gate it so drift turns something red.
 
+### WIDGETS MAY BE MADE MORE POWERFUL — AND EVERY NEW POWER NEEDS A UI
+
+**USER RULING, 2026-08-01, in two parts. The first removes a constraint; the second replaces
+it with a harder one.**
+
+> *"If polyline isn't powerful enough, you can just add more power to it. If the spline is not
+> good enough, make the spline have more options, etc. It's okay to make widgets more
+> powerful. If shatter needs it, then make the widgets better that you shatter into."*
+
+So **a widget's current capability is NOT a bound on what we deliver.** A gap found while
+building something else is a work item, not a permanent limit. This directly changes how
+SHATTER (#221) treats its warning list: warnings are the INTERIM state for gaps not yet
+closed, not the destination. Everything W3-N's audit classified GENUINELY MISSING (#231-233)
+is buildable, not a fixed boundary.
+
+It also relaxes the proportionality limit for this specific case: "that would mean changing
+the widget" stops being a reason to refuse. Say what it costs and check in — do not
+silently deliver a worse result to stay inside a smaller diff.
+
+> *"Just one caveat though — you've got to make sure there's a coherent UI for it on both
+> the properties and the canvas if we do make modifications. Everything has to be editable
+> through the UI, not through a JSON file alone."*
+
+**THE HARD CONSTRAINT: NO JSON-ONLY PROPERTIES.** Every capability added must be reachable
+by a user who never opens the document file:
+- a **property row** in the Inspector, and
+- a **canvas affordance** (handle, modifier point, edit point) where the property is
+  SPATIAL. A position, a length, an angle or an endpoint that can only be typed is
+  half-built.
+
+**THE EXISTING VIOLATION THAT PROVES THE RULE IS NEEDED: todo #239.** A group's `scale` is
+the one property that actually moves its members — and it has NO INSPECTOR ROW ANYWHERE
+(`core/properties.js` has no `scale` entry). Meanwhile the panel offers W and H, which are
+no-ops on the members. So the only way to set it today is through the document. That is
+exactly what this ruling forbids, and it predates the ruling.
+
+> *"It has to be well established, easy to understand UI, and if you can do that, then
+> you're allowed to expand it."*
+
+**SO THE PERMISSION IS CONDITIONAL, AND THE CONDITION IS THE TEST: can the new power be
+expressed in the app's EXISTING UI vocabulary?** If yes, expand — you are authorised. If it
+would need a novel control the app has never had, that is a higher bar: propose it, do not
+build it. "Well established" means the control already exists and the user already knows it.
+
+The vocabulary to reach for first, all of it already shipped: a property row of an existing
+KIND (number, angle-dial, colour, boolean, select, asset, list, paint) · a modifier point or
+edit point on canvas · the `=` equation affordance every row already carries · hover-preview,
+which is the established trope for every picker (todo #165) · a shared `src/lib` primitive
+rather than a new one (todo #82 measured FOUR of five proposed primitives as unnecessary —
+the app has more UI vocabulary than people assume).
+
+**This turns "expand the widget" from a licence into a design constraint, and that is the
+point.** A capability that cannot be expressed with controls the user already understands is
+usually a sign the capability is shaped wrong, not that the UI is missing.
+
+**Related and already settled, do not re-litigate:** an inapplicable-by-mode knob is HIDDEN
+(the MODE SELECTOR glossary entry), and a control that looks usable but is not is a lie
+about its own affordance. Adding a row is not licence to add an inert one.
+
 ### A SHARED SEAM WITHOUT A SAME-COMMIT SWEEP IS NOT A CONVENTION — IT IS ONE MORE DIALECT
 
 **CLAUDE-ORIGINATED (agent W3-B, 2026-08-01), and MEASURED, which is what makes it a law
