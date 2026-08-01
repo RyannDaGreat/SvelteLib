@@ -97,7 +97,7 @@ test("line: plugin shape — endpoints placement, no head, cap enum", () => {
   assert.equal(linePlugin.defaults.cap, "round");
   assert.deepEqual(LINE_CAPS, ["round", "butt", "square"]);
   // No arrowhead knobs (this is the arrow minus the head).
-  assert.equal("headMode" in linePlugin.defaults, false);
+  assert.equal("headEnd" in linePlugin.defaults, false);
   assert.equal(linePlugin.inspector.some((r) => r.key === "headLength"), false);
 });
 

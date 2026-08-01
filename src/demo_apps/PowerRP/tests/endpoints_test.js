@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import {
   SHAFT_GRAB_PAD, SHAFT_PULLBACK, endpointEditPoints, endpointMoveBy, endpointClosestToward,
-  hitsShaft, endpointPairHooks, HEAD_MODES, headEnds, headTriangle, shaftPullback,
+  hitsShaft, endpointPairHooks, HEAD_SHAPES, HEAD_SHAPE_LABELS, headModeSplit, headTriangle, headDrawing, arrowHeads,
 } from "../core/endpoints.js";
 import { arrowPlugin } from "../plugins/arrow.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
@@ -96,18 +96,77 @@ test("plugins keep their own hit tests but share the shaft pad", () => {
   assert.equal(fancyArrowPlugin.hitTestWorld({ state: fs }, 50, 20), false);
 });
 
-// ── headMode / head geometry (manifest ARCHITECTURE PLAN #6) ────────────────
+// ── head SHAPES / head geometry (todo #231: per-end head shapes) ────────────
 
-test("HEAD_MODES: the four enum values, in the manifest's stated order", () => {
-  assert.deepEqual(HEAD_MODES, ["none", "start", "end", "both"]);
+test("HEAD_SHAPES: derived from the generator table, every shape labelled", () => {
+  assert.equal(HEAD_SHAPES[0], "none", "the empty decoration sorts first");
+  // The label gate in core/endpoints.js throws at IMPORT if these disagree, so
+  // reaching this line already proves it; asserted anyway so the intent is
+  // readable here and a future weakening of that gate is caught.
+  assert.deepEqual(HEAD_SHAPES.filter((s) => !(s in HEAD_SHAPE_LABELS)), []);
+  assert.deepEqual(Object.keys(HEAD_SHAPE_LABELS).filter((s) => !HEAD_SHAPES.includes(s)), []);
 });
 
-test("headEnds: legacy default (end); every enum value covered", () => {
-  assert.deepEqual(headEnds(), { start: false, end: true });
-  assert.deepEqual(headEnds("none"), { start: false, end: false });
-  assert.deepEqual(headEnds("start"), { start: true, end: false });
-  assert.deepEqual(headEnds("end"), { start: false, end: true });
-  assert.deepEqual(headEnds("both"), { start: true, end: true });
+test("headModeSplit: the retired enum's four values, and null for anything else", () => {
+  assert.deepEqual(headModeSplit("none"), { headStart: "none", headEnd: "none" });
+  assert.deepEqual(headModeSplit("start"), { headStart: "triangle", headEnd: "none" });
+  assert.deepEqual(headModeSplit("end"), { headStart: "none", headEnd: "triangle" });
+  assert.deepEqual(headModeSplit("both"), { headStart: "triangle", headEnd: "triangle" });
+  assert.equal(headModeSplit("= t"), null, "an equation cannot be split across two ends");
+  assert.equal(headModeSplit(undefined), null);
+});
+
+test("headDrawing: a typo THROWS rather than silently drawing nothing", () => {
+  assert.throws(() => headDrawing("triangel", { x: 1, y: 0 }, { x: 0, y: 0 }, 14, 12), /unknown head shape "triangel"/);
+});
+
+test("headDrawing: every shape is drawable, and no two draw the same thing", () => {
+  const seen = new Map();
+  for (const shape of HEAD_SHAPES) {
+    const drawing = headDrawing(shape, { x: 100, y: 0 }, { x: 0, y: 0 }, 30, 12);
+    if (shape === "none") { assert.equal(drawing, null); continue; }
+    assert.ok(drawing.points || drawing.d, `${shape} draws nothing`);
+    assert.ok(Number.isFinite(drawing.pullback) && drawing.pullback >= 0, `${shape} has no usable pullback`);
+    // C-16's lesson generalized: the DISTINCTNESS sweep must include every member,
+    // so a shape that silently duplicates another is a dead row in the picker.
+    const key = JSON.stringify(drawing);
+    assert.equal(seen.has(key), false, `${shape} draws identically to ${seen.get(key)}`);
+    seen.set(key, shape);
+  }
+});
+
+test("headDrawing: every shape is PDF-SAFE — no elliptical arc reaches a `d`", () => {
+  // render_gpu/ir.js's path() docblock: pdf_backend's svgPathToPdfOps accepts
+  // only M L H V C Q T Z and THROWS on A/S. A curve authored with an arc would
+  // raster in Skia, export in SVG, and blow up the PDF exporter alone.
+  for (const shape of HEAD_SHAPES) {
+    const drawing = headDrawing(shape, { x: 100, y: 0 }, { x: 0, y: 0 }, 30, 12);
+    if (!drawing?.d) continue;
+    assert.deepEqual(drawing.d.match(/[^MLHVCQTZ0-9\s.,-]/g), null, `${shape}: "${drawing.d}" uses a command outside the PDF-safe subset`);
+  }
+});
+
+test("headDrawing: a hollow head stops the shaft at its BACK, a solid one tucks inside", () => {
+  const at = (shape) => headDrawing(shape, { x: 100, y: 0 }, { x: 0, y: 0 }, 30, 12).pullback;
+  assert.ok(at("triangle") < 30, "a solid triangle is opaque, so the shaft may end inside it");
+  assert.equal(at("triangleOpen"), 30, "a see-through triangle would show the shaft crossing it");
+  assert.equal(at("diamondOpen"), 30);
+  assert.equal(at("circleOpen"), 12, "the full DIAMETER — which is also what draws a UML lollipop");
+  assert.equal(at("open"), 0, "the V's vertex IS the tip; the shaft runs the whole way");
+  assert.equal(at("onlyOne"), 0, "ER marks sit ON the line, not at the end of it");
+});
+
+test("arrowHeads: end-then-start order, per-end shapes, shaft weight on a hollow glyph", () => {
+  const s = { headStart: "diamondOpen", headEnd: "triangle", headLength: 14, headWidth: 12, stroke: "#123456", strokeWidth: 5, opacity: 1 };
+  const { ops, pullback } = arrowHeads(s, { tip: { x: 100, y: 0 }, from: { x: 0, y: 0 } }, { tip: { x: 0, y: 0 }, from: { x: 100, y: 0 } });
+  assert.equal(ops.length, 2);
+  assert.deepEqual(ops[0].points[0], [100, 0], "the END head comes first, as the single-triangle code emitted it");
+  assert.equal(ops[0].fill, "#123456");
+  assert.equal(ops[1].fill, null, "a hollow glyph has no fill");
+  assert.equal(ops[1].stroke, "#123456");
+  assert.equal(ops[1].strokeWidth, 5, "a hollow head is drawn with the SHAFT's weight, not a knob of its own");
+  assert.equal(pullback.end, 14 * SHAFT_PULLBACK);
+  assert.equal(pullback.start, 14);
 });
 
 test("headTriangle: tip + two base corners, axis-covariant (rotating the axis rotates the triangle)", () => {
@@ -125,10 +184,6 @@ test("headTriangle: degenerate coincident tip/from doesn't throw (collapses to a
   assert.deepEqual(tri[0], [5, 5]);
 });
 
-test("shaftPullback: SHAFT_PULLBACK fraction when active, 0 when inactive", () => {
-  assert.equal(shaftPullback(true, 14), 14 * SHAFT_PULLBACK);
-  assert.equal(shaftPullback(false, 14), 0);
-});
 
 // ── elbow_arrow / curved_arrow: same shared-hooks contract as arrow/fancy_arrow ─
 
@@ -141,21 +196,32 @@ test("elbow arrow + curved arrow also consume the shared endpoint hooks", () => 
   }
 });
 
-test("elbow arrow + curved arrow: headMode default is legacy 'end', both defaults render a shaft + one head", () => {
+test("elbow arrow + curved arrow: the default pair IS the retired headMode 'end'", () => {
   for (const plugin of [elbowArrowPlugin, curvedArrowPlugin]) {
-    assert.equal(plugin.defaults.headMode, "end", plugin.type);
+    assert.deepEqual(
+      { headStart: plugin.defaults.headStart, headEnd: plugin.defaults.headEnd },
+      headModeSplit("end"), plugin.type);
+    assert.equal("headMode" in plugin.defaults, false, `${plugin.type} still carries the retired enum`);
     const cmds = plugin.emit(plugin.defaults);
     assert.equal(cmds.filter((c) => c.op === "polyline").length, 1, plugin.type);
     assert.equal(cmds.filter((c) => c.op === "polygon").length, 1, plugin.type);
   }
 });
 
-test("elbow arrow + curved arrow: headMode 'both' emits two head polygons; 'none' emits zero", () => {
+test("elbow arrow + curved arrow: two triangles emit two head polygons; two 'none' emit zero", () => {
   for (const plugin of [elbowArrowPlugin, curvedArrowPlugin]) {
-    const both = plugin.emit({ ...plugin.defaults, headMode: "both" });
+    const both = plugin.emit({ ...plugin.defaults, ...headModeSplit("both") });
     assert.equal(both.filter((c) => c.op === "polygon").length, 2, plugin.type);
-    const none = plugin.emit({ ...plugin.defaults, headMode: "none" });
+    const none = plugin.emit({ ...plugin.defaults, ...headModeSplit("none") });
     assert.equal(none.filter((c) => c.op === "polygon").length, 0, plugin.type);
+  }
+});
+
+test("elbow arrow + curved arrow: each end carries its OWN shape (what headMode could not say)", () => {
+  for (const plugin of [elbowArrowPlugin, curvedArrowPlugin]) {
+    const cmds = plugin.emit({ ...plugin.defaults, headStart: "triangleOpen", headEnd: "diamond" });
+    assert.equal(cmds.filter((c) => c.op === "polygon").length, 1, `${plugin.type}: the solid diamond`);
+    assert.equal(cmds.filter((c) => c.op === "path").length, 1, `${plugin.type}: the hollow triangle`);
   }
 });
 

@@ -23,16 +23,17 @@
  * shaft renders as an ordinary multi-point polyline — verified against
  * render_gpu/ir.js's polyline(), which accepts any point count >= 2.
  *
- * headMode/stroke/strokeWidth follow the same shared conventions as
+ * headStart/headEnd/stroke/strokeWidth follow the same shared conventions as
  * elbow_arrow.js (a NEW plugin, so no legacyKeys entry — no prior naming era
- * to migrate from).
+ * to migrate from; the head-shape split IS migrated, but document-wide from
+ * core/document.js, not per plugin).
  */
 
-import { polyline, polygon } from "../render_gpu/ir.js";
+import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline, axisNormalFrame, projectOntoNormal, closestPointOnAxisRange } from "../core/outline.js";
-import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, arrowHeads, ARROW_HEAD_ROWS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The bezier generator's params for a state.
  * @example bendParams({from: {x: 0, y: 0}, to: {x: 100, y: 0}, bend: 0.3}) // {x0: 0, y0: 0, x1: 100, y1: 0, bend: 0.3}
@@ -100,9 +101,7 @@ export const curvedArrowPlugin = {
     ...props("stroke", "strokeWidth"),
     ...props("opacity"),
     ...bundle("effects"),
-    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
-    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
-    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start, just the end, or both." },
+    ...ARROW_HEAD_ROWS,
     { key: "bend", label: "Bend", kind: "number", category: "arrow", help: "How much the arrow curves, as a signed fraction of its length. 0 is straight; positive and negative bow it to opposite sides." },
   ],
   /**
@@ -114,18 +113,18 @@ export const curvedArrowPlugin = {
    */
   emit(s, _targetWorldIR, world) {
     const pts = curvedArrowPolyline(bendParams(s));
-    const ends = headEnds(s.headMode);
     const opacity = s.opacity ?? 1;
-    // Head triangles point along the tangent at each end: the LAST sampled
+    // Head glyphs point along the tangent at each end: the LAST sampled
     // segment into `to` (or the first, reversed, out of `from`) — the
     // closest available approximation of the true bezier tangent at t=0/1,
     // consistent with how sampling already approximates the curve elsewhere.
     const n = pts.length;
+    const heads = arrowHeads(s, { tip: pts[n - 1], from: pts[n - 2] }, { tip: pts[0], from: pts[1] });
     const cmds = [];
-    const trimmed = trimPolylineEnds(pts, shaftPullback(ends.start, s.headLength), shaftPullback(ends.end, s.headLength));
+    const trimmed = trimPolylineEnds(pts, heads.pullback.start, heads.pullback.end);
     cmds.push(polyline({ points: trimmed.map((p) => [p.x, p.y]), width: s.strokeWidth, color: s.stroke, opacity }));
-    if (ends.end) cmds.push(polygon({ points: headTriangle(pts[n - 1], pts[n - 2], s.headLength, s.headWidth), fill: s.stroke, opacity }));
-    if (ends.start) cmds.push(polygon({ points: headTriangle(pts[0], pts[1], s.headLength, s.headWidth), fill: s.stroke, opacity }));
+    // THE LAYERING SEAM — see core/endpoints.js arrowHeads (and arrow.js's twin).
+    cmds.push(...heads.ops.map((h) => (h.d ? path(h) : polygon(h))));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
     // effects.js; all-off = pass-through). Effect region = its ink rect (the AABB
     // of the SAMPLED bezier), the SAME rect `localBounds` reports, so the
@@ -196,7 +195,8 @@ export const curvedArrowPlugin = {
 /** Pure function. Walk a polyline's arc length from each end and trim off
  * `startDist`/`endDist`, inserting an interpolated point at each cut — the
  * curve analog of arrow.js's straight-shaft pullback (core/endpoints.js
- * shaftPullback), generalized to a sampled multi-point path. Returns at
+ * arrowHeads' per-shape pullback), generalized to a sampled multi-point path.
+ * Returns at
  * least 2 points (collapses to the two innermost samples if the trims meet
  * or overlap, rather than producing a degenerate 0/1-point polyline).
  *

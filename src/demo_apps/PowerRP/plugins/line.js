@@ -38,7 +38,7 @@ import { endpointPairHooks, hitsShaft, ARROW_STROKE_WIDTH } from "../core/endpoi
  * semicircle bulging half a stroke-width past each endpoint); "butt" ends flush
  * exactly at the endpoint; "square" ends flat but extends half a stroke-width
  * past it (SVG stroke-linecap semantics). Exported as data (like endpoints.js
- * HEAD_MODES) so the inspector row and tests share one list.
+ * HEAD_SHAPES) so the inspector row and tests share one list.
  *
  * @example LINE_CAPS // ["round", "butt", "square"]
  */

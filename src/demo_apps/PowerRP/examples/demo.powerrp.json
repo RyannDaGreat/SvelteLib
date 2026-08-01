@@ -191,7 +191,8 @@
             "strokeWidth": 3,
             "headLength": 14,
             "headWidth": 12,
-            "headMode": "end",
+            "headStart": "none",
+            "headEnd": "triangle",
             "opacity": 1,
             "shadow": {
               "dx": 3,

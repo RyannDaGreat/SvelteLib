@@ -26,11 +26,11 @@
  * The canvas handle scrubs `elbow` only (its constraint segment rides the
  * bulged leg); `bulge` is set in the Inspector or by an equation.
  *
- * headMode (none|start|end|both, default "end") and the stroke/strokeWidth
- * naming are identical in spirit to the basic arrow — this is a NEW plugin
- * (not a migrated one), so it's born with the current names directly; no
- * legacyKeys entry is needed (there is no prior "color/width" era to migrate
- * from).
+ * headStart/headEnd (the per-end head SHAPE selects, core/endpoints.js
+ * HEAD_SHAPES) and the stroke/strokeWidth naming are identical in spirit to the
+ * basic arrow — this is a NEW plugin (not a migrated one), so it's born with the
+ * current names directly; no legacyKeys entry is needed (there is no prior
+ * "color/width" era to migrate from).
  *
  * Endpoint semantics (from/to may be equations, no transform of its own,
  * shaft-drag translation) come from core/endpoints.js — the shared home,
@@ -39,11 +39,11 @@
  * segment — hitTestWorld checks all three legs.
  */
 
-import { polyline, polygon } from "../render_gpu/ir.js";
+import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { elbowRoute, elbowHandle, closestPointOnSegment } from "../core/outline.js";
-import { endpointPairHooks, headEnds, headTriangle, shaftPullback, HEAD_MODES, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, arrowHeads, ARROW_HEAD_ROWS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The route generator's params for a state.
  * @example routeParams({from: {x: 0, y: 0}, to: {x: 100, y: 50}, elbow: 0.5}) // {x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5, orient: undefined, bulge: undefined}
@@ -97,9 +97,7 @@ export const elbowArrowPlugin = {
     ...props("stroke", "strokeWidth"),
     ...props("opacity"),
     ...bundle("effects"),
-    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
-    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
-    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start, just the end, or both." },
+    ...ARROW_HEAD_ROWS,
     { key: "elbow", label: "Elbow", kind: "number", min: 0, max: 1, category: "arrow", help: "Where the middle bend sits along the endpoint span, from 0 (flush at the start) to 1 (flush at the end). Drag the yellow handle on canvas." },
     { key: "orient", label: "Route", kind: "select", options: ["hvh", "vhv"], optionLabels: { hvh: "Horizontal first", vhv: "Vertical first" }, category: "arrow", help: "Leg order. Horizontal-first is the classic side-to-side elbow; vertical-first starts and ends vertically — the flowchart tree branch (out of a box's bottom, across, into the next box's top)." },
     { key: "bulge", label: "Bulge", kind: "number", scrub: 1, category: "arrow", help: "Pushes the middle leg sideways by this many canvas units beyond its span position (signed). What makes a rectangular feedback LOOP between two same-edge anchors possible — with both endpoints on one vertical line, only an absolute offset can bow the route out of the boxes." },
@@ -117,23 +115,22 @@ export const elbowArrowPlugin = {
     // convert to {x,y} objects here since every other function in this file
     // (headTriangle, the pullback helper) uses the {x,y} convention.
     const [p0, p1, p2, p3] = elbowRoute(routeParams(s)).map(([x, y]) => ({ x, y }));
-    const ends = headEnds(s.headMode);
     const opacity = s.opacity ?? 1;
-    // Shorten the route's own end segments by the pullback distance, along
-    // each segment's own direction — mirrors the basic arrow's shaftPullback,
-    // generalized to "the last/first leg of a multi-segment route" instead of
-    // "the only segment".
+    const heads = arrowHeads(s, { tip: p3, from: p2 }, { tip: p0, from: p1 });
+    // Shorten the route's own end segments by each head's pullback, along that
+    // segment's own direction — the basic arrow's shaft pullback generalized to
+    // "the last/first leg of a multi-segment route" instead of "the only
+    // segment". A zero pullback (no head, or a glyph the line runs into) leaves
+    // the leg exactly where the route put it.
     const pullback = (a, b, dist) => {
       const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
       const t = Math.min(dist / len, 1);
       return { x: b.x - (b.x - a.x) * t, y: b.y - (b.y - a.y) * t };
     };
-    const endPt = ends.end ? pullback(p2, p3, shaftPullback(true, s.headLength)) : p3;
-    const startPt = ends.start ? pullback(p1, p0, shaftPullback(true, s.headLength)) : p0;
-    const shaftPts = [startPt, p1, p2, endPt];
+    const shaftPts = [pullback(p1, p0, heads.pullback.start), p1, p2, pullback(p2, p3, heads.pullback.end)];
     const cmds = [polyline({ points: shaftPts.map((p) => [p.x, p.y]), width: s.strokeWidth, color: s.stroke, opacity })];
-    if (ends.end) cmds.push(polygon({ points: headTriangle(p3, p2, s.headLength, s.headWidth), fill: s.stroke, opacity }));
-    if (ends.start) cmds.push(polygon({ points: headTriangle(p0, p1, s.headLength, s.headWidth), fill: s.stroke, opacity }));
+    // THE LAYERING SEAM — see core/endpoints.js arrowHeads (and arrow.js's twin).
+    cmds.push(...heads.ops.map((h) => (h.d ? path(h) : polygon(h))));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
     // effects.js; all-off = pass-through). Effect region = its ink rect, the
     // SAME rect `localBounds` reports, so the substrate and the cull/band bounds

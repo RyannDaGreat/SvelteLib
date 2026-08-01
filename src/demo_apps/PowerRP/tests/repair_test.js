@@ -17,12 +17,14 @@ import {
   fancyArrowFillMigrations, withFancyArrowFillMigrated,
   linearGradientAngleMigrations, withLinearGradientAngleMigrated,
   antialiasSelectMigrations, withAntialiasSelectMigrated,
+  headModeMigrations, withHeadModeSplit,
   filmstripFramesMigrations, legacyBindings, itemCreationTypes,
   repairedDocument, defaultCameraState, withExtraCamerasDropped,
 } from "../core/document.js";
 import { angleToLinearEndpoints, linearEndpointsToAngle } from "../core/properties.js";
 import { parsePaint } from "../render_gpu/ir.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
+import { arrowPlugin } from "../plugins/arrow.js";
 import { deriveRenderTree } from "../core/derive.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { evaluateState } from "../core/expressions.js";
@@ -234,14 +236,15 @@ test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the use
   const renamed = withLegacyKeysRenamed(doc, registry).doc;
   const { doc: filled, filled: fills } = withMissingDefaultsFilled(renamed, registry);
   assert.equal(filled.slides[0].delta.items[id].headLength, 20); // preserved
-  // Only the genuinely-new headWidth/headMode + the Round-12D effects-bundle
-  // keys get filled, not headLength (headMode is the arrow-variants task's new
-  // field — manifest ARCHITECTURE PLAN #6; the effect-off shadow/bloom/
-  // blendMode/innerShadow/softEdges keys are the effects bundle's — the fixture
-  // predates them all, the same "genuinely new" territory as headWidth).
+  // Only the genuinely-new headWidth/headStart/headEnd + the Round-12D
+  // effects-bundle keys get filled, not headLength (the head-shape PAIR is the
+  // per-end head task's new field — todo #231, superseding headMode; the
+  // effect-off shadow/bloom/blendMode/innerShadow/softEdges keys are the effects
+  // bundle's — the fixture predates them all, the same "genuinely new"
+  // territory as headWidth).
   const arrowFill = fills.find((f) => f.id === id);
   assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), [
-    "headWidth", "headMode",
+    "headWidth", "headStart", "headEnd",
     "shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity",
     "bloom.radius", "bloom.strength", "blendMode",
     "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity",
@@ -790,6 +793,65 @@ test("fancy arrow: a GENUINELY legacy doc still migrates, on EVERY slide, and on
   const loud = repairedDocument(legacy, registry);
   assert.equal(loud.reports.filter((r) => r.includes("fancy-arrow")).length, 2);
   assert.deepEqual(repairedDocument(loud.doc, registry).reports.filter((r) => r.includes("fancy-arrow")), []);
+});
+
+// ── headMode → headStart/headEnd (todo #231: per-end arrowhead SHAPES) ──────
+
+test("headMode: a GENUINELY legacy doc splits on EVERY slide, loudly, and only once", () => {
+  // The retired enum named ONE decoration and chose which ends wore it, so it
+  // could never say "hollow triangle here, filled diamond there". Splitting it
+  // is a VALUE migration, and — unlike the fancy-arrow gate above — a PER-SLIDE
+  // one, because nothing in the current editor can write `headMode` at all, so
+  // every occurrence is legacy by construction and each is a real keyframe.
+  const [d1, id] = withNewItem(newDocument(), 0, { ...arrowPlugin.defaults, active: true });
+  const [d2] = withNewSlide(d1, 0);
+  let legacy = unkeyframed(unkeyframed(d2, 0, ["items", id, "headStart"]), 0, ["items", id, "headEnd"]);
+  legacy = keyframed(legacy, 0, ["items", id, "headMode"], "end");
+  legacy = keyframed(legacy, 1, ["items", id, "headMode"], "both");
+
+  assert.deepEqual(headModeMigrations(legacy, registry).map((m) => [m.slideIndex, m.from]), [[0, "end"], [1, "both"]]);
+
+  const { doc: fixed, reports } = repairedDocument(legacy, registry);
+  assert.equal(reports.filter((r) => r.includes("legacy headMode")).length, 2, "one loud line per migrated keyframe");
+  assert.equal("headMode" in fixed.slides[0].delta.items[id], false, "the retired key is gone");
+  // The ANIMATION survives: bare end on slide 1, both ends on slide 2. A
+  // per-ITEM gate would have collapsed the second keyframe and lost it.
+  assert.equal(foldState(fixed, 0, 1).items[id].headEnd, "triangle");
+  assert.equal(foldState(fixed, 0, 1).items[id].headStart, "none");
+  assert.equal(foldState(fixed, 1, 1).items[id].headStart, "triangle");
+
+  // Idempotent, and the second load is silent.
+  assert.deepEqual(headModeMigrations(fixed, registry), []);
+  assert.deepEqual(repairedDocument(fixed, registry).reports, []);
+});
+
+test("headMode: a doc authored TODAY is left completely alone", () => {
+  const [created] = withNewItem(newDocument(), 0, { ...arrowPlugin.defaults, active: true });
+  assert.deepEqual(headModeMigrations(created, registry), []);
+  const { doc, reports } = repairedDocument(created, registry);
+  assert.deepEqual(reports.filter((r) => r.includes("headMode")), []);
+  assert.deepEqual(foldState(doc, 0, 1), foldState(created, 0, 1), "an untouched arrow is byte-identical through the repair");
+});
+
+test("headMode: an EQUATION cannot be split, so it is DROPPED and said so out loud", () => {
+  // A formula choosing between "start" and "both" has no per-end reading. The
+  // no-silent-failure rule forbids guessing one: the key goes, the pair falls
+  // back to the plugin default, and the report says exactly that.
+  const [d1, id] = withNewItem(newDocument(), 0, { ...arrowPlugin.defaults, active: true });
+  const legacy = keyframed(d1, 0, ["items", id, "headMode"], "= t > 0.5 ? 'both' : 'end'");
+  const { doc, reports } = repairedDocument(legacy, registry);
+  assert.equal(reports.filter((r) => r.includes("cannot split a formula")).length, 1);
+  assert.equal("headMode" in doc.slides[0].delta.items[id], false);
+  assert.equal(foldState(doc, 0, 1).items[id].headEnd, arrowPlugin.defaults.headEnd);
+});
+
+test("headMode: a NON-arrow widget that happens to carry the key is not touched", () => {
+  // The eligible set is DERIVED from the registry (plugins whose defaults carry
+  // `headEnd`), so this migration cannot reach into a future widget that spells
+  // some unrelated property `headMode`.
+  const [d1, id] = withNewItem(newDocument(), 0, { ...registry.get("rect").defaults, active: true });
+  const doc = keyframed(d1, 0, ["items", id, "headMode"], "both");
+  assert.deepEqual(headModeMigrations(doc, registry), []);
 });
 
 test("cropbox: the NULL default `target` is reported at most once — never on every load", () => {

@@ -3,7 +3,7 @@
  * elbow_arrow.js, curved_arrow.js, and fancy_arrow.js's new modifier points.
  * Bare node, no framework — suite conventions (core_test.js/outline_test.js/
  * endpoints_test.js). Complements outline_test.js's pure-generator-math tests
- * and endpoints_test.js's headMode tests with the PLUGIN wiring: emit() shape,
+ * and endpoints_test.js's head-shape tests with the PLUGIN wiring: emit() shape,
  * modifierPoints() → apply() round-trips (the exact math CanvasView's
  * modifierDrag performs, run here without a browser), and the stroke-naming
  * migration's plugin-declared legacyKeys tables.
@@ -59,7 +59,7 @@ test("elbowArrowPlugin: registration shape (type/title/capabilities/commands)", 
   assert.equal(elbowArrowPlugin.commands[0].id, "add-elbow-arrow");
 });
 
-test("elbowArrowPlugin.emit: default state renders a shaft polyline + one head polygon (headMode 'end')", () => {
+test("elbowArrowPlugin.emit: default state renders a shaft polyline + one head polygon (headEnd 'triangle')", () => {
   const cmds = elbowArrowPlugin.emit(elbowArrowPlugin.defaults);
   assert.equal(cmds.length, 2);
   assert.equal(cmds[0].op, "polyline");
@@ -132,8 +132,8 @@ test("elbowArrowPlugin.modifierPoints: vhv drag round-trips elbow along the Y sp
   approx(modifierWrite(mp, state, { x: mp.x + 999, y: targetY }).elbow, 0.25);
 });
 
-test("elbowArrowPlugin: headMode 'both' mirrors a head at both ends", () => {
-  const cmds = elbowArrowPlugin.emit({ ...elbowArrowPlugin.defaults, headMode: "both" });
+test("elbowArrowPlugin: a head at BOTH ends mirrors the glyph", () => {
+  const cmds = elbowArrowPlugin.emit({ ...elbowArrowPlugin.defaults, headStart: "triangle", headEnd: "triangle" });
   assert.equal(cmds.filter((c) => c.op === "polygon").length, 2);
 });
 
@@ -178,8 +178,8 @@ test("curvedArrowPlugin.modifierPoints: apply() supports negative bend (signed p
   approx(result.bend, -0.35);
 });
 
-test("curvedArrowPlugin: headMode 'none' emits only the shaft, zero heads", () => {
-  const cmds = curvedArrowPlugin.emit({ ...curvedArrowPlugin.defaults, headMode: "none" });
+test("curvedArrowPlugin: two bare ends emit only the shaft, zero heads", () => {
+  const cmds = curvedArrowPlugin.emit({ ...curvedArrowPlugin.defaults, headStart: "none", headEnd: "none" });
   assert.equal(cmds.length, 1);
   assert.equal(cmds[0].op, "polyline");
 });

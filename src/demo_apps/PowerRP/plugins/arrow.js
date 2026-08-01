@@ -19,12 +19,17 @@
  * `legacyKeys` declaration (core/document.withLegacyKeysRenamed applies it
  * at the load boundary; values move verbatim — numbers AND equations).
  *
- * headMode (manifest ARCHITECTURE PLAN #6): none|start|end|both, default
- * "end" (byte-identical to the pre-headMode behavior — no migration needed,
- * a document without the key gets the same rendering via the plugin default).
- * headEnds()/headTriangle()/shaftPullback() are the shared head-geometry
- * helpers (core/endpoints.js) every arrow-family plugin now calls, so the
- * mirrored start-head triangle math is written ONCE, not per plugin.
+ * HEAD SHAPES, PER END. `headStart` and `headEnd` each name a glyph from
+ * core/endpoints.js HEAD_SHAPES — filled or hollow triangle, dart, filled or
+ * hollow diamond, circle, cross, open V, crossed circle, and the four ER
+ * cardinality marks. They REPLACE the retired `headMode` enum, which named ONE
+ * decoration and chose which ends wore it and so structurally could not say
+ * "hollow triangle here, filled diamond there" — what UML and ER notation are
+ * made of. `headEnd: "triangle"` + `headStart: "none"` IS the old `headMode:
+ * "end"`, and core/document.js withHeadModeSplit migrates a stored headMode onto
+ * the pair, loudly. arrowHeads() is the shared seam every arrow-family plugin
+ * calls, so the glyph geometry and the mirrored start-head math are written
+ * ONCE, not per plugin.
  *
  * STROKE NAMING MIGRATION (manifest ARCHITECTURE PLAN #6): arrows are
  * line-objects, so color/width become stroke/strokeWidth — aligning with
@@ -35,10 +40,10 @@
  * nothing in this plugin needs to report anything itself.
  */
 
-import { polyline, polygon } from "../render_gpu/ir.js";
+import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { endpointPairHooks, hitsShaft, headEnds, headTriangle, shaftPullback, HEAD_MODES, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, hitsShaft, arrowHeads, ARROW_HEAD_ROWS, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /**
  * Pure function. The LOCAL rect the arrow's INK occupies: the AABB of its two
@@ -98,30 +103,29 @@ export const arrowPlugin = {
     ...props("stroke", "strokeWidth"),
     ...props("opacity"),
     ...bundle("effects"),
-    { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
-    { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
-    { key: "headMode", label: "Head", kind: "select", options: HEAD_MODES, category: "arrow", help: "Which ends get an arrowhead: none, just the start (tail), just the end (tip), or both." },
+    ...ARROW_HEAD_ROWS,
   ],
   /**
    * Pure function. State → display-list commands. Endpoints are evaluated
    * numbers, and the arrow's world transform is IDENTITY (no
    * x/y/rotation/scale state), so these local commands are world coordinates.
-   * A head triangle is emitted per ACTIVE end (headMode); the shaft's own
-   * endpoints pull back only on the ends that have one (shaftPullback).
+   * A head glyph is emitted per decorated end (headStart / headEnd); the shaft's
+   * own endpoints pull back only as far as each end's glyph asks (core/endpoints
+   * arrowHeads — the pullback is a property of the SHAPE, since a hollow head
+   * cannot be tucked into the way a solid one can).
    */
   emit(s, _targetWorldIR, world) {
     const { from, to } = s;
-    const ends = headEnds(s.headMode);
     const opacity = s.opacity ?? 1;
-    const pbEnd = shaftPullback(ends.end, s.headLength);
-    const pbStart = shaftPullback(ends.start, s.headLength);
+    const heads = arrowHeads(s, { tip: to, from }, { tip: from, from: to });
     const axisLen = Math.hypot(to.x - from.x, to.y - from.y) || 1;
     const ux = (to.x - from.x) / axisLen, uy = (to.y - from.y) / axisLen;
-    const shaftFrom = { x: from.x + ux * pbStart, y: from.y + uy * pbStart };
-    const shaftTo = { x: to.x - ux * pbEnd, y: to.y - uy * pbEnd };
+    const shaftFrom = { x: from.x + ux * heads.pullback.start, y: from.y + uy * heads.pullback.start };
+    const shaftTo = { x: to.x - ux * heads.pullback.end, y: to.y - uy * heads.pullback.end };
     const cmds = [polyline({ points: [[shaftFrom.x, shaftFrom.y], [shaftTo.x, shaftTo.y]], width: s.strokeWidth, color: s.stroke, opacity })];
-    if (ends.end) cmds.push(polygon({ points: headTriangle(to, from, s.headLength, s.headWidth), fill: s.stroke, opacity }));
-    if (ends.start) cmds.push(polygon({ points: headTriangle(from, to, s.headLength, s.headWidth), fill: s.stroke, opacity }));
+    // THE LAYERING SEAM (core/endpoints.js arrowHeads): core returns op ARGUMENTS
+    // and the plugin builds the op, as plugins/shape.js does with core/shapes.js.
+    cmds.push(...heads.ops.map((h) => (h.d ? path(h) : polygon(h))));
     // Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE, render_gpu/
     // effects.js) wrap the finished op list; all-off = pass-through. Arrows
     // have no bbox state (world == identity), so the effect region is its ink

@@ -10,7 +10,7 @@
  *     (arrow_variants_test.js already covers all five analytically in Node —
  *     this is the "does it actually work through a real pointer gesture"
  *     check the manifest's VERIFY section asks for).
- * Also verifies headMode "both" renders two heads with zero console errors,
+ * Also verifies a head at BOTH ends renders two heads with zero console errors,
  * and that the legacy color/width→stroke/strokeWidth migration fires loudly
  * exactly once at boot (the demo fixture was migrated surgically — see
  * concerns.md's Opus19 precedent — so this asserts NO migration noise on the
@@ -56,7 +56,7 @@ try {
     if (m.type() !== "error") return;
     // The WEBGPU-ABSENCE line is an environment report, not a fixture-migration
     // symptom (see webgpu_absence_noise.js). This check exists to prove the demo
-    // fixture's stroke/strokeWidth/headMode migration is not re-firing; a missing
+    // fixture's stroke/strokeWidth/head-shape migration is not re-firing; a missing
     // WebGPU adapter says nothing about that, and swallowing only this one
     // sentence leaves a real repair log still able to fail the check below.
     if (isWebGpuAbsenceNoise(m.text())) return;
@@ -66,11 +66,11 @@ try {
   await page.goto(url, { waitUntil: "networkidle0" });
   await new Promise((r) => setTimeout(r, 600));
   // ZERO boot noise expected — the demo fixture's arrow item was migrated
-  // SURGICALLY (color/width -> stroke/strokeWidth, headMode: "end" added) so
+  // SURGICALLY (color/width -> stroke/strokeWidth, headStart/headEnd added) so
   // withLegacyKeysRenamed/withMissingDefaultsFilled have nothing to repair on
   // this specific item. A non-empty bootErrors here would mean the fixture
   // edit didn't actually take (the schema-lag smoke lesson from concerns.md).
-  ok(bootErrors.length === 0, `no boot errors — proves the demo fixture's stroke/strokeWidth/headMode migration is CURRENT, not re-firing (${JSON.stringify(bootErrors)})`);
+  ok(bootErrors.length === 0, `no boot errors — proves the demo fixture's stroke/strokeWidth/head-shape migration is CURRENT, not re-firing (${JSON.stringify(bootErrors)})`);
   afterBoot.on = true;
 
   const worldToPage = (wx, wy) => page.evaluate((wx, wy) => {
@@ -184,7 +184,7 @@ try {
     await page.mouse.up();
   }
 
-  // ── Scenario 5: headMode "both" renders with zero console errors ───────
+  // ── Scenario 5: a head at BOTH ends renders with zero console errors ───
   {
     await page.evaluate(() => {
       const app = window.__powerrp_app;
@@ -194,7 +194,8 @@ try {
       app.setPreview([
         [["items", id, "from"], { x: 950, y: 400 }],
         [["items", id, "to"], { x: 1100, y: 500 }],
-        [["items", id, "headMode"], "both"],
+        [["items", id, "headStart"], "triangle"],
+        [["items", id, "headEnd"], "triangle"],
       ]);
       app.commitPreview();
     });
@@ -202,9 +203,9 @@ try {
     // No direct visual assertion here (headTriangle geometry is covered
     // analytically by arrow_variants_test.js) — this scenario's job is
     // proving the REAL render pipeline (GPU compositor, not just emit())
-    // accepts headMode:"both" with zero console errors, which the
+    // accepts a head at both ends with zero console errors, which the
     // zero-console-errors check at the end of this probe covers.
-    ok(true, "headMode 'both' committed and rendered (see zero-console-errors check below)");
+    ok(true, "a head at BOTH ends committed and rendered (see zero-console-errors check below)");
   }
 
   ok(liveErrors.length === 0, `zero console errors during all interactions (${JSON.stringify(liveErrors)})`);

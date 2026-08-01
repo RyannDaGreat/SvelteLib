@@ -40,6 +40,7 @@ import {
   withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue, evaluateState,
 } from "./expressions.js";
 import { withRichTextMigrated } from "./richtext.js";
+import { headModeSplit } from "./endpoints.js";
 import { withPaletteRampMigrated, rampMigrationReports } from "./ramp_migration.js";
 import { bundleDefaults, linearEndpointsToAngle } from "./properties.js";
 import { worldTransform } from "./derive.js";
@@ -1606,6 +1607,78 @@ export function withAntialiasSelectMigrated(doc) {
   return { doc: out, migrated };
 }
 
+/**
+ * Pure function. The `headMode` → `headStart`/`headEnd` migrations a document
+ * needs (core/endpoints.js headModeSplit explains WHY the property was split).
+ *
+ * PER-SLIDE IS CORRECT HERE, and it is worth saying why, because the fancy-arrow
+ * migration two hundred lines up learned the opposite lesson the hard way. That
+ * one had to gate PER ITEM because the current editor still writes its trigger
+ * key (`stroke`), so a keyframe authored today was indistinguishable from a
+ * legacy write. `headMode` is RETIRED: nothing in the editor can produce it, so
+ * every occurrence is legacy by construction and each one is a genuine value at
+ * its own point in time — exactly the flare-light situation, where a per-slide
+ * conversion preserves an ANIMATED head rather than destroying it.
+ *
+ * The eligible types are DERIVED from the registry (the plugins whose defaults
+ * carry `headEnd`) rather than listed here, so a fourth head-bearing connector is
+ * covered with no list to update — and, more to the point, a future widget that
+ * happens to call something `headMode` is not silently rewritten.
+ *
+ * A value that is not one of the four enum strings — realistically an equation —
+ * CANNOT be split, and is reported by the caller and dropped rather than guessed
+ * at. `to` is null in that case.
+ *
+ * Args:
+ *   doc (object): document
+ *   registry (object): plugin registry (.all() → plugins with .defaults)
+ *
+ * Returns:
+ *   {id, slideIndex, from, to}[] — `to` is {headStart, headEnd} or null
+ *
+ * @example headModeMigrations({slides: [{delta: {items: {a: {type: "arrow", headMode: "both"}}}}]}, {all: () => [{type: "arrow", defaults: {headEnd: "triangle"}}]}) // [{id: "a", slideIndex: 0, from: "both", to: {headStart: "triangle", headEnd: "triangle"}}]
+ * @example headModeMigrations({slides: [{delta: {items: {a: {type: "arrow", headStart: "none", headEnd: "dart"}}}}]}, {all: () => [{type: "arrow", defaults: {headEnd: "triangle"}}]}) // [] (already split — idempotent)
+ * @example headModeMigrations({slides: [{delta: {items: {r: {type: "rect", headMode: "end"}}}}]}, {all: () => [{type: "arrow", defaults: {headEnd: "triangle"}}]}) // [] (not a head-bearing connector)
+ */
+export function headModeMigrations(doc, registry) {
+  const typeOf = itemCreationTypes(doc);
+  const headBearing = new Set(registry.all().filter((p) => "headEnd" in (p.defaults ?? {})).map((p) => p.type));
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!item || typeof item !== "object" || !headBearing.has(typeOf.get(id))) continue;
+      if (!("headMode" in item)) continue;
+      out.push({ id, slideIndex, from: item.headMode, to: headModeSplit(item.headMode) });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with every legacy `headMode` rewritten to the
+ * `headStart`/`headEnd` pair that draws the same picture, and the retired key
+ * deleted. A value with no split (an equation) drops the key too — the caller
+ * reports it, and the pair then falls back to the plugin default, which is a
+ * VISIBLE, explained change rather than a formula that silently stopped working.
+ * REPORTING IS THE CALLER'S JOB. Idempotent (the key is gone afterwards, and the
+ * current editor cannot write it back).
+ *
+ * @example withHeadModeSplit({slides: [{delta: {items: {a: {type: "arrow", headMode: "both"}}}}]}, {all: () => [{type: "arrow", defaults: {headEnd: "triangle"}}]}).doc.slides[0].delta.items.a.headEnd // "triangle"
+ * @example withHeadModeSplit({slides: [{delta: {items: {a: {type: "arrow", headMode: "both"}}}}]}, {all: () => [{type: "arrow", defaults: {headEnd: "triangle"}}]}).doc.slides[0].delta.items.a.headMode // undefined
+ */
+export function withHeadModeSplit(doc, registry) {
+  const migrated = headModeMigrations(doc, registry);
+  let out = doc;
+  for (const { id, slideIndex, to } of migrated) {
+    if (to) {
+      out = keyframed(out, slideIndex, ["items", id, "headStart"], to.headStart);
+      out = keyframed(out, slideIndex, ["items", id, "headEnd"], to.headEnd);
+    }
+    out = unkeyframed(out, slideIndex, ["items", id, "headMode"]);
+  }
+  return { doc: out, migrated };
+}
+
 /** The filmstrip state keys that existed ONLY to serve the removed server frame-
  *  extraction endpoint: the fetched still URLs, and the per-frame extraction
  *  resolution that keyed its cache. Nothing reads them now. */
@@ -1849,6 +1922,19 @@ export function repairedDocument(doc, registry) {
   for (const m of antialiasMigrated)
     reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy boolean antialias (${m.from}) → "${m.to}"`);
 
+  // Arrow `headMode` (one enum over BOTH ends) SPLIT into the per-end head SHAPE
+  // pair headStart/headEnd. A VALUE migration with a 1→2 split, so it cannot use
+  // the declarative legacyKeys seam (that only moves a value between key names),
+  // and it sits with its value-migration peers. It MUST precede the defaults-fill
+  // below for the filmstrip step's exact reason: filling first would write the
+  // new pair's DEFAULT over the slide before this step could read the old enum,
+  // silently resetting every migrated arrow to one plain triangle.
+  const { doc: headDoc, migrated: headModeMigrated } = withHeadModeSplit(aaMigratedDoc, registry);
+  for (const m of headModeMigrated)
+    reports.push(m.to
+      ? `PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy headMode "${m.from}" → headStart "${m.to.headStart}" + headEnd "${m.to.headEnd}"; each end now picks its own head SHAPE`
+      : `PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy headMode carries ${JSON.stringify(m.from)}, which is not one of none/start/end/both — cannot split a formula across two ends, so it is DROPPED and both ends fall back to the plugin default; set headStart/headEnd by hand`);
+
   // Lens-flare light position RELATIVE → WORLD (user ruling: absolute-only, so
   // an equation can bind it to another item's position). A VALUE migration with
   // a RENAME (lightX/lightY → lightWorldX/lightWorldY — never reinterpreted in
@@ -1856,7 +1942,7 @@ export function repairedDocument(doc, registry) {
   // migration peers here; MUST precede defaults-fill below for the identical
   // reason the filmstrip step does — filling first would inject the new fields'
   // equation DEFAULT before this step could read the user's old fraction.
-  const { doc: flareDoc, plain: flareMigrated, equation: flareEquations } = withFlareLightMigrated(aaMigratedDoc, registry);
+  const { doc: flareDoc, plain: flareMigrated, equation: flareEquations } = withFlareLightMigrated(headDoc, registry);
   for (const m of flareMigrated)
     reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy relative lens-flare light position → lightWorldX/lightWorldY (${m.worldX}, ${m.worldY})`);
   for (const m of flareEquations)

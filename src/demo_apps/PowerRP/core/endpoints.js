@@ -14,6 +14,8 @@
  */
 
 import { distToSegment } from "./outline.js";
+import { num, polygonPathD } from "./shapes.js";
+import { ellipsePathD } from "./svg_paths.js";
 
 /**
  * Extra grab slack around a shaft segment, in world px — a hairline shaft
@@ -28,8 +30,11 @@ export const SHAFT_GRAB_PAD = 5;
  * seamlessly (and a round shaft cap never pokes past the tip). Originated in
  * arrow.js as a local constant (0.6, same value/semantics preserved here
  * verbatim) — promoted to this shared home now that elbow/curved arrows and
- * headMode's mirrored start-head all need the identical pullback math
- * (manifest ARCHITECTURE PLAN #6: headMode on ALL arrow kinds).
+ * the mirrored start-head all need the identical pullback math (manifest
+ * ARCHITECTURE PLAN #6: a head on ALL arrow kinds, at either end). Since the
+ * per-end head SHAPES landed, the FRACTION is still this constant but the
+ * DISTANCE is per shape — a hollow glyph cannot be tucked into the way a solid
+ * one can — so each generator carries its own pullback (see HEAD_GENERATORS).
  */
 export const SHAFT_PULLBACK = 0.6;
 
@@ -136,17 +141,6 @@ export function endpointPairHooks(keys = ["from", "to"]) {
 }
 
 /**
- * Enum values for the shared `headMode` property (manifest ARCHITECTURE PLAN
- * #6: "Head options on ALL arrows: headMode enum none|start|end|both (legacy
- * = end)"). Exported as data (not just documented in a comment) so plugin
- * `inspector` row declarations and tests reference the same list instead of
- * repeating string literals.
- *
- * @example HEAD_MODES // ["none", "start", "end", "both"]
- */
-export const HEAD_MODES = ["none", "start", "end", "both"];
-
-/**
  * Shared defaults for the simple endpoint arrows (basic / elbow / curved — NOT
  * the fancy arrow, which uses the property registry). These were copied verbatim
  * into all three plugins' `defaults`; the numbers also recur as `?? N` fallbacks
@@ -157,65 +151,409 @@ export const HEAD_MODES = ["none", "start", "end", "both"];
 export const ARROW_STROKE_WIDTH = 3; // px — a visible-but-slim default shaft
 export const ARROW_HEAD_LENGTH = 14; // px — tip-to-base length along the shaft
 export const ARROW_HEAD_WIDTH = 12; // px — full base width across the shaft axis
-export const ARROW_ENDPOINT_DEFAULTS = { strokeWidth: ARROW_STROKE_WIDTH, headLength: ARROW_HEAD_LENGTH, headWidth: ARROW_HEAD_WIDTH, headMode: "end" };
 
 /**
- * Pure function. Which ends of an endpoint-pair widget get an arrowhead, for
- * a given `headMode` — the ONE place this enum's meaning is defined, so
- * arrow/elbow/curved plugins can't drift on what "both" means.
- *
- * @example headEnds("end") // {start: false, end: true}
- * @example headEnds("both") // {start: true, end: true}
- * @example headEnds("none") // {start: false, end: false}
- * @example headEnds(undefined) // {start: false, end: true} (legacy default)
+ * The per-end head defaults. `headEnd: "triangle"` + `headStart: "none"` IS the
+ * retired `headMode: "end"`, so an untouched arrow renders byte-identical to
+ * every version before the split (core/document.js withHeadModeSplit migrates
+ * a stored `headMode` onto this pair, loudly).
  */
-export function headEnds(headMode = "end") {
-  return { start: headMode === "start" || headMode === "both", end: headMode === "end" || headMode === "both" };
+export const HEAD_START_DEFAULT = "none";
+export const HEAD_END_DEFAULT = "triangle";
+export const ARROW_ENDPOINT_DEFAULTS = { strokeWidth: ARROW_STROKE_WIDTH, headLength: ARROW_HEAD_LENGTH, headWidth: ARROW_HEAD_WIDTH, headStart: HEAD_START_DEFAULT, headEnd: HEAD_END_DEFAULT };
+
+// ── ARROWHEAD SHAPES ─────────────────────────────────────────────────────────
+//
+// WHY THERE ARE MANY. Until this library there was exactly ONE head — a filled
+// triangle — and `headMode` chose WHICH ends got it, never WHAT. That is one
+// glyph against the 16 a diagram vocabulary actually needs: UML inheritance is a
+// HOLLOW triangle, composition a FILLED diamond, aggregation a HOLLOW one, a state
+// transition a notched DART, and ER cardinality four crow's-foot glyphs. The
+// vocabulary below is derived from that measured need rather than invented (see
+// the audit in .frenzy/round6/W3-N.md §2.1, read out of the pinned mermaid build).
+//
+// ── THE HEAD FRAME ───────────────────────────────────────────────────────────
+// Every glyph is authored in ONE local frame and mapped to world by a single
+// point function, so a shape author writes flat 2-D numbers and never touches a
+// rotation:
+//
+//   back   — distance BEHIND the tip, along the shaft axis (0 = at the tip)
+//   across — signed offset perpendicular to it, along the axis's RIGHT normal
+//
+// so `P(0, 0)` is the tip and `P(len, ±width/2)` are the classic triangle's base
+// corners. A glyph is symmetric about the shaft exactly when its `across` values
+// come in ± pairs. `len` is headLength and `width` is headWidth, which is what
+// makes every shape here scale with the SAME two knobs the triangle always had.
+//
+// ── BACKEND CONTRACT (why no glyph uses an elliptical arc) ───────────────────
+// The same contract core/shapes.js declares: pdf_backend's svgPathToPdfOps accepts
+// only M L H V C Q T Z and THROWS on `A` (render_gpu/ir.js's `path` docblock says
+// so verbatim). Circles therefore come from core/svg_paths.js ellipsePathD — the
+// KAPPA four-cubic approximation written for exactly this reason — rather than a
+// second one written here.
+//
+// ── WHY SOME GLYPHS ARE A `polygon` OP AND SOME A `path` ─────────────────────
+// render_gpu/ir.js's `polygon` is FILL-ONLY: it has no stroke slot at all, so a
+// HOLLOW glyph structurally cannot be one. The three solid straight-edged glyphs
+// stay `polygon` because that keeps every existing document's display list
+// byte-identical; everything needing an outline, a curve or an open contour is a
+// `path`. The discriminator a caller reads is the presence of `d` — see
+// headDrawings() and the one-line map in each arrow plugin's emit().
+
+/**
+ * The concave notch of a DART, as a fraction of the head length. Measured off
+ * mermaid's `arrow_barb` marker (`M 19,7 L9,13 L14,7 L9,1 Z`): a 10-long head
+ * whose rear vertex sits 5 back from the tip. It is the one number that makes a
+ * dart read as a dart rather than as a slightly odd triangle.
+ */
+const DART_NOTCH = 0.5;
+
+/**
+ * A diamond's widest point, as a fraction of the head length — the same halfway
+ * measurement mermaid's `composition` / `aggregation` markers use.
+ */
+const DIAMOND_WAIST = 0.5;
+
+// ── THE FOUR ER CARDINALITY GLYPHS ARE A 2×2, NOT FOUR DRAWINGS ──────────────
+//
+// Entity-relationship notation says two INDEPENDENT things at one end: how many
+// (one = a tick across the line, many = a crow's foot) and whether zero is allowed
+// (a ring). So `onlyOne` / `zeroOrOne` / `oneOrMore` / `zeroOrMore` are the four
+// cells of {tick, crow} × {tick, ring}, and erHead() DERIVES them from that pair
+// instead of drawing four glyphs that must be kept consistent by hand (the ledger's
+// "derive the list; do not top up a drifted mirror" rule).
+//
+// They remain FOUR FLAT enum values to the user, deliberately. A user-facing
+// composition axis would be a second property that is meaningless for every
+// non-ER shape — a dead control on eleven of fifteen glyphs — and mermaid itself
+// ships them as four flat marker ids.
+const ER_NEAR = 1 / 3;  // the near mark's position, as a fraction of len behind the tip
+const ER_FAR = 2 / 3;   // the far mark's; at this spacing `onlyOne`'s two ticks read as parallel
+const ER_CROW_SPAN = 0.5; // how far back the crow's-foot lens reaches, clearing the far mark
+const ER_RING_RADIUS = ER_FAR - ER_CROW_SPAN; // DERIVED: a ring on the far mark just touching the lens ahead of it
+
+/**
+ * Pure function. Open (unclosed) subpaths as one SVG path `d` — the stroke-only
+ * sibling of core/shapes.js subpathsPathD, which closes every subpath with `Z`.
+ * A cross, a bare V and the ER ticks are strokes with two loose ends, so closing
+ * them would draw a line back along itself.
+ *
+ * Kept local rather than exported beside subpathsPathD: it has exactly one
+ * consumer (the generators below), and the ledger's shared-module rule asks for
+ * two before a thing becomes public API.
+ *
+ * @example openSubpathsPathD([[[0, 0], [10, 5]]]) // "M0 0 L10 5"
+ * @example openSubpathsPathD([[[0, 0], [10, 10]], [[10, 0], [0, 10]]]) // "M0 0 L10 10 M10 0 L0 10"
+ */
+function openSubpathsPathD(subpaths) {
+  return subpaths.map(([first, ...rest]) =>
+    `M${num(first[0])} ${num(first[1])} ` + rest.map(([x, y]) => `L${num(x)} ${num(y)}`).join(" ")).join(" ");
 }
 
 /**
- * Pure function. A triangular arrowhead's 3 world-space vertices: tip at
- * `tip`, base `len` back along the tip←from axis, base corners ±half across
- * it — the SAME geometry arrow.js has always used for its single (end) head,
- * generalized to be called once per active end (mirrored for `start`: the
- * axis simply reverses, which the caller achieves by swapping which point is
- * `tip` and which is `from`).
+ * Pure function. One ER cardinality glyph, from the two INDEPENDENT marks its
+ * notation is made of (see the 2×2 note above): a `near` mark at the tip end
+ * saying HOW MANY, and a `far` mark behind it saying whether ZERO is allowed.
  *
  * Args:
- *   tip ({x,y}): the point the head's point sits at (an endpoint)
- *   from ({x,y}): the OTHER endpoint (defines the axis the head points along)
- *   len (number): tip-to-base length along the axis
- *   width (number): full base width across the axis
+ *   P (function): the head frame's (back, across) → [x, y] mapper
+ *   len (number): head length; width (number): head width
+ *   near ("tick"|"crow"): one, or many
+ *   far ("tick"|"ring"): mandatory, or optional
  *
  * Returns:
- *   number[][]: [tip, baseCornerA, baseCornerB] — a triangle, ready for
- *     render_gpu/ir.js's polygon()
+ *   {d, filled, pullback}: a stroke-only head drawing
+ *
+ * @example erHead((b, a) => [b, a], 30, 12, "tick", "tick").d // "M10 6 L10 -6 M20 6 L20 -6"
+ * @example erHead((b, a) => [b, a], 30, 12, "tick", "tick").filled // false
+ */
+function erHead(P, len, width, near, far) {
+  const half = width / 2;
+  const tick = (back) => [P(back, half), P(back, -half)];
+  // The crow's foot is a closed LENS along the axis: two quadratics from the tip
+  // back to ER_CROW_SPAN, bowing to ±half at the waist. A quadratic's midpoint is
+  // (A + 2C + B) / 4, so a control at ±width puts the waist at exactly ±half.
+  const span = len * ER_CROW_SPAN;
+  const [tipX, tipY] = P(0, 0), [tailX, tailY] = P(span, 0);
+  const [c1x, c1y] = P(span / 2, width), [c2x, c2y] = P(span / 2, -width);
+  const crow = `M${num(tipX)} ${num(tipY)} Q${num(c1x)} ${num(c1y)} ${num(tailX)} ${num(tailY)} Q${num(c2x)} ${num(c2y)} ${num(tipX)} ${num(tipY)}`;
+  const [ringX, ringY] = P(len * ER_FAR, 0);
+  const strokes = [];
+  if (near === "tick") strokes.push(tick(len * ER_NEAR));
+  if (far === "tick") strokes.push(tick(len * ER_FAR));
+  const d = [
+    strokes.length ? openSubpathsPathD(strokes) : "",
+    near === "crow" ? crow : "",
+    far === "ring" ? ellipsePathD(ringX, ringY, len * ER_RING_RADIUS, len * ER_RING_RADIUS) : "",
+  ].filter(Boolean).join(" ");
+  return { d, filled: false, pullback: 0 }; // ER glyphs sit ON the line: it runs through them
+}
+
+/**
+ * THE HEAD-SHAPE LIBRARY: shape id → generator (P, len, width) → drawing.
+ *
+ * A generator returns `null` (nothing to draw) or a DRAWING:
+ *   {points, pullback}         a filled straight-edged polygon (an ir.js `polygon`)
+ *   {d, filled, pullback}      an SVG path (an ir.js `path`); `filled` picks fill vs outline
+ *
+ * `pullback` — how far the SHAFT must stop short of the tip so the two meet
+ * cleanly — is carried BY the drawing rather than by a parallel lookup table,
+ * because a per-shape pullback map would be a hand-maintained mirror of this one
+ * and would drift the first time a glyph's proportions changed (ledger C-8).
+ * Each value is justified where it is written.
+ *
+ * Ordered tip-first: the plain heads, then the UML pair-with-a-hollow-twin, then
+ * the open decorations, then the four ER cardinality glyphs.
+ */
+const HEAD_GENERATORS = {
+  none: () => null,
+  // SHAFT_PULLBACK of the head length ends the shaft INSIDE the solid glyph, so
+  // shaft and head overlap seamlessly and a round cap never pokes past the tip.
+  triangle: (P, len, width) => ({ points: [P(0, 0), P(len, width / 2), P(len, -width / 2)], pullback: len * SHAFT_PULLBACK }),
+  // A hollow glyph is see-through, so the shaft may not tuck inside it: it stops
+  // at the glyph's rear edge instead. Same rule for every `*Open` shape below.
+  triangleOpen: (P, len, width) => ({ d: polygonPathD([P(0, 0), P(len, width / 2), P(len, -width / 2)]), filled: false, pullback: len }),
+  // The dart is solid only AHEAD of its notch, so the shaft must reach past the
+  // notch to be covered — hence the pullback is a fraction of the NOTCH depth,
+  // not of the full length.
+  dart: (P, len, width) => ({ points: [P(0, 0), P(len, width / 2), P(len * DART_NOTCH, 0), P(len, -width / 2)], pullback: len * DART_NOTCH * SHAFT_PULLBACK }),
+  diamond: (P, len, width) => ({ points: [P(0, 0), P(len * DIAMOND_WAIST, width / 2), P(len, 0), P(len * DIAMOND_WAIST, -width / 2)], pullback: len * SHAFT_PULLBACK }),
+  diamondOpen: (P, len, width) => ({ d: polygonPathD([P(0, 0), P(len * DIAMOND_WAIST, width / 2), P(len, 0), P(len * DIAMOND_WAIST, -width / 2)]), filled: false, pullback: len }),
+  // A disc of DIAMETER width, sitting just behind the tip. Its pullback is the
+  // radius — the shaft ends at the centre, buried under the fill.
+  circle: (P, len, width) => circleHead(P, width, true),
+  // The hollow ring is also how a UML lollipop draws: a full-diameter pullback
+  // stops the shaft at the ring's far edge instead of crossing the hole.
+  circleOpen: (P, len, width) => circleHead(P, width, false),
+  // An X spanning the head box. The line runs right into it (mermaid's `--x`), so
+  // there is nothing to pull back from.
+  cross: (P, len, width) => ({ d: openSubpathsPathD([[P(0, width / 2), P(len, -width / 2)], [P(0, -width / 2), P(len, width / 2)]]), filled: false, pullback: 0 }),
+  // A bare V whose vertex IS the tip — two strokes, no closing edge — so the
+  // shaft runs the whole way and meets it at the point.
+  open: (P, len, width) => ({ d: openSubpathsPathD([[P(len, width / 2), P(0, 0), P(len, -width / 2)]]), filled: false, pullback: 0 }),
+  crossedCircle: (P, len, width) => crossedCircleHead(P, width),
+  onlyOne: (P, len, width) => erHead(P, len, width, "tick", "tick"),
+  zeroOrOne: (P, len, width) => erHead(P, len, width, "tick", "ring"),
+  oneOrMore: (P, len, width) => erHead(P, len, width, "crow", "tick"),
+  zeroOrMore: (P, len, width) => erHead(P, len, width, "crow", "ring"),
+};
+
+/**
+ * Pure function. A round head of DIAMETER `width` centred one radius behind the
+ * tip, so its forward extreme touches the endpoint exactly like a triangle's
+ * point does. Filled buries the shaft to the centre; hollow stops it at the far
+ * edge (which is also what draws a UML lollipop).
+ *
+ * @example circleHead((b, a) => [b, a], 12, true).pullback // 6
+ * @example circleHead((b, a) => [b, a], 12, false).pullback // 12
+ */
+function circleHead(P, width, filled) {
+  const r = width / 2;
+  const [cx, cy] = P(r, 0);
+  return { d: ellipsePathD(cx, cy, r, r), filled, pullback: filled ? r : width };
+}
+
+/**
+ * Pure function. Mermaid's `requirement_contains` glyph: a ring of DIAMETER
+ * `width` with a cross through it (⊕). Stroke-only; the shaft stops at the far
+ * edge, and the ring's own axial bar carries the line visually through it.
+ *
+ * @example crossedCircleHead((b, a) => [b, a], 12).pullback // 12
+ * @example crossedCircleHead((b, a) => [b, a], 12).filled // false
+ */
+function crossedCircleHead(P, width) {
+  const r = width / 2;
+  const [cx, cy] = P(r, 0);
+  const bars = openSubpathsPathD([[P(0, 0), P(width, 0)], [P(r, r), P(r, -r)]]);
+  return { d: `${ellipsePathD(cx, cy, r, r)} ${bars}`, filled: false, pullback: width };
+}
+
+/**
+ * Every head-shape id, in Inspector order. DERIVED from the generator table so a
+ * glyph cannot exist without appearing in the picker, or appear in the picker
+ * without a generator (ledger C-8 — the same relationship core/shapes.js
+ * SHAPE_NAMES has to SHAPE_GENERATORS).
+ *
+ * @example HEAD_SHAPES[0] // "none"
+ * @example HEAD_SHAPES.includes("triangle") // true
+ * @example HEAD_SHAPES.length // 15
+ */
+export const HEAD_SHAPES = Object.keys(HEAD_GENERATORS);
+
+/** Human labels for the two head selects (the STROKE_CAP_LABELS convention). */
+export const HEAD_SHAPE_LABELS = {
+  none: "None", triangle: "Triangle", triangleOpen: "Hollow triangle",
+  dart: "Dart", diamond: "Diamond", diamondOpen: "Hollow diamond",
+  circle: "Circle", circleOpen: "Hollow circle", cross: "Cross",
+  crossedCircle: "Crossed circle", open: "Open V",
+  onlyOne: "ER: one", zeroOrOne: "ER: zero or one",
+  oneOrMore: "ER: one or more", zeroOrMore: "ER: zero or more",
+};
+
+// IMPORT-TIME LABEL GATE (the core/properties.js BLEND_MODE_LABELS precedent,
+// same reasoning): with fifteen shapes, one added without a label would show its
+// raw camelCase id in the Inspector, and a label left behind by a removed shape
+// would sit there forever. Both are silent, so both fail at boot instead.
+for (const shape of HEAD_SHAPES)
+  if (!(shape in HEAD_SHAPE_LABELS))
+    throw new Error(`core/endpoints: head shape "${shape}" has no HEAD_SHAPE_LABELS entry — it would show its raw id in the Inspector`);
+for (const label of Object.keys(HEAD_SHAPE_LABELS))
+  if (!HEAD_SHAPES.includes(label))
+    throw new Error(`core/endpoints: HEAD_SHAPE_LABELS has a stale entry "${label}" — no such head shape (known: ${HEAD_SHAPES.join(", ")})`);
+
+/**
+ * Pure function. The head frame's point mapper for one end: (back, across) →
+ * world [x, y], where `back` runs from the tip toward `from` and `across` runs
+ * along that axis's right normal. Every glyph in HEAD_GENERATORS is written
+ * against this, which is why none of them contains a rotation.
+ *
+ * Args:
+ *   tip ({x,y}): where the glyph's point sits (an endpoint)
+ *   from ({x,y}): a point BEHIND it on the shaft (defines the axis)
+ *
+ * Returns:
+ *   function: (back, across) → [x, y]
+ *
+ * @example headFrame({x: 100, y: 0}, {x: 0, y: 0})(14, 6) // [86, 6]
+ * @example headFrame({x: 0, y: 100}, {x: 0, y: 0})(14, 6) // [-6, 86]
+ */
+export function headFrame(tip, from) {
+  const dx = tip.x - from.x, dy = tip.y - from.y;
+  const axisLen = Math.hypot(dx, dy) || 1; // degenerate (coincident points): the axis is arbitrary and the glyph collapses anyway
+  const ux = dx / axisLen, uy = dy / axisLen; // unit axis, from → tip
+  return (back, across) => [tip.x - ux * back - uy * across, tip.y - uy * back + ux * across];
+}
+
+/**
+ * Pure function. A triangular arrowhead's 3 world-space vertices — the ONE head
+ * this codebase had before the shape library, kept because it is the shape most
+ * callers and tests mean by "a head" and because HEAD_GENERATORS.triangle is
+ * literally it.
  *
  * @example headTriangle({x: 100, y: 0}, {x: 0, y: 0}, 14, 12) // [[100, 0], [86, 6], [86, -6]]
  * @example headTriangle({x: 0, y: 100}, {x: 0, y: 0}, 14, 12) // [[0, 100], [-6, 86], [6, 86]]
  */
 export function headTriangle(tip, from, len, width) {
-  const dx = tip.x - from.x, dy = tip.y - from.y;
-  const axisLen = Math.hypot(dx, dy) || 1; // degenerate (coincident points): axis is arbitrary, triangle collapses to a point anyway
-  const ux = dx / axisLen, uy = dy / axisLen; // unit axis, from → tip
-  const nx = -uy, ny = ux; // unit normal
-  const half = width / 2;
-  return [
-    [tip.x, tip.y],
-    [tip.x - ux * len + nx * half, tip.y - uy * len + ny * half],
-    [tip.x - ux * len - nx * half, tip.y - uy * len - ny * half],
-  ];
+  return HEAD_GENERATORS.triangle(headFrame(tip, from), len, width).points;
 }
 
 /**
- * Pure function. How far a shaft should stop short of an active head's tip
- * (the shaft end sits INSIDE the head triangle so shaft and head always
- * overlap seamlessly — same SHAFT_PULLBACK convention arrow.js originated).
- * Returns 0 for an inactive end (no head there — shaft runs the full way).
+ * Pure function. One end's head drawing, or null when that end has none.
+ * THROWS on an unknown shape id — a typo must not silently draw nothing (the
+ * core/shapes.js shapePath precedent).
  *
- * @example shaftPullback(true, 14) // 8.4
- * @example shaftPullback(false, 14) // 0
+ * Args:
+ *   shape (string): a HEAD_SHAPES id
+ *   tip ({x,y}): the endpoint the glyph points at
+ *   from ({x,y}): a point behind it on the shaft (the axis)
+ *   len, width (number): headLength / headWidth
+ *
+ * Returns:
+ *   null | {points, pullback} | {d, filled, pullback} — world coordinates
+ *
+ * @example headDrawing("none", {x: 0, y: 0}, {x: 1, y: 0}, 14, 12) // null
+ * @example headDrawing("triangle", {x: 100, y: 0}, {x: 0, y: 0}, 14, 12).points // [[100, 0], [86, 6], [86, -6]]
+ * @example headDrawing("triangleOpen", {x: 100, y: 0}, {x: 0, y: 0}, 14, 12).d // "M100 0 L86 6 L86 -6 Z"
+ * @example headDrawing("open", {x: 100, y: 0}, {x: 0, y: 0}, 14, 12).pullback // 0 (the V's vertex IS the tip)
  */
-export function shaftPullback(active, headLength) {
-  return active ? headLength * SHAFT_PULLBACK : 0;
+export function headDrawing(shape, tip, from, len, width) {
+  const gen = HEAD_GENERATORS[shape];
+  if (!gen) throw new Error(`headDrawing: unknown head shape "${shape}" (known: ${HEAD_SHAPES.join(", ")})`);
+  return gen(headFrame(tip, from), len, width);
+}
+
+/**
+ * Pure function. The RETIRED `headMode` enum's four values → the per-end shape
+ * pair that means the same picture. Returns null for anything else, which the
+ * caller must report LOUDLY rather than guess at (core/document.js
+ * withHeadModeSplit) — an equation-valued headMode is the realistic case, and a
+ * formula that chose between "start" and "both" has no split.
+ *
+ * WHY THE SPLIT AT ALL: `headMode` was ONE enum over BOTH ends, so it could name
+ * WHICH ends wore a decoration but never WHAT each wore — and "hollow triangle at
+ * one end, filled diamond at the other" is what UML and ER notation are made of.
+ * A combined enum cannot express that at any size, so it is superseded rather
+ * than extended, and it does not survive alongside its replacement: a `headMode`
+ * derivable from the pair would be a hand-maintained mirror of it (ledger C-8).
+ *
+ * @example headModeSplit("end") // {headStart: "none", headEnd: "triangle"}
+ * @example headModeSplit("both") // {headStart: "triangle", headEnd: "triangle"}
+ * @example headModeSplit("none") // {headStart: "none", headEnd: "none"}
+ * @example headModeSplit("start") // {headStart: "triangle", headEnd: "none"}
+ * @example headModeSplit("= t > 0.5 ? 'both' : 'end'") // null (an equation has no split)
+ */
+export function headModeSplit(headMode) {
+  const wore = { none: [false, false], start: [true, false], end: [false, true], both: [true, true] }[headMode];
+  if (!wore) return null;
+  return { headStart: wore[0] ? "triangle" : "none", headEnd: wore[1] ? "triangle" : "none" };
+}
+
+/**
+ * The four head Inspector rows every head-bearing arrow declares, in one place.
+ *
+ * WHY THIS EXISTS RATHER THAN THREE COPIES: arrow.js, elbow_arrow.js and
+ * curved_arrow.js each carried a verbatim copy of the headLength / headWidth /
+ * head rows, and the copies had ALREADY drifted — arrow.js's head help said
+ * "just the start (tail)" where its two siblings said "just the start". That is
+ * the one-condition-one-voice rule failing in miniature, and the head shape split
+ * would have turned three drifting copies into six. The rows live beside the enum
+ * they select over, exactly as the defaults live beside the geometry.
+ *
+ * @example ARROW_HEAD_ROWS.map((r) => r.key) // ["headLength", "headWidth", "headStart", "headEnd"]
+ * @example ARROW_HEAD_ROWS[2].options.length // 15
+ */
+export const ARROW_HEAD_ROWS = [
+  { key: "headLength", label: "Head length", kind: "number", min: 0, category: "arrow", help: "How far the arrowhead extends back from the tip along the shaft, in canvas units." },
+  { key: "headWidth", label: "Head width", kind: "number", min: 0, category: "arrow", help: "How wide the arrowhead is across its base, in canvas units." },
+  { key: "headStart", label: "Start head", kind: "select", options: HEAD_SHAPES, optionLabels: HEAD_SHAPE_LABELS, category: "arrow", help: "The decoration drawn at the START (tail) of this connector. None leaves it bare; the hollow shapes and the ER cardinality marks are drawn in the shaft's own colour and weight." },
+  { key: "headEnd", label: "End head", kind: "select", options: HEAD_SHAPES, optionLabels: HEAD_SHAPE_LABELS, category: "arrow", help: "The decoration drawn at the END (tip) of this connector. A filled triangle is the classic arrow; a hollow triangle reads as UML inheritance, a diamond as composition, a dart as a state transition." },
+];
+
+/**
+ * Pure function. THE seam all three head-bearing arrow plugins call: both ends'
+ * head op-arguments plus the distance each end of the shaft must stop short.
+ *
+ * Returned `ops` are ARGUMENT OBJECTS, not display-list commands — core/ returns
+ * `d` strings and paint values and the PLUGIN builds the op, which is the split
+ * core/shapes.js ↔ plugins/shape.js established. A caller distinguishes the two
+ * kinds by the presence of `d`: `h.d ? path(h) : polygon(h)`.
+ *
+ * Ops come out END first then START, which is the order the single-triangle code
+ * emitted them in, so a two-headed arrow's display list is unchanged.
+ *
+ * Args:
+ *   s (object): evaluated item state (headStart / headEnd / headLength /
+ *     headWidth / stroke / strokeWidth / opacity)
+ *   endAxis ({tip, from}): the `to` endpoint and a point behind it on the drawn
+ *     path — for a curve or a route, the previous sample, so the glyph aims
+ *     along the real tangent rather than along the straight chord
+ *   startAxis ({tip, from}): the same for the `from` endpoint
+ *
+ * Returns:
+ *   {ops: object[], pullback: {start: number, end: number}}
+ *
+ * @example arrowHeads({headStart: "none", headEnd: "none"}, {tip: {x: 1, y: 0}, from: {x: 0, y: 0}}, {tip: {x: 0, y: 0}, from: {x: 1, y: 0}}) // {ops: [], pullback: {start: 0, end: 0}}
+ * @example arrowHeads({headEnd: "triangle", headLength: 14, headWidth: 12, stroke: "#000000"}, {tip: {x: 100, y: 0}, from: {x: 0, y: 0}}, {tip: {x: 0, y: 0}, from: {x: 100, y: 0}}).pullback // {start: 0, end: 8.4}
+ * @example arrowHeads({headEnd: "circleOpen", headLength: 14, headWidth: 12, stroke: "#000000"}, {tip: {x: 100, y: 0}, from: {x: 0, y: 0}}, {tip: {x: 0, y: 0}, from: {x: 100, y: 0}}).ops[0].fill // null
+ */
+export function arrowHeads(s, endAxis, startAxis) {
+  const len = s.headLength ?? ARROW_HEAD_LENGTH, width = s.headWidth ?? ARROW_HEAD_WIDTH;
+  const opacity = s.opacity ?? 1;
+  // A hollow or open glyph is drawn with the SHAFT's own weight, so a head always
+  // reads as part of the line it terminates and needs no knob of its own.
+  const strokeWidth = s.strokeWidth ?? ARROW_STROKE_WIDTH;
+  const ops = [];
+  const pullback = { start: 0, end: 0 };
+  for (const [end, axis, shape] of [
+    ["end", endAxis, s.headEnd ?? HEAD_END_DEFAULT],
+    ["start", startAxis, s.headStart ?? HEAD_START_DEFAULT],
+  ]) {
+    const drawing = headDrawing(shape, axis.tip, axis.from, len, width);
+    if (!drawing) continue;
+    pullback[end] = drawing.pullback;
+    if (drawing.points) ops.push({ points: drawing.points, fill: s.stroke, opacity });
+    else if (drawing.filled) ops.push({ d: drawing.d, fill: s.stroke, opacity });
+    else ops.push({ d: drawing.d, fill: null, stroke: s.stroke, strokeWidth, opacity });
+  }
+  return { ops, pullback };
 }
