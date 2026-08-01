@@ -1211,6 +1211,90 @@ is function-local with its justification 16 lines away and re-declared in two te
 - **R6-21.2** Optional: cherry-pick `a7e6964` from `render-rewrite-skia` (the
   takeover button), the one commit that branch has and `powerrp` lacks.
 
+### R6-24 CONVENTION SWEEP RESULT (wave 1, agent W1-M; full report `.frenzy/round6/W1-M.md`, 693 lines)
+
+**READ THIS BEFORE ANY GREP-BASED AUDIT OF THIS REPO, EVER.**
+
+- **R6-24.1 THREE FILES CONTAIN A RAW NUL BYTE, SO `grep` SILENTLY SKIPS THEM.**
+  `core/text_transitions.js:203`, `web/DebugStoragePage.svelte:149`,
+  `tests/lens_flare_presets_probe.js:192`. `grep` treats them as binary, skips them and
+  exits 1 — **indistinguishable from "no match"**. Demonstrated:
+  `grep -c 'process.exit' tests/lens_flare_presets_probe.js` -> 0, while `grep -ac`
+  -> 1 on a file that has it at line 241. This BLINDED W1-M's own sweep; re-running
+  classes 1-12 on those three with `-a` surfaced 6 further findings. **Consequence:
+  every grep-based audit ever run on this codebase has been silently incomplete.** Use
+  `grep -a` or `rg`. Strip the NUL bytes as the FIRST Wave-2 action.
+
+- **R6-24.2 THE THEME WCAG GATE HAS NEVER RUN HERE, AND CLAIMED OTHERWISE.**
+  `tests/theme_contrast_test.py:21` hardcodes an absolute path from a DIFFERENT
+  machine (`/Users/ryan/CleanCode/Sandbox/...`). Running it gives `FileNotFoundError`.
+  It IS collected by `run_all.mjs`, and commit `69d4b31` asserts "25 themes pass".
+  This is simultaneously a dump-portability violation (only `/models/` may be
+  absolute) and a FALSE GREEN in the canonical gate.
+
+- **R6-24.3 R6-8.4's ROUNDED KNOBS — ROOT CAUSE PROVED, by CSS specificity.**
+  `web/app.css:8353` `.paint-material-control .dn` is the SOLE (0,2,0) selector among
+  seven `--dn`/`--dd-radius` overrides; the other six are (0,3,0). By app.css's own
+  MEASURED rule at `:5869-5876` and `:2474-2481`, a (0,2,0) tie loses to Svelte's
+  later-injected `.dn.svelte-hash`, so `--dn-radius` stays 4px and the knobs render
+  rounded. **The rule's own comment claims the opposite.** Landed in `f8c2c3a`, whose
+  message records that "both agents [were] killed by API 529 mid-verification" — i.e.
+  it shipped unverified. Fix is a one-selector specificity bump; ship it WITH a probe.
+
+- **R6-24.4 THREE GATE PROBES CANNOT FAIL — more false greens.**
+  `tests/rotation_probe.js` (191 lines, ZERO assertions), `magnify_byteid_probe.js`
+  (51 lines, zero assertions, no baseline), `fontpicker_probe.js:135` (7 assertions
+  behind an unasserted guard). A probe that cannot fail is worse than a missing one:
+  it manufactures confidence. Each must gain assertions, be renamed out of the gate,
+  or be deleted.
+
+- **R6-24.5 SILENT FALLBACKS: 4 real, out of ~150 candidates examined.** This class is
+  otherwise genuinely well kept. The worst: `web/DebugStoragePage.svelte:82,89`
+  `.catch(() => [])`, whose comments describe a case that CANNOT reach the catch (a
+  prefix `getAll` resolves `[]`, it never rejects), so they swallow only real faults
+  and silently UNDERSTATE storage in both the Debug page and the AssetExplorer
+  tooltip — defeating the caller's own correct loud-failure design.
+
+- **R6-24.6 CRT's INERT KNOBS, and the two are NOT the same case.**
+  `render_gpu/skia/crt_shader.js:647-648`. **`flicker`'s documented blocker is FALSE** —
+  `particleTime()` already reaches materials (`glitch_shader.js:343,382`,
+  `sky_shader.js:39`), so flicker CAN be implemented. **`persistence` CANNOT EVER
+  SHIP**: it needs frame-N-1 history, which is EPHEMERAL state and forbidden outright.
+  So: implement flicker, and REMOVE persistence rather than leave a control that lies.
+
+- **R6-24.7 THE HAND-MAINTAINED-MIRROR PATTERN, AGAIN, ALREADY DRIFTED.** Error-box
+  constants are copied across 5 files and `TEXT_FRACTION` has already diverged to
+  0.14 / 0.16 / 0.18 / 0.22. `render_gpu/affordances.js` exports the shared version and
+  only 2 of 5 use it.
+
+- **R6-24.8 TWO DOCTRINES CONTRADICTED IN CODE.** `web/PaintField.svelte:784` uses a
+  raw checkbox against `BooleanField.svelte:12-14`'s "deliberately no native
+  `<input type=checkbox>` anywhere in the editor" (a doctrine live across 44 boolean
+  params); `web/CodeEditController.svelte:271` uses a native `<select>` against
+  `Inspector.svelte:25`'s "never the native `<select>`" — and its own comment admits
+  the reason was convenience.
+
+- **R6-24.9 LEAD RULING — THE NO-TRAILING-COMMA RULE IS PYTHON-ONLY.** The sweep found
+  9 Python violations and **380 in JS**, and measured that codebase precedent runs
+  **7:1 IN FAVOUR** of JS trailing commas. The rule's own justification in the user's
+  global instructions is Python 3.5 syntax (`*args,` / `**kwargs,` are syntax errors
+  there) — a constraint that does not exist in JS. Sweeping 380 JS sites against 7:1
+  precedent would be large, risky churn with no benefit, and R6-22.3 says the older
+  and dominant pattern wins where the manifest is silent. **RULING: fix the 9 Python,
+  leave JS alone.** Surfaced to the user for override; if he wants JS swept too, it is
+  a mechanical follow-up.
+
+- **R6-24.10 AN HONEST GAP: the docstring class (Pure/Near-pure/Query/Command labels,
+  examples, `untested` markers) HAS NO COVERAGE** — the subagent pool stayed saturated
+  at the 20-concurrent ceiling. Its section in the report is thin because it was not
+  done, NOT because the codebase is clean there. Must be re-run.
+
+- **R6-24.11 Remaining counts** (see the report for file:line): 9 `var(--radius)`
+  misuses plus 2 lib defaults; 8 undefined-token lines and 3 inline-style violations;
+  124 icon-size literals and 19 bare `1px` (both need an `--a-icon-*` / `--a-hairline`
+  decision before sweeping); 6 GUI-reinvention sites; 4 caps missing their derivations;
+  1 absolute path (R6-24.2); ZERO vendor-term violations.
+
 ### R6-23 THE 3D VIEWER FAMILY — R6-1 IS ONE MEMBER, NOT THE WHOLE THING
 
 Added by the user 2026-08-01, AFTER R6-1 was written. It SUPERSEDES R6-1.5's
