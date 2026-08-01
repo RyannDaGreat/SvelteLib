@@ -24,7 +24,7 @@ import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWor
 // The LIST-ELEMENT operations the HANDLE actions route through — one mechanism for
 // per-element hide and purge, shared with the Inspector's list control.
 import { LIST_ROW_KIND, withElementActive, withElementPurged } from "../core/lists.js";
-import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, isEquationValue } from "../core/expressions.js";
+import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, isEquationValue, materialParamDefaultAt } from "../core/expressions.js";
 // `compiledScriptExports` is core/project_script.js's `projectScriptExports`,
 // renamed at the import so it cannot be confused with the same-named method below
 // (which resolves the source and delegates here). Two identical names in one file,
@@ -1013,9 +1013,19 @@ export class PowerRPApp {
 
   /** RAW stored value at a FULL state path (e.g. ["items", id, "x"] or
    * ["vars", name]) — the KeyframeControls upsert reads this to copy the
-   * current value into a new keyframe (equations stay equations). */
+   * current value into a new keyframe (equations stay equations).
+   *
+   * A SPARSE slot holds nothing to copy, and MATERIAL KNOBS are the one such
+   * family: they are stored only once written ("no state until written") and
+   * resolve from the material's own schema at paint time. So the value a new
+   * keyframe must copy there is that schema default — core/expressions.js owns
+   * the lookup. Without this the knob's ◆ keyed `undefined` and read as a control
+   * that does nothing, which is worse than not having one. Every non-sparse slot
+   * takes the first line, byte-identically. */
   storedValueAtPath(path) {
-    return getPath(this.rawState(), path);
+    const raw = getPath(this.rawState(), path);
+    if (raw !== undefined || path[0] !== "items") return raw;
+    return materialParamDefaultAt(path.slice(2), this.rawState().items?.[path[1]]);
   }
 
   /** The referencable display name of an anchor ("circle_tm") — what the

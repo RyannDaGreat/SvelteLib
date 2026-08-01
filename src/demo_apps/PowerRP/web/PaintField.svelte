@@ -228,12 +228,13 @@
 <script>
   import "iconify-icon";
   import ColorField from "./ColorField.svelte";
-  import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import Dropdown from "../../../lib/Dropdown.svelte";
   import SearchableDropdown from "../../../lib/SearchableDropdown.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import NumericField from "./NumericField.svelte";
   import AngleField from "./AngleField.svelte";
+  import BooleanField from "./BooleanField.svelte";
+  import KeyframeControls from "./KeyframeControls.svelte";
   import ListField, { collapseKeyFor } from "./ListField.svelte";
   import BrushPalette from "./BrushPalette.svelte";
   // The paint stack's own label⟷value divider segments — one per nested run of
@@ -312,13 +313,10 @@
     app.commitPreview();
   }
 
-  /** Command. LIVE-previews a value at a SUB-PATH on every write path — the
-   * mid-gesture half of the ColorField preview/commit contract: the viewport
-   * re-renders while the DOCUMENT stays untouched (no undo entry) until commitAt
-   * settles it. Drives the material-knob DraggableNumber's `oninput`. */
-  function previewAt(subpath, val) {
-    app.setPreview(writePaths.map((p) => [[...p, ...subpath], perTarget(val)]));
-  }
+  // (previewAt — the mid-gesture half of this pair — is GONE with the bare
+  // DraggableNumber it fed: NumericField/AngleField own the identical
+  // setPreview → commitPreview contract for the knob rows now, so a second
+  // hand-rolled copy of it here would be the duplication, not the service.)
 
   /** Command. Switches the paint mode. EQUATION mode makes the WHOLE paint a
    * "=" expression (a computed color, evaluated like any other any-type
@@ -747,6 +745,8 @@
               {/if}
             {:else}
             {@const scrub = knobScrub(mrow)}
+            {@const knobPath = [...path, "material", "params", mrow.name]}
+            {@const knobPaths = writePaths.map((p) => [...p, "material", "params", mrow.name])}
             <!-- A NESTED PAINT SUB-ROW (app.css .paint-sub-row): the material
                  knobs ride the same label⟷value grid as every other row in the
                  panel, so their value edge is the one --a-label-frac boundary the
@@ -759,7 +759,7 @@
               <span class="paint-sub-label paint-material-label">{mrow.label ?? mrow.name}</span>
               <span class="paint-sub-control paint-material-control">
                 {#if mrow.kind === "color"}
-                  <ColorField {app} path={[...path, "material", "params", mrow.name]} paths={writePaths.map((p) => [...p, "material", "params", mrow.name])} label={mrow.name} value={matValue(mrow)} {disabled} />
+                  <ColorField {app} path={knobPath} paths={knobPaths} label={mrow.name} value={matValue(mrow)} {disabled} />
                 {:else if mrow.kind === "select"}
                   <!-- commitSelectKnob honors the entry's presetExpand contract:
                        a preset pick writes the continuous knobs and resets itself.
@@ -781,29 +781,65 @@
                     oncancelpreview={selHover.cancel}
                   />
                 {:else if mrow.kind === "boolean"}
-                  <input type="checkbox" checked={matValue(mrow)} {disabled} aria-label={mrow.label ?? mrow.name} onchange={(e) => commitAt(["material", "params", mrow.name], e.target.checked)} />
+                  <!-- THE ONE on/off control (web/BooleanField.svelte), not a
+                       native checkbox. This row used to mount `<input
+                       type="checkbox">`, contradicting BooleanField's own
+                       "deliberately no native <input type=checkbox> anywhere in
+                       the editor" doctrine — which tests/boolean_uniformity_probe.js
+                       asserts as fact, so the probe was asserting something false
+                       while these knobs shipped the second affordance. -->
+                  <BooleanField {app} path={knobPath} paths={knobPaths} label={mrow.label ?? mrow.name} value={Boolean(matValue(mrow))} {disabled} />
+                {:else if mrow.kind === "angle"}
+                  <!-- An `angle` knob is a HEADING in raw degrees, so it gets the
+                       rotary dial every other angle property gets — and with it
+                       equation entry, the ƒ button and the syntax overlay, none of
+                       which the bare scrubber had. `value` is the RESOLVED knob
+                       (stored ?? schema default): params are SPARSE by contract,
+                       so an unwritten knob has nothing at its path and the field
+                       falls back to this exactly as it does for a legacy gradient
+                       whose direction still lives in its endpoints. -->
+                  <AngleField {app} path={knobPath} paths={knobPaths} label={mrow.label ?? mrow.name} value={matValue(mrow)} {disabled} />
                 {:else}
-                  <!-- number + angle (degrees) share the numeric scrubber. A bare
-                       DraggableNumber, NOT NumericField: the field reads the DOC at
-                       its path, and a sparse unwritten knob stores nothing there —
-                       this control displays the RESOLVED value (stored ?? schema
-                       default) and only a commit writes the knob.
-                       LIVE PREVIEW (the ColorField contract): `oninput` stages the
-                       drag on the canvas (previewAt — no undo entry) and `onchange`
-                       settles ONE undo unit (commitAt). CALIBRATED scrub: the knob
-                       schema's step/scrub/bounds/default route through resolveScrub
-                       (knobScrub), so a bounded knob sweeps its range over
-                       KNOB_DRAG_PX instead of DraggableNumber's raw 1 unit/px. -->
-                  <DraggableNumber
+                  <!-- number → THE equation-aware numeric field, the same control
+                       every other numeric property in the app uses.
+                       IT USED TO BE A BARE DraggableNumber, and that was FAILURE 1
+                       of R6-7: a scrubber has no `onedit`, no text path and no ƒ,
+                       so there was no way to type an equation into a material knob
+                       at all — while FAILURE 2 (core/expressions.js) refused one
+                       even when it was forced into the document by hand.
+                       `value` is the sparse fallback (see the angle row above);
+                       preview/commit and undo now come from the field, which owns
+                       the same setPreview → commitPreview contract previewAt/
+                       commitAt hand-rolled here.
+                       CALIBRATED SCRUB, unchanged: the knob schema's
+                       step/scrub/bounds/default still route through the SHARED
+                       resolveScrub (knobScrub) and are handed over PRE-RESOLVED,
+                       because NumericField's own third source reads the PLUGIN's
+                       default — which a material knob does not have. Same
+                       coefficient, same grid, same feel as before. -->
+                  <NumericField
+                    {app}
+                    path={knobPath}
+                    paths={knobPaths}
+                    label={mrow.label ?? mrow.name}
                     value={matValue(mrow)}
                     min={mrow.min ?? null}
                     max={mrow.max ?? null}
                     step={scrub.step}
-                    coefficient={scrub.coefficient ?? 1}
-                    label={mrow.label ?? mrow.name}
-                    oninput={(v) => previewAt(["material", "params", mrow.name], v)}
-                    onchange={(v) => commitAt(["material", "params", mrow.name], v)}
+                    scrub={scrub.coefficient}
                   />
+                {/if}
+              </span>
+              <!-- ONE keyframe triad per KNOB, on the knob's own state path — the
+                   ListField per-element ◆ and the Inspector row ◆, one level
+                   deeper. A material knob is an ordinary keyframable leaf (it
+                   tweens through the generic nested-leaf delta fold), so the
+                   affordance was simply missing, not absent by design. Reserved
+                   even while `disabled`, so the rows stay aligned — ListField's
+                   own rule. -->
+              <span class="kf-controls">
+                {#if !disabled}
+                  <KeyframeControls {app} path={knobPath} paths={knobPaths} />
                 {/if}
               </span>
             </div>

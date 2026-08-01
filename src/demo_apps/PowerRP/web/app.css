@@ -8283,10 +8283,21 @@ audio.ae-preview-media {
    restating it, which is the point: one boundary rule for every row in the
    panel, at every nesting depth.
 
-   The third column is omitted (no --a-kf-w track): these sub-rows carry no
-   keyframe cluster of their own — a gradient's ◆ lives on the parent Stroke/Fill
-   row — and reserving the gutter would indent their values past every other
-   row's, the same per-kind drift the unconditional label gutter exists to stop. */
+   The third column is omitted here (no --a-kf-w track), because a GRADIENT
+   GEOMETRY sub-row carries no keyframe cluster of its own — a gradient's ◆ lives
+   on the parent Stroke/Fill row — and reserving the gutter for a cluster that
+   never arrives would just narrow the value track for nothing.
+
+   MATERIAL KNOB rows ARE the exception, and they state it themselves (see
+   .paint-material-row below): a knob is an ordinary keyframable leaf at a real
+   state path, so it earns the same ‹ ◆ › every other property row has. This
+   paragraph used to read "these sub-rows carry no keyframe cluster of their own"
+   as a flat fact about the whole class, and that was the design being described,
+   not a constraint — R6-7 changed the design. Adding the track back does NOT
+   cause the "indent past every other row's value" drift the sentence warned
+   about: the drift comes from the LABEL gutter on the left, whereas --a-kf-w is
+   the RIGHT-hand cluster that every top-level .inspector .row already reserves —
+   so a knob row with it is MORE aligned with the panel, not less. */
 .inspector .paint-sub-row {
   position: relative; /* anchor for the value-side out-of-flow hover chrome */
   display: grid;
@@ -8333,7 +8344,25 @@ audio.ae-preview-media {
 
 /* MATERIAL FILL rows (PaintField's "Mat" mode): a nested paint sub-row, so the
    grid and the label contract come from .paint-sub-row above. This adds only the
-   material-specific bit — see .paint-material-control .dn below. */
+   material-specific bits — the keyframe track here, and .paint-material-control
+   .dn below. */
+
+/* THE KNOB'S OWN ‹ ◆ › (R6-7): a material knob is an ordinary keyframable leaf
+   at a real state path (…fill.material.params.<name>), so it takes the same
+   third track a top-level .inspector .row reserves, at the same --a-kf-w width.
+   MEASURED CAVEAT, so nobody reads more into this than is true: these rows are
+   nested INSIDE the Fill row's own value cell, so their three tracks resolve
+   against that cell, not the panel — the knob diamonds form their own straight
+   column, a little inboard of the top-level one, and the knob VALUE track is
+   narrower by --a-kf-w than it was before. That is the price of the affordance,
+   and it is charged once, uniformly, to every knob row.
+   Scoped to .paint-material-row on purpose: the gradient GEOMETRY sub-rows beside
+   it genuinely have no cluster (see the .paint-sub-row header), so widening them
+   would reserve air nothing lands in. */
+.inspector .paint-material-row {
+  grid-template-columns: calc(var(--a-label-frac) * 100%) minmax(var(--a-input-w), 1fr) var(--a-kf-w);
+}
+
 .paint-material-control {
   min-width: 0;
 }

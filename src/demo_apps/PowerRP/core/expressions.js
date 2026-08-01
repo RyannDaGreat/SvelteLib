@@ -96,7 +96,11 @@ import { boxCenter, unsignedState } from "./geometry.js";
 import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
 import { isHexColor } from "./interpolators.js";
-import { PROPS, GRADIENT_STOPS_LIST } from "./properties.js";
+// linearEndpointsToAngle is the codebase's ONE point-to-point HEADING: the
+// gradient direction dial's own math. `direction2` (below) is built on it rather
+// than on a second atan2, so the function library and the dial can never disagree
+// about which way 90° points.
+import { PROPS, GRADIENT_STOPS_LIST, linearEndpointsToAngle } from "./properties.js";
 import {
   LIST_ROW_KIND, ACTIVE_FIELD, elementFieldKind, elementFieldValue, elementStorageKey,
   listPathKind, listStoragePath,
@@ -115,6 +119,13 @@ import { compileProjectScript } from "./project_script.js";
 // decorate.js), and particle_clock.js is DOM-free bare-node code by its own contract
 // (performance.now() is a node global), so core's bare-node requirement holds.
 import { particleTime } from "../render_gpu/particle_clock.js";
+// THE MATERIAL KNOB SCHEMAS (see §Material param knobs). A paint's material
+// params are declared in the material REGISTRY, not in plugin.defaults, so this
+// is the only place core can learn their kinds and defaults. Same layering as the
+// clock above, and already crossed the other way by core/material_plugins.js —
+// which is what proves these two modules stay bare-node loadable.
+import { getMaterial, materialIds } from "../render_gpu/skia/materials.js";
+import { getStrokeMaterial, hasStrokeMaterial } from "../render_gpu/skia/stroke_materials.js";
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
 //
@@ -712,7 +723,46 @@ export const FUNCTIONS = {
     overloads: [{ params: ["string", "number"] }],
     impl: textScramble,
   },
+  // GEOMETRY. The one arity is four NUMBERS, not (point, point): the grammar has
+  // no vector primitive — `self.position` is R6-16.2, deliberately plan-only —
+  // and a `widget` param is reserved for the rim SOLVE, which returns a point,
+  // not a scalar. So the user's "angle2 of self position, flare.x, flare.y" is
+  // spelled `direction2(self.x, self.y, flare.x, flare.y)` today, and gains the
+  // shorter spelling for free the day vectors land.
+  direction2: {
+    doc: "The heading in degrees from one point to another — aim a widget or a material's light at something.",
+    overloads: [{ params: ["number", "number", "number", "number"] }],
+    impl: direction2,
+  },
 };
+
+/**
+ * Pure function. The HEADING IN DEGREES from (fromX, fromY) to (toX, toY), in the
+ * app's ONE angle convention: 0° is +x (right), 90° is +y (screen DOWN), wrapped
+ * to [0, 360). DEGREES because that is what an `angle` property and a material's
+ * `angle` knob both STORE (radians are `rotation`'s private business, behind a
+ * display unit) — so this drops straight into the slot it exists to drive.
+ *
+ * Built on core/properties.js linearEndpointsToAngle — the gradient dial's own
+ * math — rather than a second atan2, so the function library and the dial can
+ * never disagree about which way 90° points. A degenerate zero-length direction
+ * is 0°, which is atan2(0, 0)'s answer and not a special case.
+ *
+ * @param {number} fromX - the origin's x, in the same space as the target
+ * @param {number} fromY - the origin's y
+ * @param {number} toX - the target's x
+ * @param {number} toY - the target's y
+ * @returns {number} degrees in [0, 360)
+ *
+ * @example direction2(0, 0, 1, 0) // 0 (due right)
+ * @example direction2(0, 0, 0, 1) // 90 (down the screen)
+ * @example direction2(0, 0, 0, -1) // 270 (up — wrapped, never -90)
+ * @example direction2(10, 10, 20, 20) // 45
+ * @example // = direction2(self.x, self.y, flare.x, flare.y)  — aim a light at another widget
+ */
+function direction2(fromX, fromY, toX, toY) {
+  return linearEndpointsToAngle({ x: fromX, y: fromY }, { x: toX, y: toY });
+}
 
 /**
  * Pure function. The function-library names, for equation autocomplete (the ONE
@@ -720,7 +770,7 @@ export const FUNCTIONS = {
  * for equationSuggest"). Each entry is a ready-to-type stub with its first
  * overload's arity, e.g. "closest_to_rim(" — the caller appends args.
  *
- * @example equationFunctionNames() // ["closest_to_rim", "text_dissolve", "text_type", "text_scramble"]
+ * @example equationFunctionNames() // ["closest_to_rim", "text_dissolve", "text_type", "text_scramble", "direction2"]
  */
 export function equationFunctionNames() {
   return Object.keys(FUNCTIONS);
@@ -1342,8 +1392,9 @@ function storedBodyToDisplay(src, state) {
  * @example isNumericSlot({defaults: {rotationAnchor: {x: "self.anchors.center.x"}}}, ["rotationAnchor", "x"]) // true
  * @example isNumericSlot({defaults: {}}, ["points", 9, "x"]) // true (a DECLARED list's number field — index-independent)
  * @example isNumericSlot({defaults: {}}, ["points"]) // false (the list itself is not a number)
+ * @example // isNumericSlot(rectPlugin, ["fill","material","params","rimStrength"], atmosphereRect) // true (the MATERIAL SCHEMA's default is a number)
  */
-export function isNumericSlot(plugin, path) {
+export function isNumericSlot(plugin, path, item = null) {
   const def = getPath(plugin.defaults, path);
   if (typeof def === "number") return true;
   if (typeof def === "string" && def.startsWith("self.")) return true;
@@ -1352,7 +1403,12 @@ export function isNumericSlot(plugin, path) {
   // happens to hold: `points.9.x` is a number slot on a five-vertex default, and
   // the legacy bare-string equation rule therefore applies uniformly across every
   // index instead of only the ones the default reaches.
-  return listSlotKind(path) === "number";
+  if (listSlotKind(path) === "number") return true;
+  // A MATERIAL KNOB whose SCHEMA default is a number (§Material param knobs). The
+  // test is on the DEFAULT's type, not on the row's `kind`, so this stays the same
+  // structural rule the two branches above use — and it takes an `angle` knob with
+  // it, correctly: an angle knob stores raw degrees, which is a number.
+  return typeof materialParamDefaultAt(path, item) === "number";
 }
 
 // A leading "=" marks ANY property as an equation (the UNIVERSAL any-type
@@ -1401,8 +1457,14 @@ export function withMarkerPreserved(src, rewrite) {
  * @example isEquationValue({defaults: {fill: "#000"}}, ["fill"], "#ff0000") // false (literal color, not an equation)
  * @example isEquationValue({defaults: {x: 0}}, ["x"], "speed * 2") // true (legacy numeric slot)
  * @example isEquationValue({defaults: {name: "?"}}, ["name"], "Box") // false (plain string)
+ * @example // isEquationValue(rectPlugin, ["fill","material","params","rimStrength"], "time", atmosphereRect) // true (a MATERIAL KNOB is a legacy numeric slot too — see isNumericSlot)
+ *
+ * `item` (the FOLDED item state) is OPTIONAL and only ever WIDENS the answer: it
+ * is what lets a MATERIAL KNOB be recognised (§Material param knobs), and a
+ * caller that has no item in hand — the ones walking a plugin's declarations
+ * rather than a document's items — gets exactly the pre-material behaviour.
  */
-export function isEquationValue(plugin, path, value) {
+export function isEquationValue(plugin, path, value, item = null) {
   if (typeof value !== "string") return false;
   // PER-ITEM VARIABLES (manifest item 67): any string under an item's `vars`
   // dict is a numeric equation BY FIAT — the same rule state.vars obeys, one
@@ -1414,7 +1476,7 @@ export function isEquationValue(plugin, path, value) {
   // equation-keyframe scans. Slot COLLECTION does NOT rely on this (it has its
   // own dedicated vars loop that forces kind "number" for "="-prefixed vars).
   if (path[0] === "vars") return true;
-  return EQ_PREFIX_RE.test(value) || isNumericSlot(plugin, path);
+  return EQ_PREFIX_RE.test(value) || isNumericSlot(plugin, path, item);
 }
 
 // PROPS.kind (an INSPECTOR CONTROL kind) → the JS RESULT TYPE an `=` equation
@@ -1519,6 +1581,101 @@ function paintSubKind(path) {
   const rest = path.slice(1);
   const leaf = PAINT_MODE_KEYS.includes(rest[0]) ? rest.slice(1) : rest;
   return leaf.length ? PAINT_LEAF_KINDS[leaf.join(".")] ?? null : null;
+}
+
+// ── MATERIAL PARAM knobs (the paint's fourth sub-state) ──────────────────────
+//
+// A paint may hold a MATERIAL: {type: "material", material: {id, params}}, whose
+// KNOBS live at `<paint>.material.params.<name>`. They are real keyframable,
+// equation-bindable slots — but unlike every other slot in this file their kind
+// and their default are declared in the MATERIAL REGISTRY (a descriptor's
+// `fillParams`, or `strokeParams` on a stroke slot), not in `plugin.defaults`,
+// whose entry for the paint key is a bare hex string. `params` is also SPARSE by
+// contract ("no state until written"), so there is nothing at the path to infer
+// from either.
+//
+// THAT IS WHY THESE TAKE THE FOLDED `item`: the plugin alone cannot answer, and
+// the stored `material.id` is what names the schema. It is the SAME resolution
+// web/PaintField.svelte's matEntry/matValue perform to draw the knob rows, read
+// from the SAME registry — so the field and core cannot disagree about a knob's
+// kind, which is exactly the hand-maintained-mirror hazard this codebase keeps
+// paying for.
+//
+// THE DEFECT THIS CLOSES (R6-7): without it resultKindForSlot typed all 299
+// built-in knobs across 22 materials UNRESOLVED — so `=` was refused on every one
+// — and fallbackFor wrote 0 instead of the schema default, so an equation forced
+// in by hand evaluated to a silent zero. isNumericSlot needs it too, and for a
+// reason only the UI shows: NumericField commits through displayToStored, which
+// DROPS the `=` marker, so a knob that is not a NUMERIC slot stores the stripped
+// text as a silent literal string.
+//
+// `strokeParams ?? fillParams` is materials.js materialParamDefaults' own rule,
+// restated rather than imported because that function is private there.
+const MATERIAL_KEY = "material";
+const MATERIAL_PARAMS_KEY = "params";
+/** [paintKey, "material", "params", knobName] — the only shape that is a knob. */
+const MATERIAL_PARAM_PATH_LEN = 4;
+
+/**
+ * Query (reads the two paint-material registries). The registry entry a material
+ * id names — a STROKE entry when the stroke registry claims the id, else the FILL
+ * descriptor, else null for an id neither registry knows. Non-throwing on
+ * purpose: an unknown id here means "this is not a knob slot", which is a
+ * question, not a fault (the LOUD refusal for a real paint belongs to
+ * materials.resolveMaterialPaint, which renders it).
+ *
+ * @example materialEntryFor("atmosphere").id // "atmosphere"
+ * @example materialEntryFor("wavy").id // "wavy" (the stroke registry)
+ * @example materialEntryFor("nope") // null
+ */
+function materialEntryFor(id) {
+  if (typeof id !== "string") return null;
+  if (hasStrokeMaterial(id)) return getStrokeMaterial(id);
+  return materialIds().includes(id) ? getMaterial(id) : null;
+}
+
+/**
+ * Query (reads the material registries). The material knob SCHEMA ROW a state
+ * path addresses on `item`, or null when the path is not a knob (or `item` is
+ * absent, or its paint holds no known material). `path` is relative to the item.
+ *
+ * @param {string[]} path - e.g. ["fill", "material", "params", "rimStrength"]
+ * @param {object|null} item - the FOLDED item state, whose paint carries the id
+ * @returns {object|null} the schema row {name, kind, default, min?, max?, …}
+ *
+ * @example // materialParamRow(["fill", "material", "params", "rimStrength"], atmosphereRect).kind // "number"
+ * @example // materialParamRow(["fill", "material", "params", "nope"], atmosphereRect) // null
+ * @example // materialParamRow(["fill", "solid"], atmosphereRect) // null (not a knob)
+ */
+function materialParamRow(path, item) {
+  if (!item || path.length !== MATERIAL_PARAM_PATH_LEN) return null;
+  if (!PROPS[path[0]]?.paint) return null;
+  if (path[1] !== MATERIAL_KEY || path[2] !== MATERIAL_PARAMS_KEY) return null;
+  const entry = materialEntryFor(item[path[0]]?.material?.id);
+  const schema = entry?.strokeParams ?? entry?.fillParams;
+  if (!Array.isArray(schema)) return null;
+  return schema.find((row) => row.name === path[3]) ?? null;
+}
+
+/**
+ * Query (reads the material registries). A material knob's SCHEMA DEFAULT, or
+ * undefined when the path is not a knob — the value a sparse (never-written) knob
+ * resolves to at render time, and therefore the ONLY correct fallback when its
+ * equation fails. `undefined` rather than null so a caller's `??` chain treats
+ * "not a knob" and "no such knob" alike, and a knob whose declared default IS
+ * null still reads as declared.
+ *
+ * EXPORTED for the KEYFRAME UPSERT (web/app.svelte.js storedValueAtPath): a new
+ * keyframe copies the value the slot currently holds, and for a sparse knob that
+ * value lives here and nowhere else — without it the ◆ would key `undefined` and
+ * read as a control that does nothing.
+ *
+ * @example // materialParamDefaultAt(["fill", "material", "params", "rimStrength"], atmosphereRect) // 0.85
+ * @example // materialParamDefaultAt(["w"], atmosphereRect) // undefined
+ */
+export function materialParamDefaultAt(path, item) {
+  const row = materialParamRow(path, item);
+  return row ? row.default : undefined;
 }
 
 // ── LIST PROPERTIES (core/lists.js) ──────────────────────────────────────────
@@ -1632,11 +1789,20 @@ const UNRESOLVED_KIND = "unresolved";
  *      five-vertex default used to fall all the way to UNRESOLVED.
  *   3. paintSubKind(path) — a leaf inside a paint property's sub-state, whose
  *      shape the plugin's flat hex default cannot describe.
- *   3. INFERRED from the plugin's own default at the path: a NUMERIC slot
+ *   4. materialParamRow(path, item) — a MATERIAL KNOB, whose kind is declared in
+ *      the material REGISTRY rather than by the plugin (§Material param knobs).
+ *      Needs the FOLDED ITEM, because the stored material id is what names the
+ *      schema. A knob whose declared kind KIND_RESULT does not type falls to
+ *      UNRESOLVED rather than being guessed, exactly like an undeclared slot —
+ *      the LOUD-import-guard treatment PROPS gets is unavailable here, because
+ *      core/material_plugins.js (which owns MATERIAL_PARAM_KINDS) imports
+ *      core/plugin_assets.js, which imports THIS file: reading that set at
+ *      module-evaluation time would run inside the cycle.
+ *   5. INFERRED from the plugin's own default at the path: a NUMERIC slot
  *      (isNumericSlot — a number, or a "self."-prefixed COMPUTED default such
  *      as magnifier `origin.x`) is "number"; else boolean, else a hex-vs-plain
  *      string → color/string.
- *   4. UNRESOLVED — nothing declares this slot's kind. It is NOT guessed:
+ *   6. UNRESOLVED — nothing declares this slot's kind. It is NOT guessed:
  *      evaluation reports it loudly and falls back, because a wrong guess
  *      silently rejects a correct value (that is the bug this order fixes).
  *
@@ -1651,8 +1817,9 @@ const UNRESOLVED_KIND = "unresolved";
  * @example resultKindForSlot({defaults: {}}, ["points", 9, "x"], "= self.w / 2") // "number" (declared element field; index-independent)
  * @example resultKindForSlot({defaults: {}}, ["points", 9], "= 1") // "unresolved" (a whole ELEMENT is not a slot — bind its fields)
  * @example resultKindForSlot({defaults: {}}, ["pointsActive", 2], "= false") // "boolean" (per-element visibility)
+ * @example // resultKindForSlot(rectPlugin, ["fill","material","params","glowColor"], "= #f00", atmosphereRect) // "color" (the MATERIAL SCHEMA's kind)
  */
-export function resultKindForSlot(plugin, path, value) {
+export function resultKindForSlot(plugin, path, value, item = null) {
   if (!EQ_PREFIX_RE.test(value)) return "number"; // legacy numeric / self-anchor slot
   const propDef = PROPS[path.join(".")];
   if (propDef) return KIND_RESULT[propDef.kind];
@@ -1660,7 +1827,9 @@ export function resultKindForSlot(plugin, path, value) {
   if (listed) return listed;
   const painted = paintSubKind(path);
   if (painted) return painted;
-  if (isNumericSlot(plugin, path)) return "number";
+  const knob = materialParamRow(path, item);
+  if (knob) return KIND_RESULT[knob.kind] ?? UNRESOLVED_KIND;
+  if (isNumericSlot(plugin, path, item)) return "number";
   const def = getPath(plugin.defaults, path);
   if (typeof def === "boolean") return "boolean";
   if (typeof def === "string") return isHexColor(def) ? "color" : "string";
@@ -2297,10 +2466,14 @@ function computeEvaluatedState(state, registry, script = "") {
     // collected above as a numeric dict, and isEquationValue now reports vars as
     // an equation (for the paste/rename walks), so WITHOUT this guard an
     // "="-prefixed var would be RE-collected here with an UNRESOLVED kind.
+    // `item` goes to BOTH predicates because a MATERIAL KNOB's kind and default
+    // are declared by the material its paint names, not by the plugin
+    // (§Material param knobs) — this is the ONE production caller of either that
+    // has the folded item in hand, which is why the argument is optional there.
     for (const [path, value] of [...leaves(item), ...declaredListLeaves(item)])
-      if (path[0] !== "vars" && isEquationValue(plugin, path, value)) {
+      if (path[0] !== "vars" && isEquationValue(plugin, path, value, item)) {
         const key = ["items", id, ...path].join(".");
-        slots.set(key, { key, path: ["items", id, ...path], src: value, kind: resultKindForSlot(plugin, path, value) });
+        slots.set(key, { key, path: ["items", id, ...path], src: value, kind: resultKindForSlot(plugin, path, value, item) });
       }
   }
   const itemSlotKeys = new Map(); // itemId → [slot keys] (geometry settling for anchors / rim / groups)
@@ -2310,10 +2483,19 @@ function computeEvaluatedState(state, registry, script = "") {
       itemSlotKeys.get(slot.path[1]).push(slot.key);
     }
 
+  // THE VALUE A FAILED SLOT FALLS BACK TO — its DECLARED default, because that is
+  // what the slot would hold if the equation had never been written. A MATERIAL
+  // KNOB's default lives in the material registry, not in plugin.defaults, so
+  // without the first branch every failed knob landed on the `?? 0` and rendered
+  // as if the author had asked for zero — silently, since the schema default is
+  // what a sparse knob resolves to at paint time. That was half of the R6-7 defect.
   const fallbackFor = (path) => {
     if (path[0] !== "items") return 0; // variables have no plugin defaults
     const item = state.items[path[1]];
-    return getPath(registry.get(item.type).defaults, path.slice(2)) ?? 0;
+    const rel = path.slice(2);
+    const knobDefault = materialParamDefaultAt(rel, item);
+    if (knobDefault !== undefined) return knobDefault;
+    return getPath(registry.get(item.type).defaults, rel) ?? 0;
   };
   const status = new Map(); // slotKey → "eval" | "done" | "failed"
   const stack = []; // slot keys currently on the evaluation stack (the cycle chain)

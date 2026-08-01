@@ -614,8 +614,19 @@ test("grammar: call parsing + point .x/.y projection", () => {
   assert.equal(evalAst(parseExpression("f(a,b).y + 1"), () => 0, () => ({ x: 3, y: 4 })), 5);
 });
 test("function table: names, overloads, arity/kind/unknown errors", () => {
-  assert.deepEqual(equationFunctionNames(), ["closest_to_rim", "text_dissolve", "text_type", "text_scramble"]);
-  assert.ok("closest_to_rim" in FUNCTIONS);
+  // NOT a transcribed roster — that was a hand-maintained mirror (R6-24.7), and it
+  // went red the moment a function was added without saying anything true had
+  // broken. What is actually under test is that every entry is USABLE: a name a
+  // user can type, at least one overload for resolveOverload to find, and a doc
+  // line for the autocomplete. Plus the specific entries this suite exercises,
+  // which pins their existence without claiming the list is closed.
+  for (const name of equationFunctionNames()) {
+    assert.match(name, /^[a-z][a-z0-9_]*$/, `"${name}" is not a typeable canonical function name`);
+    assert.ok(FUNCTIONS[name].overloads.length > 0, `"${name}" declares no overload`);
+    assert.ok(FUNCTIONS[name].doc, `"${name}" has no doc line for the autocomplete`);
+  }
+  for (const name of ["closest_to_rim", "text_dissolve", "text_type", "text_scramble", "direction2"])
+    assert.ok(name in FUNCTIONS, `"${name}" left the function library`);
   assert.deepEqual(resolveOverload("closest_to_rim", 2).params, ["widget", "widget"]);
   assert.deepEqual(resolveOverload("closest_to_rim", 3).params, ["widget", "number", "number"]);
   assert.throws(() => resolveOverload("nope", 1), /Unknown function "nope"/);

@@ -92,8 +92,20 @@
 
   let {
     app, path, paths = null, label, min = null, max = null, display = null, scrub = null, step = null,
-    centerAxis = null, scrubMin = null, scrubMax = null,
+    centerAxis = null, scrubMin = null, scrubMax = null, value = undefined,
   } = $props();
+
+  // `value` — THE SPARSE-SLOT FALLBACK, and ONLY that. Every ordinary row leaves
+  // it undefined and reads the document at `path`, byte-identically to before.
+  // It exists for a slot the document legitimately holds NOTHING at: a MATERIAL
+  // KNOB is stored SPARSE by contract ("no state until written") and resolves
+  // from its schema default at render time, so without a fallback this field
+  // would show 0 where the material paints 0.85. Exactly the seam AngleField
+  // already has for the same reason (its `source`, one line, same shape), which
+  // is why the two read alike. It is deliberately NOT a `defaultValue`: that prop
+  // existed here, was dead at all 1507 numeric rows, and was removed — this one
+  // is the field's DISPLAY value when the path is empty, not a second source of
+  // precision evidence.
 
   // ── SCRUB RANGE vs HARD BOUNDS (core/properties.js "SCRUB RANGE vs HARD
   // BOUNDS") ───────────────────────────────────────────────────────────────
@@ -232,7 +244,10 @@
 
   let stored = $derived(getPath(app.rawState(), path));
   let isEquation = $derived(typeof stored === "string");
-  let evaluated = $derived(getPath(app.state(), path));
+  // The settled value core produced, or — when the path holds NOTHING — the
+  // caller's `value` (see the prop note above). AngleField's `source`, verbatim.
+  let settled = $derived(getPath(app.state(), path));
+  let evaluated = $derived(settled === undefined ? value : settled);
   let error = $derived(app.exprErrorAt(path));
 
   // Text entry started FROM number mode (pre-commit) — the field shows the
