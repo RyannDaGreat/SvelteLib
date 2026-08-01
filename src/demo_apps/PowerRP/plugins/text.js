@@ -17,7 +17,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { UNIT_SPAN_SCRUB, bundle, bundleNestedDefaults } from "../core/properties.js";
-import { normalizeRichText, richTextIsEmpty } from "../core/richtext.js";
+import { normalizeRichText, richTextIsEmpty, boxStyleRowVisibility, DEFAULT_PARA_SIZE } from "../core/richtext.js";
 import { text } from "../render_gpu/ir.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
@@ -96,7 +96,7 @@ export const textPlugin = {
     // Widget-level style the single migrated run inherits AND the per-paragraph
     // layout falls back to (font/size/color/bold are run-inherited; the para
     // keys below are the box's one-alignment-per-box defaults — SET-1 Inspector).
-    size: 36, color: "#000000", bold: false, font: DEFAULT_FONT, opacity: 1,
+    size: DEFAULT_PARA_SIZE, color: "#000000", bold: false, font: DEFAULT_FONT, opacity: 1,
     // Paragraph-level defaults for the whole box (each paragraph may override in
     // paras[i] via the SET-2 UX). align ∈ left|center|right|justify.
     align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0,
@@ -123,12 +123,28 @@ export const textPlugin = {
     // through the bundle and would have skipped this one.
     ...bundle("positioning"),
     // Default typography for the box (runs inherit these; SET-2 sets them per-run).
-    { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text" },
-    { key: "size", label: "Size", kind: "number", min: 0, category: "text" },
-    { key: "bold", label: "Bold", kind: "boolean", category: "text" },
+    //
+    // EVERY ROW BELOW THAT UNDERLIES A RUN OR A PARAGRAPH DECLARES `visibleWhen`,
+    // and it is not cosmetic. These rows are FALLBACKS: runFrom puts the run's own
+    // key first and paraStyleFor puts the paragraph's own key last, so a value in
+    // which every run (or every paragraph) stores the key leaves the box nothing to
+    // supply. Measured on the user's three real decks, every text item is exactly
+    // that shape — "Untitled cheese" slide 3 shows this panel reading 36 / system /
+    // #1a1a2e while the glyphs render 76 / futura / #000000, so the rows did not
+    // merely do nothing, they CONTRADICTED the canvas. The answer is the user's own
+    // ruling on stroke width under an off stroke material — "I still have stroke
+    // width options even when stroke material is off, which is kind of dumb" — with
+    // the same mechanism (core/properties.js strokeMaterialIsOn, seven rows,
+    // tests/stroke_off_test.js). ACCEPTED COST: hiding a row hides its `ƒ` with it
+    // (the R6-7 gap); a row that reports a value the render ignores is worse.
+    // NOT hidden: valign and opacity, which have no per-run/per-paragraph twin and
+    // so can never be overridden out from under the box.
+    { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text", visibleWhen: boxStyleRowVisibility("font") },
+    { key: "size", label: "Size", kind: "number", min: 0, category: "text", visibleWhen: boxStyleRowVisibility("size") },
+    { key: "bold", label: "Bold", kind: "boolean", category: "text", visibleWhen: boxStyleRowVisibility("bold") },
     // Paragraph props (box-level; the "one alignment per box" control — SET-2
     // adds per-paragraph). align is a select over the four alignments.
-    { key: "align", label: "Align", kind: "select", options: ["left", "center", "right", "justify"], optionLabels: { left: "Left", center: "Center", right: "Right", justify: "Justify" }, category: "text" },
+    { key: "align", label: "Align", kind: "select", options: ["left", "center", "right", "justify"], optionLabels: { left: "Left", center: "Center", right: "Right", justify: "Justify" }, category: "text", visibleWhen: boxStyleRowVisibility("align") },
     // VERTICAL alignment is BOX-level (one value per box — the whole line stack
     // moves within h), so a single select row is the right control (unlike the
     // per-paragraph horizontal `align`, whose primary surface is the WYSIWYG
@@ -146,10 +162,10 @@ export const textPlugin = {
     // sub-pixel in practice: 1 px per drag-pixel is too coarse. The fine-bias ruling
     // (2026-07-28) postdates the old "leave them at 1/px like x/y/w/h" argument that
     // stood here — both now declare scrub 0.1 so a comfortable drag sweeps a few px.
-    { key: "lineSpacing", label: "Line spacing", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "text" },
-    { key: "charSpacing", label: "Char spacing", kind: "number", scrub: 0.1, category: "text" },
-    { key: "wordSpacing", label: "Word spacing", kind: "number", scrub: 0.1, category: "text" },
-    { key: "color", label: "Color", kind: "color", category: "formatting" },
+    { key: "lineSpacing", label: "Line spacing", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "text", visibleWhen: boxStyleRowVisibility("lineSpacing") },
+    { key: "charSpacing", label: "Char spacing", kind: "number", scrub: 0.1, category: "text", visibleWhen: boxStyleRowVisibility("charSpacing") },
+    { key: "wordSpacing", label: "Word spacing", kind: "number", scrub: 0.1, category: "text", visibleWhen: boxStyleRowVisibility("wordSpacing") },
+    { key: "color", label: "Color", kind: "color", category: "formatting", visibleWhen: boxStyleRowVisibility("color") },
     { key: "opacity", label: "Opacity", kind: "number", min: 0, max: 1, category: "formatting" },
     ...bundle("effects"),
   ],
@@ -173,7 +189,7 @@ export const textPlugin = {
     // in ANY backend. Returning [] here makes editor-ghostness and render-
     // exclusion agree (the assertion SonnetE's ghost_test locks).
     if (richTextIsEmpty(s.text)) return [];
-    const inherited = { font: s.font ?? DEFAULT_FONT, size: s.size ?? 36, color: s.color ?? "#000000", bold: s.bold ?? false };
+    const inherited = { font: s.font ?? DEFAULT_FONT, size: s.size ?? DEFAULT_PARA_SIZE, color: s.color ?? "#000000", bold: s.bold ?? false };
     const rich = normalizeRichText(s.text, inherited);
     const first = rich.runs[0] ?? {};
     return applyEffects([text({

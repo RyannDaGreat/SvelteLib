@@ -61,7 +61,14 @@ try {
     const app = window.__powerrp_app;
     const def = (type) => ({ ...app.registry.get(type).defaults, type });
     const cam = { ...def("camera"), name: "Camera", x: 0, y: 0, w: 400, h: 300, z: 1000, active: true, background: "#101014" };
-    const richText = { runs: [{ text: "Hello World", bold: false, italic: false, underline: false, strike: false, size: 32, font: "system", color: "#ffffff", outlineColor: "#000000", outlineWidth: 0, highlight: "" }], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] };
+    // CONTENT-ONLY, and that is the point. This fixture used to materialize all
+    // ten run keys and all four paragraph keys — the exact SHADOWED shape P6 below
+    // exists to catch — so P1-P5 exercised a document no fresh text box can
+    // produce. It renders identically either way (the box keys beside it resolve
+    // through runFrom/paraStyleFor, which tests/text_rows_test.js proves), and it
+    // matters more since R6-13.4: a fully stamped value now HIDES the box-level
+    // Inspector rows, so a stamped fixture no longer even shows the same panel.
+    const richText = { runs: [{ text: "Hello World" }], paras: [{}] };
     const txt = { ...def("text"), name: "Title", x: 40, y: 40, w: 300, h: 120, z: 1, active: true, text: richText, size: 32, color: "#ffffff", font: "system", valign: "top" };
     const doc = { meta: { name: "wysiwyg-probe", slideW: 400, slideH: 300 }, slides: [
       { id: "s0", name: "Slide 1", transition: { type: "tween", seconds: 0.4, curve: "smooth", sound: null }, delta: { items: { cam, txt } } },

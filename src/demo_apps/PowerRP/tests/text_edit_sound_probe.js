@@ -103,7 +103,11 @@ try {
     // rich value inline (one run "Hello" inheriting the box style) so no
     // string→runs migration fires at load (which would console.error loudly and
     // trip the zero-error gate). The box-level style keys still travel too.
-    const richText = { runs: [{ text: "Hello", bold: false, italic: false, underline: false, strike: false, size: 32, font: "system", color: "#ffffff" }], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] };
+    // CONTENT ONLY: the run must NOT carry the box's own style. It used to spell
+    // out size/font/color/bold — the SHADOWED shape the text suites exist to catch
+    // — which renders identically (runFrom resolves the box keys under it) but is
+    // a document the editor cannot produce, and since R6-13.4 hides the box rows.
+    const richText = { runs: [{ text: "Hello" }], paras: [{}] };
     const txt = { ...def("text"), name: "Title", x: 40, y: 40, w: 200, h: 50, z: 1, active: true, text: richText, size: 32, color: "#ffffff", font: "system" };
     const vid = { ...def("video"), name: "Clip", x: 40, y: 120, w: 160, h: 90, z: 2, active: false, animated: true, src: VIDEO_SRC };
     const doc = {

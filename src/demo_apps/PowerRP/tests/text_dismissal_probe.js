@@ -60,7 +60,12 @@ try {
   await page.evaluate(() => {
     const app = window.__powerrp_app;
     const def = (type) => ({ ...app.registry.get(type).defaults, type });
-    const richText = (text) => ({ runs: [{ text, bold: false, italic: false, underline: false, strike: false, size: 28, font: "system", color: "#ffffff", outlineColor: "#000000", outlineWidth: 0, highlight: "" }], paras: [{ align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 }] });
+    // CONTENT-ONLY: the run stores no style, so the box keys beside it (size /
+    // color / font) stay live the way a real text box's do. It used to stamp all
+    // ten run keys — the SHADOWED shape the text suites exist to catch — which
+    // made this fixture unlike anything the editor can produce, and since R6-13.4
+    // also hides the box-level Inspector rows. Renders identically (runFrom).
+    const richText = (text) => ({ runs: [{ text }], paras: [{}] });
     const cam = { ...def("camera"), name: "Camera", x: 0, y: 0, w: 400, h: 300, z: 1000, active: true, background: "#101014" };
     const txtA = { ...def("text"), name: "TextA", x: 20, y: 20, w: 150, h: 50, z: 1, active: true, text: richText("Alpha"), size: 28, color: "#ffffff", font: "system" };
     const txtB = { ...def("text"), name: "TextB", x: 220, y: 200, w: 150, h: 50, z: 2, active: true, text: richText("Beta"), size: 28, color: "#ffffff", font: "system" };

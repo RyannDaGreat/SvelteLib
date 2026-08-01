@@ -45,7 +45,8 @@
   import { getTextLayout } from "../render_gpu/skia/text_layout.js";
   import {
     normalizeRichText, unresolvedRichText, richTextToPlain, runsLength, runStyleAt,
-    commonStyle, applyRunStyle, applyParaStyle, insertText, deleteRange,
+    commonStyle, applyRunStyle, adjustRunSize, steppedSize, applyParaStyle, insertText, deleteRange,
+    DEFAULT_PARA_SIZE, SIZE_STEP,
   } from "../core/richtext.js";
   import TextFormatToolbar from "./TextFormatToolbar.svelte";
 
@@ -56,11 +57,11 @@
   // zoom = viewport.zoom.
   let { app, node, gpu, worldToScreen, screenToWorld, zoom } = $props();
 
-  const SIZE_STEP = 2;   // px per Cmd+/- (the PPT default increment; matches the toolbar)
   const CARET_SCREEN_PX = 2; // caret thickness on screen (counter-scaled to LOCAL below)
-  // Fallback glyph size for a bare op with no explicit size — mirrors the shared
-  // text default (plugins/text.js + plugins/plaintext.js DEFAULT_TEXT_SIZE = 36u).
-  const DEFAULT_TEXT_SIZE = 36;
+  // SIZE_STEP (px per Cmd+/-) and DEFAULT_PARA_SIZE (the fallback glyph size for a
+  // bare op with no explicit size) are IMPORTED, not re-declared. Both used to be
+  // local copies here and in the toolbar, and the pair drifted: the same +1 step on
+  // the same mixed selection produced 50 from this file and 38 from that one.
 
   // PLAIN-STRING mode (a single-string widget like plaintext, routed here through
   // its `inlineTextEdit` descriptor): the widget stores ONE plain string, not a
@@ -93,7 +94,7 @@
   // The ink color reads a DIFFERENT state prop per mode: plaintext paints glyphs
   // with `fill` (its paint-capable ink prop), the rich text widget with `color`.
   let inherited = $derived({
-    font: node.state.font ?? DEFAULT_FONT, size: node.state.size ?? DEFAULT_TEXT_SIZE,
+    font: node.state.font ?? DEFAULT_FONT, size: node.state.size ?? DEFAULT_PARA_SIZE,
     color: (plain ? node.state.fill : node.state.color) ?? "#000000", bold: node.state.bold ?? false,
   });
 
@@ -130,7 +131,7 @@
     const cmd = plain
       ? {
           text: richTextToPlain(resolved),
-          size: s.size ?? DEFAULT_TEXT_SIZE,
+          size: s.size ?? DEFAULT_PARA_SIZE,
           color: s.fill ?? "#000000",
           bold: s.bold ?? false,
           font: s.font ?? DEFAULT_FONT,
@@ -273,12 +274,21 @@
     moveTo(dir > 0 ? wordEndAfter(focus) : wordStartBefore(focus), shift);
   }
 
-  // ── style edits (toolbar onstyle / Cmd+B·I·U / Cmd±) ──────────────────────────
-  /** Query (reads the live selection offsets). `base` with `delta` applied over
-   *  the selection — the ONE expression of "styled selection", shared by the
-   *  durable edit and the hover preview so they can never drift. */
-  function styledOverSelection(base, delta) {
-    return { runs: applyRunStyle(base.runs, selStart, selEnd, delta, inherited), paras: base.paras };
+  // ── style edits (toolbar onstyle / onsizestep / Cmd+B·I·U / Cmd±) ─────────────
+  // TWO run edits, ONE selection. `runsOf` below is always one of these; each is
+  // the ONE expression of its edit, shared by the durable commit and the hover
+  // preview so the previewed thing and the committed thing cannot drift.
+  /** Query (reads the live selection offsets). `base`'s runs with `delta` applied
+   *  over the selection — every ABSOLUTE style write (B/I/U, color, font, …). */
+  function styledRuns(base, delta) {
+    return applyRunStyle(base.runs, selStart, selEnd, delta, inherited);
+  }
+  /** Query (reads the live selection offsets). `base`'s runs with every covered
+   *  run's size stepped BY `delta` px — the RELATIVE size write, which is a
+   *  different primitive and not a delta object: an absolute {size: n} cannot
+   *  express "shift each run by 2" and flattens a mixed selection to one run. */
+  function sizeSteppedRuns(base, delta) {
+    return adjustRunSize(base.runs, selStart, selEnd, delta, inherited);
   }
 
   // ── style HOVER PREVIEW (the FontPicker's live canvas preview) ────────────────
@@ -311,31 +321,42 @@
   }
 
   /** Query. styleBase() with the widget-level fallbacks RESOLVED — what every
-   *  style READER must use: the toolbar's B/I/U pressed state, its size box and
-   *  font name, and the two toggles that compute a next value from the current
-   *  one (toggleStyle, stepSize). On an unresolved base those reads see
-   *  `undefined` for a key the run never set, so Bold would render unset in a
-   *  BOLD box (and toggle to bold — a visible no-op), and Cmd+Plus in a size-60
-   *  box would step from runFrom's floor 36 to 38. The WRITE still goes through
-   *  styleBase(), so what is READ is resolved and what is STORED is not. */
+   *  style READER must use: the toolbar's B/I/U pressed state, its size readout
+   *  and font name, and toggleStyle, which computes a next value from the current
+   *  one. On an unresolved base those reads see `undefined` for a key the run
+   *  never set, so Bold would render unset in a BOLD box and toggle to bold — a
+   *  visible no-op. The WRITE still goes through styleBase(), so what is READ is
+   *  resolved and what is STORED is not.
+   *  stepSize no longer reads it: the same "resolve before deciding" duty moved
+   *  INTO core/richtext.adjustRunSize, which resolves each covered run separately
+   *  because a mixed selection has no single current value to resolve. */
   function styleBaseResolved() {
     return normalizeRichText(styleBase(), inherited);
   }
 
-  /** Command. Live-previews a run-style delta over the selection WITHOUT
-   *  committing and WITHOUT touching in-session history. A collapsed caret is a
-   *  no-op: there is no glyph the preview could change (the durable path stashes
-   *  pendingStyle instead, which by definition affects only text not yet typed).
-   *  Each call re-applies from the captured base, so hovering A then B previews
-   *  B alone rather than compounding. */
-  function previewStyleOnSelection(delta) {
+  /** Command. Live-previews a run edit over the selection WITHOUT committing and
+   *  WITHOUT touching in-session history. A collapsed caret is a no-op: there is
+   *  no glyph the preview could change (the durable path stashes pendingStyle
+   *  instead, which by definition affects only text not yet typed). Each call
+   *  re-applies from the CAPTURED base, so hovering A then B previews B alone
+   *  rather than compounding — and so a size SCRUB, which sends the CUMULATIVE
+   *  delta from where the gesture started on every frame, lands on the right
+   *  value each frame instead of integrating its own previews. */
+  function previewRunEdit(runsOf) {
     if (plain || selEnd <= selStart) return;
     if (!stylePreview) stylePreview = { value: rich, dirty: app.previewDelta !== null };
     // Declare the staged value TRANSIENT: every commit path drops it first, so a
     // click-away/slide-switch mid-hover commits the real value, not the hover.
     app.transientPreview = endStylePreview;
-    stageValue(styledOverSelection(stylePreview.value, delta));
+    const base = stylePreview.value;
+    stageValue({ runs: runsOf(base), paras: base.paras });
   }
+  /** Command. Previews an absolute run-style delta (the FontPicker's live canvas
+   *  preview, and every toolbar button's hover). */
+  function previewStyleOnSelection(delta) { previewRunEdit((base) => styledRuns(base, delta)); }
+  /** Command. Previews a RELATIVE size step (the toolbar's +/- hover and every
+   *  frame of the scrubbable size readout's drag). */
+  function previewSizeStepOnSelection(delta) { previewRunEdit((base) => sizeSteppedRuns(base, delta)); }
 
   /** Command. Reverts a staged style hover preview, restoring exactly what the
    *  session held before it (or clearing the preview outright when the session
@@ -380,7 +401,7 @@
   function applyStyleToSelection(delta) {
     if (plain) return; // plain-string widget: no runs to style (no format toolbar)
     const base = takeStyleBase();
-    if (selEnd > selStart) preview(styledOverSelection(base, delta));
+    if (selEnd > selStart) preview({ runs: styledRuns(base, delta), paras: base.paras });
     else pendingStyle = { ...pendingStyle, ...delta };
   }
   /** Command. Applies a paragraph-style delta to every paragraph the selection
@@ -403,13 +424,26 @@
       pendingStyle = { ...pendingStyle, [key]: cur === true ? false : true };
     }
   }
+  /** Command. THE ONE SIZE-STEP ENTRY POINT — Cmd+Plus/Minus, the toolbar's +/-
+   * buttons and the scrubbable size readout all land here, which is the fix for
+   * the two paths disagreeing (measured on a 48+18 selection, one step: the
+   * toolbar produced ONE run at 38, the keyboard ONE run at 50, and both destroyed
+   * the run boundary). `delta` is RELATIVE px, so a mixed selection keeps its
+   * relative differences: adjustRunSize resolves each covered run's own size and
+   * shifts it.
+   *
+   * The CARET branch cannot use a run edit — there is no covered run — so it
+   * stashes an absolute pending size for the next typed character, stepping from
+   * any size already pending (repeated presses accumulate, as toggleStyle's caret
+   * branch already does) and otherwise from the caret's own RESOLVED size. Both
+   * branches floor through the same steppedSize. */
   function stepSize(delta) {
     if (plain) return; // plain-string widget: size lives on the Inspector row
-    const cur = styleBaseResolved(); // the REAL state, resolved, never a hovered preview
-    const base = commonStyle(cur.runs, selStart, selEnd, "size") ?? runStyleAt(cur.runs, selStart).size ?? DEFAULT_TEXT_SIZE;
-    const size = Math.max(1, base + delta);
-    if (selEnd > selStart) applyStyleToSelection({ size });
-    else pendingStyle = { ...pendingStyle, size };
+    const base = takeStyleBase(); // the REAL value, never a hovered preview
+    if (selEnd > selStart) { preview({ runs: sizeSteppedRuns(base, delta), paras: base.paras }); return; }
+    const resolvedBase = normalizeRichText(base, inherited);
+    const from = pendingStyle.size ?? runStyleAt(resolvedBase.runs, focus).size ?? DEFAULT_PARA_SIZE;
+    pendingStyle = { ...pendingStyle, size: steppedSize(from, delta) };
   }
 
   // ── keyboard (the sink owns keydown; App.onKeydown early-returns on a focused
@@ -556,6 +590,12 @@
     window.__powerrp_textEdit = {
       applyStyle: applyStyleToSelection,
       applyPara: applyParaToSelection,
+      // The RELATIVE size step, exposed so a probe can drive the SAME entry point
+      // the toolbar buttons, the scrubbable readout and Cmd+/- all go through —
+      // proving the two paths agree instead of testing one of them twice.
+      stepSize,
+      previewSizeStep: previewSizeStepOnSelection,
+      endStylePreview,
       setSelection: (a, b) => setSel(a, b),
       getSelection: () => ({ start: selStart, end: selEnd, anchor, focus }),
       placeCaretAtScreen: (sx, sy) => { collapse(offsetAtScreen(sx, sy)); focusSink(); },
@@ -641,6 +681,8 @@
       onstyle={applyStyleToSelection}
       onstylepreview={previewStyleOnSelection}
       onstylepreviewend={endStylePreview}
+      onsizestep={stepSize}
+      onsizesteppreview={previewSizeStepOnSelection}
       onparastyle={applyParaToSelection}
       selRange={{ start: selStart, end: selEnd }}
       runsAt={() => styleBaseResolved().runs}

@@ -7,8 +7,11 @@
   as ONE undo unit when editing exits.
 
   Controls (the PPT target subset built now): Bold · Italic · Underline ·
-  Strikethrough · font-size stepper · font family · font Color · text HIGHLIGHT ·
-  glyph OUTLINE (color + width) · paragraph ALIGN left/center/right (Round 15.6).
+  Strikethrough · font-size stepper AND a scrubbable size readout between its two
+  buttons (R6-13.2) · font family · font Color · text HIGHLIGHT · glyph OUTLINE
+  (color + width) · paragraph ALIGN left/center/right (Round 15.6).
+  EVERY SIZE CONTROL HERE IS RELATIVE: it sends px to ADD, never a size to set, so
+  a mixed selection keeps its differences (core/richtext.adjustRunSize).
   Character toggles reflect the selection's COMMON value (indeterminate when
   mixed) via `onstyle`; the align buttons are PARAGRAPH-level and go through
   `onparastyle` (they set every paragraph the selection touches), reflecting the
@@ -26,9 +29,12 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import FontPicker from "./FontPicker.svelte";
   import ColorPicker from "../../../lib/ColorPicker.svelte";
-  import { commonStyle, paragraphRanges, paraStyleFor } from "../core/richtext.js";
+  import { commonStyle, runStyleAt, paragraphRanges, paraStyleFor, DEFAULT_PARA_SIZE, MIN_RUN_SIZE, SIZE_STEP } from "../core/richtext.js";
+  // The app's ONE way of writing "these values differ" — reused, not re-invented.
+  import { MIXED_MARK } from "../core/multiselect.js";
   import { fontOptions } from "../render_gpu/fonts.js";
 
   // app, boxScale (world→screen scale to counter), onstyle(delta), selRange,
@@ -44,12 +50,19 @@
   // stays app-agnostic about them (the GradientPresetPicker/AngleField callback
   // convention): only the controller knows the text model and the selection
   // RANGE a run-style delta applies over, so only it can stage one.
-  let { app, boxScale, onstyle, onstylepreview, onstylepreviewend, selRange, runsAt, onparastyle, parasAt, boxAlign } = $props();
+  //
+  // onsizestep(delta)/onsizesteppreview(delta) are the SIZE stepper's own seam,
+  // separate from onstyle because a size step is RELATIVE (px to ADD to every
+  // covered run) while every other control writes an ABSOLUTE value. This toolbar
+  // used to build a {size: n} delta itself from the selection's COMMON size, which
+  // is undefined on a MIXED selection — so it fell back to a constant and
+  // flattened 48+18 into one run at 38, while the keyboard path's differently
+  // computed fallback produced one run at 50. Both now call the controller's ONE
+  // stepSize; this file no longer knows how a size is derived, only by how much.
+  let { app, boxScale, onstyle, onstylepreview, onstylepreviewend, onsizestep, onsizesteppreview, selRange, runsAt, onparastyle, parasAt, boxAlign } = $props();
 
   // Which inline color popover is open (font | highlight | outline | null).
   let openPicker = $state(null);
-
-  const SIZE_STEP = 2; // px per +/- (matches the overlay's Cmd+/- step)
 
   // The selection's COMMON value for each style key (undefined = mixed). Reading
   // runsAt() makes these reactive to selRange + preview edits.
@@ -69,6 +82,12 @@
       outlineWidth: commonStyle(r, start, end, "outlineWidth"),
     };
   });
+
+  // The number the size scrubber SHOWS and measures its drag from: the selection's
+  // common size, or — when the sizes differ — the size at the selection START.
+  // Stable for the whole gesture, because `runs` is the PRE-PREVIEW base while a
+  // preview is staged, which is what lets the scrub send a CUMULATIVE delta.
+  let sizeSeed = $derived(common.size ?? runStyleAt(runs, selRange.start).size ?? DEFAULT_PARA_SIZE);
 
   const fonts = fontOptions().map((o) => ({ value: o.value, label: o.label }));
 
@@ -125,8 +144,19 @@
 
   function toggle(key) { previewing = false; onstyle(toggleDelta(common, key)); }
   function previewToggle(key) { previewing = true; onstylepreview(toggleDelta(common, key)); }
-  function stepSize(delta) { previewing = false; onstyle(sizeDelta(common.size, delta, DEFAULT_SIZE)); }
-  function previewStepSize(delta) { previewing = true; onstylepreview(sizeDelta(common.size, delta, DEFAULT_SIZE)); }
+  function stepSize(delta) { previewing = false; onsizestep(delta); }
+  function previewStepSize(delta) { previewing = true; onsizesteppreview(delta); }
+
+  /** Command. The scrubbable readout's live frames. DraggableNumber reports an
+   *  ABSOLUTE value, so the step it represents is that value minus what the
+   *  readout was showing when the gesture began — and `sizeSeed` IS that value
+   *  throughout the drag, because the toolbar reads the pre-preview base while a
+   *  preview is staged. Sending the CUMULATIVE delta (never a per-frame one) is
+   *  what makes the controller's re-apply-from-base preview land correctly. */
+  function scrubSize(next) { previewing = true; onsizesteppreview(next - sizeSeed); }
+  /** Command. The scrubbable readout settling — the durable write, through the
+   *  SAME relative entry point the +/- buttons use. */
+  function commitScrubSize(next) { previewing = false; onsizestep(next - sizeSeed); }
 
   /** Command. Stages a FONT preview and takes OWNERSHIP of the slot from the
    *  buttons, so a later toolbar-leave cannot revert the picker's preview. Last
@@ -212,11 +242,41 @@
       <iconify-icon icon="mdi:format-font-size-decrease" width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
-  <!-- The readout's "—" is the INDETERMINATE state (the selection spans more than
-       one size), which nothing on screen said. The stepper still works on it: it
-       steps from DEFAULT_SIZE, which is what the tip promises. -->
-  <Tooltip text={common.size != null ? `${common.size}px` : `Mixed sizes in the selection — the steppers work from ${DEFAULT_SIZE}px`}>
-    <span class="text-format-size">{common.size ?? "—"}</span>
+  <!-- THE SIZE READOUT IS A SCRUBBER (manifest R6-13.2: "a SCRUBBABLE number
+       widget, draggable like any numeric value").
+       WHY A BARE DraggableNumber AND NOT NumericField: NumericField's ƒ toggle
+       would be a lie — a RUN size is not an equation slot (core/expressions.js
+       never generates a text.runs.N.size path), and offering an escape hatch on a
+       value that cannot hold one is the "control that looks like it does
+       something" defect this round is REMOVING, not adding. The precedent for a
+       bare scrubber outside the panels is app.css's material-knob rule and
+       RenderCenterModal's form fields. No `step`: defaultValue supplies it
+       (numberStep.defaultStep(36) = 1, i.e. whole px), and `min` is the same floor
+       every size write already lands on.
+       IT STAYS LIVE ON A MIXED SELECTION, which is the ONLY place "relative"
+       actually bites: on a uniform selection relative and absolute coincide. So
+       the number shown is the selection's common size when it has one and its
+       SEED when it does not — the size at the selection START, which is
+       core/multiselect.rowMixedState's own word for "the defined starting point a
+       gesture on a mixed row needs" AND the exact fallback the keyboard path has
+       always stepped from. The mark beside it is that module's MIXED_MARK, reused
+       rather than re-invented, so the app has ONE way of saying "these differ".
+       The gesture is honest either way: it never SETS the number it displays, it
+       shifts every covered run BY the amount the number moved. -->
+  <Tooltip text={common.size != null
+    ? `Font size ${common.size}px — drag to scrub, click to type`
+    : `Sizes differ in the selection (${sizeSeed}px at the start) — dragging shifts every run by the same amount and keeps the differences`}>
+    <span class="text-format-size">
+      <DraggableNumber
+        label="Font size"
+        value={sizeSeed}
+        min={MIN_RUN_SIZE}
+        defaultValue={DEFAULT_PARA_SIZE}
+        suffix={common.size != null ? "" : MIXED_MARK}
+        oninput={scrubSize}
+        onchange={commitScrubSize}
+      />
+    </span>
   </Tooltip>
   <Tooltip text="Increase size (Cmd+Plus)">
     <button class="btn-icon" aria-label="Increase size" onpointerenter={() => previewStepSize(SIZE_STEP)} onclick={() => stepSize(SIZE_STEP)}>
@@ -278,7 +338,7 @@
       <ColorPicker value={common.outlineColor ?? "#000000"} label="Outline color" oninput={(v) => onstyle({ outlineColor: v, outlineWidth: (common.outlineWidth ?? 0) > 0 ? common.outlineWidth : DEFAULT_OUTLINE_W })} onchange={(v) => onstyle({ outlineColor: v, outlineWidth: (common.outlineWidth ?? 0) > 0 ? common.outlineWidth : DEFAULT_OUTLINE_W })} />
       <label class="text-format-range">
         Width
-        <input type="range" min="0" max="6" step="0.5" value={common.outlineWidth ?? 0} onmousedown={(e) => e.preventDefault()} oninput={(e) => onstyle({ outlineWidth: +e.currentTarget.value })} />
+        <input type="range" min={OUTLINE_W_MIN} max={OUTLINE_W_MAX} step={OUTLINE_W_STEP} value={common.outlineWidth ?? 0} onmousedown={(e) => e.preventDefault()} oninput={(e) => onstyle({ outlineWidth: +e.currentTarget.value })} />
       </label>
     </div>
   {/if}
@@ -289,10 +349,21 @@
   // width yet set (a sensible visible stroke; the user tunes it with the slider).
   const DEFAULT_OUTLINE_W = 1.5;
 
-  // The size a stepper counts from when the selection has NO common size (mixed
-  // runs, or a run that never set one). Matches the text plugin's own default so
-  // stepping an unset selection lands where the unstepped text already renders.
-  const DEFAULT_SIZE = 36;
+  // The outline-width slider's range, named because three bare literals in the
+  // markup answered none of "why 6?" or "why halves?". OUTLINE_W_MIN is 0 because
+  // 0 IS the off sentinel (core/richtext.runFrom), so the slider can turn the
+  // outline off without a second control. OUTLINE_W_MAX is DEFAULT_OUTLINE_W ×
+  // FOUR — the slider's job is to tune around the default, not to reach every
+  // representable width, and a run may still carry any value (the per-run state
+  // is unbounded; only this control's convenient range is). OUTLINE_W_STEP is a
+  // HALF-px grid, so the span is twelve notches, which a native range thumb can
+  // actually land on individually. Both are the values this slider shipped with
+  // and are FLAGGED PENDING RATIFICATION, the same disposition core/richtext.js
+  // gives its decoration-geometry fractions: named and justified here rather than
+  // left as bare literals in the markup, but not derived from a precedent.
+  const OUTLINE_W_MIN = 0;
+  const OUTLINE_W_MAX = DEFAULT_OUTLINE_W * 4;
+  const OUTLINE_W_STEP = 0.5;
 
   /**
    * Pure function. The run-style delta a boolean control would WRITE — the single
@@ -318,24 +389,11 @@
     return { [key]: common[key] === true ? false : true };
   }
 
-  /**
-   * Pure function. The run-style delta a size stepper would write: the common
-   * size nudged by `delta`, floored at 1px so repeated shrinking can never reach
-   * 0. `fallback` stands in when the selection has no common size.
-   *
-   * @param {number|undefined} size - the selection's common size, or undefined when mixed
-   * @param {number} delta - px to add (negative to shrink)
-   * @param {number} fallback - size to step from when `size` is undefined
-   * @returns {{size:number}}
-   *
-   * @example sizeDelta(36, 2, 36)  // => { size: 38 }
-   * @example sizeDelta(36, -2, 36) // => { size: 34 }
-   * @example
-   * // Mixed sizes step from the fallback, so the control still does something:
-   * sizeDelta(undefined, 2, 36) // => { size: 38 }
-   * @example sizeDelta(2, -2, 36) // => { size: 1 }  (floored, never 0)
-   */
-  export function sizeDelta(size, delta, fallback) {
-    return { size: Math.max(1, (size ?? fallback) + delta) };
-  }
+  // THERE IS NO sizeDelta HERE ANY MORE, on purpose. It returned ONE ABSOLUTE
+  // {size: n} built from the selection's common size, which applyRunStyle then
+  // spread over every covered run — so a mixed 48+18 selection collapsed to a
+  // single run at the fallback ±2, destroying the boundary, and it disagreed with
+  // the keyboard path that computed its fallback differently (38 vs 50, measured).
+  // The relative primitive core/richtext.adjustRunSize replaced it, reached
+  // through the controller's ONE stepSize via onsizestep/onsizesteppreview.
 </script>

@@ -376,7 +376,21 @@ try {
     // nothing else: left of the popover, below the floating toolbar, inside the
     // scene canvas. A few glyphs of a 96u face are ample signal; what matters is
     // that every pixel in frame can ONLY have come from the render.
-    const GAP = 4;
+    //
+    // THE GAP MUST CLEAR THE FLOATING SURFACES' SHADOW, NOT JUST THEIR BOX. Both
+    // the popover and the toolbar paint `--a-glass-shadow`, whose outer term is
+    // `--a-palette-shadow: 0 12px 40px …` — a FORTY-pixel blur that bleeds onto
+    // the canvas beside them. At the old GAP of 4 the crop sat inside that bleed,
+    // and Escape CLOSES the popover, so the baseline shot carried the shadow and
+    // the post-Escape shot did not: a difference with nothing to do with the
+    // typeface under test. It measured mad=0.366 against a SAME_MAX of 0.5 — a
+    // pre-existing red waiting for any layout change to push it over, which
+    // R6-13.2's wider size readout duly did (the popover shifted 31px right, the
+    // crop grew 31px, and the same artifact measured 0.628 and FAILED three
+    // assertions). Clearing the blur radius takes it to mad=0.007: the assertion
+    // now measures the glyphs and nothing else, and is no longer hostage to where
+    // the popover happens to sit.
+    const GAP = 40;
     const left = Math.max(x0 - pad, c.left);
     const right = Math.min(x1 + pad, pop.left - GAP, c.right);
     const top = Math.max(y0 - pad, tb.bottom + GAP, c.top);

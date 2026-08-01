@@ -29,9 +29,16 @@
  * no tree walk, and the layout's glyph runs carry that offset back for hit-
  * testing. (Justification recorded per the task's "justify WHY".)
  *
- * TWEEN — the whole value is a NON-NUMERIC leaf (arrays are leaf values to the
- * delta walker, core/deltas.isTree), so it SNAPS DISCRETELY at alpha > 0
- * (manifest: "rich text snaps discretely"). No per-run interpolation.
+ * TWEEN — `runs` and `paras` are ARRAYS, so the delta walker treats each as ONE
+ * leaf (core/deltas.isTree) and hands it whole to core/interpolators.interpolate.
+ * THAT IS NOT A DISCRETE SNAP, and this comment used to say it was (so did the
+ * manifest; both were measured wrong, bare-node and live, in Round 6). interpolate
+ * RECURSES into two arrays of EQUAL LENGTH and into two records with the SAME KEY
+ * SET, so rich text interpolates PER RUN, PER KEY whenever the two keyframes agree
+ * on the run count and on each run's key set: sizes 48/18 → 54/24 lands on 51/21 at
+ * alpha 0.5, colors cross-fade per channel, and booleans/strings snap the way every
+ * discrete leaf does. Only a STRUCTURAL change — a different run count, or a run
+ * that gained/lost a style key — falls back to snapping to the target value.
  *
  * ── THE LAYOUT ───────────────────────────────────────────────────────────────
  * layoutRichText(rich, boxW, measureRun) is PURE and DOM-FREE: all font metrics
@@ -63,6 +70,28 @@ export const PARA_STYLE_KEYS = ["align", "lineSpacing", "charSpacing", "wordSpac
  * multipliers/px offsets (lineSpacing × natural line height; char/wordSpacing
  * add device-independent px between chars/words). */
 export const DEFAULT_PARA = { align: "left", lineSpacing: 1, charSpacing: 0, wordSpacing: 0 };
+
+/** THE canonical font size a run falls back to when neither the run nor its
+ * widget supplies one (runFrom's floor). It is EXPORTED because it was not, and
+ * the cost was measured: twelve local re-declarations of the bare literal 36
+ * across plugins, the two text-editing components, the built-in plugin library
+ * and render_gpu/skia/text_layout.js — one of which documents itself as "mirrors
+ * core/richtext DEFAULT_PARA_SIZE". That is the hand-maintained-mirror defect
+ * class this codebase already names; an export is the whole cure. */
+export const DEFAULT_PARA_SIZE = 36;
+
+/** The smallest font size any size edit may produce. A run at 0 would be
+ * invisible with no way back — repeated shrinking must asymptote at "tiny", not
+ * at "gone" — so every size write goes through steppedSize, which floors here. */
+export const MIN_RUN_SIZE = 1;
+
+/** Font-size px per stepper press: the increment BOTH the floating toolbar's
+ * +/- buttons and Cmd+Plus / Cmd+Minus apply (the PowerPoint default increment).
+ * ONE declaration on purpose. It used to be declared twice — web/TextFormatToolbar
+ * and web/TextEditController — and the pair beside it (the size a MIXED selection
+ * counted from) had already drifted, so the same gesture on the same selection
+ * produced 38 from the toolbar and 50 from the keyboard. */
+export const SIZE_STEP = 2;
 
 // ── vertical alignment (box-level; Round 15.6) ───────────────────────────────
 
@@ -492,6 +521,53 @@ export function paraStyleFor(paras, i, boxStyle = {}) {
   return { ...DEFAULT_PARA, ...box, ...(paras?.[i] ?? paras?.[0] ?? {}) };
 }
 
+// ── does a BOX-LEVEL Inspector row still reach anything? ─────────────────────
+// A text widget's font / size / bold / color rows underlie every RUN and its
+// align / lineSpacing / charSpacing / wordSpacing rows underlie every PARAGRAPH
+// (runFrom and paraStyleFor respectively). Both layerings put the stored element
+// value FIRST — that is the per-run/per-paragraph feature — so a value in which
+// EVERY element stores the key leaves the box row nothing to supply. The row is
+// then not merely inert: it keeps displaying the box's value while the canvas
+// draws the runs' (projects/"Untitled cheese" shows 36 / system / #1a1a2e in the
+// box while the glyphs render 76 / futura / #000000). A row that CONTRADICTS the
+// canvas is worse than an absent one, so it hides — the same answer, and the same
+// mechanism (`visibleWhen`), as the user's own ruling on stroke width under an
+// OFF stroke material (core/properties.js strokeMaterialIsOn).
+
+/**
+ * Pure function. Builds the `visibleWhen(state)` predicate for a text widget's
+ * BOX-LEVEL row of style key `key` — true while at least one run (for a
+ * RUN_STYLE_KEYS key) or one paragraph (for a PARA_STYLE_KEYS key) still leaves
+ * that key for the box to supply.
+ *
+ * The key decides which axis is consulted, and an unknown key THROWS rather than
+ * defaulting to either one: a typo would otherwise produce a row that hides for a
+ * reason nobody can name, which is exactly the class of defect this is fixing.
+ *
+ * Args:
+ *   key (string): a RUN_STYLE_KEYS or PARA_STYLE_KEYS name
+ *
+ * Returns:
+ *   fn: (state) → boolean, reading only `state.text`
+ *
+ * @example boxStyleRowVisibility("size")({text: {runs: [{text: "a"}], paras: [{}]}}) // true (a bare run inherits it)
+ * @example boxStyleRowVisibility("size")({text: {runs: [{text: "a", size: 76}], paras: [{}]}}) // false (the only run overrides it)
+ * @example boxStyleRowVisibility("size")({text: {runs: [{text: "a", size: 76}, {text: "b"}], paras: [{}]}}) // true (the second run still inherits)
+ * @example boxStyleRowVisibility("align")({text: {runs: [{text: "a"}], paras: [{align: "center"}]}}) // false (the only paragraph overrides it)
+ * @example boxStyleRowVisibility("align")({text: {runs: [{text: "a"}], paras: [{}]}}) // true
+ * @example boxStyleRowVisibility("size")({}) // true (no rich value yet ⇒ nothing overrides anything)
+ */
+export function boxStyleRowVisibility(key) {
+  const perRun = RUN_STYLE_KEYS.includes(key);
+  if (!perRun && !PARA_STYLE_KEYS.includes(key))
+    throw new Error(`boxStyleRowVisibility: "${key}" is neither a run style key (${RUN_STYLE_KEYS.join(", ")}) nor a paragraph style key (${PARA_STYLE_KEYS.join(", ")})`);
+  return (state) => {
+    const value = unresolvedRichText(state?.text);
+    const elements = perRun ? value.runs : value.paras;
+    return elements.some((e) => e[key] === undefined);
+  };
+}
+
 // ── word wrap ─────────────────────────────────────────────────────────────────
 
 /**
@@ -790,8 +866,6 @@ export function richTextDraws(cmd, measureRun) {
   return { textDraws, highlights, lines, width: layout.width, height: layout.height };
 }
 
-const DEFAULT_PARA_SIZE = 36;
-
 /** Pure helper. Wraps a measureRun to add per-char charSpacing and per-space
  * wordSpacing into the advance (so wrap + alignment see spaced widths). Ascent/
  * descent pass through unchanged. */
@@ -1011,6 +1085,88 @@ export function splitRunAt(runs, offset) {
  * @example applyRunStyle([{text: "abcd"}], 0, 2, {bold: false}, {bold: true}).length // 2 (un-bold half of a BOLD box: kept, not merged away)
  */
 export function applyRunStyle(runs, start, end, styleDelta, inherited = {}) {
+  return overCoveredRuns(runs, start, end, () => styleDelta, inherited);
+}
+
+/**
+ * Pure function. Steps the FONT SIZE of every character in [start, end) BY
+ * `delta`, so a MIXED selection keeps its relative differences: 48+18 stepped by
+ * +2 becomes 50+20, not one flattened run. Otherwise identical to applyRunStyle —
+ * runs split at the boundaries, only fully-covered runs change, the result
+ * re-merges to canonical form, the input is never mutated, and an empty selection
+ * is a no-op (the caret's pending style is the editor's job, not a run edit).
+ *
+ * READS RESOLVED, WRITES EXPLICIT, and that asymmetry is deliberate. The step must
+ * start from what the user SEES, so each covered run's current size comes from
+ * runFrom (run key ‹ widget `inherited` ‹ DEFAULT_PARA_SIZE); the result is then
+ * STORED on the run, which shadows the box-level Size row for that run from then
+ * on. Storing a resolved value is normally the SHADOWING defect (see runFrom), but
+ * pressing a size stepper IS the user choosing a size, and only the runs the
+ * selection covers are stamped — so the box row keeps supplying every run the
+ * gesture did not touch.
+ *
+ * WHY THIS EXISTS AS ITS OWN PRIMITIVE rather than a {size: n} delta: an absolute
+ * delta cannot express "shift each run by 2". The floating toolbar used to build
+ * one from the selection's COMMON size, which is `undefined` on a mixed selection,
+ * so it fell back to a constant — flattening 48+18 to a single run at 38 while the
+ * keyboard path, computing its fallback differently, produced a single run at 50.
+ * Both entry points now call this.
+ *
+ * Args:
+ *   runs (object[]): current runs (resolved or unresolved)
+ *   start (number): selection start char offset
+ *   end (number): selection end char offset
+ *   delta (number): px to add to every covered run's size (negative to shrink)
+ *   inherited (object): widget-level style an absent run key resolves to
+ *
+ * Returns:
+ *   object[]: new runs, canonicalized
+ *
+ * @example adjustRunSize([{text: "Big ", size: 48}, {text: "small", size: 18}], 0, 9, 2).map((r) => r.size) // [50, 20]
+ * @example adjustRunSize([{text: "Big ", size: 48}, {text: "small", size: 18}], 0, 9, 2).length // 2 (the boundary SURVIVES — the whole point)
+ * @example adjustRunSize([{text: "abcd"}], 0, 4, 2, {size: 60}).map((r) => r.size) // [62] (an absent size resolves through the BOX row first)
+ * @example adjustRunSize([{text: "abcd"}], 0, 4, 2).map((r) => r.size) // [38] (…then through DEFAULT_PARA_SIZE)
+ * @example adjustRunSize([{text: "ab", size: 10}, {text: "cd", size: 10}], 0, 4, 2).length // 1 (equal sizes still merge — canonical form)
+ * @example adjustRunSize([{text: "abcd", size: 2}], 0, 4, -99).map((r) => r.size) // [1] (floored at MIN_RUN_SIZE, never 0)
+ * @example adjustRunSize([{text: "abcd", size: 20}], 1, 3, 5).map((r) => r.size) // [20, 25, 20] (only the covered characters move)
+ * @example adjustRunSize([{text: "abcd", size: 20}], 2, 2, 5).map((r) => r.size) // [20] (empty selection is a no-op)
+ */
+export function adjustRunSize(runs, start, end, delta, inherited = {}) {
+  return overCoveredRuns(
+    runs, start, end,
+    (run) => ({ size: steppedSize(runFrom(run, inherited).size, delta) }),
+    inherited
+  );
+}
+
+/**
+ * Pure function. A font size moved by `delta` and floored at MIN_RUN_SIZE — the
+ * ONE place a size step decides what "smaller" bottoms out at, shared by
+ * adjustRunSize (a selection) and the editor's caret path (the pending style for
+ * text not yet typed), so the two can never disagree about the floor.
+ *
+ * @example steppedSize(36, 2) // 38
+ * @example steppedSize(36, -2) // 34
+ * @example steppedSize(2, -10) // 1 (floored, never 0 or negative)
+ */
+export function steppedSize(size, delta) {
+  return Math.max(MIN_RUN_SIZE, size + delta);
+}
+
+/**
+ * Pure helper. The shared spine of every per-selection run edit: split the run
+ * list at both selection boundaries, overlay `deltaFor(run)` onto each FULLY
+ * COVERED run, and re-merge to canonical form. Offsets are clamped; an empty
+ * selection returns the input canonicalized.
+ *
+ * `deltaFor` is a function of the run rather than a fixed object ONLY because the
+ * two public ops differ exactly there: applyRunStyle overlays the SAME delta on
+ * every covered run, adjustRunSize computes a per-run one from the run's own
+ * resolved size. The public API stays two named primitives — this indirection is
+ * private, and exists so the twelve lines of split/cover/merge below are written
+ * once instead of twice (the hand-maintained-copy defect, in miniature).
+ */
+function overCoveredRuns(runs, start, end, deltaFor, inherited) {
   const len = runsLength(runs);
   const lo = Math.max(0, Math.min(start, end, len));
   const hi = Math.min(len, Math.max(start, end, 0));
@@ -1022,7 +1178,7 @@ export function applyRunStyle(runs, start, end, styleDelta, inherited = {}) {
   for (const r of split) {
     const rlen = [...(r.text ?? "")].length;
     // A run lies fully inside [lo, hi) iff its whole extent is covered.
-    if (pos >= lo && pos + rlen <= hi && rlen > 0) out.push({ ...r, ...styleDelta });
+    if (pos >= lo && pos + rlen <= hi && rlen > 0) out.push({ ...r, ...deltaFor(r) });
     else out.push({ ...r });
     pos += rlen;
   }
