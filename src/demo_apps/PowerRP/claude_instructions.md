@@ -273,6 +273,51 @@ says introducing the one true home without a sweep never collects them in the fi
 **Both failures are silent, and both leave a codebase that looks unified in the docs and is
 not in the code.**
 
+### MEASURE DISTINCTNESS OVER THE LIT SET, NEVER OVER THE WHOLE FRAME
+
+When you compare two renders to decide whether they are meaningfully different — preset
+against preset, before against after — **reduce over the LIT SET: the pixels where either
+frame differs from the un-preset reference. A whole-frame mean is not a weaker version of
+this; it is a different number, and for anything that does not fill its box it is
+meaningless.**
+
+**Measured, twice, and it changed a shipping decision both times.** `god_rays` first showed
+the same pairs moving an order of magnitude between the two reductions, with three real
+collisions visible only under the lit-set metric. Then the connector family, where a thin
+arrow touches a tiny fraction of the canvas, gave the definitive numbers:
+
+| pair | verdict | lit-set | whole-frame | dilution |
+|---|---|---|---|---|
+| Extension Line ↔ Hairline Pointer | real collision, CUT | 5.53 | 0.030 | **185×** |
+| Flowchart Step ↔ Bidirectional Link | real distinction, KEPT | 15.14 | 0.132 | **114×** |
+
+Under the whole-frame mean both sit below 0.14 and **no threshold separates them** — so the
+agent would have shipped "Hairline Pointer", a preset whose head does not read, which makes
+its own name false. Its words: *"I would never have caught this by eye."*
+
+`litSetDistance` lives in `tests/imageDistinctness.js` — **the established seam with three
+consumers. Do not write a fourth hash transcription.** `LIT_MIN_DELTA` is 1, not 2.
+
+**CORRECTION, SAME DAY, AND IT NARROWS THE RULE I FIRST WROTE HERE.** I stated this as
+"never over the whole frame", full stop. The next family to adopt it MEASURED ITS OWN
+COVERAGE and found it is not the sparse case: god rays covers **96.5%** of the frame for most
+pairs, so the two reductions agree within 3% and the lit-set choice buys nothing. **The
+dilution is a function of COVERAGE, not of the metric being better** — and it is still real
+where coverage drops (that family's low-density rows dilute 4.3×: Harbour Searchlight vs
+Dusty Window is 0.886 whole-frame against 3.774 lit-set).
+
+**So the honest rule is not "always use lit-set". It is: REPORT COVERAGE BESIDE THE MEAN, and
+GATE ON `maxAbs`, which needs no reduction choice at all.** A family that adopts lit-set
+without measuring its own coverage is cargo-culting a connector's problem — which is exactly
+how a good measurement becomes a ritual. I generalised from one dramatic case before a second
+had been taken; the agent that took it corrected me, and it was right.
+
+**AND THE METRIC DOES NOT GET THE LAST WORD.** The same agent KEPT a pair at 15.14 — the
+narrowest margin in its family, with the next at 62, a glaring outlier — because the contact
+sheet showed one head versus two, which is the entire one-way/two-way semantic. Gaming the
+number with a cosmetic route tweak would have been dishonest. **The number finds candidates
+for your judgement; it does not replace it. When you override it, say so and say why.**
+
 ### A REVERT MUST REVERT ITS DOCTRINE, IN THE SAME COMMIT
 
 **CLAUDE-ORIGINATED, 2026-08-01, from a measured instance.** `aba0aa9` wrote both the
@@ -1130,10 +1175,25 @@ is the actual rule.
 
 - **R6-3.1 THE THESIS.** "Presets are how we get inspiration. We need those." Each
   preset is a designed, inspiring starting point that teaches what the widget can do.
-- **R6-3.2 MEASURED GAP: 14 of 73 plugins declare `presets`.** Present:
-  `brightness_contrast`, `comic`, `crt`, `frosted_glass`, `glitch`, `globe_map`,
-  `god_rays`, `lens_flare`, `sky`, `video_time_scrub`, `filmstrip`,
-  `paper_peacock`, `pdf_packet`, `shapeshifter`. The other 59 have none.
+- **R6-3.2 THE GAP. DO NOT QUOTE A NUMBER FROM THIS FILE — run
+  `node tests/preset_contract_test.js`, which prints the census.** This bullet has now
+  been wrong TWICE with two different sets of digits ("14 of 73"; then "33 of 96, 391
+  presets"), and each stale figure was re-quoted by later sections and briefed to agents
+  as fact. Both were also too LOW at the time of writing, for a structural reason worth
+  knowing: `builtinRoster()` includes the built-in plugin-ASSET library and
+  `presetFamiliesOf` resolves `presetFamilies` as well as `presets`, so **any count taken
+  by grepping for `presets:` was always an undercount** — and function-generated tables
+  (mandelbrot's) are invisible to a grep entirely. The gate is the only honest source, and
+  it is cheap. *(Same remedy `<app>/CLAUDE.md` applies to the test count, for the same
+  reason: a pinned number in prose rots while nobody notices.)*
+- **R6-3.2b THE REAL WORK IS INSTALLATION, NOT DESIGN.** `.frenzy/round6/presets/` holds
+  roughly 721 DESIGNED presets across 13 family documents, key-validated against the live
+  registry, of which essentially none of the non-optical ones were ever installed. A
+  designed-and-shelved preset is worth nothing to the user; **prefer shipping those over
+  inventing more.** Where a family doc is stale, translate it — `presets/arrows.md`'s 96
+  entries write the RETIRED `headMode` and named a head-shape enum and arrow dashes as
+  their two biggest blockers, both of which `b6c44cb` and `3f02a2a` have since closed, so
+  its own pessimistic conclusion no longer holds.
 - **R6-3.3 NOT STUPID PRESETS.** "Not just stupid presets, every single one needs
   to have sub-agents that really think it out and do tons of research." Physical
   grounding where physics applies, graphic-design/cultural grounding where it does
@@ -1802,6 +1862,20 @@ picker closing + reopening within a session … a full page reload resets it."* 
 session state. It survives clicking off a widget and back on; a browser reload resets it. NOT
 localStorage, NOT the document.** A divider fraction is editor chrome — putting it in the
 document would make it keyframe, tween and appear in renders.
+
+**CORRECTION, ON IMPLEMENTATION (2026-08-01): "NOT localStorage" IS THE PART THAT WAS WRONG,
+and the code is right to ignore it.** The FontPicker precedent is real, but the divider fraction
+this section is about has ALWAYS been localStorage (`web/app.svelte.js:213`) — I generalised
+from a neighbouring control instead of reading the one under discussion. The consequence made
+the error obvious the moment it was built: the NEW keyed family would persist LESS than the old
+single fraction it generalises, so the same gesture on two dividers would behave differently,
+which contradicts this section's own "identical means the same kind of UI". The alternatives
+were to weaken the existing divider — an unrequested regression to a control the user already
+relies on — or to weaken only the new one. **Both dividers use the existing localStorage
+mechanism. The document exclusion stands** (editor chrome must never keyframe or render); only
+the localStorage half is retracted. If reload-reset is genuinely wanted it changes the EXISTING
+divider too, and should be decided as one thing rather than arrived at by a new feature
+quietly disagreeing with an old one.
 
 **SCOPE NOTE FOR IMPLEMENTATION:** nesting is DEFERRED by the user's own instruction
 ("don't worry about nested yet"), so with one flat variable-property fraction the "same level"
