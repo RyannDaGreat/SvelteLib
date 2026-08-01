@@ -32,6 +32,7 @@ import {
   regularOpeningRadius,
 } from "../core/optics.js";
 import { sameRowContract } from "../core/multiselect.js";
+import { pointInOutlines } from "../core/outline.js"; // the widget's OWN inside-test, so the gate and the hit-test cannot disagree
 import { subpathsPathD } from "../core/shapes.js";
 import { retypePlan, rowsByKey } from "../core/retype.js";
 import { aperturePlugin, openingOutline } from "../plugins/aperture.js";
@@ -369,5 +370,53 @@ test("(7c) DISTINCTNESS: no two presets draw the same assembly — AND none IS t
 function geometryOf(props) {
   return irisBladesPlugin.emit(stateOf(props), null, WORLD).map((o) => o.d).join("|");
 }
+
+// ── THE LEAVES DO NOT OVERLAP, WHICH IS WHY NO PAINT ORDER CAN BE WRONG ──────
+// The user, twice: "the whole point of an Iris is that you can't really z order
+// it, you got to do the geometry correctly … there's one blade on the top right
+// that is on top of all the others." He is right about the cause. The physical
+// stack is CYCLIC — leaf k laps k+1 for every k, INCLUDING N−1 lapping 0 — and no
+// painter's-algorithm order can express a cycle, so any order breaks it somewhere.
+// Leaves used to run to the rim and overlap; now each is bounded by its
+// successor's edge, so the drawn regions are disjoint and there is no order left
+// to be wrong.
+//
+// THE REST OF THIS FILE CANNOT SEE THAT CHANGE — every assertion above passes
+// against BOTH the overlapping and the disjoint construction, because the UNION is
+// identical and the union is what they measure. That is exactly why this test
+// exists, and it is the one that fails on the old code.
+test("(8) THE LEAVES ARE PAIRWISE DISJOINT — no point is covered twice", () => {
+  const inLeaf = (outline, x, y) => pointInOutlines([outline], x, y);
+  for (const [blades, stopDown, curvature] of [[8, 0.5, 0.4], [6, 0.75, 0], [12, 0.35, 1], [5, 0.6, -0.5]]) {
+    const s = stateOf({ blades, stopDown, curvature });
+    const leaves = [];
+    for (let k = 0; k < blades; k++) { const o = irisLeafOutline(s, k); if (o) leaves.push(o); }
+    assert.equal(leaves.length, blades, `${blades}/${stopDown}: expected one outline per blade`);
+    // A dense sweep over the whole box. Boundary samples legitimately land on two
+    // leaves at once (adjacent regions SHARE an edge, and that shared edge is the
+    // point of the construction), so a handful of hits is expected; a leaf lying
+    // ACROSS another shows up as a large area, orders of magnitude more.
+    const N = 140, doubled = [];
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const x = BOX.x + (BOX.w * (i + 0.5)) / N, y = BOX.y + (BOX.h * (j + 0.5)) / N;
+      let hits = 0;
+      for (const o of leaves) if (inLeaf(o, x, y)) hits++;
+      if (hits > 1) doubled.push([x, y, hits]);
+    }
+    const pct = (100 * doubled.length) / (N * N);
+    assert.ok(pct < 0.5,
+      `${blades} blades / stopDown ${stopDown}: ${doubled.length} of ${N * N} samples (${pct.toFixed(2)}%) lie in TWO OR MORE leaves — ` +
+      `the leaves overlap, so which one is on top depends on paint order and the wrap seam will read as one blade above all the others`);
+  }
+});
+
+// A ROTATIONAL-SYMMETRY TEST WAS WRITTEN HERE AND DELETED, which is worth one
+// note so it is not written again. "Rotate by one pitch, get the same picture"
+// sounds like the user's complaint stated formally, but it does not discriminate:
+// every leaf was ALREADY the same shape rotated, before and after. What the old
+// construction broke was not the leaves' symmetry but the PAINT ORDER's — and the
+// order is not in the geometry, so no comparison of outlines can see it. (8) is
+// the assertion that can, because disjoint regions are the property that makes
+// order irrelevant in the first place.
 
 console.log(`\niris_blades tests: ${passed} passed  (${irisBladesPlugin.presets.length} presets, ${SWEPT_BLADES.length} blade counts swept)`);
