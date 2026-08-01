@@ -121,49 +121,209 @@ export function godRaysLightOffset(s) {
  * space rather than an arbitrary dial spin — the four march knobs trade against each
  * other, so they are tuned as a set.
  *
+ * ── THE GAIN LAW, AND THE REASON EVERY ROW WRITES weight === exposure ─────────
+ * The march accumulates `sourceKey(tap) · decay^i · weight` and then scales the sum by
+ * `exposure`, so the PEAK possible ray value is
+ *
+ *     G = weight · exposure · S,     S = (1 − decay^samples) / (1 − decay)
+ *
+ * and the shader clamps to 1. weight and exposure therefore appear ONLY as a product:
+ * two presets that trade one against the other at a fixed G are PIXEL-IDENTICAL, which
+ * is a dead row wearing two names. Every map below writes them EQUAL so the pair reads
+ * as one brightness dial and that mistake is unavailable.
+ *
+ * MEASURED CLIP KNEE: G ≈ 0.45 on the CPU-Skia occlusion fixture — flat-white coverage
+ * jumps 5× between G = 0.417 and G = 0.481. Every G below is under it, and the loudest
+ * (Cinematic Beams, 0.380) is deliberately the ceiling of the set. This is not a
+ * hypothetical bound: the defaults were once 0.34/0.42 (G = 4.58, 95% of the frame flat
+ * white) and three of the first five presets shipped past the knee, up to G = 1.017 —
+ * past the shader's own clamp, so guaranteed white before any scene is considered.
+ * REMEMBER THE RAYS ARE ADDITIVE: the real clip point is G + backdrop, so a preset that
+ * is clean over a dim interior can still blow out over a bright sky.
+ *
+ * ── THE ORDER IS THE MEDIUM, THEN THE SUN'S OWN DAY ───────────────────────────
+ * Between runs: clear air → water droplets → mineral dust and interiors → the water
+ * column → manufactured media → beyond the atmosphere. Particle size decides whether the
+ * medium tints the beam (above ~1 µm it is Mie, so it does NOT — the tint below is the
+ * SOURCE's colour or the medium's body colour, never a scattering colour); optical depth
+ * decides how far the beam carries; absorption decides whether it reddens or just dims.
+ * Within run 1, the sun's own day, matching sky.js's preset order. Within run 3, the
+ * APERTURE, because the aperture and not the dust sets the edge: penumbra ≈ d/108 from
+ * the sun's 0.53° disc, so a 9 m oculus 43 m up is only 4.4% soft while a 0.2 m hole past
+ * 21.6 m is entirely penumbral. Those two facts are maskSoftness 0.03 and 0.34 below.
+ *
  * NO PRESET CARRIES `lightWorldX`/`lightWorldY`. A preset describes how the light
  * SCATTERS, not where the light IS — and clobbering a position the author placed (or
  * bound to a sun with an equation) would be destructive in a way no other knob is.
+ * Nor does any preset name a knob outside GOD_RAYS_FILL_PARAMS: tests/god_rays_test.js
+ * checks every key against that schema, so an `opacity` or a `blendMode` here (which the
+ * lens flare's presets DO carry) takes the suite red.
  */
 const PRESETS = [
-  {
-    name: "Subtle Morning",
-    description: "Early low sun through a window: short, soft, barely-there shafts that read as atmosphere rather than as an effect. Low exposure, quick decay, a warm-white tint.",
-    props: {
-      samples: 48, density: 0.55, decay: 0.955, weight: 0.05, exposure: 0.05,
-      threshold: 0.68, maskSoftness: 0.22, maskStrength: 1, dither: 1, tint: "#fff3df",
-    },
-  },
+  // ── RUN 1: CLEAR AIR AND CLOUD — sub-micron aerosol, kilometres of path ─────
   {
     name: "Cinematic Beams",
-    description: "The full anamorphic-trailer look: long beams carrying right across the frame, hot enough to bloom, keyed tightly so only the sun and the sky nearest it feed them. The default answer to 'make it look cinematic'.",
+    description: "The full anamorphic-trailer look: long beams carrying right across the frame, keyed tightly so only the sun and the sky nearest it feed them. The brightest set here and the default answer to 'make it look cinematic'.",
     props: {
-      samples: 96, density: 0.95, decay: 0.982, weight: 0.13, exposure: 0.13,
-      threshold: 0.6, maskSoftness: 0.16, maskStrength: 1, dither: 1, tint: "#ffffff",
-    },
-  },
-  {
-    name: "Dusty Window",
-    description: "Hard shafts through a dusty interior: a high threshold so ONLY the window opening itself is a source, slow decay so the beams stay parallel and solid, and a slightly warm cast from the dust.",
-    props: {
-      samples: 80, density: 0.85, decay: 0.978, weight: 0.14, exposure: 0.11,
-      threshold: 0.76, maskSoftness: 0.08, maskStrength: 1, dither: 1, tint: "#ffe6bd",
-    },
-  },
-  {
-    name: "Underwater Caustics",
-    description: "Light shafts falling through water: cool blue-green, quite long, and a LOW threshold so the whole bright upper water column contributes rather than a single disc. Pair with a blue-tinted sky.",
-    props: {
-      samples: 88, density: 0.9, decay: 0.972, weight: 0.10, exposure: 0.12,
-      threshold: 0.44, maskSoftness: 0.3, maskStrength: 1, dither: 1, tint: "#b6ecff",
+      samples: 96, density: 0.95, decay: 0.982, weight: 0.091, exposure: 0.091,
+      threshold: 0.62, maskSoftness: 0.16, maskStrength: 1, dither: 1, tint: "#ffffff",
     },
   },
   {
     name: "Storm Break",
-    description: "The one hole in a heavy overcast: very high threshold and a tight knee, so only the blown-out gap in the cloud is a source and everything else is an occluder — which is exactly what makes a single dramatic shaft instead of a general glow.",
+    description: "The one hole in a heavy overcast — the highest threshold and one of the tightest knees in the set, so only the blown-out gap is a source and the whole deck is an occluder: one dramatic shaft instead of a general glow, on a real 300-to-1000-fold illuminance step.",
     props: {
-      samples: 96, density: 1, decay: 0.986, weight: 0.16, exposure: 0.12,
-      threshold: 0.82, maskSoftness: 0.06, maskStrength: 1, dither: 1, tint: "#f4f8ff",
+      samples: 128, density: 1, decay: 0.99, weight: 0.06, exposure: 0.06,
+      threshold: 0.86, maskSoftness: 0.05, maskStrength: 1, dither: 1, tint: "#f2f7ff",
+    },
+  },
+  {
+    name: "Subtle Morning",
+    description: "Early low sun through a hazy window: short, soft, barely-there shafts that read as atmosphere rather than as an effect — the shortest march in the set, a quick decay, and a threshold low enough that the lit morning air feeds the beams rather than the disc alone.",
+    props: {
+      samples: 48, density: 0.55, decay: 0.955, weight: 0.08, exposure: 0.08,
+      threshold: 0.6, maskSoftness: 0.22, maskStrength: 1, dither: 1, tint: "#ffe3c2",
+    },
+  },
+  {
+    name: "Sunset Cloud Break",
+    description: "Crepuscular rays proper, with the sun about five degrees up: ten airmasses of slant path leave the beam roughly six times richer in red than in blue, and the shafts are near-parallel — only perspective makes them fan out from the sun.",
+    props: {
+      samples: 96, density: 1, decay: 0.982, weight: 0.084, exposure: 0.084,
+      threshold: 0.8, maskSoftness: 0.07, maskStrength: 1, dither: 1, tint: "#ffad6a",
+    },
+  },
+  {
+    name: "Moonlight Through Cloud",
+    description: "Full moonlight at about a millionth of sunlight — the faintest preset here by a factor of two, long and cool. The cool cast is the PERCEPT, not the spectrum: moonlight is sunlight off a 13.6%-albedo grey body and is fractionally REDDER than daylight, and the silver is the Purkinje shift in a dark-adapted eye.",
+    props: {
+      samples: 96, density: 1, decay: 0.986, weight: 0.03, exposure: 0.03,
+      threshold: 0.78, maskSoftness: 0.18, maskStrength: 1, dither: 1, tint: "#e6eeff",
+    },
+  },
+  // ── RUN 2: WATER DROPLETS — 1-40 µm, achromatic, and the density decides the reach ─
+  {
+    name: "Forest Canopy Mist",
+    description: "Sunflecks through a broadleaf canopy at dawn: many small gaps rather than one, in radiation fog dense enough that the whole lit air glows and not just the sun — hence the lowest threshold but one. Deliberately NOT green: the beam is unfiltered sunlight through a hole, and the green belongs to the diffuse light that came through leaves.",
+    props: {
+      samples: 80, density: 0.95, decay: 0.978, weight: 0.075, exposure: 0.075,
+      threshold: 0.54, maskSoftness: 0.28, maskStrength: 1, dither: 1, tint: "#ffe3c2",
+    },
+  },
+  {
+    name: "Harbour Searchlight",
+    description: "A carbon-arc beam in heavy sea fog: ten-micrometre droplets at 130 m visibility kill it inside about two hundred metres however many candela go in, so this is the shortest, hardest-ended beam in the library — warm, because an arc's light comes from its glowing anode crater.",
+    props: {
+      samples: 48, density: 0.5, decay: 0.94, weight: 0.13, exposure: 0.13,
+      threshold: 0.82, maskSoftness: 0.1, maskStrength: 1, dither: 1, tint: "#ffd2a1",
+    },
+  },
+  // ── RUN 3: MINERAL DUST AND INTERIORS — the APERTURE sets the edge, not the dust ──
+  {
+    name: "Cathedral Dust Shaft",
+    description: "A clerestory lancet raking across a dim stone nave: a very high threshold so only the opening is a source, and the faintest interior shaft here on purpose — a real one measures around a twenty-thousandth of the sunlit patch it lands on, so it needs a dark room to exist at all.",
+    props: {
+      samples: 96, density: 1, decay: 0.988, weight: 0.044, exposure: 0.044,
+      threshold: 0.86, maskSoftness: 0.16, maskStrength: 1, dither: 1, tint: "#ffebd4",
+    },
+  },
+  {
+    name: "Pantheon Oculus",
+    description: "A nine-metre round opening forty metres overhead: the crispest edge in the whole library, because an aperture that large leaves the sun's own half-degree disc only about four percent of the patch to feather. One vertical column, daylight-neutral, against a near-black interior.",
+    props: {
+      samples: 128, density: 1, decay: 0.984, weight: 0.066, exposure: 0.066,
+      threshold: 0.84, maskSoftness: 0.03, maskStrength: 1, dither: 1, tint: "#fff2e6",
+    },
+  },
+  {
+    name: "Ruin Skylight",
+    description: "Small ragged holes in a dust-choked roof: past the pinhole crossover, so every shaft is entirely penumbra with no hard core at all — the softest edge in the set, twenty times a working church's particulate, and no warm stone bounce to lift the shadows.",
+    props: {
+      samples: 96, density: 0.9, decay: 0.98, weight: 0.092, exposure: 0.092,
+      threshold: 0.68, maskSoftness: 0.34, maskStrength: 1, dither: 1, tint: "#f7f4ee",
+    },
+  },
+  {
+    name: "Dusty Window",
+    description: "A low sun through one glazed opening into a warm interior: a short march, a hard-keyed edge from the small aperture, and the amber of golden-hour light warmed further by a timber bounce.",
+    props: {
+      samples: 80, density: 0.7, decay: 0.972, weight: 0.087, exposure: 0.087,
+      threshold: 0.78, maskSoftness: 0.09, maskStrength: 1, dither: 1, tint: "#ffcb94",
+    },
+  },
+  {
+    name: "Harmattan Dust",
+    description: "A whole sky of Saharan mineral dust — the ONE preset that lets mid-tones scatter, because at that optical depth everything really does smear toward the sun. Ochre rather than orange: dust extinction is almost wavelength-flat, so it greys and dims the light instead of reddening it.",
+    props: {
+      samples: 64, density: 0.9, decay: 0.972, weight: 0.048, exposure: 0.048,
+      threshold: 0.36, maskSoftness: 0.4, maskStrength: 0.55, dither: 1, tint: "#f0d2a8",
+    },
+  },
+  {
+    name: "Wildfire Smoke Sun",
+    description: "The sun through thick wildfire smoke: an ABSORBING medium, so the beams come out short and stubby rather than long, and deep orange from the forward-scattered disc.",
+    props: {
+      samples: 48, density: 0.6, decay: 0.955, weight: 0.105, exposure: 0.105,
+      threshold: 0.72, maskSoftness: 0.2, maskStrength: 1, dither: 1, tint: "#ff9043",
+    },
+  },
+  {
+    name: "Blue Sun",
+    description: "The Alberta muskeg fires of September 1950, when a narrow population of one-micrometre droplets scattered the RED out of sunlight and left an indigo sun over half the northern hemisphere — the one cold beam in the dust run, and a dated event rather than a colour pick.",
+    props: {
+      samples: 64, density: 0.8, decay: 0.968, weight: 0.076, exposure: 0.076,
+      threshold: 0.56, maskSoftness: 0.26, maskStrength: 1, dither: 1, tint: "#9db8e8",
+    },
+  },
+  // ── RUN 4: THE WATER COLUMN — absorption, not scattering, picks the colour ───
+  {
+    name: "Sunlit Shallows",
+    description: "Sunbeams in five metres of clear ocean — the SHAFTS, not the caustics: at that depth red is already down to a fifth and deep red to a twentieth, so the columns go cyan. The bright net on the seabed is a refraction pattern and no radial effect can draw it; supply that in the artwork underneath.",
+    props: {
+      samples: 88, density: 0.9, decay: 0.972, weight: 0.086, exposure: 0.086,
+      threshold: 0.62, maskSoftness: 0.3, maskStrength: 1, dither: 1, tint: "#a8e8ff",
+    },
+  },
+  {
+    name: "Deep Water Column",
+    description: "Fifteen metres down, where red has fallen under one percent and green is halved: the softest, bluest columns in the set, dimmer than the shallows and reaching further because there is nothing left to absorb the blue.",
+    props: {
+      samples: 96, density: 1, decay: 0.982, weight: 0.049, exposure: 0.049,
+      threshold: 0.56, maskSoftness: 0.42, maskStrength: 1, dither: 1, tint: "#37bdff",
+    },
+  },
+  // ── RUN 5: MANUFACTURED MEDIA — engineered uniformity, saturated sources ─────
+  {
+    name: "Stage Haze Beam",
+    description: "A profile spot through concert haze: sub-micrometre droplets hanging for hours give a beam of even brightness along its whole throw, the fixture's imaged gate gives the hardest edge in the set, and the colour is a deep gel that blocks more than 99% of the light yet still reads vividly in the air.",
+    props: {
+      samples: 128, density: 1, decay: 0.994, weight: 0.062, exposure: 0.062,
+      threshold: 0.84, maskSoftness: 0.03, maskStrength: 1, dither: 1, tint: "#2a1aff",
+    },
+  },
+  {
+    name: "Projector Beam",
+    description: "A xenon beam in a dark auditorium: barely any medium at all, so the shaft is faint, short and granular — a bounded wedge from lamp to screen rather than a column reaching the frame edge, and the ONE preset with the dither off, because a beam you see by individual drifting motes is genuinely stepped rather than smooth.",
+    props: {
+      samples: 40, density: 0.55, decay: 0.945, weight: 0.111, exposure: 0.111,
+      threshold: 0.88, maskSoftness: 0.06, maskStrength: 1, dither: 0, tint: "#fffcfa",
+    },
+  },
+  {
+    name: "Sodium Street Fog",
+    description: "A low-pressure sodium lamp in fog: its two yellow emission lines are about nine tenths of the output, so the halo is one pure amber with no colour variation anywhere across it — the most monochromatic light in the library, and short, because fog ends a beam quickly.",
+    props: {
+      samples: 48, density: 0.45, decay: 0.94, weight: 0.107, exposure: 0.107,
+      threshold: 0.7, maskSoftness: 0.32, maskStrength: 1, dither: 1, tint: "#ff8000",
+    },
+  },
+  // ── RUN 6: BEYOND THE ATMOSPHERE — the one truly radial case ────────────────
+  {
+    name: "Nebula Shroud",
+    description: "Starlight escaping through gaps in a dust shroud around a dying star: the only entry here whose beams really do diverge from the source rather than merely appearing to, because the star is a genuine point inside a genuine dust volume — the longest, most parallel march in the library and the highest threshold.",
+    props: {
+      samples: 128, density: 1, decay: 0.992, weight: 0.048, exposure: 0.048,
+      threshold: 0.9, maskSoftness: 0.06, maskStrength: 1, dither: 1, tint: "#d9e6ff",
     },
   },
 ];
