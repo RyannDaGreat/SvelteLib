@@ -68,6 +68,7 @@ import * as T from "../core/transform.js";
 import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { fitBox, inflateRect } from "../core/geometry.js";
+import { truncate } from "../core/report.js"; // THE shared log elision; this file had its own 40/40 spelling (`truncateRef`)
 import { aabbOfMappedRect } from "../core/clip.js"; // THE declared four-corner fold; this file folded it by hand, byte-identically to pdf_backend's copy
 import { DEFAULT_TEXT_SIZE } from "./skia/text_layout.js";
 import { richTextDraws } from "../core/richtext.js";
@@ -1204,10 +1205,10 @@ class SvgAssembly {
       return ref;
     }
     if (!this.resolveImageHref)
-      throw new Error(`svg_backend: ${kind} ref "${truncateRef(ref)}" is a URL, but no resolveImageHref seam was provided — the SVG must be self-contained (inline every asset). Pass irToSVG opts.resolveImageHref.`);
+      throw new Error(`svg_backend: ${kind} ref "${truncate(ref)}" is a URL, but no resolveImageHref seam was provided — the SVG must be self-contained (inline every asset). Pass irToSVG opts.resolveImageHref.`);
     const href = await this.resolveImageHref(ref);
     if (typeof href !== "string" || !href.startsWith("data:"))
-      throw new Error(`svg_backend: resolveImageHref("${truncateRef(ref)}") must return a data: URI (the SVG must be self-contained), got ${JSON.stringify(truncateRef(String(href)))}`);
+      throw new Error(`svg_backend: resolveImageHref("${truncate(ref)}") must return a data: URI (the SVG must be self-contained), got ${JSON.stringify(truncate(String(href)))}`);
     return href;
   }
 
@@ -1216,7 +1217,7 @@ class SvgAssembly {
    * only after ensureImages scanned the same list). */
   imageHref(ref) {
     if (!this._imageHrefs.has(ref))
-      throw new Error(`svg_backend: image ref "${truncateRef(ref)}" not resolved (image op outside the scanned command list?)`);
+      throw new Error(`svg_backend: image ref "${truncate(ref)}" not resolved (image op outside the scanned command list?)`);
     return this._imageHrefs.get(ref);
   }
 
@@ -1224,7 +1225,7 @@ class SvgAssembly {
    * null. Throws if the ref was never loaded. */
   videoHref(ref) {
     if (!this._videoHrefs.has(ref))
-      throw new Error(`svg_backend: video ref "${truncateRef(ref)}" not resolved (video op outside the scanned command list?)`);
+      throw new Error(`svg_backend: video ref "${truncate(ref)}" not resolved (video op outside the scanned command list?)`);
     return this._videoHrefs.get(ref);
   }
 
@@ -1316,13 +1317,4 @@ export function bytesToBase64(bytes) {
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   return btoa(s);
-}
-
-/** Pure function. Shortens a long ref (a data URI) for an error message: the
- * first 40 chars plus a "…(N chars)" suffix; short refs pass through unchanged.
- * @example truncateRef("short") // "short"
- * @example truncateRef("data:image/png;base64," + "A".repeat(40)) // "data:image/png;base64,AAAAAAAAAAAAAAAAAA…(62 chars)"
- */
-export function truncateRef(ref) {
-  return ref.length <= 40 ? ref : `${ref.slice(0, 40)}…(${ref.length} chars)`;
 }

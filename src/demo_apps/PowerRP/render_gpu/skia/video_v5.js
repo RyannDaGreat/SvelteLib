@@ -56,10 +56,19 @@
  * PLAYER + SCRUBBER paths stay independently A/B-swappable; a pure IR key is not
  * that dependency. The scrub section below deliberately RE-OWNS its infrastructure
  * (its own paused decoders, LRU, time-resolver) in the same spirit as the player
- * half re-owns truncate/HAVE_CURRENT_DATA/the uploader-reuse logic.
+ * half re-owns HAVE_CURRENT_DATA/the uploader-reuse logic.
+ *
+ * THAT SENTENCE USED TO NAME `truncate` TOO, AND THAT PART WAS NOT INDEPENDENCE.
+ * A log line's elision has nothing to do with A/B-swappability: this file elided a
+ * src at 32 characters with no length suffix while six other modules elided the
+ * same kind of string at 48/24 with one, so a reader comparing two console lines
+ * about the same asset saw two different strings. It now uses core/report.js
+ * truncate like everything else. Re-owning the DECODER is a design position;
+ * re-owning the LOGGING was drift wearing that position's clothes.
  */
 
 import { scrubFrameKey } from "../ir.js";
+import { truncate } from "../../core/report.js"; // THE shared log elision; this file's own copy elided at 32 chars with no length, so one src read three ways in three files
 
 /** src -> entry (see makeEntry). */
 const registry = new Map();
@@ -370,10 +379,6 @@ export function resetVideoV5Registry() {
   playerImages.clear();
   resetVideoV5ScrubRegistry();
 }
-
-/** Pure function. Shortens a src for a log line (a data: URI can be megabytes).
- *  @example truncate("data:video/mp4;base64,AAAABBBBCCCCDDDD...") // "data:video/mp4;base64,AAAABBBB…" */
-function truncate(src) { return typeof src === "string" && src.length > 32 ? src.slice(0, 32) + "…" : String(src); }
 
 // ── THE V5 SCRUBBER PATH (deterministic frame-at-time, off-main-thread convert) ─
 // The PLAYER above hands back a live, LOOPING <video> whose wall clock advances
