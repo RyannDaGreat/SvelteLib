@@ -1066,6 +1066,65 @@ is the actual rule.
   agent reported search "down all session". Research must go through WebFetch of specific
   pages — which is also what forced the verbatim-verification discipline in R6-3.12(a).
 
+- **R6-3.15 INSTRUMENTS FAMILY (`.frenzy/round6/presets/instruments.md`, 2058 lines):
+  `clock_digital` 12, `progress_bar` 10 + 5 timing, `magnifier` 10, `demo_magnify` 12,
+  `qrcode` 10, `clock_analog` 13. Three findings outlive the presets.**
+
+  **(a) THE MAGNIFIER MIGRATION IS RESOLVED BY GIT AGE — `plugins/magnifier.js` IS CANONICAL.**
+  The repo CLAUDE.md records this migration as "partial, not done". Settled per the R6-22.3
+  precedence doctrine, on three independent grounds: `magnifier` is OLDER (`9bd8261`, the
+  founding commit) versus `demo_magnify` (`4663249`, ten days later); **the newer commit's own
+  message says "original magnifier widget preserved"**; and `magnifier` owns the top-level
+  palette command. Both keep presets, paired by name so the two stay comparable.
+
+  **(b) A DOCTRINE COMMENT WHOSE GLOBAL CLAIM IS FALSE — AND IT INFECTED THE AGENT'S OWN FIRST
+  DRAFT BEFORE IT WAS CAUGHT. LEAD-VERIFIED, AND THE AGENT'S OWN CITATIONS WERE WRONG.**
+  The real location is **`plugins/demo/glass.js:234-235`** (the agent said 229-237), and the
+  false sentence is verbatim: *"every preset in this codebase writes LITERALS"*.
+  **FALSIFIED BY FIVE FILES, not the two cited** — `plugins/filmstrip.js`,
+  **`plugins/demo/video_time_scrub.js`** (the agent gave a top-level path that does not exist),
+  `plugins/demo/globe_map.js`, `plugins/demo/lens_flare.js`, `plugins/demo/god_rays.js` — and the
+  dump manifest MANDATES equation presets at its item 72.
+  **BUT THE COMMENT'S LOCAL REASONING IS SOUND AND MUST BE KEPT:** it argues that writing
+  `= Math.min(self.w, self.h) / 2` there would "silently convert the user's radius field into an
+  equation-bound one, which is a different KIND of state than a preset should install." That
+  distinction is real and is exactly what makes (c) below a genuine open question rather than a
+  formatting nit. **So the fix is to narrow the sentence to this one field, not to delete the
+  paragraph.**
+  **Two lessons, and the second is about my own agents:** a false comment in a shipped plugin
+  REPRODUCES ITSELF in every agent that reads it (which is why R6-22.4 covers comments, not just
+  code) — and **an agent's file:line citations must be checked before they enter this manifest,
+  because two of three here were wrong while the substance was right.**
+
+  **(c) THE TWO SHIPPED EQUATION TABLES DISAGREE ON STRING FORM, AND IT BLOCKS FUTURE WORK.**
+  One writes bare stored-case, the other `=`-prefixed display-case — **on the same row kind**.
+  Unresolved, and it currently leaves anyone authoring a new equation preset guessing. Needs a
+  ruling before the remaining preset families write equation presets; the `=`-marker seam and
+  `displayToStored` are the deciding machinery.
+
+  **A REPRODUCED TEST DEFECT: `tests/clock_analog_test.js:376` counts HANDS as tick spokes when
+  the minute track is off, scoring -4.00 on a VALID dial** — so the shipped gate would reject
+  correct presets. Must be fixed before the clock presets land, or it will read as their failure.
+
+  **VERIFICATION, and the self-validation discipline held again:** via `scratch_instruments.mjs`
+  all 13 dials are complete 12-key vectors, all pass the shipped numeral/tick gate (worst 9.94
+  against a 4.81 floor), none collide — and **346 `props` keys parsed out of the document itself
+  were checked against live registry defaults with ZERO dead keys.** Stated honestly by the
+  agent: **nothing has been RENDERED yet**; three render checks are named in-file.
+
+  **HONEST CUTS:** Regulator, Chronograph and Marine Chronometer were judged preset-less and
+  **dropped rather than faked**, because the widget has no subdials. A drafted 1-module
+  quiet-zone QR preset was likewise dropped rather than ship an out-of-spec code, and "Negative"
+  is labelled MARGINAL because **no numeric contrast threshold exists in any of the five sources
+  reachable** — the verdicts rest only on the sourced luminance-only decoding rule. Flieger A/B,
+  panda dials and the A-11 spec were unreachable and are marked `[UNSOURCED]`, with the designs
+  cut so nothing depends on them.
+
+  **A REAL CONSTRAINT ON THIS ROUND, recorded so it is not mistaken for lack of effort: ALL FIVE
+  of this agent's subagent launches were REFUSED at the 20-concurrent ceiling**, so a
+  2058-line family was researched single-handed. The ceiling — not willingness to spend compute —
+  is the binding limit on swarm width in this session.
+
 - **R6-3.11 CROSS-WIDGET PHYSICAL CONSISTENCY.** Aperture blade count, flare
   starburst ray count and bokeh polygon must AGREE where they describe the same
   lens. A swarm authoring independently will contradict itself unless coordinated.
