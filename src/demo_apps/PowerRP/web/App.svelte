@@ -13,6 +13,7 @@
   import HintBar from "../../../lib/HintBar.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import Toolbar from "./Toolbar.svelte";
+  import PresentDock from "./PresentDock.svelte";
   import SlideNav from "./SlideNav.svelte";
   import { isStatic } from "./storageMode.js";
   import { offlineRequirement } from "./connectivity.js";
@@ -2474,6 +2475,13 @@
     </SplitPane>
   </div>
   <HintBar {hints} />
+  <!-- THE PHONE'S GUARANTEE THAT PLAY IS REACHABLE. Another surfacing of the
+       `present` registry entry — no new action layer, no new state. DOM ORDER IS
+       LOAD-BEARING: after HintBar and before CommandPalette puts it above the
+       docked chrome and below the palette at equal stacking, so a permanent
+       control can never cover an open modal. `display: none` until the phone
+       breakpoint (app.css). -->
+  <PresentDock {app} />
   <CommandPalette {app} />
   {#if app.mode === "present"}
     <PresentMode {app} />
