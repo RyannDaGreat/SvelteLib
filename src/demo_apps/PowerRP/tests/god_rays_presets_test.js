@@ -48,12 +48,21 @@
  *     the DEFAULT, since the preset models a real condition and carries a
  *     citation while the default is ours to choose.
  *
- *     THE BOUND IS `maxAbs`, NOT THE MEAN, AND THAT IS THE POINT. A low-`density`
- *     preset only marches a small neighbourhood of the light, so a whole-frame
- *     mean dilutes it and two genuinely different atmospheres read as
- *     near-identical: measured, Harbour Searchlight and Projector Beam sit
- *     0.26 apart on the frame mean and 19 apart on the largest single channel.
- *     No averaging over any region can hide a single-channel outlier.
+ *     THE BOUND IS `maxAbs`, NOT A MEAN, AND THAT IS THE POINT. A low-`density`
+ *     preset only marches a small neighbourhood of the light, so ANY mean over a
+ *     region larger than that neighbourhood dilutes it: measured, Harbour
+ *     Searchlight and Dusty Window sit 0.886 apart on the whole-frame mean and
+ *     3.774 on the lit set they actually touch — a 4.3x dilution — while their
+ *     largest single channel differs by 12 under either. No averaging over any
+ *     region can hide a single-channel outlier, so `maxAbs` needs no reduction
+ *     choice at all. The lit-set mean is REPORTED beside it, because it is the
+ *     honest number for an author reading how close two rows are getting.
+ *
+ *     THIS FAMILY IS NOT THE SPARSE CASE `litSetDistance` EXISTS FOR, and that
+ *     was measured rather than assumed: coverage is 96.5% for most pairs here, so
+ *     the two means agree within 3% and only the handful of low-density rows
+ *     diverge. A connector, where the lit set is 0.5-2% of the canvas, is the
+ *     case where the whole-frame mean gates nothing at all.
  *
  *   (4) SATURATION, in pixels. Distinct from (2) because G is the PEAK and the
  *     rays composite ADDITIVELY, so the real clip point is G + backdrop: a row
@@ -65,7 +74,7 @@ import { godRaysPlugin } from "../plugins/demo/god_rays.js";
 import { GOD_RAYS_FILL_PARAMS, godRaysUniformParams } from "../render_gpu/skia/god_rays_shader.js";
 import { materialBackdrop, rect } from "../render_gpu/ir.js";
 import { renderToPng } from "../render_gpu/skia/node_render.js";
-import { closestPair, imageDistance, readPng } from "./imageDistinctness.js";
+import { imageDistance, litSetDistance, readPng } from "./imageDistinctness.js";
 
 let passed = 0;
 /** Command. Runs one check and prints its outcome (throws on failure). */
@@ -188,15 +197,17 @@ const MIN_PAIR_MAX_DELTA = 4;
 
 test("(3) every pair renders distinguishably, the widget's own defaults included", () => {
   const tight = [];
+  let narrowest = null;
   for (let i = 0; i < frames.length; i++)
     for (let j = i + 1; j < frames.length; j++) {
       const d = imageDistance(frames[i].png, frames[j].png);
-      if (d.maxAbs < MIN_PAIR_MAX_DELTA) tight.push(`${frames[i].name} <-> ${frames[j].name} (maxAbs ${d.maxAbs}, mean ${d.meanAbs.toFixed(3)})`);
+      const lit = litSetDistance(frames[i].png, frames[j].png, unlit);
+      if (d.maxAbs < MIN_PAIR_MAX_DELTA) tight.push(`${frames[i].name} <-> ${frames[j].name} (maxAbs ${d.maxAbs}, lit-set mean ${lit.meanAbs.toFixed(3)})`);
+      if (!narrowest || d.maxAbs < narrowest.d.maxAbs) narrowest = { a: frames[i].name, b: frames[j].name, d, lit };
     }
   assert.deepEqual(tight, [],
     `these render as the same picture: ${tight.join("; ")}. A preset whose props do not move a pixel is a dead row in the library — and if one side is "(widget defaults)", move the DEFAULT, not the sourced preset.`);
-  const closest = closestPair(frames);
-  console.log(`      closest by frame mean: ${closest.a} vs ${closest.b} at mean ${closest.distance.meanAbs.toFixed(3)}, maxAbs ${closest.distance.maxAbs}`);
+  console.log(`      narrowest: ${narrowest.a} vs ${narrowest.b} — maxAbs ${narrowest.d.maxAbs}, lit-set mean ${narrowest.lit.meanAbs.toFixed(3)} over ${(100 * narrowest.lit.coverage).toFixed(1)}% of the frame (whole-frame mean ${narrowest.d.meanAbs.toFixed(3)})`);
 });
 
 // ── (4) saturation in pixels ─────────────────────────────────────────────────
