@@ -18,6 +18,13 @@
   import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
+  // The R modal types its angle in DEGREES and `rotation` stores RADIANS. The
+  // conversion is NOT re-derived here: `PROPS.rotation.display` names the same
+  // transform the Inspector's rotation dial uses (web/displayUnits.js), so the
+  // modal and the field cannot disagree about what "45" means, and a future
+  // change of storage unit moves both.
+  import { PROPS } from "../core/properties.js";
+  import { displayUnit } from "./displayUnits.js";
   import { worldViewRect, canSkipNode } from "../core/view.js";
   import { ESC_CANCELABLE_DRAG_KINDS } from "../core/shortcut_entries.js";
   // dedupeGroupSelection: the group invariant app.selectMany enforces at commit —
@@ -3737,10 +3744,21 @@
         {#if overlay.band}
           <!-- The in-progress rubber band. The held-modifier VERB rides as a
                class (the crosshair `skin` precedent: state → class, all styling
-               in app.css) so the box you are dragging itself announces whether
-               a release adds, subtracts or inverts — the modifier's meaning is
-               readable WITHOUT moving the pointer or reading the HintBar. The
-               unmodified "replace" verb keeps the bare .band-rect look. -->
+               in app.css) so the box you are dragging can announce what a release
+               will do, without moving the pointer or reading the HintBar.
+
+               WHAT IS ACTUALLY DISTINGUISHED, corrected 2026-08-01 — this comment
+               used to claim the box "announces whether a release adds, subtracts
+               or inverts", which overstated it by two verbs. Only INVERT has an
+               override (`.overlay .band-rect.band-verb-invert`, app.css:3389,
+               amber). ADD and SUBTRACT deliberately keep the base `.band-rect`
+               pink, which app.css:3386 states out loud — so they are also
+               indistinguishable from the unmodified "replace" band. The two
+               classes are applied and carry no rule ON PURPOSE; that is recorded
+               as an exemption in tests/orphan_class_test.js rather than papered
+               over with empty rules, which would imply a distinction that is not
+               there. Whether add/subtract SHOULD get their own tone is a real
+               open design question, not a bug — flagged, not silently "fixed". -->
           <rect
             class="band-rect"
             class:band-verb-add={overlay.bandVerb === "add"}

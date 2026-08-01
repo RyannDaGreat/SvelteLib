@@ -39,6 +39,11 @@
   --a-selection: #3f9eff; /* selection/guides need chroma to read against art */
   --a-guide: #ff4d97;
   --a-keyed: #e3b341;
+  /* The HALF-FILLED keyframe diamond (SOME of a multi-selection is keyed here —
+     core/multiselect.js keyframeTriState "some"). Dimmer than --a-keyed so
+     FILLED still reads as "all of them". A COMPUTED value, not a plain alias,
+     which is why it earns a name where the mixed mark's colour did not. */
+  --a-keyed-partial: color-mix(in srgb, var(--a-keyed) 55%, var(--fg-dim));
   --a-endpoint: var(--a-keyed); /* endpoints share the keyframe amber in EVERY theme — inherit, never restate */
   --a-anchor: #9aa5ce;
   --a-scrollbar: rgba(255, 255, 255, 0.18);
@@ -5099,13 +5104,48 @@ audio.ae-preview-media {
   padding: 0;
 }
 
-/* Multi-select placeholder (minimal — the full intersection Property Panel is
-   a separate milestone). The count line uses the same dim/centered treatment
-   as .empty; the actions row reuses .item-actions above. */
+/* MULTI-SELECT PANEL HEAD. (This block used to call itself a "placeholder…
+   the full intersection Property Panel is a separate milestone" — STALE: that
+   panel shipped in 26dd94f, 2026-07-28.) The count line uses the same
+   dim/centered treatment as .empty; the actions row reuses .item-actions above,
+   and .multi-note below continues the same panel-prose voice. */
 .inspector .multi-select .multi-count {
   color: var(--fg-dim);
   padding: var(--a-sp-4);
   text-align: center;
+}
+
+/* WHAT IS NOT BEING EDITED, and WHY — the skipped-items and conflicting-keys
+   notes under the selection count. Same dim/centered treatment as .empty and
+   .multi-count, so the three read as one block of panel prose. Was written in
+   markup with NO rule at all until 2026-08-01 (tests/orphan_class_test.js now
+   makes that state a red). */
+.inspector .multi-select .multi-note {
+  color: var(--fg-dim);
+  padding: 0 var(--a-sp-4) var(--a-sp-3);
+  text-align: center;
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+
+/* One excluded property KEY inside that note. Monospace because it IS a property
+   key (the equation grammar's own spelling), matching how this panel treats the
+   same vocabulary elsewhere. cursor:help because the Tooltip on it is the whole
+   point — it names which contract aspect excluded the row. Spelled var(--a-keyed)
+   directly rather than minting an --a-mixed-fg for one consumer (ledger C-1). */
+.inspector .multi-select .multi-conflict {
+  display: inline-block;
+  margin: 0 var(--a-sp-1);
+  padding: 0 var(--a-sp-2);
+  border-radius: var(--a-radius-control);
+  background: var(--a-hover-bg);
+  color: var(--a-keyed);
+  font-family: var(--a-mono);
+  cursor: help;
+}
+
+.inspector .multi-select .multi-conflict:hover {
+  color: var(--fg);
 }
 
 .inspector .rows {
@@ -6453,6 +6493,15 @@ audio.ae-preview-media {
 .inspector .keybtn.keyed,
 .varspanel .keybtn.keyed {
   color: var(--a-keyed);
+}
+
+/* HALF-FILLED keyframe diamond: SOME of the selection is keyed on this slide.
+   The mdi:rhombus-split ICON is the primary signal; this colour reinforces it —
+   before 2026-08-01 the class had no rule, so "some" and "all" differed by icon
+   alone. */
+.inspector .keybtn.keyed-some,
+.varspanel .keybtn.keyed-some {
+  color: var(--a-keyed-partial);
 }
 
 /* The "nothing here" state, shared by every pane that can be empty. NOT unscoped
@@ -8415,8 +8464,13 @@ audio.ae-preview-media {
   font-size: var(--a-font-sm);
   color: var(--fg);
   background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
+  border: var(--a-hairline) dashed var(--border);
+  /* SQUARE, and via the field token: this is an Inspector FIELD CONTROL, and
+     --radius is reserved for src/lib reusable components. .inspector .rows sets
+     --dn-radius: var(--a-radius-control) "like every other field control"
+     (:5111); this mark stands IN a value cell, so it obeys the same rule.
+     Found independently by W3-C and W3-M. */
+  border-radius: var(--a-radius-control);
   cursor: pointer;
 }
 
