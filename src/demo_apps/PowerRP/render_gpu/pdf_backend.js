@@ -60,7 +60,8 @@ import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { richTextDraws } from "../core/richtext.js";
-import { fitBox } from "../core/geometry.js";
+import { fitBox, pointsBounds } from "../core/geometry.js";
+import { intersectRect } from "../core/clip.js"; // THE declared clip primitive — this file carried a byte-identical copy for a day after clip.js unified it
 
 /**
  * Lens re-emit recursion cap — re-exported from ir.js (the single source shared
@@ -345,18 +346,6 @@ export function ellipsePath({ cx, cy, rx, ry }) {
  */
 export function pointsPath(points) {
   return points.map(([x, y], i) => `${pdfNum(x)} ${pdfNum(y)} ${i === 0 ? "m" : "l"}`).join("\n");
-}
-
-/** Pure function. The bbox {x,y,w,h} of a point list (a polygon's gradient
- * objectBoundingBox frame). Empty → a zero rect.
- *
- * @example pointsPathBounds([[0, 0], [10, 0], [5, 8]]) // {x: 0, y: 0, w: 10, h: 8}
- */
-export function pointsPathBounds(points) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const [x, y] of points) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
-  if (!Number.isFinite(minX)) return { x: 0, y: 0, w: 0, h: 0 };
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
 /**
@@ -1233,21 +1222,6 @@ export function regionOverBackground(commands, srcRect, background) {
 }
 
 /**
- * Pure function. The intersection of two world-space AABBs, or null when they do
- * not overlap. Used to clamp a raster-op tile to the visible region (a bounded
- * raster — a huge off-region op never mints a giant canvas).
- *
- * @example intersectRect({x:0,y:0,w:10,h:10},{x:5,y:5,w:10,h:10}) // {x:5,y:5,w:5,h:5}
- * @example intersectRect({x:0,y:0,w:2,h:2},{x:5,y:5,w:2,h:2}) // null
- */
-export function intersectRect(a, b) {
-  const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
-  const right = Math.min(a.x + a.w, b.x + b.w), bottom = Math.min(a.y + a.h, b.y + b.h);
-  if (right <= x || bottom <= y) return null;
-  return { x, y, w: right - x, h: bottom - y };
-}
-
-/**
  * Pure function. The WORLD-space placement rect for an op's general raster
  * fallback: the op's LOCAL geometry bbox (detected from standard geometry fields,
  * so it stays op-agnostic) inflated by the soft-spill margin, mapped through
@@ -1637,7 +1611,7 @@ function emitVector(cmd, world, out, ctx) {
       // a WRONG picture rather than a crash, which is the worse of the two.
       if (!cmd.fill) break;
       if (isGradientPaint(cmd.fill)) {
-        ops.push(...gradientShapeOps(pointsPath(cmd.points) + " h", pointsPathBounds(cmd.points), cmd, ctx, false));
+        ops.push(...gradientShapeOps(pointsPath(cmd.points) + " h", pointsBounds(cmd.points), cmd, ctx, false));
         break;
       }
       ops.push(...paintSetup(cmd.fill, null, 0, cmd.opacity, ctx));

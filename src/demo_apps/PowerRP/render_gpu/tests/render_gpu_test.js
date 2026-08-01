@@ -15,7 +15,8 @@ import { videoIR, sceneIR } from "../ports.js";
 import { rectPlugin } from "../../plugins/rect.js";
 import { circlePlugin } from "../../plugins/circle.js";
 import { imagePlugin, BLANK_SRC } from "../../plugins/image.js";
-import { getImage, imageStatus, truncate } from "../gpu/image_registry.js";
+import { getImage, imageStatus } from "../gpu/image_registry.js";
+import { truncate } from "../../core/report.js"; // the shared log elision the registries used to each own a copy of
 import { arrowPlugin } from "../../plugins/arrow.js";
 import { fancyArrowPlugin } from "../../plugins/fancy_arrow.js";
 import { blurPlugin } from "../../plugins/blur.js";

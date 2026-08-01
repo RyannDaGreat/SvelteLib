@@ -50,8 +50,9 @@
  */
 
 import {
-  BYTES_PER_PIXEL, ensureImage, getImage, imageStatus, onImageLoad, releaseImage, truncate,
+  BYTES_PER_PIXEL, ensureImage, getImage, imageStatus, onImageLoad, releaseImage,
 } from "./image_registry.js";
+import { truncate } from "../../core/report.js"; // THE shared log elision (was re-exported by image_registry until core/report.js took the nine copies)
 import { tileUrl } from "../../web/tile_providers.js";
 
 /**

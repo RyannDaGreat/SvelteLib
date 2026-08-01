@@ -51,6 +51,7 @@
 import { parseColor } from "../ir.js";
 import { randUnit } from "../../core/particles.js"; // the seeded (seed,i,stream) hash — the sparkler's, reused so a stored seed is property state
 import { elementActive } from "../../core/lists.js"; // the shared per-element visibility read — hidden stops ramp straight past, byte-identically to never authoring them
+import { unitNormal } from "../../core/geometry.js"; // THIS file's name, but not this file's home: it imports the two brush modules below, so they could not import back
 import { reportOnce } from "../../core/report.js"; // loud-once sink for a knob outside its physical domain
 import { particleTime } from "../particle_clock.js"; // THE presentation clock seam (recordable state) — wavy's BOIL re-seeds from it; frozen in the editor, driven per-frame by exports (the glitch-shader precedent)
 import { BRUSH_STROKE } from "./brush_strokes.js"; // the 23-archetype textured BRUSH material (drawAtlas stamping), kept in its own file
@@ -125,26 +126,6 @@ export function clamp01(x) {
  */
 export function frac(x) {
   return x - Math.floor(x);
-}
-
-/**
- * Pure function. The LEFT unit normal of a tangent vector (tx, ty) — a 90°
- * counter-clockwise rotation, normalized. Used to offset a path point to one side
- * for the wavy displacement and the variable-width ribbon edges. A zero-length
- * tangent (a degenerate sample) returns [0, 0] rather than NaN.
- *
- * @param {number} tx - tangent x
- * @param {number} ty - tangent y
- * @returns {[number, number]} unit normal (nx, ny)
- *
- * @example unitNormal(1, 0) // [0, 1]
- * @example unitNormal(0, 2) // [-1, 0]
- * @example unitNormal(0, 0) // [0, 0]
- */
-export function unitNormal(tx, ty) {
-  const len = Math.hypot(tx, ty);
-  if (!(len > 0)) return [0, 0];
-  return [-ty / len, tx / len];
 }
 
 /**

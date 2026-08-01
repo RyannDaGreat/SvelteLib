@@ -39,7 +39,7 @@
  * repaint / playback frame reuses it and only rebuilds when the box changes.
  */
 
-import { reportOnce } from "../../core/report.js";
+import { reportOnce, truncate } from "../../core/report.js";
 import { classifyPdfPage, pdfPageVectorIR } from "../pdf_vector.js";
 
 // pdfjs (legacy build) is loaded LAZILY (dynamic import inside loadPdfjs) so a
@@ -66,13 +66,6 @@ const irMemo = new Map();
 
 const pageKey = (src, page) => `${src}|${page}`;
 const boxKey = (box) => `${box.x},${box.y},${box.w},${box.h}`;
-
-/** Pure function. Shortens a src for log messages (data URIs are huge).
- * @example truncate("data:application/pdf;base64," + "A".repeat(200)) // "data:application/pdf;base64,AA…(228 chars)"
- */
-function truncate(src) {
-  return src.length > 48 ? `${src.slice(0, 24)}…(${src.length} chars)` : src;
-}
 
 /**
  * Query (near-pure). A pdf.js getDocument SOURCE for `src` that works in BOTH

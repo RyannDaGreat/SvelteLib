@@ -103,6 +103,55 @@ export function unionRect(rects) {
 }
 
 /**
+ * Pure function. The bbox {x, y, w, h} of a list of [x, y] points — a polygon's
+ * gradient objectBoundingBox frame. An EMPTY list returns a zero rect rather
+ * than an infinite one, so a caller may divide by w/h after a finite check.
+ *
+ * The point-list twin of unionRect, and it lives here for the same reason: it
+ * was written TWICE under two names in a single commit (b0b289c) — `pointsBounds`
+ * in the Skia painter and `pointsPathBounds` in the PDF backend — so age could
+ * not separate them and usage did (5 call sites to 1; `plugins/donut.js` cites
+ * the surviving name in prose).
+ *
+ * @example pointsBounds([[0, 0], [10, 0], [5, 8]]) // {x: 0, y: 0, w: 10, h: 8}
+ * @example pointsBounds([[-2, 3], [4, -1]]) // {x: -2, y: -1, w: 6, h: 4}
+ * @example pointsBounds([]) // {x: 0, y: 0, w: 0, h: 0}
+ */
+export function pointsBounds(points) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    minX = Math.min(minX, x); minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, w: 0, h: 0 };
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/**
+ * Pure function. The LEFT unit normal of a tangent (tx, ty) — the tangent turned
+ * a quarter turn counter-clockwise and normalized. A DEGENERATE zero tangent
+ * returns [0, 0] rather than NaN, so a caller offsetting a point by it simply
+ * does not move.
+ *
+ * The stroke family's shared perpendicular: a brush offsets a stamp by it, a
+ * ribbon finds its inner/outer rail with it, a stroke material bands across it.
+ * It lived in three files at once (`unitNormal`, `leftNormal`, `leftNormalTB`)
+ * before landing here; this is the OLDEST of the three names, but deliberately
+ * NOT in the oldest file — `render_gpu/skia/stroke_materials.js` imports the
+ * other two brush modules, so a back-import would have cycled.
+ *
+ * @example unitNormal(1, 0) // [0, 1]
+ * @example unitNormal(0, 2) // [-1, 0]
+ * @example unitNormal(3, 4) // [-0.8, 0.6]
+ * @example unitNormal(0, 0) // [0, 0]
+ */
+export function unitNormal(tx, ty) {
+  const len = Math.hypot(tx, ty);
+  if (!(len > 0)) return [0, 0];
+  return [-ty / len, tx / len];
+}
+
+/**
  * Pure function. Scale-to-FIT: the largest content-aspect rectangle that fits
  * inside boxW×boxH, CENTERED (letterbox). Returns the UNIFORM scale (so the
  * content keeps its aspect — no squash) plus the top-left offset that centers

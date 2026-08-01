@@ -39,6 +39,7 @@
 import { parseColor } from "../ir.js";
 import { randUnit } from "../../core/particles.js";
 import { reportOnce } from "../../core/report.js";
+import { unitNormal } from "../../core/geometry.js"; // the stroke family's shared perpendicular (was a local `leftNormal` copy)
 
 // ── constants (WHY each exists — no magic numbers) ────────────────────────────
 const STAMP_RES = 64;          // px side of every procedural mask; drawAtlas scales it to stamp size, so this is just texel resolution
@@ -131,21 +132,6 @@ export function stampRSXform(s, ang, cx, cy, bw, bh) {
   const ssin = s * Math.sin(ang);
   const ax = bw / 2, ay = bh / 2;
   return [scos, ssin, cx - (scos * ax - ssin * ay), cy - (ssin * ax + scos * ay)];
-}
-
-/**
- * Pure function. The LEFT unit normal of tangent (tx, ty) — a 90° CCW rotation,
- * normalized; a degenerate zero tangent returns [0, 0] (no scatter direction)
- * rather than NaN. Used to offset a stamp perpendicular to the path for scatter.
- *
- * @example leftNormal(1, 0) // [0, 1]
- * @example leftNormal(0, 2) // [-1, 0]
- * @example leftNormal(0, 0) // [0, 0]
- */
-export function leftNormal(tx, ty) {
-  const len = Math.hypot(tx, ty);
-  if (!(len > 0)) return [0, 0];
-  return [-ty / len, tx / len];
 }
 
 /**
@@ -518,7 +504,7 @@ export function renderBrush(CanvasKit, canvas, path, params, strokeWidth, opacit
     for (let d = 0; d <= len + 1e-6; d += step) {
       if (i >= MAX_BRUSH_STAMPS) { capped = true; break; }
       const pt = contour.getPosTan(Math.min(d, len));
-      const n = leftNormal(pt[2], pt[3]);
+      const n = unitNormal(pt[2], pt[3]);
       const offN = signedJitter(seed, i, STREAM_SCATTER_N) * eff.scatter * stampSize;
       const offT = signedJitter(seed, i, STREAM_SCATTER_T) * eff.scatter * stampSize * 0.5;
       const cx = pt[0] + n[0] * offN + pt[2] * offT;

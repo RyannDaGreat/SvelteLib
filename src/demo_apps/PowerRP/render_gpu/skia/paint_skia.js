@@ -60,7 +60,7 @@ import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_mod
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
 import { MAX_SURFACE_DIM } from "../../core/clip.js"; // the edge below which no surface factory clamps a request
-import { fitBox } from "../../core/geometry.js";
+import { fitBox, pointsBounds } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
 import { drawVideoV2 } from "./video_v2.js"; // V2 direct-upload video op ("videoV2") — self-resolving frame registry (additive; import-safe in node)
 import { turnPose, curlMesh, castShadowOutline } from "../page_curl.js"; // the paperCurl op's pure geometry (DOM-free)
@@ -4022,21 +4022,6 @@ function applyPaint(CanvasKit, p, paint, opacity, bounds) {
   } else {
     p.setColor(CanvasKit.Color4f(paint[0], paint[1], paint[2], paint[3] * opacity));
   }
-}
-
-/** Pure function. The LOCAL bbox {x,y,w,h} of a list of [x,y] points (a polygon's
- * gradient objectBoundingBox frame). Empty input → a zero rect.
- *
- * @example pointsBounds([[0, 0], [10, 0], [5, 8]]) // {x: 0, y: 0, w: 10, h: 8}
- */
-function pointsBounds(points) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const [x, y] of points) {
-    minX = Math.min(minX, x); minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-  }
-  if (!Number.isFinite(minX)) return { x: 0, y: 0, w: 0, h: 0 };
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 
 /** Helper. Runs `draw` with `paint`, then deletes the paint AND any gradient

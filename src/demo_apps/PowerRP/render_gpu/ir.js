@@ -2371,5 +2371,24 @@ export function flattenIR(commands) {
   return out;
 }
 
-/** Every op a backend must understand — backends throw on anything else. */
-export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "videoV5", "videoFrame", "videoV5Frame", "latexVector", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];
+/**
+ * Every op a backend must understand — the three backends' `default:` branches
+ * throw on anything else (paint_skia.js, pdf_backend.js, svg_backend.js).
+ * `pushTransform`/`popTransform` are NOT here: flattenIR consumes them, so no
+ * backend ever sees one.
+ *
+ * ── WHY THIS IS A LIST AND NOT A DERIVATION, AND WHAT GUARDS IT ──────────────
+ * It IS a hand-maintained mirror of this file's own builders, and it had already
+ * drifted by three ops (`mermaidVector`, `paperCurl`, `videoV2`) before anyone
+ * noticed — because nothing read it. Deriving it at module scope is not available:
+ * the set would have to come from CALLING each builder, and 28 of this module's 61
+ * exported functions validate their arguments and throw on an empty one (MEASURED),
+ * so a derivation would need a canonical-argument table — which is the same mirror,
+ * moved and harder to see.
+ *
+ * So it stays a list, and `tests/ir_op_coverage_test.js` is the gate that makes it
+ * true: that suite derives the produced-op set from THIS FILE'S OWN SOURCE and fails
+ * on any divergence, in either direction. Add a builder and the gate names the op you
+ * forgot. Do not edit this list without running it.
+ */
+export const DRAW_OPS = ["rect", "ellipse", "polyline", "polygon", "path", "text", "image", "video", "videoV2", "videoV5", "videoFrame", "videoV5Frame", "latexVector", "mermaidVector", "paperCurl", "blurBackdrop", "magnifyBackdrop", "glassBackdrop", "materialBackdrop", "materialFill", "cropSubtree", "effectSubtree"];

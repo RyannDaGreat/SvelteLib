@@ -111,7 +111,7 @@
  */
 
 import { reserveImageSlot, registerRasterizedBitmap } from "./image_registry.js";
-import { reportOnce } from "../../core/report.js";
+import { reportOnce, truncate } from "../../core/report.js";
 import { SUPERSAMPLE_DENSITY } from "../ir.js";
 
 /**
@@ -578,13 +578,6 @@ export function ensureLatexTypeset(latex, scale, ink = LATEX_DEFAULT_INK) {
   });
   typesets.set(key, entry);
   return entry.promise;
-}
-
-/** Pure function. Shortens a latex source for log messages.
- * @example truncate("x".repeat(200)) // "xxxxxxxxxxxxxxxxxxxxxxxx…(200 chars)"
- */
-function truncate(latex) {
-  return latex.length > 48 ? `${latex.slice(0, 24)}…(${latex.length} chars)` : latex;
 }
 
 /**

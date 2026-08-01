@@ -57,7 +57,7 @@
  */
 
 import { reserveImageSlot, registerRasterizedBitmap } from "./image_registry.js";
-import { reportOnce } from "../../core/report.js";
+import { reportOnce, truncate } from "../../core/report.js";
 import { flattenMermaidSvg } from "./mermaid_vector.js";
 
 /** Supersample factor: raster at this many device px per diagram layout px (at
@@ -364,13 +364,6 @@ export function ensureMermaidRendered(def, theme = DEFAULT_MERMAID_THEME, scale 
  * drawn — the plugin emits the error affordance instead of the image op). */
 async function transparentBitmap() {
   return createImageBitmap(new ImageData(1, 1));
-}
-
-/** Pure function. Shortens a definition for log messages.
- * @example truncate("x".repeat(200)) // "xxxxxxxxxxxxxxxxxxxxxxxx…(200 chars)"
- */
-function truncate(def) {
-  return def.length > 48 ? `${def.slice(0, 24)}…(${def.length} chars)` : def;
 }
 
 /**

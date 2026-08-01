@@ -61,3 +61,42 @@ export function reportOnce(key, line = key) {
 export function reportAction(line) {
   console.error(line);
 }
+
+/**
+ * The longest source string echoed VERBATIM in a report line, and how much of a
+ * longer one survives the elision. A `data:` URI is routinely megabytes, so a
+ * report that quotes one whole is not a report — it is a console flood with the
+ * message buried in it, which is the same failure reportOnce exists to prevent.
+ * 48/24 are the values the oldest copy shipped with (render_gpu/gpu/image_registry.js,
+ * ccb79cf 2026-07-14) and the only site that ever NAMED them used these names
+ * (web/videoV8Registry.js:59-60), so both the numbers and the spelling are inherited
+ * rather than chosen.
+ */
+const SRC_LOG_MAX = 48;
+const SRC_LOG_HEAD = 24;
+
+/**
+ * Pure function. Shortens a long source string for a report line: the first
+ * SRC_LOG_HEAD characters plus the FULL LENGTH in parentheses, so the reader can
+ * still tell a 200-char URI from a 2-million-char one. A short string passes
+ * through byte-for-byte.
+ *
+ * THE NINTH COPY IS WHY THIS IS HERE. The same elision was written out nine times
+ * — `truncate` in image_registry / video_registry / pdf_page_raster /
+ * pdf_page_vector / latex_raster / mermaid_raster, `truncateSrc` in
+ * web/videoV8Registry.js, `truncateRef` in render_gpu/svg_backend.js, and a
+ * `truncate` in render_gpu/skia/video_v5.js — and by the ninth it had drifted into
+ * three different behaviours. That is the exact history in this module's own header
+ * (a private copy per file, until one home ended it), so it lands in the same place
+ * for the same reason.
+ *
+ * @param {string} src - the source string to elide
+ * @returns {string}
+ *
+ * @example truncate("clip.mp4") // "clip.mp4"
+ * @example truncate("data:image/png;base64," + "A".repeat(200)) // "data:image/png;base64,AA…(222 chars)"
+ * @example truncate("x".repeat(48)) // "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" (48 is not yet too long)
+ */
+export function truncate(src) {
+  return src.length > SRC_LOG_MAX ? `${src.slice(0, SRC_LOG_HEAD)}…(${src.length} chars)` : src;
+}

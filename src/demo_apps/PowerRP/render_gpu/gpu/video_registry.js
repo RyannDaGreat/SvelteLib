@@ -59,6 +59,7 @@
 
 import { isMissingAssetUrl } from "../../core/asset_ref.js";
 import { registerMissing } from "./missing_media.js";
+import { truncate } from "../../core/report.js"; // THE shared log elision
 
 /** src → {status, el, error, listeners:Set, onFrame:fn|null} */
 const registry = new Map();
@@ -477,13 +478,6 @@ export function onVideoFrame(cb) {
 /** Command. Notifies every repaint subscriber that `src` advanced. */
 function notify(src) {
   for (const cb of listeners) cb(src);
-}
-
-/** Pure function. Shortens a src for log messages (data URIs are huge).
- * @example truncate("data:video/mp4;base64," + "A".repeat(200)) // "data:video/mp4;base64,AA…(222 chars)"
- */
-export function truncate(src) {
-  return src.length > 48 ? `${src.slice(0, 24)}…(${src.length} chars)` : src;
 }
 
 // ── THE SCRUBBER PATH (deterministic frame-at-time) ───────────────────────────

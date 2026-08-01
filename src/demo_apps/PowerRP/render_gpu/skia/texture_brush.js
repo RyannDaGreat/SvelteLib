@@ -77,6 +77,7 @@
 
 import { randUnit } from "../../core/particles.js";
 import { reportOnce } from "../../core/report.js";
+import { unitNormal } from "../../core/geometry.js"; // the stroke family's shared perpendicular (was a local `leftNormalTB` copy)
 import { parseColor } from "../ir.js";
 import { getSkiaImage } from "../gpu/image_registry.js";
 import { BRUSH_TEXTURES, textureIds, getTexture, textureUrl, firstTextureOf } from "./brush_textures/manifest.js";
@@ -126,21 +127,6 @@ export function clamp01(x) {
  */
 export function lerpN(a, b, t) {
   return a + (b - a) * t;
-}
-
-/**
- * Pure function. The LEFT unit normal of tangent (tx, ty) — a 90° CCW rotation,
- * normalized; a degenerate zero tangent returns [0, 0] rather than NaN. Offsets a
- * ribbon sample to its inner/outer rail.
- *
- * @example leftNormalTB(1, 0) // [0, 1]
- * @example leftNormalTB(0, 2) // [-1, 0]
- * @example leftNormalTB(0, 0) // [0, 0]
- */
-export function leftNormalTB(tx, ty) {
-  const len = Math.hypot(tx, ty);
-  if (!(len > 0)) return [0, 0];
-  return [-ty / len, tx / len];
 }
 
 /**
@@ -685,7 +671,7 @@ export function renderTextureBrush(CanvasKit, canvas, path, params, strokeWidth,
         const d = dists[i];
         const u = clamp01(d / L); // arc FRACTION (drives taper + texture U), not index fraction
         const pt = contour.getPosTan(d);
-        const nrm = leftNormalTB(pt[2], pt[3]);
+        const nrm = unitNormal(pt[2], pt[3]);
         rawSamples[i] = { x: pt[0], y: pt[1], nx: nrm[0], ny: nrm[1], u, half: taperHalfWidth(u, strokeWidth, sizeStart, sizeEnd, p.wobble ?? 0, p.wobbleFreq ?? 3) };
       }
       // 4) ROUND JOINS (#43): pivot the normal through each sharp corner so a gear
