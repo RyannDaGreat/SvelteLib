@@ -87,7 +87,22 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
   // differs from the kind it borrowed its announcement from.
   groupresize: Object.freeze(["symmetric"]),
   multiresize: Object.freeze(["uniform", "symmetric"]),
+  // THE TWO SINGLE-GESTURE PLACEMENT GRAMMARS ARE TWO KINDS, for the same reason
+  // groupresize is one: their Shift means DIFFERENT THINGS, so one kind cannot
+  // announce both truthfully. `place` runs creationRect, where Shift is resize's
+  // uniform scale; `placesegment` runs creationEndpoint, where Shift AXIS-LOCKS
+  // the free point (that function's own docstring says so, and says why: a single
+  // point has no second dimension to relate a scale to). While there was one kind,
+  // dragging out a line or an arrow put "Uniform scale" on the bar for a key that
+  // axis-locks — the groupresize lie exactly, one gesture family over.
+  //
+  // THE CORRECT CHIP ALREADY EXISTED AND WAS ALREADY IN USE. web/polygonDraw.js
+  // cites creationEndpoint BY NAME as the in-house axis-lock precedent and declares
+  // `modifiers: ["axisLock"]` for its vertex step, so the SAME behaviour was
+  // already announced correctly one flow over. This is not new vocabulary; it is
+  // the existing answer applied where it was missed.
   place: Object.freeze(["uniform", "symmetric"]),
+  placesegment: Object.freeze(["axisLock", "symmetric"]),
   band: Object.freeze(["bandAdd", "bandRemove", "bandInvert"]),
   endpoint: Object.freeze([]),
   modifier: Object.freeze([]),
@@ -98,7 +113,7 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
  * from DRAG_KIND_MODIFIERS so the two can never disagree.
  *
  * @example DRAG_KINDS.includes("multiresize") // true
- * @example DRAG_KINDS.length // 8
+ * @example DRAG_KINDS.length // 9
  */
 export const DRAG_KINDS = Object.freeze(Object.keys(DRAG_KIND_MODIFIERS));
 
@@ -813,3 +828,92 @@ export function creationEndpoint(sx, sy, wx, wy, mods) {
   const from = mods.symmetric ? { x: sx - dx, y: sy - dy } : { x: sx, y: sy };
   return { from, to };
 }
+
+/**
+ * The create-handler id (web/widget_handlers.js CREATE_HANDLERS) whose placement
+ * runs the SEGMENT grammar. Named here rather than compared inline because
+ * CanvasView used to test `plugin.placement === "endpoints"` in three separate
+ * places — the arm-time preview seed, the live drag, and (by omission) the drag
+ * kind it announced, which is how the announcement came to disagree with the
+ * other two.
+ *
+ * NOT IMPORTED FROM web/widget_handlers.js, deliberately: this module is DOM-free
+ * and node-testable (see the file header), and that registry reaches into overlay
+ * components. Two modules must therefore AGREE about a string they cannot share,
+ * which is the case the ledger says to GATE rather than trust — see
+ * tests/placement_grammar_test.js, which resolves the id through `handlerFor` and
+ * fails if the create phase stops declaring it.
+ */
+export const SEGMENT_CREATE_HANDLER = "endpoints";
+
+/**
+ * Pure function. Which drag kind a single-gesture crosshair placement runs under,
+ * from the create handler the widget resolved to. THE one place the segment
+ * grammar is recognised.
+ *
+ * Takes the RESOLVED handler id, not the raw `plugin.placement` field, so the
+ * create phase's own fallback ("placement" absent → "bbox") is honoured where it
+ * is declared instead of being restated here as a `?? "bbox"`.
+ *
+ * @param {string} createHandlerId - handlerFor("create", plugin).id
+ * @returns {("place"|"placesegment")}
+ *
+ * @example placementDragKind("endpoints") // "placesegment"
+ * @example placementDragKind("bbox") // "place"
+ * @example placementDragKind("bbox_then_asset") // "place" (it places a box, then asks for a source)
+ */
+export function placementDragKind(createHandlerId) {
+  return createHandlerId === SEGMENT_CREATE_HANDLER ? "placesegment" : "place";
+}
+
+/**
+ * THE SINGLE-GESTURE PLACEMENT GRAMMARS, keyed by the drag kind each runs under.
+ * A grammar owns the whole of what makes its placement different: the geometry a
+ * live drag previews and commits, and — DERIVED from DRAG_KIND_MODIFIERS above, so
+ * there is one source and not two — the held modifiers it reads.
+ *
+ * `gesture` RETURNS THE SHAPE `ctx.gesture` ALREADY CARRIES: exactly one of `rect`
+ * ({x, y, w, h} world) or `endpoint` ({from, to} world), which is the union
+ * web/widget_handlers.js's create handlers already destructure. So a grammar plugs
+ * into the existing create contract rather than introducing a parallel one, and
+ * CanvasView stashes whichever key came back with no branch of its own.
+ *
+ * THE MODIFIER ID AND THE PAYLOAD FLAG ARE DIFFERENT NAMES ON PURPOSE, and this is
+ * the polygon precedent, not a mismatch: the mods record is `{uniform, symmetric}`
+ * — the Shift/Cmd flags, worded for the grammar that named them first — while the
+ * modifier ID is what the HintBar ANNOUNCES. `placesegment` reads `mods.uniform`
+ * (Shift) and announces `axisLock`, exactly as web/polygonDraw.js's vertex step
+ * reads `p.mods.uniform` and declares `modifiers: ["axisLock"]`. Renaming the flag
+ * would touch every creation hook for no gain; announcing the flag's name would
+ * put "Uniform scale" on a key that axis-locks, which is the defect this table
+ * exists to close.
+ *
+ * @example Object.keys(PLACEMENT_GRAMMARS) // ["place", "placesegment"]
+ * @example PLACEMENT_GRAMMARS.placesegment.modifiers // ["axisLock", "symmetric"]
+ * @example PLACEMENT_GRAMMARS.place.gesture(100, 100, 300, 150, {}) // {rect: {x: 100, y: 100, w: 200, h: 50}}
+ * @example // Shift on the box grammar squares the rect; on the segment grammar it axis-locks:
+ * @example PLACEMENT_GRAMMARS.place.gesture(0, 0, 300, 100, {uniform: true}) // {rect: {x: 0, y: 0, w: 300, h: 300}}
+ * @example PLACEMENT_GRAMMARS.placesegment.gesture(0, 0, 300, 100, {uniform: true}) // {endpoint: {from: {x: 0, y: 0}, to: {x: 300, y: 0}}}
+ */
+export const PLACEMENT_GRAMMARS = Object.freeze({
+  place: Object.freeze({
+    modifiers: DRAG_KIND_MODIFIERS.place,
+    gesture: (sx, sy, wx, wy, mods) => {
+      const [x0, y0, x1, y1] = creationRect(sx, sy, wx, wy, mods);
+      return { rect: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } };
+    },
+  }),
+  placesegment: Object.freeze({
+    modifiers: DRAG_KIND_MODIFIERS.placesegment,
+    gesture: (sx, sy, wx, wy, mods) => ({ endpoint: creationEndpoint(sx, sy, wx, wy, mods) }),
+  }),
+});
+
+/**
+ * The drag kinds that are a single-gesture crosshair placement — what CanvasView's
+ * pointer-move and pointer-up route on, so adding a grammar routes itself.
+ *
+ * @example PLACEMENT_DRAG_KINDS.includes("placesegment") // true
+ * @example PLACEMENT_DRAG_KINDS.length // 2
+ */
+export const PLACEMENT_DRAG_KINDS = Object.freeze(Object.keys(PLACEMENT_GRAMMARS));

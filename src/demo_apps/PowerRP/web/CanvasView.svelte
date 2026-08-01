@@ -65,7 +65,7 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, creationEndpoint, geometryPairs } from "./canvas/dragKinds.js";
+  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS } from "./canvas/dragKinds.js";
   // diffState is no longer imported here: the two direct calls it had (the single
   // resize and the group resize) now go through canvas/dragKinds.js geometryPairs,
   // which is where the minimal delta and the constraint projection are one step.
@@ -1478,17 +1478,20 @@
     // immediately (one-shot) so a second gesture needs a fresh arm/command.
     if (app.crosshair) {
       const armed = app.crosshair;
-      // A PLACEMENT whose create handler declares a MULTI-STEP mode takes over
-      // instead of running a one-gesture placement, and its arm survives the press
-      // (see beginCreation) — so this is resolved BEFORE the one-shot clear below.
+      // THE CREATE HANDLER IS RESOLVED ONCE, BEFORE THE ONE-SHOT CLEAR BELOW, and
+      // it answers BOTH questions this press has to ask: whether a MULTI-STEP mode
+      // takes over instead of a one-gesture placement (its arm survives the press —
+      // see beginCreation), and, failing that, WHICH single-gesture grammar the drag
+      // runs (placementDragKind). Resolving it twice is how the second answer came
+      // to disagree with the first: the drag used to be announced as one kind for
+      // both grammars while branching on `plugin.placement` for its geometry.
       // A RIG names its handler on the arm itself; a widget's comes from its plugin
       // declaration, exactly as placementUp resolves it.
-      if (armed.kind === "place") {
-        const create = armed.plugin ? handlerFor("create", armed.plugin) : getHandler("create", armed.handlerId);
-        if (create.mode) {
-          beginCreation(create, armed, e);
-          return;
-        }
+      const create = armed.kind !== "place" ? null
+        : armed.plugin ? handlerFor("create", armed.plugin) : getHandler("create", armed.handlerId);
+      if (create?.mode) {
+        beginCreation(create, armed, e);
+        return;
       }
       e.currentTarget.setPointerCapture(e.pointerId);
       app.crosshair = null;
@@ -1517,11 +1520,19 @@
         // rather than one move-event later.
         const snappedStart = snapPoint(w.x, w.y);
         guides = snappedStart.guides;
-        drag = { kind: "place", plugin: armed.plugin, startWorld: { x: snappedStart.x, y: snappedStart.y }, startGuides: snappedStart.guides, lastWorld: w, downScreen: screenPoint(e), moved: false };
-        // Endpoint-kind (arrows) previews a from→to LINE; bbox-kind a rect.
-        if (armed.plugin.placement === "endpoints") placeLine = { x1: drag.startWorld.x, y1: drag.startWorld.y, x2: drag.startWorld.x, y2: drag.startWorld.y };
-        else placeRect = rectFromCorners(drag.startWorld, drag.startWorld);
-        app.dragKind = "place";
+        // THE DRAG KIND IS THE GRAMMAR (canvas/dragKinds.js placementDragKind): a
+        // segment placement reads Shift as an axis lock and a box placement reads it
+        // as a uniform scale, so they cannot share one kind without the HintBar
+        // announcing one of them wrongly. Everything downstream — the preview shape,
+        // the pointer routing, the commit, the chips — follows from this one value.
+        drag = { kind: placementDragKind(create.id), plugin: armed.plugin, startWorld: { x: snappedStart.x, y: snappedStart.y }, startGuides: snappedStart.guides, lastWorld: w, downScreen: screenPoint(e), moved: false };
+        // Seed the preview DEGENERATE at the start point, through the same grammar
+        // every later move uses, so the first frame cannot draw a different overlay
+        // from the second. Modifiers come from the DOWN event for the reason the
+        // band's do one branch up — a placement armed by command and then
+        // shift-dragged must honour Shift from frame one, not from the first keydown.
+        previewPlacement(drag.startWorld, { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey });
+        app.dragKind = drag.kind;
       }
       return;
     }
@@ -1737,7 +1748,9 @@
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "modifier") modifierDrag(w);
     else if (drag.kind === "band") bandDrag(w, e);
-    else if (drag.kind === "place") placementDrag(e, w);
+    // EVERY placement grammar routes here (PLACEMENT_DRAG_KINDS), so a grammar
+    // added to the table is driven and committed with no edit to this dispatch.
+    else if (PLACEMENT_DRAG_KINDS.includes(drag.kind)) placementDrag(e, w);
     // "shiftpick" = a deferred shift-click on a NON-draggable item: no drag
     // behavior, only the slop tracking above, so the pointer path does nothing.
   }
@@ -1979,25 +1992,42 @@
    */
   function placementDrag(e, w) {
     drag.lastWorld = w;
-    const mods = { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey };
-    const start = drag.startWorld;
     const live = snapPoint(w.x, w.y);
     // The start point's guide (if it snapped at grab time) stays visible for
     // the WHOLE drag — its correction is fixed (drag.startGuides), only the
     // live point's guide is recomputed every move.
     guides = [...drag.startGuides, ...live.guides];
-    if (drag.plugin.placement === "endpoints") {
-      // Stashed for placementUp (manifest pattern: resizeDrag stashes
-      // drag.lastBox the same way) — the commit reads exactly what was last
-      // previewed rather than re-deriving from modifier keys that a plain
-      // pointerup event doesn't carry.
-      drag.lastEndpoint = creationEndpoint(start.x, start.y, live.x, live.y, mods);
-      placeLine = { x1: drag.lastEndpoint.from.x, y1: drag.lastEndpoint.from.y, x2: drag.lastEndpoint.to.x, y2: drag.lastEndpoint.to.y };
-    } else {
-      const [x0, y0, x1, y1] = creationRect(start.x, start.y, live.x, live.y, mods);
-      drag.lastRect = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-      placeRect = drag.lastRect;
-    }
+    previewPlacement(live, { uniform: e.shiftKey, symmetric: e.metaKey || e.ctrlKey });
+  }
+
+  /**
+   * Command. Runs the drag's PLACEMENT GRAMMAR (canvas/dragKinds.js
+   * PLACEMENT_GRAMMARS, chosen by drag.kind) for a live point and publishes the
+   * result in the two places that need it: stashed on the drag record for the
+   * commit, and mirrored into the SVG overlay.
+   *
+   * STASHING IS WHY THE COMMIT IS HONEST (the manifest pattern resizeDrag uses for
+   * drag.lastBox): placementUp writes exactly the geometry that was last PREVIEWED,
+   * rather than re-deriving it from a pointerup event that carries no modifier
+   * state. Mutates `drag.lastRect` / `drag.lastEndpoint`, `placeRect`, `placeLine`.
+   *
+   * A grammar returns exactly ONE of `rect` / `endpoint` — the same union
+   * `ctx.gesture` already hands the create handlers — so the absent one is a
+   * DECLARED absence, not an unknown, and clearing it is what keeps a switched
+   * grammar from leaving the other overlay drawn.
+   *
+   * @param {{x: number, y: number}} live - the SNAPPED world point under the cursor
+   * @param {{uniform: boolean, symmetric: boolean}} mods - the live Shift/Cmd record
+   */
+  function previewPlacement(live, mods) {
+    const start = drag.startWorld;
+    const g = PLACEMENT_GRAMMARS[drag.kind].gesture(start.x, start.y, live.x, live.y, mods);
+    drag.lastRect = g.rect ?? null;
+    drag.lastEndpoint = g.endpoint ?? null;
+    placeRect = g.rect ?? null;
+    placeLine = g.endpoint
+      ? { x1: g.endpoint.from.x, y1: g.endpoint.from.y, x2: g.endpoint.to.x, y2: g.endpoint.to.y }
+      : null;
   }
 
   /**
@@ -2961,7 +2991,7 @@
       bandAddIds = [];
       bandRemoveIds = [];
       bandMods = NO_MODIFIERS;
-    } else if (drag.kind === "place") {
+    } else if (PLACEMENT_DRAG_KINDS.includes(drag.kind)) {
       placementUp();
     } else if (aHeld && drag.kind === "move") {
       // ANCHOR SNAP (manifest ARCHITECTURE PLAN #4): A held at release
