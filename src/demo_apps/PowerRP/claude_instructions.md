@@ -1554,6 +1554,105 @@ Lantern, WaterBottle, ToyCar, plus a procedurally generated Utah teapot.
 so in its docstring, or a future reader will "fix" working code. No violations found in
 app code.
 
+#### R6-23 DESIGN — ACCEPTED (wave 1, agent W1-O; proposal `.frenzy/round6/W1-O.md`, 1096 lines)
+
+**FAMILY REPRESENTATION: SIBLINGS OVER A SUBSTRATE.** ONE file `plugins/scene3d.js`, one
+factory, array export `scene3dPlugins`; members `scene3d_model` and `scene3d_splat`.
+Precedent is `plugins/shapeshifter.js` (2026-07-23, the OLDEST of the four family
+precedents that actually argues this question, and the one `plugins/corkboard.js:26` cites
+as its own). **The `sky` family is REJECTED for a structural reason, not a stylistic one:**
+its members read siblings' **2D world centres**, and a mesh or a light inside a viewport
+has no canvas position. **There is NO separate "scene" widget** — a scene is simply one
+viewport's properties.
+
+**PROPERTY STATE:** `BUNDLES.scene3dCamera` (camTargetX/Y/Z, camYaw/Pitch/Roll/Fov as
+`kind:"angle" display:"degrees"`, camDistance) plus `BUNDLES.scene3dRender`
+(renderMode/rasterWidth/rasterHeight/rasterDPI, copied from `plugins/pdf_page.js:205`).
+**Lighting is a `core/lists.js` LIST with TWO angle rows (azimuth + elevation)** because
+`ROW_KINDS` is CLOSED and there is no vector kind — and `plugins/tangent_lines.js:401,406`
+is the existing two-sibling-angles precedent. `plugins/corkboard.js:200` and
+`plugins/demo/glass.js:44` already spell it "Direction TO the light", so the wording is
+settled too. (Note this interacts with R6-16.2: if x/y ever becomes a real vector
+primitive, these rows are a customer.)
+
+**DOUBLE-CLICK / MOUSE-LOOK:** a NEW handler `web/sceneNav.js` with descriptor
+`sceneCamera{pose,writes}` and `activate:"navigate_scene"` — deliberately NOT a
+generalised `interiorView`, because two shipped widgets depend on that contract's
+`window(state) -> {x,y,w,h}` shape. **Mid-gesture state lives NOWHERE:** read the pose from
+current (preview-inclusive) state, `app.setPreview` all keys, and let the host commit on
+pointer-up or 250 ms wheel idle — ONE undo unit. It must copy interiorNav's LOUD refusal
+when a pose key is `=`-bound (better: lift `equationBoundInteriorProps` rather than
+duplicate it — see R6-24.7 on hand-maintained mirrors). **Escape is FREE:** declaring
+`mode` feeds `canvasModes()` -> `handShortcutEntries` -> the scoped Escape entry at
+`core/shortcut_entries.js:1021`, which answers the concern R6-1.2 raised. One deliberate
+divergence: this mode declares `onPan` (the user's "flying with the mouse"), where
+interiorNav deliberately does not. Asset picking becomes
+`placement:"bbox_then_asset"`.
+
+**THE CARDINAL CONTRACT — MAXIMUM REUSE, NO NEW IR OP.** A third pre-pass
+`render_gpu/scene3d_display.js` in the `pdf_display.js:250` shape (including
+`clipPolicy`). With `fullDevice = {s.w*scale, s.h*scale}`, offset `= sourceRect.sx *
+fullDevice.w` and sub `= sourceRect.sw * fullDevice.w` — proved equal to `deviceRect.w`
+in the proposal's section 4.2. **Pixels reach the scene as an ordinary `image` op** via
+`reserveImageSlot` / `registerRasterizedBitmap`, making this the 4th consumer after
+pdf/latex/mermaid — which buys `pendingRefs` export gating, missing-media refusal, CLI
+omission counting and PDF/SVG export for free. **The image ref IS the R6-1.7 cache**
+(content-addressed); it needs only `trimScene3dCache(keep)` and `scene3dRasterStats()` so
+a probe can prove a hit.
+
+**MODELS — MY R6-23.4 LIST WAS 4 OF 6 WRONG, AND W1-I's "SAFE" LIST IS ALSO PARTLY WRONG.**
+Hard fails: DamagedHelmet (CC-BY-NC ancestor), Sponza (Crytek EULA), Stanford models
+(NC + ND, and the ND is CONTAGIOUS to Khronos's Dragon), Duck (SCEA), BoxTextured
+(CC-BY + trademark, not CC0). **The Utah teapot has NO LICENCE TEXT AT ALL.** And
+SciFiHelmet, which W1-I called safe, is CC0 but **30,286,979 bytes with no `.glb`** —
+three times the repo's largest file. Plain Suzanne likewise has no `.glb`.
+**ACCEPTED SHIP LIST (Tier A+, 7,563,490 bytes total — less than one committed font):**
+MetalRoughSpheresNoTextures 291 KB (an untextured lighting rig), IridescenceSuzanne
+508 KB, DirectionalLight, ClearCoatCarPaint, ClearcoatWicker, GlassVaseFlowers, Fox
+(CC-BY, requires credit), Spot the cow (explicit public-domain dedication inside the
+archive), plus Avocado / WaterBottle / BoomBox / Lantern repacked to 1k JPEG — which takes
+86.20 MB down to 10.15 MB (Avocado alone 8.11 -> 0.21). **Draco compression is worthless
+here: 1.5 %, because textures dominate.** HDRI: 256x128 RGBE ~113 KB from Poly Haven
+(CC0). **The teapot and a Cornell box are GENERATED, not downloaded.** Home is the
+built-in library `assets/builtin/models/`, with `builtinClipart.js` as the loader template
+and `fonts/README.md` as the licence-table precedent. **COMMIT them; do NOT
+download-to-cache** — that is this manifest's own rule and there is ZERO
+download-on-first-use precedent in the repo, so my earlier suggestion of it is withdrawn.
+
+**OBJAVERSE: NO — R6-23.5 IS ANSWERED IN THE NEGATIVE, WITH EVIDENCE.** There is no search
+API of any kind; the explorer 404s; the only usable index is 924 KB of 1,156 category
+labels **with no licence field at all**; real metadata is 577 MB gzipped / 3.1 GB raw.
+Licences measured across 50k objects: 87.9 % CC-BY, **0.4 % CC0**, 9.7 % NC. There is also
+an open, unresolved legal complaint and an open NSFW report against the dataset.
+**AND THE TEMPTING ARCHITECTURE IS REFUSED ON PRINCIPLE:** searching Sketchfab live and
+then fetching the same uid from the mirror (~72 % hit rate) is CIRCUMVENTION of Sketchfab's
+401, and this manifest refuses it explicitly so no future agent rediscovers it as a clever
+idea. **Accepted instead:** the shipped library is primary, with an OPTIONAL author-time
+browser over **Poly Haven** (CC0, keyless, CORS-friendly). Two caveats: its assets are
+multi-file rather than `.glb`, and its ToS requires `Referer`/`User-Agent` headers that
+browser JS cannot set — so it must be proxied through `server/`.
+
+**TOP RISK IS NOT PERFORMANCE — IT IS A HOLE IN THE LOUD-OMISSION COUNTER.**
+`cli/render.js` counts EMITTED media ops, so a 3D widget that produced no raster emits
+nothing and a holed render **exits 0 silently**. The map widget already hit this exact
+hole and recorded it. Fixing the counter is a prerequisite, not a nicety.
+
+**AND AN HONEST WARNING FOR THE USER ABOUT R6-1.8:** `await update()` costs ~2.0-2.2 s per
+frame and is **RESOLUTION-INDEPENDENT**, so the fixed-resolution override the user asked
+for specifically to bound cost **will not reduce it**. That fact belongs in the property's
+help text rather than being discovered later.
+
+**CONVENTION FINDINGS (11, unfixed). HEADLINE: `plugins/shapeshifter.js`'s STATED
+JUSTIFICATION HAS SILENTLY EXPIRED** — it asserts that per-state Inspector rows are
+unsupported, but `visibleWhen` landed 2026-07-31, eight days afterwards. Its conclusion
+still holds on four other grounds, but the docblock that TWO families cite now argues from
+a false premise, so it must be rewritten rather than merely trusted. Also: `core/registry.js`
+documents 4 of 10 in-use capability keys despite being the de-facto base class; the
+pre-pass `renderCtx` is hand-wired in 3 places (record it, do not generalise this wave);
+`unit:` versus `display:` on angle rows has ALREADY shipped one bug and this design adds
+four more angle rows; `FRAME_KEYS` and the category titles are still duplicated (both
+marked HANDBACK PENDING); and `canSkip` is documented with zero implementors.
+
 ### R6-22 CONVENTION CONFORMANCE — A STANDING OBLIGATION ON EVERY AGENT
 
 User ruling, 2026-08-01, verbatim in spirit: "it's hyper duper critical that every
