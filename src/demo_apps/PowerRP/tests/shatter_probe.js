@@ -1,6 +1,15 @@
 /**
- * SHATTER end-to-end browser probe — "Convert to Widgets" on a real document,
+ * SHATTER end-to-end browser probe — the `shatter` command on a real document,
  * measured in pixels and in anchor behaviour.
+ *
+ * NAMING NOTE, because this file proposed the other name: I argued for "Convert
+ * to Widgets" from PowerPoint's "Convert to Shapes" plus the app's own noun. The
+ * user overruled it back to his original word, SHATTER, and the command id and
+ * every user-facing string now say so ("convert to widgets" survives only as a
+ * palette alias, which is the right place for a synonym). This line is the last
+ * piece of prose that still described the reverted name — recorded rather than
+ * quietly deleted, since a revert that leaves its doctrine standing is the exact
+ * defect the manifest's CONVENTIONS section names.
  * Run: node src/demo_apps/PowerRP/tests/shatter_probe.js [http://localhost:PORT]
  *
  * ── WHAT IT PROVES, AND WHY EACH HALF IS NEEDED ─────────────────────────────
