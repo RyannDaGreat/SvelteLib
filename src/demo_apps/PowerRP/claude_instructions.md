@@ -170,6 +170,38 @@ manifest itself becomes a Tower of Babel, which is the worst possible place for 
    **a hand-maintained list, map or switch mirroring another module's shape.** Derive it;
    if it cannot be derived, gate it so drift turns something red.
 
+### A SHARED SEAM WITHOUT A SAME-COMMIT SWEEP IS NOT A CONVENTION — IT IS ONE MORE DIALECT
+
+**CLAUDE-ORIGINATED (agent W3-B, 2026-08-01), and MEASURED, which is what makes it a law
+rather than an opinion.** Adoption rates of seams this project introduced, counted:
+
+| seam | landed with a same-commit sweep? | adoption |
+|---|---|---|
+| `tests/puppeteerLaunch.js` | YES | **163 / 163** |
+| `free_port.js` | YES | **8 / 8** |
+| three other seams | NO | **3%, 8%, and 0%** |
+| R6-25.3's pixel metric | NO | **zero adopters** |
+
+**The seams that shipped with a sweep reached 100%. The seams that shipped without one
+reached approximately nobody.** Not one of the three ever caught up, and the newest has no
+users at all.
+
+**Why, and it is not laziness:** a seam is only discoverable from where its author is
+standing. Everyone else is inside a file that already does the thing some other way, and
+nothing in that file mentions the new home. So the old spelling keeps being copied — not in
+defiance of the convention but in ignorance of it, which no amount of documenting fixes.
+
+**THE RULE:** introducing a shared helper, module or protocol is not done when the helper
+exists. It is done when **every existing call site has been converted in the same commit,
+and a gate fails if a new one appears.** If the sweep is too large for one commit, the seam
+is too large to introduce yet — split it, or land the sweep first against the old spelling.
+
+This is the same law as ledger C-10 (*deduplication without a gate is a snapshot*) seen from
+the other end: C-10 says consolidating N copies without a gate regenerates them, and this
+says introducing the one true home without a sweep never collects them in the first place.
+**Both failures are silent, and both leave a codebase that looks unified in the docs and is
+not in the code.**
+
 ### A REVERT MUST REVERT ITS DOCTRINE, IN THE SAME COMMIT
 
 **CLAUDE-ORIGINATED, 2026-08-01, from a measured instance.** `aba0aa9` wrote both the
