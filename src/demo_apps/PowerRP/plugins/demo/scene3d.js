@@ -112,7 +112,7 @@ import { image, rect, text } from "../../render_gpu/ir.js";
 import { cropInsetsToSource, decorateStrokedBox } from "../../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../../render_gpu/effects.js";
 import {
-  SCENE3D_RASTER_DENSITY, roundScene3dScale, scene3dDrawRef, scene3dErrorFor,
+  SCENE3D_RASTER_DENSITY, ensureScene3dRasterized, roundScene3dScale, scene3dErrorFor,
 } from "../../render_gpu/gpu/scene3d_raster.js";
 
 /** Degrees per radian, for the few places a literal angle is easier to read in
@@ -767,26 +767,17 @@ function makeScene3dPlugin(member) {
      *   1. no source        → the muted "choose a scene" panel (and isGhost above);
      *   2. source that failed to load → the LOUD red panel naming the reason, so a
      *      .spz version 4 says so instead of looking like an empty viewport;
-     *   3. otherwise        → ONE `image` op at a raster ref. Before the FIRST
-     *      render of a source lands the ref resolves to nothing and the compositor
-     *      draws nothing for it, repainting when image_registry's onImageLoad
-     *      fires — the async contract, no placeholder, no blocking.
-     *
-     * AFTER that first render, a LIVE consumer never sees a hole again: `ctx.live`
-     * asks scene3d_raster for a HOLD, so a pose or exposure change keeps showing
-     * the previous frame of the same scene until the new one is ready and then
-     * swaps atomically. Read that function's docblock before changing this call —
-     * a one-shot pixel consumer must NOT get the hold, and `ctx` is how the two
-     * are told apart (render_gpu/ports.js sets `live` only for a surface that
-     * repaints).
+     *   3. otherwise        → ONE `image` op at the raster's ref. Before the first
+     *      render lands the ref resolves to nothing and the compositor draws
+     *      nothing for it, repainting when image_registry's onImageLoad fires —
+     *      the async contract, no placeholder, no blocking.
      *
      * @param {object} s folded, evaluated item state
      * @param {object} _subtree unused (a viewport has no subtree)
      * @param {object} world the node's own absolute world transform
-     * @param {object|null} ctx the per-node render context (render_gpu/ports.js)
      * @returns {object[]} display-list commands in local space
      */
-    emit(s, _subtree, world, ctx) {
+    emit(s, _subtree, world) {
       const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
       if (c.w <= 0 || c.h <= 0) return []; // fully cropped away → nothing to draw
       const style = { x: c.x, y: c.y, w: c.w, h: c.h, stroke: s.stroke, strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0 };
@@ -802,13 +793,13 @@ function makeScene3dPlugin(member) {
 
       const size = scene3dRasterSize(s, world?.scale ?? 1);
       const pose = scene3dPose(s);
-      const ref = scene3dDrawRef({
+      const ref = ensureScene3dRasterized({
         kind: member.kind, src: s.src, pose, look: scene3dLook(s),
         lit: member.lit, exposure: s.exposure ?? 1,
         w: size.w, h: size.h,
         near: Math.max(pose.distance * NEAR_FRACTION, Number.EPSILON),
         far: Math.max(pose.distance * FAR_MULTIPLE, 1),
-      }, { hold: ctx?.live === true });
+      });
       const quad = image({
         ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1,
         sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh, sampling: "bilinear",

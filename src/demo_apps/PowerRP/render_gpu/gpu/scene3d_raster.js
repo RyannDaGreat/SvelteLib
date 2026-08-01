@@ -71,38 +71,6 @@
  * the current frame needs (trimScene3dCache) — the pdf_page_raster rule, and for
  * the same measured reason: CanvasKit's wasm heap has a hard 2 GiB ceiling.
  *
- * ── THE HOLD: A CHANGING PROPERTY MUST NOT PUNCH A TRANSPARENT HOLE ──────────
- * Content-addressing has one consequence that is a defect rather than a feature:
- * a property change mints a ref that does not exist yet, `getSkiaImage` returns
- * null for it, and the compositor draws NOTHING until the render lands. One
- * change is a blink; a DRAG changes a property every frame, so the widget is
- * transparent for the whole gesture. Measured on this host before the fix, with
- * the shipped 1,566-splat fixture — the cheapest scene in the app: a single
- * `camYaw` write left 2-3 animation frames (8-19 ms) drawing nothing, and a
- * CONTINUOUS sweep of `camYaw` (what a mouse-look drag is) left **59 of 60
- * frames drawing nothing — 98%**. The user's report was "it FLICKERS when things
- * change… I can't even use this", and this is the whole of it.
- *
- * THE FIX IS THE ONE THIS CODEBASE ALREADY MADE, one widget over. render_gpu/gpu/
- * video_registry.js hit the identical failure on the video scrubber ("frame,
- * blank, frame: the FLICKER", 153 of 154 captured frames blank) and answered it
- * with a HOLD: a miss draws the source's most recently DECODED frame instead of
- * nothing, and snaps to the exact one when it lands. That vocabulary — `held`,
- * the hold KEY, a pin the evictor skips — is reused here verbatim rather than
- * renamed, because a second name for one mechanism is how a dialect starts.
- *
- * A HOLD IS KEYED ON (kind, src), NOT ON THE POSE, which is the whole point: the
- * pose is exactly what changed. Keying on the SOURCE is also what stops a stale
- * frame outliving its subject — a widget whose `src` changes asks under a
- * different key and can never be handed the previous scene's picture. A FAILED
- * source is never held either: emit() takes its red-panel branch, so a hold could
- * not be drawn even if one existed.
- *
- * AND IT IS LIVE-PATH ONLY — see scene3dDrawRef. video_registry states the reason
- * in its own words: "holding a stale frame in a deterministic path would make its
- * pixels depend on DECODE TIMING, which pure(document, slide, alpha) forbids."
- * Same law, same split.
- *
  * Browser-facing (needs WebGL2 + `createImageBitmap`), NOT part of the DOM-free
  * `core/`. Importable in bare node — the engine import is lazy and every pure
  * helper below is reachable without it, which is what lets the node suite test
@@ -158,14 +126,6 @@ const rasters = new Map();
  *  widget and every pose. Splat scenes are tens of megabytes; decoding one per
  *  frame would dominate everything else in this file. */
 const sources = new Map();
-
-/** holdKey -> the ref of the most recently COMPLETED raster of that (kind, src) —
- *  the frame scene3dDrawRef hands a LIVE consumer while a newer pose is still
- *  rendering (see the header's HOLD section). A pin is a REFERENCE into `rasters`,
- *  never a second owner: trimScene3dCache skips pinned refs so the outgoing frame
- *  stays alive until a newer render replaces it as the pin, exactly as
- *  video_registry's evictScrubFrames treats its own holds. */
-const held = new Map();
 
 /** The single engine context, built on first use (see engine()). */
 let enginePromise = null;
@@ -307,35 +267,13 @@ export function orbitUp(pose) {
 }
 
 /**
- * Pure function. THE HOLD KEY: the identity a stale frame may be shared across.
- * Everything that changes the PICTURE but not the SUBJECT — pose, size, exposure
- * — is deliberately absent, because those are exactly what a live gesture is
- * changing. `kind` is in it because the two members load the same path through
- * different readers, and `src` is in it because a stale frame must never outlive
- * its own source (video_registry.scopedHoldKey's rule, and its wording).
- *
- * @param {string} kind the family member ("splat" / "model")
- * @param {string} src the asset URL or data URI
- * @returns {string}
- *
- * @example scene3dHoldKey("splat", "room.ply") // "splat room.ply"
- * @example scene3dHoldKey("model", "car.glb") === scene3dHoldKey("model", "van.glb") // false
- */
-export function scene3dHoldKey(kind, src) {
-  return `${kind} ${src}`;
-}
-
-/**
  * Query. Cache accounting for a probe to assert against — "the renderer did NOT
  * run" is a claim, and a claim with no observable is not testable. The material
- * raster cache ships `materialRasterStats()` for exactly this reason. `holds` is
- * how many draws were answered by a STALE frame, which is the observable the
- * flicker gate needs: a hold that never fires and a hole are indistinguishable
- * in pixels once the render is fast enough to hide both.
+ * raster cache ships `materialRasterStats()` for exactly this reason.
  *
- * @returns {{refs: number, ready: number, loading: number, bytes: number, renders: number, hits: number, holds: number, pins: number}}
+ * @returns {{refs: number, ready: number, loading: number, bytes: number, renders: number, hits: number}}
  *
- * @example scene3dRasterStats() // {refs: 0, ready: 0, loading: 0, bytes: 0, renders: 0, hits: 0, holds: 0, pins: 0}
+ * @example scene3dRasterStats() // {refs: 0, ready: 0, loading: 0, bytes: 0, renders: 0, hits: 0}
  */
 export function scene3dRasterStats() {
   let ready = 0, loading = 0, bytes = 0;
@@ -344,16 +282,12 @@ export function scene3dRasterStats() {
     else loading++;
     bytes += entry.bytes;
   }
-  return {
-    refs: rasters.size, ready, loading, bytes,
-    renders: counters.renders, hits: counters.hits, holds: counters.holds, pins: held.size,
-  };
+  return { refs: rasters.size, ready, loading, bytes, renders: counters.renders, hits: counters.hits };
 }
 
 /** Lifetime counters behind scene3dRasterStats — how many times the engine
- *  actually ran, how many times a ref answered instead, and how many draws a
- *  STALE frame covered for. */
-const counters = { renders: 0, hits: 0, holds: 0 };
+ *  actually ran, and how many times a ref answered instead. */
+const counters = { renders: 0, hits: 0 };
 
 /**
  * Command. Brings the raster cache back inside SCENE3D_CACHE_BYTES by freeing
@@ -373,17 +307,10 @@ export function trimScene3dCache(keepRefs) {
   const keep = keepRefs instanceof Set ? keepRefs : new Set(keepRefs ?? []);
   let bytes = 0;
   for (const entry of rasters.values()) bytes += entry.bytes;
-  const pinned = new Set(held.values());
   let freed = 0;
   for (const [ref, entry] of rasters) {
     if (bytes <= SCENE3D_CACHE_BYTES) break;
-    // A PINNED HOLD IS NEVER EVICTED. Freeing it would delete the one frame that
-    // stands between a mid-gesture property change and a transparent hole, and it
-    // would do so precisely when the budget is tight — i.e. during the heavy
-    // fly-through the hold exists for. At most one pin per (kind, src), so the
-    // real ceiling is this budget plus the co-visible sources, which is the same
-    // arithmetic video_registry's SCRUB_CACHE_CAP documents for its own pins.
-    if (keep.has(ref) || pinned.has(ref) || entry.status === "loading") continue;
+    if (keep.has(ref) || entry.status === "loading") continue;
     rasters.delete(ref);
     releaseImage(ref);
     freed += entry.bytes;
@@ -436,15 +363,8 @@ export function scene3dStatus(ref) {
  * "render started" and "bitmap registered" would otherwise call ensureImage on a
  * synthetic ref, fetch() it, fail, and latch the key to "error" permanently.
  *
- * A PLUGIN'S emit() MUST NOT CALL THIS DIRECTLY — call scene3dDrawRef, which
- * calls this and then decides which of the two answers ("the raster you asked
- * for" vs "the one that can be drawn right now") the caller should get. This
- * function's answer is THE TRUE REF, always: it is what `pendingImageRefs()`
- * gates the exporters on and what cli/render.js counts as omitted media, and
- * both of those must keep naming the picture the document asks for.
- *
  * @param {object} spec see scene3dSpec — {kind, src, pose, look, w, h, background}
- * @returns {string} the ref this spec's pixels will land under
+ * @returns {string} the ref to draw
  */
 export function ensureScene3dRasterized(spec) {
   const ref = scene3dRef(spec);
@@ -478,12 +398,6 @@ export function ensureScene3dRasterized(spec) {
       entry.status = "ready";
       entry.bytes = bitmap.width * bitmap.height * BYTES_PER_PIXEL;
       registerRasterizedBitmap(ref, bitmap);
-      // THE PIN MOVES ON COMPLETION, never on request: the hold must always name a
-      // frame that can actually be drawn, so it is only ever set from inside the
-      // success branch. The outgoing pin's raster is released by the ordinary LRU
-      // once it is no longer pinned (trimScene3dCache), so replacing a pin leaks
-      // nothing and dropping one frees a frame that is now genuinely dead.
-      held.set(scene3dHoldKey(spec.kind, spec.src), ref);
       return bitmap;
     })
     .catch((e) => {
@@ -507,49 +421,6 @@ export function ensureScene3dRasterized(spec) {
       return null;
     });
   return ref;
-}
-
-/**
- * Command (near-pure: idempotent). THE ONE ENTRY POINT A PLUGIN'S emit() USES.
- * Keeps `spec`'s raster rendering (ensureScene3dRasterized, so the true ref is
- * reserved, counted and pending) and answers with the ref that should actually be
- * DRAWN this frame:
- *
- *   · the TRUE ref once it is ready — always, and always eventually;
- *   · otherwise, when `hold` is set, the most recently completed raster of the
- *     SAME (kind, src): a slightly stale picture instead of a transparent hole;
- *   · otherwise the true ref, which draws nothing until it lands (today's
- *     behaviour, unchanged).
- *
- * `hold` IS THE LIVE/ONE-SHOT SWITCH AND IT IS NOT A PERFORMANCE KNOB. Set it
- * only from a consumer that REPAINTS when the raster arrives — the editor canvas,
- * which subscribes to image_registry.onImageLoad. A one-shot pixel consumer
- * (thumbnail, PNG export, the CLI hook) must leave it false: it captures once, so
- * a stale frame would not be a brief artifact but the SHIPPED PICTURE, and one
- * that looks entirely plausible while being of the wrong pose. That is a worse
- * failure than a visible hole, and it is the same split video_registry draws
- * between getScrubFrame (live, holds) and requestScrubFrame (awaited, exact).
- * The video EXPORT path needs no such care and gets none: web/renderJobPage.js
- * waits for `pendingImageRefs()` to empty before capturing, and the true ref is in
- * that set, so by capture time the true ref is ready and the hold is unreachable.
- *
- * CONVERGENCE, WHICH IS THE PROPERTY THAT KEEPS THE CORE INVARIANT: hold the
- * document and `t` fixed and this settles, in bounded time, on a ref that is a
- * pure function of the document. The hold is a TRANSIENT of the live surface, in
- * the same category as "the raster has not landed yet" — which this path already
- * had. It adds no new dependency on history that outlives a render.
- *
- * @param {object} spec see ensureScene3dRasterized
- * @param {{hold?: boolean}} [opts] hold: this consumer repaints, so prefer a stale frame to a hole
- * @returns {string} the ref to put in the `image` op
- */
-export function scene3dDrawRef(spec, { hold = false } = {}) {
-  const ref = ensureScene3dRasterized(spec);
-  if (!hold || scene3dStatus(ref) === "ready") return ref;
-  const stale = held.get(scene3dHoldKey(spec.kind, spec.src));
-  if (!stale || scene3dStatus(stale) !== "ready") return ref;
-  counters.holds++;
-  return stale;
 }
 
 /**
@@ -818,10 +689,8 @@ async function renderSpecNow(spec) {
 export function resetScene3dRaster() {
   for (const ref of rasters.keys()) releaseImage(ref);
   rasters.clear();
-  held.clear();
   sources.clear();
   sourceErrors.clear();
   counters.renders = 0;
   counters.hits = 0;
-  counters.holds = 0;
 }

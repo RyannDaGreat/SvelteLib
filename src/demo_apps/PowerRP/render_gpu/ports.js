@@ -188,20 +188,9 @@ export function videoIR(s) {
  * stays PURE (same args → same output); the map is a plain argument, never a
  * global the walker reaches into.
  *
- * `live` RIDES THE SAME SEAM AND IS NOT A PRE-PASS. It is one boolean answering
- * one question: WILL THIS SURFACE REPAINT when an asynchronous raster lands? The
- * editor canvas will (it subscribes to image_registry.onImageLoad); a thumbnail,
- * a PNG export and the CLI hook will not — they capture once. A widget whose
- * raster is not ready yet can therefore show a STALE frame on the first kind of
- * surface, where it is a few milliseconds of slightly-old picture instead of a
- * transparent hole, and must NOT on the second, where it would be the shipped
- * picture. render_gpu/gpu/scene3d_raster.scene3dDrawRef is the first reader; the
- * flag is general because the question is (any async-raster widget has it), and
- * `false` — every existing caller — is byte-identical to before it existed.
- *
  * Args:
  *   nodes (object[]): deriveRenderTree output (nodes carry .plugin)
- *   ctx ({pdfDisplay?: Map, mapTiles?: Map, live?: boolean}): optional render-time display context (see above)
+ *   ctx ({pdfDisplay?: Map, mapTiles?: Map}): optional render-time display context (see above)
  *
  * Returns:
  *   object[]: IR commands (z-ordered because nodes are)
@@ -210,17 +199,8 @@ export function videoIR(s) {
  * @example sceneIR([]) // []
  */
 export function sceneIR(nodes, ctx = {}) {
-  // ONE normalized display context travels down the walk, rather than one
-  // positional argument per pre-pass. Two of them were already threaded through
-  // three function signatures by hand; a third (`live`) and the fourth this
-  // widget family will need would make that a five-argument recursion whose call
-  // sites have to be edited in lockstep — the hand-maintained-mirror shape the
-  // convention ledger names as this codebase's worst recurring defect.
-  const display = {
-    pdfDisplay: ctx.pdfDisplay ?? null,
-    mapTiles: ctx.mapTiles ?? null,
-    live: ctx.live === true,
-  };
+  const pdfDisplay = ctx.pdfDisplay ?? null;
+  const mapTiles = ctx.mapTiles ?? null;
   const byId = new Map(nodes.map((n) => [n.itemId, n]));
   const out = [];
   for (const node of nodes) {
@@ -229,7 +209,7 @@ export function sceneIR(nodes, ctx = {}) {
     // composited subtree (built by emitNode below), so the group's shadow/bloom/
     // blend/crop wraps it as one unit. Every non-folded node draws normally.
     if (node.foldedBy) continue;
-    out.push(...emitNode(node, byId, display));
+    out.push(...emitNode(node, byId, pdfDisplay, mapTiles));
   }
   return out;
 }
@@ -334,9 +314,9 @@ export function nonFiniteAffordanceIR(node, fields) {
  * broken for the whole surface, and escapes untouched — the same line
  * paintNodeRun draws, applied at the seam one step earlier.
  */
-function emitNode(node, byId, display) {
+function emitNode(node, byId, pdfDisplay, mapTiles = null) {
   try {
-    return emitNodeBody(node, byId, display);
+    return emitNodeBody(node, byId, pdfDisplay, mapTiles);
   } catch (e) {
     if (isConfigurationError(e)) throw e;
     const msg = throwMessage(e);
@@ -369,10 +349,10 @@ function emitNode(node, byId, display) {
  *
  * @param {object} node - a derive render node (carries .plugin/.state/.world)
  * @param {Map} byId - itemId → node, for folded-member lookup
- * @param {{pdfDisplay: Map|null, mapTiles: Map|null, live: boolean}} display - the normalized render-time display context sceneIR built
+ * @param {Map|null} pdfDisplay - per-node PDF re-raster descriptors (or null)
  * @returns {object[]} IR (empty when the node emits nothing — a pure ghost)
  */
-function emitNodeBody(node, byId, display) {
+function emitNodeBody(node, byId, pdfDisplay, mapTiles = null) {
   // A plugin registered with no emit() is a BROKEN REGISTRY ENTRY, not document
   // poison — no document authored the missing method, so no red box on one item
   // describes it honestly. Branded so the emit-time boundary below rethrows it,
@@ -406,23 +386,18 @@ function emitNodeBody(node, byId, display) {
   }
   // GROUP SUBTREE: build the folded members' absolute-world IR (recursively).
   const subtreeIR = node.type === "group" && Array.isArray(node.subtreeMemberIds) && node.subtreeMemberIds.length
-    ? node.subtreeMemberIds.flatMap((id) => (byId.has(id) ? emitNode(byId.get(id), byId, display) : []))
+    ? node.subtreeMemberIds.flatMap((id) => (byId.has(id) ? emitNode(byId.get(id), byId, pdfDisplay, mapTiles) : []))
     : null;
   const targetWorldIR = node.type === "cropbox" && node.cropTarget
     ? [pushTransform(node.cropTarget.world), ...node.cropTarget.plugin.emit(node.cropTarget.state), popTransform()]
     : null;
   // The per-node RENDER CONTEXT: each view-aware pre-pass's descriptor FOR THIS
-  // NODE, plus the surface-wide `live` answer. Null when the caller supplied
-  // NEITHER a pre-pass NOR `live` (export, thumbnails, the CLI, tests), which is
+  // NODE. Null when no pre-pass ran (export, thumbnails, the CLI, tests), which is
   // the signal every consuming plugin reads to take its camera-free fallback.
-  // `live` participates in that test so a surface that repaints but happens to
-  // hold no PDF and no map still reaches its widgets — without it, the flag would
-  // silently evaporate on exactly the scenes it matters for.
-  const renderCtx = display.pdfDisplay || display.mapTiles || display.live
+  const renderCtx = pdfDisplay || mapTiles
     ? {
-        pdfDisplay: display.pdfDisplay?.get(node.itemId) ?? null,
-        mapTiles: display.mapTiles?.get(node.itemId) ?? null,
-        live: display.live,
+        pdfDisplay: pdfDisplay?.get(node.itemId) ?? null,
+        mapTiles: mapTiles?.get(node.itemId) ?? null,
       }
     : null;
   // emit() gets a subtree as arg 2 (a group's members' IR, or a crop box's target
