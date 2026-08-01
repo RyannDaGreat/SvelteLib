@@ -19,9 +19,10 @@
  * registry answers 33 of 96.
  *
  * WHAT IT PROVES, over EVERY plugin the app registers:
- *   (1) ZERO INVENTED KEYS — every key of every preset's `props` exists in the
- *       plugin's `defaults`. A preset writing a key the widget does not have
- *       keyframes a property nothing reads: invisible, permanent, silent.
+ *   (1) ZERO INVENTED KEYS — every key of every preset's `props` is DECLARED by
+ *       the plugin, in its `defaults` or its Inspector rows. A preset writing a
+ *       key the widget declares nowhere keyframes a property nothing reads:
+ *       invisible, permanent, silent.
  *   (2) A PRESET CAN INTRODUCE ITSELF — non-empty `name` and `description`, and
  *       names unique within a family (the Tools pane keys its cards by name).
  *   (3) EQUATION FORM (R6-25.1) — an equation-valued prop carries the "="
@@ -124,12 +125,47 @@ test("the roster yields presets to check at all", () => {
 });
 
 // ── (1) zero invented keys ───────────────────────────────────────────────────
-test("every preset prop key exists in the plugin's defaults", () => {
+/**
+ * Pure function. Every key a plugin DECLARES, from either seam: its `defaults`
+ * and its registered Inspector rows.
+ *
+ * BOTH SEAMS, because a defaults-only reading is wrong and it blocked real work.
+ * `STROKE_TRIM_KEYS` / `STROKE_OFFSET_KEYS` / `STROKE_JOIN_KEYS` carry NO default
+ * on purpose — `core/properties.js:1568-1570` states the rule verbatim:
+ * "absent-is-legacy, so composing them changes no widget's stored state or
+ * rendering until a knob moves" — while being declared as rows on 45 plugins. So
+ * this check's own premise, "a key nothing reads", is FALSE for them: the
+ * Inspector reads them, the renderer reads them, and a circle with
+ * `strokeStart`/`strokeEnd` is a progress arc whose rows are otherwise
+ * undiscoverable. `rowViolations` below already knew this; check (1) did not.
+ *
+ * The real target survives: a key declared in NEITHER seam is still refused. And
+ * the two other classes of undeclared-but-legal state stay caught, which is the
+ * point of widening by exactly one seam rather than removing the check — a list
+ * companion (`pointsActive`, core/lists.js:62) and an undeclared structural list
+ * (`bento.spans`, plugins/bento.js:35) appear in neither `defaults` nor
+ * `inspector`, so a preset naming one must argue for it rather than slip past.
+ *
+ * @param {object} plugin - a registered (resolved) plugin
+ * @returns {Set<string>} every declared top-level key
+ *
+ * @example declaredKeys({defaults: {fill: "#000"}, inspector: [{key: "strokeStart"}]})
+ * // Set { "fill", "strokeStart" }
+ * @example declaredKeys({defaults: {w: 10}}) // Set { "w" }
+ */
+function declaredKeys(plugin) {
+  return new Set([
+    ...Object.keys(plugin.defaults ?? {}),
+    ...(plugin.inspector ?? []).filter((r) => r.key).map((r) => r.key)
+  ]);
+}
+
+test("every preset prop key is DECLARED — in the plugin's defaults or its Inspector rows", () => {
   for (const entry of ALL) {
-    const declared = new Set(Object.keys(entry.plugin.defaults ?? {}));
+    const declared = declaredKeys(entry.plugin);
     for (const key of Object.keys(entry.preset.props ?? {}))
       assert.ok(declared.has(key),
-        `${where(entry)} writes "${key}", which is not in ${entry.plugin.type}'s defaults — a preset key nothing reads keyframes an invisible property forever`);
+        `${where(entry)} writes "${key}", which ${entry.plugin.type} declares in neither its defaults nor its Inspector rows — a preset key nothing reads keyframes an invisible property forever`);
   }
 });
 
@@ -412,7 +448,13 @@ test("(self-check) the two hoisted gates catch what they claim to and pass what 
     ["a non-boolean on a boolean row is caught", () => rowViolations(SELF_CHECK_PLUGIN, { on: 1 }).length === 1],
     ["a legal map is passed", () => rowViolations(SELF_CHECK_PLUGIN, { count: 4, hue: "#0f0", cap: "round", on: false, label: "x" }).length === 0],
     ["a key with no row is skipped, never failed", () => rowViolations(SELF_CHECK_PLUGIN, { pointsActive: [true, false] }).length === 0],
-    ["a text row is not type-checked", () => rowViolations(SELF_CHECK_PLUGIN, { label: 42 }).length === 0]
+    ["a text row is not type-checked", () => rowViolations(SELF_CHECK_PLUGIN, { label: 42 }).length === 0],
+    // Check (1)'s two seams, and specifically that widening to Inspector rows did
+    // not widen it to everything. A row-without-a-default (the absent-is-legacy
+    // trim keys) is DECLARED; a key in neither seam is still refused.
+    ["a defaults key is declared", () => declaredKeys(SELF_CHECK_PLUGIN).has("count")],
+    ["a row with no default is declared", () => declaredKeys({ defaults: {}, inspector: [{ key: "strokeStart" }] }).has("strokeStart")],
+    ["a key in neither seam is NOT declared", () => !declaredKeys(SELF_CHECK_PLUGIN).has("pointsActive")]
   ];
   const broken = cases.filter(([, fn]) => !fn()).map(([name]) => name);
   assert.deepEqual(broken, [], `the gate does not do what it says: ${broken.join("; ")}`);
