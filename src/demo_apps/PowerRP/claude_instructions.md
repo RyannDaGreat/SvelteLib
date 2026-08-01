@@ -936,6 +936,40 @@ is the actual rule.
 - **R6-3.10 MECHANICS.** Reuse the existing `presets` protocol and Tools pane
   (task #99); presets apply to the current frame. Hover-preview is the house
   default for pickers (#165), so preset hover must live-preview.
+- **R6-3.12 TWO STANDING LESSONS FROM THE PRESETS SWARM** (surfaced by the metaball
+  research agent; full report under `.frenzy/round6/presets/`):
+
+  **(a) WEBFETCH'S SUMMARISER CAN FABRICATE. VERIFY VERBATIM BEFORE CITING.** An early
+  summary of a Wikipedia page returned "a rich, confident account" of metaball palette-LUT
+  rendering and banding. A VERBATIM re-fetch showed **that article contains the word
+  "Metaballs" exactly once, in a bullet list** — the whole account was invented by the
+  summarising layer, not present in the source. The agent caught it, re-verified everything,
+  and marked the affected claims. **RULE: any load-bearing claim from a fetched page must be
+  confirmed against verbatim text, and "canonical look" lore with no citation is to be
+  treated as unsourced.** This applies to every research agent in this repo, not just
+  presets.
+
+  **(b) A PRESET SET MUST BE PRUNED BY WHAT THE KNOBS CAN ACTUALLY EXPRESS — 12 CANDIDATES
+  BECAME 7.** The metaball knob set has no emission, no true opacity (`fluidColor`
+  MULTIPLIES, so a blob can never be brighter than its background), no environment
+  reflection, no subsurface scattering, and no thin-film interference. Consequence, stated as
+  collisions rather than opinions: mercury and molten metal are **the same picture** without
+  emission; liquid nitrogen is **water with every knob turned down**; oil-lens and molten
+  glass sit within 0.02 of each other on refraction — and crown glass is LOW dispersion
+  (Abbe up to 65), so glass cannot even claim to be "the sparkly one"; slime is tinted water
+  without SSS. **Shipping near-duplicates is the failure mode the user's "not just stupid
+  presets" ruling is aimed at, so the honest move is to ship 7 that are distinguishable and
+  say which 5 were cut and why.** Ranked knob additions, by presets unlocked: **`emission`
+  first (3-5 presets, one add in the composite)**, then a 2-band environment gradient, then
+  `filmThickness`, then `translucency`, then `roughness` separate from shininess.
+
+  **A METHOD WORTH REUSING:** that agent derived `smoothK` from **log10(Ohnesorge number)**,
+  which spans six decades across these fluids and is the best available physical predictor of
+  fat-and-rounded versus pinched-and-stringy merging — while stating plainly that the
+  ORDERING is right but the GEOMETRY is not, because a smooth-union neck is short and fat
+  where a real high-Oh fluid forms a long thin thread. That is the standard: a physically
+  derived mapping, with its own limitation named.
+
 - **R6-3.11 CROSS-WIDGET PHYSICAL CONSISTENCY.** Aperture blade count, flare
   starburst ray count and bokeh polygon must AGREE where they describe the same
   lens. A swarm authoring independently will contradict itself unless coordinated.
