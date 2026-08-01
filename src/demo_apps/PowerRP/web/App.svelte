@@ -759,6 +759,9 @@
     phosphor: "mdi:console",
     platinum: "mdi:desktop-classic",
     ember: "mdi:fire",
+    verdigris: "mdi:home-roof", // oxidised copper roofing — the real-world patina
+    cranberry: "mdi:glass-wine", // colloidal-gold glass, historically stemware
+    obsidian: "mdi:volcano", // obsidian IS volcanic glass
   };
   // Local box the `insert-shape` family tile previews are generated in; matches
   // ShapePicker's 100-unit tile viewBox content area (`-6 -6 112 112`).
