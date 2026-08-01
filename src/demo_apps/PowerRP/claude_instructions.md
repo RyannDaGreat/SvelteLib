@@ -144,6 +144,18 @@ manifest itself becomes a Tower of Babel, which is the worst possible place for 
    `git blame`, `git log -S`, never by taste. A decision that feels arbitrary is a decision
    that has not been researched yet.
 
+   **THE MIRROR, which costs one grep and was learned the expensive way (2026-08-01, three
+   times in one hour — the lead, then two agents relaying the lead's error): BEFORE REPORTING
+   A VIOLATION, CHECK WHETHER THE SURROUNDING FILE ALREADY ESTABLISHES THE PATTERN AS
+   PRECEDENT. A "violation" that is the local majority is a MISREAD RULE, not a defect.**
+   The instance: `-webkit-backdrop-filter` was called a banned vendor keyword and ordered
+   removed. `web/app.css` contained sixteen `-webkit-` occurrences, fifteen predating that
+   day, **ten of them that exact property**. Acting on the report would have stripped working
+   cross-browser support from ten surfaces and called it conformance. The rule being applied
+   was about vendor NAMING of identifiers; it was over-applied to standard CSS prefixes.
+   This is the same reflex the doctrine already demands for INVENTING — look for precedent
+   first — and it applies just as hard to ACCUSING.
+
    **REFINEMENT — "older wins" arbitrates between NAMED conventions only** (agent W3-A,
    2026-08-01, CLAUDE-ORIGINATED; the case that produced it is R6-29). **An unnamed local
    spelling is not a convention — it is an implementation, and it loses to the vocabulary
