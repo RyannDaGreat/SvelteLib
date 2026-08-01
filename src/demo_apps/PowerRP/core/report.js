@@ -24,6 +24,7 @@
  */
 
 const reported = new Set();
+const warned = new Set();
 
 /**
  * Command (module-level dedup memory + console side effect). console.errors
@@ -40,6 +41,44 @@ export function reportOnce(key, line = key) {
   if (reported.has(key)) return false;
   reported.add(key);
   console.error(line);
+  return true;
+}
+
+/**
+ * Command (module-level dedup memory + console side effect). The WARN-level twin of
+ * reportOnce: console.warns `line` once per unique `key`, repeats silent, returns
+ * whether it logged. Its dedup set is SEPARATE, so a warning and an error sharing a
+ * key do not silence each other.
+ *
+ * ── WHEN TO USE THIS RATHER THAN reportOnce ──────────────────────────────────
+ * The choice is about whether the picture is still CORRECT. reportOnce says
+ * something is wrong. warnOnce says the app did the right thing by a worse route and
+ * the author should know: a gradient stroke degraded to its first stop because PDF
+ * has no shading for one, a material too big for the raster cache re-running its
+ * shader every frame, a software surface standing in for a GPU one. The output is
+ * what the author asked for; the cost or the fidelity is not.
+ *
+ * ── WHY IT EXISTS ────────────────────────────────────────────────────────────
+ * This module shipped with error-level members only, so every caller that needed the
+ * warn level wrote its own Set — and one of them, render_gpu/skia/paint_skia.js, named
+ * its private copy `reportOnce`, which COLLIDED with this module's export and forced
+ * that file to import the real one under an alias, with a five-line comment
+ * explaining which `reportOnce` a reader is looking at. A missing member of a shared
+ * module does not stop the pattern being copied; it just stops the copies being
+ * recognisable.
+ *
+ * @param {string} key - dedup key; distinct keys warn independently
+ * @param {string} [line] - the message to print; defaults to `key`
+ * @returns {boolean} whether this call actually logged
+ *
+ * @example // warnOnce("pdf-gradient-stroke", "…degrading to the first stop") → true, console.warns it
+ * @example // the same key again → false, silent
+ * @example // warnOnce("a") then reportOnce("a") → both log; the two sets are separate
+ */
+export function warnOnce(key, line = key) {
+  if (warned.has(key)) return false;
+  warned.add(key);
+  console.warn(line);
   return true;
 }
 

@@ -42,11 +42,13 @@
 
 import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, strokeInsideFraction, strokeOutwardReach, strokeIsDetached, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 // THE PER-NODE PAINT BOUNDARY's two halves: the shared error affordance, and the
-// ERROR-level report. Deliberately NOT this file's local `reportOnce` further
-// down — that one is a console.WARN for unreachable depth caps and returns
-// nothing. A widget that cannot paint is an error, and the boundary needs the
-// canonical sink's "did it actually log?" answer to print the stack exactly once.
-import { reportOnce as reportPaintFailureOnce } from "../../core/report.js";
+// ERROR-level report. The alias survives its original reason — this file used to
+// carry a PRIVATE console.warn helper also called `reportOnce`, and the import had
+// to dodge it; that shadow is now core/report.js warnOnce. The alias stays because
+// it says at every call site WHICH failure is being reported: a widget that cannot
+// paint is an error, and the boundary needs the sink's "did it actually log?"
+// answer to print the stack exactly once.
+import { reportOnce as reportPaintFailureOnce, warnOnce } from "../../core/report.js";
 import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, isConfigurationError } from "../../core/paint_containment.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
@@ -191,7 +193,7 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // The two sibling fallbacks (browser_surface.js's null render target, and
   // gpuService's software path) already report; this was the last silent one.
   const mkSurface = makeSurface || ((w, h) => {
-    reportOnce("paintIR-no-surface-factory", "paintIR: no makeSurface factory was passed — backdrop/material/lens offscreens will be allocated as SOFTWARE surfaces (CanvasKit.MakeSurface), which rasters generative material shaders on the CPU and is very slow. Expected only in node/CLI.");
+    warnOnce("paintIR-no-surface-factory", "paintIR: no makeSurface factory was passed — backdrop/material/lens offscreens will be allocated as SOFTWARE surfaces (CanvasKit.MakeSurface), which rasters generative material shaders on the CPU and is very slow. Expected only in node/CLI.");
     return CanvasKit.MakeSurface(w, h);
   });
   // `antialias` rides on ctx so every leaf/border draw reaches the ONE per-frame
@@ -2642,7 +2644,7 @@ function noteRasterRefusal(ctx, material, region) {
   _fillStats.refusals++;
   if (!ctx.liveGpu) return;
   const w = region.x1 - region.x0, h = region.y1 - region.y0;
-  reportOnce(`material-raster-oversized:${material.id}:${w}x${h}`, `paintIR(skia): material "${material.id}" needs a raster bigger than the ${MATERIAL_RASTER_CACHE_FRAMES}-frame cache budget (${(rasterCacheBudget(ctx) / 1e6).toFixed(1)} MB at this frame size), so only its visible part is drawn and its shader re-runs EVERY frame — panning it will not be cheap. Shrink the widget or zoom out to bring it inside the budget.`);
+  warnOnce(`material-raster-oversized:${material.id}:${w}x${h}`, `paintIR(skia): material "${material.id}" needs a raster bigger than the ${MATERIAL_RASTER_CACHE_FRAMES}-frame cache budget (${(rasterCacheBudget(ctx) / 1e6).toFixed(1)} MB at this frame size), so only its visible part is drawn and its shader re-runs EVERY frame — panning it will not be cheap. Shrink the widget or zoom out to bring it inside the budget.`);
 }
 
 /**
@@ -3187,7 +3189,7 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belo
     canvas.restore();
     clip.delete();
   } else {
-    reportOnce("crop-reender-depth", `paintIR(skia): crop re-render nesting exceeded MAX_REENDER_DEPTH (${MAX_REENDER_DEPTH}) — skipping content (pathological nesting)`);
+    warnOnce("crop-reender-depth", `paintIR(skia): crop re-render nesting exceeded MAX_REENDER_DEPTH (${MAX_REENDER_DEPTH}) — skipping content (pathological nesting)`);
   }
 
   if (cmd.stroke && cmd.strokeWidth > 0) {
@@ -3298,7 +3300,7 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, be
   // dropping the widget: "no effect" is always a legal rendering of a widget, an
   // invisible widget never is.
   const bail = (key, msg) => {
-    reportOnce(key, msg);
+    warnOnce(key, msg);
     if (!cmd.shadowOnly) paintFlat(CanvasKit, target, flattenIR(cmd.content), view, ctx, depth);
     return null;
   };
@@ -3967,14 +3969,6 @@ function blitImage(CanvasKit, canvas, img, opacity) {
   p.setAlphaf(opacity);
   canvas.drawImageOptions(img, 0, 0, CanvasKit.FilterMode.Linear, CanvasKit.MipmapMode.None, p);
   p.delete();
-}
-
-/** Command (console.warn, once per key). Loud-but-not-fatal notice for unreachable depth caps. */
-const _warned = new Set();
-function reportOnce(key, msg) {
-  if (_warned.has(key)) return;
-  _warned.add(key);
-  console.warn(msg);
 }
 
 /** Helper. A filled Paint for a solid rgba OR a gradient Paint (opacity folded

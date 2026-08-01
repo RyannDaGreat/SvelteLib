@@ -54,7 +54,7 @@ import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_materi
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
 // which is a console.warn for expressible-degradation notices (a gradient stroke
 // that becomes solid); an item that cannot be exported at all is not that.
-import { reportOnce as reportExportFailureOnce } from "../core/report.js";
+import { reportOnce as reportExportFailureOnce, warnOnce } from "../core/report.js";
 import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, configurationError, isConfigurationError } from "../core/paint_containment.js";
 import * as T from "../core/transform.js";
 import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
@@ -2093,7 +2093,7 @@ function gradientShapeOps(pathStr, bounds, cmd, ctx, evenOdd) {
  * clean stroked-gradient primitive, so a gradient STROKE degrades to this with a
  * loud one-time report (the documented rare-tail deviation). */
 function gradientStrokeSolid(paint) {
-  reportOncePdf("pdf-gradient-stroke", "pdf_backend: gradient STROKE is not expressible as a PDF shading — degrading to the gradient's first stop as a solid stroke (fills use true shadings; gradient strokes are the rare tail)");
+  warnOnce("pdf-gradient-stroke", "pdf_backend: gradient STROKE is not expressible as a PDF shading — degrading to the gradient's first stop as a solid stroke (fills use true shadings; gradient strokes are the rare tail)");
   return paint.stops[0].color;
 }
 
@@ -2103,17 +2103,10 @@ function gradientStrokeSolid(paint) {
  * tail — SVG export keeps it via <text fill=url(#..)>). */
 function pdfTextInk(color) {
   if (isGradientPaint(color)) {
-    reportOncePdf("pdf-gradient-text", "pdf_backend: gradient TEXT fill is not expressible as a PDF text color — degrading to the gradient's first stop (SVG export keeps gradient text via url(#..))");
+    warnOnce("pdf-gradient-text", "pdf_backend: gradient TEXT fill is not expressible as a PDF text color — degrading to the gradient's first stop (SVG export keeps gradient text via url(#..))");
     return parsePaint(color).stops[0].color;
   }
   return parseColor(color);
-}
-
-const _pdfWarned = new Set();
-function reportOncePdf(key, msg) {
-  if (_pdfWarned.has(key)) return;
-  _pdfWarned.add(key);
-  console.warn(msg);
 }
 
 /**
@@ -2360,7 +2353,7 @@ class PdfAssembly {
       this.page.node.setXObject(PDFName.of(name), embeddedPage.ref);
       return { name, width: embeddedPage.width, height: embeddedPage.height };
     } catch (e) {
-      reportOncePdf(`pdf-embed:${ref}`, `pdf_backend: lossless page-embed failed for "${ref}" — falling back to a raster embed (${e instanceof Error ? e.message : String(e)})`);
+      warnOnce(`pdf-embed:${ref}`, `pdf_backend: lossless page-embed failed for "${ref}" — falling back to a raster embed (${e instanceof Error ? e.message : String(e)})`);
       return null;
     }
   }

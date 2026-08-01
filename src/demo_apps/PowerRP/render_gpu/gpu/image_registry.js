@@ -63,13 +63,26 @@
  * produces and what CanvasKit's MakeImageFromCanvasImageSource copies into the wasm
  * heap. So a bitmap costs width · height · this bytes in EACH of those two places.
  * Exported because a ref-minting source has to budget that cost (see
- * render_gpu/gpu/pdf_page_raster.js PDF_REGION_CACHE_BYTES) and must not restate
+ * render_gpu/gpu/pdf_page_raster.js PDF_RASTER_CACHE_BYTES) and must not restate
  * the number to do it. */
 export const BYTES_PER_PIXEL = 4;
 
 import { isMissingAssetUrl } from "../../core/asset_ref.js";
 import { registerMissing } from "./missing_media.js";
 import { truncate } from "../../core/report.js"; // THE shared log elision (this file held the original copy; core/report.js is where the copies ended)
+
+// ── TEMPORARY COMPATIBILITY RE-EXPORT — DELETE ON SIGHT ──────────────────────
+// `truncate` moved to core/report.js (one home for nine copies). A concurrent
+// agent's in-flight edit to gpu/pdf_page_raster.js drops that file's own copy and
+// imports the name from HERE, which broke module resolution for the whole tree the
+// moment the two changes met. Re-exporting unblocks it without editing a file
+// another agent holds.
+//
+// THIS IS NOT AN ENDORSEMENT OF A SECOND PATH TO THE NAME — a re-export is exactly
+// the "two ways to reach one thing" this round exists to remove. pdf_page_raster.js
+// already imports `reportOnce` from core/report.js on its very next line; moving the
+// one token across is the real fix. Delete this block then.
+export { truncate };
 
 /** src → {status: "loading"|"ready"|"error", bitmap: ImageBitmap|null, error: Error|null} */
 const registry = new Map();
@@ -317,6 +330,42 @@ export function releaseImage(ref) {
   bitmap?.close?.();
   registry.delete(ref);
   return bytes;
+}
+
+/**
+ * Command. Moves a RESERVED (still "loading") slot to the registry's TERMINAL
+ * state, because no pixels are ever going to arrive for it — the raster that
+ * reserved it was superseded or failed. The counterpart of reserveImageSlot:
+ * whoever reserves a slot owes it either a registerRasterizedBitmap or this.
+ *
+ * WHY A SLOT CANNOT SIMPLY BE DELETED. releaseImage refuses a "loading" slot for
+ * a documented reason — dropping the entry entirely would send the compositor's
+ * `ensureImage` fallback off to fetch() a synthetic, unfetchable ref (see
+ * reserveImageSlot). So this LEAVES an entry and marks it terminal instead. The
+ * three consequences are exactly what an abandoned ref needs: `getImage` answers
+ * null (draw nothing — the async contract), `pendingImageRefs` stops listing it,
+ * and `ensureImage` sees an existing entry and never fetches. A later request for
+ * the SAME ref still works: reserveImageSlot is a no-op on a non-empty slot and
+ * registerRasterizedBitmap overwrites anything that is not already "ready".
+ *
+ * WHY IT MATTERS BEYOND TIDINESS. A reserved slot left "loading" forever is not
+ * inert: `pendingImageRefs()` is what web/renderJobPage.settledFrame polls to
+ * decide a frame is drawable, and a ref that never resolves makes that loop throw
+ * `made no progress` and FAIL THE WHOLE RENDER JOB — naming a superseded raster
+ * instead of the real problem.
+ *
+ * A no-op on a slot that is already ready/errored, or unknown (nothing reserved).
+ *
+ * @example // reserveImageSlot("pdfregion:x"); abandonImageSlot("pdfregion:x", "superseded"); imageStatus("pdfregion:x") // "error"
+ * @example // abandonImageSlot("never-reserved", "superseded"); imageStatus("never-reserved") // "unloaded"
+ */
+export function abandonImageSlot(ref, reason) {
+  const entry = registry.get(ref);
+  if (!entry || entry.status !== "loading") return;
+  entry.status = "error";
+  entry.error = new Error(reason);
+  entry.promise = entry.promise ?? Promise.resolve(null);
+  notify(ref); // wake pending-set watchers: this ref will never become ready
 }
 
 /**
