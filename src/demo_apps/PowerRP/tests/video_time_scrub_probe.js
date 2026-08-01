@@ -141,6 +141,10 @@ try {
       const preset = app.registry.get("demo_video_time_scrub").presets.find((p) => p.name === name);
       app.applyPreset("ts", preset);
       return {
+        // The preset's OWN declared string, read back beside what was stored —
+        // so this asserts "committed VERBATIM" without transcribing the equation
+        // here, which would be a hand-maintained mirror of the plugin's table.
+        source: preset.props.scrubTime,
         stored: app.doc.slides[0].delta.items.ts.scrubTime,
         evaluated: app.state().items.ts.scrubTime,
       };
@@ -148,7 +152,7 @@ try {
   }
 
   const loop = await applyPresetAt("Loop", CLOCK);
-  ok(loop.stored === "time % self.length", `Loop preset commits the equation SOURCE string; got ${JSON.stringify(loop.stored)}`);
+  ok(loop.stored === loop.source, `Loop preset commits the equation SOURCE string verbatim; declared ${JSON.stringify(loop.source)}, stored ${JSON.stringify(loop.stored)}`);
   ok(Math.abs(loop.evaluated - (CLOCK % CLIP_SECONDS)) < 1e-9, `Loop evaluates currentTime = time % self.length = ${CLOCK} % ${CLIP_SECONDS} = ${CLOCK % CLIP_SECONDS}; got ${loop.evaluated}`);
   const loopRgb = await liveCenter("loop_green");
   ok(dominant(loopRgb) === "green", `Loop at clock ${CLOCK} decodes the ${CLOCK % CLIP_SECONDS}s frame (green second); got ${dominant(loopRgb)} ${loopRgb}`);

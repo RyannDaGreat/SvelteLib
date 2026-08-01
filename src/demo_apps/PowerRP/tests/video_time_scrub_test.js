@@ -75,7 +75,11 @@ try {
 
   test("Loop is EXACTLY currentTime = time % self.length (the dream equation)", () => {
     const loop = TIME_SCRUB_PRESETS.find((p) => p.name === "Loop");
-    assert.equal(loop.props.scrubTime, "time % self.length");
+    // The "=" marker is the preset STRING FORM ruling (R6-25.1); the equation
+    // itself is unchanged, and the bare calls below prove the marker is not
+    // load-bearing on this numeric row — it is load-bearing on every other row,
+    // which is why the preset carries it.
+    assert.equal(loop.props.scrubTime, "= time % self.length");
     assert.equal(scrubAt("time % self.length", 13.5), 1.5); // 13.5 % 3
     assert.equal(scrubAt("time % self.length", 2.4), 2.4);   // within the first pass, unchanged
     assert.equal(scrubAt("time % self.length", 3.0), 0);     // exactly one clip → back to frame 0

@@ -85,7 +85,14 @@ export const PROGRESS_EXPORT_EQ =
 
 /**
  * Clock-driven `scrubTime` PRESETS — the equation SOURCE strings app.applyPreset
- * writes verbatim onto `scrubTime`. Every one is a function of the presentation
+ * writes verbatim onto `scrubTime`, each carrying the universal "=" marker per
+ * R6-25.1. The marker is not decoration here: applyPreset writes the value RAW,
+ * so this string IS the stored value, and without the marker a stored equation
+ * is an equation only while its slot's default happens to be a number. On this
+ * row it is (so the bare form these shipped as evaluated correctly), but the
+ * same string on a colour or enum row would have stored a silent literal — and
+ * the rule cannot be "it depends what the default is today". Every one is a
+ * function of the presentation
  * clock `time` and the clip's `self.length`, so each is RECORDABLE state (a
  * function of elapsed time alone) and reproducible in an export. The simple ones
  * are pure restricted-grammar arithmetic (`%` `*` `/` `+` `-`); the advanced ones
@@ -99,27 +106,27 @@ export const PROGRESS_EXPORT_EQ =
  */
 export const TIME_SCRUB_PRESETS = [
   { name: "Loop", description: "Play forward and wrap at the clip's end, forever: currentTime = time mod length. The headline preset — a looping player, made deterministic.",
-    props: { scrubTime: "time % self.length" } },
+    props: { scrubTime: "= time % self.length" } },
   { name: "Reverse", description: "Play BACKWARD on a loop (the clip runs end-to-start, then jumps back to the end): length − (time mod length).",
-    props: { scrubTime: "self.length - (time % self.length)" } },
+    props: { scrubTime: "= self.length - (time % self.length)" } },
   { name: "Half Speed", description: "Loop at half speed — the clock is divided by 2 before wrapping, so the clip takes twice as long to play through.",
-    props: { scrubTime: "(time / 2) % self.length" } },
+    props: { scrubTime: "= (time / 2) % self.length" } },
   { name: "Double Speed", description: "Loop at double speed — the clock is multiplied by 2 before wrapping, so the clip plays through twice as fast.",
-    props: { scrubTime: "(time * 2) % self.length" } },
+    props: { scrubTime: "= (time * 2) % self.length" } },
   { name: "Reverse Half Speed", description: "Play backward on a loop at half speed: length − ((time ÷ 2) mod length).",
-    props: { scrubTime: "self.length - ((time / 2) % self.length)" } },
+    props: { scrubTime: "= self.length - ((time / 2) % self.length)" } },
   { name: "Ping-Pong", description: "Bounce: play forward to the end, then backward to the start, forever — a triangle wave of period 2·length, amplitude length.",
-    props: { scrubTime: "self.length - Math.abs((time % (2 * self.length)) - self.length)" } },
+    props: { scrubTime: "= self.length - Math.abs((time % (2 * self.length)) - self.length)" } },
   { name: "Boomerang Burst", description: "A double-speed ping-pong — the clip bounces forward-and-back twice as fast as Ping-Pong, for a restless boomerang.",
-    props: { scrubTime: "self.length - Math.abs(((time * 2) % (2 * self.length)) - self.length)" } },
+    props: { scrubTime: "= self.length - Math.abs(((time * 2) % (2 * self.length)) - self.length)" } },
   { name: "Slow-Mo Ramp", description: "An eased loop: the clip accelerates through each pass (a quadratic ease-in) — slow at the start of the loop, fast at the end. eased = (time mod length)² ÷ length.",
-    props: { scrubTime: "((time % self.length) * (time % self.length)) / self.length" } },
+    props: { scrubTime: "= ((time % self.length) * (time % self.length)) / self.length" } },
   { name: "Stutter", description: "A stuttered loop — time is quantised to quarter-second steps (4 holds per second) before wrapping, so the clip advances in visible jerks.",
-    props: { scrubTime: "(Math.floor(time * 4) / 4) % self.length" } },
+    props: { scrubTime: "= (Math.floor(time * 4) / 4) % self.length" } },
   { name: "Strobe Skip", description: "A strobe that leaps around the clip — twice a second it jumps to the next third (0 → ⅓ → ⅔ → 0…), never scrubbing smoothly.",
-    props: { scrubTime: "(Math.floor(time * 2) * (self.length / 3)) % self.length" } },
+    props: { scrubTime: "= (Math.floor(time * 2) * (self.length / 3)) % self.length" } },
   { name: "Freeze Frame", description: "Hold one frame — the middle of the clip (length ÷ 2), constant in time. The degenerate case: a scrubber that does not move (turn `animated` off to stop repainting it).",
-    props: { scrubTime: "self.length / 2" } },
+    props: { scrubTime: "= self.length / 2" } },
 ];
 
 /**
