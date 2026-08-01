@@ -460,6 +460,13 @@ export function resolutionRows() {
  *     scenes they derive from are additionally covered by INRIA's
  *     research-only Gaussian-Splatting licence, so even a declared card would
  *     need checking upstream. REJECTED.
+ *   · Khronos `AnisotropyDiscTest` — CC0 and it FETCHES fine, but it is a flat
+ *     test chart and at the shared default three-quarter pose it renders too
+ *     sparsely for the load verification to distinguish it from a blank viewport
+ *     (240 s, no measurable change). Rather than ship a preset that MIGHT be
+ *     showing nothing, it is dropped: an entry whose only evidence is "the bytes
+ *     arrived" is the same false green that a byte-richness pixel check already
+ *     produced once on this widget.
  *   · Objaverse — answered in the negative by this round's own research and not
  *     re-litigated here: no search API, an index with no licence field, 0.4% CC0,
  *     and an open unresolved legal complaint against the dataset.
@@ -534,7 +541,7 @@ export function shotPresets() {
  * @returns {object[]} presets
  *
  * @example scenePresets({kind: "splat"}).length // 3
- * @example scenePresets({kind: "model"}).length // 10
+ * @example scenePresets({kind: "model"}).length // 9
  * @example scenePresets({kind: "splat"})[0].props.camFov // 0.8726646259971648
  * @example scenePresets({kind: "model"})[1].props.src.endsWith("MetalRoughSpheresNoTextures.glb") // true
  */
@@ -585,9 +592,6 @@ export function scenePresets(member) {
     scene("Glass vase and flowers",
       "Transmission, refraction and thin-walled glass — the hardest thing in the shading model to get right and the most obviously wrong when it is not. 1,819,824 bytes. Source: Khronos glTF-Sample-Assets, CC0.",
       khronos("GlassVaseFlowers")),
-    scene("Anisotropy disc",
-      "Brushed-metal anisotropy laid out as a test chart, 242,128 bytes: the highlight stretches along the brush direction and rotates as you orbit. Source: Khronos glTF-Sample-Assets, CC0.",
-      khronos("AnisotropyDiscTest")),
   ];
 }
 
@@ -607,7 +611,7 @@ export function scenePresets(member) {
  * @returns {object[]} presets
  *
  * @example scene3dPresets({kind: "splat"}).length // 8
- * @example scene3dPresets({kind: "model"}).length // 15
+ * @example scene3dPresets({kind: "model"}).length // 14
  */
 export function scene3dPresets(member) {
   return [...scenePresets(member), ...shotPresets()];
