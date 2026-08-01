@@ -4,7 +4,7 @@
  * GENERATOR in core/outline.js (fancyArrowOutline — a faithful port of the
  * Figures library's parametric arrow, refs/Figures/arrow/arrow.py
  * `_arrow_contours`), so this plugin is thin glue: state → generator params →
- * triangulated() → convex IR polygons. The NEXT parametric shape should be
+ * polygonPathD() → ONE IR `path` op. The NEXT parametric shape should be
  * another generator + a plugin this shape, not bespoke geometry code.
  *
  * Parameters (Figures naming; see the generator for the Python mapping):
@@ -52,12 +52,12 @@
  * NOT here (plugins hold no migration logic beyond declarative legacyKeys).
  */
 
-import { polygon, polyline } from "../render_gpu/ir.js";
+import { path, polyline } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { fancyArrowOutline, triangulated, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal, closestPointOnSegment } from "../core/outline.js";
+import { fancyArrowOutline, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal, closestPointOnSegment } from "../core/outline.js";
+import { polygonPathD } from "../core/shapes.js";
 import { endpointPairHooks, hitsShaft } from "../core/endpoints.js";
-import { reportOnce } from "../core/report.js";
 
 /** Pure function. The generator params for a state (evaluated OR raw — only
  * the caller knows; emit/hit-test pass evaluated states).
@@ -194,42 +194,44 @@ export const fancyArrowPlugin = {
     { key: "endWidth", label: "End width", kind: "number", min: 0, category: "arrow", help: "Shaft thickness where it meets the arrowhead, in canvas units." },
   ],
   /**
-   * Near-pure function (console.errors ONCE per unique degenerate-geometry
-   * message; otherwise pure). State → display-list commands: the outline
-   * (concave at the dimple) ear-clips into convex triangles for the IR's
-   * convex-only polygon op, filled with `fill`. When strokeWidth > 0 an
-   * OUTLINE stroke also draws around the outer hull (Round 17.4) — the SAME
-   * closed-polyline technique donut.js uses for its rim (a polyline() with
-   * the first vertex repeated at the end, so the closing edge gets a round
-   * join instead of two bare end caps — verbatim-identical seam to the fill
-   * triangles' own edges, so nothing double-draws or gaps). This is drawn
-   * around the WHOLE hull, never per-triangle — a per-triangle stroke would
-   * draw seams along the ear-clip's internal diagonals, which are not part
-   * of the shape's visible boundary.
+   * Pure function. State → display-list commands: the 7-point outline (concave
+   * at the dimple) as ONE `path` op, filled with `fill` under the non-zero
+   * winding rule. When strokeWidth > 0 an OUTLINE stroke also draws around the
+   * outer hull (Round 17.4) — the SAME closed-polyline technique donut.js uses
+   * for its rim (a polyline() with the first vertex repeated at the end, so the
+   * closing edge gets a round join instead of two bare end caps). It is drawn
+   * around the WHOLE hull, never per-segment.
    *
    * A zero-length arrow emits nothing (generator returns null — the Python
    * skia_draw_arrow precedent).
    *
-   * The triangulated() guard covers the generator's residual self-intersecting
-   * parameter corners (documented in core/outline.js): a degenerate config is
-   * REPORTED and draws nothing — a bad state must never brick the render loop
-   * (the app's loud-repair philosophy; evaluateState's fail-loud precedent).
+   * THIS USED TO BE 5 EAR-CLIPPED TRIANGLES, AND THAT WAS HALF OF THE R6-11 BUG:
+   * two abutting antialiased fills conflate to ~192/255 along their shared edge,
+   * so the internal diagonals showed as cracks on every surface that is not
+   * multisampled (see plugins/donut.js's RENDER note for the full account).
+   * MEASURED after the switch: the silhouette is pixel-for-pixel what the
+   * triangles drew (0 px difference at 400 px), with the interior seams gone —
+   * 148/3312 shaft pixels below full coverage at 600 px, now 0.
+   *
+   * IT ALSO RETIRED A REPORT, AND THAT IS NOT A SILENCING. The old
+   * `triangulated()` try/catch existed because the generator's residual
+   * self-intersecting parameter corners (documented in core/outline.js) are not
+   * ear-clippable; it drew NOTHING and reported. A winding rule has no such
+   * limit — a self-intersecting outline is a well-defined figure under non-zero,
+   * and every backend fills it the same way — so the configuration stopped being
+   * a failure rather than stopping being reported. `fancyArrowOutline` returns
+   * either null or exactly 7 points, so `polygonPathD`'s >= 3 guard is
+   * unreachable from here and there is nothing left to catch.
    */
   emit(s, _targetWorldIR, world) {
     const outline = fancyArrowOutline(outlineParams(s));
     if (!outline) return []; // zero-length arrow: no geometry
-    let tris;
-    try {
-      tris = triangulated(outline);
-    } catch (e) {
-      // Once per unique message (core/report.js throttle semantics) — emit
-      // runs every frame and must not spam.
-      reportOnce(`PowerRP fancy_arrow: geometry not rendered — ${e.message} (tipLength ${s.tipLength}, tipWidth ${s.tipWidth}, tipDimple ${s.tipDimple}, startWidth ${s.startWidth}, endWidth ${s.endWidth})`);
-      return [];
-    }
     const opacity = s.opacity ?? 1;
     const strokeWidth = s.strokeWidth ?? 0;
-    const cmds = tris.map((tri) => polygon({ points: tri, fill: s.fill, opacity }));
+    // fillRule is spelled out even though "nonzero" is the op's default: for a
+    // shape that MAY self-intersect it is a load-bearing choice about how the
+    // overlap fills, not a shrug (plugins/paint_path.js states its rule too).
+    const cmds = [path({ d: polygonPathD(outline), fill: s.fill, fillRule: "nonzero", opacity })];
     if (strokeWidth > 0)
       cmds.push(polyline({ points: [...outline, outline[0]], width: strokeWidth, color: s.stroke, opacity }));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/

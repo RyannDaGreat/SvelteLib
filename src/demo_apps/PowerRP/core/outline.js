@@ -525,7 +525,8 @@ export function triangulated(points) {
  *
  * DOMAIN CLAMPS (geometric validity bounds, not design choices — same rule as
  * ir.js's cornerRadius clamp). Clamping keeps the outline a SIMPLE polygon in
- * the reachable single-parameter scrubs, which triangulated() requires:
+ * the reachable single-parameter scrubs, which the plugin's pointInPolygon hit
+ * test assumes and which is the only shape a reader recognizes as an arrow:
  *   - widths/lengths are non-negative;
  *   - tipLength ≤ arrow length (a longer head self-intersects at the tail);
  *   - tipDimple ≤ tipLength·(1 − (endWidth/2)/(tipWidth/2)): the shaft joins
@@ -534,9 +535,12 @@ export function triangulated(points) {
  *     axis position is (tipWidth/2)·(tipLength−D)/tipLength) or the shaft
  *     pokes through them and the outline self-intersects.
  * Residual multi-parameter corners (e.g. a tail wider than the head with the
- * head spanning the whole arrow) can still self-intersect — the CALLER of
- * triangulated() owns that failure policy (the fancy-arrow plugin degrades
- * loudly instead of bricking the render loop).
+ * head spanning the whole arrow) can still self-intersect. That is no longer a
+ * failure: the plugin emits ONE `path` op and non-zero winding fills a
+ * self-intersecting outline the same way in all three backends. It WAS one while
+ * the plugin ear-clipped through triangulated(), which has no such rule and threw
+ * — see plugins/fancy_arrow.js's emit for why that report was retired rather than
+ * silenced.
  *
  * Args:
  *   x0, y0 (number): tail point
@@ -584,16 +588,23 @@ export function fancyArrowOutline({ x0, y0, x1, y1, tipLength, tipWidth, tipDimp
   ];
 }
 
-// Circle tessellation resolution for donutOutline's outer/inner rims. Neither
-// backend has a native ring/even-odd primitive (verified: grep for
-// evenodd/fillRule across render_gpu turns up nothing, and the PDF backend's
-// polygon case is a single "h f" non-zero-winding subpath — see pdf_backend.js
-// emitVector), so the ring is approximated as a polygon, same tradeoff the
-// fancy arrow already accepts for its curved dimple. 64 matches the visual
-// smoothness the GPU's OWN circular resize-handle affordances read as "round"
-// at typical on-screen widget sizes (no numeric precedent exists elsewhere in
-// the codebase for polygon-approximated circles — flagged). PENDING USER
-// RATIFICATION.
+// Circle tessellation resolution for donutOutline's outer/inner rims. The rims
+// are SAMPLED rather than drawn as arcs because no backend-safe arc exists: the
+// PDF backend's svgPathToPdfOps rejects `A` outright, so every curve in this
+// module is a polyline (see this file's SHAPESHIFTER GEOMETRY header). 64 matches
+// the visual smoothness the GPU's OWN circular resize-handle affordances read as
+// "round" at typical on-screen widget sizes (no numeric precedent exists
+// elsewhere in the codebase for polygon-approximated circles — flagged). PENDING
+// USER RATIFICATION.
+//
+// THIS COMMENT USED TO SAY the ring was a polygon because "neither backend has a
+// native ring/even-odd primitive (verified: grep for evenodd/fillRule across
+// render_gpu turns up nothing)". That was true when written and FALSE from
+// 2026-07-23, when the `path` op landed with `fillRule` in all three backends;
+// the claim outlived its evidence and was quoted verbatim by both donut copies as
+// the reason to ear-clip. The donut now emits ONE path op (see plugins/donut.js's
+// RENDER note for the seam measurements that forced it). Sampling density is the
+// only thing this constant still decides.
 const DONUT_SEGMENTS = 64;
 
 // A regular N-gon's vertices are EXACT-collinear at many intermediate
@@ -611,6 +622,13 @@ const DONUT_SEGMENTS = 64;
 // triangulating with area preserved to 1e-6 relative tolerance. i=0 gets ZERO
 // jitter (i·JITTER at i=0 is exactly 0) so the doctested pts[0]===[10,0]
 // start point is untouched.
+//
+// VESTIGIAL FOR THE WIDGET SINCE R6-11, KEPT DELIBERATELY: the donut fills
+// through one `path` op now, and a winding rule does not care about exact
+// collinearity, so nothing in the render path needs this. tests/outline_test.js
+// still ear-clips donutOutline, and removing the jitter would move every donut
+// vertex by ~1e-5 units — a real geometry change to buy back nothing. Retiring
+// it belongs with retiring the ear-clip test, not with the render fix.
 const DONUT_ANGLE_JITTER = 1e-7;
 
 /**
@@ -627,17 +645,27 @@ const DONUT_ANGLE_JITTER = 1e-7;
  * (inner's last point → outer's first point, via the implicit polygon close)
  * retrace the SAME radial segment in opposite directions — a zero-area slit
  * contributing nothing to signedArea or the fill, and exactly what turns two
- * disjoint circles into ONE simple polygon triangulated() (which requires no
- * holes) can ear-clip. Duplicating the angle-0 point on each rim (rather than
- * sharing an unduplicated index between the two loops, which would make the
- * bridge's "in" edge span from the LAST forward-loop angle instead of angle 0
- * — a real chord, not a slit) is the detail that keeps the bridge collinear.
+ * disjoint circles into ONE simple closed polygon. Duplicating the angle-0 point
+ * on each rim (rather than sharing an unduplicated index between the two loops,
+ * which would make the bridge's "in" edge span from the LAST forward-loop angle
+ * instead of angle 0 — a real chord, not a slit) is the detail that keeps the
+ * bridge collinear.
+ *
+ * WHAT CONSUMES THE ONE-LOOP FORM, AND WHY THE OPPOSITE WINDING IS THE POINT.
+ * plugins/donut.js turns this list straight into a `path` op's `d` and fills it
+ * with the NON-ZERO rule: the reversed inner rim cancels the outer rim's winding,
+ * so the hole is empty, and the zero-area bridge adds nothing to fill either way.
+ * MEASURED on a 1-sample surface: no hairline along the bridge and no interior
+ * seam at 100/200/400/600 px. The plugin's pointInPolygon hit test reads the SAME
+ * list, which is why keeping it one flat loop (rather than splitting it into
+ * [outer, inner] subpaths under even-odd, which renders pixel-identically) is
+ * worth something: picture and hit region cannot drift apart. triangulated() can
+ * also ear-clip this form — that USED to be its only consumer, and see
+ * plugins/donut.js's RENDER note for why it stopped being.
  *
  * inner=0 degenerates to a full disk (the slit collapses to a single point at
- * the center — still a valid, if pathological, simple polygon: triangulated()
- * handles the zero-length edges via its collinear/zero-area ear rule, same as
- * fancyArrowOutline's zero-width degenerates). inner>=1 clamps to <1 (a
- * zero-thickness ring has no fill area and no meaningful modifier-point
+ * the center — still a valid, if pathological, simple polygon). inner>=1 clamps
+ * to <1 (a zero-thickness ring has no fill area and no meaningful modifier-point
  * trajectory).
  *
  * Args:

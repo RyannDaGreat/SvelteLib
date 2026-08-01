@@ -58,9 +58,11 @@
  * angle wrap). Per the brief's rule, the PURE HELPER was exposed rather than the
  * widget skipped — each is DOM-free, side-effect-free and already part of the
  * declarative plugin vocabulary. Reimplementing any of them inside a sandboxed
- * source would have been the worse outcome: `triangulated` in particular is the
- * reason the Skia, PDF and SVG backends draw a ring with the SAME triangles, and
- * a second ear-clipper would be a parity hazard, not a convenience.
+ * source would have been the worse outcome: `donutOutline` in particular is the
+ * reason the Skia, PDF and SVG backends draw a ring from the SAME vertices, and a
+ * second ring generator would be a parity hazard, not a convenience. (This used
+ * to name `triangulated` and "the SAME triangles" — accurate until the donut
+ * stopped being ear-clipped; see plugins/donut.js's RENDER note.)
  *
  * ── ADD-COMMANDS DO NOT COME ALONG, AND THAT IS NOT A LOSS ────────────────────
  * `pluginShapeProblem` REFUSES a plugin asset that declares `commands` (a

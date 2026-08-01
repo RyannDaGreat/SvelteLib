@@ -35,27 +35,46 @@
  * same convention as circle.js) and the hole is a proportionally-scaled
  * concentric ellipse (rx·inner, ry·inner).
  *
- * RENDER (WIDGET RENDER PARITY cornerstone): neither backend has a native
- * ring/even-odd primitive (verified — see core/outline.js's DONUT_SEGMENTS
- * comment: no evenodd/fillRule anywhere in render_gpu, and the PDF backend's
- * polygon case is a single non-zero-winding "h f" subpath), so the ring is
- * emitted as a triangulated polygon via core/outline.js's donutOutline — the
- * SAME approach fancy_arrow.js already uses for its curved dimple geometry.
- * Because BOTH the GPU compositor and the PDF backend consume the identical
- * IR `polygon` op (vertex-for-vertex, from the same donutOutline call), they
- * render the SAME triangles — parity by construction, not by coincidence.
- * (An SVG/PDF path with fillRule:"evenodd" would be more elegant and truly
- * circular, but would require a NEW IR op implemented in both backends; the
- * polygon route reuses an already-proven, already-parity-tested path and
- * ships today. Revisit if/when an IR path op with fill-rule support lands —
- * flagged, not a permanent design commitment.)
+ * RENDER (WIDGET RENDER PARITY cornerstone): the ring is ONE `path` IR op whose
+ * `d` is donutOutline's keyhole loop, filled with the NON-ZERO winding rule. All
+ * three backends consume that one op vertex-for-vertex — Skia
+ * (paint_skia.js drawPathOp), SVG (`<path d>`), PDF (svgPathToPdfOps + `f`) — so
+ * they render the SAME figure by construction, not by coincidence.
+ *
+ * THIS USED TO BE N TRIANGLES, AND THAT WAS THE R6-11 BUG. The ring was
+ * ear-clipped through core/outline.js's `triangulated` and emitted as ~128
+ * separate convex `polygon` ops, because the polygon op was the only fill the
+ * RETIRED WebGPU mesh renderer could draw (render_gpu/FINDINGS.md: "mesh polygons
+ * are not [antialiased]"). Two abutting ANTIALIASED fills conflate to 192/255
+ * along their shared edge, so every internal ear-clip diagonal showed as a visible
+ * crack on any surface that is not multisampled — which is every surface in this
+ * app except the editor viewport (thumbnails, minimap, PNG/PDF export, every
+ * exported video frame, and the bare-node CLI's software raster). It also
+ * re-anchored every gradient and material frame PER TRIANGLE, because the polygon
+ * case passes `pointsBounds(cmd.points)` where drawPathOp uses the whole path's
+ * bounds. The `path` op with `fillRule` landed in all three backends on
+ * 2026-07-23, which is the condition this file's old comment said to revisit on;
+ * MEASURED after the switch: zero interior seam pixels at 100/200/400/600 px on
+ * the 1-sample software surface that used to crack at min 163.
+ *
+ * WHY NONZERO AND NOT EVENODD, and why the fill is separate from the stroke:
+ * donutOutline walks the outer rim forward and the inner rim BACKWARD, so the two
+ * loops have OPPOSITE winding and non-zero already reads the inner disc as a hole.
+ * Both rules were rendered and measured identical (silhouette diff 0 px), so the
+ * one that keeps `donutRingOutline` a single flat point list wins: hitTest shares
+ * that exact list via pointInPolygon, and one geometry means the picture and the
+ * hit region cannot disagree. The rim stroke stays TWO polylines rather than
+ * riding on the path op, because a filled-AND-stroked keyhole path strokes the
+ * zero-width bridge too — two hairlines across the ring in the PDF backend's `B`
+ * operator.
  */
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { donutOutline, triangulated, pointInPolygon, closestPointOnSegment } from "../core/outline.js";
-import { polygon, polyline } from "../render_gpu/ir.js";
+import { donutOutline, pointInPolygon, closestPointOnSegment } from "../core/outline.js";
+import { polygonPathD } from "../core/shapes.js";
+import { path, polyline } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 /**
@@ -112,19 +131,19 @@ export const donutPlugin = {
     { key: "inner", label: "Inner radius", kind: "number", min: 0, max: 1, category: "formatting", help: "The hole's size as a fraction of the donut's radius, from 0 (a full disc) to 1 (a thin ring). Drag the yellow handle on canvas to set it." },
   ],
   /**
-   * Near-pure function (console.errors ONCE per unique degenerate-geometry
-   * message via reportOnce; otherwise pure — same contract as
-   * fancy_arrow.js's emit). State → display-list commands: the annulus
-   * outline ear-clips into convex triangles for the IR's convex-only polygon
-   * op. A zero-size donut (w or h <= 0) emits nothing.
+   * Pure function. State → display-list commands: the annulus as ONE `path` op
+   * (see the RENDER note above for why it is one op and not N triangles, and why
+   * the winding rule is non-zero). A zero-size donut (w or h <= 0) emits nothing.
    */
   emit(s, _targetWorldIR, world) {
     const geom = ringGeom(s);
     if (geom.rx <= 0 || geom.ry <= 0) return [];
     const outline = donutRingOutline(geom, s.inner ?? 0.5);
-    const tris = triangulated(outline);
     const opacity = s.opacity ?? 1;
-    const fillTris = tris.map((tri) => polygon({ points: tri, fill: s.fill, opacity }));
+    // fillRule is spelled out even though "nonzero" is the op's default: here it
+    // is a LOAD-BEARING claim about donutOutline's opposite-wound rims, not a
+    // shrug (plugins/paint_path.js states its rule for the same reason).
+    const ringPath = path({ d: polygonPathD(outline), fill: s.fill, fillRule: "nonzero", opacity });
     // Effects (shadow/bloom/blend — the shared EFFECTS BUNDLE, render_gpu/
     // effects.js) wrap the finished op list; all-off = pass-through. The
     // effect bbox is the bbox (the ring's outer extent, stroke pad below).
@@ -136,12 +155,12 @@ export const donutPlugin = {
     // polyline op (round caps/joins) rather than inventing a new stroked-
     // ring primitive; circle.js's ellipse stroke has no direct equivalent
     // for a ring, so this is thin, donut-specific glue.
-    if ((s.strokeWidth ?? 0) <= 0) return fx(fillTris);
+    if ((s.strokeWidth ?? 0) <= 0) return fx([ringPath]);
     const half = outline.length / 2;
     const outer = [...outline.slice(0, half), outline[0]];
     const inner = [...outline.slice(half), outline[half]];
     return fx([
-      ...fillTris,
+      ringPath,
       polyline({ points: outer, width: s.strokeWidth, color: s.stroke, opacity }),
       polyline({ points: inner, width: s.strokeWidth, color: s.stroke, opacity }),
     ]);

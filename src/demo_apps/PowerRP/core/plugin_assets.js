@@ -249,10 +249,14 @@ const HOST_MODULES = Object.freeze({
   // the shape family is built on — donutOutline / triangulated / pointInPolygon /
   // closestPointOnSegment / closestPointInAnnulus and the rest. This is the module
   // that makes a RING, a SECTOR or a bespoke silhouette expressible as a plugin
-  // asset at all: the IR's polygon op is convex-only, so any concave shape must go
-  // through `triangulated`, and reimplementing an ear-clipper inside a sandboxed
-  // source would be both large and a parity hazard (the same outline must produce
-  // the same triangles in the Skia, PDF and SVG backends).
+  // asset at all: a concave or holed shape is `outline` + `shapes.polygonPathD` +
+  // the IR's `path` op, and reimplementing either half inside a sandboxed source
+  // would be both large and a parity hazard (the same outline must produce the
+  // same `d` string in the Skia, PDF and SVG backends). `triangulated` remains for
+  // the callers that still want a triangle list; it is NOT the route a concave
+  // shape has to take any more — the polygon op's convex-only limit belonged to
+  // the retired mesh renderer, and routing a shape through it is what made the
+  // donut crack (R6-11).
   outline,
   // FONT SELECTION, for a text-bearing widget. Data + pure lookups only: the id
   // table, the default id, and the Inspector's option list. NOTHING that loads or
