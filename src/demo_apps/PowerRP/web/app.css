@@ -3356,6 +3356,15 @@ textarea {
   stroke-width: var(--a-guide-stroke);
   pointer-events: none;
 }
+/* The DASHED guide variant (R6-2): the cursor-to-pivot line drawn during a modal
+   R/S transform, Blender-style, so the gesture shows what it measures against.
+   Guide colour + selection dash is an established pairing with two prior
+   consumers (`.band-rect`, `.crosshair-band`) — this DRYs a third onto it rather
+   than inventing a skin. No new token: `--a-guide` is already the red and
+   `--a-selection-dash` is already the dash. */
+.overlay .guide-dashed {
+  stroke-dasharray: var(--a-selection-dash);
+}
 
 /* Rubber-band selection: the in-progress box uses the guide color (it is a
    transient interaction affordance, like guides) with the selection dash. */
