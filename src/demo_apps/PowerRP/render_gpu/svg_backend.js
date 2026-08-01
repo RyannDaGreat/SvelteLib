@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import { STROKE_MITER_LIMIT } from "../core/properties.js"; // the identity limit this exporter may omit BECAUSE SVG's own initial value is the same number (pdf_backend cannot — see joinAttrs)
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
@@ -66,7 +66,7 @@ import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_materi
 import { reportOnce as reportExportFailureOnce } from "../core/report.js";
 import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, configurationError, isConfigurationError } from "../core/paint_containment.js";
 import * as T from "../core/transform.js";
-import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster } from "./pdf_backend.js";
+import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster, svgPathBounds } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { fitBox, inflateRect } from "../core/geometry.js";
 import { truncate } from "../core/report.js"; // THE shared log elision; this file had its own 40/40 spelling (`truncateRef`)
@@ -170,7 +170,7 @@ export function paintAttrs(cmd, ctx) {
   const a = [];
   a.push(cmd.fill ? `fill="${paintRef(ctx, cmd.fill)}"` : `fill="none"`);
   if (cmd.stroke && cmd.strokeWidth > 0)
-    a.push(`stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(cmd.strokeWidth)}"${joinAttrs(cmd)}`);
+    a.push(`stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(cmd.strokeWidth)}"${joinAttrs(cmd)}${capAttrs(cmd)}`);
   if ((cmd.opacity ?? 1) !== 1) a.push(`opacity="${fmt(cmd.opacity)}"`);
   return a.join(" ");
 }
@@ -202,6 +202,33 @@ function joinAttrs(cmd) {
 }
 
 /**
+ * Pure function. The FREE-END attribute for a stroked element, or "" at the
+ * identity — joinAttrs' sibling (a join finishes an interior vertex, a cap
+ * finishes a free end) and written the same way, so the two read as one pair.
+ *
+ * The op's cap ids are NOT the SVG words, so this is a translation and it is
+ * NOT done here: ir.js opStrokeLinecap owns it, because pdf_backend needs the
+ * identical answer and a second spelling is how the two exporters come to
+ * disagree. A null from it means the pair has no single-attribute form and the
+ * op never reaches this function — emitRegionSVG routed it to the raster
+ * fallback via opStrokeNeedsRaster.
+ *
+ * Omitting the identity is safe for the same reason joinAttrs' is: SVG's own
+ * initial `stroke-linecap` is `butt`, exactly what ir.js calls the identity, so
+ * every pre-feature deck's export stays byte-identical.
+ *
+ * @param {object} cmd - a stroked display-list op
+ * @returns {string} "" or a leading-space attribute string
+ *
+ * @example capAttrs({stroke: [0,0,0,1], strokeWidth: 2}) // "" (the identity, byte-identical legacy)
+ * @example capAttrs({strokeCapStart: "round", strokeCapEnd: "round"}) // ' stroke-linecap="round"'
+ */
+function capAttrs(cmd) {
+  const cap = opStrokeLinecap(cmd);
+  return cap === null || cap === "butt" ? "" : ` stroke-linecap="${cap}"`;
+}
+
+/**
  * Command (may register a <defs> gradient, via paintRef). The presentation attrs
  * for a STROKE-ONLY element at an explicit width — the half-stroke element the
  * offset construction clips. No fill (the caller drew it once already) and no
@@ -209,7 +236,7 @@ function joinAttrs(cmd) {
  * double-apply it).
  */
 function strokeOnlyAttrs(cmd, width, ctx) {
-  return `fill="none" stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(width)}"${joinAttrs(cmd)}` +
+  return `fill="none" stroke="${paintRef(ctx, cmd.stroke)}" stroke-width="${fmt(width)}"${joinAttrs(cmd)}${capAttrs(cmd)}` +
     ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "");
 }
 
@@ -224,6 +251,45 @@ function strokeOnlyAttrs(cmd, width, ctx) {
 export function ellipsePathD({ cx, cy, rx, ry }) {
   return `M${fmt(cx - rx)} ${fmt(cy)} A${fmt(rx)} ${fmt(ry)} 0 1 0 ${fmt(cx + rx)} ${fmt(cy)} ` +
     `A${fmt(rx)} ${fmt(ry)} 0 1 0 ${fmt(cx - rx)} ${fmt(cy)} Z`;
+}
+
+/**
+ * Command (may register a <defs> filter on `ctx`). Wraps a `path` op's rendered
+ * fragment in its soft MASK BLUR, or returns the fragment untouched when the op
+ * carries none (blur 0 / absent — so every existing export is byte-identical).
+ *
+ * THE BLUR STAYS VECTOR HERE, deliberately, and that is not the same choice the
+ * PDF exporter makes. `feGaussianBlur`'s `stdDeviation` IS the sigma
+ * paint_skia hands `MaskFilter.MakeBlur`, so SVG reproduces the painter's
+ * Gaussian exactly at any zoom, and this file's header rule ("every op that CAN
+ * be vector IS vector") applies. PDF has no blur primitive of any kind, so
+ * pdf_backend routes the same op to its raster fallback through
+ * ir.js opHasMaskBlur — one field, two faithful treatments, neither of them the
+ * silent drop both backends used to do.
+ *
+ * THE FILTER REGION IS STATED, not defaulted: SVG's default region is the
+ * object's bbox inflated by 10%, which CLIPS a blur wider than that into a
+ * visible straight edge. The region here is the path's own bounds grown by the
+ * stroke's outward half-width plus BLUR_SUPPORT_SIGMAS·σ — the same
+ * kernel-support bound ir.js uses to size an effectSubtree's halo, so the two
+ * cannot disagree about how far a Gaussian reaches.
+ *
+ * @param {object} cmd - a `path` op (reads blur, d, strokeWidth)
+ * @param {string} inner - the already-rendered SVG fragment for the path
+ * @param {object} ctx - the SvgAssembly (nextId/addDef)
+ * @returns {string} `inner`, or `inner` wrapped in a filtered <g>
+ *
+ * @example maskBlurWrapSVG({op: "path", d: "M0 0L10 0", blur: 0}, "<path/>", ctx) // "<path/>" (untouched)
+ * @example maskBlurWrapSVG({op: "path", d: "M0 0L10 0", blur: 2}, "<path/>", ctx) // '<g filter="url(#blur1)"><path/></g>'
+ */
+function maskBlurWrapSVG(cmd, inner, ctx) {
+  if (!opHasMaskBlur(cmd)) return inner;
+  if (!ctx || !ctx.nextId) throw new Error("svg_backend: a blurred path needs the SvgAssembly ctx (to mint a <defs> filter) — pass it to vectorCommandToSVG");
+  const id = ctx.nextId("blur");
+  const region = inflateRect(svgPathBounds(cmd.d), (cmd.strokeWidth ?? 0) / 2 + BLUR_SUPPORT_SIGMAS * cmd.blur);
+  ctx.addDef(`<filter id="${id}" filterUnits="userSpaceOnUse" x="${fmt(region.x)}" y="${fmt(region.y)}" width="${fmt(region.w)}" height="${fmt(region.h)}">` +
+    `<feGaussianBlur stdDeviation="${fmt(cmd.blur)}"/></filter>`);
+  return `<g filter="url(#${id})">${inner}</g>`;
 }
 
 /**
@@ -522,11 +588,13 @@ export function vectorCommandToSVG(cmd, world, ctx) {
       // Generic vector path (Wave 2): the `d` string is already native SVG path
       // syntax → emitted verbatim (xml-escaped). fill/stroke/opacity via the
       // shared paintAttrs; fill-rule only when evenodd (nonzero is SVG's default).
+      // A soft `blur` rides on top as a real filter — see maskBlurWrapSVG.
       if (!cmd.fill && !(cmd.stroke && cmd.strokeWidth > 0)) return "";
       {
         const rule = cmd.fillRule === "evenodd" ? ` fill-rule="evenodd"` : "";
         const pathEl = (attrs) => `<path d="${xmlEscape(cmd.d)}" ${attrs}${rule}/>`;
-        if (!opStrokeIsOffset(cmd)) return g(pathEl(paintAttrs(cmd, ctx)));
+        const soft = (inner) => maskBlurWrapSVG(cmd, inner, ctx);
+        if (!opStrokeIsOffset(cmd)) return g(soft(pathEl(paintAttrs(cmd, ctx))));
         // A `path`'s own `d` IS the clip geometry for the ATTACHED (|o| ≤ 1)
         // construction, so it generalizes to any outline the shape library or an
         // svg import produces. DETACHED (|o| > 1) has no such generalization — an
@@ -534,8 +602,8 @@ export function vectorCommandToSVG(cmd, world, ctx) {
         // backend does not have — so it refuses loudly (detachedContourStrokeSVG's
         // own guard) rather than draw a wrong ring.
         if (strokeIsDetached(cmd.strokeOffset)) detachedContourStrokeSVG(cmd, { kind: "path" }, () => "");
-        return g(pathEl(paintAttrs({ ...cmd, stroke: null }, ctx)) +
-          offsetStrokeSVG(cmd, xmlEscape(cmd.d), (w) => pathEl(strokeOnlyAttrs(cmd, w, ctx)), ctx));
+        return g(soft(pathEl(paintAttrs({ ...cmd, stroke: null }, ctx)) +
+          offsetStrokeSVG(cmd, xmlEscape(cmd.d), (w) => pathEl(strokeOnlyAttrs(cmd, w, ctx)), ctx)));
       }
     case "text":
       return g(textToSVG(cmd, ctx));
@@ -548,9 +616,7 @@ export function vectorCommandToSVG(cmd, world, ctx) {
       // (draw nothing, matching the GPU skip and pdf_backend's null XObject).
       const href = cmd.op === "image" ? ctx.imageHref(cmd.ref) : ctx.videoHref(cmd.ref);
       if (href === null) return "";
-      return g(`<image x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"` +
-        ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") +
-        ` preserveAspectRatio="none" href="${href}"/>`);
+      return g(imagePlacementSVG(cmd, href, ctx));
     }
     case "latexVector": {
       // TRUE VECTOR EQUATION (Round 15.1): MathJax glyph <path>s embedded INLINE
@@ -592,6 +658,55 @@ export function vectorCommandToSVG(cmd, world, ctx) {
     default:
       throw new Error(`svg_backend: unknown op "${cmd.op}"`);
   }
+}
+
+/**
+ * Command (may register a <defs> clipPath on `ctx`). Places an image/video's
+ * `href` into the op's dest rect, honoring the optional SOURCE RECT (`cmd.src` —
+ * the edge-crop UV insets every image and video op carries). THE SVG TWIN of
+ * pdf_backend's imagePlacementOps; read that function's derivation, this is the
+ * same construction in y-DOWN space with no flip.
+ *
+ * THIS EXISTS BECAUSE THE SVG BACKEND SIMPLY IGNORED `cmd.src`: an edge-cropped
+ * image exported UNCROPPED, silently, while the PDF export of the same scene
+ * cropped it correctly and the painter cropped it correctly. Measured by moving
+ * the field and diffing the export — the two SVGs were byte-identical.
+ *
+ * Full-frame source ({0,0,1,1} or absent) emits the plain <image>, byte-identical
+ * to every export this backend has ever produced. A cropped source clips to the
+ * dest rect and places the WHOLE image scaled up so its sub-rect lands exactly on
+ * that rect, so only the sub-region survives the clip — a source crop, not a
+ * stretch. An EMPTY source (sw or sh === 0, which ir.js sourceRect explicitly
+ * permits) draws nothing, matching the fully-cropped-away edge it describes;
+ * without that case the scale-up divides by zero.
+ *
+ * @param {object} cmd - an image/video op (reads x/y/w/h/opacity/src)
+ * @param {string} href - the resolved data: URI
+ * @param {object} ctx - the SvgAssembly (nextId/addDef)
+ * @returns {string} an <image> element, or a clipped <g> wrapping one, or ""
+ *
+ * @example imagePlacementSVG({x: 10, y: 20, w: 100, h: 80}, "data:,", ctx) // '<image x="10" y="20" width="100" height="80" preserveAspectRatio="none" href="data:,"/>' (a video op: no sampling field, so SVG's smooth default stands)
+ * @example imagePlacementSVG({x: 0, y: 0, w: 8, h: 8, sampling: "nearest"}, "data:,", ctx) // '<image x="0" y="0" width="8" height="8" image-rendering="pixelated" preserveAspectRatio="none" href="data:,"/>'
+ * @example imagePlacementSVG({x: 0, y: 0, w: 100, h: 100, src: {sx: 0.25, sy: 0.25, sw: 0.5, sh: 0.5}}, "data:,", ctx) // '<g clip-path="url(#srcclip1)"><image x="-50" y="-50" width="200" height="200" .../></g>' (full image 2x, shifted so its middle quarter lands on the dest rect)
+ */
+export function imagePlacementSVG(cmd, href, ctx) {
+  // SAMPLING, and note the direction: SVG's initial `image-rendering` is `auto`
+  // (smooth), while the IR's default — and the image widget's — is NEAREST. So
+  // writing nothing was not a neutral omission, it exported the OPPOSITE filter:
+  // a pixel-art image the editor and the PDF both draw hard-edged came out
+  // smoothed in every SVG. `video` carries no sampling field and keeps SVG's
+  // smooth default, which is what its Skia draw does.
+  const pixelated = cmd.sampling !== undefined && cmd.sampling !== "bilinear" ? ` image-rendering="pixelated"` : "";
+  const tail = ((cmd.opacity ?? 1) !== 1 ? ` opacity="${fmt(cmd.opacity)}"` : "") + pixelated + ` preserveAspectRatio="none" href="${href}"/>`;
+  const s = cmd.src;
+  if (!s || (s.sx === 0 && s.sy === 0 && s.sw === 1 && s.sh === 1))
+    return `<image x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"${tail}`;
+  if (s.sw <= 0 || s.sh <= 0) return "";
+  if (!ctx || !ctx.nextId) throw new Error("svg_backend: a source-cropped image needs the SvgAssembly ctx (to mint a <defs> clipPath) — pass it to vectorCommandToSVG");
+  const fullW = cmd.w / s.sw, fullH = cmd.h / s.sh;
+  const id = ctx.nextId("srcclip");
+  ctx.addDef(`<clipPath id="${id}"><rect x="${fmt(cmd.x)}" y="${fmt(cmd.y)}" width="${fmt(cmd.w)}" height="${fmt(cmd.h)}"/></clipPath>`);
+  return `<g clip-path="url(#${id})"><image x="${fmt(cmd.x - s.sx * fullW)}" y="${fmt(cmd.y - s.sy * fullH)}" width="${fmt(fullW)}" height="${fmt(fullH)}"${tail}</g>`;
 }
 
 /** Pure function. IR point list → an SVG points="x,y x,y …" attribute value.
@@ -770,15 +885,23 @@ async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, ou
     const { cmd, world } = flat[i];
     if (cmd.op === "magnifyBackdrop") {
       out.push(await emitLensSVG(cmd, world, commands, rawIndexOf[i], region, ctx));
-    } else if (cmd.op === "cropSubtree") {
+    } else if (cmd.op === "cropSubtree" && !opStrokeNeedsRaster(cmd)) {
+      // A crop box's BORDER is a stroke, so it faces the same question every other
+      // stroke does. Its trim/taper case had no answer at all: emitCropSVG runs
+      // BEFORE the raster-fallback branch below, so a trimmed crop border drew
+      // FULLY — silently, in both exporters. Letting the trim case fall through
+      // sends the whole cropSubtree to emitRasterOpSVG, which is the same treatment
+      // a trimmed rect or path already gets. The vector-expressible options
+      // (offset, join, miter, matched caps) still take emitCropSVG.
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
     } else if (!SVG_VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd)) {
       // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.
-      //  A TRIMMED / TAPER-capped stroke (opStrokeNeedsRaster) likewise rasterizes its
-      //  own region rather than silently drawing the untrimmed stroke; a plain round cap
-      //  stays vector — SVG expresses stroke-linecap natively.)
+      //  A TRIMMED / TAPER-capped / ASYMMETRICALLY-capped stroke (opStrokeNeedsRaster)
+      //  likewise rasterizes its own region rather than silently drawing the untrimmed
+      //  or butt-capped stroke; a MATCHED pair of round caps stays vector — SVG
+      //  expresses stroke-linecap natively, and capAttrs now actually writes it.)
       // GENERAL RASTER FALLBACK (the HYBRID RULE generalized — the SVG twin of
       // pdf_backend.emitRegion's emitRasterOp branch): an op with no SVG vector
       // form (glassBackdrop today; any FUTURE such op automatically) rasterizes
@@ -999,7 +1122,15 @@ export async function emitLensSVG(cmd, world, commands, rawIdx, region, ctx) {
  * once, in world space, and content re-emits in that same world space.)
  */
 export async function emitCropSVG(cmd, world, region, ctx) {
-  const local = { x: 0, y: 0, w: cmd.w, h: cmd.h, cornerRadius: cmd.cornerRadius };
+  // Honor cmd.x/cmd.y (the region's LOCAL top-left), not a hardcoded 0,0 — the
+  // fix pdf_backend.emitCrop already carries, verbatim, and this twin never got.
+  // A real crop box always has x=y=0 (its position lives in `world`), so it was
+  // latent here too; but a DECORATED media widget (render_gpu/decorate.js) emits a
+  // cropSubtree at the CROPPED rect's inset offset (x=cropLeft, y=cropTop) so the
+  // frame hugs the visible pixels, and the GPU compositor reads cmd.x/cmd.y. With
+  // 0,0 hardcoded, every decorated cropped widget's SVG fill, clip and border sat
+  // at the wrong offset while its PDF and its on-screen render agreed.
+  const local = { x: cmd.x ?? 0, y: cmd.y ?? 0, w: cmd.w, h: cmd.h, cornerRadius: cmd.cornerRadius };
   const boxT = similarityTransform(world);
   const parts = [];
 
@@ -1036,7 +1167,11 @@ export async function emitCropSVG(cmd, world, region, ctx) {
     // traceable shape ops) falls back to the ordinary rect path, matching
     // paint_skia.js handleCropSubtree's own fallback.
     const geometryD = cmd.silhouette ? (cmd.borderPath ?? roundedRectPathD(local)) : roundedRectPathD(local);
-    const strokeEl = (w, d = geometryD) => `<path d="${d}" fill="none" stroke="${paintRef(ctx, cmd.stroke, cmd.opacity)}" stroke-width="${fmt(w)}"/>`;
+    // joinAttrs/capAttrs, not a bare stroke: the border is a STROKE like any
+    // other and reads the same universal options. Without them a decorated box's
+    // exported border silently ignored strokeJoin/strokeMiter and its caps while
+    // the painter honored both — the same class of drop strokeOffset had here.
+    const strokeEl = (w, d = geometryD) => `<path d="${d}" fill="none" stroke="${paintRef(ctx, cmd.stroke, cmd.opacity)}" stroke-width="${fmt(w)}"${joinAttrs(cmd)}${capAttrs(cmd)}/>`;
     const border = strokeIsDetached(cmd.strokeOffset)
       ? detachedContourStrokeSVG({ ...cmd, strokeWidth: strokeW }, cmd.silhouette && cmd.borderPath ? { kind: "path" } : { kind: "rect", ...local }, strokeEl)
       : opStrokeIsOffset(cmd) ? offsetStrokeSVG(cmd, geometryD, strokeEl, ctx) : strokeEl(strokeW);

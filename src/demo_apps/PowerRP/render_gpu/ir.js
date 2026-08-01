@@ -19,9 +19,15 @@
  *   {op:"ellipse", cx, cy, rx, ry, fill, stroke, strokeWidth, opacity}
  *   {op:"polyline", points:[[x,y],...], width, color, opacity}   // round caps/joins — POLYLINE_CAP/POLYLINE_JOIN, fixed by the op
  *   {op:"polygon", points:[[x,y],...], fill, opacity}            // CONVEX fill (fan-triangulated)
+ *   {op:"path", d, fillRule, fill, stroke, strokeWidth, blur, opacity}  // generic SVG path-data shape; `blur` = soft mask blur (SVG vector, PDF raster — see path())
  *   {op:"text", text, x, y, size, color, bold, opacity, font}    // top-left origin, single run; font = registry id (fonts.js)
- *   {op:"image", ref, x, y, w, h, opacity}                       // ref → media registry key
- *   {op:"video", ref, x, y, w, h, opacity}                       // ref → <video> registry key
+ *   {op:"image", ref, x, y, w, h, opacity, src, sampling}        // ref → media registry key; src = edge-crop UV rect; sampling = nearest|bilinear
+ *   {op:"video", ref, x, y, w, h, opacity, src}                  // ref → <video> registry key
+ *   {op:"videoV2", ref, x, y, w, h, opacity, src, autoplay, loop, muted}  // the V2 player experiment
+ *   {op:"videoV5", ref, x, y, w, h, opacity, src}                // the V5 off-main-thread player experiment — DRAWS NOTHING in either vector exporter (browser-only registry)
+ *   {op:"videoFrame", ref, x, y, w, h, seekTime, wrap, opacity, src}     // the deterministic SCRUBBER's frame
+ *   {op:"videoV5Frame", ref, x, y, w, h, seekTime, wrap, opacity, src, preserveAspect}
+ *   {op:"paperCurl", ref, x, y, w, h, staple:{x,y}, angleDeg, t, curlScale, paper, shadowOpacity, opacity}
  *   {op:"latexVector", ref, x, y, w, h, glyphs, viewBox, opacity}// dual: vector glyph <path>s (SVG/PDF) + raster ref (GPU/hybrid)
  *   {op:"mermaidVector", ref, x, y, w, h, paths, texts, viewBox, opacity} // dual: vector shapes+text (SVG/PDF/GPU) + raster ref (hybrid); mirrors latexVector
  *   {op:"pushTransform", x, y, rotation, scale, signX, signY}    // SIGNED similarity, composes
@@ -32,6 +38,19 @@
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
  *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, softEdges, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow, +soft edges)
  *   {op:"materialBackdrop", material, cx, cy, halfW, halfH, cornerRadius, blurRadius, backdropScale, params, stroke, strokeWidth, opacity}  // registry-dispatched backdrop MATERIAL (SkSL); generalizes glassBackdrop
+ *   {op:"materialFill", material, cx, cy, halfW, halfH, cornerRadius, params, shadow, stroke, strokeWidth, opacity}  // a material as an OPAQUE fill — no backdrop sampling, no children
+ *
+ * Every stroked op above ALSO accepts the universal stroke options that ride on
+ * a stroke as plain fields — the trim window (strokeStart/strokeEnd/strokePhase),
+ * the caps (strokeCapStart/strokeCapEnd) and the corner treatment
+ * (strokeOffset/strokeJoin/strokeMiter). Each is ABSENT at its identity, so an
+ * untouched op is byte-identical to the one this codebase emitted before the
+ * feature. **A FIELD IS NOT UNIVERSAL JUST BECAUSE THE IR CARRIES IT** — the
+ * three backends' coverage differs, and tests/ir_field_coverage_test.js is the
+ * gate that says so out loud. Read it before you build on a field: the
+ * exporters route what they cannot draw (opStrokeNeedsRaster, opHasMaskBlur,
+ * opHasMaterialFill, opHasMirrorLinearFill), and anything they neither draw nor
+ * route is a SILENT DROP, which is a defect and not a bound.
  *
  * Backdrop-effect nodes consume the composite-so-far (everything already
  * emitted), replacing the canvas2D full-canvas snapshot with a GPU texture
@@ -652,21 +671,88 @@ export function opStrokeNeedsTrimPath(cmd) {
 }
 
 /**
+ * Pure function. THE op-cap-pair → SVG/PDF LINECAP translation, and the only one
+ * in this codebase. Returns the single `stroke-linecap` word both vector
+ * exporters can write ("butt" | "round"), or `null` when the pair has NO vector
+ * form and the op must go to the raster fallback instead.
+ *
+ * TWO VOCABULARIES MEET HERE, which is why this exists rather than a pass-through
+ * like opStrokeJoin: the OP speaks core/properties.js STROKE_CAP_MODES
+ * ("flat"/"round"/"taper", chosen for the Inspector), while SVG and PDF speak
+ * "butt"/"round"/"square" (the words POLYLINE_CAP and pdf_backend's pdfCapCode
+ * already use). Both exporters need the same answer, so the translation lives at
+ * the shared seam and neither may re-spell it.
+ *
+ * THE CAPABILITY BOUNDARY, stated once, here: **SVG and PDF have exactly ONE
+ * linecap per stroke.** A `stroke-linecap` attribute and a `J` operator apply to
+ * every free end of the whole stroke. So an op whose two ends disagree
+ * (strokeCapStart "round", strokeCapEnd "flat") is not expressible at all — there
+ * is no half-attribute to write — and neither is a TAPER, which is a
+ * variable-width outline no linecap word describes. Both return null.
+ *
+ * @param {object} cmd - a display-list op (reads strokeCapStart/strokeCapEnd)
+ * @returns {string|null} "butt" | "round", or null when there is no vector form
+ *
+ * @example opStrokeLinecap({}) // "butt" (absent = flat = the identity finish)
+ * @example opStrokeLinecap({strokeCapStart: "round", strokeCapEnd: "round"}) // "round"
+ * @example opStrokeLinecap({strokeCapStart: "round"}) // null (end is flat — the two ends disagree)
+ * @example opStrokeLinecap({strokeCapStart: "taper", strokeCapEnd: "taper"}) // null (no linecap word is a taper)
+ */
+export function opStrokeLinecap(cmd) {
+  const word = (cap) => (!capIsActive(cap) ? "butt" : cap === "round" ? "round" : null);
+  const start = word(cmd.strokeCapStart), end = word(cmd.strokeCapEnd);
+  return start === end ? start : null;
+}
+
+/**
  * Pure function. Must a VECTOR exporter (PDF/SVG) send this op to the region
  * RASTER FALLBACK because its stroke has no trivial vector form? True when the
- * stroke is trimmed/phased or carries a TAPER cap (a variable-width outline) —
- * the same "no vector form ⇒ rasterize its own region" rule material fills and
- * mirror gradients already follow (opHasMaterialFill / opHasMirrorLinearFill).
- * A ROUND cap alone is NOT here: SVG/PDF express round caps natively (linecap),
- * so a round-capped-but-untrimmed stroke stays vector.
+ * stroke is trimmed/phased, or when its caps have no single linecap spelling
+ * (opStrokeLinecap === null: a taper, or two ends that disagree) — the same
+ * "no vector form ⇒ rasterize its own region" rule material fills and mirror
+ * gradients already follow (opHasMaterialFill / opHasMirrorLinearFill).
+ *
+ * A MATCHED PAIR OF ROUND CAPS IS NOT HERE, and now that is TRUE rather than
+ * merely claimed. This docstring used to assert "SVG/PDF express round caps
+ * natively (linecap), so a round-capped-but-untrimmed stroke stays vector" while
+ * NEITHER exporter emitted a linecap at all: a round-capped open path exported
+ * byte-identical to an uncapped one — Skia round, both exports butt. The prose
+ * was the worse half of that defect, because it is what stopped anyone checking.
+ * Both exporters now write the cap (svg_backend capAttrs, pdf_backend paintSetup),
+ * so the claim is a description of code that exists.
  *
  * @example opStrokeNeedsRaster({strokeEnd: 0.5}) // true
- * @example opStrokeNeedsRaster({strokeCapStart: "taper"}) // true
- * @example opStrokeNeedsRaster({strokeCapStart: "round"}) // false (round is vector-expressible)
+ * @example opStrokeNeedsRaster({strokeCapStart: "taper", strokeCapEnd: "taper"}) // true
+ * @example opStrokeNeedsRaster({strokeCapStart: "round", strokeCapEnd: "round"}) // false (one linecap word covers both ends)
+ * @example opStrokeNeedsRaster({strokeCapStart: "round"}) // true (end is flat; one attribute cannot say two things)
  * @example opStrokeNeedsRaster({}) // false
  */
 export function opStrokeNeedsRaster(cmd) {
-  return strokeIsTrimmed(cmd) || cmd.strokeCapStart === "taper" || cmd.strokeCapEnd === "taper";
+  return strokeIsTrimmed(cmd) || opStrokeLinecap(cmd) === null;
+}
+
+/**
+ * Pure function. Does this op carry a soft MASK BLUR (`path`'s `blur` field)? The
+ * routing predicate the VECTOR PDF backend uses to send such a path into its
+ * raster fallback — a PDF page description has no blur primitive of any kind, so
+ * a blurred path is rasterized rather than silently drawn crisp. The SVG backend
+ * needs no such route: `feGaussianBlur` expresses the same Gaussian exactly (its
+ * `stdDeviation` IS Skia's mask-blur sigma), so SVG keeps it VECTOR.
+ *
+ * THIS IS A DELIBERATE ROUTE FOR A KNOWN-UNREPRESENTABLE FEATURE, not a catch of
+ * something that threw. The distinction matters and the two look alike in a diff:
+ * widening the raster fallback to swallow EXCEPTIONS would convert every
+ * capability gap into quiet degradation, which is why that was rejected. Routing
+ * a field we have measured to be unrepresentable is the opposite — it replaces a
+ * silent drop with a faithful picture, and the gap stays visible because the
+ * predicate is named, exported and gated.
+ *
+ * @example opHasMaskBlur({op: "path", blur: 3}) // true
+ * @example opHasMaskBlur({op: "path", blur: 0}) // false (the crisp default)
+ * @example opHasMaskBlur({op: "rect", fill: "#fff"}) // false (no other op has the field)
+ */
+export function opHasMaskBlur(cmd) {
+  return (cmd.blur ?? 0) > 0;
 }
 
 /**
@@ -1561,7 +1647,16 @@ export function videoV5Frame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacit
  *
  * `ref` (the raster fallback) + `src` (edge-crop UV rect, image() semantics) let
  * the GPU + hybrid split reuse the image path verbatim; a vector backend ignores
- * `ref`/`src` and consumes `glyphs`/`viewBox`/box.
+ * `ref` and consumes `glyphs`/`viewBox`/box.
+ *
+ * A NON-IDENTITY `src` IS REFUSED, LOUDLY. The vector backends map every glyph
+ * into the box with no source-sub-rect clip, so they cannot represent a partial
+ * crop — and they did not say so: a cropped latexVector exported UNCROPPED in
+ * both, silently. plugins/latex.js already knows this and emits a plain raster
+ * `image()` instead whenever the crop is live, which is why the drop was never
+ * seen; the guard here makes that the OP's rule rather than one caller's
+ * discipline. Anything that legitimately needs a cropped equation should follow
+ * latex.js and emit `image()`, or teach BOTH exporters the clip first.
  *
  * Args:
  *   ref (string): raster media-registry key (GPU / hybrid raster fallback)
@@ -1572,7 +1667,8 @@ export function videoV5Frame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacit
  *
  * @example latexVector({ref: "latex:x^2:1", x: 0, y: 0, w: 40, h: 20, glyphs: [{d: "M0 0L10 10", fill: "#000"}], viewBox: {minX: 0, minY: 0, w: 100, h: 50}}).op // "latexVector"
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).glyphs // []
- * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [{d: "M0 0", fill: "#f00"}], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).src // {sx: 0, sy: 0, sw: 1, sh: 1}
+ * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [{d: "M0 0", fill: "#f00"}], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).src // {sx: 0, sy: 0, sw: 1, sh: 1} (the only src it accepts)
+ * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}, sw: 0.5}) // throws: a non-identity source rect has no vector form
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).preserveAspect // true
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}, preserveAspect: false}).preserveAspect // false
  */
@@ -1583,6 +1679,8 @@ export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx 
   if (!viewBox || typeof viewBox !== "object") throw new Error(`latexVector: "viewBox" must be a {minX,minY,w,h} object, got ${JSON.stringify(viewBox)}`);
   requireFinite("latexVector.viewBox", { minX: viewBox.minX, minY: viewBox.minY, w: viewBox.w, h: viewBox.h });
   if (!(viewBox.w > 0) || !(viewBox.h > 0)) throw new Error(`latexVector: viewBox must have positive w/h, got ${JSON.stringify(viewBox)}`);
+  if (sx > 0 || sy > 0 || sw < 1 || sh < 1)
+    throw new Error(`latexVector: a non-identity source rect (${JSON.stringify({ sx, sy, sw, sh })}) has no vector form — the SVG/PDF backends map every glyph into the box with no sub-rect clip and would export the equation UNCROPPED. Emit image() for a cropped equation, as plugins/latex.js does.`);
   const outGlyphs = glyphs.map((g) => {
     if (typeof g.d !== "string") throw new Error(`latexVector: glyph "d" must be a string, got ${JSON.stringify(g.d)}`);
     // fill kept as a CSS string (parsed by the vector backends via parseColor,
@@ -1727,11 +1825,18 @@ export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule 
     ...normalizeStrokeTrim("path", trim),
     ...normalizeStrokeOffset("path", trim),
     ...normalizeStrokeJoin("path", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
-    // `blur` (optional): a Gaussian MASK-blur radius in LOCAL units — a general
-    // soft-path enhancement any consumer can reuse (the corkboard YARN uses it for
-    // its soft cast shadow, a blurred stroke, avoiding a heavier effectSubtree
-    // wrap). 0 = crisp (byte-identical to a path built without the field). The
-    // backend scales the sigma by the CTM, so the softness tracks zoom.
+    // `blur` (optional): a Gaussian MASK-blur radius in LOCAL units (the corkboard
+    // YARN uses it for its soft cast shadow, a blurred stroke, avoiding a heavier
+    // effectSubtree wrap). 0 = crisp (byte-identical to a path built without the
+    // field). paint_skia scales the sigma by the CTM, so the softness tracks zoom.
+    //
+    // WHAT IT COSTS IN THE EXPORTERS, because this used to read "a general soft-
+    // path enhancement any consumer can reuse" with no caveat and was in fact
+    // SILENTLY DROPPED by both: SVG keeps it VECTOR (feGaussianBlur, whose
+    // stdDeviation is exactly this sigma), and PDF has no blur primitive at all,
+    // so a blurred path routes to the general raster fallback through
+    // opHasMaskBlur — faithful, but that widget becomes a raster tile in the PDF.
+    // Cheap on a small soft shadow; think before blurring a page-sized path.
     strokeWidth, opacity, blur: Math.max(0, blur),
   };
 }

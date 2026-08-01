@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
@@ -1077,20 +1077,40 @@ async function emitOpRange(flat, start, end, commands, rawIndexOf, region, out, 
     const { cmd, world } = flat[i];
     if (cmd.op === "magnifyBackdrop") {
       await emitLens(cmd, world, commands, rawIndexOf[i], region, out, ctx);
-    } else if (cmd.op === "cropSubtree") {
+    } else if (cmd.op === "cropSubtree" && !opStrokeNeedsRaster(cmd)) {
+      // A crop box's BORDER is a stroke, so it faces the same question every other
+      // stroke does. Its trim/taper case had no answer at all: emitCrop runs BEFORE
+      // the raster-fallback branch below, so a trimmed crop border drew FULLY —
+      // silently, in both exporters. Letting the trim case fall through sends the
+      // whole cropSubtree to emitRasterOp, the same treatment a trimmed rect or path
+      // already gets. The vector-expressible options (offset, join, miter, matched
+      // caps) still take emitCrop.
       await emitCrop(cmd, world, region, out, ctx);
     } else if (cmd.op === "effectSubtree") {
       await emitEffect(cmd, world, region, out, ctx);
-    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd)) {
+    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd) || opHasMaskBlur(cmd)) {
       // (A MATERIAL-filled shape op is vector-shaped but shader-filled — PDF has
       // no vector form for it, so it takes the same region raster-embed. A
       // MIRROR-TILED linear gradient fill — wavelength ≠ 1 — is the same story: a
-      // TRIMMED / TAPER-capped stroke (opStrokeNeedsRaster) is likewise no trivial
-      // PDF path — its arc-length window / variable-width outline rasterizes here,
-      // never silently drawing the untrimmed stroke; a plain round cap stays vector.
+      // TRIMMED / TAPER-capped / ASYMMETRICALLY-capped stroke (opStrokeNeedsRaster)
+      // is likewise no trivial PDF path — its arc-length window, variable-width
+      // outline or two-different-ends finish rasterizes here, never silently
+      // drawing the untrimmed or butt-capped stroke; a MATCHED pair of round caps
+      // is one `J` operand and stays vector (paintSetup writes it).
       // PDF axial shading clamps its ends and cannot mirror-tile, so it too
       // rasterizes here rather than silently drawing a single clamped ramp. A
-      // center-only / whole-axis gradient stays a true vector PDF shading below.)
+      // center-only / whole-axis gradient stays a true vector PDF shading below.
+      // A soft MASK BLUR on a path (opHasMaskBlur) joins them because a PDF page
+      // description has NO blur primitive at any level — not a filter, not a
+      // pattern; only an SMask whose luminosity source would itself have to be a
+      // blurred raster. SVG keeps that one vector (feGaussianBlur); this backend
+      // cannot, so it rasterizes rather than exporting the path crisp, which is
+      // what it silently did before. NOTE THE DISTINCTION, because it looks the
+      // same in a diff as a thing this codebase has deliberately refused: every
+      // condition on this line is a MEASURED, NAMED capability gap routed on
+      // purpose. None of them is an exception being caught and rasterized —
+      // catch-and-rasterize would turn any future breakage into quiet
+      // degradation, and is why the per-node paint boundary REPORTS instead.)
       // GENERAL RASTER FALLBACK (the HYBRID RULE, generalized): an op this vector
       // backend cannot represent — a backdrop/effect op with no vector form
       // (glassBackdrop today; any FUTURE such op automatically) — rasterizes JUST
@@ -1265,8 +1285,9 @@ export function regionOverBackground(commands, srcRect, background) {
  * Returns null when the (clamped) rect is empty — the op is off-region; draw
  * nothing.
  *
- * Recognized geometry (in priority order): {cx,cy,halfW,halfH} (rounded box —
- * glass, box lens), {cx,cy,r} (circle), {x,y,w,h} (axis rect).
+ * Recognized geometry (in priority order): a `path` op's own `d` bounds (plus its
+ * stroke half-width and blur halo), {cx,cy,halfW,halfH} (rounded box — glass, box
+ * lens), {cx,cy,r} (circle), {x,y,w,h} (axis rect).
  *
  * @param {object} cmd the IR op (may carry a `margin` world-unit spill hint)
  * @param {number[]} world the op's absolute similarity transform (core/transform)
@@ -1275,7 +1296,18 @@ export function regionOverBackground(commands, srcRect, background) {
  */
 export function rasterOpPlaceRect(cmd, world, region) {
   let local = null, spill = 0;
-  if (Number.isFinite(cmd.halfW) && Number.isFinite(cmd.halfH)) {
+  if (cmd.op === "path" && typeof cmd.d === "string") {
+    // A PATH HAS NO w/h, so without this branch it fell through to the
+    // whole-region catch-all and one raster-routed path pixelated everything
+    // below it on the page. Its footprint is its own ink: the `d` bounds, grown
+    // by the stroke's outward half-width and by a soft mask blur's
+    // BLUR_SUPPORT_SIGMAS·σ halo (the same kernel-support bound ir.js and
+    // svg_backend's filter region use, so the three cannot disagree about how far
+    // a Gaussian reaches). Benefits every route that sends a path here — a
+    // trimmed or material stroke, a mirror gradient, and now a blur.
+    local = inflateRect(svgPathBounds(cmd.d), (cmd.strokeWidth ?? 0) / 2 + BLUR_SUPPORT_SIGMAS * (cmd.blur ?? 0));
+    spill = Math.max(local.w, local.h) / 2;
+  } else if (Number.isFinite(cmd.halfW) && Number.isFinite(cmd.halfH)) {
     local = { x: cmd.cx - cmd.halfW, y: cmd.cy - cmd.halfH, w: cmd.halfW * 2, h: cmd.halfH * 2 };
     spill = Math.max(cmd.halfW, cmd.halfH);
   } else if (Number.isFinite(cmd.r)) {
@@ -1499,10 +1531,15 @@ async function emitCrop(cmd, world, region, out, ctx) {
         : offsetStrokePdfOps(cmd, geometryD, ctx)));
       out.push("Q");
     } else {
-      const gs = ctx.gsAlphaPair(1, cmd.stroke[3] * cmd.opacity);
-      out.push("q", cmSimilarity(world), ...(gs ? [gs] : []));
-      out.push(`${pdfNum(cmd.stroke[0])} ${pdfNum(cmd.stroke[1])} ${pdfNum(cmd.stroke[2])} RG`);
-      out.push(`${pdfNum(strokeW)} w`);
+      // paintSetup, not a hand-rolled colour+width: the border is a STROKE like any
+      // other and must read the same universal options. The three lines this
+      // replaces emitted no join, no miter limit and no cap, so a decorated box's
+      // exported border silently ignored strokeJoin/strokeMiter and its caps while
+      // the painter honored both — the same class of drop strokeOffset had here.
+      // Byte-identical at the identity except for the `j`/`M` pair paintSetup
+      // always states (PDF's initial miter limit is 10 and ours is 4).
+      out.push("q", cmSimilarity(world));
+      out.push(...paintSetup(null, cmd.stroke, strokeW, cmd.opacity, ctx, cmd));
       out.push(geometryD, "S", "Q");
     }
   }
@@ -2239,6 +2276,16 @@ function paintSetup(fill, stroke, strokeWidth, opacity, ctx, cmd = null) {
     ops.push(`${pdfNum(strokeWidth)} w`);
     ops.push(`${pdfJoinCode(opStrokeJoin(cmd ?? {}))} j`);
     ops.push(`${pdfNum(opStrokeMiter(cmd ?? {}))} M`);
+    // THE FREE-END finish, the join's sibling. Written only when it is not the
+    // identity, unlike `j`/`M` above: PDF's own initial line cap IS 0 (butt),
+    // exactly what ir.js calls the identity, so silence and statement draw the
+    // same picture and every pre-feature deck's PDF stays byte-identical. (`M`
+    // cannot do that — PDF's initial miter limit is 10 and ours is 4.) The
+    // graphics state cannot leak either way: emitVector wraps every op in q/Q.
+    // A null from opStrokeLinecap never reaches here — emitOpRange routed that op
+    // to the raster fallback via opStrokeNeedsRaster.
+    const cap = opStrokeLinecap(cmd ?? {});
+    if (cap !== null && cap !== "butt") ops.push(`${pdfCapCode(cap)} J`);
   }
   return ops;
 }
@@ -2269,9 +2316,11 @@ function pdfJoinCode(join) {
 
 /**
  * Pure function. THE cap-id → PDF line-cap code (ISO 32000-1 table 51: 0 butt,
- * 1 round, 2 projecting square). Its only caller today is the polyline op's
- * POLYLINE_CAP contract; it exists so that contract is spelled by name in all
- * three backends rather than as a bare `1` here.
+ * 1 round, 2 projecting square). Two callers: the polyline op's POLYLINE_CAP
+ * contract (so that contract is spelled by name in all three backends rather
+ * than as a bare `1` here), and paintSetup's universal stroke cap, which arrives
+ * already translated out of the op's own "flat"/"round"/"taper" vocabulary by
+ * ir.js opStrokeLinecap — the ONE place those two vocabularies meet.
  *
  * @param {string} cap - "butt" | "round" | "square" (the SVG stroke-linecap words,
  *   the same vocabulary render_gpu/skia/stroke_materials.js capEnum reads)
