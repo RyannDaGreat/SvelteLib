@@ -473,9 +473,146 @@ const PRESETS = {
     secondHandTaper: 1, handBezel: 0,
     hourHandWidth: 3, minuteHandWidth: 2, secondHandWidth: 1,
   },
+  // ── THE ORDER BELOW IS VIEWING DISTANCE, AND THAT IS PHYSICS, NOT TASTE ─────
+  // `classic` must stay FIRST — it is DEFAULT_PRESET and the byte-frozen
+  // baseline. After it the pane runs from the farthest-read dial to the nearest:
+  // a terminal board across a concourse, a platform clock down a platform, a
+  // school clock across a hall, a cockpit dial at arm's length under vibration, a
+  // wrist. Viewing distance is exactly what sets index weight and hand mass, so
+  // running the list top to bottom walks that one variable. The last three are
+  // dress and graphic dials, where legibility is not the governing constraint at
+  // all and the numerals move INWARD instead of the marks growing.
+  // (`roman`, `minimal` and `thin` above keep their shipped values byte for byte;
+  // PRESET_IDS below reorders the pane without touching them.)
+  //
+  // TWO SIGNATURES ARE SOURCED INVERSIONS RATHER THAN STYLING, and they are why
+  // those two dials cannot be mistaken for any other in the set:
+  //   diver      — minuteHandWidth (9) EXCEEDS hourHandWidth (7). The diving
+  //                standard asks for "a large, easily identifiable minute hand"
+  //                and for styling such that no hand can obscure another; the
+  //                minute hand is the one being timed against, so it is the
+  //                broadest thing on the dial. Every other dial here has the hour
+  //                hand heaviest, which is the ordinary convention.
+  //   sweepTimer — secondHandWidth (3.5) EXCEEDS minuteHandWidth (3). On a timer
+  //                the sweep hand is the primary indicator, not the fine one.
+  //
+  // A PRESET CANNOT CHANGE A COLOUR (the rule stated below the model: a preset
+  // restyles the DIAL, it does not repaint a chosen palette), so every entry here
+  // is a GEOMETRY-ONLY reading of its archetype on whatever palette the author
+  // set. That costs four archetypes outright — the field watch's and the diver's
+  // white-on-black, a negative platform dial, and the railway clock's red second
+  // hand — and it is the single largest constraint on this set. It is also a
+  // deliberate shipped decision, not a defect: if it is ever revisited the right
+  // move is a SECOND, DISJOINT palette family, since {fill, tickColor,
+  // numeralColor, hourHandColor, ...} shares no key with these twelve.
+  terminalBoard: {
+    // Read across a concourse: the marks are enormous and there is no minute
+    // track at all, because at that distance a 60-tick ring is grey noise.
+    majorTickWidth: 14, majorTickLength: 0.13, minorTickWidth: 1, minorTickLength: 0.03,
+    showMinorTicks: false, numerals: NUMERALS_NONE, numeralInset: 0.19,
+    secondHandTaper: 0, handBezel: 0,
+    hourHandWidth: 14, minuteHandWidth: 10, secondHandWidth: 3,
+  },
+  stationPlatform: {
+    // The platform clock: bold hour batons AND a full minute track, because a
+    // departure is read to the minute. No numerals — the baton positions carry it.
+    majorTickWidth: 6, majorTickLength: 0.17, minorTickWidth: 2.4, minorTickLength: 0.075,
+    showMinorTicks: true, numerals: NUMERALS_NONE, numeralInset: 0.19,
+    secondHandTaper: 0, handBezel: 0,
+    hourHandWidth: 10, minuteHandWidth: 7, secondHandWidth: 2.6,
+  },
+  schoolhouse: {
+    // THE NUMERALS ARE THE DIAL HERE, so the hour ticks are deliberately the
+    // shortest and thinnest in the set and the numeral ring is pushed OUT to 0.16
+    // — nearer the rim than classic's 0.19, which only clears because those short
+    // ticks leave room for it. Measured worst numeral/tick gap 9.94 on a 500px
+    // dial, against classic's 4.82.
+    majorTickWidth: 2, majorTickLength: 0.06, minorTickWidth: 1.2, minorTickLength: 0.04,
+    showMinorTicks: true, numerals: NUMERALS_ARABIC, numeralInset: 0.16,
+    secondHandTaper: 0.15, handBezel: 0,
+    hourHandWidth: 9, minuteHandWidth: 6.5, secondHandWidth: 1.8,
+  },
+  flieger: {
+    // The pilot's observation dial, and its one expressible signature is that the
+    // MINUTE ticks are nearly as heavy as the hour ticks (2 against 3) — nothing
+    // else in the set does that — over broad hands. The type's actual defining
+    // marks, the triangle at twelve flanked by two dots and the two-ring numeral
+    // layout, need per-index control and a second numeral ring, neither of which
+    // this dial has; the description therefore describes what it DOES look like
+    // rather than claiming a specification.
+    majorTickWidth: 3, majorTickLength: 0.075, minorTickWidth: 2, minorTickLength: 0.075,
+    showMinorTicks: true, numerals: NUMERALS_ARABIC, numeralInset: 0.26,
+    secondHandTaper: 0.4, handBezel: 0,
+    hourHandWidth: 11, minuteHandWidth: 8, secondHandWidth: 1.8,
+  },
+  fieldWatch: {
+    // Everything subordinate to the minute track: fine marks, slim hands, and the
+    // numerals pulled well in so the track is what the eye lands on.
+    majorTickWidth: 2.2, majorTickLength: 0.09, minorTickWidth: 1.1, minorTickLength: 0.055,
+    showMinorTicks: true, numerals: NUMERALS_ARABIC, numeralInset: 0.33,
+    secondHandTaper: 0.2, handBezel: 0,
+    hourHandWidth: 6, minuteHandWidth: 4.5, secondHandWidth: 1.3,
+  },
+  diver: {
+    // Fat short luminous plots instead of numerals, and the sourced inversion:
+    // the minute hand is BROADER than the hour hand (see the note above).
+    majorTickWidth: 9, majorTickLength: 0.085, minorTickWidth: 1.4, minorTickLength: 0.035,
+    showMinorTicks: true, numerals: NUMERALS_NONE, numeralInset: 0.19,
+    secondHandTaper: 0.3, handBezel: 0.45,
+    hourHandWidth: 7, minuteHandWidth: 9, secondHandWidth: 1.6,
+  },
+  sweepTimer: {
+    // Long minute graduations to read fractions against, and the second
+    // inversion: the needle-pointed sweep hand is the THICKEST on the dial.
+    majorTickWidth: 3.5, majorTickLength: 0.16, minorTickWidth: 1.8, minorTickLength: 0.10,
+    showMinorTicks: true, numerals: NUMERALS_NONE, numeralInset: 0.19,
+    secondHandTaper: 1, handBezel: 0,
+    hourHandWidth: 3, minuteHandWidth: 3, secondHandWidth: 3.5,
+  },
+  bulkhead: {
+    // The marine bulkhead clock: short fat hour dots out at the rim, roman
+    // numerals pulled deep inside them leaving a bare outer band, and the
+    // heaviest chamfer available so the hands read as polished brass rather than
+    // paint. Worst numeral/tick gap 63.74 — the roomiest dial in the set.
+    majorTickWidth: 7, majorTickLength: 0.055, minorTickWidth: 1, minorTickLength: 0.03,
+    showMinorTicks: false, numerals: NUMERALS_ROMAN, numeralInset: 0.42,
+    secondHandTaper: 0.25, handBezel: 1,
+    hourHandWidth: 12, minuteHandWidth: 8, secondHandWidth: 2.2,
+  },
+  deco: {
+    // The graphic dial of the set: the deepest numeral ring (0.48) behind the
+    // longest, thinnest hour rays (0.20 at 1.2 wide), leaving a wide empty band
+    // at the rim. Worst numeral/tick gap 54.96.
+    majorTickWidth: 1.2, majorTickLength: 0.20, minorTickWidth: 1, minorTickLength: 0.03,
+    showMinorTicks: false, numerals: NUMERALS_ARABIC, numeralInset: 0.48,
+    secondHandTaper: 0.6, handBezel: 0.2,
+    hourHandWidth: 4.5, minuteHandWidth: 3.5, secondHandWidth: 1,
+  },
 };
-const PRESET_IDS = Object.keys(PRESETS);
-const PRESET_LABELS = { classic: "Classic", roman: "Roman", minimal: "Minimal", thin: "Thin" };
+// THE PANE ORDER, and it is NOT Object.keys(PRESETS) — the four shipped entries
+// keep their positions in the map above (so a diff shows nine additions rather
+// than a reshuffle) while the pane runs by viewing distance. Derived against the
+// map so a preset added to one and forgotten in the other is a LOUD failure
+// rather than a silently missing card.
+const PRESET_IDS = ["classic", "terminalBoard", "stationPlatform", "schoolhouse", "flieger",
+  "fieldWatch", "diver", "sweepTimer", "thin", "bulkhead", "roman", "deco", "minimal"];
+{
+  const declared = Object.keys(PRESETS).sort().join(",");
+  const ordered = [...PRESET_IDS].sort().join(",");
+  if (declared !== ordered)
+    throw new Error(`clock_analog: PRESET_IDS and the PRESETS map disagree — [${ordered}] vs [${declared}]`);
+}
+const PRESET_LABELS = {
+  classic: "Classic", terminalBoard: "Terminal Board", stationPlatform: "Station Platform",
+  schoolhouse: "Schoolhouse", flieger: "Flieger", fieldWatch: "Field Watch",
+  diver: "Diver's Bezel", sweepTimer: "Sweep Timer",
+  // RENAMED from "Thin", which is a knob reading rather than a thing. This dial's
+  // hairline marks over a full 60-tick minute ring ARE a chemin de fer, the term
+  // of art for exactly that ring. The STORED id stays `thin`, so no document
+  // migrates and resolveStyle is untouched — PRESET_LABELS is display only.
+  thin: "Chemin-de-Fer",
+  bulkhead: "Ship's Bulkhead", roman: "Roman", deco: "Deco Numerals", minimal: "Minimal",
+};
 const DEFAULT_PRESET = "classic";
 
 /**
@@ -666,9 +803,18 @@ return {
     name: PRESET_LABELS[id],
     description: {
       classic: "The default dial: arabic numerals, full minute track, flat hands.",
+      terminalBoard: "The concourse clock read from across a hall: enormous hour batons, no numerals and no minute track, on the heaviest hands in the set.",
+      stationPlatform: "The railway platform clock — bold hour batons over a full minute track, no numerals at all, and a broad parallel-bar second hand.",
+      schoolhouse: "The institutional wall clock: heavy arabic numerals pushed out near the minute track, with the hour marks deliberately kept subordinate to them.",
+      flieger: "The pilot's observation dial: numerals set inside a minute ring nearly as heavy as the hour marks, on broad hands meant to be read in a glance.",
+      fieldWatch: "The military field dial — numerals pulled well inside a fine minute track, on slim hands, so the track you time against is what the eye lands on.",
+      diver: "The diving dial: fat luminous plots instead of numerals, and a minute hand broader than the hour hand so the two can never be read for each other.",
+      sweepTimer: "The stopwatch face — long minute graduations and a needle-pointed sweep hand that is the thickest on the dial, because it is the one being read.",
+      thin: "The dress dial's fine railway-track minute ring: hairline marks all round, numerals set well in.",
+      bulkhead: "The marine bulkhead clock: roman numerals pulled deep inside a bare outer band, short fat hour dots, and heavy hands fully chamfered like polished brass.",
       roman: "Dressed dial — roman numerals (IIII), heavy hour marks, bezelled hands, no minute track.",
+      deco: "The nineteen-thirties mantel dial: numerals set deepest of all behind long hairline rays, leaving a wide empty band at the rim.",
       minimal: "Hour batons only, no numerals, tapered second hand.",
-      thin: "Hairline marks, full railroad minute track, numerals set well in.",
     }[id],
     props: { preset: id },
   })),

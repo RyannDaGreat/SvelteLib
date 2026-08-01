@@ -313,7 +313,16 @@ await test("every preset loads, emits, and is a complete style vector", () => {
     for (const key of keys)
       assert.ok(emit(at(0, { preset: id, [key]: undefined })).length > 0, `preset ${id} incomplete at ${key}`);
   }
-  assert.deepEqual(clock.presets.map((p) => p.props.preset), ["classic", "roman", "minimal", "thin"]);
+  // THE PANE ORDER, pinned. Not a list of WHICH presets exist (the loop above
+  // already covers every one the plugin declares, whatever they are) but of the
+  // order they are OFFERED in, which is content: `classic` must stay first because
+  // it is DEFAULT_PRESET and the byte-frozen baseline, and the rest run by viewing
+  // distance from a concourse board down to a wrist, ending on three dress and
+  // graphic dials. A re-sort is a defect, so it fails here.
+  assert.deepEqual(clock.presets.map((p) => p.props.preset), [
+    "classic", "terminalBoard", "stationPlatform", "schoolhouse", "flieger",
+    "fieldWatch", "diver", "sweepTimer", "thin", "bulkhead", "roman", "deco", "minimal",
+  ]);
 });
 
 await test("no preset crowds its numerals against the ticks more tightly than classic already does", () => {
@@ -370,8 +379,32 @@ await test("no preset crowds its numerals against the ticks more tightly than cl
     const ops = emit(s);
     const texts = ops.filter((o) => o.op === "text");
     if (texts.length === 0) continue; // "none" — nothing to collide
-    // The tick spokes, as segments, with their half-width as a pad.
-    const ticks = ops.filter((o) => o.op === "polyline").slice(0, 60 - 3);
+    // THE TICK SPOKES, DERIVED FROM POSITION — and the count-based version this
+    // replaces was WRONG IN TWO WAYS AT ONCE, both reproduced before the fix.
+    //
+    // It read `ops.filter(polyline).slice(0, 60 - 3)`, i.e. "take 57 of the
+    // polylines". emit() lays ops down in a fixed order: face, TICKS, NUMERALS,
+    // hands, pivot — so the ticks are exactly the polylines BEFORE the first
+    // numeral, and this loop already skips any dial with no numerals.
+    //
+    //   1. With `showMinorTicks: false` there are only 12 tick polylines, so the
+    //      slice runs on into the HANDS and measures a numeral against a hand as
+    //      if it were a tick. MEASURED on a roman dial with no minute track and
+    //      taper/bezel at 0: worst gap -2.75 against "XII", failing a gate about
+    //      TICK clearance because the second hand happened to pass under the
+    //      twelve. Derived correctly the same dial scores 63.74 — the roomiest in
+    //      the set. The shipped `roman` preset escaped only by coincidence: its
+    //      taper and bezel are both nonzero, which promotes all three hands to
+    //      POLYGONS and takes them out of the filter.
+    //   2. On a full 60-tick dial it took 57 of the 60 and silently dropped
+    //      three, so the gate was always checking less than it claimed. (Classic's
+    //      worst gap is unchanged at 4.820508…, so CLASSIC_WORST_GAP above stays
+    //      exactly calibrated — the three it dropped were not the worst.)
+    //
+    // The count was never derivable anyway: 60 - 3 encodes "all the ticks minus
+    // the hands", which is not what a prefix of a filtered list means.
+    const firstNumeral = ops.findIndex((o) => o.op === "text");
+    const ticks = ops.slice(0, firstNumeral).filter((o) => o.op === "polyline");
     for (const t of texts) {
       const w = t.text.length * t.size * DIGIT_ADVANCE_RATIO;
       const h = t.size;
