@@ -65,6 +65,112 @@ const SHAPE_TAGS = "path, rect, circle, ellipse, polygon, polyline, line";
 const NON_RENDERING_ANCESTORS = "defs, marker, clipPath, mask, pattern, symbol, filter";
 
 /**
+ * The ancestors that give a flattened element its SEMANTIC IDENTITY — which
+ * diagram NODE or EDGE it belongs to. Measured against mermaid 11.16.0 output
+ * under this app's config (htmlLabels:false, securityLevel:"strict"); each
+ * selector below was observed on a real render, not inferred from the docs.
+ *
+ * Two families, because mermaid has two renderers. The unified renderer
+ * (flowchart / class / state / ER) wraps nodes in `g.node` with a composed
+ * `id` and marks edges with `data-et="edge"` + `data-id`. The sequence renderer
+ * marks participants and messages with `data-et` instead and — uniquely — names
+ * a message's two ends outright in `data-from` / `data-to`.
+ *
+ * WHY THIS IS A SELECTOR LIST AND NOT A PER-DIAGRAM-TYPE SWITCH: a switch on the
+ * diagram type would be a hand-maintained mirror of mermaid's renderer roster,
+ * which is the defect class this round keeps finding. A selector matches whatever
+ * is actually in the markup, so a diagram type that grows identity later joins
+ * with no edit here, and one that has none simply yields `null`.
+ */
+const ORIGIN_TAGGED_SELECTOR = "[data-et]";
+const ORIGIN_NODE_SELECTOR = "g.node, g.cluster";
+/** An edge's LABEL lives in its own group, keyed by the same `data-id` the edge
+ * carries — the one place mermaid states a label-to-edge link explicitly. */
+const ORIGIN_EDGE_LABEL_SELECTOR = "g.edgeLabel g.label[data-id]";
+
+/**
+ * Query (reads the DOM). THE SEMANTIC ORIGIN of one flattened element: which
+ * diagram node or edge it came from, and — for a node — that node's box in
+ * viewBox space, which is what a shatter turns into a widget's bbox.
+ *
+ * Returns null when the element belongs to no identified structure. That is a
+ * real and common answer, not a failure: a pie chart's slices and a gantt bar
+ * carry no identity in mermaid's output at all, and a consumer must be able to
+ * tell "unidentified" from "identified as nothing".
+ *
+ * `boxes` is a caller-owned Map used to memoize `getBBox` per ancestor element —
+ * a layout-forcing call, and a diagram has far more paths than nodes.
+ *
+ * Args:
+ *   el (Element): the shape or text element being flattened
+ *   rootInv (DOMMatrix): the root SVG's inverse screen CTM (local → viewBox)
+ *   boxes (Map<Element, object|null>): memo for per-ancestor viewBox boxes
+ *
+ * Returns:
+ *   {kind, id, from, to, box} | null — `kind` is mermaid's own `data-et` where it
+ *   has one ("edge", "message", "participant", "note", "life-line") and "node"
+ *   for the unified renderer's `g.node`/`g.cluster`; `box` is the owning
+ *   element's {x, y, w, h} in viewBox space; `from`/`to` name the endpoints only
+ *   where mermaid states them outright (sequence messages), else null.
+ */
+function originOf(el, rootInv, boxes) {
+  // 1. MERMAID'S OWN VOCABULARY, used verbatim. `data-et` ("element type") is the
+  //    kind mermaid itself assigns — "edge", "message", "participant", "note",
+  //    "life-line". Passing it through rather than translating it into a private
+  //    vocabulary means a kind mermaid adds later arrives here with no edit, and
+  //    there is no second name for anything. A consumer decides which kinds are
+  //    box-like and which are connector-like; that decision belongs where the
+  //    mapping to widgets lives, not in a paint flatten.
+  const tagged = el.closest(ORIGIN_TAGGED_SELECTOR);
+  if (tagged) {
+    const ds = tagged.dataset;
+    return { kind: ds.et, id: ds.id ?? tagged.id ?? null, from: ds.from ?? null, to: ds.to ?? null, box: viewBoxBoxOf(tagged, rootInv, boxes) };
+  }
+  // 2. An edge LABEL is identified BY ITS EDGE — mermaid keys the label group
+  //    with the same `data-id` the edge carries, which is the one place it states
+  //    a label-to-edge link outright. Reported as kind "edge" because that is
+  //    what it belongs to; a consumer reading `edge` gets the path AND its text.
+  const edgeLabel = el.closest(ORIGIN_EDGE_LABEL_SELECTOR);
+  if (edgeLabel) return { kind: "edge", id: edgeLabel.dataset.id ?? null, from: null, to: null, box: null };
+  // 3. The unified renderer's NODES carry no `data-et` at all — only a composed
+  //    `id` on `g.node` / `g.cluster`. Measured on mermaid 11.16.0: flowchart,
+  //    class, state and ER all take this branch.
+  const node = el.closest(ORIGIN_NODE_SELECTOR);
+  if (!node) return null;
+  return { kind: "node", id: node.id || null, from: null, to: null, box: viewBoxBoxOf(node, rootInv, boxes) };
+}
+
+/**
+ * Query (reads the DOM; memoizes into `boxes`). One element's `getBBox` mapped
+ * local → viewBox, as {x, y, w, h}. Null when the browser cannot measure it.
+ *
+ * The map is AXIS-ALIGNED because every mermaid layout transform is a
+ * translation — mermaid places nodes with `transform="translate(x,y)"` and never
+ * rotates them, so the four corners stay axis-aligned and the two mapped corners
+ * determine the box. A rotated ancestor would make this wrong, which is why the
+ * corners are min/max-ed rather than assumed ordered: a mirrored transform then
+ * still yields a positive box rather than a negative one.
+ */
+function viewBoxBoxOf(el, rootInv, boxes) {
+  if (boxes.has(el)) return boxes.get(el);
+  let out = null;
+  const ctm = el.getScreenCTM();
+  if (ctm) {
+    let bbox = null;
+    try { bbox = el.getBBox(); } catch { bbox = null; }
+    if (bbox) {
+      const m = domMatrixToMat(rootInv.multiply(ctm));
+      const at = (px, py) => ({ x: m.a * px + m.c * py + m.e, y: m.b * px + m.d * py + m.f });
+      const p0 = at(bbox.x, bbox.y);
+      const p1 = at(bbox.x + bbox.width, bbox.y + bbox.height);
+      out = { x: Math.min(p0.x, p1.x), y: Math.min(p0.y, p1.y), w: Math.abs(p1.x - p0.x), h: Math.abs(p1.y - p0.y) };
+    }
+  }
+  boxes.set(el, out);
+  return out;
+}
+
+/**
  * Pure function. A browser DOMMatrix (or SVGMatrix) → the plain {a,b,c,d,e,f}
  * affine core/svg_paths.js transformPathD/matScale consume.
  *
@@ -223,7 +329,7 @@ function resolveMarkerDef(svg, cssMarker) {
  * (marker-start + marker-end), each placed at the edge's start/end vertex,
  * oriented along the path tangent, in viewBox space. `dVB` is the edge's already
  * baked viewBox-space `d`. Returns [] when the edge has no resolvable markers. */
-function markerPathsFor(svg, el, dVB, strokeWidth, warnings) {
+function markerPathsFor(svg, el, dVB, strokeWidth, warnings, origin = null) {
   const cs = getComputedStyle(el);
   const geom = pathEndTangent(dVB);
   if (!geom) return [];
@@ -242,6 +348,10 @@ function markerPathsFor(svg, el, dVB, strokeWidth, warnings) {
       strokeWidth: parseFloat(mcs.strokeWidth) || 0,
       fillRule: mcs.fillRule === "evenodd" ? "evenodd" : "nonzero",
       opacity: clampOpacity(mcs.opacity),
+      // A marker instance has no DOM element of its own, so it INHERITS the
+      // origin of the edge it decorates — otherwise an arrowhead would be the
+      // one part of an edge a consumer could not attribute to it.
+      origin, marker: true,
     });
   };
   const endDef = resolveMarkerDef(svg, cs.markerEnd);
@@ -318,8 +428,12 @@ function clampOpacity(css) {
  *
  * Returns:
  *   {
- *     paths: [{d, fill, stroke, strokeWidth, fillRule, opacity}],  // viewBox space
- *     texts: [{text, x, y, size, color, bold, font}],              // viewBox space, top-left
+ *     paths: [{d, fill, stroke, strokeWidth, fillRule, opacity, origin, marker?}],
+ *     texts: [{text, x, y, size, color, bold, font, origin}],
+ *     // both in viewBox space (texts at their glyph-box TOP-LEFT); `origin` is
+ *     // the SEMANTIC identity (originOf) — which diagram node or edge this ink
+ *     // belongs to, or null where mermaid emits none. The painter ignores it;
+ *     // core/shatter consumers read it to rebuild the relationships as anchors.
  *     viewBox: {minX, minY, w, h},
  *     warnings: string[],
  *     unflattenable: boolean, reason?: string
@@ -336,6 +450,7 @@ export function flattenMermaidSvg(svg) {
   const viewBox = rootViewBox(svg);
 
   const paths = [];
+  const originBoxes = new Map(); // memo for originOf's per-ancestor getBBox
   for (const el of svg.querySelectorAll(SHAPE_TAGS)) {
     if (el.closest(NON_RENDERING_ANCESTORS)) continue; // marker/def/clip template — skipped
     const cs = getComputedStyle(el);
@@ -361,6 +476,7 @@ export function flattenMermaidSvg(svg) {
       continue;
     }
     const strokeWidth = (parseFloat(cs.strokeWidth) || 0) * matScale(m);
+    const origin = originOf(el, rootInv, originBoxes);
     if (fill !== null || (stroke !== null && strokeWidth > 0)) {
       paths.push({
         d: dVB,
@@ -368,10 +484,11 @@ export function flattenMermaidSvg(svg) {
         strokeWidth: stroke !== null ? strokeWidth : 0,
         fillRule: cs.fillRule === "evenodd" ? "evenodd" : "nonzero",
         opacity: clampOpacity(cs.opacity),
+        origin,
       });
     }
     // Instanced arrowhead markers draw ON TOP of their edge (appended after it).
-    for (const mp of markerPathsFor(svg, el, dVB, strokeWidth, warnings)) paths.push(mp);
+    for (const mp of markerPathsFor(svg, el, dVB, strokeWidth, warnings, origin)) paths.push(mp);
   }
 
   const texts = [];
@@ -402,6 +519,7 @@ export function flattenMermaidSvg(svg) {
       color,
       bold: (parseInt(cs.fontWeight, 10) || 400) >= BOLD_WEIGHT,
       font: MERMAID_TEXT_FONT,
+      origin: originOf(el, rootInv, originBoxes),
     });
   }
 

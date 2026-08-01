@@ -33,6 +33,7 @@ import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefN
 import { projectScriptProblem, projectScriptExports as compiledScriptExports } from "../core/project_script.js";
 import { dedupeGroupSelection } from "../core/bandselect.js";
 import { retypeChoices, retypeEligible, retypedItem } from "../core/retype.js";
+import { shatterEligible, shatteredDocument, shatterIds, shatterDisclosure, vectorRecovery } from "../core/shatter.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
 import { multiSelectPanel, unifyPairs } from "../core/multiselect.js";
@@ -289,6 +290,17 @@ export const THEME_FAMILIES = [
   { id: "phosphor", title: "Phosphor", dark: "phosphor", light: "phosphor-light" },
   { id: "platinum", title: "Platinum", dark: "platinum-dark", light: "platinum" },
   { id: "ember", title: "Ember", dark: "ember", light: "ember-light" },
+  // ── More glass, one material lever earning three more theses ────────────────
+  // Each pair below is glass by the same test Nocturne/Daybreak set: it pulls
+  // --a-glass-blur/-bg/-rim together, and the rim specifically encodes a real,
+  // named optical property of its material rather than a generic bright edge.
+  // See each theme's own app.css block for the citation and the numbers.
+  { id: "verdigris", title: "Verdigris", dark: "verdigris", light: "verdigris-light" },
+  { id: "cranberry", title: "Cranberry", dark: "cranberry", light: "cranberry-light" },
+  // Two independent names, like Nocturne/Daybreak: obsidian and moonstone are
+  // different minerals, not one material lightened, so a "-light" suffix would
+  // have claimed a kinship that isn't real.
+  { id: "obsidian", title: "Obsidian", dark: "obsidian", light: "moonstone" },
 ];
 
 /** Saved-preference migration for theme ids this app no longer ships.
@@ -3275,6 +3287,82 @@ export class PowerRPApp {
         throw new Error(`retypeSelection: "${type}" is not a retype ${role} — it is structurally fixed (camera/group/scene-structural)`);
     this.dismissEdit();
     this.commit(retypedItem(this.doc, this.slideIndex, id, newType, folded, this.registry));
+  }
+
+
+  // ── Shatter (core/shatter.js — "Convert to Widgets") ────────────────────────
+
+  /**
+   * Query. WHY the selection cannot be shattered, or null when it can. ONE call
+   * answering both "may it run" and "why not", the `draftKeys.quickSaveBlocker`
+   * shape — because a command whose gate and whose explanation are computed
+   * separately will eventually disagree, and the user reads the explanation
+   * precisely when the gate says no.
+   *
+   * Single-item, deliberately: shattering several widgets at once would produce
+   * several groups and one undo entry that is hard to reason about, and no
+   * existing command does it. The plugin's own refusal (an unrendered diagram)
+   * surfaces here too, by asking it to plan.
+   */
+  shatterBlocker() {
+    const ids = this.selectedIds();
+    if (ids.length === 0) return "a selected widget";
+    if (ids.length > 1) return "one widget selected, not several — shatter makes one group at a time";
+    const folded = this.state().items?.[ids[0]];
+    if (!folded) return "a widget on this slide";
+    if (!shatterEligible(this.registry.get(folded.type)))
+      return `a widget that can be shattered — ${this.registry.get(folded.type).title} does not declare a decomposition`;
+    const plan = this.#shatterPlan(ids[0], folded);
+    if (typeof plan === "string") return plan;
+    if (plan.parts.length === 0) return "a widget with something to decompose — this one draws no recoverable parts";
+    return null;
+  }
+
+  /** Query. The plugin's decomposition of one item, or the REASON it refused as
+   * a string. The plugin throws (loudly, with a sentence) when it has no
+   * geometry; that sentence is the gate's explanation, so it is caught HERE and
+   * nowhere else — the one place a throw is a legitimate answer rather than a
+   * failure, because planning is also how the gate asks "is this possible". */
+  #shatterPlan(id, folded) {
+    const node = this.nodes().find((n) => n.itemId === id);
+    if (!node) return "a widget that is drawn on this slide";
+    const box = rotatedBBoxAABB(node);
+    if (!box) return "a widget with a bounding box";
+    try {
+      return this.registry.get(folded.type).shatter(folded, { box });
+    } catch (e) {
+      return String(e?.message ?? e);
+    }
+  }
+
+  /**
+   * Command (one undo unit). "Convert to Widgets": the selected widget BECOMES a
+   * group whose members are the editable widgets it was drawing, wired to each
+   * other by equations so a label follows the box it names and an arrow
+   * re-routes when either end moves.
+   *
+   * Reports the DISCLOSURE — what was recovered as editable widgets, what was
+   * kept as raster, and every caveat the plugin raised — rather than a silent
+   * success. The user cannot see from the canvas which parts will respond to a
+   * handle, and guessing is worse than reading.
+   */
+  shatterSelection() {
+    const blocker = this.shatterBlocker();
+    if (blocker !== null) {
+      console.warn(`Convert to Widgets: needs ${blocker} — nothing was converted.`);
+      return;
+    }
+    const id = this.selectedIds()[0];
+    const folded = this.state().items[id];
+    const plan = this.#shatterPlan(id, folded);
+    const node = this.nodes().find((n) => n.itemId === id);
+    const box = rotatedBBoxAABB(node);
+    this.dismissEdit();
+    const doc = shatteredDocument(this.doc, this.slideIndex, id, folded, plan, this.registry, shatterIds(plan), box, this.displayName(id));
+    this.commit(withNormalizedZ(doc));
+    this.selection = id; // the group — the thing the user now has a handle on
+    this.shatterReport = `${shatterDisclosure(plan.parts, this.registry, plan.notes)} (${Math.round(vectorRecovery(plan.parts) * 100)}% recovered as vector.)`;
+    console.info(`Convert to Widgets: ${this.shatterReport}`);
   }
 
   /**

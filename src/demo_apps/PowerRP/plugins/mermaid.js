@@ -61,6 +61,7 @@
 
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder, fitBox } from "../core/geometry.js";
+import { partKey, partRef } from "../core/shatter.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { image, mermaidVector, rect, text } from "../render_gpu/ir.js";
@@ -422,6 +423,307 @@ export function errorAffordance(w, h, message) {
   return [box, label];
 }
 
+
+// ── SHATTER (core/shatter.js's first consumer) ───────────────────────────────
+//
+// A rendered diagram already knows which ink belongs to which NODE and which
+// EDGE — mermaid says so in its own markup, and render_gpu/gpu/mermaid_vector.js
+// now carries that through the flatten as each path's and text's `origin`. So
+// the decomposition below is a REGROUPING of geometry we already have, not a
+// re-derivation of it, and the anchors it writes come from mermaid's semantics
+// rather than from guessing which text sits inside which rectangle. Geometry
+// guessing looks fine on a test diagram and falls apart on a real one.
+//
+// WHAT EACH ORIGIN BECOMES, and why:
+//   a BOX origin (node / participant / note / cluster) → an SVG widget carrying
+//     that origin's OWN paths, its viewBox set to the origin's sub-box so the
+//     coordinates need no rewriting at all. Pixel-exact by construction: the same
+//     `d`, the same resolved paint, the same painter. And it is a real bbox
+//     widget, so it moves, resizes and has the nine standard anchors.
+//   a LABEL text → a PLAINTEXT widget whose whole box IS its owner's box, by
+//     equation, centred. Move or resize the box and the label follows, which is
+//     the request. Its glyphs go through the SAME getTextLayout the mermaid
+//     vector painter uses, so the type does not reflow.
+//   an EDGE origin → an ARROW between the two boxes it joins, endpoints bound to
+//     their rims by `closest` refs, so it RE-ROUTES. Where mermaid routed the
+//     edge with bends this is a straight line and therefore NOT what mermaid
+//     drew — declared in the notes, never silently.
+//   an edge whose endpoints mermaid does not name (stateDiagram numbers its
+//     edges `edge0`, `edge1` and states nothing else) → the exact path as an SVG
+//     widget. Faithful, and honestly not anchored.
+//   UNATTRIBUTED ink (a pie chart carries no identity at all) → one SVG widget
+//     holding the remainder, so nothing is ever dropped.
+
+/** Origin kinds that are BOX-LIKE — a thing with an interior that can contain a
+ * label. Mermaid's own `data-et` vocabulary plus the unified renderer's `node`
+ * (see mermaid_vector.js originOf); listed rather than derived because only a
+ * consumer can know which of mermaid's kinds it intends to draw as a box. */
+const SHATTER_BOX_KINDS = new Set(["node", "cluster", "participant", "note"]);
+/** Origin kinds that are CONNECTOR-LIKE — a thing joining two boxes. */
+const SHATTER_EDGE_KINDS = new Set(["edge", "message", "life-line"]);
+
+/** The part key holding every path no origin claimed. One key, so the leftovers
+ * are one widget the user can see, select and delete rather than confetti. */
+const SHATTER_LEFTOVER_KEY = "unattributed";
+
+/**
+ * Pure function. Mermaid's composed DOM id → the id the AUTHOR wrote, or null.
+ * Mermaid builds a node's id as `<diagramId>-<familyPrefix><authorId>-<counter>`
+ * (measured on 11.16.0: `powerrp-mermaid-0-flowchart-A-0`,
+ * `powerrp-mermaid-2-classId-Animal-0`, `powerrp-mermaid-3-state-Idle-2`), and
+ * the author id is the middle segment. Recovering it matters because it is the
+ * token an EDGE id is built from, so it is how an edge finds its endpoints.
+ *
+ * @param {string} domId - the `g.node` element id
+ * @returns {string|null}
+ *
+ * @example authorIdOf("powerrp-mermaid-0-flowchart-A-0")
+ * 'A'
+ * @example authorIdOf("powerrp-mermaid-2-classId-Animal-0")
+ * 'Animal'
+ * @example authorIdOf("powerrp-mermaid-3-state-root_start-0")
+ * 'root_start'
+ * @example authorIdOf("Alice")
+ * null
+ */
+export function authorIdOf(domId) {
+  // GREEDY leading `.*`, deliberately: it backtracks to the LAST `-<word>-`,
+  // which is the family segment. A lazy `.*?` matches the FIRST one instead, so
+  // `powerrp-mermaid-0-flowchart-A-0` came back as `0-flowchart-A` and every
+  // edge then failed to find its endpoints — the whole feature degraded to
+  // unanchored paths with no error anywhere. Caught by the end-to-end probe,
+  // not by these doctests, because the doctests were written from the intent.
+  const m = /^.*-[A-Za-z]+-(.+)-\d+$/.exec(domId ?? "");
+  return m ? m[1] : null;
+}
+
+/**
+ * Pure function. The two author ids an edge joins, read off mermaid's edge id.
+ * Flowchart writes `L_<src>_<tgt>_<n>` and class writes `id_<src>_<tgt>_<n>`,
+ * both by plain `_` concatenation — so an author id containing `_` makes the
+ * split AMBIGUOUS (`L_my_node_a_my_node_b_0` has several readings). The known
+ * id set disambiguates it: only a split whose halves are both real ids counts,
+ * and a tie returns null rather than a guess.
+ *
+ * @param {string} edgeId - mermaid's `data-id` for the edge
+ * @param {Set<string>} known - every author id in the diagram
+ * @returns {{from: string, to: string}|null}
+ *
+ * @example edgeEndpoints("L_A_B_0", new Set(["A", "B"]))
+ * { from: 'A', to: 'B' }
+ * @example edgeEndpoints("id_Animal_Dog_1", new Set(["Animal", "Dog", "Cat"]))
+ * { from: 'Animal', to: 'Dog' }
+ * @example edgeEndpoints("L_my_node_a_my_node_b_0", new Set(["my_node_a", "my_node_b"]))
+ * { from: 'my_node_a', to: 'my_node_b' }
+ * @example edgeEndpoints("edge0", new Set(["Idle"]))
+ * null
+ */
+export function edgeEndpoints(edgeId, known) {
+  const m = /^(?:L|id)_(.+)_\d+$/.exec(edgeId ?? "");
+  if (!m) return null;
+  const body = m[1];
+  const hits = [];
+  for (let i = 1; i < body.length; i++) {
+    const from = body.slice(0, i), to = body.slice(i + 1);
+    if (body[i] === "_" && known.has(from) && known.has(to)) hits.push({ from, to });
+  }
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * Pure function. A stable, human PART KEY for one origin — what the shattered
+ * child is called under its parent ("Flowchart / Start"). Prefers the origin's
+ * own LABEL, because that is the word the author recognises on the canvas; falls
+ * back to the author id, then the raw dom id. De-collided against `taken` with
+ * the `_2` suffix core/expressions.js already uses for slug collisions, so two
+ * boxes reading "Start" do not fight over one name.
+ *
+ * @param {string} label - the origin's label text ("" when it has none)
+ * @param {string} id - the origin's dom id
+ * @param {Set<string>} taken - keys already issued (MUTATED: the new key is added)
+ * @returns {string}
+ *
+ * @example partKeyFor("Start", "powerrp-mermaid-0-flowchart-A-0", new Set())
+ * 'Start'
+ * @example partKeyFor("", "powerrp-mermaid-0-flowchart-A-0", new Set())
+ * 'A'
+ * @example partKeyFor("Start", "x-flowchart-B-1", new Set(["Start"]))
+ * 'Start2'
+ * @example partKeyFor("Do it", "x-flowchart-C-3", new Set())
+ * 'DoIt'
+ */
+export function partKeyFor(label, id, taken) {
+  const base = partKey((label || "").trim() || authorIdOf(id) || id || "part");
+  let key = base;
+  // De-collided WITHOUT an underscore (see core/shatter.js PART_KEY_PATTERN):
+  // `Start2`, not `Start_2`, because an underscored key mis-resolves in the
+  // shared reference remapper.
+  for (let n = 2; taken.has(key); n++) key = `${base}${n}`;
+  taken.add(key);
+  return key;
+}
+
+/**
+ * Pure function. One SVG document string carrying a set of flattened paths,
+ * framed by `viewBox` — the `svgSrc` an svg widget renders.
+ *
+ * The paths keep their DIAGRAM-space `d` verbatim and the viewBox is set to the
+ * sub-rect they occupy, so no coordinate is ever rewritten and no rounding is
+ * introduced. That is what makes the ink identical rather than merely close.
+ *
+ * @param {Array<object>} paths - flattened paths ({d, fill, stroke, strokeWidth, fillRule, opacity})
+ * @param {{x: number, y: number, w: number, h: number}} viewBox - the sub-rect to frame
+ * @returns {string}
+ *
+ * @example pathsToSvgSrc([{d: "M0 0L10 0", stroke: "#333", strokeWidth: 2, fill: null}], {x: 0, y: 0, w: 10, h: 10})
+ * '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0L10 0" fill="none" stroke="#333" stroke-width="2"/></svg>'
+ */
+export function pathsToSvgSrc(paths, viewBox) {
+  const body = paths.map((p) => {
+    const attrs = [`d="${p.d}"`, `fill="${p.fill ?? "none"}"`];
+    if (p.stroke && p.strokeWidth > 0) attrs.push(`stroke="${p.stroke}"`, `stroke-width="${p.strokeWidth}"`);
+    if (p.fillRule === "evenodd") attrs.push('fill-rule="evenodd"');
+    if ((p.opacity ?? 1) !== 1) attrs.push(`opacity="${p.opacity}"`);
+    return `<path ${attrs.join(" ")}/>`;
+  }).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}">${body}</svg>`;
+}
+
+/**
+ * Pure function. The bounding rect of a set of flattened paths, measured from
+ * their baked `d` coordinates. Used to frame a connector or the leftover ink,
+ * which — unlike a node — has no owning element with a box.
+ *
+ * A COORDINATE HULL, not a true path hull: it takes every numeric pair in the
+ * `d` as a point, so an off-curve bezier control point can push the rect
+ * slightly past the ink. That over-estimates and never under-estimates, which is
+ * the safe direction — the widget's box is a frame, and a frame that is a little
+ * large clips nothing.
+ *
+ * @param {Array<{d: string}>} paths
+ * @returns {{x: number, y: number, w: number, h: number}|null} null when empty
+ *
+ * @example pathsBounds([{d: "M10 20L30 60"}])
+ * { x: 10, y: 20, w: 20, h: 40 }
+ * @example pathsBounds([{d: "M0 0L10 0"}, {d: "M-5 3L2 9"}])
+ * { x: -5, y: 0, w: 15, h: 9 }
+ * @example pathsBounds([])
+ * null
+ */
+export function pathsBounds(paths) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of paths) {
+    const nums = (p.d.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? []).map(Number);
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      minX = Math.min(minX, nums[i]); maxX = Math.max(maxX, nums[i]);
+      minY = Math.min(minY, nums[i + 1]); maxY = Math.max(maxY, nums[i + 1]);
+    }
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/**
+ * Pure function. The viewBox→WORLD map a shatter must reproduce exactly, because
+ * every part is placed through it and the picture only survives if it matches
+ * what emit() drew. Returns the same {scale, offsetX, offsetY} letterbox
+ * drawMermaidVector applies, or the non-uniform stretch when preserveAspect is
+ * off — one formula, read by both, so they cannot drift.
+ *
+ * @param {{minX, minY, w, h}} viewBox - the diagram's viewBox
+ * @param {{x, y, w, h}} box - the widget's world box
+ * @param {boolean} preserve - the widget's preserveAspect
+ * @returns {{sx: number, sy: number, ox: number, oy: number}} world = (v - min) * s + o
+ *
+ * @example mermaidViewToWorld({minX: 0, minY: 0, w: 100, h: 100}, {x: 10, y: 20, w: 200, h: 200}, true)
+ * { sx: 2, sy: 2, ox: 10, oy: 20 }
+ * @example mermaidViewToWorld({minX: 0, minY: 0, w: 100, h: 50}, {x: 0, y: 0, w: 100, h: 100}, true)
+ * { sx: 1, sy: 1, ox: 0, oy: 25 }
+ * @example mermaidViewToWorld({minX: 0, minY: 0, w: 100, h: 50}, {x: 0, y: 0, w: 100, h: 100}, false)
+ * { sx: 1, sy: 2, ox: 0, oy: 0 }
+ */
+export function mermaidViewToWorld(viewBox, box, preserve) {
+  if (preserve) {
+    const f = fitBox(viewBox.w, viewBox.h, box.w, box.h);
+    return { sx: f.scale, sy: f.scale, ox: box.x + f.offsetX, oy: box.y + f.offsetY };
+  }
+  return { sx: box.w / viewBox.w, sy: box.h / viewBox.h, ox: box.x, oy: box.y };
+}
+
+
+/** A free-standing text run's box height, as a multiple of its font size. Only
+ * has to exceed one line so the run never wraps (wrapping would change the
+ * picture); a line box is conventionally a little over its em size. */
+const TEXT_PART_LINE_FACTOR = 1.5;
+
+/** The stroke a shattered edge falls back to when its flattened path reported
+ * none. Mermaid's own default link colour in the `default` theme. */
+const DEFAULT_EDGE_STROKE = "#333333";
+
+/**
+ * Pure function. Two decimal places. Diagram coordinates are sub-pixel, and a
+ * raw float would put fifteen digits into an equation field a human has to read.
+ *
+ * @example round2(12.3456)
+ * 12.35
+ * @example round2(40)
+ * 40
+ */
+function round2(v) {
+  return Math.round(v * 100) / 100;
+}
+
+/**
+ * Pure function. One flattened text run to a PLAINTEXT part's state. `geometry`
+ * is the anchoring equation set when the run belongs to a box, or null for a
+ * free-standing run (an edge label), which is placed at its measured world point
+ * instead because nothing declares anchors for it to bind to.
+ *
+ * align/valign are LEFT/TOP deliberately: the flatten reports each run's
+ * top-left glyph-box corner and drawMermaidVector draws from exactly there, so
+ * left/top is the alignment that reproduces Mermaid's own layout. Centring would
+ * look tidier on a one-line node and would move the type on a three-compartment
+ * class box, which is the wrong trade under a fidelity bar.
+ *
+ * @param {object} t - a flattened text ({text, x, y, size, color, bold, font})
+ * @param {object|null} geometry - x/y/w/h overrides (equations), or null
+ * @param {(r: object) => object} toWorld - diagram rect to world rect
+ * @param {{sx: number}} map - the viewBox-to-world map (also scales the font)
+ * @returns {object} a partial plaintext state
+ *
+ * @example // #  textPartState({text: "Start", x: 10, y: 4, size: 16, color: "#111", bold: false, font: "inter"},
+ * @example // #                null, toWorld, {sx: 2})
+ * @example // #  -> {type: "plaintext", text: "Start", size: 32, fill: "#111", align: "left", valign: "top", x, y, w, h}
+ */
+function textPartState(t, geometry, toWorld, map) {
+  const base = {
+    type: "plaintext", text: t.text, size: t.size * map.sx,
+    fill: t.color, bold: !!t.bold, font: t.font,
+    align: "left", valign: "top",
+  };
+  if (geometry) return { ...base, ...geometry };
+  const w = toWorld({ x: t.x, y: t.y, w: 0, h: 0 });
+  // A free run has no owner to size against, so its box is its own line. The
+  // width is deliberately generous: at align "left" a text box wider than its
+  // glyphs draws identically, while one too narrow would WRAP and change the
+  // picture, so erring wide is the only safe direction.
+  return { ...base, x: w.x, y: w.y, w: t.text.length * t.size * map.sx, h: t.size * map.sx * TEXT_PART_LINE_FACTOR };
+}
+
+/** Pure function. The human name of an edge part — its own label where it has
+ * one, else a description of what it joins, else its Mermaid id. Kept apart from
+ * the KEY because a key must tokenize and a name only has to read.
+ *
+ * @example edgeLabelFor({origin: {id: "L_A_B_0"}, texts: [{text: "Yes"}]})
+ * 'Yes edge'
+ * @example edgeLabelFor({origin: {id: "L_A_B_0"}, texts: []})
+ * 'L_A_B_0 edge'
+ */
+function edgeLabelFor(bucket) {
+  const own = bucket.texts.length > 0 ? bucket.texts[0].text : "";
+  return `${own || bucket.origin.id} edge`;
+}
+
 export const mermaidPlugin = {
   type: "mermaid",
   title: "Mermaid Diagram",
@@ -595,6 +897,146 @@ export const mermaidPlugin = {
   // Returns null until the aspect is measured.
   naturalSize(state) {
     return mermaidAspect(state.definition, state.theme ?? DEFAULT_MERMAID_THEME);
+  },
+  /**
+   * Query (reads the flatten cache; mutates nothing). THE DECOMPOSITION - this
+   * diagram as a set of editable widgets wired to each other by equations.
+   * core/shatter.js owns everything else: the type change, the id plumbing, the
+   * naming and the one undo unit.
+   *
+   * Refuses LOUDLY when there is no vector geometry. Both causes are real and
+   * expected - the render is async, and a foreignObject diagram is
+   * unflattenable - and both mean there is nothing to decompose. Shattering into
+   * nothing while reporting success is the silent failure this codebase forbids,
+   * so the command gates on the same condition and this throws if called anyway.
+   *
+   * @param {object} s - the item's evaluated state
+   * @param {{box: {x, y, w, h}}} ctx - the host's WORLD box; parts are placed in it
+   * @returns {{parts: Array<{key: string, state: object, raster?: boolean}>, notes: string[]}}
+   */
+  shatter(s, ctx) {
+    const theme = s.theme ?? DEFAULT_MERMAID_THEME;
+    const geom = mermaidVectorGeom(s.definition, theme);
+    if (!geom)
+      throw new Error("Mermaid: no vector geometry to shatter - the diagram has not finished rendering, or it could not be vectorized (its render warnings say which).");
+    const vb = geom.viewBox;
+    const map = mermaidViewToWorld(vb, ctx.box, s.preserveAspect !== false);
+    /** Pure. A diagram-space rect to its world rect under the widget's own map. */
+    const toWorld = (r) => ({
+      x: (r.x - vb.minX) * map.sx + map.ox, y: (r.y - vb.minY) * map.sy + map.oy,
+      w: r.w * map.sx, h: r.h * map.sy,
+    });
+
+    // 1. BUCKET every path and text by the origin claiming it. An origin without
+    //    an id is as unusable as no origin, so both fall through to leftovers.
+    const buckets = new Map();
+    const leftovers = [];
+    for (const collection of [geom.paths, geom.texts])
+      for (const e of collection) {
+        const k = e.origin && e.origin.id ? `${e.origin.kind} ${e.origin.id}` : null;
+        if (k === null) { if (e.d) leftovers.push(e); continue; }
+        if (!buckets.has(k)) buckets.set(k, { origin: e.origin, paths: [], texts: [] });
+        buckets.get(k)[e.d ? "paths" : "texts"].push(e);
+      }
+
+    // 2. NAME EVERY BOX FIRST, so an edge written afterwards has something to
+    //    reference. Both the part key (the child's display name) and the map
+    //    from Mermaid's author id to that key are built here, once.
+    const taken = new Set();
+    const keyByBucket = new Map();
+    const keyByAuthorId = new Map();
+    const boxes = [...buckets].filter(([, b]) => SHATTER_BOX_KINDS.has(b.origin.kind) && b.origin.box);
+    for (const [bk, b] of boxes) {
+      const key = partKeyFor(b.texts.length > 0 ? b.texts[0].text : "", b.origin.id, taken);
+      keyByBucket.set(bk, key);
+      keyByAuthorId.set(authorIdOf(b.origin.id) ?? b.origin.id, key);
+    }
+    const knownAuthorIds = new Set(keyByAuthorId.keys());
+
+    const parts = [];
+    const notes = [];
+    let straightened = 0;
+    let unanchored = 0;
+
+    // 3. EDGES FIRST so their z lands UNDER the boxes - Mermaid draws them that
+    //    way, and core/shatter.js writes parts in order with rising z.
+    for (const [, b] of buckets) {
+      if (!SHATTER_EDGE_KINDS.has(b.origin.kind)) continue;
+      const named = b.origin.from && b.origin.to
+        ? { from: b.origin.from, to: b.origin.to }
+        : edgeEndpoints(b.origin.id, knownAuthorIds);
+      const fromKey = named ? keyByAuthorId.get(named.from) : undefined;
+      const toKey = named ? keyByAuthorId.get(named.to) : undefined;
+      const key = partKeyFor(b.texts.length > 0 ? `${b.texts[0].text} edge` : "", b.origin.id, taken);
+      if (fromKey && toKey) {
+        // ANCHORED. Both endpoints ride the rim solver, so moving either box
+        // re-routes the arrow - the point of the whole feature. Mermaid may have
+        // routed this edge with bends; a straight shaft between the same two
+        // rims is the closest thing that still re-routes, and the note says so.
+        // The box parts are SVG widgets, which declare closestAnchor - a bare
+        // text widget does not, and a `closest` ref against one throws.
+        const shaft = b.paths.find((p) => !p.marker) ?? b.paths[0];
+        straightened++;
+        parts.push({ key, label: edgeLabelFor(b), state: {
+          type: "arrow",
+          from: { x: `= ${partRef(fromKey)}_closest.x`, y: `= ${partRef(fromKey)}_closest.y` },
+          to: { x: `= ${partRef(toKey)}_closest.x`, y: `= ${partRef(toKey)}_closest.y` },
+          stroke: shaft && shaft.stroke ? shaft.stroke : DEFAULT_EDGE_STROKE,
+          strokeWidth: (shaft && shaft.strokeWidth > 0 ? shaft.strokeWidth : 1) * map.sx,
+        } });
+      } else {
+        // NOT ANCHORED. Mermaid named this edge only by index (stateDiagram's
+        // `edge0`), so there is nothing to bind to. Keep its exact path.
+        const bounds = pathsBounds(b.paths);
+        if (!bounds) continue;
+        unanchored++;
+        parts.push({ key, label: edgeLabelFor(b), state: { type: "svg", ...toWorld(bounds), svgSrc: pathsToSvgSrc(b.paths, bounds), preserveAspect: false } });
+      }
+      // An edge LABEL sits where Mermaid put it: the five connector plugins
+      // declare no anchors, so there is no midpoint to bind it to.
+      for (const t of b.texts)
+        parts.push({ key: partKeyFor(`${t.text} label`, b.origin.id, taken), label: `${t.text} label`, state: textPartState(t, null, toWorld, map) });
+    }
+
+    // 4. BOXES, then the labels bound to them.
+    for (const [bk, b] of boxes) {
+      const key = keyByBucket.get(bk);
+      const w = toWorld(b.origin.box);
+      parts.push({ key, label: (b.texts.length > 0 ? b.texts[0].text : "") || key, state: { type: "svg", ...w, svgSrc: pathsToSvgSrc(b.paths, b.origin.box), preserveAspect: false } });
+      for (const t of b.texts) {
+        const tw = toWorld({ x: t.x, y: t.y, w: 0, h: 0 });
+        // AN OFFSET FROM THE BOX'S TOP-LEFT, not a centring equation. The offset
+        // reproduces Mermaid's own layout exactly - which centring could not do
+        // for a class box's three stacked compartments - and it still tracks the
+        // box when the box moves, which is what was asked for.
+        parts.push({ key: partKeyFor(`${t.text} label`, b.origin.id, taken), label: `${t.text} label`, state: textPartState(t, {
+          x: `= ${partRef(key)}_tl.x + ${round2(tw.x - w.x)}`,
+          y: `= ${partRef(key)}_tl.y + ${round2(tw.y - w.y)}`,
+          w: `= ${partRef(key)}_tr.x - ${partRef(key)}_tl.x`,
+          h: `= ${partRef(key)}_bl.y - ${partRef(key)}_tl.y`,
+        }, toWorld, map) });
+      }
+    }
+
+    // 5. WHATEVER NOTHING CLAIMED, as ONE widget - visible, selectable and
+    //    deletable, rather than confetti the user has to clean up.
+    if (leftovers.length > 0) {
+      const bounds = pathsBounds(leftovers);
+      if (bounds)
+        parts.push({ key: SHATTER_LEFTOVER_KEY, state: { type: "svg", ...toWorld(bounds), svgSrc: pathsToSvgSrc(leftovers, bounds), preserveAspect: false } });
+    }
+
+    // THE DISCLOSURE. Counts, not adjectives: an author can act on "3 edges are
+    // not anchored" and can do nothing at all with "approximate".
+    const plural = (n) => (n === 1 ? "" : "s");
+    if (straightened > 0)
+      notes.push(`${straightened} edge${plural(straightened)} became straight arrows bound to the boxes' rims, so they re-route when a box moves; where Mermaid routed an edge with bends, those bends are not reproduced. Arrowheads are all filled triangles - Mermaid's hollow, diamond, dart and crow's-foot heads have no equivalent here.`);
+    if (unanchored > 0)
+      notes.push(`${unanchored} edge${plural(unanchored)} kept Mermaid's exact path and ${unanchored === 1 ? "is" : "are"} NOT anchored: Mermaid names ${unanchored === 1 ? "it" : "them"} only by index, so there is nothing to bind to.`);
+    if (leftovers.length > 0)
+      notes.push(`${leftovers.length} shape${plural(leftovers.length)} carry no identity in Mermaid's output (pie and gantt carry none at all) and were kept together as one SVG.`);
+    if (geom.warnings && geom.warnings.length > 0) notes.push(...geom.warnings);
+    return { parts, notes };
   },
   commands: [
     { id: "add-mermaid", title: "Add Mermaid Diagram", icon: "mdi:sitemap-outline", run: (app) => app.armCrosshairPlacement(mermaidPlugin) },
