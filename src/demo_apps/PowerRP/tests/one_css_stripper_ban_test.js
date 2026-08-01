@@ -140,6 +140,39 @@ if (definitionLines(`  const s = stripCssComments(css);\n${FIX}`).length !== 0) 
   throw new Error("one_css_stripper_ban self-test: a call or an import was counted as a definition");
 }
 
+// ── THE SHARED MODULE'S CONTRACT, asserted by the gate that protects it ──────
+// A module that forbids second copies of itself owes an executable statement of
+// what the one copy GUARANTEES; otherwise it has centralised the code and left
+// the behaviour ungoverned, and the next author's local copy would have been no
+// worse. Until now the line-count property was executable only in CONSUMERS
+// (glass_blur_guard_test.js and phantom_token_ban_test.js each assert it for
+// themselves) — good practice by both, but it means deleting or refactoring
+// either one silently un-gates a property that three files depend on. C-1's
+// corollary applies: when two places must agree about a fact, gate the
+// agreement; here the agreement is between the module and every caller that
+// prints a `file:line`.
+// THIS GATE IS ITSELF ONE OF THOSE CALLERS, which is why it is the right home
+// rather than an arbitrary one: every offender it reports above is cited by line
+// number, and a stripper that ate lines would make each of those citations point
+// at innocent code. `cssComments.js` cannot assert this itself — it deliberately
+// carries NO import-scope assertions, so that importing it can never fire an
+// unrelated gate (see its docblock), and that is exactly why the assertion has
+// to live in a gate that imports it.
+const CONTRACT = "a{}\n/* two\n   lines */\nb{}";
+const stripped = stripCssComments(CONTRACT);
+if (stripped.split("\n").length !== CONTRACT.split("\n").length) {
+  throw new Error("cssComments contract: LINE COUNT not preserved — every file:line this gate prints would be wrong");
+}
+if (stripped.length !== CONTRACT.length) {
+  throw new Error("cssComments contract: LENGTH not preserved — character offsets into the result are invalid");
+}
+if (stripped.includes("two") || stripped.includes("lines")) {
+  throw new Error("cssComments contract: comment BODY survived — the strip does nothing and every grep gate is comment-blind");
+}
+if (!stripped.startsWith("a{}") || !stripped.trimEnd().endsWith("b{}")) {
+  throw new Error("cssComments contract: NON-comment text was altered — the strip is destroying real code");
+}
+
 if (offenders.length) {
   console.error(`THERE IS ONE CSS COMMENT STRIPPER. ${offenders.length} other definition(s) found:`);
   for (const o of offenders) console.error(`  ${o}`);
