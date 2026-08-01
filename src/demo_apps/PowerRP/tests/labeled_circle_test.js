@@ -10,7 +10,7 @@
  */
 
 import assert from "node:assert/strict";
-import { labeledCirclePlugin, LABEL_SIZE_EQ, REFERENCE } from "../plugins/labeled_circle.js";
+import { labeledCirclePlugin, DEFAULT_LABEL_SIZE, REFERENCE } from "../plugins/labeled_circle.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -53,15 +53,16 @@ test("the reference's NEGATIVE rim_width is strokeOffset -1, not a signed width"
   assert.equal(disc.strokeWidth, REFERENCE.rimWidth);
 });
 
-test("the label size DEFAULT is an equation, so it keeps its proportion under a resize", () => {
-  assert.equal(labeledCirclePlugin.defaults.size, LABEL_SIZE_EQ);
-  assert.equal(LABEL_SIZE_EQ, `Math.abs(self.h) * ${REFERENCE.fontSizeFraction}`, "the reference's font_size = diameter*.65");
-  // Math.abs is not decoration: a stored h may be NEGATIVE (that is how a vertical flip
-  // is stored), and an equation — unlike a plugin hook — reads the raw signed value. A
-  // flipped circle asking for a negative font size is what tests/negative_size_test.js
-  // caught, so the abs is pinned here too, beside the reason.
-  assert.ok(LABEL_SIZE_EQ.includes("Math.abs"), "a flipped disc must not ask for a negative font size");
-  // A number typed over it pins the size — the ordinary equation-slot behaviour.
+test("the label size DEFAULT is the reference's diameter*.65, as a LITERAL", () => {
+  assert.equal(labeledCirclePlugin.defaults.size, DEFAULT_LABEL_SIZE);
+  assert.equal(DEFAULT_LABEL_SIZE, REFERENCE.diameter * REFERENCE.fontSizeFraction);
+  // A LITERAL, not a computed default, and both halves of that matter — see
+  // DEFAULT_LABEL_SIZE's docblock. A number cannot go negative when the disc is
+  // flipped (tests/negative_size_test.js), and it cannot fall foul of the rule that a
+  // computed default must BEGIN with "self." (tests/computed_default_test.js).
+  assert.equal(typeof labeledCirclePlugin.defaults.size, "number");
+  assert.ok(Number.isFinite(labeledCirclePlugin.defaults.size));
+  // A number typed over it still works, as does an equation the user writes.
   const [, label] = labeledCirclePlugin.emit({ ...RESOLVED, size: 40 }, null, WORLD);
   assert.equal(label.size, 40);
 });
