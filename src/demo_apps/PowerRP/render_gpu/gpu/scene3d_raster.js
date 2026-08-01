@@ -1,0 +1,583 @@
+/**
+ * THE 3D VIEWPORT RASTERIZER — the ONE place a 3D engine exists in this app.
+ * It turns a `scene3d_*` widget's PROPERTIES into a bitmap in the shared image
+ * registry, so the widget draws through the ordinary `image` op and needs no new
+ * IR op and no backend change (the pdf_page / latex / mermaid seam, fourth
+ * consumer — render_gpu/gpu/image_registry.js reserveImageSlot +
+ * registerRasterizedBitmap).
+ *
+ * ── THE ENGINE IS CONFINED HERE, DELIBERATELY (W1-O §7.8) ─────────────────────
+ * three.js and @sparkjsdev/spark are imported LAZILY, inside the first render,
+ * and nowhere else in the app. Two consequences that are the point rather than a
+ * side effect: (a) ~1.9 MB gzip never reaches a user with no 3D widget on any
+ * slide — the same discipline pdfjs-dist / MathJax / Mermaid already follow; and
+ * (b) the engine is replaceable without touching the plugin, the handler or any
+ * test, because everything above this file speaks only "pose + size -> ref".
+ * KEEP IT THAT WAY: no `import ... from "three"` may appear outside this module.
+ * tests/scene3d_test.js greps for one and fails, so the rule is enforced rather
+ * than merely written down here.
+ *
+ * LAZY IS NOT A SUBSTITUTE FOR DECLARED, and the inference that it is cost the
+ * whole agent fleet an hour of misdiagnosis, so it is recorded rather than left
+ * to be re-derived. **Vite's dependency scanner follows a dynamic `import()` of a
+ * BARE SPECIFIER exactly as it follows a static one** — that is deliberate, it is
+ * how the optimizer knows to pre-bundle a lazily-loaded package. So an
+ * UNDECLARED package aborts `optimizeDeps` with "imported but could not be
+ * resolved" whether the import is lazy or not; the dev server then serves
+ * nothing, and every browser probe times out waiting for an app that was never
+ * built. Worse, it does not show up in a BUILD: Rollup tree-shakes an unreached
+ * module, so `vite build` passes green while `vite dev` is broken. `three` and
+ * `@sparkjsdev/spark` are therefore real entries in the root package.json, and
+ * the fast check after touching this file is `npx vite optimize --force` from
+ * `web/`, never a build.
+ *
+ * ── WHY SPARK, AND WHY NOT WEBGPU (the app's HTTP tenet) ──────────────────────
+ * The app's raster backend is Skia/CanvasKit on WebGL2 and deliberately avoids
+ * `navigator.gpu` so it works on a plain-HTTP origin
+ * (render_gpu/skia/browser_surface.js). A Gaussian-splat rasterizer is a
+ * sorted-billboard GPU pipeline Skia cannot express, so this module runs its own
+ * SECOND WebGL2 context and hands Skia a finished bitmap. Spark is WebGL2-only
+ * with no SharedArrayBuffer requirement, which matters for the same reason
+ * WebGPU is out: SAB needs `crossOriginIsolated`, which needs a secure context.
+ *
+ * ── ONE RENDERER, NOT ONE PER WIDGET ─────────────────────────────────────────
+ * Browsers cap live WebGL contexts (commonly ~16) and the app already holds two
+ * (the Skia viewport surface and gpuService's). So this module owns exactly ONE
+ * canvas + renderer + SparkRenderer for the whole process and renders each 3D
+ * node into it SERIALLY, keyed by ref. N widgets on a slide cost one context.
+ *
+ * ── DETERMINISM: MEASURED, NOT ASSUMED ───────────────────────────────────────
+ * The widget must be PROPERTY STATE — same document, same pixels, forever —
+ * because that is what lets cli/render_job.js shard a fly-through by strided
+ * frame range. Spark's sort and LoD traversal are ASYNC, so a frame taken before
+ * they converge would differ from the same frame taken after: that is the one
+ * way this widget could become ephemeral. `await spark.update({scene, camera})`
+ * is the seam that closes them, and every render below awaits it before reading
+ * pixels. Measured first-hand on this repo's headless SwiftShader host with a
+ * 786,233-splat scene: repeated renders at one pose are BYTE-IDENTICAL, a
+ * `setViewOffset` sub-rect frame is byte-identical to its own repeat, and
+ * `clearViewOffset` restores the original frame exactly. There is no clock and no
+ * `Math.random` anywhere on this path, so Delta-t = 0 leaves the picture unchanged
+ * trivially.
+ *
+ * ── THE REF IS THE CACHE (R6-1.7) ────────────────────────────────────────────
+ * `scene3dRef` is content-addressed over (kind, source, pose, size, look), and
+ * registerRasterizedBitmap documents that "the same ref always means the same
+ * pixels". Unchanged scene + unchanged view therefore hits the registry and the
+ * engine never runs — a cache by construction rather than a bespoke
+ * "did anything change?" comparison that goes stale when a property is added.
+ * A live fly-through mints a NEW ref every frame and never revisits an old pose,
+ * so the cache is bounded by BYTES with an LRU eviction that never evicts what
+ * the current frame needs (trimScene3dCache) — the pdf_page_raster rule, and for
+ * the same measured reason: CanvasKit's wasm heap has a hard 2 GiB ceiling.
+ *
+ * Browser-facing (needs WebGL2 + `createImageBitmap`), NOT part of the DOM-free
+ * `core/`. Importable in bare node — the engine import is lazy and every pure
+ * helper below is reachable without it, which is what lets the node suite test
+ * the pose math and the ref grammar with no browser.
+ */
+
+import { SUPERSAMPLE_DENSITY } from "../ir.js";
+import { reportOnce } from "../../core/report.js";
+import { clampSurfaceSize } from "../../core/clip.js";
+import { BYTES_PER_PIXEL, registerRasterizedBitmap, releaseImage, reserveImageSlot } from "./image_registry.js";
+
+/** Device px per canvas unit at world scale 1 — the same 2x supersample every
+ *  other raster widget uses (ir.js SUPERSAMPLE_DENSITY, "the retina-dpr 2x
+ *  supersample precedent"), so a 3D viewport and a LaTeX equation beside it are
+ *  crisp to the same degree. */
+export const SCENE3D_RASTER_DENSITY = SUPERSAMPLE_DENSITY;
+
+/** Raster-scale quantum. A continuous resize would mint a distinct ref per pixel
+ *  of drag and re-render the scene for each; rounding to a grid reuses one raster
+ *  across a small change. Identical to pdf_page_raster's PDF_SCALE_STEP and
+ *  latex_raster's LATEX_SCALE_STEP (0.1) — one number, three widgets. */
+export const SCENE3D_SCALE_STEP = 0.1;
+
+/** The raster-cache budget, in bytes of decoded pixels. Sized from the same
+ *  measurement pdf_page_raster records: each cached raster costs its pixels TWICE
+ *  (an ImageBitmap here plus a copy inside CanvasKit's wasm heap, which dies at
+ *  exactly 2 GiB), and a fly-through mints one ref per frame that is never
+ *  revisited. 256 MB of bitmaps is 512 MB of real cost — the same headroom
+ *  PDF_REGION_CACHE_BYTES chose against the same ceiling. */
+export const SCENE3D_CACHE_BYTES = 256 * 1024 * 1024;
+
+/** Widest surface this module will ask WebGL for, on either edge. A 3D viewport
+ *  under a deep zoom or a large fixed-resolution override can otherwise request a
+ *  surface past the driver's MAX_TEXTURE_SIZE, where the allocation fails rather
+ *  than degrading. 8192 is the conservative floor across WebGL2 implementations
+ *  (SwiftShader included), and it is what core/clip.js's own surface guard
+ *  defaults to. */
+export const SCENE3D_MAX_RASTER_DIM = 8192;
+
+/** ref -> {status, bytes, promise} — insertion order IS the LRU order (a hit
+ *  re-inserts). `bytes` is 0 until the bitmap lands. */
+const rasters = new Map();
+
+/** src -> Promise<SplatMesh|Object3D> — one decode per source, shared by every
+ *  widget and every pose. Splat scenes are tens of megabytes; decoding one per
+ *  frame would dominate everything else in this file. */
+const sources = new Map();
+
+/** The single engine context, built on first use (see engine()). */
+let enginePromise = null;
+
+/**
+ * Pure function. Rounds a raster scale onto the SCENE3D_SCALE_STEP grid, never
+ * below one step. The quantizer that turns a continuous resize into a small set
+ * of cache keys.
+ *
+ * @param {number} scale device px per canvas unit
+ * @returns {number}
+ *
+ * @example roundScene3dScale(2.04) // 2
+ * @example roundScene3dScale(2.06) // 2.1
+ * @example roundScene3dScale(0) // 0.1
+ */
+export function roundScene3dScale(scale) {
+  const rounded = Math.round(scale / SCENE3D_SCALE_STEP) * SCENE3D_SCALE_STEP;
+  return Math.max(SCENE3D_SCALE_STEP, Number(rounded.toFixed(1)));
+}
+
+/**
+ * Pure function. FNV-1a over a string, as 8 lowercase hex digits. The refs below
+ * are content-addressed over a source that may be a multi-megabyte `data:` URI,
+ * so the ref must summarize rather than contain it — a registry key is compared,
+ * logged and held in a Map, and none of those want a megabyte.
+ *
+ * @param {string} text
+ * @returns {string} 8 hex digits
+ *
+ * @example digest32("scene3d") // "d1faff4c"
+ * @example digest32("") // "811c9dc5"
+ */
+export function digest32(text) {
+  let h = 0x811c9dc5;
+  const s = String(text);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i) & 0xff;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+/**
+ * Pure function. THE CACHE KEY. A ref names exactly the inputs that change the
+ * pixels: which member drew it, which source file, the camera pose, the look
+ * knobs, and the surface size. Two renders with equal refs are the same picture,
+ * which is what makes the image registry's content-addressed slot a correct
+ * cache for this widget (R6-1.7) rather than an approximation of one.
+ *
+ * Pose numbers are rounded to POSE_DIGITS so that floating-point noise a mouse
+ * drag produces (a yaw of 0.30000000000000004 after a preview round-trip) does
+ * not mint a second ref for a picture the eye cannot tell apart.
+ *
+ * @param {object} spec the render spec (see scene3dSpec)
+ * @returns {string}
+ *
+ * @example
+ * // scene3dRef({kind: "splat", src: "a.spz", pose: {targetX: 0, targetY: 0, targetZ: 0, yaw: 0, pitch: 0, roll: 0, distance: 3, fov: 1}, look: "", w: 512, h: 384})
+ * // "scene3d:splat:670d3f2f:4ed62e67:512x384"
+ */
+export function scene3dRef(spec) {
+  const p = spec.pose;
+  const posed = [p.targetX, p.targetY, p.targetZ, p.yaw, p.pitch, p.roll, p.distance, p.fov]
+    .map((v) => (Number.isFinite(v) ? v.toFixed(POSE_DIGITS) : "0"))
+    .join(",");
+  return `scene3d:${spec.kind}:${digest32(`${spec.src} ${spec.look ?? ""}`)}:${digest32(posed)}:${spec.w}x${spec.h}`;
+}
+
+/** How many decimals of a pose scalar survive into the cache key. Six is finer
+ *  than a 4K pixel subtends at any plausible camera distance, so two poses that
+ *  agree here are the same picture; it is also coarse enough to absorb the
+ *  float noise an accumulate-preview-commit round trip introduces. */
+const POSE_DIGITS = 6;
+
+/**
+ * Pure function. The camera EYE position for an orbit pose: the target advanced
+ * by `distance` along the direction (yaw, pitch). Angles are RADIANS, matching
+ * every other stored angle in this app (`display: "degrees"` is a presentation
+ * choice made by the Inspector row, never a storage one — the trap
+ * plugins/shapeshifter.js records having already shipped once).
+ *
+ * The frame is three.js's: +Y up, and yaw 0 with pitch 0 puts the eye on +Z
+ * looking toward -Z, which is where an untouched three.js camera already looks.
+ *
+ *   eye = target + distance · (cos(pitch)·sin(yaw), sin(pitch), cos(pitch)·cos(yaw))
+ *
+ * @param {{targetX:number,targetY:number,targetZ:number,yaw:number,pitch:number,distance:number}} pose
+ * @returns {{x:number,y:number,z:number}}
+ *
+ * @example orbitEye({targetX: 0, targetY: 0, targetZ: 0, yaw: 0, pitch: 0, distance: 3}) // {x: 0, y: 0, z: 3}
+ * @example orbitEye({targetX: 0, targetY: 0, targetZ: 0, yaw: Math.PI / 2, pitch: 0, distance: 2}) // {x: 2, y: 0, z: 1.2246467991473532e-16}
+ * @example orbitEye({targetX: 1, targetY: 2, targetZ: 3, yaw: 0, pitch: Math.PI / 2, distance: 4}) // {x: 1, y: 6, z: 3.0000000000000004}
+ */
+export function orbitEye(pose) {
+  const cp = Math.cos(pose.pitch);
+  return {
+    x: pose.targetX + pose.distance * cp * Math.sin(pose.yaw),
+    y: pose.targetY + pose.distance * Math.sin(pose.pitch),
+    z: pose.targetZ + pose.distance * cp * Math.cos(pose.yaw),
+  };
+}
+
+/**
+ * Pure function. The camera's UP vector for a pose: unit, PERPENDICULAR to the
+ * view direction, and rolled about it by `roll`. Written out rather than left to
+ * the engine so the pose model is complete and testable in bare node, and so a
+ * canted shot means the same thing whichever engine renders it.
+ *
+ * IT IS NOT WORLD UP. World +Y is only perpendicular to the view at pitch 0; at
+ * any other elevation it leans into the view direction, and feeding that to a
+ * `lookAt` leaves the roll implicitly defined by whatever the engine's internal
+ * orthogonalization happens to do. (A test asserting perpendicularity is what
+ * caught that here — the first version of this function returned world up and was
+ * off by dot = -0.479 at pitch 0.5.) The unrolled up is the NORTH direction on the
+ * orbit sphere, which is world up already orthogonalized:
+ *
+ *   a  = (cos(pitch)·sin(yaw),  sin(pitch),  cos(pitch)·cos(yaw))   the target→eye axis
+ *   u  = (-sin(pitch)·sin(yaw), cos(pitch), -sin(pitch)·cos(yaw))   north, and a·u = 0
+ *
+ * Rolling turns u about a, and because a·u = 0 the Rodrigues formula loses its
+ * third term and reduces to `up = u·cos(roll) + (a × u)·sin(roll)`, with the
+ * cross product simplifying exactly to (-cos(yaw), 0, sin(yaw)).
+ *
+ * @param {object} pose the same pose orbitEye takes, plus `roll`
+ * @returns {{x:number,y:number,z:number}}
+ *
+ * @example orbitUp({targetX: 0, targetY: 0, targetZ: 0, yaw: 0, pitch: 0, distance: 1, roll: 0}).y // 1
+ * @example orbitUp({targetX: 0, targetY: 0, targetZ: 0, yaw: 0, pitch: 0, distance: 1, roll: Math.PI / 2}) // {x: -1, y: 6.123233995736766e-17, z: 0}
+ * @example orbitUp({targetX: 0, targetY: 0, targetZ: 0, yaw: 0, pitch: Math.PI / 4, distance: 1, roll: 0}).z // -0.7071067811865475
+ */
+export function orbitUp(pose) {
+  const cp = Math.cos(pose.pitch), sp = Math.sin(pose.pitch);
+  const sy = Math.sin(pose.yaw), cy = Math.cos(pose.yaw);
+  const u = { x: -sp * sy, y: cp, z: -sp * cy };
+  const cross = { x: -cy, y: 0, z: sy }; // a × u, simplified
+  const c = Math.cos(pose.roll ?? 0), s = Math.sin(pose.roll ?? 0);
+  return { x: c * u.x + s * cross.x, y: c * u.y + s * cross.y, z: c * u.z + s * cross.z };
+}
+
+/**
+ * Query. Cache accounting for a probe to assert against — "the renderer did NOT
+ * run" is a claim, and a claim with no observable is not testable. The material
+ * raster cache ships `materialRasterStats()` for exactly this reason.
+ *
+ * @returns {{refs: number, ready: number, loading: number, bytes: number, renders: number, hits: number}}
+ *
+ * @example scene3dRasterStats() // {refs: 0, ready: 0, loading: 0, bytes: 0, renders: 0, hits: 0}
+ */
+export function scene3dRasterStats() {
+  let ready = 0, loading = 0, bytes = 0;
+  for (const entry of rasters.values()) {
+    if (entry.status === "ready") ready++;
+    else loading++;
+    bytes += entry.bytes;
+  }
+  return { refs: rasters.size, ready, loading, bytes, renders: counters.renders, hits: counters.hits };
+}
+
+/** Lifetime counters behind scene3dRasterStats — how many times the engine
+ *  actually ran, and how many times a ref answered instead. */
+const counters = { renders: 0, hits: 0 };
+
+/**
+ * Command. Brings the raster cache back inside SCENE3D_CACHE_BYTES by freeing
+ * least-recently-used rasters — the bookkeeping AND the pixels, since
+ * image_registry.releaseImage deletes the CanvasKit Image (the copy that lives in
+ * the wasm heap) and closes the ImageBitmap.
+ *
+ * `keepRefs` names the refs the calling frame is ABOUT TO PAINT; they are never
+ * evicted whatever the budget says, because a CanvasKit Image is used
+ * synchronously during paint and freeing one the next paint needs draws a hole.
+ * That is pdf_page_raster.trimPdfRegionCache's rule, applied unchanged.
+ *
+ * @param {Set<string>|string[]} keepRefs refs the current frame needs
+ * @returns {number} bytes freed
+ */
+export function trimScene3dCache(keepRefs) {
+  const keep = keepRefs instanceof Set ? keepRefs : new Set(keepRefs ?? []);
+  let bytes = 0;
+  for (const entry of rasters.values()) bytes += entry.bytes;
+  let freed = 0;
+  for (const [ref, entry] of rasters) {
+    if (bytes <= SCENE3D_CACHE_BYTES) break;
+    if (keep.has(ref) || entry.status === "loading") continue;
+    rasters.delete(ref);
+    releaseImage(ref);
+    freed += entry.bytes;
+    bytes -= entry.bytes;
+  }
+  if (bytes > SCENE3D_CACHE_BYTES)
+    reportOnce(
+      "scene3d_raster:budget",
+      `PowerRP scene3d_raster: the 3D rasters ONE frame needs total ${(bytes / 1048576).toFixed(0)} MB, over the ${(SCENE3D_CACHE_BYTES / 1048576).toFixed(0)} MB budget — keeping them all (a frame must paint), but this deck is running close to CanvasKit's 2 GiB wasm heap ceiling. Reduce the number or the size of the co-visible 3D viewports, or switch one to Fixed resolution.`
+    );
+  return freed;
+}
+
+/**
+ * Query. Can this process render a 3D scene at all? False in bare node — no DOM,
+ * no WebGL context, so no engine. Exported because the honest answer to "why is
+ * there a hole in this PNG" is a question the CLI should be able to ASK rather
+ * than infer from a stack trace.
+ *
+ * @returns {boolean}
+ *
+ * @example scene3dAvailable() // false in bare node, true in a browser
+ */
+export function scene3dAvailable() {
+  return typeof document !== "undefined" && typeof document.createElement === "function";
+}
+
+/**
+ * Query. The load status of one ref: "unloaded", "loading", "ready" or "error".
+ * Lets a probe distinguish "still rendering" from "failed".
+ *
+ * @param {string} ref
+ * @returns {string}
+ *
+ * @example scene3dStatus("scene3d:splat:0:0:1x1") // "unloaded"
+ */
+export function scene3dStatus(ref) {
+  return rasters.get(ref)?.status ?? "unloaded";
+}
+
+/**
+ * Command (near-pure: idempotent). Ensures the bitmap for `spec` is rendering or
+ * rendered, and returns its ref. Safe to call on EVERY emit — a ref already
+ * loading or ready is a no-op and counts as a cache hit, which is exactly the
+ * R6-1.7 "if neither the scene nor the view changed, reuse the last raster"
+ * requirement expressed as a lookup rather than a comparison.
+ *
+ * Reserves the registry slot SYNCHRONOUSLY before any await, for the reason
+ * image_registry.reserveImageSlot documents: a compositor frame landing between
+ * "render started" and "bitmap registered" would otherwise call ensureImage on a
+ * synthetic ref, fetch() it, fail, and latch the key to "error" permanently.
+ *
+ * @param {object} spec see scene3dSpec — {kind, src, pose, look, w, h, background}
+ * @returns {string} the ref to draw
+ */
+export function ensureScene3dRasterized(spec) {
+  const ref = scene3dRef(spec);
+  if (!scene3dAvailable()) {
+    // BARE NODE (cli/render.js, the node test lane). There is no DOM and no GL
+    // context, so this cannot draw — and it must say THAT rather than let a
+    // `document is not defined` escape from three.js three frames later, which
+    // reads as a bug in the widget. The ref is still returned and still emitted
+    // as an `image` op, which is what makes cli/render.js count it in the media
+    // ops it OMITTED: a hole that announces itself is the whole point of that
+    // counter (the map widget's recorded hole was a widget that emitted NOTHING).
+    reportOnce(
+      "scene3d_raster:no-dom",
+      "PowerRP scene3d_raster: a 3D viewport cannot render here — this process has no DOM and no WebGL context, so three.js cannot be started. cli/render.js will count the missing image and report it; use cli/render_job.js (headless Chrome) for a render that includes 3D scenes."
+    );
+    return ref;
+  }
+  const existing = rasters.get(ref);
+  if (existing) {
+    counters.hits++;
+    rasters.delete(ref); // re-insert at the LRU tail: a hit is a recent use
+    rasters.set(ref, existing);
+    return ref;
+  }
+  reserveImageSlot(ref);
+  const entry = { status: "loading", bytes: 0, promise: null };
+  rasters.set(ref, entry);
+  counters.renders++;
+  entry.promise = renderSpec(spec)
+    .then((bitmap) => {
+      entry.status = "ready";
+      entry.bytes = bitmap.width * bitmap.height * BYTES_PER_PIXEL;
+      registerRasterizedBitmap(ref, bitmap);
+      return bitmap;
+    })
+    .catch((e) => {
+      // LOUD, ONCE, AND LATCHED. A 3D scene that failed to load or render must
+      // never look like one that is still loading, and must never look like a
+      // blank widget: the failure is recorded against the SOURCE so the plugin's
+      // emit() draws its red "could not load this scene" panel naming the reason.
+      //
+      // RECORDING A *RENDER* FAILURE HERE, NOT ONLY A *LOAD* FAILURE, IS
+      // DELIBERATE AND WAS EARNED. A one-off `Can not resolve #include
+      // <splatDefines>` (a stale pre-bundled dep chunk after a mid-session
+      // re-optimize) reached the console but left the widget drawing NOTHING,
+      // because only ensureSource recorded into sourceErrors. An empty box for a
+      // file that is present and valid is exactly the silent failure this
+      // codebase forbids. Latching matches image_registry's own decode-error
+      // contract — reported once, never silently retried, cleared by a reload.
+      entry.status = "error";
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (!sourceErrors.has(spec.src)) sourceErrors.set(spec.src, err.message);
+      console.error(`PowerRP scene3d_raster: ${spec.kind} "${truncate(spec.src)}" failed to render at ${spec.w}x${spec.h} — ${err.message}`);
+      return null;
+    });
+  return ref;
+}
+
+/**
+ * Query. The load error for a source, or null. The widget reads this so a broken
+ * file becomes a visible in-canvas message rather than an empty box: an absent
+ * picture and a failed picture must not look the same.
+ *
+ * @param {string} src
+ * @returns {string|null}
+ *
+ * @example scene3dErrorFor("never-asked.spz") // null
+ */
+export function scene3dErrorFor(src) {
+  return sourceErrors.get(src) ?? null;
+}
+
+/** src -> message, for scene3dErrorFor. Filled by BOTH the loader and the render
+ *  catch (see ensureScene3dRasterized). Kept separate from `sources` so a failed
+ *  promise is not re-awaited by every frame. */
+const sourceErrors = new Map();
+
+/** Pure function. Shortens a src for a log line (a data: URI is huge).
+ *  @example truncate("data:model/gltf-binary;base64," + "A".repeat(80)) // "data:model/gltf-binar…(109 chars)" */
+function truncate(src) {
+  const s = String(src);
+  return s.length > 48 ? `${s.slice(0, 21)}…(${s.length} chars)` : s;
+}
+
+/**
+ * Command. Builds (once) the single WebGL2 context this module renders through:
+ * an offscreen canvas, a three.js renderer, and a SparkRenderer bound to it.
+ * The engine modules are imported HERE and nowhere else, which is what keeps
+ * them out of the main bundle and out of bare node.
+ *
+ * @returns {Promise<{THREE: object, renderer: object, spark: object, scene: object, camera: object, canvas: HTMLCanvasElement}>}
+ */
+function engine() {
+  if (enginePromise) return enginePromise;
+  enginePromise = (async () => {
+    const [THREE, spark] = await Promise.all([import("three"), import("@sparkjsdev/spark")]);
+    const canvas = document.createElement("canvas");
+    // antialias OFF is Spark's own documented requirement: WebGL MSAA does not
+    // improve Gaussian-splat rendering and costs a lot of fill rate. alpha ON so
+    // an unfilled scene composites over whatever the slide puts behind it, the
+    // way every other box widget does.
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, preserveDrawingBuffer: true });
+    renderer.setClearColor(0x000000, 0);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera();
+    const sparkRenderer = new spark.SparkRenderer({ renderer });
+    scene.add(sparkRenderer);
+    return { THREE, spark, renderer, spark3d: sparkRenderer, scene, camera, canvas };
+  })();
+  return enginePromise;
+}
+
+/**
+ * Command. Loads one source into a three.js object, once per src. A splat file
+ * becomes a SplatMesh; anything else is refused loudly rather than guessed at —
+ * the mesh member of this family is not wired yet and a silent empty scene is
+ * exactly the failure mode this codebase forbids.
+ *
+ * @param {string} src the asset URL or data URI
+ * @param {string} kind the family member ("splat")
+ * @returns {Promise<object>} a three.js Object3D
+ */
+function ensureSource(src, kind) {
+  const key = `${kind} ${src}`;
+  const cached = sources.get(key);
+  if (cached) return cached;
+  const promise = (async () => {
+    const { spark } = await engine();
+    if (kind !== "splat")
+      throw new Error(`scene3d_raster: no loader for kind "${kind}" — only "splat" is implemented (the mesh member is declared but its glTF loader is not wired yet)`);
+    const mesh = new spark.SplatMesh({ url: src });
+    await mesh.initialized;
+    // Splat captures are stored Y-DOWN (the convention every 3DGS trainer
+    // writes, inherited from COLMAP's camera frame); three.js is Y-UP. A 180
+    // degree turn about X is the whole correction, and it is applied HERE rather
+    // than as a user-facing property because it is a property of the FORMAT, not
+    // of the author's scene.
+    mesh.quaternion.set(1, 0, 0, 0);
+    return mesh;
+  })().catch((e) => {
+    const err = e instanceof Error ? e : new Error(String(e));
+    sourceErrors.set(src, err.message);
+    sources.delete(key); // a later frame may legitimately retry a fixed asset
+    throw err;
+  });
+  sources.set(key, promise);
+  return promise;
+}
+
+/**
+ * Command. Renders ONE spec into an ImageBitmap. Serialized behind `renderQueue`
+ * because there is one context: two concurrent renders would resize the same
+ * canvas under each other and each would read back the other's pixels.
+ *
+ * @param {object} spec see ensureScene3dRasterized
+ * @returns {Promise<ImageBitmap>}
+ */
+function renderSpec(spec) {
+  renderQueue = renderQueue.then(() => renderSpecNow(spec), () => renderSpecNow(spec));
+  return renderQueue;
+}
+
+/** The serialization chain for the one context (see renderSpec). */
+let renderQueue = Promise.resolve();
+
+/**
+ * Command. The actual draw: size the surface, place the camera from the pose,
+ * converge Spark's async sort, render, read back.
+ *
+ * @param {object} spec see ensureScene3dRasterized
+ * @returns {Promise<ImageBitmap>}
+ */
+async function renderSpecNow(spec) {
+  const [{ renderer, spark3d, scene, camera, canvas, THREE }, object] = await Promise.all([
+    engine(),
+    ensureSource(spec.src, spec.kind),
+  ]);
+  const size = clampSurfaceSize(spec.w, spec.h, SCENE3D_MAX_RASTER_DIM);
+  if (!size.safe)
+    reportOnce(
+      `scene3d_raster:clamp:${spec.w}x${spec.h}`,
+      `PowerRP scene3d_raster: a 3D viewport asked for a ${spec.w}x${spec.h} surface, clamped to ${size.w}x${size.h} (the ${SCENE3D_MAX_RASTER_DIM} px edge limit). It will render at the clamped size and be scaled up, so it will look soft. Reduce the widget's zoom, or set an explicit Fixed resolution.`
+    );
+
+  // ONE object in the scene at a time. The scene is shared (one context), so the
+  // previous widget's model must leave before this one draws, or two decks'
+  // scenes composite into one picture.
+  for (const child of [...scene.children]) if (child !== spark3d) scene.remove(child);
+  scene.add(object);
+
+  renderer.setSize(size.w, size.h, false);
+  camera.fov = (spec.pose.fov * 180) / Math.PI; // three takes vertical FOV in DEGREES
+  camera.aspect = size.w / size.h;
+  camera.near = spec.near;
+  camera.far = spec.far;
+  const eye = orbitEye(spec.pose);
+  const up = orbitUp(spec.pose);
+  camera.position.set(eye.x, eye.y, eye.z);
+  camera.up.set(up.x, up.y, up.z);
+  camera.lookAt(new THREE.Vector3(spec.pose.targetX, spec.pose.targetY, spec.pose.targetZ));
+  camera.updateProjectionMatrix();
+
+  // THE DETERMINISM SEAM. Spark's splat sort and LoD traversal are async; without
+  // this await the readback below can catch a partially-sorted frame, which is
+  // how a "recordable" widget quietly becomes an ephemeral one (see the header).
+  await spark3d.update({ scene, camera });
+  renderer.render(scene, camera);
+  return createImageBitmap(canvas);
+}
+
+/**
+ * Command. Drops every cached raster and source and forgets the engine — for
+ * tests that need a clean module, and the invalidation hook if a source ever
+ * becomes mutable. Does NOT dispose the WebGL context: a context is scarce and
+ * re-creating one per test would exhaust the browser's cap faster than keeping it.
+ */
+export function resetScene3dRaster() {
+  for (const ref of rasters.keys()) releaseImage(ref);
+  rasters.clear();
+  sources.clear();
+  sourceErrors.clear();
+  counters.renders = 0;
+  counters.hits = 0;
+}
