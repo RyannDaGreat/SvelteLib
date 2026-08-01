@@ -12,10 +12,12 @@
  * core/endpoints.js — the ONE home shared by all arrow-family widgets.
  *
  * STROKE STYLE — color/width reuse the shared `stroke`/`strokeWidth` registry
- * props (core/properties.js), same as every stroked shape. Two line-specific
- * knobs live in a "line" extras category (the arrow's "arrow"-category
- * precedent): a `cap` end shape and a `dashed` on/off with a `dashLength`/
- * `dashGap` pattern. Both are implemented purely in emit() as GEOMETRY, because
+ * props (core/properties.js), same as every stroked shape. `cap` is the one
+ * knob still local to this widget; the DASH triple is shared with the whole
+ * connector family now (core/endpoints.js CONNECTOR_DASH_ROWS), because `dashed`
+ * living on the one connector with NO head meant a dotted arrow had no faithful
+ * expression anywhere in the app. Both are implemented purely in emit() as
+ * GEOMETRY, because
  * the display-list `polyline` op is round-cap-only with no dash support (a
  * deliberate "COMING" gap in render_gpu — see the dash/cap notes in
  * core/properties.js): a dash chops the segment into drawn sub-spans, and a flat
@@ -31,7 +33,7 @@ import { polyline, path } from "../render_gpu/ir.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { endpointPairHooks, hitsShaft, connectorPathAnchors, ARROW_STROKE_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, hitsShaft, connectorPathAnchors, dashedSpans, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, ARROW_STROKE_WIDTH } from "../core/endpoints.js";
 
 /**
  * Line end-cap kinds. "round" is the display-list `polyline`'s native cap (a
@@ -44,41 +46,6 @@ import { endpointPairHooks, hitsShaft, connectorPathAnchors, ARROW_STROKE_WIDTH 
  */
 export const LINE_CAPS = ["round", "butt", "square"];
 export const LINE_CAP_LABELS = { round: "Round", butt: "Butt", square: "Square" };
-
-// Default dash pattern, in canvas units. A dash a few multiples of the default
-// stroke width (ARROW_STROKE_WIDTH = 3) reads clearly as "dashed", with a gap
-// a touch shorter than the dash so the line still reads as one line.
-const DEFAULT_DASH_LENGTH = 12;
-const DEFAULT_DASH_GAP = 8;
-
-/**
- * Pure function. The DRAWN spans of a (possibly) dashed segment A→B: walks the
- * A→B axis in alternating dashLength (drawn) / dashGap (skipped) steps, returning
- * each drawn span as a [P, Q] pair of {x, y} points. A non-positive dashLength or
- * dashGap (or a zero-length segment) means "not dashed" — the whole segment is a
- * single span, so a solid line is just the degenerate case (and there is no way
- * to loop forever on a zero step).
- *
- * @param {{x:number,y:number}} a - segment start
- * @param {{x:number,y:number}} b - segment end
- * @param {number} dashLength - drawn dash length (canvas units)
- * @param {number} dashGap - skipped gap length (canvas units)
- * @returns {Array<[{x:number,y:number},{x:number,y:number}]>} drawn spans
- *
- * @example dashSpans({x:0,y:0}, {x:10,y:0}, 4, 4).length // 2  (0..4 and 8..10)
- * @example dashSpans({x:0,y:0}, {x:10,y:0}, 0, 4) // [[{x:0,y:0},{x:10,y:0}]] (solid)
- */
-export function dashSpans(a, b, dashLength, dashGap) {
-  const len = Math.hypot(b.x - a.x, b.y - a.y);
-  if (!(dashLength > 0) || !(dashGap > 0) || len === 0) return [[a, b]];
-  const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
-  const spans = [];
-  for (let d = 0; d < len; d += dashLength + dashGap) {
-    const end = Math.min(d + dashLength, len);
-    spans.push([{ x: a.x + ux * d, y: a.y + uy * d }, { x: a.x + ux * end, y: a.y + uy * end }]);
-  }
-  return spans;
-}
 
 /**
  * Pure function. The 4 corner points of a rectangular stroke piece for the A→B
@@ -149,7 +116,7 @@ export const linePlugin = {
     // stroke color + width reuse the shared registry props (single-sourced);
     // ARROW_STROKE_WIDTH (core/endpoints.js) is the arrow-family default shaft.
     stroke: "#000000", strokeWidth: ARROW_STROKE_WIDTH, opacity: 1,
-    cap: "round", dashed: false, dashLength: DEFAULT_DASH_LENGTH, dashGap: DEFAULT_DASH_GAP,
+    cap: "round", ...CONNECTOR_DASH_DEFAULTS,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle
@@ -161,9 +128,7 @@ export const linePlugin = {
     ...props("opacity"),
     ...bundle("effects"),
     { key: "cap", label: "Cap", kind: "select", options: LINE_CAPS, optionLabels: LINE_CAP_LABELS, category: "line", help: "How the line's ends are shaped: round (a semicircle past each end), butt (a flat end exactly at the point), or square (a flat end reaching half the width past the point)." },
-    { key: "dashed", label: "Dashed", kind: "boolean", category: "line", help: "Draw the line as a dashed pattern instead of one solid stroke." },
-    { key: "dashLength", label: "Dash length", kind: "number", min: 0, category: "line", help: "Length of each drawn dash, in canvas units. Only applies when Dashed is on." },
-    { key: "dashGap", label: "Dash gap", kind: "number", min: 0, category: "line", help: "Length of the empty gap between dashes, in canvas units. Only applies when Dashed is on." },
+    ...CONNECTOR_DASH_ROWS,
   ],
   /**
    * Pure function. State → display-list commands. Endpoints are evaluated
@@ -199,7 +164,12 @@ export const linePlugin = {
     const opacity = s.opacity ?? 1;
     const width = s.strokeWidth ?? ARROW_STROKE_WIDTH;
     const cap = s.cap ?? "round";
-    const spans = s.dashed ? dashSpans(from, to, s.dashLength, s.dashGap) : [[from, to]];
+    // The shared arc-length dasher (core/endpoints.js dashedSpans) — this plugin's
+    // own dashSpans WAS that function, per-segment; it moved so the three headed
+    // arrows could dash too, and generalized to cross a vertex on the way.
+    // A line is always TWO points, so every run here is a 2-point run and capRect
+    // reads run[0]/run[1] exactly as it always did.
+    const spans = (s.dashed ? dashedSpans([from, to], s.dashLength, s.dashGap) : [[from, to]]).map((run) => [run[0], run[run.length - 1]]);
     const cmds = cap === "round"
       ? spans.map(([p, q]) => polyline({ points: [[p.x, p.y], [q.x, q.y]], width, color: s.stroke, opacity }))
       // fillRule is spelled out even though "nonzero" is the op's default: here it is a

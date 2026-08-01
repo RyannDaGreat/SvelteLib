@@ -236,15 +236,14 @@ test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the use
   const renamed = withLegacyKeysRenamed(doc, registry).doc;
   const { doc: filled, filled: fills } = withMissingDefaultsFilled(renamed, registry);
   assert.equal(filled.slides[0].delta.items[id].headLength, 20); // preserved
-  // Only the genuinely-new headWidth/headStart/headEnd + the Round-12D
-  // effects-bundle keys get filled, not headLength (the head-shape PAIR is the
-  // per-end head task's new field — todo #231, superseding headMode; the
-  // effect-off shadow/bloom/blendMode/innerShadow/softEdges keys are the effects
-  // bundle's — the fixture predates them all, the same "genuinely new"
-  // territory as headWidth).
+  // Only the genuinely-new keys get filled, not headLength: the head-shape PAIR
+  // (todo #231, superseding headMode), the connector DASH triple (todo #232 —
+  // `dashed` used to live on `line` alone, the one connector with no head), and
+  // the Round-12D effect-off shadow/bloom/blendMode/innerShadow/softEdges keys.
+  // The fixture predates them all, the same "genuinely new" territory as headWidth.
   const arrowFill = fills.find((f) => f.id === id);
   assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), [
-    "headWidth", "headStart", "headEnd",
+    "headWidth", "headStart", "headEnd", "dashed", "dashLength", "dashGap",
     "shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity",
     "bloom.radius", "bloom.strength", "blendMode",
     "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity",

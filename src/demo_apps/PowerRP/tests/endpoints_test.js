@@ -9,8 +9,10 @@ import assert from "node:assert/strict";
 import {
   SHAFT_GRAB_PAD, SHAFT_PULLBACK, endpointEditPoints, endpointMoveBy, endpointClosestToward,
   hitsShaft, endpointPairHooks, HEAD_SHAPES, HEAD_SHAPE_LABELS, headModeSplit, headTriangle, headDrawing, arrowHeads,
+  dashedSpans, CONNECTOR_DASH_ROWS,
 } from "../core/endpoints.js";
 import { arrowPlugin } from "../plugins/arrow.js";
+import { opHasMaterialStroke } from "../render_gpu/ir.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { elbowArrowPlugin } from "../plugins/elbow_arrow.js";
 import { curvedArrowPlugin } from "../plugins/curved_arrow.js";
@@ -222,6 +224,54 @@ test("elbow arrow + curved arrow: each end carries its OWN shape (what headMode 
     const cmds = plugin.emit({ ...plugin.defaults, headStart: "triangleOpen", headEnd: "diamond" });
     assert.equal(cmds.filter((c) => c.op === "polygon").length, 1, `${plugin.type}: the solid diamond`);
     assert.equal(cmds.filter((c) => c.op === "path").length, 1, `${plugin.type}: the hollow triangle`);
+  }
+});
+
+// ── DASH, on the whole connector family (todo #232) ─────────────────────────
+
+test("dashedSpans: arc length, across vertices — a dash TURNS a corner", () => {
+  // plugins/line.js's version dashed ONE segment, which is all a line has. An
+  // elbow route and a sampled bezier need the pattern to continue around a bend
+  // rather than restart at every vertex, which is what generalizing it bought.
+  const corner = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }];
+  assert.equal(dashedSpans(corner, 12, 4)[0].length, 3, "the first dash carries a vertex with it");
+  assert.deepEqual(dashedSpans(corner, 0, 4), [corner], "a non-positive dash length is SOLID, not an infinite loop");
+  assert.deepEqual(dashedSpans([{ x: 5, y: 5 }, { x: 5, y: 5 }], 4, 4), [[{ x: 5, y: 5 }, { x: 5, y: 5 }]]);
+});
+
+test("EVERY connector can be dashed — the gap todo #232 names", () => {
+  // `dashed` lived on `line` ALONE, which has no head, so a dotted arrow (mermaid
+  // `-.->`, a UML dependency, an ER non-identifying relationship) could not be
+  // drawn at all. The three headed arrows now carry the same three rows.
+  for (const plugin of [arrowPlugin, elbowArrowPlugin, curvedArrowPlugin]) {
+    const keys = plugin.inspector.map((r) => r.key);
+    for (const k of CONNECTOR_DASH_ROWS.map((r) => r.key)) assert.ok(keys.includes(k), `${plugin.type} has no "${k}" row`);
+    assert.equal(plugin.defaults.dashed, false, `${plugin.type} must default SOLID`);
+    const solid = plugin.emit({ ...plugin.defaults, dashed: false });
+    const dashed = plugin.emit({ ...plugin.defaults, dashed: true });
+    assert.ok(dashed.length > solid.length, `${plugin.type}: dashing must break the shaft into runs`);
+    // The head is untouched by dashing — a dotted line still ends in a solid glyph.
+    assert.equal(dashed.filter((c) => c.op === "polygon").length, solid.filter((c) => c.op === "polygon").length, plugin.type);
+  }
+});
+
+test("dashing is GEOMETRY, so a dashed connector emits no material stroke (it would rasterize both exports)", () => {
+  // MEASURED, and the reason dashedSpans is not the `dashes` stroke material:
+  // render_gpu/svg_backend.js and pdf_backend.js both route an op with
+  // opHasMaterialStroke to RASTER, so a dashed arrow would export as a bitmap.
+  for (const plugin of [arrowPlugin, elbowArrowPlugin, curvedArrowPlugin]) {
+    for (const cmd of plugin.emit({ ...plugin.defaults, dashed: true }))
+      assert.equal(opHasMaterialStroke(cmd), false, `${plugin.type}: ${cmd.op} carries a material stroke`);
+  }
+});
+
+test("a solid connector is byte-identical with the dash keys ABSENT or false", () => {
+  // An old document has no dash keys at all; it must render exactly as before.
+  for (const plugin of [arrowPlugin, elbowArrowPlugin, curvedArrowPlugin]) {
+    const withKeys = { ...plugin.defaults };
+    const without = { ...plugin.defaults };
+    delete without.dashed; delete without.dashLength; delete without.dashGap;
+    assert.deepEqual(plugin.emit(without), plugin.emit(withKeys), plugin.type);
   }
 });
 

@@ -33,7 +33,7 @@ import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline, axisNormalFrame, projectOntoNormal, closestPointOnAxisRange } from "../core/outline.js";
-import { endpointPairHooks, arrowHeads, connectorPathAnchors, walkPolyline, ARROW_HEAD_ROWS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, arrowHeads, connectorPathAnchors, walkPolyline, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The bezier generator's params for a state.
  * @example bendParams({from: {x: 0, y: 0}, to: {x: 100, y: 0}, bend: 0.3}) // {x0: 0, y0: 0, x1: 100, y1: 0, bend: 0.3}
@@ -90,7 +90,7 @@ export const curvedArrowPlugin = {
     type: "curved_arrow", z: 1,
     from: { x: 200, y: 440 }, to: { x: 420, y: 440 },
     bend: 0.25,
-    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
+    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, ...CONNECTOR_DASH_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
@@ -102,6 +102,7 @@ export const curvedArrowPlugin = {
     ...props("opacity"),
     ...bundle("effects"),
     ...ARROW_HEAD_ROWS,
+    ...CONNECTOR_DASH_ROWS,
     { key: "bend", label: "Bend", kind: "number", category: "arrow", help: "How much the arrow curves, as a signed fraction of its length. 0 is straight; positive and negative bow it to opposite sides." },
   ],
   /**
@@ -122,7 +123,13 @@ export const curvedArrowPlugin = {
     const heads = arrowHeads(s, { tip: pts[n - 1], from: pts[n - 2] }, { tip: pts[0], from: pts[1] });
     const cmds = [];
     const trimmed = trimPolylineEnds(pts, heads.pullback.start, heads.pullback.end);
-    cmds.push(polyline({ points: trimmed.map((p) => [p.x, p.y]), width: s.strokeWidth, color: s.stroke, opacity }));
+    // THE DASHED SHAFT: one polyline per DRAWN run (core/endpoints.js dashedSpans;
+    // a solid shaft is the one-run degenerate case, byte-identical to before).
+    // Geometry rather than the `dashes` stroke material, and that is measured, not
+    // taste: a material stroke is refused by both vector exporters and rasterized,
+    // so a dashed arrow would export as a bitmap. See dashedSpans' docblock.
+    const runs = s.dashed ? dashedSpans(trimmed, s.dashLength, s.dashGap) : [trimmed];
+    cmds.push(...runs.map((run) => polyline({ points: run.map((p) => [p.x, p.y]), width: s.strokeWidth, color: s.stroke, opacity })));
     // THE LAYERING SEAM — see core/endpoints.js arrowHeads (and arrow.js's twin).
     cmds.push(...heads.ops.map((h) => (h.d ? path(h) : polygon(h))));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/

@@ -5,7 +5,10 @@
  * no Svelte. Run: node tests/line_test.js
  */
 import assert from "node:assert/strict";
-import { linePlugin, dashSpans, capRect, LINE_CAPS } from "../plugins/line.js";
+import { linePlugin, capRect, LINE_CAPS } from "../plugins/line.js";
+// The dash geometry moved to the shared connector home so the three HEADED arrows
+// could dash too — `dashed` used to live on the one connector with no head.
+import { dashedSpans } from "../core/endpoints.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { distToSegment } from "../core/outline.js";
 
@@ -75,15 +78,15 @@ test("line: a DASHED flat-capped run is still ONE op, however many dashes", () =
   const s = { ...linePlugin.defaults, from: { x: 0, y: 0 }, to: { x: 280, y: 0 }, strokeWidth: 40, cap: "square", dashed: true, dashLength: 30, dashGap: 14, opacity: 0.5 };
   const cmds = linePlugin.emit(s, null, WORLD);
   assert.equal(cmds.length, 1, "however many dashes, one fill op");
-  const dashes = dashSpans(s.from, s.to, s.dashLength, s.dashGap).length;
+  const dashes = dashedSpans([s.from, s.to], s.dashLength, s.dashGap).length;
   assert.ok(dashes > 1, "the probe needs an actually-dashed line");
   assert.equal(cmds[0].d.split("M").length - 1, dashes, "one subpath per drawn dash");
 });
 
-test("dashSpans: dashed count + solid fallback", () => {
-  assert.equal(dashSpans({ x: 0, y: 0 }, { x: 10, y: 0 }, 4, 4).length, 2); // 0..4, 8..10
-  assert.deepEqual(dashSpans({ x: 0, y: 0 }, { x: 10, y: 0 }, 0, 4), [[{ x: 0, y: 0 }, { x: 10, y: 0 }]]); // solid
-  assert.deepEqual(dashSpans({ x: 0, y: 0 }, { x: 0, y: 0 }, 4, 4), [[{ x: 0, y: 0 }, { x: 0, y: 0 }]]); // zero-length: no infinite loop
+test("dashedSpans: dashed count + solid fallback", () => {
+  assert.equal(dashedSpans([{ x: 0, y: 0 }, { x: 10, y: 0 }], 4, 4).length, 2); // 0..4, 8..10
+  assert.deepEqual(dashedSpans([{ x: 0, y: 0 }, { x: 10, y: 0 }], 0, 4), [[{ x: 0, y: 0 }, { x: 10, y: 0 }]]); // solid
+  assert.deepEqual(dashedSpans([{ x: 0, y: 0 }, { x: 0, y: 0 }], 4, 4), [[{ x: 0, y: 0 }, { x: 0, y: 0 }]]); // zero-length: no infinite loop
 });
 
 test("capRect: butt flush, square extended; convex 4-gon", () => {

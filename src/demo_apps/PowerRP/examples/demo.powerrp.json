@@ -193,6 +193,9 @@
             "headWidth": 12,
             "headStart": "none",
             "headEnd": "triangle",
+            "dashed": false,
+            "dashLength": 12,
+            "dashGap": 8,
             "opacity": 1,
             "shadow": {
               "dx": 3,

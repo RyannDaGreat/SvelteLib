@@ -43,7 +43,7 @@
 import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { endpointPairHooks, hitsShaft, arrowHeads, connectorPathAnchors, ARROW_HEAD_ROWS, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, hitsShaft, arrowHeads, connectorPathAnchors, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /**
  * Pure function. The LOCAL rect the arrow's INK occupies: the AABB of its two
@@ -84,7 +84,7 @@ export const arrowPlugin = {
     from: { x: 200, y: 300 }, to: { x: 420, y: 300 },
     // stroke width + head geometry: the shared simple-arrow defaults
     // (core/endpoints.js ARROW_ENDPOINT_DEFAULTS — one home for basic/elbow/curved).
-    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
+    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, ...CONNECTOR_DASH_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Legacy top-level state keys → their current names. headSize was really
@@ -104,6 +104,7 @@ export const arrowPlugin = {
     ...props("opacity"),
     ...bundle("effects"),
     ...ARROW_HEAD_ROWS,
+    ...CONNECTOR_DASH_ROWS,
   ],
   /**
    * Pure function. State → display-list commands. Endpoints are evaluated
@@ -122,7 +123,13 @@ export const arrowPlugin = {
     const ux = (to.x - from.x) / axisLen, uy = (to.y - from.y) / axisLen;
     const shaftFrom = { x: from.x + ux * heads.pullback.start, y: from.y + uy * heads.pullback.start };
     const shaftTo = { x: to.x - ux * heads.pullback.end, y: to.y - uy * heads.pullback.end };
-    const cmds = [polyline({ points: [[shaftFrom.x, shaftFrom.y], [shaftTo.x, shaftTo.y]], width: s.strokeWidth, color: s.stroke, opacity })];
+    // THE DASHED SHAFT: one polyline per DRAWN run (core/endpoints.js dashedSpans;
+    // a solid shaft is the one-run degenerate case, byte-identical to before).
+    // Geometry rather than the `dashes` stroke material, and that is measured, not
+    // taste: a material stroke is refused by both vector exporters and rasterized,
+    // so a dashed arrow would export as a bitmap. See dashedSpans' docblock.
+    const runs = s.dashed ? dashedSpans([shaftFrom, shaftTo], s.dashLength, s.dashGap) : [[shaftFrom, shaftTo]];
+    const cmds = runs.map((run) => polyline({ points: run.map((p) => [p.x, p.y]), width: s.strokeWidth, color: s.stroke, opacity }));
     // THE LAYERING SEAM (core/endpoints.js arrowHeads): core returns op ARGUMENTS
     // and the plugin builds the op, as plugins/shape.js does with core/shapes.js.
     cmds.push(...heads.ops.map((h) => (h.d ? path(h) : polygon(h))));

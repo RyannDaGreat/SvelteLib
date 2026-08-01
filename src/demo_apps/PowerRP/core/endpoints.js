@@ -189,6 +189,82 @@ export function pointAtPolylineFraction(points, t) {
 }
 
 /**
+ * Pure function. The sub-path of a polyline between two arc-length distances,
+ * as a point list — crossing however many vertices lie between them.
+ *
+ * @example polylineSlice([{x: 0, y: 0}, {x: 100, y: 0}], 20, 60) // [{x: 20, y: 0}, {x: 60, y: 0}]
+ * @example polylineSlice([{x: 0, y: 0}, {x: 10, y: 0}, {x: 10, y: 10}], 5, 15) // [{x: 5, y: 0}, {x: 10, y: 0}, {x: 10, y: 5}]
+ */
+export function polylineSlice(points, d0, d1) {
+  const a = walkPolyline(points, d0), b = walkPolyline(points, d1);
+  const between = points.slice(a.index + 1, b.index + 1);
+  const same = (p, q) => p.x === q.x && p.y === q.y;
+  const mid = between.filter((p) => !same(p, a.point) && !same(p, b.point)); // a cut landing ON a vertex must not repeat it
+  return [a.point, ...mid, b.point];
+}
+
+/**
+ * Default dash pattern for every connector, in canvas units. A dash a few
+ * multiples of the default stroke width (ARROW_STROKE_WIDTH) reads clearly as
+ * "dashed", with a gap a touch shorter than the dash so the line still reads as
+ * one line. Originated in plugins/line.js, where it was the only dash in the app.
+ */
+export const CONNECTOR_DASH_LENGTH = 12;
+export const CONNECTOR_DASH_GAP = 8;
+export const CONNECTOR_DASH_DEFAULTS = { dashed: false, dashLength: CONNECTOR_DASH_LENGTH, dashGap: CONNECTOR_DASH_GAP };
+
+/**
+ * Pure function. The DRAWN runs of a (possibly) dashed polyline: walks its ARC
+ * LENGTH in alternating dashLength (drawn) / dashGap (skipped) steps, returning
+ * each drawn run as its own point list. A non-positive dashLength or dashGap (or
+ * a zero-length path) means "not dashed" — the whole path comes back as one run,
+ * so a solid line is the degenerate case and there is no way to loop forever.
+ *
+ * ARC LENGTH, ACROSS VERTICES, is what makes this the shared one: plugins/line.js
+ * only ever had two points, so its version dashed a single segment. An elbow
+ * route and a sampled bezier need a dash to CONTINUE around a corner rather than
+ * restart at every vertex, which per-segment dashing gets visibly wrong.
+ *
+ * WHY GEOMETRY AND NOT THE `dashes` STROKE MATERIAL, which is the obvious reuse
+ * and is MEASURED WRONG here: an op carrying a material stroke is refused by both
+ * vector exporters (`opHasMaterialStroke` at render_gpu/svg_backend.js:777 and
+ * render_gpu/pdf_backend.js:1084) and RASTERIZED instead. A dashed connector
+ * routed through the material would look right on screen and come out of PDF and
+ * SVG export as an embedded bitmap. These spans stay vector in all three.
+ *
+ * @param {{x:number,y:number}[]} points - the drawn path
+ * @param {number} dashLength - drawn dash length (canvas units)
+ * @param {number} dashGap - skipped gap length (canvas units)
+ * @returns {Array<{x:number,y:number}[]>} one point list per drawn run
+ *
+ * @example dashedSpans([{x: 0, y: 0}, {x: 10, y: 0}], 4, 4).length // 2  (0..4 and 8..10)
+ * @example dashedSpans([{x: 0, y: 0}, {x: 10, y: 0}], 0, 4) // [[{x: 0, y: 0}, {x: 10, y: 0}]] (solid)
+ * @example dashedSpans([{x: 0, y: 0}, {x: 10, y: 0}, {x: 10, y: 10}], 12, 4)[0].length // 3 (the first dash turns the corner)
+ */
+export function dashedSpans(points, dashLength, dashGap) {
+  const total = polylineLength(points);
+  if (!(dashLength > 0) || !(dashGap > 0) || total === 0) return [points];
+  const runs = [];
+  for (let d = 0; d < total; d += dashLength + dashGap) runs.push(polylineSlice(points, d, Math.min(d + dashLength, total)));
+  return runs;
+}
+
+/**
+ * The dash Inspector rows every connector declares — one declaration, four
+ * consumers, for the ARROW_HEAD_ROWS reason. Before this, `dashed` existed on
+ * `line` ALONE, which has no head, so a dotted-with-arrowhead edge (mermaid's
+ * `-.->`, a UML dependency, an ER non-identifying relationship) had no faithful
+ * expression anywhere in the app.
+ *
+ * @example CONNECTOR_DASH_ROWS.map((r) => r.key) // ["dashed", "dashLength", "dashGap"]
+ */
+export const CONNECTOR_DASH_ROWS = [
+  { key: "dashed", label: "Dashed", kind: "boolean", category: "line", help: "Draw the connector as a dashed pattern instead of one solid stroke. The dash runs along the whole path, so it continues around a curve or a corner rather than restarting at each bend." },
+  { key: "dashLength", label: "Dash length", kind: "number", min: 0, category: "line", help: "Length of each drawn dash, in canvas units. Only applies when Dashed is on." },
+  { key: "dashGap", label: "Dash gap", kind: "number", min: 0, category: "line", help: "Length of the empty gap between dashes, in canvas units. Only applies when Dashed is on." },
+];
+
+/**
  * The three path anchor ids a connector publishes, and the arc-length fraction
  * each sits at. Exported so a test names them from here rather than restating
  * three string literals (and so a fourth is added in ONE place).

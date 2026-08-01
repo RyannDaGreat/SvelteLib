@@ -43,7 +43,7 @@ import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { elbowRoute, elbowHandle, closestPointOnSegment } from "../core/outline.js";
-import { endpointPairHooks, arrowHeads, connectorPathAnchors, ARROW_HEAD_ROWS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, arrowHeads, connectorPathAnchors, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
 
 /** Pure function. The route generator's params for a state.
  * @example routeParams({from: {x: 0, y: 0}, to: {x: 100, y: 50}, elbow: 0.5}) // {x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5, orient: undefined, bulge: undefined}
@@ -86,7 +86,7 @@ export const elbowArrowPlugin = {
     elbow: 0.5,
     orient: "hvh", // "vhv" = vertical-first (tree branches); see the docblock
     bulge: 0, // signed px offset of the middle leg (loops); Inspector-only
-    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, opacity: 1,
+    stroke: "#000000", ...ARROW_ENDPOINT_DEFAULTS, ...CONNECTOR_DASH_DEFAULTS, opacity: 1,
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY: the `endpoints` bundle +
@@ -98,6 +98,7 @@ export const elbowArrowPlugin = {
     ...props("opacity"),
     ...bundle("effects"),
     ...ARROW_HEAD_ROWS,
+    ...CONNECTOR_DASH_ROWS,
     { key: "elbow", label: "Elbow", kind: "number", min: 0, max: 1, category: "arrow", help: "Where the middle bend sits along the endpoint span, from 0 (flush at the start) to 1 (flush at the end). Drag the yellow handle on canvas." },
     { key: "orient", label: "Route", kind: "select", options: ["hvh", "vhv"], optionLabels: { hvh: "Horizontal first", vhv: "Vertical first" }, category: "arrow", help: "Leg order. Horizontal-first is the classic side-to-side elbow; vertical-first starts and ends vertically — the flowchart tree branch (out of a box's bottom, across, into the next box's top)." },
     { key: "bulge", label: "Bulge", kind: "number", scrub: 1, category: "arrow", help: "Pushes the middle leg sideways by this many canvas units beyond its span position (signed). What makes a rectangular feedback LOOP between two same-edge anchors possible — with both endpoints on one vertical line, only an absolute offset can bow the route out of the boxes." },
@@ -128,7 +129,13 @@ export const elbowArrowPlugin = {
       return { x: b.x - (b.x - a.x) * t, y: b.y - (b.y - a.y) * t };
     };
     const shaftPts = [pullback(p1, p0, heads.pullback.start), p1, p2, pullback(p2, p3, heads.pullback.end)];
-    const cmds = [polyline({ points: shaftPts.map((p) => [p.x, p.y]), width: s.strokeWidth, color: s.stroke, opacity })];
+    // THE DASHED SHAFT: one polyline per DRAWN run (core/endpoints.js dashedSpans;
+    // a solid shaft is the one-run degenerate case, byte-identical to before).
+    // Geometry rather than the `dashes` stroke material, and that is measured, not
+    // taste: a material stroke is refused by both vector exporters and rasterized,
+    // so a dashed arrow would export as a bitmap. See dashedSpans' docblock.
+    const runs = s.dashed ? dashedSpans(shaftPts, s.dashLength, s.dashGap) : [shaftPts];
+    const cmds = runs.map((run) => polyline({ points: run.map((p) => [p.x, p.y]), width: s.strokeWidth, color: s.stroke, opacity }));
     // THE LAYERING SEAM — see core/endpoints.js arrowHeads (and arrow.js's twin).
     cmds.push(...heads.ops.map((h) => (h.d ? path(h) : polygon(h))));
     // Effects wrap the finished op list (shared EFFECTS BUNDLE, render_gpu/
