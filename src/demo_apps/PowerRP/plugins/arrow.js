@@ -75,10 +75,67 @@ export function arrowInkRect(s) {
   return paddedPointsBBox([s.from, s.to], Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH));
 }
 
+/**
+ * THE SIMPLE ARROW'S PRESET LIBRARY — the head at each end, its proportions, the
+ * shaft weight, and whether the shaft is dashed. Nothing else: no colour and no
+ * opacity, because the shape is the model and the colour is the user's
+ * (plugins/shapeshifter.js's shape presets set neither, and that is the oldest
+ * preset table in the app).
+ *
+ * TWO CLUSTERS IN ONE FLAT LIST, and flat is FORCED rather than chosen: a
+ * `presetFamilies` split must write DISJOINT key sets (tests/tool_groups_test.js),
+ * and "which relation" and "how heavy" both write the head keys, so any split
+ * would overlap and the second pick would silently erase the first.
+ *
+ *   THE PROPORTION LADDER (rows 1-10) is drafting and presentation. A triangular
+ *   head of length L and base width W has included angle 2*atan((W/2)/L), so W/L
+ *   is the one number deciding whether a head reads as a technical needle or a
+ *   poster chevron: 0.33 is the ASME three-to-one leader, 0.54 is thirty degrees,
+ *   1.0 is about fifty-three, and past 1.0 the head is wider than it is long and
+ *   stops reading as a point at all.
+ *
+ *   THE RELATIONS (rows 11-19) became expressible only when heads became per-end
+ *   SHAPES and the shaft learned to dash. Every one of them is a fill-and-dash
+ *   distinction the single filled triangle structurally could not make: hollow vs
+ *   filled triangle is generalization vs a plain arrow, hollow vs filled diamond
+ *   is aggregation vs composition, and solid vs dashed separates an association
+ *   from a dependency. Before that the ONE diagram relation this widget could draw
+ *   honestly was the synchronous call it draws by default.
+ *
+ * WHY `dashed` IS ON EVERY ROW INCLUDING THE SOLID ONES: application is an
+ * OVERLAY, so a key a preset omits keeps whatever the previously HOVERED preset
+ * left there. Without it, hovering Realization and then clicking Drafting Leader
+ * would give a dashed "drafting" leader. `dashLength`/`dashGap` are deliberately
+ * NOT here — no preset in this family varies the rhythm, so leaving them alone
+ * preserves a rhythm the user chose rather than overwriting it.
+ */
+const PRESETS = [
+  { name: "Drafting Leader", description: "A leader line's head at the three-to-one length-to-width proportion: compact, unambiguous, and light enough to sit over a drawing.", props: { headLength: 18, headWidth: 6, headStart: "none", headEnd: "triangle", strokeWidth: 1, dashed: false } },
+  { name: "Thirty Degree Barb", description: "The wider thirty-degree head — the same technical shaft, but a barb that reads from across a room.", props: { headLength: 16, headWidth: 8.6, headStart: "none", headEnd: "triangle", strokeWidth: 1.5, dashed: false } },
+  { name: "Dimension Line", description: "A dimension run between two extension lines: a small head at BOTH ends over a hairline shaft.", props: { headLength: 15, headWidth: 5, headStart: "triangle", headEnd: "triangle", strokeWidth: 1, dashed: false } },
+  { name: "Extension Line", description: "The headless rule that carries a dimension out from the feature it measures — no terminator at either end.", props: { headLength: 14, headWidth: 12, headStart: "none", headEnd: "none", strokeWidth: 0.75, dashed: false } },
+  { name: "Return Arrow", description: "The head sits at the TAIL, so the edge reads backwards — a \"comes from\" rather than a \"goes to\".", props: { headLength: 15, headWidth: 13, headStart: "triangle", headEnd: "none", strokeWidth: 3, dashed: false } },
+  { name: "Presentation Callout", description: "The polite slide leader: a small tidy head on a light shaft that points without shouting.", props: { headLength: 12, headWidth: 9, headStart: "none", headEnd: "triangle", strokeWidth: 2, dashed: false } },
+  { name: "Emphasis Arrow", description: "The thick \"look at this\": a big head over a heavy shaft, sized to be the loudest thing on the slide.", props: { headLength: 40, headWidth: 38, headStart: "none", headEnd: "triangle", strokeWidth: 12, dashed: false } },
+  { name: "Poster Chevron", description: "A head far wider than it is long, over a heavy shaft — blunt, loud, and unmistakably directional.", props: { headLength: 16, headWidth: 40, headStart: "none", headEnd: "triangle", strokeWidth: 8, dashed: false } },
+  { name: "Trade-off Bar", description: "A heavy double-headed span for \"this versus that\": two big heads and a shaft thick enough to carry them.", props: { headLength: 26, headWidth: 24, headStart: "triangle", headEnd: "triangle", strokeWidth: 6, dashed: false } },
+  { name: "Signage Arrow", description: "A shaft nearly as thick as the head is wide, so the whole arrow reads as one solid wayfinding glyph.", props: { headLength: 34, headWidth: 34, headStart: "none", headEnd: "triangle", strokeWidth: 20, dashed: false } },
+  { name: "Generalization", description: "UML inheritance — a solid shaft closed by a HOLLOW triangle, read as \"is a kind of\".", props: { headLength: 20, headWidth: 18, headStart: "none", headEnd: "triangleOpen", strokeWidth: 1.5, dashed: false } },
+  { name: "Realization", description: "UML realization — the same hollow triangle over a DASHED shaft: \"implements this interface\".", props: { headLength: 20, headWidth: 18, headStart: "none", headEnd: "triangleOpen", strokeWidth: 1.5, dashed: true } },
+  { name: "Composition", description: "UML composition — a FILLED diamond at the owning end, for a part that cannot outlive its whole.", props: { headLength: 18, headWidth: 12, headStart: "diamond", headEnd: "none", strokeWidth: 1.5, dashed: false } },
+  { name: "Aggregation", description: "UML aggregation — a HOLLOW diamond at the owning end, for a part that can exist on its own.", props: { headLength: 18, headWidth: 12, headStart: "diamondOpen", headEnd: "none", strokeWidth: 1.5, dashed: false } },
+  { name: "Association", description: "A bare open V: a navigable association, and the same glyph a sequence diagram gives an asynchronous message.", props: { headLength: 16, headWidth: 14, headStart: "none", headEnd: "open", strokeWidth: 1.5, dashed: false } },
+  { name: "Dependency", description: "The open V over a DASHED shaft — a dependency, and the shape a sequence diagram's reply message takes.", props: { headLength: 16, headWidth: 14, headStart: "none", headEnd: "open", strokeWidth: 1.5, dashed: true } },
+  { name: "State Transition", description: "The notched dart every state-diagram transition is drawn with, on a light technical shaft.", props: { headLength: 18, headWidth: 14, headStart: "none", headEnd: "dart", strokeWidth: 1.5, dashed: false } },
+  { name: "One To Many", description: "Crow's-foot entity notation: exactly one at the tail, one or more at the head.", props: { headLength: 40, headWidth: 20, headStart: "onlyOne", headEnd: "oneOrMore", strokeWidth: 1.5, dashed: false } },
+  { name: "Optional To Many", description: "Crow's-foot entity notation with both ends optional: zero or one at the tail, zero or more at the head.", props: { headLength: 40, headWidth: 20, headStart: "zeroOrOne", headEnd: "zeroOrMore", strokeWidth: 1.5, dashed: false } },
+];
+
 export const arrowPlugin = {
   type: "arrow",
   title: "Arrow",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
+  presets: PRESETS,
   defaults: {
     type: "arrow", z: 1,
     from: { x: 200, y: 300 }, to: { x: 420, y: 300 },

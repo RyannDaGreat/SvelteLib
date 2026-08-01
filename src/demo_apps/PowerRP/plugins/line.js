@@ -106,10 +106,48 @@ export function lineInkRect(s) {
   return paddedPointsBBox([s.from, s.to], s.strokeWidth ?? ARROW_STROKE_WIDTH);
 }
 
+/**
+ * THE LINE'S STYLE LIBRARY.
+ *
+ * THE FIRST EIGHT ARE ISO 128-20's OWN ARITHMETIC, NOT TASTE. That standard gives
+ * every dash element as a MULTIPLE OF THE LINE WIDTH d — gap 3d, short dash 6d,
+ * dash 12d, long dash 24d, dot <= 0.5d — and its weight ladder as
+ * extra-wide : wide : narrow = 4 : 2 : 1. Because the elements are ratios rather
+ * than millimetres they carry into canvas units unchanged, so "Dashed Line" at
+ * d = 1.5 really is the hidden-detail line: 12d = 18 drawn, 3d = 4.5 skipped.
+ *
+ * `cap` IS GEOMETRY, NOT A FLAG: the display list's polyline is round-cap-only, so
+ * a flat-capped line is emitted as a filled rectangle instead. Every cap value
+ * really does change the picture.
+ *
+ * A DOT NEEDS A SMALL POSITIVE DASH, NEVER ZERO: dashedSpans treats a non-positive
+ * dash length as "solid", so Dotted Line uses ISO's 0.5d and lets the round caps do
+ * the rest.
+ *
+ * THE FIVE SOLID PRESETS STILL SPELL OUT dashLength AND dashGap, because
+ * application is an overlay: without them, hovering Zebra Bar and then clicking
+ * Continuous Narrow would leave a "continuous" line chopped into 22-unit bars.
+ */
+const PRESETS = [
+  { name: "Continuous Extra-Wide", description: "The heaviest of the three standard weights — a cut edge or section line, at four times the narrow width.", props: { cap: "butt", dashed: false, dashLength: 12, dashGap: 3, strokeWidth: 4 } },
+  { name: "Continuous Wide", description: "The standard \"wide\" weight: the visible outline of a part, twice the narrow width.", props: { cap: "butt", dashed: false, dashLength: 12, dashGap: 3, strokeWidth: 2 } },
+  { name: "Continuous Narrow", description: "The standard \"narrow\" weight — what dimension, extension and leader lines are drawn with.", props: { cap: "butt", dashed: false, dashLength: 12, dashGap: 3, strokeWidth: 1 } },
+  { name: "Hairline Rule", description: "Finer than the finest technical pen: a divider that separates without competing for attention.", props: { cap: "round", dashed: false, dashLength: 12, dashGap: 3, strokeWidth: 0.5 } },
+  { name: "Long-Dashed Line", description: "The long twenty-four-width dash of a centre or phantom line, over the standard three-width gap.", props: { cap: "butt", dashed: true, dashLength: 24, dashGap: 3, strokeWidth: 1 } },
+  { name: "Dashed Line", description: "The hidden-detail line exactly as specified: a twelve-width dash over a three-width gap, flush-ended.", props: { cap: "butt", dashed: true, dashLength: 18, dashGap: 4.5, strokeWidth: 1.5 } },
+  { name: "Short-Dashed Line", description: "The six-width dash — the tighter rhythm used where a run is too short to carry full dashes.", props: { cap: "butt", dashed: true, dashLength: 6, dashGap: 3, strokeWidth: 1 } },
+  { name: "Dotted Line", description: "The dot element on a three-width gap, rounded so each mark reads as a point rather than a stub.", props: { cap: "round", dashed: true, dashLength: 1.25, dashGap: 7.5, strokeWidth: 2.5 } },
+  { name: "Cut Here", description: "The scissors line: long dashes with long gaps and squared ends, meant to be followed with a blade.", props: { cap: "square", dashed: true, dashLength: 18, dashGap: 14, strokeWidth: 2 } },
+  { name: "Rope Ladder", description: "Dash and gap equal and chunky at a heavy weight — read as a rhythm rather than as a rule.", props: { cap: "round", dashed: true, dashLength: 14, dashGap: 14, strokeWidth: 8 } },
+  { name: "Zebra Bar", description: "Heavy square dashes separated by narrow gaps, so the whole run reads as one segmented bar.", props: { cap: "square", dashed: true, dashLength: 22, dashGap: 5, strokeWidth: 12 } },
+  { name: "Marker Underline", description: "A thick flat swipe under a phrase — a chisel-tip marker stroke rather than a drawn line.", props: { cap: "butt", dashed: false, dashLength: 12, dashGap: 3, strokeWidth: 16 } },
+];
+
 export const linePlugin = {
   type: "line",
   title: "Line",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
+  presets: PRESETS,
   defaults: {
     type: "line", z: 1,
     from: { x: 200, y: 300 }, to: { x: 420, y: 300 },

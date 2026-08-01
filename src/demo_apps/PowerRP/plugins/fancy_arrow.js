@@ -148,10 +148,47 @@ export function fancyArrowInkRect(s) {
   return paddedPointsBBox(points, (s.strokeWidth ?? 0) / 2);
 }
 
+/**
+ * THE FANCY ARROW'S SILHOUETTE LIBRARY — the five taper knobs and nothing else.
+ *
+ * ORDER IS CONTENT: darts (narrow head, hairline shaft), then broadheads (short,
+ * wide), then flow bands (a taper whose WIDTH carries magnitude), then the
+ * reverse-tapered ink shapes, ending on the stubbiest.
+ *
+ * NO COLOUR AND NO OUTLINE, for two separate reasons. The shape is the model and
+ * the colour is the user's. And `fill` and `stroke` BOTH default to black here, so
+ * a preset that only raised strokeWidth above 0 would paint a black outline on a
+ * black body — pixel-identical to its neighbour, which is a dead row, not a preset.
+ *
+ * EVERY tipDimple BELOW SITS UNDER THE RENDERER'S OWN CLAMP,
+ * maxD = tipLength * (1 - endWidth / tipWidth) (core/outline.js). A deeper value
+ * would be silently discarded on the way to the screen, so it would be a lie stored
+ * in the document. Deep Fletch sits just inside its clamp on purpose: hard against
+ * maxD is exactly where the swept-back barb lives.
+ *
+ * NO HEAD SHAPES HERE: this widget's head is FUSED into one filled outline, so it
+ * has no headStart/headEnd at all — the per-end head enum does not reach it.
+ */
+const PRESETS = [
+  { name: "Swept Dart", description: "The classic swept-back dart — barbs raked far behind a narrow head on a hairline shaft.", props: { tipLength: 34, tipWidth: 26, tipDimple: 16, startWidth: 2, endWidth: 4 } },
+  { name: "Needle Dart", description: "A very long fine head over the thinnest of shafts: a pointer for a figure that is already crowded.", props: { tipLength: 46, tipWidth: 14, tipDimple: 6, startWidth: 1.5, endWidth: 2.5 } },
+  { name: "Hair Dart", description: "The most delicate of the set — a small head, a barely-there shaft, a slight notch.", props: { tipLength: 12, tipWidth: 10, tipDimple: 3, startWidth: 1, endWidth: 1.5 } },
+  { name: "Broadhead", description: "A hunting broadhead: short, very wide, and completely unnotched — all shoulder, no sweep.", props: { tipLength: 18, tipWidth: 44, tipDimple: 0, startWidth: 6, endWidth: 8 } },
+  { name: "Deep Fletch", description: "The notch driven right to the edge of what the outline allows, so the barbs sweep almost back to the shaft.", props: { tipLength: 30, tipWidth: 36, tipDimple: 24, startWidth: 4, endWidth: 6 } },
+  { name: "Chisel Wedge", description: "Barely a head at all: a long wedge whose sides run almost to the tip before closing.", props: { tipLength: 40, tipWidth: 18, tipDimple: 0, startWidth: 3, endWidth: 14 } },
+  { name: "Banner Taper", description: "A flow band — hairline where it starts, opening steadily out into a wide head, so the width itself reads as growth.", props: { tipLength: 26, tipWidth: 46, tipDimple: 4, startWidth: 2, endWidth: 22 } },
+  { name: "Ribbon Flow", description: "A constant-width ribbon closed by a modest head: an even, unaccelerating flow.", props: { tipLength: 20, tipWidth: 30, tipDimple: 6, startWidth: 12, endWidth: 12 } },
+  { name: "Signage Block", description: "A solid block arrow: shaft and head base exactly the same width, no notch, nothing decorative.", props: { tipLength: 24, tipWidth: 48, tipDimple: 0, startWidth: 24, endWidth: 24 } },
+  { name: "Comic Whoosh", description: "Reverse taper — fat where the stroke began and thinning as it goes, finished with a big swept head.", props: { tipLength: 30, tipWidth: 40, tipDimple: 12, startWidth: 20, endWidth: 5 } },
+  { name: "Pennant", description: "A wide tail narrowing to a small head, the way a pennant streams: the shaft is wider than the head is.", props: { tipLength: 14, tipWidth: 20, tipDimple: 3, startWidth: 26, endWidth: 4 } },
+  { name: "Stubby Marker", description: "Short and fat throughout — a thick felt-pen jab rather than a drawn arrow.", props: { tipLength: 16, tipWidth: 34, tipDimple: 5, startWidth: 16, endWidth: 18 } },
+];
+
 export const fancyArrowPlugin = {
   type: "fancy_arrow",
   title: "Fancy Arrow",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
+  presets: PRESETS,
   defaults: {
     type: "fancy_arrow", z: 1,
     from: { x: 200, y: 340 }, to: { x: 420, y: 340 },

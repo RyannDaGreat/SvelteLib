@@ -112,6 +112,71 @@ export function imageDistance(a, b) {
 }
 
 /**
+ * One 8-bit code value above the reference: the threshold at which a pixel counts
+ * as TOUCHED by the thing being measured. Deliberately the same quantum as
+ * DISPLAYABLE_CODE_VALUE — a pixel a display cannot show as changed did not change.
+ */
+export const LIT_MIN_DELTA = 1;
+
+/**
+ * Pure function. Distance over the LIT SET — the pixels where EITHER frame differs
+ * from a common `reference` — instead of over the whole frame.
+ *
+ * ── WHY THIS EXISTS, AND IT IS NOT A REFINEMENT ──────────────────────────────
+ * imageDistance averages over every pixel, so anything that inks a SMALL SHARE of
+ * the canvas is diluted by the large area it never touches, and two genuinely
+ * different renders read as near-identical. Measured twice, independently:
+ * `.frenzy/round6/presets/god_rays.md` §7.1b found the same pairs moving an ORDER
+ * OF MAGNITUDE between the two reductions, with three real collisions visible only
+ * under this one; and a CONNECTOR is the extreme case of the same geometry — a
+ * hairline arrow inks a fraction of a percent of its frame, so a whole-frame mean
+ * reports every pair of arrows as identical and the check gates nothing.
+ *
+ * The reference is whatever "nothing applied" means for the family: an unlit scene
+ * for a light effect, an empty canvas for a widget. The lit set is then exactly the
+ * region the two candidates are responsible for, which is the region on which "do
+ * these render the same picture" is a real question.
+ *
+ * `maxAbs` is unchanged in meaning and is what settles a close call — no averaging,
+ * over any region, can hide a single-channel outlier.
+ *
+ * Promoted here rather than transcribed a second time: this module exists to be the
+ * repo's ONE answer to "are these two pictures the same", and the whole-frame
+ * reduction alone is not that answer for a sparse subject. `scratch_godrays.mjs`
+ * distinct() is the prior art and should call this rather than keep its copy.
+ *
+ * @param {{width: number, height: number, data: Buffer|Uint8Array}} a - candidate frame
+ * @param {{width: number, height: number, data: Buffer|Uint8Array}} b - candidate frame
+ * @param {{width: number, height: number, data: Buffer|Uint8Array}} reference - the "nothing applied" frame
+ * @returns {{meanAbs: number, maxAbs: number, coverage: number}} coverage = lit share of the frame
+ *
+ * @example // two frames inking DIFFERENT single pixels of a 2x1 white reference:
+ * @example // litSetDistance(a, b, ref) // {meanAbs: 255, maxAbs: 255, coverage: 1}
+ * @example // the whole-frame reduction on the same pair reports meanAbs 255 too here,
+ * @example // but on a 1000x1000 frame it would report 0.00051 while this still reports 255.
+ */
+export function litSetDistance(a, b, reference) {
+  if (a.width !== b.width || a.height !== b.height || a.width !== reference.width || a.height !== reference.height)
+    throw new Error(`litSetDistance: ${a.width}x${a.height} vs ${b.width}x${b.height} vs reference ${reference.width}x${reference.height} — same-size frames only`);
+  const pixels = a.width * a.height;
+  let lit = 0, sum = 0, maxAbs = 0;
+  for (let i = 0; i < pixels * BYTES_PER_PIXEL; i += BYTES_PER_PIXEL) {
+    let touched = false;
+    for (let c = 0; c < COLOUR_CHANNELS && !touched; c++)
+      touched = Math.abs(a.data[i + c] - reference.data[i + c]) >= LIT_MIN_DELTA
+        || Math.abs(b.data[i + c] - reference.data[i + c]) >= LIT_MIN_DELTA;
+    if (!touched) continue;
+    lit++;
+    for (let c = 0; c < COLOUR_CHANNELS; c++) {
+      const d = Math.abs(a.data[i + c] - b.data[i + c]);
+      sum += d;
+      if (d > maxAbs) maxAbs = d;
+    }
+  }
+  return { meanAbs: lit ? sum / (lit * COLOUR_CHANNELS) : 0, maxAbs, coverage: pixels ? lit / pixels : 0 };
+}
+
+/**
  * Pure function. Are these two frames the same picture as far as any display is
  * concerned? True when no channel anywhere differs by a full code value. This is
  * the ONE bound derivable without judgement, so it is the only one shipped here.

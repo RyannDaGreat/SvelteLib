@@ -82,10 +82,43 @@ export function curvedArrowInkRect(s) {
   return paddedPointsBBox(curvedArrowPolyline(bendParams(s)), Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH));
 }
 
+/**
+ * THE CURVED ARROW'S ARC LIBRARY — one knob swept, and the heads that suit it.
+ *
+ * ORDER IS CONTENT: `bend` from 0 up the positive side, then the negative mirror
+ * side, then the two extremes that hook right around. Reading down the list is
+ * watching one arc open.
+ *
+ * `bend` IS A PROPORTION OF THE SPAN, not a pixel offset, so every value here holds
+ * its look at any arrow length — the only knob in the whole arrow family of which
+ * that is true. The visible midpoint sits at bend * span / 2 off the straight
+ * chord, which is the number to reason with: 0.45 lifts the arc about a quarter of
+ * the span, 2.4 throws it clear past the endpoints.
+ *
+ * NO DIAGRAM RELATIONS HERE, deliberately. The UML and entity relations live on the
+ * straight `arrow` and the BPMN flows on `elbow_arrow`; repeating them across three
+ * connectors would triple the picker without adding a picture.
+ */
+const PRESETS = [
+  { name: "Chord Rule", description: "The straight construction chord an arc is measured against — no bend and no head, just the line between the two points.", props: { bend: 0, headLength: 10, headWidth: 8, headStart: "none", headEnd: "none", strokeWidth: 1 } },
+  { name: "Gentle Nudge", description: "A bow so slight it reads as deliberate rather than accidental — the least curve worth drawing.", props: { bend: 0.1, headLength: 12, headWidth: 8, headStart: "none", headEnd: "triangle", strokeWidth: 1.5 } },
+  { name: "Flow Current", description: "A long shallow curve on a broad shaft with a slim head: a current or a drift rather than a pointer.", props: { bend: 0.2, headLength: 22, headWidth: 8, headStart: "none", headEnd: "triangle", strokeWidth: 4 } },
+  { name: "Hairline Arc", description: "The most delicate curve in the set — the thinnest shaft and the smallest head that still reads.", props: { bend: 0.3, headLength: 8, headWidth: 5, headStart: "none", headEnd: "triangle", strokeWidth: 0.75 } },
+  { name: "Exchange Arc", description: "A bowed span headed at both ends: two things trading places rather than one pointing at the other.", props: { bend: 0.35, headLength: 14, headWidth: 11, headStart: "triangle", headEnd: "triangle", strokeWidth: 2 } },
+  { name: "Presentation Swoosh", description: "The generous \"look over here\" arc: enough curve to feel gestural, on a shaft light enough to stay polite.", props: { bend: 0.45, headLength: 16, headWidth: 10, headStart: "none", headEnd: "triangle", strokeWidth: 2.5 } },
+  { name: "Counter Swoosh", description: "Presentation Swoosh mirrored, so a pair of them can bracket a subject from both sides.", props: { bend: -0.45, headLength: 16, headWidth: 10, headStart: "none", headEnd: "triangle", strokeWidth: 2.5 } },
+  { name: "Banner Arc", description: "A wide shallow bow the other way, carrying a heavy shaft and a head to match — an arc with weight.", props: { bend: -0.25, headLength: 26, headWidth: 26, headStart: "none", headEnd: "triangle", strokeWidth: 10 } },
+  { name: "Comic Whip", description: "A hard arc with an oversized head on a fat shaft: the arrow drawn in one fast stroke.", props: { bend: 0.85, headLength: 34, headWidth: 30, headStart: "none", headEnd: "triangle", strokeWidth: 8 } },
+  { name: "Rebound", description: "A strong reverse arc headed at the TAIL, so it reads as something coming back rather than going out.", props: { bend: -1.1, headLength: 18, headWidth: 15, headStart: "triangle", headEnd: "none", strokeWidth: 3 } },
+  { name: "Undo Hook", description: "The tight hook that reads as \"go back one step\": curved far enough that the two ends nearly face each other.", props: { bend: 1.4, headLength: 14, headWidth: 12, headStart: "none", headEnd: "triangle", strokeWidth: 3 } },
+  { name: "Orbit Return", description: "An extreme bend that throws the curve clear of both endpoints and brings it back — a detour drawn as an arc.", props: { bend: 2.4, headLength: 16, headWidth: 13, headStart: "none", headEnd: "triangle", strokeWidth: 2.5 } },
+];
+
 export const curvedArrowPlugin = {
   type: "curved_arrow",
   title: "Curved Arrow",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
+  presets: PRESETS,
   defaults: {
     type: "curved_arrow", z: 1,
     from: { x: 200, y: 440 }, to: { x: 420, y: 440 },

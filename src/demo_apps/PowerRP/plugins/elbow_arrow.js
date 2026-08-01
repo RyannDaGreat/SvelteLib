@@ -76,10 +76,51 @@ export function elbowArrowInkRect(s) {
   return paddedPointsBBox(route, Math.max(s.strokeWidth ?? ARROW_STROKE_WIDTH, s.headWidth ?? ARROW_HEAD_WIDTH));
 }
 
+/**
+ * THE ELBOW ARROW'S ROUTING LIBRARY — where the bend sits, which way the legs run,
+ * how far the middle leg is pushed out, and what each end wears.
+ *
+ * `orient` IS FORCED BY TOPOLOGY, NOT TASTE. "vhv" starts and ends VERTICAL, which
+ * is the only way to leave a box's bottom and enter the next box's top; "hvh"
+ * structurally cannot draw that route. So every tree/org-chart preset here is vhv
+ * and every side-to-side flow is hvh, and swapping one would not restyle the
+ * route, it would break it.
+ *
+ * `bulge` IS THE LOOP ENABLER and the one absolute value in the set. Two same-edge
+ * anchors give a zero span, where every `elbow` value collapses the route onto a
+ * straight line — only an offset in canvas units can bow it clear of the boxes.
+ * Being absolute rather than a fraction, the bulged presets assume an arrow of
+ * roughly the default size and overshoot on a very short one: the honest cost of
+ * the only knob that can draw a loop at all.
+ *
+ * THE LAST TWO ARE BPMN's non-sequence flows, and they live HERE rather than on the
+ * straight arrow because BPMN routes orthogonally. They are also the reason this
+ * widget needed per-end head SHAPES: a message flow is a hollow circle at the
+ * source, a dashed shaft and an open V at the target, which is three things the
+ * old single-enum head could not say at once.
+ */
+const PRESETS = [
+  { name: "Flowchart Step", description: "The plain side-to-side elbow: the bend at the middle of the span, closed by one filled head.", props: { elbow: 0.5, orient: "hvh", bulge: 0, headLength: 14, headWidth: 10, headStart: "none", headEnd: "triangle", strokeWidth: 2, dashed: false } },
+  { name: "Tree Branch", description: "The org-chart route — straight down out of a box's bottom, across, and down into the next box's top.", props: { elbow: 0.5, orient: "vhv", bulge: 0, headLength: 14, headWidth: 10, headStart: "none", headEnd: "triangle", strokeWidth: 2, dashed: false } },
+  { name: "Org Chart Drop", description: "A trunk that drops almost at once and then runs across, headless the way a tree edge usually is.", props: { elbow: 0.2, orient: "vhv", bulge: 0, headLength: 12, headWidth: 8, headStart: "none", headEnd: "none", strokeWidth: 1.5, dashed: false } },
+  { name: "Bus Drop", description: "The bend hugs the SOURCE, leaving one long final run into the target — a tap off a bus.", props: { elbow: 0.12, orient: "hvh", bulge: 0, headLength: 12, headWidth: 8, headStart: "none", headEnd: "triangle", strokeWidth: 1.5, dashed: false } },
+  { name: "Late Turn", description: "The mirror of Bus Drop: a long run out, and the corner turned right at the target.", props: { elbow: 0.88, orient: "hvh", bulge: 0, headLength: 12, headWidth: 8, headStart: "none", headEnd: "triangle", strokeWidth: 1.5, dashed: false } },
+  { name: "Staircase Tap", description: "A very late vertical-first bend, nudged sideways — the last tread of a staircase of connectors.", props: { elbow: 0.95, orient: "vhv", bulge: 35, headLength: 10, headWidth: 14, headStart: "none", headEnd: "triangle", strokeWidth: 3, dashed: false } },
+  { name: "Feedback Loop", description: "The rectangular loop back to where it came from: the middle leg pushed clear of both boxes.", props: { elbow: 0.5, orient: "hvh", bulge: 120, headLength: 14, headWidth: 10, headStart: "none", headEnd: "triangle", strokeWidth: 2, dashed: false } },
+  { name: "Return Path", description: "The counter-loop — pushed the opposite way and headed at the tail, so it reads back into its source.", props: { elbow: 0.5, orient: "vhv", bulge: -110, headLength: 14, headWidth: 10, headStart: "triangle", headEnd: "none", strokeWidth: 2, dashed: false } },
+  { name: "Wide Detour", description: "A large offset and a late bend together: the route taken when something is in the way.", props: { elbow: 0.7, orient: "hvh", bulge: -150, headLength: 14, headWidth: 11, headStart: "none", headEnd: "triangle", strokeWidth: 2.5, dashed: false } },
+  { name: "Rack Cable", description: "A heavy orthogonal run with no head at all — a patch cable between two panels rather than an arrow.", props: { elbow: 0.5, orient: "vhv", bulge: 60, headLength: 10, headWidth: 16, headStart: "none", headEnd: "none", strokeWidth: 6, dashed: false } },
+  { name: "Circuit Trace", description: "A hairline net that turns its corner almost immediately and then runs straight — a board trace.", props: { elbow: 0.05, orient: "vhv", bulge: 0, headLength: 8, headWidth: 6, headStart: "none", headEnd: "none", strokeWidth: 0.75, dashed: false } },
+  { name: "Bidirectional Link", description: "Heads at both ends of an orthogonal route: a two-way link rather than a one-way flow.", props: { elbow: 0.5, orient: "hvh", bulge: 0, headLength: 12, headWidth: 9, headStart: "triangle", headEnd: "triangle", strokeWidth: 2, dashed: false } },
+  { name: "Message Flow", description: "BPMN's message flow — a dashed orthogonal route leaving a hollow circle and arriving as an open V, for a message crossing a pool boundary.", props: { elbow: 0.5, orient: "hvh", bulge: 0, headLength: 16, headWidth: 12, headStart: "circleOpen", headEnd: "open", strokeWidth: 1.5, dashed: true } },
+  { name: "Conditional Flow", description: "BPMN's conditional flow — a hollow diamond at the source marks the branch a gateway chose.", props: { elbow: 0.5, orient: "hvh", bulge: 0, headLength: 16, headWidth: 12, headStart: "diamondOpen", headEnd: "triangle", strokeWidth: 1.5, dashed: false } },
+];
+
 export const elbowArrowPlugin = {
   type: "elbow_arrow",
   title: "Elbow Arrow",
   capabilities: { bbox: false, transform: false, resizable: false, backdrop: false },
+  presets: PRESETS,
   defaults: {
     type: "elbow_arrow", z: 1,
     from: { x: 200, y: 260 }, to: { x: 420, y: 380 },
