@@ -9198,4 +9198,13 @@ audio.ae-preview-media {
   --modal-bg: var(--a-glass-bg); /* the palette's surface — the one .palette reads */
   --modal-radius: var(--a-radius-floating); /* the one rounded family, at its 4px cap */
   --modal-shadow: var(--a-glass-shadow); /* elevation + lit rim, per theme */
+  /* Modal publishes no --modal-blur token (no backdrop-filter anywhere in its own
+     <style>), so there is nothing to remap here — same situation as .tt-tip
+     (:2499), fixed the same way: a wholly new property, added directly on the
+     out-specified selector, reading --a-glass-blur verbatim. Without this the
+     panel is correctly translucent (--modal-bg above) but was NEVER capable of
+     blurring — the exact defect in todo #235's report (asset-picker dialog,
+     opened by double-clicking a filmstrip, transparent with no blur in Nocturne). */
+  backdrop-filter: var(--a-glass-blur);
+  -webkit-backdrop-filter: var(--a-glass-blur);
 }
