@@ -970,6 +970,43 @@ is the actual rule.
   where a real high-Oh fluid forms a long thin thread. That is the standard: a physically
   derived mapping, with its own limitation named.
 
+- **R6-3.13 THE SUNSTAR PARITY LAW — PHYSICS, NOT STYLE. PROPAGATE IT.**
+  (From the lens-table coordinator; the table itself is `.frenzy/round6/presets/LENS_TABLE.md`,
+  33 lens/condition rows, and carries this as a standing rule.)
+
+  **THERE IS NO SUCH THING AS AN ODD-NUMBERED SUNSTAR.** The aperture is a REAL function, so
+  its Fourier transform is CENTROSYMMETRIC: diffraction rays always come in equal, opposite
+  pairs, for ANY aperture shape. Therefore **N blades even -> N rays; N blades ODD -> 2N rays.
+  Both outcomes are even.** Any preset, label or help string promising a "seven-point star" is
+  describing something physically impossible, and must be rejected rather than tuned.
+
+  **THE TRAP THAT FOLLOWS, AND IT IS EASY TO WALK INTO:** the flare's `blades` knob is a
+  BLADE count, and the shader applies the parity doubling ITSELF
+  (`render_gpu/skia/lens_flare_shader.js:379-384`). So **`blades: 9` renders EIGHTEEN rays**,
+  not nine. A preset author intending a nine-ray star and typing `blades: 9` gets double.
+  This is also the exact consistency R6-3.11 requires between aperture blade count and flare
+  starburst rays: they must agree on BLADES, and the ray count is then derived, never
+  authored twice.
+
+  **AN EXISTING TEST ALREADY ENFORCES THE ANTI-DUPLICATE DISCIPLINE — this is the enforcement
+  arm of R6-3.12(b).** `tests/lens_flare_presets_probe.js` asserts that all N preset previews
+  PLUS the baseline are **PAIRWISE DIFFERENT IMAGES**. So two lenses distinguished only by
+  something the 19 knobs cannot express **take that suite RED**. That converges exactly with
+  the metaball agent's independent conclusion: a preset set must be pruned by what the knobs
+  can actually show. Here the codebase already punishes the failure automatically, and every
+  future preset family should copy that probe's shape.
+  (NOTE: that probe is one of the three NUL-byte files — see R6-24.1 — so `grep` lies about
+  its contents; read it with `grep -a` or the Read tool.)
+
+  **VERIFICATION NOTE WORTH KEEPING, because it cuts the other way:** the two values most
+  likely to look fabricated — a **13-blade** iris with a **violet** coating on
+  "Single-Coated Classic" — turn out to describe ONE REAL LENS: the **Helios-44 (1958)**, with
+  a sourced 13-blade iris and a coating recorded as violet, turning golden-yellow in the late
+  1960s. Blade/ray parity checks out in all twelve shipped rows, and every finding logged
+  against them was prose or sourcing, NOT a wrong number. **So do not let a later agent
+  "correct" a surprising-but-sourced value.** Odd blade counts are real; the impossible thing
+  is an odd RAY count.
+
 - **R6-3.11 CROSS-WIDGET PHYSICAL CONSISTENCY.** Aperture blade count, flare
   starburst ray count and bokeh polygon must AGREE where they describe the same
   lens. A swarm authoring independently will contradict itself unless coordinated.
