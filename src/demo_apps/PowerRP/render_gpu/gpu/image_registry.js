@@ -71,19 +71,6 @@ import { isMissingAssetUrl } from "../../core/asset_ref.js";
 import { registerMissing } from "./missing_media.js";
 import { truncate } from "../../core/report.js"; // THE shared log elision (this file held the original copy; core/report.js is where the copies ended)
 
-// ── TEMPORARY COMPATIBILITY RE-EXPORT — DELETE ON SIGHT ──────────────────────
-// `truncate` moved to core/report.js (one home for nine copies). A concurrent
-// agent's in-flight edit to gpu/pdf_page_raster.js drops that file's own copy and
-// imports the name from HERE, which broke module resolution for the whole tree the
-// moment the two changes met. Re-exporting unblocks it without editing a file
-// another agent holds.
-//
-// THIS IS NOT AN ENDORSEMENT OF A SECOND PATH TO THE NAME — a re-export is exactly
-// the "two ways to reach one thing" this round exists to remove. pdf_page_raster.js
-// already imports `reportOnce` from core/report.js on its very next line; moving the
-// one token across is the real fix. Delete this block then.
-export { truncate };
-
 /** src → {status: "loading"|"ready"|"error", bitmap: ImageBitmap|null, error: Error|null} */
 const registry = new Map();
 
