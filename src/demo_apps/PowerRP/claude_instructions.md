@@ -894,6 +894,70 @@ files) — disposable; this manifest copy is canonical.
   `display`.
 - **R6-4.4** Decide the rule: which affordances legitimately belong on a property
   row, and which are tools wearing a property's clothes. Hunt for others.
+#### R6-4 AUDIT RESULT — PROVEN (wave 1, agent W1-K; full report `.frenzy/round6/W1-K.md`, 772 lines)
+
+**THE VOCABULARY IS 40 ASPECTS, NOT 22.** Measured across 96 plugins and 3491 rows.
+R6-4.3's list was less than half; 18 aspects were missing from it. Counts:
+`scrub` 84, `assetKinds` 17, `display` 15, `visibleWhen` 7, Inspector
+`command`/`kind:"action"` 6, `paint` 5, `pinLight` 2, `centerAxis` 2, `writeKey` 2,
+`gallery` 1, and one each of `scrubMin`, `scrubMax`, `optionsFrom`, `nullable`,
+`presets`, `presetAspectKeys`, `orderKey`, `elementFieldDisabled`.
+
+**ONLY `pinLight` IS A TOOL. The other two suspects are EXONERATED — this corrects
+R6-4.2, which named all three.**
+- `pinLight` (`plugins/demo/lens_flare.js:452`, `plugins/demo/god_rays.js:237`) calls
+  `app.enterCanvasMode` and writes a PAIR of properties. Browser-proven: entering it
+  collapses the HintBar from 36 chips to 2. That is a mode. It is a tool.
+- `gallery` (`plugins/iconify.js:551`) is a PER-PROPERTY PICKER, not a tool:
+  `canvasMode` stays null and it writes only `row.key`. Moreover the USER HIMSELF
+  asked for it in that gutter slot (`web/GalleryPopup.svelte:2-6`). Leave it.
+- The six `kind:"action"` rows (`plugins/group.js:142` plus five `edit-code-source`)
+  are the OLDER mechanism (2026-07-15), documented at `core/properties.js:540`, and
+  the HONEST one — no diamonds, no copy-path, renders as a button. By the precedence
+  doctrine the older pattern wins, so these are the reference, not the deviation.
+- **THE TELL IS ALREADY MECHANICAL:** exactly two aspects carry the
+  `itemMode && !multi` gate — `pinLight` and `gallery`. Nothing else needs it. That
+  gate, not intuition, is how a future tool-in-a-row is detected.
+
+**WHAT A TOOL IS, from precedent (`core/registry.js:470-563`):** a `TOOL_POOL` group
+row `{kind:"command", command, help, requires, applies(plugin)}`, with `help`,
+`requires` and `applies` MANDATORY at boot and `applies` a predicate over the
+plugin's own declared shape; the behaviour lives in the command registry. A
+mode-entering tool needs NO new machinery — roughly 60 insert commands already arm
+canvas modes.
+
+**MIGRATION (templates: `edit-code-source` and `bind-to-camera`):** add
+`LIGHT_KEYS` / `lightPinnable` / `LIGHT_PIN_HELP` / `LIGHT_PIN_REQUIRES` beside
+`FRAME_KEYS` in `core/registry.js`; append ONE row to the EXISTING `positioning`
+pool group; register `pin-light-to-object` in `web/App.svelte` (`run` ->
+`enterCanvasMode`, no `preview`). **god_rays then inherits with ZERO plugin edits** —
+which is the whole point of fixing it at the tool layer. Delete the aspect, the
+Inspector button, `pinLightAspect`, and the `.pin-light-btn` CSS — whose "third slot"
+doctrine comment must be REWRITTEN, not merely deleted. `LIGHT_POSITION_PIN_HANDLER`
+stays verbatim, and do NOT add `claims` or double-click will start pinning.
+
+**A SERIOUS UNREGISTERED-INPUT BUG, BROWSER-PROVEN.** `web/GalleryPopup.svelte` is
+portalled to `document.body` but never focuses itself, so its registered
+`POPOVER_HINTS.gallery` never delivers: focus stays on `gallery-btn`, the chips never
+appear, and **Escape DESELECTS THE WIDGET while the popup stays open**. `pinLight`
+and bento bind are fully compliant by contrast. Also found: `GalleryPopup`'s
+`role="dialog"` produces a false "Tab / Next field" chip, and `CodeEditorModal`'s
+Cmd/Ctrl+Enter is registered nowhere.
+
+**A LIVE `ReferenceError`, verified first-hand:** `web/Inspector.svelte:852` uses a
+free `path`, which **breaks the ƒ (equation) button for every Tier-0 kind**. This is
+adjacent to R6-7 and must be fixed with it — an equation affordance that throws is
+worse than one that is merely missing.
+
+**LEAD RULING — STOP CITING BARE TASK NUMBERS TO AGENTS.** W1-K reported that
+"task #195 does not exist", having found its only dump-wide occurrence to be my own
+forward reference at `claude_instructions.md:773`. The task DOES exist (harness task
+list, completed: "Escape leaks past three handlers — text edit, endpoint drag, modal
+dialog"), but it lives OUTSIDE the repo, so no agent can resolve it. The agent's
+recommendation was therefore right for a reason it had slightly wrong. RULE FROM NOW
+ON: never hand an agent a bare `#nnn`; state the SUBSTANCE and record it in this
+manifest, which is the only durable, agent-visible record.
+
 - **R6-4.5** Build the lens-flare light-position tool properly IN THE TOOLS PANEL;
   god rays inherits it at the tool layer. Remove the misplaced row eyedropper.
   User's complaint: the agent "didn't understand what tools are, even though the
