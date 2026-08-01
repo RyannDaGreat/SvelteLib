@@ -814,6 +814,70 @@ files) — disposable; this manifest copy is canonical.
 - **R6-1.11 RESEARCH FIRST, heavily.** Library survey (speed, licence, quality,
   3D-engine story, WebGL2-vs-WebGPU need), format survey, capture/training
   pipelines, and sourceable example scenes with licences.
+#### R6-1.9/.10 FORMATS, ASSETS, PIPELINES — RESEARCHED (wave 1, agent W1-J; report `.frenzy/round6/W1-J.md`, 1067 lines, plus `W1-J-fmt.md`, `W1-J-lic2.md`, `W1-J-pipe2.md`)
+
+**PRIMARY IMPORT FORMAT: the INRIA `.ply`** — the only format every producer writes AND
+every viewer reads, and the only LOSSLESS one. Second: `.spz` (MIT, ~10x smaller, keeps
+spherical harmonics). **`.sog` is the right DELIVERY format (measured 19.6x) but the wrong
+IMPORT format.** `KHR_gaussian_splatting` is only a Khronos Release Candidate and its SPZ
+companion (PR #2531) is open and unmerged, so it is not something to build on yet.
+
+**AN IMPLEMENTATION TRAP, RECORDED BEFORE IT BITES: `f_rest` IS CHANNEL-MAJOR.** Read the
+other way it produces silently WRONG view-dependent colour — no error, just wrong pixels.
+
+**SHIPPABLE SCENES — the agent's OWN FIRST PICK WAS WRONG AND IT CAUGHT IT.** PlayCanvas's
+committed `apartment.txt` claims CC-BY-4.0, but the superspl.at page THAT FILE ITSELF CITES
+says **CC BY-NC 4.0**; same for `playbot/`. Both REJECTED. Corrected picks:
+1. **`hornedlizard.spz`, 18,143,098 B, MIT** from `nianticlabs/spz` — the format author's
+   own repository, so there is no third party whose terms can drift. Convert to `.sog`
+   before committing (MIT permits it; Babylon's SOG of this same scene is 11,323,413 B).
+2. **`knock-community-hall.sog`, 27,830,709 B, CC BY 4.0 confirmed against source** — the
+   only clean room-scale INTERIOR found. Small alternative: `Unicorn_Stuffy.sog`,
+   2,065,634 B, but on a blanket licence claim that over-reaches elsewhere, so it is the
+   weaker provenance.
+**Exactly ONE genuinely CC0 splat exists anywhere** (`FirePit.splat`, 16,003,424 B, and
+only a bare tag). Poly Haven, AmbientCG and Sketchfab have ZERO; KHR ships no sample assets.
+
+**SHIP IN-REPO — and this agrees with W1-O independently.** Precedent: `fonts/` already
+commits ~40 MB of licensed binaries (largest single file 10,673,480 B) with a README
+licence table and an explicit offline argument. The dump manifest's download-to-cache line
+(`/root/CleanCode/Dumps/RPPT/claude_instructions.md:1170`) SCOPES ITSELF to the "full
+palette" while stating that "small selected textures **may be committed**", and separately
+rules out rp at runtime.
+
+**SPLAT UPLOADS ALREADY WORK — CLASSIFICATION IS THE ONLY BREAKAGE.** Running `server.py`'s
+own classifier: every splat extension falls to `"other"`, which makes it **invisible to
+every picker** (`web/AssetField.svelte:200`). `_handle_upload` has NO allow-list and NO size
+cap, so nothing blocks the bytes. Seven small edits, none of them in the upload path.
+**No arbitrary-limit violation here:** the only cap is `FETCH_ZIP_MAX_BYTES` at 512 MB, and
+it carries its justification in a comment.
+
+**ON-WIDGET INSTRUCTIONS (R6-1.10): the `src` row's `help` tooltip. Precedent
+`plugins/iconify.js:544`**, whose shape is grammar -> example -> gesture -> source ->
+caveat. Measured: 566 help strings, median 98 chars, longest 1061
+(`plugins/demo/globe_map.js:189`), so a ~780-char help string is within precedent.
+**There is NO long-form prose surface in this app** — no `note` row kind, and
+ghost-on-empty (`core/derive.js:548`) carries no text, so it is not a teaching surface.
+Do not invent one.
+
+**THE CAPTURE ADVICE CHANGED AFTER VERIFICATION — this is the headline for R6-1.10.** The
+draft copy named Polycam and Postshot as the easy routes. Read off the vendors' own pricing
+pages: **Polycam's free tier exports GLTF ONLY**, and **Postshot's free tier cannot export
+a radiance field at all**. **Scaniverse is the ONLY free route.** Saying otherwise in
+on-widget help would have sent the user down two dead ends.
+
+**Two more verifications:** `mkkellogg/GaussianSplats3D` is explicitly UNMAINTAINED
+(independently confirming W1-I) and it is `.ksplat`'s only reader, so that format dies with
+it. And `colmap/glomap` is ARCHIVED/deprecated, folded into COLMAP's "global" mapper — so
+pipeline docs naming glomap are already stale.
+
+**CORRECTIONS TO MY OWN BRIEF:** (a) the repo does NOT carry `canvaskit.wasm` — it comes
+from npm / `web/dist` and is gitignored, so **`fonts/` is the committed-binary precedent**,
+not canvaskit; (b) built-in assets CAN surface in the Asset Explorer via
+`showBuiltinAssets` (default `false`, widget-library only, labelled, quota-exempt), so my
+"must NEVER appear there" phrasing in R6-1.9 was too absolute — the default is off, which
+is the actual rule.
+
 - **R6-1.12 OPEN DESIGN QUESTION (needs the user).** The runtime raster backend is
   Skia/CanvasKit on WebGL2, deliberately avoiding `navigator.gpu` so the app works
   on plain HTTP. A splat rasteriser is a sorted-billboard GPU pipeline Skia cannot
