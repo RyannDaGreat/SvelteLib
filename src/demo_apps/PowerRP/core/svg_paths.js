@@ -95,7 +95,7 @@
  * that is what plain unstyled strokes have always done here.
  */
 
-import { num } from "./shapes.js";
+import { num, PATH_DECIMALS } from "./shapes.js";
 import { fitBox } from "./geometry.js";
 
 // Circle→cubic-bezier control-arm length as a fraction of the radius (the
@@ -242,10 +242,10 @@ export function transformFnMatrix(name, a) {
  * @example transformPathD("M0 0A5 5 0 0 1 10 0", matIdentity()).includes("A") // false (arc → cubics)
  * @example transformPathD("M0 0A0 5 0 0 1 10 0", matIdentity()) // "M0 0L10 0" (zero radius → line, per spec)
  */
-export function transformPathD(d, m) {
+export function transformPathD(d, m, decimals = undefined) {
   const px = (x, y) => m.a * x + m.c * y + m.e;
   const py = (x, y) => m.b * x + m.d * y + m.f;
-  const P = (x, y) => `${num(px(x, y))} ${num(py(x, y))}`;
+  const P = (x, y) => `${num(px(x, y), decimals)} ${num(py(x, y), decimals)}`;
   const toks = tokenizePathD(d);
   const out = [];
   let cx = 0, cy = 0, sx = 0, sy = 0;        // current point + subpath start (absolute)

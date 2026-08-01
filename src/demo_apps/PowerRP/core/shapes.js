@@ -30,14 +30,29 @@ const TRAPEZOID_TOP_INSET = 0.2;    // each top corner pulled in by this fractio
 const CROSS_ARM = 1 / 3;            // plus-sign arm thickness as a fraction of the box
 const TOP_UP = -Math.PI / 2;        // start angle so polygons/stars point straight up
 
-/** Pure function. Compact fixed-precision number for path data (3 decimals,
- * trailing zeros trimmed) — keeps `d` short and doctests stable.
+/** The default decimals for authored path data — short `d` strings, stable doctests. */
+export const PATH_DECIMALS = 3;
+
+/** Pure function. Compact fixed-precision number for path data (trailing zeros
+ * trimmed) — keeps `d` short and doctests stable.
+ *
+ * `decimals` exists so a CONSUMER can normalize a path through transformPathD
+ * without losing precision it was going to keep: the PDF backend writes 4-decimal
+ * operands (pdfNum), so rounding to 3 on the way through would be a fidelity loss
+ * introduced by the normalization step alone. Every authoring caller keeps the
+ * 3-decimal default and is byte-identical.
+ *
+ * @param {number} n - the value
+ * @param {number} [decimals] - decimals to keep; defaults to PATH_DECIMALS
+ * @returns {string}
+ *
  * @example num(50) // "50"
  * @example num(33.333333) // "33.333"
  * @example num(-0) // "0"
+ * @example num(33.333333, 4) // "33.3333"
  */
-export function num(n) {
-  return String(+(+n).toFixed(3) + 0); // + 0 normalizes -0 → 0
+export function num(n, decimals = PATH_DECIMALS) {
+  return String(+(+n).toFixed(decimals) + 0); // + 0 normalizes -0 → 0
 }
 
 /**

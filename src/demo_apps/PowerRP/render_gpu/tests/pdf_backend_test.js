@@ -14,7 +14,7 @@ import {
   pdfNum, cmSimilarity, rectPath, ellipsePath, pointsPath, paintOp,
   balancedSlice, magnifiedView, hasTextOp, tjHex, irToPDF, MAX_LENS_DEPTH,
   imageRefs, videoRefs, decodeDataUri, base64ToBytes, imageFormat,
-  textFaces, fontResName, groupedTextDraws, tokenizeSvgPath, svgPathToPdfOps,
+  textFaces, fontResName, groupedTextDraws, normalizedRuns, svgPathToPdfOps,
   isSyntheticImageRef, parsePdfPageRef, pdfPageEmbedRefs, pdfPageEmbedPlacementOps,
 } from "../pdf_backend.js";
 import { rect, ellipse, text, pushTransform, popTransform, blurBackdrop, magnifyBackdrop, glassBackdrop, image, video, latexVector } from "../ir.js";
@@ -104,10 +104,14 @@ test("paintOp: f / B / S", () => {
   assert.equal(paintOp(null, [0, 0, 0, 1], 2), "S");
 });
 // ── Round 15.1 LaTeX vector: SVG path `d` → PDF operators ────────────────────
-test("tokenizeSvgPath: M L H V Q T Z, implicit-L after M", () => {
-  assert.deepEqual(tokenizeSvgPath("M0 0L10 10Z"), [["M", 0, 0], ["L", 10, 10], ["Z"]]);
-  assert.deepEqual(tokenizeSvgPath("M1 2 3 4"), [["M", 1, 2], ["L", 3, 4]]); // extra M coords → implicit L (SVG rule)
-  assert.deepEqual(tokenizeSvgPath("H5V-3"), [["H", 5], ["V", -3]]);
+test("normalizedRuns: one explicit absolute run per command, whatever the input grammar", () => {
+  assert.deepEqual(normalizedRuns("M0 0L10 10Z"), [["M", 0, 0], ["L", 10, 10], ["Z"]]);
+  assert.deepEqual(normalizedRuns("M1 2 3 4"), [["M", 1, 2], ["L", 3, 4]]); // extra M coords → implicit L (SVG rule)
+  // H/V are BAKED to absolute L by the shared walker — the retired local tokenizer
+  // passed them through, and the consumer then had to re-derive the missing axis.
+  assert.deepEqual(normalizedRuns("M0 0H5V-3"), [["M", 0, 0], ["L", 5, 0], ["L", 5, -3]]);
+  // THE REGRESSION THIS FILE EXISTS TO HOLD: an implicit repeat is N runs, not one.
+  assert.equal(normalizedRuns("M0 0L10 0 20 10 30 0 40 10").length, 5);
 });
 test("svgPathToPdfOps: M/L/Z, H/V→l, Q→cubic (degree elevation)", () => {
   assert.equal(svgPathToPdfOps("M0 0L10 0Z"), "0 0 m\n10 0 l\nh");
@@ -115,13 +119,29 @@ test("svgPathToPdfOps: M/L/Z, H/V→l, Q→cubic (degree elevation)", () => {
   // Q10 0 10 10 from (0,0): c1 = 0 + 2/3·10 = 6.6667; c2 = 10 + 2/3·(10−10)=10, 10 + 2/3·(0−10)=3.3333
   assert.equal(svgPathToPdfOps("M0 0Q10 0 10 10"), "0 0 m\n6.6667 0 10 3.3333 10 10 c");
 });
-test("svgPathToPdfOps: T reflects the previous quad control; throws on unknown cmd", () => {
+test("svgPathToPdfOps: T reflects the previous quad control; an arc EXPORTS", () => {
   // After Q10 0 10 10 (control 10,0 at endpoint 10,10), T20 20 reflects the
   // control about (10,10) → (10,20), a new quad to (20,20).
   const ops = svgPathToPdfOps("M0 0Q10 0 10 10T20 20");
   assert.ok(ops.includes("c\n"), "two cubics emitted");
   assert.equal(ops.split("c").length - 1, 2, "Q + T = two cubics");
-  assert.throws(() => svgPathToPdfOps("M0 0A1 1 0 0 1 5 5"), /unsupported SVG path command "A"/);
+
+  // ── THIS ASSERTION WAS INVERTED, AND IT IS NOT A LOOSENED GATE ──────────────
+  // It used to read `assert.throws(..., /unsupported SVG path command "A"/)`. READ
+  // THAT LINE AS IT WAS MEANT: it pinned a LIMITATION, not a contract. The old
+  // local tokenizer handed `A` straight through to a consumer with no branch for
+  // it, so ANY arc anywhere in a document threw and **failed the entire PDF
+  // export** — the old assertion was recording that the exporter could not do this,
+  // not promising that it never would.
+  //
+  // Routing the path through core/svg_paths.js transformPathD bakes the arc to its
+  // standard cubic approximation before the consumer sees it, so the whole SVG arc
+  // grammar now reaches the page. The change is "the document does not export" →
+  // "the document exports correctly". Nothing that used to succeed behaves
+  // differently; a class of documents that used to FAIL now works.
+  const arc = svgPathToPdfOps("M0 0A1 1 0 0 1 5 5");
+  assert.equal(arc.split("c").length - 1, 2, "the arc bakes to cubics rather than throwing");
+  assert.ok(!arc.includes("A"), "no arc operator survives — PDF has none");
 });
 test("latexVector: PDF emits fill f (nonzero) + local box→box cm, no XObject", async () => {
   // The equation glyphs render as inline vector path ops filled with `f`

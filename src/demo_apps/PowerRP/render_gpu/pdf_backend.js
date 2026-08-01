@@ -61,6 +61,7 @@ import { PDFDocument, PDFName, PDFDict, StandardFonts } from "pdf-lib";
 import { DEFAULT_FONT, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { richTextDraws } from "../core/richtext.js";
 import { fitBox, pointsBounds, inflateRect } from "../core/geometry.js";
+import { tokenizePathD, transformPathD, matIdentity } from "../core/svg_paths.js"; // THE grammar walker — older and complete; this file's local tokenizer knew only MathJax's subset
 import { intersectRect, aabbOfMappedRect } from "../core/clip.js"; // THE declared clip primitives — this file carried a byte-identical intersectRect for a day after clip.js unified it, and folded four mapped corners by hand in two more places
 
 /**
@@ -264,6 +265,11 @@ export function allEffectsProbeOp() {
  */
 export const BEZIER_K = 0.5522847498307936;
 
+/** Decimals a PDF operand carries, and therefore the precision normalizedRuns asks
+ * transformPathD for — so routing a path through the shared walker cannot round below
+ * what this file was going to write anyway. */
+export const PDF_PATH_DECIMALS = 4;
+
 /** Pure function. Compact PDF number (4 decimals, trimmed).
  * @example pdfNum(1.230000001) // "1.23"
  * @example pdfNum(-0.5) // "-0.5"
@@ -352,17 +358,26 @@ export function pointsPath(points) {
  * Pure function. An approximate bbox {x,y,w,h} of an SVG path `d` (its gradient
  * objectBoundingBox frame), from every on-path AND control point (control points
  * inflate the box slightly — a safe over-estimate for a gradient frame, no curve
- * flattening needed). Walks tokenizeSvgPath tracking the current point so relative
- * commands resolve. Covers the PDF-safe subset (M L H V C S Q T A Z, abs+rel).
+ * flattening needed). Walks `normalizedRuns`, so every grammar arrives already baked
+ * to absolute M L C Q Z and there is no relative accumulation left to get wrong.
+ *
+ * THIS FUNCTION WAS NEVER THE BUG, AND THAT IS WHY IT IS WORTH A NOTE. It read every
+ * coordinate pair in a run, so it stayed correct while the geometry beside it was
+ * being truncated — which meant a gradient-filled path got a CORRECT gradient box
+ * around a WRONG path, and the symptom pointed at the shading code. It is normalized
+ * now anyway, which also retires its one real defect: a RELATIVE implicit run stepped
+ * every pair from the same origin instead of from its predecessor.
  *
  * @example svgPathBounds("M0 0L10 0L5 8Z") // {x: 0, y: 0, w: 10, h: 8}
  * @example svgPathBounds("M2 3h10v6") // {x: 2, y: 3, w: 10, h: 6}
+ * @example // a RELATIVE implicit run: three steps of +10, so it reaches 30, not 10
+ * svgPathBounds("M0 0l10 0 10 0 10 0") // {x: 0, y: 0, w: 30, h: 0}
  */
 export function svgPathBounds(d) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   let cx = 0, cy = 0;
   const hit = (x, y) => { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); };
-  for (const tok of tokenizeSvgPath(d)) {
+  for (const tok of normalizedRuns(d)) {
     const cmd = tok[0], rel = cmd === cmd.toLowerCase(), a = tok.slice(1);
     const up = cmd.toUpperCase();
     if (up === "Z") continue;
@@ -387,38 +402,58 @@ export function svgPathBounds(d) {
 }
 
 /**
- * Pure function. Tokenizes an SVG path `d` string into [command, ...numbers]
- * runs. Splits on command letters (MLHVCSQTAZ, absolute+relative) and parses the
- * number list between them (commas/whitespace/sign-boundaries). MathJax v3
- * tex-svg glyph paths use ONLY absolute M L H V Q T Z (verified against the
- * bundled tex font) — this tokenizer covers the broader SVG grammar so a future
- * MathJax/font change can't silently drop geometry.
+ * Pure function. `d` reduced to one explicit run per drawing command:
+ * `[["M",x,y], ["L",x,y], ["C",…6], ["Q",…4], ["Z"]]`, absolute, in the order drawn.
  *
- * @example tokenizeSvgPath("M0 0L10 10Z") // [["M", 0, 0], ["L", 10, 10], ["Z"]]
- * @example tokenizeSvgPath("M1 2 3 4") // [["M", 1, 2], ["L", 3, 4]] (repeated M coords → implicit L, SVG rule)
- * @example tokenizeSvgPath("H5V-3") // [["H", 5], ["V", -3]]
+ * ── WHY THIS REPLACED A LOCAL TOKENIZER, AND WHY THAT TOKENIZER WAS ONCE RIGHT ──
+ * This file used to carry its own `tokenizeSvgPath`, which split on command letters
+ * and put every number up to the next letter into ONE run. Its docblock said what it
+ * was for: "MathJax v3 tex-svg glyph paths use ONLY absolute M L H V Q T Z". MathJax
+ * emits an explicit letter per segment, so one-run-per-letter WAS one-run-per-segment
+ * and the tokenizer was correct for its only input. This was scope creep, not
+ * carelessness — the function was later pointed at authored artwork without its
+ * grammar widening.
+ *
+ * SVG's implicit repeat then broke it silently. `M0 0L10 0 20 10 30 0 40 10` is four
+ * segments; it tokenized to ONE `["L",10,0,20,10,30,0,40,10]` run, and the consumer
+ * reads one segment's worth of arguments per run, so THREE SEGMENTS WERE DROPPED with
+ * exit 0 and no warning. Two implicit cubics exported as one. Skia and the SVG backend
+ * rendered the same input correctly; PDF alone lost it. Implicit repeats are exactly
+ * what SVGO, Illustrator and Figma emit — it is their main size win — so this fired on
+ * ordinary artwork rather than an edge case.
+ *
+ * ── AND WHY THE SECOND-ORDER FAILURE SENDS YOU TO THE WRONG FILE ───────────────
+ * `svgPathBounds` below walks EVERY coordinate pair in a run, so it was always right.
+ * A gradient-filled path therefore got a CORRECT gradient box around AMPUTATED
+ * geometry — which presents as a gradient bug. Anyone debugging it from the picture
+ * would go looking in the shading code, which is not where the bug was.
+ *
+ * ── ONE GRAMMAR, ONE WALKER ───────────────────────────────────────────────────
+ * `core/svg_paths.js transformPathD` already had the complete, correct walk — implicit
+ * repeats, relative commands, H/V, S/T reflection, and arcs — and predates the local
+ * tokenizer, so precedence and correctness agree. Normalizing through it at IDENTITY
+ * reduces any grammar to explicit absolute `M L C Q Z`, after which one-run-per-letter
+ * is true by construction and the consumers below need no arity logic of their own.
+ * Two consequences worth stating: an ARC now EXPORTS (it used to reach the consumer's
+ * "unsupported command" throw) as the standard cubic approximation, and the precision
+ * is asked for explicitly as PDF_PATH_DECIMALS so normalization does not quietly round
+ * below what pdfNum would have written.
+ *
+ * @param {string} d - any SVG path data string
+ * @returns {Array<Array<string|number>>} one run per command
+ *
+ * @example normalizedRuns("M0 0L10 10Z") // [["M",0,0],["L",10,10],["Z"]]
+ * @example normalizedRuns("M0 0L10 0 20 10").length // 3 (the implicit repeat is its own run)
+ * @example normalizedRuns("M0 0H10") // [["M",0,0],["L",10,0]] (H is baked to an absolute L)
  */
-export function tokenizeSvgPath(d) {
-  const tokens = [];
-  const re = /([MLHVCSQTAZmlhvcsqtaz])|(-?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)/g;
-  let m, cur = null;
-  while ((m = re.exec(d)) !== null) {
-    if (m[1] !== undefined) { cur = [m[1]]; tokens.push(cur); }
-    else {
-      if (!cur) throw new Error(`tokenizeSvgPath: number before any command in "${d.slice(0, 40)}"`);
-      // SVG rule: extra coord pairs after M/m implicitly continue as L/l.
-      const expected = SVG_ARGS[cur[0].toUpperCase()];
-      if (expected > 0 && cur.length - 1 === expected && (cur[0] === "M" || cur[0] === "m")) {
-        cur = [cur[0] === "M" ? "L" : "l"]; tokens.push(cur);
-      }
-      cur.push(Number(m[2]));
-    }
+export function normalizedRuns(d) {
+  const runs = [];
+  for (const t of tokenizePathD(transformPathD(d, matIdentity(), PDF_PATH_DECIMALS))) {
+    if (typeof t === "string") runs.push([t]);
+    else runs[runs.length - 1].push(t);
   }
-  return tokens;
+  return runs;
 }
-
-/** Number of numeric args per SVG path command (per pair for repeatable ones). */
-const SVG_ARGS = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
 
 /**
  * Pure function. Converts an SVG path `d` string into PDF path operators
@@ -455,7 +490,7 @@ export function svgPathToPdfOps(d) {
     out.push(`${n(c1x)} ${n(c1y)} ${n(c2x)} ${n(c2y)} ${n(ex)} ${n(ey)} c`);
     qpx = qcx; qpy = qcy; cx = ex; cy = ey;
   };
-  for (const tok of tokenizeSvgPath(d)) {
+  for (const tok of normalizedRuns(d)) {
     const cmd = tok[0];
     const rel = cmd === cmd.toLowerCase();
     const up = cmd.toUpperCase();
