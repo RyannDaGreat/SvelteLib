@@ -173,7 +173,28 @@
   --a-phone-max: 640px;
   /* The iOS Human Interface Guidelines minimum tap target. Named because "44" in
      a rule would be unexplainable — it is a platform floor, not a taste, and
-     --a-control-h's 26px is 59% of it. */
+     --a-control-h's 26px is 59% of it.
+     PHONES DO NOT GET --a-control-h RAISED TO THIS, AND THAT IS A DECISION, NOT
+     AN OVERSIGHT. One declaration would lift all 50 sub-floor controls at once —
+     `@media (max-width: 640px) { :root { --a-control-h: var(--a-tap-min); } }` —
+     and it is exactly what the token exists for. It is NOT APPLIED because it
+     adds 18px to every row, and the Inspector and Tools pane are stacks of those
+     rows, so a phone could end up showing FEWER rows than before. Nobody has run
+     the screenshot pass at 375/393/430 that would settle it. Do not add that
+     one-liner without doing so first: the dock takes --a-tap-min because a
+     SINGLE control can afford the space, which is not the same claim as a panel
+     of forty being able to. (W5-MOBILE measured the 50-of-50 shortfall and
+     withheld the remedy on this ground; W4-P ruled not-yet and recommended it as
+     its own todo, because it is a layout change the user should judge — he asked
+     for Play to be reachable, not for the Inspector to be re-proportioned.)
+     THIS PARAGRAPH IS HERE BECAUSE THE PARAGRAPH ABOVE IT ARMED A TRAP. It
+     states the problem — 26px is 59% of the floor — and said nothing about why
+     the obvious fix was declined, so a future reader had every reason to write
+     the one-liner and none to hesitate. The decision against it existed only in
+     `.frenzy`, which is GITIGNORED: not a destroyed record, but one that was
+     never in the repository at all. A deliberate negative leaves no trace in
+     code by construction, so stating the problem without stating the refusal is
+     worse than stating neither. */
   --a-tap-min: 44px;
   --a-input-w: 90px; /* THE value-field MIN width: number, text, color, equation.
      Value controls GROW past this to fill the panel (round-11 ruling) — the row
