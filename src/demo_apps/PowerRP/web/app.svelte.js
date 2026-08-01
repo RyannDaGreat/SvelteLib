@@ -24,7 +24,11 @@ import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWor
 // The LIST-ELEMENT operations the HANDLE actions route through — one mechanism for
 // per-element hide and purge, shared with the Inspector's list control.
 import { LIST_ROW_KIND, withElementActive, withElementPurged } from "../core/lists.js";
-import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, isEquationValue, materialParamDefaultAt } from "../core/expressions.js";
+import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, materialParamDefaultAt } from "../core/expressions.js";
+// "Which of these stored leaves hold an = equation" — ONE expression, four
+// consumers (web/canvas/equationBinding.js's header names them all). This file's
+// is beginTextEdit's refusal.
+import { equationBoundKeys } from "./canvas/equationBinding.js";
 // `compiledScriptExports` is core/project_script.js's `projectScriptExports`,
 // renamed at the import so it cannot be confused with the same-named method below
 // (which resolves the source and delegates here). Two identical names in one file,
@@ -182,6 +186,12 @@ const SETTINGS = {
   grid: browserSetting("powerrp.grid", false),
   ruler: browserSetting("powerrp.ruler", false),
   showGhosts: browserSetting("powerrp.showGhosts", false),
+  // R6-28 EQUATION LOCK. DEFAULT OFF, by explicit user ruling ("the protection
+  // is not on by default"): with it off, grabbing an axis that moved still
+  // replaces its equation with a literal, which is the established body-drag
+  // rule (web/canvas/dragKinds.js translationPairs). Armed, an equation-bound
+  // coordinate becomes read-only to every canvas gesture.
+  equationLock: browserSetting("powerrp.equationLock", false),
   fps: browserSetting("powerrp.fps", false),
   // "Show built-in assets" in the Asset Explorer. DEFAULT OFF, per the user's
   // ruling: "maybe the asset explorer could have a toggle for built-in assets. By
@@ -783,6 +793,14 @@ export class PowerRPApp {
   // ghost outlines are NOT gated by this — they show ALWAYS (core/derive.
   // isGhostNode + the "always" rule: a crop box is unclickable otherwise).
   showGhosts = $state(SETTINGS.showGhosts.initial);
+  // R6-28 EQUATION LOCK, default OFF. While armed, any stored coordinate holding
+  // an `=` equation is READ-ONLY to canvas gestures: the drag seam pins it
+  // (web/canvas/equationBinding.js equationPinning composed into
+  // web/canvas/dragKinds.js geometryPairs), so a lock on `y` leaves a body drag
+  // free in x alone and a lock on `h` leaves a corner handle resizing width
+  // alone. CANVAS GESTURES ONLY, by user ruling — the Inspector's own fields
+  // stay editable, because they already SHOW the equation they would replace.
+  equationLock = $state(SETTINGS.equationLock.initial);
   // Default OFF: the bottom-left FPS counter (shows in the editor AND present
   // mode — user spec, round 11).
   fpsVisible = $state(SETTINGS.fps.initial);
@@ -871,6 +889,10 @@ export class PowerRPApp {
 
   toggleGhosts() {
     this.showGhosts = SETTINGS.showGhosts.persist(!this.showGhosts);
+  }
+
+  toggleEquationLock() {
+    this.equationLock = SETTINGS.equationLock.persist(!this.equationLock);
   }
 
   /**
@@ -1871,7 +1893,7 @@ export class PowerRPApp {
     const property = opts.property ?? "text";
     if (plain) {
       const plugin = this.registry.get(this.storedItemValue(itemId, ["type"]));
-      if (plugin && isEquationValue(plugin, [property], this.storedItemValue(itemId, [property]))) {
+      if (plugin && equationBoundKeys(this, itemId, plugin, [property]).length) {
         console.warn(`beginTextEdit: "${property}" is an = equation — edit it in the Inspector (in-place editing would overwrite the equation with its value).`);
         return;
       }
@@ -3301,8 +3323,20 @@ export class PowerRPApp {
    *
    * Single-item, deliberately: shattering several widgets at once would produce
    * several groups and one undo entry that is hard to reason about, and no
-   * existing command does it. The plugin's own refusal (an unrendered diagram)
-   * surfaces here too, by asking it to plan.
+   * existing command does it.
+   *
+   * CHEAP ON PURPOSE, and this was MEASURED the hard way. The first version also
+   * asked the plugin to PLAN, so the gate could say "the diagram has not finished
+   * rendering". But a `when` is re-evaluated on every palette render and every
+   * availability pass, and planning a mermaid diagram regroups every path and
+   * text in it — so the gate ran a full decomposition many times a second for a
+   * command nobody had invoked. It was enough to push tests/palette_probe.js's
+   * clipboard settle over its budget; a detached-worktree bisect with ONLY the
+   * command registration removed went green, which is what found it.
+   *
+   * The plugin's own refusal did not disappear, it MOVED to run time, where it is
+   * reported loudly by shatterSelection — see there. An expensive gate is not a
+   * safer gate; it is the same answer, computed constantly, for nothing.
    */
   shatterBlocker() {
     const ids = this.selectedIds();
@@ -3312,9 +3346,6 @@ export class PowerRPApp {
     if (!folded) return "a widget on this slide";
     if (!shatterEligible(this.registry.get(folded.type)))
       return `a widget that can be shattered — ${this.registry.get(folded.type).title} does not declare a decomposition`;
-    const plan = this.#shatterPlan(ids[0], folded);
-    if (typeof plan === "string") return plan;
-    if (plan.parts.length === 0) return "a widget with something to decompose — this one draws no recoverable parts";
     return null;
   }
 
@@ -3354,7 +3385,20 @@ export class PowerRPApp {
     }
     const id = this.selectedIds()[0];
     const folded = this.state().items[id];
+    // THE PLUGIN'S OWN REFUSAL IS ANSWERED HERE, not in the gate: planning is too
+    // expensive to run on every availability pass (see shatterBlocker). A refusal
+    // is reported LOUDLY and converts nothing — never a silent no-op.
     const plan = this.#shatterPlan(id, folded);
+    if (typeof plan === "string") {
+      this.shatterReport = `Convert to Widgets: ${plan}`;
+      console.warn(this.shatterReport);
+      return;
+    }
+    if (plan.parts.length === 0) {
+      this.shatterReport = "Convert to Widgets: this widget draws no recoverable parts, so there is nothing to convert.";
+      console.warn(this.shatterReport);
+      return;
+    }
     const node = this.nodes().find((n) => n.itemId === id);
     const box = rotatedBBoxAABB(node);
     this.dismissEdit();
@@ -4349,7 +4393,10 @@ export class PowerRPApp {
     if (isStatic()) {
       const { bytes, warnings } = await buildProjectZip(name, this.doc, assetStore());
       for (const w of warnings) console.warn(`downloadZip(${name}): ${w}`);
-      downloadBytes(bytes, `${name}.zip`);
+      // The MIME type is STATED, not defaulted: downloadBytes is general (it also
+      // saves assets, renders and decks), so "application/zip" is this call's fact
+      // to declare rather than the helper's to assume.
+      downloadBytes(bytes, `${name}.zip`, "application/zip");
       return;
     }
     const { warnings } = await projectApi.downloadProjectZip(name);

@@ -36,6 +36,7 @@
   import { selectAllOnMount } from "../../../lib/selectAllOnMount.js";
   import GridSizePicker from "./GridSizePicker.svelte";
   import RenderCenterModal from "./RenderCenterModal.svelte";
+  import FileBrowser from "./FileBrowser.svelte";
   import CodeEditorModal from "./CodeEditorModal.svelte";
   import DebugConsole, { DEBUG_PAGES } from "./DebugConsole.svelte";
   import { renderBadgeCount } from "./renderJobView.js";
@@ -451,6 +452,30 @@
   let renderCenterVisible = $state(false);
   app.toggleRenderCenter = () => {
     renderCenterVisible = !renderCenterVisible;
+  };
+
+  // FILE BROWSER modal (R6-19): one navigable view of every store this editor can
+  // reach. The "File Browser" command TOGGLES it, mirroring the Render Center
+  // wrapper above. `fileBrowserPath` lets a per-item "reveal" affordance open it
+  // AT a path (the Render Center row / an asset tile) rather than at Home; it is
+  // reset to null on close so the next bare open starts at the project directory.
+  // THE PATH IS A PROP, NOT A PALETTE ARGUMENT — parameterised palette commands
+  // are banned (see the INTERACTIVE note below), so reveal is a plain onclick on
+  // the row that owns the file, exactly as the Asset Explorer's own per-tile
+  // trash/copy/download buttons are.
+  let fileBrowserVisible = $state(false);
+  let fileBrowserPath = $state(null);
+  app.toggleFileBrowser = () => {
+    if (fileBrowserVisible) {
+      fileBrowserVisible = false;
+      fileBrowserPath = null;
+      return;
+    }
+    fileBrowserVisible = true;
+  };
+  app.openFileBrowser = (path = null) => {
+    fileBrowserPath = path;
+    fileBrowserVisible = true;
   };
 
   // DEBUG CONSOLE — the debug submenu's shell (web/DebugConsole.svelte). Its own
@@ -1070,6 +1095,18 @@
     // toggle (toggleGhosts), and the manifest's own words are "GHOST OBJECTS"
     // + a TOGGLE — so the title now matches both the siblings and the manifest.
     { id: "toggle-ghosts", title: "Toggle Ghost Objects (crop box / empty-text / group outlines)", icon: "mdi:eye-outline", run: (a) => a.toggleGhosts() },
+    // R6-28 EQUATION LOCK. THE CHAIN LINK is the user's own icon choice, arrived
+    // at after considering a grabbing-hand-plus-equation composite ("Actually,
+    // yeah, that's it"), and it doubles as the metaphor he used for the
+    // `width = height * 2` case — two properties chained so the GUI has to respect
+    // the link. `mdi:link-variant` was already in this file's vocabulary
+    // (open-project-url), so the toggle introduces no new glyph, and it follows
+    // the snap/anchor/ghost convention of ONE icon plus an `active` class rather
+    // than swapping to `mdi:link-variant-off`: those four siblings are how this
+    // toolbar has always said "on", and Toolbar.svelte's header names its three
+    // state-dependent-glyph overrides as deliberate exceptions rather than a
+    // pattern to join.
+    { id: "toggle-equation-lock", title: "Toggle Equation Lock", icon: "mdi:link-variant", aliases: ["constrained", "chain link", "protect equations", "lock", "read-only"], help: "While ON, any property driven by an = equation is READ-ONLY to canvas gestures: dragging, resizing and rotating cannot overwrite it, and the drag simply loses that degree of freedom (lock y and a drag moves in x alone; lock the height and a corner resizes the width alone). The Inspector's own fields are unaffected — they already show you the equation you would be replacing.", run: (a) => a.toggleEquationLock() },
     { id: "toggle-panel-names", title: "Toggle Panel Names", icon: "mdi:format-title", run: (a) => a.togglePanelNames() },
     // PANEL VISIBILITY — one command per dockable panel, GENERATED from
     // core/panels.js's PANELS rather than written out six times, so a new panel
@@ -1511,6 +1548,23 @@
     // rendering for this project is listed. It TOGGLES, because it is surfaced as
     // a persistent toolbar button rather than a one-shot menu action.
     { id: "render-center", title: "Render Center (Video)…", icon: "mdi:movie-open-outline", help: "Submit a video render and watch every rendering for this project. A Server job keeps going if you close the dialog, refresh the page, or shut the laptop — come back any time.", run: (a) => a.toggleRenderCenter() },
+    // THE FILE BROWSER (R6-19). One navigable view of every store this editor can
+    // reach, opened at the project directory. TOGGLES, like render-center, because
+    // it is a cross-cutting surface rather than a one-shot action.
+    //
+    // NO CHORD, deliberately. A keycap is scarce (see the panel-toggle note
+    // below: six of those earn none), and this is a "go and look" surface rather
+    // than a gesture in the middle of drawing. Palette-only until the user asks
+    // otherwise — and if a chord is ever added it goes in core/shortcut_entries.js,
+    // because a shortcut that is not registered there does not exist.
+    {
+      id: "file-browser",
+      title: "File Browser…",
+      icon: "mdi:folder-open-outline",
+      aliases: ["files", "storage", "explorer", "renderings", "cache", "assets"],
+      help: "Every file this editor can reach, in one place: the project's assets and renders, the unsaved draft's staging area, the offline app cache, and the built-in library. Opens at the project directory.",
+      run: (a) => a.toggleFileBrowser(),
+    },
     // THE DEBUG SUBMENU — a container-with-children parent (same shape as
     // Color Theme / Add Shape: a registry entry is `run` XOR `children`
     // (core/commands.js enforces it), so — exactly like a theme FAMILY row —
@@ -2656,6 +2710,25 @@
   >
     {#if renderCenterVisible}
       <RenderCenterModal {app} />
+    {/if}
+  </Modal>
+
+  <!-- THE FILE BROWSER — one navigable view of every store this editor can reach
+       (R6-19). size="large" for the same reason the Render Center asks for it: a
+       listing beside a detail pane has no usable intrinsic width to shrink-wrap.
+       titleIcon comes from the REGISTRY ENTRY, so the folder glyph in the header
+       and the one in the palette are one string in one place.
+       The `{#if}` remounts it per open, which is deliberate: the browser re-reads
+       every store on mount, and a modal that reopened onto a stale listing would
+       be lying about storage — the one thing this surface exists not to do. -->
+  <Modal
+    bind:open={fileBrowserVisible}
+    title="File Browser"
+    titleIcon={app.commands.get("file-browser").icon}
+    size="large"
+  >
+    {#if fileBrowserVisible}
+      <FileBrowser {app} at={fileBrowserPath} />
     {/if}
   </Modal>
 

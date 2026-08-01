@@ -28,7 +28,7 @@
 <script module>
   import { humanReadableFileSize } from "./fileSize.js";
   import { relativeMtime } from "./projectPreviews.js";
-  import { rpFuzzyScore } from "../core/fuzzy.js";
+  import { rpFuzzyRank } from "../core/fuzzy.js";
 
   /**
    * Pure function. The assets matching a fuzzy query, best match FIRST — the same
@@ -64,14 +64,11 @@
    * // filterAssets([{name: "logo.png", url: "/asset/D/logo.png"}], "zzz") // => []
    */
   export function filterAssets(assets, query) {
-    const list = assets ?? [];
-    const q = String(query ?? "").trim();
-    if (q === "") return list;
-    return list
-      .map((a) => ({ a, score: rpFuzzyScore(q, a.url ?? a.name) }))
-      .filter((r) => r.score !== null)
-      .sort((x, y) => x.score - y.score) // LOWER is better (core/fuzzy.js's convention)
-      .map((r) => r.a);
+    // The score/filter/sort trio itself lives in core/fuzzy.js (rpFuzzyRank) —
+    // web/storagePath.js's filterEntries ranks File Browser entries with the SAME
+    // function, so the two surfaces cannot drift on what a query matches. What
+    // stays here is only WHICH FIELD an asset is ranked by.
+    return rpFuzzyRank(assets, query, (a) => a.url ?? a.name);
   }
 
   /**
@@ -294,6 +291,7 @@
   // web/storageMode.js) — a bare mode-blind seam sent the draft key to the server.
   import { assetStoreFor } from "./storageMode.js"; // resolves an asset ref for THIS page's storage
   import { copyText } from "./clipboard.js";
+  import { downloadBytes } from "./fileDownload.js";
   import { inventoryReport, quotaTooltipCategories } from "./debugStorage.js";
   // gatherDebugStorageData: the SAME origin-wide gathering the Debug console's
   // Storage page uses (web/DebugStoragePage.svelte) — reused rather than a
@@ -696,16 +694,12 @@
       const blob = a.builtin
         ? new Blob([a.source], { type: "text/javascript" })
         : await assetStoreFor(app.projectName()).get(app.projectName(), a.name);
-      const href = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = href;
-      link.download = a.name; // the asset's own basename, never the resolved URL's
-      // Must be IN the document for the synthetic click to navigate in Firefox;
-      // removed immediately after, so no stray node outlives the download.
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(href);
+      // The objectURL + a[download] + revoke gesture is web/fileDownload.js's
+      // `downloadBytes` — the ONE definition (it had eleven hand-written copies
+      // across web/, and the Firefox in-document-anchor note this copy used to
+      // carry moved there with it). `a.name` is the asset's own basename, never
+      // the resolved URL's.
+      downloadBytes(blob, a.name);
     } catch (e) {
       error = String(e?.message ?? e);
       console.error(`AssetExplorer: could not download "${a.name}":`, e);

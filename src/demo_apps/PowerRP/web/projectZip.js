@@ -316,24 +316,12 @@ export function mimeForAsset(filename) {
   return MIME_BY_EXT[ext] ?? "application/octet-stream";
 }
 
-/**
- * Command (triggers a browser download). Save `bytes` as `filename` through an
- * object-URL anchor click — the same gesture projectApi.downloadProjectZip uses
- * for the server-built archive, so both modes produce one download experience.
- *
- * @param {Uint8Array} bytes - file bytes
- * @param {string} filename - the download's name
- * @param {string} type - MIME type
- *
- * @example
- * >>> downloadBytes(zipBytes, "My Talk.zip", "application/zip")  // save dialog
- */
-export function downloadBytes(bytes, filename, type = "application/zip") {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([bytes], { type }));
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
+// `downloadBytes` MOVED to web/fileDownload.js, which is the one home for the
+// object-URL + a[download] gesture (it had eleven hand-written copies across
+// web/). Re-exported HERE so every existing importer keeps working unchanged —
+// the same "one definition, re-exported through the seam callers already know"
+// arrangement web/assetStore.js uses for MISSING_ASSET_URL. New callers should
+// import it from web/fileDownload.js directly.
+export { downloadBytes } from "./fileDownload.js";
 
 export { assetKindForName };

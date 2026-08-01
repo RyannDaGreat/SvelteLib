@@ -11,6 +11,8 @@
  * command layer surfaces the error to the user/console.
  */
 
+import { downloadBytes } from "./fileDownload.js";
+
 const params = new URLSearchParams(location.search);
 export const BACKEND = params.get("backend") || "";
 
@@ -345,12 +347,9 @@ export async function downloadProjectZip(name) {
   const res = await fetch(`${BACKEND}/api/download/${enc(name)}/`);
   if (!res.ok) throw new Error(`downloadProjectZip(${name}): ${res.status}`);
   const warning = res.headers.get("X-PowerRP-Warning");
-  const blob = await res.blob();
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `${name}.zip`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  // The objectURL + a[download] + revoke gesture is web/fileDownload.js's
+  // `downloadBytes` — the one definition of it in this app.
+  downloadBytes(await res.blob(), `${name}.zip`);
   // " | " is the server's join (header_safe_warning) — an HTTP header value is one
   // line, and it must be latin-1, so the separator is ASCII on purpose.
   return { warnings: warning ? warning.split(" | ") : [] };

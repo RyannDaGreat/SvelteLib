@@ -98,3 +98,41 @@ export function rpFuzzyMatchIndices(query, candidate) {
   }
   return q < queryChars.length ? null : indices;
 }
+
+/**
+ * Pure function. Rank a list of items by rpFuzzyScore against a key read off each
+ * one, BEST FIRST, dropping the non-matches. The one place the
+ * score/filter/sort trio is written down, so two surfaces filtering the same kind
+ * of list cannot disagree about what "vid" matches or which match wins.
+ *
+ * AN EMPTY QUERY IS NOT A FILTER: the list passes through in its incoming order,
+ * so opening a search box never reshuffles what is already on screen. A query
+ * matching nothing returns [] — the caller is expected to say "nothing matched",
+ * because an empty result and an empty collection must never look the same.
+ *
+ * @param {T[]} items - anything with a rankable string on it
+ * @param {string} query - the raw filter text (trimmed here)
+ * @param {(item: T) => string} keyOf - the string to rank each item by
+ * @returns {T[]} the matching items, lowest score (best) first
+ * @template T
+ *
+ * @example
+ * >>> rpFuzzyRank([{f: "clip.mp4"}, {f: "logo.png"}], "cmp4", (x) => x.f)
+ * [{f: 'clip.mp4'}]
+ * @example // an empty query keeps the incoming order, unfiltered:
+ * >>> rpFuzzyRank([{f: "b"}, {f: "a"}], "  ", (x) => x.f).map((x) => x.f)
+ * ['b', 'a']
+ * @example
+ * >>> rpFuzzyRank([{f: "logo.png"}], "zzz", (x) => x.f)
+ * []
+ */
+export function rpFuzzyRank(items, query, keyOf) {
+  const list = items ?? [];
+  const q = String(query ?? "").trim();
+  if (q === "") return list;
+  return list
+    .map((item) => ({ item, score: rpFuzzyScore(q, keyOf(item) ?? "") }))
+    .filter((r) => r.score !== null)
+    .sort((x, y) => x.score - y.score) // LOWER is better (this module's convention)
+    .map((r) => r.item);
+}

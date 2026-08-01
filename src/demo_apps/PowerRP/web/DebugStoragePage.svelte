@@ -113,12 +113,10 @@
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import { downloadBytes } from "./fileDownload.js";
+  import { previewOfBlob, releasePreview } from "./storageTree.js";
 
   let { app } = $props();
-
-  // A preview is a PEEK, not a second copy of a multi-MB asset held in
-  // component state. Module-top per core/endpoints.js:23's precedent.
-  const PREVIEW_TEXT_BYTES = 4096;
 
   let loading = $state(true);
   /** The one visible error line, for BOTH a failed gather and a failed row
@@ -184,23 +182,16 @@
   }
 
   /** Command (downloads a file; mutates `error`). Save one asset's bytes to
-   *  disk — the exact objectURL + a[download] + revoke pattern
-   *  web/AssetExplorer.svelte's downloadAsset uses, so a debug download and a
-   *  library download behave identically, INCLUDING the failure: the sentence
-   *  lands on the pane's own error line as well as the console, because a
-   *  download that did not happen must never look like one that did. */
+   *  disk. The objectURL + a[download] + revoke gesture itself is
+   *  web/fileDownload.js's `downloadBytes` — ONE definition, so a debug download
+   *  and a library download cannot behave differently. What stays here is the
+   *  failure report: the sentence lands on the pane's own error line as well as
+   *  the console, because a download that did not happen must never look like
+   *  one that did. */
   async function downloadAsset(project, name) {
     error = null;
     try {
-      const blob = await assetStoreFor(project).get(project, name);
-      const href = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = href;
-      link.download = name;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(href);
+      downloadBytes(await assetStoreFor(project).get(project, name), name);
     } catch (e) {
       error = `Couldn't download "${rowLabel(project)} / ${name}" — ${e?.message ?? e}`;
       console.error(`DebugStoragePage: could not download "${project}/${name}":`, e);
@@ -214,15 +205,7 @@
   async function downloadRendering(project, jobId, name) {
     error = null;
     try {
-      const blob = await renderingBlob(project, jobId);
-      const href = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = href;
-      link.download = name;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(href);
+      downloadBytes(await renderingBlob(project, jobId), name);
     } catch (e) {
       error = `Couldn't download the rendering "${name}" — ${e?.message ?? e}`;
       console.error(`DebugStoragePage: could not download rendering "${project}/${jobId}":`, e);
@@ -237,20 +220,18 @@
   async function togglePreview(project, name, kind) {
     const key = rowKey(project, name);
     if (previews[key]) {
-      if (previews[key].url) URL.revokeObjectURL(previews[key].url);
+      releasePreview(previews[key]);
       const next = { ...previews };
       delete next[key];
       previews = next;
       return;
     }
     try {
-      const blob = await assetStoreFor(project).get(project, name);
-      if (kind === "image" || kind === "video") {
-        previews = { ...previews, [key]: { kind, url: URL.createObjectURL(blob) } };
-      } else {
-        const text = await blob.slice(0, PREVIEW_TEXT_BYTES).text();
-        previews = { ...previews, [key]: { kind: "text", text: text + (blob.size > PREVIEW_TEXT_BYTES ? "\n…" : "") } };
-      }
+      // The image/video-vs-text decision and the PREVIEW_TEXT_BYTES peek live in
+      // web/storageTree.js (previewOfBlob) — the Asset Explorer and the File
+      // Browser read the SAME one, so "what a preview of this file looks like"
+      // has one answer in this app rather than three.
+      previews = { ...previews, [key]: await previewOfBlob(await assetStoreFor(project).get(project, name), kind) };
     } catch (e) {
       previews = { ...previews, [key]: { kind: "error", text: String(e?.message ?? e) } };
     }
