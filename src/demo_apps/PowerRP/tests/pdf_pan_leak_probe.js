@@ -28,7 +28,7 @@
  * Asserting "the tab survived" would need ~1150 pan steps and ~6 minutes, and the
  * step count where it dies depends on the host's free memory. Asserting "the heap
  * stayed under N MB" is barely better: the fixed code is ALLOWED to hold a bounded
- * region cache (pdf_page_raster.PDF_REGION_CACHE_BYTES = 256 MiB), which is the
+ * raster cache (pdf_page_raster.PDF_RASTER_CACHE_BYTES = 256 MiB), which is the
  * same order as what the broken code leaks over a short session, so any single
  * threshold sits uncomfortably close to both answers.
  *

@@ -308,12 +308,13 @@ function notify(src) {
  * in-flight paint still holds the Image: a CanvasKit Image handed to paint_skia
  * through the media map is used SYNCHRONOUSLY during that paint, so a caller must
  * free between paints, never during one, and never for a ref the NEXT paint will
- * ask for (pdf_page_raster.trimPdfRegionCache is the worked example — it excludes
- * the refs the frame it was called from just produced).
+ * ask for (pdf_page_raster.trimPdfRasterCache is the worked example — it runs at
+ * the frame boundary and excludes every ref requested since the previous one).
  *
  * A ref that is still LOADING is NOT freed (there is nothing to free yet, and
  * dropping the reserved slot would send the compositor's ensureImage fallback off
- * to fetch() a synthetic ref — see reserveImageSlot). Returns the bytes the freed
+ * to fetch() a synthetic ref — see reserveImageSlot; a reservation that will NEVER
+ * be filled is retired by abandonImageSlot instead). Returns the bytes the freed
  * Image copy occupied in the wasm heap (0 when nothing was freed), so a caller can
  * account for what it reclaimed.
  *

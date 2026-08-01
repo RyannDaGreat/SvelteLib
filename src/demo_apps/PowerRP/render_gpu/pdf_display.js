@@ -72,7 +72,7 @@ import { rotatedBBoxAABB, rectsIntersect } from "../core/view.js";
 import { cropInsetsToSource } from "./decorate.js";
 import {
   ensurePdfDoc, pdfPageCount, pdfPagePointSize, ensurePdfPagePointSize,
-  ensurePdfPageRegionRasterized, trimPdfRegionCache, clampPage, PDF_MAX_RASTER_DIM,
+  ensurePdfPageRegionRasterized, trimPdfRasterCache, clampPage, PDF_MAX_RASTER_DIM,
 } from "./gpu/pdf_page_raster.js";
 
 // ── RENDER MODES (the pdf_page widget's `renderMode` property) ────────────────
@@ -286,13 +286,15 @@ export function preRasterizePdfPages(nodes, view, viewW, viewH) {
     const { ref } = ensurePdfPageRegionRasterized(s.src, page, vsr.sourceRect, scale, point);
     map.set(node.itemId, { ref, x: vsr.localRect.x, y: vsr.localRect.y, w: vsr.localRect.w, h: vsr.localRect.h });
   }
-  // FREE THE REGIONS THIS FRAME NO LONGER NEEDS. "live" mode mints a NEW region ref
-  // per view change, so a pan session accumulates one per frame — and until this
-  // call existed nothing ever freed one, walking CanvasKit's wasm heap into its
-  // 2 GiB ceiling and killing the editor (see PDF_REGION_CACHE_BYTES for the
-  // measurement). THIS is the right place: the pre-pass is the frame boundary, and
-  // the refs in `map` are exactly the ones the paint that follows will use, so they
-  // are handed over as the keep-set and are never freed out from under it.
-  trimPdfRegionCache(new Set([...map.values()].map((d) => d.ref)));
+  // FREE THE PDF RASTERS THIS FRAME NO LONGER NEEDS — both the region rasters "live"
+  // mode mints per view change AND the whole-page rasters emit() mints per widget
+  // SIZE bucket. Until this call existed nothing ever freed either, and each walked
+  // CanvasKit's wasm heap into its 2 GiB ceiling and killed the editor (see
+  // PDF_RASTER_CACHE_BYTES for both measurements). THIS is the right place: the
+  // pre-pass is the frame boundary, the one moment between two paints. The trim
+  // takes no keep-set — it keeps whatever was ASKED FOR since the last one, which is
+  // the only way the whole-page refs are covered (this pre-pass cannot compute them
+  // without mirroring the plugin's scale formula).
+  trimPdfRasterCache();
   return map;
 }

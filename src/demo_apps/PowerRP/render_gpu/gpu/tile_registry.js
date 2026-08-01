@@ -33,7 +33,7 @@
  * So this module OWNS THE LIFETIME of every ref it mints and calls
  * `releaseImage()` on eviction — the "explicit invalidation call" that header
  * reserves for precisely this case, and the same discipline pdf_page_raster's
- * trimPdfRegionCache follows. The budget is BYTES, not a count, for the reason
+ * trimPdfRasterCache follows. The budget is BYTES, not a count, for the reason
  * stated there: a count cap is meaningless when entry size varies, and bytes are
  * the physical quantity that runs out.
  *
