@@ -3724,8 +3724,13 @@ textarea {
   margin: var(--a-sp-1) var(--a-sp-2);
   background: var(--border);
 }
-/* The live font-size readout between the +/- steppers. */
+/* The live font-size readout between the +/- steppers. Since R6-13.2 it holds a
+   DraggableNumber, so the slot is a FLEX BOX rather than a text span: an inline
+   span baseline-aligns its 26px control inside a ~30px line box, which pushed the
+   whole bar from 32px to 36px. Measured. */
 .text-format-size {
+  display: inline-flex;
+  align-items: center;
   min-width: calc(var(--a-control-h) - var(--a-sp-2));
   text-align: center;
   color: var(--fg);
@@ -3733,6 +3738,36 @@ textarea {
 }
 .text-format-font {
   width: calc(var(--a-control-h) * 4);
+}
+
+/* THE SIZE READOUT'S SCRUBBER (R6-13.2) is a BARE DraggableNumber — no .numfield
+   wrapper — so neither the `.inspector, .varspanel` --dn-* theming block nor the
+   `.numfield .dn` sizing standard reaches it. Measured without this rule: the
+   control renders 68.91 x 30.39 with a 4px radius beside 26 x 26 SQUARE icon
+   buttons and a 26px font slot, pushing the bar from 32px to 38.19px tall. Same
+   defect, and the same fix, as `.inspector .paint-material-row`'s knob: state the
+   standard where the control actually is.
+
+   THE THREE-CLASS CHAIN IS LOAD-BEARING, for the reason that rule records:
+   DraggableNumber declares --dn-radius on its OWN .dn root, scoped to
+   `.dn.svelte-hash` at (0,2,0) and injected LATER, so a two-class
+   `.text-format-toolbar .dn` would only TIE and lose on source order. */
+.text-format-toolbar {
+  --dn-bg: var(--control-bg);
+  --dn-fg: var(--fg);
+  --dn-fg-dim: var(--fg-dim);
+  --dn-border: var(--border);
+  --dn-accent: var(--a-selection);
+  --dn-padding: 0 var(--a-sp-2) 0 var(--a-sp-1);
+  --dn-font-size: var(--a-font-md);
+  --dn-hover-bg: var(--a-hover-bg);
+  --dn-wheel-width: 10px;
+  --dn-wheel-height: 18px; /* fits inside --a-control-h (26px) with 4px slack */
+}
+.text-format-toolbar .text-format-size .dn {
+  --dn-radius: var(--a-radius-control); /* like every other field control */
+  height: var(--a-control-h);
+  box-sizing: border-box;
 }
 
 /* ── Self-rendering FontPicker (manifest #26). Bespoke dropdown: trigger shows
