@@ -998,6 +998,70 @@ manifest, which is the only durable, agent-visible record.
 - **R6-7.3 SCOPE.** A whole CLASS: every material's shader params on every material
   widget. Task #149 closed a sweep over "six field kinds" and missed this path.
 
+#### R6-7 DIAGNOSIS — PROVEN, TWO STACKED FAILURES (wave 1, agent W1-F; report `.frenzy/round6/W1-F.md`, 669 lines)
+
+**A CONTROL EXPERIMENT REFINES R6-7.2, WHICH NAMED THE WRONG SITE.** The IDENTICAL
+`ATMOSPHERE_FILL_PARAMS`, spread into globe_map's `customProps` instead, **ACCEPTS
+`=time` and evaluates it to 2 with zero errors.** So the declaration is innocent (as
+R6-7.2 said) but the failing path is specifically **PaintField's material-param rows plus
+`resultKindForSlot`** — not the globe_map spread that R6-7.2 pointed at.
+
+**FAILURE 1 — THE UI NEVER OFFERS THE SEAM.** `web/Inspector.svelte:697` reads
+`if (!EQUATION_KINDS.has(rowKind(row)) || row.paint) return false;` — **`equationCapable`
+excludes `row.paint` outright** (lead-verified verbatim), and PaintField is one row's
+CONTROL (`Inspector.svelte:1622`), so nothing inside it can reach the Tier-0 equation
+seam. Inside, the knobs mount BARE widgets with no `onedit`/`ontext` and no ƒ:
+`web/PaintField.svelte:797-806` mounts a bare `DraggableNumber` instead of
+`NumericField`; `color` -> bare ColorField `:762`; `select` -> bare Dropdown `:776`;
+`boolean` -> a native checkbox `:784`.
+
+**FAILURE 2 — THE CORE REJECTS THE PATH.** `core/expressions.js:1655`
+`resultKindForSlot` types every `<paint>.material.params.*` as `"unresolved"`, so it is
+refused; and `fallbackFor` (`:2313`) then writes **0, NOT the schema default**. Browser
+evidence: typing `=time` stores nothing, shows red text, and logs only
+`DraggableNumber: "=time" is not a number`. Forced into the document by hand:
+`stored "=time"` -> `evaluated 0`. So even the escape hatch silently yields zero.
+
+**SCOPE MEASURED: 294 knobs across 22 materials** (16 fill + 6 stroke) on 3 paint slots;
+plugin materials inherit the defect through `core/material_plugins.js:594`. Census in the
+report.
+
+**THE CLAMP QUESTION IS ANSWERED — NON-ISSUE.** `core/properties.js:43-59` plus
+`web/NumericField.svelte:42-46`: equations are NEVER clamped; min/max bound the DRAG
+only. Atmosphere's own bounds are mixed — `rimPower`'s floor is technical, while
+`rimStrength` 3 / `haloWidth` 1 / `rimPower` 12 are taste — and should be respelled
+`scrubMin`/`scrubMax`, but that is off the critical path.
+
+**MINIMAL FIX, ALL THREE PARTS HAVE PRECEDENT:** (a) add a `materialParamKind` step to
+`resultKindForSlot` — layering is fine, `expressions.js:117` already imports from
+`render_gpu`, and there is exactly ONE production caller (`:2303`) which already has the
+item in scope; (b) mount `NumericField` / `AngleField` / the Tier-0 control in the knob
+rows, using the `value`-fallback pattern **AngleField already has** (`:233`) and that
+PaintField itself already uses (`:898`), so sparse params survive; (c) a per-knob ◆
+keyframe affordance.
+
+**THE `Inspector.svelte:852` BUG IS NOW CONFIRMED BY TWO INDEPENDENT AGENTS AND BY THE
+LEAD.** Verbatim: `eqDraft = equationSeed(getPath(app.state(), path));` — `path` is
+undeclared, so clicking the Tier-0 ƒ throws `ReferenceError: path is not defined` on
+**every** color/boolean/select/asset/text row, and because `eqOpenKey` is set first the
+entry opens UNSEEDED. Fix it together with R6-7.
+
+**OTHER EQUATION-REFUSING PATHS, RANKED** (this is the "hunt them all down" list the user
+asked for): rich-text content/runs (no row AND an undeclared array — fails at both
+layers); `kind:"list"` rows; non-numeric list ELEMENT fields
+(`web/ListField.svelte:657-670`); **MIXED multi-select rows lose ƒ on EVERY kind**
+(`:1344-1364` precede `:1365`), which contradicts the comment at `:654-658`;
+`visibleWhen` drops the row entirely (`:298`); transition rows; variables are
+number-only by fiat.
+
+**Violations recorded:** native checkbox at `PaintField.svelte:784` versus
+`tests/boolean_uniformity_probe.js:12-17`'s "ZERO native checkboxes" claim — so the probe
+asserts something false; stale comment at `Inspector.svelte:690-693`, contradicted by
+`core/properties.js:784`; an unexplained camera carve-out at
+`boolean_uniformity_probe.js:232`; `kind:"stops"` sits outside `ROW_KINDS` so
+`customProps` throws on it; and `app.addItem` returns `undefined` while two probes read
+its return value as an id.
+
 ### R6-8 NESTED SECTIONS / SUB-DROPDOWNS
 
 - **R6-8.1** Every sub-section gets the draggable label/value divider, identical to
