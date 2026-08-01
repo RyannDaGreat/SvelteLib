@@ -5859,14 +5859,17 @@ audio.ae-preview-media {
 .inspector .row-label-chrome:has(.copy-path-btn):has(.help-btn) {
   padding-left: calc(2 * var(--a-row-label-gutter));
 }
-/* THE THIRD SLOT: web/lightPositionPin.js's `.pin-light-btn` (the two
-   light-position rows) and web/GalleryPopup.svelte's `.gallery-btn` (the icon
-   row) share this slot — the two aspects never co-occur on the same row (a
-   light-position pair is never icon-valued), so one rule set covers both
-   without a fourth combinatorial tier. Generalizes the SAME rule one slot
-   further rather than a new mechanism: N affordances reserve N gutter widths. */
-.inspector .row-label-chrome:has(.pin-light-btn):has(.copy-path-btn),
-.inspector .row-label-chrome:has(.pin-light-btn):has(.help-btn),
+/* THE THIRD SLOT, today occupied by web/GalleryPopup.svelte's `.gallery-btn`
+   (the icon row). The DOCTRINE is the part worth keeping: a row-label
+   affordance does not get a bespoke mechanism, it takes the NEXT gutter slot —
+   N affordances reserve N gutter widths, and each new one generalizes the same
+   rule one step further.
+   Its original co-tenant is gone. `web/lightPositionPin.js`'s `.pin-light-btn`
+   was the other third-slot occupant until c054593 turned the light eyedropper
+   from a property row into the `pin-light-to-object` COMMAND, surfaced in the
+   Tools pane; the class has had no markup since, so its rules styled nothing
+   and are deleted here. The comment survives its example on purpose — the rule
+   it records is still true and the next affordance will need it. */
 .inspector .row-label-chrome:has(.gallery-btn):has(.copy-path-btn),
 .inspector .row-label-chrome:has(.gallery-btn):has(.help-btn) {
   padding-left: calc(3 * var(--a-row-label-gutter));
@@ -5886,7 +5889,6 @@ audio.ae-preview-media {
    click or the tooltip hover meant for the label underneath it. */
 .inspector .copy-path-btn,
 .inspector .help-btn,
-.inspector .pin-light-btn,
 .inspector .gallery-btn {
   position: absolute;
   top: 50%;
@@ -5911,7 +5913,6 @@ audio.ae-preview-media {
    the outer slot, so the icons of adjacent rows line up down the panel
    regardless of which affordances each row happens to have. */
 .inspector .copy-path-btn,
-.inspector .pin-light-btn,
 .inspector .gallery-btn {
   left: 0;
   cursor: pointer;
@@ -5927,26 +5928,21 @@ audio.ae-preview-media {
 .inspector .row-label-chrome:has(.copy-path-btn) .help-btn {
   left: var(--a-row-label-gutter);
 }
-/* pin-light / gallery take the OUTER slot on a row that has one (neither
-   carries copy-path today — this is future-proofing the same generalization
-   the padding rule above already made), pushing whichever of the other two
-   are present one slot inward. The two never co-occur on the same row (see
-   the padding-rule comment above), so one set of :has() selectors serves both. */
-.inspector .row-label-chrome:has(.pin-light-btn) .copy-path-btn,
+/* gallery takes the OUTER slot on a row that has one (it does not carry
+   copy-path today — this is future-proofing the same generalization the
+   padding rule above already made), pushing whichever of the other two are
+   present one slot inward. */
 .inspector .row-label-chrome:has(.gallery-btn) .copy-path-btn {
   left: var(--a-row-label-gutter);
 }
-.inspector .row-label-chrome:has(.pin-light-btn) .help-btn,
 .inspector .row-label-chrome:has(.gallery-btn) .help-btn {
   left: var(--a-row-label-gutter);
 }
-.inspector .row-label-chrome:has(.pin-light-btn):has(.copy-path-btn) .help-btn,
 .inspector .row-label-chrome:has(.gallery-btn):has(.copy-path-btn) .help-btn {
   left: calc(2 * var(--a-row-label-gutter));
 }
 .inspector .copy-path-btn:hover,
 .inspector .help-btn:hover,
-.inspector .pin-light-btn:hover,
 .inspector .gallery-btn:hover {
   color: var(--fg);
 }
@@ -5954,15 +5950,13 @@ audio.ae-preview-media {
    participates in layout: the buttons already occupy their gutter slots at rest,
    so the row's geometry on hover is byte-identical to its geometry at rest. That
    invariant is asserted by tests/equation_discoverability_probe.js, which
-   measures the label's rect before and during hover. pin-light additionally
-   stays visible while its mode is LIVE (aria-pressed) — an active takeover must
-   stay discoverable as a thing to cancel even after the pointer leaves the row.
-   gallery-btn gets the same treatment while its popup is open. */
+   measures the label's rect before and during hover. gallery-btn additionally
+   stays visible while its popup is open (aria-pressed) — an active takeover
+   must stay discoverable as a thing to cancel even after the pointer leaves
+   the row. */
 .inspector .row:hover .copy-path-btn,
 .inspector .row:hover .help-btn,
-.inspector .row:hover .pin-light-btn,
 .inspector .row:hover .gallery-btn,
-.inspector .pin-light-btn[aria-pressed="true"],
 .inspector .gallery-btn[aria-pressed="true"] {
   opacity: 1;
   pointer-events: auto;
@@ -9329,6 +9323,24 @@ audio.ae-preview-media {
    page. Sized to fill the "large" Modal it lives in — see the size="large"
    note on RenderCenterModal's usage above for why a two-region layout needs
    that variant rather than the default content-sized one. */
+/* This page's three structural sizes, declared rather than smuggled. Each was
+   written as `var(--a-debug-…, <literal>)` against a token that WAS NEVER
+   DECLARED, so the fallback silently carried every one of them — the CSS form
+   of a silent fallback, and unreachable by any theme or override (the same
+   defect shape as the `var(--a-danger, #e05252)` phantom found this round).
+   Local :root group, immediately above its consumers, per the --a-code-modal-*
+   precedent a few rules up rather than a fourth home in the global block. */
+:root {
+  /* The left nav's column. Sized to the longest DEBUG_PAGES label plus its
+     glyph, so switching pages never reflows the page beside it. */
+  --a-debug-nav-w: 180px;
+  /* How tall a collapsible cache listing grows before it scrolls internally —
+     a fold, not the whole dialog. */
+  --a-debug-cache-fold-h: 220px;
+  /* An inline asset preview never grows past this, in either axis. A preview is
+     a PEEK, the same reasoning --a-file-browser-preview-max records. */
+  --a-debug-preview-max: 320px;
+}
 .debug-console {
   display: flex;
   height: 100%;
@@ -9340,7 +9352,7 @@ audio.ae-preview-media {
   display: flex;
   flex-direction: column;
   flex: none;
-  width: var(--a-debug-nav-w, 180px);
+  width: var(--a-debug-nav-w);
   gap: var(--a-sp-1);
   border-right: var(--a-hairline) solid var(--border);
   padding-right: var(--a-sp-3);
@@ -9522,7 +9534,7 @@ audio.ae-preview-media {
   display: flex;
   flex-direction: column;
   padding-left: var(--a-sp-5);
-  max-height: var(--a-debug-cache-fold-h, 220px);
+  max-height: var(--a-debug-cache-fold-h);
   overflow-y: auto;
 }
 
@@ -9548,17 +9560,17 @@ audio.ae-preview-media {
 }
 
 .debug-storage-preview-image {
-  max-width: var(--a-debug-preview-max, 320px);
-  max-height: var(--a-debug-preview-max, 320px);
+  max-width: var(--a-debug-preview-max);
+  max-height: var(--a-debug-preview-max);
 }
 
 .debug-storage-preview-video {
-  max-width: var(--a-debug-preview-max, 320px);
-  max-height: var(--a-debug-preview-max, 320px);
+  max-width: var(--a-debug-preview-max);
+  max-height: var(--a-debug-preview-max);
 }
 
 .debug-storage-preview-text {
-  max-height: var(--a-debug-cache-fold-h, 220px);
+  max-height: var(--a-debug-cache-fold-h);
   overflow: auto;
   padding: var(--a-sp-2);
   background: var(--a-canvas-solid);
