@@ -227,6 +227,101 @@ export function axisPinning(axis) {
 }
 
 /**
+ * Pure function. Which coordinates of `desired` a projection REFUSES — the keys
+ * whose allowed value differs from the one asked for. Empty exactly when the
+ * gesture was already allowed.
+ *
+ * WHY A SEAM NEEDS THIS AND `constraintPull` DOES NOT ANSWER IT. `constraintPull`
+ * (core/derive.js) measures HOW FAR the projection moved the record, as one
+ * number, which is what a resisted-drag readout wants. Two consumers here need
+ * WHICH coordinates instead: a coupled gesture has to re-run itself with the
+ * refused axis suppressed (see deltaWithoutRefused), and the overlay has to grey
+ * an affordance PER DEGREE OF FREEDOM rather than per handle — a corner with only
+ * its height refused is not dead, it still resizes width, and drawing it disabled
+ * would read as broken.
+ *
+ * EXACT COMPARISON IS CORRECT HERE, not a tolerance: a projection returns the
+ * ASKED-FOR value byte-identically for every coordinate it does not restrict
+ * (`pinning` spreads `desired` and overwrites only the pinned keys), so a
+ * difference is a decision and never float noise. It is the same exactness
+ * `diffState` relies on one step later.
+ *
+ * @param {function} constrain - a `constrain(state, desired) → allowed`
+ * @param {object} start - the resolved start record
+ * @param {object} desired - what the gesture asked for
+ * @returns {string[]} the refused keys, in `desired`'s own key order
+ *
+ * @example refusedCoordinates(axisPinning("x"), {y: 5, w: 10}, {x: 1, y: 9, w: 99}) // ["y"]
+ * @example refusedCoordinates(axisPinning("x"), {y: 9, w: 10}, {x: 1, y: 9, w: 99}) // [] (the gesture never moved y, so nothing was refused)
+ * @example refusedCoordinates(UNCONSTRAINED, {x: 0}, {x: 7}) // []
+ */
+export function refusedCoordinates(constrain, start, desired) {
+  const allowed = constrain(start, desired);
+  return Object.keys(desired).filter((key) => allowed[key] !== desired[key]);
+}
+
+/**
+ * Pure function. A local pointer delta with every GESTURE AXIS that owns a
+ * refused coordinate zeroed — the projection applied one space EARLIER, in the
+ * gesture's own parameterization.
+ *
+ * WHY A COUPLED GESTURE NEEDS BOTH SPACES, and this is scalePairs' "one
+ * projection, two spaces" note one gesture family over. A resize computes its
+ * stored `x` and `w` JOINTLY from the grabbed edges, so pinning one of them in
+ * record space alone yields a box neither the user nor the constraint asked for:
+ * with `w` held and the WEST edge grabbed, `x` still tracks the cursor, and the
+ * widget SLIDES instead of refusing. Suppressing the gesture's own x delta is the
+ * same projection expressed where the two coordinates are still one parameter, and
+ * it produces the honest answer — the grabbed edge simply does not move.
+ *
+ * It is the identical trick moveDrag has always used for the Shift axis lock
+ * (zero the suppressed component before writing), which
+ * tests/universal_constraints_test.js already proves equal to `axisPinning` for
+ * the uncoupled case. Record-space pinning still runs afterwards: it is
+ * idempotent, so the second application changes nothing when the first sufficed,
+ * and it is what catches a coordinate no gesture axis owns.
+ *
+ * @param {{x: number, y: number}} d - the gesture's pointer delta, local units
+ * @param {string[]} refused - refusedCoordinates(...) for this gesture
+ * @returns {{x: number, y: number}}
+ *
+ * @example deltaWithoutRefused({x: 30, y: -12}, ["h"]) // {x: 30, y: 0} (h belongs to the y axis)
+ * @example deltaWithoutRefused({x: 30, y: -12}, ["x", "w"]) // {x: 0, y: -12}
+ * @example deltaWithoutRefused({x: 30, y: -12}, []) // {x: 30, y: -12}
+ */
+export function deltaWithoutRefused(d, refused) {
+  const dead = (axis) => refused.some((key) => AXIS_COORDINATES[axis].leaves.includes(key.split(".").pop()));
+  return { x: dead("x") ? 0 : d.x, y: dead("y") ? 0 : d.y };
+}
+
+/**
+ * Pure function. The projection that applies `first` and then `second` — the way
+ * a gesture-level restriction and a per-ITEM one are combined into the single
+ * `constrain` the seam takes.
+ *
+ * IT IS STILL THE NEAREST ALLOWED POINT *FOR THE PINNINGS THIS FILE COMPOSES*,
+ * and that is a claim about `pinning` rather than about composition in general.
+ * Two pinnings compose to the pinning of the UNION of their key sets (each holds
+ * its own keys at `state`, and neither can move a key the other pinned), and
+ * core/derive.pinning's docstring proves the union case nearest by coordinate-wise
+ * separability. Composing two ARBITRARY projections is not nearest in general —
+ * projecting onto A and then onto B lands on B, not on A∩B — so this helper is
+ * deliberately NOT exported and deliberately not offered as a general combinator.
+ * The day a non-pinning constraint needs composing, that case needs its own proof.
+ *
+ * @param {function} first - a `constrain(state, desired) → allowed`
+ * @param {function} second - likewise
+ * @returns {function} their composition
+ *
+ * @example // the modal's X-axis lock AND an item whose w is equation-bound:
+ * @example bothConstraints(axisPinning("x"), pinning(["w"]))({y: 5, w: 10}, {x: 1, y: 9, w: 99}) // {x: 1, y: 5, w: 10}
+ * @example bothConstraints(UNCONSTRAINED, UNCONSTRAINED)({x: 1}, {x: 9}) // {x: 9}
+ */
+function bothConstraints(first, second) {
+  return (state, desired) => second(state, first(state, desired));
+}
+
+/**
  * Pure function. Turns a flat geometry delta {key: value, …} (as diffState
  * returns) into the item-scoped [path, value] preview pairs CanvasView commits
  * — the bridge from a MINIMAL delta to app.setPreview's pair list. A key is a
@@ -458,6 +553,53 @@ export function resizedBox(base, d, edges, mods) {
   // keeps tracking the cursor straight through the anchor, so the negative extent
   // the caller stores is anchored exactly where the fixed edge was.
   return [x0, y0, x1, y1];
+}
+
+/**
+ * Pure function. The stored {x, y, w, h} a resize BOX means, in the item's own
+ * frame — the last step of every single-item handle resize, and the ONE mapping
+ * from "where the eight handles put the box" to "what gets written".
+ *
+ * TWO CALLERS, WHICH IS WHY IT IS HERE RATHER THAN INLINE IN CanvasView: the live
+ * resize, and the PROBE that asks what a candidate box WOULD write — used both by
+ * the equation lock's gesture-space projection (deltaWithoutRefused) and by the
+ * overlay, which greys a handle per DEGREE OF FREEDOM by running this on a
+ * one-unit trial drag of that handle and seeing which coordinates come back
+ * refused. Deriving the affordance from the real geometry is the ledger's
+ * prescription (C-8): a hand-written "the west edge moves x and w" table would be
+ * a mirror of this function and would rot against it.
+ *
+ * `rotated` picks between the two mappings, and it is a PARAMETER rather than a
+ * test on `world.rotation` because the caller already knows: a rotated item takes
+ * the centre-pivot back-solve (stateXYForCenterPivotWorld — the item keeps its
+ * `self.anchors.center` rotation anchor, so the stored x/y must be the ones that
+ * reproduce this world under a RE-CENTERED pivot), an unrotated one takes the
+ * plain local-origin shift, and at rotation 0 the two agree.
+ *
+ * Args:
+ *   box     (number[4]): [x0, y0, x1, y1] in the item's LOCAL frame
+ *   world   (object):    the item's start world transform (pivot-folded)
+ *   rotated (boolean):   whether the item carries a non-zero rotation
+ *   start   ({x, y}):    the item's resolved stored position at grab time
+ *
+ * Returns:
+ *   {x, y, w, h}: the stored geometry that box means
+ *
+ * @example // an unrotated item at (10, 20): the box's local origin shift is the state shift
+ * @example resizeStoredState([0, 0, 120, 50], {x: 10, y: 20, rotation: 0, scale: 1}, false, {x: 10, y: 20}) // {x: 10, y: 20, w: 120, h: 50}
+ * @example // dragging the WEST edge out by 30 moves x and grows w by the same amount:
+ * @example resizeStoredState([-30, 0, 100, 50], {x: 10, y: 20, rotation: 0, scale: 1}, false, {x: 10, y: 20}) // {x: -20, y: 20, w: 130, h: 50}
+ */
+export function resizeStoredState(box, world, rotated, start) {
+  const w = box[2] - box[0], h = box[3] - box[1];
+  const topLeftWorld = T.apply(world, box[0], box[1]); // intended local(0,0) in world
+  if (rotated) {
+    const pinnedWorld = { x: topLeftWorld.x, y: topLeftWorld.y, rotation: world.rotation, scale: world.scale };
+    const { x, y } = stateXYForCenterPivotWorld(pinnedWorld, w, h);
+    return { x, y, w, h };
+  }
+  const o = T.apply(world, 0, 0);
+  return { x: start.x + (topLeftWorld.x - o.x), y: start.y + (topLeftWorld.y - o.y), w, h };
 }
 
 /**
@@ -696,14 +838,24 @@ export function rotationPairs(member, angle, c, constrain = UNCONSTRAINED) {
  * This reproduces the old doX/doY pair exactly; the A/B grid in
  * tests/universal_constraints_test.js is the evidence.
  *
+ * `constrain` IS THE THIRD SPACE-INDEPENDENT RESTRICTION — a per-ITEM projection
+ * the gesture knows nothing about (R6-28's equation lock is the first), composed
+ * with the axis pin rather than replacing it. It is a parameter here, and not
+ * something the caller could pass through the `axis` argument, because the axis
+ * lock is a fact about the GESTURE while an item lock is a fact about the
+ * DOCUMENT, and a modal scale of a multi-selection has one of the former and one
+ * of the latter PER MEMBER.
+ *
  * @example scalePairs({itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startW:100, startH:50}, 2, {x:0,y:0}) // [[["items","r","x"],20],[["items","r","y"],40],[["items","r","w"],200],[["items","r","h"],100]]
  * @example // constrained to x: the height and the y position are both refused
  * @example scalePairs({itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startX:10, startY:20, startW:100, startH:50}, 2, {x:0,y:0}, "x") // [[["items","r","x"],20],[["items","r","w"],200]]
+ * @example // the same unconstrained scale with the item's `w` equation-locked: w is held, so only x/y/h are written
+ * @example scalePairs({itemId:"r", plugin:{}, rawItem:{w:100,h:50}, startWorld:{x:10,y:20,rotation:0,scale:1}, startX:10, startY:20, startW:100, startH:50}, 2, {x:0,y:0}, null, pinning(["w"])) // [[["items","r","x"],20],[["items","r","y"],40],[["items","r","h"],100]]
  */
-export function scalePairs(member, factor, c, axis = null) {
+export function scalePairs(member, factor, c, axis = null, constrain = UNCONSTRAINED) {
   const off = axis === "x" ? "y" : axis === "y" ? "x" : null;
   const k = pinning(off ? [AXIS_COORDINATES[off].factor] : [])(IDENTITY_FACTORS, { kx: factor, ky: factor });
-  return scaleMemberPairs(member, k.kx, k.ky, c.x, c.y, axisPinning(axis));
+  return scaleMemberPairs(member, k.kx, k.ky, c.x, c.y, bothConstraints(axisPinning(axis), constrain));
 }
 
 /**

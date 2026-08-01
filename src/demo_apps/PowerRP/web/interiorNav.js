@@ -57,7 +57,7 @@
  */
 
 import { fitRectView } from "../core/view.js";
-import { isEquationValue } from "../core/expressions.js";
+import { equationBoundKeys } from "./canvas/equationBinding.js";
 import { expZoomFactor } from "../../../lib/panZoomMath.js";
 
 /**
@@ -166,6 +166,11 @@ export function zoomedInteriorWindow(window, view, factor, lx, ly) {
  * different set at different zooms — the Mandelbrot's fine-centre split is
  * exactly that shape).
  *
+ * WHAT IS LEFT HERE IS THE WRITE SET, WHICH IS THIS FILE'S OWN KNOWLEDGE; the
+ * "which of these are equations" half is web/canvas/equationBinding.js
+ * equationBoundKeys, because three other places were asking it with their own
+ * copy of the same expression (see that module's header).
+ *
  * @param {object} app - the app store
  * @param {object} node - a derived render node
  * @returns {string[]} bound state keys, in write-set order
@@ -173,7 +178,7 @@ export function zoomedInteriorWindow(window, view, factor, lx, ly) {
 export function equationBoundInteriorProps(app, node) {
   const view = node.plugin.interiorView;
   const keys = Object.keys(view.writes(node.state, view.window(node.state)));
-  return keys.filter((key) => isEquationValue(node.plugin, [key], app.storedItemValue(node.itemId, [key])));
+  return equationBoundKeys(app, node.itemId, node.plugin, keys);
 }
 
 /**

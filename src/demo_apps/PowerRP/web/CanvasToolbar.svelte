@@ -71,7 +71,7 @@
   import { untrack } from "svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import FloatingCanvasPanel, { widgetPanelAnchor } from "./FloatingCanvasPanel.svelte";
-  import { isEquationValue } from "../core/expressions.js";
+  import { equationBoundKeys } from "./canvas/equationBinding.js";
   import { onConnectivityChange } from "./connectivity.js";
 
   // app = the app store; node = the widget's derived render node; worldToScreen =
@@ -221,10 +221,11 @@
 
   /** Query. The stored leaves of `field` (a field OR a toggle button — both
    * shapes carry `.keys`) that hold an `=` equation, as keys. Empty when it is
-   * free to activate. The stored value is read (never the derived one) because
-   * that is where an equation still IS an equation. */
+   * free to activate. Reading the STORED value rather than the derived one is
+   * the whole subtlety, and it lives once in web/canvas/equationBinding.js
+   * equationBoundKeys — this is the `.keys ?? []` default and nothing more. */
   function boundKeys(field) {
-    return (field.keys ?? []).filter((key) => isEquationValue(node.plugin, [key], app.storedItemValue(node.itemId, [key])));
+    return equationBoundKeys(app, node.itemId, node.plugin, field.keys ?? []);
   }
 
   /** Command. Commits a toggle button's click as ONE undo unit, through the

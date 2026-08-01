@@ -15,7 +15,7 @@
   import ResizeHandles from "./ResizeHandles.svelte";
   import VideoV7Overlay from "./VideoV7Overlay.svelte"; // per-widget WebGPU video canvases stacked over the Skia scene (video_v7)
   import { videoV7Descriptors } from "./videoV7Placement.js";
-  import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet } from "../core/derive.js";
+  import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, stateXYForCenterPivotWorld, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // The R modal types its angle in DEGREES and `rotation` stores RADIANS. The
@@ -65,7 +65,12 @@
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
-  import { translationPairs, resizeAnchors, resizedBox, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS } from "./canvas/dragKinds.js";
+  import { translationPairs, resizeAnchors, resizedBox, resizeStoredState, scaleMemberPairs, scalePairs, rotationPairs, groupResizeState, creationRect, geometryPairs, refusedCoordinates, deltaWithoutRefused, placementDragKind, PLACEMENT_GRAMMARS, PLACEMENT_DRAG_KINDS } from "./canvas/dragKinds.js";
+  // R6-28 EQUATION LOCK. `equationPinning` is the per-ITEM projection that holds
+  // every equation-bound coordinate still; it enters at the SAME `constrain`
+  // parameter the modal axis lock uses, so there is one answer to "where may this
+  // drag land" and not a second interaction layer. See dragConstraint below.
+  import { equationPinning, equationBoundKeys } from "./canvas/equationBinding.js";
   // diffState is no longer imported here: the two direct calls it had (the single
   // resize and the group resize) now go through canvas/dragKinds.js geometryPairs,
   // which is where the minimal delta and the constraint projection are one step.
@@ -1436,6 +1441,114 @@
       }));
   }
 
+  /**
+   * Query. THE PER-ITEM DRAG CONSTRAINT (R6-28 equation lock): the projection
+   * every gesture hands to the seam for this item, or the protocol's own
+   * UNCONSTRAINED identity when the lock is not armed.
+   *
+   * THIS IS THE ONE PLACE THE TOGGLE IS READ. `equationPinning` is a statement
+   * about the DOCUMENT (which stored leaves are equations) and knows nothing
+   * about the toolbar; asking `app.equationLock` here rather than inside it keeps
+   * the projection testable with no app state in the picture, and keeps the
+   * answer to "is the lock on" from being spread across the nine call sites that
+   * need a constraint.
+   *
+   * IT COMPOSES RATHER THAN COMPETES. A gesture-level restriction (the modal X/Y
+   * axis lock) and this per-item one are both `pinning`s, so the seam takes the
+   * composition and the result is still the nearest allowed record — see
+   * web/canvas/dragKinds.js bothConstraints for why that is a claim about
+   * pinnings and not about projections in general.
+   */
+  function dragConstraint(itemId, plugin) {
+    if (!app.equationLock) return UNCONSTRAINED;
+    return equationPinning(app, itemId, plugin);
+  }
+
+  /** Query. dragConstraint for a drag MEMBER (translateMembers' record), which
+   *  already carries both halves. A drag-all shares one delta across members that
+   *  may be locked DIFFERENTLY, which is why the projection is per member rather
+   *  than per gesture. */
+  function memberConstraint(m) {
+    return dragConstraint(m.itemId, m.plugin);
+  }
+
+  /** One local unit of trial travel for the affordance probe below. Any non-zero
+   *  magnitude answers the question — "would this handle's drag be refused on
+   *  this axis" is scale-free, because the projection either pins a coordinate or
+   *  does not. One unit is the smallest value that cannot be mistaken for a
+   *  no-op. */
+  const AFFORDANCE_PROBE_UNITS = 1;
+
+  /**
+   * Query. WHAT A RESIZE HANDLE CAN STILL DO under the equation lock, as
+   * `{lockedX, lockedY, lockNote}` — the per-DEGREE-OF-FREEDOM affordance.
+   *
+   * GREYING PER HANDLE WOULD BE WRONG. A corner drives both `w` and `h`; if only
+   * the height is bound, that corner is NOT dead — it still resizes the width, and
+   * drawing it disabled would read as a broken editor. So the answer is per axis,
+   * and ResizeHandles turns a half-locked corner into a single-axis affordance
+   * (its cursor becomes the one-axis cursor) rather than a disabled one.
+   *
+   * IT IS DERIVED BY RUNNING THE REAL GESTURE, not by a table. A trial drag of
+   * this handle goes through the same `resizedBox` → `resizeStoredState` the live
+   * drag uses, and whatever the projection refuses is what is locked. A
+   * hand-written "the west edge moves x and w, the east edge moves w" mirror would
+   * be a second statement of resize geometry and would rot against it the moment a
+   * modifier or a rotation changed the coupling (ledger C-8). It also means the
+   * indicator and the behaviour CANNOT disagree: both are the same call.
+   *
+   * ONE SOURCE OF "THIS COORDINATE WILL NOT MOVE", deliberately. An equation on
+   * `h` already stops some paths writing it with the lock OFF (scaleMemberPairs
+   * refuses a non-numeric `w`/`h`), and that asymmetry is a real, recorded
+   * inconsistency (W3-A's F5) — but this indicator reports the LOCK and nothing
+   * else, so it can never claim a restriction the lock is not imposing. When the
+   * lock is off it returns nothing at all.
+   */
+  function resizeAffordance(node, handleId) {
+    const lock = dragConstraint(node.itemId, node.plugin);
+    if (lock === UNCONSTRAINED) return {};
+    const start = { x: node.state.x ?? 0, y: node.state.y ?? 0, w: node.state.w ?? 0, h: node.state.h ?? 0 };
+    const edges = { west: handleId.includes("l"), east: handleId.includes("r"), north: handleId.includes("t"), south: handleId.includes("b") };
+    const rotated = (node.state.rotation ?? 0) !== 0;
+    const probe = { x: AFFORDANCE_PROBE_UNITS, y: AFFORDANCE_PROBE_UNITS };
+    const desired = resizeStoredState(resizedBox([0, 0, start.w, start.h], probe, edges, {}), node.world, rotated, start);
+    const refused = refusedCoordinates(lock, start, desired);
+    if (!refused.length) return {};
+    return {
+      lockedX: refused.some((k) => k === "x" || k === "w"),
+      lockedY: refused.some((k) => k === "y" || k === "h"),
+      lockNote: equationLockNote(refused, "resize"),
+    };
+  }
+
+  /**
+   * Pure function. The sentence a locked canvas affordance explains itself with.
+   *
+   * IT IS COMPUTED, NOT A CONSTANT, for the reason core/commands.js already
+   * records for a command's `requires`: a gate with several disqualifying
+   * conditions has several true sentences, and one fixed string would be a
+   * confident wrong answer for all but one. Here the variable part is WHICH
+   * properties are bound — which is exactly what the user asked the tip to say.
+   *
+   * THE VOICE IS THE ONE THIS CONDITION ALREADY HAS. "`x` is an = equation — edit
+   * it in the Inspector" is beginTextEdit's refusal, interiorNav's refusal and the
+   * CanvasToolbar's disabled-field tip, word for word; one condition, one voice.
+   * What is added is the clause only this feature can say: the lock is a TOGGLE,
+   * so switching it off is a second way out that those three do not have.
+   *
+   * @param {string[]} keys - the stored keys the lock refused
+   * @param {string} verb - what the gesture would have done ("move", "resize", …)
+   * @returns {string}
+   *
+   * @example equationLockNote(["h"], "resize") // 'Cannot resize: "h" is an = equation — Equation Lock is on. Edit it in the Inspector, or switch the lock off.'
+   * @example equationLockNote(["x", "w"], "move") // 'Cannot move: "x", "w" are = equations — Equation Lock is on. Edit them in the Inspector, or switch the lock off.'
+   */
+  function equationLockNote(keys, verb) {
+    const one = keys.length === 1;
+    const named = keys.map((k) => `"${k}"`).join(", ");
+    return `Cannot ${verb}: ${named} ${one ? "is an" : "are"} = equation${one ? "" : "s"} — Equation Lock is on. Edit ${one ? "it" : "them"} in the Inspector, or switch the lock off.`;
+  }
+
   // translationPairs / resizeAnchors / resizedBox / scaleMemberPairs / scalePairs
   // are imported from ./canvas/dragKinds.js (the extracted pure drag geometry).
 
@@ -2155,7 +2268,7 @@
     // translationPairs), so returning EXACTLY to the start yields NO pairs — set
     // the (possibly empty) preview unconditionally so that case reverts to the
     // committed pose instead of freezing at the last non-zero preview.
-    app.setPreview(drag.members.flatMap((m) => translationPairs(m, dx, dy)));
+    app.setPreview(drag.members.flatMap((m) => translationPairs(m, dx, dy, memberConstraint(m))));
   }
 
   // ── Resize ──────────────────────────────────────────────────────────────────
@@ -2178,6 +2291,11 @@
     drag = {
       kind: "resize",
       itemId: node.itemId,
+      // Carried for the R6-28 equation lock: isEquationValue needs the plugin's
+      // own defaults to recognise a legacy BARE-STRING equation in a numeric
+      // slot, and re-picking the node mid-drag would read a DIFFERENT selection
+      // if one changed underneath the gesture.
+      plugin: node.plugin,
       handleId,
       // An ARMATURE resizes by driving its own SIMILARITY `scale` (which members
       // inherit through applyGroupParenting), never w/h — so it needs its start
@@ -2242,20 +2360,28 @@
     // group has no rotated-pivot w/h path (groupResizeState handles rotation).
     if (drag.group) { groupResizeDrag(local, mods); return; }
     const edges = { west: drag.west, east: drag.east, north: drag.north, south: drag.south };
-    const box = resizedBox(
-      drag.baseBox,
-      { x: local.x - drag.basePointer.x, y: local.y - drag.basePointer.y },
-      edges, mods,
-    );
+    // R6-28 EQUATION LOCK, GESTURE SPACE — the projection applied one space
+    // EARLIER, before the box exists, and the reason it has to be is that a
+    // resize computes its stored `x` and `w` JOINTLY from the grabbed edges.
+    // Pinning only the locked leaf would leave the other one tracking the
+    // cursor: `w` held with the WEST edge grabbed would SLIDE the widget rather
+    // than refuse it. Zeroing the gesture's own delta on the refused axis is the
+    // same `pinning`, in the parameterization where the two are still one number
+    // — canvas/dragKinds.js deltaWithoutRefused states the equality, and the
+    // record-space pin below still runs (idempotent) to catch anything no
+    // gesture axis owns. The PROBE runs the real resizedBox, so what is tested
+    // is the box this gesture would actually produce, modifiers and all.
+    const lock = dragConstraint(drag.itemId, drag.plugin);
+    const rawDelta = { x: local.x - drag.basePointer.x, y: local.y - drag.basePointer.y };
+    const delta = lock === UNCONSTRAINED
+      ? rawDelta
+      : deltaWithoutRefused(rawDelta, refusedCoordinates(lock, s, resizeStateFor(resizedBox(drag.baseBox, rawDelta, edges, mods))));
+    const box = resizedBox(drag.baseBox, delta, edges, mods);
     drag.lastBox = box;
-    let ww = box[2] - box[0], hh = box[3] - box[1];
-    // Local origin shift → state translation through the item's world
-    // transform (rotation-aware — the same conversion the west/north handles
-    // always used): state x/y move by the world delta of local (x0, y0).
-    const o = T.apply(drag.world, 0, 0);
-    const p = T.apply(drag.world, box[0], box[1]);
-    let x = s.x + (p.x - o.x);
-    let y = s.y + (p.y - o.y);
+    // ONE box → stored-state mapping (resizeStateFor), shared by the probe above
+    // and the live path: the local origin shift for an unrotated item, the
+    // centre-pivot back-solve for a rotated one.
+    let { x, y, w: ww, h: hh } = resizeStateFor(box);
 
     // Snapping (edge→line + size-match) operates in WORLD space on the
     // axis-aligned case only. For rotated items the box edges aren't axis
@@ -2303,39 +2429,29 @@
     guides = newGuides;
     sizeIndicators = indicators;
 
-    // ROTATED-RESIZE PIVOT PIN (registry #1, PPT opposite-handle). The box was
-    // laid out in drag.world — the transform with the pivot FIXED where it was
-    // at grab (drag.world never re-centers mid-drag). But the item keeps its
-    // `self.anchors.center` rotationAnchor equation, so BOTH the live derivation
-    // and the commit would otherwise re-center the pivot to the new box center
-    // and shift the whole box (the "fixed" opposite edge drifted 10-40px,
-    // registry-measured). Fix: back-solve x/y so the re-centered CENTER pivot
-    // reproduces the SAME world the fixed pivot painted — the opposite edge then
-    // stays put in world space and the grabbed edge tracks the cursor exactly,
-    // while the stored pivot stays the clean center equation (nothing numeric is
-    // persisted, so future rotations orbit the NEW center). Unrotated items are
-    // untouched: their pivot is irrelevant (worldTransform short-circuits at
-    // rotation 0) and edge snapping already handles them. Cmd-symmetric keeps
-    // the center fixed, so the back-solve is a coincidental no-op there — the
-    // modifier still works.
-    if (drag.rotated) {
-      const topLeftWorld = T.apply(drag.world, box[0], box[1]); // intended local(0,0) in world
-      const pinnedWorld = { x: topLeftWorld.x, y: topLeftWorld.y, rotation: drag.world.rotation, scale: drag.world.scale };
-      const solved = stateXYForCenterPivotWorld(pinnedWorld, ww, hh);
-      x = solved.x;
-      y = solved.y;
-    }
-
     // THE ONE GEOMETRY-WRITE SEAM (canvas/dragKinds.js geometryPairs): project
     // the desired box onto what the constraint allows, then commit ONLY the keys
     // that actually changed vs the resolved start pose (drag.startState) — an
     // east-only stretch writes just `w`, so a stored equation on x/y/h survives
     // untouched (interaction-commit rule). Grabbing an axis that DID move
-    // overrides its equation with the literal. The resize handles have no
-    // per-gesture constraint of their own today, so this passes none and gets
-    // the protocol's UNCONSTRAINED default — the point is that a future one (an
-    // equation lock, a chain-linked aspect ratio) enters HERE and nowhere else.
-    app.setPreview(geometryPairs(drag.itemId, s, { x, y, w: ww, h: hh }));
+    // overrides its equation with the literal, UNLESS the equation lock is armed,
+    // which is the constraint this call now carries (R6-28). The comment here
+    // used to say the resize handles pass none "so that a future one enters HERE
+    // and nowhere else" — this is that future one, and it did.
+    app.setPreview(geometryPairs(drag.itemId, s, { x, y, w: ww, h: hh }, lock));
+  }
+
+  /** Query (reads the drag record's frozen start pose). The stored {x, y, w, h} a
+   *  resize BOX means — canvas/dragKinds.js resizeStoredState with this drag's
+   *  world and start pose filled in. THE ROTATED-RESIZE PIVOT PIN and the
+   *  unrotated origin shift both live there, in one place, because the equation
+   *  lock's probe and the overlay's per-handle greying need the same mapping.
+   *
+   *  THE STEP ORDER IS UNCHANGED from when the back-solve was a separate block
+   *  AFTER snapping, and it is safe to have merged them because snapping is
+   *  skipped for exactly the rotated case the back-solve applies to. */
+  function resizeStateFor(box) {
+    return resizeStoredState(box, drag.world, drag.rotated, drag.startState);
   }
 
   /**
@@ -2350,14 +2466,24 @@
    */
   function groupResizeDrag(local, mods) {
     const edges = { west: drag.west, east: drag.east, north: drag.north, south: drag.south };
-    const dLocal = { x: local.x - drag.basePointer.x, y: local.y - drag.basePointer.y };
+    const rawLocal = { x: local.x - drag.basePointer.x, y: local.y - drag.basePointer.y };
+    const start = { scale: drag.startScale, x: drag.startState.x, y: drag.startState.y };
+    const lock = dragConstraint(drag.itemId, drag.plugin);
+    // R6-28 EQUATION LOCK, GESTURE SPACE — and for an ARMATURE any refusal kills
+    // the WHOLE gesture rather than one axis. That is not a special case, it is
+    // the same sentence scaleMemberPairs' armature branch already writes: a
+    // group's x/y are pure COMPENSATION for its `scale` (the back-solve that
+    // keeps the grabbed anchor fixed), so with any one of the three held there is
+    // nothing coherent for the other two to express. A zero delta gives K = 1,
+    // which makes that fall out of the arithmetic — the group's scale, x and y
+    // all come back at their start values and diffState drops all three.
+    const dLocal = lock === UNCONSTRAINED || refusedCoordinates(lock, start, groupResizeWrites(rawLocal, edges, mods)).length === 0
+      ? rawLocal
+      : { x: 0, y: 0 };
     // Track lastBox so a modifier rebase (Cmd toggle) measures from the box on
     // screen — same bookkeeping the single-item path keeps (uniform forced).
     drag.lastBox = resizedBox(drag.baseBox, dLocal, edges, { ...mods, uniform: true });
-    const gs = groupResizeState(
-      { x: drag.startState.x, y: drag.startState.y, w: drag.startState.w, h: drag.startState.h, rotation: drag.world.rotation, scale: drag.startScale },
-      drag.world, edges, mods, dLocal,
-    );
+    const gs = groupResizeWrites(dLocal, edges, mods);
     // Uniform diagonal guide: the infinite line the grabbed corner rides through
     // the fixed anchor (or the center when Cmd-symmetric) — corner grabs only.
     const a = resizeAnchors(drag.baseBox, edges, { ...mods, uniform: true });
@@ -2368,8 +2494,19 @@
     // Only the changed keys vs the group's resolved start (startScale + start
     // x/y) — a pure Cmd-symmetric scale, say, leaves x/y put, so their stored
     // equations survive (interaction-commit rule).
-    const start = { scale: drag.startScale, x: drag.startState.x, y: drag.startState.y };
-    app.setPreview(geometryPairs(drag.itemId, start, { scale: gs.scale, x: gs.x, y: gs.y }));
+    app.setPreview(geometryPairs(drag.itemId, start, gs, lock));
+  }
+
+  /** Query (reads the frozen drag record). The group's {scale, x, y} for a local
+   *  pointer delta — groupResizeState with this drag's start pose filled in. ONE
+   *  call, two callers: the equation-lock probe and the live path, exactly as
+   *  resizeStateFor serves the single-item resize. */
+  function groupResizeWrites(dLocal, edges, mods) {
+    const gs = groupResizeState(
+      { x: drag.startState.x, y: drag.startState.y, w: drag.startState.w, h: drag.startState.h, rotation: drag.world.rotation, scale: drag.startScale },
+      drag.world, edges, mods, dLocal,
+    );
+    return { scale: gs.scale, x: gs.x, y: gs.y };
   }
 
   // ── Multi-resize (manifest UNDEFERRAL SWEEP: handles on a multi-selection ────
@@ -2446,7 +2583,7 @@
     // Pairs omit unchanged keys (diffState in scaleMemberPairs), so a return to
     // the exact start box yields none — set the preview unconditionally so that
     // reverts rather than freezing at the last non-identity scale (see moveDrag).
-    app.setPreview(drag.members.flatMap((m) => scaleMemberPairs(m, kx, ky, ax, ay)));
+    app.setPreview(drag.members.flatMap((m) => scaleMemberPairs(m, kx, ky, ax, ay, memberConstraint(m))));
   }
 
   /**
@@ -2684,6 +2821,14 @@
       .map((m) => ({ id: m.id, ...T.apply(inverse, m.x, m.y) }));
     drag = {
       kind: "modifier", itemId: node.itemId, modifierId: id, world: node.world,
+      // The RESOLVED start state, frozen at grab — the minimal-delta basis every
+      // other drag kind already carries (drag.startState / member.startX). It has
+      // to be the state at GRAB and not the live node.state, because the live one
+      // already contains this drag's own preview: diffing against it would find
+      // nothing changed from the previous frame and clear the preview outright
+      // (setPreview REPLACES wholesale), snapping the widget back.
+      startState: node.state,
+      plugin: node.plugin,
       startLocals, downScreen: screenPoint(e),
       // Shift on a handle means "toggle membership" — deferred to release exactly
       // like the item-level shift-click (onPointerUp's `drag.toggleId && !drag.moved`).
@@ -2783,8 +2928,25 @@
       state = { ...state, ...partial };
       written = { ...written, ...partial };
     }
-    const pairs = Object.entries(written).map(([key, value]) => [["items", drag.itemId, key], value]);
-    if (pairs.length) app.setPreview(pairs);
+    // THE SAME ONE SEAM the bbox family writes through (geometryPairs), reached
+    // with the record the yellow squares produce: `written` IS a flat stored-state
+    // partial keyed by state key, which is exactly the coordinate record the
+    // protocol is defined over — so this is not a second door, it is the same door
+    // with a different key set. Two consequences, both deliberate:
+    //   THE EQUATION LOCK REACHES THE YELLOW SQUARES (R6-28). A plugin's `apply`
+    //     is opaque, so no projection in the handle's POINT space could express
+    //     "this widget parameter is bound"; in the WRITE record it is one pinning,
+    //     the same one every other gesture gets.
+    //   THE MINIMAL DELTA NOW APPLIES HERE TOO, measured against the grab-time
+    //     state (drag.startState). A handle in a multi-handle selection that did
+    //     not move stops rewriting its parameter every frame, so an equation there
+    //     survives — the same fix R6-29 made for the endpoint branch, and the
+    //     `if (pairs.length)` guard that used to sit here is gone for the same
+    //     reason moveDrag's did: a gesture returned exactly to its start must
+    //     revert the preview, not freeze at the last non-zero one.
+    const keys = Object.keys(written);
+    const start = Object.fromEntries(keys.map((key) => [key, drag.startState[key]]));
+    app.setPreview(geometryPairs(drag.itemId, start, written, dragConstraint(drag.itemId, drag.plugin)));
   }
 
   // ── Anchor snap release (manifest ARCHITECTURE PLAN #4) ────────────────────
@@ -2859,7 +3021,7 @@
   function writeMoveAnchorSnap() {
     const prov = drag.snapProvenance;
     if (!prov?.length) return;
-    const pairs = drag.members.flatMap((m) => translationPairs(m, drag.lastDx, drag.lastDy));
+    const pairs = drag.members.flatMap((m) => translationPairs(m, drag.lastDx, drag.lastDy, memberConstraint(m)));
     const overrides = new Map(); // "x"|"y" → equation string, for drag.itemId only
     for (const p of prov) {
       const anchorId = provenanceAnchorId(p.sourceAnchorId, publishedAnchorIds(p.sourceItemId));
@@ -3194,7 +3356,7 @@
       // Unconditional: translationPairs omits an unmoved axis, so a zero-delta
       // grab (initial paint, or a return to origin) yields no pairs and must
       // still set the (empty) preview to hold the committed pose (see moveDrag).
-      app.setPreview(modal.members.flatMap((m) => translationPairs(m, dx, dy)));
+      app.setPreview(modal.members.flatMap((m) => translationPairs(m, dx, dy, memberConstraint(m))));
     } else if (modal.kind === "rotate") {
       // ROTATE (R6-2.1): the turn is the ANGLE THE CURSOR HAS SWEPT about the
       // collective centre since the gesture began — the Blender reading, and the
@@ -3213,7 +3375,7 @@
           ? Math.atan2(w.y - c.y, w.x - c.x) - Math.atan2(modal.startWorld.y - c.y, modal.startWorld.x - c.x)
           : 0;
       }
-      app.setPreview(modal.members.flatMap((m) => rotationPairs(m, angle, c)));
+      app.setPreview(modal.members.flatMap((m) => rotationPairs(m, angle, c, memberConstraint(m))));
     } else {
       // SCALE: factor = typed buffer, else current/initial cursor distance from
       // the collective center (Blender precedent). Degenerate start distance
@@ -3226,7 +3388,7 @@
         const d1 = Math.hypot(w.x - c.x, w.y - c.y);
         factor = d0 > MODAL_PIVOT_EPS ? d1 / d0 : 1;
       }
-      app.setPreview(modal.members.flatMap((m) => scalePairs(m, factor, c, modal.axis)));
+      app.setPreview(modal.members.flatMap((m) => scalePairs(m, factor, c, modal.axis, memberConstraint(m))));
     }
 
     // Axis guide: an infinite line through the collective center along the
@@ -3300,7 +3462,7 @@
     app.nudgeSelection = (dx, dy) => {
       const members = translateMembers(app.nodes());
       if (members.length === 0) return;
-      app.setPreview(members.flatMap((m) => translationPairs(m, dx, dy)));
+      app.setPreview(members.flatMap((m) => translationPairs(m, dx, dy, memberConstraint(m))));
       app.commitPreview();
     };
   });
@@ -3444,7 +3606,7 @@
       const hs = [["tl", 0, 0], ["tm", w / 2, 0], ["tr", w, 0], ["mr", w, h / 2], ["br", w, h], ["bm", w / 2, h], ["bl", 0, h], ["ml", 0, h / 2]];
       handles = hs.map(([id, lx, ly]) => {
         const p = T.apply(sel.world, lx, ly);
-        return { id, ...actions.worldToScreen(p.x, p.y) };
+        return { id, ...actions.worldToScreen(p.x, p.y), ...resizeAffordance(sel, id) };
       });
     } else if (selectedIds.length > 1) {
       // Collective AABB of the selected nodes (only bbox/endpoint members it can

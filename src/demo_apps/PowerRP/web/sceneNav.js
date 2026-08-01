@@ -65,7 +65,7 @@
  * DOM-free at import: pure math plus one descriptor object.
  */
 
-import { isEquationValue } from "../core/expressions.js";
+import { equationBoundKeys } from "./canvas/equationBinding.js";
 import { expZoomFactor } from "../../../lib/panZoomMath.js";
 import { ZOOM_GESTURE_IDLE_MS } from "./interiorNav.js";
 
@@ -152,13 +152,17 @@ export function fovedPose(pose, factor) {
  * The write set is asked of the plugin at the node's CURRENT state, which is the
  * only way to know which keys a gesture would touch.
  *
- * DELIBERATELY NOT A COPY of interiorNav.equationBoundInteriorProps: that
- * function is 90% general but its one widget-specific line reads
- * `node.plugin.interiorView`, and lifting it to take a write-set function is a
- * change to a file two shipped widgets depend on — a HAND-BACK, recorded in this
- * agent's report, not something to do unilaterally mid-round. The duplication is
- * therefore KNOWN and TEMPORARY, and this comment is the marker that says which
- * of the two must move when it is resolved.
+ * THE HAND-BACK THIS COMMENT USED TO ANNOUNCE IS RESOLVED (R6-28). It said the
+ * duplication with interiorNav.equationBoundInteriorProps was "KNOWN AND
+ * TEMPORARY" and named itself the marker for whoever fixed it — correctly, and it
+ * was right to defer rather than reach into two shipped widgets' file mid-round.
+ * The shared half now lives in web/canvas/equationBinding.js equationBoundKeys,
+ * with FIVE callers; what stays here is the one genuinely local line, the CAMERA
+ * write set. tests/equation_lock_test.js fails if a sixth copy appears — this
+ * function is where the gate caught the fifth.
+ *
+ * The write set is still asked of the plugin at the node's CURRENT state, which is
+ * the only way to know which keys a gesture would touch.
  *
  * @param {object} app the app store
  * @param {object} node a derived render node
@@ -167,7 +171,7 @@ export function fovedPose(pose, factor) {
 export function equationBoundCameraProps(app, node) {
   const cam = node.plugin.sceneCamera;
   const keys = Object.keys(cam.writes(node.state, cam.pose(node.state)));
-  return keys.filter((key) => isEquationValue(node.plugin, [key], app.storedItemValue(node.itemId, [key])));
+  return equationBoundKeys(app, node.itemId, node.plugin, keys);
 }
 
 /**

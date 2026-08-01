@@ -438,6 +438,30 @@
       </span>
     </button>
   </Tooltip>
+  <!-- EQUATION LOCK (R6-28) — the CHAIN LINK, the user's own choice of glyph, in
+       the group he asked for it in ("the same group as the snap magnets and the
+       ghost-objects toggle"). It expresses its two states exactly the way the
+       four toggles above it do: one registry icon plus `active`, never a second
+       glyph — Toolbar.svelte's header enumerates the three deliberate icon
+       overrides in this file and a fourth would have to earn its place, which a
+       plain on/off does not.
+
+       The note is the clause the registry title cannot carry: WHICH gestures the
+       lock governs. Scope is CANVAS GESTURES ONLY by user ruling ("we'll be
+       seeing equations there anyway"), and a user who reads "Equation Lock" and
+       then finds the Inspector still writable would reasonably call that a bug. -->
+  <Tooltip>
+    {#snippet tip()}{@render commandTip("toggle-equation-lock", "Canvas gestures only — the Inspector's fields stay editable.")}{/snippet}
+    <button
+      class="btn-icon"
+      class:active={app.equationLock}
+      aria-label={app.commands.get("toggle-equation-lock").title}
+      aria-pressed={app.equationLock}
+      onclick={() => app.runCommand("toggle-equation-lock")}
+    >
+      <iconify-icon icon={app.commands.get("toggle-equation-lock").icon} width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
   <span class="spacer"></span>
   <!-- THE PROJECT SCRIPT, verbatim: "a global script per project… on the top right
        as an icon with a script icon, which would actually be a repository of
