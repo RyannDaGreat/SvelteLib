@@ -1047,6 +1047,75 @@ files) — disposable; this manifest copy is canonical.
   not being remapped to the new item id.
 - **R6-18.2** Add DUPLICATE IN PLACE — no offset.
 
+#### R6-18 DIAGNOSIS — PROVEN (W1-A..N wave 1, agent W1-C; full report `.frenzy/round6/W1-C.md`)
+
+MEASURED in the live editor through the real registry command: clone `from`/`to`
+identical to the original, clone GAINS `x:16, y:16`, **ink moved by (16,16), handles
+moved by (0,0)**.
+
+- **ROOT CAUSE:** `web/app.svelte.js:3025` — `x: bump(clone.x ?? 0), y: bump(clone.y ?? 0)`.
+  The clone home **FABRICATES x/y on a widget that has none**. `core/derive.js:273`
+  then builds `world: worldTransform(state)` unconditionally, so the clone acquires a
+  translate(16,16) and `render_gpu/ports.js:455` paints the ink 16px away.
+  `core/endpoints.js:52` returns raw `from`/`to`, which `web/CanvasView.svelte:3332`
+  hands to `worldToScreen` with NO world applied. So the HANDLES are right and the
+  INK is wrong — the offset is being applied to the wrong properties.
+- **MY EARLIER HYPOTHESIS WAS WRONG, and this is recorded so it is not retried:** I
+  guessed the copy kept `@id` equations pointing at the original. REFUTED —
+  `core/document.js:368` `clonedItemStates` rewrites `@id` refs correctly and the
+  endpoints are copied byte-identical.
+- **THE INVARIANT BROKEN IS ALREADY WRITTEN DOWN:** `core/registry.js:88` (editPoints
+  are WORLD-space) and `core/view.js:103` ("its world is identity ... which is
+  precisely why there is no second code path").
+- **SCOPE IS WIDER THAN REPORTED.** All FIVE endpoint-pair widgets detach:
+  `fancy_arrow`, `arrow`, `line`, `curved_arrow`, `elbow_arrow`. **PASTE has the same
+  bug** via the same `#cloneStatesIntoSlide`, and paste is the OLDER entrance
+  (`692101d`, 2026-07-14, predating Duplicate) — so by the precedence doctrine paste
+  is the reference behaviour. `blur` also gains a phantom transform.
+- **WORSE THAN THE VISIBLE SYMPTOM:** the clone's hit test resolves on the ORIGINAL
+  (`hitTestAtPaintedInk:false`, `hitTestAtHandles:true`), band-select's AABB follows
+  the ink so the two disagree, and the fabricated x/y has **NO Inspector row** — it is
+  invisible, uneditable, and SURVIVES SAVE.
+- **THE FIX IS TO STOP BYPASSING AN EXISTING RULE**, not to add a special case:
+  `web/canvas/dragKinds.js:102` `translationPairs` is "the ONE translation rule" and
+  already does `if (plugin.moveBy) ... else write x/y`. Drag, drag-all, modal grab and
+  nudge all route through it; the clone home is the SOLE bypass. Route the clone offset
+  through it, and drop the `?? 0` that invents the coordinate.
+- **R6-18.2 FOLLOWS FROM 18.1:** parameterised palette commands are BANNED
+  (`web/App.svelte:1006`), so "duplicate in place" is a SIBLING registry entry beside
+  `duplicate` (`web/App.svelte:1496`), palette-only with no chord (`Cmd+D` itself is
+  still unratified), and the offset becomes a parameter of the private clone home
+  rather than a second clone path. **NAME COLLISION TO AVOID:**
+  `web/App.svelte:1494` already uses "in place" to mean "no clipboard trip". Do 18.1
+  first; then in-place is simply dx=dy=0.
+- **TEST GAP:** only `tests/clipboard_duplicate_probe.js` covers duplicate and it uses
+  a filmstrip; the string "arrow" appears in it ZERO times.
+
+#### R6-18 ENVIRONMENT REPAIR (verified by the lead, not just reported)
+
+`node_modules` was missing two DECLARED dependencies — `fflate@^0.8.3` and
+`monaco-editor@^0.52.2` — and **the live editor on 3637 could not boot**
+(`Failed to resolve import "fflate"`). Installed additively at the exact declared
+versions; no app file touched, no process restarted. Lead verification: both present
+at 0.8.3 / 0.52.2, `GET /` returns 200, `/main.js` resolves, `git status` clean.
+LESSON: a missing declared dep presents as an app-level import crash, so check
+`node_modules` against `package.json` BEFORE believing a boot failure is a regression.
+
+#### LEAD RULING on one flagged "violation" (R6-22.4 requires a decision, not a sweep)
+
+W1-C flagged OS/browser names in comments at `web/vite.config.js:87,100-107` and
+`web/app.svelte.js:2663,2988` as vendor-keyword violations. **NOT A VIOLATION —
+do not strip these.** The banned class is EMPLOYER/PLATFORM-specific vocabulary that
+would make the dump non-portable or leak an internal context. Naming a browser or an
+OS while explaining a REAL, REPRODUCED third-party bug (Vite's opener reusing a tab in
+whichever Chromium is running, hence `open:false`) is load-bearing institutional
+knowledge; deleting it would destroy the reason the setting exists and invite its
+reintroduction. Agents will keep flagging this, so the ruling is recorded here.
+The genuine violations from the same report ARE accepted and queued: `const OFFSET = 16`
+is function-local with its justification 16 lines away and re-declared in two tests
+(house precedent is module-top and exported — `core/endpoints.js:23`), and
+`core/derive.js:273` ignores `capabilities.transform: false`.
+
 ### R6-19 FILE BROWSER
 
 - **R6-19.1** Build or adopt a GENERAL FILE BROWSER for renderings, cache and
