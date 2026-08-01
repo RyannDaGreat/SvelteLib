@@ -84,10 +84,15 @@ const PUPIL_SLACK = 6;
 // = 1% of its area, counted on both frames. Five percent is therefore generous by
 // a factor of two and still far too tight to hide a different opening.
 const PUPIL_EDGE_TOLERANCE = 0.05;
-// How much of the frame must actually change between the two depictions. The
-// plates cover the whole bore annulus, so a real difference is tens of thousands
-// of pixels in a 1440-wide shot; this floor only has to exclude "nothing drew".
-const PAIR_MIN_DIFFERING_FRACTION = 0.01;
+// How many pixels must actually change between the two depictions, and this
+// number is SMALLER than intuition says — which is the finding, not a concession.
+// Both widgets fill the same annulus in the same colour, so the frames differ
+// ONLY where the plates' own edges are: N plates times roughly one radius of
+// visible edge times the 2 px stroke, i.e. 8 x 125 x 2 = 2000 px for the pair
+// below. A first attempt asserted 1% of the whole canvas (7500 px) and failed at a
+// MEASURED 3000 — the widget was right and the expectation was arithmetic nobody
+// had done. The floor is therefore the ink the strokes are made of.
+const PAIR_MIN_DIFFERING_PIXELS = 2000;
 
 const server = await createServer({
   configFile: resolve(webRoot, "vite.config.js"),
@@ -125,6 +130,12 @@ function colourMask({ data, width, height }, [r, g, b], slack) {
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
+  // The NAVIGATION gets the same generous budget as the app-ready wait. Puppeteer's
+  // 30 s default is not enough on a loaded host: measured here at load average 11
+  // with several sibling probes running, `page.goto` timed out three runs in a row
+  // on a dev server that then served fine — a host-capacity red that reads exactly
+  // like an unservable app.
+  page.setDefaultNavigationTimeout(BOOT_TIMEOUT_MS);
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => { if (m.type() === "error") errors.push(`console.error: ${m.text()}`); });
   await page.evaluateOnNewDocument((json) => localStorage.setItem("powerrp.autosave", json), demoJson);
@@ -147,7 +158,71 @@ try {
   }, DARK_BACKDROP);
   check("the camera backdrop was darkened for legible plates", !!darkened, "no camera item found");
 
-  // ── (0) THE WIDGET IS REGISTERED AND INSERTS ──────────────────────────────
+  /** Query. A PNG of the viewport's canvas region (what the app actually drew). */
+  const canvasShot = async () => await (await page.$(".canvas-wrap")).screenshot();
+
+  // ── (A) SAME HOLE, DIFFERENT PICTURE ──────────────────────────────────────
+  // FIRST, before any preset is hovered or clicked: see the state read-back below.
+  // The two widgets are drawn ONE AT A TIME at the same box and geometry, and the
+  // frames compared two ways. Same-at-a-time rather than side by side because it
+  // makes the comparison exact: the openings must land on the SAME PIXELS, not
+  // merely cover the same area, and everything else on the canvas is identical in
+  // both frames so it cancels.
+  // ONE item is inserted as an `aperture`, photographed, and then RETYPED in
+  // place through the app's own `retypeSelection` — the very command the shared
+  // row contract exists to serve. Nothing else in the scene moves, so the two
+  // frames differ by exactly one widget's depiction.
+  const placed = await page.evaluate(({ t, geo, box, at }) => {
+    const app = window.__powerrp_app;
+    app.addItem({ ...app.registry.get(t).defaults, type: t, ...box, ...at, ...geo, bladeForm: "regular" });
+    const node = app.selectedNode();
+    return { type: node?.state?.type ?? null, blades: node?.state?.blades ?? null, stopDown: node?.state?.stopDown ?? null };
+  }, { t: aperturePlugin.type, geo: PAIR_GEOMETRY, box: PAIR_BOX, at: PAIR_AT });
+  // THE STATE IS READ BACK, not assumed. Measured the hard way: run after the
+  // preset sweep, this insert silently came up carrying the LAST PRESET CLICKED —
+  // an aperture at "Apodized Soft Focus" and, after the retype, a five-plate
+  // assembly, neither of which is what the call asked for. The section now runs
+  // BEFORE any preset is touched, and the assertion says so out loud.
+  check("an aperture is placed at exactly the geometry asked for",
+    placed.type === aperturePlugin.type && placed.blades === PAIR_GEOMETRY.blades && placed.stopDown === PAIR_GEOMETRY.stopDown,
+    JSON.stringify(placed));
+  await settle();
+  const shotAperture = await canvasShot();
+  const retyped = await page.evaluate((t) => {
+    window.__powerrp_app.retypeSelection(t);
+    return window.__powerrp_app.selectedNode()?.state?.type ?? null;
+  }, TYPE);
+  await settle();
+  const shotBlades = await canvasShot();
+  await writeFile(`${shots}/98_aperture_same_geometry.png`, shotAperture);
+  await writeFile(`${shots}/99_iris_blades_same_geometry.png`, shotBlades);
+  check("RETYPE works between the two widgets", retyped === TYPE, `landed on ${retyped}`);
+
+  const a = readPng(shotAperture), b = readPng(shotBlades);
+  const differ = imageDistance(a, b);
+  const differing = Math.round(differ.fraction * a.width * a.height);
+  check("DIFFERENT PICTURE: the blade assembly does not look like the aperture",
+    differing > PAIR_MIN_DIFFERING_PIXELS && !indistinguishable(differ),
+    `${differing} px differ (maxAbs ${differ.maxAbs}) — the second widget would be pointless`);
+  console.log(`\n  same geometry, two depictions: ${differing} px differ, maxAbs ${differ.maxAbs}`);
+
+  const maskA = colourMask(a, PUPIL_RGB, PUPIL_SLACK);
+  const maskB = colourMask(b, PUPIL_RGB, PUPIL_SLACK);
+  let onlyA = 0, onlyB = 0, both = 0;
+  for (let i = 0; i < maskA.length; i++) {
+    if (maskA[i] && maskB[i]) both += 1;
+    else if (maskA[i]) onlyA += 1;
+    else if (maskB[i]) onlyB += 1;
+  }
+  const disagreement = (onlyA + onlyB) / Math.max(1, both);
+  check("both openings are drawn at all", both > 1000, `${both} shared pupil pixels`);
+  check("THE SAME HOLE: the two widgets' openings land on the same pixels",
+    disagreement < PUPIL_EDGE_TOLERANCE,
+    `${onlyA} px only in the aperture, ${onlyB} px only in the assembly, ${both} shared — ${(disagreement * 100).toFixed(2)}% disagreement`);
+  await page.evaluate(() => window.__powerrp_app.purgeSelection());
+  await settle();
+
+  // ── (B) THE WIDGET IS REGISTERED AND INSERTS ──────────────────────────────
   const inserted = await page.evaluate(({ t, box }) => {
     const app = window.__powerrp_app;
     if (!app.registry.get(t)) return { ok: false, why: "not in the registry" };
@@ -157,8 +232,6 @@ try {
   await settle();
   check("iris_blades is registered and inserts", inserted.ok && inserted.type === TYPE, JSON.stringify(inserted));
 
-  /** Query. A PNG of the viewport's canvas region (what the app actually drew). */
-  const canvasShot = async () => await (await page.$(".canvas-wrap")).screenshot();
 
   /** Query. The i-th preset row's viewport centre, scrolled into view first. */
   const rowCenter = (i) => page.evaluate((idx) => {
@@ -169,7 +242,7 @@ try {
     return { label: el.textContent.trim(), x: r.x + r.width / 2, y: r.y + r.height / 2 };
   }, i);
 
-  // ── (1) the library is complete and in the plugin's order ─────────────────
+  // ── (C) the library is complete and in the plugin's order ─────────────────
   const rows = await page.evaluate(() => {
     const groups = [...document.querySelectorAll(".toolspane .prop-category")];
     const g = groups.find((x) => x.querySelector(".cat-rows .tool-preset"));
@@ -189,7 +262,7 @@ try {
   await writeFile(`${shots}/00_defaults.png`, baseline);
   const frames = [{ name: "(widget defaults, no preview)", png: readPng(baseline) }];
 
-  // ── (2)(3)(4) sweep EVERY row ─────────────────────────────────────────────
+  // ── (D) sweep EVERY row ─────────────────────────────────────────────
   for (let i = 0; i < PRESETS.length; i++) {
     const preset = PRESETS[i];
     const row = await rowCenter(i);
@@ -229,7 +302,7 @@ try {
   if (closest)
     console.log(`\n  closest pair: "${closest.a}" vs "${closest.b}" — meanAbs ${closest.distance.meanAbs.toFixed(3)}, maxAbs ${closest.distance.maxAbs}, ${(closest.distance.fraction * 100).toFixed(1)}% of pixels differ`);
 
-  // ── (5) a click is EXACTLY one undo unit ──────────────────────────────────
+  // ── (E) a click is EXACTLY one undo unit ──────────────────────────────────
   const last = await rowCenter(PRESETS.length - 1);
   await page.mouse.move(last.x, last.y);
   await settle();
@@ -242,7 +315,7 @@ try {
   check("one undo fully reverts the pick",
     (await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc))) === docBefore);
 
-  // ── (6) ONE PLATE, ONE STROKED OP, IN ORDER — through the app's registry ──
+  // ── (F) ONE PLATE, ONE STROKED OP, IN ORDER — through the app's registry ──
   const emitted = await page.evaluate(({ t, geo }) => {
     const plugin = window.__powerrp_app.registry.get(t);
     const state = { ...plugin.defaults, x: 0, y: 0, w: 300, h: 300, ...geo };
@@ -253,55 +326,6 @@ try {
     emitted.count === PAIR_GEOMETRY.blades + 1, JSON.stringify(emitted));
   check("every op is a path (never a fan, never a polyline)", JSON.stringify(emitted.kinds) === '["path"]', JSON.stringify(emitted.kinds));
   check("every plate is stroked", emitted.stroked === PAIR_GEOMETRY.blades, `${emitted.stroked} stroked ops`);
-
-  // ── (7) SAME HOLE, DIFFERENT PICTURE ──────────────────────────────────────
-  // The two widgets are drawn ONE AT A TIME at the same box and geometry, and the
-  // frames compared two ways. Same-at-a-time rather than side by side because it
-  // makes the comparison exact: the openings must land on the SAME PIXELS, not
-  // merely cover the same area, and everything else on the canvas is identical in
-  // both frames so it cancels.
-  // ONE item is inserted as an `aperture`, photographed, and then RETYPED in
-  // place through the app's own `retypeSelection` — the very command the shared
-  // row contract exists to serve. Nothing else in the scene moves, so the two
-  // frames differ by exactly one widget's depiction.
-  const cleared = await page.evaluate(({ t, geo, box, at }) => {
-    const app = window.__powerrp_app;
-    app.purgeSelection(); // the BIG_BOX widget the preset sweep used
-    app.addItem({ ...app.registry.get(t).defaults, type: t, ...box, ...at, ...geo, bladeForm: "regular" });
-    return app.selectedNode()?.state?.type ?? null;
-  }, { t: aperturePlugin.type, geo: PAIR_GEOMETRY, box: PAIR_BOX, at: PAIR_AT });
-  check("the sweep's widget is purged and an aperture is placed alone", cleared === aperturePlugin.type, `${cleared}`);
-  await settle();
-  const shotAperture = await canvasShot();
-  const retyped = await page.evaluate((t) => {
-    window.__powerrp_app.retypeSelection(t);
-    return window.__powerrp_app.selectedNode()?.state?.type ?? null;
-  }, TYPE);
-  await settle();
-  const shotBlades = await canvasShot();
-  await writeFile(`${shots}/98_aperture_same_geometry.png`, shotAperture);
-  await writeFile(`${shots}/99_iris_blades_same_geometry.png`, shotBlades);
-  check("RETYPE works between the two widgets", retyped === TYPE, `landed on ${retyped}`);
-
-  const a = readPng(shotAperture), b = readPng(shotBlades);
-  const differ = imageDistance(a, b);
-  check("DIFFERENT PICTURE: the blade assembly does not look like the aperture",
-    differ.fraction > PAIR_MIN_DIFFERING_FRACTION,
-    `only ${(differ.fraction * 100).toFixed(1)}% of pixels differ — the second widget would be pointless`);
-
-  const maskA = colourMask(a, PUPIL_RGB, PUPIL_SLACK);
-  const maskB = colourMask(b, PUPIL_RGB, PUPIL_SLACK);
-  let onlyA = 0, onlyB = 0, both = 0;
-  for (let i = 0; i < maskA.length; i++) {
-    if (maskA[i] && maskB[i]) both += 1;
-    else if (maskA[i]) onlyA += 1;
-    else if (maskB[i]) onlyB += 1;
-  }
-  const disagreement = (onlyA + onlyB) / Math.max(1, both);
-  check("both openings are drawn at all", both > 1000, `${both} shared pupil pixels`);
-  check("THE SAME HOLE: the two widgets' openings land on the same pixels",
-    disagreement < PUPIL_EDGE_TOLERANCE,
-    `${onlyA} px only in the aperture, ${onlyB} px only in the assembly, ${both} shared — ${(disagreement * 100).toFixed(2)}% disagreement`);
 
   const newErrors = errors.slice(bootErrors);
   check("no new console errors", newErrors.length === 0, newErrors.join(" | "));
