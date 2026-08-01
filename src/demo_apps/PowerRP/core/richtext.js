@@ -1379,6 +1379,64 @@ function paraDelete(paras, oldRuns, lo, m) {
   return [...paras.slice(0, p), { ...kept }, ...paras.slice(p + 1 + m)];
 }
 
+/**
+ * Pure function. The rich value whose PLAIN-TEXT projection is `plain`, changing
+ * as little of the run structure as possible: the shared prefix and the shared
+ * suffix are left untouched and only the span between them is deleteRange'd and
+ * insertText'd. So retyping one word keeps every other run's style, and the
+ * replacement takes the style at the splice point — byte-identically to typing
+ * the same edit in the canvas editor, which reaches the same two primitives.
+ *
+ * WHY A MINIMAL SPLICE AND NOT `{runs: [{text: plain}], paras: [{}]}`. The naive
+ * form is the reason plugins/text.js refused a content row for so long: it
+ * CLOBBERS — a whole document's per-run typography vanishes because one letter
+ * was retyped. The splice is what makes a plain-string surface honest over a
+ * structured value, and it is the only reason such a surface may exist at all.
+ *
+ * Offsets are CODE POINTS, matching insertText/deleteRange (and runsLength).
+ *
+ * Args:
+ *   value ({runs, paras}|string): the current rich value
+ *   plain (string): the plain text the result must project to
+ *   inherited (object): widget-level style forwarded to the canonicalizing merge
+ *
+ * Returns:
+ *   {runs, paras}: new rich value with richTextToPlain(result) === plain
+ *
+ * @example richTextToPlain(withPlainTextReplaced({runs: [{text: "Hi "}, {text: "there"}], paras: [{}]}, "Hi world"))
+ * // "Hi world"
+ * @example withPlainTextReplaced({runs: [{text: "Big ", size: 48}, {text: "small", size: 18}], paras: [{}]}, "Big smaller").runs
+ * // [{text: "Big ", size: 48}, {text: "smaller", size: 18}] — editing inside one run keeps BOTH sizes
+ * @example withPlainTextReplaced({runs: [{text: "Big ", size: 48}, {text: "small", size: 18}], paras: [{}]}, "Bigger small").runs
+ * // [{text: "Bigger ", size: 48}, {text: "small", size: 18}] — and so does editing inside the other
+ * @example withPlainTextReplaced({runs: [{text: "Big ", size: 48}, {text: "small", size: 18}], paras: [{}]}, "Big SMALL").runs
+ * // [{text: "Big SMALL", size: 48}] — THE HONEST BOUND: replacing a run's text ENTIRELY leaves no
+ * // character of it to carry its style, so the replacement takes the neighbour's — which is exactly
+ * // what selecting that word in the canvas editor and retyping it does
+ * @example withPlainTextReplaced({runs: [{text: "ab", bold: true}], paras: [{}]}, "ab").runs
+ * // [{text: "ab", bold: true}] — an unchanged string is an exact no-op
+ * @example withPlainTextReplaced({runs: [{text: "ab"}], paras: [{}]}, "a\nb").paras.length
+ * // 2 — a typed newline splits the paragraph, exactly as insertText does
+ * @example richTextToPlain(withPlainTextReplaced({runs: [{text: "abc"}], paras: [{}]}, ""))
+ * // "" — clearing the row empties the box (and makes it a ghost) rather than failing
+ */
+export function withPlainTextReplaced(value, plain, inherited = {}) {
+  const before = [...richTextToPlain(value)];
+  const after = [...plain];
+  const limit = Math.min(before.length, after.length);
+  let head = 0;
+  while (head < limit && before[head] === after[head]) head += 1;
+  let tail = 0;
+  while (tail < limit - head && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail += 1;
+  // unresolvedRichText, never normalizeRichText: this value is WRITTEN BACK, and
+  // normalize would RESOLVE the widget-level style onto every run — the
+  // re-shadowing TextEditController's header warns about, which is exactly how
+  // the eight box rows died the first time. It also absorbs a legacy string and
+  // junk, so this function needs no shape branch of its own.
+  const cut = deleteRange(unresolvedRichText(value), head, before.length - tail, inherited);
+  return insertText(cut, head, after.slice(head, after.length - tail).join(""), inherited);
+}
+
 // ── loud document migration (string `text` → runs) ────────────────────────────
 
 /**
