@@ -81,6 +81,14 @@ import { SUPERSAMPLE_DENSITY } from "../ir.js";
 import { reportOnce } from "../../core/report.js";
 import { clampSurfaceSize } from "../../core/clip.js";
 import { BYTES_PER_PIXEL, registerRasterizedBitmap, releaseImage, reserveImageSlot } from "./image_registry.js";
+// THE ONE VOICE FOR "no internet". Presets reference scenes by URL (the user's
+// own ruling: "even if the assets don't exist in our shipped Git repository,
+// surely there are some that we can just reference by URL online"), so a
+// disconnected author WILL hit this — and it must read the same as every other
+// offline refusal in the app rather than inventing a second phrasing.
+// render_gpu importing a DOM-free web/ module has precedent in three places
+// (map_display, tile_registry, browser_canvaskit).
+import { isOnline, offlineMessage } from "../../web/connectivity.js";
 
 /** Device px per canvas unit at world scale 1 — the same 2x supersample every
  *  other raster widget uses (ir.js SUPERSAMPLE_DENSITY, "the retina-dpr 2x
@@ -460,11 +468,32 @@ function engine() {
     // way every other box widget does.
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: true, preserveDrawingBuffer: true });
     renderer.setClearColor(0x000000, 0);
+    // A PBR MATERIAL RENDERS BLACK WITH NO LIGHT, so a lit member needs a rig.
+    // Three-point, the standard studio setup, mounted once and moved in and out
+    // of the scene with the model (a splat's radiance is baked, so lights would
+    // be inert on it and it never gets these). Intensities are the conventional
+    // key : fill : rim ratio of roughly 1 : 0.4 : 0.6, and the whole rig is
+    // parented to ONE Group so adding and removing it is one call.
+    const lights = new THREE.Group();
+    const key = new THREE.DirectionalLight(0xffffff, 3);
+    key.position.set(1, 1.4, 1);
+    const fill = new THREE.DirectionalLight(0xffffff, 1.2);
+    fill.position.set(-1.4, 0.2, 0.8);
+    const rim = new THREE.DirectionalLight(0xffffff, 1.8);
+    rim.position.set(0, 0.6, -1.5);
+    // A dim sky/ground ambient so a surface facing away from all three is dark
+    // rather than pure black — the "there is a room around this" term that makes
+    // an untextured metal sphere read as metal instead of a silhouette.
+    lights.add(key, fill, rim, new THREE.HemisphereLight(0xbfd4ff, 0x2a2620, 0.6));
+    // ACES filmic is glTF's own recommended view transform and what every
+    // reference glTF viewer uses, so a Khronos sample model looks here the way it
+    // looks in its own documentation.
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera();
     const sparkRenderer = new spark.SparkRenderer({ renderer });
     scene.add(sparkRenderer);
-    return { THREE, spark, renderer, spark3d: sparkRenderer, scene, camera, canvas };
+    return { THREE, spark, renderer, spark3d: sparkRenderer, scene, camera, canvas, lights };
   })();
   return enginePromise;
 }
@@ -484,26 +513,104 @@ function ensureSource(src, kind) {
   const cached = sources.get(key);
   if (cached) return cached;
   const promise = (async () => {
-    const { spark } = await engine();
-    if (kind !== "splat")
-      throw new Error(`scene3d_raster: no loader for kind "${kind}" — only "splat" is implemented (the mesh member is declared but its glTF loader is not wired yet)`);
-    const mesh = new spark.SplatMesh({ url: src });
-    await mesh.initialized;
-    // Splat captures are stored Y-DOWN (the convention every 3DGS trainer
-    // writes, inherited from COLMAP's camera frame); three.js is Y-UP. A 180
-    // degree turn about X is the whole correction, and it is applied HERE rather
-    // than as a user-facing property because it is a property of the FORMAT, not
-    // of the author's scene.
-    mesh.quaternion.set(1, 0, 0, 0);
-    return mesh;
+    const { spark, THREE } = await engine();
+    if (kind === "splat") {
+      const mesh = new spark.SplatMesh({ url: src });
+      await mesh.initialized;
+      // Splat captures are stored Y-DOWN (the convention every 3DGS trainer
+      // writes, inherited from COLMAP's camera frame); three.js is Y-UP. A 180
+      // degree turn about X is the whole correction, and it is applied HERE rather
+      // than as a user-facing property because it is a property of the FORMAT, not
+      // of the author's scene.
+      mesh.quaternion.set(1, 0, 0, 0);
+      // NOT NORMALIZED, deliberately — see normalizeToUnitSphere. A capture's
+      // floaters would blow up its bounding sphere and shrink the subject to a
+      // dot; captures also carry a meaningful real-world scale that a room-scale
+      // fly-through depends on.
+      return mesh;
+    }
+    if (kind === "model") {
+      const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+      const gltf = await new GLTFLoader().loadAsync(src);
+      normalizeToUnitSphere(gltf.scene, THREE);
+      return gltf.scene;
+    }
+    throw new Error(`scene3d_raster: no loader for kind "${kind}" (known: "splat", "model")`);
   })().catch((e) => {
     const err = e instanceof Error ? e : new Error(String(e));
-    sourceErrors.set(src, err.message);
+    sourceErrors.set(src, sourceFailureMessage(src, err));
     sources.delete(key); // a later frame may legitimately retry a fixed asset
     throw err;
   });
   sources.set(key, promise);
   return promise;
+}
+
+/**
+ * Pure function. The sentence the widget shows when a scene will not load —
+ * the app's ONE offline voice when that is the cause, and the loader's own
+ * message otherwise.
+ *
+ * A remote preset that 404s and a laptop with no wifi are DIFFERENT problems and
+ * must not read the same. `isOnline()` is deliberately only used to CHOOSE the
+ * wording, never to decide whether to try: `navigator.onLine === true` is nearly
+ * meaningless behind a captive portal or a dead uplink, which is exactly why
+ * web/connectivity.js exists rather than a bare flag read. So the fetch is always
+ * attempted, and only its FAILURE is interpreted.
+ *
+ * @param {string} src the asset URL
+ * @param {Error} err whatever the loader threw
+ * @returns {string} one sentence for the in-canvas panel
+ *
+ * @example // online, a dead link:  "HTTP 404 fetching https://example.com/gone.spz"
+ * @example // offline:              "Offline — loading a 3D scene from the web needs the internet"
+ */
+function sourceFailureMessage(src, err) {
+  const remote = /^https?:/i.test(String(src));
+  if (remote && !isOnline()) return offlineMessage(SCENE_FETCH_CAPABILITY);
+  return err.message;
+}
+
+/** The capability name offlineMessage() completes. Named here so the sentence is
+ *  written once and the phrasing cannot drift between call sites. */
+const SCENE_FETCH_CAPABILITY = "loading a 3D scene from the web";
+
+/**
+ * Command (mutates `object`'s transform). Centres a loaded model on the origin
+ * and scales it to a UNIT bounding sphere.
+ *
+ * WHY THIS IS NECESSARY AND NOT A CONVENIENCE: glTF sample models span five
+ * orders of magnitude of authored scale — Avocado is about 0.05 units tall,
+ * ToyCar about 0.06, Fox about 100. One default camera pose cannot frame both, so
+ * without this every model would need its own hand-tuned `camDistance` and every
+ * preset would be a different shot of the same nothing. Normalizing means ONE
+ * pose frames ANY model, which is what makes the camera presets portable across
+ * sources. It is a pure function of the geometry, so it does not perturb
+ * determinism.
+ *
+ * Applied to MESHES ONLY. A splat capture's outlier "floaters" sit far outside
+ * the subject, so its bounding sphere is not its subject and normalizing would
+ * shrink the thing you came to see into a speck; a capture also carries a real
+ * metric scale that a room-scale fly-through depends on.
+ *
+ * @param {object} object a three.js Object3D
+ * @param {object} THREE the three module (passed rather than imported: the engine is lazy)
+ * @returns {void}
+ *
+ * @example // a 100-unit-tall Fox centred at (0, 50, 0) becomes a unit sphere at the origin
+ */
+function normalizeToUnitSphere(object, THREE) {
+  const sphere = new THREE.Box3().setFromObject(object).getBoundingSphere(new THREE.Sphere());
+  if (!(sphere.radius > 0) || !Number.isFinite(sphere.radius)) {
+    reportOnce(
+      "scene3d_raster:degenerate-bounds",
+      "PowerRP scene3d_raster: a model has no finite bounding sphere (empty scene, or NaN vertex data), so it is drawn at its authored scale and may be invisible. Check the file."
+    );
+    return;
+  }
+  const s = 1 / sphere.radius;
+  object.scale.setScalar(s);
+  object.position.set(-sphere.center.x * s, -sphere.center.y * s, -sphere.center.z * s);
 }
 
 /**
@@ -530,7 +637,7 @@ let renderQueue = Promise.resolve();
  * @returns {Promise<ImageBitmap>}
  */
 async function renderSpecNow(spec) {
-  const [{ renderer, spark3d, scene, camera, canvas, THREE }, object] = await Promise.all([
+  const [{ renderer, spark3d, scene, camera, canvas, lights, THREE }, object] = await Promise.all([
     engine(),
     ensureSource(spec.src, spec.kind),
   ]);
@@ -546,6 +653,12 @@ async function renderSpecNow(spec) {
   // scenes composite into one picture.
   for (const child of [...scene.children]) if (child !== spark3d) scene.remove(child);
   scene.add(object);
+  // The light rig rides with a LIT member only. A splat's radiance is baked into
+  // its Gaussians, so a light would be inert on it — and the house doctrine
+  // (core/registry.js effectsInjectable) is that a node kind which cannot honour
+  // a control gets nothing rather than a fake one.
+  if (spec.lit) scene.add(lights);
+  renderer.toneMappingExposure = spec.exposure;
 
   renderer.setSize(size.w, size.h, false);
   camera.fov = (spec.pose.fov * 180) / Math.PI; // three takes vertical FOV in DEGREES

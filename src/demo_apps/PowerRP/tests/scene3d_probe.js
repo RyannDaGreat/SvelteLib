@@ -36,7 +36,9 @@
  * probe nobody runs. It is served through Vite's `/@fs/` path, which is why this
  * file computes an absolute path rather than hardcoding a URL.
  */
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { launchBrowser } from "./puppeteerLaunch.js";
@@ -66,12 +68,35 @@ const DRAG_PX = 90;
 const YAW_NUDGE = 0.4;
 
 const splatPath = fileURLToPath(new URL("../assets/builtin/splats/spz-test-scene.ply", import.meta.url));
+const modelPath = fileURLToPath(new URL("../assets/builtin/models/clearcoat-car-paint.glb", import.meta.url));
 const SPLAT_URL = `/@fs${splatPath}`;
+const MODEL_URL = `/@fs${modelPath}`;
+/** A URL that is REACHABLE and returns 404 — the link-rot case, which is what a
+ *  preset pointing at a remote asset will eventually become. Deliberately on the
+ *  probe's OWN dev server rather than a real host: this suite must not need the
+ *  internet (a gate that goes red on a plane is a gate nobody trusts), and a
+ *  same-origin 404 exercises exactly the code path a remote 404 would. */
+const DEAD_URL = "/@fs/definitely/not/a/real/scene.ply";
+/** A third and fourth viewport for the mesh and link-rot checks, parked clear of
+ *  the first two so every clip is of one widget. */
+const MODEL_BOX = { x: 200, y: 470, w: 320, h: 240 };
+const DEAD_BOX = { x: 600, y: 470, w: 320, h: 240 };
 
-// HMR + the file watcher are OFF: a dozen agents edit this tree concurrently and
-// a stray full reload mid-probe drops window.__powerrp_app for unrelated reasons.
+// A PRIVATE DEP CACHE, and this one is not paranoia — it was measured. The
+// default cache is `<root>/node_modules/.vite`, which every concurrently running
+// agent's dev server ALSO writes; when a peer's server re-optimizes, the `?v=`
+// hash rotates and this page's in-flight `import("three")` 404s mid-render. The
+// symptom is a red "Could not load this scene — Failed to fetch dynamically
+// imported module … three.js?v=45b3870d", which reads exactly like a broken
+// widget and is not one. An isolated cache costs one re-optimize per run (~10 s)
+// and makes the result attributable.
+//
+// HMR + the file watcher are OFF for the neighbouring reason: a dozen agents edit
+// this tree concurrently and a stray full reload mid-probe drops
+// window.__powerrp_app for reasons unrelated to anything asserted here.
 const server = await createServer({
   configFile: fileURLToPath(new URL("../web/vite.config.js", import.meta.url)),
+  cacheDir: await mkdtemp(join(tmpdir(), "powerrp-scene3d-vite-")),
   server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null },
 });
 await server.listen();
@@ -82,7 +107,16 @@ const checks = [];
 const errors = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };
 /** Documented boot/runtime noise from OTHER lanes (activation_probe.js's list). */
-const IGNORE = [/PowerRP repair:/, /was missing font/, /VideoV7/, /WebGPU/, /no WebGPU adapter/, /preserveAspect/];
+const IGNORE = [
+  /PowerRP repair:/, /was missing font/, /VideoV7/, /WebGPU/, /no WebGPU adapter/, /preserveAspect/,
+  // COLD-CACHE ARTIFACT, not the app: the first run after `node_modules/.vite` is
+  // cleared re-optimizes while this page is already loading, and every request
+  // in flight during that window answers 504. It is the same noise
+  // tests/boot_probe.js already lists as known-benign. A WARM run never sees it,
+  // and it cannot mask a real fault here because every assertion below is about
+  // pixels or document state, not about the absence of a network hiccup.
+  /Outdated Optimize Dep/,
+];
 const isNoise = (s) => IGNORE.some((re) => re.test(s));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -167,6 +201,22 @@ try {
     app.commit = (d) => { window.__probeCommits += 1; return real(d); };
   });
   const commits = () => page.evaluate(() => window.__probeCommits);
+  /** Query. What a widget's emit() currently produces, reduced to the one
+   *  distinction every pixel check below depends on: `image` means a real raster
+   *  is being drawn, `text` means one of the two message panels is up.
+   *
+   *  THIS EXISTS BECAUSE THE PIXEL PROXY LIED. The mesh check first "passed" on a
+   *  RED ERROR PANEL — a box of wrapped red text compresses to more PNG bytes than
+   *  the flat empty-viewport affordance, so "richer than empty" was satisfied by a
+   *  failure. A screenshot caught it. Byte-richness alone can only ever say "not
+   *  blank"; it cannot say "not an error", so both must be asserted. */
+  const opsOf = (id) => page.evaluate((id) => {
+    const app = window.__powerrp_app;
+    const n = app.nodes().find((x) => x.itemId === id);
+    if (!n) return null;
+    const ops = n.plugin.emit(n.state, null, n.world);
+    return { kinds: [...new Set(ops.map((o) => o.op))], message: ops.find((o) => o.op === "text")?.text ?? null };
+  }, id);
 
   /** Query. A PNG of just one widget's box, as a base64 string — the unit every
    *  pixel assertion below compares. Clipping to the widget means a peer's
@@ -208,6 +258,9 @@ try {
     await sleep(400);
   }
   const refA = await refOf(splatId);
+  const splatOps = await opsOf(splatId);
+  ok(splatOps.kinds.includes("image") && splatOps.message === null,
+    `the splat is drawing a RASTER, not a message panel (ops ${JSON.stringify(splatOps.kinds)}, message ${JSON.stringify(splatOps.message)})`);
   ok(complexity(splatShot) > complexity(emptyShot) * 2,
     `the splat scene RENDERED: ${complexity(splatShot)} bytes of PNG vs ${complexity(emptyShot)} for the same-size empty viewport`);
   await page.screenshot({ path: `${shots}/01-rendered.png` });
@@ -316,7 +369,60 @@ try {
   ok((await stored(splatId, "camYaw")) === boundBefore,
     `the equation survived untouched (${JSON.stringify(await stored(splatId, "camYaw"))})`);
 
-  ok(liveErrors.length === 0, `no runtime errors during the run (${JSON.stringify(liveErrors)})`);
+  // ── 7. THE MESH MEMBER RENDERS ────────────────────────────────────────────
+  // The glTF half of the family, against the SHIPPED model so this needs no
+  // network. It proves three things at once that nothing else here touches: the
+  // GLTFLoader path, the three-point light rig (a PBR material with no light is
+  // black, so a lit render and an unlit one are trivially distinguishable), and
+  // normalizeToUnitSphere — without which an authored-scale model is either a
+  // speck or entirely off-camera and the frame looks empty either way.
+  const modelId = await spawn("scene3d_model", { ...MODEL_BOX, src: MODEL_URL });
+  await sleep(SETTLE_MS);
+  let modelShot = null;
+  const meshDeadline = Date.now() + RASTER_TIMEOUT_MS;
+  while (Date.now() < meshDeadline) {
+    modelShot = await shotOf(MODEL_BOX);
+    if (complexity(modelShot) > complexity(emptyShot) * 2) break;
+    await sleep(400);
+  }
+  const modelOps = await opsOf(modelId);
+  ok(modelOps.kinds.includes("image") && modelOps.message === null,
+    `the glTF model is drawing a RASTER, not a message panel (ops ${JSON.stringify(modelOps.kinds)}, message ${JSON.stringify(modelOps.message)})`);
+  ok(complexity(modelShot) > complexity(emptyShot) * 2,
+    `the glTF model RENDERED and is lit: ${complexity(modelShot)} bytes of PNG vs ${complexity(emptyShot)} for an empty viewport of the same size`);
+  await page.screenshot({ path: `${shots}/05-model.png` });
+
+  // ── 8. A DEAD SOURCE FAILS LOUDLY, IN THE CANVAS ──────────────────────────
+  // The whole reason this assertion exists: the preset library points at remote
+  // URLs, so LINK ROT is not hypothetical — it is the expected end state of some
+  // of those entries. A 404 must produce a red panel naming the reason, never a
+  // blank viewport, and never a silent fall back to some other scene.
+  const deadId = await spawn("scene3d_splat", { ...DEAD_BOX, src: DEAD_URL });
+  await sleep(SETTLE_MS);
+  let deadReason = null;
+  const deadDeadline = Date.now() + RASTER_TIMEOUT_MS;
+  while (Date.now() < deadDeadline) {
+    deadReason = await page.evaluate((id) => {
+      const app = window.__powerrp_app;
+      const n = app.nodes().find((x) => x.itemId === id);
+      const ops = n ? n.plugin.emit(n.state, null, n.world) : [];
+      const label = ops.find((o) => o.op === "text");
+      return label ? label.text : null;
+    }, deadId);
+    if (deadReason && /could not load/i.test(deadReason)) break;
+    await sleep(400);
+  }
+  ok(deadReason && /could not load/i.test(deadReason),
+    `a dead source draws a NAMED failure in the canvas, not a blank box (${JSON.stringify(deadReason)})`);
+  ok((await shotOf(DEAD_BOX)) !== (await shotOf(EMPTY_BOX)),
+    "a FAILED viewport and an EMPTY one look different — an absent scene and a broken one are different problems");
+  await page.screenshot({ path: `${shots}/06-dead-source.png` });
+
+  // The dead-source console.error is the SUBJECT of check 8, not a fault — it is
+  // the loud half of the loud failure, and a probe that demanded silence there
+  // would be demanding the bug back.
+  const unexpected = liveErrors.filter((e) => !e.includes(DEAD_URL));
+  ok(unexpected.length === 0, `no unexpected runtime errors during the run (${JSON.stringify(unexpected)})`);
   await page.screenshot({ path: `${shots}/04-final.png` });
 } finally {
   await browser.close();

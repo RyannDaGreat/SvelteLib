@@ -92,7 +92,24 @@ export default defineConfig({
   // Pre-bundle the exact editor.api entry the modal imports so first use is
   // deterministic. (The `?worker` chunk in web/monacoSetup.js is built by Vite's
   // worker plugin, not optimizeDeps, so it needs no entry here.)
-  optimizeDeps: { include: ["pdfjs-dist", "mathjax", "mathlive", "mermaid", "mp4-muxer", "monaco-editor/esm/vs/editor/editor.api"] },
+  // THE 3D VIEWPORT'S THREE ENTRIES ARE NOT OPTIONAL, and the failure they prevent
+  // is nasty because it is INTERMITTENT. render_gpu/gpu/scene3d_raster.js reaches
+  // three / spark / GLTFLoader through a LAZY import(), so the scanner only meets
+  // them when a 3D widget first renders — mid-session. Vite then RE-OPTIMIZES,
+  // which invalidates the already-served `three` chunk while Spark still holds a
+  // reference to the old one; measured symptoms were a burst of
+  // `504 Outdated Optimize Dep`, a `Can not resolve #include <splatDefines>` from
+  // Spark's shader assembler (its chunks had registered on the other copy of
+  // THREE), and a `Failed to fetch dynamically imported module` for the loader —
+  // all of which read as a broken widget and none of which is one. Pre-bundling
+  // them up front means the scanner never discovers anything new. GLTFLoader is
+  // listed EXPLICITLY because a deep subpath is not covered by its package entry.
+  optimizeDeps: {
+    include: [
+      "pdfjs-dist", "mathjax", "mathlive", "mermaid", "mp4-muxer", "monaco-editor/esm/vs/editor/editor.api",
+      "three", "three/addons/loaders/GLTFLoader.js", "@sparkjsdev/spark",
+    ],
+  },
   server: {
     port: 3637,
     host: true,

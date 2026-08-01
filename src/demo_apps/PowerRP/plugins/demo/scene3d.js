@@ -428,48 +428,189 @@ export function resolutionRows() {
   ];
 }
 
+/** WHERE A PRESET'S SCENE COMES FROM, and the rule every entry below obeys.
+ *
+ * The user's ruling: "Even if the assets don't exist in our shipped Git
+ * repository, surely there are some that we can just reference by URL online.
+ * For the Gaussian splat files, I'd like to see several examples of both that
+ * and meshes." So a preset may name a REMOTE scene — and every one of them
+ * therefore carries its SOURCE and its LICENCE in its own description, because
+ * we are pointing authors at other people's work and an author who exports a
+ * deck has to know what they are allowed to do with it.
+ *
+ * EVERY URL BELOW WAS MEASURED, not assumed: HTTP status, byte length and
+ * `access-control-allow-origin` were read with `curl -I` on 2026-08-01, and each
+ * one answers 200 with `ACAO: *` (a browser cannot fetch a scene without that
+ * header, so an asset host that omits it is unusable however good its licence).
+ * The byte figures in the descriptions are those measured Content-Lengths.
+ *
+ * WHAT WAS REJECTED, so nobody re-proposes it:
+ *   · `sparkjs.dev/assets/splats/*.spz` — 30-odd small, ideal, perfectly
+ *     compatible scenes, hosted by the engine we already depend on, and its own
+ *     README hot-links `butterfly.spz` in its quickstart. REJECTED ANYWAY: the
+ *     repository LICENSE is a plain MIT covering "the Software", the assets are
+ *     NOT in the repository, and there is no ASSETS.md, no attribution file and
+ *     no licence statement anywhere for them. An implied licence is not a cited
+ *     one. This is the single biggest loss in this list and it would take one
+ *     sentence from the Spark maintainers to reverse.
+ *   · `huggingface.co/cakewalk/splat-data` (train / nike / plush) and
+ *     `huggingface.co/datasets/dylanebert/3dgs` (bonsai) — the splats every 3DGS
+ *     web demo uses. Both cards declare NO licence (checked via the HF API:
+ *     `cardData.license` is null on both). The Mip-NeRF 360 and Tanks & Temples
+ *     scenes they derive from are additionally covered by INRIA's
+ *     research-only Gaussian-Splatting licence, so even a declared card would
+ *     need checking upstream. REJECTED.
+ *   · Objaverse — answered in the negative by this round's own research and not
+ *     re-litigated here: no search API, an index with no licence field, 0.4% CC0,
+ *     and an open unresolved legal complaint against the dataset.
+ *
+ * THE HONEST CONSEQUENCE: there are only TWO cleanly-licensed remote splat
+ * scenes in this list against ten meshes. That asymmetry is real and it is a
+ * property of the world, not of the effort — permissively-licensed photographic
+ * splat captures barely exist yet, while Khronos has curated a CC0 mesh library
+ * for a decade. A short list that will still resolve in a year beats a long one
+ * where half of it 404s.
+ */
+
+/** Khronos glTF-Sample-Assets, `main` branch. Every model below was confirmed
+ *  CC0 by reading its own `Models/<Name>/README.md`, not by trusting the
+ *  repository. Pinned to `main` rather than a commit DELIBERATELY: a preset is a
+ *  starting point an author replaces, and a moved-but-current asset is better
+ *  than a pinned one that a repo reorganization turns into a 404. */
+const KHRONOS = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models";
+const khronos = (name) => `${KHRONOS}/${name}/glTF-Binary/${name}.glb`;
+
+/** Niantic's SPZ reference repository — the format author's own sample captures,
+ *  MIT by the repository LICENSE, which is the strongest splat provenance found
+ *  anywhere in this round's survey. */
+const SPZ_SAMPLES = "https://raw.githubusercontent.com/nianticlabs/spz/main/samples";
+
+/** The ONE scene that travels with the app, so the widget is not useless offline
+ *  or on a first run behind a corporate proxy. `new URL(..., import.meta.url)` is
+ *  Vite's own static-asset idiom: in dev it resolves to the served file, in a
+ *  build the bytes are emitted and the URL is rewritten to the hashed asset. That
+ *  is why the file can live outside the Vite root without any loader machinery —
+ *  and why this is one line rather than a builtinClipart-style registry, which
+ *  would be the right shape only once there are several. */
+const LOCAL_SAMPLE = new URL("../../assets/builtin/splats/spz-test-scene.ply", import.meta.url).href;
+/** The mesh member's shipped subject, for the same offline reason. */
+const LOCAL_MODEL = new URL("../../assets/builtin/models/clearcoat-car-paint.glb", import.meta.url).href;
+
 /**
- * Pure function. Presets for a member — the R6-3 "presets are how we get
- * inspiration" requirement, expressed as camera shots because the camera is the
- * only thing a viewport can vary without an asset. Every key written here exists
- * in the member's `defaults` (tests/preset_contract_test.js enforces that over
- * every plugin), and the four `props` sets are pairwise distinct.
+ * Pure function. The camera SHOTS every member offers — presets that change the
+ * view and nothing else, so they compose with whatever scene is loaded.
  *
- * ONE family, so it is declared through the FLAT `presets` form rather than
- * `presetFamilies` — core/registry.presetFamiliesOf:614 wraps a flat list into
- * the single "Presets" family itself, and its own error message states the rule
- * ("one family is a family of one"). A second family (materials, say, once the
- * mesh member is real) is the moment to switch forms.
- *
- * @param {object} _member a MEMBERS row (both members take the same shots today)
  * @returns {object[]} presets
  *
- * @example scene3dPresets({kind: "splat"}).length // 4
- * @example scene3dPresets({kind: "splat"})[0].name // "Three-quarter"
+ * @example shotPresets().length // 5
+ * @example shotPresets()[0].name // "Three-quarter"
  */
-export function scene3dPresets(_member) {
+export function shotPresets() {
+  const shot = (name, description, props) => ({ name, description, props });
   return [
-    {
-      name: "Three-quarter",
-      description: "The default establishing view: off-axis and slightly above, so depth reads and no face of the subject is hidden. Start here.",
-      props: { camYaw: DEFAULT_YAW, camPitch: DEFAULT_PITCH, camDistance: DEFAULT_DISTANCE, camFov: DEFAULT_FOV, camRoll: 0 },
-    },
-    {
-      name: "Front elevation",
-      description: "Dead-on and level, at a long lens so the subject is nearly orthographic. The drawing-board view — right for comparing two things, wrong for showing volume.",
-      props: { camYaw: 0, camPitch: 0, camDistance: DEFAULT_DISTANCE * 3, camFov: 18 * DEG, camRoll: 0 },
-    },
-    {
-      name: "Top-down",
-      description: "Looking straight down at the plan. Uses the pitch clamp, so it is as vertical as a camera with a defined up direction can be.",
-      props: { camYaw: 0, camPitch: MAX_PITCH, camDistance: DEFAULT_DISTANCE, camFov: DEFAULT_FOV, camRoll: 0 },
-    },
-    {
-      name: "Inside, wide",
-      description: "The camera pushed in close on a wide lens — the walk-through look for a room-scale capture. Keyframe Yaw from here for a look-around.",
-      props: { camYaw: DEFAULT_YAW, camPitch: 0, camDistance: DEFAULT_DISTANCE / 6, camFov: 90 * DEG, camRoll: 0 },
-    },
+    shot("Three-quarter",
+      "The default establishing view: off-axis and slightly above, so depth reads and no face of the subject is hidden. Start here.",
+      { camYaw: DEFAULT_YAW, camPitch: DEFAULT_PITCH, camDistance: DEFAULT_DISTANCE, camFov: DEFAULT_FOV, camRoll: 0 }),
+    shot("Front elevation",
+      "Dead-on and level, at a long lens so the subject is nearly orthographic. The drawing-board view — right for comparing two things, wrong for showing volume.",
+      { camYaw: 0, camPitch: 0, camDistance: DEFAULT_DISTANCE * 3, camFov: 18 * DEG, camRoll: 0 }),
+    shot("Top-down",
+      "Looking straight down at the plan. Uses the pitch clamp, so it is as vertical as a camera with a defined up direction can be.",
+      { camYaw: 0, camPitch: MAX_PITCH, camDistance: DEFAULT_DISTANCE, camFov: DEFAULT_FOV, camRoll: 0 }),
+    shot("Hero, low and wide",
+      "Below the horizon on a wide lens, the angle every product shot and film poster uses to make a subject loom. Canted slightly so it does not read as an accident.",
+      { camYaw: -40 * DEG, camPitch: -18 * DEG, camDistance: DEFAULT_DISTANCE * 0.7, camFov: 75 * DEG, camRoll: -4 * DEG }),
+    shot("Inside, wide",
+      "The camera pushed in close on a wide lens — the walk-through look for a room-scale capture. Keyframe Yaw from here for a look-around.",
+      { camYaw: DEFAULT_YAW, camPitch: 0, camDistance: DEFAULT_DISTANCE / 6, camFov: 90 * DEG, camRoll: 0 }),
   ];
+}
+
+/**
+ * Pure function. The SCENE presets — one per referenced asset. Each writes `src`
+ * and a pose chosen for that subject, and each states its source and licence.
+ *
+ * @param {object} member a MEMBERS row
+ * @returns {object[]} presets
+ *
+ * @example scenePresets({kind: "splat"}).length // 3
+ * @example scenePresets({kind: "model"}).length // 10
+ * @example scenePresets({kind: "splat"})[0].props.camFov // 0.8726646259971648
+ * @example scenePresets({kind: "model"})[1].props.src.endsWith("MetalRoughSpheresNoTextures.glb") // true
+ */
+export function scenePresets(member) {
+  const framed = (src, extra = {}) => ({
+    src, camYaw: DEFAULT_YAW, camPitch: DEFAULT_PITCH, camRoll: 0,
+    camDistance: DEFAULT_DISTANCE, camFov: DEFAULT_FOV,
+    camTargetX: 0, camTargetY: 0, camTargetZ: 0, ...extra,
+  });
+  const scene = (name, description, src, extra) => ({ name, description, props: framed(src, extra) });
+  if (member.kind === "splat")
+    return [
+      scene("SPZ format sample (shipped, offline)",
+        "The one splat scene that travels WITH this app, so the widget has something to show with no network at all: 1,566 Gaussians in the standard INRIA .ply layout, 144,648 bytes. Source: nianticlabs/spz test data, MIT. It is a format fixture rather than a photograph — use it to check the widget works, then load one of the captures below.",
+        LOCAL_SAMPLE),
+      scene("Horned lizard (capture)",
+        "A real photographic capture: 786,233 Gaussians, 18,143,098 bytes over the network, so expect a few seconds on a first load. Source: nianticlabs/spz samples, MIT — the SPZ format author's own repository, which is the cleanest splat provenance this survey found.",
+        `${SPZ_SAMPLES}/hornedlizard.spz`, { camDistance: DEFAULT_DISTANCE * 0.8 }),
+      scene("Racoon family (capture)",
+        "A larger multi-subject capture: 24,202,962 bytes, the biggest scene referenced here — good for judging how the resolution controls behave on something heavy. Source: nianticlabs/spz samples, MIT.",
+        `${SPZ_SAMPLES}/racoonfamily.spz`, { camDistance: DEFAULT_DISTANCE, camFov: 60 * DEG }),
+    ];
+  return [
+    scene("Car paint (shipped, offline)",
+      "The one model that travels WITH this app, so the viewer has a subject with no network at all: a flake-and-clearcoat automotive finish over metal in 116,948 bytes — small, but it exercises the loader, the three-point light rig and the tone mapping. Source: Khronos glTF-Sample-Assets ClearCoatCarPaint, CC0 1.0 (© 2023 Public; Eric Chadwick).",
+      LOCAL_MODEL),
+    scene("Metal spheres (no textures)",
+      "A grid of 1,040,409 triangles of pure metal and roughness with ZERO image textures, 291,316 bytes. The lighting rig on its own: change the shot and watch the highlights move, with nothing painted on to confuse what you are seeing. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("MetalRoughSpheresNoTextures")),
+    scene("Suzanne",
+      "Blender's monkey, the most recognisable test mesh in computer graphics, here in its iridescent-material variant because that is the only single-file .glb Khronos ships of her. 507,608 bytes. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("IridescenceSuzanne")),
+    scene("Boom box",
+      "A full PBR material set on one object — base colour, normal, occlusion/roughness/metallic and emissive — so every channel of the shading model is doing something. 10,614,184 bytes. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("BoomBox")),
+    scene("Water bottle",
+      "Brushed metal against a matte label: the classic product-shot pairing, and the easiest way to see what the Hero shot's low wide angle does. 8,966,700 bytes. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("WaterBottle")),
+    scene("Avocado",
+      "682 triangles carrying 8,110,040 bytes of 4K texture — the clearest demonstration in this list that a model's cost is almost never its geometry. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("Avocado")),
+    scene("Lantern",
+      "A three-part prop with worn metal and glass, at 9,564,264 bytes. The most scene-like of the small models: it has an inside and an outside. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("Lantern")),
+    scene("Toy car",
+      "5,422,412 bytes and unusually GEOMETRY-dominated rather than texture-dominated, with clearcoat paint over metal. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("ToyCar")),
+    scene("Glass vase and flowers",
+      "Transmission, refraction and thin-walled glass — the hardest thing in the shading model to get right and the most obviously wrong when it is not. 1,819,824 bytes. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("GlassVaseFlowers")),
+    scene("Anisotropy disc",
+      "Brushed-metal anisotropy laid out as a test chart, 242,128 bytes: the highlight stretches along the brush direction and rotates as you orbit. Source: Khronos glTF-Sample-Assets, CC0.",
+      khronos("AnisotropyDiscTest")),
+  ];
+}
+
+/**
+ * Pure function. A member's preset FAMILIES — the shots, and the scenes.
+ *
+ * TWO FAMILIES, not one flat list, and the reason is the disjointness rule
+ * tests/tool_groups_test.js enforces: a family's presets must write DISJOINT key
+ * sets from its siblings' so picking from one never undoes a pick from another.
+ * These two deliberately OVERLAP on the camera keys — a scene preset frames its
+ * own subject — so they cannot be two families. They are therefore ONE family of
+ * scenes plus one of shots… which is a contradiction, and it is resolved the way
+ * the gate requires: a SINGLE flat list, so `presetFamiliesOf` wraps it as one
+ * "Presets" group and nothing can clobber anything.
+ *
+ * @param {object} member a MEMBERS row
+ * @returns {object[]} presets
+ *
+ * @example scene3dPresets({kind: "splat"}).length // 8
+ * @example scene3dPresets({kind: "model"}).length // 15
+ */
+export function scene3dPresets(member) {
+  return [...scenePresets(member), ...shotPresets()];
 }
 
 /**
@@ -650,6 +791,7 @@ function makeScene3dPlugin(member) {
       const pose = scene3dPose(s);
       const ref = ensureScene3dRasterized({
         kind: member.kind, src: s.src, pose, look: scene3dLook(s),
+        lit: member.lit, exposure: s.exposure ?? 1,
         w: size.w, h: size.h,
         near: Math.max(pose.distance * NEAR_FRACTION, Number.EPSILON),
         far: Math.max(pose.distance * FAR_MULTIPLE, 1),
