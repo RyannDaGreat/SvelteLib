@@ -80,6 +80,19 @@ code exists.
   the SELECTED WIDGET'S CURRENT materials, not from its widget type.
 - **Manifest / Concerns** — this file / `concerns.md` (append-only history of
   mistakes + progress). "Manifest that" = record it here.
+- **Mode selector** (user, 2026-08-01) — a property whose VALUE decides which
+  SIBLING properties are applicable. Vector Pattern's `generator` is one: 33 knobs
+  are flattened into one schema and each generator reads only its own, so the rest
+  are inert. The material choice (vector pattern vs CRT vs metaballs) is another.
+  **The rule: knobs a mode selector renders inapplicable are HIDDEN, not shown
+  inert** — an inert control is a lie about its own affordance, by the same ruling
+  that keeps the save dot from being a button. Implemented via the `visibleWhen`
+  row aspect (`core/multiselect.js` `PRESENTATIONAL_ROW_ASPECTS`), and the
+  visibility predicate must be DERIVED from the mode's own declared schema, never
+  from a hand-maintained mode→properties map.
+  **Distinguish from DISABLED:** inapplicable *by mode* is hidden; temporarily
+  unavailable *by state* is shown disabled WITH a reason (`commandUnavailableReason`).
+  Two different situations; keep them looking different.
 
 ## CONVENTIONS — THE CANONICAL REGISTRY
 
