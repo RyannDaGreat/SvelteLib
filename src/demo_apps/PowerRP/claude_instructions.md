@@ -1284,6 +1284,63 @@ triangulates plain rectangles for no reason.
   to `time - self.reveal_time`, so a video starts when revealed and plays on. The
   scrubber becomes that same widget with a different default. "Get rid of all the
   other video widgets and only have one from now on."
+#### R6-12 DIAGNOSIS (wave 1, agent W1-B; report `.frenzy/round6/W1-B.md`, frames in `.frenzy/round6/W1-B-shots/`)
+
+**R6-12.1 IS NOT REPRODUCIBLE AS WORDED on the default (server) backend.**
+`plugins/video.js` was rendered through `cli/render_job.js` with data URIs, BOTH asset-ref
+grammars, and the user's own 1920x528 and 2560x1408 clips — **it rendered every time**.
+**AND: folding `projects/Untitled cheese/doc.json` shows every `type:"video"` item in it is
+`active:false` on EVERY slide.** So at least one candidate explanation is that the items
+were keyframed inactive, not dropped by the renderer. NOT concluded — the job's collected
+`consoleErrors` (`cli/render_job.js:414-418`, surfaced by `server.py`) from the user's
+ACTUAL failing render would settle it in one look. **ASK FOR THAT before building anything
+on R6-12.1.**
+
+**WHAT WAS PROVEN INSTEAD, each by a real render:**
+- **A SILENT HOLE THAT EXITS 0 — this is the mechanism that produces the reported symptom.**
+  A player whose `src` fails to load draws NOTHING and the job SUCCEEDS.
+  `render_gpu/gpu/video_registry.js:356-360 pendingVideoSrcs()` selects only `"loading"`, so
+  an ERRORED src is never pending; `web/renderJobPage.js:156` returns immediately, the stall
+  detector at `:162` never fires, and `paint_skia.js:708 if (!img) break;` silently skips.
+  Evidence `H_badplayer_hole.png`. A CLAUDE.md silent-failure violation.
+- **A SCRUBBER DEADLOCK — SHOWSTOPPER.** `video_registry.js:690-713`: the scrub element's
+  `error` listener NEVER resolves `entry.ready`, so `:791 await entry.ready` in
+  `requestScrubFrame` never settles, and `browser_media.js:122` -> `gpuService.js:242` ->
+  `renderJobPage.js:151` all block. MEASURED: **exit 124 at 150 s, zero frames.** The guard
+  at `:792` is unreachable dead code.
+- **A FRESH UNSOURCED SCRUBBER HITS THAT DEADLOCK.** `BLANK_SRC` is a **PNG data URI**, and a
+  `<video>` REJECTS it (`MediaError code 4: Unable to load URL due to content type`). The
+  docblocks at `plugins/video.js:70-76` and `plugins/video_scrub.js:106-112` claim otherwise
+  and are factually wrong. So: insert a scrubber, do not pick a source, render — **it hangs
+  forever.**
+- **v6/v7/v8 render only a dark poster** in every Skia path, because they are overlay-based.
+- **The player is NON-DETERMINISTIC server-side:** same job, same frame index, two runs ->
+  different md5.
+- **No settle loop** in `web/browserRenderJobs.js:297` or `web/app.svelte.js:5733` (only
+  `renderJobPage.js:207` has one), and `web/videoExport.js` has ZERO media awareness.
+
+**MINIMAL FIX: resolve `entry.ready` from the error listener — ONE LINE** — then add a
+`failedMediaRefs()` that `settledFrame` THROWS on, so a hole becomes loud instead of silent.
+
+**SEQUENCING RULING, AND IT REVERSES THE OBVIOUS ORDER: R6-12.3's UNIFICATION SUBSUMES the
+overlay and determinism problems but AMPLIFIES the first three — it turns EVERY video into
+the hanging case. FIX THE DEADLOCK FIRST, then unify.**
+
+**MAP/MP4 IS A DIFFERENT CAUSE, INDEPENDENTLY CONFIRMING W1-A:** `web/gpuService.js:320`
+passes only `{project}` to `cameraFrameIR`, so `web/cameraFrame.js:162`'s `liveView` gate is
+false and `mapTiles`/`pdfDisplay` are null in EVERY offscreen path; the map then falls back
+to `plugins/demo/globe_map.js:230 FALLBACK_DEVICE_PER_WORLD` and renders **WRONG, not
+absent**. The editor (`CanvasView.svelte:657`) and presenter (`PresentMode.svelte:215`) both
+DO pass them, so `gpuService` breaks the older precedent. **R6-11.7 is false — now confirmed
+twice, independently.** The same gate also kills PDF page re-raster offscreen.
+
+**Violations recorded:** `plugins/video.js:136-140` states the registry reads playback flags
+off state — **IT DOES NOT** (`ensureVideo` has ONE call site, `video_registry.js:254`,
+passing no flags), so **the autoplay / loop / muted rows are INERT** — another lying control,
+same class as R6-24.6; both `BLANK_SRC` docblocks are factually wrong; `gpuService.js:320`
+breaks the `PresentMode`/`CanvasView` precedent; `settledFrame` is unshared across three
+consumers of one renderer.
+
 - **R6-12.4** Context: a player's current frame is NOT deterministic today
   (`gpu/video_registry.js` has no time-override seam; the `<video>` element runs on
   the browser's own clock). Unifying on the scrubber's model is what makes video
@@ -1414,6 +1471,97 @@ is function-local with its justification 16 lines away and re-declared in two te
   many things there are to keep track of."
 - **R6-19.2** EXPLAIN HOW THE FRONT-END STORE ACTUALLY WORKS: "this file system,
   well it's not a file system, is it? How does it work? I don't really know."
+
+#### R6-19 ANSWER + DESIGN (wave 1, agent W1-G; report `.frenzy/round6/W1-G.md`, 936 lines)
+
+**THE USER'S INSTINCT IS CORRECT: IT IS NOT A FILESYSTEM.** It is **FIVE unrelated
+key-value stores** — IndexedDB `powerrp` (documents + asset Blobs), `powerrp-renderings`,
+`powerrp-browser-renders`, `localStorage`, and CacheStorage. The ONLY path-like thing in it
+is a deliberate **ONE-LEVEL `"<keyspace>/<name>"` string convention**, chosen specifically
+so that `IDBKeyRange.bound("P/","P/￿")` can stand in for a folder listing
+(`web/localDb.js:19-22`). **And the absence of a real filesystem is a CONSTRAINT, not an
+oversight:** OPFS — the one true browser filesystem — is secure-context gated and was
+MEASURED ABSENT on the plain-HTTP origins this app is required to serve
+(`web/browserJobStore.js:5-12`).
+
+**THE FOUR CLASSES, per mode:**
+- **Documents** — `docs` store keyed by name / `projects/<name>/doc.json`.
+- **Assets** — `assets` store keyed `"<project>/<file>"` / `projects/<n>/assets/<file>`.
+  **No content hashing: the BASENAME is the identity.** `localAssetEntry` already mints the
+  server's listing shape, which is why one interface is achievable.
+- **Renderings** — `powerrp-renderings` keyed `"<projectKey>/<jobId>"` with the mp4 Blob
+  inside the record / `renders/<Name>.mp4` plus `renders/.jobs/<uuid4hex>/`.
+- **"Cache" means THREE unrelated things** — the service-worker shell (the app itself, which
+  the quota tooltip calls "website code"), `assets/.thumbs/`, and `assets/frames/`.
+
+**TWO IDENTITIES FOR THE SAME ITEM: ONLY RENDERINGS.** Browser ids come from
+`getRandomValues`, server ids from `uuid4().hex`, and the server additionally keeps a
+human-named, de-collided `.mp4` filename that the browser side has no equivalent of until
+download. **THE SHARPEST CONSEQUENCE: in HTTP mode the tree has TWO ROOTS** — documents and
+assets are server-side, while renderings, caches, stray IndexedDB and the entire draft
+keyspace are ALWAYS browser-local (`assetStoreFor`, `renderRecordStore`).
+
+**VERDICT ON "HIJACK FROM SOME OTHER FRAMEWORK": BUILD, DON'T ADOPT — 25+ candidates
+surveyed and each rejected on a checkable fact.** `@zenfs/core` is LGPL-3.0 since 2.4.0
+(disqualified for a portable dump); `chonky` is React + MUI + Redux and dead since 2022;
+`melt` ships `jest-axe`/MPL-2.0 as a RUNTIME dep; `svelte-file-tree` is the right shape but
+47 downloads/week and declares no licence in `package.json`; `@headless-tree/core` has no
+Svelte adapter. Monaco's `vs/base/browser/ui/tree` is MIT and — measured — **already in the
+bundle via `editor.api`, costing +48 bytes**, but has zero public typings, is imperative
+DOM, and **injects its own stylesheet with hardcoded 20px/10px radii straight past
+`app.css`'s exclusive ownership**, which is a square-corners violation by construction.
+**THE DECISIVE REASON, though, is not licensing: no candidate can be POINTED AT this
+backend. The adapter IS the work, and `assetStore.js` + `projectApi.js` + `draftKeys.js`
+already are that adapter.** Named fallback if a real tree widget is ever needed:
+**`@zag-js/tree-view` + `@zag-js/svelte`** (MIT, official Svelte-5 runes adapter, zero CSS,
+async `loadChildren`).
+
+**THE INTERFACE:** a `web/storageTree.js` seam plus a DOM-free `web/storagePath.js`, split
+per the existing `assetRef`/`draftKeys` precedent — and **deliberately NOT named "vfs",
+because the user's own question is precisely that it is not one.** Roots `local:` /
+`server:` / `builtin:` (the last reusing the scheme `builtinAssets.js` already mints), paths
+`<root>:/<keyspace>/<category>/<name>`, and
+`{id, label, capabilities, list(path), stat(path), read(path), remove(path), rename(path,to)}`
+returning `Entry {path,name,type,assetKind,bytes|null,mtime|null,previewRef,badge,note}`.
+`capabilities.unavailable` is a SENTENCE-PER-OPERATION table extending
+`storageMode.UNAVAILABLE_IN_STATIC`/`refuseInStatic` — the house's existing loud-refusal
+mechanism. **`list()` MUST NEVER catch into `[]`**; it returns `{entries, errors[]}`.
+`Home = storageTree.homePath(app)`, which is `local:/~draft/current` for a draft in every
+mode. **HONESTY ABOUT THE DIRECTORY ILLUSION:** root->keyspace and category->file are REAL
+enumerations; keyspace->category is a presentation INVENTION browser-side and real
+directories server-side; a fifth level is refused. Every node carries a `note` naming what
+actually backs it.
+
+**WHAT MOVES OUT OF THE ASSET EXPLORER** (generic -> shared): listing lifecycle and the
+`projectName|assetsVersion` re-list guard, `filterAssets`, the search box, the quota line and
+tooltip, download, preview, copy-path, delete-confirm, drop-to-upload, the tile grid, totals,
+and the error/empty states. **STAYS** (widget-specific): insert-onto-canvas, the
+`ASSET_DRAG_MIME` payload, `assetUsers`/`deleteTip`, plugin->Monaco and data->CsvTable
+dispatch, optimistic upload tiles, font registration, the built-in toggle, PDF rasterize.
+Preview reuses `assetThumbnail.assetTilePresentation` UNCHANGED — its input is already
+exactly the `Entry` subset — so add `renders` to its one switch rather than writing a second
+thumbnailer. **NOTE: selection does not exist today** and is genuinely new generic work that
+the reveal commands depend on.
+
+**COMMANDS:** `file-browser` (toggles a modal, like `render-center`; palette-only, no chord —
+keycaps are scarce and `Cmd+D` is still unratified), plus `reveal-asset-in-file-browser` and
+`reveal-render-in-file-browser`, both PARAMETERLESS reading current selection because
+`web/App.svelte:1006` bans parameterised palette commands, and both with **FUNCTION**
+`requires` (several disqualifying conditions — the `save-project` case), read only through
+`commandUnavailableReason`.
+
+**Violations recorded:** `web/DebugStoragePage.svelte:82,89` `.catch(()=>[])` — re-confirming
+R6-24.5, and it is the exact code this design builds on; `:167,:186` catch-and-console-only
+where the OLDER AssetExplorer surfaces a visible error, so **a failed download looks
+identical to a success**; **THREE copies of the download logic**, one of which documents that
+it is a copy; two implementations of inline preview; `PREVIEW_TEXT_BYTES` function-local
+against `core/endpoints.js:23`'s module-top precedent; `reload`/`toggleCache`/`rowKey` carry
+no Pure/Query/Command docstrings; `web/App.svelte:490` swallows silently but WITH a written
+justification (flagged borderline, lead ruling pending); `libraryTotalsLine` hardcodes the
+noun "asset". **And a NEW meta-violation: the `src/lib` Popover/FilterableList/
+SelectableGrid/ScrollBar promotion backburner appears in NEITHER manifest nor either
+`concerns.md`** — it existed only in the harness task list, which is exactly the failure mode
+R6-4's lead ruling identified. Record it here.
 - **R6-19.3** PREVIEW files in it, like the asset explorer does.
 - **R6-19.4** Up a directory, down a directory, Home = the project directory.
 - **R6-19.5** RE-IMPLEMENT THE ASSET EXPLORER ON TOP OF IT so there is no duplicate
