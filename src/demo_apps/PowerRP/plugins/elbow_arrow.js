@@ -215,5 +215,73 @@ export const elbowArrowPlugin = {
   placement: "endpoints",
   commands: [
     { id: "add-elbow-arrow", title: "Add Elbow Arrow", icon: "mdi:arrow-top-right-bottom-left", run: (app) => app.armCrosshairPlacement(elbowArrowPlugin) },
+    // THE SELF LOOP was already expressible and completely unreachable: it is this
+    // widget with `orient: "hvh"`, both endpoints on ONE edge of a box, and a
+    // non-zero `bulge` — two non-default knobs and two anchor bindings nobody
+    // would ever discover. That route is mermaid's own getSelfLoopPoints under
+    // another name — an H-V-H out of one edge and back into it — so this surfaces
+    // a primitive we already had rather than adding one.
+    //
+    // ONE DELIBERATE DEVIATION, stated because the depth being exact invites the
+    // assumption that everything is. The DEPTH is mermaid's formula verbatim
+    // (a 100x60 box gives 27 on both sides, measured). The SPAN is not: mermaid
+    // centres a computed 36..100px run on the edge, and this uses the box's WHOLE
+    // right edge (tr -> br). That is the better answer for a hand-placed loop,
+    // because those are the box's own named anchors and the loop therefore tracks
+    // a resize; a shatter importing a mermaid diagram bakes explicit coordinates
+    // and does not go through this command at all.
+    //
+    // A COMMAND, NOT A PRESET, and that is forced rather than chosen: a preset is
+    // a flat `props` patch applied to the SELECTED item, and it may reference only
+    // `self` and evaluator keywords (tests/preset_contract_test.js pins both), so
+    // it can neither create an item nor read the box it should wrap around.
+    {
+      id: "add-self-loop",
+      title: "Add Self Loop",
+      icon: "mdi:autorenew",
+      // Gated because run() reads the selected node's geometry in its first line;
+      // without this the palette would offer it against an empty selection and
+      // answer with an exception instead of a greyed row (the defect
+      // tests/palette_probe.js's selection-command gate sweep flags).
+      when: (app) => app.selectedNode()?.plugin?.capabilities?.bbox === true,
+      requires: "a selected box widget — the loop is anchored to that box's right edge and bulges out from it",
+      run: (app) => addSelfLoop(app),
+    },
   ],
 };
+
+// Mermaid's own self-loop DEPTH formula (`clamp(min(w, h) * 0.45, 24, 48)`), used
+// verbatim so a shattered mermaid diagram and a hand-placed loop agree. Written as
+// an EQUATION rather than a number at insert time so the loop keeps tracking the
+// box as it is resized — the same reason every other geometry here is bindable.
+const SELF_LOOP_DEPTH_FRACTION = 0.45; // of the box's SHORTER side
+const SELF_LOOP_MIN_DEPTH = 24; // px — below this the loop reads as a kink, not a loop
+const SELF_LOOP_MAX_DEPTH = 48; // px — above this it dwarfs the box it belongs to
+
+/**
+ * Command (adds ONE item; mutates the document through app.addItem). Places a
+ * self loop on the selected box: an elbow arrow from the box's `tr` anchor to its
+ * `br`, bulged out to the right. Both endpoints and the bulge are EQUATIONS, so
+ * the loop follows the box when it moves or resizes.
+ *
+ * Refs are written in the STORED `@<itemId>_<anchorId>.<coord>` form, which is
+ * what a delta holds (web/bentoBind.js and web/CanvasView.svelte's endpoint drop
+ * write the same shape); the Inspector renders them back through slugs.
+ *
+ * @param {object} app - the app shell (selectedNode, addItem)
+ * @returns {void}
+ *
+ * @example // with a 100x60 rect selected, adds an elbow arrow whose bulge is
+ * @example // "= Math.max(24, Math.min(48, Math.min(@<id>.w, @<id>.h) * 0.45))" -> 27
+ */
+function addSelfLoop(app) {
+  const id = app.selectedNode().itemId;
+  const shorterSide = `Math.min(@${id}.w, @${id}.h)`;
+  app.addItem({
+    ...elbowArrowPlugin.defaults,
+    from: { x: `@${id}_tr.x`, y: `@${id}_tr.y` },
+    to: { x: `@${id}_br.x`, y: `@${id}_br.y` },
+    orient: "hvh",
+    bulge: `= Math.max(${SELF_LOOP_MIN_DEPTH}, Math.min(${SELF_LOOP_MAX_DEPTH}, ${shorterSide} * ${SELF_LOOP_DEPTH_FRACTION}))`,
+  });
+}

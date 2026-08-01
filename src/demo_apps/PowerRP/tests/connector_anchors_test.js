@@ -194,4 +194,42 @@ test("THE FEATURE, curved: the bound label follows the CURVE, not the chord", ()
   assert.ok(Math.abs(ev.state.items.lbl.y - 50) < 1, `the label rides the arc, got y=${ev.state.items.lbl.y}`);
 });
 
+// ── the self loop: a primitive we had and could not reach (todo #233) ───────
+
+test("add-self-loop: gated on a box selection, and it says why", () => {
+  const cmd = registry.get("elbow_arrow").commands.find((c) => c.id === "add-self-loop");
+  assert.ok(cmd, "the command must exist");
+  assert.equal(cmd.when({ selectedNode: () => ({ plugin: registry.get("rect") }) }), true);
+  assert.equal(cmd.when({ selectedNode: () => ({ plugin: registry.get("arrow") }) }), false, "a connector is not a box to loop around");
+  assert.equal(cmd.when({ selectedNode: () => null }), false);
+  assert.equal(typeof cmd.requires, "string", "a selection-gated command must say what it needs");
+});
+
+test("add-self-loop: every field is an EQUATION, so the loop tracks the box", () => {
+  const cmd = registry.get("elbow_arrow").commands.find((c) => c.id === "add-self-loop");
+  let added = null;
+  cmd.run({ selectedNode: () => ({ itemId: "box1" }), addItem: (state) => { added = state; } });
+  for (const v of [added.from.x, added.from.y, added.to.x, added.to.y, added.bulge])
+    assert.equal(typeof v, "string", "a literal here would freeze the loop where the box happened to be");
+
+  // It EVALUATES, against a real box, to mermaid's own self-loop depth.
+  const box = { ...rectPlugin.defaults, x: 0, y: 0, w: 100, h: 60, active: true };
+  const ev = evaluateState({ items: { box1: box, loop: { ...added, z: 2, active: true } } }, registry);
+  assert.equal(ev.errors.size, 0, [...ev.errors.values()].join("; "));
+  const loop = ev.state.items.loop;
+  assert.equal(loop.bulge, 27, "clamp(min(w, h) * 0.45, 24, 48) — mermaid's depth formula, verbatim");
+  assert.deepEqual([loop.from.x, loop.from.y], [100, 0], "the box's tr corner");
+  assert.deepEqual([loop.to.x, loop.to.y], [100, 60], "the box's br corner — the whole right edge");
+
+  // And it is a REAL loop: out one side, along, and back into the same side.
+  const anchors = registry.get("elbow_arrow").anchors(loop);
+  assert.ok(anchors.find((a) => a.id === "mid").x > 100, "the mid of the route bulges clear of the box");
+
+  // The clamp bites at both ends rather than scaling forever.
+  const tiny = evaluateState({ items: { box1: { ...box, w: 10, h: 10 }, loop: { ...added, z: 2, active: true } } }, registry);
+  assert.equal(tiny.state.items.loop.bulge, 24, "below the floor a loop reads as a kink");
+  const huge = evaluateState({ items: { box1: { ...box, w: 900, h: 900 }, loop: { ...added, z: 2, active: true } } }, registry);
+  assert.equal(huge.state.items.loop.bulge, 48, "above the ceiling it dwarfs its own box");
+});
+
 console.log(`\n${passed} connector-anchor tests passed`);
