@@ -2186,6 +2186,9 @@
       handlesSelected: app.handleSelection.length > 0,
       dragging: app.dragging,
       dragKind: app.dragKind,
+      // How many objects the last selecting click landed on — drives the
+      // click-through chip. A plain number read, so the `when` stays O(cheap).
+      clickThroughDepth: app.clickThroughDepth,
       // The ARMED crosshair's kind ("band"|"place"), or null — both a truthy
       // "is anything armed" check (editMode's !c.crosshairArmed) and a per-skin
       // discriminator (the two pointer hints) from one field.

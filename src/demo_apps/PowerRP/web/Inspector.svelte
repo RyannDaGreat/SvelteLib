@@ -1134,10 +1134,24 @@
     id: UNIVERSAL_CATEGORY_ID,
     title: "Universal",
     rows: [
-      { key: "type", label: "Widget type", kind: "select", optionsFrom: "retype",
-        keyframes: false, help: WIDGET_TYPE_ROW_HELP },
+      // NAME FIRST, TYPE SECOND (user, 2026-08-02: "Name should be on the top,
+      // widget type should be second to that under universal"). It reads the way
+      // you address a thing: what you call it, then what it is. The previous order
+      // put the machine's answer above the author's.
       { key: "name", label: "Name", kind: "text", keyframes: false,
         placeholder: app.displayName(pickedItemId), purge: purgeable, help: NAME_ROW_HELP },
+      // KEYFRAMEABLE, at last — user, 2026-08-02: "why is there no keyframe object
+      // to the right of widget type?" The answer was already ruled and written
+      // down: R6-6.7 settled that widget type IS a keyframeable property, `type`
+      // is carried per-slide by the fold, and the note in propRow said dropping
+      // this flag was the WHOLE UI change "once the retype command writes at the
+      // CURRENT slide". Verified that it does — app.retypeSelection passes
+      // this.slideIndex to core/retype.retypedItem, which writes through
+      // `keyframed(doc, slideIndex, ["items", id, "type"], …)` and keyframes every
+      // coerced property alongside it. So the precondition had quietly been met
+      // and the row was the only thing still saying no.
+      { key: "type", label: "Widget type", kind: "select", optionsFrom: "retype",
+        help: WIDGET_TYPE_ROW_HELP },
       // The camera is mandatory (purgeable:false) and has no visibility to
       // keyframe, exactly as before this section existed.
       ...(purgeable
@@ -2343,7 +2357,7 @@
     {/if}
   {:else if sel}
     <div class="rows">
-      <!-- THE UNIVERSAL SECTION — Widget type, Name, Visible, in that order, as
+      <!-- THE UNIVERSAL SECTION — Name, Widget type, Visible, in that order, as
            three ORDINARY rows in ONE accordion (R6-6.6), FIRST because they are
            the properties every widget has and the plugin's sections are what it
            adds to them.

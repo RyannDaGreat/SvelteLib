@@ -666,6 +666,13 @@ export class PowerRPApp {
   // hover-preview surfaces (task #165 made hover-preview the default trope for
   // pickers) but at the SELECTION layer rather than the value layer.
   hoverItemId = $state(null);
+  // HOW MANY OBJECTS SIT UNDER THE LAST SELECTING CLICK (0 when none, 1 when the
+  // thing you clicked is alone there). CanvasView writes it; the HintBar reads it
+  // to offer click-through, because an affordance nobody is told about does not
+  // exist — the shortcut registry is this app's single source of truth for inputs
+  // and it BOTH dispatches and narrates. A COUNT rather than a boolean so the chip
+  // could say how deep the stack is later; the predicate only asks > 1.
+  clickThroughDepth = $state(0);
   anchorsVisible = $state(false);
   paletteOpen = $state(false);
   dragging = $state(false); // canvas sets this; drives HintBar context
@@ -2704,7 +2711,18 @@ export class PowerRPApp {
         const perSlide = [];
         for (const slide of ungroupBakeSlides(origDoc, memberId, g.itemId)) {
           const state = evaluateState(foldState(origDoc, slide, 1), this.registry, origDoc.meta.script ?? "").state;
-          const m = deriveRenderTree(state, this.registry).find((n) => n.itemId === memberId);
+          // THE PROJECT IS NOT OPTIONAL HERE, even though this call only wants a
+          // member's WORLD TRANSFORM and never looks at a URL. deriveRenderTree's
+          // third argument defaults to "", and resolveAssetRef THROWS on a
+          // project-relative ref with no owning project — by design, because a
+          // dead /asset/<nothing>/clip.mp4 masquerading as a corrupt file is the
+          // worst possible diagnostic. So ungroup crashed outright on any group
+          // holding a member with a relative asset ref (user: an mp4 named
+          // Video_2026…mp4; "the group didn't seem to work"), and the geometry it
+          // was actually asking for never got computed. Six of this app's seven
+          // deriveRenderTree calls already passed projectName(); this was the one
+          // that did not.
+          const m = deriveRenderTree(state, this.registry, this.projectName()).find((n) => n.itemId === memberId);
           if (!m) continue; // member not active on this slide — nothing to bake there
           const world = m.world; // group-influenced (derivation stage) at THIS slide
           const w = m.state.w, h = m.state.h;

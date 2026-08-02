@@ -165,6 +165,12 @@
    */
   function cycledHit(nodes, w, tol, e) {
     const stack = pickNodeStack(nodes, w.x, w.y, tol);
+    // TELL THE HINT BAR. A shortcut that is not registered does not exist, and
+    // click-through is a real input with no key to press — the bar is the only
+    // place it can be announced. Published here because this is where the stack
+    // is already known; recomputing it for the chip would be a second traversal
+    // and a second chance to disagree with the gesture.
+    app.clickThroughDepth = stack.length;
     if (stack.length === 0) { clickCycle = { x: -1, y: -1, sig: "", index: 0 }; return null; }
     const p = screenPoint(e);
     const sig = stack.map((n) => n.itemId).join(",");
@@ -2064,6 +2070,15 @@
     // Store ONLY the raw screen-space position (PanZoom render-area frame); the
     // ruler markers/readout are $derived from it + the view (see screenMouse).
     screenMouse = screenPoint(e);
+    // MOVING THE MOUSE ENDS THE CLICK-THROUGH OFFER, which is the user's own reset
+    // condition ("if I don't move the mouse"). Retiring the chip here rather than
+    // letting it linger keeps the bar honest: the next click at a new point starts
+    // at the top of that point's stack, so an offer to "select underneath" would be
+    // describing a gesture that is no longer available. Guarded on the value so a
+    // mousemove over empty canvas does not write $state on every event.
+    if (app.clickThroughDepth !== 0
+        && Math.hypot(screenMouse.x - clickCycle.x, screenMouse.y - clickCycle.y) > CLICK_SLOP_PX)
+      app.clickThroughDepth = 0;
     // A live widget CANVAS MODE pan consumes the move (see modePointerDown).
     if (creation) {
       creationHover(e);

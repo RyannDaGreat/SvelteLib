@@ -736,13 +736,40 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modal
     // Ctrl+V is not an alias of anything, so it IS shown. Alias ⇒ hidden, own
     // action ⇒ visible, everywhere in this file.
     { keys: ["Space"], label: "Palette", hidden: true, when: editMode, command: "toggle-palette" },
-    { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging && !c.crosshairArmed },
+    // The base pointer chip STANDS DOWN when click-through is available, so the two
+    // are mutually exclusive rather than two claims on one token. The registry gate
+    // caught the first version doing exactly that ("shows mouse_left twice with
+    // different labels — only one of them can fire, so the other is the bar lying
+    // about which meaning wins") and it was right on both counts: it is one gesture
+    // whose OUTCOME changed, so the chip must CHANGE, not multiply — which is also
+    // how the user asked for it ("the shortcut bar should show the click-through
+    // option change").
+    { keys: ["mouse_left"], label: "Select / drag", when: (c) => editMode(c) && !c.dragging && !c.crosshairArmed && !(c.clickThroughDepth > 1) },
     // Shift-click ADDS/REMOVES from the multi-selection (manifest "Shift-click
     // multi-select"). Display-only, same registry pathway as the other pointer
     // hints — the pick code reads the modifier itself. Alongside "Select / drag"
     // while idle over the canvas; hidden mid-drag (shift then means axis-lock,
     // whose own hint fires) and while a crosshair mode is armed.
     { keys: ["Shift", "mouse_left"], label: "Add to selection", when: (c) => editMode(c) && !c.dragging && !c.crosshairArmed },
+    // CLICK-THROUGH (user, 2026-08-02: "that click-through should show up in the
+    // shortcuts, right?" — yes, and by this file's own rule: an input that is not
+    // registered here does not exist, because this registry BOTH dispatches and
+    // narrates). It has no key to press, so the bar is the ONLY place it can be
+    // announced; without a chip the only way to discover that a second slow click
+    // reaches the object underneath is to be told.
+    //
+    // GATED ON THE STACK ACTUALLY BEING DEEP, not merely on something being
+    // selected: `clickThroughDepth` is how many objects the last selecting click
+    // landed on, published by CanvasView from the traversal it already did, and
+    // > 1 is exactly "there is something under this one to reach". Clicking a lone
+    // object offers nothing, which is correct — a chip for an unavailable gesture
+    // is the confident-wrong-answer failure the `requires` doctrine exists to stop.
+    // Moving the pointer clears the count (the user's own reset condition), so the
+    // offer retires with the gesture rather than lingering.
+    //
+    // IT SITS BESIDE THE DOUBLE-CLICK CHIP ON PURPOSE, and the pair is the whole
+    // explanation: fast again = edit, slow again = go deeper.
+    { keys: ["mouse_left"], label: "Click again: select underneath", when: (c) => editMode(c) && !c.dragging && !c.crosshairArmed && c.clickThroughDepth > 1 },
     // An armed CROSSHAIR mode (manifest ARCHITECTURE PLAN #5) replaces the
     // plain pointer hint until the one-shot gesture happens — one hint per
     // skin (band-select vs placement), each named for what the drag DOES.
@@ -1071,6 +1098,12 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modal
 export const HINT_PROBE_FLAGS = Object.freeze([
   {},
   { hasSelection: true },
+  // CLICK-THROUGH's reachable state: a selecting click that landed on a STACK.
+  // hasSelection rides along because the click that produced the depth also
+  // selected the top of that stack — modelling them together keeps the grid
+  // describing states the user can actually be in, the same invariant the
+  // activation and dragKind axes below are careful about.
+  { hasSelection: true, clickThroughDepth: 2 },
   { paletteOpen: true },
   // NOTE: the live-modal flag sets are NOT here. They are DERIVED per modal kind
   // and appended by hintProbeContexts, for the same reason the activation ones are:
@@ -1202,6 +1235,9 @@ export function hintProbeContexts({ dragKinds, canvasModeIds, canvasModeSteps, a
                 numericField: null, numericFieldBounded: false,
                 fieldScope: null, popoverOpen: false, popoverKind: null,
                 activation: null,
+                // Nothing clicked yet ⇒ no stack under the cursor. The deep case is
+                // a probe flag below, so the click-through chip is proven live.
+                clickThroughDepth: 0,
                 ...flags,
                 // THE SAME KIND OF APP INVARIANT as `dragging` below: App.svelte
                 // resolves `activation` from the SELECTED item's plugin, so a
