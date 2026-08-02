@@ -434,14 +434,33 @@ export function intersectRows(entries, mode = MULTISELECT_MODE.INTERSECTION) {
       appliesTo.set(key, present.map((e) => e.itemId));
       continue;
     }
-    // Declared by more than one item but not identically → a real conflict, worth
-    // naming. UNCHANGED BY UNION MODE ON PURPOSE: union is about a row being
-    // ABSENT from some items, which is a different problem from a row MEANING
-    // different things where it is present. Getting past a contract mismatch is
-    // its own feature (warn-and-unify) and must not be smuggled in here, where it
-    // would silently write a value the other item cannot mean.
+    // ── A CONTRACT MISMATCH WARNS, IT NO LONGER BLOCKS (#300) ────────────────
+    // User, 2026-08-02: "I realise they may mean different things, so if the
+    // top-level drop-down is different just show it with a triple dot. If I click
+    // it, it will unify them… You can still have a warning message on the top
+    // explaining why something is special, but don't actually BLOCK me from doing
+    // it. There should be a way to get around that."
+    //
+    // The row is now OFFERED as well as reported: it joins `rows` so the panel can
+    // render it with MIXED_MARK and let one click unify, and it stays in
+    // `conflicts` so the warning line above the panel can still say what differs.
+    // Those two are not alternatives — the point is to inform AND allow.
+    //
+    // THE PRIMARY'S ROW IS THE ONE OFFERED, which is the user's "it will always
+    // default to whatever that top-level drop-down says it is": the panel already
+    // reads as the primary item's panel, so its contract is the one an author is
+    // looking at when they click. Pushed BY REFERENCE like every other row, so the
+    // drift gate still holds.
+    //
+    // THIS IS ORTHOGONAL TO UNION MODE. Union is about a row being ABSENT from
+    // some items; this is about a row MEANING different things where it is
+    // present. Both now surface the row, for different reasons, and neither
+    // silently writes a value another item cannot mean — the write is a deliberate
+    // click on a marked row, not a side effect of the panel being built.
     const aspects = new Set();
     for (const r of declared.slice(1)) for (const name of contractDifferences(seed, r)) aspects.add(name);
+    rows.push(seed);
+    appliesTo.set(key, present.map((e) => e.itemId));
     conflicts.push({ key, aspects: [...aspects].sort() });
   }
   return { rows, conflicts, appliesTo };
@@ -557,7 +576,17 @@ export function multiSelectPanel(entries, mode = MULTISELECT_MODE.INTERSECTION) 
       // call the shipped code made.
       const ids = appliesTo.get(row.key) ?? live.map((e) => e.itemId);
       const applicable = live.filter((e) => ids.includes(e.itemId));
-      return { row, appliesTo: ids, ...rowMixedState(applicable, row.key), problem: jointEditProblem(row) };
+      // WHICH CONTRACT ASPECTS DISAGREE, or null. A conflicted row is OFFERED now
+      // rather than withheld (#300), so each one has to carry the reason it is
+      // special — the panel marks it and names what differs, and unifying it is a
+      // deliberate click rather than something that can happen by accident.
+      const conflict = conflicts.find((c) => c.key === row.key) ?? null;
+      return {
+        row, appliesTo: ids,
+        conflict: conflict ? conflict.aspects : null,
+        ...rowMixedState(applicable, row.key),
+        problem: jointEditProblem(row),
+      };
     }),
     conflicts,
     skipped,

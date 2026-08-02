@@ -2314,17 +2314,22 @@
           Not on this slide, so not being edited: {multiPanel.skipped.map((id) => app.displayName(id)).join(", ")}
         </div>
       {/if}
-      <!-- SHARED-LOOKING BUT NOT SHARED. A key both items declare with a
-           DIFFERENT contract (a rect's corner radius is a length, a star's is a
-           0..0.5 fraction; a magnifier's `shape` offers circle/box where the shape
-           widget offers twenty silhouettes) is excluded, and saying which aspect
-           excluded it is the difference between an honest panel and one that looks
-           like these items have less in common than they do. -->
+      <!-- SHARED-LOOKING BUT NOT SHARED. A key both items declare with a DIFFERENT
+           contract (a rect's corner radius is a length, a star's is a 0..0.5
+           fraction; a magnifier's `shape` offers circle/box where the shape widget
+           offers twenty silhouettes).
+           IT USED TO BE EXCLUDED. The user overruled that (#300): "I realise they
+           may mean different things… but don't actually BLOCK me from doing it.
+           There should be a way to get around that." So the row is now OFFERED —
+           marked with the same … every mixed row carries, unifying on a click to
+           the value THIS panel is showing — and this note stays as the warning
+           that says WHICH aspect disagrees. Informing and allowing are not
+           alternatives, and the refusal was the half that had no escape hatch. -->
       {#if multiPanel.conflicts.length > 0}
         <div class="multi-note">
-          Not editable together (the same name means different things here):
+          These mean different things here — editing one sets them all (click the … to unify):
           {#each multiPanel.conflicts as c (c.key)}
-            <Tooltip text={`These items disagree about this property's ${c.aspects.join(", ")} — so one value cannot mean the same thing to all of them.`}
+            <Tooltip text={`These items disagree about this property's ${c.aspects.join(", ")}, so one value will not mean the same thing to all of them — a corner radius that is a LENGTH on one widget and a FRACTION on another will visibly jump. The row is still editable: unifying writes the value this panel is showing (the primary item's) to every selected item. Nothing stops you; this is the warning, not a refusal.`}
               ><span class="multi-conflict">{c.key}</span></Tooltip>
           {/each}
         </div>

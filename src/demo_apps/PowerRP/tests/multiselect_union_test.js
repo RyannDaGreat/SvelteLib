@@ -131,16 +131,23 @@ test("defaults still count: absent MEANS the default, in union mode too", () => 
 
 // ── UNION IS NOT AN ESCAPE HATCH FROM CONTRACT CONFLICTS ────────────────────
 
-test("A CONTRACT CONFLICT IS STILL A CONFLICT IN UNION MODE, not a row", () => {
-  // Same key, different options → the two items cannot mean one value. Union is
-  // about ABSENCE, not about disagreement in meaning; getting past this is #300's
-  // warn-and-unify, and doing it here would write a value one item cannot mean.
+test("A CONTRACT CONFLICT IS REPORTED IN BOTH MODES, and offered in both too", () => {
+  // Same key, different options → the two items cannot mean one value.
+  //
+  // WHEN THIS FILE WAS WRITTEN the row was withheld, and this test said so. #300
+  // then landed the user's ruling that a mismatch must WARN rather than BLOCK, so
+  // the row is offered in both modes now. What has NOT changed, and is the reason
+  // this test still lives in the UNION file, is that union mode did not cause it:
+  // union is about a row being ABSENT from some items, a mismatch is about it
+  // MEANING different things where it is present, and the two remain independent.
+  // A conflicted row is still flagged, so nothing is written silently — unifying
+  // is a deliberate click on a marked row.
   const a = entry("a", [{ key: "shape", kind: "select", options: ["star"] }]);
   const b = entry("b", [{ key: "shape", kind: "select", options: ["box"] }]);
   for (const mode of [MULTISELECT_MODE.INTERSECTION, MULTISELECT_MODE.UNION]) {
     const r = intersectRows([a, b], mode);
-    assert.deepEqual(keysOf(r), [], `${mode}: the conflicting row is not offered`);
-    assert.deepEqual(r.conflicts.map((c) => c.key), ["shape"], `${mode}: and it IS reported as a conflict`);
+    assert.deepEqual(keysOf(r), ["shape"], `${mode}: the conflicting row is offered`);
+    assert.deepEqual(r.conflicts.map((c) => c.key), ["shape"], `${mode}: and it IS still reported as a conflict`);
   }
 });
 
@@ -148,7 +155,9 @@ test("a conflict on ONE key does not suppress the union of the others", () => {
   const a = entry("a", [OPACITY, { key: "shape", kind: "select", options: ["star"] }, FRACTION]);
   const b = entry("b", [OPACITY, { key: "shape", kind: "select", options: ["box"] }]);
   const r = intersectRows([a, b], MULTISELECT_MODE.UNION);
-  assert.deepEqual(keysOf(r), ["opacity", "fraction"]);
+  // `shape` is offered too now (#300) — it appears in the PRIMARY's declaration
+  // order, between opacity and fraction — and is still reported as a conflict.
+  assert.deepEqual(keysOf(r), ["opacity", "shape", "fraction"]);
   assert.deepEqual(r.conflicts.map((c) => c.key), ["shape"]);
 });
 
@@ -176,3 +185,45 @@ test("an item NOT ON THIS SLIDE is still skipped in union mode, never written", 
 });
 
 console.log(`\n${passed} multiselect union tests passed`);
+
+// ── #300: A MISMATCH WARNS, IT DOES NOT BLOCK ───────────────────────────────
+// User: "I realise they may mean different things, so if the top-level drop-down
+// is different just show it with a triple dot. If I click it, it will unify them…
+// You can still have a warning message on the top explaining why something is
+// special, but don't actually BLOCK me from doing it. There should be a way to
+// get around that."
+
+test("a conflicted row is OFFERED, MARKED, and reads as MIXED so the … affordance applies", () => {
+  const a = entry("a", [{ key: "shape", kind: "select", options: ["star"] }], { shape: "star" });
+  const b = entry("b", [{ key: "shape", kind: "select", options: ["box"] }], { shape: "box" });
+  const panel = multiSelectPanel([a, b]);
+  const row = panel.rows.find((r) => r.row.key === "shape");
+  assert.ok(row, "the row is offered rather than withheld");
+  assert.deepEqual(row.conflict, ["options"], "…and carries WHICH aspect disagrees, so the panel can say");
+  assert.equal(row.mixed, true, "it reads as mixed, so the existing … + click-to-unify affordance applies unchanged");
+});
+
+test("THE PRIMARY'S CONTRACT IS THE ONE OFFERED — the user's 'whatever the top-level dropdown says'", () => {
+  const starRow = { key: "shape", kind: "select", options: ["star"] };
+  const boxRow = { key: "shape", kind: "select", options: ["box"] };
+  const first = intersectRows([entry("a", [starRow]), entry("b", [boxRow])]);
+  assert.equal(first.rows[0], starRow, "primary a → a's row, BY REFERENCE (the drift gate)");
+  const second = intersectRows([entry("b", [boxRow]), entry("a", [starRow])]);
+  assert.equal(second.rows[0], boxRow, "primary b → b's row; the panel reads as the primary's panel");
+});
+
+test("AN UNCONFLICTED ROW CARRIES conflict: null, so the panel does not mark everything", () => {
+  const a = entry("a", [OPACITY], { opacity: 1 });
+  const b = entry("b", [OPACITY], { opacity: 0.5 });
+  const row = multiSelectPanel([a, b]).rows[0];
+  assert.equal(row.conflict, null);
+  assert.equal(row.mixed, true, "…while still being mixed on VALUE, which is a different thing entirely");
+});
+
+test("the row is offered AND still reported — informing and allowing are not alternatives", () => {
+  const a = entry("a", [{ key: "shape", kind: "select", options: ["star"] }]);
+  const b = entry("b", [{ key: "shape", kind: "select", options: ["box"] }]);
+  const panel = multiSelectPanel([a, b]);
+  assert.equal(panel.rows.length, 1, "offered");
+  assert.deepEqual(panel.conflicts.map((c) => c.key), ["shape"], "and reported, so the warning line still has its content");
+});

@@ -178,11 +178,19 @@ test("REAL homogeneous case — rect + circle shares the full common surface", (
     assert.ok(keys.includes(key), `"${key}" should be shared by two boxes`);
 });
 
-test("REAL row-kind conflict is REPORTED, not silently dropped", () => {
+test("REAL row-kind conflict is REPORTED, and now also OFFERED", () => {
   // Both the shape widget and the magnifier declare `shape`, with different
   // option sets — the exact "same key, different property" case.
+  //
+  // THIS ASSERTION FLIPPED, ON A USER RULING (#300), and the old form is worth
+  // stating so nobody restores it by instinct: it used to require that the row was
+  // NOT offered. The user overruled the refusal — "I realise they may mean
+  // different things… but don't actually BLOCK me from doing it. There should be a
+  // way to get around that." So the row IS offered, marked, and unifiable in one
+  // click, while `conflicts` still carries the warning. Informing and allowing are
+  // not alternatives; the refusal was the half with no escape hatch.
   const { rows, conflicts } = intersectRows([entry("s", "shape", {}), entry("m", "magnifier", {})]);
-  assert.ok(!rows.some((r) => r.key === "shape"), "the two `shape` selects must not unify");
+  assert.ok(rows.some((r) => r.key === "shape"), "the conflicting row is offered, so the author can get past it");
   const reported = conflicts.find((c) => c.key === "shape");
   assert.ok(reported, "an excluded row present on BOTH items must be reported by key");
   assert.ok(reported.aspects.includes("options"), `the report names the differing aspect: ${JSON.stringify(reported.aspects)}`);
