@@ -206,8 +206,20 @@ try {
 
     await closePalette();
     const reverted = await applied();
-    assert(reverted.attr === original.attr && reverted.stored === original.stored,
-      `closing reverted the scroll-triggered preview back to "${original.attr}" (attr=${reverted.attr}, stored=${reverted.stored})`);
+    // THE BASELINE IS THE STORED THEME, NOT THE ATTRIBUTE CAPTURED ABOVE, and
+    // asserting otherwise made this probe demand a bug. `original` is read AFTER
+    // enterThemeSubmenu(), and entering that submenu already previews its first
+    // family live — so `original.attr` is itself a PREVIEW artifact ("graphite"),
+    // while `original.stored` is the user's real theme ("nocturne"). Requiring the
+    // close to restore `original.attr` therefore demanded that dismissing the
+    // palette leave a previewed theme applied instead of the one actually saved.
+    //
+    // What closing MUST do is put the user back on their own theme, which is
+    // exactly what it does. Measured while triaging a gate red: attr and stored
+    // both came back "nocturne" — correct — and the old assertion called that a
+    // failure because attr no longer matched a value that was never the user's.
+    assert(reverted.attr === reverted.stored && reverted.stored === original.stored,
+      `closing restored the STORED theme rather than leaving a preview applied (attr=${reverted.attr}, stored=${reverted.stored}, expected both "${original.stored}")`);
   }
 
   if (fails.length) {
