@@ -535,3 +535,87 @@ function emitNodeBody(node, byId, display) {
 export function ownerTag(node) {
   return { itemId: node.itemId, type: node.type, name: node.state?.name };
 }
+
+/**
+ * Pure function. THE FADE COMPOSITION — a FRACTIONAL `active` multiplied into
+ * every op's opacity, recursing into subtree ops' `content` so an effected,
+ * cropped or grouped widget fades as one unit rather than only at its outer
+ * wrapper.
+ *
+ * WHY `active` CARRIES THIS AND NOT A SEPARATE KEY. The `fade` interp mode
+ * (core/interp_modes.js) answers the user's "a fade interpolate option for
+ * visible… bring it in and out between 0 to 100 opacity" by making the Visible
+ * leaf itself fractional during a transition. A mode may only ever return a value
+ * for the leaf it was asked about, so a fade that wrote `opacity` instead would
+ * both break that contract and clobber whatever the author had put there. Making
+ * the boolean fractional keeps the whole feature in one property.
+ *
+ * WHY IT COMPOSES BY MULTIPLICATION. A widget already at opacity 0.5, fading in,
+ * should read 0.25 halfway — the fade is a coverage factor OVER the widget's own
+ * opacity, not a replacement for it.
+ *
+ * WHY HERE AND NOT IN core/derive.js. derive's gate is `s.active !== false`,
+ * which a fraction passes (so a mid-fade item is correctly still derived), but
+ * derive builds nodes, not ops — there is no opacity to multiply yet. ports.js is
+ * the one place every node's ops exist and every backend walks, so one
+ * implementation here covers the editor canvas, thumbnails, the minimap, PNG
+ * export, the PDF and SVG exporters and the CLI alike.
+ *
+ * A BOOLEAN (or absent) `active` returns `cmds` UNTOUCHED — the same array, not a
+ * copy — so every document that does not use the mode, and both endpoints of
+ * every document that does, is byte-identical to before this existed.
+ *
+ * @param {object} state - the node's evaluated state (only `active` is read)
+ * @param {object[]} cmds - the node's ops
+ * @returns {object[]} the ops, faded (or the very same array)
+ *
+ * @example applyActiveFade({active: true}, [{op: "rect", opacity: 1}]) // [{op: "rect", opacity: 1}] (same array — a boolean is not a fade)
+ * @example applyActiveFade({}, [{op: "rect", opacity: 1}])[0].opacity // 1 (absent means visible)
+ * @example applyActiveFade({active: 0.5}, [{op: "rect", opacity: 1}])[0].opacity // 0.5
+ * @example applyActiveFade({active: 0.5}, [{op: "rect", opacity: 0.4}])[0].opacity // 0.2 (a coverage factor OVER the widget's own opacity)
+ * @example applyActiveFade({active: 0.5}, [{op: "effectSubtree", opacity: 1, content: [{op: "rect", opacity: 1}]}])[0].content[0].opacity // 0.5 (a subtree fades as one unit)
+ */
+export function applyActiveFade(state, cmds) {
+  const a = state?.active;
+  if (typeof a !== "number") return cmds; // boolean or absent: not a fade
+  return scaledOpacity(cmds, Math.max(0, Math.min(1, a)));
+}
+
+/**
+ * Pure function. Every op's opacity scaled by `k`, recursing into `content`.
+ * Split out from applyActiveFade so the recursion does not re-test the state's
+ * `active` at every subtree level.
+ *
+ * @param {object[]} cmds - ops
+ * @param {number} k - the multiplier, already clamped to [0, 1]
+ * @returns {object[]}
+ *
+ * @example scaledOpacity([{op: "rect", opacity: 0.8}], 0.5)[0].opacity // 0.4
+ * @example scaledOpacity([{op: "rect"}], 0.5)[0].opacity // 0.5 (an absent opacity IS 1)
+ */
+function scaledOpacity(cmds, k) {
+  return cmds.map((cmd) => {
+    // TRANSFORM BOOKKEEPING IS NOT INK. push/popTransform carry no opacity and
+    // no backend reads one off them, so stamping a faded opacity onto them would
+    // be inert noise in the display list — and inert noise is exactly what makes
+    // a later reader believe a field means something. Left byte-identical.
+    if (!opDrawsInk(cmd)) return cmd;
+    const out = { ...cmd, opacity: (cmd.opacity ?? 1) * k };
+    if (Array.isArray(cmd.content)) out.content = scaledOpacity(cmd.content, k);
+    return out;
+  });
+}
+
+/**
+ * Pure function. Does this op DRAW (so an opacity on it means something), as
+ * opposed to being transform bookkeeping? Phrased as a denylist of the two
+ * structural ops rather than an allowlist of the ~30 drawing ones, so a NEW
+ * drawing op fades by default and can never silently opt itself out of the seam.
+ *
+ * @example opDrawsInk({op: "rect"}) // true
+ * @example opDrawsInk({op: "pushTransform"}) // false
+ * @example opDrawsInk({op: "popTransform"}) // false
+ */
+function opDrawsInk(cmd) {
+  return cmd.op !== "pushTransform" && cmd.op !== "popTransform";
+}

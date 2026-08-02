@@ -205,7 +205,7 @@ export function interpMode(id) {
  * Query (reads the registry). Every registered mode id, in registration order —
  * the option list an Inspector select renders.
  *
- * @example interpModeIds() // ["tween", "step"]
+ * @example interpModeIds() // ["tween", "step", "fade", "blend"]
  */
 export function interpModeIds() {
   return [...MODES.keys()];
