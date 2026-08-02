@@ -1,5 +1,5 @@
 /**
- * SCREEN-SPACE STROKE WIDTH (#282) — the decision, gated in both directions.
+ * SCREEN-SPACE SIZING (#282 strokes, #283 text) — the decision, gated both ways.
  *
  * A screen-space stroke keeps a constant thickness in the CAMERA'S LOGICAL PIXELS:
  * zooming the canvas must not change it, and a higher-resolution export must scale
@@ -20,7 +20,7 @@
  */
 import assert from "node:assert/strict";
 import { screenSpaceDivisor } from "../core/clip.js";
-import { rect, path, normalizeStrokeSpace } from "../render_gpu/ir.js";
+import { rect, path, text as textOp, normalizeStrokeSpace } from "../render_gpu/ir.js";
 import { BUNDLES } from "../core/properties.js";
 
 let passed = 0;
@@ -83,4 +83,15 @@ test("(6) IT REACHES THE OPS THAT CAN STROKE, and the shared bundles offer it", 
     assert.ok(BUNDLES[b].includes("strokeScreenSpace"), `BUNDLES.${b} does not offer the option`);
 });
 
-console.log(`\n${passed} screen-space-stroke tests passed`);
+test("(7) TEXT SHARES THE RULE AND THE DIVISOR (#283) — same opt-in, same absence", () => {
+  const base = { text: "hi", x: 0, y: 0, size: 20, color: "#000" };
+  assert.ok(!("sizeScreenSpace" in textOp(base)), "absent by default — an un-opted text op is byte-identical");
+  assert.ok(!("sizeScreenSpace" in textOp({ ...base, sizeScreenSpace: false })), "false must not become a key either");
+  assert.equal(textOp({ ...base, sizeScreenSpace: true }).sizeScreenSpace, true);
+  // The point of reusing screenSpaceDivisor: text and stroke cannot drift apart
+  // about what "screen space" means, including the export case.
+  assert.equal(screenSpaceDivisor(1, 4, 1), 4, "text at 4x editor zoom shrinks its local size 4x");
+  assert.equal(screenSpaceDivisor(1, 4, 4), 1, "…and a 4x EXPORT leaves it alone, exactly as for strokes");
+});
+
+console.log(`\n${passed} screen-space tests passed`);

@@ -1502,7 +1502,7 @@ export function polygon({ points, fill, opacity = 1 }) {
  * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000", rich: {runs: [{text: "Hi"}], paras: [{}]}, boxW: 200}).boxW // 200
  * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000"}).rich // null
  */
-export function text({ text: str, x, y, size, color, bold = false, opacity = 1, font = DEFAULT_FONT, rich = null, boxW = Infinity, boxH = Infinity, boxStyle = null }) {
+export function text({ text: str, x, y, size, color, bold = false, opacity = 1, font = DEFAULT_FONT, rich = null, boxW = Infinity, boxH = Infinity, boxStyle = null, sizeScreenSpace = false }) {
   if (typeof str !== "string") throw new Error(`text: "text" must be a string, got ${JSON.stringify(str)}`);
   if (typeof font !== "string") throw new Error(`text: "font" must be a string id, got ${JSON.stringify(font)}`);
   requireFinite("text", { x, y, size, opacity });
@@ -1512,6 +1512,10 @@ export function text({ text: str, x, y, size, color, bold = false, opacity = 1, 
   return {
     op: "text", text: str, x, y, size, color: parsePaint(color), bold: !!bold, opacity, font,
     rich, boxW, boxH, boxStyle,
+    // SCREEN-SPACE SIZING, spread so `false` never becomes a key — the same
+    // absent-unless-on invariant normalizeStrokeSpace keeps for strokes, and for
+    // the same reason: an op that does not opt in must stay byte-identical.
+    ...(sizeScreenSpace ? { sizeScreenSpace: true } : {}),
   };
 }
 

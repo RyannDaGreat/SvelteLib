@@ -445,6 +445,18 @@ export const textPlugin = {
     // so can never be overridden out from under the box.
     { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text", visibleWhen: boxStyleRowVisibility("font") },
     { key: "size", label: "Size", kind: "number", min: 0, category: "text", visibleWhen: boxStyleRowVisibility("size") },
+    // SCREEN-SPACE SIZING (user, 2026-08-02: "for text a checkbox which is like
+    // screen space for sizing"). Same rule and the SAME divisor as the stroke
+    // option (#282, core/clip.screenSpaceDivisor): magnification is cancelled,
+    // resolution is not, so type stays legible while you zoom a figure but still
+    // scales in a higher-resolution export.
+    //
+    // DECLARED HERE RATHER THAN IN A BUNDLE because text styling in this app IS
+    // per-plugin — six widgets each declare their own `size` row (#201's mirror
+    // pattern). Adding a seventh copy in each would spread that further, so it
+    // lands on `text` first, where the user asked for it, and the other five come
+    // when those rows are unified.
+    { key: "sizeScreenSpace", label: "Screen-space size", kind: "boolean", category: "text", default: false, help: "Keep the type the same size on screen however far you zoom — like a UI label rather than part of the drawing. Measured in the camera's logical pixels, so a higher-resolution export still renders it proportionally." },
     { key: "bold", label: "Bold", kind: "boolean", category: "text", visibleWhen: boxStyleRowVisibility("bold") },
     // Paragraph props (box-level; the "one alignment per box" control — SET-2
     // adds per-paragraph). align is a select over the four alignments.
@@ -501,6 +513,7 @@ export const textPlugin = {
       text: first.text ?? "",
       x: 0, y: 0,
       size: first.size ?? inherited.size,
+      sizeScreenSpace: s.sizeScreenSpace ?? false,
       color: first.color ?? inherited.color,
       bold: first.bold ?? inherited.bold,
       font: first.font ?? inherited.font,

@@ -705,7 +705,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       drawPaperCurl(CanvasKit, canvas, cmd, opacity, media, aa);
       break;
     case "text":
-      drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa);
+      drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa, spaceDivisor);
       break;
     case "image":
     case "video":
@@ -4190,7 +4190,11 @@ function buildPath(CanvasKit, points, close) {
  * can never disagree — then draws each paragraph at its local yTop (valign-shifted).
  * The layout is CACHED (not deleted per frame); the cache bounds WASM lifetime.
  */
-function drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa = true) {
+function drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa = true, spaceDivisor = 1) {
+  // SCREEN-SPACE SIZING (#283): cancel the magnification so the type is a constant
+  // number of the camera's LOGICAL pixels. Same divisor as the stroke option, and
+  // gated on the op's own opt-in so a text op that never sets it is untouched.
+  if (cmd.sizeScreenSpace) cmd = { ...cmd, size: cmd.size / spaceDivisor };
   const layout = getTextLayout(CanvasKit, fontCollection, cmd, opacity);
   // `aa` reaches the OUTLINE-stroke + gradient-fill glyph passes (text_layout
   // draw). The plain Paragraph fill is drawn by CanvasKit's own glyph rasterizer,
