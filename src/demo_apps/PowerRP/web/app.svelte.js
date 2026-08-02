@@ -9,13 +9,16 @@
 import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   uuid, clonedItemStates,
-  withNewItem, withItemPurged, withNewSlide, withSlideDeleted, withSlideMoved,
+  withNewItem, withItemPurged, withNewSlide, withSlideDeleted,
   withSlideToggled, withSlideRenamed, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
   repairedDocument, printRepairReports, itemFallbackName, ungroupBakeSlides,
   itemCreationSlide, itemAnimationKeyframes, lostEquationKeyframes, withItemsMadeStatic,
   itemSlideKeyframes, slideEquationKeyframes, withSlideKeyframesRemoved,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
+// APPEARANCE-PRESERVING slide reorder + the duplicate-keyframe simplifier that
+// is its counterweight (core/slide_reorder.js states the law both obey).
+import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes } from "../core/slide_reorder.js";
 import { unionRect } from "../core/geometry.js";
 // Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
 import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
@@ -4101,9 +4104,50 @@ export class PowerRPApp {
     this.commit(withSlideRenamed(this.doc, index, name));
   }
 
+  /**
+   * Command (ONE undo unit). Moves the current slide by `offset`, PRESERVING
+   * WHAT EVERY SLIDE LOOKS LIKE.
+   *
+   * This used to be a bare array splice (`withSlideMoved`), which moves a
+   * slide's DELTA rather than its PICTURE — and a delta means something
+   * different in a different place, so a move rewrote the deck downstream of it
+   * (user, 2026-08-02: "when I move slide up and move slide down, it does like
+   * change way more than I bargained for"). `movedSlidePreservingLook` folds
+   * every slide first, permutes the folded sequence, and re-derives each delta
+   * as the minimal diff between neighbours, so the only thing that changes is
+   * the order. core/slide_reorder.js has the law and its one exclusion
+   * (disabled slides, which have no fold of their own).
+   */
   moveSlide(offset) {
-    this.commit(withSlideMoved(this.doc, this.slideIndex, offset));
+    this.commit(movedSlidePreservingLook(this.doc, this.slideIndex, offset));
     this.slideIndex = Math.max(0, Math.min(this.doc.slides.length - 1, this.slideIndex + offset));
+  }
+
+  /**
+   * Query. How many NO-OP keyframes the document carries — leaves whose value
+   * the fold already holds at that slide, so deleting them changes nothing.
+   * Read by the Simplify command's gate AND by its `requires` sentence, which is
+   * why it is a method rather than an inline expression: one call answers "may
+   * it run" and "how many", and the two can never disagree.
+   *
+   * Cheap enough for the availability hot path (core/commands.js's O(cheap)
+   * contract): one fold of the document, no evaluation, no render tree.
+   */
+  duplicateKeyframeCount() {
+    return duplicateKeyframes(this.doc).length;
+  }
+
+  /**
+   * Command (ONE undo unit). Deletes every no-op keyframe. Appearance-preserving
+   * by construction — each removed leaf was already satisfied by the fold — and
+   * the counterweight to reorder, which synthesizes deltas that can be larger
+   * than the ones an author typed (user, 2026-08-02: "make that a tool of
+   * simplify duplicate keyframes that would only be enabled or give some
+   * indicator of how many things we simplify").
+   */
+  simplifyDuplicateKeyframes() {
+    const { document: doc, count } = simplifyDuplicateKeyframes(this.doc);
+    if (count > 0) this.commit(doc);
   }
 
   // ── Local-disk DOCUMENT import/export ──────────────────────────────────────
