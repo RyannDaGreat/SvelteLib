@@ -59,7 +59,8 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
-  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems } from "../core/properties.js";
+  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, rowSupportsInterp } from "../core/properties.js";
+  import { DEFAULT_INTERP_MODE, interpKeyFor } from "../core/interp_modes.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
   import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
@@ -719,6 +720,47 @@
   // showing the old item's draft over a write path pointing at the old item.
   let eqOpenKey = $state(null);
   let eqOwnerId = $state(null);
+
+  // ── PER-PROPERTY INTERPOLATION MODE (core/interp_modes.js) ─────────────────
+  // The row whose interp affordance is OPEN, and the item it belongs to — the
+  // same (key, owner) pair eqOpenKey/eqOwnerId use, for the identical reason: row
+  // keys repeat across widgets, so without the owner a selection change would
+  // reopen the strip on a different item's row of the same name.
+  //
+  // A SET of keys, not one: a mode is a SECOND OPINION about a property you are
+  // already looking at, so closing one to inspect another would defeat the point
+  // of comparing (which of these three is stepping?). The equation entry is
+  // single because it is a focused text EDITOR; this is a small select.
+  let interpOpenKeys = $state(new Set());
+  let interpOwnerId = $state(null);
+
+  /** Command. Toggles the interp-mode strip under one row (per-item, see above). */
+  function toggleInterpRow(row) {
+    if (interpOwnerId !== pickedItemId) {
+      interpOwnerId = pickedItemId;
+      interpOpenKeys = new Set([row.key]);
+      return;
+    }
+    const next = new Set(interpOpenKeys);
+    if (!next.delete(row.key)) next.add(row.key);
+    interpOpenKeys = next;
+  }
+
+  /** Query. Is this row's interp strip open, on THIS item? */
+  function interpRowOpen(row) {
+    return interpOwnerId === pickedItemId && interpOpenKeys.has(row.key);
+  }
+
+  /**
+   * Query. Does this row's property carry an EXPLICIT (non-default) mode on the
+   * state being shown? Drives the button's lit state, so a stepping property
+   * announces itself without the strip being open — otherwise the only way to
+   * find out why a property is not tweening would be to open every row in turn.
+   */
+  function interpModeSet(state, row) {
+    const stored = valueAt(state, interpKeyFor(writeKey(row)));
+    return stored != null && stored !== DEFAULT_INTERP_MODE;
+  }
   let eqFocusKey = $state(null);
   let eqPath = $state(null);
   // THE WRITE TARGETS for the Tier-0 `=` field. `eqPath` above is the PRIMARY
@@ -1419,6 +1461,21 @@
        Tools pane's "Pin Light Position to an Object" (manifest R6-4.5). If a
        future row aspect wants this gutter, that is the test it has to pass. -->
   {@const gallery = itemMode && !multi ? row.gallery : null}
+  <!-- THE INTERP AFFORDANCE (core/interp_modes.js): a gutter button revealing a
+       strip under the row where this property's BLEND LAW is picked. ITEM MODE
+       ONLY and single-selection, for the gallery button's reasons one at a time:
+       a transition row and a not-yet-created row have no transition of their own
+       to blend across, and MIXED_MARK semantics over a set are DEFERRED (see the
+       strip below) rather than half-built.
+
+       WHY A GUTTER TOGGLE AND NOT A PERMANENT ROW. Every keyframeable property
+       has a mode — that is the point of the feature — so rendering them inline
+       would DOUBLE the row count of every category, to say "tween" on almost all
+       of them. The mode is a second opinion about a property you are already
+       looking at, so it is revealed per row, next to the property it governs,
+       and never floats to a panel of its own where you would have to remember
+       which property you were asking about. -->
+  {@const interpCapable = itemMode && !multi && rowSupportsInterp(row)}
   <!-- DYNAMIC BOUNDS (general mechanism): a row's `max` may be a STATE-DERIVED
        FUNCTION `(state) => number` (e.g. pdf_page's page cap = pageCount for the
        current src), not just a static number. Resolved here so the numeric field
@@ -1480,7 +1537,7 @@
          row) still gets the (?), and a row with path-but-no-help still gets
          copy. A row with neither falls back to a plain label span (no echo
          tooltip — banned). -->
-    {#if pathText != null || helpText != null || gallery}
+    {#if pathText != null || helpText != null || gallery || interpCapable}
       <span class="row-label-chrome">
         {#if pathText != null}
           {@const copied = justCopiedKey === row.key}
@@ -1511,6 +1568,29 @@
               onclick={(e) => toggleGallery(row, state, itemId, e.currentTarget)}
             >
               <iconify-icon icon="mdi:view-grid-outline" width="13" height="13"></iconify-icon>
+            </button>
+          </Tooltip>
+        {/if}
+        {#if interpCapable}
+          {@const open = interpRowOpen(row)}
+          {@const modeSet = interpModeSet(state, row)}
+          <!-- LIT WHEN THE MODE IS EXPLICIT, even with the strip closed. A
+               property that is not tweening looks broken from the outside, and
+               the only alternative to a lit button is opening every row in turn
+               to find out which one was told to step. Same hover-only-at-rest
+               idiom as its two neighbours (app.css .row-label-chrome), except
+               that .interp-set overrides the reveal — a set mode must be visible
+               without hovering, or it is not an answer to "why isn't this
+               moving". -->
+          <Tooltip text={open ? `Hide how "${row.label}" interpolates` : `How "${row.label}" interpolates across a transition${modeSet ? " (not the default)" : ""}`}>
+            <button
+              class="interp-btn"
+              class:interp-set={modeSet}
+              aria-label={`Interpolation mode for ${row.label}`}
+              aria-pressed={open}
+              onclick={() => toggleInterpRow(row)}
+            >
+              <iconify-icon icon="mdi:transit-connection-horizontal" width="13" height="13"></iconify-icon>
             </button>
           </Tooltip>
         {/if}
@@ -1625,6 +1705,43 @@
       <span class="kf-controls" aria-hidden="true"></span>
     {/if}
   </div>
+  <!-- THE INTERP STRIP: this property's blend law, revealed under the row it
+       governs. It is A PROPERTY ROW, rendered through THIS SAME SNIPPET — the
+       mode is a real keyframeable property (core/interp_modes.js: a plain
+       sibling `<key>~interp`), so it earns the select control, the keyframe
+       diamonds, the copy-path chrome and the undo unit by being one, not by
+       having any of them re-implemented here. The whole feature's storage choice
+       exists to make this line possible.
+
+       THREE THINGS FALL OUT WITH NO BRANCH, and are worth naming because each
+       would otherwise be a special case someone has to remember:
+         • NO RECURSION. rowSupportsInterp() is false for a `~interp` key, so the
+           strip's own row grows no interp button — there is no mode-of-a-mode.
+         • NO ƒ BUTTON. equationCapable() requires the key to be in PROPS or in
+           the plugin's defaults, and a derived companion is in neither, so the
+           universal `=` fallback declines it on its own. That is the RIGHT
+           answer and not a lucky one: a mode bound to a formula could change
+           mid-transition, which is exactly what "the mode steps at the start"
+           forbids — and core/interp_modes.js makes it unreachable in the
+           equation GRAMMAR too, so the two agree.
+         • DIAMONDS WORK. `x~interp` keyframes per slide like anything else, so a
+           property can step into one slide and tween into the next.
+
+       MULTI-SELECTION IS DEFERRED, deliberately and visibly: `interpCapable` is
+       false when `multi` is set, so a set simply shows no interp button rather
+       than a half-built one. MIXED_MARK over modes needs intersectRows to reason
+       about a DERIVED row that no plugin declares, which is a real design
+       question (does a set of items with different modes unify to one? what does
+       the intersection of two rows neither declares even mean?) and not a line
+       of glue. Single-selection is the whole request; the set case can be added
+       to core/multiselect.js later without touching this file's shape. -->
+  {#if interpCapable && interpRowOpen(row)}
+    <div class="interp-strip">
+      {@render propRow(interpRowFor(row), state, {
+        keyframes, disabled, onpreview, oncommit, itemId, pathState, hoverPreview, multi: null,
+      })}
+    </div>
+  {/if}
 {/snippet}
 
 <!-- THE TIER-1 SPECIALIZED CONTROL for one row, chosen by slot kind. Split out
@@ -1843,11 +1960,20 @@
         <input type="text" class="disabled-val" value={app.registry.get(valueAt(state, row.key))?.title ?? ""} disabled />
       {/if}
     {:else}
+      <!-- `absentValue` — the option to SHOW when the key is not in state at all.
+           Every ordinary select row has a plugin default, so its key is always
+           present and this is undefined (byte-identical `??` no-op). It exists
+           for a row whose ABSENCE IS ITSELF A VALUE and must stay absent: the
+           derived interp row (core/interp_modes.js), whose missing companion key
+           means "tween" and whose whole no-migration promise is that nothing
+           writes it until the author picks a mode. Filling it with a defaults
+           entry instead would touch every document on load, which is exactly
+           what that promise forbids. -->
       <Dropdown
         onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
         oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
         items={selectRowItems(row)}
-        value={valueAt(state, row.key)}
+        value={valueAt(state, row.key) ?? row.absentValue}
         onchange={(v) => oncommit(row.key, "select", v)}
       />
     {/if}

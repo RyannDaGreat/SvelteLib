@@ -65,7 +65,7 @@ import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
-import { interpKeyFor, interpMode, interpModeIds, interpModeLabels, isInterpKey } from "./interp_modes.js";
+import { DEFAULT_INTERP_MODE, interpKeyFor, interpMode, interpModeIds, interpModeLabels, isInterpKey } from "./interp_modes.js";
 
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
@@ -1959,6 +1959,10 @@ export function interpRowFor(propRow) {
     category: propRow.category,
     options: interpModeIds(),
     optionLabels: labels,
+    // The option the Inspector SHOWS when the companion key is absent from state
+    // — which is the normal, untouched condition and must stay that way. See the
+    // `absentValue` note in web/Inspector.svelte's select branch.
+    absentValue: DEFAULT_INTERP_MODE,
     interpOf: target,
     help: `How "${propRow.label}" moves across a transition. ${interpModeIds().map((id) => `${labels[id]} — ${interpMode(id).help}`).join(" ")}`,
   };

@@ -129,12 +129,16 @@ export const DEFAULT_INTERP_MODE = "tween";
 
 /**
  * Pure function. The companion state key holding `key`'s interpolation mode.
- * Takes the LAST path segment, never a dotted path: the companion is a SIBLING
- * of the leaf, so `shadow.offsetX`'s mode lives at `shadow.offsetX~interp`
- * (i.e. inside `shadow`), which is what a path-joined caller gets for free.
+ *
+ * A DOTTED key works without a special case, and that is the second reason the
+ * suffix is not a dot: appending to `rotationAnchor.x` gives
+ * `rotationAnchor.x~interp`, which splits on "." into
+ * `["rotationAnchor", "x~interp"]` — the SIBLING of `x` INSIDE `rotationAnchor`,
+ * which is exactly where mutBlendApply's per-level recursion looks for it.
  *
  * @example interpKeyFor("x") // "x~interp"
  * @example interpKeyFor("visible") // "visible~interp"
+ * @example interpKeyFor("rotationAnchor.x") // "rotationAnchor.x~interp" (splits to ["rotationAnchor", "x~interp"])
  */
 export function interpKeyFor(key) {
   return `${key}${INTERP_KEY_SUFFIX}`;
