@@ -20,7 +20,7 @@
  */
 
 import assert from "node:assert/strict";
-import { imageStackPlugin, stackAlphas, stackLayout, shadowReach, REFERENCE, REFERENCE_SIDE, DEFAULT_SHIFT_FRACTION, rectSubtract } from "../plugins/image_stack.js";
+import { imageStackPlugin, stackAlphas, stackLayout, shadowReach, REFERENCE, REFERENCE_SIDE, DEFAULT_SHIFT_FRACTION, rectSubtract, spreadFromHandle, spreadHandlePoint } from "../plugins/image_stack.js";
 import { flattenIR, BLUR_SUPPORT_SIGMAS } from "../render_gpu/ir.js";
 
 let passed = 0;
@@ -285,4 +285,74 @@ test("SHIFT 0 — every card coincident — leaves only the top one visible", ()
   const ops = p.emit(st, null, { x: 0, y: 0, rotation: 0, scale: 1 });
   assert.equal(ops.filter((o) => o.op === "cropSubtree").length, 0,
     "no occlusion clips are emitted, because every lower card is fully hidden");
+});
+
+// ── THE SPREAD HANDLE (#268) ────────────────────────────────────────────────
+
+test("ONE handle, at the deepest card's corner — the point that IS the spread", () => {
+  const st = { ...SOURCED, w: 400, h: 300, shiftX: 0.2, shiftY: 0.15, frames: [[0], [1], [2]] };
+  const mp = imageStackPlugin.modifierPoints(st);
+  assert.equal(mp.length, 1);
+  assert.equal(mp[0].id, "spread");
+  const cards = stackLayout(3, 400, 300, 0.2, 0.15);
+  assert.equal(mp[0].x, cards[2].x, "it sits on the deepest card");
+  assert.equal(mp[0].y, cards[2].y);
+  assert.deepEqual(mp[0].stem, { x: cards[0].x, y: cards[0].y }, "tethered to the first card, so the ghost line reads as travel");
+});
+
+test("THE HANDLE ROUND-TRIPS — what you grab is what you get", () => {
+  // apply() must be the exact inverse of stackLayout's placement, or the pile
+  // jumps out from under the cursor on the first pixel of a drag.
+  for (const [sx, sy] of [[0.2, 0.15], [0.4, 0], [0, 0.3], [0.05, 0.05]]) {
+    const st = { ...SOURCED, w: 400, h: 300, shiftX: sx, shiftY: sy, frames: [[0], [1], [2]] };
+    const h = imageStackPlugin.modifierPoints(st)[0];
+    const back = h.apply(st, { x: h.x, y: h.y });
+    assert.ok(Math.abs(back.shiftX - sx) < 1e-9 && Math.abs(back.shiftY - sy) < 1e-9,
+      `(${sx}, ${sy}) round-tripped to (${back.shiftX}, ${back.shiftY})`);
+  }
+});
+
+test("NO HANDLE when there is nothing to spread — never an inert one", () => {
+  const one = { ...SOURCED, w: 400, h: 300, frames: [[0]] };
+  assert.deepEqual(imageStackPlugin.modifierPoints(one), [], "a single card has no spread");
+  assert.deepEqual(imageStackPlugin.modifierPoints({ ...SOURCED, frames: [] }), [], "and neither has none");
+});
+
+test("dragging the handle to the origin flattens the pile rather than dividing by zero", () => {
+  const st = { ...SOURCED, w: 400, h: 300, shiftX: 0.2, shiftY: 0.15, frames: [[0], [1], [2]] };
+  assert.deepEqual(imageStackPlugin.modifierPoints(st)[0].apply(st, { x: 0, y: 0 }), { shiftX: 0, shiftY: 0 });
+  assert.deepEqual(spreadFromHandle({ x: 10, y: 10 }, 3, 0, 0), { shiftX: 0, shiftY: 0 }, "a zero-size box cannot solve a shift");
+});
+
+// ── THE PRESETS (#268) ──────────────────────────────────────────────────────
+
+test("presets are whole LOOKS, and none of them is the default wearing a name", () => {
+  const ps = imageStackPlugin.presets ?? [];
+  assert.ok(ps.length >= 5, `expected a real set, got ${ps.length}`);
+  for (const p of ps) {
+    assert.ok(p.name && p.description, `${p.name}: a preset needs both a name and a description`);
+    const identical = Object.entries(p.props).every(([k, v]) => imageStackPlugin.defaults[k] === v);
+    assert.ok(!identical, `"${p.name}" is identical to the defaults — a row that does nothing`);
+  }
+});
+
+test("every preset is DISTINCT from every other", () => {
+  const seen = new Map();
+  for (const p of imageStackPlugin.presets ?? []) {
+    const key = JSON.stringify(p.props);
+    assert.ok(!seen.has(key), `"${p.name}" and "${seen.get(key)}" set the same values`);
+    seen.set(key, p.name);
+  }
+});
+
+test("presets move the THREE things that change how a pile reads, not one knob", () => {
+  // A preset that moved a single value would just be a slider with a name.
+  for (const p of imageStackPlugin.presets ?? [])
+    assert.ok(Object.keys(p.props).length >= 3, `"${p.name}" sets only ${Object.keys(p.props).length} value(s)`);
+});
+
+test("every preset writes only keys the widget actually has", () => {
+  for (const p of imageStackPlugin.presets ?? [])
+    for (const k of Object.keys(p.props))
+      assert.ok(k in imageStackPlugin.defaults, `"${p.name}" writes "${k}", which is not a property of this widget`);
 });

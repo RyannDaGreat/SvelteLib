@@ -249,6 +249,89 @@ export function stackLayout(n, w, h, shiftX, shiftY) {
 }
 
 /**
+ * THE PRESETS — whole LOOKS for the pile, not knob samplers. Each moves the three
+ * things that actually change how a stack reads (how far it fans, how fast it
+ * fades, how the cards are cut) together, because those are what disagree in a
+ * real design: a crisp contact sheet and a soft receding drift differ in all
+ * three at once, and a preset that moved one of them would just be a slider.
+ *
+ * Literal-valued, per R6-25.1 (an equation-valued preset would be `=`-prefixed;
+ * none of these needs one).
+ */
+const PRESETS = [
+  { name: "Riffle", description: "A tight sideways fan with hard corners — a deck being riffled, every card readable.", props: { shiftX: 0.28, shiftY: 0.02, alphaExponent: 0.25, cardRadius: 0.01, shadowOpacity: 0.25, shadowBlur: 0.01 } },
+  { name: "Receding drift", description: "A long diagonal that fades away fast, so the pile reads as depth rather than as cards.", props: { shiftX: 0.22, shiftY: 0.22, alphaExponent: 1.2, cardRadius: 0.02, shadowOpacity: 0.35, shadowBlur: 0.04 } },
+  { name: "Contact sheet", description: "Barely offset and barely faded — a squared-up pile you can read every layer of.", props: { shiftX: 0.1, shiftY: 0.1, alphaExponent: 0, cardRadius: 0, shadowOpacity: 0.15, shadowBlur: 0.006 } },
+  { name: "Photo pile", description: "Rounded corners, a soft drop shadow and a lazy downward step — snapshots dropped on a table.", props: { shiftX: 0.12, shiftY: 0.3, alphaExponent: 0.4, cardRadius: 0.06, shadowOpacity: 0.45, shadowBlur: 0.05 } },
+  { name: "Ghost trail", description: "A wide fan that vanishes into nothing — motion, not a stack.", props: { shiftX: 0.4, shiftY: 0.06, alphaExponent: 2, cardRadius: 0.01, shadowOpacity: 0, shadowBlur: 0 } },
+  { name: "End-on", description: "No offset at all: the pile seen straight down its edge, so only the front card shows.", props: { shiftX: 0, shiftY: 0, alphaExponent: 0.5, cardRadius: 0.02, shadowOpacity: 0.3, shadowBlur: 0.02 } },
+];
+
+/**
+ * Pure function. WHERE THE SPREAD HANDLE SITS, in local box space: the deepest
+ * card's own top-left corner.
+ *
+ * That is the one point in the picture that IS the spread — drag it and the pile
+ * fans out under your cursor, which is the whole gesture. It is invertible in
+ * both signs (a negative shift recedes up-and-left, and the corner goes with it),
+ * unlike the pile's bounding box, which clamps to the widget and so tells you
+ * nothing once the shift passes zero.
+ *
+ * @param {{x: number, y: number, w: number, h: number}[]} cards - stackLayout's output
+ * @returns {{x: number, y: number}|null} null when there is no spread to grab (fewer than two cards)
+ *
+ * @example spreadHandlePoint([{x: 0, y: 0, w: 8, h: 8}, {x: 2, y: 1, w: 8, h: 8}]) // {x: 2, y: 1}
+ * @example spreadHandlePoint([{x: 0, y: 0, w: 10, h: 10}]) // null (one card has no spread)
+ * @example spreadHandlePoint([]) // null
+ */
+export function spreadHandlePoint(cards) {
+  return cards.length >= 2 ? { x: cards[cards.length - 1].x, y: cards[cards.length - 1].y } : null;
+}
+
+/**
+ * Pure function. The (shiftX, shiftY) a dragged spread handle means — the exact
+ * inverse of stackLayout's placement, so what you grab is what you get.
+ *
+ * stackLayout puts card j at `origin + j·step` with `step = shift·extent/n` and
+ * `origin = -min(0, span)`, so the deepest card's corner sits at
+ * `origin + span`. Solving that for `shift` gives the expression below; the
+ * `origin` term is what makes a NEGATIVE drag work rather than pinning at zero.
+ *
+ * @param {{x: number, y: number}} p - the dragged point, local box space
+ * @param {number} n - how many cards
+ * @param {number} w - the box width
+ * @param {number} h - the box height
+ * @returns {{shiftX: number, shiftY: number}}
+ *
+ * @example spreadFromHandle({x: 20, y: 0}, 3, 100, 100) // {shiftX: 0.3, shiftY: 0}
+ * @example spreadFromHandle({x: 0, y: 0}, 3, 100, 100) // {shiftX: 0, shiftY: 0}
+ * @example spreadFromHandle({x: 0, y: 0}, 1, 100, 100) // {shiftX: 0, shiftY: 0} (one card: no spread to solve)
+ * @example spreadFromHandle({x: -50, y: 0}, 3, 100, 100) // {shiftX: 0, shiftY: 0} (negative is unreachable from this corner — see below)
+ */
+export function spreadFromHandle(p, n, w, h) {
+  const count = Math.max(0, Math.round(n));
+  if (count < 2) return { shiftX: 0, shiftY: 0 };
+  // THE HANDLE REACHES POSITIVE SPREADS ONLY, and that is a property of the
+  // geometry rather than a shortcut. stackLayout places the deepest card at
+  // `origin + span` with `origin = -min(0, span)`, which is `max(0, span)` — so a
+  // NEGATIVE shift slides the FIRST card instead and the deepest card's corner
+  // stays pinned at 0. That corner therefore cannot express a negative spread at
+  // all, whichever way it is dragged. `constrain` says so out loud by clamping the
+  // drag to the reachable quadrant, rather than letting the handle be dragged
+  // somewhere it will silently spring back from; the Inspector's Shift X / Shift Y
+  // rows remain the way to recede up-and-left.
+  //
+  // (Found by tests/handle_constraints_test.js, which drags every handle to an
+  // arbitrary point and requires it to LAND there or declare why not. The first
+  // version of this function claimed to solve both signs and did not.)
+  const solve = (v, extent) => {
+    if (!(extent > 0)) return 0;
+    return (Math.max(0, v) * count) / ((count - 1) * extent);
+  };
+  return { shiftX: solve(p.x, w), shiftY: solve(p.y, h) };
+}
+
+/**
  * Pure function. The parts of rect `a` NOT covered by rect `b`, as up to four
  * DISJOINT rects (top strip, bottom strip, then the left and right of what
  * remains). Empty when `b` swallows `a`; `[a]` when they do not meet.
@@ -370,6 +453,7 @@ export const imageStackPlugin = {
     ...defaults("strokeWidth", "cornerRadius", "opacity"),
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
+  presets: PRESETS,
   inspector: [
     ...bundle("positioning"),
     // THE SHARED SOURCE ROWS (core/video_sampling.js VIDEO_SAMPLING_ROWS) — byte-for-
@@ -498,6 +582,37 @@ export const imageStackPlugin = {
       strokeWidth: s.strokeWidth ?? 0, cornerRadius: s.cornerRadius ?? 0,
     };
     return applyEffects(decorateStrokedBox(content, style, world), s, world, { x: 0, y: 0, w: style.w, h: style.h });
+  },
+  /**
+   * THE SPREAD HANDLE (the "PPT yellow square"): ONE draggable point at the
+   * deepest card's corner that sets shiftX and shiftY together.
+   *
+   * ONE HANDLE FOR BOTH AXES, deliberately: the spread is a single visual idea
+   * ("how far does the pile fan out, and which way") and splitting it into two
+   * one-axis handles would make the diagonal case — the common one — a two-gesture
+   * operation. The Inspector still exposes the axes separately for anyone who wants
+   * one of them exactly.
+   *
+   * ABSENT WHEN THERE IS NOTHING TO SPREAD (fewer than two visible cards), rather
+   * than offered and inert — a handle that cannot move is the lying-control defect
+   * this app keeps finding.
+   */
+  modifierPoints(s) {
+    const frames = visibleFrames(s);
+    const cards = stackLayout(frames.length, s.w ?? 0, s.h ?? 0, s.shiftX, s.shiftY);
+    const at = spreadHandlePoint(cards);
+    if (!at) return [];
+    return [{
+      id: "spread",
+      ...at,
+      // Tethered to the FIRST card's corner, so the dashed ghost line reads as
+      // "this is how far the pile has travelled".
+      stem: { x: cards[0].x, y: cards[0].y },
+      // The reachable set, declared: see spreadFromHandle on why the deepest
+      // card's corner cannot go negative.
+      constrain: (_st, p) => ({ x: Math.max(0, p.x), y: Math.max(0, p.y) }),
+      apply: (st, p) => spreadFromHandle(p, visibleFrames(st).length, st.w ?? 0, st.h ?? 0),
+    }];
   },
   /**
    * Pure function. BOUNDS protocol (core/registry.js): the cards fill the box exactly
