@@ -769,6 +769,7 @@
   const HELP_MIRROR = "Swaps the widgets' SIDES about the selection's centre and leaves each widget's own content untouched. Flip Content is the other half — run both to reflect an arrangement completely.";
   const HELP_EXPORT_CAMERA = "THE CAMERA decides the output — its rect IS the image, at its own size and aspect. Not the visible viewport, and not the widgets' extent, so what you export does not change when you pan or zoom.";
   const HELP_FLIP = "Reverses ONE widget's own content about its own centre (a negative size with the position compensated), leaving it where it sits. Mirror Layout is the one that moves widgets to each other's side.";
+  const HELP_SLIDE_MOVE = "Only the ORDER changes: every slide still looks exactly as it did, including the one you moved. A slide stores the DIFFERENCE from the slide before it, so the deltas are all rebuilt to say the right thing in their new positions — which can leave a few keyframes that restate what is already inherited. Simplify Duplicate Keyframes clears those.";
 
   // Palette icons (mdi), keyed by THEME_FAMILIES[].id — one glyph per FAMILY,
   // because the icon names the identity and both poles share it. The two
@@ -1298,8 +1299,22 @@
     { id: "new-blank-slide", title: "New Blank Slide (deactivates every visible item)", icon: "mdi:plus-box", help: "Nothing is purged: the slide keyframes `active` off for each currently visible widget, so you start on an empty stage and can bring any of them back with Show.", run: (a) => a.addBlankSlide() },
     { id: "delete-slide", title: "Delete Slide", icon: "mdi:file-remove-outline", when: (a) => a.doc.slides.length > 1, requires: "more than one slide — a document always has at least one", help: "Deletes this slide's DELTA, not the widgets in it. Anything an earlier slide created still exists; what is lost is the changes this slide made, so the slides after it now inherit from the one before it.", run: (a) => a.deleteSlide() },
     { id: "toggle-slide", title: "Toggle Slide Visibility (enable/disable delta)", icon: "mdi:eye-check-outline", help: "A disabled slide is SKIPPED when the deltas are folded, so every slide after it inherits as though it were not there — the way to park a variant without deleting it.", run: (a) => a.toggleSlide() },
-    { id: "move-slide-up", title: "Move Slide Up", icon: "mdi:arrow-up", run: (a) => a.moveSlide(-1) },
-    { id: "move-slide-down", title: "Move Slide Down", icon: "mdi:arrow-down", run: (a) => a.moveSlide(+1) },
+    // The two moves REBUILD every delta rather than splicing a row: a slide
+    // stores a difference, not a picture, so moving the row alone would change
+    // what the slides after it show. See core/slide_reorder.js.
+    { id: "move-slide-up", title: "Move Slide Up", icon: "mdi:arrow-up", help: HELP_SLIDE_MOVE, run: (a) => a.moveSlide(-1) },
+    { id: "move-slide-down", title: "Move Slide Down", icon: "mdi:arrow-down", help: HELP_SLIDE_MOVE, run: (a) => a.moveSlide(+1) },
+    // The counterweight to that rebuild: it can write a keyframe the author
+    // would not have, so there is one command that takes the redundant ones back
+    // out. User: "make that a tool of simplify duplicate keyframes that would
+    // only be enabled or give some indicator of how many things we simplify" —
+    // this is the ENABLEMENT half of that "or", gated on the live count. The
+    // COUNT is deliberately NOT in this entry: `title` is what the fuzzy matcher
+    // indexes and `help` is contractually a plain string (core/commands.js), so
+    // neither may carry a number that changes. Surfacing the number needs a
+    // surfacing that can hold live text (a KeyframePanel badge) — NOT BUILT, and
+    // the gate alone answers "is there anything to do" in the meantime.
+    { id: "simplify-duplicate-keyframes", title: "Simplify Duplicate Keyframes", icon: "mdi:filter-remove-outline", aliases: ["deduplicate keyframes", "remove redundant keyframes", "clean up keyframes"], when: (a) => a.duplicateKeyframeCount() > 0, requires: "at least one keyframe that restates a value the slide already inherits — this document has none", help: "Deletes every keyframe whose value the slide already inherits. Nothing changes on screen: each one was already a no-op. Use it after moving slides around, which rebuilds each slide's stored differences and can leave some of them redundant.", run: (a) => a.simplifyDuplicateKeyframes() },
     { id: "next-slide", title: "Next Slide", icon: "mdi:chevron-right", run: (a) => (a.slideIndex = Math.min(a.slideIndex + 1, a.doc.slides.length - 1)) },
     { id: "prev-slide", title: "Previous Slide", icon: "mdi:chevron-left", run: (a) => (a.slideIndex = Math.max(a.slideIndex - 1, 0)) },
     // NUDGE — the arrow keys move the SELECTION one pixel (user ruling: "arrow
