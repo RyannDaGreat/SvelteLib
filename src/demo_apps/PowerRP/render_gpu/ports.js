@@ -25,9 +25,11 @@ import { reportOnce, warnOnce } from "../core/report.js";
 import { errorAffordanceArgs, errorBoxExtent, errorMessage, describeOwner, throwMessage, isConfigurationError, configurationError } from "../core/paint_containment.js";
 
 /**
- * Pure function (the report sink aside). Ops with every MATERIAL fill paint
- * RESOLVED — schema defaults ⊕ the paint's sparse stored params ⊕ the
- * material's optional sceneParams hook (sky reads its sibling suns there).
+ * Pure function (the report sink aside). Ops with every MATERIAL paint RESOLVED,
+ * in ALL FOUR slots an op can carry one — `fill`, `stroke`, a text op's `color`,
+ * and a rich text op's per-RUN `color` — from schema defaults ⊕ the paint's
+ * sparse stored params ⊕ the material's optional sceneParams hook (sky reads its
+ * sibling suns there).
  * THE one resolution site: painters require `resolvedParams` and throw
  * without it, so a path that skipped this pass fails loudly instead of
  * rendering with half its knobs missing. Recurses into subtree ops' `content`
@@ -42,6 +44,8 @@ import { errorAffordanceArgs, errorBoxExtent, errorMessage, describeOwner, throw
  *
  * @example resolveMaterialFillPaints([{op: "rect", fill: "#fff"}], null, null)[0].fill // "#fff"
  * @example resolveMaterialFillPaints([{op: "rect", fill: {type: "material", material: {id: "comic"}}}], null, null)[0].fill.resolvedParams.mode // "cmyk"
+ * @example resolveMaterialFillPaints([{op: "text", color: {type: "material", material: {id: "comic"}}}], null, null)[0].color.resolvedParams.mode // "cmyk"
+ * @example resolveMaterialFillPaints([{op: "text", color: "#000"}], null, null)[0].color // "#000" (untouched)
  */
 /**
  * Query (reads registries; reports once on unknown knobs). The camera
@@ -76,6 +80,20 @@ export function resolveMaterialFillPaints(cmds, node, nodesById) {
       out = { ...out, fill: resolveMaterialPaint(cmd.fill, node, nodesById, warnOnce) };
     if (isMaterialPaint(cmd.stroke))
       out = { ...out, stroke: resolveMaterialPaint(cmd.stroke, node, nodesById, warnOnce) }; // same as the fill above
+    // TEXT INK IS A THIRD PAINT SLOT, and it is not called `fill`. A text op
+    // carries its ink on `color` (ir.js text()), and a RICH text op additionally
+    // carries a per-RUN `color` — so a material ink on either would reach the
+    // painter unresolved and throw, exactly the way a material camera background
+    // did before resolvedBackgroundFill existed. The two slots are resolved here
+    // rather than at a text-specific seam because this IS the one resolution site
+    // the docblock above promises; a second one would be the drift it warns about.
+    if (isMaterialPaint(cmd.color))
+      out = { ...out, color: resolveMaterialPaint(cmd.color, node, nodesById, warnOnce) };
+    if (Array.isArray(cmd.rich?.runs) && cmd.rich.runs.some((r) => isMaterialPaint(r.color))) {
+      const runs = cmd.rich.runs.map((r) =>
+        isMaterialPaint(r.color) ? { ...r, color: resolveMaterialPaint(r.color, node, nodesById, warnOnce) } : r);
+      out = { ...out, rich: { ...cmd.rich, runs } };
+    }
     if (Array.isArray(cmd.content)) {
       const content = resolveMaterialFillPaints(cmd.content, node, nodesById);
       if (content.some((c, i) => c !== cmd.content[i])) out = { ...out, content };
@@ -477,7 +495,16 @@ function emitNodeBody(node, byId, display) {
   // box exactly as the two above are, and likewise absent at the identity
   // (miter, STROKE_MITER_LIMIT) — so this line too adds nothing to any existing
   // document's ops.
-  const body = applyStrokeJoin(node.state, applyStrokeOffset(node.state, applyStrokeTrim(node.state, applyNodeEffects(node, cmds))));
+  // THE UNIVERSAL FADE SEAM, stacked on the same choke point as the three
+  // stroke seams above and for the same reason: it must reach every plugin and no
+  // plugin may be able to forget it. `active` is normally a boolean, but a leaf
+  // whose interp mode is `fade` (core/interp_modes.js) folds to a FRACTION on the
+  // strictly-interior frames of a transition — active: 0.3 means "this item is
+  // 30% faded in". applyActiveFade multiplies that fraction into every op's
+  // opacity. A boolean `active` (every document that does not use the mode, and
+  // both endpoints of every one that does) returns `body` UNTOUCHED and
+  // byte-identically, so this line adds nothing to any existing picture.
+  const body = applyActiveFade(node.state, applyStrokeJoin(node.state, applyStrokeOffset(node.state, applyStrokeTrim(node.state, applyNodeEffects(node, cmds)))));
   // THE OWNER TAG — this node's identity, hung on the ONE push that opens its op
   // run, so the PAINT-TIME boundary can name the item it had to contain
   // (render_gpu/skia/paint_skia.js paintFlat; flattenIR carries the tag down onto

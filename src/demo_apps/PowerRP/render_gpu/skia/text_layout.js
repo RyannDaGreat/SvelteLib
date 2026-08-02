@@ -35,8 +35,9 @@
  * the module-level cache never mixes Paragraphs across instances.
  */
 
-import { parseColor, parsePaint, isGradientPaint } from "../ir.js";
+import { parseColor, parsePaint, isGradientPaint, isMaterialPaint, paintSolidColor } from "../ir.js";
 import { skShaderForPaint } from "./gradient.js";
+import { getMaterial, materialEffect, isFillCapableMaterial, isBackdropMaterial, isSamplerMaterial } from "./materials.js";
 import { fontFamilyChain } from "../fonts.js";
 import { splitParagraphs, paragraphRanges, paraStyleFor, valignOffset, DEFAULT_VALIGN, NATURAL_LINE_HEIGHT } from "../../core/richtext.js";
 
@@ -224,12 +225,39 @@ export function styleAtOffset(ranges, offset) {
   return ranges[ranges.length - 1].style;
 }
 
+/** Pure function. Is a run's fill a GRADIENT specifically — an object paint that
+ * is NOT a material? `isGradientPaint` is deliberately the broad "object ⇒ needs a
+ * shader" test (ir.js), so it answers TRUE for a material paint too; every
+ * consumer that can draw only ONE of the two must qualify it, which is the idiom
+ * pdf_backend.js already uses (`isGradientPaint(fill) && fill.type === "material"`).
+ * Without this split a material fill fell into drawGlyphGradientFill and
+ * skShaderForPaint read `paint.stops.map` on a paint that has no stops — a
+ * TypeError mid-paint, which is how material-on-text failed before it was built.
+ *
+ * @param {*} paint - a run style's `color`
+ * @returns {boolean}
+ *
+ * @example isGradientOnlyPaint({ type: "linearGradient", stops: [] }) // true
+ * @example isGradientOnlyPaint({ type: "material", material: { id: "comic" } }) // false
+ * @example isGradientOnlyPaint("#f00") // false
+ */
+export function isGradientOnlyPaint(paint) {
+  return isGradientPaint(paint) && !isMaterialPaint(paint);
+}
+
 /** Pure function. True iff a run style needs the glyph pass (an outline stroke,
- * or a gradient fill the Paragraph can't render). A plain solid-fill, no-outline
- * run needs nothing → the byte-identical drawParagraph-only fast path.
+ * or a gradient/MATERIAL fill the Paragraph can't render). A plain solid-fill,
+ * no-outline run needs nothing → the byte-identical drawParagraph-only fast path.
+ *
+ * A MATERIAL fill joins the gradient here for the SAME structural reason the
+ * gradient is here at all: CanvasKit 0.41.1's TextStyle exposes foregroundColor,
+ * a COLOR and not a Paint, so no shader of any kind can ride the Paragraph. Both
+ * therefore draw the Paragraph glyphs TRANSPARENT and re-draw the shaped glyphs
+ * with drawGlyphs under a shader Paint.
  *
  * @example styleNeedsGlyphPass({ outlineWidth: 2 }) // true
  * @example styleNeedsGlyphPass({ color: { type: "linearGradient" } }) // true
+ * @example styleNeedsGlyphPass({ color: { type: "material", material: { id: "comic" } } }) // true
  * @example styleNeedsGlyphPass({ color: "#f00", outlineWidth: 0 }) // false
  * @example styleNeedsGlyphPass({}) // false
  */
@@ -320,14 +348,24 @@ export function buildParagraph(CanvasKit, fc, pieces, pstyle, boxW, fallbackStyl
  * paint_skia.js.) color/backgroundColor/decorationColor fold `opacity` into their
  * alpha; the RGB is never forced onto color-glyph (emoji) fonts. */
 function textStyle(CanvasKit, st, charSpacing, wordSpacing, opacity) {
-  // A GRADIENT fill can't ride the Paragraph (foregroundColor is a color, not a
-  // shader, in ckwasm 0.41.1) — draw the glyph fill TRANSPARENT here and let the
-  // gradient glyph pass (drawGlyphGradientFill) paint it. Decorations still use a
-  // representative SOLID (the first stop).
-  const gradient = isGradientPaint(st.color);
-  const solidInk = gradient ? st.color.stops[0].color : (st.color ?? "#000000");
+  // NO SHADER fill can ride the Paragraph (foregroundColor is a color, not a
+  // Paint, in ckwasm 0.41.1) — draw the glyph fill TRANSPARENT here and let the
+  // shader glyph pass (drawGlyphShaderFill) paint it. That is true of a GRADIENT
+  // and equally of a MATERIAL, so both take the same transparent-glyph route.
+  //
+  // Decorations (underline / strike) still need ONE representative SOLID, because
+  // a decoration is a Paragraph-drawn rule with a plain colour: a gradient lends
+  // its first stop, and a material has no meaningful single colour at all, so it
+  // reduces through ir.js's paintSolidColor — the documented neutral-gray stand-in
+  // every other single-colour consumer of a material paint already uses. An
+  // underline under material text is therefore gray rather than materialled; that
+  // is a real bound, and it is the same one a material border/shadow tint has.
+  const shader = isGradientPaint(st.color);
+  const solidInk = !shader ? (st.color ?? "#000000")
+    : isMaterialPaint(st.color) ? paintSolidColor(st.color) // the ONE material→solid reduction (ir.js), not a second gray
+    : st.color.stops[0].color;
   const spec = {
-    color: gradient ? CanvasKit.Color4f(0, 0, 0, 0) : ckColor(CanvasKit, st.color ?? "#000000", opacity),
+    color: shader ? CanvasKit.Color4f(0, 0, 0, 0) : ckColor(CanvasKit, st.color ?? "#000000", opacity),
     fontFamilies: fontFamilyChain(st.font ?? "system"),
     fontSize: st.size ?? DEFAULT_TEXT_SIZE,
     fontStyle: {
@@ -459,22 +497,22 @@ export class TextLayout {
    * Draw order per paragraph (matches the SVG paint-order:stroke / PDF fill+stroke
    * export idiom): the OUTLINE stroke glyph pass FIRST (behind), then the
    * Paragraph (solid fill + decorations + highlight + emoji + fallback), then the
-   * gradient-FILL glyph pass on top of the (transparent-glyph) gradient pieces.
-   * With no outline/gradient piece every glyphGroups is empty and this is exactly
-   * the historical single drawParagraph call (byte-identical).
+   * SHADER-FILL glyph pass on top of the (transparent-glyph) gradient AND material
+   * pieces. With no outline/gradient/material piece every glyphGroups is empty and
+   * this is exactly the historical single drawParagraph call (byte-identical).
    *
    * `aa` is THE camera's coverage-AA flag (render_settings.cameraAntialias): it
-   * reaches the OUTLINE-stroke + gradient-FILL glyph passes so "off" gives crisp,
+   * reaches the OUTLINE-stroke + SHADER-FILL glyph passes so "off" gives crisp,
    * jagged glyph edges. The plain Paragraph fill (canvas.drawParagraph) has no
    * per-draw coverage flag in CanvasKit, so solid un-outlined text keeps its
-   * internal AA regardless — the toggle bites on outlines and gradient text. */
+   * internal AA regardless — the toggle bites on outlines and shader-filled text. */
   draw(canvas, ox, oy, aa = true) {
     const CK = this.CanvasKit;
     for (const b of this.built) {
       const y = oy + b.yTop;
       for (const g of b.glyphGroups) drawGlyphOutline(CK, canvas, g, y, ox, this.opacity, aa);
       canvas.drawParagraph(b.para, ox, y);
-      for (const g of b.glyphGroups) drawGlyphGradientFill(CK, canvas, g, y, ox, this.opacity, aa);
+      for (const g of b.glyphGroups) drawGlyphShaderFill(CK, canvas, g, y, ox, this.opacity, aa);
     }
   }
 
@@ -632,25 +670,116 @@ function drawGlyphOutline(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
   paint.delete();
 }
 
-/** Command (draws one glyph group's GRADIENT fill, on top of the transparent-
- * glyph Paragraph pass). No-op when the piece's fill is solid (a plain color) —
- * that fill is handled by the Paragraph. The gradient shader is built from the
- * group's glyph AABB (objectBoundingBox space) via the shared skShaderForPaint.
+/** Command (draws one glyph group's SHADER fill — gradient OR material — on top
+ * of the transparent-glyph Paragraph pass). No-op when the piece's fill is solid
+ * (a plain color): that fill is handled by the Paragraph, so an ordinary run's
+ * render is byte-identical to before any of this existed.
+ *
+ * THE GLYPHS ARE THE MASK, and that is the whole trick — for BOTH kinds. There is
+ * no clip, no offscreen and no mask filter here: `drawGlyphs` rasterizes the
+ * glyph coverage and the Paint's shader supplies the colour at every covered
+ * pixel, so the shader is seen through exactly the letterforms. A gradient and a
+ * material differ ONLY in which shader is built; the masking is shared, which is
+ * why extending gradient text to material text needed no new drawing machinery.
+ *
  * `aa` is the camera's coverage-AA flag: false ⇒ crisp, jagged glyph edges. */
-function drawGlyphGradientFill(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
-  if (!isGradientPaint(group.style.color)) return;
-  const paint = parsePaint(group.style.color); // model gradient (string stops) → rgba stops
+function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true) {
+  const fill = group.style.color;
+  if (!isGradientPaint(fill)) return;
   const bounds = glyphGroupBounds(group, ox, y, CanvasKit);
-  const shader = skShaderForPaint(CanvasKit, paint, bounds, opacity);
+  const shader = isMaterialPaint(fill)
+    ? materialShaderForGlyphs(CanvasKit, fill, bounds)
+    : skShaderForPaint(CanvasKit, parsePaint(fill), bounds, opacity); // model gradient (string stops) → rgba stops
+  if (!shader) return; // a material that cannot shade text already reported itself, loudly
   const p = new CanvasKit.Paint();
   p.setShader(shader);
   p.setStyle(CanvasKit.PaintStyle.Fill);
+  // A gradient folds `opacity` into its stop alphas; a material's shader has no
+  // stops to fold it into, so the Paint carries it. Same visual result, and it is
+  // also what handleMaterialFill does (the blit applies opacity, never the raster).
+  if (isMaterialPaint(fill)) p.setAlphaf(opacity);
   p.setAntiAlias(aa);
   const font = new CanvasKit.Font(group.typeface, group.size);
   canvas.drawGlyphs(group.glyphs, group.positions, ox, y, font, p);
   font.delete();
   p.delete();
   shader.delete();
+}
+
+/**
+ * Query→build (compiles/caches the material's RuntimeEffect; the CALLER deletes
+ * the returned shader). The Skia shader for a MATERIAL text fill, framed on the
+ * glyph group's AABB so the material's own geometry is the text's ink box rather
+ * than the whole surface.
+ *
+ * ── WHY A FOREGROUND MATERIAL AND NOT A BACKDROP ONE ─────────────────────────
+ * A FOREGROUND material (`backdrop: false` — comic, sky, metal, the pattern and
+ * corkboard families) synthesizes its whole look from uniforms alone, with NO
+ * children, so its shader is self-sufficient and can simply be handed to a Paint.
+ * A BACKDROP material (glass, CRT, frosted) is defined as a function OF THE
+ * COMPOSITE BENEATH IT: its SkSL declares the {blurredBackdrop, sharpBackdrop}
+ * child pair, which only handleMaterialBackdrop can supply, because only it runs
+ * the below-content re-render. Text has no such re-render at this seam — the glyph
+ * pass draws inside an already-composited canvas — so a backdrop material is
+ * REFUSED here with a sentence naming it, rather than compiled with missing
+ * children (which returns a null shader and paints nothing at all: the silent
+ * failure this codebase's paint-containment doctrine exists to forbid).
+ *
+ * SAMPLER (magnify) and PATTERN (vector_pattern) materials carry no SkSL and
+ * dispatch their own ops, so they are refused for the same reason.
+ *
+ * ── THE UNIFORM FRAME ────────────────────────────────────────────────────────
+ * A material's `pack(u)` wants the region resolved to DEVICE px — {cx, cy, halfW,
+ * halfH, cornerRadius, angle} plus `scale`. This seam draws under the canvas's
+ * CURRENT transform (view+world are already applied, exactly as the gradient pass
+ * assumes), so `bounds` is in the same LOCAL space the glyphs are placed in and
+ * is handed through unchanged. `scale: 1` says "one local unit is one shader
+ * unit", which is the honest statement for a shader painted in this space; a
+ * material with a world-locked pitch therefore keys off the text's own em box
+ * rather than the camera, which is the behaviour that makes material text look
+ * the same when you zoom.
+ *
+ * @param CanvasKit - the initialized CanvasKit module
+ * @param {object} fill - a resolved material paint {type:"material", material:{id}, resolvedParams}
+ * @param {{x:number, y:number, w:number, h:number}} bounds - the glyph group's AABB
+ * @returns {object} a Skia shader (caller deletes)
+ *
+ * @example // materialShaderForGlyphs(CK, {type:"material", material:{id:"comic"}, resolvedParams:{…}}, {x:0,y:0,w:200,h:40})
+ * @example // → a Skia shader painting the comic halftone across a 200x40 ink box
+ */
+function materialShaderForGlyphs(CanvasKit, fill, bounds) {
+  const id = fill.material?.id;
+  const material = getMaterial(id); // LOUD on an unknown id — never a silently blank word
+  if (!isFillCapableMaterial(material))
+    throw new Error(`text_layout: the "${id}" material is not fill-capable (it declares no fillParams), so it cannot paint text — pick a material offered by the Color row's Mat tab`);
+  if (isSamplerMaterial(material))
+    throw new Error(`text_layout: "${id}" carries no SkSL (it is a sampler/pattern material that dispatches its own op), so it cannot be compiled as a text fill`);
+  if (isBackdropMaterial(material))
+    throw new Error(`text_layout: "${id}" is a BACKDROP material — it shades the composite beneath it through the {blurredBackdrop, sharpBackdrop} child pair, which the glyph pass cannot supply. Foreground materials (the ones with backdrop:false) are what can paint text.`);
+  // resolveMaterialPaint (render_gpu/ports.js, at scene-build time) is what fills
+  // resolvedParams. Its absence means this paint skipped resolution, and a shader
+  // packed from half a knob set renders confidently wrong — so it is a hard error,
+  // the same contract every other material painter states.
+  if (!fill.resolvedParams)
+    throw new Error(`text_layout: the "${id}" material text fill carries no resolvedParams — it never went through ports.js resolveMaterialPaint, and packing an unresolved knob set would render wrong rather than fail`);
+  // SCHEMA params are not UNIFORM params. A material's fillParams schema is the
+  // AUTHORING vocabulary (named presets, colour strings, mode selectors); several
+  // materials declare `toUniformParams` to translate it into the numeric knobs
+  // their packer actually reads (metal's metalType → its reflectance triple, say).
+  // Skipping that translation is why `metal` first failed here with "unsupported
+  // color undefined" — the packer asked for a knob only the mapping produces.
+  // handleMaterialPaintShape does exactly this for shapes; this is the same line.
+  const params = material.toUniformParams ? material.toUniformParams(fill.resolvedParams) : fill.resolvedParams;
+  const u = {
+    cx: bounds.x + bounds.w / 2, cy: bounds.y + bounds.h / 2,
+    halfW: bounds.w / 2, halfH: bounds.h / 2,
+    cornerRadius: 0, angle: 0, scale: 1,
+    ...params,
+  };
+  const effect = materialEffect(CanvasKit, material); // compiled once per material, memoized
+  const shader = effect.makeShader(material.pack(u));
+  if (!shader) throw new Error(`text_layout: material "${id}" makeShader returned null for a text fill`);
+  return shader;
 }
 
 /** Pure function. The device-local AABB {x, y, w, h} covering a glyph group's
