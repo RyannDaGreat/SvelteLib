@@ -6386,45 +6386,45 @@ audio.ae-preview-media {
   align-items: center;
   min-width: 0;
   overflow: hidden;
-  padding-left: var(--a-row-label-gutter);
-}
-/* A row carrying BOTH affordances reserves both slots. Scoped by :has() so a
-   help-only or copy-only row does not pay for a slot it never fills — the label
-   still starts at a fixed x for that row, which is what the ruling asks; what it
-   must not do is MOVE, and neither case does. */
-.inspector .row-label-chrome:has(.copy-path-btn):has(.help-btn) {
+  /* TWO slots at rest, not one: copy-path plus the always-reserved interp slot.
+     See the gutter-reservation note directly below for why the fourth slot is
+     unconditional. */
   padding-left: calc(2 * var(--a-row-label-gutter));
 }
-/* THE THIRD SLOT, today occupied by web/GalleryPopup.svelte's `.gallery-btn`
-   (the icon row). The DOCTRINE is the part worth keeping: a row-label
-   affordance does not get a bespoke mechanism, it takes the NEXT gutter slot —
-   N affordances reserve N gutter widths, and each new one generalizes the same
-   rule one step further.
-   Its original co-tenant is gone. `web/lightPositionPin.js`'s `.pin-light-btn`
-   was the other third-slot occupant until c054593 turned the light eyedropper
-   from a property row into the `pin-light-to-object` COMMAND, surfaced in the
-   Tools pane; the class has had no markup since, so its rules styled nothing
-   and are deleted here. The comment survives its example on purpose — the rule
-   it records is still true and the next affordance will need it. */
+/* THE GUTTER RESERVATION. The DOCTRINE is the part worth keeping across every
+   revision of this block: a row-label affordance does not get a bespoke
+   mechanism, it takes the NEXT gutter slot — N affordances reserve N gutter
+   widths, and each new one generalizes the same rule one step further.
+   (The third slot's original co-tenant is gone: `web/lightPositionPin.js`'s
+   `.pin-light-btn` occupied it until c054593 turned the light eyedropper from a
+   property row into the `pin-light-to-object` COMMAND in the Tools pane. The
+   note survives its example on purpose — the rule it records is still true.)
+   THE FOURTH SLOT — the interp button (core/interp_modes.js) — IS RESERVED
+   UNCONDITIONALLY, and that is why the base rule below is 2 gutters rather than
+   1. THE RULING it serves is that every label in the panel starts at ONE x
+   (tests/inspector_row_uniformity_probe.js "every-row-label-starts-at-one-x").
+   The conditional :has() pairs satisfy that ruling by ACCIDENT OF POPULATION —
+   copy-path is on every item row and gallery is rare, so within any one panel
+   the rows happen to agree on how many slots they need. The interp button breaks
+   the accident: it is on nearly every keyframeable row and NOT on the handful
+   that opt out (Name, Widget type, transition config), so reserving it
+   conditionally put the Universal section's labels 15px left of every other
+   label in the panel. Measured: exactly that — two x values, spread 15.0px.
+   So its slot is reserved for EVERY inspector row, button present or not. That
+   is the same doctrine the icon-placement rules further down already state
+   ("a row carrying only one affordance still puts it in the outer slot, so the
+   icons of adjacent rows line up down the panel"), applied to the PADDING as
+   well as to the icons — and it takes one rule instead of a ladder of eight.
+   The cost is 15px of gutter on the few rows with no interp button; the
+   alternative is a panel whose labels do not line up.
+   (The base 2-gutter reservation is on the .row-label-chrome rule above, so the
+   two never disagree about what "no extra affordances" costs.) */
+.inspector .row-label-chrome:has(.copy-path-btn):has(.help-btn),
+.inspector .row-label-chrome:has(.gallery-btn) {
+  padding-left: calc(3 * var(--a-row-label-gutter));
+}
 .inspector .row-label-chrome:has(.gallery-btn):has(.copy-path-btn),
 .inspector .row-label-chrome:has(.gallery-btn):has(.help-btn) {
-  padding-left: calc(3 * var(--a-row-label-gutter));
-}
-/* THE FOURTH SLOT — the interp button. The same "N affordances reserve N gutter
-   widths" rule the block above states; written as one ladder rather than as
-   another round of pairs, because interp is on nearly EVERY keyframeable row
-   (unlike gallery, which is rare — which is why enumerating pairs was cheap for
-   it and would double this block for this one). Each step out-specifies the one
-   before it, so the ladder resolves top-down with no !important. */
-.inspector .row-label-chrome:has(.interp-btn) {
-  padding-left: calc(2 * var(--a-row-label-gutter));
-}
-.inspector .row-label-chrome:has(.interp-btn):has(.copy-path-btn):has(.help-btn),
-.inspector .row-label-chrome:has(.interp-btn):has(.gallery-btn):has(.copy-path-btn),
-.inspector .row-label-chrome:has(.interp-btn):has(.gallery-btn):has(.help-btn) {
-  padding-left: calc(3 * var(--a-row-label-gutter));
-}
-.inspector .row-label-chrome:has(.interp-btn):has(.gallery-btn):has(.copy-path-btn):has(.help-btn) {
   padding-left: calc(4 * var(--a-row-label-gutter));
 }
 
