@@ -34,6 +34,7 @@
  */
 
 import { registerPluginAssets, isPluginAssetName, PLUGIN_ASSET_SUFFIX } from "../core/plugin_assets.js";
+import { widgetForAssetKind } from "../core/registry.js"; // assetDropKind asks the roster, not a copy of it
 
 /**
  * Query. The plugin-asset entries in an asset listing, in a STABLE order.
@@ -164,20 +165,36 @@ export function printPluginAssetReports({ loaded, reports }, project) {
  * first, and a listing whose `kind` disagrees with its own filename still routes by
  * the filename — the property the loader itself keys off.
  *
+ * "MEDIA" IS ASKED OF THE REGISTRY, NOT OF A LIST HERE — and that is the fix for
+ * the PDF the user could not drop. This function used to end in
+ * `kind === "image" || kind === "video"`, one of THREE hand-written copies of the
+ * same pair (the others: the drop handler's ternary, and the upload-then-insert
+ * branch in app.svelte.js). `pdf_page` has existed the whole time, so the refusal
+ * the user saw — "nothing on the canvas can show a 'pdf' asset" — was a true
+ * statement about this line and a false one about the app. Widgets now DECLARE the
+ * dropped kind they are (`assetDrop`, core/registry.js), so the answer comes from
+ * the roster that actually knows and a new droppable widget needs no edit here.
+ *
  * @param {{name?: string, kind?: string}} asset - a dropped asset payload
+ * @param {{all: function}} registry - the widget registry (who claims which kind)
  * @returns {"widget"|"media"|"none"}
  *
- * @example assetDropKind({name: "gear.plugin.js", kind: "plugin"}) // "widget"
- * @example assetDropKind({name: "donut.plugin.js", kind: "other"}) // "widget"  (the SUFFIX decides, not the kind)
- * @example assetDropKind({name: "logo.png", kind: "image"})        // "media"
- * @example assetDropKind({name: "clip.mp4", kind: "video"})        // "media"
- * @example assetDropKind({name: "notes.txt", kind: "other"})       // "none"
- * @example assetDropKind({})                                       // "none"
+ * @example assetDropKind({name: "gear.plugin.js", kind: "plugin"}, reg) // "widget"
+ * @example assetDropKind({name: "donut.plugin.js", kind: "other"}, reg) // "widget"  (the SUFFIX decides, not the kind)
+ * @example assetDropKind({name: "logo.png", kind: "image"}, reg)        // "media"
+ * @example assetDropKind({name: "paper.pdf", kind: "pdf"}, reg)         // "media"  (pdf_page claims it)
+ * @example assetDropKind({name: "ding.wav", kind: "sound"}, reg)        // "none"   (no widget plays a bare sound)
+ * @example assetDropKind({}, reg)                                       // "none"
  */
-export function assetDropKind(asset) {
+export function assetDropKind(asset, registry) {
   if (isPluginAssetName(asset?.name)) return "widget";
-  if (asset?.kind === "image" || asset?.kind === "video") return "media";
-  return "none";
+  // REFUSED, NOT DEFAULTED. A caller that forgot the registry would otherwise get
+  // "none" for every media asset — a silent, plausible answer that reads as "this
+  // file has no widget" and would put the original bug back with no error to find
+  // it by. (The plugin-asset branch above genuinely needs no registry, so it is
+  // answered first and this only guards the branch that does.)
+  if (!registry?.all) throw new Error("assetDropKind: a registry is required to say whether any widget claims this asset kind");
+  return widgetForAssetKind(registry, asset?.kind) ? "media" : "none";
 }
 
 export { PLUGIN_ASSET_SUFFIX };

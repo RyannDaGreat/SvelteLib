@@ -257,25 +257,32 @@ test("MIGRATION PARITY: defaults and inspector KEYS survived the move", () => {
 
 // ── (3) THE DROP CLASSIFIER ──────────────────────────────────────────────────
 
+// THE SIGNATURE GAINED A REGISTRY: "is there a widget for this kind" is now asked
+// of the roster instead of a hardcoded image-or-video pair (that pair is why a PDF
+// could not be dropped — tests/asset_drop_test.js owns that story). These cases are
+// unchanged in meaning; they just have to supply the roster now.
+const dropRegistry = createRegistry();
+registerPlugins(dropRegistry);
+
 test("assetDropKind: a *.plugin.js asset is a WIDGET drop", () => {
-  assert.equal(assetDropKind({ name: "gear.plugin.js", kind: "plugin" }), "widget");
+  assert.equal(assetDropKind({ name: "gear.plugin.js", kind: "plugin" }, dropRegistry), "widget");
   // The SUFFIX decides, not the listing's `kind` — the suffix is what the loader
   // itself keys off, so a listing whose kind disagrees must still route as a widget.
-  assert.equal(assetDropKind({ name: "donut.plugin.js", kind: "other" }), "widget");
+  assert.equal(assetDropKind({ name: "donut.plugin.js", kind: "other" }, dropRegistry), "widget");
   for (const name of BUILTIN_PLUGIN_ASSET_NAMES)
-    assert.equal(assetDropKind({ name, kind: "plugin" }), "widget", `${name} must be droppable as a widget`);
+    assert.equal(assetDropKind({ name, kind: "plugin" }, dropRegistry), "widget", `${name} must be droppable as a widget`);
 });
 
 test("assetDropKind: media stays media, and everything else REPORTS", () => {
-  assert.equal(assetDropKind({ name: "logo.png", kind: "image" }), "media");
-  assert.equal(assetDropKind({ name: "clip.mp4", kind: "video" }), "media");
-  assert.equal(assetDropKind({ name: "notes.txt", kind: "other" }), "none");
-  assert.equal(assetDropKind({ name: "beep.wav", kind: "sound" }), "none");
-  assert.equal(assetDropKind({}), "none");
-  assert.equal(assetDropKind(null), "none");
+  assert.equal(assetDropKind({ name: "logo.png", kind: "image" }, dropRegistry), "media");
+  assert.equal(assetDropKind({ name: "clip.mp4", kind: "video" }, dropRegistry), "media");
+  assert.equal(assetDropKind({ name: "notes.txt", kind: "other" }, dropRegistry), "none");
+  assert.equal(assetDropKind({ name: "beep.wav", kind: "sound" }, dropRegistry), "none");
+  assert.equal(assetDropKind({}, dropRegistry), "none");
+  assert.equal(assetDropKind(null, dropRegistry), "none");
   // A BARE .js is NOT a plugin asset (the compound suffix is the rule), so it must
   // not be instantiated as a widget.
-  assert.equal(assetDropKind({ name: "notes.js", kind: "other" }), "none");
+  assert.equal(assetDropKind({ name: "notes.js", kind: "other" }, dropRegistry), "none");
 });
 
 // ── (4) TOTALS LINE + TOGGLE DEFAULT ─────────────────────────────────────────

@@ -765,6 +765,65 @@ export function shapeInsertable(plugin) {
 }
 
 /**
+ * Pure function. Which ASSET KIND this plugin is the canvas DROP TARGET for —
+ * the widget a dropped image / video / PDF turns into — or null for the great
+ * majority of widgets, which are not made by dropping a file.
+ *
+ * WHY THIS IS DECLARED ON THE PLUGIN, which is the same argument INSERT_MENUS
+ * makes three functions up: the answer cannot be derived. `assetKinds` on a
+ * widget's `src` row says what that widget will ACCEPT once it exists, and three
+ * separate widgets accept a PDF (`pdf_page`, `pdf_packet`, `paper_peacock`), so
+ * acceptance cannot pick the one a bare drop should create. The choice is only
+ * WHERE the declaration lives, and it lives beside the widget's other facts so a
+ * new droppable kind arrives in its own file with no central list to remember.
+ *
+ * THE DEFECT THIS REPLACES was three hand-written copies of one pair. The drop
+ * classifier tested `kind === "image" || kind === "video"`, the drop handler
+ * ternaried between two insert methods, and the upload-then-insert path had the
+ * same if/else again — so a PDF, whose widget has existed all along, hit the
+ * "nothing on the canvas can show a pdf asset" refusal. That message was
+ * accurate about the CLASSIFIER and false about the app.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {string|null} the asset kind it claims, or null
+ *
+ * @example assetDropKindOf({type: "image", assetDrop: "image"}) // "image"
+ * @example assetDropKindOf({type: "pdf_page", assetDrop: "pdf"}) // "pdf"
+ * @example assetDropKindOf({type: "pdf_packet"}) // null (accepts PDFs, is not what a bare drop creates)
+ */
+export function assetDropKindOf(plugin) {
+  return plugin.assetDrop ?? null;
+}
+
+/**
+ * Query. The plugin a dropped asset of `kind` should become, or null when no
+ * widget claims that kind (a dropped `.wav` — it uploads to the library and the
+ * drop is reported, which is correct, not a bug).
+ *
+ * Returns the FIRST claimant, but there can only ever be one: register() refuses
+ * a second plugin claiming a kind, so the uniqueness is a registration-time fact
+ * rather than a rule this query has to enforce on every drop.
+ *
+ * @param {{all: function}} registry - a widget registry
+ * @param {string} kind - an asset kind ("image", "video", "pdf", …)
+ * @returns {object|null} the claiming plugin
+ *
+ * A NULLISH KIND IS NULL, EXPLICITLY. Without this line the `find` compares
+ * `undefined === undefined` and matches the FIRST plugin that declares no claim
+ * at all — i.e. an asset payload with no `kind` would insert an arbitrary widget,
+ * chosen by registration order. Caught by tests/asset_drop_test.js's empty-payload
+ * case, which is why that case is in there.
+ *
+ * @example // widgetForAssetKind(registry, "pdf").type // "pdf_page"
+ * @example // widgetForAssetKind(registry, "sound")    // null (no widget plays a bare sound file)
+ * @example // widgetForAssetKind(registry, undefined)  // null (NOT the first unclaiming plugin)
+ */
+export function widgetForAssetKind(registry, kind) {
+  if (!kind) return null;
+  return registry.all().find((p) => p.assetDrop === kind) ?? null;
+}
+
+/**
  * THE TOOL POOL — the generic tools, declared ONCE, composed into every widget
  * that is structurally eligible. Ordered: a resolved plugin lists its own groups
  * first, then these in this order.
@@ -1191,6 +1250,19 @@ export function createRegistry() {
       // import gate.
       if (plugin.insertMenu !== undefined && !INSERT_MENUS.includes(plugin.insertMenu))
         throw new Error(`Plugin "${plugin.type}" declares insertMenu "${plugin.insertMenu}" — the menus are: ${INSERT_MENUS.join(", ")}`);
+      // TWO WIDGETS CLAIMING ONE DROPPED KIND IS AMBIGUOUS, and the ambiguity
+      // would resolve itself SILENTLY by registration order — the loser simply
+      // never receives a drop, with nothing said. Same doctrine as the menu gate
+      // above: refuse it where it is written, not where it is felt. (The kind
+      // STRING is not whitelisted here, because the vocabulary lives in the asset
+      // classifier and a copy of it would be the very mirror this field removes;
+      // tests/asset_drop_test.js gates the spelling against that classifier.)
+      if (plugin.assetDrop !== undefined) {
+        if (typeof plugin.assetDrop !== "string" || plugin.assetDrop === "")
+          throw new Error(`Plugin "${plugin.type}" declares a malformed assetDrop: ${JSON.stringify(plugin.assetDrop)} — it must be an asset kind, e.g. "image"`);
+        const taken = [...plugins.values()].find((p) => p.assetDrop === plugin.assetDrop);
+        if (taken) throw new Error(`Plugin "${plugin.type}" claims dropped "${plugin.assetDrop}" assets, but "${taken.type}" already does — exactly one widget may be what a dropped ${plugin.assetDrop} becomes`);
+      }
       plugins.set(plugin.type, withToolGroups(withUniversalEffects(withInkAnchors(plugin))));
     },
     /** Query. Plugin by type; loud when unknown. */

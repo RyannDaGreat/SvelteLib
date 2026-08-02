@@ -78,9 +78,9 @@ import { projectSourceKind } from "./draftKeys.js";
 import { strToU8, zipSync } from "fflate";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
-import { assetRef, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
+import { assetRef, assetKindForFile, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
 import { documentAssetRefs, foreignAssetRefs, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "./assetLocalize.js";
-import { createRegistry } from "../core/registry.js";
+import { createRegistry, widgetForAssetKind } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
 // DRAG_KINDS = the dragKind setter's allowlist. translationPairs = THE ONE
@@ -106,8 +106,13 @@ import {
   uniquePluginType,
 } from "../core/plugin_assets.js";
 import { builtinWidgetAssets } from "./builtinAssets.js";
-import { imagePlugin } from "../plugins/image.js"; // insertImageAsset reuses its defaults
-import { videoPlugin } from "../plugins/video.js"; // insertVideoAsset reuses its defaults
+// NO PLUGIN IMPORTS FOR MEDIA INSERTS. imagePlugin/videoPlugin used to be pulled
+// in here purely so two insert methods could reach their `defaults` — which is
+// what made image and video the only two kinds a drop could produce. The widget
+// is looked up by the kind it CLAIMS now (core/registry.js widgetForAssetKind),
+// so this file names no media widget at all and a new droppable kind adds no
+// import. Registration is plugins/index.js registerAll's job, never an import here.
+import { assetNaturalSize } from "./assetNaturalSize.js"; // native size of a dropped file, per kind
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
 // The command below spreads these over the registry defaults to mint 3 wired items.
 import {
@@ -481,42 +486,6 @@ export function themeKind(id) {
   return THEMES.find((t) => t.id === id)?.kind ?? "dark";
 }
 
-/**
- * Pure function. Asset kind of a File/Blob by MIME prefix — the paste-to-
- * upload twin of CanvasView's OS-file-drop `fileKind` (same MIME-prefix
- * convention, kept as a small local duplicate rather than a cross-file
- * import: neither file exports it, and this one is one line).
- *
- * Args:
- *     file (File|Blob): a clipboard or drop file, read via its `.type`.
- *
- * Returns:
- *     "image" | "video" | "sound" | "pdf" | "font" | "other"
- *
- * PDF and FONT have unreliable/empty MIME types across browsers, so they fall
- * back to the filename extension (matching the server's asset_kind classes).
- * This only picks the OPTIMISTIC upload tile's icon; the server list is the
- * source of truth for the settled kind.
- *
- * Examples:
- *     >>> assetKindForFile({type: "image/png", name: "a.png"})
- *     'image'
- *     >>> assetKindForFile({type: "video/quicktime", name: "clip.mov"})
- *     'video'
- *     >>> assetKindForFile({type: "", name: "paper.pdf"})
- *     'pdf'
- *     >>> assetKindForFile({type: "", name: "Handwriting.ttf"})
- *     'font'
- */
-function assetKindForFile(file) {
-  if (file.type.startsWith("image/")) return "image";
-  if (file.type.startsWith("video/")) return "video";
-  if (file.type.startsWith("audio/")) return "sound";
-  const ext = (file.name ?? "").split(".").pop()?.toLowerCase() ?? "";
-  if (file.type === "application/pdf" || ext === "pdf") return "pdf";
-  if (["ttf", "otf", "woff", "woff2"].includes(ext)) return "font";
-  return "other";
-}
 
 export class PowerRPApp {
   doc = $state(newDocument());
@@ -3267,8 +3236,10 @@ export class PowerRPApp {
       try {
         const up = await this.uploadAsset(file); // {ok, name, url}
         const kind = assetKindForFile(file);
-        if (kind === "image") await this.insertImageAsset(up.url);
-        else if (kind === "video") await this.insertVideoAsset(up.url);
+        // THE THIRD COPY of the image-or-video pair used to live here, which is
+        // why a pasted PDF also went nowhere. The registry answers now, so paste
+        // gained PDFs for free the moment pdf_page declared itself.
+        if (widgetForAssetKind(this.registry, kind)) await this.insertAssetWidget({ kind, url: up.url, name: up.name });
         else console.warn(`Paste: uploaded "${up.name}" but no canvas widget exists for kind "${kind}" — it stays in the asset library.`);
       } catch (e) {
         console.error(`Paste-to-upload failed for "${file.name}":`, e);
@@ -5277,30 +5248,49 @@ export class PowerRPApp {
   }
 
   /**
-   * Command. Inserts an image asset (by URL) as a new image widget on the
-   * current slide at NATIVE pixel size (manifest Round 12: "because we have
-   * pixels to measure things"), CENTERED at world point `at` — a canvas drop
-   * point (manifest Round 12C: asset→canvas drag inserts at the drop point) —
-   * or at the current camera-view center when `at` is omitted (the Asset
-   * Explorer's insert button).
+   * Command. Inserts the widget an ASSET becomes — THE ONE media-insert path,
+   * for every kind a widget claims. A new image widget for an image, a player
+   * for a video, a page for a PDF, at the asset's NATIVE size (manifest Round
+   * 12: "because we have pixels to measure things"), CENTERED at world point
+   * `at` — a canvas drop point (Round 12C: asset→canvas drag inserts at the drop
+   * point) — or at the camera-view center when `at` is omitted (the Asset
+   * Explorer's insert button, and paste, which have no drop point).
    *
-   * Async because the natural size is only known after decode. A decode
-   * FAILURE rejects loudly (no silent fallback) so the caller surfaces it.
+   * NOTHING HERE KNOWS A WIDGET TYPE, which is the point. `widgetForAssetKind`
+   * reads the claim off the registry (plugins declare `assetDrop`) and
+   * `assetNaturalSize` measures the file. Before this existed the pair
+   * image-or-video was written out by hand in THREE places, so `pdf_page` — which
+   * had shipped long since — could not be reached by dropping a PDF, and the user
+   * got "nothing on the canvas can show a 'pdf' asset". Adding the fourth
+   * droppable kind now touches a plugin and a measurer, not this method.
+   *
+   * Async because a native size is only known after a decode / metadata load /
+   * document open. A FAILURE REJECTS LOUDLY (no silent fallback, no guessed box)
+   * so the caller surfaces it.
+   *
+   * @param {{kind: string, url: string, name?: string}} asset - the asset to place
+   * @param {{x: number, y: number}|null} at - world drop point, or null for view center
    */
-  async insertImageAsset(url, at = null) {
+  async insertAssetWidget(asset, at = null) {
+    const plugin = widgetForAssetKind(this.registry, asset?.kind);
+    if (!plugin)
+      throw new Error(`insertAssetWidget: no widget claims "${asset?.kind}" assets — the caller should have classified this as a non-canvas kind and reported it`);
     // TWO DIFFERENT STRINGS, and conflating them was the latent half of the
-    // relative-ref bug. `loadable` is what an <img> can actually decode RIGHT NOW
+    // relative-ref bug. `loadable` is what the browser can actually open RIGHT NOW
     // (a backend URL in HTTP mode, a blob: object URL in static mode); `stored` is
     // what belongs in the DOCUMENT. Storing the loadable one wrote a blob: URL into
     // the deck in static mode — dead the moment the page reloaded.
-    const loadable = this.#resolvedSrc(url);
-    const { naturalWidth: w, naturalHeight: h } = await new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`insertImageAsset: could not load image "${loadable}"`));
-      img.src = loadable;
-    });
-    this.#insertMediaAt(imagePlugin.defaults, this.#storedSrc(url), w, h, at);
+    const loadable = this.#resolvedSrc(asset.url);
+    const { w, h } = await assetNaturalSize(asset.kind, loadable, plugin.type);
+    this.#insertMediaAt(plugin.defaults, this.#storedSrc(asset.url), w, h, at);
+  }
+
+  /** Command. Inserts an image asset by URL — the named shorthand kept for the
+   *  Asset Explorer's insert button and the browser QA suite, both of which have
+   *  an image in hand and no asset record. Everything it does is
+   *  insertAssetWidget's. */
+  async insertImageAsset(url, at = null) {
+    return this.insertAssetWidget({ kind: "image", url }, at);
   }
 
   /**
@@ -5391,16 +5381,7 @@ export class PowerRPApp {
    * rejects loudly.
    */
   async insertVideoAsset(url, at = null) {
-    // loadable-vs-stored, exactly as insertImageAsset — see its comment.
-    const loadable = this.#resolvedSrc(url);
-    const { videoWidth: w, videoHeight: h } = await new Promise((resolve, reject) => {
-      const v = document.createElement("video");
-      v.preload = "metadata";
-      v.onloadedmetadata = () => resolve(v);
-      v.onerror = () => reject(new Error(`insertVideoAsset: could not load video "${loadable}"`));
-      v.src = loadable;
-    });
-    this.#insertMediaAt(videoPlugin.defaults, this.#storedSrc(url), w, h, at);
+    return this.insertAssetWidget({ kind: "video", url }, at);
   }
 
   /**

@@ -82,6 +82,7 @@
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
   import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js"; // asset-tile drop payload type + the one .zip-is-a-project rule (drop-handler region)
   import { assetDropKind } from "./pluginAssetLoader.js"; // what a dropped asset DOES: "widget" (*.plugin.js) | "media" | "none" — declared + bare-node tested
+  import { assetKindForFile } from "./assetRef.js"; // ONE file classifier (MIME for media prefixes, extension table otherwise) — replaced a local MIME-only copy that refused OS-dropped PDFs
   import { reportAction, warnOnce } from "../core/report.js"; // a refused DROP is one user act — reportAction, never a deduped one. A refused POINTER LOCK is the opposite on both axes: repeated clicks, so deduped; and the gesture still works by a worse route, which is warnOnce's stated remit rather than reportOnce's
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
@@ -924,21 +925,13 @@
     e.dataTransfer.dropEffect = "copy";
   }
 
-  /**
-   * Pure function. Asset kind of a dropped OS File by MIME prefix (the client
-   * mirror of the server's extension-based asset_kind).
-   *
-   * @example fileKind({type: "image/png"})  // "image"
-   * @example fileKind({type: "video/mp4"})  // "video"
-   * @example fileKind({type: "audio/wav"})  // "sound"
-   * @example fileKind({type: "text/plain"}) // "other"
-   */
-  function fileKind(file) {
-    if (file.type.startsWith("image/")) return "image";
-    if (file.type.startsWith("video/")) return "video";
-    if (file.type.startsWith("audio/")) return "sound";
-    return "other";
-  }
+  // NO LOCAL FILE CLASSIFIER. There was a `fileKind` here that read the MIME
+  // PREFIX only, so an OS drag of a PDF answered "other" and the drop was
+  // refused — the asset-tile bug's twin, one layer down, and it would have
+  // survived the fix to the tile path untouched. web/assetRef.js
+  // assetKindForFile is the one answer now: MIME for the three media prefixes a
+  // browser is reliable about, the extension table for pdf/font/data, which it
+  // already held.
 
   /** Command. Insert one asset ({name, kind, url}) centered at world point
    *  `at`. Kinds without a canvas widget are reported, never silently dropped. */
@@ -947,7 +940,7 @@
     // assetDropKind names the three outcomes and is bare-node testable (this file
     // is not). A `*.plugin.js` asset used to fall through the media branches into
     // the warning below — a correct message about the wrong classification.
-    switch (assetDropKind(asset)) {
+    switch (assetDropKind(asset, app.registry)) {
       case "widget":
         // A WIDGET PLUGIN AS AN ASSET (user ruling: "If I drag and drop a widget
         // plugin onto the canvas, it should add the widget… from the asset
@@ -955,7 +948,11 @@
         // placementAnchor — all three live in app.insertPluginAssetWidget.
         return app.insertPluginAssetWidget(asset, at);
       case "media":
-        return asset.kind === "image" ? app.insertImageAsset(asset.url, at) : app.insertVideoAsset(asset.url, at);
+        // ONE CALL FOR EVERY KIND. This was a ternary over image-vs-video, which
+        // meant "media" could only ever mean those two even after the classifier
+        // learned otherwise — so the PDF fix had to remove the branch, not extend
+        // it. insertAssetWidget resolves the widget from the kind's claim.
+        return app.insertAssetWidget(asset, at);
       default:
         // REPORTED, never a silently swallowed gesture. reportAction (not the
         // deduped reportOnce) because a refused drop is ONE user act — the same
@@ -993,7 +990,7 @@
       }
       for (const file of files) {
         const up = await app.uploadAsset(file); // {ok, name, url}
-        await insertDroppedAsset({ name: up.name, kind: fileKind(file), url: up.url }, at);
+        await insertDroppedAsset({ name: up.name, kind: assetKindForFile(file), url: up.url }, at);
       }
     } catch (err) {
       console.error("Canvas drop failed:", err);

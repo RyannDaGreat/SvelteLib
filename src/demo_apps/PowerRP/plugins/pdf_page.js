@@ -137,6 +137,13 @@ export const pdfPagePlugin = {
   // “ready” means so this cannot drift from its thirteen siblings.
   ephemeral: convergesOnRefs((s) => [s.__pdfRef]),
   title: "PDF Page",
+  // THE WIDGET A DROPPED PDF BECOMES (core/registry.js assetDropKindOf). THREE
+  // widgets accept a PDF in their src row — this one, pdf_packet and
+  // paper_peacock — which is exactly why acceptance cannot decide this and the
+  // drop target is declared. One page is the plain reading of "put this PDF on
+  // the slide"; a stapled packet or a fanned peacock is a deliberate choice made
+  // from the widget menu, not something to land on by dragging a file in.
+  assetDrop: "pdf",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the
   // asset picker. `primaryAsset` names WHICH property that picker fills; this

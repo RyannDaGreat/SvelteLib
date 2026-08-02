@@ -100,6 +100,11 @@ export const videoPlugin = {
   // NEVER is a DEFECT, not a design option (core/ephemeral.js) — grandfathered.
   ephemeral: EPHEMERAL.NEVER,
   title: "Video",
+  // THE WIDGET A DROPPED VIDEO BECOMES (core/registry.js assetDropKindOf) — the
+  // PLAYER, not the scrubber, which is the pre-existing behaviour preserved: a
+  // scrubber's deterministic frame is authored deliberately, never landed on by
+  // dragging a file in.
+  assetDrop: "video",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the asset
   // picker — choosing the Source is a media widget's primary edit action, the

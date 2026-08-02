@@ -2620,6 +2620,67 @@ R6-4's lead ruling identified. Record it here.
   logic — or expand the asset explorer into it.
 - **R6-19.6** "Open in file browser" from Renderings and from the asset panel.
 
+#### R6-19.7 A DROPPED PDF LANDS ON THE CANVAS — and the five copies that stopped it
+
+**THE USER'S REPORT:** "PowerRP: nothing on the canvas can show a 'pdf' asset
+(MagickWithSupplementary.pdf) — it stays in the asset library." **That sentence was
+TRUE of one line and FALSE of the app.** `pdf_page` shipped long ago; the classifier
+simply asked `kind === "image" || kind === "video"`.
+
+**IT WAS NOT ONE LINE — IT WAS FIVE ANSWERS TO ONE QUESTION**, which is why "add
+`pdf` to the if" would have fixed a third of it:
+1. `web/pluginAssetLoader.js assetDropKind` — the image-or-video test (asset tiles).
+2. `web/CanvasView.svelte:958` — a ternary between two insert methods.
+3. `web/app.svelte.js pasteFiles` — the same if/else again, so a PASTED PDF also died.
+4. `web/CanvasView.svelte fileKind` — MIME-PREFIX ONLY, so an OS drag from Finder
+   answered "other" for a PDF. **This one would have survived fixing 1-3**, and is the
+   reason to hunt the pattern rather than the instance.
+5. `web/app.svelte.js assetKindForFile` — a private near-duplicate of 4 whose own
+   docblock admitted it: *"kept as a small local duplicate rather than a cross-file
+   import"*. It also hand-listed font extensions `assetRef.js` already knew.
+
+**THE FIX IS A DECLARATION, NOT A LIST.** A widget says which dropped kind it IS:
+`assetDrop: "pdf"` on `plugins/pdf_page.js`, `"image"` on image, `"video"` on video.
+`core/registry.js` gains `assetDropKindOf(plugin)` + `widgetForAssetKind(registry, kind)`,
+and every consumer reads the roster. **The precedent is exact and was followed, not
+invented:** `INSERT_MENUS`/`shapeInsertable` five functions up argues the identical
+case — "the choice is only WHERE the declaration lives… so a new shape joins the menu
+in its own file and no central list has to be remembered."
+
+**WHY ACCEPTANCE COULD NOT BE DERIVED, which is the question a reader will ask.**
+Widgets already declare `assetKinds: ["pdf"]` on their `src` row — but **THREE do**
+(`pdf_page`, `pdf_packet`, `paper_peacock`), so acceptance cannot pick which one a bare
+drop creates. Accepting a PDF and being what a dropped PDF BECOMES are different facts.
+The test pins both non-claimants explicitly so this cannot be "simplified" later.
+
+**REGISTRATION-TIME GATES, matching the insertMenu doctrine:** a second widget claiming
+one kind is REFUSED (otherwise registration order picks the winner in silence), and a
+malformed claim is refused. The kind STRING is deliberately NOT whitelisted in
+`registry.js` — that whitelist would be a sixth copy of the vocabulary; instead
+`tests/asset_drop_test.js` probes `assetKindForName` for which kinds are producible and
+gates the claims against THAT.
+
+**A BUG THE GATE CAUGHT IN THE FIX ITSELF, recorded because it is the good kind of
+embarrassment:** `widgetForAssetKind` was first written as a bare
+`find(p => p.assetDrop === kind)`. With a payload carrying no kind, `undefined ===
+undefined` matches the FIRST plugin that declares no claim — so an unclassified drop
+would have inserted an arbitrary widget chosen by registration order. The empty-payload
+case in the new suite failed on the first run and the guard exists because of it.
+
+**THREE THINGS ARE MEASURED, NOT ASSERTED.** `tests/pdf_drop_probe.js` (browser, no
+screenshots by design — it is immune to the host capture hang) proves in a live app
+that a dropped PDF becomes a `pdf_page`, CENTERED on the drop point, at **the PDF's own
+page size measured by pdf.js (300x240 for the fixture), NOT the 320x414 unsourced
+default** — that last one is what proves anything measured it at all. Natural size lives
+in the new `web/assetNaturalSize.js`, one measurer per kind over three unrelated browser
+APIs, and a droppable kind with NO measurer throws naming both sides; the node suite
+gates that too, so the omission is a suite red rather than a failure in a user's hands.
+
+**NOT DONE, AND NOT PRETENDED:** this is #276 only. #277 — intrinsic size readable FROM
+EQUATIONS — is untouched and is genuinely harder, because an async-resolved value must
+not reach the equation jail without going through the settled/ephemeral vocabulary
+(`core/ephemeral.js`, #279). Nothing here exposes anything to equations.
+
 ### R6-20 MANIFEST MIGRATION
 
 - **R6-20.1** Migrate everything living ONLY in the top-level dump manifest into
@@ -2635,6 +2696,18 @@ R6-4's lead ruling identified. Record it here.
   of which 67 carry unmerged commits and 69 have uncommitted files. BLOCKED on the
   user's call: delete directories but keep branches (recoverable — recommended), or
   delete both.
+  **CENSUS CORRECTED 2026-08-02, because the lead quoted "100" and was conflating two
+  numbers.** `git worktree list` reports **100**: the dump itself, the **80** above,
+  **18 detached scratch checkouts under `/data/tmp/`**, and one spike worktree under
+  `RPPT/worktrees/`. `git worktree prune` removes **ZERO** — nothing is stale.
+  **THE 18 ARE A SEPARATE AND CHEAPER QUESTION, and were checked individually: not one
+  carries a commit that is not already on `powerrp`.** They are gate A/B pairs agents
+  made (`w3p_pal_fix` vs `w3p_pal_parent`, …), so deleting them loses no history — only
+  untracked build output. **They are also a DUMP-ISOLATION violation**: each holds
+  `gitdir: /root/CleanCode/Dumps/RPPT/SvelteLib/.git/worktrees/<name>`, an absolute path
+  from OUTSIDE the dump pointing in, so moving or renaming the dump breaks 18 external
+  directories — exactly what the portability rule forbids. Not deleted: R6-21.1 is
+  blocked on the user and widening an unauthorised deletion is not the lead's call.
 - **R6-21.2** Optional: cherry-pick `a7e6964` from `render-rewrite-skia` (the
   takeover button), the one commit that branch has and `powerrp` lacks.
 

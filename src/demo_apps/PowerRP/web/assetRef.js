@@ -89,6 +89,44 @@ export function assetKindForName(filename) {
 }
 
 /**
+ * Pure function. Asset kind of a dropped/pasted FILE — `assetKindForName`'s
+ * sibling for when a `File` is in hand rather than just a name.
+ *
+ * MIME FIRST, THEN THE NAME, and the split is not arbitrary. A browser is
+ * reliable about the three media prefixes (`image/`, `video/`, `audio/`) and
+ * routinely wrong about everything else: a PDF arrives as `application/pdf` on
+ * one platform and as `""` on another, and fonts are `""` almost everywhere. So
+ * the prefixes are trusted and the rest defers to the extension table — which
+ * already knows pdf, font and data, so no second list of extensions exists here.
+ *
+ * THIS REPLACES THE FIFTH COPY OF ONE QUESTION. There were: this table, the
+ * server's `asset_kind`, a private `assetKindForFile` in app.svelte.js (whose own
+ * docblock called itself "a small local duplicate… kept rather than a cross-file
+ * import"), a `fileKind` in CanvasView.svelte, and the classifier pair in
+ * pluginAssetLoader. The CanvasView one classified by MIME prefix ALONE, so an OS
+ * drag of a PDF answered "other" and the drop was refused — the same bug as the
+ * asset-tile path, in a second place, which is what happens when a question has
+ * five answers.
+ *
+ * @param {{type?: string, name?: string}} file - a File/Blob from a drop or paste
+ * @returns {"image"|"video"|"sound"|"pdf"|"font"|"data"|"plugin"|"other"}
+ *
+ * @example assetKindForFile({type: "image/png", name: "a.png"})        // "image"
+ * @example assetKindForFile({type: "video/quicktime", name: "c.mov"})  // "video"
+ * @example assetKindForFile({type: "application/pdf", name: "p.pdf"})  // "pdf"
+ * @example assetKindForFile({type: "", name: "paper.pdf"})             // "pdf"   (empty MIME, name decides)
+ * @example assetKindForFile({type: "", name: "Handwriting.ttf"})       // "font"
+ * @example assetKindForFile({type: "", name: "gear.plugin.js"})        // "plugin"
+ */
+export function assetKindForFile(file) {
+  const type = String(file?.type ?? "");
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("video/")) return "video";
+  if (type.startsWith("audio/")) return "sound";
+  return assetKindForName(file?.name ?? "");
+}
+
+/**
  * Pure function. A filename that does not collide with `existing` — the client
  * twin of the server's unique_asset_name(). Collisions get " 2", " 3", … before
  * the extension, so "logo.png" dropped twice becomes "logo 2.png" and the

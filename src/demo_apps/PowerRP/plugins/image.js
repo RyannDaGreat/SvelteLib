@@ -68,6 +68,10 @@ export const imagePlugin = {
   // “ready” means so this cannot drift from its thirteen siblings.
   ephemeral: convergesOnRefs((s) => [s.src]),
   title: "Image",
+  // THE WIDGET A DROPPED IMAGE BECOMES (core/registry.js assetDropKindOf). Other
+  // widgets ACCEPT an image in their src row; this one is what a bare file drop
+  // creates, which is a different question and so a separate declaration.
+  assetDrop: "image",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the
   // asset picker. `primaryAsset` names WHICH property that picker fills; this
