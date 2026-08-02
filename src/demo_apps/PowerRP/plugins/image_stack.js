@@ -105,7 +105,7 @@ import {
   VIDEO_SAMPLING_ROWS, emptySpanReport, preserveAspectRow, spanIsEmpty,
   videoSamplingDefaults, visibleFrames,
 } from "../core/video_sampling.js";
-import { path, videoV5Frame, cropSubtree, BLUR_SUPPORT_SIGMAS } from "../render_gpu/ir.js"; // cropSubtree: the per-card occlusion clip (#268)
+import { path, videoV5Frame, cropSubtree, pushTransform, popTransform, BLUR_SUPPORT_SIGMAS } from "../render_gpu/ir.js"; // cropSubtree: the per-card occlusion clip (#268)
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
@@ -573,9 +573,35 @@ export const imageStackPlugin = {
       //
       // The TOP card is unclipped (nothing is above it), and a card the one above
       // fully covers contributes nothing and is skipped entirely.
+      // A CROP IS A WORLD BOUNDARY, AND THIS IS WHERE I LEARNED IT. render_gpu/
+      // decorate.js:52-55 states the rule: "a plugin's emit() is wrapped by sceneIR
+      // in pushTransform(node.world), but that wrap does NOT reach into a
+      // cropSubtree" — paint_skia's handleCropSubtree calls flattenIR(cmd.content)
+      // FRESH, and flattenIR starts at identity. So every crop must re-establish
+      // the world for its own content, which is exactly why decorateStrokedBox
+      // wraps its content in pushTransform(world)/popTransform().
+      //
+      // The occlusion crop below introduced a SECOND boundary and did not follow
+      // that discipline. `carded` is decorateStrokedBox's cropSubtree, whose RECT
+      // sits outside its own push — so nested bare, that rect was read at identity
+      // and landed `world` short. MEASURED on the live probe: card 1's exposed
+      // strip should span local x 45..255, y 210..255 and rendered at x 45..195,
+      // y 211..225 — both far edges pulled in by exactly (60, 30), the widget's
+      // world origin, which is intersect(strip, strip - world). The right arm of
+      // every L vanished, so a stacked card lost its whole exposed right edge on
+      // screen. Not merely a red probe: that is the picture the user sees.
+      //
+      // THE WRAP DOES NOT DOUBLE-APPLY, which is the part worth stating because it
+      // looks like it should. `carded`'s content carries its own pushTransform(world)
+      // — but it sits inside carded's OWN crop, and that crop's content is flattened
+      // fresh at identity in turn. Each boundary resets, so each level applies world
+      // exactly once.
       if (j === 0) { content.push(...carded); continue; }
       for (const vis of rectSubtract(c, cards[j - 1]))
-        content.push(cropSubtree({ x: vis.x, y: vis.y, w: vis.w, h: vis.h, content: carded }));
+        content.push(cropSubtree({
+          x: vis.x, y: vis.y, w: vis.w, h: vis.h,
+          content: [pushTransform(world), ...carded, popTransform()],
+        }));
     }
     const style = {
       w: s.w ?? 0, h: s.h ?? 0, stroke: s.stroke,
