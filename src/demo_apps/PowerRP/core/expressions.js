@@ -90,6 +90,7 @@
  */
 
 import { isTree, copied, copiedDeep, getPath, setPath, leaves } from "./deltas.js";
+import { withContentSizes } from "./content_size.js"; // intrinsic content size: an INPUT to evaluation, never a lookup from it
 import * as T from "./transform.js";
 import { worldTransform, composedMemberInfluence, memberOwnerGroups } from "./derive.js";
 import { boxCenter, unsignedState } from "./geometry.js";
@@ -2681,7 +2682,7 @@ export function inReaderFrame(point, readerInfluence) {
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
  */
 
-export function evaluateState(state, registry, script = "") {
+export function evaluateState(state, registry, script = "", contentSizes = null) {
   const memo = evalMemo.get(state);
   // A CLOCK-FREE result is cached forever (the overwhelming majority — this is the
   // memo drag latency depends on). A clock-READING one is only reused while the
@@ -2695,17 +2696,30 @@ export function evaluateState(state, registry, script = "") {
   // canvas would silently ignore a saved script until something else moved. Compared
   // by SOURCE STRING rather than by compiled identity because that is what the
   // caller has; compileProjectScript's own cache makes the recompile free.
-  if (memo && memo.registry === registry && memo.script === script
+  // CONTENT SIZES ARE PART OF THE MEMO KEY, for the same reason the script is:
+  // they are an INPUT the folded state does not contain, so without this a
+  // measurement that lands after the first evaluation would be served the stale
+  // pre-measurement answer and a content-bound box would never start tracking.
+  // Compared BY REFERENCE, which makes the producer's contract explicit — publish
+  // a NEW Map when a measurement arrives, never mutate one in place (a mutation
+  // would be invisible here and the bug would look like "it only updates when I
+  // nudge something").
+  if (memo && memo.registry === registry && memo.script === script && memo.contentSizes === contentSizes
     && (memo.result.clock === null || memo.result.clock === particleTime()))
     return memo.result;
-  const result = computeEvaluatedState(state, registry, script);
-  evalMemo.set(state, { registry, script, result });
+  const result = computeEvaluatedState(state, registry, script, contentSizes);
+  evalMemo.set(state, { registry, script, contentSizes, result });
   return result;
 }
 
 /** Pure-core of evaluateState (see its docs); uncached. Full-JS, lazy engine. */
-function computeEvaluatedState(state, registry, script = "") {
-  const out = copied(state);
+function computeEvaluatedState(state, registry, script = "", contentSizes = null) {
+  // INTRINSIC CONTENT SIZES ENTER HERE AND NOWHERE ELSE (core/content_size.js).
+  // Injected onto the evaluated items as a `content` object, so `self.content.aspect`
+  // resolves through the ORDINARY property resolver — no new grammar and no new
+  // branch in the three passes that would otherwise have to agree about it. Never
+  // written to the stored document; this is evaluation output only.
+  const out = copied(withContentSizes(state, contentSizes));
   const errors = new Map();
   const deps = new Map(); // slotKey → Set(depKey): DYNAMIC dependency capture
   const slugs = slugMap(state);
