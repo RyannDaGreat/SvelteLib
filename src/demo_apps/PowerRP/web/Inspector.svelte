@@ -2192,12 +2192,23 @@
          small-list threshold. It keeps its custom `pickerItem` snippet (the
          invisible-on-this-slide danger styling), which opts out of the built-in
          match highlight. -->
+    <!-- HOVER PREVIEWS THE SELECTION BOX (user, 2026-08-01: "it should preview,
+         just like many other things preview, the selection box so that I can see
+         which element is being selected"). This list is names, and a name is not
+         a location — every OTHER dropdown in this file already previews its
+         effect on hover (the row above passes onpreview/oncancelpreview into the
+         property Dropdowns), so the one picker whose whole job is "which object
+         do you mean" was the one that answered with nothing. It sets
+         app.hoverItemId rather than app.selection: hovering must not fire every
+         selection-dependent effect in the app. -->
     <SearchableDropdown
       rankFn={appRankItems}
       items={itemChoices}
       value={pickedItemId}
       placeholder="— select item —"
-      onchange={(v) => (app.selection = v)}
+      onpreview={(v) => (app.hoverItemId = v)}
+      oncancelpreview={() => (app.hoverItemId = null)}
+      onchange={(v) => { app.hoverItemId = null; app.selection = v; }}
       item={pickerItem}
     />
   </div>

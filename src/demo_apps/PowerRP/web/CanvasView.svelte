@@ -15,7 +15,7 @@
   import ResizeHandles from "./ResizeHandles.svelte";
   import VideoV7Overlay from "./VideoV7Overlay.svelte"; // per-widget WebGPU video canvases stacked over the Skia scene (video_v7)
   import { videoV7Descriptors } from "./videoV7Placement.js";
-  import { pickNode, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
+  import { pickNode, pickNodeStack, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // The R modal types its angle in DEGREES and `rotation` stores RADIANS. The
@@ -117,6 +117,64 @@
   // arbitrary invented constants). Measured in SCREEN px so zoom doesn't change
   // the feel.
   const CLICK_SLOP_PX = 4;
+
+  /**
+   * CLICK-THROUGH CYCLING STATE — where the last selecting click landed, what was
+   * stacked under it, and how deep into that stack we currently are.
+   *
+   * User, 2026-08-01: "If I click an element and then I click it again and it's not
+   * fast enough to be a double click, select the element under that, and then under
+   * that … if I don't move the mouse, so that I can select objects that are under
+   * things that I can't normally reach." An occluded object has no pointer route to
+   * it at all otherwise — only the Inspector's item picker and the keyboard.
+   *
+   * THE RESET CONDITION IS MOVEMENT, NOT A TIMEOUT, because that is what he asked
+   * for and it is also the better rule: a timeout would silently reset mid-thought
+   * while you look at what you just selected. `sig` resets it too — if the stack
+   * under the cursor changed, the index into it means nothing.
+   */
+  let clickCycle = { x: -1, y: -1, sig: "", index: 0 };
+
+  /**
+   * Query (reads the node list; mutates only this component's cycle state). The
+   * node a pointer-down should act on: the topmost hit normally, or the next one
+   * DOWN when this is a repeated slow click at the same point.
+   *
+   * "NOT FAST ENOUGH TO BE A DOUBLE CLICK" IS ANSWERED BY THE BROWSER, NOT BY A
+   * THRESHOLD OF OURS — but NOT the way I first wrote it, and the measurement is
+   * worth keeping because the wrong version looks obviously right. `MouseEvent
+   * .detail` is the platform's own multi-click counter, applied with the OS's
+   * double-click interval, so `detail === 1` on a repeat is precisely the user's
+   * phrase. It is simply NOT AVAILABLE ON THE EVENT WE ARE ON: measured in this
+   * app, a slow repeat gives `pointerdown:detail=0  mousedown:detail=1`, and a fast
+   * double gives `pointerdown:detail=0  mousedown:detail=2`. PointerEvent carries
+   * ZERO always, and `mousedown` — which does carry it — fires AFTER `pointerdown`,
+   * so its count cannot be read in time to decide this click.
+   *
+   * SO THE CORRECTION MOVED TO WHERE THE ANSWER ACTUALLY EXISTS: this function
+   * cycles unconditionally on a held-still repeat, and `onDblClick` — which only
+   * runs when the browser has DECIDED a double-click happened, on the OS interval —
+   * resets the index and re-aligns the selection to the top of the stack. The
+   * second click of a fast pair therefore advances for the few milliseconds before
+   * `dblclick` lands, and is put back. That is invisible (no paint happens between
+   * them) and, more importantly, `onDblClick` does its OWN `pickNode`, so the
+   * activation was never reading the cycled selection in the first place.
+   *
+   * WRAPS at the bottom of the stack rather than dead-ending: clicking past the
+   * last one returns to the top, which is recoverable, where sticking is not.
+   */
+  function cycledHit(nodes, w, tol, e) {
+    const stack = pickNodeStack(nodes, w.x, w.y, tol);
+    if (stack.length === 0) { clickCycle = { x: -1, y: -1, sig: "", index: 0 }; return null; }
+    const p = screenPoint(e);
+    const sig = stack.map((n) => n.itemId).join(",");
+    const heldStill = Math.hypot(p.x - clickCycle.x, p.y - clickCycle.y) <= CLICK_SLOP_PX;
+    // Shift is multi-select's gesture; cycling under it would fight the toggle.
+    const repeat = heldStill && sig === clickCycle.sig && !e.shiftKey;
+    const index = repeat ? (clickCycle.index + 1) % stack.length : 0;
+    clickCycle = { x: p.x, y: p.y, sig, index };
+    return stack[index];
+  }
 
   let containerEl = $state(null);
   let canvasEl = $state(null);
@@ -1027,6 +1085,15 @@
     // class, in the one place double-clicks are handled. The in-place editors are
     // unaffected — each owns its own field/caret and mounts AFTER this line.
     window.getSelection()?.removeAllRanges();
+    // THE CLICK-THROUGH CYCLE'S CORRECTION POINT, and the only place the platform
+    // will tell us a double-click happened. `cycledHit` cannot know — PointerEvent
+    // carries detail 0 and `mousedown` fires after `pointerdown` — so the second
+    // click of a fast pair advanced the cycle a few milliseconds ago. Put it back:
+    // reset the index and align the selection with what is about to be ACTIVATED,
+    // so double-clicking a stack edits its top item and leaves that item selected
+    // rather than editing one object while a different one wears the outline.
+    clickCycle = { ...clickCycle, index: 0 };
+    if (app.selection !== hit.itemId) app.selection = hit.itemId;
     handler.run(activationContext(hit, e));
   }
 
@@ -1847,7 +1914,7 @@
     }
     const nodes = app.nodes();
     const tol = SNAP_PX / viewport.zoom;
-    const hit = pickNode(nodes, w.x, w.y, tol);
+    const hit = cycledHit(nodes, w, tol, e);
     // ── SELECTED-OBJECT DRAG PRIORITY (PowerPoint parity) ─────────────────────
     // Precedence #2 (after resize/rotate handles, before the topmost hit-test):
     // once objects are selected, grabbing a selected object moves THAT selection
@@ -3818,7 +3885,7 @@
 
   let overlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
-    if (!actions || !containerEl) return { outlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
+    if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -3848,6 +3915,17 @@
     const selSet = new Set(selectedIds);
     const selectedBboxNodes = nodes.filter((n) => selSet.has(n.itemId) && n.plugin.capabilities.bbox);
     const outlines = selectedBboxNodes.map(outlineOf);
+    // THE ITEM PICKER'S HOVER PREVIEW. Reuses `outlineOf` — the same geometry the
+    // real selection outline uses — so a previewed box cannot disagree with the
+    // box you get on release; only the SKIN differs (.selection-preview). Empty
+    // whenever nothing is hovered, which is the overwhelmingly common case, and
+    // suppressed while a drag is live so a stale hover cannot decorate a gesture.
+    // An already-selected item previews nothing: it is already outlined, and a
+    // second coincident polygon would just look like a rendering fault.
+    const hoverNode = app.hoverItemId && !app.dragging
+      ? nodes.find((n) => n.itemId === app.hoverItemId && n.plugin.capabilities.bbox && !selSet.has(n.itemId))
+      : null;
+    const hoverOutlines = hoverNode ? [outlineOf(hoverNode)] : [];
     // THE BODY DRAG'S REFUSAL, SAID ON THE CANVAS (todo #240). The selection
     // outline is `pointer-events: none` (app.css .overlay .selection) — as all
     // overlay decoration is, so a click reaches the item beneath it — so it cannot
@@ -4083,7 +4161,7 @@
       placeDots = placePreview.dots.map((d) => ({ ...pt(d.x, d.y), hot: d.hot }));
     }
 
-    return { outlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
+    return { outlines, hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
@@ -4249,6 +4327,13 @@
              selected ghost still reads as selected on top of it. -->
         {#each overlay.ghostOutlines as o}
           <polygon class="ghost-outline" points={o} />
+        {/each}
+        <!-- THE ITEM PICKER'S HOVER PREVIEW, drawn between the ghosts and the
+             real selection so a hovered object reads as "this one" without ever
+             being mistaken for the committed selection. Same polygon geometry
+             (outlineOf), a different skin. -->
+        {#each overlay.hoverOutlines as o}
+          <polygon class="selection-preview" points={o} />
         {/each}
         {#each overlay.outlines as o}
           <polygon class="selection" points={o} />

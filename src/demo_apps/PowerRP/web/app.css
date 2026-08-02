@@ -460,6 +460,15 @@
      stops being a signal. */
   --a-disabled-opacity: 0.35;
 
+  /* How far a PROVISIONAL, hover-only decoration fades — the item picker's
+     selection-box preview today, and any future "this is what you would get"
+     overlay. Deliberately higher than --a-disabled-opacity: a disabled control is
+     saying "you cannot have this" and should recede, while a preview is saying
+     "here it is" and has to be legible at a glance across a whole canvas. Kept
+     separate from the disabled token for exactly that reason — one number serving
+     two opposite intents is how a signal stops being one. */
+  --a-preview-opacity: 0.6;
+
   /* Save-state dot — the standalone indicator beside the title. Its ring is a
      full device pixel, not --a-hairline: the hollow "unsaved" state IS the
      ring, so it has to survive at 1× where a 0.5px border renders faintly. */
@@ -3909,6 +3918,22 @@ textarea {
   stroke: var(--a-selection);
   stroke-width: var(--a-selection-stroke);
   stroke-dasharray: var(--a-selection-dash);
+  pointer-events: none;
+}
+
+/* THE ITEM PICKER'S HOVER PREVIEW — the same box the real selection draws, in the
+   same colour, at a lower opacity and without the dash. It must read as "this is
+   what you would get", so it deliberately does NOT invent a second colour: a new
+   hue would say "a different kind of thing", when it is the very same thing one
+   commit away. Dropping the dash is what distinguishes the two at a glance —
+   provisional vs committed — and the opacity keeps it quieter than the object it
+   is describing. Reuses --a-selection-* rather than minting tokens, so retheming
+   the selection retheme its preview by construction. */
+.overlay .selection-preview {
+  fill: none;
+  stroke: var(--a-selection);
+  stroke-width: var(--a-selection-stroke);
+  opacity: var(--a-preview-opacity);
   pointer-events: none;
 }
 

@@ -653,6 +653,19 @@ export class PowerRPApp {
   // Opus10 builds the Inspector side against selectionTarget/transitionAt.
   selectedTransition = $state(null);
   mode = $state("edit"); // "edit" | "present"
+  // HOVER-PREVIEW OF A SELECTION: the itemId a picker is currently hovering, or
+  // null. The canvas draws its outline in a preview skin so you can SEE which
+  // object a menu row means before committing to it — the item picker lists every
+  // object on every slide by name, and a name is not a location.
+  //
+  // A SEPARATE FIELD FROM `selection`, deliberately, and separate from
+  // `previewDelta` too. Hovering must not change what is SELECTED (that would
+  // fire every selection-dependent effect in the app for a mouse passing over a
+  // row), and it is not a property preview either — nothing about the document
+  // changes, only what the overlay draws. It is the same shape as the app's other
+  // hover-preview surfaces (task #165 made hover-preview the default trope for
+  // pickers) but at the SELECTION layer rather than the value layer.
+  hoverItemId = $state(null);
   anchorsVisible = $state(false);
   paletteOpen = $state(false);
   dragging = $state(false); // canvas sets this; drives HintBar context

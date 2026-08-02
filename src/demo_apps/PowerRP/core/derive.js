@@ -1193,10 +1193,42 @@ function hitNode(node, wx, wy, nodesById, tol = 0) {
  * the camera keep a constant screen-space feel at any zoom.
  */
 export function pickNode(nodes, wx, wy, tol = 0) {
+  return pickNodeStack(nodes, wx, wy, tol)[0] ?? null;
+}
+
+/**
+ * Pure function. EVERY node hit by a world point, topmost FIRST — the whole
+ * stack under the cursor rather than just its lid. `pickNode` is this function's
+ * first element and is defined as such, so the two can never disagree about what
+ * "hit" means or about z-order.
+ *
+ * WHAT IT IS FOR: click-through cycling (user, 2026-08-01) — "if I click an
+ * element and then I click it again and it's not fast enough to be a double
+ * click, select the element under that, and then under that … so that I can
+ * select objects that are under things that I can't normally reach". An occluded
+ * object is otherwise unreachable by pointer at all; the only routes to it are the
+ * Inspector's item picker and the keyboard. Topmost-first ordering means the
+ * cycle's step N is simply `stack[N % stack.length]`, and index 0 is the plain
+ * click everyone already expects.
+ *
+ * @param {object[]} nodes - the derived nodes, z-ASCENDING (as app.nodes() gives them)
+ * @param {number} wx - world x
+ * @param {number} wy - world y
+ * @param {number} tol - world-unit grab tolerance, forwarded to plugin hitTests
+ * @returns {object[]} the hit nodes, topmost first; empty when nothing is hit
+ *
+ * @example pickNodeStack([], 0, 0) // []
+ * @example // two stacked rects, b drawn over a:
+ * @example // pickNodeStack([a, b], 5, 5).map((n) => n.itemId) // ["b", "a"]
+ * @example // pickNode is its lid:
+ * @example // pickNodeStack(nodes, x, y)[0] === pickNode(nodes, x, y) // true
+ */
+export function pickNodeStack(nodes, wx, wy, tol = 0) {
   const nodesById = Object.fromEntries(nodes.map((n) => [n.id, n]));
+  const hits = [];
   for (let i = nodes.length - 1; i >= 0; i--)
-    if (hitNode(nodes[i], wx, wy, nodesById, tol)) return nodes[i];
-  return null;
+    if (hitNode(nodes[i], wx, wy, nodesById, tol)) hits.push(nodes[i]);
+  return hits;
 }
 
 // NOTE: resolveBinding ({item, anchor} endpoint bindings) lived here until
