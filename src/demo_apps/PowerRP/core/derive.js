@@ -41,7 +41,7 @@
 
 import * as T from "./transform.js";
 import { reportOnce } from "./report.js";
-import { boxCenter, unmirroredLocal, unsignedState } from "./geometry.js";
+import { boxCenter, unionRect, unmirroredLocal, unsignedState } from "./geometry.js";
 import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 
 /**
@@ -1265,10 +1265,52 @@ export function withInkAnchors(plugin) {
 }
 
 /**
+ * Pure function. The LOCAL rect a bbox widget is CLICKABLE within: its property
+ * box, UNIONED with its INK BOUNDS when the plugin declares them and they reach
+ * outside that box.
+ *
+ * WHY THE UNION AND NOT SIMPLY THE INK (user, 2026-08-02: "when I click the text,
+ * when the text is out of the box, it doesn't work"). Overflowing ink must become
+ * clickable — that is the whole defect. But the property box must STAY clickable
+ * too, and the two are not nested in either direction: a half-empty text box has
+ * ink smaller than its box (its empty lower half is still a legitimate grab
+ * target, and is where a user drags a box they are about to type into), while an
+ * overflowing one has ink larger. Taking either rect alone would fix one report
+ * by creating its mirror image. The union is the only rect that keeps both.
+ *
+ * A plugin with NO `localBounds` is unchanged to the bit: localBoundsOf's own
+ * default for a bbox widget is exactly {0, 0, w, h}, so the union is the box.
+ *
+ * @param {object} node - a derived node whose plugin has capabilities.bbox
+ * @returns {{x: number, y: number, w: number, h: number}} the local clickable rect
+ *
+ * @example clickableLocalRect({state: {w: 10, h: 20}, plugin: {capabilities: {bbox: true}}}) // {x: 0, y: 0, w: 10, h: 20} (no ink hook: the box)
+ * @example // text overflowing its box downward stays grabbable across BOTH rects:
+ * @example clickableLocalRect({state: {w: 10, h: 20}, plugin: {capabilities: {bbox: true}, localBounds: () => ({x: 0, y: 0, w: 10, h: 90})}}) // {x: 0, y: 0, w: 10, h: 90}
+ * @example // ink SMALLER than the box does not shrink the grab target:
+ * @example clickableLocalRect({state: {w: 100, h: 80}, plugin: {capabilities: {bbox: true}, localBounds: () => ({x: 0, y: 0, w: 12, h: 9})}}) // {x: 0, y: 0, w: 100, h: 80}
+ */
+export function clickableLocalRect(node) {
+  const box = { x: 0, y: 0, w: node.state.w ?? 0, h: node.state.h ?? 0 };
+  const ink = node.plugin.localBounds ? node.plugin.localBounds(node.state) : null;
+  // A widget with nothing drawn (an empty text box reports a zero rect) must not
+  // drag the union to the origin when its box is elsewhere — an empty rect
+  // encloses nothing, so there is nothing to add.
+  if (!ink || (ink.w <= 0 && ink.h <= 0)) return box;
+  return unionRect([box, ink]);
+}
+
+/**
  * Pure function. Does a world point hit this node? Converts to local space
- * and asks the plugin's hitTest, falling back to the bbox. Plugins may
+ * and asks the plugin's hitTest, falling back to the CLICKABLE RECT (the box
+ * unioned with any declared ink bounds — clickableLocalRect). Plugins may
  * instead define hitTestWorld(node, wx, wy, nodesById) for widgets whose
  * geometry lives in world space (arrows).
+ *
+ * A plugin declaring its OWN `hitTest` still wins outright: that hook is a
+ * silhouette test (a polygon's interior, a line's stroke corridor), and a widget
+ * that has gone to the trouble of describing its exact shape must not have a
+ * rectangle unioned back onto it.
  */
 function hitNode(node, wx, wy, nodesById, tol = 0) {
   const { plugin, state } = node;
@@ -1282,8 +1324,10 @@ function hitNode(node, wx, wy, nodesById, tol = 0) {
     ? unmirroredLocal(T.apply(T.invert(node.world), wx, wy), { ...state, mirrorX: node.mirror.x, mirrorY: node.mirror.y })
     : T.apply(T.invert(node.world), wx, wy);
   if (plugin.hitTest) return plugin.hitTest(state, local.x, local.y, tol / node.world.scale);
-  if (plugin.capabilities.bbox)
-    return local.x >= 0 && local.x <= (state.w ?? 0) && local.y >= 0 && local.y <= (state.h ?? 0);
+  if (plugin.capabilities.bbox) {
+    const r = clickableLocalRect(node);
+    return local.x >= r.x && local.x <= r.x + r.w && local.y >= r.y && local.y <= r.y + r.h;
+  }
   return false;
 }
 
