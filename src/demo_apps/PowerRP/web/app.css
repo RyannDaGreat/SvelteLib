@@ -303,6 +303,14 @@
      --a-split-handle-size for the app shell's pane handles. */
   --a-row-divider-hit: 7px;
   --a-row-divider-line: 1px;
+  /* THE GAP THE STRIP IS CENTRED IN. The label track ends at frac×100% and the
+     grid's column GAP straddles the boundary, so the strip's centre is
+     frac×100% + gap/2. Every row grid in both panels uses --a-sp-2, so that is
+     the default; a block whose rows use a different gap RE-PUBLISHES this on
+     itself (.listfield does — its field cells are on --a-sp-1). It exists as a
+     token rather than a per-block `left` override because the rest of that calc
+     — the hit-strip centring — must not be copied around to change one term. */
+  --a-row-divider-gap: var(--a-sp-2);
   --a-kf-btn-w: 20px; /* one keyframe control button (16px icon + 2×--a-sp-1 pad) */
   /* Hover-reveal of a row's hidden chrome (copy-path / help / ƒ / eq-ref marks —
      round-11 "the resting field is minimal"). ONE duration for every one of them,
@@ -6321,11 +6329,24 @@ audio.ae-preview-media {
    So web/Inspector.svelte splits a category into RUNS (its `rowRuns`) and wraps
    each boundary run in .cat-row-run, which is what a divider now spans; a
    full-width row sits between runs with no segment of its own. Inside such an
-   editor the same rule recurses: .paint-sub-rows is the nested equivalent, a
-   contiguous run of paint sub-rows hosting its own segment (PaintField mounts
-   it). Every segment is positioned from the one --a-label-frac, so splitting the
-   strip cannot desynchronize it — which is what makes "multiple lines … in
-   synchronized x position" hold at three depths rather than one.
+   editor the same rule recurses: .paint-sub-rows and .paint-knob-rows are the
+   nested equivalents, contiguous runs of paint sub-rows hosting their own
+   segments (PaintField mounts both).
+
+   AND IT RECURSES ONCE MORE, since 2026-08-02: a LIST ELEMENT'S FIELD CELL
+   (.listfield .list-field) is the smallest block that is a label⟷value boundary,
+   and it now hosts its own segment. The user's ruling extended the divider to
+   "really everything, including the gradient sub-properties, too. There's no way
+   to control that width right now, and that makes it hard to edit things" —
+   their screenshot was a stops row with `offset` ellipsized to "off…". The 2026-
+   07-29 scoping that kept the divider out of nested regions is superseded by it;
+   a region showing a label beside a value now gets a divider by default.
+
+   Every segment is positioned from a --a-label-frac, so splitting the strip
+   cannot desynchronize it — which is what makes "multiple lines … in synchronized
+   x position" hold at four depths rather than one. WHICH NUMBER a depth reads is
+   the separate question web/labelFrac.js answers: depths deliberately do NOT
+   share, or their strips stack at one x and swallow each other's pointer events.
 
    NOTE .cat-rows IS NO LONGER A CONTAINING BLOCK. It must not be: a run wrapper
    inside it is, and if both were, the run's divider would still resolve `top/
@@ -6336,6 +6357,16 @@ audio.ae-preview-media {
    offsetParent" true by construction. */
 .inspector .cat-row-run,
 .inspector .paint-sub-rows,
+/* THE MATERIAL-KNOB RUN (web/PaintField.svelte). It mounts a divider and is a
+   contiguous run of boundary rows, so it needs a containing block exactly as the
+   two above do — it simply did not have one, and its strip therefore resolved
+   against whatever positioned ancestor was further out and ran the full height of
+   that. It carries `.cat-rows` for its LAYOUT and this class for its POSITION,
+   deliberately kept apart: `.paint-sub-rows` would have been the right name but
+   also sets a wider `gap` at higher specificity than `.cat-rows`, so reusing it
+   would have re-spaced every knob row to buy a `position`. A divider scope must
+   not move a row. */
+.inspector .paint-knob-rows,
 .varspanel .rows {
   position: relative; /* the divider's containing block AND its measuring box */
 }
@@ -6361,7 +6392,7 @@ audio.ae-preview-media {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc(var(--a-label-frac) * 100% + var(--a-sp-2) / 2 - var(--a-row-divider-hit) / 2);
+  left: calc(var(--a-label-frac) * 100% + var(--a-row-divider-gap) / 2 - var(--a-row-divider-hit) / 2);
   width: var(--a-row-divider-hit);
   z-index: 1; /* over the rows, so the grab strip is never shadowed by a field */
   cursor: col-resize;
@@ -6895,6 +6926,11 @@ audio.ae-preview-media {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* A FIELD CELL'S grid gap is --a-sp-1, not the row grid's --a-sp-2, so the
+     divider strips in this block centre on a narrower gap. Published here rather
+     than overriding `left` inside .list-field, so the rest of that calc stays in
+     one place (see the token's own note). */
+  --a-row-divider-gap: var(--a-sp-1);
 }
 
 /* THE LIST'S COLLAPSE HEADER is .cat-header itself — the shared accordion above,
@@ -6975,8 +7011,27 @@ audio.ae-preview-media {
    since `right:100%` puts it entirely OUTSIDE .numfield and thus in the gutter
    this row now reserves. The fix is the reserved space below, not a clip. */
 .listfield .list-field {
-  display: flex;
-  flex: 1;
+  /* A GRID, not a flex row, since 2026-08-02: the cell now carries its own
+     label⟷value DIVIDER (the user's "I'd like that for … really everything,
+     including the gradient sub-properties"), and a divider is only meaningful
+     over a boundary that is a stated PROPORTION of a known box. A flex label
+     sized by its own text has no such boundary — it moved with the word, which is
+     precisely why the user had no way to widen `offset` past "off…".
+     So the cell is the app's row grid, one nesting level down and minus the
+     keyframe track: `calc(var(--a-label-frac) * 100%)` for the micro-label, then
+     the control. It reads the LIST family's number, which .listfield publishes.
+     min-width:0 on the value track is what still lets the control shrink; the
+     floor that used to live on the whole cell is now the value track's own. */
+  position: relative; /* the divider's containing block AND its measuring box */
+  display: grid;
+  /* EQUAL-BASIS, not `flex: 1` (which is `1 1 0%` — equal too, but only because
+     the basis is 0; a cell whose content demanded more would still have taken
+     more). Stated as an explicit equal basis because the divider now depends on
+     it: the segments in a field COLUMN only land on one x if every cell in that
+     column is the same width. Same reason the row grid uses tracks rather than
+     letting labels size themselves. */
+  flex: 1 1 0;
+  grid-template-columns: calc(var(--a-label-frac) * 100%) minmax(0, 1fr);
   align-items: center;
   gap: var(--a-sp-1);
   min-width: var(--a-list-field-w);
@@ -7020,7 +7075,13 @@ audio.ae-preview-media {
    "so it doesn't alter the wrapped element's layout"), so this span IS the flex
    item and these properties are read against .list-field directly. */
 .listfield .list-field-label {
-  flex: 0 1 auto;
+  /* `flex: 0 1 auto` is GONE with the flex cell it was written for: the label is
+     now the grid's first TRACK, so its width is the fraction the divider sets and
+     nothing about the text can change it. That is the fix the user asked for —
+     the boundary is a proportion the reader controls, not a consequence of how
+     long the field's name happens to be. min-width:0 still earns its place: a
+     grid item's automatic minimum is its content too, so without it the label
+     would refuse to ellipsize and would push the track wider than its fraction. */
   min-width: 0;
   padding-right: calc(var(--a-row-chrome-w) - var(--a-sp-1));
   overflow: hidden;

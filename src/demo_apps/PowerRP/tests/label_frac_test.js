@@ -21,8 +21,8 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  LABEL_DIVIDER_KEYS, LABEL_DIVIDER_PROPERTY, LABEL_DIVIDER_VARIABLE,
-  LABEL_FRAC_BOUNDS, LABEL_FRAC_DEFAULT, fractionAt, labelFracSettingKey,
+  LABEL_DIVIDER_KEYS, LABEL_DIVIDER_LIST, LABEL_DIVIDER_PROPERTY, LABEL_DIVIDER_VARIABLE,
+  LABEL_FRAC_BOUNDS, LABEL_FRAC_DEFAULT, fractionAt, labelFracDefault, labelFracSettingKey,
 } from "../web/labelFrac.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -56,8 +56,12 @@ const ok = (msg) => { checks += 1; console.log(`  ok   ${msg}`); };
 assert.deepEqual([...new Set(LABEL_DIVIDER_KEYS)], LABEL_DIVIDER_KEYS, "divider keys must be distinct");
 assert.ok(LABEL_DIVIDER_KEYS.includes(LABEL_DIVIDER_PROPERTY));
 assert.ok(LABEL_DIVIDER_KEYS.includes(LABEL_DIVIDER_VARIABLE));
+// The THIRD depth (2026-08-02): a list element's field cells. It sits INSIDE both
+// blocks above, so sharing either number would stack its strip on theirs — the
+// same collision the 2026-08-01 ruling separated the first two over.
+assert.ok(LABEL_DIVIDER_KEYS.includes(LABEL_DIVIDER_LIST));
 assert.notEqual(LABEL_DIVIDER_PROPERTY, LABEL_DIVIDER_VARIABLE,
-  "the two families must be different keys — sharing one is the design the ruling overturned");
+  "the two row families must be different keys — sharing one is the design the ruling overturned");
 ok(`${LABEL_DIVIDER_KEYS.length} distinct divider families`);
 
 // THE PROPERTY FAMILY KEEPS THE BARE HISTORICAL localStorage KEY. Not nostalgia:
@@ -76,6 +80,26 @@ ok("stored keys are stable, distinct, and refuse an unknown family");
 const B = LABEL_FRAC_BOUNDS;
 assert.ok(B.min < LABEL_FRAC_DEFAULT && LABEL_FRAC_DEFAULT < B.max,
   "the default must lie strictly inside the clamp bounds, or a fresh divider starts pinned to an end stop");
+
+// THE DEFAULT IS PER FAMILY, THE BOUNDS ARE NOT (2026-08-02). One default for
+// every family was right while every family was a ~362px ROW block; the LIST
+// family's block is one field CELL at ~56px, where the shared 0.23 is ~13px —
+// under two characters, i.e. every micro-label ellipsized at rest. So each
+// family's default is asserted inside the SHARED bounds (a default outside them
+// would be clamped on the first read and the divider would appear to have moved
+// by itself), and the two ROW families are pinned EQUAL to each other, because
+// the 2026-08-01 ruling asked for independent numbers and explicitly not for a
+// different resting look.
+for (const k of LABEL_DIVIDER_KEYS)
+  assert.ok(B.min < labelFracDefault(k) && labelFracDefault(k) < B.max,
+    `family "${k}" defaults to ${labelFracDefault(k)}, outside the clamp bounds — it would be silently rewritten on the first read`);
+assert.equal(labelFracDefault(LABEL_DIVIDER_PROPERTY), labelFracDefault(LABEL_DIVIDER_VARIABLE),
+  "the two ROW families must rest at the same split — independent numbers, not a different resting look");
+assert.notEqual(labelFracDefault(LABEL_DIVIDER_LIST), LABEL_FRAC_DEFAULT,
+  "the LIST family shares the row default again — a field cell is ~56px, so that is a two-character label at rest");
+assert.throws(() => labelFracDefault("nope"), /unknown divider key/,
+  "an unknown family must fail loudly rather than silently take the row default");
+ok(`each family's default rests inside the shared bounds (${LABEL_DIVIDER_KEYS.map((k) => `${k} ${labelFracDefault(k)}`).join(", ")})`);
 assert.equal(fractionAt(140, 20, 400, B), 0.3);
 assert.equal(fractionAt(0, 20, 400, B), B.min, "left of the block clamps to min");
 assert.equal(fractionAt(1000, 20, 400, B), B.max, "right of the block clamps to max");

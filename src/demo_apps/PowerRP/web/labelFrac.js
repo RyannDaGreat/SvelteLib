@@ -23,11 +23,18 @@
  *     the first level, because then that would make them collide visually."
  *
  * So THE KEY IS (NESTING LEVEL, DIVIDER TYPE), flattened here into one opaque
- * string id per divider family. Flattened deliberately: nesting is deferred by
- * the user's own instruction ("don't worry about nested yet"), so today the pair
- * has exactly two inhabitants — but every call site already names a KEY rather
- * than assuming one global number, which is what makes adding depth later a new
- * entry in LABEL_DIVIDER_KEYS instead of a rewrite.
+ * string id per divider family. Flattened deliberately, and the flattening has
+ * now paid for itself: the third depth (LABEL_DIVIDER_LIST, 2026-08-02) landed
+ * as ONE new entry in LABEL_DIVIDER_KEYS plus its mount, because every call site
+ * already named a KEY rather than assuming one global number.
+ *
+ * THE 2026-08-01 SCOPING — "don't worry about nested yet" — IS SUPERSEDED, by
+ * the user's 2026-08-02 ruling: "you know that line that can be dragged for
+ * regular properties … Yeah, I'd like that for, well, really everything,
+ * including the gradient sub-properties, too. There's no way to control that
+ * width right now, and that makes it hard to edit things." So a region that
+ * shows a label beside a value now gets a divider by default, and the question a
+ * new region has to answer is which FAMILY it joins, not whether it gets one.
  *
  * WHY DEPTHS MUST NOT SHARE A NUMBER, measured rather than assumed. At HEAD a
  * rect with a gradient stroke mounts six dividers across three nesting depths
@@ -60,14 +67,87 @@ export const LABEL_DIVIDER_PROPERTY = "property";
  *  "columns line up" ruling is that the two PANELS share one boundary x. */
 export const LABEL_DIVIDER_VARIABLE = "variable";
 
+/**
+ * LIST-ELEMENT FIELDS — the micro-label⟷control split inside one element row of
+ * web/ListField.svelte (a gradient stop's `offset`/`color`, a polygon vertex's
+ * `x`/`y`). The THIRD depth, added 2026-08-02 on the user's ruling that the
+ * divider be extended to "really everything, including the gradient
+ * sub-properties, too. There's no way to control that width right now, and that
+ * makes it hard to edit things" — their screenshot showed a stops row's label
+ * ellipsized to "off…" with no recourse.
+ *
+ * ITS OWN NUMBER, NOT THE PANEL'S AND NOT THE VARIABLE FAMILY'S, and the choice
+ * is forced by the rule stated above rather than picked: an element row lives
+ * INSIDE both of those blocks, so sharing either number would put its strip at
+ * the same client x as the enclosing one, which is exactly the stacking the
+ * 2026-08-01 ruling and its six-strips-at-1252.2px measurement rule out.
+ *
+ * The user's own justification for why the extra number costs nothing applies
+ * verbatim one level further down: "they're proportional so the dividing line is
+ * fine even when we have nested sections, because it's just a smaller
+ * proportion". A list field's cell is narrower again, so the same fraction lands
+ * further left in absolute terms and cannot collide with its parents' strips.
+ *
+ * ONE FAMILY FOR EVERY LIST, not one per list or per field column. A stop row's
+ * `offset` cell and its `color` cell are equal-width grid tracks, so one fraction
+ * puts every boundary in the block on a shared per-column x — the "multiple
+ * lines, in synchronized x position" shape, repeated per column. Giving each
+ * column its own number would mean dragging the offset boundary left while the
+ * colour boundary stayed put, which is per-cell furniture nobody asked for.
+ */
+export const LABEL_DIVIDER_LIST = "list";
+
 /** Every divider family, in the order a settings record iterates them. */
-export const LABEL_DIVIDER_KEYS = [LABEL_DIVIDER_PROPERTY, LABEL_DIVIDER_VARIABLE];
+export const LABEL_DIVIDER_KEYS = [LABEL_DIVIDER_PROPERTY, LABEL_DIVIDER_VARIABLE, LABEL_DIVIDER_LIST];
 
 /** The default split. 84px against a 362px default row — the fixed --a-label-w
- *  this replaced — i.e. 0.2318, rounded. BOTH families start here: the ruling
- *  asks for independent numbers, not for a different resting look, and shipping
- *  a different default would move a nested column nobody asked to move. */
+ *  this replaced — i.e. 0.2318, rounded. The two ROW families start here: the
+ *  2026-08-01 ruling asks for independent numbers, not for a different resting
+ *  look, and shipping a different default would move a nested column nobody
+ *  asked to move. */
 export const LABEL_FRAC_DEFAULT = 0.23;
+
+/**
+ * The default for the LIST family, which is NOT the shared one and must not be.
+ * A field cell is ~56px at rest (--a-list-field-w), not 362px, so 0.23 of it is
+ * ~13px — under two characters, i.e. every micro-label ellipsized to "o…" by
+ * default. That is worse than the flex label it replaced, and shipping it would
+ * have answered the user's "there's no way to control that width" by making the
+ * resting width wrong and handing them a handle to fix it with.
+ *
+ * 0.50 is MEASURED, not guessed: a stop row's field cell is 95.0px at the default
+ * panel split, and the label track must hold the text PLUS the unconditional ƒ
+ * gutter the row reserves (--a-row-chrome-w − --a-sp-1 ≈ 14px, app.css
+ * .list-field-label). "offset" is ~33px at --a-font-sm, so ~47px of a 95px cell —
+ * 0.50, which is inside the shared bounds with room to spare. At 0.42 the same
+ * label measured 39.9px and still rendered "off…", which was the user's exact
+ * complaint arriving at a slightly larger size.
+ *
+ * `offset` is the longest name either shipped list element has (`offset`/`color`,
+ * `x`/`y`), so this fits every list today. It is still a PROPORTION, so widening
+ * the panel widens the label with it, and the divider moves it anywhere in the
+ * shared bounds — which is the actual answer to "there's no way to control that
+ * width". The default only decides where it RESTS.
+ */
+export const LABEL_FRAC_LIST_DEFAULT = 0.5;
+
+/**
+ * Pure function. The resting split for one divider family.
+ *
+ * @param {string} key A LABEL_DIVIDER_KEYS member.
+ * @returns {number} The default fraction.
+ *
+ * @example labelFracDefault("property")
+ * 0.23
+ * @example labelFracDefault("variable")
+ * 0.23
+ * @example labelFracDefault("list")
+ * 0.42
+ */
+export function labelFracDefault(key) {
+  if (!LABEL_DIVIDER_KEYS.includes(key)) throw new Error(`labelFracDefault: unknown divider key "${key}"`);
+  return key === LABEL_DIVIDER_LIST ? LABEL_FRAC_LIST_DEFAULT : LABEL_FRAC_DEFAULT;
+}
 
 /** Clamp bounds, shared by the drag and by the persist path so the two cannot
  *  disagree (a drag writing a value the store silently rewrites is how a divider

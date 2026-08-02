@@ -11,6 +11,17 @@
  *     coordinates is not a ramp and has nothing to paint a track with).
  *   - A BEAD IS WHERE ITS STOP IS: bead x over the track maps to the stored
  *     offset, measured against the real client rects, not asserted from CSS.
+ *   - A BEAD IS THE COLOUR IT REPRESENTS, AND POINTS AT ITS OWN STOP — the two
+ *     halves of the user's 2026-08-02 ruling ("there's no reason to make them
+ *     purple because that's not the color they're representing… they should have
+ *     a tapered top so that they point to precisely where they are"). The fill is
+ *     read back off the painted element and compared to the three DIFFERENT stop
+ *     colours, so a single accent token could not pass it; the taper is asserted
+ *     as a clip-path pentagon with its apex at the element's own centre-top.
+ *   - THE ROWS STAY OPEN FOR THE WHOLE DRAG, sampled mid-gesture. A bead drag
+ *     stages a whole-list preview, which is the shape ListField folds on, so the
+ *     rows used to vanish for the duration; the user overruled that ("that
+ *     actually makes things more confusing for me, not less confusing").
  *   - DRAG moves the stop, and is EXACTLY ONE undo unit — not one per
  *     pointermove, which is the single easiest thing to get wrong here.
  *   - DRAG PAST A NEIGHBOUR SWAPS, and the document is CANONICALLY ORDERED at
@@ -166,7 +177,20 @@ try {
     const t = track.getBoundingClientRect();
     const beads = [...document.querySelectorAll(".stopbar-bead")].map((b) => {
       const r = b.getBoundingClientRect();
-      return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, right: r.right, bound: b.classList.contains("stopbar-bead-bound"), selected: b.classList.contains("selected"), ariaDisabled: b.getAttribute("aria-disabled"), valuenow: Number(b.getAttribute("aria-valuenow")) };
+      // `fill` is the COMPUTED --sb-bead on the fill layer, i.e. exactly the colour
+      // that element is painted; `apexTop` and `bodyTop` bracket the TAPER, which is
+      // what makes the pin point at anything. Read from the inner .stopbar-bead-fill
+      // rather than the button, because that is the element carrying the colour.
+      const fillEl = b.querySelector(".stopbar-bead-fill");
+      const cs = fillEl ? getComputedStyle(fillEl) : null;
+      return {
+        cx: r.left + r.width / 2, cy: r.top + r.height / 2, right: r.right,
+        w: r.width, h: r.height,
+        fill: cs ? cs.getPropertyValue("--sb-bead").trim() : null,
+        clip: cs ? cs.clipPath : null,
+        bound: b.classList.contains("stopbar-bead-bound"), selected: b.classList.contains("selected"),
+        ariaDisabled: b.getAttribute("aria-disabled"), valuenow: Number(b.getAttribute("aria-valuenow")),
+      };
     });
     const p = document.querySelector(".stopbar-purge").getBoundingClientRect();
     return JSON.stringify({ track: { left: t.left, top: t.top, right: t.right, width: t.width, height: t.height }, beads, purge: { left: p.left, right: p.right, top: p.top, bottom: p.bottom } });
@@ -246,7 +270,7 @@ try {
     const wrap = document.querySelector(".ramp-presets-and-list");
     const kids = [...wrap.children].map((c) => c.className);
     return kids.indexOf("stopbar") < kids.indexOf("listfield");
-  }), "the bar sits ABOVE the rows (a bead drag folds them; from below it would move under the pointer)");
+  }), "the bar sits ABOVE the rows (they are live under it during a drag; from below it would move under the pointer)");
   {
     const geo = await barGeometry();
     // A missing bar must report a SENTENCE, not a stack: this is the check that
@@ -262,6 +286,27 @@ try {
     const worst = Math.max(...geo.beads.map((b, i) => Math.abs(b.cx - expected[i])));
     ok(worst <= BEAD_X_TOLERANCE_PX, `every bead sits at its stop's position on the track (worst error ${worst.toFixed(2)}px)`);
     ok(geo.beads.every((b) => !b.bound), "no stop is equation-bound yet, so no bead wears the ƒ mark");
+    // ── EACH BEAD IS THE COLOUR IT REPRESENTS (user ruling 2026-08-02) ────────
+    // "there's no reason to make them purple because that's not the color
+    // they're representing. They should be the color they're representing." The
+    // bead used to be one flat accent fill for every stop; --sb-bead is now the
+    // stop's own evaluated colour, and this reads it back off the painted element.
+    // The check is NOT vacuous by construction: THREE holds three DIFFERENT
+    // colours, so a token fill would collapse all three onto one value.
+    ok(JSON.stringify(geo.beads.map((b) => b.fill)) === JSON.stringify(THREE.map((s) => s.color)),
+      `each bead is painted its own stop's colour (${JSON.stringify(geo.beads.map((b) => b.fill))})`);
+    ok(new Set(geo.beads.map((b) => b.fill)).size === THREE.length,
+      "…and the three differ, so this could not pass with a single accent token");
+    // ── AND IT POINTS AT ITS STOP ────────────────────────────────────────────
+    // "they should have a tapered top so that they point to precisely where they
+    // are… instead of being a box with a flat top." The taper is a clip-path
+    // pentagon with its apex at 50% 0 — dead centre of the element's top edge,
+    // which translateX(-50%) has already put on the stop's fraction. Asserted on
+    // the computed clip rather than a screenshot so the failure names the cause.
+    ok(geo.beads.every((b) => /polygon/.test(b.clip ?? "") && /50%\s+0/.test(b.clip ?? "")),
+      `every bead is clipped to a pin whose apex is at its own centre-top (${JSON.stringify(geo.beads[0].clip)})`);
+    ok(geo.beads.every((b) => b.h > b.w),
+      `…and is taller than it is wide, so the taper has room to be one (${geo.beads[0].w}x${geo.beads[0].h})`);
     // NOTHING OVERLAPS THE END BEADS. A bead at position 0 or 1 is centred on the
     // track's very edge and overhangs it by half its width, which is WIDER than a
     // spacing step — so the trailing purge button collides with the last bead
@@ -329,15 +374,27 @@ try {
   {
     const geo = await barGeometry();
     const midChecks = [];
+    // THE ROWS STAY UP FOR THE WHOLE GESTURE — user ruling 2026-08-02, verbatim:
+    // "the submenu for stops disappears as I drag it and reappears when I'm done.
+    // Please, you don't need to do that. That actually makes things more confusing
+    // for me, not less confusing." A bead drag stages a whole-list preview, which
+    // is the shape ListField folds on, so this used to render ZERO rows for the
+    // duration. The bar now declares its gesture (`ondrag`) and ListField exempts
+    // it. Sampled at the same instants as the ordering check, so a fold anywhere
+    // in the gesture is caught rather than only its endpoints.
+    const midRows = [];
     await dragTo(geo.beads[0].cx, geo.beads[0].cy, geo.track.left + 0.8 * geo.track.width, {
       steps: 8,
       midway: async () => {
         const os = (await stops(rectId)).map((s) => s.offset);
         midChecks.push(os.every((o, i) => i === 0 || os[i - 1] <= o));
+        midRows.push(await page.evaluate(() => document.querySelectorAll(".listfield .list-el").length));
       },
     });
     ok(midChecks.length > 0 && midChecks.every(Boolean),
       `MID-DRAG the document is canonically ordered (${midChecks.length} sample(s)) — a leaf write would have left it collapsed here`);
+    ok(midRows.length > 0 && midRows.every((n) => n === THREE.length),
+      `MID-DRAG the stop ROWS stay open and show the previewed list (${JSON.stringify(midRows)}) — the fold the user overruled would read as all zeroes here`);
     const os = await offsetsOf(rectId);
     ok(os.every((o, i) => i === 0 || os[i - 1] <= o), `after the release the offsets ascend (${JSON.stringify(os)})`);
     ok(JSON.stringify(await colorsOf(rectId)) === JSON.stringify([GREEN, RED, BLUE]),

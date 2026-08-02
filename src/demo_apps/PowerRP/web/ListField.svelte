@@ -214,6 +214,14 @@
   import KeyframeControls from "./KeyframeControls.svelte";
   import GradientPresetPicker from "./GradientPresetPicker.svelte";
   import GradientStopBar from "./GradientStopBar.svelte";
+  // THE LABEL⟷VALUE DIVIDER, extended to list-element field cells on the user's
+  // 2026-08-02 ruling (see web/labelFrac.js — the 2026-07-29 scoping that kept it
+  // out of nested regions is superseded). Same component the Inspector and the
+  // paint stack mount, a THIRD number: an element row is nested inside both of
+  // those blocks, so sharing either family's fraction would land this strip on
+  // top of theirs.
+  import LabelDivider from "./LabelDivider.svelte";
+  import { LABEL_DIVIDER_LIST } from "./labelFrac.js";
   import { getPath } from "../core/deltas.js";
   import { COLOR_RAMP_LIBRARY } from "../core/ramps.js";
   import { RAMP_STOP_ELEMENT } from "../core/properties.js";
@@ -627,7 +635,13 @@
       ondrag={(active) => (beadDragging = active)}
     />
   {/if}
-  <div class="listfield">
+  <!-- --a-label-frac IS RE-PUBLISHED HERE for the LIST family, which is the whole
+       of the mechanism (the same one PaintField uses for its nested blocks): every
+       label⟷value grid in the app resolves `calc(var(--a-label-frac) * 100%)`, so
+       setting this family's number on the block carries it to each field cell's
+       grid AND to the divider inside that cell by plain inheritance — no new
+       token and no new selector. -->
+  <div class="listfield" style:--a-label-frac={app.labelFrac[LABEL_DIVIDER_LIST]}>
   <!-- THE COLLAPSE HEADER — web/Inspector.svelte's category accordion, class for
        class: the app's ONE section-heading device, which app.css keeps DELIBERATELY
        UNSCOPED so a new consumer does not have to be added to a selector group
@@ -703,6 +717,26 @@
             {@const fieldPath = [...path, index, elementStorageKey(decl.element, f.name)]}
             {@const fieldInert = decl.elementFieldDisabled?.(el, f.name) ?? false}
             <span class="list-field">
+              <!-- THE LABEL⟷VALUE DIVIDER, one segment per FIELD CELL — the
+                   user's 2026-08-02 "I'd like that for … really everything,
+                   including the gradient sub-properties, too. There's no way to
+                   control that width right now, and that makes it hard to edit
+                   things." Their screenshot was this exact cell, with `offset`
+                   ellipsized to "off…".
+                   ONE PER CELL, not one per row or one per list, and that falls
+                   straight out of LabelDivider's own contract: a segment always
+                   spans its offsetParent, and the cell IS the block whose width
+                   `calc(frac * 100%)` resolves against. Every cell in the block
+                   is an equal 1fr track reading ONE fraction, so the segments in
+                   a column land on one x — the "multiple lines, in synchronized x
+                   position" shape, once per column.
+                   THE LIST FAMILY, not the panel's and not the paint stack's: an
+                   element row sits inside both, so sharing either number would
+                   stack this strip on theirs (web/labelFrac.js states the
+                   measurement). It is not rendered while `disabled` — a
+                   not-yet-created item's rows are inert text, with no boundary to
+                   drag. -->
+              {#if !disabled}<LabelDivider {app} dividerKey={LABEL_DIVIDER_LIST} />{/if}
               <!-- The field's NAME is the micro-label (it is the equation
                    address's own last segment — `points.3.x`); its human label +
                    help live in the tooltip, which is where a row's (?) chrome

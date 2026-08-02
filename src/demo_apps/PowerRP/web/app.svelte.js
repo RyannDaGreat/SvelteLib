@@ -140,7 +140,7 @@ import { centerTextOverrides } from "../plugins/plaintext.js";
 // plugin may import another (see that module's header for the full reasoning).
 import { axisGridOverrides, axisTicksOverrides } from "../core/graph_axis_binding.js";
 import { browserSetting, browserNumberSetting } from "./settings.js";
-import { LABEL_DIVIDER_KEYS, LABEL_FRAC_BOUNDS, LABEL_FRAC_DEFAULT, labelFracSettingKey } from "./labelFrac.js";
+import { LABEL_DIVIDER_KEYS, LABEL_FRAC_BOUNDS, labelFracDefault, labelFracSettingKey } from "./labelFrac.js";
 // THE panel inventory (core/panels.js) — one declaration behind the layout, the
 // per-panel visibility settings here, and the "Toggle Visibility: …" commands.
 import { PANELS, panelSettingKey } from "../core/panels.js";
@@ -240,7 +240,11 @@ const SETTINGS = {
 const LABEL_FRAC_SETTINGS = Object.fromEntries(
   LABEL_DIVIDER_KEYS.map((k) => [
     k,
-    browserNumberSetting(labelFracSettingKey(k), LABEL_FRAC_DEFAULT, LABEL_FRAC_BOUNDS.min, LABEL_FRAC_BOUNDS.max),
+    // The DEFAULT is per-family (labelFracDefault), the BOUNDS are shared. A list
+    // element's field cell is ~56px wide against a row's 362px, so one fraction
+    // for both would ellipsize every micro-label to two characters at rest — see
+    // that function for the measurement.
+    browserNumberSetting(labelFracSettingKey(k), labelFracDefault(k), LABEL_FRAC_BOUNDS.min, LABEL_FRAC_BOUNDS.max),
   ]),
 );
 

@@ -50,6 +50,32 @@
   category into runs (rowRuns) and PaintField mounts one around its own geometry
   sub-rows and its material knobs.
 
+  A BLOCK IS ONE ONLY IF IT IS POSITIONED, and that is a real trap rather than an
+  implementation note: this component measures `el.offsetParent`, so a mount in an
+  UNpositioned block silently borrows the next positioned ancestor and runs the
+  full height of THAT — the "extending too far down" defect, arriving without
+  anyone writing a wrong rule. PaintField's material-knob block was in exactly
+  that state until 2026-08-02 (its `.cat-rows` is deliberately not a containing
+  block); the fix was `.paint-knob-rows`, a class that carries `position` and
+  nothing else. If you mount one, make sure app.css lists your block.
+
+  ── THE SMALLEST BLOCK IS NOT ALWAYS A ROW BLOCK (2026-08-02) ────────────────
+  USER RULING, verbatim: "you know that line that can be dragged for regular
+  properties so that I can change the title versus the actual property width so
+  that I can see things? Yeah, I'd like that for, well, really everything,
+  including the gradient sub-properties, too. There's no way to control that width
+  right now, and that makes it hard to edit things."
+
+  So a LIST ELEMENT'S FIELD CELL (web/ListField.svelte `.list-field`) mounts one
+  too, and it is the smallest scope there is: a single cell, one row tall. The
+  "run of boundary rows" phrasing above is about not spanning rows that have no
+  boundary; a cell that IS a boundary qualifies on the same rule, and the strip is
+  short because the block is. Every cell in a field COLUMN is an equal grid track
+  reading one fraction, so the segments in that column still land on one x — the
+  "multiple lines, in synchronized x position" shape, once per column.
+  This supersedes the 2026-07-29 scoping that kept the divider out of nested
+  regions: a region showing a label beside a value now gets one by default.
+
   WHICH NUMBER A SEGMENT READS IS THE `dividerKey` PROP, and it is the ONE thing
   that is not shared. Every segment in a FAMILY reads that family's fraction, so
   they stay in x-sync — the user's "multiple lines, in synchronized x position".
@@ -79,8 +105,11 @@
   Props:
     app        — the PowerRPApp; owns the fractions and their persistence.
     dividerKey — which divider FAMILY this segment belongs to (a
-                 LABEL_DIVIDER_KEYS member). Defaults to the property rows,
-                 which is every caller but the nested paint blocks.
+                 LABEL_DIVIDER_KEYS member). Defaults to the property rows —
+                 the Inspector's category runs and the Variables Panel. The
+                 nested paint blocks pass LABEL_DIVIDER_VARIABLE and a list
+                 element's field cells pass LABEL_DIVIDER_LIST, because depths
+                 must not share a number (web/labelFrac.js).
   Styling lives in app.css (.label-divider; app convention: no <style>).
 -->
 <script>

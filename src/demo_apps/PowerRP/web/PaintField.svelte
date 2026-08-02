@@ -737,7 +737,20 @@
              app.css change at all. The user's own reason for why nesting is free:
              "they're proportional so the dividing line is fine even when we have
              nested sections, because it's just a smaller proportion". -->
-        <div class="cat-rows" style:--a-label-frac={app.labelFrac[LABEL_DIVIDER_VARIABLE]}>
+        <!-- `.paint-knob-rows` ALONGSIDE `.cat-rows`, and it is not decoration:
+             LabelDivider spans its OFFSET PARENT, and `.cat-rows` is deliberately
+             NOT a containing block (app.css says so in as many words — exactly one
+             positioned ancestor per divider). Without it this block's segment
+             resolved against whatever positioned ancestor was further out and ran
+             the full height of THAT, which is the "extending too far down" defect
+             the run wrappers exist to prevent.
+             A SECOND CLASS rather than reusing `.paint-sub-rows`, which is
+             otherwise the right name: that rule also sets a `gap` of --a-sp-2, and
+             at higher specificity than .cat-rows' --a-sp-1 — so borrowing it would
+             have re-spaced every knob row to buy a `position`. A divider scope
+             must not move a single row (app.css's own rule for .cat-row-run), so
+             this class carries `position: relative` and nothing else. -->
+        <div class="cat-rows paint-knob-rows" style:--a-label-frac={app.labelFrac[LABEL_DIVIDER_VARIABLE]}>
           <!-- The knob list is its own divider group, for the same reason the
                geometry rows are: it is a contiguous run of label⟷value rows, and
                the category strip above it now stops before this full-width editor.
