@@ -130,8 +130,18 @@ test("0..1 props with integer default 1 (opacity/particleFade) carry an explicit
     assert.equal(PROPS[key].step, 0.01);
     assert.equal(resolveStep(PROPS[key].step, PROPS[key].default), 0.01);
   }
+  // curl / shoulder joined 2026-08-02 for the SAME reason: both are 0..1 knobs
+  // whose default is the integer 1 or 0, so the precision fallback would snap them
+  // to whole numbers and destroy the smooth curly⇄square⇄chevron sweep the brace
+  // exists to offer. They are checked against the same rule rather than merely
+  // added to the list.
+  for (const key of ["curl", "shoulder"]) {
+    assert.equal(PROPS[key].step, 0.01, `${key}: a 0..1 look knob needs an explicit step`);
+    assert.equal(PROPS[key].min, 0);
+    assert.equal(PROPS[key].max, 1);
+  }
   const withStep = Object.entries(PROPS).filter(([, d]) => d.kind === "number" && "step" in d).map(([k]) => k).sort();
-  assert.deepEqual(withStep, ["opacity", "particleFade"]);
+  assert.deepEqual(withStep, ["curl", "opacity", "particleFade", "shoulder"]);
 });
 
 // ── (4) stepAtMost / refinedStep / resolveScrub precedence ────────────────────

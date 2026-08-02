@@ -89,7 +89,7 @@ const BLANK = readPng(await renderToPng([], VIEW, { width: W, height: H }));
 
 test("the sweep found the connector preset tables at all", () => {
   assert.deepEqual(CONNECTORS.map((p) => p.type).sort(),
-    ["arrow", "curved_arrow", "elbow_arrow", "fancy_arrow", "line"]);
+    ["arrow", "brace_curly", "brace_square", "curved_arrow", "elbow_arrow", "fancy_arrow", "line"]);
 });
 
 for (const plugin of CONNECTORS) {

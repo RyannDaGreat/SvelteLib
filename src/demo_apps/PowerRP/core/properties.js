@@ -901,6 +901,23 @@ export const PROPS = {
   "from.y": { label: "From Y", kind: "number", category: "positioning", help: "Y of the arrow's tail (its start point). Drag the tail handle on canvas, or bind it to an anchor to make it follow another item." },
   "to.x": { label: "To X", kind: "number", category: "positioning", help: "X of the arrow's head (its end point). Drag the head handle on canvas, or bind it to an anchor to make it point at another item." },
   "to.y": { label: "To Y", kind: "number", category: "positioning", help: "Y of the arrow's head (its end point). Drag the head handle on canvas, or bind it to an anchor to make it point at another item." },
+  // THE THIRD POINT of a three-point connector (the brace family). Declared here
+  // beside from/to rather than inside plugins/brace.js because it is the SAME
+  // KIND OF THING — a free, draggable, anchorable world point with an equation-
+  // aware numeric field — and the shared registry is what stops two rows that
+  // mean the same thing drifting apart. Deliberately NOT added to the
+  // `endpoints` bundle: that bundle is a PAIR, composed by every two-point
+  // connector, and widening it would give every arrow a tip row it has no use for.
+  "tip.x": { label: "Tip X", kind: "number", category: "positioning", help: "X of the brace's pointy bit. It is a free point like the two ends — drag it, or bind it to an anchor so it follows another item. Where it sits ALONG the span slides the point left or right; how far it sits OFF the span is how far the brace bulges, and which SIDE it is on flips the brace." },
+  "tip.y": { label: "Tip Y", kind: "number", category: "positioning", help: "Y of the brace's pointy bit. It is a free point like the two ends — drag it, or bind it to an anchor so it follows another item. Where it sits ALONG the span slides the point left or right; how far it sits OFF the span is how far the brace bulges, and which SIDE it is on flips the brace." },
+  // THE BRACE'S LOOK, as two CONTINUOUS knobs rather than a style enum — so a
+  // curly brace, a right-angle bracket and a straight chevron are points in one
+  // square and every path between them is reachable, keyframeable and tweenable.
+  // An enum could not be halfway between two of its values, which is exactly what
+  // the user asked for ("interpolate between that and a straight-liney version…
+  // and another that's right angle, smoothly").
+  curl: { label: "Curl", kind: "number", min: 0, max: 1, step: 0.01, scrub: true, category: "formatting", help: "How rounded the brace's corners are. 0 is a sharp right-angle bracket, 1 is a fully rounded curly brace, and everything between is a smooth blend — so you can keyframe a bracket softening into a brace." },
+  shoulder: { label: "Shoulder", kind: "number", min: 0, max: 1, step: 0.01, scrub: true, category: "formatting", help: "How much of a bracket profile the arms have. 1 runs them alongside the span before turning out to the point — the classic brace or bracket. 0 collapses them into straight lines from each end to the point, giving a plain chevron. Blend it with Curl to reach any look between a curly brace, a square bracket and a simple V." },
 
   // ── formatting: the STROKED-BOX render bundle (fill + border + rounding) ─────
   // These four are the shared box style — the SAME set rect, image, video,

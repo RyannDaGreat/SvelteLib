@@ -57,8 +57,13 @@ const ANCHORLESS_BY_DESIGN = {
 const CONNECTORS = ENDPOINT_PAIR.filter((p) => !(p.type in ANCHORLESS_BY_DESIGN));
 
 test("premise: every endpoint-pair widget either publishes path anchors or is declared anchorless", () => {
+  // brace_curly / brace_square joined on 2026-08-02 — THREE-point connectors, so
+  // they spread the same endpoint hooks with a three-key list and are swept here
+  // by the derivation above, which is this gate working exactly as its docblock
+  // promises. Both publish anchors (start / tip / end), so neither needs an
+  // ANCHORLESS_BY_DESIGN entry.
   assert.deepEqual(CONNECTORS.map((p) => p.type).sort(),
-    ["arrow", "curved_arrow", "elbow_arrow", "fancy_arrow", "line"]);
+    ["arrow", "brace_curly", "brace_square", "curved_arrow", "elbow_arrow", "fancy_arrow", "line"]);
   for (const p of ENDPOINT_PAIR)
     assert.equal(typeof p.anchors === "function", !(p.type in ANCHORLESS_BY_DESIGN),
       `${p.type}: an endpoint-pair widget must publish path anchors or be listed in ANCHORLESS_BY_DESIGN with a reason`);
