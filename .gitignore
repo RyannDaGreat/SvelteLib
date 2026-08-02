@@ -52,3 +52,6 @@ public/videos/
 # Agent scratch dirs (evidence/probes) — never the repo tree
 .scratch/
 scratchpad*.mjs
+
+# scratch worktree for baseline comparison (never committed)
+.baseline_wt
