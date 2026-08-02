@@ -98,6 +98,7 @@
 import { deserialize, repairedDocument, printRepairReports } from "../core/document.js";
 import { planForParams, frameCount, exportVideo } from "./videoExport.js";
 import { createLetterboxFrameRenderer } from "./transitionRender.js";
+import { settledFrame } from "./settledFrame.js"; // #281: an export gets ONE chance at its pixels
 import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
 // THE RECORD BACKEND, not projectApi directly. A browser render's frames have
 // always been made HERE; only the job RECORD was server-shaped, and that is now a
@@ -298,7 +299,15 @@ export async function driveBrowserJob(record, registry, signal = undefined) {
   printRepairReports(reports);
   const plan = planForParams(doc, job.params);
   const { width, height, fps, samples, background } = job.params;
-  const renderFrame = createLetterboxFrameRenderer({ doc, registry, width, height, background });
+  // THE DRAIN (#281). This path used to render each frame ONCE and encode whatever
+  // was on the canvas at that instant, while the SERVER-side renderer waited for
+  // its rasters — so the same deck could export a PDF page from one path and a
+  // hole from the other, with the in-browser one exiting successfully. R6-11
+  // recorded it as "settledFrame is unshared across three consumers of one
+  // renderer"; sharing it is the fix, and an unarrivable asset now REFUSES the
+  // job loudly instead of silently encoding a gap.
+  const base = createLetterboxFrameRenderer({ doc, registry, width, height, background });
+  const renderFrame = (index, alpha) => settledFrame(() => base(index, alpha), "browser render");
 
   const heartbeat = setInterval(() => {
     updateBrowserJob(job.id, { heartbeatAt: Date.now() })

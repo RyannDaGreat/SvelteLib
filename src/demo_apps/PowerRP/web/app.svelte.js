@@ -114,6 +114,7 @@ import { builtinWidgetAssets } from "./builtinAssets.js";
 // import. Registration is plugins/index.js registerAll's job, never an import here.
 import { assetNaturalSize } from "./assetNaturalSize.js";
 import { contentSizesFor, setContentSrcResolver } from "./contentSizes.js"; // itemId → measured intrinsic size (#277)
+import { settledFrame } from "./settledFrame.js"; // #281: an export waits for its rasters; the editor canvas does not need to
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
 // The command below spreads these over the registry defaults to mint 3 wired items.
 import {
@@ -5842,14 +5843,20 @@ export class PowerRPApp {
     // THE renderer via the shared pixel service; the camera determines the
     // output size/aspect (evaluated state — its properties may be equations).
     const rect = cameraRect(evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state, this.doc.meta);
-    const canvas = await renderCameraFrame(this.doc, {
+    // THE DRAIN (#281): a PNG export gets ONE chance at its pixels, so it waits
+    // for every async raster the frame needs and REFUSES rather than saving a
+    // file with a hole where a PDF page, image, LaTeX or Mermaid diagram should
+    // be. The editor canvas beside it does not wait — it repaints on
+    // onImageLoad — which is exactly why the export must: a stale preview
+    // corrects itself in a moment and a saved file never does.
+    const canvas = await settledFrame(() => renderCameraFrame(this.doc, {
       slideIndex: this.slideIndex,
       alpha: 1,
       registry: this.registry,
       width: Math.round(rect.w),
       height: Math.round(rect.h),
       project: this.projectName(),
-    });
+    }), "PNG export");
     const a = document.createElement("a");
     a.href = canvas.toDataURL("image/png");
     a.download = `${this.projectDisplayName()}-slide${this.slideIndex + 1}.png`;

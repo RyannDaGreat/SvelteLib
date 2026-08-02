@@ -58,11 +58,9 @@ import { loadFonts } from "./fontLoader.js";
 import { timelinePlan, frameCount, createFrameSampler, DEFAULT_HOLD_SECONDS } from "./videoExport.js";
 import { createLetterboxFrameRenderer } from "./transitionRender.js";
 import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
-import { pendingImageRefs, failedImageRefs, onImageLoad } from "../render_gpu/gpu/image_registry.js";
-import { pendingVideoSrcs, failedVideoSrcs, onVideoFrame, resetVideoRegistry } from "../render_gpu/gpu/video_registry.js";
-import { pendingSvgSources, failedSvgSources, onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
-import { pendingTextAssets, failedTextAssets, onTextAssetLoad } from "../render_gpu/gpu/text_asset_registry.js"; // CSV/JSON data assets a plugin-asset widget charts (core/plugin_assets.js assetText)
+import { resetVideoRegistry } from "../render_gpu/gpu/video_registry.js";
 import { gpuAccelerated } from "./gpuService.js";
+import { settledFrame } from "./settledFrame.js"; // THE DRAIN, shared — it used to be four private functions in this file, reachable by this consumer alone
 import { truncate } from "../core/report.js"; // THE shared log elision (a tenth private copy lived here, with drifted constants)
 
 /**
@@ -91,139 +89,9 @@ const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
 /** The open session: null until __powerrp_renderJobOpen, one at a time. */
 let session = null;
 
-/**
- * Query. Every async load this page is still waiting on — image decodes, LaTeX
- * typesets, Mermaid renders, PDF page rasters (all of which land in the image
- * registry), video elements that have no first frame yet, SVG sources, and TEXT
- * DATA ASSETS (a CSV a chart widget is plotting). The last one is not a raster,
- * but it gates a frame for exactly the same reason: a chart whose data has not
- * arrived draws no bars, and writing that frame ships an empty chart at exit 0.
- *
- * @returns {string[]} pending refs/srcs, empty when the scene can be drawn whole
- *
- * @example // with nothing outstanding
- * pendingRasters() // []
- */
-function pendingRasters() {
-  return [...pendingImageRefs(), ...pendingVideoSrcs(), ...pendingSvgSources(), ...pendingTextAssets()];
-}
 
-/**
- * Query. Every async load this page will NEVER complete — the refs whose failure
- * is already decided. `pendingRasters` and this are not two views of one list:
- * pending means "wait longer", and a permanently failed ref is exactly the thing
- * that is not pending, so nothing pending has never meant the frame is whole.
- *
- * That gap IS the R6-12.1 defect. A `video` whose src 404s left the media map
- * without its entry, `paint_skia`'s `if (!img) break;` skipped the quad, the
- * pending set was empty on the very first check, and the worker wrote a frame with
- * a hole in it and exited 0 — the widget "does not appear in Render Center output"
- * with nothing anywhere saying so. Reproduced end-to-end before this landed.
- *
- * SCOPE: the media registries are MODULE-GLOBAL caches, so this answers "every
- * src that has failed IN THIS PAGE", not "every src this frame needs". Those two
- * are the same thing here and only here, because a render-job page renders exactly
- * ONE document — openSession refuses a second concurrent session and clears the
- * video registry, so nothing another deck loaded can be in it. A consumer that
- * runs a render inside the LIVE EDITOR page (web/browserRenderJobs.js, the in-page
- * Export MP4 — neither of which settles at all today) may NOT reuse this as-is: a
- * clip the user broke an hour ago would refuse an export of an unrelated deck.
- * That consumer needs the failed set intersected with the scene's own refs, which
- * is a question only render_gpu/skia/browser_media.js can answer, since it is what
- * walks the display list for media ops.
- *
- * ONLY VIDEO TODAY, and that is a known gap rather than a claim: the image
- * registry (LaTeX / Mermaid / PDF page rasters / plain images all land there),
- * the SVG source registry and the text-asset registry each hold their own error
- * state and none of them publishes it. Each needs the same twin of its
- * `pendingX()` before it can join this line; that is a hand-back, not an omission
- * to be papered over here.
- *
- * @returns {string[]} refs that can never resolve, empty when nothing has failed
- *
- * @example // with nothing broken
- * failedRasters() // []
- */
-function failedRasters() {
-  // ALL FOUR REGISTRIES, not just video. This returned failedVideoSrcs() alone,
-  // which meant R6-12.1's fix — "nothing pending has never meant the frame is
-  // whole" — held only for the registry it was found in. The image registry backs
-  // PDF PAGES, LaTeX, Mermaid, plain images and scene3d rasters, and an errored ref
-  // there was in neither set: not pending (pendingImageRefs selects "loading"
-  // only), not failed (no query existed). So the frame was declared whole,
-  // paint_skia's `if (!img) break;` skipped the quad, and the job exited 0 having
-  // written a hole — which is the likeliest reason a PDF is missing from an mp4
-  // while looking correct in the editor, where onImageLoad supplies the later
-  // repaint that a one-shot render does not have.
-  return [...failedVideoSrcs(), ...failedImageRefs(), ...failedSvgSources(), ...failedTextAssets()];
-}
 
-/**
- * Command (async). Resolves on the next raster event, or after RASTER_POLL_MS if
- * none arrives. Both wake reasons are equivalent to the caller: it re-examines
- * the pending set either way.
- */
-function waitForRasterProgress() {
-  return new Promise((resolve) => {
-    let offImage = null;
-    let offVideo = null;
-    let offSvg = null;
-    let offText = null;
-    let timer = null;
-    const finish = () => {
-      offImage?.();
-      offVideo?.();
-      offSvg?.();
-      offText?.();
-      clearTimeout(timer);
-      resolve();
-    };
-    offImage = onImageLoad(finish);
-    offVideo = onVideoFrame(finish);
-    offSvg = onSvgSourceLoad(finish);
-    offText = onTextAssetLoad(finish);
-    timer = setTimeout(finish, RASTER_POLL_MS);
-  });
-}
 
-/**
- * Command (async; renders repeatedly). ONE fully-resolved frame: renders, and
- * while anything is still rasterizing, waits for it and renders AGAIN — because
- * the widget that was pending drew nothing in the render that requested it.
- *
- * Throws LOUDLY, naming the refs, in BOTH of the ways a frame can fail to be
- * whole. A hole must fail the render, not quietly ship:
- *   - a raster that made no progress for RASTER_STALL_SECONDS — it will probably
- *     never arrive, and the frame has an equation-shaped gap in it;
- *   - a ref that has ALREADY failed for good (failedRasters). This one is checked
- *     FIRST and on every pass, including the pass where nothing is pending,
- *     because a failed ref is never pending — that is the whole hazard.
- *
- * @param {() => Promise<HTMLCanvasElement>} render Re-render this exact frame.
- * @returns {Promise<HTMLCanvasElement>}
- */
-async function settledFrame(render) {
-  let canvas = await render();
-  let waiting = null;             // the pending set as of the last check
-  let progressedAt = performance.now();
-  for (;;) {
-    const failed = failedRasters();
-    if (failed.length > 0)
-      throw new Error(`renderJobPage: ${failed.length} media source(s) FAILED to load, so this frame would be written with a hole where each of them should be — ${failed.map(truncate).join(", ")}. The load error itself was reported on this job's console output above.`);
-    const pending = pendingRasters();
-    if (pending.length === 0) return canvas;
-    const now = new Set(pending);
-    // PROGRESS = something that WAS pending no longer is. A set that merely grew
-    // (this frame asked for a new raster) is not progress and must not reset the
-    // clock, or a permanently stuck ref could hide behind a stream of new ones.
-    if (waiting === null || [...waiting].some((ref) => !now.has(ref))) progressedAt = performance.now();
-    else if (performance.now() - progressedAt > RASTER_STALL_SECONDS * 1000)
-      throw new Error(`renderJobPage: ${pending.length} raster(s) made no progress for ${RASTER_STALL_SECONDS}s and this frame cannot be drawn whole — ${pending.map(truncate).join(", ")}`);
-    waiting = now;
-    await waitForRasterProgress();
-    canvas = await render();
-  }
-}
 
 /**
  * Command (async; builds a registry, repairs the doc, allocates canvases).
@@ -272,7 +140,7 @@ async function openSession(docJson, params) {
     plan,
     // Each sub-sample render is SETTLED before the sampler averages it, so motion
     // blur cannot average a half-loaded frame into a loaded one.
-    renderFrame: (index, alpha) => settledFrame(() => base(index, alpha)),
+    renderFrame: (index, alpha) => settledFrame(() => base(index, alpha), "renderJobPage"),
     width, height, fps, samples,
     setTime: setParticleTimeOverride, // drive the ambient clock — see the header
   });
