@@ -1454,10 +1454,89 @@ export class PowerRPApp {
    * Routes through selectMany (the ONE multi-select substrate).
    */
   selectAll() {
-    const ids = this.nodes()
-      .filter((n) => n.plugin.capabilities.purgeable !== false)
-      .map((n) => n.itemId);
-    this.selectMany(ids);
+    this.selectMany(this.selectableIds());
+  }
+
+  /**
+   * Query. Every itemId Select All would take — the SELECTABLE population of this
+   * slide. Extracted so invert and select-by-type cannot disagree with Select All
+   * about what "everything" means; a second filter written beside it is exactly the
+   * hand-maintained-mirror defect this codebase keeps rediscovering.
+   */
+  selectableIds() {
+    return this.nodes().filter((n) => n.plugin.capabilities.purgeable !== false).map((n) => n.itemId);
+  }
+
+  /**
+   * Command. INVERT THE SELECTION (#301): everything selectable on this slide that
+   * is NOT currently selected.
+   *
+   * ON THE EMPTY SELECTION IT IS SELECT ALL, which is the honest reading of
+   * "invert" and not a special case — the complement of nothing is everything.
+   * On a full selection it deselects, for the same reason.
+   */
+  invertSelection() {
+    const chosen = new Set(this.selectedIds());
+    this.selectMany(this.selectableIds().filter((id) => !chosen.has(id)));
+  }
+
+  /**
+   * Command. INVERT WITHIN THE OWNING GROUP (#301): the members of the selection's
+   * group that are not selected, leaving everything outside that group alone.
+   *
+   * THE SCOPE IS THE GROUP THE SELECTION IS IN, so this is the natural partner of
+   * Select Inside Group (#296) — go in, then flip which members you have. Members
+   * of SEVERAL groups invert within each of them, which falls out of collecting
+   * the owners rather than being a case: a selection spanning two groups plainly
+   * means both.
+   */
+  invertSelectionInGroup() {
+    const membership = groupMembership(this.nodes());
+    const owners = new Set(this.selectedIds().map((id) => membership.get(id)).filter(Boolean));
+    if (owners.size === 0) {
+      console.warn("Invert Selection in Group: nothing selected is inside a group.");
+      return;
+    }
+    const chosen = new Set(this.selectedIds());
+    const siblings = this.nodes()
+      .filter((n) => n.type === "group" && owners.has(n.itemId))
+      .flatMap((n) => n.state.members ?? []);
+    this.selectMany([...new Set(siblings)].filter((id) => !chosen.has(id)));
+  }
+
+  /**
+   * Command. SELECT (or DESELECT) EVERY WIDGET OF ONE TYPE (#301).
+   *
+   * THE TYPE LIST IS DERIVED FROM THE LIVE REGISTRY at the call site, never
+   * hand-listed — a roster beside a registry that already knows is this repo's
+   * named recurring defect.
+   *
+   * @param {string} type - a widget type
+   * @param {boolean} [add] - true selects them alongside the current selection, false subtracts
+   */
+  selectByType(type, add = true) {
+    const matching = this.nodes().filter((n) => n.type === type && n.plugin.capabilities.purgeable !== false).map((n) => n.itemId);
+    const chosen = new Set(this.selectedIds());
+    for (const id of matching) { if (add) chosen.add(id); else chosen.delete(id); }
+    this.selectMany([...chosen]);
+  }
+
+  /**
+   * Query. The widget types PRESENT on this slide, with how many of each — what a
+   * select-by-type submenu lists. Derived from the live nodes, so a type nobody has
+   * placed is not offered and a new widget needs no edit here.
+   *
+   * @returns {Array<{type: string, title: string, count: number}>} sorted by title
+   */
+  typesOnSlide() {
+    const counts = new Map();
+    for (const n of this.nodes()) {
+      if (n.plugin.capabilities.purgeable === false) continue;
+      const e = counts.get(n.type) ?? { type: n.type, title: n.plugin.title ?? n.type, count: 0 };
+      e.count++;
+      counts.set(n.type, e);
+    }
+    return [...counts.values()].sort((a, b) => (a.title < b.title ? -1 : a.title > b.title ? 1 : 0));
   }
 
   /** Command. Clears the selection (palette "Deselect All" — manifest Round

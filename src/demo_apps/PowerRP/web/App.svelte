@@ -978,6 +978,34 @@
     });
   }
 
+  /** THE TWO BY-TYPE SUBMENUS. Registered ONCE with an empty child list and
+   *  refilled per palette open — the command registry has no `remove` (commands
+   *  are process-lifetime, which is what fixed the duplicate-id crash on a second
+   *  project open), so anything per-document must be a submenu CHILD. */
+  const SELECT_BY_TYPE_SUBMENU = { id: "select-by-type", title: "Select by Widget Type", icon: "mdi:shape-outline", aliases: ["select all of kind", "select every"], children: [] };
+  const DESELECT_BY_TYPE_SUBMENU = { id: "deselect-by-type", title: "Deselect by Widget Type", icon: "mdi:shape-outline", aliases: ["deselect all of kind", "remove kind from selection"], children: [] };
+
+  /**
+   * Command. Rebuilds both by-type submenus from THIS SLIDE's widgets.
+   *
+   * SPLICED IN PLACE, never reassigned — the registry holds these exact arrays.
+   * Each child PREVIEWS on hover (the user's "as you scroll up and down it would
+   * preview what it would look like"): `preview` stages the selection the entry
+   * would make and returns the undo, which is the same hook the camera-bind
+   * command uses, so no new affordance was invented for this.
+   */
+  function refreshTypeSelectCommands(a) {
+    const types = a.typesOnSlide();
+    const build = (add) => types.map((t) => ({
+      id: `${add ? "select" : "deselect"}-type-${t.type}`,
+      title: `${t.title} (${t.count})`,
+      icon: "mdi:shape-outline",
+      preview: (app) => { const before = [...app.selectedIds()]; app.selectByType(t.type, add); return () => app.selectMany(before); },
+      run: (app) => app.selectByType(t.type, add),
+    }));
+    SELECT_BY_TYPE_SUBMENU.children.splice(0, SELECT_BY_TYPE_SUBMENU.children.length, ...build(true));
+    DESELECT_BY_TYPE_SUBMENU.children.splice(0, DESELECT_BY_TYPE_SUBMENU.children.length, ...build(false));
+  }
   const coreCommands = [
     { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Keyframes `active` off from this slide onward. The widget still exists and still appears on the slides before this one — Show puts it back, and Purge is the irreversible one.", run: (a) => a.deleteSelection() },
     { id: "purge-item", title: "Purge Item (remove from existence)", icon: "mdi:delete-forever-outline", when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Removes the widget from the DOCUMENT — every slide at once, and Show cannot bring it back. Reach for Delete when you only meant to stop it appearing here.", run: (a) => a.purgeSelection() },
@@ -1428,6 +1456,9 @@
     // existing path — needsSelection, singular semantics unaffected) — these
     // are explicit SET commands, always visible, so they're discoverable via
     // fuzzy search without first knowing something is already selected.
+
+
+
     { id: "select-all", title: "Select All", icon: "mdi:select-all", run: (a) => a.selectAll() },
     { id: "deselect-all", title: "Deselect All", icon: "mdi:select-off", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.deselectAll() },
     // Rubber-band selection — armed via the palette (manifest round 11) OR the
@@ -1451,6 +1482,32 @@
         { id: "band-mode-outer", title: "Outer (touching)", icon: "mdi:selection-ellipse", run: (a) => a.setBandMode("outer") },
       ],
     },
+    // ── SELECTION SET OPERATIONS (#301) ──────────────────────────────────────
+    // User: "Invert selection and invert selection within group should be
+    // additional commands… We should also have a command for select by type…
+    // and deselect by type… it's command-palette only, and we'll give you a
+    // submenu in the command palette that lets you search for a given type."
+    { id: "invert-selection", title: "Invert Selection", icon: "mdi:select-inverse", aliases: ["flip selection", "select the rest", "select others"], help: "Selects everything on this slide that is NOT selected, and deselects what is. With nothing selected it selects everything, which is what inverting nothing means.", run: (a) => a.invertSelection() },
+    {
+      id: "invert-selection-in-group",
+      title: "Invert Selection in Group",
+      icon: "mdi:select-group",
+      aliases: ["invert within group", "select other members"],
+      when: (a) => a.canSelectParentGroup(),
+      requires: "a selected widget that is INSIDE a group — this flips the selection among that group's members, so the selection has to be in one",
+      help: "Selects the members of the group you are in that are NOT selected, leaving everything outside that group untouched. The partner of Select Inside Group: go in, then flip which members you have. A selection spanning two groups inverts within each of them.",
+      run: (a) => a.invertSelectionInGroup(),
+    },
+    // BY TYPE: a submenu, because web/App.svelte bans PARAMETERISED palette
+    // commands — the type has to be a CHILD ENTRY rather than an argument. The
+    // children are rebuilt from the live slide each time the palette opens (see
+    // refreshTypeSelectCommands), so a type nobody has placed is never offered and
+    // a new widget needs no edit here. The array is SPLICED, never reassigned: the
+    // registry holds this exact reference, and reassigning it would leave the
+    // palette reading the original forever — the plugin-widget submenu's own
+    // hard-won rule (tests/builtin_asset_library_test.js pins it there).
+    SELECT_BY_TYPE_SUBMENU,
+    DESELECT_BY_TYPE_SUBMENU,
     { id: "toggle-palette", title: "Toggle Command Palette", icon: "mdi:chevron-down-box-outline", run: (a) => (a.paletteOpen = !a.paletteOpen) },
     // Evaluated state: the camera's own properties may be equations.
     { id: "reset-view", title: "Zoom to Fit Camera", icon: "mdi:fit-to-screen-outline", run: (a) => a.canvasActions?.zoomToFit(cameraRectAt(a.doc, a.slideIndex, 1, a.registry)) },
@@ -2239,6 +2296,17 @@
   // instant it opens (and drops it when it closes) while activeElement.closest still
   // gives innermost-wins for the autofocus popovers (a search box's own scope beats
   // the enclosing menu's). Runes-only lifecycle: one observer for the component's life.
+  // THE BY-TYPE SUBMENUS ARE REBUILT WHEN THE PALETTE OPENS (#301). They list the
+  // widget types actually PRESENT on this slide, which changes as the deck is
+  // edited — so a stale list would offer a type nobody has any more, or omit one
+  // just added. Keyed on paletteOpen and slideIndex, the two things that decide
+  // what the next opening should show.
+  $effect(() => {
+    if (!app.paletteOpen) return;
+    app.slideIndex; // tracked: a different slide has a different population
+    refreshTypeSelectCommands(app);
+  });
+
   $effect(() => {
     const obs = new MutationObserver(() => { focus = focusContext(document.activeElement); });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-hint-popover", "data-hint-scope"], subtree: true });
