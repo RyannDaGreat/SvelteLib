@@ -2637,9 +2637,19 @@ export class PowerRPApp {
   /**
    * Query. The itemIds that a Group Selection would make members: the current
    * selection, minus purgeable:false widgets (the camera never joins a group)
-   * and minus items ALREADY in a group (no nested-group creation in the rough
-   * draft — flagged). Order = selection order. Groups themselves are excluded
-   * (grouping groups = nesting, out of scope).
+   * and minus items ALREADY in a group. Order = selection order.
+   *
+   * GROUPS THEMSELVES ARE NO LONGER EXCLUDED (#302). This used to carry
+   * `if (type === "group") return false; // no group-of-groups (rough draft)`, so
+   * selecting three groups greyed Group Selection out with nothing said. The user:
+   * "i selected 3 groups. why can't i group them into a bigger group" — "make this
+   * obviousness possible."
+   *
+   * REMOVING THE LINE ALONE WOULD HAVE SHIPPED A BROKEN PICTURE, which is why the
+   * derivation was fixed first: measured with outer group O owning inner group I
+   * owning a rect, moving O moved O and I and left the RECT BEHIND. core/derive.js
+   * now orders groups outermost-first and reads each group's already-influenced
+   * world, and memberOwnerGroups walks the chain for the expression pass.
    */
   #groupableSelection() {
     const membership = groupMembership(this.nodes());
@@ -2648,7 +2658,6 @@ export class PowerRPApp {
       if (!type) return false;
       const plugin = this.registry.get(type);
       if (plugin.capabilities.purgeable === false) return false; // camera
-      if (type === "group") return false; // no group-of-groups (rough draft)
       if (membership.has(id)) return false; // already grouped
       return true;
     });

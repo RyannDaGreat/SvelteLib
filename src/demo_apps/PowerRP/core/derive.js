@@ -421,8 +421,31 @@ export function applyGroupParenting(nodes) {
   // Mutate a shallow-cloned world per touched node so the input nodes stay pure.
   const cloned = new Map();
   const worldOf = (n) => cloned.get(n.itemId) ?? n.world;
-  for (const g of groups) {
-    const influence = groupInfluence(g.world, groupBindWorld(g.state));
+  // ── OUTERMOST GROUP FIRST (#302) ─────────────────────────────────────────
+  // A group that is itself a MEMBER of another group must be moved by its owner
+  // BEFORE it moves its own members, or the inner group's box slides away and its
+  // contents stay behind. Measured before this ordering existed: with O owning I
+  // owning rect a, moving O by +100 put O and I at 100 and left `a` at 10.
+  // A stable topological sort: a group is emitted only once every group that owns
+  // it has been. A CYCLE (a group that is its own ancestor) cannot starve the
+  // loop — whatever remains after a pass that placed nothing is emitted as-is,
+  // so a malformed document renders rather than hanging.
+  const memberOf = new Set(groups.flatMap((g) => g.state.members));
+  const ordered = [];
+  const placed = new Set();
+  let remaining = groups;
+  while (remaining.length > 0) {
+    const ready = remaining.filter((g) => !groups.some((o) => o !== g && o.state.members.includes(g.itemId) && !placed.has(o.itemId)));
+    if (ready.length === 0) { ordered.push(...remaining); break; } // cycle: emit and move on
+    for (const g of ready) { ordered.push(g); placed.add(g.itemId); }
+    remaining = remaining.filter((g) => !placed.has(g.itemId));
+  }
+  for (const g of ordered) {
+    // worldOf(g), NOT g.world: an inner group has already been moved by its owner
+    // at this point, and its influence on its own members must include that. For a
+    // TOP-LEVEL group the two are identical, so every un-nested document is
+    // byte-identical to before.
+    const influence = groupInfluence(worldOf(g), groupBindWorld(g.state));
     for (const memberId of g.state.members) {
       const m = byId.get(memberId);
       if (!m) continue; // member purged / not on this slide / not created yet — skip
@@ -488,7 +511,44 @@ export function memberOwnerGroups(state) {
       if (!map.has(memberId)) map.set(memberId, []);
       map.get(memberId).push(gid);
     }
-  return map;
+  // ── TRANSITIVE: A GROUP INSIDE A GROUP CARRIES ITS MEMBERS WITH IT (#302) ──
+  // User: "i selected 3 groups. why can't i group them into a bigger group" →
+  // "make this obviousness possible."
+  //
+  // MEASURED BEFORE THIS EXISTED: with outer group O owning inner group I owning
+  // rect a, moving O by +100 moved O and I correctly and left `a` at its original
+  // 10 — the inner group's BOX would slide away while its contents stayed behind.
+  // So nesting was not merely disallowed by canGroup(); the derivation could not
+  // express it, and simply removing that refusal would have shipped that picture.
+  //
+  // The cause is one line up in composedMemberInfluence: it reads each owner's RAW
+  // state, so a nested group contributes its own un-influenced transform and its
+  // owner's movement is never seen. Walking the chain here fixes it at the source,
+  // and CANNOT double-count for exactly that reason — each level's influence is
+  // computed from independent raw state, so O contributes +100 and I contributes
+  // its own 0.
+  //
+  // OUTERMOST FIRST, matching the compose order composedMemberInfluence already
+  // uses for two groups that both list one member (later group last).
+  const owners = (id, seen) => {
+    const direct = map.get(id);
+    if (!direct || direct.length === 0) return [];
+    const out = [];
+    for (const gid of direct) {
+      if (seen.has(gid)) continue; // a cycle: a group that is its own ancestor
+      seen.add(gid);
+      out.push(...owners(gid, seen), gid);
+    }
+    return out;
+  };
+  const transitive = new Map();
+  for (const memberId of map.keys()) {
+    const chain = owners(memberId, new Set([memberId]));
+    // Deduped: two branches of the chain can reach one ancestor, and applying it
+    // twice is the drift this whole comment exists to prevent.
+    transitive.set(memberId, [...new Set(chain)]);
+  }
+  return transitive;
 }
 
 /**
