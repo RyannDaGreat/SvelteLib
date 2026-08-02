@@ -61,6 +61,54 @@ export default defineConfig({
     // 500 kB warning would fire on assets whose size is inherent, so the
     // threshold is raised to keep real regressions visible instead of drowned.
     chunkSizeWarningLimit: 4000,
+    rollupOptions: {
+      output: {
+        /**
+         * Pure function. MERMAID SHIPS AS ONE CHUNK, NOT THIRTY-FOUR.
+         *
+         * Mermaid lazily `import()`s one module PER DIAGRAM TYPE — classDiagram,
+         * stateDiagram-v2, erDiagram, ganttDiagram, pieDiagram, sequenceDiagram,
+         * gitGraph, quadrant, mindmap, timeline, cynefin, plus shared chunks —
+         * so a default build emits 34 separately-hashed assets that are fetched
+         * at the moment a diagram of that type first renders.
+         *
+         * THAT SPLIT BUYS US NOTHING AND COSTS A WHOLE FAILURE CLASS. The user hit
+         * it on the deployed site: sixteen 404s and "Mermaid error: failed to fetch
+         * dynamically imported module". MEASURED at the time — the deployed bundle
+         * did NOT reference the requested hash (`classDiagram-OUVF2IWQ-D1sm1a0V`),
+         * so the page was running CACHED javascript from an older deploy and asking
+         * for chunks that deploy no longer had. Every content-hashed lazy chunk is a
+         * promise that a file with that exact name will still be on the server
+         * whenever the code that names it happens to run, and a cached page outlives
+         * a deploy. The user's own reading of it: "I don't see why they're different
+         * assets… can't you just keep it all in the same file?"
+         *
+         * He is right, and it is not merely a patch for one stale cache: with no
+         * lazy chunk there is no name to go missing, so the class cannot recur for
+         * a mermaid diagram type nobody has rendered yet. The engine is already
+         * behind mermaidRenderer.js's own lazy boundary, so the diagram types load
+         * WITH the engine that needs them instead of one HTTP round-trip later —
+         * which is also why this does not enlarge the initial page load.
+         *
+         * SCOPED TO MERMAID DELIBERATELY. pdfjs, mathjax, mathlive and canvaskit are
+         * genuinely large and genuinely optional, and their lazy boundary is worth
+         * the risk; mermaid's per-diagram-type split is a granularity nobody asked
+         * for. If a second dependency shows the same symptom, add it here rather
+         * than switching the whole build to inlineDynamicImports.
+         *
+         * @param {string} id - the module's resolved id
+         * @returns {string|undefined} the chunk name, or undefined for vite's default
+         *
+         * @example manualChunks("/x/node_modules/mermaid/dist/mermaid.core.mjs") // "mermaid"
+         * @example manualChunks("/x/node_modules/pdfjs-dist/build/pdf.mjs") // undefined
+         * @example manualChunks("/x/src/demo_apps/PowerRP/web/app.svelte.js") // undefined
+         */
+        manualChunks(id) {
+          if (id.includes("node_modules/mermaid/") || id.includes("node_modules/@mermaid-js/")) return "mermaid";
+          return undefined;
+        },
+      },
+    },
   },
   // pdfjs-dist is only ever reached through pdf_page_raster's LAZY
   // `await import(...)` (a bare-node-safety requirement), so vite would
