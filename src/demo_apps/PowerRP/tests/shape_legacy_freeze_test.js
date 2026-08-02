@@ -103,13 +103,32 @@ test("NOT INSERTABLE: the legacy plugin declares no placement command", () => {
     `the legacy shape must offer no Add command, found: ${cmds.map((c) => c.id).join(", ")}`);
 });
 
-test("NOT INSERTABLE: the toolbar picker renders family tiles only", () => {
+test("NOT INSERTABLE: the toolbar picker renders the DERIVED shape menu, never the legacy presets", () => {
   const src = readFileSync(resolve(HERE, "../web/ShapePicker.svelte"), "utf8");
+  // These two are this suite's actual subject — the legacy `shape` plugin must be
+  // unreachable from the picker — and both still hold exactly as written.
   assert.ok(!/SHAPE_NAMES|SHAPE_LABELS/.test(src),
     "ShapePicker must not import the legacy preset table — that row is the bug being removed");
   assert.ok(!/registry\.get\("shape"\)/.test(src),
     "ShapePicker must not arm the legacy `shape` plugin");
-  assert.ok(/familyItems/.test(src), "ShapePicker still renders the shapeshifter family tiles");
+  // ── THE THIRD ASSERTION WAS STALE IN TWO WAYS AT ONCE ───────────────────────
+  // It read `assert.ok(/familyItems/.test(src), "…renders the shapeshifter family
+  // tiles")`. `e939d85` (task #258) replaced that variable with `tiles`, derived
+  // from the insert-shape command's own menu — so the NAME was stale. But the
+  // CONCEPT was stale too, and that is the part worth keeping written down: that
+  // commit's finding was that the family-derived list "was derived-but-wrong",
+  // because "is it a shapeshifter FAMILY" describes how a shape is BUILT while the
+  // menu is about what a shape IS. It could therefore never show `aperture` or
+  // `iris_blades`, which is the bug the user reported ("New shapes that we add can
+  // go into the Add Shape menu, but I don't see them there"). Re-asserting
+  // `familyItems` would have demanded the defect back.
+  //
+  // So the contract is the CURRENT one, and it is checked by SHAPE rather than by
+  // variable name: the grid comes from the registry-derived menu, not a list in
+  // this file. #258's own suite owns the membership rule; this one only has to
+  // prove the picker is not a second, hand-written roster.
+  assert.match(src, /app\.commands\.get\("insert-shape"\)\.shapeMenu/,
+    "ShapePicker's grid must come from the insert-shape command's derived menu, not a list held here");
 });
 
 test("ONE PICKER: every family in the submenu is an ss_ type, and there are no duplicates", () => {

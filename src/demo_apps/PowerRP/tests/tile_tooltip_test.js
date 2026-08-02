@@ -283,9 +283,25 @@ test("download reads bytes through the STORE seam, so it works in both storage m
   // (web/storageMode.js) — the download must not go through the mode-blind seam.
   assert.match(body, /assetStoreFor\(.*\)\.get\(/, "the bytes must come through the storage seam");
   assert.doesNotMatch(body, /projectApi\.assetUrl|fetch\(/, "never a direct fetch or served-path link");
-  assert.match(body, /URL\.createObjectURL/, "a blob: URL is what an <a download> can save");
-  assert.match(body, /link\.download = a\.name/, "the saved filename is the asset's basename");
-  assert.match(body, /URL\.revokeObjectURL/, "the one-shot object URL is revoked, not leaked");
+  // ── THE SAVE MECHANICS MOVED, AND THIS TEST USED TO FAIL BECAUSE OF IT ──────
+  // These three lines asserted `URL.createObjectURL`, `link.download = a.name`
+  // and `URL.revokeObjectURL` INSIDE this function body. All three behaviours are
+  // still required and still happen — they were extracted into web/fileDownload.js
+  // `downloadBytes`, which consolidated ELEVEN hand-rolled copies (its docblock
+  // records that only one of the eleven appended the <a> to the document, so the
+  // rest would have failed silently in Firefox). The refactor was right; grepping
+  // one function body for another function's implementation detail was what broke.
+  //
+  // So the contract is pinned WHERE IT NOW LIVES, at both ends: this function must
+  // delegate, and the helper must do the three things. That is strictly stronger
+  // than the original — the old form would have passed on a copy-pasted twelfth
+  // implementation, and this form does not.
+  assert.match(body, /downloadBytes\(/, "the save goes through the ONE download helper, not a twelfth hand-rolled copy");
+  const dl = readFileSync(new URL("../web/fileDownload.js", import.meta.url), "utf8");
+  assert.match(dl, /URL\.createObjectURL/, "downloadBytes: a blob: URL is what an <a download> can save");
+  assert.match(dl, /a\.download = name/, "downloadBytes: the saved filename is the one passed in");
+  assert.match(dl, /URL\.revokeObjectURL/, "downloadBytes: the one-shot object URL is revoked, not leaked");
+  assert.match(body, /downloadBytes\([^)]*a\.name/, "…and THIS call passes the asset's basename as that filename");
   // A BUILT-IN's bytes are its bundled source — there is no store entry to read.
   assert.match(body, /a\.builtin/, "a built-in must take its source, not a store read");
   // Failures are LOUD (the pane's own error line + the console), never swallowed.

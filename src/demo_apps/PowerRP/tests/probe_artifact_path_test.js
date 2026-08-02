@@ -50,6 +50,41 @@ const RESOLVES_RE = /(?:\bresolve\(|\bjoin\(|os\.path\.join\()/;
 // Self-location, per language.
 const SELF_LOCATING_RE = /import\.meta\.url|__file__/;
 const CWD_RE = /process\.cwd\(\)|os\.getcwd\(\)/;
+// DISPLAY IS NOT DERIVATION, and conflating them made this guard cry wolf.
+// `path.relative(process.cwd(), SHOT_DIR)` takes an ALREADY-ABSOLUTE path and
+// renders it short for a log line — "shots in tests/../.claude_vlm_checks/x". It
+// cannot be the base of a write, because its output is never joined to anything;
+// it is the LAST step, not the first. The rule this file states is (2) "no such
+// file DERIVES A PATH from process.cwd()", and a relative-rendering call derives
+// nothing. cursor_presets_test.js resolves its SHOT_DIR from import.meta.url on
+// line 57 — correctly, by this guard's own rule — and was failing solely for
+// printing a friendly path on line 297.
+//
+// NARROW ON PURPOSE, matching this file's stated philosophy that "a narrow honest
+// guard" beats one that reasons about arbitrary path arithmetic: ONLY the
+// relative-rendering form is exempt, and only when the cwd call is its FIRST
+// argument (the `from` slot). `path.join(process.cwd(), …)`,
+// `path.resolve(process.cwd(), …)`, and a bare `const base = process.cwd()` all
+// still fail, which is the defect actually measured in pdf_p1_vlm_check.js.
+const CWD_DISPLAY_ONLY_RE = /(?:path\.relative\(\s*process\.cwd\(\)|os\.path\.relpath\([^,]*,\s*os\.getcwd\(\))/;
+
+/**
+ * Pure function. Does this line DERIVE a path from the working directory — the
+ * thing that makes output depend on where the command was run from — as opposed
+ * to merely rendering an absolute path relative to it for display?
+ *
+ * @param {string} text - one comment-stripped source line
+ * @returns {boolean} true if the line is a real cwd-derivation
+ *
+ * @example derivesFromCwd('const dir = path.join(process.cwd(), "shots");') // true
+ * @example derivesFromCwd('const dir = path.resolve(process.cwd(), "..");') // true
+ * @example derivesFromCwd('console.log(path.relative(process.cwd(), SHOT_DIR));') // false (display only)
+ * @example derivesFromCwd('const here = path.dirname(fileURLToPath(import.meta.url));') // false (no cwd at all)
+ */
+export function derivesFromCwd(text) {
+  if (!CWD_RE.test(text)) return false;
+  return !CWD_DISPLAY_ONLY_RE.test(text);
+}
 
 /**
  * Query. Every source file under the swept directories, as repo-relative paths.
@@ -141,7 +176,7 @@ function inventory() {
       selfLocating: SELF_LOCATING_RE.test(src),
       // Per-line and comment-stripped: the note this guard asks for names the very
       // call it forbids, so scanning the whole file text would fail on its own rule.
-      cwd: code.some((l) => CWD_RE.test(l.text)),
+      cwd: code.some((l) => derivesFromCwd(l.text)),
       lines,
     }];
   });
