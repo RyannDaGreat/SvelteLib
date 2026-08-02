@@ -165,7 +165,7 @@ export const editMode = (c) => editBase(c) && !c.crosshairArmed && !c.canvasMode
  * @example editSelection({mode: "edit"}) // undefined (FALSY, not false: `&&` yields the absent flag itself, which is all a `when` gate reads)
  * @example editSelection({mode: "edit", hasSelection: true, handlesSelected: true}) // false — the inner scope owns the keys
  */
-export const editSelection = (c) => editMode(c) && c.hasSelection && !c.handlesSelected;
+export const editSelection = (c) => editMode(c) && c.hasSelection && !c.handlesSelected && !c.slideRail;
 /**
  * Pure function. HANDLES are selected — the inner selection scope owns the keys
  * that both scopes want. Requires `hasSelection` because handles only exist for a
@@ -202,17 +202,21 @@ export const handlesSelected = (c) => editMode(c) && c.hasSelection && !!c.handl
  * @example slideRailFocus({mode: "edit", slideRail: true, typingTarget: true}) // false — the inline rename editor owns them
  */
 export const slideRailFocus = (c) => editMode(c) && c.slideRail;
-/** Pure function. The ITEM clipboard's scope: ordinary editor input with focus
- *  NOT in the slide rail. The complement of `slideRailFocus` inside editMode, so
- *  Ctrl+C/V/D have exactly one meaning at any moment.
+/**
+ * Pure function. THE ITEM CLIPBOARD'S SCOPE: ordinary editor input with focus NOT
+ * in the slide rail. The complement of `slideRailFocus` inside editMode, so
+ * Ctrl+V has exactly one meaning at any moment.
+ *
+ * Its selection-bearing siblings need no equivalent: `editSelection` ALREADY
+ * excludes `slideRail`, which stands the whole item-selection family down while
+ * the rail has focus (that is what keeps rail Backspace from also deleting the
+ * selected widget). This exists only for `paste`, the one item entry that gates
+ * on editMode rather than on a selection.
+ *
  * @example itemClipboardScope({mode: "edit"}) // true
- * @example itemClipboardScope({mode: "edit", slideRail: true}) // false — the rail owns the clipboard keys */
+ * @example itemClipboardScope({mode: "edit", slideRail: true}) // false — the rail owns the clipboard keys
+ */
 export const itemClipboardScope = (c) => editMode(c) && !c.slideRail;
-/** Pure function. `itemClipboardScope` with an item selected — the gate for the
- *  clipboard keys that need something to act on (Copy, Duplicate).
- * @example itemClipboardSelection({mode: "edit", hasSelection: true}) // true
- * @example itemClipboardSelection({mode: "edit", hasSelection: true, slideRail: true}) // false */
-export const itemClipboardSelection = (c) => editSelection(c) && !c.slideRail;
 /**
  * The drag kinds whose ESCAPE is claimed by CanvasView, which cancels the gesture
  * from a CAPTURE-phase listener so the selection survives — it MUST pre-empt App's
@@ -502,12 +506,14 @@ export const KEYBINDING_DEFAULTS = [
   // worse.
   { command: "purge-item", keys: ["Cmd", "Backspace"], when: "editSelection" },
   // THE CLIPBOARD KEYS ARE SCOPED, because there are TWO clipboards. Focus in
-  // the slide rail means these three chords act on SLIDES (the entries below);
-  // anywhere else they act on items, as they always have. The two scopes are
-  // complementary by construction (itemClipboardScope = editMode && !slideRail),
-  // so exactly one meaning is live and the HintBar shows one chip per key —
-  // the same disambiguation-by-`when` the handle scope uses for Backspace.
-  { command: "copy-item", keys: ["Ctrl", "C"], when: "itemClipboardSelection" },
+  // the slide rail means these chords act on SLIDES (the entries below); anywhere
+  // else they act on items, as they always have. The two scopes are complementary
+  // by construction — `editSelection` excludes `slideRail` and `slideRailFocus`
+  // requires it — so exactly one meaning is live and the HintBar shows one chip
+  // per key, the same disambiguation-by-`when` the handle scope uses for
+  // Backspace. Only `paste` needs a predicate of its own (itemClipboardScope):
+  // it is the one item entry gated on editMode rather than on a selection.
+  { command: "copy-item", keys: ["Ctrl", "C"], when: "editSelection" },
   { command: "paste", keys: ["Ctrl", "V"], when: "itemClipboardScope" },
   // 14.9: Cmd/Ctrl+D = Duplicate. FLAGGED — the binding is the convention
   // candidate PENDING USER RATIFICATION (Cmd+D is the browser bookmark key;
@@ -515,6 +521,19 @@ export const KEYBINDING_DEFAULTS = [
   // editing). No existing binding uses D, so createKeybindings finds no
   // conflict (keybindings_test guards this).
   { command: "duplicate", keys: ["Cmd", "D"], when: "editSelection" },
+  // ── THE SLIDE CLIPBOARD, scoped to rail focus ─────────────────────────────
+  // Same three chords, one level up: with a slide row focused they act on
+  // SLIDES. Ctrl (not Cmd) on copy/paste mirrors the item entries exactly —
+  // core/shortcuts.js matches Cmd and Ctrl alike, so one entry covers both
+  // platforms and the two scopes use identical vocabulary.
+  { command: "copy-slides", keys: ["Ctrl", "C"], when: "slideRailFocus" },
+  { command: "paste-slides", keys: ["Ctrl", "V"], when: "slideRailFocus" },
+  { command: "duplicate-slides", keys: ["Cmd", "D"], when: "slideRailFocus" },
+  // Backspace deletes the SELECTED SLIDES from the rail — the same
+  // harder-gesture-bigger-consequence family as the item/handle scopes, one
+  // level up again. No Cmd+Backspace twin: a slide has no hide-vs-purge
+  // distinction (its `enabled` flag is the eye toggle, not a delete).
+  { command: "delete-slides", keys: ["Backspace"], when: "slideRailFocus" },
   { command: "put-on-top", keys: ["Cmd", "Shift", "F"], when: "editSelection" },
   { command: "put-on-bottom", keys: ["Cmd", "Shift", "B"], when: "editSelection" },
   // Brackets, NOT arrows (user ruling 2026-07-28): the ARROW KEYS nudge the
@@ -565,6 +584,11 @@ export const KEYBINDING_LABELS = {
   "save-dispatch": "Save",
   "delete-item": "Delete", "copy-item": "Copy", paste: "Paste",
   duplicate: "Duplicate",
+  // The rail-scoped twins say SLIDE explicitly. The chord is the same and only
+  // one of each pair is ever live, so the word is the only thing telling the user
+  // WHICH clipboard the key in front of them is about to reach.
+  "copy-slides": "Copy slides", "paste-slides": "Paste slides",
+  "duplicate-slides": "Duplicate slides", "delete-slides": "Delete slides",
   "purge-item": "Purge",
   "put-on-top": "To front", "put-on-bottom": "To back",
   "prev-slide": "Prev slide", "next-slide": "Next slide", present: "Present",
@@ -575,7 +599,7 @@ export const KEYBINDING_LABELS = {
 };
 
 /** The `when`-name → predicate map the keybinding bridge resolves against. */
-export const WHEN_RESOLVERS = { editMode, editSelection, deselectable, handlesSelected };
+export const WHEN_RESOLVERS = { editMode, editSelection, deselectable, handlesSelected, slideRailFocus, itemClipboardScope };
 
 /**
  * The HELD-MODIFIER verbs a drag kind can read, keyed by the semantic modifier id
@@ -1196,6 +1220,12 @@ export const HINT_PROBE_FLAGS = Object.freeze([
   // makes the handle entries provably live (and their item-scope counterparts
   // provably dark) rather than a claim in a comment.
   { hasSelection: true, handlesSelected: true },
+  // FOCUS IN THE SLIDE RAIL — the scope that owns the SLIDE clipboard keys. Both
+  // halves are reachable and both must be probed: with an item selected (the real
+  // case, and the one where the item entries must stand DOWN — that is what makes
+  // the Ctrl+C hand-off provable rather than asserted in a comment) and without.
+  { slideRail: true },
+  { slideRail: true, hasSelection: true },
   { typingTarget: true, textEditing: true, textEditingRich: true },
   { typingTarget: true, textEditing: true, textEditingRich: false },
   { typingTarget: true, latexEditing: true },

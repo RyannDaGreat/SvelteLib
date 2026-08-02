@@ -1327,6 +1327,33 @@
     // what the slides after it show. See core/slide_reorder.js.
     { id: "move-slide-up", title: "Move Slide Up", icon: "mdi:arrow-up", help: HELP_SLIDE_MOVE, run: (a) => a.moveSlide(-1) },
     { id: "move-slide-down", title: "Move Slide Down", icon: "mdi:arrow-down", help: HELP_SLIDE_MOVE, run: (a) => a.moveSlide(+1) },
+    // ── THE SLIDE CLIPBOARD ───────────────────────────────────────────────────
+    // User, 2026-08-02: "I also want to be able to copy and paste slides …
+    // There should be some way to duplicate a slide."
+    //
+    // These are SLIDE commands, not the item Copy/Paste with a different
+    // argument, and they are deliberately separate entries rather than a
+    // context-sensitive Ctrl+C: the item clipboard round-trips through the OS and
+    // the server (web/clipboard.js documents why at length), and overloading one
+    // chord onto two clipboards would mean a copy whose destination depended on
+    // invisible focus state. The keybindings below scope them to the slide rail.
+    //
+    // The SELECTION they read is app.selectedSlideIndices(), which is "the
+    // current slide" when nothing is multi-selected — so each of these is
+    // meaningful with no rail selection at all, and none of them needs a `when`
+    // on the selection the way an item command does.
+    { id: "copy-slides", title: "Copy Slide(s)", icon: "mdi:content-copy", aliases: ["copy slide", "copy selected slides"], help: "Captures what the selected slides LOOK LIKE — their folded state — not their stored differences, because a difference means something else in a different place. Pasting therefore reproduces the picture wherever it lands.", run: (a) => a.copySlides() },
+    // The COUNT lives in `requires`, not in the title: `title` is what the fuzzy
+    // matcher indexes and must be stable, which is the same split
+    // simplify-duplicate-keyframes documents. Here the gate has a genuinely
+    // variable sentence, so `requires` is a FUNCTION (core/commands.js
+    // commandUnavailableReason resolves it — never read cmd.requires raw).
+    { id: "paste-slides", title: "Paste Slide(s)", icon: "mdi:content-paste", aliases: ["paste slide"], when: (a) => a.slideClipboardCount() > 0, requires: () => "a slide on the slide clipboard — copy or duplicate one first", help: "Inserts the copied slides after the current one with fresh identities. Each pasted slide's difference is rebuilt against whatever the deck shows at that point, and the slide that follows the block is rebuilt too, so nothing else in the deck changes.", run: (a) => a.pasteSlides() },
+    { id: "duplicate-slides", title: "Duplicate Slide(s)", icon: "mdi:file-multiple-outline", aliases: ["duplicate slide", "clone slide"], help: "Copy plus paste-after, in one step and one undo — so the copy is produced by exactly the same path a manual Copy/Paste takes. It does replace the slide clipboard, as Duplicate does everywhere.", run: (a) => a.duplicateSlides() },
+    // The MULTI-SLIDE delete, beside the single one above rather than replacing
+    // it: delete-slide is bound to the rail's trash button and means "this one",
+    // while this reads the multi-selection. It refuses to empty the deck.
+    { id: "delete-slides", title: "Delete Selected Slides", icon: "mdi:file-remove-outline", aliases: ["delete slides", "remove selected slides"], when: (a) => a.doc.slides.length > a.selectedSlideIndices().length, requires: "at least one slide left over after the deletion — a document always has at least one slide", help: "Deletes every slide in the rail selection at once. As with a single delete it removes their stored DIFFERENCES, not the widgets: anything an earlier slide created still exists.", run: (a) => a.deleteSlides() },
     // The counterweight to that rebuild: it can write a keyframe the author
     // would not have, so there is one command that takes the redundant ones back
     // out. User: "make that a tool of simplify duplicate keyframes that would
@@ -2280,7 +2307,7 @@
   // Read-only on the DOM and it edits nothing: the two shared-lib controls it
   // classifies (DraggableNumber, Modal) are identified by the ARIA/role they
   // ALREADY publish, so no component had to learn about the registry.
-  const NO_FOCUS_CONTEXT = { typing: false, dialog: false, numericField: null, numericFieldBounded: false, fieldScope: null, popoverKind: null };
+  const NO_FOCUS_CONTEXT = { typing: false, dialog: false, numericField: null, numericFieldBounded: false, fieldScope: null, popoverKind: null, slideRail: false };
   /**
    * Pure function. What the focused element owns, as the shortcut context's focus
    * axes. `el` is null when nothing is focused.
@@ -2302,7 +2329,7 @@
    * Enter/Escape verbs (which used to be the sweep's chipless "LOCAL" drift) without
    * any component learning about the registry.
    *
-   * @example // focusContext(null) → {typing: false, dialog: false, numericField: null, numericFieldBounded: false, fieldScope: null, popoverKind: null}
+   * @example // focusContext(null) → {typing: false, dialog: false, numericField: null, numericFieldBounded: false, fieldScope: null, popoverKind: null, slideRail: false}
    * @example // focusContext(<input>) → {typing: true, dialog: false, …}
    * @example // focusContext(<div role="spinbutton" aria-valuemin="0" aria-valuemax="1">)
    * @example // → {typing: false, dialog: false, numericField: "scrubber", numericFieldBounded: true, …}
@@ -2325,6 +2352,14 @@
       // focuses, so a focus INSIDE it resolves the scope. Nothing focused ⇒ null.
       fieldScope: el.closest("[data-hint-scope]")?.dataset.hintScope ?? null,
       popoverKind: el.closest("[data-hint-popover]")?.dataset.hintPopover ?? null,
+      // IS FOCUS IN THE SLIDE RAIL? The axis that hands Ctrl+C/V/D and Backspace
+      // to the SLIDE clipboard instead of the item one — two different
+      // clipboards, so one chord may not mean both (core/shortcut_entries.js
+      // slideRailFocus). Same closest() read as the dialog and popover axes,
+      // against the navigator's own root class rather than a data attribute:
+      // the rail is one fixed component, not a family of markable widgets, so
+      // there is nothing for an attribute to generalize over.
+      slideRail: !!el.closest(".slidenav"),
     };
   }
   let focus = $state(NO_FOCUS_CONTEXT);
@@ -2433,6 +2468,11 @@
       // the generalization of numericField, feeding the Enter/Escape chips that used
       // to be the sweep's chipless LOCAL entries (core/shortcut_entries.js fieldScope).
       fieldScope: focus.fieldScope,
+      // FOCUS IS IN THE SLIDE RAIL — the axis that decides WHICH CLIPBOARD the
+      // Ctrl+C/V/D chords reach, and stands the item-selection family down so
+      // Backspace on a focused slide row deletes slides and not the selected
+      // widget (core/shortcut_entries.js slideRailFocus / editSelection).
+      slideRail: focus.slideRail,
       // An OPEN popover/menu/combobox's kind ("menu"|"combobox"|…), or null, and the
       // truthy "is a popover holding the keyboard" flag derived from it. Like a dialog,
       // a popover is a TAKEOVER: editorInput excludes it, so the canvas chips stand
