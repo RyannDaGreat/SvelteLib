@@ -552,8 +552,25 @@ export function memberOwnerGroups(state) {
   // computed from independent raw state, so O contributes +100 and I contributes
   // its own 0.
   //
-  // OUTERMOST FIRST, matching the compose order composedMemberInfluence already
-  // uses for two groups that both list one member (later group last).
+  // ── INNERMOST FIRST, AND THE ORDER IS NOT COSMETIC ───────────────────────
+  // composedMemberInfluence folds with `compose(next, composed)`, putting each
+  // successive owner on the OUTSIDE, so the outermost ancestor must arrive LAST.
+  //
+  // THIS SAID "OUTERMOST FIRST" AND WAS WRONG, for a reason worth keeping. I
+  // justified it by the sibling rule ("later group last"), which is about Z-ORDER
+  // between two INDEPENDENT groups and says nothing about nesting depth. The two
+  // orderings agree for a pure translation and diverge the moment an ancestor is
+  // ROTATED OR SCALED, because composition does not commute. MEASURED on
+  // O(rot 30°, scale 1.5) → I(rot 0.4, scale 1.2) → rect: the render put the leaf
+  // at (265.9, 349.1) and the expression path at (296.5, 394.1) — 54.3 units
+  // apart, with rotation and scale agreeing exactly and only translation wrong,
+  // which is the signature of a swapped compose order. So an equation reading a
+  // nested member's anchor disagreed with the pixel it was drawn at.
+  //
+  // ALL TEN NESTED TESTS PASSED THROUGHOUT: every one of them translated, and
+  // translations commute. tests/group_test.js's rotate+scale agreement test was
+  // one group deep, so it could not see this either. The gap was the INTERSECTION
+  // of the two — nested AND rotated — which is now pinned below.
   const owners = (id, seen) => {
     const direct = map.get(id);
     if (!direct || direct.length === 0) return [];
@@ -561,7 +578,7 @@ export function memberOwnerGroups(state) {
     for (const gid of direct) {
       if (seen.has(gid)) continue; // a cycle: a group that is its own ancestor
       seen.add(gid);
-      out.push(...owners(gid, seen), gid);
+      out.push(gid, ...owners(gid, seen));
     }
     return out;
   };

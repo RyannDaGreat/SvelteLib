@@ -14,7 +14,8 @@
  * Run: node src/demo_apps/PowerRP/tests/nested_groups_test.js
  */
 import assert from "node:assert/strict";
-import { applyGroupParenting, memberOwnerGroups } from "../core/derive.js";
+import { applyGroupParenting, memberOwnerGroups, composedMemberInfluence, worldTransform } from "../core/derive.js";
+import * as T from "../core/transform.js";
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log(`  ok  ${name}`); };
@@ -76,14 +77,49 @@ test("A CYCLE RENDERS RATHER THAN HANGING", () => {
 
 // ── THE EXPRESSION PATH ─────────────────────────────────────────────────────
 
-test("memberOwnerGroups WALKS THE CHAIN, outermost first", () => {
+test("memberOwnerGroups WALKS THE CHAIN, INNERMOST first", () => {
+  // THIS TEST ASSERTED THE OPPOSITE AND WAS PINNING A BUG. See the rotate+scale
+  // agreement test below for the measurement that overturned it: the consumer
+  // composes each successive owner ONTO THE OUTSIDE, so the outermost ancestor
+  // must come LAST. Direction is unobservable under pure translation, which is
+  // all this file tested, so a wrong order sat here looking deliberate.
   const state = { items: {
     O: { type: "group", members: ["I"], z: 2 },
     I: { type: "group", members: ["a"], z: 1 },
     a: { type: "rect" },
   } };
-  assert.deepEqual(memberOwnerGroups(state).get("a"), ["O", "I"], "the whole chain, outer before inner");
+  assert.deepEqual(memberOwnerGroups(state).get("a"), ["I", "O"], "the whole chain, inner before outer");
   assert.deepEqual(memberOwnerGroups(state).get("I"), ["O"]);
+});
+
+test("NESTED *AND* ROTATED: the expression path agrees with the render, to the pixel", () => {
+  // THE ONE CASE NEITHER SUITE COVERED, and the reason the order above was wrong
+  // for a day. tests/group_test.js pins expr-vs-derive agreement for a rotated,
+  // scaled group ONE level deep; this file pinned nesting with pure TRANSLATION.
+  // Translations commute, so nesting could carry a swapped compose order and every
+  // test still passed. Nested + rotated is where it shows: measured 54.3 units of
+  // disagreement, rotation and scale exactly right and only translation wrong.
+  //
+  // What that divergence MEANS is the reason this matters at all: an equation
+  // reading a nested member's anchor resolved to a point 54 units from where that
+  // member was actually drawn.
+  const I = { type: "group", members: ["leaf"], z: 1, w: 120, h: 80, x: 200, y: 30,
+              rotation: 0.4, scale: 1.2, bind: { x: 180, y: 10, rotation: 0, scale: 1 }, rotationAnchor: { x: 60, y: 40 } };
+  const O = { type: "group", members: ["I"], z: 0, w: 400, h: 300, x: 10, y: 20,
+              rotation: Math.PI / 6, scale: 1.5, bind: { x: 0, y: 0, rotation: 0, scale: 1 }, rotationAnchor: { x: 200, y: 150 } };
+  const leafWorld = { x: 240, y: 70, rotation: 0.2, scale: 0.8 };
+  const state = { items: { O, I, leaf: { type: "rect" } } };
+
+  const viaExpr = T.compose(composedMemberInfluence(memberOwnerGroups(state).get("leaf"), state), leafWorld);
+  const viaDerive = applyGroupParenting([
+    { itemId: "O", type: "group", state: O, world: worldTransform(O), plugin: {} },
+    { itemId: "I", type: "group", state: I, world: worldTransform(I), plugin: {} },
+    { itemId: "leaf", type: "rect", state: { type: "rect" }, world: leafWorld, plugin: {} },
+  ]).find((n) => n.itemId === "leaf").world;
+
+  for (const k of ["x", "y", "rotation", "scale"])
+    assert.ok(Math.abs(viaExpr[k] - viaDerive[k]) < 1e-6,
+      `${k}: expression ${viaExpr[k]} vs render ${viaDerive[k]} — an anchor equation would disagree with the pixel`);
 });
 
 test("the chain is DEDUPED, so an ancestor reached twice is applied once", () => {
