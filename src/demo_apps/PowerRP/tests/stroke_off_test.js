@@ -132,7 +132,7 @@ test("strokeMaterialIsOn: the visibleWhen predicate the stroke-only rows share",
 });
 
 test("every stroke-ONLY row declares visibleWhen: strokeMaterialIsOn — stroke and cornerRadius do NOT", () => {
-  const strokeOnlyKeys = ["strokeWidth", "strokeOffset", "strokeStart", "strokeEnd", "strokePhase", "strokeCapStart", "strokeCapEnd"];
+  const strokeOnlyKeys = ["strokeWidth", "strokeOffset", "strokeScreenSpace", "strokeStart", "strokeEnd", "strokePhase", "strokeCapStart", "strokeCapEnd"];
   for (const key of strokeOnlyKeys)
     assert.equal(PROPS[key].visibleWhen, strokeMaterialIsOn, `${key}: must hide with the material`);
   assert.equal(PROPS.stroke.visibleWhen, undefined, "the stroke row itself must stay visible — it is what turns itself back on");
@@ -161,7 +161,7 @@ test("BUNDLES.strokedBorder / strokedBox are exactly their named key lists, in o
   // a per-row flag and must not move a key), but a legitimately added universal
   // stroke option lands in one place instead of three.
   assert.deepEqual(BUNDLES.strokedBorder,
-    ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS]);
+    ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "strokeScreenSpace", "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS]);
   assert.deepEqual(BUNDLES.strokedBox, ["fill", ...BUNDLES.strokedBorder],
     "the filled box IS the border slice with a fill in front — the two cannot drift apart");
 });

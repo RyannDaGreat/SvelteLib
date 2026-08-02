@@ -61,7 +61,7 @@ import { getStrokeMaterial, capEnum } from "./stroke_materials.js"; // capEnum =
 import { SKIA_NATIVE_BLEND_MODES, blendNeedsSkSL, blenderFor } from "./blend_modes.js"; // blend id → native BlendMode or a custom SkSL runtime blender
 import { effectSourceRect } from "../effects.js"; // THE per-side effect source rect (shared with the cull-margin half of the bundle)
 import * as T from "../../core/transform.js";
-import { MAX_SURFACE_DIM, rasterFitFactor } from "../../core/clip.js"; // the edge below which no surface factory clamps a request, + the ask-vs-got fit law
+import { MAX_SURFACE_DIM, rasterFitFactor, screenSpaceDivisor } from "../../core/clip.js"; // the edge below which no surface factory clamps a request, + the ask-vs-got fit law
 import { fitBox, pointsBounds, inflateRect } from "../../core/geometry.js";
 import { ellipsePoints } from "../../core/shapes.js"; // star-lens silhouette (shared angle math)
 import { drawVideoV2 } from "./video_v2.js"; // V2 direct-upload video op ("videoV2") — self-resolving frame registry (additive; import-safe in node)
@@ -174,7 +174,7 @@ const COVERAGE_AA_SLOP_PX = 2;
  *     at least a device pixel stay), and image/video ops sample through a mip
  *     chain. Invisible quality loss at ~100px.
  */
-export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null, antialias = true, quality = "full", maxUniformRows = Infinity } = {}) {
+export function paintIR(CanvasKit, canvas, commands, view, { media = {}, background = "#ffffff", fontCollection, scissor = null, makeSurface = null, antialias = true, quality = "full", maxUniformRows = Infinity, cameraFitZoom = null } = {}) {
   if (!fontCollection) throw new Error("paintIR(skia): a fontCollection is required (committed families + Noto fallback chain)");
   const flat = flattenIR(commands);
   const bg = parseColor(background);
@@ -205,7 +205,12 @@ export function paintIR(CanvasKit, canvas, commands, view, { media = {}, backgro
   // CEILING IS KNOWN, so nothing is refused and the node/CLI software path is
   // byte-identical. It rides on ctx for the same reason bgColor does: the material
   // handlers are several frames down and must not each re-thread it.
-  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality, bgColor, maxUniformRows };
+  // `cameraFitZoom` is the zoom at which the CAMERA exactly fills the output, and it
+  // is what makes a screen-space stroke mean the same thing in the editor and in an
+  // export (core/clip.screenSpaceDivisor explains why view.zoom alone is a trap).
+  // Defaulting to view.zoom makes the ratio 1, i.e. a caller that does not supply it
+  // gets scale-cancellation only — conservative, never a NaN, never a wrong export.
+  const ctx = { media, fontCollection, deviceW: bounds[2] - bounds[0], deviceH: bounds[3] - bounds[1], makeSurface: mkSurface, antialias, quality, bgColor, maxUniformRows, cameraFitZoom: cameraFitZoom ?? view.zoom };
   // THE FRAME's pixel count, fixed here and inherited by every nested scratch's ctx
   // copy: the unit the material raster cache's memory budget is expressed in
   // (rasterCacheBudget). Nested passes shrink deviceW/deviceH; the frame does not.
@@ -499,7 +504,7 @@ function drawContainmentBox(CanvasKit, canvas, flat, start, end, view, ctx) {
     for (const op of [rect(a.rect), text(a.text)]) {
       canvas.save();
       applyView(canvas, view, world);
-      drawLeafOp(CanvasKit, canvas, op, 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
+      drawLeafOp(CanvasKit, canvas, op, 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality, screenSpaceDivisor(world?.scale, view?.zoom, ctx.cameraFitZoom));
       canvas.restore();
     }
   } catch {
@@ -603,7 +608,7 @@ function paintOpRange(CanvasKit, target, flat, start, end, view, ctx, depth, bel
         const opacity = cmd.opacity ?? 1;
         canvas.save();
         applyView(canvas, view, world);
-        drawLeafOp(CanvasKit, canvas, cmd, opacity, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
+        drawLeafOp(CanvasKit, canvas, cmd, opacity, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality, screenSpaceDivisor(world?.scale, view?.zoom, ctx.cameraFitZoom));
         canvas.restore();
       }
     }
@@ -645,7 +650,7 @@ function deviceMatrix(CanvasKit, view, world) {
  *  threaded into every fill/stroke/text paint so "off" produces crisp edges.
  *  `quality` ("full"|"proxy", ctx.quality) only bites on the image/video op: proxy
  *  samples through a mip chain to cap the raster-read resolution at thumbnail size. */
-function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa = true, quality = "full") {
+function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa = true, quality = "full", spaceDivisor = 1) {
   switch (cmd.op) {
     case "rect": {
       const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius, cmd.cornerRadius);
@@ -654,7 +659,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       if (cmd.stroke && cmd.strokeWidth > 0) {
         if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
         else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, (p) => canvas.drawRRect(rr, p));
-        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd), (p) => canvas.drawRRect(rr, p));
+        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor), (p) => canvas.drawRRect(rr, p));
       }
       break;
     }
@@ -665,7 +670,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       if (cmd.stroke && cmd.strokeWidth > 0) {
         if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
         else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, (p) => canvas.drawOval(oval, p));
-        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd), (p) => canvas.drawOval(oval, p));
+        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor), (p) => canvas.drawOval(oval, p));
       }
       break;
     }
@@ -694,7 +699,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       break;
     }
     case "path":
-      drawPathOp(CanvasKit, canvas, cmd, opacity, aa);
+      drawPathOp(CanvasKit, canvas, cmd, opacity, aa, spaceDivisor);
       break;
     case "paperCurl":
       drawPaperCurl(CanvasKit, canvas, cmd, opacity, media, aa);
@@ -945,7 +950,7 @@ function drawPaperCurl(CanvasKit, canvas, cmd, opacity, media, aa = true) {
   canvas.restore();
 }
 
-function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true) {
+function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true, spaceDivisor = 1) {
   const skPath = CanvasKit.Path.MakeFromSVGString(cmd.d);
   if (!skPath) throw new Error(`paintIR(skia): path "d" failed to parse: ${JSON.stringify(cmd.d).slice(0, 64)}`);
   skPath.setFillType(cmd.fillRule === "evenodd" ? CanvasKit.FillType.EvenOdd : CanvasKit.FillType.Winding);
@@ -965,7 +970,7 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true) {
     // combination; the fill above still carries it).
     if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
     else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawWith);
-    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd), drawWith);
+    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor), drawWith);
   }
   if (maskBlur) maskBlur.delete();
   skPath.delete();
@@ -1577,7 +1582,7 @@ function handleMaterialStrokeShape(CanvasKit, target, cmd, world, view, ctx, pro
   if (cmd.fill) {
     canvas.save();
     applyView(canvas, view, world);
-    drawLeafOp(CanvasKit, canvas, { ...cmd, stroke: null }, cmd.opacity ?? 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
+    drawLeafOp(CanvasKit, canvas, { ...cmd, stroke: null }, cmd.opacity ?? 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality, screenSpaceDivisor(world?.scale, view?.zoom, ctx.cameraFitZoom));
     canvas.restore();
   }
   drawOpStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy);
@@ -1598,7 +1603,7 @@ function drawOpStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy) {
   } else if ((cmd.strokeWidth ?? 0) > 0) {
     canvas.save();
     applyView(canvas, view, world);
-    drawLeafOp(CanvasKit, canvas, { ...cmd, fill: null }, cmd.opacity ?? 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality);
+    drawLeafOp(CanvasKit, canvas, { ...cmd, fill: null }, cmd.opacity ?? 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality, screenSpaceDivisor(world?.scale, view?.zoom, ctx.cameraFitZoom));
     canvas.restore();
   }
 }
@@ -2284,10 +2289,14 @@ function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, squirc
  * that needs this.
  */
 function drawGlassOutlineBorder(CanvasKit, canvas, cmd, view, world, opacity, aa, unitScale) {
+  // Has view+world in hand, so it derives the divisor itself rather than growing a
+  // parameter. ctx is not in scope here; the camera fit therefore falls back to
+  // view.zoom, which cancels scale alone — see screenSpaceDivisor's third argument.
+  const spaceDivisor = screenSpaceDivisor(world?.scale, view?.zoom, view?.zoom);
   if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd, spaceDivisor);
   const path = glassOutlinePath(CanvasKit, cmd.cx, cmd.cy, cmd.halfW, cmd.halfH, cmd.cornerRadius, cmd.squircle, cmd.surfaceTension, unitScale);
   canvas.drawPath(path, p);
   path.delete();
@@ -2299,10 +2308,14 @@ function drawGlassOutlineBorder(CanvasKit, canvas, cmd, view, world, opacity, aa
  * edge catch-light). One stroked rounded rect; skipped when strokeWidth is 0.
  * `aa` is the camera's coverage-AA flag (ctx.antialias). */
 function drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa = true) {
+  // Has view+world in hand, so it derives the divisor itself rather than growing a
+  // parameter. ctx is not in scope here; the camera fit therefore falls back to
+  // view.zoom, which cancels scale alone — see screenSpaceDivisor's third argument.
+  const spaceDivisor = screenSpaceDivisor(world?.scale, view?.zoom, view?.zoom);
   if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd, spaceDivisor);
   const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
   canvas.drawRRect(rr, p);
   p.delete();
@@ -4077,10 +4090,14 @@ function fillPaint(CanvasKit, paint, opacity, bounds = null, aa = true) {
  * the offset ring, the proxy stand-in, the error affordance) means "the
  * identity", which is what those call sites drew before this argument existed.
  */
-function strokePaint(CanvasKit, paint, width, opacity, bounds = null, aa = true, cmd = null) {
+function strokePaint(CanvasKit, paint, width, opacity, bounds = null, aa = true, cmd = null, spaceDivisor = 1) {
   const p = new CanvasKit.Paint();
   p.setStyle(CanvasKit.PaintStyle.Stroke);
-  p.setStrokeWidth(width);
+  // SCREEN-SPACE WIDTH: gated on the op's own opt-in AND defaulted to an identity
+  // divisor, which is what keeps the seven INTERNAL geometry strokes (offset ring,
+  // proxy stand-in, error affordance — the sites that pass no cmd) byte-identical
+  // by construction rather than by anyone remembering to exclude them.
+  p.setStrokeWidth(cmd?.strokeScreenSpace ? width / spaceDivisor : width);
   p.setAntiAlias(aa);
   p.setStrokeJoin(skJoin(CanvasKit, opStrokeJoin(cmd ?? {})));
   p.setStrokeMiter(opStrokeMiter(cmd ?? {}));

@@ -282,6 +282,16 @@ export function decorateStrokedBox(content, style, world) {
     // — the painters expect a real paint or null, never the tag object itself.
     stroke: (strokeWidth ?? 0) > 0 && strokeIsVisible(stroke) ? stroke : null,
     strokeWidth: strokeWidth ?? 0,
+    // Rides along so every widget decorating through this helper inherits the
+    // option — which is the point of it being a BUNDLE property. Forwarded raw;
+    // ir.js normalizeStrokeSpace decides whether it survives onto the op (absent
+    // unless explicitly true, so a widget that never sets it is unchanged).
+    // SPREAD, NOT ASSIGNED, so `false` never appears as a key. Assigning it wrote
+    // `strokeScreenSpace: false` into the op and broke three suites that assert an
+    // exact object shape — the same "absent unless explicitly on" invariant
+    // normalizeStrokeSpace keeps at the IR boundary has to hold here too, or the
+    // two disagree about what an un-opted-in op looks like.
+    ...(style.strokeScreenSpace ? { strokeScreenSpace: true } : {}),
     // WRAPPER opacity forced to 1 (the OPACITY CONTRACT): the widget opacity
     // rides on `content` so it fades identically on GPU and PDF; opacity here
     // would fade the whole unit on GPU but not the PDF content (parity break).

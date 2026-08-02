@@ -270,3 +270,50 @@ export function visibleSourceRect(box, cropInsets, view, opts = {}) {
   const deviceRect = { w: vis.w * scale, h: vis.h * scale };
   return { visible: true, localRect: vis, sourceRect, deviceRect, scale };
 }
+
+/**
+ * Pure function. THE SCREEN-SPACE STROKE DIVISOR — what a stored width is divided
+ * by so it renders at a constant number of the CAMERA'S LOGICAL PIXELS.
+ *
+ * THREE ARGUMENTS, AND THE THIRD IS THE WHOLE SUBTLETY. The obvious divisor is
+ * `worldScale · zoom`, read straight off paint_skia's chain (scale(zoom·dpr) →
+ * translate(world) → scale(world.scale)), and IT IS WRONG FOR EVERY EXPORT.
+ * core/view.js fitRectView returns `zoom = min(w/rect.w, h/rect.h)`, so a 4K render
+ * of a 1080p camera has zoom 2 BECAUSE OF THE OUTPUT RESOLUTION, not because
+ * anything was magnified. Cancelling that would render screen-space strokes at half
+ * thickness in every export while looking perfect on canvas — a silent GPU↔PDF/mp4
+ * parity break, which is the class THE RENDERER IS ONE CODE PATH exists to stop.
+ *
+ * So what is cancelled is MAGNIFICATION RELATIVE TO THE CAMERA'S OWN FIT:
+ * `zoom / fitZoom`, where fitZoom is the zoom at which the camera exactly fills the
+ * output. In an export the two are equal, the ratio is 1, and the stroke scales with
+ * resolution exactly as the user's DPI ruling requires ("screen pixels is literally
+ * just logical pixels; the camera defines pixels, and it changes when we do high DPI
+ * vs low DPI"). In the editor the ratio IS the user's magnification, which is
+ * precisely what must go.
+ *
+ * `worldScale` is cancelled unconditionally: a stroke inside a 2x-scaled group must
+ * not thicken either, for the same reason a UI element does not.
+ *
+ * @param {number} worldScale - the node's world.scale
+ * @param {number} zoom - the view's zoom
+ * @param {number} fitZoom - the zoom at which the camera fills the output; pass
+ *   `zoom` itself when unknown, which degrades to cancelling scale alone
+ * @returns {number} the divisor; 1 when any input is unusable, so a caller lacking
+ *   them degrades to ordinary world space rather than emitting a NaN width
+ *
+ * @example screenSpaceDivisor(1, 4, 1) // 4 (editor, zoomed 4x in)
+ * @example screenSpaceDivisor(1, 2, 2) // 1 (a 2x EXPORT: resolution, not zoom — untouched)
+ * @example screenSpaceDivisor(2, 3, 1) // 6 (a 2x group at 3x magnification)
+ * @example screenSpaceDivisor(1, 1, 1) // 1
+ * @example screenSpaceDivisor(1, 0.5, 1) // 0.5 (zoomed OUT: drawn thicker in world units)
+ * @example screenSpaceDivisor(0, 2, 1) // 2 (a degenerate SCALE falls back to 1 for that term only — the zoom ratio still applies)
+ * @example screenSpaceDivisor(1, NaN, 1) // 1 (an unusable zoom degrades to no magnification, never a NaN width)
+ */
+export function screenSpaceDivisor(worldScale, zoom, fitZoom) {
+  const sc = Number.isFinite(worldScale) && worldScale > 0 ? worldScale : 1;
+  const z = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+  const f = Number.isFinite(fitZoom) && fitZoom > 0 ? fitZoom : z;
+  const d = sc * (z / f);
+  return d > 0 ? d : 1;
+}

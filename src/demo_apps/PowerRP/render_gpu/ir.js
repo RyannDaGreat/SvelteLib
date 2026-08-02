@@ -1026,6 +1026,25 @@ export function opStrokeMiter(cmd) {
  * @example normalizeStrokeJoin("rect", {strokeJoin: "bevel"}) // {strokeJoin: "bevel"}
  * @example normalizeStrokeJoin("rect", {strokeMiter: 10}) // {strokeMiter: 10}
  */
+/**
+ * Pure function. The SCREEN-SPACE STROKE flag, normalized like every other stroke
+ * extra: absent unless explicitly on, so an op that does not opt in is
+ * byte-identical to what it emitted before this existed. Only the FLAG reaches the
+ * IR — the divisor is a paint-time question (it needs the camera zoom, which a
+ * device-independent display list must not carry) and lives in
+ * core/clip.screenSpaceDivisor.
+ *
+ * @example normalizeStrokeSpace("rect", {}) // {}
+ * @example normalizeStrokeSpace("rect", {strokeScreenSpace: false}) // {}
+ * @example normalizeStrokeSpace("rect", {strokeScreenSpace: true}) // {strokeScreenSpace: true}
+ */
+export function normalizeStrokeSpace(cmdName, src = {}) {
+  const v = src.strokeScreenSpace;
+  if (v == null || v === false) return {};
+  if (v !== true) throw new Error(`${cmdName}: strokeScreenSpace must be a boolean, got ${JSON.stringify(v)}`);
+  return { strokeScreenSpace: true };
+}
+
 export function normalizeStrokeJoin(cmdName, src = {}) {
   const out = {};
   const join = src.strokeJoin;
@@ -1408,7 +1427,8 @@ export function rect({ x, y, w, h, cornerRadius = 0, fill = null, stroke = null,
     strokeWidth, opacity,
     ...normalizeStrokeTrim("rect", trim), // stroke-trim fields ride along only when non-identity (absent-is-legacy)
     ...normalizeStrokeOffset("rect", trim), // ditto the alignment field: absent = centered
-    ...normalizeStrokeJoin("rect", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
+    ...normalizeStrokeJoin("rect", trim),
+    ...normalizeStrokeSpace("rect", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
   };
 }
 
@@ -1426,7 +1446,8 @@ export function ellipse({ cx, cy, rx, ry, fill = null, stroke = null, strokeWidt
     strokeWidth, opacity,
     ...normalizeStrokeTrim("ellipse", trim),
     ...normalizeStrokeOffset("ellipse", trim),
-    ...normalizeStrokeJoin("ellipse", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
+    ...normalizeStrokeJoin("ellipse", trim),
+    ...normalizeStrokeSpace("ellipse", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
   };
 }
 
@@ -1922,7 +1943,8 @@ export function path({ d, fill = null, stroke = null, strokeWidth = 0, fillRule 
     stroke: stroke === null ? null : parsePaint(stroke),
     ...normalizeStrokeTrim("path", trim),
     ...normalizeStrokeOffset("path", trim),
-    ...normalizeStrokeJoin("path", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
+    ...normalizeStrokeJoin("path", trim),
+    ...normalizeStrokeSpace("path", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
     // `blur` (optional): a Gaussian MASK-blur radius in LOCAL units (the corkboard
     // YARN uses it for its soft cast shadow, a blurred stroke, avoiding a heavier
     // effectSubtree wrap). 0 = crisp (byte-identical to a path built without the
@@ -2483,7 +2505,8 @@ export function cropSubtree({ x, y, w, h, cornerRadius = 0, fill = null, stroke 
     strokeWidth, opacity, content,
     ...normalizeStrokeTrim("cropSubtree", trim), // a crop/media FRAME's border trims too
     ...normalizeStrokeOffset("cropSubtree", trim), // ditto the alignment field: absent = centered
-    ...normalizeStrokeJoin("cropSubtree", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
+    ...normalizeStrokeJoin("cropSubtree", trim),
+    ...normalizeStrokeSpace("cropSubtree", trim), // ditto the corner treatment: absent = (miter, STROKE_MITER_LIMIT)
   };
 }
 

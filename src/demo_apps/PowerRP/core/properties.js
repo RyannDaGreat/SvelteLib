@@ -914,6 +914,19 @@ export const PROPS = {
   fill: { label: "Fill", kind: "color", paint: true, category: "fillMaterial", help: "The color or gradient that fills the widget's interior. Lower a color's alpha for a translucent fill, pick a linear/radial gradient, or set it fully transparent for outline-only." },
   stroke: { label: "Stroke", kind: "color", paint: true, category: "strokeMaterial", help: "The color or gradient of the outline drawn around the widget's edge. Only visible when stroke width is above zero." },
   strokeWidth: { label: "Stroke width", kind: "number", min: 0, category: "strokeMaterial", default: 0, help: "Thickness of the outline in canvas units. Zero means no outline.", visibleWhen: strokeMaterialIsOn },
+  // SCREEN-SPACE STROKE (user, 2026-08-02): "this is NOT a material, this is an
+  // OPTION FOR STROKE which is screen space… it stays the same width no matter how
+  // much I zoom in or zoom out, similar to how UI elements are." A boolean on the
+  // SHARED bundle, so every stroke-bearing widget gets it at once — he corrected
+  // himself to exactly that shape mid-request, and R6-4's audit agrees this is a
+  // property row (one key, no canvas mode) rather than a tool in property clothes.
+  //
+  // THE UNIT IS THE CAMERA'S LOGICAL PIXEL: "screen pixels is literally just LOGICAL
+  // PIXELS; the camera defines pixels, and it changes when we do high DPI vs low
+  // DPI." So it cancels magnification and leaves resolution alone — see
+  // core/clip.screenSpaceDivisor, which explains why cancelling view.zoom outright
+  // would have halved every exported stroke.
+  strokeScreenSpace: { label: "Screen-space width", kind: "boolean", category: "strokeMaterial", default: false, help: "Keep the outline the same thickness on screen however far you zoom — like a UI element rather than part of the drawing. Measured in the camera's logical pixels, so a higher-resolution export still renders it proportionally.", visibleWhen: strokeMaterialIsOn },
   // THE STROKE ALIGNMENT knob (user ruling: "-1 means completely inner, 1 means
   // completely outer, 0 means the default, which is in the middle... for every
   // stroke thing"). CONTINUOUS, not a three-way select, so it keyframes and takes
@@ -1568,9 +1581,9 @@ export const BUNDLES = {
   // in strokedBox) so EVERY stroked box inherits drawing-on/caps for free; they
   // carry no default (absent-is-legacy), so composing them changes no widget's
   // stored state or rendering until a knob moves.
-  strokedBorder: ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
+  strokedBorder: ["stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "strokeScreenSpace", "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
   // The full filled-and-stroked box: fill + the border slice (trim keys included).
-  strokedBox: ["fill", "stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
+  strokedBox: ["fill", "stroke", "strokeWidth", ...STROKE_OFFSET_KEYS, "strokeScreenSpace", "cornerRadius", ...STROKE_TRIM_KEYS, ...STROKE_JOIN_KEYS],
   // EDGE-CROP INSETS (manifest "Edge-crop insets"): the four per-edge source
   // trims. Media widgets (image/video) compose this; groups will too (their
   // subtree-crop consumption is a follow-up — the bundle is defined once here).
@@ -1687,7 +1700,7 @@ export function props(...args) {
  *   object[]: resolved rows
  *
  * @example bundle("strokedBorder").map((r) => r.key)
- * ["stroke","strokeWidth","strokeOffset","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd","strokeJoin","strokeMiter"]
+ * ["stroke","strokeWidth","strokeOffset","strokeScreenSpace","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd","strokeJoin","strokeMiter"]
  * @example bundle("positioning").map((r) => r.key)
  * ["x","y","cx","cy","w","h","rotation","rotationAnchor.x","rotationAnchor.y","z"]
  * @example // cx/cy keep their OWN unique key (never collide with x/y — a
@@ -1736,7 +1749,7 @@ export function defaults(...keys) {
  * defaults what bundle is to props). Only keys with a declared default appear.
  *
  * @example bundleDefaults("strokedBox")
- * {"strokeWidth":0,"cornerRadius":0}
+ * {"strokeWidth":0,"strokeScreenSpace":false,"cornerRadius":0}
  * @example bundleDefaults("positioning")
  * {"rotation":0}
  */
