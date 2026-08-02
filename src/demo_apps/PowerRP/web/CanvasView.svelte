@@ -4653,10 +4653,11 @@
                RIGHT-CLICK a handle that backs a list element (hasElement) opens the
                point CONTEXT MENU (F.18). -->
           {@const g = glyphOutline(m.look, m.x, m.y)}
-          {@const gstyle = `--handle-accent: var(--a-handle-accent-${m.look.accent});${lockedGlyphStyle(m) ?? ""}`}
+          {@const gstyle = lockedGlyphStyle(m)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <g
             class="modifier-glyph"
+            data-accent={m.look.accent}
             onpointerenter={() => { hoverHandleId = m.id; }}
             onpointerleave={() => { if (hoverHandleId === m.id) hoverHandleId = null; }}
             onpointerdown={(e) => startModifier(m.id, e)}

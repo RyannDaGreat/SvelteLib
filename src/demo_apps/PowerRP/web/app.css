@@ -6410,6 +6410,23 @@ audio.ae-preview-media {
 .inspector .row-label-chrome:has(.gallery-btn):has(.help-btn) {
   padding-left: calc(3 * var(--a-row-label-gutter));
 }
+/* THE FOURTH SLOT — the interp button. The same "N affordances reserve N gutter
+   widths" rule the block above states; written as one ladder rather than as
+   another round of pairs, because interp is on nearly EVERY keyframeable row
+   (unlike gallery, which is rare — which is why enumerating pairs was cheap for
+   it and would double this block for this one). Each step out-specifies the one
+   before it, so the ladder resolves top-down with no !important. */
+.inspector .row-label-chrome:has(.interp-btn) {
+  padding-left: calc(2 * var(--a-row-label-gutter));
+}
+.inspector .row-label-chrome:has(.interp-btn):has(.copy-path-btn):has(.help-btn),
+.inspector .row-label-chrome:has(.interp-btn):has(.gallery-btn):has(.copy-path-btn),
+.inspector .row-label-chrome:has(.interp-btn):has(.gallery-btn):has(.help-btn) {
+  padding-left: calc(3 * var(--a-row-label-gutter));
+}
+.inspector .row-label-chrome:has(.interp-btn):has(.gallery-btn):has(.copy-path-btn):has(.help-btn) {
+  padding-left: calc(4 * var(--a-row-label-gutter));
+}
 
 /* Row-label hover affordances, LEFT of the label, HOVER-ONLY — mirror
    .numfield .eq-open (round-11 field-chrome minimalism: "it goes on the LEFT...
@@ -6425,7 +6442,8 @@ audio.ae-preview-media {
    click or the tooltip hover meant for the label underneath it. */
 .inspector .copy-path-btn,
 .inspector .help-btn,
-.inspector .gallery-btn {
+.inspector .gallery-btn,
+.inspector .interp-btn {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
@@ -6477,9 +6495,36 @@ audio.ae-preview-media {
 .inspector .row-label-chrome:has(.gallery-btn):has(.copy-path-btn) .help-btn {
   left: calc(2 * var(--a-row-label-gutter));
 }
+/* THE INTERP SLOT (core/interp_modes.js), and why it does NOT extend the :has()
+   matrix above. That matrix works because gallery is RARE — a handful of rows
+   carry it, so a few pairwise rules cover every combination. The interp button
+   is the opposite: nearly every keyframeable row has one, so pairing it with the
+   other three would add eight rules and make the NEXT affordance add sixteen.
+   Instead it is pinned INNERMOST — always the icon closest to the label — and
+   its offset counts the siblings actually present, which is the same "N
+   affordances reserve N gutter widths" rule stated as arithmetic instead of as
+   enumeration. Add a fifth affordance and only its own two rules are needed. */
+.inspector .interp-btn {
+  left: 0;
+  cursor: pointer;
+}
+.inspector .row-label-chrome:has(.copy-path-btn) .interp-btn,
+.inspector .row-label-chrome:has(.help-btn) .interp-btn,
+.inspector .row-label-chrome:has(.gallery-btn) .interp-btn {
+  left: var(--a-row-label-gutter);
+}
+.inspector .row-label-chrome:has(.copy-path-btn):has(.help-btn) .interp-btn,
+.inspector .row-label-chrome:has(.copy-path-btn):has(.gallery-btn) .interp-btn,
+.inspector .row-label-chrome:has(.help-btn):has(.gallery-btn) .interp-btn {
+  left: calc(2 * var(--a-row-label-gutter));
+}
+.inspector .row-label-chrome:has(.copy-path-btn):has(.help-btn):has(.gallery-btn) .interp-btn {
+  left: calc(3 * var(--a-row-label-gutter));
+}
 .inspector .copy-path-btn:hover,
 .inspector .help-btn:hover,
-.inspector .gallery-btn:hover {
+.inspector .gallery-btn:hover,
+.inspector .interp-btn:hover {
   color: var(--fg);
 }
 /* THE REVEAL — opacity and hit-testing ONLY. No width, no margin, nothing that
@@ -6493,9 +6538,34 @@ audio.ae-preview-media {
 .inspector .row:hover .copy-path-btn,
 .inspector .row:hover .help-btn,
 .inspector .row:hover .gallery-btn,
-.inspector .gallery-btn[aria-pressed="true"] {
+.inspector .row:hover .interp-btn,
+.inspector .gallery-btn[aria-pressed="true"],
+.inspector .interp-btn[aria-pressed="true"] {
   opacity: 1;
   pointer-events: auto;
+}
+/* A NON-DEFAULT MODE IS ALWAYS VISIBLE, hover or not — the one place this
+   affordance breaks the hover-only idiom, and on purpose. A property told to
+   STEP looks broken from the outside ("why doesn't my x animate?"), and the only
+   other way to answer that question would be to hover every row in the panel in
+   turn. So the button is dim chrome while the property tweens (the default,
+   nothing to say) and lit the moment it does not. It costs no layout: opacity
+   and color only, exactly like the reveal above. */
+.inspector .interp-btn.interp-set {
+  opacity: 1;
+  pointer-events: auto;
+  color: var(--accent);
+}
+
+/* THE INTERP STRIP — this property's blend law, revealed under the row it
+   governs. Indented by one gutter and hairline-bracketed on the left so it reads
+   as belonging to the row above rather than as a sibling property of its own;
+   the row inside is an ordinary .row and keeps every column alignment, so its
+   value control still lines up with the panel's. */
+.inspector .interp-strip {
+  margin-left: var(--a-row-label-gutter);
+  border-left: var(--a-hairline) solid var(--border);
+  padding-left: var(--a-sp-2);
 }
 
 /* Path tooltip content: one line per form (self.<path>, then the absolute
