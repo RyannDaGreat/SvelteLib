@@ -112,7 +112,8 @@ import { builtinWidgetAssets } from "./builtinAssets.js";
 // is looked up by the kind it CLAIMS now (core/registry.js widgetForAssetKind),
 // so this file names no media widget at all and a new droppable kind adds no
 // import. Registration is plugins/index.js registerAll's job, never an import here.
-import { assetNaturalSize } from "./assetNaturalSize.js"; // native size of a dropped file, per kind
+import { assetNaturalSize } from "./assetNaturalSize.js";
+import { contentSizesFor, setContentSrcResolver } from "./contentSizes.js"; // itemId → measured intrinsic size (#277)
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
 // The command below spreads these over the registry defaults to mint 3 wired items.
 import {
@@ -1010,7 +1011,16 @@ export class PowerRPApp {
    * source string for exactly that reason (a script edit leaves the fold identical,
    * so without it the canvas would keep showing the pre-edit evaluation). */
   evalInfo() {
-    return evaluateState(this.rawState(), this.registry, this.projectScript());
+    // CONTENT SIZES ARE THREADED HERE TOO, not only at web/cameraFrame.js's seam.
+    // That seam covers every PIXEL consumer (thumbnails, export, presenter, CLI),
+    // but the EDITOR reads state() through this method — so without this line a
+    // content-bound height would resolve in an export and show an error on the
+    // canvas the author is looking at.
+    //
+    // FROM THE RAW STATE, WHICH ALSO BREAKS A CIRCLE: contentSizesFor needs only
+    // each item's type/src/page, all raw literals, and asking it for the EVALUATED
+    // state here would call this method again and recurse forever.
+    return evaluateState(this.rawState(), this.registry, this.projectScript(), this.contentSizes());
   }
 
   /** The PROJECT SCRIPT source — one always-present string (repairedDocument fills
@@ -1146,6 +1156,14 @@ export class PowerRPApp {
    * on this slide. A pure derivation of `selectionEntries()` — see
    * core/multiselect.js for the identity relation and the mixed-value semantics.
    */
+  /** Query. The intrinsic-size table for the CURRENT slide — what the
+   *  bind-height-to-content command gates on, and the same table the evaluation
+   *  seam threads (web/contentSizes.js). Read through the app rather than
+   *  imported into App.svelte so the command layer holds no media knowledge. */
+  contentSizes() {
+    return contentSizesFor(this.rawState(), this.projectName());
+  }
+
   multiSelectPanel() {
     return multiSelectPanel(this.selectionEntries(), this.multiSelectMode);
   }

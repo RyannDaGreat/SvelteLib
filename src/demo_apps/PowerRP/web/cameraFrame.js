@@ -26,6 +26,7 @@
 
 import { tweenedState } from "../core/document.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
+import { contentSizesFor } from "./contentSizes.js"; // intrinsic sizes: produced here, consumed as an evaluateState input
 import { evaluateState } from "../core/expressions.js";
 import { canSkipNode } from "../core/view.js";
 import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
@@ -80,7 +81,13 @@ export function evaluationAt(doc, slideIndex, alpha, registry) {
   // scripted property fallen back to its default. Every pixel consumer (thumbnails,
   // PNG/MP4 export, the presenter, the CLI hook) reaches evaluation through here,
   // so threading it once covers all of them.
-  return evaluateState(tweenedState(doc, slideIndex, alpha, registry), registry, doc.meta.script ?? "");
+  // CONTENT INTRINSIC SIZES ride the same argument for the same reason (#277):
+  // they are an input evaluateState cannot fetch for itself without becoming
+  // impure, they are not in the fold, and every pixel consumer reaches evaluation
+  // through here — so threading them once covers thumbnails, PNG/MP4 export, the
+  // presenter and the CLI hook, exactly as the script already is.
+  const folded = tweenedState(doc, slideIndex, alpha, registry);
+  return evaluateState(folded, registry, doc.meta.script ?? "", contentSizesFor(folded, doc.meta?.name ?? ""));
 }
 
 /**

@@ -100,6 +100,7 @@ import { cameraRect } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
+import { setContentSrcResolver } from "./contentSizes.js"; // #277: ref → loadable URL, injected so bare node never pulls in the asset store (assetStoreFor is already imported at the top of this file)
 import { fitRectView } from "../core/view.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { rasterizeIrPng } from "./gpuService.js";
@@ -154,6 +155,10 @@ window.__powerrp_storage = { storageMode, isStatic, assetStore, assetStoreFor, p
 window.__powerrp_render = async function (docJson, { slide = 0, alpha = 1, width = 1280, height = 720 } = {}) {
   await fontsLoaded;
   const registry = createRegistry();
+  // THE CONTENT-SIZE RESOLVER, installed once at boot. Injected rather than
+  // imported by web/contentSizes.js so that module stays loadable in bare node
+  // (see its docblock — importing the asset store there broke 21 suites).
+  setContentSrcResolver((src, project) => assetStoreFor(project).resolveUrl(src));
   registerAll(registry, createCommands());
   // EXACTLY the editor's load-boundary repair — the SAME repairedDocument the
   // app runs — so probe and editor can never drift (silent repairs forbidden).

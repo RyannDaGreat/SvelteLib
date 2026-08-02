@@ -92,6 +92,7 @@
   // The camera-bind pair's sentences live beside `frameBindable`, the predicate
   // they explain, so the Tools pane's pool row and these command entries show the
   // same words without either transcribing the other's (core/registry.js).
+  import { BIND_HEIGHT_TO_CONTENT } from "../core/content_size.js"; // the stored equation the content bind writes
   import { CAMERA_BIND_HELP, CAMERA_BIND_REQUIRES, CAMERA_FREEZE_HELP, CAMERA_FREEZE_REQUIRES, LIGHT_PIN_HELP, LIGHT_PIN_REQUIRES, MAKE_STATIC_HELP, MAKE_STATIC_REQUIRES, SLIDE_KEYFRAMES_HELP, SLIDE_KEYFRAMES_REQUIRES, lightPinnable, shapeInsertable } from "../core/registry.js";
 
   const app = new PowerRPApp();
@@ -925,6 +926,28 @@
   /** Query. cameraBindPairs for the current selection (empty when nothing can
    * be bound), shared by the command's `preview` and its `run` so the hover
    * preview and the commit are the same write by construction. */
+  /**
+   * Query. The write for "Bind Height to Content": each selected item whose
+   * content HAS a measured intrinsic size gets `h = "= self.w / self.content.aspect"`.
+   *
+   * GATED ON A MEASUREMENT EXISTING, not merely on the widget type. Binding an
+   * unmeasured item would store an equation that evaluates to an error until its
+   * decode lands — technically self-correcting, but it would flash a red row at
+   * the user for something they did nothing wrong in. When the size is not there
+   * yet the command simply is not available, and its `requires` says so.
+   *
+   * A STORED EQUATION, not a computed number — the camera-bind precedent above.
+   * That is what makes it KEEP tracking: resize the widget, or change the PDF's
+   * page, and the height re-derives. It is also its own escape hatch, being an
+   * ordinary equation the Inspector shows and a typed number replaces.
+   */
+  function contentBindWrite(a) {
+    const sizes = a.contentSizes();
+    return a.selectedIds()
+      .filter((id) => sizes.has(id))
+      .map((id) => [["items", id, "h"], BIND_HEIGHT_TO_CONTENT]);
+  }
+
   function cameraBindWrite(a) {
     const camera = a.cameraState();
     return camera ? cameraBindPairs(cameraBindTargets(a), camera.id) : [];
@@ -1146,6 +1169,22 @@
       requires: "a selected widget that is INSIDE a group — this selects the group that owns something, so the selection has to be a member of one",
       help: "Selects the group that owns the selected widget, instead of the widget itself — the way back out after Select Inside Group. Nothing is written to the document; only the selection changes. Anything selected that is not in a group stays selected, so a mixed selection does not shrink. A group inside another group rises one level; run it again to keep going up.",
       run: (a) => a.selectParentGroup(),
+    },
+    // BIND HEIGHT TO CONTENT (#277) — placed beside the camera-bind pair because
+    // it is the same idea with a different subject: write a frame property as an
+    // equation that keeps tracking something, rather than a number that goes stale.
+    {
+      id: "bind-height-to-content",
+      title: "Bind Height to Content Shape",
+      icon: "mdi:aspect-ratio",
+      aliases: ["aspect ratio", "match aspect", "fit to content", "lock aspect", "bind aspect ratio"],
+      when: (a) => contentBindWrite(a).length > 0,
+      requires: (a) => (a.selectedIds().length === 0
+        ? "a selected image, video or PDF page — this matches a widget's height to the shape of what is inside it"
+        : "a selected widget whose content has FINISHED LOADING — nothing selected has a measured size yet, so there is no shape to match (try again in a moment)"),
+      help: "Sets the height to an equation — self.w / self.content.aspect — so the widget always matches the shape of the image, video or PDF page inside it. Because it is an equation and not a one-off number it KEEPS tracking: resize the width and the height follows, change the PDF's page and it follows that too. To stop, type a plain number into Height.",
+      preview: (a) => { a.setPreview(contentBindWrite(a)); return () => a.cancelPreview(); },
+      run: (a) => { a.setPreview(contentBindWrite(a)); a.commitPreview(); },
     },
     { id: "shatter", title: "Shatter (this widget becomes a group of its editable parts)", icon: "mdi:vector-polyline-edit", aliases: ["convert to widgets", "explode", "break apart", "convert to shapes", "decompose", "ungroup diagram"], when: (a) => a.shatterBlocker() === null, requires: (a) => a.shatterBlocker() ?? "a widget that can be shattered", help: "Replaces the widget with a GROUP of the widgets it was drawing, anchored to each other by equations \u2014 a label follows the box it names, an arrow re-routes when either end moves. The original source is kept on the group, unread, so nothing is lost. Reports what it could not recover as editable vector rather than approximating in silence.", run: (a) => a.shatterSelection() },
     // ARRANGE INTO GRID (the bento tool): lays the selection out as a BENTO GRID.
