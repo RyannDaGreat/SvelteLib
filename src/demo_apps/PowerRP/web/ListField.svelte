@@ -99,6 +99,13 @@
       scrubbing one element's field stages a sparse numeric-keyed OBJECT
       (core/deltas.js setPath) — so dragging a stop's offset never folds the row
       out from under the pointer, which would be worse than the flicker.
+      WITH EXACTLY ONE EXEMPTION, and shape is why it needs one: a STOP BAR BEAD
+      DRAG stages the array shape too, and the user overruled folding for it
+      ("that actually makes things more confusing for me, not less confusing",
+      2026-08-02). The bar DECLARES the gesture through its `ondrag`; see the
+      `suppressed` derivation for why the two gestures genuinely differ (length
+      churn under a free pointer vs. a captured pointer and a fixed length) and
+      why a shape test could never have separated them.
     • THIS CONTROL'S OWN PRESET LIBRARY being OPEN — from the CLICK, not from the
       first swatch hovered, which is what the user asked for ("collapse that for
       us upon clicking the dropdown"): the preview seam alone would not fold
@@ -237,6 +244,10 @@
   // Which stop the BAR has selected, so its row can say so. View state: it changes
   // nothing that renders, so it neither keyframes nor belongs in a delta.
   let selectedElement = $state(null);
+  // IS A BEAD DRAG IN FLIGHT? The one whole-list preview that must NOT fold these
+  // rows — see the `suppressed` derivation below for the user ruling and the
+  // reason shape alone cannot tell it from a preset sweep. View state.
+  let beadDragging = $state(false);
   // IS THE LIBRARY OPEN? Folds the rows from the CLICK, not from the first swatch
   // hovered, so nothing about the list moves for the whole session (the user's
   // "preset selection for gradients should collapse that for us upon clicking the
@@ -321,7 +332,29 @@
   // must NOT fold the row being dragged. This is the shared seam: no picker has
   // to wire anything up to get the flicker fix.
   let listPreviewStaged = $derived(Array.isArray(getPath(app.previewDelta, path)));
-  let suppressed = $derived(Boolean(forceCollapsed) || presetsOpen || listPreviewStaged);
+  // ── THE ONE EXEMPTION: A BEAD DRAG ─────────────────────────────────────────
+  // USER RULING (2026-08-02), verbatim: "right now, the submenu for stops
+  // disappears as I drag it and reappears when I'm done. Please, you don't need
+  // to do that. That actually makes things more confusing for me, not less
+  // confusing."
+  //
+  // A bead drag stages exactly the shape above — a whole-list array — so the
+  // shared seam folded it, and the rows vanished for the duration of every
+  // gesture. That was a past-Claude reading of one rule as universal, and the two
+  // gestures are NOT the same:
+  //   • A PRESET SWEEP moves the pointer ACROSS SWATCHES while each hover rewrites
+  //     the list's LENGTH (2 rows to 12 and back, measured) — the rows resize under
+  //     a cursor that is trying to rest on a tile, which is the flicker the fold
+  //     exists to stop.
+  //   • A BEAD DRAG has the pointer CAPTURED on the bead (setPointerCapture) and
+  //     never changes the list's LENGTH — only the order and one offset. Nothing
+  //     the rows do can take the gesture away, so there is nothing to protect, and
+  //     folding them merely hides the values being edited.
+  // Shape cannot tell those apart, so the BAR declares its gesture (its `ondrag`)
+  // and this is the flag. The rows then render the PREVIEWED list live for the
+  // whole drag; a row trading places with its neighbour mid-gesture is the reorder
+  // the drag is performing, and showing it is the point.
+  let suppressed = $derived(Boolean(forceCollapsed) || presetsOpen || (listPreviewStaged && !beadDragging));
   let collapsed = $derived(userCollapsed || suppressed);
 
   let hiddenCount = $derived(value.list.filter((_, i) => !elementActive(value.active, i)).length);
@@ -581,13 +614,18 @@
   {/if}
   {#if hasStopBar && value.list.length > 0}
     <!-- THE VISUAL STOP BAR — the ramp drawn as a track with a draggable bead per
-         stop (web/GradientStopBar.svelte). ABOVE the rows, like the library and
-         for a sharper version of its reason: a bead drag stages a WHOLE-LIST
-         preview, which is exactly the shape `listPreviewStaged` folds these rows
-         on, so from below the bar would jump out from under the pointer on the
-         first pointermove. An EMPTY list has no ramp to draw and no stop to drag,
-         so it gets the seed insert below and no bar. -->
-    <GradientStopBar {app} {decl} {path} {label} {disabled} onselect={(i) => (selectedElement = i)} />
+         stop (web/GradientStopBar.svelte). ABOVE the rows, and it must stay there
+         now more than before: the rows no longer fold during a bead drag (see
+         `suppressed`), so they are live underneath it — reordering, and free to
+         change height when a row's equation field grows. From below, any of that
+         would shove the bar out from under the pointer mid-gesture. An EMPTY list
+         has no ramp to draw and no stop to drag, so it gets the seed insert below
+         and no bar. -->
+    <GradientStopBar
+      {app} {decl} {path} {label} {disabled}
+      onselect={(i) => (selectedElement = i)}
+      ondrag={(active) => (beadDragging = active)}
+    />
   {/if}
   <div class="listfield">
   <!-- THE COLLAPSE HEADER — web/Inspector.svelte's category accordion, class for

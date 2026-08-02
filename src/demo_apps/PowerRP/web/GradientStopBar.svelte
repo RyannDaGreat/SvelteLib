@@ -17,12 +17,53 @@
   reaches ListField through the Inspector's own row, not through PaintField, so
   it would silently not have got one.
 
+  ── EACH BEAD IS THE COLOUR IT REPRESENTS, AND POINTS AT ITS STOP ───────────
+  USER RULING (2026-08-02), verbatim: "there's no reason to make them purple
+  because that's not the color they're representing. They should be the color
+  they're representing. Second of all, they should have a tapered top so that
+  they point to precisely where they are… instead of being a box with a flat
+  top."
+
+  So a bead is a PIN, not a chip: a pentagon whose apex sits at the top centre,
+  which is exactly the x its `left` puts on the track above it — the shape now
+  states the fraction it stores instead of leaving the reader to infer a centre
+  from a 12px flat edge. It is filled with the stop's EVALUATED colour over the
+  transparency checkerboard (the .colorfield-swatch recipe; a stop's colour
+  carries alpha and a fading ramp must read as fading), with the shared white
+  handle rim around it so a near-background colour is still a visible bead.
+
+  THE PREVIOUS SKIN WAS THE CANVAS MODIFIER POINT'S — a flat gold square. That
+  was defensible as "the same handle on another surface" and it was still wrong
+  on the user's own test: on THIS surface the handle's whole job is to say which
+  colour lives where, and a uniform accent fill says nothing. (Gold, not purple —
+  the user's word for what they saw. The complaint lands the same either way: the
+  fill was a token, not the datum.)
+
+  SELECTION STAYS THE RIM, and now that is load-bearing rather than tidy: the
+  fill IS the data, so recolouring it to mark selection would make the control
+  lie about the stop. The selected bead's rim takes --a-selection and thickens;
+  the fill is untouched.
+
   ── IT SITS ABOVE THE ROWS, AND THAT IS STRUCTURAL ──────────────────────────
   Same reason the preset library does (measured there: 13 list-height changes
-  over 14 swatches). Dragging a bead stages a WHOLE-LIST preview, which is the
-  shape ListField folds its rows on — so the rows below collapse for the duration
-  of the gesture. From ABOVE, the bar cannot move when they do; from below it
-  would jump out from under the pointer on the first pointermove.
+  over 14 swatches, so the swatch under the cursor moved). The bar must not move
+  mid-gesture, and from below the rows it would: a bead drag reorders the list, a
+  row can reorder under it, and any row-height change would shove the bar out
+  from under the pointer on the first pointermove.
+
+  IT NO LONGER FOLDS THE ROWS, on the user's ruling (2026-08-02, verbatim): "the
+  submenu for stops disappears as I drag it and reappears when I'm done. Please,
+  you don't need to do that. That actually makes things more confusing for me,
+  not less confusing." A bead drag stages a WHOLE-LIST preview, which used to be
+  enough for ListField to fold its rows — that seam is told apart by SHAPE, and a
+  bead drag has the same shape as a preset sweep. It is NOT the same gesture: a
+  preset sweep rewrites the list's LENGTH (2 rows to 12 and back, measured) under
+  a cursor resting on a swatch, while a bead drag keeps the count fixed and the
+  pointer is captured on the bead — so nothing the rows do can steal the gesture.
+  The bar therefore DECLARES its drag through `ondrag`, and ListField exempts the
+  fold for its duration; the rows below render the PREVIEWED list live, which is
+  what the user asked to see. A row swapping places with its neighbour mid-drag
+  is correct and is the point: it is the reorder the drag is performing.
 
   ── THE WRITE IS ALWAYS THE WHOLE, CANONICALLY-ORDERED LIST ─────────────────
   Not the one dragged leaf, and this is the part that is easy to get wrong.
@@ -106,7 +147,13 @@
   // light up the ROW that edits that stop — the bar's answer to "select one to
   // edit its colour" is to point at the one control that already does it, not to
   // grow a second colour editor beside the first.
-  let { app, decl, path, label, disabled = false, onselect = null } = $props();
+  //
+  // `ondrag(active)` DECLARES a bead gesture to the mount point. It exists because
+  // a bead drag and a preset hover-sweep stage the identical SHAPE (a whole-list
+  // array), and ListField's fold seam can only read shape — so the one gesture
+  // that must NOT fold the rows has to say so. See the header: the user's ruling
+  // is that the rows stay up and show the live preview.
+  let { app, decl, path, label, disabled = false, onselect = null, ondrag = null } = $props();
 
   /** Icon glyph size for the bar's own buttons — the .btn-icon size every other
    *  icon button in a panel row uses, so the bar is one height with the rows. */
@@ -161,6 +208,13 @@
   /** The EVALUATED position of each stop, in stored order — the sort keys every
    *  write is ordered by, and the x each bead is drawn at. */
   let positions = $derived(evalList.map((el) => Number(fieldOf(el, decl.orderKey))));
+
+  /** The EVALUATED colour of each stop, in stored order — WHAT EACH BEAD IS
+   *  PAINTED. Read from the same evaluated list the positions are, so an
+   *  equation-bound colour shows the colour it resolves to rather than its source
+   *  text (the user's "they should be the color they represent" applies to a
+   *  computed colour exactly as it does to a literal one). */
+  let colors = $derived(evalList.map((el) => String(fieldOf(el, colorField.name))));
 
   /** THE RAMP the track paints: the VISIBLE stops only, read through the same
    *  primitive the renderer reads them through (core/lists.visibleElements), so a
@@ -224,6 +278,11 @@
   // bead currently sits after ordering, so the bar can keep marking the bead the
   // user has hold of as it changes address underneath them.
   let drag = $state(null);
+  // DECLARE the gesture upward, so the mount point can exempt its whole-list-
+  // preview fold for its duration (see the header). Derived from the same `drag`
+  // the writes read, so the two cannot disagree about whether a gesture is live —
+  // there is no second flag to leave set when a pointercancel ends the drag.
+  $effect(() => { ondrag?.(drag !== null); });
   // The fraction the pointer is resting at over the track, or null — the GHOST
   // bead's position. Pure UI: nothing is staged and the document is untouched.
   let hover = $state(null);
@@ -459,12 +518,19 @@
     {#each evalList as _, index (index)}
       {@const bound = positionBound(index)}
       <Tooltip text={beadTip(index)} anchor="element" placement="top">
-        <!-- The bead wears the canvas MODIFIER POINT's skin, because that is what
-             it is one surface over: the same gold fill, the same white rim, the
-             same selection recolour of the rim alone, and hollow when the stop is
-             hidden (app.css .overlay .modifier — "no new colour is minted, so
-             every theme's selection override applies for free"). role="slider" is
-             AngleField's own mapping for a positional handle. -->
+        <!-- ONE BEAD — A PIN, POINTING AT ITS OWN STOP. The button is the RIM: a
+             pentagon with its apex at top-centre, which `translateX(-50%)` puts
+             exactly on the stop's fraction, so the shape states the number it
+             stores. Its child is the same pentagon inset by the rim stroke and
+             filled with the stop's EVALUATED colour over the alpha checkerboard —
+             the user's "they should be the color they represent". --sb-bead is
+             DATA, passed exactly as --sb-ramp is one element up.
+             SELECTION RECOLOURS THE RIM ONLY, and here that is a correctness
+             rule, not a convention: the fill is the datum, so dyeing it to mark
+             selection would make the bead misreport its stop. Hidden = hollow (no
+             fill), which is this app's spelling for a handle that is present but
+             not participating. role="slider" is AngleField's own mapping for a
+             positional handle. -->
         <button
           type="button"
           class="stopbar-bead"
@@ -473,6 +539,7 @@
           class:stopbar-bead-bound={bound}
           class:dragging={drag?.at === index}
           style:left={`${Number.isFinite(positions[index]) ? positions[index] * PERCENT : 0}%`}
+          style:--sb-bead={colors[index]}
           role="slider"
           tabindex={disabled ? -1 : 0}
           aria-label={`${label} ${index + 1} position`}
@@ -486,11 +553,17 @@
           onpointercancel={onBeadUp}
           onkeydown={(e) => onBeadKeydown(e, index)}
         >
-          {#if bound}
-            <!-- The ƒ mark, and the identical glyph ColorField shows on an
-                 equation-bound colour — one mark for one meaning. -->
-            <iconify-icon icon="mdi:function-variant" width={EQ_ICON} height={EQ_ICON}></iconify-icon>
-          {/if}
+          <span class="stopbar-bead-fill">
+            {#if bound}
+              <!-- The ƒ mark, and the identical glyph ColorField shows on an
+                   equation-bound colour — one mark for one meaning. It rides
+                   INSIDE the fill so it sits over the colour rather than over the
+                   rim, and the fill keeps painting the stop's colour behind it:
+                   an equation-bound POSITION says nothing about the colour, so
+                   blanking the fill would drop a datum to mark an unrelated one. -->
+              <iconify-icon icon="mdi:function-variant" width={EQ_ICON} height={EQ_ICON}></iconify-icon>
+            {/if}
+          </span>
         </button>
       </Tooltip>
     {/each}

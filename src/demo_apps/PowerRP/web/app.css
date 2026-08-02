@@ -128,6 +128,13 @@
   --a-guide-stroke: 1px;
   --a-handle-fill: var(--a-selection);
   --a-handle-rim: #ffffff; /* white rim shared by resize handles, endpoints, modifier points */
+  /* The rim's INVERSE — a halo behind a mark drawn ON a handle whose fill is
+     arbitrary DATA rather than a token, which today is the gradient stop bead's
+     ƒ (app.css .stopbar-bead-bound). White-on-white is the failure case, and no
+     theme foreground helps: the surface underneath is a user-chosen colour, so
+     the only reliably legible pair is the rim and its opposite. Theme-independent
+     for the same reason --a-handle-rim is. */
+  --a-handle-rim-ink: #000000;
   --a-handle-stroke: 1.5px; /* rim stroke shared by handles/endpoints/modifiers */
   --a-anchor-stroke: 1.5px;
   --a-anchor-opacity: 0.5; /* the spec's 50%-transparent X's */
@@ -319,13 +326,21 @@
        the TRACK is a swatch of the ramp being edited, at the height of the
          swatches in the preset library right above it, so "the ramp you have"
          and "the ramps you could pick" are one size;
-       a BEAD is a control-sized square chip, the square ColorField's own swatch
-         is — and the smallest that still seats the ƒ mark an equation-bound
-         position wears. (The canvas modifier point it is skinned after is an 8px
-         <rect>; a DOM button that small is not grabbable, which is why this is a
-         link to the swatch and not to the glyph.) */
+       a BEAD is a control-sized colour chip WITH A TAPERED TOP (a pin), as wide
+         as the square ColorField's own swatch is — and the smallest that still
+         seats the ƒ mark an equation-bound position wears. It is not skinned
+         after the canvas modifier point any more: on this surface the handle's
+         job is to say which COLOUR sits where, so it carries the stop's own
+         colour rather than the gold accent (user ruling 2026-08-02). */
   --a-stopbar-track-h: var(--a-gradient-swatch-h);
   --a-stopbar-bead: var(--a-color-swatch);
+  /* A BEAD IS TALLER THAN IT IS WIDE, because it is now a PIN: the top
+     --a-stopbar-bead-tip of its height is the taper that points at the stop, and
+     what is left below has to still read as a colour chip. Height = width + tip
+     keeps that body EXACTLY the square swatch it was before the taper, so the
+     colour area did not shrink to buy the point. */
+  --a-stopbar-bead-tip: 5px;
+  --a-stopbar-bead-h: calc(var(--a-stopbar-bead) + var(--a-stopbar-bead-tip));
   /* The scroll cap is QUANTIZED to a whole number of rows (rows × tile + gaps +
      the grid's own padding, which counts because everything is border-box) so
      the bottom row is never sliced in half at rest — the user's "the way
@@ -6682,7 +6697,29 @@ audio.ae-preview-media {
 .stopbar-lane {
   position: relative;
   grid-column: 1;
-  height: var(--a-stopbar-bead);
+  height: var(--a-stopbar-bead-h);
+}
+
+/* THE PIN OUTLINE, shared by the bead and its ghost: a pentagon whose apex is at
+   top-centre, so `translateX(-50%)` lands the point exactly on the stop's
+   fraction. This is the "tapered top so that they point to precisely where they
+   are" the user asked for, replacing a flat-topped square whose position the
+   reader had to infer from its centre.
+   Two shapes, not one, because a clip-path has no stroke: the OUTER element is
+   clipped to this and painted the rim colour, and the inner fill is clipped to
+   the SAME polygon inset by --a-handle-stroke. Inset in FRACTIONS of the element
+   rather than pixels, because the apex is a corner between two slanted edges and
+   a uniform pixel inset there does not stay a pentagon. --a-stopbar-bead-tip is
+   the taper's height; the rest is the square colour body. */
+.stopbar-bead,
+.stopbar-ghost {
+  clip-path: polygon(
+    50% 0,
+    100% var(--a-stopbar-bead-tip),
+    100% 100%,
+    0 100%,
+    0 var(--a-stopbar-bead-tip)
+  );
 }
 
 /* WHERE A CLICK WOULD LAND — a HOLLOW bead at the pointer, the shape of the thing
@@ -6697,68 +6734,138 @@ audio.ae-preview-media {
   position: absolute;
   top: 0;
   width: var(--a-stopbar-bead);
-  height: var(--a-stopbar-bead);
+  height: var(--a-stopbar-bead-h);
   transform: translateX(-50%);
   box-sizing: border-box;
-  border: var(--a-selection-stroke) dashed var(--a-selection);
+  /* NEITHER A BORDER NOR AN OUTER SHADOW, and that is forced by the clip: a
+     clip-path cuts BOTH away along the slanted edges (a border would have
+     survived on the two vertical sides only and read as a pair of ticks; an
+     outer box-shadow is outside the clip entirely, i.e. invisible). An INSET
+     shadow is inside it, so that is the rim here. The ghost stays a translucent
+     pin in the selection colour — "candidate, not selection", and now the exact
+     shape of the thing the click will create, which is what it is for. */
+  background: color-mix(in srgb, var(--a-selection) 35%, transparent);
+  box-shadow: inset 0 0 0 var(--a-handle-stroke) var(--a-selection);
   pointer-events: none;
 }
 
-/* ONE BEAD. It wears the canvas MODIFIER POINT's skin (.overlay .modifier) —
-   the same gold fill and white rim — because it is that handle on another
-   surface: both drag the same gradient state, and core/paint_handles.js already
-   puts modifier beads on the widget itself for the same paint. The rim is a
-   box-shadow rather than a border so it costs no layout, and rather than an
-   outline so :focus-visible still has one to use. Square, like all app chrome. */
+/* ONE BEAD — A PIN CARRYING ITS STOP'S OWN COLOUR (user ruling 2026-08-02:
+   "they should be the color they represent" + "a tapered top so that they point
+   to precisely where they are"). It USED to wear the canvas modifier point's
+   skin, a flat gold square; that was defensible as "the same handle on another
+   surface" and still wrong, because on THIS surface the handle's whole job is to
+   say which colour lives where, and one accent fill for every stop says nothing.
+
+   THE BUTTON IS THE RIM and its child .stopbar-bead-fill is the colour. Two
+   elements rather than a background plus a box-shadow, because a clip-path cuts
+   an OUTER shadow away entirely — so the rim has to be a painted area under the
+   fill, and the fill has to be inset by --a-handle-stroke. The rim keeps the
+   shared white --a-handle-rim, so a stop whose colour is near the panel
+   background is still a visible bead. */
 .stopbar-bead {
   position: absolute;
   top: 0;
   width: var(--a-stopbar-bead);
-  height: var(--a-stopbar-bead);
+  height: var(--a-stopbar-bead-h);
   transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   padding: 0;
   border: 0;
   border-radius: 0;
-  background: var(--a-modifier);
-  box-shadow: 0 0 0 var(--a-handle-stroke) var(--a-handle-rim);
-  color: var(--a-modifier);
+  background: var(--a-handle-rim);
+  color: var(--fg);
   cursor: grab;
+}
+
+/* THE COLOUR ITSELF, over the transparency checkerboard — the .colorfield-swatch
+   two-layer recipe, because a stop's colour carries ALPHA and a ramp that fades
+   out must read as fading out rather than as fading to white. --sb-bead is DATA
+   (the stop's evaluated colour), passed in by the component exactly as --sb-ramp
+   and --cf-swatch are, never a token.
+   Inset by the rim stroke on every side so the rim shows as an outline, and
+   clipped to the same pentagon — the clip has no stroke, so this is the only way
+   an outlined tapered shape exists at all. */
+.stopbar-bead-fill {
+  position: absolute;
+  inset: var(--a-handle-stroke);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-direction: column;
+  background:
+    linear-gradient(var(--sb-bead, transparent), var(--sb-bead, transparent)),
+    repeating-conic-gradient(var(--a-checker-dark) 0% 25%, var(--a-checker-light) 0% 50%);
+  background-size: auto, var(--a-checker-size) var(--a-checker-size);
+  clip-path: polygon(
+    50% 0,
+    100% var(--a-stopbar-bead-tip),
+    100% 100%,
+    0 100%,
+    0 var(--a-stopbar-bead-tip)
+  );
 }
 
 .stopbar-bead.dragging {
   cursor: grabbing;
 }
 
-/* SELECTED — the rim alone is recoloured, which is exactly how the canvas skins
-   a handle in the inner selection scope: no new colour is minted, so every
+/* SELECTED — the RIM alone is recoloured, and on this bead that is a correctness
+   rule rather than a convention: the fill is the datum, so dyeing it to mark a
+   selection would make the control misreport the stop. It thickens as well as
+   recolours, because a 1.5px rim against 14 arbitrary fill colours is not
+   reliably legible on its colour change alone. No new colour is minted, so every
    theme's --a-selection override applies for free. */
 .stopbar-bead.selected {
-  box-shadow: 0 0 0 var(--a-selection-stroke) var(--a-selection);
+  background: var(--a-selection);
 }
 
-/* HIDDEN (its visibility companion flag is false): HOLLOW, exactly as the canvas
-   draws a hidden handle — present and grabbable, reading as "not part of the
-   ramp". Fill only, so a hidden bead that is also selected still shows the rim. */
-.stopbar-bead.stopbar-bead-hidden {
-  background: transparent;
+.stopbar-bead.selected .stopbar-bead-fill {
+  inset: var(--a-selection-stroke);
 }
 
-/* AN EQUATION-BOUND POSITION: the bead becomes the ƒ mark instead of a chip. It
-   is drawn where the expression evaluates but does not move, so it must not
-   advertise a grab it will refuse — the say-the-reason discipline, with the
-   sentence in its tooltip. Same glyph ColorField shows on an equation-bound
-   colour; one mark, one meaning. */
+/* HIDDEN (its visibility companion flag is false): the colour drops out and only
+   the checkerboard is left under the rim — present and grabbable, reading as
+   "stored, but not part of the ramp", which is what the canvas's hollow handle
+   says one surface over. The RIM is untouched, so a hidden bead that is also
+   selected still shows its selection. */
+.stopbar-bead.stopbar-bead-hidden .stopbar-bead-fill {
+  --sb-bead: transparent;
+  opacity: var(--a-list-hidden-opacity);
+}
+
+/* AN EQUATION-BOUND POSITION wears the ƒ mark — the same glyph ColorField shows
+   on an equation-bound colour; one mark, one meaning. The bead is drawn where the
+   expression evaluates but does not move, so it must not advertise a grab it will
+   refuse; the sentence is in its tooltip. The FILL still carries the stop's
+   colour: the equation binds the POSITION, and blanking the colour to mark it
+   would drop one datum to report another. */
 .stopbar-bead.stopbar-bead-bound {
-  background: transparent;
   cursor: default;
 }
 
+/* The mark sits in the square BODY, clear of the taper (which is why the fill is
+   a bottom-aligned column rather than a centred box: centring it in the whole pin
+   would push it up into the point). It is drawn on top of an ARBITRARY stop
+   colour, so it cannot take a theme foreground: it takes the rim's own colour
+   with the rim's own inverse behind it, which is the one pair guaranteed to be
+   legible against every fill. */
+.stopbar-bead-bound .stopbar-bead-fill {
+  color: var(--a-handle-rim);
+  filter: drop-shadow(0 0 var(--a-handle-stroke) var(--a-handle-rim-ink));
+}
+
+/* FOCUS. An `outline` is CLIPPED AWAY by the pin's clip-path (it paints outside
+   the clip region), so keyboard focus would have been invisible on this control
+   the moment it stopped being a square. The ring therefore has to be INSIDE:
+   the rim takes the selection colour and thickens, which is the same device
+   .selected uses and is legible against every fill for the reason stated there. */
 .stopbar-bead:focus-visible {
-  outline: var(--a-selection-stroke) solid var(--a-selection);
-  outline-offset: var(--a-sp-1);
+  outline: none;
+  background: var(--a-selection);
+}
+
+.stopbar-bead:focus-visible .stopbar-bead-fill {
+  inset: var(--a-selection-stroke);
 }
 
 /* Purge spans both rows in the trailing column, so it never enters the position
