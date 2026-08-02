@@ -717,8 +717,8 @@ const ACTIVE_KEY_SUFFIX = "Active";
  * language, committing as one undo unit. Nothing else is needed — no per-widget
  * UI, no companion button row.
  *
- * WHAT IT REPLACED, AND WHY. Four plugins (graph_line, graph_bars, mermaid,
- * codeblock) each shipped a full-width `action` row labelled "Edit in code
+ * WHAT IT REPLACED, AND WHY. Five plugins (graph_line, graph_bars, mermaid,
+ * codeblock, latex) each shipped a full-width `action` row labelled "Edit in code
  * editor…" underneath the property it edited. The user's objection is that this
  * is the wrong SHAPE: "there's an entire button under it. That's not how this
  * should be. It should be in the same property." A whole row for one property's

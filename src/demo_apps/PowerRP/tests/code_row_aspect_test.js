@@ -6,8 +6,11 @@
  * code-valued property (2026-08-02: "we need to have a way and properties for
  * anything that is code… you just have a bracket thing, like a double bracket at
  * the end of it, which would let you edit in the code editor"), replacing the
- * four full-width "Edit in code editor…" button rows that had been copied into
- * graph_line, graph_bars, mermaid and codeblock. That replacement has a failure
+ * five full-width "Edit in code editor…" button rows that had been copied into
+ * graph_line, graph_bars, mermaid, codeblock and latex. (f1af0e3 migrated the
+ * first four; latex was missed there and followed, which is precisely the kind
+ * of straggler assertion (3) below is for — it is app-wide, not table-driven, so
+ * it fails on ANY plugin that keeps both shapes.) That replacement has a failure
  * mode with no visible symptom at the author's desk: DELETE the button row,
  * FORGET the `code` aspect, and the property is still perfectly editable inline
  * — the widget just quietly loses its only route to the full-screen editor, and
@@ -17,7 +20,7 @@
  *   (1) codeRowLanguage resolves BOTH declared forms (a literal string, and a
  *       function of the widget's state — codeblock's, which follows its own
  *       `language` property);
- *   (2) each of the four migrated plugins declares exactly one `code` row, on
+ *   (2) each of the five migrated plugins declares exactly one `code` row, on
  *       the property its `codeEditor` descriptor already names, in an agreeing
  *       language — so the row button and the double-click open the same editor
  *       on the same source;
@@ -86,7 +89,7 @@ test("codeRowLanguage is null for a row with no code aspect", () => {
 // `codeEditor` descriptor below rather than repeated here, so this table names
 // only which widgets were migrated — the property/language agreement is derived,
 // not transcribed (a transcription would be a third opinion to keep in step).
-const MIGRATED = ["graph_line", "graph_bars", "mermaid", "codeblock"];
+const MIGRATED = ["graph_line", "graph_bars", "mermaid", "codeblock", "latex"];
 
 for (const type of MIGRATED) {
   test(`${type} declares exactly one code row, agreeing with its codeEditor descriptor`, () => {
