@@ -36,6 +36,7 @@ import { blendApplied, applied, setPath, getPath, leaves } from "../core/deltas.
 import {
   INTERP_KEY_SUFFIX, DEFAULT_INTERP_MODE, interpKeyFor, isInterpKey, propertyOfInterpKey,
   registerInterpMode, interpMode, interpModeIds, interpModeLabels, modeForBlend, blendUnderMode,
+  defaultModeFor, displayedDefaultModeFor,
 } from "../core/interp_modes.js";
 import { interpRowFor, rowSupportsInterp } from "../core/properties.js";
 
@@ -254,7 +255,10 @@ test("an UNKNOWN mode THROWS rather than quietly tweening", () => {
 test("interpRowFor: a DERIVED select row over the registered modes (doctests)", () => {
   const r = interpRowFor({ key: "x", label: "X", category: "positioning" });
   assert.equal(r.key, "x~interp");
-  assert.equal(r.label, "X interpolation");
+  // "interp", not "interpolation" — user ruling, 2026-08-02: "you could just say
+  // interp, because that's shorter… So interp is better than interpolation for
+  // the UI." This label IS user-facing (it is the strip row's label).
+  assert.equal(r.label, "X interp");
   assert.equal(r.kind, "select");
   assert.equal(r.category, "positioning");
   assert.equal(r.interpOf, "x");
@@ -264,6 +268,50 @@ test("interpRowFor: a DERIVED select row over the registered modes (doctests)", 
   // A row displaying one key while WRITING another (cx → x) must name the
   // WRITTEN slot, or the mode would govern a property nothing stores.
   assert.equal(interpRowFor({ key: "cx", writeKey: "x", label: "Center X" }).key, "x~interp");
+});
+
+// ── THE SELECT MUST NOT LIE ABOUT WHAT IT IS DOING ───────────────────────────
+// The displayed absent mode and the mode the RENDERER picks for an absent
+// companion are the same question, so they must come from the same function.
+// They did not: `absentValue` was a hardcoded DEFAULT_INTERP_MODE while
+// defaultModeFor blends a paint pair — so a paint row with nothing stored
+// BLENDED on the canvas and read "Tween" in the Inspector. Both directions are
+// asserted below, because a fix that made everything say "blend" would pass the
+// paint half alone.
+const CRT = { type: "material", material: { id: "crt" } };
+const GRAD = { type: "linearGradient", stops: [] };
+
+test("displayedDefaultModeFor agrees with the RENDERER's default-mode seam", () => {
+  // A paint-shaped value: what the renderer does to a pair of them is `blend`,
+  // so that is what a row holding one must display.
+  assert.equal(defaultModeFor(CRT, GRAD, "fill"), "blend", "precondition: the seam blends a paint pair");
+  assert.equal(displayedDefaultModeFor(CRT, "fill"), "blend");
+  assert.equal(displayedDefaultModeFor(GRAD, "fill"), "blend");
+  // Everything else still reads "tween", byte-identically to before — a hex
+  // colour and an rgba array have real numeric midpoints and are NOT paint-shaped.
+  assert.equal(displayedDefaultModeFor("#ff0000", "fill"), DEFAULT_INTERP_MODE);
+  assert.equal(displayedDefaultModeFor([1, 0, 0, 1], "fill"), DEFAULT_INTERP_MODE);
+  assert.equal(displayedDefaultModeFor(0, "x"), DEFAULT_INTERP_MODE);
+  assert.equal(displayedDefaultModeFor(false, "active"), DEFAULT_INTERP_MODE);
+  // A not-yet-created item folds to nothing here; it must not claim "blend".
+  assert.equal(displayedDefaultModeFor(undefined, "fill"), DEFAULT_INTERP_MODE);
+});
+
+test("interpRowFor's absentValue is VALUE-AWARE, not a constant", () => {
+  assert.equal(
+    interpRowFor({ key: "fill", label: "Fill" }, CRT).absentValue, "blend",
+    "a paint row with nothing stored blends at render time, so the select must say so",
+  );
+  assert.equal(interpRowFor({ key: "x", label: "X" }, 5).absentValue, DEFAULT_INTERP_MODE);
+  // The value is OPTIONAL: every caller reading only key/label/kind is unchanged,
+  // and omitting it must not invent a mode.
+  assert.equal(interpRowFor({ key: "fill", label: "Fill" }).absentValue, DEFAULT_INTERP_MODE);
+  // The absent display is always a REGISTERED mode — otherwise the select would
+  // show a value none of its own options carry, and render blank.
+  for (const v of [CRT, GRAD, "#ff0000", 0, undefined]) {
+    const row = interpRowFor({ key: "fill", label: "Fill" }, v);
+    assert.ok(row.options.includes(row.absentValue), `absentValue ${row.absentValue} is not among the row's options`);
+  }
 });
 
 test("rowSupportsInterp: keyframeable rows only, and never a mode row itself", () => {

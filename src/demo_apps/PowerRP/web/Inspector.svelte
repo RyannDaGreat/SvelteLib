@@ -60,7 +60,7 @@
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
   import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, rowSupportsInterp, codeRowLanguage } from "../core/properties.js";
-  import { DEFAULT_INTERP_MODE, interpKeyFor } from "../core/interp_modes.js";
+  import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
   import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
@@ -805,10 +805,17 @@
    * state being shown? Drives the button's lit state, so a stepping property
    * announces itself without the strip being open — otherwise the only way to
    * find out why a property is not tweening would be to open every row in turn.
+   *
+   * "Default" is the VALUE-AWARE one (core/interp_modes.displayedDefaultModeFor),
+   * the same seam the strip's select displays and the renderer actually uses. A
+   * fixed "tween" would light this button on every paint row whose author picked
+   * `blend` — announcing "not the default" about the exact mode that IS the
+   * default there, on the widest class of rows the lit state exists to flag.
    */
   function interpModeSet(state, row) {
-    const stored = valueAt(state, interpKeyFor(writeKey(row)));
-    return stored != null && stored !== DEFAULT_INTERP_MODE;
+    const target = writeKey(row);
+    const stored = valueAt(state, interpKeyFor(target));
+    return stored != null && stored !== displayedDefaultModeFor(valueAt(state, target), target);
   }
   let eqFocusKey = $state(null);
   let eqPath = $state(null);
@@ -1647,7 +1654,7 @@
             <button
               class="interp-btn"
               class:interp-set={modeSet}
-              aria-label={`Interpolation mode for ${row.label}`}
+              aria-label={`Interp mode for ${row.label}`}
               aria-pressed={open}
               onclick={() => toggleInterpRow(row)}
             >
@@ -1799,7 +1806,7 @@
        to core/multiselect.js later without touching this file's shape. -->
   {#if interpCapable && interpRowOpen(row)}
     <div class="interp-strip">
-      {@render propRow(interpRowFor(row), state, {
+      {@render propRow(interpRowFor(row, valueAt(state, writeKey(row))), state, {
         keyframes, disabled, onpreview, oncommit, itemId, pathState, hoverPreview, multi: null,
       })}
     </div>

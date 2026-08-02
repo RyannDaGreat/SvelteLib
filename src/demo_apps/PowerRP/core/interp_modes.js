@@ -585,3 +585,43 @@ export function defaultModeFor(a, b, key) {
   if (isPaintShaped(a) && isPaintShaped(b)) return "blend";
   return DEFAULT_INTERP_MODE;
 }
+
+/**
+ * Pure function. THE DISPLAY SIDE of defaultModeFor: which mode the Inspector's
+ * interp select SHOWS for a property whose companion key is absent.
+ *
+ * WHY IT EXISTS. The select used to display a hardcoded DEFAULT_INTERP_MODE for
+ * every absent companion, which made it LIE on exactly the rows the default-mode
+ * seam was added for: a paint row with nothing stored blends at render time
+ * (defaultModeFor above) while the control read "Tween". A select that names a
+ * mode the renderer is not using is worse than no select — it is the one place
+ * an author goes to ask what a property does.
+ *
+ * WHY ONE VALUE AND NOT TWO. defaultModeFor answers about a TRANSITION and takes
+ * the pair (a → b); the Inspector is showing ONE slide's folded value and has no
+ * second one — the next keyframe may not exist yet, and on the last slide never
+ * will. So this asks the question the display can actually answer: is this
+ * property PAINT-SHAPED right now? Feeding the value in as both sides is not a
+ * shortcut but the precise claim — `blend` is reachable iff BOTH ends are paint,
+ * so a paint-valued property is exactly one whose OTHER end decides it, and a
+ * non-paint value cannot reach `blend` no matter what it moves to. The residual
+ * imprecision is one-directional and small: a paint that switches to a bare hex
+ * colour mid-deck displays "Blend" and tweens. Naming a REAL default the author
+ * will usually get beats naming one they get only when nothing is a material.
+ *
+ * Args:
+ *   value (*): the property's folded value on the slide being shown
+ *   key (string): the state key (carried for parity with defaultModeFor)
+ *
+ * Returns:
+ *   string: a registered mode id — what the select displays when nothing is stored
+ *
+ * @example displayedDefaultModeFor({type: "material", material: {id: "crt"}}, "fill") // "blend"
+ * @example displayedDefaultModeFor({type: "linearGradient", stops: []}, "fill") // "blend"
+ * @example displayedDefaultModeFor("#ff0000", "fill") // "tween" (a colour tweens per channel)
+ * @example displayedDefaultModeFor(0, "x") // "tween"
+ * @example displayedDefaultModeFor(undefined, "x") // "tween" (nothing folded here yet)
+ */
+export function displayedDefaultModeFor(value, key) {
+  return defaultModeFor(value, value, key);
+}

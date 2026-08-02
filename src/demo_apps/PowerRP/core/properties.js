@@ -65,7 +65,7 @@ import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
-import { DEFAULT_INTERP_MODE, interpKeyFor, interpMode, interpModeIds, interpModeLabels, isInterpKey } from "./interp_modes.js";
+import { displayedDefaultModeFor, interpKeyFor, interpMode, interpModeIds, interpModeLabels, isInterpKey } from "./interp_modes.js";
 
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
@@ -2011,14 +2011,30 @@ export function customProps(defs) {
  * through the same keyframe path, and undoes through the same machinery. The
  * mode is a real keyframeable property, which is what the whole design rests on.
  *
- * NO `default` and no defaults-fill: an ABSENT companion is the "tween" mode and
- * must stay absent, so a legacy document keeps folding to identical bytes. The
- * Inspector shows DEFAULT_INTERP_MODE as the displayed value when the key is
- * missing; writing it stores an explicit mode, which is a real (undoable) edit.
+ * NO `default` and no defaults-fill: an ABSENT companion is the mode the
+ * default-mode seam picks and must stay absent, so a legacy document keeps
+ * folding to identical bytes. The Inspector SHOWS that same seam's answer when
+ * the key is missing; writing it stores an explicit mode, a real (undoable) edit.
+ *
+ * THE DISPLAYED ABSENT MODE IS VALUE-AWARE, and must be. `absentValue` was a
+ * hardcoded "tween", which made the select LIE on a paint row: with nothing
+ * stored, core/interp_modes.defaultModeFor blends a paint pair while the control
+ * read "Tween". So the absent display now comes from displayedDefaultModeFor
+ * over the property's CURRENT VALUE — one seam answering both the render and the
+ * label, which is the only way they cannot drift.
+ *
+ * It takes the VALUE, not the state, deliberately: the caller has already read
+ * this row's possibly-dotted key ("rotationAnchor.x") out of state to render the
+ * control, so asking for the state here would mean a second path-walker in core
+ * that could disagree with the Inspector's. `undefined` (the default, and what a
+ * not-yet-created item reads) falls back to DEFAULT_INTERP_MODE, so every caller
+ * that only wants key/label/kind is unaffected.
  *
  * Args:
  *   propRow (object): the row whose blend law this edits (only its key/writeKey
  *     and label are read)
+ *   value (*): the property's folded value on the slide being shown, read ONLY
+ *     to pick the displayed absent mode. Optional.
  *
  * Returns:
  *   object: a select row over the registered mode ids
@@ -2026,26 +2042,32 @@ export function customProps(defs) {
  * @example interpRowFor({key: "x", label: "X"}).key
  * "x~interp"
  * @example interpRowFor({key: "x", label: "X"}).label
- * "X interpolation"
+ * "X interp"
  * @example interpRowFor({key: "cx", writeKey: "x", label: "Center X"}).key
  * "x~interp"
  * @example interpRowFor({key: "x", label: "X"}).kind
  * "select"
+ * @example interpRowFor({key: "x", label: "X"}, 5).absentValue
+ * "tween"
+ * @example interpRowFor({key: "fill", label: "Fill"}, {type: "material", material: {id: "crt"}}).absentValue
+ * "blend"
  */
-export function interpRowFor(propRow) {
+export function interpRowFor(propRow, value) {
   const target = propRow.writeKey ?? propRow.key;
   const labels = interpModeLabels();
   return {
     key: interpKeyFor(target),
-    label: `${propRow.label} interpolation`,
+    label: `${propRow.label} interp`,
     kind: "select",
     category: propRow.category,
     options: interpModeIds(),
     optionLabels: labels,
     // The option the Inspector SHOWS when the companion key is absent from state
-    // — which is the normal, untouched condition and must stay that way. See the
-    // `absentValue` note in web/Inspector.svelte's select branch.
-    absentValue: DEFAULT_INTERP_MODE,
+    // — which is the normal, untouched condition and must stay that way. It is
+    // the DEFAULT-MODE SEAM's own answer for this property's current value, not
+    // a constant: see the docblock's "THE DISPLAYED ABSENT MODE IS VALUE-AWARE"
+    // and the `absentValue` note in web/Inspector.svelte's select branch.
+    absentValue: displayedDefaultModeFor(value, target),
     interpOf: target,
     help: `How "${propRow.label}" moves across a transition. ${interpModeIds().map((id) => `${labels[id]} — ${interpMode(id).help}`).join(" ")}`,
   };
