@@ -238,6 +238,24 @@ try {
 
   await countCommits();
 
+  // ── THE FLAT REFERENCE, and why it is not the empty affordance ────────────
+  // "Did the raster land" used to be `richer than the SOURCELESS WIDGET`, on the
+  // stated premise that the affordance is "a flat panel plus one line of text".
+  // THAT PREMISE EXPIRED: the viewport now answers the three questions someone
+  // placing it actually has, so the affordance is EIGHT lines and its PNG grew
+  // 7396 -> 37064 bytes. Nothing about the renders changed — the glTF's raster is
+  // byte-identical at 16848 across that whole period — but the bar they were
+  // divided against rose 5x, and both checks began failing on a correct picture.
+  //
+  // So the reference is now BARE CANVAS, captured before a single widget exists,
+  // which is flat by construction and cannot drift when the affordance's copy is
+  // edited again. This still catches the failure the check exists for: a viewport
+  // that renders NOTHING is uniform, compresses like the canvas, and fails.
+  // The other half of the original meaning — "a raster, not the message panel" —
+  // is carried by the ops/message assertions, which say it directly instead of
+  // inferring it from a byte count.
+  const flatShot = await shotOf(BOX);
+
   // ── Set the scene ─────────────────────────────────────────────────────────
   const emptyId = await spawn("scene3d_splat", EMPTY_BOX);
   const splatId = await spawn("scene3d_splat", { ...BOX, src: SPLAT_URL });
@@ -246,23 +264,27 @@ try {
 
   // ── 1. IT DRAWS ───────────────────────────────────────────────────────────
   const emptyShot = await shotOf(EMPTY_BOX);
+  // THE REFERENCE IS SELF-VALIDATING. If bare canvas ever stopped being flatter
+  // than the affordance, the comparisons below would be measuring nothing — so
+  // say it out loud rather than assume it.
+  ok(complexity(flatShot) < complexity(emptyShot),
+    `bare canvas is flatter than the affordance, so it is a usable floor (${complexity(flatShot)} vs ${complexity(emptyShot)})`);
   let splatShot = null;
   const deadline = Date.now() + RASTER_TIMEOUT_MS;
   while (Date.now() < deadline) {
     splatShot = await shotOf(BOX);
-    // The empty affordance is a flat panel plus one line of text; a splat render
-    // is a photograph-like field. Waiting for the sourced widget to become
-    // MEASURABLY richer than the sourceless one is what "the raster landed" means
-    // without reaching into module internals.
-    if (complexity(splatShot) > complexity(emptyShot) * 2) break;
+    // Bare canvas is uniform; a splat render is a photograph-like field. Waiting
+    // for the sourced widget to become MEASURABLY richer than empty canvas is what
+    // "the raster landed" means without reaching into module internals.
+    if (complexity(splatShot) > complexity(flatShot) * 2) break;
     await sleep(400);
   }
   const refA = await refOf(splatId);
   const splatOps = await opsOf(splatId);
   ok(splatOps.kinds.includes("image") && splatOps.message === null,
     `the splat is drawing a RASTER, not a message panel (ops ${JSON.stringify(splatOps.kinds)}, message ${JSON.stringify(splatOps.message)})`);
-  ok(complexity(splatShot) > complexity(emptyShot) * 2,
-    `the splat scene RENDERED: ${complexity(splatShot)} bytes of PNG vs ${complexity(emptyShot)} for the same-size empty viewport`);
+  ok(complexity(splatShot) > complexity(flatShot) * 2,
+    `the splat scene RENDERED: ${complexity(splatShot)} bytes of PNG vs ${complexity(flatShot)} for the same-size bare canvas`);
   await page.screenshot({ path: `${shots}/01-rendered.png` });
 
   // A SECOND shot with NOTHING changed in between. This separates two very
@@ -382,14 +404,14 @@ try {
   const meshDeadline = Date.now() + RASTER_TIMEOUT_MS;
   while (Date.now() < meshDeadline) {
     modelShot = await shotOf(MODEL_BOX);
-    if (complexity(modelShot) > complexity(emptyShot) * 2) break;
+    if (complexity(modelShot) > complexity(flatShot) * 2) break;
     await sleep(400);
   }
   const modelOps = await opsOf(modelId);
   ok(modelOps.kinds.includes("image") && modelOps.message === null,
     `the glTF model is drawing a RASTER, not a message panel (ops ${JSON.stringify(modelOps.kinds)}, message ${JSON.stringify(modelOps.message)})`);
-  ok(complexity(modelShot) > complexity(emptyShot) * 2,
-    `the glTF model RENDERED and is lit: ${complexity(modelShot)} bytes of PNG vs ${complexity(emptyShot)} for an empty viewport of the same size`);
+  ok(complexity(modelShot) > complexity(flatShot) * 2,
+    `the glTF model RENDERED and is lit: ${complexity(modelShot)} bytes of PNG vs ${complexity(flatShot)} for the same-size bare canvas`);
   await page.screenshot({ path: `${shots}/05-model.png` });
 
   // ── 8. A DEAD SOURCE FAILS LOUDLY, IN THE CANVAS ──────────────────────────

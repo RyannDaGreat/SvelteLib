@@ -818,30 +818,57 @@ function renderSpec(spec) {
 let renderQueue = Promise.resolve();
 
 
+/** The upright turn: 180° about X, as a quaternion (x, y, z, w). Y-DOWN capture
+ *  (COLMAP's camera convention, which most splat trainers inherit) -> Y-UP scene. */
+const UPRIGHT_TURN = [1, 0, 0, 0];
+/** No turn. Set EXPLICITLY rather than left alone — see applyUpright. */
+const IDENTITY_TURN = [0, 0, 0, 1];
+
 /**
- * Near-pure helper (allocates a Group; mutates nothing shared). The scene object
- * wrapped in whatever turn makes it stand up.
+ * Command (mutates `object`'s orientation, and ONLY that). Puts the scene object
+ * the right way up, returning it for chaining.
  *
- * WHY A WRAPPER AND NOT `object.rotation.x`: the object comes from the shared
- * per-URL source cache, so two widgets showing one capture would fight over its
- * orientation — one would flip the other's. The Group is per render and throwaway.
+ * ── IT MUST BE THE MESH'S OWN TRANSFORM, NOT AN ANCESTOR'S ───────────────────
+ * This was a Group wrapper for one commit and the splat rendered DEGRADED —
+ * measurably, not subtly: the probe's splat raster fell from 74760 to 47304 bytes
+ * of PNG and the capture's dark structural detail disappeared into a smooth
+ * gradient. Spark reads the SPLAT MESH'S OWN matrix; nesting it one level deeper
+ * put the geometry somewhere its sorter did not follow. Rotating the mesh
+ * directly restores the baseline number EXACTLY (74760), which is how this is
+ * known rather than guessed.
  *
- * @param {object} object - the cached mesh/scene
+ * THE SORT GATE WAS THE OBVIOUS SUSPECT AND WAS INNOCENT. `renderSpecNow`
+ * rebuilds the scene graph every call and then skips `spark3d.update()` when the
+ * key matches, which looks exactly like a staleness bug. Disabling that gate
+ * entirely reproduced 47304 unchanged — so it is NOT the cause, and removing it
+ * would have cost a real latency win while leaving this defect in place.
+ *
+ * ── WHY BOTH BRANCHES ASSIGN, WHICH IS THE WHOLE LEAK DEFENCE ────────────────
+ * The Group existed for a real reason: `object` comes from the shared per-URL
+ * source cache, so two widgets showing one capture would otherwise fight over its
+ * orientation. Setting the quaternion UNCONDITIONALLY on every render answers
+ * that without nesting — each render states the orientation it wants instead of
+ * inheriting whatever the last one left behind. An early-return for the
+ * not-upright case would reintroduce exactly the leak the Group was defending
+ * against, so there is deliberately no early return here.
+ *
+ * @param {object} object - the cached mesh/scene (mutated)
  * @param {{kind: string, upright?: boolean}} spec - the render spec
- * @param {object} THREE - the engine namespace
- * @returns {object} `object` itself when no turn is needed, else a Group holding it
+ * @returns {object} the same object, oriented
+ *
+ * @example // a splat with upright on (the default) is turned 180° about X:
+ * // applyUpright(mesh, {kind: "splat"}).quaternion.toArray() // [1, 0, 0, 0]
+ * @example // and with it off, explicitly straightened rather than left as-is:
+ * // applyUpright(mesh, {kind: "splat", upright: false}).quaternion.toArray() // [0, 0, 0, 1]
  */
-function uprightWrapper(object, spec, THREE) {
+function applyUpright(object, spec) {
   // ONLY SPLATS. A glTF model is authored Y-up by the format's own specification,
   // so there is nothing to correct and no control is offered — the same doctrine
-  // as the light rig two lines below: a node kind that cannot honour a control
+  // as the light rig in renderSpecNow: a node kind that cannot honour a control
   // gets nothing rather than a fake one.
   if (spec.kind !== "splat") return object;
-  if (spec.upright === false) return object;
-  const g = new THREE.Group();
-  g.rotation.x = Math.PI; // Y-DOWN capture -> Y-UP scene
-  g.add(object);
-  return g;
+  object.quaternion.set(...(spec.upright === false ? IDENTITY_TURN : UPRIGHT_TURN));
+  return object;
 }
 
 /**
@@ -894,7 +921,7 @@ async function renderSpecNow(spec) {
   // `object` comes from the shared per-URL cache, so rotating it directly would
   // leak one widget's orientation into every other widget showing the same file.
   // A Group costs nothing and keeps the cached mesh pristine.
-  scene.add(uprightWrapper(object, spec, THREE));
+  scene.add(applyUpright(object, spec));
   // The light rig rides with a LIT member only. A splat's radiance is baked into
   // its Gaussians, so a light would be inert on it — and the house doctrine
   // (core/registry.js effectsInjectable) is that a node kind which cannot honour
