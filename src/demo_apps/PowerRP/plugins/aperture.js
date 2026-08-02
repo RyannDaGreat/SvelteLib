@@ -83,7 +83,6 @@ import {
   radialConstrain, regularOpeningRadius, starburstRayAngles, stopDownHandle,
 } from "../core/optics.js";
 import { pointInOutlines, radialOutline } from "../core/outline.js";
-import { paintModifierPoints } from "../core/paint_handles.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { subpathsPathD } from "../core/shapes.js";
 import * as T from "../core/transform.js";
@@ -512,8 +511,11 @@ export const aperturePlugin = {
         },
       },
       ...irisPolygonHandles(s),
-      ...paintModifierPoints(s, "fill"),
-      ...paintModifierPoints(s, "pupilFill"),
+      // The fill / pupilFill GRADIENT beads used to be spread here. They are now
+      // appended after these rows by core/derive.js nodeModifierPoints, for every
+      // `paint: true` row this plugin declares — fill, pupilFill AND stroke. The
+      // third is new: this file spread only the first two, so a gradient-STROKED
+      // aperture had no stroke beads, which is the same opt-in defect one level in.
     ];
   },
   // CROSSHAIR PLACEMENT: bbox placement — click-drag sizes the box, a plain click

@@ -2,7 +2,7 @@
  * GRADIENT HANDLE tests — the on-canvas beads that edit a linear/radial gradient's
  * geometry (core/paint_handles.js).
  *
- * The three laws under test, in the order the feature's bugs appeared:
+ * The four laws under test, in the order the feature's bugs appeared:
  *
  *   1. ANGLE ON CANVAS. The direction bead is a FREE polar handle — heading sets
  *      the axis angle, distance sets the wavelength. A SIDEWAYS drag must turn the
@@ -25,10 +25,22 @@
  *      apply at the bead's own position is exact, because the angle is already
  *      quantized by then.
  *
- * Bare-node, no DOM — core/ is DOM-free by contract.
+ *   4. UNIVERSALITY. The beads are DERIVED for every paint-capable widget, not
+ *      spread by the seven plugins that remembered to. That was the user's third
+ *      report on this feature — "why do I not see the handles for the gradient on
+ *      the graph line? Sometimes I see the handles for a gradient, and sometimes I
+ *      don't, and it baffles me" — and it is checked as a SWEEP over the whole
+ *      registered roster, because the failure mode was never one widget: it was
+ *      the default being wrong.
+ *
+ * Bare-node, no DOM — core/ is DOM-free by contract. This suite imports
+ * plugins/index.js for the roster sweep, which is bare-node importable.
  */
 
-import { paintModifierPoints, activeGradient, linearAxisOf, linearPolarInverse, phaseShiftHalves, wrappedPhase } from "../core/paint_handles.js";
+import { paintModifierPoints, allPaintModifierPoints, paintCapableKeys, activeGradient, linearAxisOf, linearPolarInverse, phaseShiftHalves, wrappedPhase } from "../core/paint_handles.js";
+import { nodeModifierPoints, worldTransform } from "../core/derive.js";
+import { unsignedState } from "../core/geometry.js";
+import { allPlugins } from "../plugins/index.js";
 import { linearGradientRender } from "../render_gpu/ir.js";
 import { angleToLinearEndpoints, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
 
@@ -225,6 +237,128 @@ console.log("helpers and non-gradient paints");
 
   check("linearAxisOf prefers a stored angle", linearAxisOf({ angle: 90 }).to.y === 1);
   check("linearAxisOf falls back to stored endpoints", linearAxisOf({ from: { x: 0, y: 0 }, to: { x: 1, y: 0 } }).to.x === 1);
+}
+
+// ── LAW 4: THE BEADS ARE DERIVED, NOT OPTED INTO ─────────────────────────────
+//
+// Until 2026-08-02 each plugin SPREAD `paintModifierPoints(s, "fill")` into its
+// own `modifierPoints`, and exactly SEVEN of ~74 paint-capable plugins did — so a
+// graph_line with a gradient fill had no handles and the user reported the
+// inconsistency ("sometimes I see the handles for a gradient, and sometimes I
+// don't"). core/derive.js nodeModifierPoints now appends them for every
+// `paint: true` Inspector row a plugin declares. The four things that must hold:
+//
+//   4a. EQUALITY WITH THE SPREAD. The derived rows are what the removed spread
+//       produced — same ids, glyphs, labels, stems and (once unwrapped) positions.
+//       This is the pin that would have caught a silent regression in the seven.
+//   4b. COVERAGE. graph_line — the widget the user reported — now has them, and so
+//       does every other paint-capable plugin, off its own declaration.
+//   4c. NO COST TO NON-GRADIENTS. A widget whose paints are all solid gets ZERO
+//       extra rows, so every existing handle set is byte-identical.
+//   4d. THE FLIP. `node.state` is post-`unsignedState`, so a NEGATIVE-w widget's
+//       beads land on its ink — the one derive seam gets this right for all 74,
+//       which is the structural win over seven per-plugin spreads.
+console.log("auto-derive: the beads are a function of the paint, not the plugin");
+{
+  const GRAD = { type: "linearGradient", linear: { stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }], angle: 30, wavelength: 0.7, phase: 0.25 } };
+  const plugins = Object.fromEntries(Object.values(allPlugins).map((p) => [p.type, p]));
+
+  /** A render node for `type` with `extra` merged over its defaults — the same
+   *  unsignedState + worldTransform pair core/derive.js deriveNodes builds. */
+  function nodeFor(type, extra) {
+    const state = unsignedState({ ...plugins[type].defaults, ...extra });
+    return { id: "i", itemId: "i", type, state, world: worldTransform(state), plugin: plugins[type] };
+  }
+  const idsOf = (node) => nodeModifierPoints(node).map((m) => m.id);
+
+  // 4a — the derived rows ARE the spread's rows. rect's `modifierPoints` was
+  // NOTHING BUT the spread, so its whole derived set must equal the helper's,
+  // aspect for aspect, with x/y offset by the node origin (rotation 0, scale 1).
+  const rectNode = nodeFor("rect", { fill: GRAD, x: 100, y: 100, w: 200, h: 100 });
+  const derived = nodeModifierPoints(rectNode);
+  const spread = paintModifierPoints(rectNode.state, "fill");
+  check("the spread and the derive produce the same number of beads", derived.length === spread.length, `derived ${derived.length}, spread ${spread.length}`);
+  for (let i = 0; i < spread.length; i++) {
+    const d = derived[i], m = spread[i];
+    check(`bead ${i} keeps its id`, d.id === m.id, `${d.id} vs ${m.id}`);
+    check(`bead ${d.id} keeps its glyph`, d.glyph === m.glyph, `${d.glyph} vs ${m.glyph}`);
+    check(`bead ${d.id} keeps its label`, d.label === m.label, `${d.label} vs ${m.label}`);
+    check(`bead ${d.id} keeps its stem presence`, !!d.stem === !!m.stem);
+    near(`bead ${d.id} lands at the same x`, d.x, m.x + rectNode.state.x, 1e-9);
+    near(`bead ${d.id} lands at the same y`, d.y, m.y + rectNode.state.y, 1e-9);
+  }
+
+  // 4b — THE REPORTED WIDGET. graph_line never spread anything and has no
+  // `modifierPoints` hook at all, so before this change its gradient fill had no
+  // handles whatsoever. Both `closed` states get them: the beads follow the PAINT
+  // being a gradient, exactly as they do on the seven, not whether it currently
+  // covers pixels (a graph_line only fills when closed).
+  check("graph_line with a gradient fill now has both beads",
+    idsOf(nodeFor("graph_line", { fill: GRAD, closed: true })).join(",") === "fill-grad-center,fill-grad-dir");
+  check("graph_line's beads do not depend on `closed`",
+    idsOf(nodeFor("graph_line", { fill: GRAD, closed: false })).join(",") === "fill-grad-center,fill-grad-dir");
+
+  // Every paint key the plugin declares, not just `fill` — the aperture declares
+  // three (fill, pupilFill, stroke) and used to spread only the first two, so a
+  // gradient-STROKED aperture had no stroke beads either.
+  check("aperture derives beads for all three of its paint keys",
+    idsOf(nodeFor("aperture", { fill: GRAD, pupilFill: GRAD, stroke: GRAD })).filter((id) => id.includes("-grad-")).join(",")
+      === "fill-grad-center,fill-grad-dir,pupilFill-grad-center,pupilFill-grad-dir,stroke-grad-center,stroke-grad-dir");
+
+  // The plugin's OWN handles come FIRST and keep their ids — polygon's vertices
+  // are p0..pN and the beads are appended after them.
+  const polyIds = idsOf(nodeFor("polygon", { fill: GRAD }));
+  check("a plugin's own handles keep their leading position", polyIds[0] === "p0", polyIds.join(","));
+  check("the beads are appended after them", polyIds.slice(-2).join(",") === "fill-grad-center,fill-grad-dir", polyIds.join(","));
+
+  // 4c — no gradient, no rows. A plain rect had zero handles before and must
+  // still have zero; a plain polygon keeps exactly its vertices.
+  check("a solid-filled rect derives NO handles", idsOf(nodeFor("rect", {})).length === 0);
+  check("a solid-filled polygon derives its vertices and nothing else",
+    idsOf(nodeFor("polygon", {})).every((id) => /^p\d+$/.test(id)));
+
+  // 4d — THE FLIP. The four sign spellings of one footprint derive to the same
+  // state (core/geometry.js unsignedState is an involution), so the beads of a
+  // negative-w widget must be at the IDENTICAL world points as its unflipped twin
+  // — i.e. on the ink, not mirrored off it.
+  const upright = nodeModifierPoints(nodeFor("rect", { fill: GRAD, x: 100, y: 100, w: 200, h: 100 }));
+  const flipped = nodeModifierPoints(nodeFor("rect", { fill: GRAD, x: 300, y: 100, w: -200, h: 100 }));
+  check("a flipped widget derives the same bead count", flipped.length === upright.length);
+  for (let i = 0; i < upright.length; i++) {
+    near(`flipped bead ${upright[i].id} lands on the ink, x`, flipped[i].x, upright[i].x, 1e-9);
+    near(`flipped bead ${upright[i].id} lands on the ink, y`, flipped[i].y, upright[i].y, 1e-9);
+  }
+  const bothFlipped = nodeModifierPoints(nodeFor("rect", { fill: GRAD, x: 300, y: 200, w: -200, h: -100 }));
+  for (let i = 0; i < upright.length; i++) {
+    near(`doubly-flipped bead ${upright[i].id} lands on the ink, x`, bothFlipped[i].x, upright[i].x, 1e-9);
+    near(`doubly-flipped bead ${upright[i].id} lands on the ink, y`, bothFlipped[i].y, upright[i].y, 1e-9);
+  }
+
+  // paintCapableKeys reads the plugin's declaration and nothing else — a widget
+  // with no paint rows contributes nothing, which is what makes this safe to run
+  // over the whole roster.
+  check("paintCapableKeys reads a plugin's own paint rows", paintCapableKeys(plugins.rect).join(",") === "fill,stroke");
+  check("paintCapableKeys is empty for a plugin with no paint rows", paintCapableKeys({ inspector: [{ key: "w", kind: "number" }] }).length === 0);
+
+  // THE SWEEP: every registered paint-capable plugin derives beads for a gradient
+  // on its FIRST paint key. This is the assertion the opt-in could not make — it
+  // is what "a function of the PAINT, not the shape" means, stated over the roster
+  // rather than over the seven files that remembered.
+  let covered = 0, uncovered = [];
+  for (const p of Object.values(allPlugins)) {
+    const keys = paintCapableKeys(p);
+    if (keys.length === 0) continue;
+    let ids;
+    // A plugin's own modifierPoints may legitimately throw on a bare-defaults
+    // state (a family needing params). Its OWN rows are not what is under test
+    // here, so fall back to the derive input the beads actually read.
+    try { ids = nodeModifierPoints(nodeFor(p.type, { [keys[0]]: GRAD })).map((m) => m.id); }
+    catch { ids = allPaintModifierPoints(unsignedState({ ...p.defaults, [keys[0]]: GRAD }), keys).map((m) => m.id); }
+    if (ids.includes(`${keys[0]}-grad-center`)) covered++;
+    else uncovered.push(`${p.type}.${keys[0]}`);
+  }
+  check(`every paint-capable plugin derives gradient beads (${covered} covered)`, uncovered.length === 0, uncovered.join(", "));
+  check("the sweep actually covered the roster, not a handful", covered > 60, `only ${covered}`);
 }
 
 console.log(`\n${checks - failures}/${checks} checks passed`);

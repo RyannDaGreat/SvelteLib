@@ -97,7 +97,6 @@ import {
   stopDownHandle,
 } from "../core/optics.js";
 import { pointInOutlines, radialOutline } from "../core/outline.js";
-import { paintModifierPoints } from "../core/paint_handles.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_JOIN_KEYS, STROKE_TRIM_KEYS } from "../core/properties.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { isPaintOff, path } from "../render_gpu/ir.js";
@@ -514,11 +513,14 @@ export const irisBladesPlugin = {
   anchors: standardBBoxAnchors,
   closestAnchor: boreClosestAnchor,
   /**
-   * Pure function. Five yellow squares, plus the fill and pupil-fill gradient
-   * handles. Four are the shared iris handles (core/optics.js) so a drag means
-   * the same thing here as on the aperture; `bladeReach` is this widget's own,
-   * and sits where the thing it controls IS — the trailing end of the first
-   * plate, on the rim.
+   * Pure function. Five yellow squares. Four are the shared iris handles
+   * (core/optics.js) so a drag means the same thing here as on the aperture;
+   * `bladeReach` is this widget's own, and sits where the thing it controls IS —
+   * the trailing end of the first plate, on the rim.
+   *
+   * The fill / pupilFill GRADIENT beads are NOT here any more: core/derive.js
+   * nodeModifierPoints appends them after these rows for every `paint: true` row
+   * this plugin declares.
    */
   modifierPoints(s) {
     return [
@@ -527,8 +529,6 @@ export const irisBladesPlugin = {
       // Absent rather than inert while there are no plates to reach — and that
       // gate is load-bearing for handle separation, see bladeReachHandle.
       ...(leafHalfSpan(s) > 0 ? [bladeReachHandle(s)] : []),
-      ...paintModifierPoints(s, "fill"),
-      ...paintModifierPoints(s, "pupilFill"),
     ];
   },
   // CROSSHAIR PLACEMENT: bbox placement — click-drag sizes the box, a plain click

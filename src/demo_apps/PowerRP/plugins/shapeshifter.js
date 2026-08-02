@@ -48,7 +48,6 @@
 
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
-import { paintModifierPoints } from "../core/paint_handles.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import {
@@ -995,11 +994,15 @@ export function makeFamilyPlugin(fam) {
       const centre = { x: (state.w ?? 0) / 2, y: (state.h ?? 0) / 2 };
       return closestPointOnOutlines(fam.outline(state), local.x, local.y, centre);
     },
-    // The family's OWN parametric handles, PLUS the gradient FILL beads
-    // (core/paint_handles.js) when the fill is a gradient — additive, the
-    // "fill-grad-*" ids never collide with a family's handle ids. A solid/material
-    // fill contributes none, so a non-gradient shapeshifter is byte-identical.
-    modifierPoints: (s) => [...(fam.modifierPoints?.(s) ?? []), ...paintModifierPoints(s, "fill")],
+    // The family's OWN parametric handles, and ONLY those. The gradient beads are
+    // appended AFTER them by core/derive.js nodeModifierPoints, for every
+    // paint-capable widget rather than only the ones that remembered to spread —
+    // see core/paint_handles.js.
+    // Spread CONDITIONALLY so a family with no handles leaves the key ABSENT
+    // rather than present-and-undefined: `pointListEditable` and the crosshair
+    // gesture both probe `typeof plugin.modifierPoints === "function"`, and an
+    // absent key is the shape every other handle-free plugin has.
+    ...(fam.modifierPoints ? { modifierPoints: (s) => fam.modifierPoints(s) } : {}),
   };
   // No per-family top-level command: the `add-ss_*` ids are surfaced ONLY as
   // children of the single `insert-shape` submenu, which web/App.svelte

@@ -110,7 +110,6 @@
 
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
-import { paintModifierPoints } from "../core/paint_handles.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num, polygonPathD, ellipsePoints } from "../core/shapes.js";
 import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
@@ -869,9 +868,10 @@ export const polygonPlugin = {
         };
       },
     }));
-    // Plus the gradient FILL beads (core/paint_handles.js) when the fill is a
-    // gradient — additive, its ids ("fill-grad-*") never collide with "pN".
-    return [...vertexHandles, ...paintModifierPoints(s, "fill")];
+    // The gradient beads are NOT declared here: core/derive.js nodeModifierPoints
+    // appends them AFTER these rows for every paint-capable widget, so a polygon's
+    // vertex handles keep exactly the order and ids they had.
+    return vertexHandles;
   },
   commands: [
     // ONE entry point, and its `run` is UNCHANGED by the click-click-click flow —

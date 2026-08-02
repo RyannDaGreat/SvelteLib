@@ -76,7 +76,6 @@
 
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
-import { paintModifierPoints } from "../core/paint_handles.js";
 import {
   bundle, bundleNestedDefaults, defaults, props,
   STROKE_JOIN_KEYS, STROKE_OFFSET_KEYS, STROKE_TRIM_KEYS,
@@ -250,9 +249,9 @@ export const labeledCirclePlugin = {
     const theta = Math.atan2((local.y - ry) / ry, (local.x - rx) / rx);
     return { x: rx + rx * Math.cos(theta), y: ry + ry * Math.sin(theta) };
   },
-  // GRADIENT HANDLES (core/paint_handles.js): center/direction beads for a gradient
-  // FILL; none for a solid/material fill.
-  modifierPoints: (s) => paintModifierPoints(s, "fill"),
+  // NO `modifierPoints`: the GRADIENT beads are appended by core/derive.js
+  // nodeModifierPoints for every paint-capable widget (off the `paint: true` rows
+  // above), not spread per plugin — see that function and core/paint_handles.js.
   commands: [
     { id: "add-labeled-circle", title: "Add Labeled Circle", icon: "mdi:numeric-1-circle-outline", run: (app) => app.armCrosshairPlacement(labeledCirclePlugin) },
   ],
