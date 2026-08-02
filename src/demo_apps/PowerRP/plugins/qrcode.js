@@ -19,6 +19,13 @@
  * a silent blank or a wrong code. The default data is a valid URL, so normal use
  * never throws.
  *
+ * DOUBLE-CLICK opens a FLOATING CANVAS TOOLBAR (`activate: "overlay_palette"` +
+ * the `floatingToolbar`/`fieldWrites` pair at the bottom of this file) holding one
+ * field: the encoded payload. The point is that a QR's content is its whole
+ * meaning, and reading it off the canvas is impossible — so it is editable AT the
+ * widget, not only in the Inspector. It works on a GHOSTED (empty-data) code too,
+ * because hit testing is bbox-based and never asks emit() what it drew.
+ *
  * Structure mirrors plugins/shape.js: it composes the SHARED PROPERTY REGISTRY
  * (positioning + opacity + the effects bundle), rides the effects bundle for
  * shadow/glow/border via applyEffects, and uses the standard bbox anchors — the
@@ -338,6 +345,62 @@ export const qrcodePlugin = {
     // Closest point on the bbox border (cornerRadius 0), like a plain rect.
     const local = T.apply(T.invert(world), wx, wy);
     return closestPointOnRoundedRect(state.w ?? 0, state.h ?? 0, 0, local.x, local.y);
+  },
+  // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): mount the
+  // floating canvas toolbar below. The hit path is BBOX-based (core/derive.hitNode
+  // falls to `capabilities.bbox` because this plugin declares no hitTest), so it
+  // does NOT consult emit() or isGhost — a GHOSTED code (data cleared, drawing
+  // nothing) is still double-clickable at its box, which is exactly the case the
+  // toolbar has to be reachable for: it is the only way to type the payload back
+  // in without going to the Inspector.
+  activate: "overlay_palette",
+  /**
+   * Pure function. THE CANVAS TOOLBAR: one field for the encoded payload, so a
+   * QR's actual CONTENT is editable where the code is, instead of only in the
+   * Inspector's formatting accordion. `keys: ["data"]` is what lets
+   * web/CanvasToolbar.svelte disable the field when `data` holds an `=` equation
+   * (committing would overwrite the binding with its current text).
+   *
+   * The value is the STORED string verbatim — no trimming, no placeholder for the
+   * empty/ghost case: a cleared code shows an empty field, which is the true
+   * reading and the thing the author is about to fix.
+   *
+   * @param {object} s folded, EVALUATED item state
+   * @returns {object} the CanvasToolbar spec
+   *
+   * @example qrcodePlugin.floatingToolbar({data: "https://x"}).fields[0].value // "https://x"
+   * @example qrcodePlugin.floatingToolbar({data: ""}).fields[0].id // "data"
+   */
+  floatingToolbar(s) {
+    return {
+      label: "QR Code",
+      fields: [
+        {
+          id: "data", label: "Data", value: String(s.data ?? ""), keys: ["data"], size: "wide",
+          help: "The text or URL this code encodes. Longer payloads need a denser grid; clearing it leaves the widget blank but still selectable.",
+        },
+      ],
+    };
+  },
+  /**
+   * Pure function. The toolbar field's typed text → the property writes storing
+   * it. The payload is FREE TEXT, so every string is accepted verbatim —
+   * including the empty one, which is the documented "nothing to encode yet"
+   * ghost state (qrDataIsEmpty), not a refusal. That is why this never returns
+   * null the way the numeric bars (globe_map, scene3d) do: there is no
+   * unparseable QR payload.
+   *
+   * @param {object} _s folded state (unused — the write does not depend on it)
+   * @param {string} id the field id from floatingToolbar
+   * @param {string} text the raw typed text
+   * @returns {object} the property writes
+   *
+   * @example qrcodePlugin.fieldWrites({}, "data", "https://example.org") // {data: "https://example.org"}
+   * @example qrcodePlugin.fieldWrites({}, "data", "") // {data: ""} (clears the code — an expected ghost state)
+   */
+  fieldWrites(_s, id, text) {
+    if (id === "data") return { data: String(text) };
+    throw new Error(`qrcode fieldWrites: unknown field "${id}" (declared: data)`);
   },
   commands: [
     // Arms crosshair placement (the SAME gesture every Add button uses —
