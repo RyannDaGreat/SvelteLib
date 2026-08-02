@@ -1159,7 +1159,7 @@ export class PowerRPApp {
     const raw = this.rawState();
     return this.selectedIds().map((itemId) => {
       const state = raw.items?.[itemId] ?? null;
-      const type = state?.type ?? this.#creationState(itemId)?.type;
+      const type = state?.type ?? this.#governingTypeState(itemId)?.type;
       return { itemId, plugin: type ? this.registry.get(type) : null, state };
     }).filter((e) => e.plugin !== null);
   }
@@ -3314,16 +3314,16 @@ export class PowerRPApp {
    * itself). One undo unit for the whole set. Keeps the selection.
    */
   showSelection() {
-    const ids = this.selectedIds().filter((id) => this.registry.get(this.rawState().items?.[id]?.type ?? this.#creationState(id)?.type)?.capabilities.purgeable !== false);
+    const ids = this.selectedIds().filter((id) => this.registry.get(this.rawState().items?.[id]?.type ?? this.#governingTypeState(id)?.type)?.capabilities.purgeable !== false);
     if (ids.length === 0) return;
     let doc = this.doc;
     for (const id of ids) {
       if (this.rawState().items?.[id]) {
         doc = keyframed(doc, this.slideIndex, ["items", id, "active"], true);
       } else {
-        const creation = this.#creationState(id);
-        if (!creation) {
-          console.error(`Show all: item "${id}" has no creation state anywhere — skipped (loudly).`);
+        const governing = this.#governingTypeState(id);
+        if (!governing) {
+          console.error(`Show all: item "${id}" has no type keyframe anywhere — skipped (loudly).`);
           continue;
         }
         // Leaf-wise keyframes (the commitPreview walk pattern) — nested
@@ -3334,7 +3334,7 @@ export class PowerRPApp {
             else doc = keyframed(doc, this.slideIndex, [...prefix, k], v);
           }
         };
-        walk({ ...creation, active: true }, ["items", id]);
+        walk({ ...governing, active: true }, ["items", id]);
       }
     }
     this.commit(doc);
@@ -3483,11 +3483,38 @@ export class PowerRPApp {
     return folded ? retypeChoices(this.registry, folded) : [];
   }
 
-  /** Query. An item's folded state as of its ORIGINAL creation slide (the
-   * first slide keying its type), or null if it is keyed nowhere. */
-  #creationState(id) {
-    const idx = keyframeIndices(this.doc, ["items", id, "type"])[0];
-    return idx === undefined ? null : foldState(this.doc, idx, 1).items?.[id] ?? null;
+  /**
+   * Query. An item's folded state as of the type keyframe that GOVERNS the current
+   * slide — the nearest one at or before it, which is what the fold itself already
+   * computes for every other key.
+   *
+   * IT USED TO TAKE keyframeIndices(...)[0] — THE FIRST — AND WAS CALLED
+   * `#creationState`. R6-6.7 flagged exactly this as its open question ("stops
+   * being unique once type is keyed on several slides… most likely the NEAREST
+   * PRECEDING type keyframe, which is what the fold already implies"), and the
+   * question stopped being hypothetical when the Widget type row became keyframeable
+   * (commit 634954c). retypeSelection has ALWAYS written its keyframe at the current
+   * slide, so multiple type keyframes were already possible; what changed is that
+   * the UI now invites them.
+   *
+   * THE DEFECT IT FIXES IS SILENT. A widget authored as a rect and retyped to a
+   * circle on slide 5 reported its RECT-era state to every caller on every slide,
+   * forever. SHOW ALL is the sharp one: it walks this state leaf-by-leaf into
+   * keyframes at the current slide, so un-hiding that widget on slide 8 resurrected
+   * it as a rect with rect-era properties and quietly undid the retype.
+   *
+   * FALLS BACK TO THE FIRST when nothing precedes — an item whose type is keyed only
+   * LATER still has a definite identity, and that fallback is exactly what the old
+   * code always returned, so this is never worse than what it replaced.
+   *
+   * RENAMED with the semantics: it is no longer "creation" state, and leaving the
+   * old name would hand the next reader the same wrong mental model it gave me.
+   */
+  #governingTypeState(id, slideIndex = this.slideIndex) {
+    const keyed = keyframeIndices(this.doc, ["items", id, "type"]);
+    if (keyed.length === 0) return null;
+    const at = keyed.filter((i) => i <= slideIndex).pop() ?? keyed[0];
+    return foldState(this.doc, at, 1).items?.[id] ?? null;
   }
 
   /** True removal FROM EXISTENCE: every keyframe of each selected item on every
