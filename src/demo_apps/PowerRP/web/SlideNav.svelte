@@ -7,6 +7,24 @@
   the lower slide, whose properties then show in the Property Panel. The slice
   above slide 1 is the first real transition (slide 0 has no predecessor).
 
+  THE SLICE IS THREE HIT TARGETS, NOT ONE (user, 2026-08-02). An insert-a-slide
+  `+` at each END, the transition chip in the MIDDLE, and a role="group" band
+  around them whose only job is to clear the hover state on leave. IDLE IT IS A
+  FLAT LINE and that is the requirement, quoted: "unless I'm hovering over it, it
+  should stay like a flat dash, a flat line like it is right now."
+
+  THE RAIL ALSO OWNS THREE GESTURES BEYOND CLICK-TO-NAVIGATE:
+    · DRAG-TO-REORDER — pointer capture on a row, a BOUNDARY (gap index) as the
+      drop target, one undo unit per drop, through core withSlidesMovedToBoundary
+      so the appearance law holds. Never a naive splice.
+    · MULTI-SELECT — plain / shift-range / cmd-toggle, resolved by
+      app.selectSlideAt. Rendered on TWO axes: `current` keeps the border (the one
+      slide the canvas shows), `selected` takes a background tint (membership).
+    · THE SLIDE CLIPBOARD — Copy/Paste/Duplicate/Delete Slide(s), registered
+      commands, and the same Ctrl+C/V, Cmd+D and Backspace chords the canvas uses
+      but scoped to RAIL FOCUS (core/shortcut_entries.js slideRailFocus), because
+      there are two clipboards and one chord may not mean both.
+
   Thumbnails use the generic DirtyImage widget (src/lib): each renders THROUGH
   its slide's camera, at the size it's DISPLAYED (panel width × dpr) so it's
   crisp, and only when it's on screen AND dirty (scales to "5 million slides" —
@@ -323,7 +341,7 @@
           aria-label={`Between slide ${i} and slide ${i + 1}`}
           onpointerleave={() => (hoverZone = null)}
         >
-          <Tooltip text={`Insert a slide here — it inherits the transition of the slide ABOVE`}>
+          <Tooltip text={`Insert a slide here. It starts as an empty difference, so it looks exactly like slide ${i} — and it takes its transition from the slide ABOVE.`}>
             <button
               class="tr-end"
               class:active={inZone(slide.id, "before")}
@@ -353,7 +371,7 @@
             </button>
           </Tooltip>
           <span class="tr-line"></span>
-          <Tooltip text={`Insert a slide here — it inherits the transition of the slide BELOW`}>
+          <Tooltip text={`Insert a slide here. It starts as an empty difference, so it looks exactly like slide ${i} — and it takes its transition from the slide BELOW.`}>
             <button
               class="tr-end"
               class:active={inZone(slide.id, "after")}
