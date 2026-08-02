@@ -617,7 +617,13 @@ export class PowerRPApp {
     // The OUTER scope owns the INNER one: handle ids belong to whichever item was
     // selected, so any item-selection change invalidates them (see handleSelection).
     this.handleSelection = [];
-    if (id !== null) this.selectedTransition = null; // item and transition selection are mutually exclusive
+    if (id !== null) {
+      // Item and transition selection are mutually exclusive — and the transition
+      // MULTI-selection goes with its primary, or a later shift-click would extend
+      // from a set the panel is no longer showing.
+      this.selectedTransition = null;
+      this.transitionSelection = [];
+    }
   }
   // MULTI-select override: the FULL set of selected itemIds (band select /
   // future multi-click). Authoritative when non-empty; its FIRST element is
@@ -652,6 +658,17 @@ export class PowerRPApp {
   // selection (via selectTransition); setting an item clears this (setter above).
   // Opus10 builds the Inspector side against selectionTarget/transitionAt.
   selectedTransition = $state(null);
+  // MULTI-select override for TRANSITIONS (user, 2026-08-02: "I should be able to
+  // shift click multiple tweens too, in the same way that I have multi-selection
+  // for widgets. It's exactly the same idea."). The FULL set of selected
+  // transition slideIds; authoritative when non-empty, with `selectedTransition`
+  // as the PRIMARY (the one whose type the panel names). Empty →
+  // selectedTransitionIds() falls back to [selectedTransition].
+  //
+  // IDS, NOT INDICES, for the reason slideSelection states: indices shift on every
+  // insert, delete and reorder, and a transition IS identified by its incoming
+  // slide. Not document state — not keyframed, not serialized.
+  transitionSelection = $state([]);
   mode = $state("edit"); // "edit" | "present"
   // HOVER-PREVIEW OF A SELECTION: the itemId a picker is currently hovering, or
   // null. The canvas draws its outline in a preview skin so you can SEE which
@@ -1264,6 +1281,7 @@ export class PowerRPApp {
     this.selectionSet = [...filtered];
     this.handleSelection = []; // the outer scope owns the inner one (see handleSelection)
     this.selectedTransition = null; // selecting items clears a transition selection
+    this.transitionSelection = []; // …and its multi-selection with it (see the field)
   }
 
   /**
@@ -1575,14 +1593,112 @@ export class PowerRPApp {
   // slide indices shift on insert). Mutually exclusive with item selection.
 
   /** Command. Selects the transition INTO slide `slideId` (clears item
-   * selection). Passing null deselects the transition. */
+   * selection). Passing null deselects the transition and its multi-selection. */
   selectTransition(slideId) {
     if (slideId === null) {
       this.selectedTransition = null;
+      this.transitionSelection = [];
       return;
     }
     this.selection = null; // clears item selection (accessor path)
     this.selectedTransition = slideId;
+    this.transitionSelection = [];
+  }
+
+  /**
+   * Query. The selected transitions as slideIds, in DOCUMENT ORDER — always
+   * non-empty when a transition is selected at all, always including the primary.
+   *
+   * Mirrors selectedSlideIndices(): an empty `transitionSelection` means "just the
+   * primary", so no consumer branches on multi-vs-single. Ids whose slide has
+   * vanished (undo, a delete under the selection) are dropped rather than throwing
+   * — the same tolerance, for the same reason.
+   */
+  selectedTransitionIds() {
+    const live = this.doc.slides.map((s) => s.id);
+    const picked = live.filter((id) => this.transitionSelection.includes(id));
+    if (picked.length > 0) return picked;
+    return this.selectedTransition !== null && live.includes(this.selectedTransition) ? [this.selectedTransition] : [];
+  }
+
+  /** Query. Is the transition into `slideId` part of the live selection? What the
+   *  rail's chips read to draw themselves selected. */
+  isTransitionSelected(slideId) {
+    return this.selectedTransitionIds().includes(slideId);
+  }
+
+  /**
+   * Command. THE SLICE'S CLICK RULE, in one place so the rail and any future
+   * surfacing of it cannot drift — the same three gestures selectSlideAt defines
+   * for rows (user: "exactly the same idea"):
+   *   plain     — select just this transition
+   *   shift     — extend from the PRIMARY to this one (a RANGE, in slide order)
+   *   cmd/ctrl  — toggle this transition in or out of the set
+   *
+   * The clicked transition always becomes the PRIMARY, cmd included, so the panel
+   * follows your last click. Toggling the last one out is refused for the reason
+   * selectSlideAt gives: an empty set means "just the primary" anyway, so the
+   * gesture would look inert while actually resetting the set.
+   *
+   * SLIDE 0 HAS NO INCOMING TRANSITION, so it is never a member — a range that
+   * would span it simply starts at slide 1.
+   */
+  selectTransitionAt(slideId, { shift = false, toggle = false } = {}) {
+    const slides = this.doc.slides;
+    const index = slides.findIndex((s) => s.id === slideId);
+    if (index < 1) return; // unknown slide, or slide 0 (no predecessor → no transition)
+    if (shift && this.selectedTransition !== null) {
+      const from = slides.findIndex((s) => s.id === this.selectedTransition);
+      if (from >= 1) {
+        const [lo, hi] = index < from ? [index, from] : [from, index];
+        this.selection = null; // a transition selection clears the item one
+        this.transitionSelection = slides.slice(lo, hi + 1).map((s) => s.id);
+        this.selectedTransition = slideId;
+        return;
+      }
+    }
+    if (toggle) {
+      const cur = new Set(this.selectedTransitionIds());
+      if (cur.has(slideId) && cur.size > 1) cur.delete(slideId);
+      else cur.add(slideId);
+      this.selection = null;
+      this.transitionSelection = slides.filter((s) => cur.has(s.id)).map((s) => s.id);
+      this.selectedTransition = cur.has(slideId) ? slideId : this.transitionSelection[0] ?? null;
+      return;
+    }
+    this.selectTransition(slideId);
+  }
+
+  /**
+   * Command (ONE undo unit). Sets one transition property on EVERY selected
+   * transition — the batch write behind the multi-selection panel.
+   *
+   * ONE COMMIT, not N: setTransitionProp per id would push one undo entry each, so
+   * unifying five tweens would take five undos to take back. The resolve-then-write
+   * rule is the singular path's, applied per slide, so a partially-stored
+   * transition still becomes complete.
+   */
+  setSelectedTransitionsProp(key, value) {
+    const ids = new Set(this.selectedTransitionIds());
+    if (ids.size === 0) return;
+    const slides = this.doc.slides.map((s, i) =>
+      ids.has(s.id) ? { ...s, transition: { ...resolveTransition(this.doc, i), [key]: value } } : s
+    );
+    this.commit({ ...this.doc, slides });
+  }
+
+  /**
+   * Command (ONE undo unit). Switches EVERY selected transition's TYPE, preserving
+   * each one's superclass props and re-seeding its extras (retypedTransition) —
+   * the batch form of setTransitionType, one commit for the same reason as above.
+   */
+  setSelectedTransitionsType(type) {
+    const ids = new Set(this.selectedTransitionIds());
+    if (ids.size === 0) return;
+    const slides = this.doc.slides.map((s, i) =>
+      ids.has(s.id) ? { ...s, transition: retypedTransition(resolveTransition(this.doc, i), type) } : s
+    );
+    this.commit({ ...this.doc, slides });
   }
 
   /**
@@ -4604,6 +4720,39 @@ export class PowerRPApp {
    *  Blank restores the positional default (core withSlideRenamed). */
   renameSlide(index, name) {
     this.commit(withSlideRenamed(this.doc, index, name));
+  }
+
+  // THE SLIDE-RENAME MODAL SEAM (user ruling, 2026-08-02: "when I double click a
+  // slide title, it should let me edit it. In the same way that rename project
+  // does when I click that. A dialog comes up pre-selected and whatever process
+  // for that should be reused for this."). App.svelte installs this, exactly as
+  // it installs showRenameModal for the PROJECT name — same hook pattern, same
+  // Modal + name-modal markup, same use:selectAllOnMount pre-selection.
+  //
+  // IT REPLACED AN INLINE EDITOR THAT COULD NOT BE OPENED BY A MOUSE, and the
+  // reason is worth keeping because a dialog could have inherited it. The rail's
+  // drag gesture calls setPointerCapture on the ROW at pointerdown; capture
+  // RETARGETS every later event in that sequence to the capturing element, so
+  // pointerup, click and dblclick all arrived with target = the row. The inline
+  // editor listened on InlineRename's `.inline-rename-display` wrapper, which is
+  // `display: contents` and therefore can only be reached by BUBBLING from the
+  // name span — a path retargeting deletes. Measured: a synthetic dblclick
+  // dispatched straight at `.name` still opened the editor (which is why the
+  // probe stayed green while the feature was dead in the user's hands), a real
+  // two-click mouse sequence did not, and stubbing setPointerCapture to a no-op
+  // restored it immediately. The dialog does NOT inherit the bug because
+  // SlideNav now opens it from the ROW's own ondblclick — the element capture
+  // retargets TO — rather than from a descendant the event no longer reaches.
+  showSlideRenameModal = null;
+
+  /**
+   * Command. Opens the Rename Slide dialog for slide `index` (defaults to the
+   * current slide), pre-selected, and commits through renameSlide — one undo
+   * unit, blank restoring the positional default, exactly as before.
+   */
+  renameSlidePrompt(index = this.slideIndex) {
+    if (this.showSlideRenameModal) return this.showSlideRenameModal(index);
+    console.error("Rename Slide: the rename modal is not wired yet (App.svelte hook missing). Use app.renameSlide(index, name).");
   }
 
   /**
