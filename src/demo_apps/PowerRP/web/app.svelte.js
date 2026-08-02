@@ -131,6 +131,10 @@ import {
   TELESCOPIC, telescopicDefaultRects,
   telescopicSourceOverrides, telescopicLensOverrides, telescopicTangentOverrides,
 } from "../plugins/tangent_lines.js";
+// ADD CENTER TEXT: the pure override builder for a plaintext box bound to another
+// widget's box. Same shape as the telescopic builders above — the plugin owns the
+// equations, this file owns the insertion and the undo unit.
+import { centerTextOverrides } from "../plugins/plaintext.js";
 import { browserSetting, browserNumberSetting } from "./settings.js";
 import { LABEL_DIVIDER_KEYS, LABEL_FRAC_BOUNDS, LABEL_FRAC_DEFAULT, labelFracSettingKey } from "./labelFrac.js";
 // THE panel inventory (core/panels.js) — one declaration behind the layout, the
@@ -2727,6 +2731,68 @@ export class PowerRPApp {
     [doc] = withNewItem(doc, this.slideIndex, withDefaults(tangentOv, baseZ + 1));
     this.commit(withNormalizedZ(doc));
     this.selection = lensId;
+  }
+
+  /**
+   * Query. The selected widgets ADD CENTER TEXT can label — those with a `bbox`,
+   * i.e. an x/y/w/h box for the equations to read. Both the command's GATE and its
+   * WORKLIST, so the gate can never promise a change the run would not make (the
+   * inkBoundsTargets precedent right below).
+   *
+   * A two-point widget (a line, an arrow) is excluded because it HAS no box: it
+   * stores endpoints, so `@id.w` is not a property and the equation would fail
+   * loudly at evaluation. Refusing it here means the command reads "unavailable"
+   * with a reason instead of minting a broken label.
+   */
+  centerTextTargets() {
+    return this.selectedNodes().filter((n) => n.plugin.capabilities.bbox);
+  }
+
+  /**
+   * Command (ONE undo unit). ADD CENTER TEXT — inserts a plaintext box per selected
+   * widget, bound by `=` equations to cover that widget and centered inside it, and
+   * leaves the new boxes SELECTED so the user can type immediately.
+   *
+   * User request (2026-08-02): "a tool that is 'add center text' which adds text to
+   * the center of a widget(s) and binds it to cy and cx of that widget, with
+   * centered vertical and horz for that text."
+   *
+   * ONE UNDO UNIT FOR THE WHOLE SELECTION: the doc is threaded through withNewItem
+   * N times and committed ONCE, the same construction insertTelescopicMagnifier
+   * uses for its three wired items. Labelling five widgets is one action the user
+   * took, so one Ctrl+Z must undo it.
+   *
+   * Each label is minted from the plugin's registry DEFAULTS first, then the
+   * equation overrides — so it loads with zero missing-default repairs
+   * (repairedDocument reports none), the rule the telescopic rig follows.
+   *
+   * Z: each label sits directly ABOVE the widget it labels rather than all of them
+   * on top, so a text centered on a low widget is not hidden by a higher one that
+   * happens to overlap it. withNormalizedZ then renumbers the document as usual.
+   *
+   * SELECTION: selectMany over the new ids (the primary is the FIRST), which is
+   * what makes "type immediately" work — Enter then activates that primary box's
+   * in-place editor (the Enter = double-click activation).
+   */
+  addCenterText() {
+    const targets = this.centerTextTargets();
+    if (targets.length === 0) return;
+    const plaintextDefaults = this.registry.get("plaintext").defaults;
+    let doc = this.doc;
+    const newIds = [];
+    for (const target of targets) {
+      const state = {
+        ...plaintextDefaults,
+        ...centerTextOverrides(target.itemId),
+        active: true,
+        z: (target.state.z ?? 0) + 1, // directly above the widget it labels
+      };
+      let id;
+      [doc, id] = withNewItem(doc, this.slideIndex, state);
+      newIds.push(id);
+    }
+    this.commit(withNormalizedZ(doc));
+    this.selectMany(newIds);
   }
 
   // ── INK BOUNDS: fit the property box to what is actually drawn ─────────────

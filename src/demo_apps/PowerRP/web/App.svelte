@@ -1912,6 +1912,27 @@
         if (ce) a.openCodeModal(a.selection, ce.property, { language: ce.language, title: ce.title });
       },
     },
+    // ADD CENTER TEXT (user request, 2026-08-02: "a tool that is 'add center text'
+    // which adds text to the center of a widget(s) and binds it to cy and cx of
+    // that widget, with centered vertical and horz for that text"). One plaintext
+    // label per selected widget, bound by `=` equations to cover that widget and
+    // centered inside it, all in ONE undo unit.
+    //
+    // `when` and `run` read the SAME worklist (a.centerTextTargets()), so the
+    // command is offered exactly when it would do something — the ink-bounds
+    // precedent. A two-point widget (a line/arrow) has no box for the equations to
+    // read, so a selection of only those is correctly unavailable rather than
+    // minting labels bound to a `w` that does not exist.
+    {
+      id: "add-center-text",
+      title: "Add Center Text",
+      icon: "mdi:format-align-middle",
+      aliases: ["label widget", "center label", "text on widget", "caption"],
+      when: (a) => a.centerTextTargets().length > 0,
+      requires: "a selected widget with a box to center the text on (a line or arrow has none)",
+      help: "Adds a text box per selected widget, bound by equations to that widget's x/y/w/h with the type centered both ways — so the label stays centered when the widget is moved OR resized. The new boxes are selected, so you can type straight away.",
+      run: (a) => a.addCenterText(),
+    },
     // THE PROJECT SCRIPT (core/project_script.js) — the per-document JavaScript
     // library whose exported functions and values every property equation can call.
     // A REGISTRY COMMAND, not a bare toolbar onclick, because that is the rule here:

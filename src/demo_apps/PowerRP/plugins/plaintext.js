@@ -36,6 +36,7 @@
  */
 
 import { EPHEMERAL } from "../core/ephemeral.js";
+import { storedItemRef } from "../core/expressions.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { textInkBounds } from "../core/richtext.js";
 import { inkMeasure } from "../core/ink_metrics.js";
@@ -343,6 +344,71 @@ const PLAINTEXT_LOOKS = [
     },
   },
 ];
+
+/**
+ * Pure function. The property overrides for a CENTER TEXT — a plaintext box bound
+ * by `=` equations to sit centered on another widget, and to STAY centered when
+ * that widget moves OR resizes.
+ *
+ * User request (2026-08-02): "a tool that is 'add center text' which adds text to
+ * the center of a widget(s) and binds it to cy and cx of that widget, with
+ * centered vertical and horz for that text."
+ *
+ * THE BINDING: the box is made to COVER the target — x/y/w/h each read the
+ * target's own — and the glyphs are then centered INSIDE it by align/valign. So
+ * "centered on the target" is expressed as "same box, centered content", which is
+ * what makes it survive a resize as well as a move: all four equations re-evaluate
+ * together, and no fifth quantity has to agree with them.
+ *
+ * WHY NOT `= @t.cx - self.w / 2` ON x ALONE. `cx`/`cy` ARE readable
+ * (core/expressions.js resolves them from core/geometry.js boxCenter) and
+ * self-reference in a stored equation is legal — plugins/tangent_lines.js
+ * telescopicLensOverrides writes exactly that form. It would center the box
+ * correctly. But it leaves `w`/`h` FREE, so the text box keeps whatever size it
+ * was created at: the glyphs then center on the target's center while WRAPPING at
+ * a width that has nothing to do with the target, and a valign of "middle" centers
+ * them in a box height that likewise does not follow. Covering the target makes
+ * the wrap width and the vertical stack room track the thing the text labels,
+ * which is the honest reading of "centered vertical and horz for that text".
+ *
+ * The equations reference the target by its STORED `@id` form (storedItemRef), NOT
+ * by slug: a rename then needs no document rewrite (core/expressions.js's stated
+ * design decision), so renaming the target never breaks the binding.
+ *
+ * `w`/`h` are read RAW, sign included. A flipped target (negative w — core/geometry
+ * "THE FLIP") hands its negative width straight to the label, which lands the box
+ * on the same footprint for the same reason boxCenter is sign-independent.
+ *
+ * Args:
+ *   targetId (string): the itemId of the widget to center on
+ *
+ * Returns:
+ *   object: property overrides for a plaintext item (equation strings + alignment)
+ *
+ * @example centerTextOverrides("ab12cd34").x // "= @ab12cd34.x"
+ * @example centerTextOverrides("ab12cd34").w // "= @ab12cd34.w"
+ * @example centerTextOverrides("ab12cd34").align // "center"
+ * @example centerTextOverrides("ab12cd34").valign // "middle"
+ * @example // the whole dict — four equations that re-evaluate together, plus the two alignments:
+ * @example // {type: "plaintext", x: "= @ab12cd34.x", y: "= @ab12cd34.y", w: "= @ab12cd34.w", h: "= @ab12cd34.h", align: "center", valign: "middle", text: ""}
+ * @example // centerTextOverrides("Do_it") throws — a "_" in an id would resolve to a different item
+ */
+export function centerTextOverrides(targetId) {
+  return {
+    type: "plaintext",
+    x: `= ${storedItemRef(targetId, ".x")}`,
+    y: `= ${storedItemRef(targetId, ".y")}`,
+    w: `= ${storedItemRef(targetId, ".w")}`,
+    h: `= ${storedItemRef(targetId, ".h")}`,
+    align: "center",
+    valign: "middle",
+    // EMPTY, not "Text". The new box becomes the selection so the user can type
+    // immediately, and a placeholder word would have to be deleted first. An empty
+    // plaintext is an expected state, not a broken one — isGhost() above grants it
+    // the dashed-outline affordance precisely so a blank box stays findable.
+    text: "",
+  };
+}
 
 export const plaintextPlugin = {
   type: "plaintext",
