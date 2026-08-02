@@ -708,9 +708,16 @@ function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true
 
 /**
  * Query→build (compiles/caches the material's RuntimeEffect; the CALLER deletes
- * the returned shader). The Skia shader for a MATERIAL text fill, framed on the
- * glyph group's AABB so the material's own geometry is the text's ink box rather
- * than the whole surface.
+ * the returned shader). The Skia shader for a MATERIAL ink, framed on the GLYPH
+ * AABB so the material's own geometry is the ink box rather than the whole
+ * surface.
+ *
+ * SHARED BY BOTH GLYPH CONSUMERS — the text glyph pass here and the LaTeX
+ * equation's shader ink (paint_skia drawLatexShaderInk). They mask differently
+ * (text has no glyph-outline API in CanvasKit 0.41.1 so it masks through
+ * drawGlyphs coverage; an equation has real outlines and clips to their union),
+ * but the SHADER is the same question — "what does this material look like over
+ * this ink box" — so it is answered once, here.
  *
  * ── WHY A FOREGROUND MATERIAL AND NOT A BACKDROP ONE ─────────────────────────
  * A FOREGROUND material (`backdrop: false` — comic, sky, metal, the pattern and
@@ -747,7 +754,7 @@ function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true
  * @example // materialShaderForGlyphs(CK, {type:"material", material:{id:"comic"}, resolvedParams:{…}}, {x:0,y:0,w:200,h:40})
  * @example // → a Skia shader painting the comic halftone across a 200x40 ink box
  */
-function materialShaderForGlyphs(CanvasKit, fill, bounds) {
+export function materialShaderForGlyphs(CanvasKit, fill, bounds) {
   const id = fill.material?.id;
   const material = getMaterial(id); // LOUD on an unknown id — never a silently blank word
   if (!isFillCapableMaterial(material))

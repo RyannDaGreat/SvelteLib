@@ -71,6 +71,7 @@ import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
 import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
+import { CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
 
@@ -328,6 +329,80 @@ export function isMaterialPaint(paint) {
 }
 
 /**
+ * THE CROSSFADE PAINT'S TYPE TAG, re-exported from core so the render side and
+ * the fold cannot drift. Defined in core/interp_modes.js because that is where
+ * the value is minted (the `blend` interp mode); named here because this module
+ * is where every backend looks up what a paint tag means.
+ */
+export { CROSSFADE_PAINT_TYPE };
+
+/**
+ * Pure function. True for the CROSSFADE paint the `blend` interp mode produces
+ * mid-transition — two paints plus a mix factor `t`, meaning "draw both and
+ * alpha-composite them". Only ever present on the strictly-interior frames of a
+ * transition: at either endpoint the fold holds one of the two operands outright,
+ * so a saved document never contains one.
+ *
+ * @param {*} paint - any paint value
+ * @returns {boolean}
+ *
+ * @example isCrossfadePaint({type: "crossfade", from: "#f00", to: "#00f", t: 0.5}) // true
+ * @example isCrossfadePaint({type: "material", material: {id: "crt"}}) // false
+ * @example isCrossfadePaint("#ff0000") // false
+ * @example isCrossfadePaint(null) // false
+ */
+export function isCrossfadePaint(paint) {
+  return !!(paint && typeof paint === "object" && !Array.isArray(paint) && paint.type === CROSSFADE_PAINT_TYPE);
+}
+
+/**
+ * Pure function. Does this op carry a crossfade in EITHER paint slot? The single
+ * predicate the Skia painter routes on and both vector exporters add to the
+ * OR-chain that decides "this op has no vector form — rasterize its region".
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean}
+ *
+ * @example opHasCrossfadePaint({op: "rect", fill: {type: "crossfade", from: "#f00", to: "#00f", t: 0.5}}) // true
+ * @example opHasCrossfadePaint({op: "path", stroke: {type: "crossfade", from: "#f00", to: "#00f", t: 0.5}}) // true
+ * @example opHasCrossfadePaint({op: "rect", fill: "#fff"}) // false
+ */
+export function opHasCrossfadePaint(cmd) {
+  return isCrossfadePaint(cmd.fill) || isCrossfadePaint(cmd.stroke);
+}
+
+/**
+ * Pure function. ONE SIDE of a crossfading op: the same op with the named side's
+ * paint substituted into every crossfading slot, and its opacity scaled by that
+ * side's share of the mix. Painting `crossfadeSide(cmd, "from")` and then
+ * `crossfadeSide(cmd, "to")` through the ORDINARY op path composites the two
+ * paints — which is why no backend needs a crossfade-aware drawing routine, only
+ * a crossfade-aware ROUTER.
+ *
+ * The `from` side takes (1 − t) and the `to` side takes t, so the two passes sum
+ * to the op's original opacity when they do not overlap and approach it as they
+ * do. A non-crossfading slot is left exactly as it was, so an op that crossfades
+ * only its fill keeps its ordinary stroke on BOTH passes — which double-draws the
+ * stroke at complementary alpha, i.e. composites back to the same stroke.
+ *
+ * @param {object} cmd - an op with at least one crossfade paint
+ * @param {"from"|"to"} side - which operand this pass draws
+ * @returns {object} a plain op the existing painters understand
+ *
+ * @example crossfadeSide({op: "rect", fill: {type: "crossfade", from: "#f00", to: "#00f", t: 0.25}, opacity: 1}, "from") // {op: "rect", fill: "#f00", opacity: 0.75}
+ * @example crossfadeSide({op: "rect", fill: {type: "crossfade", from: "#f00", to: "#00f", t: 0.25}, opacity: 1}, "to") // {op: "rect", fill: "#00f", opacity: 0.25}
+ * @example crossfadeSide({op: "rect", fill: {type: "crossfade", from: "#f00", to: "#00f", t: 0.5}, stroke: "#000", opacity: 0.8}, "to").stroke // "#000" (a non-crossfading slot is untouched)
+ */
+export function crossfadeSide(cmd, side) {
+  const mix = isCrossfadePaint(cmd.fill) ? cmd.fill.t : cmd.stroke.t;
+  const share = side === "from" ? 1 - mix : mix;
+  const out = { ...cmd, opacity: (cmd.opacity ?? 1) * share };
+  if (isCrossfadePaint(cmd.fill)) out.fill = cmd.fill[side];
+  if (isCrossfadePaint(cmd.stroke)) out.stroke = cmd.stroke[side];
+  return out;
+}
+
+/**
  * Pure function. Does this display-list op carry a MATERIAL fill? The predicate
  * the painters route on and the vector exporters use to send an otherwise-
  * vector shape op into the raster-embed fallback (a PDF/SVG cannot express a
@@ -486,6 +561,18 @@ export function parsePaint(paint) {
   // gradient shader's type switch throws on the unknown type (never a silent
   // gray fill).
   if (type === "material") return paint;
+  // A CROSSFADE paint (the `blend` interp mode's mid-transition value —
+  // core/interp_modes.js): two paints and a mix factor, drawn as two passes at
+  // complementary alpha. It PASSES THROUGH like a material does, but with both
+  // sides parsed RECURSIVELY here, so every downstream consumer receives two
+  // already-painter-ready paints and no backend has to know that parsePaint is
+  // re-entrant. Recursion is bounded: core's blend flattens nesting, so a
+  // crossfade's sides are never themselves crossfades.
+  if (type === CROSSFADE_PAINT_TYPE) {
+    if (typeof paint.t !== "number" || !(paint.t >= 0 && paint.t <= 1))
+      throw new Error(`parsePaint: a crossfade paint needs a mix "t" in [0,1], got ${JSON.stringify(paint.t)}`);
+    return { type, from: parsePaint(paint.from), to: parsePaint(paint.to), t: paint.t };
+  }
   if (STUB_PAINT_TYPES.includes(type)) throw new Error(`parsePaint: "${type}" paint is not implemented yet (Axis-1 stub — only solid + ${GRADIENT_TYPES.join("/")} are wired)`);
   if (!GRADIENT_TYPES.includes(type)) throw new Error(`parsePaint: unknown paint type ${JSON.stringify(type)} (known: solid, ${GRADIENT_TYPES.join(", ")}, solid string/array)`);
   // Active gradient sub-state: the nested wrapper for this type, else the legacy
@@ -1795,7 +1882,7 @@ export function videoV5Frame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacit
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).preserveAspect // true
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}, preserveAspect: false}).preserveAspect // false
  */
-export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, preserveAspect = true }) {
+export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, preserveAspect = true, fill = null }) {
   if (typeof ref !== "string") throw new Error(`latexVector: "ref" must be a string, got ${JSON.stringify(ref)}`);
   requireFinite("latexVector", { x, y, w, h, opacity, sx, sy, sw, sh });
   if (!Array.isArray(glyphs)) throw new Error(`latexVector: "glyphs" must be an array, got ${JSON.stringify(glyphs)}`);
@@ -1819,6 +1906,13 @@ export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx 
     src: sourceRect(sx, sy, sw, sh),
     glyphs: outGlyphs,
     viewBox: { minX: viewBox.minX, minY: viewBox.minY, w: viewBox.w, h: viewBox.h },
+    // A SHADER INK (gradient or material) for the WHOLE equation, applied through
+    // the union of the glyph coverage. Distinct from a glyph's own `fill`, which
+    // stays a plain CSS colour because that is what a `<path fill>` takes: a
+    // shader is one paint over many glyphs, so it cannot be per-glyph. Spread so
+    // it is ABSENT unless set — an op with a plain ink is byte-identical to
+    // before, which is the invariant the whole absent-is-legacy story rests on.
+    ...(fill ? { fill } : {}),
   };
 }
 

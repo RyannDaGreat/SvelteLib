@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
@@ -1088,7 +1088,7 @@ async function emitOpRange(flat, start, end, commands, rawIndexOf, region, out, 
       await emitCrop(cmd, world, region, out, ctx);
     } else if (cmd.op === "effectSubtree") {
       await emitEffect(cmd, world, region, out, ctx);
-    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd) || opHasMaskBlur(cmd)) {
+    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd) || opHasMaskBlur(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd)) {
       // (A MATERIAL-filled shape op is vector-shaped but shader-filled — PDF has
       // no vector form for it, so it takes the same region raster-embed. A
       // MIRROR-TILED linear gradient fill — wavelength ≠ 1 — is the same story: a
@@ -1346,6 +1346,56 @@ export function rasterOpPlaceRect(cmd, world, region) {
  * @param {string[]} out the content-stream operator sink.
  * @param {PdfAssembly} ctx the document assembler.
  */
+/**
+ * Query (reports once; reads the op). True — AND SAYS SO — when this op carries a
+ * CROSSFADE paint (the `blend` interp mode's mid-transition value), which routes
+ * it into the general raster fallback above. The exact twin of svg_backend's
+ * function of the same name; see that one for the full reasoning.
+ *
+ * The short version: a PDF content stream fills a path with ONE colour or ONE
+ * shading, so two paints composited in one shape has no vector form. Unlike every
+ * other clause on that OR-chain this is a TRANSIENT condition — only the
+ * strictly-interior frames of a transition carry a crossfade — so a deck that
+ * exports fully vector at every slide can quietly start embedding rasters when a
+ * frame is sampled mid-transition. That is worth one sentence. The picture is
+ * FAITHFUL; this is a fidelity/format notice, not a failure.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean} true ⇒ send it to the raster fallback
+ */
+function reportCrossfadeRaster(cmd) {
+  if (!opHasCrossfadePaint(cmd)) return false;
+  reportExportFailureOnce(
+    "pdf_backend:crossfade",
+    "PowerRP PDF export: a fill or stroke is mid-CROSS-FADE (the \"blend\" interpolation mode), and a PDF fills a path with one colour or one shading — those shapes are embedded as rasters so the exported page matches what the renderer draws. Export at the START or END of the transition (alpha 0 or 1) for fully vector output.",
+  );
+  return true;
+}
+
+/**
+ * Query (reports once). The PDF twin of svg_backend's reportLatexShaderInkRaster:
+ * an EQUATION whose Color is a gradient or material paints ONE shader across the
+ * union of its glyph outlines, and this backend converts glyphs to per-path fill
+ * operators with a single colour each.
+ *
+ * A MATERIAL ink already arrives here via opHasMaterialFill (the ink rides `fill`);
+ * a GRADIENT ink would otherwise take the vector branch and emit each glyph at its
+ * own `fill`, which for a shader ink is the neutral WHITE the mask raster was
+ * typeset at — an invisible equation on a white page, silently. Rasterizing keeps
+ * the page faithful to the render, and says so.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean} true ⇒ send it to the raster fallback
+ */
+function reportLatexShaderInkRaster(cmd) {
+  if (cmd.op !== "latexVector" || !cmd.fill) return false;
+  reportExportFailureOnce(
+    "pdf_backend:latex-shader-ink",
+    "PowerRP PDF export: an equation's Color is a GRADIENT or MATERIAL, which paints one shader across the union of its glyph outlines — a PDF fills each glyph path with one colour or shading, so those equations are embedded as rasters and the exported page still matches what the renderer draws. Use a SOLID color for a fully vector equation.",
+  );
+  return true;
+}
+
 async function emitRasterOp(cmd, world, commands, rawIdx, region, out, ctx) {
   const placeRect = rasterOpPlaceRect(cmd, world, region);
   if (!placeRect || !(placeRect.w > 0) || !(placeRect.h > 0)) return; // off-region → nothing to draw

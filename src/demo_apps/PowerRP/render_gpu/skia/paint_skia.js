@@ -40,7 +40,7 @@
  * offset scale by world.scale·zoom·dpr.
  */
 
-import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeOutwardReach, strokeIsDetached, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, isMaterialPaint, opHasCrossfadePaint, crossfadeSide, opHasMaterialFill, opHasMaterialStroke, opStrokeNeedsTrimPath, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeOutwardReach, strokeIsDetached, strokeIsTrimmed, trimSegments, scrubFrameKey, videoV5FrameKey, signedApply, isPaintableFrame, rect, text, MAX_LENS_DEPTH, BLUR_SUPPORT_SIGMAS } from "../ir.js";
 // THE PER-NODE PAINT BOUNDARY's two halves: the shared error affordance, and the
 // ERROR-level report. The alias survives its original reason — this file used to
 // carry a PRIVATE console.warn helper also called `reportOnce`, and the import had
@@ -50,7 +50,7 @@ import { flattenIR, parseColor, isGradientPaint, isMaterialPaint, opHasMaterialF
 // answer to print the stack exactly once.
 import { reportOnce as reportPaintFailureOnce, warnOnce } from "../../core/report.js";
 import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, isConfigurationError } from "../../core/paint_containment.js";
-import { getTextLayout, DEFAULT_TEXT_SIZE } from "./text_layout.js";
+import { getTextLayout, DEFAULT_TEXT_SIZE, materialShaderForGlyphs } from "./text_layout.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
 import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach, materialUnavailableReason } from "./materials.js";
@@ -548,6 +548,34 @@ function paintOpRange(CanvasKit, target, flat, start, end, view, ctx, depth, bel
       drawProxyEffect(CanvasKit, target, cmd, world, view, ctx, depth, belowOf(i));
       continue;
     }
+    // ── THE CROSSFADE ROUTER ───────────────────────────────────────────────
+    // An op whose fill or stroke is a CROSSFADE paint (the `blend` interp mode's
+    // mid-transition value — core/interp_modes.js) is the user's "render both
+    // materials in the in-between and just, like, alpha blend the results",
+    // literally: draw the op TWICE, once per operand, at complementary alpha.
+    //
+    // IT IS A ROUTER AND NOT A DRAWING ROUTINE, which is the whole reason this
+    // costs six lines instead of touching every painter. `crossfadeSide` hands
+    // back an ORDINARY op with one operand substituted in and its opacity scaled,
+    // so each pass re-enters this very loop and takes whatever branch that
+    // operand deserves — a material side goes to handleMaterialPaintShape, a
+    // gradient side to the leaf path, a solid to the same. Any pair of paints
+    // therefore composites without either side knowing the other exists, and a
+    // material introduced tomorrow works with no change here.
+    //
+    // Recursion is BOUNDED AT ONE LEVEL: core's blend flattens nesting, so a
+    // crossfade's operands are never themselves crossfades and the two recursive
+    // calls cannot re-enter this branch.
+    if (opHasCrossfadePaint(cmd)) {
+      for (const side of ["from", "to"]) {
+        const one = crossfadeSide(cmd, side);
+        // Skip a fully-transparent pass rather than paying for a material
+        // raster whose result is multiplied by zero.
+        if ((one.opacity ?? 1) > 0)
+          paintOpRange(CanvasKit, target, [{ cmd: one, world }], 0, 1, view, ctx, depth, () => belowOf(i), canvas, proxy);
+      }
+      continue;
+    }
     // A SHAPE op whose FILL is a MATERIAL paint (the fill-material framework:
     // "demo widgets are just shapes with material"). Routed HERE, not in
     // drawLeafOp: the material machinery needs the view, the below-content and
@@ -983,6 +1011,13 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true, spaceDivisor = 1
  * vector path the SVG/PDF backends also consume. Fill uses each glyph's own
  * color; nonzero winding (MathJax counters are reverse-wound), which is
  * SkPath's default from MakeFromSVGString.
+ *
+ * A SHADER INK (`cmd.fill`, a gradient or material paint) instead CLIPS to the
+ * union of the glyph outlines and paints the shader once through it — see
+ * drawLatexShaderInk. The equation's real vector geometry makes that a true
+ * CLIP rather than an alpha-mask composite, which is why LaTeX gets a sharper
+ * treatment than text does (text has no glyph-outline API in CanvasKit 0.41.1
+ * and must mask through drawGlyphs coverage instead).
  */
 function drawLatexVector(CanvasKit, canvas, cmd, opacity, aa = true) {
   const { viewBox, glyphs } = cmd;
@@ -1000,6 +1035,11 @@ function drawLatexVector(CanvasKit, canvas, cmd, opacity, aa = true) {
   canvas.translate(cmd.x + ox, cmd.y + oy);
   canvas.scale(sx, sy);
   canvas.translate(-viewBox.minX, -viewBox.minY);
+  if (cmd.fill) {
+    drawLatexShaderInk(CanvasKit, canvas, cmd, opacity, aa);
+    canvas.restore();
+    return;
+  }
   for (const g of glyphs) {
     const path = CanvasKit.Path.MakeFromSVGString(g.d);
     if (!path) throw new Error(`paintIR(skia): latexVector glyph "d" failed to parse: ${JSON.stringify(g.d).slice(0, 64)}`);
@@ -1012,6 +1052,61 @@ function drawLatexVector(CanvasKit, canvas, cmd, opacity, aa = true) {
     p.delete(); path.delete();
   }
   canvas.restore();
+}
+
+/**
+ * Command (draws the equation's SHADER ink). Called with the canvas ALREADY in
+ * viewBox space (drawLatexVector has applied the translate+scale), so every glyph
+ * `d` is used verbatim and the paint lands in the same frame as the glyphs.
+ *
+ * THE GLYPHS ARE A CLIP, and that is the whole design. Every glyph path is
+ * unioned into ONE SkPath, that path becomes the clip, and the paint is then
+ * applied ONCE across the equation's bounding box. Two consequences worth
+ * stating, because they are the reason this is a union-clip rather than a
+ * per-glyph fill:
+ *   · A gradient or material spans the WHOLE equation, so `x` and the numerator
+ *     of a fraction share one continuous ramp instead of each restarting it.
+ *     Per-glyph painting would give every glyph its own copy of the shader,
+ *     which is not what "the equation is made of brass" means.
+ *   · The union is taken with the SAME nonzero winding MakeFromSVGString gives
+ *     each glyph, so counters (the hole in an `a`, MathJax's reverse-wound
+ *     bowls) stay holes in the clip and the shader does not leak into them.
+ *
+ * BOTH KINDS PAINT AS A PLAIN SHADER, and neither needs the wider painter
+ * context. A gradient builds through skShaderForPaint; a MATERIAL builds through
+ * materialShaderForGlyphs — the SAME builder the text glyph pass uses, so a
+ * material equation and material text are one mechanism with two masks. That
+ * builder refuses a backdrop/sampler/pattern material loudly, which is what keeps
+ * this seam honest: the material kinds needing a below-content re-render (and
+ * therefore the full context) are rejected by name rather than silently drawn
+ * wrong or silently dropped.
+ */
+function drawLatexShaderInk(CanvasKit, canvas, cmd, opacity, aa) {
+  const union = new CanvasKit.Path();
+  for (const g of cmd.glyphs) {
+    const path = CanvasKit.Path.MakeFromSVGString(g.d);
+    if (!path) throw new Error(`paintIR(skia): latexVector glyph "d" failed to parse: ${JSON.stringify(g.d).slice(0, 64)}`);
+    union.addPath(path);
+    path.delete();
+  }
+  const b = union.getBounds(); // [l, t, r, b] in viewBox space — the ink box the paint frames on
+  const bounds = { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] };
+  const shader = isMaterialPaint(cmd.fill)
+    ? materialShaderForGlyphs(CanvasKit, cmd.fill, bounds)
+    : skShaderForPaint(CanvasKit, parsePaint(cmd.fill), bounds, opacity);
+  const p = new CanvasKit.Paint();
+  p.setShader(shader);
+  p.setStyle(CanvasKit.PaintStyle.Fill);
+  // A gradient folds opacity into its stop alphas; a material's shader has no
+  // stops, so the Paint carries it (the same split drawGlyphShaderFill makes).
+  if (isMaterialPaint(cmd.fill)) p.setAlphaf(opacity);
+  p.setAntiAlias(aa);
+  canvas.save();
+  canvas.clipPath(union, CanvasKit.ClipOp.Intersect, aa);
+  canvas.drawRect(CanvasKit.LTRBRect(b[0], b[1], b[2], b[3]), p);
+  canvas.restore();
+  p.delete(); shader.delete();
+  union.delete();
 }
 
 /**

@@ -105,6 +105,38 @@ export const DEFAULT_LATEX = "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}";
  * visual scale, the least-surprising default (linked to text.js's size:36). */
 export const DEFAULT_FONT_SIZE = 36;
 
+/**
+ * The ink an equation is TYPESET at when its real ink is a shader (a gradient or
+ * a material). The raster then serves as a pure ALPHA MASK: white is the neutral
+ * multiplicand, so the shader's own colour survives the mask composite unchanged
+ * (`shader × 1`), where any tinted mask would multiply a cast into it. It is also
+ * ONE cache key for every shader ink, so switching material or dragging a gradient
+ * stop re-keys nothing and re-typesets nothing — only the paint on top changes.
+ */
+const LATEX_MASK_INK = "#ffffff";
+
+/**
+ * Pure function. Is this stored ink a SHADER paint (a gradient or a material)
+ * rather than a plain colour? Object paints are the shader kinds; a string (or an
+ * absent ink) is a plain colour and takes the legacy raster-tint path untouched.
+ *
+ * An OFF paint ({type:"none"}) is deliberately NOT a shader ink: it means "paint
+ * nothing", which parsePaint already collapses to null for every backend, so it
+ * must not divert the equation into the mask path.
+ *
+ * @param {*} ink - the item's stored `ink`
+ * @returns {boolean}
+ *
+ * @example isShaderInk("#000000") // false
+ * @example isShaderInk(undefined) // false (absent ⇒ the default solid)
+ * @example isShaderInk({type: "material", material: {id: "metal"}}) // true
+ * @example isShaderInk({type: "linearGradient", linear: {stops: []}}) // true
+ * @example isShaderInk({type: "none"}) // false (OFF paints nothing; not a shader)
+ */
+export function isShaderInk(ink) {
+  return !!ink && typeof ink === "object" && !Array.isArray(ink) && ink.type !== "none";
+}
+
 /** Error-affordance colors — a LOUD, unmissable red treatment (the task's "not
  * silent, not a blank widget" requirement): a clearly red-tinted fill so the
  * whole box reads as an error zone at a glance, a saturated red border, and
@@ -523,10 +555,16 @@ export const latexPlugin = {
     // Aspect-preservation toggle (default ON). ON = uniform scale-to-fit,
     // centered in the box (no squash). OFF = stretch to fill the box aspect.
     { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Scale the equation uniformly to fit the box (centered, no distortion). Turn off to stretch it to the box's exact width and height." },
-    // INK — the glyph color (Round 15.4). A standard color row (kind "color",
-    // like text's Color / rect's Fill), keyframable; drives the live raster tint
-    // AND the SVG/PDF vector fill.
-    { key: "ink", label: "Color", kind: "color", category: "formatting", help: "The color of the equation's glyphs. Applies live and in SVG/PDF vector export (where the equation is real vector paths)." },
+    // INK — the glyph paint (Round 15.4; PAINT-capable since N1). `paint: true` is
+    // the whole declaration that makes a colour row a PaintField instead of a plain
+    // ColorField, so the equation's ink now offers the same Off/Solid/Linear/Radial/
+    // Mat/=Eq strip every shape fill does — a material equation is exactly a
+    // material shape fill, masked by the glyph outlines rather than a rectangle.
+    //
+    // ABSENT-IS-LEGACY: a stored ink is a STRING for every document written before
+    // this, and a string still takes the raster-tint path byte-identically (the
+    // material branch is entered only by an object paint), so nothing re-renders.
+    { key: "ink", label: "Color", kind: "color", paint: true, category: "formatting", offMeans: "the equation's glyphs are not painted, so nothing of it shows", help: "The color, gradient or material the equation's glyphs are painted with. A solid color also applies in SVG/PDF vector export (where the equation is real vector paths); a gradient or material rasterizes there." },
     // The stroked-BORDER bundle (a framed equation) — no `fill` row: the
     // equation's own glyphs ARE its interior, like an image/pdf page.
     ...bundle("strokedBorder"),
@@ -561,8 +599,26 @@ export const latexPlugin = {
     const worldScale = world?.scale ?? 1;
     const fontSize = s.fontSize ?? DEFAULT_FONT_SIZE;
     const scale = worldScale * fontSize; // px-per-em bucket the raster keys on (density applied inside latex_raster)
-    const ink = s.ink ?? LATEX_DEFAULT_INK; // Round 15.4 — the glyph color (raster tint + vector fill)
+    // THE INK SPLITS IN TWO, and the split is what lets a SHADER ink exist at all.
+    //
+    // A typeset equation is MathJax SVG with the ink baked in BEFORE rasterization
+    // (latex_raster sets the root's `color`, which the glyph paths inherit through
+    // currentColor) and the ink is part of the raster CACHE KEY. A gradient or a
+    // material has no colour to bake and no string to key on, so it cannot be the
+    // tint. Instead the raster is typeset at a NEUTRAL ink and the real paint is
+    // carried on the op, to be applied THROUGH the glyph coverage at paint time.
+    //
+    // `inkTint` is therefore always a plain colour (what gets baked + keyed), and
+    // `inkPaint` is the shader paint when there is one. A string ink puts itself in
+    // inkTint and leaves inkPaint null — byte-identical to every render before this.
+    const inkPaint = isShaderInk(s.ink) ? s.ink : null;
+    const ink = inkPaint ? LATEX_MASK_INK : (s.ink ?? LATEX_DEFAULT_INK); // raster tint + vector fill
     ensureLatexTypeset(latex, scale, ink); // idempotent; safe every emit()
+    // A shader ink ALSO needs the legacy-solid raster, because the pre-glyph
+    // fallback below draws it (the mask raster is white and would flash blank).
+    // Both are idempotent and cached; typesetting two inks costs one extra raster
+    // per equation, once.
+    if (inkPaint) ensureLatexTypeset(latex, scale, LATEX_DEFAULT_INK);
 
     // ERROR AFFORDANCE: once the typeset resolved and reported a syntax error,
     // draw the loud red box+message (vector) rather than the raster. Before the
@@ -597,6 +653,18 @@ export const latexPlugin = {
     // choice, exactly the hybrid rule's "what can't cleanly vectorize, rasterize".
     const cropped = c.sw < 1 || c.sh < 1 || c.sx > 0 || c.sy > 0;
     const geom = cropped ? null : latexGlyphs(latex);
+    // A SHADER ink rides as `fill` on the op, NOT as each glyph's `fill`. The
+    // per-glyph fill must stay a plain colour because that is what the SVG/PDF
+    // exporters write into a `<path fill>` and what drawLatexVector's parseColor
+    // reads; the shader is ONE paint over the whole equation, so it belongs on the
+    // op. Painters that see `fill` composite it through the glyph coverage; those
+    // that cannot say so out loud rather than dropping it (svg/pdf below).
+    //
+    // Naming it `fill` is deliberate: that is the slot ports.js
+    // resolveMaterialFillPaints already resolves, so a material ink gets its
+    // resolvedParams with no new resolution site — the thing that docblock warns
+    // against adding.
+    const inkFill = inkPaint ? { fill: inkPaint } : {};
     const quad = geom
       ? latexVector({
           ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1,
@@ -604,8 +672,17 @@ export const latexPlugin = {
           viewBox: geom.viewBox,
           glyphs: geom.glyphs.map((g) => ({ d: g.d, fill: ink })),
           preserveAspect: s.preserveAspect !== false, // default ON (user directive)
+          ...inkFill,
         })
-      : image({ ref, x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+      // The pre-glyph RASTER fallback carries NO shader ink, deliberately. It is
+      // the transient state before the async glyph flatten lands (and the cropped
+      // case, which has no vector form at all), and its raster is the white MASK —
+      // painting that raw would flash a WHITE equation. So it draws at the
+      // legacy-solid ink instead: a plain, readable equation for the frame or two
+      // before the real paint takes over, rather than a white-on-white blank.
+      // A cropped material equation stays at that solid ink permanently, which is
+      // the same bound the crop already has against the vector exporters.
+      : image({ ref: latexRef(latex, scale, LATEX_DEFAULT_INK), x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): the shadow/bloom silhouette the FRAMED equation, border included.
     return applyEffects(decorateStrokedBox([quad], style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });

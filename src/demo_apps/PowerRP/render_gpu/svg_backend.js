@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import { STROKE_MITER_LIMIT } from "../core/properties.js"; // the identity limit this exporter may omit BECAUSE SVG's own initial value is the same number (pdf_backend cannot — see joinAttrs)
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
@@ -877,6 +877,69 @@ export async function emitRegionSVG(commands, region, out, ctx) {
   }
 }
 
+/**
+ * Query (reports once; reads the op). True — AND SAYS SO — when this op carries a
+ * CROSSFADE paint (the `blend` interp mode's mid-transition value), which routes
+ * it into the general raster fallback.
+ *
+ * WHY IT REPORTS RATHER THAN JUST RETURNING A BOOLEAN. Every other clause on that
+ * OR-chain is a permanent, structural capability gap: a shader material has no
+ * SVG form and never will. A crossfade is DIFFERENT in a way worth saying out
+ * loud — it is a *transient* condition, present only on the strictly-interior
+ * frames of a transition, and it can silently turn a deck that exports fully
+ * vector at every slide into one that embeds a raster whenever a frame is
+ * sampled mid-transition. An author who exports an SVG at alpha 0.5 and gets a
+ * bitmap where their gradients used to be deserves the sentence rather than a
+ * mystery. The picture is FAITHFUL either way — this is a fidelity/format notice,
+ * not a failure, which is why it is a report and not a throw.
+ *
+ * The alternative — resolving the crossfade to one side and exporting that as
+ * vector — was rejected: it would export a picture the renderer never drew, which
+ * is the silent-wrongness this codebase forbids.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean} true ⇒ send it to the raster fallback
+ */
+function reportCrossfadeRaster(cmd) {
+  if (!opHasCrossfadePaint(cmd)) return false;
+  reportExportFailureOnce(
+    "svg_backend:crossfade",
+    "PowerRP SVG export: a fill or stroke is mid-CROSS-FADE (the \"blend\" interpolation mode), and an SVG cannot composite two paints in one shape — those shapes are embedded as rasters so the exported picture matches what the renderer draws. Export at the START or END of the transition (alpha 0 or 1) for fully vector output.",
+  );
+  return true;
+}
+
+/**
+ * Query (reports once). Does this op need the raster fallback because it is an
+ * EQUATION painted with a SHADER INK — a gradient or a material on the latex
+ * widget's Color row?
+ *
+ * WHY THIS GATE IS NOT COVERED BY THE MATERIAL ONE. A material ink already routes
+ * here through opHasMaterialFill, because the ink rides the op's `fill` slot. A
+ * GRADIENT ink does not: isGradientPaint is true of it but no `opHas…` predicate
+ * names it, so without this the equation would take the VECTOR branch and emit its
+ * glyph <path>s at their own per-glyph `fill` — which for a shader ink is the
+ * NEUTRAL WHITE MASK colour the raster was typeset at. That is a white equation on
+ * a white page: not a degraded export, an invisible one, and silently so.
+ *
+ * Rasterizing is the faithful choice for the same reason it is for a material
+ * shape: the ink is one shader across the whole equation, and SVG's own gradients
+ * cannot be applied to a union of glyph outlines without restructuring the glyphs
+ * into a clipPath — which is real vector work this backend has not done, and is the
+ * honest follow-up if fully-vector gradient equations are ever wanted.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean} true ⇒ send it to the raster fallback
+ */
+function reportLatexShaderInkRaster(cmd) {
+  if (cmd.op !== "latexVector" || !cmd.fill) return false;
+  reportExportFailureOnce(
+    "svg_backend:latex-shader-ink",
+    "PowerRP SVG export: an equation's Color is a GRADIENT or MATERIAL, which paints one shader across the union of its glyph outlines — an SVG cannot express that on inline glyph paths, so those equations are embedded as rasters and the exported picture still matches what the renderer draws. Use a SOLID color for a fully vector equation.",
+  );
+  return true;
+}
+
 /** Command (async; pushes SVG fragments for flat[start..end) — THE ORIGINAL
  *  per-op walk, unchanged, now called once per owner run. No try/catch here:
  *  the boundary is the caller's. */
@@ -896,7 +959,7 @@ async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, ou
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
-    } else if (!SVG_VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd)) {
+    } else if (!SVG_VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd)) {
       // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.
       //  A TRIMMED / TAPER-capped / ASYMMETRICALLY-capped stroke (opStrokeNeedsRaster)
       //  likewise rasterizes its own region rather than silently drawing the untrimmed
