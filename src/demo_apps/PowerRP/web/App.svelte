@@ -1171,6 +1171,29 @@
       help: LIGHT_PIN_HELP,
       run: (a) => a.enterCanvasMode("pin_light_position", lightPinTarget(a)),
     },
+    // SET SIZE TO INK BOUNDS (user, 2026-08-02: a tool to "set size to. Physical
+    // boundary."). Sits next to the group commands because its GROUP behaviour is
+    // the one the user described by reference to them — on a group it re-captures
+    // the members' collective box and re-binds, which is Ungroup followed by Group
+    // with no intervening edit.
+    //
+    // `requires` is a FUNCTION because this gate has two disqualifying conditions
+    // with different true sentences — nothing selected can be fitted at all, versus
+    // a selection that CAN be but already fits — and a fixed string would be a
+    // confident wrong answer for one of them (the `save-project` precedent). Read
+    // it through core/commands.commandUnavailableReason, never as cmd.requires.
+    {
+      id: "fit-to-ink-bounds",
+      title: "Set Size to Ink Bounds",
+      icon: "mdi:fit-to-page-outline",
+      aliases: ["fit to contents", "shrink to fit", "physical boundary", "actual size", "fit box to text"],
+      when: (a) => a.canFitToInkBounds(),
+      requires: (a) => (a.selectedNodes().some((n) => n.plugin.capabilities.bbox)
+        ? "a selected widget whose contents leave its box — everything selected already fits what it holds, so there is nothing to resize"
+        : "a selected widget with a box — this resizes a box to fit what is inside it"),
+      help: "Makes the box match what is actually drawn. Text that has overflowed its box (grown past the bottom, or run off the side) gets a box the right size for the type, which is also what makes it clickable and stops it being culled. On a GROUP it re-captures the members' collective box and re-binds the group at that pose — the same result as ungrouping and immediately regrouping, with the members left exactly where they are.",
+      run: (a) => a.fitSelectionToInkBounds(),
+    },
     // GROUPS (manifest rough draft): Group Selection needs ≥2 groupable items;
     // Ungroup is enabled when any selected node is a group. Both operate on the
     // selection through the app helpers (which own the AABB + keyframe baking).
