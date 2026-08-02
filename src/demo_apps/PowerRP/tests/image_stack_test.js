@@ -20,10 +20,7 @@
  */
 
 import assert from "node:assert/strict";
-import {
-  imageStackPlugin, stackAlphas, stackLayout, shadowReach,
-  REFERENCE, REFERENCE_SIDE, DEFAULT_SHIFT_FRACTION,
-} from "../plugins/image_stack.js";
+import { imageStackPlugin, stackAlphas, stackLayout, shadowReach, REFERENCE, REFERENCE_SIDE, DEFAULT_SHIFT_FRACTION, rectSubtract } from "../plugins/image_stack.js";
 import { flattenIR, BLUR_SUPPORT_SIGMAS } from "../render_gpu/ir.js";
 
 let passed = 0;
@@ -124,11 +121,21 @@ test("the card size is SOLVED from the box, in both shift signs", () => {
 test("emit draws BACK TO FRONT: frame 0 is painted last and at full opacity", () => {
   const ops = drawables(imageStackPlugin.emit({ ...SOURCED, frames: [[0], [1], [2]] }, null, WORLD));
   const quads = ops.filter((o) => o.op === "videoV5Frame");
-  assert.equal(quads.length, 3, "one videoV5Frame op per visible frame");
-  assert.deepEqual(quads.map((q) => q.seekTime), [2, 1, 0], "deepest card first, frame 0 last");
+  // ONE DRAW PER VISIBLE REGION, NOT PER CARD — changed by the occlusion fix (#268).
+  // A lower card is now clipped to the part of it the card above does not cover, and
+  // that region is an L, so it takes TWO clipped draws. Only the top card is a single
+  // unclipped draw. The pixel cost goes DOWN (the strips together are smaller than a
+  // whole card); it is the op COUNT that rises. The property this test is really
+  // about — back to front, frame 0 last, at full opacity — is asserted below on the
+  // DISTINCT frames rather than on a raw count.
+  const bySeek = [...new Set(quads.map((q) => q.seekTime))];
+  assert.deepEqual(bySeek, [2, 1, 0], "deepest card first, frame 0 last");
   assert.equal(quads[quads.length - 1].opacity, 1, "the front card is solid");
-  for (let i = 1; i < quads.length; i++)
-    assert.ok(quads[i].opacity > quads[i - 1].opacity, "each card painted later is stronger than the one under it");
+  // Opacity rises with depth ACROSS DISTINCT CARDS; the two strips of one card share
+  // its alpha, so a strict per-op increase is no longer the right statement.
+  const alphaOf = (t) => quads.find((q) => q.seekTime === t).opacity;
+  for (let i = 1; i < bySeek.length; i++)
+    assert.ok(alphaOf(bySeek[i]) > alphaOf(bySeek[i - 1]), "each card painted later is stronger than the one under it");
   // Every card is a SCRUB frame — the same deterministic op the filmstrip's cells and
   // the V5 scrubber emit, so the pile is pure(document, slide, alpha).
   for (const q of quads) {
@@ -154,7 +161,10 @@ test("each card carries its own blurred drop shadow, under it, fading with the p
 test("a HIDDEN frame leaves the pile — the list's hide-vs-purge, through the shared reader", () => {
   const ops = drawables(imageStackPlugin.emit(
     { ...SOURCED, frames: [[0], [1], [2]], framesActive: [true, false, true] }, null, WORLD));
-  assert.deepEqual(ops.filter((o) => o.op === "videoV5Frame").map((q) => q.seekTime), [2, 0]);
+  // DISTINCT seek times, not raw op count: the lower card is clipped into an L by
+  // the occlusion fix (#268) and so draws twice. What this test is about — the
+  // hidden frame leaves the pile entirely — is unchanged.
+  assert.deepEqual([...new Set(ops.filter((o) => o.op === "videoV5Frame").map((q) => q.seekTime))], [2, 0]);
 });
 
 // ── (5) THE DEGENERATE CASES ARE LOUD ────────────────────────────────────────
@@ -196,3 +206,83 @@ test("localBounds inflates by the shadow's reach, because a shadow is INK", () =
 });
 
 console.log(`\n${passed} tests passed`);
+
+// ── OCCLUSION, NOT BLENDING (#268) ──────────────────────────────────────────
+// User: "alpha blending is WRONG (you can see one image under another)."
+//
+// The Python reference fades the ACCUMULATED image and then pastes the next frame
+// OPAQUE, so at any pixel only the TOPMOST covering card shows. Drawing every card
+// translucent instead BLENDS them, and a lower card bleeds through an upper one.
+// stackAlphas' docblock used to assert the two were the same picture; they agree
+// about how much a card is DARKENED and disagree about whether it is OCCLUDED.
+
+test("THE BLEED IS REAL AND MEASURABLE — the arithmetic that made this a bug", () => {
+  const a = stackAlphas(3, 0.5);
+  // A pixel covered by cards 1 and 2 must show card 1 alone.
+  const correct = a[1];
+  const blended = a[1] + a[2] * (1 - a[1]); // what translucent back-to-front gives
+  assert.ok(blended - correct > 0.08,
+    `card 2 bled ${(blended - correct).toFixed(4)} into a pixel it must not touch (correct ${correct.toFixed(4)}, blended ${blended.toFixed(4)})`);
+});
+
+test("rectSubtract returns DISJOINT pieces — an overlap would re-create the bug in miniature", () => {
+  const a = { x: 0, y: 0, w: 10, h: 10 };
+  const parts = rectSubtract(a, { x: -5, y: -5, w: 10, h: 10 });
+  let area = 0;
+  for (const p of parts) area += p.w * p.h;
+  assert.equal(area, 75, "a diagonal twin leaves exactly the L, counted once");
+  for (let i = 0; i < parts.length; i++)
+    for (let j = i + 1; j < parts.length; j++) {
+      const p = parts[i], q = parts[j];
+      const ox = Math.min(p.x + p.w, q.x + q.w) - Math.max(p.x, q.x);
+      const oy = Math.min(p.y + p.h, q.y + q.h) - Math.max(p.y, q.y);
+      assert.ok(!(ox > 0 && oy > 0), `pieces ${i} and ${j} overlap — the same card would draw over itself`);
+    }
+});
+
+test("rectSubtract's degenerate cases", () => {
+  const a = { x: 0, y: 0, w: 10, h: 10 };
+  assert.deepEqual(rectSubtract(a, { x: 50, y: 50, w: 10, h: 10 }), [a], "no overlap → the whole rect");
+  assert.deepEqual(rectSubtract(a, a), [], "fully covered → nothing to draw");
+  assert.deepEqual(rectSubtract(a, { x: -20, y: -20, w: 100, h: 100 }), [], "swallowed → nothing");
+});
+
+test("EVERY LOWER CARD IS CLIPPED, and the TOP one is not", () => {
+  const p = imageStackPlugin;
+  const st = { ...p.defaults, src: "clip.mp4", w: 400, h: 300, shiftX: 0.2, shiftY: 0.15,
+    frames: [[0], [1], [2]], videoStart: 0, videoEnd: 3, shadowOpacity: 0, cardRadius: 0 };
+  const ops = p.emit(st, null, { x: 0, y: 0, rotation: 0, scale: 1 });
+  const clips = ops.filter((o) => o.op === "cropSubtree");
+  // 2 lower cards, each leaving an L of 2 strips = 4. There is NO extra card clip
+  // here because cardRadius is 0 — decorateStrokedBox only wraps a card in its own
+  // rounded cropSubtree when there is a radius to round. (At the default radius the
+  // count is 5; pinning the radius-0 case keeps this assertion about occlusion and
+  // nothing else.)
+  assert.equal(clips.length, 4, `expected 4 occlusion clips, got ${clips.length}`);
+  // The strips are exactly one step wide / tall — the geometry, not a guess.
+  const stepX = (0.2 * 400) / 3, stepY = (0.15 * 300) / 3;
+  const widths = new Set(clips.map((c) => Math.round(c.w)));
+  assert.ok(widths.has(Math.round(stepX)), `an occlusion strip should be one step (${stepX.toFixed(1)}) wide; got ${[...widths].join(", ")}`);
+  const heights = new Set(clips.map((c) => Math.round(c.h)));
+  assert.ok(heights.has(Math.round(stepY)), `and one step (${stepY.toFixed(1)}) tall; got ${[...heights].join(", ")}`);
+});
+
+test("A SINGLE CARD IS NEVER CLIPPED — nothing is above it", () => {
+  const p = imageStackPlugin;
+  const st = { ...p.defaults, src: "clip.mp4", w: 200, h: 200, shiftX: 0.2, shiftY: 0.2,
+    frames: [[0]], videoStart: 0, videoEnd: 1, shadowOpacity: 0, cardRadius: 0 };
+  const ops = p.emit(st, null, { x: 0, y: 0, rotation: 0, scale: 1 });
+  assert.equal(ops.filter((o) => o.op === "cropSubtree").length, 0,
+    "one card means no occlusion clip at all");
+});
+
+test("SHIFT 0 — every card coincident — leaves only the top one visible", () => {
+  // The pile seen exactly end-on. Each lower card is FULLY covered, so it
+  // contributes nothing: the honest answer, and the one the reference gives.
+  const p = imageStackPlugin;
+  const st = { ...p.defaults, src: "clip.mp4", w: 200, h: 200, shiftX: 0, shiftY: 0,
+    frames: [[0], [1], [2]], videoStart: 0, videoEnd: 3, shadowOpacity: 0, cardRadius: 0 };
+  const ops = p.emit(st, null, { x: 0, y: 0, rotation: 0, scale: 1 });
+  assert.equal(ops.filter((o) => o.op === "cropSubtree").length, 0,
+    "no occlusion clips are emitted, because every lower card is fully hidden");
+});

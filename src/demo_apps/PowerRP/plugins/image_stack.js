@@ -105,7 +105,7 @@ import {
   VIDEO_SAMPLING_ROWS, emptySpanReport, preserveAspectRow, spanIsEmpty,
   videoSamplingDefaults, visibleFrames,
 } from "../core/video_sampling.js";
-import { path, videoV5Frame, BLUR_SUPPORT_SIGMAS } from "../render_gpu/ir.js";
+import { path, videoV5Frame, cropSubtree, BLUR_SUPPORT_SIGMAS } from "../render_gpu/ir.js"; // cropSubtree: the per-card occlusion clip (#268)
 import { decorateStrokedBox } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
@@ -246,6 +246,41 @@ export function stackLayout(n, w, h, shiftX, shiftY) {
     w: ax.size,
     h: ay.size,
   }));
+}
+
+/**
+ * Pure function. The parts of rect `a` NOT covered by rect `b`, as up to four
+ * DISJOINT rects (top strip, bottom strip, then the left and right of what
+ * remains). Empty when `b` swallows `a`; `[a]` when they do not meet.
+ *
+ * Disjointness is the load-bearing property: these rects each get their own draw
+ * of the same card, so an overlap between them would composite that card over
+ * itself and re-introduce, in miniature, the very double-blend this exists to
+ * remove.
+ *
+ * @param {{x: number, y: number, w: number, h: number}} a
+ * @param {{x: number, y: number, w: number, h: number}} b
+ * @returns {Array<{x: number, y: number, w: number, h: number}>}
+ *
+ * @example rectSubtract({x: 0, y: 0, w: 10, h: 10}, {x: 20, y: 0, w: 10, h: 10}) // [{x: 0, y: 0, w: 10, h: 10}] (no overlap)
+ * @example rectSubtract({x: 0, y: 0, w: 10, h: 10}, {x: -5, y: 0, w: 10, h: 10}) // [{x: 5, y: 0, w: 5, h: 10}] (a left-shifted twin leaves one strip)
+ * @example rectSubtract({x: 0, y: 0, w: 10, h: 10}, {x: 0, y: 0, w: 10, h: 10}) // [] (fully covered)
+ * @example rectSubtract({x: 0, y: 0, w: 10, h: 10}, {x: -5, y: -5, w: 10, h: 10}).length // 2 (a diagonal twin leaves an L)
+ */
+export function rectSubtract(a, b) {
+  const ax2 = a.x + a.w, ay2 = a.y + a.h;
+  const ox1 = Math.max(a.x, b.x), oy1 = Math.max(a.y, b.y);
+  const ox2 = Math.min(ax2, b.x + b.w), oy2 = Math.min(ay2, b.y + b.h);
+  if (!(ox1 < ox2 && oy1 < oy2)) return [{ ...a }]; // they do not meet
+  const out = [];
+  if (oy1 > a.y) out.push({ x: a.x, y: a.y, w: a.w, h: oy1 - a.y });          // above
+  if (oy2 < ay2) out.push({ x: a.x, y: oy2, w: a.w, h: ay2 - oy2 });          // below
+  const midH = Math.min(oy2, ay2) - Math.max(oy1, a.y);
+  if (midH > 0) {
+    if (ox1 > a.x) out.push({ x: a.x, y: oy1, w: ox1 - a.x, h: midH });       // left of the overlap
+    if (ox2 < ax2) out.push({ x: ox2, y: oy1, w: ax2 - ox2, h: midH });       // right of it
+  }
+  return out;
 }
 
 /**
@@ -437,8 +472,26 @@ export const imageStackPlugin = {
         seekTime: frames[j].time, wrap: s.scrubWrap ?? "clamp",
         preserveAspect: s.preserveAspect !== false,
       });
-      for (const op of decorateStrokedBox([frame], { x: c.x, y: c.y, w: c.w, h: c.h, cornerRadius: radius }, world))
-        content.push(op);
+      const carded = decorateStrokedBox([frame], { x: c.x, y: c.y, w: c.w, h: c.h, cornerRadius: radius }, world);
+      // ── OCCLUSION, NOT BLENDING (#268) ──────────────────────────────────────
+      // The reference fades the ACCUMULATED image and then pastes the next frame
+      // OPAQUE, so at any pixel only the TOPMOST covering card shows. Drawing every
+      // card translucent instead — which is what this did — BLENDS them, and a
+      // lower card bleeds through an upper one. Measured at 3 cards / exponent 0.5
+      // (alphas 1, 0.8165, 0.4714): a doubly-covered pixel came out at 0.9030
+      // instead of 0.8165, so card 2 was contributing 8.65% of a pixel it must not
+      // touch. That is the user's "you can see one image under another", exactly.
+      //
+      // WHY SUBTRACTING JUST THE ONE CARD ABOVE IS ENOUGH: stackLayout steps every
+      // card by a CONSTANT, so card j-2's overlap with card j is a strict subset of
+      // card j-1's. The union of everything above, intersected with card j, is
+      // therefore precisely card j-1's rect — one subtraction, not j of them.
+      //
+      // The TOP card is unclipped (nothing is above it), and a card the one above
+      // fully covers contributes nothing and is skipped entirely.
+      if (j === 0) { content.push(...carded); continue; }
+      for (const vis of rectSubtract(c, cards[j - 1]))
+        content.push(cropSubtree({ x: vis.x, y: vis.y, w: vis.w, h: vis.h, content: carded }));
     }
     const style = {
       w: s.w ?? 0, h: s.h ?? 0, stroke: s.stroke,
