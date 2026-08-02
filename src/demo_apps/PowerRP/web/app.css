@@ -567,7 +567,23 @@
      is a split FRACTION the user moves, owned by the component (its
      INITIAL_FORM_SPLIT), not a token here. --a-render-form-w: 420px used to live
      on this line and is gone for that reason. */
-  --a-render-w: 860px;
+  /* THE RENDER CENTER'S FORM PANE, bounded at both ends. It used to be
+     --a-render-w: 860px, a FIXED width for the whole dialog — which left the
+     content sitting in 860 of the shared modal panel's 1440, i.e. 578px of dead
+     space down the right, while the renderings list SCROLLED and cut a video
+     preview in half. Measured before the change: panel 1440x900, body 1438 wide,
+     content 860.
+     The dialog fills the panel now, so the extra width has to go somewhere
+     sensible: the form pane is a PERCENTAGE of the container (the draggable
+     split), and at 1438 a half-and-half split would make a column of labelled
+     fields 719px wide, which is worse than the gap it replaced. These two bounds
+     keep the form legible at any panel size and hand every remaining pixel to the
+     list, where a bigger video preview is an actual improvement. */
+  /* Roughly the shared modal panel's own height, approximated from outside — see
+     .render-center-panes for why it is not derived from the panel. */
+  --a-render-min-h: 78vh;
+  --a-render-form-min: 380px;
+  --a-render-form-max: 560px;
   --a-render-label-w: 112px;
   --a-render-swatch-w: 40px;
   --a-render-bar-h: 6px;
@@ -8803,8 +8819,9 @@ audio.ae-preview-media {
    so global scoping is collision-free (the Modal portals to <body>, out of reach
    of any panel-scoped rule). */
 .render-center {
-  width: var(--a-render-w);
-  max-width: 100%;
+  /* FILLS THE PANEL. See --a-render-form-min for the measurement that motivated
+     this and why the form pane is bounded rather than the dialog. */
+  width: 100%;
   font-size: var(--a-font-md);
 }
 
@@ -8818,6 +8835,19 @@ audio.ae-preview-media {
   position: relative;
   display: flex;
   align-items: stretch;
+  /* TALL ENOUGH TO FILL THE PANEL. The shared Modal's panel has its own height
+     (measured 900 on a 1000px viewport) while its BODY sizes to content — so with
+     a short render list the content ended at 626 and left ~215px of empty panel
+     below it, WHILE the list was scrolling and cutting a video preview in half.
+     Absurd both ways round.
+     A viewport unit rather than 100%: the body's height is content-driven, so
+     asking it for a percentage is circular. Modal's panel geometry is deliberately
+     NOT touched here — app.css's own note at .modal-backdrop says the per-size
+     width caps and padding are "Modal's layout contract, not material", and
+     reshaping them would change every dialog in the app to fix one. This
+     approximates that height from the outside instead, which is why it is a round
+     number and not derived. */
+  min-height: var(--a-render-min-h);
 }
 
 /* Mid-drag the panes must not eat pointer events, or the pointer crossing a text
@@ -8836,7 +8866,12 @@ audio.ae-preview-media {
   flex-direction: column;
   gap: var(--a-sp-4);
   flex: 0 0 auto; /* the split fraction is the width; do not flex around it */
-  min-width: 0;
+  /* BOUNDED, because the split is a FRACTION and the dialog now fills a panel
+     whose width it does not control. Without the max a wide panel gives a form of
+     labelled fields 700px+ across; without the min a narrow one squeezes it below
+     readable. The user can still drag the divider anywhere between the two. */
+  min-width: var(--a-render-form-min);
+  max-width: var(--a-render-form-max);
   padding-right: var(--a-sp-5);
 }
 

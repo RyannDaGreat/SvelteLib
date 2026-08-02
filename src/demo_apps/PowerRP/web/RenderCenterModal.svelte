@@ -288,7 +288,12 @@
   // — re-creating, from the other direction, the exact "control paints over the
   // next pane" defect this dialog was just fixed for. 260px = that label column
   // plus a control still worth looking at.
-  const INITIAL_FORM_SPLIT = 0.5;
+  // A THIRD, not a half. The dialog fills the shared modal panel now, so the
+  // remaining width is worth more to the renderings list (bigger video previews,
+  // fewer cut-off cards) than to a column of labelled fields. app.css bounds the
+  // form pane at both ends, so this fraction only decides where inside that band
+  // it starts — and the divider is still draggable.
+  const INITIAL_FORM_SPLIT = 1 / 3;
   const MIN_PANE_PX = 260;
   // NOT persisted, deliberately: the app's other splitters (App.svelte's hSplits /
   // leftSplits / rightSplits) are plain $state and reset on reload, and the modal
