@@ -114,6 +114,7 @@ import { builtinWidgetAssets } from "./builtinAssets.js";
 // import. Registration is plugins/index.js registerAll's job, never an import here.
 import { assetNaturalSize } from "./assetNaturalSize.js";
 import { contentSizesFor, setContentSrcResolver } from "./contentSizes.js"; // itemId → measured intrinsic size (#277)
+import { flownPose, previewScenePose } from "./sceneNav.js"; // #270: the WASDQE fly step, declared beside its pose maths
 import { settledFrame } from "./settledFrame.js"; // #281: an export waits for its rasters; the editor canvas does not need to
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
 // The command below spreads these over the registry defaults to mint 3 wired items.
@@ -1588,6 +1589,38 @@ export class PowerRPApp {
   // registry to this, exactly as the modal's Enter routes to modalCommit; CanvasView
   // guards it on a live session, so it is a no-op otherwise.
   finishCanvasMode = () => {};
+
+  /**
+   * Command (one undo unit per keypress). ONE WASDQE FLY STEP for the widget whose
+   * activation currently owns the canvas — the 3D viewport's keyboard camera
+   * (#270, "rollerball + WASD camera").
+   *
+   * IT LIVES HERE, not in web/sceneNav.js, for the same reason finishCanvasMode
+   * does: the shortcut registry holds `app` and a handler module does not, so the
+   * handler declares WHAT each key means (web/sceneNav.js SCENE_FLY_KEYS) and this
+   * supplies the doing. Routing it through the registry rather than a private
+   * keydown is what puts the keys in the HintBar — the manifest's rule is that a
+   * shortcut which is not registered does not exist.
+   *
+   * A NO-OP RATHER THAN A THROW when nothing is flying: the entry's `when` already
+   * scopes it to the mode, so reaching here without a node means the mode ended
+   * between the keydown and the dispatch. That is a race, not a defect, and
+   * refusing loudly would turn a stray keypress into an error dialog.
+   *
+   * @param {{forward?: number, right?: number, up?: number}} verb - signed unit steps
+   */
+  flyCanvasMode(verb) {
+    const mode = this.canvasMode;
+    if (!mode) return;
+    const node = this.nodes().find((n) => n.itemId === mode.itemId);
+    if (!node?.plugin?.sceneCamera) return;
+    // COMMITTED PER KEYPRESS, not previewed: a key has no "up" that a preview
+    // could commit on, and one tap is one intelligible step to undo. That is the
+    // same reasoning ZOOM_GESTURE_IDLE_MS applies to the wheel, resolved the other
+    // way because a discrete key genuinely is a discrete gesture.
+    previewScenePose(this, node, flownPose(node.plugin.sceneCamera.pose(node.state), verb));
+    this.commitPreview();
+  }
 
   /** Command. Arms a one-shot CROSSHAIR band-select drag in `mode`
    * ("inner"|"outer"|"regular"). "regular" resolves to the default bandMode

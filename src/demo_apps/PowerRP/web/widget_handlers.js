@@ -617,6 +617,10 @@ export function canvasModes() {
       hints: h.mode.hints,
       steps: h.mode.steps ?? [],
       cursors: validatedModeCursors(h.id, h.mode.cursors),
+      // A mode's own DISPATCHING keys ({keys, label, verb}) — distinct from
+      // `hints`, which are display-only. core/shortcut_entries.js supplies the
+      // run, because it holds `app` and a handler module does not.
+      keys: h.mode.keys ?? [],
       finish: h.mode.finish ?? null,
       finishGesture: h.mode.finishGesture ?? null,
     })));

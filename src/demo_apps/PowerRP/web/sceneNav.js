@@ -129,6 +129,81 @@ export function dollyedPose(pose, factor) {
 }
 
 /**
+ * How far one WASD step moves the camera, as a fraction of its orbit distance.
+ * PROPORTIONAL, not absolute: a splat of a room and a splat of a coin are metres
+ * and centimetres apart in scale, and a fixed step would either crawl in one or
+ * teleport through the other. A tenth of the distance you are already standing at
+ * is a step that feels the same in both.
+ */
+const FLY_STEP_FRACTION = 0.1;
+
+/**
+ * Pure function. The pose after ONE fly step — WASDQE, moving the camera through
+ * the scene rather than turning it around a fixed point.
+ *
+ * User, 2026-08-02 (#270): "rollerball + WASD camera".
+ *
+ * ── IT MOVES THE TARGET, WHICH IS WHAT MAKES IT A FLY ───────────────────────
+ * The camera is an ORBIT: an eye at `distance` from a target, at (yaw, pitch).
+ * Turning is already the orbit; FLYING is translating the point being orbited.
+ * Moving the target along the view axes carries the eye with it — so forward goes
+ * forward, and the orbit you then perform is around the new place you have
+ * arrived at. Changing the EYE instead would just have re-derived a turn.
+ *
+ * FORWARD IS THE FULL 3-D VIEW DIRECTION, pitch included, so looking down and
+ * pressing forward descends — the behaviour every flying camera has. The strafe
+ * axis is deliberately HORIZONTAL (it ignores pitch), because a strafe that
+ * tilted with the look would roll the world sideways under the author; and
+ * up/down is world-vertical for the same reason. That asymmetry is the
+ * conventional one, not an oversight.
+ *
+ * @param {object} pose - the current pose ({targetX, targetY, targetZ, yaw, pitch, distance})
+ * @param {{forward?: number, right?: number, up?: number}} step - unit steps, signed
+ * @returns {object} the next pose
+ *
+ * @example // one step forward from the origin, looking down -Z:
+ * // flownPose({targetX: 0, targetY: 0, targetZ: 0, yaw: 0, pitch: 0, distance: 10}, {forward: 1}).targetZ // -1
+ * @example // strafing right is horizontal even when pitched down:
+ * // flownPose({targetX: 0, targetY: 0, targetZ: 0, yaw: 0, pitch: -1, distance: 10}, {right: 1}).targetY // 0
+ * @example flownPose({targetX: 5, targetY: 5, targetZ: 5, yaw: 0, pitch: 0, distance: 10}, {}) // unchanged position
+ */
+export function flownPose(pose, { forward = 0, right = 0, up = 0 } = {}) {
+  const step = Math.max(pose.distance, Number.EPSILON) * FLY_STEP_FRACTION;
+  const cy = Math.cos(pose.yaw), sy = Math.sin(pose.yaw);
+  const cp = Math.cos(pose.pitch), sp = Math.sin(pose.pitch);
+  // Forward: the unit view direction, matching orbitEye's convention.
+  const fx = -sy * cp, fy = sp, fz = -cy * cp;
+  // Right: the horizontal perpendicular, pitch deliberately ignored.
+  const rx = cy, rz = -sy;
+  return {
+    ...pose,
+    targetX: pose.targetX + step * (forward * fx + right * rx),
+    targetY: pose.targetY + step * (forward * fy + up),
+    targetZ: pose.targetZ + step * (forward * fz + right * rz),
+  };
+}
+
+/**
+ * THE FLY KEYS, as {keys, label, verb} — declared here beside the pose maths they
+ * drive, surfaced by web/widget_handlers.canvasModes and turned into real
+ * dispatching entries by core/shortcut_entries.js, exactly the way a mode's
+ * `finish` key already is.
+ *
+ * THEY GO THROUGH THE SHORTCUT REGISTRY RATHER THAN A KEYDOWN HERE because the
+ * manifest is explicit that the registry BOTH dispatches and feeds the HintBar:
+ * "a shortcut that isn't registered there does not exist". A private listener
+ * would fly the camera and leave the bottom bar silent about it.
+ */
+export const SCENE_FLY_KEYS = [
+  { keys: ["W"], label: "Fly forward", verb: { forward: 1 } },
+  { keys: ["S"], label: "Fly back", verb: { forward: -1 } },
+  { keys: ["A"], label: "Strafe left", verb: { right: -1 } },
+  { keys: ["D"], label: "Strafe right", verb: { right: 1 } },
+  { keys: ["E"], label: "Rise", verb: { up: 1 } },
+  { keys: ["Q"], label: "Descend", verb: { up: -1 } },
+];
+
+/**
  * Pure function. The pose after a FIELD-OF-VIEW change, clamped to a usable lens
  * range. Paired with Ctrl+wheel because the canvas's own Ctrl+wheel is zoom, so
  * the modifier means the same thing one frame down. Holding Distance and changing
@@ -236,6 +311,11 @@ export const NAVIGATE_SCENE_HANDLER = {
    */
   mode: {
     label: "Fly the camera",
+    // The FLY keys ride `keys`, not `hints`: a hint is display-only, and these
+    // must actually dispatch. canvasModes surfaces the field and
+    // core/shortcut_entries.js supplies the `run` (it holds `app`; this file does
+    // not), the same division the `finish` key already uses.
+    keys: SCENE_FLY_KEYS,
     hints: [
       { keys: ["mouse_left"], label: "Look around" },
       { keys: ["mouse_scroll"], label: "Move closer / further" },

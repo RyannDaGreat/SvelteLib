@@ -1058,8 +1058,15 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modal
     // step reads. Both are scoped by inCanvasStep, so step 2's wording cannot show
     // during step 1 — which is also what keeps two "box" steps from putting two
     // different labels on mouse_left in one context.
-    ...canvasModes.flatMap(({ handlerId, label, hints, steps, finish, finishGesture }) => [
+    ...canvasModes.flatMap(({ handlerId, label, hints, keys = [], steps, finish, finishGesture }) => [
       ...hints.map((h) => ({ ...h, when: inCanvasMode(handlerId) })),
+      // A MODE'S OWN KEYS, live rather than display-only — the 3D viewport's WASDQE
+      // fly (#270). Same shape as `finish` one block down and for the same reason:
+      // the handler declares WHAT the key means and this layer supplies the run,
+      // because `app` lives here. Routing them through the registry rather than a
+      // private keydown is what keeps the HintBar honest — the manifest's rule is
+      // that a shortcut which is not registered does not exist.
+      ...keys.map((k) => ({ keys: k.keys, label: k.label, when: inCanvasMode(handlerId), run: () => app.flyCanvasMode(k.verb) })),
       ...steps.flatMap((s, i) => [
         { keys: ["mouse_left"], label: s.hint, when: inCanvasStep(handlerId, i) },
         ...(s.modifiers ?? []).map((id) => ({ ...DRAG_MODIFIER_HINTS[id], when: inCanvasStep(handlerId, i) })),
