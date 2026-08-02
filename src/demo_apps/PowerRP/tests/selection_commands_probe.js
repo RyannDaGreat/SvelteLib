@@ -22,7 +22,16 @@ const ok = (pass, label) => checks.push([pass, label]);
 
 async function main() {
   const { createServer } = await import("vite");
-  const server = await createServer({ configFile: path.resolve(HERE, "../web/vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
+  // HMR AND THE WATCHER ARE OFF, AND THAT IS WHAT MAKES THIS PROBE DETERMINISTIC.
+  // With them on it died roughly two runs in five with `ProtocolError: Promise was
+  // collected` — a puppeteer stack carrying NO assertion text, which reads exactly
+  // like an app fault and is not one. A file change anywhere in the tree (or the
+  // dep optimizer rotating a `?v=` hash) triggers a full page reload, and a reload
+  // mid-run destroys the execution context while an evaluate is still outstanding.
+  // tests/scene3d_probe.js already states the rule for its own server: "a stray
+  // full reload mid-probe drops window.__powerrp_app for reasons unrelated to
+  // anything asserted here."
+  const server = await createServer({ configFile: path.resolve(HERE, "../web/vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null } });
   await server.listen();
   const { launchBrowser } = await import("./puppeteerLaunch.js");
   const browser = await launchBrowser();
@@ -38,12 +47,30 @@ async function main() {
     await page.waitForFunction(() => !!window.__powerrp_app, { timeout: 60000 });
     await new Promise((r) => setTimeout(r, 800));
 
-    const r = await page.evaluate(async () => {
+    // ── NO PROMISE MAY LIVE IN THE PAGE ACROSS A WAIT ─────────────────────────
+    // This was ONE async page function with `await new Promise(setTimeout)` in the
+    // middle of it, and it failed roughly two runs in five with
+    // `ProtocolError: Promise was collected` — a puppeteer stack with NO assertion
+    // text, which reads exactly like an app regression and is not one. That error
+    // means precisely what it says: the promise the page function returned was
+    // garbage-collected before it settled, and a long-lived in-page promise
+    // spanning a timer is the thing that gets collected.
+    //
+    // TWO EARLIER FIXES MISSED, and both are worth naming so the next person does
+    // not repeat them. 09bfb90 closed the palette at the end, on the theory that
+    // live Svelte effects at teardown were to blame; a later attempt disabled HMR
+    // and the file watcher, on the theory that a stray reload was destroying the
+    // context. Neither moved the failure rate, and the second measured WORSE. The
+    // giveaway both times was that ZERO checks printed — the throw happens before
+    // any assertion, so nothing about teardown could have been responsible.
+    //
+    // The wait now happens in NODE, between two ordinary synchronous evaluates.
+    const first = await page.evaluate(() => {
       const app = window.__powerrp_app;
       const add = (type) => { app.addItem(app.registry.get(type).defaults); return app.selection; };
       const rects = [add("rect"), add("rect"), add("rect")];
       const circles = [add("circle"), add("circle")];
-      const out = {};
+      const out = { rects, circles };
 
       // ── INVERT ──────────────────────────────────────────────────────────
       app.selectMany(rects);
@@ -56,10 +83,17 @@ async function main() {
       app.commands.get("invert-selection").run(app);
       out.invertOfNothingIsAll = app.selectedIds().length >= 5;
 
-      // ── BY TYPE ─────────────────────────────────────────────────────────
+      // Opening the palette is what triggers the submenu-refresh effect; the wait
+      // for it happens on the NODE side, below.
       app.deselectAll();
       app.paletteOpen = true;
-      await new Promise((res) => setTimeout(res, 120)); // let the refresh effect run
+      return out;
+    });
+    await new Promise((res) => setTimeout(res, 200)); // let the refresh effect run
+
+    const rest = await page.evaluate((rects) => {
+      const app = window.__powerrp_app;
+      const out = {};
       const sub = app.commands.get("select-by-type");
       out.subPresent = !!sub;
       out.subIsSubmenu = Array.isArray(sub?.children) && !sub?.run;
@@ -99,7 +133,8 @@ async function main() {
       // worse than one that fails: it reads as a real red in the gate.
       app.paletteOpen = false;
       return out;
-    });
+    }, first.rects);
+    const r = { ...first, ...rest };
 
     ok(r.invertHasCircles && r.invertDroppedRects, "INVERT: the unselected become selected and vice versa");
     ok(r.invertOfNothingIsAll, "inverting NOTHING selects everything — the complement of the empty set");
