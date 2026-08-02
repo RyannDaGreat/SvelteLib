@@ -2298,6 +2298,43 @@ on R6-12.1.**
 **MINIMAL FIX: resolve `entry.ready` from the error listener — ONE LINE** — then add a
 `failedMediaRefs()` that `settledFrame` THROWS on, so a hole becomes loud instead of silent.
 
+> ### ⚠ STATUS 2026-08-02: THREE OF THE FOUR ABOVE ARE FIXED. THIS SECTION WAS STILL
+> ### TEACHING THEM AS OPEN, AND THE LEAD NEARLY RE-FIXED ONE.
+>
+> Checked in the CODE, not from memory, during a saturation sweep — after this section
+> had already caused a task (#295) to be filed for a bug that no longer exists:
+>
+> - **THE SCRUBBER DEADLOCK IS FIXED** — `8d5251b` "A failed video load is an ANSWER, not
+>   an absence". `video_registry.js` now settles `entry.ready` from the `error` listener
+>   via `settleReady()`, and the docblock at the site narrates this diagnosis, the 150 s /
+>   zero-frames measurement and the MediaError-code-4 BLANK_SRC trap. The `status ===
+>   "error"` guard is reachable now, not dead code.
+> - **THE SILENT HOLE IS FIXED** — `14905df` "A RENDER MAY NOT SHIP A HOLE". `failedVideoSrcs()`
+>   exists as the deliberate COUNTERPART of `pendingVideoSrcs()`, and its docblock states the
+>   partition bug exactly: "pending" means wait longer, an errored src falls in NEITHER half,
+>   so the worker wrote a holed frame and exited 0.
+> - **THE TWO WRONG `BLANK_SRC` DOCBLOCKS ARE REWRITTEN.**
+> - **BOTH FIXES ARE GATED** by `tests/unsourced_media_test.js` (3 checks, green), so they
+>   cannot silently regress.
+>
+> **STILL OPEN, AND VERIFIED STILL OPEN:** the INERT autoplay / loop / muted rows.
+> `ensureVideo(src, flags)` still has exactly ONE production call site
+> (`video_registry.js:255`) and it still passes no flags. **This one is a DELIBERATE
+> deferral, not an oversight** — `plugins/video.js:168-182` says so out loud, names the
+> two-line shape that would fix it (`ir.js video()` carrying the flags as the sibling
+> `videoV2` op already does, plus the read in `browser_media.sceneMedia`), and defers it
+> to R6-12.3 because collapsing every video widget onto the deterministic scrubber model
+> decides whether a wall-clock playback flag survives at all. Tracked as its own task.
+>
+> **THE LESSON IS THE ONE THIS MANIFEST ALREADY WRITES DOWN ABOUT THE SAVE DOT, and it
+> has now happened twice:** *"when a commit reverts a design, the same commit must revert
+> its doctrine."* The generalisation is stronger and belongs here — **A COMMIT THAT CLOSES
+> A DEFECT MUST CLOSE ITS DIAGNOSIS.** A fixed bug left standing in the manifest is worse
+> than an unrecorded one: it is a confident, well-evidenced, *wrong* work item, and the
+> better the diagnosis, the more expensive the wasted attempt. Both fix commits wrote
+> excellent docblocks at the code and left this section alone, so the code and the manifest
+> disagreed for days — and the manifest is the artefact agents are pointed at first.
+
 **SEQUENCING RULING, AND IT REVERSES THE OBVIOUS ORDER: R6-12.3's UNIFICATION SUBSUMES the
 overlay and determinism problems but AMPLIFIES the first three — it turns EVERY video into
 the hanging case. FIX THE DEADLOCK FIRST, then unify.**
