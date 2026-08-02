@@ -2129,7 +2129,27 @@ export function withSlideToggled(doc, index) {
   return { ...doc, slides };
 }
 
-/** Pure function. Moves slide `index` by `offset` (clamped). */
+/**
+ * Pure function. Moves slide `index` by `offset` (clamped) — THE RAW SPLICE,
+ * which moves the slide's DELTA and therefore CHANGES WHAT THE DECK LOOKS LIKE.
+ *
+ * **NOT THE UI's MOVE, and must never be wired back to one.** A slide stores a
+ * difference from the slide before it, so relocating that difference makes it
+ * say something else in its new position — the user-reported defect "when I move
+ * slide up and move slide down, it does like change way more than I bargained
+ * for" (2026-08-02). `core/slide_reorder.js movedSlidePreservingLook` is what
+ * `app.moveSlide` calls: it folds first, permutes the folded sequence, and
+ * re-derives every delta so only the ORDER changes.
+ *
+ * KEPT because the raw splice is exactly the right tool for building a document
+ * whose deltas are deliberately out of order — `tests/expressions_test.js`
+ * splices a creation slide BELOW its own keyframes to pin the imaginary-slide
+ * semantics (a typeless item is skipped, not an error), and an
+ * appearance-preserving move cannot produce that document by construction.
+ *
+ * @example withSlideMoved({slides: [{id: "a"}, {id: "b"}]}, 0, 1).slides[0].id // "b"
+ * @example withSlideMoved({slides: [{id: "a"}]}, 0, -1).slides[0].id // "a" (clamped: no-op)
+ */
 export function withSlideMoved(doc, index, offset) {
   const to = Math.max(0, Math.min(doc.slides.length - 1, index + offset));
   if (to === index) return doc;
