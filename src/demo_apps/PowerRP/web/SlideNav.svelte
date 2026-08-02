@@ -190,28 +190,190 @@
   //
   // All this file still owns is the write: renameSlide is ONE undo unit, and a
   // blank name restores the positional default. InlineRename never mutates.
+
+  // ── THE TRANSITION SLICE'S THREE ZONES ──────────────────────────────────────
+  // User, 2026-08-02: "maybe only the middle of it said tween point five seconds.
+  // And if I move mouse to either side of it, maybe I'd see a plus symbol, which
+  // means add new slide here … Now, unless I'm hovering over it, it should stay
+  // like a flat dash, a flat line like it is right now."
+  //
+  // So the slice is THREE hit targets in one band, and which one the pointer is
+  // over is tracked HERE rather than in CSS. It cannot be CSS: the three zones
+  // must be separate <button>s (each does a different thing and each owes its own
+  // tooltip and aria-label), but the CHIP they replace spans the whole band, so
+  // "am I over an end" has to be readable by the middle zone's own markup. One
+  // {slideId, zone} record, cleared on leave, answers it for every zone at once.
+  //
+  // KEYBOARD FOCUS COUNTS AS HOVER (`hoverZone` is set on focus too). Otherwise
+  // the two `+` buttons would be reachable by Tab but invisible while focused —
+  // a control you can activate and cannot see.
+  let hoverZone = $state(null); // {slideId, zone: "before"|"middle"|"after"} | null
+
+  /** Query. Is the pointer/focus inside slice `slideId`'s `zone`? */
+  function inZone(slideId, zone) {
+    return hoverZone?.slideId === slideId && hoverZone.zone === zone;
+  }
+  /** Query. Is the pointer/focus anywhere in slice `slideId`? Drives the whole
+   *  band's lift out of the idle flat-line state. */
+  function sliceHot(slideId) {
+    return hoverZone?.slideId === slideId;
+  }
+
+  // ── DRAG TO REORDER ─────────────────────────────────────────────────────────
+  // User: "I should also be able to drag slides … they would slide along that
+  // vertical thing. And when in this mode, when I'm clicking and dragging it, the
+  // horizontal line would be entirely there and would almost open when my mouse is
+  // over it. And like maybe bold a little bit my mouse is under over one of those
+  // boundaries between the slides."
+  //
+  // THE DROP TARGET IS A BOUNDARY, NOT A ROW — a gap index in 0..slides.length,
+  // which is exactly what core withSlidesMovedToBoundary takes. A row index would
+  // be ambiguous once the dragged rows are lifted out ("onto slide 3" means
+  // something different depending on whether 3 is a mover); a gap does not move.
+  //
+  // POINTER EVENTS, NOT HTML5 DRAG-AND-DROP. The rail's rows are <button>s inside
+  // Tooltip wrappers with a live thumbnail canvas inside them; the native drag
+  // protocol would need a draggable attribute per row, a drag image, and a
+  // dragover handler on every gap, and it fires no event at all until a platform
+  // threshold is crossed. A pointer capture on the row gives the boundary math
+  // directly from clientY, and it is the same gesture vocabulary the canvas uses.
+  const DRAG_THRESHOLD_PX = 4; // below this a pointerdown is a CLICK, not a drag
+
+  let dragState = $state(null); // {indices, startY, moved, boundary} | null
+  let slidesEl = $state(null); // the scroll container — boundary math is relative to its rows
+
+  /**
+   * Query (reads the DOM). WHICH GAP the pointer is nearest, as a boundary index
+   * in 0..n. Measures the rendered rows rather than assuming a row height: rows
+   * differ in height (a slide whose camera is degenerate draws no thumbnail), so
+   * a computed constant would drift from what is on screen.
+   */
+  function boundaryAt(clientY) {
+    const rows = [...(slidesEl?.querySelectorAll("[data-slide-row]") ?? [])];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i].getBoundingClientRect();
+      if (clientY < r.top + r.height / 2) return i;
+    }
+    return rows.length;
+  }
+
+  /** Command. Begins a potential row drag. The gesture is not a drag until the
+   *  pointer has moved DRAG_THRESHOLD_PX — until then it is still a click, so a
+   *  plain select never has to be undone by a stray pixel of movement. */
+  function onRowPointerDown(e, i) {
+    if (e.button !== 0) return;
+    // The eye toggle and the rename editor live inside the row and own their own
+    // pointers; a drag started on them would swallow their click.
+    if (e.target.closest(".eye, .inline-rename-input")) return;
+    const indices = app.isSlideSelected(i) ? app.selectedSlideIndices() : [i];
+    dragState = { indices, startY: e.clientY, moved: false, boundary: null };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function onRowPointerMove(e) {
+    if (!dragState) return;
+    if (!dragState.moved && Math.abs(e.clientY - dragState.startY) < DRAG_THRESHOLD_PX) return;
+    dragState = { ...dragState, moved: true, boundary: boundaryAt(e.clientY) };
+  }
+
+  /** Command. Drops (one undo unit) or, if the pointer never really moved, lets
+   *  the click through untouched. Pointer capture guarantees this fires even when
+   *  the release lands outside the rail. */
+  function onRowPointerUp(e) {
+    const drag = dragState;
+    dragState = null;
+    if (!drag?.moved) return;
+    e.preventDefault(); // a drop is not also a click
+    app.moveSlidesToBoundary(drag.indices, drag.boundary ?? boundaryAt(e.clientY));
+  }
+
+  /** Query. Is boundary `b` the live drop target? Boundaries are drawn by the
+   *  slice ABOVE slide b (and by a tail element for b === slides.length). */
+  function isDropBoundary(b) {
+    return dragState?.moved === true && dragState.boundary === b;
+  }
+
+  /** Query. How many slides the rail commands will act on — 1 when nothing is
+   *  multi-selected (an empty set means "the current slide"). Read by the bottom
+   *  buttons' labels so a multi-slide Delete announces itself before it fires. */
+  function selectionCount() {
+    return app.selectedSlideIndices().length;
+  }
 </script>
 
-<div class="slidenav">
-  <div class="slides">
+<div class="slidenav" class:dragging={dragState?.moved}>
+  <div class="slides" bind:this={slidesEl}>
     {#each app.doc.slides as slide, i (slide.id)}
       {#if i > 0}
         {@const info = transitionInfo(i)}
-        <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${info.seconds}s — click to edit`}>
-          <button
-            class="transition-slice"
-            class:selected={app.selectedTransition === slide.id}
-            aria-label={`Transition into slide ${i + 1}`}
-            onclick={() => app.selectTransition(slide.id)}
-          >
-            <span class="tr-line"></span>
-            <span class="tr-chip">
+        <!-- THE SLICE IS THREE BUTTONS IN ONE BAND (see hoverZone above): an
+             insert-before `+` at each end and the transition chip in the middle.
+             Idle it is the flat line it always was — every affordance here is
+             opacity 0 until the band is hot, which is the user's own condition
+             ("unless I'm hovering over it, it should stay like a flat dash").
+             It doubles as the DROP INDICATOR for boundary `i` during a drag. -->
+        <!-- role="group": the band is a CONTAINER of three real buttons, not a
+             control itself — its only handler clears the hover state on leave.
+             Labelled so a screen reader announces what the three belong to. -->
+        <div
+          class="transition-slice"
+          class:hot={sliceHot(slide.id)}
+          class:drop={isDropBoundary(i)}
+          role="group"
+          aria-label={`Between slide ${i} and slide ${i + 1}`}
+          onpointerleave={() => (hoverZone = null)}
+        >
+          <Tooltip text={`Insert a slide here — it inherits the transition of the slide ABOVE`}>
+            <button
+              class="tr-end"
+              class:active={inZone(slide.id, "before")}
+              aria-label={`Insert a slide above slide ${i + 1}`}
+              onpointerenter={() => (hoverZone = { slideId: slide.id, zone: "before" })}
+              onfocus={() => (hoverZone = { slideId: slide.id, zone: "before" })}
+              onblur={() => (hoverZone = null)}
+              onclick={() => app.insertSlideAtBoundary(i, "above")}
+            >
+              <iconify-icon icon="mdi:arrow-up" width="12" height="12"></iconify-icon>
+              <iconify-icon icon="mdi:plus" width="12" height="12"></iconify-icon>
+            </button>
+          </Tooltip>
+          <span class="tr-line"></span>
+          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${info.seconds}s — click to edit`}>
+            <button
+              class="tr-chip"
+              class:selected={app.selectedTransition === slide.id}
+              aria-label={`Transition into slide ${i + 1}`}
+              onpointerenter={() => (hoverZone = { slideId: slide.id, zone: "middle" })}
+              onfocus={() => (hoverZone = { slideId: slide.id, zone: "middle" })}
+              onblur={() => (hoverZone = null)}
+              onclick={() => app.selectTransition(slide.id)}
+            >
               <iconify-icon icon={TRANSITION_ICONS[info.type] ?? "mdi:transition"} width="13" height="13"></iconify-icon>
               <span class="tr-label">{info.title} · {info.seconds}s</span>
-            </span>
-            <span class="tr-line"></span>
-          </button>
-        </Tooltip>
+            </button>
+          </Tooltip>
+          <span class="tr-line"></span>
+          <Tooltip text={`Insert a slide here — it inherits the transition of the slide BELOW`}>
+            <button
+              class="tr-end"
+              class:active={inZone(slide.id, "after")}
+              aria-label={`Insert a slide below slide ${i}`}
+              onpointerenter={() => (hoverZone = { slideId: slide.id, zone: "after" })}
+              onfocus={() => (hoverZone = { slideId: slide.id, zone: "after" })}
+              onblur={() => (hoverZone = null)}
+              onclick={() => app.insertSlideAtBoundary(i, "below")}
+            >
+              <iconify-icon icon="mdi:arrow-down" width="12" height="12"></iconify-icon>
+              <iconify-icon icon="mdi:plus" width="12" height="12"></iconify-icon>
+            </button>
+          </Tooltip>
+        </div>
+      {:else}
+        <!-- THE TOP BOUNDARY has no transition slice (slide 0 has no predecessor),
+             so it gets a bare drop rail of its own — otherwise dragging a slide to
+             the very top would show no indicator at the one gap that most needs
+             one. Zero height when idle; it only exists during a drag. -->
+        <div class="drop-rail" class:drop={isDropBoundary(0)}></div>
       {/if}
       <!-- THE ROW OWES EXPLANATION and gave none: it had no tooltip and no :hover
            rule at all, so the filmstrip's primary navigation surface read as inert.
@@ -251,11 +413,25 @@
                fight navigation. The toolbar title has no first gesture to lose. -->
           <div class="cmd-tip-note">Double-click the name to rename</div>
         {/snippet}
+        <!-- MULTI-SELECT + DRAG live on this one element. The click rule (plain /
+             shift-range / cmd-toggle) is app.selectSlideAt, not spelled out here,
+             so the rail and any future surfacing of it agree by construction.
+             `.selected` and `.current` are two different things and both render:
+             `current` is the ONE slide the canvas is showing (border color, as
+             before), `selected` is membership in the multi-selection (a tint), so
+             a block of five reads as a block with one of them live. -->
         <button
           class="slide"
           class:current={i === app.slideIndex}
+          class:selected={app.isSlideSelected(i)}
+          class:dragged={dragState?.moved && dragState.indices.includes(i)}
           class:disabled={slide.enabled === false}
-          onclick={() => (app.slideIndex = i)}
+          data-slide-row={i}
+          onpointerdown={(e) => onRowPointerDown(e, i)}
+          onpointermove={onRowPointerMove}
+          onpointerup={onRowPointerUp}
+          onpointercancel={() => (dragState = null)}
+          onclick={(e) => app.selectSlideAt(i, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey })}
         >
           <span class="row-top">
             <span class="num">{i + 1}</span>
@@ -309,6 +485,9 @@
         </button>
       </Tooltip>
     {/each}
+    <!-- THE TAIL BOUNDARY (drop at the very end). Same reason the head rail
+         exists: without it the last gap is the one gap with no indicator. -->
+    <div class="drop-rail" class:drop={isDropBoundary(app.doc.slides.length)}></div>
   </div>
   <div class="nav-actions">
     <Tooltip text="New slide after current">
@@ -331,8 +510,21 @@
         <iconify-icon icon="mdi:arrow-down" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>
-    <Tooltip text="Delete slide">
-      <button class="btn-icon" aria-label="Delete slide" onclick={() => app.runCommand("delete-slide")} disabled={app.doc.slides.length <= 1}>
+    <!-- DUPLICATE, beside the two News rather than hidden in the palette: it is
+         the gesture the user asked for by name ("There should be some way to
+         duplicate a slide") and the one that needs no clipboard step. It reads
+         the multi-selection, like Delete beside it. -->
+    <Tooltip text={selectionCount() > 1 ? `Duplicate the ${selectionCount()} selected slides` : "Duplicate slide"}>
+      <button class="btn-icon" aria-label="Duplicate slide" onclick={() => app.runCommand("duplicate-slides")}>
+        <iconify-icon icon="mdi:file-multiple-outline" width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
+    <!-- ONE BUTTON, TWO COMMANDS, and which one it runs is the rail selection —
+         `delete-slides` is the multi form and covers the single case too (an
+         empty slideSelection resolves to just the current slide), so this always
+         runs the multi command and the label is the only thing that varies. -->
+    <Tooltip text={selectionCount() > 1 ? `Delete the ${selectionCount()} selected slides` : "Delete slide"}>
+      <button class="btn-icon" aria-label="Delete slide" onclick={() => app.runCommand("delete-slides")} disabled={app.doc.slides.length <= selectionCount()}>
         <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>

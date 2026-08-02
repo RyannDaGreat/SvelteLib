@@ -144,20 +144,46 @@
      tokens (--a-handle-rim/--a-handle-stroke) rather than inventing new ones —
      only the fill color is new. */
   --a-modifier: #ffc72c;
-  /* THE HANDLE GLYPH BANK (core/handle_glyphs.js). A glyph's `accent` picks WHICH
-     of these fills a handle takes, and that is the axis that answers the user's
-     question "does it belong to the shape or belong to the gradient?"
-     (2026-08-02). Deliberately only TWO families, ALIASED onto colours the themes
-     already tune rather than minted fresh: a third would need a hand-picked value
-     in each of the app's ~9 themes, and the shape/mark axes already separate more
-     roles than we have. So every theme's overrides apply to handle accents for
-     free, with no per-theme work at all.
+  /* THE HANDLE GLYPH BANK (core/handle_glyphs.js). A glyph's `accent` picks the
+     handle's colour FAMILY, and that is the axis answering the user's question
+     "does it belong to the shape or belong to the gradient?" (2026-08-02).
        default — the widget's OWN geometry: the PPT-yellow above, unchanged.
-       paint   — the PAINT subsystem (gradient beads): the app's one selection
-                 colour, which is chromatically far from the yellow in every
-                 theme (that is what makes the two families read apart). */
+       paint   — the PAINT subsystem (gradient beads).
+     Deliberately only TWO families: the shape/mark axes already separate more
+     roles than we have, and every extra family multiplies the theme problem below.
+
+     THE PAINT ACCENT IS DERIVED FROM --a-modifier BY HUE ROTATION, NOT ALIASED
+     ONTO ANOTHER TOKEN, AND THAT WAS A MEASURED CORRECTION. This first shipped as
+     `var(--a-selection)`, on the reasoning that reusing a token the themes already
+     tune gets all 46 of them right for free. Measuring CIE deltaE between
+     --a-modifier and each candidate token across every theme showed that reasoning
+     is simply false — no existing token is reliably far from the modifier colour:
+
+         --a-selection   collapses to deltaE  6.5 on sepia (6.8 on sepia-dark)
+         --a-guide       collapses to deltaE  8.5 on moonstone
+         --a-keyed       collapses to deltaE  5.6 on gruvbox
+
+     Under ~10 deltaE two fills are the same colour to the eye, so on those themes
+     a gradient bead would have been INDISTINGUISHABLE from a vertex handle — the
+     feature silently absent, on a theme nobody would think to check.
+
+     Rotating the modifier's own hue makes the separation a property of the
+     FORMULA instead of 46 hand-picked values: the accent is always the modifier's
+     complement-ish, so it cannot collide with it whatever a theme sets. Worst case
+     across all 46 themes is deltaE 37.9 (rosepine, whose accents are deliberately
+     low-chroma), vs 6.5 for the aliasing it replaces. 150deg specifically: it
+     clears both 120deg neighbours in hue space, and unlike a flat 180deg it does
+     not map the app's several PURPLE modifier colours onto a yellow that would
+     then collide with --a-keyed's amber diamonds. */
   --a-handle-accent-default: var(--a-modifier);
-  --a-handle-accent-paint: var(--a-selection);
+  --a-handle-accent-paint: var(--a-modifier);
+  --a-handle-accent-paint-rotate: 150deg;
+  /* Saturation floor for the rotated accent. A hue rotation cannot separate two
+     NEAR-GRAY colours — there is barely a hue to rotate — and a handful of themes
+     (futura, eink, platinum) use muted accents. Saturating the paint family lifts
+     those cases above the perceptual floor; it is applied with the rotation, so
+     the two live and die together. */
+  --a-handle-accent-paint-saturate: 1.6;
   /* A glyph's INNER MARK (the O in a boxed-O, an X, a centre dot) is drawn in the
      RIM colour, not a colour of its own, so it reads as ENGRAVING on the glyph
      rather than a second object sitting on top of it. Its stroke is deliberately
@@ -4747,17 +4773,32 @@ textarea {
    must not be confused at a glance. Rim/stroke reuse the handle sizing tokens
    (only the fill color, --a-modifier, is new — see its :root definition). */
 .overlay .modifier {
-  /* THE FILL IS THE GLYPH BANK'S ACCENT (core/handle_glyphs.js), supplied per
-     handle as --handle-accent by CanvasView. The FALLBACK is --a-modifier, i.e.
-     exactly what this rule said before the bank existed — so a handle whose glyph
-     declares nothing, or any consumer that renders a .modifier without setting the
-     property, is byte-identical to before. Accent is the axis that says WHICH
-     SUBSYSTEM a handle belongs to (the widget's geometry vs its paint), which is
-     the user's question of 2026-08-02 stated in colour. */
-  fill: var(--handle-accent, var(--a-modifier));
+  /* EVERY handle starts from the SAME fill — the PPT yellow this rule has always
+     used. The glyph bank's accent families are then a FILTER on the wrapper
+     (.modifier-glyph[data-accent=...]), not a second colour here, so this rule is
+     byte-identical to before the bank existed and a handle in the default family
+     is untouched by the whole feature. */
+  fill: var(--a-handle-accent-default);
   stroke: var(--a-handle-rim);
   stroke-width: var(--a-handle-stroke);
   cursor: grab;
+}
+
+/* THE PAINT FAMILY'S ACCENT, applied as a hue rotation of the fill the handle
+   already has rather than as a second colour value (see
+   --a-handle-accent-paint-rotate for the measurement that forced this). The
+   filter is set on the WRAPPER so the outline and its inner mark rotate together
+   — a mark left un-rotated would read as a different object's ring sitting on the
+   glyph, which is the opposite of the "engraving" it is supposed to be.
+
+   It is keyed off a data attribute rather than a class because the accent name
+   comes from the bank as data (core/handle_glyphs.js), and matching it here means
+   a NEW accent family needs a rule with the family's own name in it — visible,
+   greppable, and impossible to add by accident. A handle with the default accent
+   matches nothing here and is filtered not at all, so it is byte-identical to
+   before this rule existed. */
+.overlay .modifier-glyph[data-accent="paint"] {
+  filter: hue-rotate(var(--a-handle-accent-paint-rotate)) saturate(var(--a-handle-accent-paint-saturate));
 }
 
 /* The <g> that wraps ONE handle's outline + inner mark. It carries the pointer
@@ -4924,20 +4965,25 @@ textarea {
   border: var(--a-hairline) solid var(--border);
 }
 
-/* Transition slice — the small selectable band between two slide rows. A
-   center hairline (the "connector") with a type chip in the middle; the whole
-   band is the click target. Square corners, --a-* tokens only (chrome rules). */
+/* Transition slice — the band between two slide rows, and THREE hit targets in
+   one: an insert-a-slide-here `+` at each END and the transition chip in the
+   MIDDLE. Square corners, --a-* tokens only (chrome rules).
+
+   IDLE IS A FLAT LINE and that is the requirement, not a default (user,
+   2026-08-02: "unless I'm hovering over it, it should stay like a flat dash, a
+   flat line like it is right now"). So every affordance in the band — the chip's
+   label, both `+` ends — is opacity 0 until `.hot`, which the component sets on
+   pointer-enter OR FOCUS of any zone. Opacity rather than display:none for two
+   reasons: the band must not change height when it lights up (the whole rail
+   would jump under the cursor), and a focused-but-invisible control would
+   otherwise be Tab-reachable and unseeable. */
 .slidenav .transition-slice {
   display: flex;
   align-items: center;
   gap: var(--a-sp-2);
   width: 100%;
   height: var(--a-transition-slice-h);
-  padding: 0;
-  background: transparent;
-  border: 0;
   color: var(--fg-dim);
-  cursor: pointer;
 }
 
 .slidenav .transition-slice .tr-line {
@@ -4951,26 +4997,112 @@ textarea {
   align-items: center;
   gap: var(--a-sp-1);
   padding: var(--a-transition-chip-pad);
+  background: transparent;
+  border: 0;
+  color: inherit;
   font-size: var(--a-font-sm);
   white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
 }
 
-.slidenav .transition-slice:hover {
+/* THE TWO `+` ENDS. An up+plus above and a down+plus below — the user's own
+   glyphs, describing which neighbour the inserted slide takes its transition
+   from ("the right side ... would add it from the previous slide ... the left
+   side would be like up plus arrow"). Fixed width so they stay grabbable in a
+   narrow rail; hidden until the band is hot, like everything else here. */
+.slidenav .transition-slice .tr-end {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-slice-end-w);
+  height: 100%;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--fg-dim);
+  cursor: pointer;
+  opacity: 0;
+}
+
+/* HOT = the pointer or keyboard focus is anywhere in this band. Everything the
+   band has to say appears at once, so moving between the three zones does not
+   flicker pieces of it in and out. */
+.slidenav .transition-slice.hot {
   color: var(--fg);
 }
 
-.slidenav .transition-slice:hover .tr-line {
+.slidenav .transition-slice.hot .tr-chip,
+.slidenav .transition-slice.hot .tr-end {
+  opacity: 1;
+}
+
+.slidenav .transition-slice.hot .tr-line {
   background: var(--fg-dim);
 }
 
-/* Selected transition: the chip + connector take the selection color (same
-   language as .slide.current), so the between-rows target reads as selected. */
-.slidenav .transition-slice.selected {
+/* The zone actually under the pointer takes the selection color, so the band
+   says WHICH of its three things a click would do. */
+.slidenav .transition-slice .tr-end.active {
   color: var(--a-selection);
 }
 
-.slidenav .transition-slice.selected .tr-line {
+/* Selected transition: the chip + connector take the selection color (same
+   language as .slide.current), so the between-rows target reads as selected.
+   A SELECTED chip stays visible when the band is cold — it is state, not an
+   affordance, and hiding it would lose the only mark of what is selected. */
+.slidenav .transition-slice .tr-chip.selected {
+  color: var(--a-selection);
+  opacity: 1;
+}
+
+.slidenav .transition-slice:has(.tr-chip.selected) .tr-line {
   background: var(--a-selection);
+}
+
+/* ── THE DROP INDICATOR ────────────────────────────────────────────────────
+   During a row drag the boundary under the cursor OPENS: its connector gains
+   weight and the band gains space ("the horizontal line would be entirely there
+   and would almost open when my mouse is over it"). It is drawn by whichever
+   element owns that boundary — a transition slice for the gaps between rows, a
+   bare .drop-rail for the head and tail gaps, which have no slice. */
+.slidenav .transition-slice.drop .tr-line,
+.slidenav .drop-rail.drop {
+  height: var(--a-drop-line-h);
+  background: var(--a-selection);
+}
+
+.slidenav .transition-slice.drop {
+  margin: var(--a-drop-gap) 0;
+}
+
+/* The head/tail boundaries have no transition slice to borrow, so they get a
+   rail of their own. ZERO HEIGHT until it is the live drop target: it must not
+   add space to a rail nobody is dragging in. */
+.slidenav .drop-rail {
+  width: 100%;
+  height: 0;
+}
+
+.slidenav .drop-rail.drop {
+  margin: var(--a-drop-gap) 0;
+}
+
+/* WHILE DRAGGING, every row is a drop zone and none of them is a click target,
+   so the pointer says grabbing and the rows stop offering their own hovers.
+   The rows keep their pointer events (the capture needs them). */
+.slidenav.dragging {
+  cursor: grabbing;
+}
+
+.slidenav.dragging .slide:hover {
+  background: var(--control-bg);
+}
+
+/* The rows travelling with the cursor fade, so the block reads as lifted out of
+   the list it is still physically occupying. */
+.slidenav .slide.dragged {
+  opacity: var(--a-drag-ghost-opacity);
 }
 
 /* HOVER READS AS A BACKGROUND SHIFT, NEVER A BORDER, and that is a constraint not
@@ -4985,6 +5117,16 @@ textarea {
 }
 .slidenav .slide.current {
   border-color: var(--a-selection);
+}
+
+/* MEMBERSHIP IN THE MULTI-SELECTION, on the BACKGROUND axis — deliberately not
+   the border, which .current owns above. The two are independent facts (a block
+   of five selected slides contains exactly one current slide) and the file's own
+   hover rule already establishes that background and border are separate axes
+   here, so a selected-and-current row shows both without either being ambiguous.
+   Written after :hover so a hover does not erase the selection tint. */
+.slidenav .slide.selected {
+  background: var(--a-slide-selected-bg);
 }
 
 .slidenav .slide.disabled {

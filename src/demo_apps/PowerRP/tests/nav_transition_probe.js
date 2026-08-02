@@ -50,7 +50,11 @@ try {
     const app = window.__powerrp_app;
     app.selection = app.nodes()[0]?.itemId ?? null; // pick some item
     const hadItem = app.selection;
-    document.querySelectorAll(".transition-slice")[0].click();
+    // THE SLICE IS NOW THREE BUTTONS in one band (the two `+` insert ends and
+    // the transition chip); the band itself is a role="group" div. So the
+    // selecting click is on the CHIP, not on the band — clicking the band would
+    // land on nothing, which is the point of the split.
+    document.querySelectorAll(".transition-slice .tr-chip")[0].click();
     return {
       hadItem,
       selectedTransition: app.selectedTransition,
