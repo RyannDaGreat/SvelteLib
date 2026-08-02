@@ -11,7 +11,10 @@
  * knob-rich widget, from many angles. The graphLine roster is the equation zoo
  * (frenzy digest 04) — heart, roses, both spirals + the λ-morph, catenary,
  * cycloid, Lissajous, superellipse, sum-of-sines, and the user's explicitly-asked
- * iterative Fibonacci — using the Manim palette (digest 02). The graphBars roster
+ * iterative Fibonacci. It is the one roster that applies a SUBSET of its authored
+ * props — the curve definition only, per the 2026-08-02 ruling documented at
+ * `curveDefinitionOnly` below; its Manim-palette styling (digest 02) survives as
+ * reference data in GRAPH_LINE_TUNING. The graphBars roster
  * is digest 10's eleven designs. graphTickMarks/graphGrid rosters come at their
  * widgets from mathematical, Manim-aesthetic, and practical-chart angles.
  *
@@ -26,11 +29,55 @@ const ORANGE = "#FF862F", BLUE_B = "#9CDCEB", MAROON = "#C55F73";
 const TWO_PI = 6.2832, FOUR_PI = 12.5664, SIX_PI = 18.8496, EIGHT_PI = 25.1327;
 
 /**
- * graphLine presets — the equation zoo (digest 04). Ranges are tuned symmetric
- * windows that comfortably frame each curve's natural amplitude at a ~400×300
- * box; the equation-zoo DECK (a later task) fine-tunes framing per slide.
+ * THE EQUATION ZOO WRITES ONLY THE EQUATION (user ruling, 2026-08-02: "The
+ * equation zoo should only, in the presets, should only affect the equation. It
+ * shouldn't affect whether or not it's closed or other stuff like that.")
+ *
+ * A graphLine preset therefore commits ONLY the CURVE DEFINITION — the keys in
+ * CURVE_DEFINITION_KEYS. The author's styling (stroke, strokeWidth, fill, bloom),
+ * their `closed` choice, and their framing (xRange/yRange) SURVIVE a preset
+ * switch, so the zoo is a menu of equations rather than a menu of whole looks.
+ *
+ * THE FULL TUNING IS KEPT IN THE TABLE BELOW ON PURPOSE. `GRAPH_LINE_TUNING`
+ * is the authored data — the stroke colours, closed flags and framing windows
+ * each curve was designed with — and remains the reference for the equation-zoo
+ * deck and for anyone hand-authoring a slide. The FILTER is applied at the
+ * export (`GRAPH_LINE_PRESETS`), not by deleting the data, so nothing is lost
+ * and the ruling is one visible line rather than 24 silent deletions.
+ *
+ * CONSEQUENCE, ACCEPTED BY THE RULING: the closed curves (heart, roses,
+ * epicycloid, superellipse, Lissajous, butterfly, breathing flower) land as OPEN
+ * paths, and every curve lands in the author's current window rather than its
+ * tuned one. That is the requested behaviour, not a defect.
  */
-export const GRAPH_LINE_PRESETS = [
+const CURVE_DEFINITION_KEYS = ["mode", "source", "tStart", "tEnd", "numPoints", "jumpThreshold"];
+
+/**
+ * Pure function. Restricts a preset's props to the curve-definition keys, keeping
+ * only the ones the entry actually declares (applyPreset writes exactly the keys
+ * it is given, so an absent key must stay absent rather than become undefined).
+ *
+ * @param {{name: string, description: string, props: Object}} preset
+ * @returns {{name: string, description: string, props: Object}} the same preset with a filtered props map
+ *
+ * @example
+ * curveDefinitionOnly({name: "Heart", description: "…", props: {mode: "parametric", source: "[x,y]", tStart: 0, tEnd: 6.28, numPoints: 300, closed: true, stroke: "#FC6255", xRange: "[-20, 20, 5]"}}).props
+ * // {mode: 'parametric', source: '[x,y]', tStart: 0, tEnd: 6.28, numPoints: 300}
+ */
+function curveDefinitionOnly(preset) {
+  const props = {};
+  for (const key of CURVE_DEFINITION_KEYS) if (key in preset.props) props[key] = preset.props[key];
+  return { ...preset, props };
+}
+
+/**
+ * graphLine preset TUNING — the equation zoo (digest 04) as authored, including
+ * the styling and framing each curve was designed with. Ranges are tuned
+ * symmetric windows that comfortably frame each curve's natural amplitude at a
+ * ~400×300 box. Only the curve-definition subset is applied — see
+ * `curveDefinitionOnly` above; this table is the reference for the rest.
+ */
+const GRAPH_LINE_TUNING = [
   {
     name: "Sine wave",
     description: "The friendly default — two periods of y = sin(x). Keyframe strokeEnd 0→1 to draw it on.",
@@ -148,6 +195,9 @@ export const GRAPH_LINE_PRESETS = [
     props: { mode: "polar", source: "150 + 40*Math.sin(time*1.2) + 20*Math.sin(5*t)*Math.sin(time*0.7)", tStart: 0, tEnd: 6.2832, numPoints: 500, xRange: "[-220, 220, 50]", yRange: "[-220, 220, 50]", closed: true, stroke: TEAL, strokeWidth: 2.5, fill: null, jumpThreshold: 0 },
   },
 ];
+
+/** The equation zoo as the app APPLIES it: curve definition only (see above). */
+export const GRAPH_LINE_PRESETS = GRAPH_LINE_TUNING.map(curveDefinitionOnly);
 
 /**
  * graphTickMarks (ruler) presets — from a MATHEMATICAL angle (centered axes,

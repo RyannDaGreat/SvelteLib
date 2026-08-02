@@ -293,10 +293,12 @@ test("no two presets in a family carry identical props", () => {
 //     is a judgement its own suite makes.
 //   The EFFECTS bundle and `opacity` are NOT here either, though
 //     tests/frosted_presets_test.js forbids them — correctly, for that widget.
-//     plugins/graph_presets.js writes a whole `bloom` bundle ("The Valentine
-//     Curve") and all twelve plugins/demo/lens_flare.js presets write
-//     `blendMode`, so hoisting the stricter list would take two shipped, correct
-//     tables red.
+//     all twelve plugins/demo/lens_flare.js presets write `blendMode`, so
+//     hoisting the stricter list would take a shipped, correct table red.
+//     (plugins/graph_presets.js used to be the second example, writing a `bloom`
+//     bundle in "The Valentine Curve"; it no longer writes ANY look key — the
+//     equation zoo was narrowed to the curve definition alone by the user ruling
+//     of 2026-08-02, pinned in tests/graph_zoo_equation_only_test.js.)
 // `type` is included because a preset that rewrites an item's widget TYPE is
 // incoherent — and it would pass check (1), since `type` IS in every plugin's
 // defaults.
