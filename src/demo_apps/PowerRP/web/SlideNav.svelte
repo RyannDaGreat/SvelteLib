@@ -311,6 +311,14 @@
     return dragState?.moved === true && dragState.boundary === b;
   }
 
+  // THE MODIFIER KEY'S NAME ON THIS PLATFORM — "Cmd" on a Mac, "Ctrl" elsewhere.
+  // The rail's toggle-click reads `metaKey || ctrlKey`, so BOTH really work; the
+  // tip names the one the reader's own keyboard has rather than teaching a chord
+  // they do not own. Same test (and the same `|| ""` guard for a
+  // platform-less navigator) as CodeEditorModal's isMac, which is the app's
+  // existing precedent for this read.
+  const CMD_KEY_NAME = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || "") ? "Cmd" : "Ctrl";
+
   /** Query. How many slides the rail commands will act on — 1 when nothing is
    *  multi-selected (an empty set means "the current slide"). Read by the bottom
    *  buttons' labels so a multi-slide Delete announces itself before it fires. */
@@ -430,6 +438,12 @@
                the slide, so rename must be the second gesture here or it would
                fight navigation. The toolbar title has no first gesture to lose. -->
           <div class="cmd-tip-note">Double-click the name to rename</div>
+          <!-- THE TWO NEW GESTURES ON THIS ROW, taught here for the reason the
+               rest of this tip exists: an affordance nobody is told about does not
+               exist, and neither of these has any visual affordance of its own
+               until it is already under way. Both are one line because the tip is
+               already four deep on a hover target you cross incidentally. -->
+          <div class="cmd-tip-note">Drag to reorder · Shift or {CMD_KEY_NAME}-click to select several</div>
         {/snippet}
         <!-- MULTI-SELECT + DRAG live on this one element. The click rule (plain /
              shift-range / cmd-toggle) is app.selectSlideAt, not spelled out here,
