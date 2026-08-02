@@ -4316,12 +4316,50 @@ textarea {
   align-items: center;
   gap: var(--a-sp-1);
   padding: var(--a-sp-1) var(--a-sp-2);
-  background: var(--a-glass-bg-panel);
   border: var(--a-hairline) solid var(--border);
   box-shadow: var(--a-glass-shadow);
+  white-space: nowrap;
+  /* The glass is painted by ::before, NOT here — see the rule below. `isolation`
+     gives ::before's z-index:-1 a stacking context to sit in, so it lands behind
+     the toolbar's own content and not behind the canvas. (position:absolute is
+     already declared at the top of this rule.) */
+  isolation: isolate;
+}
+/* THE TOOLBAR'S GLASS LIVES ON A PSEUDO-ELEMENT, AND THAT IS LOAD-BEARING, NOT
+   TIDINESS. `backdrop-filter` makes an element a BACKDROP ROOT FOR ITS
+   DESCENDANTS: a descendant's own backdrop-filter then samples that root instead
+   of the page. The font picker's popover (.fp-pop) is a descendant of this
+   toolbar — TextFormatToolbar.svelte:191 is the toolbar, :294-295 render the
+   FontPicker inside it — and it hangs BELOW the bar via `top: 100%`. So it was
+   blurring against a root that has no content where it hangs, and the canvas
+   showed through razor sharp. MEASURED in the live DOM before this change:
+   .fp-pop's own backdropFilter was "blur(18px) saturate(1.4)" and its blurred
+   ancestors were ["text-format-toolbar"]; the screenshot
+   (.claude_vlm_checks/inspector/fontpicker_before.png) shows sharp text bleeding
+   straight through the popover. That is the user's report — "there is no blur
+   behind the font selection box in the canvas… which in this theme should be
+   illegal" — and it is the SAME defect tests/glass_blur_guard_test.js was written
+   for, recurring a third time.
+
+   THE GUARD COULD NOT SEE IT, and that is the interesting part: it checks that a
+   rule painting a glass token also declares backdrop-filter, and BOTH rules did.
+   The two were individually correct and wrong TOGETHER. Its two recorded blind
+   spots were both about failing to FIND a rule; this is a third, about nesting.
+
+   Moving the filter to ::before means the TOOLBAR is no longer a backdrop root
+   (the pseudo-element is, for descendants it does not have), so any popover the
+   toolbar hosts blurs against the page. It fixes the class, not the instance —
+   the next popover added here inherits the fix — and it needs no portal, which
+   was the alternative and would have broken the picker's rootEl.contains()
+   click-away and its root-level keydown handler. */
+.text-format-toolbar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--a-glass-bg-panel);
   backdrop-filter: var(--a-glass-blur);
   -webkit-backdrop-filter: var(--a-glass-blur);
-  white-space: nowrap;
 }
 .text-format-sep {
   width: var(--a-hairline);
