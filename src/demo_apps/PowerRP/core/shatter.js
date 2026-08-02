@@ -62,6 +62,7 @@
  * problem that is already solved.
  */
 
+import { pathsToSvgSrc, pathsBounds } from "./svg_paths.js"; // the SVG family's shatter measures and re-emits path pieces
 import { uuid, keyframed, clonedItemStates } from "./document.js";
 import { retypedItem } from "./retype.js";
 
@@ -397,4 +398,75 @@ export function shatteredDocument(doc, slideIndex, itemId, folded, plan, registr
  */
 export function shatterIds(plan) {
   return plan.parts.map(() => uuid());
+}
+
+// ── THE SVG FAMILY'S SHATTER ─────────────────────────────────────────────────
+
+/**
+ * Pure function. One shatter PART per drawable piece of a flattened SVG — the
+ * shared body of "shatter this Iconify icon" and "shatter this SVG".
+ *
+ * User, 2026-08-02: "Shatter is not offered on Iconify icons — and can we shatter
+ * shapes/SVGs to POLYGON?"
+ *
+ * ── WHAT A PIECE IS ──────────────────────────────────────────────────────────
+ * One flattened path op. That is the SVG author's own unit of intent — an icon
+ * drawn as body + eye + eye is three `<path>` elements — so the pieces come out
+ * as the pieces a person would name, rather than as an arbitrary subdivision.
+ *
+ * ── WHY EACH PART IS AN `svg` WIDGET, NOT A `polygon` ────────────────────────
+ * This is the "to POLYGON?" question, answered by the geometry rather than by
+ * preference. An icon's outline is CUBICS; `polygon` stores a point list, so
+ * converting means flattening every curve to a chord run. That is lossy in a way
+ * that gets worse when the piece is later scaled up, and it inflates a four-point
+ * `d` into dozens of stored coordinates. An `svg` part keeps the exact curve, is
+ * independently movable, restylable and animatable — which is what shattering is
+ * FOR — and it is the same target plugins/mermaid.js already shatters into, so
+ * the two paths agree.
+ *
+ * A polygon conversion is a genuinely useful SEPARATE tool (it makes vertices
+ * editable, at a fidelity cost the author should choose knowingly). It is not
+ * this, and pretending one is the other would silently degrade every icon.
+ *
+ * ── EACH PART IS TIGHTLY BOXED ───────────────────────────────────────────────
+ * A part's world box is its OWN ink's bounds, not the host's. Giving every piece
+ * the host's full box would make three overlapping full-size selection targets
+ * that are impossible to pick apart — the opposite of what shattering is for.
+ *
+ * @param {Array<{d: string, fill?, stroke?, strokeWidth?, fillRule?, opacity?}>} ops - flattened path specs, already in HOST-BOX coordinates
+ * @param {{x: number, y: number, w: number, h: number}} box - the host's WORLD box
+ * @param {string} [label] - what to call the pieces ("icon", "svg")
+ * @returns {{parts: Array<{key: string, label: string, state: object}>, notes: string[]}}
+ *
+ * @example // svgOpsToParts([{d: "M0 0H10V10H0Z", fill: "#000"}], {x: 5, y: 5, w: 10, h: 10}, "icon").parts.length // 1
+ * @example // svgOpsToParts([], {x: 0, y: 0, w: 10, h: 10}, "icon") // {parts: [], notes: [...]}
+ */
+export function svgOpsToParts(ops, box, label = "piece") {
+  const parts = [];
+  const notes = [];
+  let skipped = 0;
+  ops.forEach((op, i) => {
+    const bounds = pathsBounds([op]);
+    if (!bounds || !(bounds.w > 0) || !(bounds.h > 0)) { skipped++; return; }
+    parts.push({
+      key: partKey(`${label}${i + 1}`),
+      label: `${label} ${i + 1}`,
+      state: {
+        type: "svg",
+        // The op's coordinates are already in the host box's LOCAL frame (the
+        // flattener scaled them to boxW/boxH), so the world position is the
+        // host's origin plus the piece's own offset within it.
+        x: box.x + bounds.x, y: box.y + bounds.y, w: bounds.w, h: bounds.h,
+        // The viewBox is the piece's own bounds, so the path fills its widget
+        // exactly and `preserveAspect: false` cannot distort it.
+        svgSrc: pathsToSvgSrc([op], bounds),
+        preserveAspect: false,
+      },
+    });
+  });
+  // REPORTED, NOT SWALLOWED. A zero-area op is a real thing in SVG (a hairline
+  // rule, a degenerate move) and dropping it silently would make the shattered
+  // group quietly unlike the icon it came from.
+  if (skipped > 0) notes.push(`${skipped} piece(s) had no measurable area and were not recovered as separate widgets.`);
+  return { parts, notes };
 }

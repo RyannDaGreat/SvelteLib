@@ -88,6 +88,7 @@
  * url-mode icons in one pass — the one media type that renderer CAN draw.
  */
 
+import { svgOpsToParts } from "../core/shatter.js"; // #271: shared with the iconify widget — same pieces, same reasoning
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -180,10 +181,18 @@ let rimCacheOutlines = null;
  * @param {object} state - the folded item state
  * @returns {number[][][]|null} subpaths [[[x, y], …], …] in box-local coords
  */
+/** Pure function. THE source string for a state, whichever mode it is in — the
+ *  one reader the rim outline, the shatter gate and the shatter itself all use,
+ *  so none of them can disagree about what is drawable. Null when a URL source
+ *  has not loaded. */
+function svgSourceOf(state) {
+  return state.svgSource === "url" ? (state.svgUrl ? getSvgSource(state.svgUrl) : null) : (state.svgSrc ?? null);
+}
+
 function svgRimOutlines(state) {
   const w = state.w ?? 0, h = state.h ?? 0;
   if (w <= 0 || h <= 0) return null;
-  const src = state.svgSource === "url" ? (state.svgUrl ? getSvgSource(state.svgUrl) : null) : state.svgSrc;
+  const src = svgSourceOf(state);
   if (src === null || src === undefined || svgIsEmpty(src)) return null;
   const preserveAspect = state.preserveAspect !== false;
   const key = `${w}|${h}|${preserveAspect}|${state.ink ?? ""}|${src}`;
@@ -345,6 +354,37 @@ export const svgPlugin = {
       ops = errorAffordance(w, h, e instanceof Error ? e.message : String(e));
     }
     return applyEffects(decorateSilhouetteBorder(ops, style, world), s, world, { x: 0, y: 0, w, h });
+  },
+  /**
+   * Pure function. Why this SVG cannot be shattered YET, or null.
+   *
+   * BOTH SOURCE MODES ARE HANDLED, and that is the whole subtlety here: an
+   * INLINE svgSrc is available the instant it is authored, while a URL source is
+   * fetched and has a genuine in-flight window. Reusing the same resolver
+   * emit() and the rim outline read means the gate cannot disagree with what is
+   * actually drawable.
+   */
+  shatterNotReady(s) {
+    const src = svgSourceOf(s);
+    if (src === null) return s.svgSource === "url"
+      ? "an SVG URL that has finished loading (this one is still in flight, or failed)"
+      : "some SVG source (this widget has none)";
+    return svgIsEmpty(src) ? "an SVG with something in it (this one is empty)" : null;
+  },
+  /**
+   * Pure function. The drawing's pieces as separate SVG widgets — one per
+   * drawable path, tightly boxed. Shares its body and its reasoning with the
+   * Iconify widget: core/shatter.js svgOpsToParts, which also explains why a part
+   * is an `svg` and not a `polygon`.
+   */
+  shatter(s, ctx) {
+    const src = svgSourceOf(s);
+    if (src === null || svgIsEmpty(src)) throw new Error("SVG: there is no source to shatter (it is empty, or its URL has not loaded).");
+    const flat = svgToIRWithWarnings(src, ctx.box.w, ctx.box.h, { ink: s.ink, preserveAspect: s.preserveAspect !== false, opacity: 1 });
+    const paths = flat.ops.filter((o) => o.op === "path" && typeof o.d === "string");
+    if (paths.length === 0) throw new Error("SVG: this source flattened to no drawable paths, so there is nothing to shatter.");
+    const out = svgOpsToParts(paths, ctx.box, "shape");
+    return { parts: out.parts, notes: [...out.notes, ...flat.warnings] };
   },
   cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,

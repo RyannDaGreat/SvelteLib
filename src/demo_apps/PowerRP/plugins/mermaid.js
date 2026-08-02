@@ -60,6 +60,7 @@
  */
 
 import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { pathsToSvgSrc, pathsBounds, pathPoints } from "../core/svg_paths.js"; // moved out of this file so the SVG family can shatter too
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder, fitBox } from "../core/geometry.js";
@@ -566,63 +567,7 @@ export function partKeyFor(label, id, taken) {
   return key;
 }
 
-/**
- * Pure function. One SVG document string carrying a set of flattened paths,
- * framed by `viewBox` — the `svgSrc` an svg widget renders.
- *
- * The paths keep their DIAGRAM-space `d` verbatim and the viewBox is set to the
- * sub-rect they occupy, so no coordinate is ever rewritten and no rounding is
- * introduced. That is what makes the ink identical rather than merely close.
- *
- * @param {Array<object>} paths - flattened paths ({d, fill, stroke, strokeWidth, fillRule, opacity})
- * @param {{x: number, y: number, w: number, h: number}} viewBox - the sub-rect to frame
- * @returns {string}
- *
- * @example pathsToSvgSrc([{d: "M0 0L10 0", stroke: "#333", strokeWidth: 2, fill: null}], {x: 0, y: 0, w: 10, h: 10})
- * '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 0L10 0" fill="none" stroke="#333" stroke-width="2"/></svg>'
- */
-export function pathsToSvgSrc(paths, viewBox) {
-  const body = paths.map((p) => {
-    const attrs = [`d="${p.d}"`, `fill="${p.fill ?? "none"}"`];
-    if (p.stroke && p.strokeWidth > 0) attrs.push(`stroke="${p.stroke}"`, `stroke-width="${p.strokeWidth}"`);
-    if (p.fillRule === "evenodd") attrs.push('fill-rule="evenodd"');
-    if ((p.opacity ?? 1) !== 1) attrs.push(`opacity="${p.opacity}"`);
-    return `<path ${attrs.join(" ")}/>`;
-  }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}">${body}</svg>`;
-}
 
-/**
- * Pure function. The bounding rect of a set of flattened paths, measured from
- * their baked `d` coordinates. Used to frame a connector or the leftover ink,
- * which — unlike a node — has no owning element with a box.
- *
- * A COORDINATE HULL, not a true path hull: it takes every numeric pair in the
- * `d` as a point, so an off-curve bezier control point can push the rect
- * slightly past the ink. That over-estimates and never under-estimates, which is
- * the safe direction — the widget's box is a frame, and a frame that is a little
- * large clips nothing.
- *
- * @param {Array<{d: string}>} paths
- * @returns {{x: number, y: number, w: number, h: number}|null} null when empty
- *
- * @example pathsBounds([{d: "M10 20L30 60"}])
- * { x: 10, y: 20, w: 20, h: 40 }
- * @example pathsBounds([{d: "M0 0L10 0"}, {d: "M-5 3L2 9"}])
- * { x: -5, y: 0, w: 15, h: 9 }
- * @example pathsBounds([])
- * null
- */
-export function pathsBounds(paths) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of paths)
-    for (const pt of pathPoints(p.d)) {
-      minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x);
-      minY = Math.min(minY, pt.y); maxY = Math.max(maxY, pt.y);
-    }
-  if (!Number.isFinite(minX)) return null;
-  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-}
 
 /**
  * Pure function. The viewBox→WORLD map a shatter must reproduce exactly, because
@@ -818,33 +763,6 @@ export function shatterHeadShape(markerId) {
   return shape ?? null;
 }
 
-/**
- * Pure function. Every coordinate PAIR in a path `d`, as points — the polyline
- * reading of a baked path.
- *
- * An APPROXIMATION for curves, deliberately and knowingly: a cubic's control
- * points are read as vertices, so a curved route's polyline bulges toward its
- * handles. Both consumers here tolerate that — a bounding rect only has to
- * contain the ink, and a label offset only has to be near the route's middle —
- * and the alternative is a full path flattener for two callers that do not need
- * one.
- *
- * @param {string} d - an SVG path data string
- * @returns {Array<{x: number, y: number}>}
- *
- * @example pathPoints("M10 20L30 60")
- * [ { x: 10, y: 20 }, { x: 30, y: 60 } ]
- * @example pathPoints("M0,0 L10,0 L10,10").length
- * 3
- * @example pathPoints("")
- * []
- */
-export function pathPoints(d) {
-  const nums = (String(d ?? "").match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? []).map(Number);
-  const out = [];
-  for (let i = 0; i + 1 < nums.length; i += 2) out.push({ x: nums[i], y: nums[i + 1] });
-  return out;
-}
 
 export const mermaidPlugin = {
   type: "mermaid",

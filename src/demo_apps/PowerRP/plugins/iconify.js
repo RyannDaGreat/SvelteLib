@@ -104,6 +104,7 @@
  * console.warn — never a silent narrowing of results.
  */
 
+import { svgOpsToParts } from "../core/shatter.js"; // #271: one part per drawable path, shared with the svg widget
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -661,6 +662,39 @@ export const iconifyPlugin = {
       ops = errorAffordance(w, h, e instanceof Error ? e.message : String(e));
     }
     return finish(ops);
+  },
+  /**
+   * Pure function (one registry read). Why this icon cannot be shattered YET, or
+   * null. The icon's SVG source is fetched ASYNCHRONOUSLY, so there is a real
+   * window where there is simply nothing to decompose — the same shape as
+   * mermaid's shatterNotReady, and for the same reason: a command that shattered
+   * into nothing while reporting success is the silent failure this codebase
+   * forbids, so the GATE and the shatter agree on one condition.
+   */
+  shatterNotReady(s) {
+    if (!s.icon) return "an icon to be chosen first (this widget has none)";
+    let url;
+    try { url = iconifyIconUrl(s.icon); } catch (e) { return `a valid icon name (${e instanceof Error ? e.message : String(e)})`; }
+    if (svgSourceStatus(url) === "error") return `an icon that loaded (this one failed: ${svgSourceError(url)})`;
+    return getSvgSource(url) === null ? "an icon that has finished loading (this one is still in flight)" : null;
+  },
+  /**
+   * Pure function. The icon's pieces as separate SVG widgets — one per drawable
+   * path, tightly boxed. See core/shatter.js svgOpsToParts for what a piece is
+   * and why each part is an `svg` rather than a `polygon`.
+   *
+   * The ops come from THE SAME flatten emit() draws with, so the shattered group
+   * is the icon, piece for piece, rather than a second interpretation of it.
+   */
+  shatter(s, ctx) {
+    const url = iconifyIconUrl(s.icon);
+    const src = getSvgSource(url);
+    if (src === null) throw new Error(`Iconify: "${s.icon}" has not finished loading, so there is nothing to shatter yet.`);
+    const flat = svgToIRWithWarnings(src, ctx.box.w, ctx.box.h, { ink: s.ink ?? ICONIFY_INK, preserveAspect: s.preserveAspect !== false, opacity: 1 });
+    const paths = flat.ops.filter((o) => o.op === "path" && typeof o.d === "string");
+    if (paths.length === 0) throw new Error(`Iconify: "${s.icon}" flattened to no drawable paths, so there is nothing to shatter.`);
+    const out = svgOpsToParts(paths, ctx.box, "icon");
+    return { parts: out.parts, notes: [...out.notes, ...flat.warnings] };
   },
   cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,

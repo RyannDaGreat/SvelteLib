@@ -28,10 +28,8 @@ import {
   partKey, partRef, vectorRecovery, countedTitle, shatterEligible,
   shatterNotReadyReason, shatterDisclosure, SHATTER_NAME_SEPARATOR,
 } from "../core/shatter.js";
-import {
-  MERMAID_MARKER_HEADS, markerBaseName, shatterHeadShape, pathPoints,
-  pathsBounds, mermaidViewToWorld, pathsToSvgSrc, authorIdOf, edgeEndpoints, partKeyFor,
-} from "../plugins/mermaid.js";
+import { MERMAID_MARKER_HEADS, markerBaseName, shatterHeadShape, mermaidViewToWorld, authorIdOf, edgeEndpoints, partKeyFor } from "../plugins/mermaid.js";
+import { pathPoints, pathsBounds, pathsToSvgSrc } from "../core/svg_paths.js"; // moved out of plugins/mermaid.js (#271): the iconify + svg shatter needs them, and no plugin may import another plugin
 
 let passed = 0;
 function test(name, fn) { fn(); passed++; console.log(`  ok  ${name}`); }
