@@ -13,6 +13,7 @@ import { newDocument, withNewItem, withNewSlide, keyframed, slideState, withSlid
 import {
   deltaFromFoldDiff, foldedStates, checkedPermutation, reorderedSlides,
   movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes,
+  withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted,
 } from "../core/slide_reorder.js";
 import { applied, deepEqual } from "../core/deltas.js";
 
@@ -265,6 +266,104 @@ test("reorder output is already simplified (its deltas hold no no-op keyframes)"
   for (const order of [[3, 2, 1, 0], [1, 0, 3, 2], [2, 3, 0, 1]])
     assert.deepEqual(duplicateKeyframes(reorderedSlides(doc, order)), [],
       `permutation ${order} synthesized a redundant keyframe`);
+});
+
+// ── Block move (the drag-to-reorder drop) ────────────────────────────────────
+
+test("withSlidesMovedToBoundary moves a contiguous block and preserves every look", () => {
+  const { doc } = sampleDoc();
+  const ids = doc.slides.map((s) => s.id);
+  // Slides 1+2 dropped at the end (boundary 4).
+  const moved = withSlidesMovedToBoundary(doc, [1, 2], 4);
+  assert.deepEqual(moved.slides.map((s) => s.id), [ids[0], ids[3], ids[1], ids[2]]);
+  assertLooksIdentical(doc, moved, [0, 3, 1, 2]);
+});
+
+test("withSlidesMovedToBoundary takes a NON-contiguous selection and closes it up", () => {
+  const { doc } = sampleDoc();
+  const ids = doc.slides.map((s) => s.id);
+  // Slides 0 and 3 dropped before slide 2 → they become adjacent, in doc order.
+  const moved = withSlidesMovedToBoundary(doc, [3, 0], 2);
+  assert.deepEqual(moved.slides.map((s) => s.id), [ids[1], ids[0], ids[3], ids[2]]);
+  assertLooksIdentical(doc, moved, [1, 0, 3, 2]);
+});
+
+test("withSlidesMovedToBoundary: dropping into a block's own gap is the SAME object", () => {
+  const { doc } = sampleDoc();
+  assert.equal(withSlidesMovedToBoundary(doc, [1, 2], 1), doc);
+  assert.equal(withSlidesMovedToBoundary(doc, [1, 2], 3), doc); // the far edge of the same gap
+  assert.equal(withSlidesMovedToBoundary(doc, [], 2), doc);
+  assert.throws(() => withSlidesMovedToBoundary(doc, [9], 0), /out of range/);
+  assert.throws(() => withSlidesMovedToBoundary(doc, [0], 5), /boundary 5 out of range/);
+});
+
+// ── Slide clipboard (copy / paste / duplicate) ───────────────────────────────
+
+/** A deterministic id minter, so a paste's ids are assertable. */
+function idMinter(prefix) {
+  let n = 0;
+  return () => `${prefix}${n++}`;
+}
+
+test("paste reproduces the copied slides' LOOK and leaves every other slide alone", () => {
+  const { doc } = sampleDoc();
+  const payload = slideClipboardPayload(doc, [2, 3]);
+  const { document: out, indices } = withSlidesPasted(doc, 0, payload, idMinter("p"));
+  assert.deepEqual(indices, [1, 2]);
+  assert.equal(out.slides.length, 6);
+  // The pasted pair looks exactly like the copied pair.
+  assert.deepEqual(slideState(out, 1), slideState(doc, 2));
+  assert.deepEqual(slideState(out, 2), slideState(doc, 3));
+  // Every ORIGINAL slide still looks like itself (indices shifted by the block).
+  assert.deepEqual(slideState(out, 0), slideState(doc, 0));
+  [1, 2, 3].forEach((i) => assert.deepEqual(slideState(out, i + 2), slideState(doc, i)));
+});
+
+test("paste mints FRESH ids and carries name/transition verbatim", () => {
+  const { doc } = sampleDoc();
+  const payload = slideClipboardPayload(doc, [1]);
+  const { document: out } = withSlidesPasted(doc, 1, payload, idMinter("fresh"));
+  assert.equal(out.slides[2].id, "fresh0");
+  assert.notEqual(out.slides[2].id, doc.slides[1].id);
+  assert.equal(out.slides[2].name, doc.slides[1].name);
+  assert.deepEqual(out.slides[2].transition, doc.slides[1].transition);
+});
+
+test("duplicate (copy + paste after itself) is appearance-identical on both rows", () => {
+  const { doc } = sampleDoc();
+  const { document: out } = withSlidesPasted(doc, 2, slideClipboardPayload(doc, [2]), idMinter("d"));
+  assert.deepEqual(slideState(out, 3), slideState(doc, 2)); // the copy
+  assert.deepEqual(slideState(out, 2), slideState(doc, 2)); // the original
+  assert.deepEqual(slideState(out, 4), slideState(doc, 3)); // the slide after is untouched
+});
+
+test("paste at the TOP (afterIndex -1) synthesizes a CREATION delta", () => {
+  const { doc } = sampleDoc();
+  const { document: out, indices } = withSlidesPasted(doc, -1, slideClipboardPayload(doc, [3]), idMinter("t"));
+  assert.deepEqual(indices, [0]);
+  assert.deepEqual(slideState(out, 0), slideState(doc, 3));
+  doc.slides.forEach((_, i) => assert.deepEqual(slideState(out, i + 1), slideState(doc, i)));
+});
+
+test("a pasted DISABLED slide keeps its delta verbatim and stays outside the fold", () => {
+  const { doc: base } = sampleDoc();
+  const doc = withSlideToggled(base, 2);
+  const payload = slideClipboardPayload(doc, [2]);
+  assert.deepEqual(payload.slides[0].disabledDelta, doc.slides[2].delta);
+  const { document: out } = withSlidesPasted(doc, 0, payload, idMinter("x"));
+  assert.equal(out.slides[1].enabled, false);
+  assert.deepEqual(out.slides[1].delta, doc.slides[2].delta);
+  // It contributes nothing, so slide 1 shows what slide 0 shows, and the deck
+  // downstream is unchanged.
+  assert.deepEqual(slideState(out, 1), slideState(out, 0));
+  doc.slides.forEach((_, i) => assert.deepEqual(slideState(out, i + 1), slideState(doc, i)));
+});
+
+test("an empty payload is a no-op; a malformed one throws", () => {
+  const { doc } = sampleDoc();
+  assert.equal(withSlidesPasted(doc, 0, { slides: [] }, idMinter("z")).document, doc);
+  assert.throws(() => withSlidesPasted(doc, 0, null, idMinter("z")), /no slides array/);
+  assert.throws(() => slideClipboardPayload(doc, [7]), /no slide at index 7/);
 });
 
 console.log(`\n${passed} slide-reorder tests passed`);

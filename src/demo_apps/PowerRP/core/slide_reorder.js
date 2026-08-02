@@ -242,6 +242,172 @@ export function movedSlidePreservingLook(doc, index, offset) {
 }
 
 /**
+ * Pure function. THE BLOCK MOVE — the drop half of drag-to-reorder, and the
+ * multi-select generalization of `movedSlidePreservingLook`.
+ *
+ * `indices` (any order, deduplicated) are lifted OUT of the deck in document
+ * order and re-inserted as a contiguous block BEFORE the slide that currently
+ * sits at `beforeIndex`; `beforeIndex === doc.slides.length` appends. The
+ * insertion point is expressed as a BOUNDARY (a gap between rows, which is what
+ * the navigator's drop indicator draws) rather than a destination row, because a
+ * row index is ambiguous once the dragged rows have been removed — "before row
+ * 4" is still a well-defined gap whether or not row 4 is one of the movers.
+ *
+ * Appearance-preserving: it delegates to `reorderedSlides`, so the header's
+ * acceptance law holds for the block exactly as it does for one slide.
+ *
+ * @param {object} doc - a PowerRP document
+ * @param {number[]} indices - the slides being moved
+ * @param {number} beforeIndex - the boundary they land at, in OLD indices (0..n)
+ * @returns {object} a new document (the SAME object when the move is a no-op)
+ *
+ * @example // move slides 0 and 1 to the end of a three-slide deck
+ * withSlidesMovedToBoundary({slides: [{id: "a", delta: {}}, {id: "b", delta: {}}, {id: "c", delta: {}}]}, [0, 1], 3).slides.map((s) => s.id)
+ * // ["c", "a", "b"]
+ * @example // dropping a block back into its own gap changes nothing
+ * withSlidesMovedToBoundary({slides: [{id: "a", delta: {}}, {id: "b", delta: {}}]}, [0], 0).slides.map((s) => s.id) // ["a", "b"]
+ */
+export function withSlidesMovedToBoundary(doc, indices, beforeIndex) {
+  const n = doc.slides.length;
+  const moving = [...new Set(indices)].sort((a, b) => a - b);
+  if (moving.length === 0) return doc;
+  if (moving.some((i) => !Number.isInteger(i) || i < 0 || i >= n))
+    throw new Error(`withSlidesMovedToBoundary: slide indices out of range (0..${n - 1}): ${JSON.stringify(indices)}`);
+  if (!Number.isInteger(beforeIndex) || beforeIndex < 0 || beforeIndex > n)
+    throw new Error(`withSlidesMovedToBoundary: boundary ${beforeIndex} out of range (0..${n})`);
+  const movingSet = new Set(moving);
+  const rest = [];
+  let insertAt = 0; // where the block goes, counted in the REST array
+  for (let i = 0; i < n; i++) {
+    if (i === beforeIndex) insertAt = rest.length;
+    if (!movingSet.has(i)) rest.push(i);
+  }
+  if (beforeIndex === n) insertAt = rest.length;
+  const order = [...rest.slice(0, insertAt), ...moving, ...rest.slice(insertAt)];
+  if (order.every((oldIndex, j) => oldIndex === j)) return doc;
+  return reorderedSlides(doc, order);
+}
+
+/**
+ * Pure function. THE SLIDE CLIPBOARD PAYLOAD — what "Copy Slides" captures.
+ *
+ * A slide's DELTA is meaningless out of context (this whole module exists to say
+ * so), so a copied slide carries its FOLDED PICTURE plus its identity fields
+ * instead. Paste then re-derives a delta for wherever it lands
+ * (`withSlidesPasted`), which is the same fold-then-diff construction the
+ * reorder uses — one mechanism, two commands.
+ *
+ * `id` is deliberately CARRIED but never reused: paste mints fresh UUIDs (a
+ * document may not hold two slides with one id, and pasting beside the original
+ * is the common case). It rides along so a payload can be traced back to what
+ * was copied.
+ *
+ * A DISABLED slide has no fold of its own (header: DISABLED SLIDES), so its
+ * `delta` is captured verbatim alongside the fold of whatever was showing, and
+ * paste re-lays it verbatim — the same exclusion, in the same place.
+ *
+ * @param {object} doc - a PowerRP document
+ * @param {number[]} indices - which slides to capture (document order imposed)
+ * @returns {{slides: {id: string, name: string, fold: object, disabledDelta: object|null, transition: object|undefined, enabled: boolean|undefined, autoAdvance: any}[]}}
+ *
+ * @example slideClipboardPayload({slides: [{id: "a", name: "One", delta: {items: {q: {x: 1}}}}]}, [0])
+ * // {slides: [{id: "a", name: "One", fold: {items: {q: {x: 1}}}, disabledDelta: null, transition: undefined, enabled: undefined, autoAdvance: undefined}]}
+ */
+export function slideClipboardPayload(doc, indices) {
+  const folds = foldedStates(doc);
+  const picked = [...new Set(indices)].sort((a, b) => a - b);
+  return {
+    slides: picked.map((i) => {
+      const slide = doc.slides[i];
+      if (!slide) throw new Error(`slideClipboardPayload: no slide at index ${i}`);
+      return {
+        id: slide.id,
+        name: slide.name,
+        fold: copiedDeep(folds[i]),
+        disabledDelta: slide.enabled === false ? copiedDeep(slide.delta) : null,
+        transition: slide.transition === undefined ? undefined : copiedDeep(slide.transition),
+        enabled: slide.enabled,
+        autoAdvance: slide.autoAdvance,
+      };
+    }),
+  };
+}
+
+/**
+ * Pure function (modulo the id minter). THE PASTE. Inserts the payload's slides
+ * after slide `afterIndex`, synthesizing each one's delta as
+ * `deltaFromFoldDiff(previousFold, copiedFold)` so the pasted slide LOOKS like
+ * what was copied wherever it lands — and re-deriving the delta of the slide
+ * that now follows the block, so the rest of the deck is unchanged too. That is
+ * the header's acceptance law applied to an INSERTION rather than a permutation:
+ *
+ *     fold(D', j) == fold(D, j)                  for every untouched slide j
+ *     fold(D', afterIndex + 1 + k) == payload.slides[k].fold
+ *
+ * FRESH UUIDS, always (`newId`): a document may not hold two slides with one id,
+ * and duplicating in place is the common case. Names travel verbatim — a
+ * duplicate named "Intro" beside "Intro" is what every other editor does, and
+ * the display NUMBER already distinguishes the rows.
+ *
+ * A pasted DISABLED slide re-lays its captured delta verbatim and contributes
+ * nothing to the fold, exactly as a disabled slide does under reorder.
+ *
+ * @param {object} doc - a PowerRP document
+ * @param {number} afterIndex - insert after this slide (-1 pastes at the top)
+ * @param {object} payload - a `slideClipboardPayload` result
+ * @param {() => string} newId - the fresh-uuid minter (core/document.js uuid)
+ * @returns {{document: object, indices: number[]}} the new doc and where the pasted slides landed
+ *
+ * @example // paste a copy of slide 0 after slide 0: two slides, both showing x: 1
+ * withSlidesPasted({slides: [{id: "a", name: "One", delta: {x: 1}}]}, 0,
+ *   slideClipboardPayload({slides: [{id: "a", name: "One", delta: {x: 1}}]}, [0]), () => "b").indices // [1]
+ */
+export function withSlidesPasted(doc, afterIndex, payload, newId) {
+  if (!payload || !Array.isArray(payload.slides)) throw new Error("withSlidesPasted: payload has no slides array");
+  if (payload.slides.length === 0) return { document: doc, indices: [] };
+  const at = Math.max(-1, Math.min(doc.slides.length - 1, afterIndex));
+  const folds = foldedStates(doc);
+  const before = doc.slides.slice(0, at + 1);
+  const after = doc.slides.slice(at + 1);
+
+  // The fold the FIRST pasted slide diffs against: what the deck shows at the
+  // insertion point (the empty state when pasting at the very top).
+  let prev = at < 0 ? {} : folds[at];
+  const pasted = payload.slides.map((s) => {
+    const slide = { id: newId(), name: s.name, delta: {} };
+    if (s.transition !== undefined) slide.transition = copiedDeep(s.transition);
+    if (s.enabled !== undefined) slide.enabled = s.enabled;
+    if (s.autoAdvance !== undefined) slide.autoAdvance = s.autoAdvance;
+    if (s.enabled === false) {
+      slide.delta = copiedDeep(s.disabledDelta ?? {});
+      return slide; // outside the fold — `prev` is unchanged, as under reorder
+    }
+    slide.delta = deltaFromFoldDiff(prev, s.fold);
+    prev = s.fold;
+    return slide;
+  });
+
+  // THE FIRST ENABLED SLIDE AFTER THE BLOCK MUST BE RE-DERIVED, or the paste
+  // would change what it shows: its stored delta was a diff against the fold at
+  // `at`, and the fold it now inherits is the last pasted slide's. Diff it
+  // against `prev` instead. Everything past it is untouched — its fold is
+  // restored exactly, so the deltas downstream mean what they always did. A
+  // DISABLED slide in between is skipped rather than fixed up: it is outside the
+  // fold, so the repair belongs to the first slide that actually reads one.
+  let repaired = false;
+  const rest = after.map((slide, k) => {
+    if (repaired || slide.enabled === false) return slide;
+    repaired = true;
+    return { ...slide, delta: deltaFromFoldDiff(prev, folds[at + 1 + k]) };
+  });
+
+  return {
+    document: { ...doc, slides: [...before, ...pasted, ...rest] },
+    indices: pasted.map((_, k) => at + 1 + k),
+  };
+}
+
+/**
  * Pure function. Every NO-OP KEYFRAME in the document: a delta leaf whose value
  * is ALREADY what the fold says at that slide, so removing it changes nothing.
  *
