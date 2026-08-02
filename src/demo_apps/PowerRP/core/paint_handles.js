@@ -65,6 +65,15 @@
  *     `wavelength` and `phase` is left alone — dragging a bead never silently
  *     rewrites the phase an author keyframed.
  *
+ * IDENTITY (both beads). Each declares `glyph: "boxedO"` and a `label` — the
+ * handle-identity protocol (core/registry.js, bank in core/handle_glyphs.js).
+ * These beads are drawn ON TOP of the widget's own vertex/resize handles and were
+ * previously the SAME yellow square, so the user's question "does it belong to
+ * the shape or belong to the gradient?" (2026-08-02) had no answer short of
+ * dragging one. The boxed-O keeps the square footprint (unchanged grab target)
+ * and adds a ring plus the accent colour; the labels then say which bead is which
+ * on hover.
+ *
  * The `apply` of each bead returns `{[key]: <the whole rebuilt paint object>}`
  * because a modifier drag writes each apply-partial's top-level key straight to
  * the item (web/CanvasView.modifierDrag), and the gradient lives NESTED inside the
@@ -287,6 +296,16 @@ export function paintModifierPoints(state, key = "fill") {
   const centerBead = {
     id: `${key}-grad-center`,
     x: c.x * W + shift.x, y: c.y * H + shift.y,
+    // HANDLE IDENTITY (core/registry.js, core/handle_glyphs.js). These beads sit on
+    // top of the widget's OWN vertex handles and used to be the same yellow square,
+    // so "does this belong to the shape or to the gradient?" had no answer short of
+    // dragging it. `boxedO` is the PAINT family's look — same square footprint, so
+    // the grab target is unchanged, plus a ring and the accent colour.
+    glyph: "boxedO",
+    // The label names the SUBSYSTEM first ("Gradient…") because that is the
+    // question; `key` disambiguates a shape carrying gradients on BOTH fill and
+    // stroke, where two centre beads would otherwise read identically.
+    label: `Gradient centre (${key})`,
     apply(st, allowed) {
       const a = activeGradient(st[key]);
       if (!a) return {};
@@ -312,6 +331,14 @@ export function paintModifierPoints(state, key = "fill") {
   const directionBead = {
     id: `${key}-grad-dir`,
     x: origin.x + beadMultiple * half.x, y: origin.y + beadMultiple * half.y,
+    // Same PAINT-family glyph as the centre bead: the two beads are one subsystem
+    // and should read as a pair against the widget's vertex handles. Telling THEM
+    // apart is the stem's job (it points from one to the other) and the label's.
+    glyph: "boxedO",
+    // The label states BOTH parameters this one bead writes, because that is the
+    // non-obvious part after 6a4249e made it a free polar handle: heading → angle,
+    // distance → wavelength, in a single drag.
+    label: `Gradient angle + wavelength (${key})`,
     // A STEM back to the drawn centre — the standard cue for a polar handle. It
     // draws the axis the bead swings around, so the pivot and the radius (the two
     // things this one bead edits) are both visible before the drag starts.

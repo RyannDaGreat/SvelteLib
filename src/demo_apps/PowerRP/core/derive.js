@@ -1116,19 +1116,34 @@ export function constraintPull(mp, state, desired) {
  *   `shape` — an OPTIONAL glyph name the canvas handle layer draws instead of the
  *     default square (e.g. "triangle" for a paint-path bezier handle, so the two
  *     handle roles read apart). Absent → the default square, so every existing
- *     widget's handles render byte-identically.
+ *     widget's handles render byte-identically. SUPERSEDED BY `glyph` for anything
+ *     new — see below; `shape` is kept because paint_path declares it and the two
+ *     resolve to one picture.
+ *   `glyph` — an OPTIONAL key into THE HANDLE GLYPH BANK (core/handle_glyphs.js):
+ *     a closed vocabulary of {outline shape, inner mark, accent colour} looks, so
+ *     handles of different ROLES on one widget read apart before you drag either
+ *     ("does this belong to the shape or to the gradient?" — the user's question,
+ *     2026-08-02). Carried through VERBATIM as a key, never resolved here: this
+ *     function's job is the local→world wrap, and the look is the renderer's to
+ *     interpret (core/ names the vocabulary, web/ draws it). Absent → the default
+ *     square.
+ *   `label` — an OPTIONAL short human sentence naming what this handle does
+ *     ("Gradient centre"), shown as a HOVER TOOLTIP on the glyph. The other half
+ *     of the same fix: the glyph is a look you must learn, the label is words on
+ *     demand. Absent → no tooltip, which is every handle that predates this.
  *   `stem` — an OPTIONAL LOCAL point this handle tethers to (its anchor), wrapped
  *     to WORLD here exactly like x/y so a dashed GHOST line can be drawn from it to
  *     the handle. Absent → no tether line.
  *
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {}}) // []
- * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined, constrain: UNCONSTRAINED, shape: null, stem: null}]
+ * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined, constrain: UNCONSTRAINED, shape: null, glyph: null, label: null, stem: null}]
+ * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "g", x: 0, y: 0, glyph: "boxedO", label: "Gradient centre"}]}})[0].glyph // "boxedO"
  */
 export function nodeModifierPoints(node) {
   return (node.plugin.modifierPoints?.(node.state) ?? []).map((m) => {
     const p = T.apply(node.world, m.x, m.y);
     const stem = m.stem ? T.apply(node.world, m.stem.x, m.stem.y) : null;
-    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED, shape: m.shape ?? null, stem: stem ? { x: stem.x, y: stem.y } : null };
+    return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED, shape: m.shape ?? null, glyph: m.glyph ?? null, label: m.label ?? null, stem: stem ? { x: stem.x, y: stem.y } : null };
   });
 }
 

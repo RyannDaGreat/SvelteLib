@@ -117,17 +117,19 @@
  *                                           // WORLD space (the arrow family).
  *     modifierPoints?(state)                // the "PPT yellow squares": LOCAL
  *       → [{id, x, y, apply, constrain?,    // draggable handles that each write ONE
- *           shape?, stem?}]                 // parameter. Wrapped local→world by
+ *           glyph?, label?, shape?, stem?}]  // parameter. Wrapped local→world by
  *                                           // core/derive.nodeModifierPoints — see
- *                                           // THE HANDLE-CONSTRAINT PROTOCOL below.
- *                                           // shape?: a glyph name the canvas layer
- *                                           // draws instead of the square (e.g.
- *                                           // "triangle"); absent → square. stem?:
- *                                           // an OPTIONAL local point the handle
- *                                           // tethers to, drawn as a dashed ghost
- *                                           // line (a bezier handle → its anchor).
- *                                           // Both optional & additive, so a widget
- *                                           // that omits them renders unchanged.
+ *                                           // THE HANDLE-CONSTRAINT PROTOCOL and
+ *                                           // HANDLE IDENTITY below. glyph?: a key
+ *                                           // into the handle glyph BANK. label?: a
+ *                                           // short sentence, shown on hover. shape?:
+ *                                           // the legacy one-off glyph name
+ *                                           // ("triangle"). stem?: an OPTIONAL local
+ *                                           // point the handle tethers to, drawn as a
+ *                                           // dashed ghost line (a bezier handle →
+ *                                           // its anchor). All optional & additive,
+ *                                           // so a widget that omits them renders
+ *                                           // unchanged.
  *     handleToggles?: [{key, label, icon,   // the on/off states a LIST-ELEMENT
  *       isOn(el), set(el, on)}]             // handle offers (curve/break on a paint
  *                                           // path); the universal HandleToolbar and
@@ -199,6 +201,58 @@
  * genuinely missing is a procedural material's PATTERN (see ports.js mirrorPush),
  * and closing that means adding a handedness uniform to the material contract, not
  * relaxing this one.
+ *
+ * ── HANDLE IDENTITY (`glyph` + `label`) ──────────────────────────────────────
+ *
+ * THE PROBLEM, in the user's words (2026-08-02): "it's not always clear what
+ * handle is what. Is it like, does it belong to the shape or belong to the
+ * gradient?" Every modifier point was the same yellow square, so a rectangle
+ * carrying a gradient fill showed its four vertex handles and its two gradient
+ * beads in ONE undifferentiated look, and the only way to find out which was
+ * which was to drag one and watch what moved.
+ *
+ * TWO OPTIONAL ROW FIELDS ANSWER IT, and they are deliberately INDEPENDENT
+ * rather than one mechanism, because each is bad alone:
+ *
+ *   `glyph` — a key into THE BANK (core/handle_glyphs.js): a CLOSED vocabulary of
+ *     {outline shape, inner mark, accent colour} looks. Always visible, costs no
+ *     interaction. Alone it is a code the reader must learn.
+ *   `label` — a short human sentence ("Gradient centre"), shown as a hover
+ *     TOOLTIP on the handle. Exact, needs no learning. Alone it makes the reader
+ *     hover every handle in turn to ask a question the picture should have
+ *     already answered.
+ *
+ * Both are ABSENT-BY-DEFAULT and additive: a widget that declares neither draws
+ * the same square it always did and shows no tooltip, so this protocol cost
+ * nothing to every existing plugin.
+ *
+ * THE BANK IS CLOSED ON PURPOSE. A row picks a KEY; it cannot spell an arbitrary
+ * {shape, colour, stripe}. Handles are a visual LANGUAGE shared across widgets,
+ * and per-plugin freeform looks would let two widgets mint two appearances for
+ * one role (and one appearance for two roles) — reintroducing exactly the
+ * confusion the feature removes, but harder to see. Adding a look means adding a
+ * bank entry, where the whole vocabulary is on one screen.
+ *
+ * THE ACCENT IS THE SUBSYSTEM AXIS. `glyph`'s accent says WHICH SUBSYSTEM a
+ * handle belongs to (the widget's own geometry vs its PAINT), which is the
+ * literal question asked. The shape/mark axes then separate roles WITHIN a
+ * subsystem. So the gradient beads are `boxedO` — a box with an O in it, in the
+ * accent colour (the user's own pick) — keeping the square footprint so the grab
+ * target and muscle memory are unchanged while the ring makes them unmistakably
+ * not vertex handles.
+ *
+ * A LABEL IS A SENTENCE, NOT A GLYPH NAME. It is declared per ROW because the
+ * words depend on the widget ("Gradient centre" vs "Bezier control") while the
+ * look is shared; the bank's own `description` strings are documentation for the
+ * reader of that file and are never shown in the UI.
+ *
+ * HOVER RIDES THE GRAB GEOMETRY, NOT A SECOND HIT TEST. web/CanvasView.svelte
+ * binds the tooltip to pointerenter/leave on the VERY SVG ELEMENT whose
+ * `onpointerdown` starts the drag, so "close enough to see the name" and "close
+ * enough to grab" are the same region by construction and cannot drift. The tip
+ * is suppressed while a modifier drag is in flight (a label following your
+ * pointer through a gesture is noise, and the glyph is under the cursor the whole
+ * time).
  *
  * ── THE HANDLE-CONSTRAINT PROTOCOL (`constrain(state, desired) → allowed`) ────
  *
