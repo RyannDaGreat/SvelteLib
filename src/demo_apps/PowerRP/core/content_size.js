@@ -114,8 +114,23 @@ export function withContentSizes(state, sizes) {
  * as equations reading THE camera's frame … and keeps tracking"), and it inherits
  * that precedent's escape hatch for free: the binding is an ordinary equation, so
  * it is visible in the Inspector, editable, and removable by typing a number.
+ *
+ * ── WHY `abs`, AND NOT JUST `self.w` ─────────────────────────────────────────
+ * A STORED w OR h MAY BE NEGATIVE: that is the NEGATIVE EXTENTS protocol
+ * (core/registry.js), and it is how Flip is stored — a reflection is the one
+ * thing a similarity transform cannot express. `self.w` reads the SIGNED value,
+ * so the naive `= self.w / self.content.aspect` propagated the sign: flipping a
+ * content-bound widget HORIZONTALLY drove its height negative too, silently
+ * turning a mirror into a 180-degree rotation. MEASURED before the fix: w = -120
+ * with a 2:1 content gave h = -60, where +60 is right.
+ *
+ * `abs` takes the magnitude, which is the only part of the width that carries
+ * shape information — the sign is orientation, and orientation is not something
+ * an aspect ratio has an opinion about. There is no height sign to PRESERVE here
+ * because the equation IS the height, and `sign(self.h)` would be circular.
  */
-export const BIND_HEIGHT_TO_CONTENT = "= self.w / self.content.aspect";
+export const BIND_HEIGHT_TO_CONTENT = "= abs(self.w) / self.content.aspect";
 
-/** The other direction, for a widget whose height is the fixed one. */
-export const BIND_WIDTH_TO_CONTENT = "= self.h * self.content.aspect";
+/** The other direction, for a widget whose height is the fixed one. `abs` for the
+ *  same reason: a vertically flipped widget must not flip horizontally as well. */
+export const BIND_WIDTH_TO_CONTENT = "= abs(self.h) * self.content.aspect";

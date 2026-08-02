@@ -65,11 +65,28 @@ test("injection does not touch the stored state it was given", () => {
 
 // ── THE WHOLE POINT: AN EQUATION CAN READ IT ────────────────────────────────
 
-test("THE FEATURE: `= self.w / self.content.aspect` evaluates to a content-shaped height", () => {
+test("THE FEATURE: `= abs(self.w) / self.content.aspect` evaluates to a content-shaped height", () => {
   const out = evaluateState(doc(BIND_HEIGHT_TO_CONTENT), registry, "", sizes(1600, 900));
   // 400 wide at 16:9 → 225 tall.
   assert.equal(out.state.items.img.h, 225);
   assert.equal(out.errors.size, 0, "and it is not an equation error");
+});
+
+test("A FLIPPED WIDGET STAYS A MIRROR — the sign does not cross from w into h", () => {
+  // NEGATIVE EXTENTS (core/registry.js): a stored w may be negative, and that IS
+  // the flip. `self.w` reads it SIGNED, so the binding's first form propagated the
+  // sign and a horizontal flip silently flipped the widget VERTICALLY as well —
+  // a mirror quietly became a 180-degree rotation. Measured: w = -120 gave h = -60.
+  const flipped = { items: { img: { type: "image", x: 0, y: 0, w: -400, h: BIND_HEIGHT_TO_CONTENT, src: "a.png", z: 0 } }, vars: {} };
+  const out = evaluateState(flipped, registry, "", sizes(1600, 900));
+  assert.equal(out.state.items.img.h, 225, "height is the MAGNITUDE's shape, not the sign's");
+  assert.equal(out.state.items.img.w, -400, "and the horizontal flip itself is untouched");
+  assert.equal(out.errors.size, 0);
+
+  // The mirror image of the rule, so neither direction can regress alone.
+  const flippedV = { items: { img: { type: "image", x: 0, y: 0, w: BIND_WIDTH_TO_CONTENT, h: -300, src: "a.png", z: 0 } }, vars: {} };
+  const outV = evaluateState(flippedV, registry, "", sizes(1600, 900));
+  assert.equal(outV.state.items.img.w, 300 * (1600 / 900), "a vertical flip does not flip horizontally");
 });
 
 test("the OTHER direction works too", () => {

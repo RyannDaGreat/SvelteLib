@@ -928,7 +928,10 @@
    * preview and the commit are the same write by construction. */
   /**
    * Query. The write for "Bind Height to Content": each selected item whose
-   * content HAS a measured intrinsic size gets `h = "= self.w / self.content.aspect"`.
+   * content HAS a measured intrinsic size gets `h = "= abs(self.w) / self.content.aspect"`.
+   * The `abs` is load-bearing — see core/content_size.js: a stored w may be
+   * NEGATIVE (that is how Flip is stored), and without it a horizontal flip
+   * silently flipped the widget vertically too.
    *
    * GATED ON A MEASUREMENT EXISTING, not merely on the widget type. Binding an
    * unmeasured item would store an equation that evaluates to an error until its
@@ -1210,7 +1213,7 @@
       requires: (a) => (a.selectedIds().length === 0
         ? "a selected image, video or PDF page — this matches a widget's height to the shape of what is inside it"
         : "a selected widget whose content has FINISHED LOADING — nothing selected has a measured size yet, so there is no shape to match (try again in a moment)"),
-      help: "Sets the height to an equation — self.w / self.content.aspect — so the widget always matches the shape of the image, video or PDF page inside it. Because it is an equation and not a one-off number it KEEPS tracking: resize the width and the height follows, change the PDF's page and it follows that too. To stop, type a plain number into Height.",
+      help: "Sets the height to an equation — abs(self.w) / self.content.aspect — so the widget always matches the shape of the image, video or PDF page inside it. Because it is an equation and not a one-off number it KEEPS tracking: resize the width and the height follows, change the PDF's page and it follows that too. To stop, type a plain number into Height.",
       preview: (a) => { a.setPreview(contentBindWrite(a)); return () => a.cancelPreview(); },
       run: (a) => { a.setPreview(contentBindWrite(a)); a.commitPreview(); },
     },

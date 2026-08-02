@@ -145,18 +145,33 @@ test("THE BOUNDS PROTOCOL: the hull of the three points, like an arrow's endpoin
 });
 
 test("THE DRAWN CURVE CANNOT ESCAPE THE BOUNDS — sampled, not asserted", () => {
-  // Every skeleton point lies between the axis and the nub in w and between the
-  // ends in s, and a cubic stays within its control hull, so the three-point hull
-  // is sufficient. Checked here on the skeleton for a spread of shapes.
-  for (const tip of [{ x: 50, y: 40 }, { x: 5, y: -60 }, { x: 120, y: 30 }, { x: -30, y: -10 }]) {
-    const r = braceInkRect({ from: A, to: B, tip });
-    const f = axisFrame(A, B, tip);
-    for (const p of braceSkeleton(f.along, f.out, f.len)) {
-      const wx = A.x + f.ux * p.s + f.nx * p.w, wy = A.y + f.uy * p.s + f.ny * p.w;
-      assert.ok(wx >= r.x - 1e-9 && wx <= r.x + r.w + 1e-9, `tip ${JSON.stringify(tip)}: x ${wx} outside [${r.x}, ${r.x + r.w}]`);
-      assert.ok(wy >= r.y - 1e-9 && wy <= r.y + r.h + 1e-9, `tip ${JSON.stringify(tip)}: y ${wy} outside [${r.y}, ${r.y + r.h}]`);
-    }
-  }
+  // THIS TEST HAD THE RIGHT IDEA AND THE WRONG FIXTURE, and it is worth saying so
+  // where the next author will read it. It samples the REAL skeleton — exactly the
+  // right instrument — but every case used the HORIZONTAL span A→B, which is the
+  // one family of spans where escape is arithmetically impossible: the shoulders'
+  // perpendicular offset lands on the same axis the hull already spans. So a
+  // bounds function that under-reported by up to 17.32 units on a diagonal passed
+  // this test every time. THE SPAN ANGLE IS NOW PART OF THE SWEEP, which is the
+  // whole of the repair.
+  const SPANS = [
+    ["horizontal", { x: 0, y: 0 }, { x: 100, y: 0 }],
+    ["vertical", { x: 0, y: 0 }, { x: 0, y: 100 }],
+    ["diagonal 45", { x: 0, y: 0 }, { x: 100, y: 100 }],
+    ["shallow", { x: 20, y: 30 }, { x: 140, y: 68 }],
+    ["backwards", { x: 90, y: 60 }, { x: -30, y: 10 }],
+  ];
+  for (const [label, from, to] of SPANS)
+    for (const tip of [{ x: 50, y: 40 }, { x: 5, y: -60 }, { x: 120, y: 30 }, { x: -30, y: -10 }])
+      for (const shoulder of [0, 0.5, 1]) {
+        const r = braceInkRect({ from, to, tip });
+        const f = axisFrame(from, to, tip);
+        for (const p of braceSkeleton(f.along, f.out, f.len, shoulder)) {
+          const wx = from.x + f.ux * p.s + f.nx * p.w, wy = from.y + f.uy * p.s + f.ny * p.w;
+          const where = `${label} tip ${JSON.stringify(tip)} shoulder ${shoulder}`;
+          assert.ok(wx >= r.x - 1e-9 && wx <= r.x + r.w + 1e-9, `${where}: x ${wx} outside [${r.x}, ${r.x + r.w}]`);
+          assert.ok(wy >= r.y - 1e-9 && wy <= r.y + r.h + 1e-9, `${where}: y ${wy} outside [${r.y}, ${r.y + r.h}]`);
+        }
+      }
 });
 
 // ── THE LOOK: TWO CONTINUOUS KNOBS (user: "interpolate … smoothly") ─────────

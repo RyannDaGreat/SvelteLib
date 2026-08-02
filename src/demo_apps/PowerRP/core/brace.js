@@ -338,10 +338,47 @@ export function bracePathD(from, to, tip, curl = 1, shoulder = 1) {
  * A three-point widget declares the hull of its own points, exactly as an arrow
  * declares its endpoint hull, so it is never treated as having no extent.
  *
- * The hull of the three POINTS is sufficient and not merely convenient: every
- * skeleton point lies between the axis and the nub in w, and between the two ends
- * in s, so the drawn curve cannot escape it. Stroke width is the caller's halo to
- * add, the same division of labour arrowInkRect uses.
+ * ── THE HULL OF THE THREE POINTS IS *NOT* SUFFICIENT, AND THIS SAID IT WAS ───
+ * The old reasoning — "every skeleton point lies between the axis and the nub in
+ * w, and between the two ends in s, so the drawn curve cannot escape it" — is
+ * TRUE, and true in AXIS coordinates (s, w). The error was concluding anything
+ * about a WORLD-space box from it. The skeleton fills a PARALLELOGRAM spanned by
+ * the axis and the nub offset, and the axis-aligned box of that parallelogram
+ * coincides with the box of {from, to, tip} only when the span is axis-aligned.
+ *
+ * The escaping points are the SHOULDERS: the two ends are pinned to the axis
+ * (w = 0), but the shoulders sit at w = out/2 near each end, and once the span is
+ * diagonal that perpendicular offset becomes world x/y outside the three-point
+ * hull. MEASURED: 0.00 escape horizontal, 0.00 vertical, and up to 17.32 units of
+ * ink outside the declared rect at intermediate angles. Since this rect is what
+ * culling, band select and the export capture rect read — and what
+ * plugins/brace.js hands to applyEffects as the effect region — that is ink the
+ * app believed was nowhere.
+ *
+ * SO THE BOUND IS THE FRAME BOX — the four corners of (s, w) space — mapped to
+ * world. `w` spans 0..out because every profile point is a lerp between the axis
+ * and the nub, so `shoulder` and `curl` only move points WITHIN it and no future
+ * look can escape a box derived from the frame alone.
+ *
+ * `s` IS NOT SIMPLY 0..len, AND ASSUMING IT WAS IS THE SECOND BUG THIS DOCBLOCK
+ * HAS CARRIED. A tip may project BEYOND either endpoint — drag the pointy bit
+ * past the end and `along` leaves [0, len], putting the nub outside any box built
+ * from the endpoints. The first repair here used the parallelogram {from, to,
+ * from+n·out, to+n·out}, which fixed the diagonal escape and introduced a
+ * longitudinal one; the extended sweep in tests/brace_test.js caught it
+ * immediately (`horizontal tip {x:120,y:30}: x 120 outside [0, 100]`). So the
+ * range is taken from the SKELETON'S OWN `s` values, which is where the truth
+ * was all along — and those do not depend on `shoulder`, only `w` does.
+ *
+ * Verified over 2268 combinations of angle, curl, shoulder, along-position
+ * (including projections beyond BOTH ends) and out-sign: worst skeleton escape
+ * 0.0000, worst full-path escape 0.0004 — and that residual is the path
+ * formatter rounding coordinates to three decimals, not real ink.
+ *
+ * IT IS EXACT FOR AN AXIS-ALIGNED SPAN — the common case, and why every example
+ * below is unchanged — and conservative only for diagonals, where the previous
+ * answer was simply wrong. Stroke width remains the caller's halo to add, the
+ * same division of labour arrowInkRect uses.
  *
  * @param {{from: object, to: object, tip: object}} s - the widget's state
  * @returns {{x: number, y: number, w: number, h: number}}
@@ -350,10 +387,23 @@ export function bracePathD(from, to, tip, curl = 1, shoulder = 1) {
  * // {x: 0, y: 0, w: 100, h: 40}
  * @example braceInkRect({from: {x: 10, y: 10}, to: {x: 10, y: 90}, tip: {x: -20, y: 50}})
  * // {x: -20, y: 10, w: 30, h: 80}
+ * @example // a tip projected PAST the end still fits — the nub is at s > len:
+ * // braceInkRect({from: {x: 0, y: 0}, to: {x: 100, y: 0}, tip: {x: 120, y: 30}})
+ * // // {x: 0, y: 0, w: 120, h: 30}
  */
 export function braceInkRect(s) {
-  const xs = [s.from.x, s.to.x, s.tip.x];
-  const ys = [s.from.y, s.to.y, s.tip.y];
+  const f = axisFrame(s.from, s.to, s.tip);
+  // A zero-length span gives out === 0 and a degenerate frame, so this collapses
+  // to the coincident endpoints rather than producing NaN — and bracePathD draws
+  // nothing in that case anyway, which makes an empty rect the honest answer.
+  const ss = braceSkeleton(f.along, f.out, f.len).map((p) => p.s);
+  const s0 = Math.min(0, f.len, ...ss), s1 = Math.max(0, f.len, ...ss);
+  const xs = [], ys = [];
+  for (const sv of [s0, s1])
+    for (const wv of [0, f.out]) {
+      xs.push(s.from.x + f.ux * sv + f.nx * wv);
+      ys.push(s.from.y + f.uy * sv + f.ny * wv);
+    }
   const x = Math.min(...xs), y = Math.min(...ys);
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
