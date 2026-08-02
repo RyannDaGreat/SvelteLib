@@ -42,6 +42,12 @@ import { dedupeGroupSelection, expandGroupSelection, selectParentGroups } from "
 import { retypeChoices, retypeEligible, retypedItem } from "../core/retype.js";
 import { shatterEligible, shatterNotReadyReason, shatteredDocument, shatterIds, shatterDisclosure, vectorRecovery } from "../core/shatter.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
+// INK BOUNDS (fitSelectionToInkBounds): `T` maps a widget's local ink offset
+// through its own world before it is added to the stored x/y, and `reportAction`
+// says so when the command has nothing to change (a refusal of ONE user act is
+// never deduped — core/report.js states why).
+import * as T from "../core/transform.js";
+import { reportAction } from "../core/report.js";
 import { bundleDefaults } from "../core/properties.js";
 import { multiSelectPanel, unifyPairs, MULTISELECT_MODE } from "../core/multiselect.js";
 import { sceneIR } from "../render_gpu/ports.js";
@@ -2712,6 +2718,138 @@ export class PowerRPApp {
     [doc] = withNewItem(doc, this.slideIndex, withDefaults(tangentOv, baseZ + 1));
     this.commit(withNormalizedZ(doc));
     this.selection = lensId;
+  }
+
+  // ── INK BOUNDS: fit the property box to what is actually drawn ─────────────
+
+  /**
+   * Query. The selected items whose PROPERTY BOX disagrees with what they
+   * actually occupy — i.e. the ones "Set size to ink bounds" would change. Both
+   * the command's gate and its worklist, so the gate can never claim a change
+   * the run would not make.
+   *
+   * TWO KINDS OF DISAGREEMENT, because the two kinds of widget mean different
+   * things by "actual size":
+   *   · A GROUP's actual size is its members' collective world AABB. A group's
+   *     box goes stale the moment a member moves — nothing re-derives it, by
+   *     design (a group is a flat membership parent, and its box is a captured
+   *     pose, not a computed hull).
+   *   · ANY OTHER BBOX WIDGET's actual size is its declared INK BOUNDS
+   *     (core/view.js localBoundsOf) — for text, where the type really landed.
+   *
+   * @returns {object[]} [{node, rect}] — rect is the LOCAL box the node should take
+   */
+  #inkFitTargets() {
+    return this.selectedNodes().flatMap((n) => {
+      if (!n.plugin.capabilities.bbox) return [];
+      const rect = n.type === "group" ? this.#groupMemberLocalAABB(n) : (n.plugin.localBounds?.(n.state) ?? null);
+      if (!rect || (rect.w <= 0 && rect.h <= 0)) return []; // nothing drawn / no members: nothing to fit to
+      const box = { x: 0, y: 0, w: n.state.w ?? 0, h: n.state.h ?? 0 };
+      const same = rect.x === box.x && rect.y === box.y && rect.w === box.w && rect.h === box.h;
+      return same ? [] : [{ node: n, rect }];
+    });
+  }
+
+  /**
+   * Query. A group's members' collective world AABB, expressed in the GROUP's
+   * OWN LOCAL frame — the rect groupSelection would capture if you ungrouped and
+   * regrouped right now (user: for a group the tool acts "like I ungrouped them
+   * and then regrouped them again").
+   *
+   * WHY THE INVERSE TRANSFORM. groupSelection builds its box from member world
+   * AABBs and then sets the group's x/y TO that origin with rotation 0, scale 1 —
+   * so for a fresh group, world and local coincide and no mapping is visible. A
+   * group that has since been MOVED, ROTATED or SCALED has a non-identity world,
+   * and its stored w/h are local units the world then transforms. Writing a world
+   * rect straight into local w/h would therefore double-count the group's own
+   * transform. Mapping the world AABB's corners back through the inverse and
+   * taking their AABB keeps the recapture correct at any pose — conservative
+   * under rotation exactly as rotatedBBoxAABB is in the other direction.
+   *
+   * Null when the group has no members with bounds (an empty group has no hull).
+   *
+   * @param {object} groupNode - a derived node whose type is "group"
+   * @returns {?{x: number, y: number, w: number, h: number}} local-frame AABB
+   */
+  #groupMemberLocalAABB(groupNode) {
+    const ids = new Set(groupNode.state.members ?? []);
+    const boxes = this.nodes().filter((n) => ids.has(n.itemId)).map(rotatedBBoxAABB).filter(Boolean);
+    if (boxes.length === 0) return null;
+    const minX = Math.min(...boxes.map((b) => b.x)), minY = Math.min(...boxes.map((b) => b.y));
+    const maxX = Math.max(...boxes.map((b) => b.x + b.w)), maxY = Math.max(...boxes.map((b) => b.y + b.h));
+    const inv = T.invert(groupNode.world);
+    const corners = [[minX, minY], [maxX, minY], [minX, maxY], [maxX, maxY]].map(([x, y]) => T.apply(inv, x, y));
+    const xs = corners.map((p) => p.x), ys = corners.map((p) => p.y);
+    const lx = Math.min(...xs), ly = Math.min(...ys);
+    return { x: lx, y: ly, w: Math.max(...xs) - lx, h: Math.max(...ys) - ly };
+  }
+
+  /** Query. Would "Set size to ink bounds" change anything? The command's `when`. */
+  canFitToInkBounds() {
+    return this.#inkFitTargets().length > 0;
+  }
+
+  /**
+   * Command (ONE undo unit). "Set size to ink bounds" — makes each selected
+   * widget's PROPERTY BOX equal to what it actually occupies. The user asked for
+   * a tool to "set size to. Physical boundary."
+   *
+   * WHAT IT WRITES, and why x/y move as well as w/h. An ink rect's ORIGIN need not
+   * be the box origin, so fitting is not merely a resize: the box's local origin
+   * shifts by the rect's local offset, and that shift must be mapped THROUGH the
+   * node's world transform before it is added to the stored x/y, or a rotated or
+   * scaled widget would jump. When the rect starts at the local origin (the text
+   * case — ink grows down and right) the offset is zero and only w/h are written,
+   * because unifyPairs drops any pair already holding its value.
+   *
+   * FOR A GROUP this is the ungroup-and-regroup the user described, and it also
+   * rewrites `bind`. That is the part that would be easy to leave out and wrong to:
+   * a group's influence on its members is measured as the delta from its BIND POSE
+   * (core/derive.js), so re-capturing the box without re-capturing the bind would
+   * make the group's own box change count as a transformation OF its members and
+   * shove them across the slide. Re-binding at the new pose is exactly what makes
+   * this "as if regrouped" — identity influence, members untouched, which is the
+   * whole point of a recapture.
+   *
+   * ONE UNDO UNIT via setPreview/commitPreview, the same path unifySelection and
+   * applyPreset use. No-op when nothing disagrees (reported, not silent) — an
+   * empty commit would push an undo entry for a change nobody made.
+   */
+  fitSelectionToInkBounds() {
+    const targets = this.#inkFitTargets();
+    if (targets.length === 0) {
+      reportAction("Set size to ink bounds: nothing selected has contents that leave its box — every selected box already matches what it holds. Nothing was changed.");
+      return;
+    }
+    const pairs = [];
+    for (const { node, rect } of targets) {
+      // The box's local origin moves by (rect.x, rect.y); the STORED x/y are world
+      // units, so that local offset is rotated/scaled through the node's own world
+      // before it is applied. Computed ONCE — the group's bind below must land on
+      // the SAME position the box does, and recomputing it would be two chances to
+      // disagree. A zero offset (the text case: ink grows down and right from the
+      // origin) leaves x/y exactly as they were.
+      const o = T.apply(node.world, rect.x, rect.y);
+      const origin = T.apply(node.world, 0, 0);
+      const nx = (node.state.x ?? 0) + (o.x - origin.x);
+      const ny = (node.state.y ?? 0) + (o.y - origin.y);
+      pairs.push([["items", node.itemId, "x"], nx]);
+      pairs.push([["items", node.itemId, "y"], ny]);
+      pairs.push([["items", node.itemId, "w"], rect.w]);
+      pairs.push([["items", node.itemId, "h"], rect.h]);
+      // A GROUP re-binds at its new pose — see the docblock: without this the
+      // recaptured box would read as a transformation of the members and shove
+      // them across the slide, instead of being the no-op recapture the user
+      // described ("like I ungrouped them and then regrouped them again").
+      if (node.type === "group") {
+        pairs.push([["items", node.itemId, "bind", "x"], nx]);
+        pairs.push([["items", node.itemId, "bind", "y"], ny]);
+        pairs.push([["items", node.itemId, "bind", "rotation"], node.state.rotation ?? 0]);
+        pairs.push([["items", node.itemId, "bind", "scale"], node.state.scale ?? 1]);
+      }
+    }
+    this.setPreview(pairs);
+    this.commitPreview();
   }
 
   // ── Groups (manifest "GROUPS", rough draft — the armature-shaped parent) ────
