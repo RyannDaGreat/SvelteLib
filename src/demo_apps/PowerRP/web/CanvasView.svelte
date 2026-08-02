@@ -3605,6 +3605,12 @@
     guides = [];
     sizeIndicators = [];
     hoverAnchor = null; // drag-time bind feedback ends with the gesture
+    // The handle-label hover is cleared here too, and cannot be left to
+    // pointerleave: the overlay holds POINTER CAPTURE for the whole gesture, so a
+    // drag that ends with the pointer far from the glyph never delivers a leave to
+    // it, and a stale id would pop the tip back the instant `app.dragging` drops.
+    // A pointer that really is still over a handle re-enters on its next move.
+    hoverHandleId = null;
     dynamicAnchor = null;
     app.snapEngaged = false; // cleared on pointer-up (per snap-round-2 spec)
     app.dragging = false;

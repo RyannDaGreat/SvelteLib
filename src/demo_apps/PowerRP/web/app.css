@@ -144,6 +144,38 @@
      tokens (--a-handle-rim/--a-handle-stroke) rather than inventing new ones —
      only the fill color is new. */
   --a-modifier: #ffc72c;
+  /* THE HANDLE GLYPH BANK (core/handle_glyphs.js). A glyph's `accent` picks WHICH
+     of these fills a handle takes, and that is the axis that answers the user's
+     question "does it belong to the shape or belong to the gradient?"
+     (2026-08-02). Deliberately only TWO families, ALIASED onto colours the themes
+     already tune rather than minted fresh: a third would need a hand-picked value
+     in each of the app's ~9 themes, and the shape/mark axes already separate more
+     roles than we have. So every theme's overrides apply to handle accents for
+     free, with no per-theme work at all.
+       default — the widget's OWN geometry: the PPT-yellow above, unchanged.
+       paint   — the PAINT subsystem (gradient beads): the app's one selection
+                 colour, which is chromatically far from the yellow in every
+                 theme (that is what makes the two families read apart). */
+  --a-handle-accent-default: var(--a-modifier);
+  --a-handle-accent-paint: var(--a-selection);
+  /* A glyph's INNER MARK (the O in a boxed-O, an X, a centre dot) is drawn in the
+     RIM colour, not a colour of its own, so it reads as ENGRAVING on the glyph
+     rather than a second object sitting on top of it. Its stroke is deliberately
+     THINNER than the rim: at an 8px footprint a mark at rim weight fills the
+     glyph solid and the shape stops being legible. */
+  --a-handle-mark-stroke: 1px;
+  /* The boxed-O's ring radius, and the centre dot's. Both are fractions of the
+     4px half-footprint, chosen so the ring sits clear of the rim and the dot
+     still reads as a point rather than a filled square. */
+  --a-handle-mark-r: 2px;
+  --a-handle-dot-r: 1.25px;
+  /* HANDLE LABEL TOOLTIP (the handle-identity protocol). It is drawn INSIDE the
+     overlay <svg> — an HTML Tooltip cannot nest there, the same constraint the
+     anchor hover tip already lives under — so it reuses that tip's text sizing
+     and knockout halo and only needs its own offset from the glyph. Offset is
+     up-and-right so the label never sits under the pointer that summoned it. */
+  --a-handle-label-dx: 10px;
+  --a-handle-label-dy: -9px;
   /* GHOST OBJECTS (manifest ARCHITECTURE PLAN #2): "a THIN 50%-GRAY BOUNDARY
      OUTLINE". LINKED to --fg-dim, the existing per-theme neutral-gray token
      (#8c8c8c graphite / #666 light / #94897b warm — already tuned per theme
@@ -453,6 +485,24 @@
      key chip (--a-key-chip-h) so the slice reads as a thin band, not a row. */
   --a-transition-slice-h: var(--a-key-chip-h);
   --a-transition-chip-pad: 0 var(--a-sp-2);
+  /* The slice's two INSERT ends. Width is a fixed grab target rather than a
+     fraction of the band, so the middle chip keeps a readable label in a narrow
+     rail — the user asked for the ENDS, and an end that shrinks with the panel
+     stops being one. */
+  --a-slice-end-w: 26px;
+  /* THE DROP INDICATOR during a slide drag: a thickened, selection-toned rail at
+     the boundary under the cursor ("the horizontal line ... would almost open
+     when my mouse is over it"). Two values because a boundary reads as OPEN by
+     both gaining weight and gaining space. */
+  --a-drop-line-h: 3px;
+  --a-drop-gap: 10px;
+  /* How far a row being DRAGGED fades, so the block travelling with the cursor is
+     visibly lifted out of the list it is still occupying. */
+  --a-drag-ghost-opacity: 0.45;
+  /* The multi-selection TINT on a rail row. Distinct from --a-selection (which is
+     the CURRENT slide's border) so membership and currency read independently:
+     a block of five selected slides has one current slide inside it. */
+  --a-slide-selected-bg: rgba(63, 158, 255, 0.16);
   --a-hairline: 0.5px; /* retina hairline: 0.5 CSS px = 1 device px at 2× (user spec) */
 
   /* How far a DISABLED control fades. One value for every unavailable button,
@@ -4697,10 +4747,72 @@ textarea {
    must not be confused at a glance. Rim/stroke reuse the handle sizing tokens
    (only the fill color, --a-modifier, is new — see its :root definition). */
 .overlay .modifier {
-  fill: var(--a-modifier);
+  /* THE FILL IS THE GLYPH BANK'S ACCENT (core/handle_glyphs.js), supplied per
+     handle as --handle-accent by CanvasView. The FALLBACK is --a-modifier, i.e.
+     exactly what this rule said before the bank existed — so a handle whose glyph
+     declares nothing, or any consumer that renders a .modifier without setting the
+     property, is byte-identical to before. Accent is the axis that says WHICH
+     SUBSYSTEM a handle belongs to (the widget's geometry vs its paint), which is
+     the user's question of 2026-08-02 stated in colour. */
+  fill: var(--handle-accent, var(--a-modifier));
   stroke: var(--a-handle-rim);
   stroke-width: var(--a-handle-stroke);
   cursor: grab;
+}
+
+/* The <g> that wraps ONE handle's outline + inner mark. It carries the pointer
+   handlers (grab, hover, context menu) for both, so the grab target is the whole
+   glyph and the hover region is IDENTICAL to it by construction — the handle
+   identity protocol's "no second hover geometry" requirement is satisfied by
+   there being no second element to attach one to.
+
+   pointer-events is stated EXPLICITLY rather than inherited from the .overlay
+   svg's default. Most overlay marks are decorative and individually opt OUT
+   (pointer-events:none, dozens of rules in this file); a handle is one of the few
+   that must stay interactive, and saying so here means a future blanket opt-out
+   on the overlay cannot silently kill both the grab and the hover at once. */
+.overlay .modifier-glyph {
+  pointer-events: auto;
+}
+
+/* THE INNER MARK (the O in a boxed-O, an X, a centre dot). Drawn in the RIM
+   colour so it reads as ENGRAVING on the glyph rather than a second object
+   sitting on it, at a THINNER weight than the rim because at an 8px footprint a
+   mark at rim weight fills the glyph solid and the outline stops being legible.
+   pointer-events:none so the mark can never swallow a press meant for the
+   outline underneath — the mark is decoration, the outline is the target. */
+.overlay .modifier-mark {
+  stroke: var(--a-handle-rim);
+  stroke-width: var(--a-handle-mark-stroke);
+  pointer-events: none;
+}
+/* Geometry via the CSS `r` property rather than an SVG attribute, so the bank's
+   sizes live with the rest of the design tokens instead of being literals in the
+   template. */
+.overlay .modifier-mark.ring {
+  fill: none;
+  r: var(--a-handle-mark-r);
+}
+.overlay .modifier-mark.dot {
+  fill: var(--a-handle-rim);
+  stroke: none;
+  r: var(--a-handle-dot-r);
+}
+
+/* THE HANDLE LABEL TIP: the hovered handle's `label`, the words half of the
+   handle identity protocol. Same ink + knockout halo as the anchor hover tip
+   (.anchor-tip > text) — these are the two overlay tips and they must read as one
+   idiom — offset up-and-right of the glyph so the label never sits under the
+   pointer that summoned it. pointer-events:none: it is a report, and a tip that
+   could eat the click on the handle it describes would be a trap. */
+.overlay .handle-label {
+  fill: var(--fg);
+  font-size: var(--a-font-sm);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: var(--a-text-halo-stroke);
+  pointer-events: none;
+  transform: translate(var(--a-handle-label-dx), var(--a-handle-label-dy));
 }
 
 /* A handle in the HANDLE SELECTION (the inner selection scope). Skinned by
