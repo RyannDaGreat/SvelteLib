@@ -1315,7 +1315,12 @@
     // icon-override case as the anchor and ghost composites — so the entry's icon
     // is the neutral both-states glyph the palette shows.
     { id: "toggle-light-dark", title: "Toggle Light / Dark Theme", icon: "mdi:theme-light-dark", run: (a) => a.toggleLightDark() },
-    { id: "new-slide", title: "New Slide", icon: "mdi:plus-box-outline", help: "The new slide starts as an EMPTY delta, so it looks identical to the one before it until you change something — and then only the difference is recorded. That is what makes a widget on both slides the same widget.", run: (a) => a.addSlide() },
+    // ICON, USER-CHOSEN (2026-08-02): "get rid of the new slide after current
+    // buttons logo. Take the duplicate slide buttons logo and put that on new
+    // slides after current's logo." So New Slide wears mdi:file-multiple-outline
+    // — the glyph duplicate-slides used to own. Both commands still exist; they
+    // now share the glyph, which is the user's call and not a collision to fix.
+    { id: "new-slide", title: "New Slide", icon: "mdi:file-multiple-outline", help: "The new slide starts as an EMPTY delta, so it looks identical to the one before it until you change something — and then only the difference is recorded. That is what makes a widget on both slides the same widget.", run: (a) => a.addSlide() },
     // "Fresh" said nothing next to plain "New Slide"; the id and the handler both
     // say BLANK (addBlankSlide), and the parenthetical now uses the same word as
     // delete-item's "deactivate" for the same underlying operation.
