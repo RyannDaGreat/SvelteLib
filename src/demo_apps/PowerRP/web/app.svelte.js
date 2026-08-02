@@ -18,7 +18,7 @@ import {
 import { setPath, getPath, blendApplied } from "../core/deltas.js";
 // APPEARANCE-PRESERVING slide reorder + the duplicate-keyframe simplifier that
 // is its counterweight (core/slide_reorder.js states the law both obey).
-import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes } from "../core/slide_reorder.js";
+import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted } from "../core/slide_reorder.js";
 import { unionRect } from "../core/geometry.js";
 // Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
 import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
@@ -4184,9 +4184,218 @@ export class PowerRPApp {
 
   // ── Slides ─────────────────────────────────────────────────────────────────
 
+  // MULTI-SELECTED SLIDES — the slide-rail analogue of `selectionSet`, and the
+  // same shape for the same reason: an ARRAY of slide IDs, authoritative when
+  // non-empty, with `slideIndex` staying the PRIMARY (what the canvas shows and
+  // every single-slide write targets). User request, verbatim (2026-08-02):
+  // "Being able to select multiple slides at once could also be useful. And I
+  // could drag all of them together, copy them all together, or delete them all
+  // together."
+  //
+  // IDS, NOT INDICES, deliberately: slide indices shift on every insert, delete
+  // and reorder — which is precisely what these commands DO — so an index-based
+  // set would be stale the instant it was useful. `selectedSlideIndices()` is
+  // the ONE resolution point, and it drops ids that no longer exist rather than
+  // throwing, because a slide can vanish under a selection (undo, a concurrent
+  // delete) and that is not an error.
+  //
+  // NOT DOCUMENT STATE: not keyframed, not serialized. It describes what you are
+  // pointing at, not anything about the deck.
+  slideSelection = $state([]);
+
+  /**
+   * Query. The selected slides as INDICES, in document order — always non-empty,
+   * always including the current slide.
+   *
+   * The empty `slideSelection` means "just the current slide", exactly as an
+   * empty `selectionSet` means "just `selection`". Callers therefore never
+   * branch on multi-vs-single: every slide command reads this one list.
+   */
+  selectedSlideIndices() {
+    const picked = this.doc.slides
+      .map((s, i) => (this.slideSelection.includes(s.id) ? i : -1))
+      .filter((i) => i !== -1);
+    return picked.length > 0 ? picked : [this.slideIndex];
+  }
+
+  /** Query. Is slide `index` part of the live slide selection? What the rail's
+   *  rows read to draw themselves selected. */
+  isSlideSelected(index) {
+    return this.selectedSlideIndices().includes(index);
+  }
+
+  /**
+   * Command. THE RAIL'S CLICK RULE, in one place so the three gestures cannot
+   * drift apart:
+   *   plain      — select just this slide (and make it current)
+   *   shift      — extend from the current slide to this one (a RANGE)
+   *   cmd/ctrl   — toggle this slide in or out of the set
+   *
+   * The clicked slide always becomes the PRIMARY (`slideIndex`), including under
+   * cmd — the canvas follows your last click, which is what every other rail in
+   * the app does. Toggling the last remaining slide out is refused: an empty
+   * selection would mean "the current slide" anyway, so the gesture would look
+   * like it did nothing while actually resetting the set.
+   */
+  selectSlideAt(index, { shift = false, toggle = false } = {}) {
+    const slides = this.doc.slides;
+    if (!(index >= 0 && index < slides.length)) return;
+    if (shift) {
+      const [lo, hi] = index < this.slideIndex ? [index, this.slideIndex] : [this.slideIndex, index];
+      this.slideSelection = slides.slice(lo, hi + 1).map((s) => s.id);
+    } else if (toggle) {
+      const id = slides[index].id;
+      const cur = new Set(this.selectedSlideIndices().map((i) => slides[i].id));
+      if (cur.has(id) && cur.size > 1) cur.delete(id);
+      else cur.add(id);
+      this.slideSelection = slides.filter((s) => cur.has(s.id)).map((s) => s.id);
+    } else {
+      this.slideSelection = [];
+    }
+    this.slideIndex = index;
+  }
+
+  /** Command. Drops the multi-slide selection back to "just the current slide".
+   *  Called by every command that changes the deck's SHAPE (insert, delete,
+   *  paste), because a set captured before the change describes rows that may no
+   *  longer be what the user pointed at. */
+  clearSlideSelection() {
+    this.slideSelection = [];
+  }
+
+  /**
+   * Command (ONE undo unit). THE DROP half of drag-to-reorder: moves the
+   * selected slides (or the dragged one) to the BOUNDARY before old index
+   * `beforeIndex`, preserving what every slide looks like.
+   *
+   * A boundary, not a destination row — see `withSlidesMovedToBoundary`. The
+   * primary follows the block so the canvas keeps showing the slide you dragged.
+   */
+  moveSlidesToBoundary(indices, beforeIndex) {
+    const moving = [...new Set(indices)].sort((a, b) => a - b);
+    if (moving.length === 0) return;
+    const primaryId = this.doc.slides[this.slideIndex]?.id;
+    const doc = withSlidesMovedToBoundary(this.doc, moving, beforeIndex);
+    if (doc === this.doc) return;
+    this.commit(doc);
+    const at = this.doc.slides.findIndex((s) => s.id === primaryId);
+    if (at !== -1) this.slideIndex = at;
+  }
+
+  // THE SLIDE CLIPBOARD is IN-MEMORY AND SESSION-LOCAL, unlike the ITEM
+  // clipboard (which goes to the server so it can cross TABS — see
+  // copySelection). Two reasons, both about scope: a slide payload carries the
+  // FOLD of the whole stage (every item's full state), which is orders of
+  // magnitude larger than one item's; and a slide is meaningless in another
+  // document, where the items it references were never created. Cross-tab slide
+  // paste is therefore NOT BUILT rather than half-built — a payload that
+  // silently fails to reconstitute elsewhere is worse than a command that only
+  // works where it makes sense.
+  slideClipboard = $state(null);
+
+  /** Command. Captures the selected slides' FOLDED pictures + identity fields
+   *  (core slideClipboardPayload). Deltas are deliberately NOT captured: a delta
+   *  means something different in a different place, which is the premise of
+   *  core/slide_reorder.js. */
+  copySlides() {
+    this.slideClipboard = slideClipboardPayload(this.doc, this.selectedSlideIndices());
+  }
+
+  /** Query. How many slides are on the slide clipboard — the paste command's
+   *  gate AND the number its `requires` sentence states, from one call so the
+   *  two can never disagree (the `duplicateKeyframeCount` precedent). */
+  slideClipboardCount() {
+    return this.slideClipboard?.slides.length ?? 0;
+  }
+
+  /**
+   * Command (ONE undo unit). Pastes the slide clipboard AFTER the current slide,
+   * synthesizing each pasted slide's delta from the fold at the insertion point
+   * and re-deriving the slide that now follows the block, so nothing else in the
+   * deck changes. Fresh UUIDs; the pasted block becomes the new selection, with
+   * the FIRST pasted slide current.
+   */
+  pasteSlides() {
+    if (!this.slideClipboard) return;
+    const { document: doc, indices } = withSlidesPasted(this.doc, this.slideIndex, this.slideClipboard, uuid);
+    if (indices.length === 0) return;
+    this.commit(doc);
+    this.slideSelection = indices.map((i) => this.doc.slides[i].id);
+    this.slideIndex = indices[0];
+  }
+
+  /** Command (ONE undo unit). Duplicate = copy + paste-after, so it is exactly
+   *  the paste path and cannot drift from it. It DOES overwrite the slide
+   *  clipboard, which is the same thing every editor's Duplicate does and the
+   *  reason it is one gesture rather than two. */
+  duplicateSlides() {
+    this.copySlides();
+    this.pasteSlides();
+  }
+
+  /**
+   * Command (ONE undo unit). Deletes every selected slide. Refuses to empty the
+   * deck — a document always has at least one slide (`withSlideDeleted`'s rule,
+   * enforced here for the block so the partial delete never happens).
+   *
+   * Repaired afterwards for the reason `deleteSlide` states: deleting a CREATION
+   * slide orphans the items born there, and can orphan the camera.
+   */
+  deleteSlides() {
+    const doomed = this.selectedSlideIndices();
+    if (doomed.length === 0) return;
+    if (doomed.length >= this.doc.slides.length) {
+      console.error("PowerRP: refusing to delete every slide — a document always has at least one.");
+      return;
+    }
+    const drop = new Set(doomed);
+    const slides = this.doc.slides.filter((_, i) => !drop.has(i));
+    this.commit(this.repaired({ ...this.doc, slides }));
+    this.clearSlideSelection();
+    this.slideIndex = Math.min(doomed[0], this.doc.slides.length - 1);
+  }
+
   addSlide() {
     const [doc, idx] = withNewSlide(this.doc, this.slideIndex);
     this.commit(doc);
+    this.slideIndex = idx;
+  }
+
+  /**
+   * Command (ONE undo unit). Inserts an empty-delta slide AT a boundary — the
+   * navigator's transition-slice `+` affordances, whose two ends mean the two
+   * directions the user asked for (2026-08-02): "if I move mouse to either side
+   * of it, maybe I'd see a plus symbol, which means add new slide here … on the
+   * right side, it would show like a slide plus down arrow because it would add
+   * it from the previous slide. And the left side would be like up plus arrow
+   * that would insert slide from that direction."
+   *
+   * BOTH ENDS INSERT AT THE SAME GAP, and in this delta model that is not a
+   * fudge: a new slide's delta is EMPTY, so it looks exactly like the slide
+   * before it — an "insert from above" and an "insert from below" at one
+   * boundary would produce byte-identical documents. What genuinely differs is
+   * WHICH SIDE'S NEIGHBOUR the new slide inherits its transition from, and which
+   * row ends up current; those are what the two ends do here. The arrows read as
+   * "the slide comes from up there" / "from down here", which is the honest
+   * description of the inheritance rather than of the insertion point.
+   *
+   * @param {number} boundary - the gap: 0 is above slide 0, n is after the last
+   * @param {"above"|"below"} inheritFrom - which neighbour's transition to copy
+   */
+  insertSlideAtBoundary(boundary, inheritFrom = "above") {
+    const n = this.doc.slides.length;
+    const at = Math.max(0, Math.min(n, boundary));
+    const [doc, idx] = withNewSlide(this.doc, at - 1);
+    // The transition INTO the new slide: copied from whichever neighbour the
+    // affordance named, so inserting inside a run of fades does not drop a lone
+    // default tween into the middle of it. `withNewSlide` already seeded the
+    // default; this only overrides it when there is a neighbour to copy.
+    const source = inheritFrom === "below" ? this.doc.slides[at] : this.doc.slides[at - 1];
+    const slides = source?.transition
+      ? doc.slides.map((s, i) => (i === idx ? { ...s, transition: { ...source.transition } } : s))
+      : doc.slides;
+    this.commit({ ...doc, slides });
+    this.clearSlideSelection();
     this.slideIndex = idx;
   }
 
