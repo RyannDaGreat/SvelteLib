@@ -18,6 +18,10 @@
   import { pickNode, pickNodeStack, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
+  // THE HANDLE GLYPH BANK: core/ owns the VOCABULARY (which looks exist and what
+  // each is for), this file owns the DRAWING. The split is why a plugin can name a
+  // glyph without depending on the app shell.
+  import { handleGlyph } from "../core/handle_glyphs.js";
   // The R modal types its angle in DEGREES and `rotation` stores RADIANS. The
   // conversion is NOT re-derived here: `PROPS.rotation.display` names the same
   // transform the Inspector's rotation dial uses (web/displayUnits.js), so the
@@ -301,6 +305,21 @@
   // this is the live bind candidate (manifest Anchor UX: the nearest bindable
   // anchor shows its referencable name mid-drag) and carries no itemId/anchorId.
   let hoverAnchor = $state(null);
+  // ── HANDLE IDENTITY: the hovered handle's LABEL ────────────────────────────
+  // The id of the modifier point the pointer is currently over, or null. Its
+  // `label` (declared per row — core/registry.js "HANDLE IDENTITY") is drawn as a
+  // small tip beside the glyph, answering "what is this handle?" without a drag.
+  //
+  // IT RIDES THE GRAB GEOMETRY BY CONSTRUCTION, WHICH IS WHY IT IS AN ID AND NOT A
+  // POINT. A modifier point is grabbed by `onpointerdown` ON ITS OWN SVG ELEMENT —
+  // there is no distance test anywhere in startModifier, the hit region simply IS
+  // the drawn glyph. So the hover binds pointerenter/pointerleave to that SAME
+  // element and inherits that same region exactly: no radius is written down
+  // twice, and changing a glyph's footprint moves both affordances together. (A
+  // second, distance-based hover test — the shape hoverAnchor uses for anchors,
+  // which are pointer-events:none marks with no element to hover — would have been
+  // a second geometry free to disagree with the grab.)
+  let hoverHandleId = $state(null);
   // ── ANCHOR COPY DISCOVERABILITY (task #41) ─────────────────────────────────
   // Hovering an anchor reveals two small copy chips (.x / .y); clicking one
   // copies that anchor's VALID equation reference — the DISPLAY form
@@ -318,6 +337,45 @@
   const ANCHOR_COPY_CHIP_W = 24; // one chip's width
   const ANCHOR_COPY_CHIP_H = 16; // one chip's height
   const ANCHOR_COPY_CHIP_GAP = 4; // gap between the .x and .y chips
+  // ── HANDLE GLYPH GEOMETRY ───────────────────────────────────────────────────
+  // The half-footprint every modifier glyph is drawn inside: the square is 8px
+  // across, so 4. Every other outline in the bank is sized from this ONE number so
+  // that swapping a handle's glyph never changes how big its grab target is — the
+  // property that lets the hover tip reuse the drag's hit region verbatim, and the
+  // reason muscle memory survives a widget adopting a new look. It is SCREEN px
+  // (constant chrome, view-scale independent, like every other handle glyph).
+  const HANDLE_R = 4;
+  // The triangle is drawn 1px taller than the square's half-height and dropped 1px
+  // low, which is the exact geometry paint_path's bezier handles have always had —
+  // preserved to the pixel so the bank's arrival is invisible on existing widgets.
+  const HANDLE_TRI_UP = 5, HANDLE_TRI_DOWN = 4, HANDLE_TRI_HALF_W = 5;
+
+  /**
+   * Pure function. The SVG outline points/attrs for one bank look at a screen
+   * point. Returns a discriminated shape the template renders — {kind: "rect"} or
+   * {kind: "poly", points} — so the template has ONE branch on `kind` rather than
+   * one per bank entry, and adding a polygon glyph to the bank needs no template
+   * change at all.
+   *
+   * Args:
+   *   look ({shape}): a resolved bank look (core/handle_glyphs.handleGlyph)
+   *   x, y (number): the handle's SCREEN position (its centre)
+   *
+   * Returns:
+   *   {kind: "rect", x, y, w, h} | {kind: "poly", points: string}
+   *
+   * Examples:
+   *   >>> glyphOutline({shape: "square"}, 100, 50)   // {kind: "rect", x: 96, y: 46, w: 8, h: 8}
+   *   >>> glyphOutline({shape: "diamond"}, 0, 0)     // {kind: "poly", points: "0,-4 4,0 0,4 -4,0"}
+   *   >>> glyphOutline({shape: "triangle"}, 0, 0)    // {kind: "poly", points: "0,-5 5,4 -5,4"}
+   *   >>> glyphOutline({shape: "circle"}, 10, 10)    // {kind: "circle", cx: 10, cy: 10, r: 4}
+   */
+  function glyphOutline(look, x, y) {
+    if (look.shape === "triangle") return { kind: "poly", points: `${x},${y - HANDLE_TRI_UP} ${x + HANDLE_TRI_HALF_W},${y + HANDLE_TRI_DOWN} ${x - HANDLE_TRI_HALF_W},${y + HANDLE_TRI_DOWN}` };
+    if (look.shape === "diamond") return { kind: "poly", points: `${x},${y - HANDLE_R} ${x + HANDLE_R},${y} ${x},${y + HANDLE_R} ${x - HANDLE_R},${y}` };
+    if (look.shape === "circle") return { kind: "circle", cx: x, cy: y, r: HANDLE_R };
+    return { kind: "rect", x: x - HANDLE_R, y: y - HANDLE_R, w: HANDLE_R * 2, h: HANDLE_R * 2 };
+  }
   // Baseline of the EQUATION-LOCK tip above a selected item's outline: far enough
   // clear of the dashed stroke to read, in the same screen-px chrome space every
   // other overlay glyph is measured in. Negative because the tip sits ABOVE the
@@ -1031,14 +1089,19 @@
    * Everything that touches the document goes through `app` (so preview/commit/
    * undo semantics are the house ones and no handler invents its own); everything
    * that needs the CANVAS is a named service here.
+   *
+   * `pointer` is null for a KEYBOARD activation (Enter — see activateNode below):
+   * there is no cursor, and a handler that needs one must say so rather than read
+   * a fabricated point. All six shipped handlers ignore it (they act on the NODE),
+   * which is why Enter can reach every one of them.
    */
   function activationContext(hit, e) {
-    const w = worldPoint(e);
+    const w = e ? worldPoint(e) : null;
     return {
       app,
       node: hit,
       plugin: hit.plugin,
-      pointer: { world: w, local: localPointOf(hit, w.x, w.y), screen: screenPoint(e) },
+      pointer: w ? { world: w, local: localPointOf(hit, w.x, w.y), screen: screenPoint(e) } : null,
       /** Command. Mounts the widget's own canvas-overlay palette (CanvasToolbar,
        * built from the plugin's floatingToolbar descriptor). */
       showOverlayPalette(itemId) {
@@ -1076,8 +1139,10 @@
     const w = worldPoint(e);
     const hit = pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom);
     if (!hit) return;
-    const handler = handlerFor("activate", hit.plugin);
-    if (!handler) return;
+    // A widget declaring NO activation leaves the rest of this handler with nothing
+    // to do (a dblclick on a rect), so bail before the two side effects below —
+    // activateNode re-resolves the same handler and is the one that runs it.
+    if (!handlerFor("activate", hit.plugin)) return;
     // A double-click leaves a DOCUMENT TEXT SELECTION behind (measured: 1 range of
     // whitespace, from the canvas chrome around the click), and the next drag that
     // starts on it makes the browser begin an HTML5 drag-and-drop of that selection
@@ -1096,6 +1161,28 @@
     // so double-clicking a stack edits its top item and leaves that item selected
     // rather than editing one object while a different one wears the outline.
     clickCycle = { ...clickCycle, index: 0 };
+    activateNode(hit, e);
+  }
+
+  /**
+   * Command. RUNS A NODE'S DECLARED ACTIVATION — the one entry point both ways in
+   * reach it, so the double-click and the Enter key cannot drift into two
+   * behaviours. Selects the node first (a widget you are about to edit must be the
+   * one wearing the outline), then hands its handler the activation context.
+   *
+   * `e` is the originating MouseEvent for the pointer route and null for the
+   * KEYBOARD route, which is the only difference between them — see
+   * activationContext, whose `pointer` is null in the second case.
+   *
+   * The GATES are NOT here: they belong to each caller, because the two routes are
+   * gated by different authorities. onDblClick states them as early returns (it is
+   * raw DOM delivery); Enter states them ONCE, declaratively, in the registry's
+   * `activatable` predicate — which is also what puts the chip on the HintBar, so
+   * for the key route the gate and its announcement are one fact.
+   */
+  function activateNode(hit, e = null) {
+    const handler = handlerFor("activate", hit.plugin);
+    if (!handler) return;
     if (app.selection !== hit.itemId) app.selection = hit.itemId;
     handler.run(activationContext(hit, e));
   }
@@ -3781,6 +3868,27 @@
     // routed through the shortcut registry exactly as the modal's Enter is. The
     // session lives here, so this is where the hook has to be.
     app.finishCanvasMode = () => { if (creation) finishCreation(); };
+    // ENTER = DOUBLE-CLICK (user request, 2026-08-02: "if I hit the 'enter' key
+    // wehn slecting a widget and we didn't double click it yet, treat that enter
+    // key as a double click to go into editing it"). The hook lives here for the
+    // same reason modalCommit and finishCanvasMode do: the ACTIVATION CONTEXT is
+    // CanvasView's — `showOverlayPalette` writes a local, `enterMode` needs the
+    // node — so this is the only place that can build one.
+    //
+    // It activates the PRIMARY selection (app.selectedNode()), which under a
+    // multi-selection is `selectionSet[0]` — the same single item every other
+    // single-select consumer reads (the Inspector's single-item UI, rename,
+    // keyframe). Activating N widgets at once has no meaning anyway: five text
+    // editors cannot hold the caret together.
+    //
+    // NO GATES HERE, deliberately: the registry entry's `activatable` predicate is
+    // the gate, and App.svelte's onKeydown already refuses to dispatch while a
+    // typing target, the palette or present mode owns the keyboard. Duplicating
+    // them would be a second authority to keep in step with the HintBar.
+    app.activateSelection = () => {
+      const node = app.selectedNode();
+      if (node) activateNode(node);
+    };
     // Arrow-key NUDGE (one px per press, one undo unit): the same members and
     // the same translationPairs rule a body drag uses, so an arrow press and a
     // one-pixel drag are byte-identical writes (moveBy widgets move their free
@@ -4027,6 +4135,14 @@
         // ownership is visible), `hasElement` gates the point CONTEXT MENU to handles
         // that back a list element. All null/false for widgets that declare none.
         shape: m.shape,
+        // HANDLE IDENTITY (core/registry.js "HANDLE IDENTITY"): `glyph` is a key into
+        // the BANK, resolved to a {shape, mark, accent} look HERE — once per handle
+        // per overlay rebuild — so the template stays declarative and an unknown key
+        // throws at the seam that introduced it rather than drawing a silent default.
+        // The legacy `shape: "triangle"` is folded into the SAME lookup so the two
+        // spellings cannot grow two pictures. `label` is the hover tooltip's words.
+        look: handleGlyph(m.glyph ?? m.shape ?? null),
+        label: m.label,
         stem: m.stem ? actions.worldToScreen(m.stem.x, m.stem.y) : null,
         hasElement: !!m.element,
         // {locked, lockNote} — the R6-28 affordance, per handle, and the second of
@@ -4513,38 +4629,73 @@
         {/each}
         {#each overlay.modifiers as m}
           <!-- MODIFIER POINTS (manifest ARCHITECTURE PLAN #1 — "the PPT
-               yellow squares"): an anchor is a SQUARE (the default 8px footprint,
-               like ResizeHandles); a widget may declare `shape: "triangle"` for a
-               handle of a different ROLE (a paint-path bezier handle) so the two read
-               apart. Both reuse the .modifier class (fill/rim/cursor + the .selected
-               and .hidden-element state overrides), so a triangle handle theming and
-               selection-skinning come for free.
+               yellow squares"), drawn from THE HANDLE GLYPH BANK
+               (core/handle_glyphs.js; protocol in core/registry.js "HANDLE
+               IDENTITY"). A handle's `look` is {outline shape, inner mark, accent},
+               already resolved in the overlay derivation — so the branching here is
+               on the OUTLINE KIND (rect / circle / polygon), which is a fact about
+               SVG, not on the bank's key list, which is a fact about the app. A new
+               bank entry that reuses an existing outline kind needs NO change here.
+               Every branch carries the identical class list, style, handlers and
+               <title>, so a glyph choice cannot accidentally change a handle's
+               BEHAVIOUR — only its picture. The accent is applied as a CSS custom
+               property the .modifier rule reads, so the .selected / .hidden-element
+               state overrides keep working untouched on top of any accent.
+               THE HOVER TIP (handle identity) binds to these SAME elements: the
+               grab region and the "what is this?" region are one region because
+               they are one element. See hoverHandleId.
                RIGHT-CLICK a handle that backs a list element (hasElement) opens the
                point CONTEXT MENU (F.18). -->
-          {#if m.shape === "triangle"}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <polygon
-              class="modifier"
-              class:selected={m.selected}
-              class:hidden-element={m.hidden}
-              points={`${m.x},${m.y - 5} ${m.x + 5},${m.y + 4} ${m.x - 5},${m.y + 4}`}
-              style={lockedGlyphStyle(m)}
-              onpointerdown={(e) => startModifier(m.id, e)}
-              oncontextmenu={(e) => openPointMenu(m, e)}
-            >{#if m.lockNote}<title>{m.lockNote}</title>{/if}</polygon>
-          {:else}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <rect
-              class="modifier"
-              class:selected={m.selected}
-              class:hidden-element={m.hidden}
-              x={m.x - 4} y={m.y - 4} width="8" height="8"
-              style={lockedGlyphStyle(m)}
-              onpointerdown={(e) => startModifier(m.id, e)}
-              oncontextmenu={(e) => openPointMenu(m, e)}
-            >{#if m.lockNote}<title>{m.lockNote}</title>{/if}</rect>
-          {/if}
+          {@const g = glyphOutline(m.look, m.x, m.y)}
+          {@const gstyle = `--handle-accent: var(--a-handle-accent-${m.look.accent});${lockedGlyphStyle(m) ?? ""}`}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <g
+            class="modifier-glyph"
+            onpointerenter={() => { hoverHandleId = m.id; }}
+            onpointerleave={() => { if (hoverHandleId === m.id) hoverHandleId = null; }}
+            onpointerdown={(e) => startModifier(m.id, e)}
+            oncontextmenu={(e) => openPointMenu(m, e)}
+          >
+            {#if m.lockNote}<title>{m.lockNote}</title>{/if}
+            {#if g.kind === "rect"}
+              <rect class="modifier" class:selected={m.selected} class:hidden-element={m.hidden} x={g.x} y={g.y} width={g.w} height={g.h} style={gstyle} />
+            {:else if g.kind === "circle"}
+              <circle class="modifier" class:selected={m.selected} class:hidden-element={m.hidden} cx={g.cx} cy={g.cy} r={g.r} style={gstyle} />
+            {:else}
+              <polygon class="modifier" class:selected={m.selected} class:hidden-element={m.hidden} points={g.points} style={gstyle} />
+            {/if}
+            <!-- THE INNER MARK, drawn in the RIM colour so it reads as engraving on
+                 the glyph rather than a second object on top of it. pointer-events
+                 are off on it (.modifier-mark) so the mark can never swallow a press
+                 the outline was supposed to receive — the mark is decoration, the
+                 outline is the target. -->
+            {#if m.look.mark === "o"}
+              <!-- The RADIUS comes from a token via the CSS `r` geometry property
+                   (app.css .modifier-mark), not an SVG attribute, so the bank's
+                   sizes live with the rest of the design tokens. -->
+              <circle class="modifier-mark ring" cx={m.x} cy={m.y} />
+            {:else if m.look.mark === "dot"}
+              <circle class="modifier-mark dot" cx={m.x} cy={m.y} />
+            {:else if m.look.mark === "x"}
+              <path class="modifier-mark" d={`M ${m.x - HANDLE_R / 2} ${m.y - HANDLE_R / 2} L ${m.x + HANDLE_R / 2} ${m.y + HANDLE_R / 2} M ${m.x + HANDLE_R / 2} ${m.y - HANDLE_R / 2} L ${m.x - HANDLE_R / 2} ${m.y + HANDLE_R / 2}`} fill="none" />
+            {/if}
+          </g>
         {/each}
+        <!-- THE HANDLE LABEL TIP. Drawn AFTER every glyph so it is never occluded by
+             a neighbouring handle, and only for the ONE hovered handle that declares
+             a `label` — an unlabelled handle (every handle that predates this) shows
+             nothing at all. SUPPRESSED DURING A DRAG (`!app.dragging`): the pointer
+             sits on the glyph for the whole gesture, so the tip would hang there
+             stating something the user is already doing, and it would follow the
+             handle around as visual noise over the very geometry being edited.
+             Drawn inside the <svg> like the anchor tip, for the same reason: an HTML
+             Tooltip cannot nest in SVG. -->
+        {#if !app.dragging}
+          {@const ht = overlay.modifiers.find((m) => m.id === hoverHandleId && m.label)}
+          {#if ht}
+            <text class="handle-label" x={ht.x} y={ht.y}>{ht.label}</text>
+          {/if}
+        {/if}
         {#each overlay.anchors as a}
           <g class="anchor" transform={`translate(${a.x} ${a.y})`}>
             <line x1="-5" y1="-5" x2="5" y2="5" />

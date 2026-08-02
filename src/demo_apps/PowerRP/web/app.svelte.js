@@ -1678,6 +1678,15 @@ export class PowerRPApp {
   // guards it on a live session, so it is a no-op otherwise.
   finishCanvasMode = () => {};
 
+  // ENTER = DOUBLE-CLICK (user request, 2026-08-02) — runs the PRIMARY selection's
+  // declared ACTIVATION, the same one a double-click runs. Installed by CanvasView
+  // for the same reason the two hooks above are: the activation context is the
+  // canvas's (`showOverlayPalette` writes a CanvasView local, `enterMode` needs the
+  // render node), so only CanvasView can build one. The per-activation Enter entries
+  // in core/shortcut_entries.js land here; a no-op before the canvas mounts, and
+  // CanvasView's own installed version is a no-op with nothing selected.
+  activateSelection = () => {};
+
   /**
    * Command (one undo unit per keypress). ONE WASDQE FLY STEP for the widget whose
    * activation currently owns the canvas — the 3D viewport's keyboard camera

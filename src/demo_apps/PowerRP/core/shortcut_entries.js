@@ -179,6 +179,41 @@ export const editSelection = (c) => editMode(c) && c.hasSelection && !c.handlesS
  */
 export const handlesSelected = (c) => editMode(c) && c.hasSelection && !!c.handlesSelected;
 /**
+ * Pure function. KEYBOARD FOCUS IS INSIDE THE SLIDE RAIL — the scope that owns
+ * the SLIDE clipboard keys.
+ *
+ * THE WHOLE POINT IS NOT TO STEAL Ctrl+C/Ctrl+V FROM THE CANVAS. The item
+ * clipboard round-trips through the OS and the server (web/clipboard.js); the
+ * slide clipboard is in-memory and holds whole folded stages. They are two
+ * different clipboards, so one chord may not mean both — which of them a copy
+ * went to would depend on invisible state, and the paste would be a coin flip.
+ * Scoping the slide keys to rail focus resolves it the same way the handle scope
+ * resolves Backspace: by `when`, so exactly one meaning is live and the HintBar
+ * shows exactly one chip per key.
+ *
+ * `editMode(c) && c.slideRail` rather than a bare `c.slideRail`: the rail's rows
+ * are real <button>s, so focusing one is NOT a typing target and every canvas
+ * chip would otherwise stay up beside these. The item entries exclude
+ * `slideRail` for the mirror-image reason, exactly as the item entries exclude
+ * `handlesSelected`.
+ *
+ * @example slideRailFocus({mode: "edit", slideRail: true}) // true
+ * @example slideRailFocus({mode: "edit"}) // undefined (FALSY — the canvas owns the keys; same `&&` shape as editSelection)
+ * @example slideRailFocus({mode: "edit", slideRail: true, typingTarget: true}) // false — the inline rename editor owns them
+ */
+export const slideRailFocus = (c) => editMode(c) && c.slideRail;
+/** Pure function. The ITEM clipboard's scope: ordinary editor input with focus
+ *  NOT in the slide rail. The complement of `slideRailFocus` inside editMode, so
+ *  Ctrl+C/V/D have exactly one meaning at any moment.
+ * @example itemClipboardScope({mode: "edit"}) // true
+ * @example itemClipboardScope({mode: "edit", slideRail: true}) // false — the rail owns the clipboard keys */
+export const itemClipboardScope = (c) => editMode(c) && !c.slideRail;
+/** Pure function. `itemClipboardScope` with an item selected — the gate for the
+ *  clipboard keys that need something to act on (Copy, Duplicate).
+ * @example itemClipboardSelection({mode: "edit", hasSelection: true}) // true
+ * @example itemClipboardSelection({mode: "edit", hasSelection: true, slideRail: true}) // false */
+export const itemClipboardSelection = (c) => editSelection(c) && !c.slideRail;
+/**
  * The drag kinds whose ESCAPE is claimed by CanvasView, which cancels the gesture
  * from a CAPTURE-phase listener so the selection survives — it MUST pre-empt App's
  * bubble-phase Deselect, so for these kinds Escape means "cancel", never "deselect".
@@ -466,8 +501,14 @@ export const KEYBINDING_DEFAULTS = [
   // dialog is warranted for an undoable action, and one on every purge would be
   // worse.
   { command: "purge-item", keys: ["Cmd", "Backspace"], when: "editSelection" },
-  { command: "copy-item", keys: ["Ctrl", "C"], when: "editSelection" },
-  { command: "paste", keys: ["Ctrl", "V"], when: "editMode" },
+  // THE CLIPBOARD KEYS ARE SCOPED, because there are TWO clipboards. Focus in
+  // the slide rail means these three chords act on SLIDES (the entries below);
+  // anywhere else they act on items, as they always have. The two scopes are
+  // complementary by construction (itemClipboardScope = editMode && !slideRail),
+  // so exactly one meaning is live and the HintBar shows one chip per key —
+  // the same disambiguation-by-`when` the handle scope uses for Backspace.
+  { command: "copy-item", keys: ["Ctrl", "C"], when: "itemClipboardSelection" },
+  { command: "paste", keys: ["Ctrl", "V"], when: "itemClipboardScope" },
   // 14.9: Cmd/Ctrl+D = Duplicate. FLAGGED — the binding is the convention
   // candidate PENDING USER RATIFICATION (Cmd+D is the browser bookmark key;
   // onKeydown preventDefaults on dispatch so the bookmark is suppressed while
@@ -903,6 +944,36 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modal
     // creation step's chip.
     ...activations.map(({ handlerId, label }) => ({
       keys: [MOUSE_DOUBLE_TOKEN], label, when: activatable(handlerId),
+    })),
+    // ── ENTER = DOUBLE-CLICK, THE SAME LIST ONE KEY OVER ────────────────────
+    // User request (2026-08-02): "if I hit the 'enter' key wehn slecting a widget
+    // and we didn't double click it yet, treat that enter key as a double click to
+    // go into editing it."
+    //
+    // GENERATED FROM THE SAME `activations` LIST, with the SAME `activatable(handlerId)`
+    // gate and the SAME label as the chip above it. That is the whole design: the two
+    // inputs are one behaviour (web/CanvasView.svelte activateNode is the single entry
+    // point both reach), so they are one row of this table read twice, and neither the
+    // gate nor the wording can drift between them.
+    //
+    // These DISPATCH (unlike the mouse chips, which are display-only by construction):
+    // Enter is a real key, so each carries a `run` calling the CanvasView hook. The
+    // hook is installed on `app`, so this module still imports nothing from web/.
+    //
+    // WHY `activatable` IS ALREADY THE RIGHT FOCUS GATE, unchanged. It descends from
+    // `editMode` → `editBase` → `editorInput`, which is exactly the set of "somebody
+    // else owns the keyboard" facts Enter must respect: a focused text editor,
+    // equation field or MathLive box is a `typingTarget`; a modal dialog is
+    // `dialogOpen`; the palette is `paletteOpen`; a dropdown/combobox is
+    // `popoverOpen`; a G/S/R modal transform is `modalActive`; an armed crosshair or
+    // a live widget canvas mode is excluded by `editMode` itself. Every one of those
+    // contexts binds Enter to its OWN verb, and each already registers that verb here
+    // (the palette's "Run", the modal transform's "Confirm", a creation mode's
+    // "Finish shape", a committable field's "Commit"/"Rename"/"Add"). So the "one
+    // key, one meaning" invariant holds without a single new exclusion — the gates
+    // that keep those chips off the bar are the same ones that keep this one off.
+    ...activations.map(({ handlerId, label }) => ({
+      keys: ["Enter"], label, when: activatable(handlerId), run: () => app.activateSelection(),
     })),
     // PRESENT-MODE keys (Round 18 audit INV5). DISPLAY-ONLY: PresentMode.svelte
     // owns the actual dispatch via its own CAPTURE-phase window listener (it
