@@ -37,6 +37,8 @@
 
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
+import { textInkBounds } from "../core/richtext.js";
+import { inkMeasure } from "../core/ink_metrics.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { text } from "../render_gpu/ir.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
@@ -75,6 +77,49 @@ const VALIGN_LABELS = { top: "Top", middle: "Middle", bottom: "Bottom" };
  */
 export function plaintextIsEmpty(value) {
   return value === null || value === undefined || String(value).trim() === "";
+}
+
+/**
+ * Query (reads the installed ink measure — core/ink_metrics.inkMeasure, which is
+ * module state and reports once when it is the monospace fallback). The LOCAL INK
+ * rect of a plaintext box: where the laid-out type ACTUALLY is, which is not the
+ * property box whenever the text overflows it.
+ *
+ * This is the plugin's BOUNDS-protocol answer (core/view.js localBoundsOf) and it
+ * is exported because three consumers need the same rect and must not each
+ * recompute it their own way: the hook below, the dashed INK-BOUNDS ghost, and
+ * the "Set size to ink bounds" command that writes this rect into w/h.
+ *
+ * The state is a SINGLE STRING, so it is wrapped as a one-run rich value with the
+ * widget's own style — the same shape emit() hands the renderer via the text() op
+ * (which getTextLayout wraps identically through singleRunRich). One string, one
+ * style, one layout: the rect and the glyphs come from the same description.
+ *
+ * AN EMPTY BOX HAS NO INK, and reports the ZERO-SIZE rect at the origin rather
+ * than its box. That is consistent with emit() (which returns [] — it draws
+ * nothing) and it is what keeps the empty-box GHOST affordance meaningful: an
+ * empty plaintext is findable through isGhost, not by pretending to have ink.
+ *
+ * @param {object} state - the folded, equation-evaluated item state
+ * @returns {{x: number, y: number, w: number, h: number}} local-unit ink rect
+ *
+ * @example plaintextInkBounds({ text: "" }) // {x: 0, y: 0, w: 0, h: 0} (nothing drawn)
+ * @example // a caption whose two lines overflow a one-line-tall box reports the TALLER rect:
+ * @example // plaintextInkBounds({text: "long enough to wrap", w: 100, h: 20, size: 36}).h > 20 // true
+ */
+export function plaintextInkBounds(state) {
+  if (plaintextIsEmpty(state.text)) return { x: 0, y: 0, w: 0, h: 0 };
+  const w = state.w ?? 0, h = state.h ?? 0;
+  const size = state.size ?? DEFAULT_TEXT_SIZE;
+  const rich = {
+    runs: [{ text: String(state.text), size, font: state.font ?? DEFAULT_FONT, bold: !!state.bold, color: state.fill ?? "#000000" }],
+    paras: [{}],
+  };
+  const boxStyle = { align: state.align ?? "left", valign: state.valign ?? "top" };
+  // The SAME box emit() lays out in: a 0/absent w means "no wrap" (Infinity), and
+  // a 0/absent h means "no vertical box" — mirrored from emit() rather than
+  // restated, so the rect and the draw can never disagree about the box.
+  return textInkBounds(rich, w > 0 ? w : Infinity, inkMeasure(), boxStyle, h > 0 ? h : Infinity);
 }
 
 /**
@@ -412,6 +457,13 @@ export const plaintextPlugin = {
       boxStyle: { align: s.align ?? "left", valign: s.valign ?? "top" },
     })], s, world, { x: 0, y: 0, w, h });
   },
+  // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): a text box's INK is the
+  // laid-out type, NOT the property box — type overflows the bottom of a short
+  // box and an unbreakable word overruns a narrow one. Declaring this is what
+  // stops overflowing text being culled, missed by a band, cropped out of an
+  // export capture rect, and (the reported symptom) unclickable. ORTHOGONAL to
+  // `cullMargin` below, which is the effects halo AROUND this ink.
+  localBounds: plaintextInkBounds,
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
   // Anchors sit on the bbox rim (the shared standard anchors) — same choice

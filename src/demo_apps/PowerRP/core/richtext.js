@@ -911,6 +911,76 @@ function addDecorations(out, piece, x, lineY, baseline) {
   }
 }
 
+// ── INK BOUNDS (the laid-out extent, which is NOT the property box) ───────────
+
+/**
+ * Pure function. The LOCAL rect a laid-out text stack's INK actually occupies,
+ * given the box it was laid out in — THE BOUNDS protocol's answer for a text
+ * widget (core/view.js localBoundsOf), computed from the SAME layout that
+ * positions the glyphs, so the rect can never describe a different stack than
+ * the one drawn.
+ *
+ * ── WHY IT IS NOT THE BOX (the defect this exists to fix) ─────────────────────
+ * Text OVERFLOWS. `valignOffset` documents the rule the layout already obeys —
+ * content taller than boxH "grows DOWNWARD past h … never clip" — so a two-line
+ * caption in a one-line box has ink below its box, and a single unbreakable word
+ * has ink past its right edge (wrapParagraph places an overlong word on its own
+ * line "and allowed to overflow"). Reporting the box as the bounds is therefore
+ * wrong in exactly the two directions users hit first, and the consequences were
+ * all four BOUNDS consumers at once: overflowing type got CULLED when its box
+ * left the view, could not be caught by a band, was cropped out of an export
+ * capture rect, and — the report that prompted this — could not be CLICKED.
+ *
+ * ── WHAT EACH EDGE IS, AND WHY ───────────────────────────────────────────────
+ * Mirrors render_gpu/skia/paint_skia.textOpLocalBounds (the Skia painter's
+ * effect-substrate rect) edge for edge, because two rects claiming to bound the
+ * same ink must agree:
+ *   · LEFT/WIDTH — the wrap box when finite, OR the widest laid-out line,
+ *     whichever is wider. NEITHER ALONE IS SAFE: a fixed box is overrun by an
+ *     unbreakable word (so the laid-out width matters), and a right- or
+ *     centre-aligned line is positioned against the box edge (so the box
+ *     matters). x stays 0 — alignment never moves ink left of the box origin.
+ *   · TOP/HEIGHT — from the vertical-align offset down to the stack bottom. The
+ *     offset is 0 or positive here (valignOffset clamps overflow to 0), so the
+ *     top is 0 and the height is offset + laid-out height, which EXCEEDS boxH
+ *     exactly when the text overflows. boxH is deliberately not a floor: an
+ *     empty box's ink is small, and claiming otherwise would defeat culling.
+ *
+ * NO PAD. The painter's rect adds an em of headroom because a raster substrate
+ * that clips ink is a visible artifact; this rect is a GEOMETRIC claim that hit
+ * testing, band select and "Set size to ink bounds" consume, and padding it would
+ * make the fitted box visibly loose around the type.
+ *
+ * Args:
+ *   rich (object): canonical {runs, paras} (normalizeRichText first)
+ *   boxW (number): the wrap width the widget lays out at; Infinity ⇒ no wrap
+ *   measureRun (fn): (text, style) → {width, ascent, descent} — core/ink_metrics.inkMeasure()
+ *   boxStyle (object): the widget's align/valign (and any paragraph defaults)
+ *   boxH (number): the box height valign places the stack within; Infinity ⇒ none
+ *
+ * Returns:
+ *   {x, y, w, h}: local-unit ink rect, top-left origin, y-down
+ *
+ * @example // one 10-tall line of "ab" (monoMeasure: 20 wide) in a 100x100 box: the box wins on width, the line on height
+ * @example textInkBounds({runs: [{text: "ab", size: 10, color: "#000"}], paras: [{}]}, 100, monoMeasure, {}, 100) // {x: 0, y: 0, w: 100, h: 10}
+ * @example // THE OVERFLOW CASE: two lines (20 tall) in a 5-tall box — the ink is 20 tall, four times the box
+ * @example textInkBounds({runs: [{text: "a\nb", size: 10, color: "#000"}], paras: [{}, {}]}, 100, monoMeasure, {}, 5) // {x: 0, y: 0, w: 100, h: 20}
+ * @example // AN UNBREAKABLE WORD overruns a narrow box: "aaaa" measures 40 wide against a box of 15
+ * @example textInkBounds({runs: [{text: "aaaa", size: 10, color: "#000"}], paras: [{}]}, 15, monoMeasure, {}, 100) // {x: 0, y: 0, w: 40, h: 10}
+ * @example // valign pushes the stack down, and the ink rect follows it rather than starting at the box top
+ * @example textInkBounds({runs: [{text: "a", size: 10, color: "#000"}], paras: [{}]}, 100, monoMeasure, {valign: "bottom"}, 100) // {x: 0, y: 0, w: 100, h: 100}
+ */
+export function textInkBounds(rich, boxW, measureRun, boxStyle = {}, boxH = Infinity) {
+  const layout = layoutRichText(rich, boxW, measureRun, boxStyle, boxH);
+  const vOffset = valignOffset(boxStyle.valign ?? DEFAULT_VALIGN, boxH, layout.height);
+  return {
+    x: 0,
+    y: 0,
+    w: Math.max(Number.isFinite(boxW) ? boxW : 0, layout.width),
+    h: vOffset + layout.height,
+  };
+}
+
 // ── a deterministic measure stub for node tests / doctests ────────────────────
 
 /**

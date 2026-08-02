@@ -367,6 +367,76 @@ function alignEnum(CanvasKit, align) {
   }
 }
 
+// ── the INK-METRICS seam (core/ink_metrics) ───────────────────────────────────
+
+/**
+ * Query→build (builds and disposes one throwaway Paragraph per distinct run;
+ * memoized per (text, style)). Builds THE per-run measure function
+ * core/ink_metrics wants: `(text, {size, bold, font, italic}) → {width, ascent,
+ * descent}` in LOCAL units, measured through the SAME CanvasKit FontCollection
+ * that shapes the glyphs this module draws.
+ *
+ * ── WHY THIS IS THE RIGHT MEASURE AND canvas2D IS NOT ────────────────────────
+ * There is already a canvas2D-backed run measure in the tree (web/pdfFonts.js
+ * measureText, feeding the PDF/SVG vector exporters). This one exists ALONGSIDE
+ * it rather than replacing it because the two answer for different renderers: the
+ * exporters lay out with canvas2D metrics and so must measure with canvas2D, and
+ * the SKIA path shapes with this FontCollection and so must measure with it.
+ * Using either seam for the other's renderer would make the ink rect disagree
+ * with the glyphs it claims to bound — which is precisely the defect INK BOUNDS
+ * exists to remove. It also works in BARE NODE, where there is no canvas2D at
+ * all, so the CLI still gets true bounds.
+ *
+ * MEMOIZED because a bounds query runs per node per frame while the text is
+ * unchanged, and each miss allocates a WASM Paragraph. The cache is bounded and
+ * LRU'd for the same reason the layout cache is: continuous typing would
+ * otherwise grow it without limit.
+ *
+ * `measureRun` is called on SUBSTRINGS by the wrapper (core/richtext.wrapParagraph
+ * measures each word), so the key is the substring, not the whole string.
+ *
+ * @param CanvasKit the initialized CanvasKit module
+ * @param fc the shared committed + fallback FontCollection
+ * @returns {function} (text, style) → {width, ascent, descent}
+ *
+ * @example // const measure = makeSkiaRunMeasure(CanvasKit, fc);
+ * @example // measure("Hello", {size: 36, bold: false, font: "inter"}) // {width: 92.4…, ascent: 34.9…, descent: 8.7…}
+ * @example // measure("", {size: 36}) // {width: 0, ascent: <face ascent>, descent: <face descent>} — an empty run still has line metrics
+ */
+export function makeSkiaRunMeasure(CanvasKit, fc) {
+  const cache = new Map(); // "text|size|bold|font|italic" → {width, ascent, descent} (LRU by insertion order)
+  return (text, style) => {
+    const size = style?.size ?? DEFAULT_TEXT_SIZE;
+    const font = style?.font ?? "system";
+    const bold = !!style?.bold, italic = !!style?.italic;
+    const key = `${text}|${size}|${bold ? 1 : 0}|${font}|${italic ? 1 : 0}`;
+    const hit = cache.get(key);
+    if (hit) { cache.delete(key); cache.set(key, hit); return hit; }
+    // ONE unbounded-width paragraph holding just this run: its max intrinsic
+    // width IS the run's advance, and its line metrics are the face's ascent /
+    // descent at this size. Built through the SAME buildParagraph the draw uses,
+    // so the strut and the font-family chain are identical to the drawn stack.
+    const { para } = buildParagraph(CanvasKit, fc, text.length ? [{ text, style: { size, font, bold, italic } }] : [], {}, Infinity, { size, font }, 1);
+    const lm = para.getLineMetricsAt(0);
+    const m = {
+      width: para.getMaxIntrinsicWidth(),
+      ascent: lm ? lm.ascent : size * 0.8,
+      descent: lm ? lm.descent : size * 0.2,
+    };
+    para.delete();
+    cache.set(key, m);
+    while (cache.size > MEASURE_CACHE_MAX) cache.delete(cache.keys().next().value);
+    return m;
+  };
+}
+
+/** Distinct (substring, style) run measures held before the oldest is dropped.
+ * Bounded for the same reason CACHE_MAX above is — a measure is a few numbers, so
+ * this can be far larger than the Paragraph cache, but not unbounded: word-level
+ * measuring means one entry per distinct word per style, and continuous editing
+ * would otherwise accumulate one per keystroke prefix forever. */
+const MEASURE_CACHE_MAX = 4096;
+
 // ── the laid-out object (draw + geometry) ──────────────────────────────────────
 
 /**

@@ -23,6 +23,8 @@ import CanvasKitInit from "canvaskit-wasm/bin/canvaskit.js";
 import canvaskitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
 import { committedFaces, FALLBACK_FACES } from "../fonts.js";
 import { bootStage, fetchWithProgress } from "../../web/bootProgress.js";
+import { makeSkiaRunMeasure } from "./text_layout.js";
+import { setInkMeasure } from "../../core/ink_metrics.js";
 
 // Vite inlines every committed + fallback TTF at build time (offline-safe, hashed
 // URLs) — the same mechanism web/fontLoader.js uses, resolved relative to THIS
@@ -114,5 +116,13 @@ async function buildFontCollection(CanvasKit) {
   const fc = CanvasKit.FontCollection.Make();
   fc.setDefaultFontManager(provider);
   fc.enableFontFallback(); // resolve ANY registered face for a glyph outside the run's fontFamilies
+  // THE INK-METRICS SEAM (core/ink_metrics): now that the faces are registered,
+  // give DOM-free core a real text measure so a text widget's `localBounds`
+  // reports where the type ACTUALLY is. Installed HERE — the one place in the
+  // browser where CanvasKit and the FontCollection are both known-ready — rather
+  // than at each consumer, so every browser Skia consumer (editor surface AND the
+  // offscreen pixel service) shares one measure. Before this runs, bounds fall
+  // back to a monospace estimate and say so once; it is not silent either way.
+  setInkMeasure(makeSkiaRunMeasure(CanvasKit, fc));
   return fc;
 }

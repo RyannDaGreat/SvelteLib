@@ -21,6 +21,8 @@ import fs from "fs";
 import { paintIR } from "./paint_skia.js";
 import { renderWithDither } from "./dither_shader.js";
 import { committedFaces, FALLBACK_FACES } from "../fonts.js";
+import { makeSkiaRunMeasure } from "./text_layout.js";
+import { setInkMeasure } from "../../core/ink_metrics.js";
 
 const require = createRequire(import.meta.url);
 const CanvasKitInit = require("canvaskit-wasm/bin/canvaskit.js");
@@ -63,6 +65,13 @@ function buildFontCollection(CanvasKit) {
   const fc = CanvasKit.FontCollection.Make();
   fc.setDefaultFontManager(provider);
   fc.enableFontFallback();
+  // THE INK-METRICS SEAM (core/ink_metrics) — the bare-node twin of the install in
+  // browser_canvaskit.js, for the same reason and at the same point in the
+  // bootstrap. Without it the CLI still renders text correctly (the painter has
+  // its own layout) but every `localBounds` query — culling, the export capture
+  // rect — would fall back to a monospace estimate, so a still would cull against
+  // bounds that disagree with the pixels it just drew.
+  setInkMeasure(makeSkiaRunMeasure(CanvasKit, fc));
   return fc;
 }
 
