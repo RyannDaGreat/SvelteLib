@@ -85,6 +85,14 @@
  *                                           // core/ is DOM-free, so a plugin must
  *                                           // never reach for CanvasKit or canvas2D
  *                                           // here directly.
+ *     reparametrizeToBox?(state, newBox)    // THE INK-BOUNDS REPARAMETRIZATION
+ *       → statePatch | null                 // PROTOCOL (see the full contract
+ *                                           // below). "Set Size to Ink Bounds"
+ *                                           // asks a widget to take a DIFFERENT
+ *                                           // BOX WITHOUT CHANGING ITS PICTURE.
+ *                                           // Return the interior compensation
+ *                                           // that makes that true, or null to
+ *                                           // REFUSE. Absent = refuses.
  *     canSkip?(state, viewRectWorld) → bool // CULLING protocol: return true iff
  *                                           // this widget contributes nothing to
  *                                           // the given world-space view rect
@@ -295,6 +303,77 @@
  * "nearest allowed" is a LAW WITH DECLARED EXEMPTIONS (this line used to call it
  * an unenforced convention, which was already stale) — lives at THE
  * HANDLE-CONSTRAINT PROTOCOL in core/derive.js.
+ *
+ * ── THE INK-BOUNDS REPARAMETRIZATION PROTOCOL ────────────────────────────────
+ *   (`reparametrizeToBox(state, newBox) → statePatch | null`)
+ *
+ * THE LAW (user ruling, 2026-08-02, verbatim): "When I do set size to ink bounds,
+ * in order to implement that tool, a given widget must also have a way of scaling
+ * its content down so that what's visible on the screen does not change. The
+ * purpose of this is to make the bounds recognize reality, right? But even if I
+ * tween between the two, I should see no difference... it will look like that in
+ * the properties, but the thing is that the thing on screen shouldn't move. So
+ * this tool only applies to widgets that can somehow scale their interiors
+ * separately."
+ *
+ * So "Set Size to Ink Bounds" is a REPARAMETRIZATION, NOT AN EDIT. The box is a
+ * COORDINATE SYSTEM the widget's interior is described in; the tool re-chooses
+ * that coordinate system and the interior is re-described to compensate, exactly
+ * as changing units leaves a measured length alone. Two obligations follow, and
+ * the SECOND is the one that makes this a protocol instead of a resize:
+ *
+ *   1. STATIC IDENTITY — the render before and the render after must be
+ *      BYTE-IDENTICAL. Not "close", not "within a pixel": the tool is supposed
+ *      to change the numbers in the Inspector and nothing else.
+ *   2. TWEEN IDENTITY — because a fit may be KEYFRAMED (pre-tool state on slide
+ *      1, post-tool on slide 2), and a delta tween LERPS the numbers, the
+ *      picture must also be identical at EVERY intermediate alpha. This is
+ *      strictly stronger than (1) and it is what forces the compensator to be
+ *      the true algebraic inverse of the box change rather than merely agreeing
+ *      at the endpoints. A widget whose interior compensator is not linear in
+ *      the same parameters the box lerps in will pass (1) and FAIL (2) — it
+ *      will bulge or drift mid-transition and snap back at alpha 1.
+ *
+ * WHAT IT RETURNS. A statePatch: a flat object of state leaves to write ALONGSIDE
+ * the new x/y/w/h (the command writes the box itself; the patch is only the
+ * interior compensation). An EMPTY object `{}` is a real and common answer — it
+ * means "my picture does not depend on my box, so the re-box alone already
+ * satisfies the law". `null` REFUSES, and an ABSENT hook refuses too: refusal is
+ * the DEFAULT so a new widget cannot silently acquire a tool that would distort
+ * it. The command surfaces the refusal with a sentence naming the widget rather
+ * than skipping it quietly.
+ *
+ * WHY REFUSAL IS THE DEFAULT AND NOT "just re-box it". A widget that STRETCHES
+ * its content to its box (latex, svg, image, mermaid, qr, ...) is rescaled BY the
+ * re-box: shrinking the box shrinks the picture. Those widgets do not merely fail
+ * to benefit from the tool, they are DAMAGED by it, which is precisely the user's
+ * "this tool only applies to widgets that can somehow scale their interiors
+ * separately". They can only join once they carry an interior scale/offset the
+ * patch can push the inverse into — recorded per widget at THE REFUSERS below.
+ *
+ * THE HOOK IS PURE and takes the FOLDED, EQUATION-EVALUATED state, so it can be
+ * doctested in bare node and so the tween law is checkable without a browser.
+ * It must NOT be given a box it did not ask for: the command computes `newBox`
+ * from `localBounds`, so the two hooks are a matched pair — `localBounds` says
+ * where the ink is, `reparametrizeToBox` says what it costs to call that the box.
+ *
+ * THE REFUSERS, and what each would need to join (recorded rather than built, so
+ * the next contributor does not have to re-derive it):
+ *   · latex / mermaid / svg / image / video / pdf — CONTENT-STRETCHED. Each fits
+ *     its rendered raster or vector to [0,0,w,h], so the box IS the scale. Each
+ *     needs an interior transform (a contentScale + contentOffset, or a viewBox)
+ *     that the patch can set to the exact inverse of the box change. Note the
+ *     tween law then constrains that field: it must lerp linearly with w/h, so a
+ *     single multiplicative `contentScale` works while a "fit mode" enum does not.
+ *   · GROUP WITH AN ACTIVE CROP — refuses even though a plain group accepts.
+ *     `groupCropRect` trims the group's OWN [0,0,w,h] by per-edge insets, so
+ *     re-boxing moves the clip and the members get cut differently. MEASURED, not
+ *     assumed: an uncropped group re-boxes byte-identically while the same group
+ *     with insets renders a different picture (tests/reparametrize_law_test.mjs).
+ *     It could join by rewriting the four insets into the new frame — deferred
+ *     because a crop the user placed against the OLD box has no obviously right
+ *     reading in a new one, and guessing would be an edit wearing a
+ *     reparametrization's name.
  *
  * THE UNIVERSAL EFFECTS BUNDLE is injected HERE (see withUniversalEffects): a
  * plugin does not opt in, it opts OUT by being ineligible. That is why the
@@ -764,6 +843,57 @@ export function ungroupable(plugin) {
 }
 
 /**
+ * Pure function. Does this widget occupy a BOX on the canvas — the precondition
+ * for the two tools that read one and write another item from it (Add Center Text
+ * mints a label bound to x/y/w/h; Set Size to Ink Bounds rewrites w/h to fit what
+ * is drawn). Reads `capabilities.bbox`, which is the SAME key both commands' own
+ * worklists filter on (app.centerTextTargets / inkBoundsTargets), so the row
+ * exists on exactly the widgets the run would act upon.
+ *
+ * Distinct from `hasFrame`, which asks whether the plugin DECLARES x/y/w/h in its
+ * defaults. The two agree on nearly every widget and the difference is the point:
+ * a two-point arrow has neither, but a widget could declare a frame it does not
+ * draw a box for, and it is the drawn box these tools need.
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example boxed({capabilities: {bbox: true}}) // true (a rect, an image, a QR code)
+ * @example boxed({capabilities: {}}) // false (an arrow: endpoints, no box)
+ * @example boxed({}) // false (no capabilities at all)
+ */
+export function boxed(plugin) {
+  return plugin.capabilities?.bbox === true;
+}
+
+/**
+ * The widget TYPE the Add Axis tool puts a grid and tick marks behind. A literal
+ * type, deliberately, and the reason is app.svelte.js addAxisTargets's own: the
+ * binding reads `xRange`/`yRange` as well as the box, and those are the graph
+ * family's props rather than a declared capability — a rect has a perfectly good
+ * bbox and no data window, so a structural test would offer the row on 90 widgets
+ * where it would mint a grid whose range equations fail at evaluation.
+ *
+ * ONE SPELLING, TWO READERS: the command's worklist filters on this same type, so
+ * this constant is exported and `axisTarget` below is what the pool row asks. If
+ * the tool is ever widened to graph_bars, both move together.
+ */
+export const AXIS_TARGET_TYPE = "graph_line";
+
+/**
+ * Pure function. Is this the widget Add Axis draws a ruling behind?
+ *
+ * @param {object} plugin - a widget plugin
+ * @returns {boolean}
+ *
+ * @example axisTarget({type: "graph_line"}) // true
+ * @example axisTarget({type: "rect"}) // false (a box with no data window)
+ */
+export function axisTarget(plugin) {
+  return plugin.type === AXIS_TARGET_TYPE;
+}
+
+/**
  * Pure function. Does this widget have SOURCE TEXT a code editor can open
  * (codeblock, LaTeX, Mermaid, the two graph widgets)? The plugin declares the
  * editor itself, so the tool's gate is the presence of that declaration.
@@ -1090,6 +1220,26 @@ export const TOOL_POOL = [
       // only when an elbow arrow is selected — precisely when it is useless. Which
       // module wrote a command has no bearing on which widget it acts upon.
       { kind: "command", command: "add-self-loop", applies: hasFrame },
+      // THE THREE THE PROBE CAUGHT (tool_surfacing_probe, 2026-08-02: "3
+      // unreachable: add-axis, add-center-text, fit-to-ink-bounds"), and the user
+      // asked for one of them by name — "I don't see add center text as a tool. I
+      // only see it in the command palette. Am I missing something?" He was not:
+      // all three were registered, gated on the selection, and reachable from the
+      // palette alone. This is the same failure `edit-text-content` had above, in
+      // the same group, for the same reason — a command landed and nobody added
+      // its row — which is exactly the direction that probe exists to check.
+      //
+      // BESIDE Add Self Loop, not in Arrange or a new group: all three are of the
+      // form "make/resize a thing FROM the selected widget's box", which is what
+      // this group's neighbours already do (Add Self Loop mints an arrow on the
+      // selected box; Edit Text opens what is inside it). Add Center Text mints a
+      // label bound to the box, Add Axis mints a grid + ticks bound to the box AND
+      // the data window, and Set Size to Ink Bounds rewrites the box to fit its own
+      // contents. NON-DESTRUCTIVE FIRST is preserved: the three creators sit above
+      // Hide/Delete/Purge, which stay last (this group's stated rule).
+      { kind: "command", command: "add-center-text", applies: boxed },
+      { kind: "command", command: "add-axis", applies: axisTarget },
+      { kind: "command", command: "fit-to-ink-bounds", applies: boxed },
       { kind: "command", command: "show-item", applies: purgeableWidget },
       { kind: "command", command: "delete-item", applies: purgeableWidget },
       { kind: "command", command: "purge-item", applies: purgeableWidget },
