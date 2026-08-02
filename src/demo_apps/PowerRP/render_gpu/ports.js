@@ -21,7 +21,7 @@
 import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text } from "./ir.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
-import { reportOnce } from "../core/report.js";
+import { reportOnce, warnOnce } from "../core/report.js";
 import { errorAffordanceArgs, errorBoxExtent, errorMessage, describeOwner, throwMessage, isConfigurationError, configurationError } from "../core/paint_containment.js";
 
 /**
@@ -66,16 +66,16 @@ export function resolvedBackgroundFill(background, nodes) {
   if (!isMaterialPaint(p)) return p;
   const byId = new Map((nodes ?? []).map((n) => [n.itemId, n]));
   const camera = (nodes ?? []).find((n) => n.type === "camera") ?? null;
-  return resolveMaterialPaint(p, camera, byId, reportOnce);
+  return resolveMaterialPaint(p, camera, byId, warnOnce); // foreign-knob carry-over is intended and lossless — warn, never error
 }
 
 export function resolveMaterialFillPaints(cmds, node, nodesById) {
   return cmds.map((cmd) => {
     let out = cmd;
     if (isMaterialPaint(cmd.fill))
-      out = { ...out, fill: resolveMaterialPaint(cmd.fill, node, nodesById, reportOnce) };
+      out = { ...out, fill: resolveMaterialPaint(cmd.fill, node, nodesById, warnOnce) };
     if (isMaterialPaint(cmd.stroke))
-      out = { ...out, stroke: resolveMaterialPaint(cmd.stroke, node, nodesById, reportOnce) };
+      out = { ...out, stroke: resolveMaterialPaint(cmd.stroke, node, nodesById, warnOnce) }; // same as the fill above
     if (Array.isArray(cmd.content)) {
       const content = resolveMaterialFillPaints(cmd.content, node, nodesById);
       if (content.some((c, i) => c !== cmd.content[i])) out = { ...out, content };

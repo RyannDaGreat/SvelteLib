@@ -516,8 +516,23 @@ export function resolveMaterialPaint(paint, node, nodesById, report) {
   const known = {};
   for (const [k, v] of Object.entries(stored)) {
     if (k in defaults) known[k] = v;
-    else report(`material-fill:unknown-knob:${m.id}:${k}`,
-      `PowerRP materials: fill paint stores unknown "${m.id}" knob "${k}" — dropped (schema: ${Object.keys(defaults).join(", ")}).`);
+    // NOT AN ERROR, AND THE OLD WORDING SAID TWO UNTRUE THINGS. web/PaintField.js
+    // commitMaterial CARRIES the existing sparse params across a material switch
+    // ON PURPOSE, so switching back restores the knobs you had set — the same
+    // hide-do-not-purge spirit as `active: false`. A knob from the material you
+    // came FROM is therefore expected, not "unknown", and it is NOT "dropped": it
+    // stays in the document, dormant, and returns when you switch back. Only its
+    // effect on THIS material is skipped.
+    //
+    // Reporting intended, lossless, reversible behaviour through reportOnce meant
+    // console.error, which is how a user learns to ignore console errors — this
+    // one reached the user as "what the fuck". It is still SAID (a dormant knob is
+    // worth knowing about; #262 is the same class left silent) but at warn level
+    // and in words that match what happened.
+    else report(`material-fill:foreign-knob:${m.id}:${k}`,
+      `PowerRP materials: "${k}" is not a knob of the "${m.id}" material, so it has no effect here — ` +
+      `kept in the document and ignored (it belongs to a material this paint was switched away from, ` +
+      `and returns if you switch back). "${m.id}" reads: ${Object.keys(defaults).join(", ")}.`);
   }
   const scene = m.sceneParams ? m.sceneParams(node, nodesById) : {};
   return { ...paint, resolvedParams: { ...defaults, ...known, ...scene } };
