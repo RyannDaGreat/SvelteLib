@@ -362,11 +362,18 @@ const CSS_REFERENCE_DPI = 96;
  * @param {object} s folded state
  * @returns {string}
  *
- * @example scene3dLook({exposure: 1.2, background: "#000"}) // "exposure=1.2|background=#000"
- * @example scene3dLook({}) // "exposure=1|background=transparent"
+ * `upright` IS PART OF THE KEY. It changes the pixels, and the raster is
+ * content-addressed — leaving it out would let an upside-down capture and a
+ * righted one share one cached image, so flipping the switch would appear to do
+ * nothing until something else in the key happened to change. That is exactly the
+ * "silent cache-collision" this function's header warns about.
+ *
+ * @example scene3dLook({exposure: 1.2, background: "#000"}) // "exposure=1.2|background=#000|upright=true"
+ * @example scene3dLook({}) // "exposure=1|background=transparent|upright=true"
+ * @example scene3dLook({upright: false}) // "exposure=1|background=transparent|upright=false"
  */
 export function scene3dLook(s) {
-  return `exposure=${s.exposure ?? 1}|background=${s.background ?? "transparent"}`;
+  return `exposure=${s.exposure ?? 1}|background=${s.background ?? "transparent"}|upright=${s.upright !== false}`;
 }
 
 /**
@@ -816,6 +823,7 @@ function makeScene3dPlugin(member) {
       camDistance: DEFAULT_DISTANCE, camFov: DEFAULT_FOV,
       renderMode: RENDER_MODE_DEFAULT, rasterWidth: 0, rasterHeight: 0, rasterDPI: RASTER_DEFAULT_DPI,
       exposure: 1,
+      ...(member.kind === "splat" ? { upright: true } : {}),
       // TRANSPARENT by default, so a scene composites over the slide rather than
       // punching a black hole in it — the same choice every other media box makes.
       background: "transparent",
@@ -829,6 +837,7 @@ function makeScene3dPlugin(member) {
       ...bundle("positioning"),
       { key: "src", label: "Source", kind: "asset", category: "content", help: member.srcHelp },
       ...cameraRows(),
+      ...(member.kind === "splat" ? [{ key: "upright", label: "Stand upright", kind: "boolean", category: "rendering", help: "Turns the capture the right way up. Most 3D Gaussian Splat trainers write their scenes Y-DOWN (a convention inherited from COLMAP's camera frame) while this scene is Y-UP, so ON — the default — is correct for nearly every file. Turn it OFF if YOUR capture comes out upside down: it means the tool that made it already wrote Y-up, and this turn is putting it back the wrong way. Only splats offer this; a glTF model is Y-up by its own specification, so there is nothing to correct." }] : []),
       { key: "exposure", label: "Exposure", kind: "number", min: 0, category: "rendering", help: "Multiplies the scene's brightness before it is drawn. A capture made in shade lifts with this; one made in sun comes down." },
       { key: "background", label: "Background", kind: "color", category: "rendering", help: "Fills the viewport behind the scene. Transparent lets the slide show through, which is usually what you want for an object; a solid colour suits a room-scale capture whose edges are ragged." },
       ...resolutionRows(),
@@ -914,7 +923,7 @@ function makeScene3dPlugin(member) {
         : { x: c.x, y: c.y, w: c.w, h: c.h, source: { sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh } };
       const drawn = scene3dDrawRef({
         kind: member.kind, src: s.src, pose, look: scene3dLook(s),
-        lit: member.lit, exposure: s.exposure ?? 1,
+        lit: member.lit, exposure: s.exposure ?? 1, upright: s.upright !== false,
         w: size.w, h: size.h, viewOffset: win?.viewOffset ?? null, place,
         near: Math.max(pose.distance * NEAR_FRACTION, Number.EPSILON),
         far: Math.max(pose.distance * FAR_MULTIPLE, 1),

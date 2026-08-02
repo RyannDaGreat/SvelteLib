@@ -694,12 +694,23 @@ function ensureSource(src, kind) {
     if (kind === "splat") {
       const mesh = new spark.SplatMesh({ url: src });
       await mesh.initialized;
-      // Splat captures are stored Y-DOWN (the convention every 3DGS trainer
-      // writes, inherited from COLMAP's camera frame); three.js is Y-UP. A 180
-      // degree turn about X is the whole correction, and it is applied HERE rather
-      // than as a user-facing property because it is a property of the FORMAT, not
-      // of the author's scene.
-      mesh.quaternion.set(1, 0, 0, 0);
+      // THE UPRIGHT TURN IS NOT APPLIED HERE ANY MORE, and the reason is a
+      // correction worth keeping. This line used to read `mesh.quaternion.set(1,
+      // 0, 0, 0)` — a fixed 180-degree turn about X — justified as "a property of
+      // the FORMAT, not of the author's scene", because 3DGS trainers write
+      // Y-DOWN (inherited from COLMAP's camera frame) while three.js is Y-UP.
+      //
+      // THAT IS TRUE OF MOST CAPTURES AND NOT ALL OF THEM, which the user found
+      // the only way anyone finds this: "upside-down splats". A claim that a
+      // format is uniform is falsified by one file that is not, and a fixed
+      // correction then has no escape hatch — the widget is simply wrong and
+      // nothing the author can touch will right it.
+      //
+      // So the turn moved to the per-render assembly, where it reads a per-item
+      // `upright` property and DEFAULTS TO THE OLD BEHAVIOUR. It cannot live on
+      // the mesh regardless: `sources` caches one mesh per URL and shares it
+      // across every widget using that file, so baking an orientation here would
+      // make two widgets of one capture fight over it.
       // NOT NORMALIZED, deliberately — see normalizeToUnitSphere. A capture's
       // floaters would blow up its bounding sphere and shrink the subject to a
       // dot; captures also carry a meaningful real-world scale that a room-scale
@@ -806,6 +817,33 @@ function renderSpec(spec) {
 /** The serialization chain for the one context (see renderSpec). */
 let renderQueue = Promise.resolve();
 
+
+/**
+ * Near-pure helper (allocates a Group; mutates nothing shared). The scene object
+ * wrapped in whatever turn makes it stand up.
+ *
+ * WHY A WRAPPER AND NOT `object.rotation.x`: the object comes from the shared
+ * per-URL source cache, so two widgets showing one capture would fight over its
+ * orientation — one would flip the other's. The Group is per render and throwaway.
+ *
+ * @param {object} object - the cached mesh/scene
+ * @param {{kind: string, upright?: boolean}} spec - the render spec
+ * @param {object} THREE - the engine namespace
+ * @returns {object} `object` itself when no turn is needed, else a Group holding it
+ */
+function uprightWrapper(object, spec, THREE) {
+  // ONLY SPLATS. A glTF model is authored Y-up by the format's own specification,
+  // so there is nothing to correct and no control is offered — the same doctrine
+  // as the light rig two lines below: a node kind that cannot honour a control
+  // gets nothing rather than a fake one.
+  if (spec.kind !== "splat") return object;
+  if (spec.upright === false) return object;
+  const g = new THREE.Group();
+  g.rotation.x = Math.PI; // Y-DOWN capture -> Y-UP scene
+  g.add(object);
+  return g;
+}
+
 /**
  * Command. The actual draw: size the surface, place the camera from the pose,
  * converge Spark's async sort, render, read back.
@@ -829,7 +867,11 @@ async function renderSpecNow(spec) {
   // previous widget's model must leave before this one draws, or two decks'
   // scenes composite into one picture.
   for (const child of [...scene.children]) if (child !== spark3d) scene.remove(child);
-  scene.add(object);
+  // THE UPRIGHT TURN, applied to a per-render WRAPPER rather than to the object.
+  // `object` comes from the shared per-URL cache, so rotating it directly would
+  // leak one widget's orientation into every other widget showing the same file.
+  // A Group costs nothing and keeps the cached mesh pristine.
+  scene.add(uprightWrapper(object, spec, THREE));
   // The light rig rides with a LIT member only. A splat's radiance is baked into
   // its Gaussians, so a light would be inert on it — and the house doctrine
   // (core/registry.js effectsInjectable) is that a node kind which cannot honour
