@@ -350,6 +350,36 @@
     }
   }
 
+  // Rename SLIDE modal (user ruling, 2026-08-02: "when I double click a slide
+  // title, it should let me edit it. In the same way that rename project does
+  // when I click that. A dialog comes up pre-selected and whatever process for
+  // that should be reused for this."). So this IS the project-rename process,
+  // reused: the same Modal, the same .name-modal markup, the same
+  // use:selectAllOnMount pre-selection, the same Cancel/confirm pair.
+  //
+  // WHERE IT DIVERGES, and only where the underlying operation does. Renaming a
+  // PROJECT moves storage, so that modal is async, can fail, and stays open on a
+  // refusal — it needs busy + error surfaces. A slide name is a field in the
+  // document: app.renameSlide is synchronous, ONE undo unit, and cannot be
+  // refused, so there is nothing here to be busy about and no error to show.
+  // Adding those states anyway would be ceremony for conditions that cannot
+  // arise. BLANK IS NOT AN ERROR EITHER — core withSlideRenamed restores the
+  // positional default ("Slide 3"), which is a meaningful outcome, so the
+  // confirm button stays live on an empty field and the note says what it will do.
+  let slideRenameVisible = $state(false);
+  let slideRenameIndex = $state(0);
+  let slideRenameName = $state("");
+  app.showSlideRenameModal = (index) => {
+    slideRenameIndex = index;
+    slideRenameName = app.doc.slides[index]?.name ?? "";
+    slideRenameVisible = true;
+  };
+  /** Command. Commits the slide rename (one undo unit) and closes. */
+  function confirmSlideRename() {
+    app.renameSlide(slideRenameIndex, slideRenameName);
+    slideRenameVisible = false;
+  }
+
   // Import-a-.zip RESULT modal. Importing an archive is the one storage action
   // whose OUTCOME the user cannot read off the screen: the deck that appears is
   // the one they dropped, so a COLLISION RENAME ("Imitations" → "Imitations 2")
@@ -1326,6 +1356,11 @@
     // delete-item's "deactivate" for the same underlying operation.
     { id: "new-blank-slide", title: "New Blank Slide (deactivates every visible item)", icon: "mdi:plus-box", help: "Nothing is purged: the slide keyframes `active` off for each currently visible widget, so you start on an empty stage and can bring any of them back with Show.", run: (a) => a.addBlankSlide() },
     { id: "delete-slide", title: "Delete Slide", icon: "mdi:file-remove-outline", when: (a) => a.doc.slides.length > 1, requires: "more than one slide — a document always has at least one", help: "Deletes this slide's DELTA, not the widgets in it. Anything an earlier slide created still exists; what is lost is the changes this slide made, so the slides after it now inherit from the one before it.", run: (a) => a.deleteSlide() },
+    // RENAME SLIDE — the palette's route to the same dialog the rail's
+    // double-click opens (app.renameSlidePrompt → showSlideRenameModal). A
+    // gesture-only rename is unreachable by keyboard and unfindable by search;
+    // the project rename has had its own command for the same reason.
+    { id: "rename-slide", title: "Rename Slide…", icon: "mdi:rename-box", aliases: ["rename slide", "slide name"], help: "Opens a dialog with the current name pre-selected, so typing replaces it. One undo unit; leaving it blank restores the positional default (\"Slide 3\").", run: (a) => a.renameSlidePrompt() },
     { id: "toggle-slide", title: "Toggle Slide Visibility (enable/disable delta)", icon: "mdi:eye-check-outline", help: "A disabled slide is SKIPPED when the deltas are folded, so every slide after it inherits as though it were not there — the way to park a variant without deleting it.", run: (a) => a.toggleSlide() },
     // The two moves REBUILD every delta rather than splicing a row: a slide
     // stores a difference, not a picture, so moving the row alone would change
@@ -2917,6 +2952,41 @@
       <div class="name-modal-actions">
         <button type="button" class="btn" onclick={() => (renameModalVisible = false)}>Cancel</button>
         <button type="submit" class="btn" disabled={!renameName.trim() || renameBusy}>{renameBusy ? "Renaming…" : "Rename"}</button>
+      </div>
+    </form>
+  </Modal>
+  <!-- Rename Slide: the SAME dialog process as Rename Project above, per the
+       user's ruling that it be reused — same Modal, same .name-modal markup,
+       same pre-selected field. No busy/error surface, because unlike a project
+       rename this is a synchronous document field write that cannot fail (see
+       showSlideRenameModal). Opened by double-clicking a slide name in the rail
+       and by the "Rename Slide…" command. -->
+  <Modal bind:open={slideRenameVisible} title="Rename Slide" size="compact">
+    <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmSlideRename(); }}>
+      <label class="name-modal-field">
+        <span class="name-modal-label">Slide name</span>
+        <!-- Opens with the current name ALL SELECTED, so double-click then type
+             renames the whole slide — the ruling's "pre-selected". Same action
+             as the project field's; see there. -->
+        <input
+          class="name-modal-input"
+          type="text"
+          bind:value={slideRenameName}
+          placeholder={`Slide ${slideRenameIndex + 1}`}
+          autocomplete="off"
+          spellcheck="false"
+          use:selectAllOnMount
+        />
+      </label>
+      {#if !slideRenameName.trim()}
+        <!-- A BLANK NAME IS A REAL ANSWER, not a validation failure: core
+             withSlideRenamed restores the positional default. Saying so is why
+             the button below is not disabled on an empty field. -->
+        <div class="name-modal-note">Leaving this blank restores the default name, “Slide {slideRenameIndex + 1}”.</div>
+      {/if}
+      <div class="name-modal-actions">
+        <button type="button" class="btn" onclick={() => (slideRenameVisible = false)}>Cancel</button>
+        <button type="submit" class="btn">Rename</button>
       </div>
     </form>
   </Modal>
