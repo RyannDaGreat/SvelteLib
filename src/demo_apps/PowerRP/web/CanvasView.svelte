@@ -3897,7 +3897,7 @@
 
   let overlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
-    if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
+    if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], inkGhostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -3909,15 +3909,19 @@
     const selectedIds = app.selectedIds();
     const sel = nodes.find((n) => n.itemId === app.selection);
 
-    /** A bbox node's screen-space outline polygon points string. */
-    const outlineOf = (n) => {
-      const w = n.state.w ?? 0, h = n.state.h ?? 0;
-      return [[0, 0], [w, 0], [w, h], [0, h]].map(([lx, ly]) => {
+    /** A LOCAL rect, mapped through a node's world transform into a screen-space
+     * polygon points string. The shared corner math behind both `outlineOf` (the
+     * property box) and the INK-BOUNDS ghost (a rect that is NOT the box), so the
+     * two decorations cannot drift in how they project. */
+    const rectOutlineOf = (n, r) =>
+      [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]].map(([lx, ly]) => {
         const p = T.apply(n.world, lx, ly);
         const s = actions.worldToScreen(p.x, p.y);
         return `${s.x},${s.y}`;
       }).join(" ");
-    };
+
+    /** A bbox node's screen-space outline polygon points string (its property box). */
+    const outlineOf = (n) => rectOutlineOf(n, { x: 0, y: 0, w: n.state.w ?? 0, h: n.state.h ?? 0 });
 
     // EVERY selected bbox node gets a selection outline (multi-select
     // substrate). Resize handles: a SINGLE selection gets handles on its own
@@ -4064,6 +4068,33 @@
       .filter((n) => isGhostNode(n) && n.plugin.capabilities.bbox && (n.type === "cropbox" || app.showGhosts))
       .map(outlineOf);
 
+    // INK-BOUNDS GHOST (user, 2026-08-02: "Physical boundaries when we enable
+    // ghost mode, if they are different from property boundaries. Can display as
+    // a ghost with a dashed line. And of course, they would be clickable").
+    //
+    // The rect a widget's INK actually occupies, drawn dashed whenever it DIFFERS
+    // from the property box — which for text means "whenever the type overflows",
+    // the exact condition that used to be invisible and is the whole reason the
+    // box and the ink had silently disagreed. Identical rects draw nothing: a
+    // second coincident polygon over every text box would be noise, and the
+    // decoration is meant to answer "is this box lying about its contents".
+    //
+    // ALREADY CLICKABLE, with nothing added here: core/derive.clickableLocalRect
+    // unions this same rect into the hit test, so the ghost DEPICTS a grab target
+    // that exists rather than creating one. That is why this block is pure
+    // chrome — editor-only, never in sceneIR, never exported or presented, like
+    // every other overlay decoration.
+    const inkGhostOutlines = app.showGhosts
+      ? nodes.flatMap((n) => {
+          if (!n.plugin.capabilities.bbox || !n.plugin.localBounds) return [];
+          const ink = n.plugin.localBounds(n.state);
+          if (!ink || (ink.w <= 0 && ink.h <= 0)) return []; // nothing drawn: no ink to outline
+          const box = { x: 0, y: 0, w: n.state.w ?? 0, h: n.state.h ?? 0 };
+          const same = ink.x === box.x && ink.y === box.y && ink.w === box.w && ink.h === box.h;
+          return same ? [] : [rectOutlineOf(n, ink)];
+        })
+      : [];
+
     const guideSegs = guides.flatMap((g) => {
       if (g.kind === "point") {
         const p = actions.worldToScreen(g.x, g.y);
@@ -4173,7 +4204,7 @@
       placeDots = placePreview.dots.map((d) => ({ ...pt(d.x, d.y), hot: d.hot }));
     }
 
-    return { outlines, hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
+    return { outlines, hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, inkGhostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
@@ -4339,6 +4370,16 @@
              selected ghost still reads as selected on top of it. -->
         {#each overlay.ghostOutlines as o}
           <polygon class="ghost-outline" points={o} />
+        {/each}
+        <!-- INK-BOUNDS GHOST: the DASHED rect of where a widget's ink actually
+             is, drawn only when that differs from its property box (for text:
+             when the type overflows). Dashed rather than solid so it reads as a
+             different KIND of boundary from the solid ghost outline above it —
+             one is "this object has no volume", this one is "this object's
+             contents leave its box". Clickable already, via the same rect in
+             core/derive.clickableLocalRect. -->
+        {#each overlay.inkGhostOutlines as o}
+          <polygon class="ink-ghost-outline" points={o} />
         {/each}
         <!-- THE ITEM PICKER'S HOVER PREVIEW, drawn between the ghosts and the
              real selection so a hovered object reads as "this one" without ever

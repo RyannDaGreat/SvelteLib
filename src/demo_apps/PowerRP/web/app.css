@@ -4746,6 +4746,27 @@ textarea {
   pointer-events: none;
 }
 
+/* INK-BOUNDS GHOST: where a widget's INK actually is, when that is not its
+   property box — for text, the rect the type overflows into. Shown under the
+   same "Show Ghosts" toggle as the outline above, and deliberately built from
+   the SAME two tokens (--a-ghost, --a-ghost-stroke) so both read as one family
+   of "boundary you would not otherwise see"; only the DASH distinguishes them,
+   which is the one distinction being drawn ("no rendered volume" vs "contents
+   leave the box"). The dash is --a-selection-dash, the app's single dash
+   rhythm, rather than a second one invented here.
+
+   pointer-events: none for the reason the ghost outline states at length — the
+   real hit-test is core/derive.clickableLocalRect, which unions this very rect
+   into the node's grab area, so the ink IS clickable and this element is the
+   visual affordance rather than a second, divergent hit path. */
+.overlay .ink-ghost-outline {
+  fill: none;
+  stroke: var(--a-ghost);
+  stroke-width: var(--a-ghost-stroke);
+  stroke-dasharray: var(--a-selection-dash);
+  pointer-events: none;
+}
+
 /* ── Slide navigator ─────────────────────────────────────────────────────── */
 
 .slidenav {
