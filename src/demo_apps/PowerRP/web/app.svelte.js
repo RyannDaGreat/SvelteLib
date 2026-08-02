@@ -135,6 +135,10 @@ import {
 // widget's box. Same shape as the telescopic builders above — the plugin owns the
 // equations, this file owns the insertion and the undo unit.
 import { centerTextOverrides } from "../plugins/plaintext.js";
+// ADD AXIS — the grid+axis pair bound to a graph line's box AND data window. In
+// CORE rather than either plugin because it names two widget types at once, and no
+// plugin may import another (see that module's header for the full reasoning).
+import { axisGridOverrides, axisTicksOverrides } from "../core/graph_axis_binding.js";
 import { browserSetting, browserNumberSetting } from "./settings.js";
 import { LABEL_DIVIDER_KEYS, LABEL_FRAC_BOUNDS, LABEL_FRAC_DEFAULT, labelFracSettingKey } from "./labelFrac.js";
 // THE panel inventory (core/panels.js) — one declaration behind the layout, the
@@ -2790,6 +2794,78 @@ export class PowerRPApp {
       let id;
       [doc, id] = withNewItem(doc, this.slideIndex, state);
       newIds.push(id);
+    }
+    this.commit(withNormalizedZ(doc));
+    this.selectMany(newIds);
+  }
+
+  /**
+   * Query. The selected items ADD AXIS can put a grid + axis behind — the
+   * `graph_line` widgets, and only those. Both the command's GATE and its
+   * WORKLIST, so the gate can never promise a change the run would not make (the
+   * centerTextTargets / inkBoundsTargets precedent).
+   *
+   * WHY THE TYPE AND NOT A CAPABILITY. The binding reads `xRange`/`yRange` as well
+   * as the box, and those are the graph family's own props, not a declared
+   * capability — a rect has a perfectly good bbox and no data window, so a bbox
+   * test would mint a grid whose two range equations fail at evaluation. Testing
+   * the type keeps the refusal honest and the reason sayable. (A graph_bars or a
+   * graph_tick_marks also carries ranges, but the user asked for this behind the
+   * CURVE; widening it is a decision for whoever wants it, not an accident.)
+   */
+  addAxisTargets() {
+    return this.selectedNodes().filter((n) => n.type === "graph_line");
+  }
+
+  /**
+   * Command (ONE undo unit). ADD AXIS — inserts a graph GRID and a graph AXIS
+   * (tick marks) per selected graph line, both bound by `=` equations to that
+   * line's box and data window, both stacked DIRECTLY BEHIND it.
+   *
+   * User request (2026-08-02): "for that widget perhaps a Add Axis tool would be
+   * nice, to create and bind height/width/x/y of some grid + axis directly behind
+   * it."
+   *
+   * TWO ITEMS, because "grid + axis" is two widgets here: graph_grid rules the
+   * lines and carries no axis line/ticks/labels at all, graph_tick_marks owns the
+   * axis proper. core/graph_axis_binding.js justifies the split and the equations.
+   *
+   * Z — "DIRECTLY BEHIND IT", and why fractions are the right tool. Both new items
+   * take a z just BELOW the target's (grid lowest, then the axis, then the curve),
+   * so the ruling never paints over the curve it sits behind. The offsets are
+   * FRACTIONAL (−0.5 / −0.25) rather than integer decrements because integers would
+   * COLLIDE with whatever already sits at those z values — bisecting into the gap
+   * below the target instead claims a spot that is unambiguously between the target
+   * and its lower neighbour whatever the document looks like. withNormalizedZ then
+   * renumbers the whole document back to consecutive integers on commit, which is
+   * this codebase's standing z discipline (bisect, then normalize), so the
+   * fractions never reach the saved file.
+   *
+   * ONE UNDO UNIT FOR THE WHOLE SELECTION: the doc is threaded through withNewItem
+   * 2N times and committed ONCE — addCenterText's construction, and
+   * insertTelescopicMagnifier's before it. Adding axes to three curves is one
+   * action the user took, so one Ctrl+Z must undo it.
+   *
+   * Each item is minted from the plugin's registry DEFAULTS first, then the
+   * overrides, so it loads with zero missing-default repairs.
+   *
+   * SELECTION: the new items become the selection (grid + axis of every target),
+   * so the author can immediately restyle what they just made.
+   */
+  addAxis() {
+    const targets = this.addAxisTargets();
+    if (targets.length === 0) return;
+    let doc = this.doc;
+    const newIds = [];
+    for (const target of targets) {
+      const z = target.state.z ?? 0;
+      // Behind the curve, grid behind the axis. See the Z note above.
+      for (const [overrides, dz] of [[axisGridOverrides(target.itemId), -0.5], [axisTicksOverrides(target.itemId), -0.25]]) {
+        const state = { ...this.registry.get(overrides.type).defaults, ...overrides, active: true, z: z + dz };
+        let id;
+        [doc, id] = withNewItem(doc, this.slideIndex, state);
+        newIds.push(id);
+      }
     }
     this.commit(withNormalizedZ(doc));
     this.selectMany(newIds);

@@ -1933,6 +1933,23 @@
       help: "Adds a text box per selected widget, bound by equations to that widget's x/y/w/h with the type centered both ways — so the label stays centered when the widget is moved OR resized. The new boxes are selected, so you can type straight away.",
       run: (a) => a.addCenterText(),
     },
+    // ADD AXIS — a graph GRID + a graph AXIS behind each selected curve, bound to
+    // its box AND its data window, so the ruling agrees with the curve when either
+    // the box or the range is retuned. `when` and `run` read the SAME worklist
+    // (a.addAxisTargets()), so the command is offered exactly when it would do
+    // something. Gated on the graph_line TYPE rather than on a bbox: the binding
+    // reads xRange/yRange, which a rect does not have, so a box-only test would
+    // mint a grid whose range equations fail at evaluation.
+    {
+      id: "add-axis",
+      title: "Add Axis",
+      icon: "mdi:chart-scatter-plot",
+      aliases: ["axes", "grid", "graph grid", "add grid", "plot axes", "ticks"],
+      when: (a) => a.addAxisTargets().length > 0,
+      requires: "a selected graph line to put the grid and axis behind",
+      help: "Adds a graph grid and a graph axis (ticks + labels) behind each selected graph line, bound by equations to that line's x/y/w/h AND its X/Y data ranges — so the grid keeps lining up with the curve when you move it, resize it, or retune its range.",
+      run: (a) => a.addAxis(),
+    },
     // THE PROJECT SCRIPT (core/project_script.js) — the per-document JavaScript
     // library whose exported functions and values every property equation can call.
     // A REGISTRY COMMAND, not a bare toolbar onclick, because that is the rule here:
