@@ -6,10 +6,29 @@
  * WHY IT LIVES HERE, ONCE: every shape widget (rect, circle, polygon, the
  * shapeshifter families) can carry a gradient fill, and the handles for that
  * gradient are IDENTICAL across all of them — a function of the PAINT, not the
- * shape. So a single pure helper produces the modifier-point rows and each plugin
- * SPREADS them into its own `modifierPoints` (additively — its shape handles are
- * untouched). No plugin re-derives gradient geometry, and the constraint math is
- * written down exactly once.
+ * shape. So a single pure helper produces the modifier-point rows and the
+ * constraint math is written down exactly once.
+ *
+ * THE ROWS ARE DERIVED AUTOMATICALLY, NOT OPTED INTO. They used to be SPREAD by
+ * each plugin into its own `modifierPoints`, and exactly SEVEN plugins ever did
+ * it (aperture, circle, iris_blades, labeled_circle, polygon, rect,
+ * shapeshifter). That contradicted the paragraph directly above: if the handles
+ * are a function of the PAINT and not the shape, then a graph_line with a
+ * gradient fill has the same handles a rect does, and it had none. The user
+ * reported the symptom exactly — "why do I not see the handles for the gradient
+ * on the graph line? Sometimes I see the handles for a gradient, and sometimes I
+ * don't, and it baffles me" (2026-08-02). An opt-in for a universal property is a
+ * defect generator: the DEFAULT is wrong and every widget added afterwards is
+ * wrong until someone remembers. So `core/derive.js nodeModifierPoints` now
+ * appends them for EVERY paint-capable widget, off the plugin's OWN declaration
+ * (`paintCapableKeys` below), and no plugin spreads them.
+ *
+ * WHICH KEYS: every `paint: true` Inspector row the plugin declares — the same
+ * flag that makes the Inspector render a PaintField instead of a plain
+ * ColorField, so the rule is "wherever you can AUTHOR a gradient, you can DRAG
+ * it". That is `fill` and `stroke` on most widgets, `background` on the camera,
+ * `pupilFill` on the two iris widgets, `tint` on glass, `fillColor`/`trackColor`
+ * on the progress_bar library plugin. Nothing here names a key.
  *
  * THE HANDLES (all in LOCAL widget px, over the [0,w]×[0,h] box, exactly like
  * every other modifier point — core/derive.js nodeModifierPoints wraps them
@@ -258,8 +277,9 @@ export function linearPolarInverse(ox, oy, W, H, fallbackAngle) {
 }
 
 /**
- * Pure function. THE gradient modifier points for a shape's paint field — spread
- * into a plugin's `modifierPoints(state)`. Returns [] when `state[key]` is not a
+ * Pure function. THE gradient modifier points for ONE paint field — the per-key
+ * unit `allPaintModifierPoints` (and therefore core/derive.js) calls; no plugin
+ * calls it. Returns [] when `state[key]` is not a
  * gradient (a solid/material/equation/absent fill contributes NO handles, so a
  * non-gradient widget is byte-identical to before this feature). A RADIAL gradient
  * yields one center bead; a LINEAR gradient yields a center bead plus a FREE polar
@@ -281,6 +301,60 @@ export function linearPolarInverse(ox, oy, W, H, fallbackAngle) {
  * @example paintModifierPoints({w: 100, h: 100, fill: {type: "linearGradient", linear: {stops: [], angle: 0, wavelength: 0.5}}}, "fill")[1].x // 75 (half-wavelength: center + 0.5·half)
  * @example paintModifierPoints({w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: [], center: {x: 0.5, y: 0.5}, r: 0.5}}}, "fill").map((m) => m.id) // ["fill-grad-center"]
  */
+/**
+ * Pure function. The PAINT-CAPABLE property keys a plugin declares, in Inspector
+ * order — every row carrying `paint: true`, which is THE flag that makes a color
+ * row render as a PaintField (core/properties.js) and therefore the exact set of
+ * places an author can put a gradient. This is the plugin's own declaration read
+ * back, never a central key list: a widget that adds a paint row gets its
+ * gradient handles the same day, and one that has none contributes nothing.
+ *
+ * Duplicate keys are collapsed (first occurrence wins) so a plugin that resolves
+ * the same row twice cannot produce two colliding bead pairs.
+ *
+ * @param {object} plugin - a registry plugin (reads plugin.inspector)
+ * @returns {string[]} paint-capable keys
+ *
+ * @example paintCapableKeys({}) // [] (no inspector at all)
+ * @example paintCapableKeys({inspector: [{key: "w", kind: "number"}]}) // [] (nothing paint-capable)
+ * @example paintCapableKeys({inspector: [{key: "fill", kind: "color", paint: true}, {key: "stroke", kind: "color", paint: true}]}) // ["fill", "stroke"]
+ * @example paintCapableKeys({inspector: [{key: "fill", kind: "color", paint: true}, {key: "opacity", kind: "number"}, {key: "pupilFill", kind: "color", paint: true}]}) // ["fill", "pupilFill"]
+ * @example paintCapableKeys({inspector: [{key: "fill", paint: true}, {key: "fill", paint: true}]}) // ["fill"] (deduped)
+ */
+export function paintCapableKeys(plugin) {
+  const seen = new Set();
+  for (const row of plugin?.inspector ?? []) if (row?.paint && !seen.has(row.key)) seen.add(row.key);
+  return [...seen];
+}
+
+/**
+ * Pure function. EVERY gradient bead a widget's state earns, across ALL of its
+ * paint-capable keys — `paintModifierPoints` run per key and concatenated in
+ * Inspector order. This is what core/derive.js nodeModifierPoints appends, and it
+ * is the whole of the auto-derive: a key whose paint is not an ACTIVE gradient
+ * (solid, material, equation, absent, or the OFF tag) contributes nothing, so a
+ * widget with no gradient anywhere gets [] and is byte-identical to before the
+ * feature.
+ *
+ * Ids and labels are already keyed (`fill-grad-center`, "Gradient centre (fill)"),
+ * which is what makes several simultaneous gradients on one widget legible — the
+ * two iris widgets have shipped a fill + pupilFill pair since the beads existed.
+ *
+ * @param {object} state - the folded item state (ALREADY unsigned — see derive)
+ * @param {string[]} keys - the paint-capable keys, from paintCapableKeys
+ * @returns {object[]} modifier-point rows, LOCAL px
+ *
+ * @example allPaintModifierPoints({w: 100, h: 100, fill: "#f00"}, ["fill", "stroke"]) // [] (no gradients)
+ * @example allPaintModifierPoints({w: 100, h: 100}, []) // [] (a widget with no paint rows at all)
+ * @example allPaintModifierPoints({w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}, stroke: {type: "radialGradient", radial: {stops: []}}}, ["fill", "stroke"]).map((m) => m.id) // ["fill-grad-center", "stroke-grad-center"]
+ * @example allPaintModifierPoints({w: 100, h: 100, stroke: {type: "linearGradient", linear: {stops: [], angle: 0}}}, ["fill", "stroke"]).map((m) => m.id) // ["stroke-grad-center", "stroke-grad-dir"]
+ */
+export function allPaintModifierPoints(state, keys) {
+  const out = [];
+  for (const key of keys) out.push(...paintModifierPoints(state, key));
+  return out;
+}
+
 export function paintModifierPoints(state, key = "fill") {
   const ag = activeGradient(state[key]);
   if (!ag) return [];

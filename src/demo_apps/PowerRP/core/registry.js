@@ -129,7 +129,11 @@
  *                                           // dashed ghost line (a bezier handle →
  *                                           // its anchor). All optional & additive,
  *                                           // so a widget that omits them renders
- *                                           // unchanged.
+ *                                           // unchanged. DECLARE ONLY THIS WIDGET'S
+ *                                           // OWN SHAPE HANDLES: the gradient beads
+ *                                           // are appended universally off the
+ *                                           // `paint: true` rows — see THE GRADIENT
+ *                                           // HANDLES ARE UNIVERSAL below.
  *     handleToggles?: [{key, label, icon,   // the on/off states a LIST-ELEMENT
  *       isOn(el), set(el, on)}]             // handle offers (curve/break on a paint
  *                                           // path); the universal HandleToolbar and
@@ -297,6 +301,23 @@
  * user's "soft edges should be an option for everything that we can give it to"
  * cannot rot again — a new widget file gets shadow / bloom / blend / inner
  * shadow / soft edges the moment it is registered, with no line to forget.
+ *
+ * THE GRADIENT HANDLES ARE UNIVERSAL BY THE SAME DOCTRINE, and this is the second
+ * time the lesson had to be learned. A plugin does NOT declare the centre /
+ * direction beads that edit a gradient's geometry on canvas: core/derive.js
+ * nodeModifierPoints appends them to whatever `modifierPoints` returns, for every
+ * `paint: true` Inspector row the plugin declares (core/paint_handles.js
+ * paintCapableKeys / allPaintModifierPoints). Until 2026-08-02 each plugin SPREAD
+ * `paintModifierPoints(s, "fill")` into its own `modifierPoints`, and exactly
+ * SEVEN of ~74 paint-capable plugins ever did — so a graph_line, a plaintext, a
+ * codeblock or an svg with a gradient fill showed no handles at all, and the user
+ * reported it as arbitrary ("sometimes I see the handles for a gradient, and
+ * sometimes I don't, and it baffles me"). An opt-in for a property EVERY widget
+ * can carry is a defect generator: it makes the default wrong, and every widget
+ * written afterwards is wrong until an author remembers a line no compiler asks
+ * for. If a capability is a function of a UNIVERSAL property rather than of the
+ * widget, derive it centrally — do not add a spread and a comment asking the next
+ * author to copy it.
  *
  * THE TOOL GROUPS are resolved HERE TOO (see withToolGroups / TOOL_POOL), by the
  * same doctrine and for the same reason: a widget does not list every tool

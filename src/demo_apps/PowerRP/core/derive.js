@@ -43,6 +43,7 @@ import * as T from "./transform.js";
 import { reportOnce } from "./report.js";
 import { boxCenter, unionRect, unmirroredLocal, unsignedState } from "./geometry.js";
 import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
+import { allPaintModifierPoints, paintCapableKeys } from "./paint_handles.js";
 
 /**
  * Pure function. An item's LOCAL→WORLD similarity transform, with rotation
@@ -1135,12 +1136,43 @@ export function constraintPull(mp, state, desired) {
  *     to WORLD here exactly like x/y so a dashed GHOST line can be drawn from it to
  *     the handle. Absent → no tether line.
  *
+ * THE GRADIENT BEADS ARE APPENDED HERE, FOR EVERY PAINT-CAPABLE WIDGET, and no
+ * plugin declares them. A gradient's centre/direction handles are a function of
+ * the PAINT and not of the shape (core/paint_handles.js), so making each plugin
+ * SPREAD them — which is how it worked until 2026-08-02 — made the DEFAULT wrong:
+ * exactly seven plugins ever did it, and a graph_line, a plaintext or a codeblock
+ * with a gradient fill silently had no handles at all. The user reported precisely
+ * that inconsistency. The keys come from the plugin's OWN `paint: true` Inspector
+ * rows (paintCapableKeys), so nothing here names a property and a widget that adds
+ * a paint row is covered the day it does. A widget whose paints are all
+ * solid/material/absent contributes NO rows, so it is byte-identical to before.
+ * The beads come AFTER the plugin's rows, and `node.state` is post-`unsignedState`,
+ * so a FLIPPED widget's beads land on its ink with no per-plugin sign handling.
+ *
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {}}) // []
  * @example nodeModifierPoints({world: {x: 5, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "a", x: 1, y: 2}]}}) // [{id: "a", x: 6, y: 2, element: null, active: true, apply: undefined, constrain: UNCONSTRAINED, shape: null, glyph: null, label: null, stem: null}]
  * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {}, plugin: {modifierPoints: () => [{id: "g", x: 0, y: 0, glyph: "boxedO", label: "Gradient centre"}]}})[0].glyph // "boxedO"
+ * @example // AUTO-DERIVED gradient beads: the plugin declares a paint row and NO modifierPoints at all
+ * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: {type: "radialGradient", radial: {stops: []}}}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}).map((m) => m.id) // ["fill-grad-center"]
+ * @example nodeModifierPoints({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 100, fill: "#f00"}, plugin: {inspector: [{key: "fill", kind: "color", paint: true}]}}) // [] (a solid fill earns no beads)
  */
 export function nodeModifierPoints(node) {
-  return (node.plugin.modifierPoints?.(node.state) ?? []).map((m) => {
+  // THE GRADIENT BEADS ARE DERIVED, NOT OPTED INTO (core/paint_handles.js). They
+  // are a function of the PAINT, not the shape, so they are appended here for
+  // EVERY paint-capable widget rather than spread by each plugin — seven plugins
+  // ever spread them, which is why a graph_line with a gradient fill showed none
+  // ("sometimes I see the handles for a gradient, and sometimes I don't" — user,
+  // 2026-08-02). AFTER the plugin's own rows, so a widget's shape handles keep
+  // their existing order and z (the beads draw on top, which is what the boxedO
+  // glyph is for). `node.state` has ALREADY passed THE FLIP SEAM (unsignedState,
+  // in deriveNodes), so the beads read the positive box — a flipped widget's
+  // beads land on its ink with no per-plugin sign handling, which is exactly the
+  // thing a single derive seam buys over seven spreads.
+  const rows = [
+    ...(node.plugin.modifierPoints?.(node.state) ?? []),
+    ...allPaintModifierPoints(node.state, paintCapableKeys(node.plugin)),
+  ];
+  return rows.map((m) => {
     const p = T.apply(node.world, m.x, m.y);
     const stem = m.stem ? T.apply(node.world, m.stem.x, m.stem.y) : null;
     return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED, shape: m.shape ?? null, glyph: m.glyph ?? null, label: m.label ?? null, stem: stem ? { x: stem.x, y: stem.y } : null };
