@@ -5814,6 +5814,29 @@ audio.ae-preview-media {
   text-align: center;
 }
 
+/* INTERSECTION ⇄ UNION, the row that decides what the panel below is made of.
+   LAYOUT ONLY: the buttons are plain `.btn` and take their toggled-on state from
+   `.btn.active`, which that rule's own comment calls the house's ONE labeled
+   quick-switch language — so this mints no seventh segmented-control treatment
+   (the six that already disagree are a known, unresolved wart, and adding to the
+   pile to save one line would be the wrong trade). Centered to sit under the
+   .multi-count line it belongs to, and gapped rather than butt-joined because
+   these are two independent buttons, not a fused segmented run. */
+.inspector .multi-select .multi-mode {
+  display: flex;
+  gap: var(--a-sp-2);
+  justify-content: center;
+  padding: 0 var(--a-sp-4) var(--a-sp-3);
+}
+
+/* The icon sits with the word, not above it: the Venn glyph is a HINT for the
+   label, so they share a baseline run. */
+.inspector .multi-select .multi-mode .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--a-sp-1);
+}
+
 /* WHAT IS NOT BEING EDITED, and WHY — the skipped-items and conflicting-keys
    notes under the selection count. Same dim/centered treatment as .empty and
    .multi-count, so the three read as one block of panel prose. Was written in

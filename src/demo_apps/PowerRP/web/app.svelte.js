@@ -40,7 +40,7 @@ import { retypeChoices, retypeEligible, retypedItem } from "../core/retype.js";
 import { shatterEligible, shatterNotReadyReason, shatteredDocument, shatterIds, shatterDisclosure, vectorRecovery } from "../core/shatter.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 import { bundleDefaults } from "../core/properties.js";
-import { multiSelectPanel, unifyPairs } from "../core/multiselect.js";
+import { multiSelectPanel, unifyPairs, MULTISELECT_MODE } from "../core/multiselect.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import { copyText, imageSignature, POWERRP_CLIPBOARD_MIME } from "./clipboard.js"; // canvas-clipboard ownership marker + corroborating signature + the share-link copy
@@ -562,6 +562,13 @@ export class PowerRPApp {
   // the multi-select override below — that one coupling is what keeps the two
   // coherent with zero edits to the existing write sites (least-invasive
   // design; the manifest's multi-select is a minimal SUBSTRATE, not a rewrite).
+  /** VIEW STATE: does the multi-selection panel show rows every selected item
+   *  has (intersection) or rows any of them has (union)? User-facing toggle at
+   *  the top of that panel. Deliberately NOT document state — it is not
+   *  keyframed, not serialized, and survives no reload, because it describes how
+   *  you are LOOKING at a selection, not anything about the deck. */
+  multiSelectMode = $state(MULTISELECT_MODE.INTERSECTION);
+
   #selection = $state(null);
   get selection() {
     return this.#selection;
@@ -1140,7 +1147,18 @@ export class PowerRPApp {
    * core/multiselect.js for the identity relation and the mixed-value semantics.
    */
   multiSelectPanel() {
-    return multiSelectPanel(this.selectionEntries());
+    return multiSelectPanel(this.selectionEntries(), this.multiSelectMode);
+  }
+
+  /** Command. Switches the multi-selection panel between showing rows EVERY
+   *  selected item has (intersection) and rows ANY of them has (union). View
+   *  state, not document state: it is not keyframed, not saved, and changing it
+   *  writes nothing — so it is a plain field rather than anything the fold or an
+   *  undo unit knows about. */
+  setMultiSelectMode(mode) {
+    if (mode !== MULTISELECT_MODE.INTERSECTION && mode !== MULTISELECT_MODE.UNION)
+      throw new Error(`setMultiSelectMode: unknown mode "${mode}" — expected "${MULTISELECT_MODE.INTERSECTION}" or "${MULTISELECT_MODE.UNION}"`);
+    this.multiSelectMode = mode;
   }
 
   /**
@@ -1159,8 +1177,14 @@ export class PowerRPApp {
    * @param {*} value - the value to unify to (a literal, or an `=` equation)
    * @returns {number} how many items were written (0 = nothing committed)
    */
-  unifySelection(key, value) {
-    const pairs = unifyPairs(this.selectionEntries(), key, value);
+  unifySelection(key, value, itemIds = null) {
+    // `itemIds` RESTRICTS the write to the items a row applies to. In UNION mode a
+    // row may be declared by only some of the selection, and writing the key onto
+    // an item whose plugin never declared it would store a property that widget
+    // silently ignores — invisible junk in the document. Null (the intersection
+    // case, and every pre-existing caller) means every selected item, unchanged.
+    const targets = itemIds === null ? this.selectionEntries() : this.selectionEntries().filter((e) => itemIds.includes(e.itemId));
+    const pairs = unifyPairs(targets, key, value);
     if (pairs.length === 0) return 0;
     this.setPreview(pairs);
     this.commitPreview();

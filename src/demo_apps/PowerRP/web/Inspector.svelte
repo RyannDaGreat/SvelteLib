@@ -205,7 +205,14 @@
    * targets a Tier-1 field receives as `paths` (the primary FIRST, so the field's
    * singular `path` and this list agree about who is being read). */
   function multiPaths(key) {
-    return (multiPanel?.itemIds ?? []).map((id) => ["items", id, ...key.split(".")]);
+    // THE ROW'S OWN `appliesTo`, NOT THE WHOLE SELECTION. They are the same list
+    // in intersection mode; in UNION mode a row may be declared by only some of
+    // the selected items, and writing it to the others would store a property
+    // their plugin never declared and silently ignores. Falls back to the full
+    // set only if a row somehow arrives without the field, which core always
+    // supplies.
+    const ids = multiByKey.get(key)?.row?.appliesTo ?? multiPanel?.itemIds ?? [];
+    return ids.map((id) => ["items", id, ...key.split(".")]);
   }
 
   /**
@@ -216,7 +223,9 @@
    * together, which is the "make a bunch of things fade in at the same time" flow.
    */
   function unifyRow(entry) {
-    app.unifySelection(entry.row.key, entry.seed);
+    // Scoped to the row's own participants for the same reason multiPaths is —
+    // in union mode "unify them all" means all the ones that HAVE this property.
+    app.unifySelection(entry.row.key, entry.seed, entry.row.appliesTo ?? null);
   }
 
   /**
@@ -2263,6 +2272,38 @@
             <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
           </button>
         </Tooltip>
+      </div>
+      <!-- INTERSECTION ⇄ UNION, at the very top because the user put it there:
+           "on the very top it should let me say intersection or union". It
+           decides WHICH ROWS the panel below is made of, so it reads before them
+           rather than after. Intersection is the default and is byte-identical to
+           the shipped behaviour: rows every selected item has. Union adds the
+           rows only some of them have — those still edit, keyframe, show "…" and
+           unify exactly the same way ("same behaviour for both"); they simply
+           apply to the items that declare them, which the row's own count says. -->
+      <!-- THE ICONS ARE VENN DIAGRAMS, and they are the SAME diagram with a
+           different region filled — mdi's own `set-*` family, so the pair reads as
+           one picture answering "which region of the two sets?" rather than two
+           unrelated glyphs. mdi:set-center fills the LENS (what both share);
+           mdi:set-all fills BOTH circles (everything either has). That is exactly
+           the distinction the toggle makes, which is why an icon is worth having
+           here at all. The words stay: "intersection"/"union" is set vocabulary
+           the user reached for, but an icon-only control for it would be a
+           guessing game for anyone who did not name it themselves. -->
+      <div class="multi-mode" role="group" aria-label="Which properties to show">
+        {#each [["intersection", "Shared", "mdi:set-center", "Only properties EVERY selected item has, so a change here reaches all of them. The safe default."], ["union", "All", "mdi:set-all", "Every property ANY selected item has. A property only some of them have still edits, keyframes and unifies the same way — it just applies to the ones that have it."]] as [mode, label, icon, tip] (mode)}
+          <Tooltip text={tip}>
+            <button
+              class="btn"
+              class:active={multiPanel.mode === mode}
+              aria-pressed={multiPanel.mode === mode}
+              onclick={() => app.setMultiSelectMode(mode)}
+            >
+              <iconify-icon {icon} width="14" height="14"></iconify-icon>
+              {label}
+            </button>
+          </Tooltip>
+        {/each}
       </div>
       <!-- WHAT IS NOT BEING EDITED, said out loud. An item that does not exist on
            this slide has no value to compare and must not be keyframed (that would

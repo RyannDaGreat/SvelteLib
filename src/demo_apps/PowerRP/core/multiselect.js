@@ -129,6 +129,29 @@ import { LIST_ROW_KIND } from "./lists.js";
 export const MIXED_MARK = "…";
 
 /**
+ * THE TWO WAYS A MULTI-SELECTION CAN CHOOSE ITS ROWS. User, 2026-08-02: "when I
+ * have a selection of multiple objects, on the very top it should let me say
+ * intersection or union — if I select the intersection of properties then I see
+ * what I have now, but if I toggle that to union then it will show me the union
+ * of all properties. Same behaviour for both."
+ *
+ *   INTERSECTION (default, and byte-identical to the shipped behaviour) — only
+ *     rows EVERY selected item declares. The safe reading: every row you see
+ *     edits everything you selected.
+ *   UNION — every row ANY selected item declares. A row only some items have
+ *     still edits, keyframes, shows MIXED_MARK and unifies exactly as an
+ *     intersection row does ("same behaviour for both"); it simply applies to the
+ *     items that declare it. Each row carries `appliesTo` so the panel can say
+ *     which, and so a write cannot leak onto an item whose plugin never declared
+ *     the property.
+ *
+ * DEFAULTING TO INTERSECTION IS NOT A COIN FLIP: it is the mode in which "I
+ * changed this row" means "I changed it on everything selected", and that is the
+ * assumption a bulk edit is usually made under.
+ */
+export const MULTISELECT_MODE = { INTERSECTION: "intersection", UNION: "union" };
+
+/**
  * The row aspects that are PRESENTATIONAL — the complete denylist the identity
  * relation ignores. Everything not named here is CONTRACT (see the module header
  * for why the polarity must be this way round).
@@ -362,29 +385,66 @@ export function jointEditProblem(row) {
  * // ])
  * // → {rows: [{key: "opacity", kind: "number"}], conflicts: [{key: "shape", aspects: ["options"]}]}
  */
-export function intersectRows(entries) {
+export function intersectRows(entries, mode = MULTISELECT_MODE.INTERSECTION) {
   if (entries.length === 0) return { rows: [], conflicts: [] };
-  const primaryRows = entries[0].plugin.inspector ?? [];
-  const otherRowLists = entries.slice(1).map((e) => e.plugin.inspector ?? []);
+  const union = mode === MULTISELECT_MODE.UNION;
+  const rowsOf = entries.map((e) => e.plugin.inspector ?? []);
+  // WHICH KEYS ARE CANDIDATES. Intersection asks only what the PRIMARY declares
+  // (a key it lacks can never be shared), so the panel reads as the primary
+  // item's panel minus what the others do not share — the shipped behaviour, and
+  // the reason a one-item selection returns that plugin's rows by identity.
+  // Union asks every key ANY item declares, primary-first so that framing
+  // survives and the extra rows append rather than reshuffling the panel.
+  const keys = [];
+  const seenKeys = new Set();
+  for (const list of union ? rowsOf : [rowsOf[0]])
+    for (const r of list) if (!seenKeys.has(r.key)) { seenKeys.add(r.key); keys.push(r.key); }
+
   const rows = [];
   const conflicts = [];
-  for (const row of primaryRows) {
-    // The MATCHING row on each other item, by key — the candidate this row would
-    // be unified with. A key declared twice by one plugin is a plugin defect the
+  // key → the itemIds that DECLARE the row. A side table rather than a field on
+  // the row, so rows stay the plugins' own objects (the drift gate above).
+  const appliesTo = new Map();
+  for (const key of keys) {
+    // The MATCHING row on each item, by key — the candidate this row would be
+    // unified with. A key declared twice by one plugin is a plugin defect the
     // row-kind suites already reject, so the first match is the only match.
-    const counterparts = otherRowLists.map((list) => list.find((r) => r.key === row.key));
-    if (counterparts.every((r) => r !== undefined && sameRowContract(row, r))) {
-      rows.push(row);
+    const found = rowsOf.map((list) => list.find((r) => r.key === key));
+    // WHO PARTICIPATES. Intersection: everyone, or the row is out. Union: the
+    // items that actually DECLARE the row — and no others, which is the decision
+    // worth stating. The alternative (write the key onto every selected item) was
+    // rejected: it would store a property a plugin does not declare, which is
+    // invisible junk in the document that its widget silently ignores. A union
+    // row therefore edits the subset that can MEAN it; `appliesTo` names them so
+    // the panel can say so and the fan-out can target exactly those.
+    const present = entries.filter((_, i) => found[i] !== undefined);
+    const declared = found.filter((r) => r !== undefined);
+    if (!union && declared.length !== entries.length) continue; // not shared — not a conflict either
+    const seed = declared[0];
+    if (declared.every((r) => sameRowContract(seed, r))) {
+      // THE ROW IS PUSHED BY REFERENCE, NEVER REBUILT. A `{...seed, appliesTo}`
+      // spread here would be the obvious way to carry participation and it is
+      // FORBIDDEN: tests/multiselect_test.js's drift gate asserts an intersected
+      // row IS the plugin's own object, on the manifest's reasoning that "a
+      // reference cannot drift from itself; a lookup needs a table that can be
+      // missing". It caught exactly that mistake when union mode was written.
+      // Participation therefore rides in a SIDE TABLE keyed by row key, and
+      // multiSelectPanel puts it on the WRAPPER it already builds per row.
+      rows.push(seed);
+      appliesTo.set(key, present.map((e) => e.itemId));
       continue;
     }
-    // Present on EVERY item but not identical → a real conflict, worth naming.
-    if (counterparts.every((r) => r !== undefined)) {
-      const aspects = new Set();
-      for (const r of counterparts) for (const name of contractDifferences(row, r)) aspects.add(name);
-      conflicts.push({ key: row.key, aspects: [...aspects].sort() });
-    }
+    // Declared by more than one item but not identically → a real conflict, worth
+    // naming. UNCHANGED BY UNION MODE ON PURPOSE: union is about a row being
+    // ABSENT from some items, which is a different problem from a row MEANING
+    // different things where it is present. Getting past a contract mismatch is
+    // its own feature (warn-and-unify) and must not be smuggled in here, where it
+    // would silently write a value the other item cannot mean.
+    const aspects = new Set();
+    for (const r of declared.slice(1)) for (const name of contractDifferences(seed, r)) aspects.add(name);
+    conflicts.push({ key, aspects: [...aspects].sort() });
   }
-  return { rows, conflicts };
+  return { rows, conflicts, appliesTo };
 }
 
 /**
@@ -466,9 +526,10 @@ export function rowMixedState(entries, key) {
  * it is not editing instead of quietly editing fewer than the user chose.
  *
  * @param {Array<{itemId: string, plugin: object, state: object|null}>} entries - selected items, primary FIRST
- * @returns {{rows: Array<{row: object, mixed: boolean, value: *, seed: *, problem: string|null}>, conflicts: Array<{key: string, aspects: string[]}>, skipped: string[], itemIds: string[]}}
+ * @param {string} [mode] - MULTISELECT_MODE.INTERSECTION (default) or .UNION
+ * @returns {{rows: Array<{row: object, appliesTo: string[], mixed: boolean, value: *, seed: *, problem: string|null}>, conflicts: Array<{key: string, aspects: string[]}>, skipped: string[], mode: string, itemIds: string[]}}
  *
- * @example multiSelectPanel([]) // {rows: [], conflicts: [], skipped: [], itemIds: []}
+ * @example multiSelectPanel([]) // {rows: [], conflicts: [], skipped: [], mode: "intersection", itemIds: []}
  * @example // a rect at opacity 1 and a video at opacity 0.2 share opacity, MIXED:
  * // multiSelectPanel([
  * //   {itemId: "r", plugin: {inspector: [{key: "opacity", kind: "number", min: 0, max: 1}]}, state: {opacity: 1}},
@@ -480,14 +541,27 @@ export function rowMixedState(entries, key) {
  * // multiSelectPanel([{itemId: "r", plugin: {inspector: []}, state: {}}, {itemId: "ghost", plugin: {inspector: []}, state: null}]).skipped
  * // → ["ghost"]
  */
-export function multiSelectPanel(entries) {
+export function multiSelectPanel(entries, mode = MULTISELECT_MODE.INTERSECTION) {
   const live = entries.filter((e) => e.state != null);
   const skipped = entries.filter((e) => e.state == null).map((e) => e.itemId);
-  const { rows, conflicts } = intersectRows(live);
+  const { rows, conflicts, appliesTo } = intersectRows(live, mode);
   return {
-    rows: rows.map((row) => ({ row, ...rowMixedState(live, row.key), problem: jointEditProblem(row) })),
+    rows: rows.map((row) => {
+      // MIXEDNESS IS READ OVER THE ITEMS THE ROW APPLIES TO, NOT THE WHOLE
+      // SELECTION — and in UNION mode those differ. Reading all of them would ask
+      // an item whose plugin never declares the key for a value, get `undefined`
+      // from both its state and its defaults, and report the row MIXED against a
+      // participant that has a perfectly definite value. The row would show "…"
+      // forever and unifying could never clear it: a permanently-wrong panel.
+      // In INTERSECTION mode `appliesTo` is every live item, so this is the same
+      // call the shipped code made.
+      const ids = appliesTo.get(row.key) ?? live.map((e) => e.itemId);
+      const applicable = live.filter((e) => ids.includes(e.itemId));
+      return { row, appliesTo: ids, ...rowMixedState(applicable, row.key), problem: jointEditProblem(row) };
+    }),
     conflicts,
     skipped,
+    mode,
     itemIds: live.map((e) => e.itemId),
   };
 }

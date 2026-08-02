@@ -130,7 +130,10 @@ test("a FUNCTION aspect (dynamic max) compares by reference", () => {
 
 test("empty selection intersects to nothing (no crash, no rows)", () => {
   assert.deepEqual(intersectRows([]), { rows: [], conflicts: [] });
-  assert.deepEqual(multiSelectPanel([]), { rows: [], conflicts: [], skipped: [], itemIds: [] });
+  // `mode` joined the panel object when the intersection/union toggle landed —
+  // the panel now reports which of the two it was built under, so the renderer
+  // does not have to ask the app a second time and disagree with what it drew.
+  assert.deepEqual(multiSelectPanel([]), { rows: [], conflicts: [], skipped: [], mode: "intersection", itemIds: [] });
 });
 
 test("ONE-ITEM selection degrades to that plugin's rows EXACTLY, by identity", () => {
