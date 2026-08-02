@@ -265,6 +265,32 @@ export function modeForBlend(from, to) {
  * @example blendUnderMode(0, 10, 0.5, {key: "x", mode: "step"}) // 10 (discrete)
  * @example blendUnderMode(0, 10, 0.01, {key: "x", mode: "step"}) // 10 (snaps at once)
  */
+/**
+ * Query (reads the registry). Does this mode take a WHOLE OBJECT-SHAPED value as
+ * one leaf, rather than letting core/deltas recurse into it key by key?
+ *
+ * WHY THIS EXISTS: a paint IS a plain object. `{type: "material", material: {…}}`
+ * and `{type: "linearGradient", stops: […]}` both look exactly like the nested
+ * delta tree that a SPARSE keyframe patch uses, and core/deltas.mutBlendApply
+ * cannot tell "patch these two fields of the existing paint" from "switch to a
+ * different paint entirely" by shape alone. A mode CAN: `blend` only ever means
+ * the second. So a claiming mode is consulted BEFORE the tree recursion and gets
+ * the subtree as one value; a non-claiming mode leaves the recursion exactly as
+ * it was, which is what keeps every existing sparse-patch document byte-identical.
+ *
+ * An UNKNOWN id answers false rather than throwing: the throw belongs to
+ * blendUnderMode (which the caller reaches immediately after), and duplicating it
+ * here would only move the same error one line earlier with a worse message.
+ *
+ * @example modeClaimsTrees("blend") // true
+ * @example modeClaimsTrees("tween") // false
+ * @example modeClaimsTrees("step") // false (a stepped subtree still recurses — see below)
+ * @example modeClaimsTrees("nope") // false
+ */
+export function modeClaimsTrees(id) {
+  return MODES.get(id)?.claimsTrees === true;
+}
+
 export function blendUnderMode(a, b, alpha, ctx) {
   const entry = MODES.get(ctx.mode);
   if (!entry)
@@ -274,7 +300,7 @@ export function blendUnderMode(a, b, alpha, ctx) {
   return entry.blend(a, b, alpha, ctx);
 }
 
-// ── The two shipped modes ────────────────────────────────────────────────────
+// ── The shipped modes ────────────────────────────────────────────────────────
 
 registerInterpMode({
   id: DEFAULT_INTERP_MODE,
@@ -294,3 +320,268 @@ registerInterpMode({
   // discrete rule verbatim: past zero, you are already there.
   blend: (a, b) => b,
 });
+
+// ── `fade`: a BOOLEAN that dissolves instead of blinking ──────────────────────
+//
+// User request, 2026-08-02, verbatim: "Even visible could have options for
+// interpolate. We could have a fade interpolate option for visible… The default
+// interpolation for toggling visibility is just step. But we would want to have
+// an option called fade or opacity or something that would bring it in and out
+// between 0 to 100 opacity."
+//
+// THE MECHANISM, stated once because it is the whole design: a `fade`-moded
+// boolean leaf becomes a FRACTIONAL NUMBER mid-transition. `active: false → true`
+// at alpha 0.3 folds to `active: 0.3`. That is the entire feature at this layer;
+// the render side (render_gpu/ports.js activeFadeOpacity) reads a fractional
+// `active` as a multiplier on every op's opacity, and core/derive.js's
+// "is this item drawn at all" test already asks `active !== false`, which a
+// number passes.
+//
+// WHY A FRACTIONAL BOOLEAN AND NOT A SEPARATE `opacity` KEYFRAME. Three reasons,
+// in order of weight:
+//   1. IT IS THE PROPERTY THE USER NAMED. Writing a second key would mean a mode
+//      on `active` silently authoring `opacity` — a blend that mutates a
+//      DIFFERENT leaf than the one it was asked about breaks mutBlendApply's
+//      whole contract (one leaf in, one value out) and would clobber whatever
+//      the author had put in `opacity`.
+//   2. THE ENDPOINTS STAY EXACT BOOLEANS FOR FREE. The call site enforces alpha 1
+//      = the stored target, so a folded slide state never holds a fraction; and
+//      at alpha → 0 the fold returns `a` untouched. Only the strictly-interior
+//      frames of a transition are fractional, which is exactly the window a fade
+//      occupies. Nothing serializes, nothing repairs, nothing migrates.
+//   3. MULTIPLICATION IS THE HONEST COMPOSITION. A widget at opacity 0.5 fading
+//      in reaches 0.25 halfway, not 0.5 — the fade is a coverage factor over
+//      whatever the widget's own opacity already was.
+//
+// DIRECTION IS FREE. true → false gives 1 − alpha and false → true gives alpha,
+// because the law below is a plain lerp over the numeric reading of the two
+// booleans. So Delete-with-fade dissolves out and un-Delete dissolves in, with
+// one rule and no branch.
+//
+// NON-BOOLEAN ENDPOINTS FALL BACK TO `interpolate`, not to a throw: `fade` is
+// selectable on ANY row (rowSupportsInterp says every keyframeable row qualifies),
+// and a user who picks it on `x` should get x's ordinary tween rather than an
+// error box — there is no fading a coordinate. Numbers already lerp, which IS the
+// fade for anything with a magnitude, so this fallback is the right answer and
+// not a swallow.
+
+/**
+ * Pure function. A boolean read as its opacity contribution — the numeric
+ * reading `fade` lerps between. `undefined` (an ADDITION: the key was not in
+ * the state) reads as ABSENT-MEANS-VISIBLE, matching core/derive.js's
+ * `s.active !== false` test, so a mode can never disagree with the gate.
+ *
+ * @example fadeLevel(true) // 1
+ * @example fadeLevel(false) // 0
+ * @example fadeLevel(0.25) // 0.25 (already fractional — an in-flight fade)
+ * @example fadeLevel(undefined) // 1 (absent means visible)
+ */
+export function fadeLevel(v) {
+  if (typeof v === "number") return v;
+  if (v === false) return 0;
+  return 1;
+}
+
+registerInterpMode({
+  id: "fade",
+  label: "Fade",
+  help: "Dissolve between the two values instead of switching. On Visible this is a cross-fade from 0% to 100% opacity across the transition (and back out again when the item is hidden); on a numeric property it is the ordinary tween.",
+  blend: (a, b, alpha) => {
+    const bothBoolish = (v) => typeof v === "boolean" || typeof v === "number" || v === undefined;
+    // A boolean pair (or a fraction already in flight) fades; anything else has
+    // no coverage meaning, so it takes the default law. See the note above.
+    if (!bothBoolish(a) || typeof b !== "boolean") return interpolate(a, b, alpha);
+    return lerpFade(fadeLevel(a), fadeLevel(b), alpha);
+  },
+});
+
+/**
+ * Pure function. The fade ramp: a plain lerp, CLAMPED to [0, 1] so a coverage
+ * factor can never leave the range the renderer multiplies by.
+ *
+ * @example lerpFade(0, 1, 0.25) // 0.25 (fading in)
+ * @example lerpFade(1, 0, 0.25) // 0.75 (fading out — same rule, no branch)
+ * @example lerpFade(0.5, 1, 0.5) // 0.75 (from a fraction already in flight)
+ */
+function lerpFade(a, b, alpha) {
+  return Math.max(0, Math.min(1, a + (b - a) * alpha));
+}
+
+// ── `blend`: two PAINTS alpha-composited over the transition ──────────────────
+//
+// User request, 2026-08-02, verbatim: "Different fill materials could just
+// linearly blend between each other. We could just, like, say, blend as an
+// interpolation between, like, a linear gradient and an arbitrary material. You
+// could just do alpha blending between the two, like, render both materials in
+// the in-between and just, like, alpha blend the results. Even CRT could do
+// that… So if I switch between any of those material options, it should be blend
+// by default."
+//
+// THE VALUE SHAPE: mid-transition the leaf becomes
+//
+//     {type: "crossfade", from, to, t}
+//
+// with `t` the transition alpha, and `from`/`to` the two ORIGINAL paint values,
+// carried through untouched. It is a PAINT like any other as far as this layer is
+// concerned — the renderers are what know how to draw it (render_gpu/ir.js
+// isCrossfadePaint / parsePaint, which recurses into both sides so each half is
+// already painter-ready; render_gpu/skia/paint_skia.js paints the op TWICE, once
+// per side, at complementary alpha).
+//
+// WHY A VALUE AND NOT A NEW OP. A crossfade has to work for `fill`, for `stroke`,
+// and for every one of the ~74 plugins' emit() bodies without any of them
+// knowing. Making it a PAINT means it rides the slot the paint already occupies:
+// no plugin changes, no emit() signature changes, and both vector exporters catch
+// it with one predicate in the OR-chain they already use to decide "this op has
+// no vector form — rasterize it".
+//
+// WHY IT IS NOT A PRE-BLENDED SINGLE PAINT. Two solid colors could be averaged
+// channel-wise (that is what `tween` already does), but a MATERIAL is an SkSL
+// shader and a GRADIENT is a stop list — there is no value halfway between a CRT
+// shader and a linear gradient. The user's own answer is the right one: render
+// both and composite. So the mode's job is to PRESERVE both operands, not to
+// reduce them.
+//
+// NESTING IS FLATTENED. If `a` is already a crossfade (a transition beginning
+// before the previous one's fold settled — possible under a partial fold), the
+// blend re-anchors on its `to` side rather than nesting crossfades N deep, which
+// would multiply the paint cost by 2^N. The visual cost is that the older,
+// mostly-faded-out operand is dropped a frame early; the alternative is an
+// unbounded shader chain.
+
+/** The paint-value tag a mid-transition `blend` produces. */
+export const CROSSFADE_PAINT_TYPE = "crossfade";
+
+/**
+ * Pure function. True for the crossfade paint value `blend` produces —
+ * the shape check the renderers route on, defined HERE (in DOM-free core)
+ * because core is where the value is minted. render_gpu/ir.js re-exports the
+ * predicate for the render side rather than defining a second, driftable copy.
+ *
+ * @example isCrossfadeValue({type: "crossfade", from: "#f00", to: "#00f", t: 0.5}) // true
+ * @example isCrossfadeValue("#ff0000") // false
+ * @example isCrossfadeValue(null) // false
+ */
+export function isCrossfadeValue(v) {
+  return !!(v && typeof v === "object" && !Array.isArray(v) && v.type === CROSSFADE_PAINT_TYPE);
+}
+
+registerInterpMode({
+  id: "blend",
+  label: "Blend",
+  help: "Cross-fade the two paints: both are drawn during the transition and alpha-composited, so any fill can dissolve into any other — a solid into a gradient, a gradient into a material, one material into another. The default when a fill or material changes.",
+  // A PAINT IS A TREE — see modeClaimsTrees. Without this flag the delta walker
+  // would recurse into the two paints and merge them key-wise, producing a
+  // chimera that is neither.
+  claimsTrees: true,
+  blend: (a, b, alpha, ctx) => {
+    // An ADDITION (no `a`) or a REMOVAL has only one operand — there is nothing
+    // to composite against, so the ordinary discrete/tween law applies.
+    if (a === undefined || a === null || b === undefined || b === null) return interpolate(a, b, alpha);
+    // Two plain numbers under `blend` mean the author picked it on a numeric row;
+    // a number has no second operand to draw, so lerp (see `fade`'s same note).
+    if (typeof a === "number" && typeof b === "number") return interpolate(a, b, alpha);
+    // NESTING FLATTENED — see the note above.
+    const from = isCrossfadeValue(a) ? a.to : a;
+    if (deepSame(from, b)) return b; // identical paints: no reason to draw twice
+    return { type: CROSSFADE_PAINT_TYPE, from, to: b, t: alpha, key: ctx?.key };
+  },
+});
+
+/**
+ * Pure function. Structural equality for paint values — the "these two paints
+ * are the same, do not pay to draw both" test. Local to this module (rather than
+ * imported from core/deltas.deepEqual) only because deltas.js imports THIS file;
+ * the semantics are identical.
+ *
+ * @example deepSame("#ff0000", "#ff0000") // true
+ * @example deepSame({type: "material", material: {id: "crt"}}, {type: "material", material: {id: "crt"}}) // true
+ * @example deepSame({type: "material", material: {id: "crt"}}, {type: "material", material: {id: "comic"}}) // false
+ */
+function deepSame(a, b) {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b))
+    return a.length === b.length && a.every((v, i) => deepSame(v, b[i]));
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    return ka.length === kb.length && ka.every((k) => deepSame(a[k], b[k]));
+  }
+  return false;
+}
+
+// ── The DEFAULT-MODE seam ─────────────────────────────────────────────────────
+//
+// User ruling, 2026-08-02, verbatim: "if I switch between any of those material
+// options, it should be blend by default."
+//
+// So a mode is not merely "stored, else tween": a leaf whose VALUE SHAPE is a
+// paint defaults to `blend` with nothing stored at all. That is a real behavior
+// change for existing documents — a material or gradient switch that used to
+// snap discretely at the start of a transition now cross-fades across it — and it
+// is deliberate, because it is exactly what was asked for. THE ENDPOINTS ARE
+// UNCHANGED: alpha 0 and alpha 1 are enforced at mutBlendApply's call site, so no
+// folded slide state, no saved document and no still export moves a byte. Only
+// the strictly-interior frames of a transition differ.
+//
+// WHY THE MAPPING LIVES HERE AND NOT IN core/properties.js. The obvious home is
+// the property registry — it already knows every row's `kind`. But the default
+// has to be resolvable at the ONE point a leaf blends (core/deltas.mutBlendApply),
+// which sees a KEY and two VALUES and has no plugin, no row and no registry in
+// hand. Keying off the VALUE SHAPE is what makes that possible, and it has a
+// second virtue: a plugin that invents a new paint-valued property gets the
+// default for free, with no registry entry to remember. (It also keeps this
+// feature out of properties.js entirely, which is a file another wave owns.)
+//
+// THE SHAPE TEST IS PAINT-OBJECTS ONLY, NOT COLOR STRINGS. A `#rrggbb` pair
+// already tweens per-channel under `tween`, which is a true blend and cheaper
+// than drawing the op twice — so a plain color keeps today's law. It is the
+// OBJECT paints (material / gradient / solid-wrapper / none) that have no
+// halfway value and need the composite.
+
+/**
+ * Pure function. Is this value an OBJECT-shaped paint — a material, a gradient,
+ * a solid wrapper or an explicit "none"? The shape test the paint default keys
+ * off. Hex strings and rgba arrays are NOT included: they have a true numeric
+ * midpoint, which `tween` already computes.
+ *
+ * @example isPaintShaped({type: "material", material: {id: "crt"}}) // true
+ * @example isPaintShaped({type: "linearGradient", stops: []}) // true
+ * @example isPaintShaped("#ff0000") // false (a color tweens per channel)
+ * @example isPaintShaped([1, 0, 0, 1]) // false (a parsed rgba array)
+ * @example isPaintShaped(5) // false
+ */
+export function isPaintShaped(v) {
+  return !!(v && typeof v === "object" && !Array.isArray(v) && typeof v.type === "string");
+}
+
+/**
+ * Pure function. THE DEFAULT-MODE SEAM: the mode a leaf takes when the document
+ * stores no `<key>~interp` for it. Consulted at the ONE call site in
+ * core/deltas.mutBlendApply, AFTER a stored mode has had its say — an explicit
+ * mode always wins, so an author who wants a material to snap can still pick
+ * `step` and this never overrides them.
+ *
+ * The rule is one line and deliberately shape-driven, not key-driven: a pair of
+ * OBJECT-shaped paints (material ↔ gradient ↔ solid-wrapper, in any combination)
+ * defaults to `blend`; everything else defaults to `tween`, byte-identically to
+ * before this function existed.
+ *
+ * Args:
+ *   a (*): the current folded value
+ *   b (*): the delta's target value
+ *   key (string): the state key (carried for future key-specific defaults and
+ *     for the error text; the rule below does not read it)
+ *
+ * Returns:
+ *   string: a registered mode id
+ *
+ * @example defaultModeFor({type: "material", material: {id: "crt"}}, {type: "linearGradient", stops: []}, "fill") // "blend"
+ * @example defaultModeFor({type: "material", material: {id: "crt"}}, {type: "material", material: {id: "comic"}}, "fill") // "blend"
+ * @example defaultModeFor("#ff0000", "#0000ff", "fill") // "tween" (colors already blend per channel)
+ * @example defaultModeFor(0, 10, "x") // "tween"
+ * @example defaultModeFor(false, true, "active") // "tween" (fade stays OPT-IN — the user asked for step-by-default on Visible)
+ */
+export function defaultModeFor(a, b, key) {
+  if (isPaintShaped(a) && isPaintShaped(b)) return "blend";
+  return DEFAULT_INTERP_MODE;
+}

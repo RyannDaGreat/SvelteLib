@@ -16,7 +16,7 @@
  */
 
 import { interpolate } from "./interpolators.js";
-import { blendUnderMode, interpKeyFor, modeForBlend } from "./interp_modes.js";
+import { blendUnderMode, defaultModeFor, interpKeyFor, modeClaimsTrees, modeForBlend } from "./interp_modes.js";
 
 /** Delete sentinel. A delta leaf of NONE deletes the key from the state. */
 export const NONE = null;
@@ -90,8 +90,11 @@ export function applied(state, delta) {
  *     otherwise blends by that mode's law instead. The mode is a plain sibling
  *     property `<key>~interp` with no machinery of its own, and it STEPS at the
  *     transition's start (the incoming delta's mode governs from frame 1).
- *     Absent — the case for every document written before the feature — is the
- *     "tween" mode, whose law IS `interpolate`, so nothing moves.
+ *     Absent falls through to core/interp_modes.defaultModeFor, which is "tween"
+ *     (whose law IS `interpolate`, so nothing moves) for every value shape EXCEPT
+ *     a pair of object-shaped PAINTS — those default to "blend", the cross-fade
+ *     the user asked for on material switches. Endpoints are unaffected either
+ *     way: only the strictly-interior frames of a transition differ.
  *
  * @example blendApplied({x: 0}, {x: 10}, 0.5) // {x: 5}
  * @example blendApplied({x: 0}, {x: 10}, 0) // {x: 0}
@@ -130,6 +133,35 @@ function mutBlendApply(state, delta, alpha) {
   // step takes its own snapshot of the sub-object it is about to mutate.
   const outgoing = { ...state };
   for (const [key, val] of Object.entries(delta)) {
+    // THE MODE IS RESOLVED BEFORE THE BRANCH DISPATCH, not inside the leaf arm,
+    // because A PAINT IS A TREE. `{type: "material", material: {…}}` and
+    // `{type: "linearGradient", stops: […]}` are both plain objects, so an
+    // un-hoisted mode lookup never sees them: they take the `isTree` arm and get
+    // MERGED KEY-WISE, which for two different paints produces a chimera that is
+    // neither (measured — a crt↔gradient switch folded to
+    // `{type: "material", stops: [], material: {id: "crt"}}` mid-transition).
+    // That merge is right for a SPARSE keyframe patch and wrong for a whole-paint
+    // switch, and only a mode can tell them apart. So: resolve the mode first;
+    // a mode that CLAIMS the leaf (`claimsTrees`) handles the whole subtree as
+    // one value, and everything else falls through to the untouched branches
+    // below, byte-identically.
+    const modeKey = interpKeyFor(key);
+    const storedMode = outgoing[modeKey] ?? delta[modeKey];
+    if (val !== NONE && alpha < 1 && key in state) {
+      // THE DEFAULT-MODE SEAM (core/interp_modes.defaultModeFor). A leaf with
+      // NOTHING stored is not automatically "tween": a pair of object-shaped
+      // PAINTS defaults to `blend`, per the user's "if I switch between any of
+      // those material options, it should be blend by default". A STORED mode
+      // still wins outright, so an author who wants a material to snap picks
+      // `step` and this never second-guesses them.
+      const mode = storedMode !== undefined
+        ? modeForBlend(outgoing[modeKey], delta[modeKey])
+        : defaultModeFor(state[key], val, key);
+      if (modeClaimsTrees(mode)) {
+        state[key] = blendUnderMode(state[key], val, alpha, { key, mode });
+        continue;
+      }
+    }
     if (val === NONE) {
       delete state[key];
     } else if (isTree(val)) {
@@ -162,7 +194,10 @@ function mutBlendApply(state, delta, alpha) {
         // one) governs from the first frame, else the standing one, else "tween"
         // — whose blend IS `interpolate`, so an absent companion folds to exactly
         // the bytes this line produced before modes existed.
-        const modeKey = interpKeyFor(key);
+        // A SCALAR leaf: the mode is whatever was stored, else "tween" — the
+        // paint default above cannot apply here, because a paint is never a
+        // scalar. (The tree-claiming half is hoisted above the branch dispatch;
+        // see the note there.)
         const mode = modeForBlend(outgoing[modeKey], delta[modeKey]);
         state[key] = blendUnderMode(state[key], val, alpha, { key, mode });
       }

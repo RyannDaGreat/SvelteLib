@@ -239,9 +239,13 @@ test("a DUPLICATE mode id THROWS — two waves cannot silently share a name", ()
 // ── (6) Loud on an unknown mode ──────────────────────────────────────────────
 
 test("an UNKNOWN mode THROWS rather than quietly tweening", () => {
+  // The stand-in used to be "fade" — a mode that did not exist YET. It does now
+  // (core/interp_modes.js), so this assertion silently stopped testing anything
+  // it meant to and started testing that fade was still missing. Named for a
+  // mode nobody will ever ship, so the check keeps meaning what it says.
   assert.throws(
-    () => blendApplied({ x: 0, "x~interp": "fade" }, { x: 10 }, 0.5),
-    /Unknown interpolation mode "fade" on "x~interp"/,
+    () => blendApplied({ x: 0, "x~interp": "__never_a_real_mode" }, { x: 10 }, 0.5),
+    /Unknown interpolation mode "__never_a_real_mode" on "x~interp"/,
   );
 });
 
