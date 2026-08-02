@@ -851,16 +851,39 @@ function uprightWrapper(object, spec, THREE) {
  * @param {object} spec see ensureScene3dRasterized
  * @returns {Promise<ImageBitmap>}
  */
+/** The (object, pose) the shared Spark instance is currently SORTED for, or null.
+ *  See the skip in renderSpecNow: a re-sort for the same key returns the same
+ *  order, so paying ~2 s for it again is pure waste. Reset with the raster cache,
+ *  because a fresh engine has sorted nothing. */
+let lastSortKey = null;
+
 async function renderSpecNow(spec) {
   const [{ renderer, spark3d, scene, camera, canvas, lights, THREE }, object] = await Promise.all([
     engine(),
     ensureSource(spec.src, spec.kind),
   ]);
-  const size = clampSurfaceSize(spec.w, spec.h, SCENE3D_MAX_RASTER_DIM);
+  // ── THE CEILING IS THE DEVICE'S, NOT A CONSTANT (#270 crashes) ────────────
+  // SCENE3D_MAX_RASTER_DIM is 8192, and asking a GPU that reports less than that
+  // for a surface it cannot allocate is how a WebGL context is lost — which
+  // presents to the user as the viewer "crashing", not as an error anyone can
+  // read. render_gpu/skia/browser_surface.js already solved exactly this for the
+  // Skia surface and states the rule: "a limit is a property of the INSTANCE".
+  // This path never asked, so on a 4096-capable device (SwiftShader and plenty of
+  // real hardware) a large viewport at high canvas zoom requested double what the
+  // context could give.
+  //
+  // three.js reports its own context's figure as renderer.capabilities.maxTextureSize,
+  // so the ceiling is the SMALLER of that and our own policy cap — the policy is
+  // still allowed to be stricter than the hardware, never laxer. Guarded with `||`
+  // rather than `??` because a capabilities object that reports 0 is as useless as
+  // one that reports nothing.
+  const deviceMax = renderer?.capabilities?.maxTextureSize || SCENE3D_MAX_RASTER_DIM;
+  const ceiling = Math.min(SCENE3D_MAX_RASTER_DIM, deviceMax);
+  const size = clampSurfaceSize(spec.w, spec.h, ceiling);
   if (!size.safe)
     reportOnce(
       `scene3d_raster:clamp:${spec.w}x${spec.h}`,
-      `PowerRP scene3d_raster: a 3D viewport asked for a ${spec.w}x${spec.h} surface, clamped to ${size.w}x${size.h} (the ${SCENE3D_MAX_RASTER_DIM} px edge limit). It will render at the clamped size and be scaled up, so it will look soft. Reduce the widget's zoom, or set an explicit Fixed resolution.`
+      `PowerRP scene3d_raster: a 3D viewport asked for a ${spec.w}x${spec.h} surface, clamped to ${size.w}x${size.h} (this GPU's ${ceiling} px edge limit${ceiling < SCENE3D_MAX_RASTER_DIM ? `, below our own ${SCENE3D_MAX_RASTER_DIM} px cap` : ""}). It will render at the clamped size and be scaled up, so it will look soft. Reduce the widget's zoom, or set an explicit Fixed resolution.`
     );
 
   // ONE object in the scene at a time. The scene is shared (one context), so the
@@ -919,7 +942,31 @@ async function renderSpecNow(spec) {
   // THE DETERMINISM SEAM. Spark's splat sort and LoD traversal are async; without
   // this await the readback below can catch a partially-sorted frame, which is
   // how a "recordable" widget quietly becomes an ephemeral one (see the header).
-  await spark3d.update({ scene, camera });
+  //
+  // ── SKIPPED WHEN THE SORT IS STILL VALID (#270 latency) ───────────────────
+  // This is THE cost of the widget: measured at ~2.0-2.2 s per call and
+  // RESOLUTION-INDEPENDENT, because it is the splat SORT and LoD traversal, not
+  // the draw (the render itself is 0-1 ms even at 1080p). The manifest records
+  // "gating update() on a real pose change" as an untested lever; this is it.
+  //
+  // WHAT THE SORT DEPENDS ON is the camera's POSITION and ORIENTATION and the
+  // object in the scene — nothing else. `setViewOffset` SHEARS THE PROJECTION and
+  // does not move the camera, and the surface size only changes how many pixels
+  // the same sorted splats are drawn into. So in viewport mode, panning or zooming
+  // THE CANVAS re-paid two seconds for a sort that was already correct, which is
+  // the one interaction where the delay is most obvious.
+  //
+  // DETERMINISM IS UNAFFECTED, and that is worth being explicit about because this
+  // is the seam the header calls the determinism guard: skipping a re-sort that
+  // would produce the identical order cannot change a pixel. Δt = 0 still gives a
+  // byte-identical frame; what changes is only how often the same answer is
+  // recomputed. The key includes the OBJECT, so switching widgets — the scene
+  // holds one at a time — always re-sorts.
+  const sortKey = `${spec.kind}\u0000${spec.src}\u0000${spec.upright !== false}\u0000${JSON.stringify(spec.pose)}`;
+  if (sortKey !== lastSortKey) {
+    await spark3d.update({ scene, camera });
+    lastSortKey = sortKey;
+  }
   renderer.render(scene, camera);
   return createImageBitmap(canvas);
 }
@@ -931,6 +978,9 @@ async function renderSpecNow(spec) {
  * re-creating one per test would exhaust the browser's cap faster than keeping it.
  */
 export function resetScene3dRaster() {
+  // The sort cache goes with the engine: a reset means nothing is sorted, and a
+  // stale key would skip the ONE update() a fresh scene genuinely needs.
+  lastSortKey = null;
   for (const ref of rasters.keys()) releaseImage(ref);
   rasters.clear();
   held.clear();

@@ -516,3 +516,48 @@ test("three.js is imported LAZILY and in exactly one file", () => {
 });
 
 console.log(`\n${passed} scene3d tests passed`);
+
+// ── #270: THE TWO REMAINING COMPLAINTS, ATTACKED AT THEIR MECHANISMS ────────
+
+test("THE SORT IS GATED ON A REAL POSE CHANGE — the latency lever", () => {
+  // `await spark.update()` is THE cost of this widget: ~2.0-2.2s per call and
+  // RESOLUTION-INDEPENDENT, because it is the splat SORT, not the draw (the render
+  // is 0-1ms even at 1080p). It ran on every raster. In viewport mode the surface
+  // and view offset change on every canvas pan/zoom, so a pan re-paid two seconds
+  // for a sort that was still correct — setViewOffset SHEARS the projection and
+  // does not move the camera, and the sort depends only on the camera and the
+  // object. The skip is keyed on exactly those.
+  const src = readFileSync(join(here, "..", "render_gpu", "gpu", "scene3d_raster.js"), "utf8");
+  assert.match(src, /lastSortKey/, "the module remembers what it is sorted for");
+  assert.match(src, /if \(sortKey !== lastSortKey\) \{[\s\S]{0,120}spark3d\.update/,
+    "update() runs only when that key changed");
+  // The key must NOT contain the surface size or the view offset — including
+  // either would defeat the whole point, because those are what a canvas pan
+  // changes.
+  const key = src.match(/const sortKey = [^;]+;/)[0];
+  for (const f of ["size.w", "size.h", "viewOffset", "spec.w", "spec.h"])
+    assert.ok(!key.includes(f), `the sort key must not include ${f} — a pan would re-sort for nothing`);
+  for (const needed of ["spec.pose", "spec.src", "spec.kind"])
+    assert.ok(key.includes(needed), `the sort key must include ${needed}`);
+});
+
+test("the sort cache is CLEARED with the raster cache, so a fresh engine sorts once", () => {
+  const src = readFileSync(join(here, "..", "render_gpu", "gpu", "scene3d_raster.js"), "utf8");
+  const reset = src.slice(src.indexOf("export function resetScene3dRaster"));
+  assert.match(reset.slice(0, 400), /lastSortKey = null/,
+    "a stale key after a reset would skip the ONE update a new scene genuinely needs");
+});
+
+test("THE SURFACE CEILING IS THE DEVICE'S, not a constant — the crash class", () => {
+  // Asking a GPU for a surface larger than it can allocate loses the WebGL
+  // context, which presents as the viewer "crashing" rather than as a readable
+  // error. render_gpu/skia/browser_surface.js already queries the real
+  // MAX_TEXTURE_SIZE and states the rule ("a limit is a property of the
+  // INSTANCE"); this path used a hardcoded 8192 and never asked.
+  const src = readFileSync(join(here, "..", "render_gpu", "gpu", "scene3d_raster.js"), "utf8");
+  assert.match(src, /renderer\?\.capabilities\?\.maxTextureSize/, "it asks the context for its own limit");
+  assert.match(src, /Math\.min\(SCENE3D_MAX_RASTER_DIM, deviceMax\)/,
+    "and takes the SMALLER — policy may be stricter than hardware, never laxer");
+  assert.match(src, /\|\| SCENE3D_MAX_RASTER_DIM/,
+    "a capabilities object reporting 0 falls back rather than clamping everything to nothing");
+});
