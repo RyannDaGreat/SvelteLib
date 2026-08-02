@@ -65,7 +65,16 @@ const browser = await launchBrowser();
 const checks = [];
 const errors = [];
 const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.push(`CHECK FAILED: ${label}`); };
-const IGNORE_BOOT = [/PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i];
+const IGNORE_BOOT = [
+  /PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i,
+  // A HOST FACT, NOT AN APP FAULT. VideoV7 probes for a WebGPU adapter and falls
+  // back to 2D drawImage when there is none; a headless box without one logs that
+  // fallback at error level. PowerRP deliberately does NOT run on WebGPU (the Skia
+  // surface is WebGL2 precisely so plain-HTTP origins work), so this message says
+  // the machine lacks a device, which no change to this app can fix. Other probes
+  // already list it as known-benign; this one was failing on it alone.
+  /WebGPU|no WebGPU adapter/,
+];
 const isBootNoise = (s) => IGNORE_BOOT.some((re) => re.test(s));
 
 try {

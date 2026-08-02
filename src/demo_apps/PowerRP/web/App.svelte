@@ -985,8 +985,16 @@
    *  refilled per palette open — the command registry has no `remove` (commands
    *  are process-lifetime, which is what fixed the duplicate-id crash on a second
    *  project open), so anything per-document must be a submenu CHILD. */
-  const SELECT_BY_TYPE_SUBMENU = { id: "select-by-type", title: "Select by Widget Type", icon: "mdi:shape-outline", aliases: ["select all of kind", "select every"], children: [] };
-  const DESELECT_BY_TYPE_SUBMENU = { id: "deselect-by-type", title: "Deselect by Widget Type", icon: "mdi:shape-outline", aliases: ["deselect all of kind", "remove kind from selection"], children: [] };
+  // NO ALIAS MAY CONTAIN "select all" — IT SHADOWS THE COMMAND OF THAT NAME.
+  // These read "select all of kind" / "deselect all of kind", and the palette
+  // matches on substrings, so typing the exact words "select all" ranked THIS
+  // submenu above `select-all` itself and the plainest command in the app stopped
+  // being the first hit for its own name. Caught by palette_probe, which types
+  // "select all" and asserts the top row is Select All — it was right and the
+  // alias was wrong. "kind" carries the meaning here without borrowing another
+  // command's name.
+  const SELECT_BY_TYPE_SUBMENU = { id: "select-by-type", title: "Select by Widget Type", icon: "mdi:shape-outline", aliases: ["select by kind", "every widget of a kind"], children: [] };
+  const DESELECT_BY_TYPE_SUBMENU = { id: "deselect-by-type", title: "Deselect by Widget Type", icon: "mdi:shape-outline", aliases: ["deselect by kind", "remove a kind from the selection"], children: [] };
 
   /**
    * Command. Rebuilds both by-type submenus from THIS SLIDE's widgets.

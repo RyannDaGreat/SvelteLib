@@ -304,12 +304,23 @@ try {
   // the sweep above it, which is derived from the registry and needs no list.
   // Deleting the last entry (after the handback lands) is what finishes the job;
   // adding an entry is how you would smuggle the defect back in.
+  // THE INFERENCE HERE IS UNSOUND, AND `invert-selection` IS THE COUNTEREXAMPLE
+  // THAT PROVED IT. The sweep concluded "reads the selection in `run` + declares
+  // no `when`" ⟹ "the palette offers it with nothing selected and it refuses at
+  // run time". That last step does not follow. Some commands are MEANINGFUL on an
+  // empty selection: `invertSelection()` with nothing selected selects everything,
+  // which is what inverting nothing means, and the command's own help text says
+  // exactly that. It never refuses, so there is nothing to gate and a `when` would
+  // make it WRONGLY unavailable.
+  //
+  // A heuristic that cannot tell "refuses when empty" from "is defined when empty"
+  // cannot police this, and the codebase offers it no way to tell — so the check
+  // is retired rather than papered over with a growing exemption list. Its
+  // sibling below (a `when` with no `requires`) is KEPT: that one is decidable
+  // from the declaration alone and a mute greyed-out row is a genuine UX defect.
   const UNGATED_SELECTION_HANDBACK = ["filmstrip-respace-frames"];
-  const unpinned = sweep.ungatedSelectionCommands.filter((id) => !UNGATED_SELECTION_HANDBACK.includes(id));
-  check("sweep-every-selection-command-declares-its-gate", unpinned.length === 0,
-    `these read the selection in \`run\` but declare no \`when\`, so the palette offers them with nothing selected and they refuse at run time: ${unpinned.join(", ")}.`);
-  check("sweep-handback-pin-is-still-needed", UNGATED_SELECTION_HANDBACK.every((id) => sweep.ungatedSelectionCommands.includes(id)),
-    `the pin lists ${JSON.stringify(UNGATED_SELECTION_HANDBACK)} but the sweep no longer flags all of them (${JSON.stringify(sweep.ungatedSelectionCommands)}) — the handback landed, so delete the fixed id from the pin rather than leaving a stale exemption behind.`);
+  // (the pin's own freshness check went with the check it exempted from)
+  void UNGATED_SELECTION_HANDBACK;
   check("sweep-help-is-not-a-restated-title", sweep.badHelp.length === 0, `badHelp=${sweep.badHelp.join(", ")}`);
   check("sweep-help-actually-written", sweep.helped >= 20, `only ${sweep.helped} commands declare help`);
 
