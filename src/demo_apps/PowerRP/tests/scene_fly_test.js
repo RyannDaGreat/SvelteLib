@@ -109,3 +109,33 @@ test("opposite keys cancel exactly, in all three axes", () => {
 });
 
 console.log(`\n${passed} scene-fly tests passed`);
+
+// ── THE IN-WIDGET DOCS (#270) ───────────────────────────────────────────────
+
+import { scene3dDocs } from "../plugins/demo/scene3d.js";
+
+test("THE EMPTY VIEWPORT ANSWERS ALL THREE QUESTIONS, not just the first", () => {
+  // It used to say only "Double-click to choose a … file". The other two — which
+  // files work, and how to move once one loads — were facts the module already
+  // held and kept to itself.
+  const d = scene3dDocs({ title: "Splat Scene", kind: "splat" });
+  assert.match(d, /Double-click to choose/, "how to fill it");
+  assert.match(d, /\.ply/, "which files work");
+  assert.match(d, /W\/A\/S\/D/, "how to move");
+});
+
+test("THE .spz VERSION TRAP IS NAMED where the user meets it", () => {
+  // Measured against spark 2.1.0: v3 loads, v4 is refused. Someone who exports a
+  // v4 from a current tool gets an empty box, and this is the moment to say why.
+  assert.match(scene3dDocs({ title: "Splat Scene", kind: "splat" }), /VERSION 3/);
+});
+
+test("the MODEL member does not inherit the splat's format warnings", () => {
+  const d = scene3dDocs({ title: "3D Model", kind: "model" });
+  assert.ok(!d.includes(".spz"), "a glTF has no .spz version trap to warn about");
+  assert.match(d, /\.glb/, "…it names its own formats instead");
+});
+
+test("the docs are multi-line, so the affordance can lay them out as a block", () => {
+  assert.ok(scene3dDocs({ title: "Splat Scene", kind: "splat" }).split("\n").length >= 3);
+});

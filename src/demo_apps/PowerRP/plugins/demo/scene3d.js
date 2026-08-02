@@ -423,6 +423,47 @@ export function messageAffordance(w, h, message, palette) {
 }
 
 /**
+ * Pure function. THE IN-WIDGET DOCS — what an empty viewport says about itself.
+ *
+ * User, 2026-08-02 (#270): "in-widget docs".
+ *
+ * IT USED TO SAY ONE LINE ("Double-click to choose a … file"), which answers only
+ * the first of the three questions someone placing this widget actually has. The
+ * other two are answerable from facts THIS FILE ALREADY KNOWS and was keeping to
+ * itself:
+ *
+ *   · WHICH FILES WORK. The header records a real measurement against
+ *     @sparkjsdev/spark 2.1.0 — `.ply` (what every 3DGS trainer writes),
+ *     PlayCanvas compressed `.ply` and `.splat` all load; `.spz` loads ONLY at
+ *     version 3; `.sog` does not load at all. Someone who exports a v4 `.spz`
+ *     from a current tool and gets an empty box deserves to be told which version
+ *     to ask for, at the moment they are looking at the empty box — not in a
+ *     docblock they will never open.
+ *   · HOW TO MOVE ONCE IT LOADS. The controls are real but undiscoverable: a
+ *     double-click enters a mode whose keys only then appear in the HintBar.
+ *
+ * SPLAT AND MODEL GET DIFFERENT TEXT because their format bounds are genuinely
+ * different — a glTF has no version trap to warn about — and a shared paragraph
+ * would have to be vague enough to be useless to both.
+ *
+ * @param {{title: string, kind: string}} member - the family member
+ * @returns {string} the multi-line placeholder text
+ *
+ * @example // scene3dDocs({title: "Splat Scene", kind: "splat"}).includes(".spz") // true
+ * @example // scene3dDocs({title: "3D Model", kind: "model"}).includes(".spz") // false
+ */
+export function scene3dDocs(member) {
+  const formats = member.kind === "splat"
+    ? "Takes .ply (what most splat trainers write), .splat, and .spz — but .spz only at VERSION 3; a v4 file is refused. .sog is not supported."
+    : "Takes .glb and .gltf.";
+  return [
+    `Double-click to choose a ${member.title.toLowerCase()} file, or drop one in.`,
+    formats,
+    "Once it loads, double-click to fly: drag to look, W/A/S/D to move, Q/E for down and up, scroll to close in, Ctrl+scroll for the lens. Esc leaves.",
+  ].join("\n");
+}
+
+/**
  * Pure function. The camera rows every member shares. Declared INLINE here rather
  * than as a `core/properties.js` BUNDLE, which is the donut.js precedent
  * plugins/shapeshifter.js cites for exactly this situation: "rows declared in the
@@ -893,7 +934,7 @@ function makeScene3dPlugin(member) {
       const shifted = (ops) => ops.map((op) => ({ ...op, x: op.x + c.x, y: op.y + c.y }));
 
       if (scene3dIsEmpty(s))
-        return framed(shifted(messageAffordance(c.w, c.h, `Double-click to choose a ${member.title.toLowerCase()} file`, { bg: EMPTY_BG, ink: EMPTY_INK, border: null })));
+        return framed(shifted(messageAffordance(c.w, c.h, scene3dDocs(member), { bg: EMPTY_BG, ink: EMPTY_INK, border: null })));
 
       const failure = scene3dErrorFor(s.src);
       if (failure)
