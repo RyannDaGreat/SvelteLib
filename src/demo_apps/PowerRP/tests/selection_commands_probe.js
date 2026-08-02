@@ -91,6 +91,13 @@ async function main() {
       const inv = new Set(app.selectedIds());
       out.inGroupFlipped = inv.size === 2 && !inv.has(members[0]) && inv.has(members[1]) && inv.has(members[2]);
       out.inGroupStayedInside = [...inv].every((id) => members.includes(id));
+      // LEAVE THE APP QUIET. The palette was opened above to trigger the submenu
+      // refresh effect, and leaving it open means Svelte effects are still
+      // scheduled when the harness tears the browser down — which rejected the
+      // outstanding evaluate as "Promise was collected" and made this probe EXIT 1
+      // WHILE EVERY CHECK PASSED. A probe that reports failure after passing is
+      // worse than one that fails: it reads as a real red in the gate.
+      app.paletteOpen = false;
       return out;
     });
 
