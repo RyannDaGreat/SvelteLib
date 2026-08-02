@@ -64,6 +64,32 @@
   do not preview: there is no meaningful hover for a text field, and a toggle
   button's whole point is a single decisive click, not a hover-scrub.
 
+  ── THE TOOLTIP ANCHOR — every tip in this panel is anchor="element" ─────────
+  User report, 2026-08-02: *"why [do] canvas toolbars always have the hover
+  tooltips in the wrong place?"* He was right, and the answer is one prop.
+
+  src/lib/Tooltip defaults to anchor="cursor": the tip is placed at the POINTER
+  and follows pointermove. MEASURED at baseline on the QR bar
+  (tests/canvas_toolbar_chrome_probe.js), hovering the Data field put the tip
+  264px horizontally and 379px vertically clear of the field it describes, and
+  moving the pointer from one end of that SAME field to the other slid the tip
+  208px. So the tip was never in a stable place at all — which is exactly what
+  "always in the wrong place" reports.
+
+  WHY THE DEFAULT IS WRONG *HERE* SPECIFICALLY, since it is right elsewhere. The
+  cursor anchor exists for a LARGE wrapped target — Tooltip's own docblock: a
+  panel-wide tip pushed below a 600px pane "would land nowhere near what the
+  pointer is on". Every target in this panel is the opposite: one small field,
+  one small toggle button, one 40px tile, and the tip describes THAT control.
+  The panel has also already been positioned against the widget by
+  FloatingCanvasPanel, so the useful place for a tip is a fixed offset from the
+  control — not a second, independent, pointer-driven position layered on top of
+  a placement decision that was already made for it.
+
+  This is the asset-tile ruling applied to a second surface, and it is why that
+  prop is opt-in rather than a default: "the tooltip should never be intersecting
+  [the asset]… fully below or fully above". Same shape of target, same answer.
+
   Styling lives in app.css (.canvas-toolbar-*; the app convention: NO <style>
   block, every color/size from an --a-* token).
 -->
@@ -337,6 +363,9 @@
                  listbox's own option child. NOTE: the tip is position:fixed, so
                  the panel must not carry a transform — see FloatingCanvasPanel.
 
+                 anchor="element" — see THE TOOLTIP ANCHOR in this file's header
+                 for why every tip in this panel takes it.
+
                  The `tip` snippet rather than plain `text` so the label can carry
                  a CLASS: an "id" label is an identifier and wears --a-mono (the
                  .cmd-tip-url precedent — a literal read character by character),
@@ -345,7 +374,7 @@
                  guard the snippet form loses: Tooltip's own hasContent test is
                  `!!tip || text.length > 0`, so a snippet is ALWAYS content and an
                  unlabelled cell would pop an empty tip box on hover. -->
-            <Tooltip disabled={!cell.label}>
+            <Tooltip anchor="element" disabled={!cell.label}>
               {#snippet tip()}
                 <span class="canvas-toolbar-tile-label" class:identifier={spec.grid.labelKind === "id"}>{cell.label}</span>
               {/snippet}
@@ -375,7 +404,7 @@
               {#if group.label}<span class="canvas-toolbar-field-label">{group.label}</span>{/if}
               {#each group.buttons as button (button.id)}
                 {@const bound = boundKeys(button)}
-                <Tooltip text={bound.length ? `${bound.join(", ")} ${bound.length === 1 ? "is an" : "are"} = equation — edit it in the Inspector; clicking here would overwrite it with its current value.` : button.help}>
+                <Tooltip anchor="element" text={bound.length ? `${bound.join(", ")} ${bound.length === 1 ? "is an" : "are"} = equation — edit it in the Inspector; clicking here would overwrite it with its current value.` : button.help}>
                   <button
                     type="button"
                     class="btn"
@@ -399,7 +428,7 @@
             <!-- KEEPS the "typing here would overwrite it" clause — that is why
                  the field is inert, and without it the control looks broken —
                  but as a clause rather than a second sentence. -->
-            <Tooltip text={bound.length ? `${bound.join(", ")} ${bound.length === 1 ? "is an" : "are"} = equation — edit it in the Inspector; typing here would overwrite it with its current value.` : field.help}>
+            <Tooltip anchor="element" text={bound.length ? `${bound.join(", ")} ${bound.length === 1 ? "is an" : "are"} = equation — edit it in the Inspector; typing here would overwrite it with its current value.` : field.help}>
               <label class="canvas-toolbar-field" class:narrow={field.size === "narrow"}>
                 <span class="canvas-toolbar-field-label">{field.label}</span>
                 <input

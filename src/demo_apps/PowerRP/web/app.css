@@ -3587,15 +3587,44 @@ textarea {
   height: 0;
 }
 
+/* THE HOUSE FLOATING-SURFACE CHROME, and it must be ALL FOUR facts, not three.
+   User report, 2026-08-02: "why is it that the style for the QR code floating
+   canvas toolbar is all not the same style as other things in this app? It looks
+   a little bit out of place. There's this blue line on the top of it. I don't
+   know why that's there."
+
+   Both halves of that report have ONE cause: this rule carried the glass
+   background, the hairline border and --a-glass-shadow, but NOT the
+   --a-radius-floating corner that .palette (the surface this family is defined
+   by, app.css ~8396) carries alongside them. Measured on the shipped Nocturne
+   before the fix: panel border-radius 0px against --a-radius-floating 10px.
+
+   THE BLUE LINE IS --a-glass-shadow'S FIRST LAYER, which is
+   `inset 0 var(--a-glass-rim-w) 0 var(--a-glass-rim)` — the lit top rim every
+   floating surface wears — and Nocturne's --a-glass-rim is
+   rgba(200, 220, 255, 0.16), a blue-white. It is not a stray declaration and
+   deleting it would be the wrong fix: it would take this panel FURTHER from the
+   house style, which is what the user was complaining about. What made it read
+   as a LINE rather than as a lit edge is that it ran corner to corner across a
+   square box. On .palette the same declaration curves into a 10px radius and
+   reads as light catching an edge; here it terminated in two hard right angles.
+   Giving the panel the radius the rim was designed to curve around fixes the
+   "out of place" and the "blue line" together, with one property.
+
+   overflow: hidden so the scrolling tile grid inside is clipped BY that corner
+   — without it the grid's square top-left paints over the radius and the panel
+   reads square again at exactly the place the rim meets it. */
 .canvas-toolbar {
   pointer-events: auto;
   margin-bottom: var(--a-canvas-toolbar-gap);
   padding: var(--a-sp-2);
   background: var(--a-glass-bg-panel);
   border: var(--a-hairline) solid var(--border);
+  border-radius: var(--a-radius-floating);
   box-shadow: var(--a-glass-shadow);
   backdrop-filter: var(--a-glass-blur);
   -webkit-backdrop-filter: var(--a-glass-blur);
+  overflow: hidden;
 }
 
 .canvas-toolbar-below {
