@@ -133,6 +133,14 @@ try {
   const drag = await page.evaluate(async () => {
     const app = window.__powerrp_app;
     app.selectSlideAt(0);
+    // LET LAYOUT SETTLE BEFORE MEASURING. The rows are measured with
+    // getBoundingClientRect, and the preceding undo re-renders the rail; under a
+    // loaded machine (the gate runs suites in parallel) the read can land before
+    // the new heights are in, which puts the synthetic pointer at a Y that
+    // resolves to the wrong boundary. One frame of quiet removes the race — and
+    // it is a race in the PROBE's measurement, not in the app: boundaryAt reads
+    // the same rects the browser paints.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const rows = [...document.querySelectorAll(".slidenav [data-slide-row]")];
     const idsBefore = app.doc.slides.map((s) => s.id);
     const a = rows[0].getBoundingClientRect();
