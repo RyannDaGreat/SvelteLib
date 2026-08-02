@@ -581,7 +581,13 @@ function paintOpRange(CanvasKit, target, flat, start, end, view, ctx, depth, bel
     // drawLeafOp: the material machinery needs the view, the below-content and
     // device space, none of which the leaf branch carries. Proxy mode reuses
     // the SAME cheap stand-ins widget materials use, clipped to the shape.
-    if (opHasMaterialFill(cmd)) {
+    // An EQUATION is excluded: `latexVector` carries a material on `fill` too (that
+    // is what routes it to the vector exporters' raster fallback for free), but it
+    // is NOT a shape op — shapeOpLocalBBox refuses it by name. Its ink is painted
+    // through the union of its own glyph outlines by drawLatexShaderInk, so it must
+    // reach the leaf branch. Without this guard the material ink threw
+    // `op "latexVector" carries a material fill but is not a shape op`.
+    if (opHasMaterialFill(cmd) && cmd.op !== "latexVector") {
       handleMaterialPaintShape(CanvasKit, target, cmd, world, view, belowOf(i), ctx, depth, proxy);
       continue;
     }
@@ -1082,13 +1088,21 @@ function drawLatexVector(CanvasKit, canvas, cmd, opacity, aa = true) {
  * wrong or silently dropped.
  */
 function drawLatexShaderInk(CanvasKit, canvas, cmd, opacity, aa) {
-  const union = new CanvasKit.Path();
+  // ONE PathBuilder, every glyph's contours appended — `addPath` is a PathBuilder
+  // method, NOT a Path one (Path exposes makeCombined/MakeFromOp instead), which
+  // is why this goes through the same builder→detach idiom shapeOpLocalPath uses.
+  // Appending contours rather than boolean-unioning them is both cheaper and more
+  // correct here: the glyphs do not overlap, and a real Union op would DISSOLVE the
+  // counters (an `a`'s bowl) that nonzero winding is keeping as holes.
+  const builder = new CanvasKit.PathBuilder();
   for (const g of cmd.glyphs) {
     const path = CanvasKit.Path.MakeFromSVGString(g.d);
     if (!path) throw new Error(`paintIR(skia): latexVector glyph "d" failed to parse: ${JSON.stringify(g.d).slice(0, 64)}`);
-    union.addPath(path);
+    builder.addPath(path);
     path.delete();
   }
+  const union = builder.detach();
+  builder.delete();
   const b = union.getBounds(); // [l, t, r, b] in viewBox space — the ink box the paint frames on
   const bounds = { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] };
   const shader = isMaterialPaint(cmd.fill)
