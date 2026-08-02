@@ -1113,6 +1113,40 @@
     // selection through the app helpers (which own the AABB + keyframe baking).
     { id: "group", title: "Group Selection", icon: "mdi:group", when: (a) => a.canGroup(), requires: "at least two groupable widgets — a one-widget group is inert, so grouping starts at two", help: "A group is a flat MEMBERSHIP parent, not a nested object: every member keeps its own id, its own keyframes and its own place in the delta, and gains one box that moves and resizes them together.", run: (a) => a.groupSelection() },
     { id: "ungroup", title: "Ungroup", icon: "mdi:ungroup", when: (a) => a.selectedNodes().some((n) => n.type === "group"), requires: "a selected group", help: "Dissolves the group and BAKES what its box was doing into the members, so they stay exactly where they look like they are rather than springing back to their pre-group values.", run: (a) => a.ungroupSelection() },
+    // SELECT INSIDE GROUP sits between the two on purpose: it is the NON-destructive
+    // way down into a group. Ungroup dissolves; this only moves the selection, so the
+    // document is untouched and there is nothing to undo. Its `requires` is a FUNCTION
+    // because the gate has TWO disqualifying conditions with different true sentences
+    // (nothing selected is a group at all; a selected group is empty), and a fixed
+    // string would be a confident wrong answer for one of them — the `save-project`
+    // precedent. Read it through core/commands.commandUnavailableReason, never raw.
+    {
+      id: "select-in-group",
+      title: "Select Inside Group",
+      icon: "mdi:select-group",
+      aliases: ["enter group", "select members", "select contents", "select children"],
+      when: (a) => a.selectedNodes().some((n) => n.type === "group" && (n.state.members?.length ?? 0) > 0),
+      requires: (a) => (a.selectedNodes().some((n) => n.type === "group")
+        ? "a selected group that HAS members — the selected group is empty, so there is nothing inside it to select"
+        : "a selected group — this selects the things INSIDE a group, so something has to be a group first"),
+      help: "Selects the group's members individually instead of the group's one box, so you can edit them together through the multi-selection Inspector. The group is NOT dissolved and nothing is written to the document — only the selection changes, so Ungroup is still the thing that takes a group apart. A member that is itself a group is not opened; run this again to go one level deeper.",
+      run: (a) => a.selectInsideGroup(),
+    },
+    // …and the way back UP. Deliberately a SEPARATE entry rather than one
+    // direction-guessing "toggle group level": which way you want to go is not
+    // derivable from the selection (a member of an outer group is both a thing
+    // with children and a thing with a parent), so a single command would be
+    // right half the time and silently wrong the other half.
+    {
+      id: "select-parent-group",
+      title: "Select Parent Group",
+      icon: "mdi:arrow-up-box",
+      aliases: ["exit group", "select group", "select owning group", "go up a group"],
+      when: (a) => a.canSelectParentGroup(),
+      requires: "a selected widget that is INSIDE a group — this selects the group that owns something, so the selection has to be a member of one",
+      help: "Selects the group that owns the selected widget, instead of the widget itself — the way back out after Select Inside Group. Nothing is written to the document; only the selection changes. Anything selected that is not in a group stays selected, so a mixed selection does not shrink. A group inside another group rises one level; run it again to keep going up.",
+      run: (a) => a.selectParentGroup(),
+    },
     { id: "shatter", title: "Shatter (this widget becomes a group of its editable parts)", icon: "mdi:vector-polyline-edit", aliases: ["convert to widgets", "explode", "break apart", "convert to shapes", "decompose", "ungroup diagram"], when: (a) => a.shatterBlocker() === null, requires: (a) => a.shatterBlocker() ?? "a widget that can be shattered", help: "Replaces the widget with a GROUP of the widgets it was drawing, anchored to each other by equations \u2014 a label follows the box it names, an arrow re-routes when either end moves. The original source is kept on the group, unread, so nothing is lost. Reports what it could not recover as editable vector rather than approximating in silence.", run: (a) => a.shatterSelection() },
     // ARRANGE INTO GRID (the bento tool): lays the selection out as a BENTO GRID.
     // Same ≥2-bbox gate as align/mirror. INTERACTIVE (palette commands take no

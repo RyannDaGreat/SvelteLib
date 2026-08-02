@@ -148,6 +148,94 @@ export function dedupeGroupSelection(ids, membership) {
 }
 
 /**
+ * Pure function. `dedupeGroupSelection`'s INVERSE: a selection set with every
+ * GROUP in it replaced by its own members, each standing on its own.
+ *
+ * User, 2026-08-02: "we need to select in group that will select all objects
+ * that are in a group individually." Selecting a group gives you ONE handle over
+ * the whole box, which is what a group is for; this is how you get back down to
+ * the things inside it without dissolving anything — Ungroup destroys the group,
+ * this only changes what is selected.
+ *
+ * THE INVARIANT IS PRESERVED BY CONSTRUCTION, not by a second pass. The rule
+ * (Round-12B) is that a group and its members are never both selected; here the
+ * group is REPLACED, never added alongside, so the output cannot violate it. A
+ * non-group id passes through untouched, so a mixed selection expands only its
+ * groups and keeps everything else exactly where it was.
+ *
+ * ONE LEVEL PER CALL, DELIBERATELY. A member may itself be a group, and this
+ * does not recurse into it — run the command again to go one level deeper. Two
+ * reasons: it matches what the author can actually see (a group's own `members`
+ * list is the thing on screen), and `core/derive.groupMembership` states that
+ * nested-group precedence is out of scope, so silently flattening an arbitrary
+ * depth would be inventing a semantics the rest of the system has not agreed to.
+ * Repeating a step is also easier to undo in your head than one that went further
+ * than you expected.
+ *
+ * @param {string[]} ids - the current selection
+ * @param {Map<string, string[]>} membersOf - groupId → its member ids (absent for non-groups)
+ * @returns {string[]} the expanded selection, order preserved, deduped
+ *
+ * @example expandGroupSelection(["g"], new Map([["g", ["a", "b"]]])) // ["a", "b"]
+ * @example expandGroupSelection(["r", "g"], new Map([["g", ["a"]]])) // ["r", "a"]  (non-groups pass through)
+ * @example expandGroupSelection(["r"], new Map()) // ["r"]  (nothing to expand)
+ * @example expandGroupSelection(["g"], new Map([["g", []]])) // []  (an empty group expands to nothing)
+ * @example expandGroupSelection(["g", "a"], new Map([["g", ["a", "b"]]])) // ["a", "b"]  (no duplicate from the already-selected member)
+ */
+export function expandGroupSelection(ids, membersOf) {
+  const out = [];
+  const seen = new Set();
+  for (const id of ids)
+    for (const next of membersOf.get(id) ?? [id])
+      if (!seen.has(next)) { seen.add(next); out.push(next); }
+  return out;
+}
+
+/**
+ * Pure function. GO UP: a selection set with every MEMBER replaced by the group
+ * that owns it. `expandGroupSelection`'s opposite direction, and the third
+ * member of this file's group-selection trio.
+ *
+ * User, 2026-08-02: "'select parent group' should be a tool as well. It only
+ * applies if it's a child of a group."
+ *
+ * `membership` is core/derive.groupMembership — the memberId → groupId map, the
+ * SAME one dedupeGroupSelection takes, so going up and collapsing down read the
+ * one relation rather than two views of it.
+ *
+ * WHY THIS CANNOT VIOLATE THE ROUND-12B INVARIANT even though it can produce a
+ * group that was already selected: the member is REPLACED, and the dedupe by
+ * `seen` means selecting a group plus one of its members yields just the group.
+ * That is exactly what dedupeGroupSelection would have done to the same input,
+ * so the two agree rather than fighting.
+ *
+ * A NON-MEMBER PASSES THROUGH. Selecting a loose rect and a grouped one and
+ * going up gives you the loose rect and the group — the loose rect has no parent
+ * to rise to, and dropping it would silently shrink the selection.
+ *
+ * ONE LEVEL PER CALL, matching its twin: a group that is itself a member of an
+ * outer group rises one step, and running the tool again goes further.
+ *
+ * @param {string[]} ids - the current selection
+ * @param {Map<string, string>} membership - memberId → owning groupId (absent for non-members)
+ * @returns {string[]} the raised selection, order preserved, deduped
+ *
+ * @example selectParentGroups(["a"], new Map([["a", "g"]])) // ["g"]
+ * @example selectParentGroups(["a", "b"], new Map([["a", "g"], ["b", "g"]])) // ["g"]  (both rise to the same group, once)
+ * @example selectParentGroups(["a", "r"], new Map([["a", "g"]])) // ["g", "r"]  (the ungrouped rect stays)
+ * @example selectParentGroups(["r"], new Map()) // ["r"]  (nothing has a parent)
+ */
+export function selectParentGroups(ids, membership) {
+  const out = [];
+  const seen = new Set();
+  for (const id of ids) {
+    const next = membership.get(id) ?? id;
+    if (!seen.has(next)) { seen.add(next); out.push(next); }
+  }
+  return out;
+}
+
+/**
  * Pure function. Normalizes two world drag corners into a positive-size rect
  * (x,y,w,h). A rubber-band may be dragged in any direction; the band rect is
  * always the axis-aligned box between the two points.

@@ -35,7 +35,7 @@ import { equationBoundKeys } from "./canvas/equationBinding.js";
 // one shadowing the other inside every method body, is a reader trap even though
 // JS resolves it correctly.
 import { projectScriptProblem, projectScriptExports as compiledScriptExports } from "../core/project_script.js";
-import { dedupeGroupSelection } from "../core/bandselect.js";
+import { dedupeGroupSelection, expandGroupSelection, selectParentGroups } from "../core/bandselect.js";
 import { retypeChoices, retypeEligible, retypedItem } from "../core/retype.js";
 import { shatterEligible, shatterNotReadyReason, shatteredDocument, shatterIds, shatterDisclosure, vectorRecovery } from "../core/shatter.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
@@ -2663,6 +2663,72 @@ export class PowerRPApp {
    * assumption the rotated-resize commit relies on). A member with a CUSTOM
    * NUMERIC rotationAnchor bakes with a small position drift; deferred.
    */
+  /**
+   * Command. SELECT INSIDE the selected group(s): replaces each selected group
+   * in the selection with its own members, each selected in its own right, so
+   * the Inspector's multi-selection intersection and per-member editing apply to
+   * the things inside the box.
+   *
+   * User, 2026-08-02: "we need to select in group that will select all objects
+   * that are in a group individually."
+   *
+   * IT CHANGES NOTHING BUT THE SELECTION, which is the whole distinction from the
+   * neighbouring Ungroup: no keyframes are written, no bake happens, the group
+   * still exists and still owns its members. Undo is not involved because the
+   * document is untouched — pressing Escape or clicking the group re-selects it.
+   *
+   * ONE LEVEL PER INVOCATION and non-groups pass through untouched — see
+   * core/bandselect.js expandGroupSelection for why (nested-group precedence is
+   * out of scope elsewhere in the system, so flattening arbitrarily deep would
+   * invent a semantics nothing else agrees to). Run it again to go deeper.
+   *
+   * The result goes through `selectMany`, so the group-and-members-never-both
+   * invariant is enforced by the same one substrate every other multi-select
+   * path uses — this method adds no second copy of that rule.
+   */
+  selectInsideGroup() {
+    const membersOf = new Map(
+      this.selectedNodes()
+        .filter((n) => n.type === "group" && Array.isArray(n.state.members))
+        .map((n) => [n.itemId, n.state.members]),
+    );
+    if (membersOf.size === 0) {
+      console.warn("Select Inside Group: no group is selected — nothing to select into.");
+      return;
+    }
+    this.selectMany(expandGroupSelection(this.selectedIds(), membersOf));
+  }
+
+  /**
+   * Command. SELECT THE PARENT GROUP: replaces each selected group MEMBER with
+   * the group that owns it — `selectInsideGroup`'s opposite direction.
+   *
+   * User, 2026-08-02: "'select parent group' should be a tool as well. It only
+   * applies if it's a child of a group."
+   *
+   * Like its twin it writes NOTHING: only the selection changes, so there is
+   * nothing to undo. A selected item with no parent group is left where it is
+   * rather than dropped, so a mixed selection does not silently shrink.
+   */
+  /** Query. Is anything in the selection a MEMBER of a group — i.e. is there a
+   *  parent to rise to? The `select-parent-group` command's gate, kept here
+   *  beside `canGroup()` rather than inlined in App.svelte, because that file
+   *  does not import groupMembership and a missing named import is SILENT in
+   *  this build (it binds to undefined and ships). */
+  canSelectParentGroup() {
+    const membership = groupMembership(this.nodes());
+    return this.selectedIds().some((id) => membership.has(id));
+  }
+
+  selectParentGroup() {
+    const membership = groupMembership(this.nodes());
+    if (!this.selectedIds().some((id) => membership.has(id))) {
+      console.warn("Select Parent Group: nothing selected is inside a group.");
+      return;
+    }
+    this.selectMany(selectParentGroups(this.selectedIds(), membership));
+  }
+
   ungroupSelection() {
     const groups = this.selectedNodes().filter((n) => n.type === "group");
     if (groups.length === 0) {
