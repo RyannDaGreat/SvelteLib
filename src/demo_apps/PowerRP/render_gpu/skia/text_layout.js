@@ -690,7 +690,10 @@ function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true
   const shader = isMaterialPaint(fill)
     ? materialShaderForGlyphs(CanvasKit, fill, bounds)
     : skShaderForPaint(CanvasKit, parsePaint(fill), bounds, opacity); // model gradient (string stops) → rgba stops
-  if (!shader) return; // a material that cannot shade text already reported itself, loudly
+  // No null guard: BOTH builders either return a shader or throw with a reason
+  // (materialShaderForGlyphs checks makeShader's result itself). A `if (!shader)
+  // return` here would be dead code that reads like a real fallback — i.e. it
+  // would suggest there is a silent-skip path when there is deliberately none.
   const p = new CanvasKit.Paint();
   p.setShader(shader);
   p.setStyle(CanvasKit.PaintStyle.Fill);
