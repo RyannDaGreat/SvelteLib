@@ -290,8 +290,10 @@ export const graphBarsPlugin = {
     ...bundle("positioning"),
     { key: "mode", label: "Mode", kind: "select", options: MODES, optionLabels: MODE_LABELS, category: CAT, help: "Direct: bar i's height = f(i). Riemann: sample f(x) over [xStart, xEnd] (area under the curve). Literal: explicit comma-separated values." },
     { key: "barCount", label: "Bar count", kind: "number", min: 1, category: CAT, help: "How many bars (direct/riemann modes). DISCRETE — it snaps between integers rather than smoothly interpolating; author a refinement sequence (4→8→16→32) as per-slide keyframes." },
-    { key: "valueEquation", label: "Value equation", kind: "text", category: CAT, help: "JavaScript for each bar's value: sees `i` (direct) or `x` (riemann), plus `time`, N and vars. Use `**`/pow() for powers. Bind with '='." },
-    { key: "__editvalue", label: "Edit in code editor…", kind: "action", command: "edit-code-source", category: CAT, help: "Opens the full-screen editor on the value equation." },
+    // `code: {language}` — the row aspect that puts the `{}` full-screen-editor
+    // button IN this row (core/properties.js), replacing the full-width "Edit in
+    // code editor…" action row that used to follow it.
+    { key: "valueEquation", label: "Value equation", kind: "text", category: CAT, code: { language: "javascript" }, help: "JavaScript for each bar's value: sees `i` (direct) or `x` (riemann), plus `time`, N and vars. Use `**`/pow() for powers. Bind with '=', or open the {} button for the full-screen editor." },
     { key: "barValues", label: "Literal values", kind: "text", category: CAT, help: "Comma-separated bar values for Literal mode, e.g. '2, 5, 9, 14'." },
     { key: "barNames", label: "Bar labels", kind: "text", category: CAT, help: "Comma-separated labels drawn under each bar, e.g. 'Q1, Q2, Q3'. Leave blank for none." },
     { key: "xStart", label: "x start", kind: "number", category: CAT, help: "Riemann domain start." },

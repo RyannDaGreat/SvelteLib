@@ -7435,6 +7435,63 @@ audio.ae-preview-media {
   opacity: 1;
 }
 
+/* ── THE `{}` CODE AFFORDANCE (core/properties.js `code: {language}`) ────────
+   A row whose VALUE IS CODE carries a brace button at the END of its value cell,
+   opening the shared full-screen code editor on that one property. The user's
+   ask names both the glyph and the position: "you just have a bracket thing,
+   like a double bracket at the end of it, which would let you edit in the code
+   editor".
+
+   IT IS IN FLOW, AND IT IS ALWAYS VISIBLE — the two ways it deliberately differs
+   from its neighbour the ƒ button, each for a stated reason:
+
+   • IN FLOW (a flex child at the value end), not `position:absolute; right:100%`
+     like .eq-open. That rule's placement exists to keep affordances OFF the
+     value column ("Perhaps these things should go to the left of the divider"),
+     and its landing strip — the label gutter — is on the LEFT. There is no
+     reserved strip past the value's right edge to hang this in; absolute
+     placement there would put it over the keyframe diamonds. So it takes real
+     width and the field shrinks by exactly that much (see the flex rule below),
+     which is a STABLE geometry — the button never appears or disappears on
+     hover, so nothing moves under the pointer. The ruling it must not violate is
+     "affordances may TRUNCATE, never MOVE", and a permanently-present in-flow
+     button moves nothing.
+
+   • NOT HOVER-ONLY. ƒ may hide at rest because every row has one and the value
+     is still editable without it. This button is the ONLY route to the code
+     editor for its property now that the four full-width "Edit in code editor…"
+     action rows are gone, and an only route that is invisible until hovered is
+     not discoverable — which is the complaint that produced the button rows in
+     the first place ("so I don't have to know to double-click"). */
+.numfield .code-open {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--a-row-chrome-w);
+  height: var(--a-control-h);
+  margin-left: var(--a-sp-1);
+  padding: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  cursor: pointer;
+}
+.numfield .code-open:hover {
+  color: var(--fg);
+}
+
+/* The text input is `width: 100%` by the generic panel-input rule, which inside a
+   flex .numfield would refuse to give the button its width back (100% of the
+   container, then the button overflows). Only a row that HAS the button needs
+   this, so it is scoped by :has() rather than applied to every text field —
+   a blanket `flex: 1 1 auto` would change the sizing of every equation-capable
+   row in both panels for the sake of the handful that carry code. */
+.numfield:has(.code-open) > input[type="text"] {
+  flex: 1 1 auto;
+  width: auto;
+}
+
 /* The DraggableNumber grip wheel is chrome, not resting content: hidden at rest,
    revealed on row hover (or while dragging/focused). Kept in flow (visibility,
    not display) so the value box never reflows when it appears. */

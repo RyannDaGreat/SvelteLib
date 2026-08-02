@@ -830,14 +830,13 @@ export const mermaidPlugin = {
     // Inspector — identical to how codeblock's `code` is edited (no floating
     // canvas overlay). In EQUATION mode this text property uses the normal
     // equation field; otherwise it is the LITERAL Mermaid source.
-    { key: "definition", label: "Definition", kind: "text", category: "text", help: "The Mermaid diagram source (e.g. 'flowchart TD\\n A-->B'), edited here inline OR — for a real multi-line edit — in the code editor via the button below. Invalid syntax shows a red error box with the parser message." },
-    // THE CODE BUTTON (ROUND 2 #35): "a code button next to the flowchart text …
-    // so I don't have to know to double-click." An `action` row (the existing
-    // command-trigger row kind) surfacing the widget-agnostic `edit-code-source`
-    // command, which reads this plugin's `codeEditor` descriptor and opens the
-    // full-screen Monaco editor on `definition`. Sits right under the Definition
-    // field, in the same "text" category.
-    { key: "__editdefinition", label: "Edit in code editor…", kind: "action", command: "edit-code-source", category: "text", help: "Opens the full-screen VS-Code-style editor (syntax highlighting, autocomplete, minimap) on the diagram source — the same editor double-clicking the diagram opens." },
+    // THE CODE BUTTON, now A ROW ASPECT rather than a row of its own. The ask it
+    // serves is unchanged (ROUND 2 #35: "a code button next to the flowchart text
+    // … so I don't have to know to double-click") — but "next to" is literal now:
+    // `code: {language}` puts a `{}` button at the END OF THIS ROW, where the
+    // full-width "Edit in code editor…" action row used to sit underneath it.
+    // See core/properties.js's THE `code` ROW ASPECT.
+    { key: "definition", label: "Definition", kind: "text", category: "text", code: { language: "mermaid" }, help: "The Mermaid diagram source (e.g. 'flowchart TD\\n A-->B'), edited here inline OR — for a real multi-line edit — in the full-screen code editor behind the {} button at the end of this row. Invalid syntax shows a red error box with the parser message." },
     // Theme — a Mermaid built-in theme select.
     { key: "theme", label: "Theme", kind: "select", options: MERMAID_THEMES, category: "formatting", help: "Which Mermaid built-in theme to render with. 'default' is dark ink on a light card; 'dark' suits a dark fill." },
     // Aspect-preservation toggle (default ON).

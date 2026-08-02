@@ -59,7 +59,7 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
-  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, rowSupportsInterp } from "../core/properties.js";
+  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, rowSupportsInterp, codeRowLanguage } from "../core/properties.js";
   import { DEFAULT_INTERP_MODE, interpKeyFor } from "../core/interp_modes.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
@@ -119,6 +119,55 @@
   function commitGalleryPick(row, itemId, value) {
     app.setPreview([[["items", itemId, row.key], value]]);
     app.commitPreview();
+  }
+
+  // ── THE CODE ROW ASPECT (core/properties.js `code: {language}`) ────────────
+  // A row whose VALUE IS CODE gets a `{}` button at the END of its value cell,
+  // opening the shared full-screen editor (web/CodeEditorModal.svelte) on THAT
+  // property. The user's ask, verbatim: "we need to have a way and properties
+  // for anything that is code… you just have a bracket thing, like a double
+  // bracket at the end of it, which would let you edit in the code editor".
+  //
+  // AT THE VALUE END, NOT THE GUTTER, and that is the ruled placement rather
+  // than a taste call: the gutter's remaining tenant (the gallery) is a PICKER
+  // that replaces the value wholesale, while this is an EDITOR for the value
+  // that is already there — the eyedropper's position on a colour row, which
+  // sits inside the field it feeds. Same reason the button belongs to the row
+  // at all: the four full-width "Edit in code editor…" action rows it replaces
+  // put the control one row away from the property it edits, which the user
+  // rejected outright ("There's an entire button under it. That's not how this
+  // should be. It should be in the same property.").
+  //
+  // THE MODAL IS THE EXISTING ONE, UNFORKED. app.openCodeModal(itemId, property,
+  // {language, title}) is the same seam `edit-code-source` and the double-click
+  // activation already use, so the Escape/Cmd+Enter contract, the raw-value read
+  // (never the evaluated one) and the single-undo-unit commit come along
+  // unchanged — this adds a second SURFACING of one action, not a second
+  // lifecycle.
+
+  /** Command. Opens the shared code editor on ONE row's property, in the
+   * language that row's `code` aspect resolves to for this state. `state` is the
+   * row's CURRENT folded state, because a language may be a function of it
+   * (codeblock's `code` follows its own `language` property). */
+  function openCodeRow(row, state, itemId) {
+    app.openCodeModal(itemId, writeKey(row), {
+      language: codeRowLanguage(row, state),
+      title: `Edit ${row.label}`,
+    });
+  }
+
+  /** Pure function. The `{}` button's tooltip — it NAMES THE LANGUAGE, which is
+   * the whole point of the aspect carrying one ("code things would always have a
+   * language… so that it's syntax-related properly"): the reader learns what the
+   * editor will highlight it as before opening it. A null language says plain
+   * text rather than staying silent, so an unhighlighted editor is never a
+   * surprise.
+   *
+   * @example codeButtonTip("Definition", "mermaid") // "Edit Definition in the code editor (mermaid)"
+   * @example codeButtonTip("Code", null) // "Edit Code in the code editor (plain text)"
+   */
+  function codeButtonTip(label, language) {
+    return `Edit ${label} in the code editor (${language ?? "plain text"})`;
   }
 
   // ── Selection-target dispatch (item | transition | none) ─────────────────────
@@ -1476,6 +1525,18 @@
        and never floats to a panel of its own where you would have to remember
        which property you were asking about. -->
   {@const interpCapable = itemMode && !multi && rowSupportsInterp(row)}
+  <!-- THE CODE ROW ASPECT's `{}` button (core/properties.js `code: {language}`,
+       and openCodeRow above). ITEM MODE ONLY and single-selection, for the
+       gallery button's two reasons: a transition row and a not-yet-created row
+       have no item for the modal to write back to, and the modal edits ONE
+       item's property — opening it over a set would silently commit the same
+       source to all of them under a title naming only the primary.
+       An EQUATION-BOUND row does not get it, which is the eyedropper's own
+       discipline (ColorField withholds swatch, picker and eyedropper alike
+       while a value is an expression, "every one of them would overwrite the
+       equation"): the `=` field is already the editor for that value, and a
+       second one on the same row would be two controls writing one slot. -->
+  {@const codeAffordance = itemMode && !multi && !!row.code}
   <!-- DYNAMIC BOUNDS (general mechanism): a row's `max` may be a STATE-DERIVED
        FUNCTION `(state) => number` (e.g. pdf_page's page cap = pageCount for the
        current src), not just a static number. Resolved here so the numeric field
@@ -1667,6 +1728,7 @@
           {@render equationEntry(row, eqRowPaths, eqStored)}
         {:else}
           {@render valueControl(row, state, ctx)}
+          {#if codeAffordance}{@render codeOpen(row, state, itemId)}{/if}
         {/if}
       </div>
     {:else}
@@ -2204,6 +2266,25 @@
      and clicking it drops back to the evaluated value as a plain literal. That
      is PaintField's Solid↔"= Eq" mode switch, expressed with NumericField's
      button so there is ONE recognizable way in and out of equation mode. -->
+<!-- THE `{}` CODE AFFORDANCE — the value-END sibling of the ƒ button, for a row
+     whose value IS code (core/properties.js `code: {language}`). One click opens
+     the shared full-screen editor on this property; there is no "off" state, so
+     unlike ƒ it does not toggle and carries no aria-pressed.
+     Its glyph is literally the double bracket the user asked for
+     (mdi:code-braces), and its tooltip NAMES THE LANGUAGE — see codeButtonTip. -->
+{#snippet codeOpen(row, state, itemId)}
+  {@const language = codeRowLanguage(row, state)}
+  <Tooltip text={codeButtonTip(row.label, language)}>
+    <button
+      class="code-open"
+      aria-label={codeButtonTip(row.label, language)}
+      onclick={() => openCodeRow(row, state, itemId)}
+    >
+      <iconify-icon icon="mdi:code-braces" width="14" height="14"></iconify-icon>
+    </button>
+  </Tooltip>
+{/snippet}
+
 {#snippet eqToggle(row, paths, active)}
   <Tooltip text={active ? "Drop the equation, keeping its current value" : "Enter an equation"}>
     <button

@@ -704,6 +704,84 @@ function checkListRow(label, key, def) {
  *  side and checkListRow can prove the declaration did not drift. */
 const ACTIVE_KEY_SUFFIX = "Active";
 
+/**
+ * THE `code` ROW ASPECT — "this property's VALUE IS CODE" (user request,
+ * 2026-08-02: "we need to have a way and properties for anything that is code…
+ * you just have a bracket thing, like a double bracket at the end of it, which
+ * would let you edit in the code editor… code things would always have a
+ * language, so that it's syntax-related properly").
+ *
+ * A row declares `code: {language}` and web/Inspector.svelte renders a `{}`
+ * button at the row's VALUE END which opens the shared full-screen editor
+ * (web/CodeEditorModal.svelte, via app.openCodeModal) on THAT property, in THAT
+ * language, committing as one undo unit. Nothing else is needed — no per-widget
+ * UI, no companion button row.
+ *
+ * WHAT IT REPLACED, AND WHY. Four plugins (graph_line, graph_bars, mermaid,
+ * codeblock) each shipped a full-width `action` row labelled "Edit in code
+ * editor…" underneath the property it edited. The user's objection is that this
+ * is the wrong SHAPE: "there's an entire button under it. That's not how this
+ * should be. It should be in the same property." A whole row for one property's
+ * editor also cannot scale — every code-valued property in the app would cost a
+ * row, and the reader has to infer which property the button below refers to.
+ * The aspect makes the affordance a property of the ROW, exactly as `paint`,
+ * `gallery` and `presets` are, so it is declared once per code-valued property
+ * and looks the same everywhere.
+ *
+ * `language` is EITHER a string (the widget always writes that language) OR a
+ * FUNCTION `(state) => string|null` when the widget's language is itself
+ * document state — codeblock has a `language` PROPERTY, so its `code` row
+ * declares `language: (s) => s.language`, and the editor colours what the widget
+ * actually renders instead of a hardcoded guess. `null` means plain text.
+ *
+ * SEPARATE FROM the plugin-level `codeEditor: {property, language, title}`
+ * descriptor, which is what DOUBLE-CLICKING the widget opens (web/widget_handlers.js
+ * "code_modal") — one widget has at most one double-click target, but may have
+ * any number of code-valued rows. Where both exist they name the same property
+ * and agree on the language; the row aspect is the per-property affordance and
+ * the descriptor is the per-widget activation.
+ */
+/** Query (throws). Validates one row's `code` aspect declaration. A malformed
+ *  one would render a button that opens an editor on nothing, so it fails where
+ *  it is written. `label` names the declaration in the error. */
+function checkCodeRow(label, def) {
+  if (!("code" in def)) return;
+  const spec = def.code;
+  if (!spec || typeof spec !== "object" || Array.isArray(spec))
+    throw new Error(`properties: ${label} declares a \`code\` aspect that is not an object — write \`code: {language: "javascript"}\` (see THE \`code\` ROW ASPECT).`);
+  if (!("language" in spec))
+    throw new Error(`properties: ${label} declares \`code\` with no \`language\` — a code editor with no language cannot highlight, so name one (or \`language: null\` for plain text).`);
+  const { language } = spec;
+  if (language !== null && typeof language !== "string" && typeof language !== "function")
+    throw new Error(`properties: ${label} declares \`code.language\` of type ${typeof language} — it must be a string, a (state) => string|null function, or null.`);
+  if (def.kind !== "text")
+    throw new Error(`properties: ${label} declares \`code\` on a "${def.kind}" row — code is edited as TEXT, and the editor writes a string back, so only a text row may carry it.`);
+}
+
+/**
+ * Pure function. This row's code LANGUAGE for a given widget state, or null for
+ * plain text. Resolves the `code.language` aspect's two forms (a literal string,
+ * or a function of the state — see THE `code` ROW ASPECT) so the Inspector and
+ * any test read it through ONE place and cannot disagree about which form won.
+ *
+ * Args:
+ *   row (object): a resolved Inspector row (may or may not carry `code`)
+ *   state (object): the widget's folded state, read only by a function language
+ *
+ * Returns:
+ *   string|null — the language id, or null (plain text / no code aspect)
+ *
+ * @example codeRowLanguage({key: "definition", code: {language: "mermaid"}}, {}) // "mermaid"
+ * @example codeRowLanguage({key: "code", code: {language: (s) => s.language}}, {language: "python"}) // "python"
+ * @example codeRowLanguage({key: "code", code: {language: null}}, {}) // null
+ * @example codeRowLanguage({key: "w", kind: "number"}, {}) // null (no code aspect)
+ */
+export function codeRowLanguage(row, state) {
+  const language = row?.code?.language;
+  if (typeof language === "function") return language(state ?? {}) ?? null;
+  return language ?? null;
+}
+
 /** Query (throws). Validates one row's optionGroups against its options. */
 function checkOptionGroups(key, def) {
   if (!def.optionGroups) return;
@@ -745,7 +823,10 @@ function checkOptionGroups(key, def) {
  *   Inspector's (?) hover chrome (built by another agent — this module just
  *   supplies the text; per-row override allowed). Theory of mind: a first-time
  *   user must LEARN something, so `help` never echoes the label (that class of
- *   tooltip is banned). `default` — the fragment default value; omitted for
+ *   tooltip is banned). `code` — THE CODE ASPECT: this property's value IS code,
+ *   so the Inspector gives the row a `{}` button opening the shared full-screen
+ *   editor on it, in the language the aspect names (see THE `code` ROW ASPECT
+ *   above checkCodeRow). `default` — the fragment default value; omitted for
  *   keys with no universal default (a widget supplies it).
  *
  * NOTE the two rotation-anchor entries carry a NESTED-KEY convention: their
@@ -1548,6 +1629,7 @@ for (const [key, def] of Object.entries(PROPS)) {
     throw new Error(`properties: PROPS."${key}" declares kind "${def.kind}"${def.kind in RETIRED_ROW_KINDS ? ` — that spelling is RETIRED, write "${RETIRED_ROW_KINDS[def.kind]}"` : `, which is not one of ${JSON.stringify(ROW_KINDS)} — add its Inspector control before declaring it`}.`);
   checkOptionGroups(`PROPS."${key}"`, def);
   checkListRow(`PROPS."${key}"`, key, def);
+  checkCodeRow(`PROPS."${key}"`, def);
 }
 // The gradient stop list is a declaration too (it is just not a PROPS key — see
 // GRADIENT_STOPS_LIST), so it gets the SAME guard rather than a weaker one.
@@ -1904,6 +1986,7 @@ export function customProps(defs) {
     // untyped at runtime instead of at the declaration.
     checkOptionGroups(`customProps def "${def.name}"`, def);
     checkListRow(`customProps def "${def.name}"`, def.name, def);
+    checkCodeRow(`customProps def "${def.name}"`, def);
     const { name, kind, default: defaultValue, label, category, ...rest } = def;
     rows.push({ key: name, kind, label: label ?? defaultLabel(name), category: category ?? CUSTOM_CATEGORY, ...rest });
     defaultsOut[name] = defaultValue;

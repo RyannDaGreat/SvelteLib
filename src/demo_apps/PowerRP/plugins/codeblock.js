@@ -247,10 +247,26 @@ export const codeblockPlugin = {
     // FLAG: a future dedicated code editor row (a monospace textarea with live
     // highlighting, tying into the rich-text editor wave) supersedes this. The
     // string travels + renders fully regardless of the editor control.
-    { key: "code", label: "Code", kind: "text", category: "text", help: "The source code shown in the block. Edit inline here, or open the full-screen code editor with the button below (or by double-clicking the block)." },
-    // THE CODE BUTTON (ROUND 2 #33/#35): opens the reusable Monaco editor on the
-    // `code` — same `edit-code-source` command + `action` row idiom as mermaid/latex.
-    { key: "__editcode", label: "Edit in code editor…", kind: "action", command: "edit-code-source", category: "text", help: "Opens the full-screen editor (multi-line, minimap, autocomplete) on the source code — for entering a lot of code at once." },
+    // THE CODE ROW ASPECT, and the ONE widget where its language is a FUNCTION.
+    // Every other code row knows its language at declaration time (mermaid is
+    // always mermaid; a curve equation is always JavaScript). A code BLOCK's
+    // language is DOCUMENT STATE — the `language` row below is the user's choice,
+    // and it already drives the canvas highlighter (emit() → highlightCode(s.code,
+    // s.language)). So the aspect reads that same field, and the editor colours
+    // the source as the widget renders it: switch the block to Python and the {}
+    // editor is Python too, with nothing to keep in step by hand. A hardcoded
+    // "javascript" here would be a second, silently-diverging opinion about the
+    // one question the property already answers.
+    //
+    // KNOWN BOUND, unchanged by this and worth stating so nobody reads the
+    // hookup as more than it is: web/monacoSetup.js registers exactly three
+    // grammars (MONACO_LANGUAGES = mermaid, latex, javascript) because
+    // `editor.api` ships none, so a block set to Python passes "python" through
+    // and the MODAL renders it uncoloured while the CANVAS still highlights it
+    // (core/codeHighlight.js has its own, wider grammar set). Threading the real
+    // id is what makes fixing that a one-line addition to MONACO_LANGUAGES
+    // instead of a hunt for every place a language was hardcoded.
+    { key: "code", label: "Code", kind: "text", category: "text", code: { language: (s) => s.language ?? null }, help: "The source code shown in the block. Edit inline here, or open the full-screen editor with the {} button at the end of this row (or by double-clicking the block) — it highlights in whichever Language is set below." },
     // Language: a select over the highlighter's supported grammars (+ Plain).
     { key: "language", label: "Language", kind: "select", options: languageOptions().map((o) => o.value), optionLabels: Object.fromEntries(languageOptions().map((o) => [o.value, o.label])), category: "text", help: "Which language's syntax colors to apply. Pick Plain text for no highlighting; an unknown language also renders plain." },
     { key: "fontSize", label: "Font size", kind: "number", min: 0, category: "text", help: "Monospace font size for the code, in canvas units. Line height and column width scale with it." },

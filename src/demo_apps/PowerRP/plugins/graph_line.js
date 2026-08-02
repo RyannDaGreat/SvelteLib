@@ -144,9 +144,11 @@ export const graphLinePlugin = {
   ephemeral: EPHEMERAL.NONE,
   title: "Graph Line",
   capabilities: { docVars: true,  bbox: true, transform: true, resizable: true, backdrop: false },
-  // The full-screen Monaco editor for the equation — double-click OR the "</>"
-  // Inspector row, both routed through the widget-agnostic edit-code-source
-  // command (the mermaid/latex seam; report 07 §2). One descriptor, no UI code.
+  // The full-screen Monaco editor for the equation — double-click OR the `source`
+  // row's `{}` code affordance. This descriptor is the DOUBLE-CLICK half (and the
+  // `edit-code-source` command's, which reads it); the row half is declared on the
+  // row itself as `code: {language}` — see core/properties.js's THE `code` ROW
+  // ASPECT for why a widget has one activation but may have many code rows.
   // `activate: "code_modal"` is REQUIRED alongside codeEditor (the migration gate
   // tests/activation_migration_test.js: a codeEditor-carrying widget must NAME its
   // double-click handler, not rely on the retired claims() bridge) — exactly what
@@ -172,8 +174,12 @@ export const graphLinePlugin = {
   inspector: [
     ...bundle("positioning"),
     { key: "mode", label: "Mode", kind: "select", options: MODES, optionLabels: MODE_LABELS, category: CAT_EQ, help: "How the equation's result is read. Parametric: return [x, y]. Explicit: return y (x is the domain t). Polar: return r (x,y = r·cos t, r·sin t)." },
-    { key: "source", label: "Equation", kind: "text", category: CAT_EQ, help: "The JavaScript curve equation, sampled once per point over [tStart, tEnd] with the domain value in both `t` and `x`. Use Math.sin, `**` or pow() for powers (`^` is bitwise XOR in JS!). `time` is the presentation clock (a time-reading curve animates and is deterministic). Bind with '=' or type a literal expression." },
-    { key: "__editsource", label: "Edit in code editor…", kind: "action", command: "edit-code-source", category: CAT_EQ, help: "Opens the full-screen VS-Code-style editor (autocomplete, minimap) on the equation — the same editor double-clicking the curve opens. Write multi-line JS via an IIFE, e.g. a for-loop returning a value." },
+    // THE CODE ROW ASPECT (core/properties.js `code: {language}`): this row's
+    // value IS JavaScript, so it carries the `{}` button that opens the shared
+    // full-screen editor on it. It REPLACES the full-width "Edit in code editor…"
+    // action row that used to sit directly beneath — the user's ruling that an
+    // editor for a property belongs IN that property's row, not in one of its own.
+    { key: "source", label: "Equation", kind: "text", category: CAT_EQ, code: { language: "javascript" }, help: "The JavaScript curve equation, sampled once per point over [tStart, tEnd] with the domain value in both `t` and `x`. Use Math.sin, `**` or pow() for powers (`^` is bitwise XOR in JS!). `time` is the presentation clock (a time-reading curve animates and is deterministic). Bind with '=' or type a literal expression. The {} button opens it in the full-screen editor, where a multi-line IIFE (e.g. a for-loop returning a value) is comfortable to write." },
     { key: "tStart", label: "t start", kind: "number", category: CAT_FMT, help: "Start of the parameter domain. Keyframe tStart→tEnd across slides to draw the curve on by growing its domain." },
     { key: "tEnd", label: "t end", kind: "number", category: CAT_FMT, help: "End of the parameter domain." },
     { key: "numPoints", label: "Samples", kind: "number", min: 2, category: CAT_FMT, help: "How many points the curve is sampled at (resolution-independent). 256 is smooth for most curves; raise it for many-turn spirals or harmonographs." },
