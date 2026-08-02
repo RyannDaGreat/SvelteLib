@@ -105,3 +105,45 @@ test("an UNGROUPED item still has no owners, and a cycle still terminates", () =
 });
 
 console.log(`\n${passed} nested-group tests passed`);
+
+// ── DIAMOND ANCESTRY — found by adversarial testing, not by the tests above ──
+
+test("DIAMOND ANCESTRY DOUBLE-COUNTS — a KNOWN BOUND, pinned so it cannot drift", () => {
+  // O owns I AND J; both list the same leaf. Each of I and J has already been
+  // moved by O, so each hands the leaf O's move again and it travels twice as far.
+  // Found by a sweep written to FALSIFY the nesting work — the tests above all
+  // passed while this was true, because none had two paths to one ancestor.
+  //
+  // NOT FIXED, DELIBERATELY, and core/derive.js applyGroupParenting records why:
+  // the obvious fix (one owner per member) contradicts tests/group_test.js's
+  // "two groups compose later-outermost", which pins that two INDEPENDENT groups
+  // claiming a member compose BOTH influences and that the render and expression
+  // paths agree about it. Telling "two unrelated owners" from "one shared
+  // ancestor" needs each owner's LOCAL influence plus an ancestry walk — a real
+  // restructure, not a guard.
+  //
+  // This test asserts the CURRENT behaviour so that a future fix has to come here
+  // and change it deliberately, rather than a regression sliding past unseen.
+  const out = applyGroupParenting([
+    group("O", ["I", "J"], 100, 3), group("I", ["leaf"], 0, 2), group("J", ["leaf"], 0, 1), leaf("leaf", 0),
+  ]);
+  assert.equal(xOf(out, "leaf"), 200, "TODAY: O's move arrives twice (100 would be right; see the docblock)");
+});
+
+test("FIVE LEVELS deep still composes exactly once per level", () => {
+  const out = applyGroupParenting([
+    group("A", ["B"], 100, 5), group("B", ["C"], 0, 4), group("C", ["D"], 0, 3),
+    group("D", ["E"], 0, 2), group("E", ["leaf"], 0, 1), leaf("leaf", 7),
+  ]);
+  assert.equal(xOf(out, "leaf"), 107);
+});
+
+test("TWO UNRELATED groups claiming one member COMPOSE — unchanged by the nesting work", () => {
+  // The long-standing "a member listed by two groups" case, and the reason the
+  // diamond above is left as a bound: this composition is DELIBERATE and pinned by
+  // tests/group_test.js ("two groups compose later-outermost"), which also asserts
+  // the render and expression paths agree about it. Any diamond fix must keep this
+  // true, which is exactly what makes it a restructure rather than a guard.
+  const out = applyGroupParenting([group("g1", ["r"], 10, 1), group("g2", ["r"], 50, 2), leaf("r", 0)]);
+  assert.equal(xOf(out, "r"), 60, "both influences, composed — 10 then 50");
+});

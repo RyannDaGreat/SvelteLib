@@ -440,6 +440,30 @@ export function applyGroupParenting(nodes) {
     for (const g of ready) { ordered.push(g); placed.add(g.itemId); }
     remaining = remaining.filter((g) => !placed.has(g.itemId));
   }
+  // ── A KNOWN BOUND: DIAMOND ANCESTRY DOUBLE-COUNTS. FOUND, NOT FIXED. ──────
+  // Outer group O owns I AND J, and both list the same leaf. Each of I and J has
+  // already been moved by O by this point, so each hands the leaf O's move again
+  // and it travels twice as far — MEASURED at 200 where 100 is right, by a sweep
+  // written to falsify the nesting work above (the ten tests in
+  // tests/nested_groups_test.js all passed while this was broken, because none had
+  // two paths to one ancestor).
+  //
+  // I TRIED THE OBVIOUS FIX AND REVERTED IT, which is the part worth recording.
+  // Applying only ONE owner per member removes the double-count and CONTRADICTS a
+  // tested, deliberate rule: tests/group_test.js "composedMemberInfluence: two
+  // groups compose later-outermost (matches derive order)" pins that a member
+  // listed by two INDEPENDENT groups receives BOTH influences composed, and that
+  // this path and the expression path agree about it. Single-owner broke that
+  // agreement, which is a worse and much more common defect than the diamond.
+  //
+  // The two cases are genuinely different and want different answers: two
+  // unrelated groups SHOULD compose, a shared ancestor should be counted once.
+  // Telling them apart needs each owner's LOCAL influence (excluding what it
+  // inherited) plus a walk of the ancestry DAG — a real restructure of this
+  // function and composedMemberInfluence together, not a guard. A diamond is also
+  // a pathological document: it takes one item deliberately listed by two groups
+  // that share a parent. Recorded here with its reproduction so the next author
+  // starts from the measurement instead of rediscovering it.
   for (const g of ordered) {
     // worldOf(g), NOT g.world: an inner group has already been moved by its owner
     // at this point, and its influence on its own members must include that. For a
