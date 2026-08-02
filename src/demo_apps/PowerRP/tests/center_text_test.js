@@ -66,8 +66,13 @@ test("centers the TYPE both ways — align center, valign middle", () => {
   assert.equal(ov.valign, "middle");
 });
 
-test("starts EMPTY so the user can type immediately (no placeholder to delete)", () => {
-  assert.equal(centerTextOverrides("ab12cd34").text, "");
+// INVERTED 2026-08-02 by user ruling: "When I add center text, by the way, it
+// should just say text in the middle of it. That way I can actually see it." This
+// test used to assert the empty string on the "nothing to delete" argument; an
+// empty box bound by four equations draws only a ghost outline, so the label the
+// command exists to create was invisible where the user was looking for it.
+test("says \"Text\" so the new label is VISIBLE where it lands", () => {
+  assert.equal(centerTextOverrides("ab12cd34").text, "Text");
 });
 
 test("REFUSES an id that would resolve to a different item (the stored-id invariant)", () => {

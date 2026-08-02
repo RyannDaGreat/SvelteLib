@@ -50,6 +50,10 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 // box (one shared convention, not a fresh per-widget number).
 const DEFAULT_TEXT_SIZE = 36;
 
+// What an ADD CENTER TEXT box says when it lands (centerTextOverrides below): the
+// word "Text", so the new label is VISIBLE rather than an empty ghost outline.
+const CENTER_TEXT_PLACEHOLDER = "Text";
+
 // The four horizontal + three vertical alignment options (with human labels),
 // mirroring plugins/text.js's box/paragraph alignment controls. valign moves the
 // whole line stack within the box height h (core/richtext.valignOffset).
@@ -389,8 +393,9 @@ const PLAINTEXT_LOOKS = [
  * @example centerTextOverrides("ab12cd34").w // "= @ab12cd34.w"
  * @example centerTextOverrides("ab12cd34").align // "center"
  * @example centerTextOverrides("ab12cd34").valign // "middle"
+ * @example centerTextOverrides("ab12cd34").text // "Text" — visible the moment it lands
  * @example // the whole dict — four equations that re-evaluate together, plus the two alignments:
- * @example // {type: "plaintext", x: "= @ab12cd34.x", y: "= @ab12cd34.y", w: "= @ab12cd34.w", h: "= @ab12cd34.h", align: "center", valign: "middle", text: ""}
+ * @example // {type: "plaintext", x: "= @ab12cd34.x", y: "= @ab12cd34.y", w: "= @ab12cd34.w", h: "= @ab12cd34.h", align: "center", valign: "middle", text: "Text"}
  * @example // centerTextOverrides("Do_it") throws — a "_" in an id would resolve to a different item
  */
 export function centerTextOverrides(targetId) {
@@ -402,11 +407,16 @@ export function centerTextOverrides(targetId) {
     h: `= ${storedItemRef(targetId, ".h")}`,
     align: "center",
     valign: "middle",
-    // EMPTY, not "Text". The new box becomes the selection so the user can type
-    // immediately, and a placeholder word would have to be deleted first. An empty
-    // plaintext is an expected state, not a broken one — isGhost() above grants it
-    // the dashed-outline affordance precisely so a blank box stays findable.
-    text: "",
+    // "Text", NOT EMPTY — user ruling, 2026-08-02: "When I add center text, by the
+    // way, it should just say text in the middle of it. That way I can actually see
+    // it." This line argued the opposite for a day (type immediately, no placeholder
+    // to delete) and the argument was wrong about what the user SEES: an empty box
+    // bound by four equations draws nothing but isGhost()'s dashed outline, so the
+    // one thing the command is for — a visible label centered on the widget — was
+    // invisible the moment it landed. The word is still overwritten in one gesture
+    // (the new box is the selection; Enter opens its in-place editor with the text
+    // selected), so the placeholder costs nothing and proves the binding worked.
+    text: CENTER_TEXT_PLACEHOLDER,
   };
 }
 
