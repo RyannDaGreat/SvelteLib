@@ -80,6 +80,19 @@ export function worldViewRect(view, canvasW, canvasH) {
  * declares its bounds. Neither is a substitute for the other, and a widget may
  * need both.
  *
+ * A BBOX WIDGET MAY DECLARE IT TOO, and text is why (INK BOUNDS, 2026-08-02).
+ * The default above assumes a box widget's ink IS its box; text breaks that
+ * assumption in both directions — core/richtext.valignOffset lets a stack taller
+ * than `h` grow downward past it, and wrapParagraph lets an unbreakable word run
+ * off the side. plugins/plaintext.js therefore declares `localBounds`
+ * (core/richtext.textInkBounds over the core/ink_metrics measure seam), which is
+ * what stopped overflowing type being culled while still visible.
+ *
+ * HIT TESTING IS A FOURTH CONSUMER, and takes the UNION of these bounds with the
+ * property box rather than these bounds alone — core/derive.clickableLocalRect
+ * states why (ink can be smaller than the box, and the empty part of a text box
+ * must stay grabbable).
+ *
  * @example localBoundsOf({state: {w: 10, h: 20}, plugin: {capabilities: {bbox: true}}}) // {x: 0, y: 0, w: 10, h: 20}
  * @example localBoundsOf({state: {}, plugin: {capabilities: {bbox: false}}}) // null (no hook, no box: genuinely unbounded)
  * @example // a two-point widget's hook wins, and may report a rect around anything it draws:

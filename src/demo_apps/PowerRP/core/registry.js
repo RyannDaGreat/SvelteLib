@@ -47,13 +47,44 @@
  *                                           // {0,0,w,h} for a `bbox` widget, null
  *                                           // for anything else (= genuinely
  *                                           // unboundable; blur alone). Culling,
- *                                           // band select and the copy/export
- *                                           // capture rect all read THIS, so a
- *                                           // two-point widget (line/arrow/...)
- *                                           // declares its endpoint hull here
- *                                           // instead of being treated as having
- *                                           // no extent. NOT `cullMargin` — that
- *                                           // is the EFFECT halo around the ink.
+ *                                           // band select, the copy/export
+ *                                           // capture rect, HIT TESTING and the
+ *                                           // "Set Size to Ink Bounds" command all
+ *                                           // read THIS, so a two-point widget
+ *                                           // (line/arrow/...) declares its
+ *                                           // endpoint hull here instead of being
+ *                                           // treated as having no extent. NOT
+ *                                           // `cullMargin` — that is the EFFECT
+ *                                           // halo around the ink.
+ *                                           //
+ *                                           // A BBOX WIDGET DECLARES IT TOO when
+ *                                           // its ink is not its box: text
+ *                                           // OVERFLOWS (a stack taller than h
+ *                                           // grows downward past it, an
+ *                                           // unbreakable word runs off the side),
+ *                                           // and until plugins/plaintext.js
+ *                                           // declared this, overflowing type was
+ *                                           // culled, un-band-selectable, cropped
+ *                                           // out of exports and UNCLICKABLE — all
+ *                                           // four from the one missing rect.
+ *                                           //
+ *                                           // HIT TESTING TAKES THE UNION of this
+ *                                           // rect and the property box
+ *                                           // (core/derive.clickableLocalRect), not
+ *                                           // this rect alone: ink may be SMALLER
+ *                                           // than the box (a half-empty text box),
+ *                                           // and that empty area must stay
+ *                                           // grabbable. Ink that reaches OUTSIDE
+ *                                           // the box also draws a dashed INK-BOUNDS
+ *                                           // ghost under Show Ghosts.
+ *                                           //
+ *                                           // MEASUREMENT THAT NEEDS A FONT goes
+ *                                           // through core/ink_metrics.inkMeasure()
+ *                                           // — an injectable seam the render side
+ *                                           // fills, with a LOUD monospace fallback.
+ *                                           // core/ is DOM-free, so a plugin must
+ *                                           // never reach for CanvasKit or canvas2D
+ *                                           // here directly.
  *     canSkip?(state, viewRectWorld) → bool // CULLING protocol: return true iff
  *                                           // this widget contributes nothing to
  *                                           // the given world-space view rect
