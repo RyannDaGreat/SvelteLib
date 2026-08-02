@@ -16,6 +16,7 @@
  */
 
 import { interpolate } from "./interpolators.js";
+import { blendUnderMode, interpKeyFor, modeForBlend } from "./interp_modes.js";
 
 /** Delete sentinel. A delta leaf of NONE deletes the key from the state. */
 export const NONE = null;
@@ -85,11 +86,19 @@ export function applied(state, delta) {
  *     capture, tweenline-style) toward the delta target via `interpolate`.
  *   - discrete changes (non-interpolable values, additions, deletions) apply
  *     as soon as alpha > 0.
+ *   - a leaf whose PER-PROPERTY INTERP MODE (core/interp_modes.js) says
+ *     otherwise blends by that mode's law instead. The mode is a plain sibling
+ *     property `<key>~interp` with no machinery of its own, and it STEPS at the
+ *     transition's start (the incoming delta's mode governs from frame 1).
+ *     Absent — the case for every document written before the feature — is the
+ *     "tween" mode, whose law IS `interpolate`, so nothing moves.
  *
  * @example blendApplied({x: 0}, {x: 10}, 0.5) // {x: 5}
  * @example blendApplied({x: 0}, {x: 10}, 0) // {x: 0}
  * @example blendApplied({s: "a"}, {s: "b"}, 0.01) // {s: "b"} (discrete: alpha > 0)
  * @example blendApplied({a: 1}, {b: 2}, 0.5) // {a: 1, b: 2} (addition: alpha > 0)
+ * @example blendApplied({x: 0, "x~interp": "step"}, {x: 10}, 0.5) // {x: 10, "x~interp": "step"} (standing mode: x steps)
+ * @example blendApplied({x: 0}, {x: 10, "x~interp": "step"}, 0.5) // {x: 10, "x~interp": "step"} (the mode steps first, then governs x)
  */
 export function blendApplied(state, delta, alpha) {
   if (alpha <= 0) return copied(state);
@@ -105,8 +114,21 @@ export function blendApplied(state, delta, alpha) {
  * in-place step would corrupt every earlier cached state. (A prior comment
  * promised this as an exported "fold hot path" optimization; no such
  * consumer exists, and the cache makes it unsound there.)
+ *
+ * PER-PROPERTY INTERP MODES (core/interp_modes.js) are consulted HERE, at the
+ * one point a leaf actually blends. `outgoing` is the state as it stood BEFORE
+ * this delta touched anything — captured per recursion level because the mode
+ * companion `<key>~interp` is an ordinary delta leaf and may be written EARLIER
+ * in this very loop (JS object order is insertion order, so a delta that lists
+ * `x~interp` before `x` would otherwise have already clobbered the standing
+ * mode by the time `x` asks for it). Reading the mode from a pre-loop snapshot
+ * makes the result independent of the delta's key order, which the fold's
+ * determinism requires.
  */
 function mutBlendApply(state, delta, alpha) {
+  // Shallow is enough: a mode governs a leaf at THIS level, and each recursion
+  // step takes its own snapshot of the sub-object it is about to mutate.
+  const outgoing = { ...state };
   for (const [key, val] of Object.entries(delta)) {
     if (val === NONE) {
       delete state[key];
@@ -124,8 +146,31 @@ function mutBlendApply(state, delta, alpha) {
       }
       mutBlendApply(state[key], val, alpha);
     } else if (key in state) {
-      state[key] = interpolate(state[key], val, alpha);
+      // THE ENDPOINT IS NOT A MODE'S CALL. At alpha 1 the answer IS the stored
+      // target — that is what `applied()` means and what makes the fold
+      // (core/document.js slideState) the document's own values rather than a
+      // mode's opinion of them. Enforced HERE, at the one call site, rather than
+      // trusted to every registered blend: a future `fade` or `morph` that
+      // returned something else at 1 would silently corrupt every folded slide
+      // state, the caches built on them, and every export. `interpolate` already
+      // short-circuits both endpoints; this extends the same guarantee to modes.
+      // (alpha <= 0 cannot reach here at all — blendApplied returns early.)
+      if (alpha >= 1) {
+        state[key] = interpolate(state[key], val, 1); // === copied(val) semantics
+      } else {
+        // The mode STEPS at the transition's start: the delta's mode (if it sets
+        // one) governs from the first frame, else the standing one, else "tween"
+        // — whose blend IS `interpolate`, so an absent companion folds to exactly
+        // the bytes this line produced before modes existed.
+        const modeKey = interpKeyFor(key);
+        const mode = modeForBlend(outgoing[modeKey], delta[modeKey]);
+        state[key] = blendUnderMode(state[key], val, alpha, { key, mode });
+      }
     } else {
+      // An ADDITION is discrete under every mode (there is no `a` to blend from
+      // — this is the "additions apply as soon as alpha > 0" rule), so it does
+      // not consult the registry. A mode that wants a say in appearance is
+      // asking for the `active`/`visible` property's mode, not for this branch.
       state[key] = copied(val);
     }
   }

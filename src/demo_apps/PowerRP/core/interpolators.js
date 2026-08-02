@@ -6,8 +6,19 @@
  * channel of #rrggbbaa colors (Round 10: "color properties support ALPHA";
  * plain #rrggbb stays legal and reads as opaque) — equal-length numeric
  * arrays blend elementwise, everything else is discrete (snaps to the target
- * as soon as alpha > 0 — matching tweenline/LIAC reference semantics; if you
- * want a fade, author one with opacity).
+ * as soon as alpha > 0 — matching tweenline/LIAC reference semantics).
+ *
+ * THIS MODULE IS THE *DEFAULT* LAW, NOT THE ONLY ONE. A property may name its
+ * own blend through a sibling `<key>~interp` companion (core/interp_modes.js);
+ * `interpolate` is what the default "tween" mode does, and what every property
+ * with no companion gets. This docblock used to end the discrete rule with "if
+ * you want a fade, author one with opacity" — that was an opinion AGAINST
+ * per-property modes written before they existed, and it is superseded: the
+ * user asked for exactly the ability it refused ("Even visible could have
+ * options for interpolate… by default, right now, would just be step"). Add a
+ * blend law by registering a MODE, not by editing the rules below — those stay
+ * the shape-driven default that a document with no companions folds by,
+ * byte-identically.
  *
  * STRUCTURAL RECURSION (the "structural keyframing" substrate): interpolate
  * recurses through arrays AND plain-object trees so a WHOLE list/record leaf

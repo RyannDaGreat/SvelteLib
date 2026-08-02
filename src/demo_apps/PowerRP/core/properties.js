@@ -65,6 +65,7 @@ import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
+import { interpKeyFor, interpMode, interpModeIds, interpModeLabels, isInterpKey } from "./interp_modes.js";
 
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
@@ -1908,4 +1909,75 @@ export function customProps(defs) {
     defaultsOut[name] = defaultValue;
   }
   return { rows, defaults: defaultsOut };
+}
+
+// ── Per-property interpolation modes (core/interp_modes.js) ──────────────────
+
+/**
+ * Pure function. THE INTERP ROW for a property row: a derived `select` row that
+ * edits the property's sibling mode companion `<writeKey>~interp`.
+ *
+ * It is DERIVED, never declared. No plugin lists an interp row and none ever
+ * should — the mode applies to EVERY keyframeable property of every widget, so
+ * declaring them would be the exact copy-paste this registry exists to kill (and
+ * would double the row count of every plugin file). The Inspector builds one on
+ * demand for whichever row the user opens the affordance on.
+ *
+ * The result is an ORDINARY row: same {key, label, kind, options, ...} shape
+ * every other row has, so it renders through the same select control, writes
+ * through the same keyframe path, and undoes through the same machinery. The
+ * mode is a real keyframeable property, which is what the whole design rests on.
+ *
+ * NO `default` and no defaults-fill: an ABSENT companion is the "tween" mode and
+ * must stay absent, so a legacy document keeps folding to identical bytes. The
+ * Inspector shows DEFAULT_INTERP_MODE as the displayed value when the key is
+ * missing; writing it stores an explicit mode, which is a real (undoable) edit.
+ *
+ * Args:
+ *   propRow (object): the row whose blend law this edits (only its key/writeKey
+ *     and label are read)
+ *
+ * Returns:
+ *   object: a select row over the registered mode ids
+ *
+ * @example interpRowFor({key: "x", label: "X"}).key
+ * "x~interp"
+ * @example interpRowFor({key: "x", label: "X"}).label
+ * "X interpolation"
+ * @example interpRowFor({key: "cx", writeKey: "x", label: "Center X"}).key
+ * "x~interp"
+ * @example interpRowFor({key: "x", label: "X"}).kind
+ * "select"
+ */
+export function interpRowFor(propRow) {
+  const target = propRow.writeKey ?? propRow.key;
+  const labels = interpModeLabels();
+  return {
+    key: interpKeyFor(target),
+    label: `${propRow.label} interpolation`,
+    kind: "select",
+    category: propRow.category,
+    options: interpModeIds(),
+    optionLabels: labels,
+    interpOf: target,
+    help: `How "${propRow.label}" moves across a transition. ${interpModeIds().map((id) => `${labels[id]} — ${interpMode(id).help}`).join(" ")}`,
+  };
+}
+
+/**
+ * Pure function. May this row carry an interpolation mode? A row edits a real
+ * keyframeable state leaf iff it keyframes at all — an ACTION row triggers a
+ * command and owns no state, and a row opting out with `keyframes: false` (Name,
+ * a transition's config rows) has no transition to blend across. Everything else
+ * qualifies, INCLUDING booleans, colors, selects and text: the user's request
+ * names `visible` explicitly, and a property whose values happen to be discrete
+ * TODAY is exactly the one a future `fade`/`morph` mode is for.
+ *
+ * @example rowSupportsInterp({key: "x", kind: "number"}) // true
+ * @example rowSupportsInterp({key: "visible", kind: "boolean"}) // true
+ * @example rowSupportsInterp({key: "name", kind: "text", keyframes: false}) // false
+ * @example rowSupportsInterp({key: "__ungroup", kind: "action"}) // false
+ */
+export function rowSupportsInterp(propRow) {
+  return propRow.keyframes !== false && propRow.kind !== "action" && !isInterpKey(propRow.key);
 }
