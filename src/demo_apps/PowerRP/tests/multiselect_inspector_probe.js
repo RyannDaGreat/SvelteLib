@@ -264,8 +264,19 @@ try {
     return { keys: p.rows.map((r) => r.row.key), conflicts: p.conflicts.map((c) => c.key) };
   });
   await sleep(700);
-  assert(!conflict.keys.includes("shape"),
-    "two `shape` selects with DIFFERENT option sets do not unify (they are different properties)");
+  // THE USER OVERRULED THIS EXCLUSION — #300, and this assertion outlived it.
+  // It was written when a contract mismatch was a HARD EXCLUSION: two `shape`
+  // selects with different option sets were dropped from the panel entirely. The
+  // user's ruling: "if the top-level drop-down is different just show it with a
+  // triple dot… if I click it, it will unify them… You can still have a warning
+  // message on the top explaining why something is special, but don't actually
+  // BLOCK me from doing it. There should be a way to get around that."
+  //
+  // So a mismatched row is now OFFERED (and reported as a conflict, which the
+  // next line still pins) rather than withheld. Asserting its absence asserted
+  // the behaviour that was explicitly rejected.
+  assert(conflict.keys.includes("shape"),
+    "a contract-mismatched `shape` row is OFFERED, not withheld (#300: warn, never block)");
   assert(conflict.conflicts.includes("shape"), "…and the exclusion is REPORTED by key, never silently dropped");
   const conflictDom = await page.evaluate(() =>
     [...document.querySelectorAll(".inspector .multi-conflict")].map((e) => e.textContent.trim()));
