@@ -75,6 +75,28 @@ const FLOORS = {
   // enough that a real regression (a node falling back to raster, a label
   // reflowing, an edge losing its head) moves it by far more than 10x.
   mermaid: { maxMeanAbs: 2.5, minVectorRecovery: 1 },
+  // MEASURED on the three-path inline fixture at the end of this file: three runs
+  // gave meanAbs 3.08, 3.09, 3.09 — a spread of 0.01 — with maxAbs 212 over 2.3%
+  // of pixels. Floor 4.0, comfortably above that and far below what a part
+  // failing to draw would produce.
+  //
+  // IT IS AN ORDER OF MAGNITUDE LOOSER THAN MERMAID'S (3.09 against 0.23) AND
+  // THAT IS A FINDING, NOT SLOP. maxAbs 212 on a couple of percent of pixels is
+  // real EDGE DISPLACEMENT, not antialiasing jitter: svgOpsToParts re-frames each
+  // path into its own tight viewBox with preserveAspect:false, so every piece is
+  // rescaled by a slightly different factor and its edges land on different
+  // sub-pixels than they did inside the whole drawing. The picture is the same
+  // picture — 97.7% of pixels are untouched — but it is not pixel-exact, and a
+  // future author comparing these two numbers should know why rather than
+  // assuming the svg path is sloppier code.
+  svg: { maxMeanAbs: 4.0, minVectorRecovery: 1 },
+  // NOT MEASURED, AND SAID SO. An Iconify icon's source is FETCHED from
+  // api.iconify.design, so measuring it here would make this probe red on an
+  // offline or rate-limited host for a reason that has nothing to do with
+  // shatter. It shares svgOpsToParts with the svg widget above — the code path
+  // that IS measured — so what is unverified is the fetch, not the decomposition.
+  // An admission is worth more than a number nobody took.
+  iconify: { unmeasured: "source is network-fetched; the shared decomposition is covered by the svg case" },
 };
 
 /**
@@ -391,6 +413,56 @@ for (const [name, def] of Object.entries(OTHER_DIAGRAMS)) {
 if (pageErrors.length > 0) fail(`page errors: ${JSON.stringify(pageErrors.slice(0, 4))}`);
 else ok("no page errors or dangerous console output");
 
+// ── SVG: the same before/after fidelity measurement, for the family added in
+// #271. Iconify is deliberately NOT measured here — its source is FETCHED from
+// api.iconify.design, so an offline or rate-limited host would make this probe
+// red for a reason that has nothing to do with shatter. Its floor is recorded as
+// UNMEASURED and the roster check accepts that spelling, which is the honest form:
+// a number nobody measured is worse than an admission that nobody did.
+{
+  const SVG_SRC = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">'
+    + '<path d="M2 2H18V18H2Z" fill="#c33"/><path d="M22 22H38V38H22Z" fill="#36c"/>'
+    + '<path d="M22 2C30 2 38 10 38 18L22 18Z" fill="#3a3"/></svg>';
+  await page.evaluate(() => { const a = window.__powerrp_app; a.deselectAll(); for (const n of a.nodes()) if (n.plugin.capabilities.purgeable !== false) { a.selection = n.itemId; a.runCommand("purge-item"); } });
+  await page.evaluate((src) => {
+    const a = window.__powerrp_app;
+    a.addItem({ ...a.registry.get("svg").defaults, svgSource: "inline", svgSrc: src, x: 200, y: 150, w: 300, h: 300 });
+  }, SVG_SRC);
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const svgBefore = await shot("4_svg_before");
+
+  const svgReport = await page.evaluate(() => {
+    const a = window.__powerrp_app;
+    const id = a.selection;
+    const blocker = a.shatterBlocker();
+    if (blocker !== null) return { blocker };
+    a.shatterSelection();
+    const st = a.state().items;
+    const members = [...(st[id].members ?? [])];
+    return { blocker: null, hostType: st[id].type, members, childTypes: members.map((m) => st[m].type) };
+  });
+
+  if (svgReport.blocker !== null) fail(`an inline SVG should be shatterable immediately, but the gate said: ${svgReport.blocker}`);
+  else {
+    ok(`an inline SVG shatters with no wait (its source is already in hand)`);
+    if (svgReport.hostType === "group") ok("the SVG BECAME a group, same itemId");
+    else fail(`expected a group host, got "${svgReport.hostType}"`);
+    if (svgReport.members.length === 3) ok(`one part per drawable path — 3 paths, ${svgReport.members.length} members`);
+    else fail(`expected 3 parts (one per <path>), got ${svgReport.members.length}`);
+    if (svgReport.childTypes.every((t) => t === "svg")) ok("every part is an `svg` widget — the curve survives, no polygon flattening");
+    else fail(`a part is not an svg: ${JSON.stringify(svgReport.childTypes)}`);
+
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    const svgAfter = await shot("5_svg_after");
+    const sd = imageDistance(svgBefore, svgAfter);
+    const svgFloor = FLOORS.svg;
+    console.log(`  SVG FIDELITY  meanAbs=${sd.meanAbs.toFixed(2)} maxAbs=${sd.maxAbs} fraction=${(sd.fraction * 100).toFixed(1)}%  (floor meanAbs <= ${svgFloor.maxMeanAbs})`);
+    if (sd.meanAbs <= svgFloor.maxMeanAbs) ok(`the SVG's picture is preserved within its recorded floor (meanAbs ${sd.meanAbs.toFixed(2)} <= ${svgFloor.maxMeanAbs})`);
+    else fail(`SVG fidelity REGRESSED: meanAbs ${sd.meanAbs.toFixed(2)} exceeds the recorded floor ${svgFloor.maxMeanAbs}`);
+  }
+}
+
 await browser.close();
 if (server) await server.close();
+
 console.log(`\n${passed} passed${process.exitCode ? ", FAILURES ABOVE" : ""}`);
