@@ -9,6 +9,15 @@
   menu implementation, one keyboard model, one hover-preview contract, one
   no-clip floating menu — all inherited.
 
+  THE SEARCH FIELD IS A TINTED BAND, NOT A BOX (user ruling, 2026-08-02: "the
+  search boxes that I see in drop downs… is a box in a box, it looks kind of
+  silly… all of them do this and none of them should… in the command palette
+  you'll see that the search area is actually just a slightly different tinge,
+  it's a different colour, you can use that"). So: no border, no radius, no
+  inset — a background tint one step off the menu's own, a single hairline under
+  it, and `headerFlush` so the header strip adds neither padding nor a second
+  rule. That is the command palette's input, reproduced with Dropdown's tokens.
+
   MATCHING IS PLUGGABLE. The default is plain fuzzy subsequence matching
   (./fuzzyMatch.js: `rankItems`, which merges matching + sorting into one pure
   function). Pass `rankFn(query, items) -> items[]` to replace BOTH the matcher
@@ -131,6 +140,7 @@
   {trigger}
   listItems={ranked}
   header={showSearch ? searchBox : undefined}
+  headerFlush={true}
   item={itemSnippet ?? highlight}
 />
 
@@ -165,11 +175,31 @@
      the in-app precedent is the COMMAND PALETTE's input: borderless, set apart
      by a background tint and a bottom hairline. A subtle brightening on the
      dropdown bg does the "different color"; focus brightens the hairline
-     instead of drawing a ring. */
+     instead of drawing a ring.
+
+     THE FIELD SPANS THE STRIP EDGE-TO-EDGE, and that is the other half of the
+     ruling ("a box in a box… it looks kind of silly"). Losing the field's own
+     border was not enough on its own: .dd-header pads 6px/8px around whatever it
+     holds and draws a hairline underneath, so a tinted field inset inside a
+     bordered strip read as TWO nested rectangles even with the inner one's
+     border gone. `headerFlush` (passed to Dropdown below) drops both, leaving
+     ONE surface: a tinted band with a single rule under it, which is exactly the
+     command palette's input.
+
+     THE TINT IS TRANSLUCENT INK OVER THE MENU, not a mix against an opaque
+     colour, and on a blurred menu that distinction is the whole thing. Mixing
+     7% foreground into --dd-bg yields an OPAQUE result, which would stamp a
+     solid band across the top of a translucent menu and cut a hole in the
+     blur — the field would stop being part of the surface it sits on. A bare
+     7%-of-foreground mixed against TRANSPARENT composites over whatever is
+     behind it instead, so it reads as the same pane one step brighter, whether
+     the menu is opaque (today's look, unchanged) or glass. color-mix against
+     transparent — not the newer `rgb(from …)` relative syntax — because the rest
+     of this component's chrome (.sd-mark below) already uses that idiom. */
   .sd-search {
     box-sizing: border-box;
     width: 100%;
-    background: color-mix(in srgb, var(--dd-fg, #e0e0e0) 7%, var(--dd-bg, rgba(20, 20, 30, 0.92)));
+    background: color-mix(in srgb, var(--dd-fg, #e0e0e0) 7%, transparent);
     color: var(--dd-fg, #e0e0e0);
     border: 0;
     border-bottom: 1px solid var(--dd-border, rgba(255, 255, 255, 0.18));

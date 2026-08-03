@@ -101,6 +101,18 @@
     --dd-bg, --dd-fg, --dd-fg-dim, --dd-border, --dd-radius, --dd-padding,
     --dd-font-size, --dd-hover-bg, --dd-active-bg, --dd-active-fg,
     --dd-menu-shadow, --dd-menu-max-height,
+    --dd-menu-bg             — the OPEN MENU's surface tint (default --dd-bg);
+                               its own token so a host can make the floating
+                               surface translucent without touching the trigger
+    --dd-menu-backdrop       — backdrop-filter for the open menu (default `none`,
+                               which costs no compositor layer). Pair with a
+                               translucent --dd-menu-bg for a blur-under menu.
+    --dd-header-padding      — padding around the `header` snippet (default
+                               6px 8px). For a header that fills the strip use
+                               the `headerFlush` PROP, not this — a token set on
+                               the header's own content cannot reach its parent.
+    --dd-header-border       — the header's bottom rule (default a 1px
+                               --dd-border hairline)
     --dd-caret-size          — trigger caret icon size (default 1.2em ⇒ tracks
                                the trigger's text height; flips 180° on open)
     --dd-caret-color         — caret color (default currentColor)
@@ -261,6 +273,11 @@
     item: itemSnippet,
     insert: insertSnippet,
     header,
+    /** @type {boolean} the `header` snippet fills the strip EDGE TO EDGE and
+     *  draws its own bottom edge, so the strip contributes neither padding nor a
+     *  rule. Without it, a header holding a tinted full-width control (a search
+     *  field) reads as a box nested inside a bordered box. */
+    headerFlush = false,
     footer,
   } = $props();
 
@@ -591,7 +608,7 @@
       style:--dd-menu-max-height={menuPos ? `${menuPos.maxHeight}px` : null}
     >
       {#if header}
-        <div class="dd-header">{@render header()}</div>
+        <div class="dd-header" class:dd-header-flush={headerFlush}>{@render header()}</div>
       {/if}
 
       <ul class="dd-list" bind:this={listEl} onscroll={onListScroll}>
@@ -753,13 +770,21 @@
      is only the pre-measure fallback for the first frame before menuPos exists,
      matching the legacy anchored-below look. z-index via --dd-menu-z (an ambient
      --a-z token in PowerRP; a literal fallback for standalone use). */
+  /* THE MENU IS A FLOATING SURFACE, so it takes a surface TINT and a BACKDROP
+     FILTER of its own rather than reusing the trigger's flat --dd-bg. Both
+     default to today's look exactly (--dd-bg, and `none`, which costs no
+     compositor layer), so this is inert until a host pulls it — which is what
+     lets an app give its menus the same blur-under its command palette has
+     without the component knowing that app's tokens. */
   .dd-menu {
     position: absolute;
     top: 100%;
     left: 0;
     right: 0;
     z-index: var(--dd-menu-z, 1000);
-    background: var(--dd-bg);
+    background: var(--dd-menu-bg, var(--dd-bg));
+    backdrop-filter: var(--dd-menu-backdrop, none);
+    -webkit-backdrop-filter: var(--dd-menu-backdrop, none);
     color: var(--dd-fg);
     border: 1px solid var(--dd-border);
     border-top: none;
@@ -776,8 +801,19 @@
   }
 
   .dd-header {
-    padding: 6px 8px;
-    border-bottom: 1px solid var(--dd-border);
+    padding: var(--dd-header-padding, 6px 8px);
+    border-bottom: var(--dd-header-border, 1px solid var(--dd-border));
+  }
+  /* FLUSH: the header's content IS the strip. Drops the padding that would inset
+     it and the rule that would double its own bottom edge — together those two
+     are what made a tinted full-width search field read as a box nested inside a
+     bordered box ("a box in a box… it looks kind of silly"). A PROP and not a
+     token because the tokens above cannot reach here from the header's own
+     content: custom properties inherit DOWNWARD, and the snippet renders INSIDE
+     this element. */
+  .dd-header.dd-header-flush {
+    padding: 0;
+    border-bottom: none;
   }
   .dd-footer {
     padding: 6px 8px;

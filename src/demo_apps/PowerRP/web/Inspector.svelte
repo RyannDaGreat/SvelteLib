@@ -758,6 +758,28 @@
   // push the badge across the whole field.
   const EQ_BADGE_CHARS = 18;
 
+  // SearchableDropdown's `minItemsForSearch` for a picker whose search box must
+  // ALWAYS be there. The component hides the box at or below the threshold
+  // (default 8) so a short ENUM stays plain, which is right for an enum and
+  // wrong for every picker over a set the DOCUMENT decides the size of.
+  //
+  // THE USER REPORTED IT AS AN INCONSISTENCY, and that is the real defect (2026-
+  // 08-02: "why is the select item drop down not searchable? the widget type drop
+  // down is, but the select widget drop down should also be searchable"). Both
+  // pickers ALREADY passed through SearchableDropdown; they simply landed on
+  // opposite sides of one hidden count. Retype offers ~30 types so its box always
+  // showed, while a deck with eight or fewer objects put the item picker under the
+  // threshold — so the same control searched or did not depending on how big the
+  // document happened to be, with nothing on screen explaining why. A control that
+  // appears and disappears on a rule the user cannot see is worse than one that is
+  // always plain.
+  //
+  // 0, not 1: `showSearch` is a strict `>`, so 0 shows the box even for a
+  // one-item list. That is deliberate — the box's presence is the promise, and a
+  // picker that drops it when a deck is emptied down to one object would be the
+  // same disappearing act at a smaller scale.
+  const ALWAYS_SEARCHABLE = 0;
+
   // The row currently in equation ENTRY from the ƒ button (no equation stored
   // yet), the row whose input holds focus (its draft is live), and that row's
   // state path. Only one row can be edited at a time, so one set of state
@@ -1995,6 +2017,7 @@
     {#if row.optionsFrom === "items"}
       <SearchableDropdown
         rankFn={appRankItems}
+        minItemsForSearch={ALWAYS_SEARCHABLE}
         onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
         oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
         items={allDocumentItems(app.doc)
@@ -2020,6 +2043,7 @@
       {#if retypeMenu.length > 0}
         <SearchableDropdown
           rankFn={appRankItems}
+          minItemsForSearch={ALWAYS_SEARCHABLE}
           items={retypeMenu}
           value={valueAt(state, row.key)}
           onchange={(v) => oncommit(row.key, "select", v)}
@@ -2425,10 +2449,11 @@
 <div class="inspector">
   <div class="inspector-head">
     <!-- The item picker lists EVERY object on EVERY slide (Round 2 #29: object
-         select becomes searchable) — unbounded, so it types-to-filter past the
-         small-list threshold. It keeps its custom `pickerItem` snippet (the
-         invisible-on-this-slide danger styling), which opts out of the built-in
-         match highlight. -->
+         select becomes searchable) — unbounded, so it types-to-filter ALWAYS,
+         never past a count threshold (ALWAYS_SEARCHABLE; see its declaration for
+         the user report that forced it). It keeps its custom `pickerItem`
+         snippet (the invisible-on-this-slide danger styling), which opts out of
+         the built-in match highlight. -->
     <!-- HOVER PREVIEWS THE SELECTION BOX (user, 2026-08-01: "it should preview,
          just like many other things preview, the selection box so that I can see
          which element is being selected"). This list is names, and a name is not
@@ -2440,6 +2465,7 @@
          selection-dependent effect in the app. -->
     <SearchableDropdown
       rankFn={appRankItems}
+      minItemsForSearch={ALWAYS_SEARCHABLE}
       items={itemChoices}
       value={pickedItemId}
       placeholder="— select item —"

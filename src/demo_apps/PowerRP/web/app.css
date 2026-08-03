@@ -1001,6 +1001,23 @@
      --a-radius-floating — see the .tt-tip rule for why the two are kept
      separate. Unset falls through to the component's own square-ish --tt-radius. */
   --a-glass-tip-radius: unset;
+
+  /* AN OPEN DROPDOWN MENU'S SURFACE TINT — the fourth member of the --a-glass-bg
+     family, and the token that decides whether MENUS are glass at all. Same
+     shape and same reasoning as --a-glass-tip-bg directly above: `unset`, read
+     as the FIRST term of a var() fallback chain (.app's --dd-menu-bg), so an
+     untouched theme falls through to the menu's own --control-bg and this
+     contributes exactly nothing.
+     The user asked for the pairing by name (2026-08-02: "for the themes that do
+     do blur on the command palette they would do it for the drop downs too"), so
+     the BLUR is not a separate opt-in — .app reads --a-glass-blur verbatim, and
+     a theme that blurs its palette blurs its menus. Only the TINT needs its own
+     token, because a menu paints --control-bg while the palette paints --bg and
+     the popovers paint --a-panel-bg: three different colours today, which is the
+     whole reason this family has more than one member. Reusing --a-glass-bg-panel
+     here would have shifted every menu in every non-glass theme (#242424 →
+     #1a1a1a in Graphite, and a different pair in each of the others). */
+  --a-glass-menu-bg: unset;
 }
 
 :root[data-theme="light"] {
@@ -1593,6 +1610,17 @@
      read for a second and dismissed, and at palette alpha the art behind it
      came through the glyphs; the palette can afford thinness because it is a
      large surface the eye settles on. Same material, tuned for the size. */
+  /* OPEN DROPDOWN MENUS join the glass family here too (--a-glass-menu-bg in
+     :root), on the user's explicit pairing: "for the themes that do do blur on
+     the command palette they would do it for the drop downs too."
+     THE HUE IS THE MENU'S OWN, not the palette's or the panel's. A menu paints
+     --control-bg (#1c222d here), so this is that exact colour made translucent —
+     a glass theme changes the menu's MATERIAL without changing its colour, which
+     is what keeps the blur from reading as a recolour. The alpha is the TIP's
+     0.82 rather than the palette's 0.72, for the tip's own reason restated one
+     size down: a menu is rows of small text scanned briefly, not a large surface
+     the eye settles on, so it needs the denser pane to stay legible over art. */
+  --a-glass-menu-bg: rgba(28, 34, 45, 0.82);
   --a-glass-tip-radius: 6px;
   /* Under --a-radius-floating's 10px, and that is the material scaling rather
      than drifting: 10px on a ~22px-tall tip is most of its half-height, which
@@ -1676,6 +1704,10 @@
      glyphs on a bright translucent pane lose more to a busy backdrop than pale
      glyphs on a dark one do. */
   --a-glass-tip-radius: 6px; /* the pane corner at tip scale — see Nocturne's note */
+  /* The menu's own --control-bg made translucent at the tip's density — see
+     Nocturne's --a-glass-menu-bg note for why the hue is the menu's and the
+     alpha is the tip's. */
+  --a-glass-menu-bg: rgba(205, 214, 227, 0.86);
 }
 
 /* Verdigris — oxidised copper, the one real-world colour source that is a
@@ -1747,6 +1779,8 @@
   --a-glass-rim-w: 1px; /* a hard crust edge, not a soft rolled highlight */
   --a-glass-tip-bg: rgba(16, 29, 26, 0.95);
   --a-glass-tip-radius: 2px;
+  /* The menu's own --control-bg at the tip's density — see Nocturne's note. */
+  --a-glass-menu-bg: rgba(22, 36, 31, 0.95);
 }
 
 /* Verdigris-light — the SAME patina in full sun, not an inverted palette (the
@@ -1797,6 +1831,8 @@
   --a-glass-rim-w: 1px; /* carries more here: it is the only edge cue left */
   --a-glass-tip-bg: rgba(242, 250, 247, 0.95);
   --a-glass-tip-radius: 2px;
+  /* The menu's own --control-bg at the tip's density — see Nocturne's note. */
+  --a-glass-menu-bg: rgba(203, 224, 218, 0.95);
 }
 
 /* Cranberry — Victorian "cranberry glass"/gold-ruby glass, whose colour is a
@@ -1881,6 +1917,8 @@
   --a-glass-rim: rgba(190, 225, 150, 0.18); /* dichroic green-gold against the red body */
   --a-glass-tip-bg: rgba(32, 13, 20, 0.8);
   --a-glass-tip-radius: 9px; /* the vessel's corner at tip scale — Nocturne's 6/10 ratio */
+  /* The menu's own --control-bg at the tip's density — see Nocturne's note. */
+  --a-glass-menu-bg: rgba(42, 18, 26, 0.8);
   --a-ui-font: "PowerRP Source Serif", Georgia, "Times New Roman", serif;
 }
 
@@ -1926,6 +1964,8 @@
   --a-glass-rim: rgba(90, 20, 40, 0.14);
   --a-glass-tip-bg: rgba(252, 242, 246, 0.86);
   --a-glass-tip-radius: 9px;
+  /* The menu's own --control-bg at the tip's density — see Nocturne's note. */
+  --a-glass-menu-bg: rgba(240, 210, 218, 0.86);
   --a-ui-font: "PowerRP Source Serif", Georgia, "Times New Roman", serif;
 }
 
@@ -1994,6 +2034,8 @@
   --a-glass-rim-w: 1px; /* a hard specular line on a knapped edge */
   --a-glass-tip-bg: rgba(16, 16, 18, 0.84);
   --a-glass-tip-radius: 0;
+  /* The menu's own --control-bg at the tip's density — see Nocturne's note. */
+  --a-glass-menu-bg: rgba(23, 23, 27, 0.84);
 }
 
 /* Moonstone — Obsidian's light-pole pair, but a genuinely different mineral
@@ -2057,6 +2099,8 @@
   --a-glass-rim-w: 2px; /* a BAND, not a line — the reason this lever exists */
   --a-glass-tip-bg: rgba(245, 248, 252, 0.86);
   --a-glass-tip-radius: 12px;
+  /* The menu's own --control-bg at the tip's density — see Nocturne's note. */
+  --a-glass-menu-bg: rgba(215, 223, 233, 0.86);
 }
 
 /* Futura Dark — TYPOGRAPHY-LED, and the proof that --a-ui-font is a real lever.
@@ -3094,6 +3138,30 @@ textarea {
      --dd-menu-z; its own fallback is a literal 1000 that would drift from the
      token). Set here on .app so every dropdown in the app inherits it. */
   --dd-menu-z: var(--a-z-popover);
+  /* AN OPEN DROPDOWN MENU IS GLASS, on the same terms as everything else in the
+     GLASS block: it is a floating surface, it carries an elevation shadow, and
+     it floats over arbitrary canvas art rather than over flat chrome. The user
+     asked for exactly this and named the pairing (2026-08-02: "just like the
+     command palette these drop downs can have the same kind of blur under it…
+     for the themes that do do blur on the command palette they would do it for
+     the drop downs too") — so the blur is READ VERBATIM from --a-glass-blur,
+     the same token .palette reads, and there is no second lever a theme could
+     set inconsistently. A theme that blurs its palette now blurs its menus, and
+     one that does not, does not; nothing else was needed.
+     THE TINT NEEDS ITS OWN TOKEN, and the reason is the same arithmetic that
+     caught the tooltip rule. A menu paints --control-bg (#242424 in Graphite),
+     which is NOT --a-panel-bg (#1a1a1a) — they differ in every theme, checked.
+     So chaining --dd-menu-bg straight to --a-glass-bg-panel would have RECOLOURED
+     every dropdown in every NON-glass theme the moment this line landed, which
+     is precisely the no-op contract the GLASS block promises. --a-glass-menu-bg
+     is `unset` at :root and appears as the FIRST term of a var() fallback chain,
+     so an untouched theme falls through to --control-bg and this contributes
+     nothing; a glass theme opts in by naming a translucent tint, exactly as
+     --a-glass-tip-bg works for tooltips. The BLUR needs no such care: it is
+     already `none` at :root, so reading it verbatim is inert until a theme
+     pulls it. */
+  --dd-menu-bg: var(--a-glass-menu-bg, var(--control-bg));
+  --dd-menu-backdrop: var(--a-glass-blur);
   /* Thin resizable-pane handles (SplitPane reads these). */
   --sp-handle-color: var(--a-split-handle);
   --sp-handle-hover: var(--a-split-handle-hover);
@@ -7240,10 +7308,26 @@ audio.ae-preview-media {
 }
 
 /* Text/number inputs fill their grid cell (the value column grows; the
-   var-name fills the identifier column) — one growing width, square corners. */
+   var-name fills the identifier column) — one growing width, square corners.
+
+   :not(.sd-search) EXCLUDES A DROPDOWN'S TYPE-TO-FILTER BOX, and it is
+   load-bearing rather than tidy. This selector is (0,2,1) — two classes plus an
+   attribute — while SearchableDropdown's own scoped `.sd-search.svelte-<hash>`
+   is (0,2,0), so WITHOUT the exclusion this rule WINS and repaints the search
+   field with the value-cell chrome: an opaque --control-bg, a full 1px --border
+   on all four sides, and --a-radius-control. That is precisely the "box in a
+   box" the user reported ("the search boxes I see in dropdowns… it looks kind of
+   silly"), and it survived the component being restyled to remove its own box —
+   MEASURED with CSS.getMatchedStylesForNode, which is the only reason it was
+   found at all, because the component's source looks correct in isolation.
+   The opaque background additionally punched a solid band through a glass
+   theme's blurred menu.
+   A search box is not a value cell: it lives in a FLOATING MENU, not in the
+   panel's grid, so none of the three things this rule supplies (grid-cell width,
+   the control height, the field chrome) is meant for it. */
 .inspector input[type="number"],
-.inspector input[type="text"],
-.varspanel input[type="text"] {
+.inspector input[type="text"]:not(.sd-search),
+.varspanel input[type="text"]:not(.sd-search) {
   width: 100%;
   min-width: 0; /* grid children default to min-width:auto — let them shrink */
   height: var(--a-control-h);
