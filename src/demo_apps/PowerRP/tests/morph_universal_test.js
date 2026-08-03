@@ -47,6 +47,7 @@ import {
   universalMorphToken,
 } from "../core/morph_property.js";
 import { modesForKey, TYPE_KEY } from "../core/interp_modes.js";
+import { evaluateState } from "../core/expressions.js";
 
 const registry = createRegistry();
 registerPlugins(registry);
@@ -364,6 +365,96 @@ test("the universal property offers exactly the four ruled options", () => {
 test("universalMorphToken mints nothing for an inert mode", () => {
   assert.equal(universalMorphToken("snap", { type: "a" }, { type: "b" }, 0.5), "snap");
   assert.ok(isUniversalMorphToken(universalMorphToken("auto", { type: "a" }, { type: "b" }, 0.5)));
+});
+
+// ── EQUATION-BOUND ENDPOINTS (workstream AS) ─────────────────────────────────
+//
+// USER RULING, 2026-08-02, verbatim: "Equations shouldn't cause errors like
+// these." A rect whose `h` was bound to `self.w` threw
+//   morph "rect morph target": space must be {w, h} numbers, got {"w":425.57…,"h":"self.w"}
+// because the ~morph token captured RAW stored endpoint bags in the fold, and
+// the evaluator's slot walk declined to type anything under the token's paths.
+// The endpoints are now cooked by core/expressions.mutCookMorphEndpoints.
+//
+// The ruling is GENERAL, so these pin EVERY transform property, not just the `h`
+// that happened to throw.
+
+/** The mid-transition evaluated state for a one-item doc morphing rect→circle. */
+const equationMorphState = (item, extra = {}, vars = {}, alpha = 0.5) =>
+  evaluateState(
+    blendApplied(
+      { vars, items: { a1: item, ...extra } },
+      { items: { a1: { type: "circle" } } },
+      alpha,
+    ),
+    registry,
+  );
+
+test("AS: equation-bound endpoints cook to NUMBERS — every transform property", () => {
+  const { state, errors } = equationMorphState(
+    { type: "rect", x: "= gap * 2", y: "self.x", w: 100, h: "self.w", rotation: "= gap / 7", scale: "= other.w / 55" },
+    { b2: { type: "rect", name: "Other", x: 0, y: 0, w: 55, h: 20 } },
+    { gap: 7 },
+  );
+  assert.deepEqual([...errors.entries()], [], "no equation on a morph endpoint may error");
+  const token = state.items.a1[MORPH_KEY];
+  for (const side of ["from", "to"])
+    for (const key of ["x", "y", "w", "h", "rotation", "scale"])
+      assert.equal(typeof token[side][key], "number",
+        `token.${side}.${key} must be a NUMBER, got ${JSON.stringify(token[side][key])}`);
+  // The VALUES, not merely the types — a cooked-to-zero endpoint would satisfy a
+  // typeof check while destroying the author's shape.
+  assert.equal(token.from.x, 14, "= gap * 2");
+  assert.equal(token.from.y, 14, "self.x — resolved against the ENDPOINT's own x");
+  assert.equal(token.from.h, 100, "self.w — the user's exact binding");
+  assert.equal(token.from.rotation, 1, "= gap / 7");
+  assert.equal(token.from.scale, 1, "= other.w / 55 — a CROSS-ITEM ref still resolves");
+});
+
+test("AS: an equation-bound morph RENDERS at every alpha, with no throw", () => {
+  // The user's own repro shape, at the alphas the workstream names.
+  for (const alpha of [0.25, 0.5, 0.75]) {
+    clearMorphCache();
+    const { state } = equationMorphState(
+      { type: "rect", x: 0, y: 0, w: 425.5768424048018, h: "self.w" }, {}, {}, alpha,
+    );
+    const node = deriveRenderTree(state, registry).find((n) => n.itemId === "a1");
+    assert.ok(node.morph, `alpha ${alpha}: the morph mark must survive evaluation`);
+    assert.equal(typeof node.morph.fromState.h, "number", `alpha ${alpha}: endpoint h must be cooked`);
+    // THE ORIGINAL FAILURE, directly: this threw the "space must be {w, h}
+    // numbers" error the user photographed.
+    const ops = morphIR(node);
+    assert.ok(ops.length > 0, `alpha ${alpha}: an equation-bound morph must draw something`);
+  }
+});
+
+test("AS: a NUMERIC morph is untouched — endpoint byte-identity holds", () => {
+  // The cost + memo guard. Cooking must not churn endpoints that need no cooking,
+  // or core/morph.js's content-keyed alignment memo would see a new pair every
+  // frame — which is the jiggle the endpoint law exists to prevent.
+  const folded = blendApplied(
+    { vars: {}, items: { a1: { type: "rect", x: 0, y: 0, w: 100, h: 50 } } },
+    { items: { a1: { type: "circle" } } },
+    0.5,
+  );
+  const raw = folded.items.a1[MORPH_KEY];
+  const cooked = evaluateState(folded, registry).state.items.a1[MORPH_KEY];
+  for (const side of ["from", "to"])
+    assert.deepEqual(cooked[side], raw[side],
+      `a numeric ${side} endpoint must survive evaluation unchanged`);
+});
+
+test("AS: a BROKEN endpoint equation reports and falls back — it never ships a string", () => {
+  // Fail-loud, per the house rule: the morph still draws a defined shape (the
+  // plugin's declared default), and the reason is named under a path that says
+  // WHICH SIDE of the morph failed.
+  const { state, errors } = equationMorphState(
+    { type: "rect", x: 0, y: 0, w: 100, h: "= nonexistent.w" },
+  );
+  const token = state.items.a1[MORPH_KEY];
+  assert.equal(typeof token.from.h, "number", "a failed endpoint equation must fall back to a NUMBER");
+  assert.ok([...errors.keys()].some((k) => k === `items.a1.${MORPH_KEY}.from.h`),
+    `the failure must be reported against the endpoint, got ${JSON.stringify([...errors.keys()])}`);
 });
 
 console.log(`\n${passed} passed${failed ? `, ${failed} FAILED` : ""}\n`);

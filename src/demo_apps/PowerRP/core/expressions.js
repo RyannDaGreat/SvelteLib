@@ -115,6 +115,10 @@ import { textDissolve, textType, textScramble } from "./text_transitions.js";
 // crossing is at CALL time; see scriptReservedNames for the one place that had to
 // be made lazy to stay out of the temporal dead zone.
 import { compileProjectScript } from "./project_script.js";
+// THE MORPH ENDPOINT PASS (mutCookMorphEndpoints, bottom of this file). A pure
+// value predicate + a key name, no cycle: morph_property.js imports nothing of
+// ours.
+import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
 // The presentation clock behind `= time` (see readClock in computeEvaluatedState).
 // core/ → render_gpu/ is established (core/registry.js → effects.js, core/clip.js →
 // decorate.js), and particle_clock.js is DOM-free bare-node code by its own contract
@@ -2858,8 +2862,19 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     // are declared by the material its paint names, not by the plugin
     // (§Material param knobs) — this is the ONE production caller of either that
     // has the folded item in hand, which is why the argument is optional there.
+    // THE MORPH TOKEN IS NOT A SLOT SOURCE (workstream AS). `leaves()` descends
+    // into everything, so mid-transition it reaches INSIDE the `~morphUniversal`
+    // token and finds the two endpoint bags' own leaves at paths like
+    // `morph.from.h`. Those are real equations, but they are equations of a
+    // DIFFERENT STATE — the transition's endpoints, not this mid-tween item — and
+    // this walk would type them against `plugin.defaults.morph.from.h`, which
+    // does not exist. A bare legacy equation ("self.w") therefore fell through
+    // silently, while an "="-marked one was collected and then FAILED with "has
+    // no declared value kind", clobbering the endpoint with a fallback 0. Both
+    // are wrong and the second is worse: it destroys the value on its way past.
+    // Endpoints are cooked in their own scope by mutCookMorphEndpoints, below.
     for (const [path, value] of [...leaves(item), ...declaredListLeaves(item)])
-      if (path[0] !== "vars" && isEquationValue(plugin, path, value, item)) {
+      if (path[0] !== "vars" && path[0] !== MORPH_KEY && isEquationValue(plugin, path, value, item)) {
         const key = ["items", id, ...path].join(".");
         slots.set(key, { key, path: ["items", id, ...path], src: value, kind: resultKindForSlot(plugin, path, value, item) });
       }
@@ -3336,7 +3351,170 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     reportOnce(message, `PowerRP expression warning: ${message}`);
   }
 
+  // THE MORPH ENDPOINT PASS — the last thing this function does, and the one
+  // place a morph's endpoint equations are cooked. See mutCookMorphEndpoints.
+  mutCookMorphEndpoints(out, state, registry, script, contentSizes, errors);
+
   return { state: out, errors, deps, clock: clockRead };
+}
+
+/**
+ * Command (mutates `out`'s morph tokens in place; appends to `errors`). THE
+ * MORPH ENDPOINT EVALUATION SEAM — cooks the equation leaves inside every
+ * `~morphUniversal` token so the morph pipeline reads NUMBERS, never raw
+ * `self.w` source text.
+ *
+ * ── THE DEFECT THIS EXISTS FOR (workstream AS) ───────────────────────────────
+ * USER RULING, 2026-08-02, verbatim: "Equations shouldn't cause errors like
+ * these." A rect with `h` bound to `self.w`, morphed to anything, threw
+ * `morph "rect morph target": space must be {w, h} numbers, got
+ * {"w":425.57…,"h":"self.w"}` and the author saw an error box where a shape
+ * should be. Unbinding the equation "fixed" it, which is the whole complaint:
+ * an equation-bound property is a FIRST-CLASS morph endpoint, not a lesser one.
+ *
+ * ── WHY THE LEAVES ESCAPED, WHICH IS THE INSTRUCTIVE PART ────────────────────
+ * The token is minted inside the FOLD (core/deltas.js mutMorphProperty), which
+ * runs BEFORE this pass and carries the two endpoint bags BY REFERENCE — raw
+ * stored values, equations and all. This pass then walks the folded tree looking
+ * for equation slots, and `leaves()` genuinely DOES descend into the token and
+ * reach `morph.from.h`. It is the GATE that declines it: `isEquationValue` asks
+ * `isNumericSlot`, which asks for a plugin default AT THAT PATH — and
+ * `plugin.defaults.morph.from.h` does not exist, because `morph` is a mode
+ * string in the schema, not a bag of items. So a BARE legacy equation
+ * ("self.w", no "=" marker) is invisible: no default, no "=", no slot.
+ *
+ * THE ASYMMETRY IN THE USER'S TRACE follows directly, and is worth stating
+ * because it looks like a partial evaluation and is not: `w` arrived as
+ * 425.57… and `h` as "self.w" NOT because the evaluator descended halfway, but
+ * because ONLY `h` was ever an equation. `w` was a stored number on both sides
+ * all along. Nothing inside the token is ever cooked by the main pass — the
+ * numeric-looking half was never raw to begin with.
+ *
+ * ── WHY THIS SEAM AND NOT ANOTHER ────────────────────────────────────────────
+ * Three candidates, and the other two break a stated law:
+ *
+ *   AT THE MINT (core/deltas.js) — impossible without inverting the pipeline.
+ *   The fold is DOM-free, registry-free and runs at arbitrary [[slide, alpha]];
+ *   evaluation needs the registry and the whole document. Cooking there would
+ *   also bake evaluated numbers into every cached fold and undo entry, which is
+ *   exactly what the token's "SCALARS, STRINGS and STATE REFS only" rule
+ *   forbids.
+ *
+ *   AT THE READ SITE (core/derive.js / render_gpu/ports.js) — wrong layer and
+ *   wrong cost. derive runs for hit tests and bounds on every mouse-move, so
+ *   re-entering the evaluator there would pay full evaluation per pointer event;
+ *   and derive's contract is already "callers pass an EVALUATED state", so a raw
+ *   equation reaching it is a violated precondition, not a case for it to
+ *   handle. It would also need `derive → expressions`, closing an import cycle
+ *   on a per-frame call path.
+ *
+ *   HERE — the one function that owns cooking, runs ONCE per frame behind the
+ *   memo, and already holds the registry, the script and the content sizes. The
+ *   core invariant is untouched: this is still a pure function of the folded
+ *   state, so RenderTree = pure(document, [[slide, alpha]]) still holds. The
+ *   memoization-on-script law is untouched too — this runs INSIDE
+ *   computeEvaluatedState, so its output is cached by the same key.
+ *
+ * ── HOW AN ENDPOINT IS EVALUATED: SUBSTITUTED INTO THE WHOLE DOCUMENT ────────
+ * Each endpoint bag is evaluated as `{...state, items: {...items, [id]: endpoint}}`
+ * — the real document with this ONE item replaced by that endpoint. That is what
+ * makes the scope correct in all three directions at once: `self.w` resolves
+ * against the ENDPOINT'S OWN w (not the mid-tween w, which is the value the
+ * morph must not see), document `vars` resolve, and CROSS-ITEM refs
+ * (`= other.w + gap`) resolve against the real siblings. Evaluating the bag as a
+ * lone one-item document was the simpler option and is WRONG: it silently breaks
+ * every cross-item reference, turning a working equation into a fallback.
+ *
+ * RECURSION IS BOUNDED AT ONE LEVEL BY CONSTRUCTION: the mint runs only at
+ * strictly-interior alpha and builds its endpoints from `outgoing` and
+ * `applied(outgoing, delta)`, neither of which can carry a token (alpha 1 is the
+ * document's own stored values). So a substituted endpoint has no `morph` token
+ * and its own pass mints none — verified, not assumed.
+ *
+ * COST IS PAID ONLY BY DOCUMENTS THAT MORPH. No token, no work and no allocation
+ * — the overwhelmingly common case returns immediately. An endpoint with no
+ * equation leaves is left EXACTLY as it was (same object identity), so a numeric
+ * morph stays byte-identical and the content-keyed alignment memo in
+ * core/morph.js still sees one stable pair per transition.
+ *
+ * Args:
+ *   out (object): the evaluated state being built (MUTATED)
+ *   state (object): the raw folded state (the substitution basis)
+ *   registry, script, contentSizes: passed through to the endpoint evaluations
+ *   errors (Map): slot-key → message; endpoint failures are added here (MUTATED)
+ *
+ * @example // no token: nothing walks, nothing allocates
+ * @example (() => { const o = {items: {a1: {type: "rect", w: 10}}}; mutCookMorphEndpoints(o, o, null, "", null, new Map()); return o.items.a1.morph; })() // undefined
+ */
+/**
+ * Query (reads the plugin registry). Does this endpoint bag hold ANY equation
+ * leaf — i.e. is there anything for mutCookMorphEndpoints to cook?
+ *
+ * The gate that keeps a numeric morph free and byte-identical. It asks the SAME
+ * predicate the main slot walk asks (isEquationValue over leaves + declared list
+ * elements), so an endpoint is cooked exactly when the ordinary item it is a
+ * snapshot of would have been.
+ *
+ * A typeless or unregistered endpoint is NOT an equation source: it is a bag no
+ * plugin can type, and the morph resolver will refuse it downstream on its own
+ * terms rather than having this pass guess.
+ *
+ * @param {object} endpoint - one endpoint state bag from a morph token
+ * @param {object} registry - the plugin registry
+ * @returns {boolean}
+ *
+ * @example // a purely numeric endpoint needs no evaluation at all:
+ * @example // hasEquationLeaf({type: "rect", w: 100, h: 50}, registry) // false
+ * @example // hasEquationLeaf({type: "rect", w: 100, h: "self.w"}, registry) // true
+ */
+function hasEquationLeaf(endpoint, registry) {
+  // `registry.get` is deliberately LOUD on an unknown type, and an endpoint bag
+  // is not the place to raise that: derive's morph resolver reports an
+  // unmorphable pair on its own terms. `all().find` is the codebase's
+  // non-throwing lookup idiom (core/document.js, core/plugin_assets.js).
+  const plugin = typeof endpoint.type === "string"
+    ? registry.all().find((p) => p.type === endpoint.type)
+    : null;
+  if (!plugin) return false;
+  for (const [path, value] of [...leaves(endpoint), ...declaredListLeaves(endpoint)])
+    if (path[0] !== MORPH_KEY && isEquationValue(plugin, path, value, endpoint)) return true;
+  return false;
+}
+
+function mutCookMorphEndpoints(out, state, registry, script, contentSizes, errors) {
+  for (const [id, item] of Object.entries(out.items ?? {})) {
+    const token = item?.[MORPH_KEY];
+    if (!isUniversalMorphToken(token)) continue;
+    const cooked = {};
+    for (const side of ["from", "to"]) {
+      const endpoint = token[side];
+      // AN ENDPOINT WITH NO EQUATION LEAF IS LEFT ALONE, by identity. This is the
+      // byte-identity guard AND the cost guard: computeEvaluatedState always
+      // returns a fresh copied() tree, so without this test an all-numeric morph
+      // would get two brand-new endpoint objects every pass — churning the
+      // content-keyed alignment memo in core/morph.js that the endpoint law
+      // depends on, and paying a full document evaluation twice per frame for
+      // nothing.
+      if (!isTree(endpoint) || !hasEquationLeaf(endpoint, registry)) continue;
+      // The endpoint IN PLACE OF this item, in the real document — see the
+      // scoping argument above.
+      const basis = { ...state, items: { ...state.items, [id]: endpoint } };
+      const pass = computeEvaluatedState(basis, registry, script, contentSizes);
+      // An endpoint equation that FAILED is reported under a path naming the
+      // side it failed on, so the Inspector's error affordance points at the
+      // morph rather than at a slot the author cannot find. The value still
+      // lands (the evaluator already substituted the declared fallback), so the
+      // morph draws a defined shape instead of throwing.
+      for (const [key, message] of pass.errors)
+        if (key.startsWith(`items.${id}.`))
+          errors.set(`items.${id}.${MORPH_KEY}.${side}.${key.slice(`items.${id}.`.length)}`, message);
+      cooked[side] = pass.state.items[id];
+    }
+    // Rewrite only when a side actually needed cooking — an all-numeric endpoint
+    // keeps its identity, so the alignment memo's content key is unmoved.
+    if ("from" in cooked || "to" in cooked)
+      out.items[id] = { ...item, [MORPH_KEY]: { ...token, ...cooked } };
+  }
 }
 
 // ── Migration + variable rename ──────────────────────────────────────────────
