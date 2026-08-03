@@ -191,14 +191,21 @@ function mutBlendApply(state, delta, alpha) {
         state[key] = interpolate(state[key], val, 1); // === copied(val) semantics
       } else {
         // The mode STEPS at the transition's start: the delta's mode (if it sets
-        // one) governs from the first frame, else the standing one, else "tween"
-        // — whose blend IS `interpolate`, so an absent companion folds to exactly
-        // the bytes this line produced before modes existed.
-        // A SCALAR leaf: the mode is whatever was stored, else "tween" — the
-        // paint default above cannot apply here, because a paint is never a
-        // scalar. (The tree-claiming half is hoisted above the branch dispatch;
-        // see the note there.)
-        const mode = modeForBlend(outgoing[modeKey], delta[modeKey]);
+        // one) governs from the first frame, else the standing one, else the
+        // DEFAULT-MODE SEAM's answer for this leaf.
+        //
+        // THE DEFAULT IS CONSULTED HERE TOO, and it did not used to be — this arm
+        // read `modeForBlend(stored, delta)` alone, which falls back to "tween"
+        // unconditionally. That was invisible while the only default was `blend`
+        // (a paint is never a scalar, so this arm could not reach it — as the note
+        // this replaces correctly said), and it became wrong the moment a SCALAR
+        // leaf had a default: `type` defaults to `morph`, and without this line a
+        // rect→circle keyframe silently took the tween law and snapped, with the
+        // author's chosen interp never consulted. One expression, both arms, one
+        // rule — a stored mode still wins outright in either.
+        const mode = storedMode !== undefined
+          ? modeForBlend(outgoing[modeKey], delta[modeKey])
+          : defaultModeFor(state[key], val, key);
         state[key] = blendUnderMode(state[key], val, alpha, { key, mode });
       }
     } else {

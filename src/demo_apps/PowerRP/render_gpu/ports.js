@@ -18,7 +18,9 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
+import { morphPaths, payloadToPathD, assertMorphPaths } from "../core/morph.js";
+import { interpolate } from "../core/interpolators.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { reportOnce, warnOnce } from "../core/report.js";
@@ -467,8 +469,17 @@ function emitNodeBody(node, byId, display) {
   // has to travel with the absolute world instead.
   const mirror = mirrorPush(node);
   const emitWorld = mirror ? signedCompose(node.world, mirror) : node.world;
+  // THE MORPH SEAM. A node core/derive.js marked `.morph` is mid-retype between
+  // two vector widgets, and its ink is the BLEND of their outlines rather than
+  // either plugin's own emit() — see morphIR. This is deliberately a REPLACEMENT
+  // and not a wrap: at t = 0.4 the widget is neither a rect nor a circle, so
+  // drawing either endpoint's own ops (or both) would show a shape the transition
+  // does not pass through. Everything downstream is untouched, because a morph
+  // emits ordinary `path` ops: the effects seam, the three stroke seams and the
+  // fade seam all apply exactly as they do to any other widget, and every backend
+  // — Skia, PDF, SVG and the bare-node CLI — already paints `path`.
   const cmds = resolveMaterialFillPaints(
-    node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, emitWorld, renderCtx),
+    node.morph ? morphIR(node) : node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, emitWorld, renderCtx),
     node, byId,
   );
   if (cmds.length === 0) return [];
@@ -516,6 +527,132 @@ function emitNodeBody(node, byId, display) {
   return mirror
     ? [{ ...pushTransform(node.world), owner }, mirror, ...body, popTransform(), popTransform()]
     : [{ ...pushTransform(node.world), owner }, ...body, popTransform()];
+}
+
+/**
+ * Pure function. THE MORPH EMIT — a mid-morph node's ops: the two endpoint
+ * outlines blended by core/morph.js and drawn as ONE path op per subpath, in
+ * place of either endpoint plugin's own emit().
+ *
+ * ── WHY HERE AND NOT IN A PLUGIN ─────────────────────────────────────────────
+ * A morph is inherently about TWO widget types, and no plugin may import another
+ * (the registry fence). ports.js is the one place a node's ops are decided and it
+ * already owns exactly this kind of cross-node composition — the crop box's
+ * target subtree and the group's folded members are both built here for the same
+ * reason. core/derive.js resolved WHICH two plugins (it holds the registry); this
+ * function asks them for their outlines and blends.
+ *
+ * ── THE UNIT-SPACE MAPPING, WHICH IS THE WHOLE TRAP ──────────────────────────
+ * `morphPaths` returns UNIT-space output BY DESIGN (core/morph.js's `space`
+ * note). The two widgets have different boxes and those boxes ALREADY tween as
+ * ordinary property state through core/interpolators.js — the node this function
+ * is handed is already at its tweened w/h. So the morphed outline is scaled by
+ * the NODE'S CURRENT BOX and nothing else:
+ *
+ *     screen-local = unit × {w, h} of the node
+ *
+ * Interpolating the two payloads in their own box-local coordinates instead
+ * would count the box change TWICE — the geometry would carry the size change
+ * and the box would carry it again, so a 100→200 wide morph would land at 400.
+ * That is the easiest mistake available here, so it is pinned by a test whose
+ * whole job is to catch it (tests/morph_mode_test.js: two IDENTICAL squares in
+ * DIFFERENT boxes must render exactly the tweened box's square).
+ *
+ * ── PAINT ───────────────────────────────────────────────────────────────────
+ * The engine carries per-subpath paint UNTOUCHED (it never blends colour — see
+ * its header), so the pairing happens here, through core/interpolators.js
+ * `interpolate`, which already lerps hex colours including the alpha channel and
+ * already snaps unlike-shaped values discretely. Hand-rolling a colour lerp is
+ * how the two would diverge. A MATERIAL or GRADIENT pair has no numeric midpoint
+ * and `interpolate` snaps it to the target — the honest answer at this seam,
+ * since the crossfade machinery composites two whole DRAWS of one op and a
+ * morphing path is a different op on every frame.
+ *
+ * @param {object} node - a derive render node carrying `.morph`
+ * @returns {object[]} ops in local space (an empty list when either side draws nothing)
+ */
+export function morphIR(node) {
+  const { fromPlugin, toPlugin, fromState, toState, t } = node.morph;
+  const fromPayload = fromPlugin.morphPaths(fromState);
+  const toPayload = toPlugin.morphPaths(toState);
+  // LOUD, not lenient: a provider that hands over a negative space or a non-cubic
+  // segment is a widget bug, and morphing on regardless would draw a shape
+  // neither endpoint has. The emit-time containment boundary above turns this
+  // into a named red box on the one item instead of a dead frame.
+  assertMorphPaths(fromPayload, `${node.type} morph source`);
+  assertMorphPaths(toPayload, `${node.type} morph target`);
+  const blended = morphPaths(fromPayload, toPayload, t);
+  const w = node.state.w ?? 0, h = node.state.h ?? 0;
+  // At the endpoints morphPaths short-circuits and returns an ORIGINAL payload,
+  // which is in its own box space rather than unit space — so the scale is that
+  // payload's own space, not the node box. Reading it off the result is what
+  // makes this correct at every alpha with no branch on t.
+  const sx = blended.space.w === 1 && blended.space.h === 1 ? w : w / (blended.space.w || 1);
+  const sy = blended.space.w === 1 && blended.space.h === 1 ? h : h / (blended.space.h || 1);
+  return blended.subpaths.flatMap((sp) => {
+    const d = payloadToPathD({ ...blended, subpaths: [scaledSubpath(sp, sx, sy)] });
+    if (!d) return [];
+    const paint = morphedPaint(fromPayload, toPayload, sp, t);
+    return [path({
+      d,
+      fill: paint.fill,
+      stroke: (paint.strokeWidth ?? 0) > 0 ? paint.stroke : null,
+      strokeWidth: paint.strokeWidth ?? 0,
+      fillRule: blended.fillRule,
+      opacity: paint.opacity ?? 1,
+    })];
+  });
+}
+
+/**
+ * Pure function. One subpath's coordinates scaled out of unit space into the
+ * node's box. A plain per-axis multiply: the engine's frame and the op's frame
+ * are the same y-DOWN box-local frame, differing only in extent.
+ *
+ * @example scaledSubpath({start: [0, 0], curves: [[0, 0, 1, 1, 1, 1]], closed: true, winding: 1}, 10, 20).curves[0]
+ * [ 0, 0, 10, 20, 10, 20 ]
+ * @example scaledSubpath({start: [0.5, 0.5], curves: [], closed: false, winding: 1}, 100, 50).start
+ * [ 50, 25 ]
+ */
+export function scaledSubpath(sp, sx, sy) {
+  return {
+    ...sp,
+    start: [sp.start[0] * sx, sp.start[1] * sy],
+    curves: sp.curves.map((c) => [c[0] * sx, c[1] * sy, c[2] * sx, c[3] * sy, c[4] * sx, c[5] * sy]),
+  };
+}
+
+/**
+ * Pure function. The paint one morphed subpath draws with — the two endpoint
+ * payloads' paints blended through core/interpolators.js.
+ *
+ * WHY THE ENDPOINT PAYLOADS AND NOT THE BLENDED SUBPATH'S OWN `paint`: the
+ * engine's alignment REORDERS and PADS subpaths, so a blended subpath carries
+ * whichever operand's paint survived that process — correct for identifying the
+ * contour, useless for blending. Reading the two payloads' FIRST subpath paint
+ * instead gives a stable pair for the whole widget, which is the right grain
+ * here: both morphable widgets in a shape↔shape morph carry one paint, and a
+ * multi-paint SVG's per-contour colours ride the engine's carry (the blended
+ * subpath's own `paint`) as a fallback below.
+ *
+ * @example morphedPaint({subpaths: [{paint: {fill: "#000000", strokeWidth: 0, opacity: 1}}]}, {subpaths: [{paint: {fill: "#ffffff", strokeWidth: 0, opacity: 1}}]}, {}, 0.5).fill
+ * '#808080'
+ * @example // no paint on either side: the subpath's own carried paint, else nothing
+ * @example morphedPaint({subpaths: []}, {subpaths: []}, {paint: {fill: "#f00"}}, 0.5).fill
+ * '#f00'
+ */
+export function morphedPaint(fromPayload, toPayload, blendedSubpath, t) {
+  const a = fromPayload.subpaths[0]?.paint;
+  const b = toPayload.subpaths[0]?.paint;
+  if (!a || !b) return blendedSubpath.paint ?? {};
+  // A multi-contour source (an SVG icon) has genuinely different paint per
+  // contour, and the engine already carried the aligned counterpart's through.
+  // Blending the widget-level pair would flatten those to one colour, so a
+  // subpath that carries its own paint keeps it and only the widget-level pair
+  // is interpolated.
+  if (blendedSubpath.paint && fromPayload.subpaths.length + toPayload.subpaths.length > 2)
+    return blendedSubpath.paint;
+  return interpolate(a, b, t);
 }
 
 /**

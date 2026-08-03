@@ -44,6 +44,84 @@ import { reportOnce } from "./report.js";
 import { boxCenter, unionRect, unmirroredLocal, unsignedState } from "./geometry.js";
 import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 import { allPaintModifierPoints, paintCapableKeys } from "./paint_handles.js";
+import { isMorphToken, morphPairPolicy } from "./interp_modes.js";
+
+/**
+ * Query (reads the registry; reports once on a refused pair). THE MORPH
+ * RESOLUTION — a `type` leaf holding a mid-morph token (core/interp_modes.js
+ * isMorphToken) → the ONE type this node derives as, plus the morph payload pair
+ * the render walk needs.
+ *
+ * WHY THIS LIVES IN derive AND NOT IN ports. Resolving a morph needs BOTH
+ * plugins, and derive is the one stage that holds the registry — ports.js walks
+ * nodes that already carry a single resolved `.plugin`, and handing it a registry
+ * so it could look up a second one would give the render walk a dependency the
+ * whole no-plugin-imports-another fence exists to deny. So the pair is resolved
+ * ONCE here, and ports sees a node with an ordinary plugin plus a `.morph` mark —
+ * the same shape as `.mirror`, `.cropTarget` and `.subtreeMemberIds`, every one
+ * of which is a cross-node fact derive resolved so the walker did not have to.
+ *
+ * THE FALLBACK IS THE TARGET TYPE, and it is the discrete switch the document
+ * would have had before this feature: a pair that cannot morph (one side is a
+ * video, or an icon has not fetched yet) derives as the INCOMING type at every
+ * alpha > 0, byte-identically to `step`. That is not a swallow — the pair's
+ * refusal REASON is reported once, naming the item and both types, because a
+ * morph the author asked for and did not get is exactly the silent-wrong-picture
+ * this codebase forbids.
+ *
+ * Args:
+ *   type (*): the folded `type` leaf — a plain string, or a morph token
+ *   state (object): the item's folded state
+ *   registry (object): the plugin registry
+ *   itemId (string): for the report line
+ *
+ * Returns:
+ *   {type: string, morph: object|null} — `morph` is
+ *   `{fromPlugin, toPlugin, fromState, toState, t}` when the pair really morphs
+ *
+ * @example resolveMorphType("rect", {}, {get: (t) => ({type: t})}, "a1") // {type: "rect", morph: null}
+ * @example // an unmorphable pair falls back to the INCOMING type, exactly like `step`:
+ * @example resolveMorphType({type: "~morph", fromType: "video", toType: "rect", t: 0.5}, {}, {get: (t) => ({type: t})}, "a1").type // "rect"
+ */
+/**
+ * Pure function. The state bag with `type` guaranteed to be the RESOLVED type
+ * string rather than a morph token.
+ *
+ * RETURNS THE VERY SAME OBJECT when nothing needs changing, and that identity is
+ * load-bearing rather than a micro-optimization: derive's node `state` feeds the
+ * evaluation memo and the fold cache, so a fresh object per frame for every
+ * non-morphing item in the document would defeat both. Same argument
+ * `unsignedState` makes for an unflipped item.
+ *
+ * @example morphedStateType({type: "rect", w: 10}, "rect").type // "rect"
+ * @example // the identity that keeps the memo alive:
+ * @example (() => { const s = {type: "rect"}; return morphedStateType(s, "rect") === s; })() // true
+ * @example morphedStateType({type: {type: "~morph", fromType: "rect", toType: "circle", t: 0.5}}, "circle").type // "circle"
+ */
+export function morphedStateType(state, type) {
+  return state.type === type ? state : { ...state, type };
+}
+
+export function resolveMorphType(type, state, registry, itemId) {
+  if (!isMorphToken(type)) return { type, morph: null };
+  const { fromType, toType, t } = type;
+  const fromPlugin = registry.get(fromType), toPlugin = registry.get(toType);
+  // BOTH SIDES READ THE SAME STATE BAG, and that is correct rather than a
+  // shortcut: a morph is ONE item mid-retype, so there is exactly one bag. Each
+  // plugin reads the keys it declares out of it — the shared-key carry that
+  // core/retype.js's rule 2 already governs — and a key the outgoing type owned
+  // and the incoming one does not is simply not read by the incoming plugin.
+  const policy = morphPairPolicy(fromPlugin, toPlugin, state, state);
+  if (!policy.ok) {
+    reportOnce(
+      `derive:morph:${itemId}:${fromType}>${toType}`,
+      `PowerRP: item "${itemId}" is keyframed ${fromType} → ${toType} with interp "morph", but ${policy.reason}. ` +
+      `It switches at the start of the transition instead (the same as "step"). Pick a different interp, or use two vector widgets.`,
+    );
+    return { type: toType, morph: null };
+  }
+  return { type: toType, morph: { fromPlugin, toPlugin, fromState: state, toState: state, t } };
+}
 
 /**
  * Pure function. An item's LOCAL→WORLD similarity transform, with rotation
@@ -235,7 +313,12 @@ export function deriveRenderTree(state, registry, project = "") {
   // Typeless items are NOT YET CREATED on this fold (their creation slide is
   // later in the deck — imaginary-slide semantics; see expressions.js) and
   // derive exactly like inactive ones: skipped, never an error.
-  const nodes = Object.entries(items).filter(([, s]) => s.active !== false && typeof s.type === "string").map(([id, itemState]) => {
+  // A MID-MORPH `type` IS NOT A STRING — it is the token core/interp_modes.js
+  // mints (isMorphToken), so the typeless-item test above must admit it or a
+  // morphing widget would VANISH for the whole interior of its own transition and
+  // reappear at the end. The token is admitted here and resolved to a real type
+  // (with its payload pair) inside the map, where the registry is in hand.
+  const nodes = Object.entries(items).filter(([, s]) => s.active !== false && (typeof s.type === "string" || isMorphToken(s.type))).map(([id, itemState]) => {
     // THE FLIP SEAM (module docstring): a NEGATIVE w/h is a reflection. Split it
     // into a positive box + mirror flags here, so no consumer downstream can meet
     // a negative extent. `unsignedState` is THE map — shared verbatim with the
@@ -246,7 +329,19 @@ export function deriveRenderTree(state, registry, project = "") {
     // `mirror` key at all, exactly like the other optional node marks).
     const state = unsignedState(itemState);
     const mirror = state === itemState ? null : { x: (itemState.w ?? 0) < 0, y: (itemState.h ?? 0) < 0 };
-    const plugin = registry.get(itemState.type);
+    // THE MORPH SEAM. A plain `type` returns itself with `morph: null` and
+    // allocates nothing, so every document that never morphs derives
+    // byte-identically. A token resolves to the INCOMING type — so `plugin`,
+    // `state.type`, hit tests, anchors and the Inspector all see one real widget
+    // mid-transition rather than a token they would each have to decode — plus a
+    // `.morph` mark carrying the pair. The payloads are read at PAINT time
+    // (render_gpu/ports.js), not here: derive runs for hit tests and bounds too,
+    // and building two outline payloads for a mouse-move would be pure waste.
+    // Note this reads the UNSIGNED state: a flipped morphing widget hands the
+    // engine the same geometry an unflipped one would, which the engine's own
+    // geometry law requires (assertMorphPaths refuses a negative space).
+    const resolvedType = resolveMorphType(itemState.type, state, registry, id);
+    const plugin = registry.get(resolvedType.type);
     // THE ASSET-REF RESOLUTION SEAM (see the function docblock). Every RELATIVE
     // ref in this item's own ref-bearing properties becomes absolute here, BEFORE
     // emit() runs — which is what lets the two registries fed from inside emit
@@ -269,11 +364,17 @@ export function deriveRenderTree(state, registry, project = "") {
     return {
       id,
       itemId: id,
-      type: itemState.type,
-      state: plugin.capabilities?.docVars ? { ...resolved, docVars: foldedVars } : resolved,
+      type: resolvedType.type,
+      // `state.type` must be the RESOLVED type too, not the token: every plugin
+      // emit(), every hit test and every Inspector row reads the bag, and a token
+      // sitting in `state.type` would be a value each of them has to know about.
+      // Only the node's `.morph` mark carries the morph, exactly as `.mirror`
+      // carries the flip.
+      state: morphedStateType(plugin.capabilities?.docVars ? { ...resolved, docVars: foldedVars } : resolved, resolvedType.type),
       world: worldTransform(state),
       plugin,
       ...(mirror ? { mirror } : {}),
+      ...(resolvedType.morph ? { morph: resolvedType.morph } : {}),
     };
   });
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));

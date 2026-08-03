@@ -677,19 +677,46 @@ registerInterpMode({
 });
 
 /**
+ * The paint `type` tags this seam recognizes — the CLOSED roster
+ * render_gpu/ir.js `parsePaint` itself dispatches on (solid / material / the two
+ * gradients / the explicit off), plus the crossfade this module mints.
+ *
+ * A CLOSED LIST AND NOT "any object with a string type", AND THE DIFFERENCE WAS
+ * A LIVE BUG. The open test was true of a POWERRP ITEM BAG — `{type: "rect", w,
+ * h, fill, …}` is an object with a string `type` — so a keyframe that RETYPED a
+ * widget made `defaultModeFor(itemBag, itemBag, itemId)` answer "blend", and
+ * because `blend` claims trees the whole item was replaced mid-transition by
+ * `{type: "crossfade", from: …, to: …}`. Measured on the pre-morph tree: a
+ * rect→circle keyframe folded at alpha 0.5 to a crossfade wrapper with NO w, NO
+ * h and NO fill, so derive then met a "crossfade" widget type and threw
+ * `Unknown widget type "crossfade"`. Retyping is a shipped feature
+ * (core/retype.js), so this was reachable without the morph mode existing at all
+ * — the morph wave only made it the FIRST thing anyone tried.
+ *
+ * The lesson generalizes past this one fix: a shape test keyed on the PRESENCE of
+ * a field is a claim about every object that happens to have it. `type` is the
+ * most-used discriminator in this codebase, so it is exactly the wrong field to
+ * key an open test on.
+ */
+export const PAINT_TYPE_TAGS = ["solid", "material", "linearGradient", "radialGradient", "none", CROSSFADE_PAINT_TYPE];
+
+/**
  * Pure function. Is this value an OBJECT-shaped paint — a material, a gradient,
  * a solid wrapper or an explicit "none"? The shape test the paint default keys
  * off. Hex strings and rgba arrays are NOT included: they have a true numeric
- * midpoint, which `tween` already computes.
+ * midpoint, which `tween` already computes; and an ITEM BAG is not included
+ * either, however much it looks like one (see PAINT_TYPE_TAGS).
  *
  * @example isPaintShaped({type: "material", material: {id: "crt"}}) // true
  * @example isPaintShaped({type: "linearGradient", stops: []}) // true
+ * @example isPaintShaped({type: "none"}) // true (an explicit OFF paint is a paint)
+ * @example isPaintShaped({type: "rect", w: 100, h: 50, fill: "#f00"}) // false (an ITEM BAG is not a paint)
  * @example isPaintShaped("#ff0000") // false (a color tweens per channel)
  * @example isPaintShaped([1, 0, 0, 1]) // false (a parsed rgba array)
  * @example isPaintShaped(5) // false
  */
 export function isPaintShaped(v) {
-  return !!(v && typeof v === "object" && !Array.isArray(v) && typeof v.type === "string");
+  return !!(v && typeof v === "object" && !Array.isArray(v) && PAINT_TYPE_TAGS.includes(v.type));
 }
 
 /**
