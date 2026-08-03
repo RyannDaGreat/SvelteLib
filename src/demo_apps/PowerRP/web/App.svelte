@@ -1898,6 +1898,17 @@
       ],
     },
     { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, requires: "at least one selected widget to copy", help: "Copies TWICE, on purpose: the element itself (as deltas, on the server clipboard) and a rendered PNG onto the system clipboard. Pasting back into PowerRP round-trips the real widget; pasting into another app gets the picture.", run: (a) => a.copySelection() },
+    // COPY PROPERTIES — the SAME widget at a different TIME, which is why it sits
+    // beside Copy rather than among the property rows: the user's framing is
+    // "move an object back in time". Copy clones (a NEW item); this transports
+    // state onto the item that is already there, on whatever slide you paste it.
+    { id: "copy-properties", title: "Copy Properties (the selected widget's state, to paste onto ITSELF on another slide)", icon: "mdi:content-copy", aliases: ["copy state", "copy properties", "copy all properties", "move object back in time", "copy widget state"], when: needsSelection, requires: "at least one selected widget whose state can be copied", help: "Copies what the widget LOOKS LIKE here — every property, equations verbatim. Pasting on another slide keyframes that appearance onto the SAME widget there, so it is transport through time rather than a second copy of the thing. A widget hidden on the destination slide comes back, because whether it is showing is part of the state being carried. Still puts the picture on your system clipboard, exactly as Copy does.", run: (a) => a.copySelectionProperties() },
+    // The named half of the transport. Plain Paste ALSO pastes a properties
+    // payload (paste dispatches on what it finds — the user's "paste behaves as
+    // normal"); this row exists because "Paste" in a list of palette rows cannot
+    // tell you that copied PROPERTIES are what is on the clipboard, and its gate
+    // and title can.
+    { id: "paste-properties", title: "Paste Properties (apply the copied state to those same widgets on this slide)", icon: "mdi:content-paste", aliases: ["paste state", "paste properties", "apply copied state"], when: (a) => a.canPasteProperties(), requires: "copied widget properties whose widgets still exist on this slide", help: "Writes the copied appearance onto the same widgets HERE, as the fewest keyframes that will do it — a property that already matches is left alone, so nothing you did not copy gets pinned. Widgets that have since been purged are named and skipped; the rest still apply. One undo.", run: (a) => a.pastePropertiesClipboard() },
     { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the last copied element or property. Identical to Ctrl+V: an image or file copied from ANOTHER app is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
     // 14.9: Duplicate = clone the selection LOCALLY (new UUIDs, one undo unit),
     // reusing the copy/paste serialize→insert path without a clipboard trip.
