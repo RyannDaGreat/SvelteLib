@@ -42,7 +42,7 @@ import { nodeModifierPoints, worldTransform } from "../core/derive.js";
 import { unsignedState } from "../core/geometry.js";
 import { allPlugins } from "../plugins/index.js";
 import { linearGradientRender } from "../render_gpu/ir.js";
-import { angleToLinearEndpoints, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
+import { angleToLinearEndpoints } from "../core/properties.js";
 
 let failures = 0, checks = 0;
 
@@ -114,11 +114,22 @@ console.log("angle on canvas");
   near("dragging out along the axis keeps the angle", out.fill.linear.angle, 0, 1e-6);
   near("dragging out lengthens the wavelength", sub(out).wavelength, 1.5, 1e-6);
 
-  // The floor holds, and a drag onto the centre has no heading so the stored
-  // angle survives rather than snapping to an arbitrary direction.
+  // THE FLOOR IS GONE (user ruling, 2026-08-02: the 0.05 minimum was "an arbitrary
+  // limitation"). A drag onto the centre now stores wavelength EXACTLY 0 — the
+  // collapse point, where the renderer paints the ramp's average colour — and must
+  // do so without throwing or producing NaN. The drag has no heading there, so the
+  // stored angle survives rather than snapping to an arbitrary direction.
   const onCentre = dragTo(linearState({ angle: 137, wavelength: 1 }), "fill-grad-dir", { x: BOX_W / 2, y: BOX_H / 2 });
   near("a drag onto the centre keeps the stored angle", sub(onCentre).angle, 137, 1e-9);
-  near("a drag onto the centre floors the wavelength", sub(onCentre).wavelength, GRADIENT_MIN_WAVELENGTH, 1e-12);
+  near("a drag onto the centre collapses the wavelength to 0", sub(onCentre).wavelength, 0, 1e-12);
+  check("a centre drag does not produce NaN", Number.isFinite(sub(onCentre).wavelength));
+
+  // AND THE BEAD MUST COME BACK OUT. At wavelength 0 the bead rests on the centre;
+  // grabbing it and dragging away must restore a real positive wavelength, so the
+  // collapse is a place you can leave, not a trap.
+  const backOut = dragTo(onCentre, "fill-grad-dir", { x: BOX_W / 2 + 100, y: BOX_H / 2 });
+  near("the collapsed bead drags back out to a real wavelength", sub(backOut).wavelength, 1, 1e-6);
+  check("the bead moved back off the centre", bead(backOut, "fill-grad-dir").x > BOX_W / 2);
 
   // The BOX ASPECT must be divided out: on a 200×100 box a 45° BBOX heading is a
   // (2:1) screen direction, so a drag along the screen diagonal is NOT 45°.
@@ -179,7 +190,10 @@ console.log("round trip");
     for (const t of TARGETS) {
       const label = `${JSON.stringify(g)} @ ${JSON.stringify(t)}`;
       const after = dragTo(linearState(g), "fill-grad-dir", t);
-      if (sub(after).wavelength <= GRADIENT_MIN_WAVELENGTH + 1e-12) continue; // floored on purpose
+      // A drag that lands exactly on the centre collapses to wavelength 0, where the
+      // bead has no direction to be placed along — the round trip is asserted
+      // separately above. Every other landing must be a true fixed point.
+      if (sub(after).wavelength <= 1e-12) continue;
       const landed = bead(after, "fill-grad-dir");
       near(`drag lands the bead where it was dropped, x ${label}`, landed.x, t.x, FIRST_LANDING_TOL_PX);
       near(`drag lands the bead where it was dropped, y ${label}`, landed.y, t.y, FIRST_LANDING_TOL_PX);

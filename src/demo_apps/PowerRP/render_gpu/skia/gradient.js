@@ -15,7 +15,30 @@
  */
 
 export { isGradientPaint } from "../ir.js";
-import { isGradientPaint, linearGradientRender } from "../ir.js";
+import { isGradientPaint, linearGradientRender, collapsedGradientColor } from "../ir.js";
+
+/**
+ * Pure function. A spread mode ("mirror" | "loop" | "pad") → the CanvasKit TileMode
+ * that expresses it. This is the whole cost of the spread feature on the raster
+ * side: the three modes ARE Skia's three native tile modes, so nothing is emulated.
+ *
+ * Args:
+ *   CanvasKit: the CanvasKit module (TileMode is an enum on it)
+ *   tile (string): the mode linearGradientRender resolved
+ *
+ * Returns:
+ *   TileMode
+ *
+ * @example // skTileMode(CanvasKit, "mirror") === CanvasKit.TileMode.Mirror
+ * @example // skTileMode(CanvasKit, "loop")   === CanvasKit.TileMode.Repeat
+ * @example // skTileMode(CanvasKit, "pad")    === CanvasKit.TileMode.Clamp
+ */
+export function skTileMode(CanvasKit, tile) {
+  if (tile === "mirror") return CanvasKit.TileMode.Mirror;
+  if (tile === "loop") return CanvasKit.TileMode.Repeat;
+  if (tile === "pad") return CanvasKit.TileMode.Clamp;
+  throw new Error(`skTileMode: unknown gradient spread ${JSON.stringify(tile)} (expected mirror, loop or pad)`);
+}
 
 /**
  * Query→build (allocates a CanvasKit Shader — caller deletes). Builds the SkShader
@@ -43,19 +66,36 @@ export function skShaderForPaint(CanvasKit, paint, bounds, opacity = 1) {
     CanvasKit.Matrix.scaled(bounds.w || 1e-6, bounds.h || 1e-6),
   );
   if (paint.type === "linearGradient") {
-    // CENTER + WAVELENGTH + PHASE fold in here (ir.js linearGradientRender): the
-    // ramp is centered at `center` (shifted by `phase` of the mirror period) and
-    // spans wavelength·axis, tiling with a MIRROR repeat when wavelength ≠ 1. A
-    // default/legacy paint returns the untouched axis with `mirror` false, so its
-    // Clamp shader is byte-identical to before the feature.
-    const { from, to, mirror } = linearGradientRender(paint);
+    // CENTER + WAVELENGTH + PHASE + SPREAD fold in here (ir.js linearGradientRender):
+    // the ramp is centered at `center` (shifted by `phase` of THIS SPREAD MODE's
+    // period) and spans wavelength·axis, tiling outside itself per `tile`. A
+    // default/legacy paint returns the untouched axis with tile "pad", so its Clamp
+    // shader is byte-identical to before the feature.
+    const { from, to, tile, collapsed } = linearGradientRender(paint);
+    // WAVELENGTH 0: the ramp has no extent and its limit is a SOLID of the ramp's
+    // average colour. A zero-length axis would make Skia paint the last stop (or
+    // divide by zero); one flat colour shader is the true picture, and the same one
+    // the SVG and PDF backends emit.
+    if (collapsed) return solidAverageShader(CanvasKit, paint, opacity);
     return CanvasKit.Shader.MakeLinearGradient(
       [from.x, from.y], [to.x, to.y],
-      colors, positions, mirror ? CanvasKit.TileMode.Mirror : CanvasKit.TileMode.Clamp, lm,
+      colors, positions, skTileMode(CanvasKit, tile), lm,
     );
   }
   return CanvasKit.Shader.MakeRadialGradient(
     [paint.center.x, paint.center.y], paint.r,
     colors, positions, CanvasKit.TileMode.Clamp, lm,
   );
+}
+
+/**
+ * Query→build (allocates a Shader — caller deletes). THE COLLAPSED-RAMP SHADER: one
+ * flat colour, the ramp's average (ir.js collapsedGradientColor). Built as a shader
+ * rather than returned as a colour so the wavelength-0 case slots into the existing
+ * `setShader` call site unchanged — every caller keeps one code path, and a scrub
+ * through wavelength 0 never changes which branch of the painter runs.
+ */
+function solidAverageShader(CanvasKit, paint, opacity) {
+  const [r, g, b, a] = collapsedGradientColor(paint);
+  return CanvasKit.Shader.MakeColor(CanvasKit.Color4f(r, g, b, a * opacity), CanvasKit.ColorSpace.SRGB);
 }

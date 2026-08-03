@@ -130,11 +130,83 @@
   property exactly as GradientPresetPicker passes --gp-swatch and ColorField
   passes --cf-swatch.
 -->
+<script module>
+  import { cssGradientFromStops, cssRampSwatch as rampSwatchOf } from "./GradientPresetPicker.svelte";
+  import { sampleRampHex as sampleHex } from "../core/ramps.js";
+  import { GRADIENT_SPREAD_MODES as SPREAD_MODES } from "../core/properties.js";
+
+  /**
+   * Samples across the continuation band when a spread mode is drawn — matches
+   * cssRampSwatch's own resample density, so the band is exactly as smooth as the
+   * ramp it continues.
+   */
+  const SPREAD_SAMPLES = 32;
+
+  /** What each spread mode does past the ramp's end, for the band's tooltip —
+   *  phrased as the CONSEQUENCE the strip is showing, not the API word. */
+  export const SPREAD_TIPS = {
+    mirror: "Past the ramp's end the colours reflect back the way they came.",
+    loop: "Past the ramp's end the ramp starts over, so the first colour follows the last.",
+    pad: "Past the ramp's end the last colour is held flat.",
+  };
+
+  /**
+   * Pure function. The CSS gradient the CONTINUATION BAND paints — what the ramp
+   * does JUST PAST its end under the active spread mode (user ruling, 2026-08-02:
+   * with looping "I should see purple on the right of it"). Drawn as a bare single
+   * ramp, the bar silently claimed every gradient pads.
+   *
+   * WHY A SEPARATE BAND RATHER THAN A TILED TRACK. The track's x IS the stop
+   * offset: a bead sits at `left: offset%` of its width and a click maps the same
+   * fraction back to a new stop's position. Squeezing tiles into that width would
+   * desynchronize the beads from the colours under them and mis-place every click —
+   * the bar would gain a preview and lose its accuracy as an editor. So the TRACK
+   * keeps spanning exactly one ramp, and the continuation is shown BESIDE it, where
+   * it costs the editing geometry nothing.
+   *
+   * The band reads left-to-right as the ramp's own continuation past offset 1:
+   *   loop   — restarts at the FIRST stop, so the first colour reappears right after
+   *            the last: the visible wrap the ruling asks for
+   *   mirror — reflects, so it runs back from the last colour to the first
+   *   pad     — holds the last colour flat
+   *
+   * Sampled through the SAME `sampleRampHex` the renderer's ramps go through, so a
+   * looping/OKLab ramp shows the colours it will actually produce.
+   *
+   * Args:
+   *   ramp ({stops, loop, space}): the ramp being continued
+   *   spread (string): "mirror" | "loop" | "pad"
+   *
+   * Returns:
+   *   string — a CSS `linear-gradient(...)` value
+   *
+   * @example spreadBandSwatch({stops: [{offset: 0, color: "#ff0000"}, {offset: 1, color: "#0000ff"}], loop: false, space: "srgb"}, "loop").startsWith("linear-gradient(90deg, #ff0000 0%") // true (loop RESTARTS at red right after the blue end — the user's "purple on the right")
+   * @example spreadBandSwatch({stops: [{offset: 0, color: "#ff0000"}, {offset: 1, color: "#0000ff"}], loop: false, space: "srgb"}, "mirror").startsWith("linear-gradient(90deg, #0000ff 0%") // true (mirror REFLECTS: the seam matches, so it runs back from blue)
+   * @example spreadBandSwatch({stops: [{offset: 0, color: "#ff0000"}, {offset: 1, color: "#0000ff"}], loop: false, space: "srgb"}, "pad") // "linear-gradient(90deg, #0000ff 0%, #0000ff 100%)" (pad HOLDS the last colour flat)
+   */
+  export function spreadBandSwatch(ramp, spread) {
+    if (!SPREAD_MODES.includes(spread)) throw new Error(`spreadBandSwatch: unknown spread ${JSON.stringify(spread)} (expected ${SPREAD_MODES.join(", ")})`);
+    // PAD is one flat colour, so two stops say it exactly — no resampling needed.
+    if (spread === "pad") {
+      const last = sampleHex(ramp.stops, 1, ramp);
+      return cssGradientFromStops([{ offset: 0, color: last }, { offset: 1, color: last }]);
+    }
+    const stops = Array.from({ length: SPREAD_SAMPLES + 1 }, (_, i) => {
+      const u = i / SPREAD_SAMPLES;
+      // The band is the NEXT tile: loop reads the ramp forward again from 0, mirror
+      // reads it backwards from 1 (which is why its seam matches colour).
+      return { offset: u, color: sampleHex(ramp.stops, spread === "mirror" ? 1 - u : u, ramp) };
+    });
+    return cssGradientFromStops(stops);
+  }
+</script>
+
 <script>
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { fieldOwnsKeydown } from "../../../lib/fieldKeys.js";
   import { fractionAt } from "./labelFrac.js";
+  import { GRADIENT_DEFAULT_SPREAD } from "../core/properties.js";
   import { cssRampSwatch } from "./GradientPresetPicker.svelte";
   import { getPath } from "../core/deltas.js";
   import { DEFAULT_RAMP_SPACE, sampleRampHex } from "../core/ramps.js";
@@ -228,6 +300,27 @@
     ...rampAspects(),
   });
   let rampCss = $derived(ramp.stops.length > 0 ? cssRampSwatch(ramp) : "none");
+
+  /** The active SPREAD MODE, or null when this list has none (see spreadMode). */
+  let spread = $derived(spreadMode());
+  /** The CONTINUATION BAND's gradient — what the ramp does just past its end under
+   *  the active spread. Null (no band rendered) for a list with no spread. */
+  let bandCss = $derived(spread && ramp.stops.length > 0 ? spreadBandSwatch(ramp, spread) : null);
+
+  /**
+   * Query (reads the document). The SPREAD MODE this ramp renders with, or null
+   * when the list has no spread to read (only a linear gradient paint has one —
+   * a top-level `rampStops` list, a material's ramp knob and the radial paint do
+   * not, and they must keep the plain single-ramp track they have always had).
+   *
+   * The stop list's path is […, "linear", "stops"], so the spread sits at
+   * […, "linear", "spread"] — the same sibling-key read `rampAspects` does one
+   * function up, for the same reason: the bar must show what the RENDER does.
+   */
+  function spreadMode() {
+    if (path.at(-2) !== "linear") return null;
+    return getPath(app.state(), [...path.slice(0, -1), "spread"]) ?? GRADIENT_DEFAULT_SPREAD;
+  }
 
   /**
    * Query (reads the document). The ramp ASPECTS this list stores, from the
@@ -476,6 +569,13 @@
     if (hover === null || rawList.length === 0) return `${label} bar — click to add a stop where you click.`;
     return `Add a stop at ${shown(hover)}, coloured ${sampleRampHex(ramp.stops, hover, ramp)} — the ramp's own colour there, so the picture does not change.`;
   }
+
+  /** Query. The continuation band's tooltip: which spread mode is drawn there and
+   *  what it does, so the strip beside the ramp is self-explaining rather than a
+   *  decorative smear. Names the row that changes it (Spread, in the paint panel). */
+  function bandTip() {
+    return `${SPREAD_TIPS[spread]} Set by the Spread row; this strip previews it, it is not clickable.`;
+  }
 </script>
 
 <div class="stopbar" class:stopbar-disabled={disabled}>
@@ -499,6 +599,24 @@
       onpointerleave={() => (hover = null)}
     ></div>
   </Tooltip>
+
+  <!-- THE CONTINUATION BAND — what the ramp does JUST PAST its end under the active
+       SPREAD mode (user ruling, 2026-08-02: with looping "I should see purple on the
+       right of it"). It is a SEPARATE, SHORTER strip under the track rather than
+       tiling drawn inside it, because the track's x IS the stop offset: a bead's
+       `left` and a click's fraction both read that width as 0..1, so tiling inside
+       it would desynchronize every bead and mis-place every click. As its own strip
+       the preview costs the editing geometry nothing.
+       Only a LINEAR GRADIENT PAINT has a spread, so every other ramp list (the
+       Mandelbrot rampStops, a material's ramp knob, a radial paint) renders no band
+       at all and is byte-identical to before this feature.
+       INERT: no pointer handlers and aria-hidden — it reports, it is not a second
+       place to click, and the track's own tooltip already names the offer. -->
+  {#if bandCss}
+    <Tooltip text={bandTip()} anchor="element" placement="top">
+      <div class="stopbar-band" style:--sb-band={bandCss} aria-hidden="true"></div>
+    </Tooltip>
+  {/if}
 
   <!-- THE BEAD LANE — its own row under the track, sharing the track's column so
        a bead's x IS its position on the ramp above it. Beads are a separate row

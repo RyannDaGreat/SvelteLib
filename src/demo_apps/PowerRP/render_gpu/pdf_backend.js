@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, pdfTileSpan, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
@@ -1091,15 +1091,15 @@ async function emitOpRange(flat, start, end, commands, rawIndexOf, region, out, 
     } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd) || opHasMaskBlur(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd)) {
       // (A MATERIAL-filled shape op is vector-shaped but shader-filled — PDF has
       // no vector form for it, so it takes the same region raster-embed. A
-      // MIRROR-TILED linear gradient fill — wavelength ≠ 1 — is the same story: a
       // TRIMMED / TAPER-capped / ASYMMETRICALLY-capped stroke (opStrokeNeedsRaster)
       // is likewise no trivial PDF path — its arc-length window, variable-width
       // outline or two-different-ends finish rasterizes here, never silently
       // drawing the untrimmed or butt-capped stroke; a MATCHED pair of round caps
       // is one `J` operand and stays vector (paintSetup writes it).
-      // PDF axial shading clamps its ends and cannot mirror-tile, so it too
-      // rasterizes here rather than silently drawing a single clamped ramp. A
-      // center-only / whole-axis gradient stays a true vector PDF shading below.
+      // A TILED linear gradient NO LONGER rasterizes here: a PDF axial shading has
+      // no tile mode, but its Function's Domain need not be [0,1], so mirror and
+      // loop are emitted as a stitching function replicating the ramp per tile
+      // (PdfAssembly._tiledGradientFn). Every spread mode is now true vector.
       // A soft MASK BLUR on a path (opHasMaskBlur) joins them because a PDF page
       // description has NO blur primitive at any level — not a filter, not a
       // pattern; only an SMask whose luminosity source would itself have to be a
@@ -2223,6 +2223,23 @@ function gradientShapeOps(pathStr, bounds, cmd, ctx, evenOdd) {
   return ops;
 }
 
+/**
+ * Pure function. The `Coords` of a linear shading, made safe for the COLLAPSED
+ * (wavelength-0) case. A collapsed ramp's two endpoints coincide, and a PDF axial
+ * shading with a zero-length axis is degenerate — readers may draw nothing at all.
+ * Since the colour function is already the ramp's single average colour by then,
+ * ANY non-degenerate axis paints the correct flat solid, so the endpoints are
+ * spread to the unit x-axis. A non-collapsed shading is returned untouched, so
+ * every existing export is byte-identical.
+ *
+ * @example collapsedSafeCoords({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, collapsed: false}) // [0, 0.5, 1, 0.5]
+ * @example collapsedSafeCoords({from: {x: 0.5, y: 0.5}, to: {x: 0.5, y: 0.5}, collapsed: true}) // [0, 0, 1, 0]  (degenerate axis widened; the function is one flat colour)
+ */
+function collapsedSafeCoords(axis) {
+  if (axis.collapsed) return [0, 0, 1, 0];
+  return [axis.from.x, axis.from.y, axis.to.x, axis.to.y];
+}
+
 /** Query. A gradient stroke's representative solid (its first stop) — PDF has no
  * clean stroked-gradient primitive, so a gradient STROKE degrades to this with a
  * loud one-time report (the documented rare-tail deviation). */
@@ -2491,16 +2508,29 @@ class PdfAssembly {
     const key = JSON.stringify(paint);
     if (this._shadings.has(key)) return this._shadings.get(key);
     const ctx = this.doc.context;
-    const fnRef = this._gradientColorFn(paint.stops);
-    // A linear shading folds in the CENTER + PHASE (and, for wavelength === 1, only
-    // those — a wavelength ≠ 1 mirror-tiled fill never reaches here, it routes to
-    // the raster fallback via opHasMirrorLinearFill). The centered, phase-shifted
-    // endpoints come from linearGradientRender; Extend clamps both ends (= Skia
-    // Clamp).
+    // A linear shading folds in the CENTER + PHASE + WAVELENGTH + SPREAD. The
+    // centered, phase-shifted endpoints come from linearGradientRender; Extend
+    // clamps both ends (= Skia Clamp), which IS the pad mode and is the correct
+    // finish outside the tiles laid down for the other two.
     const axis = paint.type === "linearGradient" ? linearGradientRender(paint) : null;
+    // TILED SPREAD AS TRUE VECTOR: a mirror/loop ramp is a stitching function over
+    // an EXTENDED domain, one sub-ramp per tile (see _tiledGradientFn), with the
+    // shading's Domain widened to match. A pad ramp (or wavelength 1) keeps the
+    // plain [0,1] domain and the untouched single-ramp function, byte-identical.
+    const tiled = paint.type === "linearGradient" && axis.tile !== "pad" && !axis.collapsed
+      ? this._tiledGradientFn(paint, axis)
+      : null;
+    // WAVELENGTH 0: the ramp collapses to its average colour. Its two stops become
+    // that ONE colour, so the shading paints a flat solid whatever its (degenerate)
+    // axis says — the same picture Skia and SVG produce, through the same
+    // collapsedGradientColor seam, with no extra branch at the call sites.
+    const stops = axis?.collapsed
+      ? [{ offset: 0, color: collapsedGradientColor(paint) }, { offset: 1, color: collapsedGradientColor(paint) }]
+      : paint.stops;
+    const fnRef = tiled ? tiled.ref : this._gradientColorFn(stops);
     const dict = paint.type === "radialGradient"
       ? { ShadingType: 3, ColorSpace: "DeviceRGB", Coords: [paint.center.x, paint.center.y, 0, paint.center.x, paint.center.y, paint.r], Function: fnRef, Extend: [true, true] }
-      : { ShadingType: 2, ColorSpace: "DeviceRGB", Coords: [axis.from.x, axis.from.y, axis.to.x, axis.to.y], Function: fnRef, Extend: [true, true] };
+      : { ShadingType: 2, ColorSpace: "DeviceRGB", Coords: collapsedSafeCoords(axis), Function: fnRef, Extend: [true, true], ...(tiled ? { Domain: tiled.domain } : {}) };
     const ref = ctx.register(ctx.obj(dict));
     const name = `Sh${this._shadings.size + 1}`;
     this._shadingDict().set(PDFName.of(name), ref);
@@ -2516,6 +2546,51 @@ class PdfAssembly {
     let Shading = Resources.lookupMaybe(PDFName.of("Shading"), PDFDict);
     if (!Shading) { Shading = ctx.obj({}); Resources.set(PDFName.of("Shading"), Shading); }
     return Shading;
+  }
+
+  /**
+   * Command (registers Function objects). THE VECTOR EXPRESSION OF A TILED SPREAD —
+   * what lets mirror and loop stay real PDF shadings instead of rasterizing.
+   *
+   * A PDF axial shading has no tile mode; `Extend` only clamps. But its `Function`
+   * is evaluated over its `Domain`, and the domain need not be [0, 1]. So the ramp
+   * is REPLICATED explicitly: a stitching function (FunctionType 3) whose N
+   * sub-functions are the same colour ramp once per tile, over the widened domain
+   * [−span, 1 + span]. Each sub-function is the ordinary stop ramp; a MIRRORED tile
+   * is the same ramp read BACKWARDS, which PDF expresses natively as `Encode
+   * [1 0]` on that sub-function — no second function object and no resampling.
+   *
+   *   loop   — every tile encodes forward: … 0→1, 0→1, 0→1 …
+   *   mirror — tiles alternate: … 0→1, 1→0, 0→1 … so the seams match colour, which
+   *            is exactly what Skia's Mirror and SVG's "reflect" draw.
+   *
+   * Parity of the alternation is anchored on the BASE tile (the one occupying
+   * [0, 1], the ramp linearGradientRender's endpoints describe), so tile k is
+   * reversed iff k is odd — measured from the base in both directions, which keeps
+   * the mirrored picture symmetric about the ramp the endpoints name.
+   *
+   * `span` tiles are laid on EACH side (ir.js pdfTileSpan), enough to cover the
+   * shape plus a margin for the phase shift and the diagonal chord; past them
+   * Extend clamps, where nothing of the shape remains.
+   *
+   * Returns: {ref, domain} — the stitching function and the Domain the shading dict
+   * must carry so the base ramp still lands on [0, 1].
+   */
+  _tiledGradientFn(paint, axis) {
+    const ctx = this.doc.context;
+    const span = pdfTileSpan(paint.wavelength ?? 1);
+    const base = this._gradientColorFn(paint.stops);
+    const first = -span, last = span + 1; // tiles [first, last) — the base tile is [0,1]
+    const Functions = [], Encode = [], Bounds = [];
+    for (let k = first; k < last; k++) {
+      Functions.push(base);
+      // A mirrored odd tile is the SAME function read backwards — PDF's Encode.
+      const reversed = axis.tile === "mirror" && ((k % 2) + 2) % 2 === 1;
+      Encode.push(reversed ? 1 : 0, reversed ? 0 : 1);
+      if (k > first) Bounds.push(k);
+    }
+    const domain = [first, last];
+    return { ref: ctx.register(ctx.obj({ FunctionType: 3, Domain: domain, Functions, Bounds, Encode })), domain };
   }
 
   /** Command (registers Function objects). A gradient's stops → a PDF color

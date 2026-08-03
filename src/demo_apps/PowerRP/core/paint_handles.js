@@ -62,18 +62,28 @@
  *     drag left it, to floating-point dust.
  *
  *     Dragging OUT lengthens the ramp (wavelength up, fewer tiles); dragging IN
- *     shortens it (wavelength down, more mirror-tiling), floored at
- *     GRADIENT_MIN_WAVELENGTH. A drag landing exactly ON the center has no heading,
- *     so the stored angle is KEPT and only the floored wavelength is written.
+ *     shortens it (wavelength down, more tiling), ALL THE WAY TO ZERO — the 0.05
+ *     floor this bead used to enforce is gone (user ruling, 2026-08-02: "an
+ *     arbitrary limitation"). At wavelength 0 the ramp collapses to its average
+ *     colour, the bead rests exactly on the centre, and it stays grabbable so the
+ *     drag back out works (beadInverseDivisor is never 0 — no NaN at the collapse).
+ *     A drag landing exactly ON the center has no heading, so the stored angle is
+ *     KEPT and only the wavelength is written.
+ *
+ *   SPREAD (the phase period). The bead placement reads the gradient's SPREAD MODE,
+ *     because the phase period differs per mode: mirror repeats after a
+ *     there-and-back pair (4·w·half), loop and pad after ONE ramp (2·w·half). See
+ *     core/properties.spreadPeriodHalves — reading it here is what keeps the beads
+ *     on the picture in every mode.
  *
  *   PHASE (both beads). The beads are placed on what the RENDERER actually draws,
  *     not on the stored center. render_gpu/ir.js linearGradientRender shifts the
- *     center along the axis by phase of the MIRROR PERIOD, which is 4·wavelength·half
- *     (there-and-back over one wavelength each way), taking `phase mod 1` first:
+ *     center along the axis by phase of THAT SPREAD MODE'S PERIOD — `q` half-vectors
+ *     per wavelength, q = 4 mirrored and 2 for loop/pad — taking `phase mod 1` first:
  *
- *       shift = 4·p·wavelength·half,   p = ((phase % 1) + 1) % 1
+ *       shift = q·p·wavelength·half,   p = ((phase % 1) + 1) % 1
  *       drawn center = center + shift
- *       drawn ramp end = center + shift + wavelength·half = center + (4p+1)·wavelength·half
+ *       drawn ramp end = center + shift + wavelength·half = center + (q·p+1)·wavelength·half
  *
  *     So the CENTER bead is displayed at `center + shift` and the DIRECTION bead at
  *     the drawn ramp end — both are real, visible ramp landmarks at ANY phase.
@@ -103,7 +113,24 @@
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
 
-import { angleToLinearEndpoints, linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_MIN_WAVELENGTH } from "./properties.js";
+import { angleToLinearEndpoints, linearEndpointsToAngle, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_WAVELENGTH, spreadPeriodHalves } from "./properties.js";
+
+/**
+ * Pure function. A gradient sub-state's wavelength, clamped to the one bound that
+ * still exists: NON-NEGATIVE. The old GRADIENT_MIN_WAVELENGTH floor (0.05) is gone
+ * (user ruling, 2026-08-02: "an arbitrary limitation"), so a bead may be dragged all
+ * the way to the centre — wavelength 0, where the renderer paints the ramp's average
+ * colour. Zero is a legitimate value here, NOT an error: the beads must survive it
+ * without throwing or producing NaN, and stay grabbable so the drag back out works.
+ *
+ * @example gradientWavelength({}) // 1 (absent → the default whole-axis ramp)
+ * @example gradientWavelength({wavelength: 0.02}) // 0.02 (below the old floor, now allowed)
+ * @example gradientWavelength({wavelength: 0}) // 0 (the collapse point — the average colour)
+ * @example gradientWavelength({wavelength: -3}) // 0 (a negative drag lands at the centre, not inside-out)
+ */
+export function gradientWavelength(g) {
+  return Math.max(0, g.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH);
+}
 
 /**
  * Pure function. The ACTIVE gradient sub-state of a paint value, or null if the
@@ -167,21 +194,66 @@ function withGradientPatch(paint, ag, patch) {
 
 /**
  * Pure function. The PHASE SHIFT a linear gradient's drawn ramp carries, as a
- * MULTIPLE of the axis half-vector: `4·p·wavelength`, where p = phase mod 1. This
- * is the ONE number that keeps the beads on the picture — render_gpu/ir.js
- * linearGradientRender shifts the center by exactly `4·p·w·half` because the
- * mirror period is there-and-back over one wavelength each way. Duplicated here
- * (2 lines) rather than imported for the same reason linearAxisOf is: core/ does
- * not depend UP on render_gpu/.
+ * MULTIPLE of the axis half-vector: `periodHalves·p·wavelength`, where p = phase
+ * mod 1. This is the ONE number that keeps the beads on the picture —
+ * render_gpu/ir.js linearGradientRender shifts the center by exactly that.
+ *
+ * THE PERIOD IS PER SPREAD MODE (core/properties.spreadPeriodHalves): mirror
+ * repeats only after a there-and-back pair (4·w·half), while loop and pad measure a
+ * cycle as ONE ramp (2·w·half). Reading the mode here is what keeps the beads
+ * synchronized with the picture in every mode rather than only under mirror.
  *
  * @example phaseShiftHalves({}) // 0 (no phase: the identity)
- * @example phaseShiftHalves({phase: 0.25, wavelength: 1}) // 1 (a quarter period is one half-vector)
+ * @example phaseShiftHalves({phase: 0.25, wavelength: 1}) // 1 (a quarter mirror period is one half-vector)
  * @example phaseShiftHalves({phase: 0.5, wavelength: 0.5}) // 1
  * @example phaseShiftHalves({phase: 1, wavelength: 0.3}) // 0 (a whole cycle is identity, at any wavelength)
  * @example phaseShiftHalves({phase: -0.25, wavelength: 1}) // 3 (negative phase wraps to 0.75)
+ * @example phaseShiftHalves({phase: 0.25, wavelength: 1, spread: "loop"}) // 0.5 (loop's cycle is one ramp, so a quarter of it is half a half-vector)
+ * @example phaseShiftHalves({phase: 0.5, wavelength: 0, spread: "loop"}) // 0 (a collapsed ramp cannot be shifted anywhere)
  */
 export function phaseShiftHalves(g) {
-  return 4 * wrappedPhase(g) * Math.max(GRADIENT_MIN_WAVELENGTH, g.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH);
+  return spreadPeriodHalves(g.spread) * wrappedPhase(g) * gradientWavelength(g);
+}
+
+/**
+ * Pure function. Where the DIRECTION bead sits, as a multiple of the axis
+ * half-vector from the STORED centre: `(periodHalves·p + 1)·wavelength` — the phase
+ * shift and the ramp length collapsed into the ONE multiplier `apply` inverts
+ * (linearPolarInverse explains why they cannot be inverted separately).
+ *
+ * AT WAVELENGTH 0 THIS IS 0 — the bead sits exactly on the centre, which is right:
+ * the ramp has collapsed to a point. The bead is still there and still grabbable
+ * (the modifier-point protocol hit-tests a position, not a distance), so the drag
+ * back out works; `beadInverseDivisor` is what keeps that drag well-defined.
+ *
+ * @example beadHalves({}) // 1 (default: one half-vector out, the ramp end)
+ * @example beadHalves({wavelength: 0.5}) // 0.5
+ * @example beadHalves({wavelength: 1, phase: 0.25}) // 2 (mirror: the shift adds 4·0.25·1)
+ * @example beadHalves({wavelength: 1, phase: 0.25, spread: "loop"}) // 1.5 (loop's period is 2, so the shift adds half as much)
+ * @example beadHalves({wavelength: 0}) // 0 (collapsed: the bead rests on the centre)
+ */
+export function beadHalves(g) {
+  return beadInverseDivisor(g) * gradientWavelength(g);
+}
+
+/**
+ * Pure function. The drag-INVARIANT factor `periodHalves·p + 1` that the direction
+ * bead's placement multiplies its wavelength by — so `apply` divides the dragged
+ * multiple by it to recover the wavelength the drag asked for. Invariant because a
+ * bead drag never rewrites `phase` or `spread`, only `angle` and `wavelength`.
+ *
+ * IT IS NEVER ZERO, which is the property that makes the wavelength-0 round trip
+ * safe: p ∈ [0, 1) and periodHalves > 0, so the factor is ≥ 1. Dragging the bead
+ * onto the centre therefore stores wavelength 0 cleanly, and dragging back out
+ * recovers a positive wavelength — no division by zero and no NaN at either end.
+ *
+ * @example beadInverseDivisor({}) // 1 (no phase)
+ * @example beadInverseDivisor({phase: 0.25}) // 2 (mirror period 4)
+ * @example beadInverseDivisor({phase: 0.25, spread: "loop"}) // 1.5 (loop period 2)
+ * @example beadInverseDivisor({phase: 0.9, wavelength: 0}) // 4.6 (independent of wavelength — which is why dividing by it is safe at 0)
+ */
+export function beadInverseDivisor(g) {
+  return spreadPeriodHalves(g.spread) * wrappedPhase(g) + 1;
 }
 
 /**
@@ -398,10 +470,11 @@ export function paintModifierPoints(state, key = "fill") {
   // (center + phase shift + wavelength·half), which linearPolarInverse maps back
   // to exactly this {angle, wavelength} — so the bead is its own fixed point.
   const { origin, half } = linearFrame(state, ag);
-  const wl = Math.max(GRADIENT_MIN_WAVELENGTH, ag.g.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH);
-  // `(4p + 1)·wavelength` — the phase shift and the ramp length in ONE multiplier
-  // of the half-vector, which is the quantity apply inverts (see linearPolarInverse).
-  const beadMultiple = (4 * wrappedPhase(ag.g) + 1) * wl;
+  const wl = gradientWavelength(ag.g);
+  // `(periodHalves·p + 1)·wavelength` — the phase shift and the ramp length in ONE
+  // multiplier of the half-vector, which is the quantity apply inverts (see
+  // linearPolarInverse). The period is the SPREAD MODE's (4 mirrored, 2 otherwise).
+  const beadMultiple = beadHalves(ag.g);
   const directionBead = {
     id: `${key}-grad-dir`,
     x: origin.x + beadMultiple * half.x, y: origin.y + beadMultiple * half.y,
@@ -425,9 +498,14 @@ export function paintModifierPoints(state, key = "fill") {
         allowed.x - f.origin.x, allowed.y - f.origin.y, f.W, f.H,
         a.g.angle != null && Number.isFinite(a.g.angle) ? a.g.angle : GRADIENT_DEFAULT_ANGLE,
       );
-      // `phase` is NOT rewritten by a bead drag, so 4p+1 is invariant across the
-      // gesture and dividing it out recovers the wavelength the drag asked for.
-      const wavelength = Math.max(GRADIENT_MIN_WAVELENGTH, multiple / (4 * wrappedPhase(a.g) + 1));
+      // `phase`/`spread` are NOT rewritten by a bead drag, so beadInverseDivisor is
+      // invariant across the gesture and dividing it out recovers the wavelength the
+      // drag asked for. That divisor is >= 1, never 0, so a drag ONTO the centre
+      // yields wavelength 0 (the ramp's average colour) instead of a NaN, and the
+      // bead — now resting on the centre — can still be grabbed and dragged back out.
+      // Clamped at 0, not at a floor: the floor was removed (user ruling), and a
+      // negative wavelength would render the ramp inside-out.
+      const wavelength = Math.max(0, multiple / beadInverseDivisor(a.g));
       return { [key]: withGradientPatch(st[key], a, { angle, wavelength }) };
     },
   };

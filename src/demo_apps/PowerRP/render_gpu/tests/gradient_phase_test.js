@@ -87,7 +87,11 @@ test("an absent phase parses to the default (0), exactly like an absent waveleng
   const p = parsePaint({ type: "linearGradient", linear: { stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }], angle: 0 } });
   assert.equal(p.phase, 0, "parsePaint fills the quiet default (0), the house default-fill pattern");
   assert.equal(p.wavelength, 1);
-  assert.equal(linearGradientRender(p).mirror, false);
+  // A whole-axis ramp has no OUTSIDE to tile, so every spread mode draws the same
+  // picture and the render reports the cheapest true one: "pad" (Skia Clamp) — the
+  // same tile mode this paint got before spread modes existed.
+  assert.equal(linearGradientRender(p).tile, "pad");
+  assert.equal(linearGradientRender(p).collapsed, false);
 });
 
 // ── 1 & 2: linearGradientRender's OWN formula, at the endpoint level ─────────
@@ -106,7 +110,7 @@ test("phase shifts the center by phase·(4·wavelength·half) — the mirror per
   const period = 4 * 0.5 * 0.5; // 4·w·half, half = (to-from)/2 = 0.5
   assert.equal(p03.from.x - p0.from.x, 0.25 * period);
   assert.equal(p03.to.x - p0.to.x, 0.25 * period);
-  assert.equal(p03.mirror, true);
+  assert.equal(p03.tile, "mirror", "an absent spread is mirror — the legacy default");
 });
 
 test("phase=1/2/-1 WRAP to phase=0's endpoints exactly — one whole cycle is identity at any wavelength", () => {
@@ -234,8 +238,8 @@ const parityFill = parsePaint({
 });
 
 test("SVG and Skia/ir.js agree on the phase-shifted axis endpoints", () => {
-  const { from, to, mirror } = linearGradientRender(parityFill);
-  assert.equal(mirror, false, "wavelength=1 stays a true (non-tiled) axis even with phase set");
+  const { from, to, tile } = linearGradientRender(parityFill);
+  assert.equal(tile, "pad", "wavelength=1 stays a true (non-tiled) axis even with phase set");
   const svgDef = gradientDefSVG(parityFill, "lg1", 1);
   assert.ok(svgDef.includes(`x1="${fmt(from.x)}"`), `SVG x1 must be the SAME shifted endpoint (${fmt(from.x)})`);
   assert.ok(svgDef.includes(`x2="${fmt(to.x)}"`), `SVG x2 must be the SAME shifted endpoint (${fmt(to.x)})`);

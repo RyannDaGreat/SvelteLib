@@ -69,7 +69,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
+import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_SPREAD, GRADIENT_SPREAD_MODES, GRADIENT_COLLAPSE_WAVELENGTH, spreadPeriodHalves, rampAverageColor, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
 import { CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 
@@ -664,31 +664,40 @@ function linearAxis(g) {
 }
 
 /**
- * Pure function. A linear paint's CENTER (objectBoundingBox), WAVELENGTH and PHASE
- * — the gradient-handle fields (core/paint_handles.js) plus the phase option beside
- * wavelength (user ruling: "all gradients should have a phase option"). All three
- * default to the "today" values (box-center / whole-axis / no shift), so an ABSENT
- * triple is byte-identical to before either feature (linearGradientRender returns
- * the untouched axis in that case). Validates loudly: a present center must be a
- * finite point, a present wavelength a positive finite number (a zero/negative axis
- * is degenerate), and a present phase any finite number (a phase shift has no sign
- * or magnitude restriction — it wraps every whole cycle, at any wavelength).
+ * Pure function. A linear paint's CENTER (objectBoundingBox), WAVELENGTH, PHASE and
+ * SPREAD — the gradient-handle fields (core/paint_handles.js) plus the phase option
+ * beside wavelength (user ruling: "all gradients should have a phase option") and
+ * the spread mode (user ruling, 2026-08-02: Loop / Mirror / Pad). All four default
+ * to the "today" values (box-center / whole-axis / no shift / mirror), so an ABSENT
+ * quadruple is byte-identical to before any of these features (linearGradientRender
+ * returns the untouched axis in that case). Validates loudly: a present center must
+ * be a finite point, a present phase any finite number (a phase shift has no sign or
+ * magnitude restriction — it wraps every whole cycle, at any wavelength), and a
+ * present spread one of GRADIENT_SPREAD_MODES.
+ *
+ * WAVELENGTH MAY BE ZERO (user ruling, 2026-08-02: the old 0.05 floor was "an
+ * arbitrary limitation"). Zero is not degenerate, it is the LIMIT of infinitely fine
+ * tiling — the ramp's average colour, painted as a solid (see linearGradientRender's
+ * `collapsed` flag and core/properties.rampAverageColor). A NEGATIVE wavelength is
+ * still refused loudly: it has no such reading.
  *
  * Args:
- *   g (object): the linear sub-state — {center?, wavelength?, phase?, ...}
+ *   g (object): the linear sub-state — {center?, wavelength?, phase?, spread?, ...}
  *
  * Returns:
- *   {center: {x, y}, wavelength: number, phase: number}
+ *   {center: {x, y}, wavelength: number, phase: number, spread: string}
  *
- * @example linearCenterWavelength({})  // {center: {x: 0.5, y: 0.5}, wavelength: 1, phase: 0}  (absent → defaults)
- * @example linearCenterWavelength({center: {x: 0.2, y: 0.8}, wavelength: 0.25, phase: 0.5})  // {center: {x: 0.2, y: 0.8}, wavelength: 0.25, phase: 0.5}
+ * @example linearCenterWavelength({})  // {center: {x: 0.5, y: 0.5}, wavelength: 1, phase: 0, spread: "mirror"}  (absent → defaults)
+ * @example linearCenterWavelength({center: {x: 0.2, y: 0.8}, wavelength: 0.25, phase: 0.5})  // {center: {x: 0.2, y: 0.8}, wavelength: 0.25, phase: 0.5, spread: "mirror"}
+ * @example linearCenterWavelength({wavelength: 0}).wavelength  // 0  (the collapse case: a solid average, not an error)
+ * @example linearCenterWavelength({spread: "loop"}).spread  // "loop"
  */
 function linearCenterWavelength(g) {
   const center = g.center != null ? requirePoint("linearGradient.center", g.center) : { ...GRADIENT_DEFAULT_CENTER };
   let wavelength = GRADIENT_DEFAULT_WAVELENGTH;
   if (g.wavelength != null) {
-    if (typeof g.wavelength !== "number" || !Number.isFinite(g.wavelength) || g.wavelength <= 0)
-      throw new Error(`parsePaint: linearGradient "wavelength" must be a positive finite number, got ${JSON.stringify(g.wavelength)}`);
+    if (typeof g.wavelength !== "number" || !Number.isFinite(g.wavelength) || g.wavelength < 0)
+      throw new Error(`parsePaint: linearGradient "wavelength" must be a non-negative finite number (0 collapses the ramp to its average colour), got ${JSON.stringify(g.wavelength)}`);
     wavelength = g.wavelength;
   }
   let phase = GRADIENT_DEFAULT_PHASE;
@@ -697,95 +706,173 @@ function linearCenterWavelength(g) {
       throw new Error(`parsePaint: linearGradient "phase" must be a finite number, got ${JSON.stringify(g.phase)}`);
     phase = g.phase;
   }
-  return { center, wavelength, phase };
+  let spread = GRADIENT_DEFAULT_SPREAD;
+  if (g.spread != null) {
+    if (!GRADIENT_SPREAD_MODES.includes(g.spread))
+      throw new Error(`parsePaint: linearGradient "spread" must be one of ${GRADIENT_SPREAD_MODES.join(", ")}, got ${JSON.stringify(g.spread)}`);
+    spread = g.spread;
+  }
+  return { center, wavelength, phase, spread };
 }
 
 /**
  * Pure function. THE render endpoints + tile mode of a parsed linear paint, once
- * its CENTER, WAVELENGTH and PHASE are folded in. Every backend goes through this
- * so the Skia shader, the SVG <linearGradient> and the PDF axial shading agree.
+ * its CENTER, WAVELENGTH, PHASE and SPREAD are folded in. Every backend goes through
+ * this so the Skia shader, the SVG <linearGradient> and the PDF axial shading agree.
  *
  * The parsed `from`/`to` are the whole-box axis (the chord through the box).
  * `half = (to − from)/2` is the axis half-vector; one full ramp of wavelength `w`
  * centered at `c` spans `w·half` each side, so its SEGMENT LENGTH is `2·w·half`.
- * A Skia/SVG mirror-tiled ramp reflects there-and-back, so its repeat PERIOD along
- * the axis is TWICE that segment — `4·w·half` — one "there" ramp plus one
- * reflected "back" ramp. PHASE shifts the center along the axis by `phase` of that
- * full period before the ramp is built:
- *   c' = c + phase·(4·w·half)
+ *
+ * THE PERIOD IS THE SPREAD MODE'S BUSINESS, and it is the one number that differs
+ * between them (core/properties.spreadPeriodHalves):
+ *   mirror — reflects there-and-back, so the pattern only repeats after TWO
+ *     segments: period `4·w·half`. (Today's behaviour, and the default.)
+ *   loop   — restarts the ramp each segment: period `2·w·half`, ONE ramp.
+ *   pad    — never repeats; one ramp is still the natural cycle unit, so it shares
+ *     loop's `2·w·half`.
+ * PHASE is a fraction of THAT MODE'S OWN period, which is what preserves the
+ * phase-1-is-identity law in every mode rather than only under mirror:
+ *   c' = c + phase·(periodHalves·w·half)
  *   from' = c' − w·half,   to' = c' + w·half
- * `mirror` is true iff w ≠ 1 (the ramp then tiles with a mirror repeat outside
- * [from', to']). Shifting by one whole period (phase = 1) maps the pattern onto
- * itself — "phase 1.0 = shifted one full wavelength = identical" (user ruling),
- * true whenever mirror tiling is active (verified against Skia's mirror-tile
- * semantics: a half-period shift, phase = 0.5, instead produces the MAXIMALLY
- * different pattern — the reflected mirror image — which is why the period, not
- * the single-segment length, is the phase unit). When c is the box center AND
- * w = 1 AND phase = 0 the untouched `from`/`to` are returned by IDENTITY (mirror
- * false), so a default/legacy paint renders BYTE-IDENTICALLY to before the
- * center/wavelength/phase features — the endpoints and clamp tile mode are the
- * same objects/values it always used.
+ *
+ * `tile` names the mode the backends map to their own vocabulary ("mirror" → Skia
+ * TileMode.Mirror / SVG "reflect", "loop" → Repeat / "repeat", "pad" → Clamp /
+ * "pad"). A ramp at w = 1 fills the whole axis and has nothing OUTSIDE it to tile,
+ * so it reports "pad" regardless of the stored spread — the picture is identical
+ * either way and this keeps a legacy w=1 paint's Clamp shader byte-identical.
+ *
+ * `collapsed` is the WAVELENGTH-0 case (user ruling: no floor). The ramp has no
+ * extent, so the limit of infinitely fine tiling is a SOLID of the ramp's average
+ * colour — the same in every spread mode. The endpoints are then degenerate and
+ * MUST NOT be used; every backend branches on `collapsed` and paints
+ * core/properties.rampAverageColor(paint.stops) as a plain solid instead. Returning
+ * a flag rather than throwing is what keeps a scrub through 0 continuous.
+ *
+ * When c is the box center AND w = 1 AND phase = 0 the untouched `from`/`to` are
+ * returned by IDENTITY, so a default/legacy paint renders BYTE-IDENTICALLY to before
+ * the center/wavelength/phase/spread features.
  *
  * Args:
- *   paint (object): a parsed linearGradient paint (carries from, to, center?, wavelength?, phase?)
+ *   paint (object): a parsed linearGradient paint (from, to, center?, wavelength?, phase?, spread?)
  *
  * Returns:
- *   {from: {x, y}, to: {x, y}, mirror: boolean}
+ *   {from: {x, y}, to: {x, y}, tile: "mirror"|"loop"|"pad", collapsed: boolean}
  *
  * PHASE WRAPS every whole cycle (user ruling: "zero degrees should mean
  * nothing and 360 should mean full phase... they should loop back around
  * every 360 degrees, but it doesn't do that on every object") — `phase mod 1`
- * is taken BEFORE the shift below, on both the mirror and the clamp path, so
- * an integer phase (1, 2, −1, …) is byte-identical to phase 0 REGARDLESS of
- * wavelength, including the default wavelength = 1 clamp axis that has no
- * mirror period of its own to fall back on.
+ * is taken BEFORE the shift below, in every spread mode, so an integer phase
+ * (1, 2, −1, …) is byte-identical to phase 0 REGARDLESS of wavelength.
  *
- * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}})  // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, mirror: false}  (default: untouched axis)
- * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, mirror: true}  (half-length ramp, mirror-tiled)
- * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.25, y: 0.5}, wavelength: 1}).from  // {x: -0.25, y: 0.5}  (center shifted, w=1 → clamp)
- * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5, phase: 1})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, mirror: true}  (phase 1 wraps to phase 0 — one whole cycle is identity, at any wavelength)
- * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 1, phase: 1})  // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, mirror: false}  (wavelength=1 clamp axis: phase 1 also wraps to identity, unlike before)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}})  // {from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, tile: "pad", collapsed: false}  (default: untouched axis)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, tile: "mirror", collapsed: false}  (half-length ramp, mirror-tiled)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0.5, spread: "loop"}).tile  // "loop"
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0.5, spread: "pad"}).tile  // "pad"
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.25, y: 0.5}, wavelength: 1}).from  // {x: -0.25, y: 0.5}  (center shifted, w=1 → pad)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5, phase: 1})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, tile: "mirror", collapsed: false}  (phase 1 wraps to phase 0 — one whole cycle is identity, in every mode)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0.5, spread: "loop", phase: 1}).from  // {x: 0.25, y: 0.5}  (loop's cycle is ONE ramp, and phase 1 is still identity)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0.5, spread: "loop", phase: 0.5}).from  // {x: 0.75, y: 0.5}  (half a loop cycle = one whole ramp along)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0}).collapsed  // true  (zero wavelength: paint the average colour, ignore the endpoints)
  */
 export function linearGradientRender(paint) {
   const w = paint.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH;
+  const spread = paint.spread ?? GRADIENT_DEFAULT_SPREAD;
   const rawPhase = paint.phase ?? GRADIENT_DEFAULT_PHASE;
-  // Wrap to [0, 1) — a whole cycle is identity at ANY wavelength, mirrored or
-  // clamped alike. JS `%` keeps the sign of its left operand, so a negative
-  // phase (-0.25) needs the +1/%1 fixup to land at 0.75, not -0.25.
+  // Wrap to [0, 1) — a whole cycle is identity at ANY wavelength, in ANY spread
+  // mode. JS `%` keeps the sign of its left operand, so a negative phase (-0.25)
+  // needs the +1/%1 fixup to land at 0.75, not -0.25.
   const p = ((rawPhase % 1) + 1) % 1;
   const c = paint.center ?? GRADIENT_DEFAULT_CENTER;
-  if (w === 1 && p === 0 && c.x === GRADIENT_DEFAULT_CENTER.x && c.y === GRADIENT_DEFAULT_CENTER.y)
-    return { from: paint.from, to: paint.to, mirror: false };
+  // A ramp spanning the whole axis has no OUTSIDE to tile, so every spread mode
+  // draws the same picture there and "pad" (Clamp) is the cheapest true answer —
+  // which is also what makes a legacy w=1 paint byte-identical.
+  const tile = w === GRADIENT_DEFAULT_WAVELENGTH ? "pad" : spread;
+  if (w === GRADIENT_DEFAULT_WAVELENGTH && p === 0 && c.x === GRADIENT_DEFAULT_CENTER.x && c.y === GRADIENT_DEFAULT_CENTER.y)
+    return { from: paint.from, to: paint.to, tile, collapsed: false };
   const hx = (paint.to.x - paint.from.x) / 2, hy = (paint.to.y - paint.from.y) / 2;
-  // The mirror period is 4·w·half (there-and-back over one wavelength each way);
-  // phase is a fraction OF THAT PERIOD, so phase=1 (wrapped to 0 above) shifts
-  // the center by zero and reproduces the identical picture at any wavelength.
-  const shiftX = 4 * p * w * hx, shiftY = 4 * p * w * hy;
+  // Phase is a fraction of THIS MODE's period (4·w·half mirrored, 2·w·half looped
+  // or padded), so phase=1 (wrapped to 0 above) shifts by zero and reproduces the
+  // identical picture at any wavelength, in any mode.
+  const periodHalves = spreadPeriodHalves(spread);
+  const shiftX = periodHalves * p * w * hx, shiftY = periodHalves * p * w * hy;
   const cx = c.x + shiftX, cy = c.y + shiftY;
   return {
     from: { x: cx - w * hx, y: cy - w * hy },
     to: { x: cx + w * hx, y: cy + w * hy },
-    mirror: w !== 1,
+    tile,
+    // At w = 0 the endpoints above coincide; the backends must paint the ramp's
+    // average colour as a solid rather than hand a zero-length axis to a shader.
+    collapsed: w === GRADIENT_COLLAPSE_WAVELENGTH,
   };
 }
 
 /**
- * Pure function. Does this op carry a MIRROR-TILED linear-gradient FILL (a linear
- * gradient whose wavelength ≠ 1)? The routing predicate the VECTOR PDF backend
- * uses to send such a fill into its raster fallback — a PDF axial shading extends
- * (clamps) its ends but cannot express a mirror-repeat tiling, so a tiled ramp is
- * rasterized rather than silently drawn as a single clamped ramp. The SVG backend
- * needs no such route (spreadMethod="reflect" expresses it vectorially) and a
- * clamp/center-only gradient (wavelength === 1) stays a true PDF shading.
+ * Pure function. THE SOLID COLOUR a collapsed (wavelength-0) gradient paints —
+ * `rampAverageColor` over the paint's parsed stops, re-exported through the IR so
+ * the three backends reach it at the same seam they reach `linearGradientRender`,
+ * and cannot disagree about what a collapsed ramp looks like.
  *
- * @example opHasMirrorLinearFill({op: "rect", fill: {type: "linearGradient", wavelength: 0.25}}) // true
+ * @example collapsedGradientColor({stops: [{offset: 0, color: [1, 0, 0, 1]}, {offset: 1, color: [0, 0, 1, 1]}]})  // [0.5, 0, 0.5, 1]  (red→blue collapses to purple)
+ */
+export function collapsedGradientColor(paint) {
+  return rampAverageColor(paint.stops);
+}
+
+/**
+ * Pure function. How many TILES of a tiled linear ramp the PDF backend must lay
+ * down to cover the shape — the count that turns a Skia/SVG tile mode into a TRUE
+ * VECTOR PDF shading instead of a raster fallback.
+ *
+ * WHY THIS EXISTS RATHER THAN A RASTER ROUTE. A PDF axial shading (ShadingType 2)
+ * has no tile mode: `Extend` clamps its two ends and that is all it can do. That
+ * used to send every wavelength ≠ 1 fill to the raster fallback
+ * (`opHasMirrorLinearFill`, now gone). But a shading's `Function` is evaluated over
+ * its `Domain`, and THE DOMAIN NEED NOT BE [0, 1] — so a stitching function
+ * (FunctionType 3) over an EXTENDED domain replicates the ramp explicitly, once per
+ * tile, with each mirrored tile's sub-function `Encode`d backwards (PDF's own
+ * mechanism for reversing a sub-function: Encode [1 0]). The result is genuine
+ * vector art with real PDF colour interpolation, not a picture of one.
+ *
+ * The count is finite because the shading only has to cover the shape: the ramp
+ * spans `wavelength` of the axis, so `ceil(1 / wavelength)` tiles cover the axis
+ * once, and a phase shift plus the diagonal chord can push the shape off that span
+ * by up to one tile at each end, so a tile of margin is added on both sides. Beyond
+ * the covered range `Extend` clamps, which is exactly right for PAD and invisible
+ * for the other two (nothing is left to paint there).
+ *
+ * A wavelength of 1 needs exactly one tile and no stitching at all — the untouched
+ * legacy shading, byte-identical.
+ *
+ * Args:
+ *   wavelength (number): the ramp's fraction of the axis (> 0)
+ *
+ * Returns:
+ *   number — tiles to emit on EACH SIDE of the base ramp, plus the base (odd total)
+ *
+ * @example pdfTileSpan(1) // 1  (whole-axis ramp: one tile each side of the base)
+ * @example pdfTileSpan(0.5) // 3  (two ramps cover the axis, plus a margin tile each side)
+ * @example pdfTileSpan(0.25) // 5
+ */
+export function pdfTileSpan(wavelength) {
+  return Math.ceil(1 / wavelength) + 1;
+}
+
+/**
+ * Pure function. Does this op carry a linear-gradient FILL the PDF backend must
+ * RASTERIZE? Nothing does any more: every spread mode is now expressed as a true
+ * vector PDF shading (see pdfTileSpan — a stitching function over an extended
+ * domain), and a collapsed (wavelength-0) ramp is a plain solid fill. Kept as a
+ * NAMED predicate returning false rather than deleted at the call site, because the
+ * PDF emit's raster-routing line is a list of measured capability gaps and "linear
+ * gradients are not one" is a claim worth stating where the others are stated.
+ *
+ * @example opHasMirrorLinearFill({op: "rect", fill: {type: "linearGradient", wavelength: 0.25}}) // false (now vector: a stitched, extended-domain shading)
  * @example opHasMirrorLinearFill({op: "rect", fill: {type: "linearGradient", wavelength: 1}}) // false
- * @example opHasMirrorLinearFill({op: "rect", fill: {type: "radialGradient", r: 0.5}}) // false
  * @example opHasMirrorLinearFill({op: "rect", fill: "#fff"}) // false
  */
 export function opHasMirrorLinearFill(cmd) {
-  const p = cmd.fill;
-  return !!(p && typeof p === "object" && !Array.isArray(p) && p.type === "linearGradient" && (p.wavelength ?? GRADIENT_DEFAULT_WAVELENGTH) !== 1);
+  return false;
 }
 
 // ── THE STROKE-TRIM framework (manifest E.12-15) ─────────────────────────────

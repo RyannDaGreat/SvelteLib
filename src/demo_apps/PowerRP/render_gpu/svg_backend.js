@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import { STROKE_MITER_LIMIT } from "../core/properties.js"; // the identity limit this exporter may omit BECAUSE SVG's own initial value is the same number (pdf_backend cannot — see joinAttrs)
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
@@ -419,17 +419,40 @@ export function gradientDefSVG(paint, id, opacity = 1) {
     return `<stop offset="${fmt(s.offset)}" stop-color="rgb(${byte(r)},${byte(g)},${byte(b)})" stop-opacity="${fmt(a * opacity)}"/>`;
   }).join("");
   if (paint.type === "linearGradient") {
-    // CENTER + WAVELENGTH + PHASE fold in via linearGradientRender: the axis
-    // endpoints move to the centered (phase-shifted), wavelength-scaled ramp and a
-    // mirror-tiled ramp (wavelength ≠ 1) becomes spreadMethod="reflect" — SVG
-    // expresses the tiling vectorially, no raster fallback needed. A default/legacy
-    // paint returns the untouched from/to with mirror false, so its def string is
+    // CENTER + WAVELENGTH + PHASE + SPREAD fold in via linearGradientRender: the axis
+    // endpoints move to the centered (phase-shifted), wavelength-scaled ramp and the
+    // spread mode becomes a native spreadMethod — SVG expresses ALL THREE tilings
+    // vectorially (reflect/repeat/pad), so no mode needs a raster fallback. A
+    // default/legacy paint returns the untouched from/to with tile "pad", whose
+    // spreadMethod is SVG's own default and therefore omitted: the def string stays
     // byte-identical.
-    const { from, to, mirror } = linearGradientRender(paint);
-    const spread = mirror ? ` spreadMethod="reflect"` : "";
+    const { from, to, tile, collapsed } = linearGradientRender(paint);
+    // WAVELENGTH 0: the ramp collapses to its average colour. Emitted as a
+    // two-stop gradient of that ONE colour rather than a solid fill attribute,
+    // because the caller has already committed to a `url(#id)` paint reference —
+    // this keeps the collapse inside the def, where every gradient consumer
+    // (fill, stroke, text) picks it up without a second code path.
+    if (collapsed) return `<linearGradient id="${id}">${collapsedStopsSVG(paint, opacity)}</linearGradient>`;
+    const spread = tile === "pad" ? "" : ` spreadMethod="${tile === "mirror" ? "reflect" : "repeat"}"`;
     return `<linearGradient id="${id}" x1="${fmt(from.x)}" y1="${fmt(from.y)}" x2="${fmt(to.x)}" y2="${fmt(to.y)}"${spread}>${stops}</linearGradient>`;
   }
   return `<radialGradient id="${id}" cx="${fmt(paint.center.x)}" cy="${fmt(paint.center.y)}" r="${fmt(paint.r)}">${stops}</radialGradient>`;
+}
+
+/**
+ * Pure function. The two <stop> elements a COLLAPSED (wavelength-0) gradient emits —
+ * both the ramp's average colour (ir.js collapsedGradientColor), so the def paints a
+ * flat solid whatever geometry SVG defaults the axis to. Two identical stops rather
+ * than one because SVG needs at least two to define a ramp, and rather than a solid
+ * `fill` attribute because the call site has already minted a `url(#id)` reference.
+ *
+ * @example collapsedStopsSVG({stops: [{offset: 0, color: [1, 0, 0, 1]}, {offset: 1, color: [0, 0, 1, 1]}]}, 1) // '<stop offset="0" stop-color="rgb(128,0,128)" stop-opacity="1"/><stop offset="1" stop-color="rgb(128,0,128)" stop-opacity="1"/>'
+ */
+function collapsedStopsSVG(paint, opacity) {
+  const [r, g, b, a] = collapsedGradientColor(paint);
+  const byte = (v) => Math.round(v * 255);
+  const one = (offset) => `<stop offset="${offset}" stop-color="rgb(${byte(r)},${byte(g)},${byte(b)})" stop-opacity="${fmt(a * opacity)}"/>`;
+  return one(0) + one(1);
 }
 
 /**

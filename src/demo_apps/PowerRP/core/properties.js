@@ -387,11 +387,73 @@ export const GRADIENT_DEFAULT_ANGLE = 0;
 export const GRADIENT_DEFAULT_CENTER = { x: 0.5, y: 0.5 };
 /** Default wavelength: one ramp spans the whole axis (today's behaviour). */
 export const GRADIENT_DEFAULT_WAVELENGTH = 1;
-/** Smallest wavelength the UI scrubber and the direction handle allow — a floor
- * that keeps the ramp from collapsing to a zero-length (degenerate) axis. Not a
- * hard render bound: parsePaint accepts any positive wavelength and only throws
- * on <= 0 / non-finite. */
-export const GRADIENT_MIN_WAVELENGTH = 0.05;
+
+// THERE IS NO WAVELENGTH FLOOR (user ruling, 2026-08-02: the old 0.05 minimum was
+// "an arbitrary limitation" — remove it). GRADIENT_MIN_WAVELENGTH used to clamp the
+// Inspector scrubber AND core/paint_handles.js's direction bead, so a gradient could
+// not be tiled finer than 20 ramps across its box for no reason the renderer needed:
+// Skia/SVG tile a ramp of any positive length perfectly well. Wavelength now scrubs
+// and drags all the way DOWN TO 0.
+//
+// AT EXACTLY 0 THE RAMP HAS NO EXTENT, and the honest picture is its LIMIT, not an
+// error and not a divide-by-zero: as w → 0 the tiles get infinitely fine, so every
+// pixel averages the whole ramp and the fill converges to ONE SOLID COLOUR — the
+// ramp's segment-weighted mean (rampAverageColor below). Mirror tiling does not
+// change that mean (a reflected copy has the same average as the copy it reflects),
+// so the limit is the same in every spread mode and all three backends can paint it
+// as a plain solid. That is why parsePaint now ACCEPTS 0 and still rejects negatives
+// loudly: 0 is a meaningful, renderable value; a negative axis is still nonsense.
+/** Wavelength at which the ramp collapses to its average colour — the exact 0 case,
+ *  named so the three backends' solid-fill branches read as one decision. */
+export const GRADIENT_COLLAPSE_WAVELENGTH = 0;
+
+// THE GRADIENT SPREAD MODE (user ruling, 2026-08-02): what a tiled ramp does OUTSIDE
+// its one wavelength-long segment. These are the three NATIVE tile modes every
+// backend already has — Skia TileMode, SVG spreadMethod — so this row costs no
+// shader work, only plumbing:
+//
+//   mirror — reflects there-and-back (Skia Mirror / SVG "reflect"). TODAY'S
+//     BEHAVIOUR AND THE DEFAULT, so an ABSENT spread is byte-identical to every
+//     gradient authored before this feature (the same absent-is-legacy precedent as
+//     center/wavelength/phase).
+//   loop — restarts the ramp each segment (Skia Repeat / SVG "repeat"). The user's
+//     test of it: with looping "I should see purple on the right of it" — the FIRST
+//     colour reappears immediately after the last, instead of the last colour being
+//     reflected back.
+//   pad — no tiling at all (Skia Clamp / SVG "pad"): "basically just keeps the last
+//     color", holding each end colour out to the edge of the shape.
+//
+// THE PERIOD DIFFERS PER MODE, and that is the one thing this row changes about the
+// phase math (render_gpu/ir.js linearGradientRender). One ramp SEGMENT spans
+// 2·w·half. Mirror repeats only after a there-AND-back pair, so its period is
+// 4·w·half — which is why phase has always been a fraction of 4·w·half. Loop repeats
+// after ONE segment, so its period is 2·w·half. Pad never repeats, but a phase row
+// still needs a full-cycle unit, and one ramp is the only meaningful one — so pad
+// shares loop's 2·w·half. The phase-1-is-identity law is preserved in every mode
+// because phase is taken as a fraction OF THAT MODE'S OWN period.
+export const GRADIENT_SPREAD_MODES = ["mirror", "loop", "pad"];
+/** Human labels for the spread row, naming the visible consequence rather than the
+ *  graphics-API word (an author picking one is choosing a picture, not a TileMode). */
+export const GRADIENT_SPREAD_LABELS = {
+  mirror: "Mirror (reflect back)",
+  loop: "Loop (repeat from the start)",
+  pad: "Pad (hold the end colours)",
+};
+/** Default spread: today's mirror reflection, so absent-is-legacy holds. */
+export const GRADIENT_DEFAULT_SPREAD = "mirror";
+/** How many half-vectors long ONE FULL CYCLE of a spread mode is, as a multiple of
+ *  `wavelength·half`. Mirror needs the reflected "back" ramp to return to itself
+ *  (4); loop and pad repeat/measure on a single ramp (2). This is THE number the
+ *  phase shift multiplies, and the reason phase=1 is identity in every mode.
+ *
+ * @example spreadPeriodHalves("mirror") // 4  (there and back)
+ * @example spreadPeriodHalves("loop") // 2  (one ramp, then start over)
+ * @example spreadPeriodHalves("pad") // 2  (no repeat; one ramp is the cycle unit)
+ * @example spreadPeriodHalves(undefined) // 4  (absent → mirror, the legacy default)
+ */
+export function spreadPeriodHalves(spread) {
+  return (spread ?? GRADIENT_DEFAULT_SPREAD) === "mirror" ? 4 : 2;
+}
 
 // THE LINEAR-GRADIENT PHASE (user ruling: "the gradients have a wavelength option,
 // but they don't have a phase option. All gradients should have a phase option.").
@@ -408,6 +470,66 @@ export const GRADIENT_MIN_WAVELENGTH = 0.05;
 // — Clamp has no repeat to return to.
 /** Default phase: no shift (today's behaviour). */
 export const GRADIENT_DEFAULT_PHASE = 0;
+
+/**
+ * Pure function. THE AVERAGE COLOUR of a piecewise-linear colour ramp — the exact
+ * mean of the ramp read over its whole 0..1 domain, per channel.
+ *
+ * THIS IS WHAT A ZERO-WAVELENGTH GRADIENT PAINTS, and it is a LIMIT, not a
+ * fallback. As the wavelength shrinks the ramp tiles ever more finely, so the
+ * colour any pixel integrates over converges to the mean of one whole ramp. Every
+ * spread mode converges to the SAME value: a mirrored copy is the same ramp read
+ * backwards and has the same mean, and a looped copy is the same ramp again. So
+ * the three backends can each paint a plain solid here and cannot disagree.
+ *
+ * THE INTEGRAL. Between two neighbouring stops the ramp is a straight line, whose
+ * mean over that span is the midpoint of its endpoints — so a segment from t_i to
+ * t_{i+1} contributes (c_i + c_{i+1})/2 · (t_{i+1} − t_i). Outside the stops the
+ * ramp is CONSTANT (every backend clamps to the first/last stop colour), so the
+ * PADDINGS contribute c_first · (t_first − 0) and c_last · (1 − t_last). Summing
+ * those over the unit domain — total weight is exactly 1 — gives the mean directly,
+ * with no sampling and no resolution to choose.
+ *
+ * Stops are taken in the order given (the stored order is authoritative everywhere
+ * else in the paint pipeline — see the GRADIENT STOP LIST note above), and a
+ * zero-width segment simply contributes zero weight, so duplicate offsets are
+ * harmless rather than a special case.
+ *
+ * Args:
+ *   stops ({offset: number, color: number[]}[]): >= 1 stop; color is [r,g,b,a] 0..1
+ *
+ * Returns:
+ *   number[] — the mean [r, g, b, a]
+ *
+ * Examples:
+ *   >>> rampAverageColor([{offset: 0, color: [0,0,0,1]}, {offset: 1, color: [1,1,1,1]}])
+ *   [0.5, 0.5, 0.5, 1]   // black→white across the whole domain averages mid grey
+ *   >>> rampAverageColor([{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}])
+ *   [0.5, 0, 0.5, 1]     // red→blue averages purple — the colour a w=0 fill shows
+ *   >>> rampAverageColor([{offset: 0.5, color: [1,1,1,1]}, {offset: 1, color: [1,1,1,1]}])
+ *   [1, 1, 1, 1]         // the 0..0.5 padding is the first stop's colour, not black
+ *
+ * @example rampAverageColor([{offset: 0, color: [0,0,0,1]}, {offset: 1, color: [1,1,1,1]}]) // [0.5, 0.5, 0.5, 1]
+ * @example rampAverageColor([{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}]) // [0.5, 0, 0.5, 1]
+ * @example rampAverageColor([{offset: 0, color: [1,0,0,1]}, {offset: 0.5, color: [1,0,0,1]}, {offset: 1, color: [0,0,0,1]}]) // [0.75, 0, 0, 1]  (half held red, half ramping down)
+ * @example rampAverageColor([{offset: 0.25, color: [1,1,1,1]}, {offset: 0.75, color: [1,1,1,1]}]) // [1, 1, 1, 1]  (paddings hold the end colours)
+ * @example rampAverageColor([{offset: 0, color: [0.2,0.4,0.6,0.8]}]) // [0.2, 0.4, 0.6, 0.8]  (one stop is a solid)
+ */
+export function rampAverageColor(stops) {
+  if (!Array.isArray(stops) || stops.length === 0)
+    throw new Error(`rampAverageColor: needs at least one stop, got ${JSON.stringify(stops)}`);
+  const sum = [0, 0, 0, 0];
+  const addWeighted = (color, weight) => { for (let k = 0; k < 4; k++) sum[k] += color[k] * weight; };
+  // The flat paddings out to the domain ends — the ramp holds its end colours there.
+  addWeighted(stops[0].color, stops[0].offset);
+  addWeighted(stops[stops.length - 1].color, 1 - stops[stops.length - 1].offset);
+  // Each straight segment's mean is its endpoint midpoint, weighted by its span.
+  for (let i = 0; i < stops.length - 1; i++) {
+    const span = stops[i + 1].offset - stops[i].offset;
+    for (let k = 0; k < 4; k++) sum[k] += ((stops[i].color[k] + stops[i + 1].color[k]) / 2) * span;
+  }
+  return sum;
+}
 
 /** Fewest stops a gradient can describe — one colour is a solid, so
  *  render_gpu/ir.js normalizeStops throws below this. It is the list

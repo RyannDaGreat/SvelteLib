@@ -250,7 +250,7 @@
   import { LABEL_DIVIDER_VARIABLE } from "./labelFrac.js";
   import { makeHoverPreview } from "./hoverPreview.js";
   import { resolveScrub } from "../../../lib/numberStep.js";
-  import { GRADIENT_STOPS_LIST, GRADIENT_MIN_WAVELENGTH } from "../core/properties.js";
+  import { GRADIENT_STOPS_LIST, GRADIENT_SPREAD_MODES, GRADIENT_SPREAD_LABELS, GRADIENT_DEFAULT_SPREAD } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
   import { getMaterial, fillCapableMaterialIds as fillIds, materialFillParamDefaults, visibleKnobRows } from "../render_gpu/skia/materials.js";
   import { getStrokeMaterial, strokeMaterialIds as strokeIds } from "../render_gpu/skia/stroke_materials.js";
@@ -993,9 +993,13 @@
       </div>
       <!-- WAVELENGTH — the fraction of the box one full colour ramp spans (the
            on-canvas direction bead sets it too). 1 = the whole-box axis (today);
-           below 1 the ramp mirror-tiles (render_gpu/ir.js linearGradientRender).
-           A keyframable NumericField like the radial Radius, floored at
-           GRADIENT_MIN_WAVELENGTH so the axis can't collapse. -->
+           below 1 the ramp tiles per the Spread row below.
+           NO FLOOR (user ruling, 2026-08-02: the old 0.05 minimum was "an
+           arbitrary limitation"). `min={0}` because a NEGATIVE wavelength has no
+           reading — parsePaint refuses it loudly — while 0 is meaningful and
+           renderable: the ramp collapses to its AVERAGE colour, a solid, in all
+           three backends (core/properties.rampAverageColor). So the scrubber
+           travels all the way down to 0 and back out. -->
       <!-- The value track is `minmax(--a-input-w, 1fr)` on the shared grid, so
            these fields no longer need the fixed-width wrapper div they used to
            carry: the track IS the width, and it is the same track every other row
@@ -1003,7 +1007,34 @@
       <div class="paint-sub-row">
         <span class="paint-sub-label">Wavelength</span>
         <span class="paint-sub-control">
-          <NumericField {app} path={[...path, "linear", "wavelength"]} paths={writePaths.map((p) => [...p, "linear", "wavelength"])} label={`${label} wavelength`} min={GRADIENT_MIN_WAVELENGTH} scrub={FRACTION_SCRUB} />
+          <NumericField {app} path={[...path, "linear", "wavelength"]} paths={writePaths.map((p) => [...p, "linear", "wavelength"])} label={`${label} wavelength`} min={0} scrub={FRACTION_SCRUB} />
+        </span>
+      </div>
+      <!-- SPREAD — what the ramp does OUTSIDE its one wavelength-long segment
+           (user ruling, 2026-08-02). The three modes ARE the backends' native tile
+           modes (Skia TileMode / SVG spreadMethod), so nothing is emulated:
+           Mirror reflects back (TODAY'S BEHAVIOUR AND THE DEFAULT — an absent
+           `spread` is byte-identical to every gradient authored before this row),
+           Loop restarts the ramp so the first colour reappears immediately after
+           the last, Pad holds the end colours out to the edges.
+           A plain Dropdown, the same control every other select knob in this panel
+           uses. It writes through commitAt, so ONE undo unit and the same
+           setPreview → commitPreview contract as the sibling rows — and it is
+           equation-bindable like any other property (expressions.js has no
+           per-property gradient whitelist).
+           NOTE it changes the PHASE PERIOD as well as the tiling: mirror's cycle
+           is a there-and-back pair, loop's and pad's is one ramp. That is folded
+           into render_gpu/ir.js linearGradientRender, so Phase above keeps its
+           360°-is-identity behaviour in whichever mode is picked. -->
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Spread</span>
+        <span class="paint-sub-control">
+          <Dropdown
+            items={GRADIENT_SPREAD_MODES.map((m) => ({ value: m, label: GRADIENT_SPREAD_LABELS[m] }))}
+            value={sub.linear?.spread ?? GRADIENT_DEFAULT_SPREAD}
+            {disabled}
+            onchange={(v) => commitAt(["linear", "spread"], v)}
+          />
         </span>
       </div>
       <!-- PHASE — shifts where the ramp's cycle starts, STORED in WAVELENGTH-UNIT
