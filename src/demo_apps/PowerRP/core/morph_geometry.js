@@ -298,13 +298,17 @@ export function subdivideCubic(tuple, n) {
  *
  * @param {number[][][]} tuples - consecutive cubics; each tuple[0] must equal
  *   the previous tuple[3] (they do, by construction, everywhere this is called)
- * @param {object} like - a Subpath whose `closed`/`paint` are copied
+ * @param {object} like - a Subpath whose `closed`/`paint`/`piece` are copied
  * @returns {object} a Subpath (with `winding` RE-DERIVED, since a rebuild may
  *   have reversed or rotated the geometry)
  *
  * @example
  * >>> subpathFromTuples([[[0, 0], [1, 0], [2, 0], [3, 0]]], {closed: false})
  * {start: [0, 0], curves: [[1, 0, 2, 0, 3, 0]], closed: false, winding: 1}
+ * >>> // `piece` (the AQ grouping id) rides along like `paint` does — a rebuild
+ * >>> // changes a contour's parameterization, never which glyph it belongs to:
+ * >>> subpathFromTuples([[[0, 0], [1, 0], [2, 0], [3, 0]]], {closed: false, piece: 2}).piece
+ * 2
  */
 export function subpathFromTuples(tuples, like) {
   const sp = {
@@ -314,6 +318,7 @@ export function subpathFromTuples(tuples, like) {
   };
   sp.winding = shoelaceWinding(sp);
   if (like.paint) sp.paint = like.paint;
+  if (like.piece !== undefined) sp.piece = like.piece;
   return sp;
 }
 
@@ -447,6 +452,10 @@ export function isDegenerateCurve(tuple, reference) {
  * @example
  * >>> dotSubpath([4, 5], 2, {closed: true})
  * {start: [4, 5], curves: [[4, 5, 4, 5, 4, 5], [4, 5, 4, 5, 4, 5]], closed: true, winding: 1}
+ * >>> // padding for a missing contour BELONGS TO THE PIECE IT PADS (AQ), so the
+ * >>> // fill grain does not gain a stray one-contour op where a hole vanished:
+ * >>> dotSubpath([0, 0], 1, {closed: true, piece: 3}).piece
+ * 3
  */
 export function dotSubpath(point, n, like = {}) {
   const [x, y] = point;
@@ -457,6 +466,7 @@ export function dotSubpath(point, n, like = {}) {
     winding: 1,
   };
   if (like.paint) sp.paint = like.paint;
+  if (like.piece !== undefined) sp.piece = like.piece;
   return sp;
 }
 

@@ -19,7 +19,7 @@
  */
 
 import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, isPaintOff, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
-import { morphPaths, payloadToPathD, assertMorphPaths } from "../core/morph.js";
+import { morphPaths, payloadToPathD, assertMorphPaths, midMorphFillRule } from "../core/morph.js";
 import { statePaint } from "../core/morph_payload.js";
 import { isVisibleFxToken, visibleLevel, isPaintShaped, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 import { deepEqual } from "../core/deltas.js";
@@ -720,7 +720,14 @@ export function morphIR(node) {
         fill: paint.fill,
         stroke: (paint.strokeWidth ?? 0) > 0 ? paint.stroke : null,
         strokeWidth: paint.strokeWidth ?? 0,
-        fillRule: blended.fillRule,
+        // THE RULE IS ASKED OF THIS OP'S OWN CONTOURS (workstream AQ), because a
+        // fill rule is a property of a WHOLE PATH and each run is now one path.
+        // Asking it of the whole payload was right when the payload was one op;
+        // with per-glyph ops it would let a DIFFERENT letter's crossing contours
+        // disqualify evenodd for a glyph they are not in the path with — which is
+        // the containment this split exists to give. `blended.fillRule` is the
+        // payload's own declared rule and stays the fallback the predicate reads.
+        fillRule: midMorphFillRule({ ...blended, subpaths }),
         opacity: paint.opacity ?? 1,
       })];
     });
@@ -761,16 +768,49 @@ export function morphIR(node) {
  * text box, an equation, any single-ink widget) is one run either way, which is
  * exactly the case that had the bug.
  *
+ * ── THE SECOND REASON TO SPLIT: THE PIECE (workstream AQ) ────────────────────
+ * Paint alone was the grain, and for a homogeneous string that made the WHOLE
+ * WIDGET one fill computation — every letter of "hello" resolved together, so a
+ * neighbouring glyph's outer drifting across an `o`'s counter added its winding
+ * to the sum and closed the hole. AM's fix made a counter EXPRESSIBLE; it did not
+ * make it CONTAINED, and the residual AM measured is exactly the cross-glyph
+ * crossings this splits apart.
+ *
+ * Manim's grain is the VMobject: one glyph, one `ctx.fill()`
+ * (`manim/camera/camera.py:781`). "The only contours that ever share a fill
+ * computation are the contours of ONE glyph" is the whole of why its holes
+ * survive a transform, and the research note calls it the single most valuable
+ * thing to adopt (§1.4). So a `piece` change starts a new run, and the mid-morph
+ * op count for an N-glyph string becomes N — the same count Manim issues, and the
+ * same count WE issued before AM's fix, so it is measured-safe territory.
+ *
+ * A payload whose subpaths carry no `piece` (or all the same one) is unchanged:
+ * one run per paint, exactly as before.
+ *
+ * NOT DONE, DELIBERATELY: re-merging adjacent same-paint pieces that provably do
+ * not overlap. It would restore the old op count for the common case, but
+ * correctness comes before op count and the merge condition is a per-frame
+ * geometric test whose cost is unmeasured. Spec §2.3.9 says to measure before
+ * optimizing; this is that decision, recorded rather than silently skipped.
+ *
  * @param {object[]} subpaths - the mid-morph subpaths, in paint order
  * @param {function} paintFor - (subpath) → the resolved paint for it
  * @returns {object[]} `[{subpaths, paint}]`, in paint order
  *
  * @example
- * >>> // one ink (a glyph and its counter): ONE run, so the fill rule can hole it
+ * >>> // one ink, one piece (a glyph and its counter): ONE run, so the fill rule
+ * >>> // can hole it — this is the case AM's fix exists for.
+ * >>> morphPaintRuns([{start: [0, 0], piece: "0>0"}, {start: [1, 1], piece: "0>0"}],
+ * ...   () => ({fill: "#000"})).length
+ * 1
+ * >>> // TWO GLYPHS in one ink: TWO runs, so neither letter's contours are in the
+ * >>> // other's fill computation — Manim's one-fill-per-VMobject grain.
+ * >>> morphPaintRuns([{start: [0, 0], piece: "0>0"}, {start: [1, 1], piece: "1>1"}],
+ * ...   () => ({fill: "#000"})).length
+ * 2
+ * >>> // no piece stamped at all: paint is the only grain, exactly as before AQ
  * >>> morphPaintRuns([{start: [0, 0]}, {start: [1, 1]}], () => ({fill: "#000"})).length
  * 1
- * >>> morphPaintRuns([{start: [0, 0]}, {start: [1, 1]}], () => ({fill: "#000"}))[0].subpaths.length
- * 2
  * >>> // two inks (an SVG icon): two runs, so neither contour loses its colour
  * >>> morphPaintRuns([{start: [0, 0]}, {start: [1, 1]}],
  * ...   (sp) => ({fill: sp.start[0] ? "#00f" : "#f00"})).map((r) => r.paint.fill)
@@ -782,9 +822,10 @@ export function morphPaintRuns(subpaths, paintFor) {
   const runs = [];
   for (const sp of subpaths) {
     const paint = paintFor(sp);
+    const piece = sp.piece;
     const last = runs[runs.length - 1];
-    if (last && deepEqual(last.paint, paint)) last.subpaths.push(sp);
-    else runs.push({ subpaths: [sp], paint });
+    if (last && last.piece === piece && deepEqual(last.paint, paint)) last.subpaths.push(sp);
+    else runs.push({ subpaths: [sp], paint, piece });
   }
   return runs;
 }

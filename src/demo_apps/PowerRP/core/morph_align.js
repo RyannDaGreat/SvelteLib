@@ -210,6 +210,10 @@ export function normalizeSubpath(sp, space) {
   };
   out.winding = shoelaceWinding(out);
   if (sp.paint) out.paint = sp.paint;
+  // THE PIECE ID SURVIVES NORMALIZATION (workstream AQ). It is a grouping
+  // annotation, not geometry: scaling coordinates into the unit box cannot change
+  // which authored path a contour came from, and `pairSubpaths` reads it here.
+  if (sp.piece !== undefined) out.piece = sp.piece;
   return out;
 }
 
@@ -331,6 +335,149 @@ function signedAreaOf(sp) {
 }
 
 /**
+ * Pure function. The distinct `piece` ids in a subpath list, in FIRST-APPEARANCE
+ * order — which is paint order, since `morphPayloadFromPaths` emits sources in
+ * paint order and never reorders.
+ *
+ * A subpath with no `piece` reads as piece `0`, which is the whole of the
+ * degrade-to-old-behaviour rule (spec §2.3.3): a payload where nothing is stamped
+ * is ONE piece containing everything, i.e. exactly the pre-AQ global pairing.
+ *
+ * @example
+ * >>> pieceIdsOf([{piece: 0}, {piece: 0}, {piece: 1}])
+ * [0, 1]
+ * >>> // an UNSTAMPED payload (an older memo entry) is one piece:
+ * >>> pieceIdsOf([{start: [0, 0]}, {start: [1, 1]}])
+ * [0]
+ */
+export function pieceIdsOf(subpaths) {
+  const seen = [];
+  for (const sp of subpaths) {
+    const p = sp.piece ?? 0;
+    if (!seen.includes(p)) seen.push(p);
+  }
+  return seen;
+}
+
+/** Pure helper. The indices in `subpaths` belonging to piece `id` (unstamped = 0).
+ *
+ * @example
+ * >>> indicesOfPiece([{piece: 0}, {piece: 1}, {piece: 0}], 0)
+ * [0, 2]
+ */
+function indicesOfPiece(subpaths, id) {
+  const out = [];
+  subpaths.forEach((sp, i) => { if ((sp.piece ?? 0) === id) out.push(i); });
+  return out;
+}
+
+/**
+ * Pure function. A piece's contours summarized as ONE pseudo-subpath — every
+ * member's curves concatenated — so a piece can be scored by the SAME `pairCost`
+ * a contour is, with no second metric to keep in agreement.
+ *
+ * THE WINDING IS THE LARGEST MEMBER'S, not a re-derived shoelace of the
+ * concatenation: a glyph's outer and its counter are wound in opposition, so
+ * summing them describes neither, while "the winding of the contour that carries
+ * the piece's ink" is the sense `pairCost`'s winding term wants — an `O` should
+ * read as a positively-wound letterform, not as its own net area.
+ *
+ * `closed` is likewise the largest member's, for the same reason: a piece with a
+ * closed outer is a closed letterform whatever its counters do.
+ *
+ * @param {object[]} subpaths - the whole list
+ * @param {number[]} indices - the members of one piece
+ * @returns {object} a Subpath-shaped hull (never rendered — scored only)
+ *
+ * @example
+ * >>> const sq = {start: [0, 0], closed: true, winding: 1, curves: [
+ * ...   [0,0,0,0,1,0], [0,0,0,0,1,1], [0,0,0,0,0,1], [0,0,0,0,0,0]]};
+ * >>> const dot = {start: [0.5, 0.5], closed: true, winding: -1, curves: [[0.5,0.5,0.5,0.5,0.5,0.5]]};
+ * >>> pieceHull([sq, dot], [0, 1]).curves.length   // both members' curves
+ * 5
+ * >>> pieceHull([sq, dot], [0, 1]).winding         // the OUTER's, not the sum
+ * 1
+ */
+export function pieceHull(subpaths, indices) {
+  let biggest = indices[0], bestSize = -1;
+  const curves = [];
+  for (const i of indices) {
+    const sp = subpaths[i];
+    const size = subpathSize(sp);
+    if (size > bestSize) { bestSize = size; biggest = i; }
+    curves.push(...sp.curves);
+  }
+  const lead = subpaths[biggest];
+  return { start: [...subpaths[indices[0]].start], curves, closed: !!lead.closed, winding: lead.winding };
+}
+
+/**
+ * Pure function. Which PIECE of `from` becomes which piece of `to`, as
+ * `[fromPieceId, toPieceId]` pairs — THE glyph-to-glyph decision, made before any
+ * contour is paired.
+ *
+ * ── WHY PIECES PAIR AT ALL, RATHER THAN BY POSITION ─────────────────────────
+ * Manim's plain `Transform` zips two glyph families POSITIONALLY — glyph 0 → glyph
+ * 0 (research note §1.6) — which is why "Hi" → "Yo" gives H→Y and i→o whatever
+ * their shapes are. We already have a better metric than position for contours, so
+ * pieces use the same one: `pairCost` over the piece's hull reads centroid, size,
+ * area, winding and closedness, and that makes `O` → `O` beat `O` → `l` without a
+ * text-specific rule anywhere.
+ *
+ * Greedy, lowest cost first, with the SAME stated tie-break as everywhere else in
+ * this module (cost, then fromPiece, then toPiece) — the determinism law: two
+ * renderers disagreeing on a tie would draw two different frames for one document.
+ *
+ * Pieces with no counterpart are simply ABSENT from the result; their contours
+ * fall through to `pairSubpaths`' global pass and keep today's padding behaviour.
+ *
+ * @param {object[]} fromSubpaths - unit-space subpaths, `piece`-stamped
+ * @param {object[]} toSubpaths - unit-space subpaths, `piece`-stamped
+ * @returns {number[][]} matched `[fp, tp]` piece ids, ascending by `fp`
+ *
+ * @example
+ * >>> // ONE piece per side (an unstamped payload, or a single-path widget):
+ * >>> // exactly one pair, which is why the pre-AQ behaviour is recovered.
+ * >>> const c = {start: [0, 0], closed: true, winding: 1, curves: [[0,0,0,0,1,1]]};
+ * >>> pairPieces([c], [c])
+ * [[0, 0]]
+ * >>> // TWO pieces per side, the TO side authored in the other order: the match
+ * >>> // follows GEOMETRY, so the near copy stays with the near copy.
+ * >>> const at = (x) => ({start: [x, 0], closed: true, winding: 1, piece: 0,
+ * ...   curves: [[x,0,x,0,x+0.1,0], [x,0,x,0,x+0.1,0.1], [x,0,x,0,x,0]]});
+ * >>> const A = [{...at(0), piece: 0}, {...at(0.6), piece: 1}];
+ * >>> const B = [{...at(0.62), piece: 0}, {...at(0.02), piece: 1}];
+ * >>> pairPieces(A, B)
+ * [[0, 1], [1, 0]]
+ */
+export function pairPieces(fromSubpaths, toSubpaths) {
+  const fromIds = pieceIdsOf(fromSubpaths);
+  const toIds = pieceIdsOf(toSubpaths);
+  if (!fromIds.length || !toIds.length) return [];
+  // THE DEGENERATE CASE IS THE COMMON ONE AND IT MUST COST NOTHING: one piece on
+  // each side is the unstamped payload and every single-path widget, so it pairs
+  // without building a hull or scoring anything.
+  if (fromIds.length === 1 && toIds.length === 1) return [[fromIds[0], toIds[0]]];
+
+  const hullFrom = new Map(fromIds.map((id) => [id, pieceHull(fromSubpaths, indicesOfPiece(fromSubpaths, id))]));
+  const hullTo = new Map(toIds.map((id) => [id, pieceHull(toSubpaths, indicesOfPiece(toSubpaths, id))]));
+
+  const candidates = [];
+  for (const fp of fromIds)
+    for (const tp of toIds)
+      candidates.push({ fp, tp, cost: pairCost(hullFrom.get(fp), hullTo.get(tp)) });
+  candidates.sort((p, q) => (p.cost - q.cost) || (p.fp - q.fp) || (p.tp - q.tp));
+
+  const usedFrom = new Set(), usedTo = new Set(), pairs = [];
+  for (const c of candidates) {
+    if (usedFrom.has(c.fp) || usedTo.has(c.tp)) continue;
+    usedFrom.add(c.fp); usedTo.add(c.tp);
+    pairs.push([c.fp, c.tp]);
+  }
+  return pairs.sort((p, q) => p[0] - q[0]);
+}
+
+/**
  * Pure function. Which subpath of `from` becomes which subpath of `to`, as a
  * list of `[fromIndex | null, toIndex | null]` pairs. Exactly one side may be
  * null, meaning that side needs padding.
@@ -350,6 +497,28 @@ function signedAreaOf(sp) {
  *   - Leftovers on either side pair with null, in descending-size order, so the
  *     LARGEST unmatched subpath is padded first.
  *
+ * ── PIECES PAIR BEFORE CONTOURS DO (workstream AQ) ───────────────────────────
+ * The policy above was string-wide, and that is precisely the gap the research
+ * note names (refs/manim_morph_holes_research.md §2.1): with a flat payload an
+ * `O`'s counter in word 1 could legally pair with an `A`'s counter three letters
+ * away, because nothing downstream of `morphPayloadFromPaths` knew they were
+ * different letters. Now `piece` says which authored path each contour came from
+ * (one glyph = one piece, automatically), so:
+ *
+ *   1. THE PIECES ARE PAIRED FIRST, by `pairPieces` — the same cost machinery,
+ *      applied to each piece's contour hull, so `O` → `O` beats `O` → `l`.
+ *   2. CONTOURS PAIR WITHIN A MATCHED PIECE-PAIR, one piece-pair at a time. A
+ *      contour left over INSIDE a matched piece (an `8`'s third contour against a
+ *      `6`'s two) is PADDED, never lent to another glyph — see the body.
+ *   3. TRUE LEFTOVERS — contours in pieces with no counterpart at all — fall
+ *      through to the ORIGINAL global cross product, unchanged.
+ *
+ * This is a RESTRICTION OF THE CANDIDATE SET, not a new metric: `pairCost` is
+ * untouched, and it already beats ManimGL's perimeter sort (§1.3), so the thing
+ * being adopted from Manim is its CONTAINMENT and not its pairing. A payload with
+ * no `piece` field, or one whose subpaths are all one piece, produces exactly one
+ * piece-pair covering everything — i.e. the pre-AQ global pass, bit-for-bit.
+ *
  * @example
  * >>> // two subpaths each, paired big-to-big and small-to-small:
  * >>> const big = {start: [0, 0], curves: [[0,0,0,0,10,0],[0,0,0,0,10,10],[0,0,0,0,0,10],[0,0,0,0,0,0]], closed: true, winding: 1};
@@ -361,27 +530,68 @@ function signedAreaOf(sp) {
  * [[0, 0], [1, null]]
  */
 export function pairSubpaths(fromSubpaths, toSubpaths) {
-  const order = (list) => list
-    .map((sp, i) => ({ i, size: subpathSize(sp) }))
+  const order = (list, indices) => (indices ?? list.map((_, i) => i))
+    .map((i) => ({ i, size: subpathSize(list[i]) }))
     .sort((p, q) => (q.size - p.size) || (p.i - q.i))
     .map((p) => p.i);
   const fromOrder = order(fromSubpaths);
   const toOrder = order(toSubpaths);
 
-  const candidates = [];
-  for (const fi of fromOrder)
-    for (const ti of toOrder)
-      candidates.push({ fi, ti, cost: pairCost(fromSubpaths[fi], toSubpaths[ti]) });
-  // Deterministic total order: cost, then fromIndex, then toIndex. No two
-  // candidates compare equal, so the sort's own stability is never load-bearing.
-  candidates.sort((p, q) => (p.cost - q.cost) || (p.fi - q.fi) || (p.ti - q.ti));
-
+  // ── THE PIECE RESTRICTION (workstream AQ) ──────────────────────────────────
+  // Contours in MATCHED pieces compete only inside their piece; everything else
+  // falls through to the global cross product exactly as before. This is the ONLY
+  // structural change to the pairing — the cost function is untouched.
+  const piecePairs = pairPieces(fromSubpaths, toSubpaths);
   const usedFrom = new Set(), usedTo = new Set(), pairs = [];
-  for (const c of candidates) {
-    if (usedFrom.has(c.fi) || usedTo.has(c.ti)) continue;
-    usedFrom.add(c.fi); usedTo.add(c.ti);
-    pairs.push([c.fi, c.ti]);
+
+  /** Greedy least-cost matching over one candidate rectangle, marking used. */
+  const consume = (fis, tis) => {
+    const candidates = [];
+    for (const fi of fis) {
+      if (usedFrom.has(fi)) continue;
+      for (const ti of tis) {
+        if (usedTo.has(ti)) continue;
+        candidates.push({ fi, ti, cost: pairCost(fromSubpaths[fi], toSubpaths[ti]) });
+      }
+    }
+    // Deterministic total order: cost, then fromIndex, then toIndex. No two
+    // candidates compare equal, so the sort's own stability is never load-bearing.
+    candidates.sort((p, q) => (p.cost - q.cost) || (p.fi - q.fi) || (p.ti - q.ti));
+    for (const c of candidates) {
+      if (usedFrom.has(c.fi) || usedTo.has(c.ti)) continue;
+      usedFrom.add(c.fi); usedTo.add(c.ti);
+      pairs.push([c.fi, c.ti]);
+    }
+  };
+
+  // Matched pieces first, in a stated order (by from-piece id) so two renderers
+  // cannot disagree about which piece consumed a shared candidate.
+  const inMatchedPiece = new Set();
+  for (const [fp, tp] of piecePairs) {
+    const fis = order(fromSubpaths, indicesOfPiece(fromSubpaths, fp));
+    const tis = order(toSubpaths, indicesOfPiece(toSubpaths, tp));
+    consume(fis, tis);
+    for (const i of fis) inMatchedPiece.add(`f${i}`);
+    for (const i of tis) inMatchedPiece.add(`t${i}`);
   }
+  // ── A MATCHED PIECE'S SURPLUS CONTOUR IS PADDED, NOT LENT OUT ──────────────
+  // The two glyphs of a matched pair rarely have equal contour counts — an `8`
+  // has three and a `6` has two, so one contour of the 8 has no partner inside
+  // its own piece. Letting it fall into the global pass below is what the spec's
+  // "cross-piece only for LEFTOVERS" rules out: it is not a leftover, its piece
+  // found its counterpart. Measured on "809" → "638" it produced the one residual
+  // cross-glyph pairing in the corpus — the `0`'s counter pairing into the `8`
+  // three characters away, which is the exact artifact the piece grain exists to
+  // stop. Padding is the honest answer and it is what the engine already does for
+  // a contour with no counterpart: the surplus counter collapses to a
+  // trace-and-return on its own piece's partner, so the hole shrinks shut inside
+  // its own letter instead of flying across the string.
+  const freeFrom = fromOrder.filter((i) => !usedFrom.has(i) && !inMatchedPiece.has(`f${i}`));
+  const freeTo = toOrder.filter((i) => !usedTo.has(i) && !inMatchedPiece.has(`t${i}`));
+  // Then the true leftovers — contours in pieces that found NO counterpart —
+  // against each other, under the original global cross product.
+  consume(freeFrom, freeTo);
+
   for (const fi of fromOrder) if (!usedFrom.has(fi)) pairs.push([fi, null]);
   for (const ti of toOrder) if (!usedTo.has(ti)) pairs.push([null, ti]);
   // Present pairs in the FROM shape's own subpath order (nulls last, in
@@ -619,8 +829,18 @@ export function alignPayloads(fromPayload, toPayload) {
     a = insertCurves(a, n - a.curves.length, reference);
     b = insertCurves(b, n - b.curves.length, reference);
 
-    outFrom.push(a);
-    outTo.push(b);
+    // ── THE SLOT'S PIECE (workstream AQ) ───────────────────────────────────
+    // The two payloads number their pieces INDEPENDENTLY: from-piece 1 and
+    // to-piece 1 are unrelated authored paths. What the mid-morph subpath needs
+    // is a group id whose EQUALITY is meaningful across the slots of ONE frame,
+    // so `morphPaintRuns` can start an op at a glyph boundary. That id is the
+    // SLOT'S PAIR, "fp>tp" — two slots share it exactly when they are two
+    // contours of the same pairing of a from-glyph with a to-glyph, which is the
+    // grain Manim's per-VMobject `ctx.fill()` has. A one-piece payload yields the
+    // single key "0>0" on every slot, i.e. one run, i.e. today.
+    const slot = `${a.piece ?? 0}>${b.piece ?? 0}`;
+    outFrom.push({ ...a, piece: slot });
+    outTo.push({ ...b, piece: slot });
   }
 
   return {

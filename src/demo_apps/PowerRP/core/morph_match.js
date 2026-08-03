@@ -286,6 +286,204 @@ export function matchSubpaths(fromSubpaths, toSubpaths) {
 }
 
 /**
+ * Pure function. THE PIECE-GRANULARITY HASH — a whole authored path (one glyph)
+ * → a key equal for two pieces drawing the same letterform anywhere, at any size.
+ *
+ * ── THIS IS THE ACTUAL `TransformMatchingShapes` PORT ────────────────────────
+ * `shapeKey` above hashes ONE CONTOUR, and that was a real divergence from Manim
+ * rather than a refinement of it (refs/manim_morph_holes_research.md §2.1).
+ * Manim's `get_mobject_key` hashes `mobject.points` where the mobject is a family
+ * LEAF — a whole glyph, all its contours in one array (`transform_matching_parts
+ * .py:223-235`). So in Manim a matched part is never a lone contour, and the
+ * counter of a matched `O` travels with its outer BY CONSTRUCTION.
+ *
+ * Ours could split them: an `O` whose outer hashed a match while its counter did
+ * not got its outer travelling rigidly and its counter morphing independently —
+ * the two halves of one letter on two different trajectories, which is exactly
+ * the "boiling" this module exists to remove, reintroduced at a smaller scale.
+ *
+ * ── HOW IT IS COMPUTED, AND WHY NOT JUST A CONCATENATION OF `shapeKey`s ──────
+ * The piece is normalized as a WHOLE — one centre, one extent, taken over all its
+ * contours together — and each contour is then resampled and emitted against that
+ * shared frame. Hashing the contours independently and joining the strings would
+ * lose exactly the information that distinguishes an `O` from a `Q`: where the
+ * counter sits INSIDE the outer, and how big it is relative to it. Contour ORDER
+ * is authored order (the `d` string's), which for a font is stable per glyph;
+ * a re-ordered piece is a MISSED match, never a wrong one, same as `shapeKey`'s
+ * start-vertex dependence.
+ *
+ * @param {object[]} subpaths - one piece's contours, in authored order
+ * @returns {string} the piece key
+ *
+ * @example
+ * >>> const seg = (p, q) => [p[0]+(q[0]-p[0])/3, p[1]+(q[1]-p[1])/3,
+ * ...                        p[0]+2*(q[0]-p[0])/3, p[1]+2*(q[1]-p[1])/3, q[0], q[1]];
+ * >>> const sq = (x, y, s) => { const c = [[x,y],[x+s,y],[x+s,y+s],[x,y+s],[x,y]];
+ * ...   return {start: [x, y], closed: true, winding: 1,
+ * ...           curves: [seg(c[0],c[1]), seg(c[1],c[2]), seg(c[2],c[3]), seg(c[3],c[4])]}; };
+ * >>> // A RING (outer + counter) is ONE piece. The same ring moved and scaled
+ * >>> // hashes equal — the counter's placement inside the outer is part of the key:
+ * >>> const ring = (x, s) => [sq(x, 0, s), sq(x + s / 4, s / 4, s / 2)];
+ * >>> pieceKey(ring(0, 1)) === pieceKey(ring(5, 3))
+ * true
+ * >>> // a piece that is the outer ALONE is a different letterform:
+ * >>> pieceKey(ring(0, 1)) === pieceKey([sq(0, 0, 1)])
+ * false
+ */
+export function pieceKey(subpaths) {
+  const { centre, extent } = piecePlacement(subpaths);
+  if (!(extent > 0)) return "dot";
+  const parts = subpaths.map((sp) => {
+    const pts = resampleAnchors(sp, HASH_SAMPLES);
+    return (sp.closed ? "z" : "o") + "|" + pts.map(([x, y]) =>
+      `${zeroNormalized(round((x - centre[0]) / extent))},${zeroNormalized(round((y - centre[1]) / extent))}`).join(";");
+  });
+  return `p${subpaths.length}#${parts.join("#")}`;
+}
+
+/**
+ * Pure function. A whole PIECE's placement — the centroid of all its contours'
+ * anchors, and the greatest anchor distance from it.
+ *
+ * ONE frame for the whole piece, not per contour, which is the point: it is what
+ * makes a counter's position and size RELATIVE TO ITS OUTER part of the piece's
+ * key rather than normalized away contour by contour.
+ *
+ * @param {object[]} subpaths - one piece's contours
+ * @returns {{centre: number[], extent: number}}
+ *
+ * @example
+ * >>> const bar = {start: [0, 0], closed: false, winding: 1, curves: [[0,0,0,0,4,0]]};
+ * >>> piecePlacement([bar]).centre
+ * [2, 0]
+ * >>> piecePlacement([bar]).extent
+ * 2
+ */
+export function piecePlacement(subpaths) {
+  const pts = [];
+  for (const sp of subpaths) pts.push(...anchors(sp));
+  if (!pts.length) return { centre: [0, 0], extent: 0 };
+  const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+  const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  let extent = 0;
+  for (const p of pts) extent = Math.max(extent, dist([cx, cy], p));
+  return { centre: [cx, cy], extent };
+}
+
+/**
+ * Pure function. THE PIECE MATCHING — two piece lists → the pairs that draw the
+ * SAME letterform, as `[fromPieceIndex, toPieceIndex]`.
+ *
+ * Identical policy to `matchSubpaths` one level up: hash, bucket, and resolve
+ * duplicate keys by NEAREST DISPLACEMENT, greedily, with the stated
+ * `(fromIndex, toIndex)` tie-break. THE DUPLICATE RULE MATTERS MORE HERE, not
+ * less — at contour granularity the duplicate case was two coincidentally
+ * congruent contours; at piece granularity it is DUPLICATE LETTERS, which is the
+ * common case in any real string ("bb", "hello", "600" → "800").
+ *
+ * @param {object[][]} fromPieces - unit-space pieces (each a contour list)
+ * @param {object[][]} toPieces - unit-space pieces
+ * @returns {number[][]} matched `[fi, ti]` piece indices, ascending by `fi`
+ *
+ * @example
+ * >>> const seg = (p, q) => [p[0]+(q[0]-p[0])/3, p[1]+(q[1]-p[1])/3,
+ * ...                        p[0]+2*(q[0]-p[0])/3, p[1]+2*(q[1]-p[1])/3, q[0], q[1]];
+ * >>> const sq = (x, s) => { const c = [[x,0],[x+s,0],[x+s,s],[x,s],[x,0]];
+ * ...   return {start: [x, 0], closed: true, winding: 1,
+ * ...           curves: [seg(c[0],c[1]), seg(c[1],c[2]), seg(c[2],c[3]), seg(c[3],c[4])]}; };
+ * >>> // TWO IDENTICAL LETTERS per side — the "bb" case. Nearest displacement
+ * >>> // keeps each with the copy beside it instead of swapping them:
+ * >>> matchPieceGroups([[sq(0, 0.2)], [sq(0.6, 0.2)]], [[sq(0.05, 0.2)], [sq(0.65, 0.2)]])
+ * [[0, 0], [1, 1]]
+ * >>> // authored in the other order, the match still follows the geometry:
+ * >>> matchPieceGroups([[sq(0, 0.2)], [sq(0.6, 0.2)]], [[sq(0.65, 0.2)], [sq(0.05, 0.2)]])
+ * [[0, 1], [1, 0]]
+ */
+export function matchPieceGroups(fromPieces, toPieces) {
+  const extentOf = (pieces) => {
+    let m = 0;
+    for (const p of pieces) m = Math.max(m, piecePlacement(p).extent);
+    return m;
+  };
+  const floor = Math.max(extentOf(fromPieces), extentOf(toPieces)) * MIN_MATCH_EXTENT_FRACTION;
+  const keyed = (pieces) => pieces.map((p) => {
+    const pl = piecePlacement(p);
+    return pl.extent > floor ? { key: pieceKey(p), centre: pl.centre } : null;
+  });
+  const A = keyed(fromPieces), B = keyed(toPieces);
+
+  const candidates = [];
+  for (let fi = 0; fi < A.length; fi++) {
+    if (!A[fi]) continue;
+    for (let ti = 0; ti < B.length; ti++) {
+      if (!B[ti] || B[ti].key !== A[fi].key) continue;
+      candidates.push({ fi, ti, travel: dist(A[fi].centre, B[ti].centre) });
+    }
+  }
+  candidates.sort((p, q) => (p.travel - q.travel) || (p.fi - q.fi) || (p.ti - q.ti));
+
+  const usedFrom = new Set(), usedTo = new Set(), pairs = [];
+  for (const c of candidates) {
+    if (usedFrom.has(c.fi) || usedTo.has(c.ti)) continue;
+    usedFrom.add(c.fi); usedTo.add(c.ti);
+    pairs.push([c.fi, c.ti]);
+  }
+  return pairs.sort((p, q) => p[0] - q[0]);
+}
+
+/**
+ * Pure function. A whole PIECE at alpha — every contour placed by the ONE
+ * similarity the piece's two placements define.
+ *
+ * ── THE POINT: A MATCHED GLYPH TRAVELS WHOLE ─────────────────────────────────
+ * `travelledSubpath` maps one contour by its OWN placement pair. Applying it
+ * contour by contour to a matched glyph would let the outer and the counter take
+ * two different similarities, and the counter could then drift out of its bowl
+ * mid-flight — which is the very failure grouping exists to prevent. One
+ * similarity for the piece keeps the counter exactly where it is in the letter,
+ * at every alpha, which is what Manim gets from a matched part being one VMobject.
+ *
+ * @param {object[]} a - the FROM piece's contours (unit space)
+ * @param {object[]} b - the TO piece's contours (unit space, congruent to `a`)
+ * @param {number} alpha - transition progress in [0, 1]
+ * @returns {object[]} the piece's contours at alpha
+ *
+ * @example
+ * >>> const seg = (p, q) => [p[0]+(q[0]-p[0])/3, p[1]+(q[1]-p[1])/3,
+ * ...                        p[0]+2*(q[0]-p[0])/3, p[1]+2*(q[1]-p[1])/3, q[0], q[1]];
+ * >>> const sq = (x, y, s) => ({start: [x, y], closed: true, winding: 1, curves: [
+ * ...   seg([x,y],[x+s,y]), seg([x+s,y],[x+s,y+s]), seg([x+s,y+s],[x,y+s]), seg([x,y+s],[x,y])]});
+ * >>> const ring = (x) => [sq(x, 0, 1), sq(x + 0.25, 0.25, 0.5)];
+ * >>> // the counter keeps its offset INSIDE the outer for the whole trip:
+ * >>> const mid = travelledPiece(ring(0), ring(2), 0.5);
+ * >>> [Math.round((mid[1].start[0] - mid[0].start[0]) * 1e6) / 1e6, mid.length]
+ * [0.25, 2]
+ */
+export function travelledPiece(a, b, alpha) {
+  const pa = piecePlacement(a), pb = piecePlacement(b);
+  const scale = pa.extent > 0 ? lerp(1, pb.extent / pa.extent, alpha) : 1;
+  const cx = lerp(pa.centre[0], pb.centre[0], alpha);
+  const cy = lerp(pa.centre[1], pb.centre[1], alpha);
+  const map = (x, y) => [cx + (x - pa.centre[0]) * scale, cy + (y - pa.centre[1]) * scale];
+  const piece = `${a[0]?.piece ?? 0}>${b[0]?.piece ?? 0}`;
+  return a.map((sp, i) => {
+    const out = {
+      start: map(sp.start[0], sp.start[1]),
+      curves: sp.curves.map((c) => [...map(c[0], c[1]), ...map(c[2], c[3]), ...map(c[4], c[5])]),
+      closed: !!sp.closed,
+      // A positive-scale similarity leaves the traversal alone, so the winding is
+      // the from winding by construction rather than by re-derivation — and that
+      // is what keeps a counter opposed to its outer for the whole trip.
+      winding: sp.winding,
+      piece,
+    };
+    const paint = b[i]?.paint ?? sp.paint;
+    if (paint) out.paint = paint;
+    return out;
+  });
+}
+
+/**
  * Pure function. A matched piece AT alpha — the FROM subpath's own geometry,
  * placed by lerping the two placements. Translation and uniform scale only, which
  * is exactly the freedom the hash absorbed.
@@ -334,6 +532,11 @@ export function travelledSubpath(a, b, alpha) {
   };
   if (b.paint) sp.paint = b.paint;
   else if (a.paint) sp.paint = a.paint;
+  // THE SLOT'S PIECE KEY (workstream AQ), in the same `"fp>tp"` grammar
+  // core/morph_align.js stamps on an aligned slot — so a travelled contour and a
+  // morphed one are grouped by the same vocabulary and `morphPaintRuns` can start
+  // an op at a glyph boundary regardless of which arm produced the contour.
+  sp.piece = `${a.piece ?? 0}>${b.piece ?? 0}`;
   return sp;
 }
 

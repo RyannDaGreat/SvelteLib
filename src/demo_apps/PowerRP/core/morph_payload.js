@@ -219,9 +219,46 @@ export function pathDToSubpaths(d) {
  * hands the pair to core/interpolators.js, which already lerps hex colours and
  * already snaps unlike values. See core/morph.js's header.
  *
+ * ── `piece`: ONE AUTHORED PATH IS ONE PIECE (workstream AQ) ──────────────────
+ * Each emitted subpath carries `piece: srcIndex` — WHICH ENTRY OF `sources` it
+ * came from. That single integer is the whole of the glyph-awareness this engine
+ * has, and stating it that way is deliberate: it is not a text feature.
+ *
+ * WHY IT MATTERS AND WHAT IT REPLACED. This loop used to dissolve every entry's
+ * `d` into peer contours and push them into one undifferentiated list, so after
+ * it ran there was NO representation anywhere of "these two contours were the
+ * same letter". `textMorphPayload` hands one entry per GLYPH and plugins/latex.js
+ * hands one per MathJax glyph, so an `O`'s counter became a sibling of every
+ * other letter's outer — and pairing then matched it to whatever contour was
+ * cheapest ANYWHERE IN THE STRING, while `morphPaintRuns` put the whole string
+ * into one fill computation. The user's report ("is it really taking into account
+ * the fact that it's text... it looks like it's just morphing it like any old
+ * shape") was a literally accurate description of that data model, not an
+ * impression. refs/manim_morph_holes_research.md §2.1 names this loop as THE gap.
+ *
+ * Manim's containment is the thing being adopted, and it is structural rather
+ * than clever: a glyph is ONE VMobject holding ALL its contours, Transform aligns
+ * one leaf against one leaf, and each leaf gets its own `ctx.fill()`. So the only
+ * contours that ever share a fill computation — or a pairing candidate set — are
+ * the contours of ONE glyph. Nothing can drift across a counter mid-flight
+ * because nothing else is in the path (research note §1.4).
+ *
+ * WHY AN ID AND NOT A CONTAINER. The payload stays a FLAT array of peer subpaths,
+ * so `payloadKey`, the serialized shape, `assertMorphPaths` and every existing
+ * reader are untouched — this is a grouping annotation, not a new type. A payload
+ * with NO `piece` (an older memo entry, a provider not yet updated) is read as one
+ * piece containing everything, which is exactly the pre-AQ behaviour, so absence
+ * degrades silently and bit-for-bit rather than being a flag day.
+ *
+ * WHY IT IS UNIVERSAL RATHER THAN TEXT-SPECIFIC. Every provider already passes
+ * `sources` as a list: an SVG icon's `path` ops, an equation's glyphs, a shape's
+ * single `d`. "One authored path" is therefore meaningful for all of them, and
+ * text/latex get glyph grouping FOR FREE with no text branch anywhere in the
+ * engine. A single-source widget gets one piece — i.e. today, exactly.
+ *
  * Args:
  *   sources (Array<{d: string, paint?: object}>): the widget's drawn paths, in
- *     PAINT ORDER (first painted first)
+ *     PAINT ORDER (first painted first). ONE ENTRY = ONE PIECE.
  *   box ({w: number, h: number}): the box-local space those `d` strings use.
  *     NON-NEGATIVE — see the module header's geometry law.
  *   fillRule (string): "nonzero" (default) or "evenodd"
@@ -240,14 +277,24 @@ export function pathDToSubpaths(d) {
  *     >>> // paint travels with every subpath the entry drew
  *     >>> morphPayloadFromPaths([{d: "M0 0L1 0", paint: {fill: "#f00"}}], {w: 1, h: 1}).subpaths[0].paint
  *     { fill: '#f00' }
+ *     >>> // TWO GLYPHS, each an outer plus a counter: the piece id is what says
+ *     >>> // which contours are the same letter. A ring is "M…Z" twice.
+ *     >>> const ring = "M0 0L4 0L4 4L0 4ZM1 1L1 3L3 3L3 1Z";
+ *     >>> morphPayloadFromPaths([{d: ring}, {d: ring}], {w: 8, h: 4})
+ *     ...   .subpaths.map((sp) => sp.piece)
+ *     [ 0, 0, 1, 1 ]
+ *     >>> // a one-source widget is ONE piece — i.e. the pre-AQ whole-payload grain
+ *     >>> morphPayloadFromPaths([{d: ring}], {w: 4, h: 4}).subpaths.map((sp) => sp.piece)
+ *     [ 0, 0 ]
  *     >>> morphPayloadFromPaths([], {w: 5, h: 5}).subpaths
  *     []
  */
 export function morphPayloadFromPaths(sources, box, fillRule = "nonzero") {
   const subpaths = [];
-  for (const src of sources)
+  sources.forEach((src, piece) => {
     for (const sp of pathDToSubpaths(src.d))
-      subpaths.push(src.paint ? { ...sp, paint: src.paint } : sp);
+      subpaths.push(src.paint ? { ...sp, paint: src.paint, piece } : { ...sp, piece });
+  });
   return { space: { w: box.w ?? 0, h: box.h ?? 0 }, subpaths, fillRule };
 }
 

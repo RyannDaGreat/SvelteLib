@@ -112,15 +112,43 @@
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
 
-import { alignPayloads, normalizePayload, structureSignature } from "./morph_align.js";
+import { alignPayloads, normalizePayload, pieceIdsOf, structureSignature } from "./morph_align.js";
 import { subpathToPathD } from "./morph_geometry.js";
-import { matchSubpaths, travelledSubpath } from "./morph_match.js";
+import { matchPieceGroups, matchSubpaths, travelledPiece, travelledSubpath } from "./morph_match.js";
 import { midMorphFillRule } from "./morph_fill.js";
 
-export { alignPayloads, structureSignature, assertMorphPaths } from "./morph_align.js";
+export { alignPayloads, pairPieces, pieceIdsOf, structureSignature, assertMorphPaths } from "./morph_align.js";
 export { subpathToPathD, sampleSubpath } from "./morph_geometry.js";
-export { matchSubpaths, shapeKey, travelledSubpath } from "./morph_match.js";
+export { matchPieceGroups, matchSubpaths, pieceKey, shapeKey, travelledPiece, travelledSubpath } from "./morph_match.js";
 export { hasSameWindingOverlap, midMorphFillRule } from "./morph_fill.js";
+
+/**
+ * Pure function. A subpath list split into its PIECES — one authored path each —
+ * as `{id, indices, subpaths}`, in first-appearance (paint) order.
+ *
+ * The unstamped case is the load-bearing one: a payload with no `piece` field
+ * yields ONE group containing everything, which is what makes the piece matcher
+ * degrade to "one piece per side" — i.e. it either matches the whole payload or
+ * nothing, and the contour matcher then does exactly what it did before AQ.
+ *
+ * @param {object[]} subpaths - unit-space subpaths
+ * @returns {Array<{id: number, indices: number[], subpaths: object[]}>}
+ *
+ * @example
+ * >>> pieceGroupsOf([{piece: 0, start: [0, 0]}, {piece: 1, start: [1, 1]}, {piece: 0, start: [2, 2]}])
+ * ...   .map((g) => [g.id, g.indices])
+ * [ [ 0, [ 0, 2 ] ], [ 1, [ 1 ] ] ]
+ * >>> // unstamped: one group, so nothing about the old behaviour changes
+ * >>> pieceGroupsOf([{start: [0, 0]}, {start: [1, 1]}]).map((g) => g.indices)
+ * [ [ 0, 1 ] ]
+ */
+export function pieceGroupsOf(subpaths) {
+  return pieceIdsOf(subpaths).map((id) => {
+    const indices = [];
+    subpaths.forEach((sp, i) => { if ((sp.piece ?? 0) === id) indices.push(i); });
+    return { id, indices, subpaths: indices.map((i) => subpaths[i]) };
+  });
+}
 
 /**
  * The alignment memo. Keyed on a CONTENT hash of the two payloads (see the
@@ -212,11 +240,46 @@ export function matchedPlan(fromPayload, toPayload) {
   // before pairing: the two widgets have different boxes, and a hash computed in
   // raw box coordinates would call the same glyph two different shapes.
   const A = normalizePayload(fromPayload), B = normalizePayload(toPayload);
-  const pairs = matchSubpaths(A.subpaths, B.subpaths);
-  const matchedFrom = new Set(pairs.map((p) => p[0]));
-  const matchedTo = new Set(pairs.map((p) => p[1]));
-  const restFrom = A.subpaths.filter((_, i) => !matchedFrom.has(i));
-  const restTo = B.subpaths.filter((_, i) => !matchedTo.has(i));
+
+  // ── PIECES MATCH BEFORE CONTOURS DO (workstream AQ) ────────────────────────
+  // This is the actual `TransformMatchingShapes` port: Manim's parts are family
+  // LEAVES — whole glyphs — so a matched part's counter travels with its outer by
+  // construction (research note §1.6). Matching contours first could match an
+  // `O`'s outer and miss its counter, putting the two halves of one letter on two
+  // trajectories. A matched PIECE moves under ONE similarity, so it cannot.
+  //
+  // IT ENGAGES ONLY WHERE THERE IS REAL PIECE STRUCTURE — more than one piece on
+  // at least one side. That is spec §2.3.3 stated mechanically: a payload with no
+  // `piece` field, or a one-path widget, would otherwise read as ONE piece
+  // containing everything, and matching THAT would replace the contour matcher
+  // with a whole-payload rigid travel — a different picture for every existing
+  // caller, which is exactly the flag day the degrade rule forbids. With one
+  // piece per side the piece pass does nothing and `matchSubpaths` runs on the
+  // full lists, bit-for-bit as before AQ.
+  const fromGroups = pieceGroupsOf(A.subpaths), toGroups = pieceGroupsOf(B.subpaths);
+  const groupPairs = (fromGroups.length > 1 || toGroups.length > 1)
+    ? matchPieceGroups(fromGroups.map((g) => g.subpaths), toGroups.map((g) => g.subpaths))
+    : [];
+  const matchedPieces = groupPairs.map(([fi, ti]) => ({
+    a: fromGroups[fi].subpaths, b: toGroups[ti].subpaths,
+  }));
+  const claimed = new Set();
+  for (const [fi] of groupPairs) for (const i of fromGroups[fi].indices) claimed.add(i);
+  const claimedTo = new Set();
+  for (const [, ti] of groupPairs) for (const i of toGroups[ti].indices) claimedTo.add(i);
+
+  // CONTOUR matching still runs, on what the piece pass did not claim. A piece
+  // that changed (a `6` becoming an `8`) has no piece match, but a contour inside
+  // it may still be congruent to one in the target — and travelling that contour
+  // is strictly better than morphing it. This is the pre-AQ behaviour, narrowed to
+  // the leftovers rather than replaced.
+  const leftFrom = A.subpaths.map((sp, i) => ({ sp, i })).filter(({ i }) => !claimed.has(i));
+  const leftTo = B.subpaths.map((sp, i) => ({ sp, i })).filter(({ i }) => !claimedTo.has(i));
+  const pairs = matchSubpaths(leftFrom.map((e) => e.sp), leftTo.map((e) => e.sp));
+  const matchedFrom = new Set(pairs.map((p) => leftFrom[p[0]].i));
+  const matchedTo = new Set(pairs.map((p) => leftTo[p[1]].i));
+  const restFrom = A.subpaths.filter((_, i) => !claimed.has(i) && !matchedFrom.has(i));
+  const restTo = B.subpaths.filter((_, i) => !claimedTo.has(i) && !matchedTo.has(i));
 
   // The leftovers are aligned as an ordinary pair. Both sides are ALREADY in unit
   // space, so this re-normalization is the identity — `alignPayloads` is called
@@ -230,7 +293,12 @@ export function matchedPlan(fromPayload, toPayload) {
         to: { space: { w: 1, h: 1 }, subpaths: [], fillRule: B.fillRule } };
 
   const plan = {
-    matched: pairs.map(([fi, ti]) => ({ a: A.subpaths[fi], b: B.subpaths[ti] })),
+    // TWO GRAINS OF MATCH, and the order is the picture's paint order: whole
+    // glyphs that travel intact, then lone congruent contours, then the morphing
+    // remainder. `matchedPieces` is AQ's addition; `matched` is XX-2's, narrowed
+    // to what the piece pass left.
+    matchedPieces,
+    matched: pairs.map(([fi, ti]) => ({ a: leftFrom[fi].sp, b: leftTo[ti].sp })),
     from: rest.from,
     to: rest.to,
   };
@@ -318,12 +386,19 @@ export function morphPaths(fromPayload, toPayload, alpha, options = null) {
   // untouched by it, so the endpoint law holds identically in both arms.
   if (options && options.matchPieces) {
     const plan = matchedPlan(fromPayload, toPayload);
+    // WHOLE GLYPHS FIRST, each under ONE similarity so its counter cannot leave
+    // its bowl (core/morph_match.js `travelledPiece`, workstream AQ), then lone
+    // congruent contours, then the morphing leftovers. Paint order within a morph
+    // is not meaningful to preserve — the two endpoints disagree about it by
+    // construction — and a stated order beats an emergent one.
+    const travelledGroups = plan.matchedPieces.flatMap(({ a, b }) => travelledPiece(a, b, alpha));
     const travelled = plan.matched.map(({ a, b }) => travelledSubpath(a, b, alpha));
     const morphed = plan.from.subpaths.map((a, i) => lerpSubpath(a, plan.to.subpaths[i], alpha));
-    // Matched pieces first, then the morphing leftovers. Paint order within a
-    // morph is not meaningful to preserve — the two endpoints disagree about it
-    // by construction — and a stated order beats an emergent one.
-    return withMidMorphFillRule({ space: { w: 1, h: 1 }, subpaths: [...travelled, ...morphed], fillRule: plan.to.fillRule });
+    return withMidMorphFillRule({
+      space: { w: 1, h: 1 },
+      subpaths: [...travelledGroups, ...travelled, ...morphed],
+      fillRule: plan.to.fillRule,
+    });
   }
 
   const { from, to } = alignedPair(fromPayload, toPayload);
@@ -376,6 +451,14 @@ function lerpSubpath(a, b, alpha) {
   };
   if (b.paint) sp.paint = b.paint;
   else if (a.paint) sp.paint = a.paint;
+  // THE PIECE IS THE SLOT'S, and both sides carry the same one by the time they
+  // reach here — core/morph_align.js `alignPayloads` stamps `"fp>tp"` on the two
+  // halves of each slot. Reading it off `a` rather than `b` is therefore not a
+  // choice between two answers; it is the one answer, stated from whichever side
+  // is nearer. It is what lets render_gpu/ports.js `morphPaintRuns` start an op
+  // at a glyph boundary (workstream AQ).
+  if (a.piece !== undefined) sp.piece = a.piece;
+  else if (b.piece !== undefined) sp.piece = b.piece;
   return sp;
 }
 
