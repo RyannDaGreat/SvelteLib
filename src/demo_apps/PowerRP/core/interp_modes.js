@@ -780,6 +780,155 @@ function deepSame(a, b) {
   return false;
 }
 
+// ── `expTween`: a scalar that moves GEOMETRICALLY, not linearly ───────────────
+//
+// User ruling, 2026-08-02 night, verbatim (three messages, WORKSTREAM BG): "When
+// the camera moves, by the way, its scale should interpolate exponentially… that
+// should be the default for height and width for the camera and well and X and Y
+// too. It's the Mandelbrot. Look at the Mandelbrot interpolation logic. It took a
+// while to get it right… Because when a camera zooms in, just like in Mendelbrot,
+// it's gotta look natural… should we have this as a scale option under it so like
+// tween or step if we do exponential it's really just oh right yes tween i guess
+// we'll do exponential tween yeah that's how we'll do it", then "Exp Tween", then
+// "\"Exp Tween\"". The label is quoted twice, so it is EXACTLY "Exp Tween".
+//
+// ── THE LAW ──────────────────────────────────────────────────────────────────
+//
+//     v(t) = a·(b/a)^t        equivalently exp(lerp(ln a, ln b, t))
+//
+// i.e. a lerp in LOG space: the value's RATIO per unit time is constant, where
+// `tween`'s DIFFERENCE per unit time is constant. That is what "constant-rate
+// zoom" means and why it looks natural — the eye reads magnification
+// logarithmically, so a linearly-tweened width crawls at the wide end and then
+// rushes at the tight end, which is the "it curved around and it was weird" the
+// Mandelbrot work was chasing.
+//
+// ── WHY THIS IS THE REFERENCE'S LAW, AND WHICH HALF OF IT ─────────────────────
+// The reference the user named is plugins/demo/mandelbrot.js:479 `zoomTweenLam`.
+// Its account of a natural zoom has TWO halves, and only ONE of them is a scalar
+// law that can live in this registry:
+//
+//   1. THE SCALE moves exponentially. The Mandelbrot spells that by tweening a
+//      LOG (`zoomExponent`) linearly, since its half-width is 10^(-z) — see that
+//      file's "TO ANIMATE A ZOOM, TWEEN zoomExponent — linearly, for a
+//      constant-rate zoom". A PowerRP camera stores w/h as the magnitude itself,
+//      not as a log, so the identical picture is this mode: exponentiating the
+//      lerp is the same curve as lerping the exponent. THIS is `expTween`.
+//   2. THE CENTRE is linear in the resulting HALF-WIDTH, NOT in alpha and NOT
+//      per-axis exponential. That half is a COUPLING between two leaves and is
+//      structurally unreachable from here — a `blend` sees one leaf's two values
+//      and cannot know what the width is doing. It lives where the Mandelbrot
+//      puts it, in the `interpolateState` hook (see plugins/camera.js).
+//
+// MEASURED, because the task asked whether naive per-axis exp on x/y reproduces
+// the reference's feel. It does not — it is WORSE than the linear pan it would
+// replace. Target-point offset from frame centre, in half-widths (|offset| ≤ 1 is
+// on screen), for w 1280 → 4 with the centre travelling 640 → 9000:
+//
+//     alpha                    0     0.1    0.25     0.5    0.75     0.9      1
+//     linear pan           13.06   20.93   41.44  116.83  247.07  234.78      0
+//     per-axis expTween    13.06   22.72   51.29  184.48  514.53  587.14      0
+//     reference (in w)     13.06   13.03   12.93   12.37   10.01    5.74      0
+//
+// Only the reference's law is monotone; both others swing the target hundreds of
+// frame-widths away and snap it back. So `expTween` is the SCALE law, and the
+// camera's x/y get the reference's coupling rather than this mode applied twice.
+//
+// ── DEGENERATE ENDPOINTS: LINEAR, DELIBERATELY, NEVER NaN ────────────────────
+// `(b/a)^t` is real-valued only when a and b are nonzero and share a sign. The
+// three failures are not exotic — a camera at x = 0 is the ordinary case, and a
+// pan across the origin is a sign flip — so each falls back to the ORDINARY LERP
+// rather than throwing or producing NaN:
+//
+//   - EITHER ENDPOINT ZERO. A geometric path cannot leave or reach zero: it needs
+//     infinite time in log space, so a·(b/a)^t with a = 0 is 0 for every t and
+//     then jumps at the end. Linear is the only law that both moves and lands.
+//   - OPPOSITE SIGNS. There is no real geometric path across the origin at all
+//     ((b/a) < 0 raised to a fraction is NaN), and the pair is telling us the
+//     value passes THROUGH zero, which is case one at the crossing.
+//   - EITHER END NON-FINITE OR NON-NUMERIC. Not a scalar; `expTween` is a scalar
+//     law and has nothing to say, so the leaf takes whatever `interpolate`
+//     already does with it (strings/booleans switch discretely, as always).
+//
+// This is a documented fallback, not a silent swallow: the fallback is the
+// CORRECT limit of the law in each case (a degenerate geometric path IS the
+// linear one, in the only sense available), the picture stays continuous and
+// monotone, and no value is ever NaN. BOTH-NEGATIVE endpoints are NOT degenerate
+// and are handled exactly — the ratio is positive, so the geometric path runs
+// entirely below zero, which is what a camera with a negative width (a FLIP —
+// see the NEGATIVE EXTENTS contract) needs.
+
+/**
+ * Pure function. THE GEOMETRIC (log-space) SCALAR LAW: v = a·(b/a)^t.
+ *
+ * Exact at both endpoints by construction, and MONOTONE between them. Falls back
+ * to the ordinary lerp for the degenerate pairs a geometric path cannot express
+ * (a zero endpoint, a sign flip) — see the section header for why each fallback
+ * is the law's own limit rather than a swallow.
+ *
+ * Args:
+ *   a (number): the start value (the CURRENT folded value — lazy start capture)
+ *   b (number): the target value
+ *   t (number): tween strength in [0, 1]
+ *
+ * Returns:
+ *   number
+ *
+ * @example expLerp(1, 100, 0.5) // 10 (the GEOMETRIC mean, not the arithmetic 50.5)
+ * @example expLerp(1, 100, 0) // 1
+ * @example expLerp(1, 100, 1) // 100
+ * @example expLerp(1280, 4, 0.5) // 71.55417527999327 (a camera halfway through a 320x zoom)
+ * @example expLerp(-1, -100, 0.5) // -10 (both negative: the ratio is positive, so the law holds exactly)
+ * @example expLerp(0, 100, 0.5) // 50 (zero endpoint: no geometric path leaves zero, so linear)
+ * @example expLerp(-10, 10, 0.5) // 0 (sign flip: no real path across the origin, so linear)
+ */
+export function expLerp(a, b, t) {
+  if (!expTweenApplies(a, b)) return a + (b - a) * t;
+  return a * Math.pow(b / a, t);
+}
+
+/**
+ * Pure function. Can the geometric law run on this pair — i.e. are both endpoints
+ * finite, nonzero numbers of the SAME sign? False means `expLerp` takes its
+ * documented linear fallback.
+ *
+ * @example expTweenApplies(1, 100) // true
+ * @example expTweenApplies(-1, -100) // true (same sign: the ratio is positive)
+ * @example expTweenApplies(0, 100) // false (a zero endpoint)
+ * @example expTweenApplies(-10, 10) // false (a sign flip)
+ * @example expTweenApplies("a", 10) // false (not a scalar pair)
+ */
+export function expTweenApplies(a, b) {
+  if (typeof a !== "number" || typeof b !== "number") return false;
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  return a !== 0 && b !== 0 && Math.sign(a) === Math.sign(b);
+}
+
+/** The mode id behind the "Exp Tween" label. The LABEL is the user's exact
+ *  string; the id is the ordinary camelCase this registry uses for every other
+ *  mode, and is what a document stores. */
+export const EXP_TWEEN_MODE = "expTween";
+
+registerInterpMode({
+  id: EXP_TWEEN_MODE,
+  label: "Exp Tween",
+  help: "Interpolate GEOMETRICALLY — the value's ratio changes at a constant rate instead of its difference, so a 1 → 100 scale reads 10 halfway rather than 50.5. This is what makes a zoom look natural, and it is the camera's default for X/Y/W/H. Endpoints with a zero or a sign change have no geometric path, so those fall back to an ordinary tween.",
+  // NUMERIC ROWS ONLY. The whole law is a ratio, and only a scalar has one: on a
+  // boolean, a string, a type or a paint it would fall through to `interpolate`
+  // and become yet another name for `tween` in the select — exactly the "doesn't
+  // really make any sense" the user objected to on the type row. The value SHAPE
+  // decides (not the key name), so any plugin's own numeric knob gets the mode
+  // for free — the same shape-driven argument `fade` and `blend` make.
+  appliesTo: ({ value }) => typeof value === "number",
+  blend: (a, b, alpha) => {
+    // A non-scalar pair reaching here means the author picked the mode on a row
+    // it cannot describe (or the leaf is an ADDITION with no `a`). Defer to the
+    // ordinary law rather than inventing one — the `fade`-on-`x` precedent.
+    if (typeof a !== "number" || typeof b !== "number") return interpolate(a, b, alpha);
+    return expLerp(a, b, alpha);
+  },
+});
+
 // ── The DEFAULT-MODE seam ─────────────────────────────────────────────────────
 //
 // User ruling, 2026-08-02, verbatim: "if I switch between any of those material
