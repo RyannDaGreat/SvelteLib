@@ -59,6 +59,7 @@ import {
   scrollOutline, scrollPairOutline, ironFinialOutline,
 } from "../core/outline.js";
 import { subpathsPathD } from "../core/shapes.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import { path } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
@@ -970,6 +971,33 @@ export function makeFamilyPlugin(fam) {
         fillRule: fam.fillRule ?? "nonzero",
         opacity: s.opacity ?? 1,
       })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+    },
+    /**
+     * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths`
+     * protocol) — this family's silhouette as cubic contours in box space, so a
+     * keyframed `type` change flows into another shape instead of snapping.
+     *
+     * ONE DECLARATION COVERS EVERY FAMILY, which is the point of it living in the
+     * factory: each family already computes its exact silhouette to DRAW and to
+     * HIT-TEST itself (`fam.outline`), so the morph reads that same outline and a
+     * family added tomorrow is morphable the day it is written, with no line here
+     * changing. It is also why the multi-contour families work for free — a gear
+     * with a hole and an evenodd frame both hand over their subpaths, and the
+     * engine pairs contour to contour.
+     */
+    morphPaths(s) {
+      if ((s.w ?? 0) <= 0 || (s.h ?? 0) <= 0) return { space: { w: 0, h: 0 }, subpaths: [], fillRule: fam.fillRule ?? "nonzero" };
+      return morphPayloadFromPaths(
+        [{ d: subpathsPathD(fam.outline(s)), paint: statePaint(s) }],
+        { w: s.w ?? 0, h: s.h ?? 0 },
+        fam.fillRule ?? "nonzero",
+      );
+    },
+    /** Pure function. Why this shape cannot morph YET, or null — a degenerate box
+     * has no silhouette to hand over, and an empty payload would pair a real
+     * contour against nothing. The mermaid/iconify shatterNotReady precedent. */
+    morphNotReady(s) {
+      return (s.w ?? 0) > 0 && (s.h ?? 0) > 0 ? null : "a shape with a non-zero width and height (this one is collapsed)";
     },
     cullMargin: effectsCullMargin,
     hitTest(s, lx, ly) {

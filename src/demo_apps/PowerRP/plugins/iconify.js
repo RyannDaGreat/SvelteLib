@@ -105,6 +105,7 @@
  */
 
 import { svgOpsToParts } from "../core/shatter.js"; // #271: one part per drawable path, shared with the svg widget
+import { morphPayloadFromOps } from "../core/morph_payload.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -677,6 +678,27 @@ export const iconifyPlugin = {
     try { url = iconifyIconUrl(s.icon); } catch (e) { return `a valid icon name (${e instanceof Error ? e.message : String(e)})`; }
     if (svgSourceStatus(url) === "error") return `an icon that loaded (this one failed: ${svgSourceError(url)})`;
     return getSvgSource(url) === null ? "an icon that has finished loading (this one is still in flight)" : null;
+  },
+  /**
+   * Pure function (one registry read). THE MORPH OUTLINE (core/registry.js's
+   * `morphPaths` protocol): the glyph's contours, from the SAME flatten emit()
+   * draws with — so an icon morphing into a logo flows through the art it
+   * actually shows, and a multi-contour glyph hands over every contour for the
+   * engine to pair.
+   */
+  morphPaths(s) {
+    const w = s.w ?? 0, h = s.h ?? 0;
+    const src = getSvgSource(iconifyIconUrl(s.icon));
+    const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? ICONIFY_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1 });
+    return morphPayloadFromOps(flat.ops, { w, h });
+  },
+  /** Pure function (one registry read). Why this icon cannot morph YET, or null.
+   * THE SAME GATE AS `shatterNotReady` above, by call and not by copy — the
+   * source is fetched asynchronously, so the in-flight window is real, and two
+   * spellings of "has it loaded" is how they would come to disagree. This is the
+   * reason the morph mode's `auto` needs a not-ready hook at all. */
+  morphNotReady(s) {
+    return iconifyPlugin.shatterNotReady(s);
   },
   /**
    * Pure function. The icon's pieces as separate SVG widgets — one per drawable

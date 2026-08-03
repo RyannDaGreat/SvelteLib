@@ -112,6 +112,7 @@ import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num, polygonPathD, ellipsePoints } from "../core/shapes.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { elementActive, visibleElements, visibleIndices, withElementFieldValue, withElementInserted } from "../core/lists.js";
 import * as T from "../core/transform.js";
@@ -743,6 +744,34 @@ export const polygonPlugin = {
       fillRule: "evenodd",
       opacity: s.opacity ?? 1,
     })];
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the drawn vertex chain as cubic contours, from the SAME `localPoints` +
+   * `polygonChainPathD` pair emit() draws with — so what morphs is what renders,
+   * hidden vertices skipped and the open/closed decision made by the one
+   * `fillsInterior` predicate rather than a second copy of the rule.
+   *
+   * NOTE THE SPACE IS THE BOX, NOT THE INK RECT. A vertex may be dragged OUTSIDE
+   * the box (which is why this widget declares `localBounds`), and the payload's
+   * space is the frame its coordinates are expressed in — the box — not the
+   * extent they happen to reach. Reporting the ink rect here would re-scale the
+   * geometry against a frame it was not authored in and slide every escaped
+   * vertex back inside.
+   */
+  morphPaths(s) {
+    const pts = localPoints(s);
+    return morphPayloadFromPaths(
+      [{ d: polygonChainPathD(pts, fillsInterior(s)), paint: statePaint(s) }],
+      { w: s.w ?? 0, h: s.h ?? 0 },
+      "evenodd",
+    );
+  },
+  /** Pure function. Why this polygon cannot morph YET, or null. Shares its
+   * threshold with emit()'s own "nothing to draw" guard, so the gate cannot
+   * disagree with what is actually drawable (the svg/mermaid precedent). */
+  morphNotReady(s) {
+    return localPoints(s).length >= MIN_DRAWN_VERTICES ? null : "at least two visible vertices (this one has nothing to draw)";
   },
   // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the ink rect, not the box —
   // a vertex may be dragged outside the box, and the box alone would under-report

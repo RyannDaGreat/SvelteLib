@@ -385,6 +385,58 @@
  *     reading in a new one, and guessing would be an edit wearing a
  *     reparametrization's name.
  *
+ * ── `morphPaths(state)` — THE MORPH OUTLINE (optional, vector widgets) ────────
+ * A widget's ink as CUBIC CONTOURS in its own box space, so a keyframed `type`
+ * change can FLOW into another widget's shape instead of snapping. This is what
+ * makes the `morph` interp mode (core/interp_modes.js) available on a pair: `auto`
+ * resolves to a real morph exactly when BOTH endpoint types declare this hook and
+ * neither reports `morphNotReady`.
+ *
+ * IT RETURNS A MorphPaths — `{space: {w, h}, subpaths: [{start, curves, closed,
+ * winding, paint?}], fillRule}`, cubics only. core/morph.js's header is the
+ * authority on the type and argues every field; core/morph_payload.js is how you
+ * actually build one, and NO WIDGET SHOULD HAND-WRITE SEXTUPLES:
+ * `morphPayloadFromPaths(sources, box)` takes the `d` strings the widget already
+ * draws with, and `morphPayloadFromOps(ops, box)` takes a flatten's `path` ops.
+ *
+ * DERIVE THE PAYLOAD FROM THE INK, NEVER ALONGSIDE IT. Every shipped provider
+ * reads the SAME generator its own emit() draws with — rect its `rectPathD`,
+ * shapeshifter its `fam.outline`, svg/iconify their shared flatten. A payload
+ * described independently of the ink can DISAGREE with it, and nothing would
+ * catch that: the morph would render a shape the widget shows at neither
+ * endpoint. Reusing the generator also means a widget that changes its outline
+ * changes its morph for free and cannot forget to.
+ *
+ * THE SPACE IS THE BOX, AND YOU DO NOT PRE-DIVIDE IT. Report the box the `d`
+ * strings were authored in; the engine normalizes both payloads to a shared unit
+ * box and returns UNIT-space output, which render_gpu/ports.js maps back out
+ * through the node's own (separately tweened) box. Dividing here — or morphing in
+ * box-local coordinates — counts the box change TWICE, which is the single
+ * easiest mistake at this seam and is pinned by tests/morph_mode_test.js.
+ *
+ * GEOMETRY LAW: `space` must be NON-NEGATIVE. A stored w/h may be negative (that
+ * is a REFLECTION — the NEGATIVE EXTENTS protocol), and core/geometry.js
+ * `unsignedState` has already resolved it before a plugin is called, so a provider
+ * simply uses the state it is handed. `assertMorphPaths` refuses a negative space
+ * loudly rather than sending every point across the box.
+ *
+ * ── `morphNotReady(state)` — WHY NOT YET, OR null (optional) ──────────────────
+ * The `shatterNotReady` precedent exactly, and for the same reason: a widget whose
+ * art is fetched ASYNCHRONOUSLY (iconify, a url-mode svg) has a real window with
+ * nothing to hand over, and morphing from an empty payload would pair a real
+ * contour against nothing. Return a CLAUSE completing "the widget is waiting for
+ * …". A pair that refuses falls back to the discrete switch and REPORTS the
+ * reason once (core/derive.js resolveMorphType) — the author asked for a morph and
+ * did not get one, so it is named rather than silently skipped.
+ *
+ * WHERE THE PAIR IS DECIDED. In the PLUGINS, per the user ruling that this
+ * knowledge "is not stored globally. It has to be stored in the plugins" —
+ * core/interp_modes.js `morphPairPolicy` asks the two hooks above and nothing
+ * else. A per-PAIR override (one widget wanting a different law against a
+ * specific counterpart) would be declared on the plugin and read there too; the
+ * seam is that one function, and it is deliberately not built until a widget has
+ * a second law to ask for.
+ *
  * THE UNIVERSAL EFFECTS BUNDLE is injected HERE (see withUniversalEffects): a
  * plugin does not opt in, it opts OUT by being ineligible. That is why the
  * user's "soft edges should be an option for everything that we can give it to"

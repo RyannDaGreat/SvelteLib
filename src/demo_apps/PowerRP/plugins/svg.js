@@ -89,6 +89,7 @@
  */
 
 import { svgOpsToParts } from "../core/shatter.js"; // #271: shared with the iconify widget — same pieces, same reasoning
+import { morphPayloadFromOps } from "../core/morph_payload.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -370,6 +371,29 @@ export const svgPlugin = {
       ? "an SVG URL that has finished loading (this one is still in flight, or failed)"
       : "some SVG source (this widget has none)";
     return svgIsEmpty(src) ? "an SVG with something in it (this one is empty)" : null;
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the drawing's contours, from the SAME flatten emit() draws with — so the
+   * artwork morphs piece for piece rather than as a second interpretation of
+   * itself, exactly as `shatter` above reuses that flatten for the same reason.
+   *
+   * The paint override rows are deliberately NOT applied here: the payload
+   * carries each contour's own flattened paint, and the render seam pairs the two
+   * endpoints' paints itself.
+   */
+  morphPaths(s) {
+    const w = s.w ?? 0, h = s.h ?? 0;
+    const src = svgSourceOf(s);
+    const flat = svgToIRWithWarnings(src, w, h, { ink: s.ink ?? SVG_DEFAULT_INK, preserveAspect: s.preserveAspect !== false, opacity: s.opacity ?? 1 });
+    return morphPayloadFromOps(flat.ops, { w, h });
+  },
+  /** Pure function. Why this SVG cannot morph YET, or null. THE SAME GATE AS
+   * `shatterNotReady` above, by call and not by copy — both questions are "is
+   * there drawable art here", and a second spelling is how the two would come to
+   * disagree about an in-flight URL. */
+  morphNotReady(s) {
+    return svgPlugin.shatterNotReady(s);
   },
   /**
    * Pure function. The drawing's pieces as separate SVG widgets — one per

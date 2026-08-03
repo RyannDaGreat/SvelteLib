@@ -251,6 +251,57 @@ export function morphPayloadFromPaths(sources, box, fillRule = "nonzero") {
 }
 
 /**
+ * Pure function. FLATTENED `path` OPS → a MorphPaths payload — the provider body
+ * the two SVG-backed widgets share (plugins/svg.js and plugins/iconify.js).
+ *
+ * It takes the ops from the SAME `svgToIRWithWarnings` flatten those widgets'
+ * emit() draws with, so the morph outline is the artwork piece for piece rather
+ * than a second interpretation of it — the identical argument core/shatter.js
+ * `svgOpsToParts` makes for the shatter command, and the reason both widgets can
+ * share one body at all.
+ *
+ * NON-PATH OPS ARE DROPPED, deliberately and narrowly: a flatten emits `path` for
+ * every drawable element (that is the whole point of core/svg_paths.js — "no new
+ * IR op"), so the only things filtered here are the warning/error affordances the
+ * widget overlays on damaged art. Morphing into a notice band would be nonsense;
+ * the notice still draws at the endpoints, where the widget's own emit() runs.
+ *
+ * Args:
+ *   ops (object[]): IR ops from a flatten (only `path` ops are read)
+ *   box ({w, h}): the box those ops were flattened into
+ *
+ * Returns:
+ *   object: a MorphPaths payload, per-op paint carried per subpath
+ *
+ * Examples:
+ *     >>> const ops = [{op: "path", d: "M0 0L4 0L4 4Z", fill: "#f00", strokeWidth: 0}];
+ *     >>> morphPayloadFromOps(ops, {w: 4, h: 4}).subpaths[0].paint.fill
+ *     '#f00'
+ *     >>> morphPayloadFromOps(ops, {w: 4, h: 4}).subpaths.length
+ *     1
+ *     >>> // a rect op (an affordance box) is not artwork and is dropped
+ *     >>> morphPayloadFromOps([{op: "rect", x: 0, y: 0, w: 4, h: 4}], {w: 4, h: 4}).subpaths
+ *     []
+ */
+export function morphPayloadFromOps(ops, box) {
+  const paths = ops.filter((o) => o.op === "path" && typeof o.d === "string" && o.d.trim() !== "");
+  return morphPayloadFromPaths(
+    paths.map((o) => ({
+      d: o.d,
+      paint: { fill: o.fill ?? null, stroke: o.stroke ?? null, strokeWidth: o.strokeWidth ?? 0, opacity: o.opacity ?? 1 },
+    })),
+    box,
+    // ONE fillRule for the payload, taken from the FIRST drawable path. The
+    // engine's payload carries a single rule (a `d` is one op) while an SVG may
+    // mix rules per element; the first path's rule is the honest approximation
+    // and matches how the widget's own dominant contour fills. A mixed-rule icon
+    // morphs with its leading contour's rule, which is visible only on
+    // self-intersecting art.
+    paths[0]?.fillRule ?? "nonzero",
+  );
+}
+
+/**
  * Pure function. The PAINT a widget's own fill/stroke state contributes to its
  * subpaths — the four fields core/morph.js's Subpath.paint carries, read off an
  * ordinary stroked-box state bag.

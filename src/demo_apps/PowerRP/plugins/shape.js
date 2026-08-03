@@ -29,6 +29,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { shapePath } from "../core/shapes.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
@@ -79,6 +80,24 @@ export const shapePlugin = {
       strokeWidth: s.strokeWidth ?? 0,
       opacity: s.opacity ?? 1,
     })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the preset's silhouette as cubic contours, read from the SAME `shapePath`
+   * generator emit() draws with — so a frozen legacy shape morphs to exactly the
+   * ink it renders, and this widget's freeze is not broken by giving it one.
+   *
+   * DECLARING IT ON A RETIRED WIDGET IS DELIBERATE. Old decks keep their `type:
+   * "shape"` items and are entitled to every general feature that arrives later;
+   * a retired widget is one nothing new can be CREATED as, not one that stops
+   * gaining capabilities. The path bytes are untouched, so
+   * tests/shape_legacy_freeze_test.js still pins what it always pinned.
+   */
+  morphPaths(s) {
+    return morphPayloadFromPaths(
+      [{ d: shapePath(s.shape ?? "star", s.w ?? 0, s.h ?? 0, { points: s.shapePoints, innerRatio: s.shapeInnerRatio }), paint: statePaint(s) }],
+      { w: s.w ?? 0, h: s.h ?? 0 },
+    );
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
