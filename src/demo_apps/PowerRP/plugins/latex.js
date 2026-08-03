@@ -118,24 +118,82 @@ const LATEX_MASK_INK = "#ffffff";
 
 /**
  * Pure function. Is this stored ink a SHADER paint (a gradient or a material)
- * rather than a plain colour? Object paints are the shader kinds; a string (or an
- * absent ink) is a plain colour and takes the legacy raster-tint path untouched.
+ * rather than a plain colour? A shader ink is the one that CANNOT be baked into
+ * the raster: it has no colour to typeset at and no string to key the cache on,
+ * so it diverts the equation onto the neutral-mask path and is painted through
+ * the glyph coverage instead.
  *
- * An OFF paint ({type:"none"}) is deliberately NOT a shader ink: it means "paint
- * nothing", which parsePaint already collapses to null for every backend, so it
- * must not divert the equation into the mask path.
+ * ── CLASSIFY BY PAINT KIND, NOT BY `typeof` (WORKSTREAM AB) ──────────────────
+ * This predicate used to read "is an object", which was a true description of
+ * the paints that EXISTED when it was written and a false statement of the
+ * question it is actually asking. The PaintField stores a SOLID as the wrapper
+ * `{type:"solid", solid:"#rrggbb", linear?, radial?}` — multi-sub-state, so
+ * switching mode never forgets the other modes — and that wrapper is an object
+ * whose type is neither "none" nor a gradient. So every solid an author set
+ * through the Fill row was classified as a shader, typeset at the white mask,
+ * and handed to `drawLatexShaderInk`, where `parsePaint` correctly resolved it
+ * to an [r,g,b,a] COLOUR and `skShaderForPaint` then refused it by name:
+ * "expected a gradient Paint (solid paints use setColor, not a shader)". The
+ * node run boundary turned that throw into the "failed to paint" error box.
+ *
+ * That is exactly why the reported matrix was everything-but-the-simplest-case
+ * (user, 2026-08-02: "Why does solid result in unknown item failed to paint, but
+ * linear is fine, radial is fine, off is fine, and even arbitrary materials are
+ * fine on LaTeX?"). Gradients and materials are genuinely shaders; OFF was
+ * special-cased out by tag; a LEGACY bare-string solid was excluded by `typeof`.
+ * A wrapped solid was the one shape that satisfied the object test while not
+ * being a shader — the simplest case, and the only broken one.
+ *
+ * A solid is a COLOUR in every form it is stored in, so both forms take the
+ * legacy raster-tint path and render byte-identically to each other.
  *
  * @param {*} ink - the item's stored `ink`
  * @returns {boolean}
  *
- * @example isShaderInk("#000000") // false
+ * @example isShaderInk("#000000") // false (legacy bare-string solid)
  * @example isShaderInk(undefined) // false (absent ⇒ the default solid)
+ * @example isShaderInk({type: "solid", solid: "#c0392b"}) // false (the PaintField wrapper is still a solid)
  * @example isShaderInk({type: "material", material: {id: "metal"}}) // true
  * @example isShaderInk({type: "linearGradient", linear: {stops: []}}) // true
  * @example isShaderInk({type: "none"}) // false (OFF paints nothing; not a shader)
  */
 export function isShaderInk(ink) {
-  return !!ink && typeof ink === "object" && !Array.isArray(ink) && ink.type !== "none";
+  if (!ink || typeof ink !== "object" || Array.isArray(ink)) return false;
+  return ink.type !== "none" && ink.type !== "solid";
+}
+
+/**
+ * Pure function. THE STORED INK AS A COLOUR STRING — the one place the two solid
+ * forms become one value, so nothing downstream has to know there are two.
+ *
+ * A solid reaches this widget in either of two shapes: the LEGACY bare string
+ * every document written before the Fill row became PAINT-capable stores, and
+ * the PaintField's multi-sub-state wrapper `{type:"solid", solid:"#rrggbb"}`.
+ * Both mean the same colour. This matters here and not merely in the painter
+ * because a latex ink is not only drawn, it is BAKED AND KEYED: latex_raster
+ * interpolates it into the raster cache key and sets it as the typeset SVG's
+ * `color`. Handing the wrapper to either would key every equation under the
+ * literal string "[object Object]" — one cache slot shared by every colour — and
+ * set an invalid CSS colour, so the glyphs would typeset at the browser's
+ * default black no matter what the author picked.
+ *
+ * Returns the fallback for anything that is not a solid (a shader ink, OFF, or
+ * an absent ink), because each of those has its own path and only ever wants a
+ * neutral colour from this function.
+ *
+ * @param {*} ink - the item's stored `ink`
+ * @param {string} fallback - the colour to use when `ink` is not a solid
+ * @returns {string} a CSS colour string
+ *
+ * @example inkColor("#c0392b", "#111111") // '#c0392b'  (legacy bare string)
+ * @example inkColor({type: "solid", solid: "#c0392b"}, "#111111") // '#c0392b'  (the wrapper unwraps to the same colour)
+ * @example inkColor(undefined, "#111111") // '#111111'  (absent ⇒ the widget default)
+ * @example inkColor({type: "linearGradient", linear: {stops: []}}, "#ffffff") // '#ffffff'  (a shader typesets at the neutral mask)
+ */
+export function inkColor(ink, fallback) {
+  if (typeof ink === "string") return ink;
+  if (ink && typeof ink === "object" && ink.type === "solid" && typeof ink.solid === "string") return ink.solid;
+  return fallback;
 }
 
 /**
@@ -694,7 +752,11 @@ export const latexPlugin = {
     // `inkPaint` is the shader paint when there is one. A string ink puts itself in
     // inkTint and leaves inkPaint null — byte-identical to every render before this.
     const inkPaint = isShaderInk(s.ink) ? s.ink : null;
-    const ink = inkPaint ? LATEX_MASK_INK : (s.ink ?? LATEX_DEFAULT_INK); // raster tint + vector fill
+    // inkColor, not `s.ink` raw: a solid arrives EITHER as a bare string or as the
+    // PaintField's {type:"solid", solid} wrapper, and this value is both baked into
+    // the typeset SVG's `color` and interpolated into the raster CACHE KEY, neither
+    // of which can take an object. See inkColor.
+    const ink = inkPaint ? LATEX_MASK_INK : inkColor(s.ink, LATEX_DEFAULT_INK); // raster tint + vector fill
     ensureLatexTypeset(latex, scale, ink); // idempotent; safe every emit()
     // A shader ink ALSO needs the legacy-solid raster, because the pre-glyph
     // fallback below draws it (the mask raster is white and would flash blank).

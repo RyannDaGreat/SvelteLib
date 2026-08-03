@@ -54,10 +54,10 @@
  */
 
 import assert from "node:assert/strict";
-import { latexVector, text, isMaterialPaint, isGradientPaint, opHasMaterialFill } from "../render_gpu/ir.js";
+import { latexVector, text, isMaterialPaint, isGradientPaint, opHasMaterialFill, parsePaint } from "../render_gpu/ir.js";
 import { isGradientOnlyPaint, styleNeedsGlyphPass } from "../render_gpu/skia/text_layout.js";
 import { resolveMaterialFillPaints } from "../render_gpu/ports.js";
-import { isShaderInk } from "../plugins/latex.js";
+import { isShaderInk, inkColor } from "../plugins/latex.js";
 import { readPng, imageDistance } from "./imageDistinctness.js";
 import { latexPlugin } from "../plugins/latex.js";
 import { plaintextPlugin } from "../plugins/plaintext.js";
@@ -65,6 +65,15 @@ import { plaintextPlugin } from "../plugins/plaintext.js";
 const MATERIAL = { type: "material", material: { id: "metal", params: {} } };
 const GRADIENT = { type: "linearGradient", linear: { stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }] } };
 const SOLID = "#123456";
+// The SAME colour in the other storage form: the PaintField's multi-sub-state
+// wrapper, which remembers every mode at once so switching type never forgets.
+// This is what an author's Fill row actually writes, and the shape that broke.
+const WRAPPED_SOLID = { type: "solid", solid: SOLID };
+const RADIAL = { type: "radialGradient", radial: { stops: [{ offset: 0, color: "#000" }, { offset: 1, color: "#fff" }], center: { x: 0.5, y: 0.5 }, r: 0.5 } };
+// A fallback distinct from SOLID, so a test that silently returned the fallback
+// instead of the ink's own colour cannot pass by coincidence.
+const LEGACY_FALLBACK = "#abcdef";
+const IDENTITY_WORLD = { x: 0, y: 0, rotation: 0, scale: 1 };
 
 // ── (1) a material is not a gradient, and a gradient is still a gradient ──────
 
@@ -110,6 +119,71 @@ for (const [label, ink] of [["solid string", "#000000"], ["absent", undefined], 
   assert.equal(isShaderInk(ink), false, `${label} ink is NOT a shader ink — it must keep the legacy raster-tint path`);
 for (const [label, ink] of [["material", MATERIAL], ["gradient", GRADIENT]])
   assert.equal(isShaderInk(ink), true, `${label} ink IS a shader ink`);
+
+// ── (3b) THE USER'S MATRIX: every shape the Fill row can PRODUCE must paint ───
+//
+// User, 2026-08-02: "Why does solid result in unknown item failed to paint, but
+// linear is fine, radial is fine, off is fine, and even arbitrary materials are
+// fine on LaTeX?" — everything but the simplest case. The cause was that
+// `isShaderInk` asked `typeof ink === "object"` rather than what kind of paint it
+// is, and the PaintField stores a solid as the multi-sub-state WRAPPER
+// {type:"solid", solid:"#rrggbb"}. That wrapper is an object, so it was routed to
+// the shader path, where parsePaint correctly resolved it to a COLOUR and
+// skShaderForPaint then refused it by name ("expected a gradient Paint (solid
+// paints use setColor, not a shader)") — surfacing as the containment error box.
+// Every other cell of the matrix was excluded for its own reason, which is exactly
+// why only the simplest one broke.
+//
+// The matrix is written out cell by cell rather than as one predicate assertion
+// because the bug was in the DISPATCH, and a dispatch is only correct if each
+// input reaches a branch that can actually consume it.
+for (const [label, ink] of [["legacy bare-string solid", SOLID], ["the PaintField's WRAPPED solid", WRAPPED_SOLID]]) {
+  assert.equal(isShaderInk(ink), false,
+    `${label} is a plain COLOUR, not a shader ink. Routing it to the mask path hands a solid to skShaderForPaint, which refuses it and paints the error box — the WORKSTREAM AB bug.`);
+  assert.equal(inkColor(ink, LEGACY_FALLBACK), SOLID,
+    `${label} must resolve to the same colour string: it is baked into the typeset SVG's \`color\` AND interpolated into the raster CACHE KEY, so an object here keys every equation under "[object Object]" and typesets at the browser default.`);
+}
+assert.equal(inkColor(SOLID, LEGACY_FALLBACK), inkColor(WRAPPED_SOLID, LEGACY_FALLBACK),
+  "the two storage forms of a solid are the SAME picture — a document written before the Fill row was paint-capable must render byte-identically to one authored today");
+
+// A non-solid takes its own path and only ever wants the neutral fallback. OFF is
+// the case that proves this is not cosmetic: at the time of the fix an OFF ink was
+// ALSO passed to the typesetter raw (it is not a shader, so it fell to the same
+// branch), keying under "[object Object]" — a second latent cache collision the
+// one unwrap closes.
+for (const [label, ink] of [["a gradient", GRADIENT], ["a material", MATERIAL], ["OFF", { type: "none" }], ["an absent ink", undefined]])
+  assert.equal(typeof inkColor(ink, LEGACY_FALLBACK), "string",
+    `${label} must still yield a COLOUR STRING for the raster tint — latex_raster interpolates this into its cache key, which no object can survive`);
+
+// The dispatch, end to end: what each ink is HANDED TO must be able to take it.
+// A gradient is the only kind skShaderForPaint accepts; a material has its own
+// builder; everything else is a colour and never reaches a shader at all.
+for (const [label, ink] of Object.entries({
+  "legacy bare solid": SOLID, "wrapped solid": WRAPPED_SOLID, "linear": GRADIENT,
+  "radial": RADIAL, "off": { type: "none" }, "material": MATERIAL,
+})) {
+  if (!isShaderInk(ink)) continue;               // colour: raster-tint path, asserted above
+  if (isMaterialPaint(ink)) continue;            // materialShaderForGlyphs
+  assert.ok(isGradientOnlyPaint(parsePaint(ink)),
+    `${label} reaches skShaderForPaint, which draws ONLY gradients — anything else throws there and becomes the "failed to paint" box`);
+}
+
+// PLAINTEXT carries the same wrapper through the same machinery (one session, one
+// PaintField), so its `color` slot gets the same sweep. It parses rather than
+// unwraps — a text op's colour goes straight to parsePaint, which knows the
+// wrapper natively — so the assertion is that every cell PARSES, none throws.
+for (const [label, ink] of Object.entries({
+  "legacy bare solid": SOLID, "wrapped solid": WRAPPED_SOLID, "linear": GRADIENT,
+  "radial": RADIAL, "off": { type: "none" }, "material": MATERIAL,
+})) {
+  const op = plaintextPlugin.emit({ text: "hi", w: 200, h: 60, fill: ink }, IDENTITY_WORLD).find((o) => o.op === "text");
+  assert.ok(op, `plaintext must emit a text op for a ${label} fill`);
+  assert.doesNotThrow(() => parsePaint(op.color),
+    `a ${label} fill on plaintext must PARSE — this is the same PaintField shape that broke the equation, checked on the widget that shares its machinery`);
+}
+assert.deepEqual(parsePaint(plaintextPlugin.emit({ text: "hi", w: 200, h: 60, fill: WRAPPED_SOLID }, IDENTITY_WORLD).find((o) => o.op === "text").color),
+  parsePaint(plaintextPlugin.emit({ text: "hi", w: 200, h: 60, fill: SOLID }, IDENTITY_WORLD).find((o) => o.op === "text").color),
+  "plaintext's two solid forms must resolve to the identical colour, for the same back-compat reason the equation's do");
 
 // The latex ink row is PAINT-capable — that flag alone is what mounts a
 // PaintField (with its Mat tab) instead of a plain ColorField.
