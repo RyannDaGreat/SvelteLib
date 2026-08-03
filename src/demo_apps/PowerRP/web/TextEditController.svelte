@@ -186,9 +186,31 @@
   const MAX_EDIT_HISTORY = 500; // per-session undo depth cap (a session is bounded)
   let editUndo = [];            // snapshots taken BEFORE each mutation (non-reactive)
   let editRedo = [];
-  /** Command (mutates session history). Records the current value+caret, clears redo. */
-  function pushHistory() {
-    editUndo.push({ value: rich, anchor, focus });
+  /** Command (mutates session history). Records `base` (the PRE-EDIT value) + the
+   *  caret, and clears redo.
+   *
+   *  `base` IS A PARAMETER, AND THAT IS THE WHOLE FIX (measured 2026-08-02). It
+   *  used to read `rich` — but `rich` is $derived from the PREVIEW-BLENDED node,
+   *  so it reports whatever is staged in app.previewDelta, which is not always the
+   *  pre-edit value. The toolbar's +/- buttons stage a HOVER preview on
+   *  `onpointerenter` and only then commit on `onclick`: by the time stepSize ran,
+   *  `rich` already read the hovered [50,20], so the snapshot recorded the POST-edit
+   *  value and Cmd+Z restored the edit instead of undoing it. Measured on a mixed
+   *  [48,18] selection: click + → live [50,18+2]; Cmd+Z → still [50,20], while
+   *  depth correctly fell 1→0. Driving the same stepSize through the test seam,
+   *  with no pointerenter, undid correctly — which is what identified the hover
+   *  rather than an off-by-one in this stack. Typing was never affected (no hover
+   *  precedes a keystroke), so this was a per-verb defect, not a broken mechanism.
+   *
+   *  WHY A PARAMETER RATHER THAN A REORDERING: every style caller ALREADY computes
+   *  the honest base as `takeStyleBase()` — the value with any hover preview
+   *  discarded — and it is the same value it stages its edit relative to. Passing
+   *  that value makes the snapshot and the edit share ONE source, so they cannot
+   *  disagree. Reordering reactive reads instead would leave the invariant resting
+   *  on Svelte 5 derivation timing and on no future caller staging anything before
+   *  it snapshots — neither of which is checkable at the call site. */
+  function pushHistory(base) {
+    editUndo.push({ value: base, anchor, focus });
     if (editUndo.length > MAX_EDIT_HISTORY) editUndo.shift();
     editRedo = [];
   }
@@ -198,8 +220,13 @@
    *  widget never receives a rich value; in rich mode the value passes through.
    *  All preview writes (typing, IME, in-session undo/redo) go through here. */
   function stageValue(v) { app.previewTextValue(plain ? richTextToPlain(v) : v); }
-  /** Command. Previews a new value AND records the prior one for in-session undo. */
-  function preview(v) { pushHistory(); stageValue(v); }
+  /** Command. Previews a new value AND records the prior one for in-session undo.
+   *  `base` is the value Cmd+Z must restore. It DEFAULTS to `rich` — correct for
+   *  every mutation whose base IS the live value (typing, delete, paste, IME:
+   *  nothing stages anything ahead of them). A STYLE write must pass its
+   *  takeStyleBase() explicitly, because a hover preview may already be staged
+   *  over the live value — see pushHistory for the measurement. */
+  function preview(v, base = rich) { pushHistory(base); stageValue(v); }
   /** Command. Restores the previous in-session snapshot (value + caret). No-op at
    *  session start — exit (Esc) then Cmd+Z undoes the whole edit at the doc level. */
   function undoEdit() {
@@ -415,7 +442,7 @@
   function applyStyleToSelection(delta) {
     if (plain) return; // plain-string widget: no runs to style (no format toolbar)
     const base = takeStyleBase();
-    if (selEnd > selStart) preview({ runs: styledRuns(base, delta), paras: base.paras });
+    if (selEnd > selStart) preview({ runs: styledRuns(base, delta), paras: base.paras }, base);
     else pendingStyle = { ...pendingStyle, ...delta };
   }
   /** Command. Applies a paragraph-style delta to every paragraph the selection
@@ -425,7 +452,7 @@
   function applyParaToSelection(delta) {
     if (plain) return; // plain-string widget: alignment lives on the Inspector row
     const base = takeStyleBase();
-    preview({ runs: base.runs, paras: applyParaStyle(base.paras, base.runs, selStart, selEnd, delta) });
+    preview({ runs: base.runs, paras: applyParaStyle(base.paras, base.runs, selStart, selEnd, delta) }, base);
   }
   function toggleStyle(key) {
     if (plain) return; // plain-string widget: no bold/italic/underline runs
@@ -454,7 +481,7 @@
   function stepSize(delta) {
     if (plain) return; // plain-string widget: size lives on the Inspector row
     const base = takeStyleBase(); // the REAL value, never a hovered preview
-    if (selEnd > selStart) { preview({ runs: sizeSteppedRuns(base, delta), paras: base.paras }); return; }
+    if (selEnd > selStart) { preview({ runs: sizeSteppedRuns(base, delta), paras: base.paras }, base); return; }
     const resolvedBase = normalizeRichText(base, inherited);
     const from = pendingStyle.size ?? runStyleAt(resolvedBase.runs, focus).size ?? DEFAULT_PARA_SIZE;
     pendingStyle = { ...pendingStyle, size: steppedSize(from, delta) };
@@ -507,7 +534,7 @@
   function scaleSize(factor) {
     if (plain) return; // plain-string widget: size lives on the Inspector row
     const base = takeStyleBase(); // the REAL value, never a hovered preview
-    if (selEnd > selStart) { preview({ runs: sizeScaledRuns(base, factor), paras: base.paras }); return; }
+    if (selEnd > selStart) { preview({ runs: sizeScaledRuns(base, factor), paras: base.paras }, base); return; }
     const resolvedBase = normalizeRichText(base, inherited);
     const from = pendingStyle.size ?? runStyleAt(resolvedBase.runs, focus).size ?? DEFAULT_PARA_SIZE;
     pendingStyle = { ...pendingStyle, size: scaledSize(from, factor) };
@@ -556,7 +583,9 @@
   // ── IME composition: mirror the composing string into the model as a PROVISIONAL
   // run so it renders in Skia at the caret (WYSIWYG); commit on end ──────────────
   function onCompositionStart() {
-    pushHistory(); // the whole IME composition is ONE in-session undo step
+    pushHistory(rich); // the whole IME composition is ONE in-session undo step
+    // `rich` is the honest base here: a composition begins from a keystroke in the
+    // sink, and no hover preview can be staged over a focused sink.
     composing = true;
     let base = rich;
     if (selEnd > selStart) { base = deleteRange(base, selStart, selEnd, inherited); stageValue(base); }
