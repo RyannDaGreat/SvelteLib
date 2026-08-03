@@ -604,7 +604,13 @@ export function parsePaint(paint) {
   const g = type === "linearGradient" ? (paint.linear ?? paint) : (paint.radial ?? paint);
   const stops = normalizeStops(visibleStops(g));
   if (type === "linearGradient") {
-    return { type, stops, ...linearAxis(g), ...linearCenterWavelength(g) };
+    const linear = { type, stops, ...linearAxis(g), ...linearCenterWavelength(g) };
+    // LOOP BAKES ITS WRAP SEGMENT HERE, once, for all three backends (see
+    // loopWrappedStops). The tile is asked of linearGradientRender rather than read
+    // off `spread`, because a whole-axis ramp resolves to "pad" whatever it stores.
+    return linearGradientRender(linear).tile === "loop"
+      ? { ...linear, stops: loopWrappedStops(stops) }
+      : linear;
   }
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
@@ -648,6 +654,71 @@ function normalizeStops(stops) {
     if (typeof s.offset !== "number" || !Number.isFinite(s.offset)) throw new Error(`parsePaint: stop "offset" must be a finite number, got ${JSON.stringify(s.offset)}`);
     return { offset: Math.max(0, Math.min(1, s.offset)), color: parseColor(s.color) };
   });
+}
+
+/**
+ * Pure function. A LOOPING ramp's stops with its WRAP SEGMENT BAKED IN — the one
+ * place the "loop means CONTINUOUS" ruling is expressed, consumed unchanged by
+ * Skia's TileMode.Repeat, SVG's spreadMethod="repeat" and the PDF stitching tiles.
+ *
+ * ── THE DEFECT THIS FIXES (user report, 2026-08-02, WORKSTREAM BB) ────────────
+ * "even though it looks like it would be continuous in the gradient preview in the
+ * UI, the background actually had a discontinuous jump. That's not how loops should
+ * work, with gradients anyway." MEASURED before the fix, on stops at 0.2/0.8 red→
+ * blue at wavelength 0.25: the rendered row jumped 255/255 in ONE pixel at every
+ * tile boundary, against a median adjacent slope of 2 — while the editor preview
+ * showed mid-purple there. The backends were handed the RAW [0,1] stops and a
+ * native repeat mode, so colour(last) butted straight against colour(first); only
+ * the preview's sampler (core/ramps.js, `loop: true`) synthesised the wrap.
+ *
+ * ── WHY THE BAKE IS TWO STOPS, AND WHY IT IS EXACT ───────────────────────────
+ * core/ramps.js defines a looping ramp's wrap segment as running from offset_last
+ * to offset_0 + 1 — i.e. ACROSS the tile boundary, which no backend stop list can
+ * express (a stop list lives in [0,1]). So the segment is CUT at the boundary and
+ * its two halves are stated as stops:
+ *
+ *     … c_last @ offset_last ──▶ SEAM @ 1  ⟨tile edge⟩  SEAM @ 0 ──▶ c_0 @ offset_0 …
+ *
+ * where SEAM is the wrap's own colour at the cut, `blend(c_last, c_0, f)` with
+ * f = (1 − offset_last) / wrapSpan — the fraction of the wrap already travelled
+ * when the boundary arrives. Both halves of the cut carry the SAME colour, so the
+ * ramp is C0 across the tile edge; and because the interpolation is linear on
+ * either side of the cut, the two pieces reconstruct the wrap segment EXACTLY
+ * rather than approximating it. This is why the picture now agrees with the
+ * preview's sampler pixel for pixel instead of merely closely.
+ *
+ * ── WHAT IS DELIBERATELY LEFT ALONE ──────────────────────────────────────────
+ * A ramp with stops at BOTH 0 and 1 has a ZERO-LENGTH wrap segment, which
+ * core/ramps.js calls "the deliberately-authored HARD SEAM" (it is what CSS
+ * repeating-linear-gradient and Photoshop's gradient repeat do). There is nothing
+ * to bake there, so those stops are returned BY IDENTITY and that seam survives —
+ * it is authored, not a bug. Every other ramp gets the two boundary stops.
+ *
+ * MIRROR and PAD never reach here: mirror is already C0 by reflection, and pad has
+ * no tiles at all, so both stay byte-identical to before this fix.
+ *
+ * Args:
+ *   stops ({offset, color: [r,g,b,a]}[]): normalizeStops output (parsed, in order)
+ *
+ * Returns:
+ *   {offset, color}[] — the same ramp plus the two boundary stops, or `stops`
+ *   itself when the wrap has zero length
+ *
+ * @example loopWrappedStops([{offset: 0, color: [1,0,0,1]}, {offset: 1, color: [0,0,1,1]}]).length // 2 (stops at both ends: the authored hard seam, untouched)
+ * @example loopWrappedStops([{offset: 0.25, color: [1,0,0,1]}, {offset: 0.75, color: [0,0,1,1]}]).map((s) => s.offset) // [0, 0.25, 0.75, 1] (the wrap's two halves bracket the ramp)
+ * @example loopWrappedStops([{offset: 0.25, color: [1,0,0,1]}, {offset: 0.75, color: [0,0,1,1]}])[0].color // [0.5, 0, 0.5, 1] (the seam colour: half-way round the wrap, since the cut splits it evenly)
+ */
+function loopWrappedStops(stops) {
+  const last = stops[stops.length - 1];
+  const first = stops[0];
+  // wrapSpan = (1 − offset_last) + offset_0 — the wrap's length on the circle.
+  const wrapSpan = 1 - last.offset + first.offset;
+  // Zero span = stops at 0 AND 1 = the authored hard seam. Returning by identity
+  // also keeps every such (very common) two-stop ramp allocating nothing.
+  if (wrapSpan <= 0) return stops;
+  const f = (1 - last.offset) / wrapSpan;
+  const seam = last.color.map((c, k) => c + (first.color[k] - c) * f);
+  return [{ offset: 0, color: seam }, ...stops, { offset: 1, color: seam }];
 }
 
 /** Pure function. Validates a {x, y} objectBoundingBox point (finite numbers). */
