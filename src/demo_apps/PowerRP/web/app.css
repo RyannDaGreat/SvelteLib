@@ -5785,6 +5785,98 @@ textarea {
   min-width: 0;
 }
 
+/* ── ASSET EXPLORER: LIST VIEW ───────────────────────────────────────────────
+   The pane's SECOND layout, the mirror of the Slide Navigator's toggle (user,
+   2026-08-02: "You can have the same thing for the asset explorer too"). Where the
+   rail had only a list and gained a grid, this pane had only tiles and gains a
+   list — the same control, opposite starting points.
+
+   ONE ROW PER ASSET, name · kind · size: the facts the tile keeps in its TOOLTIP,
+   promoted to always-visible columns (AssetExplorer's assetRowFacts is
+   deliberately assetTipParts' first two lines, split). That is what a list view is
+   for in a file pane — scanning twenty near-identical thumbnails costs a hover
+   each in tile view.
+
+   A GRID, NOT A FLEX ROW, so the three columns LINE UP down the pane: the kind and
+   size columns are the same width in every row, which is the only thing that makes
+   a column scannable. `1fr` on the name lets it take the slack and ellipsize;
+   auto/max-content on the rest means the columns are exactly as wide as their
+   widest value and no wider. UNSCOPED, like the tile classes above it and for the
+   same documented reason. */
+.ae-list {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto auto;
+  align-items: center;
+  column-gap: var(--a-sp-2);
+}
+
+/* Each row spans all five tracks as a subgrid, so the row is one hover/drag target
+   while its cells still align with every other row's. */
+.ae-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding: var(--a-sp-1) var(--a-sp-2);
+  cursor: grab; /* the row is draggable onto the canvas, exactly as the tile is */
+}
+
+.ae-row:hover {
+  background: var(--a-hover-bg);
+}
+
+.ae-row-kind {
+  color: var(--fg-dim);
+}
+
+/* The name is the row's BUTTON (it carries the double-click and the aria sentence),
+   so it is stripped back to text: transparent, inherited font, left-aligned, and
+   ellipsized because a long path must not push the kind and size columns off. */
+.ae-row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--a-font-sm);
+  cursor: pointer;
+}
+
+.ae-row-kind-text,
+.ae-row-size {
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  white-space: nowrap;
+}
+
+/* RIGHT-ALIGNED, because it is a magnitude: aligning the digits is what lets the
+   eye compare file sizes down the column without reading them. An UNKNOWN size is
+   the empty string (assetRowFacts), never a "0 B" that would read as measured. */
+.ae-row-size {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* THE ROW'S ACTIONS ARE THE TILE'S ACTIONS (copy-path, download, trash-unless-
+   built-in), so the toggle stays a LAYOUT switch and never a capability switch.
+   They fade in on hover/focus-within like the rail's eye toggle: three icons on
+   every row at rest would out-shout the names the list exists to show. */
+.ae-row-actions {
+  display: flex;
+  gap: var(--a-sp-1);
+  opacity: 0;
+}
+
+.ae-row:hover .ae-row-actions,
+.ae-row:focus-within .ae-row-actions {
+  opacity: 1;
+}
+
 /* Square tile (defines the Thumbnail cell height) + overlay layer for the kind
    icon, the double-click hit target, and the insert button. */
 .ae-tile {

@@ -180,6 +180,32 @@
   }
 
   /**
+   * Pure function. A LIST-VIEW row's three columns: name · kind · size.
+   *
+   * IT IS assetTipParts' FIRST TWO LINES, SPLIT INTO COLUMNS, and that is the
+   * whole design of the list view: the facts a tile hides behind a hover become
+   * always-visible text you can scan down. Deliberately the same three facts and
+   * the same formatter (humanReadableFileSize), so a row and its own tooltip can
+   * never disagree about the size of the file they describe.
+   *
+   * SIZE IS "" WHEN UNKNOWN, not "—" or "0 B": the column is right-aligned text,
+   * and an absent size must not read as a measured zero. A built-in reports no
+   * size (it is not in the project's store), which is the common case for it.
+   *
+   * @param {{name: string, kind: string, size?: number}} a An asset listing entry.
+   * @returns {{name: string, kind: string, size: string}}
+   *
+   * @example assetRowFacts({name: "clip.mp4", kind: "video", size: 27100000})
+   * { name: 'clip.mp4', kind: 'video', size: '25.8MB' }
+   * @example // No size in the listing (a built-in) leaves the column empty.
+   * @example assetRowFacts({name: "clock_digital.plugin.js", kind: "plugin"})
+   * { name: 'clock_digital.plugin.js', kind: 'plugin', size: '' }
+   */
+  export function assetRowFacts(a) {
+    return { name: a.name, kind: a.kind, size: a.size != null ? humanReadableFileSize(a.size) : "" };
+  }
+
+  /**
    * Pure function. What a double-click on a tile of `kind` DOES, as the tail of
    * assetTip's sentence. Its own function so the three outcomes are one greppable
    * table rather than a conditional buried in a template string.
@@ -293,6 +319,7 @@
   import { copyText } from "./clipboard.js";
   import { PREVIEW_WHOLE_FILE, previewOfBlob, projectCategoryPath } from "./storageTree.js";
   import { downloadBytes } from "./fileDownload.js";
+  import { browserModeSetting } from "./settings.js";
   import { inventoryReport, quotaTooltipCategories } from "./debugStorage.js";
   // gatherDebugStorageData: the SAME origin-wide gathering the Debug console's
   // Storage page uses (web/DebugStoragePage.svelte) — reused rather than a
@@ -302,6 +329,52 @@
   import { gatherDebugStorageData } from "./DebugStoragePage.svelte";
 
   let { app } = $props();
+
+  // ── THE VIEW MODE: GRID OR LIST ─────────────────────────────────────────────
+  // The MIRROR of the Slide Navigator's toggle, and the user asked for both in one
+  // breath (2026-08-02): "That would make it a tiled thumbnail display exactly how
+  // the asset explorer panel is working… you would have the view option, which
+  // would be, you know, list view or tile view. You can have the same thing for
+  // the asset explorer too."
+  //
+  // THIS PANE HAD ONLY TILES, so the toggle is what ADDS a view here rather than
+  // what chooses between two — the opposite of the rail, which had only a list.
+  // Same iconography and same footer/header placement language in both panels, so
+  // the toggle reads as ONE control that happens to appear twice.
+  //
+  // GRID IS THE DEFAULT (modes[0]) because it is what this pane has always shown;
+  // a stored preference cannot silently change under an existing user.
+  //
+  // A LIST ROW SAYS name · kind · size — the facts the tile's TOOLTIP already
+  // carries (assetTipParts' first two lines), promoted to always-visible text.
+  // That is the point of a list view for a file pane: those are exactly the
+  // columns you scan when the thumbnails all look alike, and today they cost a
+  // hover each. No new plumbing — the server's listing already sends {name, size,
+  // mtime, kind, url} (server.py) and shownAssets is the same filtered array the
+  // grid reads, so both views are two renderings of one list.
+  //
+  // COMPONENT-LOCAL for the same reason the rail's is: nothing outside this pane
+  // reads how the pane is laid out. See SlideNav's view-mode note.
+  const VIEW_SETTING = browserModeSetting("powerrp.assetExplorerView", ["grid", "list"]);
+  let viewMode = $state(VIEW_SETTING.initial);
+  let isList = $derived(viewMode === "list");
+
+  /** Command. Flips grid ↔ list and persists the choice for this browser. */
+  function toggleViewMode() {
+    viewMode = VIEW_SETTING.persist(VIEW_SETTING.next(viewMode));
+  }
+
+  // The icon shows the DESTINATION view, not the current one — the same reading
+  // SlideNav's toggle uses, so the two panels' toggles cannot mean opposite things.
+  const VIEW_TOGGLE_ICONS = { grid: "mdi:view-list-outline", list: "mdi:view-grid-outline" };
+
+  /** Query. The toggle's sentence — names the view a click switches TO, and what
+   *  that view is good for. */
+  function viewToggleLabel() {
+    return isList
+      ? "Tile view — thumbnails, for picking an asset by what it looks like"
+      : "List view — one row per asset with its name, kind and size, for scanning many files";
+  }
 
   // Asset list state. `assets` null = not-yet-loaded; [] = loaded-but-empty.
   // `error` holds the loud failure message (no project / server down) — the
@@ -949,6 +1022,25 @@
         <iconify-icon icon="mdi:folder-search-outline" width="16" height="16"></iconify-icon>
       </button>
     </Tooltip>
+    <!-- THE VIEW TOGGLE — the mirror of the Slide Navigator's, same icons and the
+         same "the glyph shows where a click takes you" reading (user: "You can
+         have the same thing for the asset explorer too"). It sits with the other
+         pane-level toggles in this header row rather than in a footer, because
+         this pane's controls live at the TOP; the rail's live at the bottom
+         because that is where the rail's controls already were, and in both cases
+         the toggle joins the panel's existing control strip. -->
+    <Tooltip text={viewToggleLabel()}>
+      <button
+        class="btn-icon"
+        class:active={isList}
+        aria-label={viewToggleLabel()}
+        aria-pressed={isList}
+        data-ae-view={viewMode}
+        onclick={toggleViewMode}
+      >
+        <iconify-icon icon={VIEW_TOGGLE_ICONS[viewMode]} width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
     <!-- Hidden file input drives the Upload button. -->
     <input class="ae-file" type="file" multiple bind:this={fileInput} onchange={onFileChosen} />
   </div>
@@ -1110,7 +1202,93 @@
     {/if}
   </div>
 
+  <!-- THE BRANCH IS INSIDE THE SNIPPET, not at its three call sites. assetGrid is
+       rendered from three places (loaded-with-assets, the built-ins-only case, and
+       the empty-with-built-ins case), and forking at each of them would be three
+       chances for one to be missed — which is exactly the defect the `listedAssets`
+       single-source note above this file's toggle records for the built-ins
+       filter. One branch, one place. -->
   {#snippet assetGrid()}
+    {#if isList}
+      <!-- ── LIST VIEW: name · kind · size ────────────────────────────────────
+           ONE ROW PER ASSET, carrying the facts the tile keeps in its tooltip
+           (assetRowFacts is deliberately assetTipParts' first two lines split into
+           columns). This is what the view is FOR: when twenty thumbnails look
+           alike, the columns you scan are the name, the type and the weight, and
+           in tile view each of those costs a hover.
+
+           SAME DATA, SAME GESTURES. `shownAssets` is the identical filtered array
+           the grid renders — both view filters (built-ins, fuzzy search) already
+           stack in that derivation, so neither view can honour one and miss the
+           other. Each row keeps the tile's two gestures: `draggable` with the same
+           onTileDragStart payload, and the same double-click dispatch
+           (onTileDoubleClick), so a plugin still opens Monaco and a CSV still
+           opens the table from here.
+
+           THE ROW'S ACTIONS ARE THE TILE'S ACTIONS, minus the image-only Insert:
+           copy-path, download, and trash-unless-built-in, in that order and from
+           the same handlers. A view that quietly dropped an action would make the
+           toggle a capability switch rather than a layout switch. -->
+      <div class="ae-list" role="list">
+        {#each shownAssets as a (a.url)}
+          {@const facts = assetRowFacts(a)}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="ae-row"
+            role="listitem"
+            draggable="true"
+            ondragstart={(e) => onTileDragStart(e, a)}
+            ondblclick={() => onTileDoubleClick(a)}
+          >
+            <iconify-icon class="ae-row-kind" icon={KIND_ICON[a.kind] ?? KIND_ICON.other} width="14" height="14" aria-hidden="true"></iconify-icon>
+            <!-- THE NAME IS THE ROW'S BUTTON, so the double-click gesture the tip
+                 names is reachable by keyboard too, and so a screen reader
+                 announces the same outcome sentence the tile's hit target does. -->
+            <Tooltip anchor="element">
+              {#snippet tip()}
+                {@const parts = assetTipParts(a, listedNowMs)}
+                <div class="ae-tip-name">{parts.name}</div>
+                <div class="ae-tip-meta">{parts.meta}</div>
+                <div class="ae-tip-desc">{parts.description}</div>
+              {/snippet}
+              <button
+                class="ae-row-name"
+                aria-label={`${a.name} — ${doubleClickClause(a.kind)}`}
+                ondblclick={() => onTileDoubleClick(a)}
+              >{facts.name}</button>
+            </Tooltip>
+            <span class="ae-row-kind-text">{facts.kind}</span>
+            <span class="ae-row-size">{facts.size}</span>
+            <span class="ae-row-actions">
+              <Tooltip text={justCopiedUrl === a.url ? "Copied!" : "Copy served path to clipboard"}>
+                <button
+                  class="btn-icon ae-copy-path"
+                  aria-label={justCopiedUrl === a.url ? `Copied path for ${a.name}` : `Copy path for ${a.name}`}
+                  onclick={() => copyAssetPath(a)}
+                >
+                  <iconify-icon icon={justCopiedUrl === a.url ? "mdi:check" : "mdi:content-copy"} width="14" height="14"></iconify-icon>
+                </button>
+              </Tooltip>
+              <Tooltip text={downloadTip(a)}>
+                <button class="btn-icon ae-download" aria-label={`Download ${a.name}`} onclick={() => downloadAsset(a)}>
+                  <iconify-icon icon="mdi:download" width="14" height="14"></iconify-icon>
+                </button>
+              </Tooltip>
+              <!-- A BUILT-IN HAS NO TRASH CAN, the same absent-beats-disabled rule
+                   the tile's action row states: it is not stored in the project,
+                   so the delete would 404 on a file the backend never had. -->
+              {#if !a.builtin}
+                <Tooltip text={deleteTip(a.name, assetUserCounts.get(a.name) ?? 0)}>
+                  <button class="btn-icon ae-trash" aria-label={`Delete ${a.name}`} onclick={() => onTrashClick(a)}>
+                    <iconify-icon icon="mdi:trash-can-outline" width="14" height="14"></iconify-icon>
+                  </button>
+                </Tooltip>
+              {/if}
+            </span>
+          </div>
+        {/each}
+      </div>
+    {:else}
       <div class="ae-grid">
         <!-- shownAssets = listedAssets through the fuzzy filter (both view filters
              STACK — see its derivation), and KEYED ON `url`, NOT `name`. Both matter
@@ -1250,6 +1428,7 @@
           </div>
         {/each}
       </div>
+    {/if}
   {/snippet}
 </div>
 

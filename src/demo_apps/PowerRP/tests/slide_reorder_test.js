@@ -247,6 +247,35 @@ test("duplicate keyframes are found, counted, removed — folds unchanged, idemp
   assert.equal(simple.slides[3].delta.vars, undefined);
 });
 
+// THE SCOPE LAW (user, 2026-08-02: "simplify duplicate keyframes should be a
+// project-wide command by the way not a slide-wide command it should simplify
+// all keyframes everywhere"). It always was project-wide — the WORDS in the
+// command entry said "the slide", which is what read as slide-wide. This pins
+// the behaviour so no later change can quietly narrow it to one slide: every
+// slide that carries a no-op is swept by the SAME single call, the count is the
+// project-wide total, and no slide's appearance moves.
+test("scope is the whole project: one pass sweeps duplicates on every slide at once", () => {
+  const { doc: base, a } = sampleDoc();
+  // A no-op planted on THREE different slides. A slide-wide implementation
+  // would return 1 here (whichever slide is 'current'); a project-wide one
+  // returns 3 from a call that is told no slide index at all.
+  let doc = keyframed(base, 1, ["items", a, "w"], 10);  // inherited from slide 0
+  doc = keyframed(doc, 2, ["items", a, "w"], 10);
+  doc = keyframed(doc, 3, ["items", a, "w"], 10);
+  assert.deepEqual(duplicateKeyframes(doc).map((f) => f.slideIndex), [1, 2, 3]);
+  const { document: simple, count } = simplifyDuplicateKeyframes(doc);
+  assert.equal(count, 3, "the count is the project-wide total, not one slide's");
+  // All three are gone — not just the first one found.
+  for (const i of [1, 2, 3])
+    assert.equal(simple.slides[i].delta.items?.[a]?.w, undefined, `slide ${i} kept its no-op`);
+  // APPEARANCE LAW, byte-identical (not merely deep-equal) on EVERY slide.
+  doc.slides.forEach((_, i) => assert.equal(
+    JSON.stringify(slideState(simple, i)), JSON.stringify(slideState(doc, i)),
+    `slide ${i} does not look byte-identical after simplifying`));
+  // And it stays one undo unit's worth of work: nothing is left for a second run.
+  assert.equal(simplifyDuplicateKeyframes(simple).count, 0);
+});
+
 test("a real change is never simplified away; slide 0 and disabled slides are exempt", () => {
   const { doc } = sampleDoc();
   assert.deepEqual(duplicateKeyframes(doc), []);

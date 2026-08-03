@@ -470,8 +470,18 @@ function collectRedundant(state, delta, prefix, slideIndex, out) {
 
 /**
  * Pure function. Removes every no-op keyframe `duplicateKeyframes` finds, and
- * reports HOW MANY — the "Simplify duplicate keyframes" command's whole
- * implementation, and the number its tooltip states.
+ * reports HOW MANY — the "Simplify Duplicate Keyframes Everywhere" command's
+ * whole implementation, and the number its tooltip states.
+ *
+ * PROJECT-WIDE, AND THAT IS THE POINT (user, 2026-08-02: "simplify duplicate
+ * keyframes should be a project-wide command by the way not a slide-wide
+ * command it should simplify all keyframes everywhere"). It takes a DOCUMENT and
+ * no slide index: one call folds the deck front to back and prunes every slide's
+ * delta, so the returned count is the project-wide total and the caller commits
+ * it as ONE undo unit. It was always this; the command entry's title and help
+ * said "the slide" and that is what read as slide-wide. Do not add a slide
+ * parameter — a per-slide variant would need its own fold prefix and would make
+ * the count mean two different things depending on where the cursor was.
  *
  * APPEARANCE-PRESERVING BY CONSTRUCTION: every removed leaf was, by definition,
  * already satisfied by the fold at that slide, so no fold changes. (Removing

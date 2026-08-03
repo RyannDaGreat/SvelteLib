@@ -5006,8 +5006,10 @@ export class PowerRPApp {
   }
 
   /**
-   * Query. How many NO-OP keyframes the document carries — leaves whose value
-   * the fold already holds at that slide, so deleting them changes nothing.
+   * Query. How many NO-OP keyframes the document carries ACROSS EVERY SLIDE —
+   * leaves whose value the fold already holds at their own slide, so deleting
+   * them changes nothing. Project-wide, matching the command it gates: the
+   * number is the whole deck's total and does not move with `this.slideIndex`.
    * Read by the Simplify command's gate AND by its `requires` sentence, which is
    * why it is a method rather than an inline expression: one call answers "may
    * it run" and "how many", and the two can never disagree.
@@ -5020,12 +5022,16 @@ export class PowerRPApp {
   }
 
   /**
-   * Command (ONE undo unit). Deletes every no-op keyframe. Appearance-preserving
-   * by construction — each removed leaf was already satisfied by the fold — and
-   * the counterweight to reorder, which synthesizes deltas that can be larger
-   * than the ones an author typed (user, 2026-08-02: "make that a tool of
-   * simplify duplicate keyframes that would only be enabled or give some
-   * indicator of how many things we simplify").
+   * Command (ONE undo unit). Deletes every no-op keyframe ANYWHERE IN THE
+   * PROJECT — every slide is swept by this single call, not just the current one
+   * (user, 2026-08-02: "it should simplify all keyframes everywhere"), and the
+   * whole sweep is one `commit` so one undo takes all of it back.
+   * Appearance-preserving by construction — each removed leaf was already
+   * satisfied by the fold at its own slide — and the counterweight to reorder,
+   * which synthesizes deltas that can be larger than the ones an author typed
+   * (user, 2026-08-02: "make that a tool of simplify duplicate keyframes that
+   * would only be enabled or give some indicator of how many things we
+   * simplify"). This method reads `this.slideIndex` deliberately NOWHERE.
    */
   simplifyDuplicateKeyframes() {
     const { document: doc, count } = simplifyDuplicateKeyframes(this.doc);

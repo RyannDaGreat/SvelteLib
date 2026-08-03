@@ -799,7 +799,7 @@
   const HELP_MIRROR = "Swaps the widgets' SIDES about the selection's centre and leaves each widget's own content untouched. Flip Content is the other half — run both to reflect an arrangement completely.";
   const HELP_EXPORT_CAMERA = "THE CAMERA decides the output — its rect IS the image, at its own size and aspect. Not the visible viewport, and not the widgets' extent, so what you export does not change when you pan or zoom.";
   const HELP_FLIP = "Reverses ONE widget's own content about its own centre (a negative size with the position compensated), leaving it where it sits. Mirror Layout is the one that moves widgets to each other's side.";
-  const HELP_SLIDE_MOVE = "Only the ORDER changes: every slide still looks exactly as it did, including the one you moved. A slide stores the DIFFERENCE from the slide before it, so the deltas are all rebuilt to say the right thing in their new positions — which can leave a few keyframes that restate what is already inherited. Simplify Duplicate Keyframes clears those.";
+  const HELP_SLIDE_MOVE = "Only the ORDER changes: every slide still looks exactly as it did, including the one you moved. A slide stores the DIFFERENCE from the slide before it, so the deltas are all rebuilt to say the right thing in their new positions — which can leave a few keyframes that restate what is already inherited. Simplify Duplicate Keyframes Everywhere clears those, across the whole project in one undo.";
 
   // Palette icons (mdi), keyed by THEME_FAMILIES[].id — one glyph per FAMILY,
   // because the icon names the identity and both poles share it. The two
@@ -1447,7 +1447,16 @@
     // neither may carry a number that changes. Surfacing the number needs a
     // surfacing that can hold live text (a KeyframePanel badge) — NOT BUILT, and
     // the gate alone answers "is there anything to do" in the meantime.
-    { id: "simplify-duplicate-keyframes", title: "Simplify Duplicate Keyframes", icon: "mdi:filter-remove-outline", aliases: ["deduplicate keyframes", "remove redundant keyframes", "clean up keyframes"], when: (a) => a.duplicateKeyframeCount() > 0, requires: "at least one keyframe that restates a value the slide already inherits — this document has none", help: "Deletes every keyframe whose value the slide already inherits. Nothing changes on screen: each one was already a no-op. Use it after moving slides around, which rebuilds each slide's stored differences and can leave some of them redundant.", run: (a) => a.simplifyDuplicateKeyframes() },
+    // SCOPE IS THE WHOLE PROJECT, and saying so is not decoration. The function
+    // always swept every slide in one pass and one undo (core/slide_reorder.js
+    // simplifyDuplicateKeyframes folds the deck front to back), but the title
+    // and both sentences here said "the slide", and the user read that as the
+    // scope it operates on — verbatim, 2026-08-02: "simplify duplicate
+    // keyframes should be a project-wide command by the way not a slide-wide
+    // command it should simplify all keyframes everywhere." The behaviour was
+    // already what he asked for; the WORDS were the defect, so the words are
+    // what changed. Every one of the three now names the project.
+    { id: "simplify-duplicate-keyframes", title: "Simplify Duplicate Keyframes Everywhere", icon: "mdi:filter-remove-outline", aliases: ["deduplicate keyframes", "remove redundant keyframes", "clean up keyframes", "simplify project keyframes", "simplify all keyframes"], when: (a) => a.duplicateKeyframeCount() > 0, requires: "at least one keyframe, anywhere in the project, that restates a value its slide already inherits — this document has none", help: "Sweeps EVERY slide in the project, not just the current one, and deletes every keyframe whose value that slide already inherits. Nothing changes on screen anywhere: each one was already a no-op. One undo takes them all back. Use it after moving slides around, which rebuilds each slide's stored differences and can leave some of them redundant.", run: (a) => a.simplifyDuplicateKeyframes() },
     { id: "next-slide", title: "Next Slide", icon: "mdi:chevron-right", run: (a) => (a.slideIndex = Math.min(a.slideIndex + 1, a.doc.slides.length - 1)) },
     { id: "prev-slide", title: "Previous Slide", icon: "mdi:chevron-left", run: (a) => (a.slideIndex = Math.max(a.slideIndex - 1, 0)) },
     // NUDGE — the arrow keys move the SELECTION one pixel (user ruling: "arrow
