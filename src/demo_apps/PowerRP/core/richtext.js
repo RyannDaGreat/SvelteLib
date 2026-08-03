@@ -1224,6 +1224,90 @@ export function steppedSize(size, delta) {
 }
 
 /**
+ * Pure function. MULTIPLIES the font size of every character in [start, end) by
+ * `factor`, so a MIXED selection keeps its PROPORTIONS: 48+18 scaled by 1.5
+ * becomes 72+27, whose ratio is still 8:3. The third of the three size verbs,
+ * beside adjustRunSize (ADDITIVE) and applyRunStyle's {size: n} (ABSOLUTE) — see
+ * the trio's contract in the SIZE VERBS note below.
+ *
+ * WHY A SEPARATE VERB AND NOT A DELTA (user ruling, 2026-08-02): "if I drag it up
+ * and down, it should make them all bigger or smaller, maintaining the myriad of
+ * different sizes I may have selected … it should do so proportionally when I'm
+ * using the slider, as opposed to the pluses and minuses. The reason why is
+ * because I want to keep the relative proportions of the different font sizes the
+ * same when I use the slider, and increment or decrement when I use the increment
+ * or decrement buttons." An additive shift does NOT preserve proportions (48+18
+ * +2 → 50/20, ratio 5:2 ≠ 8:3), so the contrast the user asked for cannot be
+ * expressed by reusing adjustRunSize with a computed delta.
+ *
+ * Reads resolved and writes explicit exactly as adjustRunSize does, floors at
+ * MIN_RUN_SIZE through the same steppedSize, and rounds to whole px — a font size
+ * is authored in whole px everywhere else in this editor (SIZE_STEP is 2, the
+ * scrubber's grid is 1), and an unrounded scale would leave 48 × 1.01 = 48.48 in
+ * the document where the readout says 48.
+ *
+ * A NON-POSITIVE OR NON-FINITE factor is REFUSED LOUDLY rather than clamped:
+ * factor ≤ 0 means the caller's ratio arithmetic divided by a zero or a negative
+ * size, and silently substituting 1 would make a broken drag look like a
+ * successful no-op.
+ *
+ * Args:
+ *   runs (object[]): current runs (resolved or unresolved)
+ *   start (number): selection start char offset
+ *   end (number): selection end char offset
+ *   factor (number): multiplier applied to every covered run's size (must be > 0)
+ *   inherited (object): widget-level style an absent run key resolves to
+ *
+ * Returns:
+ *   object[]: new runs, canonicalized
+ *
+ * @example scaleRunSize([{text: "Big ", size: 48}, {text: "small", size: 18}], 0, 9, 1.5).map((r) => r.size) // [72, 27] (ratio 8:3 preserved)
+ * @example scaleRunSize([{text: "Big ", size: 48}, {text: "small", size: 18}], 0, 9, 1.5).length // 2 (the boundary SURVIVES)
+ * @example scaleRunSize([{text: "abcd"}], 0, 4, 2, {size: 30}).map((r) => r.size) // [60] (an absent size resolves through the BOX row first)
+ * @example scaleRunSize([{text: "abcd", size: 48}], 0, 4, 1.01).map((r) => r.size) // [48] (rounded to whole px)
+ * @example scaleRunSize([{text: "abcd", size: 4}], 0, 4, 0.01).map((r) => r.size) // [1] (floored at MIN_RUN_SIZE)
+ * @example scaleRunSize([{text: "abcd", size: 20}], 2, 2, 2).map((r) => r.size) // [20] (empty selection is a no-op)
+ */
+export function scaleRunSize(runs, start, end, factor, inherited = {}) {
+  if (!Number.isFinite(factor) || factor <= 0) {
+    throw new Error(`scaleRunSize: factor must be a positive finite number, got ${factor}`);
+  }
+  return overCoveredRuns(
+    runs, start, end,
+    (run) => ({ size: scaledSize(runFrom(run, inherited).size, factor) }),
+    inherited
+  );
+}
+
+/**
+ * Pure function. A font size MULTIPLIED by `factor`, rounded to whole px and
+ * floored at MIN_RUN_SIZE — the multiplicative sibling of steppedSize, and the
+ * ONE place the proportional verb decides its rounding and its floor.
+ *
+ * @example scaledSize(48, 1.5) // 72
+ * @example scaledSize(18, 1.5) // 27
+ * @example scaledSize(48, 1.01) // 48 (rounded — sizes stay whole px)
+ * @example scaledSize(4, 0.01) // 1 (floored, never 0 or negative)
+ */
+export function scaledSize(size, factor) {
+  return Math.max(MIN_RUN_SIZE, Math.round(size * factor));
+}
+
+// ── THE THREE SIZE VERBS (user ruling, 2026-08-02 — see scaleRunSize) ────────
+// A font-size control acting on a MIXED selection has three honestly different
+// answers, and this codebase names all three rather than picking one:
+//   ABSOLUTE   applyRunStyle(runs, s, e, {size: n})  every covered run becomes n
+//              (NORMALIZE — what a TYPED number means: the user named a size)
+//   ADDITIVE   adjustRunSize(runs, s, e, delta)      every run shifts by delta
+//              (what the +/- STEPPERS mean; proportions deliberately NOT kept)
+//   PROPORTIONAL scaleRunSize(runs, s, e, factor)    every run × factor
+//              (what a DRAG means; proportions exactly kept)
+// The verbs are separate primitives because no one of them can express another
+// on a mixed selection: an absolute write flattens the run boundary, an additive
+// shift changes every ratio, and a scale cannot reach an exact typed number.
+// web/TextEditController.svelte owns the ONE mapping from gesture to verb.
+
+/**
  * Pure helper. The shared spine of every per-selection run edit: split the run
  * list at both selection boundaries, overlay `deltaFor(run)` onto each FULLY
  * COVERED run, and re-merge to canonical form. Offsets are clamped; an empty

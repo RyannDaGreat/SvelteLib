@@ -37,6 +37,15 @@
     - the grip wheel rolls to mirror the accumulated drag (wheel mode); it
       STOPS rolling once the value is clamped at a bound (accumulator clamps)
 
+  GESTURE PROVENANCE (additive): oninput/onchange fire as
+  `(value, {source, startValue})` — source is "drag" | "typed" | "step", and
+  startValue is what the control showed when that gesture began. The argument is
+  PURELY ADDITIVE: `(v) => …` consumers see no change whatsoever, which is why it
+  is a second parameter rather than a changed signature or a fourth callback.
+  A consumer that needs to treat the three gestures differently reads it; one that
+  does not, ignores it. See the block comment at `gestureSource` for the full
+  contract, the per-source table and the ruling that asked for it.
+
   CSS custom properties (all default to the ambient theme tokens, then a
   standalone literal fallback):
     --dn-bg, --dn-fg, --dn-fg-dim, --dn-border, --dn-radius, --dn-padding,
@@ -177,9 +186,11 @@
     disabled = false,
     /** @type {string} Accessible label for the control. */
     label = "value",
-    /** @type {(v:number)=>void} Fires on every change during a drag/nudge. */
+    /** @type {(v:number, g?:{source:"drag"|"typed"|"step", startValue:number})=>void}
+     *  Fires on every change during a drag/nudge. See GESTURE PROVENANCE. */
     oninput = undefined,
-    /** @type {(v:number)=>void} Fires once when a drag/nudge settles. */
+    /** @type {(v:number, g?:{source:"drag"|"typed"|"step", startValue:number})=>void}
+     *  Fires once when a drag/nudge settles. See GESTURE PROVENANCE. */
     onchange = undefined,
     /** @type {((s:string)=>void)|undefined} Fires when committed text does NOT
      *  parse as a plain number — the consumer decides what to do with the raw
@@ -214,6 +225,54 @@
   let dragStartClientY = 0; // fallback (no pointer lock) reference point
   let lastEmitted = value; // last value we told the consumer about via onchange
 
+  // ── GESTURE PROVENANCE (the second oninput/onchange argument) ──────────────
+  // WHICH GESTURE produced this value, and what the value was when that gesture
+  // began. Every callback fires as `on*(value, {source, startValue})`; a consumer
+  // that only declares `(v) => …` is completely unaffected, which is why this is
+  // an ADDITIVE argument and not a changed signature or a fourth callback.
+  //
+  // WHY IT EXISTS (user ruling, 2026-08-02): "You may need the number slider to
+  // be able to emit an event upon entering a number through text. That is where
+  // the event will tell you that it did that, so that somewhere down the line we
+  // can parse out the difference between the two, and then everything else out
+  // there right now doesn't, but this one little thing can." Its ONE consumer is
+  // PowerRP's rich-text font-size readout, where the three gestures must mean
+  // three DIFFERENT edits on a mixed-size selection: a TYPED number normalizes
+  // every run to it, a DRAG scales every run proportionally, and the +/- steppers
+  // add. Without provenance those three arrive here as the same `onchange(n)` and
+  // the consumer can only guess — which is how typing 18 over a 48+18 selection
+  // used to SHIFT it by −30 instead of normalizing it.
+  //
+  // `startValue` is the number the control SHOWED when the gesture began, which is
+  // exactly the denominator a proportional consumer needs: factor = value /
+  // startValue, taken from the START and never from the previous frame, so a
+  // continuous drag cannot compound rounding across its ticks. It equals `value`
+  // for a keyboard nudge and for a typed commit, where "since the gesture began"
+  // spans one instant.
+  //
+  // The three sources, and what produces each:
+  //   "drag"  pointer scrub (locked or fallback), and Home/End — a continuous
+  //           sweep from dragStartValue
+  //   "typed" the built-in text entry committing a parsed number
+  //   "step"  ArrowUp/ArrowDown nudge, one discrete increment per press
+  // A consumer that supplies `onedit` never sees "typed" from here: it took the
+  // text surface over, so it reports its own typed commits.
+  let gestureSource = "drag";
+  let gestureStartValue = value;
+
+  /** Pure-ish (reads the current gesture bookkeeping). The provenance record
+   *  handed to oninput/onchange as their second argument. */
+  function gesture() {
+    return { source: gestureSource, startValue: gestureStartValue };
+  }
+
+  /** Command. Declares which gesture the following applyValue/commitValue calls
+   *  belong to, and the value it started from. */
+  function beginGesture(source, startValue = value) {
+    gestureSource = source;
+    gestureStartValue = startValue;
+  }
+
   const bounded = $derived(min != null && max != null);
   // An explicit `step` always wins; otherwise fall back to the granularity
   // implied by the default value's precision (null default → continuous) — but
@@ -239,14 +298,14 @@
     next = clamp(next, min, max);
     if (next === value) return;
     value = next;
-    oninput?.(value);
+    oninput?.(value, gesture());
   }
 
   /** Command. Fire onchange if the value moved since the last settle. */
   function commitValue() {
     if (value !== lastEmitted) {
       lastEmitted = value;
-      onchange?.(value);
+      onchange?.(value, gesture());
     }
   }
 
@@ -277,6 +336,9 @@
     dragStartValue = value;
     dragStartClientY = clientY;
     lastEmitted = value;
+    // dragStartValue IS the provenance's startValue: both mean "the number this
+    // gesture started from", and reading one from the other keeps them one fact.
+    beginGesture("drag", dragStartValue);
   }
 
   function onPointerDown(e) {
@@ -382,6 +444,10 @@
   function commitText(keepOpenOnReject) {
     const num = parseNumber(draft);
     if (num !== null) {
+      // A TYPED commit is one instant, so it started from the value that was on
+      // screen when the editor opened — which is still `value`, since nothing has
+      // written it since. The consumer that cares reads only `source` here.
+      beginGesture("typed");
       applyValue(num); // clamp + step + oninput
       commitValue(); // onchange(number)
       editing = false;
@@ -468,6 +534,7 @@
   function nudge(dir, fine) {
     const base = effectiveStep ?? coefficient;
     dragStartValue = value; // applyValue reads no start, but keep parity for fine
+    beginGesture("step"); // one discrete increment per press — the +/- semantics
     const amount = base * (fine ? FINE_FACTOR : 1);
     applyValue(value + dir * amount);
     commitValue();
@@ -494,15 +561,22 @@
         e.preventDefault();
         nudge(-1, e.shiftKey);
         break;
+      // Home/End are the KEYBOARD END OF THE SCRUB, not a stepper: they sweep the
+      // value to the bound the drag would have hit, so they report "drag" with the
+      // pre-jump value as the start. Reporting "step" would tell a proportional
+      // consumer to ADD (max − value), which is not what "jump to the maximum"
+      // means on a mixed selection.
       case "Home":
         if (min == null) return;
         e.preventDefault();
+        beginGesture("drag");
         applyValue(min);
         commitValue();
         break;
       case "End":
         if (max == null) return;
         e.preventDefault();
+        beginGesture("drag");
         applyValue(max);
         commitValue();
         break;
