@@ -850,8 +850,18 @@ export function crtUniformParams(p) {
  * fill-material framework): the schema is the ONE knob declaration both the paint
  * UI and plugins/demo/crt.js derive from, and the mapping is the ONE schema→uniform
  * step both the widget emit() and the regionOp synthesis run through.
+ *
+ * `animated` is PARAM-PREDICATED, like WAVY_STROKE's `boil` — not unconditional like
+ * glitch/sky/rainy_window/raycast_dither. Those always visibly change frame to frame;
+ * CRT's temporal stage is the opposite by design (see the shader header's "STILL
+ * DELIBERATELY INERT" / flicker-off law): at flicker=0 AND scanDrift=0 (the default
+ * "Rock Steady" preset) the picture is BYTE-IDENTICAL at any t, so a repaint loop would
+ * spin for nothing — exactly what paintIsAnimated exists to avoid (this file's own
+ * completeness sweep is animated_paint_test.js).
  */
-export const CRT_MATERIAL = { id: "crt", sksl: CRT_SKSL, pack: packCrtUniforms, uniformFloats: CRT_UNIFORM_FLOATS, maxSampleReach: maxCrtSampleReach, fillParams: CRT_FILL_PARAMS, toUniformParams: crtUniformParams,
+export const crtParamsAreAnimated = (params) => (params.flicker ?? 0) !== 0 || (params.scanDrift ?? 0) !== 0;
+
+export const CRT_MATERIAL = { id: "crt", animated: crtParamsAreAnimated, sksl: CRT_SKSL, pack: packCrtUniforms, uniformFloats: CRT_UNIFORM_FLOATS, maxSampleReach: maxCrtSampleReach, fillParams: CRT_FILL_PARAMS, toUniformParams: crtUniformParams,
   // SHAPE-CONFORMING FILL: the tube face, the bezel/lit-screen and the vignette follow
   // the silhouette SDF child, so the black bezel frame traces every tooth instead of
   // drawing a rectangle inside the shape. The rectangular raster (scanlines/mask/

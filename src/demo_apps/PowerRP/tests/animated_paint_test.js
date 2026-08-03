@@ -40,6 +40,15 @@ ok(paintIsAnimated(mk("raycast_dither")), "raycast_dither paint is animated");
 ok(paintIsAnimated(mk("wavy", { boil: 2 })), "wavy with boil engaged is animated");
 ok(!paintIsAnimated(mk("wavy", { boil: 0 })), "wavy with boil 0 is static");
 ok(!paintIsAnimated(mk("wavy")), "wavy default (boil absent) is static");
+
+// CRT is param-predicated like wavy, not unconditional like glitch/sky/rainy_window/
+// raycast_dither: at flicker=0 AND scanDrift=0 (the "Rock Steady" default) the
+// temporal stage is an EXACT no-op (crt_shader.js header), so a repaint loop would
+// spin for nothing. Either knob alone must engage it.
+ok(!paintIsAnimated(mk("crt")), "crt default (flicker/scanDrift absent) is static");
+ok(!paintIsAnimated(mk("crt", { flicker: 0, scanDrift: 0 })), "crt with flicker=0 and scanDrift=0 is static");
+ok(paintIsAnimated(mk("crt", { flicker: 0.03 })), "crt with flicker engaged is animated");
+ok(paintIsAnimated(mk("crt", { scanDrift: 0.1 })), "crt with scanDrift engaged is animated");
 ok(!paintIsAnimated(mk("metal")), "metal is static (analytic lighting, no clock)");
 ok(!paintIsAnimated("#ff0000"), "a solid color is static");
 ok(!paintIsAnimated({ type: "gradient", stops: [] }), "a gradient is static");
@@ -69,6 +78,7 @@ for (const f of defFiles) {
   ok(declares, `${f} imports particle_clock AND declares animated on its entry`);
 }
 ok(flagged.has("wavy"), "stroke registry carries wavy's boil predicate");
+ok(flagged.has("crt"), "material registry carries crt's flicker/scanDrift predicate");
 console.log(`  info clock-reading definition files swept: ${defFiles.join(", ")} | flagged entries: ${[...flagged].join(", ")}`);
 
 if (failures) {
