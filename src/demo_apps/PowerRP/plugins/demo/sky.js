@@ -852,6 +852,35 @@ const CLOUDS_CUSTOM = customProps([
   // (coverage by its 0..1 range, softness by declaring this same constant), so the
   // shared unit-span constant both fixes the row and matches its siblings.
   { name: "speed", kind: "number", default: 1, scrub: UNIT_SPAN_SCRUB, help: "Drift speed (animated). 0 = a frozen still; negative drifts the clouds the other way; no cap." },
+  // WHICH CLOUD FIELD (WORKSTREAM BO). User, 2026-08-03, verbatim: "clouds are
+  // supposed to be random right? where's the seed parameter?" Before this the fbm
+  // basis was fixed, so every cloud deck in every document showed the SAME field.
+  //
+  // THE DEFAULT IS 0 AND MUST STAY 0. 0 is the field every pre-BO document already
+  // has (the shader's seedOffset returns exactly float2(0) there), so an existing
+  // deck is byte-identical — the twinkle-default precedent from WORKSTREAM BM, where
+  // the default IS the old constant.
+  //
+  // A RANDOM SEED AT INSERT TIME WAS ASKED FOR AND IS NOT WHAT THIS DOES, because
+  // the two requirements are in direct conflict and byte-identity wins. A default
+  // is not an insert-time value here: core/document.missingDefaults RE-INJECTS a
+  // plugin default for any absent leaf on EVERY LOAD, and the repair pipeline
+  // writes it back. A `defaults` that returned a fresh random number would
+  // therefore reshuffle a saved deck's clouds every time it was opened — the
+  // document would not be a function of its own bytes. Doing it properly needs an
+  // INSERT-TIME hook distinct from `defaults`, which does not exist today (measured:
+  // no plugin has one, and `defaults` is read as a plain object by the registry, the
+  // repair pipeline and retype alike). That hook is worth building and is NOT built
+  // here. Until it is, this follows the shipped seed precedent exactly —
+  // plugins/particles.js `particleSeed` is a fixed default whose help says "change
+  // it to reshuffle" — and the row is scrubbable so rerolling is one drag.
+  //
+  // UNBOUNDED AND SCRUBBABLE, deliberately, and it is not a continuum: the shader
+  // hashes the seed, so 3 and 3.5 are unrelated fields rather than nearby ones.
+  // Dragging it is therefore a REROLL gesture already — one drag walks through a new
+  // field per step — which is why no separate reroll button was built (the row
+  // machinery offers none, and the brief said not to invent chrome for it).
+  { name: "seed", kind: "number", default: 0, scrub: UNIT_SPAN_SCRUB, help: "WHICH cloud field. Every seed is a completely different arrangement of the same kind of cloud — the other knobs keep their meanings, so change this to reroll the clouds without re-tuning coverage or scale. Drag to walk through fields; 0 is the field PowerRP has always drawn. Not a continuum: the value is hashed, so 3 and 3.5 are unrelated, not neighbours." },
   { name: "ambient", kind: "color", default: "#8fa6c8", help: "Cool sky ambient lighting the shadowed sides/undersides of the clouds fall back to." },
   { name: "base", kind: "color", default: "#eef1f6", help: "Cloud base tint (lit sides go toward white·this, dense cores darken)." },
   { name: "cornerRadius", kind: "number", default: 0, min: 0, help: "Rounded-corner radius of the region (world px). Floor 0 is GEOMETRIC — a radius is a length, and render_gpu/ir.js materialFill clamps it there too." },
@@ -947,7 +976,10 @@ export const skyCloudsPlugin = {
       cx: s.w / 2, cy: s.h / 2, halfW: s.w / 2, halfH: s.h / 2, cornerRadius: s.cornerRadius,
       params: {
         time: particleTime(), coverage: s.coverage, softness: s.softness, cloudScale: s.cloudScale,
-        speed: s.speed, ambient: s.ambient, base: s.base,
+        // WHICH cloud field (WORKSTREAM BO). `?? 0` is the legacy resolution: a
+        // pre-BO item has no `seed` leaf until the repair pipeline injects the
+        // default, and 0 is the field it has always drawn either way.
+        speed: s.speed, seed: s.seed ?? 0, ambient: s.ambient, base: s.base,
         suns: mappedSuns(scene, w, s.w, s.h),
       },
       opacity: s.opacity ?? 1,

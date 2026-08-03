@@ -20,9 +20,9 @@ import { parseColor } from "../ir.js";
 
 export const SKY_CLOUDS_MAX_SUNS = 4;
 
-// geometry 8 + scalars (coverage,softness,cloudScale,speed,sunCount) 5
-//   + float3 ambient/base 6 + float2[4] 8 + float4[4] 16 = 43
-const SKY_CLOUDS_UNIFORM_FLOATS = 8 + 5 + 6 + 8 + 16;
+// geometry 8 + scalars (coverage,softness,cloudScale,speed,seed,sunCount) 6
+//   + float3 ambient/base 6 + float2[4] 8 + float4[4] 16 = 44
+const SKY_CLOUDS_UNIFORM_FLOATS = 8 + 6 + 6 + 8 + 16;
 
 export const SKY_CLOUDS_SKSL = `
 const int   MAX_SUNS = ${SKY_CLOUDS_MAX_SUNS};
@@ -39,6 +39,7 @@ uniform float  uCoverage;    // lower = more cloud
 uniform float  uSoftness;    // coverage edge width
 uniform float  uCloudScale;  // spatial frequency of the fbm
 uniform float  uSpeed;       // drift speed
+uniform float  uSeed;        // WHICH cloud field (0 = the field every pre-BO deck has)
 uniform float  uSunCount;
 uniform float3 uAmbient;     // cool sky ambient (shadowed sides)
 uniform float3 uBase;        // cloud base tint
@@ -58,6 +59,30 @@ float2 rot2(float2 v, float a) { float c = cos(a), s = sin(a); return float2(c *
 float sdRoundRect(float2 p, float2 h, float r) { float2 q = abs(p) - (h - r); return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
 // Pure. Domain-warped cloud density at a field point.
 float density(float2 p) { float2 w = float2(fbm(p + 0.0), fbm(p + 5.2)); return fbm(p + 1.4 * w); }
+// Pure. WHICH cloud field a seed names, as a TRANSLATION of the noise domain
+// (WORKSTREAM BO). The fbm basis is infinite and aperiodic, so a far-enough
+// translation lands on a genuinely unrelated stretch of it: the field changes
+// completely while every knob keeps its meaning (coverage still means coverage).
+// It is a translation rather than a re-hash of the lattice for exactly that reason
+// — re-hashing would need a per-octave seed term inside fbm's hot loop, and would
+// change the picture for seed 0 too.
+//
+// SEED 0 RETURNS EXACTLY ZERO, which is the whole back-compat argument, and it is
+// an EARLY RETURN rather than an arithmetic coincidence — hash21 does not vanish at
+// 0, so the branch is what makes the guarantee exact. A pre-BO deck (no seed stored,
+// resolving to 0) therefore adds float2(0) to the domain and renders BYTE-IDENTICALLY.
+// The twinkle-default precedent from WORKSTREAM BM, in its exact form: the default
+// IS the old constant.
+//
+// SEED_SPAN is large relative to uCloudScale's useful range so two nearby integer
+// seeds cannot land on overlapping neighbourhoods of the same field, and the two
+// axes take DIFFERENT hashes so a seed never translates along one axis alone
+// (which would read as a pan of the same clouds rather than different clouds).
+float2 seedOffset(float s) {
+  if (s == 0.0) return float2(0.0);
+  const float SEED_SPAN = 512.0;
+  return float2(hash21(float2(s, 17.0)), hash21(float2(s, 91.0))) * SEED_SPAN;
+}
 
 half4 main(float2 fragCoord) {
   float2 pl = rot2(fragCoord - uCenter, -uAngle);
@@ -65,7 +90,11 @@ half4 main(float2 fragCoord) {
   if (boxCov <= 0.0) return half4(0.0);
 
   float2 fuv = pl / max(uHalfSize, float2(1.0));            // [-1,1]
-  float2 p = fuv * uCloudScale + float2(uTime * uSpeed * 0.03, 0.0);
+  // The seed translates the NOISE DOMAIN only — it is added to p, which is the one
+  // point the field is sampled from, so the lit-ness probe below (density at
+  // p + sdir·step) rides the same field automatically and the lighting stays
+  // consistent with the density it is lighting.
+  float2 p = fuv * uCloudScale + float2(uTime * uSpeed * 0.03, 0.0) + seedOffset(uSeed);
   float den = density(p);
   float cloud = smoothstep(uCoverage, uCoverage + max(uSoftness, EPS), den);
   if (cloud <= 0.0) return half4(0.0);
@@ -112,13 +141,23 @@ function rgb(name, v) { const c = parseColor(v); return [num(name + ".r", c[0]),
  * the sibling-query result mapped into THIS box's [-1,1] frame:
  * [{sx, sy, color, intensity}], padded to SKY_CLOUDS_MAX_SUNS.
  *
- * @param {object} u geometry + {time, coverage, softness, cloudScale, speed, ambient,
- *   base, suns:[{sx,sy,color,intensity}]}
+ * `seed` (WORKSTREAM BO) names WHICH cloud field; it is the one uniform here that
+ * may be absent, resolving to 0 — the field every pre-BO document already has.
+ *
+ * @param {object} u geometry + {time, coverage, softness, cloudScale, speed, seed,
+ *   ambient, base, suns:[{sx,sy,color,intensity}]}
  * @returns {Float32Array} length 44
  *
  * @example packSkyClouds({cx:0,cy:0,halfW:450,halfH:200,cornerRadius:0,angle:0,scale:1,
  *   time:0,coverage:0.45,softness:0.28,cloudScale:2.4,speed:1,ambient:"#8fa6c8",
  *   base:"#f2efe9",suns:[{sx:0.2,sy:-0.4,color:"#ffddaa",intensity:1}]}).length // 44
+ * @example // an ABSENT seed packs 0 — the legacy field, byte-identical
+ * @example packSkyClouds({cx:0,cy:0,halfW:10,halfH:10,cornerRadius:0,angle:0,scale:1,
+ *   time:0,coverage:0.45,softness:0.28,cloudScale:2.4,speed:1,ambient:"#8fa6c8",
+ *   base:"#f2efe9",suns:[]})[12] // 0
+ * @example packSkyClouds({cx:0,cy:0,halfW:10,halfH:10,cornerRadius:0,angle:0,scale:1,
+ *   time:0,coverage:0.45,softness:0.28,cloudScale:2.4,speed:1,seed:7,ambient:"#8fa6c8",
+ *   base:"#f2efe9",suns:[]})[12] // 7
  */
 export function packSkyClouds(u) {
   const suns = Array.isArray(u.suns) ? u.suns : [];
@@ -140,7 +179,11 @@ export function packSkyClouds(u) {
     num("cx", u.cx), num("cy", u.cy), num("halfW", u.halfW), num("halfH", u.halfH),
     num("cornerRadius", u.cornerRadius), num("angle", u.angle), num("scale", u.scale), num("time", u.time),
     num("coverage", u.coverage), num("softness", u.softness), num("cloudScale", u.cloudScale),
-    num("speed", u.speed), count,
+    // WHICH cloud field (WORKSTREAM BO). ABSENT RESOLVES TO 0, and 0 is the field
+    // every pre-BO document has — so a legacy deck packs the identical bytes and
+    // renders identically. This is the only uniform here that tolerates absence,
+    // and it does so for that reason rather than out of leniency.
+    num("speed", u.speed), num("seed", u.seed ?? 0), count,
     am[0], am[1], am[2], ba[0], ba[1], ba[2],
     ...sunPos, ...sunCol,
   ]);

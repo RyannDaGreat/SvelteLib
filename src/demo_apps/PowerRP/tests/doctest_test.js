@@ -309,12 +309,11 @@ const QUARANTINE = [
     observed: 'THREW mandelbrot pack: "orbit" must hold 2048 floats, got 1024',
     why: "the orbit buffer doubled; the example still passes the old 1024-float array",
   },
-  {
-    file: "render_gpu/skia/sky_clouds_shader.js",
-    code: 'packSkyClouds({cx:0,cy:0,halfW:450,halfH:200,cornerRadius:0,angle:0,scale:1, time:0,coverage:0.45,softness:0.28,cloudScale:2.4,speed:1,ambient:"#8fa6c8", base:"#f2efe9",suns:[{sx:0.2,sy:-0.4,color:"#ffddaa",intensity:1}]}).length',
-    observed: "43",
-    why: "the uniform block is 43 floats, not 44",
-  },
+  // REMOVED 2026-08-03 (WORKSTREAM BO): the example said 44 and the block was 43,
+  // so the doctest was RIGHT about the number it wanted and the code was one short.
+  // Adding the `seed` uniform made the block 44 and the example correct on its own
+  // terms — the quarantine went stale and this collector reported it, which is the
+  // whole reason it reports staleness rather than tolerating it.
   {
     file: "render_gpu/ir.js",
     code: 'parseColor("#0f8")',

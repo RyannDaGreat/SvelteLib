@@ -75,7 +75,16 @@ registerAll(registry, createCommands());
 // for to stylise a sky, which is exactly what the exclusion protects. See the STAR
 // SIZE paragraph in plugins/demo/sky.js's preset doctrine.
 const MEMBERS = ["sky", "skySun", "skyMoon", "skyClouds"];
-const EXCLUDED = new Set(["horizon", "cornerRadius", "starSize"]);
+const EXCLUDED = new Set(["horizon", "cornerRadius", "starSize", "seed"]);
+// `seed` (WORKSTREAM BO) is excluded for a reason of its own, and it is the sharpest
+// case in this set: it names WHICH field, not WHAT the field looks like. Every other
+// key here answers a question a preset has an opinion about ("how fluffy", "how
+// fast"); the seed answers "which one of the infinitely many equally-fluffy fields",
+// which is the author's choice and nobody else's. Demanding it of every preset would
+// mean picking "Cirrus Wisps" silently REROLLED the clouds the author had already
+// arranged — a preset that changes something it never claimed to. The completeness
+// rule exists to stop a preset leaving a stale value behind; a seed left alone is not
+// stale, it is the author's.
 // `trailSamples` is EXCLUDED FROM THE LOOK for a reason none of the three above give:
 // it is a QUALITY/COST knob, not an appearance. It says how many samples the long
 // exposure accumulates along its arc, and its only visible effect is whether a trail
