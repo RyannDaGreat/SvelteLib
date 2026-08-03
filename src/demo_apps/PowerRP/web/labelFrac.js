@@ -141,8 +141,10 @@ export const LABEL_FRAC_LIST_DEFAULT = 0.5;
  * 0.23
  * @example labelFracDefault("variable")
  * 0.23
- * @example labelFracDefault("list")
- * 0.42
+ * @example // the LIST family rests wider — a field cell is ~95px, not 362px, so
+ * // the shared 0.23 would ellipsize every micro-label. See LABEL_FRAC_LIST_DEFAULT.
+ * labelFracDefault("list")
+ * 0.5
  */
 export function labelFracDefault(key) {
   if (!LABEL_DIVIDER_KEYS.includes(key)) throw new Error(`labelFracDefault: unknown divider key "${key}"`);
