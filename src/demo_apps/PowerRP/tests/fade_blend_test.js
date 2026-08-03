@@ -265,11 +265,15 @@ test("DEFAULT: the SHAPE test is what makes this reachable from mutBlendApply", 
   assert.equal(blendApplied({ rotationAnchor: { x: 0, y: 0 } }, { rotationAnchor: { x: 10, y: 20 } }, 0.5).rotationAnchor.x, 5);
 });
 
-test("BOTH MODES ARE REGISTERED, with the help text the Inspector renders", () => {
-  assert.deepEqual(interpModeIds(), ["tween", "step", "fade", "blend"]);
+test("THE MODE ROSTER IS REGISTERED, with the help text the Inspector renders", () => {
+  // The full roster IN REGISTRATION ORDER, because that order IS the Inspector's
+  // option order (interpModeIds' contract). `morph` joined it with the retype
+  // wave; this list grows by design, and a wave that adds a mode updates it here.
+  assert.deepEqual(interpModeIds(), ["tween", "step", "fade", "blend", "morph"]);
   assert.equal(interpMode("fade").label, "Fade");
   assert.equal(interpMode("blend").label, "Blend");
-  for (const id of ["fade", "blend"]) assert.ok(interpMode(id).help.length > 20, `${id} needs real help text`);
+  assert.equal(interpMode("morph").label, "Morph");
+  for (const id of ["fade", "blend", "morph"]) assert.ok(interpMode(id).help.length > 20, `${id} needs real help text`);
 });
 
 // ── (6) the crossfade value at the render boundary ───────────────────────────

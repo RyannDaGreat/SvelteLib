@@ -205,7 +205,7 @@ export function interpMode(id) {
  * Query (reads the registry). Every registered mode id, in registration order —
  * the option list an Inspector select renders.
  *
- * @example interpModeIds() // ["tween", "step", "fade", "blend"]
+ * @example interpModeIds() // ["tween", "step", "fade", "blend", "morph"]
  */
 export function interpModeIds() {
   return [...MODES.keys()];
@@ -538,6 +538,144 @@ function deepSame(a, b) {
 // OBJECT paints (material / gradient / solid-wrapper / none) that have no
 // halfway value and need the composite.
 
+// ── `morph`: one widget's OUTLINE flowing into another's ──────────────────────
+//
+// User request, 2026-08-02, verbatim: "the widget type could also have an
+// interpolation option… different widgets might want to interpolate pairs with
+// each other in different ways. So maybe we'd have auto as the default… This
+// information between the relations between the plugins is not stored globally.
+// It has to be stored in the plugins… Two shapes that interpolate can use
+// Mannum's three blue one browns interpolation algorithm. And that also includes
+// anything vector graphics… Morph is the default interpolation type for a widget
+// like that."
+//
+// THE PROPERTY THIS RIDES IS `type`. Retyping a widget is already an ordinary
+// delta write (core/retype.js: "`type` is an ordinary delta-written field"), and
+// folding already treats it as a discrete string leaf — a rect keyframed to a
+// circle SNAPS to a circle the instant alpha > 0. This mode is what makes that
+// same keyframe CONTINUOUS instead: the outline flows.
+//
+// THE VALUE SHAPE: mid-transition the leaf becomes
+//
+//     {type: "~morph", fromType, toType, t}
+//
+// and everything about that shape is chosen so nothing else can mistake it for a
+// widget type. The `~` prefix is THIS FILE'S OWN SIGIL, one level down: `~interp`
+// marks a machine-namespace state KEY, and `~morph` marks a machine-namespace
+// state VALUE, for the identical reason — no plugin type string can contain it
+// (they are all identifiers), so the namespace is provably disjoint from every
+// real `type`. A reader that has never heard of morphing sees a value it cannot
+// confuse with "rect".
+//
+// WHY A TOKEN AND NOT A PRE-MORPHED PAYLOAD IN THE LEAF. This is the crossfade
+// precedent (e90f6d3) applied one layer up, and the argument is the same in
+// shape: the fold runs at ARBITRARY [[slide, alpha]] on any machine, and baking
+// geometry into a folded state would put a whole path list into every cached
+// slide state, every undo entry and every serialized form the fold touches. The
+// token carries the two TYPE NAMES and the alpha — three scalars — and the
+// render seam (render_gpu/ports.js) asks the two plugins for their outlines at
+// paint time, where the answer is already needed and already memoized
+// (core/morph.js alignedPair, keyed on content).
+//
+// WHY IT IS NOT THE DEFAULT FOR EVERY TYPE PAIR. `auto` is (see defaultModeFor
+// below), and auto resolves to morph ONLY when both endpoint plugins actually
+// declare the capability and both report ready. A rect→video "morph" has no
+// second outline to flow into, so it must remain the discrete switch it is
+// today. The capability-present-on-both test is v1; a per-PAIR override table
+// (the user's "different widgets might want to interpolate pairs with each other
+// in different ways") is a documented seam, not shipped — see
+// `morphPairPolicy` below.
+
+/** The `type`-leaf token a mid-transition `morph` produces. The `~` prefix is
+ * the machine-namespace sigil this module already uses for keys, applied to a
+ * value: no plugin type string can contain it. */
+export const MORPH_TYPE_TOKEN = "~morph";
+
+/**
+ * Pure function. True for the mid-morph `type` token — the shape core/derive.js
+ * and render_gpu/ports.js route on. Defined HERE, in DOM-free core, because this
+ * is where the value is minted; the render side imports the predicate rather
+ * than defining a second, driftable copy (the isCrossfadeValue precedent).
+ *
+ * @example isMorphToken({type: "~morph", fromType: "rect", toType: "circle", t: 0.5}) // true
+ * @example isMorphToken("rect") // false
+ * @example isMorphToken(null) // false
+ */
+export function isMorphToken(v) {
+  return !!(v && typeof v === "object" && !Array.isArray(v) && v.type === MORPH_TYPE_TOKEN);
+}
+
+/**
+ * Pure function. THE PAIR POLICY SEAM, and v1's answer to it.
+ *
+ * The user's ruling is that pair knowledge "is not stored globally. It has to be
+ * stored in the plugins", and this function is the shape of that: it asks the
+ * two PLUGINS, never a central table. v1's question is the simplest honest one —
+ * do BOTH declare `morphPaths`, and does either report `morphNotReady`? — and it
+ * returns the REASON when the answer is no, so the fallback can be explained
+ * rather than merely taken.
+ *
+ * THE PER-PAIR OVERRIDE IS DELIBERATELY NOT SHIPPED. A plugin that wants a
+ * different law against a SPECIFIC counterpart would declare it on itself (e.g.
+ * a `morphPairs: {latex: "…"}` map read here, still plugin-owned, still no
+ * global table) — the seam is this function and nothing else has to move. It is
+ * left out because no widget yet has a second law to ask for, and a knob with
+ * one implementation is a guess about the second.
+ *
+ * Args:
+ *   fromPlugin (object|undefined): the outgoing type's plugin
+ *   toPlugin (object|undefined): the incoming type's plugin
+ *   fromState (object): the item's folded state on the outgoing side
+ *   toState (object): the item's state as the incoming type
+ *
+ * Returns:
+ *   {ok: boolean, reason: string|null} — `reason` is a clause completing
+ *   "cannot morph because …", null when ok
+ *
+ * @example morphPairPolicy({morphPaths: () => ({})}, {morphPaths: () => ({})}, {}, {}) // {ok: true, reason: null}
+ * @example morphPairPolicy({}, {morphPaths: () => ({})}, {}, {}).ok // false
+ * @example morphPairPolicy({}, {morphPaths: () => ({})}, {}, {}).reason // 'the outgoing widget has no outline to morph from'
+ * @example morphPairPolicy({morphPaths: () => ({}), morphNotReady: () => "its icon to finish loading"}, {morphPaths: () => ({})}, {}, {}).reason // 'the outgoing widget is waiting for its icon to finish loading'
+ */
+export function morphPairPolicy(fromPlugin, toPlugin, fromState, toState) {
+  if (typeof fromPlugin?.morphPaths !== "function")
+    return { ok: false, reason: "the outgoing widget has no outline to morph from" };
+  if (typeof toPlugin?.morphPaths !== "function")
+    return { ok: false, reason: "the incoming widget has no outline to morph into" };
+  const fromWait = fromPlugin.morphNotReady?.(fromState);
+  if (fromWait) return { ok: false, reason: `the outgoing widget is waiting for ${fromWait}` };
+  const toWait = toPlugin.morphNotReady?.(toState);
+  if (toWait) return { ok: false, reason: `the incoming widget is waiting for ${toWait}` };
+  return { ok: true, reason: null };
+}
+
+registerInterpMode({
+  id: "morph",
+  label: "Morph",
+  help: "Flow one widget's outline into the other's across the transition, contour by contour — a rectangle becoming a circle, an icon becoming a logo. Available when both widgets are vector shapes; anything else switches at the start instead.",
+  // A mid-morph `type` leaf is a plain string on both endpoints, so this mode
+  // does NOT claim trees — there is no subtree to protect, unlike a paint.
+  blend: (a, b, alpha, ctx) => {
+    // TWO REAL TYPE NAMES OR NOTHING. An ADDITION (the item is being created on
+    // this slide, so there is no outgoing type) and a REMOVAL have only one
+    // outline, and there is no morphing from nothing — those take the ordinary
+    // discrete law, exactly as `blend` does for a one-operand paint.
+    if (typeof a !== "string" || typeof b !== "string") return interpolate(a, b, alpha);
+    if (a === b) return b; // the type did not change: no morph to run
+    // THE CAPABILITY GATE. `ctx.morphable` is the render-independent answer to
+    // "can these two actually morph", supplied by the ONE call site
+    // (core/deltas.mutBlendApply) which is where a registry can be reached. When
+    // the caller supplies nothing — every bare fold in a test, a tool, or any
+    // consumer that has no registry in hand — the answer is a TOKEN anyway: the
+    // token is inert to anything that does not understand it, and the render
+    // seam re-asks the plugins for real before drawing a single pixel. Refusing
+    // here instead would make the fold's answer depend on WHO folded it, which
+    // the property-state law forbids.
+    if (ctx?.morphable === false) return b;
+    return { type: MORPH_TYPE_TOKEN, fromType: a, toType: b, t: alpha };
+  },
+});
+
 /**
  * Pure function. Is this value an OBJECT-shaped paint — a material, a gradient,
  * a solid wrapper or an explicit "none"? The shape test the paint default keys
@@ -575,16 +713,36 @@ export function isPaintShaped(v) {
  * Returns:
  *   string: a registered mode id
  *
+ * THE SECOND DEFAULT IS `type` → `morph`, and it is the user's "Morph is the
+ * default interpolation type for a widget like that" plus their "auto as the
+ * default". AUTO IS NOT A THIRD MODE ID — it is this function: a `type` pair
+ * defaults to `morph`, and `morph`'s own blend is what falls back to the
+ * discrete switch when the two plugins cannot actually morph (see
+ * `morphPairPolicy` and the gate in the mode's `blend`). Making "auto" a
+ * registered id instead would put a mode in the Inspector's list that is not a
+ * blend law but a question about two other laws, and every consumer would have
+ * to special-case it. One default + one gate says the same thing with no new
+ * concept, and an author who wants the old snap still picks `step`.
+ *
  * @example defaultModeFor({type: "material", material: {id: "crt"}}, {type: "linearGradient", stops: []}, "fill") // "blend"
  * @example defaultModeFor({type: "material", material: {id: "crt"}}, {type: "material", material: {id: "comic"}}, "fill") // "blend"
  * @example defaultModeFor("#ff0000", "#0000ff", "fill") // "tween" (colors already blend per channel)
+ * @example defaultModeFor("rect", "circle", "type") // "morph" (auto: the pair gate decides whether it really morphs)
+ * @example defaultModeFor("rect", "video", "type") // "morph" (still auto — morph's own blend falls back for an unmorphable pair)
+ * @example defaultModeFor("bold", "italic", "fontStyle") // "tween" (a string that is not the type key)
  * @example defaultModeFor(0, 10, "x") // "tween"
  * @example defaultModeFor(false, true, "active") // "tween" (fade stays OPT-IN — the user asked for step-by-default on Visible)
  */
 export function defaultModeFor(a, b, key) {
   if (isPaintShaped(a) && isPaintShaped(b)) return "blend";
+  if (key === TYPE_KEY && typeof a === "string" && typeof b === "string") return "morph";
   return DEFAULT_INTERP_MODE;
 }
+
+/** The state key holding a widget's plugin type — the leaf `morph` rides. Named
+ * rather than spelled inline because two functions here test against it and a
+ * bare "type" string reads like any other property name at both sites. */
+export const TYPE_KEY = "type";
 
 /**
  * Pure function. THE DISPLAY SIDE of defaultModeFor: which mode the Inspector's

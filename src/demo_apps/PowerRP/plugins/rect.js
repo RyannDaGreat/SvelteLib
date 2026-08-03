@@ -6,6 +6,8 @@ import { closestPointOnRoundedRect } from "../core/outline.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { rect } from "../render_gpu/ir.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
+import { rectPathD } from "../core/svg_paths.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 export const rectPlugin = {
@@ -51,6 +53,24 @@ export const rectPlugin = {
       strokeWidth: s.strokeWidth ?? 0,
       opacity: s.opacity ?? 1,
     })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * this widget's ink as cubic contours in its own box space, so a keyframed
+   * `type` change can FLOW into another shape instead of snapping.
+   *
+   * THE CORNER RADIUS IS PART OF THE OUTLINE, and that is the whole reason this
+   * is `rectPathD` and not four hand-written corners: a rounded rect morphing to
+   * a circle should start from the rounded silhouette the widget actually paints,
+   * not from a square one. `rectPathD` is the same generator core/svg_paths.js
+   * uses to flatten an SVG `<rect>`, so the two spellings of "a rect's outline"
+   * in this codebase stay one spelling.
+   */
+  morphPaths(s) {
+    return morphPayloadFromPaths(
+      [{ d: rectPathD(0, 0, s.w ?? 0, s.h ?? 0, s.cornerRadius ?? 0, s.cornerRadius ?? 0), paint: statePaint(s) }],
+      { w: s.w ?? 0, h: s.h ?? 0 },
+    );
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB — core/view.js
   // defaultCanSkip's cullMargin hook.

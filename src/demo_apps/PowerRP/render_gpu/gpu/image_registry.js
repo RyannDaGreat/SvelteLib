@@ -72,7 +72,11 @@ import { registerMissing } from "./missing_media.js";
 import { truncate, reportOnce } from "../../core/report.js"; // THE shared log elision (this file held the original copy; core/report.js is where the copies ended)
 import { rasterFitFactor, MAX_SURFACE_DIM } from "../../core/clip.js"; // THE surface ceiling — reused, never a second one
 
-/** src → {status: "loading"|"ready"|"error", bitmap: ImageBitmap|null, error: Error|null} */
+/** src → {status: "loading"|"ready"|"error"|"abandoned", bitmap: ImageBitmap|null, error: Error|null}
+ *  "abandoned" is TERMINAL-BUT-BENIGN: a reserved slot whose raster was superseded
+ *  by a newer view, so no pixels are coming and NOTHING IS WRONG. It is deliberately
+ *  neither "loading" (a render must not wait for it) nor "error" (a render must not
+ *  refuse over it) — see abandonImageSlot for why that distinction is load-bearing. */
 const registry = new Map();
 
 /**
@@ -183,7 +187,9 @@ export function getSkiaImage(CanvasKit, ref) {
 
 /**
  * Query. The load status of `src`: "unloaded" (never requested), "loading",
- * "ready", or "error". Lets callers/tests distinguish in-flight from failed.
+ * "ready", "error", or "abandoned" (superseded before it landed — terminal, but
+ * NOT a failure; see abandonImageSlot). Lets callers/tests distinguish in-flight
+ * from failed from deliberately-replaced.
  *
  * @example imageStatus("nope://x") // "unloaded"
  */
@@ -428,13 +434,48 @@ export function releaseImage(ref) {
  *
  * A no-op on a slot that is already ready/errored, or unknown (nothing reserved).
  *
- * @example // reserveImageSlot("pdfregion:x"); abandonImageSlot("pdfregion:x", "superseded"); imageStatus("pdfregion:x") // "error"
+ * ── ABANDONED ≠ FAILED, AND CONFLATING THEM BROKE EVERY PDF VIDEO EXPORT ─────
+ * `abandoned` is a THIRD terminal state, not a spelling of "error", because the
+ * two reasons a slot is abandoned are not the same kind of event:
+ *
+ *   SUPERSEDED — a newer view replaced this raster before it landed. Entirely
+ *     NORMAL and self-inflicted: pdf_page_raster's generation gate produces one
+ *     of these for every region render a zoom/pan/re-render outruns, BY DESIGN.
+ *     Nothing is wrong and nothing is missing — the newer ref carries the pixels.
+ *   FAILED — the raster threw. Something IS missing, and a one-shot export must
+ *     refuse rather than write a hole.
+ *
+ * This function used to mark BOTH `"error"`, so `failedImageRefs()` reported the
+ * benign one and `settledFrame` refused the frame over a raster that had been
+ * deliberately replaced by a better one. Because `settledFrame` RE-RENDERS to
+ * settle, every extra pass supersedes the previous pass's in-flight region and
+ * minted another phantom failure — so a PDF deck could not export AT ALL, in
+ * either backend, and the refusal named `pdfregion:`/`pdfpage:` refs whose
+ * pixels were in fact present. The user's report: "rendering a mp4 with pdfs in
+ * it is failing even if they're raster even if they're not live it's still
+ * failing I don't know why." The `blob:` in those ref names is a red herring —
+ * it is the resolved PDF src embedded in the synthetic cache key, and it had
+ * already loaded.
+ *
+ * The three consequences an abandoned ref needs are unchanged: `getImage`
+ * answers null, `pendingImageRefs` stops listing it, and `ensureImage` sees an
+ * entry and never fetches. Only its membership in the FAILURE set changes.
+ *
+ * @param {string} ref The reserved ref.
+ * @param {string} reason Why it will never be filled (kept for diagnosis).
+ * @param {boolean} [failed=false] TRUE only when the raster genuinely FAILED.
+ *   The default is the benign supersede, so a caller must opt IN to refusing a
+ *   render — the safe direction, since a wrong `true` merely blocks an export
+ *   while a wrong `false` would let a hole through silently.
+ *
+ * @example // reserveImageSlot("pdfregion:x"); abandonImageSlot("pdfregion:x", "superseded"); imageStatus("pdfregion:x") // "abandoned"
+ * @example // abandonImageSlot("pdfregion:y", "raster threw", true); imageStatus("pdfregion:y") // "error"
  * @example // abandonImageSlot("never-reserved", "superseded"); imageStatus("never-reserved") // "unloaded"
  */
-export function abandonImageSlot(ref, reason) {
+export function abandonImageSlot(ref, reason, failed = false) {
   const entry = registry.get(ref);
   if (!entry || entry.status !== "loading") return;
-  entry.status = "error";
+  entry.status = failed ? "error" : "abandoned";
   entry.error = new Error(reason);
   entry.promise = entry.promise ?? Promise.resolve(null);
   notify(ref); // wake pending-set watchers: this ref will never become ready

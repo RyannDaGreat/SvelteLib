@@ -10,6 +10,8 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { ellipse } from "../render_gpu/ir.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
+import { ellipsePathD } from "../core/svg_paths.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 // A circle has NO geometry knob — its shape is w/h, which a preset may not write —
@@ -119,6 +121,30 @@ export const circlePlugin = {
       strokeWidth: s.strokeWidth ?? 0,
       opacity: s.opacity ?? 1,
     })], s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the ellipse as cubic contours in box space, so a keyframed `type` change
+   * flows instead of snapping.
+   *
+   * `ellipsePathD` draws the ellipse as FOUR cubic arcs (the standard
+   * kappa-handle circle), which is exactly what the morph engine wants — an
+   * ellipse has no polygonal form to elevate, and four evenly-spaced anchors
+   * pair cleanly against a rect's four corners. That correspondence is why a
+   * rect↔circle morph reads as corners rounding off rather than as a shape
+   * turning inside out.
+   *
+   * NOTE THE STROKE TRIM IS NOT IN THIS OUTLINE. A three-quarter arc is made at
+   * the universal ports seam (render_gpu/ports.js applyStrokeTrim), which acts on
+   * the emitted op and not on the geometry, so the trim applies to the MORPHED
+   * path the same way it applies to the ellipse — one law, no special case here.
+   */
+  morphPaths(s) {
+    const w = s.w ?? 0, h = s.h ?? 0;
+    return morphPayloadFromPaths(
+      [{ d: ellipsePathD(w / 2, h / 2, w / 2, h / 2), paint: statePaint(s) }],
+      { w, h },
+    );
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,

@@ -369,7 +369,7 @@ export function ensurePdfPageRasterized(src, page, scale) {
     // The slot reserved above will never be filled. Left "loading" it would sit in
     // pendingImageRefs() forever and make renderJobPage.settledFrame fail the whole
     // render naming THIS ref instead of the real failure reported just below.
-    abandonImageSlot(ref, `pdf_page_raster: whole-page raster failed — ${entry.error.message}`);
+    abandonImageSlot(ref, `pdf_page_raster: whole-page raster failed — ${entry.error.message}`, true); // a REAL failure: an export must refuse rather than write a hole
     reportOnce(`pdf_page_raster:page:${key}`, `PowerRP pdf_page_raster: failed to rasterize "${truncate(src)}" page ${page} @${roundPdfScale(scale)}x — ${entry.error.message}`);
     return null;
   });
@@ -644,6 +644,11 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
       // a superseded raster must never be what makes a headless render give up.
       bitmap.close();
       regions.delete(key);
+      // NOT a failure (no third argument): the newer view's ref carries the pixels, so
+      // this ref is terminal-but-benign. Marking it "error" here is what made every PDF
+      // video export refuse itself — settledFrame re-renders to settle, each pass
+      // superseded the last one's in-flight region, and each supersede minted a phantom
+      // failure. See image_registry.abandonImageSlot.
       abandonImageSlot(ref, "pdf_page_raster: region raster superseded by a newer view");
       return null;
     }
@@ -654,7 +659,7 @@ export function ensurePdfPageRegionRasterized(src, page, sourceRect, scale, poin
   })().catch((e) => {
     entry.status = "error";
     entry.error = e instanceof Error ? e : new Error(String(e));
-    abandonImageSlot(ref, `pdf_page_raster: region raster failed — ${entry.error.message}`);
+    abandonImageSlot(ref, `pdf_page_raster: region raster failed — ${entry.error.message}`, true); // a REAL failure: an export must refuse rather than write a hole
     reportOnce(`pdf_page_raster:region:${key}`, `PowerRP pdf_page_raster: failed to rasterize "${truncate(src)}" page ${page} region @${roundedScale}x — ${entry.error.message}`);
     return null;
   });
