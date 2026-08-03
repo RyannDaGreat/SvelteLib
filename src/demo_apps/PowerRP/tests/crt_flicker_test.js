@@ -27,7 +27,7 @@
 import assert from "node:assert/strict";
 import { presetFamiliesOf } from "../core/registry.js";
 import { crtPlugin } from "../plugins/demo/crt.js";
-import { CRT_FILL_PARAMS, crtUniformParams, packCrtUniforms } from "../render_gpu/skia/crt_shader.js";
+import { CRT_FILL_PARAMS, CRT_SKSL, CRT_FILL_SKSL, crtUniformParams, packCrtUniforms } from "../render_gpu/skia/crt_shader.js";
 import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
 
 let passed = 0;
@@ -153,6 +153,52 @@ test("crtUniformParams reads the ONE seamed clock — Δt=0 gives the same param
   assert.equal(c.time, 9.5);
   setParticleTimeOverride(null);
   assert.notEqual(a.time, c.time, "advancing the clock must change the injected time");
+});
+
+/**
+ * Pure function. Every ALL-CAPS SkSL identifier a shader program NAMES, minus the
+ * ones it DECLARES — i.e. the constants it would fail to compile on.
+ *
+ * The two CRT variants are separate standalone SkSL programs with no shared scope,
+ * so a constant used by one must be declared in that one. This caught a real bug the
+ * moment it was written: the temporal stage was added to both `main` bodies, but its
+ * five constants landed only in the base variant's preamble, so CRT_FILL_SKSL named
+ * FLICKER_STEP_SHARE, HASH_MUL and three others it never declared. That does not
+ * throw at import — it is a RUNTIME compile failure reachable only by painting a
+ * CRT as a SHAPE'S FILL, which is why two unrelated suites went red instead of this
+ * file. Cheap text check, no GPU, and it fails on the file rather than on a picture.
+ *
+ * COMMENTS ARE STRIPPED FIRST, and that is not incidental: these shaders are
+ * heavily commented in SHOUTING PROSE ("the LIT SCREEN", "INPUT BAND-LIMIT"), so
+ * scanning raw text reports fifty English words as undeclared identifiers. Only
+ * CODE can name a constant.
+ *
+ * @param {string} sksl - a shader program's source
+ * @returns {string[]} names used but not declared, sorted
+ *
+ * @example undeclaredConstants("const float A = 1.0;\nfloat f() { return A * B; }") // ["B"]
+ * @example undeclaredConstants("const float A = 1.0;\nfloat f() { return A; }")     // []
+ * @example undeclaredConstants("// the LIT SCREEN\nfloat f() { return 1.0; }")      // [] (prose is not code)
+ */
+function undeclaredConstants(sksl) {
+  const code = sksl.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const declared = new Set([...code.matchAll(/const\s+\w+\s+([A-Z][A-Z0-9_]*)\s*=/g)].map((m) => m[1]));
+  const used = new Set([...code.matchAll(/\b([A-Z][A-Z0-9_]{2,})\b/g)].map((m) => m[1]));
+  return [...used].filter((n) => !declared.has(n)).sort();
+}
+
+test("BOTH shader variants declare every constant they use (separate programs)", () => {
+  assert.deepEqual(undeclaredConstants(CRT_SKSL), [], "CRT_SKSL uses an undeclared constant");
+  assert.deepEqual(undeclaredConstants(CRT_FILL_SKSL), [], "CRT_FILL_SKSL uses an undeclared constant — it is a SEPARATE program and needs its own declaration");
+});
+
+test("BOTH variants carry the temporal stage (a fill flickers like the widget)", () => {
+  for (const [name, sksl] of [["CRT_SKSL", CRT_SKSL], ["CRT_FILL_SKSL", CRT_FILL_SKSL]]) {
+    for (const u of ["uTime", "uFlicker", "uFlickerRate", "uScanDrift", "uSeed"])
+      assert.ok(sksl.includes(`uniform float ${u};`), `${name} does not declare the uniform ${u}`);
+    assert.ok(/flickerGain\(uTime, uFlicker, uFlickerRate, uSeed\)/.test(sksl), `${name} never CALLS flickerGain — the uniforms would be dead`);
+    assert.ok(/uScanDrift \* uTime/.test(sksl), `${name} never applies the raster drift`);
+  }
 });
 
 test("persistence stays OUT of the uniform params (still honestly inert)", () => {

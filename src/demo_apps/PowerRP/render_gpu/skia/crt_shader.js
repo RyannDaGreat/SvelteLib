@@ -378,6 +378,14 @@ const half3 LUMA = half3(0.2126, 0.7152, 0.0722);
 const half3 WB_COLD = half3(0.92, 0.97, 1.10);
 const half3 WB_WARM = half3(1.06, 1.00, 0.90);
 const half3 HALATION_WARM = half3(1.00, 0.55, 0.30);
+// TEMPORAL — the same five the base variant declares; see CRT_SKSL for the WHY of
+// each. Both shaders are standalone SkSL programs with no shared scope, so every
+// constant either shader names must be declared in BOTH.
+const float FLICKER_RIPPLE_SHARE = 0.6;
+const float FLICKER_STEP_SHARE = 0.4;
+const float FLICKER_FIELD_RATE = 2.0;
+const float HASH_MUL = 0.1031;
+const float HASH_ADD = 33.33;
 
 uniform shader blurredBackdrop;  // child 0
 uniform shader sharpBackdrop;    // child 1
