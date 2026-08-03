@@ -2364,8 +2364,9 @@ export function customProps(defs) {
  * @example interpRowFor({key: "fill", label: "Fill"}, {type: "material", material: {id: "crt"}}).absentValue
  * "blend"
  * @example // THE OPTION LIST IS FILTERED: a coordinate has no outline and no second paint
+ * @example // (but it IS a scalar, so the geometric law applies — WORKSTREAM BG)
  * @example interpRowFor({key: "x", label: "X"}, 5).options
- * [ 'tween', 'step' ]
+ * [ 'tween', 'step', 'expTween' ]
  * @example // the TYPE row no longer offers Morph — that moved to the UNIVERSAL
  * @example // Morph property, which asks about the widget's outline rather than
  * @example // about one leaf. `tween` is the displayed default and is always kept

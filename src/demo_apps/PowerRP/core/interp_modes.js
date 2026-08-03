@@ -403,7 +403,7 @@ export function registerInterpMode(entry) {
  *   string[]: applicable mode ids, in registration order
  *
  * @example modesForKey("type", "rect") // ["tween", "step"] (morph RETIRED here — it is a universal property now)
- * @example modesForKey("x", 0) // ["tween", "step"]
+ * @example modesForKey("x", 0) // ["tween", "step", "expTween"] (a SCALAR row also offers the geometric law)
  * @example modesForKey("active", false) // ["tween", "step", "fade", "blurFade", "manim"]
  * @example modesForKey("fill", {type: "material", material: {id: "crt"}}) // ["tween", "step", "blend"]
  * @example modesForKey("latex", "x^2", "latex") // ["tween", "step"] (a content leaf morphs through the universal row)
@@ -436,7 +436,7 @@ export function interpMode(id) {
  * Query (reads the registry). Every registered mode id, in registration order —
  * the option list an Inspector select renders.
  *
- * @example interpModeIds() // ["tween", "step", "fade", "blend", "morph", "blurFade", "manim"]
+ * @example interpModeIds() // ["tween", "step", "fade", "blend", "expTween", "morph", "blurFade", "manim"]
  */
 export function interpModeIds() {
   return [...MODES.keys()];
