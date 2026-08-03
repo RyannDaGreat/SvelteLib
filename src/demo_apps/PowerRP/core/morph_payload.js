@@ -362,10 +362,21 @@ export function polylinePathD(points) {
  * box-relative, and the rect's `w`/`h` become the payload's space. The engine
  * then unit-izes both sides as usual and the morph is frame-correct at both ends.
  *
- * THE NODE BOX STILL HAS TO AGREE. This function makes the PAYLOAD honest; the
- * render seam multiplies by the node's `w`/`h`, so a connector morph is only
- * positioned correctly once the mid-morph node carries the tweened ink rect.
- * That is a derive-side concern and is NOT silently papered over here.
+ * THE NODE BOX STILL HAS TO AGREE, AND AS OF THIS COMMIT IT DOES NOT. This
+ * function makes the PAYLOAD honest, and that is all it can do from here:
+ * render_gpu/ports.js `morphIR` scales by `node.state.w`/`h`, and a boxless
+ * connector's state has neither, so `?? 0` collapses the result exactly as the
+ * naive payload did. MEASURED, not feared — tests/morph_connector_test.js pins
+ * it as an expected failure of the SEAM (with instructions to invert the test
+ * when it closes), so the shortfall is recorded rather than discovered later as
+ * a mystery.
+ *
+ * WHAT CLOSING IT TAKES: a mid-morph node with a boxless endpoint needs the
+ * tweened INK RECT as its box AND the rect's origin as its offset — these
+ * widgets draw at absolute coordinates under an identity world transform, so a
+ * payload measured from the rect's corner has to be placed back at that corner.
+ * That is a derive/ports decision about node construction, not a provider one,
+ * and it is NOT silently papered over here.
  *
  * Args:
  *   sources (Array<{d: string, paint?: object}>): the widget's drawn paths, in

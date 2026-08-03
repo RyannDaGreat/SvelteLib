@@ -129,6 +129,33 @@ test("the trap is REAL: a zero space collapses the geometry AT THE RENDER SEAM",
     `the ink-rect frame must preserve real extent where the naive one destroyed it (got ${honest})`);
 });
 
+test("KNOWN GAP, PINNED: a boxless node still renders collapsed at the render seam", () => {
+  // THE PAYLOADS IN THIS FILE ARE NECESSARY BUT NOT SUFFICIENT, and this test says
+  // so in the only way that cannot rot — by MEASURING the shortfall rather than
+  // describing it in a comment. Every provider above now reports a positive space
+  // (its ink rect). But render_gpu/ports.js morphIR scales by `node.state.w`, and a
+  // boxless connector's state has NO w/h at all, so `w ?? 0` is 0 and the morph
+  // still paints "M0 0C0 0…" — an invisible widget mid-transition, with no error.
+  //
+  // The fix belongs in the DERIVE/PORTS seam, not here: a mid-morph node whose
+  // endpoint is boxless needs the tweened INK RECT as its box (and the rect's
+  // origin as its offset — these widgets draw at absolute coordinates with an
+  // identity world transform, so a payload measured from the rect's corner must be
+  // placed back at that corner). That file is owned elsewhere in this wave; this
+  // test is the handoff, and it INVERTS the moment the seam is fixed.
+  const s = { ...linePlugin.defaults };
+  const node = {
+    type: "line", state: s, // exactly what derive builds: no w/h on a boxless widget
+    morph: { fromPlugin: linePlugin, toPlugin: rectPlugin, fromState: s,
+      toState: { w: 100, h: 60, fill: "#ff0000", strokeWidth: 0 }, t: 0.5 },
+  };
+  const xs = morphIR(node).flatMap((o) => pathPoints(o.d).map((p) => p.x));
+  const spread = xs.length ? Math.max(...xs) - Math.min(...xs) : 0;
+  assert.equal(spread, 0,
+    "EXPECTED FAILURE OF THE SEAM, not of the payload: if this now reports a real spread, " +
+    "the node-box gap has been closed — delete this test and assert the extent instead");
+});
+
 test("A LINE IS ONE OPEN SUBPATH, with its endpoints in the ink rect's frame", () => {
   const s = { ...linePlugin.defaults, from: { x: 200, y: 300 }, to: { x: 420, y: 300 }, strokeWidth: 6 };
   const payload = linePlugin.morphPaths(s);
