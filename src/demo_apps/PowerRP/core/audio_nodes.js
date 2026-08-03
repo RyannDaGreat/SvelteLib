@@ -458,7 +458,14 @@ export function readoutBaseline(plugin, s, hasKnobs = false) {
   // the ORIGINAL version of this bug was caught, when the readout landed on the
   // first port row). A band that now has two tenants cannot let either of them
   // centre in the whole of it.
-  if (hasKnobs) return top + AUDIO_READOUT_SIZE - READOUT_GAP / 2;
+  // A BASELINE, so the glyphs sit ABOVE it — `top + size` puts the whole line in
+  // the band starting at `top`. The `- READOUT_GAP / 2` that used to be here made
+  // it `top + 13 - 4`, i.e. a 13pt line whose cap height was 4px ABOVE the band —
+  // and the knob band starts one gap below `top + size`, so the readout's own
+  // glyphs reached down into the first row of dials. Measured on a rendered
+  // six-knob module: the Poly Pad's "8" sat on its Cutoff dial. The gap belongs
+  // BELOW the line (which knobBandTop already adds), not stolen from above it.
+  if (hasKnobs) return top + AUDIO_READOUT_SIZE;
   // Otherwise unchanged: centre in the remaining band when there is one, else sit
   // right below the ports and let the card clip, which is the visible signal that
   // it is too short.
@@ -523,7 +530,12 @@ export function knobBandTop(spec, plugin, s) {
   // The readout, when there is one, sits at `afterPorts + AUDIO_READOUT_SIZE`
   // (readoutBaseline's knobs branch — a BASELINE, so the glyphs sit above it).
   // The band therefore starts one gap below that line, not below a centred one.
-  return spec.readout ? afterPorts + AUDIO_READOUT_SIZE + READOUT_GAP : afterPorts;
+  // TWO gaps below the readout's baseline, not one. One gap left the readout's
+  // descenders about four pixels above the first dial's arc — mathematically
+  // clear, and visibly cramped on a rendered still (the number read as sitting
+  // ON the dials). The band is the only thing that can give here: the readout's
+  // own position is fixed by the port rows above it.
+  return spec.readout ? afterPorts + AUDIO_READOUT_SIZE + READOUT_GAP * 2 : afterPorts;
 }
 
 /**

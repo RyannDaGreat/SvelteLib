@@ -132,7 +132,7 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
  * from DRAG_KIND_MODIFIERS so the two can never disagree.
  *
  * @example DRAG_KINDS.includes("multiresize") // true
- * @example DRAG_KINDS.length // 10
+ * @example DRAG_KINDS.length // 11
  */
 export const DRAG_KINDS = Object.freeze(Object.keys(DRAG_KIND_MODIFIERS));
 

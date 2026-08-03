@@ -65,6 +65,9 @@ const FACE_TOP_GAP = 8;
 const FACE_BOTTOM_GAP = 8;
 const KEY_RADIUS = 2;
 const LABEL_SIZE = 8;
+/** How far above a white key's bottom edge the C label's BASELINE sits — enough
+ *  that its descenders stay inside the key rather than under the card's rim. */
+const LABEL_BOTTOM_GAP = 7;
 
 const PORTS = {
   inputs: [],
@@ -212,7 +215,12 @@ export const nodeKeyboardPlugin = controlNodePlugin({
     for (const k of keys) {
       if (k.black || k.note % 12 !== 0) continue;
       ops.push(text({
-        text: noteName(k.note), x: k.x, y: k.y + k.h - LABEL_SIZE / 2,
+        // INSIDE the key, clear of its bottom edge. The first version used
+        // `h - LABEL_SIZE/2`, which is a BASELINE that close to the edge — so
+        // the glyphs' descenders fell outside the key and the card's rim cut
+        // through them. Caught on a rendered still, not by a test: an op's `y`
+        // is a baseline and no assertion knows how tall a glyph is.
+        text: noteName(k.note), x: k.x, y: k.y + k.h - LABEL_BOTTOM_GAP,
         size: LABEL_SIZE, color: KEY_LABEL_INK, boxW: k.w, boxStyle: { align: "center" },
       }));
     }

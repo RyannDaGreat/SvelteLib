@@ -591,6 +591,21 @@ const LOCK_SURFACE = {
   // real affordance — and that change would falsify the premise stated here, in one
   // named function, rather than silently.
   wire: null,
+  // WRITES NOTHING AT ALL — the strongest form of the checkable reason the two
+  // entries above argue an exemption must have, and easy to falsify if it stops
+  // being true. A live play (a Button press, a Keyboard key) produces no
+  // setPreview, no commitPreview and no undo unit: the press is routed straight
+  // to the audio engine as an EVENT (core/live_control.js), because a moment is
+  // not a value any leaf could hold. The equation lock exists to stop a drag from
+  // clobbering a BOUND LEAF; this gesture touches no leaf, bound or otherwise, so
+  // there is no restriction being imposed and no sentence to say.
+  //
+  // If a control node ever gains a gesture that WRITES — a knob turn does, but
+  // that is knob focus, a canvas MODE rather than a drag kind, and it goes through
+  // setPreview like any other property edit — this entry must become a real
+  // affordance. That change would falsify the premise stated here rather than
+  // silently outliving it.
+  liveplay: null,
 };
 
 test("COVERAGE: every drag kind is answered — the sheet is complete against DRAG_KINDS", () => {

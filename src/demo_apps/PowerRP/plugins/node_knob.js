@@ -25,11 +25,12 @@
  */
 
 import { controlDefaults, controlNodePlugin, controlRangeRows, controlValue, CONTROL_FAMILY } from "../core/control_nodes.js";
-import { familyCard, familyRim, formatNodeValue, knobOps, nodeFamily, nodeValueText, portBeads, NODE_HEADER_H } from "../core/node_chrome.js";
+import { familyCard, familyRim, formatNodeValue, knobOps, nodeFamily, portBeads, NODE_HEADER_H, NODE_VALUE_INK } from "../core/node_chrome.js";
+import { AUDIO_READOUT_SIZE } from "../core/audio_nodes.js";
+import { text } from "../render_gpu/ir.js";
 import { knobFraction } from "../core/node_knobs.js";
 
 const DEFAULT_W = 104;
-const DEFAULT_H = 108;
 const DEFAULT_VALUE = 0.5;
 const DEFAULT_MIN = 0;
 const DEFAULT_MAX = 1;
@@ -39,8 +40,34 @@ const DEFAULT_MAX = 1;
  *  module wears several of — this is one control filling its own widget. */
 const DIAL_R = 26;
 const DIAL_CY_GAP = 12;
-/** How far above the card's bottom rim the value readout's baseline sits. */
-const READOUT_BASELINE_GAP = 10;
+/** Between the dial's bottom and the readout's cap height. */
+const DIAL_READOUT_GAP = 6;
+/**
+ * How far above the card's bottom rim the value readout's BASELINE sits.
+ *
+ * MEASURED, NOT GUESSED. The first version used 10, which put a 22pt number's
+ * baseline 10px above the rim — so the glyphs' bodies sat ON the rim and their
+ * descenders hung outside the card entirely. It looked exactly like a bug in the
+ * card's height and was invisible to every test, because an op's `y` is a
+ * baseline and no assertion knows how tall a glyph is. Caught on a rendered
+ * still (the WAVE 3 lesson: screenshot review is not optional for anything that
+ * paints).
+ *
+ * A baseline needs roughly a third of the type size below it for descenders,
+ * plus a breathing gap — hence a little over half the size.
+ */
+const READOUT_BASELINE_GAP = 14;
+
+/**
+ * The card's default height, DERIVED from what it has to hold rather than
+ * chosen: header, the gap above the dial, the dial itself, a gap, then a full
+ * line of readout with room under its baseline for descenders.
+ *
+ * Deriving it is what stops the two from disagreeing — the first version picked
+ * 108 by eye and the readout hung off the bottom rim, because nothing connected
+ * the number to the content it was supposed to contain.
+ */
+const DEFAULT_H = NODE_HEADER_H + DIAL_CY_GAP + DIAL_R * 2 + DIAL_READOUT_GAP + AUDIO_READOUT_SIZE + READOUT_BASELINE_GAP;
 
 const PORTS = { inputs: [], outputs: [{ key: "out", type: "number", label: "out" }] };
 
@@ -150,7 +177,17 @@ export const nodeKnobPlugin = controlNodePlugin({
       // under every one of eight dials is a wall of digits. This widget has one
       // dial and its entire purpose is that number, so hiding it until you drag
       // would make the node unreadable at a glance on a slide.
-      ...nodeValueText(s, formatNodeValue(dial[0].value), (s?.h ?? DEFAULT_H) - READOUT_BASELINE_GAP),
+      //
+      // AT THE AUDIO READOUT'S SIZE, NOT nodeValueText's 22pt. That size is for a
+      // Display node, whose entire body IS one number; here the number shares the
+      // card with a dial, and at 22pt it overflowed the rim — measured on a
+      // rendered still.
+      text({
+        text: formatNodeValue(dial[0].value),
+        x: 0, y: (s?.h ?? DEFAULT_H) - READOUT_BASELINE_GAP,
+        size: AUDIO_READOUT_SIZE, color: NODE_VALUE_INK,
+        boxW: s?.w ?? DEFAULT_W, boxStyle: { align: "center" },
+      }),
       // No `ui` argument: the focus ring is transient editor state and belongs
       // to the screen-space overlay. The dial's SIZE rides on the record itself
       // (its `r`), so the painter and the hit test read one number.

@@ -26,9 +26,10 @@
  */
 
 import { controlDefaults, controlNodePlugin, controlRangeRows, controlValue, CONTROL_FAMILY } from "../core/control_nodes.js";
-import { familyCard, familyRim, formatNodeValue, nodeFamily, nodeValueText, portBeads, NODE_HEADER_H, NODE_PAD } from "../core/node_chrome.js";
+import { familyCard, familyRim, formatNodeValue, nodeFamily, portBeads, NODE_HEADER_H, NODE_VALUE_INK } from "../core/node_chrome.js";
+import { AUDIO_READOUT_SIZE } from "../core/audio_nodes.js";
 import { knobFraction } from "../core/node_knobs.js";
-import { rect } from "../render_gpu/ir.js";
+import { rect, text } from "../render_gpu/ir.js";
 
 const DEFAULT_W = 84;
 const DEFAULT_H = 148;
@@ -39,7 +40,6 @@ const DEFAULT_MAX = 1;
 /** The track's width, and its inset from the card's top and bottom. */
 const TRACK_W = 6;
 const TRACK_TOP_GAP = 12;
-const TRACK_BOTTOM_GAP = 26;
 /** The handle: wider than the track so it reads as a grip, and tall enough to
  *  be an obvious target rather than a line. */
 const HANDLE_W = 30;
@@ -48,8 +48,17 @@ const HANDLE_H = 11;
  *  as a CIRCLE (core/node_knobs.knobAt), so the strip declares the radius that
  *  covers its handle rather than pretending to be a dial the size of the card. */
 const HANDLE_GRAB_R = 15;
-/** How far above the bottom rim the value readout's baseline sits. */
-const READOUT_BASELINE_GAP = 9;
+/**
+ * How far above the bottom rim the value readout's BASELINE sits. See
+ * plugins/node_knob.js for the measurement: a baseline needs room under it for
+ * descenders, and the first version's 9 put a 22pt number's body on the rim.
+ */
+const READOUT_BASELINE_GAP = 14;
+
+/** The track stops above the readout's line, not just above the rim: the handle
+ *  may sit at the very bottom of the track, and a 22pt number under it needs the
+ *  whole band. Derived from the readout's own metrics for that reason. */
+const TRACK_BOTTOM_GAP = READOUT_BASELINE_GAP + AUDIO_READOUT_SIZE;
 
 const PORTS = { inputs: [], outputs: [{ key: "out", type: "number", label: "out" }] };
 
@@ -81,7 +90,7 @@ export function sliderRange(s) {
  * @example sliderTrack({w: 84, h: 148}).x // 42
  * @example sliderTrack({w: 84, h: 148}).top // 36
  * @example // the track runs from below the header to above the readout
- * @example sliderTrack({w: 84, h: 148}).bottom // 122
+ * @example sliderTrack({w: 84, h: 148}).bottom // 121
  */
 export function sliderTrack(s) {
   const w = s?.w ?? DEFAULT_W;
@@ -99,9 +108,9 @@ export function sliderTrack(s) {
  * @param {number} fraction - in [0, 1]
  * @returns {{cx: number, cy: number}}
  *
- * @example sliderHandle({w: 84, h: 148}, 0).cy // 122
+ * @example sliderHandle({w: 84, h: 148}, 0).cy // 121
  * @example sliderHandle({w: 84, h: 148}, 1).cy // 36
- * @example sliderHandle({w: 84, h: 148}, 0.5).cy // 79
+ * @example sliderHandle({w: 84, h: 148}, 0.5).cy // 78.5
  */
 export function sliderHandle(s, fraction) {
   const track = sliderTrack(s);
@@ -198,7 +207,13 @@ export const nodeSliderPlugin = controlNodePlugin({
       rect({ x: track.x - TRACK_W / 2, y: track.top, w: TRACK_W, h: track.height, cornerRadius: TRACK_W / 2, fill: TRACK_INK }),
       rect({ x: track.x - TRACK_W / 2, y: fillTop, w: TRACK_W, h: Math.max(0, track.bottom - fillTop), cornerRadius: TRACK_W / 2, fill: accent }),
       rect({ x: control.cx - HANDLE_W / 2, y: control.cy - HANDLE_H / 2, w: HANDLE_W, h: HANDLE_H, cornerRadius: HANDLE_RADIUS, fill: HANDLE_INK, stroke: accent, strokeWidth: 1 }),
-      ...nodeValueText(s, formatNodeValue(control.value), (s?.h ?? DEFAULT_H) - READOUT_BASELINE_GAP),
+      // At the audio readout's size, not nodeValueText's 22pt — see node_knob.js.
+      text({
+        text: formatNodeValue(control.value),
+        x: 0, y: (s?.h ?? DEFAULT_H) - READOUT_BASELINE_GAP,
+        size: AUDIO_READOUT_SIZE, color: NODE_VALUE_INK,
+        boxW: s?.w ?? DEFAULT_W, boxStyle: { align: "center" },
+      }),
       ...portBeads(nodeSliderPlugin, s),
       ...familyRim(s, CONTROL_FAMILY),
     ];

@@ -78,16 +78,35 @@ export const KNOB_SWEEP_ANGLE = (270 * Math.PI) / 180;
 export const KNOB_R = 13;
 export const KNOB_TRACK_WIDTH = 3;
 
-/** Horizontal pitch between knob centres, and the vertical space one knob row
- *  occupies including its label. */
+/** Horizontal pitch between knob centres. */
 export const KNOB_PITCH_X = 44;
-export const KNOB_ROW_H = 40;
+
 
 /** The gap between the dial's bottom and its label's baseline. */
 export const KNOB_LABEL_GAP = 11;
 /** The knob label's type size — smaller than a port label, because there are
  *  more of them and they sit closer together. */
 export const KNOB_LABEL_SIZE = 8;
+
+/**
+ * The vertical space one knob row occupies INCLUDING its label — and it is
+ * DERIVED from the parts rather than chosen, because choosing it got it wrong.
+ *
+ * ── THE MEASURED DEFECT (BV, 2026-08-03) ────────────────────────────────────
+ * It was 40, and a row genuinely needs 2·KNOB_R + KNOB_LABEL_GAP +
+ * KNOB_LABEL_SIZE = 45. So on ANY module with two rows of dials, the first
+ * row's labels were painted 5px INTO the second row's dials — the mixer and the
+ * ambience pad have had this since knobs landed. It was found on a rendered
+ * still of a six-knob module and is invisible to every test, because nothing
+ * asserts that two ops do not overlap.
+ *
+ * A derived value cannot drift back: change the dial's radius or its label's
+ * size and the row grows to fit, rather than silently re-colliding. The `+ 4` is
+ * breathing room between a label's baseline and the next dial's top edge, which
+ * is the only part of this that is taste rather than arithmetic.
+ */
+export const KNOB_ROW_GAP = 4;
+export const KNOB_ROW_H = KNOB_R * 2 + KNOB_LABEL_GAP + KNOB_LABEL_SIZE + KNOB_ROW_GAP;
 /** The live VALUE readout's type size, shown under the label only while the
  *  knob is being turned (the number matters exactly while you are changing it). */
 export const KNOB_VALUE_SIZE = 9;
