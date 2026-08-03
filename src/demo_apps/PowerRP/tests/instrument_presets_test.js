@@ -89,10 +89,31 @@ const RENDER_W = 480, RENDER_H = 270;
 const BACKGROUND = "#808080";
 
 // State every widget has and no LOOK preset may write — geometry, transform,
-// opacity and the two universal effect knobs no subject family models.
+// opacity and the universal effect knobs no subject family models.
+//
+// THE EFFECTS HALF IS A DELIBERATE SUBSET AND IT IS NOT DERIVABLE FROM THE BUNDLE.
+// Three of the six universal effects ARE looks for these subjects and are therefore
+// absent from this list: clock_digital writes `bloom` (a lit VFD/CRT display IS a
+// glow) and progress_bar writes `shadow`, `innerShadow` and `bloom` (an inset track
+// with a raised fill is what a physical gauge looks like). The other three
+// — softEdges, blendMode, and now gaussianBlur — are modelled by NO subject family,
+// so writing one would be a preset reaching past its own look.
+//
+// I TRIED TO DERIVE THIS SET FROM BUNDLES.effects, which is the correct move in the
+// three sibling suites whose families model no effect at all, and it failed here
+// twice in a row — first 'clock_digital "Bedside Alarm" writes bloom (composition)',
+// then 'progress_bar "System Track" writes shadow; innerShadow'. That is the useful
+// result: whether a given effect is a LOOK is a judgement about a particular widget,
+// which no `map` over the bundle can make. So a NEW effect must be judged the same
+// way and added here by hand if no family models it — as gaussianBlur is, since a
+// blurred gauge or clock is an out-of-focus one.
+//
+// The COMPLETENESS half needs no such judgement and is not at risk: check (1) below
+// asks only that a family's rows AGREE with each other, so a bundle key no row
+// writes is simply not required of any of them.
 const COMPOSITION_KEYS = new Set([
   "type", "x", "y", "cx", "cy", "w", "h", "z", "rotation", "scale", "rotationAnchor",
-  "opacity", "softEdges", "blendMode",
+  "opacity", "softEdges", "blendMode", "gaussianBlur",
 ]);
 
 /**

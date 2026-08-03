@@ -72,6 +72,7 @@ function effectedScene(fields) {
 /** Pure function. A live value for one effect field — what "this effect is on" means.
  * @example liveEffectValue("softEdges") // 6
  * @example liveEffectValue("bloom") // {radius: 5, strength: 1}
+ * @example liveEffectValue("blur") // 5 (the op field is `blur`; the ITEM-STATE key is `gaussianBlur`)
  */
 function liveEffectValue(field) {
   switch (field) {
@@ -79,6 +80,11 @@ function liveEffectValue(field) {
     case "innerShadow": return { dx: 3, dy: 3, blur: 4, color: "#000000", opacity: 0.6 };
     case "bloom": return { radius: 5, strength: 1 };
     case "softEdges": return 6;
+    // The effects bundle's sixth effect. A plain scalar sigma, like softEdges;
+    // note this is the IR OP's field name — the item-state key it comes from is
+    // `gaussianBlur`, because `blur` was already a plugins/blur.js property
+    // (render_gpu/effects.js EFFECT_STATE_KEYS records the split).
+    case "blur": return 5;
     default: throw new Error(`effects_export_guard: no live value defined for effect field "${field}" — add one when classifying a new effect`);
   }
 }

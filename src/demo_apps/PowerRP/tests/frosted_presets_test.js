@@ -38,6 +38,7 @@ import { createRegistry } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { cameraRect } from "../core/derive.js";
+import { BUNDLES } from "../core/properties.js";
 import { fitRectView } from "../core/view.js";
 import { cameraFrameIR, evaluatedStateAt } from "../web/cameraFrame.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
@@ -64,11 +65,19 @@ const plugin = registry.get(TYPE);
 // exclusion, and what comic / glitch / brightness_contrast all already do).
 const EXCLUDED = new Set(["cornerRadius", "stroke", "strokeWidth"]);
 // State the Inspector shows for every widget alike; a preset is a LOOK, so none of it
-// belongs in one — including the five universal EFFECTS (a preset must not switch a
+// belongs in one — including the universal EFFECTS (a preset must not switch a
 // user's shadow or feather on). This material has no emissive-blend exception.
+//
+// THE EFFECTS HALF IS DERIVED FROM BUNDLES.effects, not listed. It used to name the
+// five by hand, and when the bundle gained a SIXTH (`gaussianBlur`) that list went
+// stale in the most confusing possible way: the new row was not in NOT_LOOK, so
+// lookKeys admitted it as a look knob and check (1) started demanding every frosted
+// preset SET a universal effect — the exact opposite of this file's rule. Deriving
+// it means the bundle can grow without this suite inverting its own contract.
+const EFFECT_KEYS = [...new Set(BUNDLES.effects.map((k) => k.split(".")[0]))];
 const NOT_LOOK = new Set([
   "type", "x", "y", "w", "h", "z", "rotation", "scale", "rotationAnchor", "opacity", "animated",
-  "shadow", "innerShadow", "bloom", "softEdges", "blendMode",
+  ...EFFECT_KEYS,
 ]);
 
 /**

@@ -34,6 +34,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { newDocument } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
+import { BUNDLES } from "../core/properties.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { cameraRect } from "../core/derive.js";
@@ -78,9 +79,16 @@ const EXCLUDED = new Set(["horizon", "cornerRadius", "starSize"]);
 // State the Inspector shows for every widget alike; a preset is a LOOK, so none of it
 // belongs in one. The five universal EFFECTS are in here too — a preset must not switch
 // a user's shadow or feather on — with ONE exception, below.
+// THE EFFECTS HALF IS DERIVED FROM BUNDLES.effects, not listed. It used to name the
+// five by hand, and when the bundle gained a SIXTH (`gaussianBlur`) that list went
+// stale in the most confusing possible way: the new row was not in NOT_LOOK, so
+// lookKeys admitted it as a LOOK knob and this suite started demanding every preset
+// SET a universal effect — the exact opposite of its own rule. Deriving it means the
+// bundle can grow without this suite inverting its contract.
+const EFFECT_KEYS = [...new Set(BUNDLES.effects.map((k) => k.split(".")[0]))];
 const NOT_LOOK = new Set([
   "type", "x", "y", "w", "h", "z", "rotation", "scale", "rotationAnchor", "opacity", "animated",
-  "shadow", "innerShadow", "bloom", "softEdges", "blendMode",
+  ...EFFECT_KEYS,
 ]);
 // THE EXCEPTION. For `skySun` the blend is not an effect the user layered on, it is the
 // difference between the widget ADDING light and SUBTRACTING it: source-over there

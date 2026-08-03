@@ -40,6 +40,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { newDocument } from "../core/document.js";
 import { createRegistry } from "../core/registry.js";
+import { BUNDLES } from "../core/properties.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
 import { cameraRect } from "../core/derive.js";
@@ -71,9 +72,16 @@ const EXCLUDED = new Set(["stroke", "strokeWidth", "shape", "lightAngle", "backd
 // State the Inspector shows for every widget alike; a preset is a LOOK, so none of it
 // belongs in one — including the universal EFFECTS (a preset must not switch a user's
 // shadow or feather on).
+// THE EFFECTS HALF IS DERIVED FROM BUNDLES.effects, not listed. It used to name the
+// five by hand, and when the bundle gained a SIXTH (`gaussianBlur`) that list went
+// stale in the most confusing possible way: the new row was not in NOT_LOOK, so
+// lookKeys admitted it as a LOOK knob and this suite started demanding every preset
+// SET a universal effect — the exact opposite of its own rule. Deriving it means the
+// bundle can grow without this suite inverting its contract.
+const EFFECT_KEYS = [...new Set(BUNDLES.effects.map((k) => k.split(".")[0]))];
 const NOT_LOOK = new Set([
   "type", "x", "y", "cx", "cy", "w", "h", "z", "rotation", "scale", "rotationAnchor", "opacity", "animated",
-  "shadow", "innerShadow", "bloom", "softEdges", "blendMode",
+  ...EFFECT_KEYS,
 ]);
 // The eleven look knobs this widget has. Asserted rather than assumed, so a
 // mis-deriving filter fails here instead of silently weakening check (1).
