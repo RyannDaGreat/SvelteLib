@@ -88,6 +88,10 @@
   // creation's multi-step placement — contributes its own registry entries.
   import { activations, canvasModes, handlerFor } from "./widget_handlers.js";
   import { unionRect, alignedPosition, mirroredPosition, flippedBox } from "../core/geometry.js";
+  // DEMO PATCHES (NF-BIND): the blueprint array the palette's "Demo Patch: …"
+  // entries are generated from, so a new patch is one record and its menu entry
+  // follows. app.insertDemoPatch does the insertion.
+  import { DEMO_PATCHES } from "../core/audio_patches.js";
   import { reportAction } from "../core/report.js";
   // The camera-bind pair's sentences live beside `frameBindable`, the predicate
   // they explain, so the Tools pane's pool row and these command entries show the
@@ -2208,6 +2212,30 @@
       help: "One JavaScript file per project. Assign to `exports` and any property equation can call it: `exports.ease = t => t*t` makes `= ease(0.5)` work everywhere. It runs in the same sandbox equations do, so Date and Math.random stay unavailable and `time` and the seeded `random` are the same ones equations see.",
       run: (a) => a.openProjectScript(),
     },
+    // ── DEMO PATCHES (NF-BIND) ────────────────────────────────────────────────
+    // The user's standing directive, ADDENDUM 10 verbatim: "We should have a menu
+    // called, well, in the command palette by the way, called demo patches that will
+    // insert a demo patch in a group that is just a fully patched audio thing ... I
+    // want to see a bunch of patches, so once you have everything, as you go by the
+    // way, just make demo patches."
+    //
+    // GENERATED FROM THE BLUEPRINT ARRAY rather than written out, so that authoring a
+    // new patch is one record in core/audio_patches.js and its palette entry follows.
+    // The alternative — a hand-written entry per patch — is how a patch ends up
+    // existing in the data and not in the menu, which for a feature whose whole
+    // purpose is to be FOUND is the worst possible failure. Each entry's `help` is
+    // the patch's own sentence, so the palette explains what you are about to hear.
+    //
+    // NO `when` GATE: inserting a patch is always possible, exactly like inserting a
+    // widget. A patch needs no selection and no precondition.
+    ...DEMO_PATCHES.map((patch) => ({
+      id: `demo-patch-${patch.id}`,
+      title: `Demo Patch: ${patch.title}`,
+      icon: "mdi:music-box-multiple-outline",
+      aliases: ["demo patch", "demo patches", "audio patch", "synth patch", patch.title.toLowerCase()],
+      help: patch.help,
+      run: (a) => a.insertDemoPatch(patch.id),
+    })),
   ];
   for (const c of coreCommands) app.commands.add(c);
   // Restore MRU only AFTER every command (plugins from the constructor + the

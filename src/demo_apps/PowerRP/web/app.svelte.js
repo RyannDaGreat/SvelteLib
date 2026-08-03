@@ -22,6 +22,10 @@ import { clipboardKind, propertySubsetKind, pasteBadge, pasteIntent } from "./pa
 // is its counterweight (core/slide_reorder.js states the law both obey).
 import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted, withSlidesMerged, withSlideRunMerged } from "../core/slide_reorder.js";
 import { unionRect } from "../core/geometry.js";
+// DEMO PATCHES (NF-BIND, user ADDENDUM 10): fully-wired audio graphs, inserted as a
+// group. The blueprints are pure data in core so the whole construction is checkable
+// in bare node; `insertDemoPatch` below is the one place they become a document.
+import { DEMO_PATCHES, PATCH_ROW, buildPatchItems, patchBounds } from "../core/audio_patches.js";
 // Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
 import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
 import { isSlideField, resolveTransition, retypedTransition, slideFieldKeys } from "../core/transitions.js";
@@ -3431,6 +3435,89 @@ export class PowerRPApp {
    * onto their world transforms in the derivation stage. Selects the new group.
    * No-op (reported) with fewer than two groupable items.
    */
+  /**
+   * Command (ONE undo unit). Inserts a DEMO PATCH — a fully-wired working audio
+   * graph — as a GROUP, per the user's standing directive (ADDENDUM 10, verbatim:
+   * "a menu called ... demo patches that will insert a demo patch in a group that is
+   * just a fully patched audio thing ... Demo patches are freaking awesome").
+   *
+   * ── ONE UNDO UNIT, WHICH IS WHY THIS IS NOT addItem IN A LOOP ──────────────
+   * A patch is up to eleven widgets and a dozen wires. Built with addItem the user
+   * would need eleven Cmd+Z to take it back, and each intermediate state would be a
+   * partially-wired patch the audio mirror dutifully reflected into the engine —
+   * eleven rounds of guarded rewiring for something the author has not seen yet.
+   * So every item, every wire and the group are assembled into ONE document and
+   * committed once, the `insertTelescopicMagnifier` precedent.
+   *
+   * ── THE WIRES ARE WRITTEN WITH REAL IDS, NOT PATCHED AFTERWARDS ────────────
+   * `withNewItem` mints an id, so a blueprint's symbolic names ("filter", "out")
+   * are resolved to real ids BEFORE any state is written — core/audio_patches
+   * .buildPatchItems takes an `idFor` for exactly this. Writing placeholder wires
+   * and rewriting them afterwards would leave a window in which the document names
+   * items that do not exist, which is what the repair pipeline is entitled to strip.
+   *
+   * @param {string} patchId - a DEMO_PATCHES id
+   */
+  insertDemoPatch(patchId) {
+    const patch = DEMO_PATCHES.find((p) => p.id === patchId);
+    // A COMMAND THAT CANNOT ACT SAYS SO. The palette builds its entries from the
+    // same array, so this is unreachable from the UI — it guards a script or a typo.
+    if (!patch) throw new Error(`insertDemoPatch: no demo patch with id ${JSON.stringify(patchId)} (have: ${DEMO_PATCHES.map((p) => p.id).join(", ")})`);
+
+    // PLACED AT THE VIEW CENTRE, offset so the patch's BOX is centred rather than
+    // its top-left corner — a patch that appeared with its first node under the
+    // cursor and the rest off-screen would look like it had failed.
+    const centre = this.#viewCenter();
+    const probe = patchBounds(patch, this.registry, { x: 0, y: 0 });
+    // AND THEN PUSHED CLEAR OF WHAT IS ALREADY THERE. Measured: inserting two patches
+    // in a row landed both on the view centre, on top of each other — eleven nodes
+    // interleaved with seven, which reads as one incomprehensible tangle rather than
+    // as two patches. So the origin drops BELOW the lowest existing audio node.
+    // Only AUDIO nodes are avoided, deliberately: a patch is meant to be placed on
+    // top of the slide's ordinary content (that is what it is FOR — ambience under a
+    // figure), and dodging every rectangle would push it off the canvas.
+    const existing = this.nodes().filter((n) => n.plugin?.audioModule).map(rotatedBBoxAABB).filter(Boolean);
+    const below = existing.length ? Math.max(...existing.map((b) => b.y + b.h)) + PATCH_ROW : null;
+    const origin = {
+      x: centre.x - probe.w / 2,
+      y: below ?? centre.y - probe.h / 2,
+    };
+
+    // MINT EVERY ID FIRST, in ONE pass, so the wires can be written with real ids
+    // the first time. `newItemId` is the same generator withNewItem uses, called
+    // ahead of it — which is what lets buildPatchItems stay a pure function of
+    // (blueprint, registry, origin, idFor) with no placeholder rewriting afterwards.
+    const idFor = new Map(patch.nodes.map((n) => [n.id, uuid()]));
+    const { states, order } = buildPatchItems(patch, this.registry, origin, (name) => idFor.get(name));
+
+    let doc = this.doc;
+    const zs = this.nodes().map((n) => n.state.z ?? 0);
+    let z = (zs.length ? Math.max(...zs) : 0) + 1;
+    // The same write withNewItem makes, with an id we minted rather than one it
+    // chose — `keyframed(doc, slide, ["items", id], state)` IS creating an item, and
+    // slide 0's delta creating everything is the document model's own rule.
+    for (const id of order) doc = keyframed(doc, this.slideIndex, ["items", id], { ...states[id], active: true, z: z++ });
+
+    // THE GROUP. Its bbox is the patch's own bounds and its bind pose is that box,
+    // so it sits exactly at its bind pose the instant it is made and moves nothing
+    // until the user transforms it — the same contract groupSelection establishes.
+    const bounds = patchBounds(patch, this.registry, origin);
+    const members = [...order];
+    const groupState = {
+      ...this.registry.get("group").defaults,
+      name: patch.title,
+      x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h,
+      rotation: 0, scale: 1,
+      members,
+      bind: { x: bounds.x, y: bounds.y, rotation: 0, scale: 1 },
+      active: true,
+      z: z++,
+    };
+    const [withGroup, groupId] = withNewItem(doc, this.slideIndex, groupState);
+    this.commit(withNormalizedZ(withGroup));
+    this.selection = groupId;
+  }
+
   groupSelection() {
     const members = this.#groupableSelection();
     if (members.length < 2) {
