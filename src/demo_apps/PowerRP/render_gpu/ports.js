@@ -1078,7 +1078,12 @@ export function manimIR(node, cmds) {
   const sx = (node.state.w ?? payload.space?.w ?? 1) / (payload.space?.w || 1);
   const sy = (node.state.h ?? payload.space?.h ?? 1) / (payload.space?.h || 1);
   const fill = plan.fillAlpha > 0 ? scaledOpacity(cmds, plan.fillAlpha) : [];
-  const sketch = subpaths.flatMap((sp, i) => {
+  // A FULLY HANDED-OFF SKETCH IS NOT DRAWN AT ALL, rather than drawn at opacity
+  // 0. The two look identical, but an invisible op is still an op: it is a path
+  // every backend tessellates and every reader of the display list has to
+  // explain. This is also what makes v → 1 land on EXACTLY the widget's own ops,
+  // which is the endpoint law the byte-identity test pins.
+  const sketch = plan.sketchWeight <= 0 ? [] : subpaths.flatMap((sp, i) => {
     const trimmed = trimSubpathByLength(sp, plan.trims[i]);
     if (!trimmed) return [];
     const d = payloadToPathD({ ...payload, subpaths: [scaledSubpath(trimmed, sx, sy)] });
