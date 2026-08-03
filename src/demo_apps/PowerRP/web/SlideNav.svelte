@@ -971,7 +971,7 @@
 <!-- --drag-shift-ms is published from the JS constant so the row-slide animation
      and the code that reasons about it cannot drift to two different numbers. -->
 <div class="slidenav" class:dragging={dragState?.moved} class:grid={isGrid} style:--drag-shift-ms={`${DRAG_SHIFT_MS}ms`}>
-  <div class="slides" class:slides-grid={isGrid} bind:this={slidesEl}>
+  <div class="slides" bind:this={slidesEl}>
     {#each app.doc.slides as slide, i (slide.id)}
       <!-- THE TRANSITION SLICE IS A LIST-VIEW ELEMENT. In grid view the same
            transition is drawn by the TILE ITSELF, as the left-edge spine pill
@@ -1261,7 +1261,13 @@
               aria-pressed={app.isTransitionSelected(slide.id)}
               onclick={(e) => app.selectTransitionAt(slide.id, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey })}
             >
-              <iconify-icon icon={TRANSITION_ICONS[info.type] ?? "mdi:transition"} width="12" height="12"></iconify-icon>
+              <!-- THE ICON IS OUT OF FLOW (see .spine-icon's app.css note for why:
+                   an iconify-icon custom element sharing normal flow with the
+                   label under this pill's inherited vertical-rl is what clipped
+                   the label in the first place). It is absolutely positioned at
+                   the pill's block-start end and never participates in the text
+                   flow the label auto-sizes from. -->
+              <iconify-icon class="spine-icon" icon={TRANSITION_ICONS[info.type] ?? "mdi:transition"} width="12" height="12"></iconify-icon>
               {#if label}<span class="tr-label">{label}</span>{/if}
             </button>
           </Tooltip>

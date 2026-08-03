@@ -201,6 +201,61 @@ try {
       `the pill must name its transition for a screen reader and carry the full sentence when condensed; tile ${p.i + 1} says ${JSON.stringify(p.tip)}`);
   }
 
+  // ── 2b. NO CLIPPING (user bug report, 2026-08-02, verbatim, two screenshots):
+  // "this icon, it doesn't show me anything and it's not tall enough to show me
+  // the transition time... Clearly, there's something being cut off." The DD-era
+  // pill (writing-mode:vertical-rl end to end) mis-sized a flex sibling of an
+  // iconify-icon under vertical-rl and clipped the label's glyphs to slivers at
+  // the pill's near edge — measured (not assumed): scrollWidth exceeded
+  // clientWidth, and the label's own box spilled outside the pill's box
+  // entirely. This asserts the fix by MEASUREMENT, the way the user looked at
+  // it: the label's rendered content is never wider than its own box (no
+  // horizontal scroll-clip), the label's and icon's boxes are FULLY INSIDE the
+  // pill's box on every edge (nothing sliced off at a border), and the seconds
+  // text is genuinely present in textContent (not just occupying pixels). */
+  const clipping = await page.evaluate(() => {
+    const cells = [...document.querySelectorAll(".slidenav .slide-cell")];
+    return cells.map((cell, i) => {
+      const pill = cell.querySelector(".spine-pill");
+      if (!pill) return { i, present: false };
+      const label = pill.querySelector(".tr-label");
+      const icon = pill.querySelector("iconify-icon");
+      const pillBox = pill.getBoundingClientRect();
+      const fullyInside = (box) => !box ? null : (
+        box.left >= pillBox.left - 0.5 && box.right <= pillBox.right + 0.5 &&
+        box.top >= pillBox.top - 0.5 && box.bottom <= pillBox.bottom + 0.5
+      );
+      const iconBox = icon?.getBoundingClientRect();
+      const labelBox = label?.getBoundingClientRect();
+      return {
+        i,
+        present: true,
+        labelText: label?.textContent ?? null,
+        // scrollWidth > clientWidth means the box is truncating rendered glyphs
+        // (exactly the "sliver" the report's zoomed screenshot shows).
+        labelScrollW: label?.scrollWidth ?? null,
+        labelClientW: label?.clientWidth ?? null,
+        labelFullyInsidePill: fullyInside(labelBox),
+        iconFullyInsidePill: fullyInside(iconBox),
+      };
+    });
+  });
+  for (const c of clipping.slice(1)) {
+    check(c.present, `tile ${c.i + 1} has no spine pill to measure for clipping`);
+    check(c.iconFullyInsidePill,
+      `the ⛓ icon must render FULLY INSIDE the pill's own box, not sliced at an edge; tile ${c.i + 1} icon spills outside`);
+    if (c.labelText) {
+      check(c.labelScrollW <= c.labelClientW,
+        `the label's rendered glyphs must fit its own box (scrollWidth <= clientWidth) — the user's report was glyph SLIVERS clipped at the pill's edge; tile ${c.i + 1} label "${c.labelText}" has scrollWidth ${c.labelScrollW} > clientWidth ${c.labelClientW}`);
+      check(c.labelFullyInsidePill,
+        `the label's box must sit FULLY INSIDE the pill's own box on every edge; tile ${c.i + 1} label "${c.labelText}" spills outside its pill`);
+      // THE SECONDS TEXT MUST ACTUALLY BE THERE — the report named the seconds
+      // specifically ("it's not tall enough to show me the transition time").
+      check(/\d/.test(c.labelText),
+        `the visible label must contain the transition's SECONDS digits when it renders at all (the report's specific complaint); tile ${c.i + 1} shows "${c.labelText}" with no digit`);
+    }
+  }
+
   // THE PILL SELECTS THE SAME OBJECT THE LIST SLICE SELECTS — not a lookalike.
   // Same app.selectTransitionAt, same shift/cmd multi-select, and the selection
   // SURVIVES a view toggle, which is the sharpest way to say "same object": if
@@ -407,7 +462,7 @@ try {
     "a list row must stay draggable onto the canvas — the toggle changes the LAYOUT, never what the pane can do");
 
   if (errors.length) throw new Error(`console errors:\n${errors.join("\n")}`);
-  console.log("SLIDE GRID PROBE OK: the toggle lays slides in COLUMNS (so a wider panel shows more slides, not bigger ones) and persists as a browser preference that is absent from the document; every tile but display index 1 wears its incoming transition as an always-visible vertical pill straddling its left edge, selecting the same transition object the list slice selects; a horizontal grid drag lifts a ghost, leaves its origin cell empty, dims the pills, marks exactly one seam, tiles without a single overlap and reorders in one undo unit; list view is byte-for-byte the layout it shipped as, before and after the round trip; the Asset Explorer's mirrored toggle adds name·kind·size rows that keep the tile's drag. Zero console errors.");
+  console.log("SLIDE GRID PROBE OK: the toggle lays slides in COLUMNS (so a wider panel shows more slides, not bigger ones) and persists as a browser preference that is absent from the document; every tile but display index 1 wears its incoming transition as an always-visible vertical pill straddling its left edge, selecting the same transition object the list slice selects, with its icon and label measured FULLY INSIDE the pill's own box and the label's rendered glyphs never wider than their box (the AR fix for the reported clipping); a horizontal grid drag lifts a ghost, leaves its origin cell empty, dims the pills, marks exactly one seam, tiles without a single overlap and reorders in one undo unit; list view is byte-for-byte the layout it shipped as, before and after the round trip; the Asset Explorer's mirrored toggle adds name·kind·size rows that keep the tile's drag. Zero console errors.");
 } finally {
   await browser.close();
   await server.close();

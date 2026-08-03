@@ -563,11 +563,40 @@
      16:9 thumbnail is still ~58px tall under it, which is legible. */
   --a-slide-tile-min-w: 104px;
   --a-slide-tile-gap: var(--a-sp-3);
-  /* THE SPINE PILL — the list's transition chip ROTATED (user: "u can just rotate
-     the thing 90 degrees including rotating text right"), so the chip's HEIGHT
-     token becomes the pill's WIDTH. Same token, one axis turned: the two views
-     cannot drift to different pill thicknesses. */
-  --a-spine-pill-w: var(--a-transition-slice-h);
+  /* The ⛓ icon's rendered size — matches the `width="12" height="12"` HTML
+     attributes SlideNav.svelte sets on the spine pill's <iconify-icon> (a
+     custom element sized via attributes, not CSS, so this token cannot drive
+     that value directly; it exists so the LAYOUT MATH below that reserves the
+     icon's space has no bare px of its own). */
+  --a-spine-icon-size: 12px;
+  /* THE SPINE PILL'S WIDTH — the axis the pill's ROTATED content (its icon, its
+     label's text-thickness) must clear, NOT the list chip's height token. Those
+     two used to be the same value (--a-transition-slice-h, 18px) on the theory
+     that "rotating" meant swapping height for width one-for-one; it does not,
+     because the list chip's 18px was sized to hold ONE HORIZONTAL LINE at its
+     THIN dimension — text runs along the WIDE axis there, so 18px only ever had
+     to clear a line's own height. Rotated, the pill's width must clear its
+     content's cross-size instead: the ⛓ ICON is --a-spine-icon-size, plus 2×
+     --a-spine-pill-pad-x (below) plus the 1px border on each side — 12+3+3+1+1
+     = 20px is the floor that keeps the icon (the larger of icon-vs-label-line
+     -height at --a-font-sm) from touching the border. TIGHT ON PURPOSE: this
+     token also feeds --a-spine-overhang, which the grid's column-gap must clear
+     (below) — the rail is a FIXED ~256px sidebar (not viewport width), and
+     manifest math already spent its slack getting 2 columns to fit inside it
+     at all ("two columns need a floor at or below 110px" against a 104px min
+     tile width). A 22px pill (tried first here) pushed column-gap past that
+     margin and silently dropped the grid to ONE column — measured live, not
+     guessed: content box 228px, `2×104 + 22 = 230` doesn't fit, `2×104 + 20 =
+     228` exactly does. So this token is doubly constrained — content-driven
+     from below, column-count-driven from above — and 20px is the value inside
+     both bounds, confirmed by both tests/slide_grid_probe.js's column-count
+     check and its clipping measurements (labelBox/iconBox fully inside
+     pillBox, scrollWidth never exceeding clientWidth). */
+  --a-spine-pill-w: 20px;
+  /* The pill's CROSS-axis padding — physically left/right, which is the axis
+     `padding: 0 --a-spine-pill-pad-x` (below) provides. Without it the icon and
+     label sat flush against the 1px border with no breathing room. */
+  --a-spine-pill-pad-x: 3px;
   /* How much of the pill hangs OUTSIDE the tile. Half its width, which is what
      "straddling the edge" means literally — half over the thumbnail, half in the
      gutter — and it is why the grid's column gap must be at least the pill's
@@ -6092,14 +6121,13 @@ textarea {
    the gutter — which is what makes it read as a book spine rather than a label
    stuck to the side.
 
-   writing-mode: vertical-rl IS THE ROTATION, and it is a real rotation of the
-   TEXT rather than `transform: rotate()` on a horizontal box: rotate() would
-   leave the element's LAYOUT box horizontal, so the pill would reserve the wrong
-   space, clip against its cell and hit-test as a wide flat rectangle lying across
-   the thumbnail. Vertical writing mode turns the box too, so the pill's own
-   width/height, its flex direction and its hit area all agree with what is drawn.
-   The ⛓ icon then sits at the TOP and the text reads DOWNWARD, which is the
-   ordering the ruling asks for. */
+   writing-mode: vertical-rl is still the mechanism (unchanged from the DD-era
+   choice — .spine-pill's own note below has the full reasoning, including why
+   `transform: rotate()` was tried and rejected AGAIN in this workstream before
+   landing back here). WHAT CHANGED is narrower and is this workstream's actual
+   fix: the ⛓ icon is no longer a flow child of the vertical-rl box (see
+   .spine-icon's note) — that is what was clipping the label (user bug report,
+   2026-08-02, two screenshots of glyph slivers). */
 .slidenav.grid .spine {
   position: absolute;
   left: calc(var(--a-spine-overhang) * -1);
@@ -6126,34 +6154,92 @@ textarea {
   background: var(--border);
 }
 
+/* THE PILL'S OWN BOX. `writing-mode: vertical-rl` IS THE ROTATION (user: "u can
+   just rotate the thing 90 degrees including rotating text right") — a real
+   rotation of the LAYOUT, not `transform: rotate()` on a horizontal box:
+   rotate() never changes what an element's own PARENT reserves for it (a
+   transform is purely a paint-time effect), so a transform-rotated pill would
+   report its UNROTATED footprint upward and get sized wrong by `.spine`'s flex
+   column — measured, the first mechanism tried here, before landing on this
+   one: the pill stayed pinned at its unrotated ~21px height no matter how long
+   the label's text was, clipping it. vertical-rl's layout algorithm genuinely
+   swaps the box's width/height roles, so the pill's own size stays correctly
+   driven by its rotated content while remaining a real (non-transformed) box
+   for `.spine`'s flex, hit-testing and culling to reason about.
+
+   THE ICON IS DELIBERATELY NOT A FLOW CHILD HERE — see .spine-icon's note for
+   the measured reason: an iconify-icon custom element sharing NORMAL FLOW with
+   the label under this inherited vertical-rl is what clipped the label in the
+   first place (bisected live: remove the icon from flow, or hide it, and the
+   label's cross-size stops collapsing; every other variable tried — flex
+   direction, CSS Grid, the icon's own writing-mode, the label's line-height —
+   left the collapse unchanged). The LABEL is the only flow child, which is
+   exactly the shape that was proven, live, to auto-size correctly. */
 .slidenav.grid .spine-pill {
   writing-mode: vertical-rl;
+  position: relative; /* .spine-icon's containing block */
   display: inline-flex;
-  flex-direction: column;
   align-items: center;
-  gap: var(--a-sp-1);
+  justify-content: center;
   width: var(--a-spine-pill-w);
-  min-height: 0; /* it may shrink to the icon alone at the narrowest condensation */
-  padding: var(--a-sp-2) 0; /* the chip's padding, on the axis the pill now runs */
+  /* The ICON-ONLY floor, not zero: at the narrowest condensation step
+     pillLabel() returns "" and the label span does not render at all, so this
+     element has NO FLOW CHILD to auto-size it — only the absolutely-positioned
+     .spine-icon, which (being out of flow) contributes nothing to auto-sizing
+     by design. Without an explicit floor the pill would collapse toward 0 and
+     clip the very icon the narrowest step exists to keep showing. 2×padding +
+     --a-spine-icon-size is exactly its reserved footprint. */
+  min-height: calc(2 * var(--a-spine-pill-pad-x) + var(--a-spine-icon-size));
+  /* PHYSICAL, not logical: CSS `padding: A B` always maps A to top/bottom and B
+     to left/right, regardless of writing-mode — vertical-rl rotates the FLOW,
+     not this shorthand's axis mapping. --a-spine-pill-pad-x is the CROSS axis
+     (physical left/right, the label's breathing room — see that token's note
+     for why 0 there clipped the label); 0 leaves the along-length axis
+     (physical top/bottom) unpadded, since the stubs already give it room. */
+  padding: 0 var(--a-spine-pill-pad-x);
   box-sizing: border-box;
   background: var(--a-panel-bg); /* it crosses the thumbnail — it must stay legible over any slide */
   border: var(--a-hairline) solid var(--border);
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
-  white-space: nowrap;
-  overflow: hidden;
   cursor: pointer;
+  /* The pill's last-resort clip against its `.slide-cell`, not a truncation
+     mechanism — pillLabel() already picks text that fits the rotated length. */
+  overflow: hidden;
+}
+
+/* THE ⛓ ICON — absolutely positioned at the pill's BLOCK-START end (its near
+   corner, where "the top" reads once rotated), so it is a sibling in the DOM
+   but NEVER a sibling in LAYOUT: `position: absolute` takes it out of the
+   vertical-rl flow entirely, which is what keeps it from perturbing the
+   label's auto-sizing (see .spine-pill's note for the measurement that found
+   this). `writing-mode: horizontal-tb` keeps the glyph itself upright — an
+   icon rotated declaratively, not textually, reads as "this icon lives among
+   rotated text", not as a rotated icon. Centered on the pill's WIDTH the
+   ordinary way (a 50% inset + a half-self translate), which needs no
+   vertical-rl awareness because the icon's own box is horizontal. */
+.slidenav.grid .spine-icon {
+  writing-mode: horizontal-tb;
+  position: absolute;
+  inset-block-start: var(--a-spine-pill-pad-x);
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+}
+
+/* THE LABEL SHIFTS DOWN to clear the icon's reserved space (its own height plus
+   the gap the un-rotated chip used between icon and text) — the vertical
+   equivalent of --a-sp-1 gap, now expressed as a fixed offset since the icon
+   is no longer in flow to create one naturally. --a-spine-icon-size + --a-sp-1 gap. */
+.slidenav.grid .spine-pill .tr-label {
+  margin-top: calc(var(--a-spine-icon-size) + var(--a-sp-1));
 }
 
 /* CONDENSATION IS SIZE-DRIVEN, NOT HOVER-DRIVEN, and the label is SHORTENED,
    never hidden — a standing user ruling this rail already carries for the list
    chip ("The tween thing should always be there"). SlideNav's pillLabel picks
    which of "Tween · 0.5s" / "0.5s" / "" fits the measured tile height; the ⛓
-   renders at every step, and the full sentence is always in the tooltip. This
-   rule only stops a label that ALMOST fits from spilling past the pill. */
+   renders at every step, and the full sentence is always in the tooltip. */
 .slidenav.grid .spine-pill .tr-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-height: 0;
 }
 
