@@ -541,6 +541,40 @@
      key chip (--a-key-chip-h) so the slice reads as a thin band, not a row. */
   --a-transition-slice-h: var(--a-key-chip-h);
   --a-transition-chip-pad: 0 var(--a-sp-2);
+  /* ── GRID (TILE) VIEW of the slide navigator ────────────────────────────────
+     The second layout, added because the FIRST one answers a wider panel with
+     bigger slides rather than more of them (user, 2026-08-02: "if I want to view
+     many slides, I try to make the slides panel bigger… The slides just become
+     enormous"). Every value here is what makes the opposite true. */
+  /* MINIMUM tile width — the auto-fill track's floor, so a wider panel buys
+     COLUMNS and the tile stays about a thumbnail's natural size. Small enough
+     that the default panel width already fits two columns (which is what makes
+     the toggle visibly do something on a stock layout), large enough that a
+     16:9 thumbnail under it is still legible. */
+  --a-slide-tile-min-w: 116px;
+  --a-slide-tile-gap: var(--a-sp-3);
+  /* THE SPINE PILL — the list's transition chip ROTATED (user: "u can just rotate
+     the thing 90 degrees including rotating text right"), so the chip's HEIGHT
+     token becomes the pill's WIDTH. Same token, one axis turned: the two views
+     cannot drift to different pill thicknesses. */
+  --a-spine-pill-w: var(--a-transition-slice-h);
+  /* How much of the pill hangs OUTSIDE the tile. Half its width, which is what
+     "straddling the edge" means literally — half over the thumbnail, half in the
+     gutter — and it is why the grid's column gap must be at least the pill's
+     width, or two neighbouring pills would touch. */
+  --a-spine-overhang: calc(var(--a-spine-pill-w) / 2);
+  /* The pill's vertical inset from the tile's corners: the stubs need somewhere
+     to run, and a pill flush to the corners would read as a border. */
+  --a-spine-inset: var(--a-sp-4);
+  /* How far the STACKED multi-drag ghost's shadow layers peek out behind the lead
+     tile ("lifted tiles collapse into a STACKED ghost with a count badge"). */
+  --a-ghost-stack-offset: 4px;
+  /* HOW FAR THE PILLS FADE DURING A DRAG. Settled with the drop language: the
+     pills sit ON the column seams, which is exactly where the drop indicator
+     needs to be read, so they recede while a drag owns those seams. Not hidden —
+     a pill that vanishes and returns makes the grid flicker on every drag; faded
+     enough that the bold seam is unmistakably the brighter thing. */
+  --a-spine-drag-opacity: 0.25;
   /* THE DROP INDICATOR during a slide drag: a thickened, selection-toned rail at
      the boundary under the cursor. WEIGHT ONLY — the gap that used to open with
      it is GONE, by user correction (2026-08-02): "When I'm dragging the slides,
@@ -5399,6 +5433,227 @@ textarea {
    while the row had six. */
 .slidenav .nav-actions .btn-icon {
   flex: 1;
+}
+
+/* The view toggle is a different KIND of control from the five beside it — they
+   act on the document, it changes how this panel draws — so a hairline separates
+   them. It does NOT stretch (no flex:1): a divider that grew with the row would
+   read as an empty sixth button. */
+.slidenav .nav-view-sep {
+  width: var(--a-hairline);
+  align-self: stretch;
+  background: var(--border);
+}
+
+/* ── GRID (TILE) VIEW ────────────────────────────────────────────────────────
+   The navigator's SECOND layout. User, 2026-08-02: "Sometimes, if I want to view
+   many slides, I try to make the slides panel bigger. But here's what happens.
+   The slides just become enormous. It would be nice if there was a second option
+   for viewing slides. That would make it a tiled thumbnail display exactly how
+   the asset explorer panel is working."
+
+   EVERY RULE BELOW IS SCOPED TO `.slidenav.grid`, and that is load-bearing rather
+   than tidy: the user's ruling on LIST view is that it "visually *looks* clean",
+   i.e. do not restyle it. Nothing here can reach a list-view rail, and the cell
+   wrapper the markup added is `display: contents` in list view (below) so even
+   the box tree is the one that shipped. */
+
+/* THE CELL WRAPPER IS NOT A BOX IN LIST VIEW. `display: contents` makes the
+   element vanish from layout entirely, leaving .slide a direct flex child of
+   .slides with the same box, gaps and computed styles it had before the grid
+   existed. In GRID view it becomes the tile's positioning context — the spine
+   pill is a <button> and the tile is a <button>, and nesting those is invalid
+   HTML, so the pill is a sibling that needs something to be positioned against. */
+.slidenav .slide-cell {
+  display: contents;
+}
+
+.slidenav.grid .slide-cell {
+  display: block;
+  position: relative;
+  min-width: 0; /* a grid track's default min-content floor would refuse to shrink */
+}
+
+/* AUTO-FILL IS THE WHOLE FIX. A wider panel adds TRACKS, not width to one track,
+   so widening shows MORE slides instead of enormous ones — which is the complaint
+   in one line of CSS. minmax(...,1fr) lets the tiles share the leftover evenly
+   rather than leaving a ragged right edge. */
+.slidenav.grid .slides {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--a-slide-tile-min-w), 1fr));
+  gap: var(--a-slide-tile-gap);
+  /* ROOM FOR THE SPINES. Every tile but the first wears a pill straddling its
+     LEFT edge, so the column gap must clear the pill's width or two neighbours
+     would collide, and the container needs the same room on its left for the
+     first column's pills. */
+  column-gap: max(var(--a-slide-tile-gap), var(--a-spine-pill-w));
+  padding-left: calc(var(--a-sp-3) + var(--a-spine-overhang));
+  align-content: start; /* tiles keep their size in a tall panel instead of stretching */
+}
+
+/* THE TILE. Same control as the list row — same classes, same states, same
+   selection axes — laid out to fill its cell rather than a full-width strip. */
+.slidenav.grid .slide {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: var(--a-sp-2);
+  gap: var(--a-sp-1);
+}
+
+/* THE CORNER INDEX NUMBER carries the sequence, and it is the ONLY thing that
+   does: no flow arrows (settled — arrows in a wrapping grid would have to turn a
+   corner at every row end, drawing more attention to the layout than to the
+   deck). The name goes with it on one line; the eye keeps its place at the end. */
+.slidenav.grid .row-top {
+  gap: var(--a-sp-1);
+  font-size: var(--a-font-sm);
+}
+
+.slidenav.grid .num {
+  min-width: auto;
+}
+
+/* ── THE SPINE PILL ─────────────────────────────────────────────────────────
+   The list's transition chip, ROTATED (user: "why not the left edge when in tile
+   view?" / "u can just rotate the thing 90 degrees including rotating text
+   right"). It STRADDLES the tile's left edge — half over the thumbnail, half in
+   the gutter — which is what makes it read as a book spine rather than a label
+   stuck to the side.
+
+   writing-mode: vertical-rl IS THE ROTATION, and it is a real rotation of the
+   TEXT rather than `transform: rotate()` on a horizontal box: rotate() would
+   leave the element's LAYOUT box horizontal, so the pill would reserve the wrong
+   space, clip against its cell and hit-test as a wide flat rectangle lying across
+   the thumbnail. Vertical writing mode turns the box too, so the pill's own
+   width/height, its flex direction and its hit area all agree with what is drawn.
+   The ⛓ icon then sits at the TOP and the text reads DOWNWARD, which is the
+   ordering the ruling asks for. */
+.slidenav.grid .spine {
+  position: absolute;
+  left: calc(var(--a-spine-overhang) * -1);
+  top: var(--a-spine-inset);
+  bottom: var(--a-spine-inset);
+  width: var(--a-spine-pill-w);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--a-sp-1);
+  /* ABOVE the tile it straddles (the tile is its sibling and comes first in the
+     markup), so the half that overhangs the thumbnail is not painted under it. */
+  z-index: 1;
+}
+
+/* THE HAIRLINE STUBS — the list's connector lines, rotated with everything else:
+   the line runs DOWN the seam above and below the pill, so the pill reads as
+   sitting ON a line rather than floating on an edge. Same hairline and same
+   --border as .tr-line, which is the point: one connector vocabulary in two
+   orientations. */
+.slidenav.grid .spine-stub {
+  flex: 1;
+  width: var(--a-hairline);
+  background: var(--border);
+}
+
+.slidenav.grid .spine-pill {
+  writing-mode: vertical-rl;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--a-sp-1);
+  width: var(--a-spine-pill-w);
+  min-height: 0; /* it may shrink to the icon alone at the narrowest condensation */
+  padding: var(--a-sp-2) 0; /* the chip's padding, on the axis the pill now runs */
+  box-sizing: border-box;
+  background: var(--a-panel-bg); /* it crosses the thumbnail — it must stay legible over any slide */
+  border: var(--a-hairline) solid var(--border);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+/* CONDENSATION IS SIZE-DRIVEN, NOT HOVER-DRIVEN, and the label is SHORTENED,
+   never hidden — a standing user ruling this rail already carries for the list
+   chip ("The tween thing should always be there"). SlideNav's pillLabel picks
+   which of "Tween · 0.5s" / "0.5s" / "" fits the measured tile height; the ⛓
+   renders at every step, and the full sentence is always in the tooltip. This
+   rule only stops a label that ALMOST fits from spilling past the pill. */
+.slidenav.grid .spine-pill .tr-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 0;
+}
+
+/* THE SAME TWO SELECTION AXES AS THE LIST CHIP, from the same tokens, because it
+   is the same selection object: `.selected` is membership (tint), `.primary` is
+   the one the Property Panel is named after (selection-toned text). Those come
+   from the shared `.tr-chip` class the pill also carries, so only the parts the
+   rotation changes are restated here. */
+.slidenav.grid .spine-pill.selected {
+  background: var(--a-slide-selected-bg);
+  border-color: var(--a-selection);
+}
+
+.slidenav.grid .spine-pill.primary {
+  color: var(--a-selection);
+}
+
+.slidenav.grid .slide-cell:has(.spine-pill.selected) .spine-stub {
+  background: var(--a-selection);
+}
+
+/* PILLS DIM DURING A DRAG so the drop language owns the column seams (settled
+   design). The pills sit exactly where the drop seam has to be read, and two
+   bright things on one edge is how a drop target becomes ambiguous. Faded, not
+   removed: a pill that disappears and returns makes the whole grid flicker on
+   every drag. */
+.slidenav.grid .spine.dimmed {
+  opacity: var(--a-spine-drag-opacity);
+  pointer-events: none;
+}
+
+/* ── THE GRID'S DROP SEAM ───────────────────────────────────────────────────
+   BOLD ONLY, exactly as the list's boundary is, and for the same user ruling
+   ("When I'm dragging the slides, the space between the slides gets bigger. No,
+   I didn't want that. It should just be bold"). So it is drawn as an INSET
+   box-shadow on the tile's own edge — not a border (which would change the tile's
+   box and reflow the whole grid) and not an extra element in the track (which
+   would change the column count mid-drag).
+
+   IT IS A TILE EDGE, NOT A FULL-WIDTH RAIL, because a wrapping row-major layout
+   has no horizontal "between": boundary i is the seam to the LEFT of tile i, and
+   the last boundary is the seam to the RIGHT of the last tile. */
+.slidenav.grid .slide.seam-before {
+  box-shadow: inset var(--a-drop-line-h) 0 0 0 var(--a-selection);
+}
+
+.slidenav.grid .slide.seam-after {
+  box-shadow: inset calc(var(--a-drop-line-h) * -1) 0 0 0 var(--a-selection);
+}
+
+/* THE FLIP. Tiles that must make way translate on BOTH axes — a tile displaced
+   across a row end travels back across the panel and down a line, which a single
+   translateY cannot express (SlideNav's cellOrigins explains why the distance is
+   MEASURED rather than computed). Same transform-not-layout discipline and the
+   same 0.3s the list uses, so the two views animate identically. */
+.slidenav.grid .slide {
+  transform: translate(var(--drag-shift-x, 0px), var(--drag-shift, 0px));
+}
+
+/* THE STACKED GHOST — a multi-tile drag collapses into ONE tile with two shadow
+   layers peeking out behind it, plus the count badge the list ghost already
+   carries. Drawn with box-shadow rather than real elements: nothing about the
+   stack is interactive (the ghost is pointer-events:none), so two extra DOM nodes
+   per drag frame would buy nothing. */
+.slidenav .drag-ghost.ghost-stack {
+  box-shadow:
+    var(--a-ghost-stack-offset) var(--a-ghost-stack-offset) 0 0 var(--control-bg),
+    var(--a-ghost-stack-offset) var(--a-ghost-stack-offset) 0 var(--a-hairline) var(--border),
+    calc(var(--a-ghost-stack-offset) * 2) calc(var(--a-ghost-stack-offset) * 2) 0 0 var(--control-bg),
+    calc(var(--a-ghost-stack-offset) * 2) calc(var(--a-ghost-stack-offset) * 2) 0 var(--a-hairline) var(--border),
+    var(--a-drag-ghost-shadow);
 }
 
 /* ── Asset Explorer ──────────────────────────────────────────────────────────

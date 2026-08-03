@@ -43,6 +43,18 @@
       but scoped to RAIL FOCUS (core/shortcut_entries.js slideRailFocus), because
       there are two clipboards and one chord may not mean both.
 
+  IT HAS TWO LAYOUTS, LIST AND GRID, and they are ONE component because they are
+  one model: the same linear order, the same boundary-index drops, the same
+  two-axis selection (current = ring, selected = tint), the same DirtyImage
+  thumbnails, the same rename/clipboard/chords. What differs is where a slot is
+  drawn and where the transition is drawn — see the view-mode note in the script
+  for the user's problem statement ("The slides just become enormous"), and the
+  spine note for why a grid tile wears its own transition on its LEFT edge.
+  LIST VIEW IS UNCHANGED BY THAT WORK, deliberately and by user ruling — it
+  "visually *looks* clean", so the grid was added strictly beside it, down to the
+  cell wrapper being `display: contents` in list view so the rail's boxes are the
+  boxes it already had.
+
   THE FOOTER IS FIVE BUTTONS AND OWNS NONE OF THEIR ICONS. It is a surfacing of
   the command registry like any other, so it READS `app.commands.get(id).icon`
   rather than writing glyphs of its own — see the FOOTER_COMMANDS note in the
@@ -89,8 +101,49 @@
   import { onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
   import { onTextAssetLoad } from "../render_gpu/gpu/text_asset_registry.js"; // CSV/JSON data assets a chart widget plots (core/plugin_assets.js assetText)
   import { makeSerialSource, thumbnailDirtyKeys, makeIdleThumbScheduler, browserTickDeps, thumbRenderPaused } from "./thumbSchedule.js";
+  import { browserModeSetting } from "./settings.js";
 
   let { app } = $props();
+
+  // ── THE VIEW MODE: LIST OR GRID ─────────────────────────────────────────────
+  // User, 2026-08-02, and the problem is stated exactly: "Sometimes, if I want to
+  // view many slides, I try to make the slides panel bigger. But here's what
+  // happens. The slides just become enormous. It would be nice if there was a
+  // second option for viewing slides. That would make it a tiled thumbnail
+  // display exactly how the asset explorer panel is working. And that could be a
+  // toggle button on the bottom where it shows delete slide, move slide down,
+  // move slide up."
+  //
+  // WHAT THE COMPLAINT IS ABOUT, precisely: in LIST view a wider panel spends
+  // every extra pixel on ONE column, so widening to see MORE slides shows FEWER.
+  // Grid view spends the same pixels on COLUMNS — the tile stays roughly a
+  // thumbnail's natural size and the count per screen goes up with the width.
+  // That is also why the grid tiles keep rendering at their DISPLAYED size
+  // through the same DirtyImage machinery (this file's header): more columns is
+  // more small thumbnails, which is exactly the load thumbSchedule's ration and
+  // its per-slide dirty keys were built for. Nothing new is needed to scale it.
+  //
+  // IT IS A BROWSER PREFERENCE, NOT DOCUMENT STATE. Which way one viewer likes to
+  // look at a deck is not a fact about the deck: it is not in the document, it is
+  // not keyframeable, it does not travel in a share link, and two people opening
+  // the same project may disagree without either being wrong. So it lives in the
+  // settings repo beside minimap/grid/ruler, on the same localStorage idiom.
+  //
+  // COMPONENT-LOCAL, deliberately, unlike showBuiltinAssets. A setting goes on the
+  // app object when something OUTSIDE its panel reads it — a command, a shortcut,
+  // another component. Nothing outside this rail has any business knowing how the
+  // rail is laid out, so putting it on PowerRPApp would widen the app's surface for
+  // one component's private layout choice. The Asset Explorer's own toggle is
+  // local for the same reason. If a command ever needs to flip the view, THAT is
+  // the moment it earns an app field.
+  const VIEW_SETTING = browserModeSetting("powerrp.slideNavView", ["list", "grid"]);
+  let viewMode = $state(VIEW_SETTING.initial);
+  let isGrid = $derived(viewMode === "grid");
+
+  /** Command. Flips list ↔ grid and persists the choice for this browser. */
+  function toggleViewMode() {
+    viewMode = VIEW_SETTING.persist(VIEW_SETTING.next(viewMode));
+  }
 
   // Thumbnail scheduling knobs (named — no magic numbers).
   // How long edits must SETTLE before thumbnails re-render: a burst of commits
@@ -161,6 +214,78 @@
   function transitionInfo(i) {
     const t = resolveTransition(app.doc, i);
     return { type: t.type, seconds: t.seconds, title: transitionType(t.type).title };
+  }
+
+  // ── THE GRID'S TRANSITION PILL: A BOOK SPINE ON THE TILE'S LEFT EDGE ────────
+  // WHOSE TRANSITION IS IT — the ruling that made the grid expressible at all
+  // (user, verbatim, 2026-08-02): "the tween chips where DO they go....well they
+  // belong to the slide they come in with right? does that realization help?" It
+  // did. `transition` is a FIELD ON THE SLIDE it enters (core/document.js), so a
+  // tile can wear its OWN incoming transition and nothing has to be drawn "between"
+  // two cells in a wrapping layout — the list's placement of the chip in the GAP
+  // was always presentation, never where the data lived.
+  //
+  // WHICH EDGE (user, verbatim): "why not the left edge when in tile view?" +
+  // "u can just rotate the thing 90 degrees including rotating text right". So the
+  // pill is the list's chip ROTATED: writing-mode vertical, ⛓ at the top, text
+  // reading downward, straddling the tile's left edge (half over the thumbnail,
+  // half in the gutter). The unified rule is one sentence — THE PILL SITS ON THE
+  // EDGE THE FLOW ENTERS FROM: the top edge in a vertical list, the left edge in a
+  // row-major grid. Left also wins on DENSITY, which is what grid view exists for:
+  // a top pill spends the vertical space the grid is trying to save, while a left
+  // pill spends horizontal space the gutter already had.
+  //
+  // IT IS THE SAME SELECTION OBJECT, not a lookalike. Clicking a pill runs the
+  // same app.selectTransitionAt(slide.id, …) the list's chip runs, with the same
+  // shift/cmd multi-select, and it renders on the same two axes (.selected tint,
+  // .primary text) from the same tokens. So a transition selected in grid view is
+  // still selected after a toggle to list, and the Property Panel cannot tell
+  // which view made the selection.
+  //
+  // SLIDE 1 HAS NO PILL — a bare edge, because slide 0 has no predecessor and
+  // therefore no incoming transition. Same fact the list expresses by having no
+  // slice above its first row.
+
+  // CONDENSATION — how much of the pill's sentence fits, by the tile's HEIGHT
+  // (the pill is vertical, so its text runs along the tile's height, and height is
+  // what constrains it). Three steps, the user's own (2026-08-02): "⛓ Tween · 0.5s
+  // → ⛓ 0.5s → ⛓". Thresholds are the px of tile height at which each longer form
+  // stops fitting, measured against the pill's own font size.
+  // ALWAYS VISIBLE AT EVERY SIZE — never hover-only, which is a STANDING ruling
+  // this file already carries for the list chip ("The tween thing should always be
+  // there"); condensing is how it stays visible when it cannot stay whole, and the
+  // full sentence never disappears because the TOOLTIP always carries it.
+  const PILL_FULL_MIN_H = 128; // ⛓ Tween · 0.5s fits above this tile height
+  const PILL_SECONDS_MIN_H = 76; // ⛓ 0.5s fits above this; below it, the icon alone
+
+  /** Measured tile height (px) — the axis the vertical pill's text runs along, so
+   *  the input to the condensation above. Null until the grid has laid out. */
+  let tileHeightPx = $state(null);
+
+  /**
+   * Pure function. The pill's text at a given tile height — the condensation
+   * ladder, as one greppable table rather than nested ternaries in the template.
+   * The ⛓ ICON is not here: it renders at every step (it is the step below the
+   * shortest text), so it belongs to the markup, not to the label.
+   *
+   * @param {{title: string, seconds: number}} info A transitionInfo() result.
+   * @param {number|null} heightPx Measured tile height; null before first layout.
+   * @returns {string} The label, "" when only the icon fits.
+   *
+   * @example pillLabel({title: "Tween", seconds: 0.5}, 200)
+   * 'Tween · 0.5s'
+   * @example pillLabel({title: "Tween", seconds: 0.5}, 100)
+   * '0.5s'
+   * @example pillLabel({title: "Tween", seconds: 0.5}, 60)
+   * ''
+   * @example // Before the first measurement, assume the roomiest form.
+   * @example pillLabel({title: "Fade", seconds: 1}, null)
+   * 'Fade · 1s'
+   */
+  function pillLabel(info, heightPx) {
+    if (heightPx === null || heightPx >= PILL_FULL_MIN_H) return `${info.title} · ${info.seconds}s`;
+    if (heightPx >= PILL_SECONDS_MIN_H) return `${info.seconds}s`;
+    return "";
   }
 
   // While a GESTURE is in flight we FREEZE the committed doc (a drag preview lives
@@ -349,12 +474,30 @@
    * in 0..n. Measures the rendered rows rather than assuming a row height: rows
    * differ in height (a slide whose camera is degenerate draws no thumbnail), so
    * a computed constant would drift from what is on screen.
+   *
+   * ONE MODEL, TWO LAYOUTS. The drop target is a BOUNDARY in both views — the
+   * same gap index core withSlidesMovedToBoundary takes — because the ORDER is
+   * linear in both; only where a slot is drawn differs. What changes is the
+   * predicate for "the pointer is before slot i":
+   *   LIST — above the row's horizontal midline. One axis, as before.
+   *   GRID — row-major reading order, which is the ordering the tiles are laid
+   *          out in, so the test is lexicographic: strictly ABOVE this tile's
+   *          row (a whole line earlier) counts as before it, and WITHIN its row
+   *          it is the vertical midline that decides. `clientY < r.bottom` is
+   *          what makes "above this line" and "on this line" one comparison
+   *          rather than a row-bucketing pass.
+   * Returning the FIRST slot the pointer precedes is what makes both cases fall
+   * out of one loop, and it is why the grid needs no separate slot geometry: a
+   * cell's identity is its position in the same [data-slide-row] sequence.
    */
-  function boundaryAt(clientY) {
+  function boundaryAt(clientX, clientY) {
     const rows = [...(slidesEl?.querySelectorAll("[data-slide-row]") ?? [])];
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i].getBoundingClientRect();
-      if (clientY < r.top + r.height / 2) return i;
+      const before = isGrid
+        ? clientY < r.top || (clientY < r.bottom && clientX < r.left + r.width / 2)
+        : clientY < r.top + r.height / 2;
+      if (before) return i;
     }
     return rows.length;
   }
@@ -401,6 +544,75 @@
     return above === undefined ? block : block + (top - above);
   }
 
+  /**
+   * Query (reads the DOM). WHERE EVERY CELL IS, as {left, top} px per index —
+   * the "F" (First) of the grid's FLIP. Captured ONCE at grab time, before any
+   * transform is applied, so it is the untransformed cell geometry.
+   *
+   * THIS IS WHY THE GRID NEEDS NO SLOT ARITHMETIC AT ALL. In the list, a slot's
+   * pitch is a single scalar and every displaced row travels the same distance,
+   * so one measured number does it (slotPitch above). In a grid it is not: a tile
+   * displaced ACROSS a row end travels back to the far side and down a line, so
+   * its delta is nothing like its neighbour's. Reconstructing that from a column
+   * count and a cell size would mean re-deriving the CSS grid's own layout in JS
+   * — including how it wrapped, which is the one thing `repeat(auto-fill, …)`
+   * decides and does not report.
+   *
+   * So don't reconstruct it: READ IT. A cell's post-drag position is simply the
+   * position ANOTHER cell already occupies, because the cells are fixed and only
+   * their CONTENTS renumber. dragShift below is therefore a lookup — "tile i ends
+   * up in cell j, so translate by cells[j] − cells[i]" — and it is exact for any
+   * wrap, any column count, and any future cell size, with no layout math.
+   *
+   * Returns an array parallel to `rows`. Called at grab time by its one caller.
+   */
+  function cellOrigins(rows) {
+    return rows.map((el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top };
+    });
+  }
+
+  /**
+   * Pure function. WHICH CELL tile `i` ends up in while a block is lifted out of
+   * `indices` and hovering boundary `boundary` — the "L" (Last) of the FLIP, as a
+   * cell index in the same sequence cellOrigins measured.
+   *
+   * THE RULE IS THE LIST'S RULE, COUNTED IN SLOTS INSTEAD OF PIXELS. A tile
+   * between the hole and the drop boundary shifts by the size of the lifted block
+   * (`n`), toward the hole; everything outside that span stays put. It is the same
+   * sentence dragShift's docblock states for the rail — only the unit changes,
+   * from "the block's slot pitch in px" to "n cells in reading order", which is
+   * what makes it work across a row wrap where a px offset cannot.
+   *
+   * Sign convention matches the list's: a tile AFTER the hole and before the
+   * boundary moves EARLIER (toward index 0); one at or after the boundary and
+   * before the hole moves LATER.
+   *
+   * @param {number} i Tile index.
+   * @param {number[]} indices The lifted (contiguous-after-sort) block's indices.
+   * @param {number} boundary Drop boundary, 0..n.
+   * @returns {number} The cell index tile `i` should occupy (i itself when unmoved).
+   *
+   * @example // A 3-tile lift of [1] onto boundary 3: tile 2 slides back into cell 1.
+   * @example displacedCell(2, [1], 3)
+   * 1
+   * @example // Dragging UP instead — [3] onto boundary 1 pushes tiles 1 and 2 later.
+   * @example displacedCell(1, [3], 1)
+   * 2
+   * @example // Outside the span nothing moves.
+   * @example displacedCell(5, [1], 3)
+   * 5
+   */
+  function displacedCell(i, indices, boundary) {
+    const n = indices.length;
+    const first = indices[0];
+    const last = indices[indices.length - 1];
+    if (i > last && i < boundary) return i - n; // dragging DOWN: later tiles move earlier
+    if (i >= boundary && i < first) return i + n; // dragging UP: earlier tiles move later
+    return i;
+  }
+
   /** Command. Begins a potential row drag. The gesture is not a drag until the
    *  pointer has moved DRAG_THRESHOLD_PX — until then it is still a click, so a
    *  plain select never has to be undone by a stray pixel of movement. */
@@ -420,8 +632,15 @@
     const height = slotPitch(rows, indices);
     dragState = {
       indices, height,
-      startY: e.clientY, pointerY: e.clientY,
-      grabDy: e.clientY - own.top,
+      // WHERE EVERY CELL IS, measured once, untransformed — the grid's FLIP
+      // baseline (cellOrigins). Unused by the list branch, which needs only the
+      // scalar pitch, but measured unconditionally: it is one getBoundingClientRect
+      // per row on a gesture that already does that, and a branch here would mean
+      // the state's shape depends on the view mode.
+      cells: cellOrigins(rows),
+      startX: e.clientX, startY: e.clientY,
+      pointerX: e.clientX, pointerY: e.clientY,
+      grabDx: e.clientX - own.left, grabDy: e.clientY - own.top,
       ghostX: own.left, ghostW: own.width,
       moved: false, boundary: null,
     };
@@ -430,8 +649,15 @@
 
   function onRowPointerMove(e) {
     if (!dragState) return;
-    if (!dragState.moved && Math.abs(e.clientY - dragState.startY) < DRAG_THRESHOLD_PX) return;
-    dragState = { ...dragState, moved: true, pointerY: e.clientY, boundary: boundaryAt(e.clientY) };
+    // THE THRESHOLD IS RADIAL IN GRID VIEW. A list drag can only be vertical, so
+    // a |Δy| test is the whole gesture; a grid drag to the tile beside this one
+    // is PURELY HORIZONTAL, and a Δy-only threshold would never fire for it —
+    // the commonest single-step reorder in a grid would be undraggable.
+    const dx = e.clientX - dragState.startX;
+    const dy = e.clientY - dragState.startY;
+    const far = isGrid ? Math.hypot(dx, dy) : Math.abs(dy);
+    if (!dragState.moved && far < DRAG_THRESHOLD_PX) return;
+    dragState = { ...dragState, moved: true, pointerX: e.clientX, pointerY: e.clientY, boundary: boundaryAt(e.clientX, e.clientY) };
   }
 
   /** Command. Drops (one undo unit) or, if the pointer never really moved, lets
@@ -442,7 +668,7 @@
     dragState = null;
     if (!drag?.moved) return;
     e.preventDefault(); // a drop is not also a click
-    app.moveSlidesToBoundary(drag.indices, drag.boundary ?? boundaryAt(e.clientY));
+    app.moveSlidesToBoundary(drag.indices, drag.boundary ?? boundaryAt(e.clientX, e.clientY));
   }
 
   /** Query. Is boundary `b` the live drop target? Boundaries are drawn by the
@@ -475,15 +701,33 @@
    * Sign convention: negative is UP. A row after the hole but before the boundary
    * slides UP into it; a row at or after the boundary but before the hole slides
    * DOWN out of the way.
+   *
+   * IN GRID VIEW IT IS THE SAME RULE ON TWO AXES, and it is computed differently
+   * for the reason cellOrigins states: a tile displaced across a row end travels
+   * back across the panel and down a line, which no single pitch can express. So
+   * the grid asks displacedCell WHICH cell this tile lands in and subtracts the
+   * two measured cell origins. Both branches return a {x, y} px delta, which is
+   * what the template writes into one `translate()`.
    */
   function dragShift(i) {
-    if (!dragState?.moved || dragState.boundary === null || isLifted(i)) return 0;
-    const { indices, height, boundary } = dragState;
+    if (!dragState?.moved || dragState.boundary === null || isLifted(i)) return { x: 0, y: 0 };
+    const { indices, height, boundary, cells } = dragState;
+    if (isGrid) {
+      const to = displacedCell(i, indices, boundary);
+      const from = cells[i];
+      const dest = cells[to];
+      // A destination outside the measured set cannot happen for a valid boundary
+      // (the span displacedCell moves over is bounded by the block and the
+      // boundary, both in range), but a missing cell would silently mean "no
+      // shift" — so say nothing moved only when nothing did.
+      if (!from || !dest) return { x: 0, y: 0 };
+      return { x: dest.left - from.left, y: dest.top - from.top };
+    }
     const first = indices[0];
     const last = indices[indices.length - 1];
-    if (i > last && i < boundary) return -height; // dragging DOWN: rows above the target rise
-    if (i >= boundary && i < first) return height; // dragging UP: rows below the target sink
-    return 0;
+    if (i > last && i < boundary) return { x: 0, y: -height }; // dragging DOWN: rows above the target rise
+    if (i >= boundary && i < first) return { x: 0, y: height }; // dragging UP: rows below the target sink
+    return { x: 0, y: 0 };
   }
 
   // THE MODIFIER KEY'S NAME ON THIS PLATFORM — "Cmd" on a Mac, "Ctrl" elsewhere.
@@ -540,14 +784,70 @@
     // multi command and the label is the only thing that varies.
     { id: "delete-slides", label: () => (selectionCount() > 1 ? `Delete the ${selectionCount()} selected slides` : "Delete slide") },
   ];
+
+  // THE VIEW TOGGLE IS THE SIXTH FOOTER CONTROL, AND IT IS NOT A COMMAND — which
+  // is why it does not join FOOTER_COMMANDS above and writes its own icon. The
+  // five are surfacings of the command registry (that note explains why they READ
+  // their glyphs); this one has nothing to surface. A registry entry is an ACTION
+  // on the document or the app, reachable from the palette and chordable; this
+  // flips how one panel draws itself, for one browser, and putting it in the
+  // palette would offer "Grid View" to a user who cannot see the rail. If a
+  // shortcut for it is ever asked for, that is the moment it becomes a command —
+  // and then the icon must move to the entry, per the drift ruling above.
+  //
+  // THE ICON SHOWS THE DESTINATION, not the current state: the button offers the
+  // OTHER view, and its label says so, which is the one unambiguous reading of a
+  // two-state view switch (the alternative — showing what you are already looking
+  // at — makes the button look like a redundant status light).
+  const VIEW_TOGGLE_ICONS = { list: "mdi:view-grid-outline", grid: "mdi:view-list-outline" };
+
+  /** Query. The view toggle's sentence — it names the view a click SWITCHES TO,
+   *  and (the reason the grid exists) what that buys. */
+  function viewToggleLabel() {
+    return isGrid
+      ? "List view — one slide per row, with its transition between the rows"
+      : "Grid view — tiled thumbnails, so a wider panel shows MORE slides instead of bigger ones";
+  }
+
+  // ── MEASURING A TILE, for the pill's condensation ───────────────────────────
+  // ONE OBSERVER ON THE CONTAINER, not one per tile. Every cell in a
+  // `repeat(auto-fill, …)` grid is the same size, so one measurement answers for
+  // all of them; N observers would deliver N identical callbacks per resize on the
+  // panel whose whole point is holding many tiles.
+  // WHY OBSERVE AT ALL, rather than compute from the panel width: the column count
+  // is decided by the CSS grid's auto-fill, which does not report itself. The tile
+  // height is downstream of that AND of the thumbnail's aspect, so it is a
+  // measurement, not a formula (cellOrigins makes the same argument for the drag).
+  // OBSERVE THE CONTAINER, READ A TILE. The observed element is .slides itself
+  // (it always exists and never churns), and each callback measures the FIRST
+  // tile — which is what actually changes. Observing a tile directly would mean
+  // re-binding the observer every time the deck's first slide is replaced by an
+  // insert, a delete or a reorder, all of which are ordinary operations here.
+  $effect(() => {
+    if (!isGrid || !slidesEl) { tileHeightPx = null; return; }
+    const measure = () => {
+      const first = slidesEl.querySelector("[data-slide-row]");
+      tileHeightPx = first ? first.getBoundingClientRect().height : null;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(slidesEl);
+    return () => ro.disconnect();
+  });
 </script>
 
 <!-- --drag-shift-ms is published from the JS constant so the row-slide animation
      and the code that reasons about it cannot drift to two different numbers. -->
-<div class="slidenav" class:dragging={dragState?.moved} style:--drag-shift-ms={`${DRAG_SHIFT_MS}ms`}>
-  <div class="slides" bind:this={slidesEl}>
+<div class="slidenav" class:dragging={dragState?.moved} class:grid={isGrid} style:--drag-shift-ms={`${DRAG_SHIFT_MS}ms`}>
+  <div class="slides" class:slides-grid={isGrid} bind:this={slidesEl}>
     {#each app.doc.slides as slide, i (slide.id)}
-      {#if i > 0}
+      <!-- THE TRANSITION SLICE IS A LIST-VIEW ELEMENT. In grid view the same
+           transition is drawn by the TILE ITSELF, as the left-edge spine pill
+           below — the chip-ownership ruling ("they belong to the slide they come
+           in with"). It is not that the grid hides the slice: a wrapping,
+           row-major layout has no single "between" to put it in, and the field
+           was on the slide all along. -->
+      {#if i > 0 && !isGrid}
         {@const info = transitionInfo(i)}
         <!-- THE SLICE IS THE CHIP ALONE, in a band that spans the gap. It used
              to be THREE buttons — an insert-a-slide-here `+` at each end plus the
@@ -602,11 +902,15 @@
           </Tooltip>
           <span class="tr-line"></span>
         </div>
-      {:else}
+      {:else if i === 0 && !isGrid}
         <!-- THE TOP BOUNDARY has no transition slice (slide 0 has no predecessor),
              so it gets a bare drop rail of its own — otherwise dragging a slide to
              the very top would show no indicator at the one gap that most needs
-             one. Zero height when idle; it only exists during a drag. -->
+             one. Zero height when idle; it only exists during a drag.
+             LIST ONLY: in the grid every boundary — including 0 and n — is drawn
+             on a TILE's own edge (.seam-before / .seam-after below), because a
+             full-width horizontal rail in a wrapping layout would point at a whole
+             line rather than at the gap between two cells. -->
         <div class="drop-rail" class:drop={isDropBoundary(0)}></div>
       {/if}
       <!-- THE ROW OWES EXPLANATION and gave none: it had no tooltip and no :hover
@@ -623,6 +927,20 @@
            slide's preview, and swapping the main canvas on an incidental traverse of
            the rail would fight the thumbRenderPaused gesture discipline this file's
            header spends thirty lines on. -->
+      <!-- THE CELL WRAPPER. In GRID view it is the tile's positioning context, so
+           the spine pill can be absolutely positioned across the tile's left edge
+           — the pill is a <button> and the tile is a <button>, and nesting those is
+           invalid HTML, so the pill must be a SIBLING with something to be
+           positioned against.
+
+           IN LIST VIEW IT IS `display: contents` (app.css), which produces NO BOX
+           AT ALL: the tile stays a direct flex child of .slides, with the same
+           box, the same gaps and the same computed styles it had before this
+           workstream. That is deliberate and it is pinned — the user's ruling on
+           the list view is that it "visually *looks* clean", i.e. DO NOT RESTYLE
+           IT, and a wrapper that laid out would have silently changed its
+           geometry. -->
+      <div class="slide-cell">
       <Tooltip>
         {#snippet tip()}
           <!-- The NAME alone, not "Slide {i+1}: {name}": the number is visible in
@@ -679,13 +997,17 @@
              still reads as renaming THE NAME because a dblclick that lands on the
              row's own chrome is far likelier to be aimed at its label than at
              nothing, and the tip says so. -->
+        {@const shift = dragShift(i)}
         <button
           class="slide"
           class:current={i === app.slideIndex}
           class:selected={app.isSlideSelected(i)}
           class:lifted={isLifted(i)}
           class:disabled={slide.enabled === false}
-          style:--drag-shift={`${dragShift(i)}px`}
+          class:seam-before={isGrid && isDropBoundary(i)}
+          class:seam-after={isGrid && i === app.doc.slides.length - 1 && isDropBoundary(app.doc.slides.length)}
+          style:--drag-shift-x={`${shift.x}px`}
+          style:--drag-shift={`${shift.y}px`}
           data-slide-row={i}
           onpointerdown={(e) => onRowPointerDown(e, i)}
           onpointermove={onRowPointerMove}
@@ -734,10 +1056,66 @@
           {/if}
         </button>
       </Tooltip>
+      <!-- ── THE SPINE PILL: THIS TILE'S OWN INCOMING TRANSITION ───────────────
+           Two user rulings put it here, both 2026-08-02 and both verbatim in the
+           script's spine note. (1) OWNERSHIP: "the tween chips where DO they
+           go....well they belong to the slide they come in with right?" — the
+           transition is a FIELD on the slide it enters, so a tile can wear its own
+           and a wrapping layout never needs a "between two cells" to draw in.
+           (2) EDGE + ROTATION: "why not the left edge when in tile view?" and "u
+           can just rotate the thing 90 degrees including rotating text right" —
+           so it is the list's chip turned on its side, ⛓ at the top with the text
+           reading downward, straddling the tile's left edge.
+
+           GRID ONLY, and NOT ON DISPLAY INDEX 1. In list view this same transition
+           is the slice above the row; drawing both would state it twice. Slide 1
+           has no predecessor, hence no incoming transition, hence a bare edge —
+           the same fact the list expresses by having no slice above its first row.
+
+           IT IS THE SAME SELECTION, NOT A LOOKALIKE: the same
+           app.selectTransitionAt with the same shift/cmd multi-select, the same
+           two render axes (.selected membership tint, .primary text) and the same
+           tokens as .tr-chip. So a transition selected here stays selected through
+           a view toggle, and the Property Panel cannot tell which view selected it.
+
+           THE STUBS are the list's connector lines rotated with everything else:
+           a hairline runs down the seam above and below the pill, so the pill
+           reads as sitting ON a line rather than floating on an edge. -->
+      {#if isGrid && i > 0}
+        {@const info = transitionInfo(i)}
+        {@const label = pillLabel(info, tileHeightPx)}
+        <span class="spine" class:dimmed={dragState?.moved} aria-hidden={dragState?.moved ? "true" : null}>
+          <span class="spine-stub"></span>
+          <!-- THE TOOLTIP ALWAYS CARRIES THE FULL SENTENCE, which is what lets the
+               visible label condense at all: at the narrowest step the pill is the
+               ⛓ alone, and the transition's type and duration are still one hover
+               away. The label is never hidden — a STANDING ruling ("The tween
+               thing should always be there") — it is SHORTENED. -->
+          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${info.seconds}s — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
+            <button
+              class="spine-pill tr-chip"
+              class:selected={app.isTransitionSelected(slide.id)}
+              class:primary={app.selectedTransition === slide.id}
+              aria-label={`Transition into slide ${i + 1}`}
+              aria-pressed={app.isTransitionSelected(slide.id)}
+              onclick={(e) => app.selectTransitionAt(slide.id, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey })}
+            >
+              <iconify-icon icon={TRANSITION_ICONS[info.type] ?? "mdi:transition"} width="12" height="12"></iconify-icon>
+              {#if label}<span class="tr-label">{label}</span>{/if}
+            </button>
+          </Tooltip>
+          <span class="spine-stub"></span>
+        </span>
+      {/if}
+      </div>
     {/each}
     <!-- THE TAIL BOUNDARY (drop at the very end). Same reason the head rail
-         exists: without it the last gap is the one gap with no indicator. -->
-    <div class="drop-rail" class:drop={isDropBoundary(app.doc.slides.length)}></div>
+         exists: without it the last gap is the one gap with no indicator.
+         LIST ONLY — the grid draws that boundary as the last tile's own
+         `.seam-after` edge, for the reason the head rail's note gives. -->
+    {#if !isGrid}
+      <div class="drop-rail" class:drop={isDropBoundary(app.doc.slides.length)}></div>
+    {/if}
   </div>
   <!-- THE DRAG GHOST — the "literally dragging it" half of the user's ruling.
        A position:fixed copy of the dragged slide's number + name + thumbnail,
@@ -753,13 +1131,23 @@
        pointer-events:none (CSS) so it never becomes the drop target it is
        hovering, and it renders only mid-drag, so it costs nothing at rest. A
        multi-slide drag shows its FIRST row plus a count, rather than N stacked
-       ghosts: the block moves as one thing and the number says how big it is. -->
+       ghosts: the block moves as one thing and the number says how big it is.
+
+       IN GRID VIEW IT TRACKS X TOO, and a multi-slide drag STACKS. A rail ghost
+       only ever needed one axis because a list drag is vertical; a grid drag goes
+       anywhere, so the ghost's left is the pointer's, offset by where inside the
+       tile it was grabbed (grabDx), exactly as its top already was by grabDy. The
+       STACK is `.ghost-stack` — two offset shadow layers behind the lead tile,
+       which is the settled rendering of "lifted tiles collapse into a STACKED
+       ghost with a count badge"; the count badge is the same `.ghost-count` the
+       list already carries, so the two views say "and N more" the same way. -->
   {#if dragState?.moved}
     {@const lead = dragState.indices[0]}
     <div
       class="drag-ghost"
+      class:ghost-stack={isGrid && dragState.indices.length > 1}
       aria-hidden="true"
-      style:left={`${dragState.ghostX}px`}
+      style:left={`${isGrid ? dragState.pointerX - dragState.grabDx : dragState.ghostX}px`}
       style:width={`${dragState.ghostW}px`}
       style:top={`${dragState.pointerY - dragState.grabDy}px`}
     >
@@ -799,5 +1187,28 @@
         </button>
       </Tooltip>
     {/each}
+    <!-- THE VIEW TOGGLE — the sixth control, and the user placed it here by name
+         ("that could be a toggle button on the bottom where it shows delete slide,
+         move slide down, move slide up. And then you would have the view option").
+         It is NOT a command and writes its own icon; the script's note beside
+         VIEW_TOGGLE_ICONS says why that is not a violation of the read-your-icon
+         rule the five buttons beside it follow.
+
+         SEPARATED BY A HAIRLINE (.nav-view-sep), because it is a different KIND of
+         control: the five act on the document, this one changes how the panel
+         draws. Grouping them without a divider would invite the reading that this
+         is a sixth slide operation. -->
+    <span class="nav-view-sep" aria-hidden="true"></span>
+    <Tooltip text={viewToggleLabel()}>
+      <button
+        class="btn-icon"
+        aria-label={viewToggleLabel()}
+        aria-pressed={isGrid}
+        data-nav-view={viewMode}
+        onclick={toggleViewMode}
+      >
+        <iconify-icon icon={VIEW_TOGGLE_ICONS[viewMode]} width="16" height="16"></iconify-icon>
+      </button>
+    </Tooltip>
   </div>
 </div>
