@@ -109,6 +109,44 @@ test("generators are total over clamp-worthy extremes (never throw / never NaN)"
   }
 });
 
+// ── gear: NO ARBITRARY FLOORS (user ruling, 2026-08-02) ───────────────────────
+// innerRatio/toothWidth used to be clamped to [0.05, 0.98]/[0.02, 0.98] with no
+// stated reason ("why does gear have arbitrary minimums... there's no reason to
+// make it minimum at 0.05"). Both are plain multiplications with no division, so
+// the whole [0, 1] domain is already finite; each end renders a DEFINED shape
+// rather than a floored-away one.
+test("gear: root radius 0 renders a toothed star (valleys collapse to the center)", () => {
+  const subs = gearOutline(100, 100, { teeth: 6, innerRatio: 0, toothWidth: 0.5 });
+  for (const sp of subs) for (const [x, y] of sp) assert.ok(Number.isFinite(x) && Number.isFinite(y));
+  // Every "valley" vertex sits at the ellipse center (radius 0).
+  const valleys = subs[0].filter((_, i) => i % 4 === 0 || i % 4 === 3);
+  for (const [x, y] of valleys) { assert.ok(Math.abs(x - 50) < 1e-9); assert.ok(Math.abs(y - 50) < 1e-9); }
+});
+test("gear: root radius 1 renders a plain circle (no depth left to cut)", () => {
+  const subs = gearOutline(100, 100, { teeth: 8, innerRatio: 1, toothWidth: 0.5 });
+  for (const [x, y] of subs[0]) {
+    const r = Math.hypot(x - 50, y - 50);
+    assert.ok(Math.abs(r - 50) < 1e-6, `vertex ${x},${y} should sit on the rim (r=50), got r=${r}`);
+  }
+});
+test("gear: tooth width 0 renders spikes (tooth tops collapse to a point)", () => {
+  const subs = gearOutline(100, 100, { teeth: 6, innerRatio: 0.7, toothWidth: 0 });
+  for (const sp of subs) for (const [x, y] of sp) assert.ok(Number.isFinite(x) && Number.isFinite(y));
+  // The two "tip" vertices of each tooth (indices 1,2 mod 4) coincide when the
+  // tooth top has zero angular width.
+  for (let i = 0; i < subs[0].length; i += 4) {
+    const [x1, y1] = subs[0][i + 1], [x2, y2] = subs[0][i + 2];
+    assert.ok(Math.abs(x1 - x2) < 1e-9 && Math.abs(y1 - y2) < 1e-9, "tooth tip should collapse to a point");
+  }
+});
+test("gear: tooth width 1 merges adjacent teeth into a smooth ring", () => {
+  const subs = gearOutline(100, 100, { teeth: 8, innerRatio: 1, toothWidth: 1 });
+  for (const [x, y] of subs[0]) {
+    const r = Math.hypot(x - 50, y - 50);
+    assert.ok(Math.abs(r - 50) < 1e-6, "merged teeth at root=1 still trace the rim");
+  }
+});
+
 // ── new-family SHAPE-SPECIFIC invariants (manifest #56, #57) ──────────────────
 test("threadFlankPts: crest/root triangle wave, half-pitch phase, smooth degenerate", () => {
   assert.deepEqual(threadFlankPts(0, 40, 10, 6, 2, 0), [[10, 0], [6, 10], [10, 20], [6, 30], [10, 40]]);

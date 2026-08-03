@@ -1356,7 +1356,10 @@ export function quadWedgeOutline(w, h, { taper = 1, shear = 0, topOffset = 0, co
  * @example crossPlusOutline(90, 90, {armThickness: 1 / 3, armLengthRatio: 1})[0].length // 12
  */
 export function crossPlusOutline(w, h, { armThickness = 1 / 3, armLengthRatio = 1, cornerRadius = 0 } = {}) {
-  const t = Math.max(0.02, Math.min(armThickness, 1));
+  // No floor: armThickness 0 collapses x1===x2 and y1===y2 (the twelve corners
+  // coincide in pairs), a plain multiplication with no division — a hairline
+  // cross, a defined limit rather than a NaN.
+  const t = Math.max(0, Math.min(armThickness, 1));
   const half = t / 2;
   const x1 = (0.5 - half) * w, x2 = (0.5 + half) * w;
   const y1 = (0.5 - half) * h, y2 = (0.5 + half) * h;
@@ -1394,18 +1397,37 @@ export function frameOutline(w, h, { thickness = 0.15, sides = "frame" } = {}) {
  * Pure function. GEAR / COG family (gear → sprocket → settings icon →
  * starburst → toothed ring). `teeth` N tooth count; `innerRatio` the root radius
  * (valley between teeth) as a fraction of the outer radius; `toothWidth` the
- * tooth-top angular width as a fraction of the pitch (→ 0 = sharp starburst,
- * → 1 = teeth merge); `holeRatio` a center hole (> 0 → a 2nd evenodd subpath).
+ * tooth-top angular width as a fraction of the pitch; `holeRatio` a center hole
+ * (> 0 → a 2nd evenodd subpath).
+ *
+ * NO ARBITRARY FLOORS (user ruling, 2026-08-02: "why does gear have arbitrary
+ * minimums on root radius and tooth width... there's no reason to make it
+ * minimum at 0.05"). Both are genuine mathematical limits, not singularities —
+ * the vertex formula is `cx + r·radius·cos/sin(angle)`, pure multiplication, so
+ * every value in [0, 1] (and beyond) is already finite:
+ *   `innerRatio` → 0: the valleys collapse to the center — a toothed STAR /
+ *     starburst (root radius zero, not a division).
+ *   `innerRatio` → 1: the valleys rise to meet the tips — a plain CIRCLE (teeth
+ *     vanish because there is no depth left to cut).
+ *   `toothWidth` → 0: tooth tops collapse to a point — sharp SPIKES.
+ *   `toothWidth` → 1: adjacent tooth tops touch — the teeth MERGE into a
+ *     smooth ring (with innerRatio also 1 this is the same plain circle).
+ * Only `holeRatio` keeps a bound: it is punched INSIDE the root radius (a
+ * center hole bigger than the valleys would punch through the teeth), so its
+ * ceiling is `root − 0.02`, a relationship between two params rather than an
+ * arbitrary floor on either one.
  *
  * @example gearOutline(100, 100, {teeth: 8, innerRatio: 0.7, toothWidth: 0.5})[0].length // 32 (4 points per tooth)
  * @example gearOutline(100, 100, {teeth: 6, innerRatio: 0.7, toothWidth: 0.5, holeRatio: 0.3}).length // 2 (gear + center hole)
  * @example gearOutline(100, 100, {teeth: 3, innerRatio: 0.6, toothWidth: 0.5})[0].length // 12
+ * @example gearOutline(100, 100, {teeth: 8, innerRatio: 0, toothWidth: 0.5})[0].every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) // true (root radius 0 — a starburst, not a NaN)
+ * @example gearOutline(100, 100, {teeth: 8, innerRatio: 0.7, toothWidth: 0})[0].every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) // true (tooth width 0 — spikes)
  */
 export function gearOutline(w, h, { teeth = 8, innerRatio = 0.7, toothWidth = 0.5, holeRatio = 0 } = {}) {
   const N = Math.max(3, Math.round(teeth));
   const cx = w / 2, cy = h / 2, rx = w / 2, ry = h / 2;
-  const root = Math.max(0.05, Math.min(innerRatio, 0.98));
-  const tw = Math.max(0.02, Math.min(toothWidth, 0.98));
+  const root = Math.max(0, Math.min(innerRatio, 1));
+  const tw = Math.max(0, Math.min(toothWidth, 1));
   const pitch = (2 * Math.PI) / N;
   const halfTop = (tw * pitch) / 2;
   const at = (rad, a) => [cx + rx * rad * Math.cos(a), cy + ry * rad * Math.sin(a)];
@@ -1436,12 +1458,15 @@ export function gearOutline(w, h, { teeth = 8, innerRatio = 0.7, toothWidth = 0.
  *
  * @example calloutOutline(100, 80, {cornerRadius: 0, tailX: 20, tailY: 100, tailWidth: 0.2})[0].some(([, y]) => y >= 99) // true (tail tip reaches y≈100)
  * @example calloutOutline(100, 80, {cornerRadius: 0, tailX: 20, tailY: 100, tailWidth: 0.2}).length // 1
+ * @example calloutOutline(100, 80, {tailWidth: 0})[0].every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) // true (zero width — a needle-thin pointer, not a NaN)
  */
 export function calloutOutline(w, h, { cornerRadius = 0.2, tailX = null, tailY = null, tailWidth = 0.22 } = {}) {
   const bodyH = h * 0.78; // body occupies the top; tail hangs below
   const tipX = tailX == null ? w * 0.25 : tailX;
   const tipY = tailY == null ? h : tailY;
-  const baseW = Math.max(2, Math.min(tailWidth, 0.9) * w);
+  // No floor: baseW 0 just collapses baseL===baseR (a needle-thin pointer), a
+  // plain multiplication with nothing to divide by — a defined limit, not a NaN.
+  const baseW = Math.max(0, Math.min(tailWidth, 0.9)) * w;
   const baseCx = Math.max(baseW / 2, Math.min(tipX, w - baseW / 2));
   const baseL = baseCx - baseW / 2, baseR = baseCx + baseW / 2;
   // Raw body corners CW from TL, with the tail spliced onto the bottom edge.
@@ -1488,9 +1513,12 @@ export function bannerOutline(w, h, { endStyle = "forked", notchDepth = 0.15 } =
  * @example bracketOutline(40, 100, {thickness: 0.25, armLength: 0.5})[0][1] // [20, 0] (arms reach only halfway)
  */
 export function bracketOutline(w, h, { thickness = 0.2, armDepth = null, armLength = null } = {}) {
-  const t = Math.max(0.02, Math.min(thickness, 0.9)) * w;
+  // No floors: thickness/armDepth 0 collapse the spine/arms to zero-width lines
+  // (plain multiplications, nothing to divide by) — a hairline bracket, a
+  // defined limit rather than a NaN.
+  const t = Math.max(0, Math.min(thickness, 0.9)) * w;
   // An absent arm knob tracks the spine — the pre-three-knob shape, exactly.
-  const ty = Math.max(0.02, Math.min(armDepth ?? thickness, 0.45)) * h;
+  const ty = Math.max(0, Math.min(armDepth ?? thickness, 0.45)) * h;
   const ax = Math.max(t, Math.min(armLength ?? 1, 1) * w); // an arm never retracts behind its own spine
   return [[[0, 0], [ax, 0], [ax, ty], [t, ty], [t, h - ty], [ax, h - ty], [ax, h], [0, h]]];
 }
@@ -1640,7 +1668,9 @@ export function cloudOutline(w, h, { bumps = 6, lobeDepth = 0.28, flatten = 0.35
  */
 export function heartOutline(w, h, { cleft = 0.25, lobeWidth = 0.5, tipSharpness = 0.5 } = {}) {
   const notch = Math.max(0, Math.min(cleft, 0.9)) * h;
-  const lw = Math.max(0.05, Math.min(lobeWidth, 1));
+  // No floor: lobeWidth 0 collapses lobeR to 0 (a plain multiplication, nothing
+  // to divide by), which draws a hairline heart — a defined limit, not a NaN.
+  const lw = Math.max(0, Math.min(lobeWidth, 1));
   const sharp = Math.max(0, Math.min(tipSharpness, 1));
   const cx = w / 2, tipY = h;
   // BUILT DIRECTLY IN BBOX COORDINATES, deliberately NOT bbox-refitted. A refit
@@ -1707,12 +1737,16 @@ export function heartOutline(w, h, { cleft = 0.25, lobeWidth = 0.5, tipSharpness
  * @example arrowOutline(100, 100, {curvature: 0, doubleHead: false})[0].length // 7 (single-head block arrow)
  * @example arrowOutline(100, 100, {curvature: 0, doubleHead: true})[0].length // 10 (double-head)
  * @example arrowOutline(100, 100, {curvature: 0.5})[0].length > 7 // true (bent = sampled centerline)
+ * @example arrowOutline(100, 100, {headWidth: 0})[0].every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) // true (zero width collapses to a flat line, not a NaN)
  */
 export function arrowOutline(w, h, { headRatio = 0.4, headWidth = 0.6, shaftRatio = 0.4, tailNotch = 0, curvature = 0, doubleHead = false } = {}) {
   const L = 100;
-  const Hh = Math.max(0.02, Math.min(headWidth, 1)) * L * 0.5;   // head half-width
-  const sh = Math.max(0.02, Math.min(shaftRatio, 1)) * Hh;        // shaft half-thickness
-  const headLen = Math.max(0.02, Math.min(headRatio, 0.95)) * L;
+  // No floors: each is a plain multiplication (headWidth/shaftRatio 0 collapses
+  // the profile to a flat line; bboxFitSubpaths' `|| 1` extent guard handles the
+  // resulting zero-height bbox), so the whole [0, 1] domain is already finite.
+  const Hh = Math.max(0, Math.min(headWidth, 1)) * L * 0.5;   // head half-width
+  const sh = Math.max(0, Math.min(shaftRatio, 1)) * Hh;        // shaft half-thickness
+  const headLen = Math.max(0, Math.min(headRatio, 1)) * L;    // 1 = a pentagon with no shaft (headBase collapses to 0)
   const headBase = L - headLen;
   // Canonical profile as (ℓ, q) pairs, CCW.
   let profile;
@@ -1805,10 +1839,13 @@ export function threadFlankPts(topY, botY, crestX, rootX, threads, phase) {
  */
 export function boltOutline(w, h, { headWidth = 0.74, headHeight = 0.2, shankWidth = 0.42, threads = 8, threadDepth = 0.14, washer = false, washerWidth = 0.6, washerHeight = 0.05, chamfer = 0.24 } = {}) {
   const cx = w / 2;
-  const headHalf = Math.max(0.02, Math.min(headWidth, 1)) * w / 2;
-  const shankHalf = Math.max(0.02, Math.min(shankWidth, 1)) * w / 2;
+  // No floors: every one of these is a plain multiplication (a half-width, a
+  // height), so 0 collapses that part of the silhouette to a hairline/point —
+  // a defined limit (e.g. headWidth 0 draws a headless bolt), never a NaN.
+  const headHalf = Math.max(0, Math.min(headWidth, 1)) * w / 2;
+  const shankHalf = Math.max(0, Math.min(shankWidth, 1)) * w / 2;
   const washerHalf = Math.max(shankHalf, Math.min(washerWidth, 1) * w / 2);
-  const headBot = Math.max(0.02, Math.min(headHeight, 0.8)) * h;
+  const headBot = Math.max(0, Math.min(headHeight, 0.8)) * h;
   const cham = Math.max(0, Math.min(chamfer, 0.9)) * Math.min(headHalf, headBot / 2);
   const washerBot = washer ? headBot + Math.max(0, washerHeight) * h : headBot;
   const shankTop = washerBot;
@@ -1870,12 +1907,18 @@ export function screwHeadCap(headStyle, cx, headHalf, shankHalf, bodyTop) {
  */
 export function screwOutline(w, h, { headStyle = "flat", headWidth = 0.72, headHeight = 0.16, shankWidth = 0.36, threads = 10, threadDepth = 0.18, taper = 0.5 } = {}) {
   const cx = w / 2;
-  const headHalf = Math.max(0.02, Math.min(headWidth, 1)) * w / 2;
-  const shankHalf = Math.max(0.02, Math.min(shankWidth, 1)) * w / 2;
-  const bodyTop = Math.max(0.02, Math.min(headHeight, 0.6)) * h;
+  // No floors: plain multiplications — 0 collapses that part of the silhouette
+  // to a hairline/point (headWidth 0 draws a headless screw), never a NaN.
+  const headHalf = Math.max(0, Math.min(headWidth, 1)) * w / 2;
+  const shankHalf = Math.max(0, Math.min(shankWidth, 1)) * w / 2;
+  const bodyTop = Math.max(0, Math.min(headHeight, 0.6)) * h;
   const depth = Math.max(0, Math.min(threadDepth, 0.95)) * shankHalf;
   const nT = Math.max(0, Math.round(threads));
-  const pointFrac = Math.max(0.05, Math.min(taper, 1));
+  // No floor: taper 0 makes narrowStart 1, so `t <= narrowStart` is true for
+  // every sampled t in [0, 1] — the division branch below is simply never
+  // reached, and the body renders BLUNT (constant width, no point). Not a
+  // singularity: the guard clause already keeps the divide-by-zero unreachable.
+  const pointFrac = Math.max(0, Math.min(taper, 1));
   const narrowStart = 1 - pointFrac;
   const hwAt = (t) => (t <= narrowStart ? shankHalf : shankHalf * (1 - (t - narrowStart) / (1 - narrowStart)));
   const steps = Math.max(2, 2 * nT);
@@ -1954,8 +1997,11 @@ export function screwHeadOutline(w, h, { drive = "phillips", driveSize = 0.55, b
     const a = (i * 2 * Math.PI) / ARC_SEGMENTS;
     outer.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]);
   }
-  const R = Math.max(0.05, Math.min(driveSize, 0.95)) * Math.min(rx, ry);
-  const barW = Math.max(0.02, Math.min(barWidth, 0.9)) * Math.min(rx, ry);
+  // No floors: driveSize/barWidth 0 collapse the recess to a point (a plain
+  // multiplication of a radius), rendering a smooth head with no drive slot —
+  // a defined limit, never a NaN.
+  const R = Math.max(0, Math.min(driveSize, 1)) * Math.min(rx, ry);
+  const barW = Math.max(0, Math.min(barWidth, 0.9)) * Math.min(rx, ry);
   return [outer, driveRecess(drive, cx, cy, R, barW)];
 }
 
@@ -2067,14 +2113,24 @@ export function scrollHalfWidths(n, hwMax, taper) {
  * Shared by ss_scroll, ss_scrollPair and ss_ironFinial's volutes.
  */
 function scrollSkeleton({ turns, growth, ribbonWidth, taper }) {
-  const T = Math.max(0.1, turns);
-  const g = Math.max(1.05, growth);
+  // turns: no floor — 0 collapses the spiral to a single point at the eye
+  // (logSpiralPoints just samples one angle repeatedly), a defined "stub"
+  // scroll rather than a NaN.
+  const T = Math.max(0, turns);
+  // growth: no floor of its own — logSpiralPoints owns the one genuine
+  // singularity (Math.log needs growth > 0) and documents why it also keeps
+  // the spiral outward-only. Passed through raw so there is a single source
+  // of truth for that boundary instead of two clamps disagreeing (this used
+  // to floor at 1.05 while logSpiralPoints separately floored at 1.0001).
   const a1 = T * 2 * Math.PI;
   const samples = Math.max(8, Math.round(SPIRAL_SEGMENTS_PER_TURN * T));
-  let center = logSpiralPoints({ cx: 0, cy: 0, r0: 1, growth: g, a0: 0, a1, samples });
+  let center = logSpiralPoints({ cx: 0, cy: 0, r0: 1, growth, a0: 0, a1, samples });
   center = rotatePts(center, -endTangentAngle(center)); // outer-end tangent → +x
+  const g = Math.max(1.0001, growth); // mirrors logSpiralPoints' own floor, for outerR's closed form
   const outerR = Math.exp((Math.log(g) / (2 * Math.PI)) * a1);
-  const hwMax = Math.max(0.01, ribbonWidth) * outerR;
+  // ribbonWidth: no floor — 0 collapses the ribbon to its own centerline (both
+  // edges coincide), a hairline scroll, not a NaN.
+  const hwMax = Math.max(0, ribbonWidth) * outerR;
   const hws = scrollHalfWidths(center.length, hwMax, taper);
   return { center, hws, outerR };
 }
@@ -2175,7 +2231,10 @@ export function ironFinialOutline(w, h, { profile = "spear", voluteCount = 2, vo
   const central = ironFinialProfile(profile, H);
   const nV = Math.max(0, Math.round(voluteCount));
   const { center, hws, outerR } = scrollSkeleton({ turns, growth, ribbonWidth, taper });
-  const scale = (Math.max(0.05, voluteSize) * 0.8) / outerR; // coil size in natural units
+  // No floor: voluteSize 0 collapses scale to 0 (a plain multiplication), so
+  // every volute point lands at the anchor — a defined "no volute" limit
+  // rather than a NaN (outerR is never 0: growth's own >1 floor keeps it so).
+  const scale = (Math.max(0, voluteSize) * 0.8) / outerR; // coil size in natural units
   const unit = center.map(([x, y]) => [x * scale, y * scale]);
   const unitHws = hws.map((v) => v * scale);
   const subs = [central];

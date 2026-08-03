@@ -352,7 +352,7 @@ export const FAMILIES = [
     type: "ss_crossPlus", title: "Cross / Plus", icon: "mdi:plus-thick", fill: "#f7768e",
     defaults: { armThickness: 0.34, armLengthRatio: 1, cornerRadius: 0 },
     rows: [
-      N("armThickness", "Arm thickness", { min: 0.05, max: 1, help: "How thick the arms are as a fraction of the box. Small is a thin plus, large a chunky cross. Drag the inner-corner handle." }),
+      N("armThickness", "Arm thickness", { min: 0, max: 1, help: "How thick the arms are as a fraction of the box. 0 is a hairline plus, large a chunky cross. Drag the inner-corner handle." }),
       N("armLengthRatio", "Vertical length", { min: 0, max: 1, help: "Shortens the vertical arm: 1 is a symmetric Greek cross, lower makes a squat plus. Drag the top handle." }),
       N("cornerRadius", "Corner radius", { min: 0, max: 0.5, help: "Rounds the twelve corners by this fraction of half the shorter side." }),
     ],
@@ -365,17 +365,17 @@ export const FAMILIES = [
     // armLengthRatio's handle is the vertical arm's top, a VERTICAL segment from the box
     // top down to the arm's own crotch — the plain metric projection.
     modifierPoints(s) {
-      const t = clamp(s.armThickness, 0.02, 1), half = t / 2;
+      const t = clamp(s.armThickness, 0, 1), half = t / 2;
       const x2 = (0.5 + half) * s.w, y1 = (0.5 - half) * s.h;
       const lr = clamp(s.armLengthRatio, 0, 1), top = (1 - lr) * (0.5 - half) * s.h;
-      const [LO, HI] = [0.05, 1]; // the bounds the `armThickness` DRAG has always written within
+      const [LO, HI] = [0, 1]; // the `armThickness` row's declared bounds
       // The x-fraction that reads back as the stored thickness, so a box with no width
       // (nothing to take a fraction of) leaves the value exactly where it was.
       const heldFraction = (st) => 0.5 + clamp(st.armThickness, LO, HI) / 2;
       const thicknessAt = (st, x) => clamp(2 * ratioOf(x, st.w, heldFraction(st)) - 1, LO, HI);
       // The vertical arm's available room: zero when the arms already fill the box
       // (armThickness 1), which is a single-point allowed set — the handle cannot move.
-      const roomOf = (st) => (0.5 - clamp(st.armThickness, 0.02, 1) / 2) * st.h;
+      const roomOf = (st) => (0.5 - clamp(st.armThickness, LO, HI) / 2) * st.h;
       return [
         {
           id: "armThickness", x: x2, y: y1,
@@ -418,35 +418,37 @@ export const FAMILIES = [
     defaults: { teeth: 8, innerRatio: 0.72, toothWidth: 0.5, holeRatio: 0 },
     rows: [
       N("teeth", "Teeth", { min: 3, help: "Number of teeth around the gear (three or more; no upper cap). Type an exact count." }),
-      N("innerRatio", "Root radius", { min: 0.05, max: 0.98, help: "How deep the valleys between teeth cut in, as a fraction of the outer radius. Drag the root handle." }),
-      N("toothWidth", "Tooth width", { min: 0.02, max: 0.98, help: "Angular width of each tooth top as a fraction of the pitch: near 0 becomes a spiky starburst, near 1 the teeth merge. Drag the tooth handle." }),
-      N("holeRatio", "Center hole", { min: 0, max: 0.9, help: "Radius of a hole through the center as a fraction of the outer radius. 0 is solid." }),
+      N("innerRatio", "Root radius", { min: 0, max: 1, help: "How deep the valleys between teeth cut in, as a fraction of the outer radius. 0 collapses the valleys to the center (a toothed star); 1 rises to meet the tips (a plain circle — no depth left to cut). Drag the root handle." }),
+      N("toothWidth", "Tooth width", { min: 0, max: 1, help: "Angular width of each tooth top as a fraction of the pitch: 0 collapses each tooth to a point (a sharp starburst), 1 merges adjacent teeth into a smooth ring. Drag the tooth handle." }),
+      N("holeRatio", "Center hole", { min: 0, max: 0.9, help: "Radius of a hole through the center as a fraction of the outer radius. 0 is solid. Capped just inside the root radius — a hole cannot punch through the teeth." }),
     ],
     outline: (s) => gearOutline(s.w, s.h, { teeth: s.teeth ?? 8, innerRatio: s.innerRatio ?? 0.7, toothWidth: s.toothWidth ?? 0.5, holeRatio: s.holeRatio ?? 0 }),
-    // innerRatio rides the RADIAL SEGMENT straight up (t ∈ [0.05, 0.98]). toothWidth
-    // rides the RIM, but its reading is the ABSOLUTE angular gap from 12 o'clock, so —
-    // like the fancy arrow's half-widths — it MIRRORS a point on the far side onto the
-    // one side the handle is drawn (a tooth is symmetric about its centre line): an
-    // idempotent retraction, not the metric nearest point.
+    // innerRatio rides the RADIAL SEGMENT straight up (t ∈ [0, 1] — the full
+    // mathematical range, no floor: see gearOutline's docblock for what each end
+    // renders). toothWidth rides the RIM, but its reading is the ABSOLUTE angular
+    // gap from 12 o'clock, so — like the fancy arrow's half-widths — it MIRRORS a
+    // point on the far side onto the one side the handle is drawn (a tooth is
+    // symmetric about its centre line): an idempotent retraction, not the metric
+    // nearest point.
     modifierPoints(s) {
       const TOOTH_TOP = -Math.PI / 2; // the reference tooth is centred at 12 o'clock
       const g = ellipseGeom(s);
-      const root = clamp(s.innerRatio, 0.05, 0.98);
-      const tw = clamp(s.toothWidth, 0.02, 0.98);
+      const root = clamp(s.innerRatio, 0, 1);
+      const tw = clamp(s.toothWidth, 0, 1);
       const pitchOf = (st) => (2 * Math.PI) / Math.max(3, Math.round(st.teeth ?? 8));
       // Half the tooth top's angular width, from an angle on the rim.
       const halfTopAt = (st, a) => {
         const pitch = pitchOf(st);
-        return clamp((2 * Math.min(Math.abs(TOOTH_TOP - a), pitch / 2)) / pitch, 0.02, 0.98) * pitch / 2;
+        return clamp((2 * Math.min(Math.abs(TOOTH_TOP - a), pitch / 2)) / pitch, 0, 1) * pitch / 2;
       };
       const halfTop = (tw * pitchOf(s)) / 2;
       return [
         {
           id: "innerRatio", x: g.cx + g.rx * root * Math.cos(TOOTH_TOP), y: g.cy + g.ry * root * Math.sin(TOOTH_TOP),
-          constrain: (st, pt) => radialConstrain(ellipseGeom(st), TOOTH_TOP, pt, 0.05, 0.98),
+          constrain: (st, pt) => radialConstrain(ellipseGeom(st), TOOTH_TOP, pt, 0, 1),
           apply: (st, pt) => {
             const gg = ellipseGeom(st);
-            return { innerRatio: readOrKeep(gg, () => radialT(gg, pt.x, pt.y, TOOTH_TOP), clamp(st.innerRatio, 0.05, 0.98)) };
+            return { innerRatio: readOrKeep(gg, () => radialT(gg, pt.x, pt.y, TOOTH_TOP), clamp(st.innerRatio, 0, 1)) };
           },
         },
         {
@@ -457,7 +459,7 @@ export const FAMILIES = [
           },
           apply: (st, pt) => {
             const gg = ellipseGeom(st);
-            return { toothWidth: readOrKeep(gg, () => (2 * halfTopAt(st, angleAt(gg, pt.x, pt.y))) / pitchOf(st), clamp(st.toothWidth, 0.02, 0.98)) };
+            return { toothWidth: readOrKeep(gg, () => (2 * halfTopAt(st, angleAt(gg, pt.x, pt.y))) / pitchOf(st), clamp(st.toothWidth, 0, 1)) };
           },
         },
       ];
@@ -468,7 +470,7 @@ export const FAMILIES = [
     defaults: { cornerRadius: 0.25, tailWidth: 0.22, tailX: 40, tailY: 200 },
     rows: [
       N("cornerRadius", "Corner radius", { min: 0, max: 1, help: "Rounds the bubble body's corners, from a sharp rectangle to a soft rounded bubble." }),
-      N("tailWidth", "Tail width", { min: 0.02, max: 0.9, help: "How wide the tail's base is as a fraction of the body width. Thin is a pointer, wide is a speech-bubble beak." }),
+      N("tailWidth", "Tail width", { min: 0, max: 0.9, help: "How wide the tail's base is as a fraction of the body width. 0 is a needle-thin pointer, wide is a speech-bubble beak." }),
     ],
     outline: (s) => calloutOutline(s.w, s.h, { cornerRadius: s.cornerRadius ?? 0.2, tailX: s.tailX, tailY: s.tailY, tailWidth: s.tailWidth ?? 0.22 }),
     // The tail tip goes ANYWHERE (a speech bubble may point off its own box), so this
@@ -546,7 +548,7 @@ export const FAMILIES = [
     defaults: { cleft: 0.22, lobeWidth: 1, tipSharpness: 0.45, w: 200, h: 200 },
     rows: [
       N("cleft", "Cleft depth", { min: 0, max: 0.9, help: "How deep the notch between the two lobes cuts, as a fraction of the height. 0 is a domed top; deep turns the heart toward a spade." }),
-      N("lobeWidth", "Lobe width", { min: 0.05, max: 1, help: "How wide each lobe is, as a fraction of the width. Narrow gives a tall slender heart, wide a squat one." }),
+      N("lobeWidth", "Lobe width", { min: 0, max: 1, help: "How wide each lobe is, as a fraction of the width. 0 collapses to a hairline, wide a squat one." }),
       N("tipSharpness", "Tip sharpness", { min: 0, max: 1, help: "How drawn-out the bottom point is: 0 is a round bottom, 1 a long tapering spike." }),
     ],
     presets: [
@@ -606,9 +608,9 @@ export const FAMILIES = [
     // measurements on a real bracket, and each gets its own knob and its own yellow
     // square: one handle for three numbers could only ever write one of them.
     rows: [
-      N("thickness", "Spine width", { min: 0.02, max: 0.9, help: "Width of the bracket's vertical bar as a fraction of the width. Drag the spine handle. Rotate the widget to orient the bracket." }),
-      N("armDepth", "Arm depth", { min: 0.02, max: 0.45, help: "Thickness of the top and bottom arms as a fraction of the height — independent of the spine, so the arms can be skinnier or chunkier than the bar." }),
-      N("armLength", "Arm reach", { min: 0.05, max: 1, help: "How far the arms reach across, as a fraction of the width. 1 is a full bracket; less pulls the arms back toward the spine." }),
+      N("thickness", "Spine width", { min: 0, max: 0.9, help: "Width of the bracket's vertical bar as a fraction of the width. 0 is a hairline spine. Drag the spine handle. Rotate the widget to orient the bracket." }),
+      N("armDepth", "Arm depth", { min: 0, max: 0.45, help: "Thickness of the top and bottom arms as a fraction of the height — independent of the spine, so the arms can be skinnier or chunkier than the bar. 0 is hairline arms." }),
+      N("armLength", "Arm reach", { min: 0, max: 1, help: "How far the arms reach across, as a fraction of the width. 1 is a full bracket; 0 pulls the arms all the way back to the spine (a plain vertical bar)." }),
     ],
     presets: [
       { name: "Square Bracket", description: "The plain typographic \"[\": even spine and arms, arms reaching the full width.", props: { thickness: 0.22, armDepth: 0.12, armLength: 1 } },
@@ -631,9 +633,9 @@ export const FAMILIES = [
     // top arm's inner edge slides down the left of the opening, and the arm tip
     // slides along the top edge.
     modifierPoints(s) {
-      const [LO, HI] = [0.02, 0.9];       // the `thickness` row's declared bounds
-      const [DLO, DHI] = [0.02, 0.45];    // the `armDepth` row's declared bounds
-      const [RLO, RHI] = [0.05, 1];       // the `armLength` row's declared bounds
+      const [LO, HI] = [0, 0.9];       // the `thickness` row's declared bounds
+      const [DLO, DHI] = [0, 0.45];    // the `armDepth` row's declared bounds
+      const [RLO, RHI] = [0, 1];       // the `armLength` row's declared bounds
       const depthOf = (st) => clamp(st.armDepth ?? st.thickness, DLO, DHI);
       const reachOf = (st) => clamp(st.armLength ?? 1, RLO, RHI);
       return [
@@ -663,9 +665,9 @@ export const FAMILIES = [
     type: "ss_arrow", title: "Arrow", icon: "mdi:arrow-right-thick", fill: "#f7768e",
     defaults: { headRatio: 0.4, headWidth: 0.6, shaftRatio: 0.4, tailNotch: 0, curvature: 0, doubleHead: false },
     rows: [
-      N("headRatio", "Head length", { min: 0.05, max: 0.95, help: "How much of the arrow's length is the head, as a fraction. Small is a long shaft, large is mostly arrowhead (→ a pentagon at 1 with no shaft)." }),
-      N("headWidth", "Head width", { min: 0.05, max: 1, help: "How wide the arrowhead's barbs are as a fraction of the length." }),
-      N("shaftRatio", "Shaft thickness", { min: 0.05, max: 1, help: "Shaft thickness as a fraction of the head width. Thin is a slender arrow, near 1 fills the head." }),
+      N("headRatio", "Head length", { min: 0, max: 1, help: "How much of the arrow's length is the head, as a fraction. 0 is all shaft (no head), 1 is a pentagon with no shaft." }),
+      N("headWidth", "Head width", { min: 0, max: 1, help: "How wide the arrowhead's barbs are as a fraction of the length. 0 collapses the whole arrow to a flat line." }),
+      N("shaftRatio", "Shaft thickness", { min: 0, max: 1, help: "Shaft thickness as a fraction of the head width. 0 is a shaftless outline, near 1 fills the head." }),
       N("tailNotch", "Tail notch", { min: 0, max: 0.9, help: "Cuts a chevron notch into the flat tail: 0 is a flat back, higher turns the tail into a chevron / striped arrow." }),
       N("curvature", "Curvature", { min: 0, scrub: 0.01, help: "Bends the arrow along an arc: 0 is straight, higher curves it, near 1 wraps it into a near-circular arrow, and beyond 1 keeps winding it tighter into overlapping loops (no upper cap)." }),
       BOOL("doubleHead", "Double head", "Adds a second arrowhead at the tail (a double-headed arrow)."),
@@ -687,14 +689,14 @@ export const FAMILIES = [
     type: "ss_bolt", title: "Bolt", icon: "mdi:screw-machine-flat-top", fill: "#b8c0cc",
     defaults: { headWidth: 0.74, headHeight: 0.2, chamfer: 0.24, shankWidth: 0.42, threads: 8, threadDepth: 0.14, washer: false, washerWidth: 0.6, washerHeight: 0.05, w: 120, h: 260 },
     rows: [
-      N("headWidth", "Head width", { min: 0.1, max: 1, help: "Width of the hex head across the flats, as a fraction of the box." }),
-      N("headHeight", "Head height", { min: 0.05, max: 0.8, help: "Height of the head as a fraction of the box." }),
+      N("headWidth", "Head width", { min: 0, max: 1, help: "Width of the hex head across the flats, as a fraction of the box. 0 is a headless bolt." }),
+      N("headHeight", "Head height", { min: 0, max: 0.8, help: "Height of the head as a fraction of the box. 0 collapses the head to a flat line." }),
       N("chamfer", "Head bevel", { min: 0, max: 0.9, help: "Bevels the head's corners — the chamfer of a hex head read side-on. 0 is a plain rectangle head." }),
-      N("shankWidth", "Shank width", { min: 0.05, max: 1, help: "Width of the threaded shank as a fraction of the box." }),
+      N("shankWidth", "Shank width", { min: 0, max: 1, help: "Width of the threaded shank as a fraction of the box. 0 is a hairline shank." }),
       N("threads", "Threads", { min: 0, help: "Number of thread turns down the shank; 0 is a smooth (unthreaded) shank." }),
       N("threadDepth", "Thread depth", { min: 0, max: 0.95, help: "How deep each thread cuts into the shank, as a fraction of its half-width." }),
       BOOL("washer", "Washer", "Inserts a wider washer collar between the head and the shank."),
-      N("washerWidth", "Washer width", { min: 0.1, max: 1, help: "Width of the washer as a fraction of the box (only with Washer on)." }),
+      N("washerWidth", "Washer width", { min: 0, max: 1, help: "Width of the washer as a fraction of the box (only with Washer on). 0 collapses the washer to nothing." }),
       N("washerHeight", "Washer height", { min: 0, max: 0.3, help: "Thickness of the washer as a fraction of the box (only with Washer on)." }),
     ],
     // Real fastener catalog first (DIN/ISO/ASME proportions — they teach the
@@ -727,12 +729,12 @@ export const FAMILIES = [
     defaults: { headStyle: "flat", headWidth: 0.72, headHeight: 0.16, shankWidth: 0.36, threads: 11, threadDepth: 0.2, taper: 0.5, w: 120, h: 280 },
     rows: [
       SEL("headStyle", "Head style", ["flat", "pan", "round"], { flat: "Flat / countersunk", pan: "Pan", round: "Round / dome" }, "The screw-head profile seen from the side: a countersunk cone, a low pan, or a full dome."),
-      N("headWidth", "Head width", { min: 0.1, max: 1, help: "Width of the head as a fraction of the box." }),
-      N("headHeight", "Head height", { min: 0.05, max: 0.6, help: "Height of the head as a fraction of the box." }),
-      N("shankWidth", "Shank width", { min: 0.05, max: 1, help: "Width of the body at the top, as a fraction of the box." }),
+      N("headWidth", "Head width", { min: 0, max: 1, help: "Width of the head as a fraction of the box. 0 is a headless screw." }),
+      N("headHeight", "Head height", { min: 0, max: 0.6, help: "Height of the head as a fraction of the box. 0 collapses the head to a flat line." }),
+      N("shankWidth", "Shank width", { min: 0, max: 1, help: "Width of the body at the top, as a fraction of the box. 0 is a hairline body." }),
       N("threads", "Threads", { min: 0, help: "Number of thread turns down the tapered body; 0 is a smooth body." }),
       N("threadDepth", "Thread depth", { min: 0, max: 0.95, help: "How deep each thread cuts, as a fraction of the shank half-width." }),
-      N("taper", "Point taper", { min: 0.05, max: 1, help: "Fraction of the body length over which it narrows to the point: large is a long cone, small is a straight body with a short gimlet point." }),
+      N("taper", "Point taper", { min: 0, max: 1, help: "Fraction of the body length over which it narrows to the point: large is a long cone, 0 is a blunt straight body with no point at all." }),
     ],
     presets: [
       { name: "Flat-Head Machine Screw", description: "Flush-seating countersunk cone head (ASME B18.6.3), blunt point for a tapped hole.", props: { headStyle: "flat", headWidth: 0.70, headHeight: 0.22, shankWidth: 0.36, threads: 12, threadDepth: 0.14, taper: 0.15 } },
@@ -762,8 +764,8 @@ export const FAMILIES = [
     defaults: { drive: "phillips", driveSize: 0.55, barWidth: 0.16, w: 200, h: 200 },
     rows: [
       SEL("drive", "Drive", ["slot", "phillips", "hex", "torx"], { slot: "Slotted", phillips: "Phillips", hex: "Hex socket", torx: "Torx" }, "The drive recess punched into the head, seen from the top: a single slot, a Phillips cross, a hex socket, or a six-lobe Torx."),
-      N("driveSize", "Recess size", { min: 0.05, max: 0.95, help: "Radius of the drive recess as a fraction of the head radius." }),
-      N("barWidth", "Bar width", { min: 0.02, max: 0.9, help: "Width of the slot/cross bar as a fraction of the head radius (ignored for hex/torx)." }),
+      N("driveSize", "Recess size", { min: 0, max: 1, help: "Radius of the drive recess as a fraction of the head radius. 0 is a smooth head with no recess." }),
+      N("barWidth", "Bar width", { min: 0, max: 0.9, help: "Width of the slot/cross bar as a fraction of the head radius (ignored for hex/torx). 0 collapses the bar to a hairline." }),
     ],
     // barWidth is omitted on hex/torx presets (the family ignores it there).
     presets: [
@@ -794,9 +796,9 @@ export const FAMILIES = [
     type: "ss_scroll", title: "Iron Scroll", icon: "mdi:vector-curve", fill: "#3b3b42",
     defaults: { turns: 2.25, growth: 2, ribbonWidth: 0.16, taper: 0.6, w: 200, h: 200 },
     rows: [
-      N("turns", "Turns", { min: 0.25, scrub: 0.02, help: "How many revolutions the scroll coils through. More turns wind a tighter eye." }),
-      N("growth", "Growth per turn", { min: 1.1, scrub: 0.02, help: "How fast the coil expands each turn: near 1 is a tight even coil, larger flares open into a loose volute." }),
-      N("ribbonWidth", "Bar width", { min: 0.02, max: 0.6, help: "Thickness of the iron bar as a fraction of the coil's outer radius." }),
+      N("turns", "Turns", { min: 0, scrub: 0.02, help: "How many revolutions the scroll coils through. 0 collapses to a point at the eye; more turns wind a tighter eye." }),
+      N("growth", "Growth per turn", { min: 1.0001, scrub: 0.02, help: "How fast the coil expands each turn: 1.0001 is nearly a plain circle, larger flares open into a loose volute. Held just above 1 — the underlying log-spiral math is undefined at growth 0 or below." }),
+      N("ribbonWidth", "Bar width", { min: 0, max: 0.6, help: "Thickness of the iron bar as a fraction of the coil's outer radius. 0 is a hairline." }),
       N("taper", "Eye taper", { min: 0, max: 1, help: "Narrows the bar toward the eye: 0 is a uniform ribbon, 1 tapers the eye to a point (the classic volute)." }),
     ],
     presets: [
@@ -828,9 +830,9 @@ export const FAMILIES = [
     rows: [
       SEL("symmetry", "Symmetry", ["S", "C"], { S: "S-scroll (opposite curls)", C: "C-scroll (mirrored curls)" }, "How the two coils relate: an S curls in opposite directions (rotational symmetry); a C curls the same way (mirror symmetry) — the two classic wrought-iron units."),
       N("stemLength", "Stem length", { min: 0, scrub: 0.02, help: "Length of the straight bar joining the two coils, as a multiple of a coil's radius." }),
-      N("turns", "Turns", { min: 0.25, scrub: 0.02, help: "Revolutions in each coil." }),
-      N("growth", "Growth per turn", { min: 1.1, scrub: 0.02, help: "How fast each coil expands per turn." }),
-      N("ribbonWidth", "Bar width", { min: 0.02, max: 0.6, help: "Iron bar thickness as a fraction of a coil's outer radius." }),
+      N("turns", "Turns", { min: 0, scrub: 0.02, help: "Revolutions in each coil. 0 collapses to a point." }),
+      N("growth", "Growth per turn", { min: 1.0001, scrub: 0.02, help: "How fast each coil expands per turn. Held just above 1 — the log-spiral math is undefined at 0 or below." }),
+      N("ribbonWidth", "Bar width", { min: 0, max: 0.6, help: "Iron bar thickness as a fraction of a coil's outer radius. 0 is a hairline." }),
       N("taper", "Eye taper", { min: 0, max: 1, help: "Narrows the bar toward each eye (1 tapers to a point)." }),
     ],
     presets: [
@@ -862,10 +864,10 @@ export const FAMILIES = [
     rows: [
       SEL("profile", "Profile", ["spear", "fleur"], { spear: "Spear / lance", fleur: "Fleur-de-lis" }, "The central finial blade: a pointed spear head or a fleur-de-lis bud."),
       N("voluteCount", "Volutes per side", { min: 0, help: "Number of scroll volutes flanking each side of the base (mirrored left/right). 0 is a bare blade." }),
-      N("voluteSize", "Volute size", { min: 0.1, max: 2, scrub: 0.02, help: "Size of each flanking volute coil." }),
-      N("ribbonWidth", "Volute bar width", { min: 0.02, max: 0.6, help: "Thickness of the volute iron bar as a fraction of its outer radius." }),
-      N("turns", "Volute turns", { min: 0.25, scrub: 0.02, help: "Revolutions in each flanking volute." }),
-      N("growth", "Volute growth", { min: 1.1, scrub: 0.02, help: "How fast each flanking volute expands per turn." }),
+      N("voluteSize", "Volute size", { min: 0, max: 2, scrub: 0.02, help: "Size of each flanking volute coil. 0 collapses it to nothing." }),
+      N("ribbonWidth", "Volute bar width", { min: 0, max: 0.6, help: "Thickness of the volute iron bar as a fraction of its outer radius. 0 is a hairline." }),
+      N("turns", "Volute turns", { min: 0, scrub: 0.02, help: "Revolutions in each flanking volute. 0 collapses to a point." }),
+      N("growth", "Volute growth", { min: 1.0001, scrub: 0.02, help: "How fast each flanking volute expands per turn. Held just above 1 — the log-spiral math is undefined at 0 or below." }),
       N("taper", "Volute taper", { min: 0, max: 1, help: "Narrows each volute bar toward its eye." }),
     ],
     // Exactly one bare spear + one bare fleur: with voluteCount 0 the volute knobs
