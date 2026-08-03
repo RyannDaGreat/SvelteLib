@@ -5393,8 +5393,18 @@
     // without this the overlay would keep a key lit that is making no sound —
     // the same un-debuggable shape as the drone above, with the two halves
     // swapped (core/live_control.releaseAllPresses states the pairing).
-    releaseAllPresses();
-    app.bumpPressEpoch();
+    //
+    // ONLY IF SOMETHING WAS ACTUALLY LIT. This `if` is not an optimisation, it is
+    // the fix for a SHIPPED BOOT CRASH (2026-08-03): bumping unconditionally made
+    // this effect write on its very FIRST run, at mount, with no user gesture
+    // anywhere — and because the counter's `++` read the state it wrote, the
+    // effect became its own dependency and Svelte tripped
+    // `effect_update_depth_exceeded` while drawing the first frame. The counter is
+    // now `untrack`ed (web/app.svelte.js), so this can no longer loop; the guard
+    // stays because an effect that signals "the picture changed" when nothing
+    // changed is a false statement, and the next such counter should not have to
+    // rediscover why.
+    if (releaseAllPresses()) app.bumpPressEpoch();
   });
 
   // ── LEAVING KEYBOARD PLAY RELEASES ITS CHORD AND ITS LISTENER (CB) ────────

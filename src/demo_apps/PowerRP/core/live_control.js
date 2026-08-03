@@ -343,10 +343,23 @@ export function pressedNotes(itemId) {
  * that silences without clearing leaves keys lit that are making no sound, which
  * is the same un-debuggable class as its own docblock's drone-with-no-source.
  *
- * @example // releaseAllPresses(); pressedNotes(anyId) → []
+ * IT REPORTS WHETHER IT ACTUALLY CLEARED ANYTHING, and that return value is not
+ * decoration. Its editor caller sits in a Svelte `$effect` and follows it with a
+ * repaint signal; signalling UNCONDITIONALLY is what made that effect write on
+ * every run, including its first, which is half of the loop that took the deployed
+ * boot down on 2026-08-03 (the other half is fixed at the counter itself, in
+ * web/app.svelte.js bumpPressEpoch). A caller can now say "repaint only if the
+ * picture changed", which is both cheaper and the honest statement.
+ *
+ * @returns {boolean} whether any note was being held (false = nothing to un-light)
+ *
+ * @example // pressNote("k1", 60); releaseAllPresses() → true
+ * @example // releaseAllPresses(); releaseAllPresses() → false  (already empty)
  */
 export function releaseAllPresses() {
+  const had = pressedByItem.size > 0;
   pressedByItem.clear();
+  return had;
 }
 
 /** Query. A plugin by type, or null — `registry.get` THROWS on an unknown type,

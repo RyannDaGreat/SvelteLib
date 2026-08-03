@@ -182,6 +182,12 @@
            the eye reads WHAT BROKE first and WHAT TO DO second. */
         --boot-guidance-dim: 0.8;
         --boot-guidance-gap: 10px;
+        /* The safe-repair button (WORKSTREAM CG) and the line it reports into. */
+        --boot-remedy-gap: 14px;
+        --boot-remedy-radius: 6px;
+        --boot-remedy-pad-y: 7px;
+        --boot-remedy-pad-x: 14px;
+        --boot-remedy-note-gap: 8px;
       }
       @media (prefers-color-scheme: light) {
         :root {
@@ -318,6 +324,42 @@
         white-space: pre-wrap;
       }
       #boot-splash[data-failed="1"] .boot-guidance { display: block; }
+      /* THE REMEDY'S OWN BUTTON (WORKSTREAM CG). It exists so the safe repair is
+         something the user can PRESS, rather than a browser-settings errand that
+         has no data-safe path — see the handler for why the errand was dangerous.
+         Styled from the same tokens as the rest of the splash: this is still the
+         pre-framework surface and it may not reach for the app's stylesheet. */
+      .boot-remedy {
+        display: none;
+        max-width: var(--boot-error-max-w);
+        padding: 0 var(--boot-error-pad);
+        margin-top: var(--boot-remedy-gap);
+        text-align: left;
+      }
+      #boot-splash[data-failed="1"] .boot-remedy { display: block; }
+      .boot-remedy button {
+        font: inherit;
+        font-size: var(--boot-stage-size);
+        color: var(--boot-fg);
+        background: transparent;
+        border: 1px solid currentColor;
+        border-radius: var(--boot-remedy-radius);
+        padding: var(--boot-remedy-pad-y) var(--boot-remedy-pad-x);
+        opacity: var(--boot-guidance-dim);
+        cursor: pointer;
+      }
+      .boot-remedy button:hover:enabled, .boot-remedy button:focus-visible { opacity: 1; }
+      .boot-remedy button:disabled { cursor: default; opacity: var(--boot-pending-dim); }
+      /* The button's own progress/result line. Never red: a repair that reports
+         what it did is not a second failure. */
+      .boot-remedy-note {
+        margin-top: var(--boot-remedy-note-gap);
+        color: var(--boot-fg);
+        opacity: var(--boot-guidance-dim);
+        font-size: var(--boot-stage-size);
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
       @media (prefers-reduced-motion: reduce) {
         #boot-splash, #boot-splash > .boot-ui, .boot-bar { transition: none; }
         .boot-track[data-indeterminate="1"] > .boot-bar { animation: none; }
@@ -333,6 +375,10 @@
         <div class="boot-stages" id="boot-stages"></div>
         <div class="boot-error" id="boot-error"></div>
         <div class="boot-guidance" id="boot-guidance"></div>
+        <div class="boot-remedy" id="boot-remedy">
+          <button type="button" id="boot-remedy-btn">Clear the offline cache and reload</button>
+          <div class="boot-remedy-note" id="boot-remedy-note"></div>
+        </div>
       </div>
     </div>
     <script>
@@ -618,18 +664,91 @@
         // die WITHOUT any stage reporting it, and AH's honest slowness is what
         // makes that death invisible.
 
-        /** THE REMEDY, and it is the one that actually worked. The incident was a
-         *  stale service worker serving a MIXED bundle set, and what fixed it was
-         *  literally: unregister the worker, clear site data, reload. A reload
-         *  alone is tried first because it is free and fixes the transient half;
-         *  clearing is named second because it is the heavier step and it is the
-         *  one that beats a poisoned cache. Naming the console last is honest —
-         *  it is where the full stack is, and the user's own words were that he
-         *  "didn't even think to look in the console", so this tells him. */
+        /**
+         * THE REMEDY — AND IT MAY NOT ENDANGER THE USER'S WORK (WORKSTREAM CG,
+         * USER RULING 2026-08-03, on reading the previous wording: "THIS
+         * SUGGESTION MIGHT NUKE THE USER'S SAVED PROJECTS!").
+         *
+         * WHAT WAS WRONG. This text used to say "clear this site's data (browser
+         * settings → site data → clear)". That control is INDISCRIMINATE: it takes
+         * localStorage and IndexedDB with it, and that is where saved projects,
+         * unsaved drafts, remembered GitHub tokens and every preference live. So
+         * the splash's one piece of advice, shown at the exact moment a user is
+         * frightened and compliant, was an instruction to destroy their work in
+         * order to fix a rendering bug. A remedy that can cost more than the fault
+         * is not a remedy.
+         *
+         * WHAT REPLACES IT. The narrow repair the broad one was standing in for:
+         * unregister the service workers and delete the CacheStorage entries, which
+         * is ALL that "a stale offline cache" can mean, and which touches nothing
+         * the user authored. It is a BUTTON rather than an errand because there is
+         * no data-safe path through browser settings to offer instead — see
+         * `clearOfflineCache` below, which is the whole of it.
+         *
+         * AND IT NO LONGER ASSERTS THE CAUSE. The old line called a half-updated
+         * cache "the usual cause". That was a guess promoted to a diagnosis, and it
+         * is a poor one here: the worker's own law is ATOMICITY (a version's shell
+         * is written only by install's all-or-nothing addAll), so a mixed bundle set
+         * is precisely what it is built to make impossible. Naming the console last
+         * is kept and is still honest — it is where the full stack is, and the
+         * user's own words were that he "didn't even think to look in the console".
+         */
         var CRASH_GUIDANCE =
           "Try reloading the page.\n" +
-          "If it keeps happening, clear this site's data (browser settings → site data → clear) and reload — a half-updated offline cache is the usual cause.\n" +
+          "If it keeps happening, clear the offline cache below and reload. Your saved projects, drafts and settings are kept — that button removes only downloaded app files.\n" +
           "The browser console has the full stack.";
+
+        /**
+         * Command. The DATA-SAFE repair: drop every service-worker registration and
+         * every CacheStorage entry for this origin, then reload.
+         *
+         * THE SAFETY ARGUMENT IS THE CHOICE OF APIS, and it is worth stating because
+         * the point of this function is what it CANNOT do. `getRegistrations()` and
+         * `caches.keys()/delete()` reach downloaded app files and nothing else;
+         * neither has any access to localStorage or IndexedDB, so no bug in this
+         * code and no wrong click by the user can lose a project through it. That is
+         * the difference between this and "clear site data", which the user vetoed.
+         *
+         * IT REPORTS, INCLUDING WHEN IT FAILS. A repair that silently did nothing
+         * and reloaded into the same crash would teach the user the button is
+         * broken. Counts on success; the message on failure; the reload happens
+         * either way EXCEPT when nothing was found and nothing was cleared, because
+         * reloading into the identical crash is the outcome the user already has.
+         */
+        function clearOfflineCache() {
+          var btn = document.getElementById("boot-remedy-btn");
+          var note = document.getElementById("boot-remedy-note");
+          btn.disabled = true;
+          note.textContent = "Clearing offline cache…";
+          var workers = navigator.serviceWorker
+            ? navigator.serviceWorker.getRegistrations().then(function (regs) {
+                return Promise.all(regs.map(function (r) { return r.unregister(); })).then(function () { return regs.length; });
+              })
+            : Promise.resolve(0);
+          var stores = window.caches
+            ? caches.keys().then(function (keys) {
+                return Promise.all(keys.map(function (k) { return caches.delete(k); })).then(function () { return keys.length; });
+              })
+            : Promise.resolve(0);
+          Promise.all([workers, stores]).then(
+            function (counts) {
+              if (counts[0] === 0 && counts[1] === 0) {
+                note.textContent =
+                  "No offline cache was present, so this was not the cause. Your projects are untouched. The browser console has the full stack.";
+                btn.disabled = false;
+                return;
+              }
+              note.textContent =
+                "Cleared " + counts[0] + " service worker(s) and " + counts[1] + " cache(s). Your projects are untouched. Reloading…";
+              location.reload();
+            },
+            function (err) {
+              note.textContent = "Could not clear the offline cache: " + (err && err.message ? err.message : String(err));
+              btn.disabled = false;
+            }
+          );
+        }
+        document.getElementById("boot-remedy-btn").addEventListener("click", clearOfflineCache);
 
         /** Pure function. The ONE most useful stack line: the frame that threw.
          *  A full stack in a boot splash is a wall the user cannot act on, and it

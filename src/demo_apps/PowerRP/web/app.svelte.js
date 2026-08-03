@@ -6,6 +6,11 @@
  * menus are different surfacings of the ONE command registry.
  */
 
+// `untrack` only — this file is runes-class state, not a component. It guards the
+// one read-modify-write counter here (bumpPressEpoch) from subscribing an effect
+// to the state that effect writes; that loop crashed the deployed boot on
+// 2026-08-03 and the method's docblock records the mechanism.
+import { untrack } from "svelte";
 import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   uuid, clonedItemStates,
@@ -963,10 +968,29 @@ export class PowerRPApp {
   // It is the same class as `dragging`: a fact about what a hand is doing now.
   pressEpoch = $state(0);
 
-  /** Command. Signals that the live press set changed, so the canvas overlay
-   *  repaints. Called by every writer of core/live_control's press set. */
+  /**
+   * Command. Signals that the live press set changed, so the canvas overlay
+   * repaints. Called by every writer of core/live_control's press set.
+   *
+   * ── THE `untrack` IS THE WHOLE POINT, AND IT SHIPPED BROKEN WITHOUT IT ─────
+   * `this.pressEpoch++` is a READ-MODIFY-WRITE. Inside an `$effect` the read is
+   * TRACKED, so the effect that calls this becomes a dependent of the very state
+   * this line writes — Svelte 5 re-runs it, it bumps again, and the tenth pass
+   * trips `effect_update_depth_exceeded`. That is not a hypothetical: it took the
+   * DEPLOYED site down at first frame (2026-08-03), because CanvasView's
+   * slide-change effect calls this unconditionally on its first run and there is
+   * no user gesture needed to start the loop — mounting the canvas IS the trigger.
+   * `untrack` reads the counter WITHOUT subscribing, so a bump is a pure write and
+   * a caller in effect position cannot become its own dependency.
+   *
+   * IT IS FIXED HERE, AT THE COUNTER, rather than at each call site, because every
+   * writer of the press set calls this and a future one must not have to know. The
+   * paired discipline lives at the callers: an effect should bump only when
+   * something actually changed (see CanvasView's slide-change effect), which keeps
+   * the overlay from repainting for nothing even though it can no longer loop.
+   */
   bumpPressEpoch() {
-    this.pressEpoch++;
+    this.pressEpoch = untrack(() => this.pressEpoch) + 1;
   }
   // Editor-only Blender-style background grid and top ruler strip. Both are
   // "options" defaulting OFF (manifest: Grid + Ruler).
