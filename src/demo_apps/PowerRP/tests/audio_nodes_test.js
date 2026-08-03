@@ -39,6 +39,10 @@ import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { REVERB_CHARACTERS } from "../synth/dsp.js";
 import { audioEngineOps, diffAudioScene, readAudioScene } from "../core/audio_mirror_diff.js";
+// For the FOLD pin at the bottom: a knob's value must survive the document model
+// and the expression pass, not merely sit in a flat state object.
+import { foldState } from "../core/document.js";
+import { evaluateState } from "../core/expressions.js";
 
 let passed = 0;
 const check = (label, fn) => {
@@ -570,6 +574,54 @@ check("a wire between an audio node and a NON-audio node is dropped — the engi
   }, registry);
   assert.equal(scene.connections.filter((c) => c.sourceId === "nd").length, 0,
     "a number node drives document state, not an AudioParam — the mirror must not invent a wire for it");
+});
+
+// ── A KNOB'S VALUE IS FOLDED PROPERTY STATE (the user's law, 2026-08-03) ─────
+// USER, VERBATIM: "Lets look at poly pad. I see several knobs in teh GUI. And
+// yet, their values do NOT seem to be property state. I do not see their values
+// reflected anywhere in the properties of that pad."
+//
+// The mechanism already held when this was measured (WORKSTREAM CH) — knobs are
+// flat `audio*` leaves, audioKnobRows emits an ordinary Inspector row per knob,
+// and web/knobFocus.knobWritePairs writes the same leaf the row edits. What was
+// NOT pinned is the property that makes "property state" mean anything: the
+// value must FOLD, i.e. tween across a slide transition exactly like `w` or `x`.
+// Every existing knob pin reads a single flat state object, so all of them would
+// stay green if knob values were stored somewhere the fold never reached — which
+// is precisely the failure the user was describing. This closes that gap.
+check("a knob's value FOLDS and TWEENS across slides — it is property state, not hidden dial state", () => {
+  const spec = AUDIO_SPECS.find((s) => s.type === "audio_poly_pad");
+  const defaults = audioKnobDefaults(spec);
+  const cutoffKey = audioKnobKey("cutoff");
+  // Slide 0 creates the pad; slide 1 keyframes ONE knob. Nothing else moves, so a
+  // difference at alpha 0.5 can only come from the knob's own interpolation.
+  const doc = { meta: {}, slides: [
+    { id: "s0", name: "A", transition: { type: "cut", seconds: 0 }, delta: { items: { pad: { type: spec.type, ...defaults } } } },
+    { id: "s1", name: "B", transition: { type: "fade", seconds: 1 }, delta: { items: { pad: { [cutoffKey]: 400 } } } },
+  ] };
+  const knobAt = (slide, alpha) =>
+    audioKnobValues(spec, foldState(doc, slide, alpha).items.pad).find((k) => k.stateKey === cutoffKey).value;
+  assert.equal(knobAt(0, 1), defaults[cutoffKey], "slide 0 holds the authored default");
+  assert.equal(knobAt(1, 0), defaults[cutoffKey], "alpha 0 still reads the PREVIOUS value (lazy start capture)");
+  assert.equal(knobAt(1, 1), 400, "alpha 1 reads the keyframed value");
+  // THE ASSERTION THAT DISTINGUISHES FOLDED STATE FROM A STORED NUMBER: a value
+  // that merely sat in the item map would jump 1400 -> 400 with nothing between.
+  assert.equal(knobAt(1, 0.5), 900, "and it INTERPOLATES in between — the midpoint of 1400 and 400");
+});
+
+check("a knob is an EQUATION SLOT — the flat leaf gives it that for free", () => {
+  // audioKnobKey's docblock claims a flat numeric leaf is an equation slot "with
+  // no code here". That claim is load-bearing for the user's ask (the Inspector
+  // row must "accept equations") and is asserted through the real expression pass
+  // rather than trusted: audioKnobValues alone REJECTS a string to the default, so
+  // reading it without evaluating first would report a working equation as broken.
+  const spec = AUDIO_SPECS.find((s) => s.type === "audio_mixer");
+  const key = audioKnobKey("level1");
+  const state = { items: { mx: { type: spec.type, ...audioKnobDefaults(spec), [key]: "= 0.25 * 2" } }, vars: {} };
+  const folded = evaluateState(state, registry, "").state.items.mx;
+  assert.equal(folded[key], 0.5, "the expression pass resolves the knob's equation");
+  assert.equal(audioKnobValues(spec, folded).find((k) => k.stateKey === key).value, 0.5,
+    "and the engine-facing reader sees the RESOLVED number, not the source text");
 });
 
 console.log(`\naudio_nodes_test: ${passed} checks passed${process.exitCode ? " (WITH FAILURES)" : ""}`);
