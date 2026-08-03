@@ -333,6 +333,45 @@ test("content: derive builds ONE plugin over TWO states, and ports paints it", (
   }
 });
 
+test("content: A MATERIAL-INKED TEXT MORPH KEEPS ITS MATERIAL for the whole interior (AG)", () => {
+  // THE REPORTED BUG, through the whole pipe on the one text-bearing widget bare
+  // node can actually lay out. User, verbatim: "the equations always turn black
+  // when they morph… They should always keep the same material at all times."
+  //
+  // Latex is the widget the report names, but MathJax needs a DOM, so the same law
+  // is measured on plaintext — the seam is shared (ports.morphedPaint), and the
+  // failure was the SAME one in both: a many-glyph widget is many contours, the
+  // old carve-out was a subpath COUNT test, so every interior frame took the
+  // engine's carried per-subpath paint instead of the widget's real ink.
+  //
+  // MANY GLYPHS ON PURPOSE ("abcd" → "efgh"): a one-glyph morph passed even with
+  // the count carve-out in place, so a short string is a test that cannot fail.
+  const material = { type: "material", material: { id: "crt" } };
+  setGlyphOutlines({
+    glyphPaths: (t) => [...t].map(() => ({ d: "M0 0L1 0L1 1L0 1Z", advance: 1 })),
+    unitsPerEm: 1,
+  });
+  try {
+    const nodes = deriveRenderTree({
+      items: {
+        t1: {
+          type: "plaintext", x: 0, y: 0, w: 400, h: 100, size: 40, font: "inter",
+          fill: material,
+          text: { type: CONTENT_MORPH_TOKEN, key: "text", from: "abcd", to: "efgh", t: 0.5 },
+        },
+      },
+      vars: {},
+    }, registry);
+    const ops = morphIR(nodes.find((n) => n.itemId === "t1"));
+    assert.ok(ops.length > 1, "a multi-glyph morph must emit more than one contour, or this proves nothing");
+    for (const op of ops)
+      assert.deepEqual(op.fill, material,
+        "EVERY contour draws the widget's real ink — not a degraded solid, and not the default black");
+  } finally {
+    setGlyphOutlines(null);
+  }
+});
+
 test("content: the mark asks for MATCHED PIECES — and only a CONTENT morph does (XX-2)", () => {
   // The flag has exactly one source. A content morph is SAME-TYPE by
   // construction, so a congruent subpath on both sides really is the same glyph

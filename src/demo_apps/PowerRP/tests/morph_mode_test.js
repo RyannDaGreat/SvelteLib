@@ -24,8 +24,13 @@
  *   ITEM BAG      — the regression that this wave uncovered: an item bag is an
  *                   object with a string `type`, and the paint default used to
  *                   claim it. Pinned in both directions.
- *   PAINT         — a fill pair lerps through core/interpolators; an unlike pair
- *                   snaps rather than inventing a midpoint.
+ *   PAINT         — MORPH NEVER OWNS PAINT (workstream AG). The morph decides
+ *                   SHAPE; the paint pair goes through the ordinary paint
+ *                   machinery — a tweenable pair lerps, an unlike pair takes the
+ *                   crossfade paint, and an UNCHANGED ink (a material, a
+ *                   gradient) is unchanged at every alpha rather than degraded to
+ *                   a solid. That degradation was the reported bug: "the
+ *                   equations always turn black when they morph."
  *
  * Geometry is hand-built or read from the real plugins on purpose: a failure
  * should name a rule, not a fixture.
@@ -389,13 +394,76 @@ test("A FILL PAIR LERPS PER CHANNEL", () => {
   assert.equal(p.fill, "#808080", "the same law core/interpolators already applies to a colour row");
 });
 
-test("AN UNLIKE PAIR SNAPS rather than inventing a midpoint", () => {
-  // A material has no numeric halfway point with a hex colour; `interpolate`
-  // snaps unlike-shaped values, and this seam inherits that rather than guessing.
+// ── MORPH NEVER OWNS PAINT (workstream AG) ───────────────────────────────────
+//
+// User ruling, 2026-08-02, verbatim: "It's not the responsibility of morphing to
+// handle any material properties, it's only about shape properties." Reported as
+// "the equations always turn black when they morph". The four tests below are
+// the four ways the seam could take that responsibility back.
+
+const MATERIAL = { type: "material", material: { id: "crt" } };
+/** A payload whose subpaths carry the given fills — the shape of any real one. */
+const paintedPayload = (fills) => ({
+  space: { w: 1, h: 1 },
+  fillRule: "nonzero",
+  subpaths: fills.map((fill) => ({ paint: { fill, stroke: null, strokeWidth: 0, opacity: 1 } })),
+});
+
+test("AN UNLIKE PAIR CROSSFADES rather than snapping", () => {
+  // THIS TEST USED TO ASSERT THE OPPOSITE — that a solid → material pair snapped
+  // to the material, because `interpolate` snaps unlike-shaped values. The user's
+  // ruling overruled it: "if we're, you know, cross-fading of course, interpolate
+  // the material however the material would interpolate". So an unlike pair takes
+  // the paint machinery's own answer, the {type: "crossfade"} paint the `blend`
+  // mode mints, which the painter draws as both sides at complementary alpha.
+  const p = morphedPaint(paintedPayload(["#ff0000"]), paintedPayload([MATERIAL]), {}, 0.5);
+  assert.deepEqual(p.fill, { type: "crossfade", from: "#ff0000", to: MATERIAL, t: 0.5 });
+});
+
+test("A MULTI-GLYPH MATERIAL INK SURVIVES THE INTERIOR — the reported bug", () => {
+  // An equation or a text box is MANY contours under ONE ink. The old carve-out
+  // was a subpath COUNT test, so any multi-glyph widget took the engine's carried
+  // per-subpath paint instead — which for a shader ink was a degraded solid. That
+  // is the black.
   const p = morphedPaint(
-    { subpaths: [{ paint: { fill: "#ff0000", strokeWidth: 0, opacity: 1 } }] },
-    { subpaths: [{ paint: { fill: { type: "material", material: { id: "crt" } }, strokeWidth: 0, opacity: 1 } }] }, {}, 0.5);
-  assert.deepEqual(p.fill, { type: "material", material: { id: "crt" } });
+    paintedPayload([MATERIAL, MATERIAL, MATERIAL]),
+    paintedPayload([MATERIAL, MATERIAL]),
+    { paint: { fill: "#000000" } }, 0.5);
+  assert.deepEqual(p.fill, MATERIAL, "an unchanged ink is unchanged at every alpha");
+});
+
+test("A MULTI-GLYPH SOLID KEEPS ITS EXACT COLOUR — never the default black", () => {
+  const p = morphedPaint(
+    paintedPayload(["#22cc44", "#22cc44"]),
+    paintedPayload(["#22cc44"]),
+    { paint: { fill: "#000000" } }, 0.5);
+  assert.equal(p.fill, "#22cc44");
+});
+
+test("GENUINELY MULTI-COLOURED ART KEEPS ITS PER-CONTOUR PAINT — the carve-out's real case", () => {
+  // An SVG icon's contours DISAGREE, which is the condition the rule now tests.
+  // The engine carried the aligned counterpart's paint through, and flattening
+  // those to one widget-level colour is what the carve-out exists to prevent.
+  const p = morphedPaint(
+    paintedPayload(["#ff0000", "#00ff00"]),
+    paintedPayload(["#0000ff", "#ffff00"]),
+    { paint: { fill: "#00ff00" } }, 0.5);
+  assert.equal(p.fill, "#00ff00");
+});
+
+test("A MORPHED OP CARRIES A MATERIAL FILL, so the material actually renders", () => {
+  // The END of the chain, not the seam: a morph emits ORDINARY path ops, and
+  // ports.resolveMaterialFillPaints resolves a material fill on a path op exactly
+  // as it does on any emit()'s. If the material survives morphedPaint it reaches
+  // the painter — which is the whole claim "path ops already wear materials".
+  const node = soleNode(itemState({
+    type: { type: MORPH_TYPE_TOKEN, fromType: "rect", toType: "circle", t: 0.5 },
+    fill: MATERIAL,
+  }));
+  const op = sceneIR([node]).find((o) => o.op === "path");
+  assert.ok(op, "the morph drew ink");
+  assert.equal(op.fill?.type, "material", "a material rides the morphed path op");
+  assert.ok(op.fill.resolvedParams, "and resolveMaterialFillPaints resolved it, like any other op's");
 });
 
 test("A MORPHED OP CARRIES THE TWEENED FILL through the real pipeline", () => {
