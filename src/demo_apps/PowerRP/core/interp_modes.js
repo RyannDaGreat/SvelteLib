@@ -1060,3 +1060,158 @@ export const TYPE_KEY = "type";
 export function displayedDefaultModeFor(value, key) {
   return defaultModeFor(value, value, key);
 }
+
+// ── THE VISIBILITY-EFFECT TOKEN: how a `visible` mode reaches the renderer ────
+//
+// `fade` above answers with a BARE NUMBER, and that was right for one mode: the
+// number IS the coverage, and render_gpu/ports.js applyActiveFade multiplies it
+// into every op. But two more modes (WORKSTREAMS FF2 and JJ) also produce a
+// fractional visibility, and they draw DIFFERENT PICTURES from the same fraction
+// — a blurred one, a half-traced one. A bare number cannot say which, so the
+// render walk would have to guess, and there is no honest guess available.
+//
+// So a mode that needs to be NAMED downstream mints a token instead:
+//
+//     {type: "~visibleFx", mode, v}
+//
+// exactly the `~morph` / `~morphContent` / `~morphUniversal` precedent, one key
+// over, and for the identical reasons:
+//
+//   1. THE `~` SIGIL. A machine-namespace state VALUE, unreachable from an
+//      equation and impossible for a plugin type string to collide with — this
+//      module's own argument for `~interp` keys, applied to a value.
+//   2. IT CARRIES SCALARS, NOT A PICTURE. A mode id and a number. The fold runs
+//      at arbitrary [[slide, alpha]] on any machine and its result lands in every
+//      cached slide state and every undo entry, so baking geometry (a trimmed
+//      outline!) into the leaf is exactly what the token exists to avoid. The
+//      render seam re-derives from `v` where the answer is already needed.
+//   3. EVERY EXISTING `active` READER STILL WORKS. The gate is `active !== false`
+//      (core/derive.js, core/document.js), and a token is an object — truthy, not
+//      `false` — so a mid-transition item is correctly still derived. That is the
+//      same test a fractional `fade` already passes.
+//
+// `fade` DELIBERATELY DOES NOT MINT ONE. Its bare number is byte-identical to
+// what it has always folded to, and every consumer of that number — the render
+// seam, its tests, any tool reading a folded state — keeps working untouched. A
+// token there would be churn with no question to answer: there is only one way
+// to draw a plain fade.
+
+/** The `active`-leaf token a mid-transition NAMED visibility mode produces. */
+export const VISIBLE_FX_TOKEN = "~visibleFx";
+
+/**
+ * Pure function. True for the visibility-effect token — the shape check the
+ * render side routes on, defined beside the value that mints it (the isMorphToken
+ * / isCrossfadeValue precedent).
+ *
+ * @example isVisibleFxToken({type: "~visibleFx", mode: "blurFade", v: 0.5}) // true
+ * @example isVisibleFxToken(0.5) // false (a plain `fade` fraction)
+ * @example isVisibleFxToken(true) // false
+ * @example isVisibleFxToken(null) // false
+ */
+export function isVisibleFxToken(v) {
+  return !!(v && typeof v === "object" && !Array.isArray(v) && v.type === VISIBLE_FX_TOKEN);
+}
+
+/**
+ * Pure function. The COVERAGE any `active` value contributes, token included —
+ * `fadeLevel` widened to the one shape it does not know about. Every reader that
+ * only wants "how visible is this" asks here and never has to know a token
+ * exists.
+ *
+ * @example visibleLevel(true) // 1
+ * @example visibleLevel(false) // 0
+ * @example visibleLevel(0.25) // 0.25 (a plain fade in flight)
+ * @example visibleLevel({type: "~visibleFx", mode: "blurFade", v: 0.4}) // 0.4
+ * @example visibleLevel(undefined) // 1 (absent means visible)
+ */
+export function visibleLevel(v) {
+  return isVisibleFxToken(v) ? fadeLevel(v.v) : fadeLevel(v);
+}
+
+/**
+ * Pure function. The blend law both NAMED visibility modes share: read both ends
+ * as coverage, lerp, and mint a token carrying the mode's own name.
+ *
+ * The endpoint law is the call site's (core/deltas.mutBlendApply fixes alpha 0
+ * and 1 to the stored booleans), so this is only ever reached strictly inside a
+ * transition and a token never reaches a folded slide state, a save or an export.
+ *
+ * NON-BOOLEAN ENDPOINTS take the ordinary law, exactly as `fade` does: these
+ * modes are boolean-only by `appliesTo`, and a document that stored one on some
+ * other row should get that row's honest tween rather than an error box.
+ *
+ * @example namedVisibleBlend("blurFade", false, true, 0.25) // {type: "~visibleFx", mode: "blurFade", v: 0.25}
+ * @example namedVisibleBlend("manim", true, false, 0.25) // {type: "~visibleFx", mode: "manim", v: 0.75} (out is in, reversed — one rule, no branch)
+ * @example namedVisibleBlend("blurFade", 3, 7, 0.5) // 5 (a numeric row falls through to the ordinary tween)
+ */
+function namedVisibleBlend(mode, a, b, alpha) {
+  const boolish = (v) => typeof v === "boolean" || typeof v === "number" || v === undefined || isVisibleFxToken(v);
+  if (!boolish(a) || typeof b !== "boolean") return interpolate(a, b, alpha);
+  const v = lerpFade(visibleLevel(a), visibleLevel(b), alpha);
+  return { type: VISIBLE_FX_TOKEN, mode, v };
+}
+
+// ── `blurFade`: INTO AND OUT OF FOCUS ────────────────────────────────────────
+//
+// User request, 2026-08-02, verbatim (WORKSTREAM FF2, two messages): "There
+// should be another option for making visible by the way, which could be blur
+// fade. To blur+fade into / out of focus..." then "BUT for that blur fade thing
+// we first need to have a 'blur' effect (accessible in the effects area of all
+// the widgets)".
+//
+// The second message is the design: this mode does not invent a blur, it RIDES
+// the universal `gaussianBlur` effect that landed for it (eb78727). So the whole
+// mode at this layer is the fade's coverage number plus a name, and the render
+// seam composes BOTH consequences — opacity through the same multiplication
+// `fade` uses, radius through the effects bundle the author can already reach.
+//
+// WHY IT IS NOT TWO MODES STACKED. An author cannot put two interp modes on one
+// leaf, and writing a `gaussianBlur` keyframe from a mode on `active` would
+// break mutBlendApply's one-leaf-in-one-value-out contract and clobber whatever
+// blur the author had already set. The token says "this item is 40% visible IN
+// THE blurFade SENSE" and the render seam is where that sentence becomes two
+// numbers — which is also the only place that knows what blur the widget already
+// carries, so the two can COMPOSE rather than one overwriting the other.
+
+registerInterpMode({
+  id: "blurFade",
+  label: "Blur Fade",
+  help: "Bring the item into focus as it appears: it starts transparent and heavily blurred, then sharpens and solidifies together (and defocuses back out again when it is hidden). Rides the same Blur effect the Effects rows expose, added on top of whatever blur the item already has.",
+  // BOOLEAN-VALUED ROWS ONLY — the same domain, and the same argument, as `fade`:
+  // this ramps COVERAGE, and coverage is what a boolean has. The user asked for
+  // it as an option "for making visible", which is this row.
+  appliesTo: ({ value }) => typeof value === "boolean",
+  blend: (a, b, alpha) => namedVisibleBlend("blurFade", a, b, alpha),
+});
+
+// ── `manim`: THE BORDER DRAWS ITSELF, THEN THE FILL ARRIVES ──────────────────
+//
+// User request, 2026-08-02, verbatim (WORKSTREAM JJ): "Menom [Manim] actually
+// has a really nice entry animation where the border is kind of drawn first and
+// then the inside is filled and stuff like that... that should be an available
+// visibility interpolation option. It can be called Menom [Manim] because it's
+// such a classical Menom thing to do."
+//
+// THE USER NAMED THE MODE, so the label is "Manim" and not a description of it.
+//
+// The ALGORITHM is core/manim_draw.js (DrawBorderThenFill/Write, ported per
+// refs/manim_write_research.md); the RENDER is render_gpu/ports.js. This
+// registration is only the third of the three: what the leaf folds to. It mints
+// the same token `blurFade` does, with a different name in it — which is the
+// whole reason the token carries a mode id rather than the render side inferring
+// one from the number.
+//
+// A WIDGET WITH NO OUTLINE (a photo, a video) CANNOT TRACE A BORDER, and the
+// fallback is a plain fade — decided at the render seam, not here, for the same
+// reason the morph mode's capability gate lives there: this function has no
+// registry and no plugin in hand, and an answer that depended on WHO folded the
+// state would break the property-state law. The seam reports the degradation.
+
+registerInterpMode({
+  id: "manim",
+  label: "Manim",
+  help: "Draw the item on the way Manim does: its outline traces itself in first, contour by contour, then the fill rises underneath. Reverses to match when it is hidden — the fill fades out, then the border un-draws. Items with no outline (photos, video) simply fade.",
+  appliesTo: ({ value }) => typeof value === "boolean",
+  blend: (a, b, alpha) => namedVisibleBlend("manim", a, b, alpha),
+});

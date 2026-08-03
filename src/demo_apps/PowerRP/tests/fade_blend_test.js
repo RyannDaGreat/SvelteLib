@@ -269,11 +269,15 @@ test("THE MODE ROSTER IS REGISTERED, with the help text the Inspector renders", 
   // The full roster IN REGISTRATION ORDER, because that order IS the Inspector's
   // option order (interpModeIds' contract). `morph` joined it with the retype
   // wave; this list grows by design, and a wave that adds a mode updates it here.
-  assert.deepEqual(interpModeIds(), ["tween", "step", "fade", "blend", "morph"]);
+  assert.deepEqual(interpModeIds(), ["tween", "step", "fade", "blend", "morph", "blurFade", "manim"]);
   assert.equal(interpMode("fade").label, "Fade");
   assert.equal(interpMode("blend").label, "Blend");
   assert.equal(interpMode("morph").label, "Morph");
-  for (const id of ["fade", "blend", "morph"]) assert.ok(interpMode(id).help.length > 20, `${id} needs real help text`);
+  // The two NAMED visibility modes (WORKSTREAMS FF2/JJ). "Manim" is the user's
+  // own name for it, not a description — see its registration.
+  assert.equal(interpMode("blurFade").label, "Blur Fade");
+  assert.equal(interpMode("manim").label, "Manim");
+  for (const id of ["fade", "blend", "morph", "blurFade", "manim"]) assert.ok(interpMode(id).help.length > 20, `${id} needs real help text`);
 });
 
 // ── (6) the crossfade value at the render boundary ───────────────────────────
