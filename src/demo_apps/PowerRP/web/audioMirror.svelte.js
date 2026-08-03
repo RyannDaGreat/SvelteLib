@@ -50,6 +50,7 @@
 
 import { createEngine } from "../synth/engine.js";
 import { diffAudioScene, initialParamOps, readAudioScene } from "../core/audio_mirror_diff.js";
+import { noteRoutes, triggerRoutes } from "../core/live_control.js";
 import { reportOnce } from "../core/report.js";
 
 /** The one engine instance for the page. Created lazily: a deck with no audio
@@ -363,6 +364,99 @@ export function setTransportLive(live) {
   const running = engine.scheduler.isRunning();
   if (live && !running) engine.scheduler.start();
   else if (!live && running) engine.scheduler.stop();
+}
+
+// ── LIVE CONTROL EVENTS (the button and the keyboard) ────────────────────────
+//
+// THE SECOND DIRECTION INTO THE ENGINE, and it is not a violation of the one-way
+// law stated at the top of this file. That law is about the DOCUMENT: nothing the
+// engine does ever writes back into it, and nothing here does either. What a
+// press adds is a path INTO the engine that does not pass THROUGH the document —
+// because a press is a moment, and a moment is not a value any leaf could hold.
+// Storing one would be ephemeral state, which the project has none of
+// (core/control_nodes.js states the ruling and its consequences in full).
+//
+// The ROUTING is still document state, and that is what keeps this honest: the
+// press names only its source item, and core/live_control.js reads the document's
+// wires to decide which module is struck. So a rewired patch routes the next
+// press differently with no bookkeeping, and the decision is a pure function
+// covered in bare node — the same split diffAudioScene already makes, for the
+// same reason (a missed route is silent).
+//
+// NOTHING HAPPENS IF THE ENGINE IS NOT RUNNING, and that is deliberate rather
+// than an oversight: the badge already tells the user audio is off, and queueing
+// presses to fire later would produce a burst of notes at the moment they enable
+// sound. A press while muted is a press nobody heard.
+
+/**
+ * Command. Fire one live TRIGGER from a control widget — the Button's press.
+ *
+ * ONE PRESS IS ONE EDGE. This is called once per press gesture (not per
+ * pointermove and not per frame while held), which is what makes the engine's
+ * rising-edge semantics mean what they say.
+ *
+ * @param {object} items - the evaluated folded item map
+ * @param {object} registry - the plugin registry
+ * @param {string} sourceId - the pressed widget's item id
+ * @param {string} [sourcePort] - which output fired
+ */
+export function fireLiveTrigger(items, registry, sourceId, sourcePort = "out") {
+  if (!engine || !engine.isRunning()) return;
+  for (const route of triggerRoutes(items, registry, sourceId, sourcePort)) {
+    // GUARDED THE SAME WAY applyOps GUARDS ITS OPS: the document can name a
+    // module the engine has not built yet (a patch added on this very frame,
+    // whose addModule is still inside its ~33 ms rewire settle). Throwing here
+    // would surface a race as a failed presentation.
+    if (!engine.inspect().modules.some((m) => m.id === route.id)) continue;
+    engine.trigger(route.id, route.port);
+  }
+}
+
+/**
+ * Command. Play or release ONE NOTE from a keyboard widget.
+ *
+ * Routes to `engine.noteOn`/`noteOff` for a POLY target (which owns the voice
+ * pool, so a chord allocates and steals correctly) and to `engine.trigger` with
+ * the note's frequency for a mono method port — so a keyboard plays a bell
+ * melody with no poly module in the patch. core/live_control.noteRoutes makes
+ * that decision; this only executes it.
+ *
+ * @param {object} items - the evaluated folded item map
+ * @param {object} registry - the plugin registry
+ * @param {string} sourceId - the keyboard's item id
+ * @param {"on"|"off"} phase - key down or key up
+ * @param {number} note - the note identity (MIDI number)
+ * @param {number} frequency - the pitch in Hz
+ */
+export function playLiveNote(items, registry, sourceId, phase, note, frequency) {
+  if (!engine || !engine.isRunning()) return;
+  const held = new Set(engine.inspect().modules.map((m) => m.id));
+  for (const route of noteRoutes(items, registry, sourceId, phase, note, frequency)) {
+    if (!held.has(route.id)) continue;
+    if (route.op === "noteOn") engine.noteOn(route.id, route.note, route.frequency);
+    else if (route.op === "noteOff") engine.noteOff(route.id, route.note);
+    else engine.trigger(route.id, route.port, undefined, { frequency: route.frequency });
+  }
+}
+
+/**
+ * Command. Release every note on every poly module — what a slide change owes a
+ * held chord.
+ *
+ * WITHOUT THIS, LEAVING A SLIDE MID-CHORD LEAVES IT SOUNDING FOREVER. The keys
+ * are released by a pointerup that the new slide's canvas never sees, so the
+ * note-offs are simply never sent, and a poly voice with no release scheduled
+ * holds its envelope open. That is a drone with no visible source — the
+ * un-debuggable case the mirror's own `active: false` handling exists to prevent.
+ */
+export function releaseAllLiveNotes() {
+  if (!engine || !engine.isRunning()) return;
+  for (const m of engine.inspect().modules) {
+    // Ask rather than assume: only a poly module has notes to release, and
+    // engine.allNotesOff refuses a mono one by name.
+    const scene = engineScene.modules[m.id];
+    if (scene?.spec?.poly) engine.allNotesOff(m.id);
+  }
 }
 
 /** Query. The engine, for dev seams and probes. Null before anything audio exists —

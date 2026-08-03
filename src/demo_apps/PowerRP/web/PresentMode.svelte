@@ -14,6 +14,8 @@
   import { onMount } from "svelte";
   import { createPresenter } from "../core/presentation.js";
   import { cameraRect, deriveRenderTree } from "../core/derive.js";
+  import * as T from "../core/transform.js";
+  import { fireLiveTrigger, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
   import { fitRectView, canSkipNode } from "../core/view.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
@@ -279,8 +281,91 @@
     e.stopPropagation();
   }
 
+  // ── PLAYING A PATCH FROM THE PRESENTER ───────────────────────────────────
+  //
+  // "I need nodes in the UI so that some of these patches I can play with them.
+  // I need to be able to play with them myself." (user, 2026-08-03). That is not
+  // an editor-only request: a Button or a Keyboard on a slide must be playable in
+  // front of an audience, which is the whole reason those widgets exist.
+  //
+  // WHY THIS IS A SEPARATE, SMALLER PATH THAN THE CANVAS'S. The presenter paints
+  // to a bare canvas and has no selection, no drag machinery and no hit-test
+  // infrastructure — deliberately, because there is nothing to edit here. So it
+  // does exactly one thing: map the click back into world space through the SAME
+  // view the frame was painted with, ask the derived tree which node is under it,
+  // and route a live event. No selection is set, nothing is written, and no undo
+  // unit is created — none of those concepts exist in this mode.
+  //
+  // TRANSITIONS ARE NOT PLAYABLE (`frame.alpha !== 1`): mid-tween the widget is
+  // between two positions, so a press would land on a node that is not where it
+  // appears to be for either endpoint. Waiting for the frame to settle is a
+  // fraction of a second and is what the picture already implies.
+
+  /** Pure function. A CLIENT point (CSS px) in WORLD coordinates, inverting the
+   *  same `fitRectView` mapping paintGpu used for this frame. */
+  function worldPointOf(e) {
+    const state = evaluatedStateAt(app.doc, frame.index, frame.alpha, app.registry);
+    const view = fitRectView(cameraRect(state, app.doc.meta), innerWidth, innerHeight, app.dpr());
+    return { x: (e.clientX - view.panX) / view.zoom, y: (e.clientY - view.panY) / view.zoom, state };
+  }
+
+  /** Query. The topmost derived node under a world point whose plugin declares a
+   *  live-play surface, plus the point in that node's LOCAL frame. */
+  function livePlayHit(w, state) {
+    const nodes = deriveRenderTree(state, app.registry, app.projectName());
+    // BACK TO FRONT: the derived tree is in paint order, so the LAST match is the
+    // one actually visible — the same rule core/keyboard_layout.keyAt follows for
+    // the black keys, and for the same reason.
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const node = nodes[i];
+      const plugin = node.plugin;
+      if (!plugin?.livePress && !plugin?.livePlay) continue;
+      const local = T.apply(T.invert(node.world), w.x, w.y);
+      if (plugin.livePress?.hit(node.state, local.x, local.y)) {
+        return { node, kind: "press", port: plugin.livePress.port };
+      }
+      const note = plugin.livePlay?.noteAt(node.state, local.x, local.y);
+      if (note) return { node, kind: "note", note };
+    }
+    return null;
+  }
+
+  /** Command. A press in the presenter: fire a trigger, or start a note. */
+  function onPresentPointerDown(e) {
+    if (e.button !== 0 || frame.alpha !== 1) return;
+    const w = worldPointOf(e);
+    const hit = livePlayHit(w, w.state);
+    if (!hit) return;
+    if (hit.kind === "press") {
+      fireLiveTrigger(w.state.items ?? {}, app.registry, hit.node.itemId, hit.port);
+      return;
+    }
+    playLiveNote(w.state.items ?? {}, app.registry, hit.node.itemId, "on", hit.note.note, hit.note.frequency);
+    heldNote = { itemId: hit.node.itemId, note: hit.note.note };
+    canvasEl.setPointerCapture(e.pointerId);
+  }
+
+  /** Command. Release the held note. Also runs on pointercancel, because a
+   *  cancelled gesture that skipped this would hold its note forever. */
+  function onPresentPointerUp() {
+    if (!heldNote) return;
+    const state = evaluatedStateAt(app.doc, frame.index, frame.alpha, app.registry);
+    playLiveNote(state.items ?? {}, app.registry, heldNote.itemId, "off", heldNote.note, 0);
+    heldNote = null;
+  }
+
+  /** The note currently held by the presenter's pointer, or null. Module scratch:
+   *  a gesture in flight is not state, and there is at most one pointer. */
+  let heldNote = null;
+
   function exit() {
     presenter.stop();
+    // A HELD NOTE DOES NOT SURVIVE THE PRESENTER. Leaving fullscreen mid-press
+    // means the pointerup lands on the editor, which never saw the pointerdown,
+    // so without this the note sounds forever with nothing on screen to explain
+    // it — the un-debuggable case.
+    onPresentPointerUp();
+    releaseAllLiveNotes();
     // Land the editor on the slide that was being PRESENTED (user ruling
     // 2026-07-28), not the slide it happened to be on before Present started —
     // "exit me to the slide which I was last viewing".
@@ -342,7 +427,13 @@
 </script>
 
 <div class="present">
-  <canvas bind:this={canvasEl} class:hidden={showFade}></canvas>
+  <canvas
+    bind:this={canvasEl}
+    class:hidden={showFade}
+    onpointerdown={onPresentPointerDown}
+    onpointerup={onPresentPointerUp}
+    onpointercancel={onPresentPointerUp}
+  ></canvas>
   <canvas bind:this={fadeEl} class:hidden={!showFade}></canvas>
   <div class="present-pos">{frame.index + 1} / {app.doc.slides.length}</div>
 </div>

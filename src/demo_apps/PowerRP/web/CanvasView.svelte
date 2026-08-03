@@ -36,7 +36,7 @@
   // autoplay surface. See web/audioMirror.svelte.js for why both exist.
   import AudioOverlay from "./AudioOverlay.svelte";
   import AudioBadge from "./AudioBadge.svelte";
-  import { mirrorAudio } from "./audioMirror.svelte.js";
+  import { fireLiveTrigger, mirrorAudio, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // THE HANDLE GLYPH BANK: core/ owns the VOCABULARY (which looks exist and what
@@ -2019,6 +2019,15 @@
     //     a gesture that stole the selection would make building a patch fight
     //     with whatever the Inspector was showing.
     if (startWireDrag(e, w)) return;
+    // ── THE LIVE-PLAY LAYER, CHECKED WHERE THE BEAD LAYER IS AND FOR THE SAME
+    //    REASON ────────────────────────────────────────────────────────────────
+    // "I need to be able to play with them myself" (user, 2026-08-03). A press on
+    // a Button's face or a Keyboard's key is a PERFORMANCE, not an edit, so it is
+    // resolved before selection and before the body drag — exactly like a port
+    // bead, and with the same two consequences: it wins only inside the face's own
+    // rect (a press on the card's header still moves the node), and it does NOT
+    // change the selection, because playing a patch is not selecting it.
+    if (startLivePlay(e, w)) return;
     // An armed CROSSHAIR (manifest ARCHITECTURE PLAN #5) consumes the
     // ONE-SHOT arm on the first pointer-down: "band" starts the rubber-band
     // drag kind below (mode already resolved at arm time — "regular" →
@@ -2305,6 +2314,7 @@
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "modifier") modifierDrag(w);
     else if (drag.kind === "wire") wireDragMove(w);
+    else if (drag.kind === "livePlay") livePlayMove(w);
     else if (drag.kind === "band") bandDrag(w, e);
     // EVERY placement grammar routes here (PLACEMENT_DRAG_KINDS), so a grammar
     // added to the table is driven and committed with no edit to this dispatch.
@@ -3391,6 +3401,87 @@
    * world units — so the grab region tracks the picture at every zoom instead of
    * becoming unhittable when zoomed out and sloppy when zoomed in.
    */
+  /**
+   * Command. THE LIVE-PLAY GESTURE — a press on a Button's face or a Keyboard's
+   * key. Returns whether it took the press.
+   *
+   * ── IT WRITES NOTHING TO THE DOCUMENT, AND THAT IS THE DESIGN ─────────────
+   * A press is a MOMENT, and a moment is not a value any leaf could hold; storing
+   * one would be the ephemeral state this project has none of (the full ruling is
+   * in core/control_nodes.js). So this makes no preview, no commit and no undo
+   * unit — playing a patch does not dirty the document, and Cmd+Z after a
+   * performance undoes your last EDIT, which is what you want.
+   *
+   * ── ONE PRESS IS ONE EDGE ─────────────────────────────────────────────────
+   * Fired here on pointer-DOWN and never again for the gesture: the engine's
+   * trigger semantics are a rising edge, and a button that repeated while held
+   * would be a clock (there is a Clock module for that).
+   *
+   * A KEYBOARD additionally holds its note until release, so it takes a drag —
+   * which is also what makes a slide/glissando work: `livePlay` on pointermove
+   * releases the old note and sounds the new one when the pointer crosses to
+   * another key.
+   */
+  function startLivePlay(e, w) {
+    const hit = pickNode(app.nodes(), w.x, w.y, 0);
+    if (!hit) return false;
+    const press = hit.plugin.livePress;
+    const play = hit.plugin.livePlay;
+    if (!press && !play) return false;
+    const local = localPointOf(hit, w.x, w.y);
+    const items = app.state()?.items ?? {};
+    if (press && press.hit(hit.state, local.x, local.y)) {
+      fireLiveTrigger(items, app.registry, hit.itemId, press.port);
+      // Capture the pointer even though there is nothing to drag: without it the
+      // release lands wherever the pointer ended up and the canvas below can
+      // start its own gesture from a press this one already consumed.
+      overlayEl.setPointerCapture(e.pointerId);
+      drag = { kind: "livePlay", itemId: hit.itemId, note: null };
+      app.dragging = true;
+      app.dragKind = "livePlay";
+      return true;
+    }
+    if (play) {
+      const note = play.noteAt(hit.state, local.x, local.y);
+      if (!note) return false;
+      playLiveNote(items, app.registry, hit.itemId, "on", note.note, note.frequency);
+      overlayEl.setPointerCapture(e.pointerId);
+      drag = { kind: "livePlay", itemId: hit.itemId, note: note.note, plugin: hit.plugin, state: hit.state, world: hit.world };
+      app.dragging = true;
+      app.dragKind = "livePlay";
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Command. A live-play drag moved — a GLISSANDO across a keyboard.
+   *
+   * Releases the held note and sounds the new one only when the pointer CROSSES
+   * to a different key. Re-firing the same note on every pointermove would
+   * retrigger its envelope dozens of times per second, which is a buzz rather
+   * than a held note (and, on a poly module, would keep resetting one voice's
+   * attack while the rest of the chord sustained).
+   */
+  function livePlayMove(w) {
+    if (drag?.kind !== "livePlay" || drag.note === null) return;
+    const local = T.apply(T.invert(drag.world), w.x, w.y);
+    const next = drag.plugin.livePlay.noteAt(drag.state, local.x, local.y);
+    const items = app.state()?.items ?? {};
+    if (!next) return;
+    if (next.note === drag.note) return;
+    playLiveNote(items, app.registry, drag.itemId, "off", drag.note, 0);
+    playLiveNote(items, app.registry, drag.itemId, "on", next.note, next.frequency);
+    drag = { ...drag, note: next.note };
+  }
+
+  /** Command. The live-play gesture ended: release a held note. A BUTTON has no
+   *  note (its press was one edge at pointer-down), so this is a no-op for it. */
+  function finishLivePlay() {
+    if (drag?.kind !== "livePlay" || drag.note === null) return;
+    playLiveNote(app.state()?.items ?? {}, app.registry, drag.itemId, "off", drag.note, 0);
+  }
+
   function startWireDrag(e, w) {
     const beads = sceneBeads();
     if (beads.length === 0) return false; // no node widgets: nothing to grab, no cost
@@ -3787,6 +3878,16 @@
     // applies to it. It also writes NO selection — see the note at its pointer-down.
     if (drag.kind === "wire") {
       finishWireDrag();
+      drag = null;
+      app.dragging = false;
+      app.dragKind = null;
+      return;
+    }
+    // A LIVE PLAY RELEASES ITS NOTE AND RETURNS, for the same reason the wire
+    // gesture does: it writes nothing to the document, so none of the selection,
+    // click-vs-drag or preview machinery below applies to it.
+    if (drag.kind === "livePlay") {
+      finishLivePlay();
       drag = null;
       app.dragging = false;
       app.dragKind = null;
@@ -4968,6 +5069,22 @@
   $effect(() => {
     app.doc; app.previewDelta; app.slideIndex; // reactive deps: the document, live edits, the slide
     mirrorAudio(app.state()?.items ?? {}, app.registry);
+  });
+
+  // ── A SLIDE CHANGE RELEASES EVERY HELD NOTE ───────────────────────────────
+  // Without this, leaving a slide mid-chord leaves it sounding FOREVER: the keys
+  // are released by a pointerup the new slide's canvas never sees, so the
+  // note-offs are never sent, and a poly voice with no release scheduled holds
+  // its envelope open. The result is a drone with no visible source — the
+  // un-debuggable case, and the same one the mirror's `active: false` handling
+  // exists to prevent for modules.
+  //
+  // Depends on the SLIDE ALONE, deliberately. Hanging it off `app.doc` as well
+  // would cut a held note every time any property changed anywhere, which
+  // includes the mirror's own knob writes.
+  $effect(() => {
+    app.slideIndex;
+    releaseAllLiveNotes();
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
