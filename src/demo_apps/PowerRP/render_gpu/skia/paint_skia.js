@@ -2397,7 +2397,7 @@ function handleGlassBackdrop(CanvasKit, target, cmd, world, view, belowFlat, ctx
   // never bleeds into the refracted backdrop the shader samples). Its silhouette
   // is the SHADER'S OWN curve, so a relaxed or squircled panel does not cast a
   // rounded-rectangle shadow.
-  drawGlassShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, cmd.squircle, cmd.surfaceTension, angle, cmd.materialize, cmd.shadowStrength);
+  drawGlassShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, cmd.squircle, cmd.surfaceTension, angle, cmd.materialize, cmd.shadowStrength, opacity);
 
   // (4) the glass shader — children {blurred, sharp}.
   const effect = glassEffect(CanvasKit);
@@ -2715,6 +2715,53 @@ function glassOutlinePath(CanvasKit, cx, cy, halfW, halfH, cornerRadius, squircl
 }
 
 /**
+ * THE UNIVERSAL-FADE GUARD FOR DEVICE-ROOT DRAW HELPERS (WORKSTREAM BQ).
+ *
+ * User ruling, 2026-08-03, verbatim: "There is no shader that shouldn't work
+ * with this. Every shader should work with this. It shouldn't be dependent on
+ * the type of shader."
+ *
+ * ── THE DEFECT THIS CLOSES, AND WHY IT WAS INVISIBLE ────────────────────────
+ * An op's `opacity` is stamped by ONE seam nothing can skip (render_gpu/ports.js
+ * applyActiveFade, which multiplies a `fade`/`blurFade` coverage into every op).
+ * That seam was measured innocent: at half coverage a skyClouds op really does
+ * carry `opacity: 0.5`. What was NOT universal is the PAINTING: an op handler
+ * may issue SEVERAL draw calls, and each one has to multiply that number in
+ * itself. Two of them did not — drawGlassShadow and drawMaterialShadow both
+ * painted a black silhouette at FULL alpha under a half-faded widget.
+ *
+ * It hid because it is invisible on the widgets people test fades on. A shadow
+ * smaller than its own ink just looks slightly heavy. On corkboardThumbtack it is
+ * not small: `toShadow` derives blur and grow from the head RADIUS, so the shadow
+ * covers several times the tack's own area, and a "faded" tack at v = 0.5 came out
+ * essentially indistinguishable from the solid one — MEASURED, over a mid-grey
+ * background, mean 103.60 at v = 0.5 against 103.32 at v = 1 and 128.00 at v = 0.
+ * That is the user's report exactly: the fade ran and nothing appeared to fade.
+ *
+ * ── WHY A REQUIRED PARAMETER RATHER THAN A DEFAULT ─────────────────────────
+ * `opacity = 1` as a default parameter would have made both call sites compile
+ * and both pictures stay wrong, which is how the hole got in. A helper that draws
+ * at the DEVICE ROOT cannot inherit the fade from a CTM (it is not in one) and
+ * cannot inherit it from a layer (there is none), so the value has to be threaded
+ * by hand — and the only way a hand-threaded contract survives a new call site is
+ * if omitting it THROWS. This is the same argument the ports seam makes one level
+ * up, applied where the ops become pixels: a plugin cannot forget the fade because
+ * the walker stamps it, and now a painter cannot forget it because the helper
+ * refuses to draw without it.
+ *
+ * Pinned roster-wide by tests/material_fade_roster_test.js, which renders every
+ * registered widget at v = 0.5 and fails any whose mid-alpha frame is
+ * indistinguishable from either endpoint.
+ *
+ * @param {number} opacity - the op's already-faded opacity (0..1)
+ * @param {string} who - the helper's name, for the error message
+ */
+function requiredOpacity(opacity, who) {
+  if (typeof opacity !== "number" || !Number.isFinite(opacity))
+    throw new Error(`paintIR(skia): ${who} requires the op's \`opacity\` (WORKSTREAM BQ — a device-root draw inherits no fade from a CTM or a layer, so it must be passed; got ${opacity})`);
+}
+
+/**
  * Command (draws on `canvas` at the device root). A soft, diffuse drop shadow
  * under the glass panel: a blurred dark silhouette of the panel's OWN boundary
  * curve, offset DOWN in screen space (light from above), darkness = `strength`,
@@ -2722,14 +2769,18 @@ function glassOutlinePath(CanvasKit, cx, cy, halfW, halfH, cornerRadius, squircl
  * offset center; the screen-space downward offset is applied before the rotation
  * so the shadow stays below). Geometry is already in device px, so the outline
  * sampling scale is 1.
+ *
+ * `opacity` IS REQUIRED AND HAS NO DEFAULT — see requiredOpacity's docblock for
+ * why. Without it this drew a full-strength shadow under a half-faded panel.
  */
-function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, squircle, surfaceTension, angle, materialize, strength) {
+function drawGlassShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, squircle, surfaceTension, angle, materialize, strength, opacity) {
+  requiredOpacity(opacity, "drawGlassShadow");
   const appear = Math.min(1, Math.max(0, materialize / GLASS_SHADOW_APPEAR_END));
-  if (appear <= 0 || strength <= 0 || halfW <= 0 || halfH <= 0) return;
+  if (appear <= 0 || strength <= 0 || halfW <= 0 || halfH <= 0 || opacity <= 0) return;
   const sigma = halfH * GLASS_SHADOW_SIGMA_FRAC;
   const dy = halfH * GLASS_SHADOW_DY_FRAC;
   const p = new CanvasKit.Paint();
-  p.setColor(CanvasKit.Color4f(0, 0, 0, strength * appear));
+  p.setColor(CanvasKit.Color4f(0, 0, 0, strength * appear * opacity));
   p.setAntiAlias(true); // a mask-blurred silhouette — coverage AA is imperceptible under the blur, so this ignores the camera flag by design
   if (sigma > 0) p.setMaskFilter(CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, sigma, false));
   canvas.save();
@@ -2981,7 +3032,7 @@ function handleMaterialFill(CanvasKit, target, cmd, world, view, ctx) {
   const angle = world.rotation;
 
   // (1) optional soft shadow BENEATH the fill (the glass drawGlassShadow precedent).
-  if (cmd.shadow) drawMaterialShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, angle, cmd.shadow, sd);
+  if (cmd.shadow) drawMaterialShadow(CanvasKit, canvas, cxDev, cyDev, halfWDev, halfHDev, cornerDev, angle, cmd.shadow, sd, opacity);
 
   // (2) the FOREGROUND fill: the shader rasterized into its own REGION-LOCAL raster
   // (materialFillRaster — reused across frames when the uniforms repeat) and blitted
@@ -3499,13 +3550,19 @@ function drawPatternFill(CanvasKit, canvas, cmd, world, view, opacity) {
  * `sd` (except the 0..1 alpha). Rotation-safe (rotate about the offset center, like
  * drawGlassShadow). The plugin authors dx/dy/grow from the light + apparent height,
  * so a proud tack's shadow is larger + more offset than a pressed-in one.
+ *
+ * `opacity` IS REQUIRED AND HAS NO DEFAULT — see requiredOpacity's docblock for
+ * why. Without it a half-faded thumbtack kept a full-strength contact shadow,
+ * which on a widget whose shadow is larger than its own ink read as "the fade
+ * did nothing at all" (WORKSTREAM BQ).
  */
-function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, angle, shadow, sd) {
-  if (shadow.alpha <= 0 || halfW <= 0 || halfH <= 0) return;
+function drawMaterialShadow(CanvasKit, canvas, cx, cy, halfW, halfH, corner, angle, shadow, sd, opacity) {
+  requiredOpacity(opacity, "drawMaterialShadow");
+  if (shadow.alpha <= 0 || halfW <= 0 || halfH <= 0 || opacity <= 0) return;
   const grow = shadow.grow * sd;
   const sigma = shadow.blur * sd;
   const p = new CanvasKit.Paint();
-  p.setColor(CanvasKit.Color4f(0, 0, 0, shadow.alpha));
+  p.setColor(CanvasKit.Color4f(0, 0, 0, shadow.alpha * opacity));
   p.setAntiAlias(true); // a mask-blurred silhouette — coverage AA is imperceptible under the blur, so this ignores the camera flag by design
   if (sigma > 0) p.setMaskFilter(CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, sigma, false));
   canvas.save();
