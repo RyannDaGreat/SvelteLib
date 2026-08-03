@@ -284,10 +284,27 @@ try {
   // ruling reached the palette and not this row. Asserting the button's icon
   // EQUALS its entry's icon makes the two inexpressibly different: any future
   // icon ruling lands in one place and this row follows it by construction.
+  //
+  // IT COUNTS THE COMMAND BUTTONS, VIA [data-nav-action], AND NOT EVERY BUTTON IN
+  // THE ROW. The selector used to be `.nav-actions button`, which was the same set
+  // right up until the footer gained a control that is NOT a command — the
+  // list/grid VIEW TOGGLE (2026-08-02), which changes how the panel draws itself
+  // for one browser and is deliberately not in the registry (SlideNav's
+  // VIEW_TOGGLE_ICONS note argues that at length). Under the old selector that
+  // toggle read as a sixth footer command and failed this check with
+  // `new-slide,…,delete-slides,` — a trailing EMPTY name, which is the tell: an
+  // element with no data-nav-action was being counted as one.
+  //
+  // THE PIN IS UNWEAKENED, because what the user retracted was three COMMANDS
+  // ("I still see two pluses and also a copy"), and the assertion below still says
+  // exactly which five commands the row surfaces and in what order. Adding a
+  // non-command control cannot smuggle a sixth command past it; adding a sixth
+  // command still fails it. Widening the selector to "every button" would instead
+  // have made the row's chrome unextendable, which is not what was ruled.
   const footer = await page.evaluate(() => {
     const app = window.__powerrp_app;
     return {
-      buttons: [...document.querySelectorAll(".slidenav .nav-actions button")].map((b) => ({
+      buttons: [...document.querySelectorAll(".slidenav .nav-actions button[data-nav-action]")].map((b) => ({
         cmd: b.dataset.navAction,
         icon: b.querySelector("iconify-icon")?.getAttribute("icon"),
         entryIcon: b.dataset.navAction ? app.commands.get(b.dataset.navAction).icon : null,
