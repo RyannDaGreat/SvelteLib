@@ -471,6 +471,175 @@ try {
     `available=${order.expectedAvailable.length} unavailable=${order.expectedUnavailable.length} rankedInterleaved=${order.rankedInterleaved} — pick a query whose ranking mixes the two kinds`);
   await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; });
 
+  // ── Scenario 14: WORKSTREAM AZ — THE ARROW DERIVATION LAW ─────────────────
+  // User (2026-08-02, verbatim, with a screenshot of a bare "Color Theme" row):
+  // "Why does color theme not have a right arrow on the end of it to indicate
+  // that it's a submenu? ... double check to make sure that everything that
+  // brings up a palette submenu has that right arrow icon on it."
+  //
+  // THE MECHANISM (found, not built): CommandPalette.svelte already renders
+  // `.sub-arrow` from ONE condition — `{#if cmd.children}` — and nowhere else in
+  // the app does a second copy of that glyph exist (grep for `.sub-arrow` turns
+  // up exactly one render site). So "submenu-opening" already IS a declared
+  // marker (`children: [...]` on a command-registry entry, core/commands.js) and
+  // the arrow already DERIVES from it rather than being hand-added per entry —
+  // there was nothing to decorate away. This scenario exists to make that law
+  // durable: it is a SWEEP of the live registry (app.commands.all(), flat,
+  // includes every submenu's children), not a hand-typed id list, so a future
+  // submenu commits its arrow automatically and a future regression (someone
+  // reading `cmd.children` wrong, or adding a second hand-drawn chevron) fails
+  // here instead of shipping. It walks every level a real drill-down reaches
+  // (top level, then one level inside each submenu found), because a mismatch
+  // could in principle exist only at depth — the flat registry check alone
+  // would not catch a component that only forgets the arrow for NESTED rows.
+  //
+  // A WIDGET MUST BE SELECTED FIRST. copy-property (`when: needsSelection`) is
+  // greyed with nothing selected, and CommandPalette's activate() makes a
+  // greyed row INERT — clicking it is a documented no-op ("A GREYED ROW IS
+  // INERT", CommandPalette.svelte). Drilling in with nothing selected would
+  // silently fail to descend and then compare the still-top-level DOM against
+  // copy-property's 593-entry pool, which is a false positive for "missing",
+  // not a real defect. Select the rect the earlier scenarios already used.
+  await page.evaluate((id) => { window.__powerrp_app.selection = id; }, RECT);
+  await new Promise((r) => setTimeout(r, 100));
+  const azSweep = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const all = app.commands.all(); // flat: every id incl. every submenu's children
+    const submenus = all.filter((c) => Array.isArray(c.children));
+    return { total: all.length, submenuIds: submenus.map((c) => c.id) };
+  });
+  check("az-sweep-finds-submenus", azSweep.submenuIds.length >= 10,
+    `only ${azSweep.submenuIds.length} submenu entries found in ${azSweep.total} total commands — the registry read is probably broken`);
+  check("az-sweep-includes-color-theme", azSweep.submenuIds.includes("color-theme"),
+    `submenuIds=${JSON.stringify(azSweep.submenuIds)}`);
+
+  /** Reads every RENDERED `.palette-item` row and checks it against `pool` (the
+   *  array of command entries this level is showing — passed in explicitly
+   *  rather than re-derived, because some submenus, e.g. select-by-type, splice
+   *  their `children` array directly without ever going through
+   *  commands.add()/get() — App.svelte's refreshTypeSelectCommands, documented
+   *  at App.svelte:1081 as deliberate ("the command registry has no `remove`,
+   *  so anything per-document must be a submenu CHILD"). Those leaves are
+   *  legitimately absent from commands.all()'s flat map; that is correct
+   *  architecture, not a gap to route around, so this reads the SAME pool
+   *  object CommandPalette.svelte itself renders from (`parent.children` or
+   *  `topLevel`) rather than re-deriving one from the registry. */
+  function rowsAgainstPool(pool) {
+    return page.evaluate((poolIds) => {
+      const byId = new Map(poolIds.map(([id, hasChildren]) => [id, hasChildren]));
+      return [...document.querySelectorAll(".palette-item")].map((el) => {
+        const id = el.dataset.commandId;
+        const hasChildren = byId.has(id) ? byId.get(id) : null;
+        return { id, hasChildren, rendersArrow: !!el.querySelector(".sub-arrow"), missing: !byId.has(id) };
+      });
+    }, pool.map((c) => [c.id, Array.isArray(c.children)]));
+  }
+
+  // Top level: every row currently visible obeys the law. The top-level pool is
+  // commands.all() minus every id that is ANYONE's descendant at ANY depth.
+  // NOT app.commands.parentOf(): that helper is deliberately shallow ("The
+  // TOP-LEVEL submenu entry owning id", core/commands.js) — it walks only
+  // topLevel's OWN children, so a GRANDCHILD like theme-family-nocturne
+  // (color-theme -> theme-group-nocturne -> theme-family-nocturne) comes back
+  // parentless and would be wrongly treated as reachable from the root. This
+  // walks the actual tree (every entry's `children`, recursively) to collect
+  // every id that appears as SOMEONE's child at ANY depth; what's left is the
+  // true top level, which is exactly what CommandPalette's own `search(null)`
+  // renders (core/commands.js: `pool = parent ? parent.children : topLevel`).
+  const { topPool, descendantIds } = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const all = app.commands.all();
+    const descendants = new Set();
+    const walk = (c) => { for (const ch of c.children ?? []) { descendants.add(ch.id); walk(ch); } };
+    for (const c of all) walk(c);
+    return {
+      topPool: all.filter((c) => !descendants.has(c.id)).map((c) => ({ id: c.id, children: c.children })),
+      descendantIds: [...descendants],
+    };
+  });
+  await page.evaluate(() => { window.__powerrp_app.paletteOpen = true; });
+  await new Promise((r) => setTimeout(r, 100));
+  const azTop = await rowsAgainstPool(topPool);
+  check("az-top-level-rows-all-resolve", azTop.every((r) => !r.missing), `missing=${JSON.stringify(azTop.filter((r) => r.missing))}`);
+  const azTopMismatch = azTop.filter((r) => !r.missing && r.hasChildren !== r.rendersArrow);
+  check("az-top-level-arrow-matches-children", azTopMismatch.length === 0,
+    `mismatches=${JSON.stringify(azTopMismatch)}`);
+
+  // COLOR THEME, PINNED BY NAME — the exact row from the user's screenshot.
+  const colorThemeRow = azTop.find((r) => r.id === "color-theme");
+  check("az-color-theme-row-present-at-top-level", !!colorThemeRow, `azTop=${JSON.stringify(azTop.map((r) => r.id))}`);
+  check("az-color-theme-has-arrow", colorThemeRow?.rendersArrow === true,
+    `colorThemeRow=${JSON.stringify(colorThemeRow)} — this is the user's reported defect`);
+
+  const topPoolIds = new Set(topPool.map((c) => c.id));
+  // NOT VACUOUS: the recursive walk actually found a grandchild, so the
+  // shallow-parentOf bug this replaced (see the comment above) is provably
+  // exercised rather than accidentally never triggered.
+  check("az-descendant-walk-finds-grandchildren", descendantIds.includes("theme-family-nocturne"),
+    `descendantIds does not include theme-family-nocturne — the recursive walk did not run deep enough`);
+
+  /**
+   * Command (recurses, drives real clicks). Opens the palette fresh, clicks
+   * through `path` (a chain of command ids from the ROOT down — [] = stay at
+   * top level), asserts the arrow law on whatever level that lands on, then
+   * recurses ONE level into every submenu row found there. This is what makes
+   * the sweep reach GRANDCHILDREN like theme-group-nocturne's own six family
+   * rows (color-theme -> theme-group-nocturne -> theme-family-nocturne-* is
+   * three levels deep) via the exact drill-down gesture a user performs
+   * (click, not a registry read), rather than stopping one level short.
+   *
+   * @param {string[]} path - command ids to click through, root first
+   */
+  async function drillAndSweep(path) {
+    await page.evaluate(() => { window.__powerrp_app.paletteOpen = true; });
+    await new Promise((r) => setTimeout(r, 100));
+    for (const id of path) {
+      const result = await page.evaluate((cid) => {
+        const el = document.querySelector(`.palette-item[data-command-id="${cid}"]`);
+        if (!el) return { found: false, disabled: null };
+        const disabled = el.getAttribute("aria-disabled") === "true";
+        el.click(); // a greyed row's click is a documented no-op (CommandPalette's activate()) — clicking anyway and checking `disabled` separately is what turns that into a clear failure instead of a silent non-descent
+        return { found: true, disabled };
+      }, id);
+      check(`az-drill-reaches:${path.join(">")}`, result.found, `could not find "${id}" while drilling ${JSON.stringify(path)}`);
+      check(`az-drill-not-greyed:${path.join(">")}`, result.found && !result.disabled,
+        `"${id}" is greyed (aria-disabled) while drilling ${JSON.stringify(path)} — clicking it is a documented no-op, so this level would never actually be entered; give the probe a selection/state that makes it available first`);
+      const clicked = result.found && !result.disabled;
+      await new Promise((r) => setTimeout(r, 150));
+      if (!clicked) { await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; }); return; }
+    }
+    // The pool THIS level renders from: topPool for [], else the LAST clicked
+    // command's live `children` (read fresh — select-by-type-style submenus
+    // splice theirs per open, so a snapshot taken before the clicks could be
+    // stale by the time we get here).
+    const pool = path.length
+      ? await page.evaluate((id) => {
+          const c = window.__powerrp_app.commands.get(id);
+          return (c.children ?? []).map((ch) => ({ id: ch.id, children: ch.children }));
+        }, path[path.length - 1])
+      : topPool;
+    const rows = await rowsAgainstPool(pool);
+    const label = path.length ? path.join(" > ") : "(top level)";
+    check(`az-rows-resolve:${label}`, rows.every((r) => !r.missing), `missing=${JSON.stringify(rows.filter((r) => r.missing))}`);
+    const mismatch = rows.filter((r) => !r.missing && r.hasChildren !== r.rendersArrow);
+    check(`az-arrow-matches-children:${label}`, mismatch.length === 0, `mismatches=${JSON.stringify(mismatch)}`);
+    const submenuRowIds = rows.filter((r) => r.hasChildren).map((r) => r.id);
+    await page.evaluate(() => { window.__powerrp_app.paletteOpen = false; });
+    await new Promise((r) => setTimeout(r, 80));
+    for (const childId of submenuRowIds) await drillAndSweep([...path, childId]);
+  }
+
+  // Drive it from every ROOT submenu the flat sweep found. select-by-type /
+  // deselect-by-type rebuild their `children` from typesOnSlide() (App.svelte
+  // refreshTypeSelectCommands, run reactively whenever the palette opens) —
+  // that reads the SLIDE's widget types, not the current selection, and the
+  // demo fixture's slide always has some, so they are populated here and swept
+  // like any other submenu rather than special-cased out.
+  for (const submenuId of azSweep.submenuIds) {
+    if (!topPoolIds.has(submenuId)) continue; // reached transitively as a descendant of another root submenu
+    await drillAndSweep([submenuId]);
+  }
+
   const newErrors = errors.slice(bootErrors);
   if (newErrors.length) failures.push(`console errors during palette probe: ${newErrors.join(" | ")}`);
 
