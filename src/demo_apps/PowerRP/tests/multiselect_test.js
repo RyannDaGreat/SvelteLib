@@ -40,6 +40,16 @@ import {
   UNIVERSAL_TYPE_ROW_PROBLEM,
 } from "../core/multiselect.js";
 import { MORPH_KEY } from "../core/morph_property.js";
+import {
+  sectionKeyPaths,
+  sectionTriState,
+  sectionBubbleApplies,
+  sectionToggleAction,
+  sectionToggleTip,
+  sectionJumpTarget,
+} from "../core/section_keyframes.js";
+import { newDocument, repairedDocument, foldState, keyframed, unkeyframed, hasKeyframe } from "../core/document.js";
+import { setPath, getPath } from "../core/deltas.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -519,6 +529,201 @@ test("BE DRIFT GATE: the universal rows come from ONE definition, not a second c
   assert.equal(a[0], b[0], "the type row is one shared object, by IDENTITY");
   assert.equal(a[1], b[1], "so is the visible row");
   assert.deepEqual(a.map((r) => r.key), ["type", "active", "active~interp", MORPH_KEY]);
+});
+
+// ── THE SECTION-HEADER KEYFRAME BUBBLE (WORKSTREAM BH) ───────────────────────
+// User, 2026-08-02 night: "In each drop-down… a slightly different-looking, maybe
+// a bit smaller keyframe bubble on it too, that would be half-filled if some of
+// them are keyframed, completely unfilled if none of them are keyframed, and fully
+// filled if all of them are keyframed. And upon clicking it, we'll toggle between
+// all or none… Maybe just 30% smaller than the normal one… we can get the left and
+// right parts for it."
+//
+// THE BUBBLE'S TRI-STATE IS THE ROW DIAMOND'S, over a different axis, so it is
+// pinned HERE beside keyframeTriState rather than in a parallel suite — the two
+// readings must never drift, and a shared home is what makes that structural.
+// core/section_keyframes.js holds the reasoning; these are its consequences.
+
+test("BH: the section bubble's paths are its KEYFRAMEABLE rows, crossed with the items", () => {
+  const rows = [{ key: "x" }, { key: "y" }];
+  assert.deepEqual(sectionKeyPaths(rows, () => ["a"], (r) => r.key),
+    [["items", "a", "x"], ["items", "a", "y"]]);
+  // A row that cannot be keyed is not offered by the bubble either — a bubble
+  // promising to key Name would advertise a write the document refuses.
+  assert.deepEqual(sectionKeyPaths([{ key: "name", keyframes: false }, { key: "x" }], () => ["a"], (r) => r.key),
+    [["items", "a", "x"]], "keyframes:false rows are excluded");
+  // …and the WRITE key is what lands, so a cx row keys x exactly as its own
+  // diamond does (Inspector's writeKey; core/properties.js PROPS.cx).
+  assert.deepEqual(sectionKeyPaths([{ key: "cx", writeKey: "x" }], () => ["a"], (r) => r.writeKey ?? r.key),
+    [["items", "a", "x"]]);
+  // cx and x in ONE section are ONE path, not two — otherwise a count would lie.
+  assert.deepEqual(sectionKeyPaths([{ key: "cx", writeKey: "x" }, { key: "x" }], () => ["a"], (r) => r.writeKey ?? r.key),
+    [["items", "a", "x"]], "the same leaf twice is deduplicated");
+});
+
+test("BH: a section with nothing keyframeable renders NO bubble, not a dead one", () => {
+  assert.equal(sectionBubbleApplies(sectionKeyPaths([{ key: "name", keyframes: false }], () => ["a"], (r) => r.key)), false);
+  assert.equal(sectionBubbleApplies([["items", "a", "x"]]), true);
+});
+
+test("BH TRI-STATE: none / some / all, exactly the row diamond's reading", () => {
+  assert.equal(sectionTriState([false, false, false]), "none", "nothing in the section is keyed here");
+  assert.equal(sectionTriState([true, false, false]), "some", "one of three is the half fill");
+  assert.equal(sectionTriState([true, true, true]), "all");
+  // THE DRIFT GATE for the two bubbles' shared reading: same function, so the
+  // section header and the row can never disagree about what "half" means.
+  for (const flags of [[], [true], [false, true], [true, true]])
+    assert.equal(sectionTriState(flags), keyframeTriState(flags),
+      "the section bubble reuses the row's triad rather than restating it");
+});
+
+test("BH: the HALF state goes to ALL — the click always completes before it clears", () => {
+  assert.equal(sectionToggleAction("none"), "insert");
+  assert.equal(sectionToggleAction("some"), "insert",
+    "half → all: insert is an UPSERT, remove would destroy the very keyframes that made it half");
+  assert.equal(sectionToggleAction("all"), "remove", "only a uniformly-keyed section clears");
+  // The tooltip SAYS what the click will do, from the same decision, so a
+  // state-dependent click is never something the user has to discover.
+  assert.match(sectionToggleTip("none", "Transform"), /^Keyframe every property in Transform/);
+  assert.match(sectionToggleTip("some", "Transform"), /click to keyframe all of it$/);
+  assert.match(sectionToggleTip("all", "Transform"), /^Remove every Transform keyframe/);
+});
+
+test("BH: ‹ › walk the UNION — the nearest slide keyframing ANY of the section", () => {
+  // x keys on slides 0 and 5; opacity on slide 2. Standing on slide 1:
+  const perPath = [[0, 5], [2]];
+  assert.equal(sectionJumpTarget(perPath, 1, +1), 2, "opacity's slide 2 is nearer than x's slide 5");
+  assert.equal(sectionJumpTarget(perPath, 1, -1), 0);
+  assert.equal(sectionJumpTarget(perPath, 5, +1), null, "nothing ahead — stay put");
+  // NEAREST, not the first path's answer: the union is walked, not row order.
+  assert.equal(sectionJumpTarget([[9], [3]], 1, +1), 3);
+  assert.equal(sectionJumpTarget([[0], [4]], 5, -1), 4);
+  // The current slide is never its own jump target in either direction.
+  assert.equal(sectionJumpTarget([[3]], 3, +1), null);
+  assert.equal(sectionJumpTarget([[3]], 3, -1), null);
+});
+
+// ── THE TOGGLE AGAINST A REAL DOCUMENT ───────────────────────────────────────
+// web/app.svelte.js `toggleSectionKeyframes` folds ONE document and commits ONCE.
+// The fold is what makes it one undo unit, so it is modelled here leaf-for-leaf
+// (the app method is three lines of exactly this over `this.doc`) — a bare-node
+// pin that a browser probe could only observe indirectly by counting undos.
+
+/** Test helper. The app's toggle, over a document: the SAME branch and the SAME
+ *  fold, returning the single document a commit would receive. */
+function sectionToggled(doc, slideIndex, paths) {
+  const tri = sectionTriState(paths.map((p) => hasKeyframe(doc, slideIndex, p)));
+  let out = doc;
+  if (sectionToggleAction(tri) === "remove")
+    for (const p of paths) out = unkeyframed(out, slideIndex, p);
+  else
+    for (const p of paths) out = keyframed(out, slideIndex, p, getPath(foldState(doc, slideIndex, 1), p));
+  return out;
+}
+
+/** Test helper. A three-slide document holding one rect, so slide 1 can be keyed
+ *  and cleared without touching the creating delta on slide 0.
+ *
+ *  Built ONCE and structurally cloned per call: newDocument() mints a fresh uuid
+ *  for the camera and the slide, so two calls are not deep-equal and could not be
+ *  compared to prove the toggle left its input alone. */
+const TWO_SLIDE_SEED = (() => {
+  const doc = repairedDocument(newDocument(), registry).doc;
+  return {
+    ...doc,
+    slides: [
+      { ...doc.slides[0], delta: setPath(setPath(setPath(doc.slides[0].delta, ["items", "r", "type"], "rect"), ["items", "r", "x"], 10), ["items", "r", "y"], 20) },
+      { ...doc.slides[0], id: "s2", delta: {} },
+      { ...doc.slides[0], id: "s3", delta: {} },
+    ],
+  };
+})();
+
+function twoSlideDoc() {
+  return structuredClone(TWO_SLIDE_SEED);
+}
+
+const TRANSFORM_PATHS = [["items", "r", "x"], ["items", "r", "y"]];
+
+test("BH ACCEPTANCE: none → ALL in ONE document, and ALL → none in one more", () => {
+  const doc = twoSlideDoc();
+  const SLIDE = 1;
+  assert.equal(sectionTriState(TRANSFORM_PATHS.map((p) => hasKeyframe(doc, SLIDE, p))), "none",
+    "slide 1 inherits everything to begin with");
+
+  // ONE CLICK → every path in the section is keyed on this slide.
+  const keyed = sectionToggled(doc, SLIDE, TRANSFORM_PATHS);
+  assert.equal(sectionTriState(TRANSFORM_PATHS.map((p) => hasKeyframe(keyed, SLIDE, p))), "all");
+  // ONE UNDO UNIT is exactly this: ONE document is produced, so ONE commit takes
+  // it and one undo takes it back. Not "two writes that happen to be adjacent".
+  assert.notEqual(keyed, doc, "the toggle produced a new document");
+  assert.deepEqual(doc, twoSlideDoc(), "…and did not mutate the old one (one undo restores it verbatim)");
+
+  // THE UPSERT COPIES EACH PATH'S OWN VALUE, not one shared value.
+  assert.equal(getPath(keyed.slides[SLIDE].delta, ["items", "r", "x"]), 10);
+  assert.equal(getPath(keyed.slides[SLIDE].delta, ["items", "r", "y"]), 20);
+  // Nothing VISIBLE changed: keying an inherited value is a no-op on screen.
+  assert.deepEqual(foldState(keyed, SLIDE, 1).items.r, foldState(doc, SLIDE, 1).items.r);
+
+  // ONE MORE CLICK → back to none, again in one document.
+  const cleared = sectionToggled(keyed, SLIDE, TRANSFORM_PATHS);
+  assert.equal(sectionTriState(TRANSFORM_PATHS.map((p) => hasKeyframe(cleared, SLIDE, p))), "none");
+  assert.deepEqual(cleared.slides[SLIDE].delta, {}, "the slide inherits again, exactly as before the first click");
+  assert.deepEqual(foldState(cleared, SLIDE, 1).items.r, foldState(doc, SLIDE, 1).items.r);
+});
+
+test("BH: from HALF, one click completes the section — it never clears from half", () => {
+  const doc = twoSlideDoc();
+  const SLIDE = 1;
+  const half = keyframed(doc, SLIDE, ["items", "r", "x"], 99);
+  assert.equal(sectionTriState(TRANSFORM_PATHS.map((p) => hasKeyframe(half, SLIDE, p))), "some");
+
+  const after = sectionToggled(half, SLIDE, TRANSFORM_PATHS);
+  assert.equal(sectionTriState(TRANSFORM_PATHS.map((p) => hasKeyframe(after, SLIDE, p))), "all",
+    "half → ALL (the ruling): the destructive branch is never taken on the least-certain state");
+  // AND THE KEYFRAME THAT MADE IT HALF SURVIVES ITS OWN VALUE. Had half gone to
+  // `none`, this 99 — a real edit the user made — would be gone.
+  assert.equal(getPath(after.slides[SLIDE].delta, ["items", "r", "x"]), 99,
+    "the existing keyframe is not overwritten by the fold's value");
+  assert.equal(getPath(after.slides[SLIDE].delta, ["items", "r", "y"]), 20, "and the missing one is filled in");
+});
+
+test("BH: an EQUATION keyframes as the equation, and each path keeps its own value", () => {
+  const doc = twoSlideDoc();
+  const withEq = keyframed(doc, 0, ["items", "r", "x"], "=100+1");
+  const keyed = sectionToggled(withEq, 1, TRANSFORM_PATHS);
+  assert.equal(getPath(keyed.slides[1].delta, ["items", "r", "x"]), "=100+1",
+    "an equation is copied VERBATIM — not the number it evaluates to");
+  assert.equal(getPath(keyed.slides[1].delta, ["items", "r", "y"]), 20,
+    "and no path is given another path's value");
+});
+
+test("BH MULTI-SELECTION: the bubble reads the UNION and the toggle fans out, still one document", () => {
+  // Two rects; ONE of them is already keyed on slide 1. The union is half.
+  const base = twoSlideDoc();
+  const doc = {
+    ...base,
+    slides: base.slides.map((s, i) => i !== 0 ? s
+      : { ...s, delta: setPath(setPath(setPath(s.delta, ["items", "q", "type"], "rect"), ["items", "q", "x"], 30), ["items", "q", "y"], 40) }),
+  };
+  // The section's paths over a SET: every row crossed with every item that has it.
+  const paths = sectionKeyPaths([{ key: "x" }, { key: "y" }], () => ["r", "q"], (row) => row.key);
+  assert.deepEqual(paths, [["items", "r", "x"], ["items", "q", "x"], ["items", "r", "y"], ["items", "q", "y"]],
+    "row-major over the union of the selected items");
+
+  const half = keyframed(doc, 1, ["items", "q", "x"], 30);
+  assert.equal(sectionTriState(paths.map((p) => hasKeyframe(half, 1, p))), "some",
+    "half means 'somewhere in this section, on some item' — both axes at once");
+
+  const all = sectionToggled(half, 1, paths);
+  assert.equal(sectionTriState(paths.map((p) => hasKeyframe(all, 1, p))), "all", "the fan-out reaches every item");
+  assert.deepEqual(all.slides[1].delta.items.r, { x: 10, y: 20 });
+  assert.deepEqual(all.slides[1].delta.items.q, { x: 30, y: 40 }, "each item keeps its OWN values");
+  // ONE document for FOUR writes across TWO items — one undo takes all of it.
+  assert.deepEqual(half, keyframed(doc, 1, ["items", "q", "x"], 30), "the source document is untouched");
+
+  const none = sectionToggled(all, 1, paths);
+  assert.deepEqual(none.slides[1].delta, {}, "and one more click clears the whole set's section");
 });
 
 console.log(`\n  ${passed} multiselect core tests passed`);
