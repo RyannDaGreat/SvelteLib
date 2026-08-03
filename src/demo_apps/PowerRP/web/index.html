@@ -74,6 +74,36 @@
       after gpu.render), never on a timer. Boot failure calls fail() and the
       splash turns into a loud error surface, because a gray box forever is the
       current failure mode too.
+
+      ── THE STAGE LIST (WORKSTREAM AH) ─────────────────────────────────────────
+      The user's complaint, verbatim: "Often when the app starts, it says
+      'starting' and it just says 'starting' for a very, very long time… Someone
+      who's opening this for the first time will have no confidence that it's not
+      looping forever… don't bullshit them… make sure that it's actually
+      reporting real progress."
+
+      So the splash shows the WHOLE ROSTER of boot stages at once, not one line
+      that changes. A roster answers "how much is left" — the question a single
+      line structurally cannot answer — and the user's confidence comes from
+      watching rows TICK OFF, i.e. from motion through a list of known length.
+
+      THE HONESTY RULES, which the display enforces rather than merely intends:
+        · A row shows a PERCENTAGE only when a real denominator exists (the wasm's
+          Content-Length, the font roster's face count). There is no synthetic
+          progress anywhere — see bootProgress.js, which refuses to invent one.
+        · A row with no measurable progress (wasm COMPILE emits no events; the
+          bundle parse is one opaque block of main-thread work) shows its NAME and
+          a LIVE ELAPSED CLOCK: "Compiling renderer… 1.4s". That is a true
+          statement about a stage that is genuinely running and genuinely
+          unmeasurable, and it still moves, which is the property that
+          distinguishes it from a hang.
+        · A row that has not started yet is dimmed and silent. It is a promise
+          about what comes next, which is the other half of "not looping forever".
+
+      THE ROSTER IS DECLARED HERE, ahead of time, because the point is to show the
+      user stages they have NOT reached yet. STAGES below is that declaration; a
+      bootStage() id that is not in it is appended live (so a new stage can never
+      be silently dropped), but the ordered spine is this list.
     -->
     <style>
       :root {
@@ -87,11 +117,20 @@
         --boot-lift-ms: 220ms;   /* splash fade-out once the first frame exists */
         --boot-gap: 14px;
         --boot-bar-h: 3px;
-        --boot-bar-w: 260px;
+        --boot-bar-w: 320px;
         --boot-title-size: 15px;
         --boot-stage-size: 12px;
         --boot-error-pad: 16px;
         --boot-error-max-w: 640px;
+        /* The stage roster */
+        --boot-row-gap: 7px;          /* between stage rows */
+        --boot-row-pad: 2px;          /* row vertical breathing room */
+        --boot-mark-w: 14px;          /* the ✓/· gutter, fixed so labels align */
+        --boot-detail-dim: 0.75;      /* the trailing "2.1 MB / 6.9 MB" against the label */
+        --boot-pending-dim: 0.38;     /* a stage the boot has not reached yet */
+        --boot-done-dim: 0.55;        /* a finished stage: present, but no longer the subject */
+        --boot-row-fade-ms: 200ms;
+        --boot-tick-size: 11px;
       }
       @media (prefers-color-scheme: light) {
         :root {
@@ -158,12 +197,41 @@
         0% { transform: translateX(-100%); }
         100% { transform: translateX(286%); }
       }
-      .boot-stage {
+      /* THE STAGE ROSTER. One row per named boot stage, in declared order, all
+         visible at once — the list's LENGTH is the "how much is left" signal a
+         single changing line cannot give. */
+      .boot-stages {
+        display: flex;
+        flex-direction: column;
+        gap: var(--boot-row-gap);
+        width: var(--boot-bar-w);
         font-size: var(--boot-stage-size);
-        color: var(--boot-dim);
         font-variant-numeric: tabular-nums;
-        min-height: 1.2em;
       }
+      .boot-row {
+        display: flex;
+        align-items: baseline;
+        gap: var(--boot-mark-w);
+        padding: var(--boot-row-pad) 0;
+        color: var(--boot-dim);
+        transition: opacity var(--boot-row-fade-ms) ease, color var(--boot-row-fade-ms) ease;
+      }
+      /* The ✓/· gutter is a FIXED width so every label starts at the same x —
+         rows that jitter horizontally as marks change read as instability. */
+      .boot-mark {
+        flex: 0 0 var(--boot-mark-w);
+        margin-right: calc(-1 * var(--boot-mark-w));
+        font-size: var(--boot-tick-size);
+        text-align: center;
+      }
+      .boot-row-label { flex: 1 1 auto; }
+      .boot-row-detail { opacity: var(--boot-detail-dim); white-space: nowrap; }
+      /* Not started: dimmed and silent — a promise about what comes next. */
+      .boot-row[data-state="pending"] { opacity: var(--boot-pending-dim); }
+      /* Running: full-strength foreground. Exactly one row is the subject. */
+      .boot-row[data-state="active"] { color: var(--boot-fg); opacity: 1; }
+      /* Finished: ticked off and stepped back, so the eye tracks the frontier. */
+      .boot-row[data-state="done"] { opacity: var(--boot-done-dim); }
       .boot-error {
         display: none;
         max-width: var(--boot-error-max-w);
@@ -175,8 +243,11 @@
         text-align: left;
         line-height: 1.5;
       }
-      #boot-splash[data-failed="1"] .boot-track,
-      #boot-splash[data-failed="1"] .boot-stage { display: none; }
+      /* On failure the BAR goes (it has nothing true left to say) but the ROSTER
+         STAYS: the row marked ✕ is which of the stages died, and the rows above it
+         are the ones that did succeed — that is the difference between "it broke"
+         and "it broke HERE, after getting this far". */
+      #boot-splash[data-failed="1"] .boot-track { display: none; }
       #boot-splash[data-failed="1"] .boot-error { display: block; }
       #boot-splash[data-failed="1"] > .boot-ui { opacity: 1; }
       @media (prefers-reduced-motion: reduce) {
@@ -191,7 +262,7 @@
       <div class="boot-ui">
         <div class="boot-title">PowerRP</div>
         <div class="boot-track" id="boot-track"><div class="boot-bar" id="boot-bar"></div></div>
-        <div class="boot-stage" id="boot-stage">Starting…</div>
+        <div class="boot-stages" id="boot-stages"></div>
         <div class="boot-error" id="boot-error"></div>
       </div>
     </div>
@@ -202,15 +273,38 @@
       (function () {
         var REVEAL_DELAY_MS = 400;  // below this, a warm boot shows no progress UI at all
         var LIFT_MS = 220;          // must match --boot-lift-ms
+        var ELAPSED_TICK_MS = 100;  // how often an unmeasurable stage's clock reprints
+        var ELAPSED_FLOOR_MS = 400; // below this, a stage's elapsed clock is noise, so it stays silent
         var el = document.getElementById("boot-splash");
         var bar = document.getElementById("boot-bar");
         var track = document.getElementById("boot-track");
-        var stageEl = document.getElementById("boot-stage");
+        var stagesEl = document.getElementById("boot-stages");
         var errorEl = document.getElementById("boot-error");
         var finished = false;
         // Stage history, in arrival order — the probe asserts it advances
         // monotonically, and it is the honest record of what boot actually did.
         var history = [];
+
+        // ── THE DECLARED ROSTER ────────────────────────────────────────────────
+        // Ordered, and declared BEFORE boot runs, because the whole point is to
+        // show the user the stages they have not reached yet. Each entry's `id`
+        // must match the id its bootStage() caller passes; `label` is the user's
+        // sentence for it. Measured cold-boot cost is noted so the next person
+        // editing this list knows which rows actually matter.
+        //   · Every one of these is REAL WORK the boot genuinely does. There is no
+        //     decorative row, and none of them is a timer pretending to be work.
+        var STAGES = [
+          { id: "bundle",    label: "Loading app code" },      // ~13s on Fast-3G, ~0.25s local — the parse/eval wall
+          { id: "storage",   label: "Checking storage" },      // one GET, ~0.1s
+          { id: "wasm",      label: "Downloading renderer" },  // ~7 MB, THE cold-boot cost
+          { id: "wasm-init", label: "Compiling renderer" },    // no progress events exist — elapsed only
+          { id: "fonts",     label: "Loading fonts" },         // 50 faces, counted
+          { id: "mount",     label: "Building the editor" },
+          { id: "frame",     label: "Drawing first frame" },
+        ];
+
+        var rows = {};   // id → {root, mark, label, detail, state, startedAt, label0}
+        var order = [];  // ids in display order (STAGES, then any live arrival)
 
         var revealTimer = setTimeout(function () {
           if (!finished) el.setAttribute("data-revealed", "1");
@@ -221,38 +315,130 @@
           return (bytes / 1048576).toFixed(1) + " MB";
         }
 
+        /** Pure function. Milliseconds → a short elapsed string ("1.4s"). */
+        function secs(ms) {
+          return (ms / 1000).toFixed(1) + "s";
+        }
+
+        /** Command. Creates (once) and returns the DOM row for a stage id. A row
+         *  arriving that STAGES never declared is APPENDED rather than dropped —
+         *  a new bootStage() caller must never be silently invisible. */
+        function rowFor(id, label) {
+          if (rows[id]) return rows[id];
+          var root = document.createElement("div");
+          root.className = "boot-row";
+          root.setAttribute("data-stage", id);
+          root.setAttribute("data-state", "pending");
+          var mark = document.createElement("span");
+          mark.className = "boot-mark";
+          mark.textContent = "·";
+          var name = document.createElement("span");
+          name.className = "boot-row-label";
+          name.textContent = label;
+          var detail = document.createElement("span");
+          detail.className = "boot-row-detail";
+          root.appendChild(mark);
+          root.appendChild(name);
+          root.appendChild(detail);
+          stagesEl.appendChild(root);
+          order.push(id);
+          rows[id] = { root: root, mark: mark, name: name, detail: detail, state: "pending", startedAt: 0, measurable: false };
+          return rows[id];
+        }
+
+        // Build the declared roster up front, all rows pending.
+        for (var i = 0; i < STAGES.length; i++) rowFor(STAGES[i].id, STAGES[i].label);
+
+        /** Command. Repaints the elapsed clock on every row that is RUNNING and
+         *  has no measurable progress. This is the honest answer to "compile has
+         *  no progress events": a name plus a clock that is visibly moving. A row
+         *  that HAS real numbers is left alone — its numbers are better than a
+         *  clock, and printing both would be noise. */
+        function tickElapsed() {
+          var now = Date.now();
+          for (var k = 0; k < order.length; k++) {
+            var r = rows[order[k]];
+            if (r.state !== "active" || r.measurable) continue;
+            var dt = now - r.startedAt;
+            // Below the floor an elapsed readout is just flicker; the row still
+            // reads as active from its highlight, which is the honest signal.
+            r.detail.textContent = dt >= ELAPSED_FLOOR_MS ? secs(dt) : "";
+          }
+        }
+        var elapsedTimer = setInterval(tickElapsed, ELAPSED_TICK_MS);
+
+        /** Command. Marks every row BEFORE `id` in display order as done. Boot is
+         *  a sequence, so reaching stage N is proof stages < N finished — without
+         *  this a stage whose completion is never explicitly reported (the bundle
+         *  parse has no "I am done" event to fire) would sit "active" forever
+         *  while a later row ran, which would be a false statement on screen. */
+        function settlePriorTo(id) {
+          for (var k = 0; k < order.length; k++) {
+            if (order[k] === id) break;
+            var r = rows[order[k]];
+            if (r.state === "active") setState(r, "done");
+          }
+        }
+
+        /** Command. Moves one row between pending → active → done. */
+        function setState(r, state) {
+          if (r.state === state) return;
+          r.state = state;
+          r.root.setAttribute("data-state", state);
+          if (state === "active") {
+            r.startedAt = Date.now();
+            r.mark.textContent = "›";
+          } else if (state === "done") {
+            r.mark.textContent = "✓";
+            // A finished row keeps its FINAL numbers when it had real ones (the
+            // wasm's total, the face count) and drops its elapsed clock when it
+            // did not — a frozen clock on a finished row reads as a stall.
+            if (!r.measurable) r.detail.textContent = "";
+          }
+        }
+
         window.__powerrp_boot = {
           history: history,
           stage: function (id, label, detail) {
             if (finished) return;
             detail = detail || {};
             history.push({ id: id, label: label, loaded: detail.loaded, total: detail.total, unit: detail.unit || "bytes", done: !!detail.done, t: Date.now() });
+            var r = rowFor(id, label);
+            settlePriorTo(id);
+            if (r.state === "pending") setState(r, "active");
             // `unit` keeps the readout HONEST about what it is counting: the wasm
             // stage counts bytes ("2.1 MB / 6.9 MB"), the font stage counts FACES
-            // ("7 / 14"), because those download in parallel and a byte total
+            // ("7 / 50"), because those download in parallel and a byte total
             // would be a sum of concurrent unknowns.
             var count = detail.unit === "count";
             var fmt = count ? function (n) { return String(n); } : mb;
             var known = typeof detail.total === "number" && detail.total > 0 && typeof detail.loaded === "number";
             if (known) {
+              r.measurable = true;
               track.removeAttribute("data-indeterminate");
               var pct = Math.max(0, Math.min(100, (detail.loaded / detail.total) * 100));
               bar.style.width = pct.toFixed(1) + "%";
-              stageEl.textContent = label + " — " + fmt(detail.loaded) + " / " + fmt(detail.total);
+              r.detail.textContent = fmt(detail.loaded) + " / " + fmt(detail.total);
             } else if (typeof detail.loaded === "number" && detail.loaded > 0) {
               // Real progress, unknown total (gzip / no Content-Length): show the
               // count that IS known and sweep. Never a synthetic percentage.
+              r.measurable = true;
               track.setAttribute("data-indeterminate", "1");
-              stageEl.textContent = label + " — " + fmt(detail.loaded);
+              r.detail.textContent = fmt(detail.loaded);
             } else {
+              // NO measurable progress for this stage. The row falls back to its
+              // name plus the live elapsed clock (tickElapsed), which is a true
+              // statement rather than an invented percentage.
               track.setAttribute("data-indeterminate", "1");
-              stageEl.textContent = label + "…";
             }
+            if (detail.done) setState(r, "done");
+            tickElapsed();
           },
           done: function () {
             if (finished) return;
             finished = true;
             clearTimeout(revealTimer);
+            clearInterval(elapsedTimer);
             el.setAttribute("data-lifting", "1");
             setTimeout(function () { el.remove(); }, LIFT_MS);
           },
@@ -261,10 +447,21 @@
             // else already tried to lift the splash.
             finished = false;
             clearTimeout(revealTimer);
+            clearInterval(elapsedTimer);
             el.setAttribute("data-revealed", "1");
             el.setAttribute("data-failed", "1");
             el.removeAttribute("data-lifting");
-            errorEl.textContent = "PowerRP failed to start.\n\n" + message;
+            // NAME THE STAGE THAT DIED. The roster is still on screen under the
+            // error, and the row left in "active" is the one that failed — so the
+            // failure surface says which of the seven stages broke instead of
+            // making the user infer it from a stack.
+            var dying = null;
+            for (var k = 0; k < order.length; k++) if (rows[order[k]].state === "active") dying = rows[order[k]];
+            if (dying) {
+              dying.mark.textContent = "✕";
+              dying.root.setAttribute("data-state", "active");
+            }
+            errorEl.textContent = "PowerRP failed to start" + (dying ? " while " + dying.name.textContent.toLowerCase() + "." : ".") + "\n\n" + message;
           },
         };
 
