@@ -61,6 +61,7 @@
 
 import { convergesOnRefPrefixes } from "../render_gpu/gpu/settled.js";
 import { pathsToSvgSrc, pathsBounds, pathPoints } from "../core/svg_paths.js"; // moved out of this file so the SVG family can shatter too
+import { morphPayloadFromViewBox } from "../core/morph_payload.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder, fitBox } from "../core/geometry.js";
@@ -932,6 +933,70 @@ export const mermaidPlugin = {
     }
     // Effects wrap OUTSIDE the border decoration (effects.js order rule).
     return applyEffects(decorateStrokedBox([quad], style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });
+  },
+  /**
+   * Query (one Map lookup). Why this diagram cannot morph YET, or null — the
+   * `morphNotReady` half of the morph protocol (core/registry.js). It is the SAME
+   * condition and the SAME sentence `shatterNotReady` gives, because it is the
+   * same fact: the flatten is async and null until the render lands, and stays
+   * null for a foreignObject diagram that could not be vectorized at all. A pair
+   * that refuses falls back to the discrete switch and names this reason.
+   *
+   * A CROPPED diagram is refused too, and separately, because the reason differs:
+   * emit() deliberately stays RASTER when the edge crop bites (the vector op maps
+   * all geometry into the box with no source clip, so it cannot express a partial
+   * crop). Morphing the UNCROPPED outline while the widget shows a cropped bitmap
+   * would be a morph into a picture the author is not looking at.
+   */
+  morphNotReady(s) {
+    if (mermaidIsEmpty(s.definition)) return "a diagram (this widget has none)";
+    const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
+    if (c.w <= 0 || c.h <= 0) return "a visible diagram (this one is cropped away entirely)";
+    if (c.sw < 1 || c.sh < 1 || c.sx > 0 || c.sy > 0)
+      return "an uncropped diagram (a cropped one renders as raster, so its outline is not what you see)";
+    if (mermaidErrorFor(s.definition)) return "a diagram Mermaid accepts (this one failed to parse)";
+    return mermaidVectorGeom(s.definition, s.theme ?? DEFAULT_MERMAID_THEME)
+      ? null
+      : "a diagram that has finished rendering (this one has no vector geometry yet, or could not be vectorized)";
+  },
+  /**
+   * Query (reads the flatten cache; mutates nothing). THE MORPH OUTLINE
+   * (core/registry.js's `morphPaths` protocol): the diagram's flattened SHAPES
+   * and EDGES as cubic contours, from the SAME `mermaidVectorGeom` flatten
+   * emit()'s `mermaidVector` op and `shatter()` both read — three consumers, one
+   * geometry, which is why a morph cannot disagree with the picture.
+   *
+   * THE VIEWBOX BAKE IS THE WHOLE JOB HERE, and it is the LL lesson applied to a
+   * third widget. `geom.paths` are in the flatten's VIEWBOX frame, not the box, and
+   * the `mermaidVector` op does its own uniform letterbox fit at paint time.
+   * `morphPayloadFromViewBox` performs exactly that fit — the same one
+   * `viewBoxToBoxMatrix` gives the latex provider and the PDF/SVG backends — so the
+   * payload describes where the ink ACTUALLY sits, letterbox slack included. Skip
+   * it and a diagram morphs as a tiny blob in the corner of its own box, correct
+   * at both endpoints and wrong everywhere between.
+   *
+   * TEXT RUNS ARE NOT IN THE PAYLOAD. `geom.texts` are label runs, and text
+   * becomes morphable through the glyph-outline seam, not by a plugin inventing
+   * letterforms. The shapes and edges are the diagram's structure and are what a
+   * morph should flow; the labels step, as they do everywhere else today.
+   */
+  morphPaths(s) {
+    const geom = mermaidVectorGeom(s.definition, s.theme ?? DEFAULT_MERMAID_THEME);
+    const opacity = s.opacity ?? 1;
+    // THE BOX IS emit()'s BOX, not the raw w/h: the vector op is placed at the
+    // CROP-adjusted rect. `morphNotReady` above has already refused every state
+    // where that differs, so this is currently the same rect — spelled out anyway
+    // so the two cannot drift apart if the crop rule ever loosens.
+    const c = cropInsetsToSource(s.w ?? 0, s.h ?? 0, s);
+    return morphPayloadFromViewBox(
+      geom.paths.map((p) => ({
+        d: p.d,
+        paint: { fill: p.fill ?? null, stroke: p.stroke ?? null, strokeWidth: p.strokeWidth ?? 0, opacity },
+      })),
+      geom.viewBox,
+      { w: c.w, h: c.h },
+      s.preserveAspect !== false,
+    );
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,

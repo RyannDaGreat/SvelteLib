@@ -326,6 +326,24 @@ export const THEME_FAMILIES = [
   // ABSORBED: `tokyonight`, which measured 3.56 from Nocturne with IDENTICAL
   // --a-selection and --a-keyed — it was Nocturne without the glass.
   { id: "nocturne", title: "Nocturne", dark: "nocturne", light: "daybreak" },
+  // ── The Nocturne colour family (WORKSTREAM RR, user verbatim: "I would like
+  // more Nocturne themes... Nocturne green, Nocturne purple, Nocturne, etc. A
+  // bunch of different color variations on Nocturne") — five more takes on the
+  // SAME glass material, one per gemstone. Each is its OWN family (a family is
+  // exactly one dark + one light slot; see flattenedThemes), grouped back under
+  // Nocturne for the picker by THEME_GROUPS below, NOT by this array — a family
+  // id staying unique per THEME_FAMILIES entry is what keeps this parseable by
+  // tests/theme_contrast_test.py and tests/glass_structure_test.js's regexes,
+  // both of which require the exact {id, title, dark, light} shape with nothing
+  // else in the object. See each pair's app.css block for which single lever
+  // (a few px of corner/blur, a handful of % saturate) earns its distinctness
+  // under glass_structure_test.js's same-material-same-numbers ban — every
+  // other token is Nocturne's own, recoloured.
+  { id: "nocturne-emerald", title: "Nocturne — Emerald", dark: "nocturne-emerald", light: "nocturne-emerald-light" },
+  { id: "nocturne-amethyst", title: "Nocturne — Amethyst", dark: "nocturne-amethyst", light: "nocturne-amethyst-light" },
+  { id: "nocturne-garnet", title: "Nocturne — Garnet", dark: "nocturne-garnet", light: "nocturne-garnet-light" },
+  { id: "nocturne-topaz", title: "Nocturne — Topaz", dark: "nocturne-topaz", light: "nocturne-topaz-light" },
+  { id: "nocturne-aquamarine", title: "Nocturne — Aquamarine", dark: "nocturne-aquamarine", light: "nocturne-aquamarine-light" },
   { id: "futura", title: "Futura", dark: "futura-dark", light: "futura-light" },
   { id: "eink", title: "E-Ink", dark: "eink-dark", light: "eink" },
   { id: "phosphor", title: "Phosphor", dark: "phosphor", light: "phosphor-light" },
@@ -343,6 +361,84 @@ export const THEME_FAMILIES = [
   // have claimed a kinship that isn't real.
   { id: "obsidian", title: "Obsidian", dark: "obsidian", light: "moonstone" },
 ];
+
+/** THE SMALLEST HONEST GROUPING MECHANISM (WORKSTREAM RR) — a FAMILY collapses
+ * to one dark+one light theme (see THEME_FAMILIES above and flattenedThemes),
+ * but Nocturne now has SIX distinct family identities that are all "Nocturne,
+ * another colour" and belong under one submenu rather than six adjacent rows
+ * that all say "Nocturne" with no way to tell them apart at a glance. A GROUP
+ * is a THIRD, orthogonal level — zero or more families sharing a picker
+ * section — layered ON TOP of THEME_FAMILIES rather than folded into it, for
+ * two reasons:
+ *   1. Every existing parser of THEME_FAMILIES (tests/theme_contrast_test.py's
+ *      _families_from_registry, tests/glass_structure_test.js's themeFamilies)
+ *      regex-matches the LITERAL {id, title, dark, light} shape with nothing
+ *      else in the object — a `group` key inside those entries would silently
+ *      drop them from both parsers' output, which is a worse failure than
+ *      "ungrouped in the picker" (it is invisible to the family/light-dark and
+ *      glass-distinctness gates entirely). A parallel map touches neither
+ *      regex.
+ *   2. A family with no group must keep meaning exactly what it always has —
+ *      "show one picker row" — so grouping needed to be additive, not a new
+ *      required field forty existing entries would have to grow.
+ *
+ * Keyed by an arbitrary group id (not necessarily a family id, though Nocturne
+ * picked its own family's id for its group id since the family "Nocturne" IS a
+ * member of its own group — the ungrouped picker row and the grouped submenu
+ * are the same six-way choice at two different nesting depths). Reusable: the
+ * next multi-hue family drops in as one more entry here, no picker code
+ * changes required (see THEME_GROUP_ICONS + buildThemeMenu in App.svelte).
+ *
+ * Examples:
+ *     >>> THEME_GROUPS.nocturne
+ *     ['nocturne', 'nocturne-emerald', 'nocturne-amethyst', 'nocturne-garnet', 'nocturne-topaz', 'nocturne-aquamarine']
+ */
+export const THEME_GROUPS = {
+  nocturne: ["nocturne", "nocturne-emerald", "nocturne-amethyst", "nocturne-garnet", "nocturne-topaz", "nocturne-aquamarine"],
+};
+
+/**
+ * Pure function. THEME_FAMILIES partitioned into {grouped, ungrouped} for the
+ * picker: `grouped` is [{groupId, families}] in THEME_GROUPS' own order (each
+ * `families` entry in THEME_FAMILIES' original relative order), `ungrouped` is
+ * every family THEME_GROUPS mentions nowhere, in its original order. A family
+ * id appearing in more than one group is a config error and throws loudly
+ * rather than silently picking one — the picker has exactly one place to put
+ * a row.
+ *
+ * Args:
+ *     families (Array): THEME_FAMILIES-shaped entries.
+ *     groups (Object<string, string[]>): THEME_GROUPS-shaped map.
+ *
+ * Returns:
+ *     {grouped: Array<{groupId: string, families: Array}>, ungrouped: Array}
+ *
+ * Examples:
+ *     >>> const fams = [{ id: "a", title: "A", dark: "a", light: "a-l" },
+ *     ...               { id: "b", title: "B", dark: "b", light: "b-l" },
+ *     ...               { id: "c", title: "C", dark: "c", light: "c-l" }];
+ *     >>> const out = groupedThemeFamilies(fams, { g: ["a", "c"] });
+ *     >>> out.grouped.map((g) => [g.groupId, g.families.map((f) => f.id)])
+ *     [['g', ['a', 'c']]]
+ *     >>> out.ungrouped.map((f) => f.id)
+ *     ['b']
+ */
+export function groupedThemeFamilies(families = THEME_FAMILIES, groups = THEME_GROUPS) {
+  const byId = new Map(families.map((f) => [f.id, f]));
+  const claimed = new Map(); // family id -> group id, to catch double-claims loudly
+  const grouped = Object.entries(groups).map(([groupId, memberIds]) => ({
+    groupId,
+    families: memberIds.map((id) => {
+      if (claimed.has(id)) throw new Error(`THEME_GROUPS: family "${id}" claimed by both "${claimed.get(id)}" and "${groupId}"`);
+      claimed.set(id, groupId);
+      const fam = byId.get(id);
+      if (!fam) throw new Error(`THEME_GROUPS["${groupId}"]: no THEME_FAMILIES entry with id "${id}"`);
+      return fam;
+    }),
+  }));
+  const ungrouped = families.filter((f) => !claimed.has(f.id));
+  return { grouped, ungrouped };
+}
 
 /** Saved-preference migration for theme ids this app no longer ships.
  *

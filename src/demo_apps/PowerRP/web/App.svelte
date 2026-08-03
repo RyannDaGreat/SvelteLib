@@ -50,7 +50,7 @@
   import { ZIP_PARAM } from "./projectUrlImport.js";
   import { bootFailed, bootStage } from "./bootProgress.js";
   import { humanReadableFileSize } from "./fileSize.js";
-  import { PowerRPApp, THEME_FAMILIES } from "./app.svelte.js";
+  import { PowerRPApp, THEME_FAMILIES, groupedThemeFamilies } from "./app.svelte.js";
   import { LABEL_DIVIDER_PROPERTY } from "./labelFrac.js";
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
@@ -828,6 +828,13 @@
     desert: "mdi:cactus",
     sepia: "mdi:file-document-outline",
     nocturne: "mdi:glass-tulip",
+    // The five Nocturne colour variants (WORKSTREAM RR) — gem glyphs, one per
+    // stone, matching the citation in each pair's app.css block.
+    "nocturne-emerald": "mdi:diamond-stone",
+    "nocturne-amethyst": "mdi:hexagon-multiple-outline",
+    "nocturne-garnet": "mdi:shape-polygon-plus",
+    "nocturne-topaz": "mdi:hexagon-outline",
+    "nocturne-aquamarine": "mdi:water-outline",
     futura: "mdi:format-letter-case",
     eink: "mdi:book-open-page-variant-outline",
     phosphor: "mdi:console",
@@ -837,6 +844,58 @@
     cranberry: "mdi:glass-wine", // colloidal-gold glass, historically stemware
     obsidian: "mdi:volcano", // obsidian IS volcanic glass
   };
+  // One glyph per THEME_GROUPS key — the submenu container's own icon, distinct
+  // from any member family's so "Nocturne" (the group, holding six stones) and
+  // "Nocturne — Emerald" (one member) are not visually the same row at a glance.
+  const THEME_GROUP_ICONS = {
+    nocturne: "mdi:glass-tulip",
+  };
+
+  /**
+   * Pure function. ONE THEME_FAMILIES entry -> its palette submenu row: the
+   * family container plus its Dark/Light leaves. Factored out of the
+   * `color-theme` command builder so a family reads the same whether it sits
+   * at the picker's top level (ungrouped) or nested one level deeper inside a
+   * THEME_GROUPS submenu (Nocturne's six) — the row's own shape never changes,
+   * only where it is mounted.
+   *
+   * @param {{id: string, title: string, dark: string, light: string}} f
+   * @returns {object} a command-registry submenu entry ({id, title, icon,
+   *   preview, children: [dark leaf, light leaf]})
+   */
+  function familyRow(f) {
+    return {
+      // `theme-family-` prefix, NOT `theme-`: a family id and its dark member's
+      // theme id are frequently the same string (family "graphite" holds theme
+      // "graphite"), so sharing the namespace makes the container collide with
+      // its own child — the registry throws "Duplicate command id" at boot.
+      id: `theme-family-${f.id}`,
+      title: f.title,
+      icon: THEME_ICONS[f.id],
+      // A CONTAINER THAT PREVIEWS. `preview` is orthogonal to the registry's
+      // run-XOR-children rule (core/commands.js validates only those two), so
+      // the family row stages its theme LIVE without becoming runnable —
+      // Enter still drills in. This row is the one the ruling is actually
+      // about: "even if I'm hovering over the menu for that theme, it should
+      // preview it". Before this it previewed NOTHING, which made browsing
+      // families — the primary way to shop for a theme — show you no themes.
+      preview: (a) => a.previewTheme(f.id),
+      children: [
+        // Previewable-command hook (see CommandPalette.svelte): hovering/
+        // arrowing applies the member LIVE; moving off restores the previously
+        // applied theme; selecting commits via `run` (which persists).
+        // MEMBER ROWS PREVIEW LITERALLY, unlike the family row above: a row
+        // named "— Light" names its pole, and polarity-locking it previewed
+        // the pole you were already on — from dark, hovering "Desert — Light"
+        // showed Desert DARK, i.e. visibly nothing (user: "Once I click the
+        // theme and I hover, they should also preview immediately"). The lock
+        // exists to resolve AMBIGUOUS targets; a member row is not ambiguous.
+        { id: `theme-${f.dark}`, title: `${f.title} — Dark`, icon: "mdi:weather-night", run: (a) => a.setTheme(f.dark), preview: (a) => a.previewThemeExact(f.dark) },
+        { id: `theme-${f.light}`, title: `${f.title} — Light`, icon: "mdi:weather-sunny", run: (a) => a.setTheme(f.light), preview: (a) => a.previewThemeExact(f.light) },
+      ],
+    };
+  }
+
   // Local box the `insert-shape` tile previews are generated in; matches
   // ShapePicker's 100-unit tile viewBox content area (`-6 -6 112 112`).
   const SHAPE_PREVIEW_DIM = 100;
@@ -1732,36 +1791,36 @@
       // honest shape: "Ember" is not a thing you can apply, "Ember (dark)" is.
       // The one-keystroke way to stay in your pole is the toggle button; this
       // submenu is where you go when you want to say which.
-      children: THEME_FAMILIES.map((f) => ({
-        // `theme-family-` prefix, NOT `theme-`: a family id and its dark member's
-        // theme id are frequently the same string (family "graphite" holds theme
-        // "graphite"), so sharing the namespace makes the container collide with
-        // its own child — the registry throws "Duplicate command id" at boot.
-        id: `theme-family-${f.id}`,
-        title: f.title,
-        icon: THEME_ICONS[f.id],
-        // A CONTAINER THAT PREVIEWS. `preview` is orthogonal to the registry's
-        // run-XOR-children rule (core/commands.js validates only those two), so
-        // the family row stages its theme LIVE without becoming runnable —
-        // Enter still drills in. This row is the one the ruling is actually
-        // about: "even if I'm hovering over the menu for that theme, it should
-        // preview it". Before this it previewed NOTHING, which made browsing
-        // families — the primary way to shop for a theme — show you no themes.
-        preview: (a) => a.previewTheme(f.id),
-        children: [
-          // Previewable-command hook (see CommandPalette.svelte): hovering/
-          // arrowing applies the member LIVE; moving off restores the previously
-          // applied theme; selecting commits via `run` (which persists).
-          // MEMBER ROWS PREVIEW LITERALLY, unlike the family row above: a row
-          // named "— Light" names its pole, and polarity-locking it previewed
-          // the pole you were already on — from dark, hovering "Desert — Light"
-          // showed Desert DARK, i.e. visibly nothing (user: "Once I click the
-          // theme and I hover, they should also preview immediately"). The lock
-          // exists to resolve AMBIGUOUS targets; a member row is not ambiguous.
-          { id: `theme-${f.dark}`, title: `${f.title} — Dark`, icon: "mdi:weather-night", run: (a) => a.setTheme(f.dark), preview: (a) => a.previewThemeExact(f.dark) },
-          { id: `theme-${f.light}`, title: `${f.title} — Light`, icon: "mdi:weather-sunny", run: (a) => a.setTheme(f.light), preview: (a) => a.previewThemeExact(f.light) },
-        ],
-      })),
+      //
+      // GROUPS (WORKSTREAM RR) add ONE more container level for families that
+      // are colour variants of one identity — Nocturne's six gemstone takes —
+      // so the top-level list stays one row per DISTINCT thing rather than six
+      // adjacent rows all named "Nocturne — …". groupedThemeFamilies (app.svelte.js)
+      // partitions THEME_FAMILIES into {grouped, ungrouped}; familyRow below is
+      // the same family->row shape either way, just nested one level deeper for
+      // a grouped family. The palette's own children/stack mechanism (CommandPalette.
+      // svelte's `activate`) nests arbitrarily deep already, so no palette change
+      // was needed for this — only the entries fed to it.
+      children: (() => {
+        const { grouped, ungrouped } = groupedThemeFamilies();
+        const groupRows = grouped.map(({ groupId, families }) => ({
+          // `theme-group-` prefix: a group id and a member family's id can be the
+          // same string (Nocturne's group id IS "nocturne", its family id too), so
+          // sharing the namespace with `theme-family-` below would collide exactly
+          // the way the family/pole collision this file already guards against did.
+          id: `theme-group-${groupId}`,
+          title: THEME_FAMILIES.find((f) => f.id === groupId)?.title.replace(/ — .*/, "") ?? groupId,
+          icon: THEME_GROUP_ICONS[groupId] ?? "mdi:palette-swatch-outline",
+          // Hovering the group previews its OWN identity member (the family whose
+          // id matches the group id, i.e. plain Nocturne) — the same "browsing
+          // shows you something" rule the family row below follows, applied one
+          // level up. A group with no member sharing its id previews nothing
+          // rather than guessing, which is a config a future group is free to have.
+          preview: families.some((f) => f.id === groupId) ? (a) => a.previewTheme(groupId) : undefined,
+          children: families.map((f) => familyRow(f)),
+        }));
+        return [...ungrouped.map((f) => familyRow(f)), ...groupRows];
+      })(),
     },
     // ADD NUMBER — a numeric READOUT (plugins/number.js): a plaintext-like box
     // whose value is a NUMBER, formatted (decimals / pad / group) and, above all,

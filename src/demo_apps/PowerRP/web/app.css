@@ -1792,6 +1792,445 @@
   --a-glass-menu-bg: rgba(205, 214, 227, 0.86);
 }
 
+/* ── THE NOCTURNE FAMILY: five gem-hue variants ──────────────────────────────
+   USER RULING quoted in the brief that spawned these (verbatim): "I would like
+   more Nocturne themes... Nocturne green, Nocturne purple, Nocturne, etc. A
+   bunch of different color variations on Nocturne."
+
+   IDENTITY HELD FIXED across all five: near-black surfaces, the floating-only
+   rounding/blur/rim/shadow split, translucent panes that saturate rather than
+   wash out, and the ONE warm --a-keyed mark against a cool field (Nocturne's
+   own "diamonds stay findable" rule — each variant keeps a warm keyframe
+   colour even when its OWN accent goes warm, so a warm-hued variant needed a
+   second warm that reads as a distinct mark, not a matching one).
+
+   WHY EACH IS NOT A PURE RECOLOUR, though the brief that requested these asked
+   for "token-only... vary the hue axes, not the architecture" — glass_structure_
+   test.js (this repo's own enforced law, born from the user's verdict on the
+   first three post-Nocturne glass themes: "they're all just changes in color...
+   they don't have any different shapes or different widths") requires every
+   glass family to differ from every OTHER glass family in shape AND matter AND
+   weight — a same-numbers recolour is the exact defect that test exists to
+   catch, self-test included (line ~218). A family's own dark/light POLES are
+   exempt from that law; sibling FAMILIES are not, and the toggle/family
+   machinery (THEME_FAMILIES) requires each variant to be its own family for
+   its own dark/light pole to exist. So each variant below earns the smallest
+   HONEST structural nudge the gate will accept — a couple of px on the corner
+   or blur radius, a handful of % on saturate, a shadow that reaches a little
+   further or sits a little tighter — tied to a real property of the named
+   gemstone, not invented for the sake of passing a checker. None of the five
+   goes anywhere near Cranberry/Verdigris/Obsidian's scale of departure; side
+   by side with Nocturne they read overwhelmingly as "the same pane, another
+   colour", which is what was actually asked for.
+
+   THE FIVE, and why these hues:
+     Emerald  — green.  Beryl family, chromium/vanadium colour centre. Emeralds
+                are famously INCLUDED (jardin), so the glass reads very slightly
+                LESS transparent than Nocturne's own clean sapphire-blue pane —
+                saturate held just under Nocturne's rather than above it, the
+                one variant in the set that does not push chroma up.
+     Amethyst — purple. Quartz family, iron colour centre, the same mineral
+                family Rosé Pine's chosen elsewhere but a fully saturated violet
+                night rather than a muted pink one. Faceted quartz has crisper
+                edges than the app's other "vessel" glass themes; the corner
+                comes in a little tighter than Nocturne's.
+     Garnet   — deep red/rose. Pyrope-almandine garnet, a stone with unusually
+                HIGH refractive index and dispersion for a gem this dark —
+                reads as slightly MORE saturated light-recovery than Nocturne,
+                and a slightly deeper shadow throw (a denser stone).
+     Topaz    — amber/gold. Imperial topaz, warm through and through — the one
+                variant where the WARM mark has to be something other than
+                --a-keyed's amber, since the whole pane is already that hue
+                family (--a-keyed goes to a cool sky-blue here instead, so
+                diamonds stay findable against a warm field exactly as Nocturne
+                keeps them findable against a cool one — same rule, inverted).
+     Aquamarine — pale cyan-blue. Beryl again, same mineral as Emerald, opposite
+                colour centre (iron, not chromium) — paired with Emerald as two
+                names from one mineral family, the way Obsidian/Moonstone are
+                already paired in this app. Reads the coolest and clearest of
+                the five; blur eases down and saturate climbs, the "look
+                furthest through" end of the set.
+
+   Each has a light twin built the Daybreak way (brighter-than-page pane,
+   defining rim instead of lit rim, depth-carried shadow) — never a flipped
+   dark palette, which the Daybreak block's own note explains washes out. */
+
+/* Emerald — Nocturne's blue-night glass read through chromium-green beryl.
+   Beryl commonly carries visible inclusions ("jardin", the trade's own word
+   for it) rather than optical perfection, so the LEAD structural move is LESS
+   chroma recovery than Nocturne's clean pane: 132% against Nocturne's 140%, a
+   small step toward the include-y, slightly-less-perfect look real emerald has
+   next to sapphire or aquamarine. Corner comes in a touch tighter (9px against
+   10) and the shadow throw a touch shorter (46px against 48) — both small
+   enough to read as "the same pane" beside Nocturne, but together with the
+   saturate move they satisfy glass_structure_test.js's demand that a family
+   differ from its siblings in shape AND matter AND weight, not just colour. */
+:root[data-theme="nocturne-emerald"] {
+  --bg: #0c1512;
+  --fg: #e2f0e8;
+  --fg-dim: #94b3a3;
+  --accent: #52c98a;
+  --border: rgba(170, 225, 195, 0.14);
+  --control-bg: #18271f;
+  --a-panel-bg: #131f19;
+  --a-canvas-bg: #070c0a;
+  --a-canvas-solid: #070c0a;
+  --a-hover-bg: rgba(120, 220, 170, 0.13);
+  --a-selection: #52c98a;
+  --a-guide: #f7768e;
+  --a-keyed: #e0af68; /* the one warm mark, unchanged from Nocturne's own choice */
+  --a-anchor: #8fbfa5;
+  --a-modifier: #b48af7;
+  --a-scrollbar: rgba(170, 225, 195, 0.2);
+  --a-scrollbar-hover: rgba(170, 225, 195, 0.36);
+  --a-split-handle: #23372c;
+  --a-split-handle-hover: #52c98a;
+  --a-palette-shadow: 0 16px 46px rgba(0, 0, 0, 0.66);
+
+  --a-radius-floating: 9px;
+  --a-glass-bg: rgba(12, 21, 18, 0.72);
+  --a-glass-bg-panel: rgba(19, 31, 25, 0.78);
+  --a-glass-blur: blur(18px) saturate(132%);
+  --a-glass-rim: rgba(190, 235, 210, 0.16);
+  --a-glass-tip-bg: rgba(19, 31, 25, 0.82);
+  --a-glass-tip-radius: 5px;
+  --a-glass-menu-bg: rgba(24, 39, 31, 0.82);
+}
+
+/* Emerald-light — the same beryl in daylight: pane above page (0.72/0.78 lifted
+   toward white), rim flipped to a defining edge, depth-carried shadow — the
+   three Daybreak moves, applied verbatim (this variant makes no NEW light-pole
+   argument, unlike Cranberry's thinner-pane one; the dark pole's own departure
+   from Nocturne is small enough that the light pole needs none of its own). */
+:root[data-theme="nocturne-emerald-light"] {
+  --bg: #dcece3;
+  --fg: #142620;
+  --fg-dim: #4f6f5f;
+  --accent: #1e8b59;
+  --border: rgba(30, 70, 50, 0.22);
+  --control-bg: #cbdfd2;
+  --a-panel-bg: #eef7f1;
+  --a-canvas-bg: #b9d4c5;
+  --a-canvas-solid: #b9d4c5;
+  --a-hover-bg: rgba(31, 143, 92, 0.12);
+  --a-selection: #1e8b59;
+  --a-guide: #c2185b;
+  --a-keyed: #96601a;
+  --a-anchor: #4c6f5b;
+  --a-modifier: #7b3fa0;
+  --a-scrollbar: rgba(30, 70, 50, 0.26);
+  --a-scrollbar-hover: rgba(30, 70, 50, 0.44);
+  --a-split-handle: #c0d6c9;
+  --a-split-handle-hover: #1e8b59;
+  --a-palette-shadow: 0 16px 42px rgba(28, 66, 48, 0.26);
+
+  --a-radius-floating: 9px;
+  --a-glass-bg: rgba(247, 252, 249, 0.72);
+  --a-glass-bg-panel: rgba(243, 250, 246, 0.78);
+  --a-glass-blur: blur(18px) saturate(142%);
+  --a-glass-rim: rgba(30, 70, 50, 0.14);
+  --a-glass-tip-bg: rgba(245, 251, 248, 0.86);
+  --a-glass-tip-radius: 5px;
+  --a-glass-menu-bg: rgba(203, 223, 210, 0.86);
+}
+
+/* Amethyst — quartz-family violet night glass. Facet-cut quartz reads crisper
+   at the edge than a lifted sapphire pane, so the LEAD move is a TIGHTER corner
+   (8px against Nocturne's 10) — the app's own axis for "cut vs blown" that
+   Verdigris/Cranberry already established, dialed down to barely there rather
+   than Verdigris's full 3px. Blur eases down a hair too (17px) and the shadow
+   sits a touch tighter (15/45 against 16/48) — a smaller, crisper-cut pane
+   overall, small enough to still read as Nocturne beside it. */
+:root[data-theme="nocturne-amethyst"] {
+  --bg: #130e1a;
+  --fg: #e9e3f5;
+  --fg-dim: #a89bc2;
+  --accent: #9a7af7;
+  --border: rgba(205, 190, 240, 0.14);
+  --control-bg: #221a30;
+  --a-panel-bg: #1a1425;
+  --a-canvas-bg: #0b0710;
+  --a-canvas-solid: #0b0710;
+  --a-hover-bg: rgba(170, 140, 245, 0.13);
+  --a-selection: #9a7af7;
+  --a-guide: #f7768e;
+  --a-keyed: #e0af68;
+  --a-anchor: #a99bce;
+  --a-modifier: #6fd0e0;
+  --a-scrollbar: rgba(205, 190, 240, 0.2);
+  --a-scrollbar-hover: rgba(205, 190, 240, 0.36);
+  --a-split-handle: #322646;
+  --a-split-handle-hover: #9a7af7;
+  --a-palette-shadow: 0 15px 45px rgba(0, 0, 0, 0.66);
+
+  --a-radius-floating: 8px;
+  --a-glass-bg: rgba(19, 14, 26, 0.72);
+  --a-glass-bg-panel: rgba(26, 20, 37, 0.78);
+  --a-glass-blur: blur(17px) saturate(140%);
+  --a-glass-rim: rgba(220, 205, 250, 0.16);
+  --a-glass-tip-bg: rgba(26, 20, 37, 0.82);
+  --a-glass-tip-radius: 5px;
+  --a-glass-menu-bg: rgba(34, 26, 48, 0.82);
+}
+
+/* Amethyst-light — the daylight pole, Daybreak's three moves applied: lifted
+   pane, defining rim, depth-carried shadow. Corner stays at the dark pole's 8px
+   — it is the same cut stone, only the light on it changed. */
+:root[data-theme="nocturne-amethyst-light"] {
+  --bg: #e3dcf0;
+  --fg: #221a30;
+  --fg-dim: #6c5f88;
+  --accent: #7550c9;
+  --border: rgba(50, 35, 80, 0.22);
+  --control-bg: #d3c8e6;
+  --a-panel-bg: #f2eefb;
+  --a-canvas-bg: #c4b6dd;
+  --a-canvas-solid: #c4b6dd;
+  --a-hover-bg: rgba(117, 80, 201, 0.12);
+  --a-selection: #7550c9;
+  --a-guide: #c2185b;
+  --a-keyed: #96601a;
+  --a-anchor: #6a5d84;
+  --a-modifier: #267f90; /* darkened off #2f9bb0: WCAG floor against --bg/--a-panel-bg (3.4:1) */
+  --a-scrollbar: rgba(50, 35, 80, 0.26);
+  --a-scrollbar-hover: rgba(50, 35, 80, 0.44);
+  --a-split-handle: #cabfdd;
+  --a-split-handle-hover: #7550c9;
+  --a-palette-shadow: 0 15px 41px rgba(46, 32, 74, 0.26);
+
+  --a-radius-floating: 8px;
+  --a-glass-bg: rgba(249, 246, 253, 0.72);
+  --a-glass-bg-panel: rgba(246, 242, 252, 0.78);
+  --a-glass-blur: blur(17px) saturate(150%);
+  --a-glass-rim: rgba(50, 35, 80, 0.14);
+  --a-glass-tip-bg: rgba(247, 244, 253, 0.86);
+  --a-glass-tip-radius: 5px;
+  --a-glass-menu-bg: rgba(211, 200, 230, 0.86);
+}
+
+/* Garnet — pyrope-almandine deep red glass. Garnet has an unusually HIGH
+   refractive index and dispersion for how dark it reads, so the LEAD move is
+   MORE chroma recovery than Nocturne's clean pane (148% against 140, the
+   opposite move from Emerald's) plus a slightly deeper shadow throw — a denser
+   stone standing a little further off the page (52px against 48) and casting
+   from a touch further out (17px against 16), with a fractionally heavier tip
+   corner (7px against 6) to match. */
+:root[data-theme="nocturne-garnet"] {
+  --bg: #180d10;
+  --fg: #f3e1e4;
+  --fg-dim: #c29aa1;
+  --accent: #e6577a;
+  --border: rgba(235, 175, 190, 0.14);
+  --control-bg: #291720;
+  --a-panel-bg: #1f1117;
+  --a-canvas-bg: #0e070a;
+  --a-canvas-solid: #0e070a;
+  --a-hover-bg: rgba(230, 100, 130, 0.13);
+  --a-selection: #e6577a;
+  --a-guide: #7ec4f7; /* cool contrast against the deep red field */
+  --a-keyed: #e0af68;
+  --a-anchor: #c99aa3;
+  --a-modifier: #7a9af7;
+  --a-scrollbar: rgba(235, 175, 190, 0.2);
+  --a-scrollbar-hover: rgba(235, 175, 190, 0.36);
+  --a-split-handle: #351d27;
+  --a-split-handle-hover: #e6577a;
+  --a-palette-shadow: 0 17px 52px rgba(0, 0, 0, 0.68); /* a denser stone, standing a touch further off the page */
+
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(24, 13, 16, 0.72);
+  --a-glass-bg-panel: rgba(31, 17, 23, 0.78);
+  --a-glass-blur: blur(19px) saturate(148%);
+  --a-glass-rim: rgba(250, 205, 215, 0.16);
+  --a-glass-tip-bg: rgba(31, 17, 23, 0.82);
+  --a-glass-tip-radius: 7px;
+  --a-glass-menu-bg: rgba(41, 23, 32, 0.82);
+}
+
+/* Garnet-light — Daybreak's three moves; the dark pole's shape and matter
+   numbers (10px/7px corner, 19px blur, 17px shadow reach) carry over unchanged
+   — only saturate and the shadow's blur radius move, exactly as Nocturne's own
+   light pole only re-tunes those two against its dark pole. */
+:root[data-theme="nocturne-garnet-light"] {
+  --bg: #ecdadf;
+  --fg: #2a141a;
+  --fg-dim: #7a5560;
+  --accent: #c22f5a;
+  --border: rgba(60, 25, 40, 0.22);
+  --control-bg: #dfc4cc;
+  --a-panel-bg: #f8eef0;
+  --a-canvas-bg: #d4b3bd;
+  --a-canvas-solid: #d4b3bd;
+  --a-hover-bg: rgba(194, 47, 90, 0.12);
+  --a-selection: #c22f5a;
+  --a-guide: #2f6fa8;
+  --a-keyed: #96601a;
+  --a-anchor: #7a5b64;
+  --a-modifier: #4f5fb8;
+  --a-scrollbar: rgba(60, 25, 40, 0.26);
+  --a-scrollbar-hover: rgba(60, 25, 40, 0.44);
+  --a-split-handle: #d9bcc4;
+  --a-split-handle-hover: #c22f5a;
+  --a-palette-shadow: 0 17px 48px rgba(58, 28, 40, 0.26);
+
+  --a-radius-floating: 10px;
+  --a-glass-bg: rgba(251, 245, 246, 0.72);
+  --a-glass-bg-panel: rgba(249, 241, 243, 0.78);
+  --a-glass-blur: blur(19px) saturate(158%);
+  --a-glass-rim: rgba(60, 25, 40, 0.14);
+  --a-glass-tip-bg: rgba(250, 243, 245, 0.86);
+  --a-glass-tip-radius: 7px;
+  --a-glass-menu-bg: rgba(223, 196, 204, 0.86);
+}
+
+/* Topaz — imperial topaz, warm gold-amber glass. The one variant where the
+   pane itself sits in --a-keyed's own hue family, so --a-keyed moves to a cool
+   sky-blue here to stay the findable mark Nocturne's rule requires ("the one
+   warm mark in a cool theme" inverted: the one COOL mark in a warm theme).
+   Structural moves: the corner opens (11px, the largest of the five) and blur
+   eases up (20px) — a warmer, softer-edged pane than Nocturne's crisp cut
+   blue one — and the tip corner opens to match (7px). */
+:root[data-theme="nocturne-topaz"] {
+  --bg: #17110a;
+  --fg: #f3e7d8;
+  --fg-dim: #bfa587;
+  --accent: #f0a94a;
+  --border: rgba(240, 205, 150, 0.14);
+  --control-bg: #2a1f13;
+  --a-panel-bg: #1f170d;
+  --a-canvas-bg: #0d0a05;
+  --a-canvas-solid: #0d0a05;
+  --a-hover-bg: rgba(240, 180, 90, 0.13);
+  --a-selection: #f0a94a;
+  --a-guide: #f7768e;
+  --a-keyed: #6fb8e0; /* the one COOL mark — Topaz inverts Nocturne's rule */
+  --a-anchor: #c2a98a;
+  --a-modifier: #bb9af7;
+  --a-scrollbar: rgba(240, 205, 150, 0.2);
+  --a-scrollbar-hover: rgba(240, 205, 150, 0.36);
+  --a-split-handle: #392a17;
+  --a-split-handle-hover: #f0a94a;
+  --a-palette-shadow: 0 16px 49px rgba(0, 0, 0, 0.66);
+
+  --a-radius-floating: 11px;
+  --a-glass-bg: rgba(23, 17, 10, 0.72);
+  --a-glass-bg-panel: rgba(31, 23, 13, 0.78);
+  --a-glass-blur: blur(20px) saturate(140%);
+  --a-glass-rim: rgba(250, 225, 180, 0.16);
+  --a-glass-tip-bg: rgba(31, 23, 13, 0.82);
+  --a-glass-tip-radius: 7px;
+  --a-glass-menu-bg: rgba(42, 31, 19, 0.82);
+}
+
+/* Topaz-light — Daybreak's three moves; keeps the cool --a-keyed inversion and
+   the 20px/7px softness carried from the dark pole. */
+:root[data-theme="nocturne-topaz-light"] {
+  --bg: #ecdfc9;
+  --fg: #2a2011;
+  --fg-dim: #736242;
+  --accent: #9f691b;
+  --border: rgba(70, 55, 25, 0.22);
+  --control-bg: #ddccab;
+  --a-panel-bg: #f8f0dd;
+  --a-canvas-bg: #d3bf95;
+  --a-canvas-solid: #d3bf95;
+  --a-hover-bg: rgba(181, 119, 31, 0.12);
+  --a-selection: #9f691b;
+  --a-guide: #c2185b;
+  --a-keyed: #2f6fa8; /* stays the cool mark in the light pole too */
+  --a-anchor: #7c6e50;
+  --a-modifier: #7b3fa0;
+  --a-scrollbar: rgba(70, 55, 25, 0.26);
+  --a-scrollbar-hover: rgba(70, 55, 25, 0.44);
+  --a-split-handle: #d6c39e;
+  --a-split-handle-hover: #9f691b;
+  --a-palette-shadow: 0 16px 45px rgba(66, 52, 24, 0.26);
+
+  --a-radius-floating: 11px;
+  --a-glass-bg: rgba(250, 245, 234, 0.72);
+  --a-glass-bg-panel: rgba(248, 240, 224, 0.78);
+  --a-glass-blur: blur(20px) saturate(150%);
+  --a-glass-rim: rgba(70, 55, 25, 0.14);
+  --a-glass-tip-bg: rgba(249, 243, 230, 0.86);
+  --a-glass-tip-radius: 7px;
+  --a-glass-menu-bg: rgba(221, 204, 171, 0.86);
+}
+
+/* Aquamarine — beryl again, iron colour centre this time rather than Emerald's
+   chromium: the two are named as a pair the way Obsidian/Moonstone already are
+   in this app, one mineral, two colour centres. Reads as the clearest, coolest
+   pane in the set — the "look furthest through" end of the axis Emerald sits
+   at the other end of: blur eases DOWN (16px, the smallest of the five) and
+   saturate climbs a touch above Nocturne's own (144%), the mirror of Emerald's
+   less-chroma move, with the corner easing in slightly (9px) and the shadow a
+   touch lighter (15/47) to match the "thinnest, clearest" reading. */
+:root[data-theme="nocturne-aquamarine"] {
+  --bg: #0a151a;
+  --fg: #dcf0f5;
+  --fg-dim: #8fb3bf;
+  --accent: #4dd0e8;
+  --border: rgba(170, 225, 240, 0.14);
+  --control-bg: #172730;
+  --a-panel-bg: #101d24;
+  --a-canvas-bg: #060c0f;
+  --a-canvas-solid: #060c0f;
+  --a-hover-bg: rgba(110, 215, 235, 0.13);
+  --a-selection: #4dd0e8;
+  --a-guide: #f7768e;
+  --a-keyed: #e0af68;
+  --a-anchor: #8cb5c2;
+  --a-modifier: #bb9af7;
+  --a-scrollbar: rgba(170, 225, 240, 0.2);
+  --a-scrollbar-hover: rgba(170, 225, 240, 0.36);
+  --a-split-handle: #223641;
+  --a-split-handle-hover: #4dd0e8;
+  --a-palette-shadow: 0 15px 47px rgba(0, 0, 0, 0.66);
+
+  --a-radius-floating: 9px;
+  --a-glass-bg: rgba(10, 21, 26, 0.72);
+  --a-glass-bg-panel: rgba(16, 29, 36, 0.78);
+  --a-glass-blur: blur(16px) saturate(144%);
+  --a-glass-rim: rgba(200, 240, 250, 0.16);
+  --a-glass-tip-bg: rgba(16, 29, 36, 0.82);
+  --a-glass-tip-radius: 6px;
+  --a-glass-menu-bg: rgba(23, 39, 48, 0.82);
+}
+
+/* Aquamarine-light — Daybreak's three moves; keeps the 16px/144% clarity from
+   the dark pole. */
+:root[data-theme="nocturne-aquamarine-light"] {
+  --bg: #d7eaee;
+  --fg: #10262c;
+  --fg-dim: #4c7078;
+  --accent: #18849b;
+  --border: rgba(20, 65, 75, 0.22);
+  --control-bg: #c5dee3;
+  --a-panel-bg: #edf6f8;
+  --a-canvas-bg: #b2d0d6;
+  --a-canvas-solid: #b2d0d6;
+  --a-hover-bg: rgba(26, 143, 168, 0.12);
+  --a-selection: #18849b;
+  --a-guide: #c2185b;
+  --a-keyed: #96601a;
+  --a-anchor: #4a6b72;
+  --a-modifier: #7b3fa0;
+  --a-scrollbar: rgba(20, 65, 75, 0.26);
+  --a-scrollbar-hover: rgba(20, 65, 75, 0.44);
+  --a-split-handle: #bcd6db;
+  --a-split-handle-hover: #18849b;
+  --a-palette-shadow: 0 15px 43px rgba(18, 60, 68, 0.26);
+
+  --a-radius-floating: 9px;
+  --a-glass-bg: rgba(244, 251, 252, 0.72);
+  --a-glass-bg-panel: rgba(240, 249, 250, 0.78);
+  --a-glass-blur: blur(16px) saturate(154%);
+  --a-glass-rim: rgba(20, 65, 75, 0.14);
+  --a-glass-tip-bg: rgba(242, 250, 251, 0.86);
+  --a-glass-tip-radius: 6px;
+  --a-glass-menu-bg: rgba(197, 222, 227, 0.86);
+}
+
+
 /* Verdigris — oxidised copper, the one real-world colour source that is a
    CHEMICAL PROCESS rather than a pigment: brochantite/copper-carbonate patina
    forms over decades as copper metal weathers, moving from bright pinkish

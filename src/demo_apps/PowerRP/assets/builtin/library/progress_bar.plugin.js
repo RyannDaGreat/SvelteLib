@@ -855,6 +855,41 @@ return {
     return applyEffects(ops, s, world, { x: 0, y: 0, w, h });
   },
   /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the bar's two REGIONS as cubic contours, from the SAME `trackPathD` /
+   * `fillPathD` pair emit() draws with — so a bar at 40% morphs from the picture
+   * at 40%, its partition where the author put it.
+   *
+   * BOTH REGIONS, NOT THE OUTLINE. emit() draws the track, the fill, and then
+   * ONCE a whole-bar border — and the border is drawn separately precisely because
+   * stroking the two partition halves would ink the progress cut as a line down
+   * the middle. The payload carries the two REGIONS because they are the bar's
+   * ink and they are what carries `fraction`; a payload of the outline alone would
+   * morph a full-length rounded rect regardless of how full the bar is, which is
+   * the one thing about this widget an author is looking at.
+   *
+   * Either region can be ABSENT — `trackPathD` returns null at fraction 1 and
+   * `fillPathD` at fraction 0 — and both are dropped here exactly as emit() drops
+   * them, so an empty or a full bar hands over the one contour it actually shows.
+   */
+  morphPaths(s) {
+    const w = s.w ?? 0, h = s.h ?? 0;
+    const cornerRadius = s.cornerRadius ?? 0;
+    const orientation = s.orientation ?? "horizontal";
+    const opacity = s.opacity ?? 1;
+    const trackD = trackPathD(w, h, cornerRadius, s.fraction, orientation);
+    const fillD = fillPathD(w, h, cornerRadius, s.fraction, orientation);
+    const sources = [];
+    if (trackD !== null) sources.push({ d: trackD, paint: { fill: s.trackColor ?? null, stroke: null, strokeWidth: 0, opacity } });
+    if (fillD !== null) sources.push({ d: fillD, paint: { fill: s.fillColor ?? null, stroke: null, strokeWidth: 0, opacity } });
+    return morphPayloadFromPaths(sources, { w, h });
+  },
+  /** Pure function. Why this bar cannot morph YET, or null — emit()'s own
+   * "nothing to draw" case: a zero-size bar has neither region. */
+  morphNotReady(s) {
+    return (s.w ?? 0) > 0 && (s.h ?? 0) > 0 ? null : "a bar with extent (this one has zero size)";
+  },
+  /**
    * Pure function. ONE modifier point on the FILL'S LEADING EDGE — the "PPT yellow
    * square" that scrubs `fraction` by dragging along the bar. The Inspector field
    * and any `=` binding keep working untouched: this handle is a SURFACING of the
