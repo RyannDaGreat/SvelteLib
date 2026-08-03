@@ -772,7 +772,7 @@ function linearCenterWavelength(g) {
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.25, y: 0.5}, wavelength: 1}).from  // {x: -0.25, y: 0.5}  (center shifted, w=1 → pad)
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, center: {x: 0.5, y: 0.5}, wavelength: 0.5, phase: 1})  // {from: {x: 0.25, y: 0.5}, to: {x: 0.75, y: 0.5}, tile: "mirror", collapsed: false}  (phase 1 wraps to phase 0 — one whole cycle is identity, in every mode)
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0.5, spread: "loop", phase: 1}).from  // {x: 0.25, y: 0.5}  (loop's cycle is ONE ramp, and phase 1 is still identity)
- * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0.5, spread: "loop", phase: 0.5}).from  // {x: 0.75, y: 0.5}  (half a loop cycle = one whole ramp along)
+ * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0.5, spread: "loop", phase: 0.5}).from  // {x: 0.5, y: 0.5}  (half a loop cycle = half a ramp along: from 0.25 → 0.5)
  * @example linearGradientRender({from: {x: 0, y: 0.5}, to: {x: 1, y: 0.5}, wavelength: 0}).collapsed  // true  (zero wavelength: paint the average colour, ignore the endpoints)
  */
 export function linearGradientRender(paint) {
@@ -841,18 +841,21 @@ export function collapsedGradientColor(paint) {
  * the covered range `Extend` clamps, which is exactly right for PAD and invisible
  * for the other two (nothing is left to paint there).
  *
- * A wavelength of 1 needs exactly one tile and no stitching at all — the untouched
- * legacy shading, byte-identical.
+ * A wavelength of 1 never reaches here in practice: linearGradientRender reports
+ * tile "pad" for a whole-axis ramp, so it takes the untouched single-ramp shading
+ * and no stitching at all. The value below is what the formula yields, not a case
+ * this feeds.
  *
  * Args:
  *   wavelength (number): the ramp's fraction of the axis (> 0)
  *
  * Returns:
- *   number — tiles to emit on EACH SIDE of the base ramp, plus the base (odd total)
+ *   number — tiles to emit on EACH SIDE of the base ramp (the base itself is extra,
+ *   so the stitched total is 2·span + 1)
  *
- * @example pdfTileSpan(1) // 1  (whole-axis ramp: one tile each side of the base)
- * @example pdfTileSpan(0.5) // 3  (two ramps cover the axis, plus a margin tile each side)
- * @example pdfTileSpan(0.25) // 5
+ * @example pdfTileSpan(1) // 2  (one tile to cover the axis, plus one of margin)
+ * @example pdfTileSpan(0.5) // 3  (two ramps cover the axis, plus a margin tile)
+ * @example pdfTileSpan(0.25) // 5  (four to cover, plus margin)
  */
 export function pdfTileSpan(wavelength) {
   return Math.ceil(1 / wavelength) + 1;
