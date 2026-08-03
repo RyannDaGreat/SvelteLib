@@ -1316,21 +1316,22 @@
     // the members' collective box and re-binds, which is Ungroup followed by Group
     // with no intervening edit.
     //
-    // `requires` is a FUNCTION because this gate has two disqualifying conditions
-    // with different true sentences — nothing selected can be fitted at all, versus
-    // a selection that CAN be but already fits — and a fixed string would be a
-    // confident wrong answer for one of them (the `save-project` precedent). Read
-    // it through core/commands.commandUnavailableReason, never as cmd.requires.
+    // `requires` is a FUNCTION because this gate has THREE disqualifying conditions
+    // with different true sentences — nothing with a box is selected, everything
+    // already matches its box, or something differs but every differing widget
+    // REFUSED — and a fixed string would be a confident wrong answer for two of
+    // them (the `save-project` precedent). The clauses live on the app beside the
+    // worklist that decides them (fitToInkBoundsRequires), so the gate cannot
+    // describe a condition the run does not test. Read it through
+    // core/commands.commandUnavailableReason, never as cmd.requires.
     {
       id: "fit-to-ink-bounds",
       title: "Set Size to Ink Bounds",
       icon: "mdi:fit-to-page-outline",
       aliases: ["fit to contents", "shrink to fit", "physical boundary", "actual size", "fit box to text"],
       when: (a) => a.canFitToInkBounds(),
-      requires: (a) => (a.selectedNodes().some((n) => n.plugin.capabilities.bbox)
-        ? "a selected widget whose contents leave its box — everything selected already fits what it holds, so there is nothing to resize"
-        : "a selected widget with a box — this resizes a box to fit what is inside it"),
-      help: "Makes the box match what is actually drawn. Text that has overflowed its box (grown past the bottom, or run off the side) gets a box the right size for the type, which is also what makes it clickable and stops it being culled. On a GROUP it re-captures the members' collective box and re-binds the group at that pose — the same result as ungrouping and immediately regrouping, with the members left exactly where they are.",
+      requires: (a) => a.fitToInkBoundsRequires(),
+      help: "Makes the box match what is actually drawn, in EITHER direction: a box larger than its ink shrinks to it just as one smaller than its ink grows (user, 2026-08-02 — \"getting smaller is a legitimate use case too\"). All the tool needs is a difference. It changes the numbers and not the picture — what is on screen must not move, at every point of a tween — so a widget whose content is sized BY its box declines rather than let itself be rescaled. On a GROUP it re-captures the members' collective box and re-binds the group at that pose — the same result as ungrouping and immediately regrouping, with the members left exactly where they are.",
       run: (a) => a.fitSelectionToInkBounds(),
     },
     // GROUPS (manifest rough draft): Group Selection needs ≥2 groupable items;

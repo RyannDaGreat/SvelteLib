@@ -180,6 +180,34 @@ export function plaintextInkBounds(state) {
  * then compensate as above and delete this branch. tests/reparametrize_law_test.mjs
  * will tell you immediately whether you have actually done it.
  *
+ * ── THE REFUSAL WAS THREE TIMES WIDER THAN THE DEFECT (2026-08-02, measured) ──
+ * The residue above is REAL, but the guard that avoided it refused a much larger
+ * set than the one that drifts, and shrinking was the casualty. The user hit it
+ * head-on (verbatim): "it just has to be different from the box in order to use
+ * the tool. Getting smaller is a legitimate use case too". Three over-refusals,
+ * each confirmed by byte-comparing every tween alpha before being lifted:
+ *
+ *   · NO VERTICAL BOX (h absent or 0). boxH was Infinity, so "boxH > stackH" was
+ *     trivially true and EVERY non-top valign refused — yet a box with no height
+ *     has no slack to redistribute. LAW HOLDS at every alpha; now accepted.
+ *   · ZERO SLACK with a non-top valign. The guard compared boxH against the
+ *     TOP-valign ink height, the wrong reference for middle/bottom, so a box
+ *     exactly as tall as its type refused. LAW HOLDS; now accepted.
+ *   · valign "bottom" WITH slack. Its ink rect is vOffset + stackHeight and
+ *     vOffset is all of the slack, so ink.h == boxH identically — the "fit" never
+ *     changed h at all. A no-op cannot move type. LAW HOLDS; now accepted.
+ *
+ * What genuinely drifts, and still refuses, is exactly ONE case: valign "middle"
+ * in a real vertical box with slack, where re-boxing makes valign re-halve a
+ * smaller slack. Hence the guard's shape — it refuses when the fit would CHANGE
+ * a finite height under a redistributing valign, not merely when slack exists.
+ *
+ * WIDTH SHRINK IS UNREACHABLE, not refused, and that is worth knowing before
+ * anyone builds an x-compensator for it: core/richtext.textInkBounds reports
+ * `w: Math.max(boxW, layout.width)`, so the ink width is never BELOW the wrap
+ * box. A short line in a wide box reports the wide box (measured). Narrowing to
+ * the widest line would need that seam to change first.
+ *
  * ── WHY THE ACCEPTED CASE IS TWEEN-SAFE ──────────────────────────────────────
  * It writes NO interior compensation at all ({}), so there is nothing to lerp out
  * of step: the box's own x/y/w/h lerp, and because the type hangs from the box's
@@ -206,6 +234,10 @@ export function plaintextInkBounds(state) {
  * @example plaintextReparametrizeToBox({text: "aaaa", x: 0, y: 0, w: 15, h: 100, size: 10}, {x: 0, y: 0, w: 40, h: 10}) // null
  * @example // REFUSAL: a middle-aligned box TALLER than its type carries a valign residue this cannot measure
  * @example plaintextReparametrizeToBox({text: "a", x: 0, y: 0, w: 100, h: 200, size: 10, valign: "middle"}, {x: 0, y: 0, w: 100, h: 105}) // null
+ * @example // SHRINK, ACCEPTED: no vertical box at all (h absent) — a box with no height has no slack to redistribute
+ * @example plaintextReparametrizeToBox({text: "a", x: 0, y: 0, w: 100, h: 0, size: 10, valign: "middle"}, {x: 0, y: 0, w: 100, h: 12}) // {}
+ * @example // SHRINK, ACCEPTED: valign "bottom" — its ink rect always spans the whole box, so the fit never changes h
+ * @example plaintextReparametrizeToBox({text: "a", x: 0, y: 0, w: 100, h: 200, size: 10, valign: "bottom"}, {x: 0, y: 0, w: 100, h: 200}) // {}
  */
 export function plaintextReparametrizeToBox(state, newBox) {
   if (plaintextIsEmpty(state.text)) return null; // no ink: nothing to reparametrize
@@ -214,11 +246,27 @@ export function plaintextReparametrizeToBox(state, newBox) {
   // equality here is exact when the text fits, and any excess is a real overrun.
   const boxW = (state.w ?? 0) > 0 ? (state.w ?? 0) : Infinity;
   if (newBox.w > boxW) return null;
-  // VERTICAL SLACK ⇒ REFUSE (case 1 above). Detected as "the box is taller than
-  // the stack", which is exactly when valign has room to redistribute.
+  // VERTICAL SLACK ⇒ REFUSE (case 2 above) — but ONLY where the fit actually
+  // MOVES the type, which is narrower than "this box has slack" in three ways
+  // this guard used to get wrong. All three were measured, not reasoned:
+  //
+  //   · valign "top" never redistributes: the stack hangs from the top edge.
+  //   · NO VERTICAL BOX (h absent/0 ⇒ boxH Infinity) does not redistribute
+  //     EITHER, and the old `boxH > stackH` made that trivially true, so every
+  //     non-top valign in an auto-height box refused. There is no slack in a box
+  //     that has no height to distribute.
+  //   · THE FIT MUST ACTUALLY CHANGE h. For valign "bottom" the ink rect is
+  //     vOffset + stackHeight, and vOffset is ALL the slack, so ink.h == boxH
+  //     identically (measured across every text length and box height tried).
+  //     Re-boxing writes the height it already had — a no-op cannot move type.
+  //
+  // What is left after those three is the ONE case that genuinely drifts:
+  // valign "middle" in a real vertical box with slack, where the ink height is
+  // strictly less than the box and re-boxing makes valign re-halve a smaller
+  // slack. That is the two-layout-engine residue documented above.
   const boxH = (state.h ?? 0) > 0 ? (state.h ?? 0) : Infinity;
   const valign = state.valign ?? "top";
-  if (valign !== "top" && boxH > plaintextInkBounds({ ...state, valign: "top", h: 0 }).h) return null;
+  if (valign !== "top" && Number.isFinite(boxH) && newBox.h < boxH) return null;
   // NOTHING LEFT TO COMPENSATE. Reaching here means the type starts at the box's
   // top edge and runs down from it — the ink rect's origin IS the box origin — so
   // the new box holds the same stack laid out the same way. The empty patch is

@@ -3231,24 +3231,33 @@ export class PowerRPApp {
   }
 
   /**
-   * Query (pure over the given nodes). THE REFUSAL SENTENCE — which selected
-   * widgets declined the reparametrization, and why anyone should care.
+   * Query (pure over the given nodes). THE REFUSAL CLAUSE — which selected widgets
+   * declined the reparametrization, and why. Lowercase, no terminal period, so it
+   * composes into BOTH a `requires` clause and a reported sentence; there is one
+   * wording because two would drift.
    *
    * It names the WIDGETS rather than restating the rule abstractly, because the
-   * question a user actually has is "why did nothing happen to THAT one". The
-   * reason clause is shared: a widget refuses precisely when it cannot take the
-   * new box without its picture changing, which is the tool's whole contract.
+   * question a user actually has is "why did nothing happen to THAT one".
+   *
+   * THE REASON IS NOT ONE REASON, and this used to claim it was — every refusal
+   * was explained as "their content is sized BY the box", which is true of the
+   * content-stretched family (latex, image, svg) and FALSE of the two cases most
+   * likely to be hit. A text box refuses over a valign residue and a cropped group
+   * over its clip; telling either user their content is box-sized is a confident
+   * wrong answer of exactly the kind this workstream exists to delete. So the
+   * cause is asked of the refusing widget's own kind and the shared half is only
+   * what is genuinely shared: the picture would change.
    *
    * @param {object[]} refused - the [{node}] entries whose patch came back null
-   * @returns {string} a sentence, ending in a period
+   * @returns {string} a lowercase clause, no terminal period
    */
-  #inkFitRefusalReason(refused) {
+  #inkFitRefusalClause(refused) {
     const names = refused.map(({ node }) => node.plugin.title ?? node.type);
     const unique = [...new Set(names)];
     const list = unique.length === 1 ? unique[0]
       : unique.length === 2 ? `${unique[0]} and ${unique[1]}`
       : `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
-    return `${refused.length} selected widget${refused.length === 1 ? "" : "s"} (${list}) cannot be re-boxed without changing what they draw — their content is sized BY the box, so fitting it would rescale or reflow the picture rather than just relabel it.`;
+    return `${refused.length} selected widget${refused.length === 1 ? "" : "s"} (${list}) would be redrawn by the fit rather than merely re-measured, so ${refused.length === 1 ? "it declines" : "they decline"} it: a widget whose content is sized BY its box is rescaled by a re-box, and text with a centred vertical alignment carries a slack residue its two layout engines measure differently`;
   }
 
   /** Query. Would "Set size to ink bounds" change anything? The command's `when`.
@@ -3256,6 +3265,42 @@ export class PowerRPApp {
    * not count — enabling on it would promise a change the run declines to make. */
   canFitToInkBounds() {
     return this.#inkFitAccepted().length > 0;
+  }
+
+  /**
+   * Query. WHY "Set size to ink bounds" is unavailable — the command's `requires`
+   * clause, computed from the SAME worklist the run uses so the sentence and the
+   * behaviour cannot drift apart.
+   *
+   * THE GATE IS DIFFERENCE, NOT OVERFLOW (user ruling, 2026-08-02, verbatim):
+   * "no, it just has to be different from the box in order to use the tool.
+   * Getting smaller is a legitimate use case too". The code has always gated on
+   * ANY disagreement (#inkFitTargets compares all four edges) — the OVERFLOW
+   * language lived only in the sentences, which is the worst place for it: the
+   * user shrank a widget, the tool declined for an unrelated reason, and the
+   * palette explained the refusal by describing a condition that was not the one
+   * being tested. A wrong reason is more expensive than no reason, because it
+   * sends the user to fix the wrong thing.
+   *
+   * THREE DISQUALIFYING CONDITIONS, THREE TRUE SENTENCES — which is why `requires`
+   * is a FUNCTION here (the `save-project` precedent). A single fixed string would
+   * be a confident wrong answer for two of the three:
+   *   (a) nothing with a box is selected — the tool has no subject at all;
+   *   (b) everything selected already MATCHES its box — no difference to act on;
+   *   (c) something DOES differ, but every differing widget REFUSED the
+   *       reparametrization — the honest answer here is the refusal's own reason
+   *       (the picture cannot survive the re-box), never "it already fits", which
+   *       would flatly contradict what the user is looking at.
+   *
+   * @returns {string} a lowercase clause completing "Unavailable — requires …"
+   */
+  fitToInkBoundsRequires() {
+    if (!this.selectedNodes().some((n) => n.plugin.capabilities.bbox))
+      return "a selected widget with a box — this resizes a box to fit what is inside it";
+    const refused = this.#inkFitTargets().filter((t) => t.patch === null);
+    if (refused.length > 0)
+      return `a selected widget that can be re-boxed without changing what it draws — ${this.#inkFitRefusalClause(refused)}`;
+    return "a selected widget whose ink differs from its box — every selected box already matches what it holds exactly, so there is nothing to change";
   }
 
   /**
@@ -3301,16 +3346,21 @@ export class PowerRPApp {
     const accepted = targets.filter((t) => t.patch !== null);
     const refused = targets.filter((t) => t.patch === null);
     if (accepted.length === 0) {
+      // THE NO-OP REPORT SAYS WHICH NO-OP IT WAS. "Already matches" and "refused"
+      // are different facts and the user can tell them apart on screen, so a
+      // report that conflated them would be contradicted by what they are looking
+      // at. Neither sentence mentions overflow: the gate is DIFFERENCE (user,
+      // 2026-08-02 — "getting smaller is a legitimate use case too").
       reportAction(refused.length > 0
-        ? `Set size to ink bounds: ${this.#inkFitRefusalReason(refused)} Nothing was changed.`
-        : "Set size to ink bounds: nothing selected has contents that leave its box — every selected box already matches what it holds. Nothing was changed.");
+        ? `Set size to ink bounds: ${this.#inkFitRefusalClause(refused)}. Nothing was changed.`
+        : "Set size to ink bounds: every selected box already matches its ink exactly — there is no difference to fit. Nothing was changed.");
       return;
     }
     // A MIXED selection still runs on what it can, and says what it skipped —
     // fitting three of four widgets while staying silent about the fourth is how
     // a user concludes the tool is flaky.
     if (refused.length > 0)
-      reportAction(`Set size to ink bounds: fitted ${accepted.length} widget${accepted.length === 1 ? "" : "s"}. ${this.#inkFitRefusalReason(refused)}`);
+      reportAction(`Set size to ink bounds: fitted ${accepted.length} widget${accepted.length === 1 ? "" : "s"}. ${this.#inkFitRefusalClause(refused)}.`);
     const pairs = [];
     for (const { node, newBox, patch } of accepted) {
       // The box the widget was ASKED about is the box that gets written — the

@@ -143,10 +143,22 @@ const TEXT_BOXES = {
   slack: { w: 240, h: 260 },
 };
 
-// WHICH STATES ARE EXPECTED TO ACCEPT: those where the stack hangs from the box's
-// TOP edge, so h is not an input to where the glyphs go. That is valign "top"
-// (any box), plus any valign on an OVERFLOWING box (no slack to redistribute).
-const expectsAccept = (shape, valign) => valign === "top" || shape === "overflowing";
+// WHICH STATES ARE EXPECTED TO ACCEPT — and this predicate was WIDENED on
+// 2026-08-02 after the user hit the tool's over-refusal (verbatim: "it just has
+// to be different from the box in order to use the tool. Getting smaller is a
+// legitimate use case too"). It used to read `valign === "top" || shape ===
+// "overflowing"`, which refused three families the renderer proves are exact.
+//
+// The rule that survives measurement: a fit is refused only when it would CHANGE
+// a finite box height under a valign that REDISTRIBUTES slack. That is "middle"
+// with real slack, and nothing else:
+//   · "top" never redistributes — the stack hangs from the top edge.
+//   · "bottom" WITH slack has ink.h == box.h identically (its rect spans from the
+//     box top to the type's bottom, so vOffset + stackHeight == boxH). The fit is
+//     a NO-OP on h, and a no-op cannot move type. Measured across every text
+//     length and box height tried; asserted directly below as BOTTOM_FIT_IS_NOOP.
+//   · an OVERFLOWING box has no slack for any valign.
+const expectsAccept = (shape, valign) => valign !== "middle" || shape === "overflowing";
 
 for (const [shape, box] of Object.entries(TEXT_BOXES)) {
   for (const valign of ["top", "middle", "bottom"]) {
@@ -161,6 +173,53 @@ for (const [shape, box] of Object.entries(TEXT_BOXES)) {
       } else {
         check(patch === null, `${label}: the widget ACCEPTED a fit it cannot honour. A box taller than its type carries a valign residue that plaintextReparametrizeToBox has no way to measure (the ink rect and the renderer use two different layout engines) — accepting it moves the type.`);
       }
+    }
+  }
+}
+
+// ── SHRINK: THE NEWLY ACCEPTED FAMILIES (user ruling, 2026-08-02) ─────────────
+// "Getting smaller is a legitimate use case too". Each family below was REFUSED
+// before this wave and is byte-identical at every alpha; the law harness is the
+// evidence, so a future re-tightening has to face it.
+
+// WHY "bottom" IS SAFE, stated as arithmetic rather than left to the pixels: its
+// ink rect always spans the whole box, so the fit never changes h at all. If this
+// ever stops holding, the acceptance above is no longer justified by "it is a
+// no-op" and must be re-measured rather than assumed.
+{
+  const state = { ...TEXT_BASE, ...TEXT_BOXES.slack, valign: "bottom", align: "left" };
+  const ink = plaintextInkBounds(state);
+  check(Math.abs(ink.h - state.h) < 1e-9,
+    `BOTTOM_FIT_IS_NOOP: a bottom-valign box's ink height (${ink.h}) is supposed to equal its box height (${state.h}) — that identity is WHY the slack/bottom case is accepted. It no longer holds, so the fit now changes h under a redistributing valign and the acceptance needs re-measuring.`);
+}
+
+// SHRINK FAMILY 1 — NO VERTICAL BOX (h absent/0). Every non-top valign used to
+// refuse here because the guard compared against an Infinite box height, yet a
+// box with no height has no slack to redistribute.
+for (const valign of ["middle", "bottom"]) {
+  for (const align of ["left", "center"]) {
+    const state = { ...TEXT_BASE, w: 240, h: 0, valign, align };
+    const ink = plaintextInkBounds(state);
+    const label = `plaintext shrink h=0 ${valign}/${align}`;
+    const patch = plaintextReparametrizeToBox(state, { x: state.x, y: state.y, w: ink.w, h: ink.h });
+    check(patch !== null, `${label}: refused a fit with NO vertical box — there is no slack to redistribute when the box has no height, so this must accept.`);
+    if (patch) await assertLawHolds(label, state, { ...patch, w: ink.w, h: ink.h });
+  }
+}
+
+// SHRINK FAMILY 2 — ZERO SLACK under a non-top valign. The old guard compared the
+// box against the TOP-valign ink height, the wrong reference for middle/bottom,
+// so a box exactly as tall as its type refused.
+{
+  const stackH = plaintextInkBounds({ ...TEXT_BASE, w: 240, h: 0, valign: "top" }).h;
+  for (const valign of ["middle", "bottom"]) {
+    for (const align of ["left", "center"]) {
+      const state = { ...TEXT_BASE, w: 240, h: stackH, valign, align };
+      const ink = plaintextInkBounds(state);
+      const label = `plaintext shrink zero-slack ${valign}/${align}`;
+      const patch = plaintextReparametrizeToBox(state, { x: state.x, y: state.y, w: ink.w, h: ink.h });
+      check(patch !== null, `${label}: refused a fit on a box exactly as tall as its type — there is no slack, so valign has nothing to redistribute and the re-box cannot move the glyphs.`);
+      if (patch) await assertLawHolds(label, state, { ...patch, w: ink.w, h: ink.h });
     }
   }
 }
@@ -291,6 +350,28 @@ const HULL_BOX = { x: 40 + 60, y: 20 + 60, w: 240, h: 180 };
   check(cropped !== before, "group: the CROPPED case is supposed to DRIFT when re-boxed (that is why it refuses) — it rendered identically instead, so either the crop is not rendering or the refusal is now unnecessary. Re-measure before relaxing it.");
 }
 
+// GROUP SHRINK IS THE CASE ABOVE (the box is 400x320 and the hull 240x180, so the
+// fit SHRINKS it) — recorded here because the user's report was about shrinking
+// and "the group path already handles it" is the sort of claim that should be
+// pinned rather than asserted. The complementary direction: a group boxed SMALLER
+// than its members' hull grows to it, through the same bind rewrite.
+{
+  const [doc, gid] = groupDoc({ x: 140, y: 120, w: 80, h: 60, bind: { x: 140, y: 120, rotation: 0, scale: 1 } });
+  const patch = groupReparametrizeToBox({ x: 140, y: 120, w: 80, h: 60, rotation: 0, scale: 1 }, HULL_BOX);
+  check(patch !== null, "group GROW: a group boxed smaller than its members' hull must accept — the bind rewrite is direction-agnostic.");
+  const before = await shaAt(doc, 0, 1);
+  let two; [two] = withNewSlide(doc, 0);
+  for (const [key, value] of Object.entries({ ...HULL_BOX, ...patch })) {
+    if (value !== null && typeof value === "object")
+      for (const [sub, leaf] of Object.entries(value)) two = keyframed(two, 1, ["items", gid, key, sub], leaf);
+    else two = keyframed(two, 1, ["items", gid, key], value);
+  }
+  for (const alpha of ALPHAS) {
+    const mid = await shaAt(two, 1, alpha);
+    check(mid === before, `group GROW: alpha ${alpha} differs (${mid} vs ${before}) — growing a group's box to its members' hull must be as inert as shrinking it.`);
+  }
+}
+
 // ── THE REFUSERS: every registered widget either accepts or is absent ─────────
 // Not a list of names (which rots as widgets are added) but a sweep: whatever
 // declares the hook must return an object or null for a plausible box, and
@@ -316,4 +397,4 @@ if (failures.length) {
   console.error(`\n${failures.length} failure(s) — the ink-bounds reparametrization law is violated.`);
   process.exit(1);
 }
-console.log(`reparametrize_law: OK — static + tween identity at alphas [${ALPHAS.join(", ")}] for plaintext (3 valigns x 2 aligns) and group, with negative controls; refusals pinned for wrap-reflow text, empty text, and cropped groups.`);
+console.log(`reparametrize_law: OK — static + tween identity at alphas [${ALPHAS.join(", ")}] for plaintext (3 valigns x 2 aligns), the SHRINK families (no-vertical-box + zero-slack, 2 valigns x 2 aligns each), and group in BOTH directions, with negative controls; refusals pinned for wrap-reflow text, empty text, slack+middle text, and cropped groups.`);
