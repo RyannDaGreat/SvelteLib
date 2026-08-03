@@ -27,6 +27,8 @@ import { setInkMeasure, inkMeasure, hasInkMeasure } from "../core/ink_metrics.js
 import { plaintextPlugin, plaintextInkBounds } from "../plugins/plaintext.js";
 import { clickableLocalRect, pickNode } from "../core/derive.js";
 import { localBoundsOf, defaultCanSkip } from "../core/view.js";
+import { graphLinePlugin } from "../plugins/graph_line.js";
+import { GRAPH_LINE_PRESETS } from "../plugins/graph_presets.js";
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -148,6 +150,79 @@ test("CULLING: text whose BOX is offscreen but whose INK reaches into view is NO
   assert.equal(defaultCanSkip(node, view), false, "the overflowing ink is visible, so the node must be drawn");
   const farAway = plaintextNode({ text: "aaaa bbbb", x: 0, y: 0, w: 200, h: 40, size: 36 }, { x: 0, y: 99999, rotation: 0, scale: 1 });
   assert.equal(defaultCanSkip(farAway, view), true, "genuinely offscreen text still culls");
+});
+
+// ── A CURVE'S INK IS WHAT IT PAINTS (the equation-zoo "wackadoodle" report) ────
+//
+// User, 2026-08-02: "There's a glitch I'm worried about when I am selecting
+// different equations in the equation zoo … the ink bounds just go crazy … did
+// our distinction between ink bounds and other bounds just make a lot of widgets
+// go crazy?"
+//
+// MEASURED ANSWER: NO. graphLine's rect is EXACT — it equals the hull of the `d`
+// its own emit() produces, inflated by half the stroke, for every zoo preset.
+// The rects really are enormous (an Epicycloid in the DEFAULT ±6.28 window paints
+// a 21179x68248 local rect out of a 400x300 box), but that is HONEST: the plugin
+// clips nothing, so the polyline genuinely paints there. The size comes from the
+// preset FRAMING tension introduced by 83acbd6 (a zoo preset writes only the
+// equation and RETAINS the author's xRange/yRange, and zoo amplitudes span three
+// orders of magnitude), not from the BOUNDS protocol.
+//
+// What is pinned is the property that made that diagnosis possible and that any
+// future edit to either half must preserve: emit() and localBounds() read the ONE
+// shared sampler (graph_line.curveLocal), so they cannot drift apart. A clip added
+// to emit without teaching localBounds — or a hull widened past the paint — fails
+// here rather than in a user's hands.
+
+/** Hull of every coordinate pair in an all-M/L path `d` (what polylinePathD emits). */
+const pathDHull = (d) => {
+  const n = d.match(/-?\d+(?:\.\d+)?/g).map(Number);
+  const xs = n.filter((_, i) => i % 2 === 0), ys = n.filter((_, i) => i % 2 === 1);
+  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+};
+
+test("graphLine: localBounds equals the hull of what emit() actually PAINTS", () => {
+  // polylinePathD rounds coordinates to 3dp, so the hull can differ from the
+  // unrounded bounds by at most half a unit in the last place.
+  const ROUNDING = 0.001;
+  for (const preset of GRAPH_LINE_PRESETS) {
+    const state = { ...graphLinePlugin.defaults, ...preset.props };
+    const op = graphLinePlugin.emit(state).find((o) => o.op === "path");
+    assert.ok(op, `${preset.name}: the zoo preset must emit a path, not an error box`);
+    const hull = pathDHull(op.d), pad = state.strokeWidth / 2, ink = graphLinePlugin.localBounds(state);
+    for (const [what, inkV, paintV] of [
+      ["left", ink.x, hull.minX - pad], ["top", ink.y, hull.minY - pad],
+      ["right", ink.x + ink.w, hull.maxX + pad], ["bottom", ink.y + ink.h, hull.maxY + pad],
+    ])
+      assert.ok(
+        Math.abs(inkV - paintV) <= ROUNDING,
+        `${preset.name}: ink claims ${what}=${inkV} but emit paints ${paintV} — the rect must describe the paint`
+      );
+  }
+});
+
+test("graphLine: a discontinuous equation keeps the ink FINITE (non-finite samples are dropped)", () => {
+  // tan's asymptotes sample to ±Infinity; sampleCurve nulls them and breakSubpaths
+  // drops them, so an infinity must never reach the hull. An Infinity here would
+  // poison every consumer at once (cull, band-select, capture rect, hit union) —
+  // which is what "wackadoodle" would look like if the rect were genuinely broken.
+  const state = { ...graphLinePlugin.defaults, mode: "explicit", source: "Math.tan(x)", tStart: -3.2, tEnd: 3.2, numPoints: 257 };
+  const ink = graphLinePlugin.localBounds(state);
+  for (const [k, v] of Object.entries(ink))
+    assert.ok(Number.isFinite(v), `tan's ink.${k} must be finite, got ${v}`);
+});
+
+test("graphLine: the ink is the CURVE's, so it tracks the data window rather than the box", () => {
+  // The framing tension in one assertion. Same equation, same box: widening the
+  // window shrinks the ink. This is why a zoo preset that keeps the author's
+  // window can report a rect hundreds of times the box — and why the fix belongs
+  // to framing, not to the BOUNDS protocol.
+  const curve = { ...graphLinePlugin.defaults, mode: "polar", source: "250*Math.cos(5*t)", tStart: 0, tEnd: 3.1416, numPoints: 400 };
+  const tight = graphLinePlugin.localBounds({ ...curve, xRange: "[-270, 270, 50]", yRange: "[-270, 270, 50]" });
+  const retained = graphLinePlugin.localBounds({ ...curve }); // the ±6.28 default window
+  assert.ok(tight.w <= curve.w * 1.1, `the curve's OWN window frames it inside the box (got w=${tight.w} for a ${curve.w}-wide box)`);
+  // Measured: 339.5 -> 14462.3 local px, a 42.6x magnification of the same equation.
+  assert.ok(retained.w > tight.w * 40, `the retained narrow window magnifies the same curve (got ${retained.w} vs ${tight.w})`);
 });
 
 // ── runner ────────────────────────────────────────────────────────────────────

@@ -232,6 +232,28 @@ export const graphLinePlugin = {
    * stroke, since a curve may (legitimately) leave the data window and draw past
    * the box. Falls back to the box when the curve is empty/errored (so the error
    * box and a blank widget stay selectable and cullable).
+   *
+   * ── THIS RECT IS ENORMOUS FOR MOST ZOO PRESETS, AND THAT IS HONEST ───────────
+   * User report, 2026-08-02: "selecting different equations in the equation zoo …
+   * the ink bounds just go crazy … did our distinction between ink bounds and
+   * other bounds make a lot of widgets go crazy?" MEASURED: no. This hook is
+   * EXACT — `tests/ink_bounds_test.js` pins it equal to the hull of the `d` that
+   * THIS FILE's emit() produces, for all 23 presets. It cannot over-claim,
+   * because emit and localBounds share ONE sampler (`curveLocal` above); that
+   * sharing is the reason and is why neither may grow a clip the other lacks.
+   *
+   * The rects are large because NOTHING CLIPS THE CURVE to the box — a polyline
+   * whose data leaves the window really is painted out there. So the cause is
+   * FRAMING, not bounds: since 83acbd6 a zoo preset writes only the equation and
+   * RETAINS the author's xRange/yRange, while zoo amplitudes span three orders of
+   * magnitude (Math.sin's ±1.5 window vs a spiral's ±330). In the DEFAULT ±6.28
+   * window the presets land at 30x-227x their box — Epicycloid is 21179x68248 out
+   * of 400x300 — where each was tuned to ~1.0x under its own window.
+   *
+   * DO NOT "FIX" THIS BY SHRINKING THE RECT. Clamping it to the box would make it
+   * lie about painted ink and would re-break what the BOUNDS protocol exists to
+   * fix (culling a visible curve, and an unclickable one). The magnitude is a
+   * framing/UX question — see the note on `presetFamilies` below.
    */
   localBounds(state) {
     const { subpaths } = curveLocal(state);
@@ -274,6 +296,21 @@ export const graphLinePlugin = {
     const local = T.apply(T.invert(world), wx, wy);
     return closestPointOnRectBorder({ x: 0, y: 0, w: state.w ?? 0, h: state.h ?? 0 }, local.x, local.y);
   },
+  // THE FRAMING TENSION, OPEN AND AWAITING A USER DECISION (2026-08-02).
+  // The ruling behind 83acbd6 — "The equation zoo should only, in the presets,
+  // only affect the equation. It shouldn't affect whether or not it's closed or
+  // other stuff like that" — is why xRange/yRange are no longer written. It is
+  // ALSO why a preset's curve now usually lands far outside the author's window:
+  // an equation and the window that frames it are not independent, and the zoo's
+  // amplitudes range from ~1.5 to ~330. Measured in the default window, 21 of 23
+  // presets paint 30x-227x their box; under their own windows all 23 sat at ~1.0x.
+  // Deliberately NOT resolved here, because every candidate fix trades against
+  // that ruling: (a) treat the window as framing rather than styling and let a
+  // preset write it — the smallest change, but it is the key the ruling removed;
+  // (b) leave state alone and offer a separate "Fit window to curve" command, so
+  // reframing stays the author's explicit act; (c) auto-fit the window only when
+  // the curve overflows by some factor. (b) is the only one that adds no implicit
+  // write, and a "Set Size to Ink Bounds" command already exists as precedent.
   presetFamilies: [{ id: "zoo", title: "Equation zoo", presets: GRAPH_LINE_PRESETS }],
   commands: [
     { id: "add-graph-line", title: "Add Graph Line", icon: "mdi:chart-bell-curve", run: (app) => app.armCrosshairPlacement(graphLinePlugin) },
