@@ -361,6 +361,7 @@ function mutMorphProperty(state, outgoing, delta, alpha) {
  * @example morphEndpointsDiffer({type: "rect", gaussianBlur: 0}, {type: "rect", gaussianBlur: 10}) // false (AV: an effect is not a shape)
  * @example morphEndpointsDiffer({type: "rect"}, {type: "rect", bloom: {strength: 1}}) // false (AV: bloom tweens as it always would)
  * @example morphEndpointsDiffer({type: "rect", fill: "#f00"}, {type: "rect", fill: "#00f"}) // false (AG: morph never owns paint)
+ * @example morphEndpointsDiffer({type: "video_scrub", scrubTime: 0.5}, {type: "video_scrub", scrubTime: 2.5}) // false (BL: a decode time is not a shape)
  */
 export function morphEndpointsDiffer(from, to) {
   for (const key of new Set([...Object.keys(from), ...Object.keys(to)])) {
@@ -403,6 +404,17 @@ const MORPH_NON_SHAPE_KEYS = new Set([
   // MATERIAL — edge-crop insets (BUNDLES.cropInsets). A crop trims the SOURCE
   // rectangle a media widget samples; the drawn box is unchanged.
   "cropTop", "cropLeft", "cropRight", "cropBottom",
+  // MEDIA SELECTOR — WHICH frame a scrubber decodes, not what shape draws it. A
+  // scrubber's silhouette is its box at every time, so a moving `scrubTime` has
+  // no outline change to morph; arming one made the crossfade cross-render the
+  // two ENDPOINT times and dissolve them, so the tweened mid-time was never
+  // decoded at all (measured: a 0.5→2.5 tween showed half the 0.5 frame over
+  // half the 2.5 frame at alpha 0.5, never the 1.5 frame). That is a WRONG
+  // PICTURE, not merely a slow one — the scrubber is the DETERMINISTIC video
+  // path, and `pure(document, slide, alpha)` must give the frame at the
+  // evaluated time. `scrubWrap` joins it: it only reinterprets that same
+  // selector against the clip duration.
+  "scrubTime", "scrubWrap",
   // PRESENTATION + NON-VISUAL — visibility rides the fade seam, and the rest is
   // bookkeeping nothing draws with.
   "opacity", "active", "name", "locked", "group",
