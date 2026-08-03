@@ -252,6 +252,53 @@ export function morphPayloadFromPaths(sources, box, fillRule = "nonzero") {
 }
 
 /**
+ * Pure function. The viewBox→box matrix carried by a flatten's enclosing
+ * `pushTransform`, or null when the ops are already box-local.
+ *
+ * BOTH FLATTEN BRANCHES ARE HANDLED, and that is the point of reading the op list
+ * rather than recomputing a fit: with preserveAspect ON, `flattenSvgTree` returns
+ * a uniform push and leaves the coordinates in viewBox space (null would be
+ * wrong); with it OFF, it bakes a non-uniform affine into the coordinates and
+ * emits NO push (a recomputed fit would be applied twice). Taking the answer from
+ * the ops themselves means this cannot disagree with the flatten that produced
+ * them — the same argument that makes the payload derive from the ink.
+ *
+ * It is the op-list twin of `viewBoxToBoxMatrix` below, which computes the same
+ * mapping from a viewBox the caller already parsed (the latex provider's route).
+ * Same matrix, different source of truth: there, the artwork frame; here, the
+ * flatten's own answer.
+ *
+ * `signX`/`signY` are read because the op permits them; the flatten never sets
+ * them here (a widget-level Flip is resolved at core/geometry.js `normalizedBox`
+ * long before this), so they are +1 in practice and cost one multiply to be right
+ * if that ever changes.
+ *
+ * Args:
+ *   ops (object[]): a flatten's IR ops
+ *
+ * Returns:
+ *   object|null: an {a,b,c,d,e,f} affine, or null when there is no push
+ *
+ * Examples:
+ *     >>> flattenTransformMatrix([{op: "path", d: "M0 0"}])
+ *     null
+ *     >>> // a uniform x10 fit offset 3 right: viewBox point (2, 0) → box point (23, 0)
+ *     >>> flattenTransformMatrix([{op: "pushTransform", x: 3, y: 0, rotation: 0, scale: 10}])
+ *     { a: 10, b: 0, c: 0, d: 10, e: 3, f: 0 }
+ */
+function flattenTransformMatrix(ops) {
+  const push = ops.find((o) => o.op === "pushTransform");
+  if (!push) return null;
+  const { x = 0, y = 0, rotation = 0, scale = 1, signX = 1, signY = 1 } = push;
+  const cos = Math.cos(rotation), sin = Math.sin(rotation);
+  return {
+    a: cos * scale * signX, b: sin * scale * signX,
+    c: -sin * scale * signY, d: cos * scale * signY,
+    e: x, f: y,
+  };
+}
+
+/**
  * Pure function. FLATTENED `path` OPS → a MorphPaths payload — the provider body
  * the two SVG-backed widgets share (plugins/svg.js and plugins/iconify.js).
  *
@@ -267,12 +314,44 @@ export function morphPayloadFromPaths(sources, box, fillRule = "nonzero") {
  * widget overlays on damaged art. Morphing into a notice band would be nonsense;
  * the notice still draws at the endpoints, where the widget's own emit() runs.
  *
+ * ── THE ENCLOSING pushTransform IS BAKED IN, NOT DROPPED ─────────────────────
+ * THIS IS THE WHOLE REASON THIS FUNCTION IS NOT A ONE-LINE FILTER, and it was
+ * wrong for a day in exactly the way that is hardest to see. With preserveAspect
+ * ON — the default for both widgets — `flattenSvgTree` leaves every `d` in
+ * VIEWBOX coordinates and returns the viewBox→box mapping SEPARATELY, as the one
+ * `pushTransform` that `svgToIRWithWarnings` wraps the path ops in (its comment:
+ * "ON: a uniform pushTransform; coords stay in viewBox space"). Filtering to
+ * `op === "path"` therefore keeps the artwork and THROWS AWAY THE ONLY THING
+ * THAT SAYS WHERE IT SITS.
+ *
+ * Nothing downstream can recover it, and nothing downstream complains: the
+ * payload's `space` is the widget's box, so the engine unit-izes 24×24 viewBox
+ * coordinates by a 200px box and the icon lands at 1%–11% of its own frame,
+ * hard against the top-left corner. MEASURED on a 24×24 star in a 200×200 box:
+ * bounds (2, 2)–(22, 21) against `space: {w: 200, h: 200}`. The user's report is
+ * that picture exactly — "it morphed into the wrong place and turned into a
+ * teeny tiny little star" — and then "flicked to the red one" at the endpoint,
+ * because `morphPaths` short-circuits at alpha 0/1 to the ORIGINAL payload and
+ * ports.morphIR rescales by that payload's own space, so only the ENDPOINTS
+ * happened to draw correctly. A bug that is right at both ends and wrong
+ * everywhere between is invisible to any test that only checks the endpoints.
+ *
+ * Baking it here rather than at the two call sites is deliberate: this is the
+ * ONE place that already knows a flatten's op list is a transform plus paths, and
+ * the two SVG-backed plugins may not import each other to share a fix. Note that
+ * `morphPayloadFromViewBox` below has ALWAYS done exactly this for the latex
+ * provider, for exactly the stated reason ("the coordinates handed to the engine
+ * are the box-local ones the widget actually paints"). The mapping was never in
+ * dispute — this route just skipped it.
+ *
  * Args:
- *   ops (object[]): IR ops from a flatten (only `path` ops are read)
+ *   ops (object[]): IR ops from a flatten — `path` ops for the artwork, plus the
+ *     optional enclosing `pushTransform` carrying the viewBox→box mapping
  *   box ({w, h}): the box those ops were flattened into
  *
  * Returns:
- *   object: a MorphPaths payload, per-op paint carried per subpath
+ *   object: a MorphPaths payload in BOX-LOCAL coordinates, per-op paint carried
+ *   per subpath
  *
  * Examples:
  *     >>> const ops = [{op: "path", d: "M0 0L4 0L4 4Z", fill: "#f00", strokeWidth: 0}];
@@ -283,12 +362,23 @@ export function morphPayloadFromPaths(sources, box, fillRule = "nonzero") {
  *     >>> // a rect op (an affordance box) is not artwork and is dropped
  *     >>> morphPayloadFromOps([{op: "rect", x: 0, y: 0, w: 4, h: 4}], {w: 4, h: 4}).subpaths
  *     []
+ *     >>> // THE FIX: a 4-unit viewBox scaled x10 into a 40px box lands at 40, not 4
+ *     >>> const scaled = [{op: "pushTransform", x: 0, y: 0, rotation: 0, scale: 10},
+ *     ...   {op: "path", d: "M0 0L4 0L4 4Z"}, {op: "popTransform"}];
+ *     >>> morphPayloadFromOps(scaled, {w: 40, h: 40}).subpaths[0].curves[0].slice(4)
+ *     [ 40, 0 ]
+ *     >>> // letterboxing rides along: a centered fit keeps its offset
+ *     >>> const offset = [{op: "pushTransform", x: 5, y: 0, rotation: 0, scale: 1},
+ *     ...   {op: "path", d: "M0 0L4 0"}, {op: "popTransform"}];
+ *     >>> morphPayloadFromOps(offset, {w: 14, h: 4}).subpaths[0].start
+ *     [ 5, 0 ]
  */
 export function morphPayloadFromOps(ops, box) {
   const paths = ops.filter((o) => o.op === "path" && typeof o.d === "string" && o.d.trim() !== "");
+  const toBox = flattenTransformMatrix(ops);
   return morphPayloadFromPaths(
     paths.map((o) => ({
-      d: o.d,
+      d: toBox ? transformPathD(o.d, toBox) : o.d,
       paint: { fill: o.fill ?? null, stroke: o.stroke ?? null, strokeWidth: o.strokeWidth ?? 0, opacity: o.opacity ?? 1 },
     })),
     box,

@@ -251,6 +251,80 @@ test("THE ENDPOINTS RENDER THE ENDPOINT SHAPES, at the right size", () => {
   }
 });
 
+// ── (3b) THE VIEWBOX BAKE ────────────────────────────────────────────────────
+
+console.log("\nVIEWBOX BAKE — an SVG-backed payload is in BOX px, not viewBox units");
+
+// A "simple polygon" star in the 24×24 viewBox every iconify set is authored in —
+// the user's own reproduction ("this was a basic svg that was just a simple
+// polygon"). The 24-vs-box ratio is the whole point: it is what a dropped
+// viewBox→box transform gets wrong, and by a factor big enough to be unmistakable.
+const STAR_VIEWBOX = 24;
+const STAR_SVG = `<svg viewBox="0 0 ${STAR_VIEWBOX} ${STAR_VIEWBOX}"><path d="M12 2L15 9L22 9L16 13L18 21L12 17L6 21L8 13L2 9L9 9Z" fill="currentColor"/></svg>`;
+const STAR_BOX = 200;
+/** The star widget's state, inline-sourced so this needs no fetch and runs in bare node. */
+const starState = (over = {}) => ({
+  ...registry.get("svg").defaults, w: STAR_BOX, h: STAR_BOX,
+  svgSource: "inline", svgSrc: STAR_SVG, ...over,
+});
+/** A payload's control-point extent — `extentOf` for a MorphPaths. */
+function payloadExtent(p) {
+  return extentOf(p.subpaths.map((sp) =>
+    `M${sp.start[0]} ${sp.start[1]}` + sp.curves.map((c) => `C${c[0]} ${c[1]} ${c[2]} ${c[3]} ${c[4]} ${c[5]}`).join("")).join(""));
+}
+
+test("AN SVG PAYLOAD'S COORDS FILL ITS DECLARED SPACE — the viewBox is baked in", () => {
+  // THE BUG: flattenSvgTree leaves coords in VIEWBOX space and returns the
+  // viewBox→box mapping as a separate pushTransform, so a provider that kept only
+  // the `path` ops declared `space: {w: 200}` over coordinates that never left
+  // 0..24. The engine then unit-ized by 200 and the icon rendered at ~10% of its
+  // box, hard against the top-left — "a teeny tiny little star", in the wrong place.
+  const p = registry.get("svg").morphPaths(starState());
+  assert.equal(p.space.w, STAR_BOX, "the payload's space is the widget box");
+  const e = payloadExtent(p);
+  assert.ok(e.x1 > STAR_BOX / 2, `coords must reach across the box, got x1=${e.x1} (viewBox units would be < ${STAR_VIEWBOX})`);
+  for (const v of [e.x0, e.y0, e.x1, e.y1])
+    assert.ok(v >= -1e-6 && v <= STAR_BOX + 1e-6, `every coord must sit inside the declared space, got ${v}`);
+});
+
+test("A LETTERBOXED FIT KEEPS ITS OFFSET — the payload says where the ink really is", () => {
+  // preserveAspect centers the slack, and the payload must describe THAT placement
+  // or the endpoint will not match the widget's own emit. A WIDE viewBox in a
+  // square box is inset vertically by exactly half the leftover.
+  const wide = `<svg viewBox="0 0 20 10"><path d="M0 0L20 0L20 10Z"/></svg>`;
+  const p = registry.get("svg").morphPaths(starState({ svgSrc: wide }));
+  const e = payloadExtent(p);
+  assert.ok(Math.abs(e.x0) < 1e-6 && Math.abs(e.x1 - STAR_BOX) < 1e-6, `the wide axis fills the box, got ${e.x0}..${e.x1}`);
+  const inset = (STAR_BOX - STAR_BOX / 2) / 2;
+  assert.ok(Math.abs(e.y0 - inset) < 1e-6, `the short axis is centered at ${inset}, got ${e.y0}`);
+});
+
+test("THE MIDPOINT SITS INSIDE THE TWEENED BOX — square → star does not collapse", () => {
+  // The user's morph. Mid-transition the outline must still span most of its box;
+  // the dropped-transform bug drove this monotonically toward a ~10% corner blob.
+  const node = soleNode({
+    ...starState(), type: { type: MORPH_TYPE_TOKEN, fromType: "rect", toType: "svg", t: 0.5 },
+  });
+  const e = extentOf(sceneIR([node]).filter((o) => o.op === "path")[0].d);
+  for (const v of [e.x0, e.y0, e.x1, e.y1])
+    assert.ok(v >= -1e-6 && v <= STAR_BOX + 1e-6, `a midpoint coord escaped the box: ${v}`);
+  assert.ok(e.x1 - e.x0 > STAR_BOX * 0.8, `the midpoint must still span its box, got width ${e.x1 - e.x0}`);
+});
+
+test("AT alpha→1 THE MORPH MATCHES THE WIDGET'S OWN INK — this is what kills the flick", () => {
+  // The endpoint short-circuit returns the icon's real payload, so t=1 was always
+  // right; the bug lived strictly INSIDE the transition, which is precisely why
+  // endpoint-only tests could not see it. Pinning t=0.999 against t=1 pins
+  // CONTINUITY: a payload in the wrong space makes these two disagree hugely.
+  const at = (t) => extentOf(sceneIR([soleNode({
+    ...starState(), type: { type: MORPH_TYPE_TOKEN, fromType: "rect", toType: "svg", t },
+  })]).filter((o) => o.op === "path")[0].d);
+  const near = at(0.999), end = at(1);
+  for (const k of ["x0", "y0", "x1", "y1"])
+    assert.ok(Math.abs(near[k] - end[k]) < STAR_BOX * 0.01,
+      `${k} must not jump at the endpoint: ${near[k]} vs ${end[k]}`);
+});
+
 // ── (4) THE ITEM-BAG REGRESSION ──────────────────────────────────────────────
 
 console.log("\nITEM BAG — an item is not a paint, however much it looks like one");
