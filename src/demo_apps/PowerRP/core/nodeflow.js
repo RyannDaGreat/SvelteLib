@@ -459,6 +459,62 @@ export function findPort(plugin, state, side, key) {
   return (side === "input" ? p.inputs : p.outputs).find((x) => x.key === key) ?? null;
 }
 
+/** The Inspector category a node's input rows file under. One category, so a
+ *  patch's wiring is one collapsible group rather than rows scattered among the
+ *  transform and the knobs. */
+export const INPUTS_CAT = "inputs";
+
+/**
+ * Pure function. THE INSPECTOR ROWS FOR A NODE'S INPUT PORTS — one row per
+ * declared input, at the state path the wire is stored in.
+ *
+ * ── WHY THIS EXISTS (user ruling, 2026-08-03, verbatim) ─────────────────────
+ * "It is a bit weird that Filter, for example, as one audio node that I see here,
+ * doesn't record, actually none of these nodes seem to record any of their inputs
+ * as properties. Their inputs should all be properties."
+ *
+ * The connections WERE already properties — keyframeable state leaves at
+ * `inputs.<port>`, which is what makes a patch differ per slide. What was missing
+ * was that the Inspector never SHOWED them, so the panel asserted by omission that
+ * a node had no wiring to speak of. This is the group-members "invisible by
+ * omission" pattern: state that exists, is editable, and is undiscoverable.
+ *
+ * ── EVERY ROW IS AN ORDINARY ROW, WHICH IS THE WHOLE POINT ──────────────────
+ * The row's `key` is the ORDINARY state path `inputs.<port>`, so it keyframes,
+ * undoes, multi-selects and takes an `=` equation through the same machinery every
+ * other property uses. Nothing in web/Inspector.svelte needs to know what a node
+ * is; it needs to know how to draw ONE new control kind (NODE_INPUT_ROW_KIND).
+ * That is the same trade core/audio_nodes.audioKnobRows makes for knobs, and for
+ * the same stated reason: a declarative row is keyframable for free.
+ *
+ * `portType` rides on the row because the picker must offer only outputs this
+ * input can legally accept — the SAME question connectionRefusal answers at the
+ * bead, so a wire the drag would refuse cannot be spelled in the dropdown either.
+ *
+ * @param {object} plugin - the node's plugin (its `ports(state)` declaration)
+ * @param {object} [state] - the folded state to ask for ports (a port list may vary with state)
+ * @returns {object[]} Inspector row descriptors, one per declared input port
+ *
+ * @example // a filter's audio input becomes one row at the path its wire is stored in
+ * @example nodeInputRows({ports: () => ({inputs: [{key: "in", type: "audio", label: "In"}]})})[0].key // "inputs.in"
+ * @example nodeInputRows({ports: () => ({inputs: [{key: "in", type: "audio", label: "In"}]})})[0].kind // "nodeinput"
+ * @example nodeInputRows({ports: () => ({inputs: [{key: "in", type: "audio", label: "In"}]})})[0].portType // "audio"
+ * @example // the LABEL is the port's own, so the row reads the way the bead is labelled
+ * @example nodeInputRows({ports: () => ({inputs: [{key: "fm", type: "number", label: "FM depth"}]})})[0].label // "FM depth"
+ * @example // a widget with no inputs contributes no rows at all
+ * @example nodeInputRows({}) // []
+ */
+export function nodeInputRows(plugin, state) {
+  return declaredPorts(plugin, state ?? plugin?.defaults ?? {}).inputs.map((p) => ({
+    key: `inputs.${p.key}`,
+    label: p.label,
+    kind: NODE_INPUT_ROW_KIND,
+    portType: p.type,
+    category: INPUTS_CAT,
+    help: `Which node output feeds this ${PORT_TYPES[p.type].label} input. Pick any compatible output on this slide, or clear it to disconnect. It is ordinary keyframable state, so a patch can be rewired from one slide to the next — and you can bind it with "=" to compute the source (e.g. "= osc1").`,
+  }));
+}
+
 /**
  * THE `itemRefs` DECLARATION every node plugin spreads, so duplicate / clone /
  * shatter remap a copied patch onto the copies instead of leaving them wired to the
@@ -509,6 +565,16 @@ export function connectionsOf(items) {
   }
   return out;
 }
+
+/**
+ * THE INSPECTOR ROW KIND for a node input port (core/properties.js ROW_KINDS).
+ *
+ * Declared HERE, beside the `{item, port}` shape it edits, for the reason
+ * core/lists.js declares LIST_ROW_KIND: the module that owns a mechanism owns the
+ * name of the control that edits it, so a row kind cannot be spelled one way in
+ * the vocabulary and another way in the plugin that emits it.
+ */
+export const NODE_INPUT_ROW_KIND = "nodeinput";
 
 /**
  * Pure function. Is `v` a well-formed node REFERENCE — the `{item, port}` record an
@@ -719,6 +785,83 @@ export function connectionRefusal(items, registry, from, to) {
   if (wouldCycle(items, registry, from, to))
     return "that would make a loop — this node already feeds the one you are dragging from, and a value cannot depend on itself";
   return null;
+}
+
+/**
+ * Pure function. HOW A WIRED INPUT ROW READS — "<source name> › <port>", or the
+ * empty string when the input is unwired.
+ *
+ * THE NAME IS RE-DERIVED FROM THE ITEM'S CURRENT NAME EVERY TIME, never stored.
+ * That is what makes a rename cost nothing: the reference holds an itemId, and the
+ * label is a display-time lookup (the identical decision core/expressions.js makes
+ * for slugs — "renames then need NO document rewrites"). A row that stored its
+ * label would go stale the moment the source was renamed, and would then disagree
+ * with the wire drawn on the canvas.
+ *
+ * A reference whose item is NOT on this slide still renders — as the raw id — and
+ * does NOT throw: the connection leaf legitimately survives a slide where its
+ * source is inactive (connectionsOf states that rule), so a row that blew up there
+ * would report a per-slide patch as a defect. `nodeRefProblem` is what says a
+ * reference is genuinely broken; this function only formats.
+ *
+ * @param {object} items - folded items
+ * @param {*} ref - the input's value ({item, port} or null)
+ * @returns {string} the label, or "" when unwired
+ *
+ * @example nodeInputLabel({a: {name: "Osc 1"}}, {item: "a", port: "out"}) // "Osc 1 › out"
+ * @example // no name? the item's TYPE stands in, so the row still identifies the source
+ * @example nodeInputLabel({a: {type: "audio_noise"}}, {item: "a", port: "out"}) // "audio_noise › out"
+ * @example nodeInputLabel({}, null) // "" (unwired)
+ * @example // a source that is off THIS slide is shown by id, not treated as an error
+ * @example nodeInputLabel({}, {item: "ab12", port: "out"}) // "ab12 › out"
+ */
+export function nodeInputLabel(items, ref) {
+  if (!isNodeRef(ref)) return "";
+  const state = items?.[ref.item];
+  return `${state?.name || state?.type || ref.item} › ${ref.port}`;
+}
+
+/**
+ * Pure function. EVERY OUTPUT PORT ON THIS SLIDE THAT MAY LEGALLY DRIVE `to` —
+ * the option list behind an input row's picker.
+ *
+ * IT ROUTES THROUGH `connectionRefusal`, deliberately, rather than re-deciding
+ * legality from the type table. The dropdown and the wire drag then cannot
+ * disagree about what is connectable: a source the canvas would refuse (wrong
+ * type, or one that would close a cycle) is not offered here either. Re-spelling
+ * the rule would give the two surfaces two chances to drift, and the one that
+ * drifted would silently author a document the other calls invalid.
+ *
+ * Each option carries the coercion sentence when the wire is cross-type, so the
+ * picker can say what a legal-but-converting choice will do — the same sentence
+ * the drag shows before the drop.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {{item: string, port: string}} to - the input being wired
+ * @returns {object[]} [{item, port, type, label, note}] in deterministic order
+ *
+ * @example // a noise source's audio out is offered to a filter's audio in:
+ * @example const reg = {get: (t) => t === "s" ? {ports: () => ({outputs: [{key: "out", type: "audio"}]})} : {ports: () => ({inputs: [{key: "in", type: "audio"}]})}};
+ * @example compatibleSources({a: {type: "s"}, b: {type: "f"}}, reg, {item: "b", port: "in"}).map((o) => `${o.item}.${o.port}`) // ["a.out"]
+ * @example // and a node never offers its own output to its own input (that is a cycle)
+ * @example compatibleSources({b: {type: "f"}}, {get: () => ({ports: () => ({inputs: [{key: "in", type: "audio"}], outputs: [{key: "out", type: "audio"}]})})}, {item: "b", port: "in"}) // []
+ */
+export function compatibleSources(items, registry, to) {
+  const out = [];
+  for (const id of Object.keys(items ?? {}).sort()) {
+    const state = items[id];
+    if (!state || state.active === false) continue;
+    const plugin = pluginFor(items, registry, id);
+    if (!plugin) continue;
+    for (const p of declaredPorts(plugin, state).outputs) {
+      const from = { item: id, port: p.key };
+      if (connectionRefusal(items, registry, from, to) !== null) continue;
+      const inPort = findPort(pluginFor(items, registry, to.item), items[to.item], "input", to.port);
+      out.push({ item: id, port: p.key, type: p.type, label: p.label, note: inPort ? coercionNote(p.type, inPort.type) : null });
+    }
+  }
+  return out;
 }
 
 /**

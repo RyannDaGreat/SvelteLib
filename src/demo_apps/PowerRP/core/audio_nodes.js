@@ -58,7 +58,7 @@
 import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
-import { NODE_ITEM_REFS, PORT_BEAD_R, minimumNodeHeight, nodeCardRim, nodeInkBounds, portLayout } from "./nodeflow.js";
+import { NODE_ITEM_REFS, PORT_BEAD_R, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows, portLayout } from "./nodeflow.js";
 import { NODE_HEADER_H, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, knobOps, nodeFamily, portBeads } from "./node_chrome.js";
 import { KNOB_PITCH_X, KNOB_ROW_H, knobLayout } from "./node_knobs.js";
 import { text } from "../render_gpu/ir.js";
@@ -310,6 +310,17 @@ export function audioNodePlugin(spec) {
     },
     inspector: [
       ...bundle("transform"),
+      // THE INPUT ROWS COME FIRST AMONG THIS NODE'S OWN PROPERTIES, above its
+      // knobs. What a module is WIRED TO is the thing an author reads a patch by;
+      // its knob values only mean something once you know what is flowing in.
+      // Their absence was the defect the user named — "none of these nodes seem to
+      // record any of their inputs as properties" — and putting them below the
+      // knobs would have fixed the omission while keeping the burial.
+      // `{ports: portsFn}` rather than `plugin`: this literal is evaluated while
+      // `plugin` is still in its temporal dead zone, and nodeInputRows needs only
+      // the port declaration. (Measured — it threw "Cannot access 'plugin' before
+      // initialization" on the first run.)
+      ...nodeInputRows({ ports: portsFn }),
       ...audioKnobRows(spec),
       ...props("opacity"),
       ...bundle("effects"),

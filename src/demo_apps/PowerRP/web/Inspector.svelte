@@ -65,6 +65,7 @@
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_AUTO, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
+  import { NODE_INPUT_ROW_KIND, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
   import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
   import { sectionKeyPaths, sectionBubbleApplies } from "../core/section_keyframes.js";
   import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
@@ -375,6 +376,11 @@
     // title-caser (which would render "__universal").
     [UNIVERSAL_CATEGORY]: "Universal",
     transform: "Transform",
+    // A NODE WIDGET'S WIRING (core/nodeflow.nodeInputRows). Declared rather than
+    // left to the id title-caser so its ORDER can be stated below: what a node is
+    // wired to is how an author reads a patch, so it sits directly under Transform
+    // and above the module's own knobs.
+    inputs: "Inputs",
     // FILL/STROKE ARE THEIR OWN TOP-LEVEL SECTIONS, peers of Transform — NOT
     // rows inside Formatting (user ruling, twice: "they need to be their own
     // separate drop-down"). The section hosts the whole paint stack for its
@@ -394,7 +400,7 @@
   // UNIVERSAL LEADS, for the reason the single-selection panel renders its
   // Universal section first: these are the properties every widget has, and a
   // plugin's sections are what it adds to them.
-  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
+  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "inputs", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
 
   /**
    * Pure function. The display title for the CUSTOM_CATEGORY bucket — a widget's
@@ -626,7 +632,35 @@
    */
   function coerce(kind, raw) {
     if (raw === null) return null;
+    // A NODE INPUT's control emits "<itemId> <port>" (or "" for disconnect) and
+    // stores core/nodeflow.js's {item, port} record. The two are split HERE, at
+    // the one seam every control output already passes through, so neither the
+    // dropdown nor the commit path has to know the stored shape.
+    // DISCONNECT STORES `null`, NOT undefined: nodeflow.disconnectPairs states
+    // why — an absent key would be re-inherited from an earlier slide's delta and
+    // the wire would come back on its own.
+    if (kind === NODE_INPUT_ROW_KIND) return parseNodeRefOption(raw);
     return kind === "number" ? Number(raw) : kind === "boolean" ? Boolean(raw) : raw;
+  }
+
+  /**
+   * Pure function. A node-input dropdown's option value ("<itemId> <port>") as the
+   * stored reference, or null for the disconnect option.
+   *
+   * The two halves are joined by a SPACE because neither an itemId nor a port key
+   * can contain one (ids are generated, port keys are plugin identifiers), so the
+   * split is unambiguous without escaping.
+   */
+  function parseNodeRefOption(raw) {
+    if (typeof raw !== "string" || raw === "") return null;
+    const gap = raw.indexOf(" ");
+    return gap < 0 ? null : { item: raw.slice(0, gap), port: raw.slice(gap + 1) };
+  }
+
+  /** Pure function. The inverse: a stored {item, port} as its option value, or ""
+   *  when the input is unwired (which selects the "not connected" entry). */
+  function nodeRefOptionValue(ref) {
+    return isNodeRef(ref) ? `${ref.item} ${ref.port}` : "";
   }
 
   /**
@@ -2437,6 +2471,44 @@
       label={row.label}
       value={valueAt(state, row.key)}
       disabled={disabled}
+    />
+  {:else if kind === NODE_INPUT_ROW_KIND}
+    <!-- A NODE WIDGET'S INPUT PORT (core/nodeflow.js): which output of which item
+         is wired into it. The user's ruling, 2026-08-03: "none of these nodes seem
+         to record any of their inputs as properties. Their inputs should all be
+         properties."
+
+         THIS BRANCH IS LOAD-BEARING FOR SAFETY exactly as the list branch above
+         is: without it a nodeinput row falls through to the catch-all TEXT input,
+         whose oninput would commit a STRING over the {item, port} record — which
+         connectionsOf and deriveWires both read as unwired, so the wire would
+         vanish on a keystroke.
+
+         THE OPTIONS COME FROM core/nodeflow.compatibleSources, which routes
+         through connectionRefusal — the SAME predicate the wire drag uses. So a
+         source the canvas would refuse cannot be spelled here either, and the two
+         surfaces cannot drift into disagreeing about what is connectable.
+
+         CLEARING DISCONNECTS, and it writes `null` rather than removing the key
+         (nodeflow.disconnectPairs states why: a removed key would let an earlier
+         slide's connection be INHERITED and the wire would come back).
+
+         The ƒ equation escape hatch beside it is the ordinary one — this row is an
+         ordinary state path, so "= osc1" binds it like any other property. -->
+    <SearchableDropdown
+      rankFn={appRankItems}
+      minItemsForSearch={ALWAYS_SEARCHABLE}
+      items={[
+        { value: "", label: "— not connected —" },
+        ...compatibleSources(state.items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
+          .map((o) => ({
+            value: `${o.item} ${o.port}`,
+            label: `${nodeInputLabel(state.items ?? {}, { item: o.item, port: o.port })}${o.note ? ` (${o.note})` : ""}`,
+          })),
+      ]}
+      value={nodeRefOptionValue(valueAt(state, row.key))}
+      onchange={(v) => oncommit(row.key, NODE_INPUT_ROW_KIND, v)}
+      {disabled}
     />
   {:else if kind === LIST_ROW_KIND}
     <!-- LIST rows (core/lists.js): a variable-length list of multi-field

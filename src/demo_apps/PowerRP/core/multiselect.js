@@ -186,6 +186,7 @@ import { deepEqual, getPath } from "./deltas.js";
 import { ROW_KINDS, PROPS, interpRowFor, rowSupportsInterp } from "./properties.js";
 import { MORPH_KEY, MORPH_AUTO } from "./morph_property.js";
 import { LIST_ROW_KIND } from "./lists.js";
+import { NODE_INPUT_ROW_KIND } from "./nodeflow.js";
 
 /**
  * The category the universal rows file under. It matches the id
@@ -298,10 +299,20 @@ export const PRESENTATIONAL_ROW_ASPECTS = [
  * `paths`, and the kinds that already commit through the row's generic
  * `oncommit(key, kind, value)` seam.
  *
+ * NODE INPUTS QUALIFY, and the check is the one this list exists to apply: the
+ * joint seam fans ONE already-computed value out to N paths, and one `{item, port}`
+ * reference written to three selected filters means exactly what it says — all
+ * three read that source. Nothing about the value is relative to the item holding
+ * it (which is what disqualifies richtext below), so the fan-out is well defined.
+ * Rewiring a bank of nodes to one source in a single gesture is also a real thing
+ * to want, and it is ONE undo unit through the same setPreview → commitPreview path
+ * as any other row.
+ *
  * @example JOINT_EDITABLE_KINDS.includes("number") // true
+ * @example JOINT_EDITABLE_KINDS.includes("nodeinput") // true (one reference, N receivers)
  * @example JOINT_EDITABLE_KINDS.includes("list") // false (see JOINT_UNEDITABLE_KINDS)
  */
-export const JOINT_EDITABLE_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "action"];
+export const JOINT_EDITABLE_KINDS = ["number", "angle", "color", "boolean", "select", "asset", "text", "action", NODE_INPUT_ROW_KIND];
 
 /**
  * Row kinds that INTERSECT correctly but cannot yet be edited jointly, mapped to
