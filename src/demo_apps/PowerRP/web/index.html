@@ -139,8 +139,18 @@
       THE HANDLERS STAND DOWN at done() — the first painted frame. After that the
       editor owns its own error surfaces (the error box, the expression seam), and
       a splash that has already lifted must not resurrect itself over a working
-      editor to report a transient runtime rejection. `finished` is what gates
-      them, so this is one flag, not a second lifecycle.
+      editor to report a transient runtime rejection.
+
+      THE FAILURE LATCH, found by this feature's own probe rather than reasoned
+      about. AH's fail() sets `finished = false` so a failure outranks a done()
+      that already ran. That leaves the OPPOSITE hole, and it is not theoretical:
+      a crash injected mid-boot rendered perfectly and was then WIPED ~1s later
+      when boot limped on to a first frame and called done(), which
+      `finished === false` no longer blocked — the app came up looking fine, over
+      an error nobody ever saw. So `failed` is a separate one-way latch, and it
+      gates done() (no lifting after a failure), stage() (the roster freezes as
+      the record of how far boot got) and reportCrash() (KEEP THE FIRST crash: a
+      broken module cascades, and the last error is the least informative one).
     -->
     <style>
       :root {
@@ -341,6 +351,16 @@
         var errorEl = document.getElementById("boot-error");
         var guidanceEl = document.getElementById("boot-guidance");
         var finished = false;
+        // A LATCH, and it is not the same flag as `finished`. AH's fail() sets
+        // `finished = false` so a failure outranks a done() that already ran —
+        // but that alone left the reverse hole open, and it is not theoretical:
+        // MEASURED 2026-08-02, a crash injected mid-boot rendered correctly and
+        // was then ERASED ~1s later when boot limped on to its first frame and
+        // called done(), which `finished === false` no longer blocked. A boot
+        // that crashes and still paints something must not swallow its own
+        // report — the user is then back to guessing. Once true this never goes
+        // back: nothing after a boot failure has anything truer to say.
+        var failed = false;
         // Stage history, in arrival order — the probe asserts it advances
         // monotonically, and it is the honest record of what boot actually did.
         var history = [];
@@ -478,7 +498,11 @@
         window.__powerrp_boot = {
           history: history,
           stage: function (id, label, detail) {
-            if (finished) return;
+            // `failed` too: after a crash the roster is a FROZEN RECORD of how
+            // far boot got, and the ✕ marks where. A stage that keeps reporting
+            // afterwards (async work still in flight behind the crash) would
+            // move that mark and overwrite the answer to "where did it break".
+            if (finished || failed) return;
             detail = detail || {};
             history.push({ id: id, label: label, loaded: detail.loaded, total: detail.total, unit: detail.unit || "bytes", done: !!detail.done, t: Date.now() });
             var r = rowFor(id, label);
@@ -523,7 +547,7 @@
             tickElapsed();
           },
           done: function () {
-            if (finished) return;
+            if (finished || failed) return;
             finished = true;
             clearTimeout(revealTimer);
             clearInterval(elapsedTimer);
@@ -531,9 +555,13 @@
             setTimeout(function () { el.remove(); }, LIFT_MS);
           },
           fail: function (message, guidance) {
-            // A failure OUTRANKS done(): it must be visible even if something
-            // else already tried to lift the splash.
+            // A failure OUTRANKS done() IN BOTH DIRECTIONS. `finished = false`
+            // un-lifts a splash something already tried to remove; the `failed`
+            // latch stops a LATER done() from lifting it again (see the flag's
+            // declaration — a crashing boot that still limped to a first frame
+            // used to erase its own error surface a second later).
             finished = false;
+            failed = true;
             clearTimeout(revealTimer);
             clearInterval(elapsedTimer);
             el.setAttribute("data-revealed", "1");
@@ -543,13 +571,32 @@
             // error, and the row left in "active" is the one that failed — so the
             // failure surface says which of the seven stages broke instead of
             // making the user infer it from a stack.
+            //
+            // NOTHING ACTIVE IS ITSELF AN ANSWER, and a real one: an import-graph
+            // throw can land before the first bootStage() call ever runs, which
+            // leaves every row pending. Marking the FIRST PENDING row is the true
+            // statement there — boot died before that stage could even start —
+            // and it beats the alternative of an unmarked roster, which says only
+            // "eight things did not happen". Measured: the crash probe's injected
+            // throw lands at ~45ms, before any stage reports, so this branch is
+            // the common case for a very early crash rather than an edge.
             var dying = null;
             for (var k = 0; k < order.length; k++) if (rows[order[k]].state === "active") dying = rows[order[k]];
+            if (!dying) for (var p = 0; p < order.length; p++) if (rows[order[p]].state === "pending") { dying = rows[order[p]]; break; }
+            // "while X" vs "before X" — the preposition carries the difference
+            // between a stage that was RUNNING when it broke and one that never
+            // got to start, and saying "while loading app code" about a stage
+            // still pending would be a small confident lie in a surface whose
+            // whole job is to stop the user guessing.
+            var wasRunning = dying && dying.state === "active";
             if (dying) {
               dying.mark.textContent = "✕";
               dying.root.setAttribute("data-state", "active");
             }
-            errorEl.textContent = "PowerRP failed to start" + (dying ? " while " + dying.name.textContent.toLowerCase() + "." : ".") + "\n\n" + message;
+            errorEl.textContent =
+              "PowerRP failed to start" +
+              (dying ? (wasRunning ? " while " : " before ") + dying.name.textContent.toLowerCase() + "." : ".") +
+              "\n\n" + message;
             guidanceEl.textContent = guidance || "";
           },
         };
@@ -597,7 +644,12 @@
          *  that was never handled" are different enough that saying which one
          *  costs nothing and saves a guess. */
         function reportCrash(kind, message, stack) {
-          if (finished) return;
+          // `finished` — the handlers have stood down; the editor owns this.
+          // `failed` — KEEP THE FIRST CRASH. One broken module reliably produces
+          // a cascade of follow-on errors from everything that depended on it,
+          // and the last of those is the least informative thing on screen. The
+          // first one is the cause.
+          if (finished || failed) return;
           var frame = topFrame(stack);
           window.__powerrp_boot.fail(kind + ":\n" + message + (frame ? "\n" + frame : ""), CRASH_GUIDANCE);
         }
@@ -612,7 +664,7 @@
         // sentences — one is "the file never arrived", the other is "the code
         // arrived and blew up" — so they are branched, not merged.
         window.addEventListener("error", function (ev) {
-          if (finished) return;
+          if (finished || failed) return;
           var t = ev.target;
           if (t && (t.tagName === "SCRIPT" || t.tagName === "LINK")) {
             window.__powerrp_boot.fail(
