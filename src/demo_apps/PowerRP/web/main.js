@@ -156,6 +156,8 @@ import { videoUploadCount, videoPlaybackState, videoStatus } from "../render_gpu
 import { videoV5UploadCount, videoV5State, videoV5ScrubState } from "../render_gpu/skia/video_v5.js";
 import { nodePortAnchors } from "../core/derive.js";
 import { audioState, mirroredScene } from "./audioMirror.svelte.js";
+import { litKeyRects, setNoteSink } from "./keyboardPlay.js";
+import { keyboardRange } from "../plugins/node_keyboard.js";
 
 // NODE-FLOW diagnostic: a derived node's PORT BEAD positions in WORLD space — the
 // one geometry the painter, the hit test and the wire layer all read
@@ -166,6 +168,29 @@ import { audioState, mirroredScene } from "./audioMirror.svelte.js";
 // itself could pass while the app's own hit test and painter disagreed, which is
 // precisely the bug worth catching. Zero prod effect.
 window.__powerrp_nodePortAnchors = nodePortAnchors;
+
+// KEYBOARD PLAY diagnostics (WORKSTREAM CB), exposed for the bead seam's exact
+// reason: the lit keys are painted into the SKIA CANVAS, so a probe asking the DOM
+// whether typing pressed a key finds nothing no matter how correctly it is drawn.
+//
+// `litKeyRects` is THE QUERY THE OVERLAY ITSELF PAINTS FROM, which is the whole
+// point of exposing this one rather than the press map underneath it: a probe that
+// read the press set directly could pass while the picture stayed dead — and "the
+// keyboard doesn't press keys visually when I touch it" is precisely a report about
+// the picture, not about the bookkeeping.
+//
+// `keyboardRange` lets a probe derive the EXPECTED pitch from the widget's own base
+// note instead of hardcoding it, so the check keeps testing the mapping rather than
+// going red the day a default changes.
+//
+// `setNoteSink` is a WRITE, and the only one here — sanctioned by keyboardPlay.js's
+// own docblock ("a probe may pass a recorder"). It is how a probe observes that a
+// typed key reached the audio path at the right pitch without asserting on sound,
+// which headless Chrome cannot make. Prod sets the real sink from CanvasView on
+// mount, after this module runs, so exposing the setter changes no behaviour.
+window.__powerrp_litKeyRects = litKeyRects;
+window.__powerrp_keyboardRange = keyboardRange;
+window.__powerrp_setNoteSink = setNoteSink;
 
 // AUDIO MIRROR diagnostic (NF-BIND): what the ENGINE currently holds, and the
 // mirror's own status. Exposed for the same reason as the seam above — a probe
