@@ -12,7 +12,7 @@
  */
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
@@ -146,7 +146,11 @@ const out = {};
   await page.close();
 }
 
-const outPath = resolve(HERE, `timeline_${LABEL}${THROTTLE ? "_throttled" : ""}.json`);
+// Into the gitignored shots directory, not tests/ — this is raw measurement data,
+// not a source file, and four stray timeline_*.json in tests/ read like fixtures.
+const outDir = resolve(HERE, "../.claude_shots/boot_ah");
+mkdirSync(outDir, { recursive: true });
+const outPath = resolve(outDir, `timeline_${LABEL}${THROTTLE ? "_throttled" : ""}.json`);
 writeFileSync(outPath, JSON.stringify(out, null, 2));
 console.log(`[${LABEL}] wrote ${outPath}`);
 
