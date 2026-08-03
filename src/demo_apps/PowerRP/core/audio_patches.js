@@ -137,7 +137,13 @@ export const SEQUENCED_DINGS = {
     // firing dozens of times) — and this module is that operation. The refusal was
     // right and the patch was wrong.
     { id: "edge", type: "audio_trigger", col: 1, row: 0, knobs: { pulseMs: 5 } },
-    { id: "ding", type: "audio_ding", col: 2, row: 0, knobs: { preset: "ding", frequency: 880, level: 0.42 } },
+    // `frequency: 0` is DELIBERATE and is the whole point of the pitch wire below.
+    // The knob is an OFFSET the `pitch` input sums into (synth/modules.js
+    // dingModule), so leaving it at its 880 default would transpose every
+    // sequenced note up by 880 Hz — the sequence would still be a sequence, but a
+    // squashed one, because Hz are linear and pitch is not. At 0 the wire alone
+    // names the note and the sequencer's pattern is heard as written.
+    { id: "ding", type: "audio_ding", col: 2, row: 0, knobs: { preset: "ding", frequency: 0, level: 0.42 } },
     { id: "delay", type: "audio_delay", col: 3, row: 0, knobs: { time: 0.375, feedback: 0.35, damping: 2400, wet: 0.35, dry: 1 } },
     { id: "reverb", type: "audio_reverb", col: 4, row: 0, knobs: { character: "plate", wet: 0.55, dry: 0.5 } },
     ...analysisTail(5),
@@ -148,11 +154,78 @@ export const SEQUENCED_DINGS = {
     // still shows it, so the patch reads correctly and the gesture works.
     { from: "clock", fromPort: "out", to: "edge", toPort: "in" },
     { from: "edge", fromPort: "out", to: "ding", toPort: "gate" },
-    // The sequencer's PITCH sets which note each strike lands on.
-    { from: "seq", fromPort: "pitch", to: "ding", toPort: "level" },
+    // The sequencer's PITCH sets which note each strike lands on — into the ding's
+    // `frequency` port, which is where it always belonged.
+    //
+    // IT USED TO GO TO `level`, AND THAT WAS A REAL BUG WITH A REASON. When this
+    // patch was authored the ding's frequency was a SETTER with no input port
+    // (recorded as wave 2's third wiring truth), so there was nowhere for a pitch
+    // signal to land; the wire went to the only number port that existed and the
+    // "melody" was heard as a volume wobble at note frequencies. Wave 3 gave the
+    // ding a real pitch input, so the wire now says what it always meant.
+    { from: "seq", fromPort: "pitch", to: "ding", toPort: "frequency" },
     { from: "ding", fromPort: "out", to: "delay", toPort: "in" },
     { from: "delay", fromPort: "out", to: "reverb", toPort: "in" },
     ...analysisWires("reverb"),
+  ],
+};
+
+/**
+ * GAMELAN BELLS — the patch wave 3's engine seam made possible, and the one that
+ * shows what a PITCHED percussion voice is.
+ *
+ * ── WHY THIS IS A DIFFERENT PATCH FROM "SEQUENCED DINGS" ────────────────────
+ * Sequenced Dings is about AMBIENCE: one bell struck sparsely, buried in delay and
+ * reverb, deliberately too sparse to read as a tune. This one is about MELODY —
+ * the sequencer's pitch is the subject rather than a texture, so the reverb is
+ * shorter, the tempo is faster, and there is no delay smearing one note into the
+ * next. Both patches exist because they teach different things with the same three
+ * modules, which is what a patch library is for.
+ *
+ * ── TWO BELLS, ONE SEQUENCER, AND WHY THAT IS THE INTERESTING PART ──────────
+ * The same pitch signal drives two dings on different PRESETS, one transposed by
+ * its own frequency offset. That is only expressible because the offset and the
+ * wire SUM: the low `gong` takes the pitch as-is, and the `pip` takes it plus a
+ * fixed interval, so one melody is heard on two instruments an interval apart. It
+ * is also the clearest demonstration that the knob is an offset and not a
+ * competing setting — the two nodes differ in exactly that one number.
+ *
+ * The scale is pentatonic for the same reason Sequenced Dings' is: every note is
+ * consonant with every other, so the pattern cannot produce a sour interval.
+ */
+export const GAMELAN_BELLS = {
+  id: "gamelan-bells",
+  title: "Gamelan Bells",
+  help: "A sequenced MELODY on two FM bells — the sequencer's pitch wired into the dings' new frequency input. The second bell's Frequency knob is an OFFSET added to that pitch, so the two play the same tune an interval apart. Change either bell's Character for a different metal.",
+  nodes: [
+    { id: "clock", type: "audio_clock", col: 0, row: 0, knobs: { bpm: 108 } },
+    { id: "seq", type: "audio_sequencer", col: 0, row: 1, knobs: { stepCount: 16 } },
+    { id: "edge", type: "audio_trigger", col: 1, row: 0, knobs: { pulseMs: 5 } },
+    // THE LEAD BELL takes the sequencer's pitch untransposed, so its offset is 0.
+    { id: "lead", type: "audio_ding", col: 2, row: 0, knobs: { preset: "gong", frequency: 0, level: 0.34 } },
+    // THE ANSWERING BELL is the same melody plus a fixed 220 Hz. Hz are linear and
+    // pitch is not, so a constant offset is NOT a constant musical interval — it
+    // narrows as the melody rises, which is exactly the shimmering, slightly
+    // out-of-tune relationship a gamelan's paired instruments have and the reason
+    // the ensemble sounds alive rather than doubled.
+    { id: "answer", type: "audio_ding", col: 2, row: 1, knobs: { preset: "pip", frequency: 220, level: 0.2 } },
+    { id: "mix", type: "audio_mixer", col: 3, row: 0, knobs: { level1: 0.9, level2: 0.6, master: 1 } },
+    { id: "room", type: "audio_reverb", col: 4, row: 0, knobs: { character: "plate", wet: 0.35, dry: 0.8, preDelay: 0.02 } },
+    ...analysisTail(5),
+  ],
+  wires: [
+    { from: "clock", fromPort: "out", to: "edge", toPort: "in" },
+    // ONE edge strikes BOTH bells — an output fans out to as many inputs as like
+    // (only an INPUT is limited to one source), which is what keeps them in unison.
+    { from: "edge", fromPort: "out", to: "lead", toPort: "gate" },
+    { from: "edge", fromPort: "out", to: "answer", toPort: "gate" },
+    // …and one pitch signal feeds both, each summing with its own offset knob.
+    { from: "seq", fromPort: "pitch", to: "lead", toPort: "frequency" },
+    { from: "seq", fromPort: "pitch", to: "answer", toPort: "frequency" },
+    { from: "lead", fromPort: "out", to: "mix", toPort: "in1" },
+    { from: "answer", fromPort: "out", to: "mix", toPort: "in2" },
+    { from: "mix", fromPort: "out", to: "room", toPort: "in" },
+    ...analysisWires("room"),
   ],
 };
 
@@ -203,15 +276,28 @@ export const WHOOSH = {
  *     struck by a slow clock through an edge detector. It is a suggestion of a gull,
  *     not a recording of one.
  *
- * ── ONE THING THIS PATCH WANTED AND CANNOT HAVE YET, STATED RATHER THAN FAKED ─
- * The gulls should cry at a RANDOM pitch, which is what a sample-and-hold on noise
- * is for: sampled on each clock tick, it is the classic random-stepped-voltage
- * source. It is not here, because the bell's `frequency` is an engine SETTER with no
- * input port — no wire can drive it, so the sample-and-hold would have had nowhere
- * to land and would have sat on the canvas contributing nothing. (The test that
- * every node reaches an output is what caught the dead branch when it was.) Giving
- * the ding a `frequency` input port is a small engine change and the right fix; it
- * is noted for the next wave rather than papered over with a node that does nothing.
+ * ── THE RANDOM-PITCH GULL, WHICH WAVE 3 UNBLOCKED ──────────────────────────
+ * The gulls cry at a RANDOM pitch, from a sample-and-hold on noise: sampled on each
+ * clock tick, that is the classic random-stepped-voltage source, and it is why no
+ * two cries are the same. It could not be built before this wave — the bell's
+ * `frequency` was an engine SETTER with no input port, so a sample-and-hold would
+ * have had nowhere to land and would have sat on the canvas contributing nothing.
+ * (The test that every node reaches an output is what caught that dead branch when
+ * the patch was first authored, which is why the note was written down rather than
+ * papered over with a node that did nothing.) The ding now has a real `frequency`
+ * AudioParam input, so the branch is live and the honest note is retired.
+ *
+ * THE SOURCE IS AN LFO, NOT RAW NOISE, AND THE UNITS ARE WHY. The textbook
+ * random-voltage source samples noise, but the noise module's output is roughly
+ * [-1, 1] — patched to a frequency port that is a spread of one hertz, which is
+ * inaudible, so the gulls would all cry at the same pitch and the branch would look
+ * wired and do nothing. An LFO's output is ±`depth` in the TARGET's units (its own
+ * knob help says so), so a depth of 400 IS a ±400 Hz spread with no scaling module
+ * in between. A fast, non-integer LFO rate sampled by a much slower clock is
+ * effectively random: the two are incommensurate, so successive samples land at
+ * unrelated phases. The bell's `frequency` knob supplies the CENTRE and the held
+ * value the deviation — the two sum at the port, which is what an
+ * offset-plus-modulation pair is for.
  *
  * The AUDIO_SAMPLER module exists and would play a real loop; a patch using it is
  * the right thing to add the moment a beach asset is bundled. That is a note for the
@@ -221,7 +307,7 @@ export const WHOOSH = {
 export const BEACH = {
   id: "beach",
   title: "Beach (synthesised)",
-  help: "Seagulls and waves built from noise and modulation — there is no bundled beach recording, so nothing here is sampled. Waves: pink noise under a very slow lowpass sweep. Gulls: the FM bell's 'pip' at a random pitch from a sample-and-hold. Swap the Sampler in when you have a real loop.",
+  help: "Seagulls and waves built from noise and modulation — there is no bundled beach recording, so nothing here is sampled. Waves: pink noise under a very slow lowpass sweep. Gulls: the FM bell's 'pip', struck by a slow clock, its pitch a fresh random value each cry from a sample-and-hold on a fast LFO. Swap the Sampler in when you have a real loop.",
   nodes: [
     // THE WAVES
     { id: "waves", type: "audio_noise", col: 0, row: 0, knobs: { color: "pink", level: 0.45 } },
@@ -232,6 +318,13 @@ export const BEACH = {
     // Same edge detector as SEQUENCED_DINGS, and for the same reason: a clock emits
     // a square WAVE, and a bell's gate wants an EDGE.
     { id: "gulledge", type: "audio_trigger", col: 1, row: 2, knobs: { pulseMs: 8 } },
+    // THE RANDOM-PITCH BRANCH (wave 3). A fast irrational-rate LFO is the source of
+    // spread; the sample-and-hold freezes one value of it per gull, held steady for
+    // the whole cry so the pitch does not slide mid-note. Its trigger is the SAME
+    // edge that strikes the bell, which is what makes the held value current at the
+    // instant the strike samples it.
+    { id: "gullrand", type: "audio_lfo", col: 0, row: 3, knobs: { frequency: 7.3, depth: 400, waveform: "triangle" } },
+    { id: "gullhold", type: "audio_sample_hold", col: 1, row: 3 },
     { id: "gull", type: "audio_ding", col: 2, row: 2, knobs: { preset: "pip", frequency: 1760, level: 0.16 } },
     // THE MIXER IS REQUIRED, and leaving it out is the second thing the tests
     // caught. Two beds have to reach one reverb, and AN INPUT HOLDS AT MOST ONE
@@ -251,6 +344,11 @@ export const BEACH = {
     { from: "surf", fromPort: "out", to: "mix", toPort: "in1" },
     { from: "gullclock", fromPort: "out", to: "gulledge", toPort: "in" },
     { from: "gulledge", fromPort: "out", to: "gull", toPort: "gate" },
+    // The random-pitch branch: LFO → S&H (clocked by the same edge) → the bell's
+    // pitch offset. Only reachable at all because wave 3 gave the ding that port.
+    { from: "gullrand", fromPort: "out", to: "gullhold", toPort: "in" },
+    { from: "gulledge", fromPort: "out", to: "gullhold", toPort: "trigger" },
+    { from: "gullhold", fromPort: "out", to: "gull", toPort: "frequency" },
     { from: "gull", fromPort: "out", to: "mix", toPort: "in2" },
     { from: "mix", fromPort: "out", to: "air", toPort: "in" },
     ...analysisWires("air"),
@@ -267,7 +365,7 @@ export const BEACH = {
  * SAMPLER patch the moment an audio asset is bundled, which is also when BEACH
  * should gain a real wave loop.
  */
-export const DEMO_PATCHES = [SPACEY_PAD_DRONE, SEQUENCED_DINGS, WHOOSH, BEACH];
+export const DEMO_PATCHES = [SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, WHOOSH, BEACH];
 
 /**
  * Pure function. A patch's items as `{id → state}` plus its wires resolved to real

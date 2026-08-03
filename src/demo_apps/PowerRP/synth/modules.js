@@ -1157,25 +1157,73 @@ function dingModule(context, params, resources) {
   }
   output.gain.value = clampParam(params.level ?? 0.5, 0, 1, "level");
 
-  let frequency = clampParam(params.frequency ?? 880, MIN_AUDIBLE_HZ, MAX_AUDIBLE_HZ, "frequency");
+  // ── THE PITCH SEAM (wave 3): a WIRE-CONNECTABLE frequency, sampled at STRIKE ──
+  //
+  // The knob's value lives on a ConstantSourceNode's offset rather than in a
+  // plain JS number, and `frequency` is that offset — which is what makes it an
+  // ordinary AudioParam any control signal can be connected INTO. Web Audio sums
+  // every connection into a param, so a sequencer's pitch output patched here
+  // ADDS to the knob; the knob therefore reads as an OFFSET (set it to 0 and the
+  // wire alone determines the pitch, set it to 220 and the wire transposes up
+  // from there), which is the modular convention and the one that makes an
+  // unpatched ding behave exactly as it did before this existed.
+  //
+  // ── WHY SAMPLED AT TRIGGER TIME AND NOT AUDIO-RATE ──────────────────────────
+  // A struck bell is not a running oscillator being retuned: `trigger` builds a
+  // fresh FM voice per strike (see below), and that voice's carrier/modulator
+  // ratio is FIXED at construction because a bell's inharmonic partials are a
+  // property of the object that was struck. Continuously sweeping a ringing
+  // bell's pitch is not what a bell does — it is what a siren does. So the port
+  // sets THE PITCH OF THE NEXT STRIKE, read here as `pitchBus.offset.value`.
+  //
+  // Reading `.value` is exact for this use and NOT an approximation of an
+  // audio-rate read: `.value` returns the param's current computed value
+  // including every connected input's contribution, and a strike is a single
+  // instant, so there is nothing to average over. The one honest limitation is
+  // that a source scheduled to change at a FUTURE time (a sequencer's
+  // setValueAtTime for the next step) is not visible yet — which is exactly
+  // right, because the strike being scheduled belongs to the step whose pitch is
+  // current. This is why per-strike voice semantics are PRESERVED rather than
+  // worked around.
+  //
+  // ── THE OFFSET IS NOT CLAMPED TO THE AUDIBLE BAND, AND THAT IS THE POINT ────
+  // Every other frequency in this file is clamped to [MIN_AUDIBLE_HZ, …] at
+  // construction, because it IS a pitch and a sub-audio pitch is an authoring
+  // mistake worth catching. This one is an OFFSET that a wire sums into, and its
+  // most useful value is ZERO — "the wire alone names the note", which is what a
+  // sequenced melody wants. Clamping it to 20 Hz would silently detune every
+  // note in that patch by 20 Hz and there would be nothing to see. What IS still
+  // checked is finiteness (clampParam's own first job), across a range that
+  // permits a negative offset — transposing DOWN is a legitimate patch.
+  // The strike itself is clamped to the audible band, where it is a real pitch.
+  const pitchBus = createConstant(context, clampParam(params.frequency ?? 880, -MAX_AUDIBLE_HZ, MAX_AUDIBLE_HZ, "frequency"));
+  pitchBus.start();
 
   return {
-    inputs: { level: output.gain },
+    inputs: { level: output.gain, frequency: pitchBus.offset },
     outputs: { out: output },
     params: {
       level: output.gain,
-      frequency: (value) => {
-        frequency = clampParam(value, MIN_AUDIBLE_HZ, MAX_AUDIBLE_HZ, "frequency");
-      },
+      frequency: pitchBus.offset,
     },
     /**
      * Command. Strike the bell at an audio-clock time. Builds a fresh voice per
      * strike and disposes it on ended — bells are one-shot, so a persistent
      * voice would be wasted CPU between strikes, and per-strike voices give
      * free polyphony (overlapping rings).
+     *
+     * `options.frequency` (what engine.trigger passes through) still WINS over
+     * the port, because it is a caller naming a pitch for one specific strike —
+     * a patch's random-pitched gull — and that is more specific than a standing
+     * wire. With neither, the knob's own offset is the pitch.
      */
     trigger(time = context.currentTime, options = {}) {
-      const voice = bellVoice(preset, options.frequency ?? frequency);
+      // Out-of-range is CLAMPED rather than refused: unlike a knob (whose value
+      // the author typed and whose mistake is worth a sentence), this number can
+      // be the sum of a wire and an offset, and a modulation that briefly
+      // overshoots must not throw on the audio path and kill the strike.
+      const struckAt = options.frequency ?? Math.max(MIN_AUDIBLE_HZ, Math.min(MAX_AUDIBLE_HZ, pitchBus.offset.value));
+      const voice = bellVoice(preset, struckAt);
       const carrier = context.createOscillator();
       const modulator = context.createOscillator();
       const modulationDepth = context.createGain();
@@ -1237,6 +1285,11 @@ function dingModule(context, params, resources) {
     },
     start() {},
     dispose() {
+      // The pitch bus is a STARTED source, so it must be stopped as well as
+      // disconnected — a running ConstantSourceNode keeps its whole graph alive
+      // and the engine's leak check counts it.
+      pitchBus.stop();
+      pitchBus.disconnect();
       output.disconnect();
     },
     meta: { kind: "ding", label: "Metallic Ding", preset },

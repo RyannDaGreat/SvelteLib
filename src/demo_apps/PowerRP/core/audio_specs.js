@@ -138,11 +138,24 @@ export const DING_SPEC = {
     // trigger port to that call instead of to a wire; the port still EXISTS on the
     // card so a clock can be patched to it, which is the whole point.
     { key: "gate", type: "trigger", label: "trig", method: true },
+    // THE PITCH PORT (wave 3), and the reason a pitched-percussion patch is
+    // possible at all. It is a real AudioParam input, so a sequencer's `pitch`
+    // output wires straight into it and SUMS with the knob — the knob is an
+    // OFFSET, exactly as it is on every other modulatable param in the engine.
+    // Sampled at STRIKE time, not audio-rate: a bell's inharmonic partials are
+    // fixed when it is struck (synth/modules.js dingModule states the full
+    // reasoning), which is what preserves the per-strike voice semantics.
+    { key: "frequency", type: "number", label: "pitch" },
     { key: "level", type: "number", label: "level" },
   ],
   outputs: [{ key: "out", type: "audio", label: "out" }],
   knobs: [
-    { key: "frequency", label: "Frequency", default: 880, ...HZ, help: "The bell's fundamental. Struck metal is inharmonic, so this is the pitch you hear rather than a harmonic series root." },
+    // NOT the shared HZ range: this knob's floor is 0, not 20 Hz. It is an OFFSET
+    // the `pitch` input sums into, and 0 ("the wire alone names the note") is its
+    // most useful value in a sequenced patch — a 20 Hz floor would silently detune
+    // every note by 20 Hz with nothing to see. Unwired it is still just the pitch,
+    // and the strike itself clamps to the audible band where it really is one.
+    { key: "frequency", label: "Frequency", default: 880, min: 0, max: 20000, unit: " Hz", help: "The bell's fundamental, and the OFFSET the `pitch` input adds to — wire a sequencer in and this transposes it, so set it to 0 to hear the sequence as written; leave it unwired and this is simply the pitch. Struck metal is inharmonic, so this is the pitch you hear rather than a harmonic series root." },
     { key: "preset", label: "Character", default: "ding", discrete: true, construct: true, options: ["ding", "pip", "clank", "gong"], help: "CONSTRUCT-TIME (the preset selects an FM recipe baked into the voice, so changing it rebuilds the module). Four FM bell recipes, from the short bright pip to the long inharmonic gong. They differ in modulator ratio and decay, which is what makes one read as glass and another as metal." },
     { ...LEVEL, default: 0.42 },
   ],

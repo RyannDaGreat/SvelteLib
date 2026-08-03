@@ -198,10 +198,25 @@ export function audioKnobDefaults(spec) {
  * @returns {{inputs: object[], outputs: object[]}}
  *
  * @example audioPorts({inputs: [{key: "in", type: "audio"}]}).inputs[0].label // "in"
+ * @example // a METHOD port keeps its flag: it is what decides connect-vs-trigger
+ * @example audioPorts({inputs: [{key: "gate", type: "trigger", method: true}]}).inputs[0].method // true
+ * @example // and an ordinary port does not grow the key at all
+ * @example "method" in audioPorts({inputs: [{key: "in", type: "audio"}]}).inputs[0] // false
  * @example audioPorts({}).outputs // []
  */
 export function audioPorts(spec) {
-  const norm = (p) => ({ key: p.key, type: p.type, label: p.label ?? p.key, ...(p.feedbackSafe ? { feedbackSafe: true } : {}) });
+  const norm = (p) => ({
+    key: p.key, type: p.type, label: p.label ?? p.key,
+    ...(p.feedbackSafe ? { feedbackSafe: true } : {}),
+    // `method` RIDES ALONG TOO, and it did not until wave 3. The mirror reads the
+    // flag off the SPEC (core/audio_mirror_diff.js), so the feature worked — but
+    // anything asking the PLUGIN what its ports are got a port declaration that
+    // silently disagreed with the spec about the one thing that decides whether a
+    // wire becomes engine.connect or engine.trigger. tests/audio_patches_test.js
+    // asked exactly that question and concluded a patch had LOST two wires. A
+    // declaration that omits a field is not neutral; it is a confident wrong answer.
+    ...(p.method ? { method: true } : {}),
+  });
   return { inputs: (spec.inputs ?? []).map(norm), outputs: (spec.outputs ?? []).map(norm) };
 }
 

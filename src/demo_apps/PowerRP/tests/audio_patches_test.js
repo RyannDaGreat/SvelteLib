@@ -40,9 +40,16 @@ registerPlugins(registry);
 /** Build one patch at the origin with predictable ids, the way the app does. */
 const build = (patch) => buildPatchItems(patch, registry, { x: 0, y: 0 }, (name) => `${patch.id}-${name}`);
 
-check("the four patches the brief names all exist", () => {
-  assert.deepEqual(DEMO_PATCHES.map((p) => p.id), ["spacey-pad-drone", "sequenced-dings", "whoosh", "beach"]);
-  for (const p of [SPACEY_PAD_DRONE, SEQUENCED_DINGS, WHOOSH, BEACH]) assert.ok(DEMO_PATCHES.includes(p));
+check("the four patches the brief names all exist, and the roster is free to GROW", () => {
+  // STATED AS A SUBSET, NOT AS AN EXACT LIST, and the standing directive is why.
+  // ADDENDUM 10 verbatim: "as you go by the way, just make demo patches. I want to
+  // see demo patches." A roster that is pinned exactly turns every wave's new patch
+  // into a red test — which is a test punishing the deliverable it exists to
+  // protect. What is worth pinning is that the four the brief named are still here
+  // and still distinct; a fifth is the feature working.
+  for (const p of [SPACEY_PAD_DRONE, SEQUENCED_DINGS, WHOOSH, BEACH]) assert.ok(DEMO_PATCHES.includes(p), `${p.id} left the roster`);
+  const ids = DEMO_PATCHES.map((p) => p.id);
+  assert.equal(new Set(ids).size, ids.length, `duplicate patch id in ${ids.join(", ")}`);
 });
 
 check("every patch has a title and a real explanation", () => {
@@ -219,8 +226,22 @@ check("a built patch is a valid AUDIO SCENE — the mirror sees every module and
       `${p.id}: the mirror saw ${Object.keys(scene.modules).length} modules for ${p.nodes.length} nodes`);
     // Method wires (the ding's gate) are carried but flagged; every other wire must
     // have survived the mirror's own reality checks.
+    //
+    // WHICH WIRES ARE METHOD WIRES IS ASKED OF THE REGISTRY, NOT OF THE BLUEPRINT
+    // ID. This used to test `w.to.includes("ding") || w.to === "gull"` — a guess
+    // about what patch authors name their nodes, which held for exactly as long as
+    // every bell in the library was called "ding" or "gull". The moment a patch
+    // named its bells `lead` and `answer` (GAMELAN_BELLS), two genuinely-method
+    // gate wires were counted as real ones and the patch was reported as having
+    // LOST two wires it never had. The port's own `method` flag is the fact; a
+    // name is a correlation.
     const real = scene.connections.filter((c) => !c.method);
-    const expectedReal = p.wires.filter((w) => !(w.to.includes("ding") || w.to === "gull") || w.toPort !== "gate");
+    const isMethodWire = (w) => {
+      const target = p.nodes.find((n) => n.id === w.to);
+      const port = (registry.get(target.type).ports({}).inputs ?? []).find((i) => i.key === w.toPort);
+      return !!port?.method;
+    };
+    const expectedReal = p.wires.filter((w) => !isMethodWire(w));
     assert.equal(real.length, expectedReal.length,
       `${p.id}: the mirror kept ${real.length} wires; the blueprint declares ${expectedReal.length} non-method ones`);
   }
