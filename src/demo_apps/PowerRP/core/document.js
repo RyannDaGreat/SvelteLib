@@ -405,6 +405,51 @@ export function withNewItem(doc, index, state) {
  * @example clonedItemStates({a: {type: "rect", x: "@c.x"}}, new Map([["a", "A"]]), reg) // {states: {A: {type: "rect", x: "@c.x"}}, external: ["c"]}
  * @example clonedItemStates({g: {type: "group", members: ["m"]}, m: {type: "rect"}}, new Map([["g", "G"], ["m", "M"]]), reg).states.G.members // ["M"]
  */
+/**
+ * THE WILDCARD SEGMENT in an `itemRefs` path. A plugin whose id-valued slots live
+ * under DYNAMIC KEYS — a map whose keys are not knowable when the plugin is
+ * written — declares `"*"` where the key would go.
+ *
+ * WHY THIS EXISTS: the node-flow protocol (core/nodeflow.js) stores a widget's
+ * connections as `inputs: {<portKey>: {item, port}}`, and the port keys are the
+ * plugin's own business — a mixer's are `in0..inN` and vary with its channel count.
+ * A literal path cannot name them, so before this a copied PATCH kept its wires
+ * pointing at the ORIGINAL nodes: the copy looked right and was silently reading
+ * someone else's values, which is the exact failure `itemRefs` exists to prevent.
+ *
+ * It is deliberately ONE level and ONE meaning ("every key of the object at this
+ * point"), not a glob language. Anything richer would be a query engine in a file
+ * that is supposed to state where ids live.
+ */
+export const REF_PATH_WILDCARD = "*";
+
+/**
+ * Pure function. Expands `itemRefs` declarations against ONE state: every path
+ * with no wildcard passes through unchanged, and a path containing
+ * REF_PATH_WILDCARD becomes one concrete path per key actually present at that
+ * point. A wildcard over a missing or non-object slot expands to NOTHING, which is
+ * the right answer — there are no ids there to remap.
+ *
+ * @param {object} state - one item's state
+ * @param {Array<string[]>} refPaths - the plugin's `itemRefs`
+ * @returns {Array<string[]>} concrete paths, wildcards resolved
+ *
+ * @example expandRefPaths({target: "x"}, [["target"]]) // [["target"]]
+ * @example expandRefPaths({inputs: {a: {item: "s"}, b: {item: "t"}}}, [["inputs", "*", "item"]]) // [["inputs", "a", "item"], ["inputs", "b", "item"]]
+ * @example expandRefPaths({}, [["inputs", "*", "item"]]) // [] (nothing wired: nothing to remap)
+ */
+export function expandRefPaths(state, refPaths) {
+  const out = [];
+  for (const path of refPaths) {
+    const at = path.indexOf(REF_PATH_WILDCARD);
+    if (at === -1) { out.push(path); continue; }
+    const container = getPath(state, path.slice(0, at));
+    if (!container || typeof container !== "object") continue;
+    for (const key of Object.keys(container)) out.push([...path.slice(0, at), key, ...path.slice(at + 1)]);
+  }
+  return out;
+}
+
 export function clonedItemStates(states, idMap, registry) {
   const out = {};
   const external = new Set();
@@ -431,8 +476,9 @@ export function clonedItemStates(states, idMap, registry) {
         for (const id of remapped.external) external.add(id);
         if (remapped.src !== value) setLeaf(clone, path, remapped.src);
       }
-    // 2. ID-VALUED slots (plugin.itemRefs) — a plain id or an array of ids.
-    for (const path of plugin.itemRefs ?? []) {
+    // 2. ID-VALUED slots (plugin.itemRefs) — a plain id, an array of ids, or a
+    //    WILDCARD path over a map of them (expandRefPaths).
+    for (const path of expandRefPaths(clone, plugin.itemRefs ?? [])) {
       const value = getPath(clone, path);
       if (Array.isArray(value)) setLeaf(clone, path, value.map(mapId));
       else if (typeof value === "string") setLeaf(clone, path, mapId(value));

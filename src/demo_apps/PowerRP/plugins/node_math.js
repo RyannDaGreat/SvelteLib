@@ -107,6 +107,11 @@ export const nodeMathPlugin = {
     z: 0, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     op: DEFAULT_OP,
+    // THE CONNECTION MAP, empty at birth. Declared in `defaults` rather than left
+    // absent because `itemRefs` names a path THROUGH it (NODE_ITEM_REFS), and a
+    // wildcard cannot expand over a slot that does not exist — a node with no
+    // `inputs` key could never have a wire remapped when it was copied.
+    inputs: {},
     ...bundleNestedDefaults("effects"),
   },
   inspector: [
@@ -149,6 +154,11 @@ export const nodeMathPlugin = {
     ];
     return applyEffects(ops, s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },
+  // Palette + toolbar entry. Placed with the crosshair like every other widget
+  // (armCrosshairPlacement), so inserting a node is the SAME gesture as inserting
+  // a rectangle — a node is an ordinary widget and its insertion must not feel
+  // like a special mode.
+  commands: [{ id: "add-node-math", title: "Add Math Node", icon: "mdi:calculator-variant-outline", run: (app) => app.armCrosshairPlacement(nodeMathPlugin) }],
   cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {

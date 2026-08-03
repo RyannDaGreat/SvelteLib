@@ -154,12 +154,80 @@
  *     presets?: [{name, description, props}] // ONE preset family (see below)
  *     presetFamilies?: [{id, title, presets}] // N ORTHOGONAL preset families
  *     toolGroups?: [{id, title, rows}]      // this widget's OWN Tools sections
+ *     ports?(state)                         // THE NODE-FLOW PROTOCOL (see below):
+ *       → {inputs: [{key,type,label}],      // declaring this makes the widget a
+ *          outputs: [{key,type,label}]}     // NODE — it grows typed connection
+ *                                           // beads and can be wired to others.
+ *                                           // A FUNCTION OF STATE, so a port list
+ *                                           // may vary (a mixer grows inputs).
+ *     computeOutputs?(state, inputs)        // what this node PUBLISHES on its
+ *       → {<outPortKey>: value}             // outputs, given its resolved inputs.
+ *                                           // Absent = a pure SINK (a display).
  *   }
  *
  * No plugin may import another plugin. Composition happens through
  * capabilities, shared core modules (e.g. core/endpoints.js), and document
  * state. (A BirdsEye-style convention test suite enforcing this mechanically
  * is planned — see the dump manifest — but does not exist yet.)
+ *
+ * ── THE NODE-FLOW PROTOCOL (`ports` + `computeOutputs`) ──────────────────────
+ *   Implementation and the full reasoning: core/nodeflow.js. Read that module
+ *   before adding a node widget; this is the registry-side contract.
+ *
+ * A NODE WIDGET IS AN ORDINARY WIDGET THAT DECLARES PORTS. Nothing else changes:
+ * it is a document item with slides, deltas, equations, keyframes and playback
+ * rendering. Declaring `ports(state)` is the whole opt-in, and every widget that
+ * does not declare it answers "no ports" — so this protocol cost every existing
+ * plugin exactly nothing, and a node is not a second class of object with its own
+ * lifecycle.
+ *
+ * WIRES ARE NOT WIDGETS (user ruling, 2026-08-02, verbatim: "wires don't count as
+ * widgets... I don't want to junk up my widget library of random wires", and "Make
+ * no mistake though, wires are still rendered, they're just not widgets"). There is
+ * NO wire plugin and no wire item. A wire is DERIVED rendering of a CONNECTION, and
+ * a connection is one leaf of ordinary widget state:
+ *
+ *     state.inputs = { "<inPort>": {item: "<sourceItemId>", port: "<outPort>"} }
+ *
+ * Stored on the INPUT side because an input takes at most ONE source while an
+ * output fans out freely — so fan-in-1 is STRUCTURAL (same object key) rather than
+ * an invariant something has to police. A node plugin spreads
+ * `itemRefs: NODE_ITEM_REFS` so duplicate/clone remaps a copied patch onto the
+ * copies (the plugins/group.js `members` precedent); without it a pasted patch is
+ * silently still reading the ORIGINALS.
+ *
+ * PORTS ARE STRICTLY TYPED WITH EXPLICIT COERCION (user ruling: "we will probably
+ * need strictly typed ports... they can be coercive ports though... And they may
+ * have different colors on each node to indicate that type"). The type table and
+ * the coercion table both live in core/nodeflow.js; an ABSENT coercion pair is
+ * incompatible and the drop is REFUSED with a sentence, never silently dropped and
+ * never silently converted by some plausible fallback.
+ *
+ * A PLUGIN NEVER WALKS THE GRAPH. core/derive.js evaluates the whole node graph
+ * once per derive (topologically) and injects each node's resolved ports onto its
+ * derived state as `nodePorts: {inputs, outputs}` — the same seam shape `docVars`
+ * uses, for the same reason: emit()'s signature carries only the item state, and a
+ * value that arrived over a WIRE is by definition not in it. So a widget whose
+ * picture shows what it received reads `s.nodePorts.inputs.<key>` and does no graph
+ * work of its own. A plugin that walked the item map itself would duplicate the
+ * topological order and give the readout and the wire a way to disagree by a frame.
+ *
+ * EVERY DECLARED INPUT IS PRESENT in `computeOutputs`'s `inputs` argument — an
+ * unconnected one holds its TYPE'S ZERO, never undefined — so a half-built patch
+ * still computes and still draws a picture, which is how you see what you are
+ * building.
+ *
+ * THE GEOMETRY IS DECLARED ONCE. core/nodeflow.portLayout places inputs down the
+ * LEFT edge and outputs down the RIGHT (the user's Reaktor left-to-right ruling);
+ * core/derive.nodePortAnchors wraps it local→world. The painter, the bead hit test
+ * and the wire layer all read that ONE answer, so a bead cannot be drawn anywhere
+ * other than where it can be grabbed, and rotation/scale need no per-consumer
+ * trigonometry.
+ *
+ * NODE CHROME IS SHARED, NOT COPIED. core/node_chrome.js builds the card, the
+ * beads, the rim and the readout, so every node reads as the same kind of object.
+ * That is a core module, not a plugin, precisely because the no-plugin-imports-
+ * plugin law is what forces shared looks into core.
  *
  * ── NEGATIVE w / h: WHAT A HOOK IS GUARANTEED NOT TO SEE ─────────────────────
  *

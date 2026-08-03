@@ -106,6 +106,14 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
   band: Object.freeze(["bandAdd", "bandRemove", "bandInvert"]),
   endpoint: Object.freeze([]),
   modifier: Object.freeze([]),
+  // THE WIRE GESTURE (core/nodeflow.js, core/wire_drag.js). NO modifiers, and the
+  // empty list is a claim rather than a gap: a wire drop is decided entirely by
+  // WHAT IS UNDER THE POINTER (a compatible bead, an incompatible one, or empty
+  // space), so there is no key that could change its meaning, and offering one on
+  // the HintBar would be the exact lie this table exists to prevent. Shift in
+  // particular must stay silent here — a wire has no axis to lock and no scale to
+  // make uniform.
+  wire: Object.freeze([]),
 });
 
 /**
@@ -113,7 +121,7 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
  * from DRAG_KIND_MODIFIERS so the two can never disagree.
  *
  * @example DRAG_KINDS.includes("multiresize") // true
- * @example DRAG_KINDS.length // 9
+ * @example DRAG_KINDS.length // 10
  */
 export const DRAG_KINDS = Object.freeze(Object.keys(DRAG_KIND_MODIFIERS));
 

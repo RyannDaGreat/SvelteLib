@@ -16,6 +16,13 @@
   import VideoV7Overlay from "./VideoV7Overlay.svelte"; // per-widget WebGPU video canvases stacked over the Skia scene (video_v7)
   import { videoV7Descriptors } from "./videoV7Placement.js";
   import { pickNode, pickNodeStack, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
+  // THE NODE-FLOW WIRE LAYER. `deriveWires` walks the derived tree's connections
+  // (WIRES ARE NOT WIDGETS — nothing here is or becomes an item); core/wire_drag.js
+  // owns every decision the gesture makes, this component owns only the events and
+  // the SVG. `portColor` is the ONE type→colour lookup the painter also reads.
+  import { deriveWires } from "../core/derive.js";
+  import { portColor } from "../core/nodeflow.js";
+  import { allPortBeads, beadAt, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // THE HANDLE GLYPH BANK: core/ owns the VOCABULARY (which looks exist and what
@@ -1943,6 +1950,22 @@
       return;
     }
     const w = worldPoint(e);
+    // ── THE PORT BEAD LAYER IS ALWAYS ACTIVE, AND IT WINS ────────────────────
+    // The user's founding requirement, verbatim: "there are some things that would
+    // normally look like handles but are actually not handles. Actually, these can
+    // always be, EVEN IF IT'S NOT SELECTED, an area that if I click and drag it
+    // from it, can click and drag to another node."
+    //
+    // So this is checked BEFORE selection, before the selected-object drag
+    // priority, and before the topmost hit test — and it deliberately does NOT ask
+    // whether the node is selected. Two consequences the placement encodes:
+    //   IT BEATS BODY DRAG inside the bead radius (blueprint §6) and NOWHERE ELSE:
+    //     `beadAt` returns null a few pixels away, so the very next line down —
+    //     the ordinary pick — takes the press and the node moves as it always did.
+    //   IT DOES NOT CHANGE THE SELECTION. Wiring two nodes is not selecting them;
+    //     a gesture that stole the selection would make building a patch fight
+    //     with whatever the Inspector was showing.
+    if (startWireDrag(e, w)) return;
     // An armed CROSSHAIR (manifest ARCHITECTURE PLAN #5) consumes the
     // ONE-SHOT arm on the first pointer-down: "band" starts the rubber-band
     // drag kind below (mode already resolved at arm time — "regular" →
@@ -2228,6 +2251,7 @@
     else if (drag.kind === "multiresize") multiResizeDrag(e, w);
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "modifier") modifierDrag(w);
+    else if (drag.kind === "wire") wireDragMove(w);
     else if (drag.kind === "band") bandDrag(w, e);
     // EVERY placement grammar routes here (PLACEMENT_DRAG_KINDS), so a grammar
     // added to the table is driven and committed with no edit to this dispatch.
@@ -3257,6 +3281,109 @@
     app.dragKind = "modifier";
   }
 
+  // ── THE WIRE GESTURE (core/wire_drag.js) ─────────────────────────────────────
+  // The DECISIONS live in core (which bead a press grabs, what each target's
+  // verdict is, what a release writes); this component owns only the pointer
+  // events, the SVG and the undo call. Same split web/canvas/dragKinds.js made for
+  // the bbox family, and for the same reason: rules inside a Svelte component
+  // cannot be called from a test.
+
+  /** The live wire drag: {anchor, detach} from core, plus the cursor world point
+   *  and the per-bead verdicts recomputed on every move. null when no wire gesture
+   *  is running, which is almost always. */
+  let wireDrag = $state(null);
+
+  /**
+   * Query. Every port bead in the scene, WORLD space — recomputed per gesture
+   * rather than kept in $derived state, because the population only matters while
+   * a wire is being dragged or hit-tested and a per-frame derivation over every
+   * node would cost the 99% of sessions that never touch a node.
+   */
+  function sceneBeads() {
+    return allPortBeads(app.nodes());
+  }
+
+  /**
+   * Command. Starts a wire gesture if `w` (a WORLD point) is on a port bead;
+   * returns true when it consumed the press.
+   *
+   * THE GRAB RADIUS IS ZOOM-AWARE. The bead's LOCAL radius already scales with the
+   * node, and `SNAP_PX / viewport.zoom` converts the pointer's screen-space slop to
+   * world units — so the grab region tracks the picture at every zoom instead of
+   * becoming unhittable when zoomed out and sloppy when zoomed in.
+   */
+  function startWireDrag(e, w) {
+    const beads = sceneBeads();
+    if (beads.length === 0) return false; // no node widgets: nothing to grab, no cost
+    const bead = beadAt(beads, w.x, w.y, SNAP_PX / viewport.zoom);
+    if (!bead) return false;
+    const items = app.rawState().items ?? {};
+    const started = wireDragStart(items, bead);
+    if (!started) return false;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    hoverAnchor = null;
+    // The anchor's world position is frozen at grab: the ghost is drawn from it to
+    // the cursor, and the node it belongs to cannot move during a wire drag.
+    const anchorBead = beads.find((b) => b.item === started.anchor.item && b.key === started.anchor.port);
+    wireDrag = {
+      ...started,
+      anchorXY: anchorBead ? { x: anchorBead.x, y: anchorBead.y } : { x: w.x, y: w.y },
+      cursor: { x: w.x, y: w.y },
+      targets: wireTargets(items, app.registry, beads, started),
+      hovered: null,
+      beads,
+    };
+    drag = { kind: "wire" };
+    app.dragging = true;
+    app.dragKind = "wire";
+    return true;
+  }
+
+  /** Command. Advances a live wire drag: moves the ghost's loose end and re-asks
+   *  core for every bead's verdict, so the highlight the user sees is literally the
+   *  decision the drop will make. */
+  function wireDragMove(w) {
+    if (!wireDrag) return;
+    const target = beadAt(wireDrag.beads, w.x, w.y, SNAP_PX / viewport.zoom);
+    wireDrag = {
+      ...wireDrag,
+      cursor: { x: w.x, y: w.y },
+      // The hovered bead is only a TARGET when it is one of the drag's candidates
+      // (the anchor itself is excluded by wireTargets), so hovering your own start
+      // bead never lights up as a legal drop.
+      hovered: target && wireDrag.targets.has(`${target.item}.${target.key}`) ? target : null,
+    };
+  }
+
+  /**
+   * Command. Ends a wire gesture. ONE UNDO UNIT via the universal
+   * setPreview → commitPreview path — the same seam every drag commits through, so
+   * a connect, a reroute and a disconnect are each one Cmd+Z, and a reroute's
+   * clear-plus-write is ONE step rather than two.
+   *
+   * A REFUSED drop reports through the same channel a refused command does, rather
+   * than failing silently: the user aimed at a bead and released, so something must
+   * answer.
+   */
+  function finishWireDrag() {
+    if (!wireDrag) return;
+    const { pairs, refusal } = wireDrop(app.rawState().items ?? {}, app.registry, wireDrag, wireDrag.hovered);
+    if (pairs.length) {
+      app.setPreview(pairs);
+      app.commitPreview();
+    } else if (refusal) {
+      // A REFUSED DROP IS ONE USER ACT, so it goes through reportAction and NOT the
+      // deduped reportOnce — the identical refusal on a second attempt is a second
+      // fact about a second gesture. That is the same reasoning (and the same call)
+      // the refused asset drop above uses. The user has ALREADY been told visually:
+      // the target bead dimmed the whole time it was under the pointer and the ghost
+      // wire itself turned to the refusal colour before release. This line is the
+      // WORDS behind that colour, for the case where "why not?" is the question.
+      reportAction(`PowerRP: cannot connect — ${refusal}`);
+    }
+    wireDrag = null;
+  }
+
   // ── POINT CONTEXT MENU (F.18) ────────────────────────────────────────────────
   // Right-clicking a modifier handle that backs a LIST ELEMENT opens a small menu of
   // the point's operations. Its entries are DECLARED by the widget (registry
@@ -3539,6 +3666,10 @@
    * gesture cannot resurrect or commit. */
   function cancelPointDrag() {
     if (!ESC_CANCELABLE_DRAG_KINDS.includes(drag?.kind)) return;
+    // A cancelled WIRE gesture writes NOTHING — in particular it does not run
+    // wireDrop, so a drag that picked up an existing connection leaves that
+    // connection exactly where it was. Clearing the record is the whole cancel.
+    wireDrag = null;
     drag = null;
     hoverAnchor = null;
     dynamicAnchor = null;
@@ -3562,6 +3693,17 @@
       return;
     }
     if (!drag) return;
+    // THE WIRE GESTURE COMMITS FIRST and returns: its release is decided entirely
+    // by core/wire_drag.wireDrop (connect / reroute / disconnect / cancel /
+    // refused), so none of the selection, click-vs-drag or preview machinery below
+    // applies to it. It also writes NO selection — see the note at its pointer-down.
+    if (drag.kind === "wire") {
+      finishWireDrag();
+      drag = null;
+      app.dragging = false;
+      app.dragKind = null;
+      return;
+    }
     if (drag.kind === "band") {
       // Apply the band through the SAME query the live preview rendered from
       // (bandSelectionAt), recomputed from the drag's own endpoints rather than
@@ -4579,6 +4721,75 @@
     return { outlines: [...outlines, ...inkRectOutlines], hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, inkGhostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline, inkDashes, bandAddInkDashes, bandRemoveInkDashes };
   });
 
+  /**
+   * THE NODE-FLOW OVERLAY: the wires to draw, the beads to draw, and the live
+   * ghost. Its OWN $derived rather than another dozen keys on `overlay`, for two
+   * reasons that are really one — it is the only overlay layer that exists for a
+   * MINORITY of documents, and every one of its lists is empty when no widget
+   * declares a port, so a document with no nodes pays one `deriveWires([])` per
+   * rebuild and allocates nothing.
+   *
+   * WIRES ARE NOT WIDGETS. Every wire here is derived from the CONNECTIONS in node
+   * widgets' state (core/derive.deriveWires); none of it is an item, none of it is
+   * selectable, and nothing here can end up in the widget library.
+   *
+   * SCREEN SPACE, like the rest of the overlay: the SVG is in screen coordinates,
+   * so every world point goes through `worldToScreen` exactly once, here.
+   */
+  let nodeOverlay = $derived.by(() => {
+    app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
+    if (!actions) return { wires: [], beads: [], ghost: null };
+    const nodes = app.nodes();
+    const pt = (x, y) => actions.worldToScreen(x, y);
+    // A wire is drawn in the colour of the SOURCE port's type — what flows through
+    // it, which under a coercion is what it LEAVES as rather than what it arrives
+    // as. `deriveWires` already resolved that; this only maps it to pixels.
+    const wires = deriveWires(nodes).map((w) => ({
+      id: `${w.from.item}.${w.from.port}->${w.to.item}.${w.to.port}`,
+      d: wireBezierPath(pt(w.from.x, w.from.y), pt(w.to.x, w.to.y)),
+      color: portColor(w.type),
+    }));
+    // THE BEADS ARE DRAWN BY THE PAINTER (core/node_chrome.portBeads), not here —
+    // they are part of the node's picture and must appear in exports, in the
+    // presenter and in the CLI render. What the OVERLAY adds is the interaction
+    // affordance: a hit target that is always live, and, during a drag, the
+    // highlight/dim that says where this wire may land.
+    const beads = allPortBeads(nodes).map((b) => {
+      const id = `${b.item}.${b.key}`;
+      const verdict = wireDrag?.targets.get(id);
+      return {
+        id, ...pt(b.x, b.y), color: portColor(b.type), label: b.label, type: b.type,
+        // Three states, and only while a wire is in flight: a legal target
+        // (highlight), an illegal one (dim), or not a candidate at all. With no
+        // drag running every bead is neutral — an always-on highlight would make
+        // the canvas noisy for the entire time you are NOT wiring anything.
+        target: wireDrag ? verdict === null : false,
+        refused: wireDrag ? typeof verdict === "string" : false,
+        hovered: wireDrag?.hovered?.item === b.item && wireDrag?.hovered?.key === b.key,
+      };
+    });
+    // THE GHOST: anchor → cursor, or anchor → the bead being hovered (so it SNAPS
+    // to a legal target before you release, which is what makes a drop feel
+    // committed rather than approximate). Coloured by the anchor's type, and
+    // switched to the refusal colour when the pointer is over an illegal bead —
+    // the wire itself says no before the drop does.
+    let ghost = null;
+    if (wireDrag) {
+      const a = pt(wireDrag.anchorXY.x, wireDrag.anchorXY.y);
+      const end = wireDrag.hovered ? pt(wireDrag.hovered.x, wireDrag.hovered.y) : pt(wireDrag.cursor.x, wireDrag.cursor.y);
+      const overRefused = !wireDrag.hovered && beadAt(wireDrag.beads, wireDrag.cursor.x, wireDrag.cursor.y, SNAP_PX / viewport.zoom);
+      ghost = {
+        // A BACKWARD drag (started at an unconnected input) is drawn cursor→anchor,
+        // so the bezier's control points still leave an output rightward and enter
+        // an input leftward. Without this the ghost would curl the wrong way for
+        // exactly half of all wire gestures.
+        d: wireDrag.anchor.isInput ? wireBezierPath(end, a) : wireBezierPath(a, end),
+        color: overRefused ? null : portColor(wireDrag.anchor.type),
+      };
+    }
+    return { wires, beads, ghost };
+  });
+
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
   // TextEditController renders in the item's world pose off THIS node (preview-
   // blended state, so live edits show as you type). Recomputes on
@@ -4707,6 +4918,48 @@
              starting clears app.crosshair and no live drag repopulates this
              array). Skin picks the CSS class: band = dashed band-select
              style, place = gray --a-ghost tone. -->
+        <!-- ── THE NODE-FLOW WIRE LAYER ────────────────────────────────────────
+             WIRES ARE NOT WIDGETS (user ruling): every curve here is DERIVED from
+             the connections stored in node widgets' own state, and nothing in this
+             block is or becomes a document item. Drawn FIRST among the overlay
+             chrome so selection outlines, handles and guides all read ON TOP of a
+             patch's wiring rather than being lost under it.
+             Each wire is a HALO stroke plus the wire itself: the halo is the canvas
+             colour, so a wire crossing a dark node card stays legible without the
+             wire needing an outline that would change its colour. -->
+        {#each nodeOverlay.wires as wire (wire.id)}
+          <path class="nf-wire-halo" d={wire.d} />
+          <path class="nf-wire" d={wire.d} style={`--nf-wire-color: ${wire.color};`} />
+        {/each}
+        <!-- THE GHOST WIRE: the one being dragged right now. Dashed so it reads as
+             provisional, and it turns to the refusal colour the moment the pointer
+             is over a bead it cannot land on — the wire says no before the drop
+             does. `color: null` IS that refusal state (set in nodeOverlay). -->
+        {#if nodeOverlay.ghost}
+          <path class="nf-wire-ghost" class:nf-refused={!nodeOverlay.ghost.color} d={nodeOverlay.ghost.d}
+                style={nodeOverlay.ghost.color ? `--nf-wire-color: ${nodeOverlay.ghost.color};` : null} />
+        {/if}
+        <!-- THE PORT BEAD HIT LAYER. The bead's PICTURE is painted by the widget
+             itself (core/node_chrome.portBeads) so it exists in exports, in the
+             presenter and in the CLI render; these circles are the INTERACTION half
+             — an always-live grab target, plus the highlight/dim that says where a
+             wire in flight may land. Transparent when idle (see app.css): an
+             always-on ring would double every bead the painter already drew.
+             `pointer-events: none` on all of them, deliberately — the press is
+             handled by the overlay's own onPointerDown through core/wire_drag.beadAt,
+             which hit-tests in WORLD space against the same anchors the painter used,
+             so the grab region cannot drift from the picture the way a parallel set
+             of DOM targets would. -->
+        {#each nodeOverlay.beads as bead (bead.id)}
+          <circle
+            class="nf-bead"
+            class:nf-target={bead.target}
+            class:nf-refused={bead.refused}
+            class:nf-hovered={bead.hovered}
+            cx={bead.x} cy={bead.y}
+            style={`--nf-wire-color: ${bead.color};`}
+          ><title>{bead.label} ({bead.type})</title></circle>
+        {/each}
         {#each overlay.crosshairSegs as c}
           <line class="crosshair" class:crosshair-band={c.skin === "band"} class:crosshair-place={c.skin === "place"} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} />
         {/each}

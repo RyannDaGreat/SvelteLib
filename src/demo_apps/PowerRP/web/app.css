@@ -68,6 +68,17 @@
   --a-wire-ghost-dash: 6 5;
   --a-wire-refused: #f7768e;
   --a-bead-halo: rgba(255, 255, 255, 0.85);
+  /* The bead INTERACTION ring (the overlay's, not the painted bead): its resting
+     size matches core/nodeflow.PORT_BEAD_R so the highlight lands exactly on the
+     painted bead, and the hover size is one step larger — the growth, not a colour
+     change, is what says "release here", because the colour already names the type. */
+  --a-bead-r: 6px;
+  --a-bead-r-hover: 9px;
+  --a-bead-ring: 2px;
+  --a-bead-ring-hover: 3px;
+  /* How quickly a bead's highlight fades in when a wire drag starts. Short enough
+     to feel immediate under the pointer, long enough not to flash. */
+  --a-bead-fade: 90ms;
 
   /* Spacing scale */
   --a-sp-1: 2px;
@@ -4846,6 +4857,105 @@ textarea {
 
 .overlay .crosshair-place {
   stroke: var(--a-ghost);
+}
+
+/* ── THE NODE-FLOW WIRE LAYER (core/nodeflow.js, core/wire_drag.js) ──────────
+   WIRES ARE NOT WIDGETS (user ruling, 2026-08-02): every curve styled here is
+   DERIVED rendering of a CONNECTION stored in a node widget's own state. Nothing
+   in this block corresponds to a document item.
+
+   THE COLOUR IS PASSED IN, NOT PICKED HERE. `--nf-wire-color` is set inline per
+   element from core/nodeflow.portColor — the SAME table the PAINTER uses for the
+   beads it draws into the scene. A colour chosen in CSS would be a second source
+   of truth that could disagree with the picture, and the type→colour mapping is
+   the user's stated legibility mechanism ("they may have different colors on each
+   node to indicate that type"), so it must not have two answers.
+
+   NOT THEMED, for the same reason the tokens are not: a wire's colour names the
+   DATA TYPE flowing through it. A theme that recoloured it would be saying
+   something false about the patch. */
+.overlay .nf-wire {
+  fill: none;
+  stroke: var(--nf-wire-color);
+  stroke-width: var(--a-wire-width);
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+/* THE HALO: the canvas colour, drawn UNDER each wire and slightly wider, so a wire
+   crossing a dark node card or another wire stays legible. This is what lets the
+   wire itself stay a single flat stroke in its type colour — an outline drawn ON
+   the wire would blend into it and change the colour the user is reading. */
+.overlay .nf-wire-halo {
+  fill: none;
+  stroke: var(--a-canvas-solid);
+  stroke-width: calc(var(--a-wire-width) + var(--a-sp-2));
+  stroke-linecap: round;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* THE GHOST WIRE — the one being dragged right now. Dashed so it reads as
+   PROVISIONAL against the solid committed wires, and thicker so it stays the
+   thing your eye is following through the gesture. */
+.overlay .nf-wire-ghost {
+  fill: none;
+  stroke: var(--nf-wire-color);
+  stroke-width: var(--a-wire-hover-width);
+  stroke-dasharray: var(--a-wire-ghost-dash);
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+/* A REFUSED drop states itself on the WIRE, before the release: the ghost turns to
+   the refusal colour the moment the pointer is over a bead it cannot land on. The
+   sentence still arrives on drop; this is the half that arrives in time to stop
+   you. Shared by the ghost and the beads so "no" is one colour everywhere. */
+.overlay .nf-wire-ghost.nf-refused,
+.overlay .nf-bead.nf-refused {
+  stroke: var(--a-wire-refused);
+}
+
+/* THE PORT BEAD INTERACTION LAYER. The bead's PICTURE is painted by the widget
+   (core/node_chrome.portBeads) so it exists in exports, in the presenter and in the
+   CLI render; these circles are the interaction half and are INVISIBLE AT REST —
+   an always-on ring would double every bead the painter already drew.
+   `pointer-events: none` is not an oversight: the press is hit-tested in WORLD
+   space by core/wire_drag.beadAt against the same anchors the painter used, so the
+   grab region cannot drift from the picture the way a parallel set of DOM targets
+   would. These elements exist to be SEEN during a drag, not to be hit. */
+.overlay .nf-bead {
+  r: var(--a-bead-r);
+  fill: none;
+  stroke: none;
+  pointer-events: none;
+  transition: opacity var(--a-bead-fade) ease, r var(--a-bead-fade) ease;
+}
+
+/* A LEGAL TARGET while a wire is in flight: a bright ring in the bead's own type
+   colour, plus a white halo so it reads against a dark node card. */
+.overlay .nf-bead.nf-target {
+  stroke: var(--nf-wire-color);
+  stroke-width: var(--a-bead-ring);
+  fill: var(--a-bead-halo);
+}
+
+/* THE ONE the pointer is actually over: same ring, grown. The size change (not a
+   colour change) is what says "release here" — the colour is already spoken for by
+   the type. */
+.overlay .nf-bead.nf-hovered {
+  r: var(--a-bead-r-hover);
+  stroke-width: var(--a-bead-ring-hover);
+}
+
+/* AN ILLEGAL TARGET while a wire is in flight. Marked rather than merely left
+   neutral: with a drag running, an unmarked bead would be ambiguous between "you
+   cannot drop here" and "nothing to see", and the whole point of computing every
+   verdict continuously is that the user never has to guess which. */
+.overlay .nf-bead.nf-refused {
+  stroke-width: var(--a-bead-ring);
+  fill: none;
+  opacity: var(--a-disabled-opacity);
 }
 
 /* In-progress CROSSHAIR PLACEMENT drag rect: the gray ghost tone (matching

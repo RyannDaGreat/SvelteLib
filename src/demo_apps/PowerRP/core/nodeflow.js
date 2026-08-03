@@ -439,13 +439,48 @@ export function wouldCycle(items, registry, from, to) {
 }
 
 /**
+ * Query-shaped pure helper. The plugin for an item, or null — NEVER a throw.
+ *
+ * THE REGISTRY THROWS ON AN UNKNOWN TYPE, and that is right for a render walk (a
+ * document naming a widget nobody registered is a real defect there). It is WRONG
+ * here, because this module runs over the WHOLE item map, including items
+ * `deriveRenderTree` deliberately skips: an item whose creation slide is later in
+ * the deck has NO `type` at all yet (imaginary-slide semantics, core/expressions.js),
+ * and asking the registry about `undefined` threw and took the entire derive with
+ * it. That is the exact bug tests/expressions_test.js caught: an ordinary document
+ * with a not-yet-created item stopped rendering the moment this module existed.
+ *
+ * So the rule here MIRRORS derive's own: an item without a resolvable plugin is not
+ * an error, it is simply not part of the graph this fold sees. A truly unknown TYPE
+ * still reaches the registry's throw through the render walk, which is where that
+ * complaint belongs — this function suppresses nothing that has a picture.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {string} id - the item id
+ * @returns {object|null}
+ */
+function pluginFor(items, registry, id) {
+  const type = items?.[id]?.type;
+  if (typeof type !== "string") return null; // not created on this fold — not an error
+  try {
+    return registry?.get?.(type) ?? null;
+  } catch {
+    // A type the registry does not know. The RENDER walk will raise it (that is its
+    // job and it names the item); the graph fold simply has no ports to read from a
+    // widget that does not exist, and throwing twice for one defect helps nobody.
+    return null;
+  }
+}
+
+/**
  * Query-shaped pure helper. Is the input port an edge terminates at declared
  * `feedbackSafe`? Missing plugin / port answers false, because an edge we cannot
  * resolve must not be silently exempted from the cycle rule.
  */
 function portIsFeedbackSafe(items, registry, to) {
   const state = items?.[to.item];
-  const plugin = state ? registry?.get?.(state.type) : null;
+  const plugin = state ? pluginFor(items, registry, to.item) : null;
   if (!plugin) return false;
   return findPort(plugin, state, "input", to.port)?.feedbackSafe === true;
 }
@@ -479,8 +514,8 @@ export function connectionRefusal(items, registry, from, to) {
   const dstState = items?.[to.item];
   if (!srcState) return "the source widget is not on this slide";
   if (!dstState) return "the destination widget is not on this slide";
-  const srcPlugin = registry?.get?.(srcState.type);
-  const dstPlugin = registry?.get?.(dstState.type);
+  const srcPlugin = pluginFor(items, registry, from.item);
+  const dstPlugin = pluginFor(items, registry, to.item);
   const outPort = srcPlugin ? findPort(srcPlugin, srcState, "output", from.port) : null;
   const inPort = dstPlugin ? findPort(dstPlugin, dstState, "input", to.port) : null;
   if (!outPort) return `the source has no output named "${from.port}"`;
@@ -612,7 +647,7 @@ export function evaluateNodeGraph(items, registry) {
   for (const id of order) {
     const state = items[id];
     if (!state || state.active === false) continue;
-    const plugin = registry?.get?.(state.type);
+    const plugin = pluginFor(items, registry, id);
     if (!plugin) continue;
     const ports = declaredPorts(plugin, state);
     if (ports.inputs.length === 0 && ports.outputs.length === 0) continue;
@@ -627,7 +662,7 @@ export function evaluateNodeGraph(items, registry) {
         continue;
       }
       const srcState = items[c.item];
-      const srcPlugin = srcState ? registry?.get?.(srcState.type) : null;
+      const srcPlugin = srcState ? pluginFor(items, registry, c.item) : null;
       const srcPort = srcPlugin ? findPort(srcPlugin, srcState, "output", c.port) : null;
       // A source port that vanished (its plugin's port list changed with state)
       // reads as the zero rather than throwing: the document is still valid, the

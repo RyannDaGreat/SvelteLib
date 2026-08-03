@@ -33,7 +33,7 @@
  */
 
 import assert from "node:assert/strict";
-import { newDocument, withNewItem, clonedItemStates } from "../core/document.js";
+import { newDocument, withNewItem, clonedItemStates, REF_PATH_WILDCARD } from "../core/document.js";
 import { storedRefItemId, withItemRefsRemapped } from "../core/expressions.js";
 import { createRegistry } from "../core/registry.js";
 import { registerAll } from "../plugins/index.js";
@@ -218,11 +218,38 @@ test("itemRefs declarations name REAL state paths (a typo cannot hide)", () => {
     for (const path of plugin.itemRefs ?? []) {
       let cur = plugin.defaults;
       for (const key of path) {
+        // A WILDCARD SEGMENT (core/document.REF_PATH_WILDCARD) stands for "every key
+        // of the map here", and a freshly-inserted widget's map is EMPTY — a node
+        // widget is born with no connections. So the walk stops at the wildcard: what
+        // this test can still check, and what it exists to check, is that everything
+        // ABOVE the wildcard is a real key. The segments BELOW it name the shape of a
+        // value that does not exist yet in `defaults` and cannot be verified from a
+        // default state by any means; core/document.expandRefPaths's own doctests
+        // cover the expansion, and tests/nodeflow_test.js proves a real patch remaps.
+        if (key === REF_PATH_WILDCARD) {
+          assert.ok(cur !== null && typeof cur === "object",
+            `plugin "${plugin.type}" declares a WILDCARD in itemRefs path ${JSON.stringify(path)}, but the slot above it is not an object in its defaults — a node widget must be born with an empty map there (e.g. \`inputs: {}\`), or nothing can ever be written into it`);
+          break;
+        }
         assert.ok(cur !== null && typeof cur === "object" && key in cur,
           `plugin "${plugin.type}" declares itemRefs path ${JSON.stringify(path)} but its defaults have no such key`);
         cur = cur[key];
       }
     }
+});
+
+test("a cloned PATCH remaps its wires onto the copies, not the originals", () => {
+  // The wildcard's REASON, end to end. Without expandRefPaths, `b`'s clone would
+  // still name `a` — the copy would look right and silently read the ORIGINAL's
+  // value, which is precisely the failure itemRefs exists to prevent.
+  const states = {
+    a: { type: "node_number", value: 3 },
+    b: { type: "node_math", op: "multiply", inputs: { a: { item: "a", port: "out" }, b: { item: "gone", port: "out" } } },
+  };
+  const { states: out, external } = clonedItemStates(states, new Map([["a", "A"], ["b", "B"]]), registry);
+  assert.equal(out.B.inputs.a.item, "A", "the wire follows the copy");
+  assert.equal(out.B.inputs.a.port, "out", "and the PORT is untouched — only the item id is an id");
+  assert.deepEqual(external, ["gone"], "a wire leaving the copied set is REPORTED, not silently rewritten");
 });
 
 // ── A whole-document round trip through the real fold ────────────────────────

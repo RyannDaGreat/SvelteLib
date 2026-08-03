@@ -236,7 +236,14 @@ export const itemClipboardScope = (c) => editMode(c) && !c.slideRail;
  * divergence that already shipped, so one copy retires it. tests/
  * shortcut_registry_test.js now asserts the component holds no second copy.
  */
-export const ESC_CANCELABLE_DRAG_KINDS = Object.freeze(["modifier", "endpoint"]);
+// `wire` joins these for the reason the other two are here: an in-flight wire is a
+// gesture with a visible provisional state (the ghost) and nothing committed yet, so
+// Escape must abandon it without writing. It matters MORE here than for the other
+// two, because a wire drag that picked up an EXISTING connection is holding a real
+// wire hostage — releasing it over empty space would DELETE that connection, and
+// without an Escape the only way out of a mistakenly-grabbed wire would be to
+// complete a gesture you did not want and then undo it.
+export const ESC_CANCELABLE_DRAG_KINDS = Object.freeze(["modifier", "endpoint", "wire"]);
 /**
  * Pure function. editSelection, EXCEPT during a drag that owns Escape (see
  * ESC_CANCELABLE_DRAG_KINDS) — a "Deselect" chip there would be the bar's second

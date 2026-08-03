@@ -580,6 +580,17 @@ const LOCK_SURFACE = {
   // So: an exemption justified by a fact about the code should be phrased so the
   // fact is checkable, or it becomes a permanent excuse. This one now isn't one.
   endpoint: "endpointAffordance",
+  // NOT A GEOMETRY WRITE — and this is a fact about WHAT the gesture writes, which
+  // is the checkable kind of reason the endpoint entry above argues an exemption
+  // must have. A wire gesture writes exactly one leaf, `items.<id>.inputs.<port>`
+  // (core/nodeflow.connectPairs / disconnectPairs), and it NEVER touches x/y/w/h,
+  // rotation or scale. The equation lock exists to stop a DRAG from clobbering a
+  // bound coordinate; a connection is not a coordinate and has no equation form to
+  // be bound to, so there is no restriction being imposed and therefore no sentence
+  // to say. If connections ever become equation-bindable, this entry must become a
+  // real affordance — and that change would falsify the premise stated here, in one
+  // named function, rather than silently.
+  wire: null,
 };
 
 test("COVERAGE: every drag kind is answered — the sheet is complete against DRAG_KINDS", () => {

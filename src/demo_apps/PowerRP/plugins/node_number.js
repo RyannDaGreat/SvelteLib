@@ -53,6 +53,11 @@ export const nodeNumberPlugin = {
     // THE bindable, keyframable, tweenable value. A plain number default is what
     // makes it an equation slot.
     value: DEFAULT_VALUE,
+    // THE CONNECTION MAP, empty at birth. Declared in `defaults` rather than left
+    // absent because `itemRefs` names a path THROUGH it (NODE_ITEM_REFS), and a
+    // wildcard cannot expand over a slot that does not exist — a node with no
+    // `inputs` key could never have a wire remapped when it was copied.
+    inputs: {},
     ...bundleNestedDefaults("effects"),
   },
   inspector: [
@@ -95,6 +100,11 @@ export const nodeNumberPlugin = {
     ];
     return applyEffects(ops, s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
   },
+  // Palette + toolbar entry. Placed with the crosshair like every other widget
+  // (armCrosshairPlacement), so inserting a node is the SAME gesture as inserting
+  // a rectangle — a node is an ordinary widget and its insertion must not feel
+  // like a special mode.
+  commands: [{ id: "add-node-number", title: "Add Number Node", icon: "mdi:numeric", run: (app) => app.armCrosshairPlacement(nodeNumberPlugin) }],
   cullMargin: effectsCullMargin,
   anchors: standardBBoxAnchors,
   closestAnchor(state, wx, wy, world) {
