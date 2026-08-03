@@ -94,13 +94,16 @@
  *          every cached slide state and every export. That is enforced at the
  *          ONE call site in core/deltas.mutBlendApply, not trusted to each mode,
  *          so a wave cannot break the fold by writing a careless `blend`.
- *   ctx    `{key, mode}` — the state key being blended and the resolved mode id.
- *          THIS IS THE EXTENSION POINT. A future mode that needs more (the whole
- *          owning state object for `morph`, the plugin registry for `blend`)
- *          gets it by adding a FIELD TO ctx at the ONE call site in
- *          core/deltas.mutBlendApply — the mode entries themselves, this
- *          module's exports, and every existing caller are untouched, because
- *          ctx is a bag and every mode ignores the fields it does not read.
+ *   ctx    `{key, mode, params}` — the state key being blended, the resolved mode
+ *          id, and the mode's own PARAMETER values (see MODE PARAMETERS below;
+ *          `{}` for the modes that declare none, which is all but `blurFade`).
+ *          THIS IS THE EXTENSION POINT, and `params` is the first thing to have
+ *          used it. A future mode that needs more (the whole owning state object
+ *          for `morph`, the plugin registry for `blend`) gets it by adding a
+ *          FIELD TO ctx at the ONE call site in core/deltas.mutBlendApply — the
+ *          mode entries themselves, this module's exports, and every existing
+ *          caller are untouched, because ctx is a bag and every mode ignores the
+ *          fields it does not read.
  *
  * A `blend` MUST BE PURE and a function of (a, b, alpha, ctx) alone — no clocks,
  * no randomness, no ambient state. The determinism law is not weakened by this
@@ -401,7 +404,7 @@ export function registerInterpMode(entry) {
  *
  * @example modesForKey("type", "rect") // ["tween", "step"] (morph RETIRED here — it is a universal property now)
  * @example modesForKey("x", 0) // ["tween", "step"]
- * @example modesForKey("active", false) // ["tween", "step", "fade"]
+ * @example modesForKey("active", false) // ["tween", "step", "fade", "blurFade", "manim"]
  * @example modesForKey("fill", {type: "material", material: {id: "crt"}}) // ["tween", "step", "blend"]
  * @example modesForKey("latex", "x^2", "latex") // ["tween", "step"] (a content leaf morphs through the universal row)
  */
@@ -433,7 +436,7 @@ export function interpMode(id) {
  * Query (reads the registry). Every registered mode id, in registration order —
  * the option list an Inspector select renders.
  *
- * @example interpModeIds() // ["tween", "step", "fade", "blend", "morph"]
+ * @example interpModeIds() // ["tween", "step", "fade", "blend", "morph", "blurFade", "manim"]
  */
 export function interpModeIds() {
   return [...MODES.keys()];
@@ -1359,18 +1362,31 @@ function namedVisibleBlend(mode, a, b, alpha, params) {
 // blur?", and an absolute start would make a widget with a 40-unit target blur
 // SHARPEN on the way in whenever the knob was set below 40.
 //
-// THE DEFAULT IS 64, RAISED FROM 24, AND THE SIZING ARGUMENT IS THE SAME ONE —
-// only measured against what has to be destroyed rather than against what the
-// effect machinery finds ordinary. A Gaussian's visible reach is
-// BLUR_SUPPORT_SIGMAS·σ each side (render_gpu/ir.js, = 3), so σ = 64 smears every
-// edge ±192 units. On the 1920×1080 canvas this app defaults to, a typical slide
-// widget is 200-500 units across, so that smear is WIDER THAN THE WIDGET — its
-// interior is averaged with its surroundings and there is no recoverable shape
-// left, which is what "out of focus" means and what σ = 24 (±72 units, a smear
-// several times NARROWER than the same widget, so its silhouette survived intact)
-// did not deliver. That is precisely the "too subtle" the user reported: 24 was
-// justified as a radius the effect machinery treats as ordinary, which is an
-// argument about the machinery rather than about the picture.
+// THE DEFAULT IS 64, RAISED FROM 24, AND THE ARGUMENT IS A MEASUREMENT — CLI
+// stills at a sweep of amounts and coverages, not a calculation. The obvious
+// sizing argument (BLUR_SUPPORT_SIGMAS·σ = 3σ must exceed the widget's own width,
+// so σ = 64 smears ±192 units across a 200-500-unit widget) turns out NOT to be
+// what decides this, and saying so is the point of this paragraph: the stills
+// showed σ = 24 ALREADY destroying a 110pt glyph completely at v = 0.5. If
+// legibility at the midpoint were the test, 24 would have passed it and the
+// user's "too subtle" would be inexplicable.
+//
+// WHAT ACTUALLY DECIDES IT IS WHERE THE BLUR LIVES RELATIVE TO THE OPACITY. Both
+// ramp linearly in v, so the defocus is largest exactly when the widget is most
+// TRANSPARENT — i.e. when nothing can be seen at all — and by the time coverage
+// is high enough to perceive anything, the radius has nearly collapsed. Measured
+// at v = 0.85 (opacity 85%, the first frames where the widget really reads):
+// amount 24 gives σ = 3.6 and the still is CRISP with a faint softness, which is
+// the "too subtle" exactly; amount 64 gives σ = 9.6 and the still is an
+// unmistakable defocus still resolving into sharpness. The whole gesture happens
+// in the last fifth of the transition, so the amount has to be large enough that
+// a FIFTH of it is still a real blur.
+//
+// (A slower-than-linear decay — σ ∝ amount·√(1−v) — would put the blur in the
+// visible range directly and is probably the better curve. It is NOT shipped
+// here: the user asked for a knob and a blurrier default, and changing the decay
+// law as well would be a second, unrequested change to how the mode reads. The
+// measurement is recorded so that work has a starting point.)
 
 registerInterpMode({
   id: "blurFade",

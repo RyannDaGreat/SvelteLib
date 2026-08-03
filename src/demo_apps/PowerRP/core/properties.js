@@ -65,7 +65,7 @@ import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
-import { displayedDefaultModeFor, interpKeyFor, interpMode, interpModeLabels, isInterpKey, modesForKey } from "./interp_modes.js";
+import { displayedDefaultModeFor, interpKeyFor, interpMode, interpModeLabels, interpParamKeyFor, isInterpKey, isInterpParamKey, modeParams, modesForKey } from "./interp_modes.js";
 import { MORPH_KEY, MORPH_MODES, MORPH_MODE_HELP, MORPH_MODE_LABELS } from "./morph_property.js";
 
 /**
@@ -2393,6 +2393,82 @@ export function interpRowFor(propRow, value, type) {
 }
 
 /**
+ * Pure function. THE INTERP MODE'S OWN OPTION ROWS — the number rows the
+ * SELECTED mode declares, or `[]` for every mode that declares none (which is
+ * every mode but `blurFade` today).
+ *
+ * ── WHY IT EXISTS (user ruling, 2026-08-02, verbatim) ────────────────────────
+ *   "BlurFade should have suboptions, by the way. For BlurFade, I should be able
+ *    to choose how blurry was it, right? What is the difference in blur?
+ *    BlurFade is too subtle for me right now, so I can't adjust it."
+ *
+ * A mode used to be a bare name, so every number its picture depended on was a
+ * module constant no author could reach. This is the standing surfacing ruling
+ * ("generally I want a gooey way of doing it") applied to that gap: a knob the
+ * renderer reads must be a row the author can drag.
+ *
+ * ── IT IS DRIVEN BY THE DECLARATION, WHICH IS THE WHOLE POINT ────────────────
+ * The rows come from `modeParams(mode)`, so a FUTURE mode that declares its own
+ * options gets its rows with NO change here and none in web/Inspector.svelte.
+ * That is why this is a general mapping of declarations onto rows rather than a
+ * blurFade-shaped special case, even though blurFade is the only caller today —
+ * the alternative is a second hand-maintained list that drifts from the
+ * declarations the renderer actually reads.
+ *
+ * ── WHY THE ROWS FOLLOW THE SELECTED MODE, NOT THE STORED KEYS ───────────────
+ * The parameter state key survives a mode change (it is an ordinary leaf), which
+ * is deliberate: an author who tries Manim and comes back to Blur Fade finds
+ * their amount still set. But a row for a mode that is NOT selected would be a
+ * control with no picture behind it — the same "confident wrong answer" the
+ * option filter above removes — so the ROWS are a function of the selected mode
+ * while the VALUES are not.
+ *
+ * Args:
+ *   propRow (object): the row whose mode these parameterize (key/writeKey, label)
+ *   mode (string): the mode SELECTED for that property (stored, or the displayed
+ *     default when nothing is stored — the caller resolves which)
+ *
+ * Returns:
+ *   object[]: number rows, one per declared parameter, in declaration order
+ *
+ * @example interpParamRowsFor({key: "active", label: "Visible"}, "blurFade")[0].key
+ * "active~interp~blur"
+ * @example interpParamRowsFor({key: "active", label: "Visible"}, "blurFade")[0].label
+ * "Blur Amount"
+ * @example interpParamRowsFor({key: "active", label: "Visible"}, "blurFade")[0].kind
+ * "number"
+ * @example // the default is the row's absent value, so an untouched row SHOWS the
+ * @example // number the renderer really uses rather than an empty box:
+ * @example interpParamRowsFor({key: "active", label: "Visible"}, "blurFade")[0].default
+ * 64
+ * @example // every other mode declares nothing, so the gutter is unchanged there:
+ * @example interpParamRowsFor({key: "x", label: "X"}, "tween")
+ * []
+ */
+export function interpParamRowsFor(propRow, mode) {
+  const target = propRow.writeKey ?? propRow.key;
+  return modeParams(mode).map((decl) => ({
+    key: interpParamKeyFor(target, decl.param),
+    label: decl.label,
+    kind: "number",
+    category: propRow.category,
+    min: decl.min,
+    max: decl.max,
+    step: decl.step,
+    // ABSENT IS THE DECLARED DEFAULT, and stating it here is what makes the row
+    // honest about the untouched case: the state holds nothing, and the renderer
+    // uses this number, so the row must show this number. It is the same
+    // argument interpRowFor's `absentValue` makes one row up.
+    default: decl.default,
+    help: decl.help,
+    // The parameter this row edits, mirroring `interpOf` on the mode row — a
+    // reader walking rows can tell mode plumbing from real properties without
+    // parsing the key.
+    interpParamOf: target,
+  }));
+}
+
+/**
  * Pure function. May this row carry an interpolation mode? A row edits a real
  * keyframeable state leaf iff it keyframes at all — an ACTION row triggers a
  * command and owns no state, and a row opting out with `keyframes: false` (Name,
@@ -2401,11 +2477,20 @@ export function interpRowFor(propRow, value, type) {
  * names `visible` explicitly, and a property whose values happen to be discrete
  * TODAY is exactly the one a future `fade`/`morph` mode is for.
  *
+ * A MODE'S OWN PARAMETER ROW IS EXCLUDED TOO (WORKSTREAM AP), for exactly the
+ * reason a mode row is: there is no mode-of-a-mode, and no mode of a mode's
+ * knob. It needs its own test because `isInterpKey` is a SUFFIX check on
+ * `~interp` and a parameter key ends in the parameter name instead, so a
+ * parameter row would otherwise sail past it and grow a gutter of its own.
+ *
  * @example rowSupportsInterp({key: "x", kind: "number"}) // true
  * @example rowSupportsInterp({key: "visible", kind: "boolean"}) // true
  * @example rowSupportsInterp({key: "name", kind: "text", keyframes: false}) // false
  * @example rowSupportsInterp({key: "__ungroup", kind: "action"}) // false
+ * @example rowSupportsInterp({key: "active~interp", kind: "select"}) // false (no mode of a mode)
+ * @example rowSupportsInterp({key: "active~interp~blur", kind: "number"}) // false (nor of its knob)
  */
 export function rowSupportsInterp(propRow) {
-  return propRow.keyframes !== false && propRow.kind !== "action" && !isInterpKey(propRow.key);
+  return propRow.keyframes !== false && propRow.kind !== "action"
+    && !isInterpKey(propRow.key) && !isInterpParamKey(propRow.key);
 }

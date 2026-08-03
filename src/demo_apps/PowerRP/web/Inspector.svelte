@@ -60,7 +60,7 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
-  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, rowSupportsInterp, codeRowLanguage } from "../core/properties.js";
+  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage } from "../core/properties.js";
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_AUTO, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
@@ -848,6 +848,20 @@
     const target = writeKey(row);
     const stored = valueAt(state, interpKeyFor(target));
     return stored != null && stored !== displayedDefaultModeFor(valueAt(state, target), target);
+  }
+  /**
+   * Query (reads the shown state). THE MODE IN FORCE for a row — the stored one,
+   * else the value-aware displayed default. Exactly what the interp select shows
+   * and what the renderer really uses, which is why the mode's own option rows
+   * (WORKSTREAM AP) are chosen by this rather than by the raw stored value: a
+   * mode that is in force BY DEFAULT would otherwise have its knobs hidden, and
+   * that is the one case the author has no other way to discover.
+   *
+   * @example // selectedInterpMode(state, {key: "active"}) // "blurFade" when stored, else "tween"
+   */
+  function selectedInterpMode(state, row) {
+    const target = writeKey(row);
+    return valueAt(state, interpKeyFor(target)) ?? displayedDefaultModeFor(valueAt(state, target), target);
   }
   let eqFocusKey = $state(null);
   let eqPath = $state(null);
@@ -1902,6 +1916,31 @@
       {@render propRow(interpRowFor(row, valueAt(state, writeKey(row)), state?.type), state, {
         keyframes, disabled, onpreview, oncommit, itemId, pathState, hoverPreview, multi: null,
       })}
+      <!-- THE SELECTED MODE'S OWN OPTION ROWS (WORKSTREAM AP). User, 2026-08-02:
+           "BlurFade should have suboptions, by the way… BlurFade is too subtle
+           for me right now, so I can't adjust it. It would be nice to be able to
+           adjust it." A mode's picture used to depend on module constants no
+           author could reach; those are declared parameters now, and this is the
+           standing surfacing ruling ("generally I want a gooey way of doing it")
+           applied to them — a knob the renderer reads is a row you can drag.
+
+           THERE IS NO blurFade BRANCH HERE, deliberately. The rows come from the
+           MODE'S OWN DECLARATION (core/interp_modes `params`, mapped to rows by
+           interpParamRowsFor), so a future mode that declares options gets its
+           rows without touching this file — and a mode that declares none, which
+           is every other mode today, renders nothing and leaves the gutter
+           byte-identical to before this existed.
+
+           THE MODE IS RESOLVED THE WAY THE SELECT DISPLAYS IT: the stored value
+           when there is one, else `displayedDefaultModeFor` — the same seam the
+           row above shows and the renderer actually uses. Reading the raw stored
+           value alone would hide the options of a mode that is in force by
+           default, which is the one case the author has no other way to see. -->
+      {#each interpParamRowsFor(row, selectedInterpMode(state, row)) as paramRow (paramRow.key)}
+        {@render propRow(paramRow, state, {
+          keyframes, disabled, onpreview, oncommit, itemId, pathState, hoverPreview, multi: null,
+        })}
+      {/each}
     </div>
   {/if}
 {/snippet}
@@ -1999,7 +2038,19 @@
            real stored slot ("x"/"y") — that is why `path` below is built from
            writeKey, not row.key. The only extra wiring beyond an ordinary
            number row is `centerAxis`, the item-aware unit transform. See
-           NumericField's header. -->
+           NumericField's header.
+
+           `value` IS NumericField's SPARSE-SLOT FALLBACK, and an INTERP MODE
+           PARAMETER row (WORKSTREAM AP) is exactly the slot it was built for:
+           the document legitimately holds NOTHING there — absent IS the mode's
+           declared default, which is what makes that feature a byte-identical
+           migration — while the renderer really uses that default. Without this
+           the row would read 0 where the picture uses 64, the same lie the
+           material-knob case fixed. It is gated on `interpParamOf` rather than
+           on `row.default` because a plugin row's `default` is STRIPPED by
+           core/properties.js `row()` and lives in the plugin's `defaults`; only
+           a mode parameter carries its default ON the row, because no plugin
+           owns it. -->
       <NumericField
         {app}
         path={["items", pickedItemId, ...writeKey(row).split(".")]}
@@ -2013,6 +2064,7 @@
         scrub={row.scrub ?? null}
         step={row.step ?? null}
         centerAxis={row.centerAxis ?? null}
+        value={row.interpParamOf ? row.default : undefined}
       />
     {:else if disabled}
       <!-- Grayed display of a not-yet-created item: read the value straight

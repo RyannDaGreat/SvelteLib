@@ -214,8 +214,14 @@ test("EXTENSION HOOK: a mode registered from OUTSIDE changes the fold, with delt
   const out = blendApplied({ x: 0, "x~interp": "__test_halfway" }, { x: 10 }, 0.25);
   assert.equal(out.x, 5, "the new law drove the fold");
   // The documented contract, exactly: lazy start capture, the delta's target,
-  // an alpha strictly inside the endpoints, and a {key, mode} ctx bag.
-  assert.deepEqual(seen, [{ a: 0, b: 10, alpha: 0.25, ctx: { key: "x", mode: "__test_halfway" } }]);
+  // an alpha strictly inside the endpoints, and a {key, mode, params} ctx bag.
+  // `params` is the MODE PARAMETER seam (WORKSTREAM AP) and is always present —
+  // EMPTY for a mode declaring no `params`, which is this one and every shipped
+  // mode but blurFade. Pinning it here rather than allowing extra keys is
+  // deliberate: `ctx` is documented as extensible, so a deep-equal is what makes
+  // a future widening a decision someone has to write down instead of a silent
+  // change to what every registered blend receives.
+  assert.deepEqual(seen, [{ a: 0, b: 10, alpha: 0.25, ctx: { key: "x", mode: "__test_halfway", params: {} } }]);
   // ENDPOINTS ARE NEVER THE MODE'S CALL, and this mode would visibly disagree if
   // they were (it returns the midpoint at every alpha). `applied()` IS
   // blendApplied(…, 1) and core/document.js folds every slide through it, so a
