@@ -56,6 +56,7 @@
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
 
+import { fitBox } from "./geometry.js";
 import { shoelaceWinding } from "./morph_geometry.js";
 import { matIdentity, tokenizePathD, transformPathD } from "./svg_paths.js";
 
@@ -302,6 +303,104 @@ export function morphPayloadFromOps(ops, box) {
 }
 
 /**
+ * Pure function. A polyline of {x, y} points → the SVG `d` string that draws it,
+ * as ONE open subpath. The centerline form the whole connector family morphs by
+ * (see `morphPayloadFromConnector`), and the reason it exists here rather than in
+ * seven plugins: an arrow, an elbow, a curve and a tangent pair all reduce to
+ * "some points, joined", and a second spelling of that would be a second chance
+ * to get the M/L grammar wrong.
+ *
+ * Args:
+ *   points (Array<{x, y}>): the polyline's vertices, in draw order
+ *
+ * Returns:
+ *   string: SVG path data ("" for fewer than two points — no ink, and
+ *     `pathDToSubpaths` drops a curve-less subpath anyway)
+ *
+ * Examples:
+ *     >>> polylinePathD([{x: 0, y: 0}, {x: 10, y: 0}])
+ *     'M0 0L10 0'
+ *     >>> // an elbow route: three legs, one open subpath
+ *     >>> polylinePathD([{x: 0, y: 0}, {x: 50, y: 0}, {x: 50, y: 40}])
+ *     'M0 0L50 0L50 40'
+ *     >>> polylinePathD([{x: 3, y: 4}])
+ *     ''
+ */
+export function polylinePathD(points) {
+  if (!Array.isArray(points) || points.length < 2) return "";
+  return `M${points[0].x} ${points[0].y}` + points.slice(1).map((p) => `L${p.x} ${p.y}`).join("");
+}
+
+/**
+ * Pure function. THE CONNECTOR PROVIDER: a boxless widget's ABSOLUTE-coordinate
+ * `d` strings + its ink rect → a MorphPaths whose space is that rect and whose
+ * coordinates are rect-relative.
+ *
+ * ── WHY THE ARROW FAMILY CANNOT USE `morphPayloadFromPaths` DIRECTLY ─────────
+ * Every phase-2 provider so far was a BBOX widget: it has `w`/`h` state, its
+ * emit() draws in box-local coordinates, and `space: {w: s.w, h: s.h}` is
+ * therefore both true and free. The whole arrow/line/brace family is the
+ * opposite — `capabilities: {bbox: false, transform: false}`, NO `w`/`h` state at
+ * all, and endpoints stored as ABSOLUTE canvas positions (that is why these
+ * plugins emit world coordinates directly and why every one of them declares a
+ * `localBounds` ink rect instead of a box).
+ *
+ * That difference is not cosmetic, and it was MEASURED rather than reasoned
+ * about: render_gpu/ports.js `morphIR` scales the engine's unit output by
+ * `node.state.w`/`h`, so a connector handing over `space: {w: s.w, h: s.h}`
+ * yields `space: {w: 0, h: 0}` and `sx = sy = 0` — the morph paints
+ * `M0 0C0 0 0 0 0 0…`, a degenerate zero-size path. NO error, NO warning: a
+ * silently invisible widget for the whole interior of its own transition, which
+ * is precisely the silent-wrong-picture failure the morph seam's LOUD asserts
+ * exist to prevent. `assertMorphPaths` does not catch it either — a zero space
+ * is non-negative and every coordinate is finite.
+ *
+ * So the honest frame for a connector is ITS INK RECT — the same rect its
+ * `localBounds` publishes, which is what culling, band select and the effect
+ * substrate already agree is "where this widget is". Coordinates are translated
+ * by the rect's origin so they are rect-relative, exactly as a bbox widget's are
+ * box-relative, and the rect's `w`/`h` become the payload's space. The engine
+ * then unit-izes both sides as usual and the morph is frame-correct at both ends.
+ *
+ * THE NODE BOX STILL HAS TO AGREE. This function makes the PAYLOAD honest; the
+ * render seam multiplies by the node's `w`/`h`, so a connector morph is only
+ * positioned correctly once the mid-morph node carries the tweened ink rect.
+ * That is a derive-side concern and is NOT silently papered over here.
+ *
+ * Args:
+ *   sources (Array<{d: string, paint?: object}>): the widget's drawn paths, in
+ *     ABSOLUTE canvas coordinates, in paint order
+ *   rect ({x, y, w, h}): the widget's ink rect (its `localBounds`)
+ *   fillRule (string): "nonzero" (default) or "evenodd"
+ *
+ * Returns:
+ *   object: a MorphPaths payload, rect-relative, space = the rect's extent
+ *
+ * Examples:
+ *     >>> // a horizontal line from (200,300) to (420,300), ink rect padded by the stroke
+ *     >>> const p = morphPayloadFromConnector(
+ *     ...   [{d: "M200 300L420 300"}], {x: 197, y: 297, w: 226, h: 6});
+ *     >>> p.space
+ *     { w: 226, h: 6 }
+ *     >>> p.subpaths[0].start
+ *     [ 3, 3 ]
+ *     >>> p.subpaths[0].closed
+ *     false
+ */
+export function morphPayloadFromConnector(sources, rect, fillRule = "nonzero") {
+  const payload = morphPayloadFromPaths(sources, { w: rect.w, h: rect.h }, fillRule);
+  const ox = rect.x ?? 0, oy = rect.y ?? 0;
+  return {
+    ...payload,
+    subpaths: payload.subpaths.map((sp) => ({
+      ...sp,
+      start: [sp.start[0] - ox, sp.start[1] - oy],
+      curves: sp.curves.map((c) => [c[0] - ox, c[1] - oy, c[2] - ox, c[3] - oy, c[4] - ox, c[5] - oy]),
+    })),
+  };
+}
+
+/**
  * Pure function. The PAINT a widget's own fill/stroke state contributes to its
  * subpaths — the four fields core/morph.js's Subpath.paint carries, read off an
  * ordinary stroked-box state bag.
@@ -333,4 +432,106 @@ export function statePaint(s) {
     strokeWidth,
     opacity: s.opacity ?? 1,
   };
+}
+
+/**
+ * Pure function. The affine matrix mapping a VIEWBOX-framed artwork onto a
+ * widget's box — the third provider shape, after `morphPayloadFromPaths` (a
+ * widget that draws in its own box) and `morphPayloadFromOps` (a widget whose
+ * flatten already mapped for it).
+ *
+ * WHY IT EXISTS AS A NAMED FUNCTION rather than six lines inside one plugin: a
+ * `latexVector` op carries its glyphs in MathJax's ROOT VIEWBOX frame, not in the
+ * widget box, and the three places that draw it (render_gpu/pdf_backend.js's
+ * latexVector case, render_gpu/svg_backend.js's, and now the morph provider) must
+ * agree to the pixel or the morph's first frame jumps away from what the widget
+ * was showing at alpha 0. The backends spell this mapping out inline; a FOURTH
+ * inline spelling is exactly how the morph would come to disagree with the ink.
+ *
+ * BOTH FRAMES ARE y-DOWN, so there is no flip here — unlike an image placement,
+ * whose unit square has v=1 at its top row. That asymmetry is stated because the
+ * PDF backend's own comment has to state it too.
+ *
+ * `preserveAspect` (the widget default, and latexVector's) is the UNIFORM
+ * letterbox fit: scale by min(w/vb.w, h/vb.h) and center the slack, which is what
+ * the on-screen render does. OFF is the legacy non-uniform box→box stretch.
+ *
+ * Args:
+ *   viewBox ({minX, minY, w, h}): the artwork's own frame
+ *   box ({w, h}): the widget box to map onto
+ *   preserveAspect (boolean): uniform letterbox fit (default true)
+ *
+ * Returns:
+ *   object: a 2×3 matrix in core/svg_paths.js's {a,b,c,d,e,f} form
+ *
+ * Examples:
+ *     >>> // a square viewBox into a square box: a plain 2× scale, no offset
+ *     >>> viewBoxToBoxMatrix({minX: 0, minY: 0, w: 10, h: 10}, {w: 20, h: 20})
+ *     { a: 2, b: 0, c: 0, d: 2, e: 0, f: 0 }
+ *     >>> // a WIDE viewBox letterboxed into a square box: centered vertically
+ *     >>> viewBoxToBoxMatrix({minX: 0, minY: 0, w: 20, h: 10}, {w: 20, h: 20})
+ *     { a: 1, b: 0, c: 0, d: 1, e: 0, f: 5 }
+ *     >>> // preserveAspect OFF stretches each axis independently
+ *     >>> viewBoxToBoxMatrix({minX: 0, minY: 0, w: 20, h: 10}, {w: 20, h: 20}, false)
+ *     { a: 1, b: 0, c: 0, d: 2, e: 0, f: 0 }
+ *     >>> // a non-zero viewBox ORIGIN is subtracted before scaling (MathJax's
+ *     >>> // roots have a negative minY — the ascender space above the baseline)
+ *     >>> viewBoxToBoxMatrix({minX: 0, minY: -10, w: 10, h: 10}, {w: 10, h: 10})
+ *     { a: 1, b: 0, c: 0, d: 1, e: 0, f: 10 }
+ */
+export function viewBoxToBoxMatrix(viewBox, box, preserveAspect = true) {
+  const bw = box.w ?? 0, bh = box.h ?? 0;
+  let sx, sy, ox = 0, oy = 0;
+  if (preserveAspect) {
+    const f = fitBox(viewBox.w, viewBox.h, bw, bh);
+    sx = sy = f.scale; ox = f.offsetX; oy = f.offsetY;
+  } else {
+    sx = bw / viewBox.w; sy = bh / viewBox.h;
+  }
+  return { a: sx, b: 0, c: 0, d: sy, e: ox - viewBox.minX * sx, f: oy - viewBox.minY * sy };
+}
+
+/**
+ * Pure function. VIEWBOX-framed `{d, paint?}` artwork → a MorphPaths payload in
+ * the widget's box — the provider body for every widget whose outline source is
+ * an artwork frame rather than its own box (plugins/latex.js's MathJax glyphs
+ * today; a mermaid diagram's shapes the same way if it ever morphs).
+ *
+ * The `d` strings are baked through `viewBoxToBoxMatrix` by
+ * core/svg_paths.js `transformPathD` — the SAME absolute-izer `pathDToSubpaths`
+ * runs anyway — so the coordinates handed to the engine are the box-local ones
+ * the widget actually paints, and the payload's `space` is honestly the box.
+ *
+ * Args:
+ *   sources (Array<{d: string, paint?: object}>): artwork paths in viewBox coords
+ *   viewBox ({minX, minY, w, h}): their frame
+ *   box ({w, h}): the widget box. NON-NEGATIVE (the module header's geometry law)
+ *   preserveAspect (boolean): uniform letterbox fit (default true)
+ *
+ * Returns:
+ *   object: a MorphPaths payload in box-local space
+ *
+ * Examples:
+ *     >>> const vb = {minX: 0, minY: 0, w: 10, h: 10};
+ *     >>> const p = morphPayloadFromViewBox([{d: "M0 0L10 0L10 10Z"}], vb, {w: 20, h: 20});
+ *     >>> p.space
+ *     { w: 20, h: 20 }
+ *     >>> // the 2× bake landed: the first corner sits at the box's far edge
+ *     >>> p.subpaths[0].curves[0].slice(4)
+ *     [ 20, 0 ]
+ *     >>> morphPayloadFromViewBox([], vb, {w: 20, h: 20}).subpaths
+ *     []
+ */
+export function morphPayloadFromViewBox(sources, viewBox, box, preserveAspect = true) {
+  const m = viewBoxToBoxMatrix(viewBox, box, preserveAspect);
+  return morphPayloadFromPaths(
+    sources.map((s) => ({ ...s, d: transformPathD(s.d, m) })),
+    box,
+    // FONT-DERIVED OUTLINES ARE NONZERO-WOUND, always. A glyph's counters (the
+    // holes in e/a/0/8) are wound OPPOSITE its outer contour, so nonzero winding
+    // leaves them as holes and even-odd would misfill nested or self-intersecting
+    // letterforms — the identical argument render_gpu/pdf_backend.js's
+    // latexVector case makes for filling those same glyphs with `f`.
+    "nonzero",
+  );
 }

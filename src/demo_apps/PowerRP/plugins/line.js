@@ -35,6 +35,7 @@ import { subpathsPathD } from "../core/shapes.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { endpointPairHooks, hitsShaft, connectorPathAnchors, dashedSpans, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, ARROW_STROKE_WIDTH } from "../core/endpoints.js";
+import { morphPayloadFromConnector, polylinePathD, statePaint } from "../core/morph_payload.js";
 
 /**
  * Line end-cap kinds. "round" is the display-list `polyline`'s native cap (a
@@ -222,6 +223,37 @@ export const linePlugin = {
     // `localBounds` reports, so the substrate and the cull/band bounds can never
     // disagree about where this widget is.
     return applyEffects(cmds, s, world, lineInkRect(s));
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the line's CENTERLINE as ONE OPEN subpath, in its ink rect's frame.
+   *
+   * CENTERLINE, NOT THE STROKE SILHOUETTE, and that is the honest answer rather
+   * than the cheap one. This widget's ink is a STROKED segment: emit() hands a
+   * `polyline` op a width and lets the painter expand it, so there IS no outline
+   * path anywhere in this file to reuse (the flat-cap branch builds `capRect`
+   * quads, but those are the DASH pieces of one specific cap mode, not a general
+   * silhouette). Declaring the centerline reports the shape the widget actually
+   * models — two endpoints and the run between them — and the engine morphs open
+   * subpaths natively, so a line→shape morph is expressible with the closed flag
+   * stepping at alpha > 0. Outline-stroking machinery would be a second geometry
+   * pipeline whose output could disagree with the painter's; the width rides
+   * along in `paint.strokeWidth` instead, which is what the render seam
+   * interpolates.
+   *
+   * THE DASHES ARE DELIBERATELY NOT IN THE PAYLOAD. A dashed line's ink is N
+   * disjoint spans, but they are one CONTINUOUS run cut by a rhythm — pairing
+   * eight dash fragments against a target's contours would scatter the morph
+   * across the shape, and the dash count changes with length, so the payload's
+   * structure would depend on a knob rather than on the widget's identity.
+   * A morph is between two SHAPES; the dash pattern is styling that resumes at
+   * the endpoint where emit() draws again.
+   */
+  morphPaths(s) {
+    return morphPayloadFromConnector(
+      [{ d: polylinePathD([s.from, s.to]), paint: statePaint({ ...s, fill: null }) }],
+      lineInkRect(s),
+    );
   },
   // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): a line's width and height
   // are just the min/max of its endpoints, so it band-selects and culls like any

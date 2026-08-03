@@ -44,7 +44,8 @@ import { EPHEMERAL } from "../core/ephemeral.js";
 import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
-import { endpointPairHooks, hitsShaft, arrowHeads, connectorPathAnchors, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, hitsShaft, arrowHeads, headedConnectorMorphSources, connectorPathAnchors, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { morphPayloadFromConnector } from "../core/morph_payload.js";
 
 /**
  * Pure function. The LOCAL rect the arrow's INK occupies: the AABB of its two
@@ -198,6 +199,26 @@ export const arrowPlugin = {
     // rect — the SAME rect `localBounds` reports, so the substrate and the
     // cull/band bounds can never disagree about where this widget is.
     return applyEffects(cmds, s, world, arrowInkRect(s));
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the shaft's CENTERLINE as one open subpath, plus a closed contour per head
+   * glyph, in the ink rect's frame.
+   *
+   * The composition is core/endpoints.js `headedConnectorMorphSources` — the same
+   * seam the elbow and curved variants use, and its docblock carries the full
+   * argument for centerline-not-silhouette and for including the heads. The heads
+   * come from the SAME `arrowHeads` call emit() draws with, so what morphs is what
+   * renders; the shaft is reported at its full span rather than emit()'s
+   * pulled-back one, because the pullback is a painter's overlap trick and a
+   * centerline that stopped short would describe a shorter arrow than is drawn.
+   */
+  morphPaths(s) {
+    const { from, to } = s;
+    return morphPayloadFromConnector(
+      headedConnectorMorphSources(s, [from, to], arrowHeads(s, { tip: to, from }, { tip: from, from: to })),
+      arrowInkRect(s),
+    );
   },
   // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): an arrow's width and height
   // are just the min/max of its endpoints, so it band-selects and culls like any

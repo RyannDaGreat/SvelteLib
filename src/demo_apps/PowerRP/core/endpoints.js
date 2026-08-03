@@ -14,6 +14,7 @@
  */
 
 import { distToSegment } from "./outline.js";
+import { polylinePathD } from "./morph_payload.js";
 import { num, polygonPathD } from "./shapes.js";
 import { ellipsePathD } from "./svg_paths.js";
 
@@ -747,4 +748,69 @@ export function arrowHeads(s, endAxis, startAxis) {
     else ops.push({ d: drawing.d, fill: null, stroke: s.stroke, strokeWidth, opacity });
   }
   return { ops, pullback };
+}
+
+/**
+ * Pure function. THE MORPH OUTLINE for a HEADED connector — the shaft centerline
+ * plus every head glyph — as the `d`-string source list a `morphPaths(state)`
+ * capability hands to core/morph_payload.js `morphPayloadFromConnector`.
+ *
+ * ONE seam for the three headed arrows (basic / elbow / curved), for exactly the
+ * reason this module exists: they differ only in the POLYLINE their shaft runs
+ * along, and each already calls `arrowHeads` for its glyphs. Spelling the
+ * shaft-plus-heads composition three times would let one variant's morph drift
+ * from another's, and a plugin cannot import a sibling to share it.
+ *
+ * ── WHY THE CENTERLINE AND NOT A STROKE SILHOUETTE ──────────────────────────
+ * These widgets' shafts are STROKED `polyline` ops: the painter expands the
+ * width, so no outline path exists in any of the three plugins to reuse, and
+ * inventing one would be a second geometry pipeline that could disagree with
+ * what is actually painted. The centerline IS the shape an arrow models, the
+ * engine morphs open subpaths natively, and the weight rides along as
+ * `paint.strokeWidth` for the render seam to interpolate.
+ *
+ * ── WHY THE HEADS ARE IN, THOUGH ────────────────────────────────────────────
+ * A head is not stroke styling — it is a CLOSED region of ink with its own
+ * outline (`headDrawing` returns either a polygon's `points` or a `d`), and it is
+ * the feature that makes an arrow an arrow rather than a line. Dropping it would
+ * morph away the widget's identity a frame into the transition. The shaft is
+ * reported at its FULL span rather than pulled back to the head's base: the
+ * pullback exists so a round cap cannot poke through a glyph it is painted
+ * under, which is a painter concern, and a centerline that stopped short would
+ * describe a shorter connector than the widget shows.
+ *
+ * DASHES ARE DELIBERATELY ABSENT — see plugins/line.js `morphPaths` for the
+ * argument (a dash rhythm is styling whose fragment COUNT depends on a knob, so
+ * putting it in the payload would make the morph's structure depend on length).
+ *
+ * Args:
+ *   s (object): evaluated item state (stroke / strokeWidth / opacity / heads)
+ *   shaftPoints (Array<{x, y}>): the shaft's full drawn polyline
+ *   heads (object): the `arrowHeads(...)` result whose `ops` are the glyphs
+ *
+ * Returns:
+ *   Array<{d: string, paint: object}>: morph sources, shaft first then glyphs
+ *
+ * @example headedConnectorMorphSources({stroke: "#000", strokeWidth: 3}, [{x: 0, y: 0}, {x: 10, y: 0}], {ops: []}).length // 1
+ * @example headedConnectorMorphSources({stroke: "#000", strokeWidth: 3}, [{x: 0, y: 0}, {x: 10, y: 0}], {ops: []})[0].d // 'M0 0L10 0'
+ * @example headedConnectorMorphSources({stroke: "#000"}, [{x: 0, y: 0}, {x: 10, y: 0}], {ops: [{points: [[10, 0], [4, 3], [4, -3]], fill: "#000"}]})[1].d // 'M10 0 L4 3 L4 -3 Z'
+ */
+export function headedConnectorMorphSources(s, shaftPoints, heads) {
+  const opacity = s.opacity ?? 1;
+  const strokeWidth = s.strokeWidth ?? ARROW_STROKE_WIDTH;
+  const shaftD = polylinePathD(shaftPoints);
+  const sources = shaftD
+    ? [{ d: shaftD, paint: { fill: null, stroke: s.stroke ?? null, strokeWidth, opacity } }]
+    : [];
+  for (const op of heads.ops) {
+    // A glyph arrives as EITHER a polygon's points or a `d` — the same two kinds
+    // the plugins' `h.d ? path(h) : polygon(h)` split reads (see arrowHeads).
+    const d = op.d ?? (op.points?.length >= 3 ? polygonPathD(op.points) : "");
+    if (!d) continue;
+    sources.push({
+      d,
+      paint: { fill: op.fill ?? null, stroke: op.stroke ?? null, strokeWidth: op.strokeWidth ?? 0, opacity },
+    });
+  }
+  return sources;
 }
