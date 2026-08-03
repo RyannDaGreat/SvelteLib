@@ -155,7 +155,10 @@
   import { fieldOwnsKeydown } from "../../../lib/fieldKeys.js";
   import EquationSuggest from "./EquationSuggest.svelte";
   import { getPath } from "../core/deltas.js";
-  import { equationTokenSpans } from "../core/expressions.js";
+  // evaluateLiteralProblem only: this field's own `shownDeg` is already tidied to
+  // tenths of a degree, so it needs the REFUSAL rule but not evaluatedLiteral's
+  // rounding (which works in stored units — see evaluateEquation).
+  import { equationTokenSpans, evaluateLiteralProblem } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { displayUnit } from "./displayUnits.js";
@@ -540,6 +543,41 @@
     draft = currentText();
   }
 
+  // ── EVALUATE — the "1 2 3" button (WORKSTREAM AD) ──────────────────────────
+  // The REVERSE of ƒ, in ƒ's own slot, shown ONLY while the row is an equation
+  // (2026-08-02 ruling). Same contract as NumericField's; only the rounding unit
+  // differs, for the reason below.
+  const EVALUATE_TIP =
+    "Evaluate: replace this equation with its current value (the expression is discarded; a value that changed across slides becomes this fixed number)";
+
+  /** Query. Why Evaluate is disabled here, or null when it may run — the row's
+   * own derivation error, so the button and the error badge cannot disagree. */
+  let evaluateProblem = $derived(evaluateLiteralProblem(source, error));
+
+  /** Command. Writes the equation's CURRENT heading back as a plain number (ONE
+   * undo unit), destroying the binding.
+   *
+   * IT BAKES `shownDeg`, NOT `source`, and goes through emitCommit — i.e. it
+   * hands over DISPLAY degrees and lets the field's one commit path convert to
+   * stored units, exactly as the dial and the typed box do. That is also where
+   * this field's TIDY lives: `shownDeg` is already rounded to TENTHS OF A DEGREE,
+   * which is the precision this field shows everywhere (typed box and evaluated
+   * badge), so the baked literal is the number the user was looking at. Rounding
+   * in STORED units here would be wrong twice — radians have no tenths-of-a-
+   * degree grid, and a `rotation` row would bake a value that disagrees with its
+   * own readout.
+   *
+   * MULTI-TURN IS PRESERVED: `shownDeg` comes from displayDeg, which is
+   * deliberately UNWRAPPED, so a heading that had integrated 720° bakes as 720
+   * and not as a "0" that lies about two whole turns. */
+  function evaluateEquation() {
+    // Refuse rather than bake the fallback (see evaluateLiteralProblem) — the
+    // guard that makes the refusal true of the FUNCTION, not just of the button.
+    if (evaluateProblem) return;
+    emitCommit(shownDeg);
+    endTextEntry();
+  }
+
   /** Query. The document's own text for the current value — what an UNTOUCHED
    * draft equals, so a focus/blur with no edit commits nothing (no undo entry). */
   function currentText() {
@@ -584,6 +622,28 @@
 
 <div class="numfield">
   {#if showText}
+    <!-- EVALUATE ("1 2 3") — ƒ's slot, on the LEFT of the value, while the row IS
+         an equation. `isEquation`, not `showText`: this branch also opens from a
+         LITERAL row (the ƒ button or a typed "="), where there is no expression
+         to bake and the button would be a no-op wearing a promise.
+         mdi:numeric draws the three digits literally — verified present via
+         api.iconify.design (mdi:dice-1-2-3 does NOT exist and would have shipped
+         an EMPTY button with no build error, the 3e79a24 bug). `aria-disabled` +
+         a handler guard, not the native attribute: a natively disabled button is
+         not focusable, so the keyboard could never reach the reason. -->
+    {#if isEquation}
+      <Tooltip text={evaluateProblem ?? EVALUATE_TIP}>
+        <button
+          class="eq-open"
+          aria-label={`${label}: ${evaluateProblem ?? EVALUATE_TIP}`}
+          aria-disabled={evaluateProblem != null}
+          {disabled}
+          onclick={evaluateEquation}
+        >
+          <iconify-icon icon="mdi:numeric" width="14" height="14"></iconify-icon>
+        </button>
+      </Tooltip>
+    {/if}
     <!-- EQUATION EDITOR — the SAME DOM NumericField renders (app.css .eq-*): a
          colorized overlay behind a transparent-text input, the evaluated/error
          badge, and the autocomplete dropdown anchored under the box. -->

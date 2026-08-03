@@ -55,6 +55,7 @@
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import {
     canonicalPropPath, compiled, displayToStored, storedToDisplay, equationTokenSpans, isEquationValue,
+    evaluatedLiteral, evaluateLiteralProblem,
   } from "../core/expressions.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
@@ -1055,8 +1056,9 @@
    * `PAGEERROR path is not defined` before the fix.)
    *
    * AN EQUATION THE PRIMARY ALREADY HOLDS IS KEPT, not re-seeded from its
-   * evaluated value. In a SINGLE selection this branch is unreachable (the ƒ
-   * toggle calls dropEquation when the row already renders as an equation), but
+   * evaluated value. In a SINGLE selection this branch is unreachable (a row
+   * already rendering as an equation shows the EVALUATE button in ƒ's slot, not
+   * ƒ, so there is no ƒ click to arrive here), but
    * over a SET it is reachable the moment the row is MIXED: the primary can hold
    * `= expr` while another item holds a literal. Re-seeding from app.state()
    * there would silently substitute the expression's CURRENT NUMBER for the
@@ -1075,17 +1077,52 @@
     eqSuggestOpen = false;
   }
 
-  /** Command. Leaves equation mode: commits the CURRENT EVALUATED value as a
-   * plain literal (ONE undo unit), so the specialized editor comes back holding
-   * exactly what the equation last produced. The evaluated value is right-typed
-   * by construction — core validates an equation's result against the slot kind
-   * and falls back to the plugin default on a mismatch — so this never writes a
-   * coerced string where a color/boolean belongs. */
-  function dropEquation(paths) {
-    // The literal comes from the PRIMARY's evaluated value and is written to all
-    // of them, which is the same UNIFY semantics leaving equation mode has to
-    // have: one row, one value.
-    app.setPreview(fanOutPairs(paths, getPath(app.state(), paths[0])));
+  // ── EVALUATE — the "1 2 3" button (WORKSTREAM AD) ──────────────────────────
+  // The user's own words (2026-08-02): "where you know normally I could click f
+  // of x, in that same position, when there's an equation… There should be
+  // another one called a 1, 2, 3 button. And when I click that, it would exit
+  // out of equation mode, back into number mode, of whatever value it currently
+  // had from that equation… it's the reverse of that and you ONLY see that when
+  // it is an equation."
+  //
+  // MUTUALLY EXCLUSIVE WITH ƒ BY CONSTRUCTION, not by a second condition kept in
+  // step with the first: ONE branch picks which of the two buttons occupies the
+  // slot, keyed on the same `active` flag the ƒ toggle already computed. There is
+  // no state in which both render or neither does, so the two cannot drift.
+  //
+  // THE TOOLTIP SAYS WHAT IS LOST. Baking is not undoable-by-retyping — the
+  // expression is gone — and the surprising half is the ANIMATION: a row bound
+  // to a slide-varying reference stops following it and becomes one fixed
+  // number. That consequence is pinned by tests/evaluate_literal_test.js, so the
+  // sentence is a checked claim rather than a warning nobody verified.
+  const EVALUATE_TIP =
+    "Evaluate: replace this equation with its current value (the expression is discarded; a value that changed across slides becomes this fixed number)";
+
+  /** Query. Why this row's Evaluate button is disabled, or null when it may run.
+   * Reads the row's OWN derivation error — the same message its error badge
+   * shows — so the button's reason and the badge cannot disagree. */
+  function evaluateProblem(paths) {
+    return evaluateLiteralProblem(getPath(app.state(), paths[0]), app.exprErrorAt(paths[0]));
+  }
+
+  /** Command. EVALUATES the row's equation: writes its CURRENT value back as a
+   * plain literal, in ONE undo unit, destroying the binding.
+   *
+   * WHICH TREE IS READ, and why this one is right: app.state() is the EVALUATED
+   * tree, app.rawState() the STORED one. Here EVALUATED is correct — the stored
+   * value IS the expression text, so baking it would write the string
+   * "=@id.x + 10" as the row's literal. (This file's own rowStored() reads the
+   * other way for the opposite reason: it needs to SEE the equation. Confusing
+   * the two has shipped bugs here before, so both directions are stated.)
+   *
+   * Over a SET the primary's value is written to every path — the same UNIFY
+   * semantics dropEquation has, for the same reason: one row, one value. */
+  function evaluateEquation(paths) {
+    // Refuse rather than bake the fallback (see evaluateLiteralProblem). The
+    // button is already disabled in this case; this is the guard that makes the
+    // refusal true of the FUNCTION and not merely of one caller.
+    if (evaluateProblem(paths)) return;
+    app.setPreview(fanOutPairs(paths, evaluatedLiteral(getPath(app.state(), paths[0]))));
     app.commitPreview();
     eqOpenKey = null;
     eqOwnerId = null;
@@ -1761,12 +1798,16 @@
            fans out over it in ONE commit, so writing the equation to all N needs
            no machinery beyond letting the button render.
 
-           THE TOGGLE IS UNPRESSED HERE whatever the primary stores. `aria-pressed`
-           is a claim about the ROW, and a mixed row is by definition not on one
-           equation; pressing it would also mean the click ran dropEquation —
-           stamping the primary's evaluated literal over the others — which is a
-           unify wearing an equation button's clothes. Unpressed, the click is
-           beginEquation, which writes nothing until commit. -->
+           THE SLOT SHOWS ƒ HERE whatever the primary stores — `active: false`,
+           which is now a claim about WHICH BUTTON EXISTS and not merely about
+           `aria-pressed`. A mixed row is by definition not on one equation, so
+           EVALUATE would be a lie twice over: it would advertise "replace this
+           equation with its value" on a row that has several different values,
+           and its click would stamp the primary's literal over the others — a
+           unify wearing an equation button's clothes. Showing ƒ, the click is
+           beginEquation, which writes nothing until commit. (This is also the
+           whole of Evaluate's multi-select behaviour: it mirrors ƒ by taking the
+           same `active` flag, so there is no second rule to keep in step.) -->
       <div class="numfield">
         {#if eqCapable}{@render eqToggle(row, eqRowPaths, false)}{/if}
         <Tooltip text={`${multiPanel.itemIds.length} selected items differ here — click to set them all to ${multiValueLabel(multiRow.seed)}`}>
@@ -2366,14 +2407,15 @@
   {/if}
 {/snippet}
 
-<!-- THE ƒ AFFORDANCE — the same control NumericField puts on the left of a
+<!-- THE ƒ / EVALUATE SLOT — the same control NumericField puts on the left of a
      numeric value (app.css .numfield .eq-open: hover-only, zero width at rest,
      revealed by .row:hover or focus-within, so the resting row is just label +
-     value). Here it TOGGLES, because a non-numeric kind has no "just type a
-     literal" way back the way a number does: pressed = the row is an equation,
-     and clicking it drops back to the evaluated value as a plain literal. That
-     is PaintField's Solid↔"= Eq" mode switch, expressed with NumericField's
-     button so there is ONE recognizable way in and out of equation mode. -->
+     value). ONE slot, TWO buttons, chosen by whether the row is an equation:
+     ƒ goes IN (a literal row), "1 2 3" comes OUT (an equation row, baking its
+     current value as a literal). That is PaintField's Solid↔"= Eq" mode switch,
+     expressed with NumericField's button so there is ONE recognizable way in and
+     out of equation mode — and it is why a non-numeric kind needs no "just type
+     a literal" way back the way a number does. -->
 <!-- THE `{}` CODE AFFORDANCE — the value-END sibling of the ƒ button, for a row
      whose value IS code (core/properties.js `code: {language}`). One click opens
      the shared full-screen editor on this property; there is no "off" state, so
@@ -2394,16 +2436,43 @@
 {/snippet}
 
 {#snippet eqToggle(row, paths, active)}
-  <Tooltip text={active ? "Drop the equation, keeping its current value" : "Enter an equation"}>
-    <button
-      class="eq-open"
-      aria-label={active ? `${row.label}: drop the equation` : `${row.label}: enter an equation`}
-      aria-pressed={active}
-      onclick={() => (active ? dropEquation(paths) : beginEquation(row, paths))}
-    >
-      <iconify-icon icon="mdi:function-variant" width="14" height="14"></iconify-icon>
-    </button>
-  </Tooltip>
+  {#if active}
+    <!-- EVALUATE ("1 2 3") — the REVERSE of ƒ, in ƒ's own slot, and the user's
+         spec that it is seen ONLY on an equation is satisfied STRUCTURALLY: this
+         is the same `active` branch, so exactly one of the two buttons exists at
+         any moment. mdi:numeric draws the three digits literally (verified
+         present via api.iconify.design — mdi:dice-1-2-3 does NOT exist and would
+         have rendered an EMPTY button with no build error, the 3e79a24 bug).
+
+         DISABLED ON AN ERRORING ROW, carrying the reason instead of the promise:
+         a broken equation evaluates to the plugin FALLBACK, so baking it would
+         stamp a default nobody chose over the expression. `aria-disabled` + a
+         handler guard rather than the native attribute — the Toolbar's ruling,
+         for the same reason: a natively disabled button is not focusable, so the
+         keyboard could never reach the sentence explaining why. -->
+    {@const why = evaluateProblem(paths)}
+    <Tooltip text={why ?? EVALUATE_TIP}>
+      <button
+        class="eq-open"
+        aria-label={`${row.label}: ${why ?? EVALUATE_TIP}`}
+        aria-disabled={why != null}
+        onclick={() => evaluateEquation(paths)}
+      >
+        <iconify-icon icon="mdi:numeric" width="14" height="14"></iconify-icon>
+      </button>
+    </Tooltip>
+  {:else}
+    <Tooltip text="Enter an equation">
+      <button
+        class="eq-open"
+        aria-label={`${row.label}: enter an equation`}
+        aria-pressed={false}
+        onclick={() => beginEquation(row, paths)}
+      >
+        <iconify-icon icon="mdi:function-variant" width="14" height="14"></iconify-icon>
+      </button>
+    </Tooltip>
+  {/if}
 {/snippet}
 
 <!-- THE UNIVERSAL `=` FIELD (Tier 0) — NumericField's equation mode, verbatim in

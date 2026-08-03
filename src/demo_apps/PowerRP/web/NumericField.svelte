@@ -83,6 +83,7 @@
   import {
     displayToStored, storedToDisplay, compiled, evalAst,
     classifyEquation, equationTokenSpans, resolveRef, slugMap,
+    evaluatedLiteral, evaluateLiteralProblem,
   } from "../core/expressions.js";
   import { boxCenter, xForBoxCenterX, yForBoxCenterY } from "../core/geometry.js";
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
@@ -493,6 +494,45 @@
     return isEquation ? storedToDisplay(stored, app.rawState()) : String(roundShown(unit.toDisplay(evaluated)));
   }
 
+  // ── EVALUATE — the "1 2 3" button (WORKSTREAM AD) ──────────────────────────
+  // The user asked for the REVERSE of ƒ, in ƒ's own slot, visible ONLY while the
+  // row is an equation (2026-08-02): "it would exit out of equation mode, back
+  // into number mode, of whatever value it currently had from that equation."
+  // On a NUMBER row that gap was the widest — ƒ renders only in the literal
+  // branch, so an equation row had no button in that slot at all.
+  const EVALUATE_TIP =
+    "Evaluate: replace this equation with its current value (the expression is discarded; a value that changed across slides becomes this fixed number)";
+
+  /** Query. Why Evaluate is disabled here, or null when it may run. `error` is
+   * the row's own derivation error — the same one the badge shows — so the
+   * button's reason and the badge cannot disagree. */
+  let evaluateProblem = $derived(evaluateLiteralProblem(evaluated, error));
+
+  /** Command. Writes the equation's CURRENT value back as a plain number (ONE
+   * undo unit), destroying the binding.
+   *
+   * `evaluated` is app.state()'s value — the EVALUATED tree, which is the
+   * correct one here: `stored` IS the expression text, so baking that would
+   * write the string "=box.x + 10" into a numeric slot. (The field reads
+   * `stored` two lines up for the OPPOSITE reason — to see the equation AS an
+   * equation. Both directions are live in this file, hence saying which is which.)
+   *
+   * NO UNIT CONVERSION, deliberately, and this is the one place that differs
+   * from commitNumber: the scrubber's number arrives in DISPLAY units (degrees)
+   * and needs unit.fromDisplay, whereas `evaluated` is already the STORED value
+   * (radians) the document holds. Rounding is applied in stored units for the
+   * same reason — evaluatedLiteral only tidies float dust, and doing it after a
+   * display round-trip would quantize a rotation to whole-ish degrees. */
+  function evaluateEquation() {
+    // Refuse rather than bake the fallback (see evaluateLiteralProblem). The
+    // button is already disabled here; this guard makes the refusal true of the
+    // FUNCTION, not merely of one caller.
+    if (evaluateProblem) return;
+    app.setPreview(fanOutPairs(writePaths, evaluatedLiteral(evaluated, shownDecimals)));
+    app.commitPreview();
+    endTextEntry();
+  }
+
   /** Command. Reverts to the document's value, discarding the live preview. */
   function revertDraft() {
     app.cancelPreview();
@@ -551,6 +591,30 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="numfield" onkeydown={onWrapKeydown}>
   {#if showText}
+    <!-- EVALUATE ("1 2 3") — ƒ's slot, on the LEFT of the value, while the row IS
+         an equation. ONLY while a real equation is STORED: `textEntry` also opens
+         this branch from a literal row (typing "=" into the number box), and
+         there is nothing to bake there — the row's value is already a literal and
+         the button would be a no-op wearing a promise. So it keys on
+         `isEquation`, not on `showText`.
+         Icon: mdi:numeric draws the three digits literally, and it was verified
+         present via api.iconify.design — mdi:dice-1-2-3 does NOT exist and would
+         have shipped an EMPTY button with no build error (the 3e79a24 bug).
+         `aria-disabled` + a handler guard rather than the native attribute, per
+         the Toolbar's ruling: a natively disabled button is not focusable, so the
+         keyboard could never reach the sentence saying why it is off. -->
+    {#if isEquation}
+      <Tooltip text={evaluateProblem ?? EVALUATE_TIP}>
+        <button
+          class="eq-open"
+          aria-label={`${label}: ${evaluateProblem ?? EVALUATE_TIP}`}
+          aria-disabled={evaluateProblem != null}
+          onclick={evaluateEquation}
+        >
+          <iconify-icon icon="mdi:numeric" width="14" height="14"></iconify-icon>
+        </button>
+      </Tooltip>
+    {/if}
     <span class="eq-wrap">
       <!-- Syntax highlight overlay (manifest "Equation syntax highlighting"):
            the colorized equation rendered BEHIND the input. The input's own text
