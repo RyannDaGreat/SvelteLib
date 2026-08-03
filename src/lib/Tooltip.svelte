@@ -214,11 +214,18 @@
   }
 
   /**
-   * Command (Svelte action). Moves the tooltip element to document.body on mount
-   * and removes it on destroy, so it is a BODY-LEVEL SIBLING of the whole app
-   * rather than a descendant of whatever wrapped its anchor.
+   * THE REPARENT-TO-BODY ACTION, imported from the kit rather than written here.
    *
-   * WHY THIS IS NECESSARY AND NOT TIDINESS. The tip is `position: fixed`, and a
+   * It was hand-rolled in this file when the portal landed, which made it the
+   * FOURTH copy of an action that src/lib/popover.js exists to be the one home
+   * of — and tests/popover_reinvention_ban_test.js caught it, correctly. The ban
+   * is not about the name `portal`: it detects the SHAPE (an appendChild onto
+   * document.body paired with a destroy), so renaming a copy would not evade it,
+   * and nothing about this component made it an exception. The kit's version is
+   * behaviourally identical, so the import is a straight substitution.
+   *
+   * WHY A TOOLTIP NEEDS IT AT ALL — the measurement, kept here because it is
+   * this component's reason and not the kit's. The tip is `position: fixed`, and a
    * fixed element is positioned against the viewport ONLY while no ancestor
    * establishes a containing block for it. Several ordinary CSS properties do
    * establish one — `transform`, `filter`, `backdrop-filter`, `perspective`,
@@ -249,17 +256,12 @@
    * it through the documented --tt-* custom properties, which are read off the
    * anchor precisely so they keep working across the portal.
    *
-   * @param {HTMLElement} node The tooltip element.
-   * @returns {{destroy: () => void}} Svelte action handle.
-   *
-   * @example
-   * // <div class="tt-tip" use:portal>…</div> mounted inside a blurred panel:
-   * // document.querySelector(".tt-tip").parentElement === document.body // true
+   * Used below as `use:portal` on the tip's root element:
+   *   <div class="tt-tip" use:portal>…</div>
+   * mounted inside a blurred panel now satisfies
+   *   document.querySelector(".tt-tip").parentElement === document.body
    */
-  function portal(node) {
-    document.body.appendChild(node);
-    return { destroy: () => node.remove() };
-  }
+  import { portal } from "./popover.js";
 
   // AT MOST ONE TOOLTIP OPEN, app-wide. NESTED anchors are why this must be a
   // global invariant rather than per-instance hygiene: a tip-wrapped tile inside
