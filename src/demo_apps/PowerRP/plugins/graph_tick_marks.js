@@ -29,6 +29,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, tickValues, minorTickValues, minorSubdivisions, formatTick } from "../core/graph_scale.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { morphPayloadFromPaths } from "../core/morph_payload.js";
 import * as T from "../core/transform.js";
 import { path, text } from "../render_gpu/ir.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
@@ -202,55 +203,13 @@ export const graphTickMarksPlugin = {
     const opacity = s.opacity ?? 1;
     const ops = [];
 
-    // ── axis lines + arrow tips ──
-    const axisSubpaths = [];
-    const tipDs = [];
-    if (s.showAxisLine !== false && (s.axisWidth ?? 0) > 0) {
-      if (doX) axisSubpaths.push([[0, axisY], [w, axisY]]);
-      if (doY) axisSubpaths.push([[axisX, 0], [axisX, h]]);
-    }
-    if (s.includeTip && (s.tipSize ?? 0) > 0) {
-      if (doX) tipDs.push(axisTipD("x", axisY, w, s.tipSize));
-      if (doY) tipDs.push(axisTipD("y", axisX, 0, s.tipSize));
-    }
+    const { axisSubpaths, tipDs, majorMarks, minorMarks, xMajor, yMajor } = rulerGeometry(s);
     if (axisSubpaths.length)
       ops.push(path({ d: subpathsD(axisSubpaths), stroke: s.axisColor, strokeWidth: s.axisWidth ?? DEFAULT_AXIS_WIDTH, opacity }));
     if (tipDs.length)
       ops.push(path({ d: tipDs.join(" "), fill: s.axisColor, opacity }));
-
-    // ── tick values (integer-index × step) ──
-    const xMajor = doX ? tickValues(xr.min, xr.max, majorStepOf(xr)) : [];
-    const yMajor = doY ? tickValues(yr.min, yr.max, majorStepOf(yr)) : [];
-
-    // ── major tick marks ──
-    if (s.showTicks !== false && (s.majorTickLength ?? 0) > 0) {
-      const marks = [];
-      for (const v of xMajor) {
-        if (s.excludeOriginTick && Math.abs(v) < 1e-9) continue;
-        marks.push(tickMark("x", dataToLocal(v, xr.min, xr.max, w, false), axisY, s.majorTickLength, s.tickDirection ?? "out"));
-      }
-      for (const v of yMajor) {
-        if (s.excludeOriginTick && Math.abs(v) < 1e-9) continue;
-        marks.push(tickMark("y", dataToLocal(v, yr.min, yr.max, h, true), axisX, s.majorTickLength, s.tickDirection ?? "out"));
-      }
-      if (marks.length) ops.push(path({ d: subpathsD(marks), stroke: s.tickColor, strokeWidth: s.tickWidth ?? DEFAULT_TICK_WIDTH, opacity }));
-    }
-
-    // ── minor tick marks ──
-    if (s.showMinorTicks && (s.minorTickLength ?? 0) > 0) {
-      const marks = [];
-      if (doX) {
-        const sub = (s.minorSubdivisions ?? 0) > 0 ? s.minorSubdivisions : minorSubdivisions(majorStepOf(xr));
-        for (const v of minorTickValues(xr.min, xr.max, majorStepOf(xr), sub))
-          marks.push(tickMark("x", dataToLocal(v, xr.min, xr.max, w, false), axisY, s.minorTickLength, s.tickDirection ?? "out"));
-      }
-      if (doY) {
-        const sub = (s.minorSubdivisions ?? 0) > 0 ? s.minorSubdivisions : minorSubdivisions(majorStepOf(yr));
-        for (const v of minorTickValues(yr.min, yr.max, majorStepOf(yr), sub))
-          marks.push(tickMark("y", dataToLocal(v, yr.min, yr.max, h, true), axisX, s.minorTickLength, s.tickDirection ?? "out"));
-      }
-      if (marks.length) ops.push(path({ d: subpathsD(marks), stroke: s.tickColor, strokeWidth: (s.tickWidth ?? DEFAULT_TICK_WIDTH) * 0.7, opacity }));
-    }
+    if (majorMarks.length) ops.push(path({ d: subpathsD(majorMarks), stroke: s.tickColor, strokeWidth: s.tickWidth ?? DEFAULT_TICK_WIDTH, opacity }));
+    if (minorMarks.length) ops.push(path({ d: subpathsD(minorMarks), stroke: s.tickColor, strokeWidth: (s.tickWidth ?? DEFAULT_TICK_WIDTH) * 0.7, opacity }));
 
     // ── labels ──
     if (s.showLabels !== false) {
@@ -275,6 +234,46 @@ export const graphTickMarksPlugin = {
     }
     return ops;
   },
+  /**
+   * Query (reads only its own numeric state). THE MORPH OUTLINE
+   * (core/registry.js's `morphPaths` protocol): the axes, their arrow tips and
+   * every tick, as cubic contours, from the SAME `rulerGeometry` + `subpathsD`
+   * pair emit() draws with.
+   *
+   * THE LABELS ARE NOT IN THE PAYLOAD. They are `text` ops, and text becomes
+   * morphable through the glyph-outline seam (core/glyph_outlines.js), not by a
+   * plugin inventing letterforms; a ruler whose numerals stayed put while its
+   * ticks flowed would be worse than one that hands over its rulings alone. This
+   * is the same line plaintext/latex sit on the other side of, and if the seam
+   * ever becomes cheap to call from here the labels can join without changing
+   * anything else.
+   *
+   * ONE SUBPATH PER MARK, not one per op group: emit() batches every major tick
+   * into a single `path` for stroke-trim's sake, but the aligner pairs subpaths,
+   * and a ruler morphing into a comb should pair tick-to-tooth.
+   */
+  morphPaths(s) {
+    const { axisSubpaths, tipDs, majorMarks, minorMarks } = rulerGeometry(s);
+    const stroke = { fill: null, stroke: s.tickColor ?? null, strokeWidth: s.tickWidth ?? DEFAULT_TICK_WIDTH, opacity: s.opacity ?? 1 };
+    const axisPaint = { fill: null, stroke: s.axisColor ?? null, strokeWidth: s.axisWidth ?? DEFAULT_AXIS_WIDTH, opacity: s.opacity ?? 1 };
+    return morphPayloadFromPaths(
+      [
+        ...axisSubpaths.map((sp) => ({ d: subpathsD([sp]), paint: axisPaint })),
+        // A tip is FILLED, not stroked — it is the one solid contour on the ruler.
+        ...tipDs.map((d) => ({ d, paint: { fill: s.axisColor ?? null, stroke: null, strokeWidth: 0, opacity: s.opacity ?? 1 } })),
+        ...[...majorMarks, ...minorMarks].map((m) => ({ d: subpathsD([m]), paint: stroke })),
+      ],
+      { w: s.w ?? 0, h: s.h ?? 0 },
+    );
+  },
+  /** Pure function. Why this ruler cannot morph YET, or null — emit()'s own
+   * "nothing drawn" case, with the labels excluded for the reason morphPaths
+   * gives: a ruler showing only numerals has no outline to pair. */
+  morphNotReady(s) {
+    const { axisSubpaths, tipDs, majorMarks, minorMarks } = rulerGeometry(s);
+    return axisSubpaths.length + tipDs.length + majorMarks.length + minorMarks.length > 0
+      ? null : "an axis or a tick (this ruler draws only labels)";
+  },
   // Ink can reach past the box (labels below/left, tips beyond the ends): report a
   // generous inflated rect so culling/capture never clip a visible label.
   localBounds(state) {
@@ -298,6 +297,91 @@ export const graphTickMarksPlugin = {
     { id: "add-graph-ticks", title: "Add Graph Ticks", icon: "mdi:ruler", run: (app) => app.armCrosshairPlacement(graphTickMarksPlugin) },
   ],
 };
+
+/**
+ * Pure function. THE RULER'S VECTOR GEOMETRY in box-local space — the ONE
+ * sampler emit() and `morphPaths` share. Labels are NOT here: they are `text`
+ * ops, a different kind of ink with a different seam.
+ *
+ * IT WAS INLINE IN emit() UNTIL THIS COMMIT, and extracting it is what lets this
+ * widget morph honestly. core/registry.js's protocol says "derive the payload
+ * from the ink, never alongside it" — a provider that rebuilt these ticks from
+ * the same ranges would be a second spelling free to drift from the drawn one,
+ * and the drift would show only as a morph flowing into a ruler nobody sees.
+ * `xMajor`/`yMajor` come back too because emit()'s label pass needs exactly the
+ * tick VALUES this computed, and recomputing them there would reintroduce the
+ * same duplication one level down.
+ *
+ * Args:
+ *   s (object): the widget's folded state
+ *
+ * Returns:
+ *   {axisSubpaths, tipDs, majorMarks, minorMarks, xMajor, yMajor} — segments as
+ *   [[x0,y0],[x1,y1]], tips as `d` strings (they are filled triangles, not
+ *   segments), and the two tick-value lists
+ *
+ * Examples:
+ *     >>> // the default both-axes ruler: two axis lines
+ *     >>> rulerGeometry({w: 200, h: 200}).axisSubpaths.length
+ *     2
+ *     >>> // axes off leaves the ticks alone
+ *     >>> rulerGeometry({w: 200, h: 200, showAxisLine: false}).axisSubpaths.length
+ *     0
+ */
+export function rulerGeometry(s) {
+  const w = s.w ?? 0, h = s.h ?? 0;
+  const xr = parseRange(s.xRange ?? "[0, 5, 1]");
+  const yr = parseRange(s.yRange ?? "[0, 5, 1]");
+  const win = { xmin: xr.min, xmax: xr.max, ymin: yr.min, ymax: yr.max };
+  const { axisX, axisY } = axisPositions(win, w, h, s.spine ?? "zero");
+  const doX = (s.axes ?? "both") !== "y";
+  const doY = (s.axes ?? "both") !== "x";
+
+  // ── axis lines + arrow tips ──
+  const axisSubpaths = [];
+  const tipDs = [];
+  if (s.showAxisLine !== false && (s.axisWidth ?? 0) > 0) {
+    if (doX) axisSubpaths.push([[0, axisY], [w, axisY]]);
+    if (doY) axisSubpaths.push([[axisX, 0], [axisX, h]]);
+  }
+  if (s.includeTip && (s.tipSize ?? 0) > 0) {
+    if (doX) tipDs.push(axisTipD("x", axisY, w, s.tipSize));
+    if (doY) tipDs.push(axisTipD("y", axisX, 0, s.tipSize));
+  }
+
+  // ── tick values (integer-index × step) ──
+  const xMajor = doX ? tickValues(xr.min, xr.max, majorStepOf(xr)) : [];
+  const yMajor = doY ? tickValues(yr.min, yr.max, majorStepOf(yr)) : [];
+
+  // ── major tick marks ──
+  const majorMarks = [];
+  if (s.showTicks !== false && (s.majorTickLength ?? 0) > 0) {
+    for (const v of xMajor) {
+      if (s.excludeOriginTick && Math.abs(v) < 1e-9) continue;
+      majorMarks.push(tickMark("x", dataToLocal(v, xr.min, xr.max, w, false), axisY, s.majorTickLength, s.tickDirection ?? "out"));
+    }
+    for (const v of yMajor) {
+      if (s.excludeOriginTick && Math.abs(v) < 1e-9) continue;
+      majorMarks.push(tickMark("y", dataToLocal(v, yr.min, yr.max, h, true), axisX, s.majorTickLength, s.tickDirection ?? "out"));
+    }
+  }
+
+  // ── minor tick marks ──
+  const minorMarks = [];
+  if (s.showMinorTicks && (s.minorTickLength ?? 0) > 0) {
+    if (doX) {
+      const sub = (s.minorSubdivisions ?? 0) > 0 ? s.minorSubdivisions : minorSubdivisions(majorStepOf(xr));
+      for (const v of minorTickValues(xr.min, xr.max, majorStepOf(xr), sub))
+        minorMarks.push(tickMark("x", dataToLocal(v, xr.min, xr.max, w, false), axisY, s.minorTickLength, s.tickDirection ?? "out"));
+    }
+    if (doY) {
+      const sub = (s.minorSubdivisions ?? 0) > 0 ? s.minorSubdivisions : minorSubdivisions(majorStepOf(yr));
+      for (const v of minorTickValues(yr.min, yr.max, majorStepOf(yr), sub))
+        minorMarks.push(tickMark("y", dataToLocal(v, yr.min, yr.max, h, true), axisX, s.minorTickLength, s.tickDirection ?? "out"));
+    }
+  }
+  return { axisSubpaths, tipDs, majorMarks, minorMarks, xMajor, yMajor };
+}
 
 /** Pure helper. An SVG `d` for a set of two-point segments (each its own M/L
  *  subpath) — the multi-tick / multi-axis path builder. */

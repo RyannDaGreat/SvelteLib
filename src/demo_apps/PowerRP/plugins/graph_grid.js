@@ -32,6 +32,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { parseRange, dataToLocal, tickValues, minorTickValues, minorSubdivisions, easedReveal, clamp01 } from "../core/graph_scale.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { morphPayloadFromPaths } from "../core/morph_payload.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
@@ -116,57 +117,43 @@ export const graphGridPlugin = {
    * 0.
    */
   emit(s) {
-    const w = s.w ?? 0, h = s.h ?? 0;
-    const xr = parseRange(s.xRange ?? "[0, 10, 1]");
-    const yr = parseRange(s.yRange ?? "[0, 10, 1]");
-    const doV = (s.gridAxis ?? "both") !== "y";
-    const doH = (s.gridAxis ?? "both") !== "x";
+    const { major, minor } = gridSegments(s);
     const opacity = s.opacity ?? 1;
     const growth = clamp01(s.growth ?? 1);
-    const lag = s.growLagRatio ?? 0.3;
-    const easeName = s.growEase ?? "cubic";
-    const dir = s.growDirection ?? "index-ascending";
     const ops = [];
-
-    // The lines, ordered verticals-first (left→right) then horizontals
-    // (top→bottom) — the order the lagged reveal staggers along.
-    const xMajor = doV ? tickValues(xr.min, xr.max, xr.step > 0 ? xr.step : 1) : [];
-    const yMajor = doH ? tickValues(yr.min, yr.max, yr.step > 0 ? yr.step : 1) : [];
-    const total = xMajor.length + yMajor.length;
-
-    if (total > 0 && growth > 0 && (s.gridWidth ?? 0) > 0) {
-      const segs = [];
-      let idx = 0;
-      for (const v of xMajor) {
-        const f = easedReveal(idx++, total, growth, lag, easeName, dir);
-        const seg = gridLineSegment("v", dataToLocal(v, xr.min, xr.max, w, false), w, h, f);
-        if (seg) segs.push(seg);
-      }
-      for (const v of yMajor) {
-        const f = easedReveal(idx++, total, growth, lag, easeName, dir);
-        const seg = gridLineSegment("h", dataToLocal(v, yr.min, yr.max, h, true), w, h, f);
-        if (seg) segs.push(seg);
-      }
-      if (segs.length) ops.push(path({ d: segsD(segs), stroke: s.gridColor, strokeWidth: s.gridWidth ?? DEFAULT_GRID_WIDTH, opacity: opacity * (s.gridOpacity ?? DEFAULT_GRID_OPACITY) }));
-    }
-
-    // Minor (faded) lines — full length, opacity scaled by overall growth so they
-    // arrive with the structure rather than snaking independently.
-    if (s.showMinor && growth > 0 && (s.minorWidth ?? 0) > 0) {
-      const segs = [];
-      if (doV) {
-        const sub = (s.minorSubdivisions ?? 0) > 0 ? s.minorSubdivisions : minorSubdivisions(xr.step > 0 ? xr.step : 1);
-        for (const v of minorTickValues(xr.min, xr.max, xr.step > 0 ? xr.step : 1, sub))
-          segs.push([[dataToLocal(v, xr.min, xr.max, w, false), 0], [dataToLocal(v, xr.min, xr.max, w, false), h]]);
-      }
-      if (doH) {
-        const sub = (s.minorSubdivisions ?? 0) > 0 ? s.minorSubdivisions : minorSubdivisions(yr.step > 0 ? yr.step : 1);
-        for (const v of minorTickValues(yr.min, yr.max, yr.step > 0 ? yr.step : 1, sub))
-          segs.push([[0, dataToLocal(v, yr.min, yr.max, h, true)], [w, dataToLocal(v, yr.min, yr.max, h, true)]]);
-      }
-      if (segs.length) ops.push(path({ d: segsD(segs), stroke: s.gridColor, strokeWidth: s.minorWidth ?? DEFAULT_MINOR_WIDTH, opacity: opacity * (s.fadedLineOpacity ?? DEFAULT_FADED_OPACITY) * growth }));
-    }
+    if (major.length) ops.push(path({ d: segsD(major), stroke: s.gridColor, strokeWidth: s.gridWidth ?? DEFAULT_GRID_WIDTH, opacity: opacity * (s.gridOpacity ?? DEFAULT_GRID_OPACITY) }));
+    if (minor.length) ops.push(path({ d: segsD(minor), stroke: s.gridColor, strokeWidth: s.minorWidth ?? DEFAULT_MINOR_WIDTH, opacity: opacity * (s.fadedLineOpacity ?? DEFAULT_FADED_OPACITY) * growth }));
     return ops;
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the rulings as cubic contours, from the SAME `gridSegments` + `segsD` pair
+   * emit() draws with — so the grid that morphs is the grid on screen, at
+   * whatever point of its staggered reveal it currently sits (a half-grown line
+   * is genuinely half-length ink, and pairing against its full length would be
+   * pairing against a picture nobody is looking at).
+   *
+   * MAJOR AND MINOR IN ONE PAYLOAD, in emit()'s own order. They are two `path`
+   * ops only because they carry different stroke widths and opacities; as ink
+   * they are one family of rulings, and the aligner pairs subpaths, so keeping
+   * them together lets a dense grid distribute evenly into a target rather than
+   * having its faint half orphaned.
+   *
+   * EVERY SUBPATH IS OPEN — a ruling is a stroke, not a region. The engine steps
+   * `closed` to the target's flag at alpha > 0, which is the documented reading.
+   */
+  morphPaths(s) {
+    const { major, minor } = gridSegments(s);
+    return morphPayloadFromPaths(
+      [...major, ...minor].map((seg) => ({ d: segsD([seg]), paint: { fill: null, stroke: s.gridColor ?? null, strokeWidth: s.gridWidth ?? DEFAULT_GRID_WIDTH, opacity: s.opacity ?? 1 } })),
+      { w: s.w ?? 0, h: s.h ?? 0 },
+    );
+  },
+  /** Pure function. Why this grid cannot morph YET, or null — emit()'s own
+   * "nothing to draw" case: a fully-ungrown or line-less grid has no ink. */
+  morphNotReady(s) {
+    const { major, minor } = gridSegments(s);
+    return major.length + minor.length > 0 ? null : "at least one ruling (this grid draws nothing)";
   },
   localBounds(state) {
     return { x: 0, y: 0, w: state.w ?? 0, h: state.h ?? 0 };
@@ -188,6 +175,89 @@ export const graphGridPlugin = {
     { id: "add-graph-grid", title: "Add Graph Grid", icon: "mdi:grid", run: (app) => app.armCrosshairPlacement(graphGridPlugin) },
   ],
 };
+
+/**
+ * Pure function. THE GRID'S GEOMETRY, as two lists of two-point segments in
+ * box-local space — the ONE sampler emit() and `morphPaths` share.
+ *
+ * IT WAS INLINE IN emit() UNTIL THIS COMMIT, and extracting it is the whole
+ * reason this widget can morph honestly. core/registry.js's morph protocol says
+ * "derive the payload from the ink, never alongside it": a provider that rebuilt
+ * these rulings from the same ranges would be a SECOND spelling that could drift
+ * from the drawn one, and the drift would be invisible — the morph would flow
+ * into a grid the widget never shows.
+ *
+ * THE STAGGERED REVEAL IS INSIDE, not applied afterwards, because a partly-grown
+ * major line is genuinely SHORTER ink (`gridLineSegment` trims it), not a full
+ * line drawn faintly. Minor lines are always full length; their reveal is carried
+ * by opacity at the call site, which is why `growth` gates them but does not
+ * shorten them.
+ *
+ * Args:
+ *   s (object): the widget's folded state
+ *
+ * Returns:
+ *   {major: number[][][], minor: number[][][]} — each entry a [[x0,y0],[x1,y1]]
+ *
+ * Examples:
+ *     >>> // an ungrown grid draws nothing at all
+ *     >>> gridSegments({w: 100, h: 100, growth: 0}).major.length
+ *     0
+ *     >>> // a default 0..10 step-1 range at full growth: 11 verticals + 11 horizontals
+ *     >>> gridSegments({w: 100, h: 100}).major.length
+ *     22
+ *     >>> gridSegments({w: 100, h: 100}).major[0]
+ *     [ [ 0, 0 ], [ 0, 100 ] ]
+ */
+export function gridSegments(s) {
+  const w = s.w ?? 0, h = s.h ?? 0;
+  const xr = parseRange(s.xRange ?? "[0, 10, 1]");
+  const yr = parseRange(s.yRange ?? "[0, 10, 1]");
+  const doV = (s.gridAxis ?? "both") !== "y";
+  const doH = (s.gridAxis ?? "both") !== "x";
+  const growth = clamp01(s.growth ?? 1);
+  const lag = s.growLagRatio ?? 0.3;
+  const easeName = s.growEase ?? "cubic";
+  const dir = s.growDirection ?? "index-ascending";
+
+  // The lines, ordered verticals-first (left→right) then horizontals
+  // (top→bottom) — the order the lagged reveal staggers along.
+  const xMajor = doV ? tickValues(xr.min, xr.max, xr.step > 0 ? xr.step : 1) : [];
+  const yMajor = doH ? tickValues(yr.min, yr.max, yr.step > 0 ? yr.step : 1) : [];
+  const total = xMajor.length + yMajor.length;
+
+  const major = [];
+  if (total > 0 && growth > 0 && (s.gridWidth ?? 0) > 0) {
+    let idx = 0;
+    for (const v of xMajor) {
+      const f = easedReveal(idx++, total, growth, lag, easeName, dir);
+      const seg = gridLineSegment("v", dataToLocal(v, xr.min, xr.max, w, false), w, h, f);
+      if (seg) major.push(seg);
+    }
+    for (const v of yMajor) {
+      const f = easedReveal(idx++, total, growth, lag, easeName, dir);
+      const seg = gridLineSegment("h", dataToLocal(v, yr.min, yr.max, h, true), w, h, f);
+      if (seg) major.push(seg);
+    }
+  }
+
+  // Minor (faded) lines — full length, opacity scaled by overall growth so they
+  // arrive with the structure rather than snaking independently.
+  const minor = [];
+  if (s.showMinor && growth > 0 && (s.minorWidth ?? 0) > 0) {
+    if (doV) {
+      const sub = (s.minorSubdivisions ?? 0) > 0 ? s.minorSubdivisions : minorSubdivisions(xr.step > 0 ? xr.step : 1);
+      for (const v of minorTickValues(xr.min, xr.max, xr.step > 0 ? xr.step : 1, sub))
+        minor.push([[dataToLocal(v, xr.min, xr.max, w, false), 0], [dataToLocal(v, xr.min, xr.max, w, false), h]]);
+    }
+    if (doH) {
+      const sub = (s.minorSubdivisions ?? 0) > 0 ? s.minorSubdivisions : minorSubdivisions(yr.step > 0 ? yr.step : 1);
+      for (const v of minorTickValues(yr.min, yr.max, yr.step > 0 ? yr.step : 1, sub))
+        minor.push([[0, dataToLocal(v, yr.min, yr.max, h, true)], [w, dataToLocal(v, yr.min, yr.max, h, true)]]);
+    }
+  }
+  return { major, minor };
+}
 
 /** Pure helper. An SVG `d` for a set of two-point segments, each its own subpath. */
 function segsD(segments) {

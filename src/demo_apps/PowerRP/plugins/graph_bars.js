@@ -40,6 +40,8 @@ import { bundle, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/prope
 import { parseRange, dataToLocal, easedReveal, clamp01 } from "../core/graph_scale.js";
 import { sampleIndexed, errorAffordance } from "../core/graph_equation.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { morphPayloadFromPaths } from "../core/morph_payload.js";
+import { rectPathD } from "../core/svg_paths.js";
 import * as T from "../core/transform.js";
 import { rect, text } from "../render_gpu/ir.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
@@ -342,6 +344,50 @@ export const graphBarsPlugin = {
     for (const l of labels)
       ops.push(text({ text: l.text, x: l.x, y: l.y, size: l.size, color: s.barColor ?? DEFAULT_BAR_COLOR, opacity: s.opacity ?? 1 }));
     return ops;
+  },
+  /**
+   * Query (samples the value equation). THE MORPH OUTLINE (core/registry.js's
+   * `morphPaths` protocol): one cubic contour per BAR, from the SAME
+   * `barGeometry` emit() draws with, through `rectPathD` — which is this
+   * codebase's one spelling of "a rect's outline" (core/svg_paths.js uses it to
+   * flatten an SVG `<rect>`, and plugins/rect.js's own provider is the same call).
+   *
+   * THE CORNER RADIUS AND THE REVEAL BOTH RIDE ALONG, because both are already in
+   * the geometry: `barGeometry` returns the bar's CURRENT height at its current
+   * `reveal`, and the radius is capped per bar exactly as emit() caps it. A bar
+   * chart caught mid-grow morphs from what is on screen, not from its finished
+   * state.
+   *
+   * ONE SUBPATH PER BAR is the whole point of declaring here at all — a bar chart
+   * flowing into a row of circles should pair bar-to-circle, which is what makes
+   * this widget worth a morph rather than a crossfade.
+   *
+   * THE LABELS ARE NOT IN THE PAYLOAD: they are `text` ops, and text morphs
+   * through the glyph-outline seam, not by a plugin inventing letterforms.
+   */
+  morphPaths(s) {
+    const { rects } = barGeometry(s);
+    const cr = s.cornerRadius ?? 0;
+    const sw = s.barStrokeWidth ?? 0;
+    return morphPayloadFromPaths(
+      rects.map((r) => {
+        const radius = Math.min(cr, Math.min(r.w, r.h) / 2);
+        return {
+          d: rectPathD(r.x, r.y, r.w, r.h, radius, radius),
+          paint: { fill: r.color ?? null, stroke: sw > 0 ? (s.strokeColor ?? null) : null, strokeWidth: sw, opacity: (s.opacity ?? 1) * (s.fillOpacity ?? DEFAULT_FILL_OPACITY) },
+        };
+      }),
+      { w: s.w ?? 0, h: s.h ?? 0 },
+    );
+  },
+  /** Query (samples the value equation). Why this chart cannot morph YET, or
+   * null. It shares `barGeometry` with emit(), so the gate cannot disagree with
+   * what is drawn: an equation ERROR draws the red notice box, which is a notice
+   * and not ink, and a chart with no bars has nothing to pair. */
+  morphNotReady(s) {
+    const { rects, error } = barGeometry(s);
+    if (error) return `values that evaluate (this chart fails: ${error})`;
+    return rects.some((r) => r.w > 0 && r.h > 0) ? null : "at least one bar with extent (this chart draws nothing)";
   },
   localBounds(state) {
     const { rects } = barGeometry(state);
