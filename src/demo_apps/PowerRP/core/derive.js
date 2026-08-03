@@ -46,6 +46,10 @@ import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 import { allPaintModifierPoints, paintCapableKeys } from "./paint_handles.js";
 import { contentMorphKeyFor, isContentMorphToken, isMorphToken, morphPairPolicy } from "./interp_modes.js";
 import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
+// THE NODE-GRAPH SEAM (see deriveRenderTree). One-way: nodeflow.js imports nothing
+// from this module, so the port/type/connection layer stays independently testable
+// in bare node with no derivation in the picture.
+import { evaluateNodeGraph, portLayout } from "./nodeflow.js";
 
 /**
  * Query (reads the registry; reports once on a refused pair). THE MORPH
@@ -505,6 +509,27 @@ export function deriveRenderTree(state, registry, project = "") {
   const items = state.items ?? {};
   // The document's folded variables — injected into docVars-capable nodes below.
   const foldedVars = state.vars ?? {};
+  // THE NODE-GRAPH SEAM (core/nodeflow.js). A NODE WIDGET's picture depends on
+  // values arriving through its WIRES, not only on its own state: a display node
+  // shows the number its input carries, and nothing in its own item state knows
+  // that number. So the graph is evaluated ONCE per derive — a pure fold over the
+  // same `items` map — and each node's resolved ports are injected onto its node
+  // state as `nodePorts: {inputs, outputs}`, exactly as `docVars` is injected one
+  // level down for the graph family. Same shape of seam, same reason: emit()'s
+  // signature carries only the item state, and a value that crossed a wire is by
+  // definition not in it.
+  //
+  // WHY ONCE, AND WHY HERE: the evaluation is topological, so doing it per-node
+  // inside the map would be quadratic and would also have to re-derive its own
+  // dependencies. Doing it here also means the graph is evaluated in the SAME pass
+  // that produces the picture, so a node's readout and the wire feeding it can
+  // never be one frame apart.
+  //
+  // COSTS NOTHING FOR A DOCUMENT WITH NO NODES: nodeGraphValues returns an empty
+  // map (its topo walk finds no ports and skips every item), and the injection is
+  // guarded on a plugin actually declaring ports — so every existing document
+  // derives byte-identically, with the very same state objects.
+  const nodeValues = evaluateNodeGraph(items, registry).values;
   // `active` is a universal widget property (default true). Delete in the UI
   // keyframes active:false — the item KEEPS its identity and properties and
   // simply isn't derived on slides where it's inactive (this is how objects
@@ -586,7 +611,13 @@ export function deriveRenderTree(state, registry, project = "") {
       // sitting in `state.type` would be a value each of them has to know about.
       // Only the node's `.morph` mark carries the morph, exactly as `.mirror`
       // carries the flip.
-      state: morphedStateType(plugin.capabilities?.docVars ? { ...resolved, docVars: foldedVars } : resolved, resolvedType.type),
+      // TWO INJECTIONS, ONE EXPRESSION, and the order matters only in that neither
+      // may clobber the other: `docVars` is the graph family's document variables,
+      // `nodePorts` is this node's resolved wire values (see THE NODE-GRAPH SEAM
+      // above). A plugin that declares neither gets the very same `resolved` object
+      // back — byte-identical node state, no new key — which is what keeps both
+      // seams free for every widget that predates them.
+      state: morphedStateType(withDerivedInjections(resolved, plugin, foldedVars, nodeValues[id]), resolvedType.type),
       world: worldTransform(state),
       plugin,
       ...(mirror ? { mirror } : {}),
@@ -1503,6 +1534,121 @@ export function nodeModifierPoints(node) {
     const stem = m.stem ? T.apply(node.world, m.stem.x, m.stem.y) : null;
     return { id: m.id, x: p.x, y: p.y, element: m.element ?? null, active: m.active !== false, apply: m.apply, constrain: m.constrain ?? UNCONSTRAINED, shape: m.shape ?? null, glyph: m.glyph ?? null, label: m.label ?? null, stem: stem ? { x: stem.x, y: stem.y } : null };
   });
+}
+
+/**
+ * Pure function. The TWO derive-time injections a node state may receive, applied
+ * in one place so neither can silently clobber the other and so a plugin that
+ * declares neither gets the VERY SAME OBJECT back (===), keeping every pre-existing
+ * document byte-identical through this seam.
+ *
+ *   `docVars` — the document's folded variables, for a plugin whose capabilities
+ *     declare `docVars: true` (the graph family samples an equation inside emit()).
+ *   `nodePorts` — this node's RESOLVED port values ({inputs, outputs}) from the
+ *     node-graph fold, for any plugin declaring `ports`. A value that arrived over
+ *     a WIRE is not in the item's own state by definition, so a node widget whose
+ *     picture shows what it received (a display, a meter) can only get it here.
+ *
+ * @param {object} resolved - the item's post-asset-ref state
+ * @param {object} plugin - its plugin
+ * @param {object} foldedVars - the document's folded variables
+ * @param {object} [ports] - this item's evaluated {inputs, outputs}, if any
+ * @returns {object} the state, possibly with injections
+ *
+ * @example withDerivedInjections({w: 1}, {}, {}, undefined) // {w: 1}
+ * @example withDerivedInjections({w: 1}, {capabilities: {docVars: true}}, {k: 2}, undefined).docVars // {k: 2}
+ * @example withDerivedInjections({w: 1}, {ports: () => ({inputs: [{key: "a", type: "number"}]})}, {}, {inputs: {a: 5}, outputs: {}}).nodePorts.inputs // {a: 5}
+ */
+export function withDerivedInjections(resolved, plugin, foldedVars, ports) {
+  const wantsVars = plugin?.capabilities?.docVars === true;
+  const wantsPorts = ports !== undefined && typeof plugin?.ports === "function";
+  if (!wantsVars && !wantsPorts) return resolved;
+  return {
+    ...resolved,
+    ...(wantsVars ? { docVars: foldedVars } : {}),
+    ...(wantsPorts ? { nodePorts: ports } : {}),
+  };
+}
+
+/**
+ * Pure function. A node widget's PORT ANCHORS in WORLD space: every port's bead
+ * position, its type, its side and its key, wrapped local→world through the node's
+ * own transform — exactly as nodeModifierPoints wraps the yellow squares.
+ *
+ * THIS IS THE ONE GEOMETRY BOTH HALVES OF THE WIRE FEATURE READ (blueprint §5:
+ * "Port anchor positions come from derivation so hit-testing and drawing share one
+ * geometry"). The canvas hit layer asks it where a bead can be grabbed; the wire
+ * layer asks it where a wire's two ends are. Because both answers come from one
+ * call over one node.world, a rotated or scaled node's wires land on its beads with
+ * no per-consumer trigonometry, and a wire cannot be drawn to a point that is not
+ * grabbable.
+ *
+ * `node.state` has already passed THE FLIP SEAM (unsignedState), so a flipped node's
+ * ports read off the positive box like everything else.
+ *
+ * A non-node widget answers `[]`, so every consumer may call it unconditionally.
+ *
+ * @param {object} node - a derived render node
+ * @returns {object[]} [{key, type, label, side, x, y}] in WORLD coords
+ *
+ * @example nodePortAnchors({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {}}) // []
+ * @example nodePortAnchors({world: {x: 10, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({outputs: [{key: "o", type: "number"}]})}})[0].x // 110
+ * @example nodePortAnchors({world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({inputs: [{key: "i", type: "audio"}]})}})[0].type // "audio"
+ */
+export function nodePortAnchors(node) {
+  if (typeof node?.plugin?.ports !== "function") return [];
+  return portLayout(node.plugin, node.state).map((p) => {
+    const w = T.apply(node.world, p.x, p.y);
+    return { key: p.key, type: p.type, label: p.label, side: p.side, x: w.x, y: w.y };
+  });
+}
+
+/**
+ * Pure function. Every WIRE to draw for a derived tree: one per resolved
+ * connection, carrying both endpoints in WORLD space and the SOURCE port's type
+ * (which is what colors it — a wire is the color of what flows through it, and
+ * under a coercion that is what it LEAVES as, not what it arrives as).
+ *
+ * A connection whose source or destination node is not in the tree — deleted on
+ * this slide, culled, or naming a port its plugin no longer declares — yields NO
+ * wire and no error. A wire is derived output; if either end is not on the slide,
+ * there is nothing to draw, and the connection leaf still survives in the document.
+ *
+ * WIRES ARE NOT WIDGETS (user ruling): this returns plain geometry records, never
+ * render nodes, and nothing here ever enters the item map.
+ *
+ * @param {object[]} nodes - derived render nodes
+ * @returns {object[]} [{from: {item, port, x, y}, to: {item, port, x, y}, type}]
+ *
+ * @example deriveWires([]) // []
+ * @example // a→b on a number port: one wire, colored by the SOURCE type
+ * @example deriveWires([{itemId: "a", world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({outputs: [{key: "o", type: "number"}]})}}, {itemId: "b", world: {x: 200, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80, inputs: {i: {item: "a", port: "o"}}}, plugin: {ports: () => ({inputs: [{key: "i", type: "number"}]})}}]).length // 1
+ */
+export function deriveWires(nodes) {
+  const anchorsByItem = new Map();
+  for (const n of nodes ?? []) {
+    if (typeof n.plugin?.ports !== "function") continue;
+    anchorsByItem.set(n.itemId, nodePortAnchors(n));
+  }
+  const wires = [];
+  for (const n of nodes ?? []) {
+    const inputs = n.state?.inputs;
+    if (!inputs || typeof inputs !== "object") continue;
+    const myAnchors = anchorsByItem.get(n.itemId) ?? [];
+    for (const port of Object.keys(inputs).sort()) {
+      const c = inputs[port];
+      if (!c || typeof c !== "object" || typeof c.item !== "string") continue;
+      const dst = myAnchors.find((a) => a.side === "input" && a.key === port);
+      const src = (anchorsByItem.get(c.item) ?? []).find((a) => a.side === "output" && a.key === c.port);
+      if (!src || !dst) continue;
+      wires.push({
+        from: { item: c.item, port: c.port, x: src.x, y: src.y },
+        to: { item: n.itemId, port, x: dst.x, y: dst.y },
+        type: src.type,
+      });
+    }
+  }
+  return wires;
 }
 
 /**

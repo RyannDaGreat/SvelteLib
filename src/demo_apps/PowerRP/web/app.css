@@ -49,6 +49,26 @@
   --a-scrollbar: rgba(255, 255, 255, 0.18);
   --a-scrollbar-hover: rgba(255, 255, 255, 0.32);
 
+  /* PORT TYPE COLORS (core/nodeflow.js PORT_TYPES). GENERATED — the block below is
+     the literal output of core/nodeflow.portTypeCssVars(), and tests/nodeflow_test.js
+     asserts it matches. The colors live in core because emit() produces a
+     DEVICE-INDEPENDENT display list for Skia, PDF, SVG and bare-node rendering, none
+     of which can resolve a CSS custom property; these tokens are the DOM half (the
+     SVG bead hit layer, the ghost wire, the wire overlay) reading the same table.
+     They are DELIBERATELY NOT THEMED: a port color names a DATA TYPE, not a mood, so
+     a wire that is green in one theme and orange in another would be telling the user
+     something false about what flows through it. */
+  --a-port-number: #7aa2f7;
+  --a-port-trigger: #e0af68;
+  --a-port-audio: #9ece6a;
+  /* Wire chrome. The stroke widths are screen-space (the overlay is an SVG in screen
+     coordinates), and the ghost wire is the one being dragged. */
+  --a-wire-width: 2.5px;
+  --a-wire-hover-width: 4px;
+  --a-wire-ghost-dash: 6 5;
+  --a-wire-refused: #f7768e;
+  --a-bead-halo: rgba(255, 255, 255, 0.85);
+
   /* Spacing scale */
   --a-sp-1: 2px;
   --a-sp-2: 4px;
