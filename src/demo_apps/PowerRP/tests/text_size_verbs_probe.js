@@ -27,6 +27,10 @@
  *      one run of the real app.
  *  V4  UNDO GRANULARITY, measured on the session history's DEPTH: one drag is ONE
  *      snapshot however many frames it emitted, and N button clicks are N.
+ *  V5  UNDO CONTENT: what those snapshots actually HOLD. A + click then Cmd+Z
+ *      reads [48,18] again, Cmd+Shift+Z redoes [50,20], one drag undoes whole,
+ *      and a Cmd+B undoes clean. V4 counts units; V5 checks their values — a
+ *      green V4 once sat over an undo that restored the edit (see its comment).
  *
  * Spawns its OWN vite (isolated). Run from SvelteLib root:
  *   node src/demo_apps/PowerRP/tests/text_size_verbs_probe.js [shotDir]
@@ -275,14 +279,22 @@ try {
   // the frames go through the preview path (stageValue, no history) and only the
   // settle calls preview(), which pushes.
   //
-  // MEASURED ON THE HISTORY DEPTH, not by pressing Cmd+Z and comparing sizes. The
-  // in-session undo has an off-by-one of its own — measured on the ADDITIVE
-  // stepper, which is unchanged by this workstream: after a + click the document
-  // still reads [48,18] (the commit is staged, not yet folded) and one Cmd+Z
-  // ADVANCES it to [50,20]. That is a real pre-existing defect and it is recorded
-  // as one, but it is not this workstream's, and an assertion phrased through it
-  // would fail for a reason that has nothing to do with the three verbs. Depth is
-  // the quantity the granularity claim is actually about.
+  // MEASURED ON THE HISTORY DEPTH, because depth is the quantity the GRANULARITY
+  // claim is actually about — "how many units did this gesture make" is a count,
+  // and counting it directly is more honest than inferring it from N undos.
+  // V5 below asserts the CONTENT the undos restore, which is the other half.
+  //
+  // THIS COMMENT USED TO CLAIM AN OFF-BY-ONE HERE, AND IT WAS WRONG — recorded
+  // because the correction is instructive. It said in-session undo "ADVANCES"
+  // [48,18] to [50,20]. Two errors were compounded. First, the reading was taken
+  // from `app.doc`, which is the COMMITTED document: mid-session the edit lives in
+  // app.previewDelta and the doc legitimately still says [48,18], so that half was
+  // measuring the wrong surface, not a defect. Second, there WAS a real defect
+  // underneath, but it was not an off-by-one and not in this stack: the toolbar's
+  // +/- buttons stage a HOVER preview on pointerenter, and pushHistory snapshotted
+  // that instead of the pre-edit value, so Cmd+Z restored the edit. Undo depth was
+  // right the whole time; the VALUE was wrong. Fixed by passing the base
+  // explicitly (see TextEditController.pushHistory).
   {
     const { dn } = await freshMixedSelection();
     if (dn) {
@@ -328,12 +340,127 @@ try {
     await commitEdit();
   }
 
+  // ── V5: WHAT UNDO RESTORES — the CONTENT pin, not just the count ─────────────
+  // V4 counts snapshots; this asserts the value each one holds. It is the pin that
+  // catches the hover-poisoning defect: with pushHistory reading the live
+  // (hover-staged) value, the depth arithmetic below still passed while Cmd+Z left
+  // the sizes at [50,20] — a green V4 over a broken undo. Both halves are needed.
+  //
+  // IT READS THE LIVE NODE, NOT app.doc, AND THAT DISTINCTION IS THE TEST'S WHOLE
+  // CORRECTNESS. A text-edit session stages into app.previewDelta and only
+  // commitTextEdit folds it into the document, so mid-session app.doc still holds
+  // the pre-session value BY DESIGN and would report [48,18] no matter what undo
+  // did — passing for the wrong reason before the fix and after it alike. The
+  // preview-blended node state is what the user sees and what Cmd+Z must change.
+  {
+    const liveSizes = (id) => page.evaluate((i) => {
+      const n = window.__powerrp_app.nodes().find((nn) => nn.itemId === i);
+      return n.state.text.runs.map((r) => r.size);
+    }, id);
+    const pressUndo = async () => {
+      await focusSink();
+      await page.keyboard.down("Meta"); await page.keyboard.press("z"); await page.keyboard.up("Meta");
+      await sleep(200);
+    };
+    const pressRedo = async () => {
+      await focusSink();
+      await page.keyboard.down("Meta"); await page.keyboard.down("Shift");
+      await page.keyboard.press("z");
+      await page.keyboard.up("Shift"); await page.keyboard.up("Meta");
+      await sleep(200);
+    };
+    const STEPPED = [BIG + STEP, SMALL + STEP];
+
+    // V5a: + click, then undo, then redo — through the REAL button, so the
+    // pointerenter hover preview really is staged ahead of the click.
+    {
+      const { itemId } = await freshMixedSelection();
+      const plusBox = await page.evaluate(() => {
+        const b = document.querySelector('[aria-label="Increase size"]');
+        const r = b.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      });
+      await page.mouse.click(plusBox.x, plusBox.y);
+      await sleep(200);
+      const stepped = await liveSizes(itemId);
+      assert(
+        JSON.stringify(stepped) === JSON.stringify(STEPPED),
+        `V5a: a + click steps to ${JSON.stringify(STEPPED)} (got ${JSON.stringify(stepped)})`,
+      );
+      await pressUndo();
+      const undone = await liveSizes(itemId);
+      assert(
+        JSON.stringify(undone) === JSON.stringify([BIG, SMALL]),
+        `V5a: Cmd+Z must RESTORE [${BIG},${SMALL}] (got ${JSON.stringify(undone)}). ` +
+        `${JSON.stringify(STEPPED)} means the snapshot captured the hover preview instead of the pre-edit value.`,
+      );
+      await pressRedo();
+      const redone = await liveSizes(itemId);
+      assert(
+        JSON.stringify(redone) === JSON.stringify(STEPPED),
+        `V5a: Cmd+Shift+Z must REDO to ${JSON.stringify(STEPPED)} (got ${JSON.stringify(redone)})`,
+      );
+      await commitEdit();
+    }
+
+    // V5b: a DRAG is one unit whose undo restores the drag's START, not some
+    // intermediate frame — the frames stage without snapshotting, so there is
+    // exactly one value to come back to.
+    {
+      const { itemId, dn } = await freshMixedSelection();
+      if (dn) {
+        await page.mouse.move(dn.x, dn.y);
+        await page.mouse.down();
+        for (let dy = 2; dy <= SCRUB_PX; dy += 2) await page.mouse.move(dn.x, dn.y - dy);
+        await page.mouse.up();
+        await sleep(220);
+        const dragged = await liveSizes(itemId);
+        assert(dragged[0] > BIG, `V5b: the drag grew the size (${BIG} → ${dragged[0]})`);
+        await pressUndo();
+        const undone = await liveSizes(itemId);
+        assert(
+          JSON.stringify(undone) === JSON.stringify([BIG, SMALL]),
+          `V5b: ONE Cmd+Z must restore the whole drag to [${BIG},${SMALL}] (got ${JSON.stringify(undone)})`,
+        );
+        await commitEdit();
+      }
+    }
+
+    // V5c: Cmd+B goes through the SAME preview() seam with a different verb, and
+    // no hover precedes a keystroke — so it pins that passing the base explicitly
+    // did not break the path that was already correct.
+    {
+      const { itemId } = await freshMixedSelection();
+      await focusSink();
+      await page.keyboard.down("Meta"); await page.keyboard.press("b"); await page.keyboard.up("Meta");
+      await sleep(200);
+      const bolded = await page.evaluate((i) => {
+        const n = window.__powerrp_app.nodes().find((nn) => nn.itemId === i);
+        return n.state.text.runs.map((r) => r.bold === true);
+      }, itemId);
+      assert(bolded.every(Boolean), `V5c: Cmd+B bolds every covered run (got ${JSON.stringify(bolded)})`);
+      await pressUndo();
+      const after = await liveSizes(itemId);
+      assert(
+        JSON.stringify(after) === JSON.stringify([BIG, SMALL]),
+        `V5c: undoing a bold leaves the SIZES alone at [${BIG},${SMALL}] (got ${JSON.stringify(after)})`,
+      );
+      const unbolded = await page.evaluate((i) => {
+        const n = window.__powerrp_app.nodes().find((nn) => nn.itemId === i);
+        return n.state.text.runs.map((r) => r.bold === true);
+      }, itemId);
+      assert(!unbolded.some(Boolean), `V5c: Cmd+Z un-bolds every run (got ${JSON.stringify(unbolded)})`);
+      await commitEdit();
+    }
+  }
+
   if (errors.length) fails.push(...errors.map((e) => `unexpected error: ${e}`));
   if (fails.length) { console.error("SIZE-VERBS PROBE FAILURES:\n" + fails.join("\n")); process.exit(1); }
   console.log(`  V1 typed: typing ${TYPED_SIZE} over a ${BIG}/${SMALL} selection NORMALIZES every run to ${TYPED_SIZE} (was a -30px shift).`);
   console.log(`  V2 drag: dragging the readout SCALES — the ${BIG}:${SMALL} ratio survives, and the result is provably not an additive shift.`);
   console.log(`  V3 step: the + button still ADDS ${STEP} to each run, and the ratio changes — the user's stated contrast.`);
   console.log("  V4 undo: a drag in flight pushes NO history; the whole gesture is ONE snapshot; N clicks are N.");
+  console.log(`  V5 undo CONTENT: + then Cmd+Z restores [${BIG},${SMALL}] and Cmd+Shift+Z redoes [${BIG + STEP},${SMALL + STEP}]; one drag undoes whole; Cmd+B undoes clean.`);
   console.log("\nThree font-size verbs probe passed.");
 } finally {
   await browser.close();
