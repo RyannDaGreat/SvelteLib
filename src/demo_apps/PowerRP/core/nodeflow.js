@@ -205,12 +205,31 @@ export function portTypeCssVars() {
  *   audio → number    the signal's CURRENT sample. Lossy and rate-mismatched, but
  *                     it is what a level meter or an envelope follower reads, and
  *                     refusing it would make those nodes unwireable.
+ *   trigger → audio   a gate IS a signal — 1 while high, 0 while low. ADDED BY
+ *                     NF-BIND, and found by a sweep rather than by reasoning: the
+ *                     audio roster's Trigger module emits `trigger` and nine modules
+ *                     accept `audio`, so this pair was REACHABLE at the bead and
+ *                     refused at the drop, with nothing in the picture to say why.
+ *                     It is meaningful in the engine too — a Schmitt trigger's output
+ *                     is a real AudioNode carrying a pulse train, so patching it into
+ *                     a VCA's input to chop a drone is an ordinary thing to want.
+ *
+ * ── AND THE ONE REACHABLE PAIR STILL REFUSED, ON PURPOSE ────────────────────
+ * `audio → trigger` is absent and stays absent. It is not a value cast at all:
+ * turning a continuous signal into discrete events requires deciding WHERE the
+ * threshold is and how much hysteresis stops a signal wobbling around it from firing
+ * dozens of times. That decision is a module — plugins/audio_trigger.js — and a
+ * silent coercion here would make it pointless while producing worse timing. The
+ * refusal sends the user to the module, which is the right answer.
+ * tests/nodeflow_test.js pins BOTH halves: the pair is refused, and it is the ONLY
+ * reachable pair that is, so a future gap shows up as a decision to make.
  */
 export const COERCIONS = Object.freeze({
   "number->audio": Object.freeze({ convert: (v) => v, why: "a number drives an audio input as a constant signal" }),
   "trigger->number": Object.freeze({ convert: (v) => (v ? 1 : 0), why: "a trigger reads as 1 while high, 0 while low" }),
   "number->trigger": Object.freeze({ convert: (v) => v, why: "a number drives a trigger input by its rising edges (low to high)" }),
   "audio->number": Object.freeze({ convert: (v) => v, why: "an audio signal reads as its current sample value" }),
+  "trigger->audio": Object.freeze({ convert: (v) => (v ? 1 : 0), why: "a trigger drives an audio input as a gate signal — 1 while high, 0 while low" }),
 });
 
 /**

@@ -458,6 +458,67 @@ check("an EQUATION drives a node source, so a patch can read the rest of the doc
     "`= box.w` reached the node graph with no node-specific equation code at all");
 });
 
+// ── THE AUDIO ROSTER, SWEPT THROUGH THE GENERAL NODE PROTOCOL (NF-BIND) ─────
+// tests/audio_nodes_test.js checks the audio nodes against the ENGINE. These two
+// check them against THIS file's contract instead — that 23 new node widgets did not
+// quietly bend the general protocol to fit audio, which is the thing ADDENDUM 1
+// forbids ("this whole workflow should be possible to change the feature without
+// breaking the audio components and vice versa").
+
+check("every AUDIO node satisfies the general node-widget protocol", () => {
+  const audio = registry.all().filter((p) => p.audioModule);
+  assert.ok(audio.length >= 23, `expected the full audio roster, found ${audio.length}`);
+  for (const plugin of audio) {
+    assert.ok(isNodeWidget(plugin, plugin.defaults), `${plugin.type} does not read as a node widget`);
+    const ports = declaredPorts(plugin, plugin.defaults);
+    assert.ok(Array.isArray(ports.inputs) && Array.isArray(ports.outputs), `${plugin.type}'s ports() is malformed`);
+    for (const side of ["inputs", "outputs"])
+      for (const port of ports[side]) {
+        assert.ok(typeof port.key === "string" && port.key, `${plugin.type} has a ${side} port with no key`);
+        assert.ok(PORT_TYPE_NAMES.includes(port.type), `${plugin.type}.${port.key} has undeclared type "${port.type}"`);
+        assert.ok(typeof port.label === "string" && port.label, `${plugin.type}.${port.key} has no label`);
+        // findPort is what the wire gesture resolves a drop through; a port the
+        // protocol cannot find is a bead nothing can land on.
+        assert.ok(findPort(plugin, plugin.defaults, side === "inputs" ? "input" : "output", port.key),
+          `${plugin.type}.${port.key} is declared but findPort cannot resolve it`);
+      }
+    // Port keys must be unique per side, or a connection could not name one.
+    for (const side of ["inputs", "outputs"]) {
+      const keys = ports[side].map((q) => q.key);
+      assert.strictEqual(new Set(keys).size, keys.length, `${plugin.type} has duplicate ${side} port keys`);
+    }
+  }
+});
+
+check("the coercion table covers every port-type pair the audio roster can actually produce", () => {
+  // THE POINT: a wire the roster makes REACHABLE but the table refuses is a bead a
+  // user can drag from to a bead that lights up as illegal, with no way to tell from
+  // the picture that the pair was never intended. This does not demand that every
+  // pair be legal — it reports which reachable pairs are refused, so the refusals are
+  // a DECISION on record rather than an oversight.
+  const audio = registry.all().filter((p) => p.audioModule);
+  const outTypes = new Set(), inTypes = new Set();
+  for (const plugin of audio) {
+    const ports = declaredPorts(plugin, plugin.defaults);
+    for (const q of ports.outputs) outTypes.add(q.type);
+    for (const q of ports.inputs) inTypes.add(q.type);
+  }
+  const refused = [];
+  for (const from of outTypes) for (const to of inTypes) if (!typesCompatible(from, to)) refused.push(`${from}->${to}`);
+  // audio->trigger is the ONE refused reachable pair, and it is refused DELIBERATELY:
+  // turning a continuous signal into discrete events is a real operation with a real
+  // parameter (Schmitt hysteresis), and that operation is the Trigger MODULE. A
+  // silent coercion would have made the module pointless and the timing wrong.
+  //
+  // THIS SWEEP ALREADY EARNED ITS KEEP: it also reported `trigger->audio`, which was
+  // reachable (the Trigger module emits one, nine modules accept the other) and had
+  // NO such justification — a gate simply IS a signal. That was a real gap, found by
+  // enumeration rather than by reasoning, and the coercion is now in the table. The
+  // assertion is what makes the NEXT gap show up as a decision to make.
+  assert.deepStrictEqual(refused.sort(), ["audio->trigger"],
+    "a reachable port-type pair is refused with no module to bridge it — either add the coercion or add the module");
+});
+
 // ── SUMMARY ──────────────────────────────────────────────────────────────────
 
 console.log(`nodeflow: ${pass} passed, ${fails.length} failed`);
