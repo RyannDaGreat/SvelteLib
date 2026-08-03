@@ -26,7 +26,7 @@ import { dirname, join } from "node:path";
 import {
   COERCIONS, NODE_INPUT_ROW_KIND, NODE_ITEM_REFS, PORT_BEAD_R, PORT_TYPES, PORT_TYPE_NAMES,
   coerce, coercionNote, compatibleSources, connectPairs, connectionRefusal, connectionsOf,
-  declaredPorts, disconnectPairs, evaluateNodeGraph, findPort, isNodeWidget, nodeInputLabel,
+  declaredPorts, disconnectPairs, evaluateNodeGraph, findPort, isNodeRef, isNodeWidget, nodeInputLabel,
   nodeInputRows,
   minimumNodeHeight, portAt, portColor, portLayout, portTypeCssVars, portZero,
   topoOrder, typesCompatible, wireBezierPath, wouldCycle,
@@ -644,6 +644,31 @@ check("BU: the picker offers exactly what the WIRE DRAG would accept — no more
   for (const o of compatibleSources(items, registry, { item: "mul", port: "a" }))
     assert.strictEqual(connectionRefusal(items, registry, { item: o.item, port: o.port }, { item: "mul", port: "a" }), null,
       `the picker offered ${o.item}.${o.port}, which connectionRefusal would refuse — the two surfaces have drifted`);
+});
+
+check("CC: an EMPTY item map offers nothing — which is how a wired node read 'not connected'", () => {
+  // THE USER'S SCREENSHOT, 2026-08-03 (verbatim): "It says level has no input and
+  // yet I see it" — a node with wires at both beads whose Inspector reported
+  // nothing connected. It was never two stores disagreeing: there is ONE leaf,
+  // `inputs.<port>`. web/Inspector.svelte's row passed `state.items` where `state`
+  // is the SELECTED ITEM'S OWN folded state, which has no `.items` — so the picker
+  // searched an EMPTY DOCUMENT, produced no options, and its dropdown fell back to
+  // the "not connected" entry while the stored reference sat intact beside it.
+  //
+  // This pins the mechanism rather than the symptom: given the wrong argument the
+  // function is CORRECT to return nothing, which is exactly why nothing caught it.
+  // The component must hand it the document, and the two lines below are the
+  // before and after of that one argument.
+  const wired = trio();
+  const to = { item: "mul", port: "a" };
+  assert.deepStrictEqual(compatibleSources(wired.mul.items ?? {}, registry, to), [],
+    "an item's own state has no `.items`, so the old read could only ever offer nothing");
+  assert.ok(compatibleSources(wired, registry, to).some((o) => o.item === "src"),
+    "handed the DOCUMENT, the same call offers the source the wire already names");
+  // And the leaf the wire is drawn from is untouched either way — which is why the
+  // row still committed correctly and only its option list was empty.
+  assert.ok(isNodeRef(wired.mul.inputs.a), "the stored reference is intact throughout");
+  assert.ok(connectionsOf(wired).length > 0, "the connection was real the whole time");
 });
 
 check("BU: the `node` port type exists, and has NO coercions in either direction", () => {

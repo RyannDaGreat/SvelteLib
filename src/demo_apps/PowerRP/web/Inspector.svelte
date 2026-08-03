@@ -2495,15 +2495,29 @@
 
          The ƒ equation escape hatch beside it is the ordinary one — this row is an
          ordinary state path, so "= osc1" binds it like any other property. -->
+    <!-- THE OPTIONS READ app.state().items, NOT `state.items` (WORKSTREAM CC).
+         `state` in this snippet is the SELECTED ITEM'S OWN folded state — what
+         every other branch above pulls a property out of. It has no `.items`, so
+         `state.items ?? {}` handed compatibleSources an EMPTY DOCUMENT: no
+         candidate sources, no options, and the dropdown fell to its
+         "not connected" entry — while the stored {item, port} sat intact in
+         `value=` one line below and the wire drew normally.
+
+         THAT WAS THE USER'S SCREENSHOT: "It says level has no input and yet I see
+         it" (verbatim, 2026-08-03) — a Level node with wires at both beads whose
+         Inspector reported nothing connected. It was never two stores disagreeing
+         (there has only ever been one leaf, `inputs.<port>`); it was ONE READER
+         ASKING THE WRONG OBJECT, which is why the row still committed correctly
+         and only its option list was empty. -->
     <SearchableDropdown
       rankFn={appRankItems}
       minItemsForSearch={ALWAYS_SEARCHABLE}
       items={[
         { value: "", label: "— not connected —" },
-        ...compatibleSources(state.items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
+        ...compatibleSources(app.state().items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
           .map((o) => ({
             value: `${o.item} ${o.port}`,
-            label: `${nodeInputLabel(state.items ?? {}, { item: o.item, port: o.port })}${o.note ? ` (${o.note})` : ""}`,
+            label: `${nodeInputLabel(app.state().items ?? {}, { item: o.item, port: o.port })}${o.note ? ` (${o.note})` : ""}`,
           })),
       ]}
       value={nodeRefOptionValue(valueAt(state, row.key))}
