@@ -140,8 +140,19 @@ test("0..1 props with integer default 1 (opacity/particleFade) carry an explicit
     assert.equal(PROPS[key].min, 0);
     assert.equal(PROPS[key].max, 1);
   }
+  // rasterDensity joined 2026-08-02 for the same reason arrived at from the
+  // OTHER side: it is not a 0..1 knob at all (1 is its NEUTRAL, and useful values
+  // run either way from there), but its default is still the integer 1, so the
+  // precision fallback would snap it to whole numbers — turning "a bit crisper"
+  // into a jump from 1x to 2x pixels, i.e. 4x the memory in one click. 0.1 rather
+  // than 0.01 because the scale it feeds is itself bucketed to PDF_SCALE_STEP
+  // (0.1) before it reaches the cache key, so a finer step would offer
+  // adjustments that round away to nothing.
+  assert.equal(PROPS.rasterDensity.step, 0.1);
+  assert.equal(PROPS.rasterDensity.default, 1);
+  assert.equal(resolveStep(PROPS.rasterDensity.step, PROPS.rasterDensity.default), 0.1);
   const withStep = Object.entries(PROPS).filter(([, d]) => d.kind === "number" && "step" in d).map(([k]) => k).sort();
-  assert.deepEqual(withStep, ["curl", "opacity", "particleFade", "shoulder"]);
+  assert.deepEqual(withStep, ["curl", "opacity", "particleFade", "rasterDensity", "shoulder"]);
 });
 
 // ── (4) stepAtMost / refinedStep / resolveScrub precedence ────────────────────
