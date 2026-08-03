@@ -1226,11 +1226,20 @@ export const TOOL_POOL = [
     rows: [
       { kind: "command", command: "group", applies: purgeableWidget },
       { kind: "command", command: "ungroup", applies: ungroupable },
-      // SHATTER APPEARS ONLY ON WIDGETS THAT DECLARE A DECOMPOSITION — today that
-      // is Mermaid alone, and it will be however many declare `shatter` tomorrow
-      // with no edit here. This is the applicability axis doing its job: a Shatter
-      // row on a rectangle is a control that can never work, which is the defect
-      // `applies` exists to make unrepresentable.
+      // SHATTER APPEARS ONLY ON WIDGETS THAT DECLARE A DECOMPOSITION, and it will
+      // be however many declare `shatter` tomorrow with no edit here. This is the
+      // applicability axis doing its job: a Shatter row on a rectangle is a
+      // control that can never work, which is the defect `applies` exists to make
+      // unrepresentable.
+      // This line used to name the roster ("today that is Mermaid alone") and went
+      // stale within the week — iconify, svg and paper_peacock have joined. It is
+      // deliberately not replaced with a longer list: a comment beside a predicate
+      // must not enumerate what the predicate selects, because the enumeration is
+      // derivable and the prose is not maintained. Ask the registry
+      // (`registry.all().filter(shatterEligible)`), which is also how this
+      // correction was checked — a brief handed to an agent the same day listed
+      // elbow_arrow and shapeshifter as declarers, and neither is one; they are
+      // TARGETS a mermaid shatter emits into, which is a different relationship.
       // THE ID IS `shatter`, AND "convert to widgets" IS ONE OF ITS ALIASES — the
       // user's own ruling ("why is the tool not called shatter? I asked for it to
       // be called shatter"), after an agent renamed it to Convert to Widgets on
