@@ -7,17 +7,22 @@
   the lower slide, whose properties then show in the Property Panel. The slice
   above slide 1 is the first real transition (slide 0 has no predecessor).
 
-  THE SLICE IS THREE HIT TARGETS, NOT ONE (user, 2026-08-02). An insert-a-slide
-  `+` at each END, the transition chip in the MIDDLE, and a role="group" band
-  around them that owns the hover state.
+  THE SLICE IS THE TRANSITION CHIP, ALONE, in a role="group" band that owns the
+  hover state. It was briefly THREE hit targets — an insert-a-slide `+` at each
+  end around the chip — and the user RETRACTED that feature the day after asking
+  for it (2026-08-02): "the insert a slide here up and down buttons that we have
+  near the tween line… I made a mistake that feature should never have existed we
+  can get rid of that just just tween is fine we don't need those extra up and
+  down add slide up and add slide down buttons on either side of tween 0.5… we
+  can get rid of the up plus and down plus buttons here." The retraction is of the
+  two BUTTONS; app.insertSlideAtBoundary remains available to the action layer.
 
-  WHAT IS ALWAYS VISIBLE vs WHAT IS REVEALED (user corrections, 2026-08-02, after
-  the first version hid both): the CHIP IS ALWAYS THERE — "I don't see tween 0.5
-  seconds unless I hover over it now, which is not ideal. It's only those new
-  slide here buttons that should be appearing when I slide over them. The tween
-  thing should always be there." Only the two `+` ends are hover-revealed. And the
-  hover surface is THE WHOLE GAP, not the chip: "The hover area should be the
-  entire in between of the slides, not just a small subset."
+  THE CHIP IS ALWAYS VISIBLE (user correction, 2026-08-02, after the first version
+  hid it): "I don't see tween 0.5 seconds unless I hover over it now, which is not
+  ideal… The tween thing should always be there." The band's hover surface is THE
+  WHOLE GAP, not the chip — "The hover area should be the entire in between of the
+  slides, not just a small subset" — and now that nothing is hover-REVEALED, that
+  surface only lights the band, saying the chip is a control.
 
   THE RAIL ALSO OWNS FOUR GESTURES BEYOND CLICK-TO-NAVIGATE:
     · DRAG-TO-REORDER — pointer capture on a row, a BOUNDARY (gap index) as the
@@ -247,42 +252,34 @@
   // All this file owns is the trigger; App.svelte owns the dialog and
   // app.renameSlide owns the write (ONE undo unit, blank restores the default).
 
-  // ── THE TRANSITION SLICE'S ZONES ────────────────────────────────────────────
-  // User, 2026-08-02: "maybe only the middle of it said tween point five seconds.
-  // And if I move mouse to either side of it, maybe I'd see a plus symbol, which
-  // means add new slide here."
+  // ── THE TRANSITION SLICE'S HOVER STATE ──────────────────────────────────────
+  // The slice once had three zones, from a user request the same user RETRACTED
+  // a day later — see the header's quote. Only the chip is left, so all that
+  // remains here is whether the band is lit.
   //
   // THE CHIP IS NOT HOVER-REVEALED, and that is a CORRECTION of what shipped
   // (user: "I don't see tween 0.5 seconds unless I hover over it now, which is
   // not ideal. It's only those new slide here buttons that should be appearing
   // when I slide over them. The tween thing should always be there."). So the
-  // middle chip is ALWAYS visible; only the two `+` ends are hover-revealed. The
-  // earlier reading — that the user's "unless I'm hovering over it, it should
-  // stay like a flat dash" covered the chip too — was wrong: that sentence was
-  // about the band's CHROME, not about hiding the transition's own label.
+  // chip is ALWAYS visible. The earlier reading — that the user's "unless I'm
+  // hovering over it, it should stay like a flat dash" covered the chip too —
+  // was wrong: that sentence was about the band's CHROME, not about hiding the
+  // transition's own label.
   //
-  // THE HOT ZONE IS THE WHOLE GAP, also a correction (user: "it requires me to
-  // hover over the part that says tween in order to activate those buttons.
-  // That's silly… The hover area should be the entire in between of the slides,
-  // not just a small subset."). So the BAND owns the hover, via one
-  // pointerenter/leave pair on the band itself, and the per-zone enter handlers
-  // are gone — the ends light whenever the pointer is anywhere in the gap,
-  // including over the connector lines and the chip.
-  //
-  // `hoverZone` therefore tracks only WHICH end is under the pointer (for the
-  // end's own active tint), while `bandHot` tracks whether the gap is hot at all.
-  // KEYBOARD FOCUS COUNTS AS HOVER on both, or a Tab-focused `+` would be
-  // activatable and invisible.
-  let hoverZone = $state(null); // {slideId, zone: "before"|"after"} | null
+  // THE `+` ENDS THIS HOVER STATE USED TO REVEAL ARE GONE, retracted by the user
+  // on 2026-08-02 ("that feature should never have existed… we can get rid of
+  // the up plus and down plus buttons here"), and with them `hoverZone`/`inZone`,
+  // which existed only to tint whichever end was under the pointer. What remains
+  // is one flag: the band still lights its connector lines and chip text when the
+  // pointer or keyboard focus is anywhere in the gap, which is what tells a
+  // reader the chip is a control at all. The hot surface stays THE WHOLE GAP
+  // (user: "The hover area should be the entire in between of the slides, not
+  // just a small subset") — one pointerenter/leave pair on the band, plus the
+  // chip's own focus/blur so a Tab-focused chip lights the same way.
   let hotSliceId = $state(null); // slideId of the gap the pointer/focus is in, or null
 
-  /** Query. Is the pointer/focus on slice `slideId`'s `zone` END specifically?
-   *  Drives that one end's active tint, so the band says which `+` a click hits. */
-  function inZone(slideId, zone) {
-    return hoverZone?.slideId === slideId && hoverZone.zone === zone;
-  }
-  /** Query. Is the pointer/focus anywhere in slice `slideId`'s GAP? Reveals both
-   *  `+` ends at once — the whole inter-slide region is the hover surface. */
+  /** Query. Is the pointer/focus anywhere in slice `slideId`'s GAP? Lights the
+   *  band — the whole inter-slide region is the hover surface. */
   function sliceHot(slideId) {
     return hotSliceId === slideId;
   }
@@ -459,21 +456,24 @@
     {#each app.doc.slides as slide, i (slide.id)}
       {#if i > 0}
         {@const info = transitionInfo(i)}
-        <!-- THE SLICE IS THREE BUTTONS IN ONE BAND (see hoverZone above): an
-             insert-before `+` at each end and the transition chip in the middle.
-             THE CHIP IS ALWAYS VISIBLE (user: "The tween thing should always be
-             there"); only the two `+` ends are hover-revealed.
-             It doubles as the DROP INDICATOR for boundary `i` during a drag.
-
-             THE WHOLE BAND IS THE HOVER SURFACE (user: "The hover area should be
-             the entire in between of the slides, not just a small subset"), so
-             enter/leave live HERE, once, rather than on each end. The band is
-             also padded in CSS to claim the full inter-slide gap, which is what
-             makes "the entire in between" true of the hit area and not just of
-             this handler. -->
-        <!-- role="group": the band is a CONTAINER of three real buttons, not a
-             control itself — it owns only the hover state. Labelled so a screen
-             reader announces what the three belong to. -->
+        <!-- THE SLICE IS THE CHIP ALONE, in a band that spans the gap. It used
+             to be THREE buttons — an insert-a-slide-here `+` at each end plus the
+             chip — and the user RETRACTED the ends outright (2026-08-02): "the
+             insert a slide here up and down buttons that we have near the tween
+             line… I made a mistake that feature should never have existed we can
+             get rid of that just just tween is fine we don't need those extra up
+             and down add slide up and add slide down buttons on either side of
+             tween 0.5… we can get rid of the up plus and down plus buttons here."
+             So the `+` ends and their hover-reveal are GONE. What survives is
+             everything that was never about them: THE CHIP IS ALWAYS VISIBLE
+             (user: "The tween thing should always be there"), the band still
+             doubles as the DROP INDICATOR for boundary `i` during a drag, and the
+             band is still the hover surface for the chip's own lighting.
+             `app.insertSlideAtBoundary` stays in the app layer — the retraction
+             was of these two BUTTONS, not of boundary insertion as an action. -->
+        <!-- role="group": the band is a CONTAINER of the chip, not a control
+             itself — it owns only the hover state. Labelled so a screen reader
+             announces what it sits between. -->
         <div
           class="transition-slice"
           class:hot={sliceHot(slide.id)}
@@ -481,22 +481,8 @@
           role="group"
           aria-label={`Between slide ${i} and slide ${i + 1}`}
           onpointerenter={() => (hotSliceId = slide.id)}
-          onpointerleave={() => { hotSliceId = null; hoverZone = null; }}
+          onpointerleave={() => (hotSliceId = null)}
         >
-          <Tooltip text={`Insert a slide here. It starts as an empty difference, so it looks exactly like slide ${i} — and it takes its transition from the slide ABOVE.`}>
-            <button
-              class="tr-end"
-              class:active={inZone(slide.id, "before")}
-              aria-label={`Insert a slide above slide ${i + 1}`}
-              onpointerenter={() => (hoverZone = { slideId: slide.id, zone: "before" })}
-              onfocus={() => { hotSliceId = slide.id; hoverZone = { slideId: slide.id, zone: "before" }; }}
-              onblur={() => { hotSliceId = null; hoverZone = null; }}
-              onclick={() => app.insertSlideAtBoundary(i, "above")}
-            >
-              <iconify-icon icon="mdi:arrow-up" width="12" height="12"></iconify-icon>
-              <iconify-icon icon="mdi:plus" width="12" height="12"></iconify-icon>
-            </button>
-          </Tooltip>
           <span class="tr-line"></span>
           <!-- THE CHIP'S CLICK IS THE SLICE'S CLICK RULE — plain / shift-range /
                cmd-toggle, resolved by app.selectTransitionAt, which is
@@ -522,20 +508,6 @@
             </button>
           </Tooltip>
           <span class="tr-line"></span>
-          <Tooltip text={`Insert a slide here. It starts as an empty difference, so it looks exactly like slide ${i} — and it takes its transition from the slide BELOW.`}>
-            <button
-              class="tr-end"
-              class:active={inZone(slide.id, "after")}
-              aria-label={`Insert a slide below slide ${i}`}
-              onpointerenter={() => (hoverZone = { slideId: slide.id, zone: "after" })}
-              onfocus={() => { hotSliceId = slide.id; hoverZone = { slideId: slide.id, zone: "after" }; }}
-              onblur={() => { hotSliceId = null; hoverZone = null; }}
-              onclick={() => app.insertSlideAtBoundary(i, "below")}
-            >
-              <iconify-icon icon="mdi:arrow-down" width="12" height="12"></iconify-icon>
-              <iconify-icon icon="mdi:plus" width="12" height="12"></iconify-icon>
-            </button>
-          </Tooltip>
         </div>
       {:else}
         <!-- THE TOP BOUNDARY has no transition slice (slide 0 has no predecessor),

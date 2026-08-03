@@ -534,11 +534,6 @@
      key chip (--a-key-chip-h) so the slice reads as a thin band, not a row. */
   --a-transition-slice-h: var(--a-key-chip-h);
   --a-transition-chip-pad: 0 var(--a-sp-2);
-  /* The slice's two INSERT ends. Width is a fixed grab target rather than a
-     fraction of the band, so the middle chip keeps a readable label in a narrow
-     rail — the user asked for the ENDS, and an end that shrinks with the panel
-     stops being one. */
-  --a-slice-end-w: 26px;
   /* THE DROP INDICATOR during a slide drag: a thickened, selection-toned rail at
      the boundary under the cursor. WEIGHT ONLY — the gap that used to open with
      it is GONE, by user correction (2026-08-02): "When I'm dragging the slides,
@@ -5107,18 +5102,20 @@ textarea {
   border: var(--a-hairline) solid var(--border);
 }
 
-/* Transition slice — the band between two slide rows, and THREE hit targets in
-   one: an insert-a-slide-here `+` at each END and the transition chip in the
-   MIDDLE. Square corners, --a-* tokens only (chrome rules).
+/* Transition slice — the band between two slide rows, holding ONE hit target: the
+   transition chip, centred between two connector lines. Square corners, --a-*
+   tokens only (chrome rules).
 
-   THE CHIP IS ALWAYS VISIBLE; ONLY THE `+` ENDS ARE REVEALED. That is a user
-   CORRECTION of the first version, which hid both (2026-08-02): "I don't see
-   tween 0.5 seconds unless I hover over it now, which is not ideal. It's only
-   those new slide here buttons that should be appearing when I slide over them.
-   The tween thing should always be there." The ends stay opacity 0 until `.hot`
-   — opacity rather than display:none for two reasons: the band must not change
-   height when it lights up (the whole rail would jump under the cursor), and a
-   focused-but-invisible control would otherwise be Tab-reachable and unseeable.
+   IT BRIEFLY HELD THREE, an insert-a-slide-here `+` at each end, and the user
+   RETRACTED those (2026-08-02): "the insert a slide here up and down buttons that
+   we have near the tween line… I made a mistake that feature should never have
+   existed we can get rid of that just just tween is fine… we can get rid of the up
+   plus and down plus buttons here." Their `.tr-end` rules are gone with them, and
+   so is the only thing this band ever hover-REVEALED.
+
+   THE CHIP IS ALWAYS VISIBLE — a separate user correction of the first version,
+   which hid it (2026-08-02): "I don't see tween 0.5 seconds unless I hover over it
+   now, which is not ideal… The tween thing should always be there."
 
    THE BAND CLAIMS THE WHOLE INTER-SLIDE GAP as its hit area, also a correction
    ("it requires me to hover over the part that says tween in order to activate
@@ -5128,7 +5125,7 @@ textarea {
    cover the dead space on both sides WITHOUT occupying any more layout than it
    did, so the rail's spacing is unchanged and every pixel between two slides is
    now hoverable. Padding on the flex parent, not a taller box, because the chip
-   and ends must stay centred on the original line. */
+   must stay centred on the original line. */
 .slidenav .transition-slice {
   display: flex;
   align-items: center;
@@ -5165,45 +5162,17 @@ textarea {
   opacity: 1;
 }
 
-/* THE TWO `+` ENDS. An up+plus above and a down+plus below — the user's own
-   glyphs, describing which neighbour the inserted slide takes its transition
-   from ("the right side ... would add it from the previous slide ... the left
-   side would be like up plus arrow"). Fixed width so they stay grabbable in a
-   narrow rail. THESE are the "new slide here buttons" that appear on hover —
-   the only things in the band that do. */
-.slidenav .transition-slice .tr-end {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--a-slice-end-w);
-  height: 100%;
-  padding: 0;
-  background: transparent;
-  border: 0;
-  color: var(--fg-dim);
-  cursor: pointer;
-  opacity: 0;
-}
-
 /* HOT = the pointer or keyboard focus is anywhere in this band's GAP — the whole
-   inter-slide region, not one zone (see the block comment). Both ends appear at
-   once, so crossing the band does not flicker them in and out one at a time. */
+   inter-slide region, not just the chip (see the block comment). It no longer
+   reveals anything, because there is nothing hidden left to reveal; it BRIGHTENS
+   the chip's text and its two connector lines, which is what says the chip is a
+   control rather than a label. */
 .slidenav .transition-slice.hot {
   color: var(--fg);
 }
 
-.slidenav .transition-slice.hot .tr-end {
-  opacity: 1;
-}
-
 .slidenav .transition-slice.hot .tr-line {
   background: var(--fg-dim);
-}
-
-/* The zone actually under the pointer takes the selection color, so the band
-   says WHICH of its three things a click would do. */
-.slidenav .transition-slice .tr-end.active {
-  color: var(--a-selection);
 }
 
 /* SELECTED TRANSITIONS RENDER ON TWO AXES, exactly as the rail's ROWS do, because

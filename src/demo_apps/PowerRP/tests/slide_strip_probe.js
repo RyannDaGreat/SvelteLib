@@ -1,24 +1,25 @@
 /**
  * SLIDE STRIP probe — the rail's gestures, end to end in a real browser: the
- * transition slice's INSERT ends, DRAG-TO-REORDER (and what it LOOKS like), the
+ * transition slice's SHAPE, DRAG-TO-REORDER (and what it LOOKS like), the
  * multi-select + slide clipboard commands, and TRANSITION multi-select.
  *
  * SEVERAL ASSERTIONS HERE PIN USER CORRECTIONS OF A DESIGN THAT SHIPPED, and each
- * is marked at its site with the quote that overruled it (2026-08-02): the chip
- * is always visible rather than hover-revealed, the hover surface is the whole
- * gap rather than the chip, and a drag boundary goes bold WITHOUT opening space.
- * Where a pin was simply inverted, that is said — a pin quietly deleted is how a
- * rejected design creeps back.
+ * is marked at its site with the quote that overruled it (2026-08-02): the insert
+ * `+` ends are RETRACTED and their absence is asserted, the chip is always visible
+ * rather than hover-revealed, the hover surface is the whole gap rather than the
+ * chip, and a drag boundary goes bold WITHOUT opening space. Where a pin was
+ * inverted, that is said — a pin quietly deleted is how a rejected design creeps
+ * back.
  *
  *   node src/demo_apps/PowerRP/tests/slide_strip_probe.js
  *
  * WHY A PROBE AND NOT ANOTHER NODE TEST. The core math is already pinned in
  * bare node (tests/slide_reorder_test.js proves the appearance law for every
  * permutation, for paste and for the block move). What node cannot see is the
- * WIRING: that the `+` ends exist in the markup and reach
- * insertSlideAtBoundary, that a pointer drag on a row produces a boundary and
- * commits through moveSlidesToBoundary, and that the rail's click rule builds
- * the selection the clipboard commands then read. Those are the seams a
+ * WIRING: that the slice renders as the chip and nothing else, that a pointer
+ * drag on a row produces a boundary and commits through moveSlidesToBoundary,
+ * and that the rail's click rule builds the selection the clipboard commands
+ * then read. Those are the seams a
  * refactor silently breaks — and a MISSING NAMED IMPORT IS SILENT IN THIS BUILD
  * (CLAUDE.md, measured), so a green build proves nothing about them.
  *
@@ -65,57 +66,52 @@ try {
   await page.goto(url, { waitUntil: "networkidle0" });
   await page.waitForSelector(".slidenav [data-slide-row]");
 
-  // ── 1. THE SLICE HAS THREE ZONES, and the two ends insert ──────────────────
-  // THE CHIP IS ALWAYS VISIBLE; ONLY THE ENDS ARE HOVER-REVEALED. This probe
-  // asserted the OPPOSITE for the chip — `idleChipOpacity === "0"` — and the user
-  // overruled that design on 2026-08-02: "I don't see tween 0.5 seconds unless I
-  // hover over it now, which is not ideal. It's only those new slide here buttons
-  // that should be appearing when I slide over them. The tween thing should
-  // always be there." The old pin is inverted rather than deleted, because which
-  // of the two states each element is in is exactly what regresses silently.
+  // ── 1. THE SLICE IS THE CHIP ALONE ─────────────────────────────────────────
+  // THE `+` ENDS ARE GONE, and this block is the INVERSION of the pin that used
+  // to require them. The user asked for the three-zone slice on 2026-08-02 and
+  // retracted it the same day: "the insert a slide here up and down buttons that
+  // we have near the tween line… I made a mistake that feature should never have
+  // existed we can get rid of that just just tween is fine we don't need those
+  // extra up and down add slide up and add slide down buttons on either side of
+  // tween 0.5… we can get rid of the up plus and down plus buttons here."
+  //
+  // So `ends === 0` is asserted rather than the pin merely deleted: a retracted
+  // affordance that leaves no assertion behind is one an agent re-adds from the
+  // still-present app.insertSlideAtBoundary, reading its docblock as a TODO. The
+  // ends' ABSENCE is now the requirement, and it is checked in the markup.
+  //
+  // THE CHIP'S OWN PIN IS UNCHANGED and is itself an earlier inversion: this probe
+  // once asserted `idleChipOpacity === "0"`, overruled by "I don't see tween 0.5
+  // seconds unless I hover over it now, which is not ideal… The tween thing should
+  // always be there."
   const zones = await page.evaluate(() => {
     const slice = document.querySelector(".transition-slice");
     return {
       ends: slice.querySelectorAll(".tr-end").length,
       chips: slice.querySelectorAll(".tr-chip").length,
-      idleEndOpacity: getComputedStyle(slice.querySelector(".tr-end")).opacity,
+      buttons: slice.querySelectorAll("button").length,
       idleChipOpacity: getComputedStyle(slice.querySelector(".tr-chip")).opacity,
     };
   });
-  check(zones.ends === 2, `expected 2 insert ends on a transition slice, got ${zones.ends}`);
+  check(zones.ends === 0, `the retracted insert-slide "+" ends must not exist; found ${zones.ends}`);
   check(zones.chips === 1, `expected 1 transition chip on a slice, got ${zones.chips}`);
-  check(zones.idleEndOpacity === "0", `an IDLE slice must show no + affordance (opacity ${zones.idleEndOpacity})`);
+  check(zones.buttons === 1, `the slice's only control is the chip; found ${zones.buttons} buttons`);
   check(zones.idleChipOpacity === "1", `the transition CHIP must be visible without hovering (user ruling); opacity ${zones.idleChipOpacity}`);
 
-  // HOVERING ANYWHERE IN THE GAP reveals the ends — the hover surface is the whole
+  // HOVERING ANYWHERE IN THE GAP lights the band — the hover surface is the whole
   // inter-slide band, not the chip (user: "The hover area should be the entire in
-  // between of the slides, not just a small subset"). So this hovers the BAND, and
-  // deliberately not the `.tr-end` it is checking: hovering the target itself
-  // would pass even if the band handed hover to its children only, which is the
-  // exact defect being ruled out.
+  // between of the slides, not just a small subset"). It no longer REVEALS
+  // anything (the ends it revealed are retracted), so what is checked is that the
+  // band takes `.hot` from a pointer over the band itself, and deliberately not
+  // over the chip: hovering the chip would pass even if the band handed hover to
+  // its children only, which is the defect being ruled out.
   await page.hover(".transition-slice");
   const hot = await page.evaluate(() => {
     const slice = document.querySelector(".transition-slice");
-    return {
-      end: getComputedStyle(slice.querySelector(".tr-end")).opacity,
-      chip: getComputedStyle(slice.querySelector(".tr-chip")).opacity,
-    };
+    return { hot: slice.classList.contains("hot"), chip: getComputedStyle(slice.querySelector(".tr-chip")).opacity };
   });
-  check(hot.end === "1", `hovering anywhere in the gap must reveal the + ends (end opacity ${hot.end})`);
+  check(hot.hot, "hovering anywhere in the gap must make the band .hot");
   check(hot.chip === "1", `the chip stays visible while hot (opacity ${hot.chip})`);
-
-  // The left end inserts a slide at that boundary — one slide more, and it
-  // becomes current (the deck's picture at every OTHER index is untouched, which
-  // is what slide_reorder_test proves; here we prove the button is wired).
-  const inserted = await page.evaluate(async () => {
-    const app = window.__powerrp_app;
-    const before = app.doc.slides.length;
-    document.querySelectorAll(".transition-slice .tr-end")[0].click();
-    return { before, after: app.doc.slides.length, current: app.slideIndex };
-  });
-  check(inserted.after === inserted.before + 1, `the slice's + end did not insert a slide (${inserted.before} → ${inserted.after})`);
-  check(inserted.current === 1, `the inserted slide should be current; slideIndex is ${inserted.current}`);
-  await page.evaluate(() => window.__powerrp_app.undo());
 
   // ── 2. MULTI-SELECT, and the clipboard commands that read it ───────────────
   const multi = await page.evaluate(() => {
@@ -280,7 +276,7 @@ try {
   check(tr.itemSelectionCleared, "selecting a transition must clear the item selection (they are mutually exclusive)");
 
   if (errors.length) throw new Error(`console errors:\n${errors.join("\n")}`);
-  console.log("SLIDE STRIP PROBE OK: slice has 2 insert ends + 1 always-visible chip, ends reveal on gap hover; a + end inserts; shift/cmd build the rail selection; copy+paste round-trips 2 slides; a pointer drag lifts a ghost, shifts the others and reorders in one undo unit with a bold-not-wider boundary; transitions shift/cmd multi-select and batch-write in one undo unit. Zero console errors.");
+  console.log("SLIDE STRIP PROBE OK: the slice is the always-visible chip ALONE (the retracted + ends are absent) and the whole gap makes the band hot; shift/cmd build the rail selection; copy+paste round-trips 2 slides; a pointer drag lifts a ghost, shifts the others and reorders in one undo unit with a bold-not-wider boundary; transitions shift/cmd multi-select and batch-write in one undo unit. Zero console errors.");
 } finally {
   await browser.close();
   await server.close();
