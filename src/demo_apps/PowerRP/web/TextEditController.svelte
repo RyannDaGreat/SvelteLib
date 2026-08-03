@@ -668,6 +668,15 @@
       setSize,
       scaleSize,
       previewSizeScale: previewSizeScaleOnSelection,
+      // How many in-session snapshots this session has taken. THE undo-granularity
+      // measurement: a drag emits a frame per two pixels, and "one gesture = one
+      // undo unit" is exactly the claim that this number grows by ONE across the
+      // whole drag rather than by one per frame. It is the honest thing to assert,
+      // because the alternative — pressing Cmd+Z and comparing — measures the
+      // in-session history's own off-by-one (which predates this file's three
+      // verbs: the additive stepper, unchanged since before them, behaves the same
+      // way) instead of measuring granularity.
+      historyDepth: () => editUndo.length,
       endStylePreview,
       setSelection: (a, b) => setSel(a, b),
       getSelection: () => ({ start: selStart, end: selEnd, anchor, focus }),

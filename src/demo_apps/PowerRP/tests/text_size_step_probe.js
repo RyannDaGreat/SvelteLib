@@ -12,7 +12,10 @@
  *  P1  the toolbar's + and Cmd+Plus produce BYTE-IDENTICAL stored runs on the same
  *      mixed selection, and both preserve the 48/18 boundary at 50/20.
  *  P2  the readout is a real scrubber (role=spinbutton) and a DRAG on it commits a
- *      RELATIVE shift: the mixed run pair moves together, differences intact.
+ *      the readout travels ONE UNIT PER PIXEL, unscaled by the toolbar's counter-
+ *      transform and uninterrupted by its pointerleave. WHICH VERB that travel
+ *      then applies (proportional, since 2026-08-02) belongs to
+ *      tests/text_size_verbs_probe.js, which owns the verb question entirely.
  *  P3  the readout stays live on a MIXED selection and marks itself mixed; on a
  *      uniform one it shows the plain number (the shape text_wysiwyg_probe reads).
  *  P4  the eight box-level Inspector rows are GONE on a fully-stamped value and
@@ -205,10 +208,28 @@ try {
   if (shortDrag) {
     assert(shortDrag.seed === BIG, `P2: a MIXED selection seeds the scrubber from the selection START size ${BIG} (got ${shortDrag.seed})`);
     assert(shortDrag.sizes.length === 2, `P2: a scrub must not flatten the runs (got ${JSON.stringify(shortDrag.sizes)})`);
-    const dBig = shortDrag.sizes[0] - BIG, dSmall = shortDrag.sizes[1] - SMALL;
+    const dBig = shortDrag.sizes[0] - BIG;
     assert(dBig > 0, `P2: dragging UP grows the size (${BIG} → ${shortDrag.sizes[0]})`);
-    assert(dSmall === dBig, `P2: BOTH runs shift by the SAME amount — the scrub is RELATIVE (first +${dBig}, second +${dSmall})`);
 
+    // WHAT THIS ASSERTION IS AND IS NOT, since it used to be more.
+    // It measured the SHOWN NUMBER's travel per pixel — one unit per pixel,
+    // unscaled — by differencing two drag lengths so the constant pre-lock loss
+    // cancels (see SCRUB_SHORT_PX). That is still exactly what it measures, and it
+    // still pins the two hazards it always did: the toolbar's pointerleave must not
+    // collapse a drag longer than the toolbar is tall, and the value must not pick
+    // up the toolbar's 1/boxScale counter-transform. The FIRST run's size tracks
+    // the readout one-for-one under either verb (the seed IS the first run's size,
+    // so scaling it by next/seed lands on `next`), which is why this survives
+    // unchanged.
+    //
+    // IT NO LONGER ASSERTS THAT BOTH RUNS SHIFT BY THE SAME AMOUNT. That line
+    // ("the scrub is RELATIVE") pinned the drag as the ADDITIVE verb, and the user
+    // overruled it on 2026-08-02: a drag is now PROPORTIONAL ("I want to keep the
+    // relative proportions of the different font sizes the same when I use the
+    // slider, and increment or decrement when I use the increment or decrement
+    // buttons"). Deleted rather than inverted, because tests/text_size_verbs_probe
+    // now owns the whole verb question — including the proportional claim this
+    // would become — and two probes asserting one behaviour is how they drift.
     const longDrag = await scrubBy(SCRUB_LONG_PX);
     const dLong = longDrag.sizes[0] - BIG;
     assert(dLong - dBig === SCRUB_LONG_PX - SCRUB_SHORT_PX,
@@ -267,7 +288,7 @@ try {
   if (errors.length) fails.push(...errors.map((e) => `unexpected error: ${e}`));
   if (fails.length) { console.error("SIZE-STEP PROBE FAILURES:\n" + fails.join("\n")); process.exit(1); }
   console.log(`  P1 agreement: toolbar + and Cmd+Plus store IDENTICAL runs — ${JSON.stringify(sizes(afterToolbar))}, boundary intact (was 38 vs 50, one run).`);
-  console.log("  P2 scrubber: the readout is a spinbutton; dragging it shifts BOTH runs by the same amount.");
+  console.log("  P2 scrubber: the readout is a spinbutton, seeded from the selection start, travelling one unit per pixel.");
   console.log("  P3 readout: mixed marks itself mixed, uniform shows the plain number.");
   console.log("  P4 rows: eight box rows present on a bare value, all eight gone on the user's stamped shape;");
   console.log("     V-Align / Opacity / X / Y (no run or paragraph twin) stay put.");
