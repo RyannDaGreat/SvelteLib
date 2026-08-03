@@ -177,17 +177,32 @@ export function glyphOutlinesFor(text, style) {
 
 /**
  * Query (reads the installed outline source AND the installed ink measure).
- * THE TEXT MORPH PAYLOAD: a plaintext widget's state → its laid-out letterforms
- * as a MorphPaths payload in box-local space.
+ * A text state's laid-out letterforms as POSITIONED SVG PATH STRINGS in box-local
+ * space — the raw geometry, before any consumer decides what to do with it.
+ *
+ * ── WHY THIS EXISTS SEPARATELY FROM textMorphPayload ─────────────────────────
+ * It is the SHARED HALF of two features that want the same letterforms in two
+ * different containers. `textMorphPayload` (below) wants them as a MorphPaths
+ * payload — subpaths of cubic curves with re-derived windings — because the morph
+ * engine interpolates control points. THE GLYPH STROKE wants them as plain `d`
+ * strings, because the Skia painter builds an SkPath from an SVG string
+ * (`Path.MakeFromSVGString`) and strokes it, and the SVG exporter writes the
+ * string straight into a `<path>`. Converting a payload BACK into `d` strings to
+ * stroke it would be a lossy round trip through a representation neither consumer
+ * asked for.
+ *
+ * So the LAYOUT AND THE FRAME FLIP — the two things that are genuinely hard to get
+ * right and catastrophic to get differently in two places — happen exactly ONCE,
+ * here, and `textMorphPayload` is a thin wrapper over this. That is what makes it
+ * structurally impossible for a stroked outline to sit anywhere other than
+ * precisely on the morph's letterforms and on the drawn glyphs.
  *
  * ── THE LAYOUT IS NOT RE-DERIVED ─────────────────────────────────────────────
  * The pen positions come from `richTextDraws` — the SAME pure layout the two
  * render backends already flatten through, over the SAME injected measure
- * (core/ink_metrics.js) that produced the widget's own ink bounds. So the morph's
- * letters sit exactly where the widget draws them: same wrap, same alignment,
- * same valign offset, same baselines. Laying the text out a second way here is
- * how the morph's first frame would jump away from the pixels at alpha 0, which
- * is the failure core/morph_payload.js's header names for every provider.
+ * (core/ink_metrics.js) that produced the widget's own ink bounds. So the outlines
+ * sit exactly where the widget draws them: same wrap, same alignment, same valign
+ * offset, same baselines.
  *
  * ── THE FRAME FLIP, which is the one real conversion ─────────────────────────
  * A font's outlines are y-UP from the baseline (ink at POSITIVE y above it); the
@@ -196,26 +211,24 @@ export function glyphOutlinesFor(text, style) {
  *     scale(size/unitsPerEm, -size/unitsPerEm), translate to (penX, baselineY)
  *
  * — a NEGATIVE y scale, which is the flip, plus the run's own pen. Getting this
- * wrong renders every morph into text upside down, and it is easy to get wrong
- * because both conventions are "obviously" correct in their own world.
- *
- * Note the flip REVERSES every contour's winding, which is correct and needs no
- * correction here: core/morph_payload.js re-derives `winding` from the baked
- * coordinates with the same shoelace the engine re-derives with, so the payload
- * reports the winding its coordinates actually have.
+ * wrong renders every outline upside down, and it is easy to get wrong because
+ * both conventions are "obviously" correct in their own world.
  *
  * Args:
- *   s (object): a plaintext state bag ({text, size, font, bold, w, h, align, valign, fill, opacity})
+ *   s (object): a text state bag ({text, size, font, bold, w, h, align, valign, opacity})
  *
  * Returns:
- *   object: a MorphPaths payload, plus `baselineY` — the FIRST line's baseline in
- *     box-local coordinates, carried for tests and diagnostics rather than for
- *     the engine (which reads only space/subpaths/fillRule)
+ *   {{ds: string[], baselineY: number}}: one `d` per glyph that HAS an outline (a
+ *     space contributes none), in draw order, plus the FIRST line's baseline in
+ *     box-local coordinates (diagnostics; no consumer needs it to place anything)
  *
- * @example // textMorphPayload({text: "hi", size: 36, w: 200, h: 60}).subpaths.length // 2
- * @example textMorphPayload({text: "hi", size: 36, w: 200, h: 60}).space // {w: 200, h: 60} (with a source installed)
+ * @example // with the seam installed, two letters give two outlines:
+ * @example // textGlyphPathDs({text: "hi", size: 36, w: 200, h: 60}).ds.length // 2
+ * @example // a space has no ink, so "a b" still yields two:
+ * @example // textGlyphPathDs({text: "a b", size: 36, w: 200, h: 60}).ds.length // 2
+ * @example textGlyphPathDs({text: "hi", size: 36, w: 200, h: 60}).ds.length // 0 (with no source installed)
  */
-export function textMorphPayload(s) {
+export function textGlyphPathDs(s) {
   const w = s.w ?? 0, h = s.h ?? 0;
   const unitsPerEm = _source?.unitsPerEm ?? 1000;
   const rich = {
@@ -241,12 +254,7 @@ export function textMorphPayload(s) {
     },
     inkMeasure(),
   ).textDraws;
-  // Glyphs are FILLED contours, never stroked: `strokeWidth: 0` here is about the
-  // letterforms. A run's own `outlineWidth` (the glyph-outline text style) is a
-  // separate feature and is not carried into the morph — the outlined form draws
-  // at the endpoints through emit().
-  const paint = { fill: s.fill ?? "#000000", stroke: null, strokeWidth: 0, opacity: s.opacity ?? 1 };
-  const sources = [];
+  const ds = [];
   for (const d of draws) {
     const glyphs = glyphOutlinesFor(d.text, { font: d.font, bold: d.bold });
     const em = d.size / unitsPerEm;
@@ -255,16 +263,55 @@ export function textMorphPayload(s) {
       // y-UP EM units → y-DOWN box-local: scale (em, −em), then translate to the
       // pen and the shared line baseline.
       const m = matMul({ a: 1, b: 0, c: 0, d: 1, e: pen, f: d.baselineY }, { a: em, b: 0, c: 0, d: -em, e: 0, f: 0 });
-      if (g.d) sources.push({ d: transformPathD(g.d, m), paint });
+      if (g.d) ds.push(transformPathD(g.d, m));
       pen += g.advance * em;
     }
   }
-  const payload = morphPayloadFromPaths(sources, { w, h }, "nonzero");
+  return { ds, baselineY: draws[0]?.baselineY ?? 0 };
+}
+
+/**
+ * Query (reads the installed outline source AND the installed ink measure).
+ * THE TEXT MORPH PAYLOAD: a plaintext widget's state → its laid-out letterforms
+ * as a MorphPaths payload in box-local space.
+ *
+ * A THIN WRAPPER over `textGlyphPathDs` — that function owns the layout and the
+ * y-UP → y-DOWN frame flip (read its docblock for both); this one only decides
+ * what CONTAINER the letterforms arrive in and what paint rides along. Sharing
+ * the geometry is what guarantees a morph's letters and a stroked outline are the
+ * same curves rather than two independent derivations that agree today.
+ *
+ * The flip `textGlyphPathDs` performs REVERSES every contour's winding, which is
+ * correct and needs no correction here: core/morph_payload.js re-derives `winding`
+ * from the baked coordinates with the same shoelace the engine re-derives with, so
+ * the payload reports the winding its coordinates actually have.
+ *
+ * Args:
+ *   s (object): a plaintext state bag ({text, size, font, bold, w, h, align, valign, fill, opacity})
+ *
+ * Returns:
+ *   object: a MorphPaths payload, plus `baselineY` — the FIRST line's baseline in
+ *     box-local coordinates, carried for tests and diagnostics rather than for
+ *     the engine (which reads only space/subpaths/fillRule)
+ *
+ * @example // textMorphPayload({text: "hi", size: 36, w: 200, h: 60}).subpaths.length // 2
+ * @example textMorphPayload({text: "hi", size: 36, w: 200, h: 60}).space // {w: 200, h: 60} (with a source installed)
+ */
+export function textMorphPayload(s) {
+  const w = s.w ?? 0, h = s.h ?? 0;
+  const { ds, baselineY } = textGlyphPathDs(s);
+  // Glyphs are FILLED contours, never stroked: `strokeWidth: 0` here is about the
+  // letterforms. The widget's own GLYPH STROKE (plugins/plaintext.js `glyphStroke`)
+  // is a separate feature and is not carried into the morph — the stroked form
+  // draws at the endpoints through emit(), so a morph interpolates the shapes and
+  // the stroke re-appears when the tween lands.
+  const paint = { fill: s.fill ?? "#000000", stroke: null, strokeWidth: 0, opacity: s.opacity ?? 1 };
+  const payload = morphPayloadFromPaths(ds.map((d) => ({ d, paint })), { w, h }, "nonzero");
   // FONT-DERIVED OUTLINES ARE NONZERO-WOUND: a glyph's counters (the holes in
   // e/a/0/8) are wound opposite its outer contour, so nonzero leaves them as
   // holes — the same argument render_gpu/pdf_backend.js makes for filling these
   // glyphs with `f`.
-  payload.baselineY = draws[0]?.baselineY ?? 0;
+  payload.baselineY = baselineY;
   return payload;
 }
 
