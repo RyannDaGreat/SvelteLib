@@ -3557,12 +3557,26 @@ export class PowerRPApp {
    * IT STILL WRITES THE PNG, deliberately — user: "it still copies the image to
    * my clipboard just as it would before". Same `#writeClipboardPayload` path as
    * Copy, so the OS side effect cannot drift between the two buttons.
+   *
+   * `keys` NARROWS THE CAPTURE — the user, 2026-08-02: "We should also have copy
+   * position, copy dimensions … It's kind of like copy properties, but for a
+   * limited subset." Copy Position passes `["x", "y"]`, Copy Dimensions
+   * `["w", "h"]`, Copy Box all four; omitted = every property, this method's
+   * original behaviour byte-for-byte. The subsets are ONE argument and no new
+   * paste path because paste already applies whatever keys the payload carries
+   * (core/item_properties_clipboard.js's subset section, which also records the
+   * one real fix that made a partial payload safe). They route through the SAME
+   * `#writeClipboardPayload`, so they inherit the PNG side effect rather than
+   * re-implementing it — the drift this method's extraction exists to prevent.
+   *
+   * @param {string[]|null} [keys] - property names to capture; omitted = all
+   * @param {string} [label] - the verb's name, for the loud failure reports
    */
-  async copySelectionProperties() {
+  async copySelectionProperties(keys = null, label = "Copy Properties") {
     const ids = this.#cloneSet(this.selectedIds());
-    const payload = itemPropertiesPayload(this.rawState(), ids);
+    const payload = itemPropertiesPayload(this.rawState(), ids, keys);
     if (Object.keys(payload.powerrp_item_props).length === 0) return;
-    await this.#writeClipboardPayload(payload, "Copy Properties");
+    await this.#writeClipboardPayload(payload, label);
   }
 
   /**

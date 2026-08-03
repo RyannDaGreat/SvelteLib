@@ -1210,6 +1210,23 @@ export const TOOL_POOL = [
     // reason: the irreversible one must not be the first thing a hand reaches for.
     rows: [
       { kind: "command", command: "copy-item", applies: everyWidget },
+      // THE COPY-PROPERTIES FAMILY, beside Copy for the reason the toolbar puts
+      // them there: same clipboard, same Paste, different unit — copy the widget,
+      // or copy what the widget LOOKS like (whole, or one stated part of it).
+      //
+      // `copy-properties` was CAUGHT BY THE PROBE, not added by foresight: it
+      // shipped with a palette row, a chord and a toolbar button and no pool row,
+      // and tool_surfacing_probe.js read "1 unreachable: copy-properties" at the
+      // head of this workstream. Its three subsets landed with their rows in the
+      // same commit precisely so they could not repeat it.
+      //
+      // WHOLE FIRST, THEN THE PARTS, then the two halves in the order a box is
+      // written (position before size) — the pane's rows are read top-down, and
+      // the broadest verb is the one most hands want.
+      { kind: "command", command: "copy-properties", applies: everyWidget },
+      { kind: "command", command: "copy-box", applies: boxed },
+      { kind: "command", command: "copy-position", applies: boxed },
+      { kind: "command", command: "copy-dimensions", applies: boxed },
       { kind: "command", command: "duplicate", applies: purgeableWidget },
       { kind: "command", command: "duplicate-in-place", applies: purgeableWidget },
       // The two capture-to-clipboard exports need something with a BOX to capture;
