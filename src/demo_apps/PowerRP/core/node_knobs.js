@@ -303,6 +303,88 @@ export function knobArcPath(centre, radius, from, to) {
 const round = (n) => Number(n.toFixed(6));
 
 /**
+ * How far a knob band may be SHRUNK before it stops shrinking and starts
+ * clipping. Below roughly a third of full size a dial's arc is a few pixels of
+ * ink, its pointer is shorter than the stroke that draws it, and its label is
+ * sub-pixel — the picture is no longer a knob, it is a smudge that still eats
+ * presses. Past this floor the band is honestly too big for the card, and the
+ * registry docblock's rule applies: SHOW the overflow rather than hide it, so
+ * the author can see the node is too short and drag it taller.
+ */
+export const KNOB_BAND_MIN_SCALE = 1 / 3;
+
+/**
+ * Pure function. THE RESIZE SEAM — the uniform scale a node's knob band is drawn
+ * at so it fits inside the RESOLVED BOX, and 1 when it already does.
+ *
+ * ── THE DEFECT THIS EXISTS FOR (workstream CD, user 2026-08-03, verbatim) ───
+ * "Also looks at this stupid shit when I resize a widget lmao the knobs stay in
+ * place and the module knobs are floating"
+ *
+ * Everything below a node's header used to be laid out from the TOP with fixed
+ * pixel constants — port rows at PORT_TOP_INSET + i·PORT_PITCH, the readout one
+ * gap under those, the knob band one gap under THAT. Not one of those offsets
+ * ever read `h`. So `readoutNodeHeight` computed a natural height at which the
+ * whole stack fitted, and the moment an author dragged the card shorter than
+ * that, the band kept its absolute offsets and simply carried on past the bottom
+ * rim. MEASURED on the Mixer at its own defaults (w 150, h 355): its five dials
+ * sit at y 244…306. Shrink it to h 200 and they are still at 244…306 — the four
+ * port rows are inside the frame and every dial is below it, detached, which is
+ * exactly the screenshot.
+ *
+ * ── WHY A SCALE AND NOT A CLAMP ─────────────────────────────────────────────
+ * Clamping the band's TOP upward would slide the dials over the port rows and
+ * the readout, trading one collision for a worse one. Refusing the resize (a
+ * minimum height) would take away a size the author asked for, and the founding
+ * ask has nodes on slides at whatever size the slide needs. Scaling keeps the
+ * band's INTERNAL rhythm exactly as designed — dial, gap, label — and just draws
+ * the whole of it smaller, which is the one option that both fits and stays
+ * legible as the same object.
+ *
+ * ── AND WHY THE SCALE IS UNIFORM ────────────────────────────────────────────
+ * Squeezing only the vertical would give an oval dial, and a dial's whole reading
+ * is its pointer's ANGLE — an oval one reads its angle wrong at every position
+ * except the axes. So the dial radius, the row pitch, the label gap and the label
+ * size all take the same factor, and a scaled band is the band photographed
+ * smaller rather than a different band.
+ *
+ * ── AN ABSENT HEIGHT IS "UNCONSTRAINED", NOT "ZERO ROOM" ───────────────────
+ * A caller that passes no height has not said the card is short — it has said
+ * nothing about the card at all, which several pure-geometry callers legitimately
+ * do (they want the band's SHAPE, not its fit). Reading that silence as a
+ * zero-height box would scale every such layout straight to the floor and hand
+ * back a band of smudges, so the honest answer to "no height given" is 1.
+ * A height that IS given and is zero is a different statement and does scale.
+ *
+ * @param {number} bandTop - LOCAL y the band starts at
+ * @param {number} rows - how many knob rows the band wraps to
+ * @param {number} [boxH] - the node's RESOLVED height (already sign-normalized);
+ *     absent or non-finite = unconstrained
+ * @returns {number} a factor in [KNOB_BAND_MIN_SCALE, 1]
+ *
+ * @example // a card with room to spare draws its band at full size
+ * @example knobBandScale(60, 1, 200) // 1
+ * @example // one row needs KNOB_ROW_H (49); a card leaving exactly that is full size
+ * @example knobBandScale(60, 1, 109) // 1
+ * @example // half the room, half the band — the dials shrink instead of escaping
+ * @example knobBandScale(60, 2, 109) // 0.5
+ * @example // absurdly short: the shrink stops at the floor and the band clips, visibly
+ * @example knobBandScale(60, 4, 70) // 0.3333333333333333
+ * @example // a band that starts past the bottom rim has no room at all: the floor
+ * @example knobBandScale(300, 1, 100) // 0.3333333333333333
+ * @example // NO height given is not a short card — it is no statement about one
+ * @example knobBandScale(60, 4, undefined) // 1
+ */
+export function knobBandScale(bandTop, rows, boxH) {
+  const need = Math.max(0, rows) * KNOB_ROW_H;
+  if (need <= 0) return 1;
+  if (!Number.isFinite(boxH)) return 1;
+  const room = boxH - bandTop;
+  if (room >= need) return 1;
+  return Math.max(KNOB_BAND_MIN_SCALE, room / need);
+}
+
+/**
  * Pure function. THE KNOB LAYOUT — where every turnable knob of a node sits, in
  * LOCAL coordinates. The ONE geometry the painter and the hit test both read.
  *
@@ -365,19 +447,36 @@ const round = (n) => Number(n.toFixed(6));
 export function knobLayout(knobs, state, bandTop, valueOf, stateKeyOf = (k) => k.key) {
   const dials = (knobs ?? []).filter((k) => !k.discrete);
   if (dials.length === 0) return [];
-  const w = state?.w ?? 0;
+  // THE RESOLVED BOX, sign-resolved here. A stored w/h MAY BE NEGATIVE — that is
+  // a REFLECTION, how Flip H/V is stored (CLAUDE.md's NEGATIVE EXTENTS law), and
+  // a plugin never sees the sign. `knobLayout` runs on RAW folded state (emit's
+  // `s`, and web/knobFocus.js's item state), which is one of the pre-derivation
+  // readers the law names, so it must resolve the sign itself or a flipped
+  // module would lay its band out at negative height and scale to the floor.
+  const w = Math.abs(state?.w ?? 0);
+  // An ABSENT height stays absent (see knobBandScale): a caller that said nothing
+  // about the card's height has not said the card is short.
+  const h = typeof state?.h === "number" ? Math.abs(state.h) : undefined;
   // How many fit per row, at least one — a node narrower than one knob still
   // draws it (clipping is the visible signal that it is too narrow, which the
   // registry docblock says to show rather than hide).
   const perRow = Math.max(1, Math.floor(w / KNOB_PITCH_X));
+  const rows = Math.ceil(dials.length / perRow);
+  // THE ONE FACTOR. Every length below is multiplied by it and it is written onto
+  // each record, so the painter (core/node_chrome.knobOps), the hit test (knobAt
+  // via knobRadius) and the drag (web/knobFocus.js) all read the SAME scaled
+  // geometry rather than three copies of the unscaled constants.
+  const k$ = knobBandScale(bandTop, rows, h);
+  const pitchX = KNOB_PITCH_X * k$;
+  const r = KNOB_R * k$;
   return dials.map((k, i) => {
     const row = Math.floor(i / perRow);
     const col = i % perRow;
     // Centre each row's own run of knobs, so a final short row is not left-heavy.
     const inRow = Math.min(perRow, dials.length - row * perRow);
-    const rowW = inRow * KNOB_PITCH_X;
-    const cx = (w - rowW) / 2 + KNOB_PITCH_X * (col + 0.5);
-    const cy = bandTop + KNOB_ROW_H * row + KNOB_R;
+    const rowW = inRow * pitchX;
+    const cx = (w - rowW) / 2 + pitchX * (col + 0.5);
+    const cy = bandTop + KNOB_ROW_H * k$ * row + r;
     const raw = valueOf(k);
     const bound = typeof raw !== "number" || !Number.isFinite(raw);
     const min = typeof k.min === "number" ? k.min : 0;
@@ -386,6 +485,11 @@ export function knobLayout(knobs, state, bandTop, valueOf, stateKeyOf = (k) => k
     return {
       key: k.key, stateKey: stateKeyOf(k), label: k.label ?? k.key,
       cx, cy, min, max, step: k.step, unit: k.unit ?? "",
+      // The scaled geometry, ON THE RECORD. `r` is the field knobRadius already
+      // read for the KNOB control node's one big dial, so a band-scaled dial and
+      // a per-widget dial travel the same path; `pitchX`/`labelGap`/`labelSize`
+      // are the same idea for the label box knobOps draws under it.
+      r, pitchX, labelGap: KNOB_LABEL_GAP * k$, labelSize: KNOB_LABEL_SIZE * k$,
       value, fraction: knobFraction(value, min, max), bound,
     };
   });

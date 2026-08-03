@@ -128,32 +128,206 @@ export const BEAD_CORE_FRACTION = 0.45;
  *     ADDENDUM 7) and nothing else. A family that recoloured its beads would
  *     overload the one signal that has to stay literal.
  *
- * `glyph` is a single character drawn at the header's right — a second,
+ * `mark` is a small DRAWN emblem at the header's right — a second,
  * colour-blind-safe channel for the same distinction, and the thing that actually
  * reads at the zoom where a whole patch fits on a slide and the title text does
  * not.
+ *
+ * ── IT IS A PATH AND NOT A CHARACTER, AND THAT IS WORKSTREAM CA ─────────────
+ * User, 2026-08-03, verbatim: "The text of these widgets it not placed in the top
+ * right. Why many say "No Glyph"?"
+ *
+ * This table used to hold a `glyph`: one Unicode character per family — ∿ (U+223F
+ * SINE WAVE), ⋀ (U+22C0 N-ARY LOGICAL AND), ◇, ◠ (U+25E0 UPPER HALF CIRCLE), ▤,
+ * ◉ — typeset by the ordinary text op at the header's right. Three of those six
+ * are in NO face PowerRP registers. MEASURED with fontkit against every file in
+ * fonts/: Inter (the `system` stand-in) and Noto Sans have none of the six;
+ * ◇ ▤ ◉ survive only because the CJK fallbacks (Noto Sans JP/SC/KR) happen to
+ * carry them; ∿ ⋀ ◠ are in nothing at all. Skia's fallback therefore found no
+ * face, drew the font's .notdef box, and at 12pt a .notdef box is a narrow tall
+ * rectangle — the "tiny illegible VERTICAL text badge" in the corner of every
+ * source, filter and modulation node. The literal words "No Glyph" are nowhere in
+ * this codebase and nowhere in a library string either; they are what a reader
+ * says about a tofu box, which is the honest reading of a mark the font could not
+ * supply.
+ *
+ * The three that DID render were not healthy either: they came from a CJK face at
+ * that face's metrics, so `▤` sat a third of a line lower than `◇` and overflowed
+ * the 24-unit header strip.
+ *
+ * So the emblem is now VECTOR. A path in a unit box cannot be missing, cannot
+ * arrive from a different face with different metrics, and cannot change with the
+ * fonts a machine has — which matters twice over here, because the same display
+ * list is painted by Skia in the editor, by the PDF and SVG exporters, and by
+ * bare-node cli/render.js. A picture that depended on font coverage was a picture
+ * that could differ between those four, and the determinism law does not allow it.
  */
 export const NODE_FAMILIES = Object.freeze({
   /** SOURCES generate signal from nothing: oscillators, noise, samplers, the pad
-   *  and the ding. Warm amber — the family that starts a chain. */
-  source: Object.freeze({ label: "Source", header: "#3a3020", rim: "#7a6338", glyph: "∿" }),
+   *  and the ding. Warm amber — the family that starts a chain.
+   *  MARK: a sine wave — the signal a source makes out of nothing. */
+  source: Object.freeze({
+    label: "Source", header: "#3a3020", rim: "#7a6338",
+    mark: "M 0 0.5 C 0.17 0.05, 0.33 0.05, 0.5 0.5 C 0.67 0.95, 0.83 0.95, 1 0.5",
+  }),
   /** FILTERS shape a spectrum that already exists: filter, EQ, quantize, bitcrush.
-   *  Cool teal, the complement of source — a chain reads warm→cool left to right. */
-  filter: Object.freeze({ label: "Filter", header: "#1e3330", rim: "#3d7a6e", glyph: "⋀" }),
+   *  Cool teal, the complement of source — a chain reads warm→cool left to right.
+   *  MARK: a resonant lowpass response — flat, a peak, then the roll-off. */
+  filter: Object.freeze({
+    label: "Filter", header: "#1e3330", rim: "#3d7a6e",
+    mark: "M 0 0.35 L 0.45 0.35 L 0.62 0.05 L 1 0.95",
+  }),
   /** EFFECTS act on time and space rather than on spectrum: delay, reverb. Violet,
-   *  the family the user's "spacey ambience" lives in. */
-  effect: Object.freeze({ label: "Effect", header: "#2b2440", rim: "#6b5aa8", glyph: "◇" }),
+   *  the family the user's "spacey ambience" lives in.
+   *  MARK: a diamond — the ◇ the table used to spell, now drawn. */
+  effect: Object.freeze({
+    label: "Effect", header: "#2b2440", rim: "#6b5aa8",
+    mark: "M 0.5 0 L 1 0.5 L 0.5 1 L 0 0.5 Z",
+  }),
   /** MODULATION drives other nodes rather than being heard: LFO, ADSR, clock,
-   *  sequencer, sample+hold, trigger, VCA, mixer. Muted blue — the control plane. */
-  modulation: Object.freeze({ label: "Modulation", header: "#1f2b40", rim: "#4a6da8", glyph: "◠" }),
+   *  sequencer, sample+hold, trigger, VCA, mixer. Muted blue — the control plane.
+   *  MARK: a rising ramp into a hold — an envelope, the shape of a control. */
+  modulation: Object.freeze({
+    label: "Modulation", header: "#1f2b40", rim: "#4a6da8",
+    mark: "M 0 0.95 L 0.35 0.05 L 0.65 0.05 L 1 0.95",
+  }),
   /** ANALYSIS measures without changing: meter, spectrum. Near-neutral green, the
-   *  instrument-panel family — these are the nodes with live overlays. */
-  analysis: Object.freeze({ label: "Analysis", header: "#1f3326", rim: "#4a8a5c", glyph: "▤" }),
+   *  instrument-panel family — these are the nodes with live overlays.
+   *  MARK: three stacked bars — a level meter's static form. */
+  analysis: Object.freeze({
+    label: "Analysis", header: "#1f3326", rim: "#4a8a5c",
+    mark: "M 0 0.12 L 1 0.12 M 0 0.5 L 1 0.5 M 0 0.88 L 1 0.88",
+  }),
   /** OUTPUT is where sound leaves. Deliberately the most saturated rim in the
    *  table, because there is normally ONE of these and it is the node you look for
-   *  first when a patch is silent. */
-  output: Object.freeze({ label: "Output", header: "#3a2430", rim: "#a8557a", glyph: "◉" }),
+   *  first when a patch is silent.
+   *  MARK: a ring — the jack sound leaves through. */
+  output: Object.freeze({
+    label: "Output", header: "#3a2430", rim: "#a8557a",
+    mark: "M 0.5 0.02 A 0.48 0.48 0 1 1 0.4999 0.02 Z",
+  }),
 });
+
+/** The family mark's box, in LOCAL units: a square whose right edge sits one
+ *  NODE_PAD in from the card's right and which is vertically centred in the
+ *  header strip. Sized to the title's cap height so the two read as one line of
+ *  chrome rather than as a badge stuck on afterwards. */
+export const NODE_MARK_SIZE = 9;
+/** The mark's stroke width. One hairline, like the rim — the emblem is chrome. */
+export const NODE_MARK_STROKE = 1.4;
+
+/**
+ * Pure function. A family MARK's display-list op, placed in a node's header.
+ *
+ * The `mark` path is authored in a UNIT BOX (0..1 in both axes) so the table
+ * states a SHAPE and this function states its SIZE and PLACE — the same split
+ * every other piece of chrome here uses, and what lets the mark be re-sized in
+ * one number rather than by re-authoring six paths.
+ *
+ * Stroked and not filled, with one exception per shape: the diamond and the ring
+ * are closed and read as solid emblems, so they carry a fill too. A stroke-only
+ * mark at 9 units is a line drawing, which is the Audulus register (ADDENDUM 6)
+ * and stays quiet in a wall of forty cards.
+ *
+ * @param {object} s - the folded item state (its `w` finds the right edge)
+ * @param {string} [family] - a NODE_FAMILIES key; absent = no mark at all
+ * @returns {object[]} display-list commands, LOCAL coords (empty for no family)
+ *
+ * @example familyMarkOps({w: 150, h: 90}, "effect").length // 1
+ * @example familyMarkOps({w: 150, h: 90}, "effect")[0].op // "path"
+ * @example // the unit path is scaled and translated into the header's right end
+ * @example familyMarkOps({w: 150, h: 90}, "effect")[0].d.startsWith("M 135") // true
+ * @example // a family-less card gets no mark op at all — byte-identical to before
+ * @example familyMarkOps({w: 150, h: 90}) // []
+ * @example // FLIP-SAFE: a negative width is a REFLECTION, and the mark still lands
+ * @example // at the card's right end rather than off the left of the world
+ * @example familyMarkOps({w: -150, h: 90}, "effect")[0].d === familyMarkOps({w: 150, h: 90}, "effect")[0].d // true
+ */
+export function familyMarkOps(s, family) {
+  const f = nodeFamily(family);
+  if (!f.mark) return [];
+  // THE RESOLVED WIDTH. A stored `w` may be NEGATIVE — a REFLECTION, how Flip H
+  // is stored — and a plugin never sees the sign (CLAUDE.md's NEGATIVE EXTENTS
+  // law). emit() receives RAW folded state, one of the pre-derivation readers the
+  // law names, so the sign is resolved here.
+  const w = Math.abs(s?.w ?? 0);
+  const x0 = w - NODE_PAD - NODE_MARK_SIZE;
+  const y0 = (NODE_HEADER_H - NODE_MARK_SIZE) / 2;
+  // CLOSED marks (the ones whose path ends in Z) are emblems and take a fill at
+  // the family's own rim colour; open ones are line drawings and take only the
+  // stroke. One rule read off the path itself, so a new family cannot forget it.
+  const closed = f.mark.trimEnd().endsWith("Z");
+  return [path({
+    d: scaleUnitPath(f.mark, x0, y0, NODE_MARK_SIZE),
+    fill: closed ? f.rim : null,
+    stroke: f.rim,
+    strokeWidth: NODE_MARK_STROKE,
+  })];
+}
+
+/**
+ * Pure function. A unit-box SVG path (`0..1` in both axes) placed at `(x, y)` and
+ * scaled to `size` — the one transform between a family's authored shape and the
+ * card it lands on.
+ *
+ * Only the commands the mark table uses are handled: M, L, C, A and Z. That is
+ * deliberate rather than lazy — an UNKNOWN command THROWS rather than passing
+ * through unscaled, because a silently unscaled subpath would draw a unit-sized
+ * smudge at the card's corner and look like a rendering bug rather than like the
+ * authoring mistake it is.
+ *
+ * The arc command's first two numbers are RADII and its next three are flags, so
+ * they scale on different rules — radii by `size`, flags not at all, and the
+ * endpoint like any other point. Getting that wrong is why this is a function
+ * with a test rather than a regex.
+ *
+ * @param {string} d - an SVG path in the unit box
+ * @param {number} x - LOCAL x of the box's left edge
+ * @param {number} y - LOCAL y of the box's top edge
+ * @param {number} size - the box's side length in LOCAL units
+ * @returns {string} an SVG path in LOCAL units
+ *
+ * @example scaleUnitPath("M 0 0 L 1 1", 10, 20, 4) // "M 10 20 L 14 24"
+ * @example scaleUnitPath("M 0.5 0 L 1 0.5 Z", 0, 0, 10) // "M 5 0 L 10 5 Z"
+ * @example // a cubic's three control points all scale
+ * @example scaleUnitPath("M 0 0 C 0 1, 1 0, 1 1", 0, 0, 2) // "M 0 0 C 0 2, 2 0, 2 2"
+ * @example // an arc scales its RADII and its endpoint but never its three flags
+ * @example scaleUnitPath("M 0.5 0 A 0.5 0.5 0 1 1 0.5 1", 0, 0, 10) // "M 5 0 A 5 5 0 1 1 5 10"
+ * @example // an unhandled command is an authoring error and says so
+ * @example // scaleUnitPath("M 0 0 Q 1 1 0 1", 0, 0, 4) // throws
+ */
+export function scaleUnitPath(d, x, y, size) {
+  const round = (n) => Number(n.toFixed(4));
+  const px = (n) => round(x + n * size);
+  const py = (n) => round(y + n * size);
+  const tokens = String(d).trim().split(/[\s,]+/);
+  const out = [];
+  let i = 0;
+  const num = () => Number(tokens[i++]);
+  while (i < tokens.length) {
+    const cmd = tokens[i++];
+    switch (cmd) {
+      case "M": case "L": out.push(cmd, px(num()), py(num())); break;
+      case "C": {
+        const c = [px(num()), py(num()), px(num()), py(num()), px(num()), py(num())];
+        out.push("C", `${c[0]} ${c[1]},`, `${c[2]} ${c[3]},`, `${c[4]} ${c[5]}`);
+        break;
+      }
+      case "A": {
+        // rx ry rotation largeArc sweep x y — the middle three are FLAGS/degrees
+        // and must pass through untouched.
+        const rx = round(num() * size), ry = round(num() * size);
+        const rot = tokens[i++], large = tokens[i++], sweep = tokens[i++];
+        out.push("A", rx, ry, rot, large, sweep, px(num()), py(num()));
+        break;
+      }
+      case "Z": out.push("Z"); break;
+      default:
+        throw new Error(`scaleUnitPath: unhandled SVG path command ${JSON.stringify(cmd)} in ${JSON.stringify(d)} — the node family mark table uses only M, L, C, A and Z`);
+    }
+  }
+  return out.join(" ");
+}
 
 /** Every declared family name — for validation sweeps and the plugin roster test. */
 export const NODE_FAMILY_NAMES = Object.freeze(Object.keys(NODE_FAMILIES));
@@ -168,16 +342,17 @@ export const NODE_FAMILY_NAMES = Object.freeze(Object.keys(NODE_FAMILIES));
  * one is not an error and must not be a different picture.
  *
  * @param {string} [name] - a NODE_FAMILIES key
- * @returns {{label: string, header: string, rim: string, glyph: string|null}}
+ * @returns {{label: string, header: string, rim: string, mark: string|null}}
  *
  * @example nodeFamily("effect").rim // "#6b5aa8"
- * @example nodeFamily("analysis").glyph // "▤"
+ * @example nodeFamily("analysis").mark.startsWith("M 0 0.12") // true
  * @example // an undeclared family falls back to the neutral node look, not to an error
  * @example nodeFamily().header === NODE_HEADER // true
  * @example nodeFamily("nonsense").rim === NODE_RIM // true
+ * @example nodeFamily().mark // null
  */
 export function nodeFamily(name) {
-  return NODE_FAMILIES[name] ?? { label: "Node", header: NODE_HEADER, rim: NODE_RIM, glyph: null };
+  return NODE_FAMILIES[name] ?? { label: "Node", header: NODE_HEADER, rim: NODE_RIM, mark: null };
 }
 
 /**
@@ -187,12 +362,18 @@ export function nodeFamily(name) {
  * Identical geometry to nodeCard (same body, same header height, same radius, same
  * title position) so a family node and a plain node are the SAME OBJECT at
  * different tints rather than two different card designs. What it adds is exactly
- * three things: the header wears the family tint, the family glyph sits at the
+ * three things: the header wears the family tint, the family MARK sits at the
  * header's right, and the caller gets a matching rim from familyRim().
  *
- * The glyph is placed from the RIGHT edge so it never collides with a long title:
- * a title that would overrun simply clips against it, which is the honest signal
- * that the node is too narrow.
+ * ── THE TITLE IS BOXED SO IT CANNOT RUN UNDER THE MARK (workstream CA) ──────
+ * The title used to be an unbounded text op, and the mark an unbounded one drawn
+ * right-aligned over the same strip. Two unbounded runs on one line means the
+ * longer title simply draws THROUGH the emblem — "Ambience Pad" on a 150-wide
+ * card reaches within a few units of it, and any longer name overlaps. The title
+ * now carries a `boxW` that stops one gap short of the mark's left edge, so a
+ * name too long for its card CLIPS rather than colliding, which is the signal the
+ * registry docblock asks for rather than one to hide. A family-LESS card keeps
+ * the full width, so the plain node trio is byte-identical to before.
  *
  * @param {object} s - the folded item state (w/h size the card)
  * @param {string} title - the node's display name
@@ -201,29 +382,29 @@ export function nodeFamily(name) {
  *
  * @example familyCard({w: 140, h: 90}, "Reverb", "effect").length // 5
  * @example familyCard({w: 140, h: 90}, "Reverb", "effect")[3].text // "Reverb"
- * @example familyCard({w: 140, h: 90}, "Reverb", "effect")[4].text // "◇"
- * @example // a family-less card is the plain one plus nothing: no glyph op at all
+ * @example // the fifth op is the DRAWN mark, not a typeset character
+ * @example familyCard({w: 140, h: 90}, "Reverb", "effect")[4].op // "path"
+ * @example // a family-less card is the plain one plus nothing: no mark op at all
  * @example familyCard({w: 140, h: 90}, "Plain").length // 4
+ * @example // and its title keeps the full unbounded width it always had
+ * @example familyCard({w: 140, h: 90}, "Plain")[3].boxW // Infinity
  */
 export function familyCard(s, title, family) {
   const f = nodeFamily(family);
   const w = s.w ?? 0, h = s.h ?? 0;
-  const ops = [
+  const markOps = familyMarkOps(s, family);
+  // The title's box ends one pad short of the mark's own left edge. With no mark
+  // there is nothing to clear, and the box stays Infinity — the pre-CA op exactly.
+  const titleBoxW = markOps.length
+    ? Math.max(0, Math.abs(w) - NODE_PAD - NODE_MARK_SIZE - NODE_PAD - NODE_PAD)
+    : Infinity;
+  return [
     rect({ x: 0, y: 0, w, h, cornerRadius: NODE_RADIUS, fill: NODE_BODY }),
     rect({ x: 0, y: 0, w, h: NODE_HEADER_H, cornerRadius: NODE_RADIUS, fill: f.header }),
     rect({ x: 0, y: NODE_HEADER_H - NODE_RADIUS, w, h: NODE_RADIUS, fill: f.header }),
-    text({ text: title, x: NODE_PAD, y: NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3, size: NODE_TITLE_SIZE, color: NODE_TITLE_INK, bold: true }),
+    text({ text: title, x: NODE_PAD, y: NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3, size: NODE_TITLE_SIZE, color: NODE_TITLE_INK, bold: true, boxW: titleBoxW }),
+    ...markOps,
   ];
-  if (f.glyph) ops.push(text({
-    text: f.glyph,
-    x: 0,
-    y: NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3,
-    size: NODE_TITLE_SIZE,
-    color: f.rim,
-    boxW: Math.max(0, w - NODE_PAD),
-    boxStyle: { align: "right" },
-  }));
-  return ops;
 }
 
 /**
@@ -471,19 +652,32 @@ export function knobOps(layout, accent, ui = {}) {
     // (the card's own title says what it is, and a second word under the dial would
     // be the gaudy repetition ADDENDUM 6 refuses). An empty text op is not free —
     // it reaches the glyph atlas and lands in every export's display list.
+    //
+    // THE PITCH, THE GAP AND THE SIZE COME OFF THE RECORD (workstream CD), for
+    // exactly the reason the radius above does. A knob band on a card too short
+    // to hold it is drawn SCALED (core/node_knobs.knobBandScale) so it stays
+    // inside the box the author dragged; reading the module constants here
+    // instead would put a full-size label under a shrunken dial, which is the
+    // draw-here/grab-there class of defect one line up, in text. The constants
+    // remain the fallback for a hand-built record (the KNOB and SLIDER control
+    // nodes), which is unscaled by construction.
+    const pitchX = Number.isFinite(k.pitchX) && k.pitchX > 0 ? k.pitchX : KNOB_PITCH_X;
+    const labelGap = Number.isFinite(k.labelGap) ? k.labelGap : KNOB_LABEL_GAP;
+    const labelSize = Number.isFinite(k.labelSize) && k.labelSize > 0 ? k.labelSize : KNOB_LABEL_SIZE;
+    const gutter = KNOB_LABEL_GUTTER * (pitchX / KNOB_PITCH_X);
     if (k.label) {
       ops.push(text({
-        text: k.label, x: k.cx - (KNOB_PITCH_X - KNOB_LABEL_GUTTER) / 2, y: k.cy + r + KNOB_LABEL_GAP,
-        size: KNOB_LABEL_SIZE, color: KNOB_LABEL_INK,
-        boxW: KNOB_PITCH_X - KNOB_LABEL_GUTTER, boxStyle: { align: "center" },
+        text: k.label, x: k.cx - (pitchX - gutter) / 2, y: k.cy + r + labelGap,
+        size: labelSize, color: KNOB_LABEL_INK,
+        boxW: pitchX - gutter, boxStyle: { align: "center" },
       }));
     }
     if (ui.activeKey === k.key) {
       ops.push(text({
-        text: knobReadout(k, k.value), x: k.cx - KNOB_PITCH_X / 2,
-        y: k.cy + r + KNOB_LABEL_GAP + KNOB_VALUE_SIZE + 1,
+        text: knobReadout(k, k.value), x: k.cx - pitchX / 2,
+        y: k.cy + r + labelGap + KNOB_VALUE_SIZE + 1,
         size: KNOB_VALUE_SIZE, color: accent,
-        boxW: KNOB_PITCH_X, boxStyle: { align: "center" },
+        boxW: pitchX, boxStyle: { align: "center" },
       }));
     }
   }

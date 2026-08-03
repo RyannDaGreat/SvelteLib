@@ -370,8 +370,11 @@ check("a family-less node renders byte-identically to the pre-family look", () =
   // have changed when families landed.
   const s = { w: 140, h: 90 };
   assert.equal(nodeFamily().header, "#262b3d");
-  assert.equal(familyCard(s, "Plain").length, 4, "no glyph op for a family-less card");
-  assert.equal(familyCard(s, "Reverb", "effect").length, 5, "a family card adds exactly its glyph");
+  assert.equal(familyCard(s, "Plain").length, 4, "no mark op for a family-less card");
+  assert.equal(familyCard(s, "Reverb", "effect").length, 5, "a family card adds exactly its mark");
+  // A family-less card's TITLE keeps the unbounded width it had before the mark
+  // existed — the box that clears the emblem is added only when there is one.
+  assert.equal(familyCard(s, "Plain")[3].boxW, Infinity);
   assert.deepEqual(familyRim(s)[0].stroke, familyRim(s, "nonsense")[0].stroke);
 });
 
@@ -380,8 +383,8 @@ check("the family accents differ from each other but never touch the shared body
   assert.equal(new Set(headers).size, headers.length, "two families share a header tint — they would not sort");
   const rims = NODE_FAMILY_NAMES.map((n) => NODE_FAMILIES[n].rim);
   assert.equal(new Set(rims).size, rims.length);
-  const glyphs = NODE_FAMILY_NAMES.map((n) => NODE_FAMILIES[n].glyph);
-  assert.equal(new Set(glyphs).size, glyphs.length, "the glyph is the colour-blind-safe channel; duplicates defeat it");
+  const marks = NODE_FAMILY_NAMES.map((n) => NODE_FAMILIES[n].mark);
+  assert.equal(new Set(marks).size, marks.length, "the mark is the colour-blind-safe channel; duplicates defeat it");
   // The BODY is the shared value that keeps a patch one family of objects. Every
   // card's first op is the body, and it must be the same fill for every family.
   const bodies = NODE_FAMILY_NAMES.map((n) => JSON.stringify(familyCard({ w: 10, h: 10 }, "x", n)[0].fill));
