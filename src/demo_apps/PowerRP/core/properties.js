@@ -399,11 +399,28 @@ export const GRADIENT_DEFAULT_WAVELENGTH = 1;
 // AT EXACTLY 0 THE RAMP HAS NO EXTENT, and the honest picture is its LIMIT, not an
 // error and not a divide-by-zero: as w → 0 the tiles get infinitely fine, so every
 // pixel averages the whole ramp and the fill converges to ONE SOLID COLOUR — the
-// ramp's segment-weighted mean (rampAverageColor below). Mirror tiling does not
-// change that mean (a reflected copy has the same average as the copy it reflects),
-// so the limit is the same in every spread mode and all three backends can paint it
-// as a plain solid. That is why parsePaint now ACCEPTS 0 and still rejects negatives
-// loudly: 0 is a meaningful, renderable value; a negative axis is still nonsense.
+// ramp's segment-weighted mean (rampAverageColor below). That is why parsePaint
+// ACCEPTS 0 and still rejects negatives loudly: 0 is a meaningful, renderable value;
+// a negative axis is still nonsense.
+//
+// THE MEAN IS OF THE RAMP AS THAT MODE TILES IT — which is the same ramp for mirror
+// and pad, and a DIFFERENT one for loop. This sentence used to read "the limit is the
+// same in every spread mode", justified by mirror alone (a reflected copy has the
+// same average as the copy it reflects, so mirror's mean is the authored ramp's).
+// That was true of mirror and pad and quietly assumed of loop. It stopped being true
+// of loop when WORKSTREAM BB baked loop's WRAP SEGMENT into the stops that reach the
+// backends (render_gpu/ir.js loopWrappedStops): a looping ramp's real extent includes
+// the stretch from the last stop back round to the first, so that stretch is part of
+// what an infinitely fine tiling averages. The law is unchanged — the collapse is
+// still "the mean of what this mode actually paints" — but it now has to be computed
+// over the tiled ramp rather than assumed equal across modes.
+//
+// MEASURED, on stops 0.1/0.55 red→blue: pad/mirror collapse to (0.325, 0, 0.675),
+// loop to (0.5, 0, 0.5) — and the mean of an ACTUALLY RENDERED loop fill at w = 0.02
+// and w = 0.005 is (0.5, 0, 0.5), i.e. the collapse matches the limit it claims to be
+// and would NOT have if loop had kept the authored ramp's mean. The two modes agree
+// again whenever the wrap changes nothing: identical first/last colours, or stops at
+// both 0 and 1 (the authored hard seam, which has no wrap segment to average).
 /** Wavelength at which the ramp collapses to its average colour — the exact 0 case,
  *  named so the three backends' solid-fill branches read as one decision. */
 export const GRADIENT_COLLAPSE_WAVELENGTH = 0;

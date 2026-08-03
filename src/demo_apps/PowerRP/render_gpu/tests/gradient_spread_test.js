@@ -29,10 +29,22 @@
  * removed. Wavelength scrubs and drags to 0. AT EXACTLY 0 the ramp has no extent
  * and the honest picture is its LIMIT: as w → 0 the tiles get infinitely fine, so
  * every pixel averages the whole ramp and the fill converges to ONE SOLID COLOUR,
- * the ramp's segment-weighted mean (core/properties.rampAverageColor). Mirror
- * tiling does not change that mean — a reflected copy has the same average as the
- * copy it reflects — so the limit is the SAME in every spread mode, and all three
- * backends can paint it as a plain solid.
+ * the ramp's segment-weighted mean (core/properties.rampAverageColor). All three
+ * backends paint that as a plain solid.
+ *
+ * THE MEAN IS OF THE RAMP AS THAT MODE TILES IT. This used to read "the limit is the
+ * SAME in every spread mode", which was reasoned from mirror alone (a reflected copy
+ * has the same average as the copy it reflects) and quietly assumed of loop. Since
+ * WORKSTREAM BB bakes loop's WRAP SEGMENT into the stops, loop tiles a ramp that
+ * mirror and pad never paint, so its mean legitimately differs whenever the first and
+ * last colours do — pinned in section 8, including the measurement showing loop's
+ * collapse really is the limit of loop's own fine tiling.
+ *
+ * ── 3. LOOP MEANS CONTINUOUS (WORKSTREAM BB, section 8) ──────────────────────
+ * A loop fill used to jump 255/255 at every tile boundary while the editor preview
+ * showed a smooth wrap. The ruling: the preview is right. Section 8 pins the fill's
+ * continuity, its agreement with the preview's own sampler, the AUTHORED hard seam
+ * that must still jump, and mirror/pad's byte-identity.
  *
  * ── WHAT THIS SUITE PINS ──────────────────────────────────────────────────────
  *   1. LEGACY IS BYTE-IDENTICAL: a doc with no `spread` and wavelength 0.5 renders
@@ -59,6 +71,10 @@ import { skTileMode } from "../skia/gradient.js";
 import { gradientDefSVG } from "../svg_backend.js";
 import { irToPDF } from "../pdf_backend.js";
 import { rampAverageColor, spreadPeriodHalves, GRADIENT_SPREAD_MODES } from "../../core/properties.js";
+// The EDITOR PREVIEW's own sampler (web/GradientStopBar.svelte reads the ramp
+// through this exact function), so the BB agreement pin compares the rendered fill
+// against the very code the bar draws — not against a second opinion of it.
+import { sampleRampHex } from "../../core/ramps.js";
 
 const require = createRequire(import.meta.url);
 const CanvasKitInit = require("canvaskit-wasm/bin/canvaskit.js");
@@ -305,7 +321,13 @@ await test("SKIA: wavelength 0 paints a FLAT solid of the ramp's average colour"
   assert.deepStrictEqual(pixelAt(px, 5), pixelAt(px, W - 5));
 });
 
-await test("SKIA: the wavelength-0 solid is the SAME in every spread mode (the mean is tiling-invariant)", () => {
+await test("SKIA: the wavelength-0 solid is the same in every mode FOR THIS RAMP (stops at 0 and 1: no wrap to average)", () => {
+  // THE TITLE USED TO SAY "the mean is tiling-invariant", full stop. That was too
+  // strong, and this ramp is precisely the case that hides it: RED_BLUE has stops at
+  // BOTH 0 and 1, so its wrap segment has zero length and loop tiles the identical
+  // ramp mirror and pad do. The general claim is checked below, on an INSET ramp,
+  // where loop's mean genuinely differs — see the wavelength-0 verdict in
+  // core/properties.js's GRADIENT_COLLAPSE_WAVELENGTH block.
   const [m, l, p] = GRADIENT_SPREAD_MODES.map((spread) => renderPixels(makeRect({ wavelength: 0, spread })));
   assert.deepStrictEqual(m, l);
   assert.deepStrictEqual(m, p);
@@ -358,6 +380,134 @@ await test("PDF: wavelength 0 exports a shading whose function is the ONE averag
   // C0 and C1 are both the mean (0.5 0 0.5), so the shading paints a flat solid.
   assert.ok(/\/C0 \[ 0\.5 0 0\.5 \]/.test(pdf) && /\/C1 \[ 0\.5 0 0\.5 \]/.test(pdf),
     `both function endpoints must be the ramp's average colour — got ${pdf.match(/\/C[01] \[[^\]]*\]/g)}`);
+});
+
+// ── 8. WORKSTREAM BB: LOOP IS CONTINUOUS, AND THE PICTURE MATCHES THE PREVIEW ─
+//
+// The user reported a loop background that "had a discontinuous jump" where the
+// editor's gradient preview showed a smooth wrap, and the ruling inside the report
+// is that the PREVIEW is right: loop means CONTINUOUS. Measured before the fix on
+// the INSET ramp below — adjacent-pixel jumps of 255/255 at every tile boundary,
+// against a median slope of 2 — because the backends got the raw [0,1] stops plus a
+// native repeat mode while only core/ramps.js synthesised the wrap segment.
+//
+// The fix bakes that wrap into the stops at parsePaint (ir.js loopWrappedStops), so
+// these pins are written against the OBSERVABLE picture, not the mechanism.
+//
+// WHY AN INSET RAMP IS THE ONLY ONE THAT CAN SHOW THIS: a ramp with stops at both 0
+// and 1 (RED_BLUE above) has a ZERO-LENGTH wrap — core/ramps.js's deliberately
+// authored HARD SEAM — so it must keep jumping, and does (pinned below).
+
+/** Stops INSET from the ends, so the wrap segment has real length. */
+const INSET = [{ offset: 0.2, color: "#ff0000" }, { offset: 0.8, color: "#0000ff" }];
+const insetRect = (extra) => rect({ ...BOX, fill: { type: "linearGradient", linear: { stops: INSET, angle: 0, wavelength: 0.25, ...extra } } });
+/** The largest adjacent-pixel channel delta along the middle row. */
+function worstAdjacentJump(px) {
+  let worst = 0;
+  for (let x = 1; x < W; x++) {
+    const a = pixelAt(px, x - 1), b = pixelAt(px, x);
+    worst = Math.max(worst, Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
+  }
+  return worst;
+}
+
+await test("BB: a LOOP fill is C0 — no adjacent-pixel jump beyond the ramp's own slope", () => {
+  // The ramp traverses 255 over half a tile (W·0.25/2 = 25 px), so its own slope is
+  // ~10/px; the old defect jumped 255 in one pixel. A bound of 20 is comfortably
+  // above the slope and an order of magnitude below the seam it forbids.
+  const MAX_SLOPE = 20;
+  const jump = worstAdjacentJump(renderPixels(insetRect({ spread: "loop" })));
+  assert.ok(jump <= MAX_SLOPE, `loop must be continuous across every tile boundary — worst adjacent jump was ${jump}`);
+});
+
+await test("BB: the PICTURE agrees with the PREVIEW's sampler across the former seam", () => {
+  // THE PIN THE USER'S REPORT DEMANDS: the editor bar samples the ramp through
+  // core/ramps.js sampleRampHex with loop:true, and the fill must draw exactly that.
+  // Sampled straight across the tile boundary at x = W·0.375 (one ramp of wavelength
+  // 0.25 centred at 0.5 starts there), which is where the 255-jump used to sit.
+  const px = renderPixels(insetRect({ spread: "loop" }));
+  const { from, to } = linearGradientRender(parsePaint({ type: "linearGradient", linear: { stops: INSET, angle: 0, wavelength: 0.25, spread: "loop" } }));
+  const boundary = Math.round(W * 0.375);
+  for (const x of [boundary - 2, boundary - 1, boundary, boundary + 1, boundary + 2]) {
+    const t = ((x + 0.5) / W - from.x) / (to.x - from.x);
+    const want = sampleRampHex(INSET, t, { loop: true });
+    const [r, g, b] = pixelAt(px, x);
+    const got = "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+    assert.equal(got, want, `x=${x} (t=${t.toFixed(4)}): the fill must draw what the preview shows`);
+  }
+});
+
+await test("BB: the AUTHORED HARD SEAM survives — stops at 0 AND 1 still jump on purpose", () => {
+  // core/ramps.js: a zero-length wrap "is how a seam is authored deliberately, and
+  // it is what CSS repeating-linear-gradient and Photoshop's gradient repeat do".
+  // Baking must not smooth this away, so the jump is REQUIRED here.
+  const jump = worstAdjacentJump(renderPixels(makeRect({ spread: "loop" })));
+  assert.ok(jump > 200, `a ramp with stops at both ends must keep its authored seam — jump was ${jump}`);
+});
+
+await test("BB: MIRROR and PAD are BYTE-IDENTICAL to before the wrap bake (only loop changed)", () => {
+  // Mirror is already C0 by reflection and pad has no tiles, so neither may be
+  // touched. Checked as pixels against their own continuity, and — the stronger
+  // claim — that parsePaint hands them the AUTHORED stop list unchanged.
+  for (const spread of ["mirror", "pad"]) {
+    const parsed = parsePaint({ type: "linearGradient", linear: { stops: INSET, angle: 0, wavelength: 0.25, spread } });
+    assert.equal(parsed.stops.length, INSET.length, `${spread}: must receive the authored stops, unbaked`);
+    assert.ok(worstAdjacentJump(renderPixels(insetRect({ spread }))) <= 20, `${spread} must stay continuous`);
+  }
+});
+
+await test("BB: phase=1 is STILL identity under loop — a baked wrap does not change the period", () => {
+  // The per-mode phase-period doctrine is unchanged: the wrap segment lives INSIDE
+  // the ramp's [0,1] domain, so loop's period is still ONE ramp.
+  assert.deepStrictEqual(
+    renderPixels(insetRect({ spread: "loop", phase: 1 })),
+    renderPixels(insetRect({ spread: "loop" })),
+  );
+});
+
+await test("BB: SVG and PDF consume the SAME baked stops (one bake, three backends)", async () => {
+  const parsed = parsePaint({ type: "linearGradient", linear: { stops: INSET, angle: 0, wavelength: 0.25, spread: "loop" } });
+  // Four stops: the two authored ones bracketed by the wrap's two halves at 0 and 1.
+  assert.equal(parsed.stops.length, 4, "the wrap bakes into the stop list parsePaint returns");
+  // SVG maps paint.stops straight to <stop> elements, so it inherits the bake and
+  // its native spreadMethod="repeat" is now correct rather than seamed.
+  const def = gradientDefSVG(parsed, "lgloop", 1);
+  assert.ok(def.includes('spreadMethod="repeat"'), def);
+  assert.equal(def.split("<stop ").length - 1, 4, `SVG must emit all four stops — got ${def}`);
+  // PDF replicates ONE base colour function per tile, so a baked base function means
+  // every tile carries the wrap. Still true vector, still no raster.
+  const pdf = Buffer.from(await irToPDF([insetRect({ spread: "loop" })], PDF_VIEW)).toString("latin1");
+  assert.ok(pdf.includes("/ShadingType 2") && !pdf.includes("/Subtype /Image"), "loop stays a vector shading");
+  assert.ok(pdf.includes("/FunctionType 3"), "the tiled stitching function is still emitted");
+});
+
+await test("BB: WAVELENGTH-0 collapses to the mean of the ramp AS LOOP TILES IT (wrap included)", () => {
+  // THE VERDICT (the law reasoned from its own logic, then measured). The collapse is
+  // "the mean of what this mode actually paints". Mirror's mean equals the authored
+  // ramp's because a reflected copy has the same average — that is why the old note
+  // said the limit was mode-invariant. A LOOP WRAP SEGMENT IS NOT A REFLECTED COPY:
+  // it is new ramp territory (last colour → first colour) that mirror never paints,
+  // so once it is baked it belongs in the average, and loop's mean legitimately
+  // parts from pad's whenever first and last colours differ.
+  const meanOf = (spread) => collapsedGradientColor(parsePaint({ type: "linearGradient", linear: { stops: INSET, angle: 0, wavelength: 0, spread } }));
+  // INSET is symmetric (red at 0.2, blue at 0.8), so its wrap is half red half blue
+  // and the two means coincide at purple — the asymmetric proof is the next assert.
+  assert.deepStrictEqual(meanOf("loop"), [0.5, 0, 0.5, 1]);
+  const ASYM = [{ offset: 0.1, color: "#ff0000" }, { offset: 0.55, color: "#0000ff" }];
+  const asymMean = (spread) => collapsedGradientColor(parsePaint({ type: "linearGradient", linear: { stops: ASYM, angle: 0, wavelength: 0, spread } }));
+  // Compared channel-wise with a tolerance: these means are summed over segments, so
+  // exact float equality would pin arithmetic order rather than the colour.
+  const closeTo = (got, want, why) => want.forEach((v, k) =>
+    assert.ok(Math.abs(got[k] - v) < 1e-9, `${why}: channel ${k} was ${got[k]}, expected ${v}`));
+  closeTo(asymMean("pad"), [0.325, 0, 0.675, 1], "pad/mirror average the authored ramp");
+  closeTo(asymMean("loop"), [0.5, 0, 0.5, 1], "loop averages the ramp INCLUDING its wrap segment");
+  // AND IT IS THE TRUE LIMIT, not merely a different number: the mean of an actually
+  // rendered fine loop tiling converges to loop's collapse, not pad's.
+  const px = renderPixels(rect({ ...BOX, fill: { type: "linearGradient", linear: { stops: ASYM, angle: 0, wavelength: 0.02, spread: "loop" } } }));
+  let sum = 0;
+  for (let x = 0; x < W; x++) sum += pixelAt(px, x)[0];
+  const measuredRed = sum / W / 255;
+  assert.ok(Math.abs(measuredRed - 0.5) < 0.02, `a fine loop tiling must average to loop's collapse (0.5), got ${measuredRed.toFixed(4)}`);
 });
 
 // ── 7. VALIDATION: 0 is accepted, NEGATIVE is refused ────────────────────────
