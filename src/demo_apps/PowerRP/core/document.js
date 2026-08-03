@@ -36,6 +36,7 @@
 
 import { blendApplied, copied, copiedDeep, deepEqual, getPath, isTree, setPath, deletePath, leaves } from "./deltas.js";
 import { defaultTransition, withDurationMigrated } from "./transitions.js";
+import { interpKeyFor, EXP_TWEEN_MODE } from "./interp_modes.js";
 import {
   withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue, evaluateState,
 } from "./expressions.js";
@@ -57,6 +58,18 @@ export function uuid() {
 const DEFAULT_SLIDE_W = 1280;
 const DEFAULT_SLIDE_H = 720;
 
+/** The camera's frame leaves — the four the user ruled interpolate exponentially
+ *  (WORKSTREAM BG). Exported so the camera plugin's coupling hook and the tests
+ *  name the same set rather than repeating a literal list.
+ *
+ *  SAME FOUR NAMES AS core/registry.js FRAME_KEYS, deliberately NOT imported: that
+ *  module imports this one (registry → document), so taking the constant from it
+ *  would close a cycle. The lists are also asking different questions — FRAME_KEYS
+ *  asks "does a plugin have a position and a size", this asks "which of THE
+ *  camera's leaves the zoom ruling covers" — and they would not necessarily move
+ *  together. A handback to one constant is available if the cycle is ever broken. */
+export const CAMERA_EXP_TWEEN_KEYS = ["x", "y", "w", "h"];
+
 /**
  * Pure function. THE canonical initial state of THE camera item — the ONE
  * source of truth reconciling the three literals that used to disagree
@@ -66,13 +79,39 @@ const DEFAULT_SLIDE_H = 720;
  * sizes it. `active:true` so it frames from slide 0; white background per the
  * user spec. `name` lets the picker/inspector label it.
  *
- * @example defaultCameraState() // {type: "camera", name: "Camera", x: 0, y: 0, w: 1280, h: 720, z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff", antialias: "standard", retina: true, ditherMode: "off", ditherEmphasis: 1}
+ * ── WHY THE FRAME LEAVES DECLARE "Exp Tween" (WORKSTREAM BG) ─────────────────
+ * User ruling, 2026-08-02 night, verbatim: "its scale should interpolate
+ * exponentially… that should be the default for height and width for the camera
+ * and well and X and Y too… because when a camera zooms in, just like in
+ * Mendelbrot, it's gotta look natural."
+ *
+ * So x/y/w/h are BORN with an explicit `~interp` companion rather than getting
+ * the default through core/interp_modes.defaultModeFor. That seam sees two VALUES
+ * and a KEY and has no widget type in hand, and `x`/`w` are universal keys — a
+ * shape-driven default there would make EVERY numeric leaf of EVERY widget
+ * exponential, which is not what was ruled and would silently rewrite every deck.
+ * Writing the companion into the camera's own state is what scopes the ruling to
+ * the camera, and it is an ordinary keyframable leaf, so an author retains the
+ * dropdown on every one of the four rows.
+ *
+ * NOTE the four leaves are the camera's own SCALE story only. The natural zoom
+ * the ruling is asking for also needs its PAN coupled to its scale, and that is
+ * not expressible per-leaf — it lives in plugins/camera.js `interpolateState`
+ * (read its header for the measurement).
+ *
+ * @example defaultCameraState().w // 1280
+ * @example defaultCameraState()["w~interp"] // "expTween" (the camera zooms geometrically)
+ * @example defaultCameraState()["x~interp"] // "expTween"
  * @example defaultCameraState({slideW: 800, slideH: 600}).w // 800
  */
 export function defaultCameraState(meta = {}) {
   return {
     type: "camera", name: "Camera",
     x: 0, y: 0, w: meta.slideW ?? DEFAULT_SLIDE_W, h: meta.slideH ?? DEFAULT_SLIDE_H,
+    // THE FRAME LEAVES INTERPOLATE GEOMETRICALLY — see the docblock. Spelled with
+    // interpKeyFor rather than as literal "x~interp" strings so the companion-key
+    // grammar has exactly one speller (core/interp_modes.js owns the sigil).
+    ...Object.fromEntries(CAMERA_EXP_TWEEN_KEYS.map((k) => [interpKeyFor(k), EXP_TWEEN_MODE])),
     z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff",
     // Rendering bundle (AA / retina / dither) is DECLARED on the camera plugin;
     // spread its defaults so a fresh camera is born complete — otherwise

@@ -16,6 +16,7 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { defaultCameraState } from "../core/document.js";
 import { props, bundle, bundleDefaults } from "../core/properties.js";
 import { borderBandHit } from "../core/geometry.js";
+import { expLerp, expTweenApplies } from "../core/interp_modes.js";
 
 
 // THE CAMERA'S RENDER PROFILES — whole-scene render configurations over the three
@@ -121,4 +122,135 @@ export const cameraPlugin = {
     return borderBandHit(s, lx, ly, tol);
   },
   anchors: standardBBoxAnchors,
+  interpolateState: interpolateCameraState,
 };
+
+// ── THE ZOOM COUPLING: why the four Exp Tween leaves are not the whole story ───
+//
+// User ruling, 2026-08-02 night (WORKSTREAM BG), verbatim: "It's the Mandelbrot.
+// Look at the Mandelbrot interpolation logic. It took a while to get it right…
+// Because when a camera zooms in, just like in Mendelbrot, it's gotta look
+// natural."
+//
+// THE REFERENCE, read as instructed: plugins/demo/mandelbrot.js:479 zoomTweenLam.
+// Its account of a natural zoom is TWO laws, not one:
+//   1. the SCALE moves geometrically  — here, `w`/`h` under "Exp Tween";
+//   2. the CENTRE is linear in the resulting HALF-WIDTH, not in alpha.
+// Law 2 is the half that "took a while to get it right": that file records the
+// measurement, where a linearly-panned centre under an exponentially-shrinking
+// frame sent the target 4170 half-widths off screen mid-transition and snapped it
+// back — the user's "it curved around and it was weird".
+//
+// MEASURED HERE, on this widget's own {x, y, w, h} bbox, because the task asked
+// whether naive per-axis Exp Tween on x/y reproduces that feel. IT DOES NOT.
+// Target-point offset from frame centre in half-widths (|offset| ≤ 1 is on
+// screen), for w 1280 → 4 zooming onto a point 9000 units out:
+//
+//     alpha                       0     0.1    0.25     0.5    0.75     0.9    1
+//     per-leaf Exp Tween x,w  13.06   21.53   43.61  124.81  265.17  252.26    0
+//     Exp Tween w, linear x   13.06   21.53   43.61  124.81  265.17  252.26    0
+//     THIS HOOK (centre in w) 13.06   13.03   12.93   12.37   10.01    5.74    0
+//
+// The first two rows are IDENTICAL, and that is not a coincidence: a camera's
+// stored `x` is the frame's LEFT EDGE, and the default camera sits at x = 0 — a
+// ZERO ENDPOINT, where expLerp takes its documented linear fallback. So per-axis
+// exp on x/y buys nothing at the origin and, off it, peaks WORSE than the linear
+// pan (587 vs 247 half-widths in the centre-space measurement). Only this hook's
+// law is monotone. The ruling's stated acceptance is the picture, not the
+// mechanism, so x/y still DECLARE "Exp Tween" (the author sees the ruling in the
+// dropdown, and it governs a pure pan) while the coupled zoom is what actually
+// renders whenever the frame is also scaling.
+//
+// This is exactly the argument core/document.js tweenedState makes for the hook's
+// existence: "the correct centre path is c(a) = A + B·10^(-z(a)) with A and B
+// determined by BOTH endpoints jointly", which "no reparameterization of the
+// STORED leaves can fix under a leaf-wise lerp".
+
+/**
+ * Pure function. THE ZOOM TWEEN's shape parameter for a camera frame: how much of
+ * the way from the TARGET width back to the START width the frame is at alpha
+ * `a`. 1 at a = 0, 0 at a = 1, decaying with the FRAME rather than with alpha.
+ *
+ *           w(a) - wTo
+ *     lam = ──────────        w(a) = wFrom·(wTo/wFrom)^a
+ *           wFrom - wTo
+ *
+ * The direct transcription of mandelbrot.js zoomTweenLam onto a stored WIDTH
+ * (that widget stores a log and exponentiates; this one stores the magnitude, so
+ * `expLerp` IS its 10^(-z) and the two curves are the same).
+ *
+ * Args:
+ *   wFrom (number): the start frame width
+ *   wTo (number): the target frame width
+ *   alpha (number): tween strength in [0, 1]
+ *
+ * Returns:
+ *   number: lam in [0, 1], or NaN when there is NO zoom (wFrom === wTo)
+ *
+ * @example cameraZoomLam(100, 1, 0) // 1
+ * @example cameraZoomLam(100, 1, 1) // 0
+ * @example cameraZoomLam(100, 1, 0.5) // 0.09090909090909091 (a tenth of the way in scale, nine tenths of the way in offset)
+ * @example cameraZoomLam(1, 100, 0.5) // 0.9090909090909091 (zooming OUT is the exact time-reverse)
+ * @example Number.isNaN(cameraZoomLam(50, 50, 0.5)) // true (a pure pan has no zoom to couple to)
+ */
+export function cameraZoomLam(wFrom, wTo, alpha) {
+  if (wFrom === wTo) return NaN;
+  return (expLerp(wFrom, wTo, alpha) - wTo) / (wFrom - wTo);
+}
+
+/**
+ * Pure function. THE CAMERA'S COUPLED FRAME (the core/document.js
+ * `interpolateState` hook): the {x, y, w, h} leaves that replace the per-leaf
+ * blend while a slide transition zooms the camera, or `{}` when the per-leaf
+ * result is already right.
+ *
+ * `w`/`h` are the geometric law the four leaves already declare; the CENTRE is
+ * then placed linear in the resulting width, which is the coupling — see the
+ * section header for the measurement and for why per-axis exp on x/y is not it.
+ *
+ * RETURNS `{}` — deferring to the per-leaf blend — in exactly three cases, each
+ * for a stated reason rather than as a fallback:
+ *   - NO ZOOM (`w` equal at both ends): a pan at fixed magnification is a straight
+ *     line, which is what the leaves already do, and lam is undefined (0/0).
+ *   - A FRAME LEAF THAT IS NOT A FINITE NUMBER at either end: an `=` equation (or
+ *     a key not yet in the state) is the equation's business, and this law is
+ *     defined on numbers.
+ *   - EITHER WIDTH ZERO OR THE PAIR SIGN-FLIPPED: the geometric law has no path
+ *     there (`expTweenApplies` says so), so its coupling has no shape either. A
+ *     zero-width camera is degenerate anyway — core/view.fitRectView guards it.
+ *
+ * `h` rides `w`'s OWN lam rather than computing its own, so a non-uniform aspect
+ * change keeps one time-parameterization for the whole frame; two independent
+ * lams would let width and height reach their targets at different rates and
+ * shear the picture mid-zoom.
+ *
+ * Args:
+ *   from (object): the folded camera state on the PREVIOUS slide
+ *   to (object): its state on THIS slide (the delta at alpha 1)
+ *   alpha (number): tween strength in (0, 1)
+ *
+ * Returns:
+ *   object: a flat {stateKey: value} override map, possibly empty
+ *
+ * @example interpolateCameraState({x: 0, y: 0, w: 100, h: 100}, {x: 0, y: 0, w: 100, h: 100}, 0.5) // {} (no zoom → the per-leaf pan is correct)
+ * @example interpolateCameraState({x: 0, y: 0, w: 100, h: 50}, {x: 9, y: 0, w: 1, h: 0.5}, 0.5).w // 10 (the geometric mean)
+ * @example interpolateCameraState({x: 0, y: 0, w: 100, h: 50}, {x: 9, y: 0, w: 1, h: 0.5}, 1).x // 9 (exact at the endpoint)
+ * @example interpolateCameraState({x: "= 1 + 1", y: 0, w: 100, h: 50}, {x: 9, y: 0, w: 1, h: 0.5}, 0.5) // {} (an equation-bound frame is the equation's business)
+ */
+export function interpolateCameraState(from, to, alpha) {
+  const KEYS = ["x", "y", "w", "h"];
+  for (const key of KEYS)
+    if (!Number.isFinite(from[key]) || !Number.isFinite(to[key])) return {};
+  if (!expTweenApplies(from.w, to.w)) return {};
+  const lam = cameraZoomLam(from.w, to.w, alpha);
+  if (!Number.isFinite(lam)) return {};
+  // The frame at this alpha: width geometric, height on the SAME lam so the
+  // aspect change is one motion (see above).
+  const w = expLerp(from.w, to.w, alpha);
+  const h = to.h + lam * (from.h - to.h);
+  // The centre, linear in that width — the reference's law — then back to the
+  // stored top-left corner the camera actually keyframes.
+  const cx = (to.x + to.w / 2) + lam * ((from.x + from.w / 2) - (to.x + to.w / 2));
+  const cy = (to.y + to.h / 2) + lam * ((from.y + from.h / 2) - (to.y + to.h / 2));
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
+}
