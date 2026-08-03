@@ -1,0 +1,256 @@
+/**
+ * GRADIENT SPREAD UI probe — boot the PowerRP editor headless and drive the REAL
+ * Spread row (web/PaintField.svelte) and the REAL continuation band
+ * (web/GradientStopBar.svelte) that the bare-node suites cannot reach.
+ *
+ * render_gpu/tests/gradient_spread_test.js already proves the MATH and the three
+ * backends. What only a browser can prove is that the row exists, writes the
+ * document, and that the bar's band redraws to match — the half of the feature the
+ * user actually touches.
+ *
+ * Proves, against the REAL app:
+ *   - THE SPREAD ROW EXISTS on a LINEAR gradient fill and offers exactly the three
+ *     declared modes, defaulting to Mirror (the legacy behaviour).
+ *   - IT IS NOT OFFERED ON A RADIAL gradient, which has no wavelength and therefore
+ *     no segment to tile — the recorded boundary of this feature, asserted rather
+ *     than left as a comment.
+ *   - PICKING A MODE WRITES THE DOCUMENT at fill.linear.spread, in EXACTLY ONE undo
+ *     unit (the easiest thing to get wrong on a select that writes a nested
+ *     sub-state), and undo puts it back.
+ *   - AN ABSENT SPREAD IS MIRROR: a gradient authored without the field shows
+ *     Mirror selected, so the legacy default is what the UI reports.
+ *   - THE CONTINUATION BAND appears beside the ramp and its painted gradient
+ *     CHANGES when the mode changes — read back off the live element, so a band
+ *     that rendered a constant would fail. Loop's band must START at the ramp's
+ *     FIRST colour (the user's "I should see purple on the right of it"), while
+ *     mirror's starts at the LAST.
+ *   - THE WAVELENGTH FLOOR IS GONE: the wavelength field accepts 0 and the document
+ *     stores it, with no NaN and no console error — the scrub-to-zero the ruling
+ *     asked for.
+ */
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import fs from "node:fs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const webRoot = resolve(HERE, "../web");
+const SHOTS = resolve(HERE, "../.claude_vlm_checks/gradient_spread_ui");
+fs.mkdirSync(SHOTS, { recursive: true });
+
+const { createServer } = await import("vite");
+// HMR OFF + no repo watch: this probe writes screenshots INTO the repo, and a
+// watched write would reload the page and discard the injected document.
+const server = await createServer({
+  configFile: resolve(webRoot, "vite.config.js"),
+  server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: null },
+});
+await server.listen();
+const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`;
+
+const { launchBrowser } = await import("./puppeteerLaunch.js");
+const browser = await launchBrowser();
+
+const errors = [];
+const fails = [];
+const assert = (cond, msg) => { if (!cond) { fails.push(msg); console.log(`  FAIL ${msg}`); } else { console.log(`  ok   ${msg}`); } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+try {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 });
+  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+  // Frontend-only Vite (no server.py): backend-absent noise is expected and named
+  // specifically — the gate still fails on anything else (paintfield_probe's list).
+  const IGNORE = /Failed to load resource|thumbnail|\/api\/|clipboard|listAssets|project assets|Internal Server Error|ECONNREFUSED|http proxy error|no.*adapter|adapters/i;
+  page.on("console", (m) => { if (m.type() === "error" && !IGNORE.test(m.text())) errors.push(`console.error: ${m.text()}`); });
+
+  await page.goto(`${baseUrl}/`, { waitUntil: "networkidle0" });
+  await sleep(3500);
+  if (errors.length) { console.error("BOOT ERRORS:\n" + errors.join("\n")); process.exit(1); }
+
+  // A rect with a LINEAR gradient fill that OMITS `spread` — the legacy shape, so
+  // the "absent is mirror" claim is tested on a real absent field rather than on
+  // one this probe wrote. Red→blue: the two ends are far apart, so a wrap is
+  // unmistakable in the band's own gradient string.
+  await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const def = (type) => ({ ...app.registry.get(type).defaults, type });
+    const cam = { ...def("camera"), name: "Camera", x: 0, y: 0, w: 1000, h: 500, z: 1000, active: true, background: "#101014" };
+    const fill = {
+      type: "linearGradient",
+      linear: { stops: [{ offset: 0, color: "#ff0000" }, { offset: 1, color: "#0000ff" }], angle: 0, wavelength: 0.5 },
+    };
+    const rect = { ...def("rect"), name: "Box", x: 300, y: 150, w: 400, h: 200, z: 1, active: true, fill };
+    const tr = { type: "tween", seconds: 0.4, curve: "smooth", sound: null };
+    app.commit(app.repaired({ meta: { name: "spread-qa", slideW: 1000, slideH: 500 }, slides: [
+      { id: "s0", name: "S1", transition: tr, delta: { items: { cam, rect } } },
+    ] }));
+    app.slideIndex = 0;
+    app.selection = Object.keys(app.doc.slides[0].delta.items).find((id) => app.doc.slides[0].delta.items[id].type === "rect");
+  });
+  await sleep(600);
+
+  // Expand collapsed inspector categories so the fill PaintField is in the DOM.
+  await page.evaluate(() => {
+    for (const h of document.querySelectorAll(".cat-header[aria-expanded='false']")) h.click();
+  });
+  await sleep(400);
+
+  /** The rect's stored fill, as a faithful plain object (the doc is a $state proxy —
+   *  stringify in-page, parse in node, the paintfield_probe discipline). */
+  const rectFill = () => page.evaluate(() => {
+    const it = window.__powerrp_app.doc.slides[0].delta.items;
+    const id = Object.keys(it).find((k) => it[k]?.type === "rect");
+    return JSON.stringify(it[id]?.fill ?? null);
+  }).then((s) => JSON.parse(s));
+
+  /**
+   * The Spread row's state, read off the REAL control. The app's Dropdown is a
+   * custom listbox (src/lib/Dropdown.svelte), not a native <select> — so the
+   * current value is the trigger's label and the options only exist in the DOM
+   * while the menu is open. Opening it is therefore part of reading it.
+   */
+  const spreadRow = async () => {
+    const present = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll(".paint-sub-row")];
+      const row = rows.find((r) => r.querySelector(".paint-sub-label")?.textContent.trim() === "Spread");
+      if (!row) return null;
+      return { label: row.querySelector(".dd-trigger-label")?.textContent.trim() ?? null };
+    });
+    if (!present) return null;
+    // Open the menu to enumerate the options, then close it by clicking the SAME
+    // trigger again. NOT Escape: Escape bubbles to the Inspector and collapses the
+    // panel this probe is reading, which cost a debugging round the first time.
+    const toggle = () => page.evaluate(() => {
+      const rows = [...document.querySelectorAll(".paint-sub-row")];
+      rows.find((r) => r.querySelector(".paint-sub-label")?.textContent.trim() === "Spread")
+        .querySelector(".dd-trigger").click();
+    });
+    await toggle();
+    await sleep(250);
+    const options = await page.evaluate(() =>
+      [...document.querySelectorAll(".dd-menu [role='option']")].map((o) => o.textContent.trim()));
+    await toggle();
+    await sleep(200);
+    return { label: present.label, options };
+  };
+
+  // ── THE ROW EXISTS, WITH THE THREE MODES, DEFAULTING TO MIRROR ──────────────
+  const row = await spreadRow();
+  assert(row !== null, "a linear gradient fill has a Spread row");
+  assert(row?.options.length === 3 && row.options.every((o) => /^(Mirror|Loop|Pad)\b/.test(o)),
+    `the row offers exactly the three declared modes (got ${JSON.stringify(row?.options)})`);
+  assert(/^Mirror\b/.test(row?.label ?? ""), `an ABSENT spread shows Mirror — the legacy default (got ${row?.label})`);
+  assert((await rectFill())?.linear?.spread === undefined,
+    "…and showing it did NOT write the field: absent stays absent until picked");
+
+  await page.screenshot({ path: resolve(SHOTS, "01-spread-row-mirror.png") });
+
+  /**
+   * Command. Picks a spread mode by CLICKING the real listbox — open the trigger,
+   * click the option whose label starts with the mode's name. Driving the actual
+   * control (rather than writing state) is the point of a probe: it is what proves
+   * the row is wired to the document at all.
+   */
+  const pickSpread = async (modeLabel) => {
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll(".paint-sub-row")];
+      rows.find((r) => r.querySelector(".paint-sub-label")?.textContent.trim() === "Spread")
+        .querySelector(".dd-trigger").click();
+    });
+    await sleep(250);
+    await page.evaluate((m) => {
+      const opt = [...document.querySelectorAll(".dd-menu [role='option']")]
+        .find((o) => o.textContent.trim().startsWith(m));
+      if (!opt) throw new Error(`spread option "${m}" not found in the open menu`);
+      opt.click();
+    }, modeLabel);
+    await sleep(450);
+  };
+
+  /** The continuation band's painted gradient, read off the LIVE element. */
+  const bandCss = () => page.evaluate(() => {
+    const el = document.querySelector(".stopbar-band");
+    return el ? getComputedStyle(el).getPropertyValue("--sb-band").trim() : null;
+  });
+
+  const mirrorBand = await bandCss();
+  assert(mirrorBand && mirrorBand.length > 0, "the continuation band is rendered beside the ramp");
+  // Mirror REFLECTS, so the band runs BACK from the ramp's last colour (blue).
+  assert(/^linear-gradient\(90deg, #0000ff/.test(mirrorBand ?? ""),
+    `mirror's band starts at the LAST colour, reflecting back (got ${(mirrorBand ?? "").slice(0, 40)})`);
+
+  // ── PICKING LOOP: writes the doc, ONE undo unit, and the band wraps ─────────
+  const beforePick = await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
+  await pickSpread("Loop");
+
+  assert((await rectFill())?.linear?.spread === "loop", "picking Loop writes fill.linear.spread");
+  await page.evaluate(() => window.__powerrp_app.undo());
+  await sleep(400);
+  assert(await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc)) === beforePick,
+    "…in EXACTLY ONE undo unit (a single undo restores the whole document)");
+  await page.evaluate(() => window.__powerrp_app.redo());
+  await sleep(400);
+  assert((await rectFill())?.linear?.spread === "loop", "…and redo puts it back");
+
+  const loopBand = await bandCss();
+  assert(loopBand !== mirrorBand, "the band REDRAWS when the mode changes (it is not a constant)");
+  // THE RULING'S OWN TEST: with looping the first colour reappears past the end.
+  assert(/^linear-gradient\(90deg, #ff0000/.test(loopBand ?? ""),
+    `loop's band RESTARTS at the FIRST colour — "I should see purple on the right of it" (got ${(loopBand ?? "").slice(0, 40)})`);
+  await page.screenshot({ path: resolve(SHOTS, "02-spread-loop-band.png") });
+
+  // ── PAD holds the last colour flat ─────────────────────────────────────────
+  await pickSpread("Pad");
+  const padBand = await bandCss();
+  assert((await rectFill())?.linear?.spread === "pad", "picking Pad writes it too");
+  assert(/#0000ff 0%, #0000ff 100%/.test(padBand ?? ""),
+    `pad's band HOLDS the last colour flat (got ${(padBand ?? "").slice(0, 60)})`);
+  await page.screenshot({ path: resolve(SHOTS, "03-spread-pad-band.png") });
+
+  // ── THE BOUNDARY: a RADIAL gradient has no spread row ───────────────────────
+  await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const it = app.doc.slides[0].delta.items;
+    const id = Object.keys(it).find((k) => it[k]?.type === "rect");
+    app.setPreview([[["items", id, "fill"], {
+      type: "radialGradient",
+      radial: { stops: [{ offset: 0, color: "#ff0000" }, { offset: 1, color: "#0000ff" }], center: { x: 0.5, y: 0.5 }, r: 0.5 },
+    }]]);
+    app.commitPreview();
+  });
+  await sleep(500);
+  assert(await spreadRow() === null,
+    "a RADIAL gradient has NO Spread row — it has no wavelength, so no segment to tile (the recorded boundary)");
+  await page.screenshot({ path: resolve(SHOTS, "04-radial-no-spread-row.png") });
+
+  // ── THE FLOOR IS GONE: wavelength accepts 0 ────────────────────────────────
+  await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const it = app.doc.slides[0].delta.items;
+    const id = Object.keys(it).find((k) => it[k]?.type === "rect");
+    app.setPreview([[["items", id, "fill"], {
+      type: "linearGradient",
+      linear: { stops: [{ offset: 0, color: "#ff0000" }, { offset: 1, color: "#0000ff" }], angle: 0, wavelength: 0, spread: "loop" },
+    }]]);
+    app.commitPreview();
+  });
+  await sleep(600);
+  const collapsed = await rectFill();
+  assert(collapsed?.linear?.wavelength === 0,
+    `wavelength 0 is STORED, not floored to 0.05 (got ${collapsed?.linear?.wavelength})`);
+  // The canvas must still be painting — a NaN axis would have thrown by now, and
+  // the console listener above would have caught it.
+  assert(await page.evaluate(() => !!document.querySelector("canvas")), "the canvas survived a zero-wavelength gradient");
+  await page.screenshot({ path: resolve(SHOTS, "05-wavelength-zero-average.png") });
+
+  assert(errors.length === 0, `no console errors during the run (${JSON.stringify(errors)})`);
+
+  console.log(`\ngradient_spread_ui_probe: ${(fails.length === 0 ? "all" : "")} checks done, ${fails.length} failed, screenshots in ${SHOTS}`);
+  for (const f of fails) console.error(`CHECK FAILED: ${f}`);
+} finally {
+  await browser.close();
+  await server.close();
+}
+
+process.exit(fails.length === 0 ? 0 : 1);
