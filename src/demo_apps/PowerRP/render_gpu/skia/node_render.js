@@ -46,6 +46,33 @@ async function ensureCanvasKit() {
 }
 
 /**
+ * Command (inits CanvasKit + the font collection; memoized — the same call
+ * `renderToPng` makes). THE TEXT SEAMS, READY BEFORE THE TREE IS DERIVED.
+ *
+ * WHY A CALLER WOULD WANT THIS. Both text seams (core/ink_metrics and
+ * core/glyph_outlines) are installed by `buildFontCollection`, which until now
+ * ran only inside `renderToPng` — i.e. AFTER a caller had already derived its
+ * render tree. That ordering is invisible for the ink measure (a bound computed
+ * with the monospace fallback is merely approximate) but DECISIVE for glyph
+ * outlines: `morphNotReady` is asked during derive, so a text morph reported
+ * "the glyph-outline seam is not installed" and fell back to the discrete switch
+ * — on a run where the seam was installed a few milliseconds later and the morph
+ * would have drawn perfectly.
+ *
+ * So a caller that DERIVES BEFORE IT PAINTS awaits this first. It is idempotent
+ * and shares the memo with `renderToPng`, so calling it costs the CanvasKit init
+ * that call was going to pay for anyway, merely earlier.
+ *
+ * @returns {Promise<void>}
+ *
+ * @example // cli/render.js, before evaluatedStateAt:
+ * @example // await ensureTextSeams();
+ */
+export async function ensureTextSeams() {
+  await ensureCanvasKit();
+}
+
+/**
  * Query→build (reads font files). Builds the shared FontCollection: registers the
  * committed selectable families (both weights share ONE cssFamily — Skia matches
  * weight via the run's fontStyle) plus the Noto fallback faces, into a

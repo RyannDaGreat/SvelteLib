@@ -105,7 +105,7 @@ import { registerAll } from "../plugins/index.js";
 import { registerPluginAssets, isPluginAssetName } from "../core/plugin_assets.js";
 import { fitRectView } from "../core/view.js";
 import { cameraFrameIR, evaluatedStateAt } from "../web/cameraFrame.js";
-import { renderToPng } from "../render_gpu/skia/node_render.js";
+import { renderToPng, ensureTextSeams } from "../render_gpu/skia/node_render.js";
 import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 
 const DEFAULTS = { slide: 0, alpha: 1, width: 1280, height: 720, quality: "full" };
@@ -283,6 +283,14 @@ export async function renderDocToPng(docJson, { slide, alpha, width, height, qua
   // console.errored — silent repairs are forbidden.
   const { doc, reports } = repairedDocument(deserialize(docJson), registry);
   printRepairReports(reports);
+  // THE TEXT SEAMS BEFORE THE DERIVE, not after. Both are installed when the font
+  // collection is built, which used to happen inside renderToPng at the very
+  // bottom of this function — after derive had already asked a text widget
+  // whether it could morph. It reported "no glyph-outline source installed" and
+  // took the discrete switch on a run where the seam was ready milliseconds
+  // later. The init is memoized and renderToPng makes the same call, so this
+  // moves a cost rather than adding one.
+  await ensureTextSeams();
   // The one pipeline: fold → EVALUATE (equations become numbers) → derive → emit,
   // through web/cameraFrame's evaluatedStateAt — the ONE home for it, so the CLI
   // cannot drift from the editor. (It already imports cameraFrameIR from there;
