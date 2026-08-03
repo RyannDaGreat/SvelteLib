@@ -10,8 +10,15 @@
   Strikethrough · font-size stepper AND a scrubbable size readout between its two
   buttons (R6-13.2) · font family · font Color · text HIGHLIGHT · glyph OUTLINE
   (color + width) · paragraph ALIGN left/center/right (Round 15.6).
-  EVERY SIZE CONTROL HERE IS RELATIVE: it sends px to ADD, never a size to set, so
-  a mixed selection keeps its differences (core/richtext.adjustRunSize).
+  THE SIZE CONTROL HAS THREE VERBS, one per gesture (user ruling, 2026-08-02 —
+  quoted in full at "THE THREE SIZE VERBS" below): TYPING a number NORMALIZES every
+  selected run to it, DRAGGING scales them all PROPORTIONALLY (ratios kept), and
+  the +/- buttons ADD to each (ratios deliberately not kept). The gesture arrives
+  from DraggableNumber's provenance argument; the verbs are
+  core/richtext.applyRunStyle / scaleRunSize / adjustRunSize respectively. This
+  file used to say "EVERY SIZE CONTROL HERE IS RELATIVE" and send px-to-ADD for
+  BOTH of the readout's gestures, which is why typing 18 over a 48+18 selection
+  shifted it by -30 instead of normalizing it.
   Character toggles reflect the selection's COMMON value (indeterminate when
   mixed) via `onstyle`; the align buttons are PARAGRAPH-level and go through
   `onparastyle` (they set every paragraph the selection touches), reflecting the
@@ -52,14 +59,22 @@
   // RANGE a run-style delta applies over, so only it can stage one.
   //
   // onsizestep(delta)/onsizesteppreview(delta) are the SIZE stepper's own seam,
-  // separate from onstyle because a size step is RELATIVE (px to ADD to every
+  // separate from onstyle because a size step is ADDITIVE (px to ADD to every
   // covered run) while every other control writes an ABSOLUTE value. This toolbar
   // used to build a {size: n} delta itself from the selection's COMMON size, which
   // is undefined on a MIXED selection — so it fell back to a constant and
   // flattened 48+18 into one run at 38, while the keyboard path's differently
   // computed fallback produced one run at 50. Both now call the controller's ONE
   // stepSize; this file no longer knows how a size is derived, only by how much.
-  let { app, boxScale, onstyle, onstylepreview, onstylepreviewend, onsizestep, onsizesteppreview, selRange, runsAt, onparastyle, parasAt, boxAlign } = $props();
+  //
+  // onsizeset(px) / onsizescale(factor) / onsizescalepreview(factor) are the OTHER
+  // TWO size verbs — see "THE THREE SIZE VERBS" below and in
+  // core/richtext.js. They are separate props rather than one callback taking a
+  // verb tag because they take DIFFERENT ARGUMENTS: a size in px, a multiplier,
+  // and a px delta are three different quantities, and a single `(verb, n)` seam
+  // would put the reader one indirection away from knowing which of the three `n`
+  // is.
+  let { app, boxScale, onstyle, onstylepreview, onstylepreviewend, onsizestep, onsizesteppreview, onsizeset, onsizescale, onsizescalepreview, selRange, runsAt, onparastyle, parasAt, boxAlign } = $props();
 
   // Which inline color popover is open (font | highlight | outline | null).
   let openPicker = $state(null);
@@ -147,16 +162,79 @@
   function stepSize(delta) { previewing = false; onsizestep(delta); }
   function previewStepSize(delta) { previewing = true; onsizesteppreview(delta); }
 
-  /** Command. The scrubbable readout's live frames. DraggableNumber reports an
-   *  ABSOLUTE value, so the step it represents is that value minus what the
-   *  readout was showing when the gesture began — and `sizeSeed` IS that value
-   *  throughout the drag, because the toolbar reads the pre-preview base while a
-   *  preview is staged. Sending the CUMULATIVE delta (never a per-frame one) is
-   *  what makes the controller's re-apply-from-base preview land correctly. */
-  function scrubSize(next) { previewing = true; onsizesteppreview(next - sizeSeed); }
-  /** Command. The scrubbable readout settling — the durable write, through the
-   *  SAME relative entry point the +/- buttons use. */
-  function commitScrubSize(next) { previewing = false; onsizestep(next - sizeSeed); }
+  // ── THE THREE SIZE VERBS (user ruling, 2026-08-02, verbatim) ────────────────
+  // "when I type in a number for a font size, if I have multiple words that have
+  //  different sizes, they should all be normalized to that number. But if I drag
+  //  it up and down, it should make them all bigger or smaller, maintaining the
+  //  myriad of different sizes I may have selected. And by the way, it should do
+  //  so proportionally when I'm using the slider, as opposed to the pluses and
+  //  minuses. The reason why is because I want to keep the relative proportions of
+  //  the different font sizes the same when I use the slider, and increment or
+  //  decrement when I use the increment or decrement buttons."
+  //
+  // So ONE control has THREE meanings, decided by the GESTURE and by nothing else:
+  //   TYPED  → NORMALIZE    onsizeset(n)          every run becomes n
+  //   DRAG   → PROPORTIONAL onsizescale(f)        every run × f, ratios kept
+  //   +/-    → ADDITIVE     onsizestep(±SIZE_STEP) every run ± the step, ratios NOT
+  // The +/- buttons are unchanged; they were already the additive verb. What is
+  // new is that the READOUT no longer answers with the additive verb for both of
+  // its own two gestures.
+  //
+  // HOW THE GESTURE REACHES HERE: DraggableNumber reports it, as the second
+  // argument to oninput/onchange — {source: "drag"|"typed"|"step", startValue}.
+  // That argument is why this workstream needed a lib change at all ("You may need
+  // the number slider to be able to emit an event upon entering a number through
+  // text … everything else out there right now doesn't, but this one little thing
+  // can"). Nothing else in the app reads it.
+  //
+  // THE FACTOR IS ALWAYS RATIO-FROM-START, NEVER FROM THE LAST FRAME, and that is
+  // load-bearing rather than stylistic. `sizeSeed` is the value the readout showed
+  // when the drag began — it is stable for the whole gesture, because the toolbar
+  // reads the PRE-PREVIEW base while a preview is staged — and the controller
+  // re-applies each preview from its own captured base. So every frame computes
+  // "start sizes × (current / start)". A frame-to-frame factor would instead
+  // multiply the PREVIOUS frame's already-rounded sizes, and since scaledSize
+  // rounds to whole px, a long drag would accumulate that rounding differently per
+  // run and visibly drift the proportions apart — the classic compounding bug, and
+  // the one thing the user explicitly asked this control to preserve.
+  //
+  // WHY NOT USE g.startValue (which DraggableNumber also supplies)? It is the same
+  // number by construction, but sizeSeed is the one the CONTROLLER's re-apply base
+  // corresponds to; reading the seed keeps the numerator and denominator sourced
+  // from the same place, so they cannot disagree if a future edit changes what the
+  // readout displays mid-gesture.
+
+  /** Command. The scrubbable readout's live frames. Routes on the gesture: a DRAG
+   *  previews the PROPORTIONAL verb (ratio from the drag's start), a TYPED value
+   *  previews nothing here — it has no intermediate frames, it arrives once,
+   *  already committed, through onchange.
+   *
+   *  A "step" source cannot reach this control: it comes from DraggableNumber's
+   *  own Arrow-key nudge, which IS an increment, so it takes the additive verb —
+   *  the same one the +/- buttons use, keeping the keyboard and the buttons on one
+   *  answer as they have been since the 38-vs-50 divergence. */
+  function scrubSize(next, g) {
+    previewing = true;
+    if (g?.source === "step") { onsizesteppreview(next - sizeSeed); return; }
+    onsizescalepreview(sizeFactor(next));
+  }
+
+  /** Command. The scrubbable readout settling — the durable write, routed to
+   *  whichever of the three verbs the gesture means. TYPED normalizes, DRAG
+   *  scales, an Arrow-key nudge steps. Each is ONE undo unit: the controller's
+   *  durable entry points all push exactly one in-session snapshot, and the whole
+   *  edit session commits as one document-level entry. */
+  function commitScrubSize(next, g) {
+    previewing = false;
+    if (g?.source === "typed") { onsizeset(next); return; }
+    if (g?.source === "step") { onsizestep(next - sizeSeed); return; }
+    onsizescale(sizeFactor(next));
+  }
+
+  /** Pure-ish (reads the gesture's stable seed). The drag's whole-gesture ratio —
+   *  see the RATIO-FROM-START note above for why the denominator is the seed and
+   *  never the previous frame. */
+  function sizeFactor(next) { return dragFactor(next, sizeSeed); }
 
   /** Command. Stages a FONT preview and takes OWNERSHIP of the slot from the
    *  buttons, so a later toolbar-leave cannot revert the picker's preview. Last
@@ -253,19 +331,32 @@
        RenderCenterModal's form fields. No `step`: defaultValue supplies it
        (numberStep.defaultStep(36) = 1, i.e. whole px), and `min` is the same floor
        every size write already lands on.
-       IT STAYS LIVE ON A MIXED SELECTION, which is the ONLY place "relative"
-       actually bites: on a uniform selection relative and absolute coincide. So
-       the number shown is the selection's common size when it has one and its
-       SEED when it does not — the size at the selection START, which is
-       core/multiselect.rowMixedState's own word for "the defined starting point a
-       gesture on a mixed row needs" AND the exact fallback the keyboard path has
-       always stepped from. The mark beside it is that module's MIXED_MARK, reused
-       rather than re-invented, so the app has ONE way of saying "these differ".
-       The gesture is honest either way: it never SETS the number it displays, it
-       shifts every covered run BY the amount the number moved. -->
+       IT STAYS LIVE ON A MIXED SELECTION, which is the ONLY place the three verbs
+       differ at all: on a uniform selection normalize, scale and step can all
+       reach the same number, and the distinction is invisible.
+
+       WHAT IT SHOWS WHEN SIZES DIFFER — a NUMBER (the SEED, i.e. the size at the
+       selection start) with MIXED_MARK beside it, NOT the bare mark alone. The
+       Inspector's mixed rows show "…" and nothing else, and that is right THERE
+       because those rows have only two verbs (leave it, or unify to one typed
+       value) so a number would only invite a misread. This control has THREE, and
+       two of them are CONTINUOUS: a drag needs a number to be a ratio away from,
+       and the user must be able to see what they are dragging from. A bare "…"
+       would make the drag start from nothing visible and the readout jump on the
+       first pixel. So: the mark says "these differ" (the app's ONE way of saying
+       it, imported from core/multiselect rather than re-invented) and the number
+       says "and this is the one you are moving relative to". The seed is the size
+       at the selection START — core/multiselect.rowMixedState's own "defined
+       starting point a gesture on a mixed row needs", and the exact value the
+       keyboard path has always stepped from.
+
+       THE NUMBER IS NOT A PROMISE THAT EVERY RUN IS IT: on a mixed selection only
+       the TYPED verb sets the shown number onto everything, and typing is exactly
+       the gesture where the user names a size. The other two move every run
+       relative to its OWN size, and the tooltip says so. -->
   <Tooltip text={common.size != null
-    ? `Font size ${common.size}px — drag to scrub, click to type`
-    : `Sizes differ in the selection (${sizeSeed}px at the start) — dragging shifts every run by the same amount and keeps the differences`}>
+    ? `Font size ${common.size}px — drag to scrub, click to type, +/− to step`
+    : `Sizes differ in the selection (${sizeSeed}px at the start). Type a number to make them ALL that size; drag to scale them all proportionally, keeping the differences; use +/− to add or subtract the same amount from each`}>
     <span class="text-format-size">
       <DraggableNumber
         label="Font size"
@@ -387,6 +478,38 @@
    */
   export function toggleDelta(common, key) {
     return { [key]: common[key] === true ? false : true };
+  }
+
+  /**
+   * Pure function. The PROPORTIONAL verb's multiplier for a drag that started at
+   * `seed` and has reached `next` — the whole-gesture ratio, which is the ONE
+   * expression of "ratio from start, never from the last frame".
+   *
+   * WHY IT IS ITS OWN NAMED FUNCTION rather than a `next / sizeSeed` inline: it is
+   * where the DEGENERATE SEED is answered, and that answer needs stating. A seed
+   * of 0 (or negative, or non-finite) would make the ratio ±∞ or NaN, which
+   * scaleRunSize refuses LOUDLY — correctly, since dividing by it is meaningless.
+   * But a seed of 0 is not a bug to throw on HERE: it is what the readout shows
+   * before a real size is known, and the honest multiplier from "no size" is 1
+   * (leave the runs alone) rather than a crash on a gesture the user made in good
+   * faith. So the guard returns the identity, and the LOUD refusal stays in the
+   * primitive, where a genuinely bad factor computed some other way still hits it.
+   *
+   * @param {number} next - the value the readout shows now
+   * @param {number} seed - the value it showed when the drag began
+   * @returns {number} the multiplier to apply to every covered run's size
+   *
+   * @example
+   * // A drag from 12 up to 18 scales everything by 1.5 — so a selection holding
+   * // 12 and 24 becomes 18 and 36, and the 1:2 ratio is exactly preserved.
+   * dragFactor(18, 12) // 1.5
+   * @example dragFactor(24, 48) // 0.5  (dragging down halves every run)
+   * @example dragFactor(36, 36) // 1  (no movement — identity)
+   * @example dragFactor(20, 0) // 1  (degenerate seed → identity, never Infinity)
+   */
+  export function dragFactor(next, seed) {
+    if (!Number.isFinite(seed) || seed <= 0) return 1;
+    return next / seed;
   }
 
   // THERE IS NO sizeDelta HERE ANY MORE, on purpose. It returned ONE ABSOLUTE

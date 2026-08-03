@@ -45,7 +45,7 @@
   import { getTextLayout } from "../render_gpu/skia/text_layout.js";
   import {
     normalizeRichText, unresolvedRichText, richTextToPlain, runsLength, runStyleAt,
-    commonStyle, applyRunStyle, adjustRunSize, steppedSize, applyParaStyle, insertText, deleteRange,
+    commonStyle, applyRunStyle, adjustRunSize, scaleRunSize, steppedSize, scaledSize, MIN_RUN_SIZE, applyParaStyle, insertText, deleteRange,
     DEFAULT_PARA_SIZE, SIZE_STEP,
   } from "../core/richtext.js";
   import TextFormatToolbar from "./TextFormatToolbar.svelte";
@@ -275,11 +275,12 @@
   }
 
   // ── style edits (toolbar onstyle / onsizestep / Cmd+B·I·U / Cmd±) ─────────────
-  // TWO run edits, ONE selection. `runsOf` below is always one of these; each is
+  // THREE run edits, ONE selection. `runsOf` below is always one of these; each is
   // the ONE expression of its edit, shared by the durable commit and the hover
   // preview so the previewed thing and the committed thing cannot drift.
   /** Query (reads the live selection offsets). `base`'s runs with `delta` applied
-   *  over the selection — every ABSOLUTE style write (B/I/U, color, font, …). */
+   *  over the selection — every ABSOLUTE style write (B/I/U, color, font, …),
+   *  INCLUDING a TYPED font size, which is absolute by definition. */
   function styledRuns(base, delta) {
     return applyRunStyle(base.runs, selStart, selEnd, delta, inherited);
   }
@@ -289,6 +290,13 @@
    *  express "shift each run by 2" and flattens a mixed selection to one run. */
   function sizeSteppedRuns(base, delta) {
     return adjustRunSize(base.runs, selStart, selEnd, delta, inherited);
+  }
+  /** Query (reads the live selection offsets). `base`'s runs with every covered
+   *  run's size MULTIPLIED by `factor` — the PROPORTIONAL size write, the third
+   *  primitive, which preserves the ratios an additive shift destroys. See
+   *  core/richtext.js's "THE THREE SIZE VERBS" note for why all three exist. */
+  function sizeScaledRuns(base, factor) {
+    return scaleRunSize(base.runs, selStart, selEnd, factor, inherited);
   }
 
   // ── style HOVER PREVIEW (the FontPicker's live canvas preview) ────────────────
@@ -357,6 +365,12 @@
   /** Command. Previews a RELATIVE size step (the toolbar's +/- hover and every
    *  frame of the scrubbable size readout's drag). */
   function previewSizeStepOnSelection(delta) { previewRunEdit((base) => sizeSteppedRuns(base, delta)); }
+  /** Command. Previews a PROPORTIONAL size scale — every frame of the size
+   *  readout's DRAG. previewRunEdit re-applies from the CAPTURED base, which is
+   *  what makes ratio-from-start correct by construction: each frame multiplies
+   *  the DRAG-START sizes by the whole-gesture factor, so nothing compounds across
+   *  ticks and the run ratios are bit-stable through a continuous drag. */
+  function previewSizeScaleOnSelection(factor) { previewRunEdit((base) => sizeScaledRuns(base, factor)); }
 
   /** Command. Reverts a staged style hover preview, restoring exactly what the
    *  session held before it (or clearing the preview outright when the session
@@ -444,6 +458,59 @@
     const resolvedBase = normalizeRichText(base, inherited);
     const from = pendingStyle.size ?? runStyleAt(resolvedBase.runs, focus).size ?? DEFAULT_PARA_SIZE;
     pendingStyle = { ...pendingStyle, size: steppedSize(from, delta) };
+  }
+
+  // ── THE THREE SIZE VERBS, AND THE GESTURE EACH BELONGS TO ────────────────────
+  // This controller owns the ONE mapping from a gesture on the font-size readout
+  // to one of core/richtext's three size primitives (user ruling, 2026-08-02):
+  //
+  //   TYPED a number  → setSize(n)     NORMALIZE  — every covered run becomes n
+  //                     "if I have multiple words that have different sizes, they
+  //                      should all be normalized to that number"
+  //   DRAGGED         → scaleSize(f)   PROPORTIONAL — every run × f
+  //                     "it should make them all bigger or smaller, maintaining
+  //                      the myriad of different sizes I may have selected …
+  //                      proportionally when I'm using the slider"
+  //   +/- CLICKED     → stepSize(±2)   ADDITIVE — every run ± the step
+  //                     "…as opposed to the pluses and minuses … increment or
+  //                      decrement when I use the increment or decrement buttons"
+  //
+  // The distinction reaches here because DraggableNumber now reports WHICH gesture
+  // produced a value (its GESTURE PROVENANCE second argument); TextFormatToolbar
+  // routes on that `source` and computes the factor. Nothing else in the app reads
+  // provenance — the field's other 1500-odd consumers cannot tell it was added.
+  //
+  // ALL THREE ARE ONE UNDO UNIT PER GESTURE, by the same mechanism stepSize
+  // already used: the durable call goes through preview() (one in-session history
+  // push), the live frames of a drag go through preview*OnSelection (stageValue,
+  // NO history), and the whole edit session collapses into ONE document-level undo
+  // entry at commitTextEdit. So a continuous drag is one unit however many frames
+  // it emitted, and each button click and each typed commit is its own.
+
+  /** Command. THE TYPED SIZE — normalize every covered run to exactly `size`.
+   * Absolute by definition, so it is an ordinary run-style write and goes through
+   * applyStyleToSelection, which already owns the caret branch (an empty selection
+   * stashes the size as the pending style for the next typed character) and the
+   * hover-preview discard. The gesture the user made was "this size", and the only
+   * honest reading of that on a mixed selection is that they all become it. */
+  function setSize(size) {
+    applyStyleToSelection({ size: Math.max(MIN_RUN_SIZE, Math.round(size)) });
+  }
+
+  /** Command. THE DRAGGED SIZE — multiply every covered run by `factor`, keeping
+   * the selection's proportions. Mirrors stepSize's shape exactly (same base take,
+   * same preview, same caret fallback) and differs only in its primitive.
+   *
+   * The CARET branch scales the pending/resolved size, which is the only thing
+   * "proportional" can mean when there is a single size and no runs to hold ratios
+   * between; it lands on the same number setSize would for that one value. */
+  function scaleSize(factor) {
+    if (plain) return; // plain-string widget: size lives on the Inspector row
+    const base = takeStyleBase(); // the REAL value, never a hovered preview
+    if (selEnd > selStart) { preview({ runs: sizeScaledRuns(base, factor), paras: base.paras }); return; }
+    const resolvedBase = normalizeRichText(base, inherited);
+    const from = pendingStyle.size ?? runStyleAt(resolvedBase.runs, focus).size ?? DEFAULT_PARA_SIZE;
+    pendingStyle = { ...pendingStyle, size: scaledSize(from, factor) };
   }
 
   // ── keyboard (the sink owns keydown; App.onKeydown early-returns on a focused
@@ -595,6 +662,12 @@
       // proving the two paths agree instead of testing one of them twice.
       stepSize,
       previewSizeStep: previewSizeStepOnSelection,
+      // The other TWO size verbs, exposed for the same reason: a probe must be
+      // able to drive NORMALIZE and PROPORTIONAL through the real controller and
+      // see that the three do three different things to one mixed selection.
+      setSize,
+      scaleSize,
+      previewSizeScale: previewSizeScaleOnSelection,
       endStylePreview,
       setSelection: (a, b) => setSel(a, b),
       getSelection: () => ({ start: selStart, end: selEnd, anchor, focus }),
@@ -683,6 +756,9 @@
       onstylepreviewend={endStylePreview}
       onsizestep={stepSize}
       onsizesteppreview={previewSizeStepOnSelection}
+      onsizeset={setSize}
+      onsizescale={scaleSize}
+      onsizescalepreview={previewSizeScaleOnSelection}
       onparastyle={applyParaToSelection}
       selRange={{ start: selStart, end: selEnd }}
       runsAt={() => styleBaseResolved().runs}
