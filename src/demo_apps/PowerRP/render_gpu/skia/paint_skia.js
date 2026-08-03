@@ -4860,6 +4860,15 @@ function textStateForOutlines(cmd) {
     h: Number.isFinite(cmd.boxH) ? cmd.boxH : 0,
     align: cmd.boxStyle?.align ?? "left",
     valign: cmd.boxStyle?.valign ?? "top",
+    // THE PARAGRAPH STYLE, carried rather than dropped (workstream AN). These
+    // three keys move the LINE BOX, not the letterforms, so leaving them out made
+    // the outline seam lay text out under defaults the fill was not using —
+    // measured at lineSpacing 2, size 96: the stroke sat NINETY-TWO PIXELS above
+    // its fill. `lineSpacing` is the visible one; charSpacing/wordSpacing shift
+    // pen positions along x for the same reason and travel with it.
+    lineSpacing: cmd.rich?.paras?.[0]?.lineSpacing ?? cmd.boxStyle?.lineSpacing,
+    charSpacing: cmd.rich?.paras?.[0]?.charSpacing ?? cmd.boxStyle?.charSpacing,
+    wordSpacing: cmd.rich?.paras?.[0]?.wordSpacing ?? cmd.boxStyle?.wordSpacing,
     opacity: 1, // the caller folds the op's opacity into the Paint, not the layout
   };
 }

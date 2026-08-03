@@ -21,9 +21,9 @@ import fs from "fs";
 import { paintIR } from "./paint_skia.js";
 import { renderWithDither } from "./dither_shader.js";
 import { committedFaces, fontFileFor, FALLBACK_FACES } from "../fonts.js";
-import { makeSkiaRunMeasure } from "./text_layout.js";
+import { makeSkiaRunMeasure, makeSkiaShapedPlacement } from "./text_layout.js";
 import { setInkMeasure } from "../../core/ink_metrics.js";
-import { setGlyphOutlines } from "../../core/glyph_outlines.js";
+import { setGlyphOutlines, setGlyphShapedPlacement } from "../../core/glyph_outlines.js";
 import { makeFontkitOutlines } from "../fontkit_outlines.js";
 
 const require = createRequire(import.meta.url);
@@ -125,6 +125,14 @@ function buildFontCollection(CanvasKit) {
     },
     fontkit,
   ));
+  // THE SHAPED-PLACEMENT SEAM (workstream AN) — installed IMMEDIATELY after the
+  // outlines, so no consumer can observe one without the other. It is what makes
+  // a glyph STROKE sit on its fill: the outlines are fontkit's (CanvasKit has
+  // none) but their POSITIONS are the drawing paragraph's own, rather than a
+  // second layout pass that rounds line heights differently. Bare node gets it
+  // for the same reason it gets the outlines — a stroked still is fully
+  // renderable here, so it must be renderable CORRECTLY here.
+  setGlyphShapedPlacement(makeSkiaShapedPlacement(CanvasKit, fc));
   return fc;
 }
 

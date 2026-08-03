@@ -24,9 +24,9 @@ import canvaskitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
 import { committedFaces, fontFileFor, FALLBACK_FACES } from "../fonts.js";
 import { bootStage, fetchWithProgress } from "../../web/bootProgress.js";
 import { fontBytes } from "../../web/fontBytes.js";
-import { makeSkiaRunMeasure } from "./text_layout.js";
+import { makeSkiaRunMeasure, makeSkiaShapedPlacement } from "./text_layout.js";
 import { setInkMeasure } from "../../core/ink_metrics.js";
-import { setGlyphOutlines } from "../../core/glyph_outlines.js";
+import { setGlyphOutlines, setGlyphShapedPlacement } from "../../core/glyph_outlines.js";
 import { makeFontkitOutlines } from "../fontkit_outlines.js";
 
 // Vite inlines every committed + fallback TTF at build time (offline-safe, hashed
@@ -168,5 +168,14 @@ async function buildFontCollection(CanvasKit) {
     },
     fontkit,
   ));
+  // THE SHAPED-PLACEMENT SEAM (workstream AN) — the node bootstrap's twin,
+  // installed at the same point and immediately after the outlines so no consumer
+  // observes one without the other. THE FILL IS THE PICTURE'S AUTHORITY: the
+  // letterforms a glyph STROKE traces come from fontkit (CanvasKit 0.41.1 has no
+  // outline API), but where they GO is now read off the very Paragraph that
+  // painted the fill, instead of re-derived by core's layout engine — which
+  // rounds line heights and distributes lineSpacing leading differently, and so
+  // put the stroke a fraction of a pixel high of every letter.
+  setGlyphShapedPlacement(makeSkiaShapedPlacement(CanvasKit, fc));
   return fc;
 }

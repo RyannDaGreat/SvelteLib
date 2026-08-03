@@ -170,6 +170,10 @@ function buildTextLayout(CanvasKit, fc, norm, opacity) {
       textStart: ranges[i].start,
       charCount: ranges[i].end - ranges[i].start,
       yTop: 0,
+      // The paragraph's own pieces, kept so `shapedGlyphs()` can name the RUN
+      // style a shaped glyph belongs to (which face the outline source must
+      // load). Plain data already in hand — no extra work at build time.
+      pieces,
       // Per-piece shaped-glyph groups for the OUTLINE (and gradient-fill) glyph
       // pass — EMPTY (fast path) unless a piece needs one (outline / gradient).
       glyphGroups: glyphGroupsFor(CanvasKit, b.para, pieces),
@@ -468,6 +472,59 @@ export function makeSkiaRunMeasure(CanvasKit, fc) {
   };
 }
 
+/**
+ * Query→build (cached through getTextLayout). Builds THE shaped-placement
+ * function core/glyph_outlines.js's `setGlyphShapedPlacement` takes: a text STATE
+ * BAG → where the fill's own paragraph put each of its glyphs.
+ *
+ * The `makeSkiaRunMeasure` twin, installed from the same two bootstraps at the
+ * same point for the same reason (the FontCollection must be ready). It exists so
+ * that the GLYPH STROKE — whose outlines must come from fontkit, because
+ * CanvasKit 0.41.1 has no glyph-outline API — is nonetheless PLACED by the engine
+ * that draws the fill. `TextLayout.shapedGlyphs()`'s docblock carries the measured
+ * disagreement this removes.
+ *
+ * The state bag is the same flat single-run shape `textMorphPayload` and
+ * paint_skia's `textStateForOutlines` speak, so this converts it back into the op
+ * `getTextLayout` wants. Going through `getTextLayout` (not a fresh build) is what
+ * makes this cheap AND exact: on a stroked text op the fill has just built that
+ * very layout, so this is a cache HIT on the identical Paragraph stack — the same
+ * object, not an equal one.
+ *
+ * @param CanvasKit the initialized CanvasKit module
+ * @param fc the shared committed + fallback FontCollection
+ * @returns {function} (state) → [{glyphId, x, baselineY, size, font, bold}]
+ *
+ * @example // setGlyphShapedPlacement(makeSkiaShapedPlacement(CanvasKit, fc));
+ * @example // makeSkiaShapedPlacement(CK, fc)({text: "Hi!", size: 96, font: "inter", w: 400, h: 200})
+ * @example // // → [{glyphId: 21, x: 0, baselineY: 93, size: 96, font: "inter", bold: false}, …]
+ */
+export function makeSkiaShapedPlacement(CanvasKit, fc) {
+  return (s) => getTextLayout(CanvasKit, fc, {
+    text: String(s.text ?? ""),
+    size: s.size ?? DEFAULT_TEXT_SIZE,
+    font: s.font ?? "system",
+    bold: !!s.bold,
+    color: "#000000", // placement is colour-independent; a constant keeps the cache key stable
+    // 0/absent means "no box" in the state bag and Infinity means it in the op —
+    // the same translation textStateForOutlines makes in the other direction.
+    boxW: (s.w ?? 0) > 0 ? s.w : Infinity,
+    boxH: (s.h ?? 0) > 0 ? s.h : Infinity,
+    // The PARAGRAPH style rides on boxStyle, which is where paraStyleFor already
+    // looks for a box-level default. Spread conditionally so an absent key stays
+    // absent rather than becoming an explicit undefined — a `{lineSpacing:
+    // undefined}` in the op would change the layout CACHE KEY without changing the
+    // layout, turning every stroked draw into a miss.
+    boxStyle: {
+      align: s.align ?? "left",
+      valign: s.valign ?? "top",
+      ...(s.lineSpacing !== undefined ? { lineSpacing: s.lineSpacing } : {}),
+      ...(s.charSpacing !== undefined ? { charSpacing: s.charSpacing } : {}),
+      ...(s.wordSpacing !== undefined ? { wordSpacing: s.wordSpacing } : {}),
+    },
+  }, 1).shapedGlyphs();
+}
+
 /** Distinct (substring, style) run measures held before the oldest is dropped.
  * Bounded for the same reason CACHE_MAX above is — a measure is a few numbers, so
  * this can be far larger than the Paragraph cache, but not unbounded: word-level
@@ -514,6 +571,79 @@ export class TextLayout {
       canvas.drawParagraph(b.para, ox, y);
       for (const g of b.glyphGroups) drawGlyphShaderFill(CK, canvas, g, y, ox, this.opacity, aa);
     }
+  }
+
+  /**
+   * Query. WHERE THE FILL ACTUALLY PUT EVERY GLYPH — the shaped placement of
+   * this laid-out text in LOCAL (op-relative) coordinates.
+   *
+   * ── WHY THIS EXISTS (workstream AN, 2026-08-02) ──────────────────────────────
+   * The glyph STROKE traces real letterform outlines (fontkit, via
+   * core/glyph_outlines.js) because CanvasKit 0.41.1 has no glyph-outline API.
+   * Those outlines have to be PLACED, and until this method existed they were
+   * placed by re-running core/richtext.layoutRichText — a SECOND layout engine,
+   * over the injected ink measure. The two engines do not agree, and the
+   * disagreement is measurable in three separate ways:
+   *
+   *   1. `para.getHeight()` is ROUNDED TO A WHOLE NUMBER while core keeps the
+   *      exact `ascent + descent`. Measured on the committed faces: Inter@36
+   *      44.000 vs 43.559, JetBrains Mono@36 48.000 vs 47.520 — so every line's
+   *      baseline, and the valign offset derived from the stack height, differ by
+   *      up to half a pixel. This is the residual sub-pixel drift.
+   *   2. `lineSpacing` is distributed DIFFERENTLY. Core splits the extra leading
+   *      half above / half below (`halfLeading`); CanvasKit's strut
+   *      `heightMultiplier` puts effectively all of it above. Measured at
+   *      lineSpacing 1.5, size 96: baseline 138.55 (paragraph) vs 122.04 (core) —
+   *      a SIXTEEN PIXEL offset, and the visible half of the reported defect.
+   *   3. Shaping itself. Core measures per WORD through the ink measure and lays
+   *      pen positions out by summing advances; the paragraph shapes the whole run
+   *      through HarfBuzz, so kerning pairs and ligatures land elsewhere.
+   *
+   * Reading the paragraph's OWN shaped runs removes all three at once, because
+   * there is then only one layout: the stroke is placed by the very object that
+   * drew the fill. That is why this is a method on TextLayout rather than a
+   * standalone helper — the caller must not be able to ask about a layout other
+   * than the one on screen.
+   *
+   * `getShapedLines()` reports each run's glyph ids plus ABSOLUTE (x, baselineY)
+   * pairs relative to its paragraph's top-left, so the only arithmetic here is
+   * adding the paragraph's own `yTop` (which already carries the valign offset).
+   *
+   * THE GLYPH IDS ARE PORTABLE. They index the resolved TYPEFACE, and measured
+   * 2026-08-02 the committed TTFs give byte-identical ids under CanvasKit and
+   * under fontkit — so an id is a usable name for a letterform in the outline
+   * source, which is the whole reason this can be handed across the seam.
+   *
+   * Returns:
+   *   Array<{glyphId, x, baselineY, size, font, bold}>: one entry per shaped
+   *     glyph in draw order. `font`/`bold` name the RUN's requested face (what the
+   *     outline source must load), not whatever face Skia fell back to — a glyph
+   *     the requested face does not have comes back with an id the source refuses,
+   *     which is the honest answer rather than a wrong letterform.
+   *
+   * @example // layout.shapedGlyphs() // [{glyphId: 21, x: 0, baselineY: 93, size: 96, font: "inter", bold: false}, …]
+   */
+  shapedGlyphs() {
+    const out = [];
+    for (const b of this.built) {
+      const ranges = pieceCharRanges(b.pieces);
+      for (const line of b.para.getShapedLines()) {
+        for (const run of line.runs) {
+          for (let i = 0; i < run.glyphs.length; i++) {
+            const style = styleAtOffset(ranges, run.offsets[i]);
+            out.push({
+              glyphId: run.glyphs[i],
+              x: run.positions[2 * i],
+              baselineY: b.yTop + run.positions[2 * i + 1],
+              size: run.size,
+              font: style?.font ?? "system",
+              bold: !!style?.bold,
+            });
+          }
+        }
+      }
+    }
+    return out;
   }
 
   /** Command (deletes the WASM Paragraphs). Called by the cache on eviction. */

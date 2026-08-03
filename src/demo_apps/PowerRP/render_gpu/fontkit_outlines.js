@@ -81,7 +81,7 @@ export const OUTLINE_UNITS_PER_EM = 1000;
  *   report (function): (message) → void, for the once-per-face failure line
  *
  * Returns:
- *   {glyphPaths(text, style) -> [{d, advance}], unitsPerEm}
+ *   {glyphPaths(text, style) -> [{d, advance}], glyphPathById(id, style) -> string|null, unitsPerEm}
  *
  * @example // node: makeFontkitOutlines((id, bold) => fs.readFileSync(path.join(FONTS_DIR, fontFileFor(id, bold))), fontkit, console.warn)
  * @example makeFontkitOutlines(() => null, {create: () => null}, () => {}).unitsPerEm // 1000
@@ -133,6 +133,32 @@ export function makeFontkitOutlines(loadFontBytes, fontkit, report = console.war
         d: k === 1 ? g.path.toSVG() : g.path.scale(k, k).toSVG(),
         advance: run.positions[i].xAdvance * k,
       }));
+    },
+    /**
+     * ONE GLYPH BY ITS ID, with no shaping of our own — the half of this source
+     * the SHAPED placement path uses (core/glyph_outlines.js `textGlyphPathDs`).
+     *
+     * The id comes from the CanvasKit paragraph that drew the FILL, so this must
+     * NOT re-map a character to a glyph: the shaping decision has already been
+     * made by the engine whose picture is authoritative, and re-deciding it here
+     * is exactly the second-engine drift this path exists to remove. Measured
+     * 2026-08-02 on the committed faces: CanvasKit and fontkit produce IDENTICAL
+     * glyph ids for the same TTF (Inter/Lora/JetBrains Mono, regular and bold,
+     * including the `fi` ligature), which is what makes an id a portable name for
+     * a letterform across the two libraries rather than a per-library index.
+     *
+     * `null` for an id this face does not have — a fallback FACE resolved a glyph
+     * the run's own font cannot draw, so there is no honest outline here and the
+     * caller reports the gap rather than stroking a wrong letter.
+     */
+    glyphPathById(id, style) {
+      const face = faceFor(style.font ?? "system", !!style.bold);
+      if (!face) return null;
+      if (!(id >= 0 && id < face.numGlyphs)) return null;
+      const k = OUTLINE_UNITS_PER_EM / face.unitsPerEm;
+      const g = face.getGlyph(id);
+      if (!g?.path) return null;
+      return k === 1 ? g.path.toSVG() : g.path.scale(k, k).toSVG();
     },
   };
 }

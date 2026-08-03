@@ -85,6 +85,41 @@ import { matMul, transformPathD } from "./svg_paths.js";
  */
 let _source = null;
 
+/**
+ * THE SHAPED-PLACEMENT SOURCE, or null — the answer to "where did the FILL
+ * actually put each glyph?", installed beside the outline source by the same two
+ * render bootstraps.
+ *
+ *     shapedGlyphs(state) -> [{glyphId, x, baselineY, size, font, bold}] | null
+ *
+ * in LOCAL (box-local, y-DOWN) coordinates, or null when this state cannot be
+ * laid out through the fill's engine.
+ *
+ * ── WHY IT IS SEPARATE FROM THE OUTLINE SOURCE (workstream AN, 2026-08-02) ────
+ * They come from DIFFERENT LIBRARIES and that is not incidental. The outlines
+ * come from fontkit because CanvasKit 0.41.1 has no glyph-outline API; the
+ * placement must come from CanvasKit because CanvasKit's paragraph is what draws
+ * the fill, and THE FILL IS THE PICTURE'S AUTHORITY. Splitting them is what lets
+ * each library answer the question it is actually the authority on, instead of
+ * one of them answering both and being wrong about one.
+ *
+ * Before this existed, `textGlyphPathDs` placed fontkit's outlines by re-running
+ * core/richtext.layoutRichText — a SECOND layout engine, over the injected ink
+ * measure. render_gpu/skia/text_layout.js's `shapedGlyphs()` docblock carries the
+ * three measured ways the two engines disagree (rounded paragraph heights,
+ * lineSpacing leading distributed differently — 16 px at lineSpacing 1.5 — and
+ * HarfBuzz shaping vs summed per-word advances). This seam is how the stroke
+ * stops asking the wrong engine.
+ *
+ * NULL IS A REAL ANSWER, not a failure: bare-node doctests and any consumer that
+ * has installed outlines without a render surface get it, and `textGlyphPathDs`
+ * then falls back to the core layout and SAYS SO once. The fallback still draws
+ * the right letters in the right order at the right size — it is the sub-pixel
+ * baseline that is approximate — so refusing outright would be worse than
+ * placing them the old way and reporting it.
+ */
+let _shaped = null;
+
 /** The per-(font, bold, glyph) EM-unit outline memo. See the header. */
 const _outlineCache = new Map();
 
@@ -104,7 +139,7 @@ const OUTLINE_CACHE_LIMIT = 4096;
  * cache, because a second install with different faces must not serve the first
  * one's letterforms.
  *
- * @param {?object} source - {glyphPaths(text, style) -> [{d, advance}], unitsPerEm}
+ * @param {?object} source - {glyphPaths(text, style) -> [{d, advance}], glyphPathById(id, style) -> string|null, unitsPerEm}
  * @returns {void}
  *
  * @example // at boot, once the TTF bytes are in hand:
@@ -116,7 +151,35 @@ export function setGlyphOutlines(source) {
     throw new Error("setGlyphOutlines: expected a source with a glyphPaths(text, style) function, or null");
   _source = source;
   _outlineCache.clear();
+  _byIdCache.clear();
 }
+
+/**
+ * Command (module-level state). Installs THE SHAPED-PLACEMENT source — the query
+ * that reports where the FILL put each glyph. See `_shaped`'s docblock for why
+ * this is a second seam rather than a field on the outline source.
+ *
+ * Installed from the same two bootstraps, immediately after `setGlyphOutlines`,
+ * so no consumer ever observes placement without outlines. Passing null
+ * uninstalls, which is what a teardown does and what bare node leaves in place.
+ *
+ * @param {?function} shaped - (state) → [{glyphId, x, baselineY, size, font, bold}] | null
+ * @returns {void}
+ *
+ * @example // setGlyphShapedPlacement((s) => getTextLayout(CK, fc, opFor(s)).shapedGlyphs())
+ * @example setGlyphShapedPlacement(null) // uninstall — the stroke falls back to the core layout, loudly once
+ */
+export function setGlyphShapedPlacement(shaped) {
+  if (shaped !== null && typeof shaped !== "function")
+    throw new Error("setGlyphShapedPlacement: expected a shapedGlyphs(state) function, or null");
+  _shaped = shaped;
+}
+
+/** The per-(font, bold, glyphId) EM-unit outline memo — the SHAPED path's twin of
+ * `_outlineCache`, keyed by the id the paragraph reported rather than by the
+ * character, because the shaped path never sees a character. Same size bound and
+ * the same purely-performance status: clearing it changes no pixel. */
+const _byIdCache = new Map();
 
 /**
  * Query (reads module state). Is a REAL outline source installed? The one honest
@@ -197,12 +260,28 @@ export function glyphOutlinesFor(text, style) {
  * structurally impossible for a stroked outline to sit anywhere other than
  * precisely on the morph's letterforms and on the drawn glyphs.
  *
- * ── THE LAYOUT IS NOT RE-DERIVED ─────────────────────────────────────────────
- * The pen positions come from `richTextDraws` — the SAME pure layout the two
- * render backends already flatten through, over the SAME injected measure
- * (core/ink_metrics.js) that produced the widget's own ink bounds. So the outlines
- * sit exactly where the widget draws them: same wrap, same alignment, same valign
- * offset, same baselines.
+ * ── THE PLACEMENT COMES FROM THE ENGINE THAT DREW THE FILL ───────────────────
+ * (Workstream AN, 2026-08-02. This paragraph replaces one that claimed "the
+ * layout is not re-derived" — it WAS re-derived, and that was the defect.)
+ *
+ * THE FILL IS THE PICTURE'S AUTHORITY, so the stroke moves to agree with it and
+ * never the reverse. When the shaped-placement seam is installed (`_shaped`), the
+ * glyph ids and their (x, baselineY) pairs come from THE VERY CanvasKit paragraph
+ * that painted the fill, and each id is handed straight to the outline source.
+ * There is then exactly ONE layout in the picture, so a stroke cannot drift from
+ * its fill by construction rather than by the two engines happening to agree.
+ *
+ * Measured on the user-reported case ("Hi!", Inter): before, the stroke's
+ * baseline came from core's exact `ascent + descent` while the fill's came from
+ * `para.getHeight()`, which CanvasKit ROUNDS TO A WHOLE NUMBER — 116.156 vs
+ * 116.000 at size 96, 43.559 vs 44.000 at size 36. Under `lineSpacing` the gap is
+ * not sub-pixel at all: the two engines distribute the extra leading differently
+ * and the baselines part by 16.5 px at lineSpacing 1.5, size 96.
+ *
+ * WITHOUT THE SEAM the old core-layout placement is used and REPORTED ONCE. That
+ * path is what bare-node doctests and any outline-only consumer get; it draws the
+ * right letters at the right size in the right order, and only the baseline is
+ * approximate, so falling back beats refusing.
  *
  * ── THE FRAME FLIP, which is the one real conversion ─────────────────────────
  * A font's outlines are y-UP from the baseline (ink at POSITIVE y above it); the
@@ -229,6 +308,108 @@ export function glyphOutlinesFor(text, style) {
  * @example textGlyphPathDs({text: "hi", size: 36, w: 200, h: 60}).ds.length // 0 (with no source installed)
  */
 export function textGlyphPathDs(s) {
+  const shaped = _shaped?.(s) ?? null;
+  if (shaped) return shapedGlyphPathDs(shaped);
+  reportOnce(
+    "glyph-outlines-unshaped",
+    "PowerRP glyph_outlines: no SHAPED-PLACEMENT source is installed (setGlyphShapedPlacement was never called), so glyph " +
+    "outlines are placed by core/richtext.layoutRichText instead of by the CanvasKit paragraph that draws the FILL. The " +
+    "letters, their order and their size are right; their BASELINE is approximate, because the two engines round line " +
+    "heights differently and distribute lineSpacing leading differently. A glyph STROKE placed this way can sit a fraction " +
+    "of a pixel off its fill — visibly off under lineSpacing. Install the seam from the render side to place them exactly.",
+  );
+  return coreLayoutGlyphPathDs(s);
+}
+
+/**
+ * Pure-ish (reads the installed outline source; writes the by-id memo). THE
+ * SHAPED PATH: placements the fill's own engine reported → positioned `d`
+ * strings.
+ *
+ * Each placement already carries the glyph's box-local pen (`x`) and its line's
+ * baseline (`baselineY`) in the engine's y-DOWN frame, so the ONLY conversion
+ * left is the y-UP → y-DOWN flip of the letterform itself — `scale(em, −em)`
+ * about the pen. No advances are summed and no lines are measured here: doing
+ * either would be re-deriving the layout, which is the thing this path exists
+ * not to do.
+ *
+ * A glyph the requested face cannot supply (Skia fell back to another face for
+ * it) yields no outline and is REPORTED, because stroking it from the wrong face
+ * would draw a different letter than the fill shows.
+ *
+ * @param {Array<object>} placements - [{glyphId, x, baselineY, size, font, bold}]
+ * @returns {{ds: string[], baselineY: number}}
+ *
+ * @example // shapedGlyphPathDs([{glyphId: 21, x: 0, baselineY: 93, size: 96, font: "inter", bold: false}]).ds.length // 1
+ */
+function shapedGlyphPathDs(placements) {
+  const unitsPerEm = _source?.unitsPerEm ?? 1000;
+  const ds = [];
+  let missing = 0;
+  for (const g of placements) {
+    const d = glyphOutlineById(g.glyphId, { font: g.font, bold: g.bold });
+    if (!d) { missing++; continue; }
+    const em = g.size / unitsPerEm;
+    ds.push(transformPathD(d, matMul(
+      { a: 1, b: 0, c: 0, d: 1, e: g.x, f: g.baselineY },
+      { a: em, b: 0, c: 0, d: -em, e: 0, f: 0 },
+    )));
+  }
+  if (missing > 0)
+    reportOnce(
+      "glyph-outlines-shaped-missing",
+      `PowerRP glyph_outlines: ${missing} shaped glyph(s) have no outline in the run's OWN font — the renderer resolved ` +
+      "them through a FALLBACK face, which the outline source cannot load. Those glyphs are FILLED but not outlined; " +
+      "tracing them from the requested face would draw a different letter than the fill shows.",
+    );
+  return { ds, baselineY: placements[0]?.baselineY ?? 0 };
+}
+
+/**
+ * Query (reads the installed source; writes the by-id memo). ONE glyph's EM-unit
+ * outline BY ID, memoized per (font, bold, id). The shaped path's twin of
+ * `glyphOutlinesFor`, which is by character.
+ *
+ * A source that predates the shaped path (no `glyphPathById`) answers null for
+ * every id rather than throwing — the caller then reports a fully-unoutlined run
+ * through the same missing-glyph line, which is the honest picture.
+ *
+ * @param {number} id - the glyph id the paragraph reported
+ * @param {object} style - {font, bold}
+ * @returns {?string} an SVG path in EM units, y-UP from the baseline, or null
+ *
+ * @example // glyphOutlineById(21, {font: "inter"}) // "M180 0L180 1490…"
+ * @example glyphOutlineById(21, {font: "inter"}) // null (with no source installed)
+ */
+function glyphOutlineById(id, style) {
+  if (typeof _source?.glyphPathById !== "function") return null;
+  const font = style.font ?? "system", bold = !!style.bold;
+  const key = `${font}|${bold ? 1 : 0}|${id}`;
+  let hit = _byIdCache.get(key);
+  if (hit === undefined) {
+    hit = _source.glyphPathById(id, { font, bold }) ?? null;
+    if (_byIdCache.size >= OUTLINE_CACHE_LIMIT) _byIdCache.delete(_byIdCache.keys().next().value);
+    _byIdCache.set(key, hit);
+  }
+  return hit;
+}
+
+/**
+ * Query (reads the installed source AND the ink measure). THE FALLBACK PATH:
+ * outlines placed by core's own layout engine.
+ *
+ * This is what `textGlyphPathDs` did unconditionally before the shaped seam
+ * existed, kept verbatim (and still exercised by every bare-node consumer) so a
+ * host without a render surface still gets letterforms in the right places to
+ * within the two engines' disagreement. `textGlyphPathDs` reports once before
+ * calling it; see its docblock for what "within the disagreement" measures out to.
+ *
+ * @param {object} s - a text state bag
+ * @returns {{ds: string[], baselineY: number}}
+ *
+ * @example // coreLayoutGlyphPathDs({text: "hi", size: 36, w: 200, h: 60}).ds.length // 2
+ */
+function coreLayoutGlyphPathDs(s) {
   const w = s.w ?? 0, h = s.h ?? 0;
   const unitsPerEm = _source?.unitsPerEm ?? 1000;
   const rich = {
@@ -239,7 +420,16 @@ export function textGlyphPathDs(s) {
       bold: !!s.bold,
       color: s.fill ?? "#000000",
     }],
-    paras: [{}],
+    // The PARAGRAPH style the state bag carries, so this path honours the same
+    // lineSpacing/charSpacing/wordSpacing the shaped path does. It will still not
+    // AGREE with the fill about them (the two engines distribute leading
+    // differently — that is the disagreement above), but ignoring them outright
+    // was strictly worse: it laid the run out at defaults the author had changed.
+    paras: [{
+      ...(s.lineSpacing !== undefined ? { lineSpacing: s.lineSpacing } : {}),
+      ...(s.charSpacing !== undefined ? { charSpacing: s.charSpacing } : {}),
+      ...(s.wordSpacing !== undefined ? { wordSpacing: s.wordSpacing } : {}),
+    }],
   };
   // THE SAME box emit() lays out in — a 0/absent w means "no wrap" and a
   // 0/absent h means "no vertical box", mirrored from plugins/plaintext.js
