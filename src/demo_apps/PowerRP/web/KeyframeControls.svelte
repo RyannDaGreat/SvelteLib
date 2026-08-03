@@ -26,12 +26,28 @@
   user may not have known were there. Removal therefore requires the set to be
   uniformly keyed already, which is exactly what the FILLED diamond reports.
 
-  KNOWN BOUND: the ‹ › jumps follow the PRIMARY path only (`path`), because
-  "the previous keyframe" of a SET has no single answer — the primary is the
-  app's existing representative of a selection (app.selectMany mirrors the first
-  id into `selection`). FLAGGED: a set-aware jump ("the nearest slide where ANY
-  selected item is keyed") is a real improvement and deliberately not guessed at
-  here.
+  WORKSTREAM BJ (2026-08-03) FIXED THE TWO DEFECTS THIS HEADER USED TO FLAG, BY
+  REUSING BH's SECTION MECHANISM RATHER THAN INVENTING A SECOND ONE — a row's
+  path SET is not conceptually different from a section's path set (both are
+  "some list of full state paths, over one slide"; core/section_keyframes.js's
+  functions were already generic over an arbitrary path list and never actually
+  section-specific despite their names):
+    - THE DIAMOND now calls `app.toggleSectionKeyframes(keyPaths)` — the SAME
+      fold-once/commit-once method the section header bubble uses — instead of
+      looping `keyframePath`/`removeKey` per path. One click over N selected
+      items is now ONE undo unit, not N. For a single selection `keyPaths` is a
+      one-element array, so `sectionKeyframeState` can only read "all"/"none"
+      (never "some") — byte-identical to the old boolean behaviour.
+    - THE ‹ › ARROWS now call `app.jumpSectionKeyframes(keyPaths, ±1)` — the
+      UNION walk BH built for the section bubble — instead of following the
+      PRIMARY path only. A one-element `keyPaths` reduces to exactly
+      `jumpKeyframePath`'s own nearest-in-direction search, so single-selection
+      behaviour is unchanged; over a set the arrows now agree with what the
+      diamond itself reads (the tri-state already read the whole set — only the
+      jump was still primary-only, which is what made the two halves of one
+      control describe different things).
+  No new core function was written for either fix — see core/section_keyframes.js
+  for the pure logic and web/app.svelte.js for the two methods reused verbatim.
 
   Renders exactly the three buttons (no wrapper) so it drops into each panel's
   existing `.kf-controls` grid cell — the Variables Panel appends its own
@@ -71,15 +87,17 @@
    * slide, in ONE undo unit: FILLED removes on every path, HALF/HOLLOW inserts on
    * every path (an UPSERT that copies each path's own raw stored value, so an
    * equation keyframes as the equation and no two items are given each other's
-   * value). See the header for why the mixed case inserts rather than guessing. */
+   * value). See the header for why the mixed case inserts rather than guessing.
+   * Reuses BH's `app.toggleSectionKeyframes` verbatim — a row's path set and a
+   * section's are the same shape, so the same fold-once/commit-once method
+   * applies with no second mechanism. */
   function toggleKey() {
-    if (triState === "all") for (const p of keyPaths) app.removeKey(app.slideIndex, p);
-    else for (const p of keyPaths) app.keyframePath(p, app.storedValueAtPath(p));
+    app.toggleSectionKeyframes(keyPaths);
   }
 </script>
 
 <Tooltip text="Previous keyframe">
-  <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpKeyframePath(path, -1)}>
+  <button class="jumpbtn" aria-label="Previous keyframe" onclick={() => app.jumpSectionKeyframes(keyPaths, -1)}>
     <iconify-icon icon="mdi:chevron-left" width="16" height="16"></iconify-icon>
   </button>
 </Tooltip>
@@ -95,7 +113,7 @@
   </button>
 </Tooltip>
 <Tooltip text="Next keyframe">
-  <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpKeyframePath(path, +1)}>
+  <button class="jumpbtn" aria-label="Next keyframe" onclick={() => app.jumpSectionKeyframes(keyPaths, +1)}>
     <iconify-icon icon="mdi:chevron-right" width="16" height="16"></iconify-icon>
   </button>
 </Tooltip>

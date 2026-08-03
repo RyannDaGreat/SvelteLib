@@ -48,7 +48,7 @@ import {
   sectionToggleTip,
   sectionJumpTarget,
 } from "../core/section_keyframes.js";
-import { newDocument, repairedDocument, foldState, keyframed, unkeyframed, hasKeyframe } from "../core/document.js";
+import { newDocument, repairedDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices } from "../core/document.js";
 import { setPath, getPath } from "../core/deltas.js";
 
 let passed = 0;
@@ -724,6 +724,85 @@ test("BH MULTI-SELECTION: the bubble reads the UNION and the toggle fans out, st
 
   const none = sectionToggled(all, 1, paths);
   assert.deepEqual(none.slides[1].delta, {}, "and one more click clears the whole set's section");
+});
+
+// ── WORKSTREAM BJ: THE ROW DIAMOND/ARROWS OVER A MULTI-SELECTION ────────────
+// web/KeyframeControls.svelte's diamond and ‹ › now call the SAME two app
+// methods the section bubble uses (`toggleSectionKeyframes`/`jumpSectionKeyframes`),
+// with the ROW's own per-item path list instead of a section's row×item union.
+// `sectionToggled` above already models `toggleSectionKeyframes` leaf-for-leaf, so
+// it is reused verbatim here — a row's path set is just ONE key crossed with N
+// selected items, which is exactly what sectionKeyPaths already produces.
+
+test("BJ: N-item diamond click is ONE document, not a loop of N", () => {
+  // Three rects created on slide 0 (r: x=10, q: x=30, n: x=50), NONE keyed on
+  // slide 1 yet — mirrors the manifest's "one click keys N items, one undo
+  // reverts all of it" acceptance, now proven for the ROW diamond specifically.
+  const base = twoSlideDoc();
+  const doc = {
+    ...base,
+    slides: base.slides.map((s, i) => i !== 0 ? s
+      : {
+          ...s,
+          delta: setPath(setPath(setPath(setPath(
+            s.delta,
+            ["items", "q", "type"], "rect"), ["items", "q", "x"], 30),
+            ["items", "n", "type"], "rect"), ["items", "n", "x"], 50),
+        }),
+  };
+  // The ROW's own path set: ONE key ("x"), crossed with every selected item —
+  // exactly sectionKeyPaths with a single-row rows array.
+  const rowPaths = sectionKeyPaths([{ key: "x" }], () => ["r", "q", "n"], (row) => row.key);
+  assert.deepEqual(rowPaths, [["items", "r", "x"], ["items", "q", "x"], ["items", "n", "x"]]);
+
+  assert.equal(sectionTriState(rowPaths.map((p) => hasKeyframe(doc, 1, p))), "none",
+    "nothing is keyed on slide 1 for any of the three yet");
+  assert.deepEqual(doc.slides[1].delta, {}, "slide 1 starts empty — all three inherit from slide 0");
+
+  // ONE CLICK.
+  const keyed = sectionToggled(doc, 1, rowPaths);
+  assert.equal(sectionTriState(rowPaths.map((p) => hasKeyframe(keyed, 1, p))), "all",
+    "the diamond's one click reaches all three selected items");
+  assert.equal(getPath(keyed.slides[1].delta, ["items", "r", "x"]), 10, "r keeps its own inherited value");
+  assert.equal(getPath(keyed.slides[1].delta, ["items", "q", "x"]), 30, "q keeps its own inherited value");
+  assert.equal(getPath(keyed.slides[1].delta, ["items", "n", "x"]), 50, "n keeps its own inherited value");
+  // ONE UNDO UNIT is exactly this: one document, produced without mutating the
+  // input, so one commit takes it and one undo (re-applying `doc`) reverts all
+  // three writes at once — never three separate undo steps.
+  assert.notEqual(keyed, doc);
+  assert.deepEqual(doc.slides[1].delta, {}, "the source document is untouched by the fold");
+
+  // ONE MORE CLICK reverts all three in the same single document.
+  const cleared = sectionToggled(keyed, 1, rowPaths);
+  assert.deepEqual(cleared.slides[1].delta, {},
+    "back to exactly the pre-click slide — one undo's worth of change, not three");
+});
+
+test("BJ: the ‹ › arrows walk the UNION of a set's paths, not the primary item alone", () => {
+  // "r" is the PRIMARY item (first in the selection) and is NEVER keyed on x in
+  // this document; "q" (a NON-primary selected item) is keyed on slide 2 only.
+  // The old primary-only jump could never reach slide 2 from slide 0 — this is
+  // the defect the file's own header flagged and BH's section jump then fixed
+  // for sections. The row arrows must now agree.
+  const base = repairedDocument(newDocument(), registry).doc;
+  const doc = {
+    ...base,
+    slides: [
+      { ...base.slides[0], delta: setPath(setPath(base.slides[0].delta, ["items", "r", "type"], "rect"), ["items", "q", "type"], "rect") },
+      { ...base.slides[0], id: "s2", delta: {} },
+      { ...base.slides[0], id: "s3", delta: setPath({}, ["items", "q", "x"], 77) },
+    ],
+  };
+  const rowPaths = [["items", "r", "x"], ["items", "q", "x"]]; // primary "r" first, "q" second
+
+  // From slide 0, jumping forward with the OLD primary-only logic (path = r's
+  // alone) would find nothing, because "r" is never keyed on x anywhere.
+  assert.deepEqual(keyframeIndices(doc, ["items", "r", "x"]), [], "the primary alone has no keyframe to jump to");
+
+  // The UNION jump (sectionJumpTarget, now what the row arrows call) reaches
+  // slide 2 — q's keyframe — even though q is not the primary selected item.
+  const target = sectionJumpTarget(rowPaths.map((p) => keyframeIndices(doc, p)), 0, +1);
+  assert.equal(target, 2, "the union reaches the non-primary item's keyframe");
 });
 
 console.log(`\n  ${passed} multiselect core tests passed`);

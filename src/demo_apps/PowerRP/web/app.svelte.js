@@ -4996,9 +4996,11 @@ export class PowerRPApp {
    * control is that a section is toggled with one gesture, and a gesture that
    * cost the user twenty presses of Cmd+Z to take back would be a worse tool than
    * clicking twenty diamonds. The document is folded in a local, so no
-   * intermediate state ever reaches the undo log. (The ROW bubble still loops over
-   * a multi-selection's paths — a pre-existing N-undo-unit defect flagged, not
-   * fixed here, because it is web/KeyframeControls.svelte's own contract.)
+   * intermediate state ever reaches the undo log. (WORKSTREAM BJ, 2026-08-03: the
+   * ROW diamond used to loop over a multi-selection's paths — an N-undo-unit
+   * defect this comment used to flag as unfixed — and now calls this SAME method
+   * with its own path set instead of a second fold mechanism;
+   * web/KeyframeControls.svelte's header has the detail.)
    *
    * The direction is `sectionToggleAction`'s, so this and the tooltip cannot
    * disagree: FULL removes on every path; HALF and EMPTY both INSERT on every
