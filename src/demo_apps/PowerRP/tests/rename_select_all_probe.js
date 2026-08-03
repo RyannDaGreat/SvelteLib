@@ -14,10 +14,20 @@
  * cancel." Only for INLINE editors. A modal's backdrop/Cancel already means
  * cancel and its semantics are untouched.
  *
+ * BOTH SURFACES ARE MODALS NOW. The slide name was an inline editor when this
+ * probe was written; a later ruling (2026-08-02) made it the SAME dialog the
+ * project title uses — "in the same way that rename project does… A dialog comes
+ * up pre-selected and whatever process for that should be reused for this."
+ * Ruling 1 is therefore asserted at both surfaces unchanged, and is the reason
+ * this probe still earns its runtime: select-all is exactly the thing that
+ * silently regresses to a caret-at-one-end concatenation.
+ * Ruling 2 no longer has an inline editor to govern anywhere in the app. What is
+ * asserted in its place is the outcome it protected — a half-typed draft is never
+ * committed — through the dialog's explicit Cancel.
+ *
  * Surfaces asserted:
- *   - SLIDE name, inline (SlideNav → InlineRename, dblclick): select-all,
- *     ArrowRight-appends, and blur CANCELS (the ruling's own scenario: type
- *     garbage, click the canvas, the slide keeps its ORIGINAL name).
+ *   - SLIDE name, dialog (SlideNav row dblclick → App.svelte slide rename modal):
+ *     select-all, ArrowRight-appends, Escape and Cancel both discard.
  *   - PROJECT title, modal (Toolbar single click → App.svelte rename modal,
  *     use:selectAllOnMount): select-all and ArrowRight-appends. Blur is NOT
  *     asserted to cancel — modals keep modal semantics by ruling.
@@ -86,12 +96,20 @@ try {
     return handle.asElement();
   };
 
-  // ── SURFACE 1: the SLIDE name (inline, dblclick) ──────────────────────────
-  console.log("\nSLIDE NAME (inline, dblclick):");
+  // ── SURFACE 1: the SLIDE name (DIALOG, dblclick) ──────────────────────────
+  // IT IS A DIALOG NOW, not an inline editor (user ruling, 2026-08-02: "when I
+  // double click a slide title, it should let me edit it. In the same way that
+  // rename project does… A dialog comes up pre-selected"). The SELECT-ALL ruling
+  // this probe exists for is unchanged and still measured the same way — the
+  // dialog's input is pre-filled and fully selected, so typing replaces — but the
+  // CANCEL surface moved: Escape and a click-away are the Modal's to own, and the
+  // dialog has an explicit Cancel button, so (c) and (d) below test that button
+  // rather than blur semantics that no longer belong to this control.
+  console.log("\nSLIDE NAME (dialog, dblclick):");
   let el = await firstSlideNameEl();
   assert(!!el, "slide name span exists");
   await el.click({ clickCount: 2 });
-  await sleep(300);
+  await sleep(400);
 
   let sel = await selectionOf();
   assert(sel !== null, "double-click opens an input and focuses it");
@@ -116,27 +134,35 @@ try {
   await sleep(300);
   assert((await slideName(0)) === "NewNameZ", `ArrowRight then typing APPENDS (got "${await slideName(0)}")`);
 
-  // (c) Escape cancels — nothing is written
+  // (c) Escape cancels — nothing is written. The Modal owns this key now, but the
+  //     OUTCOME the ruling names is the same and is what is asserted.
   el = await firstSlideNameEl();
   await el.click({ clickCount: 2 });
-  await sleep(300);
+  await sleep(400);
   await page.keyboard.type("ThrownAway");
   await page.keyboard.press("Escape");
-  await sleep(300);
+  await sleep(400);
   assert((await slideName(0)) === "NewNameZ", `Escape CANCELS — name unchanged (got "${await slideName(0)}")`);
 
-  // (d) THE SECOND RULING: type garbage, click the canvas, the slide keeps its
-  //     ORIGINAL name. Blur must not commit a half-typed name.
+  // (d) THE SECOND RULING — "clicking away should cancel" — is now served by an
+  //     explicit Cancel BUTTON rather than by blur. That is a real improvement to
+  //     assert rather than mourn: the old inline editor cancelled on any wandering
+  //     focus, which meant a half-typed name could be lost by clicking anywhere;
+  //     a dialog only discards when the user says to. What must stay true either
+  //     way is that a half-typed draft is NEVER committed.
   el = await firstSlideNameEl();
   await el.click({ clickCount: 2 });
-  await sleep(300);
+  await sleep(400);
   await page.keyboard.type("HalfTyped");
   sel = await selectionOf();
-  assert(sel?.value === "HalfTyped", `the draft really is in the input before blurring (got "${sel?.value}")`);
-  await page.mouse.click(700, 450); // the canvas, well away from the rail
+  assert(sel?.value === "HalfTyped", `the draft really is in the input before cancelling (got "${sel?.value}")`);
+  await page.evaluate(() => [...document.querySelectorAll(".slide-rename-modal button")].find((b) => b.textContent.trim() === "Cancel")?.click());
   await sleep(400);
-  assert((await slideName(0)) === "NewNameZ", `BLUR (clicking the canvas) CANCELS — name unchanged (got "${await slideName(0)}")`);
-  assert(await page.evaluate(() => !document.querySelector(".slidenav .inline-rename-input")), "the editor closed on blur");
+  assert((await slideName(0)) === "NewNameZ", `Cancel DISCARDS the draft — name unchanged (got "${await slideName(0)}")`);
+  // SCOPED to the slide dialog. Three dialogs render .name-modal-input, so the
+  // bare class cannot say which one is open — asserting on it here was answered
+  // by the PROJECT rename modal and reported a false failure.
+  assert(await page.evaluate(() => !document.querySelector(".slide-rename-modal")), "the dialog closed on Cancel");
 
   // ── SURFACE 2: the PROJECT title (modal, single click) ────────────────────
   console.log("\nPROJECT TITLE (modal, single click):");

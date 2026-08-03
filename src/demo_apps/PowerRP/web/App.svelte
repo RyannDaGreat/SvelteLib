@@ -2962,7 +2962,13 @@
        showSlideRenameModal). Opened by double-clicking a slide name in the rail
        and by the "Rename Slide…" command. -->
   <Modal bind:open={slideRenameVisible} title="Rename Slide" size="compact">
-    <form class="name-modal" onsubmit={(e) => { e.preventDefault(); confirmSlideRename(); }}>
+    <!-- `slide-rename-modal` is a HOOK, not a skin: it carries no styles of its
+         own (.name-modal supplies all of them, shared with the project rename it
+         was told to reuse). It exists because THREE dialogs now render
+         .name-modal-input, so that class alone cannot say WHICH one is open —
+         a probe asserting "the dialog closed" was answered by a different
+         dialog's input and reported a false failure. -->
+    <form class="name-modal slide-rename-modal" onsubmit={(e) => { e.preventDefault(); confirmSlideRename(); }}>
       <label class="name-modal-field">
         <span class="name-modal-label">Slide name</span>
         <!-- Opens with the current name ALL SELECTED, so double-click then type

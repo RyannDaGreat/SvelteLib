@@ -1,11 +1,23 @@
 /**
  * SLIDE RENAME probe (Round 4 #54: "I can't even double click the title of the
  * slide to rename it — add me a control"). Boots the editor with the demo deck
- * and drives the navigator's inline rename: double-click the slide name → an
- * input appears seeded with the current name → type → Enter commits ONE undo
- * unit; Escape cancels without committing; blank restores the positional
- * default. The Inspector boundary panel's Name field shares the same
- * app.renameSlide seam, exercised here directly.
+ * and drives the rail's rename: double-click a slide row → the Rename Slide
+ * DIALOG opens with the name pre-selected → type → confirm commits ONE undo
+ * unit; Cancel writes nothing; blank restores the positional default. The
+ * Inspector boundary panel's Name field shares the same app.renameSlide seam,
+ * exercised here directly.
+ *
+ * IT DRIVES A REAL MOUSE, and that is the point of this rewrite. The probe used
+ * to dispatch a synthetic `new MouseEvent("dblclick")` straight at `.name`, and
+ * it stayed GREEN through the entire period the feature was dead in the user's
+ * hands ("I'm not able to rename slides. I'm double clicking the name and it
+ * won't let me edit the slide name"). The reason is exact: the rail's drag calls
+ * setPointerCapture on the ROW, pointer capture RETARGETS the rest of the
+ * sequence to the capturing element, and the old inline editor listened on a
+ * `display: contents` wrapper reachable only by bubbling from the name span.
+ * A synthesized event skips the pointer sequence, so it never sees the capture.
+ * page.mouse.click(clickCount: 2) does what a user does; anything less cannot
+ * catch this class of bug.
  *
  * Run from SvelteLib root or PowerRP dir: node tests/slide_rename_probe.js
  */
@@ -41,43 +53,48 @@ try {
 
   const nameOf = (i) => page.evaluate((n) => window.__powerrp_app.doc.slides[n].name, i);
   const before = await nameOf(0);
+  // SCOPED to the slide dialog: three dialogs render .name-modal-input, so the
+  // bare class cannot say WHICH one is open.
+  const DIALOG_INPUT = ".slide-rename-modal .name-modal-input";
+  /** Query. The dialog's input value, or null when no dialog is open. */
+  const dialogValue = () => page.evaluate((s) => document.querySelector(s)?.value ?? null, DIALOG_INPUT);
+  /** Command. Double-clicks slide row `i` with a REAL mouse (see the header). */
+  async function dblclickRow(i) {
+    const box = await page.evaluate((n) => {
+      const r = document.querySelectorAll(".slidenav [data-slide-row]")[n].getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + 12 }; // near the top: the name row, not the thumbnail
+    }, i);
+    await page.mouse.click(box.x, box.y, { clickCount: 2 });
+    await sleep(300);
+  }
 
-  // dblclick the first slide's name → inline input appears, seeded.
-  // THE INPUT IS `.inline-rename-input`, NOT the `.name-edit` this probe was
-  // written against: SlideNav no longer hand-rolls its rename editor, it renders
-  // src/lib/InlineRename.svelte, whose input carries that class. The dblclick
-  // target below is still `.slide .name` and still correct — InlineRename listens
-  // on its own `.inline-rename-display` wrapper and the event bubbles up to it —
-  // so only the class the assertions look for moved. Asserting the old name made
-  // a landed, working migration read as a broken rename.
-  await page.evaluate(() => {
-    const el = document.querySelector(".slidenav .slide .name");
-    el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
-  });
-  await sleep(150);
-  const seeded = await page.evaluate(() => document.querySelector(".slidenav .inline-rename-input")?.value ?? null);
-  ok(seeded === before, `double-click opens the inline editor seeded with the current name; got ${JSON.stringify(seeded)}`);
+  // A real double-click on the row opens the DIALOG, pre-filled AND pre-selected.
+  await dblclickRow(0);
+  const seeded = await dialogValue();
+  ok(seeded === before, `a real double-click opens the Rename Slide dialog seeded with the current name; got ${JSON.stringify(seeded)}`);
+  const selection = await page.evaluate((s) => {
+    const el = document.querySelector(s);
+    return el ? { start: el.selectionStart, end: el.selectionEnd, len: el.value.length } : null;
+  }, DIALOG_INPUT);
+  ok(selection && selection.start === 0 && selection.end === selection.len,
+    `the dialog opens PRE-SELECTED so typing replaces (got ${JSON.stringify(selection)})`);
 
-  // type a new name, Enter commits one undo unit
-  await page.evaluate(() => { const inp = document.querySelector(".slidenav .inline-rename-input"); inp.value = ""; });
-  await page.type(".slidenav .inline-rename-input", "Grand Opening");
+  // Typing replaces the whole name; submitting commits ONE undo unit.
+  await page.keyboard.type("Grand Opening");
   await page.keyboard.press("Enter");
-  await sleep(200);
-  ok((await nameOf(0)) === "Grand Opening", "Enter commits the typed name to the doc");
-  ok(await page.evaluate(() => !document.querySelector(".slidenav .inline-rename-input")), "the editor closes on commit");
+  await sleep(300);
+  ok((await nameOf(0)) === "Grand Opening", `confirming commits the typed name (got ${JSON.stringify(await nameOf(0))})`);
+  ok(await page.evaluate((s) => !document.querySelector(s), DIALOG_INPUT), "the dialog closes on commit");
   await page.evaluate(() => window.__powerrp_app.undo());
-  await sleep(150);
+  await sleep(200);
   ok((await nameOf(0)) === before, `the rename was ONE undo unit (undo restores ${JSON.stringify(before)})`);
 
-  // Escape cancels without committing
-  await page.evaluate(() => {
-    document.querySelector(".slidenav .slide .name").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
-  });
-  await sleep(150);
-  await page.type(".slidenav .inline-rename-input", "XXX");
-  await page.keyboard.press("Escape");
-  await sleep(150);
-  ok((await nameOf(0)) === before, "Escape cancels without committing");
+  // Cancel writes nothing.
+  await dblclickRow(0);
+  await page.keyboard.type("XXX");
+  await page.evaluate(() => [...document.querySelectorAll(".slide-rename-modal button")].find((b) => b.textContent.trim() === "Cancel")?.click());
+  await sleep(250);
+  ok((await nameOf(0)) === before, `Cancel writes nothing (got ${JSON.stringify(await nameOf(0))})`);
 
   // blank restores the positional default (via the shared seam)
   await page.evaluate(() => window.__powerrp_app.renameSlide(0, "   "));

@@ -540,14 +540,27 @@
      stops being one. */
   --a-slice-end-w: 26px;
   /* THE DROP INDICATOR during a slide drag: a thickened, selection-toned rail at
-     the boundary under the cursor ("the horizontal line ... would almost open
-     when my mouse is over it"). Two values because a boundary reads as OPEN by
-     both gaining weight and gaining space. */
+     the boundary under the cursor. WEIGHT ONLY — the gap that used to open with
+     it is GONE, by user correction (2026-08-02): "When I'm dragging the slides,
+     the space between the slides gets bigger. No, I didn't want that. It should
+     just be bold." A boundary that adds space reflows the rail under the cursor,
+     which is the thing being objected to; --a-drop-gap was deleted rather than
+     zeroed so nothing can quietly reintroduce it. */
   --a-drop-line-h: 3px;
-  --a-drop-gap: 10px;
-  /* How far a row being DRAGGED fades, so the block travelling with the cursor is
-     visibly lifted out of the list it is still occupying. */
-  --a-drag-ghost-opacity: 0.45;
+  /* THE HOLE a dragged row leaves behind. The row stays in layout (removing it
+     would reflow the rail, see above) but is drawn as an empty dashed slot, so
+     "you can leave the old area empty" is true without anything moving. */
+  --a-lifted-opacity: 0.25;
+  /* THE DRAG GHOST — the copy of the row that travels with the pointer. Lifted
+     off the panel by a shadow and slightly transparent, so what is under it stays
+     readable while it passes over. */
+  --a-drag-ghost-opacity: 0.9;
+  --a-drag-ghost-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  /* How long the non-dragged rows take to slide aside and open the drop slot.
+     The user's own number ("a 0.3 second animation"). SlideNav publishes the same
+     value from its DRAG_SHIFT_MS constant as --drag-shift-ms; this is the
+     fallback for any consumer that renders outside that element. */
+  --a-drag-shift-ms: 300ms;
   /* The multi-selection TINT on a rail row. Distinct from --a-selection (which is
      the CURRENT slide's border) so membership and currency read independently:
      a block of five selected slides has one current slide inside it. */
@@ -5098,14 +5111,24 @@ textarea {
    one: an insert-a-slide-here `+` at each END and the transition chip in the
    MIDDLE. Square corners, --a-* tokens only (chrome rules).
 
-   IDLE IS A FLAT LINE and that is the requirement, not a default (user,
-   2026-08-02: "unless I'm hovering over it, it should stay like a flat dash, a
-   flat line like it is right now"). So every affordance in the band — the chip's
-   label, both `+` ends — is opacity 0 until `.hot`, which the component sets on
-   pointer-enter OR FOCUS of any zone. Opacity rather than display:none for two
-   reasons: the band must not change height when it lights up (the whole rail
-   would jump under the cursor), and a focused-but-invisible control would
-   otherwise be Tab-reachable and unseeable. */
+   THE CHIP IS ALWAYS VISIBLE; ONLY THE `+` ENDS ARE REVEALED. That is a user
+   CORRECTION of the first version, which hid both (2026-08-02): "I don't see
+   tween 0.5 seconds unless I hover over it now, which is not ideal. It's only
+   those new slide here buttons that should be appearing when I slide over them.
+   The tween thing should always be there." The ends stay opacity 0 until `.hot`
+   — opacity rather than display:none for two reasons: the band must not change
+   height when it lights up (the whole rail would jump under the cursor), and a
+   focused-but-invisible control would otherwise be Tab-reachable and unseeable.
+
+   THE BAND CLAIMS THE WHOLE INTER-SLIDE GAP as its hit area, also a correction
+   ("it requires me to hover over the part that says tween in order to activate
+   those buttons. That's silly… The hover area should be the entire in between of
+   the slides, not just a small subset"). It does that with a vertical padding of
+   half the parent's row gap and a matching negative margin: the band grows to
+   cover the dead space on both sides WITHOUT occupying any more layout than it
+   did, so the rail's spacing is unchanged and every pixel between two slides is
+   now hoverable. Padding on the flex parent, not a taller box, because the chip
+   and ends must stay centred on the original line. */
 .slidenav .transition-slice {
   display: flex;
   align-items: center;
@@ -5113,6 +5136,10 @@ textarea {
   width: 100%;
   height: var(--a-transition-slice-h);
   color: var(--fg-dim);
+  /* Swallow the .slides row gap on both sides — see the note above. */
+  padding: calc(var(--a-sp-2) / 2) 0;
+  margin: calc(var(--a-sp-2) / -2) 0;
+  box-sizing: content-box;
 }
 
 .slidenav .transition-slice .tr-line {
@@ -5132,14 +5159,18 @@ textarea {
   font-size: var(--a-font-sm);
   white-space: nowrap;
   cursor: pointer;
-  opacity: 0;
+  /* ALWAYS VISIBLE — see the block comment above. It is INFORMATION (which
+     transition runs here, and for how long), not an affordance that appears on
+     approach, and the user asked for it by name. */
+  opacity: 1;
 }
 
 /* THE TWO `+` ENDS. An up+plus above and a down+plus below — the user's own
    glyphs, describing which neighbour the inserted slide takes its transition
    from ("the right side ... would add it from the previous slide ... the left
    side would be like up plus arrow"). Fixed width so they stay grabbable in a
-   narrow rail; hidden until the band is hot, like everything else here. */
+   narrow rail. THESE are the "new slide here buttons" that appear on hover —
+   the only things in the band that do. */
 .slidenav .transition-slice .tr-end {
   display: inline-flex;
   align-items: center;
@@ -5154,14 +5185,13 @@ textarea {
   opacity: 0;
 }
 
-/* HOT = the pointer or keyboard focus is anywhere in this band. Everything the
-   band has to say appears at once, so moving between the three zones does not
-   flicker pieces of it in and out. */
+/* HOT = the pointer or keyboard focus is anywhere in this band's GAP — the whole
+   inter-slide region, not one zone (see the block comment). Both ends appear at
+   once, so crossing the band does not flicker them in and out one at a time. */
 .slidenav .transition-slice.hot {
   color: var(--fg);
 }
 
-.slidenav .transition-slice.hot .tr-chip,
 .slidenav .transition-slice.hot .tr-end {
   opacity: 1;
 }
@@ -5176,13 +5206,19 @@ textarea {
   color: var(--a-selection);
 }
 
-/* Selected transition: the chip + connector take the selection color (same
-   language as .slide.current), so the between-rows target reads as selected.
-   A SELECTED chip stays visible when the band is cold — it is state, not an
-   affordance, and hiding it would lose the only mark of what is selected. */
+/* SELECTED TRANSITIONS RENDER ON TWO AXES, exactly as the rail's ROWS do, because
+   they are the same two facts (user: "exactly the same idea"). `.selected` is
+   MEMBERSHIP in the multi-selection and takes the background tint; `.primary` is
+   the ONE the Property Panel is named after and takes the selection-colored text.
+   Splitting them means a block of five selected tweens reads as a block with one
+   of them live, instead of five identical chips. The tokens are the rows' own
+   (--a-slide-selected-bg, --a-selection), so the two rails speak one language. */
 .slidenav .transition-slice .tr-chip.selected {
+  background: var(--a-slide-selected-bg);
+}
+
+.slidenav .transition-slice .tr-chip.primary {
   color: var(--a-selection);
-  opacity: 1;
 }
 
 .slidenav .transition-slice:has(.tr-chip.selected) .tr-line {
@@ -5190,19 +5226,19 @@ textarea {
 }
 
 /* ── THE DROP INDICATOR ────────────────────────────────────────────────────
-   During a row drag the boundary under the cursor OPENS: its connector gains
-   weight and the band gains space ("the horizontal line would be entirely there
-   and would almost open when my mouse is over it"). It is drawn by whichever
-   element owns that boundary — a transition slice for the gaps between rows, a
-   bare .drop-rail for the head and tail gaps, which have no slice. */
+   During a row drag the boundary under the cursor GOES BOLD — and ONLY bold.
+   User correction, 2026-08-02: "When I'm dragging the slides, the space between
+   the slides gets bigger. No, I didn't want that. It should just be bold." The
+   margin rules that used to open a gap here are DELETED, not zeroed: a boundary
+   that adds space reflows the rail under the cursor mid-gesture, which is both
+   what the user objected to and what makes the drop target move while you aim at
+   it. Weight alone is enough to say "here", and it costs no layout.
+   It is drawn by whichever element owns that boundary — a transition slice for
+   the gaps between rows, a bare .drop-rail for the head and tail gaps. */
 .slidenav .transition-slice.drop .tr-line,
 .slidenav .drop-rail.drop {
   height: var(--a-drop-line-h);
   background: var(--a-selection);
-}
-
-.slidenav .transition-slice.drop {
-  margin: var(--a-drop-gap) 0;
 }
 
 /* The head/tail boundaries have no transition slice to borrow, so they get a
@@ -5213,14 +5249,15 @@ textarea {
   height: 0;
 }
 
-.slidenav .drop-rail.drop {
-  margin: var(--a-drop-gap) 0;
-}
-
 /* WHILE DRAGGING, every row is a drop zone and none of them is a click target,
-   so the pointer says grabbing and the rows stop offering their own hovers.
-   The rows keep their pointer events (the capture needs them). */
-.slidenav.dragging {
+   so the pointer says grabbing — a CLOSED FIST, which the user asked for by name
+   ("my cursor have a closed fist icon when I'm dragging") — and the rows stop
+   offering their own hovers. The rows keep their pointer events (the capture
+   needs them). The cursor is repeated on the rows themselves because each one
+   sets `cursor: pointer`, which would otherwise win on the element under the
+   pointer and show a hand while the rail showed a fist. */
+.slidenav.dragging,
+.slidenav.dragging .slide {
   cursor: grabbing;
 }
 
@@ -5228,10 +5265,71 @@ textarea {
   background: var(--control-bg);
 }
 
-/* The rows travelling with the cursor fade, so the block reads as lifted out of
-   the list it is still physically occupying. */
-.slidenav .slide.dragged {
+/* ── THE LIFTED ROW AND THE ROWS THAT MAKE WAY ──────────────────────────────
+   User: "make it literally drag the slide… the slide thumbnail so that it looks
+   like I'm literally dragging it. You can leave the old area empty, and then when
+   I drag it into the new area, it can just push the others out of the way and
+   then move in. You can have a 0.3 second animation for that using CSS."
+
+   THE OLD SLOT IS A HOLE, not a removal. The row keeps its box (deleting it would
+   collapse the rail and reflow everything — the same objection as the drop gap
+   above) and is drawn empty: its contents vanish, its border goes dashed. What
+   the pointer carries is .drag-ghost below, a real copy. */
+.slidenav .slide.lifted {
+  opacity: var(--a-lifted-opacity);
+  border-style: dashed;
+  background: transparent;
+}
+
+.slidenav .slide.lifted > * {
+  visibility: hidden;
+}
+
+/* THE OTHERS SLIDE ASIDE. --drag-shift is set per row by SlideNav (0 for rows
+   that do not move) and animates over --drag-shift-ms, which SlideNav publishes
+   from its own DRAG_SHIFT_MS so the two cannot drift.
+
+   TRANSFORM, NOT MARGIN OR HEIGHT: a transform composites on the GPU and, more
+   importantly, cannot reflow — so opening the slot moves the rows that must move
+   and touches nothing else, which is the whole constraint the drop-gap deletion
+   above is about. */
+.slidenav .slide {
+  transform: translateY(var(--drag-shift, 0px));
+  transition: transform var(--drag-shift-ms, var(--a-drag-shift-ms)) ease;
+}
+
+/* THE GHOST — the copy of the row that literally follows the pointer. Fixed, so
+   pointer coordinates are its coordinates and the rail's own scrolling cannot
+   drag it out from under the cursor. pointer-events:none so it can never become
+   the drop target it is hovering over, and it takes no transform transition: it
+   must track the cursor exactly, not ease toward it. */
+.slidenav .drag-ghost {
+  position: fixed;
+  /* THE POPOVER TIER, not a new rung. The ghost is a box that opens on top of the
+     whole app and must clear the rail, the canvas and every panel edge it passes
+     over — which is exactly what that tier is for. The z ladder above says it has
+     FIVE app-wide tiers on purpose; a sixth for a element that exists only
+     between a pointerdown and a pointerup would be a rung nobody could reuse. */
+  z-index: var(--a-z-popover);
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+  padding: var(--a-sp-3);
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--a-selection);
+  box-shadow: var(--a-drag-ghost-shadow);
   opacity: var(--a-drag-ghost-opacity);
+  box-sizing: border-box;
+  pointer-events: none;
+  transition: none;
+}
+
+/* HOW MANY MORE ROWS TRAVEL WITH IT. A multi-slide drag shows one ghost plus this
+   count rather than N stacked copies — the block moves as one thing. */
+.slidenav .drag-ghost .ghost-count {
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
 }
 
 /* HOVER READS AS A BACKGROUND SHIFT, NEVER A BORDER, and that is a constraint not
@@ -5289,22 +5387,13 @@ textarea {
   padding: var(--a-sp-1) var(--a-sp-2);
 }
 
-/* The inline slide-rename editor (Round 4 #54, double-click the name). The
-   editor itself is InlineRename (SvelteLib) now, so this rule only supplies the
-   app's palette-input SKIN through that component's documented custom
-   properties: no border box, a background tint + bottom hairline. It targets
-   .inline-rename-input, the class the component gives its <input>; the old
-   .name-edit selector went with the bespoke input this replaced. */
-.slidenav .inline-rename-input {
-  flex: 1;
-  color: var(--fg);
-  --inline-rename-bg: var(--control-bg);
-  --inline-rename-border: transparent;
-  --inline-rename-radius: 0;
-  --inline-rename-padding: 0 var(--a-sp-1);
-  border-bottom: var(--a-hairline) solid var(--border);
-  outline: none;
-}
+/* THE INLINE SLIDE-RENAME SKIN IS GONE, with the editor it skinned. Renaming a
+   slide is a DIALOG now (user ruling, 2026-08-02: "in the same way that rename
+   project does… A dialog comes up pre-selected"), so the rail has no <input> of
+   its own and this rule had nothing left to select. It is deleted rather than
+   left behind because a rule matching nothing is indistinguishable from a rule
+   whose selector has quietly gone stale — and the dialog is styled by
+   .name-modal-input, shared with the project rename it was told to reuse. */
 
 .slidenav .eye {
   display: inline-flex;

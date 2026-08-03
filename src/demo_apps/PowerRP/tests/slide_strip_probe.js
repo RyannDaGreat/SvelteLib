@@ -1,7 +1,14 @@
 /**
- * SLIDE STRIP probe — the rail's three new gestures, end to end in a real
- * browser: the transition slice's INSERT ends, DRAG-TO-REORDER, and the
- * multi-select + slide clipboard commands.
+ * SLIDE STRIP probe — the rail's gestures, end to end in a real browser: the
+ * transition slice's INSERT ends, DRAG-TO-REORDER (and what it LOOKS like), the
+ * multi-select + slide clipboard commands, and TRANSITION multi-select.
+ *
+ * SEVERAL ASSERTIONS HERE PIN USER CORRECTIONS OF A DESIGN THAT SHIPPED, and each
+ * is marked at its site with the quote that overruled it (2026-08-02): the chip
+ * is always visible rather than hover-revealed, the hover surface is the whole
+ * gap rather than the chip, and a drag boundary goes bold WITHOUT opening space.
+ * Where a pin was simply inverted, that is said — a pin quietly deleted is how a
+ * rejected design creeps back.
  *
  *   node src/demo_apps/PowerRP/tests/slide_strip_probe.js
  *
@@ -59,12 +66,18 @@ try {
   await page.waitForSelector(".slidenav [data-slide-row]");
 
   // ── 1. THE SLICE HAS THREE ZONES, and the two ends insert ──────────────────
+  // THE CHIP IS ALWAYS VISIBLE; ONLY THE ENDS ARE HOVER-REVEALED. This probe
+  // asserted the OPPOSITE for the chip — `idleChipOpacity === "0"` — and the user
+  // overruled that design on 2026-08-02: "I don't see tween 0.5 seconds unless I
+  // hover over it now, which is not ideal. It's only those new slide here buttons
+  // that should be appearing when I slide over them. The tween thing should
+  // always be there." The old pin is inverted rather than deleted, because which
+  // of the two states each element is in is exactly what regresses silently.
   const zones = await page.evaluate(() => {
     const slice = document.querySelector(".transition-slice");
     return {
       ends: slice.querySelectorAll(".tr-end").length,
       chips: slice.querySelectorAll(".tr-chip").length,
-      // Idle the band is a flat line: every affordance in it is transparent.
       idleEndOpacity: getComputedStyle(slice.querySelector(".tr-end")).opacity,
       idleChipOpacity: getComputedStyle(slice.querySelector(".tr-chip")).opacity,
     };
@@ -72,10 +85,15 @@ try {
   check(zones.ends === 2, `expected 2 insert ends on a transition slice, got ${zones.ends}`);
   check(zones.chips === 1, `expected 1 transition chip on a slice, got ${zones.chips}`);
   check(zones.idleEndOpacity === "0", `an IDLE slice must show no + affordance (opacity ${zones.idleEndOpacity})`);
-  check(zones.idleChipOpacity === "0", `an IDLE slice must show no chip (opacity ${zones.idleChipOpacity})`);
+  check(zones.idleChipOpacity === "1", `the transition CHIP must be visible without hovering (user ruling); opacity ${zones.idleChipOpacity}`);
 
-  // Hovering the band lights it — the whole band at once, not one zone.
-  await page.hover(".transition-slice .tr-end");
+  // HOVERING ANYWHERE IN THE GAP reveals the ends — the hover surface is the whole
+  // inter-slide band, not the chip (user: "The hover area should be the entire in
+  // between of the slides, not just a small subset"). So this hovers the BAND, and
+  // deliberately not the `.tr-end` it is checking: hovering the target itself
+  // would pass even if the band handed hover to its children only, which is the
+  // exact defect being ruled out.
+  await page.hover(".transition-slice");
   const hot = await page.evaluate(() => {
     const slice = document.querySelector(".transition-slice");
     return {
@@ -83,7 +101,8 @@ try {
       chip: getComputedStyle(slice.querySelector(".tr-chip")).opacity,
     };
   });
-  check(hot.end === "1" && hot.chip === "1", `hovering a slice must reveal BOTH the ends and the chip (end ${hot.end}, chip ${hot.chip})`);
+  check(hot.end === "1", `hovering anywhere in the gap must reveal the + ends (end opacity ${hot.end})`);
+  check(hot.chip === "1", `the chip stays visible while hot (opacity ${hot.chip})`);
 
   // The left end inserts a slide at that boundary — one slide more, and it
   // becomes current (the deck's picture at every OTHER index is untouched, which
@@ -143,6 +162,9 @@ try {
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const rows = [...document.querySelectorAll(".slidenav [data-slide-row]")];
     const idsBefore = app.doc.slides.map((s) => s.id);
+    // Baseline for the no-reflow check below: where the last row SITS IN LAYOUT
+    // before anything is dragged.
+    const layoutTopBefore = rows[rows.length - 1].offsetTop;
     const a = rows[0].getBoundingClientRect();
     const b = rows[1].getBoundingClientRect();
     const opts = { bubbles: true, pointerId: 1, button: 0, isPrimary: true, pointerType: "mouse" };
@@ -158,19 +180,107 @@ try {
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const railDragging = document.querySelector(".slidenav").classList.contains("dragging");
     const dropShown = document.querySelectorAll(".slidenav .drop, .slidenav .transition-slice.drop").length;
+    // WHAT THE DRAG LOOKS LIKE, per the user's 2026-08-02 corrections. Each of
+    // these replaced a behaviour that shipped and was rejected, so each is pinned:
+    //   · the dragged row's slot is a HOLE (.lifted), left in place, not removed
+    //   · a GHOST follows the pointer ("make it literally drag the slide")
+    //   · the cursor is a CLOSED FIST
+    //   · the boundary goes BOLD ONLY — no margin opens ("It should just be bold")
+    const lifted = document.querySelectorAll(".slidenav .slide.lifted").length;
+    const ghost = document.querySelector(".slidenav .drag-ghost");
+    const railCursor = getComputedStyle(document.querySelector(".slidenav")).cursor;
+    // THE MEASUREMENT IS THE ROW'S POSITION, NOT A MARGIN VALUE. Reading
+    // margin-top off the drop slice cannot answer this: the slice carries a
+    // NEGATIVE margin on purpose (it is how the band claims the whole gap as its
+    // hover surface without taking extra layout), so a margin assertion would
+    // fail on a correct implementation and pass on a wrong one that used padding
+    // instead. What the user actually objected to is the rail MOVING —
+    // "the space between the slides gets bigger" — so measure that: the last
+    // row's top before vs during the drag, which is the accumulation of every
+    // gap above it. Transform-based shifts do not count here, deliberately;
+    // they are the rows making way, which is the behaviour that was ASKED for.
+    const lastRow = rows[rows.length - 1];
+    const layoutTopDuring = lastRow.offsetTop;
+    // A row that must make way carries a non-zero translate, and it is a
+    // TRANSFORM (compositable, cannot reflow) rather than a margin/height.
+    const shifted = [...document.querySelectorAll(".slidenav .slide")]
+      .map((r) => getComputedStyle(r).transform)
+      .filter((t) => t && t !== "none" && !/matrix\(1, 0, 0, 1, 0, 0\)/.test(t)).length;
     rows[0].dispatchEvent(new PointerEvent("pointerup", { ...opts, clientX: a.left + 10, clientY: b.bottom - 2 }));
     const idsAfter = app.doc.slides.map((s) => s.id);
     app.undo();
-    return { idsBefore, idsAfter, railDragging, dropShown, idsUndone: app.doc.slides.map((s) => s.id) };
+    return {
+      idsBefore, idsAfter, railDragging, dropShown, lifted, railCursor, shifted,
+      layoutTopBefore, layoutTopDuring,
+      ghost: ghost ? { present: true, text: ghost.textContent.trim(), pointerEvents: getComputedStyle(ghost).pointerEvents, position: getComputedStyle(ghost).position } : { present: false },
+      idsUndone: app.doc.slides.map((s) => s.id),
+    };
   });
   check(drag.railDragging, "the rail did not enter its .dragging state during a row drag");
   check(drag.dropShown >= 1, "no drop indicator was drawn at the boundary under the cursor");
+  check(drag.railCursor === "grabbing", `the cursor must be a closed fist while dragging (user ruling); got ${drag.railCursor}`);
+  check(drag.lifted === 1, `the dragged row's slot must be left EMPTY as a .lifted hole; got ${drag.lifted}`);
+  check(drag.ghost.present, "no .drag-ghost followed the pointer (user: \"make it literally drag the slide\")");
+  check(drag.ghost.position === "fixed", `the ghost must be position:fixed so rail scrolling cannot drift it off the cursor; got ${drag.ghost.position}`);
+  check(drag.ghost.pointerEvents === "none", "the ghost must not be hit-testable — it would become the drop target it is hovering");
+  check(drag.shifted >= 1, "no row translated to open the drop slot (\"push the others out of the way\")");
+  // THE BOUNDARY GOES BOLD, NOT WIDE. A margin here is the rejected design, and
+  // it is asserted absent rather than merely unasserted, because "the space
+  // between the slides gets bigger" is precisely what the user objected to.
+  check(drag.layoutTopDuring === drag.layoutTopBefore,
+    `the rail must NOT reflow when a drag starts — bold boundary only, no gap (user ruling); last row's layout top moved ${drag.layoutTopBefore} → ${drag.layoutTopDuring}`);
   check(drag.idsAfter[0] === drag.idsBefore[1] && drag.idsAfter[1] === drag.idsBefore[0],
     `the drop did not reorder: ${drag.idsBefore.slice(0, 2)} → ${drag.idsAfter.slice(0, 2)}`);
   check(drag.idsUndone.join() === drag.idsBefore.join(), "a drop is not ONE undo unit — one undo did not restore the order");
 
+  // ── 4. TRANSITION MULTI-SELECT, and the batch write it feeds ───────────────
+  // User, 2026-08-02: "I should be able to shift click multiple tweens too, in the
+  // same way that I have multi-selection for widgets. It's exactly the same idea."
+  // So the same three gestures are asserted here that section 2 asserts for rows,
+  // plus the property the phrase "exactly the same idea" actually commits us to:
+  // a batch edit is ONE undo unit, not one per transition.
+  const tr = await page.evaluate(async () => {
+    const app = window.__powerrp_app;
+    const ids = app.doc.slides.map((s) => s.id);
+    app.selectTransitionAt(ids[1]);
+    const single = app.selectedTransitionIds().length;
+    app.selectTransitionAt(ids[2], { shift: true }); // range 1..2
+    const range = app.selectedTransitionIds().length;
+    app.selectTransitionAt(ids[2], { toggle: true }); // drop one back out
+    const toggled = app.selectedTransitionIds().length;
+    // Batch-set duration over a real multi-selection, then undo ONCE.
+    app.selectTransitionAt(ids[1]);
+    app.selectTransitionAt(ids[2], { shift: true });
+    const targets = app.selectedTransitionIds();
+    app.setSelectedTransitionsProp("seconds", 1.25);
+    const after = targets.map((id) => app.transitionAt(id).seconds);
+    app.undo();
+    const undone = targets.map((id) => app.transitionAt(id).seconds);
+    // Re-select for the DOM reads below and let Svelte flush: the classes are not
+    // on the chips in the same tick as the state write (the drag section above
+    // documents the same asynchrony).
+    app.selectTransitionAt(ids[1]);
+    app.selectTransitionAt(ids[2], { shift: true });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return {
+      single, range, toggled, after, undone,
+      chipsSelected: document.querySelectorAll(".slidenav .tr-chip.selected").length,
+      primaries: document.querySelectorAll(".slidenav .tr-chip.primary").length,
+      // Item and transition selection stay mutually exclusive.
+      itemSelectionCleared: app.selection === null,
+    };
+  });
+  check(tr.single === 1, `a plain click selects exactly one transition, got ${tr.single}`);
+  check(tr.range === 2, `shift-click must select a RANGE of transitions, got ${tr.range}`);
+  check(tr.toggled === 1, `cmd-click must toggle one transition out, leaving 1; got ${tr.toggled}`);
+  check(tr.after.every((s) => s === 1.25), `a batch duration write must reach EVERY selected transition, got ${JSON.stringify(tr.after)}`);
+  check(tr.undone.every((s) => s !== 1.25), `the batch write must be ONE undo unit; after one undo: ${JSON.stringify(tr.undone)}`);
+  check(tr.chipsSelected >= 1, "no transition chip rendered as .selected during a multi-selection");
+  check(tr.primaries === 1, `exactly one chip is the PRIMARY (the one the panel names), got ${tr.primaries}`);
+  check(tr.itemSelectionCleared, "selecting a transition must clear the item selection (they are mutually exclusive)");
+
   if (errors.length) throw new Error(`console errors:\n${errors.join("\n")}`);
-  console.log("SLIDE STRIP PROBE OK: slice has 2 insert ends + 1 chip and is flat when idle; a + end inserts; shift/cmd build the rail selection; copy+paste round-trips 2 slides; a pointer drag reorders in one undo unit. Zero console errors.");
+  console.log("SLIDE STRIP PROBE OK: slice has 2 insert ends + 1 always-visible chip, ends reveal on gap hover; a + end inserts; shift/cmd build the rail selection; copy+paste round-trips 2 slides; a pointer drag lifts a ghost, shifts the others and reorders in one undo unit with a bold-not-wider boundary; transitions shift/cmd multi-select and batch-write in one undo unit. Zero console errors.");
 } finally {
   await browser.close();
   await server.close();

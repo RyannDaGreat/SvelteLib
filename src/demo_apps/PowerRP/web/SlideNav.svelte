@@ -9,21 +9,39 @@
 
   THE SLICE IS THREE HIT TARGETS, NOT ONE (user, 2026-08-02). An insert-a-slide
   `+` at each END, the transition chip in the MIDDLE, and a role="group" band
-  around them whose only job is to clear the hover state on leave. IDLE IT IS A
-  FLAT LINE and that is the requirement, quoted: "unless I'm hovering over it, it
-  should stay like a flat dash, a flat line like it is right now."
+  around them that owns the hover state.
 
-  THE RAIL ALSO OWNS THREE GESTURES BEYOND CLICK-TO-NAVIGATE:
+  WHAT IS ALWAYS VISIBLE vs WHAT IS REVEALED (user corrections, 2026-08-02, after
+  the first version hid both): the CHIP IS ALWAYS THERE — "I don't see tween 0.5
+  seconds unless I hover over it now, which is not ideal. It's only those new
+  slide here buttons that should be appearing when I slide over them. The tween
+  thing should always be there." Only the two `+` ends are hover-revealed. And the
+  hover surface is THE WHOLE GAP, not the chip: "The hover area should be the
+  entire in between of the slides, not just a small subset."
+
+  THE RAIL ALSO OWNS FOUR GESTURES BEYOND CLICK-TO-NAVIGATE:
     · DRAG-TO-REORDER — pointer capture on a row, a BOUNDARY (gap index) as the
       drop target, one undo unit per drop, through core withSlidesMovedToBoundary
-      so the appearance law holds. Never a naive splice.
-    · MULTI-SELECT — plain / shift-range / cmd-toggle, resolved by
+      so the appearance law holds. Never a naive splice. What it LOOKS like is
+      ruled separately (user: "make it literally drag the slide"): the row travels
+      with the pointer as a fixed-position ghost, its own slot goes empty, the
+      others slide aside over 0.3s, and the boundary goes BOLD without the rail
+      ever changing height — see the drag note in the script.
+    · MULTI-SELECT of ROWS — plain / shift-range / cmd-toggle, resolved by
       app.selectSlideAt. Rendered on TWO axes: `current` keeps the border (the one
       slide the canvas shows), `selected` takes a background tint (membership).
+    · MULTI-SELECT of TRANSITIONS — the same three gestures on the chips, resolved
+      by app.selectTransitionAt (user: "I should be able to shift click multiple
+      tweens too… It's exactly the same idea"), and rendered on the same two axes.
     · THE SLIDE CLIPBOARD — Copy/Paste/Duplicate/Delete Slide(s), registered
       commands, and the same Ctrl+C/V, Cmd+D and Backspace chords the canvas uses
       but scoped to RAIL FOCUS (core/shortcut_entries.js slideRailFocus), because
       there are two clipboards and one chord may not mean both.
+
+  RENAME IS A DIALOG, NOT AN INLINE EDITOR, and the row owns the double-click that
+  opens it. The reason is a real bug worth knowing before touching either gesture
+  — pointer capture retargets the dblclick away from the name span — and it is
+  written out at the rename note in the script.
 
   Thumbnails use the generic DirtyImage widget (src/lib): each renders THROUGH
   its slide's camera, at the size it's DISPLAYED (panel width × dpr) so it's
@@ -52,7 +70,6 @@
   import "iconify-icon";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import DirtyImage from "../../../lib/DirtyImage.svelte";
-  import InlineRename from "../../../lib/InlineRename.svelte";
   import { resolveTransition, transitionType } from "../core/transitions.js";
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
@@ -197,44 +214,77 @@
     return () => { if (window.__powerrp_thumbs === thumbScheduler) delete window.__powerrp_thumbs; };
   });
 
-  // ── SLIDE RENAME (Round 4 #54: "double click the title of the slide to
-  // rename it") — now delegated WHOLESALE to InlineRename (SvelteLib), which
-  // owns the editor state, the focus/select-all timing and the commit/cancel
-  // keys. The bespoke copy that lived here was deleted rather than kept
-  // alongside: two implementations of one gesture is exactly how the two halves
-  // drift apart, and this one lacked BOTH rulings it now inherits — it selected
-  // nothing on open (so typing appended to the old name) and it COMMITTED on
-  // blur (so clicking away saved a half-typed name).
+  // ── SLIDE RENAME — A DIALOG, NOT AN INLINE EDITOR ───────────────────────────
+  // User ruling, 2026-08-02: "I'm not able to rename slides. I'm double clicking
+  // the name and it won't let me edit the slide name" … "when I double click a
+  // slide title, it should let me edit it. In the same way that rename project
+  // does when I click that. A dialog comes up pre-selected and whatever process
+  // for that should be reused for this."
   //
-  // All this file still owns is the write: renameSlide is ONE undo unit, and a
-  // blank name restores the positional default. InlineRename never mutates.
+  // WHY THE INLINE EDITOR STOPPED WORKING, recorded because the fix had to avoid
+  // inheriting it. `onRowPointerDown` calls setPointerCapture on the ROW for every
+  // left pointerdown (the drag gesture needs it). Pointer capture RETARGETS the
+  // rest of that sequence to the capturing element, so pointerup, click and
+  // dblclick all arrived with target = the row. InlineRename listens on its
+  // `.inline-rename-display` wrapper, which is `display: contents` — it has no box
+  // of its own and can only be reached by the event BUBBLING UP from the name
+  // span, which is precisely the path retargeting removes.
+  //
+  // MEASURED, not surmised, and the measurement is the lesson: a synthetic
+  // dblclick dispatched straight at `.name` still opened the editor, which is why
+  // tests/slide_rename_probe.js stayed green for a feature that was dead in the
+  // user's hands; a real two-click mouse sequence did not; stubbing
+  // setPointerCapture to a no-op restored it immediately. A probe that
+  // synthesizes the event it wants instead of the gesture the user makes cannot
+  // see this class of bug at all.
+  //
+  // THE DIALOG DOES NOT INHERIT IT because it opens from the ROW's own ondblclick
+  // — the element capture retargets TO — instead of from a descendant the event
+  // no longer reaches. That is also why this is not merely "InlineRename with the
+  // guard widened": the ruling asked for the project-rename process, and it
+  // sidesteps the retargeting problem by construction rather than by exclusion.
+  //
+  // All this file owns is the trigger; App.svelte owns the dialog and
+  // app.renameSlide owns the write (ONE undo unit, blank restores the default).
 
-  // ── THE TRANSITION SLICE'S THREE ZONES ──────────────────────────────────────
+  // ── THE TRANSITION SLICE'S ZONES ────────────────────────────────────────────
   // User, 2026-08-02: "maybe only the middle of it said tween point five seconds.
   // And if I move mouse to either side of it, maybe I'd see a plus symbol, which
-  // means add new slide here … Now, unless I'm hovering over it, it should stay
-  // like a flat dash, a flat line like it is right now."
+  // means add new slide here."
   //
-  // So the slice is THREE hit targets in one band, and which one the pointer is
-  // over is tracked HERE rather than in CSS. It cannot be CSS: the three zones
-  // must be separate <button>s (each does a different thing and each owes its own
-  // tooltip and aria-label), but the CHIP they replace spans the whole band, so
-  // "am I over an end" has to be readable by the middle zone's own markup. One
-  // {slideId, zone} record, cleared on leave, answers it for every zone at once.
+  // THE CHIP IS NOT HOVER-REVEALED, and that is a CORRECTION of what shipped
+  // (user: "I don't see tween 0.5 seconds unless I hover over it now, which is
+  // not ideal. It's only those new slide here buttons that should be appearing
+  // when I slide over them. The tween thing should always be there."). So the
+  // middle chip is ALWAYS visible; only the two `+` ends are hover-revealed. The
+  // earlier reading — that the user's "unless I'm hovering over it, it should
+  // stay like a flat dash" covered the chip too — was wrong: that sentence was
+  // about the band's CHROME, not about hiding the transition's own label.
   //
-  // KEYBOARD FOCUS COUNTS AS HOVER (`hoverZone` is set on focus too). Otherwise
-  // the two `+` buttons would be reachable by Tab but invisible while focused —
-  // a control you can activate and cannot see.
-  let hoverZone = $state(null); // {slideId, zone: "before"|"middle"|"after"} | null
+  // THE HOT ZONE IS THE WHOLE GAP, also a correction (user: "it requires me to
+  // hover over the part that says tween in order to activate those buttons.
+  // That's silly… The hover area should be the entire in between of the slides,
+  // not just a small subset."). So the BAND owns the hover, via one
+  // pointerenter/leave pair on the band itself, and the per-zone enter handlers
+  // are gone — the ends light whenever the pointer is anywhere in the gap,
+  // including over the connector lines and the chip.
+  //
+  // `hoverZone` therefore tracks only WHICH end is under the pointer (for the
+  // end's own active tint), while `bandHot` tracks whether the gap is hot at all.
+  // KEYBOARD FOCUS COUNTS AS HOVER on both, or a Tab-focused `+` would be
+  // activatable and invisible.
+  let hoverZone = $state(null); // {slideId, zone: "before"|"after"} | null
+  let hotSliceId = $state(null); // slideId of the gap the pointer/focus is in, or null
 
-  /** Query. Is the pointer/focus inside slice `slideId`'s `zone`? */
+  /** Query. Is the pointer/focus on slice `slideId`'s `zone` END specifically?
+   *  Drives that one end's active tint, so the band says which `+` a click hits. */
   function inZone(slideId, zone) {
     return hoverZone?.slideId === slideId && hoverZone.zone === zone;
   }
-  /** Query. Is the pointer/focus anywhere in slice `slideId`? Drives the whole
-   *  band's lift out of the idle flat-line state. */
+  /** Query. Is the pointer/focus anywhere in slice `slideId`'s GAP? Reveals both
+   *  `+` ends at once — the whole inter-slide region is the hover surface. */
   function sliceHot(slideId) {
-    return hoverZone?.slideId === slideId;
+    return hotSliceId === slideId;
   }
 
   // ── DRAG TO REORDER ─────────────────────────────────────────────────────────
@@ -255,9 +305,38 @@
   // dragover handler on every gap, and it fires no event at all until a platform
   // threshold is crossed. A pointer capture on the row gives the boundary math
   // directly from clientY, and it is the same gesture vocabulary the canvas uses.
+  // WHAT A DRAG LOOKS LIKE — a full correction of the first version (user,
+  // 2026-08-02): "When I'm dragging the slides, the space between the slides gets
+  // bigger. No, I didn't want that. It should just be bold." · "my cursor have a
+  // closed fist icon when I'm dragging" · "make it literally drag the slide… the
+  // slide thumbnail so that it looks like I'm literally dragging it. You can leave
+  // the old area empty, and then when I drag it into the new area, it can just
+  // push the others out of the way and then move in. You can have a 0.3 second
+  // animation for that using CSS."
+  //
+  // So four things replace the opening rail:
+  //   1. THE BOUNDARY ONLY GOES BOLD. No height growth, no margin — the rail must
+  //      not reflow under the cursor, which is what the user objected to.
+  //   2. THE CURSOR IS A CLOSED FIST (`cursor: grabbing`, on the rail).
+  //   3. THE DRAGGED ROW FOLLOWS THE POINTER as a lifted ghost — a real copy of
+  //      the row, translated to the cursor — and its ORIGINAL SLOT GOES EMPTY
+  //      (`.lifted`: kept in layout so the list does not collapse, but drawn as a
+  //      hole).
+  //   4. THE OTHER ROWS SLIDE OUT OF THE WAY to open the target slot, animated by
+  //      a CSS transform transition of DRAG_SHIFT_MS. Transform, not margin or
+  //      height: it composites, and it cannot reflow the rail (which is bullet 1).
   const DRAG_THRESHOLD_PX = 4; // below this a pointerdown is a CLICK, not a drag
+  // How long a non-dragged row takes to slide aside — the user's own number
+  // ("You can have a 0.3 second animation for that"). Read here and published to
+  // CSS as a custom property so the two cannot drift.
+  const DRAG_SHIFT_MS = 300;
 
-  let dragState = $state(null); // {indices, startY, moved, boundary} | null
+  // {indices, startY, pointerY, moved, boundary, height, ghostX, grabDy} | null.
+  // `height` is the lifted block's height — how far the rows below must shift to
+  // open its slot. `grabDy` is where inside the row the pointer grabbed, so the
+  // ghost sits under the cursor exactly where the row was picked up rather than
+  // snapping its top to it.
+  let dragState = $state(null);
   let slidesEl = $state(null); // the scroll container — boundary math is relative to its rows
 
   /**
@@ -280,18 +359,34 @@
    *  plain select never has to be undone by a stray pixel of movement. */
   function onRowPointerDown(e, i) {
     if (e.button !== 0) return;
-    // The eye toggle and the rename editor live inside the row and own their own
-    // pointers; a drag started on them would swallow their click.
-    if (e.target.closest(".eye, .inline-rename-input")) return;
+    // The eye toggle owns its own pointer; a drag started on it would swallow its
+    // click. (The rename editor is no longer inside the row — it is a dialog now,
+    // for the retargeting reason this file's rename note gives.)
+    if (e.target.closest(".eye")) return;
     const indices = app.isSlideSelected(i) ? app.selectedSlideIndices() : [i];
-    dragState = { indices, startY: e.clientY, moved: false, boundary: null };
+    // MEASURE THE BLOCK AT GRAB TIME, once. The lifted rows' total height is how
+    // far the rows below must shift to open the slot, and where inside the row
+    // the pointer landed is where the ghost must hang from. Reading it per move
+    // would measure rows that are already translated.
+    const rows = [...(slidesEl?.querySelectorAll("[data-slide-row]") ?? [])];
+    const rects = indices.map((n) => rows[n]?.getBoundingClientRect()).filter(Boolean);
+    const own = e.currentTarget.getBoundingClientRect();
+    const gap = rects.length > 1 ? (rects[1].top - rects[0].bottom) : 0;
+    const height = rects.reduce((sum, r) => sum + r.height, 0) + gap * Math.max(0, rects.length - 1);
+    dragState = {
+      indices, height,
+      startY: e.clientY, pointerY: e.clientY,
+      grabDy: e.clientY - own.top,
+      ghostX: own.left, ghostW: own.width,
+      moved: false, boundary: null,
+    };
     e.currentTarget.setPointerCapture(e.pointerId);
   }
 
   function onRowPointerMove(e) {
     if (!dragState) return;
     if (!dragState.moved && Math.abs(e.clientY - dragState.startY) < DRAG_THRESHOLD_PX) return;
-    dragState = { ...dragState, moved: true, boundary: boundaryAt(e.clientY) };
+    dragState = { ...dragState, moved: true, pointerY: e.clientY, boundary: boundaryAt(e.clientY) };
   }
 
   /** Command. Drops (one undo unit) or, if the pointer never really moved, lets
@@ -311,6 +406,36 @@
     return dragState?.moved === true && dragState.boundary === b;
   }
 
+  /** Query. Is row `i` one of the rows being dragged (so its slot is a hole)? */
+  function isLifted(i) {
+    return dragState?.moved === true && dragState.indices.includes(i);
+  }
+
+  /**
+   * Query. How far row `i` must translate (px) to open the drop slot — the
+   * "push the others out of the way" half of the user's ruling.
+   *
+   * THE RULE IS ONE SENTENCE: a non-lifted row moves by the lifted block's height,
+   * TOWARD the hole the lifted rows left. Rows that sit between the hole and the
+   * drop boundary are the ones displaced; everything outside that span stays put.
+   * Because the lifted rows are still in layout (drawn as holes, never removed),
+   * the untouched rows genuinely do not move, and no reflow can occur — which is
+   * the constraint bullet 1 of the drag note sets.
+   *
+   * Sign convention: negative is UP. A row after the hole but before the boundary
+   * slides UP into it; a row at or after the boundary but before the hole slides
+   * DOWN out of the way.
+   */
+  function dragShift(i) {
+    if (!dragState?.moved || dragState.boundary === null || isLifted(i)) return 0;
+    const { indices, height, boundary } = dragState;
+    const first = indices[0];
+    const last = indices[indices.length - 1];
+    if (i > last && i < boundary) return -height; // dragging DOWN: rows above the target rise
+    if (i >= boundary && i < first) return height; // dragging UP: rows below the target sink
+    return 0;
+  }
+
   // THE MODIFIER KEY'S NAME ON THIS PLATFORM — "Cmd" on a Mac, "Ctrl" elsewhere.
   // The rail's toggle-click reads `metaKey || ctrlKey`, so BOTH really work; the
   // tip names the one the reader's own keyboard has rather than teaching a chord
@@ -327,27 +452,36 @@
   }
 </script>
 
-<div class="slidenav" class:dragging={dragState?.moved}>
+<!-- --drag-shift-ms is published from the JS constant so the row-slide animation
+     and the code that reasons about it cannot drift to two different numbers. -->
+<div class="slidenav" class:dragging={dragState?.moved} style:--drag-shift-ms={`${DRAG_SHIFT_MS}ms`}>
   <div class="slides" bind:this={slidesEl}>
     {#each app.doc.slides as slide, i (slide.id)}
       {#if i > 0}
         {@const info = transitionInfo(i)}
         <!-- THE SLICE IS THREE BUTTONS IN ONE BAND (see hoverZone above): an
              insert-before `+` at each end and the transition chip in the middle.
-             Idle it is the flat line it always was — every affordance here is
-             opacity 0 until the band is hot, which is the user's own condition
-             ("unless I'm hovering over it, it should stay like a flat dash").
-             It doubles as the DROP INDICATOR for boundary `i` during a drag. -->
+             THE CHIP IS ALWAYS VISIBLE (user: "The tween thing should always be
+             there"); only the two `+` ends are hover-revealed.
+             It doubles as the DROP INDICATOR for boundary `i` during a drag.
+
+             THE WHOLE BAND IS THE HOVER SURFACE (user: "The hover area should be
+             the entire in between of the slides, not just a small subset"), so
+             enter/leave live HERE, once, rather than on each end. The band is
+             also padded in CSS to claim the full inter-slide gap, which is what
+             makes "the entire in between" true of the hit area and not just of
+             this handler. -->
         <!-- role="group": the band is a CONTAINER of three real buttons, not a
-             control itself — its only handler clears the hover state on leave.
-             Labelled so a screen reader announces what the three belong to. -->
+             control itself — it owns only the hover state. Labelled so a screen
+             reader announces what the three belong to. -->
         <div
           class="transition-slice"
           class:hot={sliceHot(slide.id)}
           class:drop={isDropBoundary(i)}
           role="group"
           aria-label={`Between slide ${i} and slide ${i + 1}`}
-          onpointerleave={() => (hoverZone = null)}
+          onpointerenter={() => (hotSliceId = slide.id)}
+          onpointerleave={() => { hotSliceId = null; hoverZone = null; }}
         >
           <Tooltip text={`Insert a slide here. It starts as an empty difference, so it looks exactly like slide ${i} — and it takes its transition from the slide ABOVE.`}>
             <button
@@ -355,8 +489,8 @@
               class:active={inZone(slide.id, "before")}
               aria-label={`Insert a slide above slide ${i + 1}`}
               onpointerenter={() => (hoverZone = { slideId: slide.id, zone: "before" })}
-              onfocus={() => (hoverZone = { slideId: slide.id, zone: "before" })}
-              onblur={() => (hoverZone = null)}
+              onfocus={() => { hotSliceId = slide.id; hoverZone = { slideId: slide.id, zone: "before" }; }}
+              onblur={() => { hotSliceId = null; hoverZone = null; }}
               onclick={() => app.insertSlideAtBoundary(i, "above")}
             >
               <iconify-icon icon="mdi:arrow-up" width="12" height="12"></iconify-icon>
@@ -364,15 +498,24 @@
             </button>
           </Tooltip>
           <span class="tr-line"></span>
-          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${info.seconds}s — click to edit`}>
+          <!-- THE CHIP'S CLICK IS THE SLICE'S CLICK RULE — plain / shift-range /
+               cmd-toggle, resolved by app.selectTransitionAt, which is
+               deliberately the same three-gesture shape selectSlideAt gives rows
+               (user: "I should be able to shift click multiple tweens too, in the
+               same way that I have multi-selection for widgets. It's exactly the
+               same idea."). Like the rows, it renders on TWO axes: `.selected` is
+               membership in the set, `.primary` is the one the panel is named
+               after. -->
+          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${info.seconds}s — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
             <button
               class="tr-chip"
-              class:selected={app.selectedTransition === slide.id}
+              class:selected={app.isTransitionSelected(slide.id)}
+              class:primary={app.selectedTransition === slide.id}
               aria-label={`Transition into slide ${i + 1}`}
-              onpointerenter={() => (hoverZone = { slideId: slide.id, zone: "middle" })}
-              onfocus={() => (hoverZone = { slideId: slide.id, zone: "middle" })}
-              onblur={() => (hoverZone = null)}
-              onclick={() => app.selectTransition(slide.id)}
+              aria-pressed={app.isTransitionSelected(slide.id)}
+              onfocus={() => (hotSliceId = slide.id)}
+              onblur={() => (hotSliceId = null)}
+              onclick={(e) => app.selectTransitionAt(slide.id, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey })}
             >
               <iconify-icon icon={TRANSITION_ICONS[info.type] ?? "mdi:transition"} width="13" height="13"></iconify-icon>
               <span class="tr-label">{info.title} · {info.seconds}s</span>
@@ -385,8 +528,8 @@
               class:active={inZone(slide.id, "after")}
               aria-label={`Insert a slide below slide ${i}`}
               onpointerenter={() => (hoverZone = { slideId: slide.id, zone: "after" })}
-              onfocus={() => (hoverZone = { slideId: slide.id, zone: "after" })}
-              onblur={() => (hoverZone = null)}
+              onfocus={() => { hotSliceId = slide.id; hoverZone = { slideId: slide.id, zone: "after" }; }}
+              onblur={() => { hotSliceId = null; hoverZone = null; }}
               onclick={() => app.insertSlideAtBoundary(i, "below")}
             >
               <iconify-icon icon="mdi:arrow-down" width="12" height="12"></iconify-icon>
@@ -433,11 +576,17 @@
                banned, and the reason the ban exists: it waited ~1s while the eye
                toggle beside it answered instantly.
 
-               STILL DOUBLE-CLICK, unlike the toolbar's project title, which became
-               single-click in the same pass: a slide card's SINGLE click SELECTS
-               the slide, so rename must be the second gesture here or it would
-               fight navigation. The toolbar title has no first gesture to lose. -->
-          <div class="cmd-tip-note">Double-click the name to rename</div>
+               IT SAYS "A DIALOG", because that is now what happens. The tip used
+               to promise in-place editing of the name; the gesture opens the same
+               pre-selected Rename dialog the project title does (user ruling).
+               A tip that describes the old behaviour is worse than none — it
+               tells the user their correct gesture failed.
+
+               STILL DOUBLE-CLICK, unlike the toolbar's project title, which is
+               single-click: a slide card's SINGLE click SELECTS the slide, so
+               rename must be the second gesture or it would fight navigation.
+               The toolbar title has no first gesture to lose. -->
+          <div class="cmd-tip-note">Double-click to rename (opens a dialog, name pre-selected)</div>
           <!-- THE TWO NEW GESTURES ON THIS ROW, taught here for the reason the
                rest of this tip exists: an affordance nobody is told about does not
                exist, and neither of these has any visual affordance of its own
@@ -452,46 +601,50 @@
              `current` is the ONE slide the canvas is showing (border color, as
              before), `selected` is membership in the multi-selection (a tint), so
              a block of five reads as a block with one of them live. -->
+        <!-- `.lifted` is the HOLE the dragged row leaves behind (user: "You can
+             leave the old area empty"); the row stays in layout so nothing
+             reflows, and the ghost below is what the pointer actually carries.
+             `--drag-shift` is how far this row slides to open the target slot,
+             animated by CSS over DRAG_SHIFT_MS.
+
+             THE DOUBLE-CLICK OPENS THE RENAME DIALOG, and it is bound HERE — on
+             the row — rather than on the name span, because pointer capture
+             retargets the whole sequence to this element (see the rename note in
+             the script). Binding it to a descendant is exactly what broke. It
+             still reads as renaming THE NAME because a dblclick that lands on the
+             row's own chrome is far likelier to be aimed at its label than at
+             nothing, and the tip says so. -->
         <button
           class="slide"
           class:current={i === app.slideIndex}
           class:selected={app.isSlideSelected(i)}
-          class:dragged={dragState?.moved && dragState.indices.includes(i)}
+          class:lifted={isLifted(i)}
           class:disabled={slide.enabled === false}
+          style:--drag-shift={`${dragShift(i)}px`}
           data-slide-row={i}
           onpointerdown={(e) => onRowPointerDown(e, i)}
           onpointermove={onRowPointerMove}
           onpointerup={onRowPointerUp}
           onpointercancel={() => (dragState = null)}
           onclick={(e) => app.selectSlideAt(i, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey })}
+          ondblclick={() => app.renameSlidePrompt(i)}
         >
           <span class="row-top">
             <span class="num">{i + 1}</span>
-            <!-- NO TOOLTIP OF ITS OWN, and no native title= either (banned —
+            <!-- A PLAIN SPAN AGAIN. It hosted InlineRename until the rename
+                 became a dialog; the editor could not be opened by a real mouse
+                 here, because the row's pointer capture retargets the dblclick
+                 away from this span (the script's rename note has the
+                 measurement). The gesture now lives on the ROW.
+
+                 NO TOOLTIP OF ITS OWN, and no native title= either (banned —
                  manifest; tests/native_tooltip_ban_test.js enforces it). This
                  span carried a native title for exactly the reason the ban
                  exists: it predated the convention, so it waited ~1s while the
-                 eye toggle beside it answered instantly.
-
-                 The rename hint moved UP into the CARD's tip (above) rather
-                 than becoming a nested Tooltip here. A nested one was built
-                 first and was visibly wrong: the card's tip covers this span
-                 too, so hovering the name fired BOTH and painted two boxes over
-                 each other — the card's "Slide 1" landing across the middle of
-                 "Double-click to rename". One hover target owes one tip.
-
-                 STILL DOUBLE-CLICK (InlineRename's default trigger): a slide
-                 card's SINGLE click SELECTS the slide, so rename must be the
-                 second gesture here or it would fight navigation. -->
-            <InlineRename
-              value={slide.name}
-              onrename={(name) => app.renameSlide(i, name)}
-              ariaLabel={`Rename slide ${i + 1}`}
-            >
-              {#snippet children()}
-                <span class="name">{slide.name}</span>
-              {/snippet}
-            </InlineRename>
+                 eye toggle beside it answered instantly. The rename hint lives in
+                 the CARD's tip (above); a nested Tooltip here painted two boxes
+                 over each other, because the card's tip covers this span too. -->
+            <span class="name">{slide.name}</span>
             <Tooltip text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
               <span
                 class="eye"
@@ -521,6 +674,49 @@
          exists: without it the last gap is the one gap with no indicator. -->
     <div class="drop-rail" class:drop={isDropBoundary(app.doc.slides.length)}></div>
   </div>
+  <!-- THE DRAG GHOST — the "literally dragging it" half of the user's ruling.
+       A position:fixed copy of the dragged slide's number + name + thumbnail,
+       translated to the pointer, so the block visibly travels with the cursor
+       while its real slot sits empty.
+
+       FIXED, NOT ABSOLUTE, and rendered OUTSIDE the scroll container: the rail
+       scrolls, and an absolutely-positioned ghost would scroll with it and drift
+       away from a stationary cursor. Fixed coordinates are pointer coordinates,
+       which is exactly what clientY already is — no scroll compensation, nothing
+       to keep in sync.
+
+       pointer-events:none (CSS) so it never becomes the drop target it is
+       hovering, and it renders only mid-drag, so it costs nothing at rest. A
+       multi-slide drag shows its FIRST row plus a count, rather than N stacked
+       ghosts: the block moves as one thing and the number says how big it is. -->
+  {#if dragState?.moved}
+    {@const lead = dragState.indices[0]}
+    <div
+      class="drag-ghost"
+      aria-hidden="true"
+      style:left={`${dragState.ghostX}px`}
+      style:width={`${dragState.ghostW}px`}
+      style:top={`${dragState.pointerY - dragState.grabDy}px`}
+    >
+      <span class="row-top">
+        <span class="num">{lead + 1}</span>
+        <span class="name">{app.doc.slides[lead]?.name}</span>
+        {#if dragState.indices.length > 1}
+          <span class="ghost-count">+{dragState.indices.length - 1}</span>
+        {/if}
+      </span>
+      {#if thumbAspect(lead)}
+        <DirtyImage
+          class="thumb"
+          render={renderThumb(lead)}
+          dirtyKey={publishedKeys[lead]}
+          schedule={thumbScheduler.request}
+          aspect={thumbAspect(lead)}
+          alt=""
+        />
+      {/if}
+    </div>
+  {/if}
   <div class="nav-actions">
     <Tooltip text="New slide after current">
       <button class="btn-icon" aria-label="New slide" onclick={() => app.runCommand("new-slide")}>
