@@ -37,7 +37,8 @@ import {
   unifyPairs,
   keyframeTriState,
   universalRowsWithInterp,
-  UNIVERSAL_TYPE_ROW_PROBLEM,
+  retypeSkips,
+  retypeSkipReason,
 } from "../core/multiselect.js";
 import { MORPH_KEY } from "../core/morph_property.js";
 import {
@@ -146,7 +147,10 @@ test("empty selection intersects to nothing (no crash, no rows)", () => {
   // `mode` joined the panel object when the intersection/union toggle landed —
   // the panel now reports which of the two it was built under, so the renderer
   // does not have to ask the app a second time and disagree with what it drew.
-  assert.deepEqual(multiSelectPanel([]), { rows: [], conflicts: [], skipped: [], mode: "intersection", itemIds: [] });
+  // `retypeSkips` joined it with WORKSTREAM BT — the type row became editable
+  // over a set, so the panel must also carry which selected items a type change
+  // would NOT touch (and why). Empty selection, nothing to skip.
+  assert.deepEqual(multiSelectPanel([]), { rows: [], conflicts: [], skipped: [], retypeSkips: [], mode: "intersection", itemIds: [] });
 });
 
 test("ONE-ITEM selection degrades to that plugin's rows EXACTLY, by identity", () => {
@@ -468,15 +472,59 @@ test("BE: the universal rows LEAD the panel, in the ruled order", () => {
     "universal first — they are the properties every widget has");
 });
 
-test("BE: widget type is SHOWN but refuses a joint write, with its reason", () => {
+// ── THE REFUSAL PIN, UPDATED TO THE RULING THAT REPLACED IT (WORKSTREAM BT) ──
+// THIS TEST USED TO ASSERT THE OPPOSITE. It read:
+//   test("BE: widget type is SHOWN but refuses a joint write, with its reason")
+//   assert.equal(type.problem, UNIVERSAL_TYPE_ROW_PROBLEM, …)
+// and it pinned a refusal that was a CLAUDE CHOICE, never a user ruling. The
+// user overruled it (2026-08-03, verbatim, looking at that tooltip): "Hey, why
+// won't it let me edit widget type? No, that's a stupid error. Just do it to
+// everyone individually. … Just do it to them all individually, then change
+// what we see in the properties. It's not that hard."
+//
+// The manifest's own lesson is why this rewrite lives in the same commit as the
+// code: "When a commit reverts a design, the same commit must revert its
+// doctrine" — a pin left standing on an overruled design is the same confident
+// lie as a doctrine paragraph left standing, and it is worse, because a green
+// suite is evidence.
+test("BT: widget type is SHOWN and JOINTLY EDITABLE — the refusal is gone", () => {
   const panel = multiSelectPanel([entry("a", "rect", { type: "rect" }), entry("b", "circle", { type: "circle" })]);
   const type = panel.rows.find((r) => r.row.key === "type");
-  assert.ok(type, "the row is displayed — that is the ask");
-  assert.equal(type.problem, UNIVERSAL_TYPE_ROW_PROBLEM,
-    "…and it explains itself rather than vanishing or lying about what a click does");
-  assert.equal(type.mixed, true, "two different types read as MIXED");
-  // The refusal is per-ROW, not per-KIND: `select` stays jointly editable.
+  assert.ok(type, "the row is displayed — BE's half of the ask, unchanged");
+  assert.equal(type.problem, null,
+    "…and it no longer refuses: each item runs its OWN coercion plan (app.retypeSelection), so there is nothing for one shared value to fail to describe");
+  assert.equal(type.mixed, true, "two different types still read as MIXED — that part was always honest");
+  // There is no per-ROW refusal left at all; `select` was and remains a jointly
+  // editable KIND, and `type` is now just one of them.
+  assert.equal(jointEditProblem({ key: "type", kind: "select" }), null);
   assert.equal(jointEditProblem({ key: "blendMode", kind: "select" }), null);
+});
+
+test("BT: an ineligible item is named with its own reason, and does not block the rest", () => {
+  const panel = multiSelectPanel([
+    entry("a", "rect", { type: "rect" }),
+    entry("cam", "camera", { type: "camera" }),
+    entry("b", "circle", { type: "circle" }),
+  ]);
+  assert.deepEqual(panel.retypeSkips.map((s) => s.itemId), ["cam"],
+    "only the camera is skipped — the eligible rest is untouched by its presence");
+  assert.ok(/mandatory/.test(panel.retypeSkips[0].reason),
+    "and the reason NAMES why, rather than saying 'structural' (which answers nothing)");
+  const type = panel.rows.find((r) => r.row.key === "type");
+  assert.ok(type, "the type row is still offered — an ineligible item never removes the control");
+  assert.equal(type.problem, null, "…nor re-installs the refusal");
+});
+
+test("BT: retypeSkipReason reads the plugin's OWN declared marks, one sentence each", () => {
+  // The four structural marks retypeEligible excludes on — each already declared
+  // for another purpose, so this is a fact about the widget, not a hand list.
+  assert.equal(retypeSkipReason({ type: "rect", capabilities: {} }), null);
+  assert.ok(retypeSkipReason({ title: "Camera", capabilities: { purgeable: false } }).includes("mandatory"));
+  assert.ok(retypeSkipReason({ title: "Group", capabilities: { ghost: true }, foldsSubtree: () => true }).includes("members"));
+  assert.ok(retypeSkipReason({ title: "Crop Box", capabilities: { ghost: true } }).includes("no volume"));
+  assert.ok(retypeSkipReason({ title: "Metaball", capabilities: { metaball: true } }).includes("siblings"));
+  // An all-eligible selection reports nothing — no note, no noise.
+  assert.deepEqual(retypeSkips([entry("a", "rect", {}), entry("b", "circle", {})]), []);
 });
 
 test("BE: visible unifies across the set as ONE write, mixed reported honestly", () => {

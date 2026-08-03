@@ -116,15 +116,46 @@
  * `renameSelection`, not keyframed here, and N items sharing one name would make
  * the item picker unusable. Excluding it costs nothing a set edit wants.
  *
- * WIDGET TYPE IS SHOWN BUT NOT JOINTLY WRITABLE, and this is the one place this
- * module refuses a write the row's kind would otherwise allow. Displaying it is
- * the ask ("widget type … should be there"); changing type across a selection is
- * NOT, and it could not honestly reuse the fan-out seam if it were: a retype is
- * `app.retypeSelection` running core/retype's per-item COERCION PLAN, so one
- * shared value cannot describe what N items of different types would become.
- * `UNIVERSAL_TYPE_ROW_PROBLEM` states that in the same JOINT_UNEDITABLE_KINDS
- * grammar every other refusal uses, so the row renders inert WITH ITS REASON
- * rather than vanishing or lying about what a click would do.
+ * ── WIDGET TYPE IS EDITABLE OVER A SET (WORKSTREAM BT) ────────────────────────
+ * THIS SECTION USED TO DESCRIBE A REFUSAL, and that refusal was a Claude choice
+ * (`UNIVERSAL_TYPE_ROW_PROBLEM`), never a user ruling. It reasoned: a retype is a
+ * per-item COERCION PLAN, so one shared value cannot describe what N items of
+ * different types would become — therefore the row renders inert with its reason.
+ *
+ * The user overruled it (2026-08-03, verbatim, looking at that very tooltip):
+ * "Hey, why won't it let me edit widget type? No, that's a stupid error. Just do
+ * it to everyone individually. When I do widget type coercion... Look, this is a
+ * stupid error. There's no reason why this should be a problem. Just do it to
+ * them all individually, then change what we see in the properties. It's not
+ * that hard."
+ *
+ * THE PREMISE WAS TRUE AND THE CONCLUSION WAS WRONG. One shared value indeed
+ * cannot describe N coercions — but nothing ever required it to. `retypedItem`
+ * takes the item's OWN folded state and its OWN current type; running it N times,
+ * once per item, is N correct plans, not one wrong one. The refusal mistook "the
+ * FAN-OUT seam cannot drive this" for "this cannot be driven": `unifyPairs` writes
+ * one value to N paths, and a retype is not one value — so the type row simply
+ * does not go through `unifyPairs`. It goes through `app.retypeSelection`, which
+ * already looped over nothing and now loops over the selection.
+ *
+ * SO THE ROW HAS NO `problem`. `jointEditProblem` returns null for it like any
+ * other select, and the panel renders the same SearchableDropdown the single-select
+ * widget-type row renders (same row grammar, same `optionsFrom: "retype"`).
+ *
+ * WHAT THE MENU OFFERS OVER A SET is `retypeChoicesForSet` below: the types EVERY
+ * eligible selected item can become, which for the live roster is every eligible
+ * type (the eligibility predicate is about the TARGET, not the source). Coercion
+ * previews are per-item and there are N of them, so the set menu carries a COUNT
+ * of how many selected items would lose a value rather than one item's list —
+ * a per-item list would be the primary's, presented as if it were everyone's.
+ *
+ * INELIGIBLE ITEMS ARE SKIPPED WITH THE REASON, NEVER SILENTLY CONVERTED. BF's
+ * pin stands: "the app adapter declined to retype the camera but type stayed in
+ * the retargeted state and the camera SILENTLY BECAME A RECT". `retypeSkips`
+ * names them and why; the panel shows that sentence on the row, and after a
+ * partial apply the row reads MIXED because the camera really did keep its type.
+ * An ineligible item never BLOCKS the eligible rest — that was the other half of
+ * the ruling ("just do it to them all individually").
  *
  * THE SET-ACTIONS RULING IS UNTOUCHED. "A SET's visibility is TWO EXPLICIT
  * ACTIONS (Hide All / Show All), always both" rejects a tri-state ACTION control
@@ -328,13 +359,58 @@ export const JOINT_UNEDITABLE_KINDS = {
 export const UNIVERSAL_MULTI_KEYS = ["type", "active", "morph"];
 
 /**
- * Why WIDGET TYPE cannot be written jointly, in the JOINT_UNEDITABLE_KINDS
- * grammar. It is a per-ROW refusal rather than a per-KIND one (the row is a
- * `select`, and selects are jointly editable in general), so it is named here and
- * applied by `jointEditProblem`.
+ * Pure function. WHY one selected item cannot be retyped, or null when it can.
+ * The predicate is `retypeEligible`'s (core/retype.js) — read through the plugin's
+ * declared capabilities, never a hand list — and this only turns its `false` into
+ * the sentence the panel shows.
+ *
+ * FOUR STRUCTURAL REASONS, each the plugin's own declaration (see retypeEligible
+ * for why every one of them was already declared for another purpose). Named
+ * separately rather than collapsed into "it is structural" because the user reads
+ * this precisely when they are wondering why one of their items did not change,
+ * and "the camera is the document's one mandatory widget" answers that where
+ * "structural" does not.
+ *
+ * @param {object} plugin - the selected item's plugin
+ * @returns {string|null} the reason, or null when the item may be retyped
+ *
+ * @example retypeSkipReason({type: "rect", capabilities: {}}) // null
+ * @example retypeSkipReason({title: "Camera", capabilities: {purgeable: false}})
+ * // 'Camera is the document’s one mandatory widget — it owns the background and every view, so it cannot become something else.'
+ * @example retypeSkipReason({title: "Group", capabilities: {ghost: true}, foldsSubtree: () => true}).includes("members")
+ * // true
  */
-export const UNIVERSAL_TYPE_ROW_PROBLEM =
-  "Widget type is changed one item at a time — a retype runs a COERCION PLAN computed from each item's own current type, so one shared value cannot say what several different widgets would become.";
+export function retypeSkipReason(plugin) {
+  const c = plugin?.capabilities ?? {};
+  const name = plugin?.title ?? plugin?.type ?? "This widget";
+  if (c.purgeable === false)
+    return `${name} is the document’s one mandatory widget — it owns the background and every view, so it cannot become something else.`;
+  if (plugin?.foldsSubtree)
+    return `${name} is a derivation parent — its members name it by id, so retyping it would orphan them.`;
+  if (c.ghost)
+    return `${name} draws no volume of its own (it renders another item’s content or is editor chrome), so there is no picture to carry into another type.`;
+  if (c.metaball)
+    return `${name} draws from the scene collection of its siblings, not from its own state alone, so it cannot be retyped in isolation.`;
+  return null;
+}
+
+/**
+ * Pure function. The selected items a retype would SKIP, each with its reason —
+ * what the type row surfaces so a partial apply is never silent (WORKSTREAM BT;
+ * BF's camera pin is what this keeps green).
+ *
+ * @param {Array<{itemId: string, plugin: object}>} entries - the selected items
+ * @returns {Array<{itemId: string, reason: string}>} empty when everything is eligible
+ *
+ * @example retypeSkips([{itemId: "a", plugin: {capabilities: {}}}]) // []
+ * @example retypeSkips([{itemId: "cam", plugin: {title: "Camera", capabilities: {purgeable: false}}}]).map((s) => s.itemId)
+ * // ["cam"]
+ */
+export function retypeSkips(entries) {
+  return entries
+    .map((e) => ({ itemId: e.itemId, reason: retypeSkipReason(e.plugin) }))
+    .filter((s) => s.reason !== null);
+}
 
 /**
  * Pure function. The universal rows for a selection — the rows EVERY widget has,
@@ -524,17 +600,20 @@ export function contractDifferences(a, b) {
  * @param {object} row - a resolved property row
  * @returns {string|null} the reason, shown verbatim to the user
  *
+ * THERE IS NO LONGER A PER-ROW REFUSAL. `type` used to be one (WORKSTREAM BE's
+ * UNIVERSAL_TYPE_ROW_PROBLEM); the user overruled it (WORKSTREAM BT, see the
+ * module header). The row is now driven by `app.retypeSelection`, which runs one
+ * coercion plan PER ITEM — so the reason it was excluded from this table's
+ * grammar ("one shared value cannot say what N widgets become") no longer
+ * describes how the row writes. Nothing here special-cases a key any more.
+ *
  * @example jointEditProblem({key: "opacity", kind: "number"}) // null
  * @example jointEditProblem({key: "fill", kind: "color", paint: true}) // null (PaintField fans out)
  * @example jointEditProblem({key: "points", kind: "list"}) === JOINT_UNEDITABLE_KINDS.list // true
- * @example jointEditProblem({key: "type", kind: "select"}) === UNIVERSAL_TYPE_ROW_PROBLEM // true
+ * @example jointEditProblem({key: "type", kind: "select"}) // null (WORKSTREAM BT — retyped per item)
  * @example jointEditProblem({key: "active", kind: "boolean"}) // null (visibility DOES unify)
  */
 export function jointEditProblem(row) {
-  // THE ONE PER-ROW REFUSAL. `select` is a jointly editable KIND, so this cannot
-  // come from the kind table: it is the `type` row specifically, whose write is a
-  // per-item coercion plan rather than one shared value (module header).
-  if (row.key === "type") return UNIVERSAL_TYPE_ROW_PROBLEM;
   if (row.kind in JOINT_UNEDITABLE_KINDS) return JOINT_UNEDITABLE_KINDS[row.kind];
   return null;
 }
@@ -742,9 +821,14 @@ export function rowMixedState(entries, key) {
  *
  * @param {Array<{itemId: string, plugin: object, state: object|null}>} entries - selected items, primary FIRST
  * @param {string} [mode] - MULTISELECT_MODE.INTERSECTION (default) or .UNION
- * @returns {{rows: Array<{row: object, appliesTo: string[], mixed: boolean, value: *, seed: *, problem: string|null}>, conflicts: Array<{key: string, aspects: string[]}>, skipped: string[], mode: string, itemIds: string[]}}
+ * `retypeSkips` are the selected items a WIDGET-TYPE change would not touch and
+ * why (WORKSTREAM BT). It rides on the panel rather than on the type row because
+ * it is a fact about the SELECTION, not about the row's contract — and putting it
+ * on the row would mean rebuilding the row object, which the drift gate forbids.
  *
- * @example multiSelectPanel([]) // {rows: [], conflicts: [], skipped: [], mode: "intersection", itemIds: []}
+ * @returns {{rows: Array<{row: object, appliesTo: string[], mixed: boolean, value: *, seed: *, problem: string|null}>, conflicts: Array<{key: string, aspects: string[]}>, skipped: string[], retypeSkips: Array<{itemId: string, reason: string}>, mode: string, itemIds: string[]}}
+ *
+ * @example multiSelectPanel([]) // {rows: [], conflicts: [], skipped: [], retypeSkips: [], mode: "intersection", itemIds: []}
  * @example // a rect at opacity 1 and a video at opacity 0.2 share opacity, MIXED:
  * // multiSelectPanel([
  * //   {itemId: "r", plugin: {inspector: [{key: "opacity", kind: "number", min: 0, max: 1}]}, state: {opacity: 1}},
@@ -786,6 +870,10 @@ export function multiSelectPanel(entries, mode = MULTISELECT_MODE.INTERSECTION) 
     }),
     conflicts,
     skipped,
+    // Read over the LIVE entries only: an item not on this slide is already
+    // reported by `skipped` and has no folded type to retype anyway, so naming it
+    // twice for two different reasons would be noise.
+    retypeSkips: retypeSkips(live),
     mode,
     itemIds: live.map((e) => e.itemId),
   };

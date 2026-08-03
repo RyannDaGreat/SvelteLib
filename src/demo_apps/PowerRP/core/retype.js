@@ -474,3 +474,53 @@ export function retypeChoices(registry, folded) {
   // order survives inside each half.
   return rows.sort((a, b) => (a.coercions.length === 0 ? 0 : 1) - (b.coercions.length === 0 ? 0 : 1));
 }
+
+/**
+ * Query. THE RETYPE MENU FOR A SET (WORKSTREAM BT — user, 2026-08-03: "Just do it
+ * to them all individually, then change what we see in the properties").
+ *
+ * Every eligible target type, ordered clean-first exactly as the single-item menu
+ * is, but ordered by HOW MANY of the selected items would lose a value rather than
+ * by one item's coercion list. The per-item plans are genuinely different — that
+ * was the true half of the refusal this replaces — so the menu reports the COUNT
+ * and lets each item's own plan do the work at write time.
+ *
+ * WHY A COUNT AND NOT A MERGED LIST. A merged list would either be the PRIMARY's
+ * (presented as if it were everyone's — the exact lie the old refusal was right to
+ * avoid) or a union of N lists keyed by property name, which reads as "these
+ * properties will be coerced" when in truth each one is coerced on a different
+ * subset of the items. "3 of 4 selected items would lose a value" is the sentence
+ * that is true of the SET, which is what the author is choosing for.
+ *
+ * INELIGIBLE ENTRIES ARE NOT CONSULTED for the previews (they will be skipped, so
+ * counting them would inflate the warning) but they do not empty the menu either:
+ * a selection of a camera and two rects still offers the rects their types. An
+ * EMPTY menu means NOTHING in the selection is eligible, which is the same "the
+ * type really is fixed here" the single-item empty menu means.
+ *
+ * @param {object} registry - the plugin registry
+ * @param {Array<object>} foldedStates - each selected item's FOLDED state
+ * @returns {Array<{value: string, label: string, coercingCount: number, total: number}>}
+ *
+ * @example // #  retypeChoicesForSet(registry, [rectState, circleState, cameraState])
+ * @example // #  → [{value: "rect", label: "Rectangle", coercingCount: 0, total: 2},   ← clean, top
+ * @example // #     …,
+ * @example // #     {value: "mermaid", label: "Mermaid", coercingCount: 2, total: 2}]  ← coercing, bottom
+ * @example // #  (the camera is not counted in `total` — it is skipped, see retypeSkips)
+ * @example retypeChoicesForSet({all: () => [], get: () => ({capabilities: {}})}, [])
+ * []
+ */
+export function retypeChoicesForSet(registry, foldedStates) {
+  const eligible = foldedStates.filter((f) => f?.type != null && retypeEligible(registry.get(f.type)));
+  if (eligible.length === 0) return [];
+  const rows = registry
+    .all()
+    .filter(retypeEligible)
+    .map((p) => ({
+      value: p.type,
+      label: p.title,
+      coercingCount: eligible.filter((f) => coercionPreview(f, registry.get(f.type), p).length > 0).length,
+      total: eligible.length,
+    }));
+  return rows.sort((a, b) => (a.coercingCount === 0 ? 0 : 1) - (b.coercingCount === 0 ? 0 : 1));
+}

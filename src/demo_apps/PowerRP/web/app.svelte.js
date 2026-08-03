@@ -45,7 +45,7 @@ import { equationBoundKeys } from "./canvas/equationBinding.js";
 // JS resolves it correctly.
 import { projectScriptProblem, projectScriptExports as compiledScriptExports } from "../core/project_script.js";
 import { dedupeGroupSelection, expandGroupSelection, selectParentGroups } from "../core/bandselect.js";
-import { retypeChoices, retypeEligible, retypedItem } from "../core/retype.js";
+import { retypeChoices, retypeChoicesForSet, retypeEligible, retypedItem } from "../core/retype.js";
 import { shatterEligible, shatterNotReadyReason, shatteredDocument, shatterIds, shatterDisclosure, vectorRecovery } from "../core/shatter.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
 // INK BOUNDS (fitSelectionToInkBounds): `T` maps a widget's local ink offset
@@ -55,7 +55,7 @@ import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from 
 import * as T from "../core/transform.js";
 import { reportAction } from "../core/report.js";
 import { bundleDefaults } from "../core/properties.js";
-import { multiSelectPanel, unifyPairs, MULTISELECT_MODE } from "../core/multiselect.js";
+import { multiSelectPanel, unifyPairs, retypeSkipReason, MULTISELECT_MODE } from "../core/multiselect.js";
 import { sectionTriState, sectionToggleAction, sectionJumpTarget } from "../core/section_keyframes.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
@@ -4664,32 +4664,61 @@ export class PowerRPApp {
   }
 
   /**
-   * Command (ONE undo unit). Turns the selected item into widget type
-   * `newType`, keeping its id, name, z, other slides' keyframes and every
+   * Command (ONE undo unit). Turns EVERY selected item into widget type
+   * `newType`, keeping each one's id, name, z, other slides' keyframes and every
    * equation that names it — core/retype.js owns every rule about WHICH values
    * survive, and this method owns only the document plumbing.
    *
-   * Writes the type keyframe plus the fills and coercions on the CURRENT slide,
-   * so undo puts back both the old type AND every value the retype overwrote in
-   * one press. Committing the pending edit first is deleteSelection's rule
-   * (ROUND 15.2): commit() writes `this.doc` and does not know about a live
-   * previewDelta, so an in-progress text edit on the retyped item would be lost.
+   * ── ONE COERCION PLAN PER ITEM (WORKSTREAM BT) ────────────────────────────
+   * User, 2026-08-03, overruling the multi-select type row's refusal: "Just do
+   * it to everyone individually. … Just do it to them all individually, then
+   * change what we see in the properties." So this LOOPS: each selected item
+   * runs `retypedItem` from its OWN folded state and its OWN current type, which
+   * is N correct plans rather than one shared value that could not describe any
+   * of them. There is no second coercion path — it is the same call the
+   * single-item row, Paste Properties and shatter all make.
    *
-   * Refuses LOUDLY on an ineligible source or target (retypeEligible — the
-   * camera, groups, scene-structural types): the dropdown never offers one, so
-   * reaching here with one is a caller bug, not a user mistake.
+   * ONE UNDO UNIT for the whole batch: the plans FOLD into one document
+   * (`retypedItem` is pure and returns a new doc), and exactly one `commit`
+   * happens at the end. The unifySelection precedent, with a fold instead of a
+   * preview because a retype writes many keys per item rather than one.
+   *
+   * Writes each type keyframe plus its fills and coercions on the CURRENT slide,
+   * so ONE undo puts back every old type AND every value the batch overwrote.
+   * Committing the pending edit first is deleteSelection's rule (ROUND 15.2):
+   * commit() writes `this.doc` and does not know about a live previewDelta, so
+   * an in-progress text edit on a retyped item would be lost.
+   *
+   * INELIGIBLE ITEMS ARE SKIPPED, NOT CONVERTED AND NOT FATAL. A camera in the
+   * selection keeps its type — BF's pin, and the failure it caught was exactly a
+   * camera silently becoming a rect — and it does not block the eligible rest.
+   * The skip is reported (console + the panel's own `retypeSkips` sentence), so
+   * a partial apply is never silent. An ineligible TARGET is still LOUD: the
+   * dropdown never offers one, so reaching here with one is a caller bug.
+   *
+   * @param {string} newType - the type every eligible selected item becomes
+   * @returns {number} how many items were retyped (0 = nothing committed)
    */
   retypeSelection(newType) {
-    const id = this.selectedIds()[0];
-    if (id === undefined) return;
-    const folded = this.state().items?.[id];
-    if (!folded) throw new Error(`retypeSelection: item "${id}" is not on slide ${this.slideIndex}`);
-    if (folded.type === newType) return;
-    for (const [role, type] of [["source", folded.type], ["target", newType]])
-      if (!retypeEligible(this.registry.get(type)))
-        throw new Error(`retypeSelection: "${type}" is not a retype ${role} — it is structurally fixed (camera/group/scene-structural)`);
+    if (!retypeEligible(this.registry.get(newType)))
+      throw new Error(`retypeSelection: "${newType}" is not a retype target — it is structurally fixed (camera/group/scene-structural)`);
+    const items = this.state().items ?? {};
+    // Items with no folded state on this slide are not retypeable here for the
+    // same reason multiSelectPanel drops them: there is no type to plan from.
+    const targets = this.selectedIds()
+      .map((id) => ({ id, folded: items[id] }))
+      .filter((t) => t.folded?.type != null && t.folded.type !== newType);
+    const skipped = targets.filter((t) => !retypeEligible(this.registry.get(t.folded.type)));
+    for (const t of skipped)
+      console.warn(`Widget type: ${this.displayName(t.id)} was not converted — ${retypeSkipReason(this.registry.get(t.folded.type))}`);
+    const eligible = targets.filter((t) => retypeEligible(this.registry.get(t.folded.type)));
+    if (eligible.length === 0) return 0;
     this.dismissEdit();
-    this.commit(retypedItem(this.doc, this.slideIndex, id, newType, folded, this.registry));
+    let doc = this.doc;
+    for (const { id, folded } of eligible)
+      doc = retypedItem(doc, this.slideIndex, id, newType, folded, this.registry);
+    this.commit(doc);
+    return eligible.length;
   }
 
 
@@ -4794,15 +4823,23 @@ export class PowerRPApp {
   /**
    * Query. The retype menu for the selected item — every eligible target with
    * its coercion preview computed against this item's LIVE folded state, clean
-   * types first and coercing types last. Empty when nothing is selected, when
-   * several things are (a retype is single-item: an intersection menu would have
-   * to promise one type change means the same thing to a rect and a video), or
-   * when the selected item is itself ineligible — which is how the camera's
-   * Inspector header stays plain text.
+   * types first and coercing types last. Empty when nothing is selected, or when
+   * the selected item is itself ineligible — which is how the camera's Inspector
+   * header stays plain text.
+   *
+   * IT USED TO RETURN [] FOR A MULTI-SELECTION, on the reasoning that "a retype
+   * is single-item: an intersection menu would have to promise one type change
+   * means the same thing to a rect and a video". The user overruled that
+   * (WORKSTREAM BT, 2026-08-03) — it never had to promise that, because each item
+   * runs its OWN plan — so a set now gets `retypeChoicesForSet`, whose entries
+   * carry a coercing COUNT instead of one item's list.
    */
   retypeChoices() {
-    if (this.selectedIds().length !== 1) return [];
-    const folded = this.state().items?.[this.selectedIds()[0]];
+    const ids = this.selectedIds();
+    const items = this.state().items ?? {};
+    if (ids.length > 1) return retypeChoicesForSet(this.registry, ids.map((id) => items[id]).filter(Boolean));
+    if (ids.length !== 1) return [];
+    const folded = items[ids[0]];
     return folded ? retypeChoices(this.registry, folded) : [];
   }
 

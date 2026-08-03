@@ -312,6 +312,13 @@
    * together, which is the "make a bunch of things fade in at the same time" flow.
    */
   function unifyRow(entry) {
+    // WIDGET TYPE UNIFIES BY RETYPING, NOT BY WRITING `type` (WORKSTREAM BT).
+    // unifySelection would fan the primary's type string out as a bare keyframe,
+    // leaving every other item holding its OLD type's bag in slots the new
+    // plugin's emit() declared — the "a bare type write is not enough" defect
+    // core/retype.js opens with. Same call the dropdown makes, so the two ways of
+    // changing type over a set cannot produce different documents.
+    if (entry.row.key === "type") { app.retypeSelection(entry.seed); return; }
     // Scoped to the row's own participants for the same reason multiPaths is —
     // in union mode "unify them all" means all the ones that HAVE this property.
     app.unifySelection(entry.row.key, entry.seed, entry.row.appliesTo ?? null);
@@ -713,8 +720,16 @@
 
   /** Command. Live preview of a JOINT edit — the multi-selection twin of
    * previewField, for the kinds that commit through the row's generic seam
-   * (select / asset / text). The document is untouched until commit. */
+   * (select / asset / text). The document is untouched until commit.
+   *
+   * WIDGET TYPE HAS NO PREVIEW, for exactly the reason the single-select
+   * universal row has none: previewing a retype would have to run N coercion
+   * plans against the live document, which is a WRITE wearing a preview's
+   * clothes. A staged `type` value alone would be worse still — it would show
+   * every item under the new plugin with the old type's bag, i.e. a picture the
+   * commit will never produce. */
   function previewMulti(key, kind, raw) {
+    if (key === "type") return;
     const value = coerce(kind, raw);
     if (kind === "number" && Number.isNaN(value)) return;
     app.setPreview(fanOutPairs(multiPaths(key), value));
@@ -722,8 +737,22 @@
 
   /** Command. Commits a JOINT edit as ONE undo unit for the whole set
    * (app.unifySelection — which also skips the items already holding the value,
-   * and commits nothing at all when none needs writing). */
+   * and commits nothing at all when none needs writing).
+   *
+   * WIDGET TYPE ROUTES TO app.retypeSelection (WORKSTREAM BT — user, 2026-08-03:
+   * "Just do it to them all individually, then change what we see in the
+   * properties"). It CANNOT go through unifySelection: that fans ONE value out to
+   * N paths, and a bare `type` keyframe leaves each item holding the old type's
+   * bag in slots the new plugin's emit() declared. retypeSelection runs one
+   * coercion plan per item and commits once — the same one-undo-unit promise, by
+   * a fold instead of a preview. Ineligible items (the camera) are skipped there
+   * with their reason; the panel says so above the rows. */
   function commitMulti(key, kind, raw) {
+    if (key === "type") {
+      app.cancelPreview();
+      app.retypeSelection(raw);
+      return;
+    }
     const value = coerce(kind, raw);
     if (kind === "number" && Number.isNaN(value)) {
       app.cancelPreview();
@@ -1571,18 +1600,33 @@
      thing and the command do another. The house Tooltip (immediate by default,
      never a native title=) renders them through its `tip` snippet, since the
      content is markup rather than a string. -->
+<!-- ONE MENU ENTRY, TWO MENUS. A single selection's entry carries `coercions` —
+     THIS item's per-property list, which is exactly what a warning can name. A
+     SET's entry (WORKSTREAM BT, core/retype.retypeChoicesForSet) carries
+     `coercingCount`/`total` instead, because the N plans are genuinely different
+     and showing the primary's list as if it were everyone's is the one thing the
+     old refusal was right to avoid. Both render the same alert affordance; only
+     the tooltip's sentence differs, which is why this is one snippet and not
+     two. -->
 {#snippet retypeItem(it)}
-  {#if it.coercions.length === 0}
+  {@const coercing = it.coercions ? it.coercions.length > 0 : it.coercingCount > 0}
+  {#if !coercing}
     <span>{it.label}</span>
   {:else}
     <Tooltip placement="bottom">
       {#snippet tip()}
         <strong>Warning — types will be coerced</strong>
-        <ul class="retype-warn-list">
-          {#each it.coercions as c (c.key)}
-            <li>{c.label}: {c.from} → {c.to}</li>
-          {/each}
-        </ul>
+        {#if it.coercions}
+          <ul class="retype-warn-list">
+            {#each it.coercions as c (c.key)}
+              <li>{c.label}: {c.from} → {c.to}</li>
+            {/each}
+          </ul>
+        {:else}
+          <ul class="retype-warn-list">
+            <li>{it.coercingCount} of {it.total} selected items would lose a stored value here. Each one is converted by its OWN plan, so which properties are coerced differs per item — undo restores all of them together.</li>
+          </ul>
+        {/if}
       {/snippet}
       <span class="retype-coerces">
         <iconify-icon icon="mdi:alert" width="13" height="13"></iconify-icon>
@@ -1842,6 +1886,25 @@
       <Tooltip text={multiRow.problem}>
         <span class="mixed-blocked">{MIXED_MARK}</span>
       </Tooltip>
+    {:else if multiRow?.mixed && row.optionsFrom === "retype"}
+      <!-- THE MIXED WIDGET-TYPE ROW KEEPS ITS DROPDOWN (WORKSTREAM BT). Every
+           other mixed row collapses to the "…" unify button, and that is right for
+           them: their field would have to show SOME value, and showing the
+           primary's would claim an agreement that does not exist, so the mark
+           stands in until one click establishes one.
+           TYPE IS DIFFERENT BECAUSE THE MENU IS ALREADY THE ANSWER. A retype
+           dropdown does not display a shared value to be edited — you pick a
+           TARGET, and picking one is exactly the unify. Collapsing it to "…" would
+           make the click set every item to the PRIMARY'S type, which is a
+           legitimate move but a strange default and not what the user asked for
+           ("just do it to them all individually" was about picking a type, not
+           about inheriting the first one's). So the menu renders, mixed or not.
+           WHAT SAYS IT IS MIXED is the dropdown's own value: `valueAt` reads the
+           primary's type off `state`, and the multi-selection note above the rows
+           carries the count. After a partial apply (a camera in the set) the row
+           is mixed AGAIN — honestly, because the camera really did keep its
+           type — and `retypeSkips` says which item and why. -->
+      {@render valueControl(row, state, ctx)}
     {:else if multiRow?.mixed && !eqEntryOpen}
       <!-- MIXED. The user's spec: "a dot dot dot in the parts that are different.
            And then when I click them, it would have to unify them all to the same
@@ -2822,6 +2885,23 @@
       {#if multiPanel.skipped.length > 0}
         <div class="multi-note">
           Not on this slide, so not being edited: {multiPanel.skipped.map((id) => app.displayName(id)).join(", ")}
+        </div>
+      {/if}
+      <!-- WHAT A WIDGET-TYPE CHANGE WOULD NOT TOUCH (WORKSTREAM BT). The type row
+           is editable over a set now, and each item runs its own coercion plan —
+           but the camera, a group and the scene-structural types cannot be
+           retyped at all. They are SKIPPED rather than converted (BF's pin: a
+           camera silently becoming a rect is the defect that ruling caught) and
+           they do NOT block the eligible rest, so the only thing left is to say
+           so BEFORE the click rather than leave the user wondering why one item
+           did not change. Each name carries its own sentence — "structural" would
+           not answer "why not the camera?" the way naming the reason does. -->
+      {#if multiPanel.retypeSkips.length > 0}
+        <div class="multi-note">
+          Widget type will not change for:
+          {#each multiPanel.retypeSkips as s (s.itemId)}
+            <Tooltip text={s.reason}><span class="multi-conflict">{app.displayName(s.itemId)}</span></Tooltip>
+          {/each}
         </div>
       {/if}
       <!-- SHARED-LOOKING BUT NOT SHARED. A key both items declare with a DIFFERENT
