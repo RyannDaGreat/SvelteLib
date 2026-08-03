@@ -21,7 +21,8 @@
 
 import assert from "node:assert/strict";
 
-import { BEACH, DEMO_PATCHES, PATCH_COL, SEQUENCED_DINGS, SPACEY_PAD_DRONE, WHOOSH, buildPatchItems, patchBounds, patchLayout } from "../core/audio_patches.js";
+import { BEACH, DEMO_PATCHES, PATCH_COL, PLAYABLE_KEYS, SEQUENCED_DINGS, SPACEY_PAD_DRONE, WHOOSH, buildPatchItems, patchBounds, patchLayout } from "../core/audio_patches.js";
+import { nodeKeyboardPlugin } from "../plugins/node_keyboard.js";
 import { connectionRefusal } from "../core/nodeflow.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
@@ -39,6 +40,9 @@ registerPlugins(registry);
 
 /** Build one patch at the origin with predictable ids, the way the app does. */
 const build = (patch) => buildPatchItems(patch, registry, { x: 0, y: 0 }, (name) => `${patch.id}-${name}`);
+
+/** Narrowest a white key may get and still be a mouse target rather than a line. */
+const MIN_PLAYABLE_KEY_W = 9;
 
 check("the four patches the brief names all exist, and the roster is free to GROW", () => {
   // STATED AS A SUBSET, NOT AS AN EXACT LIST, and the standing directive is why.
@@ -416,6 +420,40 @@ check("every slide fits inside the deck's own frame", () => {
         `slide ${i + 1}: ${id} (${s.type}) at ${s.x},${s.y} ${s.w}x${s.h} sticks out of the ${slideW}x${slideH} frame`);
     }
   }
+});
+
+// ── NO PATCH NODE MAY OVERLAP THE COLUMN TO ITS RIGHT (BV, 2026-08-03) ────────
+// Column pitch is the ONLY thing laying a patch out, so a node wider than
+// PATCH_COL silently lands on top of its neighbour. This went unnoticed because
+// every audio module's default width happens to be under the pitch; the keyboard
+// (252 default, deliberately wide for hand play) was the first that wasn't, and
+// it took a rendered still to see. A blueprint fixes it with `w`. This sweeps
+// EVERY patch rather than pinning the one known node, so the next wide widget
+// dropped into a blueprint fails here instead of in a picture.
+check("no patch node is wider than the column pitch", () => {
+  for (const p of DEMO_PATCHES) {
+    const { states } = buildPatchItems(p, registry, { x: 0, y: 0 }, (n) => `${p.id}-${n}`);
+    for (const [id, s] of Object.entries(states)) {
+      if (typeof s.w !== "number") continue;
+      assert.ok(s.w <= PATCH_COL,
+        `${p.id}: ${id} is ${s.w} wide against a PATCH_COL of ${PATCH_COL} — it overlaps the next column; set \`w\` on the blueprint node`);
+    }
+  }
+});
+
+// The companion half: the fix must not have been bought by gutting the widget.
+// A narrowed keyboard that dropped to one octave would pass the check above and
+// still be the wrong repair (it was the FIRST attempt at this bug), so the
+// playable patch is pinned to keep enough keys to hold the chord that
+// demonstrates voice stealing — which is what the patch exists to show.
+check("Playable Keys keeps two octaves, and its keys stay wide enough to hit", () => {
+  const { states } = buildPatchItems(PLAYABLE_KEYS, registry, { x: 0, y: 0 }, (n) => n);
+  const keys = nodeKeyboardPlugin.keyboardKeys(states.keys);
+  assert.equal(states.keys.octaves, 2, "a poly demo needs range enough for a five-note chord");
+  assert.equal(keys.length, 24, "two octaves is 24 keys");
+  const whiteWidth = keys.find((k) => !k.black).w;
+  assert.ok(whiteWidth >= MIN_PLAYABLE_KEY_W,
+    `white keys are ${whiteWidth.toFixed(1)} wide — too thin to hit with a mouse`);
 });
 
 console.log(`\naudio_patches_test: ${passed} checks passed${process.exitCode ? " (WITH FAILURES)" : ""}`);

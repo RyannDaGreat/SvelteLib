@@ -395,7 +395,12 @@ export const PLAYABLE_KEYS = {
   title: "Playable Keys (Poly)",
   help: "A KEYBOARD you can play with the mouse, into a POLYPHONIC pad and a hall reverb. Set to four voices on purpose: hold five notes and the oldest is stolen, which is what the Voices knob controls. Double-click the Knob to sweep the pad's filter while you play.",
   nodes: [
-    { id: "keys", type: "node_keyboard", col: 0, row: 0, knobs: { baseNote: 48, octaves: 2 } },
+    // TWO octaves, narrowed to fit its column. The default card is 252 wide
+    // against a PATCH_COL of 210 and overlapped the next column; `w` is the
+    // property that was wrong, so `w` is what this sets. The octave span is
+    // left alone — a poly patch wants enough keys to hold a five-note chord
+    // and prove the steal, which is the whole point of this patch.
+    { id: "keys", type: "node_keyboard", col: 0, row: 0, w: 196, knobs: { baseNote: 48, octaves: 2 } },
     { id: "cutoffKnob", type: "node_knob", col: 0, row: 1, knobs: { value: 1400, min: 200, max: 6000, step: 10 } },
     { id: "poly", type: "audio_poly_pad", col: 1, row: 0, knobs: { voices: 4, cutoff: 1400, level: 0.3, attack: 0.06, release: 0.5 } },
     { id: "reverb", type: "audio_reverb", col: 2, row: 0, knobs: { character: "hall", wet: 0.45, dry: 0.7, preDelay: 0.02 } },
@@ -488,8 +493,22 @@ export function buildPatchItems(patch, registry, origin, idFor) {
     const knobs = {};
     for (const [key, value] of Object.entries(node.knobs ?? {}))
       knobs[prefixed ? "audio" + key.charAt(0).toUpperCase() + key.slice(1) : key] = value;
+    // ── A BLUEPRINT MAY SET A NODE'S SIZE, AND THE KEYBOARD IS WHY (BV) ──────
+    // Every other patchable widget's default `w` is under PATCH_COL, so column
+    // pitch alone laid patches out correctly and nothing needed this. The
+    // keyboard's default is 252 against a PATCH_COL of 210 — deliberately wide,
+    // because a keyboard dropped on a slide by hand wants playable keys — so
+    // inserted into a patch it overlapped the module in the next column.
+    // MEASURED, not reasoned: a prior attempt at this bug set `octaves: 1`,
+    // which is a MUSICAL parameter — keyLayout divides the CARD's width among
+    // however many keys are asked for, so fewer octaves means wider keys and
+    // the identical 252-wide card. It fixed nothing and cost an octave.
+    // `size` is the honest lever: it names the thing that was wrong.
+    const size = {};
+    if (Number.isFinite(node.w)) size.w = node.w;
+    if (Number.isFinite(node.h)) size.h = node.h;
     const id = idFor(node.id);
-    states[id] = { ...plugin.defaults, x: at.x, y: at.y, ...knobs, inputs: {} };
+    states[id] = { ...plugin.defaults, x: at.x, y: at.y, ...size, ...knobs, inputs: {} };
     order.push(id);
   }
   // WIRES ARE WRITTEN LAST, ONTO THE INPUT SIDE, because that is where a connection
