@@ -471,7 +471,17 @@ test("cameraRect: default camera in new docs, tweens, meta fallback", () => {
   let doc2;
   [doc2] = withNewSlide(doc, 0);
   doc2 = keyframed(doc2, 1, ["items", camId, "w"], 640);
-  assert.equal(cameraRect(foldState(doc2, 1, 0.5), doc2.meta).w, 960); // camera tweens
+  // THE CAMERA TWEENS GEOMETRICALLY (WORKSTREAM BG, user ruling 2026-08-02 night:
+  // "its scale should interpolate exponentially… that should be the default for
+  // height and width for the camera"). This assertion used to read 960 — the
+  // ARITHMETIC midpoint of 1280 and 640 — which was the law before the ruling.
+  // The geometric midpoint is sqrt(1280·640) = 905.0966799187809, and that is the
+  // picture the ruling asks for: a zoom whose RATE is constant in ratio, not in
+  // difference. The old number was a Claude-authored test encoding the old
+  // default, not a user-stated invariant, so the ruling wins and the number moves.
+  // Endpoints are unaffected (alpha 0 and 1 are enforced at the fold), so only
+  // this strictly-interior frame changed.
+  assert.equal(cameraRect(foldState(doc2, 1, 0.5), doc2.meta).w, Math.sqrt(1280 * 640));
   assert.deepEqual(cameraRect({ items: {} }, { slideW: 10, slideH: 5 }), { x: 0, y: 0, w: 10, h: 5, background: "#ffffff" });
 });
 
