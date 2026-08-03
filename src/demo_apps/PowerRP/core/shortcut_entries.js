@@ -639,6 +639,14 @@ export const DRAG_MODIFIER_HINTS = Object.freeze({
   bandAdd: { keys: ["Cmd"], label: "Add to selection" },
   bandRemove: { keys: ["Shift"], label: "Remove from selection" },
   bandInvert: { keys: ["Alt"], label: "Invert in box" },
+  // THE KNOB TURN'S FINE CONTROL (WORKSTREAM BX). Shift divides the drag
+  // sensitivity so the same travel moves an eighth as far
+  // (core/node_knobs.knobDragValue). It gets a chip for the reason the table
+  // exists: the knob gesture READS Shift and changes its outcome, and an
+  // unannounced modifier that changes an outcome is precisely the defect
+  // multiresize was. Knob focus's own mode hints already word it this way, so
+  // this is the same sentence reaching the bar for the always-active gesture too.
+  fine: { keys: ["Shift"], label: "Fine control" },
 });
 
 /**

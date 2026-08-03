@@ -27,8 +27,8 @@
   // second copy of them for a layer that no longer draws any.
   import { portColor } from "../core/nodeflow.js";
   import { KNOB_FOCUS_GAP } from "../core/node_chrome.js";
-  import { KNOB_R } from "../core/node_knobs.js";
-  import { knobFocusUi } from "./knobFocus.js";
+  import { KNOB_R, knobDragValue } from "../core/node_knobs.js";
+  import { knobFocusUi, knobCursorFor, knobDialAt, knobStateKey, knobTurnRefusal, knobWritePairs } from "./knobFocus.js";
   import { allPortBeads, beadAt, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
   // THE AUDIO MIRROR (NF-BIND): the document reflected into the one synth engine.
   // ONE WAY ONLY — the engine never writes back, so the core invariant is untouched.
@@ -299,6 +299,35 @@
     if (!cursors) return "";
     return `cursor-${cursors[Math.min(app.canvasMode.step, cursors.length - 1)]}`;
   });
+  /**
+   * THE DIAL UNDER THE POINTER, as the cursor name it asks for ("grab" /
+   * "grabbing") or null — WORKSTREAM BX's second half.
+   *
+   * ── THE RULING (user, 2026-08-03, verbatim) ───────────────────────────────
+   * "and if it showed the hand icon and then let the grabby hand icon when i move
+   * the knobs" … "I mean like my mouse cursor".
+   *
+   * ── WHY IT IS $state AND NOT $derived, unlike modeCursorClass below ───────
+   * A dial's cursor is a question about a POINTER POSITION against a HIT TEST, and
+   * neither is reactive state: screenMouse is written per pointermove anyway, but
+   * re-running pickNode + the layout for every dependency change would be a hit
+   * test per repaint rather than per move. So the pointer handlers write it at the
+   * one moment it can change — which is also the moment they already pay for the
+   * lookup. `null` whenever the pointer leaves the canvas or a non-knob drag
+   * starts, so a hand cannot outlive the thing it was pointing at.
+   */
+  let knobCursor = $state(null);
+  /**
+   * THE DIAL CURSOR CLASS — "" or `cursor-grab` / `cursor-grabbing`.
+   *
+   * SEPARATE FROM modeCursorClass, and both are applied, because they answer
+   * different questions: that one is "what is this MODE for", this one is "what is
+   * under the POINTER right now". CSS resolves the pair by specificity, and the
+   * dial rule is written last in web/app.css so the concrete thing under the
+   * pointer wins over the ambient mode — which is what you want, since a dial you
+   * can actually grab is more specific information than the mode you are in.
+   */
+  let knobCursorClass = $derived(knobCursor ? `cursor-${knobCursor}` : "");
   // Screen positions of the live mouse marker on each ruler (null = off-canvas).
   // The marker sits at the SAME screen x/y the pointer is at — worldToScreen ∘
   // screenToWorld is identity, so these equal screenMouse; expressed through the
@@ -2019,6 +2048,22 @@
     //     a gesture that stole the selection would make building a patch fight
     //     with whatever the Inspector was showing.
     if (startWireDrag(e, w)) return;
+    // ── THE DIAL LAYER, CHECKED HERE FOR THE BEAD LAYER'S OWN REASON ─────────
+    // "It would be nice if I didn't have to double click on the knobs to move
+    // them" (user, 2026-08-03, WORKSTREAM BX) — which supersedes the founding
+    // double-click phrasing. A dial is the same shape of affordance as a bead: a
+    // small purposeful target on a module's face that you reach for directly. So
+    // it resolves before selection and before the body drag, it does NOT ask
+    // whether the node is selected, and it wins only inside the dial's own radius
+    // — the very next line down takes the press a few pixels away, so there are no
+    // dead pixels between turning a knob and moving the node.
+    //
+    // AFTER the bead, because core/node_knobs.knobAt rules that a wire gesture
+    // outranks a dial wherever the two overlap (a knob has the Inspector as a
+    // second route; a bead has none). BEFORE live-play, because the two never
+    // compete on one widget — a Button/Keyboard face declares no dials — and the
+    // dial's radius is the tighter claim of the two.
+    if (startKnobTurn(e, w)) return;
     // ── THE LIVE-PLAY LAYER, CHECKED WHERE THE BEAD LAYER IS AND FOR THE SAME
     //    REASON ────────────────────────────────────────────────────────────────
     // "I need to be able to play with them myself" (user, 2026-08-03). A press on
@@ -2276,6 +2321,12 @@
       return;
     }
     if (!drag) {
+      // THE HAND OVER A TURNABLE DIAL (WORKSTREAM BX). Asked once per bare
+      // pointermove, off the SAME lookup the press uses, so the cursor promising a
+      // turn and the press performing one are by construction the same decision.
+      // knobCursorFor answers null for a BOUND knob: an `=` dial's press is
+      // refused, and a hand over it would promise a turn the press declines.
+      knobCursor = knobCursorFor(dialUnder(w)?.knob ?? null);
       const nodes = app.nodes();
       // Anchor hover tooltip (immediate; only while anchors are shown).
       // Shows the anchor's REFERENCABLE name ("circle_tm") — exactly what an
@@ -2315,6 +2366,7 @@
     else if (drag.kind === "modifier") modifierDrag(w);
     else if (drag.kind === "wire") wireDragMove(w);
     else if (drag.kind === "liveplay") livePlayMove(w);
+    else if (drag.kind === "knob") knobTurnDrag(e, w);
     else if (drag.kind === "band") bandDrag(w, e);
     // EVERY placement grammar routes here (PLACEMENT_DRAG_KINDS), so a grammar
     // added to the table is driven and committed with no edit to this dispatch.
@@ -2756,6 +2808,13 @@
     // the resize everywhere `beadAt` returns null (a few pixels away) exactly as it
     // yields to the body drag there.
     if (startWireDrag(e, worldPoint(e))) { e.stopPropagation(); return; }
+    // AND THE DIAL LAYER WITH IT, for the identical reason one paragraph up. A
+    // selected node draws its resize handles OVER its own face, so without this a
+    // dial that sat under a handle would start a RESIZE — the same silent
+    // half-gesture the bead suffered, one affordance over. BX made the dial
+    // always-active; an always-active affordance that a selection covers up is
+    // exactly the contradiction the bead's fix resolved.
+    if (startKnobTurn(e, worldPoint(e))) { e.stopPropagation(); return; }
     // MULTI-RESIZE (manifest UNDEFERRAL SWEEP): a handle on a 2+ selection grabs
     // the collective AABB and scales every member about it — a different drag
     // kind from the single-item resize (which owns the rotation back-solve, edge
@@ -3422,6 +3481,140 @@
    * releases the old note and sounds the new one when the pointer crosses to
    * another key.
    */
+  /**
+   * Query. The dial under a WORLD point, as `{node, knob}`, or null — the
+   * always-active dial layer's one lookup, shared by the press and the cursor so
+   * the hand you see and the gesture you get can never disagree.
+   *
+   * THE GRAB RADIUS IS ZOOM-AWARE for startWireDrag's stated reason: `SNAP_PX /
+   * viewport.zoom` converts the pointer's screen slop into the world units the
+   * dial's own radius is expressed in.
+   *
+   * IT ASKS THE BEAD LAYER FIRST AND YIELDS TO IT. That ordering is the ruling
+   * core/node_knobs.knobAt records: a knob has the Inspector as a second route
+   * and a bead has none, so the wire gesture wins wherever the two overlap.
+   */
+  function dialUnder(w) {
+    const nodes = app.nodes();
+    const tol = SNAP_PX / viewport.zoom;
+    const hit = pickNode(nodes, w.x, w.y, 0);
+    if (!hit?.plugin?.knobLayout) return null;
+    if (beadAt(allPortBeads(nodes), w.x, w.y, tol)) return null;
+    const local = localPointOf(hit, w.x, w.y);
+    const knob = knobDialAt(hit.plugin, hit.state, local.x, local.y, tol);
+    return knob ? { node: hit, knob } : null;
+  }
+
+  /**
+   * Command. THE ALWAYS-ACTIVE KNOB TURN (WORKSTREAM BX). Returns whether it took
+   * the press.
+   *
+   * ── THE RULING (user, 2026-08-03, verbatim) ───────────────────────────────
+   * "It would be nice if I didn't have to double click on the knobs to move them."
+   * That SUPERSEDES the founding "if I double click the module, I can start
+   * playing with the knobs in it": the user has now used the shipped mode and is
+   * asking for the friction to go. Knob focus REMAINS — it is what paints the
+   * focus ring and the live readout — but it is an affordance now, not a gate.
+   *
+   * ── IT SITS EXACTLY WHERE THE BEAD AND LIVE-PLAY LAYERS SIT, AND THAT IS THE
+   *    WHOLE ARGUMENT ─────────────────────────────────────────────────────────
+   * A dial is the third small, purposeful target on a module's face, and the two
+   * that came before it resolved before selection and before the body drag for a
+   * reason that applies verbatim here: you reach for it directly, so a selecting
+   * click first would be friction with no purpose. So this inherits both of their
+   * consequences unchanged — IT WINS ONLY INSIDE THE DIAL'S OWN RADIUS (a press a
+   * few pixels away falls through to the ordinary pick and the node moves as it
+   * always did, with no dead pixels between the two), and IT DOES NOT CHANGE THE
+   * SELECTION, because turning a knob is not selecting the module any more than
+   * wiring two nodes is.
+   *
+   * ── A BOUND KNOB IS REFUSED HERE, NOT FALLEN THROUGH ──────────────────────
+   * knobTurnRefusal's sentence, the same one knob focus says, for the same reason
+   * (web/interiorNav.js's ruling): turning would replace the equation with the
+   * number it currently evaluates to. Consuming the press rather than returning
+   * false is deliberate — falling through would MOVE THE NODE instead, which is a
+   * different edit than the one the user asked for and a surprising one to undo.
+   */
+  function startKnobTurn(e, w) {
+    const hit = dialUnder(w);
+    if (!hit) return false;
+    const refusal = knobTurnRefusal(hit.knob, app.displayName(hit.node.itemId));
+    if (refusal) {
+      reportAction(`PowerRP: ${refusal}`);
+      return true;
+    }
+    overlayEl.setPointerCapture(e.pointerId);
+    hoverAnchor = null;
+    // THE HAND CLOSES for the whole gesture, and stays closed even as the pointer
+    // travels off the dial — which it always does, because a turn is a vertical
+    // drag and the dial is 26 local units across. A cursor that reverted mid-turn
+    // would say the gesture had ended while it was still running.
+    knobCursor = knobCursorFor(hit.knob, true);
+    drag = {
+      kind: "knob",
+      itemId: hit.node.itemId,
+      knob: hit.knob,
+      stateKey: knobStateKey(hit.knob),
+      startValue: hit.knob.value,
+      startLocal: localPointOf(hit.node, w.x, w.y),
+      world: hit.node.world,
+      value: hit.knob.value,
+    };
+    app.dragging = true;
+    app.dragKind = "knob";
+    return true;
+  }
+
+  /**
+   * Command. THE TURN. Stages one property write per move through setPreview, so
+   * the host's single commitPreview on release makes the whole gesture ONE undo
+   * unit — the same seam knob focus's own onPan uses, deliberately, so the two
+   * entrances to the identical gesture cannot drift.
+   *
+   * The travel is measured from the GRAB rather than accumulated per event
+   * (core/node_knobs.knobDragValue states why: an accumulating gesture that clamps
+   * at an end stop feels stuck when it reverses), which is why this converts the
+   * CURRENT world point into the node's local frame instead of reading a delta.
+   */
+  function knobTurnDrag(e, w) {
+    if (drag?.kind !== "knob") return;
+    const local = T.apply(T.invert(drag.world), w.x, w.y);
+    const value = knobDragValue(drag.knob, drag.startValue, local.y - drag.startLocal.y, e.shiftKey);
+    // NOTHING IS WRITTEN WHEN NOTHING CHANGED — a coarse-stepped knob sits on one
+    // value across many pointermoves, and re-staging an identical preview per move
+    // is pure invalidation. knobFocus.onPan guards the same way for the same reason.
+    if (value === drag.value) return;
+    drag.value = value;
+    app.setPreview(knobWritePairs(drag.itemId, drag.stateKey, value));
+  }
+
+  /**
+   * Query. WHAT A KNOB TURN CAN STILL DO under the equation lock — the LOCK_SURFACE
+   * entry tests/equation_lock_test.js demands for the `knob` drag kind.
+   *
+   * A turn writes ONE plain numeric leaf, so unlike a resize handle there is no
+   * per-degree-of-freedom story: the lock either holds that leaf or it does not.
+   *
+   * NOTE THE TWO INDEPENDENT REFUSALS, which is why this exists ALONGSIDE
+   * knobTurnRefusal rather than replacing it. A knob whose own value is an `=`
+   * equation is refused always (that is knob focus's ruling, and it holds with the
+   * lock off). The EQUATION LOCK is the app-wide switch that additionally refuses
+   * a drag writing any bound leaf. Both end at "the press will not turn this", and
+   * the user is entitled to the sentence naming which rule stopped it.
+   *
+   * @param {object} node - the derived node carrying the dial
+   * @param {object} knob - the knobLayout record under the pointer
+   * @returns {{locked?: boolean, lockNote?: string}}
+   */
+  function knobTurnAffordance(node, knob) {
+    const lock = dragConstraint(node.itemId, node.plugin);
+    if (lock === UNCONSTRAINED) return {};
+    const stateKey = knobStateKey(knob);
+    const refused = refusedCoordinates(lock, { [stateKey]: node.state[stateKey] }, { [stateKey]: node.state[stateKey] + AFFORDANCE_PROBE_UNITS });
+    if (!refused.length) return {};
+    return { locked: true, lockNote: equationLockNote(refused, "turn this knob") };
+  }
+
   function startLivePlay(e, w) {
     const hit = pickNode(app.nodes(), w.x, w.y, 0);
     if (!hit) return false;
@@ -3860,6 +4053,11 @@
   function onPointerLeave() {
     if (!drag && !modal) screenMouse = null; // hide ruler markers on leave (not mid-gesture)
     modePointerLeave(); // a mode's hover candidate must not outlive the pointer
+    // …and neither may the grab hand: a cursor is a claim about what the next
+    // press does HERE, and the pointer is no longer here. Not cleared mid-turn —
+    // the pointer is captured then, and the closed hand belongs to the gesture
+    // rather than to whatever it happens to be over.
+    if (drag?.kind !== "knob") knobCursor = null;
   }
 
   function onPointerUp(e) {
@@ -3888,6 +4086,25 @@
     // click-vs-drag or preview machinery below applies to it.
     if (drag.kind === "liveplay") {
       finishLivePlay();
+      drag = null;
+      app.dragging = false;
+      app.dragKind = null;
+      return;
+    }
+    // A KNOB TURN COMMITS AND RETURNS. Every pointermove staged one setPreview, so
+    // this single commitPreview closes the whole gesture as ONE undo unit —
+    // idempotent when the turn never moved (commitPreview no-ops with nothing
+    // staged), so a press-and-release on a dial adds no undo entry at all.
+    //
+    // IT RETURNS BEFORE THE SELECTION MACHINERY for startKnobTurn's stated reason:
+    // turning a knob is not selecting the module, exactly as wiring is not.
+    if (drag.kind === "knob") {
+      app.commitPreview();
+      // The hand REOPENS if the release landed back over a turnable dial and
+      // reverts otherwise — asked through the same lookup rather than assumed, so
+      // a turn that ended with the pointer off the module does not leave a hand
+      // hovering over empty canvas.
+      knobCursor = knobCursorFor(dialUnder(worldPoint(e))?.knob ?? null);
       drag = null;
       app.dragging = false;
       app.dragKind = null;
@@ -5198,7 +5415,7 @@
       {/if}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
-        class="overlay {modeCursorClass}"
+        class="overlay {modeCursorClass} {knobCursorClass}"
         bind:this={overlayEl}
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}

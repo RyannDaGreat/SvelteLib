@@ -4705,6 +4705,35 @@ textarea {
   cursor: alias;
 }
 
+/* A TURNABLE DIAL UNDER THE POINTER — WORKSTREAM BX (user, 2026-08-03, verbatim:
+   "and if it showed the hand icon and then let the grabby hand icon when i move
+   the knobs" … "I mean like my mouse cursor").
+
+   STANDARD KEYWORDS AGAIN, for the reason the mode-cursor block above states:
+   CSS already owns both words, `grab` IS the open hand and `grabbing` IS the
+   closed one, and this file already uses the pair elsewhere (the rail handles).
+   No asset, no hotspot to tune.
+
+   NOT DECLARED THROUGH A MODE's `cursors`, and therefore NOT in widget_handlers'
+   MODE_CURSORS: that list answers "what is this MODE for" and is indexed by step,
+   which a hover cannot be. This pair answers "what is under the POINTER right
+   now" — the dial layer is always active, in or out of knob focus, so its cursor
+   cannot hang off a mode that may not be entered at all. web/CanvasView.svelte
+   writes the class from the SAME hit test the press uses, so the hand and the
+   gesture cannot disagree.
+
+   WRITTEN AFTER the mode rules so that when both apply, the concrete thing under
+   the pointer wins — a dial you can actually grab is more specific information
+   than the ambient mode. A BOUND (= equation) knob gets NEITHER rule, because its
+   press is refused and a hand would promise a turn that will not happen. */
+.canvas-wrap .overlay.cursor-grab {
+  cursor: grab;
+}
+
+.canvas-wrap .overlay.cursor-grabbing {
+  cursor: grabbing;
+}
+
 /* VIDEO V7 (WebGPU per-widget canvas overlay). A stacking layer sibling to
    .scene, holding one <canvas> per video_v7 widget. `isolation: isolate` keeps
    the per-canvas z-index (widget z-order) LOCAL, so the whole layer stays

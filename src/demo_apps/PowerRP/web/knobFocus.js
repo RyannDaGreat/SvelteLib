@@ -6,8 +6,21 @@
  * "we'll have knobs on them that I can... If I double click the module, I can
  * start playing with the knobs in it"
  *
- * ── THE GESTURE GRAMMAR ─────────────────────────────────────────────────────
- *   DOUBLE-CLICK a node      enter knob focus on THAT node
+ * ── SUPERSEDED IN PART BY WORKSTREAM BX (user, 2026-08-03, verbatim) ────────
+ * "It would be nice if I didn't have to double click on the knobs to move them."
+ * DOUBLE-CLICK IS NO LONGER A GATE. A dial is now drag-active wherever it is
+ * painted, in or out of this mode, through the always-active layer `knobDialAt`
+ * declares and CanvasView's `startKnobTurn` runs — the port-bead precedent,
+ * applied to the other small purposeful target on a module's face.
+ *
+ * THIS MODE SURVIVES AS AN AFFORDANCE, NOT AS A REQUIREMENT. What it still owns
+ * is the FOCUS RING and the live value READOUT: double-click a module and its
+ * dials annotate themselves while you work. Everything below therefore still
+ * describes what happens INSIDE the mode; the difference BX makes is that you
+ * no longer have to be in it to turn anything.
+ *
+ * ── THE GESTURE GRAMMAR (inside the mode) ───────────────────────────────────
+ *   DOUBLE-CLICK a node      enter knob focus on THAT node (ring + readout)
  *   PRESS + DRAG a dial      turn it; UP is more, down is less
  *   hold the FINE modifier   the same travel moves an eighth as far
  *   PRESS the node's body    nothing (the node does not move: see below)
@@ -173,6 +186,95 @@ export function knobStateKey(knob) {
     throw new Error(`knobFocus: knob ${JSON.stringify(knob?.key)} declares no stateKey — a dial must say which item property it writes to (core/node_knobs.knobLayout)`);
   }
   return knob.stateKey;
+}
+
+/**
+ * Pure function. THE ALWAYS-ACTIVE DIAL LAYER — which dial a LOCAL point grabs on
+ * a node that is not in knob focus, or null. The bead layer's twin.
+ *
+ * ── WORKSTREAM BX, THE RULING THAT CREATED THIS (user, 2026-08-03, verbatim) ──
+ * "It would be nice if I didn't have to double click on the knobs to move them."
+ * That SUPERSEDES the founding message's "if I double click the module, I can
+ * start playing with the knobs in it" — the user has now USED the shipped mode
+ * and is asking for less friction, and a later ruling beats an earlier one.
+ *
+ * So a dial is now drag-active like a PORT BEAD: press it and it turns, with no
+ * mode to enter first. This function is the whole of that decision, stated once
+ * so `tests/knob_focus_test.js` can pin it in bare node.
+ *
+ * ── IT DOES NOT ASK WHETHER THE NODE IS SELECTED, AND THAT IS THE PRECEDENT ──
+ * The bead layer is live "even if it's not selected" (the founding message), and
+ * the live-play layer copied it for exactly the same reason. A dial is the same
+ * shape of thing: a small, purposeful target on a module's face whose whole point
+ * is that you reach for it directly. Requiring a selecting click first would put
+ * back the friction BX removed, one click smaller — and it would make the dial
+ * behave differently from the bead sitting 20px away on the same card, which is
+ * the inconsistency the delete-gesture incident taught us to avoid.
+ *
+ * ── WHY THE BEAD STILL OUTRANKS IT ──────────────────────────────────────────
+ * Unchanged from knobPressKind's contract, and for core/node_knobs.knobAt's own
+ * stated reason: a knob has the Inspector as a second route and a bead has none.
+ * The CALLER must therefore ask the wire layer first; this function is only
+ * reached once that has declined, which is what CanvasView's ordering encodes.
+ *
+ * ── A BOUND KNOB IS FOUND HERE AND REFUSED BY THE CALLER ────────────────────
+ * It deliberately still RETURNS a bound dial rather than hiding it, so the press
+ * can report why it will not turn (knobTurnRefusal) instead of silently falling
+ * through to a body drag. The cursor asks a different question — see
+ * knobCursorFor, which is the one place "turnable" rather than "hit" is decided.
+ *
+ * @param {object} plugin - the node's plugin (its knobLayout, if it has one)
+ * @param {object} state - the folded item state
+ * @param {number} lx - LOCAL x of the point
+ * @param {number} ly - LOCAL y of the point
+ * @param {number} [tol] - extra grab radius in LOCAL units
+ * @returns {object|null} the knobLayout record, or null
+ *
+ * @example // a widget with no dials is not a dial layer at all
+ * @example knobDialAt({type: "rect"}, {w: 150, h: 160}, 75, 73, 0) // null
+ * @example // a press at a dial's centre grabs it, with no mode entered first
+ * @example knobDialAt({knobLayout: () => [{key: "q", cx: 75, cy: 73, min: 0, max: 1, value: 0, fraction: 0}]}, {w: 150, h: 160}, 75, 73, 0).key // "q"
+ * @example // and a press on the card away from every dial is a body drag
+ * @example knobDialAt({knobLayout: () => [{key: "q", cx: 75, cy: 73, min: 0, max: 1, value: 0, fraction: 0}]}, {w: 150, h: 160}, 20, 130, 0) // null
+ */
+export function knobDialAt(plugin, state, lx, ly, tol = 0) {
+  if (!plugin?.knobLayout) return null;
+  return knobAt(plugin.knobLayout(state) ?? [], lx, ly, tol);
+}
+
+/**
+ * Pure function. THE CURSOR A DIAL ASKS FOR: "grab", "grabbing", or null.
+ *
+ * ── THE RULING (user, 2026-08-03, verbatim) ─────────────────────────────────
+ * "and if it showed the hand icon and then let the grabby hand icon when i move
+ * the knobs" … "I mean like my mouse cursor". So: the OPEN hand over a dial you
+ * could turn, the CLOSED hand while you are turning one. CSS has both words
+ * already (`grab`/`grabbing`), which is why this returns names rather than an
+ * asset — the same standard-keyword reasoning web/bentoBind.js records for
+ * `cell`/`alias`.
+ *
+ * ── A BOUND KNOB GETS NO HAND, AND THAT IS THE POINT ────────────────────────
+ * An `=` knob's press is REFUSED (knobTurnRefusal), so showing the grab cursor
+ * over one would promise a turn the press then declines. A cursor is a claim
+ * about what the next press will do; a cursor that lies is worse than no cursor,
+ * because the refusal message then reads as a malfunction rather than as the
+ * consistent rule it is. The dial still PAINTS (it shows where the bound value
+ * sits) — it simply does not offer a hand.
+ *
+ * @param {object|null} knob - the dial under the pointer, or null
+ * @param {boolean} [turning] - whether a turn is currently live
+ * @returns {string|null} "grab", "grabbing", or null for the default pointer
+ *
+ * @example knobCursorFor(null) // null
+ * @example knobCursorFor({key: "cutoff", bound: false}) // "grab"
+ * @example // while the turn is live the hand CLOSES
+ * @example knobCursorFor({key: "cutoff", bound: false}, true) // "grabbing"
+ * @example // a knob holding an = equation offers no hand: its press is refused
+ * @example knobCursorFor({key: "cutoff", bound: true}) // null
+ */
+export function knobCursorFor(knob, turning = false) {
+  if (!knob || knob.bound) return null;
+  return turning ? "grabbing" : "grab";
 }
 
 /**

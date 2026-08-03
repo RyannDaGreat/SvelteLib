@@ -125,6 +125,15 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
   // nothing — the exact lie this table exists to prevent. Fine control is a thing
   // you want on a continuous value; a note is not one.
   liveplay: Object.freeze([]),
+  // THE KNOB TURN (WORKSTREAM BX) — an always-active dial drag, in or out of knob
+  // focus. UNLIKE `wire` and `liveplay` this one DOES read a modifier: Shift is
+  // fine control, which divides the drag sensitivity (core/node_knobs.
+  // knobDragValue). It is declared here for exactly the reason the multiresize
+  // omission is recorded above — a kind that reads a key and changes its outcome
+  // without announcing it is the lie this table exists to prevent, and a
+  // continuous value is the one thing fine control genuinely applies to (which is
+  // why `liveplay`, one widget family over, correctly declares none).
+  knob: Object.freeze(["fine"]),
 });
 
 /**
@@ -132,7 +141,7 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
  * from DRAG_KIND_MODIFIERS so the two can never disagree.
  *
  * @example DRAG_KINDS.includes("multiresize") // true
- * @example DRAG_KINDS.length // 11
+ * @example DRAG_KINDS.length // 12
  */
 export const DRAG_KINDS = Object.freeze(Object.keys(DRAG_KIND_MODIFIERS));
 

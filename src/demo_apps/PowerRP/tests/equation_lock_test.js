@@ -606,6 +606,23 @@ const LOCK_SURFACE = {
   // affordance. That change would falsify the premise stated here rather than
   // silently outliving it.
   liveplay: null,
+  // ── AND THAT IS EXACTLY WHAT HAPPENED (WORKSTREAM BX, 2026-08-03) ──────────
+  // The paragraph directly above predicted this entry's existence: a knob turn
+  // writes, and its exemption rested on the turn being a canvas MODE rather than a
+  // drag kind. The user's ruling — "It would be nice if I didn't have to double
+  // click on the knobs to move them" — made the dial always-active, so the turn IS
+  // a drag kind now and the premise is falsified. This is the sheet working as
+  // designed: the condition was stated checkably, the code changed, and the
+  // completeness gate demanded an answer rather than letting the stale reason ride.
+  //
+  // THE ANSWER IS `knobTurnAffordance`, NOT null. A knob turn writes a plain
+  // numeric leaf through setPreview (web/knobFocus.knobWritePairs), so a BOUND
+  // knob is precisely the case the equation lock is about — and knob focus already
+  // ruled on it (knobTurnRefusal, itself web/interiorNav.js's ruling applied
+  // verbatim): the turn is REFUSED, not silently allowed to overwrite the
+  // equation. The always-active gesture must say the same sentence, or the same
+  // dial would refuse a press inside the mode and clobber the binding outside it.
+  knob: "knobTurnAffordance",
 };
 
 test("COVERAGE: every drag kind is answered — the sheet is complete against DRAG_KINDS", () => {
