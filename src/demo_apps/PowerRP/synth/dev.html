@@ -64,6 +64,10 @@
     --control-height: 30px;
     --sidebar-width: 260px;
 
+    /* Wide enough for a two-line patch description without hyphenation, narrow
+       enough that three cards fit across a laptop's main column. */
+    --card-min-width: 240px;
+
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   }
@@ -204,6 +208,89 @@
   .module-chip.ok { border-color: var(--accent-dim); }
   .module-chip.failed { border-color: var(--warn); }
 
+  /* ── Patch cards ──────────────────────────────────────────────────────────
+     A CARD, not a button, because a button can only carry a name — and a name
+     alone ("Beach") tells a non-expert nothing about what they are about to
+     hear or which modules made it. The description is the point of the card. */
+  .patch-group { margin-bottom: var(--gap-lg); }
+  .patch-group-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--gap-sm);
+    margin-bottom: var(--gap-sm);
+  }
+  .patch-group-head .name {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .patch-group-head .blurb { font-size: var(--text-xs); color: var(--ink-faint); }
+
+  .patch-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--card-min-width), 1fr));
+    gap: var(--gap-sm);
+  }
+  .patch-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-xs);
+    text-align: left;
+    height: auto;
+    padding: var(--gap-md);
+    background: var(--panel);
+    border: var(--border) solid var(--line);
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-family: inherit;
+    color: var(--ink);
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .patch-card:hover:not(:disabled) { border-color: var(--accent-dim); background: var(--panel-raised); }
+  .patch-card:focus-visible { outline: var(--border-thick) solid var(--accent); outline-offset: 2px; }
+  .patch-card.playing { border-color: var(--accent); background: var(--panel-raised); }
+
+  .patch-card .title {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+    font-size: var(--text-md);
+    font-weight: 560;
+  }
+  .patch-card.playing .title { color: var(--accent); }
+  .patch-card .desc {
+    font-size: var(--text-xs);
+    line-height: 1.45;
+    color: var(--ink-faint);
+  }
+  /* The state word: "Play" until it runs, "Stop" while it does. A card that
+     gives no way back is a trap for someone exploring by clicking. */
+  .patch-card .state {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: var(--text-xs);
+    color: var(--ink-faint);
+    flex: none;
+  }
+  .patch-card.playing .state { color: var(--accent); }
+
+  .patch-controls {
+    margin-top: var(--gap-md);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--gap-md);
+    align-items: center;
+  }
+  .patch-controls .controls-label {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-faint);
+    width: 100%;
+  }
+
   .hint { color: var(--ink-faint); font-size: var(--text-sm); margin: 0 0 var(--gap-md); }
   code {
     font-family: var(--mono);
@@ -259,11 +346,12 @@
     <section>
       <h2>Demo Patches</h2>
       <p class="hint">
-        Each is built only from the public API — see <code>synth/patches.js</code>.
-        Selecting one tears the previous down completely.
+        Pick one — it starts immediately, and starting another tears the previous down
+        completely. Each card names the modules its sound is built from; every one is
+        just addModule/connect calls in <code>synth/patches.js</code>.
       </p>
-      <div class="row" id="patch-buttons"></div>
-      <div class="row" id="patch-controls" style="margin-top: var(--gap-md);"></div>
+      <div id="patch-groups"></div>
+      <div class="panel patch-controls" id="patch-controls" hidden></div>
     </section>
 
     <section>
@@ -316,7 +404,7 @@
 <script type="module">
 import { createEngine } from "./engine.js";
 import { moduleTypes, IMPLEMENTATION } from "./modules.js";
-import { DEMO_PATCHES } from "./patches.js";
+import { DEMO_PATCHES, PATCH_CATEGORIES, patchesInCategory } from "./patches.js";
 
 /** Modules needing constructor arguments a bare instantiation cannot guess. */
 const SMOKE_PARAMS = {
@@ -333,7 +421,7 @@ const elements = {
   start: document.getElementById("start"),
   suspend: document.getElementById("suspend"),
   stopPatch: document.getElementById("stop-patch"),
-  patchButtons: document.getElementById("patch-buttons"),
+  patchGroups: document.getElementById("patch-groups"),
   patchControls: document.getElementById("patch-controls"),
   meter: document.getElementById("meter"),
   spectrum: document.getElementById("spectrum"),
@@ -381,11 +469,24 @@ function clearPatch() {
   if (spectrumUnsubscribe) { spectrumUnsubscribe(); spectrumUnsubscribe = null; }
   if (currentPatch) { currentPatch.handle.dispose(); currentPatch = null; }
   elements.patchControls.innerHTML = "";
+  elements.patchControls.hidden = true;
   elements.meter.style.width = "0%";
   spectrumData = null;
-  for (const button of elements.patchButtons.children) button.classList.remove("active");
+  paintCardStates();
   elements.stopPatch.disabled = true;
   renderReadout();
+}
+
+/** Command. Repaint every card's playing/idle state from `currentPatch`, which
+ * is the single source of truth — cards never track their own state, so two of
+ * them can never both look active. */
+function paintCardStates() {
+  for (const card of elements.patchGroups.querySelectorAll(".patch-card")) {
+    const playing = Boolean(currentPatch) && card.dataset.patch === currentPatch.key;
+    card.classList.toggle("playing", playing);
+    card.setAttribute("aria-pressed", String(playing));
+    card.querySelector(".state").textContent = playing ? "Stop" : "Play";
+  }
 }
 
 /** Command. Load a demo patch and wire its meter/spectrum to the display. */
@@ -418,52 +519,97 @@ function loadPatch(key) {
   }
 
   buildPatchControls(key, handle);
-  for (const button of elements.patchButtons.children) {
-    button.classList.toggle("active", button.dataset.patch === key);
-  }
+  paintCardStates();
   elements.stopPatch.disabled = false;
   lastError = null;
   renderReadout();
 }
 
+/**
+ * Command. Click handler for a card: the same card stops what it started.
+ *
+ * A grid where "play" and "stop" live in different places makes a visitor hunt
+ * for the off switch, which is the fastest way to make them stop exploring.
+ *
+ * IT ALSO STARTS THE AUDIO. A click on a card IS a user gesture, so the
+ * autoplay policy is satisfied by it and there is no reason to demand a second
+ * one from a different button. Before this, clicking a card on a fresh page
+ * built the patch into a SUSPENDED context — modules appeared in the readout,
+ * the meter stayed flat, and nothing said why. Silence that looks like a
+ * working patch is exactly the failure the boot-splash rule exists to prevent.
+ */
+async function togglePatch(key) {
+  if (currentPatch && currentPatch.key === key) {
+    clearPatch();
+    return;
+  }
+  await startAudio();
+  loadPatch(key);
+}
+
+/**
+ * THE CONTROL TABLE — which handle method gets which widget.
+ *
+ * DECLARED AS DATA, not as a chain of `if (typeof handle.x === "function")`,
+ * because the old form grew one branch per patch and every new patch meant
+ * editing the renderer. A patch now advertises its controls purely by which
+ * methods it returns, and adding a knob to a patch requires no change here at
+ * all as long as it reuses a method name below.
+ *
+ * `button` entries fire a one-shot. `slider` entries carry their own range,
+ * which is per-CONTROL rather than per-patch: "pitch" means the same span of
+ * Hz whichever patch exposes setPitch.
+ */
+const PATCH_CONTROLS = [
+  { method: "fire", kind: "button", label: "Fire", primary: true },
+  { method: "strike", kind: "button", label: "Strike One" },
+  { method: "gull", kind: "button", label: "Gull Cry" },
+  { method: "setIntensity", kind: "slider", label: "intensity", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { method: "setPitch", kind: "slider", label: "pitch (Hz)", min: 41, max: 165, step: 0.5, value: 82.4 },
+  { method: "setStrength", kind: "slider", label: "strength", min: 0, max: 1, step: 0.01, value: 0.35 },
+  { method: "setCrush", kind: "slider", label: "crush", min: 0, max: 1, step: 0.01, value: 0.5 },
+  { method: "setBpm", kind: "slider", label: "bpm", min: 20, max: 180, step: 1, value: 60 },
+];
+
 /** Command. Build the per-patch controls — only what that patch actually
  * offers, rather than a fixed panel of mostly-dead knobs. */
 function buildPatchControls(key, handle) {
   elements.patchControls.innerHTML = "";
+  const available = PATCH_CONTROLS.filter((control) => typeof handle[control.method] === "function");
 
-  if (typeof handle.fire === "function") {
-    let intensity = 0.5;
-    const fire = document.createElement("button");
-    fire.textContent = "Fire Whoosh";
-    fire.className = "primary";
-    fire.onclick = () => handle.fire(intensity);
-    elements.patchControls.appendChild(fire);
+  // A patch with no controls gets no empty panel — an empty bordered box reads
+  // as "something failed to load".
+  elements.patchControls.hidden = available.length === 0;
+  if (available.length === 0) return;
+
+  const heading = document.createElement("div");
+  heading.className = "controls-label";
+  heading.textContent = `${DEMO_PATCHES[key].label} — controls`;
+  elements.patchControls.appendChild(heading);
+
+  for (const control of available) {
+    if (control.kind === "button") {
+      const button = document.createElement("button");
+      button.textContent = control.label;
+      if (control.primary) button.className = "primary";
+      button.onclick = () => handle[control.method]();
+      elements.patchControls.appendChild(button);
+      continue;
+    }
 
     const label = document.createElement("label");
     label.className = "slider";
-    label.innerHTML = "<span>intensity</span>";
-    const slider = document.createElement("input");
-    slider.type = "range";
-    slider.min = "0";
-    slider.max = "1";
-    slider.step = "0.01";
-    slider.value = String(intensity);
-    slider.oninput = () => { intensity = Number(slider.value); };
-    label.appendChild(slider);
-    elements.patchControls.appendChild(label);
-  }
+    const name = document.createElement("span");
+    name.textContent = control.label;
+    label.appendChild(name);
 
-  if (typeof handle.setPitch === "function") {
-    const label = document.createElement("label");
-    label.className = "slider";
-    label.innerHTML = "<span>pitch</span>";
     const slider = document.createElement("input");
     slider.type = "range";
-    slider.min = "41";
-    slider.max = "165";
-    slider.step = "0.5";
-    slider.value = "82.4";
-    slider.oninput = () => handle.setPitch(Number(slider.value));
+    slider.min = String(control.min);
+    slider.max = String(control.max);
+    slider.step = String(control.step);
+    slider.value = String(control.value);
+    slider.oninput = () => handle[control.method](Number(slider.value));
     label.appendChild(slider);
     elements.patchControls.appendChild(label);
   }
@@ -581,21 +727,37 @@ async function measureRewire() {
 
 // ── Wiring ─────────────────────────────────────────────────────────────────
 
-elements.start.onclick = async () => {
+/**
+ * Command. Load the worklets and resume the context. Idempotent, and safe to
+ * call from ANY user gesture — the Start button and every patch card both go
+ * through here, so the banner and the button states can never disagree with
+ * whether audio is actually running.
+ *
+ * Returns true if audio is running afterwards; a failure is reported in the
+ * banner AND the readout rather than thrown away, because a page that silently
+ * fails to start looks identical to one whose speakers are muted.
+ */
+async function startAudio() {
+  if (engine.isRunning()) return true;
   try {
     await engine.init();      // loads the worklets
-    await engine.resume();    // needs this user gesture
+    await engine.resume();    // needs a user gesture
     elements.start.disabled = true;
     elements.suspend.disabled = false;
     elements.banner.style.display = "none";
     lastError = null;
+    renderReadout();
+    return true;
   } catch (error) {
     lastError = error.message;
     elements.banner.className = "banner error";
     elements.banner.innerHTML = `<strong>Failed to start.</strong> ${escapeHtml(error.message)}`;
+    renderReadout();
+    return false;
   }
-  renderReadout();
-};
+}
+
+elements.start.onclick = startAudio;
 
 elements.suspend.onclick = async () => {
   await engine.suspend();
@@ -609,14 +771,61 @@ elements.stopPatch.onclick = clearPatch;
 elements.testModules.onclick = testAllModules;
 elements.testRewire.onclick = measureRewire;
 
-for (const [key, spec] of Object.entries(DEMO_PATCHES)) {
-  const button = document.createElement("button");
-  button.textContent = spec.label;
-  button.title = spec.hint;
-  button.dataset.patch = key;
-  button.onclick = () => loadPatch(key);
-  elements.patchButtons.appendChild(button);
+/**
+ * Command. Render the patch library as grouped cards.
+ *
+ * The grouping comes from PATCH_CATEGORIES in patches.js, NOT from a list here:
+ * this page and the editor's Demo Patches palette must show the same categories
+ * in the same order, and a second copy would drift the first time a patch moved.
+ *
+ * A category with no patches renders nothing rather than an empty heading —
+ * an empty group looks like a load failure.
+ */
+function renderPatchLibrary() {
+  elements.patchGroups.innerHTML = "";
+
+  for (const category of PATCH_CATEGORIES) {
+    const keys = patchesInCategory(category.key);
+    if (keys.length === 0) continue;
+
+    const group = document.createElement("div");
+    group.className = "patch-group";
+
+    const head = document.createElement("div");
+    head.className = "patch-group-head";
+    head.innerHTML =
+      `<span class="name">${escapeHtml(category.label)}</span>` +
+      `<span class="blurb">${escapeHtml(category.blurb)}</span>`;
+    group.appendChild(head);
+
+    const grid = document.createElement("div");
+    grid.className = "patch-grid";
+    for (const key of keys) grid.appendChild(patchCard(key));
+    group.appendChild(grid);
+
+    elements.patchGroups.appendChild(group);
+  }
+  paintCardStates();
 }
+
+/** Query-ish command. One card element for a patch. A real <button> so it is
+ * keyboard-reachable and announces itself; aria-pressed carries the toggle
+ * state that the accent border shows visually. */
+function patchCard(key) {
+  const spec = DEMO_PATCHES[key];
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = "patch-card";
+  card.dataset.patch = key;
+  card.setAttribute("aria-pressed", "false");
+  card.innerHTML =
+    `<span class="title">${escapeHtml(spec.label)}<span class="state">Play</span></span>` +
+    `<span class="desc">${escapeHtml(spec.hint)}</span>`;
+  card.onclick = () => togglePatch(key);
+  return card;
+}
+
+renderPatchLibrary();
 
 // Report a crash rather than dying silently — a dead page must never look like
 // a quiet one, which is the same rule PowerRP's boot splash follows.
