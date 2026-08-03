@@ -607,10 +607,39 @@ export const plaintextPlugin = {
     { key: "bold", label: "Bold", kind: "boolean", category: "text", help: "Draw the text in the font's bold weight." },
     { key: "align", label: "Align", kind: "select", options: ALIGN_OPTIONS, optionLabels: ALIGN_LABELS, category: "text", help: "Horizontal alignment of the text within the box width: left, center, right, or justified." },
     { key: "valign", label: "V-Align", kind: "select", options: VALIGN_OPTIONS, optionLabels: VALIGN_LABELS, category: "text", help: "Vertical placement of the line stack within the box height: top, middle, or bottom." },
-    // Ink color reuses the PAINT-capable registry `fill` prop (solid OR
-    // linear/radial gradient), relabelled for a text widget; text() runs it
-    // through parsePaint so a gradient fills the glyphs.
-    ...props("fill", { fill: { label: "Color", category: "formatting", help: "The color or gradient the glyphs are painted with. Pick a solid color or a linear/radial gradient." } }),
+    // THE GLYPH FILL — the PAINT-capable registry `fill` prop, which since N1 is
+    // a full Off/Solid/Linear/Radial/Mat/=Eq strip and not merely a colour.
+    //
+    // IT USED TO SAY "Color", AND THAT WAS THE WHOLE COMPLAINT (user ruling,
+    // 2026-08-02): "No, text only has color. It doesn't even have stroke or fill."
+    // The material capability was already there and the row's own label denied it,
+    // so an author looking for glassy text concluded the widget could not do it.
+    // A label is a claim about what a control offers; this one was understating its
+    // control by a whole axis. It is now "Fill" — the registry's own word for this
+    // slot, shared with every shape — and the help NAMES the three kinds so the
+    // capability is legible without opening the picker.
+    //
+    // THE KEY IS UNCHANGED (`fill`), deliberately: relabelling is a UI fact, and
+    // renaming the key would be a document migration for a wording fix.
+    ...props("fill", { fill: { label: "Fill", category: "fillMaterial", help: "How the glyphs themselves are painted: a solid color, a linear/radial gradient, or a MATERIAL (brass, glass, comic halftone…). Set it Off to draw outline-only text." } }),
+    // THE GLYPH STROKE — an outline around the LETTERFORMS, which is a different
+    // thing from a border around the text BOX and is what the user asked for
+    // (2026-08-02): "what if I want to be to have an outline around the text
+    // itself? It's impossible for me to do that right now."
+    //
+    // WIDGET-SPECIFIC KEYS, NOT the shared `stroke`/`strokeWidth` bundle, and the
+    // reason is plugins/latex.js: that widget ALREADY spends `stroke`/`strokeWidth`
+    // on its box border (the strokedBorder bundle). Naming this one `glyphStroke`
+    // on BOTH widgets keeps one word for one concept across them, and leaves an
+    // equation free to grow a real box border and a glyph outline at once without
+    // either meaning being quietly redefined.
+    //
+    // DEFAULT OFF, absent-is-legacy: no default is declared for either key, so a
+    // document written before this has neither, `glyphStrokeWidth ?? 0` is 0, and
+    // emit() omits the stroke entirely — byte-identical (pinned in
+    // tests/glyph_stroke_test.js).
+    { key: "glyphStroke", label: "Outline", kind: "color", paint: true, category: "strokeMaterial", help: "The color, gradient or material of an outline drawn around the letterforms themselves (not around the text box). Only visible once the outline width is above zero." },
+    { key: "glyphStrokeWidth", label: "Outline width", kind: "number", min: 0, category: "strokeMaterial", help: "Thickness of the outline around the glyphs, in canvas units. Zero (the default) means no outline." },
     ...props("opacity"),
     ...bundle("effects"),
   ],
@@ -645,6 +674,10 @@ export const plaintextPlugin = {
       boxW: w > 0 ? w : Infinity, // wrap to the box width; 0/absent ⇒ no wrap
       boxH: h > 0 ? h : Infinity, // box height ⇒ vertical-align room
       boxStyle: { align: s.align ?? "left", valign: s.valign ?? "top" },
+      // THE GLYPH OUTLINE. Absent keys ⇒ null/0 ⇒ ir.js omits both fields, so a
+      // pre-N2 box emits the exact op it always did.
+      glyphStroke: s.glyphStroke ?? null,
+      glyphStrokeWidth: s.glyphStrokeWidth ?? 0,
     })], s, world, { x: 0, y: 0, w, h });
   },
   /**

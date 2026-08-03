@@ -138,6 +138,55 @@ export function isShaderInk(ink) {
   return !!ink && typeof ink === "object" && !Array.isArray(ink) && ink.type !== "none";
 }
 
+/**
+ * Pure function. How many viewBox units one BOX unit is worth for this equation —
+ * the factor that turns an author's canvas-unit glyph-outline width into the
+ * viewBox-unit width the painter must stroke with.
+ *
+ * ── WHY THIS CONVERSION HAS TO EXIST ─────────────────────────────────────────
+ * The two spaces are genuinely different and both are load-bearing. A MathJax
+ * equation's glyph `d` strings live in the typeset viewBox (thousands of units per
+ * em); the painter draws them under a viewBox→box CTM established by
+ * drawLatexVector. Meanwhile the author types "2" into an Outline width row that
+ * means canvas units on every other widget in the app. Handing that 2 straight to
+ * the painter would multiply it by the CTM, so the same "2" would draw a hairline
+ * on a small equation and a slab on a large one — a width row that silently means
+ * something different per box size. Dividing it out here makes the number mean what
+ * the row says it means.
+ *
+ * It is the RECIPROCAL of the mapping drawLatexVector applies, derived from the
+ * same two branches so the pair cannot drift: preserveAspect uses fitBox's single
+ * uniform scale, and the stretch path uses the box→box x/y scales — which are
+ * unequal, so a stroke on a squashed equation is anisotropic and no single number
+ * is exactly right. The GEOMETRIC MEAN is used there: it is the factor that
+ * preserves stroke AREA under the anisotropic map, so the outline reads at the
+ * intended visual weight instead of matching one axis and being wrong on the other.
+ *
+ * Args:
+ *   viewBox ({minX, minY, w, h}): the typeset equation's viewBox
+ *   boxW (number): the widget's drawn width in canvas units
+ *   boxH (number): the widget's drawn height in canvas units
+ *   preserveAspect (boolean): the widget's own aspect setting
+ *
+ * Returns:
+ *   number: viewBox units per box unit (multiply a canvas-unit width by this)
+ *
+ * @example // a 1000x500 viewBox fit into a 100x50 box: 10 viewBox units per box unit
+ * @example latexBoxToViewBoxScale({minX: 0, minY: 0, w: 1000, h: 500}, 100, 50, true) // 10
+ * @example // the box is TALLER than the aspect wants, so fitBox is limited by WIDTH:
+ * @example latexBoxToViewBoxScale({minX: 0, minY: 0, w: 1000, h: 500}, 100, 200, true) // 10
+ * @example // stretched into a squashed box — the geometric mean of 10 and 5:
+ * @example latexBoxToViewBoxScale({minX: 0, minY: 0, w: 1000, h: 500}, 100, 100, false) // 7.0710678118654755
+ */
+export function latexBoxToViewBoxScale(viewBox, boxW, boxH, preserveAspect) {
+  if (preserveAspect) {
+    // fitBox's scale is box-per-viewBox; this function answers the other way round.
+    const fit = Math.min(boxW / viewBox.w, boxH / viewBox.h);
+    return fit > 0 ? 1 / fit : 0;
+  }
+  return Math.sqrt((viewBox.w / boxW) * (viewBox.h / boxH));
+}
+
 /** Error-affordance colors — a LOUD, unmissable red treatment (the task's "not
  * silent, not a blank widget" requirement): a clearly red-tinted fill so the
  * whole box reads as an error zone at a glance, a saturated red border, and
@@ -581,7 +630,23 @@ export const latexPlugin = {
     // ABSENT-IS-LEGACY: a stored ink is a STRING for every document written before
     // this, and a string still takes the raster-tint path byte-identically (the
     // material branch is entered only by an object paint), so nothing re-renders.
-    { key: "ink", label: "Color", kind: "color", paint: true, category: "formatting", offMeans: "the equation's glyphs are not painted, so nothing of it shows", help: "The color, gradient or material the equation's glyphs are painted with. A solid color also applies in SVG/PDF vector export (where the equation is real vector paths); a gradient or material rasterizes there." },
+    // IT USED TO SAY "Color" HERE TOO, and the user named the same gap for both
+    // widgets in one breath (2026-08-02): "LaTeX should have both stroke and fill
+    // material… what if I wanted to have, let's say, like a glassy version of text
+    // or glassy version of LaTeX". The row is the equation's FILL — the same slot a
+    // shape spends on `fill` — so it now says so, in the shared "Fill Material"
+    // group rather than under generic formatting. The KEY stays `ink` (renaming it
+    // would migrate every document that ever set an equation colour).
+    { key: "ink", label: "Fill", kind: "color", paint: true, category: "fillMaterial", offMeans: "the equation's glyphs are not painted, so nothing of it shows", help: "How the equation's glyphs are painted: a solid color, a linear/radial gradient, or a MATERIAL (brass, glass, comic halftone…). A solid color also applies in SVG/PDF vector export (where the equation is real vector paths); a gradient or material rasterizes there." },
+    // THE GLYPH OUTLINE — around the LETTERFORMS, which is emphatically not the
+    // `stroke` row below it. That one frames the BOX; this one traces the
+    // mathematics. Both exist on this widget at once, which is exactly why the
+    // glyph pair could not reuse the `stroke`/`strokeWidth` keys and is named
+    // `glyphStroke` here and on plugins/plaintext.js alike (one word, one concept,
+    // two widgets). Default OFF, absent-is-legacy — no default is declared, so a
+    // pre-N2 equation has neither key and emits no stroke at all.
+    { key: "glyphStroke", label: "Glyph outline", kind: "color", paint: true, category: "strokeMaterial", help: "The color, gradient or material of an outline traced around the equation's glyphs themselves. Distinct from the Stroke row below, which frames the whole box. Only visible once the outline width is above zero." },
+    { key: "glyphStrokeWidth", label: "Glyph outline width", kind: "number", min: 0, category: "strokeMaterial", help: "Thickness of the outline around the equation's glyphs, in canvas units. Zero (the default) means no outline." },
     // The stroked-BORDER bundle (a framed equation) — no `fill` row: the
     // equation's own glyphs ARE its interior, like an image/pdf page.
     ...bundle("strokedBorder"),
@@ -690,6 +755,22 @@ export const latexPlugin = {
           glyphs: geom.glyphs.map((g) => ({ d: g.d, fill: ink })),
           preserveAspect: s.preserveAspect !== false, // default ON (user directive)
           ...inkFill,
+          // THE GLYPH OUTLINE, CONVERTED INTO viewBox UNITS — the one arithmetic
+          // this widget owes the painter, and the reason it is done HERE.
+          //
+          // An author states the width in CANVAS units, because that is what every
+          // other width row on every widget means and a number that changes meaning
+          // per widget is a trap. But the glyph `d`s are in MathJax viewBox units
+          // and the painter strokes them under the viewBox→box CTM, so a width
+          // handed over raw would be scaled by the fit factor — an outline that
+          // silently thickens as the box grows, which is not what "2 units" says.
+          // This is the ONE place that knows the factor (latexBoxToViewBoxScale
+          // derives it from the same fitBox/stretch split drawLatexVector applies),
+          // so the conversion belongs here rather than being re-derived per backend.
+          glyphStroke: s.glyphStroke ?? null,
+          glyphStrokeWidth: (s.glyphStrokeWidth ?? 0) > 0
+            ? s.glyphStrokeWidth * latexBoxToViewBoxScale(geom.viewBox, c.w, c.h, s.preserveAspect !== false)
+            : 0,
         })
       // The pre-glyph RASTER fallback carries NO shader ink, deliberately. It is
       // the transient state before the async glyph flatten lands (and the cropped

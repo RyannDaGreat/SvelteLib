@@ -51,6 +51,11 @@ import { flattenIR, parseColor, parsePaint, isGradientPaint, isMaterialPaint, op
 import { reportOnce as reportPaintFailureOnce, warnOnce } from "../../core/report.js";
 import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, isConfigurationError } from "../../core/paint_containment.js";
 import { getTextLayout, DEFAULT_TEXT_SIZE, materialShaderForGlyphs } from "./text_layout.js";
+// THE GLYPH-OUTLINE SEAM — real letterform paths for the text GLYPH STROKE, which
+// CanvasKit cannot supply (0.41.1 has no glyph-outline API; see text_layout.js's
+// header for the measurement). The same seam the morph reads, deliberately, so an
+// outline and a morph cannot place a letter differently.
+import { glyphOutlinesReady, textGlyphPathDs } from "../../core/glyph_outlines.js";
 import { skShaderForPaint } from "./gradient.js";
 import { GLASS_SKSL, packGlassUniforms, maxGlassDisplacement, glassOutlinePoints } from "./glass_shader.js";
 import { getMaterial, materialEffect, materialFillEffect, materialUsesShapeSdf, isBackdropMaterial, resolveProxyFill, resolveProxyBackdrop, DEFAULT_PROXY_BACKDROP_TINT, materialSampleReach, materialUnavailableReason } from "./materials.js";
@@ -1043,21 +1048,99 @@ function drawLatexVector(CanvasKit, canvas, cmd, opacity, aa = true) {
   canvas.translate(-viewBox.minX, -viewBox.minY);
   if (cmd.fill) {
     drawLatexShaderInk(CanvasKit, canvas, cmd, opacity, aa);
-    canvas.restore();
-    return;
+  } else {
+    for (const g of glyphs) {
+      const path = CanvasKit.Path.MakeFromSVGString(g.d);
+      if (!path) throw new Error(`paintIR(skia): latexVector glyph "d" failed to parse: ${JSON.stringify(g.d).slice(0, 64)}`);
+      const rgba = parseColor(g.fill);
+      const p = new CanvasKit.Paint();
+      p.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
+      p.setStyle(CanvasKit.PaintStyle.Fill);
+      p.setAntiAlias(aa);
+      canvas.drawPath(path, p);
+      p.delete(); path.delete();
+    }
   }
+  // THE GLYPH OUTLINE, ON TOP OF THE FILL — the same order shapes use
+  // (drawShapeOp fills then strokes) and the same order the SVG/PDF exports
+  // write, so a half-transparent outline overlaps its own fill identically in
+  // every backend. Drawn for BOTH fill branches above, which is why the early
+  // `return` became an `else`: an outline must not depend on whether the ink
+  // happened to be a shader.
+  if (cmd.glyphStroke && cmd.glyphStrokeWidth > 0)
+    drawLatexGlyphStroke(CanvasKit, canvas, cmd, opacity, aa);
+  canvas.restore();
+}
+
+/**
+ * Command (draws the equation's GLYPH OUTLINE). Called with the canvas ALREADY in
+ * viewBox space, exactly like drawLatexShaderInk — so `cmd.glyphStrokeWidth` is in
+ * viewBox units (plugins/latex.js converted it there, at the one site that knows
+ * the box→viewBox factor) and every glyph `d` is used verbatim.
+ *
+ * ── THE UNION IS STROKED, NOT EACH GLYPH ─────────────────────────────────────
+ * Same union path drawLatexShaderInk builds, and the reason for a union is even
+ * sharper for a stroke than for a fill: a gradient or material outline must run
+ * ONE continuous ramp around the whole equation rather than restarting per letter.
+ * Stroking the union also traces the counters — the hole in an `a`, the bowl of a
+ * `0` — because those contours are IN the path; that is what an outlined glyph is
+ * supposed to look like, and it is what stroking each `d` separately would also
+ * give, so the union costs nothing here and buys the shared shader frame.
+ *
+ * A MATERIAL outline reuses materialShaderForGlyphs — the same builder the fill
+ * uses — so the material's frame is the ink box either way, and its
+ * backdrop/sampler/pattern refusals apply to an outline without being restated.
+ */
+function drawLatexGlyphStroke(CanvasKit, canvas, cmd, opacity, aa) {
+  const union = latexGlyphUnionPath(CanvasKit, cmd.glyphs);
+  const b = union.getBounds();
+  const bounds = { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] };
+  const p = new CanvasKit.Paint();
+  p.setStyle(CanvasKit.PaintStyle.Stroke);
+  p.setStrokeWidth(cmd.glyphStrokeWidth);
+  p.setAntiAlias(aa);
+  // A PLAIN COLOUR takes a colour; a SHADER (gradient or material) takes a shader,
+  // the identical split drawLatexShaderInk makes for the fill. Nothing else about
+  // the stroke differs between the two, which is the point of routing both through
+  // one Paint.
+  let shader = null;
+  if (isGradientPaint(cmd.glyphStroke)) {
+    shader = isMaterialPaint(cmd.glyphStroke)
+      ? materialShaderForGlyphs(CanvasKit, cmd.glyphStroke, bounds)
+      : skShaderForPaint(CanvasKit, parsePaint(cmd.glyphStroke), bounds, opacity);
+    p.setShader(shader);
+    if (isMaterialPaint(cmd.glyphStroke)) p.setAlphaf(opacity);
+  } else {
+    const rgba = parseColor(cmd.glyphStroke);
+    p.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
+  }
+  canvas.drawPath(union, p);
+  p.delete(); shader?.delete(); union.delete();
+}
+
+/**
+ * Command (allocates; CALLER deletes). Every glyph `d` appended into ONE SkPath in
+ * viewBox space. Shared by the shader FILL (which clips to it) and the OUTLINE
+ * (which strokes it) so the two cannot disagree about what the equation's ink is.
+ *
+ * `addPath` is a PathBuilder method, NOT a Path one (Path exposes
+ * makeCombined/MakeFromOp instead), which is why this goes through the same
+ * builder→detach idiom shapeOpLocalPath uses. Appending contours rather than
+ * boolean-unioning them is both cheaper and more correct: the glyphs do not
+ * overlap, and a real Union op would DISSOLVE the counters (an `a`'s bowl) that
+ * nonzero winding is keeping as holes.
+ */
+function latexGlyphUnionPath(CanvasKit, glyphs) {
+  const builder = new CanvasKit.PathBuilder();
   for (const g of glyphs) {
     const path = CanvasKit.Path.MakeFromSVGString(g.d);
     if (!path) throw new Error(`paintIR(skia): latexVector glyph "d" failed to parse: ${JSON.stringify(g.d).slice(0, 64)}`);
-    const rgba = parseColor(g.fill);
-    const p = new CanvasKit.Paint();
-    p.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
-    p.setStyle(CanvasKit.PaintStyle.Fill);
-    p.setAntiAlias(aa);
-    canvas.drawPath(path, p);
-    p.delete(); path.delete();
+    builder.addPath(path);
+    path.delete();
   }
-  canvas.restore();
+  const union = builder.detach();
+  builder.delete();
+  return union;
 }
 
 /**
@@ -1088,21 +1171,9 @@ function drawLatexVector(CanvasKit, canvas, cmd, opacity, aa = true) {
  * wrong or silently dropped.
  */
 function drawLatexShaderInk(CanvasKit, canvas, cmd, opacity, aa) {
-  // ONE PathBuilder, every glyph's contours appended — `addPath` is a PathBuilder
-  // method, NOT a Path one (Path exposes makeCombined/MakeFromOp instead), which
-  // is why this goes through the same builder→detach idiom shapeOpLocalPath uses.
-  // Appending contours rather than boolean-unioning them is both cheaper and more
-  // correct here: the glyphs do not overlap, and a real Union op would DISSOLVE the
-  // counters (an `a`'s bowl) that nonzero winding is keeping as holes.
-  const builder = new CanvasKit.PathBuilder();
-  for (const g of cmd.glyphs) {
-    const path = CanvasKit.Path.MakeFromSVGString(g.d);
-    if (!path) throw new Error(`paintIR(skia): latexVector glyph "d" failed to parse: ${JSON.stringify(g.d).slice(0, 64)}`);
-    builder.addPath(path);
-    path.delete();
-  }
-  const union = builder.detach();
-  builder.delete();
+  // ONE SkPath holding every glyph's contours — see latexGlyphUnionPath, which the
+  // OUTLINE shares so a stroke can never trace a different shape than the fill.
+  const union = latexGlyphUnionPath(CanvasKit, cmd.glyphs);
   const b = union.getBounds(); // [l, t, r, b] in viewBox space — the ink box the paint frames on
   const bounds = { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] };
   const shader = isMaterialPaint(cmd.fill)
@@ -4390,4 +4461,118 @@ function drawTextOp(CanvasKit, canvas, cmd, opacity, fontCollection, aa = true, 
   // which has no per-draw coverage flag — so solid, un-outlined text keeps its
   // internal AA regardless; the toggle bites on shapes, outlines, and vector text.
   layout.draw(canvas, cmd.x, cmd.y, aa);
+  // THE GLYPH OUTLINE, ON TOP OF THE FILL, matching shapes and matching the
+  // equation. Absent on any op that did not ask for one, so ordinary text draws
+  // exactly the single layout.draw it always did.
+  if (cmd.glyphStroke && cmd.glyphStrokeWidth > 0)
+    drawTextGlyphStroke(CanvasKit, canvas, cmd, opacity, aa);
+}
+
+/**
+ * Command (draws a text op's GLYPH OUTLINE in local space). The letterforms are
+ * STROKED as real outlines, which is what makes a gradient or material outline
+ * possible at all.
+ *
+ * ── WHY NOT drawGlyphs, WHICH IS WHAT THE FILL USES ──────────────────────────
+ * The shader FILL masks through `drawGlyphs` coverage because CanvasKit 0.41.1
+ * gives no glyph-outline API (text_layout.js's header documents the measurement).
+ * A fill can do that: coverage IS the filled region. A STROKE cannot — there is no
+ * "stroke this coverage mask" operation, and stroking with a Paint set to
+ * PaintStyle.Stroke under drawGlyphs strokes the glyph's own contour only for a
+ * plain colour, with no way to hang a shader on the traced outline.
+ *
+ * So the outline comes from the SAME fontkit seam the morph uses
+ * (core/glyph_outlines.textGlyphPathDs) — real letterform paths, positioned by the
+ * SAME richTextDraws layout, which is the whole reason that function was split out
+ * of textMorphPayload. Two layout engines are in this file's history already
+ * (plaintextReparametrizeToBox documents the drift they cause); this deliberately
+ * does not add a third.
+ *
+ * ── THE ONE HONEST CAVEAT, STATED RATHER THAN HIDDEN ─────────────────────────
+ * The FILL is shaped by CanvasKit/HarfBuzz and this OUTLINE by richTextDraws over
+ * the injected ink measure. They are the same two engines that already disagree
+ * slightly about height (plugins/plaintext.js's reparametrize docblock measures
+ * it), so on complex shaping — ligatures, kerning pairs, CJK, emoji — an outline
+ * can sit a fraction off its fill. It is correct for the Latin text the feature was
+ * asked for, and it is the SAME seam the morph has always used, so it cannot drift
+ * from the morph. Making it exact requires the two engines to agree, which is the
+ * standing prerequisite already written down for the ink-bounds work.
+ *
+ * NOT READY ⇒ NOT DRAWN, LOUDLY ONCE. Bare node installs the seam
+ * (node_render.ensureTextSeams), so the CLI strokes text fine; a host that somehow
+ * has no source reports through glyphOutlinesFor's own reportOnce rather than
+ * silently dropping the outline.
+ */
+function drawTextGlyphStroke(CanvasKit, canvas, cmd, opacity, aa) {
+  if (!glyphOutlinesReady()) return; // glyphOutlinesFor already reports the missing seam once
+  const { ds } = textGlyphPathDs(textStateForOutlines(cmd));
+  if (ds.length === 0) return; // nothing with ink (all spaces) — not a failure
+  const builder = new CanvasKit.PathBuilder();
+  for (const d of ds) {
+    const path = CanvasKit.Path.MakeFromSVGString(d);
+    if (!path) throw new Error(`paintIR(skia): text glyph outline "d" failed to parse: ${JSON.stringify(d).slice(0, 64)}`);
+    builder.addPath(path);
+    path.delete();
+  }
+  const union = builder.detach();
+  builder.delete();
+  const b = union.getBounds();
+  const bounds = { x: cmd.x + b[0], y: cmd.y + b[1], w: b[2] - b[0], h: b[3] - b[1] };
+  const p = new CanvasKit.Paint();
+  p.setStyle(CanvasKit.PaintStyle.Stroke);
+  p.setStrokeWidth(cmd.glyphStrokeWidth);
+  p.setAntiAlias(aa);
+  // The identical plain-vs-shader split the equation's outline and both fills make.
+  let shader = null;
+  if (isGradientPaint(cmd.glyphStroke)) {
+    shader = isMaterialPaint(cmd.glyphStroke)
+      ? materialShaderForGlyphs(CanvasKit, cmd.glyphStroke, bounds)
+      : skShaderForPaint(CanvasKit, parsePaint(cmd.glyphStroke), bounds, opacity);
+    p.setShader(shader);
+    if (isMaterialPaint(cmd.glyphStroke)) p.setAlphaf(opacity);
+  } else {
+    const rgba = parseColor(cmd.glyphStroke);
+    p.setColor(CanvasKit.Color4f(rgba[0], rgba[1], rgba[2], rgba[3] * opacity));
+  }
+  // The outline paths are BOX-LOCAL (the layout's own frame); the op draws at
+  // cmd.x/cmd.y, so translate rather than baking the origin into every path.
+  canvas.save();
+  canvas.translate(cmd.x, cmd.y);
+  canvas.drawPath(union, p);
+  canvas.restore();
+  p.delete(); shader?.delete(); union.delete();
+}
+
+/**
+ * Pure function. A text OP → the state bag core/glyph_outlines.textGlyphPathDs
+ * wants. The op carries its style at the top level for a legacy single-run op and
+ * inside `rich.runs[0]` for a rich one; the outline seam takes one flat run, so
+ * this picks whichever the op actually has.
+ *
+ * A RICH op's outline therefore uses its FIRST run's face and size for the whole
+ * string. That is a real bound and it is stated here rather than discovered: the
+ * glyph-outline seam is single-run by construction (it is the same shape
+ * textMorphPayload feeds it), so mixed-run outlining needs the seam to grow a
+ * per-run form first. The widget this feature was asked for — plugins/plaintext.js
+ * — is single-string by definition, so it is exact there.
+ *
+ * @example textStateForOutlines({text: "hi", size: 36, font: "inter", boxW: 200, boxH: 60}).w // 200
+ * @example textStateForOutlines({text: "hi", size: 36, boxW: Infinity, boxH: Infinity}).w // 0 (an unbounded box means "no wrap" to the layout)
+ * @example textStateForOutlines({text: "x", rich: {runs: [{text: "x", size: 12, font: "lora"}], paras: [{}]}, size: 36, boxW: 10, boxH: 10}).size // 12
+ */
+function textStateForOutlines(cmd) {
+  const run = cmd.rich?.runs?.[0] ?? cmd;
+  return {
+    text: cmd.rich ? cmd.rich.runs.map((r) => r.text ?? "").join("") : cmd.text,
+    size: run.size ?? cmd.size,
+    font: run.font ?? cmd.font,
+    bold: !!(run.bold ?? cmd.bold),
+    // Infinity means "no box" to the layout, which spells it as 0 — the same
+    // translation plugins/plaintext.js makes in the other direction at emit().
+    w: Number.isFinite(cmd.boxW) ? cmd.boxW : 0,
+    h: Number.isFinite(cmd.boxH) ? cmd.boxH : 0,
+    align: cmd.boxStyle?.align ?? "left",
+    valign: cmd.boxStyle?.valign ?? "top",
+    opacity: 1, // the caller folds the op's opacity into the Paint, not the layout
+  };
 }

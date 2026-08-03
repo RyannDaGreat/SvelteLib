@@ -1676,10 +1676,21 @@ export function polygon({ points, fill, opacity = 1 }) {
  * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000"}).size // 36
  * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000"}).font // "system"
  * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000", font: "inter"}).font // "inter"
+ * THE GLYPH STROKE (`glyphStroke` + `glyphStrokeWidth`) is an outline traced
+ * around the LETTERFORMS — the thing a text box could not do before N2. It is
+ * OPTIONAL and SPREAD, so an op that does not carry one has neither key and is
+ * byte-identical to every text op written before it existed. Distinct from a run's
+ * per-run `outlineWidth` (the rich widget's own plain-colour outline, drawn from
+ * the shaped-glyph coverage): this one is a widget-level PAINT — solid, gradient
+ * or material — stroked on the real glyph OUTLINES, which is why it needs the
+ * fontkit outline seam and the per-run one does not.
+ *
  * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000", rich: {runs: [{text: "Hi"}], paras: [{}]}, boxW: 200}).boxW // 200
  * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000"}).rich // null
+ * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000"}).glyphStrokeWidth // undefined (absent unless asked for)
+ * @example text({text: "Hi", x: 0, y: 0, size: 36, color: "#000", glyphStroke: "#f00", glyphStrokeWidth: 2}).glyphStrokeWidth // 2
  */
-export function text({ text: str, x, y, size, color, bold = false, opacity = 1, font = DEFAULT_FONT, rich = null, boxW = Infinity, boxH = Infinity, boxStyle = null, sizeScreenSpace = false }) {
+export function text({ text: str, x, y, size, color, bold = false, opacity = 1, font = DEFAULT_FONT, rich = null, boxW = Infinity, boxH = Infinity, boxStyle = null, sizeScreenSpace = false, glyphStroke = null, glyphStrokeWidth = 0 }) {
   if (typeof str !== "string") throw new Error(`text: "text" must be a string, got ${JSON.stringify(str)}`);
   if (typeof font !== "string") throw new Error(`text: "font" must be a string id, got ${JSON.stringify(font)}`);
   requireFinite("text", { x, y, size, opacity });
@@ -1693,6 +1704,14 @@ export function text({ text: str, x, y, size, color, bold = false, opacity = 1, 
     // absent-unless-on invariant normalizeStrokeSpace keeps for strokes, and for
     // the same reason: an op that does not opt in must stay byte-identical.
     ...(sizeScreenSpace ? { sizeScreenSpace: true } : {}),
+    // THE GLYPH STROKE, spread for exactly that invariant. The gate is the WIDTH,
+    // not the paint: a zero-width outline is no outline whatever colour it is
+    // named, which is the same gate `cmd.stroke && cmd.strokeWidth > 0` applies to
+    // every shape. The paint runs through parsePaint here so the painter and the
+    // exporters receive the SAME normalized paint shape they get for a fill.
+    ...(glyphStroke && glyphStrokeWidth > 0
+      ? { glyphStroke: parsePaint(glyphStroke), glyphStrokeWidth }
+      : {}),
   };
 }
 
@@ -1972,7 +1991,7 @@ export function videoV5Frame({ ref, x, y, w, h, seekTime, wrap = "clamp", opacit
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}}).preserveAspect // true
  * @example latexVector({ref: "r", x: 0, y: 0, w: 4, h: 2, glyphs: [], viewBox: {minX: 0, minY: 0, w: 1, h: 1}, preserveAspect: false}).preserveAspect // false
  */
-export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, preserveAspect = true, fill = null }) {
+export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx = 0, sy = 0, sw = 1, sh = 1, preserveAspect = true, fill = null, glyphStroke = null, glyphStrokeWidth = 0 }) {
   if (typeof ref !== "string") throw new Error(`latexVector: "ref" must be a string, got ${JSON.stringify(ref)}`);
   requireFinite("latexVector", { x, y, w, h, opacity, sx, sy, sw, sh });
   if (!Array.isArray(glyphs)) throw new Error(`latexVector: "glyphs" must be an array, got ${JSON.stringify(glyphs)}`);
@@ -2003,6 +2022,16 @@ export function latexVector({ ref, x, y, w, h, glyphs, viewBox, opacity = 1, sx 
     // it is ABSENT unless set — an op with a plain ink is byte-identical to
     // before, which is the invariant the whole absent-is-legacy story rests on.
     ...(fill ? { fill } : {}),
+    // THE GLYPH OUTLINE — the equation's letterforms STROKED, the twin of the text
+    // op's field of the same name (and the same absent-unless-on spread). The
+    // WIDTH is the gate, matching every other stroke in the IR. It is in viewBox
+    // units like the glyph `d`s it strokes, NOT in box units: drawLatexShaderInk
+    // and drawLatexVector both paint under the viewBox→box CTM, so a width stated
+    // in box units would be silently rescaled by the fit. plugins/latex.js converts
+    // at the ONE place that knows the fit factor.
+    ...(glyphStroke && glyphStrokeWidth > 0
+      ? { glyphStroke: parsePaint(glyphStroke), glyphStrokeWidth }
+      : {}),
   };
 }
 
