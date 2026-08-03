@@ -102,20 +102,67 @@ import { rasterFitFactor } from "../../core/clip.js";
 // a browser (no `document`/dynamic Worker support) still throws, loudly, at
 // CALL time, which is correct (this module is browser/CLI-facing, like
 // image_registry.js/video_registry.js — see the module header).
+// ── WHY THE **LEGACY** BUILD, MAIN *AND* WORKER (2026-08-02, WORKSTREAM AX) ──
+// This module used to import the MODERN build (`pdfjs-dist` bare specifier +
+// `pdfjs-dist/build/pdf.worker.mjs?url`). That shipped a REAL crash to real
+// users, reported from the live site's console:
+//   AssetThumb: thumbnail render failed for "…dnd_character_sheet.pdf":
+//   TypeError: i(...).getOrInsertComputed is not a function
+//     at VA.ph → VA.getOptionalContentConfig → og.render
+// pdfjs-dist 5.7's MODERN build calls `Map.prototype.getOrInsertComputed` — the
+// TC39 upsert proposal — as a NATIVE builtin, with no polyfill (11 call sites in
+// build/pdf.mjs, 8 in build/pdf.worker.mjs). Chrome only shipped it very
+// recently, so on any ordinary slightly-older Chrome EVERY PDF page render
+// throws, which means every PDF asset thumbnail and every PDF widget raster
+// fails. The gate's own Chrome happens to HAVE the builtin, which is exactly why
+// no probe caught it: the bug is invisible on the machine that tests it.
+//
+// The LEGACY build is pdf.js's own supported answer for browsers it no longer
+// targets natively: it is the same source transpiled with core-js polyfills
+// bundled in, and it POLYFILLS THIS EXACT METHOD (legacy/build/pdf.mjs installs
+// both `Map.prototype.getOrInsertComputed` and the WeakMap twin before use).
+// So the fix is not ours to hand-write — it is to consume the variant upstream
+// publishes for this situation.
+//
+// CHOSEN OVER A HAND-ROLLED POLYFILL, deliberately. A ~4-line
+// `Map.prototype.getOrInsertComputed` shim would fix TODAY's crash and nothing
+// else: the modern build is compiled for a browser baseline, not just this one
+// method, so the next brand-new builtin pdf.js adopts breaks us again the same
+// silent way — and we would only learn from another user's console. Legacy moves
+// the whole baseline question upstream, permanently. It ALSO matches the
+// precedent already in this repo: gpu/pdf_page_vector.js has loaded
+// `pdfjs-dist/legacy/build/pdf.mjs` since PDF P1, so after this change BOTH pdfjs
+// consumers are on ONE build variant instead of two.
+//
+// MEASURED COST (node_modules, unminified, 2026-08-02): main 817 KB → 1007 KB
+// (+23%), worker 2161 KB → 2333 KB (+8%). That is bytes NO ONE downloads until
+// they actually open a PDF — this module is reached only through a lazy
+// `await import()` (see the note above) and lands in its own chunk. Trading
+// ~360 KB on a PDF-only lazy chunk for "PDFs render at all" is not a close call.
+//
+// MAIN AND WORKER MUST COME FROM THE SAME VARIANT. pdf.js's main thread and its
+// worker exchange an internal, version- AND build-coupled message protocol;
+// mixing a modern main with a legacy worker (or vice versa) is the classic
+// pdf.js misconfiguration, and it would ALSO reintroduce this very bug through
+// the back door — the worker build has its own 8 getOrInsertComputed call sites,
+// so a modern worker keeps throwing no matter what the main thread runs. Both
+// specifiers below therefore say `legacy/` and must be changed together.
 let pdfjsLibPromise = null;
-/** Command (near-pure: memoized). Dynamically imports pdfjs-dist and wires
- * its worker script (Vite's `?url` import, done INSIDE this dynamic import
- * so bare node never parses it) exactly once per process. */
+/** Command (near-pure: memoized). Dynamically imports the LEGACY pdfjs-dist
+ * build and wires its MATCHING legacy worker script (Vite's `?url` import, done
+ * INSIDE this dynamic import so bare node never parses it) exactly once per
+ * process. See the block comment above for why legacy, both halves. */
 function loadPdfjs() {
   if (!pdfjsLibPromise) {
     pdfjsLibPromise = (async () => {
-      const pdfjsLib = await import("pdfjs-dist");
+      const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
       // Vite's `?url` import (the fontLoader.js/pdfFonts.js precedent) gives
       // the worker script a served URL without bundling it into this
       // module's own chunk — pdfjs-dist's pipeline parses/decodes on a
       // Worker. Nested inside this dynamic import so it is NEVER evaluated
-      // by a bare-node static import graph.
-      const { default: pdfWorkerUrl } = await import("pdfjs-dist/build/pdf.worker.mjs?url");
+      // by a bare-node static import graph. LEGACY, to match the main build
+      // immediately above — see the block comment.
+      const { default: pdfWorkerUrl } = await import("pdfjs-dist/legacy/build/pdf.worker.mjs?url");
       pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
       return pdfjsLib;
     })();

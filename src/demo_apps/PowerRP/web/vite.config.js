@@ -154,7 +154,16 @@ export default defineConfig({
   // listed EXPLICITLY because a deep subpath is not covered by its package entry.
   optimizeDeps: {
     include: [
-      "pdfjs-dist", "mathjax", "mathlive", "mermaid", "mp4-muxer", "monaco-editor/esm/vs/editor/editor.api",
+      // BOTH pdfjs consumers (gpu/pdf_page_raster.js, gpu/pdf_page_vector.js) import
+      // the LEGACY build's deep subpath, not the package entry — see the block comment
+      // in pdf_page_raster.js on why legacy (a modern-build crash on
+      // Map.prototype.getOrInsertComputed, WORKSTREAM AX). A deep subpath is NOT
+      // covered by its package entry (the GLTFLoader lesson below), so listing bare
+      // "pdfjs-dist" here would pre-bundle a copy nothing imports while leaving the
+      // one we DO import to be discovered mid-session — exactly the re-optimize
+      // page-reload flake this list exists to prevent.
+      "pdfjs-dist/legacy/build/pdf.mjs",
+      "mathjax", "mathlive", "mermaid", "mp4-muxer", "monaco-editor/esm/vs/editor/editor.api",
       "three", "three/addons/loaders/GLTFLoader.js", "@sparkjsdev/spark",
     ],
   },
