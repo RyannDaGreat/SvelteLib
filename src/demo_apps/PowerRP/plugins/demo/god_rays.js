@@ -327,6 +327,91 @@ const PRESETS = [
       threshold: 0.9, maskSoftness: 0.06, maskStrength: 1, dither: 1, tint: "#d9e6ff",
     },
   },
+  // ── RUN 7: THE STRENGTH RUN — every entry stronger than Cinematic Beams, the
+  // loudest of runs 1-6 (G 0.380). User's own recipe, verbatim: "when we turn mask
+  // strength down the beams get stronger, when we turn up exposure the beams get
+  // stronger, when we turn on up weight or up decay or something like that they get
+  // stronger" — every row below leans on at least one of those four levers, several
+  // combine two, and none leans on ALL four at once (that combination is where the
+  // headroom below actually runs out — see the ceiling note).
+  //
+  // THE CEILING IS TIGHTER THAN THE SHADER'S OWN CLAMP, AND MEASURED, NOT GUESSED.
+  // tests/god_rays_presets_test.js check (2) only requires peak gain G < 1 (flat
+  // white by construction). But G bounds the RAY term alone, and rays composite
+  // ADDITIVELY onto a scene that is already carrying a near-white sun disc — so
+  // check (4)'s real budget (<1% of the frame newly blown to flat white on the
+  // occlusion fixture) bites at G far below the shader's clamp. Measured by
+  // bisection on this fixture, holding maskStrength=1, density=0.95, decay=0.985:
+  // G=0.42 blows 0.34% (clean), G=0.66 blows 3.98%, G=0.94 blows 17-41% depending
+  // on decay/threshold — so the walkable range above Cinematic Beams' G=0.380 is
+  // roughly G 0.31-0.50, not the G<1 the gain law alone would suggest. Every row
+  // below sits in that measured-clean band; peak gain is cited per row so the next
+  // person extending this run has the number instead of having to re-bisect it.
+  //
+  // maskStrength BELOW 1 is used sparingly and never far off it. Pulling it much
+  // past ~0.7 does not read as "punchier beams" on this fixture — it reads as the
+  // WHOLE SKY washing toward flat white, because letting mid-tone sky pixels
+  // scatter is exactly Mitchell's raw-backdrop mode (this file's mask-decision
+  // header), and mid-tone coverage is a much larger area than the sun disc alone.
+  // That is a real, measured finding (checked at maskStrength 0.5-0.9 on this
+  // fixture, all blowing 5-40% before check (4)'s budget), not a stylistic
+  // preference — which is why every row in this run keeps maskStrength >= 0.75.
+  {
+    name: "Punchier Beams",
+    description: "Cinematic Beams with the volume up: IDENTICAL samples/density/decay/threshold/softness — only weight and exposure raised together, so the whole column reads brighter without the shape of the beam changing at all — the direct answer to 'the same look, just stronger.' Peak gain 0.420.",
+    props: {
+      samples: 96, density: 0.95, decay: 0.982, weight: 0.0957, exposure: 0.0957,
+      threshold: 0.62, maskSoftness: 0.16, maskStrength: 1, dither: 1, tint: "#ffffff",
+    },
+  },
+  {
+    name: "Radiant Overdrive",
+    description: "Leans on decay alone: the slowest falloff in the library outside Stage Haze Beam, so the shafts carry almost the full frame at a comparatively modest weight/exposure — reach over raw brightness, and the gentlest-looking row in this run despite outranking every run-1-through-6 preset. Peak gain 0.344.",
+    props: {
+      samples: 128, density: 1, decay: 0.994, weight: 0.062, exposure: 0.062,
+      threshold: 0.62, maskSoftness: 0.16, maskStrength: 1, dither: 1, tint: "#ffffff",
+    },
+  },
+  {
+    name: "Blazing Sunburst",
+    description: "The mask lever, used within its clean range: maskStrength pulled to 0.75 so the sky right around the disc starts to contribute, not just the disc itself, widening the glow before weight/exposure do the rest. Peak gain 0.374.",
+    props: {
+      samples: 128, density: 0.95, decay: 0.985, weight: 0.081, exposure: 0.081,
+      threshold: 0.62, maskSoftness: 0.16, maskStrength: 0.75, dither: 1, tint: "#ffffff",
+    },
+  },
+  {
+    name: "Solar Forge",
+    description: "A hot, hard-edged column rather than a soft wash: the tightest threshold/softness pair in this run keys only the disc itself, so the raised weight/exposure buys intensity without spreading the glow — the most concentrated beam in the library. Peak gain 0.490, the highest of the run's single-lever (maskStrength=1) rows.",
+    props: {
+      samples: 128, density: 0.85, decay: 0.978, weight: 0.107, exposure: 0.107,
+      threshold: 0.66, maskSoftness: 0.1, maskStrength: 1, dither: 1, tint: "#ffffff",
+    },
+  },
+  {
+    name: "Cathedral Inferno",
+    description: "The longest march in the whole library (decay 0.996) at a restrained weight/exposure: a vast, soft column that reaches the frame edge rather than a bright core — cathedral scale traded for searchlight intensity. Peak gain 0.315, the lowest of this run and the safest one to push further.",
+    props: {
+      samples: 128, density: 1, decay: 0.996, weight: 0.056, exposure: 0.056,
+      threshold: 0.62, maskSoftness: 0.16, maskStrength: 1, dither: 1, tint: "#ffffff",
+    },
+  },
+  {
+    name: "Searchlight Prime",
+    description: "The brightest clean row in the library: weight/exposure pushed close to the measured blowout ceiling with every other knob left at Cinematic Beams' own values, so this is the honest answer to 'as strong as this shape of beam can go before it starts eating the sky.' Peak gain 0.480, measured 0.79% blown on the occlusion fixture — clean, with margin below the 1% budget rather than riding it.",
+    props: {
+      samples: 128, density: 0.95, decay: 0.985, weight: 0.0917, exposure: 0.0917,
+      threshold: 0.62, maskSoftness: 0.16, maskStrength: 1, dither: 1, tint: "#ffffff",
+    },
+  },
+  {
+    name: "Total Eclipse Beams",
+    description: "Two levers at once, each held back so their combination stays clean: decay reaches further than Cinematic Beams, weight/exposure sit above it, and maskStrength eases to 0.9 to widen the source slightly — the full-cathedral/searchlight top of this run, using three of the user's four strength levers together rather than maxing any single one. Peak gain 0.371.",
+    props: {
+      samples: 128, density: 1, decay: 0.992, weight: 0.068, exposure: 0.068,
+      threshold: 0.6, maskSoftness: 0.16, maskStrength: 0.9, dither: 1, tint: "#ffffff",
+    },
+  },
 ];
 
 export const godRaysPlugin = {
