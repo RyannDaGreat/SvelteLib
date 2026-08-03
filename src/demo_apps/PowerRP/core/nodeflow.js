@@ -790,3 +790,109 @@ export function portAt(plugin, state, lx, ly, tol = 0) {
   }
   return best;
 }
+
+/**
+ * The node card's corner radius, in LOCAL units — the ONE number the card's
+ * painted silhouette and its rim projection both read.
+ *
+ * It is declared HERE rather than in core/node_chrome.js, which is where the rest
+ * of the card's look lives, because core/node_chrome.js imports render_gpu/ir.js
+ * (it builds display-list ops) and the geometry below must stay importable by
+ * anything that reasons about a node's SHAPE without wanting a painter.
+ * node_chrome re-exports it as NODE_RADIUS, so there is still one name at the
+ * place a plugin author looks.
+ */
+export const NODE_CORNER_R = 10;
+
+/**
+ * Pure function. The closest point ON a node card's PAINTED RIM to a LOCAL query —
+ * the rounded rectangle every node widget draws, arcs and all.
+ *
+ * ── WHY THIS EXISTS, AND WHAT IT REPLACES ───────────────────────────────────
+ * Every node plugin used to answer `closestAnchor` with
+ * `{x: clamp(0, w, lx), y: clamp(0, h, ly)}`. That reads like "project onto the
+ * card" and is NOT one: a query already INSIDE the box is its own answer, so the
+ * `closest_to_rim` equation aimed at an overlapping node landed in the node's
+ * middle and an arrow bound to it stopped in empty space inside the card. It is
+ * exactly the defect tests/anchor_ink_test.js section 7 states as a law ("a rim is
+ * a projection, not a clamp"), which is what caught all 26 node widgets at once.
+ *
+ * A clamp is also wrong at the CORNERS in the other direction: the card is drawn
+ * with NODE_CORNER_R arcs, so the square corner a clamp returns is a point the
+ * card does not paint — the same Round 12 rounded-rect bug plugins/rect.js fixed
+ * for itself and the ink rule then generalised.
+ *
+ * ── WHY THE BEADS ARE NOT PART OF THE RIM ───────────────────────────────────
+ * A bead straddles the card edge and so pokes outside this rectangle (that halo
+ * IS declared — see nodeInkBounds). It is deliberately not part of the rim map:
+ * an anchor is where you ATTACH something, and attaching an arrow to a socket
+ * would collide with the wire that socket exists to carry. The rim is the card.
+ *
+ * @param {object} state - the folded item state (w/h size the card)
+ * @param {number} lx - LOCAL x of the query
+ * @param {number} ly - LOCAL y of the query
+ * @returns {{x: number, y: number}} the LOCAL rim point
+ *
+ * @example // an INTERIOR query is projected OUT to the nearest edge, never returned as-is
+ * @example nodeCardRim({w: 200, h: 120}, 100, 60) // {x: 100, y: 0}
+ * @example // a query off the left edge lands on that edge at its own height
+ * @example nodeCardRim({w: 200, h: 120}, -50, 70) // {x: 0, y: 70}
+ * @example // and a diagonal query lands on the CORNER ARC, not on the square corner
+ * @example nodeCardRim({w: 200, h: 120}, 300, -300).x < 200 // true
+ */
+export function nodeCardRim(state, lx, ly) {
+  const w = state?.w ?? 0, h = state?.h ?? 0;
+  const rad = Math.max(0, Math.min(NODE_CORNER_R, Math.min(w, h) / 2));
+  const ax = Math.max(rad, Math.min(lx, w - rad));
+  const ay = Math.max(rad, Math.min(ly, h - rad));
+  const dx = lx - ax, dy = ly - ay;
+  const d = Math.hypot(dx, dy);
+  if (d > 0) return { x: ax + (rad * dx) / d, y: ay + (rad * dy) / d };
+  // Inside the arc-centre box: project to the nearest STRAIGHT edge. This is the
+  // branch a clamp never had, and it is the whole difference.
+  const dl = lx, dr = w - lx, dt = ly, db = h - ly;
+  const m = Math.min(dl, dr, dt, db);
+  if (m === dl) return { x: 0, y: ly };
+  if (m === dr) return { x: w, y: ly };
+  if (m === dt) return { x: lx, y: 0 };
+  return { x: lx, y: h };
+}
+
+/**
+ * Pure function. A node widget's INK rect (the BOUNDS protocol, core/registry.js):
+ * its card PLUS the half-bead halo its ports paint outside the card's edges.
+ *
+ * A bead sits ON the edge — half in, half out (portLayout's stated geometry, the
+ * Audulus look that also makes a slightly-off grab land). So a node's ink is
+ * genuinely WIDER than its box by PORT_BEAD_R on each side that carries ports, and
+ * the default `{0, 0, w, h}` a bbox widget gets is a rect that CROPS the picture.
+ * The four consequences are the ones the registry docblock lists for plaintext's
+ * overflow: culled early at the edge of the view, missed by band select, cropped
+ * out of a copy/export capture, and — because hit testing takes the union of this
+ * and the property box — a bead you can see and cannot press.
+ *
+ * The halo is applied only on sides that HAVE a bead, so a node with no inputs is
+ * not padded on the left. The vertical extent is the card's: a bead's own vertical
+ * extent is always inside it (PORT_TOP_INSET clears the title bar and
+ * minimumNodeHeight reserves a matching bottom margin), and a node squeezed
+ * shorter than that is showing a sizing problem, which the registry docblock says
+ * to see rather than to hide.
+ *
+ * @param {object} plugin - the node's own plugin (for its port declaration)
+ * @param {object} state - the folded item state
+ * @returns {{x: number, y: number, w: number, h: number}} the LOCAL ink rect
+ *
+ * @example // a node with ports on both sides: the card, widened by one bead radius each way
+ * @example nodeInkBounds({ports: () => ({inputs: [{key: "a", type: "number"}], outputs: [{key: "o", type: "number"}]})}, {w: 150, h: 90}) // {x: -6, y: 0, w: 162, h: 90}
+ * @example // an OUTPUT-ONLY node (a source) is not padded on its bare left edge
+ * @example nodeInkBounds({ports: () => ({outputs: [{key: "o", type: "audio"}]})}, {w: 150, h: 90}) // {x: 0, y: 0, w: 156, h: 90}
+ * @example // and a widget with no ports at all is exactly its box
+ * @example nodeInkBounds({}, {w: 150, h: 90}) // {x: 0, y: 0, w: 150, h: 90}
+ */
+export function nodeInkBounds(plugin, state) {
+  const w = state?.w ?? 0, h = state?.h ?? 0;
+  const { inputs, outputs } = declaredPorts(plugin, state ?? {});
+  const left = inputs.length ? PORT_BEAD_R : 0;
+  const right = outputs.length ? PORT_BEAD_R : 0;
+  return { x: -left, y: 0, w: w + left + right, h };
+}

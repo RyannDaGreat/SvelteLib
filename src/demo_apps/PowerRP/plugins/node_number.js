@@ -26,7 +26,7 @@
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
-import { NODE_ITEM_REFS, minimumNodeHeight } from "../core/nodeflow.js";
+import { NODE_ITEM_REFS, minimumNodeHeight, nodeCardRim, nodeInkBounds } from "../core/nodeflow.js";
 import { formatNodeValue, nodeCard, nodeRim, nodeValueText, portBeads } from "../core/node_chrome.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "../core/transform.js";
@@ -106,9 +106,14 @@ export const nodeNumberPlugin = {
   // like a special mode.
   commands: [{ id: "add-node-number", title: "Add Number Node", icon: "mdi:numeric", run: (app) => app.armCrosshairPlacement(nodeNumberPlugin) }],
   cullMargin: effectsCullMargin,
+  // THE BOUNDS PROTOCOL (core/registry.js): the ink is the card PLUS the half of
+  // each port bead that sits outside the card's edge.
+  localBounds: (state) => nodeInkBounds(nodeNumberPlugin, state),
   anchors: standardBBoxAnchors,
+  // The rim is the card's ROUNDED rectangle — a projection, not a clamp; see
+  // core/nodeflow.nodeCardRim for the defect the clamp had.
   closestAnchor(state, wx, wy, world) {
     const local = T.apply(T.invert(world), wx, wy);
-    return { x: Math.max(0, Math.min(state.w ?? 0, local.x)), y: Math.max(0, Math.min(state.h ?? 0, local.y)) };
+    return nodeCardRim(state, local.x, local.y);
   },
 };

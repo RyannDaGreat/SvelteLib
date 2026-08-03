@@ -58,7 +58,7 @@
 import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
-import { NODE_ITEM_REFS, PORT_BEAD_R, minimumNodeHeight, portLayout } from "./nodeflow.js";
+import { NODE_ITEM_REFS, PORT_BEAD_R, minimumNodeHeight, nodeCardRim, nodeInkBounds, portLayout } from "./nodeflow.js";
 import { NODE_HEADER_H, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, portBeads } from "./node_chrome.js";
 import { text } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
@@ -325,10 +325,16 @@ export function audioNodePlugin(spec) {
       run: (app) => app.armCrosshairPlacement(plugin),
     }],
     cullMargin: effectsCullMargin,
+    // THE BOUNDS PROTOCOL (core/registry.js): a node's ink is its card PLUS the
+    // half of each port bead that sits outside the card's edge. Declared for all
+    // 23 modules from the one place their shape is known.
+    localBounds: (state) => nodeInkBounds(plugin, state),
     anchors: standardBBoxAnchors,
+    // The rim is the card's ROUNDED rectangle — a projection, not a clamp. See
+    // core/nodeflow.nodeCardRim for the defect the clamp had.
     closestAnchor(state, wx, wy, world) {
       const local = T.apply(T.invert(world), wx, wy);
-      return { x: Math.max(0, Math.min(state.w ?? 0, local.x)), y: Math.max(0, Math.min(state.h ?? 0, local.y)) };
+      return nodeCardRim(state, local.x, local.y);
     },
   };
   return plugin;

@@ -42,7 +42,7 @@
  */
 
 import { ellipse, rect, text } from "../render_gpu/ir.js";
-import { PORT_BEAD_R, portColor, portLayout } from "./nodeflow.js";
+import { NODE_CORNER_R, PORT_BEAD_R, portColor, portLayout } from "./nodeflow.js";
 
 // ── THE PALETTE (one place; every node widget reads these) ───────────────────
 
@@ -67,7 +67,11 @@ export const NODE_PORT_INK = "#8f97b8";
 
 /** Rim stroke width and corner radius, in LOCAL units. */
 export const NODE_RIM_WIDTH = 1.5;
-export const NODE_RADIUS = 10;
+/** The card's corner radius. Defined in core/nodeflow.js (which owns node GEOMETRY
+ *  and imports no painter) and re-exported here, where a plugin author looks for
+ *  the rest of the card's look — so the painted arc and the rim projection every
+ *  node's `closestAnchor` uses cannot drift into two numbers. */
+export const NODE_RADIUS = NODE_CORNER_R;
 /** The title strip's height — also the top inset before the first port row
  *  (core/nodeflow.PORT_TOP_INSET clears it). */
 export const NODE_HEADER_H = 24;
