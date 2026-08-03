@@ -145,7 +145,11 @@ try {
   // ── 3. DRAG-TO-REORDER, through real pointer events ────────────────────────
   // Drag row 0 past the middle of row 1: it must land at boundary 2 and the deck
   // must come back in the swapped order, in ONE undo unit.
-  const drag = await page.evaluate(async () => {
+  // Long enough to outlast the rows' 0.3s slide-aside (SlideNav's DRAG_SHIFT_MS)
+  // before the tiling is measured — see the overlap block below for why the read
+  // must not land mid-easing.
+  const DRAG_SHIFT_SETTLE_MS = 600;
+  const drag = await page.evaluate(async (DRAG_SHIFT_SETTLE_MS) => {
     const app = window.__powerrp_app;
     app.selectSlideAt(0);
     // LET LAYOUT SETTLE BEFORE MEASURING. The rows are measured with
@@ -202,16 +206,43 @@ try {
     const shifted = [...document.querySelectorAll(".slidenav .slide")]
       .map((r) => getComputedStyle(r).transform)
       .filter((t) => t && t !== "none" && !/matrix\(1, 0, 0, 1, 0, 0\)/.test(t)).length;
+    // ── THE PUSHED ROWS MUST TILE, NOT OVERLAP THE CHIPS ────────────────────
+    // User, 2026-08-02: "when I'm dragging and dropping these different slides,
+    // the ones that move out of the way don't move into quite the right place.
+    // It's mostly good, but it's not quite there… You see how slide 1 intersects
+    // on top of where it says tween? … Is the math off anywhere?" It was: rows
+    // shifted by their own HEIGHT, but a row's SLOT also contains the transition
+    // slice and the flex gaps on either side of it, so every displaced row landed
+    // one slice short and parked on the chip above it. Measured on this rail at
+    // the time: rows 144.31 tall, pitch 165.31 — a 21px shortfall that put row 1
+    // (73→217.31) straight through chip 1 (200.31→213.31).
+    //
+    // ASSERT THE PICTURE, NOT THE NUMBER. What the user reported is an
+    // INTERSECTION, so intersection is what is checked — every mid-drag row box
+    // against every chip box. A pin on "shift === 165.31" would encode this
+    // rail's current row height and break the moment a thumbnail aspect or a
+    // token changed, while still not saying the thing that was wrong.
+    // Wait out the 0.3s CSS slide first: mid-transition the rows are legitimately
+    // between two correct positions, and reading there would measure the easing.
+    await new Promise((r) => setTimeout(r, DRAG_SHIFT_SETTLE_MS));
+    const boxes = (sel) => [...document.querySelectorAll(sel)].map((el) => el.getBoundingClientRect());
+    const overlaps = [];
+    for (const row of boxes(".slidenav .slide:not(.lifted)")) {
+      for (const chip of boxes(".slidenav .tr-chip")) {
+        const over = Math.min(row.bottom, chip.bottom) - Math.max(row.top, chip.top);
+        if (over > 0) overlaps.push({ over: +over.toFixed(2), row: +row.top.toFixed(2), chip: +chip.top.toFixed(2) });
+      }
+    }
     rows[0].dispatchEvent(new PointerEvent("pointerup", { ...opts, clientX: a.left + 10, clientY: b.bottom - 2 }));
     const idsAfter = app.doc.slides.map((s) => s.id);
     app.undo();
     return {
-      idsBefore, idsAfter, railDragging, dropShown, lifted, railCursor, shifted,
+      idsBefore, idsAfter, railDragging, dropShown, lifted, railCursor, shifted, overlaps,
       layoutTopBefore, layoutTopDuring,
       ghost: ghost ? { present: true, text: ghost.textContent.trim(), pointerEvents: getComputedStyle(ghost).pointerEvents, position: getComputedStyle(ghost).position } : { present: false },
       idsUndone: app.doc.slides.map((s) => s.id),
     };
-  });
+  }, DRAG_SHIFT_SETTLE_MS);
   check(drag.railDragging, "the rail did not enter its .dragging state during a row drag");
   check(drag.dropShown >= 1, "no drop indicator was drawn at the boundary under the cursor");
   check(drag.railCursor === "grabbing", `the cursor must be a closed fist while dragging (user ruling); got ${drag.railCursor}`);
@@ -220,6 +251,13 @@ try {
   check(drag.ghost.position === "fixed", `the ghost must be position:fixed so rail scrolling cannot drift it off the cursor; got ${drag.ghost.position}`);
   check(drag.ghost.pointerEvents === "none", "the ghost must not be hit-testable — it would become the drop target it is hovering");
   check(drag.shifted >= 1, "no row translated to open the drop slot (\"push the others out of the way\")");
+  // THE PUSHED ROWS TILE WITH THE CHIPS. The shortfall this catches shipped, and
+  // the user reported the picture it made ("You see how slide 1 intersects on top
+  // of where it says tween?"). A row that made way must land in a SLOT, and a slot
+  // includes the transition slice below it — so a displaced row's box may never
+  // intersect a chip's box.
+  check(drag.overlaps.length === 0,
+    `a row that moved aside overlaps a transition chip — the push-aside distance is short by the slice+gaps (user: "slide 1 intersects on top of where it says tween"); ${JSON.stringify(drag.overlaps)}`);
   // THE BOUNDARY GOES BOLD, NOT WIDE. A margin here is the rejected design, and
   // it is asserted absent rather than merely unasserted, because "the space
   // between the slides gets bigger" is precisely what the user objected to.

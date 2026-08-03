@@ -329,10 +329,11 @@
   const DRAG_SHIFT_MS = 300;
 
   // {indices, startY, pointerY, moved, boundary, height, ghostX, grabDy} | null.
-  // `height` is the lifted block's height — how far the rows below must shift to
-  // open its slot. `grabDy` is where inside the row the pointer grabbed, so the
-  // ghost sits under the cursor exactly where the row was picked up rather than
-  // snapping its top to it.
+  // `height` is THE LIFTED BLOCK'S SLOT PITCH — how far the rows below must shift
+  // to close over its slot. NOT the sum of its row heights; see slotPitch below
+  // for the measurement that distinction cost. `grabDy` is where inside the row
+  // the pointer grabbed, so the ghost sits under the cursor exactly where the row
+  // was picked up rather than snapping its top to it.
   let dragState = $state(null);
   let slidesEl = $state(null); // the scroll container — boundary math is relative to its rows
 
@@ -351,6 +352,48 @@
     return rows.length;
   }
 
+  /**
+   * Query (reads the DOM). THE SLOT PITCH of the lifted block `indices` — the
+   * distance a row must travel to move past it, given the rendered rows `rows`.
+   *
+   * THIS IS NOT THE SUM OF THE ROWS' HEIGHTS, and the difference is a bug the user
+   * saw (2026-08-02): "when I'm dragging and dropping these different slides, the
+   * ones that move out of the way don't move into quite the right place… You see
+   * how slide 1 intersects on top of where it says tween? … Is the math off
+   * anywhere?" It was. A row's SLOT in this rail is not the row: between every two
+   * rows sits a TRANSITION SLICE, and the flex column puts a gap on each side of
+   * it. Measured on a real rail — rows 144.31px tall, top-to-top pitch 165.31px —
+   * the slot is 21px taller than its row (a 17px slice plus two 4px gaps). Shifting
+   * by the row height alone therefore left every displaced row exactly 21px short,
+   * which parked it on top of the chip above it: row 1 landed spanning 73→217.31
+   * while chip 1 occupied 200.31→213.31. Precisely the reported overlap.
+   *
+   * SO MEASURE THE PITCH, don't reconstruct it. Taking the next row's top minus the
+   * first lifted row's top counts whatever is actually between them — slice, gaps,
+   * and anything a later design puts there — instead of re-deriving a number from
+   * tokens this component would then have to keep in sync with app.css. When the
+   * block is the LAST one there is no next row, so it falls back to the pitch of the
+   * gap ABOVE it, which is the same slot geometry read from the other side.
+   *
+   * Returns px. Rows are the live `[data-slide-row]` elements, so this must be
+   * called BEFORE any drag transform is applied (grab time), like its caller does.
+   */
+  function slotPitch(rows, indices) {
+    const first = indices[0];
+    const last = indices[indices.length - 1];
+    const top = rows[first]?.getBoundingClientRect().top;
+    if (top === undefined) return 0;
+    const next = rows[last + 1]?.getBoundingClientRect().top;
+    if (next !== undefined) return next - top;
+    // LAST BLOCK IN THE RAIL — no row below to measure to. Its slot is its own
+    // height plus the spacing that sits above it, which is the same slice+gaps
+    // read from the other side. With one row and no neighbours at all (a
+    // single-slide deck cannot be reordered) the spacing is simply 0.
+    const block = rows[last].getBoundingClientRect().bottom - top;
+    const above = rows[first - 1]?.getBoundingClientRect().bottom;
+    return above === undefined ? block : block + (top - above);
+  }
+
   /** Command. Begins a potential row drag. The gesture is not a drag until the
    *  pointer has moved DRAG_THRESHOLD_PX — until then it is still a click, so a
    *  plain select never has to be undone by a stray pixel of movement. */
@@ -361,15 +404,13 @@
     // for the retargeting reason this file's rename note gives.)
     if (e.target.closest(".eye")) return;
     const indices = app.isSlideSelected(i) ? app.selectedSlideIndices() : [i];
-    // MEASURE THE BLOCK AT GRAB TIME, once. The lifted rows' total height is how
-    // far the rows below must shift to open the slot, and where inside the row
+    // MEASURE THE BLOCK AT GRAB TIME, once. The lifted block's SLOT PITCH is how
+    // far the rows below must shift to close over it, and where inside the row
     // the pointer landed is where the ghost must hang from. Reading it per move
     // would measure rows that are already translated.
     const rows = [...(slidesEl?.querySelectorAll("[data-slide-row]") ?? [])];
-    const rects = indices.map((n) => rows[n]?.getBoundingClientRect()).filter(Boolean);
     const own = e.currentTarget.getBoundingClientRect();
-    const gap = rects.length > 1 ? (rects[1].top - rects[0].bottom) : 0;
-    const height = rects.reduce((sum, r) => sum + r.height, 0) + gap * Math.max(0, rects.length - 1);
+    const height = slotPitch(rows, indices);
     dragState = {
       indices, height,
       startY: e.clientY, pointerY: e.clientY,
@@ -412,9 +453,14 @@
    * Query. How far row `i` must translate (px) to open the drop slot — the
    * "push the others out of the way" half of the user's ruling.
    *
-   * THE RULE IS ONE SENTENCE: a non-lifted row moves by the lifted block's height,
-   * TOWARD the hole the lifted rows left. Rows that sit between the hole and the
-   * drop boundary are the ones displaced; everything outside that span stays put.
+   * THE RULE IS ONE SENTENCE: a non-lifted row moves by the lifted block's SLOT
+   * PITCH, TOWARD the hole the lifted rows left. Rows that sit between the hole and
+   * the drop boundary are the ones displaced; everything outside that span stays put.
+   *
+   * PITCH, NOT HEIGHT — this said "height" and shipped that way, and the rows landed
+   * 21px short, sitting on top of the transition chips (slotPitch has the user's
+   * report and the measurement). A row's slot includes the slice below it and the
+   * gaps around it; a rail of slots tiles, a rail of row heights does not.
    * Because the lifted rows are still in layout (drawn as holes, never removed),
    * the untouched rows genuinely do not move, and no reflow can occur — which is
    * the constraint bullet 1 of the drag note sets.
