@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { BEACH, DEMO_PATCHES, PATCH_COL, PLAYABLE_KEYS, SEQUENCED_DINGS, SPACEY_PAD_DRONE, WHOOSH, buildPatchItems, patchBounds, patchLayout } from "../core/audio_patches.js";
 import { nodeKeyboardPlugin } from "../plugins/node_keyboard.js";
 import { connectionRefusal } from "../core/nodeflow.js";
+import { audioDisplayTitle } from "../core/audio_nodes.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { readAudioScene } from "../core/audio_mirror_diff.js";
@@ -63,6 +64,33 @@ check("every patch has a title and a real explanation", () => {
     assert.ok(p.nodes.length >= 3, `${p.id} has only ${p.nodes.length} nodes`);
     assert.ok(p.wires.length >= 2, `${p.id} has only ${p.wires.length} wires`);
   }
+});
+
+check("BZ: every audio widget AND every patch carries the 'Audio ' prefix", () => {
+  // USER, 2026-08-03 (verbatim): "All audio related widgets should be prefixed
+  // with "Audio" like "Audio Delay" etc. Including  patches."
+  //
+  // Swept over the WHOLE population rather than spot-checked, because the point of
+  // deriving the prefix at audioNodePlugin is that a widget added later cannot opt
+  // out — and only a sweep can assert that.
+  for (const p of DEMO_PATCHES)
+    assert.ok(p.title.startsWith("Audio "), `patch ${p.id} is titled ${JSON.stringify(p.title)}`);
+  const audioWidgets = registry.all().filter((p) => p.type.startsWith("audio_"));
+  assert.ok(audioWidgets.length >= 20, `expected the full audio roster, saw ${audioWidgets.length}`);
+  for (const w of audioWidgets)
+    assert.ok(w.title.startsWith("Audio "), `${w.type} is titled ${JSON.stringify(w.title)}`);
+
+  // AND THE GENERIC NODES ARE **NOT** PREFIXED — the other half of the scope call,
+  // and the half a careless "prefix everything" would break. A Knob is not an audio
+  // widget: the founding vision has these driving materials and shapes too, so
+  // "Audio Knob" would be a false claim about what it can be wired to.
+  for (const g of registry.all().filter((p) => p.type.startsWith("node_")))
+    assert.ok(!g.title.startsWith("Audio "),
+      `${g.type} is a GENERIC control node and must not claim to be audio (${JSON.stringify(g.title)})`);
+
+  // Idempotent: the derivation must not double-prefix if a spec spells it itself.
+  assert.strictEqual(audioDisplayTitle("Audio Delay"), "Audio Delay");
+  assert.strictEqual(audioDisplayTitle("Delay"), "Audio Delay");
 });
 
 check("every node names a REGISTERED widget type", () => {

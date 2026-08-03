@@ -252,6 +252,53 @@ export function audioReadout(spec, s) {
 }
 
 /**
+ * Pure function. ONE AUDIO WIDGET'S DISPLAY TITLE — its spec title under the
+ * mandatory "Audio " prefix.
+ *
+ * USER, 2026-08-03 (verbatim): "All audio related widgets should be prefixed with
+ * "Audio" like "Audio Delay" etc. Including  patches."
+ *
+ * ── WHY THIS IS DERIVED AND NOT 24 EDITED LITERALS ─────────────────────────
+ * Every audio widget is `audioNodePlugin(SPEC)`, so there is exactly one funnel
+ * and prefixing it reaches the card, the palette entry ("Add Audio Delay") and
+ * every Inspector title at once. Editing the specs instead would put the rule in
+ * 24 places for a NEW spec to forget — the drift audioNodePlugin exists to
+ * prevent, arriving through the title field.
+ *
+ * ── WHAT IS **NOT** PREFIXED, AND WHY ──────────────────────────────────────
+ * The generic control, math and display nodes (Knob, Slider, Button, Keyboard,
+ * Number, Math, Display) keep their bare names. They are not audio widgets: the
+ * founding vision has them driving materials and shapes too, and "Audio Knob"
+ * would be a false claim about what a knob can be wired to. They are also not
+ * built by this function, so they are untouched BY CONSTRUCTION rather than by an
+ * exclusion list — the boundary is the one the code already draws.
+ *
+ * IDEMPOTENT, so a spec author who writes the prefix by hand gets one, not two.
+ *
+ * THE STORED TYPE STRING IS UNTOUCHED. This is a DISPLAY title; `spec.type`
+ * ("audio_delay") is what documents hold, so no saved deck needs migrating and
+ * this cannot be a load-bearing rename.
+ *
+ * @param {string} title - the spec's own title
+ * @returns {string}
+ *
+ * @example audioDisplayTitle("Delay") // "Audio Delay"
+ * @example audioDisplayTitle("Poly Pad") // "Audio Poly Pad"
+ * @example // the meter's card reads "Level"; it becomes the user's "Audio Level"
+ * @example audioDisplayTitle("Level") // "Audio Level"
+ * @example // already prefixed stays prefixed — no "Audio Audio Delay"
+ * @example audioDisplayTitle("Audio Delay") // "Audio Delay"
+ */
+export function audioDisplayTitle(title) {
+  const name = String(title ?? "");
+  return name.startsWith(AUDIO_TITLE_PREFIX) ? name : `${AUDIO_TITLE_PREFIX}${name}`;
+}
+
+/** The prefix the user asked for, with its trailing space — stated once so the
+ *  "already prefixed" test and the construction cannot disagree. */
+const AUDIO_TITLE_PREFIX = "Audio ";
+
+/**
  * Pure function. A COMPLETE PowerRP plugin for one audio module, built from its
  * declarative spec.
  *
@@ -275,10 +322,11 @@ export function audioNodePlugin(spec) {
   const ports = audioPorts(spec);
   const portsFn = () => ports;
   const width = spec.w ?? AUDIO_NODE_W;
+  const title = audioDisplayTitle(spec.title);
   const plugin = {
     type: spec.type,
     ephemeral: EPHEMERAL.NONE,
-    title: spec.title,
+    title,
     capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
     itemRefs: NODE_ITEM_REFS,
     // ── THE ENGINE BINDING, DECLARED ON THE PLUGIN ──────────────────────────
@@ -344,7 +392,7 @@ export function audioNodePlugin(spec) {
       const dials = audioKnobLayout(spec, plugin, s);
       const bandTop = knobBandTop(spec, plugin, s);
       const ops = [
-        ...familyCard(s, spec.title, spec.family),
+        ...familyCard(s, title, spec.family),
         // `dials.length` tells the readout it is sharing the band, so it stops
         // centring and sits above them (readoutBaseline states the collision); the
         // band's RESOLVED top then caps how far down it may sit, because on a
@@ -368,7 +416,7 @@ export function audioNodePlugin(spec) {
     knobLayout: (state) => audioKnobLayout(spec, plugin, state),
     commands: [{
       id: `add-${spec.type.replace(/_/g, "-")}`,
-      title: `Add ${spec.title}`,
+      title: `Add ${title}`,
       icon: spec.icon ?? "mdi:sine-wave",
       category: "Audio Nodes",
       run: (app) => app.armCrosshairPlacement(plugin),

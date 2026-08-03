@@ -44,6 +44,12 @@
  * same failure the autoplay badge exists to prevent.
  */
 
+// THE ONE IMPORT THIS OTHERWISE-DATA FILE TAKES: the shared "Audio " title rule
+// (WORKSTREAM BZ), so a patch's display name and a widget's cannot be prefixed by
+// two different pieces of code. audio_nodes.js does not import this file, so there
+// is no cycle.
+import { audioDisplayTitle } from "./audio_nodes.js";
+
 /** Horizontal and vertical spacing of the patch grid, in world units. The column
  *  pitch leaves room for a default-width node (150) plus a wire long enough to read
  *  as a curve rather than as a butt joint. */
@@ -461,6 +467,34 @@ export const BUTTON_DING = {
     ...analysisWires("bell"),
   ],
 };
+
+/**
+ * THE DEMO PATCH ROSTER, under the mandatory "Audio " prefix (WORKSTREAM BZ).
+ *
+ * USER, 2026-08-03 (verbatim): "All audio related widgets should be prefixed with
+ * "Audio" like "Audio Delay" etc. Including  patches."
+ *
+ * Applied HERE, at the one export both consumers read (App.svelte's Demo Patches
+ * menu and app.svelte.insertDemoPatch, which names the inserted group after it),
+ * rather than in seven title literals a new patch could forget. `audioDisplayTitle`
+ * is the SAME function the widgets use, so a patch and a widget cannot end up
+ * prefixed differently — and it is idempotent, so a blueprint that spells the
+ * prefix itself gets one.
+ *
+ * `id` IS UNTOUCHED, deliberately: insertDemoPatch looks patches up by id and the
+ * command registry builds entries from it, so ids are an API and titles are
+ * display. Renaming the display cannot break a saved deck or a palette binding.
+ *
+ * THE PREFIX IS WRITTEN ONTO THE BLUEPRINTS IN PLACE rather than onto copies. A
+ * `.map()` here would hand out NEW objects, and both the exported blueprint
+ * constants and the roster are part of this module's surface — tests and callers
+ * hold `SPACEY_PAD_DRONE` itself and ask whether the roster `includes` it. Copying
+ * would silently make those two things different objects with the same id, which
+ * is precisely the kind of split this workstream is removing elsewhere.
+ */
+for (const patch of [SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, WHOOSH, BEACH, PLAYABLE_KEYS, BUTTON_DING]) {
+  patch.title = audioDisplayTitle(patch.title);
+}
 
 export const DEMO_PATCHES = [SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, WHOOSH, BEACH, PLAYABLE_KEYS, BUTTON_DING];
 

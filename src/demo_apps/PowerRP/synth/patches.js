@@ -1651,6 +1651,30 @@ export const DEMO_PATCHES = {
   },
 };
 
+// ── THE "Audio " PREFIX ON EVERY PATCH LABEL (WORKSTREAM BZ) ────────────────
+// USER, 2026-08-03 (verbatim): "All audio related widgets should be prefixed with
+// "Audio" like "Audio Delay" etc. Including  patches."
+//
+// Applied in ONE pass over the roster rather than in sixteen label literals, for
+// the reason every such rule is centralized here: a new patch added next week
+// cannot forget a rule it never has to write down.
+//
+// THE RULE IS RESTATED RATHER THAN IMPORTED. core/audio_nodes.audioDisplayTitle is
+// the same three lines, and this file may not import it: synth/** is standalone
+// (tests/synth_engine_test.js asserts "no synth file imports PowerRP", so that the
+// engine stays usable without the editor). The duplication is deliberate and
+// bounded, and the sweep below is what stops it drifting — it prefixes THE SAME
+// WAY and is idempotent THE SAME WAY.
+/** The prefix, with its trailing space. Mirrors core/audio_nodes.js's
+ *  AUDIO_TITLE_PREFIX; see the sweep below for why it is restated.
+ *  DECLARED BEFORE THE SWEEP: a `const` is in its temporal dead zone until its
+ *  own line runs, and a module-level loop above it throws at import. */
+const AUDIO_LABEL_PREFIX = "Audio ";
+
+for (const patch of Object.values(DEMO_PATCHES)) {
+  if (!patch.label.startsWith(AUDIO_LABEL_PREFIX)) patch.label = `${AUDIO_LABEL_PREFIX}${patch.label}`;
+}
+
 /**
  * The categories, in display order, with the sentence each group gets.
  *
