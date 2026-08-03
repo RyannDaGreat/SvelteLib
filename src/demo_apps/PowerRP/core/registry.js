@@ -1291,19 +1291,14 @@ export const TOOL_POOL = [
       // head of this workstream. Its three subsets landed with their rows in the
       // same commit precisely so they could not repeat it.
       //
-      // WHOLE FIRST, THEN THE PARTS, then the parts in the order a box is written
-      // (position, size, rotation, then the transform that bundles all of them) —
-      // the pane's rows are read top-down, and the broadest verb is the one most
-      // hands want. `copy-box`'s id is UNCHANGED (WORKSTREAM VV renamed it to
-      // "Copy Transform" in App.svelte; nothing persists a command id in a
-      // document, so the id itself does not need to move — see that entry's
-      // comment). `copy-rotation` is new in the same workstream.
+      // WHOLE FIRST, THEN THE PARTS, then the two halves in the order a box is
+      // written (position before size) — the pane's rows are read top-down, and
+      // the broadest verb is the one most hands want.
       { kind: "command", command: "copy-properties", applies: everyWidget },
       { kind: "command", command: "paste-properties", applies: everyWidget },
+      { kind: "command", command: "copy-box", applies: boxed },
       { kind: "command", command: "copy-position", applies: boxed },
       { kind: "command", command: "copy-dimensions", applies: boxed },
-      { kind: "command", command: "copy-rotation", applies: boxed },
-      { kind: "command", command: "copy-box", applies: boxed },
     ],
   },
   {
