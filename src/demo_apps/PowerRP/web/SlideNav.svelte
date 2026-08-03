@@ -576,25 +576,31 @@
   /**
    * Query. THE CHIP'S SENTENCE: how many slides are about to become one, and
    * WHOSE LOOK SURVIVES — the destructive half, which "Merge" alone leaves
-   * unanswered. The winner is the LAST of the set in DECK ORDER (the user's rule:
-   * "the one that comes later in the slideshow will have priority"), which is not
-   * necessarily the row being dragged and not necessarily the row being hovered —
-   * so it is worth stating rather than leaving to be inferred from the gesture.
+   * unanswered.
    *
-   * It does NOT name the destination seat. For an adjacent pair that is the
-   * earlier row, but a scattered set is GATHERED to the winner's position first
-   * (app.mergeSlideRun), so a single "merges into N" would be wrong in one of the
-   * two cases. What is true in both is which slide's look wins, so that is what
-   * it says.
+   * THE WINNER IS THE ROW BEING DRAGGED (user, 2026-08-02: "I want the one that I
+   * am currently dropping onto the other one to take priority"), so with ONE
+   * dragged row the chip names it and nothing has to be inferred from the
+   * gesture. This used to name the LAST of the set in DECK ORDER, which is a
+   * different row whenever the drag goes downward.
+   *
+   * WITH SEVERAL DRAGGED ROWS the winner is not one row: they all beat the
+   * target, and among themselves the later one wins (app.mergeSlideRun). Naming
+   * only the last of them would be true about collisions between the dragged and
+   * the target but silent about the rule that decides the rest, and naming all of
+   * them would not fit on a chip. So it says the honest general thing — the
+   * dragged slides win — and leaves the intra-block order to the deck, which the
+   * rail is already showing.
    *
    * A number, not a name: the rail shows names two pixels away, the number is
    * what says WHERE, and a long name would blow out a chip sitting on a thumbnail.
    */
   function mergeChipLabel(target) {
-    const run = [...new Set([...(dragState?.indices ?? []), target])].sort((a, b) => a - b);
-    const winner = run[run.length - 1] + 1;
+    const dragged = [...new Set(dragState?.indices ?? [])].filter((i) => i !== target).sort((a, b) => a - b);
+    const run = [...new Set([...(dragState?.indices ?? []), target])];
     const what = run.length > 2 ? `Merge ${run.length} slides` : "Merge";
-    return `${what} · slide ${winner} wins`;
+    const who = dragged.length === 1 ? `slide ${dragged[0] + 1} wins` : "dragged slides win";
+    return `${what} · ${who}`;
   }
 
   /**
@@ -772,10 +778,13 @@
     if (!drag?.moved) return;
     e.preventDefault(); // a drop is not also a click
     // A DROP ON A BODY MERGES; a drop anywhere else reorders, exactly as before.
-    // Both go through the app layer's own seam, so the gesture and the palette
-    // command produce byte-identical documents (app.mergeSlideRun's note).
-    // PRIORITY IS DECK ORDER, not drag direction: mergeSlideRun sorts the run and
-    // the later slide wins, so dragging 2 onto 5 and 5 onto 2 agree.
+    // PRIORITY FOLLOWS THE DROP (user, 2026-08-02: "the one that I am currently
+    // dropping onto the other one to take priority … I'm physically dropping it
+    // on top"), so the DRAGGED rows win and drag.mergeTarget is not just which
+    // slides — it is which one LOSES. Dragging 2 onto 5 and 5 onto 2 therefore
+    // disagree, which they did not before. (These two comment lines used to
+    // claim the opposite; the palette command still means deck order and still
+    // goes through app.mergeSlidePair.)
     if (drag.mergeTarget !== null && drag.mergeTarget !== undefined) {
       app.mergeSlideRun(drag.indices, drag.mergeTarget);
       return;
@@ -1188,10 +1197,12 @@
                merge target, so it can never be stale.
 
                IT NAMES THE WINNER, not just the operation. "Merge" alone leaves
-               the destructive question unanswered, and the answer is not
-               guessable from the gesture — deck order decides it, so dragging a
-               slide UP and dragging one DOWN onto the same pair give the same
-               result. The arrow points at the seat the survivor takes.
+               the destructive question unanswered. Since 2026-08-02 the answer IS
+               the gesture — the DRAGGED slide wins, so dragging a slide up and
+               dragging one down onto the same pair now give DIFFERENT results and
+               the chip is what tells you which one you are performing. (It used
+               to say deck order decided, and that the two directions agreed.) The
+               arrow points at the seat the survivor takes, which is this row.
 
                WHEN THE MERGE IS REFUSED it says why instead, in the same place —
                the sentence comes from app.slideRunMergeBlocker, the very call the

@@ -409,14 +409,34 @@ export function withSlidesPasted(doc, afterIndex, payload, newId) {
 
 /**
  * Pure function. THE MERGE. Collapses the two ADJACENT slides at `indexA` and
- * `indexB` into ONE slide occupying the earlier of the two positions.
+ * `indexB` into ONE slide.
  *
  * User ruling, verbatim (2026-08-02): "We should also have merge slide up and
  * merge slide down as options … The one that comes later in the slideshow will
  * have priority. For whatever deltas arise."
  *
+ * ── TWO INDEPENDENT AXES, BECAUSE A SECOND RULING SPLIT THEM ─────────────────
+ * That ruling is the DEFAULT and still governs the Merge Slide Up/Down commands.
+ * A later ruling, verbatim (2026-08-02): "When I'm merging two slides, actually I
+ * want the one that I am currently dropping onto the other one to take priority.
+ * Because it looks to me like I'm physically dropping it on top, so the one
+ * that's on top gets the priority." That is about the DRAG GESTURE, which has a
+ * drop metaphor the commands do not have — so the two surfacings genuinely differ
+ * and this function takes the difference as an argument rather than guessing.
+ *
+ * Dragging slide 2 onto slide 5 asks for the EARLIER slide's content to win, at
+ * the LATER slide's seat. Neither half of that follows from the other, so `opts`
+ * carries them separately:
+ *   - `priority` — `"later"` (default, the original ruling) or `"earlier"`: which
+ *     slide's delta is applied LAST, hence which one wins a contested leaf, and
+ *     which one's `name`/`autoAdvance` are consulted first.
+ *   - `seat` — `"earlier"` (default) or `"later"`: which position, `id` and
+ *     ARRIVAL transition the survivor keeps.
+ * The command path passes neither and is byte-identical to what it always was.
+ *
  * ── THE COMPOSITION, AND WHY IT IS NOT A KEY-WISE MERGE ──────────────────────
- * The merged delta is the COMPOSITION of the two, later winning per leaf. The
+ * The merged delta is the COMPOSITION of the two, the priority slide winning per
+ * leaf. The
  * obvious implementation — walk both delta trees and let B's leaf beat A's — is
  * WRONG, and the case that proves it is `delete-then-recreate`:
  *
@@ -430,12 +450,20 @@ export function withSlidesPasted(doc, afterIndex, payload, newId) {
  * a fact about the FOLD, not about either delta.
  *
  * So this composes the only way that is always right: FOLD, THEN DIFF. Take the
- * fold entering the pair, take the LATER slide's fold, and ask
- * `deltaFromFoldDiff` for the minimal delta between them. That IS composition —
+ * fold entering the pair, apply the LOSER's delta then the WINNER's, and ask
+ * `deltaFromFoldDiff` for the minimal delta between the two states. That IS
+ * composition —
  * `applied(applied(s, A), B) == applied(s, deltaFromFoldDiff(s, applied(applied(s, A), B)))`
  * by `deltaFromFoldDiff`'s own contract — and it is the same construction
  * `reorderedSlides` and `withSlidesPasted` are built on. One mechanism, three
  * commands.
+ *
+ * PRIORITY IS EXACTLY THE APPLICATION ORDER, which is why "dragged wins" needed
+ * no new algebra: `priority: "later"` composes `before → A → B`, and
+ * `priority: "earlier"` composes `before → B → A`. Every tombstone case below is
+ * the same construction with the two deltas swapped. Both directions are one call
+ * to `withSlideRunMerged` (below), which is where the composition actually lives;
+ * this function is the two-slide reading of it.
  *
  * THE TOMBSTONE ALGEBRA falls out of it rather than being special-cased, and
  * every case is pinned in tests/slide_merge_test.js:
@@ -446,60 +474,84 @@ export function withSlidesPasted(doc, afterIndex, payload, newId) {
  *   - delete-then-silence → THE DELETE survives as a NONE leaf.
  *   - active:false then active:true (Delete keyframe then Show) → NOTHING, same
  *     as create-then-delete: the round trip is a no-op on the fold.
- *   - a leaf only A touches → SURVIVES (B is silent about it, so the later fold
- *     still carries A's value). "Later wins" is per LEAF, not per slide.
+ *   - a leaf only the LOSER touches → SURVIVES (the winner is silent about it, so
+ *     the composed fold still carries the loser's value). Priority is per LEAF,
+ *     not per slide, in both directions.
  *
- * ── THE KEY LAW: THE REST OF THE DECK DOES NOT MOVE ──────────────────────────
- * Because the merged delta reproduces the LATER slide's fold exactly, the fold
- * LEAVING the pair is byte-identical to what it was. Every slide after the pair
- * therefore folds byte-identically too, with its stored delta untouched — no
- * re-derivation, no repair pass, nothing to get wrong:
+ * ── THE KEY LAW: THE REST OF THE DECK DOES NOT MOVE (later priority only) ────
+ * Under the default `priority: "later"` the merged delta reproduces the LATER
+ * slide's fold exactly, so the fold LEAVING the pair is byte-identical to what it
+ * was. Every slide after the pair therefore folds byte-identically too, with its
+ * stored delta untouched — no re-derivation, no repair pass, nothing to get wrong:
  *
- *     fold(merged, indexA)      == fold(doc, indexB)      (the pair shows the LATER picture)
+ *     fold(merged, seat)        == fold(doc, indexB)      (the pair shows the LATER picture)
  *     fold(merged, j - 1)       == fold(doc, j)           for every j > indexB
  *
  * That is why this function rewrites ONE delta and splices out one row, rather
  * than rebuilding the deck the way `reorderedSlides` must.
  *
- * ── IDENTITY: THE EARLIER SLIDE'S SEAT, THE LATER SLIDE'S LOOK ───────────────
- * The survivor keeps the EARLIER slide's `id` and POSITION, because it owns the
- * boundary INTO the pair: the transition that plays when you arrive is the
- * earlier slide's, and it is unchanged by a merge that only affects what you
- * arrive AT. Keeping the earlier `transition` is therefore not a tie-break, it
- * is the only answer that leaves the deck's timing alone — adopting the later
- * slide's incoming transition would change how the merged slide is ENTERED,
- * which no part of the user's ruling asks for. (The later slide's transition is
- * the one INTERIOR to the pair; the merge is exactly the act of deleting that
- * boundary, so its transition has nothing left to describe.)
+ * UNDER `priority: "earlier"` THE SECOND HALF OF THAT LAW CANNOT HOLD, and saying
+ * so plainly matters more than keeping a tidy invariant. The pair now shows the
+ * EARLIER slide's picture, so the state leaving the pair is genuinely different;
+ * a later slide that never restates the contested leaf inherits the new value.
+ * That is not a defect, it IS the ruling — the author asked for the dropped
+ * slide's look to win, and a look that were immediately overwritten by inheritance
+ * would not have won anything. What still holds unconditionally is the first
+ * half (the merged slide shows the winner's picture) and the slides BEFORE the
+ * pair, which no merge can reach.
  *
- * `name` follows LATER PRIORITY, the ruling's own principle — WITH ONE
- * SUBTRACTION that is worth stating because it is not a special case, it is the
- * principle applied honestly. Names in this document model are ALWAYS STORED:
- * `withNewSlide` writes `"Slide 4"` eagerly, and blanking a rename restores the
- * positional string rather than clearing it (`withSlideRenamed`). So "does the
- * later slide have a name" is a question that is always yes, and answering it
- * yes would move the string `"Slide 4"` into position 3 — a label that is not
- * merely unauthored but WRONG, and that no later renumbering fixes because it is
- * stored text, not a computed number. So a later name that is exactly its own
- * old seat's default is treated as the absence of an authored name and the
- * earlier slide's name survives; anything the author actually typed wins, which
- * is the ruling. When BOTH are positional defaults the earlier one is kept, and
- * it is already correct for the seat the merged slide occupies.
+ * ── IDENTITY: THE SEAT SLIDE'S ARRIVAL, THE WINNER'S LOOK ────────────────────
+ * A merge always leaves ONE row where two were, and its POSITION is the earlier
+ * index either way — the later row is spliced out, so the survivor lands at
+ * `earlier` no matter which seat is chosen. `seat` therefore decides IDENTITY,
+ * not geometry: which slide's `id` the survivor carries, and which slide's
+ * `transition` describes ARRIVING at it.
  *
- * `autoAdvance` takes the LATER slide's value whenever it states one and is
+ * `seat: "earlier"` (default) is the answer that leaves the deck's TIMING alone.
+ * The earlier slide already owns the boundary into the pair, so keeping its
+ * transition means the merged slide is entered exactly as the pair was; the later
+ * slide's transition was INTERIOR to the pair, and the merge is precisely the act
+ * of deleting that boundary, so it has nothing left to describe.
+ *
+ * `seat: "later"` is how the DRAG says "these collapsed into THAT one": the row
+ * you dropped onto is the row that remains, keeping its own id and its own
+ * arrival. It is the honest reading of the drop metaphor, and it costs the timing
+ * invariant above — arriving at the merged row now plays what used to be the
+ * INTERIOR transition. That trade is deliberate: under a drop, the row that
+ * survives is the one the pointer named, and a survivor wearing the absorbed
+ * slide's id and arrival would be that slide with someone else's picture.
+ *
+ * `name` follows PRIORITY — WITH ONE SUBTRACTION that is worth stating because it
+ * is not a special case, it is the principle applied honestly. Names in this
+ * document model are ALWAYS STORED: `withNewSlide` writes `"Slide 4"` eagerly, and
+ * blanking a rename restores the positional string rather than clearing it
+ * (`withSlideRenamed`). So "does the winning slide have a name" is a question that
+ * is always yes, and answering it yes for a slide that sat at seat 4 would stamp
+ * the string `"Slide 4"` onto position 3 — a label that is not merely unauthored
+ * but WRONG, and that no later renumbering fixes because it is stored text, not a
+ * computed number. So a winner's name that is exactly ITS OWN old seat's default
+ * is treated as the absence of an authored name and the loser's name survives;
+ * anything the author actually typed wins, which is the ruling. When BOTH are
+ * positional defaults the EARLIER one is kept, because the survivor occupies the
+ * earlier index and that string is already correct there.
+ *
+ * `autoAdvance` takes the PRIORITY slide's value whenever it states one and is
  * dropped otherwise — same principle, no special pleading. `enabled` needs no
  * rule at all: both slides are enabled or this function has already thrown.
  *
  * ── DISABLED SLIDES ARE REFUSED, LOUDLY ──────────────────────────────────────
  * A disabled slide has NO FOLD OF ITS OWN (see the header): its delta is skipped
- * entirely, so there is no "later picture" to merge to and no honest composition
- * to perform. Merging one would either silently drop its delta or silently
- * enable it, and both are lies about what the author stored. So it throws, and
- * the command layer gates on it with a sentence instead.
+ * entirely, so there is no picture to merge to and no honest composition to
+ * perform. Merging one would either silently drop its delta or silently enable
+ * it, and both are lies about what the author stored. So it throws, and the
+ * command layer gates on it with a sentence instead.
  *
  * @param {object} doc - a PowerRP document
  * @param {number} indexA - one of the two slides
  * @param {number} indexB - the other; must be adjacent to indexA (either order)
+ * @param {{priority?: "later"|"earlier", seat?: "earlier"|"later"}} [opts] - which
+ *   slide's deltas win a contested leaf, and whose id/transition the survivor
+ *   keeps. Both default to the Merge Slide Up/Down commands' behaviour.
  * @returns {object} a new document with one fewer slide
  *
  * @example // later wins per leaf; the earlier slide's seat and id survive
@@ -518,8 +570,21 @@ export function withSlidesPasted(doc, afterIndex, payload, newId) {
  * @example // the merged slide shows what the LATER slide showed
  * withSlidesMerged({slides: [{id: "a", delta: {x: 1}}, {id: "b", delta: {x: 2}}]}, 0, 1).slides[0].delta
  * // {x: 2}
+ * @example // DRAGGING 1 ONTO 2: the earlier slide's value wins the contested leaf
+ * withSlidesMerged({slides: [{id: "a", delta: {x: 1}}, {id: "b", delta: {x: 2}}]}, 0, 1, {priority: "earlier"}).slides[0].delta
+ * // {x: 1}
+ * @example // …and the row you dropped ONTO is the row that remains
+ * withSlidesMerged({slides: [{id: "a", delta: {x: 1}}, {id: "b", delta: {x: 2}}]}, 0, 1, {priority: "earlier", seat: "later"}).slides[0].id
+ * // "b"
+ * @example // priority is per LEAF in both directions — the loser's untouched leaf survives
+ * withSlidesMerged({slides: [
+ *   {id: "a", delta: {x: 0, y: 0}},
+ *   {id: "b", delta: {x: 1}},
+ *   {id: "c", delta: {y: 2}},
+ * ]}, 1, 2, {priority: "earlier"}).slides[1].delta
+ * // {x: 1, y: 2}
  */
-export function withSlidesMerged(doc, indexA, indexB) {
+export function withSlidesMerged(doc, indexA, indexB, opts = {}) {
   const n = doc.slides.length;
   const earlier = Math.min(indexA, indexB);
   const later = Math.max(indexA, indexB);
@@ -527,31 +592,119 @@ export function withSlidesMerged(doc, indexA, indexB) {
     throw new Error(`withSlidesMerged: slide indices out of range (0..${n - 1}): ${indexA}, ${indexB}`);
   if (later - earlier !== 1)
     throw new Error(`withSlidesMerged: slides ${indexA} and ${indexB} are not adjacent — only neighbouring slides can be merged`);
+  const { priority = "later", seat = "earlier" } = opts;
+  if (priority !== "later" && priority !== "earlier")
+    throw new Error(`withSlidesMerged: priority must be "later" or "earlier", got ${JSON.stringify(priority)}`);
+  if (seat !== "earlier" && seat !== "later")
+    throw new Error(`withSlidesMerged: seat must be "earlier" or "later", got ${JSON.stringify(seat)}`);
   const a = doc.slides[earlier];
   const b = doc.slides[later];
   if (a.enabled === false || b.enabled === false)
     throw new Error("withSlidesMerged: a disabled slide has no folded picture of its own, so there is nothing to merge — enable it first");
 
-  const folds = foldedStates(doc);
-  // The fold ENTERING the pair — the empty state when the pair starts at slide 0
-  // (whose delta creates everything, so it diffs from nothing).
-  const before = earlier === 0 ? {} : folds[earlier - 1];
+  return withSlideRunMerged(doc, [earlier, later], {
+    order: priority === "later" ? [earlier, later] : [later, earlier],
+    seat: seat === "later" ? later : earlier,
+  });
+}
 
-  const merged = {
-    ...a, // the EARLIER slide's identity: id, transition, and anything a later
-          // schema adds — it keeps the seat, so it keeps the fields that describe
-          // arriving at that seat.
-    delta: deltaFromFoldDiff(before, folds[later]),
-  };
-  // LATER PRIORITY on the fields that describe the slide ITSELF rather than the
-  // boundary into it. A later name that is just its own old seat's positional
-  // default is NOT an authored name — see the docblock; adopting it would stamp
+/**
+ * Pure function. THE MERGE, generalized to a CONTIGUOUS RUN collapsed in ONE
+ * step, with the application order and the surviving identity given explicitly.
+ * `withSlidesMerged` is the two-slide caller; the drag-onto-a-slide drop is the
+ * N-slide one.
+ *
+ * ── WHY THIS EXISTS RATHER THAN A PAIRWISE LOOP ──────────────────────────────
+ * A run used to be collapsed by repeated adjacent merge, which was correct while
+ * priority was DECK ORDER because "rightmost wins" is that loop's fixed point.
+ * The 2026-08-02 drop ruling asks for an order that is NOT deck order, and the
+ * obvious way to get one — REORDER the run first, then keep collapsing rightmost
+ * — IS WRONG, in a way a test caught rather than review:
+ *
+ *   slide 1: q = {x: 0, y: 0}   slide 2: {x: 1}   slide 3: {y: 2}
+ *
+ * Drag 2 onto 3. The dragged slide's `x: 1` must win, and slide 3's `y: 2` is
+ * uncontested so it must survive. But `reorderedSlides` is APPEARANCE-preserving:
+ * moving slide 2 after slide 3 re-derives slide 3's delta so that slide 3 still
+ * LOOKS as it did, which means it acquires an explicit `y: 0` — slide 2's y,
+ * which slide 3 used to inherit. Collapse rightmost and that `y: 0` wins. The
+ * reorder did nothing wrong; it answered a different question. Priority is about
+ * which DELTA is applied last, and a reorder rewrites deltas, so the two
+ * mechanisms cannot be stacked.
+ *
+ * So the order is applied to the DELTAS THEMSELVES, exactly once: fold the state
+ * entering the run, apply each member's STORED delta in `order`, and diff. Every
+ * property of the pairwise version survives (the tombstone algebra is
+ * `deltaFromFoldDiff`'s, not the loop's) and the wrong answer above is
+ * unreachable because nothing is re-derived.
+ *
+ * DISABLED MEMBERS ARE REFUSED for the reason `withSlidesMerged` gives: a slide
+ * whose delta is outside the fold has no picture to contribute.
+ *
+ * @param {object} doc - a PowerRP document
+ * @param {number[]} block - a CONTIGUOUS ascending run of slide indices (2 or more)
+ * @param {{order: number[], seat: number}} opts - `order` is the same indices in
+ *   APPLICATION order (the LAST one wins a contested leaf, and supplies `name` /
+ *   `autoAdvance`); `seat` is the member whose `id` and arrival `transition` the
+ *   survivor keeps. The survivor always occupies `block[0]`'s index.
+ * @returns {object} a new document with `block.length - 1` fewer slides
+ *
+ * @example // deck order: the last-applied slide wins the contested leaf
+ * withSlideRunMerged({slides: [{id: "a", delta: {x: 1}}, {id: "b", delta: {x: 2}}]}, [0, 1], {order: [0, 1], seat: 0}).slides[0].delta
+ * // {x: 2}
+ * @example // drop order: slide 0 applied LAST wins, and slide 1 keeps the identity
+ * withSlideRunMerged({slides: [{id: "a", delta: {x: 1}}, {id: "b", delta: {x: 2}}]}, [0, 1], {order: [1, 0], seat: 1}).slides[0]
+ * // {id: "b", delta: {x: 1}}
+ * @example // three slides, the dragged pair applied after the target: 3 beats 2 beats 1
+ * withSlideRunMerged({slides: [
+ *   {id: "a", delta: {x: 0, y: 0}},
+ *   {id: "b", delta: {x: 1}},
+ *   {id: "c", delta: {y: 2}},
+ * ]}, [0, 1, 2], {order: [0, 2, 1], seat: 2}).slides[0].delta
+ * // {x: 1, y: 2}
+ */
+export function withSlideRunMerged(doc, block, opts) {
+  const n = doc.slides.length;
+  const { order, seat } = opts;
+  if (block.length < 2)
+    throw new Error(`withSlideRunMerged: a merge needs at least two slides, got ${JSON.stringify(block)}`);
+  if (block.some((i, k) => !Number.isInteger(i) || i < 0 || i >= n || (k > 0 && i !== block[k - 1] + 1)))
+    throw new Error(`withSlideRunMerged: block must be a contiguous ascending run within 0..${n - 1}: ${JSON.stringify(block)}`);
+  const inBlock = new Set(block);
+  if (order.length !== block.length || order.some((i) => !inBlock.has(i)) || new Set(order).size !== order.length)
+    throw new Error(`withSlideRunMerged: order must be a permutation of the block, got ${JSON.stringify(order)}`);
+  if (!inBlock.has(seat))
+    throw new Error(`withSlideRunMerged: seat ${seat} is not in the block ${JSON.stringify(block)}`);
+  const off = block.filter((i) => doc.slides[i].enabled === false);
+  if (off.length > 0)
+    throw new Error("withSlideRunMerged: a disabled slide has no folded picture of its own, so there is nothing to merge — enable it first");
+
+  const first = block[0];
+  const folds = foldedStates(doc);
+  // The fold ENTERING the run — the empty state when the run starts at slide 0
+  // (whose delta creates everything, so it diffs from nothing).
+  const before = first === 0 ? {} : folds[first - 1];
+  // PRIORITY IS APPLICATION ORDER, and this line is the whole of it.
+  const composed = order.reduce((state, i) => applied(state, doc.slides[i].delta), before);
+
+  const winner = doc.slides[order[order.length - 1]];
+  const winnerSeat = order[order.length - 1];
+  const fallbackName = doc.slides[first].name; // the survivor occupies `first`'s index
+  // A winner's name that is just its OWN old seat's positional default is NOT an
+  // authored name — see withSlidesMerged's docblock; adopting it would stamp
   // "Slide 4" onto position 3.
-  if (b.name && b.name !== `Slide ${later + 1}`) merged.name = b.name;
-  if (b.autoAdvance !== undefined) merged.autoAdvance = b.autoAdvance;
+  const merged = {
+    ...doc.slides[seat], // the SEAT slide's identity: id, transition, and anything a
+                         // later schema adds — the fields that describe ARRIVING here.
+    delta: deltaFromFoldDiff(before, composed),
+  };
+  if (winner.name && winner.name !== `Slide ${winnerSeat + 1}`) merged.name = winner.name;
+  else if (fallbackName !== undefined) merged.name = fallbackName;
+  else delete merged.name;
+  if (winner.autoAdvance !== undefined) merged.autoAdvance = winner.autoAdvance;
   else delete merged.autoAdvance;
 
-  const slides = [...doc.slides.slice(0, earlier), merged, ...doc.slides.slice(later + 1)];
+  const slides = [...doc.slides.slice(0, first), merged, ...doc.slides.slice(block[block.length - 1] + 1)];
   return { ...doc, slides };
 }
 

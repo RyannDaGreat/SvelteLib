@@ -3,7 +3,14 @@
  * Run: node src/demo_apps/PowerRP/tests/slide_merge_test.js
  *
  * User ruling (2026-08-02): "The one that comes later in the slideshow will have
- * priority. For whatever deltas arise."
+ * priority. For whatever deltas arise." — the COMMAND path (Merge Slide Up/Down),
+ * and this file's default.
+ *
+ * Later ruling the same day, for the DRAG gesture only: "When I'm merging two
+ * slides, actually I want the one that I am currently dropping onto the other one
+ * to take priority. Because it looks to me like I'm physically dropping it on
+ * top, so the one that's on top gets the priority." Pinned at the bottom, in both
+ * drag directions, alongside the command path's invariance which STILL holds.
  *
  * THE TWO LAWS under test (core/slide_reorder.js withSlidesMerged):
  *   1. fold(merged, earlier)  ==  fold(doc, later)      the pair shows the LATER picture
@@ -17,7 +24,7 @@
 
 import assert from "node:assert/strict";
 import { newDocument, withNewItem, withNewSlide, keyframed, slideState, withSlideToggled, withSlideRenamed } from "../core/document.js";
-import { withSlidesMerged, foldedStates } from "../core/slide_reorder.js";
+import { withSlidesMerged, withSlideRunMerged, foldedStates, withSlidesMovedToBoundary } from "../core/slide_reorder.js";
 import { NONE } from "../core/deltas.js";
 
 let passed = 0;
@@ -261,9 +268,12 @@ test("the input document is not mutated", () => {
 });
 
 test("a RUN collapses right-to-left to the run's LAST picture, tail untouched", () => {
-  // THE DRAG-ONTO-A-SLIDE DROP'S MATH (web/app.svelte.js mergeSlideRun). It
-  // collapses a contiguous run by repeated adjacent merge, taken from the RIGHT
-  // so the indices of the not-yet-merged pairs never shift underneath it.
+  // REPEATED COMMAND-PATH MERGE. This used to be described as the drag-drop's
+  // math; since the drop-priority ruling the drop goes through
+  // `withSlideRunMerged` with an explicit order instead (pinned below), and what
+  // this still pins is that iterating the LATER-WINS pair merge over a run lands
+  // on the run's last picture — the property the Merge Slide Up/Down commands
+  // compose to when a user runs them repeatedly.
   const { doc } = sampleDoc();
   const run = [1, 2]; // merge slides 2 and 3, leaving slide 4 as the tail
   const wantRunPicture = slideState(doc, run[run.length - 1]);
@@ -285,6 +295,156 @@ test("merging every pair down to one slide preserves the LAST slide's picture", 
   let cur = doc;
   while (cur.slides.length > 1) cur = withSlidesMerged(cur, 0, 1);
   assert.deepEqual(slideState(cur, 0), want);
+});
+
+// ── DRAG-MERGE: THE DROPPED SLIDE WINS ──────────────────────────────────────
+// User ruling (2026-08-02): "When I'm merging two slides, actually I want the one
+// that I am currently dropping onto the other one to take priority. Because it
+// looks to me like I'm physically dropping it on top, so the one that's on top
+// gets the priority." DRAG ONLY — the commands above keep deck order, which the
+// last test in this section re-pins so a future edit cannot quietly unify them.
+
+/**
+ * `web/app.svelte.js mergeSlideRun`'s ALGORITHM, replicated here so the core
+ * math is testable in bare node — the same discipline the "a RUN collapses
+ * right-to-left" test above uses for the pre-drop version. If this drifts from
+ * the app method, `tests/slide_merge_probe.js` (browser) is what catches it.
+ *
+ * GATHER IN DECK ORDER at the target's row, then merge in ONE step with an
+ * explicit application order: target first, dragged after, so the dragged win and
+ * the later of the dragged wins their own collisions. The gather must NOT express
+ * the priority — see withSlideRunMerged's docblock for the re-derivation trap.
+ */
+function dragMerge(doc, dragged, target) {
+  const run = [...new Set([...dragged, target])].sort((a, b) => a - b);
+  const targetId = doc.slides[target].id;
+  let out = doc;
+  let block = run;
+  if (run[run.length - 1] - run[0] !== run.length - 1) {
+    const ids = run.map((i) => doc.slides[i].id);
+    out = withSlidesMovedToBoundary(doc, run, target);
+    block = ids.map((id) => out.slides.findIndex((s) => s.id === id)).sort((a, b) => a - b);
+  }
+  const seat = out.slides.findIndex((s) => s.id === targetId);
+  const order = [seat, ...block.filter((i) => i !== seat)];
+  return { doc: withSlideRunMerged(out, block, { order, seat }), seat: block[0] };
+}
+
+/** A five-slide deck whose slides each move ONE shared leaf to their own number. */
+function contestedDeck() {
+  return { meta: {}, slides: [0, 1, 2, 3, 4].map((i) => ({
+    id: `s${i}`, name: `Slide ${i + 1}`,
+    transition: { type: "tween", seconds: i },
+    delta: i === 0 ? { items: { q: { type: "rect", x: 0, tag: 0 } } } : { items: { q: { x: i } } },
+  })) };
+}
+
+test("DRAG DOWN (2 onto 5): the dragged slide's value wins, at the target's seat", () => {
+  const doc = contestedDeck();
+  const { doc: out, seat } = dragMerge(doc, [1], 4);
+  assert.equal(out.slides.length, 4);
+  assert.equal(slideState(out, seat).items.q.x, 1, "the DRAGGED slide 2's x must win, not the target's");
+  assert.equal(out.slides[seat].id, "s4", "the merged slide sits at the DROP TARGET's seat");
+  assert.deepEqual(out.slides[seat].transition, { type: "tween", seconds: 4 },
+    "the seat keeps its own arrival identity");
+});
+
+test("DRAG UP (5 onto 2): the dragged slide's value wins, at the target's seat", () => {
+  const doc = contestedDeck();
+  const { doc: out, seat } = dragMerge(doc, [4], 1);
+  assert.equal(slideState(out, seat).items.q.x, 4, "the DRAGGED slide 5's x must win");
+  assert.equal(out.slides[seat].id, "s1", "the merged slide sits at the DROP TARGET's seat");
+  assert.deepEqual(out.slides[seat].transition, { type: "tween", seconds: 1 });
+});
+
+test("the two drag directions DISAGREE — that is the whole ruling", () => {
+  const doc = contestedDeck();
+  const down = dragMerge(doc, [1], 4).doc;
+  const up = dragMerge(doc, [4], 1).doc;
+  assert.notDeepEqual(down, up,
+    "dragging 2 onto 5 and 5 onto 2 must now differ; they were byte-identical before the drop ruling");
+});
+
+test("non-colliding leaves still UNION — priority is per leaf under the drag too", () => {
+  const doc = { meta: {}, slides: [
+    { id: "s0", name: "Slide 1", delta: { items: { q: { type: "rect", x: 0, y: 0 } } } },
+    { id: "s1", name: "Slide 2", delta: { items: { q: { x: 1 } } } },      // dragged: moves x
+    { id: "s2", name: "Slide 3", delta: { items: { q: { y: 2 } } } },      // target: moves y
+  ] };
+  const { doc: out, seat } = dragMerge(doc, [1], 2);
+  assert.deepEqual(slideState(out, seat).items.q, { type: "rect", x: 1, y: 2 },
+    "the target's uncontested y survives beside the dragged x");
+});
+
+test("slides OUTSIDE the merge keep their exact appearance", () => {
+  // The gather is the appearance-preserving reorder, so every slide that is not a
+  // member of the run still shows exactly what it showed — the bystanders BETWEEN
+  // the dragged row and its target included, wherever the gather parked them.
+  const doc = contestedDeck();
+  const { doc: out } = dragMerge(doc, [1], 4);
+  for (const id of ["s0", "s2", "s3"]) {
+    const wasAt = doc.slides.findIndex((s) => s.id === id);
+    const nowAt = out.slides.findIndex((s) => s.id === id);
+    assert.notEqual(nowAt, -1, `bystander ${id} vanished`);
+    assert.deepEqual(slideState(out, nowAt), slideState(doc, wasAt), `bystander ${id} changed appearance`);
+  }
+});
+
+test("MULTI-DRAG: all dragged beat the target, later of the dragged beats earlier", () => {
+  const doc = contestedDeck();          // slides 2 and 4 dragged onto slide 1
+  const { doc: out, seat } = dragMerge(doc, [1, 3], 0);
+  assert.equal(slideState(out, seat).items.q.x, 3,
+    "among the dragged, the LATER (slide 4) wins; both beat the target");
+  assert.equal(out.slides[seat].id, "s0", "the drop target keeps the seat");
+});
+
+test("the COMMAND path is UNCHANGED — later wins, both directions agree", () => {
+  // The earlier ruling stands for Merge Slide Up/Down. `withSlidesMerged` with no
+  // options is that path, and it is direction-blind by construction.
+  const doc = contestedDeck();
+  assert.deepEqual(withSlidesMerged(doc, 1, 2), withSlidesMerged(doc, 2, 1));
+  assert.equal(slideState(withSlidesMerged(doc, 1, 2), 1).items.q.x, 2, "the LATER slide's x wins");
+  assert.equal(withSlidesMerged(doc, 1, 2).slides[1].id, "s1", "and the EARLIER slide keeps the seat");
+});
+
+test("priority: earlier reverses the contested leaf and nothing else", () => {
+  const doc = contestedDeck();
+  const later = withSlidesMerged(doc, 1, 2);
+  const earlier = withSlidesMerged(doc, 1, 2, { priority: "earlier" });
+  assert.equal(slideState(later, 1).items.q.x, 2);
+  assert.equal(slideState(earlier, 1).items.q.x, 1);
+  assert.equal(earlier.slides[1].id, "s1", "seat defaults to earlier regardless of priority");
+});
+
+test("seat: later hands the survivor the LATER slide's id and arrival", () => {
+  const doc = contestedDeck();
+  const out = withSlidesMerged(doc, 1, 2, { seat: "later" });
+  assert.equal(out.slides[1].id, "s2");
+  assert.deepEqual(out.slides[1].transition, { type: "tween", seconds: 2 });
+  assert.equal(out.slides.length, 4, "the survivor still occupies the EARLIER index — a row is spliced out");
+});
+
+test("an unknown priority or seat is refused loudly", () => {
+  const doc = contestedDeck();
+  assert.throws(() => withSlidesMerged(doc, 1, 2, { priority: "dragged" }), /priority must be/);
+  assert.throws(() => withSlidesMerged(doc, 1, 2, { seat: "target" }), /seat must be/);
+});
+
+test("under priority: earlier an AUTHORED earlier name wins", () => {
+  const doc = { meta: {}, slides: [
+    { id: "sA", name: "Punchline", delta: {} },
+    { id: "sB", name: "Slide 2", delta: {} },
+  ] };
+  assert.equal(withSlidesMerged(doc, 0, 1, { priority: "earlier" }).slides[0].name, "Punchline");
+  // A winner whose name is its OWN seat's positional default is unauthored, so
+  // the fallback stands — and the fallback is the name already correct for the
+  // index the survivor occupies, which is the EARLIER slide's, in both directions.
+  const winnerUnnamed = { meta: {}, slides: [
+    { id: "sA", name: "Slide 1", delta: {} },
+    { id: "sB", name: "Kicker", delta: {} },
+  ] };
+  assert.equal(withSlidesMerged(winnerUnnamed, 0, 1, { priority: "earlier" }).slides[0].name, "Slide 1",
+    "an unauthored winner leaves the survivor's seat name in place");
 });
 
 console.log(`\nslide_merge_test: ${passed} passed`);

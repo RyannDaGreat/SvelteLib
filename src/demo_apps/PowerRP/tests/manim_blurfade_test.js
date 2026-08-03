@@ -33,7 +33,7 @@ import { blendApplied, applied } from "../core/deltas.js";
 import { deriveRenderTree } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
-import { sceneIR, manimIR, blurFadeState, BLUR_FADE_MAX_RADIUS } from "../render_gpu/ports.js";
+import { sceneIR, manimIR, manimSketchStroke, manimStatePaint, canStrokeWithPaint, blurFadeState, BLUR_FADE_MAX_RADIUS } from "../render_gpu/ports.js";
 import {
   VISIBLE_FX_TOKEN,
   isVisibleFxToken,
@@ -47,7 +47,8 @@ import {
   doubleSmooth,
   manimDrawPlan,
   manimLagRatio,
-  sketchStrokeColor,
+  sketchPaintTiers,
+  sketchStrokePaint,
   subpathLengths,
   trimSubpathByLength,
 } from "../core/manim_draw.js";
@@ -185,14 +186,108 @@ test("MANIM's phase boundary is a hard 0.5, ported verbatim", () => {
   assert.deepEqual(manimDrawPlan(0.5, 1).trims, [1], "and the border is exactly complete there");
 });
 
-test("MANIM's sketch colour is the THREE-TIER fallback, middle tier intact", () => {
+const anyPaint = () => true;
+
+test("MANIM's sketch colour is the THREE-TIER ladder, middle tier intact", () => {
   // The tier a port loses by accident: a red-filled, blue-stroked widget sketches
   // in BLUE (research §6 names exactly this case).
-  assert.equal(sketchStrokeColor({ fill: "#ff0000", stroke: "#0000ff", strokeWidth: 3 }), "#0000ff");
-  assert.equal(sketchStrokeColor({ fill: "#ff0000", stroke: "#0000ff", strokeWidth: 0 }), "#ff0000");
-  assert.equal(sketchStrokeColor({ fill: "#ff0000" }, "#00ff00"), "#00ff00");
+  assert.equal(sketchStrokePaint({ fill: "#ff0000", stroke: "#0000ff", strokeWidth: 3 }, anyPaint), "#0000ff");
+  assert.equal(sketchStrokePaint({ fill: "#ff0000", stroke: "#0000ff", strokeWidth: 0 }, anyPaint), "#ff0000");
+  assert.equal(sketchStrokePaint({ fill: "#ff0000" }, anyPaint, "#00ff00"), "#00ff00");
+  assert.equal(sketchStrokePaint({}, anyPaint), null, "nothing paintable ⇒ no sketch, and the caller decides what that means");
   const ops = inkOps({ ...RECT, active: fx("manim", 0.3) });
   assert.equal(ops[0].stroke[2], 1, "and it reaches the op: the blue channel is full");
+});
+
+// ── WORKSTREAM AO: THE SKETCH USES THE WIDGET'S REAL STROKE ──────────────────
+// User ruling, 2026-08-02: "wouldn't it make sense to use the material stroke if
+// provided for the manum entry effect instead of always using white? … if I
+// select a red stroke, then the manum effect should use that stroke, or a
+// material stroke, then manum should use that material stroke to draw."
+// As shipped, a non-string tier was DROPPED, so a material-inked widget's sketch
+// was not drawn at all — the "always white" the user reported.
+
+test("AO: the tier LADDER is a list, so a refused tier can fall through", () => {
+  // The shape change the ruling required: a tier's answer is any paint, and a
+  // tier the renderer cannot stroke with must yield to the NEXT one rather than
+  // ending the ladder at nothing.
+  const wavy = { type: "material", material: { id: "wavy", params: {} } };
+  assert.deepEqual(sketchPaintTiers({ fill: "#ff0000", stroke: wavy, strokeWidth: 4 }), [wavy, "#ff0000"],
+    "both tiers are offered, best first — the material does not disappear on the way out");
+  assert.deepEqual(sketchPaintTiers({ fill: "#ff0000" }, "#00ff00"), ["#00ff00", "#ff0000"]);
+  assert.deepEqual(sketchPaintTiers({}), []);
+});
+
+test("AO: a RED stroke sketches RED — the user's own first example", () => {
+  const ops = inkOps({ type: "circle", x: 0, y: 0, w: 80, h: 80, fill: "#0000ff", stroke: "#ff0000", strokeWidth: 4, active: fx("manim", 0.3) });
+  assert.ok(ops.length > 0 && ops.every((o) => o.op === "path"), "mid-trace, so every op is a sketch path");
+  assert.deepEqual(ops[0].stroke, [1, 0, 0, 1], "pure red, not the blue fill and not a default");
+});
+
+test("AO: a MATERIAL stroke draws the sketch, and arrives RESOLVED", () => {
+  const stroke = { type: "material", material: { id: "wavy", params: {} } };
+  const ops = inkOps({ type: "circle", x: 0, y: 0, w: 80, h: 80, fill: "#0000ff", stroke, strokeWidth: 4, active: fx("manim", 0.3) });
+  assert.ok(ops.length > 0, "the sketch is DRAWN — before AO this was zero ops, which is the bug");
+  assert.equal(ops[0].stroke.type, "material");
+  assert.equal(ops[0].stroke.material.id, "wavy");
+  // An unresolved material reaching the painter is a hard throw by contract
+  // (paint_skia.drawMaterialStroke), and resolveMaterialFillPaints runs BEFORE
+  // manimIR, so it never sees this paint — manimIR must resolve it itself.
+  assert.ok(ops[0].stroke.resolvedParams, "resolved here, because the op seam upstream cannot reach a paint read out of STATE");
+});
+
+test("AO: a GRADIENT stroke draws the sketch too", () => {
+  const stroke = { type: "linearGradient", stops: [{ color: "#ff0000", offset: 0 }, { color: "#0000ff", offset: 1 }] };
+  const ops = inkOps({ type: "circle", x: 0, y: 0, w: 80, h: 80, fill: "#00ff00", stroke, strokeWidth: 4, active: fx("manim", 0.3) });
+  assert.ok(ops.length > 0, "drawn, where a non-string tier used to be dropped");
+  assert.equal(ops[0].stroke.type, "linearGradient");
+});
+
+test("AO: a FILL-ONLY material tier falls THROUGH — never reaching getStrokeMaterial", () => {
+  // THE CRASH GUARD. `crt` is a fill material with no stroke renderer, and handing
+  // it to getStrokeMaterial throws — the `d545ddc` crash that bricked the app
+  // across reloads (core/paint_containment.js's third case). It must be refused,
+  // and the refusal must not end the ladder: the widget still has a fill tier.
+  assert.equal(canStrokeWithPaint({ type: "material", material: { id: "crt" } }), false, "fill-only: refused");
+  assert.equal(canStrokeWithPaint({ type: "material", material: { id: "wavy" } }), true, "stroke roster: accepted");
+  assert.equal(canStrokeWithPaint({ type: "none" }), false, "a paint that draws nothing is not a usable tier");
+  const crt = { type: "material", material: { id: "crt", params: {} } };
+  assert.equal(manimSketchStroke({ fill: "#ff0000", stroke: crt, strokeWidth: 4 }), "#ff0000",
+    "the ladder continued to the fill instead of crashing or drawing nothing");
+  // And end to end, through the whole walk: it draws, and it does not throw.
+  const ops = inkOps({ type: "circle", x: 0, y: 0, w: 80, h: 80, fill: "#ff0000", stroke: crt, strokeWidth: 4, active: fx("manim", 0.3) });
+  assert.ok(ops.length > 0 && ops.every((o) => o.op === "path"));
+  assert.deepEqual(ops[0].stroke, [1, 0, 0, 1], "sketched in the FILL's red");
+  // A crossfade is only strokeable if BOTH sides are — the painter draws each
+  // side as its own pass, so a bad side would throw on that pass.
+  assert.equal(canStrokeWithPaint({ type: "crossfade", from: "#f00", to: crt, t: 0.5 }), false);
+  assert.equal(canStrokeWithPaint({ type: "crossfade", from: "#f00", to: { type: "material", material: { id: "wavy" } }, t: 0.5 }), true);
+});
+
+test("AO: for TEXT the widget's-own-stroke tier is glyphStroke, not the box border", () => {
+  // plugins/plaintext.js declares NO `stroke` row and plugins/latex.js spends
+  // `stroke` on the BOX BORDER, so statePaint's middle tier read null for both and
+  // an authored letterform outline was invisible to the trace.
+  assert.equal(manimStatePaint({ fill: "#000", glyphStroke: "#ff0000", glyphStrokeWidth: 3 }).stroke, "#ff0000");
+  assert.equal(manimStatePaint({ fill: "#000", glyphStroke: "#ff0000", glyphStrokeWidth: 0 }).stroke, null,
+    "width 0 = no outline, the same gate emit() uses");
+  assert.equal(manimStatePaint({ fill: "#000", stroke: "#00ff00", strokeWidth: 2, glyphStroke: "#ff0000", glyphStrokeWidth: 3 }).stroke, "#ff0000",
+    "the GLYPH row wins: the payload being traced is the letterforms, not the box");
+  // A shape has no glyph row, so this is byte-identical to statePaint for it.
+  assert.deepEqual(manimStatePaint({ fill: "#f00", stroke: "#00f", strokeWidth: 2 }),
+    { fill: "#f00", stroke: "#00f", strokeWidth: 2, opacity: 1 });
+});
+
+test("AO: the ENDPOINT LAW still holds — v = 1 is byte-identical to no mode", () => {
+  // The ruling changed which paint the SKETCH uses, and the sketch exists only
+  // during the draw-in. A material-stroked widget at rest must be untouched.
+  const stroke = { type: "material", material: { id: "wavy", params: {} } };
+  const base = { type: "circle", x: 0, y: 0, w: 80, h: 80, fill: "#0000ff", stroke, strokeWidth: 4 };
+  assert.deepEqual(inkOps({ ...base, active: fx("manim", 1) }), inkOps({ ...base, active: true }),
+    "v = 1 IS the widget, with none of this mode's ink in it");
+  // And phase 0 still draws NO fill — the sketch is the only ink before the seam.
+  const mid = inkOps({ ...base, active: fx("manim", 0.3) });
+  assert.ok(mid.every((o) => o.op === "path" && o.fill === null), "phase 0: outline only, fill forced off");
 });
 
 // ── ARC LENGTH, NOT CURVE INDEX ──────────────────────────────────────────────

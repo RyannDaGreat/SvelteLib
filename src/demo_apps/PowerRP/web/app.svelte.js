@@ -20,7 +20,7 @@ import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDe
 import { clipboardKind, propertySubsetKind, pasteBadge, pasteIntent } from "./pasteAffordance.js"; // what the paste button's badge and tooltip say (WORKSTREAM UU half 2)
 // APPEARANCE-PRESERVING slide reorder + the duplicate-keyframe simplifier that
 // is its counterweight (core/slide_reorder.js states the law both obey).
-import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted, withSlidesMerged } from "../core/slide_reorder.js";
+import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted, withSlidesMerged, withSlideRunMerged } from "../core/slide_reorder.js";
 import { unionRect } from "../core/geometry.js";
 // Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
 import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
@@ -5364,10 +5364,17 @@ export class PowerRPApp {
    * two into one.
    *
    * User ruling, 2026-08-02: "The one that comes later in the slideshow will have
-   * priority. For whatever deltas arise." That priority is DECK ORDER, not drag
-   * direction and not which slide the cursor is on — so merge-up and merge-down
-   * on the same pair produce the SAME document. The two commands differ only in
-   * WHICH PAIR they name, which is the thing a PowerPoint user is choosing.
+   * priority. For whatever deltas arise." That priority is DECK ORDER, not which
+   * slide the cursor is on — so merge-up and merge-down on the same pair produce
+   * the SAME document. The two commands differ only in WHICH PAIR they name,
+   * which is the thing a PowerPoint user is choosing.
+   *
+   * A LATER RULING THE SAME DAY MOVED THE DRAG GESTURE OFF THIS RULE and left
+   * these commands on it: "the one that I am currently dropping onto the other
+   * one to take priority … it looks to me like I'm physically dropping it on
+   * top". A palette command has no drop, nothing is on top of anything, so there
+   * is no metaphor here to follow and deck order remains the only answer.
+   * `mergeSlideRun` is the path that changed.
    *
    * The survivor sits at the EARLIER of the two seats (core withSlidesMerged owns
    * the identity rules), so that is where the cursor lands — the canvas keeps
@@ -5380,12 +5387,15 @@ export class PowerRPApp {
 
   /**
    * Command (ONE undo unit). The merge two ADJACENT slides share, by index —
-   * what both the up/down commands and the rail's drag-onto-a-slide drop call.
+   * what the Merge Slide Up/Down commands call.
    *
-   * ONE SEAM ON PURPOSE: the drop gesture and the palette command must produce
-   * byte-identical documents, and the cheapest way to guarantee that is for
-   * there to be one path. It also means the blocker sentence is checked once,
-   * here, rather than at each surfacing.
+   * IT IS NO LONGER THE DROP'S PATH, and that sentence used to read the other
+   * way ("the drop gesture and the palette command must produce byte-identical
+   * documents"). The 2026-08-02 drop-priority ruling made the two gestures mean
+   * different things, so a shared path would now be the bug rather than the
+   * guarantee. The rail's drop goes through `mergeSlideRun`; what the two still
+   * share is `core/slide_reorder.withSlidesMerged` and the blocker sentences, so
+   * the ALGEBRA is one implementation even though the priority is not one rule.
    */
   mergeSlidePair(indexA, indexB) {
     const earlier = Math.min(indexA, indexB);
@@ -5428,35 +5438,56 @@ export class PowerRPApp {
    * drag-a-slide-onto-a-slide, and the multi-select generalization of
    * `mergeSlidePair`.
    *
-   * PRIORITY IS DECK ORDER, NOT DRAG DIRECTION. The user's rule is "the one that
-   * comes later in the slideshow will have priority", so dragging slide 2 onto
-   * slide 5 and dragging slide 5 onto slide 2 produce the SAME document: 5 wins
-   * either way. The drag direction chooses WHICH SLIDES, never which one wins.
+   * PRIORITY FOLLOWS THE DROP. User ruling, verbatim (2026-08-02): "When I'm
+   * merging two slides, actually I want the one that I am currently dropping onto
+   * the other one to take priority. Because it looks to me like I'm physically
+   * dropping it on top, so the one that's on top gets the priority." So the
+   * DRAGGED slides win, and dragging 2 onto 5 is NOT the same document as
+   * dragging 5 onto 2 — the gesture's direction is now load-bearing.
+   *
+   * THIS PARAGRAPH USED TO SAY THE OPPOSITE ("PRIORITY IS DECK ORDER, NOT DRAG
+   * DIRECTION"), citing the earlier ruling "the one that comes later in the
+   * slideshow will have priority". That ruling is not repealed: it still governs
+   * `mergeSlide` / `mergeSlidePair`, the Merge Slide Up/Down commands, which have
+   * NO drop metaphor to appeal to. The two surfacings differ on purpose, and the
+   * difference is passed to core as `{priority, seat}` rather than inferred there.
    *
    * ── GATHER, THEN COLLAPSE ───────────────────────────────────────────────────
    * The slides need not be adjacent. Dragging slide 1 onto slide 3 must merge
    * those two — refusing it because two rows sit between them would be the app
    * declining an unambiguous gesture over its own implementation detail. So a
-   * scattered set is first GATHERED into a contiguous block at the position of
-   * its LAST member, using the appearance-preserving reorder
-   * (`withSlidesMovedToBoundary`), and then collapsed pairwise.
+   * scattered set is first GATHERED into a contiguous block AT THE DROP TARGET,
+   * using the appearance-preserving reorder (`withSlidesMovedToBoundary`), and
+   * then collapsed pairwise.
    *
-   * THAT COMPOSITION IS SOUND BECAUSE BOTH HALVES PRESERVE APPEARANCE. The
+   * THAT COMPOSITION IS SOUND BECAUSE THE GATHER PRESERVES APPEARANCE. The
    * reorder's law is that every slide still looks exactly as it did (only the
-   * order changed), and the merge's law is that the pair shows the later
-   * picture while every slide after it is untouched. So the gathered slides
-   * carry their own pictures to the merge site, and the merge then applies
-   * "later wins" to exactly the slides the user pointed at — with the slides
-   * that were BETWEEN them left alone, now sitting before the merged row.
+   * order changed), so the gathered slides carry their own pictures to the merge
+   * site and the merge then applies the drop's priority to exactly the slides the
+   * user pointed at — with the slides that were BETWEEN them left alone.
    *
-   * IT GATHERS AT THE LAST MEMBER'S POSITION, not the first: that is the seat
-   * whose picture wins, so the merged slide stays where the winning content
-   * already was, and the deck reads as "these collapsed into that one".
+   * IT GATHERS AT THE TARGET'S POSITION, not the run's last: the target is the
+   * row that survives, so the deck reads "these collapsed into that one". (That
+   * sentence is unchanged; what changed is which row it names. It used to name
+   * the LAST member because that was the seat whose picture won.)
    *
-   * The block is then collapsed FROM THE RIGHT, which is "later wins" iterated
-   * (pinned in tests/slide_merge_test.js: merging a deck all the way down to one
-   * slide yields the LAST slide's picture). Every step is pure and only the final
-   * document is committed, so the whole gesture is ONE undo unit.
+   * THE GATHER MUST NOT EXPRESS THE PRIORITY, and this is the trap that cost a
+   * red test. It is tempting to reorder the dragged rows to the target's RIGHT
+   * and keep collapsing rightmost-wins. That is wrong: `withSlidesMovedToBoundary`
+   * is APPEARANCE-preserving, so a slide moved past another has its delta
+   * RE-DERIVED, acquiring explicit keyframes for leaves it used to inherit — and
+   * those manufactured keyframes then win the collision. Priority is about which
+   * STORED delta lands last, so it is expressed at the merge, not in the deck.
+   * The gather here only makes the run contiguous, in DECK ORDER, exactly as
+   * before the drop ruling; `core/slide_reorder.withSlideRunMerged` then takes
+   * the application order as an argument and collapses in one step.
+   *
+   * THE ORDER IS: the target first, then the dragged slides in DECK ORDER. Last
+   * applied wins, so the dragged all beat the target, and among themselves the
+   * later one wins — the two halves of the ruling, in one array.
+   *
+   * The whole gesture is one pure computation and one commit, so it is ONE undo
+   * unit.
    */
   mergeSlideRun(indices, target) {
     const run = [...new Set([...indices, target])].sort((a, b) => a - b);
@@ -5468,17 +5499,17 @@ export class PowerRPApp {
     let doc = this.doc;
     let block = run;
     if (run[run.length - 1] - run[0] !== run.length - 1) {
-      // SCATTERED — gather first. The boundary is just after the run's last
-      // member, so the block lands ending where that slide already sat.
+      // SCATTERED — gather first, in deck order, at the target's row. The
+      // boundary is the target's own index, so the block lands starting where the
+      // surviving row already sat.
       const ids = run.map((i) => this.doc.slides[i].id);
-      doc = withSlidesMovedToBoundary(this.doc, run, run[run.length - 1] + 1);
+      doc = withSlidesMovedToBoundary(this.doc, run, target);
       block = ids.map((id) => doc.slides.findIndex((s) => s.id === id)).sort((a, b) => a - b);
     }
-    // Collapse from the RIGHT so the indices of the not-yet-merged pairs never
-    // shift under us: merging (i, i+1) renumbers everything after i, but nothing
-    // at or before it.
-    for (let i = block[block.length - 1]; i > block[0]; i--) doc = withSlidesMerged(doc, i - 1, i);
-    this.commit(doc);
+    // Deck index -> gathered index, so the drop's order survives the gather.
+    const seat = doc.slides.findIndex((s) => s.id === this.doc.slides[target].id);
+    const order = [seat, ...block.filter((i) => i !== seat)];
+    this.commit(withSlideRunMerged(doc, block, { order, seat }));
     this.clearSlideSelection();
     this.slideIndex = block[0];
   }

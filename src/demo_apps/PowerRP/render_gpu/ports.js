@@ -18,7 +18,7 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, isPaintOff, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
 import { morphPaths, payloadToPathD, assertMorphPaths } from "../core/morph.js";
 import { statePaint } from "../core/morph_payload.js";
 import { isVisibleFxToken, visibleLevel, isPaintShaped, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
@@ -27,6 +27,7 @@ import { MANIM_SKETCH_STROKE_WIDTH, manimDrawPlan, sketchStrokePaint, trimSubpat
 import { interpolate } from "../core/interpolators.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
+import { hasStrokeMaterial } from "./skia/stroke_materials.js"; // the STROKE-material roster — WHICH materials can be a stroke at all (canStrokeWithPaint)
 import { reportOnce, warnOnce } from "../core/report.js";
 import { errorAffordanceArgs, errorBoxExtent, errorMessage, describeOwner, throwMessage, isConfigurationError, configurationError } from "../core/paint_containment.js";
 
@@ -615,7 +616,10 @@ function emitNodeBody(node, byId, display) {
   // (manimIR). Every seam below is untouched — a half-drawn widget's effects,
   // stroke trim, join and fade all apply exactly as they do to any other, because
   // what manimIR emits is ordinary `path` ops.
-  const inked = manimIR(node, cmds);
+  // `byId` rides along because the sketch STROKE is read out of state, not out of
+  // an op, so resolveMaterialFillPaints above never saw it — manimIR resolves it
+  // itself, and a scene-sampling material needs the scene (manimSketchStroke).
+  const inked = manimIR(node, cmds, byId);
   const body = applyActiveFade(fxState, applyStrokeJoin(fxState, applyStrokeOffset(fxState, applyStrokeTrim(fxState, applyNodeEffects(fxNode, inked)))));
   // THE OWNER TAG — this node's identity, hung on the ONE push that opens its op
   // run, so the PAINT-TIME boundary can name the item it had to contain
@@ -1262,6 +1266,14 @@ export function blurFadeState(state) {
  * item and its type: the author asked for a specific animation and did not get
  * it, the same rule core/derive.js applies to a refused morph. It NEVER throws.
  *
+ * ── THE SKETCH DRAWS WITH THE WIDGET'S REAL STROKE, MATERIALS INCLUDED ───────
+ * The pen's colour is the first tier of `sketchPaintTiers` this renderer can
+ * actually stroke with — a colour, a gradient, or a stroke MATERIAL, resolved
+ * here through the same helper every op slot uses. That is WORKSTREAM AO's
+ * ruling, and manimSketchStroke below carries it with its argument; the sketch
+ * used to drop any non-string tier, which is why a material-inked widget traced
+ * nothing at all.
+ *
  * ── WHY THE REAL INK IS DRAWN AND NOT REBUILT FROM THE PAYLOAD ───────────────
  * A `morphPaths` payload is an OUTLINE, not a picture: it carries no material,
  * no gradient mapping, no image, no per-glyph text layout. Fading the widget's
@@ -1346,4 +1358,137 @@ export function manimIR(node, cmds, nodesById = null) {
   // THE FILL GOES UNDER. The sketch stroke is what the eye follows, so it must
   // not be buried by the ink rising behind it.
   return [...fill, ...sketch];
+}
+
+/**
+ * Pure function. THE WIDGET-STATE HALF OF THE SKETCH TIER LADDER — what a
+ * widget's own state offers the Manim trace as `{fill, stroke, strokeWidth}`.
+ *
+ * It is core/morph_payload.statePaint WITH THE GLYPH ROW FOLDED IN, and that is
+ * the whole reason it exists rather than being that function (WORKSTREAM AO,
+ * item 3). `statePaint` reads `stroke`/`strokeWidth`, which on a TEXT widget mean
+ * nothing at all — plugins/plaintext.js declares no `stroke` row, and
+ * plugins/latex.js spends `stroke` on the BOX BORDER, not on the letterforms. So
+ * for text and equations the ladder's middle tier read `null` and silently fell
+ * through to the fill, and an author who had drawn a red outline around their
+ * letterforms watched the sketch ignore it.
+ *
+ * THE TIER IS `glyphStroke`, GATED ON `glyphStrokeWidth`, exactly as the widgets'
+ * own emit() gates it (both declare the pair, both treat width 0 as "no
+ * outline"). A widget that has BOTH kinds — a bordered equation with a glyph
+ * outline — prefers the GLYPH one, because the trace draws LETTERFORMS: the
+ * payload it is trimming is the glyph outlines, and the paint that describes
+ * those is `glyphStroke`. Its box border is not what is being drawn.
+ *
+ * A widget with no glyph row (every shape, icon, arrow) is byte-identical to
+ * `statePaint`.
+ *
+ * @param {object} s - a widget state bag
+ * @returns {{fill, stroke, strokeWidth}}
+ *
+ * @example manimStatePaint({fill: "#f00", stroke: "#00f", strokeWidth: 2}).stroke // '#00f' (a shape: statePaint, unchanged)
+ * @example manimStatePaint({fill: "#000", glyphStroke: "#f00", glyphStrokeWidth: 3}).stroke // '#f00' (text: the LETTERFORM outline is the stroke tier)
+ * @example manimStatePaint({fill: "#000", glyphStroke: "#f00", glyphStrokeWidth: 0}).stroke // null (width 0 = no outline, same gate emit() uses)
+ * @example manimStatePaint({fill: "#000", stroke: "#0f0", strokeWidth: 2, glyphStroke: "#f00", glyphStrokeWidth: 3}).stroke // '#f00' (the glyph row wins: the trace draws letterforms, not the box)
+ */
+export function manimStatePaint(s) {
+  const glyphWidth = s?.glyphStrokeWidth ?? 0;
+  const base = statePaint(s ?? {});
+  if (glyphWidth > 0 && s?.glyphStroke != null) return { ...base, stroke: s.glyphStroke, strokeWidth: glyphWidth };
+  return base;
+}
+
+/**
+ * Query (reads the material registries; reports once on a foreign knob). THE
+ * SKETCH STROKE — the first tier of `sketchPaintTiers` this renderer can
+ * ACTUALLY STROKE WITH, resolved and painter-ready. `null` when no tier is.
+ *
+ * ── THE RULING (WORKSTREAM AO, user, 2026-08-02) ─────────────────────────────
+ *   "wouldn't it make sense to use the material stroke if provided for the manum
+ *    entry effect instead of always using white? For example, if I select a red
+ *    stroke, then the manum effect should use that stroke, or a material stroke,
+ *    then manum should use that material stroke to draw."
+ *
+ * As shipped the tier's answer was DROPPED unless it was a string, on the
+ * argument that "`stroke` takes a colour". That argument was simply false about
+ * this codebase: `ir.path()` normalizes its `stroke` through `parsePaint`, which
+ * passes materials, gradients and crossfades through by design, and
+ * paint_skia.drawOpStroke has routed a material stroke to the stroke-material
+ * framework since the framework existed. Nothing had to be built to honour the
+ * ruling — a working seam was being bypassed, and the visible result was a
+ * material-inked widget whose sketch was not drawn AT ALL.
+ *
+ * ── WHY A TIER CAN STILL BE REFUSED, AND WHAT THAT MUST NOT BE ───────────────
+ * Not every material can be a STROKE. There are two registries: fill materials
+ * (crt, sky, comic, glass…) and stroke materials (alongGradient, widthProfile,
+ * dashes, wavy, brush, textureBrush). Handing a FILL-ONLY material to
+ * getStrokeMaterial THROWS — that is the exact crash `d545ddc` shipped to contain
+ * (core/paint_containment.js's third case: it bricked the app across reloads,
+ * because autosave restored the poisoned document every boot). So a fill-only
+ * material tier must never reach the painter as a stroke.
+ *
+ * IT MUST ALSO NOT END THE LADDER. The refusal is about THIS TIER, not about the
+ * widget: a crt-filled star still has a fill tier to try, and before this change
+ * an unusable tier produced no sketch at all. So `sketchStrokePaint` WALKS —
+ * refuse a tier, take the next, and only a widget with nothing strokeable
+ * anywhere gets no sketch (and then the real ink's own fade still tells the
+ * story, which is the pre-existing behaviour for a paintless widget).
+ *
+ * ── RESOLUTION, AND WHY IT IS HERE AND NOT UPSTREAM ──────────────────────────
+ * `resolveMaterialFillPaints` runs on the node's own emit() output BEFORE
+ * manimIR, so it never sees this paint: the sketch's stroke is read out of STATE
+ * (or a payload's own paint), not out of an op. An unresolved material reaching
+ * the painter is a hard throw by contract, so it is resolved HERE, through the
+ * same `resolvedPaint` helper every op slot uses — including THROUGH a crossfade,
+ * because a widget mid-`blend` carries a `{type: "crossfade", from, to, t}` on
+ * exactly the interior frames Manim mode is drawing on. A bare `isMaterialPaint`
+ * test here would be the third instance of the bug that helper exists to kill.
+ *
+ * @param {object} paint - a tier source, {fill, stroke, strokeWidth}
+ * @param {object|null} node - the render node (material scene params read it)
+ * @param {Map|null} nodesById - the scene's nodes by id, for scene-sampling materials
+ * @returns {*} a painter-ready stroke paint, or null
+ *
+ * @example manimSketchStroke({fill: "#f00", stroke: "#00f", strokeWidth: 2}) // '#00f'
+ * @example manimSketchStroke({fill: "#f00"}) // '#f00'
+ * @example manimSketchStroke({}) // null
+ * @example // a STROKE material is used, and comes back RESOLVED:
+ * @example !!manimSketchStroke({stroke: {type: "material", material: {id: "wavy"}}, strokeWidth: 2}).resolvedParams // true
+ * @example // a FILL-ONLY material falls THROUGH to the next tier rather than crashing:
+ * @example manimSketchStroke({fill: "#f00", stroke: {type: "material", material: {id: "crt"}}, strokeWidth: 2}) // '#f00'
+ */
+export function manimSketchStroke(paint, node = null, nodesById = null) {
+  const winner = sketchStrokePaint(paint, canStrokeWithPaint);
+  return winner === null ? null : resolvedPaint(winner, node, nodesById);
+}
+
+/**
+ * Pure function. Can this renderer STROKE with this paint? The acceptance
+ * predicate `sketchStrokePaint` walks the tier ladder with.
+ *
+ * A colour or a gradient: yes, always. A MATERIAL: only if it is in the STROKE
+ * registry — see manimSketchStroke's docblock for why a fill-only material must
+ * be refused rather than handed to getStrokeMaterial. A CROSSFADE is strokeable
+ * iff BOTH its sides are, because the painter's crossfade router draws each side
+ * as an ordinary op and a bad side would throw on its own pass.
+ *
+ * `{type: "none"}` is a paint that draws NOTHING, so it is not a tier: accepting
+ * it would end the ladder on a stroke nobody can see, which is the "always white"
+ * complaint wearing a different hat.
+ *
+ * @param {*} p - a candidate paint
+ * @returns {boolean}
+ *
+ * @example canStrokeWithPaint("#ff0000") // true
+ * @example canStrokeWithPaint({type: "material", material: {id: "wavy"}}) // true (a stroke material)
+ * @example canStrokeWithPaint({type: "material", material: {id: "crt"}}) // false (fill-only — getStrokeMaterial would throw)
+ * @example canStrokeWithPaint({type: "none"}) // false (draws nothing, so it is not a usable tier)
+ * @example canStrokeWithPaint(null) // false
+ */
+export function canStrokeWithPaint(p) {
+  if (p === null || p === undefined) return false;
+  if (isPaintOff(p)) return false;
+  if (isMaterialPaint(p)) return hasStrokeMaterial(p.material?.id);
+  if (isCrossfadePaint(p)) return canStrokeWithPaint(p.from) && canStrokeWithPaint(p.to);
+  return true;
 }

@@ -305,32 +305,79 @@ export function manimDrawPlan(v, subpathCount, lag = manimLagRatio(subpathCount)
 }
 
 /**
- * Pure function. THE THREE-TIER SKETCH COLOUR — Manim's `get_stroke_color`
- * (research §2.1), ported with its middle tier intact.
+ * Pure function. THE SKETCH PAINT'S TIER LADDER, in order — Manim's
+ * `get_stroke_color` (research §2.1) with its middle tier intact, as a LIST
+ * rather than a chain of `??`.
  *
  * Precedence: (1) an explicit override, (2) the widget's OWN stroke when it has
  * a visible one, (3) its fill. The middle tier is the one a port loses by
  * accident, and losing it is visible: a widget with a red fill and a blue stroke
  * must sketch in BLUE, not red (§6 names exactly this).
  *
- * `null` when nothing at all is paintable — the caller (render_gpu/ports.js)
- * decides what a widget with neither stroke nor fill sketches with, because only
- * it knows what else is in the op.
+ * WHY A LIST AND NOT A VALUE (WORKSTREAM AO, user ruling 2026-08-02): "wouldn't
+ * it make sense to use the material stroke if provided for the manum entry
+ * effect instead of always using white? … if I select a red stroke, then the
+ * manum effect should use that stroke, or a material stroke, then manum should
+ * use that material stroke to draw." A tier's answer is now ANY paint — a
+ * colour string, a gradient, a material — and not every paint can be STROKED
+ * WITH (a fill-only material like `crt` has no stroke renderer at all). So a
+ * tier can be REFUSED, and a refusal must fall through to the NEXT tier rather
+ * than to nothing: that is a decision only the render side can make, because
+ * only it holds the stroke-material roster. Returning the ladder lets the caller
+ * walk it and stop at the first tier it can actually draw.
+ *
+ * The previous shape — return one value, caller drops it if it is not a string —
+ * is exactly what the user was seeing: a material-inked widget's sketch was
+ * dropped ENTIRELY, so nothing was drawn and the ink underneath read as the
+ * whole animation.
  *
  * @param {object} paint - {fill, stroke, strokeWidth} as morph payloads carry it
- * @param {string|null} override - an explicit sketch colour, or null
+ * @param {*} override - an explicit sketch paint, or null
+ * @returns {Array} the candidate paints, best first; possibly empty
  *
- * @example sketchStrokeColor({fill: "#ff0000", stroke: "#0000ff", strokeWidth: 3}) // "#0000ff" (tier 2 — an existing stroke wins over the fill)
- * @example sketchStrokeColor({fill: "#ff0000", stroke: "#0000ff", strokeWidth: 0}) // "#ff0000" (a zero-width stroke draws nothing, so tier 3)
- * @example sketchStrokeColor({fill: "#ff0000"}) // "#ff0000"
- * @example sketchStrokeColor({fill: "#ff0000"}, "#00ff00") // "#00ff00" (tier 1)
- * @example sketchStrokeColor({}) // null
+ * @example sketchPaintTiers({fill: "#ff0000", stroke: "#0000ff", strokeWidth: 3}) // ['#0000ff', '#ff0000'] (an existing stroke leads, the fill backs it)
+ * @example sketchPaintTiers({fill: "#ff0000", stroke: "#0000ff", strokeWidth: 0}) // ['#ff0000'] (a zero-width stroke draws nothing, so it is not a tier)
+ * @example sketchPaintTiers({fill: "#ff0000"}) // ['#ff0000']
+ * @example sketchPaintTiers({fill: "#ff0000"}, "#00ff00") // ['#00ff00', '#ff0000'] (the override leads; the fill still backs it up)
+ * @example sketchPaintTiers({}) // []
+ * @example // A MATERIAL STROKE IS A TIER, not something to drop — the ruling above:
+ * @example sketchPaintTiers({fill: "#ff0000", stroke: {type: "material", material: {id: "wavy"}}, strokeWidth: 3}).length // 2
  */
-export function sketchStrokeColor(paint, override = null) {
-  if (override) return override;
+export function sketchPaintTiers(paint, override = null) {
+  const tiers = [];
+  if (override) tiers.push(override);
   const stroke = paint?.stroke;
-  if (stroke && (paint?.strokeWidth ?? 0) > 0) return stroke;
-  return paint?.fill ?? null;
+  if (stroke && (paint?.strokeWidth ?? 0) > 0) tiers.push(stroke);
+  if (paint?.fill != null) tiers.push(paint.fill);
+  return tiers;
+}
+
+/**
+ * Pure function. THE FIRST TIER A CALLER CAN ACTUALLY DRAW — `sketchPaintTiers`
+ * walked with the caller's own acceptance predicate.
+ *
+ * Split from the ladder itself so `core/` never has to know what a renderer can
+ * paint (it may not import `render_gpu/` — the layering rule), while the WALK,
+ * which is the part with an off-by-one in it, stays here where it is testable in
+ * bare node against a predicate of your choosing.
+ *
+ * `null` when NO tier is drawable — the caller decides what a widget with
+ * nothing paintable sketches with, because only it knows what else is in the op.
+ *
+ * @param {object} paint - {fill, stroke, strokeWidth}
+ * @param {(p: *) => boolean} canPaint - is this paint strokeable by the caller?
+ * @param {*} override - an explicit sketch paint, or null
+ * @returns {*} the winning paint, or null
+ *
+ * @example sketchStrokePaint({fill: "#ff0000", stroke: "#0000ff", strokeWidth: 3}, (p) => true) // '#0000ff'
+ * @example // A FILL-ONLY MATERIAL IS REFUSED AND THE LADDER CONTINUES — it does not
+ * @example // fail, and it does not silently draw nothing (WORKSTREAM AO):
+ * @example sketchStrokePaint({fill: "#ff0000", stroke: {type: "material", material: {id: "crt"}}, strokeWidth: 3}, (p) => typeof p === "string") // '#ff0000'
+ * @example sketchStrokePaint({}, (p) => true) // null
+ */
+export function sketchStrokePaint(paint, canPaint, override = null) {
+  for (const tier of sketchPaintTiers(paint, override)) if (canPaint(tier)) return tier;
+  return null;
 }
 
 /**

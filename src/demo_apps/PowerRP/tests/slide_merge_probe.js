@@ -113,8 +113,10 @@ try {
   }, { fromRow, where });
 
   // ── 1. DROP ON A BODY = MERGE ─────────────────────────────────────────────
-  // Drag slide 1 onto slide 3's BODY. Deck order decides priority, so slide 3
-  // wins regardless of which of the two was picked up.
+  // Drag slide 1 onto slide 3's BODY. THE DRAGGED SLIDE WINS (user, 2026-08-02:
+  // "the one that I am currently dropping onto the other one to take priority"),
+  // so slide 1's look survives and slide 3's ROW is the seat that remains. This
+  // comment used to say deck order decided and the direction did not matter.
   const merged = await dragTo(0, { row: 2, kind: "body" });
   check(merged.mergeTargets === 1, `hovering a slide's body must mark exactly ONE merge target, got ${merged.mergeTargets}`);
   check(merged.chipText !== null, "the merge target must carry a chip saying what the release will do");
@@ -134,6 +136,14 @@ try {
     "one of the two merged rows must be gone — two slides became one");
   check(merged.idsAfter.includes(merged.idsBefore[1]),
     "the slide BETWEEN the two merged ones must survive untouched — it was not part of the gesture");
+  // THE DROP TARGET IS THE ROW THAT REMAINS: the dragged row is the one absorbed,
+  // so its id is gone and the target's is still there. This is the seat half of
+  // the drop metaphor, and it is the assertion that would fail if a future edit
+  // put the merge back on deck order.
+  check(merged.idsAfter.includes(merged.idsBefore[2]),
+    `the DROP TARGET's row must survive a merge — its id ${merged.idsBefore[2]} is missing from ${JSON.stringify(merged.idsAfter)}`);
+  check(!merged.idsAfter.includes(merged.idsBefore[0]),
+    `the DRAGGED row is the one absorbed, so its id ${merged.idsBefore[0]} must be gone`);
 
   // ── 2. DROP IN A GAP STILL REORDERS (the no-regression half) ──────────────
   const reordered = await dragTo(0, { row: 1, kind: "gap" });
@@ -166,10 +176,16 @@ try {
   check(undoneMerge.after === undoneMerge.before + 1,
     `ONE undo must restore the whole merge (both slides back): ${undoneMerge.before} -> ${undoneMerge.after}`);
 
-  // ── 4. THE COMMANDS AGREE WITH THE GESTURE ────────────────────────────────
+  // ── 4. THE COMMANDS AGREE WITH EACH OTHER ─────────────────────────────────
   // merge-slide-up on slide N and merge-slide-down on slide N-1 name the SAME
   // pair, so they must produce the same document — deck order decides the
   // winner, never which row the command was invoked from.
+  //
+  // THIS SECTION USED TO BE HEADED "THE COMMANDS AGREE WITH THE GESTURE". They no
+  // longer do, on purpose: the 2026-08-02 drop ruling gave the DRAG a different
+  // priority ("the one that I am currently dropping onto the other one"), and
+  // left the commands — which have no drop metaphor — on deck order. What is
+  // pinned here is that the earlier ruling still governs the command path.
   const commands = await page.evaluate(async () => {
     const app = window.__powerrp_app;
     const json = () => JSON.stringify(app.doc.slides.map((s) => [s.id, s.delta]));
@@ -207,7 +223,7 @@ try {
   check(gates.interior === null, `an interior pair must be mergeable, but was refused: ${gates.interior}`);
 
   if (errors.length) throw new Error(`console errors:\n${errors.join("\n")}`);
-  console.log("SLIDE MERGE PROBE OK: dropping a dragged slide on another slide's BODY merges them (one marked target, a chip naming which slide's look wins, the reorder indicator suppressed) while a drop in a GAP still reorders exactly as before; each is one undo unit; merge-up and merge-down on the same pair produce identical documents; the first/last slides refuse with a stated reason. Zero console errors.");
+  console.log("SLIDE MERGE PROBE OK: dropping a dragged slide on another slide's BODY merges them (one marked target, a chip naming which slide's look wins, the reorder indicator suppressed) with the DRAGGED row absorbed into the DROP TARGET's surviving row, while a drop in a GAP still reorders exactly as before; each is one undo unit; the COMMAND path is unchanged — merge-up and merge-down on the same pair produce identical documents; the first/last slides refuse with a stated reason. Zero console errors.");
 } finally {
   await browser.close();
   await server.close();
