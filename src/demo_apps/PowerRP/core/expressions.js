@@ -97,6 +97,10 @@ import { boxCenter, unsignedState } from "./geometry.js";
 import { reportOnce } from "./report.js";
 import { nearestRimPair, NEAREST_PAIR_MAX_ITERS } from "./outline.js";
 import { isHexColor } from "./interpolators.js";
+// The NODE-REFERENCE type. core/nodeflow.js imports nothing from this file, so the
+// dependency is one-way and cycle-free; it owns the `{item, port}` shape and the
+// dangling sentence, and this file owns only the grammar that produces one.
+import { isNodeRef, nodeRefProblem, defaultOutputPort } from "./nodeflow.js";
 // linearEndpointsToAngle is the codebase's ONE point-to-point HEADING: the
 // gradient direction dial's own math. `direction2` (below) is built on it rather
 // than on a second atan2, so the function library and the dial can never disagree
@@ -2027,6 +2031,43 @@ export function storedListPath(path) {
 const UNRESOLVED_KIND = "unresolved";
 
 /**
+ * The result kind of a NODE INPUT slot — `items.<id>.inputs.<port>`, the leaf a
+ * wire is stored in (core/nodeflow.js). An "=" equation there must evaluate to a
+ * `{item, port}` REFERENCE, which is the user's node type (2026-08-03: "It's a
+ * different type than just float ... It's a node type").
+ *
+ * IT NEEDS ITS OWN BRANCH RATHER THAN A PROPS ENTRY because `inputs` is a MAP
+ * keyed by port name: the key is `inputs.gain` on one widget and `inputs.cutoff`
+ * on the next, so there is no fixed property path for PROPS to declare. That is
+ * the same reason NODE_ITEM_REFS needed a wildcard segment.
+ *
+ * WHAT THIS FIXES, MEASURED: before it, `"= osc1"` in an input slot WAS collected
+ * as a slot (leaves() descends into the inputs map) and typed UNRESOLVED, so it
+ * failed with "has no declared value kind" — a true sentence about a hole, not a
+ * design. A drag-authored `{item, port}` literal is untouched either way: its
+ * leaves are `inputs.gain.item` / `inputs.gain.port`, and isEquationValue answers
+ * false for both, so no existing patch enters the equation engine at all.
+ */
+const NODEREF_KIND = "noderef";
+
+/**
+ * Pure function. Is this slot path a node INPUT port slot — `inputs.<port>`,
+ * relative to the item? Exactly two segments: the map, then one port key. A
+ * DEEPER path (`inputs.gain.item`) is the literal's own leaf and is NOT an
+ * equation slot, which is what keeps a drag-authored wire out of the evaluator.
+ *
+ * @param {string[]} rel - the path BELOW the item (e.g. ["inputs", "gain"])
+ * @returns {boolean}
+ *
+ * @example isNodeInputPath(["inputs", "gain"]) // true
+ * @example isNodeInputPath(["inputs", "gain", "item"]) // false (a literal's leaf, not a slot)
+ * @example isNodeInputPath(["w"]) // false
+ */
+export function isNodeInputPath(rel) {
+  return rel.length === 2 && rel[0] === "inputs";
+}
+
+/**
  * Pure function. The RESULT TYPE an equation slot must evaluate to. Variables
  * and legacy (non-"=") numeric slots are "number" — byte-identical to the
  * pre-any-type engine. For a UNIVERSAL "=" slot the kind is resolved in this
@@ -2074,6 +2115,10 @@ const UNRESOLVED_KIND = "unresolved";
  */
 export function resultKindForSlot(plugin, path, value, item = null) {
   if (!EQ_PREFIX_RE.test(value)) return "number"; // legacy numeric / self-anchor slot
+  // A NODE INPUT is checked BEFORE the PROPS lookup: `inputs` is a port-keyed map,
+  // so no PROPS entry can ever name the path, and every later branch would fall
+  // through to UNRESOLVED. See NODEREF_KIND.
+  if (isNodeInputPath(path)) return NODEREF_KIND;
   const propDef = PROPS[path.join(".")];
   if (propDef) return KIND_RESULT[propDef.kind];
   const listed = listSlotKind(path);
@@ -2119,6 +2164,13 @@ export function resultMatchesKind(v, kind, options = null) {
     // which needs the declaration this signature does not carry (and which
     // reports WHICH element/field is wrong instead of a bare false).
     case "list": return Array.isArray(v);
+    // A NODE REFERENCE is `{item, port}`. Whether it points at a REAL output is
+    // checked separately (core/nodeflow.nodeRefProblem), for the same reason a
+    // list's element shape is: that answer needs the registry and the item map,
+    // which this signature does not carry, and it must name WHICH part dangles
+    // instead of returning a bare false. `null` is legal — it is the `node`
+    // type's zero, i.e. a deliberately unwired input.
+    case "noderef": return v === null || isNodeRef(v);
     default: return false;
   }
 }
@@ -2898,6 +2950,16 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     const rel = path.slice(2);
     const knobDefault = materialParamDefaultAt(rel, item);
     if (knobDefault !== undefined) return knobDefault;
+    // A NODE INPUT falls back to null — UNWIRED — not to the generic 0 below.
+    // `plugin.defaults.inputs` is the empty map (it has no per-port entry, because
+    // ports are named by the plugin's `ports()`, not by its defaults), so the `?? 0`
+    // would leave a NUMBER sitting in a slot every reader treats as `{item, port}`.
+    // Measured before this line: a dangling `= nope` left `inputs.in = 0`, which
+    // connectionsOf and deriveWires both skip — so the wire vanished, which LOOKS
+    // like a deliberate disconnect and is the exact silent-wrongness the loud error
+    // path exists to prevent. null is the `node` type's zero and reads as unwired
+    // everywhere, so the reported error is the ONLY thing that changed.
+    if (isNodeInputPath(rel)) return null;
     return getPath(registry.get(item.type).defaults, rel) ?? 0;
   };
   const status = new Map(); // slotKey → "eval" | "done" | "failed"
@@ -3282,10 +3344,70 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     });
   };
 
+  /**
+   * THE NODE-REFERENCE GRAMMAR, resolved. Turns an equation's result into the
+   * `{item, port}` a wire is stored as, or throws the sentence the author needs.
+   *
+   * ACCEPTED SPELLINGS, and why each is here:
+   *   `= osc1`        a lone item slug — the reference literal. Port defaults to
+   *                   the source's FIRST declared output (nodeflow.defaultOutputPort).
+   *   `= osc1.out`    the port named explicitly, as a second segment.
+   *   `= null`        a deliberate disconnect. Legal because `null` IS the node
+   *                   type's zero, and an author computing "wired only on some
+   *                   slides" (`= slide > 2 ? osc1 : null`) is the keyframeable
+   *                   connection the founding ruling asks for.
+   *   a passthrough   an already-resolved `{item, port}` — what a project-script
+   *                   export or a conditional over two refs returns.
+   *
+   * REFUSED LOUDLY: a number, a string, anything else. A STRING is refused on
+   * purpose even though it looks helpful — `= "osc1"` would be an item name that
+   * no rename walk rewrites, which is precisely the failure the slug grammar
+   * exists to prevent (see nodeflow.js's header). Accepting it would install the
+   * bug quietly for anyone who guessed that spelling.
+   */
+  const nodeRefFromResult = (result, slot) => {
+    if (result === null || result === undefined) return null; // a deliberate disconnect
+    if (isNodeRef(result)) return withResolvedRef(result, slot);
+    const segs = result != null && result[IS_REF] ? result[REF_SEGS] : null;
+    if (!segs || segs.length === 0 || segs.length > 2)
+      throw new Error(segs && segs.length > 2
+        ? `a node reference is an item and at most one output port ("${segs.join(".")}" names ${segs.length} segments)`
+        : `= expression result ${JSON.stringify(result)} is not a node reference — write an item's name, optionally with an output port (e.g. "= osc1" or "= osc1.out")`);
+    const selfId = slot.path[0] === "items" ? slot.path[1] : null;
+    // resolveWidgetArg throws a named "Unknown widget" for a slug that matches no
+    // item — the SAME sentence a mistyped widget argument produces, so a typo reads
+    // identically wherever an item is named.
+    const itemId = resolveWidgetArg(segs[0] === "self" ? "self" : segs[0], slugs, selfId);
+    const port = segs.length === 2 ? String(segs[1]) : defaultOutputPort(out.items ?? {}, registry, itemId);
+    if (port === null)
+      throw new Error(`"${segs[0]}" has no output ports, so there is nothing for this input to read`);
+    return withResolvedRef({ item: itemId, port }, slot);
+  };
+
+  /** DANGLING IS LOUD (the house rule): a reference naming a real item but no real
+   *  output port fails through the ordinary equation-error path, so the row shows
+   *  the reason and the slot falls back to its default (null = unwired). Silently
+   *  dropping it would make a typo indistinguishable from a deliberate disconnect,
+   *  and the wire would vanish with no explanation. `requireItemGeometry` is NOT
+   *  called: a reference reads an item's IDENTITY, not its geometry, so it creates
+   *  no evaluation-order constraint and cannot participate in a value cycle. */
+  const withResolvedRef = (ref, slot) => {
+    const problem = nodeRefProblem(out.items ?? {}, registry, ref);
+    if (problem) throw new Error(problem);
+    addDep(slot.key, `items.${ref.item}`);
+    return ref;
+  };
+
   const runExpression = (slot) => {
     const clean = String(slot.src).replace(/^\s*=\s*/, ""); // spreadsheet leading "="
     const fn = compileEquationFn(clean); // throws (syntax) → caught by evalSlot
     const result = fn(makeScope(slot));
+    // A NODE-REFERENCE slot reads the proxy's PATH, never its value. Coercing here
+    // is exactly what must not happen: `= osc1` would resolve to the item's own
+    // numeric properties (or throw), when what the slot wants is the IDENTITY of
+    // the thing named. This is the same read `closest_to_rim`'s widget argument
+    // makes (REF_SEGS), which is why the grammar needed no new constructor.
+    if (slot.kind === NODEREF_KIND) return nodeRefFromResult(result, slot);
     // A lone-ref result (`= box.x`, `speed`) is the ref proxy — coerce it once.
     return result != null && result[IS_REF] ? result[Symbol.toPrimitive]("default") : result;
   };
@@ -3315,6 +3437,13 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
         const found = listDeclAt(slot.path.slice(2));
         const problem = found ? listResultProblem(found.decl, v) : "has no list declaration to validate against";
         if (problem) throw new Error(`= expression result ${problem}`);
+      } else if (slot.kind === NODEREF_KIND) {
+        // Shape only. WHETHER IT DANGLES was already decided — and thrown — inside
+        // nodeRefFromResult, which is the one place with the item map and the
+        // registry in hand, and which names WHICH part is missing. Re-checking here
+        // would either duplicate that sentence or produce a vaguer one.
+        if (!resultMatchesKind(v, NODEREF_KIND))
+          throw new Error(`= expression result ${JSON.stringify(v)} is not a node reference`);
       } else if (slot.kind === "number") {
         if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`evaluates to ${v}`);
       } else if (!resultMatchesKind(v, slot.kind, PROPS[slot.path.slice(2).join(".")]?.options)) {

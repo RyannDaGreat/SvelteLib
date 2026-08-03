@@ -108,6 +108,79 @@
  * is why the trio in plugins/node_*.js retweens across slides with no special
  * handling — the number a source emits is an ordinary keyframable leaf, so a
  * tweened source drives a tweened display for free.
+ *
+ * ── THE NODE-REFERENCE TYPE: AN INPUT MAY BE COMPUTED ───────────────────────
+ * USER RULING, 2026-08-03 (verbatim): "The wires are drawn by the receiver node,
+ * based on the equation given for where its source output is. That's the way it
+ * should work, because if we don't do that we can't keyframe them. Objects should
+ * be referenceable as equations and should be nodes. It's a different type than
+ * just float and what other things, right? It's a node type."
+ *
+ * So `inputs.<port>` accepts TWO spellings of the same thing:
+ *
+ *     inputs.gain = {item: "ab12cd34", port: "out"}   // drag-authored LITERAL
+ *     inputs.gain = "= osc1.out"                      // an EQUATION
+ *
+ * THE GRAMMAR IS THE BARE SLUG, and it needed no new constructor. `= osc1` is a
+ * lone item reference — exactly the shape `closest_to_rim(box, …)` already takes
+ * as a widget argument, read off the lazy ref proxy's REF_SEGS. `= osc1.out`
+ * names the port as a second segment; with the port omitted, the source's FIRST
+ * declared output is used, because a source with one output (the common case) has
+ * only one thing the author could have meant.
+ *
+ * WHY NOT `ref("osc1", "out")`, which was the brief's other candidate: it puts an
+ * item NAME inside a STRING literal, and no rename walk rewrites string contents.
+ * Renaming the oscillator would silently dangle every such equation. A slug cannot
+ * have that bug BY CONSTRUCTION — references are STORED by itemId and DISPLAYED as
+ * slugs (see core/expressions.js's header: "renames then need NO document
+ * rewrites"), so the rename is a display-time re-derivation, not a rewrite.
+ *
+ * ── RESOLUTION IS DETERMINISTIC, AND HAPPENS BEFORE ANY WIRE IS DRAWN ───────
+ * `evaluateState` runs BEFORE `deriveRenderTree` (web/cameraFrame.js is the one
+ * seam that threads it). So by the time `connectionsOf` and `core/derive.deriveWires`
+ * read `state.inputs`, an equation-driven input is ALREADY a plain `{item, port}`
+ * literal — indistinguishable from a drag-authored one.
+ *
+ * THAT IS WHY THE WIRE DRAWS IDENTICALLY, and it required no change to BN's wire
+ * derivation at all. The user's ruling is satisfied by the pipeline's existing
+ * ORDER rather than by a special case: there is exactly one wire-drawing path
+ * because downstream there is exactly one input shape.
+ *
+ * ── DANGLING IS LOUD, THROUGH THE ORDINARY EQUATION-ERROR PATH ──────────────
+ * `nodeRefProblem` states what is wrong (unknown item, item is not a node, no such
+ * output port) and the evaluator raises it exactly as it raises "evaluates to NaN"
+ * — the error lands in `evaluateState`'s error map, the Inspector row shows it, and
+ * the slot falls back to its default (null = unwired). It is NEVER silently
+ * dropped: a wire that vanished with no explanation is the defect this app's
+ * house rules forbid, and a mistyped slug must not read as a deliberate disconnect.
+ *
+ * ── CLONE SEMANTICS: THE HONEST BOUNDARY, MEASURED ──────────────────────────
+ * `NODE_ITEM_REFS` remaps `["inputs", "*", "item"]` on duplicate/clone, so a copied
+ * patch rewires onto its copies. THAT MECHANISM CANNOT REACH INSIDE AN EQUATION,
+ * and pretending otherwise would be the silent-wrongness this file avoids:
+ *
+ *   LITERAL  `{item: "ab12", port: "out"}`  → REMAPPED. `inputs.gain.item` is a
+ *            leaf holding an itemId, which is precisely what the wildcard names.
+ *   EQUATION `"= osc1.out"`                 → NOT remapped by itemRefs, and it
+ *            does not need to be. It is stored with the SLUG resolved at read
+ *            time, so a clone of the whole patch — which copies the names too —
+ *            has its own `osc1`… but only if the copy's slug still resolves to
+ *            the COPY rather than the original. Slugs are unique per document
+ *            (slugMap disambiguates with `_2`), so a duplicated `osc1` becomes
+ *            `osc1_2`, and the clone's equation still reads `osc1` — THE ORIGINAL.
+ *
+ * SO THE BOUNDARY IS: copying a patch remaps its DRAG-AUTHORED wires and leaves
+ * its EQUATION-DRIVEN ones pointing where they were written to point. That is not
+ * a bug to fix later, it is what an equation MEANS — `= osc1.out` says "whatever
+ * the document calls osc1", and the copy did not become that. An author who wants
+ * the copy to follow the copy writes `= self`-relative or re-picks in the row;
+ * an author who wants every copy to read one shared source (a master clock, an
+ * LFO fanned across a deck) gets that for free, which is the more common intent
+ * and the reason not to "fix" it. `core/expressions.clonedItemStates` is where a
+ * future slug-rewriting clone mode would go; it is deliberately not done here,
+ * because rewriting equation TEXT on copy is the class of magic that makes an
+ * author unable to predict what their document says.
+ * tests/nodeflow_test.js pins BOTH halves of this boundary so it stays a decision.
  */
 
 // ── PORT TYPES ───────────────────────────────────────────────────────────────
@@ -131,6 +204,18 @@ export const PORT_TYPES = Object.freeze({
   number: Object.freeze({ label: "Number", color: "#7aa2f7", zero: 0 }),
   trigger: Object.freeze({ label: "Trigger", color: "#e0af68", zero: 0 }),
   audio: Object.freeze({ label: "Audio", color: "#9ece6a", zero: 0 }),
+  // THE NODE TYPE (user ruling, 2026-08-03: "Objects should be referenceable as
+  // equations and should be nodes. It's a different type than just float ... It's
+  // a node type."). A `node` value is a REFERENCE to another item's output port —
+  // `{item, port}`, the very shape a drag-authored connection stores.
+  //
+  // ITS `zero` IS null, NOT 0, and that is the whole difference from the three
+  // above. Their zeros are additive identities: an unconnected number reads 0 and
+  // the arithmetic still works. There is no "identity item" — a reference to
+  // nothing is nothing — so the zero is the absence itself, and every reader
+  // already treats a null `inputs.<port>` as unwired (connectionsOf, disconnectPairs).
+  // Using 0 would have made an unwired node port claim to point at an item.
+  node: Object.freeze({ label: "Node", color: "#bb9af7", zero: null }),
 });
 
 /** Every declared port type name, for validation messages and test sweeps. */
@@ -223,6 +308,19 @@ export function portTypeCssVars() {
  * refusal sends the user to the module, which is the right answer.
  * tests/nodeflow_test.js pins BOTH halves: the pair is refused, and it is the ONLY
  * reachable pair that is, so a future gap shows up as a decision to make.
+ *
+ * ── `node` HAS NO COERCIONS IN EITHER DIRECTION, AND THAT IS A TYPE FACT ────
+ * Not an omission awaiting a producer. The other four types all carry a VALUE
+ * that flows down a wire; `node` carries an IDENTITY — WHICH item, not what it
+ * currently reads. Every candidate pair is a category error:
+ *   node → number    would have to mean "the item's current output", which is a
+ *                    DEREFERENCE, not a cast. The wire that dereferences already
+ *                    exists: connect that output directly. A coercion here would
+ *                    silently duplicate the graph's own edge with worse timing.
+ *   number → node    there is no item whose identity is 3.
+ * So a `node` port connects only to a `node` port, and `typesCompatible` says so
+ * with no entry needed (identity is always allowed). The honest-only rule the
+ * table states is what keeps this a decision rather than a gap.
  */
 export const COERCIONS = Object.freeze({
   "number->audio": Object.freeze({ convert: (v) => v, why: "a number drives an audio input as a constant signal" }),
@@ -410,6 +508,83 @@ export function connectionsOf(items) {
     }
   }
   return out;
+}
+
+/**
+ * Pure function. Is `v` a well-formed node REFERENCE — the `{item, port}` record an
+ * input slot holds when it is wired? THE one shape test; every reader that has to
+ * distinguish "wired" from "unwired" asks this rather than re-spelling the check,
+ * which is what stops `null`, `undefined` and a half-written `{item}` being read
+ * three different ways in three places.
+ *
+ * @param {*} v - a candidate
+ * @returns {boolean}
+ *
+ * @example isNodeRef({item: "ab12", port: "out"}) // true
+ * @example isNodeRef(null) // false (an unwired input — the `node` type's zero)
+ * @example isNodeRef({item: "ab12"}) // false (a port is not optional in STORAGE)
+ * @example isNodeRef("= osc1") // false (an equation is not yet a reference — it evaluates to one)
+ */
+export function isNodeRef(v) {
+  return !!v && typeof v === "object" && typeof v.item === "string" && typeof v.port === "string";
+}
+
+/**
+ * Pure function. WHY a node reference does not name a real output port, or null
+ * when it does. THE dangling check — the sentence the equation-error path reports.
+ *
+ * It completes "… — <sentence>", so it states a fact about the DOCUMENT (a name
+ * that is not there, an item that is not a node), never about the code. The three
+ * failures are kept distinct because they have three different fixes: a typo, a
+ * wire aimed at a plain widget, and a port that was renamed out from under it.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {*} ref - the candidate reference
+ * @returns {string|null} the problem sentence, or null when the reference resolves
+ *
+ * @example nodeRefProblem({}, {get: () => ({})}, {item: "ghost", port: "out"}) // 'no item "ghost" is on this slide'
+ * @example // a real node with that output resolves cleanly:
+ * @example nodeRefProblem({a: {type: "s"}}, {get: () => ({ports: () => ({outputs: [{key: "out", type: "audio"}]})})}, {item: "a", port: "out"}) // null
+ * @example // …and naming a port it does not declare says so, with what it DOES have:
+ * @example nodeRefProblem({a: {type: "s"}}, {get: () => ({ports: () => ({outputs: [{key: "out", type: "audio"}]})})}, {item: "a", port: "nope"}) // '"a" has no output named "nope" (it has: out)'
+ */
+export function nodeRefProblem(items, registry, ref) {
+  if (!isNodeRef(ref)) return "is not a node reference";
+  const state = items?.[ref.item];
+  if (!state || state.active === false) return `no item ${JSON.stringify(ref.item)} is on this slide`;
+  const plugin = pluginFor(items, registry, ref.item);
+  const outputs = plugin ? declaredPorts(plugin, state).outputs : [];
+  if (outputs.length === 0) return `${JSON.stringify(ref.item)} is not a node — it has no output ports`;
+  if (!outputs.some((p) => p.key === ref.port))
+    return `${JSON.stringify(ref.item)} has no output named ${JSON.stringify(ref.port)} (it has: ${outputs.map((p) => p.key).join(", ")})`;
+  return null;
+}
+
+/**
+ * Pure function. The output port an equation-produced reference MEANS when it names
+ * no port — the source's FIRST declared output, or null when it declares none.
+ *
+ * WHY A DEFAULT AT ALL: `= osc1` is what an author writes, and a source with one
+ * output has exactly one thing they could have meant. Requiring `= osc1.out`
+ * universally would be ceremony for the common case. WHY THE FIRST rather than
+ * "the only one": a plugin's port ORDER is already meaningful (it is the top-to-
+ * bottom bead layout the author sees), so the first output is the one at the top of
+ * the card — a rule that reads off the picture instead of a rule that fails as soon
+ * as a module grows a second output.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {string} itemId - the source item
+ * @returns {string|null} the default output port key
+ *
+ * @example defaultOutputPort({a: {type: "s"}}, {get: () => ({ports: () => ({outputs: [{key: "out", type: "audio"}, {key: "aux", type: "audio"}]})})}, "a") // "out"
+ * @example defaultOutputPort({a: {type: "s"}}, {get: () => ({ports: () => ({outputs: []})})}, "a") // null
+ */
+export function defaultOutputPort(items, registry, itemId) {
+  const state = items?.[itemId];
+  const plugin = state ? pluginFor(items, registry, itemId) : null;
+  return (plugin ? declaredPorts(plugin, state).outputs[0]?.key : null) ?? null;
 }
 
 /**

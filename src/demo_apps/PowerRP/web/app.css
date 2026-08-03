@@ -61,6 +61,7 @@
   --a-port-number: #7aa2f7;
   --a-port-trigger: #e0af68;
   --a-port-audio: #9ece6a;
+  --a-port-node: #bb9af7;
   /* GHOST-wire chrome. Screen-space (the overlay is an SVG in screen coordinates)
      and GHOST-ONLY: the committed wires are painted into the SCENE now (WORKSTREAM
      BN), so their width lives in core/node_chrome.WIRE_WIDTH in WORLD units, where
