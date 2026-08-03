@@ -73,13 +73,21 @@
   // only its claim to a button. RENDER CENTER earns one for the opposite reason:
   // its badge has to be visible while its dialog is shut.
   //
+  // COPY PROPERTIES sits DIRECTLY AFTER COPY, per the user request that "next to
+  // the copy button, there should be a copy state button". Same group, because it
+  // is the same clipboard: copy the widget, copy the widget's STATE, paste. One
+  // Paste serves both — it dispatches on what is on the clipboard — so the group
+  // gains a copy verb rather than a second paste button.
+  //
   // (Entries here must stay BARE COMMAND IDS — tests/toolbar_surfacing_test.js
   // parses this literal to prove nothing hardcodes a title or icon, so a quoted
-  // phrase inside the array reads to it as a malformed id.)
+  // phrase inside the array reads to it as a malformed id. That is not
+  // hypothetical: the note above was FIRST written inside the array, and its
+  // comma-bearing quotation was parsed as an id.)
   const groups = [
     ["add-rect", "add-circle", "add-text", "add-qrcode", "add-arrow", "add-magnifier"],
     ["undo", "redo"],
-    ["copy-item", "paste"],
+    ["copy-item", "copy-properties", "paste"],
     ["put-on-top", "put-on-bottom"],
     // "open-project-url" sits DIRECTLY AFTER "open-project" (extending the
     // user-specified order rather than reordering it): the two are the same verb
