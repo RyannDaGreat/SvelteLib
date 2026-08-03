@@ -16,7 +16,7 @@ import {
   itemSlideKeyframes, slideEquationKeyframes, withSlideKeyframesRemoved,
 } from "../core/document.js";
 import { setPath, getPath, blendApplied, applied } from "../core/deltas.js";
-import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta } from "../core/item_properties_clipboard.js"; // Copy Properties: the fold-then-diff time transport
+import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta, retargetedPayload, retargetRefusal, retargetReport } from "../core/item_properties_clipboard.js"; // Copy Properties: the fold-then-diff time transport, and its selection-targeted retarget
 // APPEARANCE-PRESERVING slide reorder + the duplicate-keyframe simplifier that
 // is its counterweight (core/slide_reorder.js states the law both obey).
 import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted, withSlidesMerged } from "../core/slide_reorder.js";
@@ -3911,8 +3911,20 @@ export class PowerRPApp {
    * A no-op delta commits NOTHING — `commit` already early-returns on an
    * unchanged document, so pasting onto the slide the state came from does not
    * manufacture an undo step.
+   *
+   * THE SELECTION CHOOSES THE DESTINATION (WORKSTREAM UU, user ruling
+   * 2026-08-02: "How that works is determined by Whether or not I have a
+   * selection"). With something selected the payload is RETARGETED onto those
+   * items first (`#retargetedForSelection`) and the rest of this method runs
+   * UNCHANGED over the retargeted payload — the transport arithmetic,
+   * the purge partition and the single commit are the same code either way,
+   * which is the whole reason the retarget produces a payload of the same shape
+   * rather than a second write path.
    */
   #applyItemProperties(payload) {
+    const targeted = this.#retargetedForSelection(payload);
+    if (targeted === null) return; // refused, with its reason already reported
+    payload = targeted;
     const fold = this.rawState();
     const { surviving, purged } = partitionPurged(payload, fold);
     if (purged.length) console.warn(purgedRefusal(purged, surviving.length));
@@ -3923,6 +3935,54 @@ export class PowerRPApp {
       i === this.slideIndex ? { ...s, delta: applied(s.delta, delta) } : s);
     this.commit({ ...this.doc, slides });
     this.selectMany(surviving); // what you pasted onto is what you have selected
+  }
+
+  /**
+   * Query (reports). WORKSTREAM UU's dispatch: the payload `#applyItemProperties`
+   * should actually transport, given the current selection.
+   *
+   * Three outcomes, and the caller must handle all three:
+   *   • NOTHING SELECTED → the payload UNTOUCHED (returned by identity), so the
+   *     per-id "object per object" paste is byte-identical to what shipped. That
+   *     identity is deliberate and is pinned by a test: the ruling's first half is
+   *     that this path does not change.
+   *   • ONE copied item + a selection → a payload re-keyed onto the SELECTED ids,
+   *     each target taking only the keys it can mean (core/item_properties_clipboard
+   *     `retargetedState`, which reuses core/multiselect's `sameRowContract`).
+   *     Every key that did not transfer is reported by name and reason.
+   *   • SEVERAL copied items + a selection → null, having reported the ambiguity.
+   *     There is no honest pairing of N sources to M targets; see the module
+   *     header. The caller returns without committing.
+   *
+   * THE SOURCE PLUGIN COMES FROM THE PAYLOAD'S OWN `type`, not from a lookup of
+   * the source id: a properties payload can outlive its item (purge) or arrive
+   * from another document, so the id may resolve to nothing while the copied
+   * state still says exactly what it was copied from. When the payload is a
+   * SUBSET it carries no `type` at all — then there is no source contract to
+   * compare and the target's declaration alone decides, which is the documented
+   * fallback rather than a silent one.
+   *
+   * @param {object} payload - a `powerrp_item_props` payload
+   * @returns {object|null} the payload to transport, or null when refused
+   */
+  #retargetedForSelection(payload) {
+    const targets = this.selectionEntries().filter((e) => e.state !== null);
+    if (!targets.length) return payload; // no selection → the per-id path, untouched
+    const sources = Object.entries(payload.powerrp_item_props ?? {});
+    const refusal = retargetRefusal(sources.length, targets.length);
+    if (refusal) {
+      console.warn(refusal);
+      return null;
+    }
+    if (!sources.length) return payload; // empty payload — the caller's own report says so
+    // `registry.get` is LOUD on an unknown type, correctly — but a payload from
+    // another document naming a widget this build does not register is an
+    // expected case here, not a defect, so it is looked up without asserting.
+    const sourceType = sources[0][1].type;
+    const sourcePlugin = this.registry.all().find((p) => p.type === sourceType) ?? null;
+    const { payload: retargeted, report } = retargetedPayload(payload, sourcePlugin, targets);
+    for (const line of retargetReport(report)) console.warn(line);
+    return retargeted;
   }
 
   /**

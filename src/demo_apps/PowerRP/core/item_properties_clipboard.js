@@ -86,10 +86,87 @@
  * property, because it never mentions one it does not carry. That is correct for
  * these verbs (Copy Position moves a widget; it does not un-set anything) and it
  * is why the projection is safe rather than merely convenient.
+ *
+ * ── THE SELECTION DECIDES WHO IS PASTED ONTO (WORKSTREAM UU) ─────────────────
+ * User, 2026-08-02, verbatim: "When I copy position or some properties or any
+ * copying any kind of properties from some object when I then paste it into
+ * another slide How that works is determined by Whether or not I have a
+ * selection If I have no selection it will just paste It will just paste the
+ * properties given the ones that I copied individually object per object But if
+ * I select an object it will paste the properties into that object Given the
+ * intersection of whatever is possible to be pasted into it. So for example not
+ * mismatching data types"
+ *
+ * So the payload above is a TRANSPORT with two DESTINATIONS, chosen by the
+ * selection and by nothing else — no second verb, no modifier key, exactly as
+ * paste already dispatches on the clipboard's KIND:
+ *
+ *   NO SELECTION  → per-item BY ID, "object per object". Everything above,
+ *                   unchanged and byte-identical.
+ *   A SELECTION   → the copied properties are RETARGETED onto the selected
+ *                   items, intersected per target (`retargetedPayload` below).
+ *
+ * ── WHAT "THE INTERSECTION OF WHATEVER IS POSSIBLE" MEANS, EXACTLY ───────────
+ * A key transfers to a target iff the target's plugin declares a row for it
+ * whose CONTRACT matches the source's row for the same key — core/multiselect.js
+ * `sameRowContract`, the relation this codebase already uses to decide whether
+ * two widgets' same-named properties are the same property. It is REUSED rather
+ * than reinvented, deliberately: a parallel type check would be a second opinion
+ * about cross-widget compatibility, and the codebase's named recurring defect is
+ * "a hand-maintained copy of another module's shape". The Inspector's joint-edit
+ * question ("may one gesture write this row on both items?") and this one ("may
+ * this copied value land on that widget?") are the SAME question, so they must
+ * have the same answer or the panel and the paste will disagree.
+ *
+ * That relation is what "not mismatching data types" resolves to, and it is
+ * STRONGER than a type check, which is why it is the right one:
+ *   • a NUMBER `ambient` does not land on a COLOR `ambient` (kind)
+ *   • a 20-option `shape` does not land on a 2-option `shape` (options)
+ *   • a canvas-unit `cornerRadius` does not land on a 0..0.5 FRACTION one (max)
+ *   • a degrees row does not land on a radians row (display — the UNIT)
+ * A bare typeof check passes every one of those and writes a value the target
+ * cannot mean.
+ *
+ * A KEY THE TARGET'S PLUGIN NEVER DECLARES IS NOT TRANSFERRED. Writing it would
+ * store invisible junk the widget ignores — the same decision core/multiselect
+ * made for union mode, and for the same stated reason.
+ *
+ * IDENTITY KEYS ARE NEVER TRANSFERRED (`UNRETARGETABLE_KEYS`). `type` is what a
+ * widget IS, and pasting a rect's `type` onto a circle would not "apply a
+ * property" — it would silently REPLACE the widget with one whose remaining
+ * state was authored for something else. `z` and `active` are excluded for a
+ * blunter reason: they are position-in-the-stack and visibility, which are
+ * facts about the TARGET's place in this slide, not appearance being copied.
+ * (They still ride a NO-selection paste, which is the same item at another time
+ * — there, `active` coming back is the documented feature.)
+ *
+ * EQUATIONS TRANSFER VERBATIM. They are strings, and the target evaluates them;
+ * a `= @otherItem.x` that names something absent fails through the ordinary
+ * equation-error path, which is honest and visible. Rewriting or refusing them
+ * here would be this module inventing a second equation semantics.
+ *
+ * SKIPPED KEYS ARE REPORTED, NEVER DROPPED SILENTLY (`retargetReport`), naming
+ * WHICH key and WHY — the same say-the-reason discipline `purgedRefusal` uses.
+ *
+ * ── CARDINALITY: ONE SOURCE BROADCASTS, N SOURCES REFUSE ─────────────────────
+ * One copied widget + N selected → BROADCAST: every selected item receives that
+ * one item's properties, intersected per target, in ONE undo unit. This is the
+ * case the ruling describes ("I select an object it will paste the properties
+ * into that object") and the case that generalises to a set without ambiguity.
+ *
+ * N copied widgets (N > 1) + a selection → REFUSED, by name, with the ambiguity
+ * stated. There is no non-arbitrary pairing: matching source i to target i by
+ * ORDER would be a silent-wrong-mapping generator (clipboard order is capture
+ * order; selection order is click order — neither is a correspondence anyone
+ * authored), and picking one source arbitrarily would discard the rest without
+ * saying so. The refusal names the counts and points at the escape hatch that
+ * already exists: DESELECT and the per-id paste — the very thing the multi-item
+ * copy was made for — still works untouched.
  */
 
 import { deltaFromFoldDiff } from "./slide_reorder.js";
 import { copiedDeep } from "./deltas.js";
+import { sameRowContract, contractDifferences } from "./multiselect.js";
 
 /**
  * Pure function. Captures the FOLDED state of `ids` out of a folded slide
@@ -249,4 +326,216 @@ export function itemPropertiesDelta(payload, destFold) {
     if (Object.keys(diff).length) items[id] = diff;
   }
   return Object.keys(items).length ? { items } : {};
+}
+
+// ── SELECTION-TARGETED PASTE (the header's WORKSTREAM UU section) ────────────
+
+/**
+ * The payload keys a retarget never carries, each with the reason it is refused
+ * — the header's identity-keys paragraph, as data so the report can quote it.
+ *
+ * A DENYLIST rather than a "transfer only what the inspector declares" rule
+ * doing the job by accident: `type` has no inspector row anywhere, so it would
+ * already be filtered — but that would be luck, and a plugin that one day
+ * declares a `type` row would silently start replacing widgets. Named here, the
+ * refusal is a decision instead of a side effect.
+ *
+ * @example UNRETARGETABLE_KEYS.type.startsWith("A widget's type") // true
+ * @example Object.keys(UNRETARGETABLE_KEYS).sort()
+ * // ["active", "type", "z"]
+ */
+export const UNRETARGETABLE_KEYS = {
+  type: "A widget's type is what it IS, not a property it has — pasting one onto another widget would replace it rather than restyle it.",
+  z: "Stacking order is where a widget sits in THIS slide's pile, not part of the appearance being copied.",
+  active: "Whether a widget is showing on this slide belongs to the target, not to the copied look.",
+};
+
+/**
+ * Pure function. The rows a plugin declares, as a `key -> row` map — the lookup
+ * `retargetedState` needs on both sides of the contract comparison.
+ *
+ * A plugin with no `inspector` contributes nothing, which is the correct reading:
+ * it declares no property anything may be pasted into.
+ *
+ * @param {object|null|undefined} plugin - a registry plugin entry
+ * @returns {Map<string, object>} declared key → its resolved row
+ *
+ * @example rowsByKey({inspector: [{key: "x", kind: "number"}, {key: "fill", kind: "color"}]}).get("fill").kind
+ * // 'color'
+ * @example rowsByKey(null).size
+ * // 0
+ */
+export function rowsByKey(plugin) {
+  return new Map((plugin?.inspector ?? []).map((row) => [row.key, row]));
+}
+
+/**
+ * Pure function. ONE copied item's properties INTERSECTED against one target —
+ * the header's "intersection of whatever is possible to be pasted into it".
+ *
+ * Returns both halves, because dropping a key silently is exactly what this
+ * module may not do: `state` is what will be written, `skipped` is one
+ * `{key, reason}` per key that will not be, in payload order.
+ *
+ * The three ways a key fails, in the order tested:
+ *   1. It is an IDENTITY key (UNRETARGETABLE_KEYS) — refused everywhere.
+ *   2. The target's plugin declares NO row for it — it cannot mean the property.
+ *   3. Both declare it, with DIFFERENT contracts — `sameRowContract` says no, and
+ *      the reason names the aspects, so "why did my corner radius not paste"
+ *      answers itself.
+ *
+ * SOURCE ROWS ARE OPTIONAL. When the source plugin is unknown (a cross-document
+ * payload, or a widget type this build does not register) there is no contract to
+ * compare, so the target's declaration alone decides — the honest fallback: we
+ * know the target can express the key, and we have no evidence the source meant
+ * something else by it.
+ *
+ * @param {object} copiedState - one item's captured properties (whole or subset)
+ * @param {object|null} sourcePlugin - the plugin the properties were copied FROM, if known
+ * @param {object} targetPlugin - the plugin being pasted ONTO
+ * @returns {{state: object, skipped: Array<{key: string, reason: string}>}}
+ *
+ * @example // x and y are the same row on every boxed widget — they transfer:
+ * retargetedState({x: 10, y: 20}, {inspector: [{key: "x", kind: "number"}, {key: "y", kind: "number"}]},
+ *                                 {inspector: [{key: "x", kind: "number"}, {key: "y", kind: "number"}]}).state
+ * // {x: 10, y: 20}
+ * @example // a key the target's plugin never declares does not land, and says so:
+ * retargetedState({sides: 6}, {inspector: [{key: "sides", kind: "number"}]}, {inspector: []}).skipped
+ * // [{key: "sides", reason: "this widget has no “sides” property"}]
+ * @example // same key, different contract → refused, naming the aspect:
+ * retargetedState({cornerRadius: 12},
+ *   {inspector: [{key: "cornerRadius", kind: "number", min: 0}]},
+ *   {inspector: [{key: "cornerRadius", kind: "number", min: 0, max: 0.5}]}).skipped[0].reason
+ * // 'this widget’s “cornerRadius” means something different (max)'
+ * @example // an equation rides verbatim — the target evaluates it:
+ * retargetedState({x: "=cam.x + 10"}, null, {inspector: [{key: "x", kind: "number"}]}).state
+ * // {x: '=cam.x + 10'}
+ * @example retargetedState({type: "rect"}, null, {inspector: [{key: "type", kind: "text"}]}).state
+ * // {}   (identity keys are refused even where a row exists)
+ */
+export function retargetedState(copiedState, sourcePlugin, targetPlugin) {
+  const sourceRows = rowsByKey(sourcePlugin);
+  const targetRows = rowsByKey(targetPlugin);
+  const state = {};
+  const skipped = [];
+  for (const [key, value] of Object.entries(copiedState)) {
+    if (key in UNRETARGETABLE_KEYS) {
+      skipped.push({ key, reason: UNRETARGETABLE_KEYS[key] });
+      continue;
+    }
+    const targetRow = targetRows.get(key);
+    if (!targetRow) {
+      skipped.push({ key, reason: `this widget has no “${key}” property` });
+      continue;
+    }
+    const sourceRow = sourceRows.get(key);
+    if (sourceRow && !sameRowContract(sourceRow, targetRow)) {
+      const aspects = contractDifferences(sourceRow, targetRow);
+      skipped.push({ key, reason: `this widget’s “${key}” means something different (${aspects.join(", ")})` });
+      continue;
+    }
+    state[key] = value;
+  }
+  return { state, skipped };
+}
+
+/**
+ * Pure function. THE RETARGET. One copied item's properties broadcast onto every
+ * selected target, each intersected separately — a payload of the SAME shape
+ * `itemPropertiesDelta` already consumes, so the selection path reuses the
+ * transport arithmetic verbatim rather than growing a second one.
+ *
+ * ONE SOURCE ONLY. Multiple copied items are the header's refusal case and are
+ * rejected by `retargetRefusal` BEFORE this is called; passing more than one here
+ * throws rather than picking, because a silent choice among sources is exactly
+ * the mapping this design exists to refuse.
+ *
+ * A target that ends up with NO transferable key still appears in `report` (so
+ * the user learns nothing landed on it, and why) but contributes no payload
+ * entry — an empty entry would make `partitionPurged` count a target that
+ * receives nothing as one that receives something.
+ *
+ * @param {object} payload - an `itemPropertiesPayload` result with EXACTLY one item
+ * @param {object|null} sourcePlugin - the plugin the properties came from, if known
+ * @param {Array<{itemId: string, plugin: object}>} targets - the selected items
+ * @returns {{payload: object, report: Array<{itemId: string, applied: string[], skipped: Array<{key: string, reason: string}>}>}}
+ *
+ * @example // one rect's position broadcast to a circle and a text:
+ * // retargetedPayload({powerrp_item_props: {r: {x: 10, y: 20}}}, rectPlugin,
+ * //                   [{itemId: "c", plugin: circlePlugin}, {itemId: "t", plugin: textPlugin}])
+ * // → {payload: {powerrp_item_props: {c: {x: 10, y: 20}, t: {x: 10, y: 20}}}, report: [...]}
+ * @example retargetedPayload({powerrp_item_props: {r: {sides: 6}}}, null,
+ *   [{itemId: "c", plugin: {inspector: []}}]).payload
+ * // {powerrp_item_props: {}}   (nothing was expressible — no entry is invented)
+ */
+export function retargetedPayload(payload, sourcePlugin, targets) {
+  const sources = Object.entries(payload.powerrp_item_props ?? {});
+  if (sources.length !== 1)
+    throw new Error(`retargetedPayload: exactly one copied item may be broadcast, got ${sources.length} — the caller must run retargetRefusal first.`);
+  const [, copiedState] = sources[0];
+  const out = {};
+  const report = [];
+  for (const target of targets) {
+    const { state, skipped } = retargetedState(copiedState, sourcePlugin, target.plugin);
+    if (Object.keys(state).length) out[target.itemId] = state;
+    report.push({ itemId: target.itemId, applied: Object.keys(state), skipped });
+  }
+  return { payload: { powerrp_item_props: out }, report };
+}
+
+/**
+ * Pure function. The sentence refusing an N-source paste onto a selection, or
+ * null when the cardinality is fine — the header's cardinality rule, said out
+ * loud instead of resolved by an invented pairing.
+ *
+ * NAMES THE COUNTS AND THE WAY OUT. A refusal that only says "ambiguous" leaves
+ * the author with a clipboard they cannot spend; the per-id paste is still there
+ * and one deselect reaches it, so the sentence points at it.
+ *
+ * @param {number} sourceCount - how many items the payload carries
+ * @param {number} targetCount - how many items are selected
+ * @returns {string|null} the refusal, or null to proceed
+ *
+ * @example retargetRefusal(1, 3) // null
+ * @example retargetRefusal(2, 1)
+ * // 'Paste Properties: 2 widgets were copied and 1 is selected — there is no way to tell which copied widget belongs to which selected one, and pairing them by order would silently paste the wrong properties. Deselect everything to paste each copied widget’s properties back onto ITSELF, or copy just one widget to paste it onto a selection.'
+ * @example retargetRefusal(1, 0) // null (no selection at all — the per-id path, not this one)
+ */
+export function retargetRefusal(sourceCount, targetCount) {
+  if (targetCount === 0 || sourceCount <= 1) return null;
+  return `Paste Properties: ${sourceCount} widgets were copied and ${targetCount} ${targetCount === 1 ? "is" : "are"} selected — ` +
+    "there is no way to tell which copied widget belongs to which selected one, and pairing them by order would silently paste the wrong properties. " +
+    "Deselect everything to paste each copied widget’s properties back onto ITSELF, or copy just one widget to paste it onto a selection.";
+}
+
+/**
+ * Pure function. What a retarget DID, as the lines shown to the author — one per
+ * target that lost at least one key, plus a leading line when nothing landed
+ * anywhere at all.
+ *
+ * WHY PER-TARGET AND NOT ONE SUMMARY: pasting a rect's properties onto a circle
+ * and a video, the two lose DIFFERENT keys for different reasons, and "7 keys
+ * were skipped" would send the author hunting through both widgets. A target
+ * that took everything says nothing, because a silent success is fine and a
+ * silent failure is not.
+ *
+ * @param {Array<{itemId: string, applied: string[], skipped: Array<{key: string, reason: string}>}>} report - retargetedPayload's report
+ * @returns {string[]} lines to warn with, empty when every key landed everywhere
+ *
+ * @example retargetReport([{itemId: "c", applied: ["x", "y"], skipped: []}])
+ * // []
+ * @example retargetReport([{itemId: "c", applied: ["x"], skipped: [{key: "sides", reason: "this widget has no “sides” property"}]}])
+ * // ['Paste Properties: c did not take “sides” — this widget has no “sides” property.']
+ * @example retargetReport([{itemId: "c", applied: [], skipped: [{key: "sides", reason: "this widget has no “sides” property"}]}])
+ * // ['Paste Properties: nothing could be pasted onto any of the 1 selected widget — none of the copied properties exists on it with the same meaning.', 'Paste Properties: c did not take “sides” — this widget has no “sides” property.']
+ */
+export function retargetReport(report) {
+  const lines = [];
+  if (report.length && report.every((r) => r.applied.length === 0))
+    lines.push(`Paste Properties: nothing could be pasted onto any of the ${report.length} selected widget${report.length === 1 ? "" : "s"} — ` +
+      `none of the copied properties exists on ${report.length === 1 ? "it" : "them"} with the same meaning.`);
+  for (const { itemId, skipped } of report)
+    for (const { key, reason } of skipped)
+      lines.push(`Paste Properties: ${itemId} did not take “${key}” — ${reason}.`);
+  return lines;
 }
