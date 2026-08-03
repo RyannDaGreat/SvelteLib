@@ -16,13 +16,32 @@
  * the Blender-style mechanism): each is an equation-capable widget-state key with
  * ZERO evaluation-engine changes — the material framework carries the params
  * straight to the SkSL uniforms. Knobs are grouped into Inspector categories
- * (signal / scanlines / mask / glow / geometry / color / distress / render) that
+ * (signal / scanlines / mask / glow / geometry / color / flicker / distress / render) that
  * render as their own accordions after the shared ones.
  *
- * TWO knobs are DOCUMENTED INERT (see the shader header): `persistence` (phosphor
- * decay — needs a previous-frame texture) and `flicker` (needs a time uniform).
- * A still-frame render has neither, so they are exposed for completeness but NOT
- * passed into `params` — they do nothing here, honestly, rather than being faked.
+ * ── TWO ORTHOGONAL PRESET FAMILIES ───────────────────────────────────────────
+ * This widget declares `presetFamilies` (core/registry.presetFamiliesOf), not a
+ * flat `presets`, because its knobs fall into two independent axes and a preset
+ * should only ever rewrite its own:
+ *   TUBE    — what the display IS (signal, scanlines, mask, glow, geometry, colour).
+ *   FLICKER — how it MOVES over time (flicker, flickerRate, scanDrift, flickerSeed).
+ * The two key sets are DISJOINT, which is what lets you pick a Sony PVM and then
+ * independently pick "Tired Tube" without either undoing the other — and it is
+ * enforced, not merely intended (tests/tool_groups_test.js proves disjointness over
+ * every multi-family plugin, and tests/crt_flicker_test.js proves each family is
+ * COMPLETE over its OWN key set, so hovering a card never leaves a stale knob from
+ * the previously-hovered one).
+ *
+ * The flicker family is the ANIMATION class: every one of its presets is
+ * RECORDABLE STATE (CLAUDE.md's taxonomy) — a pure function of elapsed time read
+ * through the one seamed clock, so Δt = 0 leaves the picture unchanged and an
+ * export is reproducible. Its OFF preset ("Rock Steady") is the default state and
+ * an EXACT no-op.
+ *
+ * `persistence` remains DOCUMENTED INERT (see the shader header): phosphor decay
+ * needs a previous-frame texture, and such a value is a function of HISTORY rather
+ * than of time, so unlike flicker it could not be made recordable even with one.
+ * It is exposed for completeness and never faked.
  *
  * Surfaced ONLY through the "Add Demo Widget" submenu (web/App.svelte). DOM-
  * free / bare-node-safe at import time.
@@ -38,7 +57,7 @@ import { materialBackdrop } from "../../render_gpu/ir.js";
 // fill-material framework's single-declaration rule: "custom properties become
 // material properties", comic.js is the exemplar). This widget spreads that SAME
 // schema (grouped by Inspector category: signal/scanlines/mask/glow/geometry/
-// color/distress/render) into its customProps and adds ONLY its widget-side
+// color/flicker/distress/render) into its customProps and adds ONLY its widget-side
 // geometry knob (cornerRadius — a fill's shape IS its geometry). cornerRadius
 // carries category "geometry" so it groups back into the geometry accordion after
 // bezel, exactly where it was before the split. Dimensionless knobs are
@@ -50,16 +69,22 @@ const CUSTOM = customProps([
 ]);
 
 /**
- * The PRESETS: `{name, description, props}` — each `props` is a flat map of the
- * self.* look knobs above, applied to the current frame in one undo unit by the
- * Presets pane (web/ToolsPane.svelte → app.applyPreset). Each is keyed to a
- * REAL display, with numbers following the physics: sourceTVL rises with the
- * display's true horizontal resolution (composite ~240 … BVM ~1000), consumer
- * tubes use shadow/slot masks with heavier curvature + halation, pro RGB monitors
- * use a fine aperture grille, flatter glass, tighter convergence, and phosphor
- * terminals go monochrome with maskType "none".
+ * THE TUBE FAMILY — `{name, description, props}`, each `props` a flat map of the
+ * APPEARANCE knobs, applied to the current frame in one undo unit by the Presets
+ * pane (web/ToolsPane.svelte → app.applyPreset). Each is keyed to a REAL display,
+ * with numbers following the physics: sourceTVL rises with the display's true
+ * horizontal resolution (composite ~240 … BVM ~1000), consumer tubes use
+ * shadow/slot masks with heavier curvature + halation, pro RGB monitors use a fine
+ * aperture grille, flatter glass, tighter convergence, and phosphor terminals go
+ * monochrome with maskType "none".
+ *
+ * These eight are UNCHANGED in look. They no longer write `flicker` — that key
+ * moved to the FLICKER family below, and dropping it here is what makes the two
+ * families disjoint. It changes nothing on screen: they all wrote `flicker: 0`,
+ * which is the knob's default and an exact no-op, so a tube preset renders exactly
+ * the pixels it did before and now simply leaves the motion axis alone.
  */
-const PRESETS = [
+const TUBE_PRESETS = [
   {
     name: "Composite Consumer TV",
     description: "A late-80s living-room set fed composite/RF: soft (~240 TVL), fat bulge, shadow-mask phosphor, warm-ish white, heavy halation and vignette.",
@@ -70,7 +95,7 @@ const PRESETS = [
       halation: 0.18, diffusion: 0.18, blurRadius: 8,
       curvature: 0.12, convergence: 0.03, vignette: 0.42, bezel: 0.06, cornerRadius: 54,
       monochrome: 0, whiteBalance: -0.1, phosphorTint: "#ffffff",
-      flicker: 0, persistence: 0, backdropScale: 1,
+      persistence: 0, backdropScale: 1,
     },
   },
   {
@@ -83,7 +108,7 @@ const PRESETS = [
       halation: 0.08, diffusion: 0.08, blurRadius: 5,
       curvature: 0.04, convergence: 0.01, vignette: 0.25, bezel: 0.04, cornerRadius: 34,
       monochrome: 0, whiteBalance: 0.1, phosphorTint: "#ffffff",
-      flicker: 0, persistence: 0, backdropScale: 1,
+      persistence: 0, backdropScale: 1,
     },
   },
   {
@@ -96,7 +121,7 @@ const PRESETS = [
       halation: 0.06, diffusion: 0.06, blurRadius: 4,
       curvature: 0.02, convergence: 0.005, vignette: 0.2, bezel: 0.03, cornerRadius: 26,
       monochrome: 0, whiteBalance: 0.15, phosphorTint: "#ffffff",
-      flicker: 0, persistence: 0, backdropScale: 1,
+      persistence: 0, backdropScale: 1,
     },
   },
   {
@@ -109,7 +134,7 @@ const PRESETS = [
       halation: 0.14, diffusion: 0.12, blurRadius: 6,
       curvature: 0.08, convergence: 0.02, vignette: 0.35, bezel: 0.05, cornerRadius: 40,
       monochrome: 0, whiteBalance: -0.05, phosphorTint: "#ffffff",
-      flicker: 0, persistence: 0, backdropScale: 1,
+      persistence: 0, backdropScale: 1,
     },
   },
   {
@@ -122,7 +147,7 @@ const PRESETS = [
       halation: 0.06, diffusion: 0.08, blurRadius: 5,
       curvature: 0.05, convergence: 0.015, vignette: 0.28, bezel: 0.05, cornerRadius: 30,
       monochrome: 0, whiteBalance: 0.1, phosphorTint: "#ffffff",
-      flicker: 0, persistence: 0, backdropScale: 1,
+      persistence: 0, backdropScale: 1,
     },
   },
   {
@@ -135,7 +160,7 @@ const PRESETS = [
       halation: 0.18, diffusion: 0.16, blurRadius: 7,
       curvature: 0.06, convergence: 0, vignette: 0.35, bezel: 0.05, cornerRadius: 40,
       monochrome: 1, whiteBalance: 0, phosphorTint: "#00ff2b",
-      flicker: 0, persistence: 0, backdropScale: 1,
+      persistence: 0, backdropScale: 1,
     },
   },
   {
@@ -148,7 +173,7 @@ const PRESETS = [
       halation: 0.18, diffusion: 0.16, blurRadius: 7,
       curvature: 0.06, convergence: 0, vignette: 0.35, bezel: 0.05, cornerRadius: 40,
       monochrome: 1, whiteBalance: 0, phosphorTint: "#ff8c00",
-      flicker: 0, persistence: 0, backdropScale: 1,
+      persistence: 0, backdropScale: 1,
     },
   },
   {
@@ -161,8 +186,61 @@ const PRESETS = [
       halation: 0.16, diffusion: 0.15, blurRadius: 8,
       curvature: 0.12, convergence: 0, vignette: 0.42, bezel: 0.06, cornerRadius: 54,
       monochrome: 1, whiteBalance: 0, phosphorTint: "#dce6ff",
-      flicker: 0, persistence: 0, backdropScale: 1,
+      persistence: 0, backdropScale: 1,
     },
+  },
+];
+
+/**
+ * THE FLICKER FAMILY — the SECOND, ANIMATION-CLASS preset family. Its key set is
+ * exactly the four temporal knobs and NOTHING else, so picking one never disturbs
+ * the tube you chose; each preset writes ALL FOUR, so picking one never leaves a
+ * stale value from the previous pick.
+ *
+ * These are RECORDABLE STATE: a pure function of elapsed time through the one
+ * seamed clock (particleTime), so the editor and CLI show a deterministic freeze,
+ * the presenter animates, and an export is reproducible frame by frame.
+ *
+ * The scale is deliberately RESTRAINED — a CRT that strobes reads as a broken
+ * prop, not a tube. "Mains Hum" is the recommended everyday choice at a 3%
+ * peak-to-peak swing, which is roughly what a healthy set actually does; "Rock
+ * Steady" (the default state) is first because OFF is the honest default; and only
+ * "Failing Flyback", explicitly a fault, goes anywhere near conspicuous.
+ *
+ * flickerSeed varies across the presets on purpose: two CRTs on one slide given
+ * the same preset would otherwise pulse in lockstep, which reads as a global
+ * brightness animation rather than as two independent tubes.
+ */
+const FLICKER_PRESETS = [
+  {
+    name: "Rock Steady",
+    description: "No flicker and no drift — a well-adjusted set, or a still. This is the default state and an EXACT no-op: the picture is byte-identical to a CRT with no temporal stage at all, at any moment in the presentation.",
+    props: { flicker: 0, flickerRate: 30, scanDrift: 0, flickerSeed: 1337 },
+  },
+  {
+    name: "Barely There",
+    description: "A 1% breath at mains rate. You will not consciously see it flicker; you will notice the tube looks alive rather than pasted on. The safe choice under text.",
+    props: { flicker: 0.01, flickerRate: 30, scanDrift: 0, flickerSeed: 1337 },
+  },
+  {
+    name: "Mains Hum",
+    description: "The everyday recommendation: a 3% ripple at 30Hz, about what a healthy set does off a real supply, plus a tenth of a scanline per second of vertical creep so the raster shimmers instead of sitting frozen.",
+    props: { flicker: 0.03, flickerRate: 30, scanDrift: 0.1, flickerSeed: 7331 },
+  },
+  {
+    name: "PAL Set",
+    description: "The same gentle 3% ripple beating at 25Hz instead of 30 — a 50Hz-mains tube. Slower and slightly more visible than Mains Hum, and the right pick if the scene is meant to read as European.",
+    props: { flicker: 0.03, flickerRate: 25, scanDrift: 0.1, flickerSeed: 4242 },
+  },
+  {
+    name: "Tired Tube",
+    description: "An old set with a soft supply: a 7% swing wandering slowly at 6Hz, with a third of a line per second of roll. Clearly moving, still comfortable to look at.",
+    props: { flicker: 0.07, flickerRate: 6, scanDrift: 0.35, flickerSeed: 9001 },
+  },
+  {
+    name: "Failing Flyback",
+    description: "A FAULT, not a look: an 18% lurch at 2.5Hz with the vertical lock slipping a whole line and a half per second. Use it for a set that is about to die — it is deliberately the loudest preset here and is not recommended behind anything anyone has to read.",
+    props: { flicker: 0.18, flickerRate: 2.5, scanDrift: 1.5, flickerSeed: 6626 },
   },
 ];
 
@@ -171,7 +249,13 @@ export const crtPlugin = {
   ephemeral: EPHEMERAL.NONE,
   title: "CRT",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: true },
-  presets: PRESETS,
+  // TWO ORTHOGONAL FAMILIES over DISJOINT key sets (see the header): what the tube
+  // IS, and how it MOVES. Each surfaces as its own labeled Tools-pane group
+  // (core/registry.presetFamiliesOf namespaces them presets.tube / presets.flicker).
+  presetFamilies: [
+    { id: "tube", title: "Tube presets", presets: TUBE_PRESETS },
+    { id: "flicker", title: "Flicker presets", presets: FLICKER_PRESETS },
+  ],
   defaults: {
     // 4:3, the classic CRT aspect.
     type: "demo_crt", x: 140, y: 140, w: 440, h: 330, z: 100, rotation: 0, scale: 1,
@@ -187,18 +271,25 @@ export const crtPlugin = {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },
     }),
-    ...CUSTOM.rows, // the grouped look knobs (signal/scanlines/mask/glow/geometry/color/distress/render)
+    ...CUSTOM.rows, // the grouped look knobs (signal/scanlines/mask/glow/geometry/color/flicker/distress/render)
   ],
   /**
-   * Pure function. State → display-list: ONE materialBackdrop op naming the "crt"
+   * QUERY (reads the ambient presentation clock through crtUniformParams; pure
+   * w.r.t. `s`). State → display-list: ONE materialBackdrop op naming the "crt"
    * material. The bbox (w, h) IS the screen region (local space; sceneIR wraps it
    * in the node's world). The look knobs pass through the SAME schema→uniform
    * mapping the fill-material path uses (crtUniformParams — one declaration): it
-   * maps the maskType SELECT to its numeric shader code and drops the documented-
-   * inert temporal knobs (flicker, persistence) plus the non-uniform blurRadius /
-   * backdropScale. cornerRadius / blurRadius / backdropScale are top-level op
-   * fields (consumed by handleMaterialBackdrop for geometry, glow sigma, sample
-   * res), not shader uniforms.
+   * maps the maskType SELECT to its numeric shader code, carries the four FLICKER
+   * knobs with `time` injected from particleTime() beside them, and drops the
+   * documented-inert `persistence` plus the non-uniform blurRadius / backdropScale.
+   * cornerRadius / blurRadius / backdropScale are top-level op fields (consumed by
+   * handleMaterialBackdrop for geometry, glow sigma, sample res), not shader
+   * uniforms.
+   *
+   * The clock read is what makes this a Query rather than pure, and it is the ONE
+   * legal source: frozen in the editor/CLI/thumbnails (so a still is deterministic),
+   * live in the presenter, overridden per frame by both exporters. Δt = 0 ⟹ this
+   * returns the same op.
    */
   emit(s) {
     const strokeW = s.strokeWidth ?? 0;

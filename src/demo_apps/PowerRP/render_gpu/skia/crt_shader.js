@@ -44,14 +44,40 @@
  *      both from the single blurred child (see the single-kernel note below).
  *   9. VIGNETTE (corner falloff) → RE-ENCODE gamma → premultiply by coverage.
  *
- * ── DELIBERATE NO-OPS (honest, not faked) ────────────────────────────────────
- * This is a STILL-frame pipeline: there is NO previous-frame texture and NO time/
- * clock uniform threaded to materials. So the CRT's two temporal knobs —
- * `persistence` (phosphor decay, needs a feedback texture) and `flicker` (needs a
- * time uniform) — are DOCUMENTED INERT: the plugin exposes them (so presets and
- * the inspector are complete) but does NOT pass them into `params`, and they are
- * NOT declared as SkSL uniforms. They do nothing here by design, rather than
- * being silently faked. Wire a frame-history/time source in and they light up.
+ * ── THE TEMPORAL STAGE (flicker + raster drift) ───────────────────────────────
+ * A real tube is never perfectly still: the beam is re-drawn every field off a
+ * supply that ripples, and the raster's vertical lock creeps. Both are RECORDABLE
+ * STATE in this codebase's taxonomy (CLAUDE.md): a pure function of ELAPSED TIME
+ * ALONE, read through the ONE seamed clock — `render_gpu/particle_clock.particleTime()`
+ * — which the editor and CLI FREEZE and both exporters override per frame. So
+ * Δt = 0 ⟹ this stage contributes an identical picture, and frame 200 renders
+ * without frame 199 (the exporters' frame-range sharding depends on that).
+ * NEVER a wall clock, never Math.random: the shader's variation is a `uSeed`-keyed
+ * fract-hash of a QUANTIZED field index, the same house pattern glitch_shader.js
+ * and core/particles.js use.
+ *
+ * It is OPT-IN and its OFF state is EXACT, not approximate. `flicker` and
+ * `scanDrift` both default to 0, and at 0 the code takes an early-out that leaves
+ * `lin` and the scanline phase bit-for-bit as they were before this stage existed
+ * — an untouched CRT renders byte-identical to a CRT with no temporal stage at
+ * all, at any t. (That is a law, not a hope: tests/crt_flicker_test.js pins it.)
+ *
+ * FLICKER is a LUMINANCE gain applied at the beam (stage 6, with brightBoost),
+ * because that is where a supply ripple physically acts — it modulates beam
+ * current, so it dims the picture without touching the glass, the mask or the
+ * glow's colour. Two superposed components, which is what keeps it from reading
+ * as a sine: a smooth mains RIPPLE at `flickerRate` Hz, and a per-FIELD hashed
+ * step (the beam re-strikes at a discrete refresh, so real flicker has a stair
+ * edge). Their amplitudes sum to `flicker`, so the knob is the full peak-to-peak
+ * swing in fractional luminance and the value means the same thing at any rate.
+ *
+ * ── STILL DELIBERATELY INERT ─────────────────────────────────────────────────
+ * `persistence` (phosphor decay) remains DOCUMENTED INERT: it needs a PREVIOUS-FRAME
+ * texture, which this pipeline has no equivalent of — and, unlike flicker, it could
+ * not be made recordable even with one, because a value carried from frame N-1 is a
+ * function of HISTORY rather than of `t` (that is the disqualifying test in
+ * CLAUDE.md's taxonomy, and it is why persistence would break frame-range sharding).
+ * It is exposed for preset/inspector completeness and never faked.
  *
  * ── SINGLE-KERNEL GLOW LIMITATION ────────────────────────────────────────────
  * A real CRT has a TIGHT diffusion halo and a MUCH WIDER halation ring at
@@ -61,12 +87,16 @@
  * `diffusion` the neutral amount of the SAME blur. Two independent radii would
  * need a second blurred child; that is a documented follow-up, not a silent fake.
  *
- * DOM-free at import (only string SkSL + a pure packer), like glass_shader.js /
- * frosted_shader.js. `parseColor` (render_gpu/ir.js) is the shared node-safe
- * colour parser the packer reuses for phosphorTint.
+ * DOM-free at import (string SkSL + a pure packer + one clock READ), like
+ * glass_shader.js / frosted_shader.js / glitch_shader.js. `parseColor`
+ * (render_gpu/ir.js) is the shared node-safe colour parser the packer reuses for
+ * phosphorTint; `particleTime` (render_gpu/particle_clock.js) is the one seamed
+ * presentation clock, read ONLY inside crtUniformParams (which is therefore
+ * near-pure, exactly as glitchUniformParams is) and never at import time.
  */
 
 import { parseColor } from "../ir.js";
+import { particleTime } from "../particle_clock.js";
 
 // The three constants the OUTWARD-REACH math (maxCrtSampleReach, below) shares with
 // the shader. Exported as JS constants AND interpolated into the SkSL, so the
@@ -100,6 +130,12 @@ const half3 LUMA = half3(0.2126, 0.7152, 0.0722);   // Rec.709 LINEAR-light luma
 const half3 WB_COLD = half3(0.92, 0.97, 1.10);       // NTSC-J ~9300K cold-white multiplier (bluish) — applied at whiteBalance=+1
 const half3 WB_WARM = half3(1.06, 1.00, 0.90);       // ~5000K warm-white multiplier (amber) — applied at whiteBalance=-1
 const half3 HALATION_WARM = half3(1.00, 0.55, 0.30); // orange-red under-glass backscatter tint of the halation ring
+// ── TEMPORAL (flicker + raster drift) ────────────────────────────────────────
+const float FLICKER_RIPPLE_SHARE = 0.6;  // fraction of the flicker knob spent on the SMOOTH mains ripple; the remaining 0.4 is the per-field hashed step. Ripple-dominant because a supply ripple is the larger real-world term and reads as breathing rather than noise.
+const float FLICKER_STEP_SHARE = 0.4;    // = 1 - FLICKER_RIPPLE_SHARE, spelled out so the two shares are visibly a partition of the knob (their sum IS the peak-to-peak swing)
+const float FLICKER_FIELD_RATE = 2.0;    // hashed steps per ripple cycle: the beam re-strikes each FIELD and a mains cycle spans two fields (60Hz fields on a 30Hz-ripple set), so the step cadence is twice the ripple's
+const float HASH_MUL = 0.1031;           // fract-hash multiplier (the house constant, glitch_shader.hash11)
+const float HASH_ADD = 33.33;            // fract-hash additive term (ditto)
 
 uniform shader blurredBackdrop;  // child 0: Gaussian-blurred composite-so-far (device space) — the halation + diffusion GLOW source
 uniform shader sharpBackdrop;    // child 1: the un-blurred composite-so-far (device space) — the displayed image
@@ -132,6 +168,33 @@ uniform float uBezel;            // fraction of the half-size taken by the black
 uniform float uMonochrome;       // 0..1 collapse to luma × phosphorTint (1 = a monochrome phosphor terminal / B&W tube)
 uniform float uWhiteBalance;     // -1 warm … 0 neutral D65 … +1 cold (NTSC-J); scalar so it can exceed a 0..1 colour on the blue channel
 uniform float3 uPhosphorTint;    // the monochrome phosphor colour (P39 green, P3 amber, P4 bluish-white); only used as uMonochrome→1
+// ── TEMPORAL — the ONLY time input, from particleTime() (recordable state) ────
+uniform float uTime;             // presentation time (seconds): frozen in editor/CLI, driven live in the presenter, overridden per frame by both exporters
+uniform float uSeed;             // per-widget seed keying the hashed field step, so two CRTs on one slide do not flicker in lockstep
+uniform float uFlicker;          // 0..1 peak-to-peak luminance swing of the beam flicker; 0 = the temporal stage is skipped ENTIRELY (exact no-op)
+uniform float uFlickerRate;      // mains-ripple frequency in Hz (a real set ripples at its supply's rate)
+uniform float uScanDrift;        // vertical raster creep in SCANLINES per second: the picture's vertical lock slipping; 0 = no drift (exact no-op)
+
+// Pure. 1D fract-hash → [0,1). The house pattern (glitch_shader.hash11).
+float hash11(float p) {
+  p = fract(p * HASH_MUL);
+  p *= p + HASH_ADD;
+  p *= p + p;
+  return fract(p);
+}
+
+// Pure. The beam's FLICKER GAIN at time t — a multiplier around 1.0 whose
+// peak-to-peak swing is "amount". Two superposed terms (see the header): a smooth
+// mains RIPPLE, and a hashed per-FIELD step so the beam re-strike has a stair edge
+// instead of a pure sine. Deterministic in (t, seed) alone: Δt = 0 ⟹ same gain.
+// Returns EXACTLY 1.0 at amount 0, which is what makes the stage an exact no-op.
+float flickerGain(float t, float amount, float rate, float seed) {
+  if (amount <= 0.0) { return 1.0; }
+  float ripple = sin(t * rate * TWO_PI);                                  // [-1,1]
+  float field = hash11(floor(t * rate * FLICKER_FIELD_RATE) + seed) * 2.0 - 1.0; // [-1,1), one value per field
+  float swing = ripple * FLICKER_RIPPLE_SHARE + field * FLICKER_STEP_SHARE;      // [-1,1]
+  return 1.0 + swing * amount * 0.5;   // ×0.5: "amount" is the PEAK-TO-PEAK swing, so the half-amplitude is half of it
+}
 
 // Pure. Signed distance to a rounded rect (local, centered). <0 inside.
 float sdRoundRect(float2 p, float2 h, float r) {
@@ -240,12 +303,20 @@ half4 main(float2 p) {
 
   // (6) SCANLINES: vertical Lottes Gaussian beam, hardness eased dark→bright by
   // beamBloom, × brightBoost gain. Uses the WARPED y so scanlines curve with the tube.
+  // uScanDrift shifts the raster PHASE by scanlines/second, so the line pattern
+  // creeps vertically the way an imperfect vertical lock does. At 0 the term is
+  // exactly 0 and "dst" is bit-identical to the pre-temporal expression.
   float ny = warp.y * 0.5 + 0.5;                // 0..1 down the height
-  float dst = fract(ny * uScanlineCount) - 0.5; // distance to nearest line center (line units, [-0.5,0.5])
+  float driftLines = uScanDrift * uTime;        // raster phase offset in LINE units
+  float dst = fract(ny * uScanlineCount + driftLines) - 0.5; // distance to nearest line center ([-0.5,0.5])
   float hardness = mix(SCAN_HARD_DARK, SCAN_HARD_BRIGHT, clamp(lum, 0.0, 1.0) * clamp(uBeamBloom, 0.0, 1.0));
   float beam = exp2(hardness * dst * dst);      // 1 at line center, small in the gap
   float scan = mix(1.0 - clamp(uScanlineStrength, 0.0, 1.0), 1.0, beam);
-  lin *= half(scan) * half(max(uBrightBoost, 0.0));
+  // FLICKER rides with the beam gain: a supply ripple modulates BEAM CURRENT, so it
+  // dims the picture at the same point brightBoost sets its level. Exactly 1.0 when
+  // uFlicker is 0, which is what keeps the off state byte-identical.
+  float flick = flickerGain(uTime, uFlicker, uFlickerRate, uSeed);
+  lin *= half(scan) * half(max(uBrightBoost, 0.0) * flick);
 
   // (7) PHOSPHOR MASK in screen space (local unwarped px), multiplied in.
   half3 mask = phosphorMask(pl, max(uMaskPitch, 1.0), uMaskType);
@@ -334,6 +405,29 @@ uniform float uBezel;
 uniform float uMonochrome;
 uniform float uWhiteBalance;
 uniform float3 uPhosphorTint;
+uniform float uTime;             // presentation time (seconds) from particleTime() — the ONE clock
+uniform float uSeed;
+uniform float uFlicker;
+uniform float uFlickerRate;
+uniform float uScanDrift;
+
+// Pure. 1D fract-hash → [0,1) (glitch_shader.hash11).
+float hash11(float p) {
+  p = fract(p * HASH_MUL);
+  p *= p + HASH_ADD;
+  p *= p + p;
+  return fract(p);
+}
+
+// Pure. The beam flicker gain — identical to CRT_SKSL's (see its header); exactly
+// 1.0 at amount 0 so the fill variant's off state is byte-identical too.
+float flickerGain(float t, float amount, float rate, float seed) {
+  if (amount <= 0.0) { return 1.0; }
+  float ripple = sin(t * rate * TWO_PI);
+  float field = hash11(floor(t * rate * FLICKER_FIELD_RATE) + seed) * 2.0 - 1.0;
+  float swing = ripple * FLICKER_RIPPLE_SHARE + field * FLICKER_STEP_SHARE;
+  return 1.0 + swing * amount * 0.5;
+}
 
 half3 sampleBandLinear(float2 center, float2 xAxis, float sigma, float gin) {
   half3 acc = half3(0.0);
@@ -426,13 +520,17 @@ half4 main(float2 p) {
     : mix(half3(1.0), WB_WARM, half(clamp(-uWhiteBalance, 0.0, 1.0)));
   lin *= wb;
 
-  // (6) SCANLINES (warped y so lines curve with the tube).
+  // (6) SCANLINES (warped y so lines curve with the tube) + the TEMPORAL stage:
+  // uScanDrift creeps the raster phase, flickerGain modulates the beam. Both are
+  // exact no-ops at 0 — the fill variant mirrors CRT_SKSL stage for stage.
   float ny = warp.y * 0.5 + 0.5;
-  float dst = fract(ny * uScanlineCount) - 0.5;
+  float driftLines = uScanDrift * uTime;
+  float dst = fract(ny * uScanlineCount + driftLines) - 0.5;
   float hardness = mix(SCAN_HARD_DARK, SCAN_HARD_BRIGHT, clamp(lum, 0.0, 1.0) * clamp(uBeamBloom, 0.0, 1.0));
   float beam = exp2(hardness * dst * dst);
   float scan = mix(1.0 - clamp(uScanlineStrength, 0.0, 1.0), 1.0, beam);
-  lin *= half(scan) * half(max(uBrightBoost, 0.0));
+  float flick = flickerGain(uTime, uFlicker, uFlickerRate, uSeed);
+  lin *= half(scan) * half(max(uBrightBoost, 0.0) * flick);
 
   // (7) PHOSPHOR MASK (screen space).
   half3 mask = phosphorMask(pl, max(uMaskPitch, 1.0), uMaskType);
@@ -462,8 +560,9 @@ half4 main(float2 p) {
 
 // Uniform slot count — asserted by the packer so a shader edit that changes the
 // uniform block is caught loudly instead of packing a mis-sized array.
-// 6 geometry (cx,cy,halfW,halfH,cornerRadius,angle) + 18 scalar knobs + float3 tint (3) = 27.
-const CRT_UNIFORM_FLOATS = 27;
+// 6 geometry (cx,cy,halfW,halfH,cornerRadius,angle) + 18 scalar knobs + float3 tint (3)
+// + 5 temporal (time, seed, flicker, flickerRate, scanDrift) = 32.
+const CRT_UNIFORM_FLOATS = 32;
 
 /** Pure. Asserts `v` is a finite number (a NaN uniform silently blackens a whole
  * shader region — fail loudly instead). Returns `v`. */
@@ -489,23 +588,26 @@ function rgb(name, v) {
  * makeShaderWithChildren. `phosphorTint` is a colour the packer parses here.
  * `maskPitch` arrives in WORLD px and is scaled to DEVICE px by `u.scale`
  * (world→device px) so the phosphor grid magnifies with the tube, consistent with
- * the device-px band-limit. The temporal knobs (persistence, flicker) are
- * deliberately NOT part of the block (documented inert — no frame-history / time
- * source in a still render).
+ * the device-px band-limit. The TEMPORAL block {time, seed, flicker, flickerRate,
+ * scanDrift} IS packed — `time` is the ambient particle clock, injected upstream by
+ * crtUniformParams so this function stays pure. `persistence` is still NOT part of
+ * the block (documented inert — no frame-history source; see the shader header).
  *
  * @param {object} u - device geometry {cx, cy, halfW, halfH, cornerRadius, angle}
  *   + `scale` (world→device px) + the material knobs {sourceTVL, gammaIn,
  *   gammaOut, scanlineStrength, scanlineCount, brightBoost, beamBloom, maskType,
  *   maskStrength, maskPitch, halation, diffusion, curvature, convergence,
- *   vignette, bezel, monochrome, whiteBalance, phosphorTint}
- * @returns {Float32Array} length 27, in shader-uniform order
+ *   vignette, bezel, monochrome, whiteBalance, phosphorTint} + the temporal block
+ *   {time, seed, flicker, flickerRate, scanDrift}
+ * @returns {Float32Array} length 32, in shader-uniform order
  *
  * @example
  * packCrtUniforms({cx:600,cy:400,halfW:220,halfH:165,cornerRadius:44,angle:0,
  *   scale:1,sourceTVL:240,gammaIn:2.4,gammaOut:2.2,scanlineStrength:0.5,
  *   scanlineCount:240,brightBoost:1.2,beamBloom:0.4,maskType:0,maskStrength:0.35,
  *   maskPitch:3,halation:0.12,diffusion:0.15,curvature:0.06,convergence:0.02,
- *   vignette:0.3,bezel:0.05,monochrome:0,whiteBalance:0,phosphorTint:"#ffffff"}).length // 27
+ *   vignette:0.3,bezel:0.05,monochrome:0,whiteBalance:0,phosphorTint:"#ffffff",
+ *   time:2,seed:1337,flicker:0,flickerRate:30,scanDrift:0}).length // 32
  */
 export function packCrtUniforms(u) {
   const tint = rgb("phosphorTint", u.phosphorTint);
@@ -540,6 +642,12 @@ export function packCrtUniforms(u) {
     num("monochrome", u.monochrome),
     num("whiteBalance", u.whiteBalance),
     tint[0], tint[1], tint[2],
+    // temporal — `time` is the ambient particle clock, injected by crtUniformParams
+    num("time", u.time),
+    num("seed", u.seed),
+    num("flicker", u.flicker),
+    num("flickerRate", u.flickerRate),
+    num("scanDrift", u.scanDrift),
   ]);
   if (out.length !== CRT_UNIFORM_FLOATS)
     throw new Error(`packCrtUniforms: packed ${out.length} floats, expected ${CRT_UNIFORM_FLOATS} (shader uniform block changed?)`);
@@ -643,31 +751,47 @@ export const CRT_FILL_PARAMS = [
   { name: "monochrome", kind: "number", default: 0, min: 0, max: 1, category: "color", help: "Collapse the picture to a single phosphor colour: 0 = full colour tube, 1 = a monochrome phosphor terminal / B&W tube (luminance × the phosphor tint below)." },
   { name: "whiteBalance", kind: "number", default: 0, min: -1, max: 1, category: "color", help: "White point: -1 warm (~5000K amber), 0 neutral D65, +1 cold (NTSC-J ~9300K bluish). A scalar (not a colour) so the blue channel can exceed 1.0 on the cold end." },
   { name: "phosphorTint", kind: "color", default: "#ffffff", category: "color", help: "The monochrome phosphor colour, used only as Monochrome → 1: P39 green (#00ff2b), P3 amber (#ff8c00), a bluish-white B&W tube, etc." },
-  // ── DISTRESS — temporal knobs (DOCUMENTED INERT in a still render) ────────────
-  { name: "flicker", kind: "number", default: 0, min: 0, max: 1, category: "distress", help: "INERT in this build: refresh-flicker needs a time uniform, which a still-frame render does not thread to materials. Exposed for presets/completeness; does nothing until a time source is wired in (not faked)." },
-  { name: "persistence", kind: "number", default: 0, min: 0, max: 1, category: "distress", help: "INERT in this build: phosphor persistence (motion trails) needs a previous-frame texture, which this pipeline has no equivalent of. Exposed for presets/completeness; does nothing until a frame-history source is wired in (not faked)." },
+  // ── FLICKER — the TEMPORAL knobs. These are the FLICKER PRESET FAMILY's key set,
+  // disjoint from every appearance knob above (plugins/demo/crt.js declares both
+  // families over exactly this split). All four default to an EXACT no-op, so an
+  // untouched CRT renders byte-identical to one with no temporal stage at all.
+  { name: "flicker", kind: "number", default: 0, min: 0, max: 1, category: "flicker", help: "Beam flicker: the peak-to-peak luminance swing as the picture breathes, from 0 (rock steady — the default, and an EXACT no-op) to 1 (the whole picture pulsing). Real sets sit near 0.02-0.08; anything much above 0.2 reads as a fault rather than a tube. Superposes a smooth mains ripple with a hashed per-field step, so it does not read as a pure sine. NO CAP ABOVE 1 is needed — 1 is already the full swing." },
+  { name: "flickerRate", kind: "number", default: 30, min: 0, scrub: 0.5, category: "flicker", help: "Mains-ripple frequency in Hz: how fast the flicker breathes. ~30 for a 60Hz-field NTSC set (the ripple beats at half the field rate), ~25 for 50Hz PAL; drop to 1-5 Hz for a slow sick-tube sway. Only matters when Flicker > 0. NO CAP — a high rate just flickers faster, and the hashed step follows it." },
+  { name: "scanDrift", kind: "number", default: 0, min: 0, scrub: 0.1, category: "flicker", help: "Vertical raster creep in SCANLINES per second: the picture's vertical lock slipping, so the scanline pattern crawls up the screen. 0 = locked (the default, an EXACT no-op); a fraction of a line per second is a slow shimmer; whole lines per second is a visibly rolling raster. NO CAP — a large value simply rolls faster." },
+  { name: "flickerSeed", kind: "number", default: 1337, min: 0, scrub: 1, category: "flicker", help: "Seed for the hashed per-field step, so two CRTs on one slide do not flicker in lockstep. Stored document state (not a live random), which is what keeps a render reproducible. Only matters when Flicker > 0." },
+  // ── DISTRESS — still DOCUMENTED INERT (see the shader header) ─────────────────
+  { name: "persistence", kind: "number", default: 0, min: 0, max: 1, category: "distress", help: "INERT in this build: phosphor persistence (motion trails) needs a previous-frame texture, which this pipeline has no equivalent of — and a value carried from the previous frame is a function of HISTORY rather than of time, so it could not be made reproducible the way flicker is. Exposed for presets/completeness; never faked." },
   // ── RENDER — sample resolution ───────────────────────────────────────────────
   { name: "backdropScale", kind: "number", default: 1, min: 0.25, max: 2, category: "render", help: "RESOLUTION FACTOR the content beneath is re-rendered at for the distortion: 1 = screen resolution, 2 = supersample (crisper, slower), 0.5 = half res (faster, softer). The 0.25..2 bounds are a PERFORMANCE guard, not a look choice — below 0.25 the backdrop is uselessly coarse and above 2 the re-render cost balloons." },
 ];
 
 /**
- * Pure function. SCHEMA params (CRT_FILL_PARAMS names/kinds) → the PACKER's params
- * (packCrtUniforms-shaped): maps the `maskType` SELECT string to its numeric shader
- * code and passes every other shader knob through unchanged. THE one mapping both
- * consumers share — the demo widget's emit() and the fill-material regionOp synthesis
- * (paint_skia handleMaterialPaintShape reads it as entry.toUniformParams).
+ * NEAR-PURE function (reads the AMBIENT particle clock particleTime(); pure w.r.t.
+ * its argument — the glitchUniformParams contract, restated). SCHEMA params
+ * (CRT_FILL_PARAMS names/kinds) → the PACKER's params (packCrtUniforms-shaped): maps
+ * the `maskType` SELECT string to its numeric shader code, passes every other shader
+ * knob through unchanged, and INJECTS `time` from particleTime() — frozen in the
+ * editor/CLI (a deterministic still), the wall clock in the presenter, overridden per
+ * frame by both exporters. THE one mapping both consumers share — the demo widget's
+ * emit() and the fill-material regionOp synthesis (paint_skia
+ * handleMaterialPaintShape reads it as entry.toUniformParams), so a CRT FILL flickers
+ * exactly the way the widget does.
  *
  * DELIBERATELY OMITTED from the result: `blurRadius` / `backdropScale` (the framework
  * reads these off resolvedParams directly — glow sigma + sample res, not uniforms) and
- * `flicker` / `persistence` (documented inert — no time / frame-history source in a
- * still render). Any `cornerRadius` present (the widget's own state) is likewise not a
- * shader uniform and is dropped.
+ * `persistence` (documented inert — no frame-history source; see the shader header).
+ * Any `cornerRadius` present (the widget's own state) is likewise not a shader uniform
+ * and is dropped. `flickerSeed` IS carried, renamed to the packer's `seed`.
  *
  * @param {object} p - schema-shaped params (resolved: every knob present)
  * @returns {object} packCrtUniforms-shaped params
  *
  * @example crtUniformParams({maskType: "aperture", sourceTVL: 240, gammaIn: 2.4, gammaOut: 2.2, scanlineStrength: 0.5, scanlineCount: 240, brightBoost: 1.2, beamBloom: 0.4, maskStrength: 0.35, maskPitch: 3, halation: 0.12, diffusion: 0.15, curvature: 0.06, convergence: 0.02, vignette: 0.3, bezel: 0.05, monochrome: 0, whiteBalance: 0, phosphorTint: "#ffffff"}).maskType // 0
  * @example crtUniformParams({maskType: "slot", sourceTVL: 300, gammaIn: 2.4, gammaOut: 2.2, scanlineStrength: 0.5, scanlineCount: 240, brightBoost: 1.4, beamBloom: 0.55, maskStrength: 0.35, maskPitch: 4, halation: 0.14, diffusion: 0.12, curvature: 0.08, convergence: 0.02, vignette: 0.35, bezel: 0.05, monochrome: 0, whiteBalance: -0.05, phosphorTint: "#ffffff"}).maskType // 2
+ * @example // the temporal block rides along, with `time` injected from the clock:
+ * @example crtUniformParams({maskType: "aperture", flicker: 0.05, flickerRate: 30, scanDrift: 0.2, flickerSeed: 1337}).flicker // 0.05
+ * @example crtUniformParams({maskType: "aperture", flickerSeed: 1337}).seed // 1337  (flickerSeed → the packer's `seed`)
+ * @example crtUniformParams({maskType: "aperture"}).time // 2  (the paused editor freeze time)
  */
 export function crtUniformParams(p) {
   const MASK_CODE = { aperture: 0, shadow: 1, slot: 2, none: 3 };
@@ -694,6 +818,14 @@ export function crtUniformParams(p) {
     monochrome: p.monochrome,
     whiteBalance: p.whiteBalance,
     phosphorTint: p.phosphorTint,
+    // TEMPORAL — `time` is the ONE seamed presentation clock. Frozen in the editor,
+    // the CLI and every pixel service (a deterministic still); the wall clock in the
+    // presenter; overridden per frame by both exporters. Never Date.now.
+    time: particleTime(),
+    seed: p.flickerSeed,
+    flicker: p.flicker,
+    flickerRate: p.flickerRate,
+    scanDrift: p.scanDrift,
   };
 }
 
