@@ -269,6 +269,34 @@ Flip H/V exists and a stored w/h MAY BE NEGATIVE (see the contract below).
 `plugins/magnifier.js` still exists alongside `plugins/demo/magnify.js` — that
 migration is partial, not done.
 
+GRADIENT SPREAD MODES are LINEAR-ONLY, and that is a real boundary, not an
+oversight. A linear gradient carries `spread` — mirror (the default, so absent is
+byte-identical legacy), loop, pad — mapping to the backends' native tile modes
+(Skia TileMode, SVG spreadMethod). RADIAL HAS NO SPREAD ROW because it has no
+`wavelength` and no `phase`: its ramp spans 0..r with nothing outside to tile, so
+there is no second tile for a mode to describe. Skia's radial does take a
+TileMode, so the plumbing would be trivial — what is missing is the FEATURE it
+would modify. A radial wavelength is a separate piece of work, and until it
+exists a radial spread row would be a control with no picture behind it.
+THE PHASE PERIOD IS PER MODE and this is the one thing spread changes about the
+existing math: mirror repeats only after a there-and-back pair (4·w·half), loop
+and pad after ONE ramp (2·w·half). Phase is a fraction of THAT MODE's period, so
+phase=1 stays identity in every mode. It folds in at the one seam every backend
+already calls (`render_gpu/ir.js linearGradientRender`, which now reports
+`tile` + `collapsed` where it used to report a `mirror` boolean).
+THERE IS NO WAVELENGTH FLOOR (user ruling, 2026-08-02: the old 0.05 minimum was
+"an arbitrary limitation"). Wavelength scrubs and drags to 0, and 0 is not an
+error: it is the LIMIT of infinitely fine tiling, so the fill collapses to a
+SOLID of the ramp's segment-weighted average (`core/properties.rampAverageColor`)
+— identical in every spread mode, because a mirrored copy has the same mean.
+`parsePaint` accepts 0 and still refuses NEGATIVE loudly.
+THE PDF BACKEND NO LONGER RASTERIZES A TILED GRADIENT. A PDF axial shading has no
+tile mode, but its Function's `Domain` need not be [0,1], so mirror/loop are
+emitted as a stitching function replicating the ramp per tile (mirrored tiles
+`Encode`d backwards). `opHasMirrorLinearFill` therefore returns false always —
+kept as a named predicate because that raster-routing line is a list of measured
+capability gaps and "linear gradients are not one" belongs where the others are.
+
 ## Protocols a plugin must know about
 
 These are declared in `core/registry.js`'s docblock, which is the de-facto
