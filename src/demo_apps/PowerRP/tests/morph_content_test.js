@@ -363,7 +363,15 @@ test("content: A MATERIAL-INKED TEXT MORPH KEEPS ITS MATERIAL for the whole inte
       vars: {},
     }, registry);
     const ops = morphIR(nodes.find((n) => n.itemId === "t1"));
-    assert.ok(ops.length > 1, "a multi-glyph morph must emit more than one contour, or this proves nothing");
+    // MANY CONTOURS, COUNTED IN THE `d` AND NOT IN THE OP LIST. This assertion
+    // used to read `ops.length > 1`, and that was pinning the AM bug: morphIR
+    // emitted one op PER SUBPATH, which is what made a glyph's counter physically
+    // unexpressible (a fill rule is a property of a whole path, so an outer and
+    // its counter in two ops paint solid-then-solid). The claim this test is
+    // actually making — "the widget has many contours, so a per-contour paint bug
+    // would show" — is about CONTOURS, and one `M` per contour is what says so.
+    const contours = ops.reduce((n, op) => n + (op.d.match(/M/g) || []).length, 0);
+    assert.ok(contours > 1, "a multi-glyph morph must emit more than one contour, or this proves nothing");
     for (const op of ops)
       assert.deepEqual(op.fill, material,
         "EVERY contour draws the widget's real ink — not a degraded solid, and not the default black");

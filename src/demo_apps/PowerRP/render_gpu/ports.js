@@ -23,7 +23,7 @@ import { morphPaths, payloadToPathD, assertMorphPaths } from "../core/morph.js";
 import { statePaint } from "../core/morph_payload.js";
 import { isVisibleFxToken, visibleLevel, isPaintShaped, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 import { deepEqual } from "../core/deltas.js";
-import { MANIM_SKETCH_STROKE_WIDTH, manimDrawPlan, sketchStrokeColor, trimSubpathByLength } from "../core/manim_draw.js";
+import { MANIM_SKETCH_STROKE_WIDTH, manimDrawPlan, sketchStrokePaint, trimSubpathByLength } from "../core/manim_draw.js";
 import { interpolate } from "../core/interpolators.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
@@ -703,19 +703,86 @@ export function morphIR(node) {
   // makes this correct at every alpha with no branch on t.
   const sx = blended.space.w === 1 && blended.space.h === 1 ? w : w / (blended.space.w || 1);
   const sy = blended.space.w === 1 && blended.space.h === 1 ? h : h / (blended.space.h || 1);
-  return blended.subpaths.flatMap((sp) => {
-    const d = payloadToPathD({ ...blended, subpaths: [offsetSubpath(scaledSubpath(sp, sx, sy), ox, oy)] });
-    if (!d) return [];
-    const paint = morphedPaint(fromPayload, toPayload, sp, t);
-    return [path({
-      d,
-      fill: paint.fill,
-      stroke: (paint.strokeWidth ?? 0) > 0 ? paint.stroke : null,
-      strokeWidth: paint.strokeWidth ?? 0,
-      fillRule: blended.fillRule,
-      opacity: paint.opacity ?? 1,
-    })];
-  });
+  // ONE OP PER PAINT, NOT ONE PER SUBPATH — see morphPaintRuns. A fill rule is a
+  // property of a WHOLE path, so a counter and its parent must share an op or the
+  // counter is painted as a solid blob on top of the letter it should hole.
+  return morphPaintRuns(blended.subpaths, (sp) => morphedPaint(fromPayload, toPayload, sp, t)).flatMap(
+    ({ subpaths, paint }) => {
+      const placed = subpaths.map((sp) => offsetSubpath(scaledSubpath(sp, sx, sy), ox, oy));
+      const d = payloadToPathD({ ...blended, subpaths: placed });
+      if (!d) return [];
+      return [path({
+        d,
+        fill: paint.fill,
+        stroke: (paint.strokeWidth ?? 0) > 0 ? paint.stroke : null,
+        strokeWidth: paint.strokeWidth ?? 0,
+        fillRule: blended.fillRule,
+        opacity: paint.opacity ?? 1,
+      })];
+    });
+}
+
+/**
+ * Pure function. THE MORPH'S OP GRAIN — a mid-morph subpath list split into the
+ * fewest RUNS that each draw with one paint, so every run becomes ONE path op.
+ *
+ * ── WHY THIS EXISTS: A FILL RULE IS A PROPERTY OF A WHOLE PATH ───────────────
+ * `morphIR` used to emit one op per subpath, and that made a counter physically
+ * unexpressible. "6" has two contours — the bowl's outer and the hole inside it —
+ * and a hole is punched by the OUTER and the COUNTER being evaluated together
+ * under one fill rule. Split into two ops, the painter fills the outer solid and
+ * then fills the counter solid ON TOP of it, in the same ink. Neither nonzero nor
+ * evenodd can help: both are functions of one path's own contours, and each op
+ * here had exactly one.
+ *
+ * MEASURED, on "6" → "8" through this very function's caller before the change:
+ * ZERO hole pixels at every alpha sampled — 0.1, 0.25, 0.5, 0.75, 0.9 — over a
+ * 160×112 raster of the node box. Not "a hole that flickers": no hole ever, in
+ * any frame of any glyph morph. That is the picture the user photographed (the
+ * ∞'s two counters as solid dots, the 6's counter filled), and it is why
+ * core/morph_fill.js's rule appeared to do nothing: the rule was computed
+ * correctly and handed to ops that could not act on it.
+ *
+ * ── WHY RUNS AND NOT ONE OP FOR EVERYTHING ───────────────────────────────────
+ * Because per-subpath paint is REAL: an SVG icon's contours genuinely carry
+ * different fills, which is the whole reason `morphedPaint` has its heterogeneous
+ * carve-out. Merging those into one op would flatten a multi-coloured icon to a
+ * single colour — trading this bug for a worse one. So the grain is the paint
+ * itself: consecutive subpaths whose resolved paint is EQUAL share an op, and a
+ * paint change starts a new one.
+ *
+ * CONSECUTIVE, never grouped-by-value across the list, because PAINT ORDER IS
+ * SEMANTIC — a later op draws over an earlier one, and gathering all the reds
+ * together would reorder a stack of overlapping shapes. A homogeneous payload (a
+ * text box, an equation, any single-ink widget) is one run either way, which is
+ * exactly the case that had the bug.
+ *
+ * @param {object[]} subpaths - the mid-morph subpaths, in paint order
+ * @param {function} paintFor - (subpath) → the resolved paint for it
+ * @returns {object[]} `[{subpaths, paint}]`, in paint order
+ *
+ * @example
+ * >>> // one ink (a glyph and its counter): ONE run, so the fill rule can hole it
+ * >>> morphPaintRuns([{start: [0, 0]}, {start: [1, 1]}], () => ({fill: "#000"})).length
+ * 1
+ * >>> morphPaintRuns([{start: [0, 0]}, {start: [1, 1]}], () => ({fill: "#000"}))[0].subpaths.length
+ * 2
+ * >>> // two inks (an SVG icon): two runs, so neither contour loses its colour
+ * >>> morphPaintRuns([{start: [0, 0]}, {start: [1, 1]}],
+ * ...   (sp) => ({fill: sp.start[0] ? "#00f" : "#f00"})).map((r) => r.paint.fill)
+ * [ '#f00', '#00f' ]
+ * >>> morphPaintRuns([], () => ({}))
+ * []
+ */
+export function morphPaintRuns(subpaths, paintFor) {
+  const runs = [];
+  for (const sp of subpaths) {
+    const paint = paintFor(sp);
+    const last = runs[runs.length - 1];
+    if (last && deepEqual(last.paint, paint)) last.subpaths.push(sp);
+    else runs.push({ subpaths: [sp], paint });
+  }
+  return runs;
 }
 
 /**
@@ -1218,7 +1285,7 @@ export function blurFadeState(state) {
  * @example // at v = 0.3 the outline is partly traced and NOTHING is filled — every op is a sketch path:
  * @example manimIR({itemId: "a", type: "rect", plugin: {morphPaths: () => ({space: {w: 10, h: 10}, fillRule: "nonzero", subpaths: [{start: [0, 0], curves: [[3, 0, 7, 0, 10, 0]], closed: false, winding: 1, paint: {fill: "#f00", strokeWidth: 0}}]})}, state: {active: {type: "~visibleFx", mode: "manim", v: 0.3}, w: 10, h: 10, fill: "#f00"}}, [{op: "rect"}]).every((c) => c.op === "path") // true
  */
-export function manimIR(node, cmds) {
+export function manimIR(node, cmds, nodesById = null) {
   const a = node.state?.active;
   if (!isVisibleFxToken(a) || a.mode !== "manim") return cmds;
   if (typeof node.plugin?.morphPaths !== "function") {
@@ -1261,20 +1328,16 @@ export function manimIR(node, cmds) {
     if (!trimmed) return [];
     const d = payloadToPathD({ ...payload, subpaths: [scaledSubpath(trimmed, sx, sy)] });
     if (!d) return [];
-    // THE THREE-TIER SKETCH COLOUR (research §2.1), over the subpath's own paint
-    // when it has one — an SVG icon's contours genuinely differ — and the
-    // widget's otherwise. A NON-STRING answer is DROPPED rather than passed on:
-    // tier 3 can land on a material or a gradient, which is a whole shader and
-    // not a line colour, and `stroke` takes a colour. Manim has no analogue to
-    // consult (its fill is always a colour array — §5.3 names this as a real
-    // domain gap), so the honest answer is to skip the sketch for that contour
-    // and let the widget's own fill ramp tell the story, which it already does.
-    const color = sketchStrokeColor(sp.paint ?? statePaint(node.state));
-    if (typeof color !== "string") return [];
+    // THE SKETCH PAINT'S TIER LADDER (research §2.1), over the subpath's own
+    // paint when it has one — an SVG icon's contours genuinely differ — and the
+    // widget's otherwise. See manimSketchStroke: the winner may be a colour, a
+    // gradient OR a material, and it arrives RESOLVED.
+    const stroke = manimSketchStroke(sp.paint ?? manimStatePaint(node.state), node, nodesById);
+    if (stroke === null) return [];
     return [path({
       d,
       fill: null, // "fill is forced to 0 during phase 0" (§2.1) — and it stays off here, because the REAL fill is the layer below
-      stroke: color,
+      stroke,
       strokeWidth: MANIM_SKETCH_STROKE_WIDTH,
       fillRule: payload.fillRule,
       opacity: plan.sketchWeight,
