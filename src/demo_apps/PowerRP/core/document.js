@@ -551,6 +551,60 @@ export function withItemPurged(doc, itemId) {
   return out;
 }
 
+// ── GROUP LIFECYCLE CASCADES (WORKSTREAM BR) ─────────────────────────────────
+// User, 2026-08-03: "When a group is purged, all of its children should be purged
+// too. Same with... deletion." A group's members ARE its content (the same premise
+// the clone set already runs on: "a group cloned WITHOUT them would be a second
+// group steering the ORIGINAL items"), so a lifecycle verb applied to the group
+// applies to what it owns.
+//
+// THE EXPANSION IS SHARED, THE WRITE IS NOT, and that split is the whole design.
+// Purge and Delete disagree about SCOPE by definition — Purge is the document-wide
+// remover, Delete is a per-slide `active` keyframe — but they agree exactly about
+// WHICH ITEMS the verb reaches. Computing that set once means the two verbs cannot
+// drift into disagreeing about what a group contains.
+//
+// NOT FOLDED INTO withItemPurged, deliberately: that primitive has callers for whom
+// a cascade would be WRONG. `withOrphanedItemsDropped` purges a typeless item (a
+// group with no `type` is not a group and owns nothing that survived either);
+// `withCameraEnsured` purges surplus cameras; `ungroupSelection` purges the group
+// AFTER baking its members' worlds — and cascading there would delete the very
+// items ungroup exists to free. So the cascade is a NAMED verb the lifecycle
+// commands opt into, not a behavior change under every existing caller.
+
+/**
+ * Pure function. A group's itemIds plus every member it owns, transitively through
+ * nested groups — the set a group-lifecycle verb (Purge, Delete) reaches.
+ *
+ * Membership is read from the RAW folded state so a member merely HIDDEN on this
+ * slide still travels, matching the clone set's rule for the same reason: a member
+ * left behind by a group's removal is an orphan nothing steers.
+ *
+ * Cycle-safe (`seen`), multi-root, and roots-first in the returned order. A root
+ * that is not a group returns just itself, so a mixed selection needs no branching
+ * at the call site.
+ *
+ * @param {object} items - folded state's `items` map
+ * @param {string[]} roots - the itemIds the verb was invoked on
+ * @returns {string[]} roots first, then the members they pulled in
+ *
+ * @example groupCascadeIds({g: {type: "group", members: ["a"]}, a: {type: "rect"}}, ["g"]) // ["g", "a"]
+ * @example groupCascadeIds({r: {type: "rect"}}, ["r"]) // ["r"] (a non-group reaches only itself)
+ * @example // transitive through nesting: purging the outer group reaches the inner group's members
+ * @example groupCascadeIds({o: {type: "group", members: ["g"]}, g: {type: "group", members: ["a"]}, a: {type: "rect"}}, ["o"]) // ["o", "g", "a"]
+ */
+export function groupCascadeIds(items, roots) {
+  const seen = new Set();
+  const visit = (id) => {
+    if (seen.has(id) || !items[id]) return;
+    seen.add(id);
+    const s = items[id];
+    if (s.type === "group" && Array.isArray(s.members)) for (const m of s.members) visit(m);
+  };
+  for (const id of roots) visit(id);
+  return [...seen];
+}
+
 // ── MAKE STATIC FROM CURRENT SLIDE ───────────────────────────────────────────
 //
 // THE REQUEST (user): "another tool to remove all keyframes … for a given

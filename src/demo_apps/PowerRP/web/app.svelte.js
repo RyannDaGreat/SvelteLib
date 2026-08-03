@@ -9,7 +9,7 @@
 import {
   newDocument, foldState, keyframed, unkeyframed, hasKeyframe, keyframeIndices,
   uuid, clonedItemStates,
-  withNewItem, withItemPurged, withNewSlide, withSlideDeleted,
+  withNewItem, withItemPurged, groupCascadeIds, withNewSlide, withSlideDeleted,
   withSlideToggled, withSlideRenamed, withNormalizedZ, bisectedZ, blockZToExtreme, serialize, deserialize,
   repairedDocument, printRepairReports, itemFallbackName, ungroupBakeSlides,
   itemCreationSlide, itemAnimationKeyframes, lostEquationKeyframes, withItemsMadeStatic,
@@ -4608,7 +4608,12 @@ export class PowerRPApp {
    * exists to be selected.
    */
   deleteSelection() {
-    const ids = this.selectedIds().filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
+    // A GROUP TAKES ITS MEMBERS WITH IT (user, 2026-08-03: "Same with...
+    // deletion"). groupCascadeIds expands through nested groups; the purgeable
+    // filter runs AFTER the expansion so a camera swept in as a member is still
+    // skipped rather than the whole cascade being refused.
+    const ids = groupCascadeIds(this.rawState().items ?? {}, this.selectedIds())
+      .filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
     if (ids.length === 0) return;
     // [ROUND 15.2] deactivate keeps the item OBJECT alive (just hidden), so
     // the edited item's in-progress text is worth keeping — commit it first
@@ -4838,7 +4843,12 @@ export class PowerRPApp {
   /** True removal FROM EXISTENCE: every keyframe of each selected item on every
    * slide (multi-select falls out naturally). Skips purgeable:false (camera). */
   purgeSelection() {
-    const ids = this.selectedIds().filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
+    // A GROUP TAKES ITS MEMBERS WITH IT (user, 2026-08-03: "When a group is
+    // purged, all of its children should be purged too") — see
+    // core/document.js groupCascadeIds for why the expansion is a named verb
+    // rather than a change inside withItemPurged.
+    const ids = groupCascadeIds(this.rawState().items ?? {}, this.selectedIds())
+      .filter((id) => this.registry.get(this.state().items?.[id]?.type)?.capabilities.purgeable !== false);
     if (ids.length === 0) return;
     // [ROUND 15.2] purge is true removal, so if the edited item is IN the
     // purge set there is nothing left to commit — cancel (drop the pending

@@ -542,7 +542,13 @@ export function deriveRenderTree(state, registry, project = "") {
   // morphing widget would VANISH for the whole interior of its own transition and
   // reappear at the end. The token is admitted here and resolved to a real type
   // (with its payload pair) inside the map, where the registry is in hand.
-  const nodes = Object.entries(items).filter(([, s]) => s.active !== false && (typeof s.type === "string" || isMorphToken(s.type))).map(([id, itemState]) => {
+  // MEMBERSHIP HIDING (groupHiddenMembers): an INACTIVE GROUP hides everything it
+  // owns, transitively. Computed here rather than stored, so a member's own
+  // `active` still records only what the author set on the member — see that
+  // function's docblock. Empty set for every document with no inactive group, so
+  // the filter below is byte-identical for them.
+  const hiddenByGroup = groupHiddenMembers(items);
+  const nodes = Object.entries(items).filter(([id, s]) => s.active !== false && !hiddenByGroup.has(id) && (typeof s.type === "string" || isMorphToken(s.type))).map(([id, itemState]) => {
     // THE FLIP SEAM (module docstring): a NEGATIVE w/h is a reflection. Split it
     // into a positive box + mirror flags here, so no consumer downstream can meet
     // a negative extent. `unsignedState` is THE map — shared verbatim with the
@@ -882,6 +888,53 @@ export function composedMemberInfluence(ownerIds, state) {
  * @example memberOwnerGroups({items: {g: {type: "group", members: ["a"], z: 0}, a: {type: "rect", z: 1}}}).get("a") // ["g"]
  * @example memberOwnerGroups({items: {r: {type: "rect"}}}).size // 0
  */
+/**
+ * Pure function. The itemIds an INACTIVE GROUP takes down with it: every member,
+ * transitively through nested groups (user, 2026-08-03: "If a group is not
+ * visible... then neither should its children be").
+ *
+ * WHY THIS IS A DERIVE-TIME LAW AND NOT A DOCUMENT EDIT. `active` is stored
+ * PER ITEM, so a member's own `active: true` is the honest record of what the
+ * author set on the MEMBER; the group hiding it is a fact about the GROUP. Writing
+ * `active: false` onto the members instead would destroy that distinction — showing
+ * the group again could not know which members the author had hidden individually.
+ * So membership hiding is COMPUTED here, every derive, and the members' stored
+ * state is never touched.
+ *
+ * IT MUST NOT DEPEND ON groupFoldsSubtree. An effect-free group is a pure ghost
+ * whose members render independently (plugins/group.js SUBTREE EFFECTS); a group
+ * carrying effects composites them as a subtree. Those are two different RENDER
+ * shapes for the same VISIBILITY fact, so this reads only `active` + `members` and
+ * runs before either path — an invisible group hides its children whether or not it
+ * happens to carry a shadow.
+ *
+ * TRANSITIVE, because groups nest (memberOwnerGroups' #302 block): an inactive
+ * OUTER group hides an inner group AND everything the inner group owns. Cycle-safe
+ * via the visited set — a malformed document naming a cycle terminates rather than
+ * hanging.
+ *
+ * @param {object} items - folded/evaluated `state.items`
+ * @returns {Set<string>} itemIds hidden BY MEMBERSHIP (never the groups themselves)
+ *
+ * @example groupHiddenMembers({g: {type: "group", members: ["a"], active: false}, a: {type: "rect"}}) // Set {"a"}
+ * @example groupHiddenMembers({g: {type: "group", members: ["a"], active: true}, a: {type: "rect"}}).size // 0 (a visible group hides nothing)
+ * @example // transitive: an inactive OUTER group hides the inner group's members too
+ * @example [...groupHiddenMembers({o: {type: "group", members: ["g"], active: false}, g: {type: "group", members: ["a"]}, a: {type: "rect"}})].sort() // ["a", "g"]
+ */
+export function groupHiddenMembers(items) {
+  const hidden = new Set();
+  const swallow = (id) => {
+    if (hidden.has(id)) return; // cycle-safe, and each subtree walked once
+    hidden.add(id);
+    const s = items[id];
+    if (s?.type === "group" && Array.isArray(s.members)) for (const m of s.members) swallow(m);
+  };
+  for (const [id, s] of Object.entries(items))
+    if (s?.type === "group" && s.active === false && Array.isArray(s.members))
+      for (const m of s.members) swallow(m);
+  return hidden;
+}
+
 export function memberOwnerGroups(state) {
   const items = state.items ?? {};
   const groups = Object.entries(items)
