@@ -28,8 +28,11 @@ import {
   coerce, coercionNote, connectPairs, connectionRefusal, connectionsOf,
   declaredPorts, disconnectPairs, evaluateNodeGraph, findPort, isNodeWidget,
   minimumNodeHeight, portAt, portColor, portLayout, portTypeCssVars, portZero,
-  topoOrder, typesCompatible, wouldCycle,
+  topoOrder, typesCompatible, wireBezierPath, wouldCycle,
 } from "../core/nodeflow.js";
+import { WIRE_HALO_INK, WIRE_WIDTH, wireOps } from "../core/node_chrome.js";
+import { sceneIR } from "../render_gpu/ports.js";
+import { parsePaint } from "../render_gpu/ir.js";
 import { deriveRenderTree, deriveWires, nodePortAnchors, withDerivedInjections } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
@@ -517,6 +520,87 @@ check("the coercion table covers every port-type pair the audio roster can actua
   // assertion is what makes the NEXT gap show up as a decision to make.
   assert.deepStrictEqual(refused.sort(), ["audio->trigger"],
     "a reachable port-type pair is refused with no module to bridge it — either add the coercion or add the module");
+});
+
+// ── THE WIRES ARE SCENE CONTENT (WORKSTREAM BN) ──────────────────────────────
+//
+// User, 2026-08-03: "the wires between nodes should be shown in prsentation mode
+// and pdf rener and png render etc too please". Before this, a wire was an SVG
+// path in web/CanvasView.svelte alone, so every consumer that is not the editor
+// canvas drew naked nodes. These pins are about the SEAM, not about any one
+// backend: a wire that reaches the display list reaches all of them, because
+// `path` + stroke is an op every backend has drawn since before nodes existed.
+
+check("a connected trio puts WIRE OPS in the display list — the whole point of BN", () => {
+  const ir = sceneIR(deriveRenderTree({ items: trio() }, registry));
+  // Two ops per wire (halo + wire) and three wires in the trio.
+  const wireish = ir.filter((o) => o.op === "path" && typeof o.d === "string" && o.d.startsWith("M "));
+  assert.strictEqual(wireish.length, 6, `three wires × (halo + wire); got ${wireish.length} path ops`);
+  // The CURVE is the same one the editor's ghost draws — one function, so the wire
+  // that replaces a ghost cannot land on a different path.
+  const wires = deriveWires(deriveRenderTree({ items: trio() }, registry));
+  const expected = new Set(wires.map((w) => wireBezierPath(w.from, w.to)));
+  for (const op of wireish) assert.ok(expected.has(op.d), `${op.d} is not one of the three derived wire curves`);
+});
+
+check("wires are emitted UNDER the nodes, so a card never has a cable struck across its readout", () => {
+  const ir = sceneIR(deriveRenderTree({ items: trio() }, registry));
+  const firstNodeOp = ir.findIndex((o) => o.op === "pushTransform");
+  const lastWireOp = ir.map((o, i) => [o, i]).filter(([o]) => o.op === "path" && String(o.d).startsWith("M ")).pop()[1];
+  assert.ok(lastWireOp < firstNodeOp,
+    `every wire op must precede the first node's pushTransform (wire ${lastWireOp} vs node ${firstNodeOp})`);
+});
+
+check("a wire carries the SOURCE port type's colour — the SAME table the beads read", () => {
+  const ir = sceneIR(deriveRenderTree({ items: trio() }, registry));
+  // portColor returns the hex literal; ir.js parses paints to RGBA floats, so compare
+  // through the same parse rather than against a hand-written tuple that could drift.
+  const want = parsePaint(portColor("number"));
+  const wireStrokes = ir
+    .filter((o) => o.op === "path" && String(o.d).startsWith("M ") && o.strokeWidth === WIRE_WIDTH)
+    .map((o) => o.stroke);
+  assert.strictEqual(wireStrokes.length, 3, "three wires, three type-coloured strokes");
+  for (const s of wireStrokes) assert.deepStrictEqual(s, want, "a wire must be its source type's colour");
+});
+
+check("the HALO is wider, dimmer, and drawn BEFORE its own wire", () => {
+  const ops = wireOps({ from: { x: 0, y: 0 }, to: { x: 200, y: 0 }, type: "number" });
+  const [halo, wire] = ops;
+  assert.ok(halo.strokeWidth > wire.strokeWidth, "the halo must be the wider stroke or it does not separate anything");
+  assert.ok(halo.opacity < 1 && wire.opacity === 1, "the halo is the dim one");
+  // NOT a theme token: --a-canvas-solid is a property of the VIEWER, and baking one
+  // into a PDF would print the editor's grey onto a white slide.
+  assert.deepStrictEqual(halo.stroke, parsePaint(WIRE_HALO_INK));
+});
+
+check("WIRES ARE NOT WIDGETS still holds after they became scene content", () => {
+  // The document is the assertion: emitting a picture for a connection must not add
+  // an item, and the node count out of derive must not change.
+  const items = trio();
+  const before = JSON.stringify(items);
+  const nodes = deriveRenderTree({ items }, registry);
+  sceneIR(nodes);
+  assert.strictEqual(JSON.stringify(items), before, "emitting wires must not mutate the document");
+  assert.strictEqual(nodes.length, 4, "four items in, four nodes out — wires are still not widgets");
+});
+
+check("a document with NO nodes emits not one wire op (every existing deck is byte-identical)", () => {
+  const ir = sceneIR(deriveRenderTree({ items: { r: { type: "rect", x: 0, y: 0, w: 10, h: 10 } } }, registry));
+  assert.strictEqual(ir.filter((o) => o.op === "path" && String(o.d).startsWith("M ")).length, 0);
+});
+
+check("CULLING MAY NOT EAT A WIRE: ctx.wireNodes keeps a half-offscreen patch's cables", () => {
+  // THE DEFECT THIS PINS: only PresentMode culls, and it culls to the camera rect. A
+  // wire from an off-camera SOURCE into an on-camera SINK is visible for most of its
+  // length — deriving wires from the culled list would silently delete it, so the
+  // presenter would draw a different picture than the PDF export of the same slide.
+  const nodes = deriveRenderTree({ items: trio() }, registry);
+  const culled = nodes.filter((n) => n.itemId !== "src"); // pretend `src` fell off the camera
+  const wireOpsIn = (ir) => ir.filter((o) => o.op === "path" && String(o.d).startsWith("M ")).length;
+  assert.strictEqual(wireOpsIn(sceneIR(culled)), 4,
+    "without the pre-cull tree, src's wire is gone — this is the number the defect produced");
+  assert.strictEqual(wireOpsIn(sceneIR(culled, { wireNodes: nodes })), 6,
+    "with the pre-cull tree, all three wires survive while only the visible cards paint");
 });
 
 // ── SUMMARY ──────────────────────────────────────────────────────────────────

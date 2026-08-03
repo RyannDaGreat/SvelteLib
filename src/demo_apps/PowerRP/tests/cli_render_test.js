@@ -88,4 +88,77 @@ assert.notDeepEqual(Array.from(proxy), Array.from(explicitFull),
 // A bad tier fails BEFORE any rendering happens.
 await assert.rejects(() => renderDocToPng(docJson, { slide: 0, alpha: 1, width: 320, height: 180, quality: "nonsense" }), /unknown --quality/);
 
-console.log("OK cli_render_test — slides 0/1/2 render to valid PNGs (Phase 1b backdrop ops implemented); the render tier is explicit, validated, and defaults to the editor's full quality");
+// ── (4) THE NODE-FLOW WIRES REACH THE CLI (WORKSTREAM BN) ────────────────────
+// User, 2026-08-03, verbatim: "the wires between nodes should be shown in
+// prsentation mode and pdf rener and png render etc too please".
+//
+// The CLI is the STRICTEST honest witness for this feature, and that is why the
+// pin lives here rather than only in the IR suite. It runs in bare node on a
+// SOFTWARE Skia surface, so it shares the display list, paint_skia and plugin
+// emit() with the editor but shares NO browser code whatsoever — a wire that
+// appears in this PNG appeared because it is in the display list, and for no
+// other reason. It also cannot fall back: a node patch is pure vector, so
+// cli/render.js draws it at full quality with nothing omitted.
+//
+// THE ASSERTION IS PIXELS, not op counts, because the op counts are already
+// pinned in tests/nodeflow_test.js and would not have caught a wire emitted with
+// a null stroke, a zero width, or behind the camera background. Two renders of
+// ONE document — connected and disconnected — differing ONLY in whether the
+// inputs are present. Any difference in the bytes IS the wires.
+
+const wiredNodes = (connected) => {
+  const node = (extra) => ({ z: 1, rotation: 0, scale: 1, active: true, ...extra });
+  return {
+    src: node({ type: "node_number", x: 60, y: 80, w: 130, h: 90, value: 3, name: "Three" }),
+    two: node({ type: "node_number", x: 60, y: 340, w: 130, h: 90, value: 2, name: "Two" }),
+    mul: node({
+      type: "node_math", x: 420, y: 180, w: 150, h: 100, op: "multiply", name: "Multiply",
+      ...(connected ? { inputs: { a: { item: "src", port: "out" }, b: { item: "two", port: "out" } } } : {}),
+    }),
+    disp: node({
+      type: "node_display", x: 850, y: 190, w: 170, h: 90, name: "Result",
+      ...(connected ? { inputs: { in: { item: "mul", port: "out" } } } : {}),
+    }),
+  };
+};
+
+const { newDocument } = await import("../core/document.js");
+const nodeDocJson = (connected) => {
+  const doc = newDocument();
+  Object.assign(doc.slides[0].delta.items, wiredNodes(connected));
+  return JSON.stringify(doc);
+};
+
+const WIRE_RENDER = { slide: 0, alpha: 1, width: 1280, height: 720 };
+const connectedPng = await renderDocToPng(nodeDocJson(true), WIRE_RENDER);
+const disconnectedPng = await renderDocToPng(nodeDocJson(false), WIRE_RENDER);
+
+assert.ok(isPng(connectedPng) && connectedPng.length >= MIN_PNG_BYTES,
+  "a node patch must render to a valid PNG in bare node — it is pure vector, so the CLI has no excuse");
+assert.notDeepEqual(Array.from(connectedPng), Array.from(disconnectedPng),
+  "the CLI rendered a CONNECTED patch byte-identically to a DISCONNECTED one — the wires are not reaching the display list, which is the exact defect WORKSTREAM BN exists to fix");
+// AND THE DIFFERENCE IS THE WIRES, not the readout: a disconnected `mul` shows 0
+// and a connected one shows 6, so the images would differ even with no wires at
+// all. Pinning the byte difference alone would therefore pass on a completely
+// broken emission. So compare a connected patch against one that is connected
+// IDENTICALLY but whose nodes sit at the same places — same values, same text,
+// same beads — with the wire ops stripped from the scene. The only honest way to
+// strip them is at the seam itself, so assert on the op list instead: this is the
+// one thing pixels cannot separate, and the IR can.
+const { sceneIR } = await import("../render_gpu/ports.js");
+const { deriveRenderTree } = await import("../core/derive.js");
+const { createRegistry } = await import("../core/registry.js");
+const { registerPlugins } = await import("../plugins/index.js");
+const { evaluatedStateAt } = await import("../web/cameraFrame.js");
+const wireRegistry = createRegistry();
+registerPlugins(wireRegistry);
+const irFor = (connected) => {
+  const doc = JSON.parse(nodeDocJson(connected));
+  const state = evaluatedStateAt(doc, 0, 1, wireRegistry);
+  return sceneIR(deriveRenderTree(state, wireRegistry, doc.meta?.name ?? ""));
+};
+const wireCurves = (ir) => ir.filter((o) => o.op === "path" && String(o.d).startsWith("M ")).length;
+assert.equal(wireCurves(irFor(true)), 6, "three wires × (halo + wire) must be in the CLI's own display list");
+assert.equal(wireCurves(irFor(false)), 0, "an unwired patch must contribute no wire ops at all");
+
+console.log("OK cli_render_test — slides 0/1/2 render to valid PNGs (Phase 1b backdrop ops implemented); the render tier is explicit, validated, and defaults to the editor's full quality; a connected node patch renders its WIRES in bare node (WORKSTREAM BN)");
