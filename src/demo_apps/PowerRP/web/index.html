@@ -104,6 +104,43 @@
       user stages they have NOT reached yet. STAGES below is that declaration; a
       bootStage() id that is not in it is appended live (so a new stage can never
       be silently dropped), but the ordered spine is this list.
+
+      ── THE CRASH SURFACE (WORKSTREAM AI) ──────────────────────────────────────
+      The user, verbatim: "oh no um, yeah, so it turned out it actually crashed
+      when it was loading and I couldn't tell because it off- I'm so used to it
+      taking such a long time to say starting that I didn't even think to look in
+      the console for this error."
+
+      That is the failure the roster ALONE cannot catch. AH's fail() surfaces a
+      death a stage REPORTS; the incident's crash reported nothing — a module in
+      the import graph threw `properties.bundle: unknown bundle "transform"` at
+      evaluation time, so no stage ever called fail(), the roster froze mid-list,
+      and a DEAD boot was indistinguishable from AH's own honestly-slow one. The
+      slower and more honest the splash gets, the more perfectly a crash hides
+      inside it. So the splash must trap what nothing else will.
+
+      window.onerror + unhandledrejection are installed BELOW, in this same first
+      inline script, and the position is load-bearing: an import-graph throw fires
+      during the module bundle's evaluation, which is BEFORE any code the bundle
+      itself could install a handler from. A handler that arrives with the app
+      cannot catch the app failing to arrive.
+
+      They hand straight to fail(), so a crash renders in AH's existing failure
+      surface — same roster, same ✕ on the row that was running. A crash that
+      belongs to no stage is still ATTRIBUTED to one: the row left "active" is
+      where boot got to, which is a true statement about the crash even when the
+      crash is not that stage's own fault. What the crash adds beyond a stage
+      failure is the TOP STACK FRAME (one line — the file:line that threw, not a
+      wall of frames) and the REMEDY, because the incident's actual fix was
+      "unregister the service worker, clear site data, reload" and a user staring
+      at a message with no next step is barely better off than one staring at a
+      spinner.
+
+      THE HANDLERS STAND DOWN at done() — the first painted frame. After that the
+      editor owns its own error surfaces (the error box, the expression seam), and
+      a splash that has already lifted must not resurrect itself over a working
+      editor to report a transient runtime rejection. `finished` is what gates
+      them, so this is one flag, not a second lifecycle.
     -->
     <style>
       :root {
@@ -131,6 +168,10 @@
         --boot-done-dim: 0.55;        /* a finished stage: present, but no longer the subject */
         --boot-row-fade-ms: 200ms;
         --boot-tick-size: 11px;
+        /* The crash surface's remedy block: quieter than the error itself, so
+           the eye reads WHAT BROKE first and WHAT TO DO second. */
+        --boot-guidance-dim: 0.8;
+        --boot-guidance-gap: 10px;
       }
       @media (prefers-color-scheme: light) {
         :root {
@@ -250,6 +291,23 @@
       #boot-splash[data-failed="1"] .boot-track { display: none; }
       #boot-splash[data-failed="1"] .boot-error { display: block; }
       #boot-splash[data-failed="1"] > .boot-ui { opacity: 1; }
+      /* THE REMEDY. In the app's own foreground, not the error red: it is not
+         part of the failure, it is the way out of it. A user who has just been
+         told the app is dead needs the next step to read as instruction rather
+         than as more alarm. */
+      .boot-guidance {
+        display: none;
+        max-width: var(--boot-error-max-w);
+        padding: 0 var(--boot-error-pad);
+        margin-top: calc(-1 * var(--boot-guidance-gap));
+        color: var(--boot-fg);
+        opacity: var(--boot-guidance-dim);
+        font-size: var(--boot-stage-size);
+        text-align: left;
+        line-height: 1.6;
+        white-space: pre-wrap;
+      }
+      #boot-splash[data-failed="1"] .boot-guidance { display: block; }
       @media (prefers-reduced-motion: reduce) {
         #boot-splash, #boot-splash > .boot-ui, .boot-bar { transition: none; }
         .boot-track[data-indeterminate="1"] > .boot-bar { animation: none; }
@@ -264,6 +322,7 @@
         <div class="boot-track" id="boot-track"><div class="boot-bar" id="boot-bar"></div></div>
         <div class="boot-stages" id="boot-stages"></div>
         <div class="boot-error" id="boot-error"></div>
+        <div class="boot-guidance" id="boot-guidance"></div>
       </div>
     </div>
     <script>
@@ -280,6 +339,7 @@
         var track = document.getElementById("boot-track");
         var stagesEl = document.getElementById("boot-stages");
         var errorEl = document.getElementById("boot-error");
+        var guidanceEl = document.getElementById("boot-guidance");
         var finished = false;
         // Stage history, in arrival order — the probe asserts it advances
         // monotonically, and it is the honest record of what boot actually did.
@@ -470,7 +530,7 @@
             el.setAttribute("data-lifting", "1");
             setTimeout(function () { el.remove(); }, LIFT_MS);
           },
-          fail: function (message) {
+          fail: function (message, guidance) {
             // A failure OUTRANKS done(): it must be visible even if something
             // else already tried to lift the splash.
             finished = false;
@@ -490,19 +550,94 @@
               dying.root.setAttribute("data-state", "active");
             }
             errorEl.textContent = "PowerRP failed to start" + (dying ? " while " + dying.name.textContent.toLowerCase() + "." : ".") + "\n\n" + message;
+            guidanceEl.textContent = guidance || "";
           },
         };
+
+        // ── THE CRASH SURFACE (WORKSTREAM AI) ───────────────────────────────
+        // See the docblock in <head>. Everything below exists because a boot can
+        // die WITHOUT any stage reporting it, and AH's honest slowness is what
+        // makes that death invisible.
+
+        /** THE REMEDY, and it is the one that actually worked. The incident was a
+         *  stale service worker serving a MIXED bundle set, and what fixed it was
+         *  literally: unregister the worker, clear site data, reload. A reload
+         *  alone is tried first because it is free and fixes the transient half;
+         *  clearing is named second because it is the heavier step and it is the
+         *  one that beats a poisoned cache. Naming the console last is honest —
+         *  it is where the full stack is, and the user's own words were that he
+         *  "didn't even think to look in the console", so this tells him. */
+        var CRASH_GUIDANCE =
+          "Try reloading the page.\n" +
+          "If it keeps happening, clear this site's data (browser settings → site data → clear) and reload — a half-updated offline cache is the usual cause.\n" +
+          "The browser console has the full stack.";
+
+        /** Pure function. The ONE most useful stack line: the frame that threw.
+         *  A full stack in a boot splash is a wall the user cannot act on, and it
+         *  pushes the guidance off screen; the top frame is the single line that
+         *  says WHERE, which is what makes this reportable. Returns "" when the
+         *  stack is unusable, in which case the message stands alone.
+         *
+         *  >>> topFrame("Error: boom\n    at bundle.js:42:7\n    at m.js:1:1")
+         *  "at bundle.js:42:7"
+         *  >>> topFrame(undefined)
+         *  "" */
+        function topFrame(stack) {
+          if (typeof stack !== "string") return "";
+          var lines = stack.split("\n");
+          for (var k = 0; k < lines.length; k++) {
+            var line = lines[k].trim();
+            if (line.indexOf("at ") === 0) return line;
+          }
+          return "";
+        }
+
+        /** Command. Renders an uncaught boot error in the splash. `kind` names
+         *  the CATEGORY in the user's words, because "an error" and "a promise
+         *  that was never handled" are different enough that saying which one
+         *  costs nothing and saves a guess. */
+        function reportCrash(kind, message, stack) {
+          if (finished) return;
+          var frame = topFrame(stack);
+          window.__powerrp_boot.fail(kind + ":\n" + message + (frame ? "\n" + frame : ""), CRASH_GUIDANCE);
+        }
 
         // A boot that dies before any of our own code runs (a bundle that 404s
         // under the wrong base path, a syntax error) would otherwise leave the
         // splash spinning forever — which is the same gray box with extra steps.
+        //
+        // TWO DISTINCT EVENTS SHARE THIS ONE LISTENER because the platform
+        // overloads `error`: a RESOURCE failure (capture phase, has ev.target)
+        // and an uncaught THROW (has ev.error/ev.message). They need different
+        // sentences — one is "the file never arrived", the other is "the code
+        // arrived and blew up" — so they are branched, not merged.
         window.addEventListener("error", function (ev) {
           if (finished) return;
           var t = ev.target;
           if (t && (t.tagName === "SCRIPT" || t.tagName === "LINK")) {
-            window.__powerrp_boot.fail("Failed to load " + (t.src || t.href) + "\n\nThe app bundle could not be fetched. If this is a static deploy, the base path is the usual cause.");
+            window.__powerrp_boot.fail(
+              "Failed to load " + (t.src || t.href) + "\n\nThe app bundle could not be fetched. If this is a static deploy, the base path is the usual cause.",
+              CRASH_GUIDANCE,
+            );
+            return;
           }
+          // The incident's shape: a module in the import graph threw while being
+          // evaluated. `ev.error` carries the stack; `ev.message` is the fallback
+          // for a cross-origin script, where the browser gives us only "Script
+          // error." — still worth showing, because "it crashed" beats a spinner.
+          var err = ev.error;
+          reportCrash("Uncaught error", (err && err.message) || ev.message || String(err), err && err.stack);
         }, true);
+
+        // A rejected promise nobody caught. The boot path is almost entirely
+        // async (fetch the wasm, load fonts, open storage), so this is not an
+        // exotic case — it is the SHAPE most boot failures take, and without this
+        // handler every one of them is a silent freeze.
+        window.addEventListener("unhandledrejection", function (ev) {
+          if (finished) return;
+          var r = ev.reason;
+          reportCrash("Unhandled promise rejection", (r && r.message) || String(r), r && r.stack);
+        });
       })();
     </script>
     <script type="module" src="./main.js"></script>
