@@ -16,7 +16,7 @@
  */
 
 import { interpolate } from "./interpolators.js";
-import { blendUnderMode, defaultModeFor, interpKeyFor, isInterpKey, modeClaimsTrees, modeForBlend } from "./interp_modes.js";
+import { blendUnderMode, defaultModeFor, interpKeyFor, isInterpKey, modeClaimsTrees, modeForBlend, modeParamsFrom } from "./interp_modes.js";
 import { MORPH_KEY, morphModeForBlend, morphModeIsActive, universalMorphToken } from "./morph_property.js";
 
 /** Delete sentinel. A delta leaf of NONE deletes the key from the state. */
@@ -163,6 +163,13 @@ function mutBlendApply(state, delta, alpha) {
     // below, byte-identically.
     const modeKey = interpKeyFor(key);
     const storedMode = outgoing[modeKey] ?? delta[modeKey];
+    // MODE PARAMETERS (WORKSTREAM AP) follow the mode's OWN rule exactly — the
+    // target wins from the first frame, else the standing value carries, else the
+    // declaration's default. That is `modeForBlend`'s `to ?? from` spelled over a
+    // whole parameter set, so the two bags are read in that order rather than
+    // merged (a merge would allocate on EVERY leaf of every document, and this
+    // runs per key per frame).
+    const paramsFor = (mode) => modeParamsFrom(mode, key, delta, outgoing);
     if (val !== NONE && alpha < 1 && key in state) {
       // THE DEFAULT-MODE SEAM (core/interp_modes.defaultModeFor). A leaf with
       // NOTHING stored is not automatically "tween": a pair of object-shaped
@@ -174,7 +181,7 @@ function mutBlendApply(state, delta, alpha) {
         ? modeForBlend(outgoing[modeKey], delta[modeKey])
         : defaultModeFor(state[key], val, key);
       if (modeClaimsTrees(mode)) {
-        state[key] = blendUnderMode(state[key], val, alpha, { key, mode });
+        state[key] = blendUnderMode(state[key], val, alpha, { key, mode, params: paramsFor(mode) });
         continue;
       }
     }
@@ -222,7 +229,7 @@ function mutBlendApply(state, delta, alpha) {
         const mode = storedMode !== undefined
           ? modeForBlend(outgoing[modeKey], delta[modeKey])
           : defaultModeFor(state[key], val, key);
-        state[key] = blendUnderMode(state[key], val, alpha, { key, mode });
+        state[key] = blendUnderMode(state[key], val, alpha, { key, mode, params: paramsFor(mode) });
       }
     } else {
       // An ADDITION is discrete under every mode (there is no `a` to blend from

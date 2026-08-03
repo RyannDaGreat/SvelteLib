@@ -21,7 +21,7 @@
 import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, isPaintOff, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
 import { morphPaths, payloadToPathD, assertMorphPaths, midMorphFillRule } from "../core/morph.js";
 import { statePaint } from "../core/morph_payload.js";
-import { isVisibleFxToken, visibleLevel, isPaintShaped, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
+import { isVisibleFxToken, visibleLevel, isPaintShaped, modeParams, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 import { deepEqual } from "../core/deltas.js";
 import { MANIM_SKETCH_STROKE_WIDTH, manimDrawPlan, sketchStrokePaint, trimSubpathByLength } from "../core/manim_draw.js";
 import { interpolate } from "../core/interpolators.js";
@@ -1211,24 +1211,34 @@ function opDrawsInk(cmd) {
 // half of both modes IS that function and only the other half differs.
 
 /**
- * THE BLUR-FADE DEFOCUS, in canvas units — how blurred a `blurFade` widget is at
- * v = 0, before it sharpens into focus.
+ * THE BLUR-FADE DEFOCUS FALLBACK, in canvas units — the EXTRA blur a `blurFade`
+ * widget starts with at v = 0, used when the token carries no `blur` parameter.
  *
- * It is a MODE CONSTANT and not a knob, for the reason core/manim_draw.js's
- * phase split is not one: the mode is a named gesture ("into focus"), and an
- * author who wants a different amount of blur has the `gaussianBlur` effect row
- * itself — which this ADDS to rather than replaces.
+ * IT IS NO LONGER A MODE CONSTANT (WORKSTREAM AP). The amount is the author's
+ * knob now — core/interp_modes.js declares it as blurFade's `blur` parameter,
+ * whose `default` is the single source of truth and is re-exported here so the
+ * two cannot drift. Read that declaration for the sizing argument (why 64 and
+ * not the 24 the user overruled as "too subtle"); this constant exists only so
+ * this file's own fallback and every test that names a number read the SAME one.
  *
- * THE VALUE IS SIZED AGAINST THE THING IT MUST BEAT. A defocus reads as a
- * defocus only when the smear is wide enough to destroy the widget's edges, and
- * a Gaussian's visible reach is BLUR_SUPPORT_SIGMAS·σ each side (the shared
- * ir.js constant every other blurred effect here is bounded by). At σ = 24 that
- * is a ±72-unit smear, which dissolves a typical slide widget's outline
- * completely at v = 0 — the "out of focus" the user asked for — while staying a
- * radius the existing effect machinery treats as ordinary rather than extreme
- * (the bloom presets in plugins/group.js reach radius 34 on the same primitive).
+ * WHEN THE FALLBACK FIRES: a token minted before this parameter existed, or one
+ * built by hand in a test. A token minted by the current fold always carries the
+ * parameter, because core/deltas fills it from the declaration.
  */
-export const BLUR_FADE_MAX_RADIUS = 24;
+export const BLUR_FADE_MAX_RADIUS = blurFadeDefaultAmount();
+
+/**
+ * Query (reads the interp-mode registry). blurFade's declared default extra
+ * blur. Separate from the constant above so the lookup is named and testable
+ * rather than an expression in an export.
+ *
+ * @example blurFadeDefaultAmount() // 64
+ */
+function blurFadeDefaultAmount() {
+  const decl = modeParams("blurFade").find((p) => p.param === "blur");
+  if (!decl) throw new Error("render_gpu/ports.js: blurFade must declare a `blur` parameter (core/interp_modes.js) — this file's defocus fallback reads its default");
+  return decl.default;
+}
 
 /**
  * Pure function. THE BLUR-FADE COMPOSITION — a `blurFade` node's state with the
@@ -1248,35 +1258,70 @@ export const BLUR_FADE_MAX_RADIUS = 24;
  * half alone, and a self-effecting widget would fade without ever defocusing,
  * with no error at all. That is why emitNodeBody resolves this BEFORE emit().
  *
- * ── WHY IT ADDS RATHER THAN REPLACES ─────────────────────────────────────────
- * A widget may already carry a blur its author set. Overwriting it would make
- * the transition END somewhere other than the widget's own settled look; adding
- * means that at v = 1 the widget lands on EXACTLY its authored blur, whatever
- * that is. Adding is also what makes the mode compose with the effect instead of
- * fighting it, which is the whole point of riding an existing one.
+ * ── IT ADDS, WHICH IS WHY IT LANDS ON THE WIDGET'S OWN TARGET BLUR ───────────
+ * User, 2026-08-02, verbatim (WORKSTREAM AP): "the blur fade should be animating
+ * from big blur to whatever blur is in the target. Right now it always animates
+ * to zero blur, which is not the right move when the element has blur that it's
+ * going towards."
  *
- * ── THE CURVE, AND THE EXACT ENDPOINT ────────────────────────────────────────
- *     added = BLUR_FADE_MAX_RADIUS · (1 − v)
- * Linear in the coverage, so the picture sharpens at the same rate it solidifies
- * and the two read as one gesture rather than two effects racing. At v = 1 the
- * added radius is 0 and the state comes back BY IDENTITY, so the endpoint is
- * byte-identical to the same widget with no mode at all — the endpoint law,
- * enforced here rather than trusted to floating-point arithmetic.
+ * ADDING IS EXACTLY THAT BEHAVIOUR, and it is what this function has always
+ * done: overwriting would make the transition END somewhere other than the
+ * widget's settled look, while adding lands it on EXACTLY its authored blur at
+ * v = 1, whatever that is. Measured across the real fold (repairedDocument →
+ * tweenedState → evaluateState → sceneIR), a widget with `gaussianBlur: 10`
+ * entering under this mode composes 74 → 10 monotonically and paints those exact
+ * radii. So the arithmetic already converged to the target and the fix the user's
+ * sentence needed was the SIZE OF THE APPROACH, not its destination — see the
+ * amount parameter below.
+ *
+ * TWO SEPARATE THINGS COULD STILL MAKE AN AUTHOR SEE "converges to zero", and
+ * neither is this function:
+ *   1. THE UNIVERSAL MORPH SWALLOWS THE EFFECTS BUNDLE. `gaussianBlur` is not in
+ *      core/deltas MORPH_PLACEMENT_KEYS, so KEYFRAMING A BLUR ON THE ENTERING
+ *      SLIDE — the natural way to give an appearing widget its look — arms the
+ *      `auto` morph, and a morphed node is routed away from its plugin's emit()
+ *      and paints with NO effect subtree at all (measured: `blur: 0` on the op,
+ *      at every alpha). The blur then appears only at the endpoints, which reads
+ *      exactly as "it animated to zero and then popped". That is WORKSTREAM AV's
+ *      defect (morph must own SHAPE only), fixed there and not here.
+ *   2. AUTHORING THE BLUR ON THE `blur` WIDGET rather than in the Effects rows.
+ *      plugins/blur.js is a BACKDROP sampler with its own `blur` key — it blurs
+ *      what is BEHIND it, is not the universal `gaussianBlur` effect, and is not
+ *      what this mode rides. A widget blurred that way has no target blur for
+ *      this function to converge to, correctly.
+ *
+ * ── THE CURVE, THE AMOUNT, AND THE EXACT ENDPOINT ────────────────────────────
+ *     added = amount · (1 − v)
+ * where `amount` is the mode's `blur` PARAMETER off the token (WORKSTREAM AP:
+ * "It would be nice to be able to adjust it"), falling back to the declared
+ * default. So the radius runs (target + amount) → target, linear in the coverage
+ * so the picture sharpens at the same rate it solidifies and the two read as one
+ * gesture rather than two effects racing. At v = 1 the added radius is 0 and the
+ * state comes back BY IDENTITY, so the endpoint is byte-identical to the same
+ * widget with no mode at all — the endpoint law, enforced here rather than
+ * trusted to floating-point arithmetic. An `amount` of 0 is legal and returns by
+ * identity at every v, degrading the mode to a plain fade.
  *
  * @param {object} state - the node's evaluated state
  * @returns {object} the state itself, or a copy with a raised `gaussianBlur`
  *
  * @example blurFadeState({active: true}).gaussianBlur // undefined (not a blurFade — the same object back)
  * @example blurFadeState({active: {type: "~visibleFx", mode: "manim", v: 0.5}}).gaussianBlur // undefined (a different named mode adds no blur)
- * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 0.5}}).gaussianBlur // 12 (half the defocus, at half coverage)
- * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 0.5}, gaussianBlur: 4}).gaussianBlur // 16 (ADDED to the author's own 4, never replacing it)
- * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 1}}).gaussianBlur // undefined (v = 1 adds nothing — the endpoint is exact)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 0.5, blur: 64}}).gaussianBlur // 32 (half the amount, at half coverage)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 0.5, blur: 64}, gaussianBlur: 4}).gaussianBlur // 36 (ADDED to the author's own 4, so v = 1 lands on 4)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 0.5, blur: 8}}).gaussianBlur // 4 (a SMALL custom amount — the knob the user asked for)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 1, blur: 64}}).gaussianBlur // undefined (v = 1 adds nothing — the endpoint is exact)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 0.5}}).gaussianBlur // 32 (no parameter on the token = the declared default)
  * @example (() => { const s = {active: true}; return blurFadeState(s) === s; })() // true (identity for every other node)
  */
 export function blurFadeState(state) {
   const a = state?.active;
   if (!isVisibleFxToken(a) || a.mode !== "blurFade") return state;
-  const added = BLUR_FADE_MAX_RADIUS * (1 - visibleLevel(a));
+  // The parameter rides the token as a scalar (core/interp_modes namedVisibleBlend).
+  // A token without one predates the parameter or was built by hand, and takes
+  // the declared default — the same number the fold would have put there.
+  const amount = typeof a.blur === "number" && Number.isFinite(a.blur) ? Math.max(0, a.blur) : BLUR_FADE_MAX_RADIUS;
+  const added = amount * (1 - visibleLevel(a));
   if (added <= 0) return state;
   return { ...state, gaussianBlur: (state.gaussianBlur ?? 0) + added };
 }

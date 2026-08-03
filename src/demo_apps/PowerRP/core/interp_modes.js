@@ -165,6 +165,153 @@ export function propertyOfInterpKey(key) {
   return isInterpKey(key) ? key.slice(0, -INTERP_KEY_SUFFIX.length) : null;
 }
 
+// ── MODE PARAMETERS: `"<key>~interp~<param>"` (WORKSTREAM AP) ─────────────────
+//
+// User request, 2026-08-02, verbatim: "BlurFade should have suboptions, by the
+// way. For BlurFade, I should be able to choose how blurry was it, right? What
+// is the difference in blur? BlurFade is too subtle for me right now, so I can't
+// adjust it. It would be nice to be able to adjust it…"
+//
+// A mode was previously a bare id and nothing else, so every number a mode's
+// picture depended on had to be a Claude-chosen module constant. That is exactly
+// what the user overruled: BLUR_FADE_MAX_RADIUS was one, and "too subtle for me"
+// is a sentence a constant cannot answer. So a mode may now DECLARE PARAMETERS,
+// and an author sets them per keyframe like any other property.
+//
+// ── THE KEY SHAPE, AND WHY IT EXTENDS THE SAME FAMILY ────────────────────────
+// The parameter `p` of the mode on state key `x` lives at state key
+// `x~interp~p`, IN THE SAME OBJECT — one more `~` segment on the companion key
+// this module already owns. Every argument in the module docblock's four-way
+// namespace test carries over UNCHANGED, because the sigil is the same one:
+//
+//   1. DELTA PATHS still split on "." only, so `x~interp~blur` is one leaf and
+//      a dotted property's parameter (`rotationAnchor.x~interp~p`) still splits
+//      to the SIBLING inside `rotationAnchor` — the same free win `~interp` got.
+//   2. EQUATIONS still cannot tokenize `~` (REF_RE is identifier characters), so
+//      a parameter is STRUCTURALLY UNREACHABLE from a formula. That is the same
+//      feature it is for the mode itself: a parameter must be a stepped literal
+//      for the mode-steps-at-start rule to mean anything on it too.
+//   3. THE PROPERTY NAMESPACE stays provably disjoint (no plugin key contains
+//      `~`), and a parameter cannot collide with a mode key either: `isInterpKey`
+//      is a SUFFIX test, so `x~interp~blur` does not answer it and the two
+//      grammars never confuse a reader walking a state bag.
+//   4. It is still one plain leaf — deltas, keyframes, undo, copy and serialize
+//      cost ZERO new concepts, which is the whole reason `~interp` was stored
+//      this way in the first place.
+//
+// WHY NOT A NESTED OBJECT (`x~interp: {mode, blur}`). Because the mode leaf is
+// already a STRING in every shipped document, and a mode that grew an object
+// value would need a migration, a repair report and a shape check at every read.
+// A sibling key needs none of that: ABSENT = THE MODE'S OWN DEFAULT, so every
+// document written before this exists folds byte-identically and no repair runs.
+// It also keeps ONE parameter keyframable independently of the mode, which is
+// what an author actually wants ("adjust it" is a scrub, not a re-pick).
+//
+// ── HOW A PARAMETER REACHES THE PICTURE ──────────────────────────────────────
+// core/deltas.mutBlendApply gathers the declared parameters beside the mode and
+// hands them to `blend` in `ctx.params`; a visibility mode folds them into its
+// `~visibleFx` token as SCALARS (the token's standing rule), and the render seam
+// reads them there. So a parameter travels exactly the road the mode id travels,
+// and nothing between the fold and the paint learns a new shape.
+
+/** The sigil segment joining an interp companion key to one of its parameters. */
+export const INTERP_PARAM_SEPARATOR = "~";
+
+/**
+ * Pure function. The state key holding parameter `param` of the interp mode on
+ * property `key`.
+ *
+ * @example interpParamKeyFor("active", "blur") // "active~interp~blur"
+ * @example interpParamKeyFor("rotationAnchor.x", "p") // "rotationAnchor.x~interp~p" (splits to ["rotationAnchor", "x~interp~p"] — the sibling, same as the mode key)
+ */
+export function interpParamKeyFor(key, param) {
+  return `${key}${INTERP_KEY_SUFFIX}${INTERP_PARAM_SEPARATOR}${param}`;
+}
+
+/**
+ * Pure function. True for an interp PARAMETER key — deliberately disjoint from
+ * `isInterpKey`, which is a suffix test on `~interp` and so answers false here.
+ *
+ * @example isInterpParamKey("active~interp~blur") // true
+ * @example isInterpParamKey("active~interp") // false (that is the MODE key)
+ * @example isInterpParamKey("active") // false
+ */
+export function isInterpParamKey(key) {
+  return typeof key === "string" && key.includes(INTERP_KEY_SUFFIX + INTERP_PARAM_SEPARATOR);
+}
+
+/**
+ * Query (reads the registry). THE PARAMETER DECLARATIONS a mode publishes, as
+ * inspector-row descriptors — `[]` for every mode that declares none.
+ *
+ * This is the seam that makes parameters GENERAL rather than a blurFade special
+ * case: the Inspector renders whatever this returns, so a FUTURE mode declares
+ * its own knobs and gets its rows with no Inspector code at all.
+ *
+ * @example modeParams("blurFade")[0].param // "blur"
+ * @example modeParams("tween") // [] (no parameters — the overwhelming majority)
+ * @example modeParams("nope") // [] (an unknown id has nothing to declare)
+ */
+export function modeParams(id) {
+  return MODES.get(id)?.params ?? [];
+}
+
+/**
+ * Pure function. A mode's parameter values read out of a state bag, with every
+ * ABSENT one filled by the mode's own declared default.
+ *
+ * THE DEFAULT LIVES IN THE DECLARATION, NOT AT THE READ SITE, which is what
+ * makes "absent = the new default" a byte-identical migration rather than a
+ * promise: an old document stores nothing, this fills the same number the
+ * renderer would have used, and no repair pass ever has to write one in.
+ *
+ * THE BAGS ARE READ IN PRECEDENCE ORDER, not merged: the FIRST one holding a
+ * finite number for a parameter wins. Callers pass (delta, outgoing), which is
+ * `modeForBlend`'s "the target wins from frame 1, else the standing value
+ * carries" applied per parameter — and reading them in order rather than
+ * spreading them together is what keeps this allocation-free for the modes that
+ * declare nothing, which is every leaf of every existing document.
+ *
+ * A NON-NUMERIC STORED VALUE FALLS TO THE DEFAULT rather than throwing. These
+ * keys are unreachable from an equation by grammar, so the only way to hold a
+ * non-number here is a hand-damaged document, and the honest response to one
+ * damaged cosmetic knob is the mode's own default rather than refusing to render
+ * the slide.
+ *
+ * Args:
+ *   id (string): the resolved mode id
+ *   key (string): the property the mode is on
+ *   ...bags (object): state/delta objects to read the parameter keys from, most
+ *     authoritative first
+ *
+ * Returns:
+ *   object: {paramName: value} over the mode's declared parameters
+ *
+ * @example modeParamsFrom("blurFade", "active", {}) // {blur: 64} (absent = the declared default)
+ * @example modeParamsFrom("blurFade", "active", {"active~interp~blur": 10}) // {blur: 10}
+ * @example modeParamsFrom("blurFade", "active", {}, {"active~interp~blur": 10}) // {blur: 10} (the standing value carries when the delta is silent)
+ * @example modeParamsFrom("blurFade", "active", {"active~interp~blur": 3}, {"active~interp~blur": 10}) // {blur: 3} (the target wins)
+ * @example modeParamsFrom("tween", "x", {}) // {} (a mode with no parameters reads nothing)
+ */
+export function modeParamsFrom(id, key, ...bags) {
+  const decls = modeParams(id);
+  if (decls.length === 0) return EMPTY_PARAMS;
+  const out = {};
+  for (const decl of decls) {
+    const paramKey = interpParamKeyFor(key, decl.param);
+    let value = decl.default;
+    for (const bag of bags) {
+      const stored = bag?.[paramKey];
+      if (typeof stored === "number" && Number.isFinite(stored)) { value = stored; break; }
+    }
+    out[decl.param] = value;
+  }
+  return out;
+}
+
+/** Shared for the no-parameter case, so the hot path allocates nothing. */
+const EMPTY_PARAMS = Object.freeze({});
+
 // ── The registry ─────────────────────────────────────────────────────────────
 
 const MODES = new Map();
@@ -190,6 +337,20 @@ export function registerInterpMode(entry) {
     throw new Error(`registerInterpMode("${entry.id}"): \`appliesTo\` must be a function ({key, value, type}) → boolean, or absent`);
   if (MODES.has(entry.id))
     throw new Error(`registerInterpMode("${entry.id}"): that mode id is already registered — two modes cannot share a name`);
+  // A PARAMETER DECLARATION IS CHECKED AT IMPORT TIME (WORKSTREAM AP), for the
+  // same reason a duplicate id is: the Inspector renders these descriptors
+  // verbatim, so a malformed one produces a broken row rather than an error, and
+  // it would do so only when an author happened to select that mode. Every field
+  // is required because every one is load-bearing — `param` names the state key,
+  // `default` IS the absent-value migration, and `label` is the row.
+  for (const p of entry.params ?? []) {
+    if (!p || typeof p.param !== "string" || !p.param)
+      throw new Error(`registerInterpMode("${entry.id}"): every entry in \`params\` needs a non-empty string \`param\``);
+    if (typeof p.default !== "number" || !Number.isFinite(p.default))
+      throw new Error(`registerInterpMode("${entry.id}"): param "${p.param}" needs a finite numeric \`default\` — it IS the byte-identical migration for documents that store nothing`);
+    if (typeof p.label !== "string" || !p.label)
+      throw new Error(`registerInterpMode("${entry.id}"): param "${p.param}" needs a \`label\` — it is rendered as an Inspector row`);
+  }
   // `appliesTo` ABSENT MEANS EVERYWHERE, and that is the deliberate default: a
   // mode that does not declare a domain is offered on every row, which is exactly
   // what every mode did before this field existed. So adding the field changed no
@@ -1141,15 +1302,20 @@ export function visibleLevel(v) {
  * modes are boolean-only by `appliesTo`, and a document that stored one on some
  * other row should get that row's honest tween rather than an error box.
  *
- * @example namedVisibleBlend("blurFade", false, true, 0.25) // {type: "~visibleFx", mode: "blurFade", v: 0.25}
+ * MODE PARAMETERS RIDE THE TOKEN AS SCALARS (WORKSTREAM AP), spread in beside
+ * `v`. That is the token's standing rule — "it carries scalars, not a picture" —
+ * and it is why a parameter needed no new plumbing between here and the paint:
+ * the render seam already receives this object and reads fields off it.
+ *
  * @example namedVisibleBlend("manim", true, false, 0.25) // {type: "~visibleFx", mode: "manim", v: 0.75} (out is in, reversed — one rule, no branch)
+ * @example namedVisibleBlend("blurFade", false, true, 0.25, {blur: 64}) // {type: "~visibleFx", mode: "blurFade", v: 0.25, blur: 64}
  * @example namedVisibleBlend("blurFade", 3, 7, 0.5) // 5 (a numeric row falls through to the ordinary tween)
  */
-function namedVisibleBlend(mode, a, b, alpha) {
+function namedVisibleBlend(mode, a, b, alpha, params) {
   const boolish = (v) => typeof v === "boolean" || typeof v === "number" || v === undefined || isVisibleFxToken(v);
   if (!boolish(a) || typeof b !== "boolean") return interpolate(a, b, alpha);
   const v = lerpFade(visibleLevel(a), visibleLevel(b), alpha);
-  return { type: VISIBLE_FX_TOKEN, mode, v };
+  return { type: VISIBLE_FX_TOKEN, mode, v, ...params };
 }
 
 // ── `blurFade`: INTO AND OUT OF FOCUS ────────────────────────────────────────
@@ -1173,16 +1339,60 @@ function namedVisibleBlend(mode, a, b, alpha) {
 // THE blurFade SENSE" and the render seam is where that sentence becomes two
 // numbers — which is also the only place that knows what blur the widget already
 // carries, so the two can COMPOSE rather than one overwriting the other.
+//
+// ── THE AMOUNT IS THE AUTHOR'S, NOT A CONSTANT (WORKSTREAM AP) ───────────────
+// User, 2026-08-02, verbatim: "BlurFade is too subtle for me right now, so I
+// can't adjust it. It would be nice to be able to adjust it and also by default
+// have it blurrier for the BlurFade entry effect." The mode's defocus WAS a
+// Claude-chosen module constant (BLUR_FADE_MAX_RADIUS = 24) with no way to
+// reach it; it is now the declared parameter below, and the constant survives
+// only as that parameter's default.
+//
+// THE SENSE OF THE NUMBER — this is what makes the user's other sentence true.
+// "the blur fade should be animating from big blur to whatever blur is in the
+// target" (2026-08-02). `blur` is the EXTRA defocus at the start, ADDED to the
+// widget's own settled `gaussianBlur`, so the entry runs
+//     target + blur   →   target
+// and the end is the widget's own look BY CONSTRUCTION for every value of the
+// knob. It is a DIFFERENCE and not an absolute start radius on purpose: the
+// user's own words for what they want to choose are "what is the difference in
+// blur?", and an absolute start would make a widget with a 40-unit target blur
+// SHARPEN on the way in whenever the knob was set below 40.
+//
+// THE DEFAULT IS 64, RAISED FROM 24, AND THE SIZING ARGUMENT IS THE SAME ONE —
+// only measured against what has to be destroyed rather than against what the
+// effect machinery finds ordinary. A Gaussian's visible reach is
+// BLUR_SUPPORT_SIGMAS·σ each side (render_gpu/ir.js, = 3), so σ = 64 smears every
+// edge ±192 units. On the 1920×1080 canvas this app defaults to, a typical slide
+// widget is 200-500 units across, so that smear is WIDER THAN THE WIDGET — its
+// interior is averaged with its surroundings and there is no recoverable shape
+// left, which is what "out of focus" means and what σ = 24 (±72 units, a smear
+// several times NARROWER than the same widget, so its silhouette survived intact)
+// did not deliver. That is precisely the "too subtle" the user reported: 24 was
+// justified as a radius the effect machinery treats as ordinary, which is an
+// argument about the machinery rather than about the picture.
 
 registerInterpMode({
   id: "blurFade",
   label: "Blur Fade",
-  help: "Bring the item into focus as it appears: it starts transparent and heavily blurred, then sharpens and solidifies together (and defocuses back out again when it is hidden). Rides the same Blur effect the Effects rows expose, added on top of whatever blur the item already has.",
+  help: "Bring the item into focus as it appears: it starts transparent and heavily blurred, then sharpens and solidifies together (and defocuses back out again when it is hidden). Rides the same Blur effect the Effects rows expose, added on top of whatever blur the item already has — so it always lands on the item's own settled look. Set Blur Amount to choose how far out of focus it starts.",
   // BOOLEAN-VALUED ROWS ONLY — the same domain, and the same argument, as `fade`:
   // this ramps COVERAGE, and coverage is what a boolean has. The user asked for
   // it as an option "for making visible", which is this row.
   appliesTo: ({ value }) => typeof value === "boolean",
-  blend: (a, b, alpha) => namedVisibleBlend("blurFade", a, b, alpha),
+  // THE ONE DECLARED PARAMETER, and the first in the app. `min: 0` is a real
+  // boundary rather than a taste limit — a negative extra defocus would mean the
+  // item enters SHARPER than it settles, which is not this mode. Zero is legal
+  // and meaningful: it degrades blurFade to exactly `fade`, which is an honest
+  // answer for an author dialing the effect off without re-picking the mode.
+  params: [{
+    param: "blur",
+    label: "Blur Amount",
+    default: 64,
+    min: 0,
+    help: "How much EXTRA blur the item starts with, in canvas units, on top of whatever blur it settles at. The entry runs from (its own blur + this) down to its own blur, so it always ends on the item's real look. Larger is more dramatically out of focus; 0 makes this a plain fade.",
+  }],
+  blend: (a, b, alpha, ctx) => namedVisibleBlend("blurFade", a, b, alpha, ctx?.params),
 });
 
 // ── `manim`: THE BORDER DRAWS ITSELF, THEN THE FILL ARRIVES ──────────────────

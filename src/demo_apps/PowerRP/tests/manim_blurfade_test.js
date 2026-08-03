@@ -30,6 +30,8 @@
 
 import assert from "node:assert/strict";
 import { blendApplied, applied } from "../core/deltas.js";
+import { repairedDocument, tweenedState } from "../core/document.js";
+import { evaluateState } from "../core/expressions.js";
 import { deriveRenderTree } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
@@ -39,6 +41,9 @@ import {
   isVisibleFxToken,
   visibleLevel,
   interpMode,
+  interpParamKeyFor,
+  isInterpParamKey,
+  modeParams,
   modesForKey,
 } from "../core/interp_modes.js";
 import {
@@ -119,7 +124,11 @@ test("visibleLevel reads every `active` shape, token included", () => {
 // ── BLURFADE: OPACITY AND RADIUS, PINNED ─────────────────────────────────────
 
 test("BLURFADE: opacity and radius at three alphas", () => {
-  for (const [v, blur] of [[0.25, 18], [0.5, 12], [0.75, 6]]) {
+  // AGAINST THE CONSTANT, not against three literals: the amount is the mode's
+  // declared default now (WORKSTREAM AP raised it 24 → 64), and a hardcoded
+  // triple here would pin the number rather than the LAW it is supposed to pin.
+  for (const v of [0.25, 0.5, 0.75]) {
+    const blur = BLUR_FADE_MAX_RADIUS * (1 - v);
     const ops = inkOps({ ...RECT, active: fx("blurFade", v) });
     assert.equal(ops.length, 1, "the whole widget composites as ONE effect subtree");
     assert.equal(ops[0].op, "effectSubtree");
@@ -146,6 +155,138 @@ test("BLURFADE state is returned BY IDENTITY for every other node", () => {
   assert.equal(blurFadeState(s), s);
   const m = { ...RECT, active: fx("manim", 0.5) };
   assert.equal(blurFadeState(m), m, "a different named mode adds no blur");
+});
+
+// ── WORKSTREAM AP: THE TARGET BLUR, AND THE AMOUNT KNOB ──────────────────────
+//
+// User, 2026-08-02, verbatim, two messages: "the blur fade should be animating
+// from big blur to whatever blur is in the target. Right now it always animates
+// to zero blur, which is not the right move when the element has blur that it's
+// going towards." and "BlurFade should have suboptions, by the way… I should be
+// able to choose how blurry was it… BlurFade is too subtle for me right now…
+// also by default have it blurrier".
+//
+// The first message was REPRODUCED through the whole real pipeline before
+// anything was changed, and the composition arithmetic was already converging to
+// the target. The convergence-to-zero an author sees comes from the UNIVERSAL
+// MORPH swallowing the effects bundle (WORKSTREAM AV), which the last test in
+// this block pins as a live defect so it cannot be forgotten or mistaken for
+// this mode's business again.
+
+/** The whole shipped path a real author's document takes: repair → fold → evaluate → IR. */
+function documentInkOps(itemExtra, enteringDelta, alpha) {
+  const doc = repairedDocument({
+    meta: { name: "ap", w: CANVAS.w, h: CANVAS.h },
+    slides: [
+      { id: "s0", name: "one", transition: { type: "cut", seconds: 0 }, delta: { items: { cam: { type: "camera" }, a1: { ...RECT, active: false, ...itemExtra } } } },
+      { id: "s1", name: "two", transition: { type: "fade", seconds: 1 }, delta: { items: { a1: { active: true, "active~interp": "blurFade", ...enteringDelta } } } },
+    ],
+  }, registry).doc;
+  const state = evaluateState(tweenedState(doc, 1, alpha, registry), registry).state;
+  const tree = deriveRenderTree(state, registry, CANVAS);
+  return sceneIR(tree).filter((o) => o.op !== "pushTransform" && o.op !== "popTransform");
+}
+
+test("AP REPRO: an authored blur is the TARGET — the radius converges to it, not to zero", () => {
+  const TARGET = 10;
+  // `morph: "snap"` isolates this mode from WORKSTREAM AV's defect (pinned below).
+  const radii = [0.25, 0.5, 0.75].map((a) => {
+    const ops = documentInkOps({ morph: "snap", gaussianBlur: TARGET }, {}, a);
+    const sub = ops.find((o) => o.op === "effectSubtree");
+    assert.ok(sub, "a defocused widget composites through the effects seam");
+    return sub.blur;
+  });
+  for (const [i, v] of [0.25, 0.5, 0.75].entries())
+    assert.equal(radii[i], TARGET + BLUR_FADE_MAX_RADIUS * (1 - v), "radius is target + amount·(1 − v)");
+  assert.ok(radii[0] > radii[1] && radii[1] > radii[2], "and it descends TOWARD the target, monotonically");
+
+  // THE ENDPOINT: the widget lands on its own blur EXACTLY, which is the user's
+  // "whatever blur is in the target" as an assertion.
+  const ended = documentInkOps({ morph: "snap", gaussianBlur: TARGET }, {}, 1);
+  const endSub = ended.find((o) => o.op === "effectSubtree");
+  assert.equal(endSub.blur, TARGET, "at alpha 1 the blur IS the authored blur — no residue, no zero");
+});
+
+test("AP: the amount is a PARAMETER — fold → token → radius, round trip", () => {
+  const AMOUNT = 8;
+  const mid = blendApplied(
+    { active: false },
+    { active: true, "active~interp": "blurFade", "active~interp~blur": AMOUNT },
+    0.5,
+  ).active;
+  assert.equal(mid.blur, AMOUNT, "the fold reads the parameter key and folds it INTO the token");
+  assert.equal(blurFadeState({ active: mid }).gaussianBlur, AMOUNT / 2, "and the render seam spends it");
+  // The key grammar itself, so a rename cannot pass silently.
+  assert.equal(interpParamKeyFor("active", "blur"), "active~interp~blur");
+  assert.ok(isInterpParamKey("active~interp~blur"));
+  assert.ok(!isInterpParamKey("active~interp"), "a parameter key is NOT a mode key — the two grammars stay disjoint");
+});
+
+test("AP: ABSENT parameter = the declared default, byte-identically (no migration)", () => {
+  const legacy = blendApplied({ active: false }, { active: true, "active~interp": "blurFade" }, 0.5).active;
+  assert.equal(legacy.blur, BLUR_FADE_MAX_RADIUS, "a document storing no parameter folds to the default");
+  // And a token minted BEFORE the parameter existed (no `blur` field at all)
+  // renders identically to one carrying the default — that is the migration.
+  assert.equal(
+    blurFadeState({ active: fx("blurFade", 0.5) }).gaussianBlur,
+    blurFadeState({ active: { ...fx("blurFade", 0.5), blur: BLUR_FADE_MAX_RADIUS } }).gaussianBlur,
+  );
+});
+
+test("AP: the parameter follows the MODE's own rule — target wins, standing carries", () => {
+  const withParam = (outgoing, delta) => blendApplied(outgoing, delta, 0.5).active.blur;
+  assert.equal(withParam({ active: false, "active~interp~blur": 10 }, { active: true, "active~interp": "blurFade" }), 10, "the standing value carries when the delta is silent");
+  assert.equal(withParam({ active: false, "active~interp~blur": 10 }, { active: true, "active~interp": "blurFade", "active~interp~blur": 3 }), 3, "the target wins from the first frame");
+});
+
+test("AP: amount 0 degrades to a plain fade, and the endpoint law holds at every amount", () => {
+  assert.equal(blurFadeState({ active: { ...fx("blurFade", 0.5), blur: 0 } }).gaussianBlur, undefined, "zero extra blur adds nothing at any coverage");
+  for (const amount of [0, 8, BLUR_FADE_MAX_RADIUS, 200]) {
+    const ended = inkOps({ ...RECT, active: { ...fx("blurFade", 1), blur: amount } });
+    assert.deepEqual(ended, inkOps({ ...RECT, active: true }), `v = 1 is byte-identical to no mode at amount ${amount}`);
+  }
+});
+
+test("AP: the parameter DECLARATION is what the Inspector renders — general, not blurFade-shaped", () => {
+  const decls = modeParams("blurFade");
+  assert.equal(decls.length, 1);
+  assert.equal(decls[0].param, "blur");
+  assert.ok(decls[0].label && decls[0].help, "a row needs a label and a tip");
+  assert.equal(typeof decls[0].default, "number");
+  // EVERY OTHER MODE DECLARES NONE, which is what keeps the gutter unchanged
+  // everywhere else and proves the machinery is opt-in rather than universal.
+  for (const id of ["tween", "step", "fade", "manim"])
+    assert.deepEqual(modeParams(id), [], `${id} declares no parameters`);
+});
+
+test("AP: the new default is BLURRIER than the constant the user overruled", () => {
+  // The user's ruling was that 24 is "too subtle". This pins the DIRECTION of the
+  // fix (a number, not a feeling) without freezing the exact value: a future
+  // retune may move it, but never back below what was overruled.
+  const OVERRULED_DEFAULT = 24;
+  assert.ok(BLUR_FADE_MAX_RADIUS > OVERRULED_DEFAULT, `default ${BLUR_FADE_MAX_RADIUS} must exceed the overruled ${OVERRULED_DEFAULT}`);
+});
+
+test("AP → AV: keyframing the blur on the ENTERING slide loses the effects bundle (WORKSTREAM AV)", () => {
+  // THE MEASURED CAUSE of the user's "it always animates to zero blur", pinned
+  // here as a KNOWN-BAD so the next reader does not re-attribute it to blurFade.
+  // `gaussianBlur` is not in core/deltas MORPH_PLACEMENT_KEYS, so setting it on
+  // the entering slide arms the `auto` universal morph, and a morphed node is
+  // routed away from its plugin's emit() — painting with no effect subtree at
+  // all. WHEN AV LANDS THIS TEST GOES RED, and the assertion below should be
+  // inverted rather than deleted.
+  const ops = documentInkOps({}, { gaussianBlur: 10 }, 0.5);
+  assert.ok(!ops.some((o) => o.op === "effectSubtree"), "AV still open: a morphed node emits no effect subtree");
+  assert.ok(ops.every((o) => !o.blur), "…so the composed defocus never reaches the picture");
+  // The composition itself is CORRECT even here — the loss is downstream.
+  const state = evaluateState(tweenedState(repairedDocument({
+    meta: { name: "ap", w: CANVAS.w, h: CANVAS.h },
+    slides: [
+      { id: "s0", name: "one", transition: { type: "cut", seconds: 0 }, delta: { items: { cam: { type: "camera" }, a1: { ...RECT, active: false } } } },
+      { id: "s1", name: "two", transition: { type: "fade", seconds: 1 }, delta: { items: { a1: { active: true, "active~interp": "blurFade", gaussianBlur: 10 } } } },
+    ],
+  }, registry).doc, 1, 0.5, registry), registry).state;
+  assert.equal(blurFadeState(state.items.a1).gaussianBlur, 10 + BLUR_FADE_MAX_RADIUS / 2, "blurFadeState composed it correctly; the morph seam dropped it");
 });
 
 // ── MANIM: THE PHASES ────────────────────────────────────────────────────────
