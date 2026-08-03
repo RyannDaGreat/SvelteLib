@@ -365,16 +365,25 @@
  *     that the patch can set to the exact inverse of the box change. Note the
  *     tween law then constrains that field: it must lerp linearly with w/h, so a
  *     single multiplicative `contentScale` works while a "fit mode" enum does not.
- *   · PLAINTEXT WITH VERTICAL SLACK, or whose ink is WIDER than its wrap box —
- *     refuses in exactly those two states, accepts otherwise (see
+ *   · PLAINTEXT IN TWO STATES ONLY — ink WIDER than its wrap box, or a fit that
+ *     would CHANGE a finite box height under valign "middle" (see
  *     plugins/plaintext.js). The width case is a real REFLOW (widening the box
- *     changes the line breaks). The slack case is the more interesting refusal:
+ *     changes the line breaks). The middle case is the more interesting refusal:
  *     the compensator is straightforward arithmetic and it was WRITTEN, and it
  *     still moved the type, because THERE ARE TWO LAYOUT ENGINES — core/richtext
  *     (what the ink rect reports) and render_gpu/skia/text_layout (what draws the
  *     picture) compute different total heights and therefore different valign
  *     offsets. Making them agree is the prerequisite for lifting that refusal;
  *     until then the widget declines to compensate a residue it cannot measure.
+ *     THIS ENTRY USED TO SAY "VERTICAL SLACK", WHICH WAS THREE TIMES TOO WIDE and
+ *     cost the user the shrink direction of the tool (2026-08-02: "Getting
+ *     smaller is a legitimate use case too"). Slack is not the test — MOVING THE
+ *     TYPE is. Byte-compared at every alpha: an h=0 box has no height to
+ *     redistribute, a zero-slack box has nothing to redistribute, and valign
+ *     "bottom" has ink.h == boxH identically so the fit is a no-op on h. All
+ *     three are exact and now accept. Note also that width shrink is UNREACHABLE
+ *     rather than refused: textInkBounds reports max(boxW, layout.width), so the
+ *     ink width never falls below the wrap box.
  *   · GROUP WITH AN ACTIVE CROP — refuses even though a plain group accepts.
  *     `groupCropRect` trims the group's OWN [0,0,w,h] by per-edge insets, so
  *     re-boxing moves the clip and the members get cut differently. MEASURED, not
