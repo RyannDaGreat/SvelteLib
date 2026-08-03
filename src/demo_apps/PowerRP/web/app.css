@@ -351,6 +351,12 @@
      — the hit-strip centring — must not be copied around to change one term. */
   --a-row-divider-gap: var(--a-sp-2);
   --a-kf-btn-w: 20px; /* one keyframe control button (16px icon + 2×--a-sp-1 pad) */
+  /* THE SECTION-HEADER KEYFRAME BUBBLE's scale, relative to a row's (WORKSTREAM
+     BH; user: "maybe just 30% smaller than the normal one"). ONE factor drives
+     the whole triad — button width, icon box and diamond glyph — so the smaller
+     bubble stays the row bubble's proportions rather than becoming a second
+     design that happens to be small. */
+  --a-kf-section-scale: 0.7;
   /* Hover-reveal of a row's hidden chrome (copy-path / help / ƒ / eq-ref marks —
      round-11 "the resting field is minimal"). ONE duration for every one of them,
      named like the other timing tokens (--a-latex-edit-crossfade below). */
@@ -9319,6 +9325,53 @@ audio.ae-preview-media {
 .inspector .keybtn.keyed-some,
 .varspanel .keybtn.keyed-some {
   color: var(--a-keyed-partial);
+}
+
+/* ── THE SECTION-HEADER KEYFRAME BUBBLE (WORKSTREAM BH) ─────────────────────
+   A SMALLER SIBLING of the row triad above, not a new control: it inherits every
+   rule in this block (.keybtn/.jumpbtn geometry, the amber .keyed and the dimmer
+   .keyed-some) and overrides SCALE alone, through the one
+   --a-kf-section-scale factor. So a theme that restyles keyframe chrome restyles
+   this too and cannot forget it, and the two bubbles cannot drift apart in
+   colour, in state vocabulary, or in what "half-filled" looks like. */
+.inspector .kf-section .keybtn,
+.inspector .kf-section .jumpbtn {
+  width: calc(var(--a-kf-btn-w) * var(--a-kf-section-scale));
+  padding: 0;
+}
+
+/* The diamond keeps its 2× emphasis relative to the chevrons beside it (the row
+   bubble's "those should be bigger" ruling), scaled down as one piece. */
+.inspector .kf-section .keybtn {
+  font-size: calc(var(--a-font-md) * 2 * var(--a-kf-section-scale));
+}
+
+/* The icons are sized in the markup (16/17px, matching the row triad exactly), so
+   the scale is applied to the drawn glyph here rather than duplicating a second
+   set of width/height attributes that could drift from the row bubble's. */
+.inspector .kf-section iconify-icon {
+  font-size: calc(var(--a-font-md) * var(--a-kf-section-scale));
+  transform: scale(var(--a-kf-section-scale));
+}
+
+/* THE HEADER ROW: the collapse button keeps the full width it always had, and the
+   bubble sits at the trailing edge as its SIBLING (a <button> may not contain a
+   <button> — see web/SectionKeyframeControls.svelte's header). `flex: none` on the
+   bubble so a long section title never squeezes it.
+
+   THE SECTION SEAM IS RESTATED HERE, not moved. .cat-header's own
+   `border-bottom` stays exactly where it is, because that class is the app's
+   SHARED accordion — ListField and PaintField reuse it with no wrapper of their
+   own, and relocating the seam would erase theirs. So the bubble carries the
+   matching hairline and the section's line runs unbroken across both elements. */
+.cat-header-row {
+  display: flex;
+  align-items: stretch;
+}
+
+.cat-header-row > .kf-section {
+  flex: none;
+  border-bottom: var(--a-hairline) solid var(--border);
 }
 
 /* The "nothing here" state, shared by every pane that can be empty. NOT unscoped

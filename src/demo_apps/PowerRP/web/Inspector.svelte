@@ -48,6 +48,7 @@
   import ListField from "./ListField.svelte";
   import EquationSuggest from "./EquationSuggest.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
+  import SectionKeyframeControls from "./SectionKeyframeControls.svelte";
   import ItemVariablesPanel from "./ItemVariablesPanel.svelte";
   import LabelDivider from "./LabelDivider.svelte";
   import GalleryPopup from "./GalleryPopup.svelte";
@@ -65,6 +66,7 @@
   import { MORPH_AUTO, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
+  import { sectionKeyPaths, sectionBubbleApplies } from "../core/section_keyframes.js";
   import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
   import { isHexColor } from "../core/interpolators.js";
   import { getPath } from "../core/deltas.js";
@@ -257,14 +259,49 @@
    * targets a Tier-1 field receives as `paths` (the primary FIRST, so the field's
    * singular `path` and this list agree about who is being read). */
   function multiPaths(key) {
-    // THE ROW'S OWN `appliesTo`, NOT THE WHOLE SELECTION. They are the same list
-    // in intersection mode; in UNION mode a row may be declared by only some of
-    // the selected items, and writing it to the others would store a property
-    // their plugin never declared and silently ignores. Falls back to the full
-    // set only if a row somehow arrives without the field, which core always
-    // supplies.
-    const ids = multiByKey.get(key)?.row?.appliesTo ?? multiPanel?.itemIds ?? [];
-    return ids.map((id) => ["items", id, ...key.split(".")]);
+    return rowItemIds({ key }).map((id) => ["items", id, ...key.split(".")]);
+  }
+
+  /** Query. Which selected items ONE row writes to.
+   *
+   * THE ROW'S OWN `appliesTo`, NOT THE WHOLE SELECTION. They are the same list in
+   * intersection mode; in UNION mode a row may be declared by only some of the
+   * selected items, and writing it to the others would store a property their
+   * plugin never declared and silently ignores. Falls back to the full set only if
+   * a row somehow arrives without the field, which core always supplies.
+   *
+   * Takes the ROW (not its key) because the section bubble hands whole rows in;
+   * `multiByKey` is keyed by `row.key`, never by the write key, so a cx row finds
+   * its own set state rather than x's. */
+  function rowItemIds(row) {
+    return multiByKey.get(row.key)?.row?.appliesTo ?? multiPanel?.itemIds ?? [];
+  }
+
+  /**
+   * Query. Every state path a SECTION's keyframe bubble acts on (WORKSTREAM BH),
+   * or [] when the section cannot be keyframed at all.
+   *
+   * THIS IS THE ONE PLACE THE BUBBLE'S SCOPE IS DECIDED, and it is the same two
+   * gates the row diamond passes, read off the SAME `opts` object the rows are
+   * rendered with rather than re-derived:
+   *   • `opts.keyframes` false → the whole CONTEXT does not keyframe (a
+   *     transition's config rows, a not-yet-created item's grayed rows). The rows
+   *     under it show no diamonds, so a section bubble over them would be a
+   *     control claiming a power the rows beneath it visibly lack.
+   *   • `opts.disabled` → likewise; propRow withholds diamonds on exactly this.
+   * Per-row keyframeability (`row.keyframes: false` — Name, Widget type) is core's
+   * to filter, so it is stated once, in sectionKeyPaths.
+   *
+   * SINGLE vs MULTI is only the itemIds question. Single selection is the one
+   * `opts.itemId`; a set uses each row's OWN `appliesTo` via multiPaths — in UNION
+   * mode a row belongs to a subset of the selection, and keying it on the others
+   * would write a property their plugin never declared.
+   */
+  function sectionPaths(cat, opts) {
+    if (opts?.keyframes === false || opts?.disabled) return [];
+    if (opts?.multi) return sectionKeyPaths(cat.rows, rowItemIds, writeKey);
+    if (opts?.itemId == null) return [];
+    return sectionKeyPaths(cat.rows, () => [opts.itemId], writeKey);
   }
 
   /**
@@ -2605,17 +2642,39 @@
 
 
 <!-- A collapsible category accordion region. The header toggles collapse; the
-     chevron reflects state. Rows render only when expanded. -->
+     chevron reflects state. Rows render only when expanded.
+
+     THE HEADER IS A ROW, NOT A BARE BUTTON (WORKSTREAM BH). The collapse toggle
+     is still the `.cat-header` <button> it always was and still spans the header,
+     but it now sits in a `.cat-header-row` flex wrapper beside the SECTION
+     KEYFRAME BUBBLE — because a <button> may not contain a <button>, and because
+     collapsing a section and keyframing it are two different actions that must not
+     share one hit target. Every existing `.cat-header` selector (probes, ListField
+     and PaintField's reuse of the same idiom) is untouched by construction: the
+     class, the aria-expanded and the click behaviour are the same element.
+
+     THE BUBBLE READS THE SECTION'S OWN ROWS and renders only when the section has
+     a keyframeable path (sectionBubbleApplies) — so a transition's config rows and
+     a not-yet-created item's grayed rows get none, and neither does a section made
+     only of Name/Widget type. In a MULTI-SELECTION `sectionPaths` crosses the rows
+     with each row's own `appliesTo`, so the bubble reads the UNION and the toggle
+     fans out over it in the same one undo unit. -->
 {#snippet category(cat, state, opts)}
+  {@const kfPaths = sectionPaths(cat, opts)}
   <div class="prop-category">
-    <button
-      class="cat-header"
-      aria-expanded={!collapsed[cat.id]}
-      onclick={() => toggleCategory(cat.id)}
-    >
-      <iconify-icon icon={collapsed[cat.id] ? "mdi:chevron-right" : "mdi:chevron-down"} width="16" height="16"></iconify-icon>
-      <span class="cat-title">{cat.title}</span>
-    </button>
+    <div class="cat-header-row">
+      <button
+        class="cat-header"
+        aria-expanded={!collapsed[cat.id]}
+        onclick={() => toggleCategory(cat.id)}
+      >
+        <iconify-icon icon={collapsed[cat.id] ? "mdi:chevron-right" : "mdi:chevron-down"} width="16" height="16"></iconify-icon>
+        <span class="cat-title">{cat.title}</span>
+      </button>
+      {#if sectionBubbleApplies(kfPaths)}
+        <SectionKeyframeControls {app} paths={kfPaths} title={cat.title} />
+      {/if}
+    </div>
     {#if !collapsed[cat.id]}
       <div class="cat-rows">
         <!-- The divider belongs to THE CATEGORY, not the panel: "only visually

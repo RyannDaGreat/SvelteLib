@@ -52,6 +52,7 @@ import * as T from "../core/transform.js";
 import { reportAction } from "../core/report.js";
 import { bundleDefaults } from "../core/properties.js";
 import { multiSelectPanel, unifyPairs, MULTISELECT_MODE } from "../core/multiselect.js";
+import { sectionTriState, sectionToggleAction, sectionJumpTarget } from "../core/section_keyframes.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
 import { copyText, imageSignature, POWERRP_CLIPBOARD_MIME } from "./clipboard.js"; // canvas-clipboard ownership marker + corroborating signature + the share-link copy
@@ -4974,6 +4975,57 @@ export class PowerRPApp {
   jumpKeyframe(key, direction) {
     if (!this.selection) return;
     this.jumpKeyframePath(["items", this.selection, ...key.split(".")], direction);
+  }
+
+  // ── The SECTION keyframe bubble (core/section_keyframes.js, WORKSTREAM BH) ──
+  // An Inspector section header's own smaller diamond acts on EVERY keyframeable
+  // path the section holds at once. Reasoning is pure and lives in core; these
+  // two are the document seam.
+
+  /** Query. The tri-state a section bubble shows: whether each of `paths` is
+   * keyed on the CURRENT slide, reduced by core's shared triad. */
+  sectionKeyframeState(paths) {
+    return sectionTriState(paths.map((p) => this.hasKeyPath(p)));
+  }
+
+  /**
+   * Command. Brings a whole Inspector section to a uniform keyframe state on the
+   * current slide, in ONE UNDO UNIT.
+   *
+   * ONE `commit`, NOT a loop of keyframePath/removeKey — the whole point of the
+   * control is that a section is toggled with one gesture, and a gesture that
+   * cost the user twenty presses of Cmd+Z to take back would be a worse tool than
+   * clicking twenty diamonds. The document is folded in a local, so no
+   * intermediate state ever reaches the undo log. (The ROW bubble still loops over
+   * a multi-selection's paths — a pre-existing N-undo-unit defect flagged, not
+   * fixed here, because it is web/KeyframeControls.svelte's own contract.)
+   *
+   * The direction is `sectionToggleAction`'s, so this and the tooltip cannot
+   * disagree: FULL removes on every path; HALF and EMPTY both INSERT on every
+   * path (the half → all ruling — see core/section_keyframes.js's header).
+   * Insert is an UPSERT copying each path's OWN raw stored value, so an equation
+   * keyframes as the equation and no two items are given each other's value.
+   *
+   * No-op when the section holds no paths, reported by doing nothing rather than
+   * by committing an empty document (`commit` already refuses an unchanged doc,
+   * so an all-removed-already click pushes no undo entry either).
+   */
+  toggleSectionKeyframes(paths) {
+    let doc = this.doc;
+    if (sectionToggleAction(this.sectionKeyframeState(paths)) === "remove")
+      for (const p of paths) doc = unkeyframed(doc, this.slideIndex, p);
+    else
+      for (const p of paths) doc = keyframed(doc, this.slideIndex, p, this.storedValueAtPath(p));
+    this.commit(doc);
+  }
+
+  /** Command. Section-wide ‹ / ›: moves to the nearest slide in `direction`
+   * holding a keyframe for ANY of the section's paths (core's
+   * `sectionJumpTarget` — the union, so the arrows and the bubble beside them
+   * describe the same thing). Stays put when there is none. */
+  jumpSectionKeyframes(paths, direction) {
+    const target = sectionJumpTarget(paths.map((p) => keyframeIndices(this.doc, p)), this.slideIndex, direction);
+    if (target !== null) this.slideIndex = target;
   }
 
   // ── Variables (keyframable state.vars subtree — the Variables Panel) ──────

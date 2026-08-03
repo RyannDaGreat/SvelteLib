@@ -414,6 +414,239 @@ try {
   assert(visibleUnify.after.every((v) => v === true),
     `…and one unify makes every selected item visible (${JSON.stringify(visibleUnify.after)})`);
 
+  // ── WORKSTREAM BH: the SECTION-HEADER keyframe bubble ──────────────────────
+  // User, 2026-08-02 night: "In each drop-down… a slightly different-looking,
+  // maybe a bit smaller keyframe bubble on it too… half-filled if some of them
+  // are keyframed, completely unfilled if none… fully filled if all of them are… And upon
+  // clicking it, we'll toggle between all or none… Maybe just 30% smaller than
+  // the normal one… we can get the left and right parts for it."
+  //
+  // core/section_keyframes.js pins the pure reasoning bare-node. THIS section
+  // pins what only the real editor can answer: that the bubble is IN the header,
+  // that it is genuinely smaller than a row's, that its click reaches the
+  // document through the app, and that ONE undo takes a whole section back.
+  console.log("\n  — WORKSTREAM BH: the section-header keyframe bubble —");
+
+  // A THREE-SLIDE deck with one rect, so slide 1 can be keyed and cleared
+  // without disturbing the creating delta on slide 0.
+  const bhItem = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.selection = null;
+    app.clearDoc();
+    app.addItem({ ...app.registry.get("rect").defaults, type: "rect", x: 300, y: 200, w: 120, h: 90 });
+    const id = app.selection;
+    app.addSlide();
+    app.addSlide();
+    app.slideIndex = 1;
+    app.selection = id;
+    return id;
+  });
+  await sleep(900);
+  await expand();
+
+  /** The Transform section's header DOM: its bubble, that bubble's icon (which IS
+   *  the tri-state reading), and the geometry that proves it is the smaller one. */
+  const readSection = (title) => page.evaluate((title) => {
+    const cat = [...document.querySelectorAll(".inspector .prop-category")]
+      .find((c) => (c.querySelector(".cat-title")?.textContent ?? "").trim() === title);
+    if (!cat) return { found: false };
+    const headerRow = cat.querySelector(".cat-header-row");
+    const bubble = headerRow?.querySelector(".kf-section");
+    const diamond = bubble?.querySelector(".keybtn");
+    const rowDiamond = cat.querySelector(".cat-rows .kf-controls .keybtn");
+    const box = (e) => (e ? Math.round(e.getBoundingClientRect().width) : null);
+    return {
+      found: true,
+      // THE HEADER IS A ROW holding the collapse button and the bubble as
+      // SIBLINGS — a <button> may not contain a <button>.
+      headerIsRow: !!headerRow,
+      collapseStillHeader: !!headerRow?.querySelector(":scope > .cat-header"),
+      hasBubble: !!bubble,
+      // The three parts the user reversed themselves to keep.
+      jumps: bubble ? bubble.querySelectorAll(".jumpbtn").length : 0,
+      icon: diamond?.querySelector("iconify-icon")?.getAttribute("icon") ?? null,
+      keyed: diamond?.classList.contains("keyed") ?? null,
+      keyedSome: diamond?.classList.contains("keyed-some") ?? null,
+      tip: diamond?.closest(".tt-anchor") ? diamond.getAttribute("aria-label") : diamond?.getAttribute("aria-label") ?? null,
+      sectionW: box(diamond),
+      rowW: box(rowDiamond),
+      // What the app itself says, so the DOM and the pure read are cross-checked.
+      core: (() => {
+        const app = window.__powerrp_app;
+        const id = app.selection;
+        return app.sectionKeyframeState([["items", id, "x"], ["items", id, "y"]]);
+      })(),
+    };
+  }, title);
+
+  const clickSectionBubble = async (title) => {
+    await page.evaluate((title) => {
+      const cat = [...document.querySelectorAll(".inspector .prop-category")]
+        .find((c) => (c.querySelector(".cat-title")?.textContent ?? "").trim() === title);
+      cat.querySelector(".cat-header-row .kf-section .keybtn").click();
+    }, title);
+    await sleep(500);
+  };
+
+  const bhEmpty = await readSection("Transform");
+  assert(bhEmpty.found, "the Transform section is on screen");
+  assert(bhEmpty.headerIsRow && bhEmpty.collapseStillHeader,
+    "the header is a ROW holding the collapse .cat-header and the bubble as siblings");
+  assert(bhEmpty.hasBubble, "…and the section header carries its own keyframe bubble");
+  assert(bhEmpty.jumps === 2,
+    `…with BOTH the left and right parts (the user's final word) (${bhEmpty.jumps})`);
+  // "Maybe just 30% smaller than the normal one."
+  assert(bhEmpty.sectionW !== null && bhEmpty.rowW !== null && bhEmpty.sectionW < bhEmpty.rowW,
+    `the section bubble is SMALLER than a row's (${bhEmpty.sectionW}px vs ${bhEmpty.rowW}px)`);
+  assert(Math.abs(bhEmpty.sectionW / bhEmpty.rowW - 0.7) < 0.08,
+    `…by about 30% (ratio ${(bhEmpty.sectionW / bhEmpty.rowW).toFixed(2)})`);
+  // EMPTY: nothing in the section is keyed on this slide.
+  assert(bhEmpty.icon === "mdi:rhombus-outline" && bhEmpty.core === "none",
+    `EMPTY when no property in the section is keyframed here (${bhEmpty.icon}/${bhEmpty.core})`);
+  assert(bhEmpty.keyed === false && bhEmpty.keyedSome === false, "…and it wears neither fill class");
+
+  // ── HALF: key ONE property in the section, by hand. ────────────────────────
+  await page.evaluate((id) => {
+    window.__powerrp_app.keyframePath(["items", id, "x"], 321);
+  }, bhItem);
+  await sleep(500);
+  const bhHalf = await readSection("Transform");
+  assert(bhHalf.icon === "mdi:rhombus-split" && bhHalf.core === "some",
+    `HALF when only some of the section is keyframed (${bhHalf.icon}/${bhHalf.core})`);
+  assert(bhHalf.keyedSome === true && bhHalf.keyed === false,
+    "…and the half fill is a class of its own, so it can never render as FULL");
+
+  // ── CLICK from HALF → ALL (the ruling: the click completes before it clears) ─
+  const sectionKeys = (id) => page.evaluate((id) => {
+    const app = window.__powerrp_app;
+    const delta = app.doc.slides[app.slideIndex].delta.items?.[id] ?? {};
+    return { keys: Object.keys(delta).sort(), x: delta.x ?? null, canUndo: app.canUndo };
+  }, bhItem);
+
+  await clickSectionBubble("Transform");
+  const bhAll = await readSection("Transform");
+  const allKeys = await sectionKeys(bhItem);
+  assert(bhAll.icon === "mdi:rhombus" && bhAll.core === "all",
+    `one click from HALF fills the whole section (${bhAll.icon}/${bhAll.core})`);
+  assert(bhAll.keyed === true, "…wearing the full-fill class");
+  assert(allKeys.keys.length > 1, `…and the document really gained the section's keys (${JSON.stringify(allKeys.keys)})`);
+  assert(allKeys.x === 321,
+    "…without overwriting the keyframe that made it half (the UPSERT, not a restamp)");
+
+  // ONE UNDO takes the WHOLE section back — the behavioural one-undo-unit proof,
+  // read off the document rather than off a stack depth (canUndo is a boolean).
+  const bhAfterUndo = await page.evaluate((id) => {
+    const app = window.__powerrp_app;
+    app.undo();
+    const delta = app.doc.slides[app.slideIndex].delta.items?.[id] ?? {};
+    return { keys: Object.keys(delta).sort(), tri: app.sectionKeyframeState([["items", id, "x"], ["items", id, "y"]]) };
+  }, bhItem);
+  await sleep(400);
+  assert(bhAfterUndo.tri === "some" && bhAfterUndo.keys.length === 1,
+    `ONE undo reverted the ENTIRE section toggle — one undo unit (${JSON.stringify(bhAfterUndo.keys)})`);
+  await page.evaluate(() => window.__powerrp_app.redo());
+  await sleep(400);
+
+  // ── CLICK from ALL → NONE, again one undo unit ────────────────────────────
+  await clickSectionBubble("Transform");
+  const bhCleared = await readSection("Transform");
+  const clearedKeys = await sectionKeys(bhItem);
+  assert(bhCleared.icon === "mdi:rhombus-outline" && bhCleared.core === "none",
+    `a FULL section clears on the next click (${bhCleared.icon}/${bhCleared.core})`);
+  assert(!clearedKeys.keys.includes("x") && !clearedKeys.keys.includes("y"),
+    `…and the section's keys are gone from the slide (${JSON.stringify(clearedKeys.keys)})`);
+  const afterClearUndo = await page.evaluate((id) => {
+    const app = window.__powerrp_app;
+    app.undo();
+    return app.sectionKeyframeState([["items", id, "x"], ["items", id, "y"]]);
+  }, bhItem);
+  await sleep(400);
+  assert(afterClearUndo === "all", `ONE undo restores every cleared keyframe at once (${afterClearUndo})`);
+
+  // ── THE LEFT/RIGHT PARTS navigate, section-wide ───────────────────────────
+  // Put a keyframe on slide 2 for a DIFFERENT property of the section, so the
+  // jump can only land there by walking the UNION rather than one row's path.
+  const jumped = await page.evaluate((id) => {
+    const app = window.__powerrp_app;
+    app.slideIndex = 2;
+    app.keyframePath(["items", id, "y"], 77);
+    app.slideIndex = 0;
+    const clickJump = (which) => {
+      const cat = [...document.querySelectorAll(".inspector .prop-category")]
+        .find((c) => (c.querySelector(".cat-title")?.textContent ?? "").trim() === "Transform");
+      cat.querySelectorAll(".cat-header-row .kf-section .jumpbtn")[which].click();
+    };
+    clickJump(1); // ›
+    const firstForward = app.slideIndex;
+    clickJump(1);
+    const secondForward = app.slideIndex;
+    clickJump(0); // ‹
+    const back = app.slideIndex;
+    return { firstForward, secondForward, back };
+  }, bhItem);
+  await sleep(500);
+  assert(jumped.firstForward === 1, `› walks to the next slide keyframing the section (${jumped.firstForward})`);
+  assert(jumped.secondForward === 2,
+    `…and on to slide 2, which only a UNION walk reaches — its keyframe is on a DIFFERENT row (${jumped.secondForward})`);
+  assert(jumped.back === 1, `‹ walks back the same way (${jumped.back})`);
+
+  // ── A SECTION WITH NOTHING KEYFRAMEABLE GETS NO BUBBLE ────────────────────
+  // A transition's config rows are per-boundary CONFIG, not keyframeable state,
+  // so their sections must not carry a control that claims otherwise.
+  const transitionBubbles = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.selection = null;
+    app.selectTransition?.(app.doc.slides[1].id);
+    return null;
+  }).then(() => sleep(700)).then(() => page.evaluate(() => ({
+    categories: document.querySelectorAll(".inspector .prop-category").length,
+    bubbles: document.querySelectorAll(".inspector .cat-header-row .kf-section").length,
+    rowDiamonds: document.querySelectorAll(".inspector .cat-rows .keybtn").length,
+  })));
+  if (transitionBubbles.categories > 0 && transitionBubbles.rowDiamonds === 0)
+    assert(transitionBubbles.bubbles === 0,
+      `a section whose rows carry no diamonds carries no section bubble either (${transitionBubbles.bubbles})`);
+
+  // ── MULTI-SELECTION: the bubble reads the UNION and the toggle fans out ────
+  const bhTrio = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.selection = null;
+    app.clearDoc();
+    const ids = [0, 1, 2].map((i) => {
+      app.addItem({ ...app.registry.get("rect").defaults, type: "rect", x: 120 + i * 130, y: 160, w: 80, h: 60 });
+      return app.selection;
+    });
+    app.addSlide();
+    app.slideIndex = 1;
+    app.selectMany(ids);
+    // ONE of the three is already keyed here, so the union reads HALF.
+    app.keyframePath(["items", ids[0], "x"], 999);
+    return ids;
+  });
+  await sleep(900);
+  await expand();
+
+  const setHalf = await readSection("Transform");
+  assert(setHalf.hasBubble, "the SET panel's sections carry the bubble too (BE's intersection panel)");
+  assert(setHalf.icon === "mdi:rhombus-split",
+    `…reading HALF across the whole selection — 'somewhere in this section, on some item' (${setHalf.icon})`);
+
+  await clickSectionBubble("Transform");
+  const fanOut = await page.evaluate((ids) => {
+    const app = window.__powerrp_app;
+    const delta = () => app.doc.slides[app.slideIndex].delta.items ?? {};
+    const after = ids.map((id) => ({ ...(delta()[id] ?? {}) }));
+    app.undo();
+    const undone = ids.map((id) => Object.keys(delta()[id] ?? {}).length);
+    return { after, undone, x0: after[0].x ?? null };
+  }, bhTrio);
+  await sleep(400);
+  assert(fanOut.after.every((d) => "x" in d && "y" in d),
+    `one click keyframed the section on EVERY selected item (${JSON.stringify(fanOut.after.map((d) => Object.keys(d).sort()))})`);
+  assert(fanOut.x0 === 999, "…and the item that was already keyed kept its own value");
+  assert(fanOut.undone[1] === 0 && fanOut.undone[2] === 0,
+    `ONE undo reverted the whole fan-out — still one undo unit (${JSON.stringify(fanOut.undone)})`);
+
   console.log(fails.length ? `\nFAILED: ${fails.length}` : "\nPASS — multi-selection Inspector intersection");
   process.exitCode = fails.length ? 1 : 0;
 } finally {
