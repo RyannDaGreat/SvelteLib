@@ -608,6 +608,26 @@
      would reflow the rail, see above) but is drawn as an empty dashed slot, so
      "you can leave the old area empty" is true without anything moving. */
   --a-lifted-opacity: 0.25;
+  /* ── DRAG ONTO A SLIDE = MERGE ────────────────────────────────────────────
+     The merge target's wash. SELECTION-TINTED, deliberately in the same family
+     as --a-slide-selected-bg, because "this row is what the gesture is about" is
+     the same thing both say. It is STRONGER than the selection tint (which may
+     be on screen at the same time, on the very rows being dragged) so the target
+     is unambiguous, and it is a FILL where the reorder indicator is a LINE — a
+     different shape in a different place, which is what keeps the two drop
+     outcomes from being confusable mid-gesture.
+
+     MIXED FROM --a-selection RATHER THAN WRITTEN AS A LITERAL rgba, so it tracks
+     the theme: --a-selection is #3f9eff dark / #0b6bcb light, and a hardcoded
+     blue would be the dark one bleeding into the light theme. (--a-slide-selected-bg
+     predates this and IS a literal, which is exactly the drift being avoided here.) */
+  --a-merge-target-bg: color-mix(in srgb, var(--a-selection) 30%, transparent);
+  --a-merge-target-ring: 2px;
+  /* The refusal wears the GUIDE colour — the app has no danger token (a
+     `var(--a-danger, …)` phantom was found and removed this round, see the note
+     at the bottom of this file), and --a-guide is the one themed hue that is not
+     the selection blue, so a refused merge cannot be mistaken for an armed one. */
+  --a-merge-refused-bg: color-mix(in srgb, var(--a-guide) 26%, transparent);
   /* THE DRAG GHOST — the copy of the row that travels with the pointer. Lifted
      off the panel by a shadow and slightly transparent, so what is under it stays
      readable while it passes over. */
@@ -5340,6 +5360,71 @@ textarea {
 
 .slidenav .slide.lifted > * {
   visibility: hidden;
+}
+
+/* ── THE MERGE TARGET (drag a slide ONTO a slide) ───────────────────────────
+   User: "what if I can drag a slide into another slide?" — so the same drag that
+   reorders between the gaps MERGES when it is released on a slide's body.
+
+   THE TWO DROP OUTCOMES MUST NOT LOOK ALIKE, and here they deliberately differ
+   in SHAPE, PLACE and COLOUR-WEIGHT: a reorder is a thin bold LINE in the GAP,
+   a merge is a WASH plus a ring over the whole TARGET. Only one is ever drawn —
+   SlideNav's isDropBoundary returns false while a merge target is live, and the
+   rows' push-aside shift closes back to zero — so the rail never shows two
+   answers to the same release.
+
+   The ring is `inset box-shadow`, not `border` or `outline`: a border would
+   change the row's box and reflow the rail mid-drag (the objection this whole
+   drag design is built around), and an outline would sit outside the row and
+   collide with its neighbours. */
+/* `position: relative` is set HERE, on the merge-target state, not on
+   `.slidenav .slide` — the chip needs a positioning context and the row has
+   none, but the list view's row geometry is PINNED (the user's ruling on the
+   list is "do not restyle it", which .slide-cell's display:contents exists to
+   honour). Scoping it to the transient state means no row is repositioned unless
+   it is actually wearing a chip, and `relative` changes no geometry regardless. */
+.slidenav .slide.merge-target {
+  position: relative;
+  background: var(--a-merge-target-bg);
+  box-shadow: inset 0 0 0 var(--a-merge-target-ring) var(--a-selection);
+}
+
+/* A REFUSED merge (non-adjacent selection, or a disabled slide in the run) says
+   so in the guide hue rather than the selection blue, and the chip beside it
+   carries the reason. It must not read as "release here and it will work". */
+.slidenav .slide.merge-target.merge-refused {
+  background: var(--a-merge-refused-bg);
+  box-shadow: inset 0 0 0 var(--a-merge-target-ring) var(--a-guide);
+}
+
+/* THE CHIP rides the target, which is why it needs no tooltip machinery (the
+   user retracted the realtime drag tooltip). Absolutely positioned so it cannot
+   change the row's height — a chip that grew the row would reflow the rail under
+   the cursor, the same constraint the drop indicator obeys. pointer-events:none
+   because the pointer is captured by the dragged row and the chip must never
+   become the event target. */
+.slidenav .slide.merge-target .merge-chip {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: var(--a-badge-gap);
+  max-width: calc(100% - var(--a-sp-1) * 2);
+  padding: var(--a-badge-pad-y) var(--a-badge-pad-x);
+  background: var(--a-badge-bg);
+  color: var(--a-badge-fg);
+  font-size: var(--a-font-sm);
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.slidenav .slide.merge-target .merge-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* THE OTHERS SLIDE ASIDE. --drag-shift is set per row by SlideNav (0 for rows

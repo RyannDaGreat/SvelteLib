@@ -800,6 +800,13 @@
   const HELP_EXPORT_CAMERA = "THE CAMERA decides the output — its rect IS the image, at its own size and aspect. Not the visible viewport, and not the widgets' extent, so what you export does not change when you pan or zoom.";
   const HELP_FLIP = "Reverses ONE widget's own content about its own centre (a negative size with the position compensated), leaving it where it sits. Mirror Layout is the one that moves widgets to each other's side.";
   const HELP_SLIDE_MOVE = "Only the ORDER changes: every slide still looks exactly as it did, including the one you moved. A slide stores the DIFFERENCE from the slide before it, so the deltas are all rebuilt to say the right thing in their new positions — which can leave a few keyframes that restate what is already inherited. Simplify Duplicate Keyframes Everywhere clears those, across the whole project in one undo.";
+  // MERGE — one sentence about WHICH SLIDE SURVIVES and WHOSE LOOK WINS, because
+  // those are two different answers and a PowerPoint user will assume they are the
+  // same one. The pair collapses into the EARLIER seat (so the deck shortens from
+  // below), but the picture is the LATER slide's (the user's own rule: "the one
+  // that comes later in the slideshow will have priority"). Stated once and shared
+  // by both entries, which describe the same operation on different pairs.
+  const HELP_SLIDE_MERGE = "The two slides become ONE, in the EARLIER slide's position — but it LOOKS like the LATER slide, because where the two disagree the later one wins. Changes only the earlier slide made are kept, so nothing is lost that the later slide did not overrule. Every slide after the pair looks exactly as it did. The transition INTO the merged slide is the earlier one's; the transition between the two is what the merge deletes.";
 
   // Palette icons (mdi), keyed by THEME_FAMILIES[].id — one glyph per FAMILY,
   // because the icon names the identity and both poles share it. The two
@@ -1410,6 +1417,35 @@
     // what the slides after it show. See core/slide_reorder.js.
     { id: "move-slide-up", title: "Move Slide Up", icon: "mdi:arrow-up", help: HELP_SLIDE_MOVE, run: (a) => a.moveSlide(-1) },
     { id: "move-slide-down", title: "Move Slide Down", icon: "mdi:arrow-down", help: HELP_SLIDE_MOVE, run: (a) => a.moveSlide(+1) },
+    // ── MERGE ─────────────────────────────────────────────────────────────────
+    // User, 2026-08-02: "We should also have merge slide up and merge slide down
+    // as options … The one that comes later in the slideshow will have priority.
+    // For whatever deltas arise."
+    //
+    // THE TITLES NAME THE SURVIVOR, because "merge up" is genuinely ambiguous —
+    // it could mean "this slide moves up into its predecessor" or "the one above
+    // comes down into this one", and those differ in which row is left standing.
+    // The parenthetical answers it in the title itself rather than only in the
+    // help, since the palette shows titles first and a merge is destructive.
+    // Both entries collapse a pair into the EARLIER seat and both give the LATER
+    // slide's picture priority — so merge-up on slide 3 and merge-down on slide 2
+    // produce the SAME document. Deck order decides the winner, never which row
+    // you invoked it from; that is the user's rule, and making the two commands
+    // agree is what keeps it true.
+    //
+    // The MOVE UP/DOWN BUTTONS in the rail footer are deliberately NOT replaced
+    // by these (the user was weighing that option — "what if we make them merge
+    // slide up and merge slide down?" — not ruling on it). Merge ships as palette
+    // commands plus the drag-onto-a-slide gesture; swapping the footer buttons is
+    // a one-line change if that is what is wanted.
+    //
+    // `requires` is a FUNCTION because the gate has THREE disqualifying
+    // conditions with three different true sentences (no neighbour that way, a
+    // one-slide deck, a disabled slide in the pair). A fixed string would be a
+    // confident wrong answer for two of them. Read via commandUnavailableReason,
+    // never cmd.requires raw.
+    { id: "merge-slide-up", title: "Merge Slide Up (into the slide above — this slide's look wins)", icon: "mdi:arrow-collapse-up", aliases: ["merge slide up", "merge up", "combine with previous slide", "collapse slide up"], when: (a) => a.slideMergeBlocker(a.slideIndex, -1) === null, requires: (a) => a.slideMergeBlocker(a.slideIndex, -1) ?? "a mergeable slide above this one", help: HELP_SLIDE_MERGE, run: (a) => a.mergeSlide(-1) },
+    { id: "merge-slide-down", title: "Merge Slide Down (the slide below merges into this one — its look wins)", icon: "mdi:arrow-collapse-down", aliases: ["merge slide down", "merge down", "combine with next slide", "collapse slide down"], when: (a) => a.slideMergeBlocker(a.slideIndex, +1) === null, requires: (a) => a.slideMergeBlocker(a.slideIndex, +1) ?? "a mergeable slide below this one", help: HELP_SLIDE_MERGE, run: (a) => a.mergeSlide(+1) },
     // ── THE SLIDE CLIPBOARD ───────────────────────────────────────────────────
     // User, 2026-08-02: "I also want to be able to copy and paste slides …
     // There should be some way to duplicate a slide."

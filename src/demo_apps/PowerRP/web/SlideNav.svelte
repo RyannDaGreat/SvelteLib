@@ -502,6 +502,95 @@
     return rows.length;
   }
 
+  // ── DRAG ONTO A SLIDE = MERGE ───────────────────────────────────────────────
+  // User, 2026-08-02: "Or what if I can drag a slide into another slide? And then
+  // it could have a realtime tooltip while I'm dragging it, say what I'm about to
+  // do, which is merging. By the way, the realtime tooltip does not need to exist
+  // when I'm dragging slides."
+  //
+  // So ONE GESTURE CARRIES TWO OPERATIONS, and the whole design problem is making
+  // which one you are about to get unmistakable BEFORE you release:
+  //   - THE GAPS BETWEEN SLIDES STAY REORDER TARGETS, untouched. Every existing
+  //     drop still reorders exactly as it did, which is the no-regression rule.
+  //   - A SLIDE'S BODY IS A MERGE TARGET, drawn differently (a selection-tint
+  //     wash + a "Merge" chip ON the target) from the reorder indicator (a bold
+  //     line IN the gap). Different shape, different place, different meaning.
+  //   - NO FLOATING REALTIME TOOLTIP. The user's last sentence retracts it for
+  //     plain reorder drags, and a tip that appears only over bodies would be a
+  //     second, inconsistent explanation of the same gesture. The chip rides the
+  //     TARGET, where the thing being described actually is.
+  //
+  // THE BODY IS THE MIDDLE OF THE ROW, NOT ALL OF IT. A merge zone spanning the
+  // whole row would make the gaps unhittable — the pointer would have to land in
+  // a 1px seam to reorder, and the commonest gesture in the rail would become the
+  // hardest. So each row's outer MERGE_EDGE_FRACTION at each end belongs to the
+  // gap it is nearest, and the middle is the merge zone.
+  const MERGE_EDGE_FRACTION = 0.3; // of the row's length, at EACH end, reserved for reorder
+
+  /**
+   * Query (reads the DOM). WHICH SLIDE the pointer is over the BODY of — the
+   * merge target — or `null` when it is near a gap (a reorder) or over a slide
+   * that cannot be merged with what is being dragged.
+   *
+   * Returns null for a row that is part of the dragged block: a slide cannot
+   * merge into itself, and the block's own rows are holes during the drag.
+   *
+   * @returns {number|null} the target row index, or null when this is a reorder
+   */
+  function mergeTargetAt(clientX, clientY, indices) {
+    const rows = [...(slidesEl?.querySelectorAll("[data-slide-row]") ?? [])];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i].getBoundingClientRect();
+      // THE AXIS IS THE ONE THE GAPS LIE ALONG: vertically stacked rows in the
+      // list, horizontally flowing tiles in the grid (where a gap is a vertical
+      // seam between two tiles on a line). Using the wrong axis would put the
+      // reorder edges where there is no gap to reorder into.
+      const lo = isGrid ? r.left : r.top;
+      const size = isGrid ? r.width : r.height;
+      const pos = isGrid ? clientX : clientY;
+      const within = isGrid ? clientY >= r.top && clientY < r.bottom : clientX >= r.left && clientX < r.right;
+      if (!within || pos < lo || pos >= lo + size) continue;
+      const edge = size * MERGE_EDGE_FRACTION;
+      if (pos < lo + edge || pos >= lo + size - edge) return null; // near a gap → reorder
+      if (indices.includes(i)) return null; // its own hole — nothing to merge into
+      return i;
+    }
+    return null;
+  }
+
+  /** Query. Is row `i` the live MERGE target (so it wears the wash and the chip)? */
+  function isMergeTarget(i) {
+    return dragState?.moved === true && dragState.mergeTarget === i;
+  }
+
+  /**
+   * Query. WHY the live merge would be refused, or null when it is fine — read
+   * straight from the app so the chip states the SAME sentence the command layer
+   * would, rather than a second guess at the rule.
+   */
+  function mergeBlocker() {
+    const t = dragState?.mergeTarget;
+    return t === null || t === undefined ? null : app.slideRunMergeBlocker(dragState.indices, t);
+  }
+
+  /**
+   * Query. THE CHIP'S SENTENCE: which slide the pair collapses into, and whose
+   * look survives. Two facts, and they have DIFFERENT answers — the survivor sits
+   * at the EARLIER seat, the picture comes from the LATER slide (the user's rule:
+   * "the one that comes later in the slideshow will have priority"). A chip
+   * saying only "Merge" would leave the destructive half unanswered.
+   *
+   * Numbers, not names: the rail already shows names two pixels away, the numbers
+   * are what say WHERE, and a long name would blow out a chip that has to fit on
+   * a thumbnail.
+   */
+  function mergeChipLabel(target) {
+    const run = [...new Set([...(dragState?.indices ?? []), target])].sort((a, b) => a - b);
+    const seat = run[0] + 1;
+    const winner = run[run.length - 1] + 1;
+    return `Merge into ${seat} · slide ${winner} wins`;
+  }
+
   /**
    * Query (reads the DOM). THE SLOT PITCH of the lifted block `indices` — the
    * distance a row must travel to move past it, given the rendered rows `rows`.
@@ -657,7 +746,15 @@
     const dy = e.clientY - dragState.startY;
     const far = isGrid ? Math.hypot(dx, dy) : Math.abs(dy);
     if (!dragState.moved && far < DRAG_THRESHOLD_PX) return;
-    dragState = { ...dragState, moved: true, pointerX: e.clientX, pointerY: e.clientY, boundary: boundaryAt(e.clientX, e.clientY) };
+    // BOTH are resolved every move, and the MERGE TARGET WINS when it is set:
+    // over a slide's body the drop merges, near a gap it reorders. The boundary
+    // is still computed either way so that leaving a body puts the reorder
+    // indicator back instantly, with no second pass.
+    const mergeTarget = mergeTargetAt(e.clientX, e.clientY, dragState.indices);
+    dragState = {
+      ...dragState, moved: true, pointerX: e.clientX, pointerY: e.clientY,
+      boundary: boundaryAt(e.clientX, e.clientY), mergeTarget,
+    };
   }
 
   /** Command. Drops (one undo unit) or, if the pointer never really moved, lets
@@ -668,13 +765,27 @@
     dragState = null;
     if (!drag?.moved) return;
     e.preventDefault(); // a drop is not also a click
+    // A DROP ON A BODY MERGES; a drop anywhere else reorders, exactly as before.
+    // Both go through the app layer's own seam, so the gesture and the palette
+    // command produce byte-identical documents (app.mergeSlideRun's note).
+    // PRIORITY IS DECK ORDER, not drag direction: mergeSlideRun sorts the run and
+    // the later slide wins, so dragging 2 onto 5 and 5 onto 2 agree.
+    if (drag.mergeTarget !== null && drag.mergeTarget !== undefined) {
+      app.mergeSlideRun(drag.indices, drag.mergeTarget);
+      return;
+    }
     app.moveSlidesToBoundary(drag.indices, drag.boundary ?? boundaryAt(e.clientX, e.clientY));
   }
 
   /** Query. Is boundary `b` the live drop target? Boundaries are drawn by the
-   *  slice ABOVE slide b (and by a tail element for b === slides.length). */
+   *  slice ABOVE slide b (and by a tail element for b === slides.length).
+   *
+   *  A LIVE MERGE TARGET SUPPRESSES IT. The two indicators must never show at
+   *  once: they describe different outcomes for the same release, and drawing
+   *  both would make the gesture ambiguous at exactly the moment the user is
+   *  deciding. The merge wash wins because the merge is what would happen. */
   function isDropBoundary(b) {
-    return dragState?.moved === true && dragState.boundary === b;
+    return dragState?.moved === true && dragState.mergeTarget == null && dragState.boundary === b;
   }
 
   /** Query. Is row `i` one of the rows being dragged (so its slot is a hole)? */
@@ -710,6 +821,12 @@
    * what the template writes into one `translate()`.
    */
   function dragShift(i) {
+    // A LIVE MERGE TARGET CLOSES THE SLOT. The rows part to make room for an
+    // INSERTION; a merge inserts nothing, so leaving them parted would promise a
+    // gap that the drop is not going to fill. They glide back over DRAG_SHIFT_MS
+    // (the same transition already on the transform), which reads as the rail
+    // declining the reorder — the motion itself says which operation is armed.
+    if (dragState?.mergeTarget != null) return { x: 0, y: 0 };
     if (!dragState?.moved || dragState.boundary === null || isLifted(i)) return { x: 0, y: 0 };
     const { indices, height, boundary, cells } = dragState;
     if (isGrid) {
@@ -1003,6 +1120,8 @@
           class:current={i === app.slideIndex}
           class:selected={app.isSlideSelected(i)}
           class:lifted={isLifted(i)}
+          class:merge-target={isMergeTarget(i)}
+          class:merge-refused={isMergeTarget(i) && mergeBlocker() !== null}
           class:disabled={slide.enabled === false}
           class:seam-before={isGrid && isDropBoundary(i)}
           class:seam-after={isGrid && i === app.doc.slides.length - 1 && isDropBoundary(app.doc.slides.length)}
@@ -1053,6 +1172,31 @@
               aspect={thumbAspect(i)}
               alt={`Slide ${i + 1} preview`}
             />
+          {/if}
+          <!-- ── THE MERGE CHIP ────────────────────────────────────────────────
+               What the release is about to do, drawn ON the target rather than
+               floating by the cursor: the user retracted the realtime tooltip
+               ("the realtime tooltip does not need to exist when I'm dragging
+               slides"), and a label that rides the thing it describes needs no
+               tooltip machinery at all. It exists ONLY while this row is the live
+               merge target, so it can never be stale.
+
+               IT NAMES THE WINNER, not just the operation. "Merge" alone leaves
+               the destructive question unanswered, and the answer is not
+               guessable from the gesture — deck order decides it, so dragging a
+               slide UP and dragging one DOWN onto the same pair give the same
+               result. The arrow points at the seat the survivor takes.
+
+               WHEN THE MERGE IS REFUSED it says why instead, in the same place —
+               the sentence comes from app.slideRunMergeBlocker, the very call the
+               drop would refuse on, so the chip cannot promise something the drop
+               then declines. -->
+          {#if isMergeTarget(i)}
+            {@const refused = mergeBlocker()}
+            <span class="merge-chip" class:refused>
+              <iconify-icon icon={refused ? "mdi:cancel" : "mdi:call-merge"} width="12" height="12"></iconify-icon>
+              <span class="merge-chip-text">{refused ? `Can't merge — needs ${refused}` : mergeChipLabel(i)}</span>
+            </span>
           {/if}
         </button>
       </Tooltip>

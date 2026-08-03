@@ -19,7 +19,7 @@ import { setPath, getPath, blendApplied, applied } from "../core/deltas.js";
 import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta } from "../core/item_properties_clipboard.js"; // Copy Properties: the fold-then-diff time transport
 // APPEARANCE-PRESERVING slide reorder + the duplicate-keyframe simplifier that
 // is its counterweight (core/slide_reorder.js states the law both obey).
-import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted } from "../core/slide_reorder.js";
+import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted, withSlidesMerged } from "../core/slide_reorder.js";
 import { unionRect } from "../core/geometry.js";
 // Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
 import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
@@ -5026,6 +5026,131 @@ export class PowerRPApp {
   moveSlide(offset) {
     this.commit(movedSlidePreservingLook(this.doc, this.slideIndex, offset));
     this.slideIndex = Math.max(0, Math.min(this.doc.slides.length - 1, this.slideIndex + offset));
+  }
+
+  /**
+   * Query. WHY the pair at (`index`, `index + offset`) cannot be merged, or `null`
+   * when it can — the gate AND the sentence, from one call, so the command's
+   * `when` and its `requires` can never disagree. (The `quickSaveBlocker` /
+   * `duplicateKeyframeCount` precedent: a gate with several disqualifying
+   * conditions has several true sentences, and a fixed string would be a
+   * confident wrong answer for all but one.)
+   *
+   * The conditions are exactly `withSlidesMerged`'s refusals, asked BEFORE it
+   * throws: core throws because a bad merge must never silently happen, and this
+   * exists so the UI never gets there — a disabled command with a reason beats a
+   * thrown error the user cannot read.
+   */
+  slideMergeBlocker(index, offset) {
+    const other = index + offset;
+    if (this.doc.slides.length < 2) return "two slides — there is nothing to merge into";
+    if (other < 0) return "a slide above this one — the first slide has no predecessor to merge into";
+    if (other >= this.doc.slides.length) return "a slide below this one — the last slide has no successor to merge in";
+    const enabledOff = [index, other].filter((i) => this.doc.slides[i].enabled === false);
+    if (enabledOff.length > 0)
+      return `both slides enabled — slide ${enabledOff[0] + 1} is disabled, so it has no picture of its own to merge`;
+    return null;
+  }
+
+  /**
+   * Command (ONE undo unit). MERGES the current slide with its neighbour
+   * `offset` away (-1 = the slide above, +1 = the slide below), collapsing the
+   * two into one.
+   *
+   * User ruling, 2026-08-02: "The one that comes later in the slideshow will have
+   * priority. For whatever deltas arise." That priority is DECK ORDER, not drag
+   * direction and not which slide the cursor is on — so merge-up and merge-down
+   * on the same pair produce the SAME document. The two commands differ only in
+   * WHICH PAIR they name, which is the thing a PowerPoint user is choosing.
+   *
+   * The survivor sits at the EARLIER of the two seats (core withSlidesMerged owns
+   * the identity rules), so that is where the cursor lands — the canvas keeps
+   * showing the merged result rather than jumping to whatever slid up into the
+   * vacated row.
+   */
+  mergeSlide(offset) {
+    this.mergeSlidePair(this.slideIndex, this.slideIndex + offset);
+  }
+
+  /**
+   * Command (ONE undo unit). The merge two ADJACENT slides share, by index —
+   * what both the up/down commands and the rail's drag-onto-a-slide drop call.
+   *
+   * ONE SEAM ON PURPOSE: the drop gesture and the palette command must produce
+   * byte-identical documents, and the cheapest way to guarantee that is for
+   * there to be one path. It also means the blocker sentence is checked once,
+   * here, rather than at each surfacing.
+   */
+  mergeSlidePair(indexA, indexB) {
+    const earlier = Math.min(indexA, indexB);
+    const blocked = this.slideMergeBlocker(earlier, 1);
+    if (blocked) {
+      console.error(`PowerRP: cannot merge slides ${earlier + 1} and ${earlier + 2} — requires ${blocked}.`);
+      return;
+    }
+    this.commit(withSlidesMerged(this.doc, indexA, indexB));
+    // The multi-selection described rows that no longer exist (one of them is
+    // gone and everything after it renumbered), the same reason every
+    // deck-SHAPE change clears it.
+    this.clearSlideSelection();
+    this.slideIndex = earlier;
+  }
+
+  /**
+   * Query. WHY the slides `indices` cannot be merged into `target` as one run, or
+   * `null` when they can. The drag-onto-a-slide drop's gate and its refusal
+   * sentence, from one call — `slideMergeBlocker`'s shape, for the block case.
+   *
+   * THE RULE IS CONTIGUITY, and it is a real constraint rather than an
+   * implementation shortcut. Merging is defined on ADJACENT pairs, because the
+   * composition is "the fold entering the pair, then the fold leaving it" and a
+   * gap in the run means slides that are NOT being merged sit inside that span —
+   * their deltas would have to be folded through and then re-derived, which is a
+   * REORDER plus a merge, i.e. two different things the user did not ask for in
+   * one gesture. So a non-contiguous selection is REFUSED with a sentence rather
+   * than silently reordered into adjacency.
+   */
+  slideRunMergeBlocker(indices, target) {
+    const run = [...new Set([...indices, target])].sort((a, b) => a - b);
+    if (run.length < 2) return "two different slides — a slide cannot merge into itself";
+    if (run[run.length - 1] - run[0] !== run.length - 1)
+      return "the selected slides to be next to each other — merging a non-adjacent set would have to reorder the slides between them first";
+    const off = run.filter((i) => this.doc.slides[i].enabled === false);
+    if (off.length > 0) return `every slide enabled — slide ${off[0] + 1} is disabled, so it has no picture of its own to merge`;
+    return null;
+  }
+
+  /**
+   * Command (ONE undo unit). MERGES a contiguous RUN of slides into one — the
+   * drop half of drag-a-slide-onto-a-slide, and the multi-select generalization
+   * of `mergeSlidePair`.
+   *
+   * PRIORITY IS DECK ORDER, NOT DRAG DIRECTION. The user's rule is "the one that
+   * comes later in the slideshow will have priority", so dragging slide 2 onto
+   * slide 5 and dragging slide 5 onto slide 2 produce the SAME document: 5 wins
+   * either way. The drag direction chooses the PAIR, never the winner.
+   *
+   * The run is folded left-to-right by repeated adjacent merge, which is exactly
+   * "later wins" iterated and is why the result is independent of the order the
+   * pairs are taken in (pinned in tests/slide_merge_test.js: merging a deck all
+   * the way down to one slide yields the LAST slide's picture). Each step is
+   * pure; only the final document is committed, so it is ONE undo unit.
+   */
+  mergeSlideRun(indices, target) {
+    const run = [...new Set([...indices, target])].sort((a, b) => a - b);
+    const blocked = this.slideRunMergeBlocker(indices, target);
+    if (blocked) {
+      console.error(`PowerRP: cannot merge slides ${run.map((i) => i + 1).join(", ")} — requires ${blocked}.`);
+      return;
+    }
+    // Collapse from the RIGHT so the indices of the not-yet-merged pairs never
+    // shift under us: merging (i, i+1) renumbers everything after i, but nothing
+    // at or before it.
+    let doc = this.doc;
+    for (let i = run[run.length - 1]; i > run[0]; i--) doc = withSlidesMerged(doc, i - 1, i);
+    this.commit(doc);
+    this.clearSlideSelection();
+    this.slideIndex = run[0];
   }
 
   /**

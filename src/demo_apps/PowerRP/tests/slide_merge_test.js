@@ -260,6 +260,23 @@ test("the input document is not mutated", () => {
   assert.equal(JSON.stringify(doc), snapshot);
 });
 
+test("a RUN collapses right-to-left to the run's LAST picture, tail untouched", () => {
+  // THE DRAG-ONTO-A-SLIDE DROP'S MATH (web/app.svelte.js mergeSlideRun). It
+  // collapses a contiguous run by repeated adjacent merge, taken from the RIGHT
+  // so the indices of the not-yet-merged pairs never shift underneath it.
+  const { doc } = sampleDoc();
+  const run = [1, 2]; // merge slides 2 and 3, leaving slide 4 as the tail
+  const wantRunPicture = slideState(doc, run[run.length - 1]);
+  const wantTail = slideState(doc, run[run.length - 1] + 1);
+  let out = doc;
+  for (let i = run[run.length - 1]; i > run[0]; i--) out = withSlidesMerged(out, i - 1, i);
+  assert.equal(out.slides.length, doc.slides.length - (run.length - 1));
+  assert.deepEqual(slideState(out, 0), slideState(doc, 0), "the slide before the run moved");
+  assert.deepEqual(slideState(out, run[0]), wantRunPicture, "the merged run must show the run's LAST picture");
+  assert.deepEqual(slideState(out, run[0] + 1), wantTail, "the slide after the run changed");
+  assert.equal(out.slides[run[0]].id, doc.slides[run[0]].id, "the run's earliest slide keeps the seat");
+});
+
 test("merging every pair down to one slide preserves the LAST slide's picture", () => {
   // The associativity check: repeated merges must land on the final picture,
   // which is what "compose, later wins" means iterated.
