@@ -84,16 +84,54 @@
  * intersection and the write, and returned in `skipped` so the panel can say so.
  * Never silently.
  *
- * ── VISIBILITY (`active`) IS DELIBERATELY NOT HERE ────────────────────────────
- * `active` is universal, but no plugin declares it in `inspector` (the Inspector
- * renders it inline), so it is not in any intersection — and that agrees with the
- * standing ruling that a SET's visibility is TWO EXPLICIT ACTIONS (Hide All /
- * Show All), always both, because "no toggle that has to guess the set's state".
- * This module does not reopen that; the existing set actions stay exactly as they
- * are. Note the ruling rejects a tri-state ACTION control that must guess what a
- * click means, NOT the REPORTING of a mixed value — the rich-text toolbar already
- * ships a set/unset/indeterminate boolean. A `boolean` PROPERTY row here reports
- * mixed and then unifies, which is the reporting case, not the guessing one.
+ * ── THE UNIVERSAL ROWS ARE PART OF THE INTERSECTION (WORKSTREAM BE) ───────────
+ * THIS SECTION USED TO SAY `active` WAS DELIBERATELY ABSENT. The user overruled
+ * that (2026-08-02, night, verbatim): "When I am selecting multiple objects, the
+ * universal drop-down menu should still be there, or at least some subset of it.
+ * In particular, perhaps name shouldn't be there. But widget type, visible, and
+ * morph all should be. The reason why? I just duplicated three objects and there
+ * was no way to change their visibility interpolation all at once. I had to do it
+ * once each, manually."
+ *
+ * MEASURED BEFORE THE FIX, on the real editor with three duplicated rects
+ * selected: the panel rendered 39 plugin rows and ZERO interp buttons (single
+ * selection renders 42). So visibility interpolation was not merely awkward over
+ * a set — it was UNREACHABLE, which is exactly the report.
+ *
+ * THE MECHANISM WAS NOT A CONTRACT FAILURE, and that distinction is why the fix
+ * belongs here. No plugin declares `name`/`type`/`active`/`morph` in `inspector`
+ * — web/Inspector.svelte SYNTHESIZED them into a hard-coded `universalCategory`,
+ * and the multi-selection branch is a different render tree that never built it.
+ * `intersectRows` walks `plugin.inspector` alone, so these rows were never
+ * CANDIDATES: nothing fell out of `sameRowContract`, because nothing entered it.
+ * Fixing it in the component would have meant a SECOND hand-maintained copy of
+ * the universal row set — the named recurring defect this module's drift gate
+ * exists to prevent. So the rows move to ONE exported definition
+ * (`universalRows`) that both selection paths read.
+ *
+ * WHICH ROWS, AND WHY NAME IS OUT. Type, Visible and Morph are in because the
+ * user named them. NAME is out because the user volunteered it ("perhaps name
+ * shouldn't be there") AND because it is the one universal row that is not
+ * per-slide state at all: a name is written on the item's creation slide through
+ * `renameSelection`, not keyframed here, and N items sharing one name would make
+ * the item picker unusable. Excluding it costs nothing a set edit wants.
+ *
+ * WIDGET TYPE IS SHOWN BUT NOT JOINTLY WRITABLE, and this is the one place this
+ * module refuses a write the row's kind would otherwise allow. Displaying it is
+ * the ask ("widget type … should be there"); changing type across a selection is
+ * NOT, and it could not honestly reuse the fan-out seam if it were: a retype is
+ * `app.retypeSelection` running core/retype's per-item COERCION PLAN, so one
+ * shared value cannot describe what N items of different types would become.
+ * `UNIVERSAL_TYPE_ROW_PROBLEM` states that in the same JOINT_UNEDITABLE_KINDS
+ * grammar every other refusal uses, so the row renders inert WITH ITS REASON
+ * rather than vanishing or lying about what a click would do.
+ *
+ * THE SET-ACTIONS RULING IS UNTOUCHED. "A SET's visibility is TWO EXPLICIT
+ * ACTIONS (Hide All / Show All), always both" rejects a tri-state ACTION control
+ * that must GUESS what a click means. A `boolean` PROPERTY row reports a mixed
+ * value and then unifies to a value the author picked — the reporting case, not
+ * the guessing one, exactly as the rich-text toolbar's set/unset/indeterminate
+ * boolean already ships. Both surfaces stay.
  *
  * ── NO ROW IS COPIED, ONLY REFERENCED ─────────────────────────────────────────
  * `intersectRows` returns the primary plugin's OWN row objects, by reference. It
@@ -114,8 +152,18 @@
  */
 
 import { deepEqual, getPath } from "./deltas.js";
-import { ROW_KINDS } from "./properties.js";
+import { ROW_KINDS, PROPS, interpRowFor, rowSupportsInterp } from "./properties.js";
+import { MORPH_KEY, MORPH_AUTO } from "./morph_property.js";
 import { LIST_ROW_KIND } from "./lists.js";
+
+/**
+ * The category the universal rows file under. It matches the id
+ * web/Inspector.svelte's single-select panel uses (`__universal`), `__`-prefixed
+ * for the reason stated there: a hard-coded section must own an id no plugin can
+ * declare, or a plugin filing rows under it would render a second block with the
+ * same title.
+ */
+export const UNIVERSAL_CATEGORY = "__universal";
 
 /**
  * What a MIXED value reads as in a field — the user's "a dot dot dot in the parts
@@ -270,6 +318,139 @@ export const JOINT_UNEDITABLE_KINDS = {
 // is reported honestly INSIDE the field, beside the stops it gates.)
 
 /**
+ * The universal row KEYS a multi-selection offers, in the ruled order — "widget
+ * type, visible, and morph all should be", and `name` deliberately absent (see
+ * the module header for both halves).
+ *
+ * @example UNIVERSAL_MULTI_KEYS.includes("name") // false (the row the user dropped)
+ * @example UNIVERSAL_MULTI_KEYS // ["type", "active", "morph"]
+ */
+export const UNIVERSAL_MULTI_KEYS = ["type", "active", "morph"];
+
+/**
+ * Why WIDGET TYPE cannot be written jointly, in the JOINT_UNEDITABLE_KINDS
+ * grammar. It is a per-ROW refusal rather than a per-KIND one (the row is a
+ * `select`, and selects are jointly editable in general), so it is named here and
+ * applied by `jointEditProblem`.
+ */
+export const UNIVERSAL_TYPE_ROW_PROBLEM =
+  "Widget type is changed one item at a time — a retype runs a COERCION PLAN computed from each item's own current type, so one shared value cannot say what several different widgets would become.";
+
+/**
+ * Pure function. The universal rows for a selection — the rows EVERY widget has,
+ * which no plugin declares and which therefore cannot come from `plugin.inspector`.
+ *
+ * ONE DEFINITION, TWO SELECTION PATHS. web/Inspector.svelte's single-select
+ * `universalCategory` decorates these with its own help/labels/placeholder; the
+ * multi panel gets them from here. Neither hand-copies the other's set, which is
+ * the drift rule the module header states.
+ *
+ * THE CAMERA HAS NO `active` ROW. `purgeable: false` marks the mandatory
+ * singleton — it cannot be hidden, so offering the row would be a control whose
+ * write the document refuses. Same rule the single-select panel already applies,
+ * read from the same capability rather than restated.
+ *
+ * @param {Array<{plugin: object}>} entries - the selected items
+ * @returns {object[]} resolved rows, in UNIVERSAL_MULTI_KEYS order
+ *
+ * @example universalRows([{plugin: {capabilities: {}}}]).map((r) => r.key)
+ * // ["type", "active", "morph"]
+ * @example universalRows([{plugin: {capabilities: {purgeable: false}}}]).map((r) => r.key)
+ * // ["type", "morph"]   (the camera cannot be hidden, so it offers no Visible row)
+ * @example universalRows([]) // []
+ */
+export function universalRows(entries) {
+  if (entries.length === 0) return [];
+  // EVERY item must be hideable for the row to appear: a set containing the
+  // camera cannot take a joint `active` write, and showing the row would promise
+  // one. The intersection's own polarity — a row every item has, or no row.
+  const hideable = entries.every((e) => e.plugin?.capabilities?.purgeable !== false);
+  return UNIVERSAL_ROW_DEFS.filter((row) => row.key !== "active" || hideable);
+}
+
+/**
+ * The universal rows' CONTRACTS. Presentational aspects (label/help) are the
+ * multi panel's own — the single-select panel supplies richer ones — but the
+ * contract aspects here are what a joint write is defined against.
+ *
+ * `morph` is spread from core/properties.js PROPS so the two cannot describe
+ * different option sets; `type` and `active` have no PROPS entry (they are not
+ * plugin properties) and are stated here, once.
+ */
+const UNIVERSAL_ROW_DEFS = [
+  { key: "type", label: "Widget type", kind: "select", optionsFrom: "retype", category: UNIVERSAL_CATEGORY },
+  { key: "active", label: "Visible", kind: "boolean", category: UNIVERSAL_CATEGORY,
+    onIcon: "mdi:eye", offIcon: "mdi:eye-off",
+    onText: "Visible on this slide — click to hide every selected item (keyframes active: false)",
+    offText: "Hidden on this slide — click to show every selected item (keyframes active: true)",
+    help: "Whether these items show on THIS slide. Keyframeable like any other property, and its interpolation row is what fades a set in together." },
+  { ...PROPS[MORPH_KEY], key: MORPH_KEY, absentValue: MORPH_AUTO, category: UNIVERSAL_CATEGORY },
+];
+
+/**
+ * Pure function. The universal rows PLUS the interp companion rows a set edit
+ * needs — THE DRIVING USE CASE ("there was no way to change their visibility
+ * interpolation all at once").
+ *
+ * ── WHICH INTERP ROWS, AND THE CLAIM THAT DID NOT SURVIVE MEASUREMENT ────────
+ * The founding brief carried the user's context fact: "by default, the one
+ * exception for interpolation being visible by default is visible. Visible's
+ * interpolation is visible by default in the property editor."
+ *
+ * THAT IS NOT WHAT THE CODE DOES, measured on the real editor before this change:
+ * a single-selected rect renders 42 interp BUTTONS and ZERO open interp STRIPS.
+ * `interpOpenKeys` starts empty and `interpRowOpen` has no `active` exception —
+ * every interp row, Visible's included, is opt-in behind its gutter button. What
+ * IS singular about Visible is its MENU: `modesForKey("active", …)` returns five
+ * modes (tween/step/fade/blurFade/manim) where `x` returns two, so it is by far
+ * the richest interp row in the panel and the only one offering fades. That is
+ * the most likely thing the recollection was pointing at.
+ *
+ * So this does NOT "preserve a default-open" that never existed — inventing one
+ * here would have made single- and multi-select disagree, and would have been a
+ * Claude-authored behaviour wearing a user ruling's clothes. What it does is
+ * satisfy the RULING (the thing the user actually asked for, and the acceptance
+ * they stated): with a set selected, the `active~interp` row is REACHABLE, so one
+ * edit changes visibility interpolation on all N. It is a plain row here because
+ * the multi panel has no per-item interp toggle to hang it behind — `interpOpenKeys`
+ * is keyed by (row, OWNER item), a pairing a set does not have.
+ *
+ * ONLY `active` GETS ONE. A row per interp companion for all 39 shared rows would
+ * double the panel to say almost nothing: the other rows offer tween/step only.
+ * `active` is where the user's flow is and where the modes are.
+ *
+ * THE OPTION SET IS STABLE ACROSS A REAL SELECTION, which is why these rows
+ * unify rather than conflict. `modesForKey` is VALUE-AWARE and a FRACTIONAL
+ * `active` (0.3) yields only two modes — but core/interp_modes.js is explicit
+ * that "a folded slide state never holds a fraction; only the strictly-interior
+ * frames of a transition are fractional", so the Inspector's raw state is always
+ * a boolean and always the five-mode menu. Were that ever violated, the rows
+ * would differ on `options` — a CONTRACT aspect — and surface as a reported
+ * conflict rather than a silent mis-unification. The denylist polarity covers it.
+ *
+ * @param {Array<{plugin: object, state: object}>} entries - the selected items
+ * @returns {object[]} universal rows, each interp-capable one followed by its companion
+ *
+ * @example universalRowsWithInterp([{plugin: {capabilities: {}}, state: {active: true}}]).map((r) => r.key)
+ * // ["type", "active", "active~interp", "morph"]
+ * @example universalRowsWithInterp([{plugin: {capabilities: {purgeable: false}}, state: {}}]).map((r) => r.key)
+ * // ["type", "morph"]   (no Visible row, so no interp row either)
+ */
+export function universalRowsWithInterp(entries) {
+  const out = [];
+  for (const row of universalRows(entries)) {
+    out.push(row);
+    if (row.key !== "active" || !rowSupportsInterp(row)) continue;
+    // Built from core/properties.interpRowFor — the SAME builder the single-select
+    // panel uses — so the two panels cannot offer different modes for one property.
+    // Seeded from the PRIMARY's value, which is what every other row in this
+    // module reads as its seed.
+    out.push({ ...interpRowFor(row, entries[0]?.state?.[row.key], entries[0]?.state?.type), category: UNIVERSAL_CATEGORY });
+  }
+  return out;
+}
+
+/**
  * Pure function. A row's CONTRACT — the row with every presentational aspect
  * stripped. This is what the identity relation compares; see the module header
  * for the partition and why the denylist points this way.
@@ -346,8 +527,14 @@ export function contractDifferences(a, b) {
  * @example jointEditProblem({key: "opacity", kind: "number"}) // null
  * @example jointEditProblem({key: "fill", kind: "color", paint: true}) // null (PaintField fans out)
  * @example jointEditProblem({key: "points", kind: "list"}) === JOINT_UNEDITABLE_KINDS.list // true
+ * @example jointEditProblem({key: "type", kind: "select"}) === UNIVERSAL_TYPE_ROW_PROBLEM // true
+ * @example jointEditProblem({key: "active", kind: "boolean"}) // null (visibility DOES unify)
  */
 export function jointEditProblem(row) {
+  // THE ONE PER-ROW REFUSAL. `select` is a jointly editable KIND, so this cannot
+  // come from the kind table: it is the `type` row specifically, whose write is a
+  // per-item coercion plan rather than one shared value (module header).
+  if (row.key === "type") return UNIVERSAL_TYPE_ROW_PROBLEM;
   if (row.kind in JOINT_UNEDITABLE_KINDS) return JOINT_UNEDITABLE_KINDS[row.kind];
   return null;
 }
@@ -388,7 +575,16 @@ export function jointEditProblem(row) {
 export function intersectRows(entries, mode = MULTISELECT_MODE.INTERSECTION) {
   if (entries.length === 0) return { rows: [], conflicts: [] };
   const union = mode === MULTISELECT_MODE.UNION;
-  const rowsOf = entries.map((e) => e.plugin.inspector ?? []);
+  // THE UNIVERSAL ROWS LEAD, and they are PREPENDED to every item's row list
+  // rather than special-cased downstream. That is what makes them ordinary
+  // participants: they run the same contract comparison, the same mixed-value
+  // read, the same fan-out write and the same conflict report as a plugin row,
+  // with no branch anywhere below this line. Prepending (rather than appending)
+  // puts them first in the panel for the same reason the single-select panel
+  // renders its Universal section first — they are the properties every widget
+  // has, and a plugin's sections are what it adds to them.
+  const universal = universalRowsWithInterp(entries);
+  const rowsOf = entries.map((e) => [...universal, ...(e.plugin.inspector ?? [])]);
   // WHICH KEYS ARE CANDIDATES. Intersection asks only what the PRIMARY declares
   // (a key it lacks can never be shared), so the panel reads as the primary
   // item's panel minus what the others do not share — the shipped behaviour, and

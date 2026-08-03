@@ -64,7 +64,7 @@
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_AUTO, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
-  import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
+  import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
   import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
   import { isHexColor } from "../core/interpolators.js";
   import { getPath } from "../core/deltas.js";
@@ -325,6 +325,11 @@
   // start-cased fallback.
   const DEFAULT_CATEGORY = "other";
   const CATEGORY_TITLES = {
+    // The multi-selection panel's universal rows (core/multiselect.js) file under
+    // this id, so the set panel's first section is titled the same as the
+    // single-selection one rather than falling through to groupRows' id
+    // title-caser (which would render "__universal").
+    [UNIVERSAL_CATEGORY]: "Universal",
     transform: "Transform",
     // FILL/STROKE ARE THEIR OWN TOP-LEVEL SECTIONS, peers of Transform — NOT
     // rows inside Formatting (user ruling, twice: "they need to be their own
@@ -342,7 +347,10 @@
     // NOTE: there is deliberately NO `custom:` entry — see customCategoryTitle().
     other: "Other",
   };
-  const CATEGORY_ORDER = ["transform", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
+  // UNIVERSAL LEADS, for the reason the single-selection panel renders its
+  // Universal section first: these are the properties every widget has, and a
+  // plugin's sections are what it adds to them.
+  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
 
   /**
    * Pure function. The display title for the CUSTOM_CATEGORY bucket — a widget's
@@ -1301,7 +1309,12 @@
   // THE ID IS `__`-PREFIXED for the reason the Variables accordion's is: a
   // hard-coded section must own an id no plugin can declare, or a plugin filing
   // rows under it would render a second block with the same title.
-  const UNIVERSAL_CATEGORY_ID = "__universal";
+  // ONE ID, TWO PANELS. It now comes from core/multiselect.js, which needs the
+  // same id to file the SET panel's universal rows under (WORKSTREAM BE). A
+  // second literal here would be the hand-maintained-copy defect this codebase
+  // keeps rediscovering; re-exported under the old local name so the call sites
+  // below read unchanged.
+  const UNIVERSAL_CATEGORY_ID = UNIVERSAL_CATEGORY;
 
   /** The three rows every widget has, in the ruled order. A category shape
    * ({id, title, rows}) so it renders through the SAME `category` snippet the
