@@ -373,7 +373,34 @@ export function sceneIR(nodes, ctx = {}) {
   // created; `wires` is derived geometry over connections that live in node
   // widgets' own state, turned into paint. The document is byte-identical either
   // way — which is the whole point of deriving the picture instead of storing it.
-  const out = [...wireLayerOps(deriveWires(ctx.wireNodes ?? nodes))];
+  // ── BY: A WIRE IS CULLED ONLY WHEN **BOTH** ENDS ARE OFF-VIEW ──────────────
+  // USER, 2026-08-03 (verbatim): "wires should only be culled if BOTH nodes are
+  // outside view."
+  //
+  // The two wrong answers this sits between, both of which shipped at some point:
+  //   - deriving wires from the CULLED list drops a wire the moment EITHER end
+  //     leaves the view, which deletes the commonest wire in a patch that runs off
+  //     the edge of a slide — the one whose source is off-camera and whose whole
+  //     visible length is on it.
+  //   - deriving them from the PRE-CULL list (what this line did until now) never
+  //     culls anything, so a deck with a large off-screen patch pays for every
+  //     wire in it on every frame.
+  // The user's rule is the exact middle: keep the wire while ANY end is on view.
+  //
+  // `wireNodes` is the pre-cull tree and `nodes` is what survived, so membership
+  // in `nodes` IS the "is this end on view" answer — already computed by the one
+  // culling protocol (core/view.canSkipNode), never re-derived here with a second
+  // rect that could disagree with it. With no culling the two lists are the same
+  // object, every endpoint is present, and nothing is dropped — byte-identical to
+  // before for the editor, every exporter and the CLI, which is every caller but
+  // PresentMode.
+  const wireSource = ctx.wireNodes ?? nodes;
+  const onView = wireSource === nodes ? null : new Set(nodes.map((n) => n.itemId));
+  const allWires = deriveWires(wireSource);
+  const visibleWires = onView === null
+    ? allWires
+    : allWires.filter((w) => onView.has(w.from.item) || onView.has(w.to.item));
+  const out = [...wireLayerOps(visibleWires)];
   for (const node of nodes) {
     // A FOLDED GROUP MEMBER (core/derive.resolveGroupSubtrees marked it foldedBy)
     // is NOT drawn at the top level — it renders INSIDE its owning group's

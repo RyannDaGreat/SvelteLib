@@ -552,6 +552,39 @@ check("wires are emitted UNDER the nodes, so a card never has a cable struck acr
     `every wire op must precede the first node's pushTransform (wire ${lastWireOp} vs node ${firstNodeOp})`);
 });
 
+check("BY: a wire is culled ONLY when BOTH its nodes are off-view", () => {
+  // USER, 2026-08-03 (verbatim): "wires should only be culled if BOTH nodes are
+  // outside view."
+  //
+  // `wireNodes` is the PRE-CULL tree and `nodes` is what survived, so this drives
+  // the real seam by handing sceneIR the two lists a culling caller hands it —
+  // rather than simulating a camera, which would pin the cull RECT instead of the
+  // rule. Counting path ops the way the emission check above does: two per wire.
+  const all = deriveRenderTree({ items: trio() }, registry);
+  const wireOpCount = (nodes) => sceneIR(nodes, { wireNodes: all })
+    .filter((o) => o.op === "path" && typeof o.d === "string" && o.d.startsWith("M ")).length;
+  const byId = (id) => all.filter((n) => n.itemId === id);
+  const wires = deriveWires(all);
+  assert.strictEqual(wires.length, 3, "the trio has three wires to reason about");
+
+  // NOTHING CULLED: every wire drawn. This is every caller but PresentMode, and it
+  // must stay byte-identical to before the rule existed.
+  assert.strictEqual(wireOpCount(all), 6, "with nothing culled, all three wires draw");
+
+  // ONE END ON VIEW: the wire SURVIVES. This is the case the naive "derive from the
+  // culled list" answer silently deletes — an off-camera source feeding an
+  // on-camera sink, whose visible length is most of the wire.
+  const oneEnd = byId(wires[0].to.item);
+  assert.ok(wireOpCount(oneEnd) >= 2,
+    "a wire with one endpoint still on view must still be drawn");
+
+  // BOTH ENDS OFF VIEW: culled. Passing an EMPTY survivor list is exactly that —
+  // no endpoint of any wire is on view — and it is the only case the user's rule
+  // permits dropping.
+  assert.strictEqual(wireOpCount([]), 0,
+    "with every node off-view, every wire is culled");
+});
+
 check("a wire carries the SOURCE port type's colour — the SAME table the beads read", () => {
   const ir = sceneIR(deriveRenderTree({ items: trio() }, registry));
   // portColor returns the hex literal; ir.js parses paints to RGBA floats, so compare
