@@ -987,7 +987,17 @@ export function isPaintShaped(v) {
  */
 export function defaultModeFor(a, b, key) {
   if (isPaintShaped(a) && isPaintShaped(b)) return "blend";
-  if (key === TYPE_KEY && typeof a === "string" && typeof b === "string") return "morph";
+  // THE `type` → `morph` DEFAULT IS GONE, and its removal is the migration
+  // (user ruling, 2026-08-02 night — see core/morph_property.js's header). Morph
+  // is now a UNIVERSAL PROPERTY that asks about the widget's OUTLINE rather than
+  // about any one leaf, and it engages a retype through the same door it engages
+  // an icon swap, an equation edit or a tooth-count change. Leaving this default
+  // in place would mint a SECOND, mid-tween-derived token for the same
+  // transition — the very re-derivation the endpoint law exists to stop.
+  //
+  // A `type` pair therefore takes the ordinary discrete law here, exactly as it
+  // did before morphing existed. The picture does not regress: core/deltas mints
+  // the universal token for the same transition, and core/derive prefers it.
   return DEFAULT_INTERP_MODE;
 }
 

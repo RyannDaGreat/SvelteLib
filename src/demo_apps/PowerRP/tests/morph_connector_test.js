@@ -91,69 +91,64 @@ test("THE ZERO-SPACE TRAP: a boxless connector reports a POSITIVE space", () => 
   }
 });
 
-test("the trap is REAL: a zero space collapses the geometry AT THE RENDER SEAM", () => {
-  // Pinned by RUNNING the real seam rather than by describing it, and located
-  // precisely — the first two guesses at where this breaks were both wrong, which
-  // is the argument for pinning it at all.
+test("A BOXLESS NODE RENDERS AT REAL EXTENT — the gap this file used to pin OPEN", () => {
+  // THIS TEST WAS INVERTED, per its own instructions, when the seam was fixed.
+  // It used to assert `spread === 0` and carried the handoff note: "if this now
+  // reports a real spread, the node-box gap has been closed — delete this test and
+  // assert the extent instead". render_gpu/ports.js `morphBox` closed it by giving
+  // a boxless mid-morph node the TWEENED INK RECT as its box and the rect's origin
+  // as its offset, which is exactly the fix core/morph_payload.js
+  // `morphPayloadFromConnector`'s docblock specified.
   //
-  // It is NOT the aligner: core/morph_align.js normalizeSubpath guards with
-  // `space.w > 0 ? space.w : 1`, so a zero space passes ABSOLUTE coordinates
-  // through un-normalized and the blend still looks plausible. The collapse is in
-  // render_gpu/ports.js morphIR, which scales by `node.w / blended.space.w` — and
-  // for a boxless connector the node's w/h are undefined too, so it is 0/1 × 0.
-  const naive = { space: { w: 0, h: 0 }, fillRule: "nonzero", subpaths: [
-    { start: [200, 300], curves: [[273, 300, 346, 300, 420, 300]], closed: false, winding: 1 }] };
-  assert.doesNotThrow(() => assertMorphPaths(naive, "naive"),
-    "a zero space is NOT refused by the engine's own gate — which is exactly why this test exists");
-
-  const spreadOf = (ops) => {
-    const xs = ops.flatMap((o) => pathPoints(o.d).map((p) => p.x));
-    return xs.length ? Math.max(...xs) - Math.min(...xs) : 0;
-  };
-  const nodeFor = (plugin, state) => ({
-    type: "line", state, // a boxless connector node: NO w/h, exactly as derive builds it
-    morph: { fromPlugin: plugin, toPlugin: rectPlugin, fromState: state,
-      toState: { w: 100, h: 60, fill: "#ff0000", strokeWidth: 0 }, t: 0.5 },
-  });
-
-  const collapsed = spreadOf(morphIR(nodeFor({ morphPaths: () => naive }, {})));
-  assert.ok(collapsed < 1e-9,
-    `the naive payload must render as a degenerate point (got a spread of ${collapsed}) — an invisible widget, no error`);
-
-  // The SAME line through the connector provider, at the same alpha, on a node
-  // carrying its ink rect as the box: real extent where the naive one had none.
-  const s = { ...linePlugin.defaults };
-  const rect = linePlugin.localBounds(s);
-  const honest = spreadOf(morphIR(nodeFor(linePlugin, { ...s, w: rect.w, h: rect.h })));
-  assert.ok(honest > 1,
-    `the ink-rect frame must preserve real extent where the naive one destroyed it (got ${honest})`);
-});
-
-test("KNOWN GAP, PINNED: a boxless node still renders collapsed at the render seam", () => {
-  // THE PAYLOADS IN THIS FILE ARE NECESSARY BUT NOT SUFFICIENT, and this test says
-  // so in the only way that cannot rot — by MEASURING the shortfall rather than
-  // describing it in a comment. Every provider above now reports a positive space
-  // (its ink rect). But render_gpu/ports.js morphIR scales by `node.state.w`, and a
-  // boxless connector's state has NO w/h at all, so `w ?? 0` is 0 and the morph
-  // still paints "M0 0C0 0…" — an invisible widget mid-transition, with no error.
-  //
-  // The fix belongs in the DERIVE/PORTS seam, not here: a mid-morph node whose
-  // endpoint is boxless needs the tweened INK RECT as its box (and the rect's
-  // origin as its offset — these widgets draw at absolute coordinates with an
-  // identity world transform, so a payload measured from the rect's corner must be
-  // placed back at that corner). That file is owned elsewhere in this wave; this
-  // test is the handoff, and it INVERTS the moment the seam is fixed.
+  // The failure it guards against is silent by nature — an invisible widget for
+  // the interior of its own transition, no error, no warning — so it is measured
+  // rather than described.
   const s = { ...linePlugin.defaults };
   const node = {
     type: "line", state: s, // exactly what derive builds: no w/h on a boxless widget
     morph: { fromPlugin: linePlugin, toPlugin: rectPlugin, fromState: s,
       toState: { w: 100, h: 60, fill: "#ff0000", strokeWidth: 0 }, t: 0.5 },
   };
-  const xs = morphIR(node).flatMap((o) => pathPoints(o.d).map((p) => p.x));
+  const pts = morphIR(node).flatMap((o) => pathPoints(o.d));
+  assert.ok(pts.length > 0, "a mid-morph connector must draw SOMETHING");
+  const spread = Math.max(...pts.map((p) => p.x)) - Math.min(...pts.map((p) => p.x));
+  assert.ok(spread > 1,
+    `a boxless connector mid-morph must have real extent, got ${spread} — a spread of 0 is the old ` +
+    `collapse: "M0 0C0 0…", an invisible widget with no error`);
+
+  // AND IT LANDS WHERE THE WIDGET IS, not at the canvas origin. The ink rect's
+  // origin has to travel with the payload (morphPayloadFromConnector's `origin`)
+  // or the geometry is correct in shape and wrong in place — the second half of
+  // the same fix, and invisible to an extent-only assertion.
+  const rect = linePlugin.localBounds(s);
+  const minX = Math.min(...pts.map((p) => p.x));
+  assert.ok(minX > rect.x - rect.w && minX < rect.x + rect.w,
+    `the morph must be placed at the widget's own rect (x≈${rect.x}), got minX ${minX} — ` +
+    `a value near 0 means the origin offset was dropped and the shape drew at the canvas corner`);
+});
+
+test("A ZERO-SPACE payload no longer collapses — the frame comes from the seam", () => {
+  // The historical trap: a connector provider written like a bbox widget's reports
+  // `{w: 0, h: 0}`, which passes assertMorphPaths (a zero space is non-negative and
+  // every coordinate is finite) and used to scale every coordinate to nothing.
+  //
+  // It cannot collapse any more, and the reason is worth stating: the frame is no
+  // longer read from the node's absent w/h at all. `morphBox` derives it from the
+  // two ENDPOINT PAYLOADS, so even a zero-space operand is mapped through the real
+  // tweened extent of the pair rather than through zero.
+  const naive = { space: { w: 0, h: 0 }, fillRule: "nonzero", subpaths: [
+    { start: [200, 300], curves: [[273, 300, 346, 300, 420, 300]], closed: false, winding: 1 }] };
+  assert.doesNotThrow(() => assertMorphPaths(naive, "naive"),
+    "a zero space is NOT refused by the engine's own gate — which is why the seam must not depend on it");
+
+  const ops = morphIR({
+    type: "line", state: {},
+    morph: { fromPlugin: { morphPaths: () => naive }, toPlugin: rectPlugin, fromState: {},
+      toState: { w: 100, h: 60, fill: "#ff0000", strokeWidth: 0 }, t: 0.5 },
+  });
+  const xs = ops.flatMap((o) => pathPoints(o.d).map((p) => p.x));
   const spread = xs.length ? Math.max(...xs) - Math.min(...xs) : 0;
-  assert.equal(spread, 0,
-    "EXPECTED FAILURE OF THE SEAM, not of the payload: if this now reports a real spread, " +
-    "the node-box gap has been closed — delete this test and assert the extent instead");
+  assert.ok(spread > 1, `even a zero-space operand must render at real extent now, got ${spread}`);
 });
 
 test("A LINE IS ONE OPEN SUBPATH, with its endpoints in the ink rect's frame", () => {

@@ -45,6 +45,7 @@ import { boxCenter, unionRect, unmirroredLocal, unsignedState } from "./geometry
 import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 import { allPaintModifierPoints, paintCapableKeys } from "./paint_handles.js";
 import { contentMorphKeyFor, isContentMorphToken, isMorphToken, morphPairPolicy } from "./interp_modes.js";
+import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
 
 /**
  * Query (reads the registry; reports once on a refused pair). THE MORPH
@@ -196,6 +197,107 @@ export function resolveContentMorph(state, registry, itemId) {
     return { state: resolved, morph: null };
   }
   return { state: resolved, morph: { fromPlugin: plugin, toPlugin: plugin, fromState, toState, t: token.t } };
+}
+
+/**
+ * Query (reads the registry; reports once on a refused morph). THE UNIVERSAL
+ * MORPH RESOLUTION — a state bag whose `morph` leaf holds the endpoint-carrying
+ * token (core/morph_property.js) → the state this node derives as, plus the same
+ * `.morph` mark the two legacy resolvers produce.
+ *
+ * ── THIS IS THE ONE THAT KNOWS BOTH ENDPOINTS ────────────────────────────────
+ * The legacy type/content resolvers reconstruct their two states from the
+ * MID-TWEEN bag they are handed: `resolveMorphType` passes the same moving bag
+ * twice, and `resolveContentMorph` substitutes one leaf into it. That is the
+ * jiggle (workstream II) — alignment makes DISCRETE decisions (pairing, cyclic
+ * start, winding), so re-deriving them from a moving state lets them FLIP between
+ * adjacent frames, and every sampled point jumps to a new counterpart.
+ *
+ * This resolver reads the two endpoint bags STRAIGHT OUT OF THE TOKEN, where
+ * core/deltas.mutBlendApply put them, fixed for the whole transition. So the pair
+ * handed to the engine is identical on every frame, its content key is identical,
+ * and core/morph.js's memo therefore holds ONE alignment for the entire
+ * transition BY CONSTRUCTION rather than by luck. The per-frame work that remains
+ * is the proven-linear part: lerp the fixed aligned pair and map it through the
+ * node's CURRENT tweened box.
+ *
+ * ── WHAT `auto` DECIDES, AND WHERE ───────────────────────────────────────────
+ * The mode was resolved at the mint (it steps at transition start); what is left
+ * here is the CAPABILITY question, which needs the registry:
+ *
+ *   auto      morph when both endpoint outlines exist; CROSSFADE when either
+ *             side cannot outline. Silent either way — auto promised to pick the
+ *             sensible thing, and picking it is not a failure to report.
+ *   morph     morph, and when the outlines are unavailable fall to CROSSFADE
+ *             with the reason REPORTED. The author asked for something specific
+ *             and did not get it, which this codebase does not do silently.
+ *   crossfade never morph — cross-render both endpoint states unconditionally.
+ *
+ * Note `auto` reaching CROSSFADE rather than the discrete switch is the
+ * difference from the legacy resolvers, and it is the user's own default: a pair
+ * with no outlines still has two pictures, and dissolving them is strictly more
+ * informative than blinking.
+ *
+ * Args:
+ *   state (object): the item's folded state, possibly carrying the token
+ *   registry (object): the plugin registry
+ *   itemId (string): for the report line
+ *
+ * Returns:
+ *   {state: object, morph: object|null} — `state` has the token replaced by the
+ *   resolved mode string; `morph` is the mark, or null when nothing renders
+ *
+ * @example // no token: the very same object back, and no mark
+ * @example (() => { const s = {type: "rect"}; return resolveUniversalMorph(s, {get: () => ({})}, "a1").state === s; })() // true
+ */
+export function resolveUniversalMorph(state, registry, itemId) {
+  const token = state[MORPH_KEY];
+  if (!isUniversalMorphToken(token)) return { state, morph: null };
+  const { mode, from, to, t } = token;
+  // The node derives as the TARGET endpoint, matching both legacy resolvers'
+  // "the fallback is the incoming side": the Inspector, hit tests and anchors see
+  // the widget the transition is heading toward, and only the ink is mid-flight.
+  // The `morph` leaf itself resolves to the plain mode string — a token must
+  // never be visible to a plugin, an equation or a row.
+  const resolved = { ...state, [MORPH_KEY]: mode };
+  const fromPlugin = registry.get(from.type), toPlugin = registry.get(to.type);
+  if (mode === "crossfade")
+    return { state: resolved, morph: crossfadeMark(fromPlugin, toPlugin, from, to, t) };
+  const policy = morphPairPolicy(fromPlugin, toPlugin, from, to);
+  if (!policy.ok) {
+    // `auto` CHOOSING the crossfade is not a failure — it is the mode doing its
+    // job, so it says nothing. An explicit `morph` that could not be honoured IS
+    // a failure to report, named once with the reason and the item.
+    if (mode === "morph")
+      reportOnce(
+        `derive:morphUniversal:${itemId}:${from.type}>${to.type}`,
+        `PowerRP: item "${itemId}" is set to Morph across this transition, but ${policy.reason}. ` +
+        `It CROSSFADES instead — both states are drawn and dissolved. Set Morph to Auto to silence this, or use two vector widgets.`,
+      );
+    return { state: resolved, morph: crossfadeMark(fromPlugin, toPlugin, from, to, t) };
+  }
+  return { state: resolved, morph: { fromPlugin, toPlugin, fromState: from, toState: to, t } };
+}
+
+/**
+ * Pure function. The `.morph` mark for a CROSS-RENDER — the same shape a real
+ * morph mark has, plus `crossfade: true`.
+ *
+ * ONE MARK KIND, TWO BEHAVIORS, and that is deliberate: render_gpu/ports.js
+ * already routes every `.morph` node away from its plugin's own emit(), and a
+ * crossfade is the same cross-endpoint composition with a different blend law.
+ * A separate mark would mean a second branch in the render walk, a second thing
+ * derive can produce, and two places to keep the endpoint law.
+ *
+ * A crossfade needs NO outline capability at all — it draws the two endpoint
+ * states through their own plugins' emit(). That is why it is the honest
+ * fallback: it works for a video, a photo and a PDF page, none of which can
+ * morph.
+ *
+ * @example crossfadeMark({}, {}, {type: "video"}, {type: "rect"}, 0.5).crossfade // true
+ */
+export function crossfadeMark(fromPlugin, toPlugin, fromState, toState, t) {
+  return { fromPlugin, toPlugin, fromState, toState, t, crossfade: true };
 }
 
 /**
@@ -440,6 +542,14 @@ export function deriveRenderTree(state, registry, project = "") {
     // the outgoing type's business). A state with no token returns the very same
     // object, so every document that never content-morphs derives byte-identically.
     const contentMorph = resolvedType.morph ? { state, morph: null } : resolveContentMorph(state, registry, id);
+    // THE UNIVERSAL MORPH SEAM, and it WINS over both legacy resolvers above.
+    // The precedence is not a preference: the universal token is the only one
+    // carrying the transition's real ENDPOINTS, so when it is present the other
+    // two would be answering the same question from a mid-tween state — which is
+    // exactly the jiggle. A document written before tonight has no `morph` leaf,
+    // so this returns the very same object and the legacy path still runs; see
+    // the migration note in core/morph_property.js.
+    const universalMorph = resolveUniversalMorph(contentMorph.state, registry, id);
     // THE ASSET-REF RESOLUTION SEAM (see the function docblock). Every RELATIVE
     // ref in this item's own ref-bearing properties becomes absolute here, BEFORE
     // emit() runs — which is what lets the two registries fed from inside emit
@@ -450,7 +560,7 @@ export function deriveRenderTree(state, registry, project = "") {
     // day someone adds a widget. Returns the SAME object when there was nothing to
     // resolve, so an all-absolute document — every document written before this
     // grammar — keeps byte-identical node identity and the evaluation memo.
-    const resolved = resolveStateAssetRefs(contentMorph.state, pluginAssetRefProps(plugin), project);
+    const resolved = resolveStateAssetRefs(universalMorph.state, pluginAssetRefProps(plugin), project);
     // DOC-VARS INJECTION: a plugin whose capabilities declare `docVars: true`
     // samples an EQUATION inside emit() (the graph family's Monaco source) and
     // therefore needs the document's folded variables at emit time — emit's
@@ -472,13 +582,16 @@ export function deriveRenderTree(state, registry, project = "") {
       world: worldTransform(state),
       plugin,
       ...(mirror ? { mirror } : {}),
-      // ONE `.morph` MARK, TWO WAYS TO EARN IT. A type morph and a content morph
-      // produce the IDENTICAL mark shape, which is the point: render_gpu/ports.js
-      // `morphIR` asks two plugins for two payloads and blends, and never needs to
-      // know which kind it got (in a content morph the two plugins are the same
-      // object). They are mutually exclusive by construction — see the note at
-      // contentMorph's resolution above.
-      ...(resolvedType.morph ?? contentMorph.morph ? { morph: resolvedType.morph ?? contentMorph.morph } : {}),
+      // ONE `.morph` MARK, THREE WAYS TO EARN IT — and they all produce the
+      // IDENTICAL shape, which is the point: render_gpu/ports.js `morphIR` asks
+      // two plugins for two payloads and blends, and never needs to know which
+      // kind it got. A type morph is two plugins over one state; a content morph
+      // is one plugin over two states; the UNIVERSAL morph is the general case,
+      // two plugins over two ENDPOINT states, and it takes precedence because it
+      // is the only one whose states are not mid-tween (see resolveUniversalMorph).
+      ...(universalMorph.morph ?? resolvedType.morph ?? contentMorph.morph
+        ? { morph: universalMorph.morph ?? resolvedType.morph ?? contentMorph.morph }
+        : {}),
     };
   });
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));

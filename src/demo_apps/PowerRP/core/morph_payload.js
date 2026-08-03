@@ -493,6 +493,14 @@ export function morphPayloadFromConnector(sources, rect, fillRule = "nonzero") {
   const ox = rect.x ?? 0, oy = rect.y ?? 0;
   return {
     ...payload,
+    // THE ORIGIN THE COORDINATES WERE MEASURED FROM. A bbox widget has no such
+    // field — its box IS its frame and the world transform places it — but a
+    // connector draws at ABSOLUTE coordinates under an identity world, so the
+    // corner its geometry was made relative to has to travel with the payload or
+    // the morph lands at the canvas origin instead of at the widget.
+    // render_gpu/ports.js `morphBox` tweens this between the two endpoints and
+    // puts the result back as the mid-morph node's offset.
+    origin: { x: ox, y: oy },
     subpaths: payload.subpaths.map((sp) => ({
       ...sp,
       start: [sp.start[0] - ox, sp.start[1] - oy],

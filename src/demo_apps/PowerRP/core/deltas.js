@@ -16,7 +16,8 @@
  */
 
 import { interpolate } from "./interpolators.js";
-import { blendUnderMode, defaultModeFor, interpKeyFor, modeClaimsTrees, modeForBlend } from "./interp_modes.js";
+import { blendUnderMode, defaultModeFor, interpKeyFor, isInterpKey, modeClaimsTrees, modeForBlend } from "./interp_modes.js";
+import { MORPH_KEY, morphModeForBlend, morphModeIsActive, universalMorphToken } from "./morph_property.js";
 
 /** Delete sentinel. A delta leaf of NONE deletes the key from the state. */
 export const NONE = null;
@@ -132,6 +133,26 @@ function mutBlendApply(state, delta, alpha) {
   // Shallow is enough: a mode governs a leaf at THIS level, and each recursion
   // step takes its own snapshot of the sub-object it is about to mutate.
   const outgoing = { ...state };
+  // THE UNIVERSAL MORPH SEAM (core/morph_property.js), and it runs BEFORE the
+  // per-leaf loop because it is a fact about the WHOLE BAG rather than about any
+  // one leaf. That is the user's ruling made structural: "it shouldn't just be a
+  // subset of a widget type… it would just be under a universal option". A gear's
+  // tooth count, an icon's name, an equation's source and the widget's whole
+  // `type` all change the outline, and none of them is the leaf the author sets
+  // the mode on.
+  //
+  // THIS IS ALSO WHERE THE ENDPOINT LAW IS ENFORCED, which is the jiggle fix
+  // (workstream II). Here — and ONLY here — both endpoints of the transition are
+  // in hand: `outgoing` IS the from-fold (the deltas' lazy start capture) and
+  // `applied(outgoing, delta)` IS the to-state. Every consumer downstream sees a
+  // token carrying those two FIXED bags, so no later stage can re-derive an
+  // alignment from a mid-tween value. Doing it at the leaf level was impossible
+  // by construction: a leaf blend sees two VALUES and cannot reach the bag.
+  // Only the strictly-interior frames of a transition can carry a token. The
+  // alpha-1 arm is how the TO endpoint is computed (via `applied`), so minting
+  // there would recurse forever — and it must not mint anyway: alpha 1 IS the
+  // document's own stored values, per the endpoint law enforced below.
+  if (alpha < 1) mutMorphProperty(state, outgoing, delta, alpha);
   for (const [key, val] of Object.entries(delta)) {
     // THE MODE IS RESOLVED BEFORE THE BRANCH DISPATCH, not inside the leaf arm,
     // because A PAINT IS A TREE. `{type: "material", material: {…}}` and
@@ -217,6 +238,107 @@ function mutBlendApply(state, delta, alpha) {
     }
   }
 }
+
+/**
+ * Command (mutates `state`'s `morph` leaf). THE UNIVERSAL MORPH MINT — writes the
+ * endpoint-carrying token (core/morph_property.js) onto a mid-transition item bag,
+ * or leaves the bag untouched when this transition has no morph to run.
+ *
+ * ── WHY IT IS GATED ON `type`, NOT ON THE `morph` KEY ────────────────────────
+ * The token must be minted whenever a WIDGET crosses a transition, INCLUDING the
+ * overwhelmingly common case where the author has stored no mode at all (absent =
+ * auto). So the gate cannot be "does this bag have a `morph` key" — that would
+ * make the default unreachable. It is instead "is this bag a WIDGET", answered by
+ * the one field every widget has and no sub-tree does: a string `type`.
+ *
+ * That test is deliberately narrow. `mutBlendApply` recurses into every nested
+ * object in the document — paints, gradients, effect bundles, point lists — and
+ * none of them is a widget. Minting a token onto one would put a `morph` key
+ * where nothing reads it and where serialization would carry it forever.
+ *
+ * ── WHY IT SHORT-CIRCUITS ON AN UNCHANGED BAG ────────────────────────────────
+ * The endpoints must actually DIFFER for there to be anything to morph. A
+ * transition that moves an item without changing its shape (the ordinary case —
+ * x, y, opacity, rotation) mints nothing at all, so every such document folds
+ * byte-identically to before this feature and pays nothing. The real outline
+ * comparison happens at the RENDER seam, which is the only place outlines exist;
+ * this is the cheap structural pre-filter that keeps that seam off the hot path.
+ *
+ * THE ENDPOINTS THEMSELVES ARE NEVER TOUCHED: at alpha ≥ 1 (`applied`) the caller
+ * has already returned, and at alpha ≤ 0 `blendApplied` returned before this ran.
+ * So a folded slide state never carries a token, and no saved document, cached
+ * fold or still export moves a byte.
+ *
+ * Args:
+ *   state (object): the bag being mutated (already a copy)
+ *   outgoing (object): the bag as it stood BEFORE this delta — the FROM endpoint
+ *   delta (object): the delta being applied
+ *   alpha (number): transition strength, strictly in (0, 1) at this point
+ *
+ * @example // a non-widget sub-tree is never touched:
+ * @example (() => { const s = {offset: 0}; mutMorphProperty(s, {offset: 0}, {offset: 1}, 0.5); return "morph" in s; })() // false
+ */
+function mutMorphProperty(state, outgoing, delta, alpha) {
+  if (typeof outgoing.type !== "string" || !isTree(delta)) return;
+  const mode = morphModeForBlend(outgoing[MORPH_KEY], delta[MORPH_KEY]);
+  if (!morphModeIsActive(mode)) return;
+  // The TO endpoint, built by applying this delta at FULL strength to the
+  // outgoing bag. That is the definition of the transition's far end, and it is
+  // the same computation `applied()` performs — reused rather than re-derived so
+  // the two cannot disagree about what "the end of this transition" means.
+  const toState = applied(outgoing, delta);
+  // NOTHING ABOUT THE WIDGET'S FORM CHANGED — no morph, no token, no cost. The
+  // shape-bearing leaves are unknown to core (a plugin owns them), so the honest
+  // cheap test is whether the delta changed ANY leaf that is not pure placement.
+  if (!morphEndpointsDiffer(outgoing, toState)) return;
+  state[MORPH_KEY] = universalMorphToken(mode, outgoing, toState, alpha);
+}
+
+/**
+ * Pure function. Could these two endpoint states possibly have DIFFERENT
+ * outlines? The structural pre-filter in front of the render seam's real
+ * outline comparison.
+ *
+ * IT IS A DENYLIST OF PLACEMENT KEYS, NOT AN ALLOWLIST OF SHAPE KEYS, and that
+ * direction is the whole point. Which leaves define a widget's ink is PLUGIN
+ * knowledge and an open set — a gear's `teeth`, an icon's `icon`, an equation's
+ * `latex`, a shapeshifter's family, and whatever the next widget invents. An
+ * allowlist would silently fail to morph every widget it had not been taught
+ * about, which is precisely the per-key failure this universal property replaces.
+ * A denylist fails the other way: a NEW leaf defaults to "might change the
+ * outline", so the worst case is asking the render seam a question it answers
+ * cheaply, rather than a morph the author asked for silently not happening.
+ *
+ * THE DENIED KEYS ARE THE SIMILARITY TRANSFORM AND ITS KIN — position, size,
+ * rotation, z, opacity, visibility. Every one of them is carried by the NODE'S
+ * BOX at render time (render_gpu/ports.js maps the engine's unit output through
+ * the current tweened w/h), so a change in any of them moves or scales the same
+ * outline rather than producing a different one. Morphing on a pure resize would
+ * count the box change twice — the exact trap the render seam is pinned against.
+ *
+ * @example morphEndpointsDiffer({type: "rect", w: 10}, {type: "rect", w: 20}) // false (a pure resize rides the box)
+ * @example morphEndpointsDiffer({type: "rect"}, {type: "circle"}) // true (a retype)
+ * @example morphEndpointsDiffer({type: "latex", latex: "a"}, {type: "latex", latex: "b"}) // true (a re-edit)
+ * @example morphEndpointsDiffer({type: "gear", teeth: 8}, {type: "gear", teeth: 12}) // true (a parameter the plugin draws with)
+ * @example morphEndpointsDiffer({type: "rect", x: 0}, {type: "rect", x: 50}) // false (pure placement)
+ */
+export function morphEndpointsDiffer(from, to) {
+  for (const key of new Set([...Object.keys(from), ...Object.keys(to)])) {
+    if (MORPH_PLACEMENT_KEYS.has(key) || isInterpKey(key) || key === MORPH_KEY) continue;
+    if (!deepEqual(from[key], to[key])) return true;
+  }
+  return false;
+}
+
+/**
+ * The leaves a morph must IGNORE — the similarity transform plus the universal
+ * presentation knobs. A change in any of these moves, scales, spins or fades the
+ * SAME outline, and the render seam already carries all of it through the node's
+ * own box and opacity. See morphEndpointsDiffer for why this is a denylist.
+ */
+const MORPH_PLACEMENT_KEYS = new Set([
+  "x", "y", "w", "h", "z", "rotation", "rotationAnchor", "opacity", "active", "name",
+]);
 
 /**
  * Pure function. Does `state` already satisfy `delta`? (Would applying it at

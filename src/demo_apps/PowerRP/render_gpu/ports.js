@@ -582,7 +582,12 @@ export function morphIR(node) {
   assertMorphPaths(fromPayload, `${node.type} morph source`);
   assertMorphPaths(toPayload, `${node.type} morph target`);
   const blended = morphPaths(fromPayload, toPayload, t);
-  const w = node.state.w ?? 0, h = node.state.h ?? 0;
+  // THE MID-MORPH BOX. A bbox widget's is its own tweened w/h, straight off the
+  // node. A BOXLESS CONNECTOR (arrow/line/brace/elbow: `bbox: false`, no w/h
+  // state at all) has none, and reading `?? 0` collapsed the whole morph to
+  // `M0 0C0 0…` — an invisible widget for the interior of its own transition,
+  // with no error. See morphBox for the frame this substitutes instead.
+  const { w, h, ox, oy } = morphBox(node, fromPayload, toPayload, t);
   // At the endpoints morphPaths short-circuits and returns an ORIGINAL payload,
   // which is in its own box space rather than unit space — so the scale is that
   // payload's own space, not the node box. Reading it off the result is what
@@ -590,7 +595,7 @@ export function morphIR(node) {
   const sx = blended.space.w === 1 && blended.space.h === 1 ? w : w / (blended.space.w || 1);
   const sy = blended.space.w === 1 && blended.space.h === 1 ? h : h / (blended.space.h || 1);
   return blended.subpaths.flatMap((sp) => {
-    const d = payloadToPathD({ ...blended, subpaths: [scaledSubpath(sp, sx, sy)] });
+    const d = payloadToPathD({ ...blended, subpaths: [offsetSubpath(scaledSubpath(sp, sx, sy), ox, oy)] });
     if (!d) return [];
     const paint = morphedPaint(fromPayload, toPayload, sp, t);
     return [path({
@@ -602,6 +607,81 @@ export function morphIR(node) {
       opacity: paint.opacity ?? 1,
     })];
   });
+}
+
+/**
+ * Pure function. THE MID-MORPH FRAME — the box the engine's unit output is
+ * mapped through, plus the offset it is placed at.
+ *
+ * ── WHY A BOXLESS WIDGET NEEDS THIS AT ALL ───────────────────────────────────
+ * Every bbox widget's answer is trivial: its own tweened `w`/`h`, and no offset,
+ * because its emit() already draws in box-local coordinates under a world
+ * transform that positions it.
+ *
+ * The whole arrow/line/brace/elbow family is the opposite (`bbox: false`,
+ * `transform: false`): it stores ABSOLUTE endpoints, has NO `w`/`h` state, and
+ * emits world coordinates under an IDENTITY world transform. So `node.state.w`
+ * is `undefined`, `?? 0` made the scale zero, and the morph painted a degenerate
+ * point — measured, not feared, and pinned as an expected failure by
+ * tests/morph_connector_test.js until this function closed it.
+ *
+ * ── THE SUBSTITUTE FRAME IS THE TWEENED INK RECT ─────────────────────────────
+ * core/morph_payload.js `morphPayloadFromConnector` already made the PAYLOAD
+ * honest: a connector reports its ink rect as its `space` and its coordinates
+ * rect-relative. This is the other half, and the fix its docblock names — the
+ * tweened ink rect becomes the mid-morph node's box, AND the rect's ORIGIN
+ * becomes the offset, because a payload measured from the rect's corner must be
+ * placed back at that corner to land where the widget actually is.
+ *
+ * BOTH ARE TWEENED, from the two payloads' own spaces and origins, so the frame
+ * moves continuously across the transition exactly as the shape does. The origins
+ * come from the ENDPOINT payloads rather than from a live `localBounds` call for
+ * the same reason the alignment does: an endpoint is fixed for the whole
+ * transition, and a mid-tween re-derivation is what the jiggle was.
+ *
+ * A BBOX NODE IS UNTOUCHED — it takes the first branch, offset (0, 0), and every
+ * existing morph renders byte-identically.
+ *
+ * @example morphBox({state: {w: 100, h: 60}}, {space: {w: 1, h: 1}}, {space: {w: 1, h: 1}}, 0.5)
+ * { w: 100, h: 60, ox: 0, oy: 0 }
+ * @example // a boxless pair: the tweened ink rect, origin included
+ * @example morphBox({state: {}}, {space: {w: 200, h: 10}, origin: {x: 20, y: 5}}, {space: {w: 100, h: 50}, origin: {x: 0, y: 25}}, 0.5)
+ * { w: 150, h: 30, ox: 10, oy: 15 }
+ */
+export function morphBox(node, fromPayload, toPayload, t) {
+  const w = node.state.w, h = node.state.h;
+  if (typeof w === "number" && typeof h === "number") return { w, h, ox: 0, oy: 0 };
+  const lerp = (a, b) => a + (b - a) * t;
+  const from = fromPayload.origin ?? { x: 0, y: 0 }, to = toPayload.origin ?? { x: 0, y: 0 };
+  return {
+    w: typeof w === "number" ? w : lerp(fromPayload.space.w, toPayload.space.w),
+    h: typeof h === "number" ? h : lerp(fromPayload.space.h, toPayload.space.h),
+    ox: lerp(from.x, to.x),
+    oy: lerp(from.y, to.y),
+  };
+}
+
+/**
+ * Pure function. One subpath translated by a fixed offset — how a connector's
+ * rect-relative geometry is placed back at the rect's corner (see morphBox).
+ *
+ * Returns the VERY SAME object at the zero offset, so every bbox morph — which
+ * is every morph that existed before the connector fix — allocates nothing and
+ * renders byte-identically.
+ *
+ * @example offsetSubpath({start: [1, 2], curves: [[0, 0, 1, 1, 2, 2]]}, 10, 20).start
+ * [ 11, 22 ]
+ * @example // the identity that keeps every bbox morph byte-identical:
+ * @example (() => { const sp = {start: [1, 2], curves: []}; return offsetSubpath(sp, 0, 0) === sp; })()
+ * true
+ */
+export function offsetSubpath(sp, ox, oy) {
+  if (!ox && !oy) return sp;
+  return {
+    ...sp,
+    start: [sp.start[0] + ox, sp.start[1] + oy],
+    curves: sp.curves.map((c) => [c[0] + ox, c[1] + oy, c[2] + ox, c[3] + oy, c[4] + ox, c[5] + oy]),
+  };
 }
 
 /**
