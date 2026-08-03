@@ -259,19 +259,30 @@ test("SlideNav still TEACHES double-click rename, in the card's own tip", () => 
   // already covers that span, so a nested one fired both and painted two boxes
   // over each other (see the span's note in SlideNav).
   const src = stripComments(readFileSync(resolve(powerRP, "web/SlideNav.svelte"), "utf8"));
+  // THE PIN IS THE GESTURE, NOT THE SENTENCE. This asserted the literal string
+  // "Double-click the name to rename", which went stale the moment rename became
+  // a DIALOG (user, 2026-08-02: "in the same way that rename project does… A
+  // dialog comes up pre-selected") and the tip was corrected to describe what now
+  // happens. Matching exact copy makes a test fail for a WORDING change while
+  // still passing if the gesture were rewired — the opposite of what it is for.
+  // So: the tip must teach a double-click rename, in whatever words.
   assert.match(
-    src, /Double-click the name to rename/,
+    src, /[Dd]ouble-click[^<]*rename/,
     "SlideNav must still say how to rename a slide. Slides keep DOUBLE-click rename " +
     "(the user reaffirmed that convention — a slide's single click selects it); only " +
     "the toolbar's project title became single-click."
   );
-  // And the gesture itself is still wired — now DELEGATED to the shared
-  // InlineRename component (SvelteLib), whose default trigger is dblclick.
-  // Asserting both halves: SlideNav mounts it for the name, and the component
-  // actually wires the double-click on its display element.
-  assert.match(src, /<InlineRename\b/, "the slide name must delegate rename to the shared InlineRename component");
-  const inlineRename = stripComments(readFileSync(resolve(powerRP, "../../lib/InlineRename.svelte"), "utf8"));
-  assert.match(inlineRename, /ondblclick=\{trigger === "dblclick"/, "InlineRename must start the editor on double-click when so triggered");
+  // And the gesture itself is still wired. It is bound on the ROW, not the name
+  // span, and that is load-bearing rather than incidental: the rail's drag calls
+  // setPointerCapture on the row, which RETARGETS the whole pointer sequence to
+  // it, so a dblclick handler on any descendant never fires from a real mouse.
+  // That exact bug shipped — the inline editor could not be opened at all — so
+  // the row binding is pinned to keep it from being "tidied" back down.
+  assert.match(
+    src, /ondblclick=\{\(\) => app\.renameSlidePrompt\(i\)\}/,
+    "the slide row must open the rename dialog on double-click, bound on the ROW " +
+    "(a descendant never receives it: the drag's pointer capture retargets the sequence)"
+  );
 });
 
 test("the toolbar's project title says CLICK to rename, and renames on one click", () => {
