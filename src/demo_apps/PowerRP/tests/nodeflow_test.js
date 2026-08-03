@@ -24,9 +24,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import {
-  COERCIONS, NODE_ITEM_REFS, PORT_BEAD_R, PORT_TYPES, PORT_TYPE_NAMES,
-  coerce, coercionNote, connectPairs, connectionRefusal, connectionsOf,
-  declaredPorts, disconnectPairs, evaluateNodeGraph, findPort, isNodeWidget,
+  COERCIONS, NODE_INPUT_ROW_KIND, NODE_ITEM_REFS, PORT_BEAD_R, PORT_TYPES, PORT_TYPE_NAMES,
+  coerce, coercionNote, compatibleSources, connectPairs, connectionRefusal, connectionsOf,
+  declaredPorts, disconnectPairs, evaluateNodeGraph, findPort, isNodeWidget, nodeInputLabel,
+  nodeInputRows,
   minimumNodeHeight, portAt, portColor, portLayout, portTypeCssVars, portZero,
   topoOrder, typesCompatible, wireBezierPath, wouldCycle,
 } from "../core/nodeflow.js";
@@ -40,7 +41,7 @@ import { nodeMathPlugin } from "../plugins/node_math.js";
 import { nodeNumberPlugin } from "../plugins/node_number.js";
 import { displayReadout, nodeDisplayPlugin } from "../plugins/node_display.js";
 import { foldState } from "../core/document.js";
-import { evaluateState } from "../core/expressions.js";
+import { evaluateState, slugMap } from "../core/expressions.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 let pass = 0;
@@ -601,6 +602,135 @@ check("CULLING MAY NOT EAT A WIRE: ctx.wireNodes keeps a half-offscreen patch's 
     "without the pre-cull tree, src's wire is gone — this is the number the defect produced");
   assert.strictEqual(wireOpsIn(sceneIR(culled, { wireNodes: nodes })), 6,
     "with the pre-cull tree, all three wires survive while only the visible cards paint");
+});
+
+// ── WORKSTREAM BU: INPUTS ARE PROPERTIES, AND "node" IS A TYPE ───────────────
+//
+// The user's ruling, 2026-08-03: "none of these nodes seem to record any of their
+// inputs as properties. Their inputs should all be properties. ... The wires are
+// drawn by the receiver node, based on the equation given for where its source
+// output is. ... Objects should be referenceable as equations and should be nodes.
+// It's a different type than just float."
+
+check("BU: every declared input port surfaces as a first-class Inspector row", () => {
+  // THE DEFECT: an audio node's inputs map was invisible in the properties panel,
+  // so the panel asserted BY OMISSION that a Filter had no wiring.
+  const rows = nodeInputRows(registry.get("node_math"));
+  assert.deepStrictEqual(rows.map((r) => r.key), ["inputs.a", "inputs.b"]);
+  assert.ok(rows.every((r) => r.kind === NODE_INPUT_ROW_KIND), "each row declares the node-input control kind");
+  assert.ok(rows.every((r) => r.portType === "number"), "and carries its port TYPE, which is what filters the picker");
+  // The row's key is the ORDINARY state path the wire is stored at — that is the
+  // whole mechanism: keyframing, undo and "=" come from it being ordinary.
+  assert.deepStrictEqual(connectPairs({ item: "s", port: "out" }, { item: "m", port: "a" })[0][0].slice(2).join("."), rows[0].key);
+});
+
+check("BU: an input row renders honestly for UNWIRED and for WIRED", () => {
+  const items = { n: { type: "node_number", name: "Speed" }, m: { type: "node_math" } };
+  assert.strictEqual(nodeInputLabel(items, null), "", "unwired reads EMPTY, not a fake source");
+  assert.strictEqual(nodeInputLabel(items, { item: "n", port: "out" }), "Speed › out", "wired names the source AND the port");
+  // The label is re-derived from the item's CURRENT name, never stored, so a
+  // rename cannot leave the row disagreeing with the wire on the canvas.
+  assert.strictEqual(nodeInputLabel({ n: { ...items.n, name: "Tempo" } }, { item: "n", port: "out" }), "Tempo › out");
+});
+
+check("BU: the picker offers exactly what the WIRE DRAG would accept — no more, no less", () => {
+  // It routes through connectionRefusal rather than re-deciding legality, so the
+  // dropdown and the bead cannot drift into disagreeing about what is connectable.
+  const items = trio();
+  const forMulA = compatibleSources(items, registry, { item: "mul", port: "a" }).map((o) => `${o.item}.${o.port}`);
+  assert.ok(forMulA.includes("src.out"), "a legal number source is offered");
+  assert.ok(!forMulA.includes("mul.out"), "a node's own output is NOT offered to its own input (that is a cycle)");
+  assert.ok(!forMulA.includes("disp.out"), "and neither is a downstream node, for the same reason");
+  for (const o of compatibleSources(items, registry, { item: "mul", port: "a" }))
+    assert.strictEqual(connectionRefusal(items, registry, { item: o.item, port: o.port }, { item: "mul", port: "a" }), null,
+      `the picker offered ${o.item}.${o.port}, which connectionRefusal would refuse — the two surfaces have drifted`);
+});
+
+check("BU: the `node` port type exists, and has NO coercions in either direction", () => {
+  assert.ok(PORT_TYPE_NAMES.includes("node"), "the user's node type is declared");
+  assert.strictEqual(portZero("node"), null, "its zero is ABSENCE, not 0 — there is no identity item");
+  // Not an omission: node carries an IDENTITY, not a value, so every pair would be
+  // a category error (node→number is a DEREFERENCE the graph's own edge does).
+  for (const other of PORT_TYPE_NAMES.filter((t) => t !== "node")) {
+    assert.ok(!typesCompatible("node", other), `node→${other} must stay refused`);
+    assert.ok(!typesCompatible(other, "node"), `${other}→node must stay refused`);
+  }
+  assert.ok(typesCompatible("node", "node"), "identity is still allowed, with no table entry");
+});
+
+check("BU: an EQUATION-DRIVEN input draws the SAME WIRE as a drag-authored one", () => {
+  // THE USER'S RULING, mechanically: "the wires are drawn by the receiver node,
+  // based on the equation given for where its source output is."
+  //
+  // It holds because evaluateState runs BEFORE deriveRenderTree, so an equation has
+  // already become a plain {item, port} literal by the time deriveWires reads it.
+  // BN's wire derivation needed NO change — that is what this pin protects.
+  const mk = (v) => ({ items: {
+    cam: { type: "camera", x: 0, y: 0, w: 1280, h: 720 },
+    src: { type: "node_number", name: "Speed", x: 0, y: 0, w: 130, h: 90, value: 3 },
+    disp: { type: "node_display", x: 400, y: 0, w: 140, h: 90, inputs: { in: v } },
+  }, vars: {} });
+  const wiresFor = (v) => deriveWires(deriveRenderTree(evaluateState(mk(v), registry).state, registry));
+  const literal = wiresFor({ item: "src", port: "out" });
+  assert.strictEqual(literal.length, 1, "the drag-authored wire is the control");
+  assert.deepStrictEqual(wiresFor("= speed"), literal, "a BARE SLUG equation draws a byte-identical wire");
+  assert.deepStrictEqual(wiresFor("= speed.out"), literal, "and so does one naming the port explicitly");
+});
+
+check("BU: an equation-driven input KEYFRAMES across slides like any other property", () => {
+  // The ruling's stated reason for making inputs properties at all: "if we don't do
+  // that we can't keyframe them." An EQUATION in the slot must keyframe too.
+  const doc = {
+    meta: { slideW: 1280, slideH: 720 },
+    slides: [
+      { id: "s0", name: "one", delta: { items: {
+        cam: { type: "camera", x: 0, y: 0, w: 1280, h: 720 },
+        src: { type: "node_number", name: "Three", x: 0, y: 0, w: 130, h: 90, value: 3 },
+        two: { type: "node_number", name: "Two", x: 0, y: 200, w: 130, h: 90, value: 2 },
+        disp: { type: "node_display", x: 400, y: 0, w: 140, h: 90, inputs: { in: "= three" } },
+      } } },
+      { id: "s1", name: "two", delta: { items: { disp: { inputs: { in: "= two" } } } } },
+    ],
+  };
+  const at = (i) => evaluateNodeGraph(evaluateState(foldState(doc, i, 1), registry).state.items, registry).values.disp.inputs.in;
+  assert.strictEqual(at(0), 3, "slide 0's equation resolves to the source of 3");
+  assert.strictEqual(at(1), 2, "slide 1 REWIRED it by equation alone");
+});
+
+check("BU: a DANGLING reference is LOUD, and falls back to UNWIRED — never to 0", () => {
+  const mk = (v) => ({ items: {
+    src: { type: "node_number", name: "Speed", value: 3 },
+    disp: { type: "node_display", inputs: { in: v } },
+  }, vars: {} });
+  for (const [src, why] of [
+    ["= nope", /Unknown widget/],
+    ["= speed.wrong", /has no output named/],
+    ['= "speed"', /is not a node reference/],
+    ["= 3", /is not a node reference/],
+  ]) {
+    const { state, errors } = evaluateState(mk(src), registry);
+    assert.match(errors.get("items.disp.inputs.in") ?? "", why, `${src} must report its own reason`);
+    // AND THE FALLBACK IS null. A 0 here is skipped by connectionsOf and
+    // deriveWires alike, so the wire would vanish with no explanation — which is
+    // indistinguishable from a deliberate disconnect. (This was real: the generic
+    // `?? 0` fallback produced exactly that before fallbackFor learned the path.)
+    assert.strictEqual(state.items.disp.inputs.in, null, `${src} must fall back to UNWIRED, not to a number`);
+  }
+});
+
+check("BU: CLONE SEMANTICS — a literal wire remaps, an equation keeps pointing where it was written", () => {
+  // THE HONEST BOUNDARY, measured rather than assumed. itemRefs' wildcard names
+  // `inputs.*.item`, which is a LEAF of the literal — it cannot reach inside an
+  // equation STRING, and pretending otherwise would be silent wrongness.
+  assert.deepStrictEqual(NODE_ITEM_REFS, [["inputs", "*", "item"]], "the wildcard names the literal's leaf");
+  // And the reason the equation half is a DECISION, not an oversight: slugs are
+  // disambiguated per document, so a duplicated "Osc1" becomes `osc1_2` while the
+  // copied equation text still says `osc1` — i.e. THE ORIGINAL. That is what an
+  // equation MEANS ("whatever the document calls osc1"), and it is what makes one
+  // shared source fanned across copies work for free.
+  const slugs = slugMap({ items: { aaaa: { type: "node_number", name: "Osc1" }, bbbb: { type: "node_number", name: "Osc1" } } });
+  assert.strictEqual(slugs.toId.get("osc1"), "aaaa", "the ORIGINAL keeps the bare slug");
+  assert.strictEqual(slugs.toSlug.get("bbbb"), "osc1_2", "and the copy is disambiguated, so it is NOT what `= osc1` reads");
 });
 
 // ── SUMMARY ──────────────────────────────────────────────────────────────────
