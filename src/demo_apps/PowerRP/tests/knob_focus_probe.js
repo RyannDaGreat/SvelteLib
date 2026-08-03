@@ -45,7 +45,26 @@ import { isWebGpuAbsenceNoise } from "./webgpu_absence_noise.js";
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
 
-const server = await createServer({ configFile: resolve(webRoot, "vite.config.js"), server: { port: 0, open: false, host: "127.0.0.1" } });
+// HMR IS OFF, AND THAT IS A CORRECTNESS FIX RATHER THAN A SPEEDUP — the same
+// ruling cli/render_job.js's dev server already makes ("a code edit mid-render
+// would reload the page and kill the job"), which applies verbatim to a probe.
+//
+// MEASURED, 2026-08-03 (WORKSTREAM BX): this probe went red three times on
+// assertions that were all correct. Vite watches the WHOLE repo, a sibling agent
+// saved render_gpu/skia/paint_skia.js mid-run, and the page reloaded — which
+// destroys `window.__powerrp_app`, so the next page.evaluate threw
+// "Cannot read properties of undefined (reading 'canvasMode')" and the run
+// reported a PowerRP defect that did not exist. Re-running with `hmr: false`
+// turned the identical sequence green on the first attempt.
+//
+// A probe drives one page through a scripted gesture sequence; it has no use for
+// live reload, and being reloadable makes it report whoever last touched the tree
+// instead of the code under test. Watching is disabled too, so the reload cannot
+// arrive by the file-watch path either.
+const server = await createServer({
+  configFile: resolve(webRoot, "vite.config.js"),
+  server: { port: 0, open: false, host: "127.0.0.1", hmr: false, watch: { ignored: ["**/*"] } },
+});
 await server.listen();
 const url = `http://127.0.0.1:${server.httpServer.address().port}/`;
 
@@ -237,13 +256,120 @@ try {
   const status = await page.evaluate(() => window.__powerrp_audioState());
   console.log(`  note  audio status in this page: ${status.status} (headless has no output device; 'blocked' is the expected autoplay state)`);
 
+  // ── 6. WORKSTREAM BX: THE DIAL TURNS WITH NO DOUBLE-CLICK, AND SHOWS A HAND
+  // "It would be nice if I didn't have to double click on the knobs to move
+  // them" (user, 2026-08-03, verbatim), superseding the founding phrasing checked
+  // in claim 1. THIS IS THE HALF ONLY A BROWSER CAN PROVE: the bare-node pins
+  // (tests/knob_focus_test.js 10-10g) cover the hit test, the cursor rule and the
+  // call sites, but whether the CANVAS actually routes a plain press to a turn —
+  // and whether the pointer really changes shape — is not expressible without one.
+  //
+  // FIRST, LEAVE THE MODE. Everything below runs with `app.canvasMode === null`,
+  // which is the whole claim: no mode, no double-click, and the dial still turns.
+  await page.evaluate(() => window.__powerrp_app.exitCanvasMode());
+  await settle();
+  ok((await modeNow()) === null, "BX: the probe is OUT of knob focus for the always-active checks");
+
+  const cursorNow = () => page.evaluate(() => getComputedStyle(document.querySelector(".overlay")).cursor);
+
+  // THE HAND ON HOVER, before any press.
+  const freqWorld = await knobWorld(filter, "frequency");
+  const freqPage = await worldToPage(freqWorld.x, freqWorld.y);
+  await page.mouse.move(freqPage.x + 40, freqPage.y + 90); // demonstrably off the dial
+  await settle(120);
+  const cursorOffDial = await cursorNow();
+  await page.mouse.move(freqPage.x, freqPage.y);
+  await settle(120);
+  ok((await cursorNow()) === "grab",
+    `BX: hovering a turnable dial shows the OPEN HAND (got ${await cursorNow()}, off-dial was ${cursorOffDial})`);
+  ok(cursorOffDial !== "grab", `BX: …and the hand is scoped to the dial, not the whole node (off-dial cursor ${cursorOffDial})`);
+
+  // THE TURN ITSELF, with no mode and no double-click.
+  const freqBefore = await stateOf(filter, "audioFrequency");
+  await page.mouse.down();
+  await page.mouse.move(freqPage.x, freqPage.y - 25, { steps: 3 });
+  const cursorMidTurn = await cursorNow();
+  await page.mouse.move(freqPage.x, freqPage.y - 70, { steps: 5 });
+  ok(cursorMidTurn === "grabbing", `BX: the hand CLOSES while turning (got ${cursorMidTurn})`);
+  ok(await page.evaluate(() => window.__powerrp_app.dragKind === "knob"),
+    "BX: the canvas announces the `knob` drag kind, so the HintBar can offer Shift/fine control");
+  await page.mouse.up();
+  await settle();
+  const freqAfter = await stateOf(filter, "audioFrequency");
+  ok(freqAfter !== freqBefore, `BX: a plain press-drag TURNED THE DIAL with no double-click (${freqBefore} -> ${freqAfter})`);
+  ok(freqAfter > freqBefore, `BX: …and up is still more (${freqBefore} -> ${freqAfter})`);
+  ok((await modeNow()) === null, "BX: turning a dial did NOT enter knob focus — it is an affordance, not a gate");
+
+  // ONE RELEASE = ONE UNDO UNIT, for the always-active entrance too. The whole
+  // point of routing it through setPreview/commitPreview rather than writing per
+  // pointermove; a hand-rolled drag is exactly where this gets lost.
+  await page.evaluate(() => window.__powerrp_app.undo());
+  await settle();
+  ok((await stateOf(filter, "audioFrequency")) === freqBefore,
+    `BX: ONE undo reverted the whole no-double-click turn (want ${freqBefore}, got ${await stateOf(filter, "audioFrequency")})`);
+
+  // THE BODY DRAG STILL MOVES THE NODE when the press starts off every dial —
+  // "no dead pixels between the two", and the assertion that BX did not eat the
+  // gesture ADDENDUM 6 asked for ("grab nodes and move them").
+  const posBefore = await page.evaluate((id) => {
+    const n = window.__powerrp_app.nodes().find((x) => x.itemId === id);
+    return { x: n.state.x, y: n.state.y };
+  }, filter);
+  const headerPage = await worldToPage(...Object.values(await page.evaluate((id) => {
+    const n = window.__powerrp_app.nodes().find((x) => x.itemId === id);
+    return { x: n.state.x + n.state.w / 2, y: n.state.y + 12 };
+  }, filter)));
+  await page.mouse.move(headerPage.x, headerPage.y);
+  await page.mouse.down();
+  await page.mouse.move(headerPage.x + 55, headerPage.y + 35, { steps: 5 });
+  await page.mouse.up();
+  await settle();
+  const posAfter = await page.evaluate((id) => {
+    const n = window.__powerrp_app.nodes().find((x) => x.itemId === id);
+    return { x: n.state.x, y: n.state.y };
+  }, filter);
+  ok(posAfter.x !== posBefore.x || posAfter.y !== posBefore.y,
+    `BX: a press OFF every dial still MOVES the node (${JSON.stringify(posBefore)} -> ${JSON.stringify(posAfter)})`);
+
+  // AND THE BEAD STILL WINS OUTSIDE THE MODE TOO — the ordering ruling holds in
+  // both entrances, which is the thing a second always-active layer could break.
+  const inBead2 = await beadWorld(filter, "input", "in");
+  const beadPage2 = await worldToPage(inBead2.x, inBead2.y);
+  const qBeforeBead2 = await stateOf(filter, "audioQ");
+  await page.mouse.move(beadPage2.x, beadPage2.y);
+  await page.mouse.down();
+  await page.mouse.move(beadPage2.x - 60, beadPage2.y - 40, { steps: 4 });
+  ok(await page.evaluate(() => !!document.querySelector(".nf-wire-ghost")),
+    "BX: a bead press outside knob focus is STILL a wire gesture, not a turn");
+  await page.mouse.up();
+  await settle();
+  ok((await stateOf(filter, "audioQ")) === qBeforeBead2,
+    "BX: …and it turned no knob — the bead outranks the dial in the always-active layer too");
+
   // ── EXIT: a press on empty canvas leaves ──────────────────────────────────
+  // RE-ENTERED FIRST, and that line is load-bearing rather than tidying: the BX
+  // section above deliberately runs with no mode, so without this the assertion
+  // below would read `null === null` and pass while proving nothing. A check whose
+  // premise a later section removed is the stale-premise failure the manifest's
+  // save-dot incident records — caught here by asking what the check would say if
+  // the exit gesture were broken (it would still say "ok").
+  await page.evaluate((id) => window.__powerrp_app.enterCanvasMode("knob_focus", id), filter);
+  await settle();
+  const reEntered = await modeNow();
+  ok(reEntered?.handlerId === "knob_focus", `the exit check has a mode to leave (got ${JSON.stringify(reEntered)})`);
   const away = await worldToPage(1100, 700);
   await page.mouse.click(away.x, away.y);
   await settle();
   ok((await modeNow()) === null, "clicking empty canvas left knob focus");
 
-  ok(liveErrors.length === 0, `no unexpected console errors during the session (${JSON.stringify(liveErrors.slice(0, 4))})`);
+  // FILTERED THE SAME WAY THE BOOT CHECK IS, and for the identical reason stated
+  // there: run alone there is no project backend listening, so `/api/projects`
+  // answers 500. That is an ABSENT DEPENDENCY, and the gate's own doctrine forbids
+  // reporting one as a defect. The filter is by NAME, so any OTHER console error
+  // still reddens this — which is what caught the `reportAction` regression that
+  // made an ordinary successful turn write an error line.
+  const realLiveErrors = liveErrors.filter((e) => !/\/api\/projects|500 \(Internal Server Error\)/.test(e));
+  ok(realLiveErrors.length === 0, `no unexpected console errors during the session (${JSON.stringify(realLiveErrors.slice(0, 4))})`);
 } catch (e) {
   errors.push(`THREW: ${e.stack || e.message}`);
 } finally {

@@ -31,13 +31,18 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { knobAt, knobDragValue, knobLayout, knobReadout, knobSnap, KNOB_R } from "../core/node_knobs.js";
 import { knobOps } from "../core/node_chrome.js";
-import { knobPressKind, knobStateKey, knobTurnRefusal, knobWritePairs } from "../web/knobFocus.js";
+import { knobCursorFor, knobDialAt, knobPressKind, knobStateKey, knobTurnRefusal, knobWritePairs } from "../web/knobFocus.js";
 import { KNOB_FOCUS_HANDLER } from "../web/knobFocus.js";
+
+const APP = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 let passed = 0;
 const test = (name, fn) => { fn(); console.log(`  ok  ${name}`); passed += 1; };
@@ -331,6 +336,105 @@ test("9c. a BOUND knob's press is refused: no drag opens and nothing is written"
   assert.equal(verdict, undefined, "a refused knob must not open a drag");
   assert.equal(writes.length, 0, "a refused knob must not write");
   assert.equal(exited, 0, "…and must not silently leave the mode either");
+});
+
+// ── 10. WORKSTREAM BX: THE DIAL IS ALWAYS ACTIVE, AND IT ASKS FOR A HAND ─────
+// "It would be nice if I didn't have to double click on the knobs to move them"
+// (user, 2026-08-03, verbatim), which SUPERSEDES the founding double-click
+// phrasing. The pure halves of that are knobDialAt (what a press outside the mode
+// lands on) and knobCursorFor (what the pointer says about it); the browser half —
+// that a real drag with no double-click first turns the value, and that one undo
+// reverts it — is tests/knob_focus_probe.js, which is where it has to be.
+
+test("10. a dial is grabbable with NO mode entered — the always-active layer (BX)", () => {
+  const filter = registry.get("audio_filter");
+  const state = { ...filter.defaults };
+  const dial = filter.knobLayout(state).find((k) => k.key === "Q");
+  const found = knobDialAt(filter, state, dial.cx, dial.cy, 0);
+  assert.ok(found, "a press at a dial's centre must find it with no knob focus in play");
+  assert.equal(found.key, dial.key);
+  // …and it is the SAME record the in-mode press decision returns, so the two
+  // entrances to one gesture cannot drift apart.
+  assert.deepEqual(found, knobPressKind(filter, state, dial.cx, dial.cy, 0).knob);
+});
+
+test("10b. …and it still yields where there is no dial — no dead pixels, the body drag survives", () => {
+  const filter = registry.get("audio_filter");
+  const state = { ...filter.defaults };
+  // The card's top-left inside corner: header territory, no dial within reach.
+  assert.equal(knobDialAt(filter, state, 4, 4, 0), null);
+  // A widget with no dials at all is not a dial layer, and must not throw asking.
+  assert.equal(knobDialAt(registry.get("rect"), { w: 100, h: 100 }, 50, 50, 0), null);
+});
+
+test("10c. EVERY knobbed widget's dials are reachable by the always-active layer", () => {
+  // The sweep matters because BX's promise is about ALL dials, not the ones a
+  // fixture happens to name — module dials AND BV's knob/slider control nodes.
+  const bad = [];
+  for (const p of KNOBBED) {
+    const state = { ...p.defaults };
+    for (const k of p.knobLayout(state) ?? [])
+      if (knobDialAt(p, state, k.cx, k.cy, 0)?.key !== k.key) bad.push(`${p.type}.${k.key}`);
+  }
+  assert.deepEqual(bad, [], `dials the always-active layer cannot grab:\n    ${bad.join("\n    ")}`);
+});
+
+test("10d. the CURSOR: grab over a turnable dial, grabbing while turning, none over a bound one", () => {
+  const filter = registry.get("audio_filter");
+  const turnable = filter.knobLayout({ ...filter.defaults }).find((k) => k.key === "Q");
+  assert.equal(knobCursorFor(turnable), "grab", "hovering a turnable dial shows the open hand");
+  assert.equal(knobCursorFor(turnable, true), "grabbing", "turning it closes the hand");
+  assert.equal(knobCursorFor(null), null, "empty canvas keeps the default pointer");
+  // THE BOUND KNOB IS THE POINT. Its press is refused (test 4 / 9c), so a grab
+  // cursor over it would promise a turn the press declines — and the refusal
+  // would then read as a malfunction rather than as the consistent rule it is.
+  const bound = filter.knobLayout({ ...filter.defaults, audioQ: "= ease(time)" }).find((k) => k.key === "Q");
+  assert.equal(bound.bound, true, "the fixture must actually be a bound knob for this to assert anything");
+  assert.equal(knobCursorFor(bound), null, "a bound knob must offer NO hand — the cursor may not lie about the press");
+  assert.equal(knobCursorFor(bound, true), null, "…in either state");
+});
+
+test("10e. the BEAD still outranks the dial in the always-active layer too", () => {
+  // The ordering ruling (core/node_knobs.knobAt) is about the CALLER asking the
+  // wire layer first, so it cannot be pinned on knobDialAt alone — this pins the
+  // caller. CanvasView's dialUnder must consult beadAt and bail, or a squeezed
+  // card would turn a knob where the user meant to pull a wire.
+  const src = readFileSync(resolve(APP, "web/CanvasView.svelte"), "utf8");
+  const body = src.slice(src.indexOf("function dialUnder"));
+  const fn = body.slice(0, body.indexOf("\n  }"));
+  assert.ok(/beadAt\(/.test(fn), "dialUnder must ask the bead layer first — a dial may not steal a wire gesture");
+  assert.ok(/return null/.test(fn), "…and must yield to it by returning null");
+});
+
+test("10f. the press layer is WIRED, in both entrances, and commits ONE undo unit", () => {
+  // Bare-node's reach into a .svelte file is a source scan, and it is worth doing
+  // for the reason NF-BIND recorded: a perfect core and a canvas that never calls
+  // it look identical from node. The probe proves the behaviour; this proves the
+  // call sites exist, which is what turns a probe red into an obvious diagnosis.
+  // NO COMMENT STRIPPER NEEDED: every pattern below is matched in its CALL form
+  // (`if (startKnobTurn(`, `) knobTurnDrag(`), which prose never takes — the trap
+  // tests/native_tooltip_ban_test.js documents, avoided by shape rather than by a
+  // seventh copy of a stripper.
+  const src = readFileSync(resolve(APP, "web/CanvasView.svelte"), "utf8");
+  assert.equal((src.match(/if \(startKnobTurn\(/g) ?? []).length, 2,
+    "startKnobTurn must run at BOTH pointer-down entrances — the plain canvas press and the handle interception. A selected node draws handles over its own face, so missing the second one makes a selected module's dials start a RESIZE (the bead's own recorded defect).");
+  assert.ok(/drag\.kind === "knob"\) knobTurnDrag\(/.test(src), "the knob drag kind is started but never driven");
+  // ONE RELEASE = ONE UNDO UNIT: the release must commit through the house seam,
+  // not write per move. (That the per-move writes are PREVIEWS is test 9b's job.)
+  const up = src.slice(src.indexOf("function onPointerUp"));
+  const branch = up.slice(up.indexOf('drag.kind === "knob"'));
+  assert.ok(/app\.commitPreview\(\)/.test(branch.slice(0, 300)),
+    "a knob release must commitPreview — that single call is what makes the whole turn one Cmd+Z");
+});
+
+test("10g. knob focus SURVIVES as an affordance — BX removed the gate, not the mode", () => {
+  // The user asked not to have to double-click; they did not ask for the ring and
+  // the readout to go. Pinning this stops a later cleanup from reading "no longer
+  // required" as "no longer wanted" and deleting a shipped affordance.
+  assert.equal(KNOB_FOCUS_HANDLER.phase, "activate", "double-click must still enter knob focus");
+  assert.equal(KNOB_FOCUS_HANDLER.claims({ knobLayout: () => [] }), true);
+  assert.equal(typeof KNOB_FOCUS_HANDLER.mode.onPick, "function", "the in-mode press decision must remain");
+  assert.equal(typeof KNOB_FOCUS_HANDLER.mode.onHover, "function", "the focus ring's hover tracking must remain");
 });
 
 console.log(`\nknob_focus_test: ${passed} passed`);
