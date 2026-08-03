@@ -43,7 +43,7 @@ import { inkMeasure } from "../core/ink_metrics.js";
 import { glyphOutlinesReady, textMorphPayload } from "../core/glyph_outlines.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { text } from "../render_gpu/ir.js";
-import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
+import { DEFAULT_FONT, fontOptions, hasEmbeddableFile } from "../render_gpu/fonts.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 // The app's default text size, in canvas units — matches plugins/text.js's 36u
@@ -684,7 +684,7 @@ export const plaintextPlugin = {
    * Query (reads the glyph-outline seam). Why this text box cannot morph YET, or
    * null — the `morphNotReady` half of the morph protocol (core/registry.js).
    *
-   * TWO DISTINCT REASONS, and keeping them apart is the whole value of the hook.
+   * THREE DISTINCT REASONS, and keeping them apart is the whole value of the hook.
    * An EMPTY box has no ink at all (emit() returns [] and isGhost() grants it the
    * dashed affordance), so there is nothing to morph and never will be until
    * somebody types. A MISSING OUTLINE SOURCE is temporary and is about the app,
@@ -694,15 +694,48 @@ export const plaintextPlugin = {
    * Collapsing those two into "it didn't morph" would leave an author unable to
    * tell a widget they must fix from a wait they must sit through.
    *
+   * ── THE THIRD REASON: A FONT WITH NO COMMITTED TTF (workstream ZZ) ───────────
+   * The seam being INSTALLED does not mean it can answer for THIS font. `system`
+   * — which is DEFAULT_FONT, so it is what every text box has until an author
+   * changes it — has no embeddable file at all (fonts.js hasEmbeddableFile is
+   * false; it resolves to whatever the host provides), so fontkit has nothing to
+   * parse and `morphPaths` returns a payload with ZERO subpaths.
+   *
+   * That empty payload is not caught downstream: `assertMorphPaths` accepts an
+   * empty `subpaths` array as well-formed, and render_gpu/ports.js `morphIR`
+   * REPLACES the plugin's own emit() for the whole transition (ports.js:488). So
+   * the widget drew nothing from the first interior frame to the last and its real
+   * emit() only returned when the transition ended — measured as 0 ops at every
+   * alpha, which is exactly the reported "it just disappeared for a while and then
+   * reappeared" (user, 2026-08-02). fontkit_outlines.js's own docblock already
+   * claimed "the caller's widget then reports not ready rather than morphing";
+   * this is the hook actually doing so, rather than the claim being aspirational.
+   *
+   * Asking `hasEmbeddableFile` — a PURE predicate on the id — rather than counting
+   * the subpaths a trial `morphPaths` returns is deliberate: the question is a
+   * property of the FONT, answerable without laying out a single glyph, and the
+   * policy asks this on every frame of every transition.
+   *
+   * The reasons are checked IN THIS ORDER, and a doctest can only see the first
+   * two: with no outline source installed (bare node, which is where doctests
+   * run) the SEAM answer fires before the font is ever consulted.
+   *
    * @example plaintextPlugin.morphNotReady({ text: "" }) // 'text to morph (this box has none)'
-   * @example // with the render side's outline seam installed and a non-empty box:
-   * @example // plaintextPlugin.morphNotReady({ text: "hello" }) // null
+   * @example plaintextPlugin.morphNotReady({ text: "hi" }).slice(0, 22) // 'the glyph-outline seam'
+   * @example // ONCE THE SEAM IS INSTALLED the font becomes the deciding question —
+   * @example // the default `system` cannot morph, a committed family can:
+   * @example // plaintextPlugin.morphNotReady({ text: "hi", font: "system" }) // 'a font with real letterforms — "system" has no committed TTF …'
+   * @example // plaintextPlugin.morphNotReady({ text: "hi", font: "inter" }) // null
    */
   morphNotReady(s) {
     if (plaintextIsEmpty(s.text)) return "text to morph (this box has none)";
-    return glyphOutlinesReady()
-      ? null
-      : "the glyph-outline seam to be installed (core/glyph_outlines.js — the render side supplies letterforms; the CLI has none)";
+    if (!glyphOutlinesReady())
+      return "the glyph-outline seam to be installed (core/glyph_outlines.js — the render side supplies letterforms; the CLI has none)";
+    const font = s.font ?? DEFAULT_FONT;
+    if (!hasEmbeddableFile(font))
+      return `a font with real letterforms — "${font}" has no committed TTF (it is whatever the host provides), ` +
+        `so there are no outlines to morph. Pick a committed family on the Font row.`;
+    return null;
   },
   /**
    * Query (reads the glyph-outline seam and the ink measure). THE MORPH OUTLINE
