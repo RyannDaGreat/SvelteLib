@@ -5394,7 +5394,9 @@ textarea {
 /* The bottom toolbar matches the TOP toolbar's style — no box around every
    icon (Round 12B chrome ruling: "the one on the top was nicer"). Same
    transparent .btn-icon as the toolbar; only the flex:1 stretch differs (the
-   nav row spreads its four buttons across the panel width). */
+   nav row spreads its buttons across the panel width). The COUNT is not stated
+   here: SlideNav's FOOTER_COMMANDS decides it, and this comment named "four"
+   while the row had six. */
 .slidenav .nav-actions .btn-icon {
   flex: 1;
 }

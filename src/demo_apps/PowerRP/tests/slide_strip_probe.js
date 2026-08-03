@@ -1,7 +1,8 @@
 /**
  * SLIDE STRIP probe — the rail's gestures, end to end in a real browser: the
  * transition slice's SHAPE, DRAG-TO-REORDER (and what it LOOKS like), the
- * multi-select + slide clipboard commands, and TRANSITION multi-select.
+ * multi-select + slide clipboard commands, the FOOTER's button set, and
+ * TRANSITION multi-select.
  *
  * SEVERAL ASSERTIONS HERE PIN USER CORRECTIONS OF A DESIGN THAT SHIPPED, and each
  * is marked at its site with the quote that overruled it (2026-08-02): the insert
@@ -267,6 +268,48 @@ try {
     `the drop did not reorder: ${drag.idsBefore.slice(0, 2)} → ${drag.idsAfter.slice(0, 2)}`);
   check(drag.idsUndone.join() === drag.idsBefore.join(), "a drop is not ONE undo unit — one undo did not restore the order");
 
+  // ── 3b. THE FOOTER IS FIVE BUTTONS, AND ITS ICONS COME FROM THE COMMANDS ───
+  // User, 2026-08-02: "Remember how I asked to simplify the set of buttons? I
+  // still see two pluses and also a copy." The row was six — `+ · boxed-+ · up ·
+  // down · copy · trash` — two of them pluses, and the copy did what one of the
+  // pluses already did ("duplicate slide is not really needed, because new slide
+  // after current does exactly the same thing"). So the bare `+` and the separate
+  // Duplicate BUTTON are gone, and their absence is asserted rather than the pin
+  // merely deleted: a retracted button that leaves no assertion behind is one an
+  // agent re-adds. duplicate-slides stays REGISTERED — this pins the footer, not
+  // the command, and the palette/Cmd+D route to it is untouched.
+  //
+  // THE ICON CHECK IS THE POINT OF THE OTHER HALF. The footer used to hardcode
+  // glyphs, so when d3a0080 changed new-slide's icon on the PALETTE entry the
+  // ruling reached the palette and not this row. Asserting the button's icon
+  // EQUALS its entry's icon makes the two inexpressibly different: any future
+  // icon ruling lands in one place and this row follows it by construction.
+  const footer = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    return {
+      buttons: [...document.querySelectorAll(".slidenav .nav-actions button")].map((b) => ({
+        cmd: b.dataset.navAction,
+        icon: b.querySelector("iconify-icon")?.getAttribute("icon"),
+        entryIcon: b.dataset.navAction ? app.commands.get(b.dataset.navAction).icon : null,
+      })),
+      duplicateStillRegistered: !!app.commands.get("duplicate-slides"),
+    };
+  });
+  check(footer.buttons.length === 5,
+    `the rail footer is FIVE buttons after the user's simplification; got ${footer.buttons.length}: ${footer.buttons.map((b) => b.cmd)}`);
+  check(footer.buttons.map((b) => b.cmd).join() === "new-slide,new-blank-slide,move-slide-up,move-slide-down,delete-slides",
+    `unexpected footer commands: ${footer.buttons.map((b) => b.cmd)}`);
+  check(!footer.buttons.some((b) => b.cmd === "duplicate-slides"),
+    "the Duplicate BUTTON is retracted from the footer (user: \"duplicate slide is not really needed, because new slide after current does exactly the same thing\")");
+  check(footer.duplicateStillRegistered,
+    "duplicate-slides must stay REGISTERED — the retraction was of the footer button, not of the command");
+  check(!footer.buttons.some((b) => b.icon === "mdi:plus"),
+    "the bare `+` is retracted — the user counted \"two pluses\" and New Slide After Current now wears the palette's copy glyph");
+  for (const b of footer.buttons) {
+    check(b.icon && b.icon === b.entryIcon,
+      `the footer must READ its icon from the command entry, never hardcode it — ${b.cmd} draws ${b.icon} while its entry says ${b.entryIcon} (this exact drift is why an icon ruling missed this row once)`);
+  }
+
   // ── 4. TRANSITION MULTI-SELECT, and the batch write it feeds ───────────────
   // User, 2026-08-02: "I should be able to shift click multiple tweens too, in the
   // same way that I have multi-selection for widgets. It's exactly the same idea."
@@ -314,7 +357,7 @@ try {
   check(tr.itemSelectionCleared, "selecting a transition must clear the item selection (they are mutually exclusive)");
 
   if (errors.length) throw new Error(`console errors:\n${errors.join("\n")}`);
-  console.log("SLIDE STRIP PROBE OK: the slice is the always-visible chip ALONE (the retracted + ends are absent) and the whole gap makes the band hot; shift/cmd build the rail selection; copy+paste round-trips 2 slides; a pointer drag lifts a ghost, shifts the others and reorders in one undo unit with a bold-not-wider boundary; transitions shift/cmd multi-select and batch-write in one undo unit. Zero console errors.");
+  console.log("SLIDE STRIP PROBE OK: the slice is the always-visible chip ALONE (the retracted + ends are absent) and the whole gap makes the band hot; shift/cmd build the rail selection; copy+paste round-trips 2 slides; a pointer drag lifts a ghost, shifts the others into SLOTS that clear the chips and reorders in one undo unit with a bold-not-wider boundary; the footer is five buttons drawing the icons its command entries declare; transitions shift/cmd multi-select and batch-write in one undo unit. Zero console errors.");
 } finally {
   await browser.close();
   await server.close();

@@ -43,6 +43,13 @@
       but scoped to RAIL FOCUS (core/shortcut_entries.js slideRailFocus), because
       there are two clipboards and one chord may not mean both.
 
+  THE FOOTER IS FIVE BUTTONS AND OWNS NONE OF THEIR ICONS. It is a surfacing of
+  the command registry like any other, so it READS `app.commands.get(id).icon`
+  rather than writing glyphs of its own — see the FOOTER_COMMANDS note in the
+  script for the two user rulings that shaped the set, and for the drift that
+  made reading rather than copying the point. Duplicate is registered and
+  chorded, but it is NOT a button here: New Slide After Current already does it.
+
   RENAME IS A DIALOG, NOT AN INLINE EDITOR, and the row owns the double-click that
   opens it. The reason is a real bug worth knowing before touching either gesture
   — pointer capture retargets the dblclick away from the name span — and it is
@@ -493,6 +500,46 @@
   function selectionCount() {
     return app.selectedSlideIndices().length;
   }
+
+  // ── THE FOOTER: FIVE BUTTONS, AND THE ICONS COME FROM THE COMMANDS ──────────
+  // TWO RULINGS MEET HERE.
+  //
+  // (1) THE SET IS SMALLER. User, 2026-08-02: "Remember how I asked to simplify
+  // the set of buttons? I still see two pluses and also a copy." The row was
+  // `+ · boxed-+ · up · down · copy · trash` — SIX, with two of them pluses and a
+  // third doing what one of the pluses already did. The earlier reasoning the user
+  // gave is what resolves it: "duplicate slide is not really needed, because new
+  // slide after current does exactly the same thing." So DUPLICATE leaves the
+  // FOOTER (the command stays registered — the palette and the rail's Cmd+D chord
+  // are untouched; what is retracted is a button, not an action), and the bare `+`
+  // leaves because New Slide After Current now wears the copy glyph the palette
+  // gave it. Five remain, and no two of them say the same thing.
+  //
+  // (2) THE ICONS ARE READ, NOT WRITTEN. This footer hardcoded its own glyphs, so
+  // when d3a0080 changed new-slide's icon in the PALETTE entry the ruling reached
+  // the palette and not this row — which is the entire reason the user was still
+  // looking at a bare `+` a day later. A surface that copies a value it does not
+  // own will drift from it, silently, and the drift is invisible until someone
+  // reports the picture. So each button reads `app.commands.get(id).icon`: the
+  // entry is the one place an icon is decided, exactly as the palette, the toolbar
+  // (App.svelte's `titleIcon`) and ShapePicker already read it. `get()` is LOUD on
+  // an unknown id, so a renamed command breaks this row visibly instead of
+  // rendering a button with no glyph.
+  //
+  // THE LABELS STAY HERE, deliberately: they are not the command's title but the
+  // RAIL's sentence about it, and two of them count the selection ("Delete the 3
+  // selected slides") — which is rail state the entry knows nothing about.
+  const FOOTER_COMMANDS = [
+    { id: "new-slide", label: () => "New slide after current" },
+    { id: "new-blank-slide", label: () => "New blank slide — hides every visible item" },
+    { id: "move-slide-up", label: () => "Move slide up" },
+    { id: "move-slide-down", label: () => "Move slide down" },
+    // ONE BUTTON, TWO COMMANDS, and which one it runs is the rail selection —
+    // `delete-slides` is the multi form and covers the single case too (an empty
+    // slideSelection resolves to just the current slide), so this always runs the
+    // multi command and the label is the only thing that varies.
+    { id: "delete-slides", label: () => (selectionCount() > 1 ? `Delete the ${selectionCount()} selected slides` : "Delete slide") },
+  ];
 </script>
 
 <!-- --drag-shift-ms is published from the JS constant so the row-slide animation
@@ -735,44 +782,22 @@
       {/if}
     </div>
   {/if}
+  <!-- THE FOOTER IS FIVE BUTTONS, AND ITS ICONS COME FROM THE COMMAND ENTRIES.
+       See the footer note in the script for both rulings and for why the icons
+       are no longer written here. -->
   <div class="nav-actions">
-    <Tooltip text="New slide after current">
-      <button class="btn-icon" aria-label="New slide" onclick={() => app.runCommand("new-slide")}>
-        <iconify-icon icon="mdi:plus" width="16" height="16"></iconify-icon>
-      </button>
-    </Tooltip>
-    <Tooltip text="New blank slide — hides every visible item">
-      <button class="btn-icon" aria-label="New blank slide" onclick={() => app.runCommand("new-blank-slide")}>
-        <iconify-icon icon="mdi:plus-box" width="16" height="16"></iconify-icon>
-      </button>
-    </Tooltip>
-    <Tooltip text="Move slide up">
-      <button class="btn-icon" aria-label="Move slide up" onclick={() => app.runCommand("move-slide-up")}>
-        <iconify-icon icon="mdi:arrow-up" width="16" height="16"></iconify-icon>
-      </button>
-    </Tooltip>
-    <Tooltip text="Move slide down">
-      <button class="btn-icon" aria-label="Move slide down" onclick={() => app.runCommand("move-slide-down")}>
-        <iconify-icon icon="mdi:arrow-down" width="16" height="16"></iconify-icon>
-      </button>
-    </Tooltip>
-    <!-- DUPLICATE, beside the two News rather than hidden in the palette: it is
-         the gesture the user asked for by name ("There should be some way to
-         duplicate a slide") and the one that needs no clipboard step. It reads
-         the multi-selection, like Delete beside it. -->
-    <Tooltip text={selectionCount() > 1 ? `Duplicate the ${selectionCount()} selected slides` : "Duplicate slide"}>
-      <button class="btn-icon" aria-label="Duplicate slide" onclick={() => app.runCommand("duplicate-slides")}>
-        <iconify-icon icon="mdi:file-multiple-outline" width="16" height="16"></iconify-icon>
-      </button>
-    </Tooltip>
-    <!-- ONE BUTTON, TWO COMMANDS, and which one it runs is the rail selection —
-         `delete-slides` is the multi form and covers the single case too (an
-         empty slideSelection resolves to just the current slide), so this always
-         runs the multi command and the label is the only thing that varies. -->
-    <Tooltip text={selectionCount() > 1 ? `Delete the ${selectionCount()} selected slides` : "Delete slide"}>
-      <button class="btn-icon" aria-label="Delete slide" onclick={() => app.runCommand("delete-slides")} disabled={app.doc.slides.length <= selectionCount()}>
-        <iconify-icon icon="mdi:trash-can-outline" width="16" height="16"></iconify-icon>
-      </button>
-    </Tooltip>
+    {#each FOOTER_COMMANDS as { id, label }}
+      <Tooltip text={label()}>
+        <button
+          class="btn-icon"
+          aria-label={label()}
+          data-nav-action={id}
+          onclick={() => app.runCommand(id)}
+          disabled={id === "delete-slides" && app.doc.slides.length <= selectionCount()}
+        >
+          <iconify-icon icon={app.commands.get(id).icon} width="16" height="16"></iconify-icon>
+        </button>
+      </Tooltip>
+    {/each}
   </div>
 </div>
