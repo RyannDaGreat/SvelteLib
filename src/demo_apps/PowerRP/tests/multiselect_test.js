@@ -36,7 +36,10 @@ import {
   multiSelectPanel,
   unifyPairs,
   keyframeTriState,
+  universalRowsWithInterp,
+  UNIVERSAL_TYPE_ROW_PROBLEM,
 } from "../core/multiselect.js";
+import { MORPH_KEY } from "../core/morph_property.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -140,8 +143,17 @@ test("ONE-ITEM selection degrades to that plugin's rows EXACTLY, by identity", (
   const rect = registry.get("rect");
   const { rows, conflicts } = intersectRows([entry("r", "rect", {})]);
   assert.deepEqual(conflicts, []);
-  assert.equal(rows.length, rect.inspector.length, "a lone selection loses no row");
-  rows.forEach((row, i) => assert.equal(row, rect.inspector[i], "the SAME object, not a copy"));
+  // THE UNIVERSAL ROWS LEAD, and everything after them is the plugin's own list
+  // in its own order. This assertion used to compare a bare COUNT against
+  // rect.inspector.length; WORKSTREAM BE prepends the universal rows, so that
+  // number legitimately changed (39 → 43). What it was really protecting — "a
+  // lone selection loses no row", by IDENTITY and in ORDER — is asserted here
+  // directly instead, which is strictly stronger than the count ever was.
+  const universal = universalRowsWithInterp([entry("r", "rect", {})]);
+  assert.deepEqual(rows.slice(0, universal.length).map((r) => r.key), universal.map((r) => r.key));
+  const pluginRows = rows.slice(universal.length);
+  assert.equal(pluginRows.length, rect.inspector.length, "a lone selection loses no plugin row");
+  pluginRows.forEach((row, i) => assert.equal(row, rect.inspector[i], "the SAME object, not a copy"));
 });
 
 test("THE DRIFT GATE: an intersected row is the plugin's OWN row object", () => {
@@ -150,7 +162,10 @@ test("THE DRIFT GATE: an intersected row is the plugin's OWN row object", () => 
   const primary = registry.get("rect");
   const { rows } = intersectRows([entry("r", "rect", {}), entry("v", "video", {})]);
   assert.ok(rows.length > 0, "rect + video must share something to make this meaningful");
-  for (const row of rows)
+  // The universal rows are core's own shared objects (their own drift gate is
+  // the BE test at the bottom); every OTHER row must be the primary plugin's.
+  const universalKeys = new Set(universalRowsWithInterp([entry("r", "rect", {})]).map((r) => r.key));
+  for (const row of rows.filter((r) => !universalKeys.has(r.key)))
     assert.ok(primary.inspector.includes(row), `row "${row.key}" is not the primary plugin's own object`);
 });
 
@@ -242,13 +257,21 @@ test("THE CAMERA participates and honestly thins the intersection", () => {
   // opacity row and takes no effects bundle, so the intersection is genuinely
   // small — that is the feature working.
   const keys = intersectRows([entry("c", "camera", {}), entry("r", "rect", {})]).rows.map((r) => r.key);
-  assert.deepEqual(keys, ["x", "y", "w", "h"]);
+  // The universal rows lead (WORKSTREAM BE) and the camera's own exclusion shows
+  // up right here: it is purgeable:false, so the set offers NO Visible row and
+  // therefore no visibility-interp row either. The PLUGIN half of the
+  // intersection is unchanged — x/y/w/h and nothing else, as before.
+  assert.deepEqual(keys, ["type", "morph", "x", "y", "w", "h"]);
 });
 
 test("intersection is ORDER-STABLE and follows the PRIMARY's row order", () => {
   const primaryFirst = intersectRows([entry("r", "rect", {}), entry("c", "circle", {})]).rows.map((r) => r.key);
+  // The expected order is the universal prefix (WORKSTREAM BE) followed by the
+  // primary plugin's own declared order — the invariant this test has always
+  // protected, now stated over both halves rather than over the plugin's alone.
+  const universalOrder = universalRowsWithInterp([entry("r", "rect", {})]).map((r) => r.key);
   const rectOrder = registry.get("rect").inspector.map((r) => r.key).filter((k) => primaryFirst.includes(k));
-  assert.deepEqual(primaryFirst, rectOrder, "rows keep the primary plugin's declared order");
+  assert.deepEqual(primaryFirst, [...universalOrder, ...rectOrder], "rows keep the primary plugin's declared order");
 });
 
 // ── MIXED-VALUE SEMANTICS ────────────────────────────────────────────────────
@@ -336,8 +359,13 @@ test("panel skips items not on this slide, and SAYS SO", () => {
   ]);
   assert.deepEqual(panel.skipped, ["ghost"], "reported, never silently edited");
   assert.deepEqual(panel.itemIds, ["r"]);
-  // The intersection is over the LIVE items only — so it is rect's own rows.
-  assert.equal(panel.rows.length, registry.get("rect").inspector.length);
+  // The intersection is over the LIVE items only — so it is rect's own rows,
+  // behind the universal prefix every selection now carries (WORKSTREAM BE).
+  // Pinned as a difference rather than a bare count so it keeps meaning what it
+  // says if either list grows.
+  const universalCount = universalRowsWithInterp([entry("r", "rect", {})]).length;
+  assert.equal(panel.rows.length - universalCount, registry.get("rect").inspector.length,
+    "the ghost contributed nothing — the plugin half is rect's alone");
 });
 
 test("unifyPairs writes ONE key on EVERY item — the whole joint write", () => {
@@ -406,6 +434,91 @@ test("END TO END: mixed opacity on arrow + rect + video unifies in one write", (
   const after = entries.map((e) => ({ ...e, state: { ...e.state, opacity: row.seed } }));
   assert.equal(rowMixedState(after, "opacity").mixed, false);
   assert.deepEqual(unifyPairs(after, "opacity", row.seed), [], "and there is nothing left to write");
+});
+
+// ── THE UNIVERSAL SECTION OVER A SET (WORKSTREAM BE) ─────────────────────────
+// User, 2026-08-02 night: "the universal drop-down menu should still be there,
+// or at least some subset of it. In particular, perhaps name shouldn't be there.
+// But widget type, visible, and morph all should be. The reason why? I just
+// duplicated three objects and there was no way to change their visibility
+// interpolation all at once."
+
+test("BE: a multi-selection offers type, visible and morph — and NOT name", () => {
+  const panel = multiSelectPanel([entry("a", "rect", { type: "rect", active: true }), entry("b", "rect", { type: "rect", active: true })]);
+  const keys = panel.rows.map((r) => r.row.key);
+  for (const key of ["type", "active", MORPH_KEY])
+    assert.ok(keys.includes(key), `${key} is offered over a set (the user named it)`);
+  assert.ok(!keys.includes("name"), "NAME is the row the user volunteered to drop, and it stays dropped");
+});
+
+test("BE: the universal rows LEAD the panel, in the ruled order", () => {
+  const panel = multiSelectPanel([entry("a", "rect", { type: "rect", active: true }), entry("b", "circle", { type: "circle", active: true })]);
+  const keys = panel.rows.map((r) => r.row.key);
+  assert.deepEqual(keys.slice(0, 4), ["type", "active", "active~interp", MORPH_KEY],
+    "universal first — they are the properties every widget has");
+});
+
+test("BE: widget type is SHOWN but refuses a joint write, with its reason", () => {
+  const panel = multiSelectPanel([entry("a", "rect", { type: "rect" }), entry("b", "circle", { type: "circle" })]);
+  const type = panel.rows.find((r) => r.row.key === "type");
+  assert.ok(type, "the row is displayed — that is the ask");
+  assert.equal(type.problem, UNIVERSAL_TYPE_ROW_PROBLEM,
+    "…and it explains itself rather than vanishing or lying about what a click does");
+  assert.equal(type.mixed, true, "two different types read as MIXED");
+  // The refusal is per-ROW, not per-KIND: `select` stays jointly editable.
+  assert.equal(jointEditProblem({ key: "blendMode", kind: "select" }), null);
+});
+
+test("BE: visible unifies across the set as ONE write, mixed reported honestly", () => {
+  const entries = [entry("a", "rect", { active: true }), entry("b", "rect", { active: false }), entry("c", "rect", { active: false })];
+  const row = multiSelectPanel(entries).rows.find((r) => r.row.key === "active");
+  assert.equal(row.mixed, true, "they disagree, so the panel says so");
+  assert.equal(row.problem, null, "visibility DOES unify — the set-actions ruling is about a guessing TOGGLE");
+  assert.equal(row.seed, true, "the seed is the primary's value");
+  const pairs = unifyPairs(entries, "active", row.seed);
+  assert.deepEqual(pairs, [[["items", "b", "active"], true], [["items", "c", "active"], true]],
+    "the primary already holds it (minimal delta); the other two are written in one staged batch");
+});
+
+test("BE THE DRIVING ACCEPTANCE: one interp edit reaches every selected item", () => {
+  // "there was no way to change their visibility interpolation all at once."
+  const entries = [entry("a", "rect", { active: true }), entry("b", "rect", { active: true }), entry("c", "rect", { active: true })];
+  const panel = multiSelectPanel(entries);
+  const interp = panel.rows.find((r) => r.row.key === "active~interp");
+  assert.ok(interp, "the visibility INTERP row is reachable over a set — the whole report");
+  assert.equal(interp.problem, null, "and it is jointly editable");
+  assert.ok(interp.row.options.includes("blurFade") && interp.row.options.includes("fade"),
+    `and it offers the fade modes: ${JSON.stringify(interp.row.options)}`);
+  // ONE edit → THREE writes, staged together, so commitPreview walks them into
+  // ONE undo unit (the behavioural half is pinned in the browser probe).
+  const pairs = unifyPairs(entries, "active~interp", "blurFade");
+  assert.equal(pairs.length, 3, "all three change from one edit");
+  assert.deepEqual(pairs.map(([p]) => p[1]), ["a", "b", "c"]);
+});
+
+test("BE: only `active` gets an interp row — the others would double the panel to say tween/step", () => {
+  const keys = multiSelectPanel([entry("a", "rect", { active: true }), entry("b", "rect", { active: true })])
+    .rows.map((r) => r.row.key);
+  assert.equal(keys.filter((k) => k.endsWith("~interp")).length, 1);
+  assert.ok(!keys.includes("opacity~interp"), "opacity offers tween/step only; it does not earn a permanent row");
+});
+
+test("BE: the CAMERA cannot be hidden, so a set containing it offers no Visible row", () => {
+  const withCamera = multiSelectPanel([entry("r", "rect", { type: "rect", active: true }), entry("c", "camera", { type: "camera" })]);
+  const keys = withCamera.rows.map((r) => r.row.key);
+  assert.ok(!keys.includes("active"), "offering it would promise a write the document refuses");
+  assert.ok(!keys.includes("active~interp"), "and no interp row for a row that is not there");
+  assert.ok(keys.includes("type") && keys.includes(MORPH_KEY), "the rest of the universal section survives");
+});
+
+test("BE DRIFT GATE: the universal rows come from ONE definition, not a second copy", () => {
+  // The single-select panel and the set panel must read the SAME row objects.
+  // If someone re-synthesizes them per call, these stop being identical.
+  const a = universalRowsWithInterp([{ plugin: registry.get("rect"), state: { active: true } }]);
+  const b = universalRowsWithInterp([{ plugin: registry.get("circle"), state: { active: true } }]);
+  assert.equal(a[0], b[0], "the type row is one shared object, by IDENTITY");
+  assert.equal(a[1], b[1], "so is the visible row");
+  assert.deepEqual(a.map((r) => r.key), ["type", "active", "active~interp", MORPH_KEY]);
 });
 
 console.log(`\n  ${passed} multiselect core tests passed`);

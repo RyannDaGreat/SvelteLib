@@ -329,6 +329,91 @@ try {
   assert(singleEdit.after === 0.8 && singleEdit.reverted === 0.5,
     `single-selection commit + undo behave exactly as before (${singleEdit.after} -> ${singleEdit.reverted})`);
 
+  // ── 8. THE UNIVERSAL SECTION OVER A SET (WORKSTREAM BE) ────────────────────
+  // User, 2026-08-02 night: "the universal drop-down menu should still be there,
+  // or at least some subset of it… widget type, visible, and morph all should be.
+  // The reason why? I just duplicated three objects and there was no way to
+  // change their visibility interpolation all at once."
+  //
+  // MEASURED BEFORE THE FIX, by this probe's own idiom: three duplicated rects
+  // rendered 39 plugin rows and ZERO interp buttons, so visibility interpolation
+  // over a set was UNREACHABLE, not merely tedious.
+  console.log("\n  — WORKSTREAM BE: the universal section over a set —");
+  const trio = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.selection = null;
+    app.clearDoc();
+    // THE USER'S OWN SCENARIO: duplicate three objects and select them.
+    const ids = [0, 1, 2].map((i) => {
+      app.addItem({ ...app.registry.get("rect").defaults, type: "rect", x: 120 + i * 130, y: 160, w: 80, h: 60 });
+      return app.selection;
+    });
+    app.selectMany(ids);
+    return ids;
+  });
+  await sleep(900);
+  await expand();
+
+  const universal = await page.evaluate(() => {
+    const cat = [...document.querySelectorAll(".inspector .prop-category")]
+      .find((c) => /Universal/i.test(c.querySelector(".cat-header")?.textContent ?? ""));
+    if (!cat) return { found: false };
+    return {
+      found: true,
+      labels: [...cat.querySelectorAll(".label")].map((e) => e.textContent.trim()),
+      // The widget-type row is displayed but not jointly writable, so it renders
+      // the INERT mark with its reason rather than a live control.
+      blocked: [...cat.querySelectorAll(".mixed-blocked")].length,
+    };
+  });
+  assert(universal.found, "the UNIVERSAL section is present with three items selected");
+  assert(universal.labels.includes("Widget type"), "…showing Widget type (the user named it)");
+  assert(universal.labels.includes("Visible"), "…and Visible");
+  assert(universal.labels.some((l) => /^Morph/i.test(l)), `…and Morph (${JSON.stringify(universal.labels)})`);
+  assert(universal.labels.includes("Visible interp"),
+    "…and VISIBILITY INTERPOLATION, the row whose absence was the whole report");
+  assert(!universal.labels.includes("Name"),
+    "NAME is the one row the user volunteered to drop, and it is absent");
+  assert(universal.blocked === 1,
+    `exactly one universal row is inert — the type row, which cannot take a joint write (${universal.blocked})`);
+
+  // THE DRIVING ACCEPTANCE, end to end on the real editor: ONE edit to visibility
+  // interpolation changes ALL THREE, and ONE Cmd+Z reverts ALL THREE. The undo
+  // proof is BEHAVIOURAL (read all three back), never a stack-DEPTH check —
+  // `canUndo` is a boolean, a mistake already recorded in the dump's concerns.
+  const accept = await page.evaluate((ids) => {
+    const app = window.__powerrp_app;
+    const read = () => ids.map((id) => app.rawState().items?.[id]?.["active~interp"] ?? null);
+    const before = read();
+    const written = app.unifySelection("active~interp", "blurFade");
+    const after = read();
+    app.undo();
+    return { before, written, after, afterUndo: read() };
+  }, trio);
+  assert(accept.before.every((v) => v === null),
+    `precondition: none of the three has an authored visibility interp yet (${JSON.stringify(accept.before)})`);
+  assert(accept.written === 3, `ONE edit writes all three items (${accept.written})`);
+  assert(accept.after.every((v) => v === "blurFade"),
+    `…and all three really changed (${JSON.stringify(accept.after)})`);
+  assert(accept.afterUndo.every((v) => v === null),
+    `ONE undo reverts ALL THREE — one undo unit (${JSON.stringify(accept.afterUndo)})`);
+
+  // VISIBLE ITSELF UNIFIES over the set, which is the other half of the ruling.
+  const visibleUnify = await page.evaluate((ids) => {
+    const app = window.__powerrp_app;
+    // Make them disagree, then unify in one edit.
+    app.setPreview([[["items", ids[1], "active"], false], [["items", ids[2], "active"], false]]);
+    app.commitPreview();
+    const mixedRow = app.multiSelectPanel().rows.find((r) => r.row.key === "active");
+    const written = app.unifySelection("active", true);
+    const after = ids.map((id) => app.rawState().items?.[id]?.active ?? null);
+    app.undo();
+    return { mixed: mixedRow?.mixed ?? null, written, after };
+  }, trio);
+  assert(visibleUnify.mixed === true, "a set whose visibility disagrees reports MIXED");
+  assert(visibleUnify.after.every((v) => v === true),
+    `…and one unify makes every selected item visible (${JSON.stringify(visibleUnify.after)})`);
+
   console.log(fails.length ? `\nFAILED: ${fails.length}` : "\nPASS — multi-selection Inspector intersection");
   process.exitCode = fails.length ? 1 : 0;
 } finally {
