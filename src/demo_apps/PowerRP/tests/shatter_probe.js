@@ -50,6 +50,17 @@ import { launchBrowser } from "./puppeteerLaunch.js";
 import { readPng, imageDistance } from "./imageDistinctness.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+/** The peacock's fidelity floor: 2.5, an order of magnitude above the measured
+ * 0.25 (three runs, no spread — see the FLOORS entry). Hoisted to a named
+ * constant because FLOORS is declared above the fixture this is measured against. */
+const PEACOCK_MEAN_ABS_FLOOR = 2.5;
+
+/** The two-page PDF this probe fans — the repo's own vector fixture, inlined as a
+ * data: URI (pdf.js accepts one directly, the pdf_drop_probe precedent), so the
+ * peacock case needs no backend upload and no network. */
+const PEACOCK_PDF_DATA_URI = "data:application/pdf;base64,"
+  + fs.readFileSync(path.join(HERE, "fixtures", "pdf_vector_fixture.pdf")).toString("base64");
 const CONFIG = path.join(HERE, "..", "web", "vite.config.js");
 const SHOTS = path.join(HERE, "..", ".claude_vlm_checks");
 
@@ -97,6 +108,30 @@ const FLOORS = {
   // that IS measured — so what is unverified is the fetch, not the decomposition.
   // An admission is worth more than a number nobody took.
   iconify: { unmeasured: "source is network-fetched; the shared decomposition is covered by the svg case" },
+  // MEASURED, against the repo's own two-page PDF fixture — NOT recorded as
+  // `unmeasured`. The escape hatch above exists for a source this host cannot be
+  // relied on to fetch; a peacock's source is a file sitting in tests/fixtures,
+  // so taking the hatch here would have been an admission nobody had earned.
+  //
+  // THREE RUNS GAVE meanAbs 0.25, 0.25, 0.25 — no spread at all, and TIGHTER than
+  // mermaid's 0.29. That is worth stating because the first draft of this comment
+  // predicted the opposite: it reasoned that shattering splits one flattened op
+  // list into N widgets with N separate effects passes, so the overlapping shadow
+  // penumbrae would differ and this would be the loosest floor of the three. The
+  // measurement says otherwise, and the prediction was deleted rather than kept
+  // as a hedge. The reason it was wrong is instructive — a peacock sheet and a
+  // pdf_page of the same size at the same density resolve to the SAME cache key
+  // (that sharing is deliberate; see PEACOCK_RASTER_DENSITY), so the shattered
+  // fan redraws the identical bitmaps at the identical rects. It is not a
+  // re-derivation of the picture, it is the same pixels under new ownership.
+  //
+  // maxAbs stays ~202 over ~5.5% of pixels, which is the rotated-edge resampling
+  // already documented for svg above — real, local, and not what meanAbs measures.
+  //
+  // The floor is set an order of magnitude above the observed value, matching
+  // mermaid's rule, so antialiasing jitter cannot trip it while a sheet failing to
+  // draw (or landing at the wrong pose) moves it by far more.
+  paper_peacock: { maxMeanAbs: PEACOCK_MEAN_ABS_FLOOR, minVectorRecovery: 1 },
 };
 
 /**
@@ -459,6 +494,105 @@ else ok("no page errors or dangerous console output");
     console.log(`  SVG FIDELITY  meanAbs=${sd.meanAbs.toFixed(2)} maxAbs=${sd.maxAbs} fraction=${(sd.fraction * 100).toFixed(1)}%  (floor meanAbs <= ${svgFloor.maxMeanAbs})`);
     if (sd.meanAbs <= svgFloor.maxMeanAbs) ok(`the SVG's picture is preserved within its recorded floor (meanAbs ${sd.meanAbs.toFixed(2)} <= ${svgFloor.maxMeanAbs})`);
     else fail(`SVG fidelity REGRESSED: meanAbs ${sd.meanAbs.toFixed(2)} exceeds the recorded floor ${svgFloor.maxMeanAbs}`);
+  }
+}
+
+// ── PAPER PEACOCK: the fan becomes its sheets ───────────────────────────────
+// User, 2026-08-02: "Shatter should work for paper peacock too."
+//
+// THIS CASE MEASURES SOMETHING THE OTHER TWO CANNOT. Mermaid and SVG shatter
+// vector into vector; the peacock shatters a POSED ARRANGEMENT — each sheet's
+// pose lives in the fan's own pushTransform frame and has to be re-expressed as a
+// stored item's x/y/w/h + rotation + a shared numeric rotationAnchor. The bare
+// node suite proves those two spellings agree as MATH
+// (tests/peacock_shatter_density_test.js compares all four corners of every
+// sheet); this proves they agree as PIXELS, through the real derive → emit →
+// Skia path, which is where a rotation-anchor mistake would actually show up.
+{
+  await page.evaluate(() => { const a = window.__powerrp_app; a.deselectAll(); for (const n of a.nodes()) if (n.plugin.capabilities.purgeable !== false) { a.selection = n.itemId; a.runCommand("purge-item"); } });
+  await page.evaluate((src) => {
+    const a = window.__powerrp_app;
+    // Two sheets — the fixture's own page count. A two-sheet fan still spans the
+    // full ±fanAngle, so the rotation about the shared pivot is exercised at both
+    // extremes rather than at some averaged middle.
+    a.addItem({ ...a.registry.get("paper_peacock").defaults, src, pageCount: 2, x: 200, y: 120, w: 420, h: 300 });
+  }, PEACOCK_PDF_DATA_URI);
+
+  // WAIT ON THE GATE, NOT ON A TIMER. `shatterNotReady` refuses until pdf.js has
+  // opened the document precisely because the layout would otherwise be built on
+  // DEFAULT_PAGE_ASPECT guesses — so the gate going quiet IS the readiness
+  // signal, and polling it means this probe cannot race the decoder.
+  const ready = await page.evaluate(async () => {
+    const a = window.__powerrp_app;
+    for (let i = 0; i < 200; i++) {
+      if (a.shatterBlocker() === null) return true;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    return a.shatterBlocker();
+  });
+  if (ready !== true) fail(`the peacock never became shatterable — the gate still says: ${ready}`);
+  else {
+    ok("a peacock whose PDF has opened reports itself shatterable");
+    // Let the page rasters land so the BEFORE frame is the real fan, not an
+    // empty-shadow skeleton — the same "never diff two blank frames" guard the
+    // mermaid baseline exists for.
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 1200)));
+    const peacockBefore = await shot("6_peacock_before");
+
+    const report = await page.evaluate(() => {
+      const a = window.__powerrp_app;
+      const id = a.selection;
+      a.shatterSelection();
+      const st = a.state().items;
+      const members = [...(st[id].members ?? [])];
+      return {
+        hostType: st[id].type,
+        srcSurvived: typeof st[id].src === "string" && st[id].src.length > 0,
+        childTypes: members.map((m) => st[m].type),
+        pages: members.map((m) => st[m].page),
+        zs: members.map((m) => st[m].z),
+        anchors: members.map((m) => st[m].rotationAnchor),
+        rotations: members.map((m) => st[m].rotation),
+        report: a.shatterReport,
+        errors: a.expressionErrors?.().length ?? 0,
+      };
+    });
+
+    if (report.hostType === "group") ok("the peacock BECAME a group, same itemId");
+    else fail(`expected a group host, got "${report.hostType}"`);
+    if (report.srcSurvived) ok("the PDF source survived on the group as a dormant key (retype RULE 3) — the fan is reconstructible");
+    else fail("the `src` did not survive the retype — the shatter is not reversible");
+    if (report.childTypes.length === 2 && report.childTypes.every((t) => t === "pdf_page"))
+      ok(`each sheet became its own PDF Page widget (${report.childTypes.length} sheets)`);
+    else fail(`expected 2 pdf_page children, got ${JSON.stringify(report.childTypes)}`);
+    // Back-to-front: parts are written deepest-first with rising z, so the LAST
+    // member is page 1 and carries the HIGHEST z. A regression here would look
+    // perfectly fine until two sheets overlapped.
+    if (report.pages.at(-1) === 1 && report.zs.at(-1) === Math.max(...report.zs))
+      ok(`page 1 is on top — pages ${JSON.stringify(report.pages)} at z ${JSON.stringify(report.zs)}`);
+    else fail(`back-to-front broke: pages ${JSON.stringify(report.pages)} at z ${JSON.stringify(report.zs)}`);
+    // The shared pivot, read back out of the real document rather than out of the
+    // helper that wrote it.
+    const [a0, a1] = report.anchors;
+    if (a0 && a1 && Math.abs(a0.x - a1.x) < 1e-6 && Math.abs(a0.y - a1.y) < 1e-6)
+      ok(`both sheets pivot about ONE shared numeric anchor (${a0.x.toFixed(1)}, ${a0.y.toFixed(1)})`);
+    else fail(`the sheets do not share a pivot: ${JSON.stringify(report.anchors)}`);
+    if (report.rotations[0] !== report.rotations[1]) ok(`the sheets are fanned, not stacked (rotations ${report.rotations.map((r) => r.toFixed(3)).join(", ")})`);
+    else fail(`both sheets carry the same rotation ${report.rotations[0]} — the fan collapsed`);
+    if (report.errors === 0) ok("no equation errors after the conversion");
+    else fail(`${report.errors} equation error(s) after the conversion`);
+    console.log(`  disclosure: ${report.report}`);
+
+    // The rasters for the NEW widgets have to land before the after-shot, exactly
+    // as they did for the before-shot; otherwise this diffs a drawn fan against
+    // two empty boxes and calls the difference a regression.
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 1200)));
+    const peacockAfter = await shot("7_peacock_after");
+    const pd = imageDistance(peacockBefore, peacockAfter);
+    const floor = FLOORS.paper_peacock;
+    console.log(`  PEACOCK FIDELITY  meanAbs=${pd.meanAbs.toFixed(2)} maxAbs=${pd.maxAbs} fraction=${(pd.fraction * 100).toFixed(1)}%  (floor meanAbs <= ${floor.maxMeanAbs})`);
+    if (pd.meanAbs <= floor.maxMeanAbs) ok(`the fan's picture is preserved within its recorded floor (meanAbs ${pd.meanAbs.toFixed(2)} <= ${floor.maxMeanAbs})`);
+    else fail(`peacock fidelity REGRESSED: meanAbs ${pd.meanAbs.toFixed(2)} exceeds the recorded floor ${floor.maxMeanAbs}`);
   }
 }
 
