@@ -424,6 +424,18 @@
     if (shown && tipEl) place();
   });
 
+  // `disabled` GOING TRUE MUST CLOSE AN ALREADY-OPEN TIP, not just refuse the next
+  // one. `open()`/`reveal()` already guard on `disabled`, which is enough for a tip
+  // that has not shown yet, but a caller can flip `disabled` reactively AFTER
+  // `shown` went true — PowerRP's slide navigator does exactly this: a plain hover
+  // opens the tip immediately (default delay=0), and only the following pointerdown
+  // + move crosses its drag threshold and sets `disabled`. Without this effect the
+  // tip that was already open before the drag began would keep tracking the cursor
+  // for the rest of the gesture instead of closing with it.
+  $effect(() => {
+    if (disabled && shown) close();
+  });
+
   // While shown, keep the tooltip anchored through scroll/resize. (Cursor-mode
   // tips also update on pointermove via track(); this covers the element path
   // and any layout shifts under the cursor.)

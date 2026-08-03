@@ -473,6 +473,40 @@
   let dragState = $state(null);
   let slidesEl = $state(null); // the scroll container — boundary math is relative to its rows
 
+  // ── TOOLTIPS ARE SUPPRESSED FOR THE DURATION OF A SLIDE DRAG ────────────────
+  // User, verbatim (2026-08-03): "When I'm dragging slides, the hovering tooltip
+  // should not be visible, but it is right now, in grid mode. It's also visible
+  // in list view, but it shouldn't be visible either when I'm dragging the
+  // slides, because it blocks my view of the slides."
+  //
+  // KEYED OFF THE DRAG STATE ITSELF, not a pointer heuristic or a hover timer —
+  // `dragState?.moved` is the SAME flag `.slidenav.dragging` already reads (the
+  // template's root div, below) to swap the cursor to a fist and freeze row
+  // hover, so this is not a second notion of "mid-drag": it is the one the
+  // gesture already owns, read again. `moved` (not merely `dragState` truthy) is
+  // deliberate — a pointerdown that never crosses DRAG_THRESHOLD_PX is a CLICK,
+  // and the tooltip must behave normally for that case (the row's own dblclick
+  // dialog, the eye toggle, plain selection all still want it).
+  //
+  // WHY THIS ALSO COVERS "passing over other slides", not only the dragged row:
+  // `onRowPointerDown` sets pointer capture on the grabbed row, so every
+  // subsequent pointer event of that gesture — including pointerenter/leave on
+  // OTHER rows — is retargeted to the capturing row and never reaches another
+  // row's own Tooltip anchor. Only the DRAGGED row's Tooltip keeps receiving
+  // events (capture targets a descendant of its own anchor), which is why it was
+  // the one staying up and tracking the cursor. Suppressing on `dragActive`
+  // covers both: the source row's tip (which would otherwise keep tracking the
+  // pointer) and any other row's tip (belt-and-suspenders — capture already
+  // starves them of the hover events that would open one).
+  //
+  // THE MERGE CHIP AND DROP-BOUNDARY BOLD LINE ARE NOT TOOLTIPS and are UNTOUCHED
+  // by this flag — they are the drag's own affordances (isMergeTarget/
+  // isDropBoundary render them independent of any Tooltip component), and the
+  // user's OWN prior ruling on the merge gesture ("the realtime tooltip does not
+  // need to exist when I'm dragging slides") is exactly why they were built as
+  // on-target chips rather than tooltips in the first place.
+  let dragActive = $derived(dragState?.moved === true);
+
   /**
    * Query (reads the DOM). WHICH GAP the pointer is nearest, as a boundary index
    * in 0..n. Measures the rendered rows rather than assuming a row height: rows
@@ -1021,7 +1055,7 @@
                same idea."). Like the rows, it renders on TWO axes: `.selected` is
                membership in the set, `.primary` is the one the panel is named
                after. -->
-          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${formatSeconds(info.seconds)} — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
+          <Tooltip disabled={dragActive} text={`Transition into slide ${i + 1}: ${info.title} · ${formatSeconds(info.seconds)} — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
             <button
               class="tr-chip"
               class:selected={app.isTransitionSelected(slide.id)}
@@ -1077,7 +1111,7 @@
            IT, and a wrapper that laid out would have silently changed its
            geometry. -->
       <div class="slide-cell">
-      <Tooltip>
+      <Tooltip disabled={dragActive}>
         {#snippet tip()}
           <!-- The NAME alone, not "Slide {i+1}: {name}": the number is visible in
                the row two pixels away, and default names already read "Slide N", so
@@ -1170,7 +1204,7 @@
                  the CARD's tip (above); a nested Tooltip here painted two boxes
                  over each other, because the card's tip covers this span too. -->
             <span class="name">{slide.name}</span>
-            <Tooltip text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
+            <Tooltip disabled={dragActive} text={slide.enabled === false ? "Enable slide (apply its delta)" : "Disable slide (skip its delta)"}>
               <span
                 class="eye"
                 role="button"
@@ -1256,7 +1290,7 @@
                ⛓ alone, and the transition's type and duration are still one hover
                away. The label is never hidden — a STANDING ruling ("The tween
                thing should always be there") — it is SHORTENED. -->
-          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${formatSeconds(info.seconds)} — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
+          <Tooltip disabled={dragActive} text={`Transition into slide ${i + 1}: ${info.title} · ${formatSeconds(info.seconds)} — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
             <button
               class="spine-pill tr-chip"
               class:selected={app.isTransitionSelected(slide.id)}
