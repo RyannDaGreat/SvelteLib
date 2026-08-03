@@ -115,10 +115,12 @@
 import { alignPayloads, normalizePayload, structureSignature } from "./morph_align.js";
 import { subpathToPathD } from "./morph_geometry.js";
 import { matchSubpaths, travelledSubpath } from "./morph_match.js";
+import { midMorphFillRule } from "./morph_fill.js";
 
 export { alignPayloads, structureSignature, assertMorphPaths } from "./morph_align.js";
 export { subpathToPathD, sampleSubpath } from "./morph_geometry.js";
 export { matchSubpaths, shapeKey, travelledSubpath } from "./morph_match.js";
+export { hasSameWindingOverlap, midMorphFillRule } from "./morph_fill.js";
 
 /**
  * The alignment memo. Keyed on a CONTENT hash of the two payloads (see the
@@ -321,12 +323,32 @@ export function morphPaths(fromPayload, toPayload, alpha, options = null) {
     // Matched pieces first, then the morphing leftovers. Paint order within a
     // morph is not meaningful to preserve — the two endpoints disagree about it
     // by construction — and a stated order beats an emergent one.
-    return { space: { w: 1, h: 1 }, subpaths: [...travelled, ...morphed], fillRule: plan.to.fillRule };
+    return withMidMorphFillRule({ space: { w: 1, h: 1 }, subpaths: [...travelled, ...morphed], fillRule: plan.to.fillRule });
   }
 
   const { from, to } = alignedPair(fromPayload, toPayload);
   const subpaths = from.subpaths.map((a, i) => lerpSubpath(a, to.subpaths[i], alpha));
-  return { space: { w: 1, h: 1 }, subpaths, fillRule: to.fillRule };
+  return withMidMorphFillRule({ space: { w: 1, h: 1 }, subpaths, fillRule: to.fillRule });
+}
+
+/**
+ * Pure helper. A mid-morph payload with its PAINTED fill rule decided — the
+ * counter-fill fix (core/morph_fill.js, workstream XX-1).
+ *
+ * Applied at the two interior return sites and NOWHERE ELSE, which is what keeps
+ * it invisible outside the open interval: `morphPaths` short-circuits to the
+ * ORIGINAL payloads at alpha ≤ 0 and alpha ≥ 1 before either site is reached, so
+ * no stored `fillRule` is ever rewritten and the endpoint law is untouched.
+ *
+ * @example
+ * >>> // one contour cannot have a nested counter, so nothing changes:
+ * >>> withMidMorphFillRule({space: {w: 1, h: 1}, fillRule: "nonzero", subpaths: [
+ * ...   {start: [0, 0], closed: true, winding: 1, curves: [[0,0,0,0,1,1]]}]}).fillRule
+ * 'nonzero'
+ */
+function withMidMorphFillRule(payload) {
+  const fillRule = midMorphFillRule(payload);
+  return fillRule === payload.fillRule ? payload : { ...payload, fillRule };
 }
 
 /**
