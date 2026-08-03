@@ -17,6 +17,7 @@ import {
 } from "../core/document.js";
 import { setPath, getPath, blendApplied, applied } from "../core/deltas.js";
 import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta, retargetedPayload, retargetRefusal, retargetReport } from "../core/item_properties_clipboard.js"; // Copy Properties: the fold-then-diff time transport, and its selection-targeted retarget
+import { clipboardKind, propertySubsetKind, pasteBadge, pasteIntent } from "./pasteAffordance.js"; // what the paste button's badge and tooltip say (WORKSTREAM UU half 2)
 // APPEARANCE-PRESERVING slide reorder + the duplicate-keyframe simplifier that
 // is its counterweight (core/slide_reorder.js states the law both obey).
 import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted, withSlidesMerged } from "../core/slide_reorder.js";
@@ -975,6 +976,22 @@ export class PowerRPApp {
   // keybinding rebind (createShortcuts has no remove — see core/keybindings.js
   // scope note) and the HintBar picks up the swap reactively.
   shortcuts = $state(null);
+  // WORKSTREAM UU: what the paste button's badge and tooltip are describing.
+  // localStorage is NOT reactive, so the mirror is re-read into this field
+  // whenever something could have changed it (`refreshPasteAffordance`, called
+  // by every copy and by App.svelte on focus/paste). Reading it lazily in a
+  // $derived would show whatever the mirror said when the toolbar last happened
+  // to re-render — a tooltip that claims to say what a click will do must not be
+  // one render behind the clipboard.
+  //   payload     — the mirror's parsed contents, or null (empty/unreadable)
+  //   osImageSeen — was an EXTERNAL image paste the LAST thing observed? The only
+  //     evidence available: there is no synchronous read of the OS clipboard, so
+  //     this is a memory of one paste, never a guess. See web/pasteAffordance.js's
+  //     header for why the alternative is dishonest. Every writer states it
+  //     explicitly (refreshPasteAffordance takes it as an argument and never reads
+  //     this field back — see that method on why a spread here would deadlock the
+  //     mount effect).
+  pasteAffordanceState = $state({ payload: null, osImageSeen: false });
 
   // Toggles: flip the reactive field, persisting through the SETTINGS repo's
   // .persist (writes "on"/"off"). One line each — the read/write logic and the
@@ -3728,6 +3745,12 @@ export class PowerRPApp {
     } catch (e) {
       console.error(`${label}: could not write the in-browser clipboard mirror:`, e.message);
     }
+    // The paste button's badge and tooltip describe THIS mirror, so they are
+    // refreshed the instant it changes rather than on the next thing that
+    // happens to re-render the toolbar. `osImageSeen` is cleared because an
+    // in-app copy is now the most recent thing on the clipboard: leaving it set
+    // would badge an image the user has since replaced.
+    this.refreshPasteAffordance(false);
     // 2. Item JSON (+ signature) → the server-side session clipboard (cross-tab).
     //    Failure is loud but NOT fatal any more — the mirror covers this browser.
     //    SKIPPED ENTIRELY in static mode: there is no backend session to hold it,
@@ -3931,6 +3954,11 @@ export class PowerRPApp {
       return;
     }
     if (files.length) {
+      // THE ONE MOMENT the OS clipboard is synchronously visible (a `paste`
+      // ClipboardEvent). Remembering that an external image was here is the only
+      // evidence the paste BUTTON's badge can ever have — see
+      // web/pasteAffordance.js's header on why guessing instead is dishonest.
+      this.refreshPasteAffordance(files.some((f) => f.type.startsWith("image/")));
       await this.pasteFiles(files); // external image/video/file → new widget
       return;
     }
@@ -4240,6 +4268,76 @@ export class PowerRPApp {
     }
     if (!payload?.powerrp_item_props) return false;
     return partitionPurged(payload, this.rawState()).surviving.length > 0;
+  }
+
+  // ── WORKSTREAM UU HALF 2: THE PASTE BUTTON KNOWS ────────────────────────────
+  // User, 2026-08-02: "the paste icon should have a little badge on it … that
+  // says if it's an abnormal kind of paste and I'm not just pasting a widget,
+  // what am I pasting? … and of course the hover tool tip should say too."
+  //
+  // All the RULES are in web/pasteAffordance.js (pure, doctested, bare-node);
+  // these two are the app-state adapter — read the mirror, count the selection.
+
+  /**
+   * Command. Re-reads the clipboard MIRROR into `pasteAffordanceState` so the
+   * badge and tooltip describe the clipboard as it is NOW. Mutates that field.
+   *
+   * Called after every copy (which writes the mirror) and by App.svelte when the
+   * window regains focus — the moment a copy in ANOTHER tab could have landed.
+   * Cross-tab remains conservative exactly as `canPasteProperties` documents:
+   * the mirror is per-browser-origin but this tab only learns of another tab's
+   * write when it looks, and it looks at the points above rather than polling.
+   *
+   * An UNREADABLE or unparseable mirror reports and resets to empty rather than
+   * leaving a stale description standing — a badge describing a clipboard that no
+   * longer exists is worse than no badge.
+   *
+   * IT NEVER READS `pasteAffordanceState`, AND THAT IS LOAD-BEARING. This runs
+   * inside App.svelte's mount effect, so a `{...this.pasteAffordanceState}` here
+   * would be a read AND a write of the same state in one effect — Svelte's
+   * `effect_update_depth_exceeded`, which took the whole app down at boot when
+   * this was first written that way (caught by tests/paste_badge_probe.js, whose
+   * PAGE ERRORS AT BOOT check exists for exactly this class). So the one carried
+   * field is passed IN by each caller, which also makes every call site state
+   * what it believes about the OS clipboard instead of inheriting it silently.
+   *
+   * @param {boolean} [osImageSeen] - has an external image paste been observed?
+   *   Every caller says so explicitly: a copy passes false (an in-app copy is now
+   *   the most recent thing on the clipboard), a file paste passes true, and the
+   *   focus refresh passes what it already knows.
+   */
+  refreshPasteAffordance(osImageSeen = false) {
+    let payload = null;
+    try {
+      const raw = localStorage.getItem(CLIPBOARD_MIRROR_KEY);
+      if (raw) payload = JSON.parse(raw);
+    } catch (e) {
+      console.error("Paste: the in-browser clipboard mirror could not be read for the paste button's badge (the paste itself still reads the server):", e.message);
+    }
+    this.pasteAffordanceState = { payload, osImageSeen };
+  }
+
+  /**
+   * Query. Everything the paste button renders: its BADGE (null for an ordinary
+   * widget paste — the badge's presence is the signal) and the SENTENCE saying
+   * what a click would do right now.
+   *
+   * REACTIVE through `pasteAffordanceState` and `selectedIds()`, which is what
+   * makes the tip change the instant a selection does — the WORKSTREAM UU
+   * dispatch turns on exactly that, so the tooltip has to see it.
+   *
+   * @returns {{kind: string, badge: {id: string, icon: string, label: string}|null, intent: string}}
+   */
+  pasteAffordance() {
+    const { payload, osImageSeen } = this.pasteAffordanceState;
+    const kind = clipboardKind(payload, osImageSeen);
+    const subset = kind === "properties" ? propertySubsetKind(payload) : null;
+    const itemCount = Object.keys(payload?.powerrp_items ?? payload?.powerrp_item_props ?? {}).length;
+    return {
+      kind,
+      badge: pasteBadge(kind, subset),
+      intent: pasteIntent({ kind, itemCount, subset, selectedCount: this.selectedIds().length }),
+    };
   }
 
   /**

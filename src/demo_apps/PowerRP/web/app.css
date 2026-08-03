@@ -12000,3 +12000,48 @@ audio.ae-preview-media {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* ==========================================================================
+   PASTE KIND BADGE (web/Toolbar.svelte, WORKSTREAM UU half 2) — appended block.
+   Surgical add at the very end: another agent also edits this file, so this
+   touches nothing above it.
+
+   User: "The paste icon should have a little badge on it, on maybe the bottom
+   right or top right or something that says if it's an abnormal kind of paste
+   and I'm not just pasting a widget, what am I pasting? Teeny little badge".
+
+   BOTTOM-RIGHT, not top-right. The COUNT badge (.btn-badge) already owns the
+   top-right corner on this same .btn-icon, and the user offered either corner —
+   so the kind badge takes the free one, and the two can never overlap or be
+   mistaken for each other. They are also deliberately different SHAPES: the
+   count is a pill of text, this is a small disc holding a glyph.
+
+   SIZED TO STAY LEGIBLE. --a-paste-badge-size is the disc; the glyph inside it
+   is 10px (set on the element, since iconify-icon takes pixel attributes rather
+   than CSS). That pairing is what the four-glyph vocabulary in
+   web/pasteAffordance.js was chosen against — a fifth silhouette does not
+   survive this size, which is why Copy Box rides the general properties glyph
+   and lets the tooltip name it.
+
+   The disc carries the panel background so the glyph reads against whatever the
+   button's icon is doing underneath it, and pointer-events:none for the same
+   reason .btn-badge has it: a badge must never swallow the click meant for the
+   button it decorates.
+   ========================================================================== */
+.btn-kind-badge {
+  --a-paste-badge-size: 13px;      /* the disc; 10px glyph + a hair of surround */
+  --a-paste-badge-offset: -2px;    /* tucked just outside the icon's box */
+  position: absolute;
+  bottom: var(--a-paste-badge-offset);
+  right: var(--a-paste-badge-offset);
+  width: var(--a-paste-badge-size);
+  height: var(--a-paste-badge-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--accent);
+  box-shadow: 0 0 0 var(--a-hairline) var(--border);
+  pointer-events: none;
+}

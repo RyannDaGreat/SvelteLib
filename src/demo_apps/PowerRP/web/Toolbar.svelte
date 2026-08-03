@@ -136,7 +136,37 @@
    */
   function tipNoteFor(id) {
     if (isBrowserStorageCmd(id)) return BROWSER_STORAGE_NOTE;
+    // WORKSTREAM UU: Paste's note is the LIVE SENTENCE saying what a click would
+    // do right now — which clipboard kind, which subset, and (the whole point of
+    // the ruling) whether a selection redirects it. All the wording is decided in
+    // web/pasteAffordance.js; this is the per-id lookup that surfaces it, in the
+    // shape every other note already uses. It rides the `note` slot rather than
+    // replacing the title because the title still says WHICH COMMAND this is, and
+    // both facts are wanted.
+    if (id === "paste") return pasteAffordance.intent;
     return null;
+  }
+
+  // WORKSTREAM UU half 2 (user: "the paste icon should have a little badge on it
+  // … that says if it's an abnormal kind of paste"). ONE derived read, shared by
+  // the badge and the tip so the glyph and the sentence can never describe
+  // different clipboards. `app.pasteAffordance()` reads app.pasteAffordanceState
+  // (reactive) and app.selectedIds(), so this recomputes when either changes.
+  let pasteAffordance = $derived(app.pasteAffordance());
+
+  /**
+   * Query. The CORNER GLYPH badge for a toolbar command, or null.
+   *
+   * Only Paste has one today, and only when the pending paste is NOT an ordinary
+   * widget paste — `pasteBadge` returns null there deliberately, because a badge
+   * on every paste distinguishes nothing. Separate from `badgeFor` (the Render
+   * Center's COUNT) because the two are different things wearing the same corner:
+   * one reports a quantity, this one reports a KIND. Merging them into a single
+   * "badge" would force one element to render either a number or an icon and
+   * mean something different in each case.
+   */
+  function kindBadgeFor(id) {
+    return id === "paste" ? pasteAffordance.badge : null;
   }
 
   /**
@@ -334,7 +364,9 @@
         <button
           class="btn-icon"
           class:storage-local={isBrowserStorageCmd(id)}
-          aria-label={badgeFor(id) ? `${app.commands.get(id).title} — ${badgeFor(id)} active or unseen` : app.commands.get(id).title}
+          aria-label={badgeFor(id) ? `${app.commands.get(id).title} — ${badgeFor(id)} active or unseen`
+            : kindBadgeFor(id) ? `${app.commands.get(id).title} — ${kindBadgeFor(id).label}`
+            : app.commands.get(id).title}
           aria-disabled={unavailable(id)}
           onclick={() => { if (!unavailable(id)) app.runCommand(id); }}
         >
@@ -346,6 +378,18 @@
                folded into aria-label — a coloured dot is not an announcement. -->
           {#if badgeFor(id)}
             <span class="btn-badge">{badgeFor(id)}</span>
+          {/if}
+          <!-- KIND BADGE (WORKSTREAM UU): the teeny corner glyph naming an
+               ABNORMAL paste. Absent for an ordinary widget paste, which is what
+               makes its presence mean something. `data-paste-badge` is what
+               tests/paste_badge_probe.js asserts on — the id, not the icon
+               string, so the probe pins the DECISION rather than a glyph choice
+               that may be re-tuned for legibility. aria-hidden because the
+               button's aria-label already carries the same fact in words. -->
+          {#if kindBadgeFor(id)}
+            <span class="btn-kind-badge" data-paste-badge={kindBadgeFor(id).id} aria-hidden="true">
+              <iconify-icon icon={kindBadgeFor(id).icon} width="10" height="10"></iconify-icon>
+            </span>
           {/if}
         </button>
       </Tooltip>

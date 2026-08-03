@@ -2061,8 +2061,14 @@
     // normal"); this row exists because "Paste" in a list of palette rows cannot
     // tell you that copied PROPERTIES are what is on the clipboard, and its gate
     // and title can.
-    { id: "paste-properties", title: "Paste Properties (apply the copied state to those same widgets on this slide)", icon: "mdi:content-paste", aliases: ["paste state", "paste properties", "apply copied state"], when: (a) => a.canPasteProperties(), requires: "copied widget properties whose widgets still exist on this slide", help: "Writes the copied appearance onto the same widgets HERE, as the fewest keyframes that will do it — a property that already matches is left alone, so nothing you did not copy gets pinned. Widgets that have since been purged are named and skipped; the rest still apply. One undo.", run: (a) => a.pastePropertiesClipboard() },
-    { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the last copied element or property. Identical to Ctrl+V: an image or file copied from ANOTHER app is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
+    // THE SELECTION DECIDES THE DESTINATION (WORKSTREAM UU) and both rows say so,
+    // because it is the same clipboard doing two different things and neither row
+    // can be understood without the rule. `requires` is a FUNCTION here for the
+    // reason core/commands documents: this gate has two disqualifying conditions —
+    // nothing copied at all, and a copy whose widgets are gone — and a fixed
+    // string would be a confident wrong answer for one of them.
+    { id: "paste-properties", title: "Paste Properties (apply the copied state — to the selection, or to those same widgets)", icon: "mdi:content-paste", aliases: ["paste state", "paste properties", "apply copied state"], when: (a) => a.canPasteProperties(), requires: (a) => (a.pasteAffordance().kind === "properties" ? "copied widget properties whose widgets still exist on this slide" : "copied widget properties — run Copy Properties (or Copy Position / Dimensions / Box) on a widget first"), help: "WITH NOTHING SELECTED it writes the copied appearance onto the SAME widgets here, as the fewest keyframes that will do it — a property that already matches is left alone, so nothing you did not copy gets pinned. WITH A SELECTION it applies the copied properties to the SELECTED widgets instead, giving each one only the properties it can actually mean: a key the target has no row for, or has with a different meaning (different units, a different option set, a different range), is skipped and named rather than written. Equations carry across verbatim. Copying several widgets and then selecting is refused, because there is no way to tell which copied widget belongs to which selected one. One undo.", run: (a) => a.pastePropertiesClipboard() },
+    { id: "paste", title: "Paste", icon: "mdi:content-paste", help: "Pastes the last copied element or property. Copied PROPERTIES land on your SELECTION when you have one — each selected widget taking only the properties it can mean — and on their own original widgets when you do not. Identical to Ctrl+V: an image or file copied from ANOTHER app is uploaded and inserted as a new widget instead.", run: (a) => a.pasteClipboard() },
     // 14.9: Duplicate = clone the selection LOCALLY (new UUIDs, one undo unit),
     // reusing the copy/paste serialize→insert path without a clipboard trip.
     // (This comment used to say "in place" for that — a different meaning of the
@@ -2645,6 +2651,32 @@
     const obs = new MutationObserver(() => { focus = focusContext(document.activeElement); });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-hint-popover", "data-hint-scope"], subtree: true });
     return () => obs.disconnect();
+  });
+
+  // WORKSTREAM UU half 2. The paste button's badge and tooltip describe the
+  // in-browser clipboard MIRROR, and localStorage is not reactive — nothing tells
+  // this tab that another tab copied. Window focus is the honest moment to look:
+  // it is exactly when the user comes back from wherever they copied, and it
+  // costs one localStorage read per return rather than a poll. The initial read
+  // runs at mount so the button is correct on the first hover of a session, not
+  // only after the first blur/focus round trip.
+  //
+  // FOCUS CLEARS `osImageSeen` (the default argument), and that is deliberate
+  // rather than incidental: coming back from another app is precisely when the OS
+  // clipboard may have been replaced by something we have no way to see, so a
+  // remembered image from before the trip is the STALEST claim this button could
+  // make. Dropping it means the badge under-reports until the next real paste
+  // proves an image is there, which is the direction this whole affordance errs
+  // in (web/pasteAffordance.js's header).
+  //
+  // This effect must not READ app.pasteAffordanceState — refreshPasteAffordance
+  // writes it, and read+write of one state in one effect is
+  // effect_update_depth_exceeded. That is why the flag is an argument.
+  $effect(() => {
+    app.refreshPasteAffordance();
+    const onFocus = () => app.refreshPasteAffordance();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   });
 
   function shortcutCtx() {
