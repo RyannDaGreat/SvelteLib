@@ -923,15 +923,25 @@ export const latexPlugin = {
    * crop already has against the vector exporters.
    *
    * ALL GLYPHS SHARE THE WIDGET'S INK, one paint for the whole equation — which is
-   * what emit() does too (it maps every glyph to a single `fill: ink`). A SHADER
-   * ink has no colour to hand the engine, so it degrades to the default solid for
-   * the morph's interior frames; the endpoints draw the real shader through
-   * emit().
+   * what emit() does too (it maps every glyph to a single `fill: ink`).
+   *
+   * ── THE INK IS HANDED OVER WHOLE, SHADER OR NOT (workstream AG) ──────────────
+   * This used to read `isShaderInk(s.ink) ? LATEX_DEFAULT_INK : …` and say a
+   * shader ink "has no colour to hand the engine". That was the reported bug,
+   * verbatim: "the equations always turn black when they morph… They should
+   * always keep the same material at all times." The premise was wrong — the
+   * engine never needed a COLOUR. It carries the paint record untouched
+   * (core/morph.js's header) to render_gpu/ports.js `morphedPaint`, which puts it
+   * on an ORDINARY path op, and a path op already wears a material: the very same
+   * `resolveMaterialFillPaints` pass that resolves emit()'s ops resolves a morph's.
+   * Degrading here was the morph deciding about paint, which is not its job (the
+   * user's ruling: "It's not the responsibility of morphing to handle any material
+   * properties, it's only about shape properties").
    */
   morphPaths(s) {
     const w = s.w ?? 0, h = s.h ?? 0;
     const geom = latexGlyphs(s.latex);
-    const ink = isShaderInk(s.ink) ? LATEX_DEFAULT_INK : (s.ink ?? LATEX_DEFAULT_INK);
+    const ink = s.ink ?? LATEX_DEFAULT_INK;
     // Glyphs are FILLED contours, never stroked: `strokeWidth: 0` here is about
     // the letterforms, and is unrelated to the widget's own `strokeWidth`, which
     // draws the BORDER around the equation (decorateStrokedBox) rather than
