@@ -591,7 +591,11 @@ export function morphIR(node) {
   // into a named red box on the one item instead of a dead frame.
   assertMorphPaths(fromPayload, `${node.type} morph source`);
   assertMorphPaths(toPayload, `${node.type} morph target`);
-  const blended = morphPaths(fromPayload, toPayload, t);
+  // `matchPieces` rides the mark, and ONLY core/derive.js resolveContentMorph
+  // sets it — a same-type content morph, where a congruent subpath on both sides
+  // is the same glyph that moved rather than a coincidence. Absent (every type
+  // morph, every other caller) means the whole-shape morph, unchanged.
+  const blended = morphPaths(fromPayload, toPayload, t, { matchPieces: !!node.morph.matchPieces });
   // THE MID-MORPH BOX. A bbox widget's is its own tweened w/h, straight off the
   // node. A BOXLESS CONNECTOR (arrow/line/brace/elbow: `bbox: false`, no w/h
   // state at all) has none, and reading `?? 0` collapsed the whole morph to

@@ -333,6 +333,54 @@ test("content: derive builds ONE plugin over TWO states, and ports paints it", (
   }
 });
 
+test("content: the mark asks for MATCHED PIECES — and only a CONTENT morph does (XX-2)", () => {
+  // The flag has exactly one source. A content morph is SAME-TYPE by
+  // construction, so a congruent subpath on both sides really is the same glyph
+  // that moved; a TYPE morph's two payloads share no pieces, so matching there
+  // would be meaningless work. Pinned in BOTH directions, because "the feature is
+  // on" and "the feature did not leak" are two different claims.
+  setGlyphOutlines({
+    glyphPaths: (t) => [...t].map(() => ({ d: "M0 0L1 0L1 1L0 1Z", advance: 1 })),
+    unitsPerEm: 1,
+  });
+  try {
+    const contentNodes = deriveRenderTree({
+      items: {
+        t1: {
+          type: "plaintext", x: 0, y: 0, w: 400, h: 100, size: 40, font: "inter",
+          text: { type: CONTENT_MORPH_TOKEN, key: "text", from: "ab", to: "cd", t: 0.5 },
+        },
+      },
+      vars: {},
+    }, registry);
+    assert.equal(contentNodes.find((n) => n.itemId === "t1").morph.matchPieces, true,
+      "a content morph must ask for matched pieces");
+  } finally {
+    setGlyphOutlines(null);
+  }
+
+  // A UNIVERSAL (type) morph must NOT carry the flag: resolveUniversalMorph
+  // builds its mark without one, so `morphPaths` takes its default whole-shape
+  // path and every existing type-morph law is untouched.
+  const typeNodes = deriveRenderTree({
+    items: {
+      s1: {
+        type: "rect", x: 0, y: 0, w: 100, h: 100,
+        morph: {
+          type: "~morphUniversal", mode: "auto", t: 0.5,
+          from: { type: "rect", x: 0, y: 0, w: 100, h: 100 },
+          to: { type: "circle", x: 0, y: 0, w: 100, h: 100 },
+        },
+      },
+    },
+    vars: {},
+  }, registry);
+  const typeMark = typeNodes.find((n) => n.itemId === "s1")?.morph;
+  assert.ok(typeMark, "the universal token must still produce a mark");
+  assert.ok(!typeMark.matchPieces,
+    "a TYPE morph must NOT ask for matched pieces — its two payloads share no glyphs");
+});
+
 // ── APPLICABILITY ────────────────────────────────────────────────────────────
 
 test("applicability: the TYPE row NO LONGER OFFERS MORPH — it is universal now", () => {

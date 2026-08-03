@@ -196,7 +196,15 @@ export function resolveContentMorph(state, registry, itemId) {
     );
     return { state: resolved, morph: null };
   }
-  return { state: resolved, morph: { fromPlugin: plugin, toPlugin: plugin, fromState, toState, t: token.t } };
+  // MATCHED PIECES, and this resolver is the ONLY place that asks for them. A
+  // content morph is SAME-TYPE by construction — one plugin, one leaf changed —
+  // so the two payloads are two renderings of the same kind of thing and a
+  // congruent subpath on both sides really is the same glyph that moved
+  // (core/morph_match.js). A TYPE morph (rect → gear) gets nothing here: its two
+  // payloads share no pieces, so matching would be meaningless work, and
+  // `morphPaths` defaults to the whole-shape path for it and for every other
+  // caller.
+  return { state: resolved, morph: { fromPlugin: plugin, toPlugin: plugin, fromState, toState, t: token.t, matchPieces: true } };
 }
 
 /**
