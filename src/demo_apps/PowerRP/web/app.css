@@ -125,22 +125,14 @@
   /* Multi-select collective box: a SOLID rectangle at half opacity — one calm
      frame that doesn't nest confusingly with per-item selection dashes. */
   --a-multiselect-box-opacity: 0.5;
-  /* THE SELECTION CORRIDOR (WORKSTREAM NN) — the ink-following dash a STROKE
-     widget gets instead of a box marquee. A near-vertical arrow's bounding box
-     is ~zero-width, so its box dash degenerates to an invisible hairline sliver;
-     the corridor runs ALONG the ink instead, at the stroke's own width.
-
-     CLEARANCE is the gap the corridor keeps OUTSIDE the painted stroke, so the
-     dash reads as a border around the ink rather than as a second stroke drawn
-     on top of it — the same role the box marquee's offset from the art plays.
-     MIN-WIDTH is why a HAIRLINE still shows selection: a 0.5px stroke's corridor
-     would otherwise be 0.5px of dash, which is exactly the invisibility this
-     feature exists to remove. Both are SCREEN px (the corridor is chrome and does
-     not zoom with the art, matching --a-selection-stroke's own screen-space
-     units), and both are deliberately small: the corridor must describe where the
-     ink IS, and a fat one would misreport a thin arrow's reach. */
-  --a-selection-corridor-clearance: 3px;
-  --a-selection-corridor-min-width: 9px;
+  /* THE SELECTION INK DASH (WORKSTREAM NN, rendering per SS) has NO tokens of its
+     own, deliberately. NN gave it two — a clearance outside the painted stroke and
+     a 9px minimum width — because it inflated the ink into a band; the user's
+     ruling on that band was "it turns all fuzzy and thick… I was just hoping for a
+     single line, a single dashed line that connects the two points." A mark that is
+     the box marquee in a different SHAPE must not own a second set of numbers that
+     can drift from the marquee's, so it reads --a-selection, --a-selection-stroke
+     and --a-selection-dash and nothing else. See .selection-ink-dash below. */
   --a-guide-stroke: 1px;
   --a-handle-fill: var(--a-selection);
   --a-handle-rim: #ffffff; /* white rim shared by resize handles, endpoints, modifier points */
@@ -4258,26 +4250,37 @@ textarea {
   opacity: var(--a-multiselect-box-opacity);
 }
 
-/* THE SELECTION CORRIDOR (WORKSTREAM NN): a stroke widget's selection, drawn as
-   a dash running ALONG its ink instead of around a box that does not describe it.
+/* THE SELECTION INK DASH (WORKSTREAM NN, rendering per SS): a stroke widget's
+   selection, drawn as a dash running ALONG its ink instead of around a box that
+   does not describe it.
 
-   IT IS THE SAME VISUAL LANGUAGE AS THE BOX MARQUEE, deliberately — the identical
+   EVERY DECLARATION HERE IS `.selection`'s, AND THAT IS THE FEATURE. The identical
    --a-selection colour, --a-selection-stroke weight and --a-selection-dash rhythm,
    so a mixed selection of an arrow and a rectangle reads as ONE system rather than
    two decorations that happen to both be blue. Only the PATH differs, which is the
    whole point: for a near-vertical arrow the box is a ~zero-width sliver and the
    ink is a 300px run.
 
-   `fill: none` even for the CLOSED subpaths (arrowhead silhouettes): the corridor
-   outlines what is selected, it does not shade it. `stroke-width` is set per-path
-   inline, because it is derived from that widget's OWN stroke width — a property
-   of the document, not of the theme; the theme owns the clearance and the floor.
-   Round joins/caps follow the ink's own corners rather than mitering spikes off an
-   elbow's jog. pointer-events: none like every overlay decoration, so a click
-   passes through to the widget underneath. */
-.overlay .selection-corridor {
+   WORKSTREAM SS DELETED THE WIDTH. NN inflated the path into a "corridor" — the
+   painted stroke's width plus a clearance, floored at 9px, set per-path inline —
+   and the user's ruling on the result is the reason this rule now sets none: "it
+   turns all fuzzy and thick… That doesn't look like a dashed line to me. I was just
+   hoping for a single line, a single dashed line that connects the two points." A
+   `5 3` dasharray at 9-12px of stroke closes into a slab, and inflating in screen px
+   made the slab fatten against the art as you zoomed in. Taking --a-selection-stroke
+   from the theme also makes it NON-SCALING by the same mechanism the box marquee
+   uses — the overlay is an SVG in SCREEN coordinates, so 1.5px is 1.5 screen px at
+   every zoom, with no vector-effect and nothing recomputed per frame.
+
+   `fill: none` even for the CLOSED subpaths (arrowhead silhouettes): the dash
+   OUTLINES what is selected, it never shades it. Round joins/caps follow the ink's
+   own corners rather than mitering spikes off an elbow's jog. pointer-events: none
+   like every overlay decoration, so a click passes through to the widget
+   underneath. */
+.overlay .selection-ink-dash {
   fill: none;
   stroke: var(--a-selection);
+  stroke-width: var(--a-selection-stroke);
   stroke-dasharray: var(--a-selection-dash);
   stroke-linejoin: round;
   stroke-linecap: round;
