@@ -54,7 +54,31 @@
  * in hand, so the honest answer is neither blanket policy but a per-frame
  * question:
  *
- *   Use EVENODD unless the frame contains two overlapping SAME-WINDING contours.
+ *   Use EVENODD unless the frame contains two overlapping SAME-WINDING OUTERS.
+ *
+ * ── THE WORD "OUTERS" IS LOAD-BEARING, AND IT WAS MISSING FOR A DAY (AM) ─────
+ * This rule originally said SAME-WINDING CONTOURS, and that over-fired. Sign and
+ * ROLE are different questions: two OUTERS crossing is the case evenodd gets
+ * wrong, but two COUNTERS crossing has the same sign and the OPPOSITE need —
+ * under nonzero their windings sum with the parent they share to something
+ * non-zero, so the hole CLOSES, which is the very bug this module exists to stop.
+ * A sign-only test therefore disqualified evenodd on the frames that most needed
+ * it. "6" → "8" is exactly that: a 6 has one counter and an 8 has two, so the
+ * unmatched second counter travels across the first, and measured at alpha
+ * 0.1/0.25/0.5 the overlapping pair is two contours of winding −1 BOTH ENCLOSED
+ * BY THE SAME OUTER (+1). Both kinds are real and common — over a 13-pair glyph
+ * corpus × 9 alphas, 35 outer/outer pairs on 22 frames against 89 counter-
+ * involving pairs on 54 — so neither blanket answer is available and `isCounter`
+ * has to ask. Measured effect on counter interiors over that corpus: 198 probes
+ * painted solid on 46 frames → 154 on 41, which is blanket evenodd's own score,
+ * while the outer/outer frames keep nonzero exactly as before.
+ *
+ * IT WAS NOT, HOWEVER, THE USER'S BUG. That was a level down: render_gpu/ports.js
+ * `morphIR` emitted one path op PER SUBPATH, so a counter and its parent were
+ * never in the same path and NO fill rule could hole anything (measured: zero
+ * hole pixels at every alpha of "6" → "8", including under evenodd). This module
+ * was computing the right answer and handing it to ops that could not act on it.
+ * See `morphPaintRuns`. The refinement above is the second, smaller half.
  *
  * When nothing same-signed overlaps, the two rules agree everywhere EXCEPT on
  * nested counters, where evenodd is right and nonzero is the bug — so switching
@@ -129,10 +153,14 @@ export function pointInRing(pt, ring) {
 }
 
 /**
- * Pure function. Do two contours of the SAME winding overlap anywhere in this
+ * Pure function. Do two OUTERS of the same winding overlap anywhere in this
  * subpath list? That is exactly the configuration under which evenodd and nonzero
  * disagree in evenodd's DISFAVOUR — two outers crossing are "inside twice", which
  * nonzero paints solid (correct) and evenodd punches a hole in (wrong).
+ *
+ * A pair where either contour is a COUNTER is skipped, and that exclusion is the
+ * whole of workstream AM's second half — see `isCounter` and the module header.
+ * Same sign, opposite need: two counters crossing is the case evenodd gets RIGHT.
  *
  * Screening, not proof: it tests each contour's sampled points against each
  * other contour. Two shapes can cross without any sample landing inside, and the
@@ -153,6 +181,12 @@ export function pointInRing(pt, ring) {
  * >>> // the SAME outer twice, overlapping — this is the case evenodd gets wrong:
  * >>> hasSameWindingOverlap([outer, outer])
  * true
+ * >>> // TWO COUNTERS crossing inside one outer — the "6" → "8" frame. Same sign
+ * >>> // as each other, but evenodd is RIGHT here, so this is NOT a disqualifier:
+ * >>> const other = {start: [2, 1], closed: true, winding: -1, curves: [
+ * ...   [0,0,0,0,2,3], [0,0,0,0,3.5,3], [0,0,0,0,3.5,1], [0,0,0,0,2,1]]};
+ * >>> hasSameWindingOverlap([outer, counter, other])
+ * false
  */
 export function hasSameWindingOverlap(subpaths) {
   if (subpaths.length < 2) return false;
@@ -161,12 +195,75 @@ export function hasSameWindingOverlap(subpaths) {
   // been reversed or rotated by alignment carries whatever `subpathFromTuples`
   // last computed, and this predicate must describe the geometry it is handed.
   const signs = subpaths.map((sp) => shoelaceWinding(sp));
+  const counter = rings.map((_, i) => isCounter(rings, signs, i));
   for (let i = 0; i < rings.length; i++)
     for (let j = 0; j < rings.length; j++) {
       if (i === j || signs[i] !== signs[j]) continue;
+      // ROLE, NOT JUST SIGN — see the note below. Two OUTERS crossing is the case
+      // evenodd gets wrong; a pair involving a COUNTER is the case it gets right,
+      // and disqualifying evenodd for it is what left the user's counters filled.
+      if (counter[i] || counter[j]) continue;
       for (const p of rings[i]) if (pointInRing(p, rings[j])) return true;
     }
   return false;
+}
+
+/**
+ * Pure function. Is contour `i` a COUNTER — a hole in something — rather than an
+ * outer? Measured the only way that survives mid-flight: its own centroid lies
+ * inside some contour of the OPPOSITE winding, which is what "nested in a parent
+ * it opposes" means geometrically.
+ *
+ * ── WHY THE ROLE AND NOT JUST THE SIGN (workstream AM) ───────────────────────
+ * `hasSameWindingOverlap` exists to protect the ONE case evenodd is worse at:
+ * two OUTERS crossing are "inside twice", which nonzero paints solid (right) and
+ * evenodd punches a hole in (wrong). But it was testing the sign alone, and two
+ * COUNTERS overlapping have the same sign and the OPPOSITE need — under nonzero
+ * their windings sum with their shared parent's to something non-zero and the
+ * hole CLOSES, which is precisely the bug. So a sign-only test disqualified
+ * evenodd on the frames that needed it most.
+ *
+ * That is not hypothetical: "6" → "8" is exactly it. A 6 has one counter and an 8
+ * has two, so the unmatched second counter travels across the first, and measured
+ * at alpha 0.1/0.25/0.5 the pair is two contours of winding −1 BOTH ENCLOSED BY
+ * THE SAME OUTER (+1). Over a 13-pair glyph corpus × 9 alphas the two kinds are
+ * both real and both common — 35 outer/outer pairs on 22 frames, 89 pairs
+ * involving a counter on 54 frames — so neither blanket answer is available and
+ * the role has to be asked.
+ *
+ * THE CENTROID IS A SCREEN, not a proof, exactly like the sampling above it: a
+ * crescent's centroid can fall outside its own ring, in which case this answers
+ * "outer" and the payload keeps nonzero — the same bounded cost the module header
+ * already accounts for, never a wrong picture of its own.
+ *
+ * @param {number[][][]} rings - every contour's sampled points
+ * @param {number[]} signs - each contour's winding
+ * @param {number} i - the contour to classify
+ * @returns {boolean}
+ *
+ * The counter must be OFF-CENTRE in this example for it to say anything: a hole
+ * concentric with its parent contains the parent's centroid too, so both would
+ * answer "nested" and the test would not distinguish them. Real letterforms are
+ * off-centre (a 6's bowl sits low, a B's two counters sit above and below), which
+ * is why the screen works in practice — and the concentric case degrades to
+ * "outer", i.e. to the unchanged nonzero behaviour, never to a wrong picture.
+ *
+ * @example
+ * >>> // a big square (+1) with a small square (-1) low inside it — a bowl. The
+ * >>> // small one is the counter; the big one is not (its centre is above the bowl).
+ * >>> const outer = [[0, 0], [8, 0], [8, 8], [0, 8]];
+ * >>> const bowl = [[2, 5], [6, 5], [6, 7], [2, 7]];
+ * >>> isCounter([outer, bowl], [1, -1], 1)
+ * true
+ * >>> isCounter([outer, bowl], [1, -1], 0)
+ * false
+ */
+export function isCounter(rings, signs, i) {
+  const ring = rings[i];
+  if (!ring.length) return false;
+  const cx = ring.reduce((a, p) => a + p[0], 0) / ring.length;
+  const cy = ring.reduce((a, p) => a + p[1], 0) / ring.length;
+  return rings.some((r, j) => j !== i && signs[j] !== signs[i] && pointInRing([cx, cy], r));
 }
 
 /**
