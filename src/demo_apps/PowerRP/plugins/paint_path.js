@@ -86,6 +86,7 @@ import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js";
 import { num } from "../core/shapes.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import { bundle, defaults, props, STROKE_TRIM_KEYS, STROKE_JOIN_KEYS } from "../core/properties.js";
 import { elementActive, visibleElements, visibleIndices, withElementFieldValue, withElementInserted } from "../core/lists.js";
 import { path } from "../render_gpu/ir.js";
@@ -693,6 +694,40 @@ export const paintPathPlugin = {
       fillRule: "nonzero",
       opacity: s.opacity ?? 1,
     })];
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the exact bezier `d` from the SAME `scaledAnchors` + `pathBezierD` pair emit()
+   * draws with, so what morphs is what renders — every subpath, each open or
+   * closed by the one `fillsInterior` predicate rather than a second copy of the
+   * rule.
+   *
+   * UNLIKE THE REST OF THIS FAMILY, THIS WIDGET HAS A BOX. It is `bbox: true` with
+   * real `w`/`h` state and box-local anchor coordinates, so it reports its BOX as
+   * the space, exactly as the phase-2 shapes do — not the ink rect the connectors
+   * must use for want of a box. The two are different rects here (`pathInkRect`
+   * unions the box with the control-point hull, since a smooth handle bulges the
+   * curve outside it), and the box is the correct one: it is the frame the
+   * coordinates were authored in and the frame render_gpu/ports.js `morphIR`
+   * multiplies back out by. Reporting the ink rect would re-scale the curve
+   * against a frame it was never drawn in.
+   *
+   * The stroke-trim window (strokeStart/End/Phase) is NOT applied: it cuts the
+   * painted stroke at paint time via ContourMeasure and never changes the path,
+   * so the outline being morphed is the whole authored curve — the same one a
+   * trim of 0..1 shows.
+   */
+  morphPaths(s) {
+    const closed = fillsInterior(s);
+    return morphPayloadFromPaths(
+      [{ d: pathBezierD(scaledAnchors(s), closed), paint: statePaint(s) }],
+      { w: s.w ?? 0, h: s.h ?? 0 },
+    );
+  },
+  /** Pure function. Why this path cannot morph YET, or null. Shares the GHOST
+   * predicate, so "nothing to morph" and "nothing to draw" are one condition. */
+  morphNotReady(s) {
+    return paintPathPlugin.isGhost(s) ? "at least one subpath with two visible anchors (this one has nothing to draw)" : null;
   },
   // THE BOUNDS PROTOCOL: the ink rect (box ∪ anchor/control hull), not the box —
   // a smooth handle bulges the curve outside it. This one declaration answers every

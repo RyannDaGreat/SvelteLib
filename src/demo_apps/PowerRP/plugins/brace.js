@@ -39,6 +39,7 @@ import { path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { endpointPairHooks, hitsShaft, ARROW_STROKE_WIDTH } from "../core/endpoints.js";
+import { morphPayloadFromConnector, statePaint } from "../core/morph_payload.js";
 import { bracePathD, braceInkRect, handleSegments, segmentT, segmentAt, clamp01 } from "../core/brace.js";
 
 /** The three point keys, in path order. `tip` is LAST so the two ends read as a
@@ -194,6 +195,37 @@ function braceWidget(spec) {
       // rect localBounds reports, so the effect region and the cull bounds can
       // never disagree about where this widget is (the arrow's rule).
       return applyEffects([op], s, world, braceInkRect(s));
+    },
+    /**
+     * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths`
+     * protocol): the brace's own `d` — the SAME `bracePathD` emit() draws — as
+     * ONE OPEN subpath, in the ink rect's frame.
+     *
+     * CENTERLINE, and here the widget's own emit() says so in as many words:
+     * "STROKED, never filled: a brace is a rule, not a region". There is no
+     * silhouette to reuse because the ink has no interior — the `d` IS the curve
+     * the painter expands to a width. Reusing it verbatim means the morph traces
+     * the brace's serifs, shoulders and nub exactly as drawn, at whatever `curl`
+     * and `shoulder` the state carries, with the weight riding in
+     * `paint.strokeWidth`.
+     *
+     * The path stays OPEN: a brace's two arms genuinely do not meet, and the
+     * engine morphs open subpaths natively (a closed target's `Z` steps in at
+     * alpha > 0 under the open↔closed policy). A degenerate span yields an EMPTY
+     * payload, sharing emit()'s own guard rather than restating it.
+     */
+    morphPaths(s) {
+      const d = bracePathD(s.from, s.to, s.tip, s.curl ?? spec.curl, s.shoulder ?? 1);
+      return morphPayloadFromConnector(
+        d ? [{ d, paint: statePaint({ ...s, fill: null }) }] : [],
+        braceInkRect(s),
+      );
+    },
+    /** Pure function. Why this brace cannot morph YET, or null. Shares emit()'s
+     * degenerate-span guard, so the gate cannot disagree with what is drawable. */
+    morphNotReady(s) {
+      return bracePathD(s.from, s.to, s.tip, s.curl ?? spec.curl, s.shoulder ?? 1)
+        ? null : "a non-zero span (this one collapses and draws nothing)";
     },
     // THE BOUNDS PROTOCOL: the hull of the three points, like the arrow's
     // endpoint hull — so a brace culls and band-selects despite having no w/h.

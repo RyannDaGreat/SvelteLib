@@ -44,7 +44,8 @@ import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { elbowRoute, elbowHandle, closestPointOnSegment } from "../core/outline.js";
-import { endpointPairHooks, arrowHeads, connectorPathAnchors, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, arrowHeads, headedConnectorMorphSources, connectorPathAnchors, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { morphPayloadFromConnector } from "../core/morph_payload.js";
 
 /** Pure function. The route generator's params for a state.
  * @example routeParams({from: {x: 0, y: 0}, to: {x: 100, y: 50}, elbow: 0.5}) // {x0: 0, y0: 0, x1: 100, y1: 50, elbow: 0.5, orient: undefined, bulge: undefined}
@@ -190,6 +191,26 @@ export const elbowArrowPlugin = {
   // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the route's min/max IS this
   // widget's width and height, so it band-selects and culls like any box widget
   // despite having no w/h state and no resize handles.
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the 4-point ROUTE as one open centerline subpath, plus a closed contour per
+   * head glyph, in the ink rect's frame.
+   *
+   * It reads the SAME `elbowRoute(routeParams(s))` emit() draws with, so a change
+   * to the routing changes the morph for free. The route is reported WHOLE — not
+   * shortened by emit()'s per-leg head pullback, which exists so a cap cannot poke
+   * through a glyph painted over it. See core/endpoints.js
+   * `headedConnectorMorphSources` for why the centerline (not a stroke silhouette)
+   * is the honest payload here and why the heads are nonetheless included.
+   */
+  morphPaths(s) {
+    const route = elbowRoute(routeParams(s)).map(([x, y]) => ({ x, y }));
+    const [p0, p1, p2, p3] = route;
+    return morphPayloadFromConnector(
+      headedConnectorMorphSources(s, route, arrowHeads(s, { tip: p3, from: p2 }, { tip: p0, from: p1 })),
+      elbowArrowInkRect(s),
+    );
+  },
   localBounds: elbowArrowInkRect,
   // THE ANCHOR PROTOCOL: start / mid / end along the 4-point ROUTE, by arc length
   // — so `mid` lands on the middle leg (where a flowchart label belongs) rather

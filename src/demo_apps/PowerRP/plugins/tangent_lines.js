@@ -39,6 +39,7 @@ import { polyline } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
+import { morphPayloadFromConnector, polylinePathD, statePaint } from "../core/morph_payload.js";
 
 // Two shapes are "coincident" (no meaningful external tangent) when their
 // centers are within this distance — the identity end of a zoom-callout tween,
@@ -439,6 +440,43 @@ export const tangentLinesPlugin = {
     // widget is (with no tangents there are no ops either, so applyEffects has an
     // empty list to pass through).
     return applyEffects(cmds, s, world, tangentLinesInkRect(s));
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the two external tangent segments as TWO open centerline subpaths, in the ink
+   * rect's frame.
+   *
+   * INCLUDED, THOUGH IT IS THE FAMILY'S ODD MEMBER, and the deciding question was
+   * whether its payload has a STABLE STRUCTURE. It does: `externalTangents`
+   * returns the two hull bridges or NOTHING — never a count that drifts with a
+   * styling knob. That is what separates this from the dash pattern every
+   * connector here deliberately omits, where the fragment count is a function of
+   * length. Two subpaths in, two subpaths out, so the aligner pairs contours that
+   * mean the same thing at both ends of a morph.
+   *
+   * CENTERLINES for the usual reason (emit() draws stroked polylines; there is no
+   * silhouette in this file to reuse), from the SAME `shapeDescriptors` +
+   * `externalTangents` pair emit() draws with. The DASHES are omitted exactly as
+   * plugins/line.js omits them.
+   *
+   * THE TWO SHAPES THEMSELVES ARE NOT INK. This widget draws only the bridging
+   * tangents — the circles/boxes are its PARAMETERS, usually other widgets — so
+   * reporting their outlines would morph geometry this item never paints.
+   */
+  morphPaths(s) {
+    const [a, b] = shapeDescriptors(s);
+    const paint = statePaint({ ...s, fill: null, strokeWidth: s.strokeWidth ?? DEFAULT_STROKE_WIDTH });
+    return morphPayloadFromConnector(
+      externalTangents(a, b).map(([p, q]) => ({ d: polylinePathD([p, q]), paint })),
+      tangentLinesInkRect(s),
+    );
+  },
+  /** Pure function. Why this pair cannot morph YET, or null. Coincident shapes (or
+   * one containing the other) have NO external tangent, which is the same
+   * condition emit() draws nothing on — one predicate, not two. */
+  morphNotReady(s) {
+    const [a, b] = shapeDescriptors(s);
+    return externalTangents(a, b).length ? null : "two shapes with a real external tangent (these have none, so nothing is drawn)";
   },
   // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the tangent endpoints'
   // min/max IS this widget's width and height, so it band-selects and culls like

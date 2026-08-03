@@ -58,6 +58,7 @@ import { bundle, bundleNestedDefaults, defaults, props } from "../core/propertie
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { fancyArrowOutline, pointInPolygon, axisNormalFrame, projectOntoAxis, projectOntoNormal, closestPointOnSegment } from "../core/outline.js";
 import { polygonPathD } from "../core/shapes.js";
+import { morphPayloadFromConnector, statePaint } from "../core/morph_payload.js";
 import { endpointPairHooks, hitsShaft, connectorPathAnchors } from "../core/endpoints.js";
 
 /** Pure function. The generator params for a state (evaluated OR raw — only
@@ -280,6 +281,40 @@ export const fancyArrowPlugin = {
     // strokeWidth (0 when there is no outline) — the same half-strokeWidth pad
     // convention rect.js/donut.js use for their own stroked bbox halo.
     return applyEffects(cmds, s, world, fancyArrowInkRect(s));
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the 7-point SILHOUETTE as one closed contour, in the ink rect's frame.
+   *
+   * THIS IS THE ONE ARROW-FAMILY WIDGET WITH A REAL SILHOUETTE TO HAND OVER, and
+   * that is a fact about its ink rather than a preference. Its four thinner
+   * siblings are STROKED — a centerline the painter expands — so they morph by
+   * their centerline (core/endpoints.js `headedConnectorMorphSources`). This one
+   * is FILLED: emit() draws `polygonPathD(fancyArrowOutline(...))`, a closed
+   * region whose head is fused into the shaft, and reusing that exact generator
+   * means the morph contour IS the painted boundary. A centerline here would
+   * throw away the taper and the barbs — the whole point of the widget.
+   *
+   * The optional outline STROKE is not a second contour: emit() draws it as a
+   * polyline around this same loop, so it rides along in `paint` (fill, stroke,
+   * strokeWidth) rather than being reported as separate ink.
+   *
+   * A zero-length arrow has no outline and yields an EMPTY payload; `morphNotReady`
+   * below shares that exact predicate, so the gate cannot disagree with emit()'s
+   * own "no geometry" guard.
+   */
+  morphPaths(s) {
+    const outline = fancyArrowOutline(outlineParams(s));
+    return morphPayloadFromConnector(
+      outline ? [{ d: polygonPathD(outline), paint: statePaint(s) }] : [],
+      fancyArrowInkRect(s),
+    );
+  },
+  /** Pure function. Why this arrow cannot morph YET, or null — the polygon's
+   * precedent: the gate reads the SAME `fancyArrowOutline` result emit() refuses
+   * to draw on, so "nothing to morph" and "nothing to draw" are one condition. */
+  morphNotReady(s) {
+    return fancyArrowOutline(outlineParams(s)) ? null : "a non-zero length (this one collapses to a point and draws nothing)";
   },
   // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the outline's min/max IS
   // this widget's width and height, so it band-selects and culls like any box

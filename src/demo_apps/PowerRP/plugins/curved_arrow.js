@@ -34,7 +34,8 @@ import { polyline, polygon, path } from "../render_gpu/ir.js";
 import { bundle, bundleNestedDefaults, props } from "../core/properties.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { bezierControlFromBend, quadraticBezierPoint, curvedArrowPolyline, axisNormalFrame, projectOntoNormal, closestPointOnAxisRange } from "../core/outline.js";
-import { endpointPairHooks, arrowHeads, connectorPathAnchors, walkPolyline, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { endpointPairHooks, arrowHeads, headedConnectorMorphSources, connectorPathAnchors, walkPolyline, dashedSpans, ARROW_HEAD_ROWS, CONNECTOR_DASH_ROWS, CONNECTOR_DASH_DEFAULTS, hitsPolylineShaft, ARROW_ENDPOINT_DEFAULTS, ARROW_STROKE_WIDTH, ARROW_HEAD_WIDTH } from "../core/endpoints.js";
+import { morphPayloadFromConnector } from "../core/morph_payload.js";
 
 /** Pure function. The bezier generator's params for a state.
  * @example bendParams({from: {x: 0, y: 0}, to: {x: 100, y: 0}, bend: 0.3}) // {x0: 0, y0: 0, x1: 100, y1: 0, bend: 0.3}
@@ -177,6 +178,31 @@ export const curvedArrowPlugin = {
   // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): the sampled curve's min/max
   // IS this widget's width and height, so it band-selects and culls like any box
   // widget despite having no w/h state and no resize handles.
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the SAMPLED curve as one open centerline subpath, plus a closed contour per
+   * head glyph, in the ink rect's frame.
+   *
+   * SAMPLED, NOT THE ANALYTIC QUADRATIC, and deliberately so: `curvedArrowPolyline`
+   * is what emit(), `localBounds`, the anchors and the hit test all already read,
+   * so morphing the same samples keeps the payload equal to the ink. Elevating the
+   * true bezier instead would be more exact than the widget itself draws and would
+   * put the morph and the picture on two different curves. The samples elevate to
+   * cubics exactly (a straight segment IS a cubic with collinear controls), so
+   * nothing is approximated a second time.
+   *
+   * See core/endpoints.js `headedConnectorMorphSources` for the centerline and
+   * heads argument; the curve is reported whole rather than trimmed by the head
+   * pullback emit() applies.
+   */
+  morphPaths(s) {
+    const pts = curvedArrowPolyline(bendParams(s));
+    const n = pts.length;
+    return morphPayloadFromConnector(
+      headedConnectorMorphSources(s, pts, arrowHeads(s, { tip: pts[n - 1], from: pts[n - 2] }, { tip: pts[0], from: pts[1] })),
+      curvedArrowInkRect(s),
+    );
+  },
   localBounds: curvedArrowInkRect,
   // THE ANCHOR PROTOCOL: start / mid / end on the SAMPLED curve, by ARC LENGTH.
   // This widget is exactly why that qualifier matters — the chord midpoint the
