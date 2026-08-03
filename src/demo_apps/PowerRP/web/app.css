@@ -12299,3 +12299,70 @@ audio.ae-preview-media {
   box-shadow: 0 0 0 var(--a-hairline) var(--border);
   pointer-events: none;
 }
+
+/* ── AUDIO NODES: THE LIVE OVERLAY AND THE AUTOPLAY BADGE (NF-BIND) ──────────
+   Two screen-space layers over the Skia scene. Neither draws any part of a node's
+   own picture — the card, the meter's well and the family chrome are painted by the
+   widget itself into the display list, so they exist in exports and in the CLI
+   render. What lives here is the part that CANNOT be document state: live audio,
+   and the browser's autoplay gate. */
+
+:root {
+  /* The live overlay's corner radius: smaller than the node card's, because it sits
+     INSIDE the card and a matching radius would read as a second card rather than as
+     an inset well. */
+  --a-audio-overlay-radius: 4px;
+  /* The badge's offset from the canvas corner it sits in. Far enough from the edge
+     not to fight the scrollbar, close enough to read as chrome rather than content. */
+  --a-audio-badge-inset: 12px;
+  --a-audio-badge-dot: 7px;
+  --a-audio-badge-gap: 7px;
+  --a-audio-badge-pad-y: 5px;
+  --a-audio-badge-pad-x: 10px;
+  /* Amber: this is a NOTICE, not an error. The failed variant switches to the app's
+     danger colour. */
+  --a-audio-badge-ink: #e0af68;
+}
+
+/* THE ANALYSIS OVERLAY. Absolutely positioned per node from CanvasView's screen-space
+   geometry, and POINTER-EVENTS:NONE without exception — an analysis node must stay
+   grabbable, wirable and selectable THROUGH its own live picture, exactly like the
+   video overlays above it. */
+.nf-audio-overlay {
+  position: absolute;
+  pointer-events: none;
+  border-radius: var(--a-audio-overlay-radius);
+}
+
+/* THE AUTOPLAY BADGE. A real <button>, because the browser requires a genuine user
+   gesture to start audio and because it must be keyboard-reachable. */
+.nf-audio-badge {
+  position: absolute;
+  left: var(--a-audio-badge-inset);
+  bottom: var(--a-audio-badge-inset);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--a-audio-badge-gap);
+  padding: var(--a-audio-badge-pad-y) var(--a-audio-badge-pad-x);
+  border: var(--a-hairline) solid var(--border);
+  border-radius: var(--a-radius-floating);
+  background: var(--a-panel-bg);
+  color: var(--a-audio-badge-ink);
+  font-size: var(--a-font-sm);
+  cursor: pointer;
+  z-index: 2;
+}
+
+.nf-audio-badge:hover { border-color: var(--a-audio-badge-ink); }
+.nf-audio-badge:disabled { cursor: default; opacity: var(--a-disabled-opacity); }
+.nf-audio-failed { color: var(--a-guide); }
+.nf-audio-failed:hover { border-color: var(--a-guide); }
+
+/* The dot carries the state at a glance, for the same reason the save dot does:
+   colour reaches the eye before text does. */
+.nf-audio-dot {
+  width: var(--a-audio-badge-dot);
+  height: var(--a-audio-badge-dot);
+  border-radius: 50%;
+  background: currentColor;
+}

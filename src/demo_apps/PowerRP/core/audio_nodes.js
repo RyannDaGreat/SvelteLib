@@ -58,8 +58,8 @@
 import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
-import { NODE_ITEM_REFS, minimumNodeHeight } from "./nodeflow.js";
-import { NODE_HEADER_H, NODE_VALUE_INK, familyCard, familyRim, portBeads } from "./node_chrome.js";
+import { NODE_ITEM_REFS, PORT_BEAD_R, minimumNodeHeight, portLayout } from "./nodeflow.js";
+import { NODE_HEADER_H, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, portBeads } from "./node_chrome.js";
 import { text } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
@@ -277,7 +277,7 @@ export function audioNodePlugin(spec) {
     defaults: {
       type: spec.type,
       x: 100, y: 100, w: width,
-      h: minimumNodeHeight({ ports: portsFn }, {}),
+      h: readoutNodeHeight(spec, portsFn),
       z: 0, rotation: 0, scale: 1,
       rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
       // Empty at birth but PRESENT — NODE_ITEM_REFS names a wildcard path through
@@ -311,7 +311,7 @@ export function audioNodePlugin(spec) {
       const readout = audioReadout(spec, s);
       const ops = [
         ...familyCard(s, spec.title, spec.family),
-        ...(readout ? audioReadoutOps(s, readout) : []),
+        ...(readout ? audioReadoutOps(s, plugin, readout) : []),
         ...portBeads(plugin, s),
         ...familyRim(s, spec.family),
       ];
@@ -337,29 +337,90 @@ export function audioNodePlugin(spec) {
 /**
  * Pure function. The readout line's display-list ops.
  *
- * Deliberately NOT nodeValueText: that centres a 22pt number in the card's whole
- * body, which is right for a display node whose entire purpose is one number, and
- * wrong for an audio module whose body also has to hold port labels on both sides.
- * This sits just under the header at a size that stays out of their way.
+ * ── IT SITS BELOW THE PORT ROWS, AND THAT IS A MEASURED CORRECTION ──────────
+ * The first version put it just under the header, which is where a value belongs on
+ * a card that has nothing else — and it landed exactly on the first port row. On a
+ * rendered patch the noise node read "level" and "pink" on the same line, which is
+ * two labels fighting rather than one card with a number on it.
+ *
+ * So the readout is placed BELOW the last port row, in the band the ports leave
+ * free, and a node's default height already reserves that band (see
+ * `readoutNodeHeight`). Deliberately NOT nodeValueText, which centres a 22pt number
+ * in the card's whole body: that is right for a display node whose entire purpose is
+ * one number, and wrong for a module whose body also holds port labels on both
+ * sides. It is also horizontally inset by the same padding the port labels use, so
+ * a long readout on a narrow card clips against the edge rather than under a bead.
  *
  * @param {object} s - the folded item state
+ * @param {object} plugin - the node's own plugin (to know how many port rows precede)
  * @param {string} str - the formatted readout
  * @returns {object[]} display-list commands
  *
- * @example audioReadoutOps({w: 150, h: 90}, "800 Hz").length // 1
- * @example audioReadoutOps({w: 150, h: 90}, "800 Hz")[0].text // "800 Hz"
- * @example audioReadoutOps({w: 150, h: 90}, "800 Hz")[0].boxStyle.align // "center"
+ * @example audioReadoutOps({w: 150, h: 90}, {ports: () => ({inputs: [], outputs: []})}, "800 Hz").length // 1
+ * @example audioReadoutOps({w: 150, h: 90}, {ports: () => ({inputs: [], outputs: []})}, "800 Hz")[0].text // "800 Hz"
+ * @example audioReadoutOps({w: 150, h: 90}, {ports: () => ({inputs: [], outputs: []})}, "800 Hz")[0].boxStyle.align // "center"
  */
-export function audioReadoutOps(s, str) {
+export function audioReadoutOps(s, plugin, str) {
   return [text({
     text: str,
-    x: 0,
-    y: NODE_HEADER_H + AUDIO_READOUT_SIZE + 4,
+    x: NODE_PAD,
+    y: readoutBaseline(plugin, s),
     size: AUDIO_READOUT_SIZE,
     color: NODE_VALUE_INK,
-    boxW: s.w ?? 0,
+    boxW: Math.max(0, (s.w ?? 0) - NODE_PAD * 2),
     boxStyle: { align: "center" },
   })];
+}
+
+/**
+ * Pure function. The LOCAL baseline y the readout sits on: below the last port row,
+ * centred in whatever height remains.
+ *
+ * Reads the port layout the beads themselves are placed from, so the two cannot
+ * disagree about where the rows end — the same one-source-of-truth reason
+ * core/node_chrome.portBeads reads it rather than recomputing.
+ *
+ * @param {object} plugin - the node's plugin
+ * @param {object} s - the folded item state
+ * @returns {number} a LOCAL baseline y
+ *
+ * @example // with no ports, the readout centres in the body below the header
+ * @example readoutBaseline({ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 90}) > 24 // true
+ * @example // more port rows push it further down
+ * @example readoutBaseline({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}], outputs: []})}, {w: 150, h: 140}) > readoutBaseline({ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 140}) // true
+ */
+export function readoutBaseline(plugin, s) {
+  const rows = portLayout(plugin, s);
+  const lastRow = rows.length ? Math.max(...rows.map((p) => p.y)) : NODE_HEADER_H;
+  const top = lastRow + PORT_BEAD_R + READOUT_GAP;
+  const h = s.h ?? 0;
+  // Centre in the remaining band when there is one; otherwise sit right below the
+  // ports and let the card clip, which is the visible signal that it is too short.
+  return Math.max(top, top + Math.max(0, (h - top) / 2)) + AUDIO_READOUT_SIZE / 3;
+}
+
+/** The gap between the last port bead and the readout band. */
+const READOUT_GAP = 8;
+
+/**
+ * Pure function. A node's default height: tall enough for its ports AND for its
+ * readout band, when it has one.
+ *
+ * `minimumNodeHeight` sizes a card to its PORTS alone, which is correct for the
+ * proof trio (their value text is centred over the whole body). An audio node with a
+ * readout needs one more line below the last row, or the readout would be placed
+ * outside the card it belongs to.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} portsFn - the node's ports accessor
+ * @returns {number} a default height
+ *
+ * @example // a spec with a readout is taller than the same spec without one
+ * @example readoutNodeHeight({readout: "x", knobs: [{key: "x", default: 1}]}, () => ({inputs: [], outputs: []})) > readoutNodeHeight({}, () => ({inputs: [], outputs: []})) // true
+ */
+export function readoutNodeHeight(spec, portsFn) {
+  const base = minimumNodeHeight({ ports: portsFn }, {});
+  return spec.readout ? base + AUDIO_READOUT_SIZE + READOUT_GAP * 2 : base;
 }
 
 /** The readout's type size: bigger than a port label, smaller than the display

@@ -23,6 +23,13 @@
   import { deriveWires } from "../core/derive.js";
   import { portColor } from "../core/nodeflow.js";
   import { allPortBeads, beadAt, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
+  // THE AUDIO MIRROR (NF-BIND): the document reflected into the one synth engine.
+  // ONE WAY ONLY — the engine never writes back, so the core invariant is untouched.
+  // AudioOverlay draws the LIVE meter/spectrogram in screen space; AudioBadge is the
+  // autoplay surface. See web/audioMirror.svelte.js for why both exist.
+  import AudioOverlay from "./AudioOverlay.svelte";
+  import AudioBadge from "./AudioBadge.svelte";
+  import { mirrorAudio } from "./audioMirror.svelte.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // THE HANDLE GLYPH BANK: core/ owns the VOCABULARY (which looks exist and what
@@ -4822,7 +4829,68 @@
         color: overRefused ? null : portColor(wireDrag.anchor.type),
       };
     }
-    return { wires, beads, ghost };
+    // ── THE ANALYSIS NODES' SCREEN RECTS (NF-BIND) ───────────────────────────
+    // Where AudioOverlay.svelte paints a live meter bar or spectrogram. This layer
+    // carries only GEOMETRY — which node, and the screen box its readout occupies.
+    // The live SAMPLES never come through here: they arrive on the engine's own rAF
+    // into web/audioMirror.analysisData, and the overlay reads that Map on its own
+    // frame. Routing audio data through this $derived would schedule a Svelte update
+    // per meter per frame, which is exactly the per-frame reactivity the node
+    // overlay is careful to avoid elsewhere.
+    //
+    // WHY IT IS AN OVERLAY AT ALL: an analysis node's bar is LIVE audio, which is
+    // not document state. Drawing it in the plugin's emit() would make Δt = 0
+    // produce two different pictures, breaking the determinism law, frame-range
+    // sharding and export reproducibility together. The plugin paints the STATIC
+    // form (card, frame, label); this paints the motion on top, in screen space,
+    // exactly the way selection handles do — so no export and no cli/render.js ever
+    // sees it.
+    const analysis = nodes
+      .filter((n) => n.plugin?.audioSpec?.overlay)
+      .map((n) => {
+        const s = n.state;
+        const pad = AUDIO_OVERLAY_PAD;
+        const tl = T.apply(n.world, pad, AUDIO_OVERLAY_TOP);
+        const br = T.apply(n.world, (s.w ?? 0) - pad, (s.h ?? 0) - pad);
+        const a = pt(tl.x, tl.y);
+        const b = pt(br.x, br.y);
+        return {
+          id: n.itemId,
+          kind: n.plugin.audioSpec.overlay,
+          x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+          w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y),
+        };
+      })
+      .filter((r) => r.w > 1 && r.h > 1);
+    return { wires, beads, ghost, analysis };
+  });
+
+  /** The inset from a node's card edge to its live-overlay rect, and the top inset
+   *  that clears the title bar plus one port row. Local units, mapped through the
+   *  node's own world transform so a rotated or scaled analysis node's overlay
+   *  follows its card. */
+  const AUDIO_OVERLAY_PAD = 10;
+  const AUDIO_OVERLAY_TOP = 32;
+
+  // ── DRIVING THE AUDIO MIRROR ───────────────────────────────────────────────
+  // The document's EVALUATED state, reflected into the engine on every change.
+  //
+  // IT READS app.state(), NOT app.nodes(). The mirror needs the item MAP — knobs and
+  // connections — and nothing about geometry, so deriving a render tree for it would
+  // be work thrown away. It also means moving a node's card, which changes the
+  // derived tree on every pointermove, does not even reach this.
+  //
+  // AND IT IS CHEAP WHEN NOTHING AUDIO-SHAPED CHANGED, which is the point: reading
+  // the scene is a walk over the item map and an unchanged scene diffs to ZERO
+  // engine calls. A patch therefore keeps playing while it is edited, instead of
+  // being torn down and rebuilt (a 40 ms guarded ramp per topology change) on every
+  // frame of every drag.
+  //
+  // VIEWPORT AND SELECTION ARE DELIBERATELY NOT DEPENDENCIES. Panning the canvas or
+  // clicking a node must not touch the audio graph.
+  $effect(() => {
+    app.doc; app.previewDelta; app.slideIndex; // reactive deps: the document, live edits, the slide
+    mirrorAudio(app.state()?.items ?? {}, app.registry);
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
@@ -4915,6 +4983,17 @@
            backend (WebGPU zero-copy / WebGL2 upload) is created async in an effect
            above; pointer-events:none so all input still reaches the SVG overlay. -->
       <canvas bind:this={videoV8El} class="video-v8-overlay"></canvas>
+      <!-- THE LIVE ANALYSIS LAYER (NF-BIND): a small 2D canvas over each meter and
+           spectrum node, drawing the bouncing bar and the flowing spectrogram. It
+           sits here — over the Skia scene, under the SVG chrome, pointer-events:none
+           — for the same reason the video overlays do, and because the node's STATIC
+           picture is painted underneath it by the plugin. Live audio is not document
+           state, so it can never be in emit(); see the component's docblock. -->
+      <AudioOverlay rects={nodeOverlay.analysis} />
+      <!-- THE AUTOPLAY SURFACE: absent when the deck has no audio, absent again once
+           sound is running, and clickable in between. A patch that is silent because
+           the browser has not been clicked must SAY so. -->
+      <AudioBadge />
       {#if videoV8Error}
         <div class="gpu-error">Video V8 overlay init failed. {videoV8Error}</div>
       {/if}
