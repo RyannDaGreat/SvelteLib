@@ -26,7 +26,7 @@
  * Run: node src/demo_apps/PowerRP/tests/multiselect_union_test.js
  */
 import assert from "node:assert/strict";
-import { intersectRows, multiSelectPanel, MULTISELECT_MODE } from "../core/multiselect.js";
+import { intersectRows, multiSelectPanel, MULTISELECT_MODE, UNIVERSAL_MULTI_KEYS } from "../core/multiselect.js";
 
 let passed = 0;
 const test = (name, fn) => { fn(); passed++; console.log(`  ok  ${name}`); };
@@ -41,8 +41,23 @@ const entry = (itemId, rows, state = {}, defaults = {}) =>
 
 /** intersectRows returns RAW rows; multiSelectPanel returns WRAPPERS ({row, …}).
  *  One helper for both, so a test cannot silently read `undefined` off the wrong
- *  shape — which is exactly what it did on the first run of this file. */
-const keysOf = (r) => r.rows.map((row) => (row.row ?? row).key);
+ *  shape — which is exactly what it did on the first run of this file.
+ *
+ *  THE UNIVERSAL ROWS ARE DROPPED HERE (WORKSTREAM BE). Every selection now leads
+ *  with type/active/active~interp/morph — rows no plugin declares, which is why
+ *  they cannot come from these synthetic `inspector` stubs. This file is about
+ *  the UNION vs INTERSECTION of PLUGIN-DECLARED rows, so filtering them out keeps
+ *  each assertion below saying exactly what it always said, rather than restating
+ *  a fixed prefix in twelve places. The universal rows have their own pins in
+ *  tests/multiselect_test.js, including that they lead and in what order. */
+const universalKeys = new Set(UNIVERSAL_MULTI_KEYS.flatMap((k) => [k, `${k}~interp`]));
+const isUniversal = (row) => universalKeys.has((row.row ?? row).key);
+const keysOf = (r) => r.rows.map((row) => (row.row ?? row).key).filter((k) => !universalKeys.has(k));
+
+/** The PLUGIN rows only — what every assertion in this file is about. Used in
+ *  place of `rows[0]`/`rows.length`, since the universal prefix now sits ahead of
+ *  them and a positional index would be reading the wrong row. */
+const pluginRowsOf = (r) => r.rows.filter((row) => !isUniversal(row));
 
 // ── WHAT UNION ADDS ─────────────────────────────────────────────────────────
 
@@ -89,9 +104,13 @@ test("THE DRIFT GATE HOLDS IN UNION MODE TOO: rows are the plugins' OWN objects"
   const aRows = [OPACITY, FRACTION];
   const bRows = [TEXT];
   const r = intersectRows([entry("a", aRows), entry("b", bRows)], MULTISELECT_MODE.UNION);
-  assert.equal(r.rows[0], OPACITY, "the SAME object, not a copy");
-  assert.equal(r.rows[1], FRACTION, "the SAME object, not a copy");
-  assert.equal(r.rows[2], TEXT, "…including a row contributed by a non-primary item");
+  // Found BY KEY rather than by position: the universal rows lead the list now
+  // (WORKSTREAM BE), and this gate is about IDENTITY, never about index. Stating
+  // it this way also makes the assertion immune to any future row ordering.
+  const pluginRows = r.rows.filter((row) => !universalKeys.has(row.key));
+  assert.equal(pluginRows[0], OPACITY, "the SAME object, not a copy");
+  assert.equal(pluginRows[1], FRACTION, "the SAME object, not a copy");
+  assert.equal(pluginRows[2], TEXT, "…including a row contributed by a non-primary item");
   assert.ok(!("appliesTo" in OPACITY), "and nothing was mutated onto the plugin's row");
 });
 
@@ -126,7 +145,7 @@ test("defaults still count: absent MEANS the default, in union mode too", () => 
     [entry("a", [OPACITY], { opacity: 1 }, { opacity: 1 }), entry("b", [OPACITY], {}, { opacity: 1 })],
     MULTISELECT_MODE.UNION,
   );
-  assert.equal(panel.rows[0].mixed, false, "an explicit 1 and an absent-meaning-1 are the same value");
+  assert.equal(pluginRowsOf(panel)[0].mixed, false, "an explicit 1 and an absent-meaning-1 are the same value");
 });
 
 // ── UNION IS NOT AN ESCAPE HATCH FROM CONTRACT CONFLICTS ────────────────────
@@ -207,15 +226,15 @@ test("THE PRIMARY'S CONTRACT IS THE ONE OFFERED — the user's 'whatever the top
   const starRow = { key: "shape", kind: "select", options: ["star"] };
   const boxRow = { key: "shape", kind: "select", options: ["box"] };
   const first = intersectRows([entry("a", [starRow]), entry("b", [boxRow])]);
-  assert.equal(first.rows[0], starRow, "primary a → a's row, BY REFERENCE (the drift gate)");
+  assert.equal(pluginRowsOf(first)[0], starRow, "primary a → a's row, BY REFERENCE (the drift gate)");
   const second = intersectRows([entry("b", [boxRow]), entry("a", [starRow])]);
-  assert.equal(second.rows[0], boxRow, "primary b → b's row; the panel reads as the primary's panel");
+  assert.equal(pluginRowsOf(second)[0], boxRow, "primary b → b's row; the panel reads as the primary's panel");
 });
 
 test("AN UNCONFLICTED ROW CARRIES conflict: null, so the panel does not mark everything", () => {
   const a = entry("a", [OPACITY], { opacity: 1 });
   const b = entry("b", [OPACITY], { opacity: 0.5 });
-  const row = multiSelectPanel([a, b]).rows[0];
+  const row = pluginRowsOf(multiSelectPanel([a, b]))[0];
   assert.equal(row.conflict, null);
   assert.equal(row.mixed, true, "…while still being mixed on VALUE, which is a different thing entirely");
 });
@@ -224,6 +243,6 @@ test("the row is offered AND still reported — informing and allowing are not a
   const a = entry("a", [{ key: "shape", kind: "select", options: ["star"] }]);
   const b = entry("b", [{ key: "shape", kind: "select", options: ["box"] }]);
   const panel = multiSelectPanel([a, b]);
-  assert.equal(panel.rows.length, 1, "offered");
+  assert.deepEqual(pluginRowsOf(panel).map((r) => r.row.key), ["shape"], "offered");
   assert.deepEqual(panel.conflicts.map((c) => c.key), ["shape"], "and reported, so the warning line still has its content");
 });
