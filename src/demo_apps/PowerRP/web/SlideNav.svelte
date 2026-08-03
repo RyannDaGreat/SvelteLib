@@ -574,21 +574,27 @@
   }
 
   /**
-   * Query. THE CHIP'S SENTENCE: which slide the pair collapses into, and whose
-   * look survives. Two facts, and they have DIFFERENT answers — the survivor sits
-   * at the EARLIER seat, the picture comes from the LATER slide (the user's rule:
-   * "the one that comes later in the slideshow will have priority"). A chip
-   * saying only "Merge" would leave the destructive half unanswered.
+   * Query. THE CHIP'S SENTENCE: how many slides are about to become one, and
+   * WHOSE LOOK SURVIVES — the destructive half, which "Merge" alone leaves
+   * unanswered. The winner is the LAST of the set in DECK ORDER (the user's rule:
+   * "the one that comes later in the slideshow will have priority"), which is not
+   * necessarily the row being dragged and not necessarily the row being hovered —
+   * so it is worth stating rather than leaving to be inferred from the gesture.
    *
-   * Numbers, not names: the rail already shows names two pixels away, the numbers
-   * are what say WHERE, and a long name would blow out a chip that has to fit on
-   * a thumbnail.
+   * It does NOT name the destination seat. For an adjacent pair that is the
+   * earlier row, but a scattered set is GATHERED to the winner's position first
+   * (app.mergeSlideRun), so a single "merges into N" would be wrong in one of the
+   * two cases. What is true in both is which slide's look wins, so that is what
+   * it says.
+   *
+   * A number, not a name: the rail shows names two pixels away, the number is
+   * what says WHERE, and a long name would blow out a chip sitting on a thumbnail.
    */
   function mergeChipLabel(target) {
     const run = [...new Set([...(dragState?.indices ?? []), target])].sort((a, b) => a - b);
-    const seat = run[0] + 1;
     const winner = run[run.length - 1] + 1;
-    return `Merge into ${seat} · slide ${winner} wins`;
+    const what = run.length > 2 ? `Merge ${run.length} slides` : "Merge";
+    return `${what} · slide ${winner} wins`;
   }
 
   /**

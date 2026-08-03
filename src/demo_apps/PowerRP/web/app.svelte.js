@@ -5157,44 +5157,60 @@ export class PowerRPApp {
   }
 
   /**
-   * Query. WHY the slides `indices` cannot be merged into `target` as one run, or
-   * `null` when they can. The drag-onto-a-slide drop's gate and its refusal
-   * sentence, from one call — `slideMergeBlocker`'s shape, for the block case.
+   * Query. WHY the slides `indices` cannot be merged into `target`, or `null`
+   * when they can. The drag-onto-a-slide drop's gate and its refusal sentence,
+   * from one call — `slideMergeBlocker`'s shape, for the block case.
    *
-   * THE RULE IS CONTIGUITY, and it is a real constraint rather than an
-   * implementation shortcut. Merging is defined on ADJACENT pairs, because the
-   * composition is "the fold entering the pair, then the fold leaving it" and a
-   * gap in the run means slides that are NOT being merged sit inside that span —
-   * their deltas would have to be folded through and then re-derived, which is a
-   * REORDER plus a merge, i.e. two different things the user did not ask for in
-   * one gesture. So a non-contiguous selection is REFUSED with a sentence rather
-   * than silently reordered into adjacency.
+   * NON-ADJACENCY IS NOT A REFUSAL, and an earlier version of this made it one.
+   * That was wrong, and the browser probe caught it on the FIRST gesture it
+   * tried: dragging slide 1 onto slide 3 is an obvious thing to do and it was
+   * being declined with a sentence about contiguity. The user's gesture means
+   * "merge these", and "they are three rows apart" is the app's problem to solve,
+   * not a reason to say no — `mergeSlideRun` gathers them first (see there).
+   * What remains genuinely refusable is a slide with no picture to merge.
    */
   slideRunMergeBlocker(indices, target) {
     const run = [...new Set([...indices, target])].sort((a, b) => a - b);
     if (run.length < 2) return "two different slides — a slide cannot merge into itself";
-    if (run[run.length - 1] - run[0] !== run.length - 1)
-      return "the selected slides to be next to each other — merging a non-adjacent set would have to reorder the slides between them first";
     const off = run.filter((i) => this.doc.slides[i].enabled === false);
     if (off.length > 0) return `every slide enabled — slide ${off[0] + 1} is disabled, so it has no picture of its own to merge`;
     return null;
   }
 
   /**
-   * Command (ONE undo unit). MERGES a contiguous RUN of slides into one — the
-   * drop half of drag-a-slide-onto-a-slide, and the multi-select generalization
-   * of `mergeSlidePair`.
+   * Command (ONE undo unit). MERGES a set of slides into one — the drop half of
+   * drag-a-slide-onto-a-slide, and the multi-select generalization of
+   * `mergeSlidePair`.
    *
    * PRIORITY IS DECK ORDER, NOT DRAG DIRECTION. The user's rule is "the one that
    * comes later in the slideshow will have priority", so dragging slide 2 onto
    * slide 5 and dragging slide 5 onto slide 2 produce the SAME document: 5 wins
-   * either way. The drag direction chooses the PAIR, never the winner.
+   * either way. The drag direction chooses WHICH SLIDES, never which one wins.
    *
-   * The run is folded left-to-right by repeated adjacent merge, which is exactly
-   * "later wins" iterated and is why the result is independent of the order the
-   * pairs are taken in (pinned in tests/slide_merge_test.js: merging a deck all
-   * the way down to one slide yields the LAST slide's picture). Each step is
-   * pure; only the final document is committed, so it is ONE undo unit.
+   * ── GATHER, THEN COLLAPSE ───────────────────────────────────────────────────
+   * The slides need not be adjacent. Dragging slide 1 onto slide 3 must merge
+   * those two — refusing it because two rows sit between them would be the app
+   * declining an unambiguous gesture over its own implementation detail. So a
+   * scattered set is first GATHERED into a contiguous block at the position of
+   * its LAST member, using the appearance-preserving reorder
+   * (`withSlidesMovedToBoundary`), and then collapsed pairwise.
+   *
+   * THAT COMPOSITION IS SOUND BECAUSE BOTH HALVES PRESERVE APPEARANCE. The
+   * reorder's law is that every slide still looks exactly as it did (only the
+   * order changed), and the merge's law is that the pair shows the later
+   * picture while every slide after it is untouched. So the gathered slides
+   * carry their own pictures to the merge site, and the merge then applies
+   * "later wins" to exactly the slides the user pointed at — with the slides
+   * that were BETWEEN them left alone, now sitting before the merged row.
+   *
+   * IT GATHERS AT THE LAST MEMBER'S POSITION, not the first: that is the seat
+   * whose picture wins, so the merged slide stays where the winning content
+   * already was, and the deck reads as "these collapsed into that one".
+   *
+   * The block is then collapsed FROM THE RIGHT, which is "later wins" iterated
+   * (pinned in tests/slide_merge_test.js: merging a deck all the way down to one
+   * slide yields the LAST slide's picture). Every step is pure and only the final
+   * document is committed, so the whole gesture is ONE undo unit.
    */
   mergeSlideRun(indices, target) {
     const run = [...new Set([...indices, target])].sort((a, b) => a - b);
@@ -5203,14 +5219,22 @@ export class PowerRPApp {
       console.error(`PowerRP: cannot merge slides ${run.map((i) => i + 1).join(", ")} — requires ${blocked}.`);
       return;
     }
+    let doc = this.doc;
+    let block = run;
+    if (run[run.length - 1] - run[0] !== run.length - 1) {
+      // SCATTERED — gather first. The boundary is just after the run's last
+      // member, so the block lands ending where that slide already sat.
+      const ids = run.map((i) => this.doc.slides[i].id);
+      doc = withSlidesMovedToBoundary(this.doc, run, run[run.length - 1] + 1);
+      block = ids.map((id) => doc.slides.findIndex((s) => s.id === id)).sort((a, b) => a - b);
+    }
     // Collapse from the RIGHT so the indices of the not-yet-merged pairs never
     // shift under us: merging (i, i+1) renumbers everything after i, but nothing
     // at or before it.
-    let doc = this.doc;
-    for (let i = run[run.length - 1]; i > run[0]; i--) doc = withSlidesMerged(doc, i - 1, i);
+    for (let i = block[block.length - 1]; i > block[0]; i--) doc = withSlidesMerged(doc, i - 1, i);
     this.commit(doc);
     this.clearSlideSelection();
-    this.slideIndex = run[0];
+    this.slideIndex = block[0];
   }
 
   /**
