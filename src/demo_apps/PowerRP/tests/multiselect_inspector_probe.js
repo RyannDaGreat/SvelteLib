@@ -361,9 +361,21 @@ try {
     return {
       found: true,
       labels: [...cat.querySelectorAll(".label")].map((e) => e.textContent.trim()),
-      // The widget-type row is displayed but not jointly writable, so it renders
-      // the INERT mark with its reason rather than a live control.
+      // THE INERT-MARK COUNT. It was 1 under BE (the widget-type row rendered
+      // `.mixed-blocked` with its refusal); WORKSTREAM BT makes the row a real
+      // dropdown, so it must now be 0. See the assertion below.
       blocked: [...cat.querySelectorAll(".mixed-blocked")].length,
+      // …and the row that replaced it: the SAME control the single-select
+      // widget-type row uses (SearchableDropdown, `optionsFrom: "retype"`).
+      typeRowHasDropdown: (() => {
+        const row = [...cat.querySelectorAll(".row")]
+          .find((el) => el.querySelector(".label")?.textContent.trim() === "Widget type");
+        if (!row) return null;
+        // `.dd-trigger` is Dropdown's own button (SearchableDropdown wraps it), so
+        // this is the LIVE control, not merely "some element exists".
+        const t = row.querySelector(".dd-trigger");
+        return { present: !!t, disabled: t ? t.disabled === true : null, text: t?.textContent.trim() ?? null };
+      })(),
     };
   });
   assert(universal.found, "the UNIVERSAL section is present with three items selected");
@@ -374,8 +386,20 @@ try {
     "…and VISIBILITY INTERPOLATION, the row whose absence was the whole report");
   assert(!universal.labels.includes("Name"),
     "NAME is the one row the user volunteered to drop, and it is absent");
-  assert(universal.blocked === 1,
-    `exactly one universal row is inert — the type row, which cannot take a joint write (${universal.blocked})`);
+  // ── THIS ASSERTION WAS INVERTED BY WORKSTREAM BT ──────────────────────────
+  // It read: `universal.blocked === 1` — "exactly one universal row is inert —
+  // the type row, which cannot take a joint write". That pinned BE's refusal,
+  // which was a CLAUDE CHOICE and never a user ruling. The user overruled it
+  // (2026-08-03, verbatim, looking at that very tooltip): "Hey, why won't it let
+  // me edit widget type? No, that's a stupid error. Just do it to everyone
+  // individually … then change what we see in the properties."
+  // The manifest's lesson is why the flip lands in the same commit as the code:
+  // a pin left standing on an overruled design is a confident lie backed by a
+  // green suite.
+  assert(universal.blocked === 0,
+    `NO universal row is inert any more — the type row takes a real joint edit (WORKSTREAM BT) (${universal.blocked})`);
+  assert(universal.typeRowHasDropdown?.present === true && universal.typeRowHasDropdown?.disabled === false,
+    `…and it is the SAME live dropdown the single-select widget-type row uses (${JSON.stringify(universal.typeRowHasDropdown)})`);
 
   // THE DRIVING ACCEPTANCE, end to end on the real editor: ONE edit to visibility
   // interpolation changes ALL THREE, and ONE Cmd+Z reverts ALL THREE. The undo
@@ -413,6 +437,122 @@ try {
   assert(visibleUnify.mixed === true, "a set whose visibility disagrees reports MIXED");
   assert(visibleUnify.after.every((v) => v === true),
     `…and one unify makes every selected item visible (${JSON.stringify(visibleUnify.after)})`);
+
+  // ── WORKSTREAM BT: THE TYPE ROW REALLY RETYPES THE SET ─────────────────────
+  // User, 2026-08-03, overruling BE's refusal: "Just do it to everyone
+  // individually. … Just do it to them all individually, then change what we see
+  // in the properties. It's not that hard."
+  //
+  // On the REAL editor, through the REAL command the dropdown calls. The core
+  // suite (tests/retype_batch_test.js) pins the per-item survivors against each
+  // item's own plan; what only the app can prove is that the row is wired to
+  // `app.retypeSelection` at all, that ONE Cmd+Z restores every original type,
+  // and that a camera in the set is skipped instead of converted.
+  console.log("\n  — WORKSTREAM BT: widget type over a set —");
+  const mixedTrio = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.selection = null;
+    app.clearDoc();
+    // THREE DIFFERENT TYPES — the case BE's refusal said could not be expressed
+    // by one shared value. It could not; it never had to.
+    const add = (type, over) => {
+      app.addItem({ ...app.registry.get(type).defaults, type, ...over });
+      return app.selection;
+    };
+    const rect = add("rect", { x: 120, y: 160, w: 80, h: 60 });
+    const circle = add("circle", { x: 260, y: 160, w: 80, h: 60 });
+    const arrow = add("arrow", { from: { x: 400, y: 160 }, to: { x: 520, y: 240 } });
+    const ids = [rect, circle, arrow];
+    app.selectMany(ids);
+    return { ids, types: ids.map((id) => app.rawState().items?.[id]?.type) };
+  });
+  await sleep(900);
+  await expand();
+
+  const retyped = await page.evaluate((ids) => {
+    const app = window.__powerrp_app;
+    const read = () => ids.map((id) => app.state().items?.[id]?.type ?? null);
+    const before = read();
+    // The row's own commit seam calls exactly this (web/Inspector.svelte
+    // commitMulti routes key === "type" here), so driving the command IS driving
+    // the row's write path.
+    const written = app.retypeSelection("text");
+    const after = read();
+    // ONE undo — a single Cmd+Z, not three.
+    app.undo();
+    return { before, written, after, afterUndo: read(), canUndoAfter: app.undoLog.canUndo };
+  }, mixedTrio.ids);
+  assert(JSON.stringify(retyped.before) === JSON.stringify(["rect", "circle", "arrow"]),
+    `precondition: three DIFFERENT widget types are selected (${JSON.stringify(retyped.before)})`);
+  assert(retyped.written === 3, `picking one type retypes all three, individually (${retyped.written})`);
+  assert(retyped.after.every((t) => t === "text"),
+    `…and all three really became text (${JSON.stringify(retyped.after)})`);
+  assert(JSON.stringify(retyped.afterUndo) === JSON.stringify(["rect", "circle", "arrow"]),
+    `ONE Cmd+Z restores ALL THREE original types — one undo unit (${JSON.stringify(retyped.afterUndo)})`);
+
+  // AND THE PANEL AGREES AFTER THE APPLY: once every item is `text`, the row is
+  // no longer mixed — "then change what we see in the properties".
+  const afterApply = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.retypeSelection("text");
+    const row = app.multiSelectPanel().rows.find((r) => r.row.key === "type");
+    return { mixed: row?.mixed ?? null, value: row?.value ?? null, problem: row?.problem ?? null };
+  });
+  assert(afterApply.mixed === false && afterApply.value === "text",
+    `the row now reads the UNIFIED result, not "…" (${JSON.stringify(afterApply)})`);
+  assert(afterApply.problem === null, "…and still carries no refusal");
+
+  // ── A SELECTION CONTAINING THE CAMERA ─────────────────────────────────────
+  // BF's pin, on the real editor: the camera keeps its type, the reason is shown
+  // in the panel, and the eligible rest converts anyway.
+  const withCamera = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    app.selection = null;
+    app.clearDoc();
+    const add = (type, over) => {
+      app.addItem({ ...app.registry.get(type).defaults, type, ...over });
+      return app.selection;
+    };
+    const rect = add("rect", { x: 120, y: 160, w: 80, h: 60 });
+    const circle = add("circle", { x: 260, y: 160, w: 80, h: 60 });
+    // The camera is the document's mandatory singleton — find it, don't add one.
+    const cam = Object.entries(app.state().items).find(([, s]) => s.type === "camera")?.[0] ?? null;
+    const ids = [rect, circle, cam].filter(Boolean);
+    app.selectMany(ids);
+    const written = app.retypeSelection("text");
+    const types = ids.map((id) => app.state().items?.[id]?.type ?? null);
+    const panel = app.multiSelectPanel();
+    const row = panel.rows.find((r) => r.row.key === "type");
+    return {
+      ids, cam, written, types,
+      skips: panel.retypeSkips,
+      rowMixed: row?.mixed ?? null,
+      rowProblem: row?.problem ?? null,
+    };
+  });
+  assert(withCamera.cam !== null, "the camera is in the deck (it is mandatory)");
+  assert(withCamera.written === 2, `only the two eligible items were converted (${withCamera.written})`);
+  assert(withCamera.types[0] === "text" && withCamera.types[1] === "text",
+    `…and they DID convert — an ineligible item never blocks the rest (${JSON.stringify(withCamera.types)})`);
+  assert(withCamera.types[2] === "camera",
+    `THE CAMERA KEPT ITS TYPE — it must never silently become a rect (WORKSTREAM BF's pin) (${withCamera.types[2]})`);
+  assert(withCamera.skips.length === 1 && withCamera.skips[0].itemId === withCamera.cam,
+    `the panel names exactly the camera as skipped (${JSON.stringify(withCamera.skips.map((s) => s.itemId))})`);
+  assert(/mandatory/.test(withCamera.skips[0]?.reason ?? ""),
+    `…with the REASON, not a bare skip (${JSON.stringify(withCamera.skips[0]?.reason)})`);
+  assert(withCamera.rowMixed === true,
+    "after the partial apply the row reads MIXED — honestly, because the camera really did keep its type");
+  assert(withCamera.rowProblem === null, "…and still offers the control rather than refusing");
+
+  // THE REASON IS RENDERED, not merely computed: the panel prints it above the
+  // rows, so the user learns why one item did not change without opening a console.
+  await sleep(700);
+  const skipNote = await page.evaluate(() => {
+    const notes = [...document.querySelectorAll(".inspector .multi-note")].map((e) => e.textContent.trim());
+    return { notes, hasSkipNote: notes.some((t) => /Widget type will not change/i.test(t)) };
+  });
+  assert(skipNote.hasSkipNote,
+    `the panel SHOWS which items a type change will skip (${JSON.stringify(skipNote.notes)})`);
 
   // ── WORKSTREAM BH: the SECTION-HEADER keyframe bubble ──────────────────────
   // User, 2026-08-02 night: "In each drop-down… a slightly different-looking,
