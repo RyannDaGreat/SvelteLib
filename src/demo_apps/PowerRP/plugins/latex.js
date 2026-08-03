@@ -84,6 +84,7 @@ import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { morphPayloadFromViewBox } from "../core/morph_payload.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
 import { image, latexVector, rect, text } from "../render_gpu/ir.js";
@@ -354,6 +355,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -365,6 +367,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -376,6 +379,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -387,6 +391,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -398,6 +403,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 5, color: "#000000", opacity: 1 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -409,6 +415,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -420,6 +427,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -431,6 +439,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -442,6 +451,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -453,6 +463,7 @@ const LATEX_TREATMENT = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
 ];
@@ -701,6 +712,90 @@ export const latexPlugin = {
   // native-size-insert seam). Returns null until the aspect is measured.
   naturalSize(state) {
     return sizeForLatex(state.fontSize ?? DEFAULT_FONT_SIZE, latexAspect(state.latex));
+  },
+  /**
+   * Query (reads the typeset glyph cache). Why this equation cannot morph YET, or
+   * null — the `morphNotReady` half of the morph protocol (core/registry.js).
+   *
+   * THE WAIT IS REAL AND IT IS THE WHOLE REASON THE HOOK EXISTS. A typeset is
+   * ASYNCHRONOUS and browser-only: `latexGlyphs` returns null until MathJax has
+   * laid the equation out and `resolveLatexGlyphs` has flattened its <use> tree.
+   * So an equation asked to morph on the frame it first appears has NO outline,
+   * and a morph that proceeded anyway would blend against an empty payload —
+   * every contour collapsing to a point, which reads as the equation imploding
+   * rather than as "not ready". This is the shatterNotReady/iconify precedent
+   * (plugins/iconify.js morphNotReady), and the reason `morphPairPolicy` asks at
+   * all: derive reports the wait once and falls back to the discrete switch.
+   *
+   * THREE DISTINCT WAITS, each named, because "it didn't morph" is useless to an
+   * author who cannot tell an empty box from a syntax error from a cold cache.
+   * A SYNTAX ERROR is permanent rather than a wait, and it is reported as such:
+   * the widget draws its loud red affordance at both endpoints, and morphing INTO
+   * an error box is not a morph anybody asked for.
+   *
+   * @example latexPlugin.morphNotReady({latex: ""}) // 'an equation (this widget has none)'
+   * @example // once MathJax has typeset it, this is null and the pair morphs
+   * @example // latexPlugin.morphNotReady({latex: "x^2"}) // null
+   */
+  morphNotReady(s) {
+    if (latexIsEmpty(s.latex)) return "an equation (this widget has none)";
+    const err = latexErrorFor(s.latex);
+    if (err) return `an equation that typesets (this one has a LaTeX error: ${err})`;
+    return latexGlyphs(s.latex) === null
+      ? "MathJax to finish typesetting this equation (it is still in flight)"
+      : null;
+  },
+  /**
+   * Query (reads the typeset glyph cache). THE MORPH OUTLINE (core/registry.js's
+   * `morphPaths` protocol): the equation's GENUINE GLYPH CONTOURS, from the SAME
+   * flattened MathJax geometry the `latexVector` op draws with.
+   *
+   * ── WHY THIS WIDGET CAN MORPH AT ALL, WHEN TEXT NEEDED A NEW SEAM ────────────
+   * An equation's outlines ALREADY EXIST as vector data in this app:
+   * render_gpu/gpu/latex_raster.js `resolveLatexGlyphs` resolves MathJax's
+   * <use>/<defs> indirection into flat absolute `d` strings in the root viewBox
+   * frame, because the SVG and PDF exporters need exactly that to embed a real
+   * vector equation. So the morph provider is a REUSE, not a second derivation —
+   * which is the point core/morph_payload.js's header makes about every provider:
+   * the payload comes from the ink, so a change to how the equation is flattened
+   * changes its morph for free and cannot be forgotten.
+   *
+   * ── THE FRAME ────────────────────────────────────────────────────────────────
+   * Those `d` strings are in MathJax's ROOT VIEWBOX (whose minY is negative — the
+   * ascender space above the baseline), not the widget box, so they are baked
+   * through `morphPayloadFromViewBox` with the widget's own `preserveAspect`. That
+   * is the identical mapping the PDF and SVG backends apply to the same glyphs; a
+   * fourth spelling is how the morph's first frame would jump away from the pixels
+   * the widget was showing at alpha 0.
+   *
+   * A CROPPED equation is deliberately NOT special-cased here: emit() rasterizes a
+   * crop (a vector glyph list cannot express a source sub-rect), and a morph of a
+   * cropped equation would likewise show the UNCROPPED outline. The crop insets
+   * are ordinary tweened property state, so the endpoints are still exact; only
+   * the interior of a transition ignores the crop, which is the same bound the
+   * crop already has against the vector exporters.
+   *
+   * ALL GLYPHS SHARE THE WIDGET'S INK, one paint for the whole equation — which is
+   * what emit() does too (it maps every glyph to a single `fill: ink`). A SHADER
+   * ink has no colour to hand the engine, so it degrades to the default solid for
+   * the morph's interior frames; the endpoints draw the real shader through
+   * emit().
+   */
+  morphPaths(s) {
+    const w = s.w ?? 0, h = s.h ?? 0;
+    const geom = latexGlyphs(s.latex);
+    const ink = isShaderInk(s.ink) ? LATEX_DEFAULT_INK : (s.ink ?? LATEX_DEFAULT_INK);
+    // Glyphs are FILLED contours, never stroked: `strokeWidth: 0` here is about
+    // the letterforms, and is unrelated to the widget's own `strokeWidth`, which
+    // draws the BORDER around the equation (decorateStrokedBox) rather than
+    // outlining the type.
+    const paint = { fill: ink, stroke: null, strokeWidth: 0, opacity: s.opacity ?? 1 };
+    return morphPayloadFromViewBox(
+      geom.glyphs.map((g) => ({ d: g.d, paint })),
+      geom.viewBox,
+      { w, h },
+      s.preserveAspect !== false,
+    );
   },
   commands: [
     { id: "add-latex", title: "Add LaTeX", icon: "mdi:function-variant", run: (app) => app.armCrosshairPlacement(latexPlugin) }, // crosshair bbox placement (manifest UNDEFERRAL SWEEP), matching image/pdf_page's own add command

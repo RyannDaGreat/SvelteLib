@@ -21,10 +21,12 @@
 
 import CanvasKitInit from "canvaskit-wasm/bin/canvaskit.js";
 import canvaskitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
-import { committedFaces, FALLBACK_FACES } from "../fonts.js";
+import { committedFaces, fontFileFor, FALLBACK_FACES } from "../fonts.js";
 import { bootStage, fetchWithProgress } from "../../web/bootProgress.js";
 import { makeSkiaRunMeasure } from "./text_layout.js";
 import { setInkMeasure } from "../../core/ink_metrics.js";
+import { setGlyphOutlines } from "../../core/glyph_outlines.js";
+import { makeFontkitOutlines } from "../fontkit_outlines.js";
 
 // Vite inlines every committed + fallback TTF at build time (offline-safe, hashed
 // URLs) — the same mechanism web/fontLoader.js uses, resolved relative to THIS
@@ -104,12 +106,18 @@ async function buildFontCollection(CanvasKit) {
   // dozen concurrent unknowns — face counts are a number we actually have.
   let facesDone = 0;
   bootStage("fonts", "Fonts", { loaded: 0, total: faces.length, unit: "count" });
+  // The fetched bytes are KEPT, keyed by file, for the glyph-outline seam below.
+  // Re-fetching them there would re-download ~12.5 MB (or at best re-decode the
+  // cache) to parse files this pass already has in hand, so the buffers are
+  // captured on the way past instead.
+  const fontBytes = new Map();
   await Promise.all(
     faces.map(async ({ family, file }) => {
       const url = FONT_URLS[`../../fonts/${file}`];
       if (!url) { console.error(`browser_canvaskit: font "${file}" has no bundled URL — check fonts.js vs fonts/.`); return; }
       const buf = await (await fetch(url)).arrayBuffer();
       provider.registerFont(buf, family);
+      fontBytes.set(file, buf);
       bootStage("fonts", "Fonts", { loaded: ++facesDone, total: faces.length, unit: "count" });
     }),
   );
@@ -124,5 +132,26 @@ async function buildFontCollection(CanvasKit) {
   // offscreen pixel service) shares one measure. Before this runs, bounds fall
   // back to a monospace estimate and say so once; it is not silent either way.
   setInkMeasure(makeSkiaRunMeasure(CanvasKit, fc));
+  // THE GLYPH-OUTLINE SEAM (core/glyph_outlines) — the ink-metrics seam's twin,
+  // installed at the same point and for the same reason: the faces are in hand.
+  // Outlines come from FONTKIT, not CanvasKit, because CanvasKit 0.41.1 has no
+  // glyph-outline API at all (measured — the argument is in
+  // core/glyph_outlines.js's header, and text_layout.js's glyph pass already says
+  // the same thing from the other side).
+  //
+  // AWAITED, NOT FIRE-AND-FORGET, and the dynamic import is why it can be:
+  // fontkit is ~200 KB and only text morphing needs it, so it is code-split the
+  // way web/pdfFonts.js splits it for the PDF path. Installing it before this
+  // function returns means the seam is ready at the same instant the measure is
+  // — a text widget never sees one installed without the other, which would be a
+  // state where it could lay out but not morph.
+  const fontkit = (await import("@pdf-lib/fontkit")).default;
+  setGlyphOutlines(makeFontkitOutlines(
+    (fontId, bold) => {
+      const file = fontFileFor(fontId, bold);
+      return file ? (fontBytes.get(file) ?? null) : null;
+    },
+    fontkit,
+  ));
   return fc;
 }

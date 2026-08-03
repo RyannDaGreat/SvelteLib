@@ -20,12 +20,17 @@ import path from "path";
 import fs from "fs";
 import { paintIR } from "./paint_skia.js";
 import { renderWithDither } from "./dither_shader.js";
-import { committedFaces, FALLBACK_FACES } from "../fonts.js";
+import { committedFaces, fontFileFor, FALLBACK_FACES } from "../fonts.js";
 import { makeSkiaRunMeasure } from "./text_layout.js";
 import { setInkMeasure } from "../../core/ink_metrics.js";
+import { setGlyphOutlines } from "../../core/glyph_outlines.js";
+import { makeFontkitOutlines } from "../fontkit_outlines.js";
 
 const require = createRequire(import.meta.url);
 const CanvasKitInit = require("canvaskit-wasm/bin/canvaskit.js");
+// fontkit is CJS and bare node can require it directly (the browser side imports
+// it dynamically instead, for code splitting — web/pdfFonts.js's precedent).
+const fontkit = require("@pdf-lib/fontkit");
 const BIN_DIR = path.dirname(require.resolve("canvaskit-wasm/bin/canvaskit.js"));
 const FONTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "fonts");
 
@@ -72,6 +77,27 @@ function buildFontCollection(CanvasKit) {
   // rect — would fall back to a monospace estimate, so a still would cull against
   // bounds that disagree with the pixels it just drew.
   setInkMeasure(makeSkiaRunMeasure(CanvasKit, fc));
+  // THE GLYPH-OUTLINE SEAM (core/glyph_outlines) — the ink-metrics seam's twin,
+  // installed at the same point for the same reason: this is where the font files
+  // are known to be readable. Outlines come from FONTKIT rather than CanvasKit,
+  // because CanvasKit 0.41.1 has no glyph-outline API at all (measured — see
+  // core/glyph_outlines.js's header); fontkit is already this app's PDF font
+  // parser, so it adds nothing and reads the very files registered above.
+  //
+  // WHY THE CLI GETS IT AT ALL, given that the CLI cannot draw latex or media:
+  // a text morph needs NO browser. The outlines are parsed from a TTF and the
+  // painter draws ordinary `path` ops, so `cli/render.js` renders a mid-morph
+  // text frame correctly on its software surface — one of the few async-flavoured
+  // features that is fully available there.
+  setGlyphOutlines(makeFontkitOutlines(
+    (fontId, bold) => {
+      const file = fontFileFor(fontId, bold);
+      if (!file) return null;
+      const p = path.join(FONTS_DIR, file);
+      return fs.existsSync(p) ? fs.readFileSync(p) : null;
+    },
+    fontkit,
+  ));
   return fc;
 }
 

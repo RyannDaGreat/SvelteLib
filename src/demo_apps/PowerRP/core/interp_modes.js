@@ -186,10 +186,77 @@ export function registerInterpMode(entry) {
     throw new Error("registerInterpMode: an entry needs a non-empty string `id`");
   if (typeof entry.blend !== "function")
     throw new Error(`registerInterpMode("${entry.id}"): an entry needs a \`blend(a, b, alpha, ctx)\` function`);
+  if (entry.appliesTo !== undefined && typeof entry.appliesTo !== "function")
+    throw new Error(`registerInterpMode("${entry.id}"): \`appliesTo\` must be a function ({key, value, type}) → boolean, or absent`);
   if (MODES.has(entry.id))
     throw new Error(`registerInterpMode("${entry.id}"): that mode id is already registered — two modes cannot share a name`);
-  MODES.set(entry.id, { help: "", ...entry });
+  // `appliesTo` ABSENT MEANS EVERYWHERE, and that is the deliberate default: a
+  // mode that does not declare a domain is offered on every row, which is exactly
+  // what every mode did before this field existed. So adding the field changed no
+  // existing behavior; each shipped mode then narrowed itself on purpose, with an
+  // argument at its own registration.
+  MODES.set(entry.id, { help: "", appliesTo: () => true, ...entry });
 }
+
+/**
+ * Query (reads the registry). THE APPLICABILITY FILTER: the mode ids worth
+ * OFFERING for one property — what the Inspector's interp select renders.
+ *
+ * ── WHY THIS EXISTS (user ruling, 2026-08-02, verbatim) ──────────────────────
+ *   "Tween doesn't really make sense in terms of widget type interpolation…
+ *    blend and tween, those don't really make any sense"
+ *
+ * — said about the TYPE row, which was offering all five modes. Three of them
+ * could not do anything there: there is no value halfway between "rect" and
+ * "circle" for `tween` to compute, no pair of paints for `blend` to composite,
+ * and no coverage for `fade` to ramp. Each rendered as a plain discrete switch,
+ * so the select was offering three different names for the same behavior and one
+ * real choice, with nothing to tell them apart.
+ *
+ * That is worse than a shorter list: a select is where an author goes to ask what
+ * a property CAN do, so an option that silently degrades is a confident wrong
+ * answer. This function is the one place that question is answered, and each mode
+ * answers for itself (`appliesTo`) rather than a central table listing which rows
+ * get which modes — the same plugin-owned-knowledge argument `morphPairPolicy`
+ * makes one layer down.
+ *
+ * `auto` IS INCLUDED WHERE A DEFAULT EXISTS, and it is not a registered mode —
+ * it is the ABSENCE of a stored one, i.e. `defaultModeFor` deciding per
+ * transition. The select needs a name for that state or an author could never get
+ * back to it after picking something explicit. It leads the list because it is
+ * what an untouched property already has.
+ *
+ * Args:
+ *   key (string): the state key the select is for
+ *   value (*): its folded value on the slide being shown (a SHAPE hint — see
+ *     displayedDefaultModeFor for why one value rather than a pair)
+ *   type (string|undefined): the owning widget's type, when the caller knows it
+ *
+ * Returns:
+ *   string[]: mode ids, in registration order, `auto` first where it applies
+ *
+ * @example modesForKey("type", "rect") // ["auto", "morph", "step"]
+ * @example modesForKey("x", 0) // ["tween", "step"]
+ * @example modesForKey("active", false) // ["tween", "step", "fade"]
+ * @example modesForKey("fill", {type: "material", material: {id: "crt"}}) // ["auto", "tween", "step", "blend"]
+ * @example modesForKey("latex", "x^2", "latex") // ["tween", "step", "morph"]
+ */
+export function modesForKey(key, value, type) {
+  const ctx = { key, value, type };
+  const ids = [...MODES].filter(([, entry]) => entry.appliesTo(ctx)).map(([id]) => id);
+  // `auto` is offered exactly where it MEANS something — where the shape-driven
+  // default is not simply `tween`. On an ordinary numeric row "auto" and "tween"
+  // are the same answer spelled twice, which is the very thing this filter is
+  // for.
+  return displayedDefaultModeFor(value, key) === DEFAULT_INTERP_MODE ? ids : [AUTO_MODE_ID, ...ids];
+}
+
+/** The name the select gives to "nothing stored — let the default decide". NOT a
+ * registered mode: `auto` IS `defaultModeFor`, and making it an entry would put
+ * something in the registry that is a question about two other laws rather than a
+ * blend law (the argument spelled out at defaultModeFor). Storing it means
+ * storing nothing, which is what a select's handler must do when it is picked. */
+export const AUTO_MODE_ID = "auto";
 
 /**
  * Query (reads the registry). The mode entry for `id`, or undefined.
@@ -305,7 +372,17 @@ export function blendUnderMode(a, b, alpha, ctx) {
 registerInterpMode({
   id: DEFAULT_INTERP_MODE,
   label: "Tween",
-  help: "Interpolate smoothly across the transition — numbers lerp, colors blend per channel, same-shaped lists and records blend element-wise. Values with no blend law (strings, booleans, shape changes) still switch at the start. This is the default.",
+  help: "Interpolate smoothly across the transition — numbers lerp, colours blend per channel, same-shaped lists and records blend element-wise. Values with no blend law (strings, booleans, shape changes) still switch at the start. This is the default.",
+  // EVERYWHERE EXCEPT THE TYPE ROW. `tween` is the default law and a real answer
+  // for nearly every leaf — but a widget TYPE is a name, and there is nothing
+  // halfway between "rect" and "circle" to compute. Offering it there was the
+  // user's "tween… doesn't really make any sense": it rendered as a plain
+  // discrete switch, i.e. a second name for `step` with nothing to tell them
+  // apart. Note it stays offered on a CONTENT key: "a^2" → "b^2" also has no
+  // midpoint, but the row's other option is `morph`, so keeping the honest
+  // no-blend-law answer available is what lets an author turn a morph OFF
+  // without reaching for a mode that means something different.
+  appliesTo: ({ key }) => key !== TYPE_KEY,
   // Byte-identical to the pre-mode path: this IS core/interpolators.interpolate,
   // which is why an absent companion key folds to exactly the old bytes.
   blend: (a, b, alpha) => interpolate(a, b, alpha),
@@ -314,7 +391,12 @@ registerInterpMode({
 registerInterpMode({
   id: "step",
   label: "Step",
-  help: "Jump to the new value the instant the transition begins, with no in-between — a step function. What a boolean or a text property already does, available for any property.",
+  help: "Snap to the new value the instant the transition begins, with no in-between — a step function. What a boolean or a text property already does, available for any property.",
+  // NO `appliesTo`: `step` is the one mode that means the same thing on every
+  // leaf in the app, because "there is no in-between" is a true and useful answer
+  // for a coordinate, a colour, a boolean, a type and a string alike. It is the
+  // universal opt-out, and a row that offered no way to turn an animation off
+  // would be the worse failure.
   // The user's "the property x would just immediately move, just like a discrete
   // property". mutBlendApply only reaches a mode with alpha > 0, so this is the
   // discrete rule verbatim: past zero, you are already there.
@@ -385,7 +467,19 @@ export function fadeLevel(v) {
 registerInterpMode({
   id: "fade",
   label: "Fade",
-  help: "Dissolve between the two values instead of switching. On Visible this is a cross-fade from 0% to 100% opacity across the transition (and back out again when the item is hidden); on a numeric property it is the ordinary tween.",
+  help: "Ramp the item's opacity from 0% to 100% across the transition instead of blinking on (and back out again when it is hidden). This is the mode for Visible. Distinct from Blend, which draws BOTH values at once and cross-dissolves them.",
+  // BOOLEAN-VALUED ROWS ONLY — `visible`/`active` and anything else that is a
+  // true/false. A fade is a COVERAGE ramp, and coverage is what a boolean has:
+  // "shown" is 100% and "hidden" is 0%, so the in-between is meaningful. A
+  // coordinate has no coverage to ramp — `fade` on `x` fell through to the
+  // ordinary tween, which is a correct answer to a question nobody meant to ask,
+  // and offering it there put a second name for `tween` in the list.
+  //
+  // The value SHAPE decides, not the key name, so a plugin that invents its own
+  // boolean gets the mode for free — the same shape-driven argument
+  // `defaultModeFor` makes for paints, and for the same reason: this must be
+  // answerable with no registry in hand.
+  appliesTo: ({ value }) => typeof value === "boolean",
   blend: (a, b, alpha) => {
     const bothBoolish = (v) => typeof v === "boolean" || typeof v === "number" || v === undefined;
     // A boolean pair (or a fraction already in flight) fades; anything else has
@@ -469,7 +563,20 @@ export function isCrossfadeValue(v) {
 registerInterpMode({
   id: "blend",
   label: "Blend",
-  help: "Cross-fade the two paints: both are drawn during the transition and alpha-composited, so any fill can dissolve into any other — a solid into a gradient, a gradient into a material, one material into another. The default when a fill or material changes.",
+  help: "Draw BOTH fills during the transition and alpha-composite them, so any paint can dissolve into any other — a solid into a gradient, a gradient into a material, one material into another. Distinct from Fade, which ramps ONE thing's opacity rather than drawing two. The default when a fill or material changes.",
+  // PAINT-VALUED ROWS ONLY. `blend` PRESERVES TWO OPERANDS so the renderer can
+  // draw the op twice — that is its whole mechanism, and it needs two things to
+  // draw. A number has one value and no second draw, so `blend` on `x` fell
+  // through to the ordinary tween: a third name for `tween` in the list. On the
+  // TYPE row it was worse than useless — a whole ITEM BAG is object-shaped, and
+  // claiming it mid-transition is the exact bug PAINT_TYPE_TAGS was closed to
+  // prevent (read that docblock; it was live, not hypothetical).
+  //
+  // Colour STRINGS are excluded on purpose: `#f00` → `#00f` has a true numeric
+  // midpoint that `tween` already computes per channel, and computing it is
+  // cheaper than drawing the op twice. So this is the same isPaintShaped test the
+  // default-mode seam keys off, and the two cannot drift.
+  appliesTo: ({ value }) => isPaintShaped(value),
   // A PAINT IS A TREE — see modeClaimsTrees. Without this flag the delta walker
   // would recurse into the two paints and merge them key-wise, producing a
   // chimera that is neither.
@@ -649,19 +756,137 @@ export function morphPairPolicy(fromPlugin, toPlugin, fromState, toState) {
   return { ok: true, reason: null };
 }
 
+// ── `morph` ON A CONTENT KEY: the SAME widget, different CONTENT ──────────────
+//
+// User ruling, 2026-08-02, verbatim: "LaTeX to LaTeX should morph… I just edit
+// the equation between slides", and "It should be universal".
+//
+// THIS IS THE CASE THE TYPE-MORPH STRUCTURALLY CANNOT REACH, and noticing that is
+// the whole reason this section exists. Editing an equation's source or a text
+// box's string does NOT change `type` — the widget is a `latex` on both slides —
+// so the token above is never minted and the edit snaps discretely no matter what
+// interp the author picks on the type row. The morph the user actually asked for
+// ("I just edit the equation between slides") lives on a DIFFERENT leaf.
+//
+// THE VALUE SHAPE, the exact sibling of `~morph` one key over:
+//
+//     {type: "~morphContent", key, from, to, t}
+//
+// `from` and `to` are the two SOURCE STRINGS, and that is what makes this
+// affordable: the crossfade/`~morph` argument is that a token carries SCALARS
+// while a payload would put geometry into every cached slide state, undo entry
+// and serialized form the fold touches. Two equation sources are a few dozen
+// bytes; two glyph-outline payloads are thousands of control points. The render
+// seam asks the ONE plugin for both outlines at paint time, where the answer is
+// needed anyway and is already memoized on content (core/morph.js alignedPair).
+//
+// `key` RIDES IN THE TOKEN because the resolver needs it and cannot recover it.
+// core/derive.js meets a folded state bag and must know WHICH leaf is mid-morph
+// to build the two states from; scanning every leaf for a token would be a walk
+// over every property of every item on every frame. The mode is told the key
+// (ctx.key) and simply passes it along.
+//
+// WHY NOT A SECOND MODE ID ("morphContent"). It is the same question the author
+// is asking — "reshape this into that" — and the same answer the engine gives.
+// A second id would put two spellings of one idea in the select and force every
+// author to know which leaf a morph is "really" about. One `morph`, two token
+// shapes, resolved by the key it was asked about.
+
+/** The CONTENT-leaf token a mid-transition `morph` produces when the property is
+ * a widget's content rather than its type. Same `~` machine-namespace sigil as
+ * MORPH_TYPE_TOKEN, and disjoint from it so a reader (and a resolver) can tell a
+ * retype from a re-edit at a glance. */
+export const CONTENT_MORPH_TOKEN = "~morphContent";
+
+/**
+ * Pure function. True for the mid-morph CONTENT token — the shape core/derive.js
+ * routes on, defined here beside the value that mints it (the isMorphToken /
+ * isCrossfadeValue precedent).
+ *
+ * @example isContentMorphToken({type: "~morphContent", key: "latex", from: "a", to: "b", t: 0.5}) // true
+ * @example isContentMorphToken({type: "~morph", fromType: "rect", toType: "circle", t: 0.5}) // false (that is the TYPE token)
+ * @example isContentMorphToken("x^2") // false
+ */
+export function isContentMorphToken(v) {
+  return !!(v && typeof v === "object" && !Array.isArray(v) && v.type === CONTENT_MORPH_TOKEN);
+}
+
+/**
+ * The CONTENT-DEFINING leaf of each widget that has one: the property whose value
+ * IS the ink, rather than describing where the ink goes.
+ *
+ * A CLOSED TABLE, and deliberately not a plugin capability, for one reason: this
+ * is consulted by the INSPECTOR (to decide whether to offer `morph` on a row) and
+ * by the mode's own `blend`, which runs inside core/deltas with no registry in
+ * hand. A plugin-declared `contentKey` would be the better home the moment a
+ * third widget wants one, and moving it there is a two-line change — the seam is
+ * `contentMorphKeyFor` and nothing else reads this object.
+ *
+ * IT IS NOT "any string property". A widget has many string leaves that are not
+ * content: a font id, an alignment, a blend mode, a material name. Morphing
+ * between two of those means nothing, and offering it would be the same confident
+ * wrong answer the applicability filter below exists to stop.
+ */
+const CONTENT_KEYS = {
+  latex: "latex",       // the equation source — the user's "I just edit the equation between slides"
+  plaintext: "text",    // the text box's string
+};
+
+/**
+ * Pure function. The content-defining state key for a widget type, or null.
+ *
+ * @example contentMorphKeyFor("latex") // "latex"
+ * @example contentMorphKeyFor("plaintext") // "text"
+ * @example contentMorphKeyFor("rect") // null (a shape's outline IS its geometry — the TYPE morph covers it)
+ * @example contentMorphKeyFor(undefined) // null
+ */
+export function contentMorphKeyFor(type) {
+  return CONTENT_KEYS[type] ?? null;
+}
+
+/**
+ * Pure function. Is this state key some widget's content leaf? The key-side test,
+ * for the callers (the mode's `blend`, the Inspector row filter) that hold a KEY
+ * but not a widget type.
+ *
+ * A key-only test is deliberately COARSER than the pair: `text` is plaintext's
+ * content, so a different widget with a `text` property would also be offered
+ * morph on it. That is the honest trade at this seam — `blend` is called from
+ * core/deltas, which has no registry and therefore no type — and it is safe
+ * because the mode is only ever a token mint: core/derive.js re-asks the real
+ * plugin before a pixel is drawn, and a widget with no outline for that leaf
+ * falls back to the discrete switch with its reason reported.
+ *
+ * @example isContentMorphKey("latex") // true
+ * @example isContentMorphKey("text") // true
+ * @example isContentMorphKey("font") // false (a font id is not content)
+ * @example isContentMorphKey("x") // false
+ */
+export function isContentMorphKey(key) {
+  return Object.values(CONTENT_KEYS).includes(key);
+}
+
 registerInterpMode({
   id: "morph",
   label: "Morph",
-  help: "Flow one widget's outline into the other's across the transition, contour by contour — a rectangle becoming a circle, an icon becoming a logo. Available when both widgets are vector shapes; anything else switches at the start instead.",
+  help: "Reshape the outlines: one form flows into the other across the transition, contour by contour — a rectangle becoming a circle, an icon becoming a logo, one equation becoming the next. Available when both sides are vector outlines; anything else switches at the start instead.",
   // A mid-morph `type` leaf is a plain string on both endpoints, so this mode
   // does NOT claim trees — there is no subtree to protect, unlike a paint.
+  // WHERE IT MAY BE OFFERED: the widget TYPE (a retype) and a widget's CONTENT
+  // leaf (a re-edit). Those are the two questions "reshape this into that" can
+  // be asked about; on a coordinate or a boolean it has no meaning.
+  appliesTo: ({ key }) => key === TYPE_KEY || isContentMorphKey(key),
   blend: (a, b, alpha, ctx) => {
-    // TWO REAL TYPE NAMES OR NOTHING. An ADDITION (the item is being created on
-    // this slide, so there is no outgoing type) and a REMOVAL have only one
-    // outline, and there is no morphing from nothing — those take the ordinary
-    // discrete law, exactly as `blend` does for a one-operand paint.
+    // TWO REAL STRINGS OR NOTHING. An ADDITION (the item is being created on this
+    // slide, so there is no outgoing value) and a REMOVAL have only one side, and
+    // there is no morphing from nothing — those take the ordinary discrete law,
+    // exactly as `blend` does for a one-operand paint.
     if (typeof a !== "string" || typeof b !== "string") return interpolate(a, b, alpha);
-    if (a === b) return b; // the type did not change: no morph to run
+    if (a === b) return b; // nothing changed: no morph to run, and a token would make the render work for no picture
+    // THE CONTENT ARM. Same mode, same question, different leaf — see the section
+    // note above for why this is not a second mode id.
+    if (ctx?.key !== undefined && ctx.key !== TYPE_KEY)
+      return { type: CONTENT_MORPH_TOKEN, key: ctx.key, from: a, to: b, t: alpha };
     // THE CAPABILITY GATE. `ctx.morphable` is the render-independent answer to
     // "can these two actually morph", supplied by the ONE call site
     // (core/deltas.mutBlendApply) which is where a registry can be reached. When

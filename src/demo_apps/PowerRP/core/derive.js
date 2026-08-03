@@ -44,7 +44,7 @@ import { reportOnce } from "./report.js";
 import { boxCenter, unionRect, unmirroredLocal, unsignedState } from "./geometry.js";
 import { pluginAssetRefProps, resolveStateAssetRefs } from "./asset_ref.js";
 import { allPaintModifierPoints, paintCapableKeys } from "./paint_handles.js";
-import { isMorphToken, morphPairPolicy } from "./interp_modes.js";
+import { contentMorphKeyFor, isContentMorphToken, isMorphToken, morphPairPolicy } from "./interp_modes.js";
 
 /**
  * Query (reads the registry; reports once on a refused pair). THE MORPH
@@ -121,6 +121,95 @@ export function resolveMorphType(type, state, registry, itemId) {
     return { type: toType, morph: null };
   }
   return { type: toType, morph: { fromPlugin, toPlugin, fromState: state, toState: state, t } };
+}
+
+/**
+ * Query (reads the registry; reports once on a refused morph). THE CONTENT-MORPH
+ * RESOLUTION — a state bag holding a mid-morph CONTENT token
+ * (core/interp_modes.js isContentMorphToken) → the state to derive as, plus the
+ * same `.morph` payload pair the type morph produces.
+ *
+ * ── THE ASYMMETRY WITH resolveMorphType, WHICH IS THE WHOLE DESIGN ───────────
+ * A TYPE morph is TWO plugins over ONE state. A CONTENT morph is the exact
+ * mirror: ONE plugin over TWO states. The widget is a `latex` on both sides of
+ * the transition — nothing about its type changed, which is precisely why the
+ * type morph never engages here (the user's sharpest catch: "I just edit the
+ * equation between slides"). What changed is the leaf that DEFINES its ink, so
+ * the two payloads come from asking the same plugin twice, once with the
+ * outgoing source substituted in and once with the incoming one.
+ *
+ * Because the resulting mark has the IDENTICAL shape
+ * (`{fromPlugin, toPlugin, fromState, toState, t}`), render_gpu/ports.js
+ * `morphIR` needs no branch at all: it asks two plugins for two payloads and
+ * blends, and here the two plugins simply happen to be the same object. That is
+ * the reason this design was chosen over a second mark kind — the render seam,
+ * the engine, the alignment memo and every backend are untouched.
+ *
+ * THE STATE THE NODE DERIVES AS is the TARGET content, matching the type morph's
+ * "the fallback is the incoming type". So the Inspector, hit tests and anchors
+ * see the equation the transition is heading toward, and only the ink is
+ * mid-flight.
+ *
+ * THE FALLBACK IS THE TARGET CONTENT, reported once with its reason — a MathJax
+ * typeset still in flight, a text widget on a build with no glyph-outline source.
+ * Identical contract to the type morph's refusal, and for the identical reason: a
+ * morph the author asked for and did not get must not be silent.
+ *
+ * Args:
+ *   state (object): the item's folded state, possibly carrying a content token
+ *   registry (object): the plugin registry
+ *   itemId (string): for the report line
+ *
+ * Returns:
+ *   {state: object, morph: object|null} — `state` has the token replaced by the
+ *   target string; `morph` is the pair mark, or null when it cannot morph
+ *
+ * @example // a state with no token is returned UNTOUCHED, same object:
+ * @example (() => { const s = {type: "latex", latex: "x^2"}; return resolveContentMorph(s, {get: () => ({})}, "a1").state === s; })() // true
+ * @example resolveContentMorph({type: "latex", latex: "x^2"}, {get: () => ({})}, "a1").morph // null
+ */
+export function resolveContentMorph(state, registry, itemId) {
+  // THE FAST PATH IS A TYPE CHECK ON ONE KNOWN KEY, not a scan of the bag. Every
+  // item in the document passes through here on every frame, so walking every
+  // leaf looking for a token would put an O(properties) search on the hot path
+  // to serve a feature almost no item is using. The key is in the token's own
+  // `key` field for exactly this reason — but we must find the token first, and
+  // the content keys are a short closed list, so we check those.
+  const key = contentMorphKeyOf(state);
+  if (!key) return { state, morph: null };
+  const token = state[key];
+  const plugin = registry.get(state.type);
+  // The two states differ in ONE leaf. Everything else — box, rotation, ink,
+  // font, alignment — is shared, because it IS shared: those are ordinary
+  // property state and have already tweened to their mid-transition values, and
+  // the morph rides on top of the box the same way the type morph does.
+  const fromState = { ...state, [key]: token.from };
+  const toState = { ...state, [key]: token.to };
+  const resolved = { ...state, [key]: token.to };
+  const policy = morphPairPolicy(plugin, plugin, fromState, toState);
+  if (!policy.ok) {
+    reportOnce(
+      `derive:morphContent:${itemId}:${key}`,
+      `PowerRP: item "${itemId}" is keyframed with interp "morph" on its ${key}, but ${policy.reason}. ` +
+      `It switches at the start of the transition instead (the same as "step").`,
+    );
+    return { state: resolved, morph: null };
+  }
+  return { state: resolved, morph: { fromPlugin: plugin, toPlugin: plugin, fromState, toState, t: token.t } };
+}
+
+/**
+ * Pure function. The content key this state bag holds a mid-morph token on, or
+ * null. Separated from the resolver so the "is anything morphing here" question
+ * is one named test rather than a condition buried in a branch.
+ *
+ * @example contentMorphKeyOf({type: "latex", latex: "x^2"}) // null
+ * @example contentMorphKeyOf({type: "latex", latex: {type: "~morphContent", key: "latex", from: "a", to: "b", t: 0.5}}) // "latex"
+ * @example contentMorphKeyOf({type: "rect", w: 10}) // null (a shape has no content leaf)
+ */
+export function contentMorphKeyOf(state) {
+  const key = contentMorphKeyFor(state.type);
+  return key && isContentMorphToken(state[key]) ? key : null;
 }
 
 /**
@@ -342,6 +431,15 @@ export function deriveRenderTree(state, registry, project = "") {
     // geometry law requires (assertMorphPaths refuses a negative space).
     const resolvedType = resolveMorphType(itemState.type, state, registry, id);
     const plugin = registry.get(resolvedType.type);
+    // THE CONTENT-MORPH SEAM, the mirror of the type seam above: ONE plugin over
+    // TWO states, rather than two plugins over one. It is resolved SECOND and
+    // only when the type morph found nothing, because the two cannot both be
+    // running on one item — a retype and a re-edit in the same transition is a
+    // morph between four things, and the honest answer to that is the retype (the
+    // widget is literally becoming something else; the content it is leaving is
+    // the outgoing type's business). A state with no token returns the very same
+    // object, so every document that never content-morphs derives byte-identically.
+    const contentMorph = resolvedType.morph ? { state, morph: null } : resolveContentMorph(state, registry, id);
     // THE ASSET-REF RESOLUTION SEAM (see the function docblock). Every RELATIVE
     // ref in this item's own ref-bearing properties becomes absolute here, BEFORE
     // emit() runs — which is what lets the two registries fed from inside emit
@@ -352,7 +450,7 @@ export function deriveRenderTree(state, registry, project = "") {
     // day someone adds a widget. Returns the SAME object when there was nothing to
     // resolve, so an all-absolute document — every document written before this
     // grammar — keeps byte-identical node identity and the evaluation memo.
-    const resolved = resolveStateAssetRefs(state, pluginAssetRefProps(plugin), project);
+    const resolved = resolveStateAssetRefs(contentMorph.state, pluginAssetRefProps(plugin), project);
     // DOC-VARS INJECTION: a plugin whose capabilities declare `docVars: true`
     // samples an EQUATION inside emit() (the graph family's Monaco source) and
     // therefore needs the document's folded variables at emit time — emit's
@@ -374,7 +472,13 @@ export function deriveRenderTree(state, registry, project = "") {
       world: worldTransform(state),
       plugin,
       ...(mirror ? { mirror } : {}),
-      ...(resolvedType.morph ? { morph: resolvedType.morph } : {}),
+      // ONE `.morph` MARK, TWO WAYS TO EARN IT. A type morph and a content morph
+      // produce the IDENTICAL mark shape, which is the point: render_gpu/ports.js
+      // `morphIR` asks two plugins for two payloads and blends, and never needs to
+      // know which kind it got (in a content morph the two plugins are the same
+      // object). They are mutually exclusive by construction — see the note at
+      // contentMorph's resolution above.
+      ...(resolvedType.morph ?? contentMorph.morph ? { morph: resolvedType.morph ?? contentMorph.morph } : {}),
     };
   });
   nodes.sort((a, b) => (a.state.z ?? 0) - (b.state.z ?? 0) || (a.id < b.id ? -1 : 1));

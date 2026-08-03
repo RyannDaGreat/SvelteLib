@@ -40,6 +40,7 @@ import { storedItemRef } from "../core/expressions.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { textInkBounds } from "../core/richtext.js";
 import { inkMeasure } from "../core/ink_metrics.js";
+import { glyphOutlinesReady, textMorphPayload } from "../core/glyph_outlines.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { text } from "../render_gpu/ir.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
@@ -286,6 +287,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -297,6 +299,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 5, dy: 6, blur: 0, color: "#f2c14e", opacity: 1 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -308,6 +311,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -319,6 +323,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 12, color: "#0a4a55", opacity: 0.6 },
       bloom: { radius: 28, strength: 1.2 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -330,6 +335,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 1, dy: 1.5, blur: 1.5, color: "#3a2c05", opacity: 0.6 },
       bloom: { radius: 8, strength: 0.3 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   // ── labels ─────────────────────────────────────────────────────────────────
@@ -342,6 +348,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 4, color: "#000000", opacity: 1 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -353,6 +360,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -364,6 +372,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -375,6 +384,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 6, color: "#000000", opacity: 0.85 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -386,6 +396,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -397,6 +408,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   // ── screen readouts ────────────────────────────────────────────────────────
@@ -409,6 +421,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 14, strength: 0.7 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -420,6 +433,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0.45 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -431,6 +445,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   // ── annotation ─────────────────────────────────────────────────────────────
@@ -443,6 +458,7 @@ const PLAINTEXT_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 6, strength: 0.25 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
 ];
@@ -630,6 +646,49 @@ export const plaintextPlugin = {
       boxH: h > 0 ? h : Infinity, // box height ⇒ vertical-align room
       boxStyle: { align: s.align ?? "left", valign: s.valign ?? "top" },
     })], s, world, { x: 0, y: 0, w, h });
+  },
+  /**
+   * Query (reads the glyph-outline seam). Why this text box cannot morph YET, or
+   * null — the `morphNotReady` half of the morph protocol (core/registry.js).
+   *
+   * TWO DISTINCT REASONS, and keeping them apart is the whole value of the hook.
+   * An EMPTY box has no ink at all (emit() returns [] and isGhost() grants it the
+   * dashed affordance), so there is nothing to morph and never will be until
+   * somebody types. A MISSING OUTLINE SOURCE is temporary and is about the app,
+   * not the document: core/glyph_outlines.js is injected from the render
+   * bootstraps, so before boot finishes — and in bare node, where the CLI has no
+   * outline source at all — a text widget genuinely cannot produce letterforms.
+   * Collapsing those two into "it didn't morph" would leave an author unable to
+   * tell a widget they must fix from a wait they must sit through.
+   *
+   * @example plaintextPlugin.morphNotReady({ text: "" }) // 'text to morph (this box has none)'
+   * @example // with the render side's outline seam installed and a non-empty box:
+   * @example // plaintextPlugin.morphNotReady({ text: "hello" }) // null
+   */
+  morphNotReady(s) {
+    if (plaintextIsEmpty(s.text)) return "text to morph (this box has none)";
+    return glyphOutlinesReady()
+      ? null
+      : "the glyph-outline seam to be installed (core/glyph_outlines.js — the render side supplies letterforms; the CLI has none)";
+  },
+  /**
+   * Query (reads the glyph-outline seam and the ink measure). THE MORPH OUTLINE
+   * (core/registry.js's `morphPaths` protocol): the box's type as real
+   * letterforms, laid out exactly where emit() draws them.
+   *
+   * The whole body is core/glyph_outlines.js `textMorphPayload` — read its
+   * docblock for the two things that matter here: the layout is the SAME pure
+   * `richTextDraws` pass the render backends flatten through (so the morph's
+   * letters cannot drift from the drawn ones), and the y-UP → y-DOWN flip is
+   * done once, there, rather than by each caller.
+   *
+   * WHY THE BODY IS NOT IN THIS FILE: plugins/latex.js needs no such seam (its
+   * outlines already exist as MathJax vector data), but any future text-bearing
+   * widget will need exactly this one, and a plugin may not import another
+   * plugin. So the shared half lives in core/, which is where both can reach it.
+   */
+  morphPaths(s) {
+    return textMorphPayload(s);
   },
   // THE BOUNDS PROTOCOL (core/view.js localBoundsOf): a text box's INK is the
   // laid-out type, NOT the property box — type overflows the bottom of a short
