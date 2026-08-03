@@ -361,4 +361,55 @@ test("EXPORT: BOTH vector backends name the crossfade in their raster OR-chain",
   }
 });
 
+test("WORKSTREAM BK: the crossfade router sees EVERY paint slot, not just fill/stroke", () => {
+  // THE DEPLOYED CRASH, 2026-08-03. The user's live session (GitHub Pages,
+  // index-D842wJ-V.js, built from 66c8bf3) died with "Cannot read properties of
+  // undefined (reading '0')" inside an Array.map over a rich text op's paragraphs.
+  //
+  // Mechanism: opHasCrossfadePaint tested `cmd.fill || cmd.stroke` ONLY. A text
+  // op carries its ink on `color`, and a RICH one carries one `color` PER RUN —
+  // so a keyframed run colour entering a transition's interior produced a
+  // crossfade paint that the op-level router did not see, did not split, and
+  // therefore handed whole to the Skia text layout. There, textStyle's
+  // `isGradientPaint` (the broad "object ⇒ needs a shader" test) answered true,
+  // isMaterialPaint answered false, and the remaining branch read
+  // `st.color.stops[0].color` — but a crossfade has no `stops`.
+  //
+  // The router IS the seam that keeps a crossfade away from every leaf, so a slot
+  // it cannot see is a leaf receiving a paint no leaf is written to understand.
+  // Pinned per slot, because each one was independently invisible.
+  const cf = { type: "crossfade", from: "#f00", to: "#00f", t: 0.25 };
+
+  const richRun = { op: "text", rich: { runs: [{ text: "a", color: cf }, { text: "b", color: "#0f0" }] }, opacity: 1 };
+  assert.ok(opHasCrossfadePaint(richRun), "a crossfading RICH RUN must be detected — this is the exact deployed crash");
+  assert.ok(opHasCrossfadePaint({ op: "text", color: cf }), "a plain text op's ink lives on `color`, not `fill`");
+  assert.ok(opHasCrossfadePaint({ op: "text", glyphStroke: cf }), "the glyph OUTLINE is a paint slot too");
+  // The two that always worked must keep working.
+  assert.ok(opHasCrossfadePaint({ op: "rect", fill: cf }));
+  assert.ok(opHasCrossfadePaint({ op: "path", stroke: cf }));
+
+  // A NON-crossfading op is still false in every slot — the predicate did not
+  // become "any object", which is the over-correction that would double-draw
+  // every gradient and material in the deck.
+  assert.equal(opHasCrossfadePaint({ op: "rect", fill: "#fff" }), false);
+  assert.equal(opHasCrossfadePaint({ op: "text", rich: { runs: [{ text: "a", color: "#f00" }] } }), false);
+  assert.equal(opHasCrossfadePaint({ op: "text", rich: { runs: [{ text: "a", color: { type: "linearGradient", stops: [] } }] } }), false,
+    "a GRADIENT run is not a crossfade — it has its own leaf path");
+
+  // SPLITTING substitutes the run's own operand and leaves its neighbours alone.
+  for (const [side, want] of [["from", "#f00"], ["to", "#00f"]]) {
+    const one = crossfadeSide(richRun, side);
+    assert.equal(one.rich.runs[0].color, want, `the ${side} pass must carry that operand`);
+    assert.equal(one.rich.runs[1], richRun.rich.runs[1], "a non-crossfading run is returned BY IDENTITY");
+    assert.equal(typeof one.rich.runs[0].color, "string", "no crossfade may survive the split into a leaf");
+  }
+  // The two passes' opacities sum to the op's own, exactly as for a fill.
+  assert.equal(crossfadeSide(richRun, "from").opacity + crossfadeSide(richRun, "to").opacity, 1);
+
+  // THE MIX IS READ FROM WHICHEVER SLOT CARRIES IT. `cmd.stroke.t` was the old
+  // positional read; a rich-run-only crossfade has neither fill nor stroke, so
+  // that read would throw a NEW TypeError in place of the old one.
+  assert.equal(crossfadeSide({ op: "text", rich: { runs: [{ text: "a", color: cf }] }, opacity: 1 }, "to").opacity, 0.25);
+});
+
 console.log(`\n${passed} passed`);

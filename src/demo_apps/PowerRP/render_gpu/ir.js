@@ -356,19 +356,56 @@ export function isCrossfadePaint(paint) {
 }
 
 /**
- * Pure function. Does this op carry a crossfade in EITHER paint slot? The single
+ * Pure function. THE PAINT SLOTS AN OP CAN CARRY, in one place. An op's ink does
+ * NOT always live on `fill`: a text op puts it on `color` (see text()), a
+ * glyph-bearing op adds `glyphStroke` for its letterform outline, and a RICH text
+ * op additionally carries one `color` PER RUN, nested inside `rich.runs`.
+ *
+ * Stated here because that spread is exactly what a slot-blind consumer gets
+ * wrong, twice now. `resolveMaterialFillPaints` (ports.js) learned it the hard
+ * way — a material ink on `color`/`glyphStroke`/a rich run reached the painter
+ * unresolved and threw — and it grew a hand-written walk over all four. This
+ * function is that walk's shape, made reusable so the crossfade router below
+ * cannot know a smaller set of slots than the material resolver does.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {Array<*>} every paint value the op carries (missing slots omitted)
+ *
+ * @example opPaintSlots({op: "rect", fill: "#f00", stroke: "#000"}) // ["#f00", "#000"]
+ * @example opPaintSlots({op: "text", color: "#f00"}) // ["#f00"]
+ * @example opPaintSlots({op: "text", rich: {runs: [{text: "a", color: "#0f0"}]}}) // ["#0f0"]
+ */
+export function opPaintSlots(cmd) {
+  const slots = [cmd.fill, cmd.stroke, cmd.color, cmd.glyphStroke];
+  if (Array.isArray(cmd.rich?.runs)) for (const r of cmd.rich.runs) slots.push(r.color);
+  return slots.filter((p) => p !== undefined && p !== null);
+}
+
+/**
+ * Pure function. Does this op carry a crossfade in ANY paint slot? The single
  * predicate the Skia painter routes on and both vector exporters add to the
  * OR-chain that decides "this op has no vector form — rasterize its region".
+ *
+ * EVERY slot, not just fill/stroke — see opPaintSlots. This checked only those
+ * two until 2026-08-03, which is how a crossfading RICH RUN reached the Skia text
+ * layout unsplit: `textStyle` then read `st.color.stops[0]` on a crossfade paint,
+ * which has no `stops`, and the user's deployed session died with "Cannot read
+ * properties of undefined (reading '0')" the moment a keyframed run colour
+ * entered a transition's interior. The op-level router IS the seam that keeps a
+ * crossfade away from every leaf, so a slot it cannot see is a leaf that receives
+ * a paint no leaf is written to understand.
  *
  * @param {object} cmd - a display-list op
  * @returns {boolean}
  *
  * @example opHasCrossfadePaint({op: "rect", fill: {type: "crossfade", from: "#f00", to: "#00f", t: 0.5}}) // true
  * @example opHasCrossfadePaint({op: "path", stroke: {type: "crossfade", from: "#f00", to: "#00f", t: 0.5}}) // true
+ * @example opHasCrossfadePaint({op: "text", color: {type: "crossfade", from: "#f00", to: "#00f", t: 0.5}}) // true
+ * @example opHasCrossfadePaint({op: "text", rich: {runs: [{text: "a", color: {type: "crossfade", from: "#f00", to: "#00f", t: 0.5}}]}}) // true
  * @example opHasCrossfadePaint({op: "rect", fill: "#fff"}) // false
  */
 export function opHasCrossfadePaint(cmd) {
-  return isCrossfadePaint(cmd.fill) || isCrossfadePaint(cmd.stroke);
+  return opPaintSlots(cmd).some(isCrossfadePaint);
 }
 
 /**
@@ -389,16 +426,26 @@ export function opHasCrossfadePaint(cmd) {
  * @param {"from"|"to"} side - which operand this pass draws
  * @returns {object} a plain op the existing painters understand
  *
+ * EVERY slot opPaintSlots names is substituted, including a RICH text op's
+ * per-run `color` — the slot whose omission crashed the deployed editor (see
+ * opHasCrossfadePaint). The mix `t` is read from whichever slot actually carries
+ * a crossfade rather than from `fill`/`stroke` positionally: a rich text op
+ * crossfading only a run has neither, and reading `cmd.stroke.t` off undefined
+ * would trade the old TypeError for a new one.
+ *
  * @example crossfadeSide({op: "rect", fill: {type: "crossfade", from: "#f00", to: "#00f", t: 0.25}, opacity: 1}, "from") // {op: "rect", fill: "#f00", opacity: 0.75}
  * @example crossfadeSide({op: "rect", fill: {type: "crossfade", from: "#f00", to: "#00f", t: 0.25}, opacity: 1}, "to") // {op: "rect", fill: "#00f", opacity: 0.25}
  * @example crossfadeSide({op: "rect", fill: {type: "crossfade", from: "#f00", to: "#00f", t: 0.5}, stroke: "#000", opacity: 0.8}, "to").stroke // "#000" (a non-crossfading slot is untouched)
+ * @example crossfadeSide({op: "text", rich: {runs: [{text: "a", color: {type: "crossfade", from: "#f00", to: "#00f", t: 0.25}}]}, opacity: 1}, "to").rich.runs[0].color // "#00f"
  */
 export function crossfadeSide(cmd, side) {
-  const mix = isCrossfadePaint(cmd.fill) ? cmd.fill.t : cmd.stroke.t;
+  const mix = opPaintSlots(cmd).find(isCrossfadePaint).t;
   const share = side === "from" ? 1 - mix : mix;
   const out = { ...cmd, opacity: (cmd.opacity ?? 1) * share };
-  if (isCrossfadePaint(cmd.fill)) out.fill = cmd.fill[side];
-  if (isCrossfadePaint(cmd.stroke)) out.stroke = cmd.stroke[side];
+  for (const slot of ["fill", "stroke", "color", "glyphStroke"])
+    if (isCrossfadePaint(cmd[slot])) out[slot] = cmd[slot][side];
+  if (Array.isArray(cmd.rich?.runs) && cmd.rich.runs.some((r) => isCrossfadePaint(r.color)))
+    out.rich = { ...cmd.rich, runs: cmd.rich.runs.map((r) => (isCrossfadePaint(r.color) ? { ...r, color: r.color[side] } : r)) };
   return out;
 }
 
