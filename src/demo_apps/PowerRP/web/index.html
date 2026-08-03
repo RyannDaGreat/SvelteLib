@@ -294,16 +294,22 @@
         //   · Every one of these is REAL WORK the boot genuinely does. There is no
         //     decorative row, and none of them is a timer pretending to be work.
         var STAGES = [
-          { id: "bundle",    label: "Loading app code" },      // ~13s on Fast-3G, ~0.25s local — the parse/eval wall
-          { id: "storage",   label: "Checking storage" },      // one GET, ~0.1s
-          { id: "wasm",      label: "Downloading renderer" },  // ~7 MB, THE cold-boot cost
-          { id: "wasm-init", label: "Compiling renderer" },    // no progress events exist — elapsed only
-          { id: "fonts",     label: "Loading fonts" },         // 50 faces, counted
-          { id: "mount",     label: "Building the editor" },
-          { id: "frame",     label: "Drawing first frame" },
+          { id: "bundle",     label: "Loading app code" },      // ~13s Fast-3G / ~0.5s local — the parse+eval wall
+          { id: "wasm",       label: "Downloading renderer" },  // ~7 MB, THE cold-boot cost; metered in bytes
+          { id: "fonts",      label: "Loading fonts" },         // 30 CSS faces, counted; runs WITH the wasm
+          { id: "storage",    label: "Checking storage" },      // one GET
+          { id: "wasm-init",  label: "Compiling renderer" },    // no progress events exist — elapsed only
+          { id: "skia-fonts", label: "Preparing text" },        // 50 Skia faces, counted
+          { id: "mount",      label: "Building the editor" },
+          { id: "frame",      label: "Drawing first frame" },
         ];
 
-        var rows = {};   // id → {root, mark, label, detail, state, startedAt, label0}
+        // The ONE stage the top bar reports (see the `known` branch in stage()):
+        // the 7 MB wasm, the stage that dominates a cold boot and the only big one
+        // with a true Content-Length denominator.
+        var BAR_STAGE = "wasm";
+
+        var rows = {};   // id → {root, mark, name, detail, state, startedAt, measurable}
         var order = [];  // ids in display order (STAGES, then any live arrival)
 
         var revealTimer = setTimeout(function () {
@@ -367,16 +373,28 @@
         }
         var elapsedTimer = setInterval(tickElapsed, ELAPSED_TICK_MS);
 
-        /** Command. Marks every row BEFORE `id` in display order as done. Boot is
-         *  a sequence, so reaching stage N is proof stages < N finished — without
-         *  this a stage whose completion is never explicitly reported (the bundle
-         *  parse has no "I am done" event to fire) would sit "active" forever
-         *  while a later row ran, which would be a false statement on screen. */
+        /** Command. Marks earlier rows done when a LATER row starts reporting.
+         *
+         *  Boot is MOSTLY a sequence, so reaching stage N is usually proof that
+         *  stages < N finished — and without that inference a stage whose
+         *  completion nothing reports (the bundle parse has no "I am done" event
+         *  to fire) would sit "active" forever underneath a later running row,
+         *  which is a false statement on screen.
+         *
+         *  BUT IT IS NOT A TOTAL ORDER ANY MORE, and assuming it was would put a
+         *  ✓ on work still in flight — the exact species of lie this feature
+         *  exists to remove. Since the wasm prefetch moved to module load it runs
+         *  CONCURRENTLY with the font load, so `fonts` reporting proves nothing
+         *  whatsoever about `wasm`. CONCURRENT names the rows that overlap; a row
+         *  listed there is never settled by inference and must report its own
+         *  `done`, which both of these do (fetchWithProgress ends with done:true,
+         *  and the face counter ends at loaded === total). */
+        var CONCURRENT = { wasm: 1, fonts: 1, storage: 1 };
         function settlePriorTo(id) {
           for (var k = 0; k < order.length; k++) {
             if (order[k] === id) break;
             var r = rows[order[k]];
-            if (r.state === "active") setState(r, "done");
+            if (r.state === "active" && !CONCURRENT[order[k]]) setState(r, "done");
           }
         }
 
@@ -415,21 +433,31 @@
             var known = typeof detail.total === "number" && detail.total > 0 && typeof detail.loaded === "number";
             if (known) {
               r.measurable = true;
-              track.removeAttribute("data-indeterminate");
-              var pct = Math.max(0, Math.min(100, (detail.loaded / detail.total) * 100));
-              bar.style.width = pct.toFixed(1) + "%";
+              // THE TOP BAR TRACKS ONE STAGE, and it is the wasm. With the fonts
+              // now downloading CONCURRENTLY with it, a bar driven by whichever
+              // stage reported last would jump backwards between two unrelated
+              // percentages — motion that means nothing. The wasm is the right
+              // single subject: it is 7 MB against the fonts' 3.4 MB, it is the
+              // stage that dominates a cold boot, and it is honestly metered by
+              // Content-Length. Every other stage still shows its own real
+              // numbers on its own row; they just do not fight over the bar.
+              if (id === BAR_STAGE) {
+                track.removeAttribute("data-indeterminate");
+                var pct = Math.max(0, Math.min(100, (detail.loaded / detail.total) * 100));
+                bar.style.width = pct.toFixed(1) + "%";
+              }
               r.detail.textContent = fmt(detail.loaded) + " / " + fmt(detail.total);
             } else if (typeof detail.loaded === "number" && detail.loaded > 0) {
               // Real progress, unknown total (gzip / no Content-Length): show the
               // count that IS known and sweep. Never a synthetic percentage.
               r.measurable = true;
-              track.setAttribute("data-indeterminate", "1");
+              if (id === BAR_STAGE) track.setAttribute("data-indeterminate", "1");
               r.detail.textContent = fmt(detail.loaded);
             } else {
               // NO measurable progress for this stage. The row falls back to its
               // name plus the live elapsed clock (tickElapsed), which is a true
               // statement rather than an invented percentage.
-              track.setAttribute("data-indeterminate", "1");
+              if (id === BAR_STAGE) track.setAttribute("data-indeterminate", "1");
             }
             if (detail.done) setState(r, "done");
             tickElapsed();

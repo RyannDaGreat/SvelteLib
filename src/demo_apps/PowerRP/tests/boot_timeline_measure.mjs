@@ -17,7 +17,7 @@ import { writeFileSync } from "node:fs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const webRoot = resolve(HERE, "../web");
 const BASE = "/SvelteLib/";
-const BOOT_SETTLE_MS = 120000;
+const BOOT_SETTLE_MS = 300000; // a Fast-3G cold load moves ~24 MB; 120s was not enough and reported a false hang
 const SW_SETTLE_MS = 120000;
 
 const args = process.argv.slice(2);
@@ -123,6 +123,26 @@ const out = {};
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 900 });
   await page.setCacheEnabled(false);
+  // A GENUINELY COLD BOOT MEANS NO SERVICE WORKER EITHER, and forgetting that
+  // invalidated a whole round of measurement: `setCacheEnabled(false)` disables
+  // only the HTTP cache, so a browser profile that had already precached 33 MB
+  // in a previous run navigated with the worker CONTROLLING the page and served
+  // the ~32 MB of Noto/CJK faces from Cache Storage at wire=0. That run reported
+  // 65 s and looked like a fast baseline; the identical build, measured with the
+  // worker actually cleared, was ~244 s. The difference was entirely the SW, not
+  // the app. So: unregister every worker and delete every cache first, and prove
+  // the page navigated UNCONTROLLED (recorded as swState in the result).
+  await page.goto(origin, { waitUntil: "domcontentloaded" }).catch(() => {});
+  await page.evaluate(async () => {
+    if (navigator.serviceWorker) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (window.caches) {
+      const names = await caches.keys();
+      await Promise.all(names.map((n) => caches.delete(n)));
+    }
+  }).catch(() => {});
   console.log(`[${LABEL}] COLD boot …`);
   out.cold = await measure(page, { cold: true, throttle: THROTTLE });
   console.log(`[${LABEL}]   splash lifted at ${out.cold.splashLiftMs}ms; precache ${out.cold.cache.entries} entries / ${(out.cold.cache.bytes / 1048576).toFixed(1)}MB at ${out.cold.swPrecacheDoneMs}ms`);

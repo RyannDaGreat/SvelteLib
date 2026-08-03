@@ -23,6 +23,7 @@ import CanvasKitInit from "canvaskit-wasm/bin/canvaskit.js";
 import canvaskitWasmUrl from "canvaskit-wasm/bin/canvaskit.wasm?url";
 import { committedFaces, fontFileFor, FALLBACK_FACES } from "../fonts.js";
 import { bootStage, fetchWithProgress } from "../../web/bootProgress.js";
+import { fontBytes } from "../../web/fontBytes.js";
 import { makeSkiaRunMeasure } from "./text_layout.js";
 import { setInkMeasure } from "../../core/ink_metrics.js";
 import { setGlyphOutlines } from "../../core/glyph_outlines.js";
@@ -64,11 +65,19 @@ let _ckPromise = null;
  */
 export function ensureCanvasKit() {
   if (!_ckPromise) {
-    _ckPromise = fetchWithProgress(canvaskitWasmUrl, "wasm", "Graphics engine").then(async (bytes) => {
-      bootStage("wasm-init", "Starting graphics engine", {});
+    _ckPromise = fetchWithProgress(canvaskitWasmUrl, "wasm", "Downloading renderer").then(async (bytes) => {
+      // COMPILE/INSTANTIATE. There is NO progress event for this — the browser
+      // compiles ~7 MB of wasm behind one opaque promise — so the splash row shows
+      // its name and a live elapsed clock rather than a bar. That is the honest
+      // display for a stage that genuinely cannot be metered (web/index.html's
+      // STAGES roster documents the rule); inventing a percentage here is exactly
+      // the thing the user's "don't bullshit them" ruling forbids.
+      bootStage("wasm-init", "Compiling renderer", {});
       const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "application/wasm" }));
       try {
-        return await CanvasKitInit({ locateFile: () => blobUrl });
+        const ck = await CanvasKitInit({ locateFile: () => blobUrl });
+        bootStage("wasm-init", "Compiling renderer", { done: true });
+        return ck;
       } finally {
         URL.revokeObjectURL(blobUrl);
       }
@@ -105,20 +114,26 @@ async function buildFontCollection(CanvasKit) {
   // bytes: they download in parallel, so a byte total would be the sum of a
   // dozen concurrent unknowns — face counts are a number we actually have.
   let facesDone = 0;
-  bootStage("fonts", "Fonts", { loaded: 0, total: faces.length, unit: "count" });
+  bootStage("skia-fonts", "Preparing text", { loaded: 0, total: faces.length, unit: "count" });
   // The fetched bytes are KEPT, keyed by file, for the glyph-outline seam below.
   // Re-fetching them there would re-download ~12.5 MB (or at best re-decode the
   // cache) to parse files this pass already has in hand, so the buffers are
   // captured on the way past instead.
-  const fontBytes = new Map();
+  const registeredBytes = new Map();
   await Promise.all(
     faces.map(async ({ family, file }) => {
       const url = FONT_URLS[`../../fonts/${file}`];
       if (!url) { console.error(`browser_canvaskit: font "${file}" has no bundled URL — check fonts.js vs fonts/.`); return; }
-      const buf = await (await fetch(url)).arrayBuffer();
+      // THROUGH THE SHARED PER-FILE CACHE (web/fontBytes.js), not a bare
+      // fetch. The committed faces in this list are the SAME FILES fontLoader is
+      // loading for canvas2D at the same moment; a bare fetch here downloaded
+      // every one of them a second time (measured: +2.5 MB on the wire, 26 files,
+      // once the two loaders stopped accidentally running in sequence). The Noto
+      // fallbacks are unique to this list and simply get their single fetch here.
+      const buf = await fontBytes(file, url);
       provider.registerFont(buf, family);
-      fontBytes.set(file, buf);
-      bootStage("fonts", "Fonts", { loaded: ++facesDone, total: faces.length, unit: "count" });
+      registeredBytes.set(file, buf);
+      bootStage("skia-fonts", "Preparing text", { loaded: ++facesDone, total: faces.length, unit: "count", done: facesDone === faces.length });
     }),
   );
   const fc = CanvasKit.FontCollection.Make();
@@ -149,7 +164,7 @@ async function buildFontCollection(CanvasKit) {
   setGlyphOutlines(makeFontkitOutlines(
     (fontId, bold) => {
       const file = fontFileFor(fontId, bold);
-      return file ? (fontBytes.get(file) ?? null) : null;
+      return file ? (registeredBytes.get(file) ?? null) : null;
     },
     fontkit,
   ));

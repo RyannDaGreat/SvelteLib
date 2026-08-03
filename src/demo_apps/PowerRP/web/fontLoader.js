@@ -19,6 +19,7 @@
  */
 
 import { committedFaces } from "../render_gpu/fonts.js";
+import { fontBytes } from "./fontBytes.js";
 
 /**
  * The committed TTF url map: basename → hashed asset URL. Vite inlines every
@@ -44,8 +45,16 @@ let loadPromise = null;
  * is reported LOUDLY and the promise still resolves for the rest — one bad
  * font must not black-hole the whole editor (and the atlas degrades to the CSS
  * fallback for that one, which is visible, not silent).
+ *
+ * @param {() => void} [onFace] Called once per face as it SETTLES, so the boot
+ *   splash can count faces completed. Fired for a FAILED face too: the splash is
+ *   reporting "how many of these are still outstanding", and a face that failed
+ *   is no longer outstanding — skipping it would stall the counter below its
+ *   total forever and make a healthy boot look stuck. The failure itself is
+ *   reported separately, and loudly, by the handlers below.
+ *   Only read on the FIRST call (the promise is memoized thereafter).
  */
-export function loadFonts() {
+export function loadFonts(onFace) {
   if (loadPromise) return loadPromise;
   if (typeof document === "undefined" || !document.fonts) {
     // No FontFace API (bare node / SSR) — nothing to load; the atlas will use
@@ -53,35 +62,68 @@ export function loadFonts() {
     loadPromise = Promise.resolve([]);
     return loadPromise;
   }
+  // ONE tick per face, on EVERY settle path (loaded, missing file, failed load) —
+  // wrapped here rather than sprinkled at the three `return` sites below, so a
+  // future fourth exit cannot silently stop counting and stall the splash's
+  // "N / 50" below its total.
+  const tick = () => { if (onFace) onFace(); };
   loadPromise = Promise.all(
-    committedFaces().map(async ({ cssFamily, bold, file }) => {
-      const url = urlFor(file);
-      if (!url) {
-        // Missing bundled file — most often a font added AFTER the running dev
-        // server last globbed ../fonts/*.ttf (restart it to re-glob), or a
-        // fonts.js/file mismatch. Report LOUDLY and SKIP just this face: one
-        // missing font must NOT brick the whole editor (this module's contract).
-        // Its text falls back to the CSS generic — visible, not silent.
-        console.error(`fontLoader: committed font "${file}" (${cssFamily} ${bold ? "Bold" : "Regular"}) has no bundled file at ../fonts/${file} — SKIPPING (falls back to CSS generic). If you just added it, restart the dev server to re-glob.`);
-        return { cssFamily, bold, ok: false };
-      }
-      const face = new FontFace(cssFamily, `url("${url}")`, {
-        weight: bold ? "700" : "400",
-        style: "normal",
-        display: "swap",
-      });
+    committedFaces().map(async (spec) => {
       try {
-        await face.load();
-        document.fonts.add(face);
-        return { cssFamily, bold, ok: true };
-      } catch (e) {
-        console.error(`fontLoader: failed to load ${cssFamily} ${bold ? "Bold" : "Regular"} (${file}) — text in this font falls back to the CSS generic. ${e.message}`);
-        return { cssFamily, bold, ok: false };
+        return await loadOneFace(spec);
+      } finally {
+        tick();
       }
     }),
   );
   return loadPromise;
 }
+
+/** Command (registers ONE committed face on document.fonts). The uncached
+ *  per-face body of loadFonts — extracted so the face COUNTER above can wrap
+ *  every exit path in one place. Never throws: a face that cannot load is
+ *  reported loudly and returned as `{ok: false}` (loadFonts' contract that one
+ *  bad font must not brick the editor). */
+async function loadOneFace({ cssFamily, bold, file }) {
+    const url = urlFor(file);
+    if (!url) {
+      // Missing bundled file — most often a font added AFTER the running dev
+      // server last globbed ../fonts/*.ttf (restart it to re-glob), or a
+      // fonts.js/file mismatch. Report LOUDLY and SKIP just this face: one
+      // missing font must NOT brick the whole editor (this module's contract).
+      // Its text falls back to the CSS generic — visible, not silent.
+      console.error(`fontLoader: committed font "${file}" (${cssFamily} ${bold ? "Bold" : "Regular"}) has no bundled file at ../fonts/${file} — SKIPPING (falls back to CSS generic). If you just added it, restart the dev server to re-glob.`);
+      return { cssFamily, bold, ok: false };
+    }
+    try {
+      // FETCH THE BYTES OURSELVES, then build the FontFace FROM THE BUFFER
+      // rather than from the URL. `new FontFace(family, 'url(…)')` does its own
+      // internal fetch whose response we cannot reach, and the SAME file is
+      // needed a second time by the Skia FontCollection
+      // (render_gpu/skia/browser_canvaskit.js). Going through fontBytes() makes
+      // that reuse EXPLICIT and one-fetch-per-file by construction.
+      //
+      // This used to be free by accident and stopped being so, which is why it is
+      // now written down: the two loaders happened to run strictly one after the
+      // other, so the second one's fetches were HTTP-cache hits. The moment the
+      // wasm prefetch moved to module load (web/main.js) they overlapped instead,
+      // nothing was warm, and MEASURED on Fast-3G the cold boot's wire total went
+      // 12.7 MB → 51.9 MB — 26 duplicated TTFs. Ordering is not a cache strategy.
+      const buf = await fontBytes(file, url);
+      const face = new FontFace(cssFamily, buf, {
+        weight: bold ? "700" : "400",
+        style: "normal",
+        display: "swap",
+      });
+      await face.load();
+      document.fonts.add(face);
+      return { cssFamily, bold, ok: true };
+    } catch (e) {
+      console.error(`fontLoader: failed to load ${cssFamily} ${bold ? "Bold" : "Regular"} (${file}) — text in this font falls back to the CSS generic. ${e.message}`);
+      return { cssFamily, bold, ok: false };
+    }
+}
+
 
 // Which dynamic (uploaded) families are already loaded into document.fonts, so
 // re-listing a project's assets never re-fetches an already-registered face.

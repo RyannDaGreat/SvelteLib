@@ -3,14 +3,61 @@ import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { loadFonts } from "./fontLoader.js";
+import { committedFaces } from "../render_gpu/fonts.js";
+import { ensureCanvasKit } from "../render_gpu/skia/browser_canvaskit.js";
 import { bootDone, bootFailed, bootStage } from "./bootProgress.js";
+
+// CLOSES THE "bundle" ROW THE INLINE SPLASH OPENED. This is the first statement
+// in the bundle that can run, so it is the only honest place to say "the app code
+// is now loaded and evaluating". MEASURED: that window is 13.0 s on a Fast-3G cold
+// load (2.5 MB of JS to fetch, parse and evaluate) and was reported by nothing —
+// it is the largest single slice of the "very, very long time saying starting"
+// the user reported. See web/index.html's STAGES roster for why the inline script
+// has to open it: a module cannot report the interval that ends when it starts.
+bootStage("bundle", "Loading app code", { done: true });
+
+// THE ~7 MB WASM DOWNLOAD STARTS *HERE*, AT MODULE LOAD — not at mount.
+//
+// MEASURED (Fast-3G cold load, before this line existed): the wasm fetch did not
+// begin until 30.2 s, because it was kicked by CanvasView inside the mount, and
+// the mount waited on `Promise.all([fontsLoaded, storageReady])` below. So 3.4 MB
+// of CSS font faces downloaded to completion FIRST and the single largest asset
+// on the critical path sat idle behind them — 17 seconds of pure serialization on
+// a connection that could have been carrying both at once.
+//
+// Nothing about the ordering was intentional; it fell out of "the thing that
+// needs CanvasKit is the canvas". `ensureCanvasKit` is memoized (browser_canvaskit
+// .js), so calling it early does not add a second download — it MOVES the existing
+// one to the front, where the connection is otherwise idle, and CanvasView's own
+// call later resolves against the same promise.
+//
+// Fire-and-forget on purpose: its failure is already routed to the splash's error
+// surface by the consumer that awaits it. Attaching a second rejection handler
+// here would be the only place an unhandled-rejection warning could come from, so
+// the `.catch` swallows nothing — it merely marks the promise as handled while the
+// real report still happens downstream.
+const canvasKitWarm = ensureCanvasKit();
+canvasKitWarm.catch(() => {}); // reported by CanvasView/gpuService, which await the same memoized promise
 
 // Load the committed font FILES (../fonts/) into the browser BEFORE any text
 // rasterizes — the WebGPU glyph atlas draws through canvas2D, which silently
 // substitutes any font that isn't loaded yet (manifest "Text fonts", offline
 // rule). Kicked at module load so BOTH the editor mount and the CLI render hook
 // share one memoized promise; each awaits it before its first frame.
-const fontsLoaded = loadFonts();
+//
+// REPORTED, because it was not before: on a Fast-3G cold load these faces are
+// 3.4 MB and take 17 s, and the splash said "Starting…" through all of it. The
+// count is FACES COMPLETED — they download in parallel, so a byte total would be
+// a sum of concurrent unknowns, and a face count is a number we actually have.
+const fontsLoaded = (() => {
+  const faces = committedFaces();
+  bootStage("fonts", "Loading fonts", { loaded: 0, total: faces.length, unit: "count" });
+  let done = 0;
+  // loadFonts() memoizes internally and resolves to one entry per face; the
+  // per-face ticks come from racing each face's own promise, which is why this
+  // wrapper exists rather than a `.then` on the aggregate.
+  return loadFonts((/* onFace */) => bootStage("fonts", "Loading fonts", { loaded: ++done, total: faces.length, unit: "count" }));
+})();
 import { assetStore, assetStoreFor, detectStorageMode, isStatic, projectStore, storageMode } from "./storageMode.js";
 import { REPO_PARAM } from "./githubProject.js";
 import { isOnline, offlineMessage, startConnectivityWatch } from "./connectivity.js";
@@ -199,8 +246,16 @@ if (!new URLSearchParams(location.search).has("cli")) {
   bootStage("storage", "Checking storage", {});
   Promise.all([fontsLoaded, storageReady])
     .then(() => {
+      bootStage("storage", "Checking storage", { done: true });
       bootStage("mount", "Building the editor", {});
       mount(App, { target: document.getElementById("app") });
+      // The mount itself is synchronous; what follows is the GPU surface coming
+      // up and the first derive+paint, which is a DIFFERENT and much longer
+      // stage. MEASURED: ~800 ms locally between the mount returning and the
+      // first frame landing, all of it previously unreported. CanvasView's
+      // bootDone() at the first real paint is what ends it.
+      bootStage("mount", "Building the editor", { done: true });
+      bootStage("frame", "Drawing first frame", {});
       openRepoParamProject(); // after mount: needs the live app (fire-and-forget, loud on failure)
     })
     // BOOT FAILURE IS THE OTHER GRAY BOX. Anything that throws before the first
