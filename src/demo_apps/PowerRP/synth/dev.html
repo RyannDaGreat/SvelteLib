@@ -300,8 +300,9 @@
       <h2>Notes</h2>
       <p class="hint">
         Rewiring ramps the affected output's guard gain to zero, switches the wire,
-        then ramps back — so live patching never clicks. The cost is ~40&nbsp;ms of
-        quiet on that path, measured by <em>Measure Rewire</em>.
+        then ramps back — so live patching never clicks. The call itself returns in
+        microseconds; the wire lands ~33&nbsp;ms later, which is the real price of
+        not clicking. Press <em>Measure Rewire</em> for this machine's numbers.
       </p>
       <p class="hint">
         The scheduler runs two clocks: a 25&nbsp;ms JS timer queues events onto the
