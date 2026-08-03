@@ -193,6 +193,42 @@ return {
       polyline({ points: inner, width: s.strokeWidth, color: s.stroke, opacity }),
     ]);
   },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the ring as cubic contours, from the SAME `ringGeom` + `donutRingOutline` +
+   * `shapes.polygonPathD` chain emit() draws the fill with — so what morphs is
+   * what renders, hole and all.
+   *
+   * THIS IS THE FIRST PLUGIN ASSET TO DECLARE A MORPH, and it is only expressible
+   * because `morphPayloadFromPaths` / `statePaint` are in the jail's library. They
+   * were not, and that absence was a silent coverage hole: a fully-vector widget
+   * sat off the morph roster for a reason that had nothing to do with its ink.
+   *
+   * ONE SUBPATH, NOT TWO, inherited rather than chosen: `donutRingOutline` is
+   * deliberately a SINGLE flat point list walking the outer rim forward and the
+   * inner rim backward (see the header — hitTest shares that exact list, so the
+   * picture and the hit region cannot disagree). The aligner therefore sees one
+   * closed contour, which is also the better pairing: a donut→circle morph pairs
+   * the whole ring against the whole disc instead of orphaning a hole.
+   *
+   * THE RIM STROKES ARE NOT IN THE PAYLOAD. emit() draws them as two separate
+   * `polyline` ops precisely because the keyhole path cannot be stroked without
+   * hairlining its own zero-width bridge; a morph paints ONE path op, so carrying
+   * them would reintroduce that bridge stroke for the whole transition.
+   */
+  morphPaths(s) {
+    const geom = ringGeom(s);
+    return morphPayloadFromPaths(
+      [{ d: shapes.polygonPathD(donutRingOutline(geom, s.inner ?? 0.5)), paint: statePaint(s) }],
+      { w: s.w ?? 0, h: s.h ?? 0 },
+    );
+  },
+  /** Pure function. Why this donut cannot morph YET, or null. It shares emit()'s
+   * own "nothing to draw" threshold — a zero-radius ring has no outline to pair. */
+  morphNotReady(s) {
+    const geom = ringGeom(s);
+    return geom.rx > 0 && geom.ry > 0 ? null : "a positive radius (this donut has zero size)";
+  },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
   hitTest(s, lx, ly) {

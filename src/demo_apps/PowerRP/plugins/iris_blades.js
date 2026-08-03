@@ -97,6 +97,7 @@ import {
   stopDownHandle,
 } from "../core/optics.js";
 import { pointInOutlines, radialOutline } from "../core/outline.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import { bundle, bundleNestedDefaults, defaults, props, STROKE_JOIN_KEYS, STROKE_TRIM_KEYS } from "../core/properties.js";
 import { subpathsPathD } from "../core/shapes.js";
 import { isPaintOff, path } from "../render_gpu/ir.js";
@@ -499,6 +500,43 @@ export const irisBladesPlugin = {
     }
     if (ops.length === 0) return [];
     return applyEffects(ops, s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * every LEAF as its own cubic contour, from the SAME `irisLeafOutline` loop
+   * emit() draws the mechanism with — so what morphs is what renders, at whatever
+   * stop the blades are currently at.
+   *
+   * ONE SUBPATH PER LEAF, deliberately not merged. The aligner pairs subpaths, so
+   * an eight-bladed iris morphing into an eight-pointed star pairs leaf-to-point;
+   * merging them into one silhouette would throw that structure away and give the
+   * engine a single blob to distribute. It is the same argument the QR provider
+   * makes from the other direction (hundreds of modules, kept separate so they
+   * collapse INDIVIDUALLY into a ring).
+   *
+   * THE PUPIL IS NOT INK, for the aperture widget's reason exactly: it is the
+   * light coming through the hole the leaves leave, an author can turn it off
+   * without changing the mechanism, and pairing a target's outline against a
+   * widget's own negative space is not a morph anyone asked for.
+   */
+  morphPaths(s) {
+    const n = Math.max(0, Math.round(s.blades ?? 0));
+    const sources = [];
+    for (let k = 0; k < n; k++) {
+      const leaf = irisLeafOutline(s, k);
+      if (!leaf) break; // emit()'s own rule: every leaf is one shape rotated
+      sources.push({ d: subpathsPathD([leaf]), paint: statePaint(s) });
+    }
+    return morphPayloadFromPaths(sources, { w: s.w ?? 0, h: s.h ?? 0 });
+  },
+  /** Pure function. Why this iris cannot morph YET, or null — emit()'s own
+   * guards: a zero bore draws nothing, and a bladeless or fully-open assembly has
+   * no leaf outline to pair against. */
+  morphNotReady(s) {
+    const bore = boreGeom(s);
+    if (!(bore.rx > 0) || !(bore.ry > 0)) return "a positive bore (this iris has zero size)";
+    const n = Math.max(0, Math.round(s.blades ?? 0));
+    return n > 0 && irisLeafOutline(s, 0) ? null : "blades with an outline (these draw nothing)";
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,

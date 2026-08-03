@@ -53,6 +53,7 @@ import { pointInPolygon, distToSegment, subpathsBBox } from "../core/outline.js"
 import { parseRange, dataToLocal, breakSubpaths, polylinePathD } from "../core/graph_scale.js";
 import { sampleCurve, errorAffordance, DEFAULT_NUM_POINTS } from "../core/graph_equation.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import * as T from "../core/transform.js";
 import { path } from "../render_gpu/ir.js";
 import { effectsCullMargin } from "../render_gpu/effects.js";
@@ -225,6 +226,49 @@ export const graphLinePlugin = {
       fillRule: "evenodd",
       opacity: s.opacity ?? 1,
     })];
+  },
+  /**
+   * Query (samples the source). Why this curve cannot morph YET, or null — the
+   * `morphNotReady` half of the morph protocol (core/registry.js). It shares
+   * `curveLocal` with emit(), so the gate cannot disagree with what is drawn: an
+   * empty source is the ghost state, and an equation ERROR draws the red box
+   * rather than a curve, which is a notice and not ink to pair against.
+   *
+   * @example graphLinePlugin.morphNotReady({source: ""}) // 'an equation (this graph has none)'
+   */
+  morphNotReady(s) {
+    if (!((s.source ?? "").trim())) return "an equation (this graph has none)";
+    const { subpaths, error } = curveLocal(s);
+    if (error) return `an equation that evaluates (this one fails: ${error})`;
+    return subpaths.some((sp) => sp.length >= 2) ? null : "at least one drawable segment (this curve samples to nothing)";
+  },
+  /**
+   * Query (samples the source). THE MORPH OUTLINE (core/registry.js's
+   * `morphPaths` protocol): the plotted curve as cubic contours, from the SAME
+   * `curveLocal` + `polylinePathD` pair emit() draws with — so a curve morphing
+   * into a circle starts from the polyline actually on screen, discontinuity
+   * breaks and all (each M-split run becomes its own subpath, which is exactly
+   * how the aligner should see a broken curve).
+   *
+   * OPEN SUBPATHS ARE THE NORMAL CASE HERE, unlike every filled provider: an
+   * unclosed curve is a stroke, and `morphPayloadFromPaths` keeps `closed: false`
+   * for it. The engine's open↔closed policy then steps the flag to the target's
+   * at alpha > 0, which is the documented reading (core/morph_align.js's header).
+   *
+   * THE SPACE IS THE BOX, NOT THE INK RECT — the polygon.js precedent, and it
+   * matters more here than anywhere: this widget's `localBounds` is famously
+   * enormous (a zoo preset can reach 200x its box) because nothing clips the
+   * curve. Reporting that rect would re-scale the geometry against a frame it was
+   * never authored in and haul every escaped sample back inside the box.
+   */
+  morphPaths(s) {
+    const { subpaths } = curveLocal(s);
+    const closed = s.closed === true;
+    return morphPayloadFromPaths(
+      [{ d: polylinePathD(subpaths, closed), paint: { ...statePaint(s), fill: closed ? (s.fill ?? null) : null } }],
+      { w: s.w ?? 0, h: s.h ?? 0 },
+      "evenodd",
+    );
   },
   /**
    * Query (samples the source). THE BOUNDS PROTOCOL: the LOCAL rect the curve's

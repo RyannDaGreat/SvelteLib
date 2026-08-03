@@ -128,6 +128,7 @@ import * as shapes from "./shapes.js";
 import * as transform from "./transform.js";
 import * as geometry from "./geometry.js";
 import * as outline from "./outline.js";
+import { morphPayloadFromPaths, statePaint } from "./morph_payload.js";
 import * as ir from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin, paddedPointsBBox } from "../render_gpu/effects.js";
 import { DEFAULT_FONT, FONTS, fontOptions } from "../render_gpu/fonts.js";
@@ -262,6 +263,24 @@ const HOST_MODULES = Object.freeze({
   // the retired mesh renderer, and routing a shape through it is what made the
   // donut crack (R6-11).
   outline,
+  // THE MORPH PROVIDER HELPERS (core/morph_payload.js), so a plugin asset can
+  // declare `morphPaths` at all. WITHOUT THESE THE JAIL IS A COVERAGE HOLE, and
+  // it was one: `donut` is a fully vector widget that emits ONE `path` op, and it
+  // could not join the morph roster for the sole reason that the ONE converter
+  // every provider is required to use (core/registry.js: "NO WIDGET SHOULD
+  // HAND-WRITE SEXTUPLES") was unreachable from inside the sandbox. The
+  // alternative — an asset building cubic sextuples by hand — is precisely the
+  // second spelling of the ink that the payload protocol exists to forbid, so the
+  // absence did not make assets safe, it made them wrong or absent.
+  //
+  // Both are pure and DOM-free, take only plain data, and reach nothing: they
+  // turn `d` strings into a payload record. `morphPayloadFromOps` and
+  // `morphPayloadFromConnector` are deliberately NOT here — the first takes an SVG
+  // flatten's op list (no asset can produce one) and the second needs an ink rect
+  // from a boxless widget, a shape no asset declares yet. Add them when an asset
+  // has that shape, not before.
+  morphPayloadFromPaths,
+  statePaint,
   // FONT SELECTION, for a text-bearing widget. Data + pure lookups only: the id
   // table, the default id, and the Inspector's option list. NOTHING that loads or
   // rasterizes a face — a plugin asset names a font, it never touches the font

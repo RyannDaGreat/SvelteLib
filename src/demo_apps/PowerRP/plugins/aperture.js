@@ -83,6 +83,7 @@ import {
   radialConstrain, regularOpeningRadius, starburstRayAngles, stopDownHandle,
 } from "../core/optics.js";
 import { pointInOutlines, radialOutline } from "../core/outline.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { subpathsPathD } from "../core/shapes.js";
 import * as T from "../core/transform.js";
@@ -473,6 +474,41 @@ export const aperturePlugin = {
     }
     if (ops.length === 0) return [];
     return applyEffects(ops, s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the blade BODY as cubic contours, from the SAME `bodySubpaths` +
+   * `subpathsPathD` pair emit() draws the mechanism with.
+   *
+   * ONLY THE BODY, and this is the one judgement in the declaration. emit() draws
+   * up to three layers — the pupil fill, the blade body, and the sunstar rays —
+   * and the body is the only one that is the WIDGET'S OWN SHAPE. The pupil is the
+   * light coming through the hole the body leaves (an author can turn it off with
+   * no change to the mechanism), and the sunstar is an optical artefact of that
+   * light, present only while the pupil is. A morph pairs contours, so including
+   * a ray fan would pair a target's outline against a spike; including the pupil
+   * would pair it against the body's own negative space. What another shape should
+   * flow into is the iris.
+   *
+   * `evenodd` matches the body op exactly: `bodySubpaths` returns the outer rim
+   * plus the opening as a second contour, and the hole is even-odd's, not a
+   * winding accident.
+   */
+  morphPaths(s) {
+    const body = bodySubpaths(s);
+    return morphPayloadFromPaths(
+      [{ d: subpathsPathD(body), paint: statePaint(s) }],
+      { w: s.w ?? 0, h: s.h ?? 0 },
+      "evenodd",
+    );
+  },
+  /** Pure function. Why this aperture cannot morph YET, or null. It shares
+   * emit()'s own guards: a zero bore draws nothing, and `bodySubpaths` returns
+   * null when the blades have no body left to draw. */
+  morphNotReady(s) {
+    const bore = boreGeom(s);
+    if (!(bore.rx > 0) || !(bore.ry > 0)) return "a positive bore (this aperture has zero size)";
+    return bodySubpaths(s) ? null : "blades with a body (these draw nothing)";
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
