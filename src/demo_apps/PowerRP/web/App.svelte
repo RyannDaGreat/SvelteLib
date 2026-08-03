@@ -1049,7 +1049,15 @@
     DESELECT_BY_TYPE_SUBMENU.children.splice(0, DESELECT_BY_TYPE_SUBMENU.children.length, ...build(false));
   }
   const coreCommands = [
-    { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Keyframes `active` off from this slide onward. The widget still exists and still appears on the slides before this one — Show puts it back, and Purge is the irreversible one.", run: (a) => a.deleteSelection() },
+    // ALIASES CARRY THE BARE WORD "delete", which the title cannot: the title has
+    // to say WHICH delete this is (deactivate here, vs purge-item's remove
+    // everywhere), and that parenthetical is the whole reason the one-word query
+    // did not land on it. The user's ruling behind tests/tool_surfacing_probe.js
+    // names "duplicate or delete" as the words he reaches for, so the bare word
+    // must resolve HERE and not to delete-slides — see core/commands.entryScore,
+    // which makes an exact name beat a command that merely starts with it.
+    // "delete item"/"delete widget" mirror duplicate's alias shape below.
+    { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", aliases: ["delete", "delete item", "delete widget", "delete object", "hide item"], when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Keyframes `active` off from this slide onward. The widget still exists and still appears on the slides before this one — Show puts it back, and Purge is the irreversible one.", run: (a) => a.deleteSelection() },
     { id: "purge-item", title: "Purge Item (remove from existence)", icon: "mdi:delete-forever-outline", when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Removes the widget from the DOCUMENT — every slide at once, and Show cannot bring it back. Reach for Delete when you only meant to stop it appearing here.", run: (a) => a.purgeSelection() },
     // The inverse of delete-item — registry-routed per the cruft audit (un-hide
     // previously had NO command surfacing, so it could never get a shortcut).

@@ -317,11 +317,51 @@ function registerFlat(map, cmd) {
 }
 
 /**
+ * The bonus subtracted when a name IS the query rather than merely starting with
+ * it. A tie-break and nothing more, and its SIZE is measured rather than picked.
+ *
+ * It must clear TWO thresholds. The floor it has to beat is rpFuzzyScore's best
+ * prefix score, 0.000001. The subtler one is the CASE PENALTY: a title matched
+ * case-insensitively costs +0.0001 per differing char before the /1000, so
+ * `rpFuzzyScore("duplicate", "Duplicate")` is 0.0000011, not 0.000001. A bonus
+ * smaller than that difference leaves an exact-but-capitalised TITLE tied with
+ * the command's OWN lowercase alias ("duplicate object", 0.000001) — measured,
+ * and the reason a first attempt at 1e-7 changed nothing for "duplicate".
+ *
+ * 1e-5 clears both with room, and cannot reach further: the next score band up
+ * is a non-prefix match, whose scores start at 0.1 (a word-boundary skip) —
+ * four orders of magnitude away. So this reorders EXACT-vs-PREFIX pairs and
+ * provably nothing else.
+ */
+const EXACT_NAME_BONUS = 0.00001;
+
+/**
  * Pure function. An entry's best (lowest) fuzzy score for `query`, across its
  * TITLE and its search `aliases` — or null when none of them match. This is
  * what lets "duplicate object" or "clone" find the command titled "Duplicate":
  * a fuzzy subsequence match needs the query's letters to EXIST in the target,
  * and a one-word title cannot carry its synonyms.
+ *
+ * AN EXACT NAME BEATS A MERE PREFIX, and this tie-break is why the function is
+ * not just `Math.min` over rpFuzzyScore. MEASURED (2026-08-02): rpFuzzyScore
+ * FLOORS every prefix match at the same 0.000001 — `rpFuzzyScore("delete",
+ * "delete")` and `rpFuzzyScore("delete", "delete slides")` are the identical
+ * number — because the prefix branch divides by 1000 and there is no term for
+ * how much of the candidate the query covered. So typing the whole of one
+ * command's name tied with a DIFFERENT command that happens to start with it,
+ * and the tie fell through to REGISTRATION ORDER, which is an implementation
+ * detail no user can see. Concretely: "duplicate" and "delete" both resolved to
+ * the SLIDE commands (registered ~500 lines earlier in web/App.svelte) instead
+ * of the widget Duplicate/Delete the user named in the ruling that
+ * tests/tool_surfacing_probe.js exists to enforce.
+ *
+ * FIXED HERE AND NOT IN core/fuzzy.js, deliberately. That module is rp's
+ * completion ranker, shared verbatim by the palette, the Asset Explorer, the
+ * File Browser, equation autocomplete and the iconify search (web/searchRank.js
+ * documents the one-ranking rule). Teaching it a new term would silently
+ * reorder all five for a defect that is about COMMANDS having both a title and
+ * aliases. This function is already the command-specific blend of those names,
+ * so the command-specific tie-break belongs in it.
  *
  * @param {string} query - the palette's search text
  * @param {{title: string, aliases?: string[]}} entry - a registered command
@@ -331,11 +371,22 @@ function registerFlat(map, cmd) {
  * @example typeof entryScore("clone", {title: "Duplicate", aliases: ["clone", "duplicate object"]}) // "number"
  * @example typeof entryScore("duplicate object", {title: "Duplicate", aliases: ["duplicate object"]}) // "number"
  * @example entryScore("zzz", {title: "Duplicate", aliases: ["clone"]}) // null
+ * @example // the whole point: typing a name exactly beats a command that merely starts with it
+ * entryScore("delete", {title: "Delete", aliases: []}) < entryScore("delete", {title: "Delete Selected Slides", aliases: ["delete slides"]})
+ * // => true
+ * @example // and the bonus is a tie-break only — it never lifts a scattered match over a prefix one
+ * entryScore("ds", {title: "ds"}) < entryScore("d", {title: "Distribute Spacing"})
+ * // => true
  */
 export function entryScore(query, entry) {
-  const scores = [entry.title, ...(entry.aliases ?? [])]
-    .map((name) => rpFuzzyScore(query, name))
-    .filter((s) => s !== null);
-  return scores.length ? Math.min(...scores) : null;
+  const q = query.toLowerCase();
+  let best = null;
+  for (const name of [entry.title, ...(entry.aliases ?? [])]) {
+    const raw = rpFuzzyScore(query, name);
+    if (raw === null) continue;
+    const score = name.toLowerCase() === q ? raw - EXACT_NAME_BONUS : raw;
+    if (best === null || score < best) best = score;
+  }
+  return best;
 }
 
