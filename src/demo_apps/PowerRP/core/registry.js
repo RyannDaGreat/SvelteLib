@@ -1568,14 +1568,14 @@ export function presetFamiliesOf(plugin) {
  * @returns {Array<{id: string, title: string, rows: Array}>}
  *
  * @example toolGroupsOf({type: "blur", defaults: {blur: 4}, capabilities: {}}).map((g) => g.id)
- * // ["grouping", "edit", "keyframes"]   (no frame → no Transform, no Arrange;
+ * // ["grouping", "clipboard", "edit", "keyframes"]   (no frame → no Transform, no Arrange;
  * //                                      but it can still be grouped, copied and keyed)
  * @example toolGroupsOf({type: "blur", defaults: {}, capabilities: {}}).map((g) => g.id)
- * // ["grouping", "edit"]   (nothing to key either — only the item-level tools survive)
+ * // ["grouping", "clipboard", "edit"]   (nothing to key either — only the item-level tools survive)
  * @example toolGroupsOf({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).map((g) => g.title)
- * // ["Transform", "Arrange", "Grouping", "Edit", "Keyframes"]
+ * // ["Transform", "Arrange", "Grouping", "Clipboard", "Edit", "Keyframes"]
  * @example toolGroupsOf({type: "flare", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}, presets: [{name: "Cinematic", props: {}}]}).map((g) => g.id)
- * // ["presets", "transform", "arrange", "grouping", "edit", "keyframes"]  (plugin-owned first, inherited last)
+ * // ["presets", "transform", "arrange", "grouping", "clipboard", "edit", "keyframes"]  (plugin-owned first, inherited last)
  */
 export function toolGroupsOf(plugin) {
   const groups = [];
@@ -1622,7 +1622,7 @@ export function toolGroupsOf(plugin) {
  * @returns {object} an augmented copy of it
  *
  * @example withToolGroups({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).toolGroups[0].id // "transform"
- * @example withToolGroups({type: "blur", defaults: {blur: 4}, capabilities: {}}).toolGroups.map((g) => g.id) // ["grouping", "edit", "keyframes"]
+ * @example withToolGroups({type: "blur", defaults: {blur: 4}, capabilities: {}}).toolGroups.map((g) => g.id) // ["grouping", "clipboard", "edit", "keyframes"]
  */
 export function withToolGroups(plugin) {
   return { ...plugin, toolGroups: toolGroupsOf(plugin) };

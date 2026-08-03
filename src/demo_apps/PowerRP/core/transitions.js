@@ -219,8 +219,8 @@ export function resolveTransition(doc, index) {
  * generic row machinery renders these (no keyframe diamonds — transitions are
  * config, not keyframable state).
  *
- * @example transitionInspector("tween").map((r) => r.key) // ["seconds", "curve", "sound"]
- * @example transitionInspector("fade").length // 3 (superclass only, in V1)
+ * @example transitionInspector("tween").map((r) => r.key) // ["seconds", "curve", "sound", "autoAdvance"]
+ * @example transitionInspector("fade").length // 4 (superclass only, in V1: seconds/curve/sound/autoAdvance)
  */
 export function transitionInspector(type) {
   return [...TRANSITION_BASE_INSPECTOR, ...transitionType(type).inspector];
