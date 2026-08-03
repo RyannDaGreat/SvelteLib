@@ -48,16 +48,21 @@ try {
   //   - a resource 500, which under the gate runner means the project backend is
   //     up but here (run standalone, no BACKEND_URL) means the asset list has
   //     nothing to talk to — an absent dependency, not a broken app;
-  //   - `PowerRP repair:` lines, which are the LOAD-TIME migration reporting
-  //     LOUDLY exactly as it is supposed to. The fixture deck predates whatever
-  //     property was most recently added, so the repair fires on every boot and
-  //     says so. That is the design working, and this probe must not be a
-  //     tripwire on other agents' in-flight schema additions.
+  // NOT LISTED, DELIBERATELY: `PowerRP repair:`. This probe carried that
+  // exclusion for a few hours, as a workaround for the night `gaussianBlur`
+  // joined the universal effects bundle and made the fixture deck print one
+  // repair line PER ITEM on every boot. The reasoning was that the repair was
+  // "the design working" — but it was not: the blur shipped absent-is-legacy
+  // semantics (identity 0, byte-identical render), so announcing it contradicted
+  // its own design. core/document.js now fills a version-skew key QUIETLY and
+  // stays loud only for a DELETED one, so the noise is gone at the source and
+  // this line has nothing left to suppress. Restoring it would be strictly
+  // worse than the flood it was written for: a permanent blanket over the one
+  // channel that reports a document losing an authored value.
   const ignore = (t) =>
     /zero-sized canvas/.test(t) ||
     /VideoV7: WebGPU init failed/.test(t) ||
-    /Failed to load resource/.test(t) ||
-    /PowerRP repair:/.test(t);
+    /Failed to load resource/.test(t);
   page.on("pageerror", (e) => { if (!ignore(e.message)) errors.push(`pageerror: ${e.message}`); });
   page.on("console", (m) => { if (m.type() === "error" && !ignore(m.text())) errors.push(`console.error: ${m.text()}`); });
   await page.evaluateOnNewDocument((json) => localStorage.setItem("powerrp.autosave", json), demoJson);

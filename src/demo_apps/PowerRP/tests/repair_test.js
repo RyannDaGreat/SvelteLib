@@ -880,12 +880,71 @@ test("cropbox: the NULL default `target` is reported at most once — never on e
     cur = doc;
   }
 
-  // (b) a document that never wrote `target` at all: reported ONCE, filled, then silent.
+  // (b) a document that never wrote `target` at all: filled QUIETLY, then silent.
+  // This assertion used to demand exactly one report. It no longer does, and the
+  // change is the point rather than an accommodation: never having written a key
+  // is VERSION SKEW — the document predates the property — which is legal legacy
+  // state, and the fill writes the plugin's own default, so nothing the author
+  // authored changed. The fill must still HAPPEN (asserted below); only the
+  // announcement goes away.
   const never = unkeyframed(created, 0, ["items", id, "target"]);
   const first = repairedDocument(never, registry);
-  assert.equal(first.reports.filter((r) => r.includes("target")).length, 1);
-  assert.equal(first.doc.slides[0].delta.items[id].target, null); // the report matches a real write
+  assert.deepEqual(first.reports, [], "an absent key is version skew — filled, not announced");
+  assert.equal(first.doc.slides[0].delta.items[id].target, null); // the quiet fill is a REAL write
   assert.deepEqual(repairedDocument(first.doc, registry).reports, []);
+});
+
+test("a DELETED required key is still LOUD — quieting version skew did not quiet damage", () => {
+  // The other half of the split this file's cropbox case above describes. A key
+  // that is merely absent is legal legacy state; a key some slide wrote as NULL
+  // is a delete sentinel — the author HAD a value and it is gone, so filling the
+  // plugin default in its place changes what the document means. That must be
+  // announced, or the fix for the gaussianBlur console flood would have bought
+  // silence by going deaf.
+  const [d1, id] = withNewItem(newDocument(), 0, { type: "rect", x: 1, y: 1, w: 10, h: 10, active: true });
+  const nulled = keyframed(d1, 0, ["items", id, "w"], null);
+  const { doc, reports } = repairedDocument(nulled, registry);
+  const line = reports.find((r) => r.includes(id) && r.includes("DELETED"));
+  assert.ok(line, `a nulled required key must be reported (got ${JSON.stringify(reports)})`);
+  assert.ok(/\bw\b/.test(line), `the report must NAME the key (got ${JSON.stringify(line)})`);
+  assert.equal(doc.slides[0].delta.items[id].w, registry.get("rect").defaults.w); // restored
+  assert.deepEqual(repairedDocument(doc, registry).reports, []); // and then idempotent
+});
+
+test("a PRE-BLUR document loads SILENTLY and folds byte-identically — the absent-is-legacy pin", () => {
+  // THE DEFECT, in the form two agents found it: the night `gaussianBlur` joined
+  // the universal effects bundle, every document ever saved began printing
+  //   PowerRP repair: item "…" was missing gaussianBlur — filled with plugin defaults
+  // once PER ITEM on load. The blur shipped absent-is-legacy fold semantics
+  // (identity 0, render byte-identical), so the loud repair contradicted the very
+  // design it was announcing — and it reds the probes whose console gates exist
+  // to catch REAL repair noise.
+  //
+  // This pins BOTH halves at once, which is what makes it worth its length: the
+  // load says nothing, AND the evaluated state is indistinguishable from the same
+  // document with the key already present. If a future effect key is ever filled
+  // at something other than its identity, the second half fails even though the
+  // first still passes.
+  const rect = registry.get("rect").defaults;
+  assert.equal(rect.gaussianBlur, 0, "premise: the bundle's blur default IS its identity");
+
+  const { gaussianBlur, ...preBlurDefaults } = rect; // the shape a pre-blur editor wrote
+  const [legacyDoc, id] = withNewItem(newDocument(), 0, { ...preBlurDefaults, active: true });
+  const [todayDoc, todayId] = withNewItem(newDocument(), 0, { ...rect, active: true });
+
+  const legacy = repairedDocument(legacyDoc, registry);
+  assert.deepEqual(legacy.reports, [],
+    `a pre-blur document must load in SILENCE (got ${JSON.stringify(legacy.reports)})`);
+
+  // The fill still HAPPENED — quiet is not the same as skipped, and the strict IR
+  // builders must never meet an undefined leaf.
+  assert.equal(legacy.doc.slides[0].delta.items[id].gaussianBlur, 0);
+
+  // BYTE-IDENTICAL FOLD: the repaired legacy item and an item authored today are
+  // the same evaluated state, key for key (ids differ, so compare the states).
+  const stateOf = (d, itemId) => evaluateState(foldState(d, 0, 1), registry).state.items[itemId];
+  assert.deepEqual(stateOf(legacy.doc, id), stateOf(repairedDocument(todayDoc, registry).doc, todayId));
+  assert.ok(effectsOff(stateOf(legacy.doc, id)), "the quiet fill may not switch an effect ON");
 });
 
 test("repairedDocument REPORTS the legacy {item, anchor} binding migration (it used to rewrite in silence)", () => {

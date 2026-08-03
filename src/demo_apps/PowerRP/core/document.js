@@ -982,14 +982,24 @@ export function withOrphanedItemsDropped(doc, knownTypes) {
  * the null-default note in the body: nothing else can cover such a key, so
  * without the exception the report repeats on every load forever).
  *
+ * EACH MISSING LEAF CARRIES ITS CAUSE as `deleted` — true when some slide wrote
+ * an explicit `null` at that path (a DELETE SENTINEL: the author's value existed
+ * and is gone, so substituting a default changes meaning), false when the key is
+ * simply absent everywhere (VERSION SKEW: legal legacy state, filled at the
+ * plugin's own default, byte-identical render). repairedDocument reports only
+ * the first — see the note in the body for why conflating them broke the loud
+ * channel.
+ *
  * Args:
  *   doc (object): document
  *   registry (object): plugin registry (.get(type) → plugin with .defaults)
  *
  * Returns:
- *   {id, slideIndex, missing: {path: string[], value}[]}[]
+ *   {id, slideIndex, missing: {path: string[], value, deleted: boolean}[]}[]
  *
  * @example missingDefaults({slides: [{delta: {items: {a: {type: "rect", x: 1, y: 2}}}}]}, reg)[0].missing.some((m) => m.path.join(".") === "w") // true
+ * @example // version skew — a pre-blur item's gaussianBlur comes back {path: ["gaussianBlur"], value: 0, deleted: false}
+ * @example // damage — after keyframing items.a.w to null, that leaf comes back deleted: true
  * @example // a fully-written item (normal creation) reports nothing
  */
 export function missingDefaults(doc, registry) {
@@ -1063,7 +1073,24 @@ export function missingDefaults(doc, registry) {
       // other key's delete-sentinel handling is untouched (a `w: null` still
       // reports and still gets the real default filled in).
       const coveredByNull = value === null && nulls.has(key);
-      if (path[0] !== "type" && !coveredByNested && !coveredByNull) missing.push({ path, value });
+      // WHY EACH FILL CARRIES ITS OWN CAUSE. This function's docblock has always
+      // named TWO populations, and they are not the same event:
+      //   VERSION SKEW — the key is absent from every slide delta because the
+      //     PROPERTY DID NOT EXIST when the document was written. That is LEGAL
+      //     LEGACY STATE, not damage; the fill writes the plugin's own default,
+      //     which for a new effect is its identity, so the render is
+      //     byte-identical and nothing about the document's MEANING changed.
+      //   DELETE SENTINEL — some slide explicitly wrote `null` at this path,
+      //     removing a key the plugin requires. That is a damaged or hand-edited
+      //     document: the author's stored value is gone and the fill substitutes
+      //     a default for it, which IS a change of meaning.
+      // Only the second is news. Reporting both in one voice is what made every
+      // pre-blur deck print a console error per item on load the night
+      // `gaussianBlur` joined the effects bundle — the loud channel crying wolf
+      // about the routine case, which is precisely how it stops being trusted for
+      // the real one. The caller decides what to say; this only records which.
+      const deleted = nulls.has(key);
+      if (path[0] !== "type" && !coveredByNested && !coveredByNull) missing.push({ path, value, deleted });
     }
     if (missing.length) out.push({ id, slideIndex, missing });
   }
@@ -1073,8 +1100,12 @@ export function missingDefaults(doc, registry) {
 /**
  * Pure function. Document with every missing default keyframed into the
  * item's CREATION slide (where its type is written), plus the fill report.
- * REPORTING IS THE CALLER'S JOB (the app console.errors each fill — silent
- * repairs are forbidden). Idempotent: a filled document reports nothing.
+ * REPORTING IS THE CALLER'S JOB, and it is SELECTIVE: repairedDocument speaks
+ * only for the `deleted` leaves (see missingDefaults). The fill ITSELF is
+ * unconditional — a version-skew key is still written, because the strict IR
+ * builders must never see an undefined leaf; what changes is that writing the
+ * plugin's own default over a key that was never authored is not news.
+ * Idempotent: a filled document reports nothing.
  *
  * @example withMissingDefaultsFilled({slides: [{delta: {items: {a: {type: "rect", x: 1}}}}]}, reg).filled.length // 1
  */
@@ -1871,7 +1902,11 @@ export function legacyBindings(doc) {
  *      its position among the item/slide steps is free — placed here to match
  *      the editor's long-tested sequence.
  *   4. missing defaults filled  — typed-but-partial items get plugin defaults so
- *      the strict IR builders never see w: undefined.
+ *      the strict IR builders never see w: undefined. FILLED ALWAYS, REPORTED
+ *      ONLY WHEN DELETED: a key absent because it postdates the document is
+ *      version skew (legal legacy state, filled at the plugin's identity value,
+ *      byte-identical render) and stays QUIET, the meta.script precedent; a key
+ *      a slide explicitly NULLED destroyed an authored value and is LOUD.
  *   5. duration → transition    — legacy per-slide `duration` becomes
  *      transition.seconds (round 12).
  *   6. camera ensured + deduped — a doc predating the camera (or one whose
@@ -2023,9 +2058,31 @@ export function repairedDocument(doc, registry) {
   for (const m of richMigrated)
     reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy string text → rich runs`);
 
+  // THE FILL IS UNCONDITIONAL; THE REPORT IS NOT. Every missing leaf is written
+  // (the strict IR builders must never meet an undefined), but only the DELETED
+  // ones — a slide's explicit `null` at a required key — are announced. A leaf
+  // that is merely ABSENT is version skew: the property did not exist when the
+  // document was written, absence is legal legacy state under this codebase's
+  // absent-is-legacy discipline, and the fill writes the plugin's own default,
+  // which for every effect in the bundle is its IDENTITY value — the render is
+  // byte-identical and no authored value was touched. This is the meta.script
+  // precedent applied to items ("filled with '' when absent, quietly — an old
+  // deck has no library and an empty one means the same"), and the ABSENCE of it
+  // here is what made the night `gaussianBlur` joined the effects bundle print a
+  // console error PER ITEM for every deck ever saved. That is not the loud
+  // channel doing its job; it is the loud channel drowning itself, and it reds
+  // the probes whose console gates exist to catch genuine repair noise.
+  //
+  // MALFORMED VALUES ARE UNAFFECTED and stay loud: this step is about a key that
+  // is not there, not about one carrying garbage. A non-number `gaussianBlur` is
+  // WRITTEN, so it is never "missing" — it flows on to the expression/validation
+  // seam that reports bad values by name.
   const { doc: filledDoc, filled } = withMissingDefaultsFilled(richDoc, registry);
-  for (const { id, missing } of filled)
-    reports.push(`PowerRP repair: item "${id}" was missing ${missing.map((m) => m.path.join(".")).join(", ")} — filled with plugin defaults`);
+  for (const { id, missing } of filled) {
+    const deleted = missing.filter((m) => m.deleted);
+    if (deleted.length)
+      reports.push(`PowerRP repair: item "${id}" had ${deleted.map((m) => m.path.join(".")).join(", ")} DELETED (written as null) — a required key, restored to the plugin default`);
+  }
 
   // NO SHADOW STEP HERE. The dormant-shadow migration that used to sit between
   // the fill and the duration migration was deleted — see the RETIRED block above
