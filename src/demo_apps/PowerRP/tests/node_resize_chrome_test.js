@@ -41,6 +41,9 @@ import { audioPlugins } from "../plugins/audio_index.js";
 import { knobAt, knobBandScale, knobRadius, KNOB_BAND_MIN_SCALE } from "../core/node_knobs.js";
 import { knobBandTop } from "../core/audio_nodes.js";
 import { MIXER_SPEC } from "../core/audio_specs.js";
+// web/knobFocus.js is DOM-free despite its path — it is pure geometry and pure
+// policy, which is exactly why BX put the press and the cursor behind it.
+import { knobCursorFor, knobDialAt } from "../web/knobFocus.js";
 import {
   NODE_FAMILIES, NODE_FAMILY_NAMES, NODE_HEADER_H, NODE_MARK_SIZE,
   familyCard, familyMarkOps, nodeFamily, scaleUnitPath,
@@ -212,6 +215,32 @@ check("CD: THE HIT TEST AGREES WITH THE DRAWN POSITION at every height", () => {
       assert.equal(knobAt(layout, d.cx, d.cy - knobRadius(d) - 0.5, 0), null,
         `mixer at h=${h}: dial ${d.key} grabs past its own painted radius`);
     }
+  }
+});
+
+check("CD: the EDITOR'S OWN lookup agrees with the drawn position at every height", () => {
+  // knobAt above is the geometry; THIS is the seam web/CanvasView.dialUnder
+  // actually calls, and the one BX built both the press and the hand cursor from
+  // ("a separate knobCursor class on the overlay written from the SAME dialUnder
+  // lookup the press uses, so hand and gesture cannot disagree"). Going through
+  // knobDialAt proves the plugin's `knobLayout` declaration is what the mode sees,
+  // not just that the geometry module is self-consistent.
+  for (const h of HEIGHTS) {
+    const s = { ...audioMixerPlugin.defaults, h };
+    for (const d of audioMixerPlugin.knobLayout(s)) {
+      const hit = knobDialAt(audioMixerPlugin, s, d.cx, d.cy, 0);
+      assert.equal(hit?.key, d.key,
+        `mixer at h=${h}: the editor's dial lookup missed ${d.key} at its own painted centre`);
+      // AND THE CURSOR AGREES. A hand over a dial the press would not find is the
+      // exact "cursor that lies" BX refused; a hand is offered here because these
+      // dials hold plain numbers rather than equations.
+      assert.equal(knobCursorFor(hit), "grab",
+        `mixer at h=${h}: no hand offered over dial ${d.key}`);
+    }
+    // And a press in the card's empty upper body is still a body drag at every
+    // size — the band must not have grown a claim on space it does not draw in.
+    assert.equal(knobDialAt(audioMixerPlugin, s, Math.abs(s.w) / 2, NODE_HEADER_H + 4, 0), null,
+      `mixer at h=${h}: a press just under the header found a dial`);
   }
 });
 
