@@ -128,6 +128,104 @@ export function plaintextInkBounds(state) {
 }
 
 /**
+ * Query (lays the text out through the installed ink measure). THE
+ * REPARAMETRIZATION PROTOCOL for plaintext — the contract is in core/registry.js:
+ * "Set Size to Ink Bounds" must change the numbers and NOT the picture, at every
+ * tween alpha as well as at the endpoints. Returns the interior compensation the
+ * re-box costs (patch leaves override the box the command would otherwise write),
+ * or null to refuse.
+ *
+ * ── WHY TEXT NEEDS A COMPENSATOR AT ALL (measured, not assumed) ───────────────
+ * A text box is not a frame the glyphs sit inside — w and h are INPUTS TO THE
+ * LAYOUT. w is the wrap width and h is the room valign distributes. So naively
+ * writing the ink rect into w/h re-runs the layout in a different box and the
+ * type moves. Both drift classes were found by rendering and byte-comparing
+ * (tests/reparametrize_law_test.mjs keeps the measurement standing):
+ *
+ *   1. WRAP REFLOW. An unbreakable word overruns its wrap box, so the ink is
+ *      WIDER than w. Writing that width in widens the wrap box, and text that
+ *      used to break now fits on one line. That is a genuine reflow: no offset or
+ *      scale undoes it, because the line breaks themselves changed. Refusing to
+ *      WIDEN is the honest answer, and it costs nothing the user asked for — the
+ *      reported defect is type overflowing DOWNWARD, which is the height axis.
+ *
+ *   2. VALIGN RESIDUE, when the box is TALLER than the stack. textInkBounds
+ *      returns h = vOffset + stackHeight — the rect's top stays at 0, so it
+ *      INCLUDES the slack valign put ABOVE the stack. Re-boxing to that height
+ *      leaves a smaller slack which "middle" re-halves, so a centred line rises.
+ *
+ * ── WHY THE SLACK CASE REFUSES RATHER THAN COMPENSATING ──────────────────────
+ * THE OBVIOUS FIX WAS TRIED AND MEASURED WRONG, and that measurement is the
+ * reason this reads as a refusal instead of arithmetic. The fix looks exact on
+ * paper: move the offset out of the LAYOUT and into the POSITION — shift y down
+ * by vOffset, keep stackHeight as h, pin valign to "top". Every number checks
+ * out. It still moved the type, at every valign with slack, in both aligns.
+ *
+ * THE REASON IS A SEAM, not an arithmetic slip: THERE ARE TWO LAYOUT ENGINES AND
+ * THEY DISAGREE ABOUT HEIGHT. core/richtext.layoutRichText stacks lines from the
+ * injected per-run measure and is what textInkBounds (hence this hook, hence the
+ * ink rect and the ghost) reports. The PICTURE is laid out by
+ * render_gpu/skia/text_layout.buildTextLayout, which sums CanvasKit PARAGRAPH
+ * heights and computes its OWN valignOffset from that sum. The two totals are
+ * close but not equal, so a compensator built from the core number cancels an
+ * offset the renderer never applied, and the residue is the difference. No amount
+ * of care on this side fixes that; the two engines have to agree first.
+ *
+ * So the widget refuses what it cannot measure. A slack box keeps its valign and
+ * the tool declines it, with the reason surfaced — which is worse for the user
+ * than a working fit and far better than a fit that silently nudges their type.
+ * REMOVING THIS REFUSAL IS A REAL FEATURE, and the prerequisite is stated: make
+ * the ink rect read the renderer's own layout (or make the two engines agree),
+ * then compensate as above and delete this branch. tests/reparametrize_law_test.mjs
+ * will tell you immediately whether you have actually done it.
+ *
+ * ── WHY THE ACCEPTED CASE IS TWEEN-SAFE ──────────────────────────────────────
+ * It writes NO interior compensation at all ({}), so there is nothing to lerp out
+ * of step: the box's own x/y/w/h lerp, and because the type hangs from the box's
+ * TOP EDGE in every accepted case, the stack tracks that edge continuously rather
+ * than being redistributed inside a changing height. That is precisely why the
+ * accepted set is "valign top, or a box with no slack" — those are the states
+ * where h is not an input to where the glyphs go.
+ *
+ * Args:
+ *   state (object): the folded, equation-evaluated plaintext state
+ *   newBox (object): {x, y, w, h} the command proposes — x/y are stored world
+ *     coords, w/h local extents (this widget's ink rect always starts at the
+ *     local origin, so x/y arrive unchanged)
+ *
+ * Returns:
+ *   {object|null}: state leaves to write (overriding the proposed box where they
+ *     collide), or null to refuse
+ *
+ * @example // THE ACCEPTED CASE: top-aligned type overflowing a short box — re-box, compensate nothing
+ * @example plaintextReparametrizeToBox({text: "a\nb", x: 0, y: 0, w: 100, h: 5, size: 10, valign: "top"}, {x: 0, y: 0, w: 100, h: 20}) // {}
+ * @example // an EMPTY box draws nothing, so there is nothing to fit
+ * @example plaintextReparametrizeToBox({text: "", w: 10, h: 10}, {x: 0, y: 0, w: 0, h: 0}) // null
+ * @example // REFUSAL: the ink is wider than the wrap box, so accepting would reflow the lines
+ * @example plaintextReparametrizeToBox({text: "aaaa", x: 0, y: 0, w: 15, h: 100, size: 10}, {x: 0, y: 0, w: 40, h: 10}) // null
+ * @example // REFUSAL: a middle-aligned box TALLER than its type carries a valign residue this cannot measure
+ * @example plaintextReparametrizeToBox({text: "a", x: 0, y: 0, w: 100, h: 200, size: 10, valign: "middle"}, {x: 0, y: 0, w: 100, h: 105}) // null
+ */
+export function plaintextReparametrizeToBox(state, newBox) {
+  if (plaintextIsEmpty(state.text)) return null; // no ink: nothing to reparametrize
+  // WIDENING IS A REFLOW, not a re-box (case 2 above). A tolerance is deliberately
+  // NOT used: the wrap box is compared to the ink the SAME layout produced, so
+  // equality here is exact when the text fits, and any excess is a real overrun.
+  const boxW = (state.w ?? 0) > 0 ? (state.w ?? 0) : Infinity;
+  if (newBox.w > boxW) return null;
+  // VERTICAL SLACK ⇒ REFUSE (case 1 above). Detected as "the box is taller than
+  // the stack", which is exactly when valign has room to redistribute.
+  const boxH = (state.h ?? 0) > 0 ? (state.h ?? 0) : Infinity;
+  const valign = state.valign ?? "top";
+  if (valign !== "top" && boxH > plaintextInkBounds({ ...state, valign: "top", h: 0 }).h) return null;
+  // NOTHING LEFT TO COMPENSATE. Reaching here means the type starts at the box's
+  // top edge and runs down from it — the ink rect's origin IS the box origin — so
+  // the new box holds the same stack laid out the same way. The empty patch is
+  // the honest answer, not a stub: the re-box alone already satisfies the law.
+  return {};
+}
+
+/**
  * PLAINTEXT LOOKS — whole looks for the app's "just some text" primitive: a
  * caption, a label, a sign, a readout.
  *
@@ -540,6 +638,14 @@ export const plaintextPlugin = {
   // export capture rect, and (the reported symptom) unclickable. ORTHOGONAL to
   // `cullMargin` below, which is the effects halo AROUND this ink.
   localBounds: plaintextInkBounds,
+  // THE REPARAMETRIZATION PROTOCOL (core/registry.js): what "Set Size to Ink
+  // Bounds" costs this widget's interior. w/h are LAYOUT INPUTS here (wrap width
+  // and valign room), not a frame the glyphs sit in, so a naive re-box can move
+  // the type. Accepts exactly the states where the stack hangs from the box's TOP
+  // edge (compensating nothing), and REFUSES a widening wrap or a valign residue.
+  // Both refusals are measured, and the second one documents a real seam between
+  // two layout engines — read the function before trying to remove it.
+  reparametrizeToBox: plaintextReparametrizeToBox,
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
   // Anchors sit on the bbox rim (the shared standard anchors) — same choice

@@ -3008,7 +3008,22 @@ export class PowerRPApp {
    *   · ANY OTHER BBOX WIDGET's actual size is its declared INK BOUNDS
    *     (core/view.js localBoundsOf) — for text, where the type really landed.
    *
-   * @returns {object[]} [{node, rect}] — rect is the LOCAL box the node should take
+   * TWO GATES, COMPOSED, and the second is the one the user's amendment added.
+   * A candidate must BOTH disagree with its box AND be able to keep its picture
+   * while taking the new one — `reparametrizeToBox` (core/registry.js: THE
+   * INK-BOUNDS REPARAMETRIZATION PROTOCOL), which returns the interior
+   * compensation or null to refuse. Refusal is the DEFAULT for a widget that
+   * declares no hook, because a content-stretched widget (latex, svg, image) is
+   * RESCALED by a re-box rather than merely unhelped by one: "this tool only
+   * applies to widgets that can somehow scale their interiors separately".
+   *
+   * REFUSERS ARE KEPT, NOT DROPPED — that is why this returns a `patch` of null
+   * rather than filtering. The command has to be able to SAY which selected
+   * widgets it would not touch and why; a silently skipped item looks exactly
+   * like a tool that did not work.
+   *
+   * @returns {object[]} [{node, rect, patch}] — rect is the LOCAL box the node
+   *   should take; patch is the interior compensation, or null if it refuses
    */
   #inkFitTargets() {
     return this.selectedNodes().flatMap((n) => {
@@ -3017,8 +3032,31 @@ export class PowerRPApp {
       if (!rect || (rect.w <= 0 && rect.h <= 0)) return []; // nothing drawn / no members: nothing to fit to
       const box = { x: 0, y: 0, w: n.state.w ?? 0, h: n.state.h ?? 0 };
       const same = rect.x === box.x && rect.y === box.y && rect.w === box.w && rect.h === box.h;
-      return same ? [] : [{ node: n, rect }];
+      if (same) return [];
+      // The box the command would write, in the terms the plugin is asked about:
+      // stored x/y (the local ink offset mapped through the node's own world) plus
+      // the ink's local extents. Computed HERE so the hook is asked about exactly
+      // the box that will be written, not an approximation of it.
+      const o = T.apply(n.world, rect.x, rect.y);
+      const origin = T.apply(n.world, 0, 0);
+      const newBox = {
+        x: (n.state.x ?? 0) + (o.x - origin.x),
+        y: (n.state.y ?? 0) + (o.y - origin.y),
+        w: rect.w, h: rect.h,
+      };
+      const patch = n.plugin.reparametrizeToBox?.(n.state, newBox) ?? null;
+      return [{ node: n, rect, newBox, patch }];
     });
+  }
+
+  /**
+   * Query. The selected items the tool WOULD change — those that disagree with
+   * their box AND accept the reparametrization. The gate and the worklist.
+   *
+   * @returns {object[]} [{node, rect, newBox, patch}] with a non-null patch
+   */
+  #inkFitAccepted() {
+    return this.#inkFitTargets().filter((t) => t.patch !== null);
   }
 
   /**
@@ -3055,9 +3093,32 @@ export class PowerRPApp {
     return { x: lx, y: ly, w: Math.max(...xs) - lx, h: Math.max(...ys) - ly };
   }
 
-  /** Query. Would "Set size to ink bounds" change anything? The command's `when`. */
+  /**
+   * Query (pure over the given nodes). THE REFUSAL SENTENCE — which selected
+   * widgets declined the reparametrization, and why anyone should care.
+   *
+   * It names the WIDGETS rather than restating the rule abstractly, because the
+   * question a user actually has is "why did nothing happen to THAT one". The
+   * reason clause is shared: a widget refuses precisely when it cannot take the
+   * new box without its picture changing, which is the tool's whole contract.
+   *
+   * @param {object[]} refused - the [{node}] entries whose patch came back null
+   * @returns {string} a sentence, ending in a period
+   */
+  #inkFitRefusalReason(refused) {
+    const names = refused.map(({ node }) => node.plugin.title ?? node.type);
+    const unique = [...new Set(names)];
+    const list = unique.length === 1 ? unique[0]
+      : unique.length === 2 ? `${unique[0]} and ${unique[1]}`
+      : `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
+    return `${refused.length} selected widget${refused.length === 1 ? "" : "s"} (${list}) cannot be re-boxed without changing what they draw — their content is sized BY the box, so fitting it would rescale or reflow the picture rather than just relabel it.`;
+  }
+
+  /** Query. Would "Set size to ink bounds" change anything? The command's `when`.
+   * A widget that disagrees with its box but REFUSES the reparametrization does
+   * not count — enabling on it would promise a change the run declines to make. */
   canFitToInkBounds() {
-    return this.#inkFitTargets().length > 0;
+    return this.#inkFitAccepted().length > 0;
   }
 
   /**
@@ -3073,50 +3134,61 @@ export class PowerRPApp {
    * case — ink grows down and right) the offset is zero and only w/h are written,
    * because unifyPairs drops any pair already holding its value.
    *
-   * FOR A GROUP this is the ungroup-and-regroup the user described, and it also
-   * rewrites `bind`. That is the part that would be easy to leave out and wrong to:
-   * a group's influence on its members is measured as the delta from its BIND POSE
-   * (core/derive.js), so re-capturing the box without re-capturing the bind would
-   * make the group's own box change count as a transformation OF its members and
-   * shove them across the slide. Re-binding at the new pose is exactly what makes
-   * this "as if regrouped" — identity influence, members untouched, which is the
-   * whole point of a recapture.
+   * IT IS A REPARAMETRIZATION, NOT AN EDIT (user ruling, 2026-08-02) — the whole
+   * law, and the reason the interior compensation exists, is stated at THE
+   * INK-BOUNDS REPARAMETRIZATION PROTOCOL in core/registry.js. The user: "the
+   * thing on screen shouldn't move … even if I tween between the two, I should
+   * see no difference". So this writes the new box AND the patch the widget asked
+   * for in the same breath; the patch wins where the two collide, because it is
+   * the widget's own correction to a box the command only proposed.
+   *
+   * FOR A GROUP the patch is the bind rewrite, which is the ungroup-and-regroup
+   * the user described. That is the part that would be easy to leave out and
+   * wrong to: a group's influence on its members is measured as the delta from
+   * its BIND POSE (core/derive.js), so re-capturing the box without re-capturing
+   * the bind would make the group's own box change count as a transformation OF
+   * its members and shove them across the slide. It now lives in
+   * plugins/group.js `reparametrizeToBox` rather than in a `type === "group"`
+   * test here — the registry's own rule is that tools dispatch on capabilities,
+   * never on type, and expressing it as the capability is what let the CROPPED
+   * group be found and refused (its clip is defined in the box being replaced).
    *
    * ONE UNDO UNIT via setPreview/commitPreview, the same path unifySelection and
    * applyPreset use. No-op when nothing disagrees (reported, not silent) — an
-   * empty commit would push an undo entry for a change nobody made.
+   * empty commit would push an undo entry for a change nobody made. A selection
+   * of widgets that all REFUSE is reported too, naming them: silently doing
+   * nothing to a latex box looks identical to a broken tool.
    */
   fitSelectionToInkBounds() {
     const targets = this.#inkFitTargets();
-    if (targets.length === 0) {
-      reportAction("Set size to ink bounds: nothing selected has contents that leave its box — every selected box already matches what it holds. Nothing was changed.");
+    const accepted = targets.filter((t) => t.patch !== null);
+    const refused = targets.filter((t) => t.patch === null);
+    if (accepted.length === 0) {
+      reportAction(refused.length > 0
+        ? `Set size to ink bounds: ${this.#inkFitRefusalReason(refused)} Nothing was changed.`
+        : "Set size to ink bounds: nothing selected has contents that leave its box — every selected box already matches what it holds. Nothing was changed.");
       return;
     }
+    // A MIXED selection still runs on what it can, and says what it skipped —
+    // fitting three of four widgets while staying silent about the fourth is how
+    // a user concludes the tool is flaky.
+    if (refused.length > 0)
+      reportAction(`Set size to ink bounds: fitted ${accepted.length} widget${accepted.length === 1 ? "" : "s"}. ${this.#inkFitRefusalReason(refused)}`);
     const pairs = [];
-    for (const { node, rect } of targets) {
-      // The box's local origin moves by (rect.x, rect.y); the STORED x/y are world
-      // units, so that local offset is rotated/scaled through the node's own world
-      // before it is applied. Computed ONCE — the group's bind below must land on
-      // the SAME position the box does, and recomputing it would be two chances to
-      // disagree. A zero offset (the text case: ink grows down and right from the
-      // origin) leaves x/y exactly as they were.
-      const o = T.apply(node.world, rect.x, rect.y);
-      const origin = T.apply(node.world, 0, 0);
-      const nx = (node.state.x ?? 0) + (o.x - origin.x);
-      const ny = (node.state.y ?? 0) + (o.y - origin.y);
-      pairs.push([["items", node.itemId, "x"], nx]);
-      pairs.push([["items", node.itemId, "y"], ny]);
-      pairs.push([["items", node.itemId, "w"], rect.w]);
-      pairs.push([["items", node.itemId, "h"], rect.h]);
-      // A GROUP re-binds at its new pose — see the docblock: without this the
-      // recaptured box would read as a transformation of the members and shove
-      // them across the slide, instead of being the no-op recapture the user
-      // described ("like I ungrouped them and then regrouped them again").
-      if (node.type === "group") {
-        pairs.push([["items", node.itemId, "bind", "x"], nx]);
-        pairs.push([["items", node.itemId, "bind", "y"], ny]);
-        pairs.push([["items", node.itemId, "bind", "rotation"], node.state.rotation ?? 0]);
-        pairs.push([["items", node.itemId, "bind", "scale"], node.state.scale ?? 1]);
+    for (const { node, newBox, patch } of accepted) {
+      // The box the widget was ASKED about is the box that gets written — the
+      // same object, not a recomputation of it, so the hook's answer and the
+      // write can never be about two different rectangles.
+      const box = { ...newBox, ...patch };
+      // FLATTENED TO LEAF PATHS, not written as one nested object. A group's patch
+      // carries `bind: {x, y, rotation, scale}`, and storing that as a single
+      // object leaf would keyframe and TWEEN it as an opaque value — a discrete
+      // switch at alpha > 0 instead of four numbers lerping alongside the x/y they
+      // must track. The tween half of the law is exactly what that would break.
+      for (const [key, value] of Object.entries(box)) {
+        if (value !== null && typeof value === "object" && !Array.isArray(value))
+          for (const [sub, leaf] of Object.entries(value)) pairs.push([["items", node.itemId, key, sub], leaf]);
+        else pairs.push([["items", node.itemId, key], value]);
       }
     }
     this.setPreview(pairs);

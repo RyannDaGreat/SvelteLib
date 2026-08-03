@@ -96,6 +96,69 @@ export function groupFoldsSubtree(s) {
   return groupCropRect(s) !== null || !effectsOff(s);
 }
 
+/**
+ * Pure function. THE REPARAMETRIZATION PROTOCOL for a group (the contract lives
+ * in core/registry.js: "Set Size to Ink Bounds" must change the numbers and NOT
+ * the picture, at every tween alpha as well as at the endpoints). Returns the
+ * interior compensation a re-box costs, or null to refuse.
+ *
+ * A GROUP IS THE MODEL CASE, and it is the model case for a reason worth stating:
+ * a plain group DRAWS NOTHING OF ITS OWN (emit() → [], the pure ghost), so its
+ * box cannot possibly be visible. What its box DOES do is serve as the reference
+ * for its influence on its members — influence = current ∘ invert(bind) — and
+ * that is why the compensator is a BIND REWRITE rather than nothing at all.
+ * Re-boxing without re-binding would make the new pose read as a transformation
+ * OF the members and shove them across the slide; re-binding at the new pose
+ * restores identity influence, which is exactly the user's "like I ungrouped them
+ * and then regrouped them again".
+ *
+ * IT IS LINEAR IN THE LERPED PARAMETERS, which is what satisfies the TWEEN half
+ * of the law and not merely the static half. bind.{x,y} are set equal to the new
+ * {x,y}, so a delta tween lerping x from x₀ to x₁ lerps bind.x identically —
+ * current ∘ invert(bind) stays the identity at EVERY alpha, not just at 0 and 1.
+ * (bind.rotation/scale are carried through unchanged for the same reason: the
+ * tool never touches them, so pinning them to their current values keeps the pair
+ * consistent if a rotated group is fitted.)
+ *
+ * A CROPPED GROUP REFUSES, and this is measured rather than assumed
+ * (tests/reparametrize_law_test.mjs renders both). groupCropRect trims the
+ * group's OWN [0,0,w,h] by the four insets, so the clip is defined IN the box
+ * being replaced: shrink the box and the members get cut somewhere else. An
+ * uncropped group re-boxes byte-identically; the same group with insets does not.
+ * Refusing is honest — the insets could in principle be rewritten into the new
+ * frame, but a crop the author placed against the OLD box has no single obviously
+ * right reading in a new one, and picking one would be an edit wearing a
+ * reparametrization's name.
+ *
+ * EFFECTS DO NOT REFUSE, also measured: shadow/bloom/blend are cast by the MEMBER
+ * SILHOUETTE (the composited subtree), not by the group's box, so they survive a
+ * re-box untouched.
+ *
+ * Args:
+ *   state (object): the folded, equation-evaluated group state
+ *   newBox (object): {x, y, w, h} — the box the command is about to write, in the
+ *     same terms the command writes it (x/y are the group's own stored world x/y)
+ *
+ * Returns:
+ *   {object|null}: the state patch to write alongside the box, or null to refuse
+ *
+ * @example // a plain group re-binds at the new pose — identity influence preserved
+ * @example groupReparametrizeToBox({x: 40, y: 20, rotation: 0, scale: 1}, {x: 100, y: 80, w: 240, h: 180}) // {bind: {x: 100, y: 80, rotation: 0, scale: 1}}
+ * @example // a rotated/scaled group carries its own rotation+scale into the new bind
+ * @example groupReparametrizeToBox({x: 0, y: 0, rotation: 30, scale: 2}, {x: 5, y: 5, w: 10, h: 10}) // {bind: {x: 5, y: 5, rotation: 30, scale: 2}}
+ * @example groupReparametrizeToBox({w: 200, h: 100, cropRight: 40}, {x: 0, y: 0, w: 150, h: 100}) // null (a crop is defined in the box being replaced)
+ */
+export function groupReparametrizeToBox(state, newBox) {
+  if (groupCropRect(state) !== null) return null; // the clip lives in the old box
+  return {
+    bind: {
+      x: newBox.x, y: newBox.y,
+      rotation: state.rotation ?? 0,
+      scale: state.scale ?? 1,
+    },
+  };
+}
+
 // GROUP ASSEMBLY TREATMENTS — the effects bundle wraps a group's WHOLE MEMBER
 // SUBTREE as one composite (see SUBTREE EFFECTS above, and groupFoldsSubtree), so
 // these model how a COLLECTION of separate objects is made to read as ONE physical
@@ -283,6 +346,13 @@ export const groupPlugin = {
   // members from the top-level render walk (the manifest cropbox fence: derive
   // does suppression/ordering, the plugin owns the render shape).
   foldsSubtree: groupFoldsSubtree,
+  // THE REPARAMETRIZATION PROTOCOL (core/registry.js): what "Set Size to Ink
+  // Bounds" costs this widget's interior. A group's is a BIND REWRITE — it draws
+  // nothing itself, so the only thing its box means is the reference its member
+  // influence is measured from, and re-binding at the new pose keeps that
+  // influence the identity. Refuses when CROPPED (the clip is defined in the box
+  // being replaced). See groupReparametrizeToBox for the tween-linearity argument.
+  reparametrizeToBox: groupReparametrizeToBox,
   // Effects halo (shadow/bloom spill) extends the group's cull AABB (core/view.js
   // hook), so an effected group isn't culled before its halo would show. Zero when
   // effect-off — the default culling of a plain ghost group is untouched.
