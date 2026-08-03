@@ -4105,12 +4105,69 @@ export class PowerRPApp {
     const { surviving, purged } = partitionPurged(payload, fold);
     if (purged.length) console.warn(purgedRefusal(purged, surviving.length));
     if (!surviving.length) return;
+    // THE TRANSMUTATION RUNS FIRST, on the SAME document the property delta then
+    // merges into — that composition is what keeps one paste to one undo unit.
+    const retyped = this.#transmutedForPaste(payload, fold, surviving);
     const delta = itemPropertiesDelta(payload, fold);
-    if (!Object.keys(delta).length) return;
-    const slides = this.doc.slides.map((s, i) =>
+    if (!Object.keys(delta).length && retyped === this.doc) return;
+    const slides = retyped.slides.map((s, i) =>
       i === this.slideIndex ? { ...s, delta: applied(s.delta, delta) } : s);
-    this.commit({ ...this.doc, slides });
+    this.commit({ ...retyped, slides });
     this.selectMany(surviving); // what you pasted onto is what you have selected
+  }
+
+  /**
+   * Query (reports a refused transmutation). WORKSTREAM BF's TYPE PASTE: the
+   * document with every surviving target whose payload carries a DIFFERENT `type`
+   * retyped, via the same `retypedItem` the Inspector's Widget-type row uses.
+   *
+   * WHY THIS EXISTS AT ALL — a bare `type` keyframe does not render.
+   * core/retype.js's header owns the reason: plugin defaults are materialized
+   * ONLY at the load boundary, never at fold/derive/emit time, so a widget that
+   * merely had `type` rewritten meets `undefined` where the new plugin's emit()
+   * declared a number. The COERCION PLAN is what fills them. Pasting a type
+   * without it would produce exactly the half-rendered widget this workstream was
+   * told not to produce.
+   *
+   * `type` IS LEFT IN THE PAYLOAD DELIBERATELY. `retypedItem` writes the `type`
+   * keyframe itself, and `itemPropertiesDelta` then diffs against the ORIGINAL
+   * fold and writes the same value again — an idempotent second write of a leaf
+   * that already holds it, not a conflict. Stripping it would be the tempting
+   * alternative and is worse: the payload is also what a NO-selection paste
+   * transports, and there the type keyframe is the whole point.
+   *
+   * REFUSED, BY NAME, FOR A STRUCTURAL TARGET. `retypeEligible` is the same gate
+   * the Widget-type dropdown offers its options through — a camera, a group, a
+   * ghost or a metaball cannot be retyped, and the paste says so rather than
+   * throwing out of `registry.get` or writing a type the deriver cannot fold.
+   * An UNREGISTERED source type (a cross-document payload) is refused the same
+   * way, for the same reason `#retargetedForSelection` looks it up leniently.
+   *
+   * @param {object} payload - the (possibly retargeted) properties payload
+   * @param {object} fold - the current slide's folded state
+   * @param {string[]} surviving - the ids that still exist here
+   * @returns {object} the document to merge the property delta into — `this.doc`
+   *   unchanged when nothing transmutes
+   */
+  #transmutedForPaste(payload, fold, surviving) {
+    let doc = this.doc;
+    for (const id of surviving) {
+      const wanted = payload.powerrp_item_props[id]?.type;
+      const current = fold.items[id];
+      if (typeof wanted !== "string" || !current || current.type === wanted) continue;
+      const target = this.registry.all().find((p) => p.type === current.type);
+      const becoming = this.registry.all().find((p) => p.type === wanted);
+      if (!becoming) {
+        console.warn(`Paste Properties: ${id} did not take “type” — this build does not register the widget type “${wanted}”.`);
+        continue;
+      }
+      if (!retypeEligible(target) || !retypeEligible(becoming)) {
+        console.warn(`Paste Properties: ${id} did not take “type” — a ${retypeEligible(target) ? `“${wanted}”` : `“${current.type}”`} cannot be retyped (it is a structural widget: the camera, a group, a ghost or a metaball).`);
+        continue;
+      }
+      doc = retypedItem(doc, this.slideIndex, id, wanted, current, this.registry);
+    }
+    return doc;
   }
 
   /**

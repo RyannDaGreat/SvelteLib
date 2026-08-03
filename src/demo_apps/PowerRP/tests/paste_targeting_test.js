@@ -19,9 +19,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   itemPropertiesPayload, itemPropertiesDelta, retargetedState, retargetedPayload,
-  retargetRefusal, retargetReport, rowsByKey, UNRETARGETABLE_KEYS,
+  retargetRefusal, retargetReport, rowsByKey, UNRETARGETABLE_KEYS, UNIVERSAL_PASTE_KEYS,
 } from "../core/item_properties_clipboard.js";
-import { sameRowContract } from "../core/multiselect.js";
+import { sameRowContract, UNIVERSAL_MULTI_KEYS } from "../core/multiselect.js";
 import { createRegistry } from "../core/registry.js";
 import { allPlugins } from "../plugins/index.js";
 import {
@@ -113,13 +113,45 @@ test("a key the target's plugin never declares is skipped and NAMED, never writt
   assert.deepEqual(skipped, [{ key: "sides", reason: "this widget has no “sides” property" }]);
 });
 
+// WORKSTREAM BF REVERSED HALF OF THIS ASSERTION, and the old form is kept in the
+// comment because the reversal is a USER RULING, not a bug fix. It used to read
+// "type/z/active must be refused regardless of declared rows". The user
+// (2026-08-02): "Why does copy properties not copy the widget type and visibility
+// and everything under universal other than name? Copy properties should do
+// that". So `type` and `active` now TRANSFER; `z` and `name` remain refused.
 test("identity keys never transfer, even when a row would allow them", () => {
-  const withTypeRow = { inspector: [...RECT.inspector, { key: "type", kind: "text" }, { key: "z", kind: "number" }, { key: "active", kind: "boolean" }] };
-  const { state, skipped } = retargetedState({ type: "rect", z: 3, active: true, x: 5 }, null, withTypeRow);
-  assert.deepEqual(state, { x: 5 }, "type/z/active must be refused regardless of declared rows");
-  assert.deepEqual(skipped.map((s) => s.key).sort(), ["active", "type", "z"]);
+  const withRows = { inspector: [...RECT.inspector, { key: "z", kind: "number" }, { key: "name", kind: "text" }] };
+  const { state, skipped } = retargetedState({ z: 3, name: "n", x: 5 }, null, withRows);
+  assert.deepEqual(state, { x: 5 }, "z/name must be refused regardless of declared rows");
+  assert.deepEqual(skipped.map((s) => s.key).sort(), ["name", "z"]);
   for (const { key, reason } of skipped)
     assert.equal(reason, UNRETARGETABLE_KEYS[key], "the refusal must quote the declared reason, not restate it");
+});
+
+test("WORKSTREAM BF: the universal section transfers though NO plugin declares it", () => {
+  // The blind spot this fixed: universal rows live in Inspector/multiselect, never
+  // in plugin.inspector, so the declaration rule refused them with a sentence that
+  // was true of the data structure and false of the widget.
+  assert.equal(RECT.inspector.some((r) => r.key === "morph"), false,
+    "this test's premise: no plugin declares a morph row");
+  const { state, skipped } = retargetedState(
+    { type: "rect", active: false, morph: "crossfade", name: "Src", z: 9, x: 5 }, null, CIRCLE);
+  assert.deepEqual(state, { type: "rect", active: false, morph: "crossfade", x: 5 },
+    "widget type, visible and morph must all land; name and z must not");
+  assert.deepEqual(skipped.map((s) => s.key).sort(), ["name", "z"]);
+});
+
+test("WORKSTREAM BF: the universal subset is BE's, imported rather than restated", () => {
+  assert.deepEqual(UNIVERSAL_PASTE_KEYS, UNIVERSAL_MULTI_KEYS,
+    "a second literal here is the hand-maintained-copy defect — it must BE core/multiselect's list");
+  assert.equal(UNIVERSAL_PASTE_KEYS.includes("name"), false, "name is excluded by the ruling");
+});
+
+test("WORKSTREAM BF: the camera refuses `active` — it is mandatory and cannot be hidden", () => {
+  const camera = { capabilities: { purgeable: false }, inspector: [] };
+  const { state, skipped } = retargetedState({ active: false, morph: "snap" }, null, camera);
+  assert.deepEqual(state, { morph: "snap" }, "a mandatory widget cannot be hidden by a paste");
+  assert.deepEqual(skipped, [{ key: "active", reason: "this widget is mandatory and cannot be hidden" }]);
 });
 
 test("an EQUATION transfers verbatim — the target evaluates it, we do not rewrite it", () => {

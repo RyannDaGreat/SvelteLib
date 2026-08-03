@@ -131,14 +131,62 @@
  * store invisible junk the widget ignores — the same decision core/multiselect
  * made for union mode, and for the same stated reason.
  *
- * IDENTITY KEYS ARE NEVER TRANSFERRED (`UNRETARGETABLE_KEYS`). `type` is what a
- * widget IS, and pasting a rect's `type` onto a circle would not "apply a
- * property" — it would silently REPLACE the widget with one whose remaining
- * state was authored for something else. `z` and `active` are excluded for a
- * blunter reason: they are position-in-the-stack and visibility, which are
- * facts about the TARGET's place in this slide, not appearance being copied.
- * (They still ride a NO-selection paste, which is the same item at another time
- * — there, `active` coming back is the documented feature.)
+ * ── THE UNIVERSAL SECTION TRANSFERS (WORKSTREAM BF) ─────────────────────────
+ * User, 2026-08-02, verbatim: "Why does copy properties not copy the widget type
+ * and visibility and everything under universal other than name? Copy properties
+ * should do that, but it doesn't seem to. Can you double check that? See if I'm
+ * wrong? Maybe it's pasted the issue."
+ *
+ * The user was right, and "maybe it's pasted the issue" was the correct guess:
+ * MEASURED, the COPY side was already perfect — `itemPropertiesPayload` captures
+ * the whole fold, so `type`, `name`, `active` and `morph` were all in the
+ * payload. Both drops were on the PASTE side, and there were TWO of them, from
+ * different mechanisms, which is why the symptom looked like one blanket failure:
+ *
+ *   • `type` and `active` were refused by the `UNRETARGETABLE_KEYS` denylist —
+ *     a deliberate decision, made before this ruling, that the ruling overturns.
+ *   • `morph` and `name` were refused by the plugin-declaration rule, which is
+ *     not a decision at all but a BLIND SPOT: the universal rows are declared in
+ *     web/Inspector.svelte and core/multiselect.js, never in a `plugin.inspector`
+ *     array, so `retargetedState` asked 107 plugins whether they had a `morph`
+ *     row and all 107 truthfully said no. The refusal sentence ("this widget has
+ *     no “morph” property") was true of the data structure and false of the
+ *     widget.
+ *
+ * So the fix is not one line: the denylist SHRINKS to `{z, name}`, and universal
+ * keys are tested BEFORE the declaration rule so the blind spot cannot swallow
+ * them. `z` stays out because stacking order is a fact about the target's place
+ * in this slide; `name` stays out because the ruling says so and because one name
+ * broadcast over a set is the opposite of what a name is for.
+ *
+ * NOTE THE ASYMMETRY THAT REMAINS, deliberately: a NO-selection paste (the same
+ * item at another time) carries `z` and `name` too, because there it is not a
+ * broadcast — it is that one item's own state coming home. The denylist governs
+ * the RETARGET only, and always did.
+ *
+ * ── PASTING A TYPE IS A TRANSMUTATION, AND IT RUNS THE RETYPE PLAN ───────────
+ * A bare `type` keyframe is NOT enough, and core/retype.js's header explains why
+ * at length: plugin defaults are materialized only at the load boundary, so the
+ * new type's own keys would be `undefined` where its emit() declared a number.
+ * Pasting `type` therefore routes through the SAME `retypedItem` the Inspector's
+ * Widget-type row uses — the coercion plan, not a raw write. That is what makes
+ * the transmutation keyframe like any other delta property while still rendering:
+ * absent keys get the new type's defaults (rule 1), shared keys keep their values
+ * when the row kinds agree (rule 2), and keys only the old type declared stay
+ * dormant in the bag (rule 3).
+ *
+ * MEASURED, rect -> text: 20 keys survive (geometry, fill, stroke, opacity,
+ * shadow), 11 are filled from text's defaults (text, size, font, align, …), 0 are
+ * coerced, and `name`/`z`/the item's id are untouched. The widget derives and
+ * paints as a text. One paste is still ONE undo unit: the app composes the retype
+ * document and the property delta into a single commit.
+ *
+ * WHY THE PLAN AND NOT A KEYFRAME, stated because the shortcut is tempting: this
+ * module is pure and has no registry, so it cannot compute a plan. It therefore
+ * CARRIES `type` in the retargeted payload and the app-layer adapter
+ * (`#applyItemProperties`) runs the retype before merging the rest. The split is
+ * the same one every other command uses — core owns the law, the app owns the
+ * registry.
  *
  * EQUATIONS TRANSFER VERBATIM. They are strings, and the target evaluates them;
  * a `= @otherItem.x` that names something absent fails through the ordinary
@@ -166,7 +214,7 @@
 
 import { deltaFromFoldDiff } from "./slide_reorder.js";
 import { copiedDeep } from "./deltas.js";
-import { sameRowContract, contractDifferences } from "./multiselect.js";
+import { sameRowContract, contractDifferences, UNIVERSAL_MULTI_KEYS } from "./multiselect.js";
 
 /**
  * Pure function. Captures the FOLDED state of `ids` out of a folded slide
@@ -335,20 +383,87 @@ export function itemPropertiesDelta(payload, destFold) {
  * — the header's identity-keys paragraph, as data so the report can quote it.
  *
  * A DENYLIST rather than a "transfer only what the inspector declares" rule
- * doing the job by accident: `type` has no inspector row anywhere, so it would
- * already be filtered — but that would be luck, and a plugin that one day
- * declares a `type` row would silently start replacing widgets. Named here, the
+ * doing the job by accident: these keys have no inspector row anywhere, so they
+ * would already be filtered — but that would be luck, and a plugin that one day
+ * declared such a row would silently start writing them. Named here, the
  * refusal is a decision instead of a side effect.
  *
- * @example UNRETARGETABLE_KEYS.type.startsWith("A widget's type") // true
+ * WHAT LEFT THIS LIST, AND WHY (WORKSTREAM BF, user ruling 2026-08-02: "Why does
+ * copy properties not copy the widget type and visibility and everything under
+ * universal other than name?"). `type` and `active` used to sit here; they are
+ * now UNIVERSAL_PASTE_KEYS below. The old reasoning was not wrong about the
+ * MECHANISM — pasting a type really does replace the widget rather than restyle
+ * it — it was wrong about the VERB the user wanted, which is exactly that
+ * replacement, keyframed like any other property. See `retargetedState`.
+ *
+ * `name` is here for the BE-consistent reason, not the identity one: it is the
+ * one universal row the user volunteered to drop ("perhaps name shouldn't be
+ * there"). Broadcasting one name onto a set would give several widgets the same
+ * label, which is the opposite of what a name is for.
+ *
+ * @example UNRETARGETABLE_KEYS.z.startsWith("Stacking order") // true
  * @example Object.keys(UNRETARGETABLE_KEYS).sort()
- * // ["active", "type", "z"]
+ * // ["name", "z"]
  */
 export const UNRETARGETABLE_KEYS = {
-  type: "A widget's type is what it IS, not a property it has — pasting one onto another widget would replace it rather than restyle it.",
   z: "Stacking order is where a widget sits in THIS slide's pile, not part of the appearance being copied.",
-  active: "Whether a widget is showing on this slide belongs to the target, not to the copied look.",
+  name: "A name identifies ONE widget — pasting it would give several widgets the same label.",
 };
+
+/**
+ * THE UNIVERSAL KEYS A RETARGET DOES CARRY — the WORKSTREAM BF ruling, mirroring
+ * WORKSTREAM BE's `UNIVERSAL_MULTI_KEYS` exactly rather than restating it.
+ *
+ * These are the rows EVERY widget has and NO plugin declares: they live in
+ * web/Inspector.svelte's hard-coded `universalCategory` and in core/multiselect's
+ * `universalRows`, never in a `plugin.inspector` array. MEASURED: 0 of 107
+ * registered plugins declare `type`, `name`, `active` or `morph`. That is the
+ * SECOND half of the defect the user reported and the half that was invisible —
+ * `type` and `active` were refused loudly by the denylist above, but `morph` and
+ * `name` were refused by rule 2 ("this widget has no “morph” property"), which
+ * is a TRUE sentence about `plugin.inspector` and a FALSE one about the widget.
+ * Every widget has a morph row; the contract check simply could not see it.
+ *
+ * So a universal key bypasses the plugin-declaration test entirely. There is no
+ * contract to compare because there is only ONE contract — core/multiselect owns
+ * it — and both sides are guaranteed to have it.
+ *
+ * IMPORTED, NOT COPIED. BE ruled the subset ("widget type, visible, and morph
+ * all should be", name excluded) and BF's ruling is explicitly consistent with
+ * it ("EXCLUDING name"). A second literal here is the hand-maintained-copy defect
+ * this codebase keeps rediscovering — if BE adds a universal row, this must gain
+ * it too, and importing is what makes that automatic.
+ *
+ * @example UNIVERSAL_PASTE_KEYS // ["type", "active", "morph"]
+ * @example UNIVERSAL_PASTE_KEYS.includes("name") // false (excluded by the ruling)
+ */
+export const UNIVERSAL_PASTE_KEYS = UNIVERSAL_MULTI_KEYS;
+
+/**
+ * Pure function. Whether a target can take a universal key — the ONE capability
+ * question a universal row asks, read from the same capability core/multiselect's
+ * `universalRows` reads rather than restated.
+ *
+ * THE CAMERA CANNOT BE HIDDEN (`purgeable: false` marks the mandatory singleton),
+ * so `active` is refused onto it — offering it would promise a write the document
+ * refuses. `type` is refused onto anything `retypeEligible` would refuse for the
+ * same structural reasons (a camera, a group, a ghost); that gate lives in
+ * core/retype.js and is applied by the caller, which is where the registry is.
+ *
+ * @param {string} key - a universal key
+ * @param {object} targetPlugin - the plugin being pasted onto
+ * @returns {string|null} the refusal reason, or null when it may be written
+ *
+ * @example universalRefusal("active", {capabilities: {purgeable: false}})
+ * // 'this widget is mandatory and cannot be hidden'
+ * @example universalRefusal("active", {capabilities: {}}) // null
+ * @example universalRefusal("morph", {capabilities: {purgeable: false}}) // null
+ */
+export function universalRefusal(key, targetPlugin) {
+  if (key === "active" && targetPlugin?.capabilities?.purgeable === false)
+    return "this widget is mandatory and cannot be hidden";
+  return null;
+}
 
 /**
  * Pure function. The rows a plugin declares, as a `key -> row` map — the lookup
@@ -377,10 +492,16 @@ export function rowsByKey(plugin) {
  * module may not do: `state` is what will be written, `skipped` is one
  * `{key, reason}` per key that will not be, in payload order.
  *
- * The three ways a key fails, in the order tested:
+ * The ways a key is decided, in the order tested:
  *   1. It is an IDENTITY key (UNRETARGETABLE_KEYS) — refused everywhere.
- *   2. The target's plugin declares NO row for it — it cannot mean the property.
- *   3. Both declare it, with DIFFERENT contracts — `sameRowContract` says no, and
+ *   2. It is a UNIVERSAL key (UNIVERSAL_PASTE_KEYS) — TRANSFERRED, subject only
+ *      to `universalRefusal`. Tested BEFORE the plugin-declaration rule, which is
+ *      the whole WORKSTREAM BF fix: no plugin declares these rows, so rule 3
+ *      would refuse every one of them with a sentence ("this widget has no
+ *      “morph” property") that is true of `plugin.inspector` and false of the
+ *      widget. Order matters here and the order IS the fix.
+ *   3. The target's plugin declares NO row for it — it cannot mean the property.
+ *   4. Both declare it, with DIFFERENT contracts — `sameRowContract` says no, and
  *      the reason names the aspects, so "why did my corner radius not paste"
  *      answers itself.
  *
@@ -410,8 +531,11 @@ export function rowsByKey(plugin) {
  * @example // an equation rides verbatim — the target evaluates it:
  * retargetedState({x: "=cam.x + 10"}, null, {inspector: [{key: "x", kind: "number"}]}).state
  * // {x: '=cam.x + 10'}
- * @example retargetedState({type: "rect"}, null, {inspector: [{key: "type", kind: "text"}]}).state
+ * @example retargetedState({z: 4}, null, {inspector: [{key: "z", kind: "number"}]}).state
  * // {}   (identity keys are refused even where a row exists)
+ * @example // WORKSTREAM BF: the universal section transfers though no plugin declares it
+ * retargetedState({type: "rect", active: false, morph: "snap", name: "n"}, null, {inspector: []}).state
+ * // {type: 'rect', active: false, morph: 'snap'}   (name excluded by the ruling)
  */
 export function retargetedState(copiedState, sourcePlugin, targetPlugin) {
   const sourceRows = rowsByKey(sourcePlugin);
@@ -421,6 +545,14 @@ export function retargetedState(copiedState, sourcePlugin, targetPlugin) {
   for (const [key, value] of Object.entries(copiedState)) {
     if (key in UNRETARGETABLE_KEYS) {
       skipped.push({ key, reason: UNRETARGETABLE_KEYS[key] });
+      continue;
+    }
+    // THE UNIVERSAL SECTION — before the plugin-declaration rule below, which no
+    // universal row could ever pass (see this function's header, step 2).
+    if (UNIVERSAL_PASTE_KEYS.includes(key)) {
+      const refusal = universalRefusal(key, targetPlugin);
+      if (refusal) skipped.push({ key, reason: refusal });
+      else state[key] = value;
       continue;
     }
     const targetRow = targetRows.get(key);
