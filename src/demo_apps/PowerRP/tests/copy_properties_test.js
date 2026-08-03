@@ -10,6 +10,8 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { KEYBINDING_DEFAULTS, KEYBINDING_LABELS } from "../core/shortcut_entries.js";
 import { newDocument, withNewItem, withNewSlide, keyframed, slideState, withItemPurged } from "../core/document.js";
 import { applied } from "../core/deltas.js";
 import {
@@ -184,6 +186,43 @@ test("an id with no state on the copy slide captures nothing (no empty entry)", 
   const { doc, a } = sampleDoc();
   const payload = itemPropertiesPayload(slideState(doc, 0), [a, "never-existed"]);
   assert.deepEqual(Object.keys(payload.powerrp_item_props), [a]);
+});
+
+// ── WIDGET-COPY PASTE IS UNCHANGED ───────────────────────────────────────────
+//
+// The ruling is that adding a kind must not disturb the one that was there:
+// "paste behaves as normal, because after all if we copy something different,
+// paste will still do it". The dispatch lives in web/app.svelte.js's
+// #insertClipboardPayload, which is private AND DOM-bound (localStorage, the
+// server clipboard, $state), so it cannot be called from bare node. What CAN be
+// pinned here — and is the thing that would actually break — is that the clone
+// branch still comes FIRST and still routes to the same clone home, so a
+// powerrp_items payload never reaches the new code at all.
+
+test("the clone branch is still first and still routes to the clone home", () => {
+  const src = readFileSync(new URL("../web/app.svelte.js", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("#insertClipboardPayload(payload) {"));
+  const dispatch = body.slice(0, body.indexOf("\n  }\n"));
+  assert.ok(dispatch.includes("if (payload.powerrp_items) {"),
+    "the clone payload is no longer the first branch");
+  assert.ok(dispatch.includes("this.#cloneStatesIntoSlide(payload.powerrp_items)"),
+    "the clone payload no longer routes to the canonical clone home");
+  assert.ok(dispatch.indexOf("powerrp_items") < dispatch.indexOf("powerrp_item_props"),
+    "the properties branch precedes the clone branch — a clone payload could be captured by it");
+});
+
+test("copy-properties is bound, surfaced and labelled — the chord is not orphaned", () => {
+  const entry = KEYBINDING_DEFAULTS.find((e) => e.command === "copy-properties");
+  assert.ok(entry, "no shortcut entry for copy-properties");
+  assert.deepEqual(entry.keys, ["Cmd", "Shift", "C"], "not the chord the user asked for");
+  assert.equal(entry.when, "editSelection", "the chord must not be live without a selection");
+  // A registered chord with no HintBar label does not exist to the user, and
+  // toShortcutEntries throws on the gap — assert it directly so the reason is
+  // named here rather than surfacing as a stack trace in another suite.
+  assert.ok(KEYBINDING_LABELS["copy-properties"], "the chord has no HintBar label");
+  const toolbar = readFileSync(new URL("../web/Toolbar.svelte", import.meta.url), "utf8");
+  assert.match(toolbar, /\["copy-item", "copy-properties", "paste"\]/,
+    "the button is not beside Copy in the toolbar group");
 });
 
 console.log(`\ncopy_properties: ${passed} passed`);
