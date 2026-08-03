@@ -1,0 +1,367 @@
+/**
+ * AUDIO NODES — the bridge between one synth module and one PowerRP node widget.
+ *
+ * ── WHAT THIS FILE IS, AND WHY IT IS ONE FILE ───────────────────────────────
+ * There are 23 engine modules today and the user expects "upwards of a hundred"
+ * nodes eventually (ADDENDUM 3). Written out longhand, each would be a ~110-line
+ * plugin file that differs from its neighbours in about twelve values: a title, a
+ * family, a port list, a knob list. Twenty-three copies of one shape is twenty-three
+ * places for the shape to drift, and the drift is not cosmetic — a node whose
+ * `defaults` forgets `inputs: {}` cannot have its wires remapped when it is copied
+ * (NF-CORE measured exactly that), and one whose `h` is not sized from its own port
+ * list paints beads outside its own card.
+ *
+ * So the SHAPE lives here, once, as `audioNodePlugin(spec)`, and each
+ * plugins/audio_*.js is the twelve values that make its module different. That is
+ * the same composition route core/node_chrome.js takes for the LOOK and for the
+ * same stated reason: no plugin may import another plugin, so anything shared by
+ * plugins lives in core.
+ *
+ * ── THIS FILE IS DOM-FREE AND ENGINE-FREE, DELIBERATELY ─────────────────────
+ * core/ must run in bare node (CLAUDE.md), and nothing here may import synth/**.
+ * That is not merely a layering preference: the ENGINE constructs an AudioContext,
+ * which does not exist in node, so a core module that imported it would break every
+ * bare-node suite and cli/render.js with it.
+ *
+ * What this file therefore holds is the module's *description* — its ports, its
+ * knobs, their ranges — not its implementation. The description is checked against
+ * the real engine by tests/audio_nodes_test.js, which imports BOTH and asserts that
+ * every declared knob is a param the engine actually has and every declared port is
+ * a port the engine actually exposes. That test is the seam that keeps a
+ * description honest without a runtime dependency.
+ *
+ * ── THE THREE KINDS OF STATE, FOR AN AUDIO NODE ─────────────────────────────
+ * A module's KNOBS and its CONNECTIONS are PROPERTY STATE: ordinary keyframable
+ * numeric leaves, folded from the document, so a patch tweens across slides and is
+ * reproducible under a shuffle of time. Nothing in this file reads a clock.
+ *
+ * The SOUND is not state at all — it is a live consumer downstream of that state
+ * (blueprint §7), the same way the video player is. web/audioMirror.svelte.js is
+ * where the folded state becomes engine calls; this file never touches the engine.
+ *
+ * ── WHY `computeOutputs` IS ABSENT FOR AUDIO PORTS ──────────────────────────
+ * core/nodeflow.js's evaluator is PULL-BASED and computes VALUES. An `audio` port
+ * does not carry a value that a document evaluation could produce — it carries a
+ * signal that exists only inside the engine's graph, at a sample rate the document
+ * has no concept of. So an audio module declares its audio ports for WIRING (the
+ * gesture, the type checking, the picture) and computes nothing for them: it is a
+ * SINK in the value evaluator's terms, which is exactly what `computeOutputs`'s
+ * absence already means (nodeflow's docblock: "A node with no computeOutputs
+ * produces nothing, which is what a pure SINK wants").
+ *
+ * A module with genuine NUMBER outputs would declare computeOutputs; none of the 23
+ * has one, because every engine module's outputs are audio-rate. The sequencer's
+ * `pitch` is the interesting near-miss and it is audio too — it is a control SIGNAL
+ * on an AudioNode, not a number the document knows.
+ */
+
+import { EPHEMERAL } from "./ephemeral.js";
+import { standardBBoxAnchors } from "./derive.js";
+import { bundle, bundleNestedDefaults, props } from "./properties.js";
+import { NODE_ITEM_REFS, minimumNodeHeight } from "./nodeflow.js";
+import { NODE_HEADER_H, NODE_VALUE_INK, familyCard, familyRim, portBeads } from "./node_chrome.js";
+import { text } from "../render_gpu/ir.js";
+import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
+import * as T from "./transform.js";
+
+/** The Inspector category every audio knob row lands in. One category, so a
+ *  module's knobs are one collapsible group rather than scattered among the
+ *  universal rows. */
+export const AUDIO_CAT = "audio";
+
+/** A node card's default width. Wide enough for a two-word title and a port label
+ *  on each side at the default type size; narrow enough that a 6-module patch fits
+ *  across a 1920-wide slide with room for its wires. */
+export const AUDIO_NODE_W = 150;
+
+/**
+ * Pure function. The item-state key a knob's value is stored under.
+ *
+ * Knobs are stored FLAT (`cutoff: 800`), not nested under a `params` object, and
+ * that is a deliberate choice with one concrete consequence: a flat numeric leaf
+ * whose plugin default is a NUMBER is an EQUATION SLOT for free
+ * (core/expressions.js's rule), so `= ease(time)` works on any knob with no code
+ * here. A nested `params.cutoff` would be a leaf too, but its Inspector row and its
+ * keyframe path would both need the dotted spelling, and every equation would have
+ * to name it that way. Flat is what makes a knob indistinguishable from `w`.
+ *
+ * The `audio` prefix exists because knob names come from the ENGINE's vocabulary
+ * and some of them collide with PowerRP's universal item state: a filter's `type`
+ * is its lowpass/highpass mode, but `type` on an item is its WIDGET TYPE, and a
+ * module with a `scale` knob would collide with the similarity transform's `scale`.
+ * A silent collision there would be a widget that retypes itself when you turn a
+ * knob, so the namespace is not optional.
+ *
+ * @param {string} key - the engine's param name
+ * @returns {string} the item-state key
+ *
+ * @example audioKnobKey("cutoff") // "audioCutoff"
+ * @example audioKnobKey("type") // "audioType"
+ * @example // the collision this prevents: an item's own `scale` is its similarity transform
+ * @example audioKnobKey("scale") // "audioScale"
+ */
+export function audioKnobKey(key) {
+  return "audio" + key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/**
+ * Pure function. Every knob of a spec as `{key, stateKey, value}`, read off a
+ * folded item state with each knob's own default filled in.
+ *
+ * THE ONE READER both halves of the feature go through: the audio mirror turns this
+ * into setParam calls and the node's own picture reads its readout from it, so what
+ * you hear and what you see cannot disagree about what a knob is set to.
+ *
+ * A knob whose folded value is not a finite number (an unresolved equation, a
+ * string that failed to evaluate) falls back to its DEFAULT rather than reaching
+ * the engine: `setParam` with a NaN would poison an AudioParam permanently — the
+ * Web Audio spec makes a NaN'd param stay NaN, so one bad equation would silence
+ * that module for the rest of the session with no way back short of a reload. The
+ * equation's own error is already reported by the expression pass; this is about
+ * not turning a visible error into an inaudible one. DISCRETE knobs (a waveform
+ * name) are strings by nature and skip the numeric check.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} s - the folded item state
+ * @returns {Array<{key: string, stateKey: string, value: number|string, discrete: boolean}>}
+ *
+ * @example audioKnobValues({knobs: [{key: "cutoff", default: 800}]}, {audioCutoff: 1200})[0].value // 1200
+ * @example audioKnobValues({knobs: [{key: "cutoff", default: 800}]}, {})[0].value // 800
+ * @example // a broken equation leaves a STRING in the slot; the default is used instead of NaN
+ * @example audioKnobValues({knobs: [{key: "cutoff", default: 800}]}, {audioCutoff: "= nope"})[0].value // 800
+ * @example // discrete knobs are strings BY DESIGN and are passed through
+ * @example audioKnobValues({knobs: [{key: "waveform", default: "sine", discrete: true}]}, {audioWaveform: "saw"})[0].value // "saw"
+ */
+export function audioKnobValues(spec, s) {
+  return (spec.knobs ?? []).map((k) => {
+    const stateKey = audioKnobKey(k.key);
+    const raw = s?.[stateKey];
+    const value = k.discrete
+      ? (typeof raw === "string" ? raw : k.default)
+      : (Number.isFinite(Number(raw)) ? Number(raw) : k.default);
+    return { key: k.key, stateKey, value, discrete: !!k.discrete };
+  });
+}
+
+/**
+ * Pure function. The Inspector rows for a spec's knobs — DECLARATIVE ONLY.
+ *
+ * Every row is an ordinary `number` or `select` row on a flat item-state key, which
+ * is what makes a knob keyframable, equation-bindable and multi-select-unifiable
+ * with no audio-specific code anywhere in web/Inspector.svelte. This function is in
+ * core rather than in each plugin so that a knob's row and the mirror's setParam
+ * call are generated from ONE declaration and cannot describe different ranges.
+ *
+ * @param {object} spec - an audio node spec
+ * @returns {object[]} Inspector row descriptors
+ *
+ * @example audioKnobRows({knobs: [{key: "cutoff", label: "Cutoff", default: 800, min: 20, max: 20000, help: "Hz"}]})[0].key // "audioCutoff"
+ * @example audioKnobRows({knobs: [{key: "cutoff", label: "Cutoff", default: 800}]})[0].kind // "number"
+ * @example audioKnobRows({knobs: [{key: "waveform", label: "Wave", default: "sine", discrete: true, options: ["sine", "square"]}]})[0].kind // "select"
+ * @example audioKnobRows({}) // []
+ */
+export function audioKnobRows(spec) {
+  return (spec.knobs ?? []).map((k) => (k.discrete
+    ? { key: audioKnobKey(k.key), label: k.label, kind: "select", options: k.options, category: AUDIO_CAT, help: k.help }
+    : { key: audioKnobKey(k.key), label: k.label, kind: "number", min: k.min, max: k.max, step: k.step, category: AUDIO_CAT, help: k.help }));
+}
+
+/**
+ * Pure function. A spec's `defaults` fragment for its knobs: `{audioCutoff: 800, …}`.
+ *
+ * @param {object} spec - an audio node spec
+ * @returns {object}
+ *
+ * @example audioKnobDefaults({knobs: [{key: "cutoff", default: 800}, {key: "Q", default: 1}]}) // {audioCutoff: 800, audioQ: 1}
+ * @example audioKnobDefaults({}) // {}
+ */
+export function audioKnobDefaults(spec) {
+  return Object.fromEntries((spec.knobs ?? []).map((k) => [audioKnobKey(k.key), k.default]));
+}
+
+/**
+ * Pure function. The `{inputs, outputs}` port declaration for a spec.
+ *
+ * Ports are declared as `{key, type, label}` exactly like any node widget's, and
+ * the TYPE is the port's real signal type in the engine — `audio` for a signal,
+ * `number` for a control input a wire can drive, `trigger` for a gate. That is what
+ * makes the type checking meaningful: core/nodeflow.js's coercion table decides
+ * whether a drop is legal, and it can only be right if these say what is true.
+ *
+ * `feedbackSafe` rides along per-port. NF-CORE reserved it as the declared escape
+ * hatch for exactly this wave: a delay's feedback path is a genuine cycle in the
+ * AUDIO domain, where a one-block delay is part of the sound rather than a
+ * frame-N-1 dependency the determinism law forbids. Only ports whose module
+ * actually delays by at least one render quantum may carry it (see DELAY_SPEC).
+ *
+ * @param {object} spec - an audio node spec
+ * @returns {{inputs: object[], outputs: object[]}}
+ *
+ * @example audioPorts({inputs: [{key: "in", type: "audio"}]}).inputs[0].label // "in"
+ * @example audioPorts({}).outputs // []
+ */
+export function audioPorts(spec) {
+  const norm = (p) => ({ key: p.key, type: p.type, label: p.label ?? p.key, ...(p.feedbackSafe ? { feedbackSafe: true } : {}) });
+  return { inputs: (spec.inputs ?? []).map(norm), outputs: (spec.outputs ?? []).map(norm) };
+}
+
+/**
+ * Pure function. The one-line readout an audio node shows in its body: its most
+ * telling knob, formatted with its unit.
+ *
+ * A module has up to eight knobs and a card has room for one line, so a node shows
+ * the knob its spec names as `readout` — the cutoff for a filter, the BPM for a
+ * clock — and nothing at all when a spec names none (an output module's card is
+ * better empty than padded with a number nobody reads). This is a GLANCE, not the
+ * Inspector: the full knob set is one click away and does not belong on the card.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} s - the folded item state
+ * @returns {string} the readout, or "" when the spec declares none
+ *
+ * @example audioReadout({knobs: [{key: "bpm", default: 120, unit: " BPM"}], readout: "bpm"}, {audioBpm: 96}) // "96 BPM"
+ * @example audioReadout({knobs: [{key: "frequency", default: 440, unit: " Hz"}], readout: "frequency"}, {}) // "440 Hz"
+ * @example // a discrete knob reads out as its own name, which is the whole value
+ * @example audioReadout({knobs: [{key: "character", default: "hall", discrete: true}], readout: "character"}, {}) // "hall"
+ * @example audioReadout({knobs: []}, {}) // ""
+ */
+export function audioReadout(spec, s) {
+  if (!spec.readout) return "";
+  const knob = (spec.knobs ?? []).find((k) => k.key === spec.readout);
+  if (!knob) return "";
+  const { value } = audioKnobValues({ knobs: [knob] }, s)[0];
+  if (knob.discrete) return String(value);
+  const rounded = Math.abs(value) >= 100 ? Math.round(value) : Number(Number(value).toFixed(2));
+  return `${rounded}${knob.unit ?? ""}`;
+}
+
+/**
+ * Pure function. A COMPLETE PowerRP plugin for one audio module, built from its
+ * declarative spec.
+ *
+ * WHAT THE CALLER STILL OWNS: nothing structural. A plugins/audio_*.js file is its
+ * spec and one line calling this. That is on purpose — a plugin that could reach in
+ * and override `emit` or `ports` would reintroduce the 23-way drift this exists to
+ * prevent, so the escape hatch is deliberately absent. A module that genuinely
+ * cannot be described by a spec (the analysis nodes' live overlays are the closest
+ * call, and they are handled by a DECLARATION — `overlay` — rather than by an
+ * override) is a signal that the spec vocabulary is missing a word, and the fix is
+ * to add the word here where all 23 get it.
+ *
+ * @param {object} spec - {type, title, family, module, inputs, outputs, knobs, readout, icon, help, overlay}
+ * @returns {object} a plugin object for core/registry.js
+ *
+ * @example // const p = audioNodePlugin(REVERB_SPEC); p.type // "audio_reverb"
+ * @example audioNodePlugin({type: "audio_x", title: "X", module: "noise", family: "source"}).capabilities.bbox // true
+ * @example audioNodePlugin({type: "audio_x", title: "X", module: "noise"}).audioModule // "noise"
+ */
+export function audioNodePlugin(spec) {
+  const ports = audioPorts(spec);
+  const portsFn = () => ports;
+  const width = spec.w ?? AUDIO_NODE_W;
+  const plugin = {
+    type: spec.type,
+    ephemeral: EPHEMERAL.NONE,
+    title: spec.title,
+    capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
+    itemRefs: NODE_ITEM_REFS,
+    // ── THE ENGINE BINDING, DECLARED ON THE PLUGIN ──────────────────────────
+    // `audioModule` is what web/audioMirror.svelte.js reads to decide that an item
+    // is an audio module and which engine type to instantiate for it. It lives on
+    // the PLUGIN rather than in a table inside the mirror so that adding a module
+    // is one file, and so the mirror never has to know the roster — it asks each
+    // item's plugin what it is, exactly as every other tool in the app dispatches
+    // on declarations rather than on type strings (core/registry.js's law).
+    audioModule: spec.module,
+    audioSpec: spec,
+    defaults: {
+      type: spec.type,
+      x: 100, y: 100, w: width,
+      h: minimumNodeHeight({ ports: portsFn }, {}),
+      z: 0, rotation: 0, scale: 1,
+      rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
+      // Empty at birth but PRESENT — NODE_ITEM_REFS names a wildcard path through
+      // it, and a wildcard cannot expand over a slot that does not exist, so a node
+      // without this key would stay wired to the original when it was copied.
+      inputs: {},
+      ...audioKnobDefaults(spec),
+      ...bundleNestedDefaults("effects"),
+    },
+    inspector: [
+      ...bundle("transform"),
+      ...audioKnobRows(spec),
+      ...props("opacity"),
+      ...bundle("effects"),
+    ],
+    ports: portsFn,
+    /**
+     * Pure function. The node's picture: family card, readout, beads, family rim.
+     *
+     * THIS PATH STAYS PURE, AND THAT IS WHY THE METERS ARE NOT DRAWN HERE. An
+     * analysis node's bouncing bar is LIVE audio data, which is not document state
+     * and cannot be — reading it inside emit() would make Δt = 0 produce two
+     * different pictures and break the determinism law outright (CLAUDE.md). So
+     * emit() draws the node's STATIC form, including the static form of its meter,
+     * and the live bar is a CANVAS OVERLAY the editor composites on top (see
+     * `overlay` in the spec and web/AudioOverlay.svelte). Exports and cli/render.js
+     * get the static form, which is the honest picture of a document that has no
+     * sound in it.
+     */
+    emit(s, _target, world) {
+      const readout = audioReadout(spec, s);
+      const ops = [
+        ...familyCard(s, spec.title, spec.family),
+        ...(readout ? audioReadoutOps(s, readout) : []),
+        ...portBeads(plugin, s),
+        ...familyRim(s, spec.family),
+      ];
+      return applyEffects(ops, s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+    },
+    commands: [{
+      id: `add-${spec.type.replace(/_/g, "-")}`,
+      title: `Add ${spec.title}`,
+      icon: spec.icon ?? "mdi:sine-wave",
+      category: "Audio Nodes",
+      run: (app) => app.armCrosshairPlacement(plugin),
+    }],
+    cullMargin: effectsCullMargin,
+    anchors: standardBBoxAnchors,
+    closestAnchor(state, wx, wy, world) {
+      const local = T.apply(T.invert(world), wx, wy);
+      return { x: Math.max(0, Math.min(state.w ?? 0, local.x)), y: Math.max(0, Math.min(state.h ?? 0, local.y)) };
+    },
+  };
+  return plugin;
+}
+
+/**
+ * Pure function. The readout line's display-list ops.
+ *
+ * Deliberately NOT nodeValueText: that centres a 22pt number in the card's whole
+ * body, which is right for a display node whose entire purpose is one number, and
+ * wrong for an audio module whose body also has to hold port labels on both sides.
+ * This sits just under the header at a size that stays out of their way.
+ *
+ * @param {object} s - the folded item state
+ * @param {string} str - the formatted readout
+ * @returns {object[]} display-list commands
+ *
+ * @example audioReadoutOps({w: 150, h: 90}, "800 Hz").length // 1
+ * @example audioReadoutOps({w: 150, h: 90}, "800 Hz")[0].text // "800 Hz"
+ * @example audioReadoutOps({w: 150, h: 90}, "800 Hz")[0].boxStyle.align // "center"
+ */
+export function audioReadoutOps(s, str) {
+  return [text({
+    text: str,
+    x: 0,
+    y: NODE_HEADER_H + AUDIO_READOUT_SIZE + 4,
+    size: AUDIO_READOUT_SIZE,
+    color: NODE_VALUE_INK,
+    boxW: s.w ?? 0,
+    boxStyle: { align: "center" },
+  })];
+}
+
+/** The readout's type size: bigger than a port label, smaller than the display
+ *  node's headline number, because it shares its row with neither. */
+export const AUDIO_READOUT_SIZE = 13;

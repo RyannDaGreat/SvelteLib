@@ -84,6 +84,157 @@ export const PORT_LABEL_GAP = PORT_BEAD_R + 5;
  *  a decoration. Audulus's ports do exactly this. */
 export const BEAD_CORE_FRACTION = 0.45;
 
+// ── NODE FAMILIES (NF-BIND) ─────────────────────────────────────────────────
+
+/**
+ * THE FAMILY TABLE — the ONE place a node family's identity is defined.
+ *
+ * ── THE PROBLEM A FAMILY SOLVES ─────────────────────────────────────────────
+ * The audio module set is 23 nodes and the user expects "upwards of a hundred"
+ * (ADDENDUM 3). At that count a patch stops being readable as a graph: every card
+ * is the same dark rectangle, so finding the reverb in a wall of nodes means
+ * reading 40 title bars. The user asked for "visually distinct cool-looking
+ * modules like the noise module, the reverb module, the echo module" (founding
+ * message) — distinct, so the eye can sort them.
+ *
+ * ── AND THE PROBLEM A FAMILY MUST NOT CREATE ────────────────────────────────
+ * User ruling, ADDENDUM 6, verbatim: "you gotta make sure that because you're
+ * Claude, you don't get gouty and disgusting. So actually, Audulous ... is great
+ * for inspiration for aesthetics."
+ *
+ * Twenty-three individually-coloured cards IS the gaudy failure. So the
+ * discipline here is deliberately narrow, and every part of it is a restriction:
+ *
+ *   SIX FAMILIES, NOT 23 COLOURS. Colour sorts nodes into KINDS — sources,
+ *     filters, effects, modulation, analysis, output. A hundred modules still
+ *     only ever wear six accents, so the palette cannot grow with the catalogue.
+ *   THE ACCENT IS A HEADER TINT AND A RIM, NEVER THE BODY. The body stays
+ *     NODE_BODY for every node in the app, audio or not. That single shared
+ *     value is what keeps a patch reading as one family of objects; tinting
+ *     bodies would produce the candy wall the ruling forbids.
+ *   THE TINTS ARE DESATURATED AND DARK. Each is a small step off NODE_HEADER,
+ *     not a saturated hue — visible when two families sit side by side, invisible
+ *     as "colour" when one sits alone. Audulus's own node chrome is monochrome
+ *     line work; this is the smallest departure that buys sorting.
+ *   THE PORT BEADS ARE UNTOUCHED. Bead colour means TYPE (the user's ruling,
+ *     ADDENDUM 7) and nothing else. A family that recoloured its beads would
+ *     overload the one signal that has to stay literal.
+ *
+ * `glyph` is a single character drawn at the header's right — a second,
+ * colour-blind-safe channel for the same distinction, and the thing that actually
+ * reads at the zoom where a whole patch fits on a slide and the title text does
+ * not.
+ */
+export const NODE_FAMILIES = Object.freeze({
+  /** SOURCES generate signal from nothing: oscillators, noise, samplers, the pad
+   *  and the ding. Warm amber — the family that starts a chain. */
+  source: Object.freeze({ label: "Source", header: "#3a3020", rim: "#7a6338", glyph: "∿" }),
+  /** FILTERS shape a spectrum that already exists: filter, EQ, quantize, bitcrush.
+   *  Cool teal, the complement of source — a chain reads warm→cool left to right. */
+  filter: Object.freeze({ label: "Filter", header: "#1e3330", rim: "#3d7a6e", glyph: "⋀" }),
+  /** EFFECTS act on time and space rather than on spectrum: delay, reverb. Violet,
+   *  the family the user's "spacey ambience" lives in. */
+  effect: Object.freeze({ label: "Effect", header: "#2b2440", rim: "#6b5aa8", glyph: "◇" }),
+  /** MODULATION drives other nodes rather than being heard: LFO, ADSR, clock,
+   *  sequencer, sample+hold, trigger, VCA, mixer. Muted blue — the control plane. */
+  modulation: Object.freeze({ label: "Modulation", header: "#1f2b40", rim: "#4a6da8", glyph: "◠" }),
+  /** ANALYSIS measures without changing: meter, spectrum. Near-neutral green, the
+   *  instrument-panel family — these are the nodes with live overlays. */
+  analysis: Object.freeze({ label: "Analysis", header: "#1f3326", rim: "#4a8a5c", glyph: "▤" }),
+  /** OUTPUT is where sound leaves. Deliberately the most saturated rim in the
+   *  table, because there is normally ONE of these and it is the node you look for
+   *  first when a patch is silent. */
+  output: Object.freeze({ label: "Output", header: "#3a2430", rim: "#a8557a", glyph: "◉" }),
+});
+
+/** Every declared family name — for validation sweeps and the plugin roster test. */
+export const NODE_FAMILY_NAMES = Object.freeze(Object.keys(NODE_FAMILIES));
+
+/**
+ * Pure function. A family's chrome record, or the NEUTRAL default for a node that
+ * declares none.
+ *
+ * The default is the plain (non-audio) node look — NODE_HEADER with NODE_RIM — so
+ * the proof trio in plugins/node_*.js renders BYTE-IDENTICALLY to how it did
+ * before families existed. A family is an opt-in a node CHOOSES; the absence of
+ * one is not an error and must not be a different picture.
+ *
+ * @param {string} [name] - a NODE_FAMILIES key
+ * @returns {{label: string, header: string, rim: string, glyph: string|null}}
+ *
+ * @example nodeFamily("effect").rim // "#6b5aa8"
+ * @example nodeFamily("analysis").glyph // "▤"
+ * @example // an undeclared family falls back to the neutral node look, not to an error
+ * @example nodeFamily().header === NODE_HEADER // true
+ * @example nodeFamily("nonsense").rim === NODE_RIM // true
+ */
+export function nodeFamily(name) {
+  return NODE_FAMILIES[name] ?? { label: "Node", header: NODE_HEADER, rim: NODE_RIM, glyph: null };
+}
+
+/**
+ * Pure function. The node CARD in a FAMILY's colours — nodeCard's audio-aware
+ * sibling, and the one every plugins/audio_*.js emits.
+ *
+ * Identical geometry to nodeCard (same body, same header height, same radius, same
+ * title position) so a family node and a plain node are the SAME OBJECT at
+ * different tints rather than two different card designs. What it adds is exactly
+ * three things: the header wears the family tint, the family glyph sits at the
+ * header's right, and the caller gets a matching rim from familyRim().
+ *
+ * The glyph is placed from the RIGHT edge so it never collides with a long title:
+ * a title that would overrun simply clips against it, which is the honest signal
+ * that the node is too narrow.
+ *
+ * @param {object} s - the folded item state (w/h size the card)
+ * @param {string} title - the node's display name
+ * @param {string} [family] - a NODE_FAMILIES key; absent = the neutral node look
+ * @returns {object[]} display-list commands, LOCAL coords
+ *
+ * @example familyCard({w: 140, h: 90}, "Reverb", "effect").length // 5
+ * @example familyCard({w: 140, h: 90}, "Reverb", "effect")[3].text // "Reverb"
+ * @example familyCard({w: 140, h: 90}, "Reverb", "effect")[4].text // "◇"
+ * @example // a family-less card is the plain one plus nothing: no glyph op at all
+ * @example familyCard({w: 140, h: 90}, "Plain").length // 4
+ */
+export function familyCard(s, title, family) {
+  const f = nodeFamily(family);
+  const w = s.w ?? 0, h = s.h ?? 0;
+  const ops = [
+    rect({ x: 0, y: 0, w, h, cornerRadius: NODE_RADIUS, fill: NODE_BODY }),
+    rect({ x: 0, y: 0, w, h: NODE_HEADER_H, cornerRadius: NODE_RADIUS, fill: f.header }),
+    rect({ x: 0, y: NODE_HEADER_H - NODE_RADIUS, w, h: NODE_RADIUS, fill: f.header }),
+    text({ text: title, x: NODE_PAD, y: NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3, size: NODE_TITLE_SIZE, color: NODE_TITLE_INK, bold: true }),
+  ];
+  if (f.glyph) ops.push(text({
+    text: f.glyph,
+    x: 0,
+    y: NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3,
+    size: NODE_TITLE_SIZE,
+    color: f.rim,
+    boxW: Math.max(0, w - NODE_PAD),
+    boxStyle: { align: "right" },
+  }));
+  return ops;
+}
+
+/**
+ * Pure function. The card's rim in a FAMILY's colour — nodeRim's family-aware
+ * sibling, emitted LAST for the same reason nodeRim is.
+ *
+ * @param {object} s - the folded item state
+ * @param {string} [family] - a NODE_FAMILIES key
+ * @returns {object[]} display-list commands
+ *
+ * @example familyRim({w: 140, h: 90}, "output").length // 1
+ * @example familyRim({w: 140, h: 90}, "output")[0].op // "rect"
+ * @example // ir.js parses colours to RGBA floats at construction; alpha 1 = opaque
+ * @example familyRim({w: 140, h: 90}, "output")[0].stroke[3] // 1
+ */
+export function familyRim(s, family) {
+  return [rect({ x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0, cornerRadius: NODE_RADIUS, fill: null, stroke: nodeFamily(family).rim, strokeWidth: NODE_RIM_WIDTH })];
+}
+
 /**
  * Pure function. The node CARD: body, title strip, rim, title text. Every node
  * widget emits this first, so a patch is visually one family.
