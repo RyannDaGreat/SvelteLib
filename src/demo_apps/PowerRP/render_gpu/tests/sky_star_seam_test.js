@@ -114,6 +114,21 @@ const SEAM_EDGE_SKIP = 4;
 // the box; 0 and 0.95 are outside it and are the control that the statistic is not
 // simply always high.
 const SEAM_TIMES = [0, 0.5, 0.7, 0.95];
+// THE SIGNAL FLOOR (BM). Both statistics are RATIOS against the frame's own 99th
+// percentile, so they are only meaningful while there is a band in the frame to
+// measure: divide a quantization step by a p99 that has collapsed to nothing and any
+// frame scores high. That case is now REACHABLE, and it is correct behaviour rather
+// than a defect. The Milky Way is a great circle at a fixed angle to the celestial
+// pole, so once BM made the dome turn about that pole (instead of about the zenith,
+// which kept the band permanently in view) the band genuinely swings out of a fixed
+// window and back, exactly as the real one does over a night. MEASURED at 700×700 on
+// the GALAXY_ONLY fixture, mean luma by timeOfDay: 9.13 at 0, 16.33 at 0.25, 2.57 at
+// 0.5, 0.15 at 0.7, 6.64 at 0.95 — and at 0.7 the peak pixel is 7/255, i.e. the band
+// is off-frame. Its "hard edge" there reads 1 against a p99 of 0.1: noise over noise.
+// So a time whose frame carries no band is SKIPPED and SAID SO, rather than being
+// silently tolerated by loosening EDGE_RATIO_MAX for everybody — which would have
+// blinded the check at the times when it can actually see something.
+const BAND_MEAN_LUMA_MIN = 1.0;
 
 const CanvasKit = await CanvasKitInit({ locateFile: (f) => path.join(BIN_DIR, f) });
 
@@ -320,8 +335,19 @@ test("growing the box about its centre leaves the overlapping stars byte-identic
 // ── LAW 2: no galaxy seam at any time of day ─────────────────────────────────
 test("the Milky Way has no seam and no hard edge at any time of day (R6-9.2)", () => {
   const worst = [], scores = [];
+  let measured = 0;
   for (const tod of SEAM_TIMES) {
     const px = render(skyDoc(SEAM_W, SEAM_H, { x: 0, y: 0, w: SEAM_W, h: SEAM_H }, { ...GALAXY_ONLY, timeOfDay: tod }), SEAM_W, SEAM_H);
+    // Is there a band in this frame at all? See BAND_MEAN_LUMA_MIN — after BM the dome
+    // turns about the celestial pole, so the band swings out of the window and back.
+    let sum = 0;
+    for (let i = 0; i < SEAM_W * SEAM_H; i++) sum += luma(px, i);
+    const meanLuma = sum / (SEAM_W * SEAM_H);
+    if (meanLuma < BAND_MEAN_LUMA_MIN) {
+      scores.push(`${tod}:off-frame(${meanLuma.toFixed(2)})`);
+      continue;
+    }
+    measured++;
     const s = seamScore(px, SEAM_W, SEAM_H);
     const e = hardEdgeScore(px, SEAM_W, SEAM_H);
     scores.push(`${tod}:${s.ratio.toFixed(2)}/${e.ratio.toFixed(1)}`);
@@ -329,8 +355,12 @@ test("the Milky Way has no seam and no hard edge at any time of day (R6-9.2)", (
     if (e.ratio > EDGE_RATIO_MAX) worst.push(`timeOfDay ${tod}: a HARD EDGE, gradient ${e.max.toFixed(0)} against a 99th percentile of ${e.p99.toFixed(1)} — something is clipping the band along a curve, the way pow(gLat, 2.0) did by being undefined for gLat < 0`);
   }
   console.log(`      column-step / hard-edge statistic by timeOfDay (limits ${SEAM_RATIO_MAX} / ${EDGE_RATIO_MAX}): ${scores.join("  ")}`);
+  // A sweep that skipped EVERY time would assert nothing while printing green, which is
+  // the failure mode the signal floor could introduce if the band ever stopped rendering.
+  assert.ok(measured >= 2,
+    `only ${measured} of ${SEAM_TIMES.length} times had a band in frame — the seam statistic measured almost nothing, so this check is not testing the galaxy any more`);
   assert.equal(worst.length, 0,
-    `${worst.length} discontinuit(ies) across ${SEAM_TIMES.length} times of day:\n  ${worst.join("\n  ")}`);
+    `${worst.length} discontinuit(ies) across ${measured} measured times of day:\n  ${worst.join("\n  ")}`);
 });
 
 // ── the new capability: star SIZE is independent of star DENSITY ─────────────

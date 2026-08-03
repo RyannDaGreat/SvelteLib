@@ -253,7 +253,7 @@ const SKY_PRESETS = [
     description: "A 3000 m sky: pure-air turbidity with a third of the air column removed, so the deepest, most saturated blue this model makes — and, at night, a Bortle 1 dark-site star field. Pair with the Sky Sun 'High Mountain Air' preset and put the sun high.",
     props: {
       turbidity: 1, atmosphere: 0.69, exposure: 2.8, zenith: "#ffffff",
-      starDensity: 199, milkyWay: 0.6, timeOfDay: 0.95, night: "#02040a", galaxyTint: "#46567c",
+      starDensity: 199, twinkle: 0.45, milkyWay: 0.6, timeOfDay: 0.95, night: "#02040a", galaxyTint: "#46567c",
       ground: "#232a2e",
     },
   },
@@ -262,7 +262,7 @@ const SKY_PRESETS = [
     description: "Preetham's 'very clear' sky at sea level, exposed so nothing clips: a clean blue zenith fading to a pale horizon. Pair with the Sky Sun 'Clear Blue Noon' preset, put the sun high, and add Sky Clouds 'Fair-Weather Cumulus'.",
     props: {
       turbidity: 2, atmosphere: 1, exposure: 2.0, zenith: "#ffffff",
-      starDensity: 79, milkyWay: 0.5, timeOfDay: 0.7, night: "#080e1c", galaxyTint: "#46567c",
+      starDensity: 79, twinkle: 0.3, milkyWay: 0.5, timeOfDay: 0.7, night: "#080e1c", galaxyTint: "#46567c",
       ground: "#1c2a22",
     },
   },
@@ -271,7 +271,7 @@ const SKY_PRESETS = [
     description: "The atmosphere of the paper's own 'half hour before sunset' figure — turbidity 6, so the long horizon airmass strips the blue out of the sunlight and spreads amber across the whole dome. Pair with the Sky Sun 'Golden Hour' preset and DRAG THE SUN DOWN onto the horizon line; that placement is the time of day and no preset can set it.",
     props: {
       turbidity: 6, atmosphere: 1, exposure: 1.2, zenith: "#ffffff",
-      starDensity: 79, milkyWay: 0.4, timeOfDay: 0.7, night: "#0e1526", galaxyTint: "#46567c",
+      starDensity: 79, twinkle: 0.3, milkyWay: 0.4, timeOfDay: 0.7, night: "#0e1526", galaxyTint: "#46567c",
       ground: "#241a10",
     },
   },
@@ -280,7 +280,7 @@ const SKY_PRESETS = [
     description: "Urban aerosol at the turbidity the paper uses for overcast: the blue is scattered away into a flat grey-white wash with a broad soft sun. Its night is a sodium-lit Bortle 8 sky. Pair with the Sky Sun 'City Haze' preset and Sky Clouds 'Overcast Stratus' for a real cloud deck — this dome has no clouds of its own.",
     props: {
       turbidity: 10, atmosphere: 1, exposure: 1.2, zenith: "#ffffff",
-      starDensity: 40, milkyWay: 0, timeOfDay: 0.7, night: "#2a2114", galaxyTint: "#46567c",
+      starDensity: 40, twinkle: 0.18, milkyWay: 0, timeOfDay: 0.7, night: "#2a2114", galaxyTint: "#46567c",
       ground: "#1a1a18",
     },
   },
@@ -289,7 +289,7 @@ const SKY_PRESETS = [
     description: "The thin-fog end of the turbidity ladder — the aerosol load of a dust storm. Mie scattering dominates completely, so the sky is one warm orange field and the sun is a soft blown disc in it. Pair with the Sky Sun 'Dust Haze' preset and keep the sun low.",
     props: {
       turbidity: 32, atmosphere: 1, exposure: 1.1, zenith: "#ffffff",
-      starDensity: 40, milkyWay: 0, timeOfDay: 0.7, night: "#1c1610", galaxyTint: "#46567c",
+      starDensity: 40, twinkle: 0.15, milkyWay: 0, timeOfDay: 0.7, night: "#1c1610", galaxyTint: "#46567c",
       ground: "#2a1e12",
     },
   },
@@ -298,7 +298,7 @@ const SKY_PRESETS = [
     description: "Nautical twilight: an even deep blue with only the brightest stars out (naked-eye limit ~3.75). Use it with NO sun above the horizon — the sky's night branch is a flat colour, so this is the blue, not a bright horizon glow. Its day half is a clear sea-level sky, so keyframing a sun up through the horizon lands on one.",
     props: {
       turbidity: 3, atmosphere: 1, exposure: 1.4, zenith: "#ffffff",
-      starDensity: 31, milkyWay: 0, timeOfDay: 0.7, night: "#1d3050", galaxyTint: "#46567c",
+      starDensity: 31, twinkle: 0.25, milkyWay: 0, timeOfDay: 0.7, night: "#1d3050", galaxyTint: "#46567c",
       ground: "#101826",
     },
   },
@@ -307,7 +307,7 @@ const SKY_PRESETS = [
     description: "A Bortle 8 city sky: sodium skyglow, a quarter of the suburban star count, and no Milky Way at all — the scale's own text calls it invisible from class 7 up. Add a Sky Moon preset if you want anything else in it.",
     props: {
       turbidity: 8, atmosphere: 1, exposure: 1.2, zenith: "#ffffff",
-      starDensity: 40, milkyWay: 0, timeOfDay: 0.7, night: "#2a2114", galaxyTint: "#46567c",
+      starDensity: 40, twinkle: 0.18, milkyWay: 0, timeOfDay: 0.7, night: "#2a2114", galaxyTint: "#46567c",
       ground: "#14100c",
     },
   },
@@ -316,9 +316,76 @@ const SKY_PRESETS = [
     description: "A Bortle 1 site: two and a half times the suburban star count on a near-black sky, with the galaxy pulled back to a faint glow (the band does not read as a band in a wide box — see this file's dropped-presets note). Pair with the Sky Moon 'Earthshine Crescent' preset; a full moon washes the faint stars out.",
     props: {
       turbidity: 1, atmosphere: 1, exposure: 2.4, zenith: "#ffffff",
-      starDensity: 199, milkyWay: 0.6, timeOfDay: 0.95, night: "#02040a", galaxyTint: "#46567c",
+      starDensity: 199, twinkle: 0.5, milkyWay: 0.6, timeOfDay: 0.95, night: "#02040a", galaxyTint: "#46567c",
       ground: "#05070c",
     },
+  },
+];
+
+/**
+ * THE `sky` EXPOSURES — a SECOND preset family, over the SHUTTER rather than the sky.
+ *
+ * WHY A FAMILY AND NOT MORE ROWS IN THE ATMOSPHERE LIST (the AT precedent, CRT's
+ * tube/flicker split). core/registry.presetFamiliesOf gives a widget several named
+ * families and REQUIRES their key sets to be disjoint so that picking one from each
+ * COMPOSES — tests/tool_groups_test.js proves it over every plugin. These two qualify
+ * where this file's own PRESET DOCTRINE says a by-scene split would not:
+ *   ATMOSPHERE writes the ten look knobs (turbidity … galaxyTint, + twinkle).
+ *   EXPOSURE writes {trailArc, trailSamples} and NOTHING ELSE.
+ * The sets are disjoint by construction, so "Golden Hour" + "Circumpolar Arcs" is one
+ * coherent pick each and neither undoes the other.
+ *
+ * AND THE SPLIT IS THE HONEST ONE, not merely the legal one: a shutter is a property
+ * of the CAMERA, an atmosphere of the SKY. Folding trails into the flat list would
+ * force all eight atmospheres to carry a shutter setting — "Dust Haze" would have to
+ * declare an exposure time — and the completeness rule would then make every future
+ * atmosphere answer a question it has no opinion about. It also keeps the trail knobs
+ * reachable from any atmosphere, which is the whole point: a long exposure is
+ * something you DO to a sky, not a different sky.
+ *
+ * EVERY PRESET SETS BOTH KNOBS (the per-family completeness law — tests/crt_flicker_test.js
+ * states it for the two-family case: a preset that omits a knob leaves whatever the
+ * previously HOVERED card wrote, and with two families the user hovers back and forth).
+ * "Instant" is the widget's own default state, so it is an EXACT no-op — the "Rock
+ * Steady" role in CRT's flicker family.
+ *
+ * WHERE THE NUMBERS COME FROM. trailArc is in TURNS of sky rotation, and the sky turns
+ * once per sidereal day, so arc = hours/23.934. The classic exposures:
+ *   30 min  → 0.021   the standard "short" star-trail frame (arcs a few degrees long)
+ *   2 h     → 0.084   the common single-frame trail
+ *   8 h     → 0.334   a full winter night's stacked sequence, ~120 degrees of arc
+ *   24 h    → 1.0     complete circles (only a pole-facing time-lapse composite gets
+ *                     this, and it is here because the shader makes it free)
+ * trailSamples rises with the arc because it must: the smear is drawn as discrete
+ * samples along the path, so a longer arc needs more of them to stay continuous rather
+ * than beading. MEASURED at 600x600 (the trailSamples row records the sweep): 8 reads
+ * as separate beads, 24 as a dotted arc, 48 as a continuous line at arc 0.05.
+ */
+const SKY_EXPOSURE_PRESETS = [
+  {
+    name: "Instant",
+    description: "A normal photograph: the shutter is closed, so stars are points and the Milky Way is sharp. This is the sky's default state and the one to come back to — pick it to clear any trail setting. Combine with any Atmosphere preset.",
+    props: { trailArc: 0, trailSamples: 24 },
+  },
+  {
+    name: "Half-Hour Trails",
+    description: "A 30-minute exposure (0.021 of a turn): stars draw short arcs about the celestial pole, long enough to read as motion but still clearly individual stars. The gentlest trail here, and the one that still looks like a photograph of a sky rather than of time. Combine with a dark Atmosphere preset — city skyglow drowns short trails.",
+    props: { trailArc: 0.021, trailSamples: 24 },
+  },
+  {
+    name: "Two-Hour Arcs",
+    description: "The classic single-frame star trail: two hours of rotation (0.084 of a turn), about 30 degrees of arc, with the Milky Way smeared along the same curves. Long enough that the concentric structure about the pole is unmistakable. Combine with 'Dark-Sky Star Field' for the postcard version.",
+    props: { trailArc: 0.084, trailSamples: 40 },
+  },
+  {
+    name: "All-Night Sweep",
+    description: "Eight hours (0.334 of a turn) — a whole winter night, the look of a stacked all-night sequence. Roughly 120 degrees of arc, so trails are long ribbons and the sky reads as pure motion. Needs the sample count high or the arcs break into beads.",
+    props: { trailArc: 0.334, trailSamples: 64 },
+  },
+  {
+    name: "Full Circumpolar",
+    description: "A complete 24-hour turn: every star closes its own circle about the pole, the image a real camera can only get by compositing a full day. Concentric rings, nothing pointlike left. The most extreme setting here and deliberately so — combine with a high star density to fill the rings in.",
+    props: { trailArc: 1, trailSamples: 64 },
   },
 ];
 
@@ -327,7 +394,13 @@ export const skyPlugin = {
   ephemeral: EPHEMERAL.NONE,
   title: "Sky",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, skyReader: true },
-  presets: SKY_PRESETS,
+  // TWO ORTHOGONAL FAMILIES over DISJOINT key sets (see SKY_EXPOSURE_PRESETS): what the
+  // SKY is, and how long the SHUTTER was open. core/registry.presetFamiliesOf namespaces
+  // them presets.atmosphere / presets.exposure, each its own Tools-pane group.
+  presetFamilies: [
+    { id: "atmosphere", title: "Atmosphere presets", presets: SKY_PRESETS },
+    { id: "exposure", title: "Exposure presets", presets: SKY_EXPOSURE_PRESETS },
+  ],
   defaults: {
     type: "sky", x: 60, y: 60, w: 1000, h: 620, z: 1, rotation: 0, scale: 1,
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
@@ -349,7 +422,8 @@ export const skyPlugin = {
       params: {
         time: particleTime(),
         horizon: s.horizon, turbidity: s.turbidity, atmosphere: s.atmosphere, exposure: s.exposure,
-        starDensity: s.starDensity, starSize: s.starSize, milkyWay: s.milkyWay, timeOfDay: s.timeOfDay, moonlight,
+        starDensity: s.starDensity, starSize: s.starSize, milkyWay: s.milkyWay, timeOfDay: s.timeOfDay,
+        twinkle: s.twinkle, trailArc: s.trailArc, trailSamples: s.trailSamples, moonlight,
         zenith: s.zenith, ground: s.ground, night: s.night, galaxyTint: s.galaxyTint,
         suns,
       },

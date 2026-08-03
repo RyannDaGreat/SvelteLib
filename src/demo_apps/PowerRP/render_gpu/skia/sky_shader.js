@@ -42,8 +42,9 @@ import { particleTime } from "../particle_clock.js";
 export const SKY_MAX_SUNS = 4;
 export const SKY_MAX_MOONS = 2;
 
-// geometry 8 + scalars 10 + float3 tints 12 + float2[4] suns 8 + float4[4] sunColor 16
-const SKY_UNIFORM_FLOATS = 8 + 10 + 12 + 8 + 16; // = 54
+// geometry 8 + scalars 13 + float3 tints 12 + float2[4] suns 8 + float4[4] sunColor 16
+// The scalars grew from 10 to 13 with BM's twinkle + trailArc + trailSamples.
+const SKY_UNIFORM_FLOATS = 8 + 13 + 12 + 8 + 16; // = 57
 
 export const SKY_SKSL = `
 // ── structural constants (the physics; only CHARACTER knobs are uniforms) ─────
@@ -76,6 +77,64 @@ const float  MW_DUST_FREQ   = 5.5;
 // was box-relative — the number keeps its old intuition after losing its old
 // dependence on the box. See starField for why that dependence had to go.
 const float  STAR_SPAN_PX = 1000.0;
+// ── THE CELESTIAL POLE (BM): ONE ANGLE, ONE POLE, TWO NATURAL FRAMES ──────────
+// A real sky is ONE RIGID DOME turning about the celestial pole, so the star field
+// and the Milky Way must MOVE TOGETHER. They used not to, and the two were not even
+// the same KIND of motion — MEASURED at 600x600, timeOfDay 0.20 -> 0.21, the
+// per-quadrant displacement of each layer rendered alone:
+//   stars  (14,-10) (7,11) (-6,-9) (-8,8)  — a CURL about the box centre (rotation)
+//   galaxy (11, 0)  (11,0) (11, 0) (11,0)  — a UNIFORM SLIDE (translation)
+// because starField rotated the flat world-px LATTICE about the box centre while
+// main() rotated the view DIRECTION about the world +Y (zenith) axis. Two different
+// groups acting on two different spaces; neither had a pole, and the user saw the
+// band drift sideways under stars that wheeled.
+//
+// WHY THE TWO LAYERS DO NOT SHARE A SPACE, only a rotation. The obvious unification —
+// rotate one point and let both layers read it — was built and MEASURED, and it is
+// wrong in both directions:
+//   Route the BAND through the star plane (rotate in the plane, then domeDir back to
+//     a direction) and the rotation is NOT RIGID: composing a plane rotation with the
+//     non-linear box->dome map drifts the angular distance between two sky features by
+//     up to 3 degrees per 0.05 turn (measured over sample pairs), so the constellations
+//     would visibly deform as the night went on.
+//   Route the STARS through the sphere and they stop being round: the box->dome
+//     Jacobian is anisotropic, measured aspect 1.07 / 1.18 / 0.76 at up = -0.5 / 0 /
+//     +0.5, so stars would come out as ellipses whose eccentricity VARIES ACROSS THE
+//     FRAME — a worse version of the uniform stretch R6-9.1 removed, and it would
+//     break that law's two pinned halves (roundness, box-size independence).
+// Each layer's frame is load-bearing and neither can be given up. So what is shared is
+// THE ROTATION ITSELF — one angle about one pole — applied in each layer's own frame:
+//   the STARS turn in the flat lattice plane about SKY_POLE_PX (a plane isometry, so
+//     they stay round and box-independent),
+//   the BAND turns on the sphere about SKY_POLE_AXIS by Rodrigues (a true rotation of
+//     the sphere, exactly rigid — measured drift 0.000000000 degrees — so the band
+//     keeps its shape and its seamless direction-domain noise).
+// The two are the SAME physical rotation seen in two charts, and they are kept in
+// agreement by construction: both read uTimeOfDay through the same TWO_PI, and the
+// plane pole is the sphere pole's own projection (see SKY_POLE_PX).
+//
+// THE POLE'S ALTITUDE IS THE OBSERVER'S LATITUDE — that is what the celestial pole's
+// elevation MEANS — so a single constant fixes the whole geometry. 45 degrees is the
+// mid-northern default: high enough that the pole sits well above the horizon (so
+// trails curve visibly rather than reading as straight streaks) and low enough that it
+// is not overhead. Due north is +z, the direction domeDir gives at vx = 0.
+const float  SKY_POLE_LAT = 0.7853981634; // 45 degrees, in radians
+const float3 SKY_POLE_AXIS = float3(0.0, 0.7071067812, 0.7071067812); // (0, sin, cos) of the above
+// The pole in the STAR PLANE, as a fixed WORLD-px offset from the box centre. That
+// frame is forced, not chosen: the star lattice lives in world px measured from the box
+// centre (starField says why), and a pole expressed in the BOX-NORMALIZED frame would
+// MOVE when the box grew, breaking R6-9.1 LAW 1(b) — growing the box about its centre
+// must leave the overlapping stars byte-identical. A length from the centre is
+// box-independent by construction. Stated as a fraction of STAR_SPAN_PX so it is in the
+// same unit as the lattice pitch: up and left of centre, the classic northern star-trail
+// framing with the pole just outside the frame.
+const float2 SKY_POLE_PX = float2(-0.45, 0.62) * STAR_SPAN_PX;
+// Loop bound for the long-exposure accumulation. SkSL requires a CONSTANT trip count
+// (the loop is unrolled), so the knob clamps into this and the shader always compiles
+// to the same program. 64 is where the arc reads CONTINUOUS rather than as a string of
+// beads at the trail lengths the presets use — see the trailSamples row for the
+// measurement that sets it.
+const int    MAX_TRAIL_SAMPLES = 64;
 const float  EDGE_AA   = 1.0;     // rounded-rect coverage AA half-width (device px)
 const float  EPS       = 1e-3;
 // DIVIDE GUARD for the closed-form single-scatter ratio scatterCoef/betaTot below.
@@ -108,7 +167,10 @@ uniform float  uExposure;      // HDR tone-map exposure
 uniform float  uStarDensity;   // star lattice cells across STAR_SPAN_PX world px
 uniform float  uStarSize;      // star core radius, world px (independent of density)
 uniform float  uMilkyWay;      // Milky-Way band strength (0 = off)
-uniform float  uTimeOfDay;     // 0..1 — rotates the star sphere / Milky Way
+uniform float  uTimeOfDay;     // 0..1 — rotates the whole dome about the celestial pole
+uniform float  uTwinkle;       // twinkle AMOUNT (0 = none; the ONE clock reader)
+uniform float  uTrailArc;      // long exposure: TURNS of dome rotation the shutter was open
+uniform float  uTrailSamples;  // samples accumulated along that arc
 uniform float  uMoonlight;     // night ambient lift from moon(s) illuminated fraction
 uniform float  uSunCount;      // number of active suns (0..MAX_SUNS)
 // ── colour tints ──────────────────────────────────────────────────────────────
@@ -167,6 +229,24 @@ float fbm3(float3 p) {
 }
 // Pure. Rotate a 2-vector by angle.
 float2 rot2(float2 v, float a) { float c = cos(a), s = sin(a); return float2(c * v.x - s * v.y, s * v.x + c * v.y); }
+// Pure. THE SKY ROTATION IN THE STAR PLANE (BM): turns the lattice point "pw" (world
+// px, y-up, box centre at the origin) about the pole's projected position. A rotation
+// of the plane about a point is an ISOMETRY (determinant 1, no shear), which is what
+// keeps a star round (R6-9.1 LAW 1a); the pole is a fixed world-px offset from the box
+// centre, so nothing here reads the box's size (LAW 1b).
+float2 skyRotatePlane(float2 pw, float turns) {
+  return SKY_POLE_PX + rot2(pw - SKY_POLE_PX, turns * TWO_PI);
+}
+// Pure. THE SAME ROTATION ON THE SPHERE (BM): Rodrigues' formula turns a direction
+// about SKY_POLE_AXIS by the same angle. This is an exact rotation of the sphere, so
+// the band keeps its shape and every angular distance is preserved — measured drift
+// 0.000000000 degrees between sample pairs, against up to 3 degrees for the
+// plane-rotate-then-project alternative that was tried first and rejected.
+float3 skyRotateDir(float3 v, float turns) {
+  float a = turns * TWO_PI, c = cos(a), s = sin(a);
+  float3 k = SKY_POLE_AXIS;
+  return v * c + cross(k, v) * s + k * dot(k, v) * (1.0 - c);
+}
 // Pure. Rounded-rect SDF (iq). <0 inside.
 float sdRoundRect(float2 p, float2 h, float r) { float2 q = abs(p) - (h - r); return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r; }
 // Pure. Rayleigh phase P_R(μ) = 3/(16π)(1+μ²) (unnormalized 3/4 form, folded into scale).
@@ -218,9 +298,21 @@ float3 starTint(float h) {
 // cellPx is the lattice pitch and sizePx the star core radius, both world px, and
 // they are now INDEPENDENT: the old form had one grid doing both jobs, so the only
 // way to enlarge a star was to remove stars.
-float3 starField(float2 pw, float cellPx, float sizePx, float amount) {
+//
+// "pw" ARRIVES ALREADY ROTATED (BM). This function used to wheel the lattice itself
+// by uTimeOfDay about the box centre, which is half of why the dome was not rigid —
+// see SKY_POLE_PX. The rotation now happens ONCE in the caller, through skyRotate,
+// and the Milky Way reads the SAME rotated point, so neither layer can drift against
+// the other. Everything below is a function of the point it is handed.
+//
+// TWINKLE is "twinkleAmt", not the old baked 0.7 + 0.3·sin(…). The factor is
+// 1 − amt + amt·sin(…), so amt = 0.3 reproduces the old expression EXACTLY (0.7 =
+// 1 − 0.3) and amt = 0 is exactly 1.0 — a star that does not read the clock at all.
+// That zero is what SKY_MATERIAL's param-predicated "animated" is asserting about,
+// so it has to be an exact identity rather than a small number: see the entry.
+float3 starField(float2 pw, float cellPx, float sizePx, float amount, float twinkleAmt) {
   if (amount <= 0.0) return float3(0.0);
-  float2 g = rot2(pw / max(cellPx, EPS), uTimeOfDay * TWO_PI); // wheel by time-of-day
+  float2 g = pw / max(cellPx, EPS);
   float2 cell = floor(g), fpos = fract(g);
   float3 acc = float3(0.0);
   float rel = max(sizePx, 0.0) / max(cellPx, EPS); // core radius in CELL units
@@ -233,7 +325,9 @@ float3 starField(float2 pw, float cellPx, float sizePx, float amount) {
       float2 star = float2(float(dx), float(dy)) + hash22(c) - fpos;
       float mag = pow(hash21(c + 3.7), STAR_MAG_POW);        // rare bright stars
       float glow = mag * rel * rel / (dot(star, star) + EPS); // inverse-square core+halo
-      float twinkle = 0.7 + 0.3 * sin(uTime * (1.5 + 4.0 * hash21(c + 1.3)) + hash21(c) * TWO_PI);
+      // SEEDED, never a wall clock: the rate and the phase are hashes of the CELL, so
+      // the same star twinkles the same way in the editor, the CLI and both exporters.
+      float twinkle = 1.0 - twinkleAmt + twinkleAmt * sin(uTime * (1.5 + 4.0 * hash21(c + 1.3)) + hash21(c) * TWO_PI);
       acc += starTint(hash21(c + 9.2)) * glow * twinkle;
     }
   }
@@ -283,29 +377,69 @@ half4 main(float2 fragCoord) {
   // The star lattice lives in the box's own WORLD-px plane (y-up, centred), which is
   // what makes it isotropic and box-size independent — see starField.
   float2 pw = float2(pl.x, -pl.y) / max(uScale, EPS);
-  float3 stars = starField(pw, STAR_SPAN_PX / max(uStarDensity, EPS), uStarSize, nightAmt);
-  float2 rdXZ = rot2(dirV.xz, uTimeOfDay * TWO_PI);      // wheel the galaxy with the stars
-  float3 rdR = float3(rdXZ.x, dirV.y, rdXZ.y);
+  float cellPx = STAR_SPAN_PX / max(uStarDensity, EPS);
   float3 galAxis = normalize(float3(0.35, 0.55, 0.75));
-  float3 rdN = normalize(rdR);
-  // gLat is the SINE OF GALACTIC LATITUDE and it is SIGNED — the band straddles its
-  // own great circle, so half the sky has gLat < 0. This line used to read
-  // pow(dot(rdN, galAxis), 2.0), and pow(x, y) IS UNDEFINED FOR x < 0 in SkSL: the
-  // entire negative-latitude half of the sky came out with NO Milky Way at all,
-  // bounded by a HARD ARC where gLat crosses zero — which is the biggest thing R6-9.2
-  // ("the galaxy is not seamless") is actually about, bigger than the atan2 seam.
-  // Squaring by MULTIPLICATION has no undefined region. MEASURED at 720x200 with the
-  // band cranked, largest luma gradient over the frame's 99th percentile: 51-63 with
-  // the pow, 1.8-3.1 without it, at every timeOfDay whose arc crosses the box.
-  // ANY pow() IN A SHADER NEEDS ITS BASE PROVED NON-NEGATIVE — the other four in this
-  // file are (a hash in [0,1), and three wrapped in max(…, EPS)).
-  float gLat = dot(rdN, galAxis);
-  float band = exp(-(gLat * gLat) / (2.0 * MW_SIGMA * MW_SIGMA));
-  // Noised on the DIRECTION, not on (azimuth, elevation) — see fbm3 for the seam
-  // this removes. The two offsets decorrelate the mottling from the dust lanes.
-  float mott = fbm3(rdN * MW_MOTTLE_FREQ + 4.0);
-  float dust = fbm3(rdN * MW_DUST_FREQ + 11.0);
-  float mw = band * mott * (1.0 - 0.55 * dust) * uMilkyWay * nightAmt;
+
+  // ── THE RIGID DOME + THE LONG EXPOSURE, in one loop (BM) ────────────────────
+  // ONE ANGLE drives BOTH night layers — the same "turns" goes to skyRotatePlane for
+  // the stars and to skyRotateDir for the band, so the two cannot drift apart: there
+  // is one expression for the time of day and both layers read it. Each rotation acts
+  // in its own layer's natural frame, which is forced by two pinned laws that point in
+  // opposite directions (see SKY_POLE_AXIS for the measurements that settled it).
+  //
+  // A LONG EXPOSURE IS THAT SAME LOOP RUN MORE THAN ONCE. A shutter held open while
+  // the sky turns integrates the scene along the rotation path, so "uTrailArc" turns
+  // of dome rotation are accumulated over uTrailSamples steps and averaged — which is
+  // literally the definition of the photograph, not an approximation of it. Stars
+  // become concentric ARCS about the pole and the Milky Way smears along the same
+  // arcs, consistently, for free: it rides the identical rotated point.
+  //
+  // WHY IN-SHADER AND NOT THE COMPOSITOR'S MOTION BLUR. The compositor blurs a
+  // FINISHED widget along ONE LINEAR velocity. A star trail is a family of CONCENTRIC
+  // ARCS whose direction and length both vary across the frame (zero at the pole,
+  // longest at the edge), which no single linear kernel can express — it would smear
+  // the pole as hard as the rim and bend nothing. It would also drag the ATMOSPHERE,
+  // THE HORIZON AND THE GROUND along with the stars, and in a real long exposure the
+  // landscape is the one thing that stays sharp. Accumulating along the actual
+  // rotation path gets all three right and costs one loop.
+  float trailTurns = uTrailArc;
+  int steps = int(clamp(uTrailSamples, 1.0, float(MAX_TRAIL_SAMPLES)));
+  if (trailTurns == 0.0) steps = 1; // an unopened shutter is one sample, exactly
+  float3 stars = float3(0.0);
+  float mwAcc = 0.0, mottAcc = 0.0;
+  for (int i = 0; i < MAX_TRAIL_SAMPLES; i++) {
+    if (i >= steps) break;
+    // Sub-turn offset: the shutter opened at uTimeOfDay and the sky turned trailTurns
+    // while it was open. steps == 1 puts the single sample exactly at uTimeOfDay, so
+    // a closed shutter is byte-identical to no trail feature at all.
+    float f = steps > 1 ? float(i) / float(steps - 1) : 0.0;
+    float turns = uTimeOfDay + trailTurns * f;
+    // THE SAME "turns" IN BOTH FRAMES — this pair of lines IS the rigid dome.
+    stars += starField(skyRotatePlane(pw, turns), cellPx, uStarSize, nightAmt, uTwinkle);
+    float3 rdN = normalize(skyRotateDir(dirV, turns));
+    // gLat is the SINE OF GALACTIC LATITUDE and it is SIGNED — the band straddles its
+    // own great circle, so half the sky has gLat < 0. It is SQUARED BY MULTIPLICATION,
+    // never pow(): "pow(x, y)" IS UNDEFINED FOR x < 0 in SkSL, and while this read
+    // pow(dot(rdN, galAxis), 2.0) the entire negative-latitude half of the sky came out
+    // with NO Milky Way at all, bounded by a HARD ARC where gLat crosses zero — the
+    // biggest half of R6-9.2 ("the galaxy is not seamless"). MEASURED at 720x200 with
+    // the band cranked, largest luma gradient over the frame's 99th percentile: 51-63
+    // with the pow, 1.8-3.1 without. ANY pow() IN A SHADER NEEDS ITS BASE PROVED
+    // NON-NEGATIVE — the other pow()s in this file are (a hash in [0,1), and three
+    // wrapped in max(…, EPS)).
+    float gLatS = dot(rdN, galAxis);
+    float bandS = exp(-(gLatS * gLatS) / (2.0 * MW_SIGMA * MW_SIGMA));
+    // Noised on the DIRECTION, not on (azimuth, elevation) — see fbm3 for the branch-cut
+    // seam that removes. The two offsets decorrelate the mottling from the dust lanes.
+    float mottS = fbm3(rdN * MW_MOTTLE_FREQ + 4.0);
+    float dustS = fbm3(rdN * MW_DUST_FREQ + 11.0);
+    mwAcc += bandS * mottS * (1.0 - 0.55 * dustS);
+    mottAcc += mottS;
+  }
+  float inv = 1.0 / float(steps);
+  stars *= inv;
+  float mott = mottAcc * inv;
+  float mw = mwAcc * inv * uMilkyWay * nightAmt;
   float3 mwCol = mix(uGalaxyTint, float3(1.0, 0.92, 0.8), mott) * mw;
 
   float3 col = mix(night, dayCol, dayF) + stars + mwCol;
@@ -338,14 +472,15 @@ function rgb(name, v) { const c = parseColor(v); return [num(name + ".r", c[0]),
  * [-1,1] frame: [{sx, sy, color, intensity}]; it is padded to SKY_MAX_SUNS.
  *
  * @param {object} u geometry + {time, horizon, turbidity, atmosphere, exposure,
- *   starDensity, starSize, milkyWay, timeOfDay, moonlight, zenith, ground, night, galaxyTint,
- *   suns:[{sx,sy,color,intensity}]}
- * @returns {Float32Array} length 54
+ *   starDensity, starSize, milkyWay, timeOfDay, twinkle, trailArc, trailSamples,
+ *   moonlight, zenith, ground, night, galaxyTint, suns:[{sx,sy,color,intensity}]}
+ * @returns {Float32Array} length 57
  *
  * @example packSky({cx:0,cy:0,halfW:640,halfH:360,cornerRadius:0,angle:0,scale:1,
  *   time:0,horizon:-0.15,turbidity:3,atmosphere:1,exposure:1.1,starDensity:40,starSize:0.82,
- *   milkyWay:1,timeOfDay:0.5,moonlight:0,zenith:"#8ab4ff",ground:"#0b0d12",
- *   night:"#05070f",galaxyTint:"#3a4a6a",suns:[{sx:0.2,sy:-0.5,color:"#fff",intensity:1}]}).length // 54
+ *   milkyWay:1,timeOfDay:0.5,twinkle:0.3,trailArc:0,trailSamples:24,moonlight:0,
+ *   zenith:"#8ab4ff",ground:"#0b0d12",
+ *   night:"#05070f",galaxyTint:"#3a4a6a",suns:[{sx:0.2,sy:-0.5,color:"#fff",intensity:1}]}).length // 57
  */
 export function packSky(u) {
   const suns = Array.isArray(u.suns) ? u.suns : [];
@@ -371,7 +506,11 @@ export function packSky(u) {
     num("horizon", u.horizon), num("turbidity", u.turbidity), num("atmosphere", u.atmosphere),
     num("exposure", u.exposure), num("starDensity", u.starDensity), num("starSize", u.starSize),
     num("milkyWay", u.milkyWay),
-    num("timeOfDay", u.timeOfDay), num("moonlight", u.moonlight), count,
+    // SkSL DECLARATION ORDER (the packer is tight-packed and positional): timeOfDay,
+    // then BM's twinkle/trailArc/trailSamples, then moonlight and the sun count.
+    num("timeOfDay", u.timeOfDay),
+    num("twinkle", u.twinkle), num("trailArc", u.trailArc), num("trailSamples", u.trailSamples),
+    num("moonlight", u.moonlight), count,
     ze[0], ze[1], ze[2], gr[0], gr[1], gr[2], ni[0], ni[1], ni[2], ga[0], ga[1], ga[2],
     ...sunPos, ...sunCol,
   ]);
@@ -563,7 +702,39 @@ export const SKY_FILL_PARAMS = [
   // old 0..1 cap was ARBITRARY and it blocked keyframing a multi-turn spin (0 → 3).
   // Measured byte-identical: 0 ≡ 1 ≡ 3, and 0.25 ≡ 1.25 ≡ 12.25 ≡ 100.25 (the float32
   // argument survives 10 000 turns), 0.5 ≡ 2.5 ≡ −0.5.
-  { name: "timeOfDay", kind: "number", default: 0.2, scrub: UNIT_SPAN_SCRUB, help: "Rotates the star sphere + Milky Way: 0..1 is ONE full turn, and it is unbounded because the rotation is periodic — keyframe 0 → 3 to spin the night sky three whole turns (2.5 renders exactly like 0.5, as a turn should), or go negative to wheel the other way. The day/night look itself is driven by the SUN widgets' elevation, not this." },
+  { name: "timeOfDay", kind: "number", default: 0.2, scrub: UNIT_SPAN_SCRUB, help: "Rotates the whole night sky — stars and Milky Way together, as one rigid dome about the celestial pole. 0..1 is ONE full turn, and it is unbounded because the rotation is periodic: keyframe 0 → 3 to spin the sky three whole turns (2.5 renders exactly like 0.5, as a turn should), or go negative to wheel the other way. The day/night look itself is driven by the SUN widgets' elevation, not this." },
+  // TWINKLE IS THE SHADER'S ONE CLOCK READER, which is why it is also the predicate
+  // SKY_MATERIAL.animated is built on. DEFAULT 0.3 IS THE OLD BAKED CONSTANT: the
+  // factor was written `0.7 + 0.3·sin(…)` and is now `1 − a + a·sin(…)`, so a = 0.3
+  // reproduces the previous expression EXACTLY and every deck authored before this
+  // knob existed renders byte-identically. 0 is not merely "very little" — it makes
+  // the factor exactly 1.0, so the term drops out and the sky stops depending on `t`
+  // at all, which is what lets `animated` be false and the presenter's repaint loop
+  // stand down (the CRT "Rock Steady" precedent). NO CEILING: past 1 the trough goes
+  // NEGATIVE and stars blink fully out and back, a harder scintillation than the
+  // atmosphere really does but a legitimate stylised look; the floor is 0 because a
+  // negative amount is just the same twinkle a half-cycle out of phase, i.e. it
+  // reaches nothing the positive side does not already reach.
+  { name: "twinkle", kind: "number", default: 0.3, min: 0, scrub: UNIT_SPAN_SCRUB, help: "How much the stars scintillate, as a fraction of each star's own brightness (0.3 = the classic ±30% shimmer). Each star gets its own seeded rate and phase, so the field never pulses in unison. 0 switches twinkling off completely — and that is a real off, not a small value: the sky then stops reading the clock at all, so a slide holding it needs no repaint loop. Above 1 the dimmest point of the cycle goes dark, so stars blink right out and back." },
+  // ── THE LONG EXPOSURE (a SECOND, disjoint preset family — see plugins/demo/sky.js)
+  // NO CEILING: the arc is turns of sky rotation, and a multi-turn exposure is a real
+  // (if unusual) photograph — at 1 every star has closed its circle, which renders as
+  // complete concentric rings, and beyond that the rings simply retrace themselves and
+  // brighten. NEGATIVE IS LEGAL AND MEANINGFUL: it trails the sky the other way, i.e.
+  // the shutter closed at `timeOfDay` instead of opening there, so keyframing timeOfDay
+  // with a negative arc leaves the trail BEHIND the motion rather than ahead of it.
+  { name: "trailArc", kind: "number", default: 0, scrub: UNIT_SPAN_SCRUB, help: "Long-exposure star trails: how far the sky turns while the shutter is open, in TURNS (0 = none, a normal instant photograph; 0.02 ≈ a 30-minute exposure; 1 = a full circle, so every star closes its own ring). Stars smear into concentric arcs about the celestial pole and the Milky Way blurs along the same arcs, exactly as it does in the real photograph — the ground and the atmosphere stay sharp, because only the sky is turning. Negative trails the other way, leaving the smear behind the motion." },
+  // SAMPLES IS COST, NOT LOOK, and it is the one row here whose bounds are purely
+  // TECHNICAL. The floor of 1 is the shader's own clamp (a zero-sample exposure has no
+  // picture to average); the ceiling is MAX_TRAIL_SAMPLES = 64, past which the SkSL's
+  // constant trip count cannot go — the loop is unrolled, so the bound is compiled in
+  // rather than chosen. It is a MAX, not a fixed count: the shader runs `steps` samples
+  // and a short arc needs far fewer than a long one, so raising the arc is what forces
+  // this up. MEASURED at 600x600 with the arc at 0.05: 8 samples read as a visible
+  // string of separate beads, 24 as a dotted arc, 48 as a continuous line; the default
+  // 24 is where the shortest useful arcs are already smooth and the cost is one pass in
+  // twenty-four rather than in forty-eight.
+  { name: "trailSamples", kind: "number", default: 24, min: 1, max: 64, step: 1, help: "How many samples the long exposure accumulates along its arc. Only matters when Trail arc is non-zero; it is a QUALITY/COST knob, not a look. Too few and a long trail breaks into a string of beads — raise it as you lengthen the arc. 64 is the ceiling because the shader unrolls this loop, so its trip count is fixed at compile time." },
   { name: "zenith", kind: "color", default: "#ffffff", help: "Zenith colour multiplier applied to the scattered day sky. White = pure physics; tint to warm/cool the whole dome." },
   { name: "ground", kind: "color", default: "#0d1017", help: "Ground/foreground colour below the horizon (darkens at night)." },
   { name: "night", kind: "color", default: "#04060e", help: "Deep night-sky colour the dome fades to once every sun is below the horizon." },
@@ -696,19 +867,44 @@ export function skySceneParams(node, nodesById) {
  * @param {object} p - resolved params (every SKY_FILL_PARAMS knob + suns + moonlight)
  * @returns {object} packSky-shaped params
  *
- * @example skyUniformParams({horizon: -0.15, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 79, starSize: 0.82, milkyWay: 1, timeOfDay: 0.2, zenith: "#ffffff", ground: "#0d1017", night: "#04060e", galaxyTint: "#46567c", suns: [], moonlight: 0}).horizon // -0.15
- * @example skyUniformParams({horizon: 0, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 79, starSize: 0.82, milkyWay: 1, timeOfDay: 0.2, zenith: "#fff", ground: "#000", night: "#000", galaxyTint: "#000", suns: [], moonlight: 0}).suns.length // 0
+ * @example skyUniformParams({horizon: -0.15, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 79, starSize: 0.82, milkyWay: 1, timeOfDay: 0.2, twinkle: 0.3, trailArc: 0, trailSamples: 24, zenith: "#ffffff", ground: "#0d1017", night: "#04060e", galaxyTint: "#46567c", suns: [], moonlight: 0}).horizon // -0.15
+ * @example skyUniformParams({horizon: 0, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 79, starSize: 0.82, milkyWay: 1, timeOfDay: 0.2, twinkle: 0.3, trailArc: 0, trailSamples: 24, zenith: "#fff", ground: "#000", night: "#000", galaxyTint: "#000", suns: [], moonlight: 0}).suns.length // 0
+ * @example skyUniformParams({horizon: 0, turbidity: 3, atmosphere: 1, exposure: 1.1, starDensity: 79, starSize: 0.82, milkyWay: 1, timeOfDay: 0.2, twinkle: 0, trailArc: 0.25, trailSamples: 48, zenith: "#fff", ground: "#000", night: "#000", galaxyTint: "#000", suns: [], moonlight: 0}).trailArc // 0.25
  */
 export function skyUniformParams(p) {
   return {
     time: particleTime(),
     horizon: p.horizon, turbidity: p.turbidity, atmosphere: p.atmosphere, exposure: p.exposure,
     starDensity: p.starDensity, starSize: p.starSize, milkyWay: p.milkyWay, timeOfDay: p.timeOfDay,
+    twinkle: p.twinkle, trailArc: p.trailArc, trailSamples: p.trailSamples,
     moonlight: p.moonlight ?? 0,
     zenith: p.zenith, ground: p.ground, night: p.night, galaxyTint: p.galaxyTint,
     suns: p.suns ?? [],
   };
 }
+
+/**
+ * Pure function. Does this sky READ THE CLOCK? PARAM-PREDICATED `animated`, the CRT
+ * precedent (crtParamsAreAnimated, commit 9a6f215) — and this entry used to declare a
+ * flat `animated: true`, which was true only by accident of the twinkle amount being
+ * baked in at 0.3.
+ *
+ * TWINKLE IS THE SHADER'S ONLY `uTime` READ. Everything else that moves in this sky is
+ * DOCUMENT state, not elapsed time: `timeOfDay` rotates the dome and `trailArc` opens
+ * the shutter, and both are keyframed values that a still renders from its own
+ * `[[slide, alpha]]` — they animate a PRESENTATION without making the paint animated at
+ * rest, which is exactly the distinction paintIsAnimated draws. So at twinkle = 0 the
+ * factor `1 − a + a·sin(…)` is exactly 1.0, the picture is byte-identical at any `t`,
+ * and a repaint loop would spin for nothing.
+ *
+ * @param {object} params - the material's resolved knobs
+ * @returns {boolean}
+ *
+ * @example skyParamsAreAnimated({twinkle: 0.3}) // true
+ * @example skyParamsAreAnimated({twinkle: 0})   // false (the exact identity — no clock read)
+ * @example skyParamsAreAnimated({twinkle: 0, trailArc: 0.5}) // false (a trail is document state, not a clock)
+ */
+export const skyParamsAreAnimated = (params) => (params.twinkle ?? 0) !== 0;
 
 /** FOREGROUND generative material descriptor (backdrop:false). `proxyFill` gives the
  * thumbnail/minimap (quality:"proxy") path a cheap vertical-gradient stand-in
@@ -717,7 +913,8 @@ export function skyUniformParams(p) {
  * fill, and its scattering reads the scene's suns through the sibling gather. */
 export const SKY_MATERIAL = {
   id: "sky",
-  animated: true, // reads particleTime — the presenter must keep repainting (paintIsAnimated)
+  // PARAM-PREDICATED (see skyParamsAreAnimated): twinkle is the one clock reader.
+  animated: skyParamsAreAnimated,
   sksl: SKY_SKSL,
   pack: packSky,
   uniformFloats: SKY_UNIFORM_FLOATS,
