@@ -357,13 +357,10 @@
      colour area did not shrink to buy the point. */
   --a-stopbar-bead-tip: 5px;
   --a-stopbar-bead-h: calc(var(--a-stopbar-bead) + var(--a-stopbar-bead-tip));
-  /* THE SPREAD CONTINUATION BAND is HALF the track's height: it previews what
-     happens past the ramp's end, and being visibly shorter is what distinguishes a
-     preview from the editable ramp above it without needing a label. */
-  --a-stopbar-band-h: calc(var(--a-stopbar-track-h) / 2);
-  /* Slightly receded, for the same reason: the band is context for the ramp, so it
-     must not compete with it for attention at equal saturation. */
-  --a-stopbar-band-opacity: 0.75;
+  /* (There is no second bar and no continuation-band token: the SPREAD mode is now
+     shown IN the one ramp, at its two ends, on the user's 2026-08-02 ruling "You
+     don't need two bars. That's weird looking." — see web/GradientStopBar.svelte's
+     effectiveRampSwatch.) */
   /* The scroll cap is QUANTIZED to a whole number of rows (rows × tile + gaps +
      the grid's own padding, which counts because everything is border-box) so
      the bottom row is never sliced in half at rest — the user's "the way
@@ -7840,24 +7837,12 @@ audio.ae-preview-media {
   height: var(--a-stopbar-bead-h);
 }
 
-/* THE SPREAD CONTINUATION BAND — what the ramp does past its end (Loop restarts,
-   Mirror reflects, Pad holds). SHORTER than the track on purpose: it is a preview,
-   not a second editable ramp, and the height difference is what says so at a
-   glance. Same checkerboard underlay as the track, so a ramp fading to transparent
-   reads the same in both. Inert — no cursor affordance, no pointer events. */
-.stopbar-band {
-  grid-column: 1;
-  height: var(--a-stopbar-band-h);
-  pointer-events: none;
-  background:
-    var(--sb-band, none),
-    repeating-conic-gradient(var(--a-checker-dark) 0% 25%, var(--a-checker-light) 0% 50%);
-  background-size: auto, var(--a-checker-size) var(--a-checker-size);
-  /* A hairline seam so the band reads as a SEPARATE strip continuing the ramp
-     rather than as part of it — the ramp ends at the track, this is what follows. */
-  border-top: var(--a-hairline) solid var(--a-panel-bg);
-  opacity: var(--a-stopbar-band-opacity);
-}
+/* (.stopbar-band is GONE. It was a second, shorter strip under the track showing
+   the next tile past offset 1 — the SPREAD preview. The user removed it
+   (2026-08-02, verbatim: "You don't need two bars. That's weird looking."), and
+   the information moved INTO .stopbar-track's own --sb-ramp: under Loop the ramp's
+   two ends now cross the seam, which is where the mode is actually visible.
+   web/GradientStopBar.svelte effectiveRampSwatch is that rule.) */
 
 /* THE PIN OUTLINE, shared by the bead and its ghost: a pentagon whose apex is at
    top-centre, so `translateX(-50%)` lands the point exactly on the stop's
