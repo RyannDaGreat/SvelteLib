@@ -53,6 +53,11 @@
  *  (11) THIS SLIDE INHERITS THE PREVIOUS ONE, no other slide's DELTA is touched,
  *       a later slide that re-keys a property is unaffected for it, and the CREATION
  *       slide is REFUSED (clearing it would delete the widget).
+ *  (12) THE WORDS THE USER TYPES REACH IT. The tool is already selection-scoped,
+ *       so when he asked for a per-widget version the thing actually missing was
+ *       the NAME: "remove keyframes" ranked it below an unrelated command and
+ *       "clear keyframes"/"unkeyframe" did not reach it at all. The routing of his
+ *       own phrasings is now pinned, in both directions of the scope split.
  */
 
 import assert from "node:assert/strict";
@@ -65,6 +70,7 @@ import {
   itemSlideKeyframes, slideEquationKeyframes, withSlideKeyframesRemoved,
 } from "../core/document.js";
 import { createRegistry, TOOL_POOL, keyframable } from "../core/registry.js";
+import { entryScore } from "../core/commands.js";
 import { allPlugins } from "../plugins/index.js";
 
 let passed = 0;
@@ -378,6 +384,58 @@ test("THE TITLES OPEN WITH DIFFERENT WORDS, and each states its own SCOPE", () =
   assert.notEqual(local.split(" ")[0], sweeping.split(" ")[0], "both titles open with the same word");
   assert.match(local, /This Slide/, "the local tool's title does not say it is local");
   assert.match(sweeping, /every slide/i, "the sweeping tool's title does not say how far it reaches");
+});
+
+// ── (12) THE WORDS THE USER ACTUALLY TYPES REACH THE RIGHT TOOL ───────────────
+// The reported defect (user, 2026-08-02): "There should be an option to remove
+// keyframes for a given widget, instead of just removing it for the entire slide
+// only. Or of course a widget selection, etc. Is there a tool for that?"
+//
+// There WAS. `remove-slide-keyframes` has always been selection-scoped — it reads
+// selectedIds() and clears each selected item's subtree, never the whole slide —
+// so nothing was missing but the NAME. Measured before the fix: "remove keyframes"
+// scored the entry 0.0000012 and ranked it BELOW simplify-duplicate-keyframes,
+// while "clear keyframes" and "unkeyframe" did not reach it at all. A feature the
+// search cannot find is indistinguishable from one that was never built, which is
+// exactly the conclusion the user came to.
+//
+// This pins the ROUTING, not the alias list: the assertion is which command wins
+// each query, so the aliases may be reworded freely and only a regression in what
+// the user can FIND fails. It reads the entries out of web/App.svelte rather than
+// booting Svelte, keeping the suite bare-node.
+test("the user's own phrasings route to the SELECTION-scoped tool, not the sweeping one", () => {
+  const appSvelte = readFileSync(resolve(here, "../web/App.svelte"), "utf8");
+  // Parse `id`, `title` and the optional `aliases` array off each entry line.
+  const entryOf = (id) => {
+    const line = appSvelte.split("\n").find((l) => l.includes(`id: "${id}", title:`));
+    assert.ok(line, `web/App.svelte registers no \`${id}\` entry`);
+    const title = line.match(/title: "([^"]+)"/)[1];
+    const raw = line.match(/aliases: \[([^\]]*)\]/);
+    const aliases = raw ? [...raw[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+    return { id, title, aliases };
+  };
+  const entries = ["remove-slide-keyframes", "make-static", "simplify-duplicate-keyframes", "delete-item"].map(entryOf);
+  // LOWER IS BETTER (core/commands.js entryScore); null = no match at all.
+  const winner = (query) => entries
+    .map((e) => [e.id, entryScore(query, e)])
+    .filter(([, s]) => s !== null)
+    .sort((a, b) => a[1] - b[1])[0]?.[0] ?? null;
+
+  for (const query of [
+    "remove keyframes",                      // the user's words, verbatim
+    "remove keyframes for a widget",         // his framing: per-widget, not per-slide
+    "remove keyframes for a selected widget",
+    "clear keyframes",
+    "unkeyframe",
+    "reset to previous slide",               // what the tool actually does
+  ])
+    assert.equal(winner(query), "remove-slide-keyframes", `"${query}" does not reach the selection-scoped tool`);
+
+  // And the SWEEP keeps the queries that mean whole-stretch — otherwise the fix
+  // above would have made the local tool swallow both halves of the scope split
+  // that the 2026-07 ruling exists to preserve.
+  for (const query of ["remove keyframes everywhere", "remove all keyframes", "make static"])
+    assert.equal(winner(query), "make-static", `"${query}" does not reach the sweeping tool`);
 });
 
 test("both tools reach EVERY registered widget, THE camera included", () => {

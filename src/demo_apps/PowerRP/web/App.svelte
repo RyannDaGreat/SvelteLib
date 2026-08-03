@@ -1082,8 +1082,43 @@
     // Keyframes…" entries would both match one query (registry.js says more) — and
     // each names its own SCOPE, which is the exact thing the first version of the
     // sweeping one left unsaid and got reported for.
-    { id: "remove-slide-keyframes", title: "Remove Keyframes on This Slide (the widget inherits the previous slide)", icon: "mdi:vector-point-minus", when: (a) => a.slideKeyframeTargets().length > 0, requires: SLIDE_KEYFRAMES_REQUIRES, help: SLIDE_KEYFRAMES_HELP, run: (a) => a.removeSlideKeyframes() },
-    { id: "make-static", title: "Make Static from Current Slide (every slide from where it appears until it is hidden)", icon: "mdi:motion-pause-outline", when: (a) => a.makeStaticTargets().length > 0, requires: MAKE_STATIC_REQUIRES, help: MAKE_STATIC_HELP, run: (a) => a.makeSelectionStatic() },
+    //
+    // THE ALIASES ARE LOAD-BEARING, and their absence was a REPORTED BUG (user,
+    // 2026-08-02: "There should be an option to remove keyframes for a given
+    // widget, instead of just removing it for the entire slide only. Or of course
+    // a widget selection, etc. Is there a tool for that?"). The tool he was asking
+    // for is THIS ONE — it has always been selection-scoped (it reads
+    // selectedIds(), never the whole slide) — so the report was not a missing
+    // feature but a missing NAME. Measured against core/commands.entryScore
+    // before the fix: "remove keyframes" scored this entry 0.0000012 and ranked it
+    // BELOW simplify-duplicate-keyframes at 0.101, while "clear keyframes",
+    // "unkeyframe" and "remove keyframes for a widget" matched it at all — the
+    // one query that did hit, "unkeyframe", returned only the WRONG command.
+    // The title cannot fix this: it must keep opening with its scope (above), and
+    // "on This Slide" is what dilutes the fuzzy match on the two words the user
+    // actually types. Aliases are the field for exactly that — searchable, never
+    // displayed (core/commands.js) — so the title keeps saying what the tool DOES
+    // while these say what it is CALLED. "for this widget"/"for selected widgets"
+    // are here because the user's own phrasing was scope-anxious: he assumed the
+    // per-widget option was the missing one, so the per-widget words must lead
+    // here rather than to silence.
+    //
+    // "for a selected widget" is worded that way for a MEASURED reason, not a
+    // stylistic one: rpFuzzyScore needs the query's letters as a SUBSEQUENCE of
+    // the name, so the user's literal "remove keyframes for a widget" scores null
+    // against "…for this widget" and null against "…for selected widgets" — the
+    // article is missing from one and the singular from the other. "for a selected
+    // widget" contains both readings as subsequences and matches all three
+    // phrasings. This is the general trap with aliases: an alias is not a synonym
+    // list, it is a SUPERSTRING the likely queries can be threaded through, and a
+    // near-miss alias scores exactly as badly as no alias at all.
+    { id: "remove-slide-keyframes", title: "Remove Keyframes on This Slide (the widget inherits the previous slide)", icon: "mdi:vector-point-minus", aliases: ["remove keyframes", "clear keyframes", "unkeyframe", "delete keyframes", "remove keyframes for a selected widget", "reset to previous slide", "inherit previous slide", "stop changing here"], when: (a) => a.slideKeyframeTargets().length > 0, requires: SLIDE_KEYFRAMES_REQUIRES, help: SLIDE_KEYFRAMES_HELP, run: (a) => a.removeSlideKeyframes() },
+    // The sweeping one gets the words that mean WHOLE-STRETCH, so the two are told
+    // apart by search and not only by reading their parentheticals. "remove
+    // keyframes everywhere" is deliberately HERE and not above: it is the query of
+    // someone who wants the sweep, and leaving it unclaimed would land them on the
+    // local tool and quietly do a fraction of what they asked.
+    { id: "make-static", title: "Make Static from Current Slide (every slide from where it appears until it is hidden)", icon: "mdi:motion-pause-outline", aliases: ["remove keyframes everywhere", "remove all keyframes", "clear keyframes on every slide", "freeze", "stop animating", "unanimate", "flatten animation"], when: (a) => a.makeStaticTargets().length > 0, requires: MAKE_STATIC_REQUIRES, help: MAKE_STATIC_HELP, run: (a) => a.makeSelectionStatic() },
     { id: "bring-forward", title: "Bring Forward", icon: "mdi:arrange-bring-forward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, run: (a) => a.reorderSelection(+1) },
     { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, run: (a) => a.reorderSelection(-1) },
     { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, run: (a) => a.sendToExtreme(+1) },
