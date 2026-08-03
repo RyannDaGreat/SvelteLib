@@ -22,6 +22,7 @@ import { audioNoisePlugin } from "./audio_noise.js";
 import { audioSamplerPlugin } from "./audio_sampler.js";
 import { audioDingPlugin } from "./audio_ding.js";
 import { audioPadPlugin } from "./audio_pad.js";
+import { audioPolyPadPlugin } from "./audio_poly_pad.js";
 import { audioFilterPlugin } from "./audio_filter.js";
 import { audioEq3Plugin } from "./audio_eq3.js";
 import { audioBitcrushPlugin } from "./audio_bitcrush.js";
@@ -43,7 +44,7 @@ import { audioOutputPlugin } from "./audio_output.js";
 /** Every audio node plugin, in core/audio_specs.AUDIO_SPECS order (sources →
  *  shapers → analysis → out), which is also the order they appear in the palette. */
 export const audioPlugins = [
-  audioOscillatorPlugin, audioSupersawPlugin, audioNoisePlugin, audioSamplerPlugin, audioDingPlugin, audioPadPlugin,
+  audioOscillatorPlugin, audioSupersawPlugin, audioNoisePlugin, audioSamplerPlugin, audioDingPlugin, audioPadPlugin, audioPolyPadPlugin,
   audioFilterPlugin, audioEq3Plugin, audioBitcrushPlugin, audioQuantizePlugin,
   audioDelayPlugin, audioReverbPlugin,
   audioLfoPlugin, audioAdsrPlugin, audioVcaPlugin, audioMixerPlugin, audioClockPlugin, audioSequencerPlugin, audioSampleHoldPlugin, audioTriggerPlugin,

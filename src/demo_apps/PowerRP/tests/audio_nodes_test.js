@@ -141,9 +141,17 @@ function instantiate(moduleType) {
 
 // ── ROSTER ──────────────────────────────────────────────────────────────────
 
-check("the roster and the specs are the same 23 modules", () => {
-  assert.equal(AUDIO_SPECS.length, 23, "AUDIO_SPECS should hold all 23 engine modules");
-  assert.equal(audioPlugins.length, 23);
+check("the roster and the specs are the SAME modules", () => {
+  // ── WHY THIS NO LONGER PINS A NUMBER (BV, 2026-08-03) ─────────────────────
+  // It asserted `=== 23` and went red the moment the poly pad landed, which is
+  // wave 3's recorded lesson repeating in a second file: "an exactly-pinned
+  // roster turns every wave's new patch into a red test — a test punishing the
+  // deliverable it exists to protect." The count was never what this check is
+  // FOR. What it is for is the CORRESPONDENCE: a module registered in one list
+  // and not the other is half-registered, appears in the palette but has no
+  // spec (or vice versa), and fails somewhere far from here. That assertion is
+  // exact, unchanged, and does not need to know how many modules there are.
+  assert.ok(AUDIO_SPECS.length > 0, "AUDIO_SPECS is empty — the roster would vacuously agree with it");
   assert.deepEqual(audioPlugins.map((p) => p.type).sort(), AUDIO_SPECS.map((s) => s.type).sort(),
     "plugins/audio_index.js must cover AUDIO_SPECS exactly — a module in one and not the other is half-registered");
 });
@@ -153,7 +161,7 @@ check("every spec names a module the engine actually has", () => {
     assert.ok(MODULE_FACTORIES[spec.module], `${spec.type} names engine module "${spec.module}", which does not exist`);
 });
 
-check("the 23 specs cover the 23 engine modules with none left over", () => {
+check("the specs cover the engine modules exactly, with none left over", () => {
   assert.deepEqual(AUDIO_SPECS.map((s) => s.module).sort(), Object.keys(MODULE_FACTORIES).sort(),
     "every engine module should have exactly one node widget");
 });

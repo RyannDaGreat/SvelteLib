@@ -66,6 +66,14 @@ import {
 } from "./dsp.js";
 import { MODULE_FACTORIES } from "./modules.js";
 import { createScheduler } from "./scheduler.js";
+import {
+  createVoicePool,
+  noteOn as voiceNoteOn,
+  noteOff as voiceNoteOff,
+  allNotesOff as allVoicesOff,
+  soundingNotes as voiceSoundingNotes,
+  DEFAULT_POLY_VOICES,
+} from "./voices.js";
 
 /** Where the worklet processors live, relative to this file. */
 const WORKLET_URL = new URL("./worklets/processors.js", import.meta.url);
@@ -181,6 +189,27 @@ export function createEngine(options = {}) {
     }
     if (target.node && typeof target.index === "number") return target;
     return { node: target, index: 0 };
+  }
+
+  /**
+   * Query. The module entry for `id`, refusing LOUDLY if it is not polyphonic.
+   *
+   * A mono module handed a note-on is the mistake worth catching: nothing about
+   * `engine.noteOn("pad1", 60, 262)` looks wrong, and the pad WOULD have a
+   * frequency to set — so a permissive fallback would produce a monophonic
+   * instrument that mysteriously plays only the last key of every chord. The
+   * sentence names the requirement rather than the symptom.
+   */
+  function requirePoly(id, method) {
+    const entry = modules.get(id);
+    if (!entry) throw new Error(`No module with id ${JSON.stringify(id)}`);
+    if (!entry.pool) {
+      throw new Error(
+        `Module ${JSON.stringify(id)} (${entry.type}) is not polyphonic — ${method} needs a module ` +
+          `declaring noteOn/noteOff (e.g. polyPad). A mono module takes a frequency param, not notes.`,
+      );
+    }
+    return entry;
   }
 
   /**
@@ -349,7 +378,16 @@ export function createEngine(options = {}) {
         guards.set(portName, guard);
       }
 
-      modules.set(id, { instance, guards, guardLevel: 1, type, meterBuffer: null, spectrumBuffer: null });
+      // A POLY module gets a voice pool, sized from what it actually built.
+      // The pool lives HERE rather than inside the module for one reason: the
+      // allocation policy (who gets stolen) must be identical for every poly
+      // module and provable in bare node, so it is a pure table the engine
+      // owns and synth/voices.js decides over. A module that declares no
+      // `noteOn` gets no pool and is untouched by any of this.
+      const pool = typeof instance.noteOn === "function"
+        ? createVoicePool(instance.meta?.voices ?? DEFAULT_POLY_VOICES)
+        : null;
+      modules.set(id, { instance, guards, guardLevel: 1, type, meterBuffer: null, spectrumBuffer: null, pool });
       instance.start();
 
       // A sequencer joins the shared transport, so all sequencers in a patch
@@ -532,6 +570,82 @@ export function createEngine(options = {}) {
         throw new Error(`Module ${JSON.stringify(id)} (${entry.type}) is not triggerable`);
       }
       entry.instance.trigger(time ?? context.currentTime, options, port);
+    },
+
+    /**
+     * Command. Sound a note on a POLYPHONIC module — the keyboard's note-on.
+     *
+     * ── WHAT THE ENGINE OWNS HERE AND WHAT IT DOES NOT ──────────────────────
+     * The engine owns the VOICE POOL (which slot, and who is stolen) because
+     * the policy must be one policy: two poly modules that stole differently
+     * would be a difference nobody could hear the reason for. The pool itself
+     * is synth/voices.js — pure, and tested without an AudioContext.
+     *
+     * The module owns the SOUND: given a slot it retunes and opens an
+     * envelope. It never sees the allocation.
+     *
+     * A STEAL IS EXECUTED HERE, in order: the displaced voice is released
+     * BEFORE the new note starts on the same slot, so the module's noteOn
+     * always writes onto a voice that is on its way down rather than one still
+     * being told to hold. Both land at the same audio-clock `time`, which is
+     * what keeps the switch sample-accurate rather than two rAF ticks apart.
+     *
+     * Returns what was allocated, so a caller that draws a keyboard can
+     * un-light the stolen key.
+     *
+     * Args:
+     *     id (string): Module id
+     *     note (number): The note's identity — MIDI number, or any stable key
+     *     frequency (number): The pitch in Hz
+     *     time (number): Audio-clock time; defaults to now
+     *
+     * Returns:
+     *     {slot: number, stolen: number|null, retrigger: boolean}
+     */
+    noteOn(id, note, frequency, time = undefined) {
+      const entry = requirePoly(id, "noteOn");
+      const at = time ?? context.currentTime;
+      const allocation = voiceNoteOn(entry.pool, note);
+      entry.pool = allocation.pool;
+      if (allocation.stolen !== null) entry.instance.noteOff(allocation.slot, at);
+      entry.instance.noteOn(allocation.slot, frequency, at);
+      return { slot: allocation.slot, stolen: allocation.stolen, retrigger: allocation.retrigger };
+    },
+
+    /**
+     * Command. Release a note on a polyphonic module.
+     *
+     * A note-off for a note that is NOT sounding does nothing and is NOT an
+     * error — a note that was stolen while its key was held sends its note-off
+     * later, and silencing the thief would be the classic poly bug. The pool
+     * refuses it by identity (synth/voices.noteOff), so this cannot happen
+     * even if a caller is sloppy about pairing.
+     *
+     * Returns:
+     *     {slot: number|null} — null when the note was not sounding
+     */
+    noteOff(id, note, time = undefined) {
+      const entry = requirePoly(id, "noteOff");
+      const release = voiceNoteOff(entry.pool, note);
+      entry.pool = release.pool;
+      if (release.slot !== null) entry.instance.noteOff(release.slot, time ?? context.currentTime);
+      return { slot: release.slot };
+    },
+
+    /** Command. Release every sounding note on a poly module — the panic
+     *  button, and what a slide change owes a held chord. */
+    allNotesOff(id, time = undefined) {
+      const entry = requirePoly(id, "allNotesOff");
+      const cleared = allVoicesOff(entry.pool);
+      entry.pool = cleared.pool;
+      for (const slot of cleared.slots) entry.instance.noteOff(slot, time ?? context.currentTime);
+      return { slots: cleared.slots };
+    },
+
+    /** Query. Which notes a poly module is currently sounding, in slot order.
+     *  For the keyboard's own display and for probes. */
+    soundingNotes(id) {
+      return voiceSoundingNotes(requirePoly(id, "soundingNotes").pool);
     },
 
     /**

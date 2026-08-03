@@ -180,6 +180,61 @@ export const PAD_SPEC = {
   ],
 };
 
+/**
+ * THE VOICE-COUNT RANGE, RESTATED — synth/voices.js is the definition and this
+ * is its echo, for the same reason every other range in this file echoes a
+ * clampParam: THIS FILE MAY NOT IMPORT synth/** (stated at the top — it is data,
+ * and core/ must run in bare node without an AudioContext anywhere in its import
+ * graph). tests/poly_voices_test.js asserts the two agree, which is what makes
+ * the restatement checkable rather than a second opinion waiting to drift.
+ */
+const POLY_VOICES_DEFAULT = 8;
+const POLY_VOICES_MIN = 1;
+const POLY_VOICES_MAX = 16;
+
+/**
+ * THE POLYPHONIC PAD — the module a keyboard plays.
+ *
+ * ── WHY IT IS SEPARATE FROM PAD_SPEC ────────────────────────────────────────
+ * "Polyphonic demos are important" (user, 2026-08-03). The Ambience Pad is a
+ * DRONE: one `frequency` knob, sounding from the moment it is patched, which is
+ * what SPACEY_PAD_DRONE relies on. This module has no frequency knob at all and
+ * is SILENT at rest — it has a `pitch` input and a `gate`, and it sounds only
+ * what is played into it. Those are different instruments that share a timbre.
+ *
+ * `gate` is a METHOD port, exactly like the ding's: a note is engine.noteOn /
+ * engine.noteOff, not an AudioNode connection, because a voice ALLOCATION is a
+ * decision (which slot, who is stolen) and a wire carries no decisions. `pitch`
+ * is an ordinary number input and is READ AT NOTE-ON, the same seam and the same
+ * reasoning as the ding's frequency: a held chord whose voices all glide when the
+ * pitch input moves is a siren, not a chord.
+ *
+ * `voices` is CONSTRUCT-TIME because every voice is built eagerly (see
+ * synth/modules.js polyPadModule — a voice built inside the note-on handler
+ * would allocate on the gesture path), so changing the count genuinely is a new
+ * instrument.
+ */
+export const POLY_PAD_SPEC = {
+  type: "audio_poly_pad", module: "polyPad", title: "Poly Pad", family: "source",
+  icon: "mdi:piano", readout: "voices", w: 165,
+  help: "A POLYPHONIC pad — several notes at once. It makes no sound on its own: wire a Keyboard's pitch and gate into it and play. When more keys are held than it has voices, the OLDEST sounding note is stolen.",
+  inputs: [
+    { key: "pitch", type: "number", label: "pitch" },
+    { key: "gate", type: "trigger", label: "gate", method: true },
+    { key: "level", type: "number", label: "level" },
+    { key: "cutoff", type: "number", label: "cutoff" },
+  ],
+  outputs: [{ key: "out", type: "audio", label: "out" }],
+  knobs: [
+    { key: "voices", label: "Voices", default: POLY_VOICES_DEFAULT, min: POLY_VOICES_MIN, max: POLY_VOICES_MAX, step: 1, construct: true, help: "How many notes may sound at once. CONSTRUCT-TIME: every voice is built up front, so changing this rebuilds the module. Press more keys than this and the oldest note is stolen." },
+    { key: "cutoff", label: "Cutoff", default: 1400, ...HZ, help: "The shared filter's corner. One filter for the whole instrument, not one per voice — a chord already moves." },
+    { key: "motion", label: "Motion", default: 0.09, min: 0.001, max: 2, step: 0.001, unit: " Hz", help: "Speed of the shared filter sweep." },
+    { key: "attack", label: "Attack", default: 0.12, min: 0.001, max: 4, step: 0.001, unit: " s", construct: true, help: "How long a note takes to reach full level. CONSTRUCT-TIME: read when the voice envelope is scheduled from the module's own build parameters." },
+    { key: "release", label: "Release", default: 0.45, min: 0.01, max: 8, step: 0.01, unit: " s", construct: true, help: "How long a released note takes to fade. CONSTRUCT-TIME, as attack." },
+    { ...LEVEL, default: 0.3 },
+  ],
+};
+
 // ── FILTERS ─────────────────────────────────────────────────────────────────
 // Modules that shape a spectrum which already exists.
 
@@ -468,7 +523,7 @@ export const OUTPUT_SPEC = {
  * module that appears in one place and not another is worse).
  */
 export const AUDIO_SPECS = [
-  OSCILLATOR_SPEC, SUPERSAW_SPEC, NOISE_SPEC, SAMPLER_SPEC, DING_SPEC, PAD_SPEC,
+  OSCILLATOR_SPEC, SUPERSAW_SPEC, NOISE_SPEC, SAMPLER_SPEC, DING_SPEC, PAD_SPEC, POLY_PAD_SPEC,
   FILTER_SPEC, EQ3_SPEC, BITCRUSH_SPEC, QUANTIZE_SPEC,
   DELAY_SPEC, REVERB_SPEC,
   LFO_SPEC, ADSR_SPEC, VCA_SPEC, MIXER_SPEC, CLOCK_SPEC, SEQUENCER_SPEC, SAMPLE_HOLD_SPEC, TRIGGER_SPEC,

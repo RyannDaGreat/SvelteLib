@@ -53,6 +53,7 @@ import {
   MAX_AUDIBLE_HZ,
   BELL_PRESETS,
 } from "./dsp.js";
+import { DEFAULT_POLY_VOICES, MAX_POLY_VOICES, MIN_POLY_VOICES } from "./voices.js";
 
 /**
  * Which modules are native-only and which need a worklet — the machine-readable
@@ -78,6 +79,7 @@ export const IMPLEMENTATION = {
   spectrum: "native",
   ding: "native",
   pad: "native",
+  polyPad: "native",
   adsr: "worklet",
   bitcrush: "worklet",
   quantize: "worklet",
@@ -1478,6 +1480,213 @@ function padModule(context, params, resources) {
   };
 }
 
+// ─── 24. POLY PAD (the polyphonic voice pool) ────────────────────────────────
+
+/**
+ * POLY PAD — N independent voices with one shared tone-shaping chain, played by
+ * note events rather than by a frequency knob.
+ *
+ * ── WHY THIS IS A NEW MODULE AND NOT A FLAG ON THE PAD ──────────────────────
+ * "Polyphonic demos are important" (user, 2026-08-03). The obvious move is to
+ * teach `padModule` to be polyphonic, and it is the wrong one for a stated
+ * reason: the pad is a DRONE. Its whole interface is one `frequency` knob and a
+ * sound that is always on, and every patch in both libraries relies on that —
+ * SPACEY_PAD_DRONE connects it to an output and nothing else, and it plays. A
+ * poly pad has no sound at rest and no frequency knob at all; it has a pitch
+ * INPUT and a gate. Those are different modules that happen to share a timbre,
+ * and merging them would mean a `poly: true` knob that silently changes what
+ * every other knob on the card means.
+ *
+ * THE SEAM THIS ESTABLISHES, and it is the part meant to outlive this module: a
+ * poly module is one that exposes `noteOn(note, frequency, time)` and
+ * `noteOff(note, time)` alongside the ordinary instance shape. The ENGINE
+ * dispatches to those (see engine.noteOn/noteOff) and nothing else in the engine
+ * changes — MONO MODULES ARE UNTOUCHED, they simply do not declare the methods
+ * and the engine says so loudly if you send them a note. That is the same
+ * discipline `trigger` already follows.
+ *
+ * ── VOICES ARE BUILT EAGERLY, WHICH IS A REAL TRADE ─────────────────────────
+ * All N voices exist from construction: oscillators started, gains at zero. The
+ * alternative is building a voice per note-on, which is what dingModule does and
+ * is right there — a bell is a one-shot whose voice dies on its own. A pad voice
+ * is HELD, so per-note construction would allocate several AudioNodes inside the
+ * note-on handler, i.e. on the gesture path, and connect them while sound is
+ * playing. Eager voices cost CPU that is not being heard, which is why the count
+ * is a knob with a ceiling (synth/voices.MAX_POLY_VOICES) rather than unbounded.
+ *
+ * ── THE ALLOCATION DECISION IS NOT HERE ─────────────────────────────────────
+ * Which slot a note lands on, and which note gets stolen, is synth/voices.js —
+ * pure, and tested in bare node. This module owns only the AudioNodes: given a
+ * slot index, retune it and open its envelope. Keeping the two apart is what
+ * makes "the 9th note steals the oldest" an ordinary assertion instead of
+ * something you have to hear.
+ */
+function polyPadModule(context, params) {
+  const output = context.createGain();
+  const filter = context.createBiquadFilter();
+  const lfo = context.createOscillator();
+  const lfoDepth = context.createGain();
+
+  const voiceCount = Math.floor(clampParam(params.voices ?? DEFAULT_POLY_VOICES, MIN_POLY_VOICES, MAX_POLY_VOICES, "voices"));
+  const detunes = supersawDetunes(POLY_DETUNE_COUNT, params.spread ?? POLY_SPREAD_CENTS);
+
+  output.gain.value = clampParam(params.level ?? 0.3, 0, 1, "level");
+
+  filter.type = "lowpass";
+  filter.frequency.value = clampParam(params.cutoff ?? POLY_CUTOFF_HZ, MIN_AUDIBLE_HZ, MAX_AUDIBLE_HZ, "cutoff");
+  filter.Q.value = POLY_RESONANCE;
+  filter.connect(output);
+
+  // The shared slow filter sweep — one LFO for the whole instrument, not one per
+  // voice: a pad's motion is a property of the patch, and N independent sweeps
+  // beating against each other is a chorus, not a pad.
+  lfo.type = "sine";
+  lfo.frequency.value = clampParam(params.motion ?? POLY_LFO_HZ, 0.01, 20, "motion");
+  lfoDepth.gain.value = POLY_LFO_DEPTH_HZ;
+  lfo.connect(lfoDepth);
+  lfoDepth.connect(filter.frequency);
+
+  /**
+   * One voice: a small detuned saw stack through its own envelope gain.
+   *
+   * The envelope is an ordinary AudioParam ramp rather than the ADSR worklet,
+   * deliberately: this module must work before `init()` has loaded the worklets
+   * (a poly pad in a deck that loads mid-presentation), and attack/release on a
+   * gain is exactly what a pad envelope is. The worklet ADSR remains the module
+   * you patch when you want a shaped envelope on something else.
+   */
+  const voices = Array.from({ length: voiceCount }, () => {
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    const oscillators = detunes.map((cents) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = "sawtooth";
+      oscillator.frequency.value = POLY_REST_HZ;
+      oscillator.detune.value = cents;
+      oscillator.connect(gain);
+      return oscillator;
+    });
+    gain.connect(filter);
+    return { gain, oscillators };
+  });
+
+  // ── THE PITCH SEAM, AND WHY IT IS A ConstantSourceNode ──────────────────────
+  // Identical in shape and in reasoning to dingModule's: `pitch` is the OFFSET of
+  // a ConstantSourceNode, which makes it an ordinary AudioParam that any control
+  // signal can be wired INTO and that Web Audio SUMS. So a keyboard's pitch
+  // output and a transpose knob add up with no scaling module in between.
+  //
+  // It is SAMPLED AT NOTE-ON, not audio-rate, and that is the same ruling the
+  // ding made for the same reason: a held chord whose voices all glide when the
+  // pitch input moves is a siren, not a chord. The note being started belongs to
+  // the pitch that is current when the key goes down.
+  //
+  // A caller MAY still name a frequency per note (engine.noteOn's third
+  // argument, which is what a keyboard does — it knows exactly which key was
+  // pressed). That WINS over the port, exactly as options.frequency wins for a
+  // ding: naming a pitch for one specific note is more specific than a standing
+  // wire. The port is for the patch that drives pitch by a wire alone.
+  const pitchBus = createConstant(context, clampParam(params.pitch ?? POLY_REST_HZ, -MAX_AUDIBLE_HZ, MAX_AUDIBLE_HZ, "pitch"));
+  pitchBus.start();
+
+  const attack = () => clampParam(params.attack ?? POLY_ATTACK_SECONDS, 0.001, 4, "attack");
+  const release = () => clampParam(params.release ?? POLY_RELEASE_SECONDS, 0.01, 8, "release");
+  // Each voice carries 1/sqrt(N) of full scale so a held chord does not clip
+  // where a single note did not — the same power-summing convention the supersaw
+  // uses for its own stack.
+  const voiceLevel = 1 / Math.sqrt(voiceCount);
+
+  let started = false;
+  return {
+    inputs: { level: output.gain, cutoff: filter.frequency, pitch: pitchBus.offset },
+    outputs: { out: output },
+    params: {
+      level: output.gain,
+      cutoff: filter.frequency,
+      motion: lfo.frequency,
+      pitch: pitchBus.offset,
+    },
+    /**
+     * Command. Sound `frequency` on voice `slot` at an audio-clock time.
+     *
+     * The pitch is set with `setValueAtTime` rather than ramped: a stolen voice
+     * gliding from the note it was playing to the new one is a portamento
+     * nobody asked for, and it is exactly what makes voice stealing audible.
+     * The AMPLITUDE does ramp (the attack), which is what covers the switch.
+     *
+     * Args:
+     *     slot (number): which voice, from synth/voices.js
+     *     frequency (number): the note in Hz
+     *     time (number): audio-clock time
+     */
+    noteOn(slot, frequency, time = context.currentTime) {
+      const voice = voices[slot];
+      if (!voice) throw new RangeError(`poly pad has ${voices.length} voices; no slot ${slot}`);
+      // The caller's frequency wins; with none, the pitch PORT names the note.
+      // Clamped rather than refused on this path: the value can be the sum of a
+      // wire and an offset, and a modulation that briefly overshoots must not
+      // throw on the audio path and kill the note.
+      const named = frequency ?? pitchBus.offset.value;
+      const hz = Math.max(MIN_AUDIBLE_HZ, Math.min(MAX_AUDIBLE_HZ, named));
+      for (const oscillator of voice.oscillators) oscillator.frequency.setValueAtTime(hz, time);
+      voice.gain.gain.cancelScheduledValues(time);
+      // Anchor at the CURRENT value before ramping. Without this, a voice
+      // stolen mid-release would jump to wherever its last scheduled ramp had
+      // reached rather than continuing from where it audibly is — a click.
+      voice.gain.gain.setValueAtTime(voice.gain.gain.value, time);
+      voice.gain.gain.linearRampToValueAtTime(voiceLevel, time + attack());
+    },
+    /** Command. Release voice `slot`. Ramps to zero over the release time. */
+    noteOff(slot, time = context.currentTime) {
+      const voice = voices[slot];
+      if (!voice) throw new RangeError(`poly pad has ${voices.length} voices; no slot ${slot}`);
+      voice.gain.gain.cancelScheduledValues(time);
+      voice.gain.gain.setValueAtTime(voice.gain.gain.value, time);
+      voice.gain.gain.linearRampToValueAtTime(0, time + release());
+    },
+    start() {
+      if (started) return;
+      for (const voice of voices) for (const oscillator of voice.oscillators) oscillator.start();
+      lfo.start();
+      started = true;
+    },
+    dispose() {
+      for (const voice of voices) {
+        for (const oscillator of voice.oscillators) {
+          if (started) oscillator.stop();
+          oscillator.disconnect();
+        }
+        voice.gain.disconnect();
+      }
+      if (started) lfo.stop();
+      // The pitch bus is a started source like any other; the engine's leak
+      // check counts it, so it must be stopped as well as disconnected.
+      pitchBus.stop();
+      pitchBus.disconnect();
+      for (const node of [filter, lfo, lfoDepth, output]) node.disconnect();
+    },
+    meta: { kind: "polyPad", label: "Poly Pad", voices: voiceCount },
+  };
+}
+
+/** How many detuned saws make up ONE poly voice. Three, not the supersaw's
+ *  seven: a poly pad may have eight voices sounding at once, and 56 oscillators
+ *  is a real cost for a thickness nobody can hear inside a chord. */
+const POLY_DETUNE_COUNT = 3;
+const POLY_SPREAD_CENTS = 11;
+const POLY_CUTOFF_HZ = 1400;
+const POLY_RESONANCE = 1.2;
+/** Slower than the mono pad's sweep — a chord already moves. */
+const POLY_LFO_HZ = 0.09;
+const POLY_LFO_DEPTH_HZ = 500;
+/** Where a silent voice's oscillators park. Any audible frequency will do (they
+ *  are at zero gain); a real one avoids a denormal-adjacent value. */
+const POLY_REST_HZ = 220;
+/** A pad's envelope: slow enough to swell, fast enough that a played chord
+ *  arrives with the gesture rather than after it. */
+const POLY_ATTACK_SECONDS = 0.12;
+const POLY_RELEASE_SECONDS = 0.45;
+
 /** Pad voicing constants — the "spacey by default" settings. */
 const PAD_VOICES = 7;
 const PAD_SPREAD_CENTS = 16;
@@ -1535,6 +1744,7 @@ export const MODULE_FACTORIES = {
   spectrum: spectrumModule,
   ding: dingModule,
   pad: padModule,
+  polyPad: polyPadModule,
 };
 
 /** Query. The module type names, for UI enumeration. */

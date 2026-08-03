@@ -391,7 +391,14 @@ test("the blueprint's MODULE SET v1 is all present", () => {
   // sampleHold is the 23rd: the blueprint's implementation law requires the
   // worklet, and a processor no patch can reach would be dead code.
   assert.ok(MODULE_FACTORIES.sampleHold, "sampleHold must be reachable as a module");
-  assert.equal(moduleTypes().length, 23);
+  // A FLOOR, NOT A CEILING (BV, 2026-08-03). This asserted `=== 23` and went red
+  // when the poly pad landed — the same "exactly-pinned roster punishes the
+  // deliverable" trap wave 3 recorded for the patch list. The blueprint's claim
+  // is that every module it named EXISTS, which the loop above checks by name
+  // (so a rename still fails, and says which one). That a later wave ADDED a
+  // module is not a violation of the blueprint; it is the project working.
+  assert.ok(moduleTypes().length >= required.length + 1,
+    "every blueprint module plus sampleHold must be registered");
 });
 
 test("IMPLEMENTATION covers every module exactly", () => {
@@ -410,8 +417,15 @@ test("NATIVE FIRST is actually honored — the worklet list is exactly the five"
   // native node exists.
   const worklets = moduleTypes().filter((type) => IMPLEMENTATION[type] === "worklet").sort();
   assert.deepEqual(worklets, ["adsr", "bitcrush", "quantize", "sampleHold", "trigger"]);
+  // THE LAW IS THE WORKLET LIST, which the deepEqual above pins EXACTLY: a sixth
+  // worklet appearing is the violation worth catching, and it still fails here.
+  // "Native" is that list's complement, so a hard native count adds nothing and
+  // merely reds every wave that lands a new native module (it did, when the poly
+  // pad landed). What is still worth asserting is that every module has an
+  // opinion — no module falls outside the split.
   const natives = moduleTypes().filter((type) => IMPLEMENTATION[type] === "native");
-  assert.equal(natives.length, 18);
+  assert.equal(natives.length + worklets.length, moduleTypes().length,
+    "every module must be classified native or worklet");
 });
 
 console.log("synth: worklet / dsp constant agreement");
