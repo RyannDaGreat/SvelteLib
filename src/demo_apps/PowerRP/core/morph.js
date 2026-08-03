@@ -112,11 +112,13 @@
  * DOM-free pure JS (bare-node testable, like the rest of core/).
  */
 
-import { alignPayloads, structureSignature } from "./morph_align.js";
+import { alignPayloads, normalizePayload, structureSignature } from "./morph_align.js";
 import { subpathToPathD } from "./morph_geometry.js";
+import { matchSubpaths, travelledSubpath } from "./morph_match.js";
 
 export { alignPayloads, structureSignature, assertMorphPaths } from "./morph_align.js";
 export { subpathToPathD, sampleSubpath } from "./morph_geometry.js";
+export { matchSubpaths, shapeKey, travelledSubpath } from "./morph_match.js";
 
 /**
  * The alignment memo. Keyed on a CONTENT hash of the two payloads (see the
@@ -179,6 +181,63 @@ export function alignedPair(fromPayload, toPayload) {
 }
 
 /**
+ * Query (reads and writes the module-level memo; the RESULT is a pure function of
+ * the arguments). THE MATCHED-PIECE PLAN for two payloads — which subpaths are
+ * congruent and therefore TRAVEL, and the aligned pair for everything left over.
+ *
+ * Memoized on the SAME content key `alignedPair` uses, plus a marker, so a
+ * content morph costs ONE matching pass per transition rather than one per frame
+ * — the property core/morph_property.js's endpoint law already guarantees by
+ * fixing both endpoints for the whole transition.
+ *
+ * Returns `{matched, from, to}`: `matched` is a list of `{a, b}` unit-space
+ * subpath pairs to travel, and `from`/`to` are the structurally-aligned leftovers
+ * (possibly empty). Treat the result as READ-ONLY — it is shared across frames.
+ *
+ * @example
+ * >>> // two payloads with nothing congruent: everything falls to the alignment
+ * >>> const p = (x) => ({space: {w: 1, h: 1}, fillRule: "nonzero", subpaths: [
+ * ...   {start: [x, 0], closed: false, winding: 1, curves: [[0,0,0,0,x+0.5,0.5]]}]});
+ * >>> matchedPlan(p(0), p(0.2)).matched.length
+ * 0
+ */
+export function matchedPlan(fromPayload, toPayload) {
+  const key = "match»" + payloadKey(fromPayload) + "»" + payloadKey(toPayload);
+  const hit = alignCache.get(key);
+  if (hit) return hit;
+
+  // Matching runs in UNIT SPACE, for the reason core/morph_align.js normalizes
+  // before pairing: the two widgets have different boxes, and a hash computed in
+  // raw box coordinates would call the same glyph two different shapes.
+  const A = normalizePayload(fromPayload), B = normalizePayload(toPayload);
+  const pairs = matchSubpaths(A.subpaths, B.subpaths);
+  const matchedFrom = new Set(pairs.map((p) => p[0]));
+  const matchedTo = new Set(pairs.map((p) => p[1]));
+  const restFrom = A.subpaths.filter((_, i) => !matchedFrom.has(i));
+  const restTo = B.subpaths.filter((_, i) => !matchedTo.has(i));
+
+  // The leftovers are aligned as an ordinary pair. Both sides are ALREADY in unit
+  // space, so this re-normalization is the identity — `alignPayloads` is called
+  // with unit spaces rather than the originals precisely so the matched pieces
+  // and the morphed ones end up in ONE coordinate system.
+  const rest = (restFrom.length || restTo.length)
+    ? alignPayloads(
+        { space: { w: 1, h: 1 }, subpaths: restFrom, fillRule: A.fillRule },
+        { space: { w: 1, h: 1 }, subpaths: restTo, fillRule: B.fillRule })
+    : { from: { space: { w: 1, h: 1 }, subpaths: [], fillRule: A.fillRule },
+        to: { space: { w: 1, h: 1 }, subpaths: [], fillRule: B.fillRule } };
+
+  const plan = {
+    matched: pairs.map(([fi, ti]) => ({ a: A.subpaths[fi], b: B.subpaths[ti] })),
+    from: rest.from,
+    to: rest.to,
+  };
+  if (alignCache.size >= ALIGN_CACHE_LIMIT) alignCache.delete(alignCache.keys().next().value);
+  alignCache.set(key, plan);
+  return plan;
+}
+
+/**
  * Command (clears the module-level memo). Drops every cached alignment. This is
  * a PERFORMANCE event and never a visual one — a test calls it to prove that
  * `morphPaths` returns identical output cold and warm, and a long-running editor
@@ -223,9 +282,18 @@ export function clearMorphCache() {
  * There is no half-`Z` — a `Z` joins the stroke, and a join cannot appear
  * gradually. See core/morph_align.js's header for the full argument.
  *
+ * MATCHED PIECES (`options.matchPieces`, default OFF) is the one behavioural
+ * switch this function has, and it is off by default on purpose: every existing
+ * caller and every law in tests/morph_test.js describes the whole-shape morph, so
+ * the flag cannot change any picture the app draws today. Turned on — which
+ * core/derive.js does for a SAME-TYPE content morph — congruent subpaths TRAVEL
+ * instead of morphing (core/morph_match.js). A type morph (rect → gear) leaves it
+ * off, because matching is meaningless when the two shapes share no pieces.
+ *
  * @param {object} fromPayload - MorphPaths, already unsignedState-normalized
  * @param {object} toPayload - MorphPaths, already unsignedState-normalized
  * @param {number} alpha - transition progress in [0, 1]
+ * @param {object} [options] - `{matchPieces: boolean}`; absent means whole-shape
  * @returns {object} the intermediate MorphPaths, in UNIT space (the caller maps
  *   it back out through the separately-tweened box — see the header's `space` note)
  *
@@ -240,25 +308,53 @@ export function clearMorphCache() {
  * >>> morphPaths(line(1, 0), line(1, 1), 0).subpaths[0].curves[0]
  * [0, 0, 0, 0, 1, 0]
  */
-export function morphPaths(fromPayload, toPayload, alpha) {
+export function morphPaths(fromPayload, toPayload, alpha, options = null) {
   if (!(alpha > 0)) return fromPayload;
   if (alpha >= 1) return toPayload;
 
+  // THE MATCHED-PIECE ARM. The endpoint short-circuits above run FIRST and are
+  // untouched by it, so the endpoint law holds identically in both arms.
+  if (options && options.matchPieces) {
+    const plan = matchedPlan(fromPayload, toPayload);
+    const travelled = plan.matched.map(({ a, b }) => travelledSubpath(a, b, alpha));
+    const morphed = plan.from.subpaths.map((a, i) => lerpSubpath(a, plan.to.subpaths[i], alpha));
+    // Matched pieces first, then the morphing leftovers. Paint order within a
+    // morph is not meaningful to preserve — the two endpoints disagree about it
+    // by construction — and a stated order beats an emergent one.
+    return { space: { w: 1, h: 1 }, subpaths: [...travelled, ...morphed], fillRule: plan.to.fillRule };
+  }
+
   const { from, to } = alignedPair(fromPayload, toPayload);
-  const subpaths = from.subpaths.map((a, i) => {
-    const b = to.subpaths[i];
-    const sp = {
-      start: [lerp(a.start[0], b.start[0], alpha), lerp(a.start[1], b.start[1], alpha)],
-      curves: a.curves.map((c, j) => c.map((v, k) => lerp(v, b.curves[j][k], alpha))),
-      // DISCRETE, at alpha > 0, to the target — this codebase's unlike-value rule.
-      closed: !!b.closed,
-      winding: b.winding,
-    };
-    if (b.paint) sp.paint = b.paint;
-    else if (a.paint) sp.paint = a.paint;
-    return sp;
-  });
+  const subpaths = from.subpaths.map((a, i) => lerpSubpath(a, to.subpaths[i], alpha));
   return { space: { w: 1, h: 1 }, subpaths, fillRule: to.fillRule };
+}
+
+/**
+ * Pure helper. One ALIGNED pair of subpaths lerped elementwise — Manim's
+ * `straight_path` on a single slot. Both arms of `morphPaths` call it, so the
+ * whole-shape morph and the matched-piece arm's leftovers cannot drift apart in
+ * how they treat `closed`, `winding` or `paint`.
+ *
+ * The two subpaths MUST already be structurally identical (same curve count);
+ * that is exactly what alignment guarantees, and it is why this is private.
+ *
+ * @example
+ * >>> // a straight cubic sliding its end point from (1,0) to (1,1), halfway:
+ * >>> lerpSubpath({start: [0, 0], closed: false, winding: 1, curves: [[0,0,0,0,1,0]]},
+ * ...             {start: [0, 0], closed: false, winding: 1, curves: [[0,0,0,0,1,1]]}, 0.5).curves[0]
+ * [0, 0, 0, 0, 1, 0.5]
+ */
+function lerpSubpath(a, b, alpha) {
+  const sp = {
+    start: [lerp(a.start[0], b.start[0], alpha), lerp(a.start[1], b.start[1], alpha)],
+    curves: a.curves.map((c, j) => c.map((v, k) => lerp(v, b.curves[j][k], alpha))),
+    // DISCRETE, at alpha > 0, to the target — this codebase's unlike-value rule.
+    closed: !!b.closed,
+    winding: b.winding,
+  };
+  if (b.paint) sp.paint = b.paint;
+  else if (a.paint) sp.paint = a.paint;
+  return sp;
 }
 
 /** Pure helper. Linear interpolation, local so this module has no import cycle
