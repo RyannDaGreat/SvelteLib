@@ -217,6 +217,13 @@ const POLY_VOICES_MAX = 16;
 export const POLY_PAD_SPEC = {
   type: "audio_poly_pad", module: "polyPad", title: "Poly Pad", family: "source",
   icon: "mdi:piano", readout: "voices", w: 165,
+  // POLY: this module takes NOTES (engine.noteOn/noteOff with a voice pool
+  // behind them), not strikes. core/live_control.noteRoutes reads this to decide
+  // whether a keyboard's gate becomes a note or a one-shot trigger, and
+  // tests/control_nodes_test.js asserts the flag agrees with the engine module
+  // actually declaring noteOn — a spec claiming polyphony the module cannot
+  // deliver would be a chord that plays one note with nothing to explain it.
+  poly: true,
   help: "A POLYPHONIC pad — several notes at once. It makes no sound on its own: wire a Keyboard's pitch and gate into it and play. When more keys are held than it has voices, the OLDEST sounding note is stolen.",
   inputs: [
     { key: "pitch", type: "number", label: "pitch" },

@@ -67,8 +67,14 @@
 export const KNOB_START_ANGLE = (135 * Math.PI) / 180;
 export const KNOB_SWEEP_ANGLE = (270 * Math.PI) / 180;
 
-/** The dial's radius in LOCAL units, and the stroke width of its ring. Small:
- *  a node is 150 wide and must hold several of these plus its ports. */
+/** The dial's DEFAULT radius in LOCAL units, and the stroke width of its ring.
+ *  Small: a node is 150 wide and must hold several of these plus its ports.
+ *
+ *  A layout record MAY carry its own `r` and the KNOB control node does — it is
+ *  one large dial that IS the widget rather than one of a band of small ones.
+ *  Read it through `knobRadius` so the painter, the hit test and the overlay
+ *  cannot disagree about how big a given dial is (the same one-source rule
+ *  `knobLayout` states for where a dial sits). */
 export const KNOB_R = 13;
 export const KNOB_TRACK_WIDTH = 3;
 
@@ -302,11 +308,26 @@ const round = (n) => Number(n.toFixed(6));
  * the vertical stack of a node's body and this module must not grow a second
  * opinion about it.
  *
+ * ── EVERY RECORD CARRIES ITS OWN `stateKey` (BV, 2026-08-03) ────────────────
+ * The item-state key a turn writes to is now ON the layout record, supplied by
+ * the caller. web/knobFocus.js used to derive it by prefixing "audio", which was
+ * correct while audio modules were the only widgets with dials and was written
+ * down at the time as a thing to remove: "When that happens the key belongs ON
+ * the layout record and this function goes away." That happened — the KNOB and
+ * SLIDER control nodes store their value in a plain `value` leaf with no prefix
+ * at all, and a mode that guessed the key from the knob's name would have
+ * written `audioValue` into a widget that has no such property, silently doing
+ * nothing to the sound while the dial appeared to move.
+ *
+ * `stateKeyOf` defaults to the knob's own key, which is the identity a
+ * non-prefixing widget wants.
+ *
  * @param {Array<object>} knobs - the spec's knob declarations, in order
  * @param {object} state - the folded item state (its `w` decides the wrap)
  * @param {number} bandTop - LOCAL y the knob band starts at
  * @param {function} valueOf - (knob) → its current value, or a non-number when bound
- * @returns {Array<object>} [{key, label, cx, cy, min, max, step, unit, value, fraction, bound}]
+ * @param {function} [stateKeyOf] - (knob) → the flat item-state key it writes to
+ * @returns {Array<object>} [{key, stateKey, label, cx, cy, min, max, step, unit, value, fraction, bound}]
  *
  * @example // one continuous knob centres itself in the first row of the band
  * @example knobLayout([{key: "cutoff", label: "Cutoff", min: 20, max: 20000}], {w: 150}, 60, () => 800).length // 1
@@ -317,8 +338,12 @@ const round = (n) => Number(n.toFixed(6));
  * @example knobLayout([{key: "q", label: "Q", min: 0, max: 10}], {w: 150}, 60, () => "= ease(time)")[0].bound // true
  * @example // three knobs on a 150-wide node wrap to a second row
  * @example knobLayout([{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}], {w: 150}, 60, () => 0)[3].cy > knobLayout([{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}], {w: 150}, 60, () => 0)[0].cy // true
+ * @example // the state key defaults to the knob's own name…
+ * @example knobLayout([{key: "value", min: 0, max: 1}], {w: 150}, 60, () => 0.5)[0].stateKey // "value"
+ * @example // …and a widget that namespaces its knobs says so
+ * @example knobLayout([{key: "q", min: 0, max: 1}], {w: 150}, 60, () => 0.5, (k) => "audio" + k.key)[0].stateKey // "audioq"
  */
-export function knobLayout(knobs, state, bandTop, valueOf) {
+export function knobLayout(knobs, state, bandTop, valueOf, stateKeyOf = (k) => k.key) {
   const dials = (knobs ?? []).filter((k) => !k.discrete);
   if (dials.length === 0) return [];
   const w = state?.w ?? 0;
@@ -340,7 +365,7 @@ export function knobLayout(knobs, state, bandTop, valueOf) {
     const max = typeof k.max === "number" ? k.max : 1;
     const value = bound ? min : raw;
     return {
-      key: k.key, label: k.label ?? k.key,
+      key: k.key, stateKey: stateKeyOf(k), label: k.label ?? k.key,
       cx, cy, min, max, step: k.step, unit: k.unit ?? "",
       value, fraction: knobFraction(value, min, max), bound,
     };
@@ -375,13 +400,37 @@ export function knobLayout(knobs, state, bandTop, valueOf) {
  * @example knobAt(knobLayout([{key: "cutoff", min: 0, max: 1}], {w: 150}, 60, () => 0.5), 5, 5, 0) // null
  */
 export function knobAt(layout, lx, ly, tol = 0) {
-  const r = KNOB_R + tol;
   let best = null, bestD = Infinity;
   for (const k of layout) {
     const d = Math.hypot(k.cx - lx, k.cy - ly);
-    if (d <= r && d < bestD) { best = k; bestD = d; }
+    // PER-DIAL RADIUS, not the module constant: a big dial must be grabbable
+    // across its whole face, and a small one must not steal presses from the
+    // card around it. Both read `knobRadius`, so grabbing and drawing agree.
+    if (d <= knobRadius(k) + tol && d < bestD) { best = k; bestD = d; }
   }
   return best;
+}
+
+/**
+ * Pure function. A dial's radius: its own `r` when it declares one, else the
+ * shared default.
+ *
+ * THE ONE LOOKUP the painter (core/node_chrome.knobOps), the hit test (knobAt)
+ * and the editor overlay all go through. A dial drawn at one radius and grabbed
+ * at another is the defect this prevents, and it is invisible in a screenshot —
+ * the picture looks right and the click misses.
+ *
+ * @param {object} knob - a knobLayout record
+ * @returns {number} radius in LOCAL units
+ *
+ * @example knobRadius({}) // 13
+ * @example knobRadius({r: 26}) // 26
+ * @example // a nonsense radius falls back rather than painting an inverted arc
+ * @example knobRadius({r: -4}) // 13
+ */
+export function knobRadius(knob) {
+  const r = Number(knob?.r);
+  return Number.isFinite(r) && r > 0 ? r : KNOB_R;
 }
 
 /**
@@ -399,7 +448,17 @@ export function knobAt(layout, lx, ly, tol = 0) {
  * unwound, so a knob you pushed past maximum feels stuck. Measuring from the
  * grab means the knob is always exactly where the pointer says it is.
  *
- * @param {object} knob - a knobLayout record (its min/max/step/value at grab)
+ * ── A RECORD MAY DECLARE ITS OWN `span` (BV, 2026-08-03) ────────────────────
+ * A DIAL has no length, so how far you drag to sweep it is a free choice, and
+ * KNOB_DRAG_SPAN's 150 units is that choice. A SLIDER does have a length: its
+ * handle sits on a track, and the one thing a user expects is that the handle
+ * stays under the cursor. With the shared 150 against a track ~86 tall, dragging
+ * the handle to the top of its own track reached 0.79 of the range and the
+ * handle visibly lagged the pointer — measured, not reasoned. So a strip control
+ * declares `span` = its track length and the handle tracks exactly.
+ *
+ * @param {object} knob - a knobLayout record (its min/max/step/value at grab,
+ *     and optionally its own `span`)
  * @param {number} startValue - the value when the drag began
  * @param {number} dyLocal - travel since the grab, LOCAL units, +y = down
  * @param {boolean} fine - whether the FINE modifier is held
@@ -414,9 +473,14 @@ export function knobAt(layout, lx, ly, tol = 0) {
  * @example // the step snaps the result, and the range clamps it
  * @example knobDragValue({min: 0, max: 16, step: 1}, 8, -30, false) // 11
  * @example knobDragValue({min: 0, max: 100}, 90, -1000, false) // 100
+ * @example // a declared span rescales the gesture: on an 86-unit track, dragging
+ * @example // the handle 43 up from the middle reaches the TOP of the range
+ * @example knobDragValue({min: 0, max: 1, span: 86}, 0.5, -43, false) // 1
  */
 export function knobDragValue(knob, startValue, dyLocal, fine) {
-  const span = KNOB_DRAG_SPAN * (fine ? KNOB_FINE_DIVISOR : 1);
+  const declared = Number(knob?.span);
+  const base = Number.isFinite(declared) && declared > 0 ? declared : KNOB_DRAG_SPAN;
+  const span = base * (fine ? KNOB_FINE_DIVISOR : 1);
   const delta = (-dyLocal / span) * (knob.max - knob.min);
   const raw = Math.max(knob.min, Math.min(knob.max, startValue + delta));
   return Math.max(knob.min, Math.min(knob.max, knobSnap(raw, knob)));

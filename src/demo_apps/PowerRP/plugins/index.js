@@ -99,6 +99,9 @@ import { brightnessContrastPlugin } from "./demo/brightness_contrast.js"; // ton
 import { nodeNumberPlugin } from "./node_number.js";
 import { nodeMathPlugin } from "./node_math.js";
 import { nodeDisplayPlugin } from "./node_display.js";
+// The CONTROL nodes — knob, slider, button, keyboard: the widgets a human plays
+// (core/control_nodes.js). A barrel for the same reason audio_index.js is one.
+import { controlPlugins } from "./control_index.js";
 // THE AUDIO NODE FAMILY (NF-BIND): 23 node widgets, one per synth/ engine module.
 // Their shape comes from core/audio_nodes.js and their data from core/audio_specs.js,
 // so a new module is a spec plus a two-line file — see plugins/audio_index.js for
@@ -106,7 +109,7 @@ import { nodeDisplayPlugin } from "./node_display.js";
 import { audioPlugins } from "./audio_index.js";
 import { scene3dPlugins } from "./demo/scene3d.js"; // THE 3D VIEWPORT FAMILY: scene3d_splat (Gaussian splats, working) + scene3d_model (glTF, loader not wired) — camera pose is keyframable property state, double-click flies it
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, ...bracePlugins, polygonPlugin, paintPathPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, ...audioPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, ...bracePlugins, polygonPlugin, paintPathPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, ...controlPlugins, ...audioPlugins];
 
 /**
  * Command. Registers every plugin TYPE into `registry`, and nothing else.

@@ -141,24 +141,38 @@ export function knobWritePairs(itemId, stateKey, value) {
 }
 
 /**
- * Pure function. The flat item-state key a knob writes to.
+ * Pure function. The flat item-state key a knob writes to — READ OFF THE LAYOUT
+ * RECORD, which is where the widget that owns the dial declares it.
  *
- * Duplicated from core/audio_nodes.audioKnobKey ON PURPOSE, in three lines,
- * rather than imported: this file is in web/ and must stay usable by a future
- * NON-AUDIO node family that declares `knobLayout` (materials and shapes are
- * coming — ADDENDUM 1), which would have its own prefix. When that happens the
- * key belongs ON the layout record and this function goes away; until then a
- * dependency from the general mode onto the audio module would be exactly the
- * coupling ADDENDUM 1 asks us not to build.
+ * ── THIS FUNCTION USED TO GUESS, AND THE GUESS EXPIRED (BV, 2026-08-03) ─────
+ * It was three lines that prefixed "audio" onto the knob's name, duplicated from
+ * core/audio_nodes.audioKnobKey on purpose because this file is in web/ and must
+ * not depend on the audio module. Its own docblock named the condition for
+ * removing it: "a future NON-AUDIO node family that declares knobLayout … When
+ * that happens the key belongs ON the layout record and this function goes away."
  *
- * @param {string} key - the knob's own name
+ * That family is here. The KNOB and SLIDER control nodes store their value in a
+ * plain `value` leaf with NO prefix, so the guess would have written `audioValue`
+ * — a property the widget does not have. Nothing would throw: setPreview writes
+ * whatever key it is given, so the dial would have appeared to turn while the
+ * output never moved, which is the silent failure this project forbids.
+ *
+ * The record now carries `stateKey` (core/node_knobs.knobLayout), so the mode
+ * reads a declaration instead of inferring one. The throw is deliberate: a layout
+ * record without it is a widget that has not declared where its knob writes, and
+ * guessing on its behalf is what got us here.
+ *
+ * @param {object} knob - a knobLayout record
  * @returns {string} the item-state key
  *
- * @example knobStateKey("cutoff") // "audioCutoff"
- * @example knobStateKey("Q") // "audioQ"
+ * @example knobStateKey({key: "cutoff", stateKey: "audioCutoff"}) // "audioCutoff"
+ * @example knobStateKey({key: "value", stateKey: "value"}) // "value"
  */
-export function knobStateKey(key) {
-  return "audio" + key.charAt(0).toUpperCase() + key.slice(1);
+export function knobStateKey(knob) {
+  if (typeof knob?.stateKey !== "string") {
+    throw new Error(`knobFocus: knob ${JSON.stringify(knob?.key)} declares no stateKey — a dial must say which item property it writes to (core/node_knobs.knobLayout)`);
+  }
+  return knob.stateKey;
 }
 
 /**
@@ -297,7 +311,7 @@ export const KNOB_FOCUS_HANDLER = {
       hoverKey = kind.knob.key;
       turning = {
         key: kind.knob.key,
-        stateKey: knobStateKey(kind.knob.key),
+        stateKey: knobStateKey(kind.knob),
         startValue: kind.knob.value,
         startLocal: { x: pick.local.x, y: pick.local.y },
         knob: kind.knob,

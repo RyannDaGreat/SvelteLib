@@ -495,7 +495,12 @@ const READOUT_GAP = 8;
  * @example audioKnobLayout({}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 90}) // []
  */
 export function audioKnobLayout(spec, plugin, s) {
-  return knobLayout(spec.knobs, s, knobBandTop(spec, plugin, s), (k) => s?.[audioKnobKey(k.key)] ?? k.default);
+  // The `audio` prefix is declared HERE, on the record, rather than re-derived by
+  // the mode that turns the dial (which is what web/knobFocus.js used to do, and
+  // which its own docblock flagged as temporary). A control node stores its value
+  // in a plain `value` leaf with no prefix, so a guessing mode would have written
+  // `audioValue` into a widget that has no such property.
+  return knobLayout(spec.knobs, s, knobBandTop(spec, plugin, s), (k) => s?.[audioKnobKey(k.key)] ?? k.default, (k) => audioKnobKey(k.key));
 }
 
 /**

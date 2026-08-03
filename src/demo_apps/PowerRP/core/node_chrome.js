@@ -44,7 +44,7 @@
 import { ellipse, path, rect, text } from "../render_gpu/ir.js";
 import { NODE_CORNER_R, PORT_BEAD_R, portColor, portLayout, wireBezierPath } from "./nodeflow.js";
 import {
-  KNOB_LABEL_GAP, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_R, KNOB_TRACK_WIDTH,
+  KNOB_LABEL_GAP, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_R, KNOB_TRACK_WIDTH, knobRadius,
   KNOB_VALUE_SIZE, knobArcPath, knobPoint, knobReadout,
 } from "./node_knobs.js";
 
@@ -427,23 +427,35 @@ export const KNOB_LABEL_GUTTER = 6;
  * @example // the one being TURNED wears the ring AND its live readout — six
  * @example knobOps([{key: "q", label: "Q", cx: 40, cy: 60, min: 0, max: 10, value: 5, fraction: 0.5, unit: ""}], "#6b5aa8", {activeKey: "q"}).length // 6
  * @example knobOps([{key: "q", label: "Q", cx: 40, cy: 60, min: 0, max: 10, value: 5, fraction: 0.5, unit: ""}], "#6b5aa8", {activeKey: "q"})[5].text // "5"
+ * @example // an UNLABELLED dial (the Knob control node's, whose card title already
+ * @example // names it) emits no label op at all — three, not four
+ * @example knobOps([{key: "value", label: "", cx: 40, cy: 60, min: 0, max: 1, value: 0.5, fraction: 0.5, unit: ""}], "#6b5aa8").length // 3
+ * @example // a record's own `r` sizes its arc: a bigger dial reaches further left
+ * @example knobOps([{key: "v", label: "", r: 26, cx: 40, cy: 60, min: 0, max: 1, value: 0, fraction: 0, unit: ""}], "#6b5aa8")[0].d.includes("26") // true
  * @example knobOps([], "#6b5aa8") // []
  */
 export function knobOps(layout, accent, ui = {}) {
   const ops = [];
   for (const k of layout) {
+    // PER-DIAL RADIUS (BV, 2026-08-03). A module's knob band is many small dials
+    // at the shared KNOB_R; the KNOB control node is ONE large dial that is the
+    // whole widget. `knobRadius` is the one lookup this painter, core/node_knobs
+    // .knobAt and the editor overlay all make, so a dial cannot be drawn at one
+    // size and grabbed at another — a defect that is invisible in a screenshot,
+    // because the picture looks right and only the click misses.
+    const r = knobRadius(k);
     // THE FOCUS RING IS FIRST so everything else draws over it — it is a halo
     // behind the dial, not an outline on top of it.
     if (ui.focusKey === k.key || ui.activeKey === k.key) {
       ops.push(ellipse({
-        cx: k.cx, cy: k.cy, rx: KNOB_R + KNOB_FOCUS_GAP, ry: KNOB_R + KNOB_FOCUS_GAP,
+        cx: k.cx, cy: k.cy, rx: r + KNOB_FOCUS_GAP, ry: r + KNOB_FOCUS_GAP,
         fill: null, stroke: accent, strokeWidth: 1,
       }));
     }
-    ops.push(path({ d: knobArcPath(k, KNOB_R, 0, 1), fill: null, stroke: KNOB_TRACK_INK, strokeWidth: KNOB_TRACK_WIDTH }));
-    ops.push(path({ d: knobArcPath(k, KNOB_R, 0, k.fraction), fill: null, stroke: accent, strokeWidth: KNOB_TRACK_WIDTH }));
-    const tip = knobPoint(k, KNOB_R, k.fraction);
-    const heel = knobPoint(k, KNOB_R * KNOB_POINTER_INNER, k.fraction);
+    ops.push(path({ d: knobArcPath(k, r, 0, 1), fill: null, stroke: KNOB_TRACK_INK, strokeWidth: KNOB_TRACK_WIDTH }));
+    ops.push(path({ d: knobArcPath(k, r, 0, k.fraction), fill: null, stroke: accent, strokeWidth: KNOB_TRACK_WIDTH }));
+    const tip = knobPoint(k, r, k.fraction);
+    const heel = knobPoint(k, r * KNOB_POINTER_INNER, k.fraction);
     ops.push(path({
       d: `M ${heel.x.toFixed(4)} ${heel.y.toFixed(4)} L ${tip.x.toFixed(4)} ${tip.y.toFixed(4)}`,
       fill: null, stroke: KNOB_POINTER_INK, strokeWidth: 1.5,
@@ -454,15 +466,22 @@ export function knobOps(layout, accent, ui = {}) {
     // four labels — caught by eye on a rendered patch. The inset costs a long
     // label its last character or two, which is the honest signal that the name is
     // too long for the space, and is what the port labels already do.
-    ops.push(text({
-      text: k.label, x: k.cx - (KNOB_PITCH_X - KNOB_LABEL_GUTTER) / 2, y: k.cy + KNOB_R + KNOB_LABEL_GAP,
-      size: KNOB_LABEL_SIZE, color: KNOB_LABEL_INK,
-      boxW: KNOB_PITCH_X - KNOB_LABEL_GUTTER, boxStyle: { align: "center" },
-    }));
+    //
+    // AN EMPTY LABEL EMITS NO OP AT ALL. The KNOB control node's dial is unlabelled
+    // (the card's own title says what it is, and a second word under the dial would
+    // be the gaudy repetition ADDENDUM 6 refuses). An empty text op is not free —
+    // it reaches the glyph atlas and lands in every export's display list.
+    if (k.label) {
+      ops.push(text({
+        text: k.label, x: k.cx - (KNOB_PITCH_X - KNOB_LABEL_GUTTER) / 2, y: k.cy + r + KNOB_LABEL_GAP,
+        size: KNOB_LABEL_SIZE, color: KNOB_LABEL_INK,
+        boxW: KNOB_PITCH_X - KNOB_LABEL_GUTTER, boxStyle: { align: "center" },
+      }));
+    }
     if (ui.activeKey === k.key) {
       ops.push(text({
         text: knobReadout(k, k.value), x: k.cx - KNOB_PITCH_X / 2,
-        y: k.cy + KNOB_R + KNOB_LABEL_GAP + KNOB_VALUE_SIZE + 1,
+        y: k.cy + r + KNOB_LABEL_GAP + KNOB_VALUE_SIZE + 1,
         size: KNOB_VALUE_SIZE, color: accent,
         boxW: KNOB_PITCH_X, boxStyle: { align: "center" },
       }));

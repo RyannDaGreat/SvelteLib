@@ -49,6 +49,12 @@ registerPlugins(registry);
  *  sweeps below cover a module added tomorrow. */
 const AUDIO = registry.all().filter((p) => p.audioModule);
 
+/** EVERY widget with dials, audio or not — which since BV includes the KNOB and
+ *  SLIDER control nodes, whose leaves carry no `audio` prefix at all. The sweeps
+ *  that check a dial writes to a real, declared, Inspector-visible leaf are about
+ *  the KNOB CONTRACT rather than about audio, so they run over this. */
+const KNOBBED = registry.all().filter((p) => typeof p.knobLayout === "function");
+
 // ── 1. THE DIAL IS WHERE IT IS DRAWN ─────────────────────────────────────────
 
 test("1. a press at a dial's own centre finds that dial — the painter and the hit test read one layout", () => {
@@ -156,26 +162,37 @@ test("4. a knob holding an = equation is laid out, marked BOUND, and refused", (
 
 test("5. a turn writes ONE flat state key at the setPreview path — no audio-specific route", () => {
   assert.deepEqual(knobWritePairs("n1", "audioCutoff", 820), [[["items", "n1", "audioCutoff"], 820]]);
-  assert.equal(knobStateKey("cutoff"), "audioCutoff");
+  // THE KEY IS READ OFF THE RECORD, not guessed from the knob's name (BV,
+  // 2026-08-03). The guess prefixed "audio" onto everything, which was right
+  // while audio modules were the only widgets with dials — and would have written
+  // `audioValue` into a Knob control node whose leaf is plain `value`, turning a
+  // dial that changed nothing.
+  assert.equal(knobStateKey({ key: "cutoff", stateKey: "audioCutoff" }), "audioCutoff");
+  assert.equal(knobStateKey({ key: "value", stateKey: "value" }), "value");
+});
+
+test("5a. a record with NO stateKey is refused loudly rather than guessed at", () => {
+  assert.throws(() => knobStateKey({ key: "cutoff" }), /declares no stateKey/);
 });
 
 test("5b. the key a turn writes IS the key the plugin declares as its Inspector row", () => {
   // The load-bearing join: the dial and the Inspector number field must edit the
   // SAME leaf, or turning a knob would create a second, shadow value.
+  // Sweeps EVERY widget with dials, which since BV includes the control nodes.
   const bad = [];
-  for (const plugin of AUDIO) {
+  for (const plugin of KNOBBED) {
     const rowKeys = new Set(plugin.inspector.map((r) => r.key));
     for (const k of plugin.knobLayout({ ...plugin.defaults }))
-      if (!rowKeys.has(knobStateKey(k.key))) bad.push(`${plugin.type}.${k.key} -> ${knobStateKey(k.key)}`);
+      if (!rowKeys.has(knobStateKey(k))) bad.push(`${plugin.type}.${k.key} -> ${knobStateKey(k)}`);
   }
   assert.deepEqual(bad, [], `dials whose write key is not an Inspector row:\n    ${bad.join("\n    ")}`);
 });
 
 test("5c. …and it is a key the plugin's own DEFAULTS carry, so the write is a real leaf", () => {
   const bad = [];
-  for (const plugin of AUDIO)
+  for (const plugin of KNOBBED)
     for (const k of plugin.knobLayout({ ...plugin.defaults }))
-      if (!(knobStateKey(k.key) in plugin.defaults)) bad.push(`${plugin.type}.${k.key}`);
+      if (!(knobStateKey(k) in plugin.defaults)) bad.push(`${plugin.type}.${k.key}`);
   assert.deepEqual(bad, [], `dials writing to a key the widget does not declare:\n    ${bad.join("\n    ")}`);
 });
 
