@@ -330,14 +330,17 @@ export function audioNodePlugin(spec) {
      */
     emit(s, _target, world) {
       const readout = audioReadout(spec, s);
+      const dials = audioKnobLayout(spec, plugin, s);
       const ops = [
         ...familyCard(s, spec.title, spec.family),
-        ...(readout ? audioReadoutOps(s, plugin, readout) : []),
+        // `dials.length` tells the readout it is sharing the band, so it stops
+        // centring and sits above them (readoutBaseline states the collision).
+        ...(readout ? audioReadoutOps(s, plugin, readout, dials.length > 0) : []),
         // THE KNOBS, painted with NO `ui` argument — the dials are document
         // state and every pixel consumer gets exactly this. The focus ring and
         // the live readout are transient editor state and belong to the
         // screen-space overlay (core/node_chrome.knobOps states the split).
-        ...knobOps(audioKnobLayout(spec, plugin, s), nodeFamily(spec.family).rim),
+        ...knobOps(dials, nodeFamily(spec.family).rim),
         ...portBeads(plugin, s),
         ...familyRim(s, spec.family),
       ];
@@ -396,11 +399,11 @@ export function audioNodePlugin(spec) {
  * @example audioReadoutOps({w: 150, h: 90}, {ports: () => ({inputs: [], outputs: []})}, "800 Hz")[0].text // "800 Hz"
  * @example audioReadoutOps({w: 150, h: 90}, {ports: () => ({inputs: [], outputs: []})}, "800 Hz")[0].boxStyle.align // "center"
  */
-export function audioReadoutOps(s, plugin, str) {
+export function audioReadoutOps(s, plugin, str, hasKnobs = false) {
   return [text({
     text: str,
     x: NODE_PAD,
-    y: readoutBaseline(plugin, s),
+    y: readoutBaseline(plugin, s, hasKnobs),
     size: AUDIO_READOUT_SIZE,
     color: NODE_VALUE_INK,
     boxW: Math.max(0, (s.w ?? 0) - NODE_PAD * 2),
@@ -424,14 +427,30 @@ export function audioReadoutOps(s, plugin, str) {
  * @example readoutBaseline({ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 90}) > 24 // true
  * @example // more port rows push it further down
  * @example readoutBaseline({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}], outputs: []})}, {w: 150, h: 140}) > readoutBaseline({ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 140}) // true
+ * @example // WITH KNOBS below it the readout stops centring and hugs the port rows,
+ * @example // which is what stops it landing on the dials' labels
+ * @example readoutBaseline({ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 200}, true) < readoutBaseline({ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 200}, false) // true
  */
-export function readoutBaseline(plugin, s) {
+export function readoutBaseline(plugin, s, hasKnobs = false) {
   const rows = portLayout(plugin, s);
   const lastRow = rows.length ? Math.max(...rows.map((p) => p.y)) : NODE_HEADER_H;
   const top = lastRow + PORT_BEAD_R + READOUT_GAP;
   const h = s.h ?? 0;
-  // Centre in the remaining band when there is one; otherwise sit right below the
-  // ports and let the card clip, which is the visible signal that it is too short.
+  // WITH KNOBS BELOW IT, THE READOUT SITS RIGHT ON `top` AND DOES NOT CENTRE, and
+  // this correction is the second time this line has been wrong in the same way.
+  // Centring "in the remaining band" was right when the readout was the ONLY
+  // thing under the port rows — it is the rule that put the value in the middle
+  // of an otherwise empty card. Wave 3 gave the card a knob band occupying that
+  // same space, and the centred readout landed squarely on top of the dials'
+  // labels: a rendered filter read "800 Hz" through the words "Cutoff" and
+  // "Resonance" (caught by eye on a screenshot, not by any test — the same way
+  // the ORIGINAL version of this bug was caught, when the readout landed on the
+  // first port row). A band that now has two tenants cannot let either of them
+  // centre in the whole of it.
+  if (hasKnobs) return top + AUDIO_READOUT_SIZE - READOUT_GAP / 2;
+  // Otherwise unchanged: centre in the remaining band when there is one, else sit
+  // right below the ports and let the card clip, which is the visible signal that
+  // it is too short.
   return Math.max(top, top + Math.max(0, (h - top) / 2)) + AUDIO_READOUT_SIZE / 3;
 }
 
@@ -485,6 +504,9 @@ export function knobBandTop(spec, plugin, s) {
   const rows = portLayout(plugin, s);
   const lastRow = rows.length ? Math.max(...rows.map((p) => p.y)) : NODE_HEADER_H;
   const afterPorts = lastRow + PORT_BEAD_R + READOUT_GAP;
+  // The readout, when there is one, sits at `afterPorts + AUDIO_READOUT_SIZE`
+  // (readoutBaseline's knobs branch — a BASELINE, so the glyphs sit above it).
+  // The band therefore starts one gap below that line, not below a centred one.
   return spec.readout ? afterPorts + AUDIO_READOUT_SIZE + READOUT_GAP : afterPorts;
 }
 

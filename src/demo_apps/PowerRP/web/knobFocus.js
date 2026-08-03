@@ -62,7 +62,7 @@
  */
 
 import { portAt } from "../core/nodeflow.js";
-import { knobAt, knobDragValue, knobReadout } from "../core/node_knobs.js";
+import { knobAt, knobDragValue } from "../core/node_knobs.js";
 import { reportAction } from "../core/report.js";
 
 /**
@@ -235,7 +235,11 @@ export const KNOB_FOCUS_HANDLER = {
     label: "Turn knobs",
     hints: [
       { keys: ["mouse_left"], label: "Drag a knob to turn it — up is more" },
-      { keys: ["shift", "mouse_left"], label: "Fine control" },
+      // "Shift", CAPITALISED — the shortcut registry's token set is case-sensitive
+      // and lowercase "shift" is refused LOUDLY at boot (a token dispatch() could
+      // never match is a chip that lies about what the app does). The probe caught
+      // this on its first run, which is exactly what a boot-error assertion is for.
+      { keys: ["Shift", "mouse_left"], label: "Fine control" },
     ],
     /**
      * Query (mutates the module hover; writes NOTHING). Stages the dial under
@@ -322,17 +326,21 @@ export const KNOB_FOCUS_HANDLER = {
       ctx.app.setPreview(knobWritePairs(ctx.node.itemId, turning.stateKey, value));
     },
     /**
-     * Command. Release ends the turn. The host has already called
-     * commitPreview (endModeGesture does it for every mode), so this only drops
-     * the gesture record — and REPORTS the landing value, because a dial is a
-     * coarse readout and the number is worth having said once.
+     * Command. Release ends the turn. The host has already called commitPreview
+     * (endModeGesture does it for every mode), so this only drops the gesture
+     * record.
+     *
+     * IT REPORTS NOTHING, AND THE FIRST VERSION DID. It logged the landing value
+     * on every release — which is `reportAction`, which is `console.error`,
+     * which meant an ordinary successful knob turn wrote an error line. The probe
+     * caught it as an unexpected console error and it was right to: a report is
+     * for something the user needs told, and "the knob you just turned is now at
+     * the value you turned it to" is told better by the dial, which is under the
+     * pointer and already says so. The REFUSAL still reports, because that is the
+     * case where the app did not do what the gesture asked.
      */
-    onPanEnd(ctx) {
-      if (!turning) return;
-      const { knob, value, startValue } = turning;
+    onPanEnd() {
       turning = null;
-      if (value === startValue) return;
-      reportAction(`PowerRP: ${ctx.app.displayName(ctx.node.itemId)} ${knob.label} = ${knobReadout(knob, value)}`);
     },
     // NO `onExit` HOOK, DELIBERATELY. A mode can be left by Escape, by a slide
     // change, by the item being purged, and by entering the presenter — four

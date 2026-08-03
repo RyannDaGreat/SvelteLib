@@ -378,6 +378,9 @@ export const KNOB_POINTER_INK = NODE_VALUE_INK;
 export const KNOB_POINTER_INNER = 0.45;
 /** The FOCUS RING's radius beyond the dial, drawn only in knob focus. */
 export const KNOB_FOCUS_GAP = 4;
+/** The gap between one knob label's box and the next. Without it adjacent labels
+ *  abut and a row of four reads as one sentence. */
+export const KNOB_LABEL_GUTTER = 6;
 
 /**
  * Pure function. The display-list ops for one node's KNOBS — the dials on a
@@ -445,10 +448,16 @@ export function knobOps(layout, accent, ui = {}) {
       d: `M ${heel.x.toFixed(4)} ${heel.y.toFixed(4)} L ${tip.x.toFixed(4)} ${tip.y.toFixed(4)}`,
       fill: null, stroke: KNOB_POINTER_INK, strokeWidth: 1.5,
     }));
+    // THE LABEL BOX IS NARROWER THAN THE PITCH, by one gutter. At the full pitch
+    // two adjacent labels touch edge to edge, which on the mixer (four dials in a
+    // row, all named "Level N") read as one continuous run of words rather than as
+    // four labels — caught by eye on a rendered patch. The inset costs a long
+    // label its last character or two, which is the honest signal that the name is
+    // too long for the space, and is what the port labels already do.
     ops.push(text({
-      text: k.label, x: k.cx - KNOB_PITCH_X / 2, y: k.cy + KNOB_R + KNOB_LABEL_GAP,
+      text: k.label, x: k.cx - (KNOB_PITCH_X - KNOB_LABEL_GUTTER) / 2, y: k.cy + KNOB_R + KNOB_LABEL_GAP,
       size: KNOB_LABEL_SIZE, color: KNOB_LABEL_INK,
-      boxW: KNOB_PITCH_X, boxStyle: { align: "center" },
+      boxW: KNOB_PITCH_X - KNOB_LABEL_GUTTER, boxStyle: { align: "center" },
     }));
     if (ui.activeKey === k.key) {
       ops.push(text({
