@@ -101,10 +101,22 @@ export const VECTOR_SAFE_EFFECT_FIELDS = ["shadow"];
  *   bloom       — an additive halo; no PDF/SVG primitive produces it.
  *   innerShadow — a blurred recess clipped INSIDE the widget silhouette.
  *   softEdges   — the widget's own coverage feathered inward to transparency.
+ *   blur        — a Gaussian over the widget's whole composite.
+ *
+ * BLUR IS CLASSIFIED WITH BLOOM, AND SVG'S feGaussianBlur IS NOT A LOOPHOLE. PDF
+ * settles it on its own — it has no blur operator at all, which is exactly why the
+ * drop shadow is exported as a raster PNG rather than as a soft vector — so blur
+ * must be raster there regardless. SVG could in principle carry
+ * `filter="url(#…)"` with an feGaussianBlur, but this list is THE SHARED gate both
+ * backends read, and its whole reason for existing is that an effect must never be
+ * visible to one exporter and invisible to the other (the defect that ate
+ * innerShadow and softEdges out of every PDF). A blur-only-in-SVG special case
+ * would reintroduce exactly that split for the sake of one backend, so blur
+ * rasterizes in both — the same trade bloom already takes.
  * (`blend` is not a field-presence test — a mode string — so it is gated
  * separately by vectorSafeEffects; see there.)
  */
-export const RASTER_ONLY_EFFECT_FIELDS = ["bloom", "innerShadow", "softEdges"];
+export const RASTER_ONLY_EFFECT_FIELDS = ["bloom", "innerShadow", "softEdges", "blur"];
 
 /**
  * effectSubtree keys that are STRUCTURE, not an effect: geometry, the wrapped
@@ -135,6 +147,7 @@ const EFFECT_STRUCTURAL_FIELDS = ["op", "x", "y", "w", "h", "content", "margin",
  * @example vectorSafeEffects({shadow: null, bloom: {radius: 5, strength: 1}, innerShadow: null, softEdges: 0, blend: "normal"}) // false (bloom has no vector form)
  * @example vectorSafeEffects({shadow: null, bloom: null, innerShadow: {dx: 2, dy: 2, blur: 4, opacity: 0.6}, softEdges: 0, blend: "normal"}) // false (inner shadow has no vector form)
  * @example vectorSafeEffects({shadow: null, bloom: null, innerShadow: null, softEdges: 8, blend: "normal"}) // false (an 8-unit feather has no vector form)
+ * @example vectorSafeEffects({shadow: null, bloom: null, innerShadow: null, softEdges: 0, blur: 5, blend: "normal"}) // false (PDF has no blur operator; see RASTER_ONLY_EFFECT_FIELDS)
  * @example vectorSafeEffects({shadow: null, bloom: null, innerShadow: null, softEdges: 0, blend: "multiply"}) // false (needs an isolated raster under /BM Multiply)
  */
 export function vectorSafeEffects(cmd) {
@@ -232,6 +245,7 @@ export function droppedRasterOnlyEffects(original, forwarded) {
  * 0-opacity shadow would be off).
  *
  * @example allEffectsProbeOp().softEdges // 4
+ * @example allEffectsProbeOp().blur // 2
  * @example allEffectsProbeOp().blend // "multiply"
  */
 export function allEffectsProbeOp() {
@@ -241,6 +255,7 @@ export function allEffectsProbeOp() {
     bloom: { radius: 1, strength: 1 },
     innerShadow: { dx: 1, dy: 1, blur: 1, color: "#000000", opacity: 1 },
     softEdges: 4,
+    blur: 2,
     blend: "multiply",
   });
 }

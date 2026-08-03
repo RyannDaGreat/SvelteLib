@@ -5,8 +5,10 @@
  * half lives in core/properties.js (the `effects` bundle: shadow.{dx,dy,blur,
  * color,opacity}, bloom.{radius,strength}, blendMode, the mirrored INNER SHADOW
  * innerShadow.{dx,dy,blur,color,opacity} — a recess cast inside the widget
- * silhouette — and SOFT EDGES `softEdges`, a canvas-unit amount that feathers
- * the widget's own coverage inward to transparency, PowerPoint-style); THIS
+ * silhouette — SOFT EDGES `softEdges`, a canvas-unit amount that feathers
+ * the widget's own coverage inward to transparency, PowerPoint-style, and BLUR
+ * `gaussianBlur`, a canvas-unit Gaussian sigma applied to the widget's whole composite —
+ * bloom's own blur primitive minus bloom's add-back over-glow); THIS
  * module gives every composing widget the matching
  * render composition (all of them ride ONE effectSubtree) — one shared
  * function each plugin's emit() calls, exactly like decorate.js's
@@ -17,11 +19,12 @@
  * Given a widget's OWN content ops plus its (evaluated) state, it returns the
  * content wrapped in ONE `effectSubtree` op (render_gpu/ir.js) when any
  * effect is ON, and returns the content UNCHANGED when none is. "None" is
- * `effectsOff()` below — the ONE gate, and it is FIVE conditions, each reading
+ * `effectsOff()` below — the ONE gate, and it is SIX conditions, each reading
  * the property that makes its effect VISIBLE rather than the property that
  * softens it: shadow.opacity <= 0 AND bloom.strength <= 0 AND
- * innerShadow.opacity <= 0 AND softEdges <= 0 AND blendMode normal (the manifest
- * defaults: "Defaults = effect-off ... so every old doc is byte-identical").
+ * innerShadow.opacity <= 0 AND softEdges <= 0 AND gaussianBlur <= 0 AND blendMode
+ * (the manifest defaults: "Defaults = effect-off ... so every old doc is
+ * byte-identical").
  * BLUR IS NOT A GATE: a blur-0 shadow at opacity 0.5 is a HARD-EDGED shadow and
  * is fully visible, which is the model manifest 14.8 exists to overturn. This
  * header claimed "shadow blur <= 0 AND bloom strength <= 0 AND blendMode normal"
@@ -74,6 +77,9 @@
  *     footprint to bound the effect substrate. A full-screen backdrop blur has
  *     no geometry at all; a yarn curve has geometry but declares no bounds —
  *     it becomes injectable the day it declares an `effectBounds` hook.
+ *     (The excluded `blur` PLUGIN is the backdrop-blur WIDGET, not the bundle's
+ *     own `gaussianBlur` effect — the two are unrelated, which is exactly why
+ *     the effect could not be named `blur`; see core/properties.js.)
  * A node kind that cannot honour an effect gets NO ROW — never a fake one.
  * (The ARROW FAMILY fails the same bbox test but is NOT excluded: each arrow
  * composes the bundle in its own emit() and passes paddedPointsBBox of its drawn
@@ -118,19 +124,34 @@ import { localBoundsOf } from "../core/view.js";
  * bundle without a render implementation fails at boot instead of shipping a
  * dead Inspector row (the render_settings.js "declared option with no
  * implementation throws at import" precedent).
+ *
+ * `gaussianBlur` IS THE ITEM-STATE KEY; the IR OP's field is plain `blur`. Those
+ * are two different namespaces and the mismatch is deliberate: item state shares
+ * ONE flat namespace with every plugin's own properties, where `blur` was already
+ * taken by plugins/blur.js's backdrop radius (core/properties.js says why at
+ * length), while an effectSubtree op has exactly one blur and nothing to collide
+ * with. applyEffects below is the one place the two names meet.
  */
-export const EFFECT_STATE_KEYS = ["shadow", "bloom", "blendMode", "innerShadow", "softEdges"];
+export const EFFECT_STATE_KEYS = ["shadow", "bloom", "blendMode", "innerShadow", "softEdges", "gaussianBlur"];
 
 /**
  * Pure function. Is a widget's effects state visually a no-op? True iff the
  * shadow is off (OPACITY <= 0 — the manifest 14.8 gate: "shadow opacity = 0
  * gates whether we render it") AND bloom is off (strength <= 0) AND the blend
  * mode is normal/absent AND the inner shadow is off (opacity <= 0) AND soft
- * edges are off (amount <= 0). Absent keys are OFF (old documents predate the
- * bundle), so a pre-effects document is byte-identical by construction.
+ * edges are off (amount <= 0) AND the blur is off (gaussianBlur radius <= 0). Absent keys are
+ * OFF (old documents predate the bundle), so a pre-effects document is
+ * byte-identical by construction.
  *
- * SOFT EDGES gate on the AMOUNT itself (there is no separate opacity): a 0
- * feather is a crisp, unchanged edge, so softEdges 0 is off.
+ * SOFT EDGES and BLUR gate on the AMOUNT itself (there is no separate opacity):
+ * a 0 feather is a crisp, unchanged edge and a 0-sigma Gaussian is the identity,
+ * so softEdges 0 and gaussianBlur 0 are off.
+ *
+ * THIS IS ALSO WHAT MAKES A BLURRED GROUP FOLD ITS SUBTREE. plugins/group.js
+ * groupFoldsSubtree is `groupCropRect(s) !== null || !effectsOff(s)`, so the
+ * moment a group's blur goes above 0 this returns false, the group composites its
+ * whole member subtree to ONE texture, and the blur is applied to that composite —
+ * the members smear TOGETHER as one silhouette rather than each blurring alone.
  *
  * BLUR IS NOT PART OF THE GATE (manifest 14.8, user verbatim: "blur should be
  * allowed to be 0 and still visible"). blur 0 with opacity > 0 is a legal,
@@ -163,6 +184,8 @@ export const EFFECT_STATE_KEYS = ["shadow", "bloom", "blendMode", "innerShadow",
  * @example effectsOff({innerShadow: {dx: 2, dy: 2, blur: 4, color: "#000", opacity: 0.6}}) // false
  * @example effectsOff({softEdges: 0}) // true (0 feather = crisp edge — the default)
  * @example effectsOff({softEdges: 8}) // false (an 8-unit feather is a live effect)
+ * @example effectsOff({gaussianBlur: 0}) // true (0 sigma = the identity Gaussian — the default)
+ * @example effectsOff({gaussianBlur: 6}) // false (a 6-unit blur is a live effect)
  */
 export function effectsOff(state) {
   const shadowOn = (state.shadow?.opacity ?? 0) > 0;
@@ -170,7 +193,8 @@ export function effectsOff(state) {
   const blendOn = (state.blendMode ?? "normal") !== "normal";
   const innerOn = (state.innerShadow?.opacity ?? 0) > 0; // mirror of the drop-shadow gate (14.8): opacity turns it on
   const softOn = (state.softEdges ?? 0) > 0; // soft edges gate on the amount itself (0 = crisp/off)
-  return !shadowOn && !bloomOn && !blendOn && !innerOn && !softOn;
+  const blurOn = (state.gaussianBlur ?? 0) > 0; // same shape as soft edges: the radius IS the gate
+  return !shadowOn && !bloomOn && !blendOn && !innerOn && !softOn && !blurOn;
 }
 
 /**
@@ -210,6 +234,7 @@ export function effectsOff(state) {
  * @example applyEffects([{op: "rect"}], {shadow: {dx: 3, dy: 3, blur: 4, color: "#000000", opacity: 3}}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].shadow.opacity // 3 (an OVERDRIVEN opacity passes through UNCAPPED to the renderer)
  * @example applyEffects([{op: "rect"}], {blendMode: "multiply"}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].blend // "multiply"
  * @example applyEffects([{op: "rect"}], {softEdges: 6}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].softEdges // 6 (soft edges alone wraps in an effectSubtree)
+ * @example applyEffects([{op: "rect"}], {gaussianBlur: 5}, {x: 0, y: 0, rotation: 0, scale: 1}, {x: 0, y: 0, w: 10, h: 10})[0].blur // 5 (blur alone wraps in an effectSubtree)
  */
 export function applyEffects(content, state, world, bbox) {
   if (effectsOff(state)) return content;
@@ -218,6 +243,7 @@ export function applyEffects(content, state, world, bbox) {
   const bloomOn = (state.bloom?.strength ?? 0) > 0;
   const innerOn = (state.innerShadow?.opacity ?? 0) > 0; // same gate as the drop shadow (blur 0 stays visible)
   const softOn = (state.softEdges ?? 0) > 0; // soft edges gate on the amount (0 = off)
+  const blurOn = (state.gaussianBlur ?? 0) > 0; // the blur radius IS its gate (0 = off)
   return [effectSubtree({
     x: bbox.x, y: bbox.y, w: bbox.w, h: bbox.h,
     shadow: shadowOn ? {
@@ -237,6 +263,10 @@ export function applyEffects(content, state, world, bbox) {
     // Skia backend feathers the widget's coverage inward BEFORE the other
     // composites. Off (0) ⇒ 0, so a crisp widget is byte-identical.
     softEdges: softOn ? state.softEdges : 0,
+    // BLUR (the bundle's sixth effect): a plain Gaussian on the widget's own
+    // composite — bloom's blur primitive without bloom's add-back over-glow. Off
+    // (0) ⇒ 0, so a sharp widget is byte-identical.
+    blur: blurOn ? state.gaussianBlur : 0,
     content: [pushTransform(world), ...content, popTransform()],
   })];
 }
@@ -286,6 +316,8 @@ export function applyEffects(content, state, world, bbox) {
  * @example effectsCullMargin({shadow: {dx: 3, dy: 4, blur: 0, color: "#000", opacity: 0.5}}) // 5 (blur 0 = no spill, but the offset silhouette still reaches 5)
  * @example effectsCullMargin({bloom: {radius: 5, strength: 1}}) // 15 (3·5 bloom spill)
  * @example effectsCullMargin({blendMode: "multiply"}) // 0 (blend alone adds no halo)
+ * @example effectsCullMargin({gaussianBlur: 4}) // 12 (3·4 — the widget's own ink smears outward)
+ * @example effectsCullMargin({softEdges: 40}) // 0 (a feather only ERODES inward — no halo, however wide)
  */
 export function effectsCullMargin(state) {
   // BLUR_SUPPORT_SIGMAS·σ = the Gaussian kernel's support bound each side (the
@@ -300,9 +332,15 @@ export function effectsCullMargin(state) {
   const strokeExcess = strokeOn
     ? Math.max(0, strokeOutwardReach(state.strokeWidth, state.strokeOffset) - state.strokeWidth / 2)
     : 0;
+  // THE PLAIN BLUR SPILLS, and it is the one gate here that needs no `On` flag:
+  // the radius IS the gate, so a 0 radius contributes 0 by arithmetic. Same 3σ
+  // support bound as the bloom radius above — it is the same Gaussian, applied to
+  // the widget's own ink instead of to a bright copy of it. (softEdges is still
+  // absent by design: a feather only erodes coverage INWARD.)
   return Math.max(
     shadowOn ? state.shadow.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(state.shadow.dx ?? 0, state.shadow.dy ?? 0) : 0,
     bloomOn ? (state.bloom.radius ?? 0) * BLUR_SUPPORT_SIGMAS : 0,
+    Math.max(0, state.gaussianBlur ?? 0) * BLUR_SUPPORT_SIGMAS,
     strokeExcess,
   );
 }

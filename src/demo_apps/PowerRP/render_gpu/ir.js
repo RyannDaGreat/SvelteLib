@@ -36,7 +36,7 @@
  *   {op:"magnifyBackdrop", shape, cx, cy, r, halfW, halfH, cornerRadius, points, innerRatio, originX, originY, magnification, magnificationX, magnificationY, stroke, strokeWidth, opacity, supersample}  // shape "circle"|"box"|"star" (points/innerRatio = star silhouette; rimColor/rimWidth accepted as legacy builder aliases → stroke/strokeWidth; magnificationX/Y = per-axis zoom, default to magnification)
  *   {op:"glassBackdrop", cx, cy, halfW, halfH, cornerRadius, blurRadius, refractionStrength, edgeFalloff, lightAngle, lightIntensity, tint, saturation, materialize, squircle, surfaceTension, sheen, specularPower, contactShadow, caustic, edgeLight, tintAdaptivity, chromatic, backdropScale, shadowStrength, stroke, strokeWidth, opacity}  // macOS Liquid Glass; WORLD-unit lengths; SkSL refraction+chromatic+adaptive tint+specular; backdropScale = below-content sample resolution
  *   {op:"cropSubtree", x, y, w, h, cornerRadius, fill, stroke, strokeWidth, opacity, content}
- *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, softEdges, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow, +soft edges)
+ *   {op:"effectSubtree", x, y, w, h, content, shadow, bloom, blend, innerShadow, softEdges, blur, shadowOnly, margin}  // Round 12D effects substrate (+inner shadow, +soft edges, +blur)
  *   {op:"materialBackdrop", material, cx, cy, halfW, halfH, cornerRadius, blurRadius, backdropScale, params, stroke, strokeWidth, opacity}  // registry-dispatched backdrop MATERIAL (SkSL); generalizes glassBackdrop
  *   {op:"materialFill", material, cx, cy, halfW, halfH, cornerRadius, params, shadow, stroke, strokeWidth, opacity}  // a material as an OPAQUE fill — no backdrop sampling, no children
  *
@@ -2795,6 +2795,13 @@ export const MAX_LENS_DEPTH = 1;
  *     them follows the softened silhouette. It only shrinks coverage INWARD ⇒ NO
  *     outward halo, so it too is absent from `margin`. 0 = off (no feather).
  *
+ *   BLUR (blur: canvas-unit Gaussian sigma) — a plain Gaussian blur of the
+ *     widget's WHOLE composite, applied to the content image at BLIT time. It is
+ *     the same primitive bloom's glow is built from (an ImageFilter.MakeBlur)
+ *     WITHOUT bloom's add-back over-glow, so the widget itself goes soft instead
+ *     of gaining a halo. UNLIKE soft edges it SPILLS OUTWARD, so it DOES join
+ *     `margin` — BLUR_SUPPORT_SIGMAS·blur, exactly the bloom radius term. 0 = off.
+ *
  * The EFFECT-OFF pass-through lives in render_gpu/effects.js applyEffects
  * (returns `content` unchanged when nothing is on), so this builder always
  * has real work — mirroring decorateStrokedBox/isUndecorated.
@@ -2808,14 +2815,18 @@ export const MAX_LENS_DEPTH = 1;
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], innerShadow: {dx: 2, dy: 2, blur: 4, color: "#000000", opacity: 0.6}}).innerShadow.opacity // 0.6
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], softEdges: 6}).softEdges // 6 (soft edges alone is a valid effect)
  * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], softEdges: 6}).margin // 0 (soft edges only erodes inward → no halo)
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], blur: 4}).blur // 4 (blur alone is a valid effect)
+ * @example effectSubtree({x: 0, y: 0, w: 10, h: 10, content: [], blur: 4}).margin // 12 (3·4 — a blur DOES spill outward, unlike soft edges)
  */
-export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom = null, blend = "normal", innerShadow = null, softEdges = 0, shadowOnly = false }) {
+export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom = null, blend = "normal", innerShadow = null, softEdges = 0, blur = 0, shadowOnly = false }) {
   requireFinite("effectSubtree", { x, y, w, h });
   requireFinite("effectSubtree.softEdges", { softEdges });
+  requireFinite("effectSubtree.blur", { blur });
   if (!Array.isArray(content)) throw new Error(`effectSubtree: "content" must be an array, got ${JSON.stringify(content)}`);
   if (!BLEND_MODES.includes(blend)) throw new Error(`effectSubtree: unknown blend "${blend}" (known: ${BLEND_MODES.join(", ")})`);
   const soft = Math.max(0, softEdges);
-  if (shadow === null && bloom === null && innerShadow === null && blend === "normal" && soft <= 0) throw new Error("effectSubtree: no effect is on (shadow/bloom/innerShadow null, blend normal, softEdges 0) — callers must pass content through instead (render_gpu/effects.js applyEffects)");
+  const blurSigma = Math.max(0, blur);
+  if (shadow === null && bloom === null && innerShadow === null && blend === "normal" && soft <= 0 && blurSigma <= 0) throw new Error("effectSubtree: no effect is on (shadow/bloom/innerShadow null, blend normal, softEdges 0, blur 0) — callers must pass content through instead (render_gpu/effects.js applyEffects)");
   let sh = null;
   if (shadow !== null) {
     const { dx, dy, blur, color, opacity } = shadow;
@@ -2844,12 +2855,15 @@ export function effectSubtree({ x, y, w, h, content = [], shadow = null, bloom =
   // hypot(dx, dy) contains the offset however the widget is turned). Inner shadow
   // and SOFT EDGES contribute nothing — inner shadow never reaches outside the
   // widget's bbox, and soft edges only ERODES coverage inward (fades edges to
-  // transparent), so both leave the outward cull bound exactly as before.
+  // transparent), so both leave the outward cull bound exactly as before. The
+  // plain BLUR does contribute, on the same 3σ bound as the bloom radius: it is
+  // the identical Gaussian, spilling the widget's own ink outward.
   const margin = Math.max(
     sh ? sh.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(sh.dx, sh.dy) : 0,
     bl ? bl.radius * BLUR_SUPPORT_SIGMAS : 0,
+    blurSigma * BLUR_SUPPORT_SIGMAS,
   );
-  return { op: "effectSubtree", x, y, w, h, content, shadow: sh, bloom: bl, blend, innerShadow: inner, softEdges: soft, shadowOnly: !!shadowOnly, margin };
+  return { op: "effectSubtree", x, y, w, h, content, shadow: sh, bloom: bl, blend, innerShadow: inner, softEdges: soft, blur: blurSigma, shadowOnly: !!shadowOnly, margin };
 }
 
 // ── flattening ───────────────────────────────────────────────────────────────

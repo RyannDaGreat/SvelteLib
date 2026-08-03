@@ -23,6 +23,7 @@ import {
 } from "../core/document.js";
 import { angleToLinearEndpoints, linearEndpointsToAngle } from "../core/properties.js";
 import { parsePaint } from "../render_gpu/ir.js";
+import { effectsOff } from "../render_gpu/effects.js";
 import { fancyArrowPlugin } from "../plugins/fancy_arrow.js";
 import { arrowPlugin } from "../plugins/arrow.js";
 import { deriveRenderTree } from "../core/derive.js";
@@ -145,6 +146,7 @@ test("computed (self.-equation) defaults are NEVER injected into old docs", () =
     blendMode: "normal",
     innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
     softEdges: 0, // the effects bundle's soft-edges amount (0 = off)
+    gaussianBlur: 0, // the effects bundle's blur radius (0 = off; NOT plugins/blur.js's `blur`)
   });
   const report = missingDefaults(doc, registry).find((r) => r.id === "old1");
   assert.equal(report, undefined);
@@ -239,7 +241,8 @@ test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the use
   // Only the genuinely-new keys get filled, not headLength: the head-shape PAIR
   // (todo #231, superseding headMode), the connector DASH triple (todo #232 —
   // `dashed` used to live on `line` alone, the one connector with no head), and
-  // the Round-12D effect-off shadow/bloom/blendMode/innerShadow/softEdges keys.
+  // the Round-12D effect-off shadow/bloom/blendMode/innerShadow/softEdges keys
+  // plus the bundle's sixth effect `gaussianBlur`.
   // The fixture predates them all, the same "genuinely new" territory as headWidth.
   const arrowFill = fills.find((f) => f.id === id);
   assert.deepEqual(arrowFill.missing.map((m) => m.path.join(".")), [
@@ -247,8 +250,15 @@ test("legacy rename ORDER: rename BEFORE missing-defaults fill preserves the use
     "shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity",
     "bloom.radius", "bloom.strength", "blendMode",
     "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity",
-    "softEdges",
+    "softEdges", "gaussianBlur",
   ]);
+  // ABSENT-IS-LEGACY, the byte-identity half: every one of those keys must be
+  // filled at its OFF value, so a document written before the effect existed
+  // renders exactly as it did. gaussianBlur is called out because it is the newest
+  // and because a nonzero fill would silently soften every legacy widget at once.
+  assert.equal(arrowFill.missing.find((m) => m.path.join(".") === "gaussianBlur").value, 0);
+  assert.ok(effectsOff(evaluateState(foldState(filled, 0, 1), registry).state.items[id]),
+    "a repaired legacy item must still be effect-FREE — the fill may not turn an effect on");
   const state = evaluateState(foldState(filled, 1, 1), registry).state;
   assert.equal(state.items[id].headLength, 40);
   sceneIR(deriveRenderTree(state, registry)); // renders through the strict IR

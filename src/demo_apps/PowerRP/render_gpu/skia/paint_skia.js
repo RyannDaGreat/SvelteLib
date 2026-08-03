@@ -3322,8 +3322,9 @@ function shadowReachPx(shadow, scale) {
  * content ops) and its BLEND mode — plus a drop shadow when that shadow reaches
  * at least one device pixel. Everything that needs a per-pixel pass over an
  * offscreen (SOFT EDGES' morphology, the INNER SHADOW's field+blur+clip, BLOOM's
- * blur) is dropped: each is a rim treatment a ~100px preview cannot resolve, and
- * each costs more than the whole rest of the thumbnail.
+ * blur, the plain BLUR) is dropped: each is a rim or softness treatment a ~100px
+ * preview cannot resolve, and each costs more than the whole rest of the
+ * thumbnail.
  *
  * The reduction is built FIELD BY FIELD rather than by copying the op, so it is
  * universal: an effect added to effectSubtree later is absent from the reduced op
@@ -3347,7 +3348,7 @@ function drawProxyEffect(CanvasKit, target, cmd, world, view, ctx, depth, belowF
     op: "effectSubtree",
     x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h, margin: cmd.margin,
     content: cmd.content, blend: cmd.blend, shadowOnly: cmd.shadowOnly,
-    shadow, bloom: null, innerShadow: null, softEdges: 0,
+    shadow, bloom: null, innerShadow: null, softEdges: 0, blur: 0,
   }, world, view, ctx, depth, belowFlat);
 }
 
@@ -3552,6 +3553,35 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, be
     contentImg = feathered;
   }
 
+  // BLUR (the bundle's sixth effect, after the feather and before every
+  // composite): a plain Gaussian on the widget's whole composite. It is bloom's
+  // own primitive — ImageFilter.MakeBlur, the same call bloomFilter makes — WITHOUT
+  // bloom's add-back over-glow, so the widget itself goes soft instead of gaining
+  // a halo.
+  //
+  // WHY IT IS A FILTER ON THE CONTENT IMAGE AND NOT A SECOND SCRATCH SURFACE: the
+  // blur SPILLS OUTWARD (unlike the feather, which only erodes inward), and the
+  // scratch is clamped to the effect SOURCE REGION — re-rendering the blurred
+  // content into a region-sized surface would guillotine the spill at the region
+  // edge. Skia draws an ImageFilter's output PAST the source image's rect, which is
+  // exactly why the shadow and the bloom are filters at BLIT time too, and why
+  // effectRegion's docblock says only the inner shadow needs source margin. So the
+  // blur rides along on each composite's paint instead, through blurredFilter():
+  // the widget's own draw gets it, and the shadow's / bloom's filter chains are
+  // built ON TOP of it (blur ∘ dropShadow, blur ∘ bloom) so those composites read
+  // the BLURRED silhouette — a blurred widget casts a blurred shadow and blooms
+  // blurrily, the same physical consistency the feather already has.
+  //
+  // THE INNER SHADOW IS THE ONE EXCEPTION and it is deliberate: drawInnerShadow
+  // builds its recess from `contentImg`'s alpha through coverage blends on its own
+  // surface, with no filter seam to thread. It therefore follows the SHARP
+  // silhouette and is then drawn over a blurred widget, which is visible only as a
+  // crisper recess than the body it sits in. Cheap to accept, expensive to fix
+  // (a second full pass), and the combination — an inner shadow on a widget that
+  // is itself blurred to illegibility — is not a look anyone reaches for.
+  const blurSigma = cmd.blur * scale;
+  const blurred = (inner) => blurredFilter(CanvasKit, blurSigma, inner);
+
   // SHADOW (under): blurred, offset, tinted alpha silhouette of the content.
   //
   // COVERAGE DRIVE = the shadow colour's own alpha × the opacity property, and it
@@ -3580,20 +3610,30 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, be
       filt = CanvasKit.ImageFilter.MakeColorFilter(cf, shadowFilt);
       cf.delete();
     }
+    // The blur goes UNDERNEATH the shadow chain (it runs first on the source), so
+    // a blurred widget casts a blurred shadow. blurredFilter returns its input
+    // unchanged at sigma 0 ⇒ the no-blur path is byte-identical.
+    const finalFilt = blurred(filt);
     const p = new CanvasKit.Paint();
-    p.setImageFilter(filt);
+    p.setImageFilter(finalFilt);
     canvas.drawImage(contentImg, region.x0, region.y0, p);
     p.delete();
+    if (finalFilt !== filt) finalFilt.delete();
     if (filt !== shadowFilt) filt.delete();
     shadowFilt.delete();
   }
 
   if (!cmd.shadowOnly) {
-    // WIDGET: the content itself, composited against the backdrop via blend mode.
+    // WIDGET: the content itself, composited against the backdrop via blend mode
+    // — through the BLUR filter when one is on (null at sigma 0, so the sharp
+    // path keeps its exact paint).
     const p = new CanvasKit.Paint();
     applyBlend(CanvasKit, p, cmd.blend);
+    const widgetFilt = blurred(null);
+    if (widgetFilt) p.setImageFilter(widgetFilt);
     canvas.drawImage(contentImg, region.x0, region.y0, p);
     p.delete();
+    if (widgetFilt) widgetFilt.delete();
 
     // INNER SHADOW (inside the widget): darkens the interior near the edges — a
     // recess. Drawn AFTER the widget (over it) and clipped to its silhouette, so
@@ -3605,11 +3645,16 @@ function handleEffectSubtree(CanvasKit, target, cmd, world, view, ctx, depth, be
     // BLOOM (on top): the content's own Gaussian-blurred copy × strength, ADD.
     if (cmd.bloom) {
       const filt = bloomFilter(CanvasKit, cmd.bloom.radius * scale, cmd.bloom.strength);
+      // Same nesting as the shadow: the blur runs on the source first, so the
+      // glow is a glow OF the blurred widget.
+      const finalFilt = blurred(filt);
       const p2 = new CanvasKit.Paint();
-      p2.setImageFilter(filt);
+      p2.setImageFilter(finalFilt);
       p2.setBlendMode(CanvasKit.BlendMode.Plus);
       canvas.drawImage(contentImg, region.x0, region.y0, p2);
-      p2.delete(); filt.delete();
+      p2.delete();
+      if (finalFilt !== filt) finalFilt.delete();
+      filt.delete();
     }
   }
 
@@ -4136,6 +4181,41 @@ function coverageDriveFilter(CanvasKit, drive) {
  * adds strength·premultiplied-color — additive light, clamped per pixel). Caller
  * deletes.
  */
+/**
+ * Query→build. THE PLAIN BLUR of the effects bundle's sixth effect: `inner`
+ * composed under an ImageFilter.MakeBlur of `sigma` device px, i.e. "blur the
+ * source, THEN run `inner` on the result". Returns `inner` UNTOUCHED when sigma
+ * is 0 — the identity Gaussian is not worth an extra filter node, and skipping
+ * it is what keeps every unblurred widget byte-identical (an added node costs an
+ * 8-bit round trip, measured as a ±1 byte shift on soft coverage in the shadow
+ * overdrive work).
+ *
+ * IT IS THE SAME PRIMITIVE bloomFilter's own glow is built from; bloom is this
+ * blur plus channelScaleMatrix's RGB over-glow added back with BlendMode.Plus,
+ * and this effect is simply the blur without the add-back.
+ *
+ * TileMode.Decal (bloom's choice, not blurBackdrop's Clamp): outside the content
+ * image is genuinely TRANSPARENT — the widget's silhouette ends there — so the
+ * blur must fade into nothing rather than replicate the edge texels outward,
+ * which is what Clamp would do and what a BACKDROP sampler wants instead.
+ *
+ * OWNERSHIP: returns either a NEW filter (caller deletes) or `inner` itself
+ * (caller must NOT double-delete) — every call site compares the result against
+ * what it passed in before deleting, which is the same shape handleEffectSubtree
+ * already used for the shadow's optional overdrive node.
+ *
+ * @param sigma (number) blur radius in DEVICE px; 0 (or less) ⇒ no blur
+ * @param inner (object|null) the filter to run AFTER the blur, or null for the blur alone
+ */
+function blurredFilter(CanvasKit, sigma, inner) {
+  if (!(sigma > 0)) return inner;
+  const blur = CanvasKit.ImageFilter.MakeBlur(sigma, sigma, CanvasKit.TileMode.Decal, null);
+  if (!inner) return blur;
+  const composed = CanvasKit.ImageFilter.MakeCompose(inner, blur);
+  blur.delete();
+  return composed;
+}
+
 function bloomFilter(CanvasKit, sigma, strength) {
   const cf = CanvasKit.ColorFilter.MakeMatrix(channelScaleMatrix(strength, 1));
   const blur = sigma > 0 ? CanvasKit.ImageFilter.MakeBlur(sigma, sigma, CanvasKit.TileMode.Decal, null) : null;

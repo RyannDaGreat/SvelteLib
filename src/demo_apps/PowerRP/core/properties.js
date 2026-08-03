@@ -1671,6 +1671,50 @@ export const PROPS = {
   // `softEdges`. min 0 (a negative feather is meaningless).
   softEdges: { label: "Soft edges", kind: "number", min: 0, category: "effects", default: 0, help: "Feathers the widget's edges inward to transparent over this many canvas units, so its border softly dissolves (like PowerPoint's Soft Edges). Zero is a crisp edge (off); larger values fade a wider band." },
 
+  // ── effects: BLUR (the effects bundle's sixth effect) ───────────────────────
+  // A plain GAUSSIAN BLUR of the widget's whole composite — the SIMPLEST member
+  // of the family, and the one the other blur-shaped effects were already built
+  // on: bloom is this blur plus an RGB over-glow added back on top
+  // (render_gpu/skia/paint_skia.js bloomFilter = MakeBlur ∘ channelScaleMatrix),
+  // and the drop shadow is this blur applied to a tinted silhouette. Adding it as
+  // its own knob costs one ImageFilter.MakeBlur at the SAME effectSubtree seam;
+  // it is not a new substrate.
+  //
+  // NOT the same thing as plugins/blur.js (the full-screen backdrop blur, which
+  // blurs what is BEHIND a region and has no widget of its own). This blurs the
+  // WIDGET, is universal through the bundle, and every drawn widget inherits it.
+  //
+  // THE KEY IS `gaussianBlur`, NOT `blur`, AND THAT IS FORCED RATHER THAN CHOSEN.
+  // `blur` is already a TOP-LEVEL property of plugins/blur.js (its backdrop radius,
+  // in its own `blur` category), and tests/universal_effects_test.js's exclusion
+  // check reads exactly this: an EXCLUDED plugin must not offer a single row whose
+  // key is in BUNDLES.effects. The blur widget is one of the four declared
+  // exclusions (no bbox, no effectBounds hook — nothing to bound a substrate with),
+  // so a bundle key named `blur` would make its own unrelated radius row read as a
+  // universal effect row it cannot honour. That is a real collision in the ONE
+  // namespace equations and keyframe paths share, not a test technicality: `= blur`
+  // in an equation would be ambiguous between the two. (`blurRadius` was the next
+  // candidate and is likewise taken — plugins/demo/crt.js.) Note that the drop
+  // shadow's own softness is NESTED (`shadow.blur`) and so never collided.
+  //
+  // GATE = the RADIUS itself, like softEdges and unlike shadow/inner-shadow (which
+  // gate on opacity): gaussianBlur default 0 is THE off state — a 0-radius Gaussian
+  // is the identity, so every pre-blur document renders byte-identically. A single
+  // scalar (equation slug `gaussianBlur`), min 0 (a negative sigma is meaningless).
+  //
+  // UNLIKE softEdges IT SPILLS OUTWARD, so it DOES contribute a cull halo:
+  // effectsCullMargin / effectSubtree.margin count BLUR_SUPPORT_SIGMAS·radius for
+  // it, exactly as they do for the bloom radius (same Gaussian, same support
+  // bound). A blurred widget's ink genuinely reaches past its box.
+  //
+  // The radius is a Gaussian SIGMA in canvas units — the shared convention of
+  // shadow.blur / bloom.radius / blurBackdrop (render_gpu/ir.js). NO `scrub`
+  // declaration: it is an open-topped magnitude with a nonzero-feeling range in the
+  // tens, exactly like `shadow.blur` and `bloom.radius`, and those take the
+  // default 1 unit/px. (The `scrub: UNIT_SPAN_SCRUB` rows are the ones whose
+  // interesting span is 0..1, where 1 unit/px would flick the control end to end.)
+  gaussianBlur: { label: "Blur", kind: "number", min: 0, category: "effects", default: 0, help: "Blurs the whole widget with a Gaussian blur of this radius, in canvas units. Zero is perfectly sharp (off — the default); larger values smear it further, and the blur spreads OUTSIDE the widget's box the way a soft shadow does. This blurs the widget itself; the separate Blur widget blurs whatever is behind it." },
+
   // ── particles: the EMITTER bundle (manifest 13.5 PARTICLE EFFECT WIDGET) ──────
   // The sparkler's emission parameters — all equation-capable numeric properties
   // (kind "number"), read by the PURE simulation core/particles.js. There are no
@@ -1847,11 +1891,18 @@ export const BUNDLES = {
   // subtree-crop consumption is a follow-up — the bundle is defined once here).
   cropInsets: ["cropTop", "cropLeft", "cropRight", "cropBottom"],
   // THE EFFECTS BUNDLE (manifest Round 12D): drop shadow + bloom + blend mode +
-  // inner shadow + soft edges, composed by every DRAWN widget (render half:
+  // inner shadow + soft edges + blur, composed by every DRAWN widget (render half:
   // render_gpu/effects.js — exclusions justified in its header). Defaults are
   // effect-OFF; use bundleNestedDefaults("effects") in plugin defaults (the
-  // shadow/inner-shadow keys are nested, blendMode/softEdges are plain scalars).
-  effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode", "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity", "softEdges"],
+  // shadow/inner-shadow keys are nested, blendMode/softEdges/gaussianBlur are plain
+  // scalars). ADDING A KEY HERE IS NOT A LOCAL EDIT — render_gpu/effects.js
+  // EFFECT_STATE_KEYS must gain the matching top-level key (core/registry.js
+  // cross-checks the two at import), the render halves must implement it
+  // (ir.js effectSubtree, skia/paint_skia.js), pdf_backend.js must CLASSIFY it
+  // vector-safe or raster-only (its own import-time guard), and every effects
+  // PRESET FAMILY must carry the new key's identity (see plugins/group.js's FULL
+  // note — an overlay that omits a knob leaves the previously hovered row's value).
+  effects: ["shadow.dx", "shadow.dy", "shadow.blur", "shadow.color", "shadow.opacity", "bloom.radius", "bloom.strength", "blendMode", "innerShadow.dx", "innerShadow.dy", "innerShadow.blur", "innerShadow.color", "innerShadow.opacity", "softEdges", "gaussianBlur"],
   // THE PRESET-SHAPE bundle (Wave 2): the shape selector + its two generator
   // knobs, composed only by plugins/shape.js. Order = Inspector row order.
   shape: ["shape", "shapePoints", "shapeInnerRatio"],
@@ -2050,7 +2101,7 @@ export function nestedDefaults(...keys) {
  * `...bundleNestedDefaults("effects")`.
  *
  * @example bundleNestedDefaults("effects")
- * {"shadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"bloom":{"radius":10,"strength":0},"blendMode":"normal","innerShadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"softEdges":0}
+ * {"shadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"bloom":{"radius":10,"strength":0},"blendMode":"normal","innerShadow":{"dx":0,"dy":0,"blur":0,"color":"#000000","opacity":0},"softEdges":0,"gaussianBlur":0}
  */
 export function bundleNestedDefaults(name) {
   const keys = BUNDLES[name];
