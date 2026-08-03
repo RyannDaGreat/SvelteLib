@@ -514,6 +514,16 @@ export const KEYBINDING_DEFAULTS = [
   // Backspace. Only `paste` needs a predicate of its own (itemClipboardScope):
   // it is the one item entry gated on editMode rather than on a selection.
   { command: "copy-item", keys: ["Ctrl", "C"], when: "editSelection" },
+  // COPY PROPERTIES — Cmd+Shift+C, the user's own choice of chord ("command
+  // shift c can do this"). Deliberately the COPY key plus a modifier: it is the
+  // same verb over a different unit (the widget's STATE rather than the widget),
+  // so the shifted twin says that relationship the way Cmd+Shift+F/B say theirs.
+  // Same `editSelection` scope as copy-item, for the same reason — it needs a
+  // selection to capture, and the rail scope must keep owning the slide keys.
+  // There is NO paste twin: paste dispatches on what is on the clipboard (the
+  // user's "paste behaves as normal"), so a second paste chord would be a key
+  // for something the one key already does.
+  { command: "copy-properties", keys: ["Cmd", "Shift", "C"], when: "editSelection" },
   { command: "paste", keys: ["Ctrl", "V"], when: "itemClipboardScope" },
   // 14.9: Cmd/Ctrl+D = Duplicate. FLAGGED — the binding is the convention
   // candidate PENDING USER RATIFICATION (Cmd+D is the browser bookmark key;
@@ -583,6 +593,10 @@ export const KEYBINDING_LABELS = {
   // indicator, not a second thing to memorize.
   "save-dispatch": "Save",
   "delete-item": "Delete", "copy-item": "Copy", paste: "Paste",
+  // "Copy state" and not "Copy properties": the HintBar chip has room for a
+  // short phrase, and STATE is the user's own word for the thing ("copy state
+  // button", "copy all of this state in whatever widget it is").
+  "copy-properties": "Copy state",
   duplicate: "Duplicate",
   // The rail-scoped twins say SLIDE explicitly. The chord is the same and only
   // one of each pair is ever live, so the word is the only thing telling the user
