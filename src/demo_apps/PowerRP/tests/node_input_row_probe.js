@@ -22,6 +22,19 @@
  * Only the rendered panel could show the disagreement, so only the rendered panel
  * can pin it shut.
  *
+ * ── THIS PROBE DID NOT BITE, AND WHY (WORKSTREAM CH, 2026-08-03) ────────────
+ * As first committed it read the row's FIRST <button>. An Inspector row's first
+ * button is the copy-path icon — an <iconify-icon> whose textContent is "" — so
+ * every text assertion below ran against "" and passed BYTE-IDENTICALLY on fixed
+ * and broken code. It asserted nothing at all. (`shown.length > 0` was the one
+ * assertion that could have caught it, and it is the one that failed; the three
+ * around it were vacuous.) It is now anchored on `.dd-trigger`, THE control, and
+ * the selector is deliberately EXACT — no `button,` alternative to fall back to,
+ * because a fallback is what made a wrong element look like a right answer.
+ * Commit dd6a3e6 also shipped it knowingly red ("cannot run green in this tree
+ * right now"), which is the practice that let an app-wide dead Inspector hide for
+ * hours. It runs green at its fix now, in the same commit.
+ *
  * WHAT IS ASSERTED, and the two halves are deliberately opposite:
  *   1. WIRED: the dropdown NAMES the source, the stored leaf holds it, and
  *      deriveWires draws exactly one wire — three surfaces, one answer.
@@ -29,6 +42,13 @@
  *      is drawn. (Without this half the fix could be "always show something".)
  *   3. The option list is non-empty and OFFERS the compatible source — the exact
  *      thing that was empty, asserted directly rather than through its symptom.
+ *   4. THE LAW, stated as one sentence the probe can check: a CONNECTED input's
+ *      row never renders placeholder text, and DOES render the source's name. The
+ *      placeholder is identified STRUCTURALLY (Dropdown's own `.dd-placeholder`
+ *      class, which it puts on the label exactly when no item resolved) as well as
+ *      by its text, because the second remnant of this bug showed the generic
+ *      "Select…" rather than "— not connected —" and a text-only check for the
+ *      latter read a broken panel as fixed.
  *
  * Frontend-only Vite on an EPHEMERAL port, per the probe convention.
  * Run from the SvelteLib repo root:
@@ -95,30 +115,51 @@ try {
     const app = window.__powerrp_app;
     const rows = [...document.querySelectorAll(".inspector .row")];
     const inputRow = rows.find((r) => r.querySelector(".label")?.textContent.trim() === "in");
-    const trigger = inputRow?.querySelector("button, .dd-trigger, [role='combobox']");
+    // EXACTLY `.dd-trigger` — see the header. The row's first <button> is a
+    // copy-path icon with empty text, and accepting it is what made this probe blind.
+    const trigger = inputRow?.querySelector(".dd-trigger");
+    const label = trigger?.querySelector(".dd-trigger-label");
     return {
       rowPresent: !!inputRow,
-      shown: (trigger?.textContent ?? "").trim(),
+      triggerPresent: !!trigger,
+      shown: (label ?? trigger)?.textContent.trim() ?? "",
+      // Dropdown's OWN structural signal that nothing resolved for `value`.
+      placeholderStyled: !!label?.classList.contains("dd-placeholder"),
       stored: app.rawState().items?.[app.selection]?.inputs?.in ?? null,
-      wireCount: app.debugWireCount ? app.debugWireCount() : null,
     };
   });
 
   // ── 1. WIRED: all three surfaces name the same connection ──────────────────
+  // THE LAW: a connected input's row never renders placeholder text and DOES
+  // render the source's name. Both spellings of "placeholder" are refused — the
+  // node-input row's own "— not connected —" AND Dropdown's generic "Select…",
+  // which is what a failed value→item resolution actually shows.
   const wired = await surfaces();
   assert(wired.rowPresent, "the Level node's INPUTS section renders an `in` row");
+  assert(wired.triggerPresent, "and that row's control is a .dd-trigger (NOT the copy-path icon)");
   assert(wired.stored && wired.stored.item === ids.osc,
     `the document STORES the connection (${JSON.stringify(wired.stored)})`);
   assert(!/not connected/i.test(wired.shown),
     `and the dropdown does NOT claim "not connected" — it reads ${JSON.stringify(wired.shown)}`);
+  assert(!/^select…?$/i.test(wired.shown),
+    `nor Dropdown's generic placeholder, which is what an unresolved value shows (${JSON.stringify(wired.shown)})`);
+  assert(!wired.placeholderStyled,
+    "nor is the label styled .dd-placeholder — Dropdown resolved the bound value to a real option");
   assert(wired.shown.length > 0, "the dropdown NAMES the source rather than showing an empty label");
+  assert(wired.shown.includes("oscillator"),
+    `and the name it renders is the SOURCE's (${JSON.stringify(wired.shown)})`);
 
   // ── 3. THE OPTION LIST, asserted directly ──────────────────────────────────
   // This is the value that was empty. Reading it through the core function with
   // the SAME argument the component now passes is the regression's tightest pin.
+  // `/@fs<abs>` is how a probe reaches core/ from the web/ vite root (the
+  // clipboard_duplicate_probe precedent). "/../core/…" does NOT resolve — it 404s
+  // and the probe dies on an unhandled rejection before reaching its later halves,
+  // which is the second reason this file could not run green.
+  await page.evaluate((root) => { window.__powerrp_probeRoot = root; }, resolve(HERE, ".."));
   const options = await page.evaluate(async () => {
     const app = window.__powerrp_app;
-    const { compatibleSources } = await import("/../core/nodeflow.js");
+    const { compatibleSources } = await import("/@fs" + window.__powerrp_probeRoot + "/core/nodeflow.js");
     const items = app.state().items ?? {};
     return compatibleSources(items, app.registry, { item: app.selection, port: "in" })
       .map((o) => `${o.item}.${o.port}`);
@@ -128,24 +169,56 @@ try {
     `and the oscillator is among them: ${JSON.stringify(options)}`);
 
   // ── 2. UNWIRED: the honest opposite ────────────────────────────────────────
-  await page.evaluate(() => {
+  // DRIVEN THROUGH `disconnectPairs`, NOT A HAND-SPELLED PATH. This probe used to
+  // write [["items", id, "inputs.in"], null] — three segments with a DOTTED key —
+  // and that is not the same write the app makes. `deltas.setPath` treats each
+  // array element as ONE key, so the dotted form creates a literal `"inputs.in"`
+  // property beside the real `inputs` tree and leaves the connection standing:
+  //   setPath({}, ["items","abc","inputs.in"], null) -> {items:{abc:{"inputs.in":null}}}
+  //   setPath({}, ["items","abc","inputs","in"], null) -> {items:{abc:{inputs:{in:null}}}}
+  // The app never produces the first shape (the Inspector commits through
+  // `oncommit(row.key, …)` -> app.svelte.js:4231 `key.split(".")`, which splits it),
+  // so those three reds were the PROBE being wrong about the app, not the app being
+  // broken — the exact failure mode a probe exists to avoid. Calling the core
+  // function the UI calls means this can never drift from the real write again.
+  await page.evaluate(async () => {
     const app = window.__powerrp_app;
-    app.setPreview([[["items", app.selection, "inputs.in"], null]]);
+    const { disconnectPairs } = await import("/@fs" + window.__powerrp_probeRoot + "/core/nodeflow.js");
+    app.setPreview(disconnectPairs({ item: app.selection, port: "in" }));
     app.commitPreview();
   });
   await sleep(700);
   const cut = await surfaces();
-  assert(cut.stored === null, "disconnecting stores null (not an absent key — it must not re-inherit)");
+  // WHAT "DISCONNECTED" IS IN THE STORE: `disconnectPairs` writes deltas.NONE,
+  // and NONE is the delete sentinel (core/deltas.js:23), so the folded leaf is
+  // ABSENT, not literally null. Both spellings read as unwired at the one reader
+  // that matters — connectionsOf skips on `!c` (nodeflow.js:560) — so the law to
+  // pin is "nothing that names a source", not a particular falsy encoding. The
+  // old assertion demanded `=== null` exactly and would have gone red on a
+  // correct disconnect; asserting the encoding rather than the meaning is how a
+  // test starts dictating an implementation detail it was never asked to guard.
+  assert(cut.stored == null, `disconnecting leaves no source reference (${JSON.stringify(cut.stored)})`);
   assert(/not connected/i.test(cut.shown),
     `and NOW the dropdown honestly reads "not connected" (${JSON.stringify(cut.shown)})`);
+  // The unwired state is a RESOLVED option ("" → the "— not connected —" row), NOT
+  // an unresolved value. So even here the label must not be .dd-placeholder — which
+  // is what distinguishes "honestly disconnected" from "failed to resolve".
+  assert(!cut.placeholderStyled,
+    "and it says so by SELECTING the disconnect option, not by failing to resolve");
 
   // ── The wire follows the property, in both directions ──────────────────────
   const wires = await page.evaluate(async () => {
     const app = window.__powerrp_app;
-    const { deriveRenderTree, deriveWires } = await import("/../core/derive.js");
+    const { deriveRenderTree, deriveWires } = await import("/@fs" + window.__powerrp_probeRoot + "/core/derive.js");
+    const { connectPairs } = await import("/@fs" + window.__powerrp_probeRoot + "/core/nodeflow.js");
     const count = () => deriveWires(deriveRenderTree(app.state(), app.registry)).length;
     const cut = count();
-    app.setPreview([[["items", app.selection, "inputs.in"], { item: app.rawState().items && Object.keys(app.rawState().items).find((k) => app.rawState().items[k].type === "audio_oscillator"), port: "out" }]]);
+    // Through `connectPairs` for the same reason the cut goes through
+    // `disconnectPairs` — see above. The dotted path this used to spell wrote a
+    // key no reader looks at, so "reconnecting draws one wire" was being asked of
+    // a document that had never been rewired.
+    const osc = Object.keys(app.rawState().items ?? {}).find((k) => app.rawState().items[k].type === "audio_oscillator");
+    app.setPreview(connectPairs({ item: osc, port: "out" }, { item: app.selection, port: "in" }));
     app.commitPreview();
     await new Promise((r) => setTimeout(r, 300));
     return { cut, rewired: count() };

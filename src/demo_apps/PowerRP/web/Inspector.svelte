@@ -658,7 +658,24 @@
   }
 
   /** Pure function. The inverse: a stored {item, port} as its option value, or ""
-   *  when the input is unwired (which selects the "not connected" entry). */
+   *  when the input is unwired (which selects the "not connected" entry).
+   *
+   *  THIS IS THE ONLY PLACE THE OPTION STRING IS SPELLED, and it has to be, because
+   *  the one time it was spelled twice the second spelling was INVISIBLE. The option
+   *  list below used to build its own `${o.item}<NUL>${o.port}` — a RAW U+0000 byte
+   *  in this file, not the escape `\x00` — while this function and parseNodeRefOption
+   *  used a SPACE. So the trigger's `items[findIndex(items, value)]` could never
+   *  match: option "abc\0out" vs bound "abc out", strictly unequal, resolving to
+   *  undefined and falling to Dropdown's "Select…" placeholder. That was the LAST
+   *  live remnant of the user's "It says level has no input and yet I see it"
+   *  (2026-08-03) — a connected input still reading as unconnected.
+   *
+   *  It survived a full verification pass because a NUL prints as NOTHING: the
+   *  measurement that cleared this seam reported the option list as
+   *  `["21b43f1a out"]` and the bound value as `"21b43f1a out"` and concluded they
+   *  matched. They differed by one unprintable character. The lesson is not "use a
+   *  space" — it is that a value compared across two call sites must be PRODUCED at
+   *  one, so no future difference can hide in a glyph nobody renders. */
   function nodeRefOptionValue(ref) {
     return isNodeRef(ref) ? `${ref.item} ${ref.port}` : "";
   }
@@ -2508,7 +2525,12 @@
          Inspector reported nothing connected. It was never two stores disagreeing
          (there has only ever been one leaf, `inputs.<port>`); it was ONE READER
          ASKING THE WRONG OBJECT, which is why the row still committed correctly
-         and only its option list was empty. -->
+         and only its option list was empty.
+
+         AND ITS OPTION VALUES GO THROUGH nodeRefOptionValue (WORKSTREAM CH), the
+         same function `value=` below uses — because CC's fix left this map spelling
+         the pair with a RAW NUL and the two never compared equal, so a connected
+         input STILL rendered "Select…". See nodeRefOptionValue's docblock. -->
     <SearchableDropdown
       rankFn={appRankItems}
       minItemsForSearch={ALWAYS_SEARCHABLE}
@@ -2516,7 +2538,7 @@
         { value: "", label: "— not connected —" },
         ...compatibleSources(app.state().items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
           .map((o) => ({
-            value: `${o.item} ${o.port}`,
+            value: nodeRefOptionValue({ item: o.item, port: o.port }),
             label: `${nodeInputLabel(app.state().items ?? {}, { item: o.item, port: o.port })}${o.note ? ` (${o.note})` : ""}`,
           })),
       ]}
