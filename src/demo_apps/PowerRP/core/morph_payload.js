@@ -567,28 +567,69 @@ export function morphPayloadFromConnector(sources, rect, fillRule = "nonzero") {
  * rather than omitted: the engine hands the whole record to the render seam, and
  * "no stroke" must be expressible as a VALUE so an interpolator can see a pair.
  *
+ * ── IT ALSO ANSWERS "WHERE DID THIS INK COME FROM" (WORKSTREAM AV) ───────────
+ * The returned record carries `[STATE_PAINT_MARK]: true`, and that flag is what
+ * lets render_gpu/ports.js REREAD a morphing widget's ink off its TWEENED state
+ * instead of blending the two endpoint payloads. The user's ruling is that every
+ * non-shape property must reach the picture exactly as it would with no morph
+ * active, and the tweened bag is the only place that is true by construction —
+ * an endpoint blend is an independent re-derivation of the fold and silently
+ * overrides the row's own interp mode (measured: a `fill~interp: "step"` painted
+ * a lerp).
+ *
+ * THE MARK IS WHY THIS IS NOT A HARDCODED KEY LIST IN CORE. Which state keys hold
+ * a widget's ink is PLUGIN knowledge: plaintext and latex spend `stroke`/
+ * `strokeWidth` on the BOX BORDER and carry their glyph ink on `glyphStroke`/
+ * `glyphStrokeWidth` instead, so a core-side "read s.strokeWidth" would paint an
+ * equation's letterforms with its frame's border width. A payload built by this
+ * function is precisely the set that says otherwise, and it says so itself.
+ * A provider whose ink is not state-described (an SVG icon's per-contour art)
+ * simply never calls this, and keeps the endpoint blend.
+ *
  * Args:
  *   s (object): a widget state bag with fill/stroke/strokeWidth/opacity
  *
+ * THE MARK IS NON-ENUMERABLE, deliberately. This record is a PUBLIC value —
+ * deep-equalled by tests, spread into ops, compared for run-grouping by
+ * ports.morphPaintRuns — and an enumerable extra key would change every one of
+ * those answers. Hiding it keeps the record byte-identical to what it has always
+ * been for every consumer that walks its keys, while a consumer that ASKS the
+ * question by name still gets it.
+ *
  * Returns:
- *   {fill, stroke, strokeWidth, opacity}
+ *   {fill, stroke, strokeWidth, opacity}, marked
  *
  * Examples:
  *     >>> statePaint({fill: "#7aa2f7", stroke: "#000", strokeWidth: 2, opacity: 1})
  *     { fill: '#7aa2f7', stroke: '#000', strokeWidth: 2, opacity: 1 }
  *     >>> // a zero stroke width means NO stroke, exactly as every emit() reads it
- *     >>> statePaint({fill: "#fff", stroke: "#000", strokeWidth: 0})
- *     { fill: '#fff', stroke: null, strokeWidth: 0, opacity: 1 }
+ *     >>> statePaint({fill: "#fff", stroke: "#000", strokeWidth: 0}).stroke
+ *     null
+ *     >>> statePaint({fill: "#fff"})[STATE_PAINT_MARK]  // the ink is state-described
+ *     true
+ *     >>> Object.keys(statePaint({fill: "#fff"}))  // the mark is invisible to a walk
+ *     [ 'fill', 'stroke', 'strokeWidth', 'opacity' ]
  */
 export function statePaint(s) {
   const strokeWidth = s.strokeWidth ?? 0;
-  return {
+  const paint = {
     fill: s.fill ?? null,
     stroke: strokeWidth > 0 ? (s.stroke ?? null) : null,
     strokeWidth,
     opacity: s.opacity ?? 1,
   };
+  Object.defineProperty(paint, STATE_PAINT_MARK, { value: true, enumerable: false });
+  return paint;
 }
+
+/**
+ * The flag `statePaint` stamps on the paint records it builds: "this widget's ink
+ * IS its fill/stroke/strokeWidth/opacity state, so a consumer may reread it from
+ * any state bag of this widget". See statePaint for why the answer has to travel
+ * with the payload rather than being a key list in core, and why it is hidden
+ * from key walks.
+ */
+export const STATE_PAINT_MARK = "__statePaint";
 
 /**
  * Pure function. The affine matrix mapping a VIEWBOX-framed artwork onto a

@@ -198,6 +198,38 @@ export function effectsOff(state) {
 }
 
 /**
+ * Pure function. The same state with every effects-bundle key STRIPPED, so a
+ * self-effecting plugin's own applyEffects call is the pass-through. Returns the
+ * VERY SAME object when there was nothing to strip.
+ *
+ * ── WHO NEEDS THIS: THE CROSSFADE'S TWO ENDPOINT EMITS (WORKSTREAM AV) ───────
+ * ports.crossfadeIR draws BOTH endpoint states through their OWN plugins' emit()
+ * and dissolves them. 34 plugins compose the effects bundle inside emit(), so
+ * without this each side would carry ITS ENDPOINT'S effects — two discrete looks
+ * cross-dissolving — AND the walker's tweened wrap would land on top, a double
+ * composition of the same shadow. Stripping the keys at the endpoint emits makes
+ * the walker's ONE tweened wrap the only effects composition on the node, which
+ * is the AV law: the morph seam owns shape, the ordinary seams own the rest.
+ *
+ * Deleting rather than zeroing, because `effectsOff` reads absent-as-off and the
+ * defaults are effect-off — so the stripped bag is exactly what a plugin sees for
+ * an un-effected widget, with no invented zero to disagree about.
+ *
+ * @param {object} state - an evaluated widget state
+ * @returns {object} the state itself, or a copy with the effect keys removed
+ *
+ * @example (() => { const s = {w: 10}; return withEffectsStripped(s) === s; })() // true (nothing to strip — identity)
+ * @example withEffectsStripped({w: 10, gaussianBlur: 8, bloom: {strength: 1}}) // {w: 10}
+ * @example effectsOff(withEffectsStripped({shadow: {opacity: 0.9, blur: 4}})) // true
+ */
+export function withEffectsStripped(state) {
+  if (!EFFECT_STATE_KEYS.some((k) => k in state)) return state;
+  const out = { ...state };
+  for (const k of EFFECT_STATE_KEYS) delete out[k];
+  return out;
+}
+
+/**
  * Pure function. Wraps a widget's own content ops in the shared effects
  * composition (ONE effectSubtree op carrying shadow/bloom/blend), or returns
  * `content` UNCHANGED when all effects are off (effectsOff) — the
@@ -565,11 +597,43 @@ export function effectBoundsOf(node) {
  * hand-copied lines a plugin author can forget.
  *
  * Exactly one wrap, always:
+ *   node.morph (WORKSTREAM AV) ⇒ the walker owns the render half NO MATTER WHAT
+ *     the plugin does, because ports.emitNodeBody ROUTED THE PLUGIN'S emit() AWAY
+ *     — morphIR/crossfadeIR produced these ops instead. See below.
  *   plugin.effectsInjected (set by core/registry.register when it injected the
  *     property half) ⇒ the walker owns the render half → wrap here.
  *   otherwise ⇒ the plugin already calls applyEffects inside emit() (the 34
  *     pre-universal call sites, which also own their own bbox/world choices) →
  *     return `cmds` untouched. Never both.
+ *
+ * ── WHY A MORPHED NODE IS THE FIRST CLAUSE, AND WHAT IT FIXES ────────────────
+ * The user's ruling (2026-08-02, verbatim, WORKSTREAM AV): "If I have bloom at
+ * zero strength and then another one at full strength in the middle of the morph,
+ * just like anything else, in the middle of that morph, it should be
+ * interpolating, just like it normally would if it wasn't morphing. This should be
+ * the same for every single property."
+ *
+ * The old two-clause rule read the plugin's flag and NOTHING ELSE, so a morphing
+ * SHAPE — rect, circle, latex, plaintext, the whole vector family, every one of
+ * which is a SELF-EFFECTING plugin (`effectsInjected: false`) — took the third
+ * clause and got NO EFFECT SUBTREE AT ALL. Its own emit() would have composed the
+ * bundle, but morphIR replaced that emit(); the walker then declined to wrap
+ * because the plugin "does it itself". Measured before this line existed: a
+ * gaussianBlur of 10, tweened across a morph, produced ops with no effectSubtree
+ * at every interior alpha and the full blur at the endpoints — which reads to an
+ * author exactly as the reported "it just flicks on, like a step at the end".
+ *
+ * `node.state` is the TWEENED bag (core/derive.js resolves the morph token but
+ * leaves every other leaf alone — measured identical to the same document with
+ * morph off), so wrapping here gives the morphed ops precisely the effects a
+ * NON-morphed node would carry at that alpha. That is the whole law: the morph
+ * owns the shape, the ordinary seams own everything else.
+ *
+ * A CROSSFADE takes this clause too, and must. crossfadeIR calls both endpoint
+ * plugins' emit() directly, so a self-effecting pair would compose each ENDPOINT's
+ * effects from its ENDPOINT state — two discrete looks cross-dissolving, not one
+ * tweened look. The wrap here is the tweened one, and it is the only one an
+ * injected-effects plugin gets at all.
  *
  * The order the hand-written sites established — applyEffects OUTSIDE
  * decorateStrokedBox, so a bordered photo's shadow is the framed photo's shadow
@@ -587,9 +651,14 @@ export function effectBoundsOf(node) {
  * @example applyNodeEffects({plugin: {capabilities: {bbox: true}}, state: {softEdges: 8}, world: {}}, [{op: "rect"}]) // [{op: "rect"}] (plugin composes the bundle itself — not injected)
  * @example applyNodeEffects({plugin: {capabilities: {bbox: true}, effectsInjected: true}, state: {w: 10, h: 10}, world: {x: 0, y: 0, rotation: 0, scale: 1}}, [{op: "rect"}]) // [{op: "rect"}] (all effects off → byte-identical pass-through)
  * @example applyNodeEffects({plugin: {capabilities: {bbox: true}, effectsInjected: true}, state: {w: 10, h: 10, softEdges: 8}, world: {x: 0, y: 0, rotation: 0, scale: 1}}, [{op: "rect"}])[0].softEdges // 8
+ * @example // AV: a MORPHING self-effecting plugin gets the wrap anyway — its emit() was replaced
+ * @example applyNodeEffects({morph: {t: 0.5}, plugin: {capabilities: {bbox: true}}, state: {w: 10, h: 10, gaussianBlur: 6}, world: {x: 0, y: 0, rotation: 0, scale: 1}}, [{op: "path"}])[0].blur // 6
  */
 export function applyNodeEffects(node, cmds) {
-  if (!node.plugin.effectsInjected) return cmds;
+  // WORKSTREAM AV: a morphed node's plugin emit() was ROUTED AWAY (ports.morphIR /
+  // crossfadeIR produced `cmds`), so whatever the plugin would have composed for
+  // itself did not happen and the walker owns the render half unconditionally.
+  if (!node.morph && !node.plugin.effectsInjected) return cmds;
   if (effectsOff(node.state)) return cmds;
   const { bbox, world } = effectBoundsOf(node);
   return applyEffects(cmds, node.state, world, bbox);

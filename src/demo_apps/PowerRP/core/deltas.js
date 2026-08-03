@@ -324,35 +324,88 @@ function mutMorphProperty(state, outgoing, delta, alpha) {
  * outline", so the worst case is asking the render seam a question it answers
  * cheaply, rather than a morph the author asked for silently not happening.
  *
- * THE DENIED KEYS ARE THE SIMILARITY TRANSFORM AND ITS KIN — position, size,
- * rotation, z, opacity, visibility. Every one of them is carried by the NODE'S
- * BOX at render time (render_gpu/ports.js maps the engine's unit output through
- * the current tweened w/h), so a change in any of them moves or scales the same
- * outline rather than producing a different one. Morphing on a pure resize would
- * count the box change twice — the exact trap the render seam is pinned against.
+ * THE TRIGGER LAW (WORKSTREAM AV, 2026-08-02) — A MORPH ARMS ON A SHAPE-DEFINING
+ * DELTA AND ON NOTHING ELSE. The user's ruling generalizes the paint one:
+ * "If I have bloom at zero strength and then another one at full strength in the
+ * middle of the morph, just like anything else, in the middle of that morph, it
+ * should be interpolating, just like it normally would if it wasn't morphing.
+ * This should be the same for every single property." A morph replaces the SHAPE
+ * pipeline; an effect delta, a paint delta, a crop delta are not shape changes,
+ * so keyframing one must not arm a morph any more than moving the widget does.
+ *
+ * That makes the denylist bigger than it was, in three families (see
+ * MORPH_NON_SHAPE_KEYS for the enumeration and the per-family argument):
+ *   TRANSFORM   the similarity transform and its kin — carried by the NODE'S BOX
+ *               at render time, so a change moves or scales the SAME outline.
+ *               Morphing on a pure resize would count the box change twice.
+ *   MATERIAL    paint, effects, crop insets, blend — the widget's LOOK, which is
+ *               orthogonal to its silhouette. These used to arm the morph, and a
+ *               morphed node paints through a different seam, so an authored blur
+ *               was lost for the whole interior of its own transition (measured;
+ *               tests/manim_blurfade_test.js carried it as a known-bad).
+ *   NON-VISUAL  bookkeeping leaves nothing draws with.
+ *
+ * WHY THE DIRECTION IS STILL A DENYLIST, now that the list is long: which leaves
+ * define a widget's INK is PLUGIN knowledge and an open set — a gear's `teeth`,
+ * an icon's `icon`, an equation's `latex`, and whatever the next widget invents.
+ * An allowlist would silently fail to morph every widget it had not been taught
+ * about. The keys denied here are exactly the UNIVERSAL ones core owns, so a new
+ * PLUGIN leaf still defaults to "might change the outline" (the safe direction),
+ * while a new UNIVERSAL non-shape key is a core edit that belongs in this list.
  *
  * @example morphEndpointsDiffer({type: "rect", w: 10}, {type: "rect", w: 20}) // false (a pure resize rides the box)
  * @example morphEndpointsDiffer({type: "rect"}, {type: "circle"}) // true (a retype)
  * @example morphEndpointsDiffer({type: "latex", latex: "a"}, {type: "latex", latex: "b"}) // true (a re-edit)
  * @example morphEndpointsDiffer({type: "gear", teeth: 8}, {type: "gear", teeth: 12}) // true (a parameter the plugin draws with)
  * @example morphEndpointsDiffer({type: "rect", x: 0}, {type: "rect", x: 50}) // false (pure placement)
+ * @example morphEndpointsDiffer({type: "rect", gaussianBlur: 0}, {type: "rect", gaussianBlur: 10}) // false (AV: an effect is not a shape)
+ * @example morphEndpointsDiffer({type: "rect"}, {type: "rect", bloom: {strength: 1}}) // false (AV: bloom tweens as it always would)
+ * @example morphEndpointsDiffer({type: "rect", fill: "#f00"}, {type: "rect", fill: "#00f"}) // false (AG: morph never owns paint)
  */
 export function morphEndpointsDiffer(from, to) {
   for (const key of new Set([...Object.keys(from), ...Object.keys(to)])) {
-    if (MORPH_PLACEMENT_KEYS.has(key) || isInterpKey(key) || key === MORPH_KEY) continue;
+    if (MORPH_NON_SHAPE_KEYS.has(key) || isInterpKey(key) || key === MORPH_KEY) continue;
     if (!deepEqual(from[key], to[key])) return true;
   }
   return false;
 }
 
 /**
- * The leaves a morph must IGNORE — the similarity transform plus the universal
- * presentation knobs. A change in any of these moves, scales, spins or fades the
- * SAME outline, and the render seam already carries all of it through the node's
- * own box and opacity. See morphEndpointsDiffer for why this is a denylist.
+ * THE UNIVERSAL NON-SHAPE LEAVES — every key core itself owns that cannot change
+ * a widget's OUTLINE, and therefore must never arm a morph. See
+ * morphEndpointsDiffer for the ruling and the direction argument.
+ *
+ * Kept as a literal here rather than assembled from core/properties.js BUNDLES:
+ * this module is the leanest thing in core (deltas are the document atom) and
+ * properties.js is the UI-facing declaration table that imports half of core.
+ * The two are cross-checked instead — tests/morph_universal_test.js walks the
+ * bundles and fails if a material/transform key exists there and not here, which
+ * catches the drift a shared import would have prevented, without the dependency.
  */
-const MORPH_PLACEMENT_KEYS = new Set([
-  "x", "y", "w", "h", "z", "rotation", "rotationAnchor", "opacity", "active", "name",
+const MORPH_NON_SHAPE_KEYS = new Set([
+  // TRANSFORM — the node's box carries all of it (BUNDLES.transform). The
+  // CONNECTOR family's `from`/`to` are deliberately NOT here: they are that
+  // family's geometry, not its placement, and a curved arrow's bend really does
+  // change outline when an endpoint moves. Its box substitution (ports.morphBox)
+  // tweens the ink rect, so a straight-line endpoint move morphs to the same
+  // picture a pure placement would give.
+  "x", "y", "cx", "cy", "w", "h", "z", "rotation", "rotationAnchor", "scale",
+  // MATERIAL — paint. AG's ruling ("It's not the responsibility of morphing to
+  // handle any material properties, it's only about shape properties"): the ink
+  // rides the morphed path op exactly as it rides any other path op.
+  "fill", "stroke", "strokeWidth", "strokeScreenSpace",
+  "strokeStart", "strokeEnd", "strokePhase", "strokeCapStart", "strokeCapEnd",
+  "strokeOffset", "strokeJoin", "strokeMiter",
+  // MATERIAL — the effects bundle (render_gpu/effects.js EFFECT_STATE_KEYS). The
+  // widget's silhouette is what gets shadowed/bloomed/blurred; changing HOW it is
+  // effected does not change WHAT is effected.
+  "shadow", "bloom", "blendMode", "innerShadow", "softEdges", "gaussianBlur",
+  // MATERIAL — edge-crop insets (BUNDLES.cropInsets). A crop trims the SOURCE
+  // rectangle a media widget samples; the drawn box is unchanged.
+  "cropTop", "cropLeft", "cropRight", "cropBottom",
+  // PRESENTATION + NON-VISUAL — visibility rides the fade seam, and the rest is
+  // bookkeeping nothing draws with.
+  "opacity", "active", "name", "locked", "group",
 ]);
 
 /**

@@ -20,12 +20,12 @@
 
 import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, isPaintOff, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
 import { morphPaths, payloadToPathD, assertMorphPaths, midMorphFillRule } from "../core/morph.js";
-import { statePaint } from "../core/morph_payload.js";
+import { statePaint, STATE_PAINT_MARK } from "../core/morph_payload.js";
 import { isVisibleFxToken, visibleLevel, isPaintShaped, modeParams, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 import { deepEqual } from "../core/deltas.js";
 import { MANIM_SKETCH_STROKE_WIDTH, manimDrawPlan, sketchStrokePaint, trimSubpathByLength } from "../core/manim_draw.js";
 import { interpolate } from "../core/interpolators.js";
-import { applyNodeEffects } from "./effects.js";
+import { applyNodeEffects, withEffectsStripped } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { hasStrokeMaterial } from "./skia/stroke_materials.js"; // the STROKE-material roster — WHICH materials can be a stroke at all (canStrokeWithPaint)
 import { reportOnce, warnOnce } from "../core/report.js";
@@ -710,7 +710,12 @@ export function morphIR(node) {
   // ONE OP PER PAINT, NOT ONE PER SUBPATH — see morphPaintRuns. A fill rule is a
   // property of a WHOLE path, so a counter and its parent must share an op or the
   // counter is painted as a solid blob on top of the letter it should hole.
-  return morphPaintRuns(blended.subpaths, (sp) => morphedPaint(fromPayload, toPayload, sp, t)).flatMap(
+  // THE NODE'S OWN TWEENED INK (WORKSTREAM AV) — computed ONCE for the whole
+  // widget because a widget has one ink, and handed to every run. Null for a
+  // payload whose art the state does not describe (an SVG icon), which is exactly
+  // where the endpoint blend remains the only available answer.
+  const stateInk = morphStateInk(node.state, fromPayload, toPayload);
+  return morphPaintRuns(blended.subpaths, (sp) => morphedPaint(fromPayload, toPayload, sp, t, stateInk)).flatMap(
     ({ subpaths, paint }) => {
       const placed = subpaths.map((sp) => offsetSubpath(scaledSubpath(sp, sx, sy), ox, oy));
       const d = payloadToPathD({ ...blended, subpaths: placed });
@@ -858,13 +863,25 @@ export function morphPaintRuns(subpaths, paintFor) {
  * mid-tween state. The op ORDER is outgoing-then-incoming so the widget being
  * revealed paints over the one being dissolved.
  *
+ * ── BUT THE EFFECTS ARE STRIPPED FROM BOTH SIDES (WORKSTREAM AV) ─────────────
+ * The endpoint law is about the SHAPE and the ink each side draws. It is NOT
+ * about the effects bundle, which under the AV ruling must reach the picture
+ * TWEENED, exactly as it would with no morph at all. 34 plugins compose the
+ * bundle inside their own emit(), so an un-stripped crossfade would carry each
+ * side's ENDPOINT effects into the dissolve — a bloom that is off on one side and
+ * full on the other cross-dissolving between two discrete looks instead of
+ * ramping — AND the walker's tweened wrap (effects.applyNodeEffects, which now
+ * takes every morphed node) would compose the same shadow a second time on top.
+ * `withEffectsStripped` returns each state BY IDENTITY when it carries no effect
+ * keys, so an effect-free crossfade is byte-identical to before this line.
+ *
  * @param {object} node - a derive render node whose `.morph` mark carries `crossfade`
  * @returns {object[]} ops in local space
  */
 export function crossfadeIR(node) {
   const { fromPlugin, toPlugin, fromState, toState, t } = node.morph;
   const emitSide = (plugin, state) =>
-    typeof plugin?.emit === "function" ? plugin.emit(state, null, node.world, null) ?? [] : [];
+    typeof plugin?.emit === "function" ? plugin.emit(withEffectsStripped(state), null, node.world, null) ?? [] : [];
   return [
     ...scaledOpacity(emitSide(fromPlugin, fromState), 1 - t),
     ...scaledOpacity(emitSide(toPlugin, toState), t),
@@ -1007,8 +1024,29 @@ export function scaledSubpath(sp, sx, sy) {
  * only when a payload's subpaths DISAGREE with each other (`paintIsHeterogeneous`).
  * Homogeneous art of any contour count is a widget-level pair and blends as one.
  *
+ * ── THE TWEENED STATE OUTRANKS THE ENDPOINT BLEND (WORKSTREAM AV) ────────────
+ * `stateInk` is the node's own TWEENED paint, and where the state carries a slot
+ * that slot WINS over anything computed here. That is AV's generalization of AG's
+ * ruling: "in the middle of that morph, it should be interpolating, just like it
+ * normally would if it wasn't morphing. This should be the same for EVERY SINGLE
+ * PROPERTY." The endpoint blend below is an INDEPENDENT re-derivation of the fold,
+ * and independent re-derivations disagree with the fold the moment the author
+ * makes them: MEASURED, on a rect→circle with `fill~interp: "step"` — the folded
+ * state said the target blue (step switches at alpha > 0), and the morph painted
+ * `#800080`, a lerp of the endpoints, silently overriding the row's own interp
+ * mode. Every interp mode, every equation-valued paint and every future paint law
+ * has the same exposure, and reading the fold has none of it by construction.
+ *
+ * THE ENDPOINT BLEND STAYS as the fallback, for the payloads whose ink is not in
+ * the state at all: an SVG icon's per-contour art, and any provider that paints
+ * from its own asset. Those have nothing to read, and blending their two payloads
+ * is the only answer available.
+ *
  * @example morphedPaint({subpaths: [{paint: {fill: "#000000", strokeWidth: 0, opacity: 1}}]}, {subpaths: [{paint: {fill: "#ffffff", strokeWidth: 0, opacity: 1}}]}, {}, 0.5).fill
  * '#808080'
+ * @example // AV: the node's own tweened fill WINS over the endpoint blend
+ * @example morphedPaint({subpaths: [{paint: {fill: "#000000"}}]}, {subpaths: [{paint: {fill: "#ffffff"}}]}, {}, 0.5, {fill: "#0000ff"}).fill
+ * '#0000ff'
  * @example // a MATERIAL on both sides survives the interior — it is one unchanged ink
  * @example morphedPaint({subpaths: [{paint: {fill: {type: "material", material: {id: "sky"}}}}, {paint: {fill: {type: "material", material: {id: "sky"}}}}]}, {subpaths: [{paint: {fill: {type: "material", material: {id: "sky"}}}}]}, {paint: {fill: "#000000"}}, 0.5).fill
  * { type: 'material', material: { id: 'sky' } }
@@ -1016,20 +1054,80 @@ export function scaledSubpath(sp, sx, sy) {
  * @example morphedPaint({subpaths: []}, {subpaths: []}, {paint: {fill: "#f00"}}, 0.5).fill
  * '#f00'
  */
-export function morphedPaint(fromPayload, toPayload, blendedSubpath, t) {
+export function morphedPaint(fromPayload, toPayload, blendedSubpath, t, stateInk = null) {
   const a = fromPayload.subpaths[0]?.paint;
   const b = toPayload.subpaths[0]?.paint;
-  if (!a || !b) return blendedSubpath.paint ?? {};
+  if (!a || !b) return withStateInk(blendedSubpath.paint ?? {}, stateInk);
   // GENUINELY MULTI-COLOURED ART ONLY (an SVG icon): its contours disagree, the
   // engine already carried the aligned counterpart's paint through, and blending
-  // one widget-level pair would flatten them all to a single colour.
+  // one widget-level pair would flatten them all to a single colour. The state's
+  // ink does NOT override here — this is exactly the art the state does not
+  // describe, which is why the carve-out exists.
   if (blendedSubpath.paint && (paintIsHeterogeneous(fromPayload) || paintIsHeterogeneous(toPayload)))
     return blendedSubpath.paint;
-  return {
+  return withStateInk({
     ...interpolate(a, b, t),
     fill: blendedPaintValue(a.fill, b.fill, t),
     stroke: blendedPaintValue(a.stroke, b.stroke, t),
-  };
+  }, stateInk);
+}
+
+/**
+ * Pure function. THE MORPHED NODE'S OWN TWEENED INK — or null when this pair's
+ * ink is not state-described and the endpoint blend must stand.
+ *
+ * ── WORKSTREAM AV: THE TWEENED BAG IS THE AUTHORITY ─────────────────────────
+ * `state` is the ordinary tweened bag (core/derive.js resolves the morph token
+ * and leaves every other leaf exactly where the fold put it — measured identical
+ * to the same document with morph off), so `statePaint(state)` IS what the same
+ * widget would paint with at this alpha with no morph active. Reading it is what
+ * makes a morph obey every interp mode, every equation and every future paint law
+ * for free, instead of re-deriving the fold from two endpoints and disagreeing
+ * with it.
+ *
+ * ── THE GATE IS THE PAYLOADS' OWN MARK, NOT A KEY LIST HERE ─────────────────
+ * BOTH endpoint payloads must have been built by `statePaint`
+ * (core/morph_payload STATE_PAINT_MARK). That is the payload declaring "my ink IS
+ * this widget's fill/stroke/strokeWidth/opacity", and only it makes rereading
+ * them sound. plaintext and latex spend `stroke`/`strokeWidth` on their BOX
+ * BORDER and carry glyph ink on `glyphStroke` instead, so an ungated reread would
+ * paint an equation's letterforms with its frame's border width — the trap this
+ * gate exists for. BOTH sides, because either payload's paint can survive the
+ * alignment into the blended subpath.
+ *
+ * @param {object} state - the morphed node's evaluated, tweened state
+ * @param {object} fromPayload - the outgoing endpoint's MorphPaths payload
+ * @param {object} toPayload - the incoming endpoint's MorphPaths payload
+ * @returns {object|null} a payload paint, or null when the pair is not state-inked
+ *
+ * @example // an SVG icon's per-contour art: unmarked, so the endpoint blend stands
+ * @example morphStateInk({fill: "#00f"}, {subpaths: [{paint: {fill: "#f00"}}]}, {subpaths: [{paint: {fill: "#0f0"}}]}) // null
+ * @example // both sides built by statePaint: the node's own tweened ink wins
+ * @example morphStateInk({fill: "#0000ff", strokeWidth: 0}, {subpaths: [{paint: statePaint({fill: "#f00"})}]}, {subpaths: [{paint: statePaint({fill: "#0f0"})}]}).fill
+ * '#0000ff'
+ */
+export function morphStateInk(state, fromPayload, toPayload) {
+  if (!isStatePainted(fromPayload) || !isStatePainted(toPayload)) return null;
+  return statePaint(state ?? {});
+}
+
+/** Does every subpath this payload paints carry `statePaint`'s mark? */
+function isStatePainted(payload) {
+  const subs = payload?.subpaths ?? [];
+  return subs.length > 0 && subs.every((sp) => !sp.paint || sp.paint[STATE_PAINT_MARK]);
+}
+
+/**
+ * Pure function. A computed morph paint with the node's own tweened ink laid over
+ * it. `stateInk` null (a pair whose ink the state does not describe) returns the
+ * computed paint BY IDENTITY, which is what keeps every icon and text morph
+ * byte-identical to before WORKSTREAM AV.
+ *
+ * @example (() => { const p = {fill: "#808080"}; return withStateInk(p, null) === p; })() // true
+ * @example withStateInk({fill: "#808080", strokeWidth: 6}, {fill: "#0000ff", strokeWidth: 2}).fill // '#0000ff'
+ */
+function withStateInk(paint, stateInk) {
+  return stateInk ? { ...paint, ...stateInk } : paint;
 }
 
 /**
@@ -1274,16 +1372,18 @@ function blurFadeDefaultAmount() {
  * sentence needed was the SIZE OF THE APPROACH, not its destination — see the
  * amount parameter below.
  *
- * TWO SEPARATE THINGS COULD STILL MAKE AN AUTHOR SEE "converges to zero", and
- * neither is this function:
- *   1. THE UNIVERSAL MORPH SWALLOWS THE EFFECTS BUNDLE. `gaussianBlur` is not in
- *      core/deltas MORPH_PLACEMENT_KEYS, so KEYFRAMING A BLUR ON THE ENTERING
- *      SLIDE — the natural way to give an appearing widget its look — arms the
- *      `auto` morph, and a morphed node is routed away from its plugin's emit()
- *      and paints with NO effect subtree at all (measured: `blur: 0` on the op,
- *      at every alpha). The blur then appears only at the endpoints, which reads
- *      exactly as "it animated to zero and then popped". That is WORKSTREAM AV's
- *      defect (morph must own SHAPE only), fixed there and not here.
+ * ONE THING COULD STILL MAKE AN AUTHOR SEE "converges to zero", and it is not
+ * this function:
+ *   1. HISTORICAL, FIXED BY WORKSTREAM AV — kept because it explains a real report
+ *      and the reader should not re-attribute it here. `gaussianBlur` was not in
+ *      core/deltas's morph denylist, so KEYFRAMING A BLUR ON THE ENTERING SLIDE —
+ *      the natural way to give an appearing widget its look — armed the `auto`
+ *      morph, and a morphed node was routed away from its plugin's emit() and
+ *      painted with NO effect subtree at all (measured: `blur: 0` on the op, at
+ *      every alpha), so the blur appeared only at the endpoints and read exactly
+ *      as "it animated to zero and then popped". AV closed BOTH halves: an effect
+ *      delta no longer arms a morph (MORPH_NON_SHAPE_KEYS), and a morphed node
+ *      that IS morphing now takes the walker's effects wrap unconditionally.
  *   2. AUTHORING THE BLUR ON THE `blur` WIDGET rather than in the Effects rows.
  *      plugins/blur.js is a BACKDROP sampler with its own `blur` key — it blurs
  *      what is BEHIND it, is not the universal `gaussianBlur` effect, and is not

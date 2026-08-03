@@ -267,18 +267,23 @@ test("AP: the new default is BLURRIER than the constant the user overruled", () 
   assert.ok(BLUR_FADE_MAX_RADIUS > OVERRULED_DEFAULT, `default ${BLUR_FADE_MAX_RADIUS} must exceed the overruled ${OVERRULED_DEFAULT}`);
 });
 
-test("AP → AV: keyframing the blur on the ENTERING slide loses the effects bundle (WORKSTREAM AV)", () => {
+test("AP → AV: keyframing the blur on the ENTERING slide KEEPS the effects bundle (WORKSTREAM AV, landed)", () => {
   // THE MEASURED CAUSE of the user's "it always animates to zero blur", pinned
   // here as a KNOWN-BAD so the next reader does not re-attribute it to blurFade.
-  // `gaussianBlur` is not in core/deltas MORPH_PLACEMENT_KEYS, so setting it on
-  // the entering slide arms the `auto` universal morph, and a morphed node is
-  // routed away from its plugin's emit() — painting with no effect subtree at
-  // all. WHEN AV LANDS THIS TEST GOES RED, and the assertion below should be
-  // inverted rather than deleted.
+  // AV LANDED, so this is now INVERTED exactly as the known-bad said it should be,
+  // and it pins BOTH halves of the fix at once:
+  //   1. THE TRIGGER. `gaussianBlur` is now in core/deltas MORPH_NON_SHAPE_KEYS,
+  //      so keyframing a blur on the entering slide no longer arms the auto morph
+  //      at all — an effect delta is not a shape change.
+  //   2. THE SEAM. Even when a REAL shape morph is running, the walker's effects
+  //      wrap now takes every morphed node (render_gpu/effects.applyNodeEffects's
+  //      first clause), because morphIR replaced the emit() that would have
+  //      composed the bundle for a self-effecting plugin.
   const ops = documentInkOps({}, { gaussianBlur: 10 }, 0.5);
-  assert.ok(!ops.some((o) => o.op === "effectSubtree"), "AV still open: a morphed node emits no effect subtree");
-  assert.ok(ops.every((o) => !o.blur), "…so the composed defocus never reaches the picture");
-  // The composition itself is CORRECT even here — the loss is downstream.
+  const sub = ops.find((o) => o.op === "effectSubtree");
+  assert.ok(sub, "AV: a blurred widget composites through the effects seam mid-transition");
+  assert.equal(sub.blur, 10 + BLUR_FADE_MAX_RADIUS / 2, "and the radius is the COMPOSED one — author's blur + the mode's defocus at v = 0.5");
+  // The composition itself was always correct; the loss used to be downstream.
   const state = evaluateState(tweenedState(repairedDocument({
     meta: { name: "ap", w: CANVAS.w, h: CANVAS.h },
     slides: [
