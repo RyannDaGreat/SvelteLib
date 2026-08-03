@@ -155,6 +155,7 @@ import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 import { videoUploadCount, videoPlaybackState, videoStatus } from "../render_gpu/gpu/video_registry.js";
 import { videoV5UploadCount, videoV5State, videoV5ScrubState } from "../render_gpu/skia/video_v5.js";
 import { nodePortAnchors } from "../core/derive.js";
+import { audioState, mirroredScene } from "./audioMirror.svelte.js";
 
 // NODE-FLOW diagnostic: a derived node's PORT BEAD positions in WORLD space — the
 // one geometry the painter, the hit test and the wire layer all read
@@ -165,6 +166,16 @@ import { nodePortAnchors } from "../core/derive.js";
 // itself could pass while the app's own hit test and painter disagreed, which is
 // precisely the bug worth catching. Zero prod effect.
 window.__powerrp_nodePortAnchors = nodePortAnchors;
+
+// AUDIO MIRROR diagnostic (NF-BIND): what the ENGINE currently holds, and the
+// mirror's own status. Exposed for the same reason as the seam above — a probe
+// cannot ask the DOM whether an AudioNode got connected, and the alternative
+// (asserting on sound) is exactly what the brief rules out. `mirroredScene()` is
+// the scene the last applied batch actually reached, so a probe can check that
+// editing the document really moved the engine rather than only the picture.
+// Zero prod effect: two read-only accessors.
+window.__powerrp_audioScene = mirroredScene;
+window.__powerrp_audioState = () => ({ ...audioState });
 
 // Dev/test seams (like __powerrp_render / __powerrp_app): the running total of
 // <video>→GPU-texture uploads (probe confirms the frame-advance gate keeps uploads

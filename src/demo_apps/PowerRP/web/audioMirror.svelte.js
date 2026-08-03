@@ -161,12 +161,24 @@ function queueApply(ops, scene) {
       applying = null;
       const next = pending;
       pending = null;
-      // Re-diff against the scene the engine actually reached rather than replaying
-      // a stale op list.
-      if (next) {
-        const followUp = diffAudioScene(engineScene, next);
-        if (followUp.length) { engineScene = next; queueApply(followUp, next); }
-      }
+      // ── THE SELF-HEALING PASS, AND WHY IT RUNS EVEN WITH NOTHING PENDING ────
+      // applyOps SKIPS any op whose module the engine no longer holds (see the race
+      // documented there), so a batch can finish having done less than its transcript
+      // said. `engineScene` would then be a claim rather than a fact.
+      //
+      // So the truth is re-read from the ENGINE and re-diffed against the target. A
+      // skipped op is recomputed and re-issued on this pass; if the engine really did
+      // reach the target, the diff is empty and this costs one walk of a handful of
+      // modules. That is what makes "skip it and move on" safe rather than lossy.
+      const target = next ?? engineScene;
+      const held = new Set(engine ? engine.inspect().modules.map((m) => m.id) : []);
+      const reached = {
+        modules: Object.fromEntries(Object.entries(engineScene.modules).filter(([id]) => held.has(id))),
+        connections: engineScene.connections.filter((c) => held.has(c.sourceId) && held.has(c.targetId)),
+      };
+      engineScene = target;
+      const followUp = diffAudioScene(reached, target);
+      if (followUp.length) queueApply(followUp, target);
     });
 }
 
@@ -184,30 +196,57 @@ function queueApply(ops, scene) {
  */
 async function applyOps(ops) {
   await ensureEngine();
+  // WHAT THE ENGINE ACTUALLY HOLDS, RE-READ BEFORE EVERY OP THAT NAMES A MODULE.
+  //
+  // ── THE RACE THIS FIXES, WHICH A PROBE CAUGHT AND REASONING DID NOT ────────
+  // EVERY `await` HERE IS A YIELD POINT, and each one lasts about 33 ms (the guarded
+  // rewire ramp). During that window the document can change, `queueApply` can stash
+  // a newer scene, and the REST OF THIS BATCH becomes stale — it was computed against
+  // a picture of the engine that is no longer true. The symptom measured by
+  // tests/audio_mirror_probe.js was `setParam` on a module id the engine had already
+  // dropped: "No module with id …", thrown from the engine, surfaced as a failed
+  // graph change. Harmless in that instance and NOT harmless in general — the same
+  // window can put a `connect` after its module's removal.
+  //
+  // The fix is not more locking; it is asking the engine rather than assuming. Each
+  // op that names a module checks that the module is THERE at the moment it runs. A
+  // skipped op is not a lost change: the follow-up diff in `queueApply` re-diffs
+  // against the scene the engine actually reached, so whatever this batch could not
+  // do is recomputed from the truth.
+  const holds = (id) => engine.inspect().modules.some((m) => m.id === id);
   for (const op of ops) {
     switch (op.op) {
       case "disconnect":
-        await engine.disconnect(op.sourceId, op.sourcePort, op.targetId, op.targetPort);
+        // Both ends must still exist. Disconnecting a wire whose module is gone is
+        // not merely useless — removeModule already dropped its connections.
+        if (holds(op.sourceId) && holds(op.targetId))
+          await engine.disconnect(op.sourceId, op.sourcePort, op.targetId, op.targetPort);
         break;
       case "removeModule":
-        await engine.removeModule(op.id);
+        if (holds(op.id)) await engine.removeModule(op.id);
         unsubscribeAnalysis(op.id);
         break;
       case "addModule": {
+        // A rebuild's remove may have been skipped above (already gone), or a
+        // concurrent batch may have added this id. Adding twice throws.
+        if (holds(op.id)) break;
         await engine.addModule(op.module, op.id, op.params);
         // The LIVE knobs, pushed once: addModule carries only construct-time params,
         // so without this a module born mid-session sits at the engine's factory
         // defaults while the Inspector shows the author's values.
         const scene = engineScene.modules[op.id];
-        if (scene) for (const p of initialParamOps(scene, op.id)) engine.setParam(p.id, p.key, p.value, { rampSeconds: 0 });
-        subscribeAnalysis(op.id, scene);
+        if (scene && holds(op.id)) {
+          for (const p of initialParamOps(scene, op.id)) engine.setParam(p.id, p.key, p.value, { rampSeconds: 0 });
+          subscribeAnalysis(op.id, scene);
+        }
         break;
       }
       case "connect":
-        await engine.connect(op.sourceId, op.sourcePort, op.targetId, op.targetPort);
+        if (holds(op.sourceId) && holds(op.targetId))
+          await engine.connect(op.sourceId, op.sourcePort, op.targetId, op.targetPort);
         break;
       case "setParam":
-        engine.setParam(op.id, op.key, op.value, { rampSeconds: op.rampSeconds });
+        if (holds(op.id)) engine.setParam(op.id, op.key, op.value, { rampSeconds: op.rampSeconds });
         break;
       default:
         // A NEW OP KIND MUST NOT BE SILENTLY DROPPED. If core/audio_mirror_diff.js
