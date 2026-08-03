@@ -338,7 +338,7 @@ export const cursorPlugin = {
     ...CUSTOM.defaults, // cursorKind, spin, spinRevsPerSec
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...CUSTOM.rows, // cursorKind + spin + spinRevsPerSec
     ...props("animated"),
     { key: "preserveAspect", label: "Preserve aspect", kind: "boolean", category: "formatting", help: "Scale the cursor uniformly to fit the box (keeps its shape). Off stretches it to the box's exact size." },

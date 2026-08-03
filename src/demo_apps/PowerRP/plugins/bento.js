@@ -439,7 +439,7 @@ export const bentoPlugin = {
     ...defaults("opacity"),
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ROW("rows", "Rows", { min: 1, help: "Number of grid rows (one or more). Each row of cells gets its own anchor set." }),
     ROW("cols", "Columns", { min: 1, help: "Number of grid columns (one or more). Each column of cells gets its own anchor set." }),
     ROW("rowGap", "Row gap", { min: 0, help: "Vertical gutter between rows, in canvas units. The gap centers become grid-line intersection anchors." }),

@@ -63,7 +63,7 @@
 //
 // PROPERTY REGISTRY — how you compose Inspector rows and defaults:
 //   props("fill", "stroke", "strokeWidth", "opacity")  → standard rows
-//   bundle("positioning") / bundle("strokedBox") / bundle("effects")
+//   bundle("transform") / bundle("strokedBox") / bundle("effects")
 //   defaults("opacity", "cornerRadius")                → their default values
 //   bundleNestedDefaults("effects")                    → a bundle's defaults
 //   customProps([{name, kind, default, min?, max?, step?, help?}])
@@ -208,7 +208,7 @@ return {
   // The Inspector, composed from shared row sets plus your own. Order is the
   // order the user sees.
   inspector: [
-    ...bundle("positioning"),                    // x / y / w / h / rotation / scale
+    ...bundle("transform"),                    // x / y / w / h / rotation / scale
     ...props("fill", "stroke", "strokeWidth"),   // paint
     ...props("opacity"),
     ...CUSTOM.rows,                              // your knobs

@@ -161,7 +161,7 @@ export const particlesPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The emitter parameters (rate/lifetime/launch/gravity/size/appearance/seed).
     ...bundle("particles"),
     // The animated toggle + opacity, then the shared effects bundle.

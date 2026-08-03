@@ -621,7 +621,7 @@ export const paintPathPlugin = {
     // bundle at REGISTRATION (matching the polygon).
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE ANCHOR LIST as ONE list row (web/ListField.svelte renders every element
     // with per-field `=`, a visibility eye, insert-between, purge) — the polygon's
     // `points` row, one field wider. Augmented with `elementFieldDisabled` so a

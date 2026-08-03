@@ -306,7 +306,7 @@ export const glassPlugin = {
     ...CUSTOM.defaults,     // the glass.* material knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("stroke", "strokeWidth", "opacity", {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },

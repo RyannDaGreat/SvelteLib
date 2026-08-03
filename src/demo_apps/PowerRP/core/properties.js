@@ -9,7 +9,7 @@
  *
  * ── WHY (the problem this solves) ─────────────────────────────────────────────
  * Before this module every plugin hand-wrote its own `defaults` object AND its
- * own `inspector` row array. The SAME nine positioning rows (x/y/w/h/rotation/
+ * own `inspector` row array. The SAME nine transform rows (x/y/w/h/rotation/
  * rotationAnchor.x/rotationAnchor.y/z) and the SAME four stroked-box rows
  * (fill/stroke/strokeWidth/cornerRadius) were literally re-typed in rect,
  * circle, image, video, filmstrip, cropbox, donut, camera... The costs the user
@@ -1102,9 +1102,9 @@ export function strokeJoinApplies(state) {
 }
 
 export const PROPS = {
-  // ── positioning (bbox) ──────────────────────────────────────────────────────
-  x: { label: "X", kind: "number", category: "positioning", help: "Horizontal position of the widget's top-left corner, in canvas units (right is positive)." },
-  y: { label: "Y", kind: "number", category: "positioning", help: "Vertical position of the widget's top-left corner, in canvas units (down is positive)." },
+  // ── transform (bbox) ──────────────────────────────────────────────────────
+  x: { label: "X", kind: "number", category: "transform", help: "Horizontal position of the widget's top-left corner, in canvas units (right is positive)." },
+  y: { label: "Y", kind: "number", category: "transform", help: "Vertical position of the widget's top-left corner, in canvas units (down is positive)." },
   // cx/cy: a DERIVED shortcut for the box's center — x/y's own bundle-mate, not
   // a stored field of its own (no plugin default; core/expressions.js resolves
   // `self.cx`/`@slug.cx` by computing core/geometry.js boxCenter, never by
@@ -1125,8 +1125,8 @@ export const PROPS = {
   // inverse (core/geometry.js xForBoxCenterX/yForBoxCenterY). Typing "=" on
   // the row stores the equation on that same real path verbatim (same as any
   // other numeric row, no inversion attempted on a general equation).
-  cx: { label: "Center X", kind: "number", category: "positioning", writeKey: "x", centerAxis: "x", help: "Horizontal position of the widget's CENTER, in canvas units — a shortcut for x + width/2. Typing a value here moves x so the center lands exactly there; equivalent to reading self.cx in an equation." },
-  cy: { label: "Center Y", kind: "number", category: "positioning", writeKey: "y", centerAxis: "y", help: "Vertical position of the widget's CENTER, in canvas units — a shortcut for y + height/2. Typing a value here moves y so the center lands exactly there; equivalent to reading self.cy in an equation." },
+  cx: { label: "Center X", kind: "number", category: "transform", writeKey: "x", centerAxis: "x", help: "Horizontal position of the widget's CENTER, in canvas units — a shortcut for x + width/2. Typing a value here moves x so the center lands exactly there; equivalent to reading self.cx in an equation." },
+  cy: { label: "Center Y", kind: "number", category: "transform", writeKey: "y", centerAxis: "y", help: "Vertical position of the widget's CENTER, in canvas units — a shortcut for y + height/2. Typing a value here moves y so the center lands exactly there; equivalent to reading self.cy in an equation." },
   // NO `min` ON w/h — a NEGATIVE size is meaningful: it is a FLIP (core/geometry.js
   // "THE FLIP"; the Flip Content commands write exactly this, and dragging a resize
   // handle past the opposite edge produces it). A `min: 0` here would have made the
@@ -1134,10 +1134,10 @@ export const PROPS = {
   // would have silently clamped a legitimate stored value on edit. Contrast the
   // `min: 0` rows below (strokeWidth, blur, radii, rates): for those a negative
   // number has no meaning at all, which is what earns them a bound.
-  w: { label: "Width", kind: "number", category: "positioning", help: "How wide the widget is, in canvas units. Drag the side/corner handles to resize instead. A NEGATIVE width flips the widget horizontally — it covers the same area with its content mirrored left ↔ right." },
-  h: { label: "Height", kind: "number", category: "positioning", help: "How tall the widget is, in canvas units. Drag the side/corner handles to resize instead. A NEGATIVE height flips the widget vertically — it covers the same area with its content mirrored top ↔ bottom." },
+  w: { label: "Width", kind: "number", category: "transform", help: "How wide the widget is, in canvas units. Drag the side/corner handles to resize instead. A NEGATIVE width flips the widget horizontally — it covers the same area with its content mirrored left ↔ right." },
+  h: { label: "Height", kind: "number", category: "transform", help: "How tall the widget is, in canvas units. Drag the side/corner handles to resize instead. A NEGATIVE height flips the widget vertically — it covers the same area with its content mirrored top ↔ bottom." },
   // THE universal transform rotation, inherited by every bbox widget through the
-  // `positioning` bundle. core stores RADIANS; the field edits/shows DEGREES
+  // `transform` bundle. core stores RADIANS; the field edits/shows DEGREES
   // (manifest "Rotation is DEGREES" — round-10 ruling), which is what `display`
   // does — single-sourced here rather than re-typed per widget.
   // kind "angle" (the rotary DIAL) because a rotation IS a heading and the dial
@@ -1146,15 +1146,15 @@ export const PROPS = {
   // radians, still `display`-bridged) and the heading stays UNWRAPPED so a
   // 0 → 720° keyframe pair still tweens two whole spins (manifest: "Rotation is
   // an unwrapped angle (deltas can spin 720°)") — see the unit-kind note above.
-  rotation: { label: "Rotation", kind: "angle", display: "degrees", category: "positioning", default: 0, help: "Clockwise rotation in degrees, pivoting about the rotation anchor (its own center by default). Drag the dial, or type an exact angle — past 360° keeps counting, so a keyframed 720° spins twice." },
-  "rotationAnchor.x": { label: "Rot anchor X", kind: "number", category: "positioning", help: "The X of the point the widget rotates around. Defaults to the widget's own center; set it to another item's anchor to spin about that point." },
-  "rotationAnchor.y": { label: "Rot anchor Y", kind: "number", category: "positioning", help: "The Y of the point the widget rotates around. Defaults to the widget's own center; set it to another item's anchor to spin about that point." },
-  z: { label: "Z order", kind: "number", category: "positioning", help: "Stacking order: higher numbers draw on top of lower ones. Use Bring to Front / Send to Back to reorder without typing." },
+  rotation: { label: "Rotation", kind: "angle", display: "degrees", category: "transform", default: 0, help: "Clockwise rotation in degrees, pivoting about the rotation anchor (its own center by default). Drag the dial, or type an exact angle — past 360° keeps counting, so a keyframed 720° spins twice." },
+  "rotationAnchor.x": { label: "Rot anchor X", kind: "number", category: "transform", help: "The X of the point the widget rotates around. Defaults to the widget's own center; set it to another item's anchor to spin about that point." },
+  "rotationAnchor.y": { label: "Rot anchor Y", kind: "number", category: "transform", help: "The Y of the point the widget rotates around. Defaults to the widget's own center; set it to another item's anchor to spin about that point." },
+  z: { label: "Z order", kind: "number", category: "transform", help: "Stacking order: higher numbers draw on top of lower ones. Use Bring to Front / Send to Back to reorder without typing." },
   // Declared here ONLY so core can NAME its kind: Tier 0 says every property is
   // "="-bindable, and resultKindForSlot needs a kind to validate against. There is
   // deliberately NO `default` — nothing composes `active` from a BUNDLES list, and
   // absent-means-visible must keep working for every existing document.
-  active: { label: "Visible", kind: "boolean", category: "positioning", help: "Whether the item draws on this slide. Deleting keyframes this off rather than removing the item, so it can come back on a later slide; Purge removes it for good." },
+  active: { label: "Visible", kind: "boolean", category: "transform", help: "Whether the item draws on this slide. Deleting keyframes this off rather than removing the item, so it can come back on a later slide; Purge removes it for good." },
   // THE UNIVERSAL MORPH PROPERTY (core/morph_property.js is the authority on the
   // design and carries the user ruling verbatim). Declared here, beside `active`,
   // because it is the same KIND of thing: a universal per-widget property that
@@ -1167,15 +1167,15 @@ export const PROPS = {
   // re-typeset equation and a tooth-count change all travel through one control.
   [MORPH_KEY]: {
     label: "Morph", kind: "select", options: MORPH_MODES, optionLabels: MORPH_MODE_LABELS,
-    category: "positioning",
+    category: "transform",
     help: `How this widget's SHAPE crosses a transition when it changes — a different widget type, a new icon, an edited equation, a different number of teeth. ${MORPH_MODES.map((id) => `${MORPH_MODE_LABELS[id]} — ${MORPH_MODE_HELP[id]}`).join(" ")}`,
   },
 
-  // ── positioning (endpoint-pair — arrows) ────────────────────────────────────
-  "from.x": { label: "From X", kind: "number", category: "positioning", help: "X of the arrow's tail (its start point). Drag the tail handle on canvas, or bind it to an anchor to make it follow another item." },
-  "from.y": { label: "From Y", kind: "number", category: "positioning", help: "Y of the arrow's tail (its start point). Drag the tail handle on canvas, or bind it to an anchor to make it follow another item." },
-  "to.x": { label: "To X", kind: "number", category: "positioning", help: "X of the arrow's head (its end point). Drag the head handle on canvas, or bind it to an anchor to make it point at another item." },
-  "to.y": { label: "To Y", kind: "number", category: "positioning", help: "Y of the arrow's head (its end point). Drag the head handle on canvas, or bind it to an anchor to make it point at another item." },
+  // ── transform (endpoint-pair — arrows) ────────────────────────────────────
+  "from.x": { label: "From X", kind: "number", category: "transform", help: "X of the arrow's tail (its start point). Drag the tail handle on canvas, or bind it to an anchor to make it follow another item." },
+  "from.y": { label: "From Y", kind: "number", category: "transform", help: "Y of the arrow's tail (its start point). Drag the tail handle on canvas, or bind it to an anchor to make it follow another item." },
+  "to.x": { label: "To X", kind: "number", category: "transform", help: "X of the arrow's head (its end point). Drag the head handle on canvas, or bind it to an anchor to make it point at another item." },
+  "to.y": { label: "To Y", kind: "number", category: "transform", help: "Y of the arrow's head (its end point). Drag the head handle on canvas, or bind it to an anchor to make it point at another item." },
   // THE THIRD POINT of a three-point connector (the brace family). Declared here
   // beside from/to rather than inside plugins/brace.js because it is the SAME
   // KIND OF THING — a free, draggable, anchorable world point with an equation-
@@ -1183,8 +1183,8 @@ export const PROPS = {
   // mean the same thing drifting apart. Deliberately NOT added to the
   // `endpoints` bundle: that bundle is a PAIR, composed by every two-point
   // connector, and widening it would give every arrow a tip row it has no use for.
-  "tip.x": { label: "Tip X", kind: "number", category: "positioning", help: "X of the brace's pointy bit. It is a free point like the two ends — drag it, or bind it to an anchor so it follows another item. Where it sits ALONG the span slides the point left or right; how far it sits OFF the span is how far the brace bulges, and which SIDE it is on flips the brace." },
-  "tip.y": { label: "Tip Y", kind: "number", category: "positioning", help: "Y of the brace's pointy bit. It is a free point like the two ends — drag it, or bind it to an anchor so it follows another item. Where it sits ALONG the span slides the point left or right; how far it sits OFF the span is how far the brace bulges, and which SIDE it is on flips the brace." },
+  "tip.x": { label: "Tip X", kind: "number", category: "transform", help: "X of the brace's pointy bit. It is a free point like the two ends — drag it, or bind it to an anchor so it follows another item. Where it sits ALONG the span slides the point left or right; how far it sits OFF the span is how far the brace bulges, and which SIDE it is on flips the brace." },
+  "tip.y": { label: "Tip Y", kind: "number", category: "transform", help: "Y of the brace's pointy bit. It is a free point like the two ends — drag it, or bind it to an anchor so it follows another item. Where it sits ALONG the span slides the point left or right; how far it sits OFF the span is how far the brace bulges, and which SIDE it is on flips the brace." },
   // THE BRACE'S LOOK, as two CONTINUOUS knobs rather than a style enum — so a
   // curly brace, a right-angle bracket and a straight chevron are points in one
   // square and every path between them is reachable, keyframeable and tweenable.
@@ -1924,13 +1924,13 @@ checkListRow("GRADIENT_STOPS_LIST", "stops", GRADIENT_STOPS_LIST);
  * `bundle(name)` expands it to rows, `bundleDefaults(name)` to a defaults
  * fragment.
  *
- * `positioning` — the nine bbox positioning rows every bbox widget shares.
+ * `transform` — the nine bbox transform rows every bbox widget shares.
  * `strokedBox` — the four-property box style (fill/stroke/strokeWidth/
  *   cornerRadius) + its render decoration (render_gpu/decorate.js). This is
  *   THE bundle the user meant by "make the stroke composition inherit... I'd
  *   like everything to inherit them at once, including images and videos".
  * `media` — the shared media chrome: a `src` string row + `opacity`. Media
- *   widgets compose positioning + media + (the border half of) strokedBox.
+ *   widgets compose transform + media + (the border half of) strokedBox.
  */
 /** THE STROKE-TRIM property keys, single-sourced so strokedBorder and strokedBox
  *  cannot drift on which trim/cap rows a box inherits (manifest E.12-15). Order =
@@ -1951,9 +1951,9 @@ export const STROKE_OFFSET_KEYS = ["strokeOffset"];
 export const STROKE_JOIN_KEYS = ["strokeJoin", "strokeMiter"];
 
 export const BUNDLES = {
-  positioning: ["x", "y", "cx", "cy", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"],
-  // The endpoint-pair positioning every arrow-family widget shares (from/to
-  // coordinates + z). Distinct from `positioning` — arrows have no bbox/rotation
+  transform: ["x", "y", "cx", "cy", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"],
+  // The endpoint-pair transform every arrow-family widget shares (from/to
+  // coordinates + z). Distinct from `transform` — arrows have no bbox/rotation
   // of their own; their geometry IS the two endpoints (core/endpoints.js).
   endpoints: ["from.x", "from.y", "to.x", "to.y", "z"],
   // The BORDER-only slice of the stroked box: stroke + strokeWidth + cornerRadius
@@ -2064,7 +2064,7 @@ export function row(key, override = {}) {
  *   object[]: resolved rows
  *
  * @example props("x", "y")
- * [{"key":"x","label":"X","kind":"number","category":"positioning"},{"key":"y","label":"Y","kind":"number","category":"positioning"}]
+ * [{"key":"x","label":"X","kind":"number","category":"transform"},{"key":"y","label":"Y","kind":"number","category":"transform"}]
  * @example props("strokeWidth", { strokeWidth: { label: "Border" } })[0].label
  * "Border"
  */
@@ -2078,7 +2078,7 @@ export function props(...args) {
 
 /**
  * Pure function. Expands a named BUNDLE to a row array, with the same trailing
- * {key: overrides} map as props(). `bundle("positioning")` is the shared bbox
+ * {key: overrides} map as props(). `bundle("transform")` is the shared bbox
  * rows (x/y, the cx/cy center shortcut, w/h, rotation + its anchor, z);
  * `bundle("strokedBox")` the four box-style rows.
  *
@@ -2091,13 +2091,13 @@ export function props(...args) {
  *
  * @example bundle("strokedBorder").map((r) => r.key)
  * ["stroke","strokeWidth","strokeOffset","strokeScreenSpace","cornerRadius","strokeStart","strokeEnd","strokePhase","strokeCapStart","strokeCapEnd","strokeJoin","strokeMiter"]
- * @example bundle("positioning").map((r) => r.key)
+ * @example bundle("transform").map((r) => r.key)
  * ["x","y","cx","cy","w","h","rotation","rotationAnchor.x","rotationAnchor.y","z"]
  * @example // cx/cy keep their OWN unique key (never collide with x/y — a
  * @example // repeated key is a plugin defect per core/multiselect.js
  * @example // intersectRows) but carry `writeKey` naming the REAL stored slot:
- * @example bundle("positioning")[2]
- * {"key":"cx","label":"Center X","kind":"number","category":"positioning","writeKey":"x","centerAxis":"x","help":"Horizontal position of the widget's CENTER, in canvas units — a shortcut for x + width/2. Typing a value here moves x so the center lands exactly there; equivalent to reading self.cx in an equation."}
+ * @example bundle("transform")[2]
+ * {"key":"cx","label":"Center X","kind":"number","category":"transform","writeKey":"x","centerAxis":"x","help":"Horizontal position of the widget's CENTER, in canvas units — a shortcut for x + width/2. Typing a value here moves x so the center lands exactly there; equivalent to reading self.cx in an equation."}
  */
 export function bundle(name, overrides = {}) {
   const keys = BUNDLES[name];
@@ -2140,7 +2140,7 @@ export function defaults(...keys) {
  *
  * @example bundleDefaults("strokedBox")
  * {"strokeWidth":0,"strokeScreenSpace":false,"cornerRadius":0}
- * @example bundleDefaults("positioning")
+ * @example bundleDefaults("transform")
  * {"rotation":0}
  */
 export function bundleDefaults(name) {

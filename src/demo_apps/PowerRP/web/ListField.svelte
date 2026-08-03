@@ -76,7 +76,7 @@
   exactly as the Inspector's and Tools pane's collapse maps do, keyed by the
   PROPERTY rather than the item — so collapsing a polygon's points stays
   collapsed as you select the next polygon, which is the whole point of the
-  Inspector's own "collapsing Positioning stays collapsed as you switch
+  Inspector's own "collapsing Transform stays collapsed as you switch
   selections" rule.
 
   ── TWO KINDS OF COLLAPSED, deliberately kept apart ───────────────────────────
@@ -174,7 +174,7 @@
    * Pure function. The localStorage key one list's collapsed state is remembered
    * under: its property path with the ITEM ID dropped, so the choice follows the
    * PROPERTY and not the item (web/Inspector.svelte's accordion rule — "collapsing
-   * Positioning stays collapsed as you switch selections" — one level down). A
+   * Transform stays collapsed as you switch selections" — one level down). A
    * path that is not item-rooted keys on itself.
    *
    * @example collapseKeyFor(["items", "a1b2c3", "points"]) // "points"

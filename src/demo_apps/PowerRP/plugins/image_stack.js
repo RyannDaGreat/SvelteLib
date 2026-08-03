@@ -455,7 +455,7 @@ export const imageStackPlugin = {
   },
   presets: PRESETS,
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE SHARED SOURCE ROWS (core/video_sampling.js VIDEO_SAMPLING_ROWS) — byte-for-
     // byte the filmstrip's, which is what makes a retype between them lossless.
     ...VIDEO_SAMPLING_ROWS,

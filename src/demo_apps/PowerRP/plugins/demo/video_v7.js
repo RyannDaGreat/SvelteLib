@@ -102,7 +102,7 @@ export const videoV7Plugin = {
     ...defaults("strokeWidth", "cornerRadius"),
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     videoSrcRow("Source"),
     ...props("autoplay", "loop", "muted"),
     ...bundle("strokedBorder"),

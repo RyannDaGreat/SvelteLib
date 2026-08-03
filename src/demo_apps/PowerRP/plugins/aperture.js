@@ -406,7 +406,7 @@ export const aperturePlugin = {
     sunstar: 0,
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     irisRow("blades", `Number of diaphragm leaves. ${NO_IRIS_BLADES} means the lens has NO IRIS — a mirror telephoto or a phone module — and the opening is the bare entrance pupil; one or two leaves cut a real circular segment out of it; ${MIN_POLYGON_BLADES} is the fewest that enclose a polygon. Diffraction physics: an EVEN count gives that many rays, an ODD count twice as many (9 blades give 18 rays), and the lens flare's blade count means the same thing under the same law.`),
     irisRow("stopDown", "How far the blades have closed: 0 is wide open, where the leaves sit clear of the bore and the opening is ROUND whatever the blade count, and 1 is shut. The polygon only takes over once its corners clear the bore, so a straight-bladed lens shows arcs between the flats for the first fraction of a stop. Drag the handle on the blade edge."),
     irisRow("curvature", "The shape of each leaf's inner edge: 0 is a straight-edged blade, which becomes a hard polygon as soon as it stops down, and 1 is a fully curved 'circular aperture' design that stays round at every stop. NEGATIVE is an inwardly curved leaf — real, and the reason a 0-to-1 knob is not enough: it bulges into the opening and leaves concave sides. Needs at least three blades to have a polygon to round. Drag the handle on the second blade's edge."),

@@ -15,7 +15,7 @@
  *   (1) WELL-FORMED — unique group ids, no group with zero rows, every row a
  *       known kind, no command surfaced twice on one widget.
  *   (2) EMPTINESS IS UNREPRESENTABLE — a widget with no presets has no preset
- *       group, a widget with no frame has no Positioning group. The pane cannot
+ *       group, a widget with no frame has no Transform group. The pane cannot
  *       receive an empty group, so it needs no "hide if empty" branch to forget.
  *   (3) EVERY DISABLE-ABLE ROW CAN EXPLAIN ITSELF — help + requires present on
  *       every command row everywhere, so a mystery gray button is not expressible.
@@ -67,7 +67,7 @@ const allRows = (plugin) => (plugin.toolGroups ?? []).flatMap((g) => g.rows);
  * the next generic tool being added to the pool instead of pinning today's list.
  *
  * @example poolIdsFor({defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}})
- * // ["positioning", "arrange", "grouping", "edit", "keyframes"]
+ * // ["transform", "arrange", "grouping", "edit", "keyframes"]
  * @example poolIdsFor({defaults: {blur: 4}, capabilities: {}})
  * // ["grouping", "edit", "keyframes"]   (no frame → no camera-bind rows, no layout rows)
  */
@@ -117,7 +117,7 @@ test("a widget with no presets gets NO preset group; one with presets gets one p
 
 test("a widget with no FRAME gets no camera-bind ROWS (the tools' gate)", () => {
   // THE CLAIM IS ABOUT THE ROWS, NOT THE SECTION, and it used to be written the
-  // other way round — "a frameless widget shows no Positioning group" — which was
+  // other way round — "a frameless widget shows no Transform group" — which was
   // true only while the group's every row needed a frame. It stopped being true
   // the moment the nudges joined it (an arrow has no x/y/w/h and moves via
   // `moveBy`, so it is nudgeable and correctly keeps the section). A proxy
@@ -256,8 +256,8 @@ test("presetFamiliesOf normalizes both declaration forms and refuses a contradic
     /twice/,
   );
   // Namespacing is what makes a family id unable to collide with a pool group id.
-  const clash = presetFamiliesOf({ presetFamilies: [{ id: "positioning", title: "Positioning", presets: [{ name: "p", props: {} }] }] });
-  assert.equal(clash[0].id, "presets.positioning");
+  const clash = presetFamiliesOf({ presetFamilies: [{ id: "transform", title: "Transform", presets: [{ name: "p", props: {} }] }] });
+  assert.equal(clash[0].id, "presets.transform");
   assert.ok(!TOOL_POOL.some((g) => g.id === clash[0].id));
 });
 
@@ -295,38 +295,38 @@ test("a plugin's OWN groups come first; its own rows MERGE into a pool group of 
     presets: [{ name: "P", props: { a: 1 } }],
     toolGroups: [
       { id: "mine", title: "Mine", rows: [{ kind: "command", command: "my-cmd", help: "h", requires: "r" }] },
-      // Same id as a pool group: must land IN Positioning, not in a second
+      // Same id as a pool group: must land IN Transform, not in a second
       // section with the same heading.
-      { id: "positioning", title: "Positioning", rows: [{ kind: "command", command: "my-pos-cmd", help: "h", requires: "r" }] },
+      { id: "transform", title: "Transform", rows: [{ kind: "command", command: "my-pos-cmd", help: "h", requires: "r" }] },
     ],
   });
   // MEMBERSHIP: its own two groups plus every pool group it is eligible for, and
-  // nothing else — "positioning" is BOTH (merged, not duplicated).
+  // nothing else — "transform" is BOTH (merged, not duplicated).
   const ids = plugin.toolGroups.map((g) => g.id);
   assert.deepEqual([...ids].sort(), [...new Set(["presets", "mine", ...poolIdsFor(plugin)])].sort());
-  const pos = plugin.toolGroups.find((g) => g.id === "positioning");
+  const pos = plugin.toolGroups.find((g) => g.id === "transform");
   assert.deepEqual(pos.rows.map((r) => r.command), ["my-pos-cmd", "bind-to-camera", "unbind-from-camera"]);
   // ORDER, stated as the law rather than as a frozen list: preset families, then
-  // declared groups, then the purely INHERITED ones. "positioning" is declared by
+  // declared groups, then the purely INHERITED ones. "transform" is declared by
   // this plugin, so it sits with the declared groups, which is why the law is
   // written over the pool ids it did NOT declare.
-  assert.deepEqual(ids.slice(0, 3), ["presets", "mine", "positioning"]);
+  assert.deepEqual(ids.slice(0, 3), ["presets", "mine", "transform"]);
   for (const id of poolIdsFor(plugin))
-    if (id !== "positioning") assert.ok(ids.indexOf("positioning") < ids.indexOf(id), `inherited "${id}" must follow the plugin's own groups`);
+    if (id !== "transform") assert.ok(ids.indexOf("transform") < ids.indexOf(id), `inherited "${id}" must follow the plugin's own groups`);
 });
 
 test("a plugin row's own applies() can exclude it, and an all-excluded group vanishes", () => {
   const plugin = withToolGroups({
     type: "synthetic_excluded",
-    defaults: { blur: 4 }, // no frame → no Positioning group either
+    defaults: { blur: 4 }, // no frame → no Transform group either
     capabilities: {},
     toolGroups: [{ id: "mine", title: "Mine", rows: [{ kind: "command", command: "c", help: "h", requires: "r", applies: () => false }] }],
   });
-  // Its OWN group is gone (every row excluded), and Positioning with it (no frame).
+  // Its OWN group is gone (every row excluded), and Transform with it (no frame).
   // What remains is exactly the pool groups it IS eligible for — nothing of its own.
   assert.deepEqual(plugin.toolGroups.map((g) => g.id), poolIdsFor(plugin));
   assert.ok(!plugin.toolGroups.some((g) => g.id === "mine"));
-  assert.ok(!plugin.toolGroups.some((g) => g.id === "positioning"));
+  assert.ok(!plugin.toolGroups.some((g) => g.id === "transform"));
 });
 
 test("the source plugin object is never mutated (two live documents share plugin modules)", () => {
@@ -345,7 +345,7 @@ test("a pool group titled with an Inspector category id is spelled as Inspector.
   // failure mode the deleted mirror block in ToolsPane.svelte warned about.
   const inspector = readFileSync(resolve(here, "../web/Inspector.svelte"), "utf8");
   const titles = inspector.slice(inspector.indexOf("const CATEGORY_TITLES"), inspector.indexOf("const CATEGORY_ORDER"));
-  assert.ok(titles.includes("positioning:"), "could not find CATEGORY_TITLES in web/Inspector.svelte — update this pin");
+  assert.ok(titles.includes("transform:"), "could not find CATEGORY_TITLES in web/Inspector.svelte — update this pin");
   for (const group of TOOL_POOL) {
     if (!titles.includes(`${group.id}:`)) continue; // a tools-only group, no shared spelling to pin
     assert.ok(titles.includes(`${group.id}: "${group.title}"`),

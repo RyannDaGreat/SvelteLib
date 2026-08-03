@@ -690,7 +690,7 @@ export const polygonPlugin = {
     // tests/universal_effects_test.js exists to catch.
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE VERTEX LIST as a property row — ONE declaration, not N vertex rows:
     // `points` is kind "list" (core/properties.js), so the row IS its list
     // declaration and web/ListField.svelte renders every element from it (x/y

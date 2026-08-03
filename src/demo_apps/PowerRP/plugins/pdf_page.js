@@ -9,7 +9,7 @@
  * ── BOX SHAPE IS A GENERIC TERM (standing ruling, manifest 2026-07-15
  * "AGAIN FOR THE LAST FUCKING TIME") ──────────────────────────────────────────
  * A PDF page is a BOX exactly like an image: it composes the SAME shared
- * bundles (core/properties.js) — positioning, the stroked-BORDER slice
+ * bundles (core/properties.js) — transform, the stroked-BORDER slice
  * (stroke/strokeWidth/cornerRadius — a framed page, not a fill), crop insets,
  * and effects (shadow/bloom/blend) — so it inherits every current AND future
  * box feature for free, with zero widget-specific decoration code. This file
@@ -155,7 +155,7 @@ export const pdfPagePlugin = {
   activate: "asset_picker",
   primaryAsset: "src",
   // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
-  // positioning, the stroked-BORDER slice (a page has a frame, not a fill),
+  // transform, the stroked-BORDER slice (a page has a frame, not a fill),
   // crop insets, and effects are all inherited — identical composition to
   // image.js/video.js (manifest "BOX SHAPE IS A GENERIC TERM").
   defaults: {
@@ -195,7 +195,7 @@ export const pdfPagePlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The PDF asset — the registry `src` row (kind:"asset"), restricted to
     // the "pdf" asset kind (manifest task brief: "accept=pdf" — SonnetA's
     // AssetField renders the picker/upload/drag-drop UI from this same

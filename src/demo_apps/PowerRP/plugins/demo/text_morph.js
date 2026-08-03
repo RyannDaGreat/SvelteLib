@@ -525,7 +525,7 @@ const DISSOLVE_PRESETS = [
 
 /**
  * Pure function (factory). Builds one text-morph DEMO widget plugin. All three
- * widgets share the plaintext-style box (positioning + typography + ink +
+ * widgets share the plaintext-style box (transform + typography + ink +
  * opacity + effects); they differ ONLY in their word inputs, which transition
  * maps those inputs + alpha to the displayed string, and which preset table.
  *
@@ -563,7 +563,7 @@ function makeTextMorphPlugin({ type, title, wordProps, morph, presets }) {
       ...custom.defaults, // the word input(s) + alpha (custom self.* props)
     },
     inspector: [
-      ...bundle("positioning"),
+      ...bundle("transform"),
       ...custom.rows, // the morph knobs FIRST (the point of the widget): words + alpha
       { key: "font", label: "Font", kind: "select", options: fontOptions().map((o) => o.value), optionLabels: Object.fromEntries(fontOptions().map((o) => [o.value, o.label])), category: "text", help: "The typeface the text is drawn in." },
       { key: "size", label: "Size", kind: "number", min: 0, category: "text", help: "Font size in canvas units." },

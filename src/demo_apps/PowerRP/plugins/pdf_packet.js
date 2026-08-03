@@ -203,7 +203,7 @@ export const pdfPacketPlugin = {
     ...bundleNestedDefaults("effects"),
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("src", { src: { label: "PDF", assetKinds: ["pdf"], help: "The PDF whose pages this packet holds — the whole document, stapled at the corner." } }),
     // `scrub` (drag units per pixel), not just `step`: resolveScrub can't infer
     // fractionality here (integer min, integer default, no max), so without it

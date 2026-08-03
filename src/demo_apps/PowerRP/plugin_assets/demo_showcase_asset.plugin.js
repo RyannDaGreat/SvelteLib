@@ -53,7 +53,7 @@ return {
     ...CUSTOM.defaults, // inset — the custom self.* prop
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...bundle("strokedBox"),
     ...props("opacity"),
     ...CUSTOM.rows,

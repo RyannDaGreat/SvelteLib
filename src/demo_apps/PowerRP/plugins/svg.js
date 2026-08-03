@@ -25,7 +25,7 @@
  *
  * ── CAPABILITIES / BOX (a generic box, everything free from the bundles) ──────
  * bbox + transform + resizable + opacity, backdrop:false — composites under
- * magnifiers/blur and culls for free. Composes positioning + the stroked-BORDER
+ * magnifiers/blur and culls for free. Composes transform + the stroked-BORDER
  * slice (a FRAMED svg) + crop insets? (left out — an SVG has no raster source to
  * UV-crop) + opacity + effects. So shadow/bloom/blend + anchors come for free.
  *
@@ -273,7 +273,7 @@ export const svgPlugin = {
     ...CUSTOM.defaults, // svgSrc
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // SOURCE MODE — explicit select (a non-empty url must never silently
     // shadow an authored svgSrc, and vice versa).
     { key: "svgSource", label: "Source", kind: "select", options: ["inline", "url"], optionLabels: { inline: "Inline markup", url: "URL / asset" }, category: "formatting", help: "Where the SVG comes from. Inline renders the markup below; URL loads an .svg asset (or any URL) — pick one from the project assets, e.g. an Iconify icon dropped into the asset library." },

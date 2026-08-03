@@ -8,7 +8,7 @@
  *
  * ── BOX SHAPE IS A GENERIC TERM (standing manifest ruling) ────────────────────
  * A typeset equation is a BOX exactly like an image or a PDF page: it composes
- * the SAME shared bundles (core/properties.js) — positioning, the stroked-BORDER
+ * the SAME shared bundles (core/properties.js) — transform, the stroked-BORDER
  * slice (stroke/strokeWidth/cornerRadius — a framed equation), crop insets, and
  * effects (shadow/bloom/blend) — so it inherits every current AND future box
  * feature for free, with zero widget-specific decoration code. This file is
@@ -564,7 +564,7 @@ export const latexPlugin = {
   isGhost(state) {
     return latexIsEmpty(state.latex);
   },
-  // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY — positioning,
+  // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY — transform,
   // stroked BORDER (a framed equation, not a fill), crop insets, effects are all
   // inherited (manifest "BOX SHAPE IS A GENERIC TERM"). Only `latex` + `fontSize`
   // are widget-specific (declared inline below, exactly as codeblock declares
@@ -599,7 +599,7 @@ export const latexPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE latex source — a multi-line STRING. Uses the "text" row kind (a
     // single-line field that round-trips the whole string), the EXACT precedent
     // codeblock.js's `code` row set: a dedicated multi-line math editor control

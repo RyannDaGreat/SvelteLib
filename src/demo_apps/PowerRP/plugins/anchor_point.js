@@ -55,12 +55,12 @@ export const anchorPointPlugin = {
     rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
     opacity: 1,
   },
-  // Only the position is meaningful; x/y group into positioning. No fill/stroke
+  // Only the position is meaningful; x/y group into transform. No fill/stroke
   // rows — the widget paints nothing.
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    { key: "x", label: "X", kind: "number", category: "transform" },
+    { key: "y", label: "Y", kind: "number", category: "transform" },
+    { key: "z", label: "Z order", kind: "number", category: "transform" },
   ],
   /** Pure function. Paints NOTHING — the widget is an invisible reference point. */
   emit() {

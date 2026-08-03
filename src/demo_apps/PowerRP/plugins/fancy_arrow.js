@@ -217,7 +217,7 @@ export const fancyArrowPlugin = {
   // withFancyArrowFillMigrated (core/document.js), which runs AFTER it.
   legacyKeys: { color: "stroke" },
   // `category` groups rows into the Inspector's collapsible accordion regions
-  // (manifest Round 12 "PROPERTY CATEGORIES"). Endpoints/z → positioning;
+  // (manifest Round 12 "PROPERTY CATEGORIES"). Endpoints/z → transform;
   // fill/stroke/opacity → formatting; tip/shaft geometry → an "arrow" extras
   // category. Rows COMPOSE from the SHARED PROPERTY REGISTRY: the
   // `endpoints` bundle + fill/stroke/strokeWidth (the strokedBorder trio,

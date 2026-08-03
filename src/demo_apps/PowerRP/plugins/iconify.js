@@ -600,7 +600,7 @@ export const iconifyPlugin = {
     ...CUSTOM.defaults, // icon
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...CUSTOM.rows, // the icon id
     // INK — the currentColor resolution. Help SHARED with the svg widget, because it
     // is the same system and the pair only makes sense read together (see docblock).

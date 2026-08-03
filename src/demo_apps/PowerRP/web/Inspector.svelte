@@ -324,8 +324,8 @@
   // start-cased fallback.
   const DEFAULT_CATEGORY = "other";
   const CATEGORY_TITLES = {
-    positioning: "Positioning",
-    // FILL/STROKE ARE THEIR OWN TOP-LEVEL SECTIONS, peers of Positioning — NOT
+    transform: "Transform",
+    // FILL/STROKE ARE THEIR OWN TOP-LEVEL SECTIONS, peers of Transform — NOT
     // rows inside Formatting (user ruling, twice: "they need to be their own
     // separate drop-down"). The section hosts the whole paint stack for its
     // slot: the paint mode buttons, solid/gradient editors, the Mat picker and
@@ -341,7 +341,7 @@
     // NOTE: there is deliberately NO `custom:` entry — see customCategoryTitle().
     other: "Other",
   };
-  const CATEGORY_ORDER = ["positioning", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
+  const CATEGORY_ORDER = ["transform", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
 
   /**
    * Pure function. The display title for the CUSTOM_CATEGORY bucket — a widget's
@@ -389,8 +389,8 @@
    * is honest for the transition panel, which has no widget and no custom rows.
    *
    * Examples:
-   *     >>> // rows [{key:"x",category:"positioning"},{key:"fill",category:"fillMaterial"}]
-   *     >>> // → [{id:"positioning",title:"Positioning",rows:[…x]},{id:"fillMaterial",…}]
+   *     >>> // rows [{key:"x",category:"transform"},{key:"fill",category:"fillMaterial"}]
+   *     >>> // → [{id:"transform",title:"Transform",rows:[…x]},{id:"fillMaterial",…}]
    *     >>> // groupRows([{key:"strokeWidth",category:"strokeMaterial",visibleWhen:(s)=>!isPaintOff(s.stroke)}], {stroke:{type:"none"}})
    *     >>> // → [] (the row is hidden; the now-empty strokeMaterial bucket is dropped)
    *     >>> // groupRows([{key:"ghostCount",category:"custom"}], null, "Lens Flare")
@@ -501,7 +501,7 @@
 
   // Collapsed categories persist as a BROWSER setting (viewer-local; manifest
   // rule for collapse state). ONE map, keyed by category id, shared across item
-  // types — collapsing "Positioning" stays collapsed as you switch selections.
+  // types — collapsing "Transform" stays collapsed as you switch selections.
   const COLLAPSE_KEY = "powerrp.inspectorCollapsed";
   let collapsed = $state(loadCollapsed());
   function loadCollapsed() {
@@ -1951,7 +1951,7 @@
            from the owning plugin instead — the same `sel.plugin.defaults` lookup
            equationCapable() above already uses.
 
-           `row.centerAxis` (cx/cy, core/properties.js positioning bundle): the
+           `row.centerAxis` (cx/cy, core/properties.js transform bundle): the
            row DISPLAYS as "cx"/"cy" (row.key — unique, so multiByKey/undo/
            multiselect bookkeeping never collide with the real x/y row) but
            READS/WRITES through `writeKey(row)`, which PROPS.cx/.cy set to the

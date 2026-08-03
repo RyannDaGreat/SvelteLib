@@ -897,7 +897,7 @@ export const globeMapPlugin = {
     ...CUSTOM.defaults,
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("fill", "stroke", "strokeWidth", "opacity", {
       fill: { label: "Space color" },
       stroke: { label: "Edge color" },

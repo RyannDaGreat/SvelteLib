@@ -101,7 +101,7 @@ return {
   // Rows compose from the SHARED property registry, exactly as circle.js does —
   // no cornerRadius (the exponent is this widget's corner knob).
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("fill", "stroke", "strokeWidth"),
     ...props(...STROKE_TRIM_KEYS), // draw-on / dash phase, free at the ports seam
     ...props("opacity"),

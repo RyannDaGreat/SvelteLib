@@ -150,7 +150,7 @@ export const progressBarPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     { key: "fraction", label: "Fraction", kind: "number", min: 0, max: 1, category: CAT, help: "How full the bar is, 0 to 1. Type a number, or bind it with '=' to a live value — most usefully a video scrubber's progress: = @clip.progress. Keyframe it across slides to animate the fill. Values outside 0..1 are clamped." },
     { key: "orientation", label: "Orientation", kind: "select", options: ORIENTATIONS, optionLabels: ORIENTATION_LABELS, category: CAT, help: "Horizontal fills left to right; vertical fills bottom to top (a rising bar). The bbox size sets the track: make it wide and short for horizontal, tall and narrow for vertical." },
     { key: "trackColor", label: "Track color", kind: "color", category: CAT, help: "The color of the empty groove behind the fill." },

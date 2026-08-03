@@ -70,8 +70,8 @@ test("rowContract strips exactly the presentational aspects, keeps the rest", ()
 test("same row + presentational differences only = THE SAME ROW", () => {
   // A rect's X carries `help`; the magnifier's does not. Same property.
   assert.equal(sameRowContract(
-    { key: "x", kind: "number", label: "X", help: "Horizontal position…", category: "positioning" },
-    { key: "x", kind: "number", label: "X", category: "positioning" }
+    { key: "x", kind: "number", label: "X", help: "Horizontal position…", category: "transform" },
+    { key: "x", kind: "number", label: "X", category: "transform" }
   ), true);
   // A magnifier calls `stroke` "Rim color" and files it under "lens".
   assert.equal(sameRowContract(

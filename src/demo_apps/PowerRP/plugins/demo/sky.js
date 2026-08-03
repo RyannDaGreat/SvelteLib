@@ -334,7 +334,7 @@ export const skyPlugin = {
     ...defaults("animated", "opacity"),
     ...SKY_CUSTOM.defaults,
   },
-  inspector: [...bundle("positioning"), ...props("animated", "opacity"), ...SKY_CUSTOM.rows],
+  inspector: [...bundle("transform"), ...props("animated", "opacity"), ...SKY_CUSTOM.rows],
   /**
    * Near-pure function (reads the ambient particle clock). State → ONE materialFill
    * op naming the "sky" material. CONSUMES the SAME scene mapping the fill-material
@@ -536,7 +536,7 @@ export const skySunPlugin = {
     blendMode: "screen",
     ...SUN_CUSTOM.defaults,
   },
-  inspector: [...bundle("positioning"), ...props("opacity"), ...SUN_CUSTOM.rows, ...bundle("effects")],
+  inspector: [...bundle("transform"), ...props("opacity"), ...SUN_CUSTOM.rows, ...bundle("effects")],
   /**
    * Pure function. State → ONE materialFill op naming the "skySun" material,
    * WRAPPED in the effects bundle (render_gpu/effects.js applyEffects) so the
@@ -668,7 +668,7 @@ export const skyMoonPlugin = {
     ...defaults("opacity"),
     ...MOON_CUSTOM.defaults,
   },
-  inspector: [...bundle("positioning"), ...props("opacity"), ...MOON_CUSTOM.rows],
+  inspector: [...bundle("transform"), ...props("opacity"), ...MOON_CUSTOM.rows],
   /**
    * Pure function. State → ONE materialFill op naming the "skyMoon" material. Reads
    * the sibling suns to point the lit limb at the nearest one (physically, the moon's
@@ -835,7 +835,7 @@ export const skyCloudsPlugin = {
     ...defaults("animated", "opacity"),
     ...CLOUDS_CUSTOM.defaults,
   },
-  inspector: [...bundle("positioning"), ...props("animated", "opacity"), ...CLOUDS_CUSTOM.rows],
+  inspector: [...bundle("transform"), ...props("animated", "opacity"), ...CLOUDS_CUSTOM.rows],
   /**
    * Near-pure function (reads the ambient particle clock). State → ONE materialFill
    * op naming the "skyClouds" material. Reads the sibling suns (mapped into this

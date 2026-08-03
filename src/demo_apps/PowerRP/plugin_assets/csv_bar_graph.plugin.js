@@ -524,7 +524,7 @@ return {
     ...CUSTOM.defaults,
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...CUSTOM.rows,
     ...props("opacity"),
     ...bundle("effects"),

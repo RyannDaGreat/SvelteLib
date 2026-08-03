@@ -39,7 +39,7 @@ export const shapePlugin = {
   ephemeral: EPHEMERAL.NONE,
   title: "Shape",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
-  // Composes the SHARED PROPERTY REGISTRY like rect/circle: positioning + the
+  // Composes the SHARED PROPERTY REGISTRY like rect/circle: transform + the
   // shape selector/knobs + fill/stroke/strokeWidth (NO cornerRadius — a path has
   // no square corners to round) + opacity + the effects bundle. strokeWidth
   // default 2 (a visible border); shape default "star".
@@ -55,7 +55,7 @@ export const shapePlugin = {
   },
   // Shape selector + knobs FIRST (the widget's identity), then the paint props.
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...bundle("shape"),
     ...props("fill", "stroke", "strokeWidth"),
     // THE UNIVERSAL STROKE-TRIM ROWS (Tier C adoption — this widget always HAD

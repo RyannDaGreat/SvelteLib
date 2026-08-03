@@ -218,7 +218,7 @@ export const codeblockPlugin = {
   activate: "code_modal",
   codeEditor: { property: "code", language: null, title: "Edit Code" },
   // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
-  // the positioning bundle + the full strokedBox bundle (fill/stroke/strokeWidth/
+  // the transform bundle + the full strokedBox bundle (fill/stroke/strokeWidth/
   // cornerRadius — a code block IS a box) + opacity. The box is the code's
   // background; fill defaults to the DARK palette bg so a fresh code block reads
   // as an embedded editor on any app theme (see CODE_PALETTES). strokeWidth 1
@@ -239,9 +239,9 @@ export const codeblockPlugin = {
   },
   // Rows grouped into the Inspector accordion via each row's `category`. The
   // code content + typography live in the "text" category; the box style in
-  // "formatting"; position in "positioning".
+  // "formatting"; position in "transform".
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // Code content: a multiline STRING. Today it uses the "text" row kind (a
     // single-line field that still round-trips the whole multi-line string) —
     // FLAG: a future dedicated code editor row (a monospace textarea with live

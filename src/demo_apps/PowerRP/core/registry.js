@@ -687,7 +687,7 @@ export function hasFrame(plugin) {
  * to camera, and then unbind. Unbind what?"). The object is the widget's FRAME,
  * and the words for it are not invented here: FRAME_KEYS above already defines a
  * frame as "a position and a size", which is what hasFrame's docstring calls it
- * and what the Inspector groups under Positioning. Neither title says "Unbind
+ * and what the Inspector groups under Transform. Neither title says "Unbind
  * from Camera" — the freeze half replaces an equation on x/y/w/h whatever that
  * equation references, which is what makes it the honest inverse.
  *
@@ -1149,20 +1149,20 @@ export function widgetForAssetKind(registry, kind) {
  */
 export const TOOL_POOL = [
   {
-    id: "positioning",
+    id: "transform",
     // Titled with the Inspector's own word for this category, so the widget's
     // x/y/w/h ROWS in the Property Panel and the tools that WRITE them read as
     // the same section of the same system.
     // HANDBACK PENDING: web/Inspector.svelte's CATEGORY_TITLES is the vocabulary
     // this literal belongs to; the patch moves that map to core/properties.js and
-    // this becomes CATEGORY_TITLES.positioning. Until then
+    // this becomes CATEGORY_TITLES.transform. Until then
     // tests/tool_groups_test.js pins the two spellings together so they cannot
     // drift in the meantime.
-    title: "Positioning",
+    title: "Transform",
     rows: [
       { kind: "command", command: "bind-to-camera", applies: frameBindable },
       { kind: "command", command: "unbind-from-camera", applies: frameBindable },
-      // THE LIGHT PIN (manifest R6-4.5). Filed under Positioning with the
+      // THE LIGHT PIN (manifest R6-4.5). Filed under Transform with the
       // camera-bind pair because it is the same operation on a different pair of
       // coordinates: write one item's position keys as equations reading another
       // item's, so the first tracks the second. `lightPinnable` is narrower than
@@ -1172,7 +1172,7 @@ export const TOOL_POOL = [
       { kind: "command", command: "pin-light-to-object", applies: lightPinnable },
       // THE NUDGES are here rather than in Arrange because they write the same
       // x/y the camera-bind pair does — the Inspector files those rows under
-      // Positioning, and a tool belongs beside the property it rewrites (this
+      // Transform, and a tool belongs beside the property it rewrites (this
       // group's own founding argument). They are keyboard-first and stay on the
       // arrow keys; a pointer-only user had no way to reach them at all.
       { kind: "command", command: "nudge-left", applies: movable },
@@ -1187,7 +1187,7 @@ export const TOOL_POOL = [
     // "PowerPoint-like" by charter, and Arrange is what PowerPoint (and Slides,
     // and Keynote) call the menu holding order, align, distribute and flip. Every
     // row below writes x / y / z, so the Inspector would file them all under
-    // Positioning — which is exactly why they are NOT there: seventeen layout
+    // Transform — which is exactly why they are NOT there: seventeen layout
     // rows would bury the three tools that section is about.
     title: "Arrange",
     // ORDER, then ALIGN, then DISTRIBUTE, then MIRROR/FLIP — coarsest first, and
@@ -1291,14 +1291,19 @@ export const TOOL_POOL = [
       // head of this workstream. Its three subsets landed with their rows in the
       // same commit precisely so they could not repeat it.
       //
-      // WHOLE FIRST, THEN THE PARTS, then the two halves in the order a box is
-      // written (position before size) — the pane's rows are read top-down, and
-      // the broadest verb is the one most hands want.
+      // WHOLE FIRST, THEN THE PARTS, then the parts in the order a box is written
+      // (position, size, rotation, then the transform that bundles all of them) —
+      // the pane's rows are read top-down, and the broadest verb is the one most
+      // hands want. `copy-box`'s id is UNCHANGED (WORKSTREAM VV renamed it to
+      // "Copy Transform" in App.svelte; nothing persists a command id in a
+      // document, so the id itself does not need to move — see that entry's
+      // comment). `copy-rotation` is new in the same workstream.
       { kind: "command", command: "copy-properties", applies: everyWidget },
       { kind: "command", command: "paste-properties", applies: everyWidget },
-      { kind: "command", command: "copy-box", applies: boxed },
       { kind: "command", command: "copy-position", applies: boxed },
       { kind: "command", command: "copy-dimensions", applies: boxed },
+      { kind: "command", command: "copy-rotation", applies: boxed },
+      { kind: "command", command: "copy-box", applies: boxed },
     ],
   },
   {
@@ -1475,8 +1480,8 @@ export function presetFamiliesOf(plugin) {
  * eligible for — each group carrying only the rows that APPLY, and any group
  * left with no rows dropped entirely.
  *
- * Merging is BY GROUP ID, so a widget that declares its own "positioning" tool
- * gets it beside the two frame-bind tools in ONE Positioning section rather than
+ * Merging is BY GROUP ID, so a widget that declares its own "transform" tool
+ * gets it beside the two frame-bind tools in ONE Transform section rather than
  * a second section with the same heading. A plugin joining a POOL group may
  * therefore OMIT the title and inherit the pool's — re-spelling "Edit" in every
  * plugin that adds a row to it would be a heading free to disagree with itself,
@@ -1486,14 +1491,14 @@ export function presetFamiliesOf(plugin) {
  * @returns {Array<{id: string, title: string, rows: Array}>}
  *
  * @example toolGroupsOf({type: "blur", defaults: {blur: 4}, capabilities: {}}).map((g) => g.id)
- * // ["grouping", "edit", "keyframes"]   (no frame → no Positioning, no Arrange;
+ * // ["grouping", "edit", "keyframes"]   (no frame → no Transform, no Arrange;
  * //                                      but it can still be grouped, copied and keyed)
  * @example toolGroupsOf({type: "blur", defaults: {}, capabilities: {}}).map((g) => g.id)
  * // ["grouping", "edit"]   (nothing to key either — only the item-level tools survive)
  * @example toolGroupsOf({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).map((g) => g.title)
- * // ["Positioning", "Arrange", "Grouping", "Edit", "Keyframes"]
+ * // ["Transform", "Arrange", "Grouping", "Edit", "Keyframes"]
  * @example toolGroupsOf({type: "flare", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}, presets: [{name: "Cinematic", props: {}}]}).map((g) => g.id)
- * // ["presets", "positioning", "arrange", "grouping", "edit", "keyframes"]  (plugin-owned first, inherited last)
+ * // ["presets", "transform", "arrange", "grouping", "edit", "keyframes"]  (plugin-owned first, inherited last)
  */
 export function toolGroupsOf(plugin) {
   const groups = [];
@@ -1539,7 +1544,7 @@ export function toolGroupsOf(plugin) {
  * @param {object} plugin - a widget plugin as authored
  * @returns {object} an augmented copy of it
  *
- * @example withToolGroups({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).toolGroups[0].id // "positioning"
+ * @example withToolGroups({type: "rect", defaults: {x: 0, y: 0, w: 1, h: 1}, capabilities: {}}).toolGroups[0].id // "transform"
  * @example withToolGroups({type: "blur", defaults: {blur: 4}, capabilities: {}}).toolGroups.map((g) => g.id) // ["grouping", "edit", "keyframes"]
  */
 export function withToolGroups(plugin) {

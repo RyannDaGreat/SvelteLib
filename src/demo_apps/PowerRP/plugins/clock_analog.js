@@ -327,7 +327,7 @@ export const clockAnalogPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blend/innerShadow, all EFFECT-OFF
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     N("time", "Time (seconds)", "The clock's time in seconds since 12 o'clock (0 = 12:00:00). This is the point of the widget: bind it to a shared time source with an equation — `= time` for the live presentation clock, `= time * 3600` for an hour per second — and every instance follows. Or drag a hand's yellow tip to set it by hand. To sweep the clock across a transition, keyframe this on the two slides and let the tween do it."),
     ...props("fill", "stroke", "strokeWidth"),
     BOOL("showNumerals", "Numerals", "Draw the hour numbers 1–12 around the dial."),

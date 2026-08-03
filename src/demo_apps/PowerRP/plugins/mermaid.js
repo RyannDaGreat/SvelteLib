@@ -9,7 +9,7 @@
  * ── BOX SHAPE IS A GENERIC TERM (standing manifest ruling) ────────────────────
  * A rendered diagram is a BOX exactly like an image, a PDF page, or a typeset
  * equation: it composes the SAME shared bundles (core/properties.js) —
- * positioning, the stroked-BOX slice (fill/stroke/strokeWidth/cornerRadius — a
+ * transform, the stroked-BOX slice (fill/stroke/strokeWidth/cornerRadius — a
  * framed diagram card), crop insets, and effects (shadow/bloom/blend) — so it
  * inherits every box feature for free with zero widget-specific decoration code.
  * This file is deliberately near-identical to plugins/latex.js; the only new
@@ -806,7 +806,7 @@ export const mermaidPlugin = {
   isGhost(state) {
     return mermaidIsEmpty(state.definition);
   },
-  // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY — positioning,
+  // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY — transform,
   // stroked BOX (fill/stroke/strokeWidth/cornerRadius — a framed diagram card),
   // crop insets, effects are inherited. Only `definition`/`theme`/`preserveAspect`
   // are widget-specific.
@@ -831,7 +831,7 @@ export const mermaidPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE diagram source — a multi-line STRING. Uses the "text" row kind (which
     // round-trips the whole string) for storage/undo, edited directly in the
     // Inspector — identical to how codeblock's `code` is edited (no floating

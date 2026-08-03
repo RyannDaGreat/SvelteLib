@@ -30,7 +30,7 @@
 // plain number instead of an equation.
 //
 // ── STYLING = SHARED REGISTRY, one text() op (the plaintext inheritance) ──────
-// Like plaintext.js, it composes the positioning bundle, opacity, the effects
+// Like plaintext.js, it composes the transform bundle, opacity, the effects
 // bundle (shadow/bloom/inner-shadow/blend), and reuses the PAINT-capable registry
 // `fill` prop (relabelled "Color") for the glyph ink (solid OR a gradient, run
 // through parsePaint by the text() op). emit() builds exactly ONE existing
@@ -340,7 +340,7 @@ return {
   // resizable:true → the standard 8 resize handles (same machinery as plaintext);
   // w gives the centered readout room, h gives the vertical-align stack its room.
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
-  // defaults COMPOSE from the SHARED REGISTRY (positioning + opacity + effects-off),
+  // defaults COMPOSE from the SHARED REGISTRY (transform + opacity + effects-off),
   // exactly like plaintext.js. `time` is a NUMERIC leaf (default 0 → a static
   // 00:00 the user can set or bind with `= time` to follow the shared clock). The
   // clock-format flags default to a plain MM:SS, zero-padded, 24-hour readout.
@@ -361,9 +361,9 @@ return {
   // Rows grouped into the Inspector accordion by each row's `category`. The clock's
   // own knobs live in "clock" (start-cased "Clock" by the Inspector's fallback);
   // typography in "text" (the plaintext convention); ink + opacity in "formatting";
-  // position in "positioning"; the shared effects bundle last.
+  // position in "transform"; the shared effects bundle last.
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The TIME leaf. kind "number" makes it a numeric slot: a typed number OR an
     // `=` equation (bind it to the shared `time` identifier to tick live).
     { key: "time", label: "Time (seconds)", kind: "number", category: "clock", help: "The time this clock shows, in seconds. Type a fixed number, or start with '=' to bind it to an equation — e.g. '= time' to follow the presentation's playback clock." },

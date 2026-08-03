@@ -931,7 +931,7 @@ export const filmstripPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE SHARED SOURCE ROWS (core/video_sampling.js VIDEO_SAMPLING_ROWS): the video
     // asset (VIDEO assets, stored as the served URL — same picker/drop as the player
     // and the scrubbers), the sampled window, THE frame list, and the past-the-end

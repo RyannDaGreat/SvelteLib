@@ -289,7 +289,7 @@ export const graphBarsPlugin = {
     opacity: 1,
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     { key: "mode", label: "Mode", kind: "select", options: MODES, optionLabels: MODE_LABELS, category: CAT, help: "Direct: bar i's height = f(i). Riemann: sample f(x) over [xStart, xEnd] (area under the curve). Literal: explicit comma-separated values." },
     { key: "barCount", label: "Bar count", kind: "number", min: 1, category: CAT, help: "How many bars (direct/riemann modes). DISCRETE — it snaps between integers rather than smoothly interpolating; author a refinement sequence (4→8→16→32) as per-slide keyframes." },
     // `code: {language}` — the row aspect that puts the `{}` full-screen-editor

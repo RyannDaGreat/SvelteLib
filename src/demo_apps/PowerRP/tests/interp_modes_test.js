@@ -253,14 +253,14 @@ test("an UNKNOWN mode THROWS rather than quietly tweening", () => {
 // ── The Inspector's derived row ──────────────────────────────────────────────
 
 test("interpRowFor: a DERIVED select row over the registered modes (doctests)", () => {
-  const r = interpRowFor({ key: "x", label: "X", category: "positioning" });
+  const r = interpRowFor({ key: "x", label: "X", category: "transform" });
   assert.equal(r.key, "x~interp");
   // "interp", not "interpolation" — user ruling, 2026-08-02: "you could just say
   // interp, because that's shorter… So interp is better than interpolation for
   // the UI." This label IS user-facing (it is the strip row's label).
   assert.equal(r.label, "X interp");
   assert.equal(r.kind, "select");
-  assert.equal(r.category, "positioning");
+  assert.equal(r.category, "transform");
   assert.equal(r.interpOf, "x");
   assert.ok(r.options.includes("step"));
   assert.equal(r.optionLabels.step, "Step");

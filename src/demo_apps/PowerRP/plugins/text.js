@@ -420,11 +420,11 @@ export const textPlugin = {
   inspector: [
     // The eight shared bbox rows, COMPOSED from the registry rather than
     // re-typed. They used to be hand-copied literals here — byte-identical to
-    // BUNDLES.positioning except for the `help` text they silently lacked, and
+    // BUNDLES.transform except for the `help` text they silently lacked, and
     // exactly the copy-paste drift core/properties.js exists to end: the `angle`
     // KIND that put the rotary dial on `rotation` reached every other bbox widget
     // through the bundle and would have skipped this one.
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE CONTENT ITSELF, first among this widget's own rows because it IS the
     // widget. `richtext` is the row kind for a structured value with a plain-text
     // surface (core/properties.js ROW_KINDS): it shows richTextToPlain and writes a

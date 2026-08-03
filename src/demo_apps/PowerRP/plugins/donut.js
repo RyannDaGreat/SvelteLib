@@ -119,14 +119,14 @@ export const donutPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
     inner: 0.5, // hole radius as a PROPORTION (0..1) of the outer radius
   },
-  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: positioning + fill/stroke/
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: transform + fill/stroke/
   // strokeWidth + opacity. No cornerRadius (a ring has no square corners). The
   // plugin-specific `inner` row (the donut's hole, a FORMATTING property that
   // shapes the fill like cornerRadius does for rect) stays declared here; its
   // min 0 / max 1 gives it range-scaled scrub sensitivity for free
   // (NumericField, the same mechanism opacity uses).
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("fill", "stroke", "strokeWidth"),
     ...props("opacity"),
     ...bundle("effects"),

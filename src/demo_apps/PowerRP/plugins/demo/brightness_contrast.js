@@ -152,7 +152,7 @@ export const brightnessContrastPlugin = {
     ...CUSTOM.defaults,     // the tone knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("stroke", "strokeWidth", "opacity", {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },

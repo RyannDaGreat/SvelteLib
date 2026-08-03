@@ -130,7 +130,7 @@ try {
     if (SAMPLED.includes(generator)) {
       // The FILL ROW, not the whole Inspector: the panel is several thousand px
       // of scroll and the knob list sits below the fold, so a panel-wide shot is
-      // a picture of the positioning section. This frames the thing under test.
+      // a picture of the transform section. This frames the thing under test.
       const handle = await page.evaluateHandle(() => {
         const row = [...document.querySelectorAll(".inspector .row")].find((r) => r.querySelector(".label")?.textContent === "Fill");
         row?.scrollIntoView({ block: "center" });

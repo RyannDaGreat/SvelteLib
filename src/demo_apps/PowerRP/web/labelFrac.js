@@ -18,7 +18,7 @@
  *
  *   - "Within a level and a type of divider it will be synchronized across all
  *     of them" — which is why dragging any Property Panel category divider moves
- *     Fill Material, Stroke Material and Positioning together today.
+ *     Fill Material, Stroke Material and Transform together today.
  *   - "If there was a second level that second level would not be synced with
  *     the first level, because then that would make them collide visually."
  *

@@ -23,7 +23,7 @@
       (Mandelbrot: location / colour / performance) gets one top-level group each.
     - AN EMPTY GROUP CANNOT REACH HERE. Groups arrive already filtered by
       applicability, so there is no "hide if empty" branch to forget: a rect has no
-      preset group at all, a blur layer has no Positioning group, and with nothing
+      preset group at all, a blur layer has no Transform group, and with nothing
       selected there are no groups (the pane shows one empty state instead of a
       stack of dead controls).
 
@@ -119,8 +119,8 @@
   }
 
   // Collapsed sections persist as a BROWSER setting (the Inspector's own rule for
-  // collapse state), under this pane's OWN key: collapsing "Positioning" here
-  // must not also collapse the Property Panel's Positioning rows — different
+  // collapse state), under this pane's OWN key: collapsing "Transform" here
+  // must not also collapse the Property Panel's Transform rows — different
   // content that happens to share a heading.
   const COLLAPSE_KEY = "powerrp.toolsCollapsed";
   let collapsed = $state(loadCollapsed());

@@ -79,7 +79,7 @@ export const imagePlugin = {
   activate: "asset_picker",
   primaryAsset: "src",
   // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
-  // the positioning bundle, the stroked-BORDER slice (stroke/strokeWidth/
+  // the transform bundle, the stroked-BORDER slice (stroke/strokeWidth/
   // cornerRadius — a photo has a frame, not a fill), and opacity are inherited,
   // so an added stroke aspect (dashes/caps/joins) reaches images automatically.
   // strokeWidth 0 + cornerRadius 0 by default → an undecorated image renders
@@ -100,7 +100,7 @@ export const imagePlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The image source (data URI / URL) — the registry `src` row. Default
     // assetKinds (["image"]) and assetForm ("url") match this widget exactly,
     // so no override is needed here (unlike video/filmstrip).

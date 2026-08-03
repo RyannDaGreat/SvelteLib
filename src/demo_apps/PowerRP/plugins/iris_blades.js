@@ -450,7 +450,7 @@ export const irisBladesPlugin = {
     bladeReach: DEFAULT_BLADE_REACH,
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     irisRow("blades", `Number of plates in the assembly. ${NO_IRIS_BLADES} means there is no iris at all and the bore is left bare; ${MIN_POLYGON_BLADES} is the fewest that can enclose an opening. The count is what you are looking at here — each plate is drawn, so a change is visible as plates rather than only as the shape of the hole. The aperture widget and the lens flare mean the same number.`),
     irisRow("stopDown", "How far the plates have swung across the bore: 0 is wide open, where the leaves are withdrawn into the barrel and nothing is drawn at all, and 1 is shut. Everything else about the picture follows from this — the arms lengthen, the crossings move inward, and the opening shrinks. Drag the handle on the first plate's edge."),
     irisRow("curvature", "The shape of each plate's working edge: 0 is a straight-edged leaf, 1 a fully curved one whose edges together make an exact circle, and NEGATIVE an inwardly curved leaf that bulges into the opening. Real leaves are arcs — a twelve-blade diaphragm measured off a technical drawing fits an arc to 0.005 percent — so 0 is the stylised case and the middle of the range is the common one. Drag the handle on the third plate's edge."),

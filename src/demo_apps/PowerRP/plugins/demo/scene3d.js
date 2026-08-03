@@ -875,7 +875,7 @@ function makeScene3dPlugin(member) {
     },
 
     inspector: [
-      ...bundle("positioning"),
+      ...bundle("transform"),
       { key: "src", label: "Source", kind: "asset", category: "content", help: member.srcHelp },
       ...cameraRows(),
       ...(member.kind === "splat" ? [{ key: "upright", label: "Stand upright", kind: "boolean", category: "rendering", help: "Turns the capture the right way up. Most 3D Gaussian Splat trainers write their scenes Y-DOWN (a convention inherited from COLMAP's camera frame) while this scene is Y-UP, so ON — the default — is correct for nearly every file. Turn it OFF if YOUR capture comes out upside down: it means the tool that made it already wrote Y-up, and this turn is putting it back the wrong way. Only splats offer this; a glTF model is Y-up by its own specification, so there is nothing to correct." }] : []),

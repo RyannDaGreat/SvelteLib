@@ -66,7 +66,7 @@ export const raycastDitherPlugin = {
     ...CUSTOM.defaults, // the look knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("animated", "opacity"),
     ...CUSTOM.rows, // the look knobs (Inspector "Custom" region)
   ],

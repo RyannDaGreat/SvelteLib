@@ -95,13 +95,13 @@ export const circlePlugin = {
     ...defaults("opacity"), // opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
-  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: positioning + fill/stroke/
+  // Rows COMPOSE from the SHARED PROPERTY REGISTRY: transform + fill/stroke/
   // strokeWidth + opacity. NO cornerRadius — an ellipse has no square corners to
   // round (that's why circle composes the individual fill/stroke/strokeWidth
   // props, not the whole strokedBox bundle). strokeWidth default 2 (a visible
   // 2px border) overrides the registry's 0.
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("fill", "stroke", "strokeWidth"),
     // THE UNIVERSAL STROKE-TRIM ROWS (Tier C adoption — this widget always HAD
     // render support at the ports seam; it just never declared the rows, which

@@ -215,10 +215,10 @@ export const magnifyPlugin = {
     ...CUSTOM.defaults,     // shape / magnification / points / innerRatio / supersample (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // TARGET (origin) — the world point the lens magnifies FROM (default = center).
-    { key: "origin.x", label: "Target X", kind: "number", category: "positioning" },
-    { key: "origin.y", label: "Target Y", kind: "number", category: "positioning" },
+    { key: "origin.x", label: "Target X", kind: "number", category: "transform" },
+    { key: "origin.y", label: "Target Y", kind: "number", category: "transform" },
     ...props("stroke", "strokeWidth", { stroke: { label: "Rim color" }, strokeWidth: { label: "Rim width" } }),
     // OPACITY: the default is already spread above and emit() already sends it to
     // the op — it simply had no Inspector row, so the knob existed and was

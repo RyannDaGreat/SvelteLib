@@ -169,9 +169,9 @@ test("row('cx') / row('cy'): the row's OWN key is unique ('cx'/'cy', never colli
   assert.equal(row("cx").centerAxis, "x");
 });
 
-test("BUNDLES.positioning carries cx/cy beside x/y, in order, with UNIQUE keys (a repeated key is a plugin defect — core/multiselect.js intersectRows)", () => {
-  assert.deepEqual(BUNDLES.positioning.slice(0, 4), ["x", "y", "cx", "cy"]);
-  const keys = bundle("positioning").map((r) => r.key);
+test("BUNDLES.transform carries cx/cy beside x/y, in order, with UNIQUE keys (a repeated key is a plugin defect — core/multiselect.js intersectRows)", () => {
+  assert.deepEqual(BUNDLES.transform.slice(0, 4), ["x", "y", "cx", "cy"]);
+  const keys = bundle("transform").map((r) => r.key);
   assert.deepEqual(keys, ["x", "y", "cx", "cy", "w", "h", "rotation", "rotationAnchor.x", "rotationAnchor.y", "z"]);
   assert.equal(new Set(keys).size, keys.length, "every row key in the bundle is unique");
 });

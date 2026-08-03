@@ -459,7 +459,7 @@ export const paperPeacockPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("src", { src: { label: "PDF", assetKinds: ["pdf"], help: "The PDF whose pages fan out — pick from the project's assets, upload a file, or drag one in from the Asset Explorer or Finder." } }),
     { key: "firstPage", label: "First page", kind: "number", min: 1, max: (state) => pdfPageCount(state.src) ?? null, category: "formatting", help: "The 1-based page the fan starts at (the sheet drawn ON TOP). Out-of-range values are clamped to the nearest real page and reported in the console." },
     { key: "pageCount", label: "Pages", kind: "number", min: 1, category: "formatting", help: "How many consecutive pages the fan shows. Trimmed (loudly) to the pages the PDF actually has." },

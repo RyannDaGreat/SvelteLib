@@ -951,7 +951,7 @@ export function makeFamilyPlugin(fam) {
       ...fam.defaults,
     },
     inspector: [
-      ...bundle("positioning"),
+      ...bundle("transform"),
       ...fam.rows,
       ...props("fill", "stroke", "strokeWidth"),
       // THE UNIVERSAL STROKE-TRIM ROWS (Tier C adoption — this widget always

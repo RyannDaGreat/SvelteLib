@@ -31,7 +31,7 @@
  * button entered a sustained canvas MODE — browser-measured at the time as
  * collapsing the HintBar from 36 chips to 2, which is the signature of a mode.
  * It is now the `pin-light-to-object` command, surfaced as a Tools-pane row in
- * the `positioning` pool group (core/registry.js TOOL_POOL) and in the palette
+ * the `transform` pool group (core/registry.js TOOL_POOL) and in the palette
  * like every other tool. A widget qualifies by DECLARING core/registry.js's
  * LIGHT_KEYS in its defaults (`lightPinnable`) — it opts in by having a light
  * position at all, so the next lit widget needs no declaration whatsoever.

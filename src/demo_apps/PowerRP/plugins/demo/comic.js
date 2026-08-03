@@ -104,7 +104,7 @@ export const comicPlugin = {
     ...CUSTOM.defaults,     // the comic.* look knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("stroke", "strokeWidth", "opacity", {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },

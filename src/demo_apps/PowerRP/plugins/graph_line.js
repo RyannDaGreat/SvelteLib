@@ -173,7 +173,7 @@ export const graphLinePlugin = {
     // identical to an untrimmed stroke until keyframed).
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     { key: "mode", label: "Mode", kind: "select", options: MODES, optionLabels: MODE_LABELS, category: CAT_EQ, help: "How the equation's result is read. Parametric: return [x, y]. Explicit: return y (x is the domain t). Polar: return r (x,y = r·cos t, r·sin t)." },
     // THE CODE ROW ASPECT (core/properties.js `code: {language}`): this row's
     // value IS JavaScript, so it carries the `{}` button that opens the shared

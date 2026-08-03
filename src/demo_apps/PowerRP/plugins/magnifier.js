@@ -189,23 +189,23 @@ export const magnifierPlugin = {
   // form is still read by lensGeom at emit time (older than the key-rename seam).
   legacyKeys: { rimColor: "stroke", rimWidth: "strokeWidth" },
   // `category` groups rows into the Inspector's collapsible accordion regions.
-  // POSITIONING rows stay hand-written: they are Opus24's active territory (it
+  // TRANSFORM rows stay hand-written: they are Opus24's active territory (it
   // merges the origin/target equation rows in around them — the lead's Q2
   // ruling). SHAPE + the stroked-box BORDER bundle rows are mine (this task's
   // fence); the border bundle composes from core/properties.js exactly as
   // rect/image/video do, so a future stroke aspect reaches the magnifier free.
   inspector: [
-    { key: "x", label: "X", kind: "number", category: "positioning" },
-    { key: "y", label: "Y", kind: "number", category: "positioning" },
-    { key: "w", label: "Width", kind: "number", min: 0, category: "positioning" },
-    { key: "h", label: "Height", kind: "number", min: 0, category: "positioning" },
-    { key: "z", label: "Z order", kind: "number", category: "positioning" },
+    { key: "x", label: "X", kind: "number", category: "transform" },
+    { key: "y", label: "Y", kind: "number", category: "transform" },
+    { key: "w", label: "Width", kind: "number", min: 0, category: "transform" },
+    { key: "h", label: "Height", kind: "number", min: 0, category: "transform" },
+    { key: "z", label: "Z order", kind: "number", category: "transform" },
     // ── TARGET (Opus24's territory) — the world point the lens magnifies FROM.
     // Equation-aware number rows (default self.anchors.center → the lens's own
     // center; retarget via the anchor picker / an equation to any anchor). The
     // lens renders the region around THIS point instead of its own center.
-    { key: "origin.x", label: "Target X", kind: "number", category: "positioning" }, // world point; default self.anchors.center
-    { key: "origin.y", label: "Target Y", kind: "number", category: "positioning" },
+    { key: "origin.x", label: "Target X", kind: "number", category: "transform" }, // world point; default self.anchors.center
+    { key: "origin.y", label: "Target Y", kind: "number", category: "transform" },
     // ── SHAPE (this task's fence) ──────────────────────────────────────────
     { key: "shape", label: "Shape", kind: "select", options: ["circle", "box"], optionLabels: { circle: "Circle", box: "Box" }, category: "lens" },
     // GENUINE SINGULARITY, not an arbitrary floor: the sampled source rect is a

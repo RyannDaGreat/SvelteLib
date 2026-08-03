@@ -66,7 +66,7 @@ export const rainyWindowPlugin = {
     ...CUSTOM.defaults, // the look knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("stroke", "strokeWidth", "animated", "opacity", {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },

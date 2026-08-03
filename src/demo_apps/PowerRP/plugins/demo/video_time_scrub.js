@@ -201,7 +201,7 @@ export const videoTimeScrubPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The video source — VIDEO assets (same picker/drop as the player).
     videoSrcRow("Source"),
     // THE scrub controls: the keyframable/equation-bindable time (presets write it)

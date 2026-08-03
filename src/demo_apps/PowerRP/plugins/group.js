@@ -300,11 +300,11 @@ export const groupPlugin = {
   inspector: [
     // The eight shared bbox rows, COMPOSED from the registry rather than
     // re-typed. They used to be hand-copied literals here — byte-identical to
-    // BUNDLES.positioning except for the `help` text they silently lacked, and
+    // BUNDLES.transform except for the `help` text they silently lacked, and
     // exactly the copy-paste drift core/properties.js exists to end: the `angle`
     // KIND that put the rotary dial on `rotation` reached every other bbox widget
     // through the bundle and would have skipped this one.
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The subtree crop (cropInsets) + the effects bundle — the SAME rows every
     // box/drawn widget composes, applied here to the group's member composite.
     ...bundle("cropInsets"),

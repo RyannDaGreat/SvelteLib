@@ -67,7 +67,7 @@ export const videoV5Plugin = {
     ...defaults("autoplay", "loop", "muted", "animated", "opacity"),
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     videoSrcRow("Source"),
     ...props("autoplay", "loop", "muted", "animated"),
     ...props("opacity"),

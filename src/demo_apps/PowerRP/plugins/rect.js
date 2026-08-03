@@ -16,7 +16,7 @@ export const rectPlugin = {
   title: "Rectangle",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
-  // rect is the canonical filled+stroked box, so it composes the positioning
+  // rect is the canonical filled+stroked box, so it composes the transform
   // bundle + the full strokedBox bundle (fill/stroke/strokeWidth/cornerRadius) +
   // opacity. strokeWidth default 2 overrides the registry's 0 (rect ships with a
   // visible 2px border, its long-standing default); cornerRadius 0 (square by
@@ -36,7 +36,7 @@ export const rectPlugin = {
   // Rows organized into the Inspector's collapsible accordion regions via each
   // registry row's `category` (manifest Round 12 "PROPERTY CATEGORIES").
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...bundle("strokedBox"),
     ...props("opacity"),
     ...bundle("effects"),

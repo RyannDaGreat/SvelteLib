@@ -91,7 +91,7 @@ export const graphGridPlugin = {
     opacity: 1,
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     { key: "xRange", label: "X data range", kind: "text", category: CAT, help: "[min, max, step] mapped across the box width. The step sets the spacing of the vertical grid lines. Share it with a graphLine/graphTickMarks to line up." },
     { key: "yRange", label: "Y data range", kind: "text", category: CAT, help: "[min, max, step] mapped across the box height (step = horizontal line spacing)." },
     { key: "gridAxis", label: "Grid lines", kind: "select", options: GRID_AXES, optionLabels: GRID_AXIS_LABELS, category: CAT, help: "Draw vertical lines, horizontal lines, or both." },

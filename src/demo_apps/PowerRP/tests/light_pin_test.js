@@ -113,7 +113,7 @@ test("the keys the tool is OFFERED for are the keys it WRITES (no second list)",
 
 test("the tool REACHES the Tools pane, on the two lit widgets and nowhere else", () => {
   // toolGroupsOf is ToolsPane's entire input, so this is where "the tool is
-  // offered" is decided. It rides the EXISTING `positioning` group rather than
+  // offered" is decided. It rides the EXISTING `transform` group rather than
   // opening a group of its own — a widget with one light tool and no camera-bind
   // pair would be a section of one, and the pool's whole point is that a tool that
   // writes coordinates lives beside the other tools that write coordinates.
@@ -122,10 +122,10 @@ test("the tool REACHES the Tools pane, on the two lit widgets and nowhere else",
   // already-resolved plugin and trip the pool's own malformed-row gate on the
   // preset groups it has since gained.
   const commandsIn = (type) =>
-    (registry.get(type).toolGroups.find((g) => g.id === "positioning")?.rows ?? []).map((r) => r.command);
+    (registry.get(type).toolGroups.find((g) => g.id === "transform")?.rows ?? []).map((r) => r.command);
   for (const type of ["demo_lens_flare", "demo_god_rays"]) {
     // MEMBERSHIP, not the whole array. This used to pin the section's exact
-    // contents, which made it fail the next time ANY tool joined Positioning —
+    // contents, which made it fail the next time ANY tool joined Transform —
     // a gate that reports an unrelated addition as a light-pin regression costs
     // more than it protects. Both halves of the real claim are still here: the
     // pin is offered on a lit widget, and it is withheld from one with no light.
@@ -135,7 +135,7 @@ test("the tool REACHES the Tools pane, on the two lit widgets and nowhere else",
   }
   assert.ok(!commandsIn("rect").includes("pin-light-to-object"),
     "a rect has no light position, so the pool's applies() must withhold the tool entirely");
-  assert.ok(commandsIn("rect").includes("bind-to-camera"), "a rect DOES have a Positioning section to withhold it from");
+  assert.ok(commandsIn("rect").includes("bind-to-camera"), "a rect DOES have a Transform section to withhold it from");
 });
 
 // ── refusals ──────────────────────────────────────────────────────────────────

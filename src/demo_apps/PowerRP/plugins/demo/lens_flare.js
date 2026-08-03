@@ -440,7 +440,7 @@ export const lensFlarePlugin = {
     ...CUSTOM.defaults, // the look knobs (self.*), lightX/lightY EXCLUDED (see LOOK_PARAMS)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("opacity"),
     {
       key: "lightWorldX", label: "Light X", kind: "number", category: CUSTOM_CATEGORY,

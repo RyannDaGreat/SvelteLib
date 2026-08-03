@@ -46,7 +46,7 @@ export const demoShowcasePlugin = {
   ephemeral: EPHEMERAL.NONE,
   title: "Demo Showcase",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
-  // Composes from the SHARED PROPERTY REGISTRY exactly as rect does (positioning
+  // Composes from the SHARED PROPERTY REGISTRY exactly as rect does (transform
   // + full strokedBox + opacity + effects), then adds its OWN declared custom
   // prop's default. strokeWidth 2 (a visible border by default, rect's precedent)
   // so the inner inset outline shows out of the box.
@@ -59,7 +59,7 @@ export const demoShowcasePlugin = {
     ...CUSTOM.defaults, // inset — the custom self.* prop
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...bundle("strokedBox"),
     ...props("opacity"),
     ...CUSTOM.rows, // the custom self.* prop row (Inspector "Custom" category)

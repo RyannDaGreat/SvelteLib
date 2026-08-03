@@ -27,7 +27,7 @@
  * because hit testing is bbox-based and never asks emit() what it drew.
  *
  * Structure mirrors plugins/shape.js: it composes the SHARED PROPERTY REGISTRY
- * (positioning + opacity + the effects bundle), rides the effects bundle for
+ * (transform + opacity + the effects bundle), rides the effects bundle for
  * shadow/glow/border via applyEffects, and uses the standard bbox anchors — the
  * math lives in the pure helpers below, emit() stays thin.
  */
@@ -282,7 +282,7 @@ export const qrcodePlugin = {
   isGhost(state) {
     return qrDataIsEmpty(state.data);
   },
-  // Composes the SHARED PROPERTY REGISTRY like shape/rect: positioning + opacity
+  // Composes the SHARED PROPERTY REGISTRY like shape/rect: transform + opacity
   // + the effects bundle. The QR-specific rows (data/ecLevel/dark/light/
   // quietModules) are inline plain rows (the text.js precedent for widget-local
   // props not in the shared registry). Default data is a valid URL, so a
@@ -301,7 +301,7 @@ export const qrcodePlugin = {
   // props. `category: "formatting"` groups them into the Inspector's formatting
   // accordion, beside opacity.
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     { key: "data", label: "Data", kind: "text", category: "formatting", help: "The text or URL encoded in the QR code. Longer data needs a denser (higher-version) grid." },
     { key: "ecLevel", label: "Error correction", kind: "select", options: EC_LEVELS, optionLabels: EC_LEVEL_LABELS, category: "formatting", help: "How much of the code can be damaged/covered and still scan — higher levels recover more but pack the grid denser." },
     { key: "dark", label: "Dark", kind: "color", category: "formatting", help: "The color of the dark modules (the pattern). Keep strong contrast with the light color so scanners read it." },

@@ -47,7 +47,7 @@
   centerAxis ("x" | "y" | null — the cx/cy shortcut; see below).
   Styling lives in app.css (.numfield / .eq-*; app convention: no <style>).
 
-  CENTER SHORTCUT (cx/cy, core/properties.js positioning bundle): `centerAxis`
+  CENTER SHORTCUT (cx/cy, core/properties.js transform bundle): `centerAxis`
   is a SECOND, ITEM-AWARE unit transform alongside `display` — necessarily
   separate, because every `displayUnits.js` transform (degrees, cycles) is a
   pure scalar function of the STORED value alone, while cx/cy's conversion

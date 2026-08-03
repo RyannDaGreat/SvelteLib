@@ -182,7 +182,7 @@ export const crtPlugin = {
     ...CUSTOM.defaults,     // the crt.* look knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("stroke", "strokeWidth", "opacity", {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },

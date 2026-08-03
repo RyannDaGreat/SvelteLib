@@ -68,7 +68,7 @@ export const videoV6Plugin = {
     ...defaults("autoplay", "loop", "muted", "opacity"),
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // src filtered to VIDEO assets in the picker/drop (same as the video widget).
     videoSrcRow("Source"),
     ...props("autoplay", "loop", "muted"),

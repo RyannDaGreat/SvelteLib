@@ -132,7 +132,7 @@ try {
   const findRow = (label) => `[...document.querySelectorAll(".inspector .row")].find(r => r.querySelector(".label")?.textContent === ${JSON.stringify(label)})`;
 
   // The Property Panel is a SCROLLING region (.panel-body {overflow:auto});
-  // a Fancy Arrow's rows (Positioning + Formatting + Arrow categories) exceed
+  // a Fancy Arrow's rows (Transform + Formatting + Arrow categories) exceed
   // its visible height, so getBoundingClientRect() on a lower row (e.g. "End
   // width") reports a position OUTSIDE the panel's clipped viewport — real
   // screen-coordinate interactions (page.mouse.move, elementFromPoint-style

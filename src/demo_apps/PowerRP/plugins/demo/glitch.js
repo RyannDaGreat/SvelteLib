@@ -99,7 +99,7 @@ export const glitchPlugin = {
     ...CUSTOM.defaults, // the glitch.* look knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("stroke", "strokeWidth", "animated", "opacity", {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },

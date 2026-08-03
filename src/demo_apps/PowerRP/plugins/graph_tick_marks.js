@@ -155,7 +155,7 @@ export const graphTickMarksPlugin = {
     opacity: 1,
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     { key: "xRange", label: "X data range", kind: "text", category: CAT, help: "[min, max, step] mapped across the box width. The step is the spacing between major ticks. Share it with a graphLine/graphGrid to line them up." },
     { key: "yRange", label: "Y data range", kind: "text", category: CAT, help: "[min, max, step] mapped across the box height (math up-is-positive)." },
     { key: "axes", label: "Axes", kind: "select", options: AXES, optionLabels: AXIS_LABELS, category: CAT, help: "Which axes to draw: x, y, or both." },

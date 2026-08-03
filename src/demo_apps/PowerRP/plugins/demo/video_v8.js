@@ -91,7 +91,7 @@ export const videoV8Plugin = {
     ...defaults("autoplay", "loop", "muted", "opacity"),
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // Video source — filtered to VIDEO assets in the AssetField picker/drop,
     // exactly like the stock player's src row.
     videoSrcRow("Source"),

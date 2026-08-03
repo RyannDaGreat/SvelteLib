@@ -390,16 +390,16 @@ export const godRaysPlugin = {
     ...CUSTOM.defaults, // the march/mask/look knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE LIGHT — world coordinates, so an equation can bind them to a sun widget.
-    { key: "lightWorldX", label: "Light X", kind: "number", category: "positioning",
+    { key: "lightWorldX", label: "Light X", kind: "number", category: "transform",
       // NOTHING IS DECLARED HERE FOR THE PIN, and that is the point of manifest
       // R6-4.5: this row used to repeat lens_flare's `pinLight` aspect verbatim to
       // get the same eyedropper. The pin is now a Tools-pane tool whose gate reads
       // core/registry.js's LIGHT_KEYS off `defaults`, so this widget inherits it
       // from having a light position at all.
       help: "The light's X in DOCUMENT coordinates — not a position inside this box. Bind it to a sun widget with an equation (e.g. = sun.anchors.center.x), or use the Tools pane's Pin Light Position to an Object and pick the sun, and the beams follow it anywhere, including off the edge of the slide." },
-    { key: "lightWorldY", label: "Light Y", kind: "number", category: "positioning",
+    { key: "lightWorldY", label: "Light Y", kind: "number", category: "transform",
       help: "The light's Y in DOCUMENT coordinates. A value above the region (a smaller Y than the box's top) is the normal case for a high sun; the rays fade out as the light travels well past the region." },
     ...props("cornerRadius", "stroke", "strokeWidth", "opacity", {
       cornerRadius: { label: "Corner radius" },

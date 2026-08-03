@@ -158,7 +158,7 @@ return {
     ...CUSTOM.defaults,
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("fill", "stroke", "strokeWidth"),
     ...props("opacity"),
     ...CUSTOM.rows,

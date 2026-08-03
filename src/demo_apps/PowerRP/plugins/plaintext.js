@@ -18,7 +18,7 @@
  * string) — a sensible coercion, NOT a silent swallow.
  *
  * ── STYLING = SHARED REGISTRY, one text() op ──────────────────────────────────
- * It composes the SHARED PROPERTY REGISTRY like rect.js: the positioning bundle,
+ * It composes the SHARED PROPERTY REGISTRY like rect.js: the transform bundle,
  * opacity, and the effects bundle (shadow/bloom/blend). The ink colour reuses the
  * registry's PAINT-capable `fill` prop (relabelled "Color"), so a solid colour
  * OR a linear/radial gradient paints the glyphs for free — the text() IR op runs
@@ -43,7 +43,7 @@ import { inkMeasure } from "../core/ink_metrics.js";
 import { glyphOutlinesReady, textMorphPayload } from "../core/glyph_outlines.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { text } from "../render_gpu/ir.js";
-import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
+import { DEFAULT_FONT, fontOptions, hasEmbeddableFile } from "../render_gpu/fonts.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 
 // The app's default text size, in canvas units — matches plugins/text.js's 36u
@@ -577,7 +577,7 @@ export const plaintextPlugin = {
   isGhost(state) {
     return plaintextIsEmpty(state.text);
   },
-  // defaults COMPOSE from the SHARED REGISTRY: positioning coords + opacity +
+  // defaults COMPOSE from the SHARED REGISTRY: transform coords + opacity +
   // effects-off, exactly like rect.js. `text` is a plain STRING (NOT a {runs,
   // paras} rich value — the whole point of this widget). `fill` is the glyph ink
   // (paint-capable via the registry `fill` prop); the registry declares no
@@ -595,9 +595,9 @@ export const plaintextPlugin = {
   },
   // Rows grouped into the Inspector accordion via each row's `category`. The
   // string CONTENT + typography live in "text"; the ink + opacity in
-  // "formatting"; position in "positioning"; the shared effects bundle last.
+  // "formatting"; position in "transform"; the shared effects bundle last.
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The single string. kind "text" is an ordinary field (the qr/codeblock
     // precedent) that also accepts an `=` equation — this is the widget's whole
     // "single equation-bindable string" surface, with NO floating format bar.
@@ -684,7 +684,7 @@ export const plaintextPlugin = {
    * Query (reads the glyph-outline seam). Why this text box cannot morph YET, or
    * null — the `morphNotReady` half of the morph protocol (core/registry.js).
    *
-   * TWO DISTINCT REASONS, and keeping them apart is the whole value of the hook.
+   * THREE DISTINCT REASONS, and keeping them apart is the whole value of the hook.
    * An EMPTY box has no ink at all (emit() returns [] and isGhost() grants it the
    * dashed affordance), so there is nothing to morph and never will be until
    * somebody types. A MISSING OUTLINE SOURCE is temporary and is about the app,
@@ -694,15 +694,42 @@ export const plaintextPlugin = {
    * Collapsing those two into "it didn't morph" would leave an author unable to
    * tell a widget they must fix from a wait they must sit through.
    *
+   * ── THE THIRD REASON: A FONT WITH NO COMMITTED TTF (workstream ZZ) ───────────
+   * The seam being INSTALLED does not mean it can answer for THIS font. `system`
+   * — which is DEFAULT_FONT, so it is what every text box has until an author
+   * changes it — has no embeddable file at all (fonts.js hasEmbeddableFile is
+   * false; it resolves to whatever the host provides), so fontkit has nothing to
+   * parse and `morphPaths` returns a payload with ZERO subpaths.
+   *
+   * That empty payload is not caught downstream: `assertMorphPaths` accepts an
+   * empty `subpaths` array as well-formed, and render_gpu/ports.js `morphIR`
+   * REPLACES the plugin's own emit() for the whole transition (ports.js:488). So
+   * the widget drew nothing from the first interior frame to the last and its real
+   * emit() only returned when the transition ended — measured as 0 ops at every
+   * alpha, which is exactly the reported "it just disappeared for a while and then
+   * reappeared" (user, 2026-08-02). fontkit_outlines.js's own docblock already
+   * claimed "the caller's widget then reports not ready rather than morphing";
+   * this is the hook actually doing so, rather than the claim being aspirational.
+   *
+   * Asking `hasEmbeddableFile` — a PURE predicate on the id — rather than counting
+   * the subpaths a trial `morphPaths` returns is deliberate: the question is a
+   * property of the FONT, answerable without laying out a single glyph, and the
+   * policy asks this on every frame of every transition.
+   *
    * @example plaintextPlugin.morphNotReady({ text: "" }) // 'text to morph (this box has none)'
-   * @example // with the render side's outline seam installed and a non-empty box:
-   * @example // plaintextPlugin.morphNotReady({ text: "hello" }) // null
+   * @example plaintextPlugin.morphNotReady({ text: "hi", font: "system" }) // 'a font with real letterforms — "system" has no committed TTF (it is whatever the host provides), so there are no outlines to morph. Pick a committed family on the Font row.'
+   * @example // with the render side's outline seam installed, a non-empty box and a committed family:
+   * @example // plaintextPlugin.morphNotReady({ text: "hello", font: "inter" }) // null
    */
   morphNotReady(s) {
     if (plaintextIsEmpty(s.text)) return "text to morph (this box has none)";
-    return glyphOutlinesReady()
-      ? null
-      : "the glyph-outline seam to be installed (core/glyph_outlines.js — the render side supplies letterforms; the CLI has none)";
+    if (!glyphOutlinesReady())
+      return "the glyph-outline seam to be installed (core/glyph_outlines.js — the render side supplies letterforms; the CLI has none)";
+    const font = s.font ?? DEFAULT_FONT;
+    if (!hasEmbeddableFile(font))
+      return `a font with real letterforms — "${font}" has no committed TTF (it is whatever the host provides), ` +
+        `so there are no outlines to morph. Pick a committed family on the Font row.`;
+    return null;
   },
   /**
    * Query (reads the glyph-outline seam and the ink measure). THE MORPH OUTLINE

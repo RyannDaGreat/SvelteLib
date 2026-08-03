@@ -444,7 +444,7 @@ return {
   isGhost(state) {
     return numberIsEmpty(state.value);
   },
-  // defaults COMPOSE from the SHARED REGISTRY: positioning coords + opacity +
+  // defaults COMPOSE from the SHARED REGISTRY: transform coords + opacity +
   // effects-off, exactly like plaintext.js. `value` is a plain NUMBER (making it
   // an equation slot). `fill` is the glyph ink (paint-capable; the registry
   // declares no default, so it is supplied here, matching the text widgets' ink).
@@ -464,9 +464,9 @@ return {
   // Rows grouped into the Inspector accordion by each row's `category`. The value
   // + numeric-format knobs + the ink live in "formatting" (so "Value" is the
   // prominent first row of the second group); typography in "text"; position in
-  // "positioning"; the shared effects bundle last.
+  // "transform"; the shared effects bundle last.
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The number itself. kind "number" is an equation-capable numeric slot — the
     // widget's whole "equation-bindable value" surface (typed value OR `=` expr).
     { key: "value", label: "Value", kind: "number", category: "formatting", help: "The number this readout shows. Type a number, or start with '=' to bind it to a live equation (e.g. = my_var, = box.w, or = 3.14159)." },

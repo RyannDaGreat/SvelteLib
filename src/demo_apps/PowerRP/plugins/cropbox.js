@@ -37,7 +37,7 @@ export const cropboxPlugin = {
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false, ghost: true },
   // defaults + rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js):
   // the crop box IS a filled+stroked box (it shares rect's box shape), so it
-  // composes positioning + the full strokedBox bundle + opacity, PLUS its own
+  // composes transform + the full strokedBox bundle + opacity, PLUS its own
   // `target` picker. strokeWidth default 2 (visible border, its long-standing
   // default) overrides the registry's 0; fill defaults to fully-transparent
   // (#00000000 — a crop box shows its target through, no background by default).
@@ -55,7 +55,7 @@ export const cropboxPlugin = {
   // guarded in tests/multipaste_test.js).
   itemRefs: [["target"]],
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // `options`/`optionLabels` are populated PER-DOCUMENT by the Inspector at
     // render time (transitions.js `curve` select precedent) — a plugin's static
     // inspector array has no document to enumerate. See web/Inspector.svelte's

@@ -288,7 +288,7 @@ const QUARANTINE = [
   {
     file: "core/properties.js",
     code: 'props("x", "y")',
-    observed: '[{"key":"x","label":"X","kind":"number","category":"positioning","help":"Horizontal position of the widget\'s top-left co',
+    observed: '[{"key":"x","label":"X","kind":"number","category":"transform","help":"Horizontal position of the widget\'s top-left corn',
     why: "rows gained `help`; the example still lists the pre-help shape",
   },
   {

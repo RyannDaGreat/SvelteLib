@@ -342,7 +342,7 @@ test("sweep: BLIND rows are REPORTED, not silently scrubbing at 1/px", () => {
   // What IS asserted is the structural promise — blind means UNTOUCHED.
   const blind = resolvedRows.filter((r) => r.coefficient == null);
   const zeroDefault = blind.filter((r) => r.defaultValue === 0);
-  // A plugin's OWN rows — not the shared positioning/box/effect bundles, whose
+  // A plugin's OWN rows — not the shared transform/box/effect bundles, whose
   // keys live in PROPS (dotted keys, "shadow.dx", come from those bundles too).
   // Only an own row can be a widget-specific fractional knob, so those are the
   // ones a human should read; the 1000-odd bundle rows would bury them.

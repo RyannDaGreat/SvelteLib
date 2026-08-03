@@ -819,7 +819,7 @@ return {
     props: { preset: id },
   })),
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     N("time", "Time (seconds)", "The clock's time in seconds since 12 o'clock (0 = 12:00:00). This is the point of the widget: bind it to a shared time source with an equation — `= time` for the live presentation clock, `= time * 3600` for an hour per second — and every instance follows. Or drag a hand's yellow tip to WIND it: sweeping the second hand once around advances the minute hand by one, exactly like the rotation property. To sweep the clock across a transition, keyframe this on the two slides and let the tween do it."),
     SELECT("preset", "Preset", "The dial style every blank row below inherits from. It is an ordinary property, so it keyframes and tweens like any other — and pinning a row below overrides just that row, without disturbing the rest.", PRESET_IDS, PRESET_LABELS),
     ...props("fill", "stroke", "strokeWidth"),

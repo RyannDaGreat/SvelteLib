@@ -137,7 +137,7 @@ export const videoPlugin = {
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF (Round 12D)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // The video source (data URI / URL) — the registry `src` row, filtered to
     // VIDEO assets in the AssetField picker/drop (assetForm stays "url", the
     // registry default: video.src stores the served /asset/<project>/<file>

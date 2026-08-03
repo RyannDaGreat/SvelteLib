@@ -79,7 +79,7 @@ export const videoV2Plugin = {
     ...bundleNestedDefaults("effects"),
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     videoSrcRow("Source"),
     ...props("autoplay", "loop", "muted", "animated"),
     ...bundle("strokedBorder"),

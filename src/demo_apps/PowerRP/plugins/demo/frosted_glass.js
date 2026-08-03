@@ -194,7 +194,7 @@ export const frostedGlassPlugin = {
     ...CUSTOM.defaults,     // the frosted.* look knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("stroke", "strokeWidth", "opacity", {
       stroke: { label: "Border color" },
       strokeWidth: { label: "Border width" },

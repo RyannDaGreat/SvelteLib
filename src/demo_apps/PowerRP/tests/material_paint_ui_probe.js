@@ -126,7 +126,7 @@ try {
   await new Promise((r) => setTimeout(r, 250));
 
   // ── Round 2 #26 — Fill/Stroke Material are TOP-LEVEL Inspector sections ──────
-  // (peers of Positioning), NOT rows inside Formatting. The user rejected the
+  // (peers of Transform), NOT rows inside Formatting. The user rejected the
   // first shipped version; this pins the corrected structure permanently.
   const sections = await page.evaluate(() => {
     const cats = [...document.querySelectorAll(".inspector .prop-category")];

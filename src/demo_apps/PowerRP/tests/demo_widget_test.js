@@ -76,8 +76,8 @@ test("demo_showcase: the custom prop is an Inspector row in the `custom` categor
   assert.ok(insetRow, "inset row present in inspector");
   assert.equal(insetRow.kind, "number");
   assert.equal(insetRow.category, CUSTOM_CATEGORY);
-  // Still composes the shared bundles alongside it (positioning is present).
-  const posKeys = bundle("positioning").map((r) => r.key);
+  // Still composes the shared bundles alongside it (transform is present).
+  const posKeys = bundle("transform").map((r) => r.key);
   assert.ok(posKeys.every((k) => demoShowcasePlugin.inspector.some((r) => r.key === k)));
 });
 

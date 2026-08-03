@@ -1370,7 +1370,7 @@ export const mandelbrotPlugin = {
     ...CUSTOM.defaults,     // the mandelbrot.* knobs (self.*)
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     ...props("stroke", "strokeWidth", "opacity", {
       stroke: { label: "Edge color" },
       strokeWidth: { label: "Edge width" },

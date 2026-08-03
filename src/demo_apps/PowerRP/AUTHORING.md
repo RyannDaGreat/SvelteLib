@@ -307,7 +307,7 @@ shaders and effects like `demo_glass`, `demo_crt`, `demo_glitch`,
 assuming an effect does not exist.
 
 Every widget also gets the **universal property bundles** (`core/properties.js`):
-`positioning` (x/y/w/h/rotation/scale/rotationAnchor), `opacity`, and `effects`
+`transform` (x/y/w/h/rotation/scale/rotationAnchor), `opacity`, and `effects`
 (shadow, inner shadow, bloom, blend mode, soft edges). And a stored `w`/`h` **may
 be negative** — that is a flip, resolved in one place, and no plugin ever sees it.
 
@@ -360,7 +360,7 @@ return {                         // exactly one return, yielding the plugin
   title: "Squircle",
   capabilities: {bbox: true, transform: true, resizable: true},
   defaults: {type: "my_squircle", x: 0, y: 0, w: 100, h: 100, /* … */},
-  inspector: [...bundle("positioning"), ...props("fill")],
+  inspector: [...bundle("transform"), ...props("fill")],
   emit(s) { return [rect({x: 0, y: 0, w: s.w, h: s.h, fill: s.fill})]; },
   anchors: standardBBoxAnchors,
 };
@@ -521,7 +521,7 @@ Conventions to follow:
 
 Then the plugin object itself declares `type`, `title`, `capabilities`,
 `defaults` (spreading `bundleNestedDefaults("effects")` and the custom
-defaults), `inspector` (spreading `bundle("positioning")`, the custom rows,
+defaults), `inspector` (spreading `bundle("transform")`, the custom rows,
 `props("opacity")`, `bundle("effects")`), `emit`, `localBounds`, `cullMargin` and
 `anchors`.
 
