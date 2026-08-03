@@ -95,6 +95,7 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import DirtyImage from "../../../lib/DirtyImage.svelte";
   import { resolveTransition, transitionType } from "../core/transitions.js";
+  import { formatSeconds } from "./formatSeconds.js";
   import { renderCameraFrame } from "./gpuService.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
@@ -281,10 +282,13 @@
    * @example // Before the first measurement, assume the roomiest form.
    * @example pillLabel({title: "Fade", seconds: 1}, null)
    * 'Fade · 1s'
+   * @example // Display caps at 3 decimals — the stored value stays exact.
+   * @example pillLabel({title: "Tween", seconds: 2.9800000000000004}, null)
+   * 'Tween · 2.98s'
    */
   function pillLabel(info, heightPx) {
-    if (heightPx === null || heightPx >= PILL_FULL_MIN_H) return `${info.title} · ${info.seconds}s`;
-    if (heightPx >= PILL_SECONDS_MIN_H) return `${info.seconds}s`;
+    if (heightPx === null || heightPx >= PILL_FULL_MIN_H) return `${info.title} · ${formatSeconds(info.seconds)}`;
+    if (heightPx >= PILL_SECONDS_MIN_H) return formatSeconds(info.seconds);
     return "";
   }
 
@@ -1017,7 +1021,7 @@
                same idea."). Like the rows, it renders on TWO axes: `.selected` is
                membership in the set, `.primary` is the one the panel is named
                after. -->
-          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${info.seconds}s — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
+          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${formatSeconds(info.seconds)} — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
             <button
               class="tr-chip"
               class:selected={app.isTransitionSelected(slide.id)}
@@ -1029,7 +1033,7 @@
               onclick={(e) => app.selectTransitionAt(slide.id, { shift: e.shiftKey, toggle: e.metaKey || e.ctrlKey })}
             >
               <iconify-icon icon={TRANSITION_ICONS[info.type] ?? "mdi:transition"} width="13" height="13"></iconify-icon>
-              <span class="tr-label">{info.title} · {info.seconds}s</span>
+              <span class="tr-label">{info.title} · {formatSeconds(info.seconds)}</span>
             </button>
           </Tooltip>
           <span class="tr-line"></span>
@@ -1081,7 +1085,7 @@
                name-only line is the Open Project card's precedent (App.svelte), and
                it is information whenever the label is ellipsized. -->
           <div>{slide.name}</div>
-          {#if i > 0}{@const info = transitionInfo(i)}<div>Transition in: {info.title} · {info.seconds}s</div>{/if}
+          {#if i > 0}{@const info = transitionInfo(i)}<div>Transition in: {info.title} · {formatSeconds(info.seconds)}</div>{/if}
           {#if slide.enabled === false}
             <div class="tool-tip-requires">Disabled — its delta is skipped, so later slides inherit as if it were not here</div>
           {/if}
@@ -1252,7 +1256,7 @@
                ⛓ alone, and the transition's type and duration are still one hover
                away. The label is never hidden — a STANDING ruling ("The tween
                thing should always be there") — it is SHORTENED. -->
-          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${info.seconds}s — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
+          <Tooltip text={`Transition into slide ${i + 1}: ${info.title} · ${formatSeconds(info.seconds)} — click to edit, Shift or ${CMD_KEY_NAME}-click to select several`}>
             <button
               class="spine-pill tr-chip"
               class:selected={app.isTransitionSelected(slide.id)}
