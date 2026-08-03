@@ -208,6 +208,10 @@ export const magnifierPlugin = {
     { key: "origin.y", label: "Target Y", kind: "number", category: "positioning" },
     // ── SHAPE (this task's fence) ──────────────────────────────────────────
     { key: "shape", label: "Shape", kind: "select", options: ["circle", "box"], optionLabels: { circle: "Circle", box: "Box" }, category: "lens" },
+    // GENUINE SINGULARITY, not an arbitrary floor: the sampled source rect is a
+    // square of side 2r/m (see the header doc), so m = 0 divides by zero — there
+    // is no "0x magnification" to render (unlike the gear's ratios, this isn't a
+    // plain multiplication with a defined limit at 0). Held just above zero.
     { key: "magnification", label: "Magnification", kind: "number", min: 0.01, category: "lens" },
     { key: "supersample", label: "Supersample", kind: "boolean", category: "lens" },
     // The stroked-BORDER bundle (stroke/strokeWidth/cornerRadius) in the lens
