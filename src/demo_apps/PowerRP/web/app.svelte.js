@@ -23,7 +23,7 @@ import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframe
 import { unionRect } from "../core/geometry.js";
 // Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
 import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
-import { resolveTransition, retypedTransition } from "../core/transitions.js";
+import { isSlideField, resolveTransition, retypedTransition, slideFieldKeys } from "../core/transitions.js";
 import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWorld, nodeModifierPoints } from "../core/derive.js";
 // The LIST-ELEMENT operations the HANDLE actions route through — one mechanism for
 // per-element hide and purge, shared with the Inspector's list control.
@@ -1682,9 +1682,16 @@ export class PowerRPApp {
   setSelectedTransitionsProp(key, value) {
     const ids = new Set(this.selectedTransitionIds());
     if (ids.size === 0) return;
-    const slides = this.doc.slides.map((s, i) =>
-      ids.has(s.id) ? { ...s, transition: { ...resolveTransition(this.doc, i), [key]: value } } : s
-    );
+    // A `slideField` row (core/transitions.isSlideField — today only the LINGER)
+    // stores at slide.<key>, NOT inside the transition record, so writing it must
+    // leave `transition` alone: routing here rather than at the row keeps the
+    // serialized transition shape exactly what core/transitions.js defines.
+    const slideField = isSlideField(key);
+    const slides = this.doc.slides.map((s, i) => {
+      if (!ids.has(s.id)) return s;
+      if (slideField) return { ...s, [key]: value };
+      return { ...s, transition: { ...resolveTransition(this.doc, i), [key]: value } };
+    });
     this.commit({ ...this.doc, slides });
   }
 
@@ -1727,7 +1734,17 @@ export class PowerRPApp {
    */
   transitionAt(slideId) {
     const i = this.slideIndexOf(slideId);
-    return i === -1 ? null : resolveTransition(this.doc, i);
+    if (i === -1) return null;
+    // SLIDE FIELDS are folded IN for DISPLAY only (core/transitions.slideFieldKeys):
+    // the boundary panel renders a `slideField` row through the same generic row
+    // machinery as the rest, and that machinery reads one flat record. The
+    // document is untouched — `resolveTransition` stays the serialized transition
+    // shape, and the write path routes these keys back out to the slide.
+    // `?? null` so a slide that never set one displays as UNSET rather than as the
+    // string "undefined" (the nullable row's own two spellings of absence).
+    const slideFields = {};
+    for (const key of slideFieldKeys()) slideFields[key] = this.doc.slides[i][key] ?? null;
+    return { ...resolveTransition(this.doc, i), ...slideFields };
   }
 
   /**
@@ -1739,8 +1756,14 @@ export class PowerRPApp {
   setTransitionProp(slideId, key, value) {
     const i = this.slideIndexOf(slideId);
     if (i === -1) return;
-    const transition = { ...resolveTransition(this.doc, i), [key]: value };
-    const slides = this.doc.slides.map((s, j) => (j === i ? { ...s, transition } : s));
+    // Same slide-field routing as the batch path above — one predicate, both
+    // entrances, so a slide field cannot land inside a transition record by
+    // whichever door the write came through.
+    const slides = this.doc.slides.map((s, j) => {
+      if (j !== i) return s;
+      if (isSlideField(key)) return { ...s, [key]: value };
+      return { ...s, transition: { ...resolveTransition(this.doc, i), [key]: value } };
+    });
     this.commit({ ...this.doc, slides });
   }
 

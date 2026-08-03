@@ -12,12 +12,14 @@ import {
   TRANSITION_TYPES, TRANSITION_BASE_INSPECTOR,
   defaultTransition, resolveTransition, retypedTransition, transitionType,
   transitionInspector, durationMigrations, withDurationMigrated,
+  isSlideField, slideFieldKeys,
 } from "../core/transitions.js";
 import { newDocument, withNewSlide } from "../core/document.js";
 import { createPresenter } from "../core/presentation.js";
 import { fadeStrength, isFadeFrame } from "../web/transitionRender.js";
+import { timelinePlan, DEFAULT_HOLD_SECONDS } from "../web/videoExport.js";
 import { ease } from "../core/interpolators.js";
-import { SECONDS_SCRUB, PROPS } from "../core/properties.js";
+import { SECONDS_SCRUB, PROPS, NULLABLE_ROW_KINDS, customProps } from "../core/properties.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -67,11 +69,63 @@ test("retypedTransition preserves superclass, swaps class", () => {
 // ── Inspector rows (Opus10 seam) ───────────────────────────────────────────
 
 test("transitionInspector = base rows + type extras; base is superclass rows", () => {
-  assert.deepEqual(TRANSITION_BASE_INSPECTOR.map((r) => r.key), ["seconds", "curve", "sound"]);
-  assert.deepEqual(transitionInspector("tween").map((r) => r.key), ["seconds", "curve", "sound"]);
-  assert.deepEqual(transitionInspector("fade").map((r) => r.key), ["seconds", "curve", "sound"]);
+  // `autoAdvance` (the LINGER) is here even though it stores on the SLIDE — see
+  // slideFieldKeys' header. The rows list is the PANEL, not the record shape.
+  const base = ["seconds", "curve", "sound", "autoAdvance"];
+  assert.deepEqual(TRANSITION_BASE_INSPECTOR.map((r) => r.key), base);
+  assert.deepEqual(transitionInspector("tween").map((r) => r.key), base);
+  assert.deepEqual(transitionInspector("fade").map((r) => r.key), base);
   // row shape matches plugin inspector rows (label/key/kind present)
   for (const r of transitionInspector("tween")) assert.ok(r.key && r.label && r.kind);
+});
+
+// ── THE LINGER: a slideField row, and the nullable number aspect ──────────────
+
+test("autoAdvance is a slideField row; the transition RECORD is untouched by it", () => {
+  // The row renders on the transition panel...
+  const linger = TRANSITION_BASE_INSPECTOR.find((r) => r.key === "autoAdvance");
+  assert.equal(linger.slideField, true);
+  assert.equal(linger.label, "Linger");
+  assert.equal(isSlideField("autoAdvance"), true);
+  assert.deepEqual(slideFieldKeys(), ["autoAdvance"]);
+  // ...and every OTHER row is NOT a slide field, so the routing cannot over-fire.
+  for (const key of ["seconds", "curve", "sound"]) assert.equal(isSlideField(key), false);
+  // BYTE-IDENTICAL LEGACY: the serialized transition shape gained nothing. A
+  // slide with no autoAdvance resolves to exactly the four keys it always had.
+  assert.deepEqual(Object.keys(resolveTransition({ slides: [{}, {}] }, 1)).sort(), ["curve", "seconds", "sound", "type"]);
+  assert.deepEqual(defaultTransition("tween"), { seconds: 0.5, curve: "smooth", sound: null, type: "tween" });
+  // A LINGER set on the slide does not leak into the record either.
+  assert.equal("autoAdvance" in resolveTransition({ slides: [{}, { autoAdvance: 3 }] }, 1), false);
+});
+
+test("autoAdvance shares the SECONDS unit-kind and declares the nullable aspect", () => {
+  const linger = TRANSITION_BASE_INSPECTOR.find((r) => r.key === "autoAdvance");
+  // Same scrub rate as the seconds row beside it — two time rows on one panel
+  // that moved at different speeds would be a bug the user feels immediately.
+  assert.equal(linger.scrub, SECONDS_SCRUB);
+  assert.equal(linger.min, 0);
+  assert.equal(linger.category, "transition");
+  // NULL IS NOT ZERO — the whole reason the aspect exists (0 = advance at once,
+  // absent = never). Both consumers read `typeof x === "number"`.
+  assert.equal(linger.nullable, true);
+  assert.ok(NULLABLE_ROW_KINDS.includes(linger.kind), "a nullable row's kind must have an unset display");
+  // The help text names BOTH consumers and says what CLEARED means.
+  for (const phrase of ["presenter", "export", "never"]) assert.ok(linger.help.includes(phrase), `help must mention "${phrase}"`);
+});
+
+test("the `nullable` aspect is loud where it would do nothing", () => {
+  // A kind with no unset display must not silently accept the aspect.
+  assert.throws(
+    () => customProps([{ name: "flagged", kind: "boolean", label: "Flagged", nullable: true, default: false }]),
+    /nullable.*"boolean"/s,
+  );
+  // A non-boolean value is a typo, not a declaration.
+  assert.throws(
+    () => customProps([{ name: "dwell", kind: "number", label: "Dwell", nullable: "yes", default: 0 }]),
+    /boolean aspect/,
+  );
+  // The legitimate declaration passes and flows through to the row.
+  assert.equal(customProps([{ name: "dwell", kind: "number", label: "Dwell", nullable: true, default: 0 }]).rows[0].nullable, true);
 });
 
 // ── 14.6: the seconds row inherits the LOW registry scrub (unit-kind fix) ──────
@@ -267,6 +321,68 @@ test("bare-node: an ANIMATED transition with NO scheduler fails LOUDLY (no silen
   const pres = createPresenter(() => doc, () => {}); // animated path, but no scheduler injected
   pres.goTo(0);
   assert.throws(() => pres.next(), /frame scheduler/);
+});
+
+// ── THE LINGER IN PLAYBACK: null ≠ 0, measured at the presenter ───────────────
+
+/** The presenter arms its linger with the GLOBAL setTimeout (core stays
+ *  scheduler-agnostic for FRAMES, but a linger is a plain timeout). Swapping it
+ *  for a recorder is how a bare-node test reads the arming decision AND the
+ *  delay without waiting real seconds. Command: restores the real one. */
+function withRecordedTimeouts(fn) {
+  const realSetTimeout = globalThis.setTimeout;
+  const armed = [];
+  globalThis.setTimeout = (cb, ms) => { armed.push({ cb, ms }); return armed.length; };
+  try { fn(armed); } finally { globalThis.setTimeout = realSetTimeout; }
+}
+
+test("PLAYBACK: an absent linger arms NOTHING; 0 arms an IMMEDIATE advance", () => {
+  // The two meanings the `nullable` aspect exists to keep apart, measured at the
+  // consumer rather than asserted about the row.
+  withRecordedTimeouts((armed) => {
+    const noLinger = twoSlideDoc(0);
+    const pres = createPresenter(() => noLinger, () => {});
+    pres.goTo(0);
+    assert.equal(armed.length, 0, "no autoAdvance ⇒ the presenter waits for a click");
+  });
+  withRecordedTimeouts((armed) => {
+    const zero = twoSlideDoc(0);
+    zero.slides[0].autoAdvance = 0; // "advance the instant this slide arrives"
+    const pres = createPresenter(() => zero, () => {});
+    pres.goTo(0);
+    assert.equal(armed.length, 1);
+    assert.equal(armed[0].ms, 0);
+  });
+  withRecordedTimeouts((armed) => {
+    const lingering = twoSlideDoc(0);
+    lingering.slides[0].autoAdvance = 3;
+    const pres = createPresenter(() => lingering, () => {});
+    pres.goTo(0);
+    assert.equal(armed[0].ms, 3000); // seconds → ms
+  });
+  // A CLEARED linger is null, not undefined (the Inspector's × writes literal
+  // null) — the presenter must read that as absent too, or clearing would arm a
+  // 0ms advance, which is the opposite instruction.
+  withRecordedTimeouts((armed) => {
+    const cleared = twoSlideDoc(0);
+    cleared.slides[0].autoAdvance = null;
+    const pres = createPresenter(() => cleared, () => {});
+    pres.goTo(0);
+    assert.equal(armed.length, 0, "a CLEARED linger (null) must behave exactly like an absent one");
+  });
+});
+
+test("EXPORT: the linger is the slide's dwell; cleared falls back to holdSeconds", () => {
+  // The SECOND consumer named in the row's help. Same document, four lingers.
+  const holdOf = (autoAdvance) => {
+    const doc = twoSlideDoc(0);
+    if (autoAdvance !== undefined) doc.slides[0].autoAdvance = autoAdvance;
+    return timelinePlan(doc, { endIndex: 0 }).segments[0].seconds;
+  };
+  assert.equal(holdOf(undefined), DEFAULT_HOLD_SECONDS); // never set
+  assert.equal(holdOf(null), DEFAULT_HOLD_SECONDS);      // CLEARED — same as never set
+  assert.equal(holdOf(0), 0);                            // "advance immediately" is honored, not defaulted
+  assert.equal(holdOf(4), 4);
 });
 
 console.log(`\n${passed} tests passed`);

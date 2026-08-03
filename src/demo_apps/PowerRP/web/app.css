@@ -7878,6 +7878,23 @@ audio.ae-preview-media {
   box-sizing: border-box;
 }
 
+/* ── The NULLABLE number row (core/properties.js THE `nullable` ROW ASPECT) ──
+   A number row that may hold NOTHING gains a clear (×) / set (+) button beside
+   the scrubber, and shows "(none)" when unset. --a-sp-1 is the same gap
+   .assetfield-actions uses between its buttons, because this IS that affordance
+   on a different control and the two must not look like two conventions. */
+.numfield-nullable {
+  gap: var(--a-sp-1);
+}
+/* The unset display. Same DIM neutral .assetfield-name.empty uses — one visual
+   language for "this property holds nothing" across every nullable kind. */
+.numfield-none {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: var(--a-font-md);
+}
+
 /* SQUARE corners: --dn-radius MUST be set ON the .dn element (not an ancestor) —
    DraggableNumber declares --dn-radius on its OWN .dn root, and Svelte scopes
    that rule to `.dn.svelte-hash` (specificity 0,2,0). So the app override must

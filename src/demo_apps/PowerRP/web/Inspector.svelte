@@ -563,7 +563,15 @@
   // trip). The old normalizedHex/rgbHex/alphaOf/composedHex/commitHexField and
   // the hexEditing/hexDraft draft state died with the native-input color row.
 
+  /**
+   * The row's raw control output as the value to STORE. NULL PASSES STRAIGHT
+   * THROUGH for every kind, and for a number that is the whole point of the
+   * `nullable` row aspect (core/properties.js): `Number(null)` is 0, so without
+   * this line a nullable row's CLEAR button would silently write "advance
+   * immediately" where the user asked for "never". Only a non-null raw is coerced.
+   */
   function coerce(kind, raw) {
+    if (raw === null) return null;
     return kind === "number" ? Number(raw) : kind === "boolean" ? Boolean(raw) : raw;
   }
 
@@ -1981,16 +1989,63 @@
            (core/transitions.js `row("seconds")`) declares an explicit `scrub`,
            which outranks any default. A transition's own default seconds lives
            with the transition TYPE, the analogue of a plugin's `defaults`. -->
-      <div class="numfield">
-        <DraggableNumber
-          label={row.label}
-          value={Number(valueAt(state, row.key) ?? 0)}
-          min={row.min ?? null}
-          max={resolvedMax}
-          coefficient={row.scrub ?? 1}
-          oninput={(n) => onpreview(row.key, kind, n)}
-          onchange={(n) => oncommit(row.key, kind, n)}
-        />
+
+      <!-- THE NULLABLE NUMBER (core/properties.js THE `nullable` ROW ASPECT). A
+           row declaring `nullable: true` may hold NOTHING, and for such a row
+           NOTHING IS NOT ZERO — the LINGER's null means "never auto-advance"
+           while its 0 means "advance immediately". So the control needs two
+           states a plain scrubber does not have.
+
+           UNSET renders the SAME chrome AssetField's unset state does — the dim
+           "(none)" span (.assetfield-name.empty is that language; this reuses the
+           spelling, not the class, since the surrounding flex box differs) — and
+           a SET button that writes a starting value, because a scrubber showing 0
+           would be indistinguishable from a real 0 and dragging it would silently
+           choose one of the two meanings for the user.
+           SET renders the ordinary scrubber PLUS an × that writes literal null
+           (Inspector `coerce` passes null through untouched; without that
+           `Number(null)` would store 0 — the exact confusion the aspect exists to
+           avoid). Non-nullable rows take neither branch and render byte-identically
+           to before.
+
+           The start value is the row's `min` when it has one and 0 otherwise: a
+           seconds row's 0 IS its minimum and is the least surprising first number
+           to scrub away from. -->
+      {@const nullable = row.nullable === true}
+      {@const rawValue = valueAt(state, row.key)}
+      {@const unset = nullable && (rawValue === null || rawValue === undefined)}
+      <div class="numfield" class:numfield-nullable={nullable}>
+        {#if unset}
+          <Tooltip text={`${row.label} is not set — click Set to give it a value`}>
+            <span class="numfield-none">(none)</span>
+          </Tooltip>
+          <Tooltip text={`Set ${row.label}`}>
+            <button
+              class="btn-icon"
+              aria-label={`Set ${row.label}`}
+              onclick={() => oncommit(row.key, kind, row.min ?? 0)}
+            >
+              <iconify-icon icon="mdi:plus" width="14" height="14"></iconify-icon>
+            </button>
+          </Tooltip>
+        {:else}
+          <DraggableNumber
+            label={row.label}
+            value={Number(rawValue ?? 0)}
+            min={row.min ?? null}
+            max={resolvedMax}
+            coefficient={row.scrub ?? 1}
+            oninput={(n) => onpreview(row.key, kind, n)}
+            onchange={(n) => oncommit(row.key, kind, n)}
+          />
+          {#if nullable}
+            <Tooltip text={`Clear ${row.label} — leaves it unset, which is not the same as zero`}>
+              <button class="btn-icon" aria-label={`Clear ${row.label}`} onclick={() => oncommit(row.key, kind, null)}>
+                <iconify-icon icon="mdi:close" width="14" height="14"></iconify-icon>
+              </button>
+            </Tooltip>
+          {/if}
+        {/if}
       </div>
     {/if}
   {:else if kind === "select"}

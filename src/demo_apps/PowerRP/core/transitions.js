@@ -88,7 +88,47 @@ export const TRANSITION_BASE_INSPECTOR = [
   row("seconds"),
   { key: "curve", label: "Curve", kind: "select", options: TRANSITION_CURVES, category: "transition" },
   { key: "sound", label: "Sound", kind: "asset", assetKinds: ["sound"], nullable: true, category: "transition" },
+  // THE LINGER — see SLIDE_FIELD_ROWS below for why a row that stores on the SLIDE
+  // renders here. Nullable (core/properties.js THE `nullable` ROW ASPECT): cleared
+  // means never auto-advance, 0 means advance immediately.
+  row("autoAdvance", { slideField: true }),
 ];
+
+/**
+ * Pure function. The keys of the transition rows that are SLIDE FIELDS —
+ * `slideField: true` rows, whose value is stored at `slide.<key>` rather than
+ * inside `slide.transition`.
+ *
+ * WHY THE ASPECT EXISTS. The boundary panel is already the SLIDE's properties
+ * surface (it edits the slide's Name there too), and a per-slide LINGER belongs
+ * beside the duration it follows — a user setting "0.5s tween, then wait 3s"
+ * reads one pair of numbers, not two panels. But `autoAdvance` genuinely IS a
+ * slide field: both consumers read `doc.slides[i].autoAdvance`
+ * (core/presentation.armAutoAdvance, web/videoExport.timelinePlan), and folding
+ * it into the transition RECORD would change the serialized shape of every
+ * transition for one row's convenience. So the row is DECLARATIVE about where it
+ * writes, and web/app.svelte.js's setTransitionProp/setSelectedTransitionsProp
+ * route on this list instead of naming `autoAdvance` in a special case — a second
+ * slide field (say a per-slide note) is one aspect, no new branch.
+ *
+ * @example slideFieldKeys() // ["autoAdvance"]
+ * @example slideFieldKeys().includes("seconds") // false (seconds lives in the transition record)
+ */
+export function slideFieldKeys() {
+  return TRANSITION_BASE_INSPECTOR.filter((r) => r.slideField).map((r) => r.key);
+}
+
+/**
+ * Pure function. Whether transition-row `key` writes to the SLIDE rather than to
+ * the transition record. THE ONE predicate the write path asks — reading the row
+ * list directly at a call site is how the two would drift.
+ *
+ * @example isSlideField("autoAdvance") // true
+ * @example isSlideField("seconds") // false
+ */
+export function isSlideField(key) {
+  return slideFieldKeys().includes(key);
+}
 
 /**
  * The transition TYPE registry — shaped like the plugin registry (a `type`

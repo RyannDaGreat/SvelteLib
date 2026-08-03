@@ -734,6 +734,22 @@ export const ROW_KINDS = ["number", "angle", "color", "boolean", "select", "asse
 export const NUMERIC_ROW_KINDS = ["number", "angle"];
 
 /**
+ * The row kinds whose Inspector control can render an UNSET state — a "(none)"
+ * display plus a clear-to-nothing button — so `nullable: true` means something on
+ * them (see THE `nullable` ROW ASPECT below). "asset" has had it since the
+ * transition `sound` row (AssetField's own `nullable` prop); "number" gained it
+ * with the slide LINGER, where absent and 0 are different instructions.
+ *
+ * Kept beside ROW_KINDS for the reason NUMERIC_ROW_KINDS is: "which controls can
+ * show nothing" is a fact about the control vocabulary, and it is the ONE list a
+ * new nullable kind is added to once its control learns the affordance.
+ *
+ * @example NULLABLE_ROW_KINDS // ["number", "asset"]
+ * @example NULLABLE_ROW_KINDS.includes("boolean") // false (a checkbox has no unset display)
+ */
+export const NULLABLE_ROW_KINDS = ["number", "asset"];
+
+/**
  * RETIRED_ROW_KINDS — {oldName: canonicalName} for a row kind that has been
  * renamed. It is NOT an accepted spelling: it exists so a guard can say what to
  * write INSTEAD of merely "unknown kind".
@@ -902,6 +918,45 @@ export function codeRowLanguage(row, state) {
   const language = row?.code?.language;
   if (typeof language === "function") return language(state ?? {}) ?? null;
   return language ?? null;
+}
+
+/**
+ * THE `nullable` ROW ASPECT — "this property may hold NOTHING, and nothing is
+ * not zero". A row declares `nullable: true` and web/Inspector.svelte gives it a
+ * CLEAR affordance (an × button at the value end) plus an UNSET DISPLAY: the
+ * value column reads "(none)" in the dim empty styling instead of a scrubber.
+ *
+ * It already existed for kind:"asset" — AssetField has taken a `nullable` prop
+ * since the transition `sound` row (an absent sound is silence, and "" is not a
+ * legible spelling of that). What did NOT exist was any GENERAL machinery, so
+ * nullability was bespoke to one control. This aspect is that machinery: a
+ * number row declaring it gets the same two affordances, in the same language,
+ * with no per-row code — and the next nullable kind is a branch in ONE place.
+ *
+ * WHY A NUMBER NEEDS IT AT ALL, given that a number row can already hold 0. For
+ * `autoAdvance` (the slide LINGER) null and 0 are DIFFERENT INSTRUCTIONS: 0 says
+ * "advance the instant this slide arrives", ABSENT says "never auto-advance —
+ * wait for a click". Both consumers read it that way already
+ * (core/presentation.armAutoAdvance arms a timer only for `typeof secs ===
+ * "number"`; web/videoExport.timelinePlan falls back to DEFAULT_HOLD_SECONDS
+ * only when it is absent), so a control that could only ever write a number
+ * could set the linger but never take it back.
+ *
+ * SEMANTICS AT THE SEAM. The clear affordance writes literal `null`, never ""
+ * and never NaN — the Inspector's `coerce()` passes null straight through
+ * instead of running it into `Number(null) === 0`, which is precisely the
+ * confusion this aspect exists to prevent. A nullable row's stored ABSENCE may
+ * be `undefined` (never written) or `null` (cleared); both display as unset, and
+ * only the write path normalizes to null.
+ */
+/** Query (throws). Validates one row's `nullable` aspect. `nullable` on a kind
+ *  with no unset display would silently do nothing, so it fails where written. */
+function checkNullableRow(label, def) {
+  if (!("nullable" in def)) return;
+  if (def.nullable !== true && def.nullable !== false)
+    throw new Error(`properties: ${label} declares \`nullable: ${JSON.stringify(def.nullable)}\` — it is a boolean aspect (see THE \`nullable\` ROW ASPECT).`);
+  if (def.nullable === true && !NULLABLE_ROW_KINDS.includes(def.kind))
+    throw new Error(`properties: ${label} declares \`nullable\` on a "${def.kind}" row, but only ${JSON.stringify(NULLABLE_ROW_KINDS)} render a clear affordance and an unset display — give that kind one in web/Inspector.svelte before declaring it.`);
 }
 
 /** Query (throws). Validates one row's optionGroups against its options. */
@@ -1441,6 +1496,15 @@ export const PROPS = {
   // already "transition" here (its current sole home) — a future non-transition
   // time property overrides it.
   seconds: { label: "Seconds", kind: "number", min: 0, scrub: SECONDS_SCRUB, category: "transition", help: "How long the transition takes, in seconds. Zero is an instant cut; larger values make the fade or tween slower and smoother." },
+  // THE SLIDE LINGER. Stored on the SLIDE (`slide.autoAdvance`), not inside the
+  // transition record — see core/transitions.js's `slideField` aspect for why the
+  // row sits with the transition rows anyway. It shares `seconds`' unit-kind
+  // (SECONDS_SCRUB, min 0) so both time rows on that panel scrub at one rate.
+  // `nullable` is the whole point: null and 0 are different instructions here
+  // (0 = advance immediately, absent = never), and BOTH consumers already read it
+  // that way, so a row that could only write a number could set a linger but never
+  // take it back.
+  autoAdvance: { label: "Linger", kind: "number", min: 0, scrub: SECONDS_SCRUB, nullable: true, category: "transition", help: "How long this slide waits before advancing on its own, in seconds. Cleared (—) it never advances by itself: the presenter waits for a click, and a video export holds the slide for its default dwell. Set, the presenter lingers this long after the transition finishes and then moves on, and an export uses it as this slide's dwell." },
 
   // ── media: source + playback ────────────────────────────────────────────────
   // `src` is the media asset reference (image data URI / URL, video filename).
@@ -1832,6 +1896,7 @@ for (const [key, def] of Object.entries(PROPS)) {
   checkOptionGroups(`PROPS."${key}"`, def);
   checkListRow(`PROPS."${key}"`, key, def);
   checkCodeRow(`PROPS."${key}"`, def);
+  checkNullableRow(`PROPS."${key}"`, def);
 }
 // The gradient stop list is a declaration too (it is just not a PROPS key — see
 // GRADIENT_STOPS_LIST), so it gets the SAME guard rather than a weaker one.
@@ -2196,6 +2261,7 @@ export function customProps(defs) {
     checkOptionGroups(`customProps def "${def.name}"`, def);
     checkListRow(`customProps def "${def.name}"`, def.name, def);
     checkCodeRow(`customProps def "${def.name}"`, def);
+    checkNullableRow(`customProps def "${def.name}"`, def);
     const { name, kind, default: defaultValue, label, category, ...rest } = def;
     rows.push({ key: name, kind, label: label ?? defaultLabel(name), category: category ?? CUSTOM_CATEGORY, ...rest });
     defaultsOut[name] = defaultValue;
