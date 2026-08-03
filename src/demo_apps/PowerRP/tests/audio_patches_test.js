@@ -108,9 +108,14 @@ check("every wire is one the EDITOR would accept — same refusal the drag uses"
 });
 
 check("every knob override is a knob the module really has", () => {
+  // AUDIO NODES ONLY. A control node (knob, slider, button, keyboard) has no
+  // audioSpec at all — its settings are plain item leaves, and the check that
+  // they are real is the landed-key sweep below, which covers BOTH kinds by
+  // asking the plugin's own defaults.
   for (const p of DEMO_PATCHES)
     for (const n of p.nodes) {
       const spec = registry.get(n.type).audioSpec;
+      if (!spec) continue;
       for (const key of Object.keys(n.knobs ?? {}))
         assert.ok((spec.knobs ?? []).some((k) => k.key === key),
           `${p.id}.${n.id} sets "${key}", which ${n.type} does not have (has ${(spec.knobs ?? []).map((k) => k.key)})`);
@@ -123,12 +128,41 @@ check("every knob override is INSIDE that knob's declared range", () => {
   for (const p of DEMO_PATCHES)
     for (const n of p.nodes) {
       const spec = registry.get(n.type).audioSpec;
+      if (!spec) continue;
       for (const [key, value] of Object.entries(n.knobs ?? {})) {
         const knob = spec.knobs.find((k) => k.key === key);
         if (knob.discrete) assert.ok(knob.options.includes(value), `${p.id}.${n.id}.${key} = ${value} is not among ${JSON.stringify(knob.options)}`);
         else assert.ok(value >= knob.min && value <= knob.max, `${p.id}.${n.id}.${key} = ${value} is outside [${knob.min}, ${knob.max}]`);
       }
     }
+});
+
+check("EVERY knob a blueprint names LANDS on a key the widget actually has", () => {
+  // ── THE SWEEP THAT WOULD HAVE CAUGHT A REAL, SILENT BUG (BV, 2026-08-03) ──
+  // buildPatchItems prefixed "audio" onto every knob name unconditionally, which
+  // was right while every patchable node was an audio module. A CONTROL node
+  // stores plain leaves (`value`, `label`, `baseNote`), so the prefix produced
+  // `audioValue` — a key the widget does not have. Nothing throws: a state object
+  // takes any key, so the node would have inserted at its defaults and the patch
+  // would be quietly wrong.
+  //
+  // This asserts the OUTPUT rather than the rule: whatever key the builder
+  // chooses must be one the plugin's own defaults declare. That holds for both
+  // kinds of node and does not care how the key was derived.
+  const bad = [];
+  for (const p of DEMO_PATCHES) {
+    const { states } = buildPatchItems(p, registry, { x: 0, y: 0 }, (id) => id);
+    for (const node of p.nodes) {
+      const plugin = registry.get(node.type);
+      const state = states[node.id];
+      for (const [key, value] of Object.entries(node.knobs ?? {})) {
+        const target = plugin.audioModule ? "audio" + key.charAt(0).toUpperCase() + key.slice(1) : key;
+        if (!(target in plugin.defaults)) bad.push(`${p.id}.${node.id}: "${key}" → "${target}", which ${node.type} does not declare`);
+        else if (state[target] !== value) bad.push(`${p.id}.${node.id}.${target} is ${state[target]}, not the ${value} the blueprint set`);
+      }
+    }
+  }
+  assert.deepEqual(bad, [], `knob overrides that do not land:\n    ${bad.join("\n    ")}`);
 });
 
 check("NO NODE IS ORPHANED — every node is joined to the graph", () => {
@@ -222,8 +256,16 @@ check("a built patch is a valid AUDIO SCENE — the mirror sees every module and
   for (const p of DEMO_PATCHES) {
     const { states } = build(p);
     const scene = readAudioScene(states, registry);
-    assert.equal(Object.keys(scene.modules).length, p.nodes.length,
-      `${p.id}: the mirror saw ${Object.keys(scene.modules).length} modules for ${p.nodes.length} nodes`);
+    // THE MIRROR SEES ENGINE MODULES, NOT NODES — and since BV a patch may
+    // legitimately contain neither-modules: a Keyboard, a Knob and a Button are
+    // real nodes on the canvas with NO engine counterpart at all (they produce
+    // document values and live events, which is core/control_nodes.js's whole
+    // point). Counting them as missing modules is the same mistake the method-wire
+    // note below records: asserting against a guess about the roster instead of
+    // asking what a node IS. `audioModule` is the fact.
+    const engineNodes = p.nodes.filter((n) => registry.get(n.type).audioModule);
+    assert.equal(Object.keys(scene.modules).length, engineNodes.length,
+      `${p.id}: the mirror saw ${Object.keys(scene.modules).length} modules for ${engineNodes.length} engine nodes`);
     // Method wires (the ding's gate) are carried but flagged; every other wire must
     // have survived the mirror's own reality checks.
     //
@@ -241,7 +283,20 @@ check("a built patch is a valid AUDIO SCENE — the mirror sees every module and
       const port = (registry.get(target.type).ports({}).inputs ?? []).find((i) => i.key === w.toPort);
       return !!port?.method;
     };
-    const expectedReal = p.wires.filter((w) => !isMethodWire(w));
+    // ── AND BOTH ENDS MUST BE ENGINE MODULES (BV, 2026-08-03) ───────────────
+    // A wire from a KNOB into a pad's `cutoff` is a real, legal, useful wire on
+    // the canvas — and it has no engine counterpart, because a knob is not a
+    // module. readAudioScene drops it deliberately and says so ("a number node
+    // CAN legitimately be wired to a node widget — it simply has no engine
+    // counterpart"). Its VALUE reaches the engine anyway, through the ordinary
+    // fold: the node evaluator resolves the knob into the pad's cutoff leaf and
+    // the mirror sends a setParam. So counting it as a lost wire asserts the
+    // opposite of the design.
+    const isEngineWire = (w) => {
+      const ends = [w.from, w.to].map((id) => p.nodes.find((n) => n.id === id));
+      return ends.every((n) => registry.get(n.type).audioModule);
+    };
+    const expectedReal = p.wires.filter((w) => !isMethodWire(w) && isEngineWire(w));
     assert.equal(real.length, expectedReal.length,
       `${p.id}: the mirror kept ${real.length} wires; the blueprint declares ${expectedReal.length} non-method ones`);
   }

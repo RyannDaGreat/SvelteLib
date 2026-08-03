@@ -28,8 +28,9 @@ import {
   allNotesOff,
   DEFAULT_POLY_VOICES,
   MAX_POLY_VOICES,
+  MIN_POLY_VOICES,
 } from "../synth/voices.js";
-import { POLY_PAD_SPEC } from "../core/audio_specs.js";
+import { AUDIO_SPECS, POLY_PAD_SPEC } from "../core/audio_specs.js";
 import { MODULE_FACTORIES } from "../synth/modules.js";
 import { PORT_TYPES } from "../core/nodeflow.js";
 
@@ -39,6 +40,29 @@ function test(name, fn) {
   passed++;
   console.log(`  ok  ${name}`);
 }
+
+// ── A RECORDING STUB CONTEXT ────────────────────────────────────────────────
+// The params RECORD their scheduled ramps, which is the whole trick for the
+// envelope assertions at the bottom of this file: an AudioParam's `.value` does
+// not reflect a linearRampToValueAtTime, so asserting on `.value` would pass no
+// matter what the module scheduled.
+
+const param = (value = 0) => ({
+  value, defaultValue: value, events: [],
+  setValueAtTime(v, t) { this.events.push(["set", v, t]); this.value = v; return this; },
+  setTargetAtTime(v, t) { this.events.push(["target", v, t]); return this; },
+  linearRampToValueAtTime(v, t) { this.events.push(["linear", v, t]); return this; },
+  exponentialRampToValueAtTime(v, t) { this.events.push(["exp", v, t]); return this; },
+  cancelScheduledValues(t) { this.events.push(["cancel", t]); return this; },
+});
+const node = (extra = {}) => ({ connect() { return this; }, disconnect() {}, ...extra });
+const stubAudioContext = () => ({
+  currentTime: 0, sampleRate: 48000, destination: node(),
+  createGain: () => node({ gain: param(1) }),
+  createOscillator: () => node({ frequency: param(440), detune: param(0), type: "sine", start() {}, stop() {} }),
+  createBiquadFilter: () => node({ frequency: param(350), Q: param(1), gain: param(0), type: "lowpass" }),
+  createConstantSource: () => node({ offset: param(1), start() {}, stop() {} }),
+});
 
 console.log("polyphony: the pool");
 
@@ -189,12 +213,112 @@ test("POLY_PAD_SPEC's ports are declared types with a legal `voices` range", () 
   assert.equal(voices.construct, true, "voices are built eagerly, so changing the count rebuilds");
 });
 
+test("a spec claiming POLY names a module that really declares noteOn", () => {
+  // core/live_control.noteRoutes routes a keyboard's gate by this flag alone. A
+  // spec claiming polyphony the module cannot deliver would be a chord that
+  // plays one note, with nothing to explain it — and the engine would throw at
+  // noteOn, mid-performance.
+  for (const spec of AUDIO_SPECS) {
+    if (!spec.poly) continue;
+    const instance = MODULE_FACTORIES[spec.module](stubAudioContext(), {}, {});
+    assert.equal(typeof instance.noteOn, "function", `${spec.type} claims poly but ${spec.module} has no noteOn`);
+    assert.equal(typeof instance.noteOff, "function", `${spec.type} claims poly but ${spec.module} has no noteOff`);
+  }
+});
+
+test("THE VOICE-COUNT RANGE RESTATED IN core/ AGREES WITH synth/voices.js", () => {
+  // core/audio_specs.js may not import synth/** (it is data, and core must run in
+  // bare node), so it restates the range. This is what makes the duplication
+  // checkable rather than a second opinion waiting to drift.
+  const voices = POLY_PAD_SPEC.knobs.find((k) => k.key === "voices");
+  assert.equal(voices.default, DEFAULT_POLY_VOICES);
+  assert.equal(voices.min, MIN_POLY_VOICES);
+  assert.equal(voices.max, MAX_POLY_VOICES);
+});
+
 test("the poly pad takes pitch and gate, which is what a keyboard drives", () => {
   const keys = POLY_PAD_SPEC.inputs.map((p) => p.key);
   assert.ok(keys.includes("pitch"), "a poly voice needs a note to play");
   assert.ok(keys.includes("gate"), "and an edge to play it on");
   const gate = POLY_PAD_SPEC.inputs.find((p) => p.key === "gate");
   assert.equal(gate.method, true, "a gate is engine.noteOn/noteOff, not an AudioNode connect");
+});
+
+console.log("polyphony: the module actually sounds the notes");
+
+// Everything above is the DECISION (which slot, who is stolen). This section
+// checks the other half: that the module turns a slot into an actual envelope.
+// Both halves are needed, because a perfect allocator driving a module that
+// never opens a gain is a silent synth with every test green.
+
+/** Query. A fresh poly pad plus the voice gains it built, in slot order. */
+function buildPolyPad(params = {}) {
+  const gains = [];
+  const ctx = stubAudioContext();
+  const createGain = ctx.createGain;
+  ctx.createGain = () => { const g = createGain(); gains.push(g); return g; };
+  const instance = MODULE_FACTORIES.polyPad(ctx, params, {});
+  // The voice gains are the ones whose gain STARTS AT ZERO (a silent voice); the
+  // module's output gain starts at its level. Asked structurally rather than by
+  // construction order, so a refactor that builds them in a different sequence
+  // does not silently make this test measure the wrong node.
+  return { instance, voiceGains: gains.filter((g) => g.gain.defaultValue === 1 && g.gain.value === 0) };
+}
+
+test("a poly pad builds exactly `voices` silent voices", () => {
+  const { voiceGains } = buildPolyPad({ voices: 4 });
+  assert.equal(voiceGains.length, 4);
+  for (const g of voiceGains) assert.equal(g.gain.value, 0, "a voice must be silent until it is played");
+});
+
+test("noteOn OPENS a voice's envelope and sets its oscillators' pitch", () => {
+  const { instance, voiceGains } = buildPolyPad({ voices: 2 });
+  instance.noteOn(0, 440, 0);
+  const ramps = voiceGains[0].gain.events.filter((e) => e[0] === "linear");
+  assert.equal(ramps.length, 1, "exactly one attack ramp");
+  assert.ok(ramps[0][1] > 0, `the attack must ramp UP, got ${ramps[0][1]}`);
+  // …and the OTHER voice was not touched.
+  assert.deepEqual(voiceGains[1].gain.events, [], "playing slot 0 must not disturb slot 1");
+});
+
+test("noteOff CLOSES that voice's envelope, ramping to zero", () => {
+  const { instance, voiceGains } = buildPolyPad({ voices: 2 });
+  instance.noteOn(0, 440, 0);
+  instance.noteOff(0, 1);
+  const last = voiceGains[0].gain.events.filter((e) => e[0] === "linear").at(-1);
+  assert.equal(last[1], 0, "the release must ramp to silence");
+});
+
+test("A STOLEN VOICE IS RELEASED BEFORE THE NEW NOTE STARTS ON IT", () => {
+  // The ordering the engine owns (engine.noteOn), asserted on the MODULE's own
+  // events: the displaced note's release must be scheduled before the new note's
+  // attack on that same voice, or the new note writes onto a voice still being
+  // told to hold.
+  const { instance, voiceGains } = buildPolyPad({ voices: 1 });
+  instance.noteOn(0, 440, 0);
+  instance.noteOff(0, 1); // what the engine does for the stolen note
+  instance.noteOn(0, 660, 1); // …immediately before starting the new one
+  const linears = voiceGains[0].gain.events.filter((e) => e[0] === "linear");
+  assert.equal(linears.length, 3, "attack, release, attack");
+  assert.equal(linears[1][1], 0, "the middle event releases the stolen note");
+  assert.ok(linears[2][1] > 0, "and the new note attacks after it");
+});
+
+test("a note out of the voice range is refused LOUDLY, not silently dropped", () => {
+  const { instance } = buildPolyPad({ voices: 2 });
+  assert.throws(() => instance.noteOn(5, 440, 0), /no slot 5/);
+  assert.throws(() => instance.noteOff(5, 0), /no slot 5/);
+});
+
+test("the pitch PORT names the note when the caller does not", () => {
+  // The seam that lets a wire drive pitch (the ding's ruling, applied here).
+  const { instance } = buildPolyPad({ voices: 1, pitch: 330 });
+  assert.ok("pitch" in instance.inputs, "pitch must be a wireable AudioParam input");
+  assert.ok("pitch" in instance.params);
+  instance.noteOn(0, undefined, 0); // no caller-named frequency
+  // It did not throw, and it used the port rather than a NaN — which a clamp of
+  // `undefined` would have produced and then poisoned the param with forever.
+  assert.equal(instance.inputs.pitch.value, 330);
 });
 
 console.log(`\n${passed} polyphony assertions passed.`);

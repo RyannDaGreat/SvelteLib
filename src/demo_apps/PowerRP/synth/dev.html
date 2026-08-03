@@ -59,6 +59,15 @@
     --text-lg: 16px;
     --text-xl: 21px;
 
+    /* The playable keyboard. A white key tall enough to hit with a mouse
+       without being a wall; a black key 62% of that, the near-universal
+       proportion on real instruments. */
+    --key-height: 64px;
+    --key-black-height: 62%;
+    --key-white: #c8cdd8;
+    --key-black: #14171f;
+    --key-held: var(--accent);
+
     --meter-height: 10px;
     --scope-height: 132px;
     --control-height: 30px;
@@ -317,6 +326,36 @@
     font-size: var(--text-sm); color: var(--ink-dim);
   }
   input[type="range"] { accent-color: var(--accent); flex: 1; min-width: 100px; }
+
+  /* THE PLAYABLE KEYBOARD. Keys are absolutely positioned inside the board
+     because a black key OVERLAPS the two whites it sits between — that overlap
+     is what a keyboard is, and no flow layout expresses it. The board is
+     `position: relative` so every key's percentage left/width is relative to
+     it, which is what makes the whole thing scale with the panel. */
+  .keyboard {
+    position: relative;
+    width: 100%;
+    height: var(--key-height);
+    margin-top: var(--gap-sm);
+    touch-action: none; /* a drag across the keys must not scroll the page */
+  }
+  .keyboard .key {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    padding: 0;
+    border: var(--border) solid var(--ground);
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    background: var(--key-white);
+    cursor: pointer;
+  }
+  /* Blacks come after whites in the DOM, so they paint on top without a
+     z-index — the same paint-order rule core/keyboard_layout.js states. */
+  .keyboard .key.black {
+    height: var(--key-black-height);
+    background: var(--key-black);
+  }
+  .keyboard .key.held { background: var(--key-held); }
 </style>
 </head>
 <body>
@@ -569,7 +608,84 @@ const PATCH_CONTROLS = [
   { method: "setStrength", kind: "slider", label: "strength", min: 0, max: 1, step: 0.01, value: 0.35 },
   { method: "setCrush", kind: "slider", label: "crush", min: 0, max: 1, step: 0.01, value: 0.5 },
   { method: "setBpm", kind: "slider", label: "bpm", min: 20, max: 180, step: 1, value: 60 },
+  // THE PLAYABLE KEYBOARD — keyed on `playNote`, so any patch that grows a
+  // polyphonic voice gets a keyboard with no renderer edit, exactly the way the
+  // slider table already works for `setBpm`.
+  { method: "playNote", kind: "keys", label: "keys" },
 ];
+
+/** The keyboard's range on the dev page: two octaves from C3, which is a
+ *  two-handed chord's worth and fits the controls panel. */
+const DEV_KEYS_BASE_NOTE = 48;
+const DEV_KEYS_OCTAVES = 2;
+/** Semitone offsets of the white and black keys within an octave. There is no
+ *  black key between E-F or B-C, which is why the pattern is irregular. */
+const WHITE_SEMITONES = [0, 2, 4, 5, 7, 9, 11];
+const BLACK_SEMITONES = [1, 3, 6, 8, 10];
+
+/**
+ * Command. Build a playable keyboard into `parent`, driving `handle.playNote` /
+ * `handle.releaseNote`.
+ *
+ * POINTER CAPTURE PER KEY, and `pointerleave` releasing: without both, dragging
+ * off a key leaves its note sounding forever — the pointerup lands somewhere
+ * else and the note-off is never sent. That is the same stuck-note case the
+ * editor's canvas handles, and it is worth getting right HERE too, because this
+ * page is where the engine seam gets debugged.
+ */
+function buildKeyboard(parent, handle) {
+  const board = document.createElement("div");
+  board.className = "keyboard";
+
+  const whites = DEV_KEYS_OCTAVES * WHITE_SEMITONES.length;
+  for (let octave = 0; octave < DEV_KEYS_OCTAVES; octave++) {
+    for (let i = 0; i < WHITE_SEMITONES.length; i++) {
+      board.appendChild(makeKey(handle, DEV_KEYS_BASE_NOTE + octave * 12 + WHITE_SEMITONES[i], false, {
+        left: `${((octave * WHITE_SEMITONES.length + i) / whites) * 100}%`,
+        width: `${(1 / whites) * 100}%`,
+      }));
+    }
+  }
+  for (let octave = 0; octave < DEV_KEYS_OCTAVES; octave++) {
+    for (const semitone of BLACK_SEMITONES) {
+      // The black key straddles the boundary between the two whites it lies
+      // between; its lower neighbour is the white one semitone below.
+      const index = octave * WHITE_SEMITONES.length + WHITE_SEMITONES.indexOf(semitone - 1);
+      board.appendChild(makeKey(handle, DEV_KEYS_BASE_NOTE + octave * 12 + semitone, true, {
+        left: `${(((index + 1) / whites) - (0.62 / whites) / 2) * 100}%`,
+        width: `${(0.62 / whites) * 100}%`,
+      }));
+    }
+  }
+  parent.appendChild(board);
+}
+
+/** Command. One key element, wired to press/release. */
+function makeKey(handle, note, black, style) {
+  const key = document.createElement("button");
+  key.className = black ? "key black" : "key";
+  key.style.left = style.left;
+  key.style.width = style.width;
+  let held = false;
+  const press = (e) => {
+    if (held) return;
+    held = true;
+    key.classList.add("held");
+    key.setPointerCapture(e.pointerId);
+    handle.playNote(note);
+  };
+  const release = () => {
+    if (!held) return;
+    held = false;
+    key.classList.remove("held");
+    handle.releaseNote?.(note);
+  };
+  key.onpointerdown = press;
+  key.onpointerup = release;
+  key.onpointercancel = release;
+  key.onpointerleave = release;
+  return key;
+}
 
 /** Command. Build the per-patch controls — only what that patch actually
  * offers, rather than a fixed panel of mostly-dead knobs. */
@@ -588,6 +704,10 @@ function buildPatchControls(key, handle) {
   elements.patchControls.appendChild(heading);
 
   for (const control of available) {
+    if (control.kind === "keys") {
+      buildKeyboard(elements.patchControls, handle);
+      continue;
+    }
     if (control.kind === "button") {
       const button = document.createElement("button");
       button.textContent = control.label;

@@ -1407,6 +1407,141 @@ const WHOOSH_PEAK_LEVEL = 0.55;
  * obviously useful to the most specialised. A first-time visitor clicking down
  * the list in order gets a sensible tour rather than a shock.
  */
+/**
+ * PLAYABLE KEYS — the POLYPHONY patch, and the one the whole voice pool exists
+ * for. Play the on-screen keyboard; several notes sound at once.
+ *
+ * ── FOUR VOICES ON PURPOSE ──────────────────────────────────────────────────
+ * The module's own default is eight, which is one more than a two-handed chord
+ * needs — correct as a default, and useless as a DEMONSTRATION, because nothing
+ * you can play would ever reach it. Four is small enough that an ordinary
+ * five-note chord steals, so the oldest-steal rule is something you can hear
+ * rather than a claim you have to take on faith.
+ *
+ * ── IT PROVES THE ENGINE SEAM, NOT THE UI ───────────────────────────────────
+ * `playNote`/`releaseNote` call engine.noteOn/noteOff directly, which is the same
+ * entry point the editor's Keyboard widget reaches through the mirror. So this
+ * patch failing and the widget failing have the same cause, and dev.html is the
+ * cheap place to find it — no document, no canvas, no browser gesture.
+ *
+ * Args:
+ *     engine (object): A started engine
+ *     options (object): {voices} — how many notes may sound at once
+ */
+export function playableKeys(engine, options = {}) {
+  const tail = outputTail(engine, "keys", 0.7);
+  const voices = options.voices ?? PLAYABLE_KEYS_VOICES;
+
+  engine.addModule("polyPad", "keys-poly", {
+    voices,
+    cutoff: 1400,
+    level: 0.3,
+    attack: 0.06,
+    release: 0.5,
+  });
+  engine.addModule("reverb", "keys-room", { character: "hall", wet: 0.45, dry: 0.7, preDelay: 0.02 });
+
+  engine.connect("keys-poly", "out", "keys-room", "in");
+  engine.connect("keys-room", "out", tail.inputId, "in");
+
+  const ids = ["keys-poly", "keys-room", ...tail.ids];
+  return {
+    ids,
+    meterId: tail.meterId,
+    spectrumId: tail.spectrumId,
+    voices,
+    /** Command. Sound a MIDI note. Returns what the pool allocated, so a caller
+     *  drawing keys can un-light the one that was stolen. */
+    playNote(note) {
+      return engine.noteOn("keys-poly", note, noteHz(note));
+    },
+    /** Command. Release a MIDI note. Harmless for a note that is not sounding —
+     *  the pool refuses it by identity, which is what stops a stolen note's late
+     *  release from silencing the key that stole it. */
+    releaseNote(note) {
+      return engine.noteOff("keys-poly", note);
+    },
+    /** Command. Sweep the shared filter — something to play with by hand while
+     *  holding a chord. Reuses the PATCH_CONTROLS `setCrush` slider's 0..1 shape
+     *  mapped onto the filter's useful band, so surfacing it costs no renderer
+     *  edit. */
+    setCrush(amount) {
+      const hz = POLY_CUTOFF_MIN_HZ + amount * (POLY_CUTOFF_MAX_HZ - POLY_CUTOFF_MIN_HZ);
+      engine.setParam("keys-poly", "cutoff", hz, { rampSeconds: 0.05 });
+    },
+    dispose() {
+      for (const id of ids) engine.removeModule(id);
+    },
+  };
+}
+
+/**
+ * Pure function. MIDI note number → Hz (A4 = 69 = 440).
+ *
+ * Written out rather than imported from dsp.js because THIS FILE HAS NO IMPORTS,
+ * deliberately: its header states that every patch is built "ONLY from the public
+ * engine API … if a patch needed something the API does not expose, the API would
+ * be wrong." A pitch conversion is arithmetic a caller writing their own patch
+ * would also write, so importing an internal helper for it would weaken exactly
+ * the claim this file exists to make.
+ *
+ * Examples:
+ *     >>> noteHz(69)   // 440
+ *     >>> noteHz(57)   // 220
+ */
+function noteHz(note) {
+  return 440 * Math.pow(2, (note - 69) / 12);
+}
+
+/** Deliberately BELOW the module's own eight-voice default, so a playable chord
+ *  reaches the steal threshold and the behaviour is demonstrable. */
+const PLAYABLE_KEYS_VOICES = 4;
+/** The sweep slider's band: from a dark pad to a bright one, both musical. */
+const POLY_CUTOFF_MIN_HZ = 300;
+const POLY_CUTOFF_MAX_HZ = 6000;
+
+/**
+ * BUTTON DING — the smallest playable patch. Press Fire, hear a bell.
+ *
+ * Two modules plus the tail, and nothing else, deliberately: a demonstration of
+ * one mechanism should contain one mechanism. It is the dev-page counterpart of
+ * the editor's BUTTON_DING, and it exists so that "does a live trigger reach a
+ * strike?" can be answered without a document or a canvas.
+ *
+ * Args:
+ *     engine (object): A started engine
+ *     options (object): {frequency} — the bell's pitch
+ */
+export function buttonDing(engine, options = {}) {
+  const tail = outputTail(engine, "btn", 0.7);
+
+  engine.addModule("ding", "btn-bell", {
+    preset: "ding",
+    frequency: options.frequency ?? 880,
+    level: 0.5,
+  });
+  engine.connect("btn-bell", "out", tail.inputId, "in");
+
+  const ids = ["btn-bell", ...tail.ids];
+  return {
+    ids,
+    meterId: tail.meterId,
+    spectrumId: tail.spectrumId,
+    /** Command. ONE press is ONE strike. Reuses the shared `fire` button. */
+    fire() {
+      engine.trigger("btn-bell", "gate");
+    },
+    /** Command. Retune the bell. The strike samples this at trigger time, which
+     *  is why a ringing bell does not glide (synth/modules.js states why). */
+    setPitch(frequency) {
+      engine.setParam("btn-bell", "frequency", frequency, { rampSeconds: 0 });
+    },
+    dispose() {
+      for (const id of ids) engine.removeModule(id);
+    },
+  };
+}
+
 export const DEMO_PATCHES = {
   // ── Ambient ───────────────────────────────────────────────────────────────
   padDrone: {
@@ -1497,6 +1632,23 @@ export const DEMO_PATCHES = {
     category: "fx",
     hint: "The three-module original: noise → swept filter → reverb. Kept as the smallest worked example of a patch.",
   },
+
+  // ── PLAYABLE ──────────────────────────────────────────────────────────────
+  // The patches that make NO SOUND until you play them. Every other patch in
+  // this library starts itself; these two wait for a hand, which is what makes
+  // them the demonstration of the control-node family.
+  playableKeys: {
+    build: playableKeys,
+    label: "Playable Keys (Poly)",
+    category: "playable",
+    hint: "A POLYPHONIC pad through a hall. Play the keys — four voices, so a five-note chord steals the oldest note, which is the whole point.",
+  },
+  buttonDing: {
+    build: buttonDing,
+    label: "Button Ding",
+    category: "playable",
+    hint: "Press Fire, hear a bell. The smallest playable patch: one live trigger into one strike.",
+  },
 };
 
 /**
@@ -1510,6 +1662,7 @@ export const PATCH_CATEGORIES = [
   { key: "ambient", label: "Ambient", blurb: "Sustained beds. Start one and leave it running." },
   { key: "percussion", label: "Percussion", blurb: "Struck and sequenced. All of these keep playing on their own." },
   { key: "fx", label: "FX", blurb: "One-shots with an idle bed. Press Fire." },
+  { key: "playable", label: "Playable", blurb: "Silent until you play them. Press the keys or the button." },
 ];
 
 /**

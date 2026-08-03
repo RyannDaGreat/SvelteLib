@@ -114,6 +114,17 @@ export const DRAG_KIND_MODIFIERS = Object.freeze({
   // particular must stay silent here — a wire has no axis to lock and no scale to
   // make uniform.
   wire: Object.freeze([]),
+  // THE LIVE-PLAY GESTURE (plugins/node_button.js, plugins/node_keyboard.js) —
+  // pressing a Button's face or holding a Keyboard's key. NO modifiers, and as
+  // with `wire` the empty list is a CLAIM rather than a gap: what a press does is
+  // decided entirely by what is under the pointer (which key, or the button's
+  // face), and there is no key on the keyboard that could change its meaning.
+  //
+  // Shift in particular must stay silent. It is knob focus's FINE modifier one
+  // widget family over, and offering it here would announce a key that does
+  // nothing — the exact lie this table exists to prevent. Fine control is a thing
+  // you want on a continuous value; a note is not one.
+  liveplay: Object.freeze([]),
 });
 
 /**

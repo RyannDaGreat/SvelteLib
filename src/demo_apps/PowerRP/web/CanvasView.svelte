@@ -2314,7 +2314,7 @@
     else if (drag.kind === "endpoint") endpointDrag(w);
     else if (drag.kind === "modifier") modifierDrag(w);
     else if (drag.kind === "wire") wireDragMove(w);
-    else if (drag.kind === "livePlay") livePlayMove(w);
+    else if (drag.kind === "liveplay") livePlayMove(w);
     else if (drag.kind === "band") bandDrag(w, e);
     // EVERY placement grammar routes here (PLACEMENT_DRAG_KINDS), so a grammar
     // added to the table is driven and committed with no edit to this dispatch.
@@ -3436,9 +3436,9 @@
       // release lands wherever the pointer ended up and the canvas below can
       // start its own gesture from a press this one already consumed.
       overlayEl.setPointerCapture(e.pointerId);
-      drag = { kind: "livePlay", itemId: hit.itemId, note: null };
+      drag = { kind: "liveplay", itemId: hit.itemId, note: null };
       app.dragging = true;
-      app.dragKind = "livePlay";
+      app.dragKind = "liveplay";
       return true;
     }
     if (play) {
@@ -3446,9 +3446,9 @@
       if (!note) return false;
       playLiveNote(items, app.registry, hit.itemId, "on", note.note, note.frequency);
       overlayEl.setPointerCapture(e.pointerId);
-      drag = { kind: "livePlay", itemId: hit.itemId, note: note.note, plugin: hit.plugin, state: hit.state, world: hit.world };
+      drag = { kind: "liveplay", itemId: hit.itemId, note: note.note, plugin: hit.plugin, state: hit.state, world: hit.world };
       app.dragging = true;
-      app.dragKind = "livePlay";
+      app.dragKind = "liveplay";
       return true;
     }
     return false;
@@ -3464,7 +3464,7 @@
    * attack while the rest of the chord sustained).
    */
   function livePlayMove(w) {
-    if (drag?.kind !== "livePlay" || drag.note === null) return;
+    if (drag?.kind !== "liveplay" || drag.note === null) return;
     const local = T.apply(T.invert(drag.world), w.x, w.y);
     const next = drag.plugin.livePlay.noteAt(drag.state, local.x, local.y);
     const items = app.state()?.items ?? {};
@@ -3478,7 +3478,7 @@
   /** Command. The live-play gesture ended: release a held note. A BUTTON has no
    *  note (its press was one edge at pointer-down), so this is a no-op for it. */
   function finishLivePlay() {
-    if (drag?.kind !== "livePlay" || drag.note === null) return;
+    if (drag?.kind !== "liveplay" || drag.note === null) return;
     playLiveNote(app.state()?.items ?? {}, app.registry, drag.itemId, "off", drag.note, 0);
   }
 
@@ -3886,7 +3886,7 @@
     // A LIVE PLAY RELEASES ITS NOTE AND RETURNS, for the same reason the wire
     // gesture does: it writes nothing to the document, so none of the selection,
     // click-vs-drag or preview machinery below applies to it.
-    if (drag.kind === "livePlay") {
+    if (drag.kind === "liveplay") {
       finishLivePlay();
       drag = null;
       app.dragging = false;

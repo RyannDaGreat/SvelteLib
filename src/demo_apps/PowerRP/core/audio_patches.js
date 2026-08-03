@@ -365,7 +365,90 @@ export const BEACH = {
  * SAMPLER patch the moment an audio asset is bundled, which is also when BEACH
  * should gain a real wave loop.
  */
-export const DEMO_PATCHES = [SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, WHOOSH, BEACH];
+/**
+ * PLAYABLE KEYS — the polyphony patch, and the one the user asked for by name.
+ *
+ * "Even a keyboard node is good. Polyphonic demos are important" (user,
+ * 2026-08-03). Insert it, click Enable Audio, and play chords with the mouse.
+ *
+ * ── WHAT MAKES IT THE POLYPHONY DEMO RATHER THAN JUST A PATCH ──────────────
+ * The Poly Pad is set to FOUR voices, not its default eight, DELIBERATELY: a
+ * four-voice pool is small enough that an ordinary two-handed chord reaches it,
+ * so the OLDEST-STEAL behaviour is something you can hear on purpose rather than
+ * a rule you have to take on faith. Turn Voices up in the Inspector and the
+ * stealing goes away — which is the clearest possible demonstration of what the
+ * knob does.
+ *
+ * ── THE KEYBOARD'S TWO OUTPUTS GO TO TWO DIFFERENT PLACES ──────────────────
+ * `gate` carries the per-note EVENTS (the polyphonic path — noteOn/noteOff with
+ * a voice pool behind them). `pitch` is a VALUE, and here it drives the reverb's
+ * nothing — it is deliberately left unwired, because a chord has no single pitch
+ * and wiring it would suggest otherwise. That absence is the patch teaching the
+ * distinction the ports exist to make.
+ *
+ * The KNOB is wired to the pad's cutoff so there is something to play with by
+ * hand besides the keys, which is the founding ask in miniature: turn it while
+ * holding a chord and the whole instrument moves.
+ */
+export const PLAYABLE_KEYS = {
+  id: "playable-keys",
+  title: "Playable Keys (Poly)",
+  help: "A KEYBOARD you can play with the mouse, into a POLYPHONIC pad and a hall reverb. Set to four voices on purpose: hold five notes and the oldest is stolen, which is what the Voices knob controls. Double-click the Knob to sweep the pad's filter while you play.",
+  nodes: [
+    { id: "keys", type: "node_keyboard", col: 0, row: 0, knobs: { baseNote: 48, octaves: 2 } },
+    { id: "cutoffKnob", type: "node_knob", col: 0, row: 1, knobs: { value: 1400, min: 200, max: 6000, step: 10 } },
+    { id: "poly", type: "audio_poly_pad", col: 1, row: 0, knobs: { voices: 4, cutoff: 1400, level: 0.3, attack: 0.06, release: 0.5 } },
+    { id: "reverb", type: "audio_reverb", col: 2, row: 0, knobs: { character: "hall", wet: 0.45, dry: 0.7, preDelay: 0.02 } },
+    ...analysisTail(3),
+  ],
+  wires: [
+    // THE POLYPHONIC WIRE. `gate` is a METHOD port on the poly pad, so this is
+    // not an engine connect — core/live_control.noteRoutes turns each key press
+    // into engine.noteOn and each release into noteOff, and the engine's voice
+    // pool (synth/voices.js) decides which voice and who is stolen.
+    { from: "keys", fromPort: "gate", to: "poly", toPort: "gate" },
+    // The knob drives the pad's cutoff: `cutoff` is a `number` input (an
+    // AudioParam a wire can drive), the same thing that makes the LFO patch work.
+    { from: "cutoffKnob", fromPort: "out", to: "poly", toPort: "cutoff" },
+    { from: "poly", fromPort: "out", to: "reverb", toPort: "in" },
+    ...analysisWires("reverb"),
+  ],
+};
+
+/**
+ * BUTTON DING — the smallest possible playable patch, and the one that proves a
+ * live trigger reaches the engine.
+ *
+ * "button nodes for triggers" (user, 2026-08-03). Press the button, hear a bell.
+ * Two nodes plus the analysis tail; there is nothing else in it, deliberately —
+ * a demo of one mechanism should contain one mechanism.
+ *
+ * WORTH KNOWING WHILE PLAYING IT: this patch is silent in a RENDERED EXPORT, and
+ * that is correct rather than broken. Nobody pressed the button, because a press
+ * is a live human event with no representation in [[slide, alpha]]
+ * (core/control_nodes.js states the ruling). To ring the bell in an export, drive
+ * it from the Sequenced Dings patch's clock instead — a clock is RECORDABLE, so
+ * it reproduces exactly.
+ */
+export const BUTTON_DING = {
+  id: "button-ding",
+  title: "Button Ding",
+  help: "Press the button, hear the bell. The smallest playable patch: a live trigger into an FM bell's strike input. NOTE: a rendered video of this slide is silent — nobody pressed the button. Use a Clock to ring it in an export.",
+  nodes: [
+    { id: "btn", type: "node_button", col: 0, row: 0, knobs: { label: "Ding" } },
+    { id: "bell", type: "audio_ding", col: 1, row: 0, knobs: { preset: "ding", frequency: 880, level: 0.5 } },
+    ...analysisTail(2),
+  ],
+  wires: [
+    // A METHOD wire: `gate` on the ding is engine.trigger, not a connect. One
+    // press is one rising edge (plugins/node_button.js states why it does not
+    // repeat while held).
+    { from: "btn", fromPort: "out", to: "bell", toPort: "gate" },
+    ...analysisWires("bell"),
+  ],
+};
+
+export const DEMO_PATCHES = [SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, WHOOSH, BEACH, PLAYABLE_KEYS, BUTTON_DING];
 
 /**
  * Pure function. A patch's items as `{id → state}` plus its wires resolved to real
@@ -389,9 +472,22 @@ export function buildPatchItems(patch, registry, origin, idFor) {
   for (const node of patch.nodes) {
     const plugin = registry.get(node.type);
     const at = patchLayout(node, origin);
+    // ── THE KNOB KEY IS THE WIDGET'S, NOT A FIXED PREFIX (BV, 2026-08-03) ────
+    // This prefixed "audio" onto every knob name unconditionally, which was
+    // right while every patchable node was an audio module. A CONTROL node
+    // (knob, slider, button, keyboard) stores its settings in PLAIN leaves —
+    // `value`, `min`, `label`, `baseNote` — so the prefix would have written
+    // `audioValue` into a widget with no such property. Nothing would throw: the
+    // state object takes any key, so the node would silently insert at its
+    // defaults and the patch would be subtly wrong with nothing to see.
+    //
+    // A widget SAYS which it is by declaring `audioModule`, so this asks rather
+    // than assumes. Pinned by tests/audio_patches_test.js, which asserts every
+    // knob a blueprint names is a key the target plugin's own defaults carry.
+    const prefixed = !!plugin.audioModule;
     const knobs = {};
     for (const [key, value] of Object.entries(node.knobs ?? {}))
-      knobs["audio" + key.charAt(0).toUpperCase() + key.slice(1)] = value;
+      knobs[prefixed ? "audio" + key.charAt(0).toUpperCase() + key.slice(1) : key] = value;
     const id = idFor(node.id);
     states[id] = { ...plugin.defaults, x: at.x, y: at.y, ...knobs, inputs: {} };
     order.push(id);
