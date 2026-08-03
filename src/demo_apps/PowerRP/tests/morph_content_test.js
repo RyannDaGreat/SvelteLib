@@ -155,6 +155,43 @@ test("text: an EMPTY box is not-ready for a reason of its own", () => {
     "an empty text box has no ink to morph, which is a different sentence from a missing seam");
 });
 
+test("text: a font with NO COMMITTED TTF is not-ready even with the seam installed (ZZ)", () => {
+  // WORKSTREAM ZZ, the reported "it just disappeared for a while and then
+  // reappeared". The seam being INSTALLED does not mean it can answer for THIS
+  // font: `system` is DEFAULT_FONT — what every text box has until an author
+  // picks another — and it has no embeddable file, so fontkit has nothing to
+  // parse and the payload comes back with ZERO subpaths.
+  //
+  // Nothing downstream catches that: assertMorphPaths accepts an empty
+  // `subpaths` array as well-formed (its own doctest does), and ports.js
+  // morphIR REPLACES the plugin's emit() for the whole transition. So the box
+  // drew nothing from the first interior frame to the last and its real emit()
+  // only came back when the transition ended — measured as 0 ops at EVERY
+  // alpha. The refusal has to happen here, at the readiness hook, which is the
+  // one place that can still choose the honest crossfade.
+  setGlyphOutlines({
+    glyphPaths: (text) => [...text].map(() => ({ d: "M0 0L1 0L1 1L0 1Z", advance: 1 })),
+    unitsPerEm: 1,
+  });
+  try {
+    assert.equal(glyphOutlinesReady(), true, "the seam IS installed — this is not the missing-source case");
+    const notReady = plaintextPlugin.morphNotReady({ text: "hi", font: "system" });
+    assert.ok(notReady, "a font with no committed TTF must report not-ready rather than morph on an empty payload");
+    assert.match(notReady, /font/i, "and the sentence must name the FONT as the thing to fix, not the seam");
+    // The default is the same case — a box the author never touched is exactly
+    // the one the user hit, so an assertion on "system" alone could pass while
+    // the default silently resolved elsewhere.
+    assert.ok(plaintextPlugin.morphNotReady({ text: "hi" }),
+      "and a box with NO font key at all defaults to system, so it must refuse too");
+    // The other direction, so the guard cannot pass by refusing everything: a
+    // committed family still morphs.
+    assert.equal(plaintextPlugin.morphNotReady({ text: "hi", font: "inter" }), null,
+      "a committed family has real letterforms and must still be allowed to morph");
+  } finally {
+    setGlyphOutlines(null);
+  }
+});
+
 test("text: an INSTALLED outline source produces a laid-out payload in the box", () => {
   // A STUB source, deliberately: this block is about the seam's contract (the
   // layout, the frame, the per-glyph placement), not about any particular font's
