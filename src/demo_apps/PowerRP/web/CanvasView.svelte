@@ -67,6 +67,12 @@
   import { thumbRenderPaused } from "./thumbSchedule.js";
   import { cameraRectAt } from "./cameraFrame.js";
   import * as T from "../core/transform.js";
+  // sampleSubpath: the morph engine's own subpath sampler, reused by the SELECTION
+  // CORRIDOR (WORKSTREAM NN) to measure how much of a boxed widget's box its ink
+  // actually fills. Reading the engine's sampler rather than writing a second one
+  // keeps "where the ink is" a single answer — the same reason the corridor traces
+  // morphPaths instead of a chrome-only outline hook.
+  import { sampleSubpath } from "../core/morph.js";
   // Extracted pure drag geometry (manifest UNDEFERRAL SWEEP: CanvasView
   // drag-machine extraction — PARTIAL: the stateless math; the stateful per-kind
   // handlers stay here). See web/canvas/dragKinds.js + tests/dragkinds_test.js.
@@ -4021,6 +4027,18 @@
   const CORRIDOR_MIN_WIDTH_VAR = "--a-selection-corridor-min-width";
   const CORRIDOR_MIN_WIDTH_FALLBACK = 9;
 
+  // "IS THIS BOX MOSTLY EMPTY?" — the test that decides whether a BOXED widget
+  // takes the corridor instead of its marquee (see wantsCorridor). Below this
+  // fraction of the box's area, the ink is a thin run and the box is a large empty
+  // frame around it, which is the paint_path case. Not a tuned constant: a stroked
+  // open curve crossing a box corner-to-corner at a typical few-px width lands one
+  // to two orders of magnitude under it, while anything drawing a filled region
+  // lands far above — so the value sits in a wide gap rather than on a boundary.
+  const CORRIDOR_EMPTY_BOX_FRACTION = 0.15;
+  // Points per curve when measuring that arc length. Enough to follow a cubic's
+  // bend closely; the result feeds a coarse ratio test, not a rendered path.
+  const CORRIDOR_INK_SAMPLES = 8;
+
   /**
    * Query (reads the container's computed style). A CSS length custom property as
    * a NUMBER of px, or `fallback` when the property is absent or unparseable.
@@ -4193,14 +4211,29 @@
      * dash is the right answer only when the box actually DESCRIBES it; for a
      * stroke widget it does not, so the corridor replaces it.
      *
-     * THE PREDICATE IS "IS THIS A STROKE WIDGET", DERIVED, NOT A TYPE LIST. It asks
-     * two things the plugin already declares: does it publish an ink outline
-     * (`morphPaths`), and does that outline include an OPEN subpath — a centerline,
-     * which is precisely how a widget says "my ink is a stroked run, not a filled
-     * region". A rect, circle, image or text has neither an open subpath nor any
-     * need of this, and keeps its box. fancy_arrow is the one member whose payload
-     * is all-closed (a silhouette), so it is admitted by being BOXLESS: an arrow
-     * family widget with no `w`/`h` has no box to fall back on in the first place.
+     * THE PREDICATE IS DERIVED, NOT A TYPE LIST, and it asks the question the
+     * feature is actually about: DOES THIS WIDGET'S BOX DESCRIBE IT?
+     *
+     * BOXLESS ⟹ ALWAYS. The whole arrow family is `bbox: false` with no `w`/`h`
+     * state at all, so there is no box to fall back on; `outlines` above skips them
+     * entirely, which is why a selected arrow showed nothing. That covers line,
+     * arrow, elbow_arrow, curved_arrow, fancy_arrow, brace and tangent_lines —
+     * including fancy_arrow, whose payload is an all-CLOSED silhouette rather than
+     * a centerline, and which an "has an open subpath" test would have missed.
+     *
+     * BOXED ⟹ ONLY WHEN THE BOX IS A BAD DESCRIPTION, measured against the ink it
+     * publishes. A first cut of this admitted any boxed widget whose payload had an
+     * OPEN subpath, and the AUDIT caught it over-reaching: plugins/svg.js is a
+     * perfectly ordinary 160×160 boxed widget, but its DEFAULT artwork happens to
+     * contain one open stroked subpath, so it would have lost its correct box
+     * marquee because of a detail of the drawing inside it. Whether a box describes
+     * a widget cannot depend on what art was loaded into it.
+     *
+     * So the real test is EMPTINESS: a corridor is warranted when the ink occupies
+     * a small fraction of the box's area, which is exactly the paint_path case — a
+     * thin open curve inside a large rect, where the marquee is a big empty frame
+     * around a stroke it barely touches. A filled shape, an image, a text box or a
+     * fully-inked SVG all cover their box and keep the marquee.
      *
      * A NAMED TYPE LIST WOULD HAVE BEEN THE DEFECT GENERATOR the registry docblock
      * warns about under the universal-effects and gradient-handle rulings: the next
@@ -4211,12 +4244,23 @@
     const wantsCorridor = (n) => {
       if (!n.plugin.morphPaths) return false;
       if (!n.plugin.capabilities.bbox) return true; // no box to draw at all — the whole arrow family
-      // A BOXED widget joins only if its ink is genuinely a stroked run, which is
-      // what an open subpath means. paint_path is the member this admits: it has a
-      // real box, but an OPEN path drawn inside a large one is a thin diagonal in a
-      // big empty rect, and the box says almost nothing about where the ink is.
       if (n.plugin.morphNotReady?.(n.state)) return false;
-      return (n.plugin.morphPaths(n.state)?.subpaths ?? []).some((sp) => !sp.closed);
+      const subpaths = n.plugin.morphPaths(n.state)?.subpaths ?? [];
+      // Only an OPEN subpath can be a thin run — a closed one bounds an area, and a
+      // widget that draws any filled region is described by its box well enough.
+      if (!subpaths.length || subpaths.some((sp) => sp.closed)) return false;
+      const boxW = Math.abs(n.state.w ?? 0), boxH = Math.abs(n.state.h ?? 0);
+      if (!(boxW > 0 && boxH > 0)) return true; // a zero-area box describes nothing
+      // THE INK'S OWN AREA vs THE BOX'S. A stroked open path covers roughly its
+      // arc length times its width; comparing that to the box area asks "is this
+      // box mostly empty?" without needing a second geometry pipeline to measure it.
+      const ink = subpaths.reduce((acc, sp) => {
+        const pts = sampleSubpath(sp, CORRIDOR_INK_SAMPLES);
+        let len = 0;
+        for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+        return acc + len * Math.max(sp.paint?.strokeWidth ?? 0, 1);
+      }, 0);
+      return ink / (boxW * boxH) < CORRIDOR_EMPTY_BOX_FRACTION;
     };
 
     // THE TWO INDICATIONS ARE EXCLUSIVE per widget: a corridor widget does NOT also
@@ -4232,6 +4276,31 @@
     // restores them to the overlay. They are corridor-only by construction (no box).
     const selectedStrokeNodes = nodes.filter((n) => selSet.has(n.itemId) && !n.plugin.capabilities.bbox && wantsCorridor(n));
     const corridors = [...corridorNodes, ...selectedStrokeNodes].flatMap(corridorPathsOf);
+    // THE AUDIT'S THIRD FINDING (WORKSTREAM NN). A boxless widget with a real ink
+    // rect but NO `morphPaths` gets neither indication: no box to outline, no
+    // payload to trace. plugins/demo/corkboard.js's `corkboardYarn` is the one such
+    // widget in the tree — a sagging catenary cord that publishes `localBounds`
+    // (368×212 at its defaults) but never joined the morph roster.
+    //
+    // ITS INK RECT IS THE HONEST FALLBACK, and it is deliberately NOT a corridor:
+    // the rect is a genuine, correctly-placed bound, so drawing it says something
+    // true, whereas synthesizing a path through ink whose shape we have not been
+    // told would be chrome inventing geometry — the exact "described alongside the
+    // ink rather than derived from it" failure the corridor was built to avoid.
+    // It gets the ordinary `.selection` marquee, which is what this widget would
+    // have had all along had it carried a box.
+    //
+    // THE REAL FIX IS ONE LINE IN THAT PLUGIN — a `morphPaths` declaring the same
+    // quadratic its emit() already draws — at which point this branch stops
+    // selecting it and it takes a curve-following corridor like every other cord.
+    // That line is not written here: plugins/ is outside this change's surface, and
+    // the fallback means the widget is not invisible in the meantime.
+    const inkRectOutlines = nodes
+      .filter((n) => selSet.has(n.itemId) && !n.plugin.capabilities.bbox && !n.plugin.morphPaths && n.plugin.localBounds)
+      .flatMap((n) => {
+        const ink = n.plugin.localBounds(n.state);
+        return ink && ink.w > 0 && ink.h > 0 ? [rectOutlineOf(n, ink)] : [];
+      });
     // THE ITEM PICKER'S HOVER PREVIEW. Reuses `outlineOf` — the same geometry the
     // real selection outline uses — so a previewed box cannot disagree with the
     // box you get on release; only the SKIN differs (.selection-preview). Empty
@@ -4529,7 +4598,7 @@
       placeDots = placePreview.dots.map((d) => ({ ...pt(d.x, d.y), hot: d.hot }));
     }
 
-    return { outlines, hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, inkGhostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline, corridors, bandAddCorridors, bandRemoveCorridors };
+    return { outlines: [...outlines, ...inkRectOutlines], hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, inkGhostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline, corridors, bandAddCorridors, bandRemoveCorridors };
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
