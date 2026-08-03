@@ -61,9 +61,12 @@
   --a-port-number: #7aa2f7;
   --a-port-trigger: #e0af68;
   --a-port-audio: #9ece6a;
-  /* Wire chrome. The stroke widths are screen-space (the overlay is an SVG in screen
-     coordinates), and the ghost wire is the one being dragged. */
-  --a-wire-width: 2.5px;
+  /* GHOST-wire chrome. Screen-space (the overlay is an SVG in screen coordinates)
+     and GHOST-ONLY: the committed wires are painted into the SCENE now (WORKSTREAM
+     BN), so their width lives in core/node_chrome.WIRE_WIDTH in WORLD units, where
+     the DOM-less backends can read it. `--a-wire-width` was deleted with them
+     rather than left declared-but-unread — a token nothing reads is the next
+     agent's phantom. */
   --a-wire-hover-width: 4px;
   --a-wire-ghost-dash: 6 5;
   --a-wire-refused: #f7768e;
@@ -4874,41 +4877,33 @@ textarea {
   stroke: var(--a-ghost);
 }
 
-/* ── THE NODE-FLOW WIRE LAYER (core/nodeflow.js, core/wire_drag.js) ──────────
+/* ── THE NODE-FLOW INTERACTION LAYER (core/nodeflow.js, core/wire_drag.js) ────
    WIRES ARE NOT WIDGETS (user ruling, 2026-08-02): every curve styled here is
    DERIVED rendering of a CONNECTION stored in a node widget's own state. Nothing
    in this block corresponds to a document item.
 
+   THE COMMITTED WIRES ARE NOT STYLED HERE ANY MORE. `.nf-wire` and
+   `.nf-wire-halo` were deleted with their markup in WORKSTREAM BN (2026-08-03):
+   the persistent wires became SCENE content so they appear in presentation mode
+   and in every export (the user's ask), and their look now lives in
+   core/node_chrome.js as WIRE_WIDTH / WIRE_HALO_INK — display-list literals,
+   because Skia, the PDF/SVG exporters and bare-node cli/render.js have no DOM and
+   cannot resolve a custom property. LEAVING THE RULES HERE WOULD HAVE BEEN WORSE
+   THAN DEAD CODE: they would be a second, DOM-only definition of a wire's look,
+   and the first edit to either side would make the editor and the export disagree
+   about the picture. What remains below is the GHOST and the BEADS — interaction
+   affordances that must never reach an export at all.
+
    THE COLOUR IS PASSED IN, NOT PICKED HERE. `--nf-wire-color` is set inline per
    element from core/nodeflow.portColor — the SAME table the PAINTER uses for the
-   beads it draws into the scene. A colour chosen in CSS would be a second source
-   of truth that could disagree with the picture, and the type→colour mapping is
-   the user's stated legibility mechanism ("they may have different colors on each
-   node to indicate that type"), so it must not have two answers.
+   beads and the scene wires. A colour chosen in CSS would be a second source of
+   truth that could disagree with the picture, and the type→colour mapping is the
+   user's stated legibility mechanism ("they may have different colors on each node
+   to indicate that type"), so it must not have two answers.
 
    NOT THEMED, for the same reason the tokens are not: a wire's colour names the
    DATA TYPE flowing through it. A theme that recoloured it would be saying
    something false about the patch. */
-.overlay .nf-wire {
-  fill: none;
-  stroke: var(--nf-wire-color);
-  stroke-width: var(--a-wire-width);
-  stroke-linecap: round;
-  pointer-events: none;
-}
-
-/* THE HALO: the canvas colour, drawn UNDER each wire and slightly wider, so a wire
-   crossing a dark node card or another wire stays legible. This is what lets the
-   wire itself stay a single flat stroke in its type colour — an outline drawn ON
-   the wire would blend into it and change the colour the user is reading. */
-.overlay .nf-wire-halo {
-  fill: none;
-  stroke: var(--a-canvas-solid);
-  stroke-width: calc(var(--a-wire-width) + var(--a-sp-2));
-  stroke-linecap: round;
-  opacity: 0.55;
-  pointer-events: none;
-}
 
 /* THE GHOST WIRE — the one being dragged right now. Dashed so it reads as
    PROVISIONAL against the solid committed wires, and thicker so it stays the

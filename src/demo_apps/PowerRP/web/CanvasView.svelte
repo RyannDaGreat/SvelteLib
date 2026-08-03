@@ -16,11 +16,15 @@
   import VideoV7Overlay from "./VideoV7Overlay.svelte"; // per-widget WebGPU video canvases stacked over the Skia scene (video_v7)
   import { videoV7Descriptors } from "./videoV7Placement.js";
   import { pickNode, pickNodeStack, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
-  // THE NODE-FLOW WIRE LAYER. `deriveWires` walks the derived tree's connections
-  // (WIRES ARE NOT WIDGETS — nothing here is or becomes an item); core/wire_drag.js
-  // owns every decision the gesture makes, this component owns only the events and
-  // the SVG. `portColor` is the ONE type→colour lookup the painter also reads.
-  import { deriveWires } from "../core/derive.js";
+  // THE NODE-FLOW INTERACTION LAYER. core/wire_drag.js owns every decision the
+  // gesture makes; this component owns only the events and the SVG that shows the
+  // GHOST being dragged and the beads it may land on. `portColor` is the ONE
+  // type→colour lookup, and the painter reads the same table for the committed
+  // wires it now draws into the scene (WORKSTREAM BN) — so a wire in flight and
+  // the wire that replaces it are the same colour by construction.
+  // `deriveWires` IS DELIBERATELY NOT IMPORTED any more: the committed wires are
+  // scene content (render_gpu/ports.sceneIR), and calling it here would rebuild a
+  // second copy of them for a layer that no longer draws any.
   import { portColor } from "../core/nodeflow.js";
   import { KNOB_FOCUS_GAP } from "../core/node_chrome.js";
   import { KNOB_R } from "../core/node_knobs.js";
@@ -4806,33 +4810,33 @@
   });
 
   /**
-   * THE NODE-FLOW OVERLAY: the wires to draw, the beads to draw, and the live
-   * ghost. Its OWN $derived rather than another dozen keys on `overlay`, for two
-   * reasons that are really one — it is the only overlay layer that exists for a
-   * MINORITY of documents, and every one of its lists is empty when no widget
-   * declares a port, so a document with no nodes pays one `deriveWires([])` per
-   * rebuild and allocates nothing.
+   * THE NODE-FLOW INTERACTION OVERLAY: the beads' hit/highlight layer, the live
+   * ghost wire, and the knob focus ring. Its OWN $derived rather than another
+   * dozen keys on `overlay`, for two reasons that are really one — it is the only
+   * overlay layer that exists for a MINORITY of documents, and every one of its
+   * lists is empty when no widget declares a port, so a document with no nodes
+   * pays one `allPortBeads([])` per rebuild and allocates nothing.
    *
-   * WIRES ARE NOT WIDGETS. Every wire here is derived from the CONNECTIONS in node
-   * widgets' state (core/derive.deriveWires); none of it is an item, none of it is
-   * selectable, and nothing here can end up in the widget library.
+   * IT NO LONGER CARRIES THE COMMITTED WIRES (WORKSTREAM BN, 2026-08-03). Those
+   * are SCENE content now — render_gpu/ports.sceneIR emits them under the nodes —
+   * because the user asked for wires "in prsentation mode and pdf rener and png
+   * render etc too", and an overlay path exists in this component alone. Deriving
+   * them here as well would be a second drawing of one wire: a double-draw that
+   * darkens every wire in the editor and nowhere else, and an editor that has
+   * quietly stopped being a preview of what an export produces. So `deriveWires`
+   * is not called here at all — the SVG below is the ghost and the beads only.
+   *
+   * WIRES ARE NOT WIDGETS is unchanged by that move: the scene emission creates no
+   * item, none of it is selectable, and nothing reaches the widget library.
    *
    * SCREEN SPACE, like the rest of the overlay: the SVG is in screen coordinates,
    * so every world point goes through `worldToScreen` exactly once, here.
    */
   let nodeOverlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
-    if (!actions) return { wires: [], beads: [], ghost: null, analysis: [], knobRings: [] };
+    if (!actions) return { beads: [], ghost: null, analysis: [], knobRings: [] };
     const nodes = app.nodes();
     const pt = (x, y) => actions.worldToScreen(x, y);
-    // A wire is drawn in the colour of the SOURCE port's type — what flows through
-    // it, which under a coercion is what it LEAVES as rather than what it arrives
-    // as. `deriveWires` already resolved that; this only maps it to pixels.
-    const wires = deriveWires(nodes).map((w) => ({
-      id: `${w.from.item}.${w.from.port}->${w.to.item}.${w.to.port}`,
-      d: wireBezierPath(pt(w.from.x, w.from.y), pt(w.to.x, w.to.y)),
-      color: portColor(w.type),
-    }));
     // THE BEADS ARE DRAWN BY THE PAINTER (core/node_chrome.portBeads), not here —
     // they are part of the node's picture and must appear in exports, in the
     // presenter and in the CLI render. What the OVERLAY adds is the interaction
@@ -4935,7 +4939,7 @@
         });
       }
     }
-    return { wires, beads, ghost, analysis, knobRings };
+    return { beads, ghost, analysis, knobRings };
   });
 
   /** The inset from a node's card edge to its live-overlay rect, and the top inset
@@ -5105,19 +5109,24 @@
              starting clears app.crosshair and no live drag repopulates this
              array). Skin picks the CSS class: band = dashed band-select
              style, place = gray --a-ghost tone. -->
-        <!-- ── THE NODE-FLOW WIRE LAYER ────────────────────────────────────────
-             WIRES ARE NOT WIDGETS (user ruling): every curve here is DERIVED from
-             the connections stored in node widgets' own state, and nothing in this
-             block is or becomes a document item. Drawn FIRST among the overlay
-             chrome so selection outlines, handles and guides all read ON TOP of a
-             patch's wiring rather than being lost under it.
-             Each wire is a HALO stroke plus the wire itself: the halo is the canvas
-             colour, so a wire crossing a dark node card stays legible without the
-             wire needing an outline that would change its colour. -->
-        {#each nodeOverlay.wires as wire (wire.id)}
-          <path class="nf-wire-halo" d={wire.d} />
-          <path class="nf-wire" d={wire.d} style={`--nf-wire-color: ${wire.color};`} />
-        {/each}
+        <!-- ── THE PERSISTENT WIRES ARE NOT DRAWN HERE ANY MORE ────────────────
+             They moved INTO THE SCENE (WORKSTREAM BN; render_gpu/ports.sceneIR
+             splices core/node_chrome.wireLayerOps under the nodes), because the
+             user asked for them everywhere: "the wires between nodes should be
+             shown in prsentation mode and pdf rener and png render etc too
+             please" (2026-08-03). An overlay path exists only in THIS component,
+             so presentation mode and every exporter drew naked nodes joined by
+             nothing.
+             THIS BLOCK IS DELIBERATELY GONE RATHER THAN KEPT AS A SECOND COPY.
+             Two drawings of one wire would be a double-draw the moment either
+             side's width, colour or curve changed — the halo alone would darken
+             every wire in the editor and nowhere else — and the editor would stop
+             being an honest preview of what an export produces, which is the whole
+             point of the display list. WIRES ARE NOT WIDGETS still holds: the
+             scene emission creates no item, exactly as this block created none.
+             What stays below is the INTERACTIVE half only — the ghost being
+             dragged, and the bead highlights that say where it may land. Neither
+             is document state, so neither belongs in an export. -->
         <!-- THE GHOST WIRE: the one being dragged right now. Dashed so it reads as
              provisional, and it turns to the refusal colour the moment the pointer
              is over a bead it cannot land on — the wire says no before the drop

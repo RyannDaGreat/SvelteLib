@@ -167,7 +167,8 @@ export function cameraRectAt(doc, slideIndex, alpha, registry) {
  */
 export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0, project = "", live = false } = {}) {
   const rect = cameraRect(state, meta);
-  let nodes = deriveRenderTree(state, registry, project || meta?.name || "");
+  const allNodes = deriveRenderTree(state, registry, project || meta?.name || "");
+  let nodes = allNodes;
   if (cullRect) nodes = nodes.filter((n) => !canSkipNode(n, cullRect));
   const liveView = view && viewW > 0 && viewH > 0;
   const pdfDisplay = liveView ? preRasterizePdfPages(nodes, view, viewW, viewH) : null;
@@ -203,6 +204,16 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
     // looks right. The pre-passes above are still driven by `view`, because a
     // resolution decision does not depend on repainting and the presenter should
     // get its scenes at presentation resolution.
-    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, live }),
+    // `wireNodes` IS THE PRE-CULL TREE, and passing it is the whole reason this
+    // function keeps `allNodes` around (WORKSTREAM BN). A node-flow WIRE spans two
+    // nodes; culling asks only whether ONE node's own bounds miss the view. So a
+    // wire from an off-camera source into an on-camera sink — visible for most of
+    // its length, and the commonest arrangement in a patch that runs off the edge
+    // of a slide — would simply vanish if the wire pass read the culled list.
+    // Presentation mode is the only caller that culls, so without this line the
+    // presenter would show a DIFFERENT set of wires than the PDF/PNG export of the
+    // same slide, which is exactly the split the user asked to close. With no
+    // cullRect, `allNodes === nodes` and this is the same object it always was.
+    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, live, wireNodes: allNodes }),
   ];
 }

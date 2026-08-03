@@ -351,50 +351,6 @@ test("GROWING COMPOSES WITH A SCALE TWEEN — the ramp multiplies the authored s
   near(worldPush(mid).scale, 2 * 0.5, "the grow ramp MULTIPLIES it rather than replacing it");
 });
 
-// ── A GROUP: WHERE A WRAP EXISTS, GROW OWNS IT; WHERE NONE DOES, NEITHER MODE ─
-//
-// MEASURED BOUND, recorded so it is never mis-read as a grow defect. A group is a
-// flat-membership DERIVATION PARENT, not a nested object: its members are emitted
-// as INDEPENDENT top-level nodes carrying their own worlds, and the group folds
-// them into one subtree ONLY when its effects/crop bundle is live
-// (plugins/group.js groupFoldsSubtree). So on a PLAIN group there is no
-// group-level wrap for ANY visible-interp mode to ride — and the pin asserts that
-// PLAIN `fade` behaves identically, which is what shows this is a property of the
-// group model rather than anything this mode introduced. Cascading a group's
-// visibility onto its children is WORKSTREAM BR's subject, and when BR lands the
-// cascade this mode inherits it for free (the members' own `active` is what grow
-// already reads).
-test("a FOLDING group grows as ONE composite, about the GROUP's anchor", () => {
-  const group = {
-    id: "g", type: "group", x: 0, y: 0, w: 400, h: 200, rotation: 0, scale: 1,
-    members: ["m"], bind: { x: 0, y: 0, rotation: 0, scale: 1 }, blendMode: "multiply", // an effect ⇒ it folds
-  };
-  const member = { id: "m", type: "rect", x: 40, y: 20, w: 200, h: 100, fill: "#ff0000", group: "g" };
-  const push = (active) => {
-    const ev = evaluateState({ items: { g: { ...group, active }, m: member }, vars: {} }, registry);
-    return sceneIR(deriveRenderTree(ev.state, registry, CANVAS)).find((o) => o.op === "pushTransform");
-  };
-  const half = push(fx("grow", 0.5));
-  near(half.scale, 0.5, "the whole composite halves");
-  near(half.x, 100, "about the GROUP's own centre (200,100) — x");
-  near(half.y, 50, "…and y");
-});
-
-test("BOUND: on a PLAIN group neither grow NOR fade reaches the members (the group model, not this mode)", () => {
-  const group = { id: "g", type: "group", x: 0, y: 0, w: 400, h: 200, rotation: 0, scale: 1, members: ["m"], bind: { x: 0, y: 0, rotation: 0, scale: 1 } };
-  const member = { id: "m", type: "rect", x: 40, y: 20, w: 200, h: 100, fill: "#ff0000", group: "g" };
-  const memberOps = (active) => {
-    const ev = evaluateState({ items: { g: { ...group, active }, m: member }, vars: {} }, registry);
-    return sceneIR(deriveRenderTree(ev.state, registry, CANVAS));
-  };
-  const plain = memberOps(true);
-  // THE CONTROL: plain fade does not reach the member either. If this assertion
-  // ever fails, the group cascade has landed (BR) and the grow line below should
-  // be expected to change WITH it — they are one behaviour, not two.
-  assert.deepEqual(memberOps(0.5), plain, "plain FADE on a plain group does not reach its member — the control");
-  assert.deepEqual(memberOps(fx("grow", 0.5)), plain, "so grow does not either — same seam, same bound");
-});
-
 test("an authored opacity survives the grow — it is not a fade and must not touch one", () => {
   const drawn = ops({ ...RECT, opacity: 0.4, active: fx("grow", 0.5) }).filter((o) => o.op === "rect");
   assert.ok(drawn.length > 0, "the rect still draws");

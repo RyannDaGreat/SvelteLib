@@ -42,7 +42,7 @@
  */
 
 import { ellipse, path, rect, text } from "../render_gpu/ir.js";
-import { NODE_CORNER_R, PORT_BEAD_R, portColor, portLayout } from "./nodeflow.js";
+import { NODE_CORNER_R, PORT_BEAD_R, portColor, portLayout, wireBezierPath } from "./nodeflow.js";
 import {
   KNOB_LABEL_GAP, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_R, KNOB_TRACK_WIDTH,
   KNOB_VALUE_SIZE, knobArcPath, knobPoint, knobReadout,
@@ -497,4 +497,128 @@ export function formatNodeValue(v, decimals = 3) {
   if (v === Infinity) return "∞";
   if (v === -Infinity) return "-∞";
   return String(Number(Number(v).toFixed(decimals)));
+}
+
+// ── THE WIRES (WORKSTREAM BN) ───────────────────────────────────────────────
+//
+// User ruling, 2026-08-03, verbatim: "the wires between nodes should be shown in
+// prsentation mode and pdf rener and png render etc too please".
+//
+// Until this landed, a wire existed ONLY as an SVG path in the editor's overlay,
+// which meant presentation mode and every exporter drew naked nodes joined by
+// nothing — the picture the author made, minus the part that says what is
+// connected to what. The beads were already scene content
+// (portBeads above, painted by each plugin's emit) so an export showed the
+// SOCKETS with no cables in them, which reads as a broken patch rather than as a
+// missing feature.
+//
+// WIRES ARE STILL NOT WIDGETS (ADDENDA 7/9 stand untouched). Nothing below
+// creates an item, a plugin, or a document leaf. These are display-list ops built
+// from geometry that core/derive.deriveWires computed out of the connections
+// already stored in node widgets' own state — derived RENDERING of derived
+// geometry, exactly as ADDENDUM 9 says ("wires are still rendered, they're just
+// not widgets"). The emission owner is render_gpu/ports.sceneIR, the scene
+// WALKER, not any plugin: a wire spans TWO nodes, so no single plugin's emit()
+// could own it without reading a sibling's state, which the
+// no-plugin-imports-plugin law exists to prevent.
+
+/**
+ * The wire's stroke width, in WORLD units — the same length space the node cards
+ * and their beads live in, so a wire scales with the patch instead of staying a
+ * fixed-size piece of UI furniture. Matched to the editor overlay's
+ * `--a-wire-width` at 100% zoom, so moving a wire into the scene did not change
+ * how thick it looks.
+ */
+export const WIRE_WIDTH = 2.5;
+
+/**
+ * The HALO drawn under each wire, as extra width added to WIRE_WIDTH. A wire
+ * crossing a dark node card, or another wire, needs separation from what is
+ * behind it; a halo gives that without an outline ON the wire, which would blend
+ * into the wire and change the type colour the user is reading.
+ */
+export const WIRE_HALO_EXTRA = 2;
+
+/**
+ * The halo's colour and opacity. THE EDITOR'S HALO IS THE CANVAS COLOUR AND THIS
+ * ONE CANNOT BE: `--a-canvas-solid` is a THEME token, and a theme is a property
+ * of the person looking at the editor, not of the document. Baking one into a PDF
+ * would put the current theme's grey into a printed page, and would put a DARK
+ * halo on a white-background slide. So the scene halo is the NODE BODY colour at
+ * low alpha instead — the patch's own darkest surface, which is what a wire
+ * mostly crosses, and which is a fact about the node chrome rather than about the
+ * viewer.
+ */
+export const WIRE_HALO_INK = NODE_BODY;
+export const WIRE_HALO_OPACITY = 0.55;
+
+/**
+ * Pure function. The display-list ops for ONE wire, in WORLD space: a halo stroke
+ * and the wire itself, both along the same cubic bezier.
+ *
+ * The wire is drawn in the SOURCE port type's colour — what flows through it,
+ * which under a coercion is what it LEAVES as rather than what it arrives as.
+ * `deriveWires` already resolved which end that is; this only turns the answer
+ * into paint, through the SAME core/nodeflow.portColor table the beads read, so a
+ * wire and the beads it joins can never disagree about a type's colour.
+ *
+ * Emitted at IDENTITY, not inside any node's transform: a wire spans two nodes
+ * and belongs to neither, so its endpoints arrive already in world space from
+ * core/derive.nodePortAnchors (which is what makes a wire land on a ROTATED or
+ * SCALED node's beads with no trigonometry here).
+ *
+ * @param {object} wire - one core/derive.deriveWires record ({from: {x, y}, to: {x, y}, type})
+ * @returns {object[]} display-list commands (halo first, then the wire)
+ *
+ * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"}).length // 2
+ * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"})[1].d // "M 0 0 C 100 0 100 0 200 0"
+ * @example // the halo is the WIDER of the two, and is drawn FIRST so the wire lands on top
+ * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"}).map((o) => o.strokeWidth) // [4.5, 2.5]
+ * @example // the wire carries the SOURCE type's colour (ir.js has parsed it to RGBA)
+ * @example wireOps({from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "audio"})[1].stroke.length // 4
+ */
+export function wireOps(wire) {
+  const d = wireBezierPath(wire.from, wire.to);
+  // ROUND CAPS at both ends, matching the editor overlay's `stroke-linecap: round`
+  // — a wire's end sits AT its bead's centre, so a flat cap would leave the cable
+  // stopping half a bead short of the socket it plugs into.
+  const caps = { strokeCapStart: "round", strokeCapEnd: "round" };
+  return [
+    path({ d, fill: null, stroke: WIRE_HALO_INK, strokeWidth: WIRE_WIDTH + WIRE_HALO_EXTRA, opacity: WIRE_HALO_OPACITY, ...caps }),
+    path({ d, fill: null, stroke: portColor(wire.type), strokeWidth: WIRE_WIDTH, ...caps }),
+  ];
+}
+
+/**
+ * Pure function. Every wire in a derived tree as display-list ops, in one flat
+ * list — what render_gpu/ports.sceneIR splices in UNDER the nodes.
+ *
+ * ── WHY UNDER, AND NOT OVER ─────────────────────────────────────────────────
+ * A deliberate choice, and the reference node editors (Audulus — the user's
+ * stated taste anchor — plus Reaktor, Blender, Nuke, TouchDesigner) all make the
+ * same one: wires pass BEHIND the node cards. Three reasons, in order of weight:
+ *   THE CARD'S CONTENT IS THE POINT. A node shows a title, a readout, sometimes a
+ *     spectrum. A wire crossing OVER it would strike through the number the node
+ *     exists to display, and a patch is read by its values.
+ *   A WIRE BEHIND A CARD IS SELF-OCCLUDING IN THE RIGHT DIRECTION. It disappears
+ *     at the card and re-emerges on the far side, which the eye completes as one
+ *     continuous cable. Drawn over, it reads as a scratch across the card.
+ *   THE BEAD IS THE JOINT. Beads are painted by each node's own emit(), so they
+ *     are node-layer content; a wire ending UNDER its bead tucks into the socket,
+ *     while a wire ending OVER it covers the socket it is plugged into.
+ * The cost is honest and accepted: a wire routed across a node it does not
+ * connect to is hidden behind that node. That is the same trade every reference
+ * app makes, and the halo below keeps the visible spans legible where they cross
+ * each OTHER (wires are all in one layer, so they do halo against each other).
+ *
+ * @param {object[]} wires - core/derive.deriveWires output
+ * @returns {object[]} display-list commands (two per wire)
+ *
+ * @example wireLayerOps([]) // []
+ * @example wireLayerOps([{from: {x: 0, y: 0}, to: {x: 200, y: 0}, type: "number"}]).length // 2
+ * @example // two wires → four ops, and EVERY halo precedes its own wire (one flat layer)
+ * @example wireLayerOps([{from: {x: 0, y: 0}, to: {x: 9, y: 0}, type: "number"}, {from: {x: 0, y: 5}, to: {x: 9, y: 5}, type: "audio"}]).map((o) => o.strokeWidth) // [4.5, 2.5, 4.5, 2.5]
+ */
+export function wireLayerOps(wires) {
+  return (wires ?? []).flatMap(wireOps);
 }

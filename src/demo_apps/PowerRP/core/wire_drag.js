@@ -224,32 +224,17 @@ export function wireDrop(items, registry, drag, target) {
 }
 
 /**
- * Pure function. The cubic BEZIER for a wire between two world points, as an SVG
- * path `d`. Control points are pushed HORIZONTALLY out of each end — out of the
- * source's right, into the destination's left — which is what gives a node editor
- * its characteristic left-to-right flow (the user's Reaktor reference) and what
- * makes two wires crossing readable rather than a tangle.
+ * THE WIRE CURVE MOVED TO core/nodeflow.js (WORKSTREAM BN, 2026-08-03) and is
+ * re-exported here so this module's existing importers keep one name for it.
  *
- * The horizontal reach grows with the horizontal gap but is CLAMPED, so a wire
- * across the whole slide does not bow into a giant arc, and two nodes stacked
- * vertically (dx ≈ 0) still get a visible S rather than a straight line through
- * both cards. That minimum is the whole reason this is a function and not a lerp.
- *
- * @param {{x: number, y: number}} from - the source end (world)
- * @param {{x: number, y: number}} to - the destination end (world)
- * @returns {string} an SVG path `d`
- *
- * @example wireBezierPath({x: 0, y: 0}, {x: 200, y: 0}) // "M 0 0 C 100 0 100 0 200 0"
- * @example wireBezierPath({x: 0, y: 0}, {x: 0, y: 100}) // "M 0 0 C 40 0 -40 100 0 100"
+ * WHY IT MOVED: the curve stopped being an interaction detail the day wires
+ * became SCENE content. The RENDERER now needs the identical path — the user's
+ * ask is that "the wires between nodes should be shown in prsentation mode and
+ * pdf rener and png render etc too" — and render_gpu/ must not import an
+ * interaction module that pulls in core/derive.js and the whole drag protocol.
+ * core/nodeflow.js is the leaf (it imports NOTHING), so both the ghost wire the
+ * pointer drags and the committed wire the painter draws now come from one
+ * function, which is what makes the ghost land exactly on the curve that
+ * replaces it.
  */
-export function wireBezierPath(from, to) {
-  const dx = to.x - from.x;
-  const reach = Math.min(WIRE_MAX_REACH, Math.max(WIRE_MIN_REACH, Math.abs(dx) / 2));
-  return `M ${from.x} ${from.y} C ${from.x + reach} ${from.y} ${to.x - reach} ${to.y} ${to.x} ${to.y}`;
-}
-
-/** The bezier's horizontal control reach, in WORLD units. The minimum keeps a
- *  vertical wire an S-curve instead of a straight line through both cards; the
- *  maximum stops a long wire bowing into an arc that leaves the slide. */
-export const WIRE_MIN_REACH = 40;
-export const WIRE_MAX_REACH = 160;
+export { wireBezierPath, WIRE_MIN_REACH, WIRE_MAX_REACH } from "./nodeflow.js";

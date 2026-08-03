@@ -29,6 +29,8 @@ import { applyNodeEffects, withEffectsStripped } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
 import { hasStrokeMaterial } from "./skia/stroke_materials.js"; // the STROKE-material roster — WHICH materials can be a stroke at all (canStrokeWithPaint)
 import { reportOnce, warnOnce } from "../core/report.js";
+import { deriveWires } from "../core/derive.js";
+import { wireLayerOps } from "../core/node_chrome.js";
 import { errorAffordanceArgs, errorBoxExtent, errorMessage, describeOwner, throwMessage, isConfigurationError, configurationError } from "../core/paint_containment.js";
 
 /**
@@ -307,9 +309,22 @@ export function videoIR(s) {
  * flag is general because the question is (any async-raster widget has it), and
  * `false` — every existing caller — is byte-identical to before it existed.
  *
+ * `wireNodes` IS THE ONE PIECE OF CONTEXT THAT IS NOT A PRE-PASS, and it exists
+ * because CULLING AND WIRES DISAGREE ABOUT WHAT A NODE IS FOR. A cull rect drops
+ * every node whose own bounds miss the view, which is correct for the node's
+ * PICTURE and wrong for its WIRES: a wire from an off-camera source to an
+ * on-camera sink is visible for most of its length, and deriving it from the
+ * culled list would silently delete it. Only ONE caller culls
+ * (web/PresentMode.svelte, through cameraFrameIR, to the camera rect), so the fix
+ * is for that caller to hand back the PRE-CULL tree for the wire pass alone —
+ * which is what stops presentation mode from drawing a different set of wires
+ * than the PDF export of the same slide. Absent (every other caller — the editor,
+ * thumbnails, every exporter, the CLI) means "nothing was culled", and `nodes`
+ * itself is the honest answer.
+ *
  * Args:
  *   nodes (object[]): deriveRenderTree output (nodes carry .plugin)
- *   ctx ({pdfDisplay?: Map, mapTiles?: Map, scene3d?: Map, live?: boolean}): optional render-time display context (see above)
+ *   ctx ({pdfDisplay?: Map, mapTiles?: Map, scene3d?: Map, live?: boolean, wireNodes?: object[]}): optional render-time display context (see above)
  *
  * Returns:
  *   object[]: IR commands (z-ordered because nodes are)
@@ -331,7 +346,34 @@ export function sceneIR(nodes, ctx = {}) {
     live: ctx.live === true,
   };
   const byId = new Map(nodes.map((n) => [n.itemId, n]));
-  const out = [];
+  // ── THE WIRE LAYER (WORKSTREAM BN, user 2026-08-03: "the wires between nodes
+  // should be shown in prsentation mode and pdf rener and png render etc too
+  // please") ──────────────────────────────────────────────────────────────────
+  //
+  // THIS WALKER IS THE EMISSION OWNER, and it has to be. A wire spans TWO nodes,
+  // so no plugin's emit() can own one without reading a sibling's state — which
+  // is precisely what the no-plugin-imports-plugin law forbids. sceneIR is the
+  // one function that sees the WHOLE node list, and it is the seam EVERY pixel
+  // consumer walks (editor canvas, PresentMode, thumbnails, minimap, PNG export,
+  // PDF, SVG, cli/render.js, the video render job) — so emitting here buys wires
+  // in all of them with ZERO per-backend work: they are ordinary `path` ops with
+  // a stroke, which every backend has drawn since before nodes existed.
+  //
+  // UNDER THE NODES, deliberately — the ops go FIRST, so every card paints on top
+  // of every wire. core/node_chrome.wireLayerOps states the reasoning (Audulus,
+  // the user's taste anchor, and every other reference node editor route wires
+  // behind the cards; a wire over a card strikes through the readout the node
+  // exists to display).
+  //
+  // AND IT COSTS A DOCUMENT WITH NO NODES NOTHING: deriveWires' first loop finds
+  // no plugin declaring `ports`, so it returns [] after one pass and flatMap
+  // allocates nothing. The overwhelming majority of documents take that path.
+  //
+  // WIRES ARE NOT WIDGETS (ADDENDA 7/9) IS UNTOUCHED BY THIS. Not one item is
+  // created; `wires` is derived geometry over connections that live in node
+  // widgets' own state, turned into paint. The document is byte-identical either
+  // way — which is the whole point of deriving the picture instead of storing it.
+  const out = [...wireLayerOps(deriveWires(ctx.wireNodes ?? nodes))];
   for (const node of nodes) {
     // A FOLDED GROUP MEMBER (core/derive.resolveGroupSubtrees marked it foldedBy)
     // is NOT drawn at the top level — it renders INSIDE its owning group's
