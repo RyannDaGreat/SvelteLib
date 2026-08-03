@@ -46,7 +46,7 @@ import {
   modesForKey, blendUnderMode, interpKeyFor,
 } from "../core/interp_modes.js";
 import { defaultCameraState, newDocument, CAMERA_EXP_TWEEN_KEYS } from "../core/document.js";
-import { interpolateCameraState, cameraZoomLam } from "../plugins/camera.js";
+import { interpolateCameraState, cameraZoomLam, naturalZoomOn } from "../plugins/camera.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -296,6 +296,30 @@ test("THE ACCEPTANCE: a deep zoom's target approaches MONOTONICALLY, never swing
   assert.ok(naivePeak > 50,
     `per-axis exp was expected to swing far off frame (it peaked at ${naivePeak.toFixed(1)}) — ` +
     "if this ever fails, the coupling may no longer be needed and the plugin header's measurement should be redone");
+});
+
+// ── WORKSTREAM BI: the coupling BG shipped now has a switch ─────────────────
+//
+// The FULL surface is pinned in tests/natural_zoom_test.js. These two assertions
+// live HERE because they are about THIS suite's own subject: every measurement
+// above was taken with the coupling unconditionally in force, and the switch is
+// now what decides whether it is. If it ever defaulted OFF, every acceptance in
+// this file would go on passing while the app rendered the naive law — so the
+// default belongs beside the measurements it silently underwrites.
+
+test("BI: the coupling every test above measures is ON by default", () => {
+  assert.equal(defaultCameraState().naturalZoom, true);
+  // and the measurements above pass a `to` with no such key, so ABSENT must be ON
+  // too, or this whole file would be testing a law the app does not run.
+  assert.equal(naturalZoomOn({}), true);
+});
+
+test("BI: turning it off hands the frame back to the per-leaf modes this file pins", () => {
+  const from = { x: 0, y: 0, w: 1280, h: 720 };
+  const to = { x: 8998, y: 0, w: 4, h: 2.25, naturalZoom: false };
+  // No overrides at all — so what renders is exactly `blendUnderMode` per leaf,
+  // i.e. the Exp Tween law the first half of this suite measures.
+  assert.deepEqual(interpolateCameraState(from, to, 0.5), {});
 });
 
 console.log(`\n${passed} Exp Tween tests passed`);

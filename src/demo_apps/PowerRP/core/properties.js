@@ -2406,7 +2406,17 @@ export function interpRowFor(propRow, value, type) {
     // The help explains EXACTLY the options the select offers, never the whole
     // registry: describing a mode the author cannot pick here is the same
     // confident wrong answer the filter above removes, one line down.
-    help: `How "${propRow.label}" moves across a transition. ${options.map((id) => `${labels[id]} — ${interpMode(id).help}`).join(" ")}`,
+    //
+    // `interpNote` (WORKSTREAM BI) IS THE SAME ARGUMENT ONE STEP FURTHER. A row
+    // may declare a trailing sentence naming something that OUTRANKS the selected
+    // mode — today only the camera's x/y, whose pan a `interpolateState` coupling
+    // replaces whenever the frame is also scaling (plugins/camera.js). The option
+    // filter above stops the select naming a law the author cannot pick; this
+    // stops it implying the law it names is the last word when the widget's own
+    // hook says otherwise. It is appended, never substituted, because the stored
+    // mode IS still real and still governs the moment the override does not apply.
+    // Absent on every other row, so nothing else changes by a character.
+    help: `How "${propRow.label}" moves across a transition. ${options.map((id) => `${labels[id]} — ${interpMode(id).help}`).join(" ")}${propRow.interpNote ?? ""}`,
   };
 }
 

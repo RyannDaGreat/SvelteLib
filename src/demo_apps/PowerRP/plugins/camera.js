@@ -13,10 +13,124 @@
 
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
-import { defaultCameraState } from "../core/document.js";
+import { defaultCameraState, CAMERA_NATURAL_ZOOM_KEY, CAMERA_NATURAL_ZOOM_DEFAULT } from "../core/document.js";
 import { props, bundle, bundleDefaults } from "../core/properties.js";
 import { borderBandHit } from "../core/geometry.js";
 import { expLerp, expTweenApplies } from "../core/interp_modes.js";
+
+
+// ── NATURAL ZOOM: THE COUPLING'S OWN SWITCH (WORKSTREAM BI) ───────────────────
+//
+// User ruling, 2026-08-02 night, verbatim, answering BG's flagged judgment call:
+// "It is important that we follow the Mandelbrot zoom pan type, but it has to be
+// smoothly carried over into the interface, however it works. If we have to make
+// a tool for it to make sure that several settings are set simultaneously, so be
+// it, by default it will be on for camera."
+//
+// BG shipped the coupling as a hook with no control and no mention: the four
+// per-axis dropdowns said "Exp Tween" and interpolateCameraState quietly rendered
+// something else. This is the switch that makes it a stated setting.
+//
+// ── WHAT ACTUALLY LIED, MEASURED BEFORE ANYTHING WAS DESIGNED ────────────────
+// The obvious reading is "all four dropdowns misrepresent the coupling", and it
+// is WRONG. Rendered against the coupling for w 1280 → 4 onto a point 9000 out:
+//
+//     alpha           0     0.1     0.25      0.5     0.75     0.9      1
+//     coupled w  1280.00  718.94   302.64    71.55    16.92    7.12   4.00
+//     Exp Tween w 1280.00 718.94   302.64    71.55    16.92    7.12   4.00   ← SAME
+//     coupled x      0.0  3957.3   6893.6   8523.5   8908.9  8978.0   9000
+//     Exp Tween x    0.0   900.0   2250.0   4500.0   6750.0  8100.0   9000   ← NOT
+//
+//   • `w` IS EXACTLY WHAT ITS DROPDOWN CLAIMS, at every alpha, always — the
+//     coupling's width term literally IS `expLerp(from.w, to.w, alpha)` (line
+//     ~"const w = expLerp" below). Swept at 0.005 steps over proportional and
+//     non-proportional pairs alike: max |Δ| = 0. The w dropdown has never lied.
+//   • `h` matches too WHENEVER THE ASPECT IS PRESERVED (max |Δ| = 0), and
+//     diverges only when the aspect CHANGES — up to 24.7% mid-tween on a
+//     1280×720 → 4×400 pair, 14.0% on a milder one — because `h` deliberately
+//     rides `w`'s lam so the frame is one motion instead of two (see
+//     interpolateCameraState). So `h` is honest for the ordinary camera, whose
+//     aspect is the export aspect and does not change, and approximate exactly
+//     when the author is doing something the coupling explicitly reshapes.
+//   • `x`/`y` ARE THE LIARS, and by a wide margin: 3957 where the dropdown
+//     promises 900. They are the leaves the coupling REPLACES outright.
+//
+// THAT MEASUREMENT IS THE WHOLE DESIGN. "Hide the four dropdowns while coupled"
+// would have suppressed two controls that were telling the truth, and would have
+// needed a state-aware interp gutter in web/Inspector.svelte — which is another
+// wave's file. Instead the switch says what it governs, and the two rows it
+// actually overrides say so in their own help text, which is a row aspect a
+// plugin declares. No component change at all.
+//
+// ── WHY IT IS ONE SWITCH AND NOT FOUR DROPDOWNS ──────────────────────────────
+// The ruling authorizes "a tool… to make sure that several settings are set
+// simultaneously". The coupling is not expressible as four independent per-axis
+// laws — that is the finding BG measured and this file's section header records
+// (c(a) = A + B·10^(-z(a)) needs BOTH endpoint states jointly, so no per-leaf
+// mode can be it). A control that IS the coupling therefore cannot be a fifth
+// entry in the per-axis dropdowns; it has to be the thing that says whether the
+// per-axis dropdowns are the whole story. That is exactly a boolean.
+//
+// THE SPELLING COMES FROM core/document.js and the MEANING lives here. That
+// module holds the camera's one literal and this one already imports it, so the
+// constant has to travel plugin-ward or the import cycle closes; re-exported
+// under this file's own names because this is where every reader looks.
+export const NATURAL_ZOOM_KEY = CAMERA_NATURAL_ZOOM_KEY;
+
+/** ON by default, per the ruling's "by default it will be on for camera" — and
+ *  ABSENT MEANS ON, which is what keeps every pre-BI document byte-identical:
+ *  BG's coupling already governed unconditionally, so a stored `true` and a
+ *  missing key must render the same frame. Read through naturalZoomOn(); nothing
+ *  tests the raw key. */
+export const NATURAL_ZOOM_DEFAULT = CAMERA_NATURAL_ZOOM_DEFAULT;
+
+/**
+ * Pure function. Is the coupled zoom-pan law in force for this camera state?
+ *
+ * ABSENT IS ON (see NATURAL_ZOOM_DEFAULT): every document written before this
+ * switch existed rendered under the coupling, so reading a missing key as OFF
+ * would silently re-cut every deck that moves its camera.
+ *
+ * Only an EXPLICIT `false` turns it off. An equation-bound value (`"= …"`) reads
+ * as ON rather than throwing: this leaf is not equation-capable (it is not in
+ * PROPS and takes no `=` slot), so a string here is a hand-edited document, and
+ * the safe reading of a malformed switch is the one every other document gets.
+ *
+ * Args:
+ *   state (object): a folded camera state
+ *
+ * Returns:
+ *   boolean — true when interpolateCameraState should apply the coupling
+ *
+ * @example naturalZoomOn({}) // true (absent = on; a pre-BI document is unchanged)
+ * @example naturalZoomOn({naturalZoom: true}) // true
+ * @example naturalZoomOn({naturalZoom: false}) // false (the four dropdowns govern alone)
+ * @example naturalZoomOn(undefined) // true (no camera state at all is not a reason to change the law)
+ */
+export function naturalZoomOn(state) {
+  return state?.[NATURAL_ZOOM_KEY] !== false;
+}
+
+// THE TWO ROWS THE COUPLING ACTUALLY OVERRIDES — the pan axes, and ONLY them, per
+// the measurement above. Exported because the pins assert against this set rather
+// than against a literal pair: if a future change makes the coupling replace `h`
+// outright, the row carrying the note must move with the law, and a test reading
+// the same constant as the rows cannot catch that. Reading it in BOTH places is
+// the point — the rows are BUILT from it below.
+export const COUPLED_PAN_KEYS = ["x", "y"];
+
+/** The `~interp` help sentence an OVERRIDDEN axis row carries while Natural
+ *  zoom is on. It is appended to the registry's own help rather than replacing
+ *  it, because the stored mode is still real and still governs the moment the
+ *  frame stops scaling (a pure pan) or the switch goes off. A dropdown that
+ *  named a law nothing was using would be the confident wrong answer
+ *  core/properties.interpRowFor's own comment refuses; a dropdown that names its
+ *  law AND says when something else outranks it is the honest form. */
+const COUPLED_AXIS_NOTE =
+  " NATURAL ZOOM OVERRIDES THIS WHENEVER THE FRAME IS ALSO SCALING: the pan is then"
+  + " placed linear in the resulting width (the Mandelbrot law) instead of by this mode,"
+  + " so this setting governs a pure pan at fixed magnification and nothing else."
+  + " Turn Natural zoom off in Transform to hand this axis back to the mode named here.";
 
 
 // THE CAMERA'S RENDER PROFILES — whole-scene render configurations over the three
@@ -98,6 +212,9 @@ export const cameraPlugin = {
   // byte-identically, and the load-boundary missing-defaults fill (document.js
   // withMissingDefaultsFilled) backfills them into a pre-rendering-settings
   // camera loudly (version-skew path), exactly like rotationAnchor did.
+  // `naturalZoom` rides in through defaultCameraState() (core/document.js), not
+  // as a literal here — that function is THE camera literal, and this line's own
+  // comment above records what happened last time a second one drifted from it.
   defaults: { ...defaultCameraState(), ...bundleDefaults("rendering") },
   // Rows COMPOSE from the SHARED PROPERTY REGISTRY (core/properties.js): the
   // camera exposes its frame (x/y/w/h — NOT rotation/z, which don't apply to the
@@ -105,9 +222,60 @@ export const cameraPlugin = {
   // — the slide backdrop), and its own "Rendering" accordion (the scene-global
   // render toggles). The registry `help` explains each.
   inspector: [
-    ...props("x", "y", "w", "h"),
+    // THE COUPLING'S SWITCH SITS ABOVE THE FRAME IT GOVERNS, in the same
+    // Transform section as x/y/w/h — it is a statement ABOUT those four leaves,
+    // and a reader meets it before the rows whose behaviour it qualifies.
+    {
+      key: NATURAL_ZOOM_KEY, label: "Natural zoom", kind: "boolean", category: "transform",
+      default: NATURAL_ZOOM_DEFAULT,
+      help: "Move the camera the way a zoom actually looks: the frame scales geometrically (a constant zoom RATE) and the view is panned in step with that scaling, rather than each of X/Y/W/H sliding independently. This is on by default and is what keeps the point you are zooming toward on screen the whole way in — with it off, a linear pan under a shrinking frame swings the target hundreds of frame-widths away mid-transition and snaps it back at the end. It changes nothing at either end of a transition (the stored frames are exact), nothing when the camera only pans at a fixed size, and nothing on any other widget. Turning it OFF hands X, Y, W and H back to their own interpolation modes, set individually below.",
+    },
+    // THE X/Y ROWS SAY WHAT OUTRANKS THEM. `interpNote` is appended to the interp
+    // dropdown's own help (core/properties.interpRowFor): measured, `w` is
+    // byte-identical to what its dropdown claims at every alpha and `h` is too
+    // unless the aspect ratio changes, so only these two are overridden and only
+    // these two carry the note. See the NATURAL ZOOM section header for the table.
+    ...props("x", "y", "w", "h",
+      Object.fromEntries(COUPLED_PAN_KEYS.map((k) => [k, { interpNote: COUPLED_AXIS_NOTE }]))),
     ...props("background"),
     ...bundle("rendering"),
+  ],
+  commands: [
+    // THE SAME STATE IN A SECOND SURFACING — the house rule that the palette, the
+    // shortcuts, the toolbar and the Inspector are all views of ONE action layer.
+    // Declared HERE rather than as a core/registry.js TOOL_POOL row because the
+    // action belongs to the widget that owns the law (plugins/text.js
+    // `edit-text-content` is the standing precedent for a plugin publishing a
+    // command whose gate reads the selection).
+    //
+    // THE TITLE NAMES THE VERB, NOT THE NEXT STATE. "Toggle Natural Zoom" rather
+    // than "Turn Natural Zoom Off": the palette is searched before it is read, so
+    // an entry whose name flips under the user's fingers is one they cannot learn
+    // to type. The CURRENT state is what `help` reports, where there is room to
+    // say it in a sentence.
+    {
+      id: "toggle-natural-zoom",
+      title: "Toggle Natural Zoom (Camera)",
+      icon: "mdi:magnify-scan",
+      // A FUNCTION `requires`, per core/registry.js's rule — this gate has TWO
+      // disqualifying conditions (nothing selected at all vs. something that is
+      // not the camera), and a fixed string would be a confident wrong answer for
+      // whichever one is not the case. Read through commandUnavailableReason.
+      when: (app) => app.selectedNode()?.state?.type === "camera",
+      requires: (app) => (app.selection
+        ? "THE camera selected — natural zoom is the camera's own frame law, and no other widget has one"
+        : "a selection — pick THE camera (its border, or the item picker) to set its frame law"),
+      help: "Switches the camera's coupled zoom-pan law on or off. On (the default), a zoom keeps its target on screen the whole way in; off, X/Y/W/H each follow the interpolation mode set on their own row. Same setting as the Natural zoom checkbox in the Inspector's Transform section.",
+      run: (app) => {
+        const cam = app.selectedNode();
+        if (!cam) return;
+        // ONE undo unit through the ordinary property seam, so the palette's
+        // write is byte-identical to the checkbox's — the two surfacings share
+        // the state because they share the write, not because they agree.
+        app.setPreview([[["items", cam.id, NATURAL_ZOOM_KEY], !naturalZoomOn(cam.state)]]);
+        app.commitPreview();
+      },
+    },
   ],
   emit() {
     // The camera renders NOTHING (user ruling: its own dashed border doubled
@@ -208,8 +376,15 @@ export function cameraZoomLam(wFrom, wTo, alpha) {
  * then placed linear in the resulting width, which is the coupling — see the
  * section header for the measurement and for why per-axis exp on x/y is not it.
  *
- * RETURNS `{}` — deferring to the per-leaf blend — in exactly three cases, each
+ * RETURNS `{}` — deferring to the per-leaf blend — in exactly four cases, each
  * for a stated reason rather than as a fallback:
+ *   - NATURAL ZOOM OFF (WORKSTREAM BI): the author has said the four per-axis
+ *     modes govern alone, and this hook is precisely what overrides them, so its
+ *     whole job here is to stand down. It is read off the TARGET state (`to`),
+ *     because a switch is a property like any other and the mode-steps-at-start
+ *     rule already says the incoming slide's value wins from frame 1
+ *     (core/interp_modes.modeForBlend) — a transition that turns the coupling off
+ *     is uncoupled for the whole of that transition, not half of it.
  *   - NO ZOOM (`w` equal at both ends): a pan at fixed magnification is a straight
  *     line, which is what the leaves already do, and lam is undefined (0/0).
  *   - A FRAME LEAF THAT IS NOT A FINITE NUMBER at either end: an `=` equation (or
@@ -236,8 +411,12 @@ export function cameraZoomLam(wFrom, wTo, alpha) {
  * @example interpolateCameraState({x: 0, y: 0, w: 100, h: 50}, {x: 9, y: 0, w: 1, h: 0.5}, 0.5).w // 10 (the geometric mean)
  * @example interpolateCameraState({x: 0, y: 0, w: 100, h: 50}, {x: 9, y: 0, w: 1, h: 0.5}, 1).x // 9 (exact at the endpoint)
  * @example interpolateCameraState({x: "= 1 + 1", y: 0, w: 100, h: 50}, {x: 9, y: 0, w: 1, h: 0.5}, 0.5) // {} (an equation-bound frame is the equation's business)
+ * @example interpolateCameraState({x: 0, y: 0, w: 100, h: 50}, {x: 9, y: 0, w: 1, h: 0.5, naturalZoom: false}, 0.5) // {} (the author turned the coupling off; the four dropdowns govern alone)
  */
 export function interpolateCameraState(from, to, alpha) {
+  // THE SWITCH FIRST — before any arithmetic, so an uncoupled camera costs
+  // exactly one property read and reaches none of the law below.
+  if (!naturalZoomOn(to)) return {};
   const KEYS = ["x", "y", "w", "h"];
   for (const key of KEYS)
     if (!Number.isFinite(from[key]) || !Number.isFinite(to[key])) return {};

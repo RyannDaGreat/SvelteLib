@@ -70,6 +70,17 @@ const DEFAULT_SLIDE_H = 720;
  *  together. A handback to one constant is available if the cycle is ever broken. */
 export const CAMERA_EXP_TWEEN_KEYS = ["x", "y", "w", "h"];
 
+/** The camera leaf holding THE ZOOM COUPLING'S SWITCH (WORKSTREAM BI), and its
+ *  born-with value. Declared HERE rather than in plugins/camera.js — which is
+ *  where the law and every reader of it live — for one mechanical reason: that
+ *  module already imports `defaultCameraState` from this one, so the constant has
+ *  to travel plugin-ward or the cycle closes. plugins/camera.js re-exports both
+ *  under its own names and owns the SEMANTICS (naturalZoomOn, and the header
+ *  recording what was measured); this pair is just the spelling, kept beside the
+ *  interp-companion list it sits next to in the literal below. */
+export const CAMERA_NATURAL_ZOOM_KEY = "naturalZoom";
+export const CAMERA_NATURAL_ZOOM_DEFAULT = true;
+
 /**
  * Pure function. THE canonical initial state of THE camera item — the ONE
  * source of truth reconciling the three literals that used to disagree
@@ -99,9 +110,38 @@ export const CAMERA_EXP_TWEEN_KEYS = ["x", "y", "w", "h"];
  * not expressible per-leaf — it lives in plugins/camera.js `interpolateState`
  * (read its header for the measurement).
  *
+ * ── AND WHY THE CAMERA IS BORN WITH `naturalZoom: true` (WORKSTREAM BI) ──────
+ * User ruling, 2026-08-02 night, verbatim: "If we have to make a tool for it to
+ * make sure that several settings are set simultaneously, so be it, by default it
+ * will be on for camera."
+ *
+ * That coupling shipped (BG) with no control at all, so the four dropdowns above
+ * were the only account of a law they do not fully describe. `naturalZoom` is the
+ * switch that makes it a stated setting — see plugins/camera.js's NATURAL ZOOM
+ * header for what was measured to lie (x/y) and what never did (w, and h at a
+ * fixed aspect).
+ *
+ * WRITTEN EXPLICITLY, not left to the ABSENT-IS-ON reading. Both render the same
+ * frame — plugins/camera.naturalZoomOn treats a missing key as ON precisely so
+ * that every pre-BI document is byte-identical — but a fresh camera that stores
+ * the value shows the author a checkbox reflecting real state rather than an
+ * inferred one, and it keeps `withMissingDefaultsFilled` from reporting a repair
+ * on every load (the pre-camera-lane regression the rendering bundle below fixed
+ * the same way).
+ *
+ * A PLAIN NON-KEYFRAMED PROPERTY IN V1, and that is a decision rather than an
+ * omission. Nothing STOPS it keyframing — it is an ordinary delta leaf and the
+ * boolean row grows the usual diamonds — but the coupling is read off the TARGET
+ * state, so a per-slide value already means exactly "this transition is coupled
+ * or it is not", which is the only question a keyframe on it could ask. There is
+ * no in-between value for a tween to find, and `naturalZoom` is a statement about
+ * HOW a transition moves rather than about what any slide LOOKS like, so nothing
+ * here mints a keyframe and no default mode is declared for it.
+ *
  * @example defaultCameraState().w // 1280
  * @example defaultCameraState()["w~interp"] // "expTween" (the camera zooms geometrically)
  * @example defaultCameraState()["x~interp"] // "expTween"
+ * @example defaultCameraState().naturalZoom // true (the ruling's "by default it will be on for camera")
  * @example defaultCameraState({slideW: 800, slideH: 600}).w // 800
  */
 export function defaultCameraState(meta = {}) {
@@ -112,6 +152,9 @@ export function defaultCameraState(meta = {}) {
     // interpKeyFor rather than as literal "x~interp" strings so the companion-key
     // grammar has exactly one speller (core/interp_modes.js owns the sigil).
     ...Object.fromEntries(CAMERA_EXP_TWEEN_KEYS.map((k) => [interpKeyFor(k), EXP_TWEEN_MODE])),
+    // THE COUPLING'S SWITCH, born ON per the ruling — see the docblock for why it
+    // is written rather than inferred, and why it does not keyframe in v1.
+    [CAMERA_NATURAL_ZOOM_KEY]: CAMERA_NATURAL_ZOOM_DEFAULT,
     z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff",
     // Rendering bundle (AA / retina / dither) is DECLARED on the camera plugin;
     // spread its defaults so a fresh camera is born complete — otherwise
