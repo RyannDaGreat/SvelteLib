@@ -37,6 +37,32 @@
  * computePosition), and pinning an exact pair of coordinates would fail on those
  * correct behaviours.
  *
+ * ── AND THE BIGGER HALF: A CONTAINING BLOCK WAS EATING THE TIP ──────────────
+ * The cursor anchor was only ONE of two causes, and not the larger one. The tip
+ * is `position: fixed`, which resolves against the viewport ONLY while no
+ * ancestor establishes a containing block for it — and `transform`, `filter`,
+ * `backdrop-filter`, `contain` and `will-change` all do. `.canvas-toolbar`
+ * carries `backdrop-filter: var(--a-glass-blur)`, so every tip inside it was
+ * being positioned against THE PANEL.
+ *
+ * MEASURED: the tip's inline style read `left: 747.7px; top: 422.5px;
+ * max-width: 240px` — correct viewport coordinates from a correct anchor rect —
+ * while its real rect was `(1401.7, 801.0) 79.7 x 252.8`. Six hundred px away,
+ * and squeezed into a narrow column. Setting `backdrop-filter: none` on that one
+ * panel and changing nothing else snapped it to exactly (747.7, 422.5) 240x74.75.
+ *
+ * FIXED IN src/lib/Tooltip.svelte, by portalling the tip to <body> — shared
+ * library code, and the right home for it: the component's own docblock already
+ * claimed the tip "renders as a body-level sibling", the claim was simply false
+ * of the DOM, and the app has 28 `backdrop-filter` declarations and 38 Tooltip
+ * consumers, so every tip inside any glass surface had this. FloatingCanvasPanel
+ * documents the `transform` half of this trap at length; nobody had noticed that
+ * the panel's own blur is the same trap by a different property.
+ *
+ * So the probe asserts the cause DIRECTLY as well as the symptom: the tip's real
+ * rect must equal the coordinates place() wrote into its inline style. That check
+ * is independent of which property a future ancestor introduces.
+ *
  * ── (2) THE CHROME MEASUREMENT ──────────────────────────────────────────────
  * The app's floating-surface convention is one set of four facts, and `.palette`
  * is where they are written down: the glass background, a hairline border, a
@@ -194,9 +220,33 @@ try {
   });
   check("the fields toolbar rendered its input", !!fieldBox);
 
-  const measureAt = async (fx, fy) => {
+  /**
+   * Command. Hovers the field at `t` (0 = its left end, 1 = its right end) and
+   * measures the resulting tip.
+   *
+   * THE BOX IS RE-READ HERE, not captured once and reused, and that is not
+   * defensiveness — a stale box silently measured NOTHING. The panel is laid out
+   * from the widget's screen anchor and reflows (a radius change, a font load, a
+   * camera settle), so coordinates taken before the hover can land outside the
+   * control by the time the pointer gets there. When that happened,
+   * elementFromPoint at the cached point returned the canvas SVG behind the
+   * panel: no pointerenter, no tip, and a "the tooltip does not show" failure
+   * that had nothing to do with tooltips.
+   */
+  const measureAt = async (t) => {
+    const box = await page.evaluate(() => {
+      const r = document.querySelector(".canvas-toolbar-field-input").getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+    });
+    const INSET = 12; // px in from the end, so the point is inside the border
+    const fx = t === 0 ? box.left + INSET : box.right - INSET;
+    const fy = (box.top + box.bottom) / 2;
+    // Approach from outside the control first, so a real pointerenter fires on
+    // the anchor rather than the pointer teleporting inside an already-entered box.
+    await page.mouse.move(fx - 80, fy - 80);
+    await sleep(80);
     await page.mouse.move(fx, fy);
-    await sleep(250);
+    await sleep(300);
     return page.evaluate(() => {
       const tip = document.querySelector(".tt-tip");
       const el = document.querySelector(".canvas-toolbar-field-input");
@@ -205,13 +255,25 @@ try {
       // Per-axis separation between two rects: 0 when they overlap on that axis.
       const gapX = Math.max(0, a.left - t.right, t.left - a.right);
       const gapY = Math.max(0, a.top - t.bottom, t.top - a.bottom);
-      return { gapX, gapY, tip: { left: t.left, top: t.top }, anchor: { left: a.left, top: a.top } };
+      // THE CONTAINING-BLOCK CHECK, and it is the sharpest one here. place()
+      // writes viewport coordinates into the inline style; a fixed element only
+      // LANDS there while no ancestor establishes a containing block for it
+      // (transform / filter / backdrop-filter / contain / will-change all do).
+      // Comparing the two is how the defect was found and is the only assertion
+      // that names it directly: intended vs actual, in one number.
+      const wantLeft = parseFloat(tip.style.left), wantTop = parseFloat(tip.style.top);
+      const drift = Math.abs(t.left - wantLeft) + Math.abs(t.top - wantTop);
+      return {
+        gapX, gapY, drift,
+        parentIsBody: tip.parentElement === document.body,
+        tip: { left: t.left, top: t.top }, anchor: { left: a.left, top: a.top },
+      };
     });
   };
 
   // Near the field's left end, then near its right end — same control, far apart.
-  const left = await measureAt(fieldBox.left + 12, (fieldBox.top + fieldBox.bottom) / 2);
-  const right = await measureAt(fieldBox.right - 12, (fieldBox.top + fieldBox.bottom) / 2);
+  const left = await measureAt(0);
+  const right = await measureAt(1);
   check("hovering the field shows its tooltip", !!left && !!right);
 
   if (left && right) {
@@ -221,6 +283,16 @@ try {
       check(`the tip lands ON its anchor when hovering the field's ${where}`,
         m.gapX <= MAX_ANCHOR_GAP && m.gapY <= MAX_ANCHOR_GAP,
         `gap (${m.gapX.toFixed(0)}, ${m.gapY.toFixed(0)}) px exceeds ${MAX_ANCHOR_GAP} — the tip is not near the control it describes`);
+      // THE ROOT-CAUSE ASSERTION. A fixed tip inside a backdrop-filtered panel
+      // lands at its coordinates measured from THE PANEL, not the viewport —
+      // measured here at 600px off before the portal, with a correct inline style
+      // the whole time. This catches that class directly, whichever containing-
+      // block property a future ancestor happens to introduce.
+      check(`the tip lands where place() put it, hovering the ${where} (no containing-block capture)`,
+        m.drift < 1,
+        `inline style says one place, getBoundingClientRect says ${m.drift.toFixed(0)}px away — an ancestor (transform / filter / backdrop-filter / contain) is the containing block for this position:fixed tip`);
+      check(`the tip is portalled out of the panel, hovering the ${where}`, m.parentIsBody,
+        "the tip is still a descendant of the app subtree, so any ancestor's overflow can clip it and any containing block can move it");
     }
     // THE DEFINING CHECK. A cursor-anchored tip moves with the pointer; an
     // element-anchored one is placed against a fixed box and cannot.

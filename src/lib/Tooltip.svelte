@@ -29,8 +29,11 @@
   follow — the anchor is a fixed box), which also means it does not jitter while
   the pointer moves inside the target.
 
-  Positioned with fixed coordinates — no dependency on scroll containers or
-  transforms. Placement is "top" or "bottom" (relative to the cursor or element);
+  Positioned with fixed coordinates AND PORTALLED TO <body> (see the `portal`
+  action) — so no scroll container, transform, filter or backdrop-filter between
+  the anchor and the root can reinterpret those coordinates or clip the tip.
+  Rendering it in place was a real defect, measured, not a hypothetical; the
+  action's docblock has the numbers. Placement is "top" or "bottom" (relative to the cursor or element);
   it flips automatically when the chosen side would clip the viewport, and is
   clamped horizontally so it never overflows. Hides on pointerleave, blur,
   Escape, and pointerdown (a click dismisses).
@@ -208,6 +211,54 @@
     left = Math.max(margin, Math.min(left, viewW - tipW - margin));
     const top = side === "top" ? rect.top - gap - tipH : rect.bottom + gap;
     return { left, top };
+  }
+
+  /**
+   * Command (Svelte action). Moves the tooltip element to document.body on mount
+   * and removes it on destroy, so it is a BODY-LEVEL SIBLING of the whole app
+   * rather than a descendant of whatever wrapped its anchor.
+   *
+   * WHY THIS IS NECESSARY AND NOT TIDINESS. The tip is `position: fixed`, and a
+   * fixed element is positioned against the viewport ONLY while no ancestor
+   * establishes a containing block for it. Several ordinary CSS properties do
+   * establish one — `transform`, `filter`, `backdrop-filter`, `perspective`,
+   * `contain`, `will-change` — and any of them on ANY ancestor silently
+   * reinterprets the tip's coordinates as relative to that ancestor's border box.
+   * Nothing errors; the tip simply appears somewhere else, and it is also clipped
+   * by that ancestor's `overflow`.
+   *
+   * MEASURED, on PowerRP's floating canvas toolbar (2026-08-02): the tip's inline
+   * style read `left: 747.7px; top: 422.5px; max-width: 240px` — the correct
+   * viewport coordinates, computed by place() from a correct anchor rect — while
+   * its actual getBoundingClientRect was `(1401.7, 801.0) 79.7 x 252.8`. Six
+   * hundred px away, and squeezed from 240x75 into a narrow column because the
+   * width cap was resolving against the panel instead of the viewport. Setting
+   * `backdrop-filter: none` on that one panel — changing nothing else — snapped
+   * the tip to exactly (747.7, 422.5) 240x74.75. That is the whole bug, and it is
+   * why the user's report was "the hover tooltips [are] in the wrong place".
+   *
+   * This component's own docblock already CLAIMED the tip "renders as a
+   * body-level sibling of the anchor and so inherits nothing from the host's
+   * subtree" — the reasoning behind reading --tt-gap and --tt-max-width off the
+   * anchor instead of declaring them on the tip. That claim was true about
+   * INHERITANCE (the values do come from the anchor) and false about the DOM: the
+   * element was rendered in place. The action makes the DOM match the docblock.
+   *
+   * The consequence a caller might notice: the tip is no longer inside the host's
+   * subtree, so a descendant selector rooted at the host will not match it. Style
+   * it through the documented --tt-* custom properties, which are read off the
+   * anchor precisely so they keep working across the portal.
+   *
+   * @param {HTMLElement} node The tooltip element.
+   * @returns {{destroy: () => void}} Svelte action handle.
+   *
+   * @example
+   * // <div class="tt-tip" use:portal>…</div> mounted inside a blurred panel:
+   * // document.querySelector(".tt-tip").parentElement === document.body // true
+   */
+  function portal(node) {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
   }
 
   // AT MOST ONE TOOLTIP OPEN, app-wide. NESTED anchors are why this must be a
@@ -405,10 +456,16 @@
 </span>
 
 {#if shown}
+  <!-- PORTALLED TO <body> by the `portal` action below. The tip is
+       position:fixed, and a fixed element is positioned against its nearest
+       CONTAINING BLOCK — which is the viewport only while no ancestor
+       establishes one. Rendered in place, it is at the mercy of every wrapper
+       between here and the root. See the portal action for the measurement. -->
   <div
     class="tt-tip tt-{side}"
     role="tooltip"
     bind:this={tipEl}
+    use:portal
     style="left: {pos.left}px; top: {pos.top}px; max-width: {maxWidth}px;"
   >
     {#if tip}{@render tip()}{:else}{text}{/if}

@@ -3611,9 +3611,19 @@ textarea {
    Giving the panel the radius the rim was designed to curve around fixes the
    "out of place" and the "blue line" together, with one property.
 
-   overflow: hidden so the scrolling tile grid inside is clipped BY that corner
-   — without it the grid's square top-left paints over the radius and the panel
-   reads square again at exactly the place the rim meets it. */
+   NO `overflow: hidden` HERE, though the corner appears to want it. MEASURED
+   2026-08-02: adding it COLLAPSED the panel's own border box to 10x36 while its
+   children still laid out at their full 232px width. The panel is a flex item of
+   .canvas-toolbar-root, which is deliberately `width: 0; height: 0` (a
+   zero-footprint anchor, so it cannot swallow canvas drags — decision 3 in
+   FloatingCanvasPanel), and the panel is meant to OVERFLOW that anchor in both
+   axes. `overflow: hidden` establishes a scroll container, which stops the box
+   growing to fit its content and sizes it from the zero-width parent instead.
+   The panel then no longer covered its own controls for hit-testing:
+   elementFromPoint over the Data field returned the canvas SVG four layers down,
+   so the field received no pointerenter, showed no tooltip, and would not have
+   taken a click either. The grid inside already has its own overflow-y for
+   scrolling; the corner is left to the border-radius alone. */
 .canvas-toolbar {
   pointer-events: auto;
   margin-bottom: var(--a-canvas-toolbar-gap);
@@ -3624,7 +3634,6 @@ textarea {
   box-shadow: var(--a-glass-shadow);
   backdrop-filter: var(--a-glass-blur);
   -webkit-backdrop-filter: var(--a-glass-blur);
-  overflow: hidden;
 }
 
 .canvas-toolbar-below {
