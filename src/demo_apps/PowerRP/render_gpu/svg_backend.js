@@ -66,7 +66,7 @@ import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_materi
 import { reportOnce as reportExportFailureOnce } from "../core/report.js";
 import { errorAffordanceArgs, errorMessage, describeOwner, throwMessage, ownerRunEnd, containmentBoxSize, configurationError, isConfigurationError } from "../core/paint_containment.js";
 import * as T from "../core/transform.js";
-import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster, svgPathBounds } from "./pdf_backend.js";
+import { balancedSlice, magnifiedView, imageRefs, videoRefs, textFaces, decodeDataUri, rasterOpPlaceRect, droppedRasterOnlyEffects, regionOverBackground, blendNeedsBelowRaster, svgPathBounds, isSyntheticImageRef } from "./pdf_backend.js";
 import { DEFAULT_FONT, cssFamilyFor, fontFileFor, hasEmbeddableFile } from "./fonts.js";
 import { fitBox, inflateRect } from "../core/geometry.js";
 import { truncate } from "../core/report.js"; // THE shared log elision; this file had its own 40/40 spelling (`truncateRef`)
@@ -1577,6 +1577,14 @@ class SvgAssembly {
     if (!this.resolveImageHref)
       throw new Error(`svg_backend: ${kind} ref "${truncate(ref)}" is a URL, but no resolveImageHref seam was provided — the SVG must be self-contained (inline every asset). Pass irToSVG opts.resolveImageHref.`);
     const href = await this.resolveImageHref(ref);
+    // A SYNTHETIC ref (latex:/mermaid:/pdfpage:… — pdf_backend.isSyntheticImageRef)
+    // may legitimately resolve to NOTHING: it names a bitmap the image registry
+    // rasterizes asynchronously, so an export fired before that raster lands has
+    // no pixels to inline. `null` is the same "blank, draw nothing" answer a 1×1
+    // marker PNG gives above, and the resolver reports the skip; throwing here
+    // instead would fail a whole export over one equation that was still
+    // typesetting. A fetchable URL has no such excuse and stays loud.
+    if (href === null && isSyntheticImageRef(ref)) return null;
     if (typeof href !== "string" || !href.startsWith("data:"))
       throw new Error(`svg_backend: resolveImageHref("${truncate(ref)}") must return a data: URI (the SVG must be self-contained), got ${JSON.stringify(truncate(String(href)))}`);
     return href;

@@ -7546,6 +7546,14 @@ export class PowerRPApp {
     const { irToSVG } = await import("../render_gpu/svg_backend.js");
     const { loadFontBytes, measureTextAscent, measureText } = await import("./pdfFonts.js");
     const { getVideo } = await import("../render_gpu/gpu/video_registry.js");
+    const { getImage } = await import("../render_gpu/gpu/image_registry.js");
+    // THE SAME predicate the PDF exporter routes on (pdf_backend.loadImageBytes),
+    // deliberately reused rather than re-derived: it is a scheme ALLOWLIST
+    // (data/http/https/blob/file are fetchable, everything else is a registry
+    // key), so a raster module that invents a new prefix tomorrow is covered by
+    // both exporters without either being edited. A second prefix list here is
+    // exactly how the two would drift apart again.
+    const { isSyntheticImageRef } = await import("../render_gpu/pdf_backend.js");
     const { resolveSilhouetteBorders } = await import("../render_gpu/skia/silhouette.js");
     const { ensureCanvasKit } = await import("../render_gpu/skia/browser_canvaskit.js");
     const state = evaluateState(foldState(this.doc, this.slideIndex, 1), this.registry, this.projectScript()).state;
@@ -7554,7 +7562,40 @@ export class PowerRPApp {
     // Any image src that is a URL (asset-server case) must be inlined for a
     // self-contained SVG. A data-URI src is used as-is by the backend (no
     // resolver call); this only fires for URL refs. Loud on a failed fetch.
+    //
+    // A SYNTHETIC REF IS NOT A URL, and this is where that used to be forgotten
+    // (workstream AS, user-reported 2026-08-02). `latex:`/`mermaid:`/`pdfpage:`
+    // refs name a bitmap the image registry already HOLDS — nothing can fetch
+    // them, and handing one to `fetch` produced exactly the console pair the
+    // user photographed: `Fetch API cannot load latex:x = \frac{...}:#000000:36.
+    // URL scheme "latex" is not supported`, then `image_registry: failed to load
+    // … Failed to fetch`. The equation exported as a hole and the error read
+    // like a broken asset rather than a routing mistake.
+    //
+    // exportPdf's `resolveImageBytes` (above) always did this correctly — it
+    // reads `getImage(ref)` and re-encodes. So the two exporters DISAGREED about
+    // the same refs, which is the real defect; they now share one predicate
+    // (pdf_backend.isSyntheticImageRef) and one policy, including the reported
+    // skip when a raster has not landed yet.
     const resolveImageHref = async (ref) => {
+      if (isSyntheticImageRef(ref)) {
+        const bitmap = getImage(ref);
+        if (!bitmap) {
+          console.warn(`exportSvg: synthetic ref "${ref.slice(0, 48)}…" has no rasterized bitmap yet — it exports blank. Re-export once the equation/diagram/page has finished rendering.`);
+          return null;
+        }
+        const c = document.createElement("canvas");
+        c.width = bitmap.width;
+        c.height = bitmap.height;
+        c.getContext("2d").drawImage(bitmap, 0, 0);
+        const blob = await new Promise((res) => c.toBlob(res, "image/png"));
+        return await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result); // a data: URI
+          fr.onerror = () => reject(new Error(`exportSvg: could not read the rasterized bitmap for "${ref.slice(0, 48)}…" as a data URI`));
+          fr.readAsDataURL(blob);
+        });
+      }
       const res = await fetch(ref);
       if (!res.ok) throw new Error(`exportSvg: failed to fetch image "${ref}" for inlining — HTTP ${res.status} ${res.statusText}`);
       const blob = await res.blob();
