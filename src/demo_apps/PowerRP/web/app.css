@@ -6031,6 +6031,18 @@ textarea {
   text-overflow: ellipsis;
 }
 
+/* THE CHIP'S OWN REFUSED STATE (class:refused, bound to the same mergeBlocker()
+   read as the row's .merge-refused): the row's ring already turns --a-guide, and
+   the chip riding it must agree rather than staying in the neutral badge tint —
+   the comment above .merge-target.merge-refused says the chip "must not read as
+   release here and it will work". Tinting icon + text (not the badge background,
+   which stays --a-badge-bg for legibility over any thumbnail) is the restrained
+   version of the same danger colour every other refusal in this app uses
+   (--a-eq-error, .nf-audio-failed, .merge-refused's own ring). */
+.slidenav .slide.merge-target .merge-chip.refused {
+  color: var(--a-guide);
+}
+
 /* THE OTHERS SLIDE ASIDE. --drag-shift is set per row by SlideNav (0 for rows
    that do not move) and animates over --drag-shift-ms, which SlideNav publishes
    from its own DRAG_SHIFT_MS so the two cannot drift.
