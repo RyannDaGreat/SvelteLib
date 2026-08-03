@@ -18,10 +18,11 @@
  * DOM-free pure JS (bare-node testable).
  */
 
-import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
+import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, isCrossfadePaint, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
 import { morphPaths, payloadToPathD, assertMorphPaths } from "../core/morph.js";
 import { statePaint } from "../core/morph_payload.js";
-import { isVisibleFxToken, visibleLevel } from "../core/interp_modes.js";
+import { isVisibleFxToken, visibleLevel, isPaintShaped, CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
+import { deepEqual } from "../core/deltas.js";
 import { MANIM_SKETCH_STROKE_WIDTH, manimDrawPlan, sketchStrokeColor, trimSubpathByLength } from "../core/manim_draw.js";
 import { interpolate } from "../core/interpolators.js";
 import { applyNodeEffects } from "./effects.js";
@@ -51,6 +52,7 @@ import { errorAffordanceArgs, errorBoxExtent, errorMessage, describeOwner, throw
  * @example resolveMaterialFillPaints([{op: "rect", fill: {type: "material", material: {id: "comic"}}}], null, null)[0].fill.resolvedParams.mode // "cmyk"
  * @example resolveMaterialFillPaints([{op: "text", color: {type: "material", material: {id: "comic"}}}], null, null)[0].color.resolvedParams.mode // "cmyk"
  * @example resolveMaterialFillPaints([{op: "text", color: "#000"}], null, null)[0].color // "#000" (untouched)
+ * @example resolveMaterialFillPaints([{op: "rect", fill: {type: "crossfade", from: "#f00", to: {type: "material", material: {id: "comic"}}, t: 0.5}}], null, null)[0].fill.to.resolvedParams.mode // "cmyk" (resolved THROUGH the crossfade)
  */
 /**
  * Query (reads registries; reports once on unknown knobs). The camera
@@ -78,13 +80,64 @@ export function resolvedBackgroundFill(background, nodes) {
   return resolveMaterialPaint(p, camera, byId, warnOnce); // foreign-knob carry-over is intended and lossless — warn, never error
 }
 
+/**
+ * Pure function (the report sink aside). ONE PAINT, resolved — and resolved
+ * THROUGH A CROSSFADE, which is the whole reason this exists as a named helper
+ * rather than five inline `isMaterialPaint` tests.
+ *
+ * A CROSSFADE IS A PAINT THAT CONTAINS PAINTS. Mid-transition the `blend` interp
+ * mode replaces a slot's value with `{type: "crossfade", from, to, t}` — and that
+ * wrapper is NOT a material paint, so every `isMaterialPaint(slot)` test answers
+ * FALSE and a material hidden on either side went UNRESOLVED. The painter's
+ * contract is that it throws on absent `resolvedParams`, so the whole op was
+ * caught by paint containment and drawn as the red "failed to paint" box on
+ * exactly the interior frames of a transition — the user's report (2026-08-02):
+ * "unknown item failed to paint when i am tweening… one of which has a linear
+ * gradient and one of which has the sky shader… is this a generalized problem".
+ * It was: measured, EVERY from × to pair with a material on EITHER side errored,
+ * including material→material and material→solid. Only gradient→gradient and
+ * solid→solid survived, which is precisely why it read as "fine with going from
+ * a gradient to a gradient".
+ *
+ * WHY THE FIX IS HERE AND NOT IN THE PAINTER'S ROUTER. The router
+ * (paint_skia.js "THE CROSSFADE ROUTER") is correct as written: crossfadeSide
+ * hands back an ORDINARY op that re-enters the op loop, so a material side
+ * reaches handleMaterialPaintShape and a backdrop-class material reaches
+ * handleMaterialBackdrop with its below-content supply intact. Verified by
+ * pre-resolving the operands by hand — sky, crt, frosted, metal and
+ * vector_pattern all paint correctly through that path. The router never needed
+ * the fix; resolution simply never reached the operands. Resolving here keeps the
+ * "THE one resolution site" promise the docblock above makes, and every slot and
+ * every backend inherits it at once.
+ *
+ * Non-crossfade paints take the original path byte-identically, and a crossfade
+ * whose sides need no resolution is returned BY IDENTITY (no allocation).
+ *
+ * @param {*} paint - any paint value, or undefined
+ * @returns {*} the paint with any material inside it resolved
+ *
+ * @example resolvedPaint("#fff", null, null) // "#fff" (untouched, same value)
+ * @example resolvedPaint({type: "material", material: {id: "comic"}}, null, null).resolvedParams.mode // "cmyk"
+ * @example resolvedPaint({type: "crossfade", from: "#f00", to: {type: "material", material: {id: "comic"}}, t: 0.5}, null, null).to.resolvedParams.mode // "cmyk"
+ */
+function resolvedPaint(paint, node, nodesById) {
+  if (isMaterialPaint(paint)) return resolveMaterialPaint(paint, node, nodesById, warnOnce);
+  if (!isCrossfadePaint(paint)) return paint;
+  const from = resolvedPaint(paint.from, node, nodesById);
+  const to = resolvedPaint(paint.to, node, nodesById);
+  return from === paint.from && to === paint.to ? paint : { ...paint, from, to };
+}
+
 export function resolveMaterialFillPaints(cmds, node, nodesById) {
   return cmds.map((cmd) => {
     let out = cmd;
-    if (isMaterialPaint(cmd.fill))
-      out = { ...out, fill: resolveMaterialPaint(cmd.fill, node, nodesById, warnOnce) };
-    if (isMaterialPaint(cmd.stroke))
-      out = { ...out, stroke: resolveMaterialPaint(cmd.stroke, node, nodesById, warnOnce) }; // same as the fill above
+    // Each slot goes through resolvedPaint, which handles BOTH a bare material
+    // and one wrapped in a mid-transition crossfade. Identity return on the
+    // common path keeps a non-material op allocation-free, as before.
+    const fill = resolvedPaint(cmd.fill, node, nodesById);
+    if (fill !== cmd.fill) out = { ...out, fill };
+    const stroke = resolvedPaint(cmd.stroke, node, nodesById);
+    if (stroke !== cmd.stroke) out = { ...out, stroke }; // same as the fill above
     // TEXT INK IS A THIRD PAINT SLOT, and it is not called `fill`. A text op
     // carries its ink on `color` (ir.js text()), and a RICH text op additionally
     // carries a per-RUN `color` — so a material ink on either would reach the
@@ -92,18 +145,20 @@ export function resolveMaterialFillPaints(cmds, node, nodesById) {
     // did before resolvedBackgroundFill existed. The two slots are resolved here
     // rather than at a text-specific seam because this IS the one resolution site
     // the docblock above promises; a second one would be the drift it warns about.
-    if (isMaterialPaint(cmd.color))
-      out = { ...out, color: resolveMaterialPaint(cmd.color, node, nodesById, warnOnce) };
+    const color = resolvedPaint(cmd.color, node, nodesById);
+    if (color !== cmd.color) out = { ...out, color };
     // THE GLYPH OUTLINE is a FOURTH paint slot (N2): an outline traced around the
     // letterforms of a text box or an equation, which is not `stroke` because on a
     // latexVector op `stroke` already means the BOX BORDER. Same argument as the
     // text ink above — an unresolved material here reaches the painter and throws.
-    if (isMaterialPaint(cmd.glyphStroke))
-      out = { ...out, glyphStroke: resolveMaterialPaint(cmd.glyphStroke, node, nodesById, warnOnce) };
-    if (Array.isArray(cmd.rich?.runs) && cmd.rich.runs.some((r) => isMaterialPaint(r.color))) {
-      const runs = cmd.rich.runs.map((r) =>
-        isMaterialPaint(r.color) ? { ...r, color: resolveMaterialPaint(r.color, node, nodesById, warnOnce) } : r);
-      out = { ...out, rich: { ...cmd.rich, runs } };
+    const glyphStroke = resolvedPaint(cmd.glyphStroke, node, nodesById);
+    if (glyphStroke !== cmd.glyphStroke) out = { ...out, glyphStroke };
+    if (Array.isArray(cmd.rich?.runs)) {
+      const runs = cmd.rich.runs.map((r) => {
+        const c = resolvedPaint(r.color, node, nodesById);
+        return c === r.color ? r : { ...r, color: c };
+      });
+      if (runs.some((r, i) => r !== cmd.rich.runs[i])) out = { ...out, rich: { ...cmd.rich, runs } };
     }
     if (Array.isArray(cmd.content)) {
       const content = resolveMaterialFillPaints(cmd.content, node, nodesById);
@@ -779,19 +834,42 @@ export function scaledSubpath(sp, sx, sy) {
 
 /**
  * Pure function. The paint one morphed subpath draws with — the two endpoint
- * payloads' paints blended through core/interpolators.js.
+ * payloads' paints routed through the ORDINARY paint pipeline.
+ *
+ * ── MORPH NEVER OWNS PAINT (user ruling, 2026-08-02, verbatim) ───────────────
+ * "It's not the responsibility of morphing to handle any material properties,
+ * it's only about shape properties." So this function decides NOTHING about how
+ * two paints combine: it identifies the PAIR and hands it to `blendedPaintValue`,
+ * which is the same tween/crossfade law any other property row gets. The morph
+ * contributes the shape and nothing else, and a shader ink (a material, a
+ * gradient) rides the morphed path op exactly as it rides any other path op —
+ * ports.resolveMaterialFillPaints runs on morphIR's output like on any emit().
  *
  * WHY THE ENDPOINT PAYLOADS AND NOT THE BLENDED SUBPATH'S OWN `paint`: the
  * engine's alignment REORDERS and PADS subpaths, so a blended subpath carries
  * whichever operand's paint survived that process — correct for identifying the
  * contour, useless for blending. Reading the two payloads' FIRST subpath paint
  * instead gives a stable pair for the whole widget, which is the right grain
- * here: both morphable widgets in a shape↔shape morph carry one paint, and a
- * multi-paint SVG's per-contour colours ride the engine's carry (the blended
- * subpath's own `paint`) as a fallback below.
+ * here: a widget has ONE ink, and both morphable widgets in a shape↔shape morph
+ * carry it on every subpath they emit.
+ *
+ * ── WHAT THE MULTI-CONTOUR RULE BECAME, AND WHY IT HAD TO CHANGE ─────────────
+ * It used to be a COUNT test — "more than two subpaths between the two payloads,
+ * so keep the carried per-subpath paint". That is right for the case it was
+ * written for (an SVG icon whose contours genuinely carry different fills) and
+ * WRONG for every multi-glyph equation or text box, which is also multi-contour
+ * but carries ONE widget ink repeated on each glyph. Under the count test a
+ * material-inked equation's interior frames took the ENGINE'S CARRY — a degraded
+ * copy of one widget-level ink — which is half of the black-mid-morph bug.
+ * The rule is now the thing the carve-out actually meant: keep per-subpath paint
+ * only when a payload's subpaths DISAGREE with each other (`paintIsHeterogeneous`).
+ * Homogeneous art of any contour count is a widget-level pair and blends as one.
  *
  * @example morphedPaint({subpaths: [{paint: {fill: "#000000", strokeWidth: 0, opacity: 1}}]}, {subpaths: [{paint: {fill: "#ffffff", strokeWidth: 0, opacity: 1}}]}, {}, 0.5).fill
  * '#808080'
+ * @example // a MATERIAL on both sides survives the interior — it is one unchanged ink
+ * @example morphedPaint({subpaths: [{paint: {fill: {type: "material", material: {id: "sky"}}}}, {paint: {fill: {type: "material", material: {id: "sky"}}}}]}, {subpaths: [{paint: {fill: {type: "material", material: {id: "sky"}}}}]}, {paint: {fill: "#000000"}}, 0.5).fill
+ * { type: 'material', material: { id: 'sky' } }
  * @example // no paint on either side: the subpath's own carried paint, else nothing
  * @example morphedPaint({subpaths: []}, {subpaths: []}, {paint: {fill: "#f00"}}, 0.5).fill
  * '#f00'
@@ -800,13 +878,78 @@ export function morphedPaint(fromPayload, toPayload, blendedSubpath, t) {
   const a = fromPayload.subpaths[0]?.paint;
   const b = toPayload.subpaths[0]?.paint;
   if (!a || !b) return blendedSubpath.paint ?? {};
-  // A multi-contour source (an SVG icon) has genuinely different paint per
-  // contour, and the engine already carried the aligned counterpart's through.
-  // Blending the widget-level pair would flatten those to one colour, so a
-  // subpath that carries its own paint keeps it and only the widget-level pair
-  // is interpolated.
-  if (blendedSubpath.paint && fromPayload.subpaths.length + toPayload.subpaths.length > 2)
+  // GENUINELY MULTI-COLOURED ART ONLY (an SVG icon): its contours disagree, the
+  // engine already carried the aligned counterpart's paint through, and blending
+  // one widget-level pair would flatten them all to a single colour.
+  if (blendedSubpath.paint && (paintIsHeterogeneous(fromPayload) || paintIsHeterogeneous(toPayload)))
     return blendedSubpath.paint;
+  return {
+    ...interpolate(a, b, t),
+    fill: blendedPaintValue(a.fill, b.fill, t),
+    stroke: blendedPaintValue(a.stroke, b.stroke, t),
+  };
+}
+
+/**
+ * Pure function. Do THIS payload's subpaths carry paints that disagree with one
+ * another? The question the morph's per-contour carve-out actually asks — an SVG
+ * icon says yes, a 40-glyph equation under one ink says no (see morphedPaint).
+ *
+ * Compares against the FIRST subpath's paint rather than pair-wise, which is the
+ * same answer for a fraction of the work: disagreeing with a common reference and
+ * disagreeing with each other are equivalent for "are these all the same".
+ *
+ * @example paintIsHeterogeneous({subpaths: [{paint: {fill: "#f00"}}, {paint: {fill: "#f00"}}]})
+ * false
+ * @example paintIsHeterogeneous({subpaths: [{paint: {fill: "#f00"}}, {paint: {fill: "#00f"}}]})
+ * true
+ * @example paintIsHeterogeneous({subpaths: []})
+ * false
+ */
+export function paintIsHeterogeneous(payload) {
+  const first = payload.subpaths[0]?.paint;
+  return payload.subpaths.some((sp) => !deepEqual(sp.paint ?? null, first ?? null));
+}
+
+/**
+ * Pure function. ONE PAINT SLOT across a morph — the fill (or the stroke) the
+ * interior frames draw with, decided by the paint machinery rather than by the
+ * morph.
+ *
+ * TWO ARMS, AND THEY ARE THE APP'S EXISTING TWO. A pair `interpolate` can
+ * genuinely blend — two hex colours, two same-shaped gradients, one unchanged
+ * value — tweens, exactly as a colour row tweens. An UNLIKE pair (a solid
+ * becoming a material, a gradient becoming a shader) has no midpoint, and this
+ * returns the `{type: "crossfade", from, to, t}` paint core/interp_modes.js's
+ * `blend` mode mints, which the painter draws by painting the op TWICE at
+ * complementary alpha. Routing is all this does; the router is
+ * render_gpu/ir.js + skia/paint_skia.js and is not touched here.
+ *
+ * WHY NOT `interpolate` ALONE, WHICH IS WHAT THIS SEAM USED TO CALL: it SNAPS a
+ * structurally-unlike pair to the target. On a property row that is the honest
+ * discrete answer; across a morph it means a red rect turning into a material
+ * equation is fully material from the first interior frame, which is the same
+ * "the morph decided about paint" mistake in the other direction.
+ *
+ * @example blendedPaintValue("#000000", "#ffffff", 0.5)
+ * '#808080'
+ * @example blendedPaintValue(null, null, 0.5)
+ * null
+ * @example // one unchanged shader ink: itself, with nothing to composite
+ * @example blendedPaintValue({type: "material", material: {id: "sky"}}, {type: "material", material: {id: "sky"}}, 0.5)
+ * { type: 'material', material: { id: 'sky' } }
+ * @example // unlike pair → the crossfade paint, both sides preserved for the painter
+ * @example blendedPaintValue("#ff0000", {type: "material", material: {id: "sky"}}, 0.25)
+ * { type: 'crossfade', from: '#ff0000', to: { type: 'material', material: { id: 'sky' } }, t: 0.25 }
+ */
+export function blendedPaintValue(a, b, t) {
+  if (deepEqual(a ?? null, b ?? null)) return a ?? null;
+  // A pair with a SHADER on either side has no numeric midpoint. `null` is not
+  // one — "no stroke" becoming a material is an appearance, and the fade seam
+  // above already ramps an appearing widget; compositing against nothing would
+  // draw the material at full strength from the first frame.
+  if ((isPaintShaped(a) || isPaintShaped(b)) && a != null && b != null)
+    return { type: CROSSFADE_PAINT_TYPE, from: a, to: b, t };
   return interpolate(a, b, t);
 }
 
