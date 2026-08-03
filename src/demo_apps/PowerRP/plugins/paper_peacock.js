@@ -654,6 +654,14 @@ export const paperPeacockPlugin = {
    * GROUP (retype RULE 1 fills the group's own keys), so the group still fades
    * the fan as one — pushing it down as well would square it.
    *
+   * NEITHER IS `rasterDensity`, and that is a decision rather than an omission.
+   * It is not a `pdf_page` property, so copying it across would write a key the
+   * receiving plugin never reads — a dormant value that looks like a working
+   * control and silently does nothing. A shattered sheet gets its resolution
+   * from pdf_page's OWN density story instead (`renderMode` + rasterWidth/
+   * rasterHeight/rasterDPI), which is richer than the multiplier and is the
+   * reason pdf_page was deliberately left off the shared row.
+   *
    * @param {object} s - the item's evaluated state
    * @param {{box: {x, y, w, h}}} ctx - the host's WORLD box; sheets are placed in it
    * @returns {{parts: Array<{key: string, label: string, state: object}>, notes: string[]}}
