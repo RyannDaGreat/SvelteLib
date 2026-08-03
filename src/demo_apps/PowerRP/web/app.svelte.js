@@ -15,7 +15,8 @@ import {
   itemCreationSlide, itemAnimationKeyframes, lostEquationKeyframes, withItemsMadeStatic,
   itemSlideKeyframes, slideEquationKeyframes, withSlideKeyframesRemoved,
 } from "../core/document.js";
-import { setPath, getPath, blendApplied } from "../core/deltas.js";
+import { setPath, getPath, blendApplied, applied } from "../core/deltas.js";
+import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta } from "../core/item_properties_clipboard.js"; // Copy Properties: the fold-then-diff time transport
 // APPEARANCE-PRESERVING slide reorder + the duplicate-keyframe simplifier that
 // is its counterweight (core/slide_reorder.js states the law both obey).
 import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted } from "../core/slide_reorder.js";
@@ -3536,11 +3537,52 @@ export class PowerRPApp {
   async copySelection() {
     const items = this.#cloneStates(this.#cloneSet(this.selectedIds()));
     if (Object.keys(items).length === 0) return;
+    await this.#writeClipboardPayload({ powerrp_items: items }, "Copy");
+  }
+
+  /**
+   * Command (async). COPY PROPERTIES — the SELECTION'S FOLDED STATE, keyed by
+   * item id, as the `powerrp_item_props` payload (core/item_properties_clipboard.js).
+   *
+   * The user's verb (2026-08-02): "copy all of this state in whatever widget it
+   * is. And then if I move to another slide and I paste it, all that state will
+   * be pasted. That way I can basically move an object back in time." So this is
+   * the SAME item at a different time, not a clone — which is why it is a
+   * distinct payload KIND rather than a flag on the clone payload: paste
+   * dispatches on what it finds, per "paste behaves as normal".
+   *
+   * FOLDED, not raw: `rawState()` is already the fold of this slide (equations
+   * intact), which is exactly the "what it looks like here" that transports.
+   *
+   * IT STILL WRITES THE PNG, deliberately — user: "it still copies the image to
+   * my clipboard just as it would before". Same `#writeClipboardPayload` path as
+   * Copy, so the OS side effect cannot drift between the two buttons.
+   */
+  async copySelectionProperties() {
+    const ids = this.#cloneSet(this.selectedIds());
+    const payload = itemPropertiesPayload(this.rawState(), ids);
+    if (Object.keys(payload.powerrp_item_props).length === 0) return;
+    await this.#writeClipboardPayload(payload, "Copy Properties");
+  }
+
+  /**
+   * Command (async). THE ONE CLIPBOARD WRITE, shared by every copy verb: render
+   * the selection PNG, stamp its signature onto the payload, then write to all
+   * three stores (in-browser mirror, server session clipboard, OS clipboard).
+   *
+   * Extracted so Copy and Copy Properties cannot drift: the user requires the
+   * PNG side effect on BOTH ("it still copies the image to my clipboard just as
+   * it would before"), and a second hand-rolled copy of this sequence is exactly
+   * how one of them would quietly lose a store.
+   *
+   * @param {object} payload - the tagged payload ({powerrp_items} | {powerrp_item_props})
+   * @param {string} label - the verb's name, for the loud failure reports
+   */
+  async #writeClipboardPayload(payload, label) {
     // Render the OS-clipboard PNG first so its signature rides WITH the payload
     // (a camera-only selection has no bbox → null png, and no png_sig).
     const png = await this.#renderSelectionPng();
-    const payload = { powerrp_items: items };
-    if (png) payload.png_sig = imageSignature(png);
+    if (png) payload = { ...payload, png_sig: imageSignature(png) };
     const json = JSON.stringify(payload);
     // 1. An IN-BROWSER MIRROR of the payload, unconditionally. The server-side
     //    clipboard is the cross-tab authority, but with the backend down a paste
@@ -3551,7 +3593,7 @@ export class PowerRPApp {
     try {
       localStorage.setItem(CLIPBOARD_MIRROR_KEY, json);
     } catch (e) {
-      console.error("Copy: could not write the in-browser clipboard mirror:", e.message);
+      console.error(`${label}: could not write the in-browser clipboard mirror:`, e.message);
     }
     // 2. Item JSON (+ signature) → the server-side session clipboard (cross-tab).
     //    Failure is loud but NOT fatal any more — the mirror covers this browser.
@@ -3563,7 +3605,7 @@ export class PowerRPApp {
       try {
         await projectApi.setClipboard(json);
       } catch (e) {
-        console.error("Copy: could not reach the server-side clipboard (cross-TAB paste needs the project server; this browser can still paste via the mirror):", e.message);
+        console.error(`${label}: could not reach the server-side clipboard (cross-TAB paste needs the project server; this browser can still paste via the mirror):`, e.message);
       }
     }
     // 3. Rendered PNG → the OS clipboard (for pasting into OTHER apps). Failure
@@ -3665,7 +3707,7 @@ export class PowerRPApp {
     }
     if (payload?.powerrp_item && !payload.powerrp_items)
       payload = { ...payload, powerrp_items: { [LEGACY_CLIPBOARD_SOURCE_ID]: payload.powerrp_item } };
-    if (!payload?.powerrp_items && !payload?.powerrp_props) {
+    if (!payload?.powerrp_items && !payload?.powerrp_props && !payload?.powerrp_item_props) {
       console.warn("Paste: the server clipboard holds no PowerRP item or property payload.");
       return null;
     }
@@ -3680,6 +3722,33 @@ export class PowerRPApp {
     const payload = await this.#readClipboardPayload();
     if (!payload) {
       console.warn("Paste: the server-side clipboard is empty for this browser session (nothing copied yet).");
+      return;
+    }
+    this.#insertClipboardPayload(payload);
+  }
+
+  /**
+   * Command (async). PASTE PROPERTIES explicitly — the palette's named entry for
+   * the transport half of Copy Properties.
+   *
+   * NOT a second paste MECHANISM: it reads the same clipboard and routes through
+   * the same `#insertClipboardPayload`, so it is the ordinary Paste under a name
+   * that says which of its meanings you are asking for. That naming is the whole
+   * value — "Paste" in a palette list gives no clue that a properties payload is
+   * what is sitting on the clipboard, and this row's gate + title do.
+   *
+   * It REFUSES a non-properties payload rather than quietly pasting a clone: the
+   * user asked for this row by name, so silently doing the other thing would be
+   * the surprise. Plain Paste remains the way to paste whatever is there.
+   */
+  async pastePropertiesClipboard() {
+    const payload = await this.#readClipboardPayload();
+    if (!payload) {
+      console.warn("Paste Properties: the clipboard is empty for this browser session (nothing copied yet).");
+      return;
+    }
+    if (!payload.powerrp_item_props) {
+      console.warn("Paste Properties: the clipboard holds a copied WIDGET, not copied properties — use Paste (Ctrl+V) to paste it, or run Copy Properties (Cmd+Shift+C) on a widget first.");
       return;
     }
     this.#insertClipboardPayload(payload);
@@ -3768,20 +3837,55 @@ export class PowerRPApp {
     return files.some((f) => !f.type.startsWith("image/"));
   }
 
-  /** Command (one undo unit). Inserts a tagged clipboard payload
-   *  ({powerrp_items} or {powerrp_props}) into the current slide:
-   *    - powerrp_items: routed to #cloneStatesIntoSlide (14.9's "one canonical
-   *      clone home", shared with duplicateSelection).
-   *    - powerrp_props: applies the property values to the current selection. */
+  /** Command (one undo unit). Inserts a tagged clipboard payload into the
+   *  current slide, DISPATCHING ON KIND — the user's ruling is "paste behaves as
+   *  normal, because after all if we copy something different, paste will still
+   *  do it", so there is one paste verb and the clipboard's contents decide what
+   *  it means. No second key, no mode:
+   *    - powerrp_items:      routed to #cloneStatesIntoSlide (14.9's "one canonical
+   *                          clone home", shared with duplicateSelection).
+   *    - powerrp_item_props: TIME TRANSPORT — the copied fold re-keyframed onto
+   *                          the SAME items here (#applyItemProperties).
+   *    - powerrp_props:      applies one property's value to the current selection. */
   #insertClipboardPayload(payload) {
     if (payload.powerrp_items) {
       this.#cloneStatesIntoSlide(payload.powerrp_items);
+    } else if (payload.powerrp_item_props) {
+      this.#applyItemProperties(payload);
     } else if (payload.powerrp_props && this.selection) {
       let doc = this.doc;
       for (const [key, value] of Object.entries(payload.powerrp_props))
         doc = keyframed(doc, this.slideIndex, ["items", this.selection, ...key.split(".")], value);
       this.commit(doc);
     }
+  }
+
+  /**
+   * Command (ONE undo unit). PASTE PROPERTIES: writes the copied fold onto the
+   * SAME items on the CURRENT slide, as the MINIMAL set of keyframes
+   * (core/item_properties_clipboard.js — that module owns the law and the
+   * arithmetic; this is the app-state adapter around it).
+   *
+   * PURGED ITEMS ARE REFUSED BY NAME and the survivors still apply: a partial
+   * result the user can see and act on beats an all-or-nothing refusal over one
+   * widget they deleted three slides ago. The report is loud because a silently
+   * skipped item is indistinguishable from a paste that did not work.
+   *
+   * A no-op delta commits NOTHING — `commit` already early-returns on an
+   * unchanged document, so pasting onto the slide the state came from does not
+   * manufacture an undo step.
+   */
+  #applyItemProperties(payload) {
+    const fold = this.rawState();
+    const { surviving, purged } = partitionPurged(payload, fold);
+    if (purged.length) console.warn(purgedRefusal(purged, surviving.length));
+    if (!surviving.length) return;
+    const delta = itemPropertiesDelta(payload, fold);
+    if (!Object.keys(delta).length) return;
+    const slides = this.doc.slides.map((s, i) =>
+      i === this.slideIndex ? { ...s, delta: applied(s.delta, delta) } : s);
+    this.commit({ ...this.doc, slides });
+    this.selectMany(surviving); // what you pasted onto is what you have selected
   }
 
   /**
@@ -3902,6 +4006,47 @@ export class PowerRPApp {
    *  item — a camera-only selection cannot). Drives the command's `when`. */
   canDuplicate() {
     return this.#duplicableSelection().length > 0;
+  }
+
+  /**
+   * Query (reads localStorage). The Paste-Properties gate: is there a copied
+   * properties payload whose items STILL EXIST on this slide?
+   *
+   * THE IN-BROWSER MIRROR, not the server clipboard — and that is a real bound,
+   * stated rather than hidden. A palette `when` is SYNCHRONOUS (it runs on every
+   * render to decide the row's availability) and the server clipboard is an
+   * async fetch, so a gate cannot consult it without either blocking or lying
+   * for a frame. The mirror is written by EVERY copy in this browser, so the gate
+   * is exact for the copy-then-paste-here case and conservative for the
+   * cross-TAB one: a payload copied in another tab reads as unavailable until
+   * this tab copies something, yet Ctrl+V and the Paste button still paste it
+   * (they read the server through the async path). Under-promising in a
+   * disabled-with-a-reason row beats a row that claims to be ready and is not.
+   *
+   * `surviving.length` and not merely "a payload exists": a payload whose every
+   * item has been purged has nothing to apply, and the gate's sentence should
+   * say so BEFORE the click rather than the refusal saying it after.
+   *
+   * @returns {boolean} true iff a properties payload exists AND ≥1 of its items survives
+   */
+  canPasteProperties() {
+    let raw;
+    try {
+      raw = localStorage.getItem(CLIPBOARD_MIRROR_KEY);
+    } catch (e) {
+      console.error("Paste Properties: the in-browser clipboard mirror is unreadable:", e.message);
+      return false;
+    }
+    if (!raw) return false;
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch (e) {
+      console.error("Paste Properties: the in-browser clipboard mirror holds unparseable JSON:", e.message);
+      return false;
+    }
+    if (!payload?.powerrp_item_props) return false;
+    return partitionPurged(payload, this.rawState()).surviving.length > 0;
   }
 
   /**
