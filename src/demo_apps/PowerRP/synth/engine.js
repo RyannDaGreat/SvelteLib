@@ -200,23 +200,26 @@ export function createEngine(options = {}) {
       // No guard to protect: the change is still legitimate (e.g. the module
       // was removed concurrently), so apply it rather than silently skipping.
       apply();
-      return;
+      return Promise.resolve();
     }
     const guards = port === null ? [...entry.guards.values()] : [entry.guards.get(port)].filter(Boolean);
     const now = context.currentTime;
     for (const guard of guards) guard.gain.setTargetAtTime(0, now, REWIRE_RAMP_SECONDS);
 
     const settleMs = rampSettleSeconds(REWIRE_RAMP_SECONDS) * 1000;
-    setTimeout(() => {
-      apply();
-      // Ramp back only if the module still exists — a remove during the window
-      // is legal and its guards are already gone.
-      if (modules.has(id)) {
-        for (const guard of guards) {
-          guard.gain.setTargetAtTime(entry.guardLevel, context.currentTime, REWIRE_RAMP_SECONDS);
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        apply();
+        // Ramp back only if the module still exists — a remove during the
+        // window is legal and its guards are already gone.
+        if (modules.has(id)) {
+          for (const guard of guards) {
+            guard.gain.setTargetAtTime(entry.guardLevel, context.currentTime, REWIRE_RAMP_SECONDS);
+          }
         }
-      }
-    }, settleMs);
+        resolve();
+      }, settleMs);
+    });
   }
 
   /** Pure. The map key identifying one connection. */
@@ -361,7 +364,7 @@ export function createEngine(options = {}) {
     /**
      * Command. Remove a module: disconnect every wire touching it, dispose it,
      * and forget it. Runs under the ramp guard so removal is as click-free as
-     * any other topology change.
+     * any other topology change. Returns a promise resolving once it is gone.
      */
     removeModule(id) {
       const entry = modules.get(id);
@@ -377,7 +380,7 @@ export function createEngine(options = {}) {
       spectrumSubscriptions.delete(id);
       maybeStopPolling();
 
-      underRampGuard(id, null, () => {
+      return underRampGuard(id, null, () => {
         entry.instance.dispose();
         for (const guard of entry.guards.values()) guard.disconnect();
         modules.delete(id);
@@ -390,32 +393,39 @@ export function createEngine(options = {}) {
      * Reconnecting an already-connected pair is a no-op rather than an error:
      * the graph state is what was asked for, and throwing would make an
      * idempotent "apply this patch" call fail on the second run.
+     *
+     * RETURNS A PROMISE that resolves when the wire is ACTUALLY switched —
+     * roughly 32 ms later, once the guard ramp has settled. The call itself
+     * returns immediately and the graph reads as connected at once, so callers
+     * that do not care can ignore it. Await it when the ORDER of two topology
+     * changes matters, or to measure the true rewire cost (dev.html does).
      */
     connect(sourceId, sourcePort, targetId, targetPort) {
       const key = connectionKey(sourceId, sourcePort, targetId, targetPort);
-      if (connections.has(key)) return;
+      if (connections.has(key)) return Promise.resolve();
 
       const source = resolvePort(sourceId, sourcePort, "output");
       const target = resolvePort(targetId, targetPort, "input");
       connections.set(key, { sourceId, sourcePort, targetId, targetPort });
 
-      underRampGuard(sourceId, sourcePort, () => {
+      return underRampGuard(sourceId, sourcePort, () => {
         if (target.node instanceof AudioParam) source.node.connect(target.node);
         else source.node.connect(target.node, 0, target.index);
       });
     },
 
     /** Command. Remove a connection, GLITCH-FREE. Disconnecting something that
-     * is not connected is a no-op, for the same idempotence reason as connect. */
+     * is not connected is a no-op, for the same idempotence reason as connect.
+     * Returns a promise resolving when the wire is actually cut. */
     disconnect(sourceId, sourcePort, targetId, targetPort) {
       const key = connectionKey(sourceId, sourcePort, targetId, targetPort);
-      if (!connections.has(key)) return;
+      if (!connections.has(key)) return Promise.resolve();
       connections.delete(key);
 
       const source = resolvePort(sourceId, sourcePort, "output");
       const target = resolvePort(targetId, targetPort, "input");
 
-      underRampGuard(sourceId, sourcePort, () => {
+      return underRampGuard(sourceId, sourcePort, () => {
         if (target.node instanceof AudioParam) source.node.disconnect(target.node);
         else source.node.disconnect(target.node, 0, target.index);
       });
@@ -460,6 +470,49 @@ export function createEngine(options = {}) {
       const bounded = clampParam(value, param.minValue, param.maxValue, `${entry.type}.${key}`);
       if (ramp > 0) param.setTargetAtTime(bounded, when, ramp);
       else param.setValueAtTime(bounded, when);
+    },
+
+    /**
+     * Query. The raw AudioParam behind a knob, for SCHEDULED AUTOMATION.
+     *
+     * WHY THIS EXISTS, given setParam already sets values: setParam expresses
+     * "move this knob, optionally glide", which covers a live control. It
+     * cannot express an ENVELOPE — a shape over time with ordered breakpoints,
+     * like a whoosh's rising sweep and fall. Building one out of repeated
+     * setParam calls does not merely look clumsy, it is WRONG: successive
+     * calls all land at the same currentTime, so the automation events collide
+     * and the later ones win. (That is a real bug this engine shipped; see
+     * patches.js whoosh().) An envelope must be scheduled as one sequence on
+     * the audio clock, and that requires the param itself.
+     *
+     * Throws for discrete params (waveform, filter type) — those are setter
+     * functions with no AudioParam behind them, and automation is meaningless
+     * for a value that cannot be interpolated.
+     *
+     * Args:
+     *     id (string): Module id
+     *     key (string): Parameter name
+     *
+     * Returns:
+     *     AudioParam
+     */
+    paramNode(id, key) {
+      const entry = modules.get(id);
+      if (!entry) throw new Error(`No module with id ${JSON.stringify(id)}`);
+      const param = entry.instance.params[key];
+      if (param === undefined) {
+        throw new Error(
+          `Module ${JSON.stringify(id)} (${entry.type}) has no parameter ${JSON.stringify(key)}; ` +
+            `has ${Object.keys(entry.instance.params).join(", ") || "none"}`,
+        );
+      }
+      if (typeof param === "function") {
+        throw new Error(
+          `Parameter ${JSON.stringify(key)} on ${entry.type} is discrete (a setter, not an AudioParam) — ` +
+            `it cannot be automated; use setParam`,
+        );
+      }
+      return param;
     },
 
     /**
