@@ -175,36 +175,67 @@ try {
   // ── DELETE BY DRAGGING THE END OFF INTO EMPTY SPACE ────────────────────────
   // The user's stated gesture, verbatim: "you take one of the nodes you click and
   // drag off into the outer space and the wire disappears."
-  // ── DELETE BY DRAGGING THE END OFF INTO EMPTY SPACE ────────────────────────
-  // The user's stated gesture, verbatim: "you take one of the nodes you click and
-  // drag off into the outer space and the wire disappears."
   //
-  // ── KNOWN GAP, REPORTED RATHER THAN HIDDEN (NF-CORE, 2026-08-02) ───────────
-  // THE CORE IS PROVEN AND THE CANVAS IS NOT. tests/nodeflow_test.js pins the whole
-  // decision chain in bare node — grabbing a CONNECTED input bead returns
-  // {anchor: the source, detach: this input}, and dropping that on empty space
-  // returns `{kind: "disconnect", pairs: [[["items", d, "inputs", "in"], null]]}`.
-  // Reproduced directly against the REGISTERED plugins and the REAL derivation, so
-  // core/wire_drag.js is not the suspect.
+  // ── THIS WAS NF-CORE'S REPORTED GAP, AND THE DIAGNOSIS WAS WRONG ───────────
+  // NF-CORE measured correctly that the press never reached finishWireDrag and
+  // reported it honestly rather than asserting a pass. Its SUSPECT — "pointer-down
+  // routing for a CONNECTED input bead, between onPointerDown and startWireDrag" —
+  // was not the mechanism, and the difference matters for anyone reading this file.
   //
-  // What does not happen is the browser half: this drag's press never reaches
-  // finishWireDrag, while the four CONNECT drags above (same helper, same
-  // beadAt-derived coordinates, same pointer sequence) all work. So the defect is
-  // in the pointer-down routing for a press on an ALREADY-CONNECTED input bead
-  // specifically, somewhere between onPointerDown and startWireDrag — not in the
-  // gesture's logic.
+  // MEASURED (NF-BIND, 2026-08-02, by logging the real pointerdown's target in the
+  // live page): the press landed on `rect.handle` and the drag announced
+  // `dragKind: "resize"`. onPointerDown was NEVER CALLED. The resize handles are
+  // their own SVG rects with their own pointerdown listener
+  // (web/ResizeHandles.svelte -> startResize), so a press on one bypasses the whole
+  // onPointerDown routing — including the always-active bead check at the top of it.
   //
-  // This block therefore MEASURES and REPORTS instead of asserting a pass. Writing
-  // `ok(true)` here, or deleting the block, would be exactly the "manufactured
-  // confidence" the test-gate doctrine names as worse than a red: the connect path
-  // is genuinely proven end to end above, and this one is genuinely not.
+  // Why it looked input-specific: handles exist only on the SELECTED node, and the
+  // west-middle handle sits on the left edge, which is exactly where the INPUT beads
+  // are. Connecting a wire SELECTS the target node, so the very next gesture — grab
+  // that input bead to drag the wire off — grabs `ml` instead. Every CONNECT drag
+  // above starts on an OUTPUT (right edge) of a node that is not the freshly
+  // selected one, which is why all four worked. The bead's connectedness was a
+  // correlation, not a cause.
+  //
+  // FIX: startResize runs the same startWireDrag check first (CanvasView.svelte),
+  // because "the bead is drag-active even if it's not selected" cannot be true if a
+  // selection-only affordance covers it.
+  // Captured BEFORE any delete gesture: the resize-collision pin below proves the
+  // wire drag ran INSTEAD of a resize, which needs the pre-gesture size.
+  const dispSizeBefore = await page.evaluate((id) => {
+    const s = window.__powerrp_app.rawState().items[id];
+    return { w: s.w, h: s.h };
+  }, disp);
   const inDNow = await beadWorld(disp, "input", "in");
   await dragBetween(inDNow, { x: inDNow.x + 90, y: inDNow.y + 170 });
-  const cutWorked = (await connectionOf(disp, "in")) === null;
-  console.log(cutWorked
-    ? "  ok   drag-off-to-delete works in the browser — REMOVE THE KNOWN-GAP BLOCK in this file and restore the assertions"
-    : "  GAP  drag-off-to-delete did NOT reach the canvas (core/wire_drag.js proves the decision; the pointer-down routing for a CONNECTED input bead is the suspect) — tracked, not asserted");
-  ok((await itemCount()) === baseItems, "the delete attempt created or removed NO item either way");
+  ok((await connectionOf(disp, "in")) === null,
+    "DRAG-OFF-TO-DELETE: grabbing a connected input bead and dropping it on empty space REMOVED the wire");
+  ok((await itemCount()) === baseItems, "the delete created or removed NO item — a wire is not a widget");
+  ok((await displayText(disp)).includes("0"),
+    "and the display fell back to its unconnected zero — the deletion reached the picture, not just the state");
+  // ONE UNDO UNIT, the same standard the connect path is held to above.
+  await undo();
+  const restored = await connectionOf(disp, "in");
+  ok(restored?.item === math, `ONE Cmd+Z restored the deleted wire (got ${JSON.stringify(restored)})`);
+  ok((await itemCount()) === baseItems, "undoing a deletion did not resurrect or duplicate an item");
+
+  // THE REGRESSION PIN FOR THE MECHANISM ITSELF, not just its symptom. The delete
+  // drag above only exercises the handle collision when the display node happens to
+  // be selected; asserting that explicitly means a future change to handle geometry,
+  // z-order or hit area fails HERE with the reason, instead of quietly restoring the
+  // gap for whichever bead a handle grows to cover next.
+  await page.evaluate((id) => { window.__powerrp_app.selection = id; }, disp);
+  await new Promise((r) => setTimeout(r, 60));
+  const inDSel = await beadWorld(disp, "input", "in");
+  await dragBetween(inDSel, { x: inDSel.x + 80, y: inDSel.y + 150 });
+  ok((await connectionOf(disp, "in")) === null,
+    "THE BEAD BEATS THE RESIZE HANDLE: the same gesture works with the node SELECTED, when a handle sits on the bead");
+  const sizeAfter = await page.evaluate((id) => {
+    const s = window.__powerrp_app.rawState().items[id];
+    return { w: s.w, h: s.h };
+  }, disp);
+  ok(sizeAfter.w === dispSizeBefore.w && sizeAfter.h === dispSizeBefore.h,
+    `and it did NOT resize the node instead (${JSON.stringify(dispSizeBefore)} → ${JSON.stringify(sizeAfter)})`);
 
   // ── PRECEDENCE: the bead beats the body, and ONLY inside its radius ────────
   // The ruling this whole layer rests on. Both halves are checked, because either

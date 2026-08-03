@@ -2667,6 +2667,32 @@
   // resizeAnchors / resizedBox are imported from ./canvas/dragKinds.js.
 
   function startResize(handleId, e) {
+    // ── THE BEAD LAYER WINS HERE TOO, AND THIS IS WHERE THE DELETE GESTURE WAS
+    //    LOST (NF-BIND, 2026-08-02; measured, not reasoned) ────────────────────
+    // The resize handles are their OWN SVG <rect>s with their OWN pointerdown
+    // (ResizeHandles.svelte), so a press on one NEVER reaches onPointerDown — and
+    // therefore never reaches the always-active bead check that lives there. The
+    // handles only exist on the SELECTED node, and a node's west-middle handle
+    // sits on its left edge, which is exactly where its INPUT beads are. So:
+    //
+    //   connect a wire into a node  →  that node becomes selected
+    //   grab the input bead to drag the wire off  →  you grab `ml` instead
+    //   the app starts a RESIZE, and the user's founding delete gesture dies
+    //
+    // Every CONNECT drag worked because it starts on an OUTPUT (right edge) of a
+    // node that is not the freshly-selected one — which is why the gap looked like
+    // "connected input beads specifically" rather than "beads under a handle".
+    // Measured directly: the pointerdown's target was `rect.handle` and the drag
+    // announced `dragKind: "resize"`.
+    //
+    // THE FIX IS THE RULING, NOT A SPECIAL CASE. The user's founding requirement is
+    // that a bead is drag-active "even if it's not selected" — an affordance that
+    // is always live cannot be one a DIFFERENT affordance covers up when the node
+    // happens to be selected. So the bead check runs FIRST here for the same reason
+    // it runs first in onPointerDown, calls the SAME startWireDrag, and yields to
+    // the resize everywhere `beadAt` returns null (a few pixels away) exactly as it
+    // yields to the body drag there.
+    if (startWireDrag(e, worldPoint(e))) { e.stopPropagation(); return; }
     // MULTI-RESIZE (manifest UNDEFERRAL SWEEP): a handle on a 2+ selection grabs
     // the collective AABB and scales every member about it — a different drag
     // kind from the single-item resize (which owns the rotation back-solve, edge
@@ -3320,7 +3346,16 @@
     const items = app.rawState().items ?? {};
     const started = wireDragStart(items, bead);
     if (!started) return false;
-    e.currentTarget.setPointerCapture(e.pointerId);
+    // CAPTURE ON THE OVERLAY, NOT ON `e.currentTarget`. This function has TWO
+    // callers now: onPointerDown (where currentTarget IS the overlay) and
+    // startResize (where it is the handle <rect>, a child element with no
+    // pointermove/pointerup listeners of its own). Capturing on the rect would
+    // route the rest of the gesture to an element that ignores it, so the ghost
+    // wire would freeze at the press point and the release would never commit —
+    // the same silent half-gesture the handle interception produced. `overlayEl`
+    // is the element the move and up handlers are actually bound to, which makes
+    // it the only correct capture target for either entrance.
+    overlayEl.setPointerCapture(e.pointerId);
     hoverAnchor = null;
     // The anchor's world position is frozen at grab: the ghost is drawn from it to
     // the cursor, and the node it belongs to cannot move during a wire drag.
