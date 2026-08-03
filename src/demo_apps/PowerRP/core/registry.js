@@ -365,6 +365,16 @@
  *     that the patch can set to the exact inverse of the box change. Note the
  *     tween law then constrains that field: it must lerp linearly with w/h, so a
  *     single multiplicative `contentScale` works while a "fit mode" enum does not.
+ *   · PLAINTEXT WITH VERTICAL SLACK, or whose ink is WIDER than its wrap box —
+ *     refuses in exactly those two states, accepts otherwise (see
+ *     plugins/plaintext.js). The width case is a real REFLOW (widening the box
+ *     changes the line breaks). The slack case is the more interesting refusal:
+ *     the compensator is straightforward arithmetic and it was WRITTEN, and it
+ *     still moved the type, because THERE ARE TWO LAYOUT ENGINES — core/richtext
+ *     (what the ink rect reports) and render_gpu/skia/text_layout (what draws the
+ *     picture) compute different total heights and therefore different valign
+ *     offsets. Making them agree is the prerequisite for lifting that refusal;
+ *     until then the widget declines to compensate a residue it cannot measure.
  *   · GROUP WITH AN ACTIVE CROP — refuses even though a plain group accepts.
  *     `groupCropRect` trims the group's OWN [0,0,w,h] by per-edge insets, so
  *     re-boxing moves the clip and the members get cut differently. MEASURED, not
