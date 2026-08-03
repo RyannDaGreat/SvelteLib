@@ -2349,12 +2349,15 @@ export function customProps(defs) {
  * @example // THE OPTION LIST IS FILTERED: a coordinate has no outline and no second paint
  * @example interpRowFor({key: "x", label: "X"}, 5).options
  * [ 'tween', 'step' ]
- * @example // the TYPE row drops tween/fade/blend — none of them can do anything to a widget type
+ * @example // the TYPE row no longer offers Morph — that moved to the UNIVERSAL
+ * @example // Morph property, which asks about the widget's outline rather than
+ * @example // about one leaf. `tween` is the displayed default and is always kept
+ * @example // (a select whose current value is absent from its options renders blank).
  * @example interpRowFor({key: "type", label: "Type"}, "rect").options
- * [ 'step', 'morph' ]
- * @example // an equation's SOURCE is a content leaf, so it offers the reshape
+ * [ 'tween', 'step' ]
+ * @example // an equation's SOURCE morphs through the UNIVERSAL row, not its own
  * @example interpRowFor({key: "latex", label: "LaTeX"}, "x^2", "latex").options
- * [ 'tween', 'step', 'morph' ]
+ * [ 'tween', 'step' ]
  */
 export function interpRowFor(propRow, value, type) {
   const target = propRow.writeKey ?? propRow.key;

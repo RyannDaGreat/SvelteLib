@@ -48,6 +48,7 @@ import {
   interpModeIds,
 } from "../core/interp_modes.js";
 import { morphPayloadFromPaths, pathDToSubpaths, lineToCubic, quadToCubic } from "../core/morph_payload.js";
+import { MORPH_KEY, isUniversalMorphToken } from "../core/morph_property.js";
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -87,14 +88,23 @@ function extentOf(d) {
 
 console.log("\nFOLD — a keyframed type folds to a token inside, exact strings at the ends");
 
-test("MID-TRANSITION the `type` leaf is a MORPH TOKEN naming both endpoints", () => {
+test("MID-TRANSITION the retype is carried by the UNIVERSAL token, not the `type` leaf", () => {
+  // SUPERSEDED BY WORKSTREAM MM, and rewritten rather than deleted because the
+  // law it protects still matters — a retype must be RESOLVABLE mid-transition,
+  // naming both endpoints. What changed is WHERE that lives.
+  //
+  // The `type` leaf used to hold a `~morph` token. It no longer does: morph is a
+  // UNIVERSAL PROPERTY now (core/morph_property.js, user ruling 2026-08-02
+  // night), so `type` is an ordinary discrete string again and the endpoints ride
+  // the `morph` leaf — which is what lets an equation edit or a tooth-count
+  // change morph too, none of which touch `type` at all.
   const mid = blendApplied({ items: { a: itemState() } }, { items: { a: { type: "circle" } } }, 0.5);
-  const t = mid.items.a.type;
-  assert.ok(isMorphToken(t), `expected a morph token, got ${JSON.stringify(t)}`);
-  assert.equal(t.type, MORPH_TYPE_TOKEN);
-  assert.equal(t.fromType, "rect");
-  assert.equal(t.toType, "circle");
-  assert.equal(t.t, 0.5, "the token carries the transition alpha, so the render seam needs no clock");
+  assert.equal(mid.items.a.type, "circle", "`type` is a plain discrete leaf again");
+  const tok = mid.items.a[MORPH_KEY];
+  assert.ok(isUniversalMorphToken(tok), `the retype must ride the universal token, got ${JSON.stringify(tok)}`);
+  assert.equal(tok.from.type, "rect");
+  assert.equal(tok.to.type, "circle");
+  assert.equal(tok.t, 0.5, "the token carries the transition alpha, so the render seam needs no clock");
 });
 
 test("THE ENDPOINTS ARE EXACT TYPE STRINGS — never a token", () => {
@@ -139,11 +149,17 @@ test("`morph` IS REGISTERED and carries help the Inspector can render", () => {
   assert.ok(interpMode("morph").help.length > 20);
 });
 
-test("AUTO IS defaultModeFor — a `type` pair defaults to morph, other strings do not", () => {
-  assert.equal(defaultModeFor("rect", "circle", "type"), "morph");
+test("AUTO MOVED OFF THE `type` ROW — it is the universal property's default now", () => {
+  // SUPERSEDED BY WORKSTREAM MM. `type` used to default to the `morph` interp
+  // mode; it no longer does, because the universal Morph property mints the token
+  // for the same transition and derive prefers it. Leaving the old default would
+  // mint a SECOND, mid-tween-derived token for one transition — exactly the
+  // re-derivation the endpoint law exists to stop.
+  assert.equal(defaultModeFor("rect", "circle", "type"), "tween",
+    "a type pair takes the ordinary discrete law here; the universal token carries the morph");
   assert.equal(defaultModeFor("bold", "italic", "fontStyle"), "tween", "an ordinary string row is untouched");
   assert.equal(defaultModeFor(0, 10, "x"), "tween");
-  assert.ok(!interpModeIds().includes("auto"), "auto is a DEFAULT, not a registered mode id");
+  assert.ok(!interpModeIds().includes("auto"), "auto is a DEFAULT, not a registered interp mode id");
 });
 
 test("BOTH SIDES DECLARING morphPaths → the pair morphs", () => {
@@ -347,7 +363,8 @@ test("A RETYPE KEYFRAME KEEPS THE ITEM'S OTHER PROPERTIES", () => {
   assert.equal(it.w, 200, "w must still tween");
   assert.equal(it.fill, "#808080", "fill must still tween per channel");
   assert.equal(it.h, 100, "an untouched property must survive");
-  assert.ok(isMorphToken(it.type), "and the type is a morph token, not a crossfade paint");
+  assert.equal(it.type, "circle", "and the type is a plain string, NOT a crossfade paint wrapper");
+  assert.ok(isUniversalMorphToken(it[MORPH_KEY]), "with the retype carried by the universal morph token");
 });
 
 test("THE WHOLE PIPELINE SURVIVES A RETYPE AT EVERY ALPHA", () => {

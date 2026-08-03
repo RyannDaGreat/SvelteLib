@@ -238,11 +238,11 @@ export function registerInterpMode(entry) {
  * Returns:
  *   string[]: applicable mode ids, in registration order
  *
- * @example modesForKey("type", "rect") // ["step", "morph"]
+ * @example modesForKey("type", "rect") // ["tween", "step"] (morph RETIRED here — it is a universal property now)
  * @example modesForKey("x", 0) // ["tween", "step"]
  * @example modesForKey("active", false) // ["tween", "step", "fade"]
  * @example modesForKey("fill", {type: "material", material: {id: "crt"}}) // ["tween", "step", "blend"]
- * @example modesForKey("latex", "x^2", "latex") // ["tween", "step", "morph"]
+ * @example modesForKey("latex", "x^2", "latex") // ["tween", "step"] (a content leaf morphs through the universal row)
  */
 export function modesForKey(key, value, type) {
   const ctx = { key, value, type };
@@ -994,8 +994,8 @@ export function isPaintShaped(v) {
  * @example defaultModeFor({type: "material", material: {id: "crt"}}, {type: "linearGradient", stops: []}, "fill") // "blend"
  * @example defaultModeFor({type: "material", material: {id: "crt"}}, {type: "material", material: {id: "comic"}}, "fill") // "blend"
  * @example defaultModeFor("#ff0000", "#0000ff", "fill") // "tween" (colors already blend per channel)
- * @example defaultModeFor("rect", "circle", "type") // "morph" (auto: the pair gate decides whether it really morphs)
- * @example defaultModeFor("rect", "video", "type") // "morph" (still auto — morph's own blend falls back for an unmorphable pair)
+ * @example defaultModeFor("rect", "circle", "type") // "tween" (the UNIVERSAL morph property carries a retype now)
+ * @example defaultModeFor("rect", "video", "type") // "tween" (same: `type` is an ordinary discrete leaf again)
  * @example defaultModeFor("bold", "italic", "fontStyle") // "tween" (a string that is not the type key)
  * @example defaultModeFor(0, 10, "x") // "tween"
  * @example defaultModeFor(false, true, "active") // "tween" (fade stays OPT-IN — the user asked for step-by-default on Visible)
