@@ -236,4 +236,48 @@ test("swBuildPlugin actually inlines swPrune.js into the emitted sw.js — no ex
   assert.doesNotThrow(() => new Function("self", "caches", "fetch", "Response", swAsset.source), "emitted sw.js must be syntactically valid as a classic script");
 });
 
+test("THE SHELL IS PRECACHED even though vite's bundle does not contain it at generateBundle time", () => {
+  // THE BUG THIS PINS, measured 2026-08-02 on a real `vite build`: the emitted
+  // precache had 104 entries and NONE of them was index.html. This plugin runs
+  // in `generateBundle`; vite's HTML plugin emits the document LATER, so
+  // `Object.keys(bundle)` genuinely does not contain it. The hole was invisible
+  // for as long as the worker's navigation route was network-first and seeded
+  // the shell with `cache.put(SHELL_URL, …)` on the first online visit — the
+  // same write that caused the version-skew crash. Remove that write (WORKSTREAM
+  // AI) and an offline boot has no document at all.
+  //
+  // NOTE THE BUNDLE ARGUMENT, which is the whole point: the sibling check above
+  // passes `{ "index.html": {} }` and would have passed with the bug present.
+  // This one passes what vite ACTUALLY passes — assets only.
+  const plugin = powerrpServiceWorker();
+  plugin.configResolved({ base: "/SvelteLib/" });
+  const emitted = [];
+  plugin.generateBundle.call({ emitFile: (f) => emitted.push(f) }, {}, {
+    "assets/main-a1b2c3.js": {},
+    "assets/canvaskit-9f8e7d.wasm": {},
+    "assets/style-1234.css": {},
+  });
+  const swAsset = emitted.find((f) => f.fileName === "sw.js");
+  const precache = JSON.parse(swAsset.source.match(/self\.__POWERRP_PRECACHE = (\[[\s\S]*?\]);/)[1]);
+  const shell = swAsset.source.match(/self\.__POWERRP_SHELL = "([^"]+)"/)[1];
+
+  assert.ok(precache.includes(shell), `the shell ${shell} must be in its own version's precache — an offline boot has no document otherwise`);
+  assert.equal(precache.filter((u) => u === shell).length, 1, "the shell must appear exactly once, not twice when vite does emit it");
+  assert.equal(precache[0], shell, "the shell is first, so a human reading the emitted manifest sees the document before 100 hashed assets");
+});
+
+test("the shell is not DUPLICATED when vite's bundle does happen to carry index.html", () => {
+  // The other half of "always present, exactly once". A future vite could emit
+  // the document into `bundle`, and a list containing it twice would make
+  // `addAll` fetch it twice on every install — harmless but wrong, and a
+  // duplicate here would mean the prepend is uncoordinated with the filter.
+  const plugin = powerrpServiceWorker();
+  plugin.configResolved({ base: "/" });
+  const emitted = [];
+  plugin.generateBundle.call({ emitFile: (f) => emitted.push(f) }, {}, { "index.html": {}, "assets/main-x.js": {} });
+  const swAsset = emitted.find((f) => f.fileName === "sw.js");
+  const precache = JSON.parse(swAsset.source.match(/self\.__POWERRP_PRECACHE = (\[[\s\S]*?\]);/)[1]);
+  assert.deepEqual(precache, ["/index.html", "/assets/main-x.js"]);
+});
+
 console.log(`sw_prune_test: ${n} checks passed`);

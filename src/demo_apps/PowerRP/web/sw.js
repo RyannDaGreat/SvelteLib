@@ -12,7 +12,12 @@
  *   · DEV SERVER — a service worker serving a cached bundle to a page that HMR
  *     is trying to hot-patch is a debugging nightmare with no upside: it would
  *     answer with yesterday's module while the editor insists it just reloaded.
- *     The dev server also has a backend, so there is nothing to rescue.
+ *     The dev server also has a backend, so there is nothing to rescue. AND
+ *     ABSTAINING IS NOT SUFFICIENT: a worker survives the code that registered
+ *     it, and `localhost` is one origin shared with `vite preview` and any
+ *     locally-served build — so the registration site also UNREGISTERS in dev.
+ *     See its docblock; that cleanup was a suspect in the incident behind the
+ *     atomic swap below.
  *   · ELECTRON — loads local files off disk. Those are already offline; a cache
  *     in front of them is pure overhead. The CONNECTIVITY SEAM still works there,
  *     which is the part of "offline capable" Electron actually needs.
@@ -34,10 +39,10 @@
  * activating a worker that will strand the user at the splash.
  *
  * ── THE THREE ROUTING RULES ──────────────────────────────────────────────────
- * 1. NAVIGATIONS → the cached `index.html`, network-first. The app is a single
- *    page, so any navigation (including a share link with `?zip=`/`?repo=`)
- *    resolves to that one document. Network-first so a deploy is picked up on
- *    the next online visit; cache is the fallback that makes offline work.
+ * 1. NAVIGATIONS → THIS VERSION'S cached `index.html`, CACHE-FIRST. See "THE
+ *    ATOMIC SWAP" below for why this is cache-first and not network-first: a
+ *    document fetched from the network belongs to whatever version the server is
+ *    serving RIGHT NOW, and this worker only has THIS version's chunks.
  * 2. PRECACHED BUNDLE ASSETS → cache-first. They are content-hashed, so a hit is
  *    by definition the right bytes and revalidating would be wasted latency on
  *    every boot.
@@ -56,11 +61,69 @@
  * reachability-sensitive call would let a dead network look healthy (which is
  * why connectivity.js's own probe sets `cache: "no-store"`).
  *
- * ── UPDATES ──────────────────────────────────────────────────────────────────
- * A new worker installs in the background and takes over on the NEXT load. No
- * `skipWaiting`, deliberately: swapping the bundle under a running editor could
- * load a new module against old in-memory state, and the user did not ask for a
- * reload in the middle of their work.
+ * ── THE ATOMIC SWAP (WORKSTREAM AI) ──────────────────────────────────────────
+ * THE LAW: at no instant may a page load assets from two different versions.
+ *
+ * This is not a hypothetical. The incident, user verbatim: "it actually crashed
+ * when it was loading and I couldn't tell". The crash was
+ * `properties.bundle: unknown bundle "transform"` — a PRE-rename properties chunk
+ * evaluated against POST-rename plugin chunks. HEAD was consistent; the browser
+ * was not. The two halves of that build never existed together in any deploy: the
+ * service worker assembled the chimera locally.
+ *
+ * HOW IT ASSEMBLED IT, precisely, because the mechanism is not obvious. Rule 1
+ * used to be NETWORK-FIRST and, on success, wrote the fetched document into the
+ * RUNNING worker's own shell cache:
+ *     const res = await fetch(request);
+ *     if (res.ok) { cache.put(SHELL_URL, res.clone()); return res; }
+ * After a deploy, a page controlled by version A navigates, the network answers
+ * with version B's index.html, and that document — naming B's content-hashed
+ * chunks — is stored in A'S CACHE. A's precache does not contain B's chunks, so
+ * rule 2 misses and falls through to the network, which papers over it while the
+ * user is online and the deploy is intact. The moment either is untrue (offline,
+ * a flaky request, an atomically-replaced deploy, a CDN mid-propagation) the page
+ * gets B's HTML and whatever mix of A and B chunks the network happens to yield.
+ * That cache entry OUTLIVES the session: A's cache is now permanently poisoned
+ * with a document it cannot satisfy, and every later offline boot from A is the
+ * chimera. One line, and the whole offline guarantee is conditional on luck.
+ *
+ * THE FIX IS A RULE ABOUT OWNERSHIP, not a retry or a checksum: A VERSION'S CACHE
+ * CONTAINS ONLY THAT VERSION'S BYTES. Nothing writes into `SHELL_CACHE` except
+ * `install`'s single `addAll`, which is all-or-nothing. So:
+ *   · Rule 1 is CACHE-FIRST from this version's shell (`shellFirst` below). The
+ *     cached document is the one whose chunks this worker provably holds — that
+ *     is the entire content of "complete". The network is the fallback for the
+ *     one case the cache cannot answer (a first navigation racing install).
+ *   · Nothing puts a network response into a shell cache. Ever. The only writer
+ *     is `addAll`.
+ * A version therefore either serves a COMPLETE self-consistent set or does not
+ * exist. There is no partial state to observe, which is what makes it atomic.
+ *
+ * WHAT REPLACED NETWORK-FIRST AS THE UPDATE MECHANISM. Network-first existed so a
+ * deploy was picked up on the next online visit; that job now belongs where it
+ * always should have — to the SERVICE WORKER LIFECYCLE, which is atomic by
+ * construction. The browser byte-compares `sw.js` on navigation (and on
+ * `registration.update()`, which `registerServiceWorker.js` calls); a changed
+ * VERSION constant means a new worker, which precaches the WHOLE new bundle into
+ * a NEW cache name, and only reaches `activate` if every byte landed. The version
+ * string is a hash of the precache list, so any bundle change is a new worker by
+ * construction. A user is never more than one reload behind, and the reload they
+ * get is a complete version rather than a fresh document over stale chunks.
+ *
+ * ── THE MID-SESSION UPDATE ───────────────────────────────────────────────────
+ * A new version installing while the editor is open must not disturb it, and
+ * does not:
+ *   1. INSTALL precaches into its OWN new cache name. The running page's cache is
+ *      a different name and is never written to, so every asset the live page
+ *      lazily loads (a font, a plugin chunk, the mermaid bundle) still comes from
+ *      the version it booted with.
+ *   2. NO `skipWaiting`, deliberately and now doubly so. Swapping the controller
+ *      under a running editor is exactly how you get new modules against old
+ *      in-memory state — the same class of mismatch, one layer up. It waits.
+ *   3. THE NEXT RELOAD activates it, at which point `activate` claims and the page
+ *      loads entirely from the new complete cache.
+ * `install`-time pruning (below) is what keeps this from costing unbounded disk,
+ * and it is careful never to delete the generation the live page is pinned to.
  *
  * BECAUSE of that, `activate` (where the old cleanup lived) never runs while any
  * tab from a prior deploy stays open — the new worker sits WAITING forever behind
@@ -224,31 +287,34 @@ async function staleWhileRevalidate(request) {
 }
 
 /**
- * Query (async; network + cache). Rule 1 — network-first for the app shell.
+ * Query (async; cache, then network only as a fallback). Rule 1 — the app shell,
+ * CACHE-FIRST, and cache-first is the load-bearing half of the atomic swap.
  *
- * Network-first so a new deploy is seen on the next online visit rather than
- * being masked by the cache; the cached shell is the fallback that makes an
- * offline boot possible at all. A shell missing from BOTH is a broken install
- * and rethrows rather than returning a synthetic error page, because a fabricated
- * 200 would hide the failure from the very error surface built to report it.
+ * THIS FUNCTION USED TO BE NETWORK-FIRST AND THAT WAS THE VERSION-SKEW BUG. See
+ * "THE ATOMIC SWAP" in the header: fetching the document from the network hands
+ * back whatever version the server is serving right now, while THIS worker holds
+ * only its own version's chunks — and the old code additionally STORED that
+ * foreign document in this version's cache, poisoning it permanently. Both are
+ * gone. The cached shell is served because it is the one document whose every
+ * chunk this worker provably has, which is the whole definition of a complete
+ * version. Staleness is not the cost people assume: the browser re-checks `sw.js`
+ * on navigation, so a deploy still lands on the next reload — through the worker
+ * lifecycle, which swaps a whole version at once instead of one file at a time.
+ *
+ * THE NETWORK FALLBACK is for the one case the cache genuinely cannot answer: a
+ * navigation controlled by a worker whose install has not finished (or whose
+ * cache a browser has evicted). Its response is NOT cached — writing it would
+ * reintroduce exactly the mixing this function was rewritten to prevent.
+ *
+ * A shell missing from BOTH is a broken install and rethrows rather than
+ * returning a synthetic error page, because a fabricated 200 would hide the
+ * failure from the very error surface built to report it.
  */
 async function shellFirst(request) {
   const cache = await caches.open(SHELL_CACHE);
-  try {
-    const res = await fetch(request);
-    if (res.ok) {
-      cache.put(SHELL_URL, res.clone());
-      return res;
-    }
-    // A non-ok navigation (a 404 from a misconfigured host) still deserves the
-    // cached shell if we have one — the app itself can then say what went wrong.
-    const cached = await cache.match(SHELL_URL);
-    return cached ?? res;
-  } catch (e) {
-    const cached = await cache.match(SHELL_URL);
-    if (cached) return cached;
-    throw e;
-  }
+  const cached = await cache.match(SHELL_URL);
+  if (cached) return cached;
+  return fetch(request);
 }
 
 self.addEventListener("fetch", (event) => {

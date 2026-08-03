@@ -68,6 +68,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * never precaches itself (it would pin the old worker in the cache meant to
  * replace it) — handled by name in precacheUrls.
  */
+/** The app shell's emitted filename. Named once because THREE things must agree
+ *  about it — the precache list, `__POWERRP_SHELL`, and the worker's navigation
+ *  route — and they disagreeing is how a version ends up without its own
+ *  document (see precacheUrls). */
+const SHELL_FILE = "index.html";
+
 const PRECACHE_SKIP = [
   /\.map$/,
   // Media fixtures: demo/test assets, never on the boot path.
@@ -131,19 +137,31 @@ export function webAppManifest(base) {
  * @param {string} base - resolved base path, slash-terminated
  * @returns {string[]}
  *
- * @example precacheUrls(["index.html", "assets/main-a1b2.js", "assets/x.js.map"], "/SvelteLib/")
+ * THE SHELL IS ALWAYS FIRST AND ALWAYS PRESENT, unconditionally — it is
+ * PREPENDED rather than filtered out of `fileNames`, and that is a fix, not a
+ * flourish. MEASURED 2026-08-02 on a real build: `index.html` was NOT in the
+ * emitted precache list at all (104 entries, none of them the document), because
+ * this plugin runs in `generateBundle` and vite's HTML plugin emits the document
+ * LATER — so `Object.keys(bundle)` genuinely does not contain it yet. The hole
+ * was invisible for as long as the worker's navigation route was network-first
+ * and seeded the cache with `cache.put(SHELL_URL, …)` on the first online visit:
+ * the offline probe passed because the shell arrived through the poisoning write
+ * this workstream removed. Take that write away and an offline boot has no
+ * document at all. A version's completeness cannot depend on a hook ordering, so
+ * the shell is stated here rather than discovered.
+ *
+ * @example precacheUrls(["assets/main-a1b2.js", "assets/x.js.map"], "/SvelteLib/")
  * [ '/SvelteLib/index.html', '/SvelteLib/assets/main-a1b2.js' ]
- * @example precacheUrls(["assets/canvaskit-9f.wasm", "index.html"], "/")
+ * @example // present in the bundle or not, it appears exactly once and first:
+ * precacheUrls(["index.html", "assets/canvaskit-9f.wasm"], "/")
  * [ '/index.html', '/assets/canvaskit-9f.wasm' ]
  * @example // The heavyweights that are NOT boot-critical are skipped (see PRECACHE_SKIP):
- * precacheUrls(["index.html", "assets/demo-x1.MOV", "assets/NotoColorEmoji-a2.ttf"], "/")
+ * precacheUrls(["assets/demo-x1.MOV", "assets/NotoColorEmoji-a2.ttf"], "/")
  * [ '/index.html' ]
  */
 export function precacheUrls(fileNames, base) {
-  const keep = fileNames.filter((f) => !PRECACHE_SKIP.some((re) => re.test(f)) && f !== "sw.js");
-  const shell = keep.filter((f) => f === "index.html");
-  const rest = keep.filter((f) => f !== "index.html").sort();
-  return [...shell, ...rest].map((f) => `${base}${f}`);
+  const keep = fileNames.filter((f) => !PRECACHE_SKIP.some((re) => re.test(f)) && f !== "sw.js" && f !== SHELL_FILE);
+  return [SHELL_FILE, ...keep.sort()].map((f) => `${base}${f}`);
 }
 
 /**
@@ -242,7 +260,7 @@ export function powerrpServiceWorker() {
         `// GENERATED PREAMBLE — powerrpServiceWorker (web/swBuildPlugin.js). Do not edit.\n` +
         `self.__POWERRP_PRECACHE = ${JSON.stringify(urls, null, 2)};\n` +
         `self.__POWERRP_SW_VERSION = ${JSON.stringify(version)};\n` +
-        `self.__POWERRP_SHELL = ${JSON.stringify(`${base}index.html`)};\n\n` +
+        `self.__POWERRP_SHELL = ${JSON.stringify(`${base}${SHELL_FILE}`)};\n\n` +
         // swPrune.js's `export function` cannot survive into a classic-script
         // worker verbatim (see that file's header) — strip the one `export`
         // keyword and inline the plain declaration. sw.js's UPDATES docblock
