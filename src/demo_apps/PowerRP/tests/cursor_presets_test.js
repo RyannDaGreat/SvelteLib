@@ -91,7 +91,7 @@ const NOT_LOOK = new Set([
  * (`shadow.dx`, `bloom.radius`) and their bundle heads appear in `defaults` but
  * never as a row key, so reading row keys verbatim finds SEVEN look knobs where
  * this widget has eleven — which is how a completeness check quietly stops
- * demanding the five effects a pointer treatment is mostly made of.
+ * demanding the effects a pointer treatment is mostly made of.
  *
  * @param {object} p - a registered plugin
  * @returns {string[]} top-level look keys, inspector order, deduplicated

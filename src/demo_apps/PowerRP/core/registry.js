@@ -541,7 +541,7 @@ export function composesEffects(plugin) {
  * NOT INJECTABLE ≠ CANNOT HAVE EFFECTS. The ARROW FAMILY (arrow / line /
  * tangent_lines / fancy_arrow / elbow_arrow / curved_arrow) has no bbox and no
  * effectBounds hook, so this returns false for it — yet every one of them
- * supports all five effects, because each composes the bundle in its OWN emit()
+ * supports every effect, because each composes the bundle in its OWN emit()
  * and passes its OWN bounds (paddedPointsBBox of its drawn geometry). This
  * predicate answers "may the registry do it FOR the plugin", nothing more; a
  * plugin that already does it itself is never asked.

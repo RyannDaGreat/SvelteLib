@@ -77,7 +77,7 @@ registerAll(registry, createCommands());
 const MEMBERS = ["sky", "skySun", "skyMoon", "skyClouds"];
 const EXCLUDED = new Set(["horizon", "cornerRadius", "starSize"]);
 // State the Inspector shows for every widget alike; a preset is a LOOK, so none of it
-// belongs in one. The five universal EFFECTS are in here too — a preset must not switch
+// belongs in one. The universal EFFECTS are in here too — a preset must not switch
 // a user's shadow or feather on — with ONE exception, below.
 // THE EFFECTS HALF IS DERIVED FROM BUNDLES.effects, not listed. It used to name the
 // five by hand, and when the bundle gained a SIXTH (`gaussianBlur`) that list went

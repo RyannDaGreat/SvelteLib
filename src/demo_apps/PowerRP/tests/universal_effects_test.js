@@ -19,7 +19,7 @@
  * loses the bundle again.
  *
  * WHAT IT PROVES, over EVERY registered plugin (not a sample):
- *   (1) COVERAGE — every plugin carries all five effects' rows, or is INELIGIBLE
+ *   (1) COVERAGE — every plugin carries all the effects' rows, or is INELIGIBLE
  *       for a declared reason (the promoted audit matrix, asserted all-Y).
  *   (2) the ineligible set is exactly the four declared exclusion reasons, and
  *       every excluded plugin has NO effect row at all (no fake half-support).
@@ -67,8 +67,24 @@ const registry = createRegistry();
 registerPlugins(registry); // BOTH halves of the roster: source modules + the built-in plugin-asset library
 const registered = registry.all();
 
-// The five effects' GATE rows — one per effect, the keys effectsOff() reads.
-const GATE_ROWS = ["shadow.opacity", "bloom.strength", "innerShadow.opacity", "softEdges", "blendMode"];
+// The GATE rows — one per effect, the keys effectsOff() reads. This list is
+// ENUMERATED rather than derived because it names the ONE row per effect that
+// decides whether that effect is on, which the bundle does not record: a shadow
+// gates on `opacity` and not on its `blur`, bloom on `strength` and not its
+// `radius`. It IS checked against the bundle below, so it cannot silently fall
+// behind — it went stale exactly once, when `gaussianBlur` arrived as the sixth
+// effect and this list still had five, at which point the suite quietly stopped
+// checking one effect's row while still reporting success.
+const GATE_ROWS = ["shadow.opacity", "bloom.strength", "innerShadow.opacity", "softEdges", "blendMode", "gaussianBlur"];
+// The guard that makes the above safe to hand-maintain: every top-level effect in
+// the bundle must be represented by exactly one gate row.
+{
+  const heads = [...new Set(BUNDLES.effects.map((k) => k.split(".")[0]))];
+  const covered = new Set(GATE_ROWS.map((k) => k.split(".")[0]));
+  const missing = heads.filter((h) => !covered.has(h));
+  if (missing.length)
+    throw new Error(`universal_effects_test: BUNDLES.effects has ${missing.join(", ")} with no GATE_ROWS entry — add the row that turns each ON, or this suite passes while ignoring that effect entirely`);
+}
 
 /** Pure function. Why can the registry not INJECT the bundle into `plugin` — or
  *  null if it can. Mirrors core/registry.effectsInjectable, spelled out so a
@@ -88,7 +104,7 @@ function hasBundle(plugin) {
   return BUNDLES.effects.every((k) => keys.has(k));
 }
 
-test("(1) COVERAGE: every plugin the registry can inject into carries all five effects' rows", () => {
+test("(1) COVERAGE: every plugin the registry can inject into carries all the effects' rows", () => {
   const gaps = [];
   for (const p of registered) {
     if (injectionBlocker(p)) continue;
