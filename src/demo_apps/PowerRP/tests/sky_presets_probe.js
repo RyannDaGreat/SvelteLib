@@ -50,6 +50,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { launchBrowser } from "./puppeteerLaunch.js";
 import { skyPlugins } from "../plugins/demo/sky.js";
+import { presetFamiliesOf } from "../core/registry.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const powerRP = resolve(here, "..");
@@ -174,77 +175,132 @@ try {
   const docBefore = await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
   let lastRowIndex = 0;
 
-  // ── sweep every widget, then every row of it ───────────────────────────────
+  // ── sweep every widget, then every family of it, then every row of that family ──
+  // core/registry.presetFamiliesOf is the SAME resolver ToolsPane itself calls, so a
+  // widget that still declares a single `presets` array (sun/moon/clouds) resolves to
+  // one family titled "Presets", and `sky` itself — split by workstream BM into
+  // "Atmosphere presets" + "Exposure presets" — resolves to two. Sweeping the resolved
+  // families rather than `plugin.presets` directly is what keeps this probe honest
+  // about EITHER declaration shape, rather than hard-coding today's split.
   for (const plugin of skyPlugins) {
-    const presets = plugin.presets;
-    console.log(`\n  ── ${plugin.title} (${presets.length} presets) ──`);
-    check(`${plugin.type}: the plugin ships presets`, Array.isArray(presets) && presets.length > 0);
-    if (!presets?.length) continue;
+    const families = presetFamiliesOf(plugin);
+    const totalPresets = families.reduce((n, f) => n + f.presets.length, 0);
+    console.log(`\n  ── ${plugin.title} (${families.length} famil${families.length === 1 ? "y" : "ies"}, ${totalPresets} presets) ──`);
+    check(`${plugin.type}: the plugin ships preset families`, families.length > 0 && totalPresets > 0);
+    if (!totalPresets) continue;
 
     await page.evaluate((id) => { window.__powerrp_app.selection = id; }, ids[plugin.type]);
     await settle();
     check(`${plugin.type}: it is the selected widget`,
       (await page.evaluate(() => window.__powerrp_app.selectedNode()?.type)) === plugin.type);
 
-    // ── (1) the library is complete and in the plugin's order ────────────────
-    const rows = await page.evaluate(() => {
-      const groups = [...document.querySelectorAll(".toolspane .prop-category")];
-      const g = groups.find((x) => x.querySelector(".cat-rows .tool-preset"));
-      if (!g) return null;
-      return {
-        title: g.querySelector(".cat-title")?.textContent?.trim(),
-        labels: [...g.querySelectorAll(".cat-rows .tool-preset")].map((b) => b.textContent.trim()),
-      };
-    });
-    check(`${plugin.type}: a preset group is rendered`, !!rows);
-    check(`${plugin.type}: the group is titled Presets`, rows?.title === "Presets", rows?.title);
-    check(`${plugin.type}: the pane lists every preset in the plugin's order`,
-      JSON.stringify(rows?.labels) === JSON.stringify(presets.map((p) => p.name)),
-      `${rows?.labels?.length} rows: ${rows?.labels?.join(" | ")}`);
-
     const baseline = await canvasShot();
     await writeFile(`${shots}/${slug(plugin.type)}_00_no_preview.png`, baseline);
     const seen = new Map([[digest(baseline), "(widget defaults, no preview)"]]);
+    let rowOffset = 0; // rows in the pane are flat across families in declaration order
 
-    // ── (2)(3)(4) sweep EVERY row of THIS widget ─────────────────────────────
-    for (let i = 0; i < presets.length; i++) {
-      const preset = presets[i];
-      const row = await rowCenter(i);
-      check(`${plugin.type} row ${i} is present`, !!row, preset.name);
-      if (!row) continue;
-      lastRowIndex = i;
-      await page.mouse.move(row.x, row.y);
-      await settle();
+    for (const family of families) {
+      const presets = family.presets;
+      console.log(`    — ${family.title} (${presets.length} presets) —`);
 
-      const staged = await page.evaluate(() => ({
-        preview: window.__powerrp_app.previewDelta,
-        doc: JSON.stringify(window.__powerrp_app.doc),
-        tip: document.querySelector(".tt-tip")?.textContent ?? "",
-      }));
-      check(`${preset.name}: hover stages a preview`, !!staged.preview);
-      check(`${preset.name}: hover leaves the document untouched`, staged.doc === docBefore);
-      check(`${preset.name}: tip is the preset's own description`,
-        staged.tip.includes(preset.description.slice(0, 40)),
-        staged.tip === GENERIC_TIP(preset.name) ? "showing ToolsPane's generic fallback — the preset declares no description" : JSON.stringify(staged.tip.slice(0, 90)));
+      // ── (1) the library is complete and in the plugin's order, under ITS OWN title ──
+      const rows = await page.evaluate((title) => {
+        const groups = [...document.querySelectorAll(".toolspane .prop-category")];
+        const g = groups.find((x) => x.querySelector(".cat-title")?.textContent?.trim() === title);
+        if (!g) return null;
+        return { labels: [...g.querySelectorAll(".cat-rows .tool-preset")].map((b) => b.textContent.trim()) };
+      }, family.title);
+      check(`${plugin.type}/${family.id}: a preset group titled "${family.title}" is rendered`, !!rows);
+      check(`${plugin.type}/${family.id}: the pane lists every preset in the plugin's order`,
+        JSON.stringify(rows?.labels) === JSON.stringify(presets.map((p) => p.name)),
+        `${rows?.labels?.length} rows: ${rows?.labels?.join(" | ")}`);
 
-      // (3) It rendered, and it rendered something no other row of this widget produced.
-      const png = await canvasShot();
-      await writeFile(`${shots}/${slug(plugin.type)}_${String(i + 1).padStart(2, "0")}_${slug(preset.name)}.png`, png);
-      const d = digest(png);
-      check(`${preset.name}: renders a distinct image`, !seen.has(d), `identical to ${seen.get(d)}`);
-      seen.set(d, preset.name);
+      // sky's EXPOSURE family (trailArc/trailSamples) only smears something that is
+      // already visible — under the SCENE fixture's daytime default (sun above the
+      // horizon) there are no stars for a trail to draw, so every arc length would
+      // render identically. Every exposure preset's own description says to pair it
+      // with a dark Atmosphere; here that means COMMITTING (not merely previewing)
+      // a night sky before the sweep, and undoing both writes once it is done — the
+      // presets under test are trailArc/trailSamples alone (disjoint from the keys a
+      // dark atmosphere or the sun's position touch), so this does not change what
+      // family (2)(3)(4) are checking.
+      let familyDocBefore = docBefore;
+      const nightStaged = plugin.type === "sky" && family.id === "presets.exposure";
+      if (nightStaged) {
+        const sunId = ids.skySun;
+        const skyBox = SCENE.find((s) => s.type === "sky");
+        const darkSkyPreset = families
+          .find((f) => f.id === "presets.atmosphere")
+          .presets.find((p) => p.name === "Dark-Sky Star Field");
+        // Push the sun's world CENTRE to sy ≈ 1.4 box-heights below the sky's own
+        // centre (render_gpu/skia/sky_shader.js domeDir: theta = (up-horizon)/(1-horizon)
+        // * HALF_PI, up = -sy). That lands sin(theta) ≈ -0.99 — deep night. Overshooting
+        // this wraps PAST -HALF_PI and sin(theta) climbs back toward +1 (measured: sy≈3.2
+        // reads as bright daylight again, the trap this comment is here to name), so the
+        // offset is deliberately moderate, not "as far below as possible".
+        const boxCenterY = skyBox.y + skyBox.h / 2;
+        const nightSunCenterY = boxCenterY + 1.4 * (skyBox.h / 2);
+        await page.evaluate(({ sunId, sunH, centerY, preset }) => {
+          const app = window.__powerrp_app;
+          app.setPreview([[["items", sunId, "y"], centerY - sunH / 2]]);
+          app.commitPreview();
+          app.applyPreset(app.selection, preset);
+        }, { sunId, sunH: SCENE.find((s) => s.type === "skySun").h, centerY: nightSunCenterY, preset: darkSkyPreset });
+        await settle();
+        familyDocBefore = await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
+      }
 
-      // (4) Leaving reverts, with no document change either way.
-      await page.mouse.move(10, 10);
-      await settle();
-      const left = await page.evaluate(() => ({
-        preview: window.__powerrp_app.previewDelta,
-        doc: JSON.stringify(window.__powerrp_app.doc),
-      }));
-      check(`${preset.name}: leaving reverts the preview`, left.preview === null, JSON.stringify(left.preview));
-      check(`${preset.name}: still no document change after revert`, left.doc === docBefore);
+      // ── (2)(3)(4) sweep EVERY row of THIS family ────────────────────────────
+      for (let i = 0; i < presets.length; i++) {
+        const preset = presets[i];
+        const row = await rowCenter(rowOffset + i);
+        check(`${plugin.type}/${family.id} row ${i} is present`, !!row, preset.name);
+        if (!row) continue;
+        lastRowIndex = rowOffset + i;
+        await page.mouse.move(row.x, row.y);
+        await settle();
+
+        const staged = await page.evaluate(() => ({
+          preview: window.__powerrp_app.previewDelta,
+          doc: JSON.stringify(window.__powerrp_app.doc),
+          tip: document.querySelector(".tt-tip")?.textContent ?? "",
+        }));
+        check(`${preset.name}: hover stages a preview`, !!staged.preview);
+        check(`${preset.name}: hover leaves the document untouched`, staged.doc === familyDocBefore);
+        check(`${preset.name}: tip is the preset's own description`,
+          staged.tip.includes(preset.description.slice(0, 40)),
+          staged.tip === GENERIC_TIP(preset.name) ? "showing ToolsPane's generic fallback — the preset declares no description" : JSON.stringify(staged.tip.slice(0, 90)));
+
+        // (3) It rendered, and it rendered something no other row of this widget produced.
+        const png = await canvasShot();
+        await writeFile(`${shots}/${slug(plugin.type)}_${slug(family.id)}_${String(i + 1).padStart(2, "0")}_${slug(preset.name)}.png`, png);
+        const d = digest(png);
+        check(`${preset.name}: renders a distinct image`, !seen.has(d), `identical to ${seen.get(d)}`);
+        seen.set(d, preset.name);
+
+        // (4) Leaving reverts, with no document change either way.
+        await page.mouse.move(10, 10);
+        await settle();
+        const left = await page.evaluate(() => ({
+          preview: window.__powerrp_app.previewDelta,
+          doc: JSON.stringify(window.__powerrp_app.doc),
+        }));
+        check(`${preset.name}: leaving reverts the preview`, left.preview === null, JSON.stringify(left.preview));
+        check(`${preset.name}: still no document change after revert`, left.doc === familyDocBefore);
+      }
+      rowOffset += presets.length;
+
+      // Undo the night staging (dark preset, then the sun move — undo is a stack) so
+      // later families/widgets — and the final "one undo reverts a click" check below,
+      // which compares against the ORIGINAL docBefore — see the true starting scene.
+      if (nightStaged) {
+        await page.evaluate(() => { window.__powerrp_app.undo(); window.__powerrp_app.undo(); });
+        await settle();
+        const restored = await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
+        check(`${plugin.type}/${family.id}: undoing the night staging restores the original scene`, restored === docBefore);
+      }
     }
-    console.log(`  ${seen.size - 1}/${presets.length} ${plugin.type} presets rendered distinctly`);
+    console.log(`  ${seen.size - 1}/${totalPresets} ${plugin.type} presets rendered distinctly`);
   }
 
   // ── a click is EXACTLY one undo unit ──────────────────────────────────────
