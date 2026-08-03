@@ -1185,12 +1185,24 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modal
     ...canvasModes.flatMap(({ handlerId, label, hints, keys = [], steps, finish, finishGesture }) => [
       ...hints.map((h) => ({ ...h, when: inCanvasMode(handlerId) })),
       // A MODE'S OWN KEYS, live rather than display-only — the 3D viewport's WASDQE
-      // fly (#270). Same shape as `finish` one block down and for the same reason:
-      // the handler declares WHAT the key means and this layer supplies the run,
-      // because `app` lives here. Routing them through the registry rather than a
-      // private keydown is what keeps the HintBar honest — the manifest's rule is
-      // that a shortcut which is not registered does not exist.
-      ...keys.map((k) => ({ keys: k.keys, label: k.label, when: inCanvasMode(handlerId), run: () => app.flyCanvasMode(k.verb) })),
+      // fly (#270) and the Keyboard node's piano row (CB). Same shape as `finish`
+      // one block down and for the same reason: the handler declares WHAT the key
+      // means and this layer supplies the run, because `app` lives here. Routing
+      // them through the registry rather than a private keydown is what keeps the
+      // HintBar honest — the manifest's rule is that a shortcut which is not
+      // registered does not exist.
+      //
+      // `method` NAMES THE APP COMMAND, defaulting to the fly (its only caller
+      // when this was written, and unchanged by the default). It became a
+      // declaration when a SECOND mode wanted keys: a piano key is not a fly step,
+      // and hard-coding one mode's verb here would have forced the other to bind
+      // its keys outside the registry — which is precisely the anti-pattern this
+      // block exists to prevent. `verb` stays whatever the receiving method wants:
+      // a signed unit step for the fly, a key token for the keyboard.
+      ...keys.map((k) => ({
+        keys: k.keys, label: k.label, hidden: k.hidden, when: inCanvasMode(handlerId),
+        run: () => modeKeyRun(app, k),
+      })),
       ...steps.flatMap((s, i) => [
         { keys: ["mouse_left"], label: s.hint, when: inCanvasStep(handlerId, i) },
         ...(s.modifiers ?? []).map((id) => ({ ...DRAG_MODIFIER_HINTS[id], when: inCanvasStep(handlerId, i) })),
@@ -1211,6 +1223,27 @@ export function handShortcutEntries({ app, canvasModes, dragKindModifiers, modal
       { keys: ["Escape"], label: `Exit ${label.toLowerCase()}`, when: inCanvasMode(handlerId), run: () => app.exitCanvasMode() },
     ]),
   ];
+}
+
+/**
+ * Command. Runs ONE of a canvas mode's declared keys against the app.
+ *
+ * THE METHOD NAME IS RESOLVED, NOT GUESSED, and an unknown one THROWS. A typo
+ * would otherwise produce a chip on the HintBar that the user can see, press, and
+ * get silence from — the exact failure `add()`'s gesture-honesty guard and
+ * `getHandler`'s unknown-id throw both exist to prevent, arriving through a third
+ * door. It throws at PRESS rather than at boot because a mode's key list is data
+ * from a handler module; tests/shortcut_registry_test.js sweeps the real
+ * population, which is where a bad name is caught before a user meets it.
+ *
+ * @param {object} app - the app store
+ * @param {{verb: *, method?: string}} key - one entry of a mode's `keys`
+ */
+function modeKeyRun(app, key) {
+  const method = key.method ?? "flyCanvasMode";
+  if (typeof app[method] !== "function")
+    throw new Error(`canvas mode key "${key.label}" declares method "${method}", which the app store does not have — the key would silently do nothing.`);
+  app[method](key.verb);
 }
 
 /**

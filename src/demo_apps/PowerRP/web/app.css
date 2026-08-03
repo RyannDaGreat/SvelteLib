@@ -93,6 +93,23 @@
      to feel immediate under the pointer, long enough not to flash. */
   --a-bead-fade: 90ms;
 
+  /* WORKSTREAM CB — the playable Keyboard node's live skins, all screen-space
+     overlay because a press is live input and a selection is editor state
+     (web/CanvasView.svelte's `litKeys` states why neither can be in emit()).
+     The two card tints are the SAME hue at two strengths, deliberately: brighter
+     is "this one is selected", brightest is "this one has taken the alphabet".
+     The hue is the modulation family's rim (#4a6da8, core/node_chrome.js), so the
+     card reads as itself getting brighter rather than as a new colour arriving. */
+  --a-play-card-tint: rgba(74, 109, 168, 0.14);
+  --a-play-card-tint-live: rgba(74, 109, 168, 0.3);
+  --a-play-card-edge: rgba(122, 160, 224, 0.85);
+  --a-play-card-edge-stroke: 1.5px;
+  /* A PRESSED KEY. Two skins because the keys are two colours: a dark wash that
+     depresses a pale white key is invisible on a near-black one, which needs a
+     LIGHT wash instead. Both are the accent hue, so a chord reads as one gesture. */
+  --a-key-lit: rgba(74, 109, 168, 0.72);
+  --a-key-lit-black: rgba(138, 176, 240, 0.85);
+
   /* Spacing scale */
   --a-sp-1: 2px;
   --a-sp-2: 4px;
@@ -5026,6 +5043,40 @@ textarea {
 .overlay .nf-knob-ring.nf-knob-bound {
   stroke-dasharray: var(--a-wire-ghost-dash);
   opacity: var(--a-disabled-opacity);
+}
+
+/* WORKSTREAM CB — A PLAYABLE NODE'S CARD TINT. The user asked for it to "change
+   color a bit when selected"; "a bit" is the whole brief, so this is a low-alpha
+   wash and no more. It is NOT a replacement for the selection outline, which
+   still draws on top and still says which item the Inspector is showing. */
+.overlay .nf-play-card {
+  fill: var(--a-play-card-tint);
+  stroke: none;
+  pointer-events: none;
+}
+
+/* PLAYING: the computer keyboard has this widget's letters. Louder than selected,
+   AND it grows an edge — a mode that swallows every keystroke in the app must be
+   unmistakable at a glance, and alpha alone is a difference you have to look for. */
+.overlay .nf-play-card.nf-play-live {
+  fill: var(--a-play-card-tint-live);
+  stroke: var(--a-play-card-edge);
+  stroke-width: var(--a-play-card-edge-stroke);
+}
+
+/* A PRESSED PIANO KEY. Live input, so it exists only here — the plugin's emit()
+   paints the resting keyboard and every export gets that (see the Δt reasoning in
+   core/live_control.js). No transition: a key must light on the frame the note
+   sounds, and a fade would put the picture behind the sound. */
+.overlay .nf-key-lit {
+  fill: var(--a-key-lit);
+  stroke: none;
+  pointer-events: none;
+}
+
+/* …on a BLACK key, where the dark wash above would be invisible. */
+.overlay .nf-key-lit.nf-key-lit-black {
+  fill: var(--a-key-lit-black);
 }
 
 /* In-progress CROSSHAIR PLACEMENT drag rect: the gray ghost tone (matching

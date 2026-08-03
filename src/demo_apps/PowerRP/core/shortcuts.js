@@ -118,8 +118,17 @@ for (const [retired, replacement] of Object.entries(RETIRED_KEY_TOKENS))
  * transform's numeric entry; "="/"+" and "-"/"_" are the text size steppers (the
  * unshifted and shifted face of the same physical key — hence both spellings);
  * "[" and "]" are slide navigation (the arrows nudge the selection instead).
+ *
+ * "," ";" "/" and "\\" joined for the KEYBOARD NODE's play mode (WORKSTREAM CB),
+ * which binds the reference app's piano rows — the bottom row ends `, . /` and the
+ * home row ends `;`, so the punctuation is not decoration, it is five of the keys.
+ * They are the UNSHIFTED faces, which is what `keyToken()` returns and therefore
+ * the only spelling that can match; the mode's own keyup reader uppercases before
+ * comparing, so a letter and a punctuation key are looked up the same way.
+ * This is the growth the list's own note above describes: a token is legal once
+ * something registers it, and something now does.
  */
-export const PUNCTUATION_KEY_TOKENS = Object.freeze([".", "-", "=", "+", "_", "[", "]"]);
+export const PUNCTUATION_KEY_TOKENS = Object.freeze([".", "-", "=", "+", "_", "[", "]", ",", ";", "/", "\\"]);
 
 /**
  * Pure function. Is this a single PRINTABLE main key — the tokens keyToken()

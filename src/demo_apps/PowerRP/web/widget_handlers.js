@@ -109,6 +109,7 @@
  */
 
 import { BENTO_BIND_HANDLER } from "./bentoBind.js";
+import { KEYBOARD_PLAY_HANDLER } from "./keyboardPlay.js";
 import { KNOB_FOCUS_HANDLER } from "./knobFocus.js";
 import { NAVIGATE_INTERIOR_HANDLER } from "./interiorNav.js";
 import { NAVIGATE_SCENE_HANDLER } from "./sceneNav.js";
@@ -312,6 +313,7 @@ const ACTIVATE_HANDLERS = [
   BENTO_BIND_HANDLER,
   LIGHT_POSITION_PIN_HANDLER,
   KNOB_FOCUS_HANDLER,
+  KEYBOARD_PLAY_HANDLER,
 ];
 
 /**
@@ -619,9 +621,13 @@ export function canvasModes() {
       hints: h.mode.hints,
       steps: h.mode.steps ?? [],
       cursors: validatedModeCursors(h.id, h.mode.cursors),
-      // A mode's own DISPATCHING keys ({keys, label, verb}) — distinct from
-      // `hints`, which are display-only. core/shortcut_entries.js supplies the
-      // run, because it holds `app` and a handler module does not.
+      // A mode's own DISPATCHING keys ({keys, label, verb, method?, hidden?}) —
+      // distinct from `hints`, which are display-only. core/shortcut_entries.js
+      // supplies the run, because it holds `app` and a handler module does not;
+      // `method` names WHICH app command receives the verb (defaulting to the fly
+      // that was its only caller), and `hidden` keeps a key dispatching without a
+      // chip — what a THIRTY-KEY mode needs, since a piano row on the HintBar
+      // would bury every other chip in the app (web/keyboardPlay.js states it).
       keys: h.mode.keys ?? [],
       finish: h.mode.finish ?? null,
       finishGesture: h.mode.finishGesture ?? null,

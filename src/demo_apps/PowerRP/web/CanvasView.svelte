@@ -29,6 +29,10 @@
   import { KNOB_FOCUS_GAP } from "../core/node_chrome.js";
   import { KNOB_R, knobDragValue } from "../core/node_knobs.js";
   import { knobFocusUi, knobCursorFor, knobDialAt, knobStateKey, knobTurnRefusal, knobWritePairs } from "./knobFocus.js";
+  // WORKSTREAM CB: the live press set (what the overlay lights) and the play
+  // mode's teardown. The SET is core/ so the presenter shares it; the MODE is web/.
+  import { pressNote, releaseAllPresses, releaseNote } from "../core/live_control.js";
+  import { litKeyRects, releaseHeldKeys, removeKeyUp, resetKeyboardPlay, setNoteSink } from "./keyboardPlay.js";
   import { allPortBeads, beadAt, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
   // THE AUDIO MIRROR (NF-BIND): the document reflected into the one synth engine.
   // ONE WAY ONLY — the engine never writes back, so the core invariant is untouched.
@@ -3637,6 +3641,13 @@
     if (play) {
       const note = play.noteAt(hit.state, local.x, local.y);
       if (!note) return false;
+      // THE PICTURE AND THE SOUND, IN ONE STATEMENT (WORKSTREAM CB — user: "The
+      // keyboard doesn't press keys visually when I touch it"). The press set is
+      // what the overlay lights, and writing it HERE, next to the note that is
+      // being played, is what makes "a key that sounds is a key that lights" true
+      // by construction rather than by two call sites agreeing to stay in step.
+      pressNote(hit.itemId, note.note);
+      app.bumpPressEpoch();
       playLiveNote(items, app.registry, hit.itemId, "on", note.note, note.frequency);
       overlayEl.setPointerCapture(e.pointerId);
       drag = { kind: "liveplay", itemId: hit.itemId, note: note.note, plugin: hit.plugin, state: hit.state, world: hit.world };
@@ -3663,6 +3674,12 @@
     const items = app.state()?.items ?? {};
     if (!next) return;
     if (next.note === drag.note) return;
+    // The LIGHTS follow the glissando exactly as the sound does — released and
+    // relit in the same statements, so a slide across the keys cannot leave a lit
+    // key behind the pointer.
+    releaseNote(drag.itemId, drag.note);
+    pressNote(drag.itemId, next.note);
+    app.bumpPressEpoch();
     playLiveNote(items, app.registry, drag.itemId, "off", drag.note, 0);
     playLiveNote(items, app.registry, drag.itemId, "on", next.note, next.frequency);
     drag = { ...drag, note: next.note };
@@ -3672,6 +3689,8 @@
    *  note (its press was one edge at pointer-down), so this is a no-op for it. */
   function finishLivePlay() {
     if (drag?.kind !== "liveplay" || drag.note === null) return;
+    releaseNote(drag.itemId, drag.note);
+    app.bumpPressEpoch();
     playLiveNote(app.state()?.items ?? {}, app.registry, drag.itemId, "off", drag.note, 0);
   }
 
@@ -5152,7 +5171,7 @@
    */
   let nodeOverlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
-    if (!actions) return { beads: [], ghost: null, analysis: [], knobRings: [] };
+    if (!actions) return { beads: [], ghost: null, analysis: [], knobRings: [], litKeys: [], playCards: [] };
     const nodes = app.nodes();
     const pt = (x, y) => actions.worldToScreen(x, y);
     // THE BEADS ARE DRAWN BY THE PAINTER (core/node_chrome.portBeads), not here —
@@ -5257,8 +5276,67 @@
         });
       }
     }
-    return { beads, ghost, analysis, knobRings };
+    // ── THE PRESSED PIANO KEYS, AND THE PLAYABLE CARD'S TINT (WORKSTREAM CB) ──
+    // User: "The keyboard doesn't press keys visually when I touch it" and "change
+    // color a bit when selected".
+    //
+    // BOTH ARE OVERLAY, NOT DISPLAY LIST, and for the same reason the analysis
+    // meters above are: a press is LIVE input and a selection is EDITOR state, so
+    // painting either in a plugin's emit() would make a PNG export of a slide
+    // depend on what the author was holding down or had clicked. The keyboard's
+    // own paint() carries what is TRUE OF THE DOCUMENT — the keys, their QWERTY
+    // labels and the playable badge — and this carries what is true of this
+    // moment.
+    //
+    // `app.pressEpoch` is the dependency that makes it repaint: the press SET is a
+    // plain Map in core/live_control.js (shared with the presenter, testable in
+    // bare node), and a Map mutation is invisible to Svelte.
+    app.pressEpoch; app.selection; // reactive deps: a press landed; the selection moved
+    const litKeys = [];
+    const playCards = [];
+    {
+      const playingId = app.canvasMode?.handlerId === "keyboard_play" ? app.canvasMode.itemId : null;
+      for (const n of nodes) {
+        if (!n.plugin?.playableKeys) continue;
+        // THE TINT IS TWO STATES, NOT ONE. "Selected" is the user's word and the
+        // milder step; PLAYING is the one that has taken the alphabet, and it
+        // must not look like an ordinary selection — a mode that swallows every
+        // letter has to be unmistakable, which is the same argument the mode's
+        // HintBar takeover makes one surface up.
+        // selectedIds() rather than `selection`, so ONE of a multi-selection
+        // still tints — the heterogeneous multi-select is a shipped feature
+        // (core/multiselect.js) and a widget that read only the primary would go
+        // dark inside a band select that plainly includes it.
+        const selected = app.selectedIds().includes(n.itemId);
+        if (selected || playingId === n.itemId)
+          playCards.push({ id: n.itemId, poly: cardPolygon(n), playing: playingId === n.itemId });
+        for (const k of litKeyRects(n)) {
+          // The key's four corners through the node's OWN world transform, so a
+          // rotated or scaled keyboard's lit key sits exactly on the painted one.
+          const pts = [[k.x, k.y], [k.x + k.w, k.y], [k.x + k.w, k.y + k.h], [k.x, k.y + k.h]]
+            .map(([lx, ly]) => T.apply(n.world, lx, ly))
+            .map((wp) => pt(wp.x, wp.y));
+          litKeys.push({
+            id: `${n.itemId}.${k.note}`,
+            poly: pts.map((q) => `${q.x},${q.y}`).join(" "),
+            black: k.black,
+          });
+        }
+      }
+    }
+    return { beads, ghost, analysis, knobRings, litKeys, playCards };
   });
+
+  /** Pure function. A node's CARD as a screen-space polygon — its four local
+   *  corners through its own world transform, the same construction the lit keys
+   *  use one scope up. */
+  function cardPolygon(node) {
+    const w = node.state.w ?? 0, h = node.state.h ?? 0;
+    return [[0, 0], [w, 0], [w, h], [0, h]]
+      .map(([lx, ly]) => T.apply(node.world, lx, ly))
+      .map((wp) => actions.worldToScreen(wp.x, wp.y))
+      .map((q) => `${q.x},${q.y}`).join(" ");
+  }
 
   /** The inset from a node's card edge to its live-overlay rect, and the top inset
    *  that clears the title bar plus one port row. Local units, mapped through the
@@ -5288,6 +5366,15 @@
     mirrorAudio(app.state()?.items ?? {}, app.registry);
   });
 
+  // ── THE TYPED-NOTE SINK (WORKSTREAM CB) ──────────────────────────────────
+  // web/keyboardPlay.js may NOT import web/audioMirror.svelte.js: the handler
+  // registry imports keyboardPlay, the bare-node suites import the registry, and
+  // a `.svelte.js` module declares `$state`, which does not exist outside Vite.
+  // (Measured: the first version did import it and turned 57 node suites red.)
+  // This component is not node-imported, so it is the right place to close that
+  // last link — one assignment, at mount, of the function keyboardPlay calls.
+  setNoteSink(playLiveNote);
+
   // ── A SLIDE CHANGE RELEASES EVERY HELD NOTE ───────────────────────────────
   // Without this, leaving a slide mid-chord leaves it sounding FOREVER: the keys
   // are released by a pointerup the new slide's canvas never sees, so the
@@ -5302,6 +5389,33 @@
   $effect(() => {
     app.slideIndex;
     releaseAllLiveNotes();
+    // THE LIGHTS GO OUT WITH THE SOUND. releaseAllLiveNotes silences the ENGINE;
+    // without this the overlay would keep a key lit that is making no sound —
+    // the same un-debuggable shape as the drone above, with the two halves
+    // swapped (core/live_control.releaseAllPresses states the pairing).
+    releaseAllPresses();
+    app.bumpPressEpoch();
+  });
+
+  // ── LEAVING KEYBOARD PLAY RELEASES ITS CHORD AND ITS LISTENER (CB) ────────
+  // A mode can be left by Escape, by a slide change, by the item being purged and
+  // by entering the presenter — four paths through app.exitCanvasMode(), which is
+  // in the store and cannot reach a handler descriptor (web/knobFocus.js records
+  // exactly this, and answers it by clearing on ENTRY). Play mode cannot use that
+  // answer: it holds two things that outlive a clear — note-ons the engine is
+  // still sounding, and a window keyup listener. Both must be undone AT THE EXIT,
+  // whichever path it was, so this watches the one fact every path produces:
+  // `app.canvasMode` ceasing to be this mode.
+  let playingItemId = null;
+  $effect(() => {
+    const live = app.canvasMode?.handlerId === "keyboard_play" ? app.canvasMode.itemId : null;
+    if (live === playingItemId) return;
+    if (playingItemId) {
+      releaseHeldKeys(app, playingItemId);
+      resetKeyboardPlay();
+      removeKeyUp();
+    }
+    playingItemId = live;
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
@@ -5500,6 +5614,24 @@
         {#each nodeOverlay.knobRings as ring (ring.id)}
           <circle class="nf-knob-ring" class:nf-knob-active={ring.active} class:nf-knob-bound={ring.bound}
                   cx={ring.x} cy={ring.y} r={ring.r} />
+        {/each}
+        <!-- THE PLAYABLE CARD'S TINT (WORKSTREAM CB — user: "change color a bit
+             when selected"). A wash over the whole card, in the modulation
+             family's own accent so it reads as that node getting brighter rather
+             than as a new colour arriving. Two strengths: SELECTED is the mild
+             one, PLAYING (the computer keyboard has the alphabet) is the loud one,
+             because a mode that swallows every letter must be unmistakable.
+             Drawn BEFORE the lit keys so a pressed key still reads on top of it. -->
+        {#each nodeOverlay.playCards as card (card.id)}
+          <polygon class="nf-play-card" class:nf-play-live={card.playing} points={card.poly} />
+        {/each}
+        <!-- THE PRESSED PIANO KEYS. Live input, so it can never be in the display
+             list (an export must not depend on what was held down) — the analysis
+             meters' seam, one widget over. Two skins because the keys are two
+             colours: a wash that reads on a pale white key is invisible on a near
+             black one. -->
+        {#each nodeOverlay.litKeys as key (key.id)}
+          <polygon class="nf-key-lit" class:nf-key-lit-black={key.black} points={key.poly} />
         {/each}
         {#each overlay.crosshairSegs as c}
           <line class="crosshair" class:crosshair-band={c.skin === "band"} class:crosshair-place={c.skin === "place"} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} />

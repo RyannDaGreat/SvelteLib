@@ -131,6 +131,7 @@ import { builtinWidgetAssets } from "./builtinAssets.js";
 import { assetNaturalSize } from "./assetNaturalSize.js";
 import { contentSizesFor, setContentSrcResolver } from "./contentSizes.js"; // itemId → measured intrinsic size (#277)
 import { flownPose, previewScenePose } from "./sceneNav.js"; // #270: the WASDQE fly step, declared beside its pose maths
+import { playKey } from "./keyboardPlay.js"; // CB: one typed piano key, declared beside the mode that binds it
 import { settledFrame } from "./settledFrame.js"; // #281: an export waits for its rasters; the editor canvas does not need to
 // Telescopic-magnifier rig: the pure equation-override builders + rig constants.
 // The command below spreads these over the registry defaults to mint 3 wired items.
@@ -948,6 +949,25 @@ export class PowerRPApp {
   // controller component, which is what lets a NEW kind of mode ship without
   // touching this file.
   canvasMode = $state(null);
+  // ── THE LIVE PRESS EPOCH (WORKSTREAM CB) ──────────────────────────────────
+  // Bumped every time a key is pressed or released on a playable widget. The
+  // press SET itself lives in core/live_control.js — plain data, DOM-free,
+  // testable in bare node, and shared by the editor and the presenter — but a
+  // Map mutation is invisible to Svelte, so the overlay that lights the pressed
+  // keys would never repaint. This is the one reactive fact about it: a COUNTER,
+  // not a copy of the set, so pressing a key costs one integer and the overlay's
+  // own $derived reads the set itself.
+  //
+  // NOT DOCUMENT STATE and deliberately not near `doc`: nothing here is folded,
+  // saved, keyframed or exported (WORKSTREAM BV's ruling — a press is a moment).
+  // It is the same class as `dragging`: a fact about what a hand is doing now.
+  pressEpoch = $state(0);
+
+  /** Command. Signals that the live press set changed, so the canvas overlay
+   *  repaints. Called by every writer of core/live_control's press set. */
+  bumpPressEpoch() {
+    this.pressEpoch++;
+  }
   // Editor-only Blender-style background grid and top ruler strip. Both are
   // "options" defaulting OFF (manifest: Grid + Ruler).
   gridEnabled = $state(SETTINGS.grid.initial);
@@ -1987,6 +2007,34 @@ export class PowerRPApp {
     // way because a discrete key genuinely is a discrete gesture.
     previewScenePose(this, node, flownPose(node.plugin.sceneCamera.pose(node.state), verb));
     this.commitPreview();
+  }
+
+  /**
+   * Command (SOUNDS a note and lights a key; writes NOTHING to the document).
+   * ONE typed piano key for the Keyboard node whose activation owns the canvas
+   * (WORKSTREAM CB).
+   *
+   * ── IT MAKES NO UNDO UNIT, WHICH IS THE OPPOSITE OF flyCanvasMode ABOVE ────
+   * Worth stating side by side, because the two are the same mechanism used for
+   * opposite kinds of state. A fly step MOVES A CAMERA, which is a property, so it
+   * writes and commits. A key press is a MOMENT: WORKSTREAM BV's ruling is that a
+   * press is live, never a document leaf, and a recorded export plays no presses.
+   * So this touches neither `setPreview` nor the delta — playing a patch does not
+   * dirty the project, and Cmd+Z after a performance undoes your last EDIT.
+   *
+   * A NO-OP RATHER THAN A THROW when the mode's node is gone, for flyCanvasMode's
+   * own stated reason: the entry's `when` already scopes it to the mode, so
+   * reaching here without a node means the mode ended between the keydown and the
+   * dispatch — a race, not a defect.
+   *
+   * @param {string} key - the registry key token that was pressed ("Q", ";", "2")
+   */
+  playKeyboardKey(key) {
+    const mode = this.canvasMode;
+    if (!mode?.itemId) return;
+    const node = this.nodes().find((n) => n.itemId === mode.itemId);
+    if (!node?.plugin?.playableKeys) return;
+    playKey(this, node.itemId, node.state, key);
   }
 
   /** Command. Arms a one-shot CROSSHAIR band-select drag in `mode`
