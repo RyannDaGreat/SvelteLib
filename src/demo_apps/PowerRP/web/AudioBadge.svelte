@@ -28,6 +28,12 @@
   Styling is in app.css per the app convention (no <style> blocks in app components).
 -->
 <script>
+  // THE APP-WIDE TOOLTIP, not a native `title=`. That ban is real and
+  // tests/native_tooltip_ban_test.js enforces it — a native tooltip waits about a
+  // second before appearing and is unthemed, so the sentence explaining WHY a patch
+  // is silent would arrive after the user had already concluded it was broken. That
+  // sentence is the whole reason this control exists, so it must appear immediately.
+  import Tooltip from "../../../lib/Tooltip.svelte";
   import { audioState, enableAudio } from "./audioMirror.svelte.js";
 
   /** The four surfaced states. `idle` renders nothing (see the markup guard):
@@ -40,16 +46,17 @@
 </script>
 
 {#if audioState.status === "blocked" || audioState.status === "starting" || audioState.status === "failed"}
-  <button
-    type="button"
-    class="nf-audio-badge"
-    class:nf-audio-failed={audioState.status === "failed"}
-    disabled={audioState.status === "starting"}
-    onclick={enableAudio}
-    title={audioState.reason
-      ?? `${audioState.moduleCount} audio module${audioState.moduleCount === 1 ? "" : "s"} on this slide. Browsers require a click before any page may make sound.`}
-  >
-    <span class="nf-audio-dot" aria-hidden="true"></span>
-    {LABELS[audioState.status]}
-  </button>
+  <Tooltip text={audioState.reason
+    ?? `${audioState.moduleCount} audio module${audioState.moduleCount === 1 ? "" : "s"} on this slide. Browsers require a click before any page may make sound.`}>
+    <button
+      type="button"
+      class="nf-audio-badge"
+      class:nf-audio-failed={audioState.status === "failed"}
+      disabled={audioState.status === "starting"}
+      onclick={enableAudio}
+    >
+      <span class="nf-audio-dot" aria-hidden="true"></span>
+      {LABELS[audioState.status]}
+    </button>
+  </Tooltip>
 {/if}
