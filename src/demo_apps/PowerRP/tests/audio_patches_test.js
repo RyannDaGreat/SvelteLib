@@ -26,7 +26,8 @@ import { connectionRefusal } from "../core/nodeflow.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { readAudioScene } from "../core/audio_mirror_diff.js";
-import { repairedDocument } from "../core/document.js";
+import { foldState, repairedDocument } from "../core/document.js";
+import { readFileSync } from "node:fs";
 
 let passed = 0;
 const check = (label, fn) => {
@@ -258,6 +259,87 @@ check("a document containing every patch REPAIRS CLEAN — zero reports", () => 
   };
   const { reports } = repairedDocument(doc, registry);
   assert.deepEqual(reports, [], `demo patches would be REPAIRED on load: ${JSON.stringify(reports, null, 1)}`);
+});
+
+// ── THE DEMO DECK ───────────────────────────────────────────────────────────
+// examples/audio_demo.powerrp.json is a CHECKED-IN fixture, and a fixture that has
+// drifted from the code is worse than no fixture: it loads, it looks plausible, and
+// it teaches a stale schema. These pins are what make regenerating it safe.
+
+check("the demo deck loads and REPAIRS CLEAN — zero reports", () => {
+  const deck = JSON.parse(readFileSync(new URL("../examples/audio_demo.powerrp.json", import.meta.url), "utf8"));
+  const { reports } = repairedDocument(deck, registry);
+  assert.deepEqual(reports, [], `the checked-in deck would be repaired on load: ${JSON.stringify(reports, null, 1)}`);
+});
+
+check("the deck is three slides on the current transition schema", () => {
+  const deck = JSON.parse(readFileSync(new URL("../examples/audio_demo.powerrp.json", import.meta.url), "utf8"));
+  assert.equal(deck.slides.length, 3);
+  assert.deepEqual(deck.slides.map((s) => s.name), ["Ambience", "Rhythm", "Two Outputs"]);
+  for (const s of deck.slides) {
+    assert.ok(s.transition && typeof s.transition === "object", `slide "${s.name}" has no transition object`);
+    assert.ok("type" in s.transition && "seconds" in s.transition, `slide "${s.name}"'s transition is not the current schema`);
+    // `duration` is the LEGACY field transition supersedes; the repair pipeline
+    // migrates it loudly, so a generated fixture must never contain one.
+    assert.ok(!("duration" in s), `slide "${s.name}" carries the legacy \`duration\` field`);
+  }
+  assert.equal(typeof deck.meta.script, "string", "meta.script must be present — repairedDocument fills it, and a fixture should not need that");
+});
+
+check("EVERY SLIDE SHOWS A DIFFERENT PATCH — the fold is used, not fought", () => {
+  // The bug this pins: slide 0's delta CREATES everything and later slides INHERIT.
+  // A generator that wrote each slide's items into its own delta produced a third
+  // slide showing all three scenes stacked on top of each other. What must be true
+  // is that each slide's ACTIVE audio modules are a different set.
+  const deck = JSON.parse(readFileSync(new URL("../examples/audio_demo.powerrp.json", import.meta.url), "utf8"));
+  const activeSets = deck.slides.map((_, i) => {
+    const state = foldState(deck, i, 1);
+    return new Set(Object.entries(state.items)
+      .filter(([, s]) => s.active !== false && registry.get(s.type)?.audioModule)
+      .map(([id]) => id));
+  });
+  for (const set of activeSets) assert.ok(set.size > 0, "a slide shows no audio modules at all");
+  for (let i = 1; i < activeSets.length; i++)
+    for (const id of activeSets[i])
+      assert.ok(!activeSets[i - 1].has(id),
+        `slide ${i + 1} shows module ${id}, which slide ${i} also showed — the scenes are not switching`);
+});
+
+check("every slide's patch REACHES an output, folded — the deck plays on every slide", () => {
+  const deck = JSON.parse(readFileSync(new URL("../examples/audio_demo.powerrp.json", import.meta.url), "utf8"));
+  for (let i = 0; i < deck.slides.length; i++) {
+    const scene = readAudioScene(foldState(deck, i, 1).items, registry);
+    const outputs = Object.entries(scene.modules).filter(([, m]) => m.module === "output").map(([id]) => id);
+    assert.ok(outputs.length >= 1, `slide ${i + 1} has no active output module — it is silent`);
+    // Every active module must reach one of them.
+    const feeding = new Map();
+    for (const c of scene.connections) feeding.set(c.targetId, [...(feeding.get(c.targetId) ?? []), c.sourceId]);
+    const reached = new Set(outputs);
+    const stack = [...outputs];
+    while (stack.length) for (const src of feeding.get(stack.pop()) ?? []) if (!reached.has(src)) { reached.add(src); stack.push(src); }
+    for (const id of Object.keys(scene.modules))
+      assert.ok(reached.has(id), `slide ${i + 1}: module ${id} (${scene.modules[id].module}) reaches no output`);
+  }
+});
+
+check("the LAST slide carries TWO outputs — the ADDENDUM 10 ruling, on screen", () => {
+  const deck = JSON.parse(readFileSync(new URL("../examples/audio_demo.powerrp.json", import.meta.url), "utf8"));
+  const scene = readAudioScene(foldState(deck, deck.slides.length - 1, 1).items, registry);
+  const outputs = Object.values(scene.modules).filter((m) => m.module === "output");
+  assert.equal(outputs.length, 2, "the two-outputs slide must actually have two — they sum, never conflict");
+});
+
+check("every slide fits inside the deck's own frame", () => {
+  const deck = JSON.parse(readFileSync(new URL("../examples/audio_demo.powerrp.json", import.meta.url), "utf8"));
+  const { slideW, slideH } = deck.meta;
+  for (let i = 0; i < deck.slides.length; i++) {
+    const items = foldState(deck, i, 1).items;
+    for (const [id, s] of Object.entries(items)) {
+      if (s.active === false || s.type === "camera" || typeof s.w !== "number") continue;
+      assert.ok(s.x >= 0 && s.y >= 0 && s.x + s.w <= slideW && s.y + s.h <= slideH,
+        `slide ${i + 1}: ${id} (${s.type}) at ${s.x},${s.y} ${s.w}x${s.h} sticks out of the ${slideW}x${slideH} frame`);
+    }
+  }
 });
 
 console.log(`\naudio_patches_test: ${passed} checks passed${process.exitCode ? " (WITH FAILURES)" : ""}`);

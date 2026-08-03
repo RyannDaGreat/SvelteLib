@@ -1,0 +1,2208 @@
+{
+  "meta": {
+    "name": "PowerRP Audio Demo",
+    "slideW": 1920,
+    "slideH": 1080,
+    "script": ""
+  },
+  "slides": [
+    {
+      "id": "62a83fd0",
+      "name": "Ambience",
+      "transition": {
+        "type": "tween",
+        "seconds": 0.8,
+        "curve": "smooth",
+        "sound": null
+      },
+      "delta": {
+        "items": {
+          "81350999": {
+            "type": "audio_clock",
+            "x": 120,
+            "y": 300,
+            "w": 150,
+            "h": 97,
+            "z": 10,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioBpm": 72,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "3751aa58": {
+            "type": "camera",
+            "name": "Camera",
+            "x": 0,
+            "y": 0,
+            "w": 1920,
+            "h": 1080,
+            "x~interp": "expTween",
+            "y~interp": "expTween",
+            "w~interp": "expTween",
+            "h~interp": "expTween",
+            "naturalZoom": true,
+            "z": 1000,
+            "rotation": 0,
+            "scale": 1,
+            "active": true,
+            "background": "#0e1018",
+            "antialias": "standard",
+            "retina": true,
+            "ditherMode": "off",
+            "ditherEmphasis": 1
+          },
+          "1e71ed31": {
+            "type": "plaintext",
+            "x": 120,
+            "y": 90,
+            "w": 1680,
+            "h": 73.60000000000001,
+            "z": 900,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "text": "Spacey Pad Drone",
+            "font": "system",
+            "size": 46,
+            "bold": false,
+            "fill": "#c8cee6",
+            "align": "left",
+            "valign": "top",
+            "opacity": 1,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "1bdf7afe": {
+            "type": "plaintext",
+            "x": 120,
+            "y": 156,
+            "w": 1680,
+            "h": 35.2,
+            "z": 900,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "text": "pad → filter (swept by an LFO) → deep-space reverb → meter → spectrum → out",
+            "font": "system",
+            "size": 22,
+            "bold": false,
+            "fill": "#8f97b8",
+            "align": "left",
+            "valign": "top",
+            "opacity": 1,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "fadb3164": {
+            "type": "audio_pad",
+            "x": 120,
+            "y": 300,
+            "w": 165,
+            "h": 119,
+            "z": 10,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioFrequency": 82.41,
+            "audioCutoff": 700,
+            "audioMotion": 0.05,
+            "audioReverb": 0.5,
+            "audioSpace": "deepSpace",
+            "audioLevel": 0.4,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "ea325424": {
+            "type": "audio_lfo",
+            "x": 120,
+            "y": 430,
+            "w": 150,
+            "h": 119,
+            "z": 11,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioFrequency": 0.05,
+            "audioDepth": 600,
+            "audioWaveform": "sine",
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "0f449149": {
+            "type": "audio_filter",
+            "x": 330,
+            "y": 300,
+            "w": 150,
+            "h": 141,
+            "z": 12,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "fadb3164",
+                "port": "out"
+              },
+              "frequency": {
+                "item": "ea325424",
+                "port": "out"
+              }
+            },
+            "audioFrequency": 900,
+            "audioQ": 3,
+            "audioType": "lowpass",
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "d97abaac": {
+            "type": "audio_reverb",
+            "x": 540,
+            "y": 300,
+            "w": 150,
+            "h": 119,
+            "z": 13,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "0f449149",
+                "port": "out"
+              }
+            },
+            "audioCharacter": "deepSpace",
+            "audioWet": 0.6,
+            "audioDry": 0.5,
+            "audioPreDelay": 0.04,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "6dfc3645": {
+            "type": "audio_meter",
+            "x": 750,
+            "y": 300,
+            "w": 120,
+            "h": 68,
+            "z": 14,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "d97abaac",
+                "port": "out"
+              }
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "68b2e9b3": {
+            "type": "audio_spectrum",
+            "x": 960,
+            "y": 300,
+            "w": 200,
+            "h": 68,
+            "z": 15,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "6dfc3645",
+                "port": "out"
+              }
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "ed59e3c6": {
+            "type": "audio_output",
+            "x": 1170,
+            "y": 300,
+            "w": 150,
+            "h": 97,
+            "z": 16,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "68b2e9b3",
+                "port": "out"
+              }
+            },
+            "audioVolume": 0.7,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": true
+          },
+          "db728ece": {
+            "type": "group",
+            "x": 120,
+            "y": 300,
+            "w": 1200,
+            "h": 249,
+            "z": 17,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "members": [
+              "fadb3164",
+              "ea325424",
+              "0f449149",
+              "d97abaac",
+              "6dfc3645",
+              "68b2e9b3",
+              "ed59e3c6"
+            ],
+            "bind": {
+              "x": 120,
+              "y": 300,
+              "rotation": 0,
+              "scale": 1
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "cropTop": 0,
+            "cropLeft": 0,
+            "cropRight": 0,
+            "cropBottom": 0,
+            "name": "Spacey Pad Drone",
+            "active": true
+          },
+          "7aa63fd1": {
+            "type": "plaintext",
+            "x": 120,
+            "y": 90,
+            "w": 1680,
+            "h": 73.60000000000001,
+            "z": 900,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "text": "Sequenced Dings",
+            "font": "system",
+            "size": 46,
+            "bold": false,
+            "fill": "#c8cee6",
+            "align": "left",
+            "valign": "top",
+            "opacity": 1,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "301bb6ea": {
+            "type": "plaintext",
+            "x": 120,
+            "y": 156,
+            "w": 1680,
+            "h": 35.2,
+            "z": 900,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "text": "a clock's square wave through an edge detector strikes an FM bell — then delay and plate reverb",
+            "font": "system",
+            "size": 22,
+            "bold": false,
+            "fill": "#8f97b8",
+            "align": "left",
+            "valign": "top",
+            "opacity": 1,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "30b4735a": {
+            "type": "audio_sequencer",
+            "x": 120,
+            "y": 430,
+            "w": 165,
+            "h": 119,
+            "z": 11,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioStepCount": 16,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "e5a6a8cb": {
+            "type": "audio_trigger",
+            "x": 330,
+            "y": 300,
+            "w": 150,
+            "h": 97,
+            "z": 12,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "81350999",
+                "port": "out"
+              }
+            },
+            "audioPulseMs": 5,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "d7a7f96e": {
+            "type": "audio_ding",
+            "x": 540,
+            "y": 300,
+            "w": 150,
+            "h": 119,
+            "z": 13,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "gate": {
+                "item": "e5a6a8cb",
+                "port": "out"
+              },
+              "level": {
+                "item": "30b4735a",
+                "port": "pitch"
+              }
+            },
+            "audioFrequency": 880,
+            "audioPreset": "ding",
+            "audioLevel": 0.42,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "2636f39e": {
+            "type": "audio_delay",
+            "x": 750,
+            "y": 300,
+            "w": 150,
+            "h": 141,
+            "z": 14,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "d7a7f96e",
+                "port": "out"
+              }
+            },
+            "audioTime": 0.375,
+            "audioFeedback": 0.35,
+            "audioDamping": 2400,
+            "audioWet": 0.35,
+            "audioDry": 1,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "46a839fb": {
+            "type": "audio_reverb",
+            "x": 960,
+            "y": 300,
+            "w": 150,
+            "h": 119,
+            "z": 15,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "2636f39e",
+                "port": "out"
+              }
+            },
+            "audioCharacter": "plate",
+            "audioWet": 0.55,
+            "audioDry": 0.5,
+            "audioPreDelay": 0.02,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "1f1ede09": {
+            "type": "audio_meter",
+            "x": 1170,
+            "y": 300,
+            "w": 120,
+            "h": 68,
+            "z": 16,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "46a839fb",
+                "port": "out"
+              }
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "c8bddecd": {
+            "type": "audio_spectrum",
+            "x": 1380,
+            "y": 300,
+            "w": 200,
+            "h": 68,
+            "z": 17,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "1f1ede09",
+                "port": "out"
+              }
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "6c1da75d": {
+            "type": "audio_output",
+            "x": 1590,
+            "y": 300,
+            "w": 150,
+            "h": 97,
+            "z": 18,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "c8bddecd",
+                "port": "out"
+              }
+            },
+            "audioVolume": 0.7,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "835884e7": {
+            "type": "group",
+            "x": 120,
+            "y": 300,
+            "w": 1620,
+            "h": 249,
+            "z": 19,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "members": [
+              "81350999",
+              "30b4735a",
+              "e5a6a8cb",
+              "d7a7f96e",
+              "2636f39e",
+              "46a839fb",
+              "1f1ede09",
+              "c8bddecd",
+              "6c1da75d"
+            ],
+            "bind": {
+              "x": 120,
+              "y": 300,
+              "rotation": 0,
+              "scale": 1
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "cropTop": 0,
+            "cropLeft": 0,
+            "cropRight": 0,
+            "cropBottom": 0,
+            "name": "Sequenced Dings",
+            "active": false
+          },
+          "6fc225ca": {
+            "type": "plaintext",
+            "x": 120,
+            "y": 90,
+            "w": 1680,
+            "h": 73.60000000000001,
+            "z": 900,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "text": "Two patches, two outputs — they sum",
+            "font": "system",
+            "size": 46,
+            "bold": false,
+            "fill": "#c8cee6",
+            "align": "left",
+            "valign": "top",
+            "opacity": 1,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "65711de6": {
+            "type": "plaintext",
+            "x": 120,
+            "y": 156,
+            "w": 1680,
+            "h": 35.2,
+            "z": 900,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "text": "Whoosh over Beach. Multiple output modules coexist; the engine adds them.",
+            "font": "system",
+            "size": 22,
+            "bold": false,
+            "fill": "#8f97b8",
+            "align": "left",
+            "valign": "top",
+            "opacity": 1,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "ce9af9ac": {
+            "type": "audio_noise",
+            "x": 120,
+            "y": 300,
+            "w": 150,
+            "h": 97,
+            "z": 10,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioColor": "pink",
+            "audioLevel": 0.5,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "a7fd0ea0": {
+            "type": "audio_lfo",
+            "x": 120,
+            "y": 430,
+            "w": 150,
+            "h": 119,
+            "z": 11,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioFrequency": 0.15,
+            "audioDepth": 900,
+            "audioWaveform": "triangle",
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "84684d54": {
+            "type": "audio_filter",
+            "x": 330,
+            "y": 300,
+            "w": 150,
+            "h": 141,
+            "z": 12,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "ce9af9ac",
+                "port": "out"
+              },
+              "frequency": {
+                "item": "a7fd0ea0",
+                "port": "out"
+              }
+            },
+            "audioFrequency": 500,
+            "audioQ": 7,
+            "audioType": "bandpass",
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "b61aed8d": {
+            "type": "audio_reverb",
+            "x": 540,
+            "y": 300,
+            "w": 150,
+            "h": 119,
+            "z": 13,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "84684d54",
+                "port": "out"
+              }
+            },
+            "audioCharacter": "hall",
+            "audioWet": 0.45,
+            "audioDry": 0.7,
+            "audioPreDelay": 0.02,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "214b5439": {
+            "type": "audio_meter",
+            "x": 750,
+            "y": 300,
+            "w": 120,
+            "h": 68,
+            "z": 14,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "b61aed8d",
+                "port": "out"
+              }
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "8cb30680": {
+            "type": "audio_spectrum",
+            "x": 960,
+            "y": 300,
+            "w": 200,
+            "h": 68,
+            "z": 15,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "214b5439",
+                "port": "out"
+              }
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "59cfb60f": {
+            "type": "audio_output",
+            "x": 1170,
+            "y": 300,
+            "w": 150,
+            "h": 97,
+            "z": 16,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "8cb30680",
+                "port": "out"
+              }
+            },
+            "audioVolume": 0.7,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "a719a2b4": {
+            "type": "group",
+            "x": 120,
+            "y": 300,
+            "w": 1200,
+            "h": 249,
+            "z": 17,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "members": [
+              "ce9af9ac",
+              "a7fd0ea0",
+              "84684d54",
+              "b61aed8d",
+              "214b5439",
+              "8cb30680",
+              "59cfb60f"
+            ],
+            "bind": {
+              "x": 120,
+              "y": 300,
+              "rotation": 0,
+              "scale": 1
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "cropTop": 0,
+            "cropLeft": 0,
+            "cropRight": 0,
+            "cropBottom": 0,
+            "name": "Whoosh",
+            "active": false
+          },
+          "bfc85973": {
+            "type": "audio_noise",
+            "x": 120,
+            "y": 654,
+            "w": 150,
+            "h": 97,
+            "z": 18,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioColor": "pink",
+            "audioLevel": 0.45,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "4ffdfec1": {
+            "type": "audio_lfo",
+            "x": 120,
+            "y": 784,
+            "w": 150,
+            "h": 119,
+            "z": 19,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioFrequency": 0.08,
+            "audioDepth": 500,
+            "audioWaveform": "sine",
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "8cbd6b0a": {
+            "type": "audio_filter",
+            "x": 330,
+            "y": 654,
+            "w": 150,
+            "h": 141,
+            "z": 20,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "bfc85973",
+                "port": "out"
+              },
+              "frequency": {
+                "item": "4ffdfec1",
+                "port": "out"
+              }
+            },
+            "audioFrequency": 700,
+            "audioQ": 1.4,
+            "audioType": "lowpass",
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "81ce43d8": {
+            "type": "audio_clock",
+            "x": 120,
+            "y": 914,
+            "w": 150,
+            "h": 97,
+            "z": 21,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {},
+            "audioBpm": 26,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "5061adc6": {
+            "type": "audio_trigger",
+            "x": 330,
+            "y": 914,
+            "w": 150,
+            "h": 97,
+            "z": 22,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "81ce43d8",
+                "port": "out"
+              }
+            },
+            "audioPulseMs": 8,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "7849e277": {
+            "type": "audio_ding",
+            "x": 540,
+            "y": 914,
+            "w": 150,
+            "h": 119,
+            "z": 23,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "gate": {
+                "item": "5061adc6",
+                "port": "out"
+              }
+            },
+            "audioFrequency": 1760,
+            "audioPreset": "pip",
+            "audioLevel": 0.16,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "e13a5dfd": {
+            "type": "audio_mixer",
+            "x": 540,
+            "y": 784,
+            "w": 150,
+            "h": 251,
+            "z": 24,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in1": {
+                "item": "8cbd6b0a",
+                "port": "out"
+              },
+              "in2": {
+                "item": "7849e277",
+                "port": "out"
+              }
+            },
+            "audioLevel1": 0.9,
+            "audioLevel2": 0.7,
+            "audioLevel3": 1,
+            "audioLevel4": 1,
+            "audioMaster": 1,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "2e72f935": {
+            "type": "audio_reverb",
+            "x": 750,
+            "y": 784,
+            "w": 150,
+            "h": 119,
+            "z": 25,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "e13a5dfd",
+                "port": "out"
+              }
+            },
+            "audioCharacter": "hall",
+            "audioWet": 0.4,
+            "audioDry": 0.85,
+            "audioPreDelay": 0.03,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "fdd915c2": {
+            "type": "audio_meter",
+            "x": 960,
+            "y": 784,
+            "w": 120,
+            "h": 68,
+            "z": 26,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "2e72f935",
+                "port": "out"
+              }
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "c25a2d98": {
+            "type": "audio_spectrum",
+            "x": 1170,
+            "y": 784,
+            "w": 200,
+            "h": 68,
+            "z": 27,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "fdd915c2",
+                "port": "out"
+              }
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "fe33aa87": {
+            "type": "audio_output",
+            "x": 1380,
+            "y": 784,
+            "w": 150,
+            "h": 97,
+            "z": 28,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "inputs": {
+              "in": {
+                "item": "c25a2d98",
+                "port": "out"
+              }
+            },
+            "audioVolume": 0.7,
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "active": false
+          },
+          "ecc8c786": {
+            "type": "group",
+            "x": 120,
+            "y": 654,
+            "w": 1410,
+            "h": 381,
+            "z": 29,
+            "rotation": 0,
+            "scale": 1,
+            "rotationAnchor": {
+              "x": "self.anchors.center.x",
+              "y": "self.anchors.center.y"
+            },
+            "members": [
+              "bfc85973",
+              "4ffdfec1",
+              "8cbd6b0a",
+              "81ce43d8",
+              "5061adc6",
+              "7849e277",
+              "e13a5dfd",
+              "2e72f935",
+              "fdd915c2",
+              "c25a2d98",
+              "fe33aa87"
+            ],
+            "bind": {
+              "x": 120,
+              "y": 654,
+              "rotation": 0,
+              "scale": 1
+            },
+            "shadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "bloom": {
+              "radius": 10,
+              "strength": 0
+            },
+            "blendMode": "normal",
+            "innerShadow": {
+              "dx": 0,
+              "dy": 0,
+              "blur": 0,
+              "color": "#000000",
+              "opacity": 0
+            },
+            "softEdges": 0,
+            "gaussianBlur": 0,
+            "cropTop": 0,
+            "cropLeft": 0,
+            "cropRight": 0,
+            "cropBottom": 0,
+            "name": "Beach (synthesised)",
+            "active": false
+          }
+        }
+      }
+    },
+    {
+      "id": "299f8703",
+      "name": "Rhythm",
+      "transition": {
+        "type": "tween",
+        "seconds": 0.8,
+        "curve": "smooth",
+        "sound": null
+      },
+      "delta": {
+        "items": {
+          "81350999": {
+            "active": true
+          },
+          "1e71ed31": {
+            "active": false
+          },
+          "1bdf7afe": {
+            "active": false
+          },
+          "fadb3164": {
+            "active": false
+          },
+          "ea325424": {
+            "active": false
+          },
+          "0f449149": {
+            "active": false
+          },
+          "d97abaac": {
+            "active": false
+          },
+          "6dfc3645": {
+            "active": false
+          },
+          "68b2e9b3": {
+            "active": false
+          },
+          "ed59e3c6": {
+            "active": false
+          },
+          "db728ece": {
+            "active": false
+          },
+          "7aa63fd1": {
+            "active": true
+          },
+          "301bb6ea": {
+            "active": true
+          },
+          "30b4735a": {
+            "active": true
+          },
+          "e5a6a8cb": {
+            "active": true
+          },
+          "d7a7f96e": {
+            "active": true
+          },
+          "2636f39e": {
+            "active": true
+          },
+          "46a839fb": {
+            "active": true
+          },
+          "1f1ede09": {
+            "active": true
+          },
+          "c8bddecd": {
+            "active": true
+          },
+          "6c1da75d": {
+            "active": true
+          },
+          "835884e7": {
+            "active": true
+          }
+        }
+      }
+    },
+    {
+      "id": "5ac8afde",
+      "name": "Two Outputs",
+      "transition": {
+        "type": "tween",
+        "seconds": 0.8,
+        "curve": "smooth",
+        "sound": null
+      },
+      "delta": {
+        "items": {
+          "81350999": {
+            "active": false
+          },
+          "7aa63fd1": {
+            "active": false
+          },
+          "301bb6ea": {
+            "active": false
+          },
+          "30b4735a": {
+            "active": false
+          },
+          "e5a6a8cb": {
+            "active": false
+          },
+          "d7a7f96e": {
+            "active": false
+          },
+          "2636f39e": {
+            "active": false
+          },
+          "46a839fb": {
+            "active": false
+          },
+          "1f1ede09": {
+            "active": false
+          },
+          "c8bddecd": {
+            "active": false
+          },
+          "6c1da75d": {
+            "active": false
+          },
+          "835884e7": {
+            "active": false
+          },
+          "6fc225ca": {
+            "active": true
+          },
+          "65711de6": {
+            "active": true
+          },
+          "ce9af9ac": {
+            "active": true
+          },
+          "a7fd0ea0": {
+            "active": true
+          },
+          "84684d54": {
+            "active": true
+          },
+          "b61aed8d": {
+            "active": true
+          },
+          "214b5439": {
+            "active": true
+          },
+          "8cb30680": {
+            "active": true
+          },
+          "59cfb60f": {
+            "active": true
+          },
+          "a719a2b4": {
+            "active": true
+          },
+          "bfc85973": {
+            "active": true
+          },
+          "4ffdfec1": {
+            "active": true
+          },
+          "8cbd6b0a": {
+            "active": true
+          },
+          "81ce43d8": {
+            "active": true
+          },
+          "5061adc6": {
+            "active": true
+          },
+          "7849e277": {
+            "active": true
+          },
+          "e13a5dfd": {
+            "active": true
+          },
+          "2e72f935": {
+            "active": true
+          },
+          "fdd915c2": {
+            "active": true
+          },
+          "c25a2d98": {
+            "active": true
+          },
+          "fe33aa87": {
+            "active": true
+          },
+          "ecc8c786": {
+            "active": true
+          }
+        }
+      }
+    }
+  ]
+}
