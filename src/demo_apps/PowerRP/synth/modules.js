@@ -951,7 +951,17 @@ function sequencerModule(context, params) {
     playStep(index, time) {
       const step = steps[index % steps.length];
       if (!step || !step.on) return;
-      pitchOutput.offset.setValueAtTime(midiToFreq(step.note), time);
+      const hz = midiToFreq(step.note);
+      pitchOutput.offset.setValueAtTime(hz, time);
+      // AND AS A PLAIN NUMBER, for whoever is STRUCK by this step (WORKSTREAM CC).
+      // A scheduled setValueAtTime does NOT move `offset.value` — measured — so a
+      // module reading the param on the control thread sees the pitch it had
+      // BEFORE this step, which for a patch whose pitch comes only from the wire
+      // is the initial 0. That is why Gamelan Bells played its whole melody at the
+      // 20 Hz clamp. `controlValue` is the same number, readable where a discrete
+      // strike is decided; the AudioParam remains the thing an audio-rate consumer
+      // is connected to, so the wire's audio-thread behaviour is unchanged.
+      pitchOutput.controlValue = hz;
       // A short gate pulse: up at `time`, down a moment later. The receiving
       // ADSR's Schmitt detector sees a clean rising edge.
       gateSource.offset.setValueAtTime(1, time);

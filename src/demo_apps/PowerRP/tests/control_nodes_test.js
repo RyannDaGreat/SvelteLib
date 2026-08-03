@@ -16,6 +16,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
@@ -226,13 +227,28 @@ check("core's noteFrequency AGREES with the engine's midiToFreq", () => {
 
 console.log("control nodes: live routing");
 
-/** A small patch: a button into a bell, a keyboard into a poly pad AND a bell. */
+/** A small patch: a button into a bell, a keyboard into a poly pad AND a bell.
+ *
+ *  BOTH KEYBOARD TARGETS ARE WIRED FOR PITCH AS WELL AS GATE (WORKSTREAM CC).
+ *  This fixture used to wire `gate` alone and still assert the key's pitch came
+ *  through — which passed only because the pitch wire was decorative, the very
+ *  defect the user reported: "I disconnected pitch from the keyboard to the pad
+ *  synth....kept only Gate....and it was fine. This is a big red flag" (verbatim,
+ *  2026-08-03). A fixture that omits the cable can no longer assert the cable's
+ *  effect, so it draws it. The cut-cable case is its own check below. */
 const items = {
   btn: { type: "node_button" },
   kbd: { type: "node_keyboard" },
   bell: { type: "audio_ding", inputs: { gate: { item: "btn", port: "out" } } },
-  poly: { type: "audio_poly_pad", inputs: { gate: { item: "kbd", port: "gate" } } },
-  chime: { type: "audio_ding", inputs: { gate: { item: "kbd", port: "gate" } } },
+  poly: { type: "audio_poly_pad", inputs: {
+    gate: { item: "kbd", port: "gate" },
+    pitch: { item: "kbd", port: "pitch" },
+  } },
+  // The ding spells its pitch input `frequency` (labelled "pitch" on the card).
+  chime: { type: "audio_ding", inputs: {
+    gate: { item: "kbd", port: "gate" },
+    frequency: { item: "kbd", port: "pitch" },
+  } },
 };
 
 check("ONE BUTTON PRESS PRODUCES EXACTLY ONE TRIGGER EDGE", () => {
@@ -263,8 +279,63 @@ check("A KEY PRESS ALLOCATES ON THE POLY TARGET and strikes the mono one", () =>
   const chime = on.find((r) => r.id === "chime");
   assert.equal(poly.op, "noteOn", "a poly module takes NOTES");
   assert.equal(poly.note, 60);
+  assert.equal(poly.frequency, noteFrequency(60), "…and its pitch wire names the note");
   assert.equal(chime.op, "trigger", "a mono method port takes a pitched strike");
   assert.ok(Math.abs(chime.frequency - noteFrequency(60)) < 1e-9, "…at the key's own pitch");
+});
+
+// ── THE ELEPHANT (WORKSTREAM CC) ─────────────────────────────────────────────
+// USER, 2026-08-03, verbatim: "I disconnected pitch from the keyboard to the pad
+// synth....kept only Gate....and it was fine. This is a big red flag lol there's
+// clearly state that's not visible in properties about these instrucments."
+//
+// These three checks ARE that experiment. Before the fix all three produced
+// byte-identical routes, which is what "it was fine" measured.
+check("THE ELEPHANT: pitch DISCONNECTED ⟹ the keys stop naming the note", () => {
+  const cut = { ...items, poly: { ...items.poly, inputs: { ...items.poly.inputs, pitch: null } } };
+  const on = noteRoutes(cut, registry, "kbd", "on", 60, noteFrequency(60));
+  const poly = on.find((r) => r.id === "poly");
+  assert.equal(poly.op, "noteOn", "the GATE is still wired, so the key still triggers");
+  assert.equal(poly.note, 60, "the note IDENTITY still travels — it pairs the note-off");
+  assert.equal(poly.frequency, undefined,
+    "but NO frequency: the pad must sound its own pitch property, not the pressed key's");
+});
+
+check("THE ELEPHANT: reconnecting pitch makes the keys choose the pitch again", () => {
+  const on = noteRoutes(items, registry, "kbd", "on", 72, noteFrequency(72));
+  assert.equal(on.find((r) => r.id === "poly").frequency, noteFrequency(72));
+});
+
+check("a pitch input wired to SOMEONE ELSE is not this keyboard naming the note", () => {
+  const other = { ...items, poly: { ...items.poly, inputs: { ...items.poly.inputs, pitch: { item: "lfo", port: "out" } } } };
+  const poly = noteRoutes(other, registry, "kbd", "on", 60, noteFrequency(60)).find((r) => r.id === "poly");
+  assert.equal(poly.frequency, undefined, "the LFO drives the pitch; the keyboard only gates");
+});
+
+check("a module with NO pitch input still rings at the key's pitch", () => {
+  // There is no cable to have cut, so the old behaviour is the correct one —
+  // this is what keeps "a keyboard plays a bell melody" true.
+  const spec = registry.get("audio_ding").audioSpec;
+  assert.ok(spec.inputs.some((p) => p.key === "frequency"), "the ding DOES have one, so build a module without");
+  const plugin = { audioModule: "x", audioSpec: { inputs: [{ key: "gate", type: "trigger", method: true }] } };
+  const fake = { get: (t) => (t === "kb" ? {} : plugin) };
+  const items2 = { kbd: { type: "kb" }, bell: { type: "b", inputs: { gate: { item: "kbd", port: "gate" } } } };
+  const routes = noteRoutes(items2, fake, "kbd", "on", 60, noteFrequency(60));
+  assert.equal(routes[0].frequency, noteFrequency(60));
+});
+
+check("core's pitch-input spelling set AGREES with the engine's", () => {
+  // core/ may not import synth/**, so PITCH_INPUT_KEYS is a restatement of
+  // engine.js's PITCH_PARAM_KEYS. This is the assertion that stops them drifting:
+  // a module whose pitch input core does not recognize would have a cable that is
+  // load-bearing in the engine and decorative in the router — the exact split
+  // this workstream removed.
+  const engineSource = readFileSync(new URL("../synth/engine.js", import.meta.url), "utf8");
+  const declared = engineSource.match(/PITCH_PARAM_KEYS = new Set\(\[([^\]]*)\]\)/);
+  assert.ok(declared, "engine.js must declare PITCH_PARAM_KEYS as a literal Set");
+  const engineKeys = [...declared[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+  assert.deepEqual(engineKeys, ["frequency", "pitch"],
+    "if this changes, core/live_control.PITCH_INPUT_KEYS must change with it");
 });
 
 check("a key RELEASE releases the poly voice and does nothing to the bell", () => {

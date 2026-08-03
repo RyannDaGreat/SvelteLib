@@ -192,6 +192,104 @@ export function createEngine(options = {}) {
   }
 
   /**
+   * Query. THE PITCH THIS MODULE'S WIRES NAME, in Hz — or `undefined` when no
+   * wire names one, which means "use the module's own pitch".
+   *
+   * ── WHY THIS EXISTS: AudioParam.value CANNOT ANSWER IT ──────────────────────
+   * WORKSTREAM CC, and it is the reason the Gamelan Bells demo made no sound.
+   * Both pitch-reading modules used to strike at `pitchBus.offset.value`, on a
+   * stated premise that `.value` "returns the param's current computed value
+   * including every connected input's contribution". THAT IS FALSE, and it was
+   * measured in Chrome rather than argued: a ConstantSource of 440 connected into
+   * a param whose own offset is 0 leaves `.value` reading 0. `.value` is the
+   * INTRINSIC value; connected inputs are summed on the audio thread at render
+   * time and are not observable from the control thread at all.
+   *
+   * The consequence was silent and total. Gamelan sets its lead bell's frequency
+   * offset to 0 precisely so "the wire alone names the note", and passes no
+   * frequency option precisely so the wire is what is under test. So every strike
+   * read 0, clamped to MIN_AUDIBLE_HZ, and played the whole melody at 20 Hz —
+   * inaudible, with nothing in any log to explain it.
+   *
+   * ── SO THE SUM IS COMPUTED WHERE THE WIRES ARE KNOWN ───────────────────────
+   * The engine owns `connections`, so it can ask each wired SOURCE for its own
+   * intrinsic offset — which IS readable, because on the source node it is not a
+   * summed value but the number something wrote there. Summing those is exactly
+   * what Web Audio would do at the param, computed one layer up.
+   *
+   * SCOPE IS DELIBERATELY NARROW. Only wires into a PITCH-NAMING param count
+   * (PITCH_PARAM_KEYS), and only sources that expose a plain readable offset. A
+   * source that is a genuine audio-rate signal (an LFO's oscillator) has no
+   * single control-thread value, contributes nothing here, and still modulates
+   * the param on the audio thread the way it always did. This function decides
+   * ONE thing: what pitch a discrete strike should be built at.
+   *
+   * `undefined` rather than 0 when nothing is wired, so the caller's `??` keeps
+   * meaning "nobody named a pitch" — 0 is a legitimate offset and would read as
+   * an answer.
+   *
+   * Args:
+   *     id (string): the module being struck
+   *
+   * Returns:
+   *     number|undefined: summed wired pitch in Hz, or undefined if unwired
+   */
+  function wiredPitch(id) {
+    const target = modules.get(id);
+    if (!target) return undefined;
+    let total;
+    for (const wire of connections.values()) {
+      if (wire.targetId !== id) continue;
+      if (!PITCH_PARAM_KEYS.has(wire.targetPort)) continue;
+      const contribution = readableOffset(modules.get(wire.sourceId), wire.sourcePort);
+      if (contribution === undefined) continue;
+      total = (total ?? 0) + contribution;
+    }
+    // The module's OWN offset is part of the sum — it is what Web Audio adds the
+    // wires to, and it is what makes the ding's knob read as a transposition.
+    if (total === undefined) return undefined;
+    const own = readableOffset(target, wire2ParamKey(target, id));
+    return total + (own ?? 0);
+  }
+
+  /** The param keys that name "what pitch to sound". Both pitch-reading modules
+   *  spell it differently — the ding calls it `frequency`, the poly pad `pitch` —
+   *  so the set is stated once here rather than guessed at each call. */
+  const PITCH_PARAM_KEYS = new Set(["pitch", "frequency"]);
+
+  /**
+   * Query. A module's OWN intrinsic value for one output/param, when it has a
+   * readable one — the offset of a ConstantSourceNode, which is how every control
+   * source in synth/modules.js stores "the number I am emitting".
+   *
+   * Returns undefined for anything else (an oscillator, a gain carrying audio),
+   * which is the honest answer: those carry a waveform, not a number.
+   *
+   * ── `controlValue` WINS OVER `.value`, AND HAS TO ──────────────────────────
+   * A param moved by `setValueAtTime` does NOT update `.value` — measured, and it
+   * is the second half of the Gamelan defect: the sequencer schedules its pitch
+   * for a precise audio-clock time (which is what makes the timing sample-exact)
+   * and `.value` therefore still reports the PREVIOUS step's number. A module that
+   * schedules rather than assigns publishes the plain number alongside, and this
+   * prefers it. `.value` remains correct for the sources that simply assign.
+   */
+  function readableOffset(entry, port) {
+    if (!entry || port === undefined) return undefined;
+    const node = entry.instance?.outputs?.[port] ?? entry.instance?.params?.[port];
+    if (typeof node?.controlValue === "number") return node.controlValue;
+    const offset = node instanceof AudioParam ? node : node?.offset;
+    if (typeof offset?.controlValue === "number") return offset.controlValue;
+    return offset instanceof AudioParam && !(node instanceof AudioParam) ? offset.value : undefined;
+  }
+
+  /** Query. Which of a target module's params is its pitch — the one a wire into
+   *  it was summing with. Returns undefined when it has none. */
+  function wire2ParamKey(entry) {
+    for (const key of PITCH_PARAM_KEYS) if (entry?.instance?.params?.[key]) return key;
+    return undefined;
+  }
+
+  /**
    * Query. The module entry for `id`, refusing LOUDLY if it is not polyphonic.
    *
    * A mono module handed a note-on is the mistake worth catching: nothing about
@@ -569,7 +667,13 @@ export function createEngine(options = {}) {
       if (typeof entry.instance.trigger !== "function") {
         throw new Error(`Module ${JSON.stringify(id)} (${entry.type}) is not triggerable`);
       }
-      entry.instance.trigger(time ?? context.currentTime, options, port);
+      // THE PITCH A WIRE NAMES (WORKSTREAM CC — this is why Gamelan was silent).
+      // A caller's explicit frequency still wins; with none, the wires into this
+      // module's pitch param are summed HERE, because the module cannot read them
+      // (wiredPitch states why AudioParam.value cannot answer this).
+      const resolved = options.frequency ?? wiredPitch(id);
+      const withPitch = resolved === undefined ? options : { ...options, frequency: resolved };
+      entry.instance.trigger(time ?? context.currentTime, withPitch, port);
     },
 
     /**
@@ -608,7 +712,11 @@ export function createEngine(options = {}) {
       const allocation = voiceNoteOn(entry.pool, note);
       entry.pool = allocation.pool;
       if (allocation.stolen !== null) entry.instance.noteOff(allocation.slot, at);
-      entry.instance.noteOn(allocation.slot, frequency, at);
+      // As `trigger` above: a named frequency wins, and a note with none takes the
+      // pitch its WIRES name. This is the path a keyboard whose pitch cable was
+      // cut travels — core/live_control.noteRoutes deliberately sends no frequency
+      // then, so the pad sounds its own pitch instead of the pressed key's.
+      entry.instance.noteOn(allocation.slot, frequency ?? wiredPitch(id), at);
       return { slot: allocation.slot, stolen: allocation.stolen, retrigger: allocation.retrigger };
     },
 

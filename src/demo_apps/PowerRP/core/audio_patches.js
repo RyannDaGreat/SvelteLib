@@ -412,6 +412,15 @@ export const PLAYABLE_KEYS = {
     // into engine.noteOn and each release into noteOff, and the engine's voice
     // pool (synth/voices.js) decides which voice and who is stolen.
     { from: "keys", fromPort: "gate", to: "poly", toPort: "gate" },
+    // THE PITCH WIRE, and this patch used to be missing it (WORKSTREAM CC). The
+    // keys ALWAYS chose the note, because noteRoutes carried the pressed key's
+    // frequency whether or not anything was wired — which is exactly the defect
+    // the user found by cutting this cable and hearing no change. Now that the
+    // wire decides, the patch has to draw the connection it always relied on.
+    // It is also simply the honest picture of the patch: the keyboard names both
+    // WHEN a note happens and WHICH note it is, so it has two cables, and cutting
+    // this one now audibly leaves the pad on its own pitch.
+    { from: "keys", fromPort: "pitch", to: "poly", toPort: "pitch" },
     // The knob drives the pad's cutoff: `cutoff` is a `number` input (an
     // AudioParam a wire can drive), the same thing that makes the LFO patch work.
     { from: "cutoffKnob", fromPort: "out", to: "poly", toPort: "cutoff" },
