@@ -318,6 +318,8 @@ export function applyEffects(content, state, world, bbox) {
  * @example effectsCullMargin({blendMode: "multiply"}) // 0 (blend alone adds no halo)
  * @example effectsCullMargin({gaussianBlur: 4}) // 12 (3·4 — the widget's own ink smears outward)
  * @example effectsCullMargin({softEdges: 40}) // 0 (a feather only ERODES inward — no halo, however wide)
+ * @example effectsCullMargin({glyphStroke: "#000", glyphStrokeWidth: 10}) // 5 (an outline around the LETTERFORMS reaches its full half-width past the ink)
+ * @example effectsCullMargin({glyphStrokeWidth: 10}) // 0 (a width with no paint draws nothing)
  */
 export function effectsCullMargin(state) {
   // BLUR_SUPPORT_SIGMAS·σ = the Gaussian kernel's support bound each side (the
@@ -337,11 +339,21 @@ export function effectsCullMargin(state) {
   // support bound as the bloom radius above — it is the same Gaussian, applied to
   // the widget's own ink instead of to a bright copy of it. (softEdges is still
   // absent by design: a feather only erodes coverage INWARD.)
+  // THE GLYPH OUTLINE (N2) reaches its FULL half-width past the ink, and unlike the
+  // box stroke above there is no historical slop to subtract. The difference is
+  // that a box stroke runs along the widget's own bbox, which localBounds already
+  // reports; a glyph outline runs along the LETTERFORMS, and for a text widget
+  // localBounds is the laid-out ink rect (plaintextInkBounds) which the outline
+  // genuinely sits outside of. So the whole half-width counts — otherwise a heavy
+  // outline on type near the viewport edge is culled or clipped out of an export,
+  // which is the exact defect the stroke term above was added to fix for boxes.
+  const glyphStrokeOn = state.glyphStroke != null && (state.glyphStrokeWidth ?? 0) > 0;
   return Math.max(
     shadowOn ? state.shadow.blur * BLUR_SUPPORT_SIGMAS + Math.hypot(state.shadow.dx ?? 0, state.shadow.dy ?? 0) : 0,
     bloomOn ? (state.bloom.radius ?? 0) * BLUR_SUPPORT_SIGMAS : 0,
     Math.max(0, state.gaussianBlur ?? 0) * BLUR_SUPPORT_SIGMAS,
     strokeExcess,
+    glyphStrokeOn ? state.glyphStrokeWidth / 2 : 0,
   );
 }
 

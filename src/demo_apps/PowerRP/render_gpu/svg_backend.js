@@ -664,8 +664,25 @@ export function vectorCommandToSVG(cmd, world, ctx) {
         sx = cmd.w / vb.w; sy = cmd.h / vb.h;
       }
       const boxT = `translate(${fmt(cmd.x + ox - vb.minX * sx)} ${fmt(cmd.y + oy - vb.minY * sy)}) scale(${fmt(sx)} ${fmt(sy)})`;
+      // THE GLYPH OUTLINE IS TRUE VECTOR HERE, and it is one of the few places the
+      // hybrid rule gets to say yes. A SOLID outline is exactly what SVG's own
+      // `stroke` attribute expresses, on the very same `d` strings, in the very same
+      // viewBox units cmd.glyphStrokeWidth is already stated in (plugins/latex.js
+      // converted it once, for the painter, and the transform above puts this <g>
+      // in that same space) — so an outlined equation exports as real paths that
+      // scale losslessly, no raster anywhere.
+      //
+      // `paint-order: stroke fill` is deliberate and is NOT what the Skia painter
+      // does. Skia strokes AFTER the fill; SVG's default does too, which would put
+      // half the outline's width on top of the glyph and thin the letterform. Since
+      // SVG can express the other order for free, it does — and this is the same
+      // choice text_layout.js's outline pass already documents ("the outline sits
+      // under the fill (paint-order:stroke, matching the SVG/PDF export idiom)").
+      // A SHADER outline never reaches here: reportLatexGlyphStrokeRaster sends it
+      // to the raster fallback, for the same reason a shader ink goes there.
+      const strokeAttrs = solidGlyphStrokeAttrs(cmd);
       const paths = cmd.glyphs
-        .map((gl) => `<path d="${xmlEscape(gl.d)}" fill="${rgbaToCss(parseColor(gl.fill))}"/>`)
+        .map((gl) => `<path d="${xmlEscape(gl.d)}" fill="${rgbaToCss(parseColor(gl.fill))}"${strokeAttrs}/>`)
         .join("");
       const inner = `<g transform="${boxT}">${paths}</g>`;
       // Per-item opacity rides the world <g> (a group opacity over all glyphs —
@@ -770,7 +787,13 @@ export function textToSVG(cmd, ctx) {
     // top+ascent from the layout — no ascentFraction needed here).
     for (const d of draws.textDraws) {
       if (d.text.length === 0) continue;
-      out.push(richRunTextSVG(d, ctx));
+      // THE WIDGET-LEVEL GLYPH OUTLINE reuses the per-run outline fields
+      // richRunTextSVG already writes as `stroke`/`paint-order`, because an SVG
+      // <text> element takes exactly one such pair and the two features are the
+      // same attribute. A run that sets its OWN outline keeps it — the per-run
+      // value is the more specific statement, and the rich widget is where that
+      // one is authored.
+      out.push(richRunTextSVG(withGlyphStroke(d, cmd), ctx));
     }
     // Underline / strike decoration bars (on TOP of glyphs), filled <rect>s.
     for (const ln of draws.lines) {
@@ -789,9 +812,38 @@ export function textToSVG(cmd, ctx) {
   ];
   if (cmd.bold) attrs.push(`font-weight="bold"`);
   attrs.push(`fill="${paintRef(ctx, cmd.color)}"`);
+  // THE GLYPH OUTLINE on the legacy single-run path, which is the one plaintext
+  // actually emits (plugins/plaintext.js builds a legacy op — no `rich` payload).
+  // A SOLID outline is native SVG here, on a real selectable <text>: `stroke` plus
+  // `paint-order="stroke"` so the outline sits UNDER the fill and does not eat half
+  // its own width out of the letterform.
+  const solidStroke = solidGlyphStrokeAttrs(cmd);
+  if (solidStroke) attrs.push(solidStroke.trim());
   if ((cmd.opacity ?? 1) !== 1) attrs.push(`opacity="${fmt(cmd.opacity)}"`);
   attrs.push(`xml:space="preserve"`);
   return `<text ${attrs.join(" ")}>${xmlEscape(cmd.text)}</text>`;
+}
+
+/**
+ * Pure function. A rich-run draw with the WIDGET-level glyph outline folded into
+ * the per-run outline fields richRunTextSVG already emits — the two are the same
+ * SVG attribute pair, and an <text> element takes only one.
+ *
+ * THE RUN WINS when it has its own outline: that is the more specific statement,
+ * authored per-run on the rich widget, and a widget-level default must not silently
+ * overwrite it. A SHADER glyph stroke is skipped here (the raster gate diverts the
+ * op before this matters), because `stroke` takes a colour.
+ *
+ * @example withGlyphStroke({text: "a", outlineWidth: 0}, {}).outlineWidth // 0
+ * @example withGlyphStroke({text: "a"}, {glyphStroke: "#f00", glyphStrokeWidth: 3}).outlineWidth // 3
+ * @example withGlyphStroke({text: "a"}, {glyphStroke: "#f00", glyphStrokeWidth: 3}).outlineColor // "#f00"
+ * @example // a run's OWN outline is not overwritten by the widget's:
+ * @example withGlyphStroke({text: "a", outlineWidth: 1, outlineColor: "#00f"}, {glyphStroke: "#f00", glyphStrokeWidth: 3}).outlineColor // "#00f"
+ */
+function withGlyphStroke(d, cmd) {
+  if (!cmd.glyphStroke || !(cmd.glyphStrokeWidth > 0) || isGradientPaint(cmd.glyphStroke)) return d;
+  if ((d.outlineWidth ?? 0) > 0) return d; // the run's own outline is the more specific statement
+  return { ...d, outlineWidth: cmd.glyphStrokeWidth, outlineColor: cmd.glyphStroke };
 }
 
 /**
@@ -963,6 +1015,71 @@ function reportLatexShaderInkRaster(cmd) {
   return true;
 }
 
+/**
+ * Query (reports once). Does this op need the raster fallback because its GLYPH
+ * OUTLINE is a SHADER paint — a gradient or a material on the Glyph outline row?
+ *
+ * THE SPLIT IS THE POINT. A SOLID outline is NOT here: SVG's own `stroke` attribute
+ * expresses it exactly, on the same glyph paths, so an outlined equation stays
+ * fully vector (see the latexVector case). A SHADER outline is a different animal —
+ * one shader running around the union of the letterforms, which SVG cannot apply to
+ * inline glyph paths without restructuring them into a clipPath. Rasterizing it is
+ * the faithful choice, and it is the SAME line reportLatexShaderInkRaster draws for
+ * a shader FILL, for the same reason.
+ *
+ * Text is not named here because a text op never takes the vector branch at all —
+ * see reportTextGlyphStrokeRaster.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean} true ⇒ send it to the raster fallback
+ */
+function reportLatexGlyphStrokeRaster(cmd) {
+  if (cmd.op !== "latexVector" || !isGradientPaint(cmd.glyphStroke)) return false;
+  reportExportFailureOnce(
+    "svg_backend:latex-glyph-stroke-shader",
+    "PowerRP SVG export: an equation's Glyph outline is a GRADIENT or MATERIAL, which paints one shader around the union of its glyph outlines — an SVG cannot express that on inline glyph paths, so those equations are embedded as rasters and the exported picture still matches what the renderer draws. A SOLID outline color exports as real vector strokes.",
+  );
+  return true;
+}
+
+/**
+ * Pure function. The SVG stroke attributes for a SOLID glyph outline, or "" when
+ * there is no outline or it is a shader (which the raster gate has already
+ * diverted). Emitted on each glyph <path>, in viewBox units — the space the op's
+ * width is already stated in.
+ *
+ * @example solidGlyphStrokeAttrs({}) // ""
+ * @example solidGlyphStrokeAttrs({glyphStroke: "#ff0000", glyphStrokeWidth: 4}) // ' stroke="rgba(255, 0, 0, 1)" stroke-width="4" paint-order="stroke fill"'
+ * @example solidGlyphStrokeAttrs({glyphStroke: {type: "linearGradient", stops: []}, glyphStrokeWidth: 4}) // "" (a shader outline rasterizes instead)
+ */
+function solidGlyphStrokeAttrs(cmd) {
+  if (!cmd.glyphStroke || !(cmd.glyphStrokeWidth > 0) || isGradientPaint(cmd.glyphStroke)) return "";
+  return ` stroke="${rgbaToCss(parseColor(cmd.glyphStroke))}" stroke-width="${fmt(cmd.glyphStrokeWidth)}" paint-order="stroke fill"`;
+}
+
+/**
+ * Query (reports once). Does a TEXT op need the raster fallback because its GLYPH
+ * OUTLINE is a SHADER paint?
+ *
+ * A SOLID outline is NOT here and does not rasterize: this backend emits real,
+ * SELECTABLE <text> elements, and an SVG <text> takes `stroke` + `stroke-width`
+ * natively — so outlined text exports as true vector, on both the rich and the
+ * legacy single-run path. A SHADER outline cannot ride that attribute (it takes a
+ * paint server, and the outline is one shader around the union of the letterforms),
+ * so it rasterizes, exactly as a shader outline on an equation does.
+ *
+ * @example reportTextGlyphStrokeRaster({op: "rect"}) // false
+ * @example reportTextGlyphStrokeRaster({op: "text", glyphStroke: "#f00", glyphStrokeWidth: 2}) // false (a solid outline is native SVG)
+ */
+function reportTextGlyphStrokeRaster(cmd) {
+  if (cmd.op !== "text" || !isGradientPaint(cmd.glyphStroke)) return false;
+  reportExportFailureOnce(
+    "svg_backend:text-glyph-stroke-shader",
+    "PowerRP SVG export: text whose glyph OUTLINE is a GRADIENT or MATERIAL is embedded as a raster — an SVG <text> element's stroke takes a colour, not one shader running around the union of the letterforms, so the exported picture still matches what the renderer draws. A SOLID outline color exports as real selectable vector text.",
+  );
+  return true;
+}
+
 /** Command (async; pushes SVG fragments for flat[start..end) — THE ORIGINAL
  *  per-op walk, unchanged, now called once per owner run. No try/catch here:
  *  the boundary is the caller's. */
@@ -982,7 +1099,7 @@ async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, ou
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
-    } else if (!SVG_VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd)) {
+    } else if (!SVG_VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd) || reportLatexGlyphStrokeRaster(cmd) || reportTextGlyphStrokeRaster(cmd)) {
       // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.
       //  A TRIMMED / TAPER-capped / ASYMMETRICALLY-capped stroke (opStrokeNeedsRaster)
       //  likewise rasterizes its own region rather than silently drawing the untrimmed

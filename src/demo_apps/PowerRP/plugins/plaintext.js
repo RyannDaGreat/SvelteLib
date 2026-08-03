@@ -739,6 +739,9 @@ export const plaintextPlugin = {
   // two layout engines — read the function before trying to remove it.
   reparametrizeToBox: plaintextReparametrizeToBox,
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
+  // It ALSO carries the GLYPH OUTLINE's half-width, because that outline sits
+  // outside the ink rect localBounds reports — the term lives in the shared reach
+  // function, which is where that docblock says to add reach rather than in callers.
   cullMargin: effectsCullMargin,
   // Anchors sit on the bbox rim (the shared standard anchors) — same choice
   // plugins/text.js makes; a text box's selectable frame IS its bounding box.

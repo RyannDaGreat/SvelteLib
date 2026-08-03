@@ -1103,7 +1103,7 @@ async function emitOpRange(flat, start, end, commands, rawIndexOf, region, out, 
       await emitCrop(cmd, world, region, out, ctx);
     } else if (cmd.op === "effectSubtree") {
       await emitEffect(cmd, world, region, out, ctx);
-    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd) || opHasMaskBlur(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd)) {
+    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd) || opHasMaskBlur(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd) || reportGlyphStrokeRaster(cmd)) {
       // (A MATERIAL-filled shape op is vector-shaped but shader-filled — PDF has
       // no vector form for it, so it takes the same region raster-embed. A
       // TRIMMED / TAPER-capped / ASYMMETRICALLY-capped stroke (opStrokeNeedsRaster)
@@ -1407,6 +1407,41 @@ function reportLatexShaderInkRaster(cmd) {
   reportExportFailureOnce(
     "pdf_backend:latex-shader-ink",
     "PowerRP PDF export: an equation's Color is a GRADIENT or MATERIAL, which paints one shader across the union of its glyph outlines — a PDF fills each glyph path with one colour or shading, so those equations are embedded as rasters and the exported page still matches what the renderer draws. Use a SOLID color for a fully vector equation.",
+  );
+  return true;
+}
+
+/**
+ * Query (reports once). Does this op need the raster fallback because it carries a
+ * GLYPH OUTLINE (text or equation) this backend cannot draw as vector?
+ *
+ * THIS IS A WIDER GATE THAN THE SVG ONE, and the difference is real rather than an
+ * oversight, so it is stated plainly: the SVG backend exports a SOLID outline as
+ * true vector on both widgets (an <text> element and a <path> each take `stroke`
+ * natively, and glyph `d`s are emitted verbatim). This backend does not — its
+ * equation path groups glyphs by colour and emits ONE nonzero fill operator per
+ * group (`f`), and its text path draws through embedded fonts with a fill colour;
+ * neither writes a stroke. Expressing an outline here means the fill-and-stroke
+ * operator (`B`) plus a stroke colour/width per group for equations, and the text
+ * render mode for type — real work, and honest follow-up work rather than something
+ * to fake.
+ *
+ * So outlined glyphs rasterize into the page. That keeps the PDF matching the
+ * renderer exactly, which is the hybrid rule's whole promise, and the message names
+ * the SVG route for anyone who needs vector today.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean} true ⇒ send it to the raster fallback
+ *
+ * @example reportGlyphStrokeRaster({op: "rect"}) // false
+ * @example reportGlyphStrokeRaster({op: "text", glyphStrokeWidth: 0}) // false
+ */
+function reportGlyphStrokeRaster(cmd) {
+  if (cmd.op !== "text" && cmd.op !== "latexVector") return false;
+  if (!cmd.glyphStroke || !(cmd.glyphStrokeWidth > 0)) return false;
+  reportExportFailureOnce(
+    "pdf_backend:glyph-stroke",
+    "PowerRP PDF export: text or an equation with a glyph OUTLINE is embedded as a raster — this backend fills glyph paths (and draws type through embedded fonts) without a stroke operator, so the outline is rasterized and the exported page still matches what the renderer draws. The SVG export writes solid outlines as true vector.",
   );
   return true;
 }
