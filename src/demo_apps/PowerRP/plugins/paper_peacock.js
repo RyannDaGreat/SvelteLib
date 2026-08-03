@@ -43,6 +43,16 @@
  * decode PDFs and REPORTS the omitted image ops) still renders the true
  * silhouette for geometry checks.
  *
+ * ── SHATTER: THE FAN BECOMES ITS SHEETS ───────────────────────────────────────
+ * User, 2026-08-02: "Shatter should work for paper peacock too." It does, and
+ * this is the one widget whose shatter loses NOTHING: a sheet IS a whole-page
+ * raster at a rect, which is exactly what plugins/pdf_page.js draws, so every
+ * part comes back as a native editable widget (vectorRecovery 1) rather than as
+ * a picture. See `shatter` below for what each sheet carries, and
+ * `sheetTransform` for why the shared pivot is written as a NUMERIC
+ * rotationAnchor — the one thing the per-item `self.anchors.center` default
+ * structurally cannot express.
+ *
  * ── THE THREE KINDS OF STATE ──────────────────────────────────────────────────
  * Property state only: the whole render is pure(document, [[slide, alpha]]).
  * No clock, no randomness, no frame-to-frame carry.
@@ -58,6 +68,7 @@ import { closestPointOnSegment } from "../core/outline.js";
 import { image, path, pushTransform, popTransform, SUPERSAMPLE_DENSITY } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { reportOnce } from "../core/report.js";
+import { partKey } from "../core/shatter.js"; // core, not a plugin — the mermaid/svg precedent
 import {
   ensurePdfDoc, ensurePdfPagePointSize, ensurePdfPageRasterized,
   pdfPageCount, pdfPagePointSize, pdfPageRef,
@@ -334,6 +345,52 @@ export function rectPathD(x, y, w, h) {
 }
 
 /**
+ * Pure function. THE SHATTER GEOMETRY — one sheet of a fan as a free-standing
+ * widget's stored transform, in WORLD units.
+ *
+ * The fan draws each sheet as `pushTransform(rotationAboutPivot(...))` over the
+ * SHARED base rect; a shattered sheet has no such enclosing frame, so the same
+ * pose has to be expressed in the terms a stored item owns: an unrotated box at
+ * the base rect, plus `rotation`, plus a rotationAnchor at the SHARED PIVOT. That
+ * pivot is the whole reason the anchor is written NUMERICALLY here rather than
+ * left at the `self.anchors.center` default every other widget keeps — the pages
+ * pivot about ONE point they all share, which is precisely the thing a per-item
+ * self-center anchor cannot say. Written as numbers rather than as an equation
+ * naming a sibling because the pivot is a POSITION, not a relationship: binding
+ * it to one arbitrary sheet's anchor would make that sheet's deletion silently
+ * re-pose the other seven.
+ *
+ * `rotation` is RADIANS (core stores radians; degrees are a DISPLAY unit —
+ * web/displayUnits.js), which is why the layout's degrees are converted here and
+ * not left for a caller to remember.
+ *
+ * Args:
+ *   layout (object): peacockLayout's shape, in the host's LOCAL units
+ *   i (number): the sheet's index into layout.angles (0 = the top sheet, page `first`)
+ *   box ({x, y, w, h}): the host's WORLD box — local (0,0) lands at its origin
+ *
+ * Returns:
+ *   {x, y, w, h, rotation, rotationAnchor: {x, y}} — a stored item's transform
+ *
+ * @example // an unrotated single-sheet fan is just the base rect, offset into the box
+ * @example sheetTransform(peacockLayout(100, 100, 1, 0, 1, 1), 0, {x: 10, y: 20, w: 100, h: 100})
+ * {"x":10,"y":20,"w":100,"h":100,"rotation":0,"rotationAnchor":{"x":60,"y":120}}
+ * @example // the pivot is SHARED: every sheet of a fan reports the same anchor
+ * @example sheetTransform(peacockLayout(200, 100, 2, 90, 1, 1), 1, {x: 0, y: 0, w: 200, h: 100}).rotationAnchor.x
+ * 100
+ * @example sheetTransform(peacockLayout(200, 100, 2, 90, 1, 1), 1, {x: 0, y: 0, w: 200, h: 100}).rotation
+ * 1.5707963267948966
+ */
+export function sheetTransform(layout, i, box) {
+  return {
+    x: box.x + layout.pageX, y: box.y + layout.pageY,
+    w: layout.pageW, h: layout.pageH,
+    rotation: (layout.angles[i] * Math.PI) / 180,
+    rotationAnchor: { x: box.x + layout.pivotX, y: box.y + layout.pivotY },
+  };
+}
+
+/**
  * Query (reads the shared PDF caches — pdfPageCount / pdfPagePointSize — but
  * kicks nothing and mutates nothing; emit() owns the ensure* side effects).
  * The fan a STATE resolves to right now: its local layout, the trimmed
@@ -537,6 +594,92 @@ export const paperPeacockPlugin = {
         },
       },
     ];
+  },
+  /**
+   * Pure function (two cache reads). Why this fan cannot be shattered YET, or
+   * null. Cheap on purpose — it is a command GATE, re-evaluated on every palette
+   * render (core/shatter.js shatterNotReadyReason).
+   *
+   * TWO conditions, and the second is the one that earns this hook. A fan with no
+   * PDF has nothing to become. But a fan whose PDF has not OPENED yet is worse
+   * than empty: `stateLayout` falls back to DEFAULT_PAGE_ASPECT and to the
+   * REQUESTED page count, so shattering then would bake US-Letter proportions and
+   * an untrimmed page window into eight permanent items — silently wrong, and
+   * wrong in a way the author would have to undo rather than notice. Waiting for
+   * `pdfPageCount` costs a moment; not waiting costs a re-do.
+   *
+   * @example paperPeacockPlugin.shatterNotReady({src: ""})
+   * 'a PDF chosen — an empty peacock has no sheets to shatter into'
+   */
+  shatterNotReady(s) {
+    const src = typeof s.src === "string" && s.src.length > 0 ? s.src : null;
+    if (!src) return "a PDF chosen — an empty peacock has no sheets to shatter into";
+    if (pdfPageCount(src) === null)
+      return "a PDF that has finished opening (its page count and page size are not known yet, and shattering now would bake in guesses)";
+    return null;
+  },
+  /**
+   * Pure function. THE FAN, BECOME ITS SHEETS: one `pdf_page` widget per sheet,
+   * each posed exactly where the fan drew it.
+   *
+   * ── WHY `pdf_page` AND NOT A RASTER ──────────────────────────────────────────
+   * core/shatter.js's whole argument is fidelity versus EDITABILITY: an image
+   * floor is always available and always useless. Here the native widget is
+   * exact — a peacock sheet IS a whole-page PDF raster at a rect, which is
+   * literally what `pdf_page` emits — so every part comes back as vector-grade
+   * editable content and `vectorRecovery` is 1. Nothing is approximated, so
+   * nothing is disclosed as raster.
+   *
+   * ── WHAT EACH SHEET CARRIES ──────────────────────────────────────────────────
+   *   · its POSE — the shared base rect plus its own rotation about the SHARED
+   *     pivot, via `sheetTransform` (see there for why the anchor is numeric).
+   *   · its SHADOW — the fan's baked shadow rect becomes the sheet's own
+   *     `effects` shadow bundle, in the units that bundle wants (the fan stores
+   *     blur as a FRACTION of page width and the offsets as fractions of the
+   *     blur; a stored item stores canvas units). This is a real gain in
+   *     editability: eight shadows that could only move together become eight
+   *     that can be tuned one at a time.
+   *   · its Z — parts are written in plan order with RISING z (core/shatter.js
+   *     shatteredDocument), and the fan draws DEEPEST FIRST, so the plan is
+   *     emitted deepest-first too and page `first` lands on top exactly as it
+   *     did before. Back-to-front is preserved by ordering, not by a z field.
+   *
+   * The host's own `opacity` is NOT pushed onto the sheets: it survives on the
+   * GROUP (retype RULE 1 fills the group's own keys), so the group still fades
+   * the fan as one — pushing it down as well would square it.
+   *
+   * @param {object} s - the item's evaluated state
+   * @param {{box: {x, y, w, h}}} ctx - the host's WORLD box; sheets are placed in it
+   * @returns {{parts: Array<{key: string, label: string, state: object}>, notes: string[]}}
+   */
+  shatter(s, ctx) {
+    const { layout, first, count, src } = stateLayout(s);
+    if (!src) throw new Error("Paper Peacock: no PDF is chosen, so there are no sheets to shatter into.");
+    // The fan is fitted to the host's LOCAL box; ctx.box is the host's WORLD box.
+    // Re-fit to the world box so the sheets land where they are drawn even when
+    // the host carries a scale (the mermaid/svg precedent: ctx.box is the frame).
+    const worldLayout = peacockLayout(
+      ctx.box.w, ctx.box.h, count, s.fanAngle ?? 0, s.hRatio ?? 1,
+      layout.pageH / layout.pageW,
+    );
+    const blur = (s.shadowBlur ?? 0) * worldLayout.pageW;
+    const shadow = {
+      blur,
+      dx: (s.shadowDx ?? 0) * blur,
+      dy: (s.shadowDy ?? 0) * blur,
+      color: SHADOW_INK,
+      opacity: s.shadowOpacity ?? 0,
+    };
+    const parts = [];
+    for (let i = count - 1; i >= 0; i--) { // DEEPEST FIRST — rising z restores page `first` on top
+      const page = first + i;
+      parts.push({
+        key: partKey(`sheet${page}`),
+        label: `page ${page}`,
+        state: { type: "pdf_page", src, page, ...sheetTransform(worldLayout, i, ctx.box), shadow },
+      });
+    }
+    return { parts, notes: [] };
   },
   presets: [
     {
