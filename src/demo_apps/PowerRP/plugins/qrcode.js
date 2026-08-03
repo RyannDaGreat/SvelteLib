@@ -35,6 +35,7 @@
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRoundedRect } from "../core/outline.js";
+import { morphPayloadFromPaths } from "../core/morph_payload.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import { num } from "../core/shapes.js";
 import * as T from "../core/transform.js";
@@ -335,6 +336,60 @@ export const qrcodePlugin = {
     if (!isTransparentColor(s.light)) ops.push(rect({ x: 0, y: 0, w, h, fill: s.light, opacity }));
     ops.push(path({ d, fill: s.dark, opacity }));
     return applyEffects(ops, s, world, { x: 0, y: 0, w, h });
+  },
+  /**
+   * Pure function. Why this QR cannot morph YET, or null — the `morphNotReady`
+   * half of the morph protocol (core/registry.js). It shares `qrDataIsEmpty`
+   * with emit()'s ghost short-circuit, so the gate cannot disagree with what is
+   * actually drawn: a ghosted code draws NOTHING, and morphing a real contour
+   * against an empty payload would pair it with nothing.
+   *
+   * @example qrcodePlugin.morphNotReady({data: ""}) // 'data to encode (this code is empty)'
+   * @example // qrcodePlugin.morphNotReady({data: "https://x"}) // null
+   */
+  morphNotReady(s) {
+    return qrDataIsEmpty(s.data) ? "data to encode (this code is empty)" : null;
+  },
+  /**
+   * Near-pure function (delegates the matrix to qrMatrix → the qrcode library;
+   * DETERMINISTIC). THE MORPH OUTLINE (core/registry.js's `morphPaths`
+   * protocol): the dark modules as cubic contours, from the SAME
+   * `qrMatrix` + `qrMatrixToPathD` pair emit() draws with — so what morphs is
+   * exactly what renders, run-merging and all.
+   *
+   * THE QUIET ZONE IS WHY THE PAYLOAD IS NOT SIMPLY "THE BOX". `qrMatrixToPathD`
+   * already places every module at its true box-local position: the grid is
+   * scaled by min(w,h)/(N + 2·quiet) and CENTERED, so the modules occupy an inset
+   * sub-rect of the box and a non-square box leaves slack on the long axis. That
+   * offset must ride along or the morph's first frame jumps away from what the
+   * widget was showing at alpha 0 — the LL lesson (a payload has to describe
+   * where the ink ACTUALLY sits in the box, not where the box is). Since the `d`
+   * is generated in box coordinates already, the honest space IS the box and
+   * there is nothing to bake; the inset is inside the coordinates.
+   *
+   * THE BACKGROUND RECT IS DELIBERATELY NOT IN THE PAYLOAD. emit() draws an
+   * optional light rect UNDER the modules, and it is a backdrop rather than ink:
+   * including it would hand the aligner a box-sized contour that dominates
+   * pairing (it is by far the largest subpath), so a QR→circle would pair the
+   * circle with the BACKGROUND and collapse the whole grid into the middle. The
+   * "Overlay" preset draws no rect at all, so it would also make the payload
+   * depend on a paint choice. What morphs is the code.
+   *
+   * NONZERO WINDING, matching emit()'s `path` op (which declares no fillRule and
+   * therefore fills nonzero). The module rectangles are disjoint, so the two
+   * rules agree on a real code — stating it keeps them from drifting apart if a
+   * future style ever overlaps runs.
+   *
+   * PERFORMANCE, MEASURED rather than assumed: a version-4 code (33×33) merges to
+   * ~180 subpaths and a dense version-10 to ~450, and the aligner pairs subpaths
+   * with an O(n·m) score matrix. tests/morph_qrcode_test.js times a real
+   * QR→circle alignment and records the number.
+   */
+  morphPaths(s) {
+    const w = s.w ?? 0, h = s.h ?? 0;
+    const matrix = qrMatrix(s.data ?? "", s.ecLevel ?? "M");
+    const d = qrMatrixToPathD(matrix, { boxW: w, boxH: h, quietModules: s.quietModules ?? QR_SPEC_QUIET_ZONE_MODULES });
+    return morphPayloadFromPaths([{ d, paint: { fill: s.dark ?? null, stroke: null, strokeWidth: 0, opacity: s.opacity ?? 1 } }], { w, h });
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
