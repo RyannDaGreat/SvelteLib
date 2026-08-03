@@ -41,6 +41,7 @@ import { audioPlugins } from "../plugins/audio_index.js";
 import { knobAt, knobBandScale, knobRadius, KNOB_BAND_MIN_SCALE } from "../core/node_knobs.js";
 import { knobBandTop } from "../core/audio_nodes.js";
 import { MIXER_SPEC } from "../core/audio_specs.js";
+import { PORT_BEAD_R, PORT_MIN_PITCH_SCALE, PORT_PITCH, PORT_TOP_INSET, portAt, portLayout, portPitchFor, portsOnlyFloorHeight } from "../core/nodeflow.js";
 // web/knobFocus.js is DOM-free despite its path — it is pure geometry and pure
 // policy, which is exactly why BX put the press and the cursor behind it.
 import { knobCursorFor, knobDialAt } from "../web/knobFocus.js";
@@ -63,17 +64,38 @@ const check = (label, fn) => {
  * to escape entirely).
  *
  * BELOW THE FLOOR THE CARD IS GENUINELY TOO SHORT AND THE BAND CLIPS, ON PURPOSE.
- * A node's PORT ROWS are placed from its top edge by fixed constants in
- * core/nodeflow.portLayout — they are not part of this workstream's seam and they
- * do not reflow — so a Mixer shorter than ~235 has already spent its whole body on
- * beads and has no band to give. At that point the registry docblock's rule
- * applies (SHOW the overflow so the author can see the node is too small), and a
- * sweep that asserted otherwise would be asserting the ports away.
+ * At that point the registry docblock's rule applies (SHOW the overflow so the
+ * author can see the node is too small), and a sweep that asserted otherwise
+ * would be asserting the ports away.
  *
- * `PORTS_ONLY_H` is where that begins, stated once rather than dotted through the
- * checks, and pinned by its own check below so it cannot silently drift upward.
+ * ── THERE ARE TWO FLOORS, AND THIS CONSTANT WAS ALWAYS THE BAND'S ──────────
+ * (workstream CH, 2026-08-03, re-deriving CD's deferred item.)
+ *
+ * CD left port-row reflow as its deferred item and CH did it:
+ * core/nodeflow.portPitchFor now closes the gaps between port rows against the
+ * resolved height, on the same cheapest-loss-first ladder (floor → uniform scale
+ * → visible clip) the knob band already used. So the note that used to justify
+ * this number — port rows "are not part of this workstream's seam and they do not
+ * reflow" — is no longer true and has been removed.
+ *
+ * BUT RE-DERIVING THE NUMBER FROM THE PORT GEOMETRY WAS WRONG, and measuring is
+ * what caught it. The mixer's port column now bottoms out at 145, yet its knob
+ * band still stops fitting at 235 — the two are independent, and they always were.
+ * 235 was never "the height at which the ports fill the card"; it is the height at
+ * which THE BAND runs out of room, which is what every check in this file that
+ * uses it actually sweeps. Pointing it at the port floor pushed the CD sweeps 90
+ * units into territory where the band legitimately clips, turning four green
+ * checks red against code nobody had broken.
+ *
+ * So the constant keeps its value and gets its honest name, and the port floor
+ * lives beside it as its own DERIVED figure (a literal is a claim about geometry
+ * that stops being true the moment the geometry moves — exactly what happened to
+ * the old justification). The CH checks below sweep the port floor; the CD checks
+ * above keep sweeping the band's.
  */
 const PORTS_ONLY_H = 235;
+/** The height at which the PORT COLUMN itself bottoms out — derived, not frozen. */
+const PORT_FLOOR_H = portsOnlyFloorHeight(audioMixerPlugin, audioMixerPlugin.defaults);
 const HEIGHTS = [500, 400, 355, 320, 300, 280, 260, 250, 240, PORTS_ONLY_H];
 const WIDTHS = [300, 220, 150, 120, 100];
 
@@ -168,6 +190,70 @@ check("CD: the ports-only floor is where it is claimed to be, and one unit above
   assert.ok(fits(PORTS_ONLY_H), `the mixer's band does not fit at the claimed floor h=${PORTS_ONLY_H}`);
   assert.ok(!fits(PORTS_ONLY_H - 5),
     `the mixer's band fits below the claimed floor — PORTS_ONLY_H is too high and the sweep is testing less than it could`);
+});
+
+// ── CH: THE PORT ROWS REFLOW TOO (CD's deferred item) ────────────────────────
+
+check("CH: the PORT floor is derived from the port geometry, and sits well below the BAND floor", () => {
+  // The value itself, stated once so a change to the layout constants has to come
+  // through here. 8 rows -> 7 gaps at half of PORT_PITCH, plus the two insets.
+  const gaps = Math.max(MIXER_SPEC.inputs.length, MIXER_SPEC.outputs.length) - 1;
+  assert.equal(PORT_FLOOR_H, PORT_TOP_INSET + gaps * PORT_PITCH * PORT_MIN_PITCH_SCALE + PORT_TOP_INSET);
+  assert.equal(PORT_FLOOR_H, 145, "the mixer's derived port-column floor");
+  // THE TWO FLOORS ARE DIFFERENT THINGS, and this is the assertion that keeps them
+  // from being conflated again: the band gives out at 235 while the column still
+  // has 90 units of squeeze left. It also catches a silent revert of the reflow —
+  // at fixed pitch the column's floor is 222, just under the band's rather than
+  // far below it.
+  assert.ok(PORT_FLOOR_H < PORTS_ONLY_H - 50,
+    "the reflow must BUY real height — a port floor near the band's means port rows stopped reflowing");
+});
+
+check("CH: a Mixer's beads stay INSIDE the card at every height down to the PORT floor", () => {
+  // THE DEFECT, stated as its own sweep. Before the reflow the mixer's last input
+  // bead sat at y=188 at EVERY height, so h=150 put three beads below the bottom
+  // rim — detached wire anchors, the port-row twin of the screenshot CD fixed.
+  for (const h of [...HEIGHTS, 200, 180, 160, PORT_FLOOR_H]) {
+    const rows = portLayout(audioMixerPlugin, { ...audioMixerPlugin.defaults, h });
+    const lowest = Math.max(...rows.map((p) => p.y));
+    assert.ok(lowest <= h + 0.001,
+      `mixer at h=${h}: the last bead sits at y=${lowest.toFixed(1)}, past the bottom rim`);
+  }
+});
+
+check("CH: the squeeze STOPS at its floor — below it the ports clip VISIBLY rather than vanishing", () => {
+  // The third rung of the ladder. A pitch that kept closing would eventually stack
+  // every bead on one point: a column that looks like one port but still answers
+  // to eight hit tests, which is worse than an overflow the author can SEE.
+  const tiny = portPitchFor(8, 10);
+  assert.equal(tiny, PORT_PITCH * PORT_MIN_PITCH_SCALE, "the pitch bottoms out rather than collapsing");
+  // And at that floor successive beads are still separable — further apart than a
+  // bead is wide, so `portAt`'s nearest-wins never has to break a tie between two
+  // beads that are drawn on top of each other.
+  assert.ok(tiny >= PORT_BEAD_R, `beads ${tiny} apart are closer than a bead radius (${PORT_BEAD_R})`);
+});
+
+check("CH: the HIT TEST and the WIRE ANCHOR follow the reflowed bead, not its old slot", () => {
+  // The way CD kept `dialUnder` honest: the picture and the grab must move
+  // together. `portAt` reads portLayout, so this asserts they cannot drift.
+  const h = 150;
+  const state = { ...audioMixerPlugin.defaults, h };
+  const inputs = portLayout(audioMixerPlugin, state).filter((p) => p.x === 0);
+  const last = inputs.at(-1);
+  assert.ok(last.y < 188, `at h=${h} the last bead must have moved up from its fixed-pitch slot y=188`);
+  assert.equal(portAt(audioMixerPlugin, state, last.x, last.y, 0)?.key, last.key,
+    "the bead is grabbable where it is drawn");
+  assert.equal(portAt(audioMixerPlugin, state, 0, 188, 0), null,
+    "and NOT where it used to be — a stale hit region is a wire that lands on nothing");
+});
+
+check("CH: a NEGATIVE h is a flip, not a zero-height card", () => {
+  // The registry's negative-extent contract. Without resolving the sign a
+  // vertically flipped node computes negative room and reflows to the floor for a
+  // reason the author cannot see anywhere on screen.
+  const up = portLayout(audioMixerPlugin, { ...audioMixerPlugin.defaults, h: 355 });
+  const down = portLayout(audioMixerPlugin, { ...audioMixerPlugin.defaults, h: -355 });
+  assert.deepEqual(down.map((p) => p.y), up.map((p) => p.y));
 });
 
 check("CD: THE REGRESSION ITSELF — the natural band top is BELOW the card at the reported heights", () => {

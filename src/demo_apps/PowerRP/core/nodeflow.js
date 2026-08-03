@@ -1031,6 +1031,18 @@ export const PORT_BEAD_R = 6;
 export const PORT_PITCH = 22;
 export const PORT_TOP_INSET = 34; // clears the title bar
 
+/**
+ * The tightest the port column may be squeezed, as a fraction of PORT_PITCH.
+ *
+ * At this factor successive beads on one side are PORT_PITCH·PORT_MIN_PITCH_SCALE
+ * apart. The floor is set by the beads themselves: they are drawn and grabbed at a
+ * radius, so a pitch that closes below roughly a bead diameter stops being a
+ * column of separable targets and becomes one smear that eats presses — the same
+ * judgement KNOB_BAND_MIN_SCALE makes for dials, and `portAt`'s nearest-bead-wins
+ * rule is what keeps the answer unambiguous while they are merely close.
+ */
+export const PORT_MIN_PITCH_SCALE = 1 / 2;
+
 /** The bezier's horizontal control reach, in WORLD units. The minimum keeps a
  *  vertical wire an S-curve instead of a straight line through both cards; the
  *  maximum stops a long wire bowing into an arc that leaves the slide. */
@@ -1087,25 +1099,122 @@ export function wireBezierPath(from, to) {
  * @returns {object[]} [{key, type, label, side, x, y}] in LOCAL coords
  *
  * @example portLayout({ports: () => ({inputs: [{key: "a", type: "number"}], outputs: [{key: "o", type: "number"}]})}, {w: 120, h: 80}).map((p) => [p.key, p.x, p.y]) // [["a", 0, 34], ["o", 120, 34]]
- * @example portLayout({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}]})}, {w: 120, h: 80})[1].y // 56
+ * @example // a card with room places its rows a full PORT_PITCH apart
+ * @example portLayout({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}]})}, {w: 120, h: 120})[1].y // 56
+ * @example // …and a SHORT one closes the gap so the bead stays inside the rim
+ * @example // (h 80 leaves 80-34-34 = 12 for a 22-unit gap, so the pitch becomes 12)
+ * @example portLayout({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}]})}, {w: 120, h: 80})[1].y // 46
  * @example portLayout({}, {w: 10, h: 10}) // []
  */
 export function portLayout(plugin, state) {
   const { inputs, outputs } = declaredPorts(plugin, state);
   const w = state?.w ?? 0;
-  const place = (list, x) => list.map((p, i) => ({ ...p, x, y: PORT_TOP_INSET + i * PORT_PITCH }));
+  const pitch = portPitchFor(Math.max(inputs.length, outputs.length), unsignedH(state));
+  const place = (list, x) => list.map((p, i) => ({ ...p, x, y: PORT_TOP_INSET + i * pitch }));
   return [...place(inputs, 0), ...place(outputs, w)];
 }
 
 /**
- * Pure function. The minimum body HEIGHT a node needs to hold its port columns —
- * the taller of the two columns plus a bottom margin equal to the top inset. Node
- * plugins use it as their default `h` so a freshly-inserted node is never born with
- * beads hanging off its bottom edge.
+ * Pure function. A node's RESOLVED height, or undefined when it did not state one.
+ *
+ * A stored `h` MAY BE NEGATIVE — that is a flip, and the registry's contract is
+ * that plugins never see the sign (the two entrances are geometry.normalizedBox
+ * and unsignedState). Port layout is one of the pre-derivation readers, so it
+ * resolves the sign itself; without this a vertically-flipped node would compute
+ * a negative room and reflow to the floor for no reason the author could see.
+ */
+function unsignedH(state) {
+  const h = state?.h;
+  return Number.isFinite(h) ? Math.abs(h) : undefined;
+}
+
+/**
+ * Pure function. THE PORT-ROW RESIZE SEAM — the vertical pitch a node's port
+ * column is laid out at so its beads stay inside the RESOLVED BOX, and PORT_PITCH
+ * when they already do.
+ *
+ * ── WHY THIS EXISTS (workstream CH, extending CD's seam) ────────────────────
+ * CD taught the KNOB BAND to reflow against the resolved height, and recorded in
+ * tests/node_resize_chrome_test.js that port rows still did not: "A node's PORT
+ * ROWS are placed from its top edge by fixed constants in core/nodeflow.portLayout
+ * — they are not part of this workstream's seam and they do not reflow — so a
+ * Mixer shorter than ~235 has already spent its whole body on beads and has no
+ * band to give." That is this function's brief. MEASURED before the change: the
+ * Mixer's eight input rows end at y=188 at EVERY height, so at h=150 its lowest
+ * three beads hang below the bottom rim — detached wire anchors, which is the
+ * same escape the user photographed for the dials.
+ *
+ * ── CHEAPEST LOSS FIRST, the CD ordering ────────────────────────────────────
+ * 1. FLOOR — a card with room lays out at the full PORT_PITCH and nothing moves.
+ * 2. UNIFORM SCALE — a short card closes the pitch, keeping the column's rhythm.
+ * 3. VISIBLE CLIP — past PORT_MIN_PITCH_SCALE the squeeze stops and the overflow
+ *    SHOWS, per the registry docblock's rule, because a card too short for
+ *    separable beads must look too short rather than quietly hide its ports.
+ *
+ * ── WHAT IS SCALED, AND WHAT DELIBERATELY IS NOT ───────────────────────────
+ * ONLY THE PITCH. A knob band scales as a whole because a dial is a picture whose
+ * INTERNAL proportions carry its reading. A bead is not: it is a fixed-radius
+ * GRAB TARGET sitting astride the node's edge, and shrinking it would shrink the
+ * hit region and thin the wire's landing point exactly when the card is smallest
+ * and hardest to hit. So the beads keep their size and only the gaps between them
+ * close — the column compresses, the targets do not.
+ *
+ * PORT_TOP_INSET is likewise NOT scaled: it clears the TITLE BAR, whose height is
+ * a constant, so scaling it would slide the first bead up under the title rather
+ * than buy any room. Only the space BELOW the first bead is negotiable, which is
+ * why the room here is measured from PORT_TOP_INSET down.
+ *
+ * ── AN ABSENT HEIGHT IS "UNCONSTRAINED", NOT "ZERO ROOM" ───────────────────
+ * The same ruling knobBandScale makes, for the same reason: several pure-geometry
+ * callers ask for a column's SHAPE with no box in hand, and reading that silence
+ * as a zero-height card would collapse every one of them to the floor.
+ *
+ * @param {number} rows - ports on the taller side
+ * @param {number} [boxH] - the node's RESOLVED height; absent/non-finite = unconstrained
+ * @returns {number} a pitch in [PORT_PITCH·PORT_MIN_PITCH_SCALE, PORT_PITCH]
+ *
+ * @example // a card with room to spare places its ports at the full pitch
+ * @example portPitchFor(4, 300) // 22
+ * @example // exactly enough room is still full pitch (4 rows need 34 + 3·22 + 34 = 134)
+ * @example portPitchFor(4, 134) // 22
+ * @example // a short card CLOSES the gaps instead of letting beads escape
+ * @example portPitchFor(4, 101) // 11
+ * @example // …and the squeeze stops at the floor, where the overflow becomes visible
+ * @example portPitchFor(4, 40) // 11
+ * @example // fewer than two rows has no gap to negotiate
+ * @example portPitchFor(1, 10) // 22
+ * @example // no height stated is no statement about the card
+ * @example portPitchFor(8, undefined) // 22
+ */
+export function portPitchFor(rows, boxH) {
+  const gaps = Math.max(0, (rows ?? 0) - 1);
+  if (gaps === 0) return PORT_PITCH;
+  if (!Number.isFinite(boxH)) return PORT_PITCH;
+  // The bottom margin mirrors the top inset, exactly as minimumNodeHeight reserves
+  // it — the column is centred between title bar and bottom rim, not flush to it.
+  const room = boxH - PORT_TOP_INSET - PORT_TOP_INSET;
+  const need = gaps * PORT_PITCH;
+  if (room >= need) return PORT_PITCH;
+  return Math.max(PORT_PITCH * PORT_MIN_PITCH_SCALE, room / gaps);
+}
+
+/**
+ * Pure function. The NATURAL body height a node's port columns want — the taller
+ * of the two columns at the FULL PORT_PITCH, plus a bottom margin equal to the top
+ * inset. Node plugins use it as their default `h` so a freshly-inserted node is
+ * never born with beads hanging off its bottom edge.
+ *
+ * SINCE CH THIS IS A PREFERENCE, NOT A LIMIT, and the distinction matters. It is
+ * the height at which nothing has to give; a card shorter than this is no longer
+ * broken, it reflows (portPitchFor closes the gaps). The true floor — below which
+ * the pitch has bottomed out and the ports genuinely clip — is this same figure
+ * with the gaps taken at PORT_MIN_PITCH_SCALE, which is what
+ * `portsOnlyFloorHeight` reports. Reading THIS number as the clipping point is
+ * how a resize test would come to assert a limit the layout no longer has.
  *
  * @param {object} plugin - the node's plugin
  * @param {object} state - the folded state
- * @returns {number} minimum local height
+ * @returns {number} natural local height
  *
  * @example minimumNodeHeight({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}]})}, {}) // 90
  * @example minimumNodeHeight({ports: () => ({outputs: [{key: "o", type: "number"}]})}, {}) // 68
@@ -1114,6 +1223,33 @@ export function minimumNodeHeight(plugin, state) {
   const { inputs, outputs } = declaredPorts(plugin, state ?? {});
   const rows = Math.max(inputs.length, outputs.length);
   return PORT_TOP_INSET + Math.max(0, rows - 1) * PORT_PITCH + PORT_TOP_INSET;
+}
+
+/**
+ * Pure function. THE PORTS-ONLY FLOOR — the height below which a node's port
+ * column has spent every gap it has and its beads begin to clip.
+ *
+ * This is the number tests/node_resize_chrome_test.js used to carry as the literal
+ * 235, with a note that port rows "do not reflow" and so a Mixer shorter than that
+ * had "no band to give". Both halves of that changed at once: the column now
+ * reflows, so the floor moved DOWN, and it is now derived from the layout's own
+ * constants instead of being a measured constant that a later pitch change would
+ * silently invalidate. DERIVING it is the point — a floor written as a literal is
+ * a claim about geometry that stops being true the moment the geometry moves.
+ *
+ * @param {object} plugin - the node's plugin
+ * @param {object} state - the folded state
+ * @returns {number} the local height at which the port column bottoms out
+ *
+ * @example // two rows: 34 + 1·11 + 34
+ * @example portsOnlyFloorHeight({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}]})}, {}) // 79
+ * @example // one row has no gap, so its floor IS its natural height
+ * @example portsOnlyFloorHeight({ports: () => ({outputs: [{key: "o", type: "number"}]})}, {}) // 68
+ */
+export function portsOnlyFloorHeight(plugin, state) {
+  const { inputs, outputs } = declaredPorts(plugin, state ?? {});
+  const gaps = Math.max(0, Math.max(inputs.length, outputs.length) - 1);
+  return PORT_TOP_INSET + gaps * PORT_PITCH * PORT_MIN_PITCH_SCALE + PORT_TOP_INSET;
 }
 
 /**
