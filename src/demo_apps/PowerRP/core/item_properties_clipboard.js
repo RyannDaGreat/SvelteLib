@@ -446,9 +446,23 @@ export const UNIVERSAL_PASTE_KEYS = UNIVERSAL_MULTI_KEYS;
  *
  * THE CAMERA CANNOT BE HIDDEN (`purgeable: false` marks the mandatory singleton),
  * so `active` is refused onto it — offering it would promise a write the document
- * refuses. `type` is refused onto anything `retypeEligible` would refuse for the
- * same structural reasons (a camera, a group, a ghost); that gate lives in
- * core/retype.js and is applied by the caller, which is where the registry is.
+ * refuses.
+ *
+ * A STRUCTURAL WIDGET CANNOT BE RETYPED, and that gate has to live HERE rather
+ * than only in the app's transmutation adapter. Found by the test that pins it:
+ * the adapter correctly declined to run a retype plan on the camera, but `type`
+ * was still sitting in the retargeted state, so `itemPropertiesDelta` wrote it as
+ * an ORDINARY keyframe and the camera silently became a rect — the exact
+ * half-transmuted widget this workstream was told not to produce. A key that must
+ * not be written has to be refused where keys are chosen, not where one consumer
+ * of them happens to look.
+ *
+ * The marks are `retypeEligible`'s own (core/retype.js): the mandatory singleton,
+ * a subtree-folding group, a ghost, a metaball. They are READ FROM THE SAME
+ * CAPABILITIES rather than importing that predicate, because this module is pure
+ * core with no registry — and duplicating the four marks is checked by
+ * tests/paste_universal_test.js against the real registry, so the two cannot
+ * drift silently.
  *
  * @param {string} key - a universal key
  * @param {object} targetPlugin - the plugin being pasted onto
@@ -458,10 +472,15 @@ export const UNIVERSAL_PASTE_KEYS = UNIVERSAL_MULTI_KEYS;
  * // 'this widget is mandatory and cannot be hidden'
  * @example universalRefusal("active", {capabilities: {}}) // null
  * @example universalRefusal("morph", {capabilities: {purgeable: false}}) // null
+ * @example universalRefusal("type", {capabilities: {purgeable: false}})
+ * // 'this is a structural widget (the camera, a group, a ghost or a metaball) and cannot be retyped'
  */
 export function universalRefusal(key, targetPlugin) {
-  if (key === "active" && targetPlugin?.capabilities?.purgeable === false)
+  const c = targetPlugin?.capabilities ?? {};
+  if (key === "active" && c.purgeable === false)
     return "this widget is mandatory and cannot be hidden";
+  if (key === "type" && (c.purgeable === false || targetPlugin?.foldsSubtree || c.ghost || c.metaball))
+    return "this is a structural widget (the camera, a group, a ghost or a metaball) and cannot be retyped";
   return null;
 }
 
