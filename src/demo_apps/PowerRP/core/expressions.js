@@ -2149,6 +2149,95 @@ export function listResultProblem(decl, value) {
   return null;
 }
 
+// ── EVALUATE (baking an equation back down to a literal) ─────────────────────
+//
+// The REVERSE of entering equation mode, and the user's own framing of it
+// (2026-08-02): "it would exit out of equation mode, back into number mode, of
+// whatever value it currently had from that equation… Evaluating is the word I'm
+// looking for… it's the reverse of [ƒx] and you only see that when it is an
+// equation." The GUI surfacing is the "1 2 3" button that replaces ƒ on a row
+// that already stores an equation (web/Inspector.svelte, web/NumericField.svelte,
+// web/AngleField.svelte); this is the value rule those three share.
+//
+// WHICH TREE THIS READS, stated because the codebase has shipped bugs from
+// confusing the two (CLAUDE.md documents the stored/evaluated split, and
+// emit_poisoned_autosave was fixed by moving the other way): here the EVALUATED
+// tree is CORRECT and the raw stored tree would be wrong. The whole point is to
+// capture what the expression CURRENTLY PRODUCES — the stored value IS the
+// expression text, so baking it would write the string "=box.x + 10" as a
+// literal. So the caller passes the value it read from evaluateState/app.state(),
+// never from rawState(). That is the opposite of the direction most readers in
+// this file take, which is exactly why it is written down.
+
+/**
+ * Pure function. The LITERAL an evaluated value bakes to when its equation is
+ * discarded — the value half of the Evaluate affordance.
+ *
+ * Type fidelity per kind, because the row's editor must come back holding
+ * something it can actually edit: a number stays a number, a color stays its
+ * hex string, a boolean stays a boolean, a string (text/select/asset) stays
+ * itself. Only NUMBERS are touched at all, and only to TIDY them: an evaluated
+ * expression routinely lands on float dust (0.1 + 0.2 → 0.30000000000000004),
+ * and writing that as the row's new literal would put garbage in a box the user
+ * is about to read as "the value it had". `decimals` is the row's own shown
+ * precision (NumericField's shownDecimals: never coarser than the grid the row
+ * scrubs in), so the baked literal is exactly the number the user was LOOKING at
+ * when they pressed the button — no more precision than the field ever showed,
+ * and no less than its step can express.
+ *
+ * A non-finite number is NOT tidied to garbage or to zero: it is returned as-is
+ * so the caller's own validity gate (evaluateLiteralProblem) refuses the bake.
+ *
+ * @example evaluatedLiteral(0.30000000000000004, 3) // 0.3
+ * @example evaluatedLiteral(42, 3) // 42
+ * @example evaluatedLiteral(1.23456, 3) // 1.235
+ * @example evaluatedLiteral(1.23456, 5) // 1.23456
+ * @example evaluatedLiteral("#ff0000", 3) // "#ff0000"
+ * @example evaluatedLiteral(true, 3) // true
+ * @example evaluatedLiteral("multiply", 3) // "multiply"
+ */
+export function evaluatedLiteral(value, decimals = EVALUATE_DECIMALS) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return value;
+  const scale = 10 ** decimals;
+  return Math.round(value * scale) / scale;
+}
+
+// The shown-precision default when a caller has no row-specific one (the
+// Inspector's non-numeric kinds never reach the rounding branch at all, so this
+// only ever serves a plain numeric row that declared no finer step). Same 3 as
+// NumericField's SHOWN_DECIMALS, which is the long-standing default for the
+// shown value, the text-entry pre-fill and the evaluated badge — one number in
+// two files would be two numbers the day someone changed one.
+export const EVALUATE_DECIMALS = 3;
+
+/**
+ * Pure function. Why this equation must NOT be baked into a literal — a
+ * specific, actionable sentence — or null when Evaluate is safe to run.
+ *
+ * THE ERRORING-EQUATION RULE, and the reason it is a refusal rather than a
+ * bake: a broken equation does not evaluate to nothing, it evaluates to the
+ * plugin's FALLBACK (core replaces a bad result with the default rather than
+ * render garbage). So "evaluate" on a red row would silently stamp a default
+ * nobody chose over the expression that was the only record of the author's
+ * intent — destroying the one thing that could be repaired, and doing it while
+ * the row is visibly complaining. Refusing keeps the expression editable.
+ *
+ * `error` is the row's own derivation error (app.exprErrorAt(path)) — the same
+ * message the row's error badge already shows, so the button's reason and the
+ * badge cannot disagree.
+ *
+ * @example evaluateLiteralProblem(42, null) // null (a healthy equation bakes)
+ * @example evaluateLiteralProblem(42, 'Unknown variable "spedd"') // "this equation has an error — fix or clear it; evaluating would bake the fallback value"
+ * @example evaluateLiteralProblem(undefined, null) // "this equation has no value yet — nothing to bake"
+ * @example evaluateLiteralProblem(Infinity, null) // "this equation's value is not finite — nothing to bake"
+ */
+export function evaluateLiteralProblem(value, error) {
+  if (error) return "this equation has an error — fix or clear it; evaluating would bake the fallback value";
+  if (value === undefined || value === null) return "this equation has no value yet — nothing to bake";
+  if (typeof value === "number" && !Number.isFinite(value)) return "this equation's value is not finite — nothing to bake";
+  return null;
+}
+
 /**
  * Pure function. Every referencable equation path on a plugin's own
  * properties, in CANONICAL DISPLAY (snake_case, dot-joined) form — the
