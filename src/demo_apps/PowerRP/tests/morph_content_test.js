@@ -32,6 +32,8 @@
 
 import assert from "node:assert/strict";
 import { blendApplied, applied } from "../core/deltas.js";
+import { deriveRenderTree } from "../core/derive.js";
+import { morphIR } from "../render_gpu/ports.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { morphPayloadFromViewBox, viewBoxToBoxMatrix } from "../core/morph_payload.js";
@@ -257,6 +259,41 @@ test("content: contentMorphKeyFor names each widget's content leaf", () => {
   assert.equal(contentMorphKeyFor("latex"), "latex", "the equation's source");
   assert.equal(contentMorphKeyFor("plaintext"), "text", "the text box's string");
   assert.equal(contentMorphKeyFor("rect"), null, "a shape has no content leaf — its outline IS its geometry");
+});
+
+test("content: derive builds ONE plugin over TWO states, and ports paints it", () => {
+  // THE WHOLE PIPE, in one assertion, because the individual halves passing does
+  // not prove they meet: fold → derive → the `.morph` mark → morphIR → path ops.
+  // This is the pipe a CLI render of a mid-morph text frame walks, measured by
+  // hand at alphas 0/0.5/1 (exact "hello", letterforms in flight, exact "world")
+  // and pinned here so it stays walked.
+  setGlyphOutlines({
+    glyphPaths: (t) => [...t].map(() => ({ d: "M0 0L1 0L1 1L0 1Z", advance: 1 })),
+    unitsPerEm: 1,
+  });
+  try {
+    const items = {
+      t1: {
+        type: "plaintext", x: 0, y: 0, w: 400, h: 100, size: 40, font: "inter",
+        text: { type: CONTENT_MORPH_TOKEN, key: "text", from: "ab", to: "cd", t: 0.5 },
+      },
+    };
+    const nodes = deriveRenderTree({ items, vars: {} }, registry);
+    const node = nodes.find((n) => n.itemId === "t1");
+    assert.ok(node.morph, "a content token must hang a .morph mark on the node");
+    assert.equal(node.morph.fromPlugin, node.morph.toPlugin,
+      "ONE plugin, twice — that identity is what makes the mark shape shared with the type morph");
+    assert.equal(node.morph.fromState.text, "ab", "with the OUTGOING content substituted in");
+    assert.equal(node.morph.toState.text, "cd", "and the INCOMING one");
+    assert.equal(node.state.text, "cd", "while the node itself derives as the TARGET (the type morph's own rule)");
+    // And the render seam turns that mark into ordinary path ops, which is why no
+    // backend needed a change: the same op every vector widget already emits.
+    const ops = morphIR(node);
+    assert.ok(ops.length > 0, "the morph must emit ink");
+    assert.ok(ops.every((o) => o.op === "path"), `ordinary path ops only, got ${[...new Set(ops.map((o) => o.op))]}`);
+  } finally {
+    setGlyphOutlines(null);
+  }
 });
 
 // ── APPLICABILITY ────────────────────────────────────────────────────────────
