@@ -41,8 +41,12 @@
  * halves share one source of truth even though they cannot share one mechanism.
  */
 
-import { ellipse, rect, text } from "../render_gpu/ir.js";
+import { ellipse, path, rect, text } from "../render_gpu/ir.js";
 import { NODE_CORNER_R, PORT_BEAD_R, portColor, portLayout } from "./nodeflow.js";
+import {
+  KNOB_LABEL_GAP, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_R, KNOB_TRACK_WIDTH,
+  KNOB_VALUE_SIZE, knobArcPath, knobPoint, knobReadout,
+} from "./node_knobs.js";
 
 // ── THE PALETTE (one place; every node widget reads these) ───────────────────
 
@@ -357,6 +361,105 @@ export function nodeValueText(s, str, y) {
     boxW: w,
     boxStyle: { align: "center" },
   })];
+}
+
+/** The knob's TRACK: the unfilled part of the dial, and the same value as the
+ *  card's rim so a dial reads as part of the chrome rather than as content. */
+export const KNOB_TRACK_INK = NODE_RIM;
+/** The knob's LABEL ink — the port-label grey, because a knob label is the same
+ *  kind of thing as a port label and must not shout louder. */
+export const KNOB_LABEL_INK = NODE_PORT_INK;
+/** The pointer line's ink. The brightest thing on the dial, because it is the
+ *  one part you actually read at a glance. */
+export const KNOB_POINTER_INK = NODE_VALUE_INK;
+/** The pointer's inner end, as a fraction of the dial radius: it is a stub from
+ *  the rim inward, not a spoke from the centre — an Audulus dial's pointer does
+ *  not cross its own hub, and a full spoke turns the dial into a clock face. */
+export const KNOB_POINTER_INNER = 0.45;
+/** The FOCUS RING's radius beyond the dial, drawn only in knob focus. */
+export const KNOB_FOCUS_GAP = 4;
+
+/**
+ * Pure function. The display-list ops for one node's KNOBS — the dials on a
+ * module's face (core/node_knobs.js states the design and the founding ask).
+ *
+ * ── THIS RUNS IN emit(), SO IT IS DOCUMENT STATE ONLY ───────────────────────
+ * The dial's ANGLE comes from the folded knob value and nothing else, so a knob
+ * paints identically in the editor, in a PNG export, in the PDF and in bare-node
+ * cli/render.js, and Δt = 0 produces the same picture twice. Nothing here reads
+ * a clock, an engine or a pointer.
+ *
+ * The `ui` argument is the ONE exception and it is why the parameter is optional
+ * and defaulted to `{}`: a focus ring and a live readout are TRANSIENT EDITOR
+ * STATE (which knob the pointer is on), not document state, so `emit()` never
+ * passes it — every pixel consumer gets `{}` and the honest static dial. It
+ * exists because web/AudioOverlay.svelte paints the same knobs into its
+ * screen-space layer, the seam wave 2 established for the live meters, and
+ * building that overlay from THIS function is what stops the focused dial from
+ * being drawn a second, slightly different way.
+ *
+ * ── WHAT IS DRAWN, AND WHAT IS DELIBERATELY NOT ─────────────────────────────
+ * Four ops per knob: the track arc, the value arc, the pointer stub, the label.
+ * A fifth (the live value readout) appears only for the knob being TURNED,
+ * because a number under every dial is a wall of digits at the zoom where a
+ * whole patch fits on a slide — and the number matters exactly while you are
+ * changing it. No tick marks, no hub circle, no bevel, no shadow: ADDENDUM 6's
+ * "don't get gouty and disgusting", spent where it is cheapest to obey.
+ *
+ * `accent` is the node's FAMILY rim colour, so a knob's fill is the same one
+ * accent its card already wears — the palette does not grow with the knob count,
+ * which is the same discipline NODE_FAMILIES states for the cards.
+ *
+ * @param {Array<object>} layout - from core/node_knobs.knobLayout
+ * @param {string} accent - the value arc's colour (the node's family rim)
+ * @param {{focusKey?: string|null, activeKey?: string|null}} [ui] - transient
+ *        editor state: which knob wears the focus ring, which is being turned
+ * @returns {object[]} display-list commands, LOCAL coords
+ *
+ * @example // four ops for one knob: track arc, value arc, pointer, label
+ * @example knobOps([{key: "q", label: "Q", cx: 40, cy: 60, min: 0, max: 10, value: 5, fraction: 0.5, unit: ""}], "#6b5aa8").length // 4
+ * @example knobOps([{key: "q", label: "Q", cx: 40, cy: 60, min: 0, max: 10, value: 5, fraction: 0.5, unit: ""}], "#6b5aa8")[3].text // "Q"
+ * @example // the FOCUSED knob gains a fifth op: the ring behind its dial
+ * @example knobOps([{key: "q", label: "Q", cx: 40, cy: 60, min: 0, max: 10, value: 5, fraction: 0.5, unit: ""}], "#6b5aa8", {focusKey: "q"}).length // 5
+ * @example // the one being TURNED wears the ring AND its live readout — six
+ * @example knobOps([{key: "q", label: "Q", cx: 40, cy: 60, min: 0, max: 10, value: 5, fraction: 0.5, unit: ""}], "#6b5aa8", {activeKey: "q"}).length // 6
+ * @example knobOps([{key: "q", label: "Q", cx: 40, cy: 60, min: 0, max: 10, value: 5, fraction: 0.5, unit: ""}], "#6b5aa8", {activeKey: "q"})[5].text // "5"
+ * @example knobOps([], "#6b5aa8") // []
+ */
+export function knobOps(layout, accent, ui = {}) {
+  const ops = [];
+  for (const k of layout) {
+    // THE FOCUS RING IS FIRST so everything else draws over it — it is a halo
+    // behind the dial, not an outline on top of it.
+    if (ui.focusKey === k.key || ui.activeKey === k.key) {
+      ops.push(ellipse({
+        cx: k.cx, cy: k.cy, rx: KNOB_R + KNOB_FOCUS_GAP, ry: KNOB_R + KNOB_FOCUS_GAP,
+        fill: null, stroke: accent, strokeWidth: 1,
+      }));
+    }
+    ops.push(path({ d: knobArcPath(k, KNOB_R, 0, 1), fill: null, stroke: KNOB_TRACK_INK, strokeWidth: KNOB_TRACK_WIDTH }));
+    ops.push(path({ d: knobArcPath(k, KNOB_R, 0, k.fraction), fill: null, stroke: accent, strokeWidth: KNOB_TRACK_WIDTH }));
+    const tip = knobPoint(k, KNOB_R, k.fraction);
+    const heel = knobPoint(k, KNOB_R * KNOB_POINTER_INNER, k.fraction);
+    ops.push(path({
+      d: `M ${heel.x.toFixed(4)} ${heel.y.toFixed(4)} L ${tip.x.toFixed(4)} ${tip.y.toFixed(4)}`,
+      fill: null, stroke: KNOB_POINTER_INK, strokeWidth: 1.5,
+    }));
+    ops.push(text({
+      text: k.label, x: k.cx - KNOB_PITCH_X / 2, y: k.cy + KNOB_R + KNOB_LABEL_GAP,
+      size: KNOB_LABEL_SIZE, color: KNOB_LABEL_INK,
+      boxW: KNOB_PITCH_X, boxStyle: { align: "center" },
+    }));
+    if (ui.activeKey === k.key) {
+      ops.push(text({
+        text: knobReadout(k, k.value), x: k.cx - KNOB_PITCH_X / 2,
+        y: k.cy + KNOB_R + KNOB_LABEL_GAP + KNOB_VALUE_SIZE + 1,
+        size: KNOB_VALUE_SIZE, color: accent,
+        boxW: KNOB_PITCH_X, boxStyle: { align: "center" },
+      }));
+    }
+  }
+  return ops;
 }
 
 /**

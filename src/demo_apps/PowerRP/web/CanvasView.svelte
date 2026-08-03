@@ -22,6 +22,9 @@
   // the SVG. `portColor` is the ONE type→colour lookup the painter also reads.
   import { deriveWires } from "../core/derive.js";
   import { portColor } from "../core/nodeflow.js";
+  import { KNOB_FOCUS_GAP } from "../core/node_chrome.js";
+  import { KNOB_R } from "../core/node_knobs.js";
+  import { knobFocusUi } from "./knobFocus.js";
   import { allPortBeads, beadAt, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
   // THE AUDIO MIRROR (NF-BIND): the document reflected into the one synth engine.
   // ONE WAY ONLY — the engine never writes back, so the core invariant is untouched.
@@ -1367,15 +1370,33 @@
     if (active?.mode.onPick) {
       e.preventDefault();
       const w = worldPoint(e);
-      active.mode.onPick(modeContext(active), {
+      const verdict = active.mode.onPick(modeContext(active), {
         node: pickNode(app.nodes(), w.x, w.y, SNAP_PX / viewport.zoom),
         world: w,
         local: localPointOf(active.node, w.x, w.y),
       });
       refreshModePreview(active);
-      return true;
-    }
-    if (!active?.mode.onPan) return false;
+      // ── A PICK MAY DECIDE THE PRESS IS A DRAG, AND THAT IS NOT A CONTRADICTION
+      // OF THE PARAGRAPH ABOVE. "One press cannot both be consumed as a pick and
+      // open a drag" is still true: what changed is WHO decides which it was.
+      // For an eyedropper the answer is fixed and the mode never wants a drag.
+      // For KNOB FOCUS (web/knobFocus.js) it is not: the same press is a wire
+      // gesture on a bead, a turn on a dial, and an exit anywhere else, and only
+      // the mode can tell those apart because only the mode knows where its
+      // dials are. So `onPick` may RETURN "drag" to say "that press was mine and
+      // it opens a pan", and the pan branch below runs for it.
+      //
+      // RETURNING NOTHING KEEPS THE OLD BEHAVIOUR EXACTLY — the two shipped pick
+      // modes (bentoBind, lightPositionPin) return undefined and are unaffected.
+      // Returning "release" says the opposite: the mode did NOT want this press,
+      // so it falls through to the canvas's own machinery. Knob focus returns it
+      // for a press on a PORT BEAD, which is how the always-active wire layer
+      // keeps working inside the mode (the founding message's "even if it's not
+      // selected", and the lesson wave 2's delete-gesture incident recorded).
+      if (verdict === "release") return false;
+      if (verdict !== "drag") return true;
+    } else if (!active?.mode.onPan) return false;
+    if (!active?.mode.onPan) return true;
     // preventDefault SUPPRESSES THE NATIVE DRAG, and this gesture is the one place
     // in the app that needs it: a mode is entered by DOUBLE-CLICKING, a double-click
     // leaves a document text selection behind, and dragging a selection starts an
@@ -1463,7 +1484,20 @@
     // the pointer was captured at and stays the anchor a released drag resumes
     // from, while each locked step is self-contained (its own from/to pair).
     if (!locked) modeDrag.lastWorld = toWorld;
-    active.mode.onPan(modeContext(active), { dLocalX: b.x - a.x, dLocalY: b.y - a.y });
+    // `localX`/`localY` are the pointer's ABSOLUTE position in the widget's own
+    // frame, alongside the per-move delta. A mode that integrates travel wants
+    // the delta (interior pan, scene nav); a mode that measures FROM THE GRAB
+    // wants the absolute point, and knob focus is the second kind for a stated
+    // reason (core/node_knobs.knobDragValue: an accumulating gesture that clamps
+    // at an end stop feels stuck when it reverses). `fine` is the held modifier,
+    // read from the EVENT every move rather than frozen at the press, so
+    // pressing Shift mid-turn takes effect — the same rule the band-select
+    // modifiers follow.
+    active.mode.onPan(modeContext(active), {
+      dLocalX: b.x - a.x, dLocalY: b.y - a.y,
+      localX: b.x, localY: b.y,
+      fine: e.shiftKey,
+    });
   }
 
   /** Command. Release ends the pan gesture (one undo unit) and gives the pointer
@@ -1477,6 +1511,14 @@
     app.dragging = false;
     if (document.pointerLockElement) document.exitPointerLock();
     endModeGesture();
+    // `onPanEnd` AFTER the commit, so a mode that reports what it landed on is
+    // describing state the document actually holds. Optional like every other
+    // mode hook — the three shipped pan modes declare none and are unaffected.
+    const active = activeMode();
+    if (active?.mode.onPanEnd) {
+      active.mode.onPanEnd(modeContext(active));
+      refreshModePreview(active);
+    }
   }
 
   // A pending wheel-idle timer must not outlive the component: unmounting (entering
@@ -4780,7 +4822,7 @@
    */
   let nodeOverlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
-    if (!actions) return { wires: [], beads: [], ghost: null };
+    if (!actions) return { wires: [], beads: [], ghost: null, analysis: [], knobRings: [] };
     const nodes = app.nodes();
     const pt = (x, y) => actions.worldToScreen(x, y);
     // A wire is drawn in the colour of the SOURCE port's type — what flows through
@@ -4862,7 +4904,38 @@
         };
       })
       .filter((r) => r.w > 1 && r.h > 1);
-    return { wires, beads, ghost, analysis };
+    // ── THE KNOB FOCUS RING (wave 3) ─────────────────────────────────────────
+    // The DIALS themselves are painted by the plugin (core/node_chrome.knobOps),
+    // because a knob is part of the module's face and belongs in every export —
+    // the founding message's "knobs on them". What is transient, and therefore
+    // lives here beside the beads, is which dial the POINTER is on and which one
+    // is being TURNED. That is editor state, not document state; putting it in
+    // the display list would make a PNG export of a slide depend on where the
+    // mouse happened to be, which is the same category error the analysis
+    // overlay above exists to avoid.
+    //
+    // Empty except while knob focus is live, so a document with no audio nodes —
+    // and an audio document nobody is editing — pays one null check.
+    const knobRings = [];
+    if (app.canvasMode?.handlerId === "knob_focus") {
+      const focusNode = nodes.find((n) => n.itemId === app.canvasMode.itemId);
+      const ui = knobFocusUi(focusNode?.itemId ?? null, app.canvasMode.itemId);
+      for (const k of focusNode?.plugin?.knobLayout?.(focusNode.state) ?? []) {
+        if (k.key !== ui.focusKey && k.key !== ui.activeKey) continue;
+        const c = T.apply(focusNode.world, k.cx, k.cy);
+        const edge = T.apply(focusNode.world, k.cx + KNOB_R + KNOB_FOCUS_GAP, k.cy);
+        const cs = pt(c.x, c.y);
+        const es = pt(edge.x, edge.y);
+        knobRings.push({
+          id: `${focusNode.itemId}.${k.key}`, ...cs,
+          r: Math.hypot(es.x - cs.x, es.y - cs.y),
+          // `active` = being turned right now, which reads brighter than a hover.
+          active: k.key === ui.activeKey,
+          bound: k.bound,
+        });
+      }
+    }
+    return { wires, beads, ghost, analysis, knobRings };
   });
 
   /** The inset from a node's card edge to its live-overlay rect, and the top inset
@@ -5073,6 +5146,17 @@
             cx={bead.x} cy={bead.y}
             style={`--nf-wire-color: ${bead.color};`}
           ><title>{bead.label} ({bead.type})</title></circle>
+        {/each}
+        <!-- THE KNOB FOCUS RING. Only ever non-empty inside knob focus, and only
+             for the dial under the pointer or the one being turned — the dials
+             themselves are painted by the widget, like the beads above and for
+             the same reason (a knob belongs in an export; a hover does not).
+             `bound` marks a knob holding an = equation, which the mode refuses to
+             turn: the ring still appears, so the affordance is visible, and the
+             skin says it will not move. -->
+        {#each nodeOverlay.knobRings as ring (ring.id)}
+          <circle class="nf-knob-ring" class:nf-knob-active={ring.active} class:nf-knob-bound={ring.bound}
+                  cx={ring.x} cy={ring.y} r={ring.r} />
         {/each}
         {#each overlay.crosshairSegs as c}
           <line class="crosshair" class:crosshair-band={c.skin === "band"} class:crosshair-place={c.skin === "place"} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} />

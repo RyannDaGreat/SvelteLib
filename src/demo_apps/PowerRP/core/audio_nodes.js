@@ -59,7 +59,8 @@ import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
 import { NODE_ITEM_REFS, PORT_BEAD_R, minimumNodeHeight, nodeCardRim, nodeInkBounds, portLayout } from "./nodeflow.js";
-import { NODE_HEADER_H, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, portBeads } from "./node_chrome.js";
+import { NODE_HEADER_H, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, knobOps, nodeFamily, portBeads } from "./node_chrome.js";
+import { KNOB_PITCH_X, KNOB_ROW_H, knobLayout } from "./node_knobs.js";
 import { text } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
@@ -289,10 +290,15 @@ export function audioNodePlugin(spec) {
     // on declarations rather than on type strings (core/registry.js's law).
     audioModule: spec.module,
     audioSpec: spec,
+    // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the
+    // founding ask, verbatim — "If I double click the module, I can start
+    // playing with the knobs in it". Enters KNOB FOCUS, a sustained mode in
+    // which a press on a dial turns it and a press anywhere else leaves.
+    activate: "knob_focus",
     defaults: {
       type: spec.type,
       x: 100, y: 100, w: width,
-      h: readoutNodeHeight(spec, portsFn),
+      h: readoutNodeHeight(spec, portsFn, width),
       z: 0, rotation: 0, scale: 1,
       rotationAnchor: { x: "self.anchors.center.x", y: "self.anchors.center.y" },
       // Empty at birth but PRESENT — NODE_ITEM_REFS names a wildcard path through
@@ -327,11 +333,20 @@ export function audioNodePlugin(spec) {
       const ops = [
         ...familyCard(s, spec.title, spec.family),
         ...(readout ? audioReadoutOps(s, plugin, readout) : []),
+        // THE KNOBS, painted with NO `ui` argument — the dials are document
+        // state and every pixel consumer gets exactly this. The focus ring and
+        // the live readout are transient editor state and belong to the
+        // screen-space overlay (core/node_chrome.knobOps states the split).
+        ...knobOps(audioKnobLayout(spec, plugin, s), nodeFamily(spec.family).rim),
         ...portBeads(plugin, s),
         ...familyRim(s, spec.family),
       ];
       return applyEffects(ops, s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
     },
+    /** Query. THIS NODE'S KNOB DIALS in LOCAL coords — the declaration
+     *  web/knobFocus.js hit-tests and drags, and the one the overlay repaints.
+     *  Declared on the plugin so the mode never needs the spec roster. */
+    knobLayout: (state) => audioKnobLayout(spec, plugin, state),
     commands: [{
       id: `add-${spec.type.replace(/_/g, "-")}`,
       title: `Add ${spec.title}`,
@@ -424,6 +439,84 @@ export function readoutBaseline(plugin, s) {
 const READOUT_GAP = 8;
 
 /**
+ * Pure function. THE KNOB LAYOUT for one audio node — the ONE call the painter,
+ * the hit test and the drag all make, so a dial cannot be drawn anywhere other
+ * than where it can be turned.
+ *
+ * Placed in this file rather than in core/node_knobs.js because it is what
+ * joins a knob to an AUDIO SPEC: the band's top comes from `readoutBaseline`
+ * (this file owns a node's vertical stack) and each dial's live value comes
+ * from the RAW state, not from `audioKnobValues`. The distinction matters and
+ * is the reason `valueOf` reads `s[stateKey]` directly: audioKnobValues
+ * substitutes a knob's DEFAULT when the slot holds an unresolved equation, which
+ * is exactly right for the engine (a NaN would poison an AudioParam forever) and
+ * exactly wrong here — a dial must show that the value is BOUND so the drag can
+ * refuse it, rather than quietly showing a default the document does not hold.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} plugin - the node's own plugin (for its port rows)
+ * @param {object} s - the folded item state
+ * @returns {Array<object>} knobLayout records
+ *
+ * @example // audioKnobLayout(FILTER_SPEC, filterPlugin, {w: 150, h: 160}).length // 3
+ * @example audioKnobLayout({knobs: [{key: "q", min: 0, max: 10, default: 1}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 160})[0].key // "q"
+ * @example // an unresolved equation in the slot marks the dial BOUND, not defaulted
+ * @example audioKnobLayout({knobs: [{key: "q", min: 0, max: 10, default: 1}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 160, audioQ: "= ease(time)"})[0].bound // true
+ * @example audioKnobLayout({}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 90}) // []
+ */
+export function audioKnobLayout(spec, plugin, s) {
+  return knobLayout(spec.knobs, s, knobBandTop(spec, plugin, s), (k) => s?.[audioKnobKey(k.key)] ?? k.default);
+}
+
+/**
+ * Pure function. The LOCAL y a node's knob band starts at: below the readout
+ * when there is one, below the last port row otherwise.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} plugin - the node's plugin
+ * @param {object} s - the folded item state
+ * @returns {number}
+ *
+ * @example knobBandTop({}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 90}) > NODE_HEADER_H // true
+ * @example // a spec WITH a readout starts its knobs lower than the same spec without
+ * @example knobBandTop({readout: "x", knobs: [{key: "x"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 200}) > knobBandTop({}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 200}) // true
+ */
+export function knobBandTop(spec, plugin, s) {
+  const rows = portLayout(plugin, s);
+  const lastRow = rows.length ? Math.max(...rows.map((p) => p.y)) : NODE_HEADER_H;
+  const afterPorts = lastRow + PORT_BEAD_R + READOUT_GAP;
+  return spec.readout ? afterPorts + AUDIO_READOUT_SIZE + READOUT_GAP : afterPorts;
+}
+
+/**
+ * Pure function. How much extra height a spec's KNOB BAND needs — the rows its
+ * dials wrap to at a given width, plus the label under the last one.
+ *
+ * Zero for a spec whose knobs are all DISCRETE (no dial is drawn, so no band is
+ * reserved): a Noise node's only continuous knob is its level, and an Output's
+ * is its volume, so nothing here inflates a card that has nothing to show.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {number} width - the node's width
+ * @returns {number} extra local height, 0 when the spec has no dials
+ *
+ * @example knobBandHeight({knobs: []}, 150) // 0
+ * @example knobBandHeight({knobs: [{key: "a", discrete: true}]}, 150) // 0
+ * @example knobBandHeight({knobs: [{key: "a"}]}, 150) > 0 // true
+ * @example // four dials on a 150-wide card need two rows, so twice the height
+ * @example knobBandHeight({knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, 150) > knobBandHeight({knobs: [{key: "a"}]}, 150) // true
+ */
+export function knobBandHeight(spec, width) {
+  const dials = (spec.knobs ?? []).filter((k) => !k.discrete).length;
+  if (dials === 0) return 0;
+  const perRow = Math.max(1, Math.floor(width / KNOB_PITCH_X));
+  return Math.ceil(dials / perRow) * KNOB_ROW_H + KNOB_BAND_PAD;
+}
+
+/** Bottom margin under the last knob row, so a label is not flush with the rim. */
+const KNOB_BAND_PAD = 6;
+
+/**
  * Pure function. A node's default height: tall enough for its ports AND for its
  * readout band, when it has one.
  *
@@ -439,9 +532,15 @@ const READOUT_GAP = 8;
  * @example // a spec with a readout is taller than the same spec without one
  * @example readoutNodeHeight({readout: "x", knobs: [{key: "x", default: 1}]}, () => ({inputs: [], outputs: []})) > readoutNodeHeight({}, () => ({inputs: [], outputs: []})) // true
  */
-export function readoutNodeHeight(spec, portsFn) {
+export function readoutNodeHeight(spec, portsFn, width = AUDIO_NODE_W) {
   const base = minimumNodeHeight({ ports: portsFn }, {});
-  return spec.readout ? base + AUDIO_READOUT_SIZE + READOUT_GAP * 2 : base;
+  const withReadout = spec.readout ? base + AUDIO_READOUT_SIZE + READOUT_GAP * 2 : base;
+  // …AND FOR ITS KNOB BAND. A node born too short to show its own dials would
+  // paint them past its bottom rim, which is the same defect the readout had
+  // before it was placed below the port rows (see audioReadoutOps). The author
+  // may still shrink the card afterwards — that clips, visibly, which is the
+  // signal the registry docblock asks for rather than one to hide.
+  return withReadout + knobBandHeight(spec, width);
 }
 
 /** The readout's type size: bigger than a port label, smaller than the display

@@ -76,6 +76,15 @@
   --a-bead-r-hover: 9px;
   --a-bead-ring: 2px;
   --a-bead-ring-hover: 3px;
+  /* THE KNOB FOCUS RING (wave 3). The dial itself is painted by the widget, so
+     this is only the transient "the pointer is on this one" halo. Its RADIUS is
+     computed per node from the widget's own geometry (a knob scales with its
+     card), so only the stroke lives here. Hover is a hairline; turning is one
+     step heavier — the same growth-not-hue vocabulary the beads use. */
+  --a-knob-ring: 1px;
+  --a-knob-ring-active: 2px;
+  --a-knob-ring-ink: rgba(255, 255, 255, 0.55);
+  --a-knob-ring-ink-active: rgba(255, 255, 255, 0.9);
   /* How quickly a bead's highlight fades in when a wire drag starts. Short enough
      to feel immediate under the pointer, long enough not to flash. */
   --a-bead-fade: 90ms;
@@ -4961,6 +4970,36 @@ textarea {
 .overlay .nf-bead.nf-refused {
   stroke-width: var(--a-bead-ring);
   fill: none;
+  opacity: var(--a-disabled-opacity);
+}
+
+/* THE KNOB FOCUS RING. Present only inside knob focus and only on the dial the
+   pointer is on or the one being turned — the dials are painted by the widget
+   (core/node_chrome.knobOps), because a knob belongs in an export and a hover
+   does not. Not hit-testable for the same reason the beads are not: the press is
+   routed in LOCAL space by web/knobFocus.knobPressKind against the same layout
+   the painter used, so a parallel DOM target could only drift from the picture. */
+.overlay .nf-knob-ring {
+  fill: none;
+  stroke: var(--a-knob-ring-ink);
+  stroke-width: var(--a-knob-ring);
+  pointer-events: none;
+}
+
+/* THE ONE BEING TURNED: brighter and heavier, so a dial under an active drag is
+   distinguishable from one merely under the pointer. */
+.overlay .nf-knob-ring.nf-knob-active {
+  stroke: var(--a-knob-ring-ink-active);
+  stroke-width: var(--a-knob-ring-active);
+}
+
+/* A KNOB HOLDING AN `=` EQUATION. The ring still appears — the dial IS the thing
+   under your pointer and pretending otherwise would be a worse lie — but it is
+   dashed and dimmed, because a press there is refused rather than obeyed
+   (web/knobFocus.knobTurnRefusal states why: turning it would overwrite the
+   equation with the number it currently evaluates to). */
+.overlay .nf-knob-ring.nf-knob-bound {
+  stroke-dasharray: var(--a-wire-ghost-dash);
   opacity: var(--a-disabled-opacity);
 }
 

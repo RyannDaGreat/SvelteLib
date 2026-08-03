@@ -109,6 +109,7 @@
  */
 
 import { BENTO_BIND_HANDLER } from "./bentoBind.js";
+import { KNOB_FOCUS_HANDLER } from "./knobFocus.js";
 import { NAVIGATE_INTERIOR_HANDLER } from "./interiorNav.js";
 import { NAVIGATE_SCENE_HANDLER } from "./sceneNav.js";
 import { LIGHT_POSITION_PIN_HANDLER } from "./lightPositionPin.js";
@@ -310,6 +311,7 @@ const ACTIVATE_HANDLERS = [
   INSERT_POINT_HANDLER,
   BENTO_BIND_HANDLER,
   LIGHT_POSITION_PIN_HANDLER,
+  KNOB_FOCUS_HANDLER,
 ];
 
 /**
