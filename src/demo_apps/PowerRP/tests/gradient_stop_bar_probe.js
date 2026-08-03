@@ -325,10 +325,17 @@ try {
     const before = await docJson();
     await page.mouse.move(geo.track.left + 0.32 * geo.track.width, geo.track.top + geo.track.height / 2);
     await settle(250);
-    // The tooltip must state the POSITION, not the resting sentence — the text has
-    // to track the pointer or it is describing a click somewhere else.
-    ok(/Add a stop at 0\.3/.test(await page.evaluate(() => document.querySelector(".tooltip, [role=tooltip]")?.textContent ?? "")),
-      `the tip states WHERE the click would land and what colour it would take (${await page.evaluate(() => document.querySelector(".tooltip, [role=tooltip]")?.textContent ?? "<no tip>")})`);
+    // NO TOOLTIP — the user removed it (2026-08-02, verbatim: "This tooltip is
+    // noise. That tooltip does not need to exist… Those are both redundant and
+    // they're noisy"). It used to read "Add a stop at 0.348, coloured #00c497 — the
+    // ramp's own colour there, so the picture does not change." Asserted as the
+    // ABSENCE of that sentence after a real hover has settled, so re-adding it
+    // fails here; the GHOST below is what carries the same information now, and the
+    // assertions after it prove the BEHAVIOUR the tip advertised still works.
+    const tipText = await page.evaluate(() =>
+      [...document.querySelectorAll(".tooltip, [role=tooltip]")].map((t) => t.textContent).join(" | "));
+    ok(!/Add a stop at/.test(tipText),
+      `hovering the track raises NO add-stop tooltip (rendered tips: ${tipText || "<none>"})`);
     ok(await page.evaluate(() => !!document.querySelector(".stopbar-ghost")), "hovering the track shows a GHOST at the pointer");
     ok(await docJson() === before,
       "…and stages NOTHING: the ghost is pure UI, so the rows below cannot resize under the pointer (why the hover-PREVIEW trope is withheld here)");
@@ -338,6 +345,36 @@ try {
     await page.mouse.move(0, 0);
     await settle(120);
     ok(await page.evaluate(() => !document.querySelector(".stopbar-ghost")), "leaving the track takes the ghost with it");
+  }
+
+  // ── 1b². NO TOOLTIP ON A BEAD EITHER, but its ARIA LABEL survives ───────────
+  // The second half of the same ruling (2026-08-02, verbatim: "That tooltip does
+  // not need to exist… redundant and they're noisy"). The removed sentence was
+  // "Stop 2 at 0.356. Drag to move it, or use the arrow keys." Two claims, and the
+  // second is why this is not just a deletion: what is redundant ON SCREEN (the
+  // bead's own x, the number in the row below) is NOT redundant to a screen
+  // reader, so the position stays as the accessible name and role="slider" keeps
+  // announcing the arrow keys. Drag and nudge are exercised in sections 2 and 4 —
+  // this asserts only that their ADVERTISEMENT is gone.
+  {
+    const geo = await barGeometry();
+    const bead = geo.beads[1];
+    await page.mouse.move(bead.cx, bead.cy);
+    await settle(300);
+    const tipText = await page.evaluate(() =>
+      [...document.querySelectorAll(".tooltip, [role=tooltip]")].map((t) => t.textContent).join(" | "));
+    ok(!/Drag to move it/.test(tipText) && !/^Stop \d+ at/.test(tipText),
+      `hovering a bead raises NO tooltip (rendered tips: ${tipText || "<none>"})`);
+    const labels = await page.evaluate(() =>
+      [...document.querySelectorAll(".stopbar-bead")].map((b) => b.getAttribute("aria-label")));
+    ok(labels.every((l) => l && /\bat\b\s*[\d.]+/.test(l)),
+      `…but every bead still NAMES its position for a screen reader (${JSON.stringify(labels[1])})`);
+    ok(await page.evaluate(() =>
+      [...document.querySelectorAll(".stopbar-bead")].every((b) =>
+        b.getAttribute("role") === "slider" && b.hasAttribute("aria-valuenow"))),
+      "…and keeps role=slider + aria-valuenow, which is what states the arrow-key affordance the tip used to narrate");
+    await page.mouse.move(0, 0);
+    await settle(120);
   }
 
   // ── 1c. A TRANSLUCENT RAMP reads as translucent (the alpha checkerboard) ────

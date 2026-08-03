@@ -1,11 +1,11 @@
 /**
  * GRADIENT SPREAD UI probe — boot the PowerRP editor headless and drive the REAL
- * Spread row (web/PaintField.svelte) and the REAL continuation band
+ * Spread row (web/PaintField.svelte) and the REAL stop bar
  * (web/GradientStopBar.svelte) that the bare-node suites cannot reach.
  *
  * render_gpu/tests/gradient_spread_test.js already proves the MATH and the three
  * backends. What only a browser can prove is that the row exists, writes the
- * document, and that the bar's band redraws to match — the half of the feature the
+ * document, and that the bar redraws to match — the half of the feature the
  * user actually touches.
  *
  * Proves, against the REAL app:
@@ -19,11 +19,14 @@
  *     sub-state), and undo puts it back.
  *   - AN ABSENT SPREAD IS MIRROR: a gradient authored without the field shows
  *     Mirror selected, so the legacy default is what the UI reports.
- *   - THE CONTINUATION BAND appears beside the ramp and its painted gradient
- *     CHANGES when the mode changes — read back off the live element, so a band
- *     that rendered a constant would fail. Loop's band must START at the ramp's
- *     FIRST colour (the user's "I should see purple on the right of it"), while
- *     mirror's starts at the LAST.
+ *   - THERE IS EXACTLY ONE BAR, and it is LOOP-AWARE (user ruling, 2026-08-02:
+ *     "There should only be one… You don't need two bars. That's weird looking.").
+ *     The old second strip (.stopbar-band) is asserted ABSENT. The one track's
+ *     painted gradient is read off the live element, so a bar that rendered a
+ *     constant would fail: mirror IS the authored ramp, pad is BYTE-IDENTICAL to
+ *     mirror ("it would look the same between those two"), and loop's two ends
+ *     cross the seam to #800080 — the purple the ruling asks to see on the right.
+ *     The fixture ramp is INSET (0.2/0.8) on purpose; see the comment at it.
  *   - THE WAVELENGTH FLOOR IS GONE: the wavelength field accepts 0 and the document
  *     stores it, with no NaN and no console error — the scrub-to-zero the ruling
  *     asked for.
@@ -78,7 +81,13 @@ try {
     const cam = { ...def("camera"), name: "Camera", x: 0, y: 0, w: 1000, h: 500, z: 1000, active: true, background: "#101014" };
     const fill = {
       type: "linearGradient",
-      linear: { stops: [{ offset: 0, color: "#ff0000" }, { offset: 1, color: "#0000ff" }], angle: 0, wavelength: 0.5 },
+      // AN INSET RAMP (0.2 → 0.8), DELIBERATELY, and this is load-bearing for the
+      // one-bar assertions below. A ramp with stops at 0 AND 1 spans the whole
+      // window, so its wrap segment has zero length (core/ramps.js's hard seam) and
+      // ALL THREE spread modes paint an identical bar — a full-span fixture would
+      // make the loop assertion unfalsifiable. Inset leaves a stretch outside the
+      // stops, which is exactly where pad/mirror hold flat and loop crosses the seam.
+      linear: { stops: [{ offset: 0.2, color: "#ff0000" }, { offset: 0.8, color: "#0000ff" }], angle: 0, wavelength: 0.5 },
     };
     const rect = { ...def("rect"), name: "Box", x: 300, y: 150, w: 400, h: 200, z: 1, active: true, fill };
     const tr = { type: "tween", seconds: 0.4, curve: "smooth", sound: null };
@@ -168,17 +177,29 @@ try {
     await sleep(450);
   };
 
-  /** The continuation band's painted gradient, read off the LIVE element. */
-  const bandCss = () => page.evaluate(() => {
-    const el = document.querySelector(".stopbar-band");
-    return el ? getComputedStyle(el).getPropertyValue("--sb-band").trim() : null;
+  /** THE ONE BAR's painted gradient, read off the LIVE track element. */
+  const barCss = () => page.evaluate(() => {
+    const el = document.querySelector(".stopbar-track");
+    return el ? getComputedStyle(el).getPropertyValue("--sb-ramp").trim() : null;
   });
 
-  const mirrorBand = await bandCss();
-  assert(mirrorBand && mirrorBand.length > 0, "the continuation band is rendered beside the ramp");
-  // Mirror REFLECTS, so the band runs BACK from the ramp's last colour (blue).
-  assert(/^linear-gradient\(90deg, #0000ff/.test(mirrorBand ?? ""),
-    `mirror's band starts at the LAST colour, reflecting back (got ${(mirrorBand ?? "").slice(0, 40)})`);
+  // ── THERE IS EXACTLY ONE BAR ───────────────────────────────────────────────
+  // User ruling (2026-08-02, verbatim): "What I also don't understand is why
+  // there's two bars. There should only be one… You don't need two bars. That's
+  // weird looking." The second bar was a shorter CONTINUATION BAND under the track
+  // previewing the next tile; its information moved into the one ramp's two ends.
+  // Asserted as ABSENCE of the class, so re-adding a second strip fails here.
+  assert(await page.evaluate(() => document.querySelectorAll(".stopbar-track").length) === 1,
+    "the stop bar draws exactly ONE ramp track");
+  assert(await page.evaluate(() => !document.querySelector(".stopbar-band")),
+    "…and no second continuation band beside it (the two-bar layout is gone)");
+
+  const mirrorBar = await barCss();
+  assert(mirrorBar && mirrorBar.length > 0, "the one bar paints a ramp");
+  // MIRROR leaves the [0,1] window exactly as authored — the reflection is the NEXT
+  // tile, outside it. So the bar is the literal stop list: red at 20%, blue at 80%.
+  assert(/#ff0000 20%/.test(mirrorBar ?? "") && /#0000ff 80%/.test(mirrorBar ?? ""),
+    `mirror's bar IS the authored ramp — red at 20%, blue at 80% (got ${(mirrorBar ?? "").slice(0, 70)})`);
 
   // ── PICKING LOOP: writes the doc, ONE undo unit, and the band wraps ─────────
   const beforePick = await page.evaluate(() => JSON.stringify(window.__powerrp_app.doc));
@@ -193,20 +214,31 @@ try {
   await sleep(400);
   assert((await rectFill())?.linear?.spread === "loop", "…and redo puts it back");
 
-  const loopBand = await bandCss();
-  assert(loopBand !== mirrorBand, "the band REDRAWS when the mode changes (it is not a constant)");
-  // THE RULING'S OWN TEST: with looping the first colour reappears past the end.
-  assert(/^linear-gradient\(90deg, #ff0000/.test(loopBand ?? ""),
-    `loop's band RESTARTS at the FIRST colour — "I should see purple on the right of it" (got ${(loopBand ?? "").slice(0, 40)})`);
-  await page.screenshot({ path: resolve(SHOTS, "02-spread-loop-band.png") });
+  const loopBar = await barCss();
+  assert(loopBar !== mirrorBar, "the ONE bar REDRAWS when the mode changes (it is not a constant)");
+  // THE RULING'S OWN TEST, now shown IN the ramp instead of beside it: "in order
+  // for a loop to work, the very left of it and the very right of it have to take
+  // into consideration what would happen if it loops." With period-1 tiling, the
+  // stretch past the last stop runs across the seam toward the FIRST stop's colour
+  // instead of holding blue flat — so both ends land on the seam's midpoint, which
+  // for red→blue is #800080. That is, exactly, "I should see purple on the right".
+  assert(/^linear-gradient\(90deg, #800080 0%/.test(loopBar ?? ""),
+    `loop's bar STARTS across the seam, not at the first stop's red (got ${(loopBar ?? "").slice(0, 45)})`);
+  assert(/#800080 100%\)$/.test(loopBar ?? ""),
+    `…and ENDS on the seam colour too — the purple on the right the ruling asks for (got …${(loopBar ?? "").slice(-30)})`);
+  await page.screenshot({ path: resolve(SHOTS, "02-spread-loop-bar.png") });
 
-  // ── PAD holds the last colour flat ─────────────────────────────────────────
+  // ── PAD IS IDENTICAL TO MIRROR inside the window ───────────────────────────
+  // The user stated this outcome directly: "If it's mirror or pad, it would look
+  // the same between those two. Loop would only be the only one that's different."
+  // Both hold/reflect OUTSIDE [0,1], so neither changes the bar — asserted as
+  // EQUALITY with the mirror string, which is a stronger claim than a shape match.
   await pickSpread("Pad");
-  const padBand = await bandCss();
+  const padBar = await barCss();
   assert((await rectFill())?.linear?.spread === "pad", "picking Pad writes it too");
-  assert(/#0000ff 0%, #0000ff 100%/.test(padBand ?? ""),
-    `pad's band HOLDS the last colour flat (got ${(padBand ?? "").slice(0, 60)})`);
-  await page.screenshot({ path: resolve(SHOTS, "03-spread-pad-band.png") });
+  assert(padBar === mirrorBar,
+    `pad's bar is BYTE-IDENTICAL to mirror's — the ruling's "it would look the same between those two" (pad ${(padBar ?? "").slice(0, 45)})`);
+  await page.screenshot({ path: resolve(SHOTS, "03-spread-pad-bar.png") });
 
   // ── THE BOUNDARY: a RADIAL gradient has no spread row ───────────────────────
   await page.evaluate(() => {
