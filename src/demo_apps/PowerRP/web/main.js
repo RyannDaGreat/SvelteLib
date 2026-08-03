@@ -243,10 +243,17 @@ if (!new URLSearchParams(location.search).has("cli")) {
   // ALSO awaits the storage-mode probe (see storageReady above) — the two run
   // CONCURRENTLY (both promises were started at module load) so the probe adds
   // no boot latency beyond the font load it hides behind.
+  // EACH STAGE CLOSES ON ITS OWN PROMISE, not on the Promise.all below. The
+  // storage probe is one cheap GET that settles in ~100 ms; closing it with the
+  // aggregate made its row sit "active" with a running clock for the whole 20 s
+  // font load, so the splash showed "Checking storage — 9.4s" while the storage
+  // check had been finished for nine of those seconds. That is a small lie, but
+  // it is exactly the kind this feature exists to remove: a stage's elapsed clock
+  // must measure THAT stage.
   bootStage("storage", "Checking storage", {});
+  storageReady.then(() => bootStage("storage", "Checking storage", { done: true }));
   Promise.all([fontsLoaded, storageReady])
     .then(() => {
-      bootStage("storage", "Checking storage", { done: true });
       bootStage("mount", "Building the editor", {});
       mount(App, { target: document.getElementById("app") });
       // The mount itself is synchronous; what follows is the GPU surface coming

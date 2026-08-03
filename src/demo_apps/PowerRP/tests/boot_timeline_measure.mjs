@@ -120,29 +120,21 @@ async function measure(page, { cold, throttle }) {
 
 const out = {};
 {
-  const page = await browser.newPage();
+  // A GENUINELY COLD BOOT NEEDS ITS OWN STORAGE PARTITION, not merely
+  // setCacheEnabled(false). That flag disables the HTTP cache and NOTHING ELSE,
+  // so a profile that had already installed the service worker navigated
+  // SW-CONTROLLED and was handed the ~32 MB of Noto/CJK faces out of Cache
+  // Storage at wire=0. Two rounds of measurement were invalidated by this: one
+  // build "measured" 65 s that way and ~244 s with the worker actually gone —
+  // a 4x difference that was entirely the service worker and not the app.
+  // Unregistering by hand inside a throwaway navigation is not enough either,
+  // because the page that does the unregistering re-registers the worker as it
+  // loads. An incognito-style BrowserContext has no worker and no caches by
+  // construction, which is the only version of this that cannot silently rot.
+  const coldCtx = await browser.createBrowserContext();
+  const page = await coldCtx.newPage();
   await page.setViewport({ width: 1400, height: 900 });
   await page.setCacheEnabled(false);
-  // A GENUINELY COLD BOOT MEANS NO SERVICE WORKER EITHER, and forgetting that
-  // invalidated a whole round of measurement: `setCacheEnabled(false)` disables
-  // only the HTTP cache, so a browser profile that had already precached 33 MB
-  // in a previous run navigated with the worker CONTROLLING the page and served
-  // the ~32 MB of Noto/CJK faces from Cache Storage at wire=0. That run reported
-  // 65 s and looked like a fast baseline; the identical build, measured with the
-  // worker actually cleared, was ~244 s. The difference was entirely the SW, not
-  // the app. So: unregister every worker and delete every cache first, and prove
-  // the page navigated UNCONTROLLED (recorded as swState in the result).
-  await page.goto(origin, { waitUntil: "domcontentloaded" }).catch(() => {});
-  await page.evaluate(async () => {
-    if (navigator.serviceWorker) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map((r) => r.unregister()));
-    }
-    if (window.caches) {
-      const names = await caches.keys();
-      await Promise.all(names.map((n) => caches.delete(n)));
-    }
-  }).catch(() => {});
   console.log(`[${LABEL}] COLD boot …`);
   out.cold = await measure(page, { cold: true, throttle: THROTTLE });
   console.log(`[${LABEL}]   splash lifted at ${out.cold.splashLiftMs}ms; precache ${out.cold.cache.entries} entries / ${(out.cold.cache.bytes / 1048576).toFixed(1)}MB at ${out.cold.swPrecacheDoneMs}ms`);
