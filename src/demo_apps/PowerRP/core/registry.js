@@ -1333,6 +1333,18 @@ export const TOOL_POOL = [
       // registration and its consumer in the SAME commit, which is what this one
       // finally does.
       { kind: "command", command: "shatter", applies: shatterEligible },
+      // GROUP-SELECTION NAVIGATION (WORKSTREAM BP, user verbatim: "We should
+      // have a select parent group tool under groups, along with other
+      // group-related selection thigns"). These two write NOTHING — only the
+      // selection changes — so they sit beside Group/Ungroup/Shatter (the ways
+      // a group is made or unmade) as the ways you move THROUGH one that
+      // already exists. `applies: everyWidget`, same idiom as `paste`/
+      // `copy-properties` above: which way is available depends on the
+      // SELECTION (a group vs. a member), not on the type of the widget the
+      // Tools pane happens to be showing rows for, so the row always renders
+      // and the command's own `when` grays it out with a reason.
+      { kind: "command", command: "select-in-group", applies: everyWidget },
+      { kind: "command", command: "select-parent-group", applies: everyWidget },
     ],
   },
   {
