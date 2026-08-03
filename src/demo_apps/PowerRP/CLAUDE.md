@@ -314,8 +314,23 @@ THERE IS NO WAVELENGTH FLOOR (user ruling, 2026-08-02: the old 0.05 minimum was
 "an arbitrary limitation"). Wavelength scrubs and drags to 0, and 0 is not an
 error: it is the LIMIT of infinitely fine tiling, so the fill collapses to a
 SOLID of the ramp's segment-weighted average (`core/properties.rampAverageColor`)
-— identical in every spread mode, because a mirrored copy has the same mean.
+— the limit of EACH MODE'S OWN tiling, which is NOT one number. Pad and mirror
+share the authored ramp's mean (a reflected copy has the same mean); LOOP's
+collapse also averages its baked wrap segment — ramp territory mirror never
+paints — so it differs whenever the end colours differ. This line used to say
+"identical in every spread mode"; that was reasoned from mirror alone and
+measured wrong for loop (BB, 2026-08-02, pinned against a rendered w=0.02 fill).
 `parsePaint` accepts 0 and still refuses NEGATIVE loudly.
+LOOP IS CONTINUOUS AT THE SEAM (user ruling, 2026-08-02: a loop's "smooth
+interpolation that goes 360 all the way around" is the semantics; a hard jump
+"is not how loops should work"). The wrap segment the stop-bar preview
+synthesizes (core/ramps.js, last stop → first stop + 1) is BAKED into the stop
+list at the parsePaint funnel (`loopWrappedStops`, render_gpu/ir.js) — cut at
+the tile boundary, both halves stated at 0 and 1 — so every backend's native
+repeat tiling is C0-continuous and the picture matches
+`sampleRampHex(loop:true)` byte-for-byte. An AUTHORED hard seam (stops at both
+0 and 1, differing colours) still jumps: that ramp has a zero-length wrap, and
+the jump is what the author drew.
 THE PDF BACKEND NO LONGER RASTERIZES A TILED GRADIENT. A PDF axial shading has no
 tile mode, but its Function's `Domain` need not be [0,1], so mirror/loop are
 emitted as a stitching function replicating the ramp per tile (mirrored tiles
