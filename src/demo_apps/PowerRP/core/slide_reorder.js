@@ -408,6 +408,154 @@ export function withSlidesPasted(doc, afterIndex, payload, newId) {
 }
 
 /**
+ * Pure function. THE MERGE. Collapses the two ADJACENT slides at `indexA` and
+ * `indexB` into ONE slide occupying the earlier of the two positions.
+ *
+ * User ruling, verbatim (2026-08-02): "We should also have merge slide up and
+ * merge slide down as options … The one that comes later in the slideshow will
+ * have priority. For whatever deltas arise."
+ *
+ * ── THE COMPOSITION, AND WHY IT IS NOT A KEY-WISE MERGE ──────────────────────
+ * The merged delta is the COMPOSITION of the two, later winning per leaf. The
+ * obvious implementation — walk both delta trees and let B's leaf beat A's — is
+ * WRONG, and the case that proves it is `delete-then-recreate`:
+ *
+ *     prev = {q: {x: 1, y: 2}}     A = {q: NONE}     B = {q: {x: 9}}
+ *
+ * A destroys `q` entirely, B builds a fresh one carrying only `x`. The picture
+ * the later slide shows is `{q: {x: 9}}` — no `y`. A key-wise merge yields
+ * `{q: {x: 9}}` as a DELTA, which applied to `prev` gives `{q: {x: 9, y: 2}}`,
+ * silently RESURRECTING the `y` the author deleted. The correct merged delta is
+ * `{q: {x: 9, y: NONE}}`, and nothing about B's tree says so — the tombstone is
+ * a fact about the FOLD, not about either delta.
+ *
+ * So this composes the only way that is always right: FOLD, THEN DIFF. Take the
+ * fold entering the pair, take the LATER slide's fold, and ask
+ * `deltaFromFoldDiff` for the minimal delta between them. That IS composition —
+ * `applied(applied(s, A), B) == applied(s, deltaFromFoldDiff(s, applied(applied(s, A), B)))`
+ * by `deltaFromFoldDiff`'s own contract — and it is the same construction
+ * `reorderedSlides` and `withSlidesPasted` are built on. One mechanism, three
+ * commands.
+ *
+ * THE TOMBSTONE ALGEBRA falls out of it rather than being special-cased, and
+ * every case is pinned in tests/slide_merge_test.js:
+ *   - create-then-delete  → NOTHING. A makes `q`, B removes it; the pair's net
+ *     effect on `q` is nil, so the merged delta mentions it not at all.
+ *   - delete-then-recreate → THE RECREATE, PLUS TOMBSTONES for whatever the
+ *     recreation did not restore (the `y: NONE` above).
+ *   - delete-then-silence → THE DELETE survives as a NONE leaf.
+ *   - active:false then active:true (Delete keyframe then Show) → NOTHING, same
+ *     as create-then-delete: the round trip is a no-op on the fold.
+ *   - a leaf only A touches → SURVIVES (B is silent about it, so the later fold
+ *     still carries A's value). "Later wins" is per LEAF, not per slide.
+ *
+ * ── THE KEY LAW: THE REST OF THE DECK DOES NOT MOVE ──────────────────────────
+ * Because the merged delta reproduces the LATER slide's fold exactly, the fold
+ * LEAVING the pair is byte-identical to what it was. Every slide after the pair
+ * therefore folds byte-identically too, with its stored delta untouched — no
+ * re-derivation, no repair pass, nothing to get wrong:
+ *
+ *     fold(merged, indexA)      == fold(doc, indexB)      (the pair shows the LATER picture)
+ *     fold(merged, j - 1)       == fold(doc, j)           for every j > indexB
+ *
+ * That is why this function rewrites ONE delta and splices out one row, rather
+ * than rebuilding the deck the way `reorderedSlides` must.
+ *
+ * ── IDENTITY: THE EARLIER SLIDE'S SEAT, THE LATER SLIDE'S LOOK ───────────────
+ * The survivor keeps the EARLIER slide's `id` and POSITION, because it owns the
+ * boundary INTO the pair: the transition that plays when you arrive is the
+ * earlier slide's, and it is unchanged by a merge that only affects what you
+ * arrive AT. Keeping the earlier `transition` is therefore not a tie-break, it
+ * is the only answer that leaves the deck's timing alone — adopting the later
+ * slide's incoming transition would change how the merged slide is ENTERED,
+ * which no part of the user's ruling asks for. (The later slide's transition is
+ * the one INTERIOR to the pair; the merge is exactly the act of deleting that
+ * boundary, so its transition has nothing left to describe.)
+ *
+ * `name` follows LATER PRIORITY, the ruling's own principle — WITH ONE
+ * SUBTRACTION that is worth stating because it is not a special case, it is the
+ * principle applied honestly. Names in this document model are ALWAYS STORED:
+ * `withNewSlide` writes `"Slide 4"` eagerly, and blanking a rename restores the
+ * positional string rather than clearing it (`withSlideRenamed`). So "does the
+ * later slide have a name" is a question that is always yes, and answering it
+ * yes would move the string `"Slide 4"` into position 3 — a label that is not
+ * merely unauthored but WRONG, and that no later renumbering fixes because it is
+ * stored text, not a computed number. So a later name that is exactly its own
+ * old seat's default is treated as the absence of an authored name and the
+ * earlier slide's name survives; anything the author actually typed wins, which
+ * is the ruling. When BOTH are positional defaults the earlier one is kept, and
+ * it is already correct for the seat the merged slide occupies.
+ *
+ * `autoAdvance` takes the LATER slide's value whenever it states one and is
+ * dropped otherwise — same principle, no special pleading. `enabled` needs no
+ * rule at all: both slides are enabled or this function has already thrown.
+ *
+ * ── DISABLED SLIDES ARE REFUSED, LOUDLY ──────────────────────────────────────
+ * A disabled slide has NO FOLD OF ITS OWN (see the header): its delta is skipped
+ * entirely, so there is no "later picture" to merge to and no honest composition
+ * to perform. Merging one would either silently drop its delta or silently
+ * enable it, and both are lies about what the author stored. So it throws, and
+ * the command layer gates on it with a sentence instead.
+ *
+ * @param {object} doc - a PowerRP document
+ * @param {number} indexA - one of the two slides
+ * @param {number} indexB - the other; must be adjacent to indexA (either order)
+ * @returns {object} a new document with one fewer slide
+ *
+ * @example // later wins per leaf; the earlier slide's seat and id survive
+ * withSlidesMerged({slides: [
+ *   {id: "a", delta: {items: {q: {x: 1, y: 1}}}},
+ *   {id: "b", delta: {items: {q: {x: 5}}}},
+ * ]}, 0, 1).slides
+ * // [{id: "a", delta: {items: {q: {x: 5, y: 1}}}}]
+ * @example // create-then-delete nets to nothing at all
+ * withSlidesMerged({slides: [
+ *   {id: "a", delta: {}},
+ *   {id: "b", delta: {items: {q: {x: 1}}}},
+ *   {id: "c", delta: {items: {q: null}}},
+ * ]}, 1, 2).slides[1].delta
+ * // {}
+ * @example // the merged slide shows what the LATER slide showed
+ * withSlidesMerged({slides: [{id: "a", delta: {x: 1}}, {id: "b", delta: {x: 2}}]}, 0, 1).slides[0].delta
+ * // {x: 2}
+ */
+export function withSlidesMerged(doc, indexA, indexB) {
+  const n = doc.slides.length;
+  const earlier = Math.min(indexA, indexB);
+  const later = Math.max(indexA, indexB);
+  if (!Number.isInteger(earlier) || earlier < 0 || later >= n)
+    throw new Error(`withSlidesMerged: slide indices out of range (0..${n - 1}): ${indexA}, ${indexB}`);
+  if (later - earlier !== 1)
+    throw new Error(`withSlidesMerged: slides ${indexA} and ${indexB} are not adjacent — only neighbouring slides can be merged`);
+  const a = doc.slides[earlier];
+  const b = doc.slides[later];
+  if (a.enabled === false || b.enabled === false)
+    throw new Error("withSlidesMerged: a disabled slide has no folded picture of its own, so there is nothing to merge — enable it first");
+
+  const folds = foldedStates(doc);
+  // The fold ENTERING the pair — the empty state when the pair starts at slide 0
+  // (whose delta creates everything, so it diffs from nothing).
+  const before = earlier === 0 ? {} : folds[earlier - 1];
+
+  const merged = {
+    ...a, // the EARLIER slide's identity: id, transition, and anything a later
+          // schema adds — it keeps the seat, so it keeps the fields that describe
+          // arriving at that seat.
+    delta: deltaFromFoldDiff(before, folds[later]),
+  };
+  // LATER PRIORITY on the fields that describe the slide ITSELF rather than the
+  // boundary into it. A later name that is just its own old seat's positional
+  // default is NOT an authored name — see the docblock; adopting it would stamp
+  // "Slide 4" onto position 3.
+  if (b.name && b.name !== `Slide ${later + 1}`) merged.name = b.name;
+  if (b.autoAdvance !== undefined) merged.autoAdvance = b.autoAdvance;
+  else delete merged.autoAdvance;
+
+  const slides = [...doc.slides.slice(0, earlier), merged, ...doc.slides.slice(later + 1)];
+  return { ...doc, slides };
+}
+
+/**
  * Pure function. Every NO-OP KEYFRAME in the document: a delta leaf whose value
  * is ALREADY what the fold says at that slide, so removing it changes nothing.
  *
