@@ -552,8 +552,18 @@ function emitNodeBody(node, byId, display) {
   // or decorated widget's `content` is flattened INDEPENDENTLY from identity (see
   // the arg-3 note below), so the outer push below cannot reach it and the mirror
   // has to travel with the absolute world instead.
+  // THE GROW RAMP (WORKSTREAM BS, core/interp_modes.js `grow`), resolved HERE
+  // because the world transform is the deepest seam a shader structurally cannot
+  // opt out of — see growScaledWorld for the ruling and why the state and the ops
+  // are both wrong places for it. It is the FIRST thing computed from node.world
+  // so that EVERY later use is the grown one: the outer push below, the emitWorld
+  // handed to emit() as arg 3 (a decorated widget's `content` is flattened
+  // independently, so the outer push cannot reach it), and the mirror composition
+  // in between. Returns node.world BY IDENTITY for every node that is not
+  // mid-grow, so this line is free everywhere else.
+  const grownWorld = growScaledWorld(node.world, node.state);
   const mirror = mirrorPush(node);
-  const emitWorld = mirror ? signedCompose(node.world, mirror) : node.world;
+  const emitWorld = mirror ? signedCompose(grownWorld, mirror) : grownWorld;
   // THE MORPH SEAM. A node core/derive.js marked `.morph` is mid-retype between
   // two vector widgets, and its ink is the BLEND of their outlines rather than
   // either plugin's own emit() — see morphIR. This is deliberately a REPLACEMENT
@@ -630,8 +640,8 @@ function emitNodeBody(node, byId, display) {
   // boundary needs is already in the structure.
   const owner = ownerTag(node);
   return mirror
-    ? [{ ...pushTransform(node.world), owner }, mirror, ...body, popTransform(), popTransform()]
-    : [{ ...pushTransform(node.world), owner }, ...body, popTransform()];
+    ? [{ ...pushTransform(grownWorld), owner }, mirror, ...body, popTransform(), popTransform()]
+    : [{ ...pushTransform(grownWorld), owner }, ...body, popTransform()];
 }
 
 /**
@@ -1257,9 +1267,41 @@ export function applyActiveFade(state, cmds) {
   // same multiplication — blurFade and Manim both fade, they just each do
   // something else as well. Reading the level through `visibleLevel` is what
   // keeps that one composition in one place instead of each mode re-deriving it.
-  if (isVisibleFxToken(a)) return scaledOpacity(cmds, visibleLevel(a));
+  if (isVisibleFxToken(a)) {
+    const k = growOpacityLevel(a);
+    return k === 1 ? cmds : scaledOpacity(cmds, k);
+  }
   if (typeof a !== "number") return cmds; // boolean or absent: not a fade
   return scaledOpacity(cmds, Math.max(0, Math.min(1, a)));
+}
+
+/**
+ * Pure function. THE OPACITY a named visibility token contributes — its coverage
+ * for every mode EXCEPT `grow`, which contributes none (1, i.e. fully opaque).
+ *
+ * WHY `grow` IS THE EXCEPTION, and why the exception lives HERE (WORKSTREAM BS).
+ * `fade`, `blurFade` and `manim` are all ways of resolving INTO the picture, and
+ * opacity is half of each of those gestures — which is why applyActiveFade could
+ * treat "is a token" as "is a fade" for all of them. `grow` says the arrival with
+ * SIZE instead: the widget is a small SOLID thing that becomes a big one. Fading
+ * it as well would spend the first half of the entry on a barely-visible speck,
+ * i.e. two entrance effects stacked where the author asked for one.
+ *
+ * It is a render-seam decision rather than a fold-time one for the same reason
+ * blurFade's radius is: the fold may only return a value for the leaf it was
+ * asked about, so the token carries a coverage and this file is where a coverage
+ * becomes a specific picture. Reading the mode name here — rather than teaching
+ * the token an extra "does this fade" scalar — keeps the token's standing rule
+ * intact (it carries scalars, not a picture) and means a future mode declares its
+ * opacity behaviour in ONE readable place.
+ *
+ * @example growOpacityLevel({type: "~visibleFx", mode: "fade", v: 0.25}) // 0.25
+ * @example growOpacityLevel({type: "~visibleFx", mode: "blurFade", v: 0.4}) // 0.4
+ * @example growOpacityLevel({type: "~visibleFx", mode: "manim", v: 0.4}) // 0.4
+ * @example growOpacityLevel({type: "~visibleFx", mode: "grow", v: 0.25}) // 1 (it scales, it does not dissolve)
+ */
+function growOpacityLevel(token) {
+  return token.mode === "grow" ? 1 : visibleLevel(token);
 }
 
 /**
@@ -1424,6 +1466,159 @@ export function blurFadeState(state) {
   const added = amount * (1 - visibleLevel(a));
   if (added <= 0) return state;
   return { ...state, gaussianBlur: (state.gaussianBlur ?? 0) + added };
+}
+
+// ── `grow`: THE SCALE RAMP, AND WHY IT IS ON THE WORLD TRANSFORM ─────────────
+//
+// User request, 2026-08-03, verbatim (WORKSTREAM BS): "Another intro... sorry,
+// visible interp should be growing from nothing or shrinking back to nothing."
+//
+// ── THE EVERY-SHADER LAW DECIDES THE SEAM, NOT CONVENIENCE ──────────────────
+// User ruling, 2026-08-03, verbatim (WORKSTREAM BQ): "There is no shader that
+// shouldn't work with this. Every shader should work with this. It shouldn't be
+// dependent on the type of shader."
+//
+// So the question this function had to answer FIRST is where a widget's size can
+// be changed in a way a shader CANNOT opt out of. There are three candidate
+// seams and only one of them is honest:
+//
+//   1. THE STATE (what blurFadeState does, one function up). Scaling `state.w/h`
+//      or `state.scale` before emit() would be a LIE about the document — every
+//      plugin reads those leaves to lay out its own content, so a text widget
+//      would re-wrap its lines at each frame and a material would re-derive its
+//      uniforms from a size the author never wrote. It also could not reach a
+//      widget whose emit() ignores `scale` entirely.
+//   2. THE OPS (what applyActiveFade does). A per-op geometric rewrite is
+//      impossible in general: `materialFill` carries cx/cy/halfW/halfH, `text`
+//      carries a font size, `video` carries a source rect, and a `path` carries
+//      absolute coordinates. Rewriting all of them correctly is exactly the
+//      per-op knowledge the law forbids depending on, and any op the walker had
+//      not been taught about would silently not grow.
+//   3. THE WORLD TRANSFORM — this one. Every node's ops are emitted INSIDE
+//      exactly one `pushTransform(node.world)` (emitNodeBody's return, the only
+//      exit this function has), and every backend — Skia, PDF, SVG, the bare-node
+//      CLI — realizes that push as its own CTM. A shader cannot escape the CTM:
+//      it does not get to choose where its quad lands, because the quad's
+//      placement is applied by the painter around it, outside any shader's code.
+//      That is a STRUCTURAL guarantee rather than a roster of cooperating
+//      plugins, which is what the ruling asks for.
+//
+// So grow multiplies `node.world.scale`. Nothing downstream of this line knows
+// the mode exists: the ops are byte-identical to the widget's own, and the
+// picture changes because the frame they are painted in is smaller.
+//
+// ── THE ANCHOR IS THE ROTATION ANCHOR (its centre by default) ───────────────
+// The founding block asks the implementer to state the choice: the fixed point is
+// the item's ROTATION ANCHOR — `core/derive.worldTransform`'s pivot, which is the
+// item's geometric centre unless the author moved it ("the default rotation
+// anchor is the object's center — self.anchors.center", manifest Round 11).
+//
+// WHY THAT ONE. Growing from the box's local origin (the top-left) is the failure
+// mode the block names: the widget appears to slide out of its own corner, which
+// reads as a placement bug rather than an entrance. The centre is the point an
+// author already understands as "where this widget is", AND reusing the ROTATION
+// anchor specifically means the two transforms agree about where the widget's
+// still point is: an author who moved the anchor to make a widget swing about its
+// edge gets it growing from that same edge, which is the one answer consistent
+// with what they already told us. A separate grow-anchor would be a second
+// vocabulary for the same idea.
+//
+// ROTATION COMPOSES BECAUSE ONLY `scale` AND THE TRANSLATION MOVE. The output
+// carries the input's rotation UNCHANGED, and the translation is the unique one
+// that keeps the anchor a fixed point, so a rotated widget grows in place at a
+// constant angle — it never sweeps an arc. (An implementation that re-derived the
+// world through `T.aboutPivot` DOES sweep, measured: aboutPivot re-parametrizes
+// about a pivot expressed in the PRE-scale frame, so at k = 1 it already moves
+// the anchor. This function scales about a WORLD point instead, which is why it
+// is its own two lines of arithmetic and not a call to that helper.)
+
+/**
+ * Pure function. THE GROW SCALE RAMP — a node's world transform with its scale
+ * multiplied by the mode's coverage, about the item's rotation anchor. Returns
+ * the VERY SAME transform object for every node that is not mid-`grow`.
+ *
+ * The coverage IS the scale factor (linear, no easing): at v = 0 the widget is a
+ * point at its anchor, at v = 1 it is exactly its authored size. v = 1 returns by
+ * IDENTITY, so the endpoint is byte-identical to the same widget with no mode at
+ * all — the endpoint law, enforced here rather than trusted to floating point.
+ *
+ * @param {object} world - the node's world similarity {x, y, rotation, scale}
+ * @param {object} state - the node's evaluated state (`active`, and the box the anchor comes from)
+ * @returns {object} the transform itself, or a copy scaled about the anchor
+ *
+ * @example growScaledWorld({x: 0, y: 0, rotation: 0, scale: 1}, {active: true}).scale // 1 (not a grow — the same object back)
+ * @example growScaledWorld({x: 0, y: 0, rotation: 0, scale: 1}, {active: {type: "~visibleFx", mode: "blurFade", v: 0.5}}).scale // 1 (a different named mode does not scale)
+ * @example growScaledWorld({x: 0, y: 0, rotation: 0, scale: 1}, {active: {type: "~visibleFx", mode: "grow", v: 0.5}, w: 200, h: 100}).scale // 0.5
+ * @example growScaledWorld({x: 0, y: 0, rotation: 0, scale: 1}, {active: {type: "~visibleFx", mode: "grow", v: 0.5}, w: 200, h: 100}).x // 50 (the centre (100,50) held fixed)
+ * @example growScaledWorld({x: 0, y: 0, rotation: 0, scale: 1}, {active: {type: "~visibleFx", mode: "grow", v: 0}, w: 200, h: 100}) // {x: 100, y: 50, rotation: 0, scale: 0} (collapsed onto the anchor)
+ * @example growScaledWorld({x: 0, y: 0, rotation: 0.7, scale: 1}, {active: {type: "~visibleFx", mode: "grow", v: 0.5}, w: 200, h: 100}).rotation // 0.7 (the angle is untouched — it grows in place, never sweeping an arc)
+ * @example (() => { const w = {x: 0, y: 0, rotation: 0, scale: 1}; return growScaledWorld(w, {active: {type: "~visibleFx", mode: "grow", v: 1}, w: 200, h: 100}) === w; })() // true (v = 1 is the exact authored render)
+ */
+export function growScaledWorld(world, state) {
+  const a = state?.active;
+  if (!isVisibleFxToken(a) || a.mode !== "grow") return world;
+  const k = visibleLevel(a);
+  if (k === 1) return world; // the endpoint is the authored render, by identity
+  const anchor = growAnchorWorld(world, state);
+  // SCALE ABOUT A FIXED WORLD POINT: out = translate(P) ∘ scale(k) ∘ translate(-P)
+  // applied to `world`. Because a similarity's scale acts about its own origin,
+  // this is exactly "move the origin toward P by (1 - k)" — rotation untouched,
+  // and P is a fixed point at every k INCLUDING k = 0 (where the whole widget
+  // collapses onto it). `signX/signY` ride along in the spread: a flip is a
+  // reflection, orthogonal to the size ramp, and must survive it.
+  return {
+    ...world,
+    x: anchor.x + (world.x - anchor.x) * k,
+    y: anchor.y + (world.y - anchor.y) * k,
+    scale: world.scale * k,
+  };
+}
+
+/**
+ * Pure function. The WORLD point a `grow` ramp holds fixed: the item's rotation
+ * anchor, falling back to its box centre, falling back to the transform's own
+ * origin for a widget with no box.
+ *
+ * The three cases mirror `core/derive.worldTransform`'s pivot resolution exactly,
+ * and deliberately so — the two must not be able to disagree about where a
+ * widget's still point is. `rotationAnchor` is already a WORLD point (an
+ * equation-valued property the expression pass evaluated to numbers before
+ * derivation), so it is used as-is; the box centre is a base-frame point and has
+ * to be carried through `world` to become one.
+ *
+ * A NON-FINITE ANCHOR CANNOT ARISE HERE: emitNodeBody's non-finite containment
+ * seam runs BEFORE this and diverts a bad world to the error affordance, and the
+ * box centre is arithmetic over leaves the same seam has already accepted.
+ *
+ * @example growAnchorWorld({x: 0, y: 0, rotation: 0, scale: 1}, {w: 200, h: 100}) // {x: 100, y: 50} (the box centre)
+ * @example growAnchorWorld({x: 0, y: 0, rotation: 0, scale: 1}, {w: 200, h: 100, rotationAnchor: {x: 10, y: 20}}) // {x: 10, y: 20} (the author moved it — grow follows)
+ * @example growAnchorWorld({x: 7, y: 9, rotation: 0, scale: 1}, {}) // {x: 7, y: 9} (no box: the transform's own origin)
+ */
+function growAnchorWorld(world, state) {
+  const ra = state?.rotationAnchor;
+  if (ra && Number.isFinite(ra.x) && Number.isFinite(ra.y)) return { x: ra.x, y: ra.y };
+  if (state?.w == null || state?.h == null) return { x: world.x, y: world.y };
+  // The centre in the item's LOCAL frame (the box is [0..w]×[0..h] there), mapped
+  // out through the node's own world so rotation and scale are already accounted
+  // for. Reading `state.w/h` is sign-blind-safe: core/derive normalizes a negative
+  // extent away before a node exists (the NEGATIVE EXTENTS protocol).
+  return applySimilarity(world, state.w / 2, state.h / 2);
+}
+
+/**
+ * Pure function. A similarity transform applied to a local point — the one piece
+ * of core/transform.js this file needs, inlined to keep render_gpu/ports.js's
+ * import surface unchanged (it already imports nothing from core/transform.js).
+ *
+ * @example applySimilarity({x: 0, y: 0, rotation: 0, scale: 2}, 10, 5) // {x: 20, y: 10}
+ * @example applySimilarity({x: 100, y: 0, rotation: Math.PI / 2, scale: 1}, 10, 0).y // 10
+ */
+function applySimilarity(t, lx, ly) {
+  const c = Math.cos(t.rotation), s = Math.sin(t.rotation);
+  return {
+    x: t.x + t.scale * (c * lx - s * ly),
+    y: t.y + t.scale * (s * lx + c * ly),
+  };
 }
 
 /**

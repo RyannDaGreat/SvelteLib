@@ -1590,3 +1590,44 @@ registerInterpMode({
   appliesTo: ({ value }) => typeof value === "boolean",
   blend: (a, b, alpha) => namedVisibleBlend("manim", a, b, alpha),
 });
+
+// ── `grow`: THE WIDGET SCALES UP FROM NOTHING, AND BACK DOWN ─────────────────
+//
+// User request, 2026-08-03, verbatim (WORKSTREAM BS): "Another intro... sorry,
+// visible interp should be growing from nothing or shrinking back to nothing."
+//
+// So: appearing = scale 0 → the widget's authored size; disappearing = the same
+// ramp read backwards. Like every mode in this family it is a VISIBILITY effect,
+// so it rides `active` and mints the same `~visibleFx` token blurFade and manim
+// do, with its own name in it. That is the whole of this layer: the RENDER half
+// (render_gpu/ports.js growScaledWorld) is what turns the coverage into a scale.
+//
+// ── IT IS NOT A FADE, AND IT DELIBERATELY DOES NOT STACK ONE ────────────────
+// The other two named modes both ALSO fade, because both are ways of resolving
+// INTO focus and opacity is half of that gesture. Growing is not: a widget that
+// scales up from a point is already unmistakably arriving, and multiplying a
+// fade on top would make the first half of the entry a barely-visible speck
+// instead of a small solid widget. `applyActiveFade`'s token branch is therefore
+// the one place this mode differs from its siblings — see growOpacityLevel
+// there for why that exception lives at the render seam rather than here.
+//
+// ── NO PARAMETER, DELIBERATELY (the AP machinery is available and declined) ──
+// The obvious knob is an overshoot/back-ease ("grow to 110% then settle"), and
+// AP's params machinery would carry it in three lines. It is NOT shipped: the
+// founding block asks for a default that is "natural and restrained", an
+// overshoot is a taste that reads as a bounce rather than an arrival, and a
+// parameter whose default is 0 would put a control in the Inspector that does
+// nothing until an author goes looking for it. The ramp is linear in coverage
+// for the same reason the blur half of blurFade is: the scale and the
+// transition's own curve then read as ONE gesture, and an author who wants an
+// ease already has the transition curve to spend on it.
+
+registerInterpMode({
+  id: "grow",
+  label: "Grow",
+  help: "Scale the item up from nothing to its full size as it appears, and shrink it back down to nothing when it is hidden. It grows about its own centre (its rotation anchor), so it expands in place rather than sliding out of a corner, and a rotated item keeps its angle the whole way. Unlike Fade it stays fully opaque while it grows — the arrival is the size change, not a dissolve.",
+  // BOOLEAN-VALUED ROWS ONLY — the same domain and the same argument as `fade`
+  // and `blurFade`: this ramps COVERAGE, and coverage is what a boolean has.
+  appliesTo: ({ value }) => typeof value === "boolean",
+  blend: (a, b, alpha) => namedVisibleBlend("grow", a, b, alpha),
+});
