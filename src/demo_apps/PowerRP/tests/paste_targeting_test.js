@@ -22,6 +22,8 @@ import {
   retargetRefusal, retargetReport, rowsByKey, UNRETARGETABLE_KEYS,
 } from "../core/item_properties_clipboard.js";
 import { sameRowContract } from "../core/multiselect.js";
+import { createRegistry } from "../core/registry.js";
+import { allPlugins } from "../plugins/index.js";
 import {
   clipboardKind, propertySubsetKind, pasteBadge, pasteIntent, subsetNoun,
   PASTE_BADGES, SUBSET_KEY_SETS,
@@ -60,6 +62,32 @@ const CIRCLE = {
 };
 
 // ── THE INTERSECTION RULE ────────────────────────────────────────────────────
+
+// WORKSTREAM VV, item 2: rotation must transfer through the intersection paste
+// — "a rect's rotation onto a circle must land". This uses the REAL registered
+// plugins (not the hand-built RECT/CIRCLE fixtures above) precisely because the
+// claim is about the actual shared `transform` bundle (core/properties.js
+// BUNDLES.transform), not about a fixture that happens to agree.
+const registry = createRegistry();
+for (const p of allPlugins) registry.register(p);
+test("rotation is a UNIVERSAL row — a real rect's rotation onto a real circle lands", () => {
+  const rectPlugin = registry.get("rect");
+  const circlePlugin = registry.get("circle");
+  assert.ok(rowsByKey(rectPlugin).get("rotation"), "rect declares no rotation row — the premise is false");
+  assert.ok(rowsByKey(circlePlugin).get("rotation"), "circle declares no rotation row — the premise is false");
+  const { state, skipped } = retargetedState({ rotation: 0.85 }, rectPlugin, circlePlugin);
+  assert.deepEqual(state, { rotation: 0.85 }, "rotation did not transfer from a real rect to a real circle");
+  assert.deepEqual(skipped, [], "rotation was skipped instead of landing");
+});
+
+test("copy-rotation's payload retargets end to end onto a selection of one", () => {
+  const rectPlugin = registry.get("rect");
+  const circlePlugin = registry.get("circle");
+  const payload = itemPropertiesPayload({ items: { r: { rotation: 1.2 } } }, ["r"], ["rotation"]);
+  const { payload: out, report } = retargetedPayload(payload, rectPlugin, [{ itemId: "c", plugin: circlePlugin }]);
+  assert.deepEqual(out.powerrp_item_props, { c: { rotation: 1.2 } });
+  assert.deepEqual(retargetReport(report), [], "a clean rotation retarget must warn about nothing");
+});
 
 test("rect Position onto a circle applies x and y — the same row under a different label", () => {
   const { state, skipped } = retargetedState({ x: 10, y: 20 }, RECT, CIRCLE);
@@ -198,12 +226,13 @@ test("the badge appears ONLY for an abnormal paste — an ordinary widget paste 
   assert.equal(pasteBadge("properties").id, "properties");
   assert.equal(pasteBadge("properties", "position").id, "position");
   assert.equal(pasteBadge("properties", "dimensions").id, "dimensions");
-  assert.equal(pasteBadge("properties", "box").id, "properties", "Box rides the general glyph — see the vocabulary note");
+  assert.equal(pasteBadge("properties", "rotation").id, "rotation");
+  assert.equal(pasteBadge("properties", "transform").id, "properties", "Transform rides the general glyph — see the vocabulary note");
   assert.equal(pasteBadge("image").id, "image");
 });
 
 test("every badge id names a declared glyph and label", () => {
-  for (const kind of [["properties"], ["properties", "position"], ["properties", "dimensions"], ["image"]]) {
+  for (const kind of [["properties"], ["properties", "position"], ["properties", "dimensions"], ["properties", "rotation"], ["image"]]) {
     const badge = pasteBadge(...kind);
     assert.ok(PASTE_BADGES[badge.id], `badge id "${badge.id}" has no PASTE_BADGES entry`);
     assert.equal(badge.icon, PASTE_BADGES[badge.id].icon);
@@ -223,16 +252,17 @@ test("the clipboard kind ranks OURS over an observed OS image", () => {
 test("the subset kinds are recognised from the payload's key SET, order-independently", () => {
   assert.equal(propertySubsetKind({ powerrp_item_props: { a: { y: 2, x: 1 } } }), "position");
   assert.equal(propertySubsetKind({ powerrp_item_props: { a: { h: 4, w: 8 } } }), "dimensions");
-  assert.equal(propertySubsetKind({ powerrp_item_props: { a: { w: 8, h: 4, x: 1, y: 2 } } }), "box");
+  assert.equal(propertySubsetKind({ powerrp_item_props: { a: { rotation: 0.5 } } }), "rotation");
+  assert.equal(propertySubsetKind({ powerrp_item_props: { a: { w: 8, h: 4, x: 1, y: 2, rotation: 0, scale: 1 } } }), "transform");
   assert.equal(propertySubsetKind({ powerrp_item_props: { a: { x: 1, y: 2, fill: "#f00" } } }), null);
 });
 
 test("the subset key sets AGREE with the copy commands that produce them", () => {
   // A DRIFT GATE. The subset badges are a second statement of App.svelte's
-  // copy-position/dimensions/box key lists; without this, adding a fourth subset
-  // verb would silently show the generic properties glyph forever.
+  // copy-position/dimensions/rotation/box key lists; without this, adding another
+  // subset verb would silently show the generic properties glyph forever.
   const src = readFileSync(new URL("../web/App.svelte", import.meta.url), "utf8");
-  const declared = { position: "copy-position", dimensions: "copy-dimensions", box: "copy-box" };
+  const declared = { position: "copy-position", dimensions: "copy-dimensions", rotation: "copy-rotation", transform: "copy-box" };
   for (const [subset, id] of Object.entries(declared)) {
     const entry = src.slice(src.indexOf(`{ id: "${id}"`));
     const keys = entry.slice(0, entry.indexOf("},")).match(/copySelectionProperties\(\[([^\]]*)\]/);
@@ -262,12 +292,24 @@ test("the refusal is stated BEFORE the click, not reported after it", () => {
   assert.match(tip, /deselect/i, "and must name the way out, as the refusal itself does");
 });
 
-test("Copy Box's tooltip NAMES the subset its badge cannot distinguish", () => {
-  // The legibility trade recorded in PASTE_BADGES: Box shares the properties
-  // glyph, so the sentence has to carry what the glyph dropped.
-  assert.equal(subsetNoun("box"), "Box");
-  assert.match(pasteIntent({ kind: "properties", itemCount: 1, subset: "box", selectedCount: 1 }),
-    /copied Box/, "the tip must name Box even though the badge groups it with properties");
+test("Copy Transform's tooltip NAMES the subset its badge cannot distinguish", () => {
+  // The legibility trade recorded in PASTE_BADGES: Transform shares the
+  // properties glyph, so the sentence has to carry what the glyph dropped.
+  assert.equal(subsetNoun("transform"), "Transform");
+  assert.match(pasteIntent({ kind: "properties", itemCount: 1, subset: "transform", selectedCount: 1 }),
+    /copied Transform/, "the tip must name Transform even though the badge groups it with properties");
+});
+
+test("Copy Rotation gets its own badge id and its tooltip says Rotation", () => {
+  assert.equal(subsetNoun("rotation"), "Rotation");
+  assert.match(pasteIntent({ kind: "properties", itemCount: 1, subset: "rotation", selectedCount: 2 }),
+    /Apply the copied Rotation to the 2 selected widgets/);
+});
+
+test("Copy Size's tooltip says Size, matching the row's new title", () => {
+  assert.equal(subsetNoun("dimensions"), "Size");
+  assert.match(pasteIntent({ kind: "properties", itemCount: 1, subset: "dimensions", selectedCount: 1 }),
+    /Apply the copied Size to the 1 selected widget/);
 });
 
 // ── THE SURFACES AGREE WITH THE DISPATCH ─────────────────────────────────────

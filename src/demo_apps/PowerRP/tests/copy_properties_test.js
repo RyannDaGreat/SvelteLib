@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { KEYBINDING_DEFAULTS, KEYBINDING_LABELS } from "../core/shortcut_entries.js";
 import { newDocument, withNewItem, withNewSlide, keyframed, slideState, withItemPurged } from "../core/document.js";
 import { applied } from "../core/deltas.js";
+import { entryScore } from "../core/commands.js";
 import {
   itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta,
 } from "../core/item_properties_clipboard.js";
@@ -188,7 +189,7 @@ test("an id with no state on the copy slide captures nothing (no empty entry)", 
   assert.deepEqual(Object.keys(payload.powerrp_item_props), [a]);
 });
 
-// ── SUBSET COPIES: COPY POSITION / DIMENSIONS / BOX ──────────────────────────
+// ── SUBSET COPIES: COPY POSITION / SIZE / ROTATION / TRANSFORM ───────────────
 //
 // The user (2026-08-02): "copy position, copy dimensions … It's kind of like copy
 // properties, but for a limited subset." The verb is the same; the payload is
@@ -196,10 +197,20 @@ test("an id with no state on the copy slide captures nothing (no empty entry)", 
 // smaller diff" assumption gets wrong: what the payload CARRIES, and what the
 // paste WRITES — because deltaFromFoldDiff reads an absent key as a DELETION, and
 // an unprojected subset paste emitted `type: null` before this was fixed.
+//
+// WORKSTREAM VV renamed the widest subset (copy-box, id unchanged) to "Copy
+// Transform" and grew its key set to include rotation and scale — the two rows
+// core/transform.js's own similarity carries that the old four-key Box did not.
+// copy-rotation is new in the same workstream. BOX is kept as the name of the
+// old four-key constant below (it is still what "Copy Dimensions" + "Copy
+// Position" compose to) so the byte-identical-migration test can keep comparing
+// against it; TRANSFORM is the new six-key superset the command itself sends.
 
 const POSITION = ["x", "y"];
 const DIMENSIONS = ["w", "h"];
 const BOX = ["x", "y", "w", "h"];
+const ROTATION = ["rotation"];
+const TRANSFORM = ["x", "y", "w", "h", "rotation", "scale"];
 
 test("a subset payload carries ONLY its keys — nothing else of the widget rides along", () => {
   const { doc, a } = sampleDoc();
@@ -209,6 +220,28 @@ test("a subset payload carries ONLY its keys — nothing else of the widget ride
   assert.deepEqual(dimensions.powerrp_item_props[a], { w: 5, h: 5 });
   const box = itemPropertiesPayload(slideState(doc, 0), [a], BOX);
   assert.deepEqual(Object.keys(box.powerrp_item_props[a]).sort(), ["h", "w", "x", "y"]);
+});
+
+test("Copy Transform carries all six keys, rotation and scale included", () => {
+  const { doc, a } = sampleDoc();
+  // sampleDoc's rect defaults omit rotation/scale, so keyframe them so the
+  // payload has something real to carry (not just an absent-key drop-out).
+  const withTransform = keyframed(keyframed(doc, 0, ["items", a, "rotation"], 0.3), 0, ["items", a, "scale"], 2);
+  const payload = itemPropertiesPayload(slideState(withTransform, 0), [a], TRANSFORM);
+  assert.deepEqual(payload.powerrp_item_props[a], { x: 10, y: 20, w: 5, h: 5, rotation: 0.3, scale: 2 });
+});
+
+test("Copy Rotation round-trips the angle alone, touching nothing else", () => {
+  const { doc, a } = sampleDoc();
+  const withRotation = keyframed(doc, 0, ["items", a, "rotation"], 0.7);
+  const rotatedAgain = keyframed(withRotation, 2, ["items", a, "rotation"], 1.4);
+  const payload = itemPropertiesPayload(slideState(rotatedAgain, 0), [a], ROTATION);
+  assert.deepEqual(payload.powerrp_item_props[a], { rotation: 0.7 });
+  const after = pasted(rotatedAgain, 2, payload);
+  const item = slideState(after, 2).items[a];
+  assert.equal(item.rotation, 0.7, "rotation did not transport");
+  assert.equal(item.x, 200, "Copy Rotation moved the widget");
+  assert.equal(item.fill, "#0f0", "Copy Rotation touched a property outside rotation");
 });
 
 test("paste writes ONLY those keys: a moved AND recoloured widget, pasted position-only, keeps its colour", () => {
@@ -228,14 +261,14 @@ test("paste writes ONLY those keys: a moved AND recoloured widget, pasted positi
     ["x"], "y already agreed, so minimality says no keyframe — and no tombstones either");
 });
 
-test("Copy Dimensions does not move the widget; Copy Box moves AND resizes it", () => {
+test("Copy Size does not move the widget; Copy Transform moves AND resizes it", () => {
   const { doc, a } = sampleDoc();
   const sized = pasted(doc, 2, itemPropertiesPayload(slideState(doc, 0), [a], DIMENSIONS));
-  assert.equal(slideState(sized, 2).items[a].y, 400, "Copy Dimensions moved the widget");
+  assert.equal(slideState(sized, 2).items[a].y, 400, "Copy Size moved the widget");
   const boxed = pasted(doc, 2, itemPropertiesPayload(slideState(doc, 0), [a], BOX));
   const item = slideState(boxed, 2).items[a];
   assert.deepEqual([item.x, item.y, item.w, item.h], [10, 20, 5, 5]);
-  assert.equal(item.fill, "#0f0", "Copy Box carried a property outside the box");
+  assert.equal(item.fill, "#0f0", "the four-key box subset carried a property outside itself");
 });
 
 test("a negative w is a FLIP, and the box subset round-trips it sign and all", () => {
@@ -268,13 +301,14 @@ test("the FULL copy is byte-identical to before the subsets existed (keys omitte
   assert.deepEqual(slideState(pasted(doc, 2, implicitAll), 2).items[a], slideState(doc, 0).items[a]);
 });
 
-test("the three subset commands are registered, gated and surfaced as tools", () => {
+test("the four subset commands are registered, gated and surfaced as tools", () => {
   const app = readFileSync(new URL("../web/App.svelte", import.meta.url), "utf8");
   const pool = readFileSync(new URL("../core/registry.js", import.meta.url), "utf8");
   for (const [id, keys] of [
     ["copy-position", '["x", "y"]'],
     ["copy-dimensions", '["w", "h"]'],
-    ["copy-box", '["x", "y", "w", "h"]'],
+    ["copy-rotation", '["rotation"]'],
+    ["copy-box", '["x", "y", "w", "h", "rotation", "scale"]'],
   ]) {
     assert.ok(app.includes(`id: "${id}"`), `${id} is not a registered command`);
     assert.ok(app.includes(`a.copySelectionProperties(${keys}`),
@@ -284,6 +318,53 @@ test("the three subset commands are registered, gated and surfaced as tools", ()
   // The one this workstream inherited RED from tool_surfacing_probe.js.
   assert.ok(pool.includes('command: "copy-properties"'),
     "copy-properties is still unreachable from the Tools pane");
+});
+
+test("copy-dimensions is titled Copy Size, with dimensions kept as a search alias", () => {
+  const app = readFileSync(new URL("../web/App.svelte", import.meta.url), "utf8");
+  const entry = app.slice(app.indexOf('{ id: "copy-dimensions"'), app.indexOf('{ id: "copy-dimensions"') + 900);
+  assert.match(entry, /title: "Copy Size/, "the row's title did not move to Copy Size");
+  assert.match(entry, /"copy dimensions"/, "the old spoken form must still resolve as an alias");
+});
+
+test("copy-box is titled Copy Transform, with the old spoken forms kept as aliases", () => {
+  const app = readFileSync(new URL("../web/App.svelte", import.meta.url), "utf8");
+  const entry = app.slice(app.indexOf('{ id: "copy-box"'), app.indexOf('{ id: "copy-box"') + 1400);
+  assert.match(entry, /title: "Copy Transform/, "the row's title did not move to Copy Transform");
+  assert.match(entry, /"copy box"/, "the old spoken form must still resolve as an alias");
+  assert.match(entry, /"copy transform"/, "the new spoken form must resolve too");
+});
+
+// ── THE PALETTE SCORER: EXACT BEATS PREFIX (b6d3b577) ────────────────────────
+//
+// The fix landed in core/commands.entryScore: typing a command's full name must
+// outscore every OTHER command whose title merely starts with those words. The
+// renamed family's new titles are exactly the shape that defect bites — "Copy
+// Transform" and "Copy Size" both share a prefix with the whole-state and other
+// subset rows' titles/aliases, so the same regression is one row away from
+// repeating itself here.
+test("typing a family member's own words beats every command that merely starts with them", () => {
+  const app = readFileSync(new URL("../web/App.svelte", import.meta.url), "utf8");
+  const entryOf = (id) => {
+    const marker = `{ id: "${id}", title:`;
+    const start = app.indexOf(marker);
+    assert.ok(start >= 0, `web/App.svelte registers no "${id}" entry at the expected shape`);
+    const line = app.slice(start, app.indexOf("},", start) + 1);
+    const title = line.match(/title: "([^"]+)"/)[1];
+    const raw = line.match(/aliases: \[([^\]]*)\]/);
+    const aliases = raw ? [...raw[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+    return { id, title, aliases };
+  };
+  const family = ["copy-properties", "copy-position", "copy-dimensions", "copy-rotation", "copy-box"].map(entryOf);
+  const winner = (query) => family
+    .map((e) => [e.id, entryScore(query, e)])
+    .filter(([, s]) => s !== null)
+    .sort((a, b) => a[1] - b[1])[0]?.[0] ?? null;
+
+  assert.equal(winner("copy transform"), "copy-box", '"copy transform" must resolve to Copy Transform, not tie into another row');
+  assert.equal(winner("copy size"), "copy-dimensions", '"copy size" must resolve to Copy Size (the renamed title, not just the alias)');
+  assert.equal(winner("copy rotation"), "copy-rotation");
+  assert.equal(winner("copy x y h w"), "copy-box", 'the box\'s classic spoken form must still resolve to Copy Transform');
 });
 
 // ── WIDGET-COPY PASTE IS UNCHANGED ───────────────────────────────────────────

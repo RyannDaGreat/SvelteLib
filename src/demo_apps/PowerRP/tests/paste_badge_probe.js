@@ -157,7 +157,8 @@ try {
     ["copy-properties", "properties"],
     ["copy-position", "position"],
     ["copy-dimensions", "dimensions"],
-    ["copy-box", "properties"], // shares the general glyph by legibility ruling
+    ["copy-rotation", "rotation"], // WORKSTREAM VV: new subset, own glyph (mdi:rotate-360)
+    ["copy-box", "properties"], // now "Copy Transform" — still shares the general glyph by legibility ruling
   ]) {
     await page.evaluate((id) => window.__powerrp_app.selectMany([id]), ids.rectId);
     await run(command);

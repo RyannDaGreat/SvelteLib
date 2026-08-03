@@ -3696,9 +3696,11 @@ export class PowerRPApp {
    *
    * `keys` NARROWS THE CAPTURE — the user, 2026-08-02: "We should also have copy
    * position, copy dimensions … It's kind of like copy properties, but for a
-   * limited subset." Copy Position passes `["x", "y"]`, Copy Dimensions
-   * `["w", "h"]`, Copy Box all four; omitted = every property, this method's
-   * original behaviour byte-for-byte. The subsets are ONE argument and no new
+   * limited subset." Copy Position passes `["x", "y"]`, Copy Size (titled from
+   * "Copy Dimensions" — WORKSTREAM VV) `["w", "h"]`, Copy Rotation `["rotation"]`,
+   * Copy Transform (titled from "Copy Box", same workstream) all six of
+   * `["x", "y", "w", "h", "rotation", "scale"]`; omitted = every property, this
+   * method's original behaviour byte-for-byte. The subsets are ONE argument and no new
    * paste path because paste already applies whatever keys the payload carries
    * (core/item_properties_clipboard.js's subset section, which also records the
    * one real fix that made a partial payload safe). They route through the SAME

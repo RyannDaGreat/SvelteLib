@@ -83,24 +83,35 @@
  * by looking rather than by wishing: `mdi:axis-arrow` (Copy Position's own icon)
  * and `mdi:ruler-square` (Copy Dimensions') are a CROSS and a SQUARE — two
  * shapes that survive being shrunk, because neither depends on interior detail.
- * `mdi:vector-square` (Copy Box) is a square with corner marks and reads as
- * "square" at size, which is a legitimate confusion with Dimensions — so Box is
- * NOT given its own badge and rides the general properties glyph, with the
- * tooltip naming it exactly. A badge that is ambiguous about which of two
- * subsets is on the clipboard is worse than one that says "properties" and
- * defers the detail to the sentence a hover already shows.
+ * `mdi:vector-square` (Copy Box, now titled Copy Transform) is a square with
+ * corner marks and reads as "square" at size, which is a legitimate confusion
+ * with Dimensions — so it is NOT given its own badge and rides the general
+ * properties glyph, with the tooltip naming it exactly. A badge that is
+ * ambiguous about which of two subsets is on the clipboard is worse than one
+ * that says "properties" and defers the detail to the sentence a hover already
+ * shows.
+ *
+ * COPY ROTATION (WORKSTREAM VV) gets its own badge by the SAME test: at 10px,
+ * `mdi:rotate-360` is a single closed loop with one arrowhead — a silhouette
+ * that survives shrinking the way `axis-arrow`'s cross and `ruler-square`'s
+ * square do, and it is not one a squint could mistake for either of them. Copy
+ * Transform's `scale` addition changes nothing about this: it stays grouped
+ * with Position/rotation/everything-else under the general glyph for the same
+ * reason Box always was — a badge cannot show six properties at once, so the
+ * tooltip carries the detail (`subsetNoun`/`pasteIntent` below).
  *
  * @example PASTE_BADGES.properties.icon
  * // 'mdi:text-box-multiple-outline'
  * @example PASTE_BADGES.position.label
  * // 'copied position'
  * @example Object.keys(PASTE_BADGES).sort()
- * // ["dimensions", "image", "position", "properties"]
+ * // ["dimensions", "image", "position", "properties", "rotation"]
  */
 export const PASTE_BADGES = {
   properties: { icon: "mdi:text-box-multiple-outline", label: "copied properties" },
   position: { icon: "mdi:axis-arrow", label: "copied position" },
   dimensions: { icon: "mdi:ruler-square", label: "copied dimensions" },
+  rotation: { icon: "mdi:rotate-360", label: "copied rotation" },
   image: { icon: "mdi:image-outline", label: "image from the system clipboard" },
 };
 
@@ -112,28 +123,37 @@ export const PASTE_BADGES = {
  * `itemPropertiesPayload` preserves the order its `keys` argument was given in,
  * and a future caller passing ["y", "x"] means the same thing.
  *
- * These mirror web/App.svelte's copy-position / copy-dimensions / copy-box
- * entries. THAT IS A DUPLICATION AND IT IS GATED: tests/paste_affordance_test.js
- * reads the command entries' `run` source and asserts the key lists agree, so
- * adding a fourth subset verb without a badge fails loudly instead of showing the
- * generic properties glyph forever.
+ * These mirror web/App.svelte's copy-position / copy-dimensions / copy-rotation /
+ * copy-box entries (the LAST two now titled "Copy Rotation" and "Copy Transform"
+ * — WORKSTREAM VV; the ids did not move, see copy-box's App.svelte comment).
+ * THAT IS A DUPLICATION AND IT IS GATED: tests/paste_targeting_test.js reads the
+ * command entries' `run` source and asserts the key lists agree, so adding a new
+ * subset verb without a badge fails loudly instead of showing the generic
+ * properties glyph forever.
+ *
+ * "transform" (not "box") is the SUBSET NAME for the six-key copy-box payload,
+ * matching the command's new title — the badge vocabulary speaks the same word
+ * the command palette does.
  *
  * @example SUBSET_KEY_SETS["x,y"]
  * // 'position'
  * @example SUBSET_KEY_SETS["h,w"]
  * // 'dimensions'
- * @example SUBSET_KEY_SETS["h,w,x,y"]
- * // 'box'
+ * @example SUBSET_KEY_SETS["rotation"]
+ * // 'rotation'
+ * @example SUBSET_KEY_SETS["h,rotation,scale,w,x,y"]
+ * // 'transform'
  */
 export const SUBSET_KEY_SETS = {
   "x,y": "position",
   "h,w": "dimensions",
-  "h,w,x,y": "box",
+  "rotation": "rotation",
+  "h,rotation,scale,w,x,y": "transform",
 };
 
 /**
  * Pure function. Which SUBSET verb produced this properties payload — "position",
- * "dimensions", "box", or null for a whole-state Copy Properties.
+ * "dimensions", "rotation", "transform", or null for a whole-state Copy Properties.
  *
  * The payload's items must AGREE on their key set, and they do by construction
  * (one `keys` argument captures every item); a payload whose items disagree is
@@ -141,14 +161,16 @@ export const SUBSET_KEY_SETS = {
  * guessing from the first item.
  *
  * @param {object} payload - a `powerrp_item_props` payload
- * @returns {"position"|"dimensions"|"box"|null}
+ * @returns {"position"|"dimensions"|"rotation"|"transform"|null}
  *
  * @example propertySubsetKind({powerrp_item_props: {a: {x: 1, y: 2}}})
  * // 'position'
  * @example propertySubsetKind({powerrp_item_props: {a: {w: 8, h: 4}, b: {w: 1, h: 1}}})
  * // 'dimensions'
- * @example propertySubsetKind({powerrp_item_props: {a: {x: 1, y: 2, w: 8, h: 4}}})
- * // 'box'
+ * @example propertySubsetKind({powerrp_item_props: {a: {rotation: 0.5}}})
+ * // 'rotation'
+ * @example propertySubsetKind({powerrp_item_props: {a: {x: 1, y: 2, w: 8, h: 4, rotation: 0, scale: 1}}})
+ * // 'transform'
  * @example propertySubsetKind({powerrp_item_props: {a: {x: 1, y: 2, fill: "#f00"}}})
  * // null   (a whole-state copy — no subset names it)
  * @example propertySubsetKind({powerrp_item_props: {a: {x: 1, y: 2}, b: {w: 8, h: 4}}})
@@ -208,7 +230,7 @@ export function clipboardKind(payload, osImageSeen = false) {
  * belongs.
  *
  * @param {"items"|"properties"|"image"|"empty"} kind - clipboardKind's answer
- * @param {"position"|"dimensions"|"box"|null} [subset] - propertySubsetKind's answer
+ * @param {"position"|"dimensions"|"rotation"|"transform"|null} [subset] - propertySubsetKind's answer
  * @returns {{id: string, icon: string, label: string}|null}
  *
  * @example pasteBadge("items")
@@ -219,38 +241,48 @@ export function clipboardKind(payload, osImageSeen = false) {
  * // 'properties'
  * @example pasteBadge("properties", "position").icon
  * // 'mdi:axis-arrow'
- * @example pasteBadge("properties", "box").id
- * // 'properties'   (box's glyph is not legible against dimensions' — the tip names it)
+ * @example pasteBadge("properties", "rotation").icon
+ * // 'mdi:rotate-360'
+ * @example pasteBadge("properties", "transform").id
+ * // 'properties'   (Transform's six keys are not one legible glyph — the tip names it)
  * @example pasteBadge("image").icon
  * // 'mdi:image-outline'
  */
 export function pasteBadge(kind, subset = null) {
   if (kind === "image") return { id: "image", ...PASTE_BADGES.image };
   if (kind !== "properties") return null;
-  const id = subset === "position" || subset === "dimensions" ? subset : "properties";
+  const id = subset === "position" || subset === "dimensions" || subset === "rotation" ? subset : "properties";
   return { id, ...PASTE_BADGES[id] };
 }
 
 /**
  * Pure function. What a properties payload's contents are CALLED in a sentence —
- * "Position", "Dimensions", "Box" or the general "properties".
+ * "Position", "Size", "Rotation", "Transform" or the general "properties".
  *
- * Capitalized for the three named subsets because they are the COMMAND names the
- * user pressed (Copy Position); lowercase for the general case because
- * "properties" is a common noun there, not a verb's name.
+ * Capitalized for the named subsets because they are the COMMAND names the user
+ * pressed (Copy Position, Copy Size — WORKSTREAM VV's rename off "Dimensions" so
+ * the tooltip says the word the palette row now says); lowercase for the general
+ * case because "properties" is a common noun there, not a verb's name.
  *
- * @param {"position"|"dimensions"|"box"|null} subset - propertySubsetKind's answer
+ * @param {"position"|"dimensions"|"rotation"|"transform"|null} subset - propertySubsetKind's answer
  * @returns {string}
  *
  * @example subsetNoun("position")
  * // 'Position'
+ * @example subsetNoun("dimensions")
+ * // 'Size'
+ * @example subsetNoun("rotation")
+ * // 'Rotation'
+ * @example subsetNoun("transform")
+ * // 'Transform'
  * @example subsetNoun(null)
  * // 'properties'
  */
 export function subsetNoun(subset) {
   if (subset === "position") return "Position";
-  if (subset === "dimensions") return "Dimensions";
-  if (subset === "box") return "Box";
+  if (subset === "dimensions") return "Size";
+  if (subset === "rotation") return "Rotation";
+  if (subset === "transform") return "Transform";
   return "properties";
 }
 
@@ -280,7 +312,7 @@ export function subsetNoun(subset) {
  * @param {object} facts - the clipboard and selection facts
  * @param {"items"|"properties"|"image"|"empty"} facts.kind - clipboardKind's answer
  * @param {number} [facts.itemCount] - how many widgets/items the payload carries
- * @param {"position"|"dimensions"|"box"|null} [facts.subset] - propertySubsetKind's answer
+ * @param {"position"|"dimensions"|"rotation"|"transform"|null} [facts.subset] - propertySubsetKind's answer
  * @param {number} [facts.selectedCount] - how many widgets are selected right now
  * @returns {string} one sentence, no trailing period (tooltip house style)
  *
