@@ -160,6 +160,97 @@ function midiFrequency(note) {
   return 440 * Math.pow(2, (note - 69) / 12);
 }
 
+/**
+ * GAMELAN BELLS — a sequenced MELODY on two FM bells, and the ONE patch in this
+ * file that drives pitch through a WIRE rather than through a trigger option.
+ *
+ * ── WHY THAT DISTINCTION IS THE WHOLE POINT OF THIS PATCH ──────────────────
+ * Every other bell patch here calls `engine.trigger(id, "gate", time,
+ * {frequency})` — the scheduler knows the note and names it per strike. That
+ * works, and it is why sequencedDings sounds right. But it means the pitch never
+ * travels through the GRAPH, so nothing in this file exercised the path a node
+ * editor actually uses: a wire from one module's output into another's param.
+ * Wave 3 gave the ding a real `frequency` AudioParam input, so this patch
+ * connects `sequencer.pitch -> ding.frequency` and passes NO frequency option.
+ * If the seam is broken, this patch plays one repeated note and every other
+ * patch still sounds fine — which is exactly the failure worth being able to
+ * hear.
+ *
+ * ── TWO BELLS, ONE PITCH SIGNAL ─────────────────────────────────────────────
+ * Both bells take the same wire, and the second's own `frequency` param is a
+ * fixed offset the wire SUMS with (that is what an AudioParam does with a
+ * connection). Hz are linear and pitch is not, so a constant offset is not a
+ * constant interval — it narrows as the melody rises, which is the shimmering
+ * near-unison a gamelan's paired instruments have.
+ */
+export function gamelanBells(engine, options = {}) {
+  const bpm = options.bpm ?? 108;
+  // E-minor pentatonic again — consonant with itself, so a sparse pattern
+  // cannot land on a sour interval.
+  const pattern = options.pattern ?? [
+    { on: true, note: 64 }, { on: true, note: 71 }, { on: false }, { on: true, note: 69 },
+    { on: true, note: 76 }, { on: false }, { on: true, note: 67 }, { on: false },
+    { on: true, note: 71 }, { on: true, note: 74 }, { on: false }, { on: true, note: 64 },
+    { on: true, note: 79 }, { on: false }, { on: true, note: 67 }, { on: false },
+  ];
+
+  engine.addModule("clock", "gam-clock", { bpm });
+  engine.addModule("sequencer", "gam-seq", { steps: pattern, stepCount: pattern.length });
+  // OFFSET 0 on the lead: the wire alone names the note.
+  engine.addModule("ding", "gam-lead", { preset: "gong", frequency: 0, level: 0.34 });
+  engine.addModule("ding", "gam-answer", { preset: "pip", frequency: GAMELAN_DETUNE_HZ, level: 0.2 });
+  engine.addModule("mixer", "gam-mix", { level1: 0.9, level2: 0.6, master: 1 });
+  engine.addModule("reverb", "gam-room", { character: "plate", wet: 0.35, dry: 0.8, preDelay: 0.02 });
+  const tail = outputTail(engine, "gam", 0.7);
+
+  // THE WIRE THIS PATCH EXISTS TO EXERCISE — one pitch signal, two bells. An
+  // output fans out freely; only an input is limited to one source.
+  engine.connect("gam-seq", "pitch", "gam-lead", "frequency");
+  engine.connect("gam-seq", "pitch", "gam-answer", "frequency");
+  engine.connect("gam-lead", "out", "gam-mix", "in1");
+  engine.connect("gam-answer", "out", "gam-mix", "in2");
+  engine.connect("gam-mix", "out", "gam-room", "in");
+  engine.connect("gam-room", "out", tail.inputId, "in");
+
+  const unsubscribe = engine.scheduler.onStep((index, time) => {
+    const step = pattern[index % pattern.length];
+    if (!step || step.on === false) return;
+    // NO `{frequency}` OPTION, DELIBERATELY. The sequencer's playStep has
+    // already set its pitch output for this same `time`, and the strike reads
+    // the port. That is the seam under test, and passing the option would
+    // silently bypass it — the patch would sound identical whether the wire
+    // worked or not, which would make it worthless as a demonstration.
+    engine.trigger("gam-lead", "gate", time);
+    engine.trigger("gam-answer", "gate", time);
+  });
+
+  engine.scheduler.setTempo(bpm, 2);
+  engine.scheduler.setStepCount(pattern.length);
+  engine.scheduler.start();
+
+  const ids = ["gam-clock", "gam-seq", "gam-lead", "gam-answer", "gam-mix", "gam-room", ...tail.ids];
+  return {
+    ids,
+    meterId: tail.meterId,
+    spectrumId: tail.spectrumId,
+    /** Command. Change the tempo. Reuses the shared PATCH_CONTROLS `setBpm`
+     *  slider, so surfacing this patch on dev.html costs no renderer edit. */
+    setBpm(nextBpm) {
+      engine.scheduler.setTempo(nextBpm, 2);
+    },
+    dispose() {
+      unsubscribe();
+      engine.scheduler.reset();
+      for (const id of ids) engine.removeModule(id);
+    },
+  };
+}
+
+/** The answering bell's fixed offset, in Hz. Chosen to sit a rough fourth above
+ *  the melody's low register and to narrow as it climbs — near-unison at the
+ *  top, which is where the shimmer comes from. */
+const GAMELAN_DETUNE_HZ = 220;
+
 // ─── Shared helpers for the patch library ────────────────────────────────────
 
 /**
@@ -1355,6 +1446,12 @@ export const DEMO_PATCHES = {
     label: "Sequenced Dings",
     category: "percussion",
     hint: "The acceptance patch: clock → sequencer → FM bell → plate reverb, on a pentatonic scale with rests.",
+  },
+  gamelanBells: {
+    build: gamelanBells,
+    label: "Gamelan Bells",
+    category: "percussion",
+    hint: "A melody, not a texture: the sequencer's pitch WIRED into two bells' frequency input (wave 3's new port), the second offset so it shimmers against the first.",
   },
   cathedralBells: {
     build: cathedralBells,
