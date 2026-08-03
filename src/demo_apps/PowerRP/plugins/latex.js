@@ -763,6 +763,20 @@ export const latexPlugin = {
     // Both are idempotent and cached; typesetting two inks costs one extra raster
     // per equation, once.
     if (inkPaint) ensureLatexTypeset(latex, scale, LATEX_DEFAULT_INK);
+    // THE INK THE PRE-GLYPH FALLBACK RASTER IS KEYED ON, and it must be one of the
+    // two this emit just ensured — never a third. Workstream BD (user, 2026-08-02,
+    // a browser render job named "Bloombok" died mid-job): this used to be the bare
+    // literal LATEX_DEFAULT_INK, which is right for a SHADER ink (the white mask
+    // would flash blank, so the legacy solid is drawn instead — and line 765
+    // typesets it) and WRONG for every other non-default ink. An equation inked
+    // "#ffffff" typesets `latex:…:#ffffff:36` and emitted `latex:…:#000000:36` — a
+    // ref nothing had reserved. image_registry.getSkiaImage's ensureImage() is a
+    // no-op only for a RESERVED synthetic slot; an unreserved one falls through to
+    // `fetch("latex:…")`, which is what produced the user's console pair
+    // (`URL scheme "latex" is not supported` → `image_registry: failed to load`)
+    // and then, correctly, settledFrame's no-holed-frames refusal killed the job.
+    // Reproduced at HEAD from the user's own deck; see tests/latex_fallback_ref_test.js.
+    const fallbackInk = inkPaint ? LATEX_DEFAULT_INK : ink;
 
     // ERROR AFFORDANCE: once the typeset resolved and reported a syntax error,
     // draw the loud red box+message (vector) rather than the raster. Before the
@@ -836,13 +850,16 @@ export const latexPlugin = {
         })
       // The pre-glyph RASTER fallback carries NO shader ink, deliberately. It is
       // the transient state before the async glyph flatten lands (and the cropped
-      // case, which has no vector form at all), and its raster is the white MASK —
-      // painting that raw would flash a WHITE equation. So it draws at the
-      // legacy-solid ink instead: a plain, readable equation for the frame or two
-      // before the real paint takes over, rather than a white-on-white blank.
-      // A cropped material equation stays at that solid ink permanently, which is
-      // the same bound the crop already has against the vector exporters.
-      : image({ ref: latexRef(latex, scale, LATEX_DEFAULT_INK), x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+      // case, which has no vector form at all), and a SHADER ink's raster is the
+      // white MASK — painting that raw would flash a WHITE equation. So a shader
+      // ink draws at the legacy-solid ink instead: a plain, readable equation for
+      // the frame or two before the real paint takes over, rather than a
+      // white-on-white blank. A cropped material equation stays at that solid ink
+      // permanently, which is the same bound the crop already has against the
+      // vector exporters. A PLAIN ink has no mask and no such problem, so it draws
+      // at its OWN raster — see fallbackInk, and the workstream-BD note there for
+      // what drawing someone else's ref cost.
+      : image({ ref: latexRef(latex, scale, fallbackInk), x: c.x, y: c.y, w: c.w, h: c.h, opacity: s.opacity ?? 1, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): the shadow/bloom silhouette the FRAMED equation, border included.
     return applyEffects(decorateStrokedBox([quad], style, world), s, world, { x: c.x, y: c.y, w: c.w, h: c.h });
