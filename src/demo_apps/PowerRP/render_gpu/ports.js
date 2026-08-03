@@ -65,25 +65,45 @@ import { errorAffordanceArgs, errorBoxExtent, errorMessage, describeOwner, throw
  * stored in the doc (the camera-background freeze, user-reported live).
  * A non-material background returns parsePaint's result byte-identically.
  *
+ * AND IT GOES THROUGH resolvedPaint, WHICH IS THE SIXTH SLOT OF THAT HELPER'S
+ * FIVE. This function used to test `isMaterialPaint` inline, which is exactly
+ * the bug resolvedPaint was written to kill: a background mid-`blend` is the
+ * `{type: "crossfade", from, to, t}` wrapper, that test answers FALSE, and both
+ * material sides reached the painter unresolved. The user hit it on the slot AC's
+ * five-slot fix could not reach, because the background is not an op slot at all
+ * (2026-08-02): "when interpolating from material to material, blend does not
+ * seem to do what it's supposed to do… It just gives me a big error when I
+ * interpolate and I fade between two materials on the background."
+ * THE LESSON, since this is the second time: a bare `isMaterialPaint` test on
+ * paint that came out of the FOLD is a latent crossfade bug. Foldable paint can
+ * always arrive wrapped, so every such site is either resolvedPaint or wrong.
+ *
  * @param {*} background - the camera's stored background paint
  * @param {Array|null} nodes - the derived render nodes (scene hooks read them)
  * @returns {*} a fill the painters accept
  *
  * @example resolvedBackgroundFill("#123f5a", []) // [0.070..., 0.247..., 0.352..., 1]
  * @example resolvedBackgroundFill({type: "material", material: {id: "comic", params: {}}}, []).resolvedParams.mode // "cmyk"
+ * @example resolvedBackgroundFill({type: "crossfade", from: {type: "material", material: {id: "sky"}}, to: {type: "material", material: {id: "comic"}}, t: 0.5}, []).to.resolvedParams.mode // "cmyk" (resolved THROUGH the crossfade)
  */
 export function resolvedBackgroundFill(background, nodes) {
-  const p = parsePaint(background);
-  if (!isMaterialPaint(p)) return p;
   const byId = new Map((nodes ?? []).map((n) => [n.itemId, n]));
   const camera = (nodes ?? []).find((n) => n.type === "camera") ?? null;
-  return resolveMaterialPaint(p, camera, byId, warnOnce); // foreign-knob carry-over is intended and lossless — warn, never error
+  // parsePaint FIRST, so a non-material background is byte-identical to before
+  // (the contract above). resolvedPaint returns anything that is neither a
+  // material nor a crossfade by identity, so that result passes straight out.
+  // Foreign-knob carry-over inside is intended and lossless — warn, never error.
+  return resolvedPaint(parsePaint(background), camera, byId);
 }
 
 /**
  * Pure function (the report sink aside). ONE PAINT, resolved — and resolved
  * THROUGH A CROSSFADE, which is the whole reason this exists as a named helper
- * rather than five inline `isMaterialPaint` tests.
+ * rather than six inline `isMaterialPaint` tests. (Five when it was written —
+ * the sixth is resolvedBackgroundFill above, which had its own inline test, and
+ * which the user's material→material background blend broke the day after. That
+ * is the argument for the helper restated as evidence: the count grows, and a
+ * respelled test is a bug waiting for the slot it was respelled into.)
  *
  * A CROSSFADE IS A PAINT THAT CONTAINS PAINTS. Mid-transition the `blend` interp
  * mode replaces a slot's value with `{type: "crossfade", from, to, t}` — and that

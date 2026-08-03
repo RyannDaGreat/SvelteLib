@@ -1,5 +1,11 @@
 /**
- * CROSSFADE × MATERIAL matrix gate (bare node) — WORKSTREAM AC.
+ * CROSSFADE × MATERIAL matrix gate (bare node) — WORKSTREAM AC, extended by AJ.
+ *
+ * TWO SECTIONS, because there are TWO resolution seams. The matrix proper covers
+ * an OP's paint slots (resolveMaterialFillPaints); the BACKGROUND section at the
+ * bottom covers the camera background (resolvedBackgroundFill), which is not an
+ * op slot and so has its own seam — and which shipped the identical wrapper bug
+ * one day later, on the user's own deck. See that section's header for AJ.
  *
  * THE BUG, as reported (user, 2026-08-02, verbatim): "unknown item failed to
  * paint when i am tweening… between two slides one of which has a linear
@@ -44,8 +50,8 @@
  */
 
 import assert from "node:assert/strict";
-import { rect, pushTransform, popTransform } from "../render_gpu/ir.js";
-import { resolveMaterialFillPaints } from "../render_gpu/ports.js";
+import { rect, pushTransform, popTransform, parsePaint, parseColor, paintSolidColor, CROSSFADE_PAINT_TYPE } from "../render_gpu/ir.js";
+import { resolveMaterialFillPaints, resolvedBackgroundFill } from "../render_gpu/ports.js";
 import { readPng } from "./imageDistinctness.js";
 
 const { renderToPng } = await import("../render_gpu/skia/node_render.js");
@@ -140,5 +146,93 @@ assert.ok(dist(mid, b) > 2, `linear->sky mid-tween is indistinguishable from the
 const ERROR_BG_RGB = [246, 201, 196];
 assert.ok(dist(mid, ERROR_BG_RGB) > 30, `linear->sky mid-tween looks like the containment error box (${mid.map(Math.round)})`);
 console.log(`  user's case linear->sky at alpha ${INTERIOR_ALPHA}: mixes both endpoints, no error box`);
+
+// ── THE BACKGROUND SLOT (WORKSTREAM AJ) ─────────────────────────────────────
+// THE SIXTH SLOT, and the one the matrix above structurally cannot reach. Every
+// cell above goes through resolveMaterialFillPaints, which walks an OP's paint
+// slots — but the camera BACKGROUND is not an op slot. It is hand-assembled by
+// web/cameraFrame.js and web/CanvasView.svelte outside sceneIR, so it has its own
+// resolution seam (ports.resolvedBackgroundFill), and that seam kept its own
+// inline `isMaterialPaint` test after AC fixed the other five. The wrapper
+// answered false there exactly as it had everywhere else, so both material sides
+// reached the painter unresolved.
+//
+// THE USER'S REPORT (2026-08-02, verbatim): "when interpolating from material to
+// material, blend does not seem to do what it's supposed to do. I mean, it should
+// just render twice, right? … It just gives me a big error when I interpolate and
+// I fade between two materials on the background."
+//
+// These cells therefore call resolvedBackgroundFill FIRST and paint its output as
+// the background rect — the real seam, not a restatement of the op path. A cell
+// that regressed would either throw here or draw the containment box.
+const BACKGROUND_CASES = {
+  "material -> material": [material("sky"), material("metal")], // the user's exact case
+  "gradient -> material": [FROM.linear, material("sky")],
+  "solid -> material": [FROM.solid, material("metal")],
+  "material -> solid": [material("crt"), TO.solid], // the wrapper resolves on EITHER side
+};
+
+/**
+ * Command (renders one background cell). Mirrors renderCell's report capture, but
+ * the paint goes through resolvedBackgroundFill — the background's own seam.
+ */
+async function renderBackgroundCell(from, to) {
+  const itemId = `aj-bg-${cellSeq++}`;
+  const reports = [];
+  const realError = console.error;
+  console.error = (...a) => { reports.push(String(a[0])); };
+  let png;
+  try {
+    const background = { type: "crossfade", from, to, t: INTERIOR_ALPHA };
+    const fill = resolvedBackgroundFill(background, []);
+    const owned = [
+      { ...pushTransform({ x: 0, y: 0, rotation: 0, scale: 1 }), owner: { itemId, type: "camera" } },
+      rect({ x: 0, y: 0, w: W, h: H, fill }),
+      popTransform(),
+    ];
+    png = await renderToPng(owned, { zoom: 1, dpr: 1, panX: 0, panY: 0 }, { width: W, height: H });
+  } finally {
+    console.error = realError;
+  }
+  return { png, failures: reports.filter((r) => r.includes("failed to PAINT")) };
+}
+
+let bgCells = 0;
+for (const [where, [from, to]] of Object.entries(BACKGROUND_CASES)) {
+  const { png, failures } = await renderBackgroundCell(from, to);
+  assert.equal(failures.length, 0, `background crossfade ${where} at alpha ${INTERIOR_ALPHA} reported a paint failure: ${failures[0]}`);
+  assert.ok(png && png.length > 0, `background crossfade ${where} produced no PNG`);
+  bgCells++;
+}
+console.log(`  background slot: ${bgCells} cells paint clean at alpha ${INTERIOR_ALPHA}`);
+
+// THE BYTE-IDENTICAL CONTRACT resolvedBackgroundFill has always carried: a
+// background that is neither a material nor a crossfade comes back as plain
+// parsePaint output. Routing it through resolvedPaint must not have changed that,
+// so this pins the non-crossfade path the fix passes THROUGH.
+assert.deepEqual(resolvedBackgroundFill("#123f5a", []), parsePaint("#123f5a"), "a solid background must be byte-identical to parsePaint");
+assert.deepEqual(resolvedBackgroundFill(FROM.linear, []), parsePaint(FROM.linear), "a gradient background must be byte-identical to parsePaint");
+assert.equal(resolvedBackgroundFill({ type: "material", material: { id: "comic", params: {} } }, []).resolvedParams.mode, "cmyk", "a bare material background still resolves");
+// …and the fix itself, asserted structurally rather than only through pixels:
+// BOTH sides of a background crossfade carry resolvedParams.
+const bgMix = resolvedBackgroundFill({ type: "crossfade", from: material("sky"), to: material("metal"), t: INTERIOR_ALPHA }, []);
+assert.ok(bgMix.from.resolvedParams, "a background crossfade's FROM material must be resolved");
+assert.ok(bgMix.to.resolvedParams, "a background crossfade's TO material must be resolved");
+console.log("  background slot: resolution reaches both sides; non-crossfade backgrounds unchanged");
+
+// THE SECOND CAUSE ON THE SAME FRAME (AJ). Resolution was only half of it. The
+// camera background is ALSO paintIR's surface CLEAR colour, which is a scalar by
+// construction (a clear cannot be a shader), so it goes through parseColor →
+// paintSolidColor — a reduction with a branch for every paint KIND and none for
+// the wrapper, which is not a kind. A crossfade therefore fell through to that
+// function's throw and killed the whole render, AFTER resolution was fixed. Found
+// only by rendering the user's deck end-to-end through the CLI; the seam above
+// cannot reach it, which is exactly why this case is here.
+assert.equal(paintSolidColor({ type: CROSSFADE_PAINT_TYPE, from: { type: "solid", solid: "#ff0000" }, to: { type: "solid", solid: "#0000ff" }, t: 0.75 }), "#0000ff", "past halfway a crossfade reduces to its TO side");
+assert.equal(paintSolidColor({ type: CROSSFADE_PAINT_TYPE, from: { type: "solid", solid: "#ff0000" }, to: material("sky"), t: 0.25 }), "#ff0000", "before halfway it reduces to its FROM side");
+assert.equal(paintSolidColor({ type: CROSSFADE_PAINT_TYPE, from: material("sky"), to: material("metal"), t: 0.5 }), "#888888", "material→material reduces to the documented gray stand-in, not a throw");
+// …and the whole point: parseColor no longer throws on a background crossfade.
+assert.doesNotThrow(() => parseColor({ type: CROSSFADE_PAINT_TYPE, from: material("sky"), to: material("metal"), t: 0.5 }), "a background crossfade must reduce to a clear colour rather than killing the render");
+console.log("  background slot: a crossfade reduces to a scalar clear colour (paintIR's surface clear)");
 
 console.log("crossfade_material_matrix_test: OK");

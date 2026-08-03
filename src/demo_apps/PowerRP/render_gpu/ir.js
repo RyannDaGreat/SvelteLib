@@ -473,11 +473,35 @@ export function opHasMaterialStroke(cmd) {
  * silent black). The returned color may be a hex string OR an already-parsed
  * rgba array (a parsed gradient's stop) — parseColor handles both.
  *
+ * A CROSSFADE reduces to the reduction of its DOMINANT side — the side the mix is
+ * closer to, so the single colour tracks the transition instead of jumping. It is
+ * handled BEFORE the `solid` shortcut because the wrapper carries no `solid` of its
+ * own and its sides may each need a different reduction (a material side to gray, a
+ * gradient side to its first stop).
+ *
+ * WHY THIS CASE EXISTS (WORKSTREAM AJ). Every OTHER branch here answers a paint
+ * KIND, and a crossfade is not a kind — it is a paint that CONTAINS paints, so it
+ * matched nothing and fell through to the throw below. That killed the render
+ * outright rather than degrading, on the one consumer that cannot take a shader:
+ * paintIR's surface CLEAR colour, which is a scalar by construction. So a camera
+ * background blending material→material threw here even after resolution was
+ * fixed — the user's crash had TWO independent causes on the same frame, and this
+ * is the second. Same lesson as the first: a kind-test that has not been taught
+ * about the wrapper is a latent crossfade bug.
+ *
  * @example paintSolidColor({type: "solid", solid: "#1a1a2e"}) // "#1a1a2e"
  * @example paintSolidColor({type: "linearGradient", solid: "#1a1a2e", linear: {stops: [{offset: 0, color: "#f00"}]}}) // "#1a1a2e"
  * @example paintSolidColor({type: "linearGradient", stops: [{offset: 0, color: "#f00"}, {offset: 1, color: "#00f"}]}) // "#f00" (legacy inline, no remembered solid)
+ * @example paintSolidColor({type: "crossfade", from: {type: "solid", solid: "#f00"}, to: {type: "solid", solid: "#00f"}, t: 0.75}) // "#00f" (past halfway ⇒ the TO side)
+ * @example paintSolidColor({type: "crossfade", from: {type: "solid", solid: "#f00"}, to: {type: "material", material: {id: "sky"}}, t: 0.25}) // "#f00" (still nearer the FROM side)
  */
 export function paintSolidColor(paint) {
+  if (paint.type === CROSSFADE_PAINT_TYPE) {
+    const side = (paint.t ?? 0) < 0.5 ? paint.from : paint.to;
+    // A side may already be a parsed rgba array (parsePaint recurses into both),
+    // in which case it IS the answer — only an object still needs reducing.
+    return side && typeof side === "object" && !Array.isArray(side) ? paintSolidColor(side) : side;
+  }
   if (typeof paint.solid === "string" || Array.isArray(paint.solid)) return paint.solid;
   // A MATERIAL paint with no remembered solid reduces to neutral gray — a
   // single-color consumer (a border, a shadow tint) has no meaningful "the
