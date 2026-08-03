@@ -41,10 +41,21 @@
 /**
  * ── PRESET DOCTRINE FOR THIS FAMILY (read before adding a preset) ─────────────
  *
- * FLAT LISTS, NOT `presetFamilies`, AND THE KEY SETS SAY WHY. core/registry.js will
- * give a widget several named families and requires them to write DISJOINT key sets
+ * FLAT LISTS FOR THREE OF THE FOUR MEMBERS — AND THE KEY SETS SAY WHY. core/registry.js
+ * will give a widget several named families and requires them to write DISJOINT key sets
  * so that picking one from each COMPOSES (tests/tool_groups_test.js enforces it over
- * every plugin). Two candidate splits were checked mechanically, not by eye
+ * every plugin).
+ *
+ * SINCE BM, `sky` ITSELF IS THE EXCEPTION: it declares TWO families, ATMOSPHERE and
+ * EXPOSURE (see SKY_EXPOSURE_PRESETS for the full argument). That is not a reversal of
+ * the reasoning below — it is the reasoning below applied to a genuinely new axis. The
+ * two candidates rejected here were both attempts to slice the SAME ten look knobs,
+ * which is why they failed or cost too much; the shutter is a different quantity
+ * altogether (a property of the CAMERA, not of the sky), so it neither overlaps the
+ * atmospheres nor multiplies the pairing problem — every atmosphere still pairs with a
+ * skySun by name, and the exposure family sits orthogonally beside that.
+ *
+ * The two candidate splits of the LOOK KNOBS were checked mechanically, not by eye
  * (.frenzy/sky_presets/families_check.js):
  *   BY SCENE ("Golden Hour" / "City Haze" / …) — these are alternative WHOLE
  *     atmospheres over the SAME ten look knobs, so ANY split overlaps on all ten and
@@ -59,10 +70,17 @@
  * and a name-matched pairing (below) is impossible once "Golden Hour" can only live
  * in one of three lists. Flat keeps one pick per widget and one shared vocabulary.
  *
- * EVERY PRESET SETS EVERY LOOK KNOB of its widget — the lens flare's rule, for its
+ * EVERY PRESET SETS EVERY KNOB OF ITS OWN FAMILY — the lens flare's rule, for its
  * reason: app.applyPreset writes exactly the keys in `props` as an OVERLAY, so a knob
  * a preset omits keeps whatever the PREVIOUSLY hovered preset left there, and
  * comparing looks by running down the list is the whole point of the pane.
+ * FOR A ONE-FAMILY WIDGET (skySun, skyMoon, skyClouds) "its own family" is the whole
+ * look, i.e. the rule as originally stated. For `sky` it is PER FAMILY, which is the
+ * form the two-family case needs and the only form that is correct: demanding every
+ * knob of the WIDGET would force each atmosphere to declare a shutter speed and each
+ * exposure to declare a whole sky, which is precisely what separating them avoided.
+ * tests/sky_family_test.js check (1) enforces this shape; tests/crt_flicker_test.js
+ * states the same rule for the widget that established the pattern.
  *
  * TWO KNOBS ARE DELIBERATELY ABSENT FROM EVERY PRESET, by the lens flare's
  * composition-vs-look test (it excludes lightX/lightY/flareScale for the same
@@ -349,17 +367,27 @@ const SKY_PRESETS = [
  * "Instant" is the widget's own default state, so it is an EXACT no-op — the "Rock
  * Steady" role in CRT's flicker family.
  *
- * WHERE THE NUMBERS COME FROM. trailArc is in TURNS of sky rotation, and the sky turns
- * once per sidereal day, so arc = hours/23.934. The classic exposures:
- *   30 min  → 0.021   the standard "short" star-trail frame (arcs a few degrees long)
- *   2 h     → 0.084   the common single-frame trail
- *   8 h     → 0.334   a full winter night's stacked sequence, ~120 degrees of arc
- *   24 h    → 1.0     complete circles (only a pole-facing time-lapse composite gets
- *                     this, and it is here because the shader makes it free)
- * trailSamples rises with the arc because it must: the smear is drawn as discrete
- * samples along the path, so a longer arc needs more of them to stay continuous rather
- * than beading. MEASURED at 600x600 (the trailSamples row records the sweep): 8 reads
- * as separate beads, 24 as a dotted arc, 48 as a continuous line at arc 0.05.
+ * WHERE THE NUMBERS COME FROM, AND WHY THEY STOP WHERE THEY DO. trailArc is in TURNS of
+ * sky rotation, and the sky turns once per sidereal day, so arc = hours/23.934:
+ *   15 min  → 0.010    a short trail — stars are clearly dashes, not points
+ *   30 min  → 0.021    the standard short star-trail frame
+ *   60 min  → 0.042    the long end of what a single frame usually holds
+ * THE LADDER STOPS AT AN HOUR, and that ceiling is MEASURED, not chosen. The shader
+ * finds a trailed pixel's star by walking back along the arc through the star lattice,
+ * and that walk is bounded (render_gpu/skia/sky_shader.js TRAIL_LOOKBACK = 24 cells)
+ * because widening it is quadratic — covering an 8-hour arc would be 2.2 BILLION cell
+ * evaluations for one 1080p frame. Twenty-four cells of lookback reaches, depending on
+ * star density: 179 min at density 40, 91 min at 79, 65 min at 110, 36 min at 199.
+ * An hour therefore renders correctly at every density in the Bortle ladder, and past
+ * it the trail would silently stop growing while the knob kept promising more — so the
+ * presets end where the picture does. The KNOB itself is not capped (a stylised sky may
+ * want the clipped look, and a low-density field reaches three hours honestly); its help
+ * text states the bound. Complete circumpolar circles need the polar-lattice rewrite
+ * noted in the shader, which is its own workstream.
+ * trailSamples is a QUALITY knob only: the star trails are integrated ANALYTICALLY
+ * (no sampling), so this drives the MILKY WAY's blur alone. Point-sampling the stars was
+ * built first and abandoned — a continuous trail would have needed 107 to 5093 samples
+ * against a hard ceiling of 64, and it beaded exactly as that arithmetic predicts.
  */
 const SKY_EXPOSURE_PRESETS = [
   {
@@ -368,24 +396,19 @@ const SKY_EXPOSURE_PRESETS = [
     props: { trailArc: 0, trailSamples: 24 },
   },
   {
+    name: "Quarter-Hour Dashes",
+    description: "Fifteen minutes of rotation (0.010 of a turn): every star is a short dash about the celestial pole. The gentlest trail here — the sky still reads as a star field, just one that has clearly been moving. Combine with any Atmosphere preset.",
+    props: { trailArc: 0.010, trailSamples: 24 },
+  },
+  {
     name: "Half-Hour Trails",
-    description: "A 30-minute exposure (0.021 of a turn): stars draw short arcs about the celestial pole, long enough to read as motion but still clearly individual stars. The gentlest trail here, and the one that still looks like a photograph of a sky rather than of time. Combine with a dark Atmosphere preset — city skyglow drowns short trails.",
-    props: { trailArc: 0.021, trailSamples: 24 },
+    description: "A 30-minute exposure (0.021 of a turn): the standard short star-trail frame, with arcs long enough to show the concentric structure about the pole but short enough that individual stars are still countable. Combine with a dark Atmosphere preset — city skyglow drowns short trails.",
+    props: { trailArc: 0.021, trailSamples: 32 },
   },
   {
-    name: "Two-Hour Arcs",
-    description: "The classic single-frame star trail: two hours of rotation (0.084 of a turn), about 30 degrees of arc, with the Milky Way smeared along the same curves. Long enough that the concentric structure about the pole is unmistakable. Combine with 'Dark-Sky Star Field' for the postcard version.",
-    props: { trailArc: 0.084, trailSamples: 40 },
-  },
-  {
-    name: "All-Night Sweep",
-    description: "Eight hours (0.334 of a turn) — a whole winter night, the look of a stacked all-night sequence. Roughly 120 degrees of arc, so trails are long ribbons and the sky reads as pure motion. Needs the sample count high or the arcs break into beads.",
-    props: { trailArc: 0.334, trailSamples: 64 },
-  },
-  {
-    name: "Full Circumpolar",
-    description: "A complete 24-hour turn: every star closes its own circle about the pole, the image a real camera can only get by compositing a full day. Concentric rings, nothing pointlike left. The most extreme setting here and deliberately so — combine with a high star density to fill the rings in.",
-    props: { trailArc: 1, trailSamples: 64 },
+    name: "Hour-Long Arcs",
+    description: "A full hour (0.042 of a turn): long ribbons curving about the pole, the longest exposure this shader draws correctly at every star density (the trail search is bounded — see the shader's TRAIL_LOOKBACK note). Combine with 'Dark-Sky Star Field' for the postcard version, and lower the star density if you want to push the arc further still.",
+    props: { trailArc: 0.042, trailSamples: 48 },
   },
 ];
 

@@ -33,7 +33,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { newDocument } from "../core/document.js";
-import { createRegistry } from "../core/registry.js";
+import { createRegistry, presetFamiliesOf } from "../core/registry.js";
 import { BUNDLES } from "../core/properties.js";
 import { createCommands } from "../core/commands.js";
 import { registerAll } from "../plugins/index.js";
@@ -76,6 +76,13 @@ registerAll(registry, createCommands());
 // SIZE paragraph in plugins/demo/sky.js's preset doctrine.
 const MEMBERS = ["sky", "skySun", "skyMoon", "skyClouds"];
 const EXCLUDED = new Set(["horizon", "cornerRadius", "starSize"]);
+// `trailSamples` is EXCLUDED FROM THE LOOK for a reason none of the three above give:
+// it is a QUALITY/COST knob, not an appearance. It says how many samples the long
+// exposure accumulates along its arc, and its only visible effect is whether a trail
+// reads as a continuous line or beads — so it belongs to the exposure family (which
+// does set it, and must, since a longer arc needs more samples) but it must not be
+// demanded of the ATMOSPHERE presets, which have no opinion about render cost.
+// It is handled by the per-family rule below rather than by this set: see FAMILY_KEYS.
 // State the Inspector shows for every widget alike; a preset is a LOOK, so none of it
 // belongs in one. The universal EFFECTS are in here too — a preset must not switch
 // a user's shadow or feather on — with ONE exception, below.
@@ -116,23 +123,82 @@ function lookKeys(plugin) {
     .filter((k) => (k === "blendMode" ? blendIsLook : !NOT_LOOK.has(k) && !EXCLUDED.has(k) && k in plugin.defaults));
 }
 
-// ── (1) THE COMPLETENESS RULE ────────────────────────────────────────────────
-test("(1) every preset sets EVERY look knob of its widget", () => {
+// THE EXPOSURE FAMILY'S OWN KEY SET (BM). `sky` now declares TWO families over
+// disjoint keys — the ATMOSPHERE (the ten look knobs) and the EXPOSURE (the shutter).
+// Completeness is therefore a PER-FAMILY rule, which is the form tests/crt_flicker_test.js
+// states for the two-family case: with two families the user hovers back and forth
+// between them, so a preset that omits one of its OWN family's knobs leaves whatever
+// the previously hovered card in that family wrote. It must NOT be read as "every
+// preset sets every knob of the widget" — that would demand the shutter of every
+// atmosphere and the atmosphere of every shutter, which is exactly what splitting them
+// was for.
+const EXPOSURE_KEYS = ["trailArc", "trailSamples"];
+
+/** Pure function. A family's own key set: the keys ANY of its presets writes.
+ *
+ * @param {{presets: Array<{props: object}>}} family
+ * @returns {string[]}
+ *
+ * @example familyKeys({presets: [{props: {a: 1}}, {props: {b: 2}}]}) // ["a", "b"]
+ */
+function familyKeys(family) {
+  return [...new Set(family.presets.flatMap((p) => Object.keys(p.props ?? {})))];
+}
+
+
+/** Query. Every preset of a widget, across ALL its families (BM: `sky` has two).
+ *  Checks 2-5 are statements about EVERY preset regardless of which family it is in,
+ *  so they iterate this rather than a `.presets` field that a multi-family widget
+ *  does not have. */
+function allPresets(type) {
+  return presetFamiliesOf(registry.get(type)).flatMap((f) => f.presets);
+}
+
+// ── (1) THE COMPLETENESS RULE, PER FAMILY ────────────────────────────────────
+test("(1) every preset sets EVERY knob of its OWN family", () => {
   for (const type of MEMBERS) {
     const plugin = registry.get(type);
-    const want = lookKeys(plugin);
-    assert.ok(want.length >= 5, `${type}: only ${want.length} look keys found — lookKeys is mis-deriving`);
-    assert.ok(Array.isArray(plugin.presets) && plugin.presets.length > 0, `${type} declares no presets`);
-    for (const preset of plugin.presets) {
-      const missing = want.filter((k) => !(k in preset.props));
-      assert.deepEqual(missing, [], `${type} / "${preset.name}" omits ${missing.join(", ")} — an incomplete overlay makes this row's render depend on which row was hovered before it`);
+    const families = presetFamiliesOf(plugin);
+    assert.ok(families.length > 0, `${type} declares no presets`);
+    for (const family of families) {
+      assert.ok(family.presets.length > 0, `${type} / ${family.id}: an empty family`);
+      // The family's own key set. For a single-family widget this IS the look-key set
+      // (every preset writes every look knob), and the assertion below is the original
+      // rule unchanged; for a multi-family widget it is that family's slice.
+      const want = families.length === 1 ? lookKeys(plugin) : familyKeys(family);
+      assert.ok(want.length >= 2, `${type} / ${family.id}: only ${want.length} keys — the key derivation is wrong`);
+      for (const preset of family.presets) {
+        const missing = want.filter((k) => !(k in preset.props));
+        assert.deepEqual(missing, [], `${type} / ${family.id} / "${preset.name}" omits ${missing.join(", ")} — an incomplete overlay makes this row's render depend on which row in its family was hovered before it`);
+      }
     }
   }
 });
 
+// THE SPLIT ITSELF, pinned: `sky` must keep TWO families and they must stay disjoint.
+// tests/tool_groups_test.js proves disjointness generically; this names the two and
+// asserts the ATMOSPHERE family still covers the look knobs, so folding the shutter
+// back into the flat list (or letting an atmosphere start writing trailArc) is caught.
+test("(1b) sky declares an ATMOSPHERE family and a disjoint EXPOSURE family", () => {
+  const families = presetFamiliesOf(registry.get("sky"));
+  assert.deepEqual(families.map((f) => f.id), ["presets.atmosphere", "presets.exposure"]);
+  const atmo = new Set(familyKeys(families[0])), expo = familyKeys(families[1]);
+  assert.deepEqual([...expo].sort(), [...EXPOSURE_KEYS].sort(),
+    `the exposure family writes ${expo.join(",")} — it owns the shutter and nothing else`);
+  const overlap = expo.filter((k) => atmo.has(k));
+  assert.deepEqual(overlap, [], `both sky families write ${overlap.join(",")} — picking one would undo the other`);
+  // "Instant" is the widget's DEFAULT state, so it is an exact no-op — the role
+  // "Rock Steady" plays in CRT's flicker family. Without it there is no way back to a
+  // normal photograph once a trail has been picked.
+  const off = families[1].presets.find((p) => p.name === "Instant");
+  assert.ok(off, "the exposure family has no OFF preset — a trail could not be cleared");
+  assert.equal(off.props.trailArc, registry.get("sky").defaults.trailArc,
+    "the exposure family's OFF preset does not match the widget's own default trailArc");
+});
+
 test("(2) no preset writes a COMPOSITION key (framing, geometry, transform, opacity)", () => {
   for (const type of MEMBERS)
-    for (const preset of registry.get(type).presets) {
+    for (const preset of allPresets(type)) {
       const illegal = Object.keys(preset.props).filter((k) => EXCLUDED.has(k) || (NOT_LOOK.has(k) && !(k === "blendMode" && BLEND_IS_LOOK.has(type))));
       assert.deepEqual(illegal, [], `${type} / "${preset.name}" writes ${illegal.join(", ")} — a pick would undo the user's own framing`);
     }
@@ -141,7 +207,7 @@ test("(2) no preset writes a COMPOSITION key (framing, geometry, transform, opac
 test("(3) every preset has a unique name and its own description (the pane's hover tip)", () => {
   for (const type of MEMBERS) {
     const seen = new Set();
-    for (const preset of registry.get(type).presets) {
+    for (const preset of allPresets(type)) {
       assert.equal(typeof preset.name, "string");
       assert.ok(preset.name.length > 0, `${type}: a preset with no name`);
       assert.ok(!seen.has(preset.name), `${type}: duplicate preset name "${preset.name}"`);
@@ -162,7 +228,7 @@ test("(3) every preset has a unique name and its own description (the pane's hov
 // rename on one side would silently break it.
 const PAIRED_NAMES = ["High Mountain Air", "Clear Blue Noon", "Golden Hour", "City Haze", "Dust Haze"];
 test("(4) sky and skySun share the paired names, and every description names its companions", () => {
-  const names = (type) => registry.get(type).presets.map((p) => p.name);
+  const names = (type) => allPresets(type).map((p) => p.name);
   const skyNames = names("sky"), sunNames = names("skySun");
   for (const n of PAIRED_NAMES) {
     assert.ok(skyNames.includes(n), `sky lost the paired preset "${n}"`);
@@ -170,7 +236,7 @@ test("(4) sky and skySun share the paired names, and every description names its
   }
   // Each `sky` preset must point somewhere: at a companion widget, or at the one thing
   // no preset can do (place the sun, which IS the time of day).
-  for (const preset of registry.get("sky").presets)
+  for (const preset of presetFamiliesOf(registry.get("sky"))[0].presets)
     assert.match(preset.description, /Sky Sun|Sky Moon|Sky Clouds|sun/,
       `sky / "${preset.name}" description names no companion — the pairing is then implicit, which is what this rule forbids`);
 });
@@ -179,7 +245,7 @@ test("(5) every preset value is legal for its own Inspector row", () => {
   for (const type of MEMBERS) {
     const plugin = registry.get(type);
     const rows = new Map((plugin.inspector ?? []).map((r) => [r.key, r]));
-    for (const preset of plugin.presets)
+    for (const preset of allPresets(type))
       for (const [key, value] of Object.entries(preset.props)) {
         const row = rows.get(key);
         assert.ok(row, `${type} / "${preset.name}" writes "${key}", which is not an Inspector row`);
@@ -210,7 +276,7 @@ test("(6) skySun alone defaults to an ADDITIVE blend; the three matter widgets s
   assert.equal(registry.get("skySun").effectsInjected, undefined, "skySun must compose the effects bundle itself, like demo_lens_flare");
   for (const type of ["sky", "skyMoon", "skyClouds"])
     assert.equal(registry.get(type).effectsInjected, true, `${type} changes no effect default, so it must stay INJECTED rather than hand-copy the bundle`);
-  for (const preset of registry.get("skySun").presets)
+  for (const preset of allPresets("skySun"))
     assert.ok(typeof preset.props.blendMode === "string",
       `skySun / "${preset.name}" omits blendMode — it could inherit a stale "normal" and bring the dark halo back`);
 });
@@ -330,5 +396,5 @@ await asyncTest("(7) the sun's aureole never DARKENS the sky it sits in (the rep
   console.log(`      aureole luma: bare sky ${bare.toFixed(1)} | shipped default ${shipped.toFixed(1)} | forced source-over ${sourceOver.toFixed(1)}`);
 });
 
-const totalPresets = MEMBERS.reduce((n, t) => n + registry.get(t).presets.length, 0);
+const totalPresets = MEMBERS.reduce((n, t) => n + allPresets(t).length, 0);
 console.log(`\n${passed} checks passed over ${totalPresets} presets in ${MEMBERS.length} widgets; halo shots in ${SHOT_DIR.replace(path.resolve(here, "../../../.."), ".")}`);

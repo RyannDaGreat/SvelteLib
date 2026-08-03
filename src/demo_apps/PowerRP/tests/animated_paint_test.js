@@ -35,14 +35,28 @@ const mk = (id, params = {}) => ({ type: "material", material: { id, params } })
 // The reported bug, pinned forever: rainy_window IS animated as a paint.
 ok(paintIsAnimated(mk("rainy_window")), "rainy_window paint is animated (the reported freeze)");
 ok(paintIsAnimated(mk("glitch")), "glitch paint is animated");
-ok(paintIsAnimated(mk("sky")), "sky paint is animated");
 ok(paintIsAnimated(mk("raycast_dither")), "raycast_dither paint is animated");
 ok(paintIsAnimated(mk("wavy", { boil: 2 })), "wavy with boil engaged is animated");
 ok(!paintIsAnimated(mk("wavy", { boil: 0 })), "wavy with boil 0 is static");
 ok(!paintIsAnimated(mk("wavy")), "wavy default (boil absent) is static");
 
-// CRT is param-predicated like wavy, not unconditional like glitch/sky/rainy_window/
-// raycast_dither: at flicker=0 AND scanDrift=0 (the "Rock Steady" default) the
+// SKY IS PARAM-PREDICATED ON TWINKLE ALONE (BM), and this used to be a single
+// unconditional assertion that would have kept passing with the predicate deleted —
+// the sky's DEFAULT twinkle is 0.3, so `mk("sky")` is animated either way. The knob
+// is the sky's ONLY clock reader: the long exposure (trailArc/trailSamples) is
+// ordinary keyframed document state that the shader reads without touching
+// particleTime, so a trailing sky with twinkle 0 is STATIC AT REST and must not spin
+// the presenter's repaint loop. Both directions, so neither can rot unnoticed.
+ok(paintIsAnimated(mk("sky")), "sky default (twinkle 0.3) is animated");
+ok(paintIsAnimated(mk("sky", { twinkle: 0.6 })), "sky with twinkle engaged is animated");
+ok(!paintIsAnimated(mk("sky", { twinkle: 0 })), "sky with twinkle 0 is static");
+ok(!paintIsAnimated(mk("sky", { twinkle: 0, trailArc: 0.042, trailSamples: 48 })),
+  "sky with a long exposure but no twinkle is static (trails are document state, not a clock read)");
+ok(paintIsAnimated(mk("sky", { twinkle: 0.3, timeOfDay: 0.7 })),
+  "sky with twinkle and a time-of-day is animated");
+
+// CRT is param-predicated like wavy and sky, not unconditional like glitch/
+// rainy_window/raycast_dither: at flicker=0 AND scanDrift=0 (the "Rock Steady" default) the
 // temporal stage is an EXACT no-op (crt_shader.js header), so a repaint loop would
 // spin for nothing. Either knob alone must engage it.
 ok(!paintIsAnimated(mk("crt")), "crt default (flicker/scanDrift absent) is static");

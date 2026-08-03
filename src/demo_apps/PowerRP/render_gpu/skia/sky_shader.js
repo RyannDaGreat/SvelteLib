@@ -26,8 +26,19 @@
  * a low sun's transmitted light exp(-(βR+βM)·airmass) loses blue first → sunset.
  * Closed-form single scatter (no nested ray-march): inScatter = scatterCoef/βtot ·
  * (1 − exp(-βtot·airmassView)), tinted by the sun's transmittance. Stars: sine-free
- * hash over a cellular grid of the (time-rotated) view direction, magnitude-
- * distributed, blackbody-tinted. Milky Way: great-circle band mask × fbm mottling.
+ * hash over a square world-px lattice, magnitude-distributed, blackbody-tinted, each
+ * scintillating on its own seeded phase. Milky Way: great-circle band mask × fbm
+ * mottling over the view DIRECTION.
+ *
+ * ── THE NIGHT SKY IS ONE RIGID DOME (BM) ─────────────────────────────────────
+ * The star field and the Milky Way turn together, about an explicit CELESTIAL POLE
+ * whose altitude is the observer's latitude — one angle (uTimeOfDay), applied in each
+ * layer's own chart because the two charts are each load-bearing and incompatible.
+ * See SKY_POLE_AXIS for the defect this replaced, the two unifications that were
+ * measured and rejected, and why "share the rotation, not the space" is the only
+ * option left. A LONG EXPOSURE is that same rotation integrated: uTrailArc turns of
+ * dome rotation accumulated in-shader, so stars smear into concentric arcs about the
+ * pole and the band smears along the same arcs, while the ground stays sharp.
  *
  * DOM-free at import (string SkSL + a pure packer), like glass/raycast_dither.
  * parseColor (render_gpu/ir.js) is the shared node-safe hex/rgb parser.
@@ -135,6 +146,13 @@ const float2 SKY_POLE_PX = float2(-0.45, 0.62) * STAR_SPAN_PX;
 // beads at the trail lengths the presets use — see the trailSamples row for the
 // measurement that sets it.
 const int    MAX_TRAIL_SAMPLES = 64;
+// How many cells BACK ALONG THE TRAIL the star walk looks. See starField's own note:
+// a trailed pixel is lit by a star that started up-arc of it, and the search has to
+// reach that far or the trail is clipped. This is a BAND (a constant extra cost per
+// pixel), not a wider square, and it is the reason trailArc carries a documented
+// ceiling: 24 cells is roughly what the walk can afford, so the honest exposure range
+// is the arc that fits inside it. Trails do not grow past that — they stop.
+const int    TRAIL_LOOKBACK = 24;
 const float  EDGE_AA   = 1.0;     // rounded-rect coverage AA half-width (device px)
 const float  EPS       = 1e-3;
 // DIVIDE GUARD for the closed-form single-scatter ratio scatterCoef/betaTot below.
@@ -301,35 +319,132 @@ float3 starTint(float h) {
 //
 // "pw" ARRIVES ALREADY ROTATED (BM). This function used to wheel the lattice itself
 // by uTimeOfDay about the box centre, which is half of why the dome was not rigid —
-// see SKY_POLE_PX. The rotation now happens ONCE in the caller, through skyRotate,
-// and the Milky Way reads the SAME rotated point, so neither layer can drift against
-// the other. Everything below is a function of the point it is handed.
+// see SKY_POLE_AXIS. The rotation now happens ONCE in the caller, and the Milky Way
+// takes the SAME angle in its own frame, so neither layer can drift against the other.
 //
 // TWINKLE is "twinkleAmt", not the old baked 0.7 + 0.3·sin(…). The factor is
 // 1 − amt + amt·sin(…), so amt = 0.3 reproduces the old expression EXACTLY (0.7 =
 // 1 − 0.3) and amt = 0 is exactly 1.0 — a star that does not read the clock at all.
 // That zero is what SKY_MATERIAL's param-predicated "animated" is asserting about,
 // so it has to be an exact identity rather than a small number: see the entry.
-float3 starField(float2 pw, float cellPx, float sizePx, float amount, float twinkleAmt) {
+//
+// ── THE LONG EXPOSURE IS ANALYTIC, NOT POINT-SAMPLED (BM) ────────────────────
+// "arcRad" is the angle this star sweeps while the shutter is open, and the glow is
+// integrated ALONG THAT ARC rather than by rendering the field at N rotations and
+// averaging. POINT SAMPLING WAS BUILT FIRST AND MEASURED TO BE STRUCTURALLY UNABLE
+// TO WORK HERE: consecutive samples must land within about one star DIAMETER or the
+// trail reads as a string of beads, and at the shipped exposures that needs
+//   30 min -> ~107 samples,  2 h -> ~428,  8 h -> ~1701,  24 h -> ~5093
+// (max arc length over a default box, at starSize 0.82) against a ceiling of 64 —
+// SkSL unrolls the loop, so the trip count is a compile-time constant and cannot be
+// raised to four figures. The rendered 30-minute frame showed exactly the predicted
+// beading. No sample count fixes this; the sampling itself is the wrong instrument.
+//
+// The integral has a closed form because the star's path is a CIRCULAR ARC about the
+// pole and the glow is an inverse-square of distance to the star. Over one arc the
+// nearest approach dominates, so this uses the standard reduction: find the point of
+// the arc closest to the shading pixel, evaluate the SAME inverse-square core there,
+// and weight it by how much of the exposure is spent near that point (1/arcLength,
+// the surface-brightness normalization a photograph gives). The result is CONTINUOUS
+// by construction — there is no sampling rate to alias — costs ONE evaluation per
+// cell instead of N, and converges to the instant star exactly as arcRad -> 0.
+float3 starField(float2 pw, float cellPx, float sizePx, float amount, float twinkleAmt, float arcRad, float2 poleCell) {
   if (amount <= 0.0) return float3(0.0);
   float2 g = pw / max(cellPx, EPS);
   float2 cell = floor(g), fpos = fract(g);
   float3 acc = float3(0.0);
   float rel = max(sizePx, 0.0) / max(cellPx, EPS); // core radius in CELL units
-  // sample the 3x3 cell neighbourhood so a star's glow crosses cell borders
+  // ── THE SEARCH NEIGHBOURHOOD, AND THE BOUND IT PUTS ON A TRAIL ──────────────
+  // A pixel can only be lit by a star this walk actually VISITS. Without trails the
+  // 3x3 neighbourhood is exactly right: a star's glow reaches about a cell, so a
+  // pixel's light comes from its own cell or a neighbour. A TRAIL BREAKS THAT — the
+  // star that smeared over this pixel started somewhere BACK ALONG THE ARC, which at
+  // the exposures a photographer would use is many cells away:
+  //   30 min -> 11 cells,  2 h -> 44,  8 h -> 177,  24 h -> 530 (at the default density)
+  // and covering that by widening the box walk is quadratic and hopeless — the 8-hour
+  // case alone is 2.2 BILLION cell evaluations for one 1080p frame.
+  //
+  // So the walk is widened ONLY ALONG THE TRAIL, and only by a fixed amount: "back"
+  // steps in the arc's own direction, TRAIL_LOOKBACK at most. That is a constant extra
+  // cost (a band, not a square) and it is honest about what it buys — see the trailArc
+  // row, whose documented range is exactly the range this reaches. Beyond it a trail
+  // stops growing rather than growing wrong, which is why the row is capped there
+  // instead of letting the knob promise an exposure the shader cannot draw.
+  //
+  // THE REAL FIX IS A POLAR LATTICE (stars indexed by ring and angle about the pole),
+  // where a trail is axis-aligned and the covering star is ONE floor() per ring — O(1)
+  // for any arc length. It is not done here because that lattice is the subject of two
+  // pinned laws (R6-9.1: stars round at every box aspect, and byte-identical when the
+  // box grows) and re-deriving both in polar form is its own workstream.
+  int back = int(clamp(abs(arcRad) * length(poleCell), 0.0, float(TRAIL_LOOKBACK)));
+  // The arc's local direction at this pixel: perpendicular to the pole radius, signed
+  // by the sweep. Stars arrive from BEHIND, so the walk steps against the motion.
+  float2 radial2 = normalize(poleCell + float2(EPS, 0.0));
+  float2 tang = float2(-radial2.y, radial2.x) * (arcRad >= 0.0 ? 1.0 : -1.0);
+  for (int b = 0; b <= TRAIL_LOOKBACK; b++) {
+    if (b > back) break;
+    float2 lag = tang * float(b);
   for (int dy = -1; dy <= 1; dy++) {
     for (int dx = -1; dx <= 1; dx++) {
-      float2 c = cell + float2(float(dx), float(dy));
+      float2 c = cell + floor(lag) + float2(float(dx), float(dy));
       float present = hash21(c + 7.1);
       if (present < STAR_THRESHOLD) continue;
-      float2 star = float2(float(dx), float(dy)) + hash22(c) - fpos;
+      // The star's position relative to the SHADING PIXEL, including how many cells back
+      // along the trail this band step is (floor(lag) shifted the cell, so the fractional
+      // remainder has to come back in here or the star would jump to a lattice point).
+      float2 star = floor(lag) + float2(float(dx), float(dy)) + hash22(c) - fpos;
       float mag = pow(hash21(c + 3.7), STAR_MAG_POW);        // rare bright stars
-      float glow = mag * rel * rel / (dot(star, star) + EPS); // inverse-square core+halo
+      // DISTANCE TO THE STAR'S SWEPT ARC, not to the star. At arcRad = 0 this is
+      // exactly length(star) and every line below collapses to the original point glow,
+      // so an instant photograph is untouched by the trail machinery.
+      //
+      // Both the pixel and the star are taken relative to the POLE (poleCell is the pole
+      // in this same cell frame). The star travels a circle of radius rs about it, so the
+      // pixel's distance to that path splits into two independent parts:
+      //   RADIAL  — |rp − rs|, how far the pixel is off the star's circle. The arc cannot
+      //             help with this, so it is unchanged by the exposure.
+      //   ANGULAR — how far around the circle the pixel is from the arc the star actually
+      //             covered. Zero while the pixel lies WITHIN the swept sector (the star
+      //             passed right over it); outside, it is the gap to the nearer END of the
+      //             arc, measured as a length along the circle (rp · Δangle).
+      float2 pRel = -poleCell;              // pixel, relative to the pole (fpos is the origin)
+      float2 sRel = star - poleCell;        // this star, relative to the pole
+      float rp = length(pRel), rs = length(sRel);
+      float radial = rp - rs;
+      // Signed angle from the star to the pixel, in [-PI, PI]. The star sweeps from 0 to
+      // arcRad (either sign), so the pixel is "inside" the sweep when its angle lies
+      // between them. atan here is safe: its branch cut is at the DIAMETRICALLY OPPOSITE
+      // point of the circle, which is half a sky away from any arc this samples.
+      float dAng = atan(pRel.y * sRel.x - pRel.x * sRel.y, dot(pRel, sRel));
+      float lo = min(0.0, arcRad), hi = max(0.0, arcRad);
+      float outside = dAng < lo ? (lo - dAng) : (dAng > hi ? (dAng - hi) : 0.0);
+      float along = outside * rp;           // arc-length gap to the nearer end of the trail
+      float d2 = radial * radial + along * along;
+      // THE EXPOSURE NORMALIZATION, and it is the one number in this feature that is a
+      // deliberate DEPARTURE from strict energy conservation. Both extremes were measured:
+      //   CONSERVE ENERGY EXACTLY — divide by the full arc length in star radii (~92 at
+      //     the 30-minute preset). Correct for a fixed shutter speed, and it renders an
+      //     almost BLANK SKY: every trail pixel sits at ~1% of the star's peak, under any
+      //     visibility threshold. Measured: 6 lit pixels in a 320x320 frame.
+      //   DO NOT NORMALIZE AT ALL — every trail pixel keeps the star's full peak. That is
+      //     what the first, point-sampled build effectively did, and it is ~92x
+      //     overexposed: it looked right only because a night sky is mostly black.
+      // NEITHER IS THE PHOTOGRAPH. A real star-trail exposure is not a normal exposure
+      // with the stars smeared out — the photographer OPENS UP to compensate, which is
+      // why trails in a real frame read at roughly the brightness the stars had. So the
+      // falloff is the SQUARE ROOT of the arc length: it still darkens with exposure
+      // (a 24-hour circle is visibly fainter than a 30-minute arc, as it should be) but
+      // at a rate that keeps trails legible over the whole knob range. sqrt is the
+      // standard photographic compromise — one stop per quadrupling of the arc.
+      // Floored at 1 so a closed shutter is EXACTLY the old point glow.
+      float arcLen = abs(arcRad) * rs / max(rel, EPS);
+      float glow = mag * rel * rel / (d2 + EPS) / sqrt(max(arcLen, 1.0));
       // SEEDED, never a wall clock: the rate and the phase are hashes of the CELL, so
       // the same star twinkles the same way in the editor, the CLI and both exporters.
       float twinkle = 1.0 - twinkleAmt + twinkleAmt * sin(uTime * (1.5 + 4.0 * hash21(c + 1.3)) + hash21(c) * TWO_PI);
       acc += starTint(hash21(c + 9.2)) * glow * twinkle;
     }
+  }
   }
   return acc * amount;
 }
@@ -387,25 +502,38 @@ half4 main(float2 fragCoord) {
   // in its own layer's natural frame, which is forced by two pinned laws that point in
   // opposite directions (see SKY_POLE_AXIS for the measurements that settled it).
   //
-  // A LONG EXPOSURE IS THAT SAME LOOP RUN MORE THAN ONCE. A shutter held open while
-  // the sky turns integrates the scene along the rotation path, so "uTrailArc" turns
-  // of dome rotation are accumulated over uTrailSamples steps and averaged — which is
-  // literally the definition of the photograph, not an approximation of it. Stars
-  // become concentric ARCS about the pole and the Milky Way smears along the same
-  // arcs, consistently, for free: it rides the identical rotated point.
+  // A LONG EXPOSURE integrates the sky along that rotation path, and THE TWO LAYERS
+  // INTEGRATE BY DIFFERENT MEANS because they are different KINDS of picture:
+  //   THE STARS ARE INTEGRATED ANALYTICALLY, inside starField, by measuring each pixel's
+  //     distance to the star's swept ARC instead of to the star. Point sampling was built
+  //     first and MEASURED to be structurally incapable here — a continuous trail needs
+  //     107 to 5093 samples at the shipped exposures against a hard ceiling of 64 (SkSL
+  //     unrolls the loop), and the rendered frame beaded exactly as that predicts. See
+  //     starField's own note for the arithmetic and the closed form.
+  //   THE BAND IS SAMPLED, because it has no closed form (it is fbm over a direction) and
+  //     needs none: it is a broad smooth field, so a handful of samples blur it without
+  //     any of the aliasing that destroyed the point-sampled stars. Its cost is also the
+  //     only reason uTrailSamples still exists.
   //
-  // WHY IN-SHADER AND NOT THE COMPOSITOR'S MOTION BLUR. The compositor blurs a
-  // FINISHED widget along ONE LINEAR velocity. A star trail is a family of CONCENTRIC
-  // ARCS whose direction and length both vary across the frame (zero at the pole,
-  // longest at the edge), which no single linear kernel can express — it would smear
-  // the pole as hard as the rim and bend nothing. It would also drag the ATMOSPHERE,
-  // THE HORIZON AND THE GROUND along with the stars, and in a real long exposure the
-  // landscape is the one thing that stays sharp. Accumulating along the actual
-  // rotation path gets all three right and costs one loop.
+  // WHY IN-SHADER AND NOT THE COMPOSITOR'S MOTION BLUR. The compositor blurs a FINISHED
+  // widget along ONE LINEAR velocity. A star trail is a family of CONCENTRIC ARCS whose
+  // direction and length both vary across the frame (zero at the pole, longest at the
+  // rim), which no single linear kernel can express — it would smear the pole as hard as
+  // the rim and bend nothing. It would also drag the ATMOSPHERE, THE HORIZON AND THE
+  // GROUND along with the stars, and in a real long exposure the landscape is the one
+  // thing that stays sharp. Doing it here gets all three right.
   float trailTurns = uTrailArc;
   int steps = int(clamp(uTrailSamples, 1.0, float(MAX_TRAIL_SAMPLES)));
   if (trailTurns == 0.0) steps = 1; // an unopened shutter is one sample, exactly
-  float3 stars = float3(0.0);
+
+  // THE STARS: ONE evaluation, at the shutter-open rotation, integrated over the arc.
+  float2 pwR = skyRotatePlane(pw, uTimeOfDay);
+  // The pole expressed in the same CELL frame starField works in, and relative to the
+  // pixel — so inside that function the shading point is the origin, as "star" already is.
+  float2 poleCell = (SKY_POLE_PX - pwR) / max(cellPx, EPS);
+  float3 stars = starField(pwR, cellPx, uStarSize, nightAmt, uTwinkle, trailTurns * TWO_PI, poleCell);
+
+  // THE BAND: sampled along the same arc, from the same angle.
   float mwAcc = 0.0, mottAcc = 0.0;
   for (int i = 0; i < MAX_TRAIL_SAMPLES; i++) {
     if (i >= steps) break;
@@ -414,8 +542,8 @@ half4 main(float2 fragCoord) {
     // a closed shutter is byte-identical to no trail feature at all.
     float f = steps > 1 ? float(i) / float(steps - 1) : 0.0;
     float turns = uTimeOfDay + trailTurns * f;
-    // THE SAME "turns" IN BOTH FRAMES — this pair of lines IS the rigid dome.
-    stars += starField(skyRotatePlane(pw, turns), cellPx, uStarSize, nightAmt, uTwinkle);
+    // THE SAME ANGLE THE STARS TOOK — this is the rigid dome: one uTimeOfDay, one
+    // trailTurns, read by both layers in their own frames.
     float3 rdN = normalize(skyRotateDir(dirV, turns));
     // gLat is the SINE OF GALACTIC LATITUDE and it is SIGNED — the band straddles its
     // own great circle, so half the sky has gLat < 0. It is SQUARED BY MULTIPLICATION,
@@ -436,8 +564,28 @@ half4 main(float2 fragCoord) {
     mwAcc += bandS * mottS * (1.0 - 0.55 * dustS);
     mottAcc += mottS;
   }
+  // ── THE TWO ACCUMULATIONS ARE NOT THE SAME OPERATOR, and this is the one place
+  // the long exposure could be got physically wrong without looking wrong at a glance.
+  //
+  // THE BAND AVERAGES. It is a continuous SURFACE BRIGHTNESS — it is already covering
+  // the pixel at every instant of the exposure, so holding the shutter open longer does
+  // not make it brighter, it only smears its structure. Mean over the samples.
+  //
+  // THE STARS INTEGRATE. A star is a POINT source sweeping ACROSS the pixel: it is only
+  // over any given pixel for a fraction of the exposure, and the film collects light the
+  // whole time it is there. Averaging by the SAMPLE COUNT is therefore wrong, and wrong
+  // by a factor that grows with the arc: a star crossing a 20 px arc lands in a given
+  // pixel for ~1 of 24 samples, so a mean leaves that pixel at ~5% of the star's peak
+  // and everything but the brightest stars falls below visibility. MEASURED, that is
+  // exactly what happened — a trailed frame lit 281 pixels against the instant frame's
+  // 793, i.e. the trail DIMMED THE SKY instead of smearing it.
+  //
+  // The band's samples AVERAGE: it is a continuous surface brightness, already covering
+  // the pixel at every instant, so a longer exposure smears its structure without
+  // brightening it. (The stars' own normalization is analytic and lives in starField —
+  // a point source crossing the pixel is a different integral, and normalizing it like
+  // this one is what dimmed the first sampled version into invisibility.)
   float inv = 1.0 / float(steps);
-  stars *= inv;
   float mott = mottAcc * inv;
   float mw = mwAcc * inv * uMilkyWay * nightAmt;
   float3 mwCol = mix(uGalaxyTint, float3(1.0, 0.92, 0.8), mott) * mw;
