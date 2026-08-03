@@ -59,7 +59,7 @@
  * reported loudly by mermaid_raster (console.error), never swallowed.
  */
 
-import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { convergesOnRefPrefixes } from "../render_gpu/gpu/settled.js";
 import { pathsToSvgSrc, pathsBounds, pathPoints } from "../core/svg_paths.js"; // moved out of this file so the SVG family can shatter too
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
@@ -768,7 +768,13 @@ export const mermaidPlugin = {
   type: "mermaid",
   // CONVERGES: it draws an async raster (the Mermaid raster). settled.js owns what
   // “ready” means so this cannot drift from its thirteen siblings.
-  ephemeral: convergesOnRefs((s) => [s.__mermaidRef]),
+  // CONVERGES: it draws an async raster (the mermaid render). BY NAMESPACE, not by
+  // exact ref: mermaidRef(def, theme, scale) folds in a `scale` emit() derives from
+  // the live camera, which a settled(state) predicate never sees — see
+  // convergesOnRefPrefixes for the measured defect this replaces (`s.__mermaidRef`
+  // was never assigned by anything, so this widget declared itself permanently
+  // settled).
+  ephemeral: convergesOnRefPrefixes(["mermaid:"]),
   title: "Mermaid Diagram",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): open the

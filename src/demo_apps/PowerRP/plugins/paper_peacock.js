@@ -58,7 +58,7 @@
  * No clock, no randomness, no frame-to-frame carry.
  */
 
-import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { convergesOnRefPrefixes } from "../render_gpu/gpu/settled.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -429,7 +429,12 @@ export const paperPeacockPlugin = {
   type: "paper_peacock",
   // CONVERGES: it draws an async raster (the fanned page rasters). settled.js owns what
   // “ready” means so this cannot drift from its thirteen siblings.
-  ephemeral: convergesOnRefs((s) => [s.__pdfRef]),
+  // CONVERGES: it draws async rasters (one per fanned page). BY NAMESPACE, not by
+  // exact ref: the pdfPageRef scale is derived inside emit() from the live camera,
+  // which a settled(state) predicate never sees — see convergesOnRefPrefixes for
+  // the measured defect this replaces (`s.__pdfRef` was never assigned by
+  // anything, so this widget declared itself permanently settled).
+  ephemeral: convergesOnRefPrefixes(["pdfpage:"]),
   title: "Paper Peacock",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // DOUBLE-CLICK ACTIVATION: open the asset picker on `src`, exactly like

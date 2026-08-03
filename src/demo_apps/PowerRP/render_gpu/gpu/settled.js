@@ -15,7 +15,7 @@
  * this file owns the meaning of ready.
  */
 
-import { imageStatus } from "./image_registry.js";
+import { imageStatus, pendingImageRefs } from "./image_registry.js";
 
 /**
  * Pure-ish Query (reads the image registry). Have ALL of `refs` stopped changing?
@@ -61,4 +61,52 @@ export function refsReady(refs) {
  */
 export function convergesOnRefs(refsOf) {
   return { kind: "converges", settled: (state) => refsReady(refsOf(state) ?? []) };
+}
+
+/**
+ * Pure function. The CONVERGES declaration for a widget whose refs are SYNTHETIC
+ * CACHE KEYS it cannot name from `state` alone — "is any raster in my namespace
+ * still in flight".
+ *
+ * ── WHY THIS EXISTS: THE `__pdfRef` DEFECT (measured 2026-08-02) ─────────────
+ * pdf_page, pdf_packet and latex each declared `convergesOnRefs((s) => [s.__pdfRef])`
+ * (resp. `__latexRef`). NOTHING EVER ASSIGNED THOSE FIELDS — grep found zero
+ * writers. So `refsOf(state)` returned `[undefined]`, `refsReady` skipped it as
+ * "nothing requested", and the predicate answered TRUE UNCONDITIONALLY: three of
+ * the app's slowest-loading widgets declared themselves permanently settled. It
+ * was harmless only by luck — `unsettledIn` has no consumers yet and the live
+ * export drain (web/settledFrame.js) reads the registries directly — but a
+ * predicate that reports READY for a frame that is not is the exact
+ * "hand-maintained mirror" failure this module's docblock was written to prevent,
+ * armed and waiting for its first caller.
+ *
+ * ── WHY A PREFIX AND NOT THE EXACT REF ──────────────────────────────────────
+ * The `__pdfRef` field was reaching for something UNCOMPUTABLE. These widgets'
+ * refs are `pdfPageRef(src, page, scale)` / `latexRef(latex, scale, ink)`, and
+ * `scale` is derived inside `emit()` from the live `world.scale` and the PDF's
+ * own point size — camera context a `settled(state)` predicate is never handed.
+ * No amount of state-shape juggling recovers the exact key, which is precisely
+ * why the author invented a field instead.
+ *
+ * So this asks the coarser question the registry CAN answer honestly, exactly as
+ * `plugins/demo/scene3d.js` does for the same reason: is any ref under this
+ * namespace loading. It can OVER-WAIT (another PDF widget's raster delays this
+ * one) and it can never UNDER-WAIT. That asymmetry is the whole point —
+ * over-waiting costs milliseconds, under-waiting ships a hole into an export.
+ *
+ * Terminal states do not count: "error" and "abandoned" are not "loading", so a
+ * failed asset cannot hang an export and a SUPERSEDED region raster cannot
+ * either (see gpu/image_registry.js abandonImageSlot — abandoned ≠ failed).
+ *
+ * @param {string[]} prefixes - registry-ref namespaces, e.g. ["pdfpage:", "pdfregion:"]
+ * @returns {object} an `ephemeral` declaration
+ *
+ * @example // ephemeral: convergesOnRefPrefixes(["latex:"])
+ * @example convergesOnRefPrefixes(["pdfpage:"]).kind // "converges"
+ * @example convergesOnRefPrefixes(["pdfpage:"]).settled({}) // true (no PDF raster in flight)
+ */
+export function convergesOnRefPrefixes(prefixes) {
+  const settled = () =>
+    !pendingImageRefs().some((ref) => prefixes.some((p) => ref.startsWith(p)));
+  return { kind: "converges", settled };
 }

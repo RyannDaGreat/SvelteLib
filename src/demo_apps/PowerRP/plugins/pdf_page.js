@@ -102,7 +102,7 @@
  * loudly by pdf_page_raster.js (console.error), never swallowed.
  */
 
-import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { convergesOnRefPrefixes } from "../render_gpu/gpu/settled.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -133,9 +133,13 @@ export const NO_SRC = "";
 
 export const pdfPagePlugin = {
   type: "pdf_page",
-  // CONVERGES: it draws an async raster (the page raster AT the requested tier). settled.js owns what
-  // “ready” means so this cannot drift from its thirteen siblings.
-  ephemeral: convergesOnRefs((s) => [s.__pdfRef]),
+  // CONVERGES: it draws an async raster (the page raster AT the requested tier),
+  // plus the pre-pass's crisp REGION raster. BY NAMESPACE, not by exact ref: both
+  // keys embed a `scale` emit() derives from the live camera, which a
+  // settled(state) predicate never sees — see convergesOnRefPrefixes for the
+  // measured defect this replaces (`s.__pdfRef` was never assigned by anything,
+  // so this widget declared itself permanently settled).
+  ephemeral: convergesOnRefPrefixes(["pdfpage:", "pdfregion:"]),
   title: "PDF Page",
   // THE WIDGET A DROPPED PDF BECOMES (core/registry.js assetDropKindOf). THREE
   // widgets accept a PDF in their src row — this one, pdf_packet and

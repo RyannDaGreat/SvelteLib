@@ -80,7 +80,7 @@
  * (console.error), never swallowed.
  */
 
-import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { convergesOnRefPrefixes } from "../render_gpu/gpu/settled.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
@@ -470,9 +470,13 @@ const LATEX_TREATMENT = [
 
 export const latexPlugin = {
   type: "latex",
-  // CONVERGES: it draws an async raster (the MathJax raster). settled.js owns what
-  // “ready” means so this cannot drift from its thirteen siblings.
-  ephemeral: convergesOnRefs((s) => [s.__latexRef]),
+  // CONVERGES: it draws an async raster (the MathJax raster). BY NAMESPACE, not by
+  // exact ref: latexRef(latex, scale, ink) folds in a `scale` emit() derives from
+  // the live camera, which a settled(state) predicate never sees — see
+  // convergesOnRefPrefixes for the measured defect this replaces (`s.__latexRef`
+  // was never assigned by anything, so this widget declared itself permanently
+  // settled).
+  ephemeral: convergesOnRefPrefixes(["latex:"]),
   title: "LaTeX Equation",
   capabilities: { bbox: true, transform: true, resizable: true, backdrop: false },
   // TWO key-DISJOINT families: the source and its presentation compose in either

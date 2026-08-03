@@ -25,7 +25,7 @@
  * path: whole-page rasters via render_gpu/gpu/pdf_page_raster.js refs.
  */
 
-import { convergesOnRefs } from "../render_gpu/gpu/settled.js";
+import { convergesOnRefPrefixes } from "../render_gpu/gpu/settled.js";
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
@@ -172,9 +172,12 @@ export function stapleOps(at, len, angleDeg) {
 
 export const pdfPacketPlugin = {
   type: "pdf_packet",
-  // CONVERGES: it draws an async raster (the page rasters). settled.js owns what
-  // “ready” means so this cannot drift from its thirteen siblings.
-  ephemeral: convergesOnRefs((s) => [s.__pdfRef]),
+  // CONVERGES: it draws async rasters (one per visible page). BY NAMESPACE, not by
+  // exact ref: pageRasterRef() folds in the live `world.scale`, which a
+  // settled(state) predicate never sees — see convergesOnRefPrefixes for the
+  // measured defect this replaces (`s.__pdfRef` was never assigned by anything,
+  // so this widget declared itself permanently settled).
+  ephemeral: convergesOnRefPrefixes(["pdfpage:"]),
   title: "PDF Packet",
   capabilities: { bbox: true, transform: true, resizable: true },
   defaults: {
