@@ -56,6 +56,36 @@
  * "paste behaves as normal, because after all if we copy something different,
  * paste will still do it". One paste verb, told apart by what is on the
  * clipboard — never by a second key the user has to remember.
+ *
+ * ── SUBSET COPIES: THE PAYLOAD MAY BE A PARTIAL FOLD ─────────────────────────
+ * The user, 2026-08-02, verbatim: "We should also have copy position, copy
+ * dimensions, in other words, hide width, and also copy x, y, h, w as options in
+ * the command palette, and also, of course, tools. It's kind of like copy
+ * properties, but for a limited subset."
+ *
+ * So `powerrp_item_props` may carry a PROPER SUBSET of an item's keys — Copy
+ * Position is `{x, y}`, Copy Dimensions `{w, h}`, Copy Box all four. The paste
+ * VERB is unchanged; the payload is simply smaller, which is the whole reason
+ * the subsets cost one capture argument and no new paste path.
+ *
+ * THAT STILL NEEDED A REAL FIX ON THIS SIDE, and it was found by measuring rather
+ * than by reasoning that a smaller payload is a smaller diff. `deltaFromFoldDiff`
+ * diffs two WHOLE folds, so a key present in `from` and ABSENT from `to` is a
+ * DELETION and earns a NONE tombstone (slide_reorder.js:132). Handing it a
+ * two-key payload against a full destination state emitted
+ * `{x: 10, type: null, w: null, h: null, z: null, active: null, fill: null}` —
+ * i.e. pasting Copy Position would have STRIPPED THE WIDGET'S TYPE and hidden it.
+ * A subset is not a smaller diff of the same two states; it is a diff over a
+ * RESTRICTED KEY SET. `itemPropertiesDelta` therefore projects the DESTINATION
+ * onto the payload's own keys before diffing, which makes that deletion loop
+ * vacuous by construction rather than by luck. A FULL payload is unaffected — its
+ * key set already IS every key, so the projection is the identity and the
+ * transport law above holds unchanged. Both directions are pinned by tests.
+ *
+ * ONE CONSEQUENCE WORTH STATING: a subset payload can no longer DELETE a
+ * property, because it never mentions one it does not carry. That is correct for
+ * these verbs (Copy Position moves a widget; it does not un-set anything) and it
+ * is why the projection is safe rather than merely convenient.
  */
 
 import { deltaFromFoldDiff } from "./slide_reorder.js";
@@ -75,20 +105,48 @@ import { copiedDeep } from "./deltas.js";
  * Ids with no state on this slide drop out (nothing to capture), matching the
  * clone path's `#cloneStates`.
  *
+ * `keys` narrows the capture to a SUBSET of each item's properties (the header's
+ * subset section — Copy Position is `["x", "y"]`). Omitted or null = every key,
+ * the original whole-state behaviour, unchanged. A requested key the item does
+ * not have simply does not appear: a widget with no `w` cannot contribute one,
+ * and inventing `w: undefined` would paste a tombstone.
+ *
+ * RAW STORED VALUES, sign included. A flipped widget's `w` is NEGATIVE (the
+ * negative-extents contract: the sign IS the reflection), and that sign is part
+ * of the dimensions being copied — normalising it here would silently un-flip the
+ * widget at the destination.
+ *
+ * An item that contributes NO requested key drops out entirely, exactly as an
+ * absent id does — an empty entry would make `partitionPurged` report a surviving
+ * item with nothing to transport.
+ *
  * @param {object} foldedState - a folded slide state ({items, vars})
  * @param {string[]} ids - the item ids to capture
+ * @param {string[]|null} [keys] - property names to keep; omitted = all of them
  * @returns {{powerrp_item_props: Object<string, object>}} the payload
  *
  * @example itemPropertiesPayload({items: {a: {x: 1, y: 2}, b: {x: 9}}}, ["a"])
  * // {powerrp_item_props: {a: {x: 1, y: 2}}}
  * @example itemPropertiesPayload({items: {a: {x: 1}}}, ["a", "gone"])
  * // {powerrp_item_props: {a: {x: 1}}}  (an absent id captures nothing)
+ * @example itemPropertiesPayload({items: {a: {x: 1, y: 2, fill: "#f00"}}}, ["a"], ["x", "y"])
+ * // {powerrp_item_props: {a: {x: 1, y: 2}}}  (Copy Position: the colour stays home)
+ * @example itemPropertiesPayload({items: {a: {x: 1, w: -8}}}, ["a"], ["w", "h"])
+ * // {powerrp_item_props: {a: {w: -8}}}  (the flip's sign rides along; absent `h` is not invented)
  */
-export function itemPropertiesPayload(foldedState, ids) {
+export function itemPropertiesPayload(foldedState, ids, keys = null) {
   const items = foldedState.items ?? {};
+  const captured = (state) => {
+    const whole = copiedDeep(state);
+    if (!keys) return whole;
+    return Object.fromEntries(keys.filter((k) => k in whole).map((k) => [k, whole[k]]));
+  };
   return {
     powerrp_item_props: Object.fromEntries(
-      ids.filter((id) => items[id]).map((id) => [id, copiedDeep(items[id])]),
+      ids
+        .filter((id) => items[id])
+        .map((id) => [id, captured(items[id])])
+        .filter(([, state]) => Object.keys(state).length),
     ),
   };
 }
@@ -153,7 +211,15 @@ export function purgedRefusal(purged, surviving) {
  * Arrays are whole leaves (deltaFromFoldDiff's contract), so a copied point
  * list transports intact rather than being merged element-wise.
  *
- * @param {object} payload - an `itemPropertiesPayload` result
+ * THE DESTINATION IS PROJECTED ONTO THE PAYLOAD'S KEYS FIRST — the header's
+ * subset section, and the load-bearing line in this function. `deltaFromFoldDiff`
+ * reads a key it has and the other side lacks as a DELETION, so diffing a
+ * two-key Copy Position payload against the destination's full state would write
+ * `type: null` and unmake the widget. Restricting the `from` side to the keys
+ * actually being transported makes that loop vacuous. For a WHOLE-state payload
+ * the projection is the identity, so nothing about the original verb changes.
+ *
+ * @param {object} payload - an `itemPropertiesPayload` result (whole or subset)
  * @param {object} destFold - the DESTINATION slide's folded state
  * @returns {object} a delta of the shape `{items: {id: {...}}}` ({} when nothing differs)
  *
@@ -165,13 +231,21 @@ export function purgedRefusal(purged, surviving) {
  * // {items: {a: {active: true}}}
  * @example itemPropertiesDelta({powerrp_item_props: {a: {x: 1}}}, {items: {a: {x: 1}}})
  * // {}   (nothing differs → no delta at all, so no undo-worthy edit)
+ * @example // a SUBSET payload touches only its own keys — no tombstone for `fill`
+ * itemPropertiesDelta({powerrp_item_props: {a: {x: 1}}}, {items: {a: {x: 5, fill: "#f00"}}})
+ * // {items: {a: {x: 1}}}
  */
 export function itemPropertiesDelta(payload, destFold) {
   const destItems = destFold.items ?? {};
   const items = {};
   for (const [id, copiedState] of Object.entries(payload.powerrp_item_props ?? {})) {
     if (!destItems[id]) continue; // purged — refused by the caller, never silently created
-    const diff = deltaFromFoldDiff(destItems[id], copiedState);
+    // See the header: diff over the payload's OWN key set, so an unmentioned
+    // property is "not being transported" rather than "deleted".
+    const destState = Object.fromEntries(
+      Object.keys(copiedState).filter((k) => k in destItems[id]).map((k) => [k, destItems[id][k]]),
+    );
+    const diff = deltaFromFoldDiff(destState, copiedState);
     if (Object.keys(diff).length) items[id] = diff;
   }
   return Object.keys(items).length ? { items } : {};

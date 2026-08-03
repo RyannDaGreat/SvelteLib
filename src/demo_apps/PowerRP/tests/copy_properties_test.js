@@ -188,6 +188,104 @@ test("an id with no state on the copy slide captures nothing (no empty entry)", 
   assert.deepEqual(Object.keys(payload.powerrp_item_props), [a]);
 });
 
+// ── SUBSET COPIES: COPY POSITION / DIMENSIONS / BOX ──────────────────────────
+//
+// The user (2026-08-02): "copy position, copy dimensions … It's kind of like copy
+// properties, but for a limited subset." The verb is the same; the payload is
+// smaller. The tests that matter are the two that a "smaller payload is just a
+// smaller diff" assumption gets wrong: what the payload CARRIES, and what the
+// paste WRITES — because deltaFromFoldDiff reads an absent key as a DELETION, and
+// an unprojected subset paste emitted `type: null` before this was fixed.
+
+const POSITION = ["x", "y"];
+const DIMENSIONS = ["w", "h"];
+const BOX = ["x", "y", "w", "h"];
+
+test("a subset payload carries ONLY its keys — nothing else of the widget rides along", () => {
+  const { doc, a } = sampleDoc();
+  const position = itemPropertiesPayload(slideState(doc, 0), [a], POSITION);
+  assert.deepEqual(position.powerrp_item_props[a], { x: 10, y: 20 });
+  const dimensions = itemPropertiesPayload(slideState(doc, 0), [a], DIMENSIONS);
+  assert.deepEqual(dimensions.powerrp_item_props[a], { w: 5, h: 5 });
+  const box = itemPropertiesPayload(slideState(doc, 0), [a], BOX);
+  assert.deepEqual(Object.keys(box.powerrp_item_props[a]).sort(), ["h", "w", "x", "y"]);
+});
+
+test("paste writes ONLY those keys: a moved AND recoloured widget, pasted position-only, keeps its colour", () => {
+  const { doc, a } = sampleDoc();
+  // Slide 1 differs from slide 0 in BOTH x (200 vs 10) and fill (#0f0 vs #f00).
+  const payload = itemPropertiesPayload(slideState(doc, 0), [a], POSITION);
+  const after = pasted(doc, 1, payload);
+  const item = slideState(after, 1).items[a];
+  assert.equal(item.x, 10, "the position did not transport");
+  assert.equal(item.fill, "#0f0", "Copy Position overwrote a property it never copied");
+  // THE REGRESSION THIS FILE EXISTS TO CATCH: before itemPropertiesDelta
+  // projected the destination onto the payload's keys, every unmentioned key got
+  // a NONE tombstone and the widget lost its very type.
+  assert.equal(item.type, "rect", "an unmentioned property was DELETED by a subset paste");
+  assert.deepEqual(
+    Object.keys(itemPropertiesDelta(payload, slideState(doc, 1)).items[a]),
+    ["x"], "y already agreed, so minimality says no keyframe — and no tombstones either");
+});
+
+test("Copy Dimensions does not move the widget; Copy Box moves AND resizes it", () => {
+  const { doc, a } = sampleDoc();
+  const sized = pasted(doc, 2, itemPropertiesPayload(slideState(doc, 0), [a], DIMENSIONS));
+  assert.equal(slideState(sized, 2).items[a].y, 400, "Copy Dimensions moved the widget");
+  const boxed = pasted(doc, 2, itemPropertiesPayload(slideState(doc, 0), [a], BOX));
+  const item = slideState(boxed, 2).items[a];
+  assert.deepEqual([item.x, item.y, item.w, item.h], [10, 20, 5, 5]);
+  assert.equal(item.fill, "#0f0", "Copy Box carried a property outside the box");
+});
+
+test("a negative w is a FLIP, and the box subset round-trips it sign and all", () => {
+  const { doc: base, a } = sampleDoc();
+  const doc = keyframed(base, 0, ["items", a, "w"], -5); // flipped horizontally on slide 0
+  assert.equal(slideState(doc, 0).items[a].w, -5, "precondition: stored w is negative");
+  const payload = itemPropertiesPayload(slideState(doc, 0), [a], BOX);
+  assert.equal(payload.powerrp_item_props[a].w, -5, "the capture normalised away the flip");
+  const after = pasted(doc, 2, payload);
+  assert.equal(slideState(after, 2).items[a].w, -5, "the pasted widget lost its flip");
+});
+
+test("a requested key the widget does not have is not invented (no undefined leaf, no tombstone)", () => {
+  let doc = newDocument();
+  let a;
+  [doc, a] = withNewItem(doc, 0, { type: "line", x: 0, y: 0, z: 0, active: true }); // no w/h at all
+  const payload = itemPropertiesPayload(slideState(doc, 0), [a], DIMENSIONS);
+  // The item contributes no requested key, so it drops out entirely rather than
+  // shipping an empty entry that partitionPurged would call a surviving target.
+  assert.deepEqual(payload.powerrp_item_props, {});
+});
+
+test("the FULL copy is byte-identical to before the subsets existed (keys omitted = all)", () => {
+  const { doc, a } = sampleDoc();
+  const explicitAll = itemPropertiesPayload(slideState(doc, 0), [a], null);
+  const implicitAll = itemPropertiesPayload(slideState(doc, 0), [a]);
+  assert.deepEqual(explicitAll, implicitAll);
+  assert.deepEqual(implicitAll.powerrp_item_props[a], slideState(doc, 0).items[a]);
+  // And the whole-state transport law still holds through the projected diff.
+  assert.deepEqual(slideState(pasted(doc, 2, implicitAll), 2).items[a], slideState(doc, 0).items[a]);
+});
+
+test("the three subset commands are registered, gated and surfaced as tools", () => {
+  const app = readFileSync(new URL("../web/App.svelte", import.meta.url), "utf8");
+  const pool = readFileSync(new URL("../core/registry.js", import.meta.url), "utf8");
+  for (const [id, keys] of [
+    ["copy-position", '["x", "y"]'],
+    ["copy-dimensions", '["w", "h"]'],
+    ["copy-box", '["x", "y", "w", "h"]'],
+  ]) {
+    assert.ok(app.includes(`id: "${id}"`), `${id} is not a registered command`);
+    assert.ok(app.includes(`a.copySelectionProperties(${keys}`),
+      `${id} does not capture ${keys} — the subset is the whole point of the command`);
+    assert.ok(pool.includes(`command: "${id}"`), `${id} never reaches the Tools pane`);
+  }
+  // The one this workstream inherited RED from tool_surfacing_probe.js.
+  assert.ok(pool.includes('command: "copy-properties"'),
+    "copy-properties is still unreachable from the Tools pane");
+});
+
 // ── WIDGET-COPY PASTE IS UNCHANGED ───────────────────────────────────────────
 //
 // The ruling is that adding a kind must not disturb the one that was there:
