@@ -101,6 +101,32 @@ the error in its footer.
   suites do not cover the five frozen-baseline defects recorded in the dump's
   Round 18 manifest.
 
+## The boot surface
+
+A DEAD BOOT MUST NEVER LOOK LIKE A SLOW ONE (user, 2026-08-02: "it actually
+crashed when it was loading and I couldn't tell because ... I'm so used to it
+taking such a long time to say starting that I didn't even think to look in the
+console for this error"). `web/index.html`'s FIRST INLINE SCRIPT owns this and
+nothing else may: it declares the stage roster, and it installs `window.onerror`
++ `unhandledrejection`, which must be there because an import-graph throw fires
+during the bundle's EVALUATION — a handler that ships with the bundle cannot
+catch the bundle failing to arrive. A crash renders IN the splash (message, top
+stack frame, remedy) and stands down at the first painted frame. `failed` is a
+one-way latch separate from `finished`; both gate done()/stage()/reportCrash(),
+because a boot that crashed and then limped to a frame used to erase its own
+error. Keep it pre-framework: no Svelte, no imports.
+
+THE SERVICE WORKER'S LAW IS ATOMICITY: at no instant may a page load assets from
+two different versions. A version's shell cache is written by exactly ONE thing —
+`install`'s all-or-nothing `addAll` — and navigations are CACHE-FIRST from it.
+A network response is never stored in a shell cache; that write is what built the
+chimera behind the incident above. Deploy discovery is the SW lifecycle plus an
+explicit `reg.update()`, never a fresh document over stale chunks. The shell is
+PREPENDED to the precache list rather than discovered in vite's bundle (it is not
+in `bundle` at `generateBundle` time). **The dev server registers no worker AND
+unregisters any it finds** — abstaining is not the same as being uncontrolled,
+because scope is per ORIGIN and `localhost` is shared with `vite preview`.
+
 ## Command architecture
 
 The command registry is the single action layer. The palette (Cmd+Shift+P),
