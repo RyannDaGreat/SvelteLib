@@ -1385,12 +1385,21 @@
   // The type dropdown lists every registered transition type (tween|fade|…).
   let transitionTypeChoices = TRANSITION_TYPES.map((t) => ({ value: t.type, label: t.title }));
 
-  /** Commits one transition property (per-boundary config; one undo unit via the
-   * app accessor). Not keyframed/previewed — transitions have no tween state. */
+  /**
+   * Commits one transition property (per-boundary config; one undo unit via the
+   * app accessor). Not keyframed/previewed — transitions have no tween state.
+   *
+   * IT WRITES THE WHOLE SELECTION, not just the primary. Transitions multi-select
+   * on the rail now (user, 2026-08-02: "I should be able to shift click multiple
+   * tweens too, in the same way that I have multi-selection for widgets"), and
+   * setSelectedTransitionsProp resolves to exactly [primary] when only one is
+   * selected — so this is the singular path too, with no branch here. One commit
+   * covers the whole set, so unifying five tweens costs one undo rather than five.
+   */
   function commitTransition(key, kind, raw) {
     const value = coerce(kind, raw);
     if (kind === "number" && Number.isNaN(value)) return;
-    app.setTransitionProp(transitionSlideId, key, value);
+    app.setSelectedTransitionsProp(key, value);
   }
 </script>
 
@@ -2602,10 +2611,22 @@
          generic machinery, WITHOUT keyframe diamonds (transitions are
          per-boundary CONFIG, not keyframable tweened state). -->
     {#if transitionState}
+      <!-- HOW MANY TRANSITIONS THIS PANEL WRITES. With several selected, every
+           row below fans out to all of them in ONE undo unit, and a panel that
+           looked identical to a single selection would make that invisible —
+           the user would change "the" duration and silently move five. The rows
+           still SHOW the primary's values; this line says what a write will hit.
+           Absent at a single selection, where the count is not information. -->
+      {@const transitionCount = app.selectedTransitionIds().length}
+      {#if transitionCount > 1}
+        <div class="transition-multi-note">Editing {transitionCount} transitions — every change below applies to all of them.</div>
+      {/if}
       <!-- SLIDE NAME (Round 4 #54): the boundary panel is the slide's
            properties surface, so the name is editable HERE as well as by
-           double-clicking it in the navigator. Commit on change (ONE undo
-           unit); blank restores the positional default. -->
+           double-clicking it in the navigator. It is the PRIMARY slide's name
+           even in a multi-selection: a name is per-slide, so there is nothing to
+           fan out. Commit on change (ONE undo unit); blank restores the
+           positional default. -->
       {@const nameSlideIndex = app.doc.slides.findIndex((s) => s.id === transitionSlideId)}
       {#if nameSlideIndex >= 0}
         <div class="row">
@@ -2624,7 +2645,7 @@
         <Dropdown
           items={transitionTypeChoices}
           value={transitionState.type}
-          onchange={(v) => app.setTransitionType(transitionSlideId, v)}
+          onchange={(v) => app.setSelectedTransitionsType(v)}
         />
         <span class="kf-controls" aria-hidden="true"></span>
       </div>

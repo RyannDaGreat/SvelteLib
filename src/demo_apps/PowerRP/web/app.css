@@ -6359,6 +6359,21 @@ audio.ae-preview-media {
   line-height: var(--a-text-line-height);
 }
 
+/* THE TRANSITION PANEL'S OWN multi-selection note — how many transitions a write
+   will hit (user, 2026-08-02: shift-click multi-select for tweens). Same
+   dim/centered panel-prose treatment as .multi-note above, and deliberately a
+   SEPARATE selector rather than a reuse: .multi-note is scoped under
+   .multi-select, which is the ITEM intersection panel, and a transition panel is
+   not inside it. Widening that selector would silently apply the item panel's
+   future changes to a panel with different semantics. */
+.inspector .transition-multi-note {
+  color: var(--fg-dim);
+  padding: var(--a-sp-3) var(--a-sp-4);
+  text-align: center;
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+
 /* One excluded property KEY inside that note. Monospace because it IS a property
    key (the equation grammar's own spelling), matching how this panel treats the
    same vocabulary elsewhere. cursor:help because the Tooltip on it is the whole

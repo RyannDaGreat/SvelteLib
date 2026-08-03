@@ -40,6 +40,12 @@ const EXEMPT = new Map([
   //        hook. Both carry a comment at the element saying so.
   ["handle-stem", "web/CanvasView.svelte:3773 styles it inline with --a-* tokens"],
   ["colorfield-eyedropper", "web/ColorField.svelte:277 — the documented inline-token exception"],
+  // A DISAMBIGUATOR, not a skin: .name-modal supplies every style, and this only
+  // says WHICH of the three dialogs rendering .name-modal-input is open. Giving
+  // it a rule would be an empty one — a lie about there being a distinct look —
+  // and the class earns its keep: a probe asserting "the slide dialog closed" was
+  // answered by the PROJECT rename dialog's input and reported a false failure.
+  ["slide-rename-modal", "web/App.svelte:2971 — query hook only; .name-modal carries all styling"],
 
   // ── (b) COMPANION / QUALIFIER names sitting beside a sibling that carries all
   //        the styling. They describe the element; they do not style it.
