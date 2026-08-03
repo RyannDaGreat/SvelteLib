@@ -853,14 +853,24 @@ export function scaledSubpath(sp, sx, sy) {
  * here: a widget has ONE ink, and both morphable widgets in a shape↔shape morph
  * carry it on every subpath they emit.
  *
- * ── WHAT THE MULTI-CONTOUR RULE BECAME, AND WHY IT HAD TO CHANGE ─────────────
+ * ── WHAT THE MULTI-CONTOUR RULE BECAME, AND WHAT IT DID *NOT* CAUSE ──────────
  * It used to be a COUNT test — "more than two subpaths between the two payloads,
  * so keep the carried per-subpath paint". That is right for the case it was
  * written for (an SVG icon whose contours genuinely carry different fills) and
- * WRONG for every multi-glyph equation or text box, which is also multi-contour
- * but carries ONE widget ink repeated on each glyph. Under the count test a
- * material-inked equation's interior frames took the ENGINE'S CARRY — a degraded
- * copy of one widget-level ink — which is half of the black-mid-morph bug.
+ * wrong as a PROXY for it: a multi-glyph equation or text box is also
+ * multi-contour, and carries ONE widget ink repeated on each glyph.
+ *
+ * BE PRECISE ABOUT THE BLAME, because an earlier draft of this paragraph was not.
+ * The count test was NOT the reported black — MEASURED, by re-instating it and
+ * rendering the same material-inked text morph frame both ways: BYTE-IDENTICAL
+ * brass. It is harmless whenever the engine's carry happens to equal the widget
+ * ink, which is the common same-ink case. The black came from the OTHER half,
+ * plugins/latex.js degrading a shader ink before the payload ever reached here.
+ * The count test is a LATENT failure rather than a live one: it bites exactly
+ * when the carry and the widget-level pair disagree — a same-type morph whose ink
+ * ALSO changed across the transition, where the carry is one endpoint's ink and
+ * the honest answer is the blended pair.
+ *
  * The rule is now the thing the carve-out actually meant: keep per-subpath paint
  * only when a payload's subpaths DISAGREE with each other (`paintIsHeterogeneous`).
  * Homogeneous art of any contour count is a widget-level pair and blends as one.

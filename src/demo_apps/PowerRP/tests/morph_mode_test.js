@@ -421,10 +421,13 @@ test("AN UNLIKE PAIR CROSSFADES rather than snapping", () => {
 });
 
 test("A MULTI-GLYPH MATERIAL INK SURVIVES THE INTERIOR — the reported bug", () => {
-  // An equation or a text box is MANY contours under ONE ink. The old carve-out
-  // was a subpath COUNT test, so any multi-glyph widget took the engine's carried
-  // per-subpath paint instead — which for a shader ink was a degraded solid. That
-  // is the black.
+  // An equation or a text box is MANY contours under ONE ink, and the ink must
+  // reach the interior frames whole. THE CARRY AND THE PAIR ARE MADE TO DISAGREE
+  // here (the blended subpath carries black) precisely because that is the case
+  // the old subpath-COUNT carve-out got wrong: it returned the carry. With the
+  // carry equal to the ink — the common case — the count test was harmless, which
+  // is why the reported black traced to plugins/latex.js's degradation instead.
+  // This pins the latent half so it cannot come back as a live one.
   const p = morphedPaint(
     paintedPayload([MATERIAL, MATERIAL, MATERIAL]),
     paintedPayload([MATERIAL, MATERIAL]),
