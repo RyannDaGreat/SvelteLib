@@ -220,11 +220,14 @@ export function registerInterpMode(entry) {
  * get which modes — the same plugin-owned-knowledge argument `morphPairPolicy`
  * makes one layer down.
  *
- * `auto` IS INCLUDED WHERE A DEFAULT EXISTS, and it is not a registered mode —
- * it is the ABSENCE of a stored one, i.e. `defaultModeFor` deciding per
- * transition. The select needs a name for that state or an author could never get
- * back to it after picking something explicit. It leads the list because it is
- * what an untouched property already has.
+ * THERE IS NO `auto` OPTION IN THIS LIST, and that is not an omission. "Auto" is
+ * already how the select behaves: an ABSENT companion key renders
+ * `interpRowFor`'s `absentValue`, which is `displayedDefaultModeFor` — the very
+ * mode the renderer will use. So the untouched state ALREADY shows its real
+ * answer by name ("Blend" on a material row, "Morph" on a type row), which is
+ * strictly more informative than the word "Auto", and adding a separate option
+ * would give one state two spellings. The type row's `auto` in this feature's
+ * design notes IS that absent state, not a fifth id.
  *
  * Args:
  *   key (string): the state key the select is for
@@ -233,30 +236,27 @@ export function registerInterpMode(entry) {
  *   type (string|undefined): the owning widget's type, when the caller knows it
  *
  * Returns:
- *   string[]: mode ids, in registration order, `auto` first where it applies
+ *   string[]: applicable mode ids, in registration order
  *
- * @example modesForKey("type", "rect") // ["auto", "morph", "step"]
+ * @example modesForKey("type", "rect") // ["step", "morph"]
  * @example modesForKey("x", 0) // ["tween", "step"]
  * @example modesForKey("active", false) // ["tween", "step", "fade"]
- * @example modesForKey("fill", {type: "material", material: {id: "crt"}}) // ["auto", "tween", "step", "blend"]
+ * @example modesForKey("fill", {type: "material", material: {id: "crt"}}) // ["tween", "step", "blend"]
  * @example modesForKey("latex", "x^2", "latex") // ["tween", "step", "morph"]
  */
 export function modesForKey(key, value, type) {
   const ctx = { key, value, type };
   const ids = [...MODES].filter(([, entry]) => entry.appliesTo(ctx)).map(([id]) => id);
-  // `auto` is offered exactly where it MEANS something — where the shape-driven
-  // default is not simply `tween`. On an ordinary numeric row "auto" and "tween"
-  // are the same answer spelled twice, which is the very thing this filter is
-  // for.
-  return displayedDefaultModeFor(value, key) === DEFAULT_INTERP_MODE ? ids : [AUTO_MODE_ID, ...ids];
+  // THE DISPLAYED DEFAULT IS ALWAYS OFFERED, even where its own `appliesTo` says
+  // no. The select renders `absentValue` — the mode the renderer really uses when
+  // nothing is stored — as the CURRENT value, and a select whose current value is
+  // not among its options renders blank in every browser. That would turn the one
+  // row this feature exists to explain into an empty box. This cannot fire for
+  // any shipped mode (each default is applicable where it is the default) and is
+  // here so a future default cannot silently produce that blank.
+  const shown = displayedDefaultModeFor(value, key);
+  return ids.includes(shown) ? ids : [shown, ...ids];
 }
-
-/** The name the select gives to "nothing stored — let the default decide". NOT a
- * registered mode: `auto` IS `defaultModeFor`, and making it an entry would put
- * something in the registry that is a question about two other laws rather than a
- * blend law (the argument spelled out at defaultModeFor). Storing it means
- * storing nothing, which is what a select's handler must do when it is picked. */
-export const AUTO_MODE_ID = "auto";
 
 /**
  * Query (reads the registry). The mode entry for `id`, or undefined.

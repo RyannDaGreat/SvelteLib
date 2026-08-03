@@ -65,7 +65,7 @@ import { SHAPE_NAMES, SHAPE_LABELS } from "./shapes.js";
 import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
-import { displayedDefaultModeFor, interpKeyFor, interpMode, interpModeIds, interpModeLabels, isInterpKey } from "./interp_modes.js";
+import { displayedDefaultModeFor, interpKeyFor, interpMode, interpModeLabels, isInterpKey, modesForKey } from "./interp_modes.js";
 
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
@@ -2242,11 +2242,15 @@ export function customProps(defs) {
  * Args:
  *   propRow (object): the row whose blend law this edits (only its key/writeKey
  *     and label are read)
- *   value (*): the property's folded value on the slide being shown, read ONLY
- *     to pick the displayed absent mode. Optional.
+ *   value (*): the property's folded value on the slide being shown. Read to pick
+ *     the displayed absent mode AND to filter the option list by value shape (a
+ *     paint offers Blend, a boolean offers Fade). Optional.
+ *   type (string): the owning widget's type, when the caller knows it — lets the
+ *     filter recognize a widget's CONTENT leaf (an equation's source, a text
+ *     box's string) and offer Morph on it. Optional.
  *
  * Returns:
- *   object: a select row over the registered mode ids
+ *   object: a select row over the mode ids that APPLY to this property
  *
  * @example interpRowFor({key: "x", label: "X"}).key
  * "x~interp"
@@ -2260,16 +2264,34 @@ export function customProps(defs) {
  * "tween"
  * @example interpRowFor({key: "fill", label: "Fill"}, {type: "material", material: {id: "crt"}}).absentValue
  * "blend"
+ * @example // THE OPTION LIST IS FILTERED: a coordinate has no outline and no second paint
+ * @example interpRowFor({key: "x", label: "X"}, 5).options
+ * [ 'tween', 'step' ]
+ * @example // the TYPE row drops tween/fade/blend — none of them can do anything to a widget type
+ * @example interpRowFor({key: "type", label: "Type"}, "rect").options
+ * [ 'step', 'morph' ]
+ * @example // an equation's SOURCE is a content leaf, so it offers the reshape
+ * @example interpRowFor({key: "latex", label: "LaTeX"}, "x^2", "latex").options
+ * [ 'tween', 'step', 'morph' ]
  */
-export function interpRowFor(propRow, value) {
+export function interpRowFor(propRow, value, type) {
   const target = propRow.writeKey ?? propRow.key;
   const labels = interpModeLabels();
+  // THE APPLICABILITY FILTER (core/interp_modes.modesForKey), not the whole
+  // registry. User ruling: "Tween doesn't really make sense in terms of widget
+  // type interpolation… blend and tween, those don't really make any sense". A
+  // mode that cannot do anything for this row degraded silently to the discrete
+  // switch, so the select was offering several names for one behavior with
+  // nothing to tell them apart — a confident wrong answer in the one place an
+  // author goes to ask what a property can do. Each mode declares its own domain;
+  // this reads them.
+  const options = modesForKey(target, value, type);
   return {
     key: interpKeyFor(target),
     label: `${propRow.label} interp`,
     kind: "select",
     category: propRow.category,
-    options: interpModeIds(),
+    options,
     optionLabels: labels,
     // The option the Inspector SHOWS when the companion key is absent from state
     // — which is the normal, untouched condition and must stay that way. It is
@@ -2278,7 +2300,10 @@ export function interpRowFor(propRow, value) {
     // and the `absentValue` note in web/Inspector.svelte's select branch.
     absentValue: displayedDefaultModeFor(value, target),
     interpOf: target,
-    help: `How "${propRow.label}" moves across a transition. ${interpModeIds().map((id) => `${labels[id]} — ${interpMode(id).help}`).join(" ")}`,
+    // The help explains EXACTLY the options the select offers, never the whole
+    // registry: describing a mode the author cannot pick here is the same
+    // confident wrong answer the filter above removes, one line down.
+    help: `How "${propRow.label}" moves across a transition. ${options.map((id) => `${labels[id]} — ${interpMode(id).help}`).join(" ")}`,
   };
 }
 

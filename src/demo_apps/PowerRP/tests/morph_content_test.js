@@ -45,6 +45,7 @@ import {
   TYPE_KEY,
 } from "../core/interp_modes.js";
 import { glyphOutlinesReady, setGlyphOutlines, textMorphPayload } from "../core/glyph_outlines.js";
+import { interpRowFor } from "../core/properties.js";
 import { LATEX_EQUATION_VIEWBOX, LATEX_EQUATION_GLYPHS } from "./fixtures/latex_equation_vector.js";
 
 let passed = 0, failed = 0;
@@ -260,7 +261,7 @@ test("content: contentMorphKeyFor names each widget's content leaf", () => {
 
 // ── APPLICABILITY ────────────────────────────────────────────────────────────
 
-test("applicability: the TYPE row offers auto/morph/step and NOTHING else", () => {
+test("applicability: the TYPE row offers step/morph and NOTHING else", () => {
   // User ruling, verbatim: "Tween doesn't really make sense in terms of widget
   // type interpolation... blend and tween, those don't really make any sense".
   // A select that offers a mode which cannot do anything for the row is a
@@ -268,12 +269,19 @@ test("applicability: the TYPE row offers auto/morph/step and NOTHING else", () =
   // subset check — an option added by a later wave must come here and argue for
   // itself.
   const ids = modesForKey(TYPE_KEY, "rect");
-  assert.deepEqual(ids, ["auto", "step", "morph"],
+  assert.deepEqual(ids, ["step", "morph"],
     `the type row's options are pinned; got ${JSON.stringify(ids)}`);
   // Stated separately from the deepEqual so a failure names the RULE rather than
   // just a list mismatch: these three are the modes the user said do not belong.
   for (const gone of ["tween", "fade", "blend"])
     assert.ok(!ids.includes(gone), `"${gone}" must not be offered on the type row — it has no meaning for a widget type`);
+  // AND "auto" IS NOT AN OPTION, because it is already the untouched STATE: with
+  // nothing stored the select shows `absentValue`, which is the mode the renderer
+  // really uses — "Morph" here, by name. A separate "Auto" entry would give one
+  // state two spellings and be strictly less informative than the name it hides.
+  assert.ok(!ids.includes("auto"), "`auto` is the absent state, not a fifth mode id");
+  assert.equal(interpRowFor({ key: TYPE_KEY, label: "Type" }, "rect").absentValue, "morph",
+    "and the untouched row displays that real default by name");
 });
 
 test("applicability: `visible`/`active` offers step and fade, not morph", () => {
@@ -295,6 +303,21 @@ test("applicability: a PAINT row offers blend, and a CONTENT key offers morph", 
   assert.ok(paintIds.includes("blend"), `a material must offer the crossfade, got ${paintIds}`);
   const contentIds = modesForKey("latex", "x^2", "latex");
   assert.ok(contentIds.includes("morph"), `an equation's source must offer morph, got ${contentIds}`);
+});
+
+test("applicability: the INSPECTOR ROW is filtered, not just the core function", () => {
+  // The filter is only worth anything at the surface the user sees, and the row
+  // builder is that surface — web/Inspector.svelte renders exactly this row's
+  // `options`. Pinning it here rather than only in a browser probe is what makes
+  // the assertion cheap enough to keep.
+  const typeRow = interpRowFor({ key: TYPE_KEY, label: "Type" }, "rect");
+  assert.deepEqual(typeRow.options, ["step", "morph"]);
+  // AND THE HELP MATCHES THE OPTIONS. Describing a mode the author cannot pick
+  // here is the same confident wrong answer the filter removes — the help used to
+  // walk the whole registry, so it would have gone on explaining Blend on a row
+  // that no longer offers it.
+  assert.ok(!/Blend —/.test(typeRow.help), "the type row's help must not explain Blend, which it does not offer");
+  assert.ok(/Morph —/.test(typeRow.help), "and must explain Morph, which it does");
 });
 
 test("applicability: every mode's help says what it DOES, in one sentence", () => {

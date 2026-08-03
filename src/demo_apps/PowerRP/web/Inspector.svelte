@@ -1837,7 +1837,12 @@
        to core/multiselect.js later without touching this file's shape. -->
   {#if interpCapable && interpRowOpen(row)}
     <div class="interp-strip">
-      {@render propRow(interpRowFor(row, valueAt(state, writeKey(row))), state, {
+      <!-- The widget's TYPE is threaded so the option filter can recognize a
+           CONTENT leaf — an equation's `latex`, a text box's `text` — and offer
+           Morph on it. Without it the filter still works from the value's shape
+           alone; the type is what tells a content string apart from any other
+           string the widget happens to store. -->
+      {@render propRow(interpRowFor(row, valueAt(state, writeKey(row)), state?.type), state, {
         keyframes, disabled, onpreview, oncommit, itemId, pathState, hoverPreview, multi: null,
       })}
     </div>
