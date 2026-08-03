@@ -581,6 +581,27 @@ function paintOpRange(CanvasKit, target, flat, start, end, view, ctx, depth, bel
       }
       continue;
     }
+    // GLASSY TEXT / GLASSY EQUATIONS — a glyph-bearing op carrying a BACKDROP
+    // material. Routed HERE for the same reason a shape's material fill is: the
+    // below-content re-render needs the view and device space, which the leaf
+    // branch does not carry. The glyph outlines become the clip and the ordinary
+    // backdrop machinery runs inside it, exactly as handleMaterialPaintShape does
+    // with a shape's outline. Must come BEFORE the branches below, which would
+    // otherwise send a text op to the glyph pass that correctly refuses this kind.
+    //
+    // The FILL still draws first for a stroke-only case: a glass OUTLINE around
+    // solid-filled text needs the solid fill painted, and this handler only ever
+    // draws the material slots.
+    if (opNeedsGlyphBackdrop(cmd)) {
+      if (!isMaterialPaint(cmd[glyphPaintSlots(cmd)[0]])) {
+        canvas.save();
+        applyView(canvas, view, world);
+        drawLeafOp(CanvasKit, canvas, { ...cmd, glyphStroke: null }, cmd.opacity ?? 1, ctx.media, ctx.fontCollection, ctx.antialias, ctx.quality, screenSpaceDivisor(world?.scale, view?.zoom, ctx.cameraFitZoom));
+        canvas.restore();
+      }
+      handleGlyphBackdropMaterial(CanvasKit, target, cmd, world, view, belowOf(i), ctx, depth, proxy);
+      continue;
+    }
     // A SHAPE op whose FILL is a MATERIAL paint (the fill-material framework:
     // "demo widgets are just shapes with material"). Routed HERE, not in
     // drawLeafOp: the material machinery needs the view, the below-content and
@@ -1747,6 +1768,272 @@ function handleMaterialPaintShape(CanvasKit, target, cmd, world, view, belowFlat
   // The stroke draws on top — a plain stroke through the leaf path, OR a MATERIAL
   // stroke through the stroke-material framework (the both-material case). ONE seam.
   drawOpStroke(CanvasKit, canvas, cmd, world, view, ctx, proxy);
+}
+
+/**
+ * Command (draws on target). A TEXT or EQUATION op whose fill and/or glyph outline
+ * is a BACKDROP MATERIAL — GLASSY TEXT, which is the thing the user asked for by
+ * name (2026-08-02): "what if I wanted to have, let's say, like a glassy version of
+ * text or glassy version of LaTeX, right? It's not possible right now."
+ *
+ * ── WHY THIS EXISTS RATHER THAN A FIX INSIDE THE GLYPH PASS ──────────────────
+ * N1 refused a backdrop material on glyphs, and the refusal was CORRECT for the
+ * seam it was written at. A backdrop material is defined as a function OF THE
+ * COMPOSITE BENEATH IT: its SkSL declares the {blurredBackdrop, sharpBackdrop}
+ * child pair, and only handleMaterialBackdrop can supply that pair because only it
+ * runs the below-content re-render. The glyph pass draws inside an
+ * already-composited canvas and has no access to the below-content, the view or
+ * device space — so compiling the shader there returns null and paints NOTHING,
+ * the silent failure paint containment exists to forbid. text_layout.js still
+ * refuses, for exactly that reason, and that refusal is still right.
+ *
+ * What was WRONG was concluding the FEATURE was impossible. Shapes have solved this
+ * since the fill-material framework landed: handleMaterialPaintShape clips the
+ * device canvas to the shape's own geometry and then runs the ordinary material
+ * machinery inside that clip, so the material never learns it is confined and the
+ * full backdrop re-render happens normally. THE GLYPHS ARE JUST ANOTHER CLIP.
+ * That is the whole idea here, and it is why this needed no new material
+ * machinery, no new SkSL, and no change to handleMaterialBackdrop.
+ *
+ * ── THE ONE THING THAT IS GENUINELY DIFFERENT FROM A SHAPE ───────────────────
+ * A shape's clip is its analytic outline. A text op's is the union of its glyph
+ * outlines, which for TEXT come from the fontkit seam (CanvasKit has no glyph-path
+ * API) and for an EQUATION come from the MathJax glyph `d`s already on the op. Both
+ * are produced in LOCAL space and mapped to device space by the same deviceMatrix a
+ * shape uses, so the material's geometry frame is the ink box either way.
+ *
+ * A text op whose outlines are unavailable (no seam installed) CANNOT be clipped to
+ * its glyphs, and drawing an unclipped backdrop material would paint the material
+ * across the whole ink box — a solid slab where the letters should be. So it
+ * refuses out loud rather than degrading, which is the same call
+ * core/glyph_outlines.js makes for the morph.
+ *
+ * `regionFor` decides WHICH paint drives it (fill or glyph stroke) — the two run
+ * as separate passes with separate clips, so glassy text with a brass outline is
+ * expressible.
+ */
+function handleGlyphBackdropMaterial(CanvasKit, target, cmd, world, view, belowFlat, ctx, depth, proxy) {
+  const canvas = target.canvas;
+  const dm = deviceMatrix(CanvasKit, view, world);
+  // THE FILL PASS, then THE OUTLINE PASS. A fill clips to the glyph interiors; an
+  // outline clips to the STROKED outline of those same glyphs (Path.stroke turns a
+  // path into the region its stroke would cover), so a backdrop material outline
+  // shades only the ring of pixels the stroke occupies.
+  for (const slot of glyphPaintSlots(cmd)) {
+    const paint = cmd[slot];
+    if (!isMaterialPaint(paint)) continue;
+    const material = getMaterial(paint.material.id);
+    if (!isBackdropMaterial(material)) continue; // a foreground material still takes the glyph pass, which is sharper
+    if (!paint.resolvedParams)
+      throw new Error(`paintIR(skia): the "${paint.material.id}" material on a ${cmd.op} op's ${slot} reached the painter UNRESOLVED — render_gpu/ports.js resolveMaterialFillPaints must run on every pipeline that builds IR.`);
+    // The LOCAL path first, for the material's own geometry frame (a bbox in the
+    // op's own units, which is what the uniform packer wants), then the DEVICE path
+    // for the clip. Two builds rather than one build and a transform, because a
+    // detached Path has no `transform` — that lives on PathBuilder (measured:
+    // `localPath.transform is not a function`), so the matrix must be applied
+    // before detaching and a path cannot be moved after the fact.
+    const localPath = glyphOpLocalPath(CanvasKit, cmd, null);
+    if (!localPath) {
+      throw new Error(
+        `paintIR(skia): a BACKDROP material ("${paint.material.id}") on this ${cmd.op} op cannot be drawn because its GLYPH OUTLINES are unavailable — ` +
+        (cmd.op === "text"
+          ? "core/glyph_outlines.js has no source installed (the render side calls setGlyphOutlines at boot). "
+          : "the equation's glyphs have not been flattened yet (the async MathJax typeset). ") +
+        "A backdrop material shades the composite beneath it and must be clipped to the letterforms; drawing it unclipped would paint a solid slab over the whole ink box instead of glassy type.",
+      );
+    }
+    // AN OUTLINE'S REGION IS ITS STROKE, TURNED INTO AN AREA. There is no "clip to
+    // a stroke" and no "stroke with a backdrop shader", so the outline is converted
+    // into the filled region it would cover and THAT becomes the clip —
+    // `makeStroked`, the same primitive drawDetachedContourStroke uses to build a
+    // parallel contour (Miter/Butt for the same reason it pins them there: this is
+    // geometry, not ink). The result is a NEW path, so the glyph path is released.
+    const localRegion = slot === "glyphStroke"
+      ? strokedRegionOf(CanvasKit, localPath, glyphStrokeWidthInLocalSpace(cmd))
+      : localPath;
+    const bboxLocal = localRegion.getBounds();
+    if (localRegion !== localPath) localRegion.delete();
+    localPath.delete();
+    const devicePath = glyphOpLocalPath(CanvasKit, cmd, dm);
+    // The DEVICE clip is widened by the DEVICE width — the same length in the space
+    // it is being built in, which is what deviceLengthScale converts.
+    const clip = slot === "glyphStroke"
+      ? strokedRegionOf(CanvasKit, devicePath, glyphStrokeWidthInLocalSpace(cmd) * deviceLengthScale(view, world))
+      : devicePath;
+    if (clip !== devicePath) devicePath.delete();
+    const regionOp = {
+      op: "materialBackdrop",
+      material: material.id,
+      cx: (bboxLocal[0] + bboxLocal[2]) / 2, cy: (bboxLocal[1] + bboxLocal[3]) / 2,
+      halfW: (bboxLocal[2] - bboxLocal[0]) / 2, halfH: (bboxLocal[3] - bboxLocal[1]) / 2,
+      cornerRadius: 0,
+      blurRadius: paint.resolvedParams.blurRadius ?? 8,
+      backdropScale: paint.resolvedParams.backdropScale ?? 1,
+      params: material.toUniformParams ? material.toUniformParams(paint.resolvedParams) : paint.resolvedParams,
+      stroke: null, strokeWidth: 0,
+      opacity: cmd.opacity ?? 1,
+    };
+    canvas.save();
+    canvas.clipPath(clip, CanvasKit.ClipOp.Intersect, true);
+    if (proxy) drawProxyBackdrop(CanvasKit, canvas, regionOp, view, world, ctx);
+    else handleMaterialBackdrop(CanvasKit, target, regionOp, world, view, belowFlat, ctx, depth);
+    canvas.restore();
+    clip.delete();
+  }
+}
+
+/** Pure function. World length → DEVICE px, the factor handleMaterialBackdrop
+ * calls `sd`. Needed here because a glyph-stroke CLIP is built in device space and
+ * so must be widened by the device-space width, while the material's uniform frame
+ * is stated in local units.
+ *
+ * @example deviceLengthScale({zoom: 2, dpr: 2}, {scale: 1}) // 4
+ * @example deviceLengthScale({zoom: 1, dpr: 1}, {scale: 3}) // 3
+ */
+function deviceLengthScale(view, world) {
+  return world.scale * view.zoom * view.dpr;
+}
+
+/** Command (allocates a NEW path; caller deletes both it and the input). The
+ * FILLED REGION a stroke of `width` along `path` would cover — how an outline
+ * becomes something a clip can be taken against.
+ *
+ * `makeStroked` returns a new Path (it does not mutate); `stroke` is a PathBuilder
+ * method and does not exist on a detached Path at all (measured: `localPath.stroke
+ * is not a function`). Miter/Butt because this is geometry rather than ink, the
+ * same pinning drawDetachedContourStroke documents for the same reason. */
+function strokedRegionOf(CanvasKit, path, width) {
+  const region = path.makeStroked({ width, join: CanvasKit.StrokeJoin.Miter, cap: CanvasKit.StrokeCap.Butt });
+  if (!region) throw new Error(`paintIR(skia): a glyph outline of width ${width} produced no stroked region — a degenerate outline (report, do not swallow)`);
+  return region;
+}
+
+/**
+ * Command (allocates; caller deletes). A text or latexVector op's glyph outlines as
+ * ONE local-space SkPath, or null when they are unavailable.
+ *
+ * The two sources are structurally different and that is inherent, not incidental:
+ * an EQUATION carries real vector `d`s on the op (MathJax flattened them), while
+ * TEXT has none anywhere in CanvasKit and must go out to the fontkit seam. One
+ * function so every caller that wants "the ink of this glyph-bearing op" asks once.
+ *
+ * A latexVector op's paths are in VIEWBOX space, so they are mapped through the
+ * same viewBox→box fit drawLatexVector applies — otherwise the clip would sit in a
+ * different coordinate system than the pixels it is meant to confine.
+ */
+function glyphOpLocalPath(CanvasKit, cmd, extraMatrix) {
+  // `transform` and `addPath` are BOTH PathBuilder methods, NOT Path ones — the
+  // same API asymmetry latexGlyphUnionPath's comment names. So the placement
+  // matrix is applied to the BUILDER, before detaching, rather than to the
+  // finished path (which silently has no such method: `union.transform is not a
+  // function`, measured).
+  const builder = new CanvasKit.PathBuilder();
+  let matrix;
+  if (cmd.op === "latexVector") {
+    if (!cmd.glyphs?.length) { builder.delete(); return null; }
+    for (const g of cmd.glyphs) {
+      const path = CanvasKit.Path.MakeFromSVGString(g.d);
+      if (!path) throw new Error(`paintIR(skia): latexVector glyph "d" failed to parse: ${JSON.stringify(g.d).slice(0, 64)}`);
+      builder.addPath(path);
+      path.delete();
+    }
+    // viewBox → box, mirroring drawLatexVector's own two branches.
+    const { viewBox } = cmd;
+    let sx, sy, ox = 0, oy = 0;
+    if (cmd.preserveAspect !== false) {
+      const f = fitBox(viewBox.w, viewBox.h, cmd.w, cmd.h);
+      sx = sy = f.scale; ox = f.offsetX; oy = f.offsetY;
+    } else {
+      sx = cmd.w / viewBox.w; sy = cmd.h / viewBox.h;
+    }
+    matrix = CanvasKit.Matrix.multiply(
+      CanvasKit.Matrix.translated(cmd.x + ox, cmd.y + oy),
+      CanvasKit.Matrix.scaled(sx, sy),
+      CanvasKit.Matrix.translated(-viewBox.minX, -viewBox.minY),
+    );
+  } else {
+    if (!glyphOutlinesReady()) { builder.delete(); return null; }
+    const { ds } = textGlyphPathDs(textStateForOutlines(cmd));
+    if (ds.length === 0) { builder.delete(); return null; }
+    for (const d of ds) {
+      const path = CanvasKit.Path.MakeFromSVGString(d);
+      if (!path) throw new Error(`paintIR(skia): text glyph outline "d" failed to parse: ${JSON.stringify(d).slice(0, 64)}`);
+      builder.addPath(path);
+      path.delete();
+    }
+    matrix = CanvasKit.Matrix.translated(cmd.x, cmd.y); // the outlines are box-local; the op draws at x/y
+  }
+  // `extraMatrix` (the device matrix, when the caller wants a device-space clip)
+  // is applied OUTSIDE the placement — device ∘ placement — so it maps the
+  // already-placed ink rather than the raw outlines.
+  builder.transform(extraMatrix ? CanvasKit.Matrix.multiply(extraMatrix, matrix) : matrix);
+  const union = builder.detach();
+  builder.delete();
+  return union;
+}
+
+/**
+ * Pure function. A glyph-bearing op's outline width in the LOCAL space
+ * glyphOpLocalPath returns — which for an equation is not the width on the op.
+ *
+ * A latexVector's `glyphStrokeWidth` is in VIEWBOX units (plugins/latex.js converted
+ * it there, because the painter normally strokes under the viewBox→box CTM). But
+ * glyphOpLocalPath has ALREADY mapped the path out of viewBox space into box space,
+ * so the width has to make the same trip or the backdrop-material outline would be
+ * the one place in the app where the number means something else again.
+ *
+ * @example glyphStrokeWidthInLocalSpace({op: "text", glyphStrokeWidth: 4}) // 4
+ * @example // a 1000-wide viewBox drawn into a 100-wide box: viewBox widths are 10x too big
+ * @example glyphStrokeWidthInLocalSpace({op: "latexVector", glyphStrokeWidth: 40, viewBox: {minX: 0, minY: 0, w: 1000, h: 500}, w: 100, h: 50, preserveAspect: true}) // 4
+ */
+function glyphStrokeWidthInLocalSpace(cmd) {
+  if (cmd.op !== "latexVector") return cmd.glyphStrokeWidth;
+  const { viewBox } = cmd;
+  const s = cmd.preserveAspect !== false
+    ? Math.min(cmd.w / viewBox.w, cmd.h / viewBox.h)
+    : Math.sqrt((cmd.w / viewBox.w) * (cmd.h / viewBox.h));
+  return cmd.glyphStrokeWidth * s;
+}
+
+/**
+ * Pure function. Does this op need the GLYPH BACKDROP route — is it a glyph-bearing
+ * op (text or equation) carrying a BACKDROP material on its fill or its outline?
+ *
+ * Reads the registry, so an entry that becomes a backdrop material tomorrow routes
+ * correctly with no edit here. A FOREGROUND material deliberately answers false: it
+ * needs no below-content, so it keeps the sharper glyph pass (drawGlyphs coverage
+ * for text, a union clip for an equation) rather than paying for a device-space
+ * re-render it would not use.
+ *
+ * @example opNeedsGlyphBackdrop({op: "rect", fill: {type: "material", material: {id: "glass"}}}) // false (a shape has its own route)
+ * @example opNeedsGlyphBackdrop({op: "text", fill: "#fff"}) // false
+ * @example // a glass fill on a text op — the "glassy text" case:
+ * @example // opNeedsGlyphBackdrop({op: "text", fill: {type: "material", material: {id: "glass"}}}) // true
+ */
+function opNeedsGlyphBackdrop(cmd) {
+  if (cmd.op !== "text" && cmd.op !== "latexVector") return false;
+  for (const slot of glyphPaintSlots(cmd)) {
+    const paint = cmd[slot];
+    if (isMaterialPaint(paint) && isBackdropMaterial(getMaterial(paint.material.id))) return true;
+  }
+  return false;
+}
+
+/**
+ * Pure function. WHICH KEYS carry this glyph-bearing op's ink, in paint order
+ * (interior first, outline second).
+ *
+ * The two ops disagree about the name of the FILL and the disagreement is
+ * historical, not principled: a text op puts its ink on `color` (ir.js text()),
+ * while a latexVector puts a shader ink on `fill`. Rather than have every consumer
+ * remember which is which — the mistake that silently skips a material and paints
+ * nothing — the mapping is stated once here.
+ *
+ * @example glyphPaintSlots({op: "text"}) // ["color", "glyphStroke"]
+ * @example glyphPaintSlots({op: "latexVector"}) // ["fill", "glyphStroke"]
+ */
+function glyphPaintSlots(cmd) {
+  return [cmd.op === "text" ? "color" : "fill", "glyphStroke"];
 }
 
 /**

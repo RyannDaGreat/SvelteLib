@@ -764,8 +764,22 @@ export function materialShaderForGlyphs(CanvasKit, fill, bounds) {
     throw new Error(`text_layout: the "${id}" material is not fill-capable (it declares no fillParams), so it cannot paint text — pick a material offered by the Color row's Mat tab`);
   if (isSamplerMaterial(material))
     throw new Error(`text_layout: "${id}" carries no SkSL (it is a sampler/pattern material that dispatches its own op), so it cannot be compiled as a text fill`);
+  // A BACKDROP MATERIAL NEVER REACHES HERE ANY MORE, and the reason it is still
+  // refused rather than deleted is that this seam genuinely still cannot draw one.
+  // It has no below-content, no view and no device space, so compiling the shader
+  // without its {blurredBackdrop, sharpBackdrop} children returns null and paints
+  // NOTHING — the silent failure paint containment forbids.
+  //
+  // What changed in N2 is the ROUTING, not this limit: paint_skia's
+  // opNeedsGlyphBackdrop intercepts a glyph-bearing op carrying a backdrop material
+  // BEFORE the glyph pass runs, and handleGlyphBackdropMaterial draws it by clipping
+  // the device canvas to the letterforms and running the ordinary backdrop
+  // machinery inside — the same trick handleMaterialPaintShape has always used for
+  // shapes. So "glassy text" works, and this line is now a BACKSTOP: if a future
+  // caller reaches the glyph pass with a backdrop material it has bypassed that
+  // route, and saying so loudly is better than painting an invisible word.
   if (isBackdropMaterial(material))
-    throw new Error(`text_layout: "${id}" is a BACKDROP material — it shades the composite beneath it through the {blurredBackdrop, sharpBackdrop} child pair, which the glyph pass cannot supply. Foreground materials (the ones with backdrop:false) are what can paint text.`);
+    throw new Error(`text_layout: "${id}" is a BACKDROP material and reached the GLYPH PASS, which cannot supply its {blurredBackdrop, sharpBackdrop} children. It should have been routed to paint_skia's handleGlyphBackdropMaterial (which clips the device canvas to the letterforms and runs the real backdrop machinery inside) — reaching here means opNeedsGlyphBackdrop did not fire for this op.`);
   // resolveMaterialPaint (render_gpu/ports.js, at scene-build time) is what fills
   // resolvedParams. Its absence means this paint skipped resolution, and a shader
   // packed from half a knob set renders confidently wrong — so it is a hard error,

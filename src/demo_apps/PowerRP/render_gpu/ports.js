@@ -91,6 +91,12 @@ export function resolveMaterialFillPaints(cmds, node, nodesById) {
     // the docblock above promises; a second one would be the drift it warns about.
     if (isMaterialPaint(cmd.color))
       out = { ...out, color: resolveMaterialPaint(cmd.color, node, nodesById, warnOnce) };
+    // THE GLYPH OUTLINE is a FOURTH paint slot (N2): an outline traced around the
+    // letterforms of a text box or an equation, which is not `stroke` because on a
+    // latexVector op `stroke` already means the BOX BORDER. Same argument as the
+    // text ink above — an unresolved material here reaches the painter and throws.
+    if (isMaterialPaint(cmd.glyphStroke))
+      out = { ...out, glyphStroke: resolveMaterialPaint(cmd.glyphStroke, node, nodesById, warnOnce) };
     if (Array.isArray(cmd.rich?.runs) && cmd.rich.runs.some((r) => isMaterialPaint(r.color))) {
       const runs = cmd.rich.runs.map((r) =>
         isMaterialPaint(r.color) ? { ...r, color: resolveMaterialPaint(r.color, node, nodesById, warnOnce) } : r);
