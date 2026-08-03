@@ -170,9 +170,16 @@ export function groupReparametrizeToBox(state, newBox) {
 // (1-2), eating into it (3-4), emitting from it (5-6), rewriting every pixel (7-8),
 // then removing the edge entirely (9).
 //
-// FULL — all five knobs in every row including the identities, because application
+// FULL — all SIX knobs in every row including the identities, because application
 // is an overlay (plugins/demo/sky.js:63-66): without them, hovering "Ink Stamp"
 // after "Neon Glass" would leave the bloom on.
+//
+// "SIX" IS NOT A NUMBER TO TRUST BY READING, AND THAT IS THE POINT. It was five
+// until `gaussianBlur` joined the effects bundle, and a preset family cannot know
+// the bundle grew. So the completeness check below is DERIVED FROM
+// BUNDLES.effects rather than from a transcribed list (tests/group_treatments_test
+// .js): the day a seventh effect lands, this family fails loudly with the missing
+// key named instead of silently leaking the previous row's value on hover.
 //
 // EVERY ROW MUST MAKE groupFoldsSubtree TRUE or it renders NOTHING. An effect-free,
 // uncropped group is a pure ghost, so a preset that left every knob at its identity
@@ -181,26 +188,30 @@ export function groupReparametrizeToBox(state, newBox) {
 const SHADOW_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
 const BLOOM_OFF = { radius: 10, strength: 0 };
 const INNER_OFF = { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 };
+// The bundle's sixth effect. A plain scalar like softEdges (0 = the identity
+// Gaussian), named for the constant it is rather than written bare, so the
+// identity reads the same way the other four do at every call site.
+const BLUR_OFF = 0;
 
 const GROUP_TREATMENTS = [
   { name: "Cut Paper", description: "A paper cut-out lying flat on the page — one tight, close shadow under the whole assembly's outline rather than under each piece of it.",
-    props: { shadow: { dx: 0, dy: 3, blur: 6, color: "#000000", opacity: 0.35 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0 } },
+    props: { shadow: { dx: 0, dy: 3, blur: 6, color: "#000000", opacity: 0.35 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
   { name: "Lifted Card", description: "The same assembly held well above the page: a long, soft, low-contrast shadow that says height rather than contact.",
-    props: { shadow: { dx: 0, dy: 18, blur: 36, color: "#000000", opacity: 0.32 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0 } },
+    props: { shadow: { dx: 0, dy: 18, blur: 36, color: "#000000", opacity: 0.32 }, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
   { name: "Pressed Into The Page", description: "A debossed impression — a tight inner shadow all round the composite silhouette, so the assembly reads as stamped INTO the surface instead of resting on it.",
-    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 8, color: "#000000", opacity: 0.55 }, softEdges: 0 } },
+    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 8, color: "#000000", opacity: 0.55 }, softEdges: 0, gaussianBlur: BLUR_OFF } },
   { name: "Vignette Well", description: "A deep recess: the same inner shadow taken to a very wide blur, darkening far into the assembly so the whole group sits at the bottom of a well.",
-    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 64, color: "#000000", opacity: 0.45 }, softEdges: 0 } },
+    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: { dx: 0, dy: 0, blur: 64, color: "#000000", opacity: 0.45 }, softEdges: 0, gaussianBlur: BLUR_OFF } },
   { name: "Backlit Sign", description: "A lit sign face — a broad bloom leaving the composite silhouette, so the assembly glows outward as ONE shape rather than as a crowd of glowing parts.",
-    props: { shadow: SHADOW_OFF, bloom: { radius: 26, strength: 0.6 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0 } },
+    props: { shadow: SHADOW_OFF, bloom: { radius: 26, strength: 0.6 }, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
   { name: "Neon Glass", description: "Glow plus additive compositing: a wide strong bloom over a screen blend, so the assembly stops reflecting the backdrop and starts emitting into it.",
-    props: { shadow: SHADOW_OFF, bloom: { radius: 34, strength: 0.85 }, blendMode: "screen", innerShadow: INNER_OFF, softEdges: 0 } },
+    props: { shadow: SHADOW_OFF, bloom: { radius: 34, strength: 0.85 }, blendMode: "screen", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
   { name: "Ink Stamp", description: "Ink soaking into the backdrop — a multiply blend over the whole composite, so the assembly can only darken what is behind it and never lighten it.",
-    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "multiply", innerShadow: INNER_OFF, softEdges: 0 } },
+    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "multiply", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
   { name: "Light Leak", description: "Film fogged by stray light: a faint bloom under a screen blend, washing the assembly pale into the backdrop instead of sitting on top of it.",
-    props: { shadow: SHADOW_OFF, bloom: { radius: 12, strength: 0.25 }, blendMode: "screen", innerShadow: INNER_OFF, softEdges: 0 } },
+    props: { shadow: SHADOW_OFF, bloom: { radius: 12, strength: 0.25 }, blendMode: "screen", innerShadow: INNER_OFF, softEdges: 0, gaussianBlur: BLUR_OFF } },
   { name: "Fog Edge", description: "The assembly dissolving at its own boundary — a wide soft-edge falloff on the composite, so the group has no border anywhere, only a fade.",
-    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 34 } },
+    props: { shadow: SHADOW_OFF, bloom: BLOOM_OFF, blendMode: "normal", innerShadow: INNER_OFF, softEdges: 34, gaussianBlur: BLUR_OFF } },
 ];
 
 // GROUP MATTES — the cropInsets bundle trims the group's own bbox and CLIPS the

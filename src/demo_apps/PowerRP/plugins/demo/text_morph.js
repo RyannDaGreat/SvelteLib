@@ -152,6 +152,7 @@ function terminalRows(greenTail, amberTail) {
         shadow: { dx: 0, dy: 0, blur: 20, color: "#00ff66", opacity: 0.85 },
         bloom: { radius: 12, strength: 0.5 },
         innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
       },
     },
     {
@@ -163,6 +164,7 @@ function terminalRows(greenTail, amberTail) {
         shadow: { dx: 0, dy: 0, blur: 14, color: "#ff8000", opacity: 0.5 },
         bloom: { radius: 10, strength: 0.45 },
         innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
       },
     },
   ];
@@ -189,6 +191,7 @@ const TYPE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -200,6 +203,7 @@ const TYPE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 12, color: "#00ff66", opacity: 0.5 },
       bloom: { radius: 16, strength: 0.7 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -211,6 +215,7 @@ const TYPE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 6, strength: 0.25 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -222,6 +227,7 @@ const TYPE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -233,6 +239,7 @@ const TYPE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -244,6 +251,7 @@ const TYPE_PRESETS = [
       shadow: { dx: 0, dy: 1, blur: 0, color: "#000000", opacity: 0.5 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -255,6 +263,7 @@ const TYPE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 14, strength: 0.8 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -266,6 +275,7 @@ const TYPE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 6, color: "#000000", opacity: 0.9 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
 ];
@@ -303,6 +313,7 @@ const SCRAMBLE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 10, color: "#00ff41", opacity: 0.5 },
       bloom: { radius: 14, strength: 0.7 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -314,6 +325,7 @@ const SCRAMBLE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 8, strength: 0.4 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -325,6 +337,7 @@ const SCRAMBLE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -336,6 +349,7 @@ const SCRAMBLE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -347,6 +361,7 @@ const SCRAMBLE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 20, strength: 0.9 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -358,6 +373,7 @@ const SCRAMBLE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 20, strength: 0.9 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -369,6 +385,7 @@ const SCRAMBLE_PRESETS = [
       shadow: { dx: 2, dy: 0, blur: 0, color: "#7a4a3a", opacity: 0.6 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -380,6 +397,7 @@ const SCRAMBLE_PRESETS = [
       shadow: { dx: 3, dy: 0, blur: 0, color: "#ff00a0", opacity: 0.7 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
 ];
@@ -413,6 +431,7 @@ const DISSOLVE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -424,6 +443,7 @@ const DISSOLVE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 16, strength: 0.8 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   ...terminalRows(
@@ -438,6 +458,7 @@ const DISSOLVE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -449,6 +470,7 @@ const DISSOLVE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 14, color: "#0a5a75", opacity: 0.7 },
       bloom: { radius: 26, strength: 1.1 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -460,6 +482,7 @@ const DISSOLVE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 12, color: "#5a1a05", opacity: 0.6 },
       bloom: { radius: 26, strength: 1.15 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -471,6 +494,7 @@ const DISSOLVE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 6, color: "#000000", opacity: 0.85 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -482,6 +506,7 @@ const DISSOLVE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -493,6 +518,7 @@ const DISSOLVE_PRESETS = [
       shadow: { dx: 0, dy: 0, blur: 22, color: "#000000", opacity: 0.6 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
 ];

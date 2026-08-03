@@ -62,6 +62,7 @@ import { builtinRoster } from "../plugins/index.js";
 import { presetFamiliesOf } from "../core/registry.js";
 import { compiled, isEquationValue, isNumericSlot, resolveRef, resultKindForSlot, slugMap } from "../core/expressions.js";
 import { parseColor } from "../render_gpu/ir.js";
+import { BUNDLES } from "../core/properties.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -326,6 +327,99 @@ test("no preset writes a placement key", () => {
     assert.deepEqual(illegal, [],
       `${where(entry)} writes ${illegal.join(", ")} — applying it would undo framing the author had already done by hand`);
   }
+});
+
+// ── (7) THE EFFECTS-FAMILY COMPLETENESS LAW ──────────────────────────────────
+// A preset is applied as an OVERLAY (app.applyPreset writes exactly the keys in
+// `props`), so a knob a row OMITS keeps whatever the previously HOVERED row left
+// there. plugins/group.js states the consequence in the family's own words:
+// "without them, hovering 'Ink Stamp' after 'Neon Glass' would leave the bloom
+// on." That is not a per-family stylistic rule, it is arithmetic about overlays,
+// and it bites hardest on the EFFECTS bundle specifically because those knobs are
+// universal — six of them, shared by ~100 widgets, every one an identity the
+// author of a new row has no reason to think about.
+//
+// THE GATE IS PER-FAMILY AGREEMENT, and the narrower shape is deliberate — the
+// broader one is wrong and this suite MEASURED that rather than assuming it.
+//
+// The tempting rule is "a row that writes ANY effect key must write them all",
+// but skySun refutes it: all seven of its rows write `blendMode` and nothing
+// else, on a documented reason (it "is the one shared key that decides whether
+// this widget adds light or occludes it", sky.js:422). Those rows leak NOTHING
+// between each other — every one sets the only effect key any of them touches —
+// so failing them would be a false gate, and "just add five identities to
+// skySun" would be this suite editing a family it does not understand.
+//
+// What actually causes the leak is DISAGREEMENT WITHIN A FAMILY: row A sets
+// `bloom`, row B does not mention it, so hovering B after A leaves A's glow on.
+// So the required key set is the UNION of what the family's own rows write, and
+// every row must cover that union. A family that never touches effects is
+// untouched (SPARSE families are legal — SPEC.md §4, shapeshifter writes three
+// keys and no paint, which is why frosted's "every look knob" check was NOT
+// hoisted); a family where all rows agree passes whatever subset they agree on.
+//
+// IT IS STILL DERIVED, WHICH IS THE POINT. The `blur` (`gaussianBlur`) effect
+// landed as the bundle's SIXTH member and 86 preset rows across six families
+// each needed a new identity line. Deriving the union means the day someone adds
+// the new key to SOME rows of a family, the rest fail by name — which is exactly
+// the half-migrated state a transcribed list cannot see.
+const EFFECT_HEADS = [...new Set(BUNDLES.effects.map((k) => k.split(".")[0]))];
+
+/**
+ * Pure function. The effect keys each preset in a family is MISSING relative to
+ * the union of effect keys the family's rows write. All-empty is the passing
+ * answer: either no row touches an effect (union empty), or every row covers the
+ * same set.
+ *
+ * Nested heads (`shadow`, `innerShadow`, `bloom`) count as PRESENT when the HEAD
+ * is written, because a preset spells them as whole objects
+ * (`shadow: {dx, dy, blur, color, opacity}`) rather than as dotted leaves — that
+ * is the form applyPreset needs, since a PARTIAL nested object MERGES rather than
+ * replacing (plugins/text.js measured this against core/deltas.js applied(): a
+ * bare `shadow: {opacity: 0}` would keep the last row's blur and colour).
+ *
+ * @param {object[]} presets - one family's presets
+ * @param {string[]} heads - the bundle's top-level keys (EFFECT_HEADS)
+ * @returns {string[][]} per preset, its missing keys in bundle order
+ *
+ * @example // a family that never touches effects: nothing required of it
+ * effectGapsInFamily([{props: {bumps: 5}}, {props: {bumps: 9}}], ["shadow", "bloom"]) // [[], []]
+ * @example // skySun's real shape — every row writes the same single key, so they agree
+ * effectGapsInFamily([{props: {blendMode: "screen"}}, {props: {blendMode: "normal"}}], ["blendMode", "bloom"]) // [[], []]
+ * @example // THE DEFECT: one row lights a glow, the next never takes it back off
+ * effectGapsInFamily([{props: {bloom: {strength: 0.6}}}, {props: {tint: "#fff"}}], ["shadow", "bloom"]) // [[], ["bloom"]]
+ */
+function effectGapsInFamily(presets, heads) {
+  const writes = (p) => heads.filter((k) => k in (p.props ?? {}));
+  const union = heads.filter((k) => presets.some((p) => k in (p.props ?? {})));
+  return presets.map((p) => {
+    const has = new Set(writes(p));
+    return union.filter((k) => !has.has(k));
+  });
+}
+
+test("(7) within a family, every preset covers the SAME effect keys — no hover leaks", () => {
+  let rows = 0;
+  const seen = new Set();
+  for (const plugin of WITH_PRESETS) {
+    for (const family of presetFamiliesOf(plugin)) {
+      const presets = family.presets ?? [];
+      const gaps = effectGapsInFamily(presets, EFFECT_HEADS);
+      gaps.forEach((missing, i) => {
+        assert.deepEqual(missing, [],
+          `${plugin.type}/${family.key ?? "presets"}/"${presets[i].name}" omits ${missing.join(", ")}, which OTHER rows of the same family set — applyPreset is an OVERLAY, so hovering this row after one of those leaves them on and the picture becomes hover-order dependent`);
+      });
+      if (gaps.length && EFFECT_HEADS.some((k) => presets.some((p) => k in (p.props ?? {})))) {
+        rows += presets.length;
+        seen.add(plugin.type);
+      }
+    }
+  }
+  // The sweep must have SUBJECTS. If a refactor stopped presets carrying effect
+  // keys at all this check would pass vacuously, which is the failure mode the
+  // whole file is written against.
+  assert.ok(rows > 0 && seen.size > 0, "no preset family writes an effects key — this gate is proving nothing");
+  console.log(`      effects-carrying rows: ${rows} across ${seen.size} families (${[...seen].sort().join(", ")}); bundle keys: ${EFFECT_HEADS.join(", ")}`);
 });
 
 // ── (6) every value is legal for its own Inspector row ───────────────────────

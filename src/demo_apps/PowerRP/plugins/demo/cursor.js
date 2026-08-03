@@ -195,6 +195,13 @@ const MEASURED_SHADOW_BLACK = "#000000"; // every measured pointer shadow is pla
 const NO_SHADOW = { dx: 0, dy: 0, blur: 0, color: MEASURED_SHADOW_BLACK, opacity: 0 };
 const NO_INNER_SHADOW = { dx: 0, dy: 0, blur: 0, color: MEASURED_SHADOW_BLACK, opacity: 0 };
 const NO_BLOOM = { radius: 10, strength: 0 }; // radius is the shipped default; strength 0 is the gate
+// The effects bundle's sixth effect. NO pointer preset uses it and none should:
+// a blurred cursor is an out-of-focus cursor, which reads as a rendering fault
+// rather than a treatment. It is carried at its identity anyway because
+// applyPreset is an OVERLAY — a row that omitted it would inherit whatever the
+// previously HOVERED row left there, and the suite derives the required key set
+// from the plugin's own inspector rows, so this is enforced rather than trusted.
+const NO_BLUR = 0;
 // The two measured shadows, at the shipped 96 px box (3x the 32-unit nominal):
 const CONTACT_SHADOW = { dx: 0, dy: 3, blur: 3, color: MEASURED_SHADOW_BLACK, opacity: 0.3 };
 const RECORDING_SHADOW = { dx: 0, dy: 0, blur: 8, color: MEASURED_SHADOW_BLACK, opacity: 0.6 };
@@ -225,7 +232,7 @@ const PRESETS = [
     description: "The arrow exactly as a compositor draws it with the system shadow switched off: no shadow, no glow, no feather. This is also the documentation convention — an inline pointer glyph used as a noun in a sentence carries no effects at all.",
     props: {
       cursorKind: "default", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
-      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -233,7 +240,7 @@ const PRESETS = [
     description: "The shadow real desktop pointer artwork bakes in: a one-unit drop and a tight blur at 30% — a contact shadow for figure-ground separation, not a floating object. Measured off a shipping vector cursor and scaled to this widget's 96 px box.",
     props: {
       cursorKind: "default", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
-      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -241,7 +248,7 @@ const PRESETS = [
     description: "A screen recorder's redrawn pointer: no offset at all, a much wider blur, and double the opacity — because a recorded pointer has to survive arbitrary video and chroma subsampling, which can eat the one-pixel outline a desktop pointer relies on.",
     props: {
       cursorKind: "default", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
-      shadow: RECORDING_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: RECORDING_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -249,7 +256,7 @@ const PRESETS = [
     description: "A pointer part-way through the idle fade, for a still where it should be present but recessive. The two-second idle TIMING is a documented convention; the 35% opacity is not — every shipping product hides an idle pointer rather than dimming it, so no fade value exists to copy.",
     props: {
       cursorKind: "default", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 0.35,
-      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 1.5, blendMode: "normal",
+      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 1.5, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -257,7 +264,7 @@ const PRESETS = [
     description: "The closed grabbing hand at the exact alpha a browser engine uses for a drag preview — 0.75, a shipped constant rather than a guess — over the desktop contact shadow.",
     props: {
       cursorKind: "handgrabbing", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 0.75,
-      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -265,7 +272,7 @@ const PRESETS = [
     description: "The historical monochrome cursor's fourth state, reverse-screen — visible on any background by construction, and the reason the classic I-beam was readable over black text and white page alike. A difference blend is not identical to it: the white ink inverts exactly, the black ink disappears.",
     props: {
       cursorKind: "textcursor", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
-      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "difference",
+      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "difference", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -273,7 +280,7 @@ const PRESETS = [
     description: "The I-beam over selectable text, with a soft shadow at zero offset in both axes so the top and bottom crossbeams stay symmetric — an offset shadow makes a thin glyph look bent.",
     props: {
       cursorKind: "textcursor", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
-      shadow: { dx: 0, dy: 0, blur: 3, color: MEASURED_SHADOW_BLACK, opacity: 0.25 }, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: { dx: 0, dy: 0, blur: 3, color: MEASURED_SHADOW_BLACK, opacity: 0.25 }, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -281,7 +288,7 @@ const PRESETS = [
     description: "The pointing hand, which means one thing only — this target is a link — and by convention must never be used for anything else. Carries the desktop contact shadow.",
     props: {
       cursorKind: "handpointing", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
-      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -289,7 +296,7 @@ const PRESETS = [
     description: "The blocking wait indicator, spinning at a measured 1.06 revolutions per second — 59 frames at 16 ms is what a shipping cursor theme authors, and independent spinners cluster in the same 0.7-1.35 band. It appears after about two seconds of an unserviced event loop, and while it shows nothing is clickable.",
     props: {
       cursorKind: "beachball", spin: true, spinRevsPerSec: 1.06, animated: true, opacity: 1,
-      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -297,7 +304,7 @@ const PRESETS = [
     description: "A reticle for two-dimensional work at the 75% opacity a shipping crosshair overlay ships with, and with nothing soft on it at all — a shadow or a feather on a reticle destroys the thing it is for. Its hotspot is dead centre, unlike the arrow's.",
     props: {
       cursorKind: "cross", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 0.75,
-      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: NO_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
   {
@@ -305,7 +312,7 @@ const PRESETS = [
     description: "The double-headed diagonal resize arrow, one of twelve resize forms in the built-in set (four edges, four corners, and four double-headed axes), over the desktop contact shadow.",
     props: {
       cursorKind: "resizenorthwestsoutheast", spin: false, spinRevsPerSec: MEASURED_SPIN_REVS_PER_SEC, animated: false, opacity: 1,
-      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal",
+      shadow: CONTACT_SHADOW, bloom: NO_BLOOM, innerShadow: NO_INNER_SHADOW, softEdges: 0, blendMode: "normal", gaussianBlur: NO_BLUR,
     },
   },
 ];

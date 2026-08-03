@@ -261,7 +261,7 @@ const REJECTED_HIGHLIGHT_HALO = {
   shadow: { dx: 0, dy: 0, blur: 8, color: "#000000", opacity: 0.6 },
   bloom: { radius: 30, strength: 0.65 },
   innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
-  softEdges: 0, blendMode: "normal"
+  softEdges: 0, blendMode: "normal", gaussianBlur: 0
 };
 
 test("(4) every pair renders distinguishably over the lit set, the defaults included", () => {

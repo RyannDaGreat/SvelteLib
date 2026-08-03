@@ -144,6 +144,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -154,6 +155,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -164,6 +166,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 2, blur: 8, color: "#000000", opacity: 0.28 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -174,6 +177,7 @@ const INK_LOOKS = [
       shadow: { dx: 4, dy: 5, blur: 0, color: "#000000", opacity: 1 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -184,6 +188,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 4, color: "#000000", opacity: 1 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -194,6 +199,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 18, color: "#000000", opacity: 0.5 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -204,6 +210,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 1.5, blur: 0, color: "#ffffff", opacity: 0.75 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -214,6 +221,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 1, blur: 0, color: "#ffffff", opacity: 0.5 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 2, blur: 3, color: "#000000", opacity: 0.85 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -224,6 +232,7 @@ const INK_LOOKS = [
       shadow: { dx: 1, dy: 1.5, blur: 1.5, color: "#3a2c05", opacity: 0.6 },
       bloom: { radius: 8, strength: 0.3 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -234,6 +243,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 6, strength: 0.25 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -244,6 +254,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0.35 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -254,6 +265,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 12, strength: 0.6 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -264,6 +276,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 14, strength: 0.75 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -274,6 +287,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 10, color: "#0a4a55", opacity: 0.6 },
       bloom: { radius: 28, strength: 1.2 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
   {
@@ -284,6 +298,7 @@ const INK_LOOKS = [
       shadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
       bloom: { radius: 10, strength: 0 },
       innerShadow: { dx: 0, dy: 0, blur: 0, color: "#000000", opacity: 0 },
+      gaussianBlur: 0,
     },
   },
 ];
