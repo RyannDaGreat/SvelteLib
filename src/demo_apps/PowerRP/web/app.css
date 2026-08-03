@@ -547,11 +547,16 @@
      many slides, I try to make the slides panel bigger… The slides just become
      enormous"). Every value here is what makes the opposite true. */
   /* MINIMUM tile width — the auto-fill track's floor, so a wider panel buys
-     COLUMNS and the tile stays about a thumbnail's natural size. Small enough
-     that the default panel width already fits two columns (which is what makes
-     the toggle visibly do something on a stock layout), large enough that a
-     16:9 thumbnail under it is still legible. */
-  --a-slide-tile-min-w: 116px;
+     COLUMNS and the tile stays about a thumbnail's natural size.
+     MEASURED, not guessed. The rail ships 256px wide, and by the time the
+     container's padding and the spine gutter are taken out, .slides has 238px of
+     content box with an 18px column gap between tracks — so two columns need a
+     floor at or below (238 - 18) / 2 = 110px. It was set to 116px first and the
+     stock panel rendered ONE 230px column, i.e. the grid looked exactly like the
+     list and the toggle appeared to do nothing at the only width most users ever
+     see. 104px leaves a little slack for a theme that widens the gutter, and a
+     16:9 thumbnail is still ~58px tall under it, which is legible. */
+  --a-slide-tile-min-w: 104px;
   --a-slide-tile-gap: var(--a-sp-3);
   /* THE SPINE PILL — the list's transition chip ROTATED (user: "u can just rotate
      the thing 90 degrees including rotating text right"), so the chip's HEIGHT
