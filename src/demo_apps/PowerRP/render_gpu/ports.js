@@ -20,6 +20,9 @@
 
 import { video, pushTransform, popTransform, signedCompose, isMaterialPaint, applyStrokeTrim, applyStrokeOffset, applyStrokeJoin, parsePaint, isPaintableFrame, rect, text, path } from "./ir.js";
 import { morphPaths, payloadToPathD, assertMorphPaths } from "../core/morph.js";
+import { statePaint } from "../core/morph_payload.js";
+import { isVisibleFxToken, visibleLevel } from "../core/interp_modes.js";
+import { MANIM_SKETCH_STROKE_WIDTH, manimDrawPlan, sketchStrokeColor, trimSubpathByLength } from "../core/manim_draw.js";
 import { interpolate } from "../core/interpolators.js";
 import { applyNodeEffects } from "./effects.js";
 import { resolveMaterialPaint } from "./skia/materials.js";
@@ -484,8 +487,19 @@ function emitNodeBody(node, byId, display) {
   // emits ordinary `path` ops: the effects seam, the three stroke seams and the
   // fade seam all apply exactly as they do to any other widget, and every backend
   // — Skia, PDF, SVG and the bare-node CLI — already paints `path`.
+  // THE NAMED-VISIBILITY STATE, resolved BEFORE emit() and used for every seam
+  // below it (core/interp_modes.js `~visibleFx`). A `blurFade` node's DEFOCUS
+  // rides the widget's own `gaussianBlur` effect leaf, and it has to be in the
+  // state the PLUGIN sees, not only the state the walker sees: 34 plugins call
+  // applyEffects inside their own emit() and the registry injects it for the
+  // rest, so composing later would reach the injected half only — a widget whose
+  // plugin effects itself would fade without ever defocusing, with no error.
+  // Returns `node.state` BY IDENTITY for every other node, which is what keeps
+  // the evaluation memo alive and this line free everywhere else.
+  const fxState = blurFadeState(node.state);
+  const fxNode = fxState === node.state ? node : { ...node, state: fxState };
   const cmds = resolveMaterialFillPaints(
-    node.morph ? morphIR(node) : node.plugin.emit(node.state, subtreeIR ?? targetWorldIR, emitWorld, renderCtx),
+    node.morph ? morphIR(node) : node.plugin.emit(fxState, subtreeIR ?? targetWorldIR, emitWorld, renderCtx),
     node, byId,
   );
   if (cmds.length === 0) return [];
@@ -521,7 +535,13 @@ function emitNodeBody(node, byId, display) {
   // opacity. A boolean `active` (every document that does not use the mode, and
   // both endpoints of every one that does) returns `body` UNTOUCHED and
   // byte-identically, so this line adds nothing to any existing picture.
-  const body = applyActiveFade(node.state, applyStrokeJoin(node.state, applyStrokeOffset(node.state, applyStrokeTrim(node.state, applyNodeEffects(node, cmds)))));
+  // THE NAMED-VISIBILITY INK, the other half of the seam `fxState` opened above:
+  // a `manim` node's ops are its half-traced OUTLINE rather than its own emit()
+  // (manimIR). Every seam below is untouched — a half-drawn widget's effects,
+  // stroke trim, join and fade all apply exactly as they do to any other, because
+  // what manimIR emits is ordinary `path` ops.
+  const inked = manimIR(node, cmds);
+  const body = applyActiveFade(fxState, applyStrokeJoin(fxState, applyStrokeOffset(fxState, applyStrokeTrim(fxState, applyNodeEffects(fxNode, inked)))));
   // THE OWNER TAG — this node's identity, hung on the ONE push that opens its op
   // run, so the PAINT-TIME boundary can name the item it had to contain
   // (render_gpu/skia/paint_skia.js paintFlat; flattenIR carries the tag down onto
@@ -849,6 +869,12 @@ export function ownerTag(node) {
  */
 export function applyActiveFade(state, cmds) {
   const a = state?.active;
+  // A NAMED VISIBILITY MODE (core/interp_modes.js `~visibleFx`) carries its
+  // coverage in the token's `v`, and the opacity half of EVERY such mode is this
+  // same multiplication — blurFade and Manim both fade, they just each do
+  // something else as well. Reading the level through `visibleLevel` is what
+  // keeps that one composition in one place instead of each mode re-deriving it.
+  if (isVisibleFxToken(a)) return scaledOpacity(cmds, visibleLevel(a));
   if (typeof a !== "number") return cmds; // boolean or absent: not a fade
   return scaledOpacity(cmds, Math.max(0, Math.min(1, a)));
 }
@@ -890,4 +916,193 @@ function scaledOpacity(cmds, k) {
  */
 function opDrawsInk(cmd) {
   return cmd.op !== "pushTransform" && cmd.op !== "popTransform";
+}
+
+// ── THE NAMED VISIBILITY MODES' RENDER HALF (WORKSTREAMS FF2 + JJ) ───────────
+//
+// core/interp_modes.js folds a `blurFade`/`manim` `visible` leaf to a token
+// carrying a mode name and a coverage (`~visibleFx`). This is where that
+// sentence becomes pixels — beside applyActiveFade above, because the OPACITY
+// half of both modes IS that function and only the other half differs.
+
+/**
+ * THE BLUR-FADE DEFOCUS, in canvas units — how blurred a `blurFade` widget is at
+ * v = 0, before it sharpens into focus.
+ *
+ * It is a MODE CONSTANT and not a knob, for the reason core/manim_draw.js's
+ * phase split is not one: the mode is a named gesture ("into focus"), and an
+ * author who wants a different amount of blur has the `gaussianBlur` effect row
+ * itself — which this ADDS to rather than replaces.
+ *
+ * THE VALUE IS SIZED AGAINST THE THING IT MUST BEAT. A defocus reads as a
+ * defocus only when the smear is wide enough to destroy the widget's edges, and
+ * a Gaussian's visible reach is BLUR_SUPPORT_SIGMAS·σ each side (the shared
+ * ir.js constant every other blurred effect here is bounded by). At σ = 24 that
+ * is a ±72-unit smear, which dissolves a typical slide widget's outline
+ * completely at v = 0 — the "out of focus" the user asked for — while staying a
+ * radius the existing effect machinery treats as ordinary rather than extreme
+ * (the bloom presets in plugins/group.js reach radius 34 on the same primitive).
+ */
+export const BLUR_FADE_MAX_RADIUS = 24;
+
+/**
+ * Pure function. THE BLUR-FADE COMPOSITION — a `blurFade` node's state with the
+ * mode's defocus composed into its `gaussianBlur` effect leaf. Returns the VERY
+ * SAME state object for every other node.
+ *
+ * ── WHY THE STATE AND NOT THE OPS (the seam choice) ──────────────────────────
+ * The user's second message IS the design (2026-08-02: "BUT for that blur fade
+ * thing we first need to have a 'blur' effect (accessible in the effects area of
+ * all the widgets)") — this mode RIDES the universal blur rather than inventing
+ * one, and the universal blur is a STATE KEY: render_gpu/effects.js applyEffects
+ * reads `state.gaussianBlur` and folds the whole bundle into ONE effectSubtree.
+ * So the composition point is the state, one step before the effects seam — and
+ * the state is also the ONLY point that reaches both halves of the effects
+ * architecture (34 plugins call applyEffects inside their own emit(); the
+ * registry injects it for the rest). Composing the OPS would reach the injected
+ * half alone, and a self-effecting widget would fade without ever defocusing,
+ * with no error at all. That is why emitNodeBody resolves this BEFORE emit().
+ *
+ * ── WHY IT ADDS RATHER THAN REPLACES ─────────────────────────────────────────
+ * A widget may already carry a blur its author set. Overwriting it would make
+ * the transition END somewhere other than the widget's own settled look; adding
+ * means that at v = 1 the widget lands on EXACTLY its authored blur, whatever
+ * that is. Adding is also what makes the mode compose with the effect instead of
+ * fighting it, which is the whole point of riding an existing one.
+ *
+ * ── THE CURVE, AND THE EXACT ENDPOINT ────────────────────────────────────────
+ *     added = BLUR_FADE_MAX_RADIUS · (1 − v)
+ * Linear in the coverage, so the picture sharpens at the same rate it solidifies
+ * and the two read as one gesture rather than two effects racing. At v = 1 the
+ * added radius is 0 and the state comes back BY IDENTITY, so the endpoint is
+ * byte-identical to the same widget with no mode at all — the endpoint law,
+ * enforced here rather than trusted to floating-point arithmetic.
+ *
+ * @param {object} state - the node's evaluated state
+ * @returns {object} the state itself, or a copy with a raised `gaussianBlur`
+ *
+ * @example blurFadeState({active: true}).gaussianBlur // undefined (not a blurFade — the same object back)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "manim", v: 0.5}}).gaussianBlur // undefined (a different named mode adds no blur)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 0.5}}).gaussianBlur // 12 (half the defocus, at half coverage)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 0.5}, gaussianBlur: 4}).gaussianBlur // 16 (ADDED to the author's own 4, never replacing it)
+ * @example blurFadeState({active: {type: "~visibleFx", mode: "blurFade", v: 1}}).gaussianBlur // undefined (v = 1 adds nothing — the endpoint is exact)
+ * @example (() => { const s = {active: true}; return blurFadeState(s) === s; })() // true (identity for every other node)
+ */
+export function blurFadeState(state) {
+  const a = state?.active;
+  if (!isVisibleFxToken(a) || a.mode !== "blurFade") return state;
+  const added = BLUR_FADE_MAX_RADIUS * (1 - visibleLevel(a));
+  if (added <= 0) return state;
+  return { ...state, gaussianBlur: (state.gaussianBlur ?? 0) + added };
+}
+
+/**
+ * Near-pure function (reportOnce logs the outline-less fallback). THE MANIM
+ * DRAW-IN EMIT — a `manim`-moded node's ops mid-transition: its outline traced
+ * partway as a SKETCH STROKE, with its real ink faded up underneath once the
+ * trace completes. Returns `cmds` UNTOUCHED for every other node.
+ *
+ * ── THE MAPPING AS SHIPPED ───────────────────────────────────────────────────
+ * core/manim_draw.js owns the law (phase split at v = 0.5, arc-length trim,
+ * per-subpath stagger, double_smooth) and this owns its translation into ops.
+ * Per subpath of the widget's `morphPaths` payload — the same currency every
+ * vector widget here already speaks — the plan's `trims[i]` becomes a partial
+ * path drawn with the sketch stroke and NO fill; the plan's `fillAlpha` becomes
+ * the opacity of the widget's OWN emit() output, drawn underneath. Both are
+ * present through phase 1, which is what makes the sketch hand off to the real
+ * ink continuously instead of popping: the sketch fades out (`sketchWeight`) as
+ * the fill rises, exactly as Manim's `interpolate_color` ramps stroke and fill
+ * together over one sub-alpha (research §2.2).
+ *
+ * ── THE OUTLINE-LESS FALLBACK IS AUTOMATIC AND REPORTED ──────────────────────
+ * A widget with no `morphPaths` (a photo, a video, a map) has no border to
+ * trace. It takes a PLAIN FADE — which it already has, because applyActiveFade
+ * reads the token's coverage for every named mode — so this function simply
+ * returns `cmds` and the picture is a fade. It is REPORTED once, naming the
+ * item and its type: the author asked for a specific animation and did not get
+ * it, the same rule core/derive.js applies to a refused morph. It NEVER throws.
+ *
+ * ── WHY THE REAL INK IS DRAWN AND NOT REBUILT FROM THE PAYLOAD ───────────────
+ * A `morphPaths` payload is an OUTLINE, not a picture: it carries no material,
+ * no gradient mapping, no image, no per-glyph text layout. Fading the widget's
+ * own emit() is what makes "then the inside is filled" fill with the widget's
+ * ACTUAL fill — a CRT shader, a linear gradient, a photograph — rather than a
+ * flat approximation of it. The payload is used for the one thing it IS: the
+ * path the pen follows.
+ *
+ * ── REVERSAL NEEDS NO CODE HERE ──────────────────────────────────────────────
+ * `v` decreasing runs this identical function with a smaller number, so the fill
+ * fades out first and the border un-traces below 0.5 — the same phase boundary
+ * crossed the other way, which is precisely how Manim's own Unwrite/Uncreate
+ * work (research §8.2). There is deliberately no direction flag to find here.
+ *
+ * @param {object} node - a derive render node
+ * @param {object[]} cmds - the node's own emitted ops
+ * @returns {object[]} the ops, or the sketch-plus-fill composition
+ *
+ * @example manimIR({state: {active: true}}, [{op: "rect"}]) // [{op: "rect"}] (not a manim node — the same array)
+ * @example manimIR({state: {active: {type: "~visibleFx", mode: "blurFade", v: 0.5}}}, [{op: "rect"}]) // [{op: "rect"}] (a different named mode)
+ * @example // at v = 0.3 the outline is partly traced and NOTHING is filled — every op is a sketch path:
+ * @example manimIR({itemId: "a", type: "rect", plugin: {morphPaths: () => ({space: {w: 10, h: 10}, fillRule: "nonzero", subpaths: [{start: [0, 0], curves: [[3, 0, 7, 0, 10, 0]], closed: false, winding: 1, paint: {fill: "#f00", strokeWidth: 0}}]})}, state: {active: {type: "~visibleFx", mode: "manim", v: 0.3}, w: 10, h: 10, fill: "#f00"}}, [{op: "rect"}]).every((c) => c.op === "path") // true
+ */
+export function manimIR(node, cmds) {
+  const a = node.state?.active;
+  if (!isVisibleFxToken(a) || a.mode !== "manim") return cmds;
+  if (typeof node.plugin?.morphPaths !== "function") {
+    // NO OUTLINE, NO TRACE — the fade fallback, named once. A mode the author
+    // picked and did not get must not be silent (core/derive.js's refused morph
+    // makes the identical promise). `morphNotReady` is deliberately NOT consulted
+    // here: an icon still fetching has an outline COMING, and reporting a
+    // permanent degradation for a transient wait would be the wrong sentence —
+    // the empty-payload guard below covers that frame instead.
+    reportOnce(
+      `ports:manim:${node.itemId}:${node.type}`,
+      `PowerRP: item "${node.itemId}" (${node.type}) has its Visible interp set to "Manim", but a ${node.type} has no outline to draw, so it fades in instead. Manim mode draws vector widgets — shapes, icons, equations, arrows.`,
+    );
+    return cmds;
+  }
+  const payload = node.plugin.morphPaths(node.state);
+  const subpaths = payload?.subpaths ?? [];
+  // AN EMPTY PAYLOAD IS A WAIT, NOT A REFUSAL — an icon mid-fetch, an equation
+  // mid-typeset. The plain fade is the right frame for it and the next frame
+  // will have the outline, so this is silent by design where the branch above is
+  // loud: nothing is permanently degraded.
+  if (!subpaths.length) return cmds;
+  const plan = manimDrawPlan(visibleLevel(a), subpaths.length);
+  // THE BOX. The payload lives in its own `space` and the node draws in its own
+  // box, so the sketch is scaled by the ratio — 1 for every provider that
+  // measured itself against the widget box, which is the overwhelming majority.
+  // This is morphIR's unit mapping without its double-counting trap: there is
+  // only ONE payload here and it is already in this widget's own space, so there
+  // is no second tween of the box to accidentally count twice.
+  const sx = (node.state.w ?? payload.space?.w ?? 1) / (payload.space?.w || 1);
+  const sy = (node.state.h ?? payload.space?.h ?? 1) / (payload.space?.h || 1);
+  const fill = plan.fillAlpha > 0 ? scaledOpacity(cmds, plan.fillAlpha) : [];
+  const sketch = subpaths.flatMap((sp, i) => {
+    const trimmed = trimSubpathByLength(sp, plan.trims[i]);
+    if (!trimmed) return [];
+    const d = payloadToPathD({ ...payload, subpaths: [scaledSubpath(trimmed, sx, sy)] });
+    if (!d) return [];
+    // THE THREE-TIER SKETCH COLOUR (research §2.1), over the subpath's own paint
+    // when it has one — an SVG icon's contours genuinely differ — and the
+    // widget's otherwise. A NON-STRING answer is DROPPED rather than passed on:
+    // tier 3 can land on a material or a gradient, which is a whole shader and
+    // not a line colour, and `stroke` takes a colour. Manim has no analogue to
+    // consult (its fill is always a colour array — §5.3 names this as a real
+    // domain gap), so the honest answer is to skip the sketch for that contour
+    // and let the widget's own fill ramp tell the story, which it already does.
+    const color = sketchStrokeColor(sp.paint ?? statePaint(node.state));
+    if (typeof color !== "string") return [];
+    return [path({
+      d,
+      fill: null, // "fill is forced to 0 during phase 0" (§2.1) — and it stays off here, because the REAL fill is the layer below
+      stroke: color,
+      strokeWidth: MANIM_SKETCH_STROKE_WIDTH,
+      fillRule: payload.fillRule,
+      opacity: plan.sketchWeight,
+    })];
+  });
+  // THE FILL GOES UNDER. The sketch stroke is what the eye follows, so it must
+  // not be buried by the ink rising behind it.
+  return [...fill, ...sketch];
 }
