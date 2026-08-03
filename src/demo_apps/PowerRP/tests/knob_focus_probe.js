@@ -357,7 +357,30 @@ try {
   await settle();
   const reEntered = await modeNow();
   ok(reEntered?.handlerId === "knob_focus", `the exit check has a mode to leave (got ${JSON.stringify(reEntered)})`);
-  const away = await worldToPage(1100, 700);
+  // THE POINT IS CHOSEN INSIDE THE OVERLAY'S OWN RECT, not at a world coordinate
+  // guessed to be "far away", and that is the second stale-premise fix in this
+  // section. A fixed world point (1100, 700) mapped to page x=1330 while the
+  // overlay ends at x=1123 — so the click landed OUTSIDE the canvas, the mode was
+  // never asked to exit, and the check reported a PowerRP defect that was really
+  // the probe missing the element. It only ever "passed" because earlier gestures
+  // happened to leave the view panned somewhere that made the guess land inside.
+  // Asking the element where its own empty corner is cannot drift that way.
+  const away = await page.evaluate((id) => {
+    const r = document.querySelector(".overlay").getBoundingClientRect();
+    const app = window.__powerrp_app;
+    // A world point well clear of the node, expressed back in page coordinates,
+    // then CLAMPED into the overlay — empty canvas that is certainly hittable.
+    const n = app.nodes().find((x) => x.itemId === id);
+    const far = app.canvasActions.worldToScreen(n.state.x - 260, n.state.y - 180);
+    return {
+      x: Math.min(Math.max(r.left + far.x, r.left + 8), r.right - 8),
+      y: Math.min(Math.max(r.top + far.y, r.top + 8), r.bottom - 8),
+    };
+  }, filter);
+  ok(await page.evaluate(({ x, y }) => {
+    const r = document.querySelector(".overlay").getBoundingClientRect();
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  }, away), "the exit click lands INSIDE the canvas overlay (the premise of the check below)");
   await page.mouse.click(away.x, away.y);
   await settle();
   ok((await modeNow()) === null, "clicking empty canvas left knob focus");
