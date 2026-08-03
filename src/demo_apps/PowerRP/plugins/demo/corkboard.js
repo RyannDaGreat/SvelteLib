@@ -32,6 +32,7 @@
 
 import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
+import { morphPayloadFromConnector } from "../../core/morph_payload.js";
 import { closestPointOnRoundedRect } from "../../core/outline.js";
 import * as T from "../../core/transform.js";
 import { bundle, customProps, defaults, props } from "../../core/properties.js";
@@ -123,7 +124,7 @@ function makeMaterialWidget(cfg) {
       ...cfg.custom.defaults, // the look knobs (self.*)
     },
     inspector: [
-      ...bundle("positioning"),
+      ...bundle("transform"),
       ...props("opacity"),
       ...cfg.custom.rows, // the look knobs (Inspector "Custom" region)
     ],
@@ -392,6 +393,44 @@ const corkboardYarnPlugin = {
       path({ d: d(0, 0), stroke: s.color ?? "rgb(200,30,30)", strokeWidth: width, opacity }),
       path({ d: d(0, -width * YARN_HL_LIFT_FRAC), stroke: lightenCss(s.color ?? "rgb(200,30,30)", YARN_HL_LIGHTEN, YARN_HL_ALPHA), strokeWidth: width * YARN_HL_WIDTH_FRAC, opacity }),
     ];
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the cord's CENTERLINE as ONE OPEN subpath, in its ink rect's frame — the
+   * connector route (core/morph_payload.js `morphPayloadFromConnector`), because
+   * this widget is boxless with ABSOLUTE endpoints exactly like the arrow family.
+   *
+   * THE CORD ONLY, not the shadow or the highlight. emit() draws three copies of
+   * the SAME curve at three offsets — a blurred dark one behind and a paler thin
+   * one lifted toward the light — and those two are LIGHTING, not shape: they
+   * exist to make one cord read as round. Handing the aligner three near-identical
+   * contours would pair a target's outline against a shadow, and the two extra
+   * copies move with `lightAngle`, so the payload's structure would depend on a
+   * lighting knob rather than on the widget's identity. The same argument
+   * plugins/line.js makes for leaving its dashes out.
+   *
+   * ITS OWN QUADRATIC, not a resampling of it: the gravity curve is one `Q`, and
+   * `pathDToSubpaths` elevates a quadratic to a cubic EXACTLY, so the payload is
+   * the catenary the widget draws rather than an approximation of it.
+   */
+  morphPaths(s) {
+    const { from, to } = s;
+    const span = Math.hypot(to.x - from.x, to.y - from.y);
+    const mx = (from.x + to.x) / 2, my = (from.y + to.y) / 2;
+    const cy = my + 2 * (s.gravity ?? 0) * span; // emit()'s own control point
+    const width = s.width ?? ARROW_STROKE_WIDTH;
+    return morphPayloadFromConnector(
+      [{
+        d: `M ${from.x} ${from.y} Q ${mx} ${cy} ${to.x} ${to.y}`,
+        paint: { fill: null, stroke: s.color ?? "rgb(200,30,30)", strokeWidth: width, opacity: s.opacity ?? 1 },
+      }],
+      yarnInkRect(s),
+    );
+  },
+  /** Pure function. Why this yarn cannot morph YET, or null — a zero-length cord
+   * has no run between its endpoints, so there is nothing to pair. */
+  morphNotReady(s) {
+    return Math.hypot(s.to.x - s.from.x, s.to.y - s.from.y) > 0 ? null : "two distinct endpoints (this cord has zero length)";
   },
   // EFFECT BOUNDS (the hook core/registry.effectsInjectable looks for): the yarn
   // has no bbox, so without this the registry cannot give it the shared effects

@@ -80,6 +80,8 @@ import {
   bundle, bundleNestedDefaults, defaults, props,
   STROKE_JOIN_KEYS, STROKE_OFFSET_KEYS, STROKE_TRIM_KEYS,
 } from "../core/properties.js";
+import { morphPayloadFromPaths, statePaint } from "../core/morph_payload.js";
+import { ellipsePathD } from "../core/svg_paths.js";
 import * as T from "../core/transform.js";
 import { ellipse, text } from "../render_gpu/ir.js";
 import { DEFAULT_FONT, fontOptions } from "../render_gpu/fonts.js";
@@ -174,7 +176,7 @@ export const labeledCirclePlugin = {
     ...bundleNestedDefaults("effects"),
   },
   inspector: [
-    ...bundle("positioning"),
+    ...bundle("transform"),
     // THE LABEL. `text` is spelled exactly as plugins/plaintext.js spells it, so a
     // retype between the two carries the string across (core/retype.js).
     { key: "text", label: "Text", kind: "text", category: "text", help: "The label drawn in the middle of the circle — a number, a letter, a word. Start with '=' to bind it to an equation." },
@@ -233,6 +235,36 @@ export const labeledCirclePlugin = {
         boxStyle: { align: s.align ?? "center", valign: s.valign ?? "middle" },
       }));
     return applyEffects(ops, s, world, { x: 0, y: 0, w, h });
+  },
+  /**
+   * Pure function. THE MORPH OUTLINE (core/registry.js's `morphPaths` protocol):
+   * the DISC as cubic contours, from `ellipsePathD` — the same four-arc kappa
+   * circle plugins/circle.js hands over, and the same figure this widget's own
+   * `ellipse` op paints and its `hitTest` accepts.
+   *
+   * THE LABEL IS NOT IN THE PAYLOAD, and this widget is the clearest case of the
+   * line: it is a disc PLUS a text run, drawn as two ops, and text becomes
+   * morphable through the glyph-outline seam (core/glyph_outlines.js) rather than
+   * by a plugin inventing letterforms. So the disc flows and the numeral steps,
+   * which is the same reading a mermaid label and a graph tick label get. When
+   * the seam is reachable from a general provider the label can join with no
+   * other change here.
+   *
+   * THE DISC ALONE IS STILL THE WIDGET'S SHAPE — an empty label emits no text op
+   * at all (see emit()), so for the unlabelled case this payload is the ENTIRE
+   * ink, not a part of it.
+   */
+  morphPaths(s) {
+    const w = s.w ?? 0, h = s.h ?? 0;
+    return morphPayloadFromPaths(
+      [{ d: ellipsePathD(w / 2, h / 2, w / 2, h / 2), paint: statePaint(s) }],
+      { w, h },
+    );
+  },
+  /** Pure function. Why this widget cannot morph YET, or null — emit()'s own
+   * threshold: a zero-size disc has no outline to pair. */
+  morphNotReady(s) {
+    return (s.w ?? 0) > 0 && (s.h ?? 0) > 0 ? null : "a disc with extent (this one has zero size)";
   },
   // Effects halo (shadow/bloom spill) extends the cull AABB (core/view.js hook).
   cullMargin: effectsCullMargin,
