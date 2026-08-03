@@ -435,6 +435,18 @@
         // Build the declared roster up front, all rows pending.
         for (var i = 0; i < STAGES.length; i++) rowFor(STAGES[i].id, STAGES[i].label);
 
+        // THE FIRST ROW STARTS NOW, FROM THIS SCRIPT — not from the bundle.
+        // stage("bundle")'s only other caller is main.js, which IS the bundle:
+        // waiting for it means the whole fetch+parse of the app code (the
+        // ~13s Fast-3G wall) shows an all-pending roster, which on a slow link
+        // reads as a hang — measured on the deployed site, 2026-08-02, where
+        // it sat dim long enough to be reported as "stuck here forever". This
+        // script executing is itself the proof that boot has begun and the
+        // module fetch is in flight, so it is the honest reporter: the row
+        // goes active with a live clock at t≈0, and main.js's first line
+        // marks it done.
+        setState(rows.bundle, "active");
+
         /** Command. Repaints the elapsed clock on every row that is RUNNING and
          *  has no measurable progress. This is the honest answer to "compile has
          *  no progress events": a name plus a clock that is visibly moving. A row
