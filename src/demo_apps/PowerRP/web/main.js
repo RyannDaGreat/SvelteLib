@@ -154,6 +154,17 @@ import { rasterizeIrPng } from "./gpuService.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 import { videoUploadCount, videoPlaybackState, videoStatus } from "../render_gpu/gpu/video_registry.js";
 import { videoV5UploadCount, videoV5State, videoV5ScrubState } from "../render_gpu/skia/video_v5.js";
+import { nodePortAnchors } from "../core/derive.js";
+
+// NODE-FLOW diagnostic: a derived node's PORT BEAD positions in WORLD space — the
+// one geometry the painter, the hit test and the wire layer all read
+// (core/derive.nodePortAnchors). Exposed for the same reason __powerrp_videoStatus
+// is: a probe cannot ask the DOM this question. The beads are painted INTO THE SKIA
+// CANVAS, not into the SVG overlay, so `document.querySelector` finds nothing no
+// matter how correctly they are drawn — and a probe that recomputed the positions
+// itself could pass while the app's own hit test and painter disagreed, which is
+// precisely the bug worth catching. Zero prod effect.
+window.__powerrp_nodePortAnchors = nodePortAnchors;
 
 // Dev/test seams (like __powerrp_render / __powerrp_app): the running total of
 // <video>→GPU-texture uploads (probe confirms the frame-advance gate keeps uploads
