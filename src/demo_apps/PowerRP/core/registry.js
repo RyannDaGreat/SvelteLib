@@ -1259,18 +1259,28 @@ export const TOOL_POOL = [
     ],
   },
   {
-    id: "edit",
-    // A TOOLS-ONLY group: the operations on the ITEM ITSELF rather than on any of
-    // its properties — put it on the clipboard, make another, stop it appearing,
-    // remove it outright, open its source. The classic Edit menu, and the reason
-    // it is not split into "Clipboard" and "Visibility" is that Duplicate belongs
-    // to neither and the user asked for these by name in one breath ("if there's
-    // anything that I can do — like duplicate or delete or something").
-    title: "Edit",
-    // NON-DESTRUCTIVE FIRST, PURGE LAST — the Keyframes group's rule, for the same
-    // reason: the irreversible one must not be the first thing a hand reaches for.
+    id: "clipboard",
+    // A TOOLS-ONLY group, SPLIT OUT OF Edit (user, verbatim: "I think clipboard
+    // can be its own section for the tools panel. It would make things more
+    // collapsible."). Everything that puts something on a clipboard or takes it
+    // off — the widget itself, or one stated slice of what it looks like — lives
+    // here; Duplicate stays in Edit because it never touches a clipboard, it
+    // clones locally in one step (see that group's own comment).
+    title: "Clipboard",
+    // WHOLE-STATE PAIR FIRST (copy, paste), THEN THE SUBSETS — the broadest verbs
+    // read top-down before the narrower ones, same ordering argument the Copy
+    // Properties family used when it was still filed under Edit.
     rows: [
       { kind: "command", command: "copy-item", applies: everyWidget },
+      // PASTE HAS NO `when`/`requires` AT ALL — it is the one row in this pool
+      // that runs with nothing selected (it inserts a NEW widget) and reports an
+      // empty clipboard itself rather than graying out (web/app.svelte.js's
+      // pasteClipboard, ~L3818: "nothing anywhere → pasteClipboard() reports the
+      // empty clipboard"). `applies: everyWidget` still gates it correctly: no row
+      // renders with nothing selected at all (ToolsPane has no plugin to hang it
+      // on), and once ANY widget is selected the row appears and is always
+      // clickable, exactly like the Toolbar's own Paste button.
+      { kind: "command", command: "paste", applies: everyWidget },
       // THE COPY-PROPERTIES FAMILY, beside Copy for the reason the toolbar puts
       // them there: same clipboard, same Paste, different unit — copy the widget,
       // or copy what the widget LOOKS like (whole, or one stated part of it).
@@ -1285,14 +1295,34 @@ export const TOOL_POOL = [
       // written (position before size) — the pane's rows are read top-down, and
       // the broadest verb is the one most hands want.
       { kind: "command", command: "copy-properties", applies: everyWidget },
+      { kind: "command", command: "paste-properties", applies: everyWidget },
       { kind: "command", command: "copy-box", applies: boxed },
       { kind: "command", command: "copy-position", applies: boxed },
       { kind: "command", command: "copy-dimensions", applies: boxed },
+    ],
+  },
+  {
+    id: "edit",
+    // A TOOLS-ONLY group: the operations on the ITEM ITSELF rather than on any of
+    // its properties — make another, stop it appearing, remove it outright, open
+    // its source. Used to also hold the clipboard family; that split into its own
+    // Clipboard group above (user, verbatim: "I think clipboard can be its own
+    // section for the tools panel. It would make things more collapsible.").
+    // Duplicate stays here rather than moving with it: it never touches a
+    // clipboard, it clones locally in one step, and the user asked for these by
+    // name in one breath ("if there's anything that I can do — like duplicate or
+    // delete or something").
+    title: "Edit",
+    // NON-DESTRUCTIVE FIRST, PURGE LAST — the Keyframes group's rule, for the same
+    // reason: the irreversible one must not be the first thing a hand reaches for.
+    rows: [
       { kind: "command", command: "duplicate", applies: purgeableWidget },
       { kind: "command", command: "duplicate-in-place", applies: purgeableWidget },
       // The two capture-to-clipboard exports need something with a BOX to capture;
       // the blur layer has no bounds of its own, which is the same fact hasFrame
-      // reads for the camera-bind pair.
+      // reads for the camera-bind pair. They stay in Edit, not Clipboard: their
+      // clipboard is the SYSTEM one (for pasting a picture into another app), not
+      // this app's item/property clipboard the rest of the new group manages.
       { kind: "command", command: "copy-as-png", applies: hasFrame },
       { kind: "command", command: "copy-as-pdf", applies: hasFrame },
       { kind: "command", command: "edit-code-source", applies: codeEditable },
