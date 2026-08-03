@@ -1505,6 +1505,42 @@ export const PROPS = {
   cropRight: { label: "Crop right", kind: "number", min: 0, category: "formatting", default: 0, help: "Trims this many canvas units off the RIGHT of the source media (a crop, not a squash) — the rest keeps its scale." },
   cropBottom: { label: "Crop bottom", kind: "number", min: 0, category: "formatting", default: 0, help: "Trims this many canvas units off the BOTTOM of the source media (a crop, not a squash) — the rest keeps its scale." },
 
+  // ── formatting: RASTER DENSITY (the shared "how crisp is this raster" knob) ──
+  // User, 2026-08-02: "why no control over DPI in pdf packet and paper peacock?"
+  // Both widgets computed their raster resolution ENTIRELY automatically —
+  // `(world.scale ?? 1) * SUPERSAMPLE_DENSITY` — with no way to ask for more (a
+  // fan of sheets printed at poster size) or less (a deck of many packets whose
+  // rasters are eating the budget). This row is that control, defined ONCE so the
+  // two widgets cannot drift apart on what "density" means.
+  //
+  // ── IT MULTIPLIES, IT IS NOT AN ABSOLUTE DPI, AND THE CACHE KEY IS WHY ───────
+  // The number that reaches render_gpu/gpu/pdf_page_raster.js is a pdfjs `scale`:
+  // DEVICE PX PER PDF POINT. Both widgets derive it as
+  // (the local px the page spans · density) / (the PDF points it spans), so the
+  // scale ALREADY carries the widget's size and the camera's zoom, and the cache
+  // key `pdfpage:<src>:<page>:<roundPdfScale(scale)>` is keyed on exactly that
+  // resolved figure. An ABSOLUTE DPI would have to overwrite that composition
+  // — it would mean "ignore how big this is on screen and how far you are zoomed
+  // in" — which is a DIFFERENT feature (plugins/pdf_page.js's `renderMode:
+  // "raster"` + rasterWidth/rasterHeight/rasterDPI is that feature, and it is
+  // deliberately a fixed-size CACHED mode, not a density tweak). A multiplier
+  // COMPOSES with zoom instead of fighting it: 2 means "twice the pixels you
+  // would have picked", at every size and every zoom, which is the thing an
+  // author actually wants when a fanned sheet looks soft.
+  //
+  // DEFAULT 1 IS EXACTLY TODAY'S BEHAVIOUR, and that is the point: an absent
+  // value multiplies by 1, so the computed scale, the rounded scale, the cache
+  // key and the pixels are all byte-identical for every document written before
+  // this row existed (the absent-is-legacy precedent).
+  //
+  // NO UPPER CAP on the row: pdf_page_raster caps the ACTUAL allocation itself
+  // (rasterFitFactor against PDF_MAX_RASTER_DIM) and reports loudly when it bites,
+  // so an ambitious number degrades to "as crisp as the heap allows, and it said
+  // so" rather than being silently clamped at the Inspector. `min` IS declared:
+  // a zero or negative density has no meaning (roundPdfScale would floor it to
+  // the step anyway, which would be a silent lie about what was asked for).
+  rasterDensity: { label: "Raster density", kind: "number", min: 0.1, step: 0.1, category: "formatting", default: 1, help: "Multiplies how many pixels each PDF page is rasterized at. 1 (the default) is the automatic choice, which already accounts for the widget's size and your zoom level; 2 renders twice as densely for a crisper page when it is printed or exported large; 0.5 halves it to save memory in a deck with many pages. Very high values are capped to what fits in memory, and the console says when that happens." },
+
   // ── effects: the EFFECTS BUNDLE (manifest Round 12D — shadow/bloom/blend) ────
   // ONE substrate, three effects, every drawn widget (render half:
   // render_gpu/effects.js applyEffects — the module header there records which

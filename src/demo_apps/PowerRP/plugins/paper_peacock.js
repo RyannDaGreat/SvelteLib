@@ -450,7 +450,7 @@ export const paperPeacockPlugin = {
     shadowOpacity: 0.5, // reference: black at 50%
     shadowDx: 0.2, // shadow x-offset as a fraction of the blur (reference: 0.2·blur)
     shadowDy: 0.2, // shadow y-offset as a fraction of the blur
-    ...defaults("opacity"), // opacity:1
+    ...defaults("rasterDensity", "opacity"), // rasterDensity:1 (= today's automatic density), opacity:1
     ...bundleNestedDefaults("effects"), // shadow/bloom/blendMode, all EFFECT-OFF
   },
   inspector: [
@@ -468,6 +468,7 @@ export const paperPeacockPlugin = {
     { key: "shadowOpacity", label: "Sheet shadow opacity", kind: "number", min: 0, max: 1, category: "formatting", help: "Each sheet's drop-shadow darkness, 0 (none) to 1 (solid black)." },
     { key: "shadowDx", label: "Sheet shadow offset X", kind: "number", category: "formatting", help: "The shadow's horizontal offset, as a fraction of the blur radius (positive = right)." },
     { key: "shadowDy", label: "Sheet shadow offset Y", kind: "number", category: "formatting", help: "The shadow's vertical offset, as a fraction of the blur radius (positive = down)." },
+    ...props("rasterDensity"),
     ...props("opacity"),
     ...bundle("effects"),
   ],
@@ -502,7 +503,12 @@ export const paperPeacockPlugin = {
     const opacity = s.opacity ?? 1;
     const blur = (s.shadowBlur ?? 0) * L.pageW;
     const shadowOpacity = (s.shadowOpacity ?? 0) * opacity;
-    const density = (world?.scale ?? 1) * PEACOCK_RASTER_DENSITY; // device px per world unit — the pdf_page precedent
+    // Device px per world unit — the pdf_page precedent, times the author's own
+    // `rasterDensity` multiplier (core/properties.js has the full reasoning for
+    // why it multiplies rather than naming an absolute DPI). Absent ⇒ 1 ⇒ the
+    // computed scale, its rounded cache key and the pixels are byte-identical to
+    // before this knob existed.
+    const density = (world?.scale ?? 1) * PEACOCK_RASTER_DENSITY * (s.rasterDensity ?? 1);
     const ops = [];
     for (let i = count - 1; i >= 0; i--) { // deepest sheet first → page `first` on top
       ops.push(pushTransform(rotationAboutPivot(L.pivotX, L.pivotY, L.angles[i])));

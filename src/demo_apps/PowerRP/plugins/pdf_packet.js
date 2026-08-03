@@ -126,9 +126,12 @@ export function packetBounds(s) {
 
 /** Near-pure helper (kicks idempotent async rasters). The whole-page raster
  * ref for one 1-based page at this widget's world size — pdf_page's density
- * math, shared verbatim so both widgets cache-hit the same rasters. */
+ * math, shared verbatim so both widgets cache-hit the same rasters, times the
+ * author's own `rasterDensity` multiplier (core/properties.js has the full
+ * reasoning for why it multiplies rather than naming an absolute DPI). Absent
+ * ⇒ 1 ⇒ byte-identical to before this knob existed, cache key included. */
 function pageRasterRef(s, page, world) {
-  const density = (world?.scale ?? 1) * RASTER_DENSITY;
+  const density = (world?.scale ?? 1) * RASTER_DENSITY * (s.rasterDensity ?? 1);
   const point = pdfPagePointSize(s.src, page);
   ensurePdfPagePointSize(s.src, page);
   const scale = point && point.w > 0 ? (s.w * density) / point.w : density;
@@ -193,7 +196,7 @@ export const pdfPacketPlugin = {
     spreadRemaining: 1.2,
     paper: PAPER,
     shadowOpacity: 0.45,
-    ...defaults("opacity"),
+    ...defaults("rasterDensity", "opacity"), // rasterDensity:1 (= today's automatic density)
     ...bundleNestedDefaults("effects"),
   },
   inspector: [
@@ -217,6 +220,7 @@ export const pdfPacketPlugin = {
     { key: "stapleY", label: "Staple Y", kind: "number", min: 0, max: 1, step: 0.01, category: "formatting", help: "Staple position down the page height (fraction)." },
     { key: "paper", label: "Paper", kind: "color", category: "formatting", help: "The sheet color — the back of every turned page, and the stack edges." },
     { key: "shadowOpacity", label: "Page shadow", kind: "number", min: 0, max: 1, step: 0.05, category: "formatting", help: "Strength of the geometry-derived shadow the lifted sheet casts on the pile." },
+    ...props("rasterDensity"),
     ...props("opacity"),
     ...bundle("effects"),
   ],
