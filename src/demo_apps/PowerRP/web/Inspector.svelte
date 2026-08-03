@@ -61,6 +61,7 @@
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
   import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, rowSupportsInterp, codeRowLanguage } from "../core/properties.js";
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
+  import { MORPH_AUTO, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { MIXED_MARK, fanOutPairs } from "../core/multiselect.js";
   import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
@@ -1307,6 +1308,13 @@
               : "Hidden on this slide — click to show (keyframes active: true)",
             help: VISIBLE_ROW_HELP }]
         : []),
+      // THE UNIVERSAL MORPH ROW (user ruling, 2026-08-02 night: "maybe it should
+      // just be a morph universal property"). It sits under Universal for the
+      // same reason Visible does — it is a question about the WIDGET, not about
+      // any one of its properties — and it is what replaced the interp affordance
+      // the Widget type row above used to carry. core/properties.js declares it;
+      // this only places it, so the two cannot describe different options.
+      { ...PROPS[MORPH_KEY], key: MORPH_KEY, absentValue: MORPH_AUTO },
     ],
   });
 

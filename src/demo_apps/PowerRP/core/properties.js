@@ -66,6 +66,7 @@ import { checkListDeclaration, LIST_ROW_KIND } from "./lists.js";
 import { PERF_FAMILY_IDS, PERF_FAMILY_LABELS } from "./film.js";
 import { RAMP_SPACES, RAMP_SPACE_LABELS, DEFAULT_RAMP_SPACE, RAMP_PRESET_LIBRARIES, COLOR_RAMP_LIBRARY } from "./ramps.js";
 import { displayedDefaultModeFor, interpKeyFor, interpMode, interpModeLabels, isInterpKey, modesForKey } from "./interp_modes.js";
+import { MORPH_KEY, MORPH_MODES, MORPH_MODE_HELP, MORPH_MODE_LABELS } from "./morph_property.js";
 
 /**
  * Default scrub coefficient (seconds PER dragged pixel) for TIME-IN-SECONDS
@@ -1154,6 +1155,21 @@ export const PROPS = {
   // deliberately NO `default` — nothing composes `active` from a BUNDLES list, and
   // absent-means-visible must keep working for every existing document.
   active: { label: "Visible", kind: "boolean", category: "positioning", help: "Whether the item draws on this slide. Deleting keyframes this off rather than removing the item, so it can come back on a later slide; Purge removes it for good." },
+  // THE UNIVERSAL MORPH PROPERTY (core/morph_property.js is the authority on the
+  // design and carries the user ruling verbatim). Declared here, beside `active`,
+  // because it is the same KIND of thing: a universal per-widget property that
+  // core must be able to name a kind for, with deliberately NO `default` —
+  // absent means Auto and must keep meaning that for every existing document.
+  //
+  // It replaces the per-key `~interp` morph mode, which could only ever ask about
+  // the ONE leaf that changed and therefore could not reach an equation edit at
+  // all. This row asks about the widget's OUTLINE, so a retype, an icon swap, a
+  // re-typeset equation and a tooth-count change all travel through one control.
+  [MORPH_KEY]: {
+    label: "Morph", kind: "select", options: MORPH_MODES, optionLabels: MORPH_MODE_LABELS,
+    category: "positioning",
+    help: `How this widget's SHAPE crosses a transition when it changes — a different widget type, a new icon, an edited equation, a different number of teeth. ${MORPH_MODES.map((id) => `${MORPH_MODE_LABELS[id]} — ${MORPH_MODE_HELP[id]}`).join(" ")}`,
+  },
 
   // ── positioning (endpoint-pair — arrows) ────────────────────────────────────
   "from.x": { label: "From X", kind: "number", category: "positioning", help: "X of the arrow's tail (its start point). Drag the tail handle on canvas, or bind it to an anchor to make it follow another item." },

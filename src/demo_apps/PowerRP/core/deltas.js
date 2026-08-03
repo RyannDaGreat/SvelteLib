@@ -148,11 +148,6 @@ function mutBlendApply(state, delta, alpha) {
   // token carrying those two FIXED bags, so no later stage can re-derive an
   // alignment from a mid-tween value. Doing it at the leaf level was impossible
   // by construction: a leaf blend sees two VALUES and cannot reach the bag.
-  // Only the strictly-interior frames of a transition can carry a token. The
-  // alpha-1 arm is how the TO endpoint is computed (via `applied`), so minting
-  // there would recurse forever — and it must not mint anyway: alpha 1 IS the
-  // document's own stored values, per the endpoint law enforced below.
-  if (alpha < 1) mutMorphProperty(state, outgoing, delta, alpha);
   for (const [key, val] of Object.entries(delta)) {
     // THE MODE IS RESOLVED BEFORE THE BRANCH DISPATCH, not inside the leaf arm,
     // because A PAINT IS A TREE. `{type: "material", material: {…}}` and
@@ -237,6 +232,19 @@ function mutBlendApply(state, delta, alpha) {
       state[key] = copied(val);
     }
   }
+  // MINTED LAST, and the order is load-bearing. `morph` is an ordinary delta leaf
+  // like any other, so the loop above would happily write the delta's PLAIN MODE
+  // STRING ("crossfade") over a token minted before it — measured, not feared: a
+  // slide that sets the mode and retypes in one keyframe produced the mode string
+  // and no token at all, i.e. the author's own setting silently disabled the
+  // feature it was selecting. Running after the loop means the token always wins
+  // the leaf it owns.
+  //
+  // Only the strictly-interior frames of a transition can carry one. The alpha-1
+  // arm is how the TO endpoint is computed (via `applied`), so minting there would
+  // recurse forever — and it must not mint anyway: alpha 1 IS the document's own
+  // stored values, per the endpoint law enforced above.
+  if (alpha < 1) mutMorphProperty(state, outgoing, delta, alpha);
 }
 
 /**

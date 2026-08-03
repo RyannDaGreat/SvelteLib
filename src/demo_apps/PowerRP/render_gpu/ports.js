@@ -573,6 +573,10 @@ function emitNodeBody(node, byId, display) {
  */
 export function morphIR(node) {
   const { fromPlugin, toPlugin, fromState, toState, t } = node.morph;
+  // THE CROSSFADE ARM — a cross-render rather than a reshape. core/derive.js marks
+  // it when the universal Morph property says `crossfade`, and when `auto` meets a
+  // pair that cannot outline (a video, a photo, a PDF page). See crossfadeIR.
+  if (node.morph.crossfade) return crossfadeIR(node);
   const fromPayload = fromPlugin.morphPaths(fromState);
   const toPayload = toPlugin.morphPaths(toState);
   // LOUD, not lenient: a provider that hands over a negative space or a non-cubic
@@ -607,6 +611,47 @@ export function morphIR(node) {
       opacity: paint.opacity ?? 1,
     })];
   });
+}
+
+/**
+ * Pure function. THE CROSS-RENDER — both endpoint states drawn through their OWN
+ * plugins' emit() and composited at complementary opacity, (1-t) over t.
+ *
+ * ── WHY THIS EXISTS AND WHAT IT IS FOR ───────────────────────────────────────
+ * A morph needs two OUTLINES; a crossfade needs only two PICTURES. That is the
+ * whole difference, and it is what makes this the honest fallback for the pairs a
+ * morph structurally cannot serve — a video becoming a rect, a photo becoming an
+ * equation, anything raster on either side. The universal Morph property reaches
+ * it two ways: explicitly (`crossfade`), and as `auto`'s answer when either side
+ * cannot produce an outline. `auto` picking it is silent (the mode promised to
+ * choose sensibly); an explicit `morph` that has to fall back here is REPORTED at
+ * core/derive.js, because the author asked for something specific.
+ *
+ * ── IT REUSES THE FADE SEAM RATHER THAN INVENTING A COMPOSITE ────────────────
+ * `scaledOpacity` is the same function the universal fade seam uses to ramp a
+ * fractional `active`, and it already recurses into subtree content so an
+ * effected or grouped endpoint fades as ONE unit rather than per-op. So a
+ * crossfade is two ordinary emits plus two opacity scales — no new op, no new
+ * painter, nothing for the four backends to learn.
+ *
+ * ── THE ENDPOINT LAW HOLDS HERE TOO ──────────────────────────────────────────
+ * Both states come from the mark, where core/deltas.mutBlendApply fixed them for
+ * the whole transition. So at t → 0 this is the outgoing widget at full strength
+ * and at t → 1 the incoming one, and neither endpoint's picture depends on the
+ * mid-tween state. The op ORDER is outgoing-then-incoming so the widget being
+ * revealed paints over the one being dissolved.
+ *
+ * @param {object} node - a derive render node whose `.morph` mark carries `crossfade`
+ * @returns {object[]} ops in local space
+ */
+export function crossfadeIR(node) {
+  const { fromPlugin, toPlugin, fromState, toState, t } = node.morph;
+  const emitSide = (plugin, state) =>
+    typeof plugin?.emit === "function" ? plugin.emit(state, null, node.world, null) ?? [] : [];
+  return [
+    ...scaledOpacity(emitSide(fromPlugin, fromState), 1 - t),
+    ...scaledOpacity(emitSide(toPlugin, toState), t),
+  ];
 }
 
 /**

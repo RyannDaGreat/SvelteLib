@@ -872,10 +872,25 @@ registerInterpMode({
   help: "Reshape the outlines: one form flows into the other across the transition, contour by contour — a rectangle becoming a circle, an icon becoming a logo, one equation becoming the next. Available when both sides are vector outlines; anything else switches at the start instead.",
   // A mid-morph `type` leaf is a plain string on both endpoints, so this mode
   // does NOT claim trees — there is no subtree to protect, unlike a paint.
-  // WHERE IT MAY BE OFFERED: the widget TYPE (a retype) and a widget's CONTENT
-  // leaf (a re-edit). Those are the two questions "reshape this into that" can
-  // be asked about; on a coordinate or a boolean it has no meaning.
-  appliesTo: ({ key }) => key === TYPE_KEY || isContentMorphKey(key),
+  //
+  // IT IS OFFERED ON NO ROW AT ALL ANY MORE, and that is the surfacing half of
+  // the universal-property ruling (2026-08-02 night, verbatim): "Maybe that
+  // widget type doesn't have an interpolation option, so when I mouse over it, I
+  // don't get that. And it would just be under a universal option."
+  //
+  // Both rows it used to appear on are covered by the universal Morph property
+  // (core/morph_property.js), which asks the SAME question about the whole widget
+  // rather than about whichever leaf happened to change. Leaving the per-row
+  // option would give one question two controls that can DISAGREE — an author
+  // could set the type row to Morph and the universal row to Snap, and only one
+  // of them can be obeyed. So the row is retired rather than kept as a synonym.
+  //
+  // THE MODE ITSELF STAYS REGISTERED. Documents written before tonight may store
+  // `type~interp: "morph"` or a content-key mode, and an UNKNOWN mode id is a
+  // LOUD throw by design (blendUnderMode). Keeping the entry is what makes those
+  // documents keep folding; it simply is no longer OFFERED. See the migration
+  // note in core/morph_property.js.
+  appliesTo: () => false,
   blend: (a, b, alpha, ctx) => {
     // TWO REAL STRINGS OR NOTHING. An ADDITION (the item is being created on this
     // slide, so there is no outgoing value) and a REMOVAL have only one side, and
