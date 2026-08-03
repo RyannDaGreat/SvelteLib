@@ -4009,9 +4009,43 @@
 
   // ── Overlay geometry (screen space) ────────────────────────────────────────
 
+  // THE SELECTION CORRIDOR's two theme numbers (WORKSTREAM NN). They live in
+  // app.css beside every other overlay measurement — see the tokens there for what
+  // each one MEANS and why it has the value it does. They are read rather than
+  // duplicated so a retheme moves the corridor with the rest of the chrome; the
+  // fallbacks exist for the one case getComputedStyle cannot answer (the very first
+  // derive, before the stylesheet has applied) and MUST equal the token values, or
+  // the corridor would silently change width on the second frame.
+  const CORRIDOR_CLEARANCE_VAR = "--a-selection-corridor-clearance";
+  const CORRIDOR_CLEARANCE_FALLBACK = 3;
+  const CORRIDOR_MIN_WIDTH_VAR = "--a-selection-corridor-min-width";
+  const CORRIDOR_MIN_WIDTH_FALLBACK = 9;
+
+  /**
+   * Query (reads the container's computed style). A CSS length custom property as
+   * a NUMBER of px, or `fallback` when the property is absent or unparseable.
+   *
+   * The grid renderer's `getComputedStyle(containerEl).getPropertyValue(...)` idiom
+   * (above), narrowed to lengths: a token is the single source of truth for a
+   * measurement, so the geometry reads it instead of restating it as a literal.
+   *
+   * @param {string} name - the custom property, e.g. "--a-selection-corridor-min-width"
+   * @param {number} fallback - px to use when the property is missing/unparseable
+   * @returns {number} px
+   *
+   * @example // readPx("--a-selection-corridor-min-width", 9) // 9
+   * @example // an absent property falls back: readPx("--nope", 4) // 4
+   */
+  function readPx(name, fallback) {
+    if (!containerEl) return fallback;
+    const raw = getComputedStyle(containerEl).getPropertyValue(name).trim();
+    const n = parseFloat(raw);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
   let overlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
-    if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], inkGhostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null };
+    if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], inkGhostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null, corridors: [], bandAddCorridors: [], bandRemoveCorridors: [] };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = {
       x: (0 - viewport.panX) / viewport.zoom,
@@ -4037,6 +4071,115 @@
     /** A bbox node's screen-space outline polygon points string (its property box). */
     const outlineOf = (n) => rectOutlineOf(n, { x: 0, y: 0, w: n.state.w ?? 0, h: n.state.h ?? 0 });
 
+    /**
+     * THE SELECTION CORRIDOR (WORKSTREAM NN — user: "selected arrows show
+     * nothing", and, on the fix, "that line could just go along the width of the
+     * arrow"). A stroke widget's screen-space selection paths: the dash runs
+     * ALONG THE INK instead of around a box.
+     *
+     * ── WHY A BOX MARQUEE IS NOT MERELY UGLY HERE, IT IS ABSENT ────────────────
+     * Two separate failures stack, and the second is the one the screenshot shows.
+     * First, `outlines` above filters on `capabilities.bbox`, and the ENTIRE stroke
+     * family is `bbox: false` — so a selected arrow got no outline at all; what the
+     * user saw was the endpoint/modifier beads and nothing else. Second, even if it
+     * had drawn one, the box IS the degenerate thing: a near-vertical arrow's ink
+     * rect measures 26 × 324, so its marquee is a dashed hairline sliver that
+     * reports none of the widget's 300px reach. Fixing only the filter would have
+     * shipped the sliver; the corridor is the answer to both.
+     *
+     * ── THE MECHANISM IS `morphPaths`, AND NOTHING NEW WAS DECLARED ────────────
+     * Every stroke-family plugin ALREADY publishes its ink as cubic subpaths for
+     * the morph engine (core/registry.js's `morphPaths` protocol), and that protocol
+     * is bound by a stronger rule than we would have written for chrome: DERIVE THE
+     * PAYLOAD FROM THE INK, NEVER ALONGSIDE IT — every provider reads the same
+     * generator its own emit() draws with. So the corridor traces exactly what the
+     * widget paints, follows an elbow's jogs and a curved arrow's arc for free, and
+     * a widget that changes its outline changes its corridor with it. Declaring a
+     * second per-plugin "selection outline" hook would have been a second geometry
+     * pipeline entitled to disagree with the first, which is the failure mode that
+     * protocol's own docblock exists to prevent.
+     *
+     * READ-ONLY: this calls the plugin hook and maps the result. It writes nothing,
+     * registers nothing, and adds no declaration to any plugin file.
+     *
+     * ── OPEN vs CLOSED SUBPATHS ARE THE TWO HALVES OF AN ARROW ────────────────
+     * A payload's OPEN subpaths are centerlines (a shaft: the widget models two
+     * endpoints and the run between them, and its width rides in `paint.strokeWidth`
+     * because emit() hands a width to a polyline op and lets the painter expand it).
+     * Its CLOSED subpaths are real silhouettes — an arrowhead glyph, a fancy_arrow's
+     * whole outline. Both get a corridor, and they need different widths for the
+     * same visual result: a centerline must be INFLATED to the painted stroke's
+     * width plus clearance, whereas a silhouette already traces the ink's edge and
+     * needs the clearance alone. Conflating them would draw a fat band over every
+     * arrowhead.
+     *
+     * WHAT THIS MEANS FOR A CENTERLINE WIDGET, STATED PLAINLY: for line, arrow,
+     * elbow_arrow, curved_arrow and paint_path the corridor covers the SHAFT, and
+     * the arrowhead is covered only where the plugin's payload includes a head
+     * contour (arrow/curved_arrow/elbow_arrow do; a plain line has none to include).
+     * fancy_arrow's payload is a single closed silhouette, so its corridor wraps the
+     * head as part of the body. Where a head is not in the payload, the existing
+     * endpoint beads still mark it — the corridor plus those beads is the accepted
+     * indication, not an oversight.
+     *
+     * ── SCREEN SPACE, AND WHY THE WIDTH IS COMPUTED HERE ──────────────────────
+     * Points map payload-local → world → screen through the SAME `worldToScreen`
+     * every other overlay decoration uses. The corridor WIDTH, though, is chrome:
+     * it is expressed in screen px like --a-selection-stroke, so the widget's world
+     * strokeWidth is scaled by the zoom, and the result is floored at a minimum so a
+     * hairline stroke still shows a grabbable-looking band. Without that floor a
+     * 0.5px arrow would get a 0.5px corridor and we would have reintroduced
+     * invisibility by a different route.
+     *
+     * @param {object} n - a derived render node whose plugin declares morphPaths
+     * @returns {Array<{d: string, width: number}>} SVG path data + stroke width, in
+     *   screen px; empty when the widget has no ink to trace
+     */
+    const corridorPathsOf = (n) => {
+      // A widget that says it is not ready has nothing honest to trace (a
+      // zero-span brace, a tangent pair with no tangent, an icon still fetching).
+      // Same predicate the morph seam gates on, so the two cannot disagree about
+      // whether geometry exists.
+      if (n.plugin.morphNotReady?.(n.state)) return [];
+      const payload = n.plugin.morphPaths(n.state);
+      if (!payload?.subpaths?.length) return [];
+      // The payload's frame. A boxless connector reports its INK RECT and its
+      // coordinates are rect-relative (core/morph_payload.morphPayloadFromConnector),
+      // so the rect origin has to be added back; a bbox widget like paint_path
+      // reports its BOX, whose local origin is already (0,0) — reading localBounds
+      // there would re-offset by the ink hull and slide the corridor off the art.
+      const origin = n.plugin.capabilities.bbox
+        ? { x: 0, y: 0 }
+        : (n.plugin.localBounds?.(n.state) ?? { x: 0, y: 0 });
+      const toScreen = (lx, ly) => {
+        const p = T.apply(n.world, (origin.x ?? 0) + lx, (origin.y ?? 0) + ly);
+        return actions.worldToScreen(p.x, p.y);
+      };
+      const clearance = readPx(CORRIDOR_CLEARANCE_VAR, CORRIDOR_CLEARANCE_FALLBACK);
+      const minWidth = readPx(CORRIDOR_MIN_WIDTH_VAR, CORRIDOR_MIN_WIDTH_FALLBACK);
+      return payload.subpaths.flatMap((sp) => {
+        const pts = [{ x: sp.start[0], y: sp.start[1] }];
+        let d = "";
+        {
+          const s0 = toScreen(sp.start[0], sp.start[1]);
+          d = `M${s0.x} ${s0.y}`;
+        }
+        for (const c of sp.curves) {
+          const c1 = toScreen(c[0], c[1]), c2 = toScreen(c[2], c[3]), e = toScreen(c[4], c[5]);
+          d += `C${c1.x} ${c1.y} ${c2.x} ${c2.y} ${e.x} ${e.y}`;
+          pts.push({ x: c[4], y: c[5] });
+        }
+        if (sp.closed) d += "Z";
+        if (pts.length < 2) return []; // a subpath with no run draws nothing
+        // A CLOSED subpath is a silhouette — it already traces the ink's edge, so
+        // it needs the clearance only. An OPEN one is a centerline through the
+        // middle of a painted stroke, so the corridor must span that stroke's full
+        // width before the clearance is added on either side.
+        const inkWidth = sp.closed ? 0 : (sp.paint?.strokeWidth ?? 0) * viewport.zoom;
+        return [{ d, width: Math.max(inkWidth + 2 * clearance, minWidth) }];
+      });
+    };
+
     // EVERY selected bbox node gets a selection outline (multi-select
     // substrate). Resize handles: a SINGLE selection gets handles on its own
     // (rotation-aware) box; a MULTI selection gets handles on its COLLECTIVE
@@ -4044,7 +4187,51 @@
     // grabbed handle drags the collective box, members scale proportionally).
     const selSet = new Set(selectedIds);
     const selectedBboxNodes = nodes.filter((n) => selSet.has(n.itemId) && n.plugin.capabilities.bbox);
-    const outlines = selectedBboxNodes.map(outlineOf);
+
+    /**
+     * WHICH SELECTION INDICATION A WIDGET GETS (WORKSTREAM NN). A widget's box
+     * dash is the right answer only when the box actually DESCRIBES it; for a
+     * stroke widget it does not, so the corridor replaces it.
+     *
+     * THE PREDICATE IS "IS THIS A STROKE WIDGET", DERIVED, NOT A TYPE LIST. It asks
+     * two things the plugin already declares: does it publish an ink outline
+     * (`morphPaths`), and does that outline include an OPEN subpath — a centerline,
+     * which is precisely how a widget says "my ink is a stroked run, not a filled
+     * region". A rect, circle, image or text has neither an open subpath nor any
+     * need of this, and keeps its box. fancy_arrow is the one member whose payload
+     * is all-closed (a silhouette), so it is admitted by being BOXLESS: an arrow
+     * family widget with no `w`/`h` has no box to fall back on in the first place.
+     *
+     * A NAMED TYPE LIST WOULD HAVE BEEN THE DEFECT GENERATOR the registry docblock
+     * warns about under the universal-effects and gradient-handle rulings: the next
+     * stroke widget anyone writes would be invisible when selected until someone
+     * remembered to append it to a list no compiler asks for. Deriving from what the
+     * plugin declares means a new stroke widget gets its corridor for free.
+     */
+    const wantsCorridor = (n) => {
+      if (!n.plugin.morphPaths) return false;
+      if (!n.plugin.capabilities.bbox) return true; // no box to draw at all — the whole arrow family
+      // A BOXED widget joins only if its ink is genuinely a stroked run, which is
+      // what an open subpath means. paint_path is the member this admits: it has a
+      // real box, but an OPEN path drawn inside a large one is a thin diagonal in a
+      // big empty rect, and the box says almost nothing about where the ink is.
+      if (n.plugin.morphNotReady?.(n.state)) return false;
+      return (n.plugin.morphPaths(n.state)?.subpaths ?? []).some((sp) => !sp.closed);
+    };
+
+    // THE TWO INDICATIONS ARE EXCLUSIVE per widget: a corridor widget does NOT also
+    // get a box dash. Drawing both would put the degenerate sliver back on screen
+    // next to the thing that replaced it, and for paint_path it would be the exact
+    // pair of marks ("a big empty rect, and the curve") the corridor exists to
+    // reduce to one honest one.
+    const corridorNodes = selectedBboxNodes.filter(wantsCorridor);
+    const corridorSet = new Set(corridorNodes.map((n) => n.itemId));
+    const outlines = selectedBboxNodes.filter((n) => !corridorSet.has(n.itemId)).map(outlineOf);
+    // BOXLESS selected widgets never reached `selectedBboxNodes` at all — that
+    // filter is why a selected arrow showed NOTHING, and this is the line that
+    // restores them to the overlay. They are corridor-only by construction (no box).
+    const selectedStrokeNodes = nodes.filter((n) => selSet.has(n.itemId) && !n.plugin.capabilities.bbox && wantsCorridor(n));
+    const corridors = [...corridorNodes, ...selectedStrokeNodes].flatMap(corridorPathsOf);
     // THE ITEM PICKER'S HOVER PREVIEW. Reuses `outlineOf` — the same geometry the
     // real selection outline uses — so a previewed box cannot disagree with the
     // box you get on release; only the SKIN differs (.selection-preview). Empty
@@ -4165,7 +4352,7 @@
     // the template can skin "about to be ADDED" differently from "about to be
     // REMOVED". `bandVerb` rides along so the box itself can carry the verb as a
     // class (the crosshair `skin` precedent: state → class, styling in app.css).
-    let band = null, verb = null, bandAddOutlines = [], bandRemoveOutlines = [];
+    let band = null, verb = null, bandAddOutlines = [], bandRemoveOutlines = [], bandAddCorridors = [], bandRemoveCorridors = [];
     if (bandRect) {
       const a = actions.worldToScreen(bandRect.x, bandRect.y);
       const b = actions.worldToScreen(bandRect.x + bandRect.w, bandRect.y + bandRect.h);
@@ -4173,8 +4360,24 @@
       verb = bandVerb(bandMods);
       const addSet = new Set(bandAddIds);
       const removeSet = new Set(bandRemoveIds);
-      bandAddOutlines = nodes.filter((n) => addSet.has(n.itemId)).map(outlineOf);
-      bandRemoveOutlines = nodes.filter((n) => removeSet.has(n.itemId)).map(outlineOf);
+      // BAND PREVIEW SPEAKS THE SAME TWO GRAMMARS AS THE COMMITTED SELECTION
+      // (WORKSTREAM NN). "About to be added" must be legible for an arrow for the
+      // same reason "is selected" must be, and the answer has to be the same shape
+      // or a band over a vertical arrow would preview an invisible sliver and then
+      // commit to a visible corridor. Same split, same predicate: box widgets get
+      // the box, stroke widgets get their corridor.
+      const bandBucket = (idSet) => {
+        const caught = nodes.filter((n) => idSet.has(n.itemId));
+        return {
+          outlines: caught.filter((n) => n.plugin.capabilities.bbox && !wantsCorridor(n)).map(outlineOf),
+          corridors: caught.filter(wantsCorridor).flatMap(corridorPathsOf),
+        };
+      };
+      const add = bandBucket(addSet), remove = bandBucket(removeSet);
+      bandAddOutlines = add.outlines;
+      bandRemoveOutlines = remove.outlines;
+      bandAddCorridors = add.corridors;
+      bandRemoveCorridors = remove.corridors;
     }
 
     const anchors = (app.anchorsVisible ? nodes : []).flatMap((n) =>
@@ -4326,7 +4529,7 @@
       placeDots = placePreview.dots.map((d) => ({ ...pt(d.x, d.y), hot: d.hot }));
     }
 
-    return { outlines, hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, inkGhostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline };
+    return { outlines, hoverOutlines, lockTips, handles, anchors, guideSegs, endpoints, modifiers, sizeArrows, band, bandVerb: verb, bandAddOutlines, bandRemoveOutlines, modalPivotSeg, ghostOutlines, inkGhostOutlines, crosshairSegs, placeBox, placeSeg, placeChains, placeRects, placeDots, multiBoxOutline, corridors, bandAddCorridors, bandRemoveCorridors };
   });
 
   // TRUE IN-PLACE EDIT: the derived node of the item being edited (or null). The
@@ -4513,6 +4716,21 @@
         {#each overlay.outlines as o}
           <polygon class="selection" points={o} />
         {/each}
+        <!-- THE SELECTION CORRIDOR (WORKSTREAM NN): a stroke widget's selection,
+             dashed ALONG its ink rather than around a box that does not describe
+             it. A near-vertical arrow's box is a ~zero-width sliver — the user's
+             report was literally "selected arrows show nothing" — so these
+             widgets get their morphPaths outline stroked at the ink's own width
+             instead. Same colour, weight and dash rhythm as the box marquee
+             above, so a mixed selection reads as one system.
+
+             stroke-width is INLINE because it is per-path: it comes from that
+             widget's own stroke width (scaled to screen and floored), which is
+             document state, not a theme constant. The theme owns the clearance
+             and the floor; see .selection-corridor in app.css. -->
+        {#each overlay.corridors as c}
+          <path class="selection-corridor" d={c.d} style="stroke-width: {c.width}px;" />
+        {/each}
         <!-- THE EQUATION LOCK'S SENTENCE FOR A BODY DRAG (todo #240). The third
              surface of one condition: a resize handle and a yellow square can each
              carry an SVG <title>, because the pointer reaches them; the selection
@@ -4602,6 +4820,18 @@
         {/each}
         {#each overlay.bandRemoveOutlines as o}
           <polygon class="band-candidate band-remove" points={o} />
+        {/each}
+        <!-- THE BAND'S CORRIDOR PREVIEW (WORKSTREAM NN): the same two verbs, for
+             the widgets whose box does not describe them. A band dragged over a
+             vertical arrow has to preview the arrow, not an invisible sliver —
+             and it must preview the SAME mark the release will commit to. Reuses
+             the band verb skins on the corridor path, so add/remove read
+             identically whichever indication a caught widget wears. -->
+        {#each overlay.bandAddCorridors as c}
+          <path class="selection-corridor band-candidate band-add" d={c.d} style="stroke-width: {c.width}px;" />
+        {/each}
+        {#each overlay.bandRemoveCorridors as c}
+          <path class="selection-corridor band-candidate band-remove" d={c.d} style="stroke-width: {c.width}px;" />
         {/each}
         <ResizeHandles handles={overlay.handles} onstart={startResize} />
         {#each overlay.endpoints as ep}

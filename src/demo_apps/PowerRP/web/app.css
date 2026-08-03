@@ -125,6 +125,22 @@
   /* Multi-select collective box: a SOLID rectangle at half opacity — one calm
      frame that doesn't nest confusingly with per-item selection dashes. */
   --a-multiselect-box-opacity: 0.5;
+  /* THE SELECTION CORRIDOR (WORKSTREAM NN) — the ink-following dash a STROKE
+     widget gets instead of a box marquee. A near-vertical arrow's bounding box
+     is ~zero-width, so its box dash degenerates to an invisible hairline sliver;
+     the corridor runs ALONG the ink instead, at the stroke's own width.
+
+     CLEARANCE is the gap the corridor keeps OUTSIDE the painted stroke, so the
+     dash reads as a border around the ink rather than as a second stroke drawn
+     on top of it — the same role the box marquee's offset from the art plays.
+     MIN-WIDTH is why a HAIRLINE still shows selection: a 0.5px stroke's corridor
+     would otherwise be 0.5px of dash, which is exactly the invisibility this
+     feature exists to remove. Both are SCREEN px (the corridor is chrome and does
+     not zoom with the art, matching --a-selection-stroke's own screen-space
+     units), and both are deliberately small: the corridor must describe where the
+     ink IS, and a fat one would misreport a thin arrow's reach. */
+  --a-selection-corridor-clearance: 3px;
+  --a-selection-corridor-min-width: 9px;
   --a-guide-stroke: 1px;
   --a-handle-fill: var(--a-selection);
   --a-handle-rim: #ffffff; /* white rim shared by resize handles, endpoints, modifier points */
@@ -4220,6 +4236,32 @@ textarea {
 .overlay .multiselect-box {
   stroke-dasharray: none;
   opacity: var(--a-multiselect-box-opacity);
+}
+
+/* THE SELECTION CORRIDOR (WORKSTREAM NN): a stroke widget's selection, drawn as
+   a dash running ALONG its ink instead of around a box that does not describe it.
+
+   IT IS THE SAME VISUAL LANGUAGE AS THE BOX MARQUEE, deliberately — the identical
+   --a-selection colour, --a-selection-stroke weight and --a-selection-dash rhythm,
+   so a mixed selection of an arrow and a rectangle reads as ONE system rather than
+   two decorations that happen to both be blue. Only the PATH differs, which is the
+   whole point: for a near-vertical arrow the box is a ~zero-width sliver and the
+   ink is a 300px run.
+
+   `fill: none` even for the CLOSED subpaths (arrowhead silhouettes): the corridor
+   outlines what is selected, it does not shade it. `stroke-width` is set per-path
+   inline, because it is derived from that widget's OWN stroke width — a property
+   of the document, not of the theme; the theme owns the clearance and the floor.
+   Round joins/caps follow the ink's own corners rather than mitering spikes off an
+   elbow's jog. pointer-events: none like every overlay decoration, so a click
+   passes through to the widget underneath. */
+.overlay .selection-corridor {
+  fill: none;
+  stroke: var(--a-selection);
+  stroke-dasharray: var(--a-selection-dash);
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  pointer-events: none;
 }
 
 .overlay .guide {
