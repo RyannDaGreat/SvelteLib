@@ -323,6 +323,12 @@ test("the open-from field classifies every input shape", () => {
     ["https://github.com/owner/name", "repo", "the URL a repo's address bar shows IS the repo grammar"],
     ["https://www.github.com/owner/name", "repo", "…with or without the www"],
     ["https://github.com/owner/name@main", "repo", "…and it carries a branch too"],
+    // A .zip PATH OUTRANKS THE HOST (user ruling, 2026-08-03: "it should check if
+    // it's a zip file first"). The host rule alone pushed this real link at
+    // parseRepoSlug, which refused a good zip with a sentence about owner/name.
+    ["https://github.com/RyannDaGreat/ClarapointPresentations/raw/refs/heads/main/DogCatMorph2%20(3).zip", "url", "a raw FILE link on github.com is a zip fetch — the regression that pinned this"],
+    ["https://github.com/owner/name/archive/refs/heads/main.zip", "url", "…and github's own source-archive link is a zip too"],
+    ["https://github.com/owner/name/raw/main/deck.zip?download=1", "url", "the query string does not hide the .zip"],
     ["owner", "unknown", "a bare word names nothing — refused with a sentence, never guessed"],
     ["a/b/c", "unknown", "two slashes is not owner/name"],
     ["robot sim deck", "unknown", "prose"],

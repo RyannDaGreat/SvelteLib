@@ -385,6 +385,12 @@ export function openNeedsConfirm(draft, state) {
  *     `https://github.com/owner/name` is ALSO routed to the repo loader, because
  *     parseRepoSlug accepts that form and it is what the repo page's address bar
  *     says. Scheme-first means a URL is never mistaken for a slug.
+ *   · …EXCEPT THAT A .zip PATH OUTRANKS THE HOST (user ruling, 2026-08-03: "it
+ *     should check if it's a zip file first"). github.com serves RAW FILE links
+ *     too — `…/raw/refs/heads/main/Deck.zip` — and the host rule alone shoved
+ *     those at parseRepoSlug, which refused a perfectly good zip with a sentence
+ *     about owner/name. A path ending in .zip names a FILE; no repo home page
+ *     ever ends that way, so nothing real is stolen from the repo path.
  *   · OTHERWISE, `owner/name` WITH EXACTLY ONE SLASH IS A REPO, optionally
  *     `@ref` for a branch, tag or commit. This shape cannot be a URL — it has no
  *     scheme and no host — so nothing is stolen from the zip path by claiming it.
@@ -412,6 +418,9 @@ export function openNeedsConfirm(draft, state) {
  * @example // a github WEB url is a repo, not a zip — parseRepoSlug reads this form
  * projectSourceKind("https://github.com/RyannDaGreat/PowerRP-RobotSim-Demo")
  * 'repo'
+ * @example // …but a RAW FILE link on github.com is a zip — .zip outranks the host
+ * projectSourceKind("https://github.com/owner/name/raw/refs/heads/main/Deck%20(3).zip")
+ * 'url'
  * @example // …including with a branch in the github tree form
  * projectSourceKind("https://github.com/owner/name@release/1.2")
  * 'repo'
@@ -429,9 +438,14 @@ export function projectSourceKind(raw) {
   if (!text) return "unknown";
   const scheme = text.match(/^([a-z][a-z0-9+.-]*):\/\//i);
   if (scheme) {
+    // .zip FIRST: github.com serves raw file links (`…/raw/refs/heads/main/x.zip`)
+    // as well as repo pages, so a path ending in .zip names a FILE regardless of
+    // host. Query/hash are stripped so `deck.zip?v=2` still counts.
+    const rest = text.slice(scheme[0].length);
+    if (/\.zip$/i.test(rest.split(/[?#]/)[0])) return "url";
     // A github.com URL is the repo grammar wearing its web address; anything
     // else with a scheme is a plain fetch, and validatedZipUrl judges the scheme.
-    const host = text.slice(scheme[0].length).split("/")[0].toLowerCase();
+    const host = rest.split("/")[0].toLowerCase();
     return host === "github.com" || host === "www.github.com" ? "repo" : "url";
   }
   // Scheme-less. Exactly one slash, and a non-empty side each way, is owner/name.
