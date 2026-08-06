@@ -4298,10 +4298,17 @@ owner per wave.
 
 **WAVE 3 — breadth, once the standard exists (parallel, mostly data)**
 
-R7-11 (~100 specs, split by category — DATA in `core/audio_specs.js` + the engine
-modules behind them), R7-12 (~30 patches + demo slides), R7-13 (keyboard already has
-`baseNote`/`octaves`; only the LOCK toggle is missing), R7-14 (piano roll), R7-15
-(trail), R7-16 (double-pendulum preset — needs W1-C).
+**R7-17 REPLACES THE SELECTION METHOD FOR R7-11 AND R7-12 — read it first.** The node
+list is the UNION OF WHAT HARVESTED KNOWN-GOOD PATCHES USE, not a category sweep, and
+the patches are the acceptance test. So Wave 3's shape is: harvest patches → derive the
+node list → port nodes (DATA in `core/audio_specs.js` + the engine modules behind them,
+to the R7-11 arithmetic laws, each carrying a derivation record for debugging) → rebuild
+every patch as a demo patch + demo slide.
+
+Independent of that pipeline and parallelizable alongside it: R7-13 (keyboard already
+has `baseNote`/`octaves`; only the LOCK toggle is missing), R7-14 (piano roll — also
+unblocks the Sequencer, which currently emits steps but has no notes), R7-15 (trail),
+R7-16 (double-pendulum preset — needs W1-C).
 
 ### R7-10 DESIGN: THE INLINE-VALUE SOCKET ROW, AND MEASURE-THEN-PLACE
 
@@ -4560,43 +4567,71 @@ The successor project is **Ksoloti** (active). Best-of-breed pads found: `Shimme
 7.7 s LFOs rewriting waveform STEP LEVELS so harmonic content drifts),
 `SolinaStrings.axp` (six objects, literal three-phase BBD ensemble).
 
-### R7-17 FIFTY VCV RACK PLUGINS, BATCH SWARM (user, 2026-08-06)
+### R7-17 THE LIBRARY IS CHOSEN BY PATCH, NOT BY CATEGORY (user, 2026-08-06)
 
-> *"please choose 50 VCV rack plugins and perfectly emulate them with a batch swarm
-> once we're capable. choose super popular ones."*
+> *"choose the nodes by looking at demo patches, and copy the patches you see into demo
+> patches in our app and copy the nodes needed as faithfully as possible, so we know
+> they sound good without even having to listen. the web is full of good patches for
+> axoloti (their builtin samples) and for VCV rack (please be able to faithfully
+> emulate at least 20 or so patches along with whatever nodes they need). We gonna have
+> a GIANT beautiful node library! Use batch swarms when ready. This is important"*
 
-**"Once we're capable" is the gate:** this runs AFTER Tier A lands, because a spec
-authored against the wrong vocabulary is worse than no spec (§ R7-DIAGNOSIS, the
-two-line-wrapper finding). It joins R7-11/R7-12 in Wave 3 and is run as a **batch
-swarm** — N agents, each owning a disjoint slice of the 50 and its own spec files.
+**THIS INVERTS THE PLAN AND IT IS A BETTER PLAN. It supersedes "choose ~100 nodes by
+category" in R7-11 and the earlier "50 popular VCV plugins" framing.**
 
-**"PLUGIN" IN VCV MEANS A PACKAGE OF MODULES, NOT ONE MODULE.** So "50 plugins" is
-potentially hundreds of modules. **Interpretation, to be confirmed with the user before
-the swarm launches:** 50 individually-popular MODULES drawn from the most-used plugin
-packages, not 50 whole packages. Picking 50 packages would be thousands of modules and
-is almost certainly not what was meant. The survey already ranked 40 VCV modules
-(`.frenzy/round7/patchers_blueprints_report.md`) — that list is the starting point, to
-be extended to 50 and weighted by actual popularity (VCV Library download ranking),
-with the pads/leads/ambience bias the user asked for in R7-12.
+**THE PIPELINE:**
+1. **HARVEST KNOWN-GOOD PATCHES FIRST** — Axoloti's shipped/factory patches and the
+   frozen community corpus (`axoloti-contrib` at tag `1.0.12`; the live site is down,
+   mirror `sebiik.github.io/community.axoloti.com.backup`), plus **≥20 VCV Rack
+   patches**. Weight toward the sounds the user named: leads, **PADS**, ambience.
+2. **THE NODE LIST IS THE UNION OF WHAT THOSE PATCHES USE.** Not a category sweep.
+3. **PORT THOSE NODES** to the R7-11 arithmetic laws.
+4. **REBUILD EACH PATCH as a demo patch + demo slide in our app.**
 
-**⚠ LICENSING IS A REAL CONSTRAINT HERE AND IT IS NOT A FORMALITY.** Axoloti was
-uniformly `<license>BSD</license>`, so R7-11 can port its arithmetic freely. **VCV is
-not uniform:** Rack itself and several major plugin sets are **GPL-3.0**, which is
-copyleft — transcribing their DSP source into this repo would put the repo under GPL.
-That is a decision only the user can make. So the rule for this item:
+**WHY THIS IS BETTER, stated because it is the whole point:** *"so we know they sound
+good without even having to listen."* A category sweep produces 100 nodes and no
+evidence any combination of them is musical. A patch-driven sweep produces a library
+where **every node is justified by a real patch that already sounds good**, and the
+patch itself is the acceptance test. Coverage follows from use rather than from a
+taxonomy, and nothing gets ported that nothing needs.
 
-- **Permissive (BSD/MIT/Apache) plugins: port the code directly**, as with Axoloti.
-- **GPL-3.0 plugins: behavioural emulation only** — work from manuals, published
-  specifications, block diagrams and MEASURED response, not from reading their source
-  into ours. Document the source of each derivation in the spec's `help`.
-- **Record each module's licence in its spec entry** so the provenance is auditable
-  later rather than reconstructed.
-- If a famously good module cannot be honestly reproduced without its GPL source, say
-  so and leave it out rather than laundering it. Flag the list to the user.
+**IT ALSO CHANGES WHAT "DONE" MEANS.** A ported node is done when the PATCH it was
+ported for reproduces; a node with no patch behind it is unverified by construction.
+Where we can render the original for comparison (VCV Rack has a headless mode; Axoloti
+needs hardware and generally cannot be rendered here) a spectral/numeric diff is the
+strongest available check — use it where possible, and where impossible say so rather
+than implying an audio comparison happened.
 
-"Perfectly emulate" is measured against the R7-11 standard already established: match
-the recurrence and the parameter law, not the pixels — and where a source has a real
-bug, port the SOUND and make the LABEL honest.
+**LICENCE — USER RULING, 2026-08-06.** The lead raised GPL-3 copyleft as a constraint on
+porting VCV DSP source. The user overruled it twice: *"NO. we just use it. this is for
+personal use. This does not apply"* and *"we copy it"*. **He is factually correct** —
+GPL obligations attach on DISTRIBUTION, and the licence explicitly permits unlimited
+private modification. So: **port source directly from any of these projects.** Settled;
+do not re-litigate. (The one fact a future reader needs: if this repo is ever
+published, that calculus changes.)
+
+**RECORD A DERIVATION FOR EVERY PORTED NODE — AND THE REASON IS DEBUGGING, NOT
+ATTRIBUTION** (user: *"it's so we can debug shit and find flaws in the emulation"*).
+That purpose decides what the record must contain, and a bare licence tag is useless
+for it. Each ported node's spec carries:
+- **the exact source**: project, object/module name, and the version/tag/commit it was
+  read at (e.g. `axoloti objects/filter/lp svf.axo @ tag 1.0.12`);
+- **which code block** the recurrence came from (`code.krate` / `code.srate`, or the
+  source file and function);
+- **the recurrence as ported**, in float form, so a wrong sound can be diffed against
+  the original line rather than re-derived from scratch;
+- **every deliberate deviation, named** — the fixed-point→float rescaling, and any
+  source bug we chose not to reproduce (see R7-11 on `env/ad` running 2× slow, and on
+  noise being seeded here but hardware-random there).
+
+**When a patch sounds wrong, that record is the debugging entry point.** Without it,
+finding a flaw means re-reading the original library from scratch — which is exactly
+the cost the user is telling us to avoid paying twice.
+
+**EXECUTION:** batch swarm, after Tier A (a spec authored against the wrong vocabulary
+is worse than no spec — see § R7-DIAGNOSIS's two-line-wrapper finding). Each agent owns
+a disjoint slice of patches AND the spec files for the nodes that slice needs; where two
+slices need the same node, the lead assigns it to one owner and the other depends on it.
 
 ### R7-RULING: THE TEST BUDGET
 
