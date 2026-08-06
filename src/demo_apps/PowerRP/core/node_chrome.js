@@ -209,6 +209,43 @@ export function textLineH(size) {
 export const NODE_BODY_GAP = 8;
 
 /**
+ * Pure function. A DERIVED NATURAL SIZE, rounded to a whole unit — the last step
+ * of the measure-then-place pass, and the ONE place abstract units become a
+ * stored default.
+ *
+ * ── A FRACTIONAL DEFAULT IS NOT COSMETIC, IT CHANGES A DRAG'S FEEL ──────────
+ * MEASURED (tests/default_step_test.js, 2026-08-06): the scrub resolver derives
+ * a DraggableNumber coefficient from a default's DECIMAL PLACES, so a natural
+ * height of 123.6 gave `node_knob`'s `h` row a sensitivity of 1.236 units per
+ * pixel instead of 1. That sweep names `x`/`y`/`w`/`h` explicitly and says why —
+ * "a sensitivity regression here would be far worse than the bug this rule
+ * fixes" — and it is right: every node in the app had picked one up, silently,
+ * because the derived stack now sums line heights (`size · 1.2`) that are not
+ * whole numbers.
+ *
+ * So the conversion from abstract units to a stored pixel size ROUNDS, exactly
+ * once, here. Axoloti does the same thing at the same point for a different
+ * reason (`resizeToGrid`: `ceil(h / 14) * 14`, so its patches tile); ours rounds
+ * to 1 rather than to a lattice, because our cards are author-resizable and
+ * core/snap.js already snaps them to their NEIGHBOURS rather than to an absolute
+ * grid — a second invisible lattice would argue with the visible solver.
+ *
+ * CEIL, not round: this number is a natural size that must CONTAIN its content,
+ * and rounding 123.6 down to 123 would shave the band it was measured to hold.
+ *
+ * @param {number} n - a derived size in abstract units
+ * @returns {number} a whole number of local units
+ *
+ * @example nodeDefaultSize(123.6) // 124
+ * @example nodeDefaultSize(68) // 68
+ * @example // it never shrinks the content it was measured for
+ * @example nodeDefaultSize(200.1) // 201
+ */
+export function nodeDefaultSize(n) {
+  return Math.ceil(Number(n) || 0);
+}
+
+/**
  * Pure function. THE TOP OF A NODE'S OWN FACE: below its lowest port bead, with
  * one gap. Every node family's content — a knob band, one big dial, a track, a
  * button face, a number — starts at or below this line.

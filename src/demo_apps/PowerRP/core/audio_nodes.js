@@ -61,7 +61,7 @@ import { bundle, bundleNestedDefaults, props } from "./properties.js";
 import { NODE_ITEM_REFS, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows } from "./nodeflow.js";
 import {
   NODE_BODY_GAP, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, knobOps, nodeBodyTop,
-  nodeBox, nodeFaceBand, nodeFamily, portBeads, portIsWired, textLineH,
+  nodeBox, nodeDefaultSize, nodeFaceBand, nodeFamily, portBeads, portIsWired, textLineH,
 } from "./node_chrome.js";
 import { KNOB_BAND_MIN_SCALE, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_ROW_H, knobLayout } from "./node_knobs.js";
 import { text } from "../render_gpu/ir.js";
@@ -992,7 +992,10 @@ export function readoutNodeHeight(spec, portsFn, width = AUDIO_NODE_W) {
   // before it was placed below the port rows (see audioReadoutOps). The author
   // may still shrink the card afterwards — that clips, visibly, which is the
   // signal the registry docblock asks for rather than one to hide.
-  return withReadout + knobBandHeight(spec, width);
+  // ROUNDED at the one point an abstract size becomes a stored default — see
+  // core/node_chrome.nodeDefaultSize for the drag-sensitivity regression a
+  // fractional `defaults.h` caused on all 23 modules at once.
+  return nodeDefaultSize(withReadout + knobBandHeight(spec, width));
 }
 
 /** The readout's type size: bigger than a port label, smaller than the display

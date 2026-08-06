@@ -70,7 +70,7 @@ import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
 import { NODE_ITEM_REFS, nodeCardRim, nodeInkBounds } from "./nodeflow.js";
-import { NODE_BODY_GAP, nodeBodyTop, nodeBox, nodeFaceBand, textLineH } from "./node_chrome.js";
+import { NODE_BODY_GAP, nodeBodyTop, nodeBox, nodeDefaultSize, nodeFaceBand, textLineH } from "./node_chrome.js";
 import { AUDIO_READOUT_SIZE } from "./audio_nodes.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
@@ -269,12 +269,15 @@ export function controlFace(face, plugin, s) {
  * @returns {number} a LOCAL height
  *
  * @example // header + one port row + gap + a 52-tall face + a readout band
- * @example controlNodeHeight({height: 52, bottomPad: CONTROL_READOUT_H}, {outputs: [{key: "out", type: "number"}]}) // 123.6
+ * @example controlNodeHeight({height: 52, bottomPad: CONTROL_READOUT_H}, {outputs: [{key: "out", type: "number"}]}) // 124
  * @example // no readout to reserve, so the card is exactly its face plus the stack
  * @example controlNodeHeight({height: 52}, {outputs: [{key: "out", type: "number"}]}) // 100
  */
 export function controlNodeHeight(face, ports, bottomPad = face.bottomPad ?? 0) {
-  return nodeBodyTop({ ports: () => ports }, {}) + Math.max(0, face.height ?? 0) + bottomPad;
+  // ROUNDED, because this becomes a stored `defaults.h` and a fractional default
+  // gives that Inspector row a fractional DRAG SENSITIVITY (nodeDefaultSize
+  // records the measurement).
+  return nodeDefaultSize(nodeBodyTop({ ports: () => ports }, {}) + Math.max(0, face.height ?? 0) + bottomPad);
 }
 
 /**
