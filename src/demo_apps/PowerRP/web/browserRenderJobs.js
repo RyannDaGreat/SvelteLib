@@ -95,7 +95,7 @@
  * See web/browserJobStore.js.
  */
 
-import { deserialize, repairedDocument, printRepairReports } from "../core/document.js";
+import { deserialize, repairedDocument, printRepairReports, documentIsSimulated } from "../core/document.js";
 import { planForParams, frameCount, exportVideo } from "./videoExport.js";
 import { createLetterboxFrameRenderer } from "./transitionRender.js";
 import { settledFrame } from "./settledFrame.js"; // #281: an export gets ONE chance at its pixels
@@ -335,6 +335,26 @@ export async function driveBrowserJob(record, registry, signal = undefined) {
   try {
     encoder = await buildEncoder(job.encoder, job);
     const startFrame = await encoder.resumeFrom();
+    // ── A RESUME IS A COLD START IN THE MIDDLE OF A TRAJECTORY ──────────────────
+    // SIMULATED state (an equation reading `@` or `dt`) makes frame N a function of
+    // frames 0..N-1, so resuming at frame N without having integrated 0..N-1 produces
+    // a video that is CONTINUOUS IN THE FILE and DISCONTINUOUS IN THE MOTION — a
+    // plausible wrong deliverable, which is the failure this project forbids outright.
+    // `core/document.stridedShardRefusal` is the same law for the sharded case; this is
+    // its resume-shaped sibling, and it lives HERE because this is the first scope that
+    // holds both the repaired doc and the registry (`web/videoExport.exportVideo` has
+    // neither, which is why it cannot make this check itself).
+    //
+    // It REFUSES rather than silently restarting from 0: the already-encoded frames are
+    // in the encoder and re-adding them would duplicate them, so the honest recovery is
+    // a fresh render, which the sentence tells the author to start.
+    if (startFrame > 0 && documentIsSimulated(doc, registry)) {
+      throw new Error(
+        `Cannot RESUME this render: the document contains SIMULATED STATE (an equation reading \`@\` or \`dt\`), `
+        + `so frame ${startFrame} depends on every frame before it. Resuming here would restart the motion `
+        + `mid-file and produce a plausible but wrong video. Start a FRESH render instead — a simulated deck `
+        + `must be walked from frame 0 in order.`);
+    }
     live[job.id] = { framesDone: startFrame, framesTotal: job.framesTotal, phase: "rendering" };
     const product = await exportVideo({
       plan, renderFrame, encoder, width, height, fps, samples,
