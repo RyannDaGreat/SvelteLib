@@ -4500,6 +4500,131 @@ replaying from slide 0 is cheap, correct, and identical every time, and
 `RenderTree = pure(document, [[slide, alpha]])` survives having events at all. This is
 the single most important sentence for whoever builds R7-8.
 
+### R7-10 WAVE 1 RESULT — and the text-baseline bug that had defeated three fixes
+
+**THE FINDING WORTH THE WHOLE ROUND: A TEXT OP'S `y` IS THE LINE BOX'S TOP, NOT A
+BASELINE.** `render_gpu/skia/text_layout.js` draws at `layout.draw(canvas, cmd.x, cmd.y)`
+and `svg_backend.js` agrees. But every node text added `size/3` "so the glyphs sit above
+it" — **so every one was drawn a full line low.** Consequences that were each previously
+diagnosed as their own bug: the Number node's 22 pt digit clipped by its own rim at
+h=68; card titles hanging below their header strips; and **three successive documented
+"fixes" to the audio readout that kept landing it on the dials — all three were tuning
+the wrong quantity.** Fixed at the one seam (`textLineH`).
+
+**A COROLLARY THAT MATTERS MORE THAN THE FIX: "three fixes that did not stick" IS A
+DIAGNOSTIC.** Each of those commits looked local and reasonable. When a symptom returns
+after a repair, the repair is evidence the model is wrong, not that the number needs
+another nudge. Escalate to measuring the primitive.
+
+**Also found at DEFAULT sizes, on nodes nobody had resized** — so the original complaint
+("no guarantee the knobs will even be in the node") was worse than reported: **every
+output port label was painted outside its own card** (`portBeads` boxed it at
+`[p.x − GAP, … + w/2 − GAP]` and right-aligned, so its right edge sat half a card past
+the rim), and a wrapped knob label's second line fell outside ("Resonanc/**e**").
+`node_knob`'s missing `Math.abs` was shared by the slider, button and keyboard.
+
+**WHAT LANDED:** one unbypassable layout path in `core/node_chrome.js` — `nodeBox` (the
+one sign-resolving entrance), `textLineH`, `nodeBodyTop` (the one reader of port
+geometry; it replaced three copies of `lastRow + PORT_BEAD_R + gap`), and `nodeFaceBand`
+(CD's ladder generalized: natural top → slide up → shrink → visible clip, with rigid vs
+elastic bands). Both factories route through it. **A plugin declares WHAT its control
+needs and never WHERE** — `paint(s, face)` receives the rect. No override hatch, per
+`core/audio_nodes.js:305-312` and the Bespoke evidence (191 of ~265 modules override an
+optional auto-layout).
+
+**THE INVARIANT TEST IS THE DELIVERABLE.** `tests/node_chrome_layout_test.js` sweeps
+every registry-derived node type × 5 widths × ~11 heights down to each plugin's floor
+(155 combinations), asserting CONTAINMENT not visibility (per the VCV finding). **It
+found two escapes the eye missed** — `node_knob` at 400×82, and `audio_oscillator` at
+80×124 where the band wraps to three rows, **so a floor is a function of WIDTH, not just
+of content**. It also pins "a control never has an authored x".
+
+**HONEST MEASUREMENT, RECORDED BECAUSE THE HABIT MATTERS MORE THAN THE NUMBER: THE
+DEDUP GREW THE CODE — +107 non-comment lines (1006 → 1113), and no simplification is
+claimed.** Three schemes did collapse to one and the plugin files now hold a `FACE`
+declaration instead of arithmetic, but the shared functions cost more than the ~5 lines
+each scheme spent, and most of the growth is capability that did not exist (the declared
+floor, the duality predicate, the line-height correction, the test API).
+
+**DELIBERATELY NOT DONE — the inline-value socket row**, and the reason is a semantic
+trap Wave 3 must not walk into: **Blender and Blueprint hide a wired input's widget
+because their link REPLACES the value. Our audio wire connects to an AudioParam, which
+SUMS.** So hiding an audio dial hides a still-contributing offset. It is hidden anyway
+(that is what the user asked to see), but the honest fix is a `combine` field — see the
+spec vocabulary below. Moving knobs into port rows is a visual redesign of 24 modules and
+was out of scope.
+
+**THE SPEC VOCABULARY FOR WAVE 3 — the most consequential output of Wave 1:**
+
+```
+knob: { key, label, default, min, max, step, unit, help,
+        discrete?, options?, construct?,     // existing
+        combine?: "sum" | "replace",         // NEW: does a wire REPLACE the knob
+                                             //  (hide the dial) or SUM with it
+                                             //  (keep it as an offset)?
+        modulatable?: boolean }              // NEW: derive a same-named input
+```
+
+**`modulatable` DEFAULTS FALSE TODAY AND MUST STAY SO UNTIL THE ENGINE IS QUERYABLE.**
+`tests/audio_nodes_test.js` proves every declared port exists in the engine; auto-deriving
+inlets for all specs would declare ports the engines lack, and the mirror would connect to
+nonexistent AudioParams. Once the engine's param surface can be read from `core/`, flip
+the default and Axoloti's ~70 duplicated `x` / `x m` objects never get built here.
+
+**STILL OUTSIDE THE SINGLE PATH:** `plugins/node_keyboard.js` hand-places its face from
+`NODE_HEADER_H + 10` and takes no `Math.abs`. It passes the containment sweep only
+because its face floors at 0. **It needs a two-line change to call `controlFace`** — fold
+into R7-13.
+
+### R7-9 WAVE 1 RESULT — simulated state, and the integration it still needs
+
+**PROVEN, and this is the user's own example:** `rotation = @ + dt` gives **exactly
+2.000000000000 degrees after 2 s at 24, 30, 60, 144 and 1000 fps.** The framerate
+independence the fixed-timestep design could not have delivered.
+
+**THE INTEGRATOR DEMONSTRATION, which is the nicest result in the round:** for
+`x'' = −(x+1)`, energy `(x+1)² + v²` (true value 1.0) over 40 s at 400 fps —
+
+    explicit    1.0000 1.0101 1.0202 1.0305 1.0408 … 1.1052   (monotone gain)
+    symplectic  1.0000 0.9988 1.0004 1.0011 0.9993 … 1.0012   (bounded orbit)
+
+**and the two sources differ by exactly one `@`** — `@ + dt * @self.vars.v` versus
+`@ + dt * self.vars.v`. The symplectic form needed no new mechanism: `self.vars.v` is an
+ordinary reference, so `requireSlot` settles `v` first.
+
+**Δt = 0 IS PINNED BOTH WAYS:** re-rendering one frame gives a byte-identical display
+list, **and 28 evaluations at one instant produce ONE step** — the double-buffer earning
+its place against the measured ~28 `app.nodes()` calls per frame. Cost: 40.5 ms/1000
+simulated passes vs 41.2 ms/1000 plain; a document with no `@`/`dt` never touches the
+table.
+
+**INTEGRATION STILL OWED (Wave 2 — W1-C did not own these files):**
+- `web/videoExport.js createFrameSampler` — `setSimulationTimestepOverride(1/(fps*samples))`
+  on construction, `null` in `release()`, `resetSimulation()` on construction. **THE
+  `samples` DIVISOR IS A TRAP:** with motion blur every sub-frame rolls, so a dictated
+  `1/fps` runs the simulation `samples`× too fast.
+- `web/PresentMode.svelte:403/:441` — `resetSimulation()` beside start/stopParticleClock.
+- `web/gpuService.js:315` and `web/App.svelte:980` — wrap in `withSimulationFrozen`.
+  `documentState` is the sharp one: it is deliberately the state WITHOUT the preview
+  delta, i.e. a hypothetical, evaluated at the same instant as `app.state()`.
+- `web/app.svelte.js` — `resetSimulation()` on document load / open / new.
+- `cli/render_job.js` — `stridedShardRefusal(doc, registry)` before sharding.
+- `<app>/CLAUDE.md` § "The three kinds of state" — write in the fourth kind.
+
+**RULING ON THE EDITOR QUESTION W1-C RAISED.** In the editor a simulated widget shows its
+initial condition and does not move, because presented time is frozen there. **That is
+correct and it stays** — it is exactly how recordable state already behaves (a sparkler
+does not animate in the editor either), and an inconsistency between the two kinds would
+be worse than the inconvenience. Preview by presenting. **An editor play/scrub affordance
+is a real authoring need for a pendulum and the user has not asked for one — BACKBURNER,
+not this round.**
+
+**THE ONE ERGONOMIC GAP, which R7-16's author will hit:** there is no authorable initial
+condition on a simulated slot. `@` with no history is the folded value when the slot holds
+a plain value, and the plugin DEFAULT when the slot holds its own equation — so an author
+states a start by composing (`rotation = theta0 + theta`). Decide whether that is
+acceptable when building the pendulum.
+
 ### R7-11 PORTING RULES — the fixed-point→float laws, and the traps that change the sound
 
 From primary sources (Axoloti firmware + Java + 684 object definitions); full report
