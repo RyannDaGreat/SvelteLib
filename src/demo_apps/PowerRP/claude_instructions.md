@@ -5106,6 +5106,55 @@ minutes — and if the figure-eight ships at all, label its drift honestly.
 **TRAILS MAKE THIS DEMO.** Three R7-15 trails, one per body, is the recognisable picture;
 without them it is three drifting dots. Depends on R7-15, same as the pendulum.
 
+### R7-21 A NODE'S SIZE DEFAULTS TO AN EQUATION, NOT A NUMBER (user, 2026-08-06)
+
+> *"what u can do is just made a property for nodes and default their height and width to
+> an equation height=node_height and width=self.node_width"*
+
+**ADOPT. This supersedes the stored-numeric-default half of R7-10** (`controlNodeHeight` /
+`readoutNodeHeight` as a rounded number, plus an advisory `nodeFloorHeight`). The natural
+size becomes an **output property** and `w`/`h` default to `"= self.node_width"` /
+`"= self.node_height"` — so **depends on R7-7**, and it is the first genuinely useful
+consumer of it, which is a good validation of that design.
+
+Spelling: use the `self.`-prefixed form for BOTH. A bare `node_height` would parse as a
+global variable, and the two rows disagreeing about their own grammar is the Tower of Babel
+in miniature.
+
+**WHY IT IS BETTER THAN A STORED NUMBER — four things, and the first two are bugs it
+deletes rather than fixes:**
+
+1. **It removes the fractional-default hazard entirely.** A stored derived size produced a
+   non-integer `h` default for `node_knob`, and the scrub resolver reads a drag coefficient
+   off a default's DECIMAL PLACES — so dragging a Knob's height silently became 1.236 px per
+   pixel (caught by `tests/default_step_test.js`). W1-D fixed it by rounding. **An equation
+   default is a STRING**, so the scrub resolver never sees a number to read places off. The
+   class of bug stops existing rather than being defended against.
+2. **The size follows the content.** Add a knob to a spec and the node grows; today it does
+   not, which is why `nodeFloorHeight` had to exist at all. **And a node that is always at
+   natural size cannot have knobs outside it** — the containment problem largely dissolves
+   for every node the author never resized, which is most of them.
+3. **Override is the ordinary gesture and needs no new mechanism.** Dragging a resize handle
+   writes a number, which REPLACES the equation — the author takes control by doing the
+   obvious thing. And the `=` affordance every row already carries is the way back.
+4. **It is the same shape the app already uses elsewhere** — `plugins/video_scrub.js`
+   defaults `seconds`/`progress` to `"self.…"` equation strings. Precedent exists; this
+   extends it rather than inventing.
+
+**⚠ THE ONE THING TO VERIFY BEFORE BUILDING: IS IT A CYCLE?** W1-D measured that a node's
+**floor is a function of WIDTH** (`audio_oscillator` at 80×124 wraps its knob band to three
+rows). So `node_height` legitimately depends on the resolved `w`. That is fine — a DAG —
+**provided `node_width` does NOT depend on `h`.** If both directions exist, `requireSlot`
+will refuse it as a loud cycle, which is the correct failure but means the design needs
+`node_width` to be content-only (port labels and knob-column count), with wrapping affecting
+height alone. **Confirm that asymmetry first; the whole idea rests on it.**
+
+**MIGRATION: leave existing documents alone.** Their nodes hold stored numeric `w`/`h`, and
+rewriting them would be a silent edit of authored values on load. New nodes get the equation
+default. The consequence, stated honestly: **nodes in existing decks keep whatever size they
+were saved at and keep their current escape behaviour** — R7-10's ladder (slide up → shrink →
+clip) remains the safety net for them, so it must not be removed when this lands.
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
