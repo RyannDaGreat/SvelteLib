@@ -253,3 +253,83 @@ add → bind x to self.vars.lambda → scrub → keyframe across two slides →
 tween=0.75 at alpha 0.5 through cameraFrame.evaluatedStateAt → undo one unit each),
 plus the shortcut-sweep allowlist entry for the new add-row. Gate: 95/95 node,
 hintbar_context_probe + the new probe green.
+
+## 2026-08-06 — ROUND 7 opens: the audio system was built beside the invariant
+
+Branch `powerrp_branch2` (worktree `/root/CleanCode/Dumps/RPPT/powerrpbranch2`),
+per the user's instruction to do all of this round's work there. Requirements
+recorded verbatim in the manifest at `## ROUND 7` before any code was touched
+(commit d982519), per manifest-first.
+
+### THE ROUND'S THESIS, IN THE USER'S WORDS
+
+*"The audio system seems to be like it was coded by some other person on the other
+side of the universe who didn't take any consideration into how this program works
+in general. It ignored property states and it just completely ignored the fact that
+the presentation mode should be just the same audio as editor mode."*
+
+This is a process failure worth recording as such, not just a bug list. The audio
+system was built to a brief and shipped working ON ITS OWN TERMS — the specs are
+well-documented, the engine clamps are mirrored honestly, `construct: true` was
+invented rather than lie about a knob. What it never did was join the app's core
+invariant. **A subsystem can be internally excellent and still be wrong, if it is
+excellent against its own private model.** That is the failure mode this round is
+paying off, and it is the same shape as the Tower of Babel law already in the
+manifest — one concept (a value the document owns) got a second expression.
+
+### FIRST-HAND RECON FINDINGS BEFORE ANY AGENT REPORTED (lead, 2026-08-06)
+
+Recorded now because they shape the plan, and because two of them CONTRADICT the
+obvious reading of the user's complaint — which is exactly the kind of thing that
+gets lost once a fix lands.
+
+1. **The connection model is ALREADY correct, and already property state.**
+   `core/nodeflow.js:27` — `state.inputs = {"<inPortKey>": {item, port}}`, a leaf of
+   ordinary widget state, keyframable, with `itemRefs: [["inputs","*","item"]]` so
+   duplicate remaps a patch. Its docblock even states the fan-in-1 rule structurally.
+   So "the entire audio system needs to be rewritten because it's not properly using
+   properties" is TRUE of the audio RUNTIME but NOT of the connection model. Whatever
+   breaks the bijection is downstream of a design that is right.
+2. **The Inspector's node-input row is also already backed by that same leaf**
+   (`web/Inspector.svelte:2492-2548`), and this exact area has been repaired twice
+   before for two DIFFERENT reasons — WORKSTREAM CC (the option list read the wrong
+   object, so a connected input showed "not connected") and WORKSTREAM CH (option
+   values spelled the pair with a raw NUL so they never compared equal). **Two prior
+   near-miss fixes in one dropdown is itself the finding**: the row keeps breaking in
+   the "reads fine, writes fine, but the two halves don't agree" direction, which is
+   precisely the direction the user is complaining about a third time.
+3. **The audio plugins are two-line spec wrappers** — `plugins/audio_*.js` are
+   `audioNodePlugin(SPEC)` over `core/audio_specs.js`. So R7-11's ~100 ported nodes
+   are mostly DATA authoring, not 100 plugin implementations. This is the single
+   biggest fact for planning: the breadth work is cheap IF the spec vocabulary is
+   right first, and expensive-and-wrong if it is not.
+4. **There are TWO node factories plus a bespoke one** — `audioNodePlugin`
+   (`core/audio_nodes.js`) and `controlNodePlugin` (`core/control_nodes.js:203`),
+   with `plugins/node_keyboard.js` (27 KB) hand-written outside both. That is the
+   Tower of Babel behind *"nodes don't seem to have any coherent way of where you
+   place the knobs"*, and it means R7-10 is a UNIFICATION, not a new layout engine.
+5. **Knob placement has already been patched once for this exact symptom.**
+   WORKSTREAM CD (`core/audio_nodes.js:648`, user: *"the knobs stay in place and the
+   module knobs are floating"*) added band-floor-then-scale reflow. So the knobs-
+   outside-the-node complaint is a REGRESSION OF A FIXED BUG or a different node
+   family — most likely the control/keyboard nodes, which never got CD's reflow.
+   **Do not re-fix CD; find which family lacks it.**
+6. **The audio-enable button is `web/AudioBadge.svelte`.** Its docblock defends
+   itself well (browsers refuse an AudioContext without a gesture; silence is
+   indistinguishable from breakage) — and the user has now overruled it outright:
+   *"Of course I fucking want audio on. I always want audio on."* The resolution is
+   NOT to ignore the browser constraint: satisfy it from a gesture the user is
+   already making, and keep a LOUD failure surface (the no-silent-failure law still
+   binds). What dies is the state that ASKS PERMISSION TO WANT SOUND.
+
+### RISK ON THE TABLE FOR THIS ROUND
+
+**Simulated state (`@`, `dt`) deliberately weakens a property the app relies on.**
+`<app>/CLAUDE.md` states that recordable state is SEEKABLE — "frame 200 renders
+without frame 199" — and that this is what lets `cli/render_job.js` shard a render
+by strided frame range. It also states outright that carrying state from frame N-1
+is disqualifying. R7-9 introduces exactly that, with the user's eyes open
+(*"it's very close to perfectly predictable, which is why it's okay"*). The cost is
+therefore real and must be BOUNDED, not discovered later: a document containing
+simulated state cannot be frame-range sharded, and the render job must detect that
+and fall back to sequential rather than silently emit a wrong video.
