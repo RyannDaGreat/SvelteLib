@@ -68,8 +68,21 @@ const appRoot = resolve(here, "..");
 const repoRoot = resolve(appRoot, "../../..");
 
 /** Per-test wall clock. A browser probe boots Vite + Chrome + CanvasKit, so it needs
- *  far longer than a pure-JS suite; the slowest legitimate probe observed is ~4 min. */
-const TIMEOUT_MS = { node: 300_000, browser: 600_000, python: 300_000, shell: 300_000 };
+ *  far longer than a pure-JS suite; the slowest legitimate probe observed is ~4 min.
+ *
+ *  NODE WAS 300_000 AND THAT WAS A PERMANENT FALSE RED (measured 2026-08-06).
+ *  `sky_twinkle_trails_test.js` takes **305.47 s standalone and PASSES** with a wider
+ *  window — it printed every check `ok` and then died on the cap, which reads in the
+ *  summary exactly like an assertion failure and is not one. Under this file's own x8
+ *  node concurrency it is slower still, so the suite failed on a clean tree, on both
+ *  branches, every run. Two separate Round 7 sessions spent time attributing it to their
+ *  own changes before measuring it.
+ *
+ *  Raised to match `browser` rather than special-cased per suite: a real HANG still
+ *  fails, just later, and R6-30's ruling is that a gate which cries wolf teaches you to
+ *  ignore it — that is the expensive failure, not a slow suite. If a node suite ever
+ *  legitimately needs more than this, the suite is the thing to fix. */
+const TIMEOUT_MS = { node: 600_000, browser: 600_000, python: 300_000, shell: 300_000 };
 
 /** How many of each kind run at once. BROWSER IS DELIBERATELY LOW: concurrent Chrome
  *  instances contend for the OS clipboard, which produced a ~50% flake in
