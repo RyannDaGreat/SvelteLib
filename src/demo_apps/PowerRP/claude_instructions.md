@@ -4242,10 +4242,30 @@ for:**
 1. **`setTransportLive` has ZERO callers repo-wide and `engine.scheduler.start()` is
    never called. The Sequencer node has never emitted a single step, in either
    mode.** A whole shipped widget does nothing.
-2. **THE DOTTED-KEY WRITE BUG IS NOT AUDIO-SPECIFIC.** `plugins/magnifier.js:207-208`
-   (`origin.x`, `origin.y`) and `plugins/tangent_lines.js:400-409` declare dotted row
-   keys and are silently broken by the same line — writing `state["origin.x"]` while
-   reading `state.origin.x`. Found only because the audio complaint led here.
+2. **~~THE DOTTED-KEY WRITE BUG IS NOT AUDIO-SPECIFIC.~~ RETRACTED — THIS WAS WRONG, AND
+   THE RETRACTION IS MORE INSTRUCTIVE THAN THE CLAIM.** The recon report asserted that
+   `plugins/magnifier.js:207-208` (`origin.x`, `origin.y`) and
+   `plugins/tangent_lines.js:400-409` were silently broken by the same unsplit-key line,
+   and the lead propagated it here without checking. **W1-A drove both widgets in a real
+   browser on unpatched HEAD and they wrote correctly**: `origin.x = 777`,
+   `origin.y = 888`, `a.halfW = 123`, `a.x = 456`, with **zero** dotted keys on the item.
+
+   **WHY:** those rows are `kind: "number"` / `"angle"`, and in item mode those kinds
+   never reach `commitField` at all — they go through `NumericField`/`AngleField` with
+   `path={["items", pickedItemId, ...writeKey(row).split(".")]}`, which has **always**
+   split. The kinds that DO reach `commitField` in item mode are select, asset,
+   text/richtext and nodeinput; a repo-wide grep found no dotted keys outside `inputs.*`
+   and number/angle rows. **So `nodeinput` was the sole live victim**, and the general
+   split now also protects any future dotted select/asset/text row.
+
+   **THE LESSON, which is the reason this is kept rather than deleted:** a plausible
+   root-cause generalisation ("same line, same shape, therefore same bug") was recorded
+   as measured fact by an agent and re-recorded by the lead, and only a third agent
+   actually drove the widgets. **A shared-cause claim is a hypothesis until the second
+   site is exercised.** Cost here was only a wrong paragraph; the same reflex is what
+   put "which is why the row still committed correctly" into
+   `web/Inspector.svelte:2559`, and THAT sentence talked three previous repairs out of
+   looking at the write path.
 3. **THE EDITOR DERIVES WIRES FROM THE CULLED LIST.** `render_gpu/ports.js:397`
    `ctx.wireNodes ?? nodes`; `web/cameraFrame.js:217` passes `wireNodes: allNodes`,
    `web/CanvasView.svelte:902` does not — so the editor drops a wire the instant
@@ -4628,10 +4648,48 @@ for it. Each ported node's spec carries:
 finding a flaw means re-reading the original library from scratch — which is exactly
 the cost the user is telling us to avoid paying twice.
 
-**EXECUTION:** batch swarm, after Tier A (a spec authored against the wrong vocabulary
-is worse than no spec — see § R7-DIAGNOSIS's two-line-wrapper finding). Each agent owns
-a disjoint slice of patches AND the spec files for the nodes that slice needs; where two
-slices need the same node, the lead assigns it to one owner and the other depends on it.
+#### EXECUTION: A THREE-PHASE SWARM. NODES ARE ASSIGNED BEFORE ANYONE BUILDS ONE.
+
+Runs after Tier A (a spec authored against the wrong vocabulary is worse than no spec —
+§ R7-DIAGNOSIS's two-line-wrapper finding).
+
+**USER, 2026-08-06:** *"since many patches will reuse nodes — have them coordinate ahead
+of time which nodes they'll build so we dont duplicate and keep it all DRY"*.
+
+**This replaces the earlier plan of "each agent owns a slice of patches, and the lead
+arbitrates collisions as they appear." That was reactive and would have produced exactly
+the duplication it was meant to catch** — with 50 patches over a shared vocabulary, the
+overlap is not an edge case, it is the normal case. `filter/lp svf`, `env/adsr`,
+`math/smooth` and `gain/vca` will be wanted by a dozen patches each. Two agents writing
+the same node independently is the Tower of Babel failure at its most literal: not two
+spellings of a concept, two implementations of one DSP recurrence, which will then
+diverge and sound different in different patches.
+
+**PHASE 1 — SURVEY. READ-ONLY, PARALLEL, NO CODE WRITTEN.**
+Agents harvest candidate patches and report, per patch: its source and tag, its exact
+node list (source object names), its distinct-node count, and which hard family it
+exercises. Nothing is built. Output is a patch→nodes table per agent.
+
+**PHASE 2 — THE LEAD COMPUTES THE UNION AND ASSIGNS. THIS IS THE COORDINATION POINT.**
+The lead dedupes into a single **NODE REGISTRY** — `.frenzy/round7/NODE_REGISTRY.md` —
+recording for every node: its source object + tag, **exactly one owning agent**, the
+patches that depend on it, and its status. **OWNERSHIP IS BY NODE, NOT BY PATCH.** Also
+selected here: the final 50 and the Axoloti/VCV split, checked against the difficulty and
+coverage obligations above rather than against convenience.
+
+**PHASE 3 — BUILD, PARALLEL, PIPELINED.** Each agent builds its assigned nodes first
+(disjoint spec/engine files), then assembles the patches assigned to it. **A patch is
+assembled only once every node it needs exists** — so patches pipeline per-patch as their
+dependencies land, rather than waiting on a global barrier. An agent that needs a node it
+does not own WAITS FOR IT; it does not write its own copy, and it does not "temporarily"
+inline one.
+
+**THE DRY GUARD, because a protocol nobody can check is a wish.** A node's `type` must
+appear in exactly ONE spec. Extend the existing coverage assertion
+(`tests/audio_nodes_test.js` already checks `plugins/audio_index.js` against
+`AUDIO_SPECS`) with: no duplicate `type` across all specs, and **every node referenced by
+a demo patch exists exactly once**. A duplicate must turn something RED, not be caught by
+a reviewer noticing.
 
 **⚠ THE COUNTS ARE LITERAL, AND THE LEAD UNDERSHOT THEM ONCE ALREADY.** User,
 2026-08-06: *"btw the numbers of patches i asked for were not exaggerated i actually want
