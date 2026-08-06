@@ -108,6 +108,15 @@ function stubWorkletNode(paramNames) {
 /** The `resources` bag the engine hands every factory. */
 function stubResources() {
   return {
+    // THE MASTER BUS (R7-22). `outputModule` REFUSES to build without it rather
+    // than falling back to `context.destination`, because an output that bypassed
+    // the bus would be audible while the session was muted and invisible to a
+    // recorder — wrong in both directions, and silent in both. That refusal is
+    // what made this suite fail when the bus landed, which is the check doing its
+    // job: an unbuildable module is an UNCHECKED module here, and this file counts
+    // those rather than skipping them. So the stub grows a bus; the assertion that
+    // zero modules were unbuildable stays exactly as strict as it was.
+    destination: makeNode(),
     impulseResponse: (character) => {
       assert.ok(REVERB_CHARACTERS[character], `impulseResponse asked for unknown character ${character}`);
       return { numberOfChannels: 2, length: 1000, sampleRate: 48000, getChannelData: () => new Float32Array(1000) };

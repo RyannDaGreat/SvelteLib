@@ -40,6 +40,7 @@ import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
 import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
 import { prepareMapTiles } from "../render_gpu/map_display.js";
 import { prepareScene3dViews } from "../render_gpu/scene3d_display.js";
+import { prepareLiveAnalysis } from "../render_gpu/gpu/live_analysis_registry.js";
 import { rect as rectCmd } from "../render_gpu/ir.js";
 /**
  * Query (memoized fold + evaluate). THE evaluated folded state for
@@ -163,27 +164,34 @@ export function cameraRectAt(doc, slideIndex, alpha, registry) {
  * @param {object} state EVALUATED folded state (equations already numbers).
  * @param {object} meta doc.meta ({slideW, slideH}) — the camera-rect fallback.
  * @param {object} registry Plugin registry.
- * LIVE AUDIO ANALYSIS (R7-5) rides `opts.liveAnalysis`, and it is an EXPLICIT
- * OPT-IN for the same reason `live` is — not inferred from `view`, and not run as
- * a pre-pass here. A surface asks for it when it has a running AudioContext whose
- * output the author is watching (the editor canvas, the presenter). Every other
- * caller of this function — thumbnails, the minimap, PNG/PDF/SVG export, the video
- * render job, the CLI hook — must NOT pass it: live samples are not reproducible,
- * so an export that drew them would differ run to run, and a headless render has
- * no samples to draw at all. Omitting it yields the analysis node's static form.
+ * LIVE AUDIO ANALYSIS (R7-5) is the FOURTH pre-pass, run here like the three
+ * above it because this function is the one that holds the derived node list —
+ * a caller cannot build the map itself without deriving the tree a second time.
  *
- * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number, project?: string, live?: boolean, liveAnalysis?: Map}} [opts]
+ * IT IS AN EXPLICIT BOOLEAN OPT-IN, NOT `view`-DRIVEN, and that is the whole
+ * safety property. A surface passes `liveAnalysis: true` when it has a running
+ * AudioContext whose output the author is watching — the presenter, and the editor
+ * canvas (which does not come through this function and calls
+ * `prepareLiveAnalysis` directly). EVERY OTHER CALLER MUST NOT: thumbnails, the
+ * minimap, PNG/PDF/SVG export, the video render job and the CLI hook all render
+ * something that must be reproducible, and live samples are not — an export that
+ * drew them would differ run to run, and a headless render has no samples at all.
+ * Gating on `view` instead would have been exactly wrong: the presenter passes a
+ * view, and so does anything else that knows its camera, so live audio would have
+ * leaked into surfaces that must never see it.
+ *
+ * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number, project?: string, live?: boolean, liveAnalysis?: boolean}} [opts]
  *   Optional world-space cull rect + live view (view + device-px canvas size) to
  *   drive the PDF display re-raster, and the owning project for ref resolution.
  *   `live` declares that the CALLER repaints when an async raster lands — see the
  *   note at the sceneIR call below; it is deliberately NOT inferred from `view`.
- *   `liveAnalysis` is render_gpu/gpu/live_analysis_registry.prepareLiveAnalysis's
- *   map, and is likewise an explicit opt-in.
+ *   `liveAnalysis` declares that this surface may draw LIVE audio analysis, and is
+ *   likewise an explicit opt-in.
  * @returns {Array} IR command list: [cameraBgRect, ...sceneIR(nodes)].
  *
  * @example // cameraFrameIR(evaluatedState, doc.meta, registry, {project: doc.meta.name}) // [rectCmd(bg), ...scene]
  */
-export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0, project = "", live = false, liveAnalysis = null } = {}) {
+export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0, project = "", live = false, liveAnalysis = false } = {}) {
   const rect = cameraRect(state, meta);
   const allNodes = deriveRenderTree(state, registry, project || meta?.name || "");
   let nodes = allNodes;
@@ -202,6 +210,12 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
   // the CLI — means no descriptor, and the widget renders its whole self at its
   // own world scale exactly as it did before this pre-pass existed.
   const scene3d = liveView ? prepareScene3dViews(nodes, view, viewW, viewH) : null;
+  // THE ANALYSIS PRE-PASS. Gated on the caller's own opt-in rather than on `view`
+  // (see the docblock), and built from the POST-CULL list: a culled node draws
+  // nothing, so it needs no descriptor. Its ring keeps filling either way — the
+  // engine's subscription is not driven by rendering, which is what R7-6 means by
+  // "a culled audio widget keeps playing".
+  const analysisColumns = liveAnalysis ? prepareLiveAnalysis(nodes) : null;
   return [
     // resolvedBackgroundFill (NOT bare parsePaint): the camera background is a
     // full PAINT prop — Solid / Linear / Radial / MATERIAL / `=` equation — and
@@ -232,6 +246,6 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
     // presenter would show a DIFFERENT set of wires than the PDF/PNG export of the
     // same slide, which is exactly the split the user asked to close. With no
     // cullRect, `allNodes === nodes` and this is the same object it always was.
-    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, liveAnalysis, live, wireNodes: allNodes }),
+    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, liveAnalysis: analysisColumns, live, wireNodes: allNodes }),
   ];
 }
