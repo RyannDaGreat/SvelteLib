@@ -256,3 +256,50 @@ export function initialParamOps(module, id) {
 /** The op builders, exposed as one object so tests can reach the pieces the diff
  *  uses without re-deriving them. */
 export const audioEngineOps = { constructParams, wireKey };
+
+/** The scheduler's own parameter names (synth/scheduler.js `setTempo`,
+ *  `setStepCount`), which are ALSO the knob keys the specs that own those numbers
+ *  declare. Spelled here rather than as a list of module names on purpose: a list
+ *  of names would be a second copy of core/audio_specs.js's shape and would go
+ *  stale the day a new tempo source is added. Whatever module declares the knob
+ *  drives the transport. */
+const TEMPO_KNOB = "bpm";
+const STEP_COUNT_KNOB = "stepCount";
+
+/**
+ * Pure function. THE SHARED TRANSPORT a scene asks for — the step clock's tempo
+ * and pattern length, read off whichever modules declare those knobs.
+ *
+ * ── WHY THIS IS DOCUMENT STATE AND NOT A SCHEDULER DEFAULT ──────────────────
+ * The scheduler was running at its own factory 90 BPM / 16 steps and nothing ever
+ * told it otherwise: the Clock node's Tempo knob set only its own oscillator's
+ * frequency, so the knob the author turned and the transport the sequencer ran on
+ * were two different numbers. That is the same class of defect as a knob that
+ * visibly moves and audibly does not.
+ *
+ * THERE IS ONE TRANSPORT, so a patch with two Clocks is locked to the FIRST in
+ * document order — stated rather than averaged, because averaging two tempos
+ * produces a third that neither knob shows.
+ *
+ * A null means "no module on this slide declares it": the caller leaves the
+ * scheduler's current setting alone rather than inventing one.
+ *
+ * @param {object} scene - a readAudioScene result
+ * @returns {{bpm: number|null, stepCount: number|null}}
+ *
+ * @example transportOf({modules: {}}) // {bpm: null, stepCount: null}
+ * @example transportOf({modules: {c: {spec: {knobs: [{key: "bpm"}]}, knobs: {bpm: 128}}}}) // {bpm: 128, stepCount: null}
+ * @example transportOf({modules: {s: {spec: {knobs: [{key: "stepCount"}]}, knobs: {stepCount: 12}}}}) // {bpm: null, stepCount: 12}
+ */
+export function transportOf(scene) {
+  const transport = { bpm: null, stepCount: null };
+  for (const module of Object.values(scene?.modules ?? {})) {
+    for (const knob of module.spec?.knobs ?? []) {
+      const value = module.knobs?.[knob.key];
+      if (!Number.isFinite(value)) continue;
+      if (knob.key === TEMPO_KNOB && transport.bpm === null) transport.bpm = value;
+      else if (knob.key === STEP_COUNT_KNOB && transport.stepCount === null) transport.stepCount = value;
+    }
+  }
+  return transport;
+}

@@ -15,7 +15,7 @@
   import { createPresenter } from "../core/presentation.js";
   import { cameraRect, deriveRenderTree } from "../core/derive.js";
   import * as T from "../core/transform.js";
-  import { fireLiveTrigger, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
+  import { enableAudio, fireLiveTrigger, mirrorAudioFrame, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
   import { fitRectView, canSkipNode } from "../core/view.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
@@ -181,10 +181,26 @@
       console.error(`PowerRP transition sound: playback of "${sound}" (${url}) was blocked/failed:`, e));
   }
 
-  /** Command. Paints the current frame. Branches on whether this is a FADE
-   * crossfade frame (async 2D snapshot blend) or an ordinary tween/instant
-   * frame (direct GPU render). */
+  /** Command. Paints the current frame — and MIRRORS IT INTO THE AUDIO ENGINE,
+   * because a frame is a frame whichever organ receives it. Branches on whether
+   * this is a FADE crossfade frame (async 2D snapshot blend) or an ordinary
+   * tween/instant frame (direct GPU render); the audio call sits ABOVE that branch
+   * because the sound of a fade is the sound of the document at that alpha,
+   * crossfade or not.
+   *
+   * ── WHY HERE AND NOT IN THE PRESENTER'S onFrame ─────────────────────────────
+   * paint() is called by every route that shows a frame: a tween tick, a
+   * navigation, the at-rest animation loop (a knob bound to `= time`), a resize,
+   * and the first frame after the GPU surface comes up. onFrame misses the last
+   * three. Hanging the sound off "what is on screen" rather than off "what the
+   * presenter announced" is what makes the two impossible to desynchronise.
+   *
+   * COSTS NOTHING WHEN NOTHING CHANGED: an unchanged scene diffs to zero engine
+   * calls (web/audioMirror.svelte.js), so a per-rAF call during a tween issues
+   * setParam only for knobs whose tweened value actually moved — which is exactly
+   * the whoosh the user could not hear. */
   function paint() {
+    mirrorAudioFrame(evaluatedStateAt(app.doc, frame.index, frame.alpha, app.registry), app.registry);
     const token = ++paintToken;
     if (isFadeFrame(app.doc, frame.index, frame.alpha)) paintFade(token);
     else paintGpu();
@@ -385,6 +401,14 @@
     // advancing time. Every other consumer (editor/CLI/thumbnails/export) leaves
     // the clock PAUSED → a deterministic freeze still. Stopped on exit (cleanup).
     startParticleClock();
+    // ENTERING PRESENT IS A GESTURE, SO SPEND IT (R7-3). The user reached here by
+    // clicking Present or pressing its shortcut, which is a user activation the
+    // browser will accept — so a deck whose first slide is a patch is audible from
+    // the first frame instead of from the presenter's first click. The mirror's own
+    // one-shot harvest covers every other entry; this one is here because a
+    // presentation is the case where waiting for a stray click in front of an
+    // audience is worst.
+    enableAudio();
     presenter.goTo(app.slideIndex);
     document.documentElement.requestFullscreen?.().catch(() => {}); // headless/iframe: fine without
     window.addEventListener("keydown", onkeydown, true);

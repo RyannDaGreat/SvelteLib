@@ -17,6 +17,13 @@
  * web/SlideNav.svelte + web/App.svelte (cameraRectAt) — outputs asserted
  * identical to the hand-assembled idioms they replaced.
  *
+ * NOT ONLY PIXEL CONSUMERS ANY MORE (R7-2/R7-4): web/PresentMode.svelte also feeds
+ * `evaluatedStateAt(doc, frame.index, frame.alpha, registry)` to the AUDIO mirror,
+ * from the same paint() that feeds cameraFrameIR. That is the whole fix for "the
+ * presentation audio behaves differently" and for a filter cutoff that stepped
+ * instead of sweeping: sound now comes out of the same [[slide, alpha]] evaluation
+ * the picture does, so the two cannot disagree.
+ *
  * TODO (flagged, out of this task's fence — contested file): CanvasView.svelte
  * still hand-assembles the SAME bg-rect + sceneIR recipe (its own idiom, with
  * culling — cameraFrameIR already accepts cullRect for exactly that). Swap it

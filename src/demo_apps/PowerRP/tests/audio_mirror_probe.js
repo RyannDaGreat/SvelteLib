@@ -110,17 +110,19 @@ try {
   ok(status.status === "blocked", `with a patch present the mirror is BLOCKED on the autoplay gate (got ${status.status})`);
   ok(status.moduleCount === 5, `and it knows how many modules it is holding (${status.moduleCount})`);
 
-  // THE BADGE IS THE HONEST SURFACE, and it must actually be in the DOM — a status
-  // field nothing renders is the same silence it exists to replace.
-  const badge = await page.evaluate(() => {
+  // ── AND IT ASKS NOBODY'S PERMISSION (R7-3) ────────────────────────────────
+  // This probe used to assert the opposite three lines down: that a button reading
+  // "audio off — click to enable" was rendered and visible. The user overruled that
+  // control outright ("Never make me ask that again. Get rid of that stupid ass
+  // button."), so the assertion is inverted rather than deleted — a prompt that
+  // comes back must turn something red. The engine is still reachable: the mirror
+  // harvests the next real pointerdown/keydown instead (proved end to end by
+  // tests/audio_frame_seam_probe.js, which uses a genuine click).
+  const prompt = await page.evaluate(() => {
     const b = document.querySelector(".nf-audio-badge");
-    if (!b) return null;
-    const r = b.getBoundingClientRect();
-    return { text: b.textContent.trim(), tag: b.tagName, visible: r.width > 0 && r.height > 0 };
+    return b ? b.textContent.trim() : null;
   });
-  ok(badge && badge.visible, `the autoplay badge is rendered and visible (${JSON.stringify(badge)})`);
-  ok(badge?.tag === "BUTTON", "and it is a real BUTTON — the browser requires a genuine gesture, and it must be keyboard-reachable");
-  ok(/click to enable/i.test(badge?.text ?? ""), `it says what to do (${JSON.stringify(badge?.text)})`);
+  ok(prompt === null, `NO permission prompt is rendered for a merely-blocked context (got ${JSON.stringify(prompt)})`);
 
   // ── WIRES ─────────────────────────────────────────────────────────────────
   await wire(noise, "out", filter, "in");

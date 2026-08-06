@@ -40,7 +40,7 @@
   // autoplay surface. See web/audioMirror.svelte.js for why both exist.
   import AudioOverlay from "./AudioOverlay.svelte";
   import AudioBadge from "./AudioBadge.svelte";
-  import { fireLiveTrigger, mirrorAudio, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
+  import { fireLiveTrigger, mirrorAudioFrame, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
   import { clipLineToRect } from "../core/geometry.js";
   // THE HANDLE GLYPH BANK: core/ owns the VOCABULARY (which looks exist and what
@@ -5346,12 +5346,28 @@
   const AUDIO_OVERLAY_TOP = 32;
 
   // ── DRIVING THE AUDIO MIRROR ───────────────────────────────────────────────
-  // The document's EVALUATED state, reflected into the engine on every change.
+  // THE EDITOR'S FRAME, handed to the one audio seam — the same object this
+  // component's paint() hands sceneIR, so what is heard is what is drawn.
+  //
+  // THIS COMPONENT IS NO LONGER THE ONLY DRIVER, and that was the defect (R7-2).
+  // web/PresentMode.svelte calls mirrorAudioFrame with ITS frame, at ITS alpha,
+  // every time it paints. Neither surface is special: the mirror takes an evaluated
+  // [[slide, alpha]] frame exactly as cameraFrameIR does, and there is no mode
+  // branch below it. Before this, the presenter never re-fired this effect (it
+  // writes app.slideIndex only on exit and this component stays mounted underneath
+  // it), so the engine sat frozen at the editor's slide for a whole presentation.
   //
   // IT READS app.state(), NOT app.nodes(). The mirror needs the item MAP — knobs and
   // connections — and nothing about geometry, so deriving a render tree for it would
   // be work thrown away. It also means moving a node's card, which changes the
   // derived tree on every pointermove, does not even reach this.
+  //
+  // app.state() AND NOT cameraFrame.evaluatedStateAt, deliberately and for one
+  // reason: the editor's frame INCLUDES app.previewDelta, the live mid-gesture
+  // edit that is not in app.doc yet. Turning an audio knob must be audible while
+  // the pointer is still down, and app.state() is the evaluation the editor is
+  // already painting from. The presenter has no preview to blend and reaches the
+  // identical evaluation through evaluatedStateAt.
   //
   // AND IT IS CHEAP WHEN NOTHING AUDIO-SHAPED CHANGED, which is the point: reading
   // the scene is a walk over the item map and an unchanged scene diffs to ZERO
@@ -5363,7 +5379,7 @@
   // clicking a node must not touch the audio graph.
   $effect(() => {
     app.doc; app.previewDelta; app.slideIndex; // reactive deps: the document, live edits, the slide
-    mirrorAudio(app.state()?.items ?? {}, app.registry);
+    mirrorAudioFrame(app.state(), app.registry);
   });
 
   // ── THE TYPED-NOTE SINK (WORKSTREAM CB) ──────────────────────────────────
