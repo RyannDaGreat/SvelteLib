@@ -15,7 +15,7 @@
   import ResizeHandles from "./ResizeHandles.svelte";
   import VideoV7Overlay from "./VideoV7Overlay.svelte"; // per-widget WebGPU video canvases stacked over the Skia scene (video_v7)
   import { videoV7Descriptors } from "./videoV7Placement.js";
-  import { pickNode, pickNodeStack, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, deriveRenderTree, cameraRect, worldTransform, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
+  import { pickNode, pickNodeStack, pointInNodeBox, nodeFeatures, nodeAnchors, nodeModifierPoints, modifierWrite, isGhostNode, cameraRect, worldTransform, groupMembership, snapExclusionSet, UNCONSTRAINED } from "../core/derive.js";
   // THE NODE-FLOW INTERACTION LAYER. core/wire_drag.js owns every decision the
   // gesture makes; this component owns only the events and the SVG that shows the
   // GHOST being dragged and the beads it may land on. `portColor` is the ONE
@@ -816,7 +816,13 @@
     // never re-renders per keystroke — the async render fires ONCE on commit
     // when the item is un-suppressed during the `closing` crossfade).
     const codeSuppressId = app.codeEditing && !app.codeEditing.closing ? app.codeEditing.itemId : null;
-    const allNodes = deriveRenderTree(state, app.registry, app.projectName());
+    // app.nodes() AND NOT A DERIVATION OF OUR OWN. It is the identical call — the
+    // same evaluated state, registry and project — but it is MEMOIZED on that
+    // state's identity, so the paint now shares one derivation with the two overlay
+    // layers and every hit test in this file instead of adding a full pass over
+    // every item to each frame. (Inlining it here is the same mistake the fold/blend
+    // lines above already record: a private copy of a shared computation.)
+    const allNodes = app.nodes();
     const nodes = allNodes
       .filter((n) => !canSkipNode(n, viewRect) && n.itemId !== latexSuppressId && n.itemId !== codeSuppressId);
     // VIDEO PLAYBACK GATE: only PLAYER videos actually VISIBLE this frame may
@@ -899,11 +905,20 @@
       // scene3d: the viewport pre-pass (todo #257) — the resolution and the
       // sub-frustum a 3D scene renders at, both of which follow THIS canvas's
       // zoom and pan and so cannot be decided inside a camera-free emit().
+      // `wireNodes` IS THE PRE-CULL TREE, and web/cameraFrame.js has passed it for
+      // every other pixel consumer since WORKSTREAM BN — this call did not, so the
+      // EDITOR alone derived its wires from the CULLED list and dropped a cable the
+      // instant either end left the viewport. render_gpu/ports.js names that as one
+      // of "the two wrong answers, both of which shipped at some point"; it was
+      // still shipped here, in the one surface an author actually wires patches in.
+      // The user's rule is "wires should only be culled if BOTH nodes are outside
+      // view", and passing the pre-cull tree is how sceneIR knows which ends survived.
       ...sceneIR(nodes, {
         pdfDisplay,
         mapTiles: prepareMapTiles(nodes, view, canvasEl.width, canvasEl.height),
         scene3d: prepareScene3dViews(nodes, view, canvasEl.width, canvasEl.height),
         live: true,
+        wireNodes: allNodes,
       }),
     ];
     // THE camera's dither settings drive the whole-frame final pass (scatters
@@ -4594,17 +4609,42 @@
   // bend closely; the result feeds a coarse ratio test, not a rendered path.
   const INK_DASH_INK_SAMPLES = 8;
 
+  /**
+   * Query (reads the live viewport and the container's measured size). The WORLD
+   * rect the SVG overlay is showing — THE cull rect for every per-node decoration,
+   * and the clip rect the infinite guides are cut to.
+   *
+   * It is `core/view.worldViewRect`, the same function paint() culls with, so the
+   * overlay cannot disagree with the picture about what is on screen. `dpr: 1`
+   * because the SVG's coordinates are CSS pixels while the canvas's are device
+   * pixels: paint() passes `canvasEl.width` (already multiplied by dpr) and the
+   * real dpr, this passes the CSS size and 1, and the two produce the SAME world
+   * rect by construction.
+   *
+   * `overlay` used to inline this arithmetic as a four-key object literal — a
+   * second expression of a named concept, which is the drift this codebase keeps
+   * paying for. Identical output: min() over a positive zoom is the (0,0) corner
+   * and |x1 − x0| is width/zoom.
+   */
+  function overlayViewRect() {
+    return worldViewRect({ ...viewport, dpr: 1 }, wrapW, wrapH);
+  }
+
   let overlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
+    app.doc; app.previewDelta; app.slideIndex; viewport; wrapW; wrapH; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
     if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], inkGhostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null, inkDashes: [], bandAddInkDashes: [], bandRemoveInkDashes: [] };
     const rect = containerEl.getBoundingClientRect();
-    const worldRect = {
-      x: (0 - viewport.panX) / viewport.zoom,
-      y: (0 - viewport.panY) / viewport.zoom,
-      w: rect.width / viewport.zoom,
-      h: rect.height / viewport.zoom,
-    };
+    const worldRect = overlayViewRect();
     const nodes = app.nodes();
+    // THE DOCUMENT-WIDE DECORATIONS ARE CULLED (R7-6). Three of the lists below —
+    // the anchor dots, the ghost outlines and the ink-bounds ghosts — are ONE DOM
+    // ELEMENT PER NODE (per ANCHOR, for the first) over the whole document, so with
+    // "show anchors" on, a deck with a thousand off-screen widgets emitted several
+    // thousand SVG circles nobody could see and rebuilt them on every pan. The
+    // selection-driven lists are deliberately NOT culled from: they are bounded by
+    // what the author selected, and `nodes` still feeds the hit tests and the
+    // editPoint `byId` map, where an off-view item is a legitimate reference.
+    const visibleNodes = nodes.filter((n) => !canSkipNode(n, worldRect));
     const selectedIds = app.selectedIds();
     const sel = nodes.find((n) => n.itemId === app.selection);
 
@@ -4994,7 +5034,7 @@
       bandRemoveInkDashes = remove.inkDashes;
     }
 
-    const anchors = (app.anchorsVisible ? nodes : []).flatMap((n) =>
+    const anchors = (app.anchorsVisible ? visibleNodes : []).flatMap((n) =>
       nodeAnchors(n).map((a) => actions.worldToScreen(a.x, a.y)));
 
     // GHOST-OUTLINE (manifest ARCHITECTURE PLAN #2): widgets with no rendered
@@ -5003,7 +5043,7 @@
     // the editor"); other ghosts (future: empty text, groups) only when the
     // "Show Ghosts" toggle is on. Editor-only chrome — never reaches sceneIR/
     // the GPU composite, so it never exports/presents.
-    const ghostOutlines = nodes
+    const ghostOutlines = visibleNodes
       .filter((n) => isGhostNode(n) && n.plugin.capabilities.bbox && (n.type === "cropbox" || app.showGhosts))
       .map(outlineOf);
 
@@ -5024,7 +5064,7 @@
     // chrome — editor-only, never in sceneIR, never exported or presented, like
     // every other overlay decoration.
     const inkGhostOutlines = app.showGhosts
-      ? nodes.flatMap((n) => {
+      ? visibleNodes.flatMap((n) => {
           if (!n.plugin.capabilities.bbox || !n.plugin.localBounds) return [];
           const ink = n.plugin.localBounds(n.state);
           if (!ink || (ink.w <= 0 && ink.h <= 0)) return []; // nothing drawn: no ink to outline
@@ -5168,11 +5208,34 @@
    *
    * SCREEN SPACE, like the rest of the overlay: the SVG is in screen coordinates,
    * so every world point goes through `worldToScreen` exactly once, here.
+   *
+   * ── IT IS CULLED, BY THE SAME PROTOCOL THE PAINT USES (R7-6) ────────────────
+   * Every list below draws something AT a node — a hit target on its port, a ring
+   * on its dial, a wash over its card — so a node the paint skipped contributes
+   * nothing to any of them. Un-culled, this emitted one SVG <circle> per PORT of
+   * every node in the DOCUMENT and rebuilt the lot on every viewport change:
+   * measured at 3006 circles for a 1000-node patch parked entirely off-view, none
+   * of them on screen, which is the DOM half of the user's "laggy when there are
+   * tons of objects, even if they're out of view".
+   *
+   * ONE CULLING PROTOCOL, NOT A SECOND ONE: `canSkipNode` against `worldViewRect`,
+   * the pair paint() filters on, so the overlay and the picture can never disagree
+   * about what is on screen. The rect is built at dpr 1 because THIS surface is the
+   * SVG, whose coordinates are CSS pixels — the paint passes device pixels and its
+   * own dpr, and the two rects are the same world rect by construction.
+   *
+   * THE WIRES ARE NOT AT RISK FROM THIS, and that is worth stating because it is
+   * the one thing culling an endpoint list could break. They are scene content now
+   * (render_gpu/ports.sceneIR), derived from `wireNodes` — the PRE-CULL tree paint()
+   * hands it — so a cable into an off-view node keeps both of its ends. Nothing
+   * downstream of here reads these beads for geometry: the wire GESTURE takes its
+   * anchors from sceneBeads(), which is deliberately un-culled.
    */
   let nodeOverlay = $derived.by(() => {
-    app.doc; app.previewDelta; app.slideIndex; viewport; // reactive deps (match `overlay`)
+    app.doc; app.previewDelta; app.slideIndex; viewport; wrapW; wrapH; // reactive deps (match `overlay`, plus the cull rect's size)
     if (!actions) return { beads: [], ghost: null, analysis: [], knobRings: [], litKeys: [], playCards: [] };
-    const nodes = app.nodes();
+    const viewRect = overlayViewRect();
+    const nodes = app.nodes().filter((n) => !canSkipNode(n, viewRect));
     const pt = (x, y) => actions.worldToScreen(x, y);
     // THE BEADS ARE DRAWN BY THE PAINTER (core/node_chrome.portBeads), not here —
     // they are part of the node's picture and must appear in exports, in the

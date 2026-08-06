@@ -1304,8 +1304,59 @@ export class PowerRPApp {
     return anchorRefName(this.rawState(), itemId, anchorId);
   }
 
+  /**
+   * Query. The z-sorted render tree for the current frame — THE derivation every
+   * editor consumer reads (the paint, both overlay layers, every hit test, every
+   * pointermove handler).
+   *
+   * IDENTITY-STABLE, exactly like rawState() one level up, and for a sharper
+   * version of the same reason. This is called ~30 times per frame in
+   * web/CanvasView.svelte alone — several of them from pointermove handlers and
+   * from $derived blocks that re-run on every viewport change — and each call used
+   * to be a FULL deriveRenderTree over every item in the document, including a
+   * complete evaluateNodeGraph topological pass. Measured on a 1000-node deck
+   * parked off-view: 30 pan frames cost 4.0 s before this cache and the beads alone
+   * rebuilt 3006 SVG circles per frame. That is the whole of the user's "it's laggy
+   * when there are tons of objects, even if they're out of view" (R7-6) — culling
+   * itself was never off (core/view.canSkipNode has run in the paint all along).
+   *
+   * THE KEY IS THE EVALUATED STATE'S IDENTITY, and that is the ONE thing it can be:
+   * `state()` already returns the same object until something real changes, because
+   * evaluateState memoizes on the folded state and re-keys on the clock, the project
+   * script, the content sizes and the SIMULATION GENERATION. So every axis that must
+   * invalidate a derivation invalidates that object first, and this cache inherits
+   * all of them for free — including the one that is easiest to get wrong, SIMULATED
+   * state: a `@`/`dt` document produces a new evaluated state per step and exactly
+   * one step per clock instant (core/simulation_history.beginSimulationStep does not
+   * roll twice at one instant), so N calls in a frame still advance the simulation
+   * once, as they always did.
+   *
+   * `registry` and `projectName()` are the other two arguments and both can change
+   * under a running app — reloadPluginAssets REPLACES the registry, and opening a
+   * project renames it — so both are compared too. A plain field, never $state: it
+   * is written from inside $derived blocks (mutating reactive state there is an
+   * error), which is the same reason #blendCache is a plain field.
+   *
+   * Callers must not mutate the returned array or its nodes; they never did (the
+   * derivation was already handed out fresh to a dozen readers that only read).
+   */
+  #nodesCache = { state: null, registry: null, project: null, nodes: null };
+
   nodes() {
-    return deriveRenderTree(this.state(), this.registry, this.projectName());
+    // state() FIRST and unconditionally: it is what registers this call's reactive
+    // dependencies (doc, previewDelta, slideIndex) with the surrounding $derived or
+    // $effect. Returning a cached array before reading it would make a consumer
+    // stop tracking the document.
+    const state = this.state();
+    const project = this.projectName();
+    const c = this.#nodesCache;
+    if (c.state !== state || c.registry !== this.registry || c.project !== project) {
+      c.state = state;
+      c.registry = this.registry;
+      c.project = project;
+      c.nodes = deriveRenderTree(state, this.registry, project);
+    }
+    return c.nodes;
   }
 
   selectedNode() {
