@@ -4303,6 +4303,156 @@ modules behind them), R7-12 (~30 patches + demo slides), R7-13 (keyboard already
 `baseNote`/`octaves`; only the LOCK toggle is missing), R7-14 (piano roll), R7-15
 (trail), R7-16 (double-pendulum preset — needs W1-C).
 
+### R7-10 DESIGN: THE INLINE-VALUE SOCKET ROW, AND MEASURE-THEN-PLACE
+
+From the patcher survey, `.frenzy/round7/patchers_blueprints_report.md` §A0–A8.
+**This CORRECTS an earlier instruction to copy Axoloti's uniform 14 px grid pitch.**
+Axoloti's constant pitch works only because Axoloti has no inline widgets in its port
+rows. We are adding exactly that, so their rule does not survive the feature.
+
+**THE STRUCTURE: one ordered port list; each port is a full-width row; a WIRED port
+shows its label, an UNWIRED port shows its editor widget in that same row.**
+
+    showWidget = widget && (isOutput || !socket || linkCount === 0)
+
+**This IS the knob-or-input duality**, and it supersedes the earlier "every param gets
+an implicit same-named inlet" framing — it subsumes it and makes the state VISIBLE
+rather than inferred, which is what the user's complaint was actually about.
+**Four unrelated projects invented this independently** (Blender, Unreal Blueprint,
+Rete.js, litegraph's TS fork). That convergence outweighs any one of them being well
+designed.
+
+**THE MECHANISM: measure-then-place in abstract units, pixels exactly once at the
+end.** Not constant pitch — once a row can hold a widget, row heights VARY. Measured:
+in Blender an unlinked Vector input is ~84 px and **collapses to 20 px the instant a
+link attaches**; the node visibly shrinks. Three passes (faust-ui's model):
+
+    adjust()   bottom-up — each leaf reports intrinsic size
+    expand()   distribute slack ONLY to children whose sizing policy accepts it
+    offset()   assign absolute positions
+
+**Why this family and not a host layout engine: we do not have one.** We paint through
+Skia, and `cli/render.js`, `cli/render_job.js` and `gpuService` must all produce
+byte-identical geometry headlessly. There is no flexbox to ask. Blender's
+`block_layout_resolve` and Blockly's `RenderInfo.measure()` are the same family.
+**Blender's trick, worth stealing outright: hand the layout a start `y`, let arbitrary
+widget calls run, then read `y` back — never ask a node how tall it is.** That is why
+a node whose row count varies with a dropdown needs no special case.
+
+**TWO RULES THAT MUST NOT BREAK — and both are the invariant test, not prose:**
+1. **A CONTROL NEVER HAS AN AUTHORED `x`.** The moment it does, you have VCV Rack.
+2. **EXACTLY ONE LAYOUT PATH, UNBYPASSABLE.** Bespoke Synth is the measured
+   cautionary tale: an excellent auto-layout macro that **only 83 of ~265 modules use
+   (64 auto-sizing), with 191 headers overriding `GetModuleDimensions` and one
+   mutating its height DURING paint.** An auto-layout that CAN be opted out of WILL
+   be. `core/audio_nodes.js:305-312` already refuses an override hatch for
+   `emit`/`ports` deliberately — extend that precedent, do not weaken it.
+
+**THE MEASURED ARGUMENT FOR WHY CONTAINMENT MUST BE TESTED, NOT EYEBALLED.** In VCV,
+`addParam()` is literally `addChild(param)` with no bounds check. A traced
+out-of-panel widget: `drawChild` clips it so it is **never drawn**; `recurseEvent`
+skips it so it **receives no mouse events** — yet the param still serializes,
+randomizes, is MIDI-mappable, and is read every sample. **An invisible, unreachable,
+but LIVE control.** Strictly worse than a knob sticking out of the card, because
+there is nothing to notice. So the test asserts CONTAINMENT, never visibility.
+
+### R7-7 BOUNDARY: A SIGNAL IS NOT A PROPERTY — WHICH NODES CAN HAVE OUTPUT PROPERTIES
+
+**The user's question, 2026-08-06, which located this before it became a bug:**
+*"Like, how would an LFO output to audio if our control rate = the draw rate of the
+canvas"*
+
+**It doesn't, and that is the point.** Verified at `synth/engine.js:548`:
+
+```js
+if (target.node instanceof AudioParam) source.node.connect(target.node);
+```
+
+An LFO's output is an **AudioNode**. Wiring it to a filter's `frequency` is a NATIVE
+Web Audio AudioNode→AudioParam connection made ONCE, structurally. The modulation then
+runs on the browser's audio thread at audio rate. **The document never sees the LFO's
+value and the frame rate is irrelevant to it.** The mirror only ever does three things:
+create/destroy modules, `connect`/`disconnect`, and `setParam` for knobs.
+
+**SO THE FRAME RATE BOUNDS HOW FAST A KNOB MOVES, NOT HOW FAST A SIGNAL OSCILLATES.**
+This is what the existing port types already mean, and reading them loosely is how the
+confusion starts (`core/audio_specs.js:11-25`): `audio` = an AudioNode carrying a
+signal; `number` = an AudioParam a wire can drive. Its own words: *"Every module output
+is audio, including the sequencer's `pitch` and `gate`: they are control SIGNALS on
+AudioNodes, not numbers the document can read."*
+
+**THE BOUNDARY THIS PUTS ON R7-7:** an audio-rate signal **CANNOT** be an output
+property. Reading an LFO's instantaneous value into the document would sample it at
+frame rate, make it ephemeral state, and break determinism — three refusals at once.
+So:
+
+- **Output properties apply to CONTROL nodes** — knob, slider, button, keyboard, math,
+  number: values the document genuinely knows and can reproduce from `[[slide, alpha]]`.
+- **Output properties do NOT apply to audio signal outputs.** `computeOutputs` already
+  reflects this by accident of good design (`plugins/node_display.js` is a pure sink,
+  `node_button` returns `{out: 0}` because the press is live, not state).
+
+**THERE ARE THEREFORE TWO LFOs, AND THE UI MUST NOT PRETEND OTHERWISE:**
+1. **Audio LFO** — an AudioNode, modulates AudioParams at audio rate, invisible to the
+   document. For tremolo, vibrato, filter sweeps, FM.
+2. **Document LFO** — a pure equation of `time` (`= sin(time * 2 * pi * 2)`), evaluated
+   per frame, fully deterministic, drives VISUAL properties. **Already expressible
+   today; needs no widget.**
+
+**THE TRAP TO DESIGN AGAINST:** an author wires an AUDIO LFO into a rectangle's
+rotation and gets nothing, because that value does not exist outside the engine. That
+wire must be REFUSED WITH A SENTENCE, not silently accepted — `connectionRefusal`
+(`core/nodeflow.js`) is exactly the mechanism, and "honest at the gesture" is already
+its stated principle.
+
+**AND THE SOFT CEILING IN THE OTHER DIRECTION, stated so nobody treats it as a bug:** a
+document-side value driving an audio param is fine up to a few Hz (5 Hz at 60 fps is 12
+samples per cycle — usable, and the adaptive ramp smooths it). Audio-rate modulation
+must stay inside the engine. That is a real limit of pushing values across a frame
+boundary, not a defect to fix.
+
+### R7-8 DESIGN: TRIGGERS, AND THE ONE RULE THAT BUYS BACK THE CORE INVARIANT
+
+Blueprint's model, verified (same report, §B1–B6). The cardinalities are exact
+mirrors, and that symmetry is the key structural fact:
+
+    exec OUT ≤1 wire     exec IN many
+    data OUT many        data IN ≤1
+    event  : no exec IN, one exec OUT        pure  : no exec pins at all
+    impure : has exec pins, runs per pulse   latent: registers a pending action, RETURNS
+
+**Why exec is a separate wire kind at all:** side effects need a TOTAL order and pure
+values do not. Dataflow gives only a partial order — it cannot express "do A then B
+when neither reads the other", cannot express zero occurrences, and cannot branch.
+**Pure nodes are not nodes in the emitted program at all**; a pure chain is a
+statement template copied into the head of each impure consumer. Every observable
+Blueprint behaviour follows from that one sentence.
+Cardinality is enforced by honouring the new wire and **silently dropping the old
+one**, not by refusing the connection — which matches our own fan-in-1 rule
+(`core/nodeflow.js:29-45`), arrived at independently. Good corroboration.
+
+**WHAT MAPS:** pure node ≡ property equation (an identity, and re-evaluate-per-read is
+CORRECT for us because our expressions are genuinely pure) · data edge ≡ cross-item
+reference · `BeginPlay` ≡ `onSlideEnter` · inline widget on an unconnected pin (≡ the
+socket row above) · collapsible advanced pins · Timeline ≡ a keyframe track with an
+exec pin.
+
+**WHAT DOES NOT MAP, and must not be copied:** `Event Tick` with `DeltaSeconds` as a
+general trigger — it breaks Δt = 0, frame-range sharding and export reproducibility
+all at once. Use `onAlphaChange(alpha)`. Wall-clock `Delay` becomes
+`DelayAlpha(Δalpha)`. UE's UNDEFINED multicast order must not be inherited — ours is
+`topoOrder`. And Blueprint's *syntactic* purity ("no exec pin", yet `Random Integer`
+is pure there) must never override our SEMANTIC definition.
+*(Note the boundary: R7-9's simulated state deliberately does take an elapsed-time
+input. That is a bounded, opt-in, double-buffered exception with a loud shard
+refusal — not a licence for a general Tick trigger.)*
+
+**THE RULE THAT SAVES THE INVARIANT: restrict exec sources to functions of POSITION,
+and require every effect to be IDEMPOTENT — `set X to V`, never `add 1 to X`.** Then
+replaying from slide 0 is cheap, correct, and identical every time, and
+`RenderTree = pure(document, [[slide, alpha]])` survives having events at all. This is
+the single most important sentence for whoever builds R7-8.
+
 ### R7-11 PORTING RULES — the fixed-point→float laws, and the traps that change the sound
 
 From primary sources (Axoloti firmware + Java + 684 object definitions); full report
