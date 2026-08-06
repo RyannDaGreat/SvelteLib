@@ -4656,6 +4656,48 @@ If a target cannot be met, the round says so EXPLICITLY with the shortfall named
 reason — scaling work down is the user's call, not the agent's.
 *"We gonna have a GIANT beautiful node library!"* is the requirement.
 
+#### ⚠ SELECTION IS FOR POPULARITY AND DIFFICULTY. THIS IS THE ENTIRE MECHANISM.
+
+**USER, 2026-08-06, verbatim:** *"dont just choose random bullshit-ass easy patches
+either. choose popular, pretty challenging ones so I can impress people with my demos —
+especially if that means we gotta add more emulated nodes along the way (thats kinda the
+point its a way to choose which nodes to build without getting lazy and choosing the easy
+ones)"*
+
+**READ THAT TWICE BEFORE PICKING A SINGLE PATCH.** Patch-driven selection exists to
+FORCE the hard nodes to get built. An agent measured against "50 patches" has a natural
+incentive to pick the 50 cheapest, which would hit the number and destroy the purpose.
+So:
+
+- **A PATCH'S NODE COST IS A FEATURE, NOT A COST.** One patch that forces three new hard
+  nodes is worth more than three patches that force none. `~100 nodes` is a floor
+  precisely because good patches will blow through it.
+- **REJECT A PATCH FOR BEING TRIVIAL. NEVER REJECT ONE FOR BEING HARD.** "It needs a
+  node we do not have" is the reason to CHOOSE it. If a patch is genuinely
+  unimplementable, say why in one sentence and pick another hard one — do not substitute
+  an easy one.
+- **AIM AT THE HAND-AUTHORED CORNERS OF THE LIBRARIES.** Measured (R7-11): of Axoloti's
+  684 objects, **610 are machine-generated** boilerplate (math/logic/mux overloads) and
+  **74 are hand-written — and the hand-written ones are the good ones**: `osc/brds/` (40
+  Braids ports) and `fx/` (13 Mutable Instruments ports — Clouds, Rings, Elements,
+  Streams, Warps) are 100% hand-authored. **Demos come from there, not from the
+  generated arithmetic.** Same principle for VCV: the modules people are actually
+  impressed by.
+- **COVERAGE OBLIGATION.** The 50 must COLLECTIVELY exercise the hard families, not
+  cluster in one: granular · FDN/plate reverb · pitch shifting · wavetable and phase
+  distortion · physical modelling (string/modal) · FM · vocoder/spectral · chaotic and
+  generative sequencing · polyphony with voice allocation. The pads/leads/ambience bias
+  stands, and the best pads found are already hard ones — `Shimmer.axp` (two
+  pitch-shifters inside an FDN feedback path), `EvolPad.axp` (three incommensurate 7.7 s
+  LFOs rewriting waveform step levels), `SolinaStrings.axp` (three-phase BBD ensemble).
+
+**THE ANTI-GAMING GUARD, because the count alone can be satisfied dishonestly.** Every
+patch entry records **its distinct-node count** and **which hard family it exercises**,
+and the round reports the tally. **A set of 50 patches averaging four trivial nodes each
+has FAILED, even at 50/50.** The report must make that visible rather than let a number
+stand in for the requirement — which is the same reason the test gate is not allowed to
+quote a partial count.
+
 ### R7-18 A DEMO AUDIO PATCHES SUBMENU (user, 2026-08-06)
 
 > *"we need a demo audio patches submenu like demo widgets btw cause we gonna have a lot
