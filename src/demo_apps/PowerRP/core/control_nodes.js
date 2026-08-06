@@ -72,6 +72,7 @@ import { bundle, bundleNestedDefaults, props } from "./properties.js";
 import { NODE_ITEM_REFS, nodeCardRim, nodeInkBounds } from "./nodeflow.js";
 import { NODE_BODY_GAP, nodeBodyTop, nodeBox, nodeDefaultSize, nodeFaceBand, textLineH } from "./node_chrome.js";
 import { AUDIO_READOUT_SIZE } from "./audio_nodes.js";
+import { KNOB_BAND_MIN_SCALE } from "./node_knobs.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
 
@@ -314,17 +315,13 @@ export function controlNodeHeight(face, ports, bottomPad = face.bottomPad ?? 0) 
  */
 export function controlFloorHeight(face, plugin, s) {
   const natural = Math.max(0, face.height ?? 0);
-  const minScale = face.minScale ?? CONTROL_FACE_MIN_SCALE;
+  // THE SAME FLOOR THE KNOB BAND TAKES, read from the one place it is defined
+  // rather than restated here. A second name for 1/3 would be a two-element
+  // mirror of exactly the kind the brief forbids: it cannot be derived from the
+  // first, so it can only drift away from it.
+  const minScale = face.minScale ?? KNOB_BAND_MIN_SCALE;
   return nodeBodyTop(plugin, { ...s, h: undefined }) + natural * minScale + Math.max(0, face.bottomPad ?? 0);
 }
-
-/** The tightest a control node's face may be squeezed, as a fraction of its
- *  natural height — the same floor a knob band takes (core/node_knobs
- *  .KNOB_BAND_MIN_SCALE), because it is the same judgement: past roughly a third
- *  a control is a smudge that still eats presses. Named here rather than
- *  imported bare so the two can diverge if a face ever needs a different floor,
- *  and so a reader of this file sees which number applies. */
-export const CONTROL_FACE_MIN_SCALE = 1 / 3;
 
 /**
  * Pure function. A COMPLETE plugin for one control node, from the parts that
