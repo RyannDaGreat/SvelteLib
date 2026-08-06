@@ -5352,9 +5352,63 @@ different pictures, and an export disagrees with the editor.
 in the editor and another in an export, with a green exit code. That is the failure this
 project forbids by name, and it is the reason the variable is absent rather than an oversight.
 
-**NOT SCHEDULED.** Recorded here because the user asked and the answer is a design decision,
-not a bug. **Option 2 is the recommendation**; it needs a ruling from the user before anyone
-builds it, since options 2 and 3 are different products.
+**USER RULING, 2026-08-06: *"its recordable state. we can record it every frame"*** —
+**OPTION 2. Settled.**
+
+**AND THE RULING IS EXACTLY RIGHT IN THE TAXONOMY'S OWN TERMS, which is what makes it a
+design rather than a loophole.** `<app>/CLAUDE.md` defines recordable state as needing *"an
+ambient input (presentation time `t`) that is not document state, but is a PURE FUNCTION of
+it"*. A live pointer is not a function of `t` — but **a RECORDED pointer track is**:
+playback is `sample(track, t)`. **Recording converts an ephemeral input into recordable
+state by making it a function of time.** That is the whole trick, and it is why this
+proposal keeps `RenderTree = pure(document, [[slide, alpha]])` intact where exposing a live
+`mouse_x` would have broken it.
+
+**FOUR THINGS THE BUILD MUST DECIDE, none of them obvious:**
+
+1. **WHERE THE TRACK LIVES — `meta`, not a slide delta.** A pointer track spans a
+   presentation; slide deltas are per-slide. `meta.script` is the precedent for a
+   document-level, non-folded `meta` member. A per-slide track would fragment one continuous
+   gesture across slide boundaries.
+2. **⚠ STORAGE VOLUME IS A REAL PROBLEM.** Every frame at 60 fps for five minutes is ~18,000
+   samples of (x, y, buttons). Naively keyframing that would bloat the document by hundreds
+   of KB and make undo/redo and autosave miserable. **It needs a compact representation** —
+   typed numeric arrays, delta or RLE encoding, and a decimation pass (a stationary pointer
+   should cost almost nothing). Decide this BEFORE writing the recorder; retrofitting a
+   format is worse than choosing one.
+3. **LIVE vs REPLAY — the track is the source of truth for RENDERING.** The live pointer
+   WRITES the track during a recording pass; rendering always READS the track. With no
+   recording the cursor sits at rest, which is deterministic and honest. That single rule
+   keeps the editor, the presenter and every export on one path — the R7-2 law.
+4. **EXPORTS: replay the track exactly; with no track, render at rest.** Both are
+   deterministic, and the export must SAY which it did rather than leave the author guessing
+   why their cursor did not move.
+
+### R7-25 THE MOUSE-CURSOR DEMO PRESET (user, 2026-08-06)
+
+> *"I want a mouse-cursor demo widget which = a trail + cursor widget that follows mouse x
+> and y, and follows mouse_left_clicked to go from open to closed hand. NOte: these are
+> normal basic ass vanilla widgets like the double pendulum, but with pre-filled equations
+> in their properties"*
+
+**Same architecture as R7-16 / R7-20: a PRESET that stamps ordinary widgets with pre-filled
+equations. No new widget type.** Third instance of one mechanism — build it in that slice.
+
+**IT NEEDS NO NEW ART.** `plugins/demo/cursor.js` already ships the two shapes: the
+canonical list in `render_gpu/gpu/svg_raster.js` includes **`handpointing`** and
+**`handgrabbing`**. So the open/closed hand is a `shape` equation, e.g.
+`= mouse_left ? "handgrabbing" : "handpointing"`. **VERIFY that a discrete/select row accepts
+an equation** before relying on it — R6-7 put equations on every property, but a select
+returning a string needs checking rather than assuming.
+
+**COMPOSITION:** the cursor widget's `x`/`y` bind to the pointer track; the R7-15 trail
+anchors to the cursor. **Depends on R7-15 and on R7-24's recorder.** The cursor plugin also
+already carries measured pointer presets (contact shadow, click halo) — reuse them rather
+than inventing a look; its docblock cites what each was measured from.
+
+**A NOTE THE BUILD WILL WANT:** `plugins/demo/cursor.js`'s own docblock labels its spin as
+RECORDABLE state and cites the taxonomy — so this widget was already designed against the
+law this preset has to satisfy. Read it before starting.
 
 ### R7-RULING: THE TEST BUDGET
 
