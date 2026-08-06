@@ -137,6 +137,13 @@ import {
   beginSimulationStep, hasSimulationValue, simulationValue, recordSimulationValue,
   simulationGeneration, cameraMaxTimestep, withSimulationFrozen,
 } from "./simulation_history.js";
+// THE AMBIENT POINTER behind `mouse_x` / `mouse_y` / `mouse_left` (manifest R7-24).
+// RECORDABLE state, reached through a seam of exactly particle_clock's shape — live
+// in the presenter, frozen in every still consumer, overridable per frame. This
+// module owns the GRAMMAR (the keywords below + readPointer in
+// computeEvaluatedState); core/pointer_input.js owns the ambient value and its
+// regimes, the same split the clock and the simulation table both keep.
+import { POINTER_KEYWORDS, pointerInput } from "./pointer_input.js";
 // THE MATERIAL KNOB SCHEMAS (see §Material param knobs). A paint's material
 // params are declared in the material REGISTRY, not in plugin.defaults, so this
 // is the only place core can learn their kinds and defaults. Same layering as the
@@ -288,7 +295,21 @@ const RESERVED_LITERALS = new Map([["true", true], ["false", false]]);
 // controlled clock `time` is. It is a keyword rather than a variable for the same
 // three-passes-must-agree reason, and its display and stored forms are identical, so
 // it round-trips verbatim exactly as `time` does.
-export const RESERVED_KEYWORDS = new Set(["time", "dt"]);
+//
+// `mouse_x` / `mouse_y` / `mouse_left` are the THIRD such thing (manifest R7-24) and
+// the same kind again: the AMBIENT POINTER, read through core/pointer_input.js's
+// seam the way `time` is read through the clock's. They are FOLDED IN from
+// POINTER_KEYWORDS rather than restated, because that table is also what scopeGet
+// reads the value through and what server/server.py's export warning matches — a
+// second spelling of the list here is exactly the drift this set exists to prevent.
+// Their display and stored forms are identical, so they round-trip verbatim.
+//
+// A KEYWORD IS UNSHADOWABLE (scopeGet resolves it before any document reference), so
+// a pre-existing variable named `mouse_x` would silently change meaning. That risk is
+// what kept `min`/`max` OUT of this precedence (see scopeGet's asymmetry note), and it
+// is acceptable here for the reason it was for `dt`: these are minted names, not
+// ordinary words a deck plausibly already uses for something else.
+export const RESERVED_KEYWORDS = new Set(["time", "dt", ...Object.keys(POINTER_KEYWORDS)]);
 
 // ── Previous-value marker (SIMULATED STATE — manifest R7-9) ──────────────────
 //
@@ -3116,8 +3137,15 @@ export function inReaderFrame(point, readerInfluence) {
  * from the pass that actually ran, so it cannot drift from the equations the way a
  * hand-declared `animated` flag or a static source scan could.
  *
+ * `pointer` is the AMBIENT POINTER sample this pass read (core/pointer_input.js's
+ * pointerInput()), or `null` when no equation mentioned `mouse_x`/`mouse_y`/
+ * `mouse_left`. Same two jobs `clock` has — the memo's third invalidation key, and
+ * the presenter's "does this slide follow the pointer?" answer — derived from the
+ * pass that actually ran rather than from a source scan.
+ *
  * @example evaluateState({vars: {speed: 5}, items: {a1: {type: "rect", x: "speed * 2"}}}, registry).state.items.a1.x // 10
  * @example evaluateState({vars: {speed: 5}, items: {}}, registry).clock // null (no equation read the clock)
+ * @example evaluateState({vars: {}, items: {a1: {type: "rect", x: "mouse_x"}}}, registry).pointer // {x: 0, y: 0, left: false} (the frozen regime)
  * @example // Cycle: {vars: {a: "b", b: "a"}} → errors.get("vars.a") mentions the cycle; values fall back to 0
  */
 
@@ -3150,8 +3178,18 @@ export function evaluateState(state, registry, script = "", contentSizes = null)
   // start, a document load), and a memo served across one would render the abandoned
   // trajectory. Only a SIMULATED result carries the axis, so a document that reads
   // neither `@` nor `dt` caches exactly as it always did.
+  // THE AMBIENT POINTER IS THE THIRD INVALIDATION AXIS (RECORDABLE STATE — manifest
+  // R7-24), and it is the clock's rule with one difference: a pointer is a RECORD,
+  // not a number, so identity is the comparison. core/pointer_input.js guarantees a
+  // stable identity while the pointer has not moved (samplePointer drops an
+  // unchanged sample), which is what makes `===` both correct and cheap — a still
+  // pointer never invalidates, a moved one always does, and the FROZEN regime is a
+  // module constant so every still consumer keeps caching exactly as before. Only a
+  // pointer-READING result carries the axis (`pointer === null` otherwise), so a
+  // document with no `mouse_*` keyword is untouched.
   if (memo && memo.registry === registry && memo.script === script && memo.contentSizes === contentSizes
     && (memo.result.clock === null || memo.result.clock === particleTime())
+    && (memo.result.pointer === null || memo.result.pointer === pointerInput())
     && (!memo.result.simulated || memo.result.simGeneration === simulationGeneration()))
     return memo.result;
   const result = computeEvaluatedState(state, registry, script, contentSizes);
@@ -3303,6 +3341,21 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // reproducible sequence.
   let clockRead = null; // the clock value this pass used, or null if nothing read it
   const readClock = () => (clockRead ??= particleTime());
+
+  // THE AMBIENT POINTER (RECORDABLE STATE — manifest R7-24, core/pointer_input.js).
+  // Read LAZILY and ONCE per pass, exactly as the clock is, and handed back to the
+  // memo as `pointer` — so a document that mentions no `mouse_*` keyword gets null
+  // and caches unconditionally, while one that does re-evaluates the instant the
+  // pointer moves and NOT while it is still. Reading it once per pass also means
+  // two equations in one frame cannot disagree about where the pointer is, which is
+  // the same guarantee `clockRead` gives about what time it is.
+  //
+  // ITS FROZEN REGIME IS WHAT MAKES A STILL BYTE-REPRODUCIBLE: outside the
+  // presenter's live feed pointerInput() is the POINTER_REST constant, so Δt = 0 on
+  // a pointer-reading deck is byte-identical by construction — the defining test of
+  // the recordable kind.
+  let pointerRead = null; // the sample this pass used, or null if nothing read it
+  const readPointer = () => (pointerRead ??= pointerInput());
 
   // THE SIMULATION STEP (SIMULATED STATE — manifest R7-9, core/simulation_history.js).
   // Opened LAZILY by the first `@` or `dt` read, exactly as the clock is: a document
@@ -3787,6 +3840,10 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
       case "dt": return readDt(); // the seconds THIS simulation step covers (see readDt)
       case "random": return seededRandom; // seeded, deterministic
     }
+    // THE AMBIENT POINTER (`mouse_x`/`mouse_y`/`mouse_left`) — one table, indexed
+    // rather than a second switch, so the keyword set above and the value read here
+    // can never name different things (see POINTER_KEYWORDS).
+    if (name in POINTER_KEYWORDS) return POINTER_KEYWORDS[name](readPointer());
     if (name in DOMAIN_FUNCTIONS) return makeFn(name, slot, selfId);
     if (BLOCKED_GLOBALS.has(name)) return undefined; // Date/window/… → undefined → member use throws loud
     // THREE THINGS SIT BELOW DOCUMENT REFERENCES, and for one reason: a slug or a
@@ -3997,7 +4054,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // place a morph's endpoint equations are cooked. See mutCookMorphEndpoints.
   mutCookMorphEndpoints(out, state, registry, script, contentSizes, errors);
 
-  return { state: out, errors, deps, clock: clockRead, simulated: simRead, simGeneration: simGen };
+  return { state: out, errors, deps, clock: clockRead, pointer: pointerRead, simulated: simRead, simGeneration: simGen };
 }
 
 /**
