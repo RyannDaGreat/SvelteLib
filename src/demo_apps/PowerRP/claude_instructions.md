@@ -4059,42 +4059,100 @@ Settled by the lead 2026-08-06 after a full read of `core/expressions.js` (agent
 report `/tmp/powerrp_property_map.md`). **Both conflicts are with things already
 written down, so neither may be resolved silently.**
 
-#### CONFLICT 1 — `dt` AS A FRAME DELTA IS THE `frame` VARIABLE, WHICH WAS ALREADY REFUSED
+#### `dt` IS ELAPSED TIME. THE LEAD PROPOSED A FIXED TIMESTEP AND THE USER KILLED IT.
 
-`core/expressions.js:2991-2999` rejected a `frame` variable and closed with
-*"Divide `time` by a frame rate you choose if you want frames."* A wall-clock `dt`
-is the same idea wearing a different name, and it is DISHONEST IN THREE OF THE FOUR
-REGIMES THIS APP RENDERS IN:
+**Recorded as a mistake rather than quietly replaced, because the reasoning that
+produced it looked responsible and was wrong.**
 
-| regime | what a frame-delta `dt` would be |
-|---|---|
-| presenter | one rAF tick — so 60 Hz and 120 Hz displays render the same document differently |
-| editor / CLI / thumbnails / minimap | `particleTime()` is a CONSTANT, so `dt` is genuinely **0** and `x/dt` throws |
-| video export | `1/fps` — honest, but `fps` is an EXPORT SETTING, not document state |
+The lead's first design made `dt` a fixed simulation timestep held as document state
+(`meta.simDt`), on the argument that a frame-delta `dt` is the `frame` variable
+`core/expressions.js:2991-2999` already refused — 0 in the editor, display-dependent
+in the presenter, an export setting during export.
 
-**THE RESOLUTION: `dt` IS A FIXED SIMULATION TIMESTEP AND IT IS DOCUMENT STATE.**
-Not the frame interval — a document-level constant (`meta.simDt`) with its own
-Inspector row, defaulting finer than any frame interval. The simulation advances by
-integrating from a known start in whole `simDt` steps; the renderer's frame rate
-decides only how often you LOOK at it, never how far it moved.
+**The user's answer, verbatim, 2026-08-06:**
 
-This is also the reading the user's own words point at — *"we have a smaller time
-step. Things will integrate better."* A frame delta is not smaller than a frame and
-does not integrate better; a fixed sub-frame step is and does.
+> *"no, as I said, based on what I asked for, dt is a TIME step. By your logic, what
+> happens if we have a framerate we render a video with like 1000? What if our dt is
+> just .1 seconds? What do we do, interpolate?"*
 
-**WHAT THIS BUYS, and it is the whole reason to prefer it:** the four regimes agree,
-Δt = 0 still gives a byte-identical frame, and **a simulated document is still
-reproducible** — frame 200 is `200·(frameInterval/simDt)` steps from the start, the
-same number every time, on every machine. Simulated state stops being a hole in the
-determinism law and becomes an EXPENSIVE-TO-SEEK member of it.
+That is decisive. With `simDt = 0.1` and a 1000 fps render, a hundred consecutive
+frames fall between two simulation steps: you either hold a stale value (visible
+judder) or interpolate (a fudge). **A fixed timestep makes the simulation's
+resolution independent of the render's, which is precisely the thing that must not
+happen.**
 
-**WHAT IT COSTS, stated so it is not discovered later:** seeking to frame N costs N
-steps instead of 1. `cli/render_job.js` shards by STRIDED frame range, and a strided
-shard can no longer start cold. Two mitigations, in order: checkpoint the history
-table every K steps, and have the render job detect a simulated-state document and
-shard by CONTIGUOUS ranges (each worker integrating its own prefix) instead of
-strided ones. **A simulated document must never be strided-sharded silently** — that
-is the wrong-video-with-a-green-exit failure this project forbids.
+**THE SEMANTICS: `dt` IS THE REAL ELAPSED TIME, IN SECONDS, SINCE THE PREVIOUS
+EVALUATION. One simulation step per rendered frame.** It is the only reading under
+which the user's own example holds at every framerate:
+
+    rotation = @ + dt        →  one degree per second, always
+    1000 fps: dt = 0.001, ×1000 steps/s = 1 deg/s
+      30 fps: dt = 1/30,  ×30   steps/s = 1 deg/s
+
+**WHERE THE LEAD MISREAD THE BRIEF.** The original text said *"we have a smaller
+time step. Things will integrate better."* That was read as "a fixed sub-frame
+step". It means **a higher framerate yields a smaller dt and therefore a more
+accurate integration** — a property of frame-delta dt, and a description of the
+design the user had in mind all along. The next sentence sanctions the cost
+outright: *"While it's not perfectly predictable, it is very close to perfectly
+predictable, which is why it's okay."* **The objections the lead raised had already
+been answered in the brief.** Read the whole requirement before designing against
+part of it.
+
+So the three "dishonest regimes" are simply true and are all fine:
+- **`dt = 0` when time is not advancing is the TRUTH.** A frozen simulation does not
+  move. Do not fabricate a nonzero dt to avoid it.
+- **`x / dt` throwing at dt = 0 is the author's problem, explicitly** — *"The user is
+  responsible for correctly using another reserved variable dt."* It fails through
+  the normal equation-error path. **No guard, no clamp-to-epsilon, no fallback** —
+  that would be the silent fallback this project forbids.
+- **fps-dependence in an export is accepted and stated.** Do not engineer around it.
+
+#### THE MAX-TIMESTEP CLAMP (user, 2026-08-06)
+
+> *"We can set a max timestep in the camera, under some settings, which can be none
+> or .1 seconds etc to prevent extreme lag spikes from driving it crazy."*
+
+Adopted. A GC pause, a tab switch or a breakpoint otherwise hands the integrator a
+multi-second `dt` and the pendulum leaves the slide. Lives in **camera settings** —
+the camera is the mandatory global singleton, and the user has already pointed at it
+as the home for global settings of this kind. Nullable: **`none` disables the clamp;
+default `0.1 s`.** A default clamp trades a mild cost (the simulation drifts slightly
+behind wall-clock after a stall) against a severe one (a backgrounded tab returns to
+an exploded scene).
+
+**THE CLAMPED TIME IS DISCARDED, NOT CAUGHT UP.** The alternative — substepping to
+recover the lost interval — is the classic death spiral, where a slow frame schedules
+more work and produces a slower frame. Falling behind is the correct failure.
+
+**AND IT APPLIES TO MEASURED TIME ONLY — AN EXPORT DOES NOT MEASURE, IT DICTATES.**
+In the presenter and editor, `dt` is an observation of how long a frame took, so a
+lag spike is a lie about elapsed simulation time and clamping corrects a measurement
+error. In a video render `dt = 1/fps` is definitional and there are no spikes to
+correct, so the clamp never engages. **This is not a mode branch** — there is simply
+nothing measured to clamp — which matters because R7-2 forbids mode branches on the
+playback path. It yields a clean and worthwhile split:
+
+> **Exports are exactly reproducible. Live playback is approximately so.**
+
+#### WHAT SIMULATED STATE COSTS — unchanged by the correction
+
+Frame N genuinely depends on frames 0…N−1. Not seekable, not strided-shardable.
+`cli/render_job.js` shards by STRIDED frame range and cannot start a shard cold on a
+simulated document. Required: a predicate that detects simulated state, and a LOUD
+refusal — **a simulated document must never be strided-sharded silently**, which is
+the wrong-video-with-a-green-exit failure this project forbids. Mitigations, in
+order: checkpoint history every K steps; shard by CONTIGUOUS ranges with each worker
+integrating its own prefix.
+
+**Δt = 0 STILL PRODUCES A BYTE-IDENTICAL FRAME** and that is not negotiable — it is
+what keeps the orthogonality law in `<app>/CLAUDE.md` alive. Pin it with a test.
+
+**HISTORY NEEDS A RESET RULE, and the fixed-step design was hiding that it does.**
+The property's authored/keyframed value is the INITIAL CONDITION (user: *"of course
+I can set the rotation in the beginning"*). When history resets — seeking backwards,
+jumping to the start, beginning a presentation — must be explicit, documented and
+tested. An ill-defined reset is how a demo silently diverges between runs.
 
 #### CONFLICT 2 — `@` IS ALREADY THE STORED ITEM-REFERENCE SIGIL
 
