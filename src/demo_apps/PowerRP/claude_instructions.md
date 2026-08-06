@@ -5274,6 +5274,45 @@ background fill.
 different sentences and must not share one control — the badge's remaining failure state
 stays.
 
+### R7-23 `dt` IS AN ALIAS FOR `time - @time` (user, 2026-08-06)
+
+> *"it occured to me - dt is just an alias for (time-@time)"*
+
+**Correct, and it is the better model.** `dt` was implemented as its own primitive with its
+own measurement path; the user's reading makes it DERIVED from two things that already
+exist. Adopt it.
+
+**IT DOES NOT WORK TODAY, and it is one small change away.** `@time` already PARSES:
+`resolveRef` strips the marker and recurses (`core/expressions.js:1535`), and `time` resolves
+to `{kind:"keyword", name:"time"}` (`:1547`), so the AST is
+`{kind:"prev", inner:{kind:"keyword", name:"time"}}`. What is missing is the evaluation:
+`prevValue` (`:3530`) was written for PROPERTY and ITEM references, not for a keyword inner.
+Teaching it to read the previous CLOCK observation is the whole change.
+
+**THE REAL PRIZE IS NOT BREVITY — IT IS DELETING THE STATE WHERE A BUG LIVED.** `dt`'s
+separate measurement kept its own `lastObserved` inside `observeClock`, and **that private
+state is exactly where the sticky-clock defect came from**: after a forward clock
+discontinuity it memoized one clamped value and returned it for the rest of the page's life,
+pinning every editor audio ramp at the clamp (found by W1-B, fixed by W1-C at the clock
+REGIME). A second, independent copy of "when did I last look at the clock" is a
+hand-maintained mirror of the history table — the Tower of Babel form this manifest already
+names. **Derive `dt` from `@time` and there is ONE previous-value store and ONE discontinuity
+rule.**
+
+**⚠ THE ONE WRINKLE: THE CLAMP. `dt` IS NOT LITERALLY `time - @time` — IT IS
+`clampedTimestep(time - @time)`.** The camera's max-timestep exists so a stall cannot hand
+the integrator three seconds (R7-9). You cannot clamp a subtraction of two exposed values
+without lying about one of them, and lying about `@time` would be worse than keeping `dt`.
+
+**So keep BOTH, and the difference is meaningful rather than redundant:**
+- **`dt`** — the CLAMPED step. What an author integrates with. Safe by construction.
+- **`time - @time`** — the RAW elapsed truth, unclamped. Equal to `dt` except during a stall.
+
+That is not two spellings of one concept; it is a safe value and a measurement, and an author
+can legitimately want either (detecting a stall is a real use). Document them as such so
+nobody "unifies" them later. **`dt` remains the documented, recommended form** — an author
+should not have to know about the clamp to write a working simulation.
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
