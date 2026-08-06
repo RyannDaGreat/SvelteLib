@@ -182,13 +182,76 @@ try {
   ok(noise in afterUndo.modules, "undo restored the module");
   ok(afterUndo.wires.includes(`${noise}.out->${filter}.in`), "and its wire");
 
-  // ── THE ANALYSIS OVERLAYS MOUNT ON EXACTLY THE NODES THAT DECLARE THEM ────
-  // The live meter/spectrogram layer. Its DATA cannot be checked without sound, but
-  // its PRESENCE can: one canvas per analysis node and none for anything else.
-  const overlays = await page.evaluate(() => document.querySelectorAll(".nf-audio-overlay").length);
-  ok(overlays === 2, `exactly two live-analysis canvases, for the meter and the spectrum (got ${overlays})`);
-  ok(await page.evaluate(() => [...document.querySelectorAll(".nf-audio-overlay")].every((c) => getComputedStyle(c).pointerEvents === "none")),
-    "and they are pointer-events:none — an analysis node stays grabbable and wirable THROUGH its own live picture");
+  // ── THE ANALYSIS DISPLAY REACHES THE DISPLAY LIST, AND ONLY WHEN ASKED ────
+  //
+  // THIS CHECK USED TO COUNT DOM CANVASES (`.nf-audio-overlay`), and R7-5 deleted
+  // the design it was pinning. The overlay drew the waterfall in SCREEN space on a
+  // <canvas> whose PIXELS were the history, which is why the picture died on every
+  // zoom; the display is now emitted by the node's own emit() from a ring buffer of
+  // magnitude columns. The old assertion is not merely obsolete — it would now be
+  // satisfied only by REGRESSING, so it is restated positively rather than deleted.
+  //
+  // Deleting it was the tempting move and the wrong one: it is the only browser-side
+  // coverage of the feature, and "no canvases" alone is a vacuous check that a blank
+  // display would also pass.
+  // TWO THINGS THIS PROBE MEASURED THAT ARE WORTH KNOWING BEFORE READING THE
+  // ASSERTIONS, because the first draft of them was wrong about both:
+  //   1. THE RINGS ARE ALREADY FILLING, even though the context is BLOCKED. The
+  //      engine's analyser poll runs on rAF from the moment a module is added, and
+  //      a suspended context's `getByteFrequencyData` returns zeros — so an
+  //      analysis node accumulates SILENT columns before any sound exists. That is
+  //      correct (a silent spectrogram is what silence looks like) and it means
+  //      "the ring is empty" is not a state this probe can observe.
+  //   2. A METER'S RING IS CAPACITY 1 BY DESIGN. It draws one bar from the newest
+  //      reading and has no time axis, so ANALYSIS_HISTORY_COLUMNS declares depth
+  //      1 — pushing 24 columns leaves 1, which is the ring working, not failing.
+  // The depths are therefore READ from the module that declares them rather than
+  // written here; a hardcoded 128 would be a two-element mirror of exactly the kind
+  // this round keeps finding.
+  const analysisIr = await page.evaluate(async (registryUrl, displayUrl) => {
+    const app = window.__powerrp_app;
+    const { cameraFrameIR, evaluatedStateAt } = await import("/cameraFrame.js");
+    const reg = await import(registryUrl);
+    const { ANALYSIS_HISTORY_COLUMNS } = await import(displayUrl);
+    const state = evaluatedStateAt(app.doc, app.slideIndex, 1, app.registry);
+    const frame = (liveAnalysis) => cameraFrameIR(state, app.doc.meta, app.registry, { project: app.projectName(), liveAnalysis }).length;
+    const analysisIds = Object.entries(state.items)
+      .filter(([, it]) => app.registry.get(it.type)?.audioSpec?.overlay)
+      .map(([id, it]) => [id, app.registry.get(it.type).audioSpec.overlay]);
+    // FEED THE RINGS the way the engine's subscription does. Synthetic columns,
+    // because headless Chrome has no output device and this probe does not assert
+    // on sound — what is proven is the PATH: registry -> pre-pass -> emit() -> IR.
+    // Enough frames to fill the deepest ring, so the counts below are the declared
+    // capacities rather than however far the rAF poll happened to get.
+    const deepest = Math.max(...Object.values(ANALYSIS_HISTORY_COLUMNS));
+    for (const [id, kind] of analysisIds) {
+      for (let f = 0; f < deepest; f++) {
+        reg.pushAnalysisFrame(id, kind, kind === "meter" ? Float32Array.of(0.6) : Float32Array.from({ length: 32 }, (_, b) => (b % 5) / 5));
+      }
+    }
+    const live = frame(true);
+    const headless = frame(false);
+    const liveAgain = frame(true);
+    const columns = Object.fromEntries(analysisIds.map(([id, kind]) => [kind, reg.analysisColumnCount(id)]));
+    const declared = Object.fromEntries(analysisIds.map(([, kind]) => [kind, ANALYSIS_HISTORY_COLUMNS[kind]]));
+    return { kinds: analysisIds.map(([, k]) => k).sort(), headless, live, liveAgain, columns, declared };
+  }, `/@fs${resolve(repo, "src/demo_apps/PowerRP/render_gpu/gpu/live_analysis_registry.js")}`,
+     `/@fs${resolve(repo, "src/demo_apps/PowerRP/core/analysis_display.js")}`);
+
+  ok(analysisIr.kinds.join(",") === "meter,spectrum",
+    `exactly two nodes declare a live display, the meter and the spectrum (got ${JSON.stringify(analysisIr.kinds)})`);
+  ok(analysisIr.live > analysisIr.headless,
+    `the display reaches the DISPLAY LIST (${analysisIr.live} ops vs ${analysisIr.headless} static) — in the scene's own z-order, riding each node's world transform, which a screen-space canvas structurally could not do`);
+  ok(analysisIr.headless < analysisIr.live && analysisIr.liveAgain > analysisIr.headless,
+    `and a surface that does NOT opt in gets the static form even while audio is live (${analysisIr.headless} ops, between two live frames of ${analysisIr.live}/${analysisIr.liveAgain}) — the Δt = 0 law every exporter and cli/render.js depends on`);
+  ok(JSON.stringify(analysisIr.columns) === JSON.stringify(analysisIr.declared),
+    `each ring holds exactly its DECLARED depth (${JSON.stringify(analysisIr.columns)}) — rendering neither consumes nor resets it, which is why a zoom cannot erase the waterfall`);
+
+  // AND THE DOM OVERLAY MUST NOT COME BACK. The class is gone from the app; if it
+  // reappears, someone has rebuilt the layer whose pixels-as-history was the whole
+  // defect (R7-5's four symptoms).
+  ok(await page.evaluate(() => document.querySelectorAll(".nf-audio-overlay").length === 0),
+    "no screen-space analysis canvas exists — the display is part of the scene, not a layer above it");
 
   // ── MULTIPLE OUTPUTS COEXIST (ADDENDUM 10) ────────────────────────────────
   const out2 = await addNode("audio_output", 1000, 400);
