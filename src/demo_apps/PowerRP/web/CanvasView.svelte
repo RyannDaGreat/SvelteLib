@@ -4640,21 +4640,44 @@
     return worldViewRect({ ...viewport, dpr: 1 }, wrapW, wrapH);
   }
 
+  /**
+   * THE NODES ON SCREEN — the one cull both overlay layers read (R7-6).
+   *
+   * Every per-node DECORATION is a function of this list and not of the document:
+   * an anchor cross, a ghost outline, a port bead's hit target, a knob's focus
+   * ring, a pressed key. Un-culled, those lists were one DOM element per node (per
+   * ANCHOR, for the crosses) over the whole document, rebuilt on every pan —
+   * measured at 3006 bead circles and 9027 anchor groups for a 1000-node patch
+   * parked entirely off-view. That, and not the paint, is what the user was feeling
+   * when he reported the editor "laggy when there are tons of objects, even if
+   * they're out of view"; core/view.canSkipNode has run in paint() all along.
+   *
+   * ITS OWN $derived so the two overlay layers cannot disagree about what is on
+   * screen, and so the cull runs ONCE per invalidation instead of once per layer.
+   * paint() keeps its own: it culls against the canvas's ACTUAL backing size, which
+   * it may have just changed in the same call, and a $derived on the bound
+   * clientWidth would be one frame stale through a pane resize.
+   *
+   * SELECTION-DRIVEN LISTS DO NOT READ THIS. Handles, outlines and the editPoint
+   * `byId` map are bounded by what the author selected, and an off-view item is a
+   * legitimate reference for a modifier point — culling there would break geometry,
+   * not save work.
+   */
+  let visibleNodes = $derived.by(() => {
+    const viewRect = overlayViewRect();
+    return app.nodes().filter((n) => !canSkipNode(n, viewRect));
+  });
+
   let overlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; wrapW; wrapH; app.selection; app.selectionSet; app.anchorsVisible; app.showGhosts; sizeIndicators; bandRect; bandAddIds; bandRemoveIds; bandMods; modalCenter; app.crosshair; placeRect; placeLine; placePreview; mouseWorld;
     if (!actions || !containerEl) return { outlines: [], hoverOutlines: [], lockTips: [], handles: [], anchors: [], guideSegs: [], endpoints: [], modifiers: [], sizeArrows: [], band: null, bandVerb: null, bandAddOutlines: [], bandRemoveOutlines: [], modalPivotSeg: null, ghostOutlines: [], inkGhostOutlines: [], crosshairSegs: [], placeBox: null, placeSeg: null, placeChains: [], placeRects: [], placeDots: [], multiBoxOutline: null, inkDashes: [], bandAddInkDashes: [], bandRemoveInkDashes: [] };
     const rect = containerEl.getBoundingClientRect();
     const worldRect = overlayViewRect();
     const nodes = app.nodes();
-    // THE DOCUMENT-WIDE DECORATIONS ARE CULLED (R7-6). Three of the lists below —
-    // the anchor dots, the ghost outlines and the ink-bounds ghosts — are ONE DOM
-    // ELEMENT PER NODE (per ANCHOR, for the first) over the whole document, so with
-    // "show anchors" on, a deck with a thousand off-screen widgets emitted several
-    // thousand SVG circles nobody could see and rebuilt them on every pan. The
-    // selection-driven lists are deliberately NOT culled from: they are bounded by
-    // what the author selected, and `nodes` still feeds the hit tests and the
-    // editPoint `byId` map, where an off-view item is a legitimate reference.
-    const visibleNodes = nodes.filter((n) => !canSkipNode(n, worldRect));
+    // THREE OF THE LISTS BELOW ARE CULLED (R7-6, `visibleNodes` above): the anchor
+    // crosses, the ghost outlines and the ink-bounds ghosts are ONE DOM ELEMENT PER
+    // NODE over the whole document — per ANCHOR, for the crosses. Everything else
+    // here is selection-driven and reads the full `nodes`.
     const selectedIds = app.selectedIds();
     const sel = nodes.find((n) => n.itemId === app.selection);
 
@@ -5228,11 +5251,8 @@
    * of them on screen, which is the DOM half of the user's "laggy when there are
    * tons of objects, even if they're out of view".
    *
-   * ONE CULLING PROTOCOL, NOT A SECOND ONE: `canSkipNode` against `worldViewRect`,
-   * the pair paint() filters on, so the overlay and the picture can never disagree
-   * about what is on screen. The rect is built at dpr 1 because THIS surface is the
-   * SVG, whose coordinates are CSS pixels — the paint passes device pixels and its
-   * own dpr, and the two rects are the same world rect by construction.
+   * It reads `visibleNodes`, the SHARED cull — see that derivation for the rect and
+   * for why the selection-driven lists in `overlay` do not read it.
    *
    * THE WIRES ARE NOT AT RISK FROM THIS, and that is worth stating because it is
    * the one thing culling an endpoint list could break. They are scene content now
@@ -5244,8 +5264,7 @@
   let nodeOverlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; wrapW; wrapH; // reactive deps (match `overlay`, plus the cull rect's size)
     if (!actions) return { beads: [], ghost: null, knobRings: [], litKeys: [], playCards: [] };
-    const viewRect = overlayViewRect();
-    const nodes = app.nodes().filter((n) => !canSkipNode(n, viewRect));
+    const nodes = visibleNodes;
     const pt = (x, y) => actions.worldToScreen(x, y);
     // THE BEADS ARE DRAWN BY THE PAINTER (core/node_chrome.portBeads), not here —
     // they are part of the node's picture and must appear in exports, in the
