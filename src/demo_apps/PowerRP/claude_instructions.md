@@ -4053,6 +4053,198 @@ Numbered for grinding. Each is DONE only when live-verified, per the standing ru
   two rectangles with the right variables and rotation equations. It exists to demonstrate
   simulated state, with a trail anchored to its end.
 
+### R7-9 DESIGN: SIMULATED STATE, AND THE TWO CONFLICTS IT WALKED INTO
+
+Settled by the lead 2026-08-06 after a full read of `core/expressions.js` (agent
+report `/tmp/powerrp_property_map.md`). **Both conflicts are with things already
+written down, so neither may be resolved silently.**
+
+#### CONFLICT 1 — `dt` AS A FRAME DELTA IS THE `frame` VARIABLE, WHICH WAS ALREADY REFUSED
+
+`core/expressions.js:2991-2999` rejected a `frame` variable and closed with
+*"Divide `time` by a frame rate you choose if you want frames."* A wall-clock `dt`
+is the same idea wearing a different name, and it is DISHONEST IN THREE OF THE FOUR
+REGIMES THIS APP RENDERS IN:
+
+| regime | what a frame-delta `dt` would be |
+|---|---|
+| presenter | one rAF tick — so 60 Hz and 120 Hz displays render the same document differently |
+| editor / CLI / thumbnails / minimap | `particleTime()` is a CONSTANT, so `dt` is genuinely **0** and `x/dt` throws |
+| video export | `1/fps` — honest, but `fps` is an EXPORT SETTING, not document state |
+
+**THE RESOLUTION: `dt` IS A FIXED SIMULATION TIMESTEP AND IT IS DOCUMENT STATE.**
+Not the frame interval — a document-level constant (`meta.simDt`) with its own
+Inspector row, defaulting finer than any frame interval. The simulation advances by
+integrating from a known start in whole `simDt` steps; the renderer's frame rate
+decides only how often you LOOK at it, never how far it moved.
+
+This is also the reading the user's own words point at — *"we have a smaller time
+step. Things will integrate better."* A frame delta is not smaller than a frame and
+does not integrate better; a fixed sub-frame step is and does.
+
+**WHAT THIS BUYS, and it is the whole reason to prefer it:** the four regimes agree,
+Δt = 0 still gives a byte-identical frame, and **a simulated document is still
+reproducible** — frame 200 is `200·(frameInterval/simDt)` steps from the start, the
+same number every time, on every machine. Simulated state stops being a hole in the
+determinism law and becomes an EXPENSIVE-TO-SEEK member of it.
+
+**WHAT IT COSTS, stated so it is not discovered later:** seeking to frame N costs N
+steps instead of 1. `cli/render_job.js` shards by STRIDED frame range, and a strided
+shard can no longer start cold. Two mitigations, in order: checkpoint the history
+table every K steps, and have the render job detect a simulated-state document and
+shard by CONTIGUOUS ranges (each worker integrating its own prefix) instead of
+strided ones. **A simulated document must never be strided-sharded silently** — that
+is the wrong-video-with-a-green-exit failure this project forbids.
+
+#### CONFLICT 2 — `@` IS ALREADY THE STORED ITEM-REFERENCE SIGIL
+
+`@<itemId>.prop` is how a reference is SERIALIZED (`parseStoredRef`,
+`core/expressions.js:1256`; `refToJs:2630` mangles it to `$id`). So `@` is spoken
+for — but only in the STORED grammar. What the author TYPES is the display grammar,
+where a reference is a slug (`osc1.out`), and `@` is FREE there.
+
+**THE RESOLUTION: `@` IS THE DISPLAY TOKEN, EXACTLY AS THE USER ASKED, AND IT
+SERIALIZES TO SOMETHING ELSE.** The user types and reads `@ + dt`, `@self.value`,
+`@osc1.phase`; `displayToStored` writes a non-colliding spelling. This costs one
+more entry in the four passes that must already agree on grammar (parser,
+`displayToStored`/`storedToDisplay`, `mapRefTokens`, `equationTokenSpans`) — which
+is a known, bounded price, and it is the RIGHT place to pay it, because the
+alternative is telling the user his own notation is unavailable for a reason that
+is purely internal.
+
+#### THE REST OF THE BILL (from the same report, so it is not rediscovered)
+
+- **No previous-value table exists.** `evalMemo` is a WeakMap on the folded state
+  object, and every tween alpha mints a new one — there is nothing "previous" to
+  read. A module-level `(itemId, propPath)` history table is new, shaped like
+  `core/particle_clock.js` (an ambient service with an explicit freeze seam).
+- **The memo needs a second invalidation axis.** Clock-free results cache FOREVER
+  today. `clock` is the precedent for a second axis, but `clock` is a comparable
+  value and history is a counter — so every still-renderer (thumbnails, minimap,
+  PNG export, `cli/render.js`, `gpuService`) must FREEZE the tick explicitly, where
+  today it is safe for free. Forgetting one is a silently-drifting thumbnail.
+- **Cycle detection must be exempted.** `requireSlot` treats slot re-entry as a loud
+  cycle, and `@self.x` is one by construction. Follow the `feedbackSafe` precedent
+  (`core/nodeflow.js:97-101`) rather than inventing a second exemption idiom.
+
+### R7-7 DESIGN: OUTPUT PROPERTIES ARE EVALUATED, NOT STORED
+
+Also settled from the same report, because there were THREE competing precedents and
+picking the wrong one bloats every document in existence.
+
+- `core/content_size.js` — injected onto the EVALUATED state only, never stored,
+  read through the ordinary `{kind:"prop"}` resolver as `@logo.content.aspect`. **No
+  new grammar, no stored bytes, no migration.**
+- `plugins/video_scrub.js:114-127` — `seconds`/`progress` as `self.…` equation-string
+  DEFAULTS. Works, and is discoverable in autocomplete, but they ARE stored document
+  state: keyframable (meaningless for a read-only value) and backfilled into every
+  old document by `withMissingDefaultsFilled`.
+- `cx`/`cy` — a hardcoded branch in `refValue` plus a hand-appended autocomplete
+  entry. A Tower of Babel instance; do not extend it.
+
+**THE RULING: output properties follow `content_size`.** They are computed onto the
+evaluated state and are never stored. A read-only value that can be keyframed is a
+lie about its own affordance, by the same reasoning that keeps the save dot from
+being a button.
+
+**THE ONE STRUCTURAL BLOCKER, and it is the actual reason the user's complaint is
+true:** node outputs are computed by `evaluateNodeGraph` inside `deriveRenderTree`
+(`core/derive.js:532`) — strictly AFTER `evaluateState`. So a node's output
+physically cannot be read by an equation today; it reaches `emit()` and nothing
+else. *"Other nodes can then read these properties"* requires that ordering to
+change. **That re-ordering is the load-bearing work of R7-7**, and everything else
+in it is presentation.
+
+**Multi-select needs nothing declared** — `PRESENTATIONAL_ROW_ASPECTS`
+(`core/multiselect.js:259`) is a denylist, so a new `readOnly` aspect defaults to
+CONTRACT and fails loud on disagreement, which is correct. Keep it out of
+`MULTI_EDITABLE_KINDS`.
+
+### R7-DIAGNOSIS: WHERE EACH COMPLAINT ACTUALLY LIVES
+
+Measured 2026-08-06, full report `.frenzy/round7/powerrp_audio_map.md`. **Two of the
+ten are not what they look like, and one is not reproducible at all** — recorded
+because acting on the obvious reading would have built the wrong fix.
+
+| # | complaint | root cause |
+|---|---|---|
+| 1 | wire→property works, property→wire does not | `web/Inspector.svelte:762-770` `commitField` passes the row key `"inputs.in"` **unsplit** as one path segment, so it writes `items[id]["inputs.in"]` — a leaf nothing reads. The READ side (`valueAt`) splits correctly. **That asymmetry is the entire bijection failure.** |
+| 2,3 | dropdown lists things "not connected to any specific node"; two keyboards look the same | The option list IS per-instance. `nodeInputLabel` (`core/nodeflow.js:818-822`) falls back to `state.type` because `app.addItem` sets no default `name`, so both keyboards render the identical string `"node_keyboard › pitch"`. **A labelling bug, not a wiring bug.** |
+| 4 | "property state should be what the node does" | The audio graph is driven by a `$effect` in a CANVAS COMPONENT on `app.slideIndex` (`web/CanvasView.svelte:5363-5367`) instead of the one evaluation seam every pixel consumer uses. |
+| 5 | no cutoff whoosh | `mirrorAudio(app.state().items)` has **no alpha argument anywhere on the path**, so a mid-transition value never reaches `setParam`. The engine side would sweep fine (`KNOB_RAMP_SECONDS = 0.02`); the alpha-bearing caller is what is missing. |
+| 6 | presentation audio behaves differently | `web/PresentMode.svelte:372` writes `app.slideIndex` **only inside `exit()`**. `CanvasView` stays mounted but none of the effect's dependencies change, so **the audio graph is frozen at whatever slide the editor was on when Present started**, for the whole presentation. |
+| 7 | the audio-on button | `web/AudioBadge.svelte:48-62`. `enableAudio` is the **only caller of `engine.resume()`** repo-wide — so deleting the button naively makes audio permanently unstartable. |
+| 8 | spectrogram in DOM space | `web/CanvasView.svelte:5231-5246` transforms **two corners** and reduces to an axis-aligned `{x,y,w,h}` consumed as an absolutely-positioned DOM `<canvas>`. Under rotation the box is not even the true AABB. **`litKeys` 50 lines below does it correctly** (four corners, SVG polygon). |
+| 9 | culled audio should still play | **NOT REPRODUCIBLE.** `mirrorAudio` reads the un-culled item map and `readAudioScene` already drops `active === false`. What the user actually experienced is #6 — during a presentation `active:false` never reaches the engine, so a widget "declared not visible" keeps playing. |
+| 10 | knobs escape the node | **THREE unrelated hand-rolled placement schemes.** The audio family got the CD reflow; `plugins/node_knob.js:121-124` places `cy`/`r` as **constants from the top edge** and additionally ignores NEGATIVE EXTENTS, so a flipped Knob puts its dial at negative x. |
+
+**THREE FINDINGS NOBODY ASKED FOR, and they matter more than some that were asked
+for:**
+
+1. **`setTransportLive` has ZERO callers repo-wide and `engine.scheduler.start()` is
+   never called. The Sequencer node has never emitted a single step, in either
+   mode.** A whole shipped widget does nothing.
+2. **THE DOTTED-KEY WRITE BUG IS NOT AUDIO-SPECIFIC.** `plugins/magnifier.js:207-208`
+   (`origin.x`, `origin.y`) and `plugins/tangent_lines.js:400-409` declare dotted row
+   keys and are silently broken by the same line — writing `state["origin.x"]` while
+   reading `state.origin.x`. Found only because the audio complaint led here.
+3. **THE EDITOR DERIVES WIRES FROM THE CULLED LIST.** `render_gpu/ports.js:397`
+   `ctx.wireNodes ?? nodes`; `web/cameraFrame.js:217` passes `wireNodes: allNodes`,
+   `web/CanvasView.svelte:902` does not — so the editor drops a wire the instant
+   either endpoint leaves the viewport. `ports.js:381-384` names this exact mistake
+   as one of "the two wrong answers, both of which shipped at some point". It is
+   still shipped.
+
+**AND THE CULLING ANSWER IS THE OPPOSITE OF THE COMPLAINT.** Culling DOES run in the
+editor paint (`web/CanvasView.svelte:820-821`). The lag is real but comes from
+elsewhere: `app.nodes()` is an **un-memoized full `deriveRenderTree`** called ~28
+times in `CanvasView.svelte` alone, several from pointermove handlers; and the bead
+overlay emits **one SVG `<circle>` per port of every node in the document**,
+un-culled, rebuilt on every viewport change. So R7-6 is a MEMOIZATION AND OVERLAY-
+CULLING item, not a "turn culling on" item.
+
+### R7-PLAN: THE DEPENDENCY GRAPH AND THE WAVES
+
+Ordered so that what must be STANDARDIZED lands before what depends on the standard.
+Concurrent writer agents have **disjoint file ownership**; a file has exactly one
+owner per wave.
+
+**WAVE 1 — the re-founding (4 agents, parallel)**
+
+- **W1-A · THE BIJECTION.** Fix `commitField`/`previewField` dotted-key splitting;
+  label node-input options by INSTANCE. Sweep the two collateral victims.
+  *Owns:* `web/Inspector.svelte`, `core/nodeflow.js`, `plugins/magnifier.js`,
+  `plugins/tangent_lines.js`. (R7-1)
+- **W1-B · THE AUDIO SEAM.** One path for editor and presentation, driven by
+  `cameraFrame.evaluationAt` with alpha; kill the permission prompt; wake the dead
+  transport. *Owns:* `web/audioMirror.svelte.js`, `web/CanvasView.svelte`,
+  `web/PresentMode.svelte`, `web/AudioBadge.svelte`, `web/cameraFrame.js`,
+  `core/audio_mirror_diff.js`. (R7-2, R7-3, R7-4)
+- **W1-C · SIMULATED STATE.** `@` and `dt` per the R7-9 design above.
+  *Owns:* `core/expressions.js`, a new history module, `core/document.js`. (R7-9)
+- **W1-D · NODE CHROME.** Collapse three placement schemes into one declarative
+  auto-layout, Axoloti-style, with the knob-or-input duality.
+  *Owns:* `core/node_chrome.js`, `core/node_knobs.js`, `core/audio_nodes.js`,
+  `core/control_nodes.js`, `plugins/node_{knob,slider,button,display,number,math}.js`.
+  (R7-10)
+
+**WAVE 2 — depends on Wave 1's seams (3 agents)**
+
+- **W2-A · CANVAS-SPACE DISPLAYS** (R7-5) — needs W1-B's seam. *Owns:*
+  `web/AudioOverlay.svelte` (deletion), `render_gpu/ports.js`, the display emit path.
+- **W2-B · CULLING AND PERF** (R7-6) — needs W1-B (same file). *Owns:*
+  `web/CanvasView.svelte` overlay lists, `web/app.svelte.js` `nodes()` memoization.
+- **W2-C · OUTPUT + TRIGGER PROPERTIES** (R7-7, R7-8) — needs W1-A (Inspector).
+  *Owns:* `core/registry.js`, `core/properties.js`, `core/derive.js` (the
+  `evaluateNodeGraph` re-ordering, which is the load-bearing part), `core/multiselect.js`.
+
+**WAVE 3 — breadth, once the standard exists (parallel, mostly data)**
+
+R7-11 (~100 specs, split by category — DATA in `core/audio_specs.js` + the engine
+modules behind them), R7-12 (~30 patches + demo slides), R7-13 (keyboard already has
+`baseNote`/`octaves`; only the LOCK toggle is missing), R7-14 (piano roll), R7-15
+(trail), R7-16 (double-pendulum preset — needs W1-C).
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
