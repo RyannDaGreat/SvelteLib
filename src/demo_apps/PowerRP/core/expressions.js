@@ -100,7 +100,8 @@ import { isHexColor } from "./interpolators.js";
 // The NODE-REFERENCE type. core/nodeflow.js imports nothing from this file, so the
 // dependency is one-way and cycle-free; it owns the `{item, port}` shape and the
 // dangling sentence, and this file owns only the grammar that produces one.
-import { isNodeRef, nodeRefProblem, defaultOutputPort } from "./nodeflow.js";
+import { isNodeRef, nodeRefProblem, defaultOutputPort, nodeOutputResolver, NODE_INPUT_ROW_KIND } from "./nodeflow.js";
+import { outputPropertyAt, outputPropertyDescriptors, outputPropertyInjection, outputPropertyValue, outputValueProblem } from "./output_properties.js";
 // linearEndpointsToAngle is the codebase's ONE point-to-point HEADING: the
 // gradient direction dial's own math. `direction2` (below) is built on it rather
 // than on a second atan2, so the function library and the dial can never disagree
@@ -2016,6 +2017,34 @@ export function isEquationValue(plugin, path, value, item = null) {
 // (listResultProblem), so a wrong-shaped list is reported rather than rendered.
 // A per-ELEMENT slot (`points.3.x`) types as its declared field kind instead —
 // see resultKindForSlot / core/lists.js listPathKind.
+/**
+ * The result kind of a PORT REFERENCE — the `{item, port}` record a wire is stored
+ * as (core/nodeflow.js). An "=" equation in such a slot must evaluate to one, which
+ * is the user's node type (2026-08-03: "It's a different type than just float ...
+ * It's a node type").
+ *
+ * IT IS A FIRST-CLASS PROPERTY TYPE, not a shape peculiar to `inputs.<port>`
+ * (manifest R7-7 BOUNDARY, tier 1: "R7-7 should promote that from a special row
+ * kind to a first-class property TYPE, which also serves the user's standing ask
+ * that variables be typeable"). So it is typed HERE, in the one map from a declared
+ * ROW KIND to an equation RESULT kind, and any property declaring
+ * `kind: NODE_INPUT_ROW_KIND` gets it — a PROPS entry, a plugin row, or a typed
+ * variable — rather than only a path shaped `inputs.<port>`.
+ *
+ * The PATH-SHAPED branch in resultKindForSlot survives alongside it, and is not a
+ * duplicate: `inputs` is a MAP keyed by port name, so the key is `inputs.gain` on
+ * one widget and `inputs.cutoff` on the next and no fixed PROPS path can ever name
+ * it. That branch types the map; this entry types the KIND.
+ *
+ * WHAT IT FIXED, MEASURED: before it, `"= osc1"` in an input slot WAS collected as a
+ * slot (leaves() descends into the inputs map) and typed UNRESOLVED, so it failed
+ * with "has no declared value kind" — a true sentence about a hole, not a design. A
+ * drag-authored `{item, port}` literal is untouched either way: its leaves are
+ * `inputs.gain.item` / `inputs.gain.port`, and isEquationValue answers false for
+ * both, so no existing patch enters the equation engine at all.
+ */
+export const NODEREF_KIND = "noderef";
+
 const KIND_RESULT = {
   number: "number", angle: "number",
   color: "color",
@@ -2023,6 +2052,7 @@ const KIND_RESULT = {
   select: "select",
   asset: "string", text: "string",
   [LIST_ROW_KIND]: "list",
+  [NODE_INPUT_ROW_KIND]: NODEREF_KIND,
 };
 
 // LOUD IMPORT-TIME GUARD (the render_settings.js ANTIALIAS_MODES precedent): a
@@ -2294,26 +2324,6 @@ export function storedListPath(path) {
 const UNRESOLVED_KIND = "unresolved";
 
 /**
- * The result kind of a NODE INPUT slot — `items.<id>.inputs.<port>`, the leaf a
- * wire is stored in (core/nodeflow.js). An "=" equation there must evaluate to a
- * `{item, port}` REFERENCE, which is the user's node type (2026-08-03: "It's a
- * different type than just float ... It's a node type").
- *
- * IT NEEDS ITS OWN BRANCH RATHER THAN A PROPS ENTRY because `inputs` is a MAP
- * keyed by port name: the key is `inputs.gain` on one widget and `inputs.cutoff`
- * on the next, so there is no fixed property path for PROPS to declare. That is
- * the same reason NODE_ITEM_REFS needed a wildcard segment.
- *
- * WHAT THIS FIXES, MEASURED: before it, `"= osc1"` in an input slot WAS collected
- * as a slot (leaves() descends into the inputs map) and typed UNRESOLVED, so it
- * failed with "has no declared value kind" — a true sentence about a hole, not a
- * design. A drag-authored `{item, port}` literal is untouched either way: its
- * leaves are `inputs.gain.item` / `inputs.gain.port`, and isEquationValue answers
- * false for both, so no existing patch enters the equation engine at all.
- */
-const NODEREF_KIND = "noderef";
-
-/**
  * Pure function. Is this slot path a node INPUT port slot — `inputs.<port>`,
  * relative to the item? Exactly two segments: the map, then one port key. A
  * DEEPER path (`inputs.gain.item`) is the literal's own leaf and is NOT an
@@ -2580,6 +2590,14 @@ export function numericPropertyPaths(plugin) {
   // enforce still holds. Only for a BBOX plugin (declares both w and h): a
   // two-point widget (arrow/line) has no box and thus no center.
   if (typeof plugin.defaults.w === "number" && typeof plugin.defaults.h === "number") out.push("cx", "cy");
+  // OUTPUT PROPERTIES (core/output_properties.js) are referenceable, so the same
+  // law puts them here. DERIVED from the plugin's own declaration rather than
+  // appended by hand the way cx/cy above had to be — a new node output becomes
+  // discoverable the moment it is declared, with nothing to keep in sync. Only the
+  // NUMBER-kind readable ones: this list is the NUMERIC autocomplete, and a
+  // tier-1 signal has no number to offer (reading it is refused with a sentence).
+  for (const d of outputPropertyDescriptors(plugin, plugin.defaults))
+    if (d.readable && d.kind === "number") out.push(d.name);
   return out;
 }
 
@@ -2978,6 +2996,12 @@ class CycleAbort {
     this.chain = chain;
   }
 }
+
+/** "This path names no output property" — a SENTINEL, not `undefined`, because
+ *  `undefined` is also a legal answer from an output whose producer made none, and
+ *  the two must not be confused: one falls through to the stored-property read, the
+ *  other is refused with a sentence (core/output_properties.outputValueProblem). */
+const NOT_AN_OUTPUT = Symbol("not an output property");
 
 /**
  * Pure function. Ref-proxy path segments → a resolver token for resolveRef: a
@@ -3390,6 +3414,85 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
       requireSlot(depKey);
     }
   };
+  // ── OUTPUT PROPERTIES: THE ORDERING FIX (core/output_properties.js) ─────────
+  //
+  // A node's outputs used to be computed by evaluateNodeGraph INSIDE
+  // deriveRenderTree — strictly AFTER this pass — so they reached emit() and
+  // NOTHING ELSE, and the user's *"other nodes can then read these properties"* was
+  // physically unspellable. They are pulled HERE instead, lazily, so an equation can
+  // read one.
+  //
+  // ── WHY A READ-SETTLING VIEW RATHER THAN "SETTLE THE ITEM FIRST" ────────────
+  // The obvious move — settle every slot of a node before computing its outputs —
+  // is WRONG, and the case that proves it is the first real consumer. Manifest R7-21
+  // defaults a node's `w` to "= self.node_width" and its `h` to "= self.node_height".
+  // Settling the whole item to answer `node_width` would settle `h`, whose equation
+  // reads `node_height`, which would settle `w` — already in progress. A legitimate
+  // DAG reported as a cycle, on the very feature this exists for.
+  //
+  // So the resolver reads the items through a view in which touching a TOP-LEVEL KEY
+  // settles that key's equation slots and no others. The dependency is then
+  // discovered by EXECUTION, exactly as every other dependency in this pass is (the
+  // dynamic-capture principle in evaluateState's docblock), a genuine self-cycle
+  // still lands in requireSlot and is LOUD, and no plugin has to declare which of
+  // its own properties its outputs read — a declaration that would be a
+  // hand-maintained mirror of the code, i.e. the thing that goes stale.
+  const settledViews = new Map(); // itemId → the read-settling proxy (one per item per pass)
+  const settledItem = (itemId) => {
+    let view = settledViews.get(itemId);
+    if (view === undefined) {
+      const target = out.items[itemId];
+      view = target === undefined || target === null ? target : new Proxy(target, {
+        get: (t, key) => {
+          if (typeof key === "string") {
+            const prefix = `items.${itemId}.${key}`;
+            for (const depKey of itemSlotKeys.get(itemId) ?? [])
+              if (depKey === prefix || depKey.startsWith(`${prefix}.`)) requireSlot(depKey);
+          }
+          return t[key];
+        },
+      });
+      settledViews.set(itemId, view);
+    }
+    return view;
+  };
+  const settledItems = new Proxy(Object.create(null), {
+    has: (_t, key) => typeof key === "string" && key in (out.items ?? {}),
+    ownKeys: () => Reflect.ownKeys(out.items ?? {}),
+    getOwnPropertyDescriptor: (_t, key) => Reflect.getOwnPropertyDescriptor(out.items ?? {}, key),
+    get: (_t, key) => (typeof key === "string" ? settledItem(key) : undefined),
+  });
+  const nodeOutputs = nodeOutputResolver(settledItems, registry);
+  /** Query. The plugin of `itemId` IF it can publish output properties at all —
+   *  a capability test (does it declare ports, or derived facts?), never a type
+   *  test, per the registry law. Null for every ordinary widget, which is what
+   *  keeps this whole seam free for a document with no nodes. */
+  const outputPublisher = (itemId) => {
+    const item = out.items[itemId];
+    if (typeof item?.type !== "string") return null;
+    const plugin = registry.get(item.type);
+    return plugin?.ports || plugin?.outputProps ? plugin : null;
+  };
+  /** Query→value (settles what it reads; may recurse). The value of the output
+   *  property `rel` names on `itemId`, THROWING the refusal sentence for one that
+   *  has none. Returns the sentinel NOT_AN_OUTPUT when `rel` names no output at
+   *  all, so the caller can fall through to the ordinary stored-property read —
+   *  `undefined` could not say that, because it is also a legal absent value. */
+  const readOutputProperty = (itemId, rel) => {
+    const plugin = outputPublisher(itemId);
+    if (!plugin) return NOT_AN_OUTPUT;
+    const view = settledItem(itemId);
+    const descriptor = outputPropertyAt(plugin, view, rel);
+    if (!descriptor) return NOT_AN_OUTPUT;
+    // The node graph is pulled ONLY for a PORT, so a derived fact (R7-21's natural
+    // size) costs nothing and, more importantly, does not settle this node's wires
+    // on its way to answering a question about geometry.
+    const value = outputPropertyValue(plugin, view, descriptor, descriptor.source === "port" ? nodeOutputs(itemId)?.outputs ?? null : null);
+    const problem = outputValueProblem(descriptor, value);
+    if (problem) throw new Error(problem);
+    return value;
+  };
+
   const requireGroups = (itemId) => {
     for (const gid of ownerGroups.get(itemId) ?? []) requireItemGeometry(gid, false);
   };
@@ -3555,6 +3658,24 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
         const c = boxCenter(target);
         return d.path[0] === "cx" ? c.x : c.y;
       }
+      // OUTPUT PROPERTIES (core/output_properties.js): a value the widget PUBLISHES
+      // rather than stores — a node's output port, or a derived fact like a node's
+      // natural size. Answered ahead of the generic getPath below for the same
+      // reason cx/cy is: nothing is stored at the path, so the generic read would
+      // always report "has no property". Unlike cx/cy this is ONE DECLARATIVE
+      // LOOKUP rather than a branch per name — a new output is readable the moment
+      // its plugin declares it, and `numericPropertyPaths` offers it in
+      // autocomplete from the same declaration.
+      //
+      // Tested BEFORE pathToStored because an output property's name is canonical
+      // DISPLAY spelling (the name gate in output_properties.js refuses anything
+      // else), and camelCasing it here would look up a name that cannot exist.
+      //
+      // An output with NO readable value — an audio signal, or a port whose value is
+      // produced in the engine — THROWS the sentence outputValueProblem states, into
+      // the ordinary equation-error path. Never 0, never a stale sample.
+      const published = readOutputProperty(d.itemId, d.path);
+      if (published !== NOT_AN_OUTPUT) return published;
       // display snake_case → stored camelCase (idempotent on camel), then a
       // DECLARED-LIST element field's canonical NAME → its storage key
       // (`points.3.x` → points[3][0] for a tuple element; a no-op otherwise).
@@ -3829,6 +3950,31 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // so this loop never throws.
   for (const key of slots.keys())
     if (!status.has(key)) evalSlot(slots.get(key));
+
+  // OUTPUT PROPERTIES ARE INJECTED ONTO THE EVALUATED STATE HERE, after every slot
+  // has settled — core/output_properties.js, following core/content_size.js: never
+  // stored, never keyframable, read through the ordinary property resolver.
+  //
+  // The refValue branch above already answers an EQUATION's read on demand; this
+  // pass exists for every OTHER consumer of an evaluated state — the Inspector's
+  // outputs section, and emit() — so that they all see one set of values rather
+  // than each recomputing the graph in its own idiom. An output with no readable
+  // value injects NOTHING (an audio signal, a port produced in the engine): absent
+  // fails loudly through "has no property", where a 0 would be a plausible wrong
+  // number nobody notices.
+  //
+  // A FAILURE HERE IS REPORTED, NOT THROWN, for the reason the project script's
+  // compile error a few hundred lines above is: the pass must still produce a frame,
+  // and a document with a cyclic hand-edited patch must show the rest of itself.
+  for (const id of Object.keys(out.items ?? {})) {
+    const plugin = outputPublisher(id);
+    if (!plugin) continue;
+    try {
+      Object.assign(out.items[id], outputPropertyInjection(plugin, settledItem(id), nodeOutputs(id)?.outputs ?? null));
+    } catch (e) {
+      reportOnce(`output properties on "${out.items[id].type}": ${e.message}`);
+    }
+  }
 
   // THE SIMULATION STEP CLOSES HERE — after every slot is settled, so what each
   // `@`-read slot records is this step's FINAL value. Only slots something actually

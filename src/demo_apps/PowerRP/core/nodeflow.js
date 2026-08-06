@@ -187,13 +187,34 @@
 
 /**
  * THE PORT TYPE TABLE. One entry per type: its color (the user's ruling that the
- * bead color indicates the type), a human label, and a `zero` — the value an
- * UNCONNECTED input of that type reads.
+ * bead color indicates the type), a human label, a `zero` — the value an
+ * UNCONNECTED input of that type reads — and `readable`, whether the DOCUMENT can
+ * see a value of this type at all.
  *
  * `zero` exists so an unconnected input is never `undefined`: a math node with one
  * wire plugged in still computes, and a display with nothing attached shows a
  * defined value rather than a hole. It is the type's additive identity where that
  * makes sense.
+ *
+ * ── `readable` IS THE TIER BOUNDARY (manifest R7-7 BOUNDARY) ────────────────
+ * Every output port is REFERENCEABLE — that is tier 1, and it is what makes a
+ * patch wireable at all. Only SOME outputs additionally expose a value an equation
+ * can read (tier 2), and which ones follows from the TYPE rather than from a second
+ * hand-maintained list — which is why this is a column on this table.
+ *
+ * `audio: readable = false` is the one false entry, and it is a fact about the
+ * type, not a gap. An `audio` port is an AudioNode on the browser's audio thread
+ * (core/audio_specs.js's own words: "control SIGNALS on AudioNodes, not numbers the
+ * document can read"); sampling its instantaneous amplitude into the document would
+ * make the value frame-rate dependent, ephemeral and non-reproducible — three
+ * refusals at once. So `= lfo1.out` is REFUSED WITH A SENTENCE (see
+ * core/output_properties.js), never answered with 0 and never with a stale sample.
+ *
+ * `readable: true` does NOT promise a value exists — it says the type is one the
+ * document could hold. Whether a given port HAS one is decided by whether the
+ * plugin's `computeOutputs` produced it, which is the honest answer for the audio
+ * roster's `trigger` output (audio_specs TRIGGER_SPEC): typed readable, but its
+ * pulse train lives in the engine, so it produces nothing and reading it says so.
  *
  * The reserved-for-later types (image / material / shape, per the blueprint) are
  * NOT declared here. A type with no widget that produces it would be a color in a
@@ -201,9 +222,9 @@
  * producer, which is also who knows what its `zero` should be.
  */
 export const PORT_TYPES = Object.freeze({
-  number: Object.freeze({ label: "Number", color: "#7aa2f7", zero: 0 }),
-  trigger: Object.freeze({ label: "Trigger", color: "#e0af68", zero: 0 }),
-  audio: Object.freeze({ label: "Audio", color: "#9ece6a", zero: 0 }),
+  number: Object.freeze({ label: "Number", color: "#7aa2f7", zero: 0, readable: true }),
+  trigger: Object.freeze({ label: "Trigger", color: "#e0af68", zero: 0, readable: true }),
+  audio: Object.freeze({ label: "Audio", color: "#9ece6a", zero: 0, readable: false }),
   // THE NODE TYPE (user ruling, 2026-08-03: "Objects should be referenceable as
   // equations and should be nodes. It's a different type than just float ... It's
   // a node type."). A `node` value is a REFERENCE to another item's output port —
@@ -215,7 +236,11 @@ export const PORT_TYPES = Object.freeze({
   // nothing is nothing — so the zero is the absence itself, and every reader
   // already treats a null `inputs.<port>` as unwired (connectionsOf, disconnectPairs).
   // Using 0 would have made an unwired node port claim to point at an item.
-  node: Object.freeze({ label: "Node", color: "#bb9af7", zero: null }),
+  // `readable: true` because a reference IS document state — it is exactly what
+  // `inputs.<port>` already stores and keyframes. Reading one yields the
+  // `{item, port}` record, not a number, which is the tier-1 property TYPE the
+  // R7-7 boundary names (core/expressions.js NODEREF_KIND validates it).
+  node: Object.freeze({ label: "Node", color: "#bb9af7", zero: null, readable: true }),
 });
 
 /** Every declared port type name, for validation messages and test sweeps. */
@@ -252,6 +277,23 @@ export function portZero(type) {
   const t = PORT_TYPES[type];
   if (!t) throw new Error(`nodeflow: unknown port type ${JSON.stringify(type)} — declare it in PORT_TYPES (have: ${PORT_TYPE_NAMES.join(", ")})`);
   return t.zero;
+}
+
+/**
+ * Pure function. Can the DOCUMENT hold a value of this port type — i.e. may an
+ * equation read it (tier 2), or is the port referenceable only (tier 1)? See the
+ * PORT_TYPES docblock for why `audio` is the false one.
+ *
+ * @param {string} type - a PORT_TYPES key
+ * @returns {boolean}
+ *
+ * @example portReadable("number") // true
+ * @example portReadable("audio") // false (a signal on the audio thread; the document never sees it)
+ */
+export function portReadable(type) {
+  const t = PORT_TYPES[type];
+  if (!t) throw new Error(`nodeflow: unknown port type ${JSON.stringify(type)} — declare it in PORT_TYPES (have: ${PORT_TYPE_NAMES.join(", ")})`);
+  return t.readable;
 }
 
 /**
@@ -1002,34 +1044,114 @@ export function evaluateNodeGraph(items, registry) {
   const { order, cyclic } = topoOrder(items);
   const values = {};
   for (const id of order) {
-    const state = items[id];
-    if (!state || state.active === false) continue;
-    const plugin = pluginFor(items, registry, id);
-    if (!plugin) continue;
-    const ports = declaredPorts(plugin, state);
-    if (ports.inputs.length === 0 && ports.outputs.length === 0) continue;
-    // Resolve every declared input: a connected one takes its source's output
-    // COERCED to this port's type; an unconnected one takes the type's zero.
-    const inputs = {};
-    for (const p of ports.inputs) {
-      const c = state.inputs?.[p.key];
-      const srcOut = c && typeof c === "object" ? values[c.item]?.outputs?.[c.port] : undefined;
-      if (srcOut === undefined) {
-        inputs[p.key] = portZero(p.type);
-        continue;
-      }
-      const srcState = items[c.item];
-      const srcPlugin = srcState ? pluginFor(items, registry, c.item) : null;
-      const srcPort = srcPlugin ? findPort(srcPlugin, srcState, "output", c.port) : null;
-      // A source port that vanished (its plugin's port list changed with state)
-      // reads as the zero rather than throwing: the document is still valid, the
-      // wire simply has nothing behind it this frame.
-      inputs[p.key] = srcPort && typesCompatible(srcPort.type, p.type) ? coerce(srcOut, srcPort.type, p.type) : portZero(p.type);
-    }
-    const outputs = plugin.computeOutputs?.(state, inputs) ?? {};
-    values[id] = { inputs, outputs };
+    const resolved = resolveNode(items, registry, id, (srcId) => values[srcId]?.outputs);
+    if (resolved) values[id] = resolved;
   }
   return { values, cyclic };
+}
+
+/**
+ * Pure function. ONE node's `{inputs, outputs}`, given a way to read its SOURCES'
+ * outputs. Extracted so the two drivers below cannot disagree about what a wire
+ * carries: `evaluateNodeGraph` walks the whole graph in topological order, and
+ * `nodeOutputResolver` pulls one node on demand from inside the equation pass.
+ * Coercion, the unconnected zero and the vanished-port rule are therefore stated
+ * exactly once.
+ *
+ * Returns null for an item that is not a live node (absent, inactive, unregistered,
+ * or declaring no ports) — the same items both drivers skip.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {string} id - the node to resolve
+ * @param {function} outputsOf - (sourceItemId) => that node's outputs map, or undefined
+ * @returns {{inputs: object, outputs: object}|null}
+ *
+ * @example // a doubler reading a source that already answered 3:
+ * @example const reg = {get: () => ({ports: () => ({inputs: [{key: "in", type: "number"}], outputs: [{key: "out", type: "number"}]}), computeOutputs: (s, i) => ({out: i.in * 2})})};
+ * @example resolveNode({b: {type: "mul", inputs: {in: {item: "a", port: "out"}}}}, reg, "b", () => ({out: 3})).outputs.out // 6
+ * @example // an unconnected input reads its type's zero, never undefined:
+ * @example resolveNode({b: {type: "mul"}}, reg, "b", () => undefined).inputs.in // 0
+ * @example resolveNode({}, reg, "gone", () => undefined) // null
+ */
+export function resolveNode(items, registry, id, outputsOf) {
+  const state = items?.[id];
+  if (!state || state.active === false) return null;
+  const plugin = pluginFor(items, registry, id);
+  if (!plugin) return null;
+  const ports = declaredPorts(plugin, state);
+  if (ports.inputs.length === 0 && ports.outputs.length === 0) return null;
+  // Resolve every declared input: a connected one takes its source's output
+  // COERCED to this port's type; an unconnected one takes the type's zero.
+  const inputs = {};
+  for (const p of ports.inputs) {
+    const c = state.inputs?.[p.key];
+    const srcOut = c && typeof c === "object" ? outputsOf(c.item)?.[c.port] : undefined;
+    if (srcOut === undefined) {
+      inputs[p.key] = portZero(p.type);
+      continue;
+    }
+    const srcState = items[c.item];
+    const srcPlugin = srcState ? pluginFor(items, registry, c.item) : null;
+    const srcPort = srcPlugin ? findPort(srcPlugin, srcState, "output", c.port) : null;
+    // A source port that vanished (its plugin's port list changed with state)
+    // reads as the zero rather than throwing: the document is still valid, the
+    // wire simply has nothing behind it this frame.
+    inputs[p.key] = srcPort && typesCompatible(srcPort.type, p.type) ? coerce(srcOut, srcPort.type, p.type) : portZero(p.type);
+  }
+  return { inputs, outputs: plugin.computeOutputs?.(state, inputs) ?? {} };
+}
+
+/**
+ * Near-pure function (returns a closure that memoizes into its own per-call table).
+ * A LAZY, PULL-BASED node-graph evaluator: `resolver(itemId)` returns that node's
+ * `{inputs, outputs}`, computing its sources first and remembering every answer.
+ *
+ * ── WHY A SECOND DRIVER EXISTS, AND WHY IT IS NOT A SECOND EVALUATOR ────────
+ * `evaluateNodeGraph` runs at DERIVE time, over a state whose every equation has
+ * already settled, so a topological sweep is exactly right there. The equation pass
+ * cannot work that way: it settles slots LAZILY, on demand, and a node's own
+ * properties may be equations that are not settled yet when something reads its
+ * output. So the equation pass pulls, and hands in an `items` VIEW that settles a
+ * key's equation on read (core/expressions.js). Both drivers call `resolveNode`, so
+ * what a wire CARRIES is defined once.
+ *
+ * ── CYCLES ARE LOUD HERE, unlike at derive ─────────────────────────────────
+ * `connectionRefusal` refuses a cycle at connect time, so one can only reach this
+ * from a hand-edited document. `evaluateNodeGraph` tolerates that (it reports
+ * `cyclic` and zeroes the back edge) because a frame must still be drawn. A PULL
+ * cannot: there is no answer to give the equation that asked. So re-entry throws,
+ * naming the chain, and the reading equation fails through the ordinary
+ * equation-error path — the same treatment a cyclic equation gets.
+ *
+ * @param {object} items - folded items, or a view of them that settles on read
+ * @param {object} registry - plugin registry
+ * @returns {function} (itemId) => {inputs, outputs} | null
+ *
+ * @example const reg = {get: () => ({ports: () => ({outputs: [{key: "out", type: "number"}]}), computeOutputs: (s) => ({out: s.value})})};
+ * @example nodeOutputResolver({a: {type: "src", value: 7}}, reg)("a").outputs.out // 7
+ * @example nodeOutputResolver({}, reg)("nobody") // null
+ */
+export function nodeOutputResolver(items, registry) {
+  const done = new Map(); // itemId → {inputs, outputs} | null
+  const pulling = []; // the pull stack, in order, so the cycle sentence names the chain
+  const resolve = (id) => {
+    if (done.has(id)) return done.get(id);
+    const at = pulling.indexOf(id);
+    if (at >= 0) {
+      const chain = [...pulling.slice(at), id];
+      throw new Error(`Cyclic node outputs: ${chain.join(" → ")} — a node cannot read an output that depends on its own`);
+    }
+    pulling.push(id);
+    try {
+      const resolved = resolveNode(items, registry, id, (srcId) => resolve(srcId)?.outputs);
+      done.set(id, resolved);
+      return resolved;
+    } finally {
+      pulling.pop();
+    }
+  };
+  return resolve;
 }
 
 // ── GEOMETRY ─────────────────────────────────────────────────────────────────

@@ -623,11 +623,25 @@ export function contractDifferences(a, b) {
  * @example jointEditProblem({key: "points", kind: "list"}) === JOINT_UNEDITABLE_KINDS.list // true
  * @example jointEditProblem({key: "type", kind: "select"}) // null (WORKSTREAM BT — retyped per item)
  * @example jointEditProblem({key: "active", kind: "boolean"}) // null (visibility DOES unify)
+ * @example jointEditProblem({key: "out", kind: "number", readOnly: true}) === READ_ONLY_ROW_PROBLEM // true
  */
 export function jointEditProblem(row) {
+  // A READ-ONLY ROW IS REFUSED BEFORE THE KIND TABLE IS CONSULTED, and it has to
+  // be: `readOnly` (core/output_properties.js — a widget's PUBLISHED outputs) is a
+  // property of the ROW, not of its kind, and its kind is an ordinary "number".
+  // Asking the kind table would classify a computed value as jointly editable and
+  // hand it a fan-out field, which is the affordance lie the aspect exists to
+  // prevent — on N items at once.
+  if (row.readOnly) return READ_ONLY_ROW_PROBLEM;
   if (row.kind in JOINT_UNEDITABLE_KINDS) return JOINT_UNEDITABLE_KINDS[row.kind];
   return null;
 }
+
+/** The sentence a read-only row is refused a joint edit with. It states a fact
+ *  about the VALUE rather than about the selection, because being computed is why
+ *  it cannot be written on one item either. */
+export const READ_ONLY_ROW_PROBLEM =
+  "This value is computed, not stored — it cannot be edited, on one widget or on several.";
 
 /**
  * Pure function. The rows N selected items SHARE, plus the CONFLICTS worth

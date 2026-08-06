@@ -11603,6 +11603,27 @@ audio.ae-preview-media {
   color: var(--fg-dim);
 }
 
+/* AN OUTPUT ROW'S VALUE CELL (core/output_properties.js) — the closest kin of
+   .mixed-blocked above, and placed beside it for that reason: both are inert cells
+   that explain themselves rather than editors. A widget's PUBLISHED outputs are
+   computed, never stored, so the cell reports and offers nothing to type into — a
+   field that discarded what the author typed would be a lie about its own
+   affordance, the ruling that keeps the save dot from being a button.
+   LEFT-ALIGNED, unlike the mixed mark: that one centres a glyph standing in for an
+   absent agreement, while this one carries a real value that should read against
+   its label. Tabular figures so a value changing under a scrub does not jitter.
+   It is FOCUSABLE (tabindex in the markup) so an unreadable output's reason is
+   reachable without a pointer. */
+.output-val {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  padding: var(--a-sp-1) var(--a-sp-2);
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
 /* The gradient-stops honesty note inside a multi-selection PaintField (the one
    paint aspect that cannot write to a set yet — see PaintField's fan-out). */
 .paint-stops-multi-note {

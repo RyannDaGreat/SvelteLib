@@ -65,7 +65,8 @@
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_AUTO, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
-  import { NODE_INPUT_ROW_KIND, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
+  import { NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
+  import { OUTPUTS_CAT, outputPropertyRows } from "../core/output_properties.js";
   import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
   import { sectionKeyPaths, sectionBubbleApplies } from "../core/section_keyframes.js";
   import { commandUnavailableReason, unavailableMessage } from "../core/commands.js";
@@ -381,6 +382,12 @@
     // wired to is how an author reads a patch, so it sits directly under Transform
     // and above the module's own knobs.
     inputs: "Inputs",
+    // WHAT THE WIDGET PUBLISHES (core/output_properties.js) — the read-only mirror
+    // of Inputs, directly beneath it, because a patch reads in that direction. Every
+    // row here is a REPORT: computed, never stored, so no editor, no `=` and no
+    // diamonds. NO JSON-ONLY PROPERTIES is why the section exists at all — an output
+    // an equation can name must be visible in the panel that names properties.
+    [OUTPUTS_CAT]: "Outputs",
     // FILL/STROKE ARE THEIR OWN TOP-LEVEL SECTIONS, peers of Transform — NOT
     // rows inside Formatting (user ruling, twice: "they need to be their own
     // separate drop-down"). The section hosts the whole paint stack for its
@@ -400,7 +407,7 @@
   // UNIVERSAL LEADS, for the reason the single-selection panel renders its
   // Universal section first: these are the properties every widget has, and a
   // plugin's sections are what it adds to them.
-  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "inputs", "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
+  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "inputs", OUTPUTS_CAT, "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
 
   /**
    * Pure function. The display title for the CUSTOM_CATEGORY bucket — a widget's
@@ -553,7 +560,17 @@
     return runs;
   }
 
-  let itemCategories = $derived(sel ? groupRows(sel.plugin.inspector ?? [], sel.state, sel.plugin.title ?? null) : []);
+  // OUTPUT ROWS ARE APPENDED HERE, not spread into each plugin's `inspector` the
+  // way `nodeInputRows` is. Two reasons, and the second is the load-bearing one:
+  // an output row is not a plugin's editorial choice (every declared output must be
+  // listed, or the panel asserts by omission that there are none), and doing it
+  // centrally means a widget gains the section the moment it declares a port —
+  // nothing to spread, nothing to forget, no per-plugin copy to drift.
+  // `sel.state` is the EVALUATED state, which is where core/expressions.js injected
+  // the values, so the panel shows the very numbers the equations read.
+  let itemCategories = $derived(
+    sel ? groupRows([...(sel.plugin.inspector ?? []), ...outputPropertyRows(sel.plugin, sel.state)], sel.state, sel.plugin.title ?? null) : []
+  );
   let creationCategories = $derived(
     creationState ? groupRows(app.registry.get(creationState.type)?.inspector ?? [], creationState, app.registry.get(creationState.type)?.title ?? null) : []
   );
@@ -1960,7 +1977,26 @@
          A row with no equation fallback (number/angle/paint, which own theirs;
          transition + grayed rows, which are not equation slots) renders the
          specialized editor alone, exactly as before. -->
-    {#if multiRow?.problem}
+    {#if row.readOnly}
+      <!-- A PUBLISHED OUTPUT (core/output_properties.js). It is a REPORT, not a
+           control, and it renders FIRST so no editor branch below can claim it: the
+           value is computed, so a field the author could click into but that
+           discarded what they typed would be a lie about its own affordance — the
+           same ruling that keeps the save dot from being a button.
+           It keeps the row's copy-path chrome, which is the point of the section:
+           the path it copies (`self.out`, `@id.out`) is exactly what an equation
+           writes to read this value.
+           EITHER A VALUE OR A REASON, never a blank — `row.unreadable` is the
+           sentence for an output the document cannot hold (an audio signal) or one
+           whose value is produced in the engine. Focusable, so that reason is not
+           pointer-only (the save-dot rule again). -->
+      {@const shown = valueAt(state, row.key)}
+      <Tooltip text={row.unreadable ?? row.help}>
+        <span class="output-val" role="status" tabindex="0">
+          {row.unreadable ? (row.portType ? `${PORT_TYPES[row.portType].label} signal` : "no value") : equationBadge(shown)}
+        </span>
+      </Tooltip>
+    {:else if multiRow?.problem}
       <!-- SHARED BUT NOT JOINTLY EDITABLE. Listed, inert, and EXPLAINING ITSELF
            (the "a disabled control explains itself" rule, and the standing
            Inspector rule that a row which cannot be edited in this context is
