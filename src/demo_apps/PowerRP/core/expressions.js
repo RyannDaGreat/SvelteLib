@@ -134,7 +134,7 @@ import { particleTime } from "../render_gpu/particle_clock.js";
 // same one particle_clock.js keeps: the pure grammar here, the mutable service there.
 import {
   beginSimulationStep, hasSimulationValue, simulationValue, recordSimulationValue,
-  simulationGeneration, cameraMaxTimestep,
+  simulationGeneration, cameraMaxTimestep, withSimulationFrozen,
 } from "./simulation_history.js";
 // THE MATERIAL KNOB SCHEMAS (see §Material param knobs). A paint's material
 // params are declared in the material REGISTRY, not in plugin.defaults, so this
@@ -3990,7 +3990,14 @@ function mutCookMorphEndpoints(out, state, registry, script, contentSizes, error
       // The endpoint IN PLACE OF this item, in the real document — see the
       // scoping argument above.
       const basis = { ...state, items: { ...state.items, [id]: endpoint } };
-      const pass = computeEvaluatedState(basis, registry, script, contentSizes);
+      // FROZEN, because this is a HYPOTHETICAL state, not the timeline: the endpoint
+      // is what the item WOULD be at one end of a morph, evaluated in place of the
+      // real item. A simulated equation inside it must read the current step and
+      // record NOTHING — otherwise this nested pass would overwrite the outer pass's
+      // history for the same slot with a value from a state that is not on the
+      // timeline, which is exactly the one-advancer violation the freeze exists for
+      // (core/simulation_history.js, "THE SCOPING INVARIANT").
+      const pass = withSimulationFrozen(() => computeEvaluatedState(basis, registry, script, contentSizes));
       // An endpoint equation that FAILED is reported under a path naming the
       // side it failed on, so the Inspector's error affordance points at the
       // morph rather than at a slot the author cannot find. The value still
