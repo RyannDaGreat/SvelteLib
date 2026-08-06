@@ -4023,6 +4023,41 @@ Numbered for grinding. Each is DONE only when live-verified, per the standing ru
 - **R7-5 NODE DISPLAYS LIVE IN CANVAS SPACE.** The spectrogram — and every node display —
   is drawn by the widget's `emit()` into the display list, so it rotates, scales, zooms
   and exports with its node. No DOM overlay.
+
+  **THE USER'S FULL SYMPTOM LIST, 2026-08-06 — four symptoms, ONE root cause, and the
+  third one names it:** *"Why does the spectrogram image always show on TOP of everything
+  else and restart when I zoom or pan my camera btw its clearly not part of the canvas
+  which is very annoying its like some overlaid dom element or some bullshit. not
+  acceptable. not recordable and not renderable :("*
+
+  1. **Always on top** — a DOM overlay is above ALL canvas content, so it can never sit
+     behind another widget. No z-interleaving is possible, at all.
+  2. **RESTARTS ON ZOOM/PAN** — and this is the diagnostic. **The waterfall's history is
+     stored in the PIXELS of the DOM `<canvas>`.** Zooming changes the element's
+     width/height, which resets its backing store and erases the accumulated image.
+  3. Doesn't rotate with its node (only two corners are transformed, then reduced to an
+     axis-aligned box).
+  4. Not recordable, not renderable — absent from every export and from `cli/render.js`.
+
+  **THEREFORE THE LOAD-BEARING FIX IS A DATA CHANGE, NOT A DRAWING CHANGE: THE HISTORY
+  MUST BE A RING BUFFER OF MAGNITUDE COLUMNS, NOT PAINTED PIXELS.** Once history is data:
+  zoom/pan merely re-renders the same columns at a new size (no restart); the columns can
+  be emitted into the display list (correct z-order, rotates, exports); and the widget
+  stops owning a canvas element at all. **A rewrite that moves the drawing into `emit()`
+  but leaves history in a pixel buffer would fix three symptoms and leave the one the
+  user noticed first.**
+
+  **ON "NOT RECORDABLE", which is the deepest part of the ask.** Live analysis of a live
+  `AudioContext` is not reproducible — it is the same class as a video player's current
+  frame. But **a synth patch built from document state IS a pure function of the document
+  and time**, so its spectrum is deterministic *in principle*, and the path to collecting
+  it is **`OfflineAudioContext`**: render the patch's audio for a frame range offline, then
+  compute the columns from that. That would move audio analysis from "live only" into
+  RECORDABLE state and make an exported spectrogram exact. It is real work and it is not
+  in R7-5's scope — but it is the honest answer to the user's last four words, and the
+  ring-buffer design above is a prerequisite for it either way. **Do not claim
+  "recordable" until the offline path exists;** until then say plainly that the editor and
+  presenter draw live analysis and an export draws none.
 - **R7-6 CULLING IS VISUAL-ONLY, AND IT RUNS IN THE EDITOR.** Cull in the editor as well
   as in presentation (the reported lag with thousands of off-screen nodes). A culled audio
   widget KEEPS PLAYING; a widget that is `active:false` / not visible does NOT.
