@@ -36,9 +36,12 @@
   import { allPortBeads, beadAt, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
   // THE AUDIO MIRROR (NF-BIND): the document reflected into the one synth engine.
   // ONE WAY ONLY — the engine never writes back, so the core invariant is untouched.
-  // AudioOverlay draws the LIVE meter/spectrogram in screen space; AudioBadge is the
-  // autoplay surface. See web/audioMirror.svelte.js for why both exist.
-  import AudioOverlay from "./AudioOverlay.svelte";
+  // AudioBadge is the autoplay surface. See web/audioMirror.svelte.js.
+  // THE LIVE METER/SPECTROGRAM IS NO LONGER A DOM OVERLAY (R7-5, W2-A): it is a
+  // display-list pre-pass now, `liveAnalysis` below, so it lives in the node's own
+  // canvas space and rotates and scales with its card. The screen-space
+  // AudioOverlay it replaced could only ever draw an axis-aligned rect built from
+  // two transformed corners — not even the true AABB under rotation.
   import AudioBadge from "./AudioBadge.svelte";
   import { fireLiveTrigger, mirrorAudioFrame, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
   import { solveSnap, solveEdgeSnap, sizeMatches, axisLock, provenanceAnchorId, anchorSnapEquation, resizeEdgeEquation } from "../core/snap.js";
@@ -69,6 +72,7 @@
   // map would otherwise get no descriptor in the editor and fetch nothing.
   import { prepareMapTiles } from "../render_gpu/map_display.js";
   import { prepareScene3dViews } from "../render_gpu/scene3d_display.js";
+  import { prepareLiveAnalysis } from "../render_gpu/gpu/live_analysis_registry.js";
   import { rect as rectCmd } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { bootDone, bootFailed } from "./bootProgress.js";
@@ -917,6 +921,12 @@
         pdfDisplay,
         mapTiles: prepareMapTiles(nodes, view, canvasEl.width, canvasEl.height),
         scene3d: prepareScene3dViews(nodes, view, canvasEl.width, canvasEl.height),
+        // liveAnalysis: THE LIVE METER/SPECTROGRAM COLUMNS (R7-5). The editor does
+        // not go through cameraFrameIR — it hand-assembles this IR — so the map has
+        // to be handed over here, exactly as mapTiles and scene3d are. It is an
+        // explicit argument and never a global sceneIR reaches for: that is what
+        // keeps live samples out of every export and out of the CLI.
+        liveAnalysis: prepareLiveAnalysis(nodes),
         live: true,
         wireNodes: allNodes,
       }),
@@ -5233,7 +5243,7 @@
    */
   let nodeOverlay = $derived.by(() => {
     app.doc; app.previewDelta; app.slideIndex; viewport; wrapW; wrapH; // reactive deps (match `overlay`, plus the cull rect's size)
-    if (!actions) return { beads: [], ghost: null, analysis: [], knobRings: [], litKeys: [], playCards: [] };
+    if (!actions) return { beads: [], ghost: null, knobRings: [], litKeys: [], playCards: [] };
     const viewRect = overlayViewRect();
     const nodes = app.nodes().filter((n) => !canSkipNode(n, viewRect));
     const pt = (x, y) => actions.worldToScreen(x, y);
@@ -5275,39 +5285,6 @@
         color: overRefused ? null : portColor(wireDrag.anchor.type),
       };
     }
-    // ── THE ANALYSIS NODES' SCREEN RECTS (NF-BIND) ───────────────────────────
-    // Where AudioOverlay.svelte paints a live meter bar or spectrogram. This layer
-    // carries only GEOMETRY — which node, and the screen box its readout occupies.
-    // The live SAMPLES never come through here: they arrive on the engine's own rAF
-    // into web/audioMirror.analysisData, and the overlay reads that Map on its own
-    // frame. Routing audio data through this $derived would schedule a Svelte update
-    // per meter per frame, which is exactly the per-frame reactivity the node
-    // overlay is careful to avoid elsewhere.
-    //
-    // WHY IT IS AN OVERLAY AT ALL: an analysis node's bar is LIVE audio, which is
-    // not document state. Drawing it in the plugin's emit() would make Δt = 0
-    // produce two different pictures, breaking the determinism law, frame-range
-    // sharding and export reproducibility together. The plugin paints the STATIC
-    // form (card, frame, label); this paints the motion on top, in screen space,
-    // exactly the way selection handles do — so no export and no cli/render.js ever
-    // sees it.
-    const analysis = nodes
-      .filter((n) => n.plugin?.audioSpec?.overlay)
-      .map((n) => {
-        const s = n.state;
-        const pad = AUDIO_OVERLAY_PAD;
-        const tl = T.apply(n.world, pad, AUDIO_OVERLAY_TOP);
-        const br = T.apply(n.world, (s.w ?? 0) - pad, (s.h ?? 0) - pad);
-        const a = pt(tl.x, tl.y);
-        const b = pt(br.x, br.y);
-        return {
-          id: n.itemId,
-          kind: n.plugin.audioSpec.overlay,
-          x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
-          w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y),
-        };
-      })
-      .filter((r) => r.w > 1 && r.h > 1);
     // ── THE KNOB FOCUS RING (wave 3) ─────────────────────────────────────────
     // The DIALS themselves are painted by the plugin (core/node_chrome.knobOps),
     // because a knob is part of the module's face and belongs in every export —
@@ -5315,8 +5292,8 @@
     // lives here beside the beads, is which dial the POINTER is on and which one
     // is being TURNED. That is editor state, not document state; putting it in
     // the display list would make a PNG export of a slide depend on where the
-    // mouse happened to be, which is the same category error the analysis
-    // overlay above exists to avoid.
+    // mouse happened to be — the same category error the beads' highlight state
+    // above avoids, and the reason this layer exists at all.
     //
     // Empty except while knob focus is live, so a document with no audio nodes —
     // and an audio document nobody is editing — pays one null check.
@@ -5343,8 +5320,8 @@
     // User: "The keyboard doesn't press keys visually when I touch it" and "change
     // color a bit when selected".
     //
-    // BOTH ARE OVERLAY, NOT DISPLAY LIST, and for the same reason the analysis
-    // meters above are: a press is LIVE input and a selection is EDITOR state, so
+    // BOTH ARE OVERLAY, NOT DISPLAY LIST, and for the same reason the knob focus
+    // ring above is: a press is LIVE input and a selection is EDITOR state, so
     // painting either in a plugin's emit() would make a PNG export of a slide
     // depend on what the author was holding down or had clicked. The keyboard's
     // own paint() carries what is TRUE OF THE DOCUMENT — the keys, their QWERTY
@@ -5387,7 +5364,7 @@
         }
       }
     }
-    return { beads, ghost, analysis, knobRings, litKeys, playCards };
+    return { beads, ghost, knobRings, litKeys, playCards };
   });
 
   /** Pure function. A node's CARD as a screen-space polygon — its four local
@@ -5400,13 +5377,6 @@
       .map((wp) => actions.worldToScreen(wp.x, wp.y))
       .map((q) => `${q.x},${q.y}`).join(" ");
   }
-
-  /** The inset from a node's card edge to its live-overlay rect, and the top inset
-   *  that clears the title bar plus one port row. Local units, mapped through the
-   *  node's own world transform so a rotated or scaled analysis node's overlay
-   *  follows its card. */
-  const AUDIO_OVERLAY_PAD = 10;
-  const AUDIO_OVERLAY_TOP = 32;
 
   // ── DRIVING THE AUDIO MIRROR ───────────────────────────────────────────────
   // THE EDITOR'S FRAME, handed to the one audio seam — the same object this
@@ -5597,13 +5567,14 @@
            backend (WebGPU zero-copy / WebGL2 upload) is created async in an effect
            above; pointer-events:none so all input still reaches the SVG overlay. -->
       <canvas bind:this={videoV8El} class="video-v8-overlay"></canvas>
-      <!-- THE LIVE ANALYSIS LAYER (NF-BIND): a small 2D canvas over each meter and
-           spectrum node, drawing the bouncing bar and the flowing spectrogram. It
-           sits here — over the Skia scene, under the SVG chrome, pointer-events:none
-           — for the same reason the video overlays do, and because the node's STATIC
-           picture is painted underneath it by the plugin. Live audio is not document
-           state, so it can never be in emit(); see the component's docblock. -->
-      <AudioOverlay rects={nodeOverlay.analysis} />
+      <!-- THE LIVE ANALYSIS LAYER IS NOT A DOM OVERLAY ANY MORE (R7-5). A 2D canvas
+           used to sit here, positioned from an axis-aligned screen rect — so the
+           meter and the spectrogram were the only parts of a node that did not
+           rotate, scale or skew with the card they belonged to. The columns now ride
+           the display list as `liveAnalysis` (see the sceneIR call), which means the
+           node's own world transform carries them, exactly like every other part of
+           its picture. Live audio is still not document state: the map is an
+           explicit argument this surface passes and no exporter does. -->
       <!-- THE AUTOPLAY SURFACE: absent when the deck has no audio, absent again once
            sound is running, and clickable in between. A patch that is silent because
            the browser has not been clicked must SAY so. -->
@@ -5715,8 +5686,8 @@
           <polygon class="nf-play-card" class:nf-play-live={card.playing} points={card.poly} />
         {/each}
         <!-- THE PRESSED PIANO KEYS. Live input, so it can never be in the display
-             list (an export must not depend on what was held down) — the analysis
-             meters' seam, one widget over. Two skins because the keys are two
+             list (an export must not depend on what was held down) — the same line
+             the knob focus ring sits on. Two skins because the keys are two
              colours: a wash that reads on a pale white key is invisible on a near
              black one. -->
         {#each nodeOverlay.litKeys as key (key.id)}
