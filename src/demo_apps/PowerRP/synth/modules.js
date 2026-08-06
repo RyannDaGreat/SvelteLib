@@ -169,7 +169,7 @@ function createConstant(context, value) {
  * a safety limiter that is inaudible until something is too loud. Native, so it
  * costs nothing.
  */
-function outputModule(context, params) {
+function outputModule(context, params, resources) {
   const input = context.createGain();
   const volume = context.createGain();
   const limiter = context.createDynamicsCompressor();
@@ -183,7 +183,16 @@ function outputModule(context, params) {
 
   input.connect(volume);
   volume.connect(limiter);
-  limiter.connect(context.destination);
+  // THE ENGINE'S MASTER BUS, NOT `context.destination` (R7-22). Every output
+  // module lands on one node, which is what gives the session a single place to
+  // mute and a single place to record. Required, never defaulted: an output wired
+  // straight to the destination would be audible while the rest of the patch was
+  // muted, and invisible to a recorder — a silent-but-plausible failure in both
+  // directions, which is exactly the class this codebase refuses to paper over.
+  if (!resources?.destination) {
+    throw new Error("outputModule: resources.destination (the engine's master bus) is required — see the master-chain block in synth/engine.js");
+  }
+  limiter.connect(resources.destination);
 
   return {
     inputs: { in: input },

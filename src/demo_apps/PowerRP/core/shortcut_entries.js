@@ -576,6 +576,22 @@ export const KEYBINDING_DEFAULTS = [
   // different combo (comboEquals is exact), and createKeybindings throws on a
   // real conflict rather than letting one shadow the other silently.
   { command: "band-select-regular", keys: ["B"], when: "editMode" },
+  // M = mute (R7-22). The third surfacing of `toggle-audio-mute`, with the toolbar
+  // button and the palette — a shortcut that is not registered HERE does not
+  // exist and never reaches the HintBar, which is the manifest invariant this
+  // file was extracted to make testable.
+  //
+  // `editMode` LIKE EVERY OTHER LETTER, and the consequence is worth stating
+  // rather than leaving to be discovered: THE KEY DOES NOT WORK IN PRESENT MODE.
+  // A presenter wanting to mute mid-show is a real want, and no resolver spans
+  // both modes today — inventing one is a change to the context axes, which is a
+  // bigger decision than this binding and belongs to whoever owns that vocabulary.
+  // Reported rather than papered over with a resolver invented in passing.
+  //
+  // No collision: no other binding claims plain M, and editBase's typing-target
+  // exclusion keeps a literal "m" in a text field from reaching the registry —
+  // the same guarantee P and B above rely on.
+  { command: "toggle-audio-mute", keys: ["M"], when: "editMode" },
   { command: "deselect", keys: ["Escape"], when: "deselectable" },
   // THE HANDLE SCOPE REUSES THE ITEM SCOPE'S KEYS, one level down — the SAME
   // Backspace-hides / Cmd+Backspace-purges relationship, applied to the selected
@@ -615,6 +631,11 @@ export const KEYBINDING_LABELS = {
   "prev-slide": "Prev slide", "next-slide": "Next slide", present: "Present",
   "nudge-left": "Nudge", "nudge-right": "Nudge", "nudge-up": "Nudge", "nudge-down": "Nudge",
   "band-select-regular": "Box select",
+  // "Mute" and not "Mute audio": the chip has room for a short phrase, and the
+  // command's own title carries the noun. It does NOT change with the state —
+  // the HintBar names what a key DOES, and the toolbar's icon is where the
+  // current state is read (the toggle ruling: state via the icon).
+  "toggle-audio-mute": "Mute",
   deselect: "Deselect",
   "hide-points": "Hide points", "purge-points": "Purge points",
 };

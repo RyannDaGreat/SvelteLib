@@ -158,8 +158,14 @@ function frameTimestepSeconds(maxTimestep) {
  *   failed   — resume() was refused or the engine could not init. THE ONE SURFACED
  *              STATE, and it carries its REASON, because "audio failed" with no
  *              sentence is the unhelpful silence the badge exists to replace.
+ *
+ * `muted` IS A SEPARATE AXIS FROM `status`, not a fifth value of it, and that is
+ * the R7-22 requirement to keep the mute distinct from the FAILURE surface. The
+ * two are independent facts — audio can fail while muted, and run while muted —
+ * and folding them into one field would force one control to say two different
+ * sentences. It is SESSION state: see setAudioMuted for why it is in no document.
  */
-export const audioState = $state({ status: "idle", reason: null, moduleCount: 0 });
+export const audioState = $state({ status: "idle", reason: null, moduleCount: 0, muted: false });
 
 /**
  * Command. Ensure the engine exists and its worklets are loaded.
@@ -171,6 +177,10 @@ export const audioState = $state({ status: "idle", reason: null, moduleCount: 0 
 function ensureEngine() {
   if (engineReady) return engineReady;
   engine = createEngine();
+  // THE SESSION'S MUTE APPLIES TO AN ENGINE BUILT AFTER IT. A user can mute an
+  // empty deck and then add a patch; without this the new engine would come up at
+  // full gain and the mute would be a lie until the next toggle.
+  engine.setMuted(muted);
   engineReady = engine.init().catch((e) => {
     // A FAILURE HERE IS FATAL TO AUDIO AND MUST SAY SO. The most common cause is
     // the worklet module failing to load (a 404 on processors.js under a changed
@@ -519,19 +529,82 @@ export async function enableAudio() {
   }
 }
 
-/** Command. Suspend the context without tearing the graph down, so re-enabling is
- *  instant and the patch survives.
+// ── THE MUTE (R7-22) ─────────────────────────────────────────────────────────
+//
+// THIS REPLACES `disableAudio()`, WHICH WAS DELETED RATHER THAN LEFT AS A TRAP.
+// That function suspended the context, had zero callers, and was SELF-DEFEATING:
+// R7-3 made the next user gesture start audio, so a suspended context with a patch
+// on screen is precisely the condition `armAudioGesture` exists to resolve — the
+// very next click undid it. Its own docblock said a real mute "needs document
+// state saying so". That was wrong, and the correction is the interesting part:
+//
+// MUTE IS SESSION STATE, NOT DOCUMENT STATE (user ruling, R7-22). It is a viewer
+// preference, like a volume slider on a video player: it is not part of the deck's
+// content, keyframing it would be absurd, and SHARING A PROJECT MUST NOT SHARE THE
+// AUTHOR'S MUTE. It is therefore a plain module-level flag mirrored into reactive
+// state for the toolbar, and it appears in no delta, no save file and no share
+// link. The document-level output volume (`audio_output`'s `volume` knob) is the
+// authored thing, and it is untouched by this.
+//
+// ⚠ AND THEREFORE AN EXPORT MUST IGNORE IT. A video rendered while the author
+// happened to be muted must not come out silent — a silent deliverable with a
+// green exit code is the failure class this project forbids. Two things make that
+// structural rather than a promise: nothing about the mute reaches the document, so
+// a headless render (cli/render_job.js boots its own page and never runs this
+// code) cannot observe it; and the engine's mute gain sits DOWNSTREAM of
+// `engine.captureTap()`, so a recorder taking the tap is immune even in this page.
+// synth/engine.js's master-chain block states that ordering and why.
+
+/** Whether this SESSION has muted the speakers. Module scratch mirrored into
+ *  `audioState.muted` for the surfaces; the engine node is the actual truth, and
+ *  this is what re-applies it to an engine created later. */
+let muted = false;
+
+/**
+ * Command. Set the session mute and push it to the engine.
  *
- *  NO CALLER TODAY, and worth knowing before you add one: the next gesture will
- *  turn sound back on, because a suspended context with a patch on screen is
- *  exactly the condition armAudioGesture exists to resolve. A real MUTE is a
- *  different feature — it needs document state saying so, which is what would stop
- *  the gesture harvest from undoing it. */
-export async function disableAudio() {
-  if (!engine) return;
-  await engine.suspend();
-  audioState.status = audioState.moduleCount > 0 ? "blocked" : "idle";
+ * Safe before an engine exists: the flag is remembered and `ensureEngine` applies
+ * it at construction, so muting an empty deck and then adding a patch does not
+ * produce a burst of sound.
+ *
+ * @param {boolean} next - true to silence the speakers
+ */
+export function setAudioMuted(next) {
+  muted = !!next;
+  audioState.muted = muted;
+  if (engine) engine.setMuted(muted);
 }
+
+/** Query. Is the session muted? */
+export function audioMuted() {
+  return muted;
+}
+
+/**
+ * THE MUTE COMMAND — one registry entry, three surfacings (toolbar button,
+ * keyboard shortcut, palette), per the house law that those are all views of one
+ * action layer.
+ *
+ * DECLARED HERE rather than inline in web/App.svelte's `coreCommands` because the
+ * state it toggles lives in this module; App.svelte spreads it into that array the
+ * same way it spreads `DEMO_PATCHES`. Keeping the entry beside `setAudioMuted`
+ * means the command and the thing it commands cannot drift apart.
+ *
+ * NO `when` GATE, deliberately. Muting is always possible — with no patch, with a
+ * suspended context, with audio that has FAILED — and each of those is a state a
+ * user might reasonably want to mute pre-emptively from. A gate would also collide
+ * with the failure surface, which is the one thing R7-22 says to keep separate:
+ * "audio failed" and "you muted audio" are different sentences, and
+ * web/AudioBadge.svelte still owns the first one.
+ */
+export const AUDIO_MUTE_COMMAND = {
+  id: "toggle-audio-mute",
+  title: "Mute Audio",
+  icon: "mdi:volume-off",
+  aliases: ["mute", "unmute", "silence", "sound off", "audio off", "volume"],
+  help: "Silences the speakers for THIS SESSION only. It is not part of the document — sharing or saving a project does not carry your mute, and an exported video is unaffected. The patch and the transport keep running, so nothing drifts out of time while you are muted.",
+  run: () => setAudioMuted(!muted),
+};
 
 /**
  * Command. Bring the engine's SHARED TRANSPORT into line with the scene — tempo,

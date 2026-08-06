@@ -149,7 +149,42 @@ export function createEngine(options = {}) {
     return strikeNoiseBuffer;
   }
 
-  const resources = { impulseResponse, strikeNoise };
+  // ── THE MASTER CHAIN: BUS → MUTE → DESTINATION (R7-22) ────────────────────
+  //
+  // Every output module used to `connect(context.destination)` directly, so there
+  // was no single point where the whole patch could be silenced. There are now two
+  // nodes, and WHICH ONE YOU TAP IS THE WHOLE DESIGN:
+  //
+  //   masterBus   — where every output module lands, and THE CAPTURE TAP. Anything
+  //                 that RECORDS the patch (a MediaStreamDestination for an MP4
+  //                 with sound; an OfflineAudioContext render) must take it here.
+  //   masterMute  — bus → destination, and the only thing `setMuted` touches. It
+  //                 is downstream of the tap, so it can only ever affect THE
+  //                 SPEAKERS.
+  //
+  // THAT ORDERING IS THE R7-22 REQUIREMENT MADE STRUCTURAL. The rule is that an
+  // export must ignore the mute — *"a video rendered while the author happened to
+  // be muted must not come out silent"*, which is the silent-wrong-deliverable-
+  // with-a-green-exit this project forbids. A rule that lives only in prose is a
+  // rule the next recorder forgets; a tap that sits UPSTREAM of the mute cannot
+  // capture it even if the author of that recorder never reads this comment.
+  //
+  // A GAIN, NOT `context.suspend()`. Suspending stops the AudioContext clock, and
+  // the shared transport schedules against exactly that clock — so a suspended
+  // context would stall the sequencer and desynchronise everything timed to it.
+  // Muting a gain keeps time running and is instantly reversible.
+  //
+  // THIS IS NOT THE "MASTER DUCK" THIS FILE'S HEADER RULES OUT. That ruling is
+  // about REWIRE guards: ducking the master for a rewire would dip a playing pad
+  // when an idle LFO is connected, which is why guards are per module. A mute is
+  // meant to attenuate the entire patch — that is its definition, not a side
+  // effect — so the master is the correct and only place for it.
+  const masterBus = context.createGain();
+  const masterMute = context.createGain();
+  masterBus.connect(masterMute);
+  masterMute.connect(context.destination);
+
+  const resources = { impulseResponse, strikeNoise, destination: masterBus };
 
   // ── Port resolution ───────────────────────────────────────────────────────
 
@@ -843,6 +878,41 @@ export function createEngine(options = {}) {
       return context.state === "running";
     },
 
+    /**
+     * Command. Silence or restore the SPEAKERS, leaving the patch and the clock
+     * running (R7-22). See the master-chain block above for why this is a gain
+     * rather than `context.suspend()`, and why it sits downstream of the capture
+     * tap.
+     *
+     * RAMPED, NOT STEPPED: a gain jumped to 0 on a loud patch is an audible click,
+     * the same discontinuity the rewire guards use setTargetAtTime to avoid. The
+     * ramp is short enough to feel instant.
+     *
+     * Args:
+     *     muted (boolean): true to silence the output
+     */
+    setMuted(muted) {
+      const target = muted ? 0 : 1;
+      masterMute.gain.setTargetAtTime(target, context.currentTime, MUTE_RAMP_TIME_CONSTANT);
+    },
+
+    /** Query. Is the master output muted? Reads the NODE, so it cannot disagree
+     *  with what the speakers are doing. Mid-ramp counts as muted. */
+    isMuted() {
+      return masterMute.gain.value < MUTE_AUDIBLE_FLOOR;
+    },
+
+    /**
+     * Query. THE CAPTURE TAP — the node a recorder must connect to, upstream of
+     * the mute. Exposed as a named query rather than as a raw field so the reason
+     * has somewhere to live: a recorder wired to `context.destination` or to the
+     * mute node would ship a silent file whenever the author had muted, exit 0,
+     * and look fine until someone played it.
+     */
+    captureTap() {
+      return masterBus;
+    },
+
     /** Query. The live graph, for UI and debugging. */
     inspect() {
       return {
@@ -871,6 +941,20 @@ const IMPULSE_SEED = 20260802;
 
 const STRIKE_NOISE_SECONDS = 0.05;
 const STRIKE_NOISE_SEED = 12345;
+
+/**
+ * The master mute's ramp time constant, in seconds. `setTargetAtTime` is
+ * exponential, so the gain is within 2% of its target after four of these — about
+ * 32 ms, which reads as instant while removing the click a step discontinuity
+ * makes on a loud patch. Deliberately the same shape as the rewire guards' ramp
+ * (dsp.REWIRE_RAMP_SECONDS) and for the same reason: no corner at either end.
+ */
+const MUTE_RAMP_TIME_CONSTANT = 0.008;
+
+/** Below this gain the output is inaudible, so `isMuted` reports true. A plain
+ *  `=== 0` would answer "not muted" for the whole of the mute ramp, which is when
+ *  a toolbar button is most likely to be re-read. */
+const MUTE_AUDIBLE_FLOOR = 0.001;
 
 /** Reported level for true silence. -120 dB stands in for log10(0) = -Infinity,
  * which would break any UI that tries to scale it. */
