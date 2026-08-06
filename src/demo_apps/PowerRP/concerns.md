@@ -488,6 +488,56 @@ finding rather than any member of it:
 a red — and note that three of them were discovered by chasing the fourth, which is the
 argument for writing the family down rather than the members.
 
+### A BUILD TAKEN FROM A TREE UNDER CONCURRENT WRITES BRICKS THE APP, AND A SERVICE WORKER MAKES IT STICK (2026-08-06)
+
+**The user hit this and it cost them a debugging session.** Verbatim: *"adding an audio widget
+broke it even on refresh, i had to go to incognito to fix it"* / *"adding audio demo poisoned
+it"* / *"all of them hang"*. Their shell history shows the cause:
+
+    npx vite build   --config web/vite.config.js
+    npx vite preview --config web/vite.config.js --host 0.0.0.0 --port 4178
+
+**That build ran at 12:43, while FIVE writer agents had files mid-edit.**
+
+**NOT REPRODUCIBLE FROM HEAD.** A reproduction script drove a dev server and inserted **all
+seven** audio demo patches (`demo-patch-{spacey-pad-drone,sequenced-dings,gamelan-bells,whoosh,
+beach,playable-keys,button-ding}`): every one stayed responsive, the autosave reached 82 783
+bytes, and the app was responsive **after a reload with that autosave restored**. So the
+document is fine and the code at HEAD is fine.
+
+**WHY THE BUILD BRICKED ANYWAY, and it is the combination that matters:**
+1. **A MISSING NAMED IMPORT IS SILENT HERE** (already doctrine in `<app>/CLAUDE.md`): Rollup
+   binds it to `undefined` and ships it, exit 0, no warning. A file half-written at the instant
+   the bundler read it therefore produces a **green build that throws only on the path that
+   touches it** — e.g. inserting an audio demo.
+2. **THE BUILT APP REGISTERS A SERVICE WORKER** (`web/registerServiceWorker.js`) and
+   navigations are CACHE-FIRST. So the broken bundle is then served back on **every refresh**.
+   The dev server does not register one (it unregisters any it finds), which is exactly why
+   this class is invisible in development.
+3. **Incognito "fixed" it** by starting with no worker and no cache — not because the code
+   differed.
+
+**THE RULES, and they are the same rule twice:**
+- **NEVER BUILD FROM A TREE THAT WRITER AGENTS ARE EDITING.** `git status` must be clean, or at
+  least free of the files the build touches. This is the build-shaped sibling of "never run the
+  gate while writers are active" — and the build one is worse, because the gate merely reports
+  nonsense while the build ships it.
+- **A HANG IS NOT A CRASH, so `web/index.html`'s crash handler does not catch it.** The splash
+  reports throws during boot; a page that boots and then spins reports nothing.
+- **RECOVERY NEEDS THE WORKER AND THE CACHES, NOT JUST `localStorage`:**
+  ```js
+  for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+  for (const k of await caches.keys()) await caches.delete(k);
+  localStorage.removeItem("powerrp.autosave");
+  ```
+
+**A REAL GAP THIS EXPOSED, worth closing on its own merits: there is NO escape hatch from a
+document that hangs at boot.** Grepped for a `?fresh` URL flag, a discard-autosave command, any
+opt-out — **none exists.** `AUTOSAVE_KEY = "powerrp.autosave"` (`web/app.svelte.js:172`) is
+restored before the user can act, so if a document ever *does* hang the app, it is unrecoverable
+through the UI. Today's cause was the bundle rather than the document, but the hole is real
+either way.
+
 ### RISK ON THE TABLE FOR THIS ROUND
 
 **Simulated state (`@`, `dt`) deliberately weakens a property the app relies on.**
