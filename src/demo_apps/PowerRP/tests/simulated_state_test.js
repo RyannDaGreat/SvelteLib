@@ -20,12 +20,12 @@
 import assert from "node:assert/strict";
 import {
   tokenize, equationTokenSpans, displayToStored, storedToDisplay, resolveRef,
-  evaluateState, withVariableRenamed, withItemRefsRemapped, sourceIsSimulated, cameraMaxTimestep,
+  evaluateState, withVariableRenamed, withItemRefsRemapped, sourceIsSimulated,
 } from "../core/expressions.js";
 import {
   beginSimulationStep, resetSimulation, withSimulationFrozen, setSimulationTimestepOverride,
   simulationGeneration, clampedTimestep, simulationSnapshot, restoreSimulationSnapshot,
-  hasSimulationValue, CAMERA_MAX_TIMESTEP_DEFAULT, CAMERA_MAX_TIMESTEP_KEY,
+  hasSimulationValue, cameraMaxTimestep, simulationTimestep, CAMERA_MAX_TIMESTEP_DEFAULT, CAMERA_MAX_TIMESTEP_KEY,
 } from "../core/simulation_history.js";
 import { createRegistry } from "../core/registry.js";
 import {
@@ -362,37 +362,52 @@ test("an ANCHOR has no previous value, and says so instead of approximating one"
 // ── The integrator: symplectic vs explicit Euler is exactly one `@` ──────────
 
 test("SYMPLECTIC Euler beats EXPLICIT Euler on a harmonic oscillator, and the difference is one `@`", () => {
-  // x'' = -x, integrated as two coupled first-order equations in item VARIABLES.
-  //   EXPLICIT (forward) Euler: x uses the OLD v            → `@ + dt * @v`
-  //   SYMPLECTIC (semi-implicit): x uses the NEW v          → `@ + dt * v`
-  // The two sources differ by exactly one "@", and the second conserves energy.
-  const run = (xSrc) => {
+  // x'' = -(x + x0), a unit oscillator displaced by x0 — two coupled first-order
+  // equations in item VARIABLES, integrated one step per frame:
+  //
+  //   v = @ - dt * (@self.vars.x + x0)      the acceleration, from the OLD position
+  //   x = @ + dt * @self.vars.v             EXPLICIT (forward) Euler — the OLD v
+  //   x = @ + dt * self.vars.v              SYMPLECTIC (semi-implicit) — the NEW v
+  //
+  // THE TWO SOURCES DIFFER BY EXACTLY ONE "@", and that one character is the whole
+  // difference between an integrator whose energy grows without bound and one whose
+  // energy stays on a bounded orbit. `self.vars.v` is an ORDINARY reference, so the
+  // engine settles v's slot first through the existing dependency machinery — which
+  // is why symplectic Euler needs no new mechanism at all.
+  //
+  // x0 is a document VARIABLE because a simulated slot's initial condition is its
+  // declared default (0 here): displacing the oscillator inside its own equation is
+  // how an author states a starting condition today.
+  const x0 = 1;
+  const energyAfter = (xSrc, seconds) => {
     freshRun();
-    const fps = 200, seconds = 20;
+    const fps = 400;
     let last = null;
     for (let i = 0; i <= fps * seconds; i++) {
       const state = {
-        vars: {},
+        vars: { x0 },
         items: {
           a1: {
             ...rectPlugin.defaults, type: "rect", name: "Osc",
-            vars: { v: "= @@ - dt * @@self.vars.x", x: xSrc },
+            vars: { v: "= @@ - dt * (@@self.vars.x + x0)", x: xSrc },
             rotation: "= self.vars.x",
           },
         },
       };
       last = evaluateAt(state, i / fps).items.a1;
     }
-    // Energy of a unit oscillator, whose exact value is conserved: x² + v².
-    return last.vars.x ** 2 + last.vars.v ** 2;
+    return (last.vars.x + x0) ** 2 + last.vars.v ** 2; // exactly conserved by the true solution
   };
-  // Both start from x = 0, v = 0 (the slots' own defaults), which conserves
-  // trivially — so kick x with a constant to give the oscillator energy.
-  const explicit = run("= @@ + dt * @@self.vars.v + (dt * 0.5)");
-  const symplectic = run("= @@ + dt * self.vars.v + (dt * 0.5)");
+  const explicit = energyAfter("= @@ + dt * @@self.vars.v", 40);
+  const symplectic = energyAfter("= @@ + dt * self.vars.v", 40);
+  // The true energy is x0² = 1. Explicit Euler spirals OUT of it; symplectic stays
+  // on a bounded orbit around it.
+  assert.ok(Math.abs(symplectic - 1) < 0.01,
+    `symplectic Euler drifted off the ${x0 ** 2} energy shell (got ${symplectic}) — it is supposed to stay bounded`);
+  assert.ok(explicit - 1 > 0.1,
+    `explicit Euler did not visibly gain energy (got ${explicit}) — the demonstration has stopped demonstrating`);
   assert.ok(explicit > symplectic,
-    `explicit Euler (${explicit}) did not drift more than symplectic (${symplectic}) — check the integrator claim`);
-  assert.ok(Number.isFinite(symplectic) && Number.isFinite(explicit));
+    `explicit (${explicit}) did not drift more than symplectic (${symplectic})`);
 });
 
 // ── Seekability: the refusal a render job needs ──────────────────────────────
@@ -420,6 +435,28 @@ test("a snapshot restores a trajectory exactly — the shape a contiguous shard 
   restoreSimulationSnapshot(checkpoint);
   setParticleTimeOverride(1); // the clock the checkpoint was taken at
   assert.equal(evaluateAt(state(), 2).items.a1.rotation, next);
+});
+
+test("simulationTimestep: ONE measurement of the frame interval, readable without advancing anything", () => {
+  freshRun();
+  // The interval is readable on a deck with NO simulated state — that is the whole
+  // reason it is separate from beginSimulationStep, which is reached only when an
+  // equation reads `@` or `dt`.
+  setParticleTimeOverride(0);
+  approx(simulationTimestep(0.1), 0);
+  setParticleTimeOverride(0.02);
+  approx(simulationTimestep(0.1), 0.02);
+  approx(simulationTimestep(0.1), 0.02); // same instant, same answer, no drift
+  assert.equal(hasSimulationValue("anything"), false, "reading the interval advanced the history");
+  setParticleTimeOverride(5);
+  approx(simulationTimestep(0.1), 0.1); // a hitch is clamped by the AUTHOR's value…
+  setParticleTimeOverride(10);
+  approx(simulationTimestep(null), 5); // …and `none` means none
+  // A DICTATED step wins over any measurement, and is never clamped.
+  setSimulationTimestepOverride(1 / 4);
+  setParticleTimeOverride(20);
+  approx(simulationTimestep(0.1), 0.25);
+  setSimulationTimestepOverride(null);
 });
 
 test("beginSimulationStep: the raw step ladder (first frame 0, same instant reused, backwards resets)", () => {

@@ -123,6 +123,10 @@
  */
 
 import { reportOnce } from "./report.js";
+// THE ONE PRESENTATION CLOCK. core/ → render_gpu/ is established and
+// particle_clock.js is DOM-free bare-node code by its own contract, which is the
+// same justification core/expressions.js records for the same import.
+import { particleTime } from "../render_gpu/particle_clock.js";
 
 /** The camera property holding the max measured timestep, in SECONDS, or `null`
  *  for no clamp. It lives on THE CAMERA because the camera is the mandatory
@@ -150,10 +154,18 @@ let curValues = new Map();
  *  pre-seeds it from `prev`. This is what makes the two-consumers-disagreeing check
  *  above a real detector rather than a false alarm on every ordinary second pass. */
 let writtenThisStep = new Set();
-/** The clock reading (seconds) at the last roll, or null before the first pass. */
+/** The clock reading (seconds) at the last HISTORY ROLL, or null before the first
+ *  simulated pass. Distinct from lastObservedTime below: rolling is a state ADVANCE
+ *  that only a simulated document does, and measuring the frame interval is an
+ *  OBSERVATION every consumer may make. Conflating them is what made the interval
+ *  unreadable on a deck with no `@` in it. */
 let lastAdvanceTime = null;
-/** The timestep the CURRENT step covers. Computed at the roll and reused by every
- *  pass at this instant, which is what makes the answer evaluation-count invariant. */
+/** The clock reading (seconds) the CURRENT timestep was measured from, or null
+ *  before the first observation. */
+let lastObservedTime = null;
+/** The timestep the CURRENT step covers. Computed ONCE per clock instant (see
+ *  observeClock) and reused by every pass and every consumer at that instant, which
+ *  is what makes the answer evaluation-count invariant. */
 let currentDt = 0;
 /** Bumped by every roll and every reset — the equation memo's second invalidation
  *  axis (core/expressions.evaluateState). `clock` alone is not enough: an explicit
@@ -209,13 +221,12 @@ export function clampedTimestep(elapsed, maxTimestep) {
  * @example // then beginSimulationStep(0.2, 0.1) // 0 — time went backwards: reset to the initial condition
  */
 export function beginSimulationStep(now, maxTimestep) {
-  if (frozenDepth > 0) return currentDt; // read-only: renders the current step, cannot advance it
+  if (frozenDepth > 0) return observeClock(now, maxTimestep); // read-only: renders the current step, cannot advance it
   if (lastAdvanceTime !== null && now < lastAdvanceTime) resetSimulation();
+  const dt = observeClock(now, maxTimestep);
   if (lastAdvanceTime === null) {
     lastAdvanceTime = now;
-    currentDt = 0;
   } else if (now > lastAdvanceTime) {
-    currentDt = dictatedSeconds ?? clampedTimestep(now - lastAdvanceTime, maxTimestep);
     // Carried forward, not emptied: a slot no pass touched this step keeps its last
     // known value, so a consumer that skips a slide does not blank the history of
     // every slot on it.
@@ -225,7 +236,98 @@ export function beginSimulationStep(now, maxTimestep) {
     lastAdvanceTime = now;
     generation++;
   }
+  return dt;
+}
+
+/**
+ * Command (updates the observed instant; no history roll). The seconds between the
+ * previous clock instant and `now` — measured ONCE per instant and then reused, so
+ * every consumer that asks at one instant is told the same number.
+ *
+ * MEASURING IS NOT ADVANCING, and separating the two is the point: the history rolls
+ * only for a document that actually reads `@`, while the FRAME INTERVAL is a fact
+ * about the clock that any consumer may need (an audio ramp, a meter) whether or not
+ * anything is simulated. This is called by beginSimulationStep and by
+ * simulationTimestep, so both can never disagree about the interval.
+ *
+ * A frozen consumer MAY observe: it is reading a measurement, not advancing state.
+ */
+function observeClock(now, maxTimestep) {
+  if (lastObservedTime === null || now < lastObservedTime) {
+    lastObservedTime = now;
+    currentDt = 0;
+  } else if (now > lastObservedTime) {
+    currentDt = dictatedSeconds ?? clampedTimestep(now - lastObservedTime, maxTimestep);
+    lastObservedTime = now;
+  }
   return currentDt;
+}
+
+/**
+ * Query→value (observes the clock; never rolls the history). THE ONE ANSWER TO "HOW
+ * LONG IS THIS FRAME?" in seconds — dictated by an export when one is running,
+ * otherwise the measured interval since the previous instant, clamped.
+ *
+ * WHY IT EXISTS SEPARATELY FROM beginSimulationStep: that one is reached lazily, only
+ * when an equation actually reads `@` or `dt`, so on a deck with no simulated state
+ * it never runs. A consumer that needs the frame interval REGARDLESS — an audio
+ * parameter ramp is the first — would otherwise measure it a second time, and two
+ * independent measurements of one physical quantity is the mirror-drift failure this
+ * codebase keeps paying for. Cheap and allocation-free, so calling it every frame
+ * from several consumers is fine.
+ *
+ * IT ANSWERS FOR THE PRESENTATION CLOCK, AND ONLY THAT. A consumer scheduled against
+ * a DIFFERENT clock — the Web Audio context's `currentTime`, which keeps running when
+ * presented time is frozen in the editor — must keep its own reading for that clock.
+ * Those are two genuinely different clocks, not one concept spelled twice; do not
+ * "unify" them.
+ *
+ * @param {number|null} maxTimestep - the resolved clamp (cameraMaxTimestep(state)),
+ *   or null for none. Pass the DOCUMENT's value, not the default: a settings row that
+ *   only half-applies is an inert control.
+ * @returns {number} seconds
+ *
+ * @example // in the paused editor the clock does not move, so simulationTimestep(0.1) === 0
+ * @example // under a 60 fps export override, simulationTimestep(0.1) === 1/60 (dictated, unclamped)
+ */
+export function simulationTimestep(maxTimestep) {
+  return observeClock(particleTime(), maxTimestep);
+}
+
+/**
+ * Pure function. THE CAMERA's max simulation timestep for a folded state, in
+ * seconds, or null for "none" (no clamp). Absent means the document predates the
+ * setting, which takes the default — the absent-is-legacy discipline; an explicit
+ * `null` is the author choosing none and is honoured.
+ *
+ * IT LIVES HERE, NOT IN THE EQUATION ENGINE, so a consumer that must not depend on
+ * core/expressions.js can still honour the AUTHOR's value rather than assuming the
+ * default (`core/audio_mirror_diff.js` is the first: expressions → derive → plugins →
+ * audio_nodes would close a cycle). This module imports core/report.js and the clock
+ * and nothing else, so anyone can read it.
+ *
+ * AN EQUATION HERE CANNOT BE HONOURED and says so: the clamp is needed BEFORE the
+ * pass that would evaluate it, so a `=` in this slot falls back to the default and is
+ * reported rather than silently disabling the protection.
+ *
+ * @param {object} state - a folded or evaluated state ({items, vars})
+ * @returns {number|null} seconds, or null for no clamp
+ *
+ * @example cameraMaxTimestep({items: {}}) // 0.1 (no camera — the default clamp)
+ * @example cameraMaxTimestep({items: {c1: {type: "camera", maxTimestep: 0.25}}}) // 0.25
+ * @example cameraMaxTimestep({items: {c1: {type: "camera", maxTimestep: null}}}) // null (the author chose "none")
+ * @example cameraMaxTimestep({items: {c1: {type: "camera"}}}) // 0.1 (pre-setting document)
+ */
+export function cameraMaxTimestep(state) {
+  for (const item of Object.values(state.items ?? {})) {
+    if (item?.type !== "camera" || !(CAMERA_MAX_TIMESTEP_KEY in item)) continue;
+    const value = item[CAMERA_MAX_TIMESTEP_KEY];
+    if (typeof value === "number" || value === null) return value;
+    const message = `the camera's ${CAMERA_MAX_TIMESTEP_KEY} is ${JSON.stringify(value)} — the simulation clamp is read before equations are evaluated, so it cannot be one; using the ${CAMERA_MAX_TIMESTEP_DEFAULT}s default`;
+    reportOnce(message, `PowerRP simulation: ${message}`);
+    return CAMERA_MAX_TIMESTEP_DEFAULT;
+  }
+  return CAMERA_MAX_TIMESTEP_DEFAULT;
 }
 
 /**
@@ -301,6 +403,7 @@ export function resetSimulation() {
   curValues = new Map();
   writtenThisStep = new Set();
   lastAdvanceTime = null;
+  lastObservedTime = null;
   currentDt = 0;
   generation++;
 }
@@ -384,6 +487,7 @@ export function restoreSimulationSnapshot(snapshot) {
   curValues = new Map(snapshot.cur);
   writtenThisStep = new Set();
   lastAdvanceTime = snapshot.lastAdvanceTime;
+  lastObservedTime = snapshot.lastAdvanceTime;
   currentDt = snapshot.dt;
   generation++;
 }

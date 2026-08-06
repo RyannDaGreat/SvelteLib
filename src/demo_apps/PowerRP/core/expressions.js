@@ -134,7 +134,7 @@ import { particleTime } from "../render_gpu/particle_clock.js";
 // same one particle_clock.js keeps: the pure grammar here, the mutable service there.
 import {
   beginSimulationStep, hasSimulationValue, simulationValue, recordSimulationValue,
-  simulationGeneration, CAMERA_MAX_TIMESTEP_KEY, CAMERA_MAX_TIMESTEP_DEFAULT,
+  simulationGeneration, cameraMaxTimestep,
 } from "./simulation_history.js";
 // THE MATERIAL KNOB SCHEMAS (see §Material param knobs). A paint's material
 // params are declared in the material REGISTRY, not in plugin.defaults, so this
@@ -3128,36 +3128,6 @@ export function evaluateState(state, registry, script = "", contentSizes = null)
   const result = computeEvaluatedState(state, registry, script, contentSizes);
   evalMemo.set(state, { registry, script, contentSizes, result });
   return result;
-}
-
-/**
- * Pure function. THE CAMERA's max simulation timestep for a folded state, in
- * seconds, or null for "none" (no clamp). Absent means the document predates the
- * setting, which takes the default — the absent-is-legacy discipline; an explicit
- * `null` is the author choosing none and is honoured.
- *
- * AN EQUATION HERE CANNOT BE HONOURED and says so: the clamp is needed BEFORE the
- * pass that would evaluate it, so a `=` in this slot falls back to the default and
- * is reported rather than silently disabling the protection.
- *
- * @param {object} state - a folded state ({items, vars})
- * @returns {number|null} seconds, or null for no clamp
- *
- * @example cameraMaxTimestep({items: {}}) // 0.1 (no camera — the default clamp)
- * @example cameraMaxTimestep({items: {c1: {type: "camera", maxTimestep: 0.25}}}) // 0.25
- * @example cameraMaxTimestep({items: {c1: {type: "camera", maxTimestep: null}}}) // null (the author chose "none")
- * @example cameraMaxTimestep({items: {c1: {type: "camera"}}}) // 0.1 (pre-setting document)
- */
-export function cameraMaxTimestep(state) {
-  for (const item of Object.values(state.items ?? {})) {
-    if (item?.type !== "camera" || !(CAMERA_MAX_TIMESTEP_KEY in item)) continue;
-    const value = item[CAMERA_MAX_TIMESTEP_KEY];
-    if (typeof value === "number" || value === null) return value;
-    const message = `the camera's ${CAMERA_MAX_TIMESTEP_KEY} is ${JSON.stringify(value)} — the simulation clamp is read before equations are evaluated, so it cannot be one; using the ${CAMERA_MAX_TIMESTEP_DEFAULT}s default`;
-    reportOnce(message, `PowerRP simulation: ${message}`);
-    return CAMERA_MAX_TIMESTEP_DEFAULT;
-  }
-  return CAMERA_MAX_TIMESTEP_DEFAULT;
 }
 
 /** Pure-core of evaluateState (see its docs); uncached. Full-JS, lazy engine. */
