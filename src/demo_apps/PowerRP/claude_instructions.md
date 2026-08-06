@@ -4381,16 +4381,36 @@ signal; `number` = an AudioParam a wire can drive. Its own words: *"Every module
 is audio, including the sequencer's `pitch` and `gate`: they are control SIGNALS on
 AudioNodes, not numbers the document can read."*
 
-**THE BOUNDARY THIS PUTS ON R7-7:** an audio-rate signal **CANNOT** be an output
-property. Reading an LFO's instantaneous value into the document would sample it at
-frame rate, make it ephemeral state, and break determinism — three refusals at once.
-So:
+**THE BOUNDARY THIS PUTS ON R7-7 — AND THE LEAD OVERCORRECTED IT ONCE, SO READ THE
+TWO TIERS CAREFULLY.** The first version of this section said "output properties do NOT
+apply to audio signal outputs", full stop. **That was wrong**, and the user corrected
+it immediately: *"audio outputs are indeed outputs, just maybe not properties... but u
+can still reference them as a property type otherwise how would we do a node inputs
+correctly."*
 
-- **Output properties apply to CONTROL nodes** — knob, slider, button, keyboard, math,
-  number: values the document genuinely knows and can reproduce from `[[slide, alpha]]`.
-- **Output properties do NOT apply to audio signal outputs.** `computeOutputs` already
-  reflects this by accident of good design (`plugins/node_display.js` is a pure sink,
-  `node_button` returns `{out: 0}` because the press is live, not state).
+He is right, and the distinction is between a REFERENCE and a VALUE:
+
+- **TIER 1 — EVERY output port is declared and REFERENCEABLE, and a reference IS
+  property state.** `inputs.frequency = {item: "lfo1", port: "out"}` is an ordinary
+  keyframable leaf whose value is a PORT REFERENCE. **This is the whole of R7-1** — if
+  audio outputs were not referenceable, no audio patch could be wired at all. So audio
+  outputs absolutely appear in the outputs section, and they absolutely have a property
+  type: a **port reference**, which the app already stores (`core/nodeflow.js:27`) and
+  edits (`NODE_INPUT_ROW_KIND`). R7-7 should promote that from a special row kind to a
+  first-class property TYPE, which also serves the user's standing ask that variables
+  be typeable.
+- **TIER 2 — SOME outputs additionally expose an equation-readable VALUE.** `= knob1.out`
+  reads a number because a knob's value is document state the fold can reproduce.
+  **An audio-rate signal has no Tier 2 value:** sampling an LFO's instantaneous
+  amplitude into the document would make it frame-rate-dependent, ephemeral and
+  non-reproducible — three refusals at once. `computeOutputs` already encodes this by
+  good design (`plugins/node_display.js` is a pure sink; `node_button` returns
+  `{out: 0}` because the press is live, not state).
+
+So the outputs section lists ALL outputs; the equation engine resolves a value for the
+Tier-2 ones and REFUSES WITH A SENTENCE for Tier 1 — never returns 0, never returns a
+stale sample. Tier is a property of the port's declared TYPE (`audio` vs `number`), so
+it is derived, not a second hand-maintained list.
 
 **THERE ARE THEREFORE TWO LFOs, AND THE UI MUST NOT PRETEND OTHERWISE:**
 1. **Audio LFO** — an AudioNode, modulates AudioParams at audio rate, invisible to the
@@ -4539,6 +4559,44 @@ The successor project is **Ksoloti** (active). Best-of-breed pads found: `Shimme
 (two pitch-shifters inside an FDN feedback path), `EvolPad.axp` (three incommensurate
 7.7 s LFOs rewriting waveform STEP LEVELS so harmonic content drifts),
 `SolinaStrings.axp` (six objects, literal three-phase BBD ensemble).
+
+### R7-17 FIFTY VCV RACK PLUGINS, BATCH SWARM (user, 2026-08-06)
+
+> *"please choose 50 VCV rack plugins and perfectly emulate them with a batch swarm
+> once we're capable. choose super popular ones."*
+
+**"Once we're capable" is the gate:** this runs AFTER Tier A lands, because a spec
+authored against the wrong vocabulary is worse than no spec (§ R7-DIAGNOSIS, the
+two-line-wrapper finding). It joins R7-11/R7-12 in Wave 3 and is run as a **batch
+swarm** — N agents, each owning a disjoint slice of the 50 and its own spec files.
+
+**"PLUGIN" IN VCV MEANS A PACKAGE OF MODULES, NOT ONE MODULE.** So "50 plugins" is
+potentially hundreds of modules. **Interpretation, to be confirmed with the user before
+the swarm launches:** 50 individually-popular MODULES drawn from the most-used plugin
+packages, not 50 whole packages. Picking 50 packages would be thousands of modules and
+is almost certainly not what was meant. The survey already ranked 40 VCV modules
+(`.frenzy/round7/patchers_blueprints_report.md`) — that list is the starting point, to
+be extended to 50 and weighted by actual popularity (VCV Library download ranking),
+with the pads/leads/ambience bias the user asked for in R7-12.
+
+**⚠ LICENSING IS A REAL CONSTRAINT HERE AND IT IS NOT A FORMALITY.** Axoloti was
+uniformly `<license>BSD</license>`, so R7-11 can port its arithmetic freely. **VCV is
+not uniform:** Rack itself and several major plugin sets are **GPL-3.0**, which is
+copyleft — transcribing their DSP source into this repo would put the repo under GPL.
+That is a decision only the user can make. So the rule for this item:
+
+- **Permissive (BSD/MIT/Apache) plugins: port the code directly**, as with Axoloti.
+- **GPL-3.0 plugins: behavioural emulation only** — work from manuals, published
+  specifications, block diagrams and MEASURED response, not from reading their source
+  into ours. Document the source of each derivation in the spec's `help`.
+- **Record each module's licence in its spec entry** so the provenance is auditable
+  later rather than reconstructed.
+- If a famously good module cannot be honestly reproduced without its GPL source, say
+  so and leave it out rather than laundering it. Flag the list to the user.
+
+"Perfectly emulate" is measured against the R7-11 standard already established: match
+the recurrence and the parameter law, not the pixels — and where a source has a real
+bug, port the SOUND and make the LABEL honest.
 
 ### R7-RULING: THE TEST BUDGET
 
