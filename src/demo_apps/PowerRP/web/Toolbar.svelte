@@ -37,6 +37,13 @@
   // are executed by the bare-node gate rather than read off a screenshot.
   import { saveText } from "./draftKeys.js";
   import { themeKind } from "./app.svelte.js";
+  // THE MUTE'S STATE, read from the audio mirror rather than from `app` (R7-22).
+  // It is SESSION state, not document state and not app state: it belongs to the
+  // module that owns the AudioContext, so sharing or saving a project cannot carry
+  // it. The button still RUNS the registry command like every other button here —
+  // only the "is it on" question is answered locally, exactly as `app.snapEnabled`
+  // answers it for the snap toggles.
+  import { audioState } from "./audioMirror.svelte.js";
 
   // BROWSER-STORAGE surfacing (user ruling 2026-07-30, replacing the top-left
   // chip that could overlap the project name): in static mode the save/load
@@ -512,6 +519,36 @@
       onclick={() => app.runCommand("toggle-equation-lock")}
     >
       <iconify-icon icon={app.commands.get("toggle-equation-lock").icon} width="18" height="18"></iconify-icon>
+    </button>
+  </Tooltip>
+  <!-- AUDIO MUTE (R7-22, user: "we should have an audio mute/unmute button in the
+       toolbar btw"). It expresses its two states the way the five toggles above it
+       do: ONE registry icon plus `active`, never a second glyph.
+
+       That is a deliberate choice against the obvious alternative. Every media
+       player swaps volume-high for volume-off, and this file's header enumerates
+       exactly three deliberate icon overrides (the two composites and light/dark's
+       state-dependent glyph) with the standing rule that "a fourth would have to
+       earn its place, which a plain on/off does not". A mute IS a plain on/off, so
+       it takes the house form: the registry icon names the ACTION (mdi:volume-off
+       = mute, the same way mdi:magnet names snap whether or not snap is on), and
+       the accent ink says the action is engaged. `.btn-icon.active` is ICON COLOUR
+       ONLY, never a background fill — which is the toggle ruling R7-22 cites.
+
+       It is NOT the failure surface. "Audio failed" is a different sentence with a
+       different remedy and it stays on web/AudioBadge.svelte; this button is
+       ungated and never reports an engine problem. The note is the clause the
+       registry title cannot carry: that the mute is yours, not the document's. -->
+  <Tooltip>
+    {#snippet tip()}{@render commandTip("toggle-audio-mute", "This session only — it is not saved with the project and an exported video is unaffected.")}{/snippet}
+    <button
+      class="btn-icon"
+      class:active={audioState.muted}
+      aria-label={app.commands.get("toggle-audio-mute").title}
+      aria-pressed={audioState.muted}
+      onclick={() => app.runCommand("toggle-audio-mute")}
+    >
+      <iconify-icon icon={app.commands.get("toggle-audio-mute").icon} width="18" height="18"></iconify-icon>
     </button>
   </Tooltip>
   <span class="spacer"></span>
