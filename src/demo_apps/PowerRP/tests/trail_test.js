@@ -134,6 +134,16 @@ test("a FROZEN consumer renders the trail and extends nothing", () => {
   assert.equal(after, before, "a frozen pass must not extend the timeline's trail");
 });
 
+test("EXACTLY REPRODUCIBLE: the same frame sequence twice gives the same streamer", () => {
+  const run = () => {
+    freshRun();
+    let item = null;
+    for (let frame = 0; frame <= 120; frame++) item = stepTrail(frame / 60, 400 + 200 * Math.cos(frame / 60), 300 + 120 * Math.sin(frame / 40));
+    return JSON.stringify(item[TRAIL_POINTS_KEY]);
+  };
+  assert.equal(run(), run(), "a re-run of one frame sequence must produce the identical trail");
+});
+
 // ── Decimation, eviction and the memory bound ────────────────────────────────
 
 test("the sample count follows the AUTHORED WINDOW, not the frame rate", () => {
