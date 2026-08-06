@@ -4987,6 +4987,79 @@ space with the sample buffer threaded as render-time context — the same shape
 `pdfDisplay`/`mapTiles`/`scene3d` already use in `render_gpu/ports.js`. These new rows are
 ordinary property state and tween normally; only the samples are live.
 
+### R7-16 SPEC: THE DOUBLE PENDULUM IS TWO RECTS AND FOUR ITEM VARIABLES
+
+**Nothing is built yet** (checked 2026-08-06: the only "pendulum" strings in the tree are
+two illustrative docblocks). The user's clarifications arrive BEFORE the build, and they
+rule out the two shapes an agent would otherwise reach for.
+
+> *"why r they not stored as variables? they should be — otherwise they're not normal
+> rects. rod 1 and 2 are not new widget types they should just be rects with special vars
+> that use the dt w.r.t. each other + velocity in vars to do physics with each other."*
+>
+> *"the double pendulum widget demo — why they not connected to each other like a chaotic
+> double pendulum"*
+
+**THREE HARD CONSTRAINTS:**
+
+1. **NO NEW WIDGET TYPE.** Rod 1 and rod 2 are ordinary `rect` items. R7-16 is an
+   INSERTABLE PRESET that stamps two rects with the right variables and equations —
+   *"this widget is really not a widget, it's just like an alias"*. If a `pendulum` plugin
+   appears, it is wrong.
+2. **THE PHYSICS STATE LIVES IN ITEM VARIABLES, not in widget properties.** The mechanism
+   exists (`web/ItemVariablesPanel.svelte`, `self.vars.<name>`, per-item vars evaluated in
+   the slot loop). Each rod carries `theta` and `omega`; `rotation` is then a *read* of
+   `theta`, not the state itself. **This is the point of "otherwise they're not normal
+   rects"**: a rect whose rotation happens to be simulated is still a rect, whereas a rect
+   with bespoke physics fields is a new type wearing a rect's name.
+3. **THEY MUST BE COUPLED, AND THE COUPLING IS THE WHOLE DEMO.** A double pendulum is
+   chaotic *because* each rod's angular acceleration depends on the other's angle AND
+   angular velocity. Two independently swinging rods are two pendulums, not a double
+   pendulum — and would be a convincing-looking fake. So rod 2's equations read rod 1's
+   variables and vice versa, through the ordinary cross-item reference with the previous-
+   value marker (`@rod1.vars.theta`). **That mutual reference is exactly the case `@`
+   exists for**: an instantaneous mutual dependency would be a cycle and `requireSlot`
+   would refuse it, but each reading the other's PREVIOUS value is well-founded.
+
+**THE EQUATIONS OF MOTION** (point masses `m_1`,`m_2`; rod lengths `L_1`,`L_2`; `g`;
+`theta` from vertical). Written down so the build does not re-derive them wrongly —
+**verify against a reference before shipping**, and prefer putting the two accelerations in
+`meta.script` as exported helpers (the user: *"possibly even in the project script… although
+that's not something we have to do right now"*), because inlining them in a property row is
+unreadable:
+
+    D    = L_1 * (2*m_1 + m_2 - m_2*cos(2*theta_1 - 2*theta_2))
+    a_1  = (-g*(2*m_1 + m_2)*sin(theta_1)
+            - m_2*g*sin(theta_1 - 2*theta_2)
+            - 2*sin(theta_1 - theta_2)*m_2*(omega_2^2*L_2 + omega_1^2*L_1*cos(theta_1 - theta_2))) / D
+    a_2  = (2*sin(theta_1 - theta_2)*(omega_1^2*L_1*(m_1 + m_2)
+            + g*(m_1 + m_2)*cos(theta_1)
+            + omega_2^2*L_2*m_2*cos(theta_1 - theta_2))) / (L_2/L_1 * D)
+
+**INTEGRATE SEMI-IMPLICITLY — velocity first, then position from the NEW velocity.** W1-C
+measured why: for `x'' = -(x+1)` over 40 s, explicit Euler's energy climbs monotonically
+(1.0 → 1.105) while symplectic stays bounded (0.9988–1.0012), **and the two differ by
+exactly one `@`**. So:
+
+    omega = @ + dt * a(...)        // reads @-marked values of BOTH rods
+    theta = @ + dt * self.vars.omega    // NOT @self.vars.omega — the new velocity
+
+**PHYSICAL CONNECTION IS SEPARATE FROM DYNAMICAL COUPLING, and both are required.** Rod 2's
+position must track rod 1's free end, or it will swing correctly while floating in the wrong
+place. Use the established geometry references (`@id.x`/`@id.w` for a box, `@id_tl` for ink
+— see the `@id.x` convention section) rather than duplicating the trigonometry.
+
+**THE TRAIL (R7-15) ANCHORS TO ROD 2's FREE END** — the user's stated demo. Build R7-15
+first or in the same slice; a pendulum with no trail does not show the chaos.
+
+**THE KNOWN ERGONOMIC GAP, from § R7-9's Wave 1 result:** there is no authorable initial
+condition on a simulated slot — `@` with no history reads the folded value, or the plugin
+default when the slot holds its own equation. The user expects to set a starting angle
+(*"of course I can set the rotation in the beginning"*). Composing (`theta = theta0 + …`)
+works; decide when building whether that is good enough or whether the gap needs closing
+first. **A double pendulum released from exactly vertical never moves**, so the preset must
+stamp a non-trivial starting angle or the demo looks broken on insert.
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
