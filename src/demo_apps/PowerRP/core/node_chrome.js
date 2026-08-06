@@ -733,8 +733,10 @@ export function nodeRim(s) {
  * @param {object} s - the folded item state
  * @returns {object[]} display-list commands
  *
- * @example // three ops per port: the coloured ring, its dark core, and the label
- * @example portBeads({ports: () => ({inputs: [{key: "a", type: "number"}]})}, {w: 120, h: 80}).length // 3
+ * @example // TWO ops for a lone port: the coloured ring and its core. It was three
+ * @example // until R7-10 adopted Axoloti's rule below — the label is SUPPRESSED, not
+ * @example // dropped by accident, because a node with one input has already named it.
+ * @example portBeads({ports: () => ({inputs: [{key: "a", type: "number"}]})}, {w: 120, h: 80}).length // 2
  * @example portBeads({ports: () => ({inputs: [{key: "a", type: "number"}]})}, {w: 120, h: 80})[0].op // "ellipse"
  * @example // the ring is painted in the PORT TYPE's colour (ir.js has parsed it to RGBA)
  * @example portBeads({ports: () => ({inputs: [{key: "a", type: "number"}]})}, {w: 120, h: 80})[0].fill[2] > 0.9 // true
@@ -763,8 +765,16 @@ export function nodeRim(s) {
  * @example portBeads({ports: () => ({outputs: [{key: "out", type: "number"}]})}, {w: 120, h: 80}).length // 2
  * @example // TWO outputs need naming, so both are labelled…
  * @example portBeads({ports: () => ({outputs: [{key: "pitch", type: "number"}, {key: "gate", type: "trigger"}]})}, {w: 120, h: 80}).filter((o) => o.op === "text").length // 2
- * @example // …and the label's box now ENDS at the bead instead of starting there
- * @example portBeads({ports: () => ({outputs: [{key: "pitch", type: "number"}, {key: "gate", type: "trigger"}]})}, {w: 120, h: 80}).find((o) => o.op === "text").x // 11
+ * @example // …and the label's box now ENDS at the bead instead of STARTING there,
+ * @example // which is the fix. `x` is the box's LEFT edge and the run is aligned
+ * @example // right inside it, so the meaningful number is where the box ENDS:
+ * @example // exactly one PORT_LABEL_GAP short of the rim, at every width.
+ * @example // (MEASURED at w 84/120/150/200 — the clearance is 11 in all four. On a
+ * @example // 120 card the left edge lands on 60, which is w/2 not by centring but
+ * @example // because each side's label column is half the card, so the input and
+ * @example // output columns meet in the middle and can never overlap.)
+ * @example ((o) => o.x + o.boxW)(portBeads({ports: () => ({outputs: [{key: "pitch", type: "number"}, {key: "gate", type: "trigger"}]})}, {w: 120, h: 80}).find((o) => o.op === "text")) // 109
+ * @example portBeads({ports: () => ({outputs: [{key: "pitch", type: "number"}, {key: "gate", type: "trigger"}]})}, {w: 120, h: 80}).find((o) => o.op === "text").boxStyle.align // "right"
  * @example // A CONNECTED input is a FILLED socket (Axoloti's jack rule), which is
  * @example // the knob-or-input duality's honest signal: the wire is plugged in.
  * @example portBeads({ports: () => ({inputs: [{key: "a", type: "number"}]})}, {w: 120, h: 80, inputs: {a: {item: "n1", port: "out"}}})[1].fill[3] // 1

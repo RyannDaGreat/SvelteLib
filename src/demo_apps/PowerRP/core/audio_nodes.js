@@ -63,7 +63,7 @@ import {
   NODE_BODY_GAP, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, knobOps, nodeBodyTop,
   nodeBox, nodeFaceBand, nodeFamily, portBeads, portIsWired, textLineH,
 } from "./node_chrome.js";
-import { KNOB_PITCH_X, KNOB_ROW_H, knobLayout } from "./node_knobs.js";
+import { KNOB_BAND_MIN_SCALE, KNOB_PITCH_X, KNOB_ROW_H, knobLayout } from "./node_knobs.js";
 import { text } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
@@ -417,6 +417,11 @@ export function audioNodePlugin(spec) {
      *  web/knobFocus.js hit-tests and drags, and the one the overlay repaints.
      *  Declared on the plugin so the mode never needs the spec roster. */
     knobLayout: (state) => audioKnobLayout(spec, plugin, state),
+    /** Query. THE DECLARED FLOOR — the height below which this module's dial band
+     *  has spent its whole reflow ladder and begins to clip. Same contract as
+     *  core/control_nodes.controlFloorHeight, so ONE question answers for every
+     *  node family; it depends on the width because the band WRAPS. */
+    nodeFloorHeight: (state) => audioFloorHeight(spec, plugin, state ?? plugin.defaults),
     commands: [{
       id: `add-${spec.type.replace(/_/g, "-")}`,
       title: `Add ${title}`,
@@ -779,10 +784,20 @@ export function paramWidgetKnobs(spec, s) {
  * @example knobBandTop({readout: "x", knobs: [{key: "x"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 200}) > knobBandTop({}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 200}) // true
  * @example // FOUR dials on a portless card with a readout: the band is two rows,
  * @example // and a tall card leaves it at its natural top under the readout line.
- * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 400}) // 67
- * @example // SHORTENED, the band slides UP to sit against the bottom rim…
- * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 160}) // 62
+ * @example // 61.6 SINCE R7-10, and it MOVED FOR ONE REASON: the natural top is now
+ * @example // DERIVED (body top 38 + the readout's real line 15.6 + one gap 8) where
+ * @example // it used to be a constant sum (38 + the readout's SIZE 13 + TWO gaps 16
+ * @example // = 67). The doubled gap was compensating for a text op's `y` being read
+ * @example // as a baseline; stating the line's true height retires the fudge.
+ * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 400}) // 61.6
+ * @example // SHORTENED, the band slides UP to sit against the bottom rim. h=160 no
+ * @example // longer needs to — the band now FITS at its natural top there, which is
+ * @example // the 5.4 units the derivation gave back — so the slide is shown at the
+ * @example // heights where it still bites. CD's ladder is untouched: MEASURED
+ * @example // 400→61.6, 200→61.6, 160→61.6, 150→52, 140→42, 130→38, 120→38, 100→38.
+ * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 160}) // 61.6
  * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 150}) // 52
+ * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 140}) // 42
  * @example // …but NEVER above the port rows (here 38, the portless inset): past
  * @example // that the band stops moving and knobBandScale starts shrinking it.
  * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 120}) // 38
@@ -834,6 +849,40 @@ export function knobBandTop(spec, plugin, s) {
  * @example knobBandRows({knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {w: 150}) // 2
  * @example knobBandRows({knobs: []}, {w: 150}) // 0
  */
+/**
+ * Pure function. THE DECLARED FLOOR for one audio module — the height at which
+ * its dial band has slid up, shrunk to KNOB_BAND_MIN_SCALE, and begins to clip.
+ *
+ * The twin of core/control_nodes.controlFloorHeight, and it takes the STATE
+ * rather than a width alone because the band WRAPS: the same module is a
+ * one-row band at 150 wide and a three-row band at 80, so its floor is not one
+ * number. That is exactly the case the containment sweep found — an oscillator
+ * whose dials were inside every card at its default width and outside a narrow
+ * one, because the wrap tripled the band it had to fit.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} plugin - the node's plugin
+ * @param {object} s - the folded item state (its `w` decides the wrap)
+ * @returns {number} a LOCAL height
+ *
+ * @example // a module with no dials only has to hold its ports and readout
+ * @example audioFloorHeight({}, {ports: () => ({inputs: [], outputs: []})}, {w: 150}) // 38
+ * @example // one dial row adds a third of KNOB_ROW_H, plus the band's bottom pad
+ * @example Math.round(audioFloorHeight({knobs: [{key: "a"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150})) // 60
+ * @example // …and a NARROW card wraps that band, so its floor is higher
+ * @example audioFloorHeight({knobs: [{key: "a"}, {key: "b"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 60}) > audioFloorHeight({knobs: [{key: "a"}, {key: "b"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150}) // true
+ */
+export function audioFloorHeight(spec, plugin, s) {
+  const top = nodeBodyTop(plugin, { ...s, h: undefined })
+    + (spec?.readout ? readoutLineH() + READOUT_GAP : 0);
+  const rows = knobBandRows(spec, s);
+  // NO ROWS, NO PAD. KNOB_BAND_PAD is the margin under the LAST LABEL, so a module
+  // with no dials (or whose every dial is currently driven by a wire) reserves
+  // nothing for it — otherwise an Output node's floor would claim six units for a
+  // band it does not draw.
+  return top + rows * KNOB_ROW_H * KNOB_BAND_MIN_SCALE + (rows ? KNOB_BAND_PAD : 0);
+}
+
 export function knobBandRows(spec, s) {
   const dials = paramWidgetKnobs(spec, s).length;
   if (dials === 0) return 0;

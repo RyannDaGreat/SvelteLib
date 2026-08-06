@@ -70,6 +70,8 @@ import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
 import { NODE_ITEM_REFS, nodeCardRim, nodeInkBounds } from "./nodeflow.js";
+import { NODE_BODY_GAP, nodeBodyTop, nodeBox, nodeFaceBand, textLineH } from "./node_chrome.js";
+import { AUDIO_READOUT_SIZE } from "./audio_nodes.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
 
@@ -183,15 +185,156 @@ export function controlDefaults(type, w, h, own) {
 }
 
 /**
+ * The value readout every ranged control node prints under its face, as a BAND:
+ * one line of type plus the gap above it. Sized from the line rather than chosen,
+ * for the reason core/node_chrome.textLineH records — the two constants this
+ * replaces (`READOUT_BASELINE_GAP = 14` in BOTH plugins/node_knob.js and
+ * plugins/node_slider.js) were each one plugin's attempt to guess how much room a
+ * baseline needs beneath it, on a renderer that has no baseline.
+ */
+export const CONTROL_READOUT_H = NODE_BODY_GAP + textLineH(AUDIO_READOUT_SIZE);
+
+/**
+ * Pure function. THE FACE — the LOCAL rect a control node draws its own control
+ * inside, and the guarantee that it is inside the card.
+ *
+ * ── THE ONE LAYOUT PATH, AND IT IS UNBYPASSABLE (R7-10) ─────────────────────
+ * `.frenzy/round7/patchers_blueprints_report.md` §(a) states the rule this obeys
+ * and the reason it is not optional: *"a control never has an authored `x`. The
+ * moment it does, you have VCV Rack."* In Rack, `ModuleWidget::addParam()` is
+ * `addChild(param)` with no bounds check, so an out-of-panel knob is never drawn
+ * and receives no events while still serializing, randomizing and being read
+ * every sample — an invisible, unreachable, LIVE control, which is strictly worse
+ * than one sticking out of the box because there is nothing to notice.
+ *
+ * So a control node does not get to say WHERE. It declares WHAT (a natural
+ * height, whether it stretches, what it reserves beneath) and this returns the
+ * rect. Bespoke Synth is the measured cautionary tale for making that optional:
+ * it has an excellent auto-layout macro and only 83 of ~265 modules use it,
+ * because 191 headers override the sizing hook. There is no override here, the
+ * same way core/audio_nodes.js:305-312 deliberately withholds one for `emit` and
+ * `ports`.
+ *
+ * The vertical placement is `core/node_chrome.nodeFaceBand`, i.e. the SAME ladder
+ * the audio modules' knob band descends; the horizontal is the card's own
+ * resolved width inset by the face's declared margin. Neither is a free parameter.
+ *
+ * @param {object} face - {height, minScale?, grow?, bottomPad?, inset?}
+ * @param {object} plugin - the node's own plugin (for its port rows)
+ * @param {object} s - the folded item state
+ * @returns {{x: number, y: number, w: number, h: number, scale: number}} LOCAL
+ *
+ * @example // a tall card gives an elastic face all the room under its ports
+ * @example controlFace({height: 40, grow: true}, {ports: () => ({outputs: [{key: "out", type: "number"}]})}, {w: 100, h: 200}) // {x: 0, y: 48, w: 100, h: 152, scale: 1}
+ * @example // an INSET narrows it symmetrically, and never below zero
+ * @example controlFace({height: 40, grow: true, inset: 14}, {ports: () => ({outputs: [{key: "out", type: "number"}]})}, {w: 100, h: 200}).w // 72
+ * @example // a RIGID face keeps its natural height and slides up when short
+ * @example controlFace({height: 52}, {ports: () => ({outputs: [{key: "out", type: "number"}]})}, {w: 100, h: 200}).h // 52
+ * @example // a FLIPPED card is a reflection, not a negative face
+ * @example controlFace({height: 52}, {ports: () => ({outputs: [{key: "out", type: "number"}]})}, {w: -100, h: -200}).w // 100
+ */
+export function controlFace(face, plugin, s) {
+  const { w, h } = nodeBox(s);
+  const top = nodeBodyTop(plugin, s);
+  const band = nodeFaceBand({ floorTop: top, top, ...face }, h);
+  const inset = Math.max(0, face.inset ?? 0);
+  return { x: inset, y: band.top, w: Math.max(0, w - inset * 2), h: band.height, scale: band.scale };
+}
+
+/**
+ * Pure function. A control node's NATURAL height — the sum of its derived bands,
+ * exactly as Axoloti computes a node's size from its declaration
+ * (`AxoObjectInstanceAbstract.resizeToGrid`, research report Q2 §"Size
+ * computation").
+ *
+ * ── NATURAL IS A FLOOR, NOT A LIMIT, AND THAT IS THE RECONCILIATION ─────────
+ * Axoloti's size is computed and FINAL — an author cannot resize a node at all.
+ * Ours must be resizable, because a node lives on a SLIDE and the slide decides
+ * how big it may be; the founding ask has nodes at whatever size the deck needs.
+ * The two are reconciled the way the lead directed: the derived sum is the
+ * DEFAULT and the advisory floor, and `nodeFaceBand`'s ladder covers everything
+ * below it — slide up, shrink, then clip visibly. So the author keeps the drag,
+ * and the drag can no longer put a control outside the card.
+ *
+ * It is deliberately NOT snapped to a grid. Axoloti's ⌈h/14⌉·14 is what makes its
+ * patches tile, and it works there because nothing is resizable and no row holds
+ * a widget. Ours would fight two things that already exist: the author's own drag
+ * and core/snap.js, which snaps a node to its NEIGHBOURS' edges rather than to an
+ * absolute lattice. A second, invisible lattice underneath a visible snap solver
+ * is a control that argues with the user.
+ *
+ * @param {object} face - the face declaration (its natural `height`)
+ * @param {object} ports - the node's port declaration
+ * @param {number} [bottomPad] - what the face reserves beneath it
+ * @returns {number} a LOCAL height
+ *
+ * @example // header + one port row + gap + a 52-tall face + a readout band
+ * @example controlNodeHeight({height: 52, bottomPad: CONTROL_READOUT_H}, {outputs: [{key: "out", type: "number"}]}) // 123.6
+ * @example // no readout to reserve, so the card is exactly its face plus the stack
+ * @example controlNodeHeight({height: 52}, {outputs: [{key: "out", type: "number"}]}) // 100
+ */
+export function controlNodeHeight(face, ports, bottomPad = face.bottomPad ?? 0) {
+  return nodeBodyTop({ ports: () => ports }, {}) + Math.max(0, face.height ?? 0) + bottomPad;
+}
+
+/**
+ * Pure function. THE DECLARED FLOOR — the height at which a control node's reflow
+ * ladder bottoms out and its content begins to CLIP, visibly, on purpose.
+ *
+ * ── WHY A NODE HAS TWO SIZES AND NEITHER IS A LIMIT ─────────────────────────
+ * `controlNodeHeight` is the NATURAL size: what the content wants, and the
+ * default a fresh node is born at. This is the FLOOR: the smallest height at
+ * which everything is still inside the card, after the band has slid up and
+ * shrunk to its minimum scale. Between them the layout reflows and the
+ * containment invariant HOLDS; below it the registry docblock's rule takes over
+ * ("SHOW the overflow so the author can see the node is too small").
+ *
+ * IT IS ADVISORY, NOT ENFORCED, and that is a decision rather than an omission.
+ * Enforcing it would mean refusing a resize the author asked for, and a node
+ * lives on a SLIDE — the deck decides how much room a patch may have, and a
+ * hard minimum would make some layouts simply impossible to author. The
+ * alternative to enforcement is not "knobs escape": it is the ladder, which
+ * keeps them in down to this line and then fails LOUDLY to the eye. What the
+ * author loses below the floor is legibility, which they can see; what they
+ * would lose under enforcement is the drag, which they cannot get back.
+ *
+ * It depends on the WIDTH because a face's natural height can too (a knob band
+ * wraps), so it takes the state rather than a bare port list.
+ *
+ * @param {object} face - the face declaration
+ * @param {object} plugin - the node's own plugin (for its port rows)
+ * @param {object} s - the folded item state (its `w` decides any wrap)
+ * @returns {number} a LOCAL height
+ *
+ * @example // 48 (below one port row) + 52/3 + a 23.6 readout band
+ * @example Math.round(controlFloorHeight({height: 52, bottomPad: 23.6}, {ports: () => ({outputs: [{key: "out", type: "number"}]})}, {w: 104})) // 89
+ */
+export function controlFloorHeight(face, plugin, s) {
+  const natural = Math.max(0, face.height ?? 0);
+  const minScale = face.minScale ?? CONTROL_FACE_MIN_SCALE;
+  return nodeBodyTop(plugin, { ...s, h: undefined }) + natural * minScale + Math.max(0, face.bottomPad ?? 0);
+}
+
+/** The tightest a control node's face may be squeezed, as a fraction of its
+ *  natural height — the same floor a knob band takes (core/node_knobs
+ *  .KNOB_BAND_MIN_SCALE), because it is the same judgement: past roughly a third
+ *  a control is a smudge that still eats presses. Named here rather than
+ *  imported bare so the two can diverge if a face ever needs a different floor,
+ *  and so a reader of this file sees which number applies. */
+export const CONTROL_FACE_MIN_SCALE = 1 / 3;
+
+/**
  * Pure function. A COMPLETE plugin for one control node, from the parts that
  * differ between them.
  *
  * What the caller supplies: its type, title, icon, ports, defaults, its own
- * Inspector rows, a `paint(state)` returning the display-list ops INSIDE the
- * card, and optionally `computeOutputs`, `knobLayout` and an `activate` handler.
+ * Inspector rows, a FACE DECLARATION, a `paint(state, face)` returning the
+ * display-list ops inside that face, and optionally `computeOutputs`,
+ * `knobLayout` and an `activate` handler.
  * What this supplies: the card, the rim, the beads, the effects halo, the bounds
- * protocol, the anchors, the rim projection and the palette command — i.e. every
- * part where getting it wrong is a defect the registry docblock already names.
+ * protocol, the anchors, the rim projection, the palette command — and, since
+ * R7-10, THE FACE ITSELF. A plugin no longer computes where its control goes; it
+ * is handed the rect (see controlFace for why that is not negotiable).
  *
  * @param {object} spec - the control node's differing parts
  * @returns {object} a plugin object for core/registry.js
@@ -199,9 +342,13 @@ export function controlDefaults(type, w, h, own) {
  * @example // controlNodePlugin({type: "node_knob", …}).capabilities.bbox // true
  * @example controlNodePlugin({type: "n", title: "N", defaults: {}, ports: {inputs: [], outputs: []}, paint: () => []}).type // "n"
  * @example controlNodePlugin({type: "n", title: "N", defaults: {}, ports: {inputs: [], outputs: []}, paint: () => []}).controlNode // true
+ * @example // the face is a QUERY on the plugin, so the painter, the hit test and
+ * @example // any test all read one rect rather than three copies of the arithmetic
+ * @example typeof controlNodePlugin({type: "n", title: "N", defaults: {}, ports: {inputs: [], outputs: []}, face: {height: 10}, paint: () => []}).controlFace // "function"
  */
 export function controlNodePlugin(spec) {
   const portsFn = () => spec.ports;
+  const face = spec.face ?? { height: 0, grow: true };
   const plugin = {
     type: spec.type,
     ephemeral: EPHEMERAL.NONE,
@@ -224,6 +371,16 @@ export function controlNodePlugin(spec) {
       ...bundle("effects"),
     ],
     ports: portsFn,
+    /** Query. THIS NODE'S FACE in LOCAL coords — the ONE rect its picture, its
+     *  hit test and the containment sweep all read. Declared on the plugin for
+     *  the same reason `knobLayout` is: a mode must never have to know the
+     *  roster to ask a widget where its control is. */
+    controlFace: (state) => controlFace(face, plugin, state),
+    /** Query. THE DECLARED FLOOR (see controlFloorHeight): the height below which
+     *  this widget's content starts clipping. Declared on the plugin so a sweep,
+     *  a resize handle or an Inspector hint can ask a widget its own minimum
+     *  rather than a roster having to know. */
+    nodeFloorHeight: (state) => controlFloorHeight(face, plugin, state ?? plugin.defaults),
     ...(spec.computeOutputs ? { computeOutputs: spec.computeOutputs } : {}),
     ...(spec.knobLayout ? { knobLayout: spec.knobLayout } : {}),
     ...(spec.activate ? { activate: spec.activate } : {}),
@@ -239,7 +396,8 @@ export function controlNodePlugin(spec) {
      * screen-space overlay, the same seam the audio meters use.
      */
     emit(s, _target, world) {
-      return applyEffects(spec.paint(s), s, world, { x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0 });
+      const box = nodeBox(s);
+      return applyEffects(spec.paint(s, controlFace(face, plugin, s)), s, world, { x: 0, y: 0, w: box.w, h: box.h ?? 0 });
     },
     commands: [{
       id: `add-${spec.type.replace(/_/g, "-")}`,

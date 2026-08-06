@@ -25,21 +25,22 @@
  * reason, so the picture is also the familiar one.
  */
 
-import { controlDefaults, controlNodePlugin, controlRangeRows, controlValue, CONTROL_FAMILY } from "../core/control_nodes.js";
-import { familyCard, familyRim, formatNodeValue, nodeFamily, portBeads, NODE_HEADER_H, NODE_VALUE_INK } from "../core/node_chrome.js";
+import {
+  controlDefaults, controlFace, controlNodeHeight, controlNodePlugin, controlRangeRows,
+  controlValue, CONTROL_FAMILY, CONTROL_READOUT_H,
+} from "../core/control_nodes.js";
+import { familyCard, familyRim, formatNodeValue, nodeBox, nodeFamily, portBeads, NODE_BODY_GAP, NODE_VALUE_INK } from "../core/node_chrome.js";
 import { AUDIO_READOUT_SIZE } from "../core/audio_nodes.js";
 import { knobFraction } from "../core/node_knobs.js";
 import { rect, text } from "../render_gpu/ir.js";
 
 const DEFAULT_W = 84;
-const DEFAULT_H = 148;
 const DEFAULT_VALUE = 0.5;
 const DEFAULT_MIN = 0;
 const DEFAULT_MAX = 1;
 
-/** The track's width, and its inset from the card's top and bottom. */
+/** The track's width. */
 const TRACK_W = 6;
-const TRACK_TOP_GAP = 12;
 /** The handle: wider than the track so it reads as a grip, and tall enough to
  *  be an obvious target rather than a line. */
 const HANDLE_W = 30;
@@ -48,19 +49,28 @@ const HANDLE_H = 11;
  *  as a CIRCLE (core/node_knobs.knobAt), so the strip declares the radius that
  *  covers its handle rather than pretending to be a dial the size of the card. */
 const HANDLE_GRAB_R = 15;
-/**
- * How far above the bottom rim the value readout's BASELINE sits. See
- * plugins/node_knob.js for the measurement: a baseline needs room under it for
- * descenders, and the first version's 9 put a 22pt number's body on the rim.
- */
-const READOUT_BASELINE_GAP = 14;
 
-/** The track stops above the readout's line, not just above the rim: the handle
- *  may sit at the very bottom of the track, and a 22pt number under it needs the
- *  whole band. Derived from the readout's own metrics for that reason. */
-const TRACK_BOTTOM_GAP = READOUT_BASELINE_GAP + AUDIO_READOUT_SIZE;
+/**
+ * THE FACE DECLARATION — an ELASTIC band, and the contrast with the Knob's rigid
+ * one is the whole reason `nodeFaceBand` has two kinds.
+ *
+ * A DIAL'S internal proportions carry its reading (an oval dial reads its angle
+ * wrong everywhere but the axes), so it may only scale uniformly. A TRACK'S
+ * length is not a proportion, it is a RANGE: a fader on a tall card should BE
+ * tall, and stretching it costs nothing. So this one says `grow: true` and takes
+ * the room under the ports, reserving the readout's line beneath.
+ *
+ * The natural height is what the old hand-rolled `TRACK_TOP_GAP`/`TRACK_BOTTOM_GAP`
+ * pair produced at the default size, so a Slider at its own default is the
+ * picture it always was, one band lower.
+ */
+const TRACK_NATURAL_H = 85;
+const FACE = { height: TRACK_NATURAL_H, grow: true, bottomPad: CONTROL_READOUT_H, inset: HANDLE_W / 2 };
 
 const PORTS = { inputs: [], outputs: [{ key: "out", type: "number", label: "out" }] };
+
+/** The card's default height: the derived sum of its bands. */
+const DEFAULT_H = controlNodeHeight(FACE, PORTS);
 
 /**
  * Pure function. This slider's range, defaulted and ordered — identical rule to
@@ -84,20 +94,37 @@ export function sliderRange(s) {
  * is the same one-source rule core/nodeflow.portLayout states for the beads: a
  * handle drawn where it cannot be grabbed is a defect invisible in a screenshot.
  *
+ * SINCE R7-10 IT DERIVES NOTHING ITSELF. It used to compute `top` from a constant
+ * off the header and `bottom` from `h - TRACK_BOTTOM_GAP` — the second of the
+ * three hand-rolled placement schemes, and the one that at least reflowed, which
+ * is why it was the least broken of them. It now reads the face
+ * `core/control_nodes.controlFace` hands back, so a Slider and a Knob and a
+ * Mixer's dial band all reflow by the same arithmetic, and a NEGATIVE width is a
+ * reflection rather than a track at negative x (which is what `w / 2` on a raw
+ * signed width produced).
+ *
  * @param {object} s - the folded item state
  * @returns {{x: number, top: number, bottom: number, height: number}}
  *
- * @example sliderTrack({w: 84, h: 148}).x // 42
- * @example sliderTrack({w: 84, h: 148}).top // 36
- * @example // the track runs from below the header to above the readout
- * @example sliderTrack({w: 84, h: 148}).bottom // 121
+ * @example sliderTrack({w: 84, h: 160}).x // 42
+ * @example // TOP = nodeBodyTop: one bead (y 34) + its radius + one gap. It was 36
+ * @example // (a constant 12 under the header) and is now derived, which is the
+ * @example // unification — the track starts below the PORTS like every other face.
+ * @example sliderTrack({w: 84, h: 160}).top // 48
+ * @example // BOTTOM = h - CONTROL_READOUT_H, i.e. 160 - (8 gap + a 15.6 line) =
+ * @example // 136.4. The old pair reserved READOUT_BASELINE_GAP(14) + SIZE(13) = 27,
+ * @example // a guess at how much room a BASELINE needs beneath it; the renderer has
+ * @example // no baseline, so the reservation is now the line's real height.
+ * @example sliderTrack({w: 84, h: 160}).bottom // 136.4
+ * @example // a TALLER card stretches the track rather than leaving a gap: the same
+ * @example // 23.6 is reserved, so 260 - 23.6 - 48 = 188.4.
+ * @example sliderTrack({w: 84, h: 260}).height // 188.4
+ * @example // a FLIPPED card is a reflection, not a negative x
+ * @example sliderTrack({w: -84, h: 160}).x // 42
  */
 export function sliderTrack(s) {
-  const w = s?.w ?? DEFAULT_W;
-  const h = s?.h ?? DEFAULT_H;
-  const top = NODE_HEADER_H + TRACK_TOP_GAP;
-  const bottom = Math.max(top, h - TRACK_BOTTOM_GAP);
-  return { x: w / 2, top, bottom, height: bottom - top };
+  const face = controlFace(FACE, nodeSliderPlugin, s);
+  return { x: nodeBox(s).w / 2, top: face.y, bottom: face.y + face.h, height: face.h };
 }
 
 /**
@@ -108,9 +135,11 @@ export function sliderTrack(s) {
  * @param {number} fraction - in [0, 1]
  * @returns {{cx: number, cy: number}}
  *
- * @example sliderHandle({w: 84, h: 148}, 0).cy // 121
- * @example sliderHandle({w: 84, h: 148}, 1).cy // 36
- * @example sliderHandle({w: 84, h: 148}, 0.5).cy // 78.5
+ * @example // the ends ARE the track's ends (136.4 and 48 — see sliderTrack for why
+ * @example // each moved), and the middle is their midpoint. Nothing here is chosen.
+ * @example sliderHandle({w: 84, h: 160}, 0).cy // 136.4
+ * @example sliderHandle({w: 84, h: 160}, 1).cy // 48
+ * @example sliderHandle({w: 84, h: 160}, 0.5).cy // 92.2
  */
 export function sliderHandle(s, fraction) {
   const track = sliderTrack(s);
@@ -129,12 +158,12 @@ export function sliderHandle(s, fraction) {
  * @param {object} s - the folded item state
  * @returns {Array<object>} one knobLayout record
  *
- * @example nodeSliderPlugin.knobLayout({w: 84, h: 148, value: 0.5})[0].stateKey // "value"
- * @example nodeSliderPlugin.knobLayout({w: 84, h: 148, value: 1, min: 0, max: 1})[0].fraction // 1
+ * @example nodeSliderPlugin.knobLayout({w: 84, h: 160, value: 0.5})[0].stateKey // "value"
+ * @example nodeSliderPlugin.knobLayout({w: 84, h: 160, value: 1, min: 0, max: 1})[0].fraction // 1
  * @example // the record's centre TRACKS THE VALUE, so the grab target is under
  * @example // the handle rather than at a fixed point on the card
- * @example nodeSliderPlugin.knobLayout({w: 84, h: 148, value: 1})[0].cy < nodeSliderPlugin.knobLayout({w: 84, h: 148, value: 0})[0].cy // true
- * @example nodeSliderPlugin.knobLayout({w: 84, h: 148, value: "= ease(time)"})[0].bound // true
+ * @example nodeSliderPlugin.knobLayout({w: 84, h: 160, value: 1})[0].cy < nodeSliderPlugin.knobLayout({w: 84, h: 160, value: 0})[0].cy // true
+ * @example nodeSliderPlugin.knobLayout({w: 84, h: 160, value: "= ease(time)"})[0].bound // true
  */
 function sliderLayoutOf(s) {
   const { min, max } = sliderRange(s);
@@ -162,6 +191,7 @@ function sliderLayoutOf(s) {
     value,
     fraction,
     bound,
+    driven: false,
   }];
 }
 
@@ -197,7 +227,8 @@ export const nodeSliderPlugin = controlNodePlugin({
    * why both exist. Restrained per ADDENDUM 6: a track, a fill, a handle. No
    * bevel, no gradient, no tick marks.
    */
-  paint(s) {
+  face: FACE,
+  paint(s, face) {
     const control = sliderLayoutOf(s)[0];
     const track = sliderTrack(s);
     const accent = nodeFamily(CONTROL_FAMILY).rim;
@@ -208,11 +239,14 @@ export const nodeSliderPlugin = controlNodePlugin({
       rect({ x: track.x - TRACK_W / 2, y: fillTop, w: TRACK_W, h: Math.max(0, track.bottom - fillTop), cornerRadius: TRACK_W / 2, fill: accent }),
       rect({ x: control.cx - HANDLE_W / 2, y: control.cy - HANDLE_H / 2, w: HANDLE_W, h: HANDLE_H, cornerRadius: HANDLE_RADIUS, fill: HANDLE_INK, stroke: accent, strokeWidth: 1 }),
       // At the audio readout's size, not nodeValueText's 22pt — see node_knob.js.
+      // Placed from the FACE's bottom as a line box, for the reason recorded
+      // there: the retired `READOUT_BASELINE_GAP` was guessing room for a
+      // baseline the renderer does not have.
       text({
         text: formatNodeValue(control.value),
-        x: 0, y: (s?.h ?? DEFAULT_H) - READOUT_BASELINE_GAP,
+        x: 0, y: face.y + face.h + NODE_BODY_GAP,
         size: AUDIO_READOUT_SIZE, color: NODE_VALUE_INK,
-        boxW: s?.w ?? DEFAULT_W, boxStyle: { align: "center" },
+        boxW: nodeBox(s).w, boxStyle: { align: "center" },
       }),
       ...portBeads(nodeSliderPlugin, s),
       ...familyRim(s, CONTROL_FAMILY),

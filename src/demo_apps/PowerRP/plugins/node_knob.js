@@ -24,8 +24,11 @@
  * core/control_nodes.js for where the live/stored boundary actually falls.
  */
 
-import { controlDefaults, controlNodePlugin, controlRangeRows, controlValue, CONTROL_FAMILY } from "../core/control_nodes.js";
-import { familyCard, familyRim, formatNodeValue, knobOps, nodeFamily, portBeads, NODE_HEADER_H, NODE_VALUE_INK } from "../core/node_chrome.js";
+import {
+  controlDefaults, controlFace, controlNodeHeight, controlNodePlugin, controlRangeRows,
+  controlValue, CONTROL_FAMILY, CONTROL_READOUT_H,
+} from "../core/control_nodes.js";
+import { familyCard, familyRim, formatNodeValue, knobOps, nodeBox, nodeFamily, portBeads, NODE_BODY_GAP, NODE_VALUE_INK } from "../core/node_chrome.js";
 import { AUDIO_READOUT_SIZE } from "../core/audio_nodes.js";
 import { text } from "../render_gpu/ir.js";
 import { knobFraction } from "../core/node_knobs.js";
@@ -35,41 +38,35 @@ const DEFAULT_VALUE = 0.5;
 const DEFAULT_MIN = 0;
 const DEFAULT_MAX = 1;
 
-/** The big dial's radius, and where its centre sits below the header. Sized to
- *  the card rather than to core/node_knobs.KNOB_R, which is the SMALL dial a
- *  module wears several of — this is one control filling its own widget. */
+/** The big dial's NATURAL radius. Sized to the card rather than to
+ *  core/node_knobs.KNOB_R, which is the SMALL dial a module wears several of —
+ *  this is one control filling its own widget. It is a natural size and not a
+ *  fixed one: the face band scales it on a card too short to hold it. */
 const DIAL_R = 26;
-const DIAL_CY_GAP = 12;
-/** Between the dial's bottom and the readout's cap height. */
-const DIAL_READOUT_GAP = 6;
-/**
- * How far above the card's bottom rim the value readout's BASELINE sits.
- *
- * MEASURED, NOT GUESSED. The first version used 10, which put a 22pt number's
- * baseline 10px above the rim — so the glyphs' bodies sat ON the rim and their
- * descenders hung outside the card entirely. It looked exactly like a bug in the
- * card's height and was invisible to every test, because an op's `y` is a
- * baseline and no assertion knows how tall a glyph is. Caught on a rendered
- * still (the WAVE 3 lesson: screenshot review is not optional for anything that
- * paints).
- *
- * A baseline needs roughly a third of the type size below it for descenders,
- * plus a breathing gap — hence a little over half the size.
- */
-const READOUT_BASELINE_GAP = 14;
 
 /**
- * The card's default height, DERIVED from what it has to hold rather than
- * chosen: header, the gap above the dial, the dial itself, a gap, then a full
- * line of readout with room under its baseline for descenders.
+ * THE FACE DECLARATION — what this widget's control needs, never where it goes.
  *
- * Deriving it is what stops the two from disagreeing — the first version picked
- * 108 by eye and the readout hung off the bottom rim, because nothing connected
- * the number to the content it was supposed to contain.
+ * A RIGID square band one dial tall, reserving the readout's line beneath it.
+ * That is the whole of what this plugin gets to say about its layout; the rect
+ * comes back from core/control_nodes.controlFace, which is the one path and has
+ * no override (see its docblock for the VCV Rack failure it forecloses).
+ *
+ * ── WHAT THIS REPLACED, AND WHY IT WAS THE WORST OF THE THREE ───────────────
+ * `cy: NODE_HEADER_H + DIAL_CY_GAP + DIAL_R` — a constant from the TOP EDGE that
+ * never read `h` at all, so shrinking a Knob below 88 pushed its dial straight
+ * through the bottom rim, and `cx: (s?.w ?? DEFAULT_W) / 2` took no `Math.abs`,
+ * so a horizontally flipped Knob put its dial at negative x (CLAUDE.md's NEGATIVE
+ * EXTENTS law; the audio path already resolved the sign, this one did not).
+ * `.frenzy/round7/powerrp_audio_map.md` §B.10 names both.
  */
-const DEFAULT_H = NODE_HEADER_H + DIAL_CY_GAP + DIAL_R * 2 + DIAL_READOUT_GAP + AUDIO_READOUT_SIZE + READOUT_BASELINE_GAP;
+const FACE = { height: DIAL_R * 2, bottomPad: CONTROL_READOUT_H };
 
 const PORTS = { inputs: [], outputs: [{ key: "out", type: "number", label: "out" }] };
+
+/** The card's default height: the derived sum of its bands (Axoloti's rule —
+ *  a node IS its declaration list), which is also its advisory floor. */
+const DEFAULT_H = controlNodeHeight(FACE, PORTS);
 
 /** Pure function. This knob's range, defaulted and ordered.
  *
@@ -96,16 +93,24 @@ export function knobRange(s) {
  * Built by hand rather than through `knobLayout` because that function LAYS OUT
  * a row of dials across a card's width, and this widget has exactly one dial
  * that is centred and larger. The RECORD is identical, which is the part the
- * mode reads.
+ * mode reads — and since R7-10 the PLACEMENT is identical too: the dial is
+ * centred in the face `controlFace` hands back, so it descends the same ladder a
+ * module's band does instead of sitting on constants from the top edge.
  *
  * @param {object} s - the folded item state
  * @returns {Array<object>} one knobLayout record
  *
- * @example nodeKnobPlugin.knobLayout({w: 104, h: 108, value: 0.5}).length // 1
- * @example nodeKnobPlugin.knobLayout({w: 104, h: 108, value: 0.5})[0].stateKey // "value"
- * @example nodeKnobPlugin.knobLayout({w: 104, h: 108, value: 0.5})[0].fraction // 0.5
+ * @example nodeKnobPlugin.knobLayout({w: 104, h: 124, value: 0.5}).length // 1
+ * @example nodeKnobPlugin.knobLayout({w: 104, h: 124, value: 0.5})[0].stateKey // "value"
+ * @example nodeKnobPlugin.knobLayout({w: 104, h: 124, value: 0.5})[0].fraction // 0.5
  * @example // an equation in the slot marks it BOUND, so the drag refuses it
- * @example nodeKnobPlugin.knobLayout({w: 104, h: 108, value: "= ease(time)"})[0].bound // true
+ * @example nodeKnobPlugin.knobLayout({w: 104, h: 124, value: "= ease(time)"})[0].bound // true
+ * @example // THE DIAL FITS INSIDE THE CARD AT EVERY HEIGHT — the R7-10 invariant.
+ * @example // Squeeze the card to a third of its natural size and the dial shrinks
+ * @example // and stays in rather than walking out of the bottom rim.
+ * @example nodeKnobPlugin.knobLayout({w: 104, h: 70, value: 0.5})[0].r < 26 // true
+ * @example // a FLIPPED card is a reflection, not a negative x
+ * @example nodeKnobPlugin.knobLayout({w: -104, h: 124, value: 0.5})[0].cx // 52
  */
 function knobLayoutOf(s) {
   const { min, max } = knobRange(s);
@@ -113,6 +118,11 @@ function knobLayoutOf(s) {
   const bound = typeof raw !== "number" || !Number.isFinite(raw);
   const value = bound ? min : raw;
   const step = Number(s?.step);
+  const face = controlFace(FACE, nodeKnobPlugin, s);
+  // The dial is the largest circle the face can hold, centred in it. Both the
+  // radius and the centre come off the face, so there is nothing left here that
+  // could place a dial outside the card even if it wanted to.
+  const r = Math.max(0, Math.min(DIAL_R * face.scale, face.h / 2, nodeBox(s).w / 2));
   return [{
     key: "value",
     // THE DECLARATION, not a guess. web/knobFocus.js reads this rather than
@@ -120,15 +130,16 @@ function knobLayoutOf(s) {
     // which would have written `audioValue` into a widget that has no such leaf.
     stateKey: "value",
     label: "",
-    cx: (s?.w ?? DEFAULT_W) / 2,
-    cy: NODE_HEADER_H + DIAL_CY_GAP + DIAL_R,
-    r: DIAL_R,
+    cx: face.x + face.w / 2,
+    cy: face.y + face.h / 2,
+    r,
     min, max,
     step: Number.isFinite(step) && step > 0 ? step : undefined,
     unit: "",
     value,
     fraction: knobFraction(value, min, max),
     bound,
+    driven: false,
   }];
 }
 
@@ -169,8 +180,10 @@ export const nodeKnobPlugin = controlNodePlugin({
    * to the screen-space overlay, because putting it in the display list would
    * make a PNG export depend on where the mouse was.
    */
-  paint(s) {
+  face: FACE,
+  paint(s, face) {
     const dial = knobLayoutOf(s);
+    const { w } = nodeBox(s);
     return [
       ...familyCard(s, "Knob", CONTROL_FAMILY),
       // THE VALUE, ALWAYS SHOWN — unlike a module's knob band, where a number
@@ -182,11 +195,16 @@ export const nodeKnobPlugin = controlNodePlugin({
       // Display node, whose entire body IS one number; here the number shares the
       // card with a dial, and at 22pt it overflowed the rim — measured on a
       // rendered still.
+      //
+      // PLACED FROM THE FACE'S BOTTOM, not from the card's. Its `y` is the LINE
+      // BOX's top (core/node_chrome.textLineH), which is what the retired
+      // `READOUT_BASELINE_GAP = 14` was guessing at from the other end — and
+      // guessing wrong, because there is no baseline to leave room under.
       text({
         text: formatNodeValue(dial[0].value),
-        x: 0, y: (s?.h ?? DEFAULT_H) - READOUT_BASELINE_GAP,
+        x: 0, y: face.y + face.h + NODE_BODY_GAP,
         size: AUDIO_READOUT_SIZE, color: NODE_VALUE_INK,
-        boxW: s?.w ?? DEFAULT_W, boxStyle: { align: "center" },
+        boxW: w, boxStyle: { align: "center" },
       }),
       // No `ui` argument: the focus ring is transient editor state and belongs
       // to the screen-space overlay. The dial's SIZE rides on the record itself

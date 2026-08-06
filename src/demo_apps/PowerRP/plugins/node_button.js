@@ -42,21 +42,37 @@
  * performer and the note.
  */
 
-import { controlDefaults, controlNodePlugin, CONTROL_CAT, CONTROL_FAMILY } from "../core/control_nodes.js";
-import { familyCard, familyRim, nodeFamily, portBeads, NODE_HEADER_H } from "../core/node_chrome.js";
+import { controlDefaults, controlFace, controlNodeHeight, controlNodePlugin, CONTROL_CAT, CONTROL_FAMILY } from "../core/control_nodes.js";
+import { familyCard, familyRim, nodeFamily, portBeads, textLineH } from "../core/node_chrome.js";
 import { rect, text } from "../render_gpu/ir.js";
 
 const DEFAULT_W = 104;
-const DEFAULT_H = 96;
 
-/** The pressable face's inset from the card's edges, and its corner radius. */
+/** The pressable face's inset from the card's side edges, its bottom margin and
+ *  its corner radius. */
 const FACE_INSET = 14;
-const FACE_TOP_GAP = 10;
 const FACE_BOTTOM_GAP = 14;
 const FACE_RADIUS = 5;
 const LABEL_SIZE = 11;
 
+/**
+ * THE FACE DECLARATION — an ELASTIC band like the Slider's, because a button's
+ * face is a TARGET and a bigger target on a bigger card is simply better. The
+ * natural height is what the old hand-placed rect produced at the default size.
+ *
+ * This one already reflowed (`h - y - FACE_BOTTOM_GAP`, floored at 0), so it was
+ * the least broken of the three schemes — but it still took no `Math.abs`, so a
+ * flipped Button computed `w - 28` on a negative width and produced a
+ * zero-width face. Routing it through the one path fixes that as a side effect
+ * rather than as a second patch, which is the argument for having one path.
+ */
+const FACE_NATURAL_H = 48;
+const FACE = { height: FACE_NATURAL_H, grow: true, bottomPad: FACE_BOTTOM_GAP, inset: FACE_INSET };
+
 const PORTS = { inputs: [], outputs: [{ key: "out", type: "trigger", label: "out" }] };
+
+/** The card's default height: the derived sum of its bands. */
+const DEFAULT_H = controlNodeHeight(FACE, PORTS);
 
 /**
  * Pure function. The pressable FACE's rect in LOCAL coordinates — the ONE
@@ -66,16 +82,17 @@ const PORTS = { inputs: [], outputs: [{ key: "out", type: "trigger", label: "out
  * @param {object} s - the folded item state
  * @returns {{x: number, y: number, w: number, h: number}}
  *
- * @example buttonFace({w: 104, h: 96}) // {x: 14, y: 34, w: 76, h: 48}
+ * @example buttonFace({w: 104, h: 110}) // {x: 14, y: 48, w: 76, h: 48, scale: 1}
+ * @example // a TALLER card grows the target rather than leaving a gap
+ * @example buttonFace({w: 104, h: 160}).h // 98
  * @example // a card squeezed shorter than its own face still reports a valid
  * @example // rect rather than a negative one; it clips, which is the visible signal
- * @example buttonFace({w: 104, h: 20}).h // 0
+ * @example buttonFace({w: 104, h: 20}).h // 16
+ * @example // a FLIPPED card is a reflection, not a zero-width face
+ * @example buttonFace({w: -104, h: 110}).w // 76
  */
 export function buttonFace(s) {
-  const w = s?.w ?? DEFAULT_W;
-  const h = s?.h ?? DEFAULT_H;
-  const y = NODE_HEADER_H + FACE_TOP_GAP;
-  return { x: FACE_INSET, y, w: Math.max(0, w - FACE_INSET * 2), h: Math.max(0, h - y - FACE_BOTTOM_GAP) };
+  return controlFace(FACE, nodeButtonPlugin, s);
 }
 
 /**
@@ -90,10 +107,10 @@ export function buttonFace(s) {
  * @param {number} ly - LOCAL y
  * @returns {boolean}
  *
- * @example buttonPressed({w: 104, h: 96}, 52, 58) // true
+ * @example buttonPressed({w: 104, h: 110}, 52, 70) // true
  * @example // the header is not the button: a press there drags the node
- * @example buttonPressed({w: 104, h: 96}, 52, 10) // false
- * @example buttonPressed({w: 104, h: 96}, 2, 58) // false
+ * @example buttonPressed({w: 104, h: 110}, 52, 10) // false
+ * @example buttonPressed({w: 104, h: 110}, 2, 70) // false
  */
 export function buttonPressed(s, lx, ly) {
   const f = buttonFace(s);
@@ -145,15 +162,18 @@ export const nodeButtonPlugin = controlNodePlugin({
    * meters use, so an export gets the honest picture of a document nobody is
    * playing.
    */
-  paint(s) {
-    const face = buttonFace(s);
+  face: FACE,
+  paint(s, face) {
     const accent = nodeFamily(CONTROL_FAMILY).rim;
     const label = typeof s?.label === "string" ? s.label : "";
     return [
       ...familyCard(s, "Button", CONTROL_FAMILY),
       rect({ x: face.x, y: face.y, w: face.w, h: face.h, cornerRadius: FACE_RADIUS, fill: FACE_INK, stroke: accent, strokeWidth: 1 }),
+      // The label's LINE BOX is centred in the face — `y` is its top, not a
+      // baseline (core/node_chrome.textLineH), which is what the retired
+      // `+ LABEL_SIZE / 3` was written for and got backwards.
       ...(label ? [text({
-        text: label, x: face.x, y: face.y + face.h / 2 + LABEL_SIZE / 3,
+        text: label, x: face.x, y: face.y + (face.h - textLineH(LABEL_SIZE)) / 2,
         size: LABEL_SIZE, color: FACE_LABEL_INK, boxW: face.w, boxStyle: { align: "center" },
       })] : []),
       ...portBeads(nodeButtonPlugin, s),
