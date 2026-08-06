@@ -4905,6 +4905,53 @@ TEMPLATE (a multi-item stamp) or a document to open?** The double-pendulum prese
 (R7-16) is the same question in miniature (*"it's just like an alias for creating two
 rectangles with the proper equations"*), so **the two must share one mechanism.**
 
+### R7-19 THE SPECTROGRAM GROWS OPTIONS AND PRESETS (user, 2026-08-06)
+
+> *"the spectrogram should have some more options and presets btw - like, what about
+> linear and haming window options and num freqs and movement speed and color theme (i.e.
+> the gradient! we have a gradient picker so why not go ham with the presets??)"*
+
+`SPECTRUM_SPEC` currently declares **zero knobs** (`core/audio_specs.js`; inventory in
+`.frenzy/round7/powerrp_audio_map.md` § F.1), so this is a blank slate. **ORDERED AFTER
+R7-5** — adding a colour-map gradient to a DOM overlay that is about to be replaced by a
+display-list emitter would be wasted work.
+
+**THE ROWS:**
+- **`window`** — discrete: rectangular ("linear"), Hann, Hamming, Blackman, Blackman-Harris.
+- **`bins`** — the "num freqs": `fftSize` is natively 32…32768 in powers of two, so this is
+  a discrete row, not a free number. `frequencyBinCount = fftSize / 2`.
+- **`speed`** — how fast the waterfall scrolls, in columns or seconds of history per
+  second. A DISPLAY property, not a DSP one.
+- **`colors`** — **a gradient `paint`, reusing `PaintField` and `core/ramps.js`.** This is
+  the user's own point and it is the right instinct: *"we have a gradient picker so why
+  not"*. A colour map IS a ramp; we already have stops, `sampleRampHex`, spread modes and
+  a picker. **Do not invent a colormap type.**
+  This is precisely the test the manifest already sets for expanding a widget — *can the
+  new power be expressed in the app's EXISTING UI vocabulary?* Here, yes, entirely.
+
+**⚠ THE WINDOW ROW IS NOT FREE, AND THIS IS THE ONE THING TO KNOW BEFORE ESTIMATING IT.**
+Web Audio's `AnalyserNode` **hardcodes a Blackman window** — the spec mandates it and
+there is no parameter. So `getByteFrequencyData` can never honour a `window` choice. To
+offer one we must take `getFloatTimeDomainData` and **run our own window + FFT**. That is
+a real piece of work, it is entirely doable, and it also buys `bins` and dB-scaling
+control we would otherwise inherit. **`bins` and `speed` and `colors` are cheap and can
+land first; `window` is the one that carries the FFT rewrite.** Do not let a swarm report
+"window: done" while still calling `getByteFrequencyData` — that would be a control with
+no picture behind it, which is the inert-control lie.
+
+**PRESETS — "go ham".** Follow the established presets convention (§ R6-3, the
+research-driven presets programme), and ship the perceptually-uniform scientific maps as
+the defaults rather than inventing gradients by taste: **viridis, magma, inferno, plasma,
+cividis, turbo**, plus greyscale and the classic audio-tool looks. Perceptual uniformity
+matters here for the same reason it does in a chart — a colour map with a bright band in
+the middle invents a feature in the data that is not there.
+
+**STILL ANALYSIS STATE, so the existing law holds:** live samples must NOT enter `emit()`
+(Δt = 0 would produce two different frames). R7-5's job is to draw the display in CANVAS
+space with the sample buffer threaded as render-time context — the same shape
+`pdfDisplay`/`mapTiles`/`scene3d` already use in `render_gpu/ports.js`. These new rows are
+ordinary property state and tween normally; only the samples are live.
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
