@@ -432,8 +432,11 @@ bullet before you reach for it.)
   prefix in order). Everything else survives — **Δt = 0 still means a
   BYTE-IDENTICAL frame, absolutely**, which is what the history's two tables
   (`prev`/`cur`, rolled only when the clock moves) are for: `web/CanvasView.svelte`
-  evaluates one frame ~28 times, and with one table a dt-free `= @ * 0.9` would
-  advance 28 times and the count would change with mouse movement.
+  evaluates one frame SEVERAL times — 2 on a pan, 3 on a hover, MEASURED (the
+  "~28" figure this once cited was a count of call SITES, most of them gated by
+  mode/selection/drag) — and with one table a dt-free `= @ * 0.9` would advance
+  once per evaluation, **with the count varying by gesture**. The exact number
+  was never the argument; that the number is greater than one and not fixed is.
   The table is AMBIENT and global to the process, so **exactly one consumer per
   process may advance it**; every other must run inside `withSimulationFrozen()`,
   which makes a pass structurally unable to write (a thumbnail of another slide, a

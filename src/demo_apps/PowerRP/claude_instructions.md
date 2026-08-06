@@ -4310,8 +4310,8 @@ for:**
 
 **AND THE CULLING ANSWER IS THE OPPOSITE OF THE COMPLAINT.** Culling DOES run in the
 editor paint (`web/CanvasView.svelte:820-821`). The lag is real but comes from
-elsewhere: `app.nodes()` is an **un-memoized full `deriveRenderTree`** called ~28
-times in `CanvasView.svelte` alone, several from pointermove handlers; and the bead
+elsewhere: `app.nodes()` is an **un-memoized full `deriveRenderTree`** with ~28 call
+SITES in `CanvasView.svelte` alone, several from pointermove handlers; and the bead
 overlay emits **one SVG `<circle>` per port of every node in the document**,
 un-culled, rebuilt on every viewport change. So R7-6 is a MEMOIZATION AND OVERLAY-
 CULLING item, not a "turn culling on" item.
@@ -4663,8 +4663,15 @@ independence the fixed-timestep design could not have delivered.
 ordinary reference, so `requireSlot` settles `v` first.
 
 **Δt = 0 IS PINNED BOTH WAYS:** re-rendering one frame gives a byte-identical display
-list, **and 28 evaluations at one instant produce ONE step** — the double-buffer earning
-its place against the measured ~28 `app.nodes()` calls per frame. Cost: 40.5 ms/1000
+list, **and N evaluations at one instant produce ONE step** — the double-buffer earning its
+place against repeated per-frame evaluation. **CORRECTED: the "~28 per frame" figure the lead
+quoted (twice, including to the user) was a count of call SITES, not runtime calls.** Measured
+by W2-B: **2 `app.nodes()` calls on a pan frame, 3 on a hover move**; most of the 28 sites are
+gated by mode, selection or drag. The double-buffer argument SURVIVES unchanged — 2 or 3
+advances per frame is still wrong, and the count still varies with gesture, which is the part
+that matters — but the number was wrong and the lag was never call *count*: it was that each
+of those 2–3 calls was a full `deriveRenderTree` over 1003 items, beside 3006 SVG circles
+rebuilt every pan. Cost: 40.5 ms/1000
 simulated passes vs 41.2 ms/1000 plain; a document with no `@`/`dt` never touches the
 table.
 
