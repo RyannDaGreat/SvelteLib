@@ -51,6 +51,7 @@ import { sceneMedia, prepareSceneScrubFrames } from "../render_gpu/skia/browser_
 import { makeCpuUploader, makeGpuUploader } from "../render_gpu/gpu/video_registry.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 import { withSimulationFrozen } from "../core/simulation_history.js";
+import { withPointerFrozen } from "../core/pointer_input.js";
 
 let ckPromise = null;
 let queue = Promise.resolve();
@@ -317,6 +318,14 @@ function renderJob(reqWidth, reqHeight, buildIR) {
  * mounted ALONGSIDE the editor rather than instead of it (web/App.svelte:3060) —
  * so the evaluation runs inside withSimulationFrozen.
  *
+ * AND INSIDE withPointerFrozen, for the SAME sentence one paragraph up (manifest
+ * R7-24). The ambient pointer is RECORDABLE state on the presenter's live feed, so
+ * a thumbnail rendered behind a presentation would otherwise follow the presenter's
+ * mouse and two renders of the same thumbnail would differ — the one thing the
+ * recordable kind is defined to exclude. An exporter's per-frame OVERRIDE still
+ * wins over the freeze (core/pointer_input.js), because a movie's frames come
+ * through here and a DICTATED pointer is not the ambient one this guards against.
+ *
  * FROZEN MEANS NO WRITE, NOT MERELY dt = 0, and the difference is the whole point:
  * a dt-FREE simulated equation (`= @ * 0.9`, a decay) still computes f(prev) at
  * dt = 0, so a thumbnail of SLIDE 5 would otherwise land its value in the slot the
@@ -341,7 +350,7 @@ function renderJob(reqWidth, reqHeight, buildIR) {
  * @example // renderCameraFrame(doc, {slideIndex: 0, registry, width: 96, height: 54, quality: "proxy", project: "RobotSim"}) → cheap thumbnail
  */
 export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width, height, quality = "full", project = "" }) {
-  return renderJob(width, height, () => withSimulationFrozen(() => {
+  return renderJob(width, height, () => withPointerFrozen(() => withSimulationFrozen(() => {
     const state = evaluatedStateAt(doc, slideIndex, alpha, registry);
     const rect = cameraRect(state, doc.meta);
     return {
@@ -355,7 +364,7 @@ export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width,
       antialias: antialiasCoverage(cameraAntialias(state)), // THE camera's coverage-AA → setAntiAlias
       quality,
     };
-  }));
+  })));
 }
 
 /**

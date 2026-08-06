@@ -384,10 +384,15 @@
    *  mouse event; gated on `alpha === 1` for the repaint because a tween is already
    *  painting every frame and must not be double-painted (idleTick's rule).
    *
-   *  Bound on the WRAPPER, not on a canvas: the two present surfaces swap visibility
-   *  per frame (`.hidden` is display:none), so a canvas-bound listener would go deaf
-   *  for the duration of every fade. Canvas events bubble here, so the live-play
-   *  handlers below keep their own bindings untouched. */
+   *  Bound on the WINDOW, not on a canvas, and not in the markup: the two present
+   *  surfaces swap visibility per frame (`.hidden` is display:none), so a
+   *  canvas-bound listener would go deaf for the duration of every fade, and a
+   *  wrapper div carrying pointer handlers needs an ARIA role it has no honest one
+   *  for. The window is where this file already listens for keydown and resize, and
+   *  present mode owns the whole viewport. The live-play handlers below keep their
+   *  own canvas bindings, which is right: THEY need the canvas's pointer capture. */
+  const POINTER_EVENTS = ["pointermove", "pointerdown", "pointerup", "pointercancel"];
+
   function trackPointer(e) {
     if (!pointerBound) return;
     const w = worldPointOf(e);
@@ -476,6 +481,10 @@
     document.documentElement.requestFullscreen?.().catch(() => {}); // headless/iframe: fine without
     window.addEventListener("keydown", onkeydown, true);
     window.addEventListener("resize", paint);
+    // THE AMBIENT POINTER's live feed (see trackPointer). All four types, because
+    // `mouse_left` is the button HELD: a press and a release change it with no
+    // movement, and a cancelled gesture must not leave it stuck down.
+    for (const type of POINTER_EVENTS) window.addEventListener(type, trackPointer);
     const onFsChange = () => {
       if (!document.fullscreenElement) exit();
     };
@@ -499,6 +508,7 @@
     return () => {
       window.removeEventListener("keydown", onkeydown, true);
       window.removeEventListener("resize", paint);
+      for (const type of POINTER_EVENTS) window.removeEventListener(type, trackPointer);
       document.removeEventListener("fullscreenchange", onFsChange);
       presenter.stop();
       stopParticleClock(); // back to the PAUSED freeze regime (editor renders a still)
@@ -522,13 +532,7 @@
   });
 </script>
 
-<div
-  class="present"
-  onpointermove={trackPointer}
-  onpointerdown={trackPointer}
-  onpointerup={trackPointer}
-  onpointercancel={trackPointer}
->
+<div class="present">
   <canvas
     bind:this={canvasEl}
     class:hidden={showFade}

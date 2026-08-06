@@ -3393,10 +3393,10 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // still produce a frame, and every equation calling a missing export then fails
   // loudly on its own line, which is where the fix belongs.
   //
-  // `time` is read through readClock, so a script that reads it at TOP LEVEL still
-  // marks this pass as clock-reading and the memo invalidates per frame, exactly as
-  // an `= time` equation does.
-  const projectScript = compileProjectScript(script, { random: seededRandom, time: readClock });
+  // `time` is read through readClock — and the AMBIENT POINTER through readPointer,
+  // for the identical reason — so a script reading either marks this pass as having
+  // read it and the memo invalidates exactly as the equivalent equation would.
+  const projectScript = compileProjectScript(script, { random: seededRandom, time: readClock, pointer: readPointer });
   if (projectScript.error) reportOnce(projectScript.error);
 
   // Rim-solve MEMO (per pass): from.x/from.y of one closest ref share ONE solve;

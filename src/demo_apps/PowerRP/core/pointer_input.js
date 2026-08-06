@@ -18,17 +18,21 @@
  * `mouse_x` was absent rather than an oversight.
  *
  * ── THE THREE REGIMES, IN particleTime()'s PRECEDENCE ────────────────────────
- *   OVERRIDE  setPointerInputOverride(sample) wins over both regimes below.
- *             Tests, and the per-frame seam an exporter (or a future recorded
- *             pointer TRACK) drives — the analogue of setParticleTimeOverride.
+ *   OVERRIDE  setPointerInputOverride(sample) wins over everything below, INCLUDING
+ *             a freeze. Tests, and the per-frame seam an exporter (or a future
+ *             recorded pointer TRACK) drives — the analogue of
+ *             setParticleTimeOverride. A DICTATED pointer is not the thing a still
+ *             consumer has to be protected from; an ambient one is.
+ *   FROZEN    withPointerFrozen(fn) — a still consumer running inside a process
+ *             whose feed is live (see below).
  *   LIVE      startPointerFeed() opts a consumer INTO the live samples that
  *             samplePointer() writes. The presenter does this on mount
  *             (web/PresentMode.svelte) and stopPointerFeed() on exit.
- *   FROZEN    the DEFAULT, and therefore what every still consumer inherits for
- *             free: POINTER_REST. cli/render.js, the render-job page, the
- *             thumbnail/minimap/PNG pixel service and the settled editor all run
- *             here, so the kind's DEFINING TEST holds by construction — hold the
- *             ambient input and the document fixed and the frame is byte-identical.
+ *   REST      the DEFAULT, and therefore what every still consumer inherits for
+ *             free: POINTER_REST. cli/render.js, the render-job page and the
+ *             settled editor all run here, so the kind's DEFINING TEST holds by
+ *             construction — hold the ambient input and the document fixed and the
+ *             frame is byte-identical.
  *
  * samplePointer() OUTSIDE the live regime is deliberately inert rather than an
  * error: a producer may run in a process where nothing consumes the pointer (the
@@ -44,18 +48,20 @@
  * (server/server.py pointer_input_warning). It must not fail, and it must not
  * imply a reproducibility it does not have.
  *
- * ── ⚠ IF YOU WIRE THE *EDITOR* LIVE, FREEZE THE STILL CONSUMERS FIRST ────────
- * The freeze above is inherited by PROCESS: the CLI and the render-job page never
- * call startPointerFeed(), so nothing there can see a live sample. The editor is
- * NOT such a process — it HOSTS still consumers (web/gpuService.js's thumbnails
- * and minimap, the PNG export, and web/videoExport.createFrameSampler when a
- * client-backend job renders in the author's own tab). Today the editor never
- * starts the feed, so those are frozen and correct. A hook in
- * web/CanvasView.svelte that calls startPointerFeed() would change that, and it
- * MUST land together with a freeze at those seams (the shape to copy is
- * core/simulation_history.withSimulationFrozen, which exists for the identical
- * "one process, one live consumer, many frozen ones" problem). Wiring the hook
- * alone would make a thumbnail depend on where the mouse happened to be.
+ * ── ONE PROCESS, ONE LIVE CONSUMER, MANY FROZEN ONES ─────────────────────────
+ * The frozen default is inherited by PROCESS, and for cli/render.js and the
+ * render-job page that is the whole story — they never open a feed, so no sample
+ * can reach them. THE EDITOR IS NOT SUCH A PROCESS. PresentMode is mounted
+ * ALONGSIDE the editor rather than instead of it, so the slide thumbnails and the
+ * minimap keep rendering behind a fullscreen presentation (web/gpuService.js says
+ * so in its own docblock, about the simulation, for the identical reason) — and
+ * without a scope they would follow the presenter's pointer, which is a still whose
+ * pixels depend on where the mouse was.
+ *
+ * withPointerFrozen() is that scope, and it is core/simulation_history's
+ * withSimulationFrozen at the same seams. A hook in web/CanvasView.svelte that put
+ * the EDITOR in the live regime would widen this from "while presenting" to
+ * "always", and it must not land without auditing the same list.
  *
  * ── WORLD COORDINATES, AND WHO CONVERTS ──────────────────────────────────────
  * `x`/`y` are WORLD units — the same space an item's `x`/`y` live in — because the
@@ -127,8 +133,11 @@ let liveSample = POINTER_REST;
 /** true while a consumer has opted into the live samples (startPointerFeed). */
 let feedLive = false;
 
-/** An explicit override sample, or null. Wins over BOTH regimes. */
+/** An explicit override sample, or null. Wins over every regime, freeze included. */
 let overrideSample = null;
+
+/** Nesting depth of withPointerFrozen — while > 0 the LIVE feed is unreachable. */
+let frozenDepth = 0;
 
 /**
  * Pure function. `{x, y, left}` normalized and FROZEN, or a thrown error naming
@@ -156,8 +165,9 @@ export function pointerSample(x, y, left) {
 /**
  * Query. The pointer an equation reads RIGHT NOW. Precedence:
  *   1. an explicit override (setPointerInputOverride) — tests / exporters;
- *   2. the last live sample, while a feed is running (the presenter);
- *   3. POINTER_REST — the frozen default (editor stills, CLI, thumbnails, export).
+ *   2. POINTER_REST inside withPointerFrozen (a still in a live process);
+ *   3. the last live sample, while a feed is running (the presenter);
+ *   4. POINTER_REST — the default (editor stills, CLI, render-job page).
  *
  * Near-pure (reads module state); PURE and CONSTANT in the frozen regime, which is
  * what makes every still render byte-reproducible.
@@ -175,8 +185,49 @@ export function pointerSample(x, y, left) {
  */
 export function pointerInput() {
   if (overrideSample !== null) return overrideSample;
+  if (frozenDepth > 0) return POINTER_REST;
   if (feedLive) return liveSample;
   return POINTER_REST;
+}
+
+/**
+ * Command (raises a module scope for the duration of `fn`; returns its result).
+ * Runs a STILL consumer with the live feed unreachable, so its pixels cannot depend
+ * on where the mouse happens to be. Nests.
+ *
+ * WHY IT IS NEEDED AT ALL, given the default is already rest: the freeze is
+ * inherited by PROCESS, and the editor's process is one where a feed CAN be live —
+ * PresentMode is mounted alongside the editor, so web/gpuService.js's thumbnails
+ * and minimap go on rendering behind a fullscreen presentation. Measured: without
+ * this, a thumbnail rendered during a presentation follows the presenter's pointer,
+ * and re-rendering the same thumbnail gives different pixels. That is the exact
+ * failure the recordable kind is defined to exclude.
+ *
+ * AN OVERRIDE STILL WINS, deliberately. The thing a still consumer must be
+ * protected from is the AMBIENT pointer, not a DICTATED one: an exporter (or a
+ * future recorded track) driving setPointerInputOverride per frame is stating what
+ * the pointer is for that frame, and a movie's frames reach pixels through the same
+ * pixel service the thumbnails do.
+ *
+ * SYNCHRONOUS SCOPE ONLY, exactly as withSimulationFrozen is: the depth drops when
+ * `fn` RETURNS, so wrapping an async function freezes only as far as its first
+ * await. That is why renderCameraFrame's callback computes the EVALUATION and hands
+ * back a plain IR object — the async rasterization afterwards reads no pointer, so
+ * the scope covers the whole of what it needs to.
+ *
+ * @param {Function} fn - the still evaluation to run frozen (synchronous)
+ * @returns {*} whatever `fn` returns
+ *
+ * @example // withPointerFrozen(() => renderThumbnail(doc, 5)) — rest, even mid-presentation
+ * @example // withPointerFrozen(() => pointerInput()) === POINTER_REST, with a feed live
+ */
+export function withPointerFrozen(fn) {
+  frozenDepth++;
+  try {
+    return fn();
+  } finally {
+    frozenDepth--;
+  }
 }
 
 /**

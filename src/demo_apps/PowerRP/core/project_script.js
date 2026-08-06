@@ -83,14 +83,24 @@
  * can see. That precedence is pinned by tests.
  */
 
-import { BLOCKED_GLOBALS, FUNCTIONS, SAFE_MATH } from "./expressions.js";
+import { BLOCKED_GLOBALS, FUNCTIONS, RESERVED_KEYWORDS, SAFE_MATH } from "./expressions.js";
+import { POINTER_KEYWORDS } from "./pointer_input.js";
 
 // The evaluator's own scope keywords — resolved by core/expressions.js's
 // `scopeGet` BEFORE script exports are consulted, so an export using one could
 // never be reached, which makes accepting it a silent no-op (the exact failure
 // this file refuses). `self` is here too: it is the owning-item keyword, handled
 // as a reference head.
-const RESERVED_KEYWORD_NAMES = ["time", "random", "Math", "self", "undefined", "NaN", "Infinity"];
+//
+// THE GRAMMAR HALF IS NOT LISTED HERE — scriptReservedNames() folds in
+// RESERVED_KEYWORDS (`time`, `dt`, the pointer keywords), because this list was
+// ALREADY WRONG as a hand-kept mirror: `dt` shipped with R7-9 and never reached
+// here, so `exports.dt = …` compiled and was then permanently unreachable, which is
+// the silent no-op this file's own doctrine forbids. The fold is LAZY for the same
+// reason FUNCTIONS is (see scriptReservedNames) — the import cycle puts
+// RESERVED_KEYWORDS in its temporal dead zone while this module's body runs.
+// What stays spelled out is exactly what scopeGet resolves that is NOT a keyword.
+const RESERVED_SCOPE_NAMES = ["random", "Math", "self", "undefined", "NaN", "Infinity"];
 
 /**
  * THE DETERMINISTIC STANDARD LIBRARY a project script may reach — beyond `Math`,
@@ -131,9 +141,9 @@ const SCRIPT_STDLIB = Object.freeze({
 /**
  * Query (reads a module const of core/expressions.js; memoized). Names a script
  * export may NOT take: the evaluator keywords, every FUNCTION-library name, and
- * every SCRIPT_STDLIB name. The latter two are FOLDED IN from their own
- * declarations rather than restated, so a new library function or a new stdlib
- * entry becomes reserved automatically instead of by remembering to edit a list.
+ * every SCRIPT_STDLIB name. All three are FOLDED IN from their own declarations
+ * rather than restated, so a new reserved keyword, library function or stdlib entry
+ * becomes reserved automatically instead of by remembering to edit a list.
  *
  * COMPUTED LAZILY, not at module scope, because this module and
  * core/expressions.js import EACH OTHER: expressions.js needs
@@ -144,12 +154,14 @@ const SCRIPT_STDLIB = Object.freeze({
  * after both modules are initialized.
  *
  * @example scriptReservedNames().has("time") // true
+ * @example scriptReservedNames().has("dt") // true (a RESERVED_KEYWORDS name)
+ * @example scriptReservedNames().has("mouse_x") // true (the ambient pointer)
  * @example scriptReservedNames().has("closest_to_rim") // true (a FUNCTIONS name)
  * @example scriptReservedNames().has("ease") // false
  */
 export function scriptReservedNames() {
   return (reservedMemo ??= new Set([
-    ...RESERVED_KEYWORD_NAMES, ...Object.keys(FUNCTIONS), ...Object.keys(SCRIPT_STDLIB),
+    ...RESERVED_KEYWORDS, ...RESERVED_SCOPE_NAMES, ...Object.keys(FUNCTIONS), ...Object.keys(SCRIPT_STDLIB),
   ]));
 }
 let reservedMemo = null;
@@ -203,7 +215,7 @@ export function isIdentifier(name) {
  * it surfaces as the script's compile error naming the fix.
  *
  * Args:
- *   cell (object): {host} — re-pointed per pass to {random, time}, or null while
+ *   cell (object): {host} — re-pointed per pass to {random, time, pointer}, or null while
  *     the script body runs (see above).
  *   exported (object): the collector the script assigns its public bindings to.
  *
@@ -234,6 +246,14 @@ export function scriptScope(cell, exported) {
         case "time": return host("time").time();
         case "random": return host("random").random;
       }
+      // THE AMBIENT POINTER (manifest R7-24), served from the SAME host cell `time`
+      // is, so an exported function reads THIS pass's pointer rather than the one
+      // the compile happened to see — and a TOP-LEVEL read is refused by the same
+      // null-cell rule, which it must be: the compile is memoized per source, so a
+      // pointer captured there would be frozen for the life of the page. Without
+      // this the name resolved to `undefined` and `mouse_left ? a : b` silently took
+      // the false branch forever, which is worse than the jail refusing it.
+      if (prop in POINTER_KEYWORDS) return POINTER_KEYWORDS[prop](host(prop).pointer());
       // BLOCKED_GLOBALS is listed explicitly for the same reason expressions.js
       // lists it: `has: () => true` already blocks the fall-through, so this is
       // the self-documenting half of the guard. It is checked BEFORE the stdlib so
