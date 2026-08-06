@@ -4633,20 +4633,28 @@ is worse than no spec — see § R7-DIAGNOSIS's two-line-wrapper finding). Each 
 a disjoint slice of patches AND the spec files for the nodes that slice needs; where two
 slices need the same node, the lead assigns it to one owner and the other depends on it.
 
-**⚠ THE COUNTS ARE LITERAL. USER, 2026-08-06:** *"btw the numbers of patches i asked for
-were not exaggerated i actually want this many"*. So they are targets, not rhetorical
-scale, and **no swarm may quietly deliver a tenth of them and call it a representative
-sample**:
+**⚠ THE COUNTS ARE LITERAL, AND THE LEAD UNDERSHOT THEM ONCE ALREADY.** User,
+2026-08-06: *"btw the numbers of patches i asked for were not exaggerated i actually want
+this many"*, then, when the lead wrote "≥20": *"ahem. I said 50."* Then the split:
+*"it can be axoloti patches too"* / *"25 from each or balance it till u find a happy
+mediam — 50 total tho"*.
 
 | target | count |
 |---|---|
-| ported nodes | **~100** |
-| demo patches (R7-12) | **~30** |
-| of which faithfully-emulated VCV Rack patches | **≥20** |
+| **DEMO PATCHES, TOTAL** | **50** — this is the hard number |
+| from Axoloti (factory + contrib@1.0.12) | ~25 |
+| from VCV Rack | ~25 |
+| ported nodes | **~100**, and this is a FLOOR — it is the union of what the 50 patches need |
 
-If a target cannot be met, the round says SO EXPLICITLY with the shortfall named and
-the reason — per the standing rule that scaling work down is the user's call, not the
-agent's. *"We gonna have a GIANT beautiful node library!"* is the requirement.
+**THE 50 IS THE HARD NUMBER; THE 25/25 IS NOT.** *"balance it till u find a happy
+medium"* — so shift the split toward whichever corpus actually yields better patches,
+and say what the final split was and why. This SUPERSEDES R7-12's earlier "~30 demo
+patches": the 30 is folded into the 50, not added to it.
+
+**No swarm may quietly deliver a tenth of these and call it a representative sample.**
+If a target cannot be met, the round says so EXPLICITLY with the shortfall named and the
+reason — scaling work down is the user's call, not the agent's.
+*"We gonna have a GIANT beautiful node library!"* is the requirement.
 
 ### R7-18 A DEMO AUDIO PATCHES SUBMENU (user, 2026-08-06)
 
