@@ -63,7 +63,7 @@ import {
   NODE_BODY_GAP, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, knobOps, nodeBodyTop,
   nodeBox, nodeFaceBand, nodeFamily, portBeads, portIsWired, textLineH,
 } from "./node_chrome.js";
-import { KNOB_BAND_MIN_SCALE, KNOB_PITCH_X, KNOB_ROW_H, knobLayout } from "./node_knobs.js";
+import { KNOB_BAND_MIN_SCALE, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_ROW_H, knobLayout } from "./node_knobs.js";
 import { text } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
@@ -790,14 +790,18 @@ export function paramWidgetKnobs(spec, s) {
  * @example // = 67). The doubled gap was compensating for a text op's `y` being read
  * @example // as a baseline; stating the line's true height retires the fudge.
  * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 400}) // 61.6
- * @example // SHORTENED, the band slides UP to sit against the bottom rim. h=160 no
- * @example // longer needs to — the band now FITS at its natural top there, which is
- * @example // the 5.4 units the derivation gave back — so the slide is shown at the
- * @example // heights where it still bites. CD's ladder is untouched: MEASURED
- * @example // 400→61.6, 200→61.6, 160→61.6, 150→52, 140→42, 130→38, 120→38, 100→38.
- * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 160}) // 61.6
- * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 150}) // 52
- * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 140}) // 42
+ * @example // SHORTENED, the band slides UP to sit against the bottom rim — and it
+ * @example // now starts sliding EARLIER than it used to, because the reservation
+ * @example // grew by the two corrections above: KNOB_ROW_H reserves the label's
+ * @example // LINE (9.6) where it reserved its SIZE (8), and the band reserves its
+ * @example // bottom pad so a WRAPPED label stays inside the rim. A band that
+ * @example // occupies more must climb sooner; CD's ladder itself is untouched.
+ * @example // MEASURED: 400→61.6, 200→61.6, 160→49.2, 150→39.2, 140→38, 120→38.
+ * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 160}) // 49.2
+ * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 150}) // 39.2
+ * @example // …but NEVER above the port rows (38, the portless inset): past that the
+ * @example // band stops moving and the fit scale starts shrinking it.
+ * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 140}) // 38
  * @example // …but NEVER above the port rows (here 38, the portless inset): past
  * @example // that the band stops moving and knobBandScale starts shrinking it.
  * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 120}) // 38
@@ -824,11 +828,20 @@ export function knobBandTop(spec, plugin, s) {
   // is the honest signal that the card is too short for what it is holding.
   const readoutKnob = (spec.knobs ?? []).find((k) => k.key === spec.readout);
   if (spec.readout && readoutKnob?.discrete) return natural;
-  // THE LADDER, in the one place it lives. The band's height excludes
-  // KNOB_BAND_PAD for the reason the docblock states — this measures to the last
-  // LABEL, not past it.
+  // THE LADDER, in the one place it lives.
+  //
+  // THE RESERVATION INCLUDES KNOB_BAND_PAD, and it did not until W1-D. The
+  // docblock above argued for excluding it — "that pad is a margin under the last
+  // label and this is measuring to the label, not past it" — which is true of a
+  // ONE-LINE label and false of a wrapped one. A knob label is a boxed run one
+  // pitch wide and wraps when the name is longer (the Filter's "Resonance", the
+  // Pad's "Frequency"); with the pad excluded, a band floored against the bottom
+  // rim ends its last label line exactly AT the rim, so the wrapped line landed
+  // outside the card. MEASURED on the shipped ambience deck, before and after.
+  // Reserving the pad costs a floored band one line of upward travel and buys the
+  // containment the whole workstream is about.
   return nodeFaceBand({
-    floorTop: afterPorts, top: natural, height: rows * KNOB_ROW_H,
+    floorTop: afterPorts, top: natural, height: rows * KNOB_ROW_H + KNOB_BAND_PAD,
   }, nodeBox(s).h).top;
 }
 
@@ -868,7 +881,7 @@ export function knobBandTop(spec, plugin, s) {
  * @example // a module with no dials only has to hold its ports and readout
  * @example audioFloorHeight({}, {ports: () => ({inputs: [], outputs: []})}, {w: 150}) // 38
  * @example // one dial row adds a third of KNOB_ROW_H, plus the band's bottom pad
- * @example Math.round(audioFloorHeight({knobs: [{key: "a"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150})) // 60
+ * @example Math.round(audioFloorHeight({knobs: [{key: "a"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150})) // 64
  * @example // …and a NARROW card wraps that band, so its floor is higher
  * @example audioFloorHeight({knobs: [{key: "a"}, {key: "b"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 60}) > audioFloorHeight({knobs: [{key: "a"}, {key: "b"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150}) // true
  */
@@ -935,8 +948,25 @@ export function knobBandHeight(spec, width) {
   return Math.ceil(dials / perRow) * KNOB_ROW_H + KNOB_BAND_PAD;
 }
 
-/** Bottom margin under the last knob row, so a label is not flush with the rim. */
-const KNOB_BAND_PAD = 6;
+/**
+ * Bottom margin under the last knob row.
+ *
+ * ── IT IS ONE LABEL LINE, AND THAT IS A MEASUREMENT NOT A MARGIN ────────────
+ * It was 6, "so a label is not flush with the rim". A knob label is a BOXED run
+ * one knob-pitch wide and it WRAPS when the name is longer than that — which the
+ * registry docblock's rule says to show rather than hide, because a name too long
+ * for its column is a sizing problem the author should see. But the WRAP was
+ * landing outside the card: seen on a rendered still of the shipped ambience deck,
+ * the Filter's "Resonance" broke to a second line whose "e" was painted three
+ * units BELOW the bottom rim, and the Ambience Pad's "Frequency" did the same.
+ * An overflow you can see is a signal; one that leaves the card is the defect this
+ * whole workstream is about.
+ *
+ * So the band reserves ONE MORE LINE of label. A two-line label now lands inside
+ * the rim; a three-line one still escapes, and that is honest — at three lines the
+ * card is far too narrow and no reservation makes it readable.
+ */
+const KNOB_BAND_PAD = textLineH(KNOB_LABEL_SIZE);
 
 /**
  * Pure function. A node's default height: tall enough for its ports AND for its

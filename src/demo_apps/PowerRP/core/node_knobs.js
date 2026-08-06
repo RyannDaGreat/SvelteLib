@@ -104,9 +104,19 @@ export const KNOB_LABEL_SIZE = 8;
  * size and the row grows to fit, rather than silently re-colliding. The `+ 4` is
  * breathing room between a label's baseline and the next dial's top edge, which
  * is the only part of this that is taste rather than arithmetic.
+ *
+ * ── AND THE SECOND TIME, FOR THE SAME REASON ONE LEVEL DOWN (W1-D, 2026-08-06)
+ * It reserved `KNOB_LABEL_SIZE` for the label — the TYPE SIZE, where what a label
+ * occupies is a LINE, which is `size · NATURAL_LINE_HEIGHT`. So every row
+ * under-reserved by 1.6 units, and the last row of a band placed hard against the
+ * bottom rim put its label's descenders outside the card. Same class of error as
+ * the 40, one level finer: a number chosen for a part rather than derived from it.
+ * The ratio is core/richtext's NATURAL_LINE_HEIGHT, quoted rather than re-guessed;
+ * it is inlined here because this module is deliberately import-free.
  */
 export const KNOB_ROW_GAP = 4;
-export const KNOB_ROW_H = KNOB_R * 2 + KNOB_LABEL_GAP + KNOB_LABEL_SIZE + KNOB_ROW_GAP;
+export const KNOB_LABEL_LINE_H = KNOB_LABEL_SIZE * 1.2;
+export const KNOB_ROW_H = KNOB_R * 2 + KNOB_LABEL_GAP + KNOB_LABEL_LINE_H + KNOB_ROW_GAP;
 /** The live VALUE readout's type size, shown under the label only while the
  *  knob is being turned (the number matters exactly while you are changing it). */
 export const KNOB_VALUE_SIZE = 9;
@@ -401,10 +411,11 @@ export function bandFitScale(top, natural, boxH, minScale = KNOB_BAND_MIN_SCALE)
  *
  * @example // a card with room to spare draws its band at full size
  * @example knobBandScale(60, 1, 200) // 1
- * @example // one row needs KNOB_ROW_H (49); a card leaving exactly that is full size
- * @example knobBandScale(60, 1, 109) // 1
+ * @example // one row needs KNOB_ROW_H (50.6 — the label reserves a LINE, not a
+ * @example // type size, since W1-D); a card leaving exactly that is full size
+ * @example knobBandScale(60, 1, 110.6) // 1
  * @example // half the room, half the band — the dials shrink instead of escaping
- * @example knobBandScale(60, 2, 109) // 0.5
+ * @example knobBandScale(60, 2, 110.6) // 0.5
  * @example // absurdly short: the shrink stops at the floor and the band clips, visibly
  * @example knobBandScale(60, 4, 70) // 0.3333333333333333
  * @example // a band that starts past the bottom rim has no room at all: the floor

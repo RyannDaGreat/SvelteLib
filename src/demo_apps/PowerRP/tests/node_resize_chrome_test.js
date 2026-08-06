@@ -289,7 +289,10 @@ check("CD: a card WITH ROOM is byte-identical to the pre-CD layout", () => {
     // identically at every height at or above its default, which is what the
     // sweep over [355, 400, 500] actually proves.
     assert.deepEqual(dials.map((d) => [d.cx, d.cy]),
-      [[31, 238.6], [75, 238.6], [119, 238.6], [53, 287.6], [97, 287.6]],
+      // The SECOND row is a further 1.6 down because KNOB_ROW_H now reserves the
+      // label's LINE (9.6) where it reserved its type SIZE (8) — the row was
+      // under-reserved, which is why a floored band's last label escaped the rim.
+      [[31, 238.6], [75, 238.6], [119, 238.6], [53, 289.2], [97, 289.2]],
       `mixer at h=${h} moved a dial that had room — the CD fix must be invisible on a card that already fitted`);
     assert.deepEqual(dials.map((d) => knobRadius(d)), [13, 13, 13, 13, 13]);
   }
