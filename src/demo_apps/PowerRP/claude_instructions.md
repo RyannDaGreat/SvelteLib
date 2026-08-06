@@ -5060,6 +5060,52 @@ works; decide when building whether that is good enough or whether the gap needs
 first. **A double pendulum released from exactly vertical never moves**, so the preset must
 stamp a non-trivial starting angle or the demo looks broken on insert.
 
+### R7-20 THREE-BODY PROBLEM PRESET (user, 2026-08-06)
+
+> *"a 3 body problem demo widget could be nice."* / *"same idea, 3 circles with variable
+> masses - basic ass circles with preset properties"* / *"they are all circle widgets"*
+
+**Same architecture as R7-16, so build it in the same slice** — it is a second instance of
+one mechanism, not a second mechanism. **Three ordinary CIRCLE items** stamped by a preset.
+No new widget type; *"basic ass circles"* is the requirement.
+
+**WHERE THE STATE LIVES — and this differs from the pendulum for a reason.**
+- **Position stays in the circles' own `x`/`y` properties**, simulated directly:
+  `x = @ + dt * self.vars.vx`. **Do NOT put position in a var** — `x`/`y` already exist, so
+  a `px`/`py` var would be a second spelling of one quantity, which is the Tower of Babel
+  failure the manifest names. (The pendulum needs `theta` in a var because `theta` and a
+  rod's `rotation` are not the same number; here they are.)
+- **Velocity and mass go in item vars** (`vx`, `vy`, `mass`) because no property holds them.
+  *"variable masses"* = `mass` is authorable per body, and the demo is most interesting when
+  they differ.
+
+**THE COUPLING IS N-BODY GRAVITY, each body reading the other two's PREVIOUS positions:**
+
+    a_x = G * Σ_j  m_j * (x_j - x_i) / (r_ij^2 + eps^2)^(3/2)
+
+with `r_ij^2 = (x_j - x_i)^2 + (y_j - y_i)^2`, summed over the other two bodies via
+`@body2.x`, `@body2.vars.mass`, etc. As with the pendulum, the mutual `@` references are
+what make a three-way mutual dependency well-founded instead of a cycle.
+
+**⚠ THE SOFTENING TERM `eps` IS NOT OPTIONAL.** Newtonian gravity is `1/r^2`, so two bodies
+passing close produce an unbounded acceleration and the demo detonates — bodies fly off the
+slide and never return. `eps` (a var, authorable) bounds it. This is the single most likely
+way a first attempt looks broken, and the camera max-timestep clamp does NOT save it: the
+clamp bounds `dt`, not `a`.
+
+**INTEGRATOR BOUND, stated so nobody promises what the engine cannot do.** Use the same
+semi-implicit form as R7-16 (`v` first, then `x` from the NEW `v`). **Velocity-Verlet is not
+expressible** — it needs the acceleration at the *new* position, i.e. a second evaluation
+pass per frame, and we advance once per frame by construction. **Consequence: do not ship
+the figure-eight (Chenciner–Montgomery) periodic solution as the default.** It is beautiful
+and it requires exact initial conditions plus a properly symplectic integrator; under
+semi-implicit Euler it will visibly drift apart and read as a bug. **Ship a chaotic but
+bounded configuration** — unequal masses, a starting arrangement that stays on-slide for
+minutes — and if the figure-eight ships at all, label its drift honestly.
+
+**TRAILS MAKE THIS DEMO.** Three R7-15 trails, one per body, is the recognisable picture;
+without them it is three drifting dots. Depends on R7-15, same as the pendulum.
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
