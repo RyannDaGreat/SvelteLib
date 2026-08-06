@@ -600,7 +600,24 @@ export function createEngine(options = {}) {
       for (const [portName, output] of Object.entries(instance.outputs)) {
         const guard = context.createGain();
         guard.gain.value = 1;
-        output.connect(guard);
+        // ── AN OUTPUT MAY BE `{node, index}`, EXACTLY AS AN INPUT MAY ────────
+        // `resolvePort` already documents THREE shapes a port can take and handles all
+        // three — but only on the INPUT side. This loop called `.connect()` on the value
+        // directly, so a module whose output is the descriptor threw
+        // `output.connect is not a function` and the whole graph change failed.
+        //
+        // The module builders are RIGHT to use it and say so: `ax1WorkletModule`'s own
+        // comment reads "A multi-port one must name the INDEX, because Web Audio's
+        // connect() takes one." One AudioWorkletNode with `numberOfOutputs > 1` cannot
+        // expose output 2 as anything but an index. The ENGINE was the incomplete half.
+        //
+        // MEASURED, in a real engine rather than against a stub: 104 of 112 module types
+        // constructed and these 8 did not — axDivRem, axCounter, axDecode, axStepsBool,
+        // axStepsValue, axStepsMulti, axSvf, axZdfSvf. Every one is multi-output, which is
+        // the whole population of multi-output ported modules; nothing else was affected
+        // and nothing single-output changes behaviour here.
+        if (output && output.node && typeof output.index === "number") output.node.connect(guard, output.index);
+        else output.connect(guard);
         guards.set(portName, guard);
       }
 
