@@ -791,34 +791,54 @@ export function connectionRefusal(items, registry, from, to) {
  * Pure function. HOW A WIRED INPUT ROW READS — "<source name> › <port>", or the
  * empty string when the input is unwired.
  *
- * THE NAME IS RE-DERIVED FROM THE ITEM'S CURRENT NAME EVERY TIME, never stored.
- * That is what makes a rename cost nothing: the reference holds an itemId, and the
- * label is a display-time lookup (the identical decision core/expressions.js makes
- * for slugs — "renames then need NO document rewrites"). A row that stored its
- * label would go stale the moment the source was renamed, and would then disagree
- * with the wire drawn on the canvas.
+ * IT NAMES AN INSTANCE, NOT A CLASS, AND THAT IS WHY IT TAKES A NAME RATHER THAN
+ * THE ITEM MAP (ROUND 7 R7-1). It used to look the name up itself and fall back to
+ * `state.type`, but `app.addItem` sets NO default `name` ("NO WIDGET TYPE IS NAMED
+ * HERE, deliberately", web/app.svelte.js) — so every freshly added node fell
+ * through to its TYPE and two keyboards both rendered the identical string
+ * "node_keyboard › pitch". The user, on that list: *"This drop-down lists a bunch
+ * of things that aren't connected to any one specific node."* They were connected
+ * to specific nodes; they were LABELLED with a class name.
  *
- * A reference whose item is NOT on this slide still renders — as the raw id — and
- * does NOT throw: the connection leaf legitimately survives a slide where its
- * source is inactive (connectionsOf states that rule), so a row that blew up there
- * would report a per-slide patch as a defect. `nodeRefProblem` is what says a
- * reference is genuinely broken; this function only formats.
+ * The caller therefore supplies the app's ONE display name (`app.displayName` →
+ * the item's `name`, else core/document.js `itemFallbackName(title, id)` →
+ * "Keyboard (ab12)"), which is what the item picker, the item-valued select row,
+ * the outline and the keyframe panel all already show. Deriving a second
+ * per-instance name here would be a second naming scheme for one concept — and it
+ * CANNOT be the same one by import: `core/nodeflow.js` has no imports on purpose,
+ * and pulling `itemFallbackName` in from core/document.js is a measured hard crash,
+ * not a style question (document.js → derive.js → nodeflow.js is a cycle, and
+ * core/properties.js:750 reads this module's NODE_INPUT_ROW_KIND at evaluation
+ * time: "ReferenceError: Cannot access 'NODE_INPUT_ROW_KIND' before initialization").
  *
- * @param {object} items - folded items
+ * THE NAME IS RE-DERIVED EVERY TIME, never stored. That is what makes a rename cost
+ * nothing: the reference holds an itemId, and the label is a display-time lookup
+ * (the identical decision core/expressions.js makes for slugs — "renames then need
+ * NO document rewrites"). A row that stored its label would go stale the moment the
+ * source was renamed, and would then disagree with the wire drawn on the canvas.
+ *
+ * A reference whose item is NOT on this slide still renders — `app.displayName`
+ * returns the raw id for an item that is not on the fold — and does NOT throw: the
+ * connection leaf legitimately survives a slide where its source is inactive
+ * (connectionsOf states that rule), so a row that blew up there would report a
+ * per-slide patch as a defect. `nodeRefProblem` is what says a reference is
+ * genuinely broken; this function only formats.
+ *
+ * @param {string} displayName - the SOURCE item's display name (app.displayName)
  * @param {*} ref - the input's value ({item, port} or null)
  * @returns {string} the label, or "" when unwired
  *
- * @example nodeInputLabel({a: {name: "Osc 1"}}, {item: "a", port: "out"}) // "Osc 1 › out"
- * @example // no name? the item's TYPE stands in, so the row still identifies the source
- * @example nodeInputLabel({a: {type: "audio_noise"}}, {item: "a", port: "out"}) // "audio_noise › out"
- * @example nodeInputLabel({}, null) // "" (unwired)
+ * @example nodeInputLabel("Osc 1", {item: "a", port: "out"}) // "Osc 1 › out"
+ * @example // unnamed? app.displayName's fallback distinguishes two of a kind:
+ * @example nodeInputLabel("Keyboard (7f3c)", {item: "7f3c…", port: "pitch"}) // "Keyboard (7f3c) › pitch"
+ * @example nodeInputLabel("Keyboard (b104)", {item: "b104…", port: "pitch"}) // "Keyboard (b104) › pitch"
+ * @example nodeInputLabel("", null) // "" (unwired)
  * @example // a source that is off THIS slide is shown by id, not treated as an error
- * @example nodeInputLabel({}, {item: "ab12", port: "out"}) // "ab12 › out"
+ * @example nodeInputLabel("ab12", {item: "ab12", port: "out"}) // "ab12 › out"
  */
-export function nodeInputLabel(items, ref) {
+export function nodeInputLabel(displayName, ref) {
   if (!isNodeRef(ref)) return "";
-  const state = items?.[ref.item];
-  return `${state?.name || state?.type || ref.item} › ${ref.port}`;
+  return `${displayName || ref.item} › ${ref.port}`;
 }
 
 /**

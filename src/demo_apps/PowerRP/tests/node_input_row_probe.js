@@ -49,6 +49,21 @@
  *      by its text, because the second remnant of this bug showed the generic
  *      "Select…" rather than "— not connected —" and a text-only check for the
  *      latter read a broken panel as fixed.
+ *   5. THE COMMIT SEAM, DRIVEN — see below.
+ *
+ * ── AND IT STILL DID NOT BITE: THIS PROBE NEVER CLICKED THE DROPDOWN (R7-1) ──
+ * Everything above READS the row and WRITES through core functions. Nothing ever
+ * drove the control's own `onchange`, so three repairs to this one row all shipped
+ * over a dead write path: `Inspector.commitField` handed `deltas.setPath` the row's
+ * DOTTED key unsplit and stored `items[id]["inputs.in"]`, a leaf no reader looks at.
+ * Dragging a wire worked (that goes through `connectPairs`), so the row updated;
+ * changing the row did nothing. The user, 2026-08-06: *"when I change the property,
+ * the node doesn't change, which is very stupid."*
+ *
+ * Section 5 therefore CLICKS THE OPTION and reads the document back. It also pins
+ * the OTHER half of R7-1 — two unnamed nodes of the same type must offer two
+ * DISTINGUISHABLE options, which they did not while the label fell back to
+ * `state.type` and both keyboards read "node_keyboard › pitch".
  *
  * Frontend-only Vite on an EPHEMERAL port, per the probe convention.
  * Run from the SvelteLib repo root:
@@ -146,8 +161,14 @@ try {
   assert(!wired.placeholderStyled,
     "nor is the label styled .dd-placeholder — Dropdown resolved the bound value to a real option");
   assert(wired.shown.length > 0, "the dropdown NAMES the source rather than showing an empty label");
-  assert(wired.shown.includes("oscillator"),
-    `and the name it renders is the SOURCE's (${JSON.stringify(wired.shown)})`);
+  // AGAINST `app.displayName`, NOT A HARD-CODED SUBSTRING. This used to look for
+  // "oscillator" — which passed only because the label WAS the widget's type name,
+  // i.e. the very defect R7-1 fixed. Reading the app's own display name asserts the
+  // stronger property (the label identifies THIS INSTANCE) and keeps working when a
+  // widget's title or the fallback format changes.
+  const sourceName = await page.evaluate((osc) => window.__powerrp_app.displayName(osc), ids.osc);
+  assert(wired.shown.includes(sourceName),
+    `and the name it renders is the SOURCE's own display name ${JSON.stringify(sourceName)} (${JSON.stringify(wired.shown)})`);
 
   // ── 3. THE OPTION LIST, asserted directly ──────────────────────────────────
   // This is the value that was empty. Reading it through the core function with
@@ -176,11 +197,20 @@ try {
   // property beside the real `inputs` tree and leaves the connection standing:
   //   setPath({}, ["items","abc","inputs.in"], null) -> {items:{abc:{"inputs.in":null}}}
   //   setPath({}, ["items","abc","inputs","in"], null) -> {items:{abc:{inputs:{in:null}}}}
-  // The app never produces the first shape (the Inspector commits through
-  // `oncommit(row.key, …)` -> app.svelte.js:4231 `key.split(".")`, which splits it),
-  // so those three reds were the PROBE being wrong about the app, not the app being
-  // broken — the exact failure mode a probe exists to avoid. Calling the core
-  // function the UI calls means this can never drift from the real write again.
+  // THAT PARENTHESIS USED TO READ "The app never produces the first shape (the
+  // Inspector commits through `oncommit(row.key, …)` -> app.svelte.js:4231
+  // `key.split(".")`, which splits it)". BOTH HALVES WERE FALSE, and the citation
+  // is how the probe talked itself out of the bug it was standing on:
+  // app.svelte.js:4231 is the CLIPBOARD `powerrp_props` paste path, which has
+  // nothing to do with this row, and the Inspector's own commitField did NOT split
+  // — it wrote exactly the phantom `"inputs.in"` shape spelled out above, on every
+  // use of the dropdown, until R7-1. So the three reds this comment dismissed as
+  // "the PROBE being wrong about the app" were the probe being ACCIDENTALLY RIGHT,
+  // and rewriting them to call the core functions directly is what removed the last
+  // surface that could see it. Calling connectPairs/disconnectPairs is still correct
+  // for THESE assertions (they pin the storage law), but it is not a substitute for
+  // driving the control — see section 5, which does that and is the check that would
+  // have caught this in the first place.
   await page.evaluate(async () => {
     const app = window.__powerrp_app;
     const { disconnectPairs } = await import("/@fs" + window.__powerrp_probeRoot + "/core/nodeflow.js");
@@ -225,6 +255,97 @@ try {
   });
   assert(wires.cut === 0, `no wire is drawn while the input is null (${wires.cut})`);
   assert(wires.rewired === 1, `and reconnecting draws exactly one again (${wires.rewired})`);
+
+  // ── 5. THE COMMIT SEAM, DRIVEN THROUGH THE CONTROL ITSELF (R7-1) ───────────
+  // Every assertion above this line passes on the broken write path. This one does
+  // not: it CLICKS an option and reads the document back. A SECOND oscillator makes
+  // it a real choice — and makes the two options distinguishable-or-not testable in
+  // the same gesture, which is R7-1's other half.
+  const secondOsc = await page.evaluate(() => {
+    const app = window.__powerrp_app;
+    const meter = app.selection;
+    app.addItem({ ...app.registry.get("audio_oscillator").defaults, type: "audio_oscillator", x: 120, y: 420 });
+    const added = app.selection;
+    app.selection = meter;
+    return added;
+  });
+  await sleep(900);
+  await expand();
+
+  const picked = await page.evaluate(async (wantId) => {
+    const app = window.__powerrp_app;
+    const rows = [...document.querySelectorAll(".inspector .row")];
+    const row = rows.find((r) => r.querySelector(".label")?.textContent.trim() === "in");
+    row.querySelector(".dd-trigger").click();
+    await new Promise((r) => setTimeout(r, 300));
+    const lis = [...document.querySelectorAll(".dd-menu .dd-item")];
+    const options = lis.map((li) => li.textContent.trim());
+    // Find the option by the app's OWN display name for the item — if the label
+    // does not identify the instance, this cannot find it, which is the point.
+    const want = app.displayName(wantId);
+    const byName = lis.find((li) => li.textContent.includes(want));
+    // THE TWO HALVES OF R7-1 MUST BITE INDEPENDENTLY. If the LABEL half regresses,
+    // name-matching finds nothing, no click happens, and the WRITE assertions below
+    // would pass vacuously on a dead commit path — one defect hiding another, which
+    // is exactly how this row survived three repairs. So fall back to the option's
+    // POSITION, derived from the same compatibleSources order that built the list
+    // (+1 for the leading "— not connected —" entry).
+    const { compatibleSources } = await import("/@fs" + window.__powerrp_probeRoot + "/core/nodeflow.js");
+    const order = compatibleSources(app.state().items ?? {}, app.registry, { item: app.selection, port: "in" });
+    const hit = byName ?? lis[order.findIndex((o) => o.item === wantId) + 1];
+    hit?.click();
+    await new Promise((r) => setTimeout(r, 500));
+    const raw = app.rawState().items?.[app.selection] ?? {};
+    return {
+      options,
+      want,
+      found: !!hit,
+      clicked: !!hit,
+      stored: raw.inputs?.in ?? null,
+      // THE PHANTOM LEAF, named directly. A dotted key on an item state is the
+      // signature of an unsplit path write and is never legitimate.
+      dottedKeys: Object.keys(raw).filter((k) => k.includes(".")),
+    };
+  }, secondOsc);
+  await sleep(400);
+
+  // R7-1, the OPTION LABELS: two unnamed oscillators must not read identically.
+  const sources = picked.options.filter((o) => !/not connected/i.test(o));
+  assert(sources.length === 2, `both oscillators are offered (${JSON.stringify(picked.options)})`);
+  assert(new Set(sources).size === sources.length,
+    `and they are DISTINGUISHABLE — no two options share a label (${JSON.stringify(sources)})`);
+  assert(picked.found, `the option naming the second oscillator (${JSON.stringify(picked.want)}) is findable by its display name`);
+
+  // R7-1, the WRITE: picking an option lands on the real leaf, not beside it.
+  assert(picked.clicked, "an option was actually clicked (the write half is being driven, not skipped)");
+  assert(picked.dottedKeys.length === 0,
+    `the commit writes NO dotted key on the item — a "<a>.<b>" key is the unsplit-path signature (${JSON.stringify(picked.dottedKeys)})`);
+  assert(picked.stored?.item === secondOsc,
+    `and it lands on inputs.in as {item, port} (${JSON.stringify(picked.stored)})`);
+
+  // …and the canvas agrees, which is the bijection the user asked for.
+  const afterPick = await page.evaluate(async () => {
+    const app = window.__powerrp_app;
+    const { deriveRenderTree, deriveWires } = await import("/@fs" + window.__powerrp_probeRoot + "/core/derive.js");
+    const { connectionsOf } = await import("/@fs" + window.__powerrp_probeRoot + "/core/nodeflow.js");
+    return { edges: connectionsOf(app.state().items ?? {}), wires: deriveWires(deriveRenderTree(app.state(), app.registry)).length };
+  });
+  assert(afterPick.wires === 1, `the dropdown's own choice draws exactly one wire (${afterPick.wires})`);
+  assert(afterPick.edges.length === 1 && afterPick.edges[0].from.item === secondOsc,
+    `and connectionsOf sees it, rewired to the SECOND oscillator (${JSON.stringify(afterPick.edges)})`);
+
+  // THE SEAM AND THE DRAG PRODUCE ONE WRITE. `commitField` splits the dotted key
+  // rather than special-casing this row into connectPairs; this asserts the two
+  // spellings cannot drift, which is the reason that choice is safe.
+  const samePairs = await page.evaluate(async (osc) => {
+    const app = window.__powerrp_app;
+    const { connectPairs } = await import("/@fs" + window.__powerrp_probeRoot + "/core/nodeflow.js");
+    const [[path, value]] = connectPairs({ item: osc, port: "out" }, { item: app.selection, port: "in" });
+    const raw = app.rawState().items?.[app.selection] ?? {};
+    return { path, matches: JSON.stringify(path.slice(2).reduce((o, k) => o?.[k], raw)) === JSON.stringify(value) };
+  }, secondOsc);
+  assert(samePairs.matches,
+    `the row's commit stored exactly what connectPairs would have written at ${JSON.stringify(samePairs.path)}`);
 } finally {
   await browser.close();
   await server.close();

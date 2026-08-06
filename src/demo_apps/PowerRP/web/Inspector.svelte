@@ -751,12 +751,44 @@
     return key.split(".").reduce((o, k) => (o == null ? undefined : o[k]), state);
   }
 
+  // ── THE DOT IS A PATH SEPARATOR, AND THIS PAIR IS WHERE THAT WAS MISSING ────
+  // A row key may be NESTED ("inputs.in", "origin.x", "a.halfW"), and every other
+  // write in this file splits it — multiPaths (:263), the equation paths (:1818),
+  // NumericField/ColorField/ListField/BooleanField's `path` (:2220, :2444, :2464,
+  // :2486, :2567, :2581). These two did not. `deltas.setPath` treats every array
+  // element as ONE literal key and never splits, so the unsplit form wrote
+  // `items[id]["inputs.in"]` — a leaf beside the real tree that NO reader looks at
+  // (connectionsOf reads `state.inputs`; deriveWires reads `n.state.inputs`;
+  // readAudioScene reads `items[id]?.inputs`). `valueAt` above DOES split, which is
+  // what made the failure so hard to see: the row READ the true value and WROTE a
+  // phantom one, so dragging a wire updated the row and changing the row did
+  // nothing. That asymmetry is the whole of the user's R7-1 bijection complaint —
+  // "when I change the property, the node doesn't change, which is very stupid".
+  //
+  // Measured on the node-input row, before and after:
+  //     unsplit -> {items: {n1: {"inputs.in": {item: "osc1", port: "out"}}}}
+  //                nodeflow.connectionsOf(…) -> []          (no wire)
+  //     split   -> {items: {n1: {inputs: {in: {item: "osc1", port: "out"}}}}}
+  //                nodeflow.connectionsOf(…) -> one edge    (the wire)
+  //
+  // FIXED HERE RATHER THAN BY ROUTING THE NODE-INPUT ROW THROUGH
+  // `nodeflow.connectPairs`/`disconnectPairs`, and the two are NOT alternatives:
+  // WITH the split this seam PRODUCES those functions' pairs exactly — a picked
+  // source gives `[[["items", to, "inputs", port], {item, port}]]` (connectPairs),
+  // and the clear option gives the same path with `null` (disconnectPairs, whose
+  // null is the override that stops an earlier slide's connection being INHERITED;
+  // `coerce` above already turns "" into that null). So routing would put a
+  // widget-specific branch in a generic seam and spell one write twice, while
+  // leaving every OTHER dotted row still writing to a phantom leaf. The split is
+  // the general fix; tests/node_input_row_probe.js asserts this seam and those two
+  // functions agree PAIR FOR PAIR, so they cannot drift apart later.
+
   /** Live preview while typing/dragging a field — viewport re-renders in real
    * time BEFORE commit (manifest rule); Enter/blur commits; Escape reverts. */
   function previewField(key, kind, raw) {
     const value = coerce(kind, raw);
     if (kind === "number" && Number.isNaN(value)) return;
-    app.setPreview([[["items", pickedItemId, key], value]]);
+    app.setPreview([[["items", pickedItemId, ...key.split(".")], value]]);
   }
 
   function commitField(key, kind, raw) {
@@ -765,7 +797,7 @@
       app.cancelPreview();
       return;
     }
-    app.setPreview([[["items", pickedItemId, key], value]]);
+    app.setPreview([[["items", pickedItemId, ...key.split(".")], value]]);
     app.commitPreview();
   }
 
@@ -2524,13 +2556,25 @@
          it" (verbatim, 2026-08-03) — a Level node with wires at both beads whose
          Inspector reported nothing connected. It was never two stores disagreeing
          (there has only ever been one leaf, `inputs.<port>`); it was ONE READER
-         ASKING THE WRONG OBJECT, which is why the row still committed correctly
-         and only its option list was empty.
+         ASKING THE WRONG OBJECT, and only its option list was empty.
+
+         (THAT LAST CLAUSE USED TO END "…which is why the row still committed
+         correctly", and it was FALSE FOR THREE DAYS. The row committed to
+         `items[id]["inputs.in"]` — see the split at commitField above, ROUND 7
+         R7-1. Two defects sat on this one control and the comment for the first
+         asserted the second one away.)
 
          AND ITS OPTION VALUES GO THROUGH nodeRefOptionValue (WORKSTREAM CH), the
          same function `value=` below uses — because CC's fix left this map spelling
          the pair with a RAW NUL and the two never compared equal, so a connected
-         input STILL rendered "Select…". See nodeRefOptionValue's docblock. -->
+         input STILL rendered "Select…". See nodeRefOptionValue's docblock.
+
+         THE OPTION LABELS NAME INSTANCES (ROUND 7 R7-1). `app.displayName` is the
+         app's ONE item name — the item's `name`, else "Keyboard (ab12)" — and it is
+         what the picker at the top of this panel and the item-valued select row
+         already show. nodeInputLabel used to derive its own name and fell through
+         to `state.type`, so two keyboards both read "node_keyboard › pitch": the
+         user's "a bunch of things that aren't connected to any one specific node". -->
     <SearchableDropdown
       rankFn={appRankItems}
       minItemsForSearch={ALWAYS_SEARCHABLE}
@@ -2539,7 +2583,7 @@
         ...compatibleSources(app.state().items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
           .map((o) => ({
             value: nodeRefOptionValue({ item: o.item, port: o.port }),
-            label: `${nodeInputLabel(app.state().items ?? {}, { item: o.item, port: o.port })}${o.note ? ` (${o.note})` : ""}`,
+            label: `${nodeInputLabel(app.displayName(o.item), { item: o.item, port: o.port })}${o.note ? ` (${o.note})` : ""}`,
           })),
       ]}
       value={nodeRefOptionValue(valueAt(state, row.key))}

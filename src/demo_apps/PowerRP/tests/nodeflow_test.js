@@ -658,12 +658,21 @@ check("BU: every declared input port surfaces as a first-class Inspector row", (
 });
 
 check("BU: an input row renders honestly for UNWIRED and for WIRED", () => {
-  const items = { n: { type: "node_number", name: "Speed" }, m: { type: "node_math" } };
-  assert.strictEqual(nodeInputLabel(items, null), "", "unwired reads EMPTY, not a fake source");
-  assert.strictEqual(nodeInputLabel(items, { item: "n", port: "out" }), "Speed › out", "wired names the source AND the port");
+  // R7-1: the label takes the DISPLAY NAME (app.displayName) rather than the item
+  // map, because the map alone could only fall back to `state.type` — and every
+  // freshly added node is unnamed, so two keyboards rendered one identical string.
+  assert.strictEqual(nodeInputLabel("Speed", null), "", "unwired reads EMPTY, not a fake source");
+  assert.strictEqual(nodeInputLabel("Speed", { item: "n", port: "out" }), "Speed › out", "wired names the source AND the port");
   // The label is re-derived from the item's CURRENT name, never stored, so a
   // rename cannot leave the row disagreeing with the wire on the canvas.
-  assert.strictEqual(nodeInputLabel({ n: { ...items.n, name: "Tempo" } }, { item: "n", port: "out" }), "Tempo › out");
+  assert.strictEqual(nodeInputLabel("Tempo", { item: "n", port: "out" }), "Tempo › out");
+  // TWO OF A KIND ARE DISTINGUISHABLE — the defect the signature change exists for.
+  assert.notStrictEqual(
+    nodeInputLabel("Keyboard (7f3c)", { item: "7f3c0011", port: "pitch" }),
+    nodeInputLabel("Keyboard (b104)", { item: "b1042299", port: "pitch" }),
+    "two unnamed keyboards do NOT render the same option string");
+  // An item that is off this slide has no display name; the raw id still identifies it.
+  assert.strictEqual(nodeInputLabel("", { item: "ab12", port: "out" }), "ab12 › out");
 });
 
 check("BU: the picker offers exactly what the WIRE DRAG would accept — no more, no less", () => {
