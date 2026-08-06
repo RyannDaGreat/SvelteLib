@@ -362,10 +362,14 @@ widget base class. Read it before adding a widget.
   and hide-vs-purge via a companion `active` list (hiding keeps numbering, so
   equations bound to later elements survive; purging renumbers).
 
-## The three kinds of state
+## The four kinds of state
 
 Before you add a widget, decide which kind it introduces. This is not
 bookkeeping: it decides whether a render can be split across machines.
+
+(It was THREE until R7-9. The fourth, SIMULATED state, was named by the user
+this round and is the only one that gives up frame-range sharding — read its
+bullet before you reach for it.)
 
 - **Property state** — reproducible under a SHUFFLE OF TIME: computable from
   `[[slide, alpha]]` alone, with no history. This is the core invariant and the
@@ -409,13 +413,42 @@ bookkeeping: it decides whether a render can be split across machines.
   a warning naming it and pointing at the scrubber, which IS deterministic (its
   current time is tweened state, and `browser_media.prepareSceneScrubFrames` parks
   and awaits the decoder before the paint).
+- **Simulated state** — a value at time `t` that depends on ITS OWN value at
+  `t - dt`. Reached in an equation by `@` (this property's previous value;
+  `@self.value`, `@osc1.phase`, `@theta` for another slot) and `dt` (the seconds
+  this step covers). `core/simulation_history.js` owns the table and the rules;
+  `core/expressions.js` owns the grammar. **`@` is the DISPLAY token and
+  SERIALIZES TO `@@`**, because `@<itemId>` was already the stored item sigil.
+  **ONE STEP PER RENDERED FRAME, AND `dt` IS REAL ELAPSED TIME** — not a fixed
+  document timestep, which would make the simulation's resolution independent of
+  the render's and leave 100 frames of a 1000 fps render sitting between two
+  steps. So `rotation = @ + dt` is one degree per second at 24, 30, 60, 144 and
+  1000 fps (measured, identical to twelve decimal places), and a higher framerate
+  integrates more accurately rather than differently.
+  **IT GIVES UP SEEKABILITY, DELIBERATELY, AND THAT IS THE WHOLE COST.** Frame N
+  is a function of frames 0..N-1, so a strided shard cannot compute its own
+  prefix: `core/document.stridedShardRefusal` is the loud refusal a render job
+  must consult, and CONTIGUOUS ranges are the answer (each worker walks its own
+  prefix in order). Everything else survives — **Δt = 0 still means a
+  BYTE-IDENTICAL frame, absolutely**, which is what the history's two tables
+  (`prev`/`cur`, rolled only when the clock moves) are for: `web/CanvasView.svelte`
+  evaluates one frame ~28 times, and with one table a dt-free `= @ * 0.9` would
+  advance 28 times and the count would change with mouse movement.
+  The table is AMBIENT and global to the process, so **exactly one consumer per
+  process may advance it**; every other must run inside `withSimulationFrozen()`,
+  which makes a pass structurally unable to write (a thumbnail of another slide, a
+  morph endpoint, a preview-free hypothetical). A violation is reported loudly, not
+  merged. A PAUSED clock yields `dt = 0` by definition, so every still renderer is
+  correct with no changes and a frozen simulation genuinely does not move.
 - **Ephemeral state** — genuinely untrackable; gone at the end of every
   presentation, impossible to record or reproduce. **We have none, and avoiding
   it is a design goal.** A widget that reads a host input (`Date.now`,
   `Math.random`, an iframe, a live socket) inside `emit()` or a paint path
-  introduces it; so does a widget carrying state from frame N-1 (a physics sim),
-  which additionally breaks frame-range sharding. If you cannot avoid it, it must
-  fail LOUDLY rather than silently emit wrong frames.
+  introduces it. Carrying state from frame N-1 (a physics sim) used to be listed
+  here too; since R7-9 that is SIMULATED state — legal, spelled `@`, and paying
+  the stated sharding cost — so what remains ephemeral is state that cannot be
+  reproduced from a timeline AT ALL. If you cannot avoid it, it must fail LOUDLY
+  rather than silently emit wrong frames.
 
 Randomness is not an exception: `core/expressions.js` blocks `Date`,
 `performance` and `Math.random` outright and exposes a SEEDED `random`, and

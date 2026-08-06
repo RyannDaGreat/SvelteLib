@@ -1,6 +1,6 @@
 /**
  * THE SIMULATION HISTORY — the ambient service behind SIMULATED STATE, the FOURTH
- * kind of state (manifest R7-9; PowerRP CLAUDE.md "The three kinds of state", which
+ * kind of state (manifest R7-9; PowerRP CLAUDE.md "The four kinds of state", which
  * this amends). It answers exactly two questions for the equation engine:
  *
  *   `@`   what did this property hold at the PREVIOUS simulation step?

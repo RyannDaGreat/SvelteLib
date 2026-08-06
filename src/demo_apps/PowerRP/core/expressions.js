@@ -3250,7 +3250,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     reportOnce(message, `PowerRP expression error at ${slot.key}: ${message}`);
   };
 
-  // THE PRESENTATION CLOCK. `time` is RECORDABLE state (manifest THE THREE KINDS
+  // THE PRESENTATION CLOCK. `time` is RECORDABLE state (manifest THE FOUR KINDS
   // OF STATE): not derivable from [[slide, alpha]], but fully deterministic given a
   // timeline. There is exactly ONE answer in this codebase to "what animation time
   // is it right now?" — render_gpu/particle_clock.particleTime() — with a PAUSED
