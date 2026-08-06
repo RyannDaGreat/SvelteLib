@@ -419,6 +419,40 @@ thing standing between this and shipping.**
 - Renaming CLAUDE.md's "three kinds of state" to four left **seven** stale citations across
   the tree. Fixed. Prose remains this project's worst-measured defect class.
 
+### A FRESH WORKTREE'S FIRST FULL GATE PRODUCES ~26 FAKE BROWSER REDS (2026-08-06)
+
+**Measured, and worth knowing before anyone triages a fresh clone.** The first full gate on
+this worktree read `487 pass / 26 fail`, all 26 in `[browser]`, most failing in 7–19 s. The
+cause was in the boot-error list of one of them:
+
+```
+console.error: Failed to load resource: the server responded with a status of 504 (Outdated Optimize Dep)
+pageerror:     Failed to fetch dynamically imported module: …/node_modules/.vite/deps/@pdf-lib_fontkit.js?v=e1002e92
+```
+
+**Vite's dependency optimizer.** `node_modules` was installed minutes earlier, so
+`.vite/deps` was COLD; the gate runs browser probes at concurrency 3; each probe spins its
+own Vite server and they all share one dep cache. The first to re-optimize invalidates the
+`?v=<hash>` URLs the others are already serving → 504 → the app fails to boot → every
+assertion after it fails. **PowerRP's own CLAUDE.md already names the mechanism** for the
+render worker: *"concurrent Vite servers fight the dep optimizer"*. It applies to the test
+gate too, and nothing said so.
+
+**PROVEN, not assumed:** `activation_probe.js`, one of the 26, was re-run ALONE immediately
+afterwards and passed **71/71 with zero console errors**. Only the dep cache changed.
+
+**THE PROCEDURE FOR A FRESH TREE: warm the cache with ONE browser probe before running the
+gate.** Otherwise the first run's browser phase is uninterpretable, and — the expensive part
+— it looks exactly like a real regression in whatever landed most recently. This round it
+briefly looked like Wave 1 had broken 26 probes.
+
+**This is a THIRD member of a family that has now cost this project real time**, and the
+family is the useful finding: a browser red can come from the HOST (a Chrome that cannot
+screenshot — hence `browser_capture_preflight.mjs`), from the HARNESS (the 300 s per-suite
+cap failing a suite that needs 305 s), or from the BUILD ENVIRONMENT (this). **None of the
+three is the app, and all three read as the app.** Check all three before believing a
+browser red.
+
 ### RISK ON THE TABLE FOR THIS ROUND
 
 **Simulated state (`@`, `dt`) deliberately weakens a property the app relies on.**
