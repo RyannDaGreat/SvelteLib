@@ -21,6 +21,7 @@
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
   import { cameraFrameIR, evaluatedStateAt, evaluationAt } from "./cameraFrame.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
+  import { startPointerFeed, stopPointerFeed, samplePointer } from "../core/pointer_input.js"; // RECORDABLE state: the presenter is the LIVE pointer regime
   import { resetSimulation } from "../core/simulation_history.js"; // SIMULATED STATE: a presentation is a fresh trajectory (see the mount)
   import { paintIsAnimated } from "../render_gpu/skia/materials.js"; // an animated MATERIAL fill/stroke/background must also keep the loop alive
   // assetStoreFor, NOT the bare assetStore(): a transition sound can belong to an
@@ -60,6 +61,9 @@
   // requirement). `restingAnimated` caches that decision; `idleRaf` is the loop.
   let restingAnimated = false; // visible animated widget, or an equation reading `time`?
   let idleRaf = null; // rAF handle for the at-rest animation loop (null = idle)
+  // Does the CURRENT frame's evaluation read the ambient pointer? Re-decided per
+  // delivered frame in syncIdleAnimation; the gate on trackPointer's work.
+  let pointerBound = false;
 
   const presenter = createPresenter(
     () => app.doc,
@@ -124,6 +128,14 @@
    *  current slide has a visible animated widget. Idempotent (safe to call on
    *  every frame): it flips the loop on/off only on a state change. */
   function syncIdleAnimation() {
+    // THE AMBIENT POINTER (RECORDABLE state — manifest R7-24). `pointer` is non-null
+    // exactly when some equation on this frame read `mouse_x`/`mouse_y`/`mouse_left`
+    // (core/expressions.evaluateState), derived from the pass that ran rather than
+    // from a source scan — the same rule `clock` follows above. Cached here, on the
+    // seam that already re-decides per delivered frame, so a pointermove on a deck
+    // that ignores the pointer costs one boolean instead of a world-space
+    // conversion. The evaluation is memoized, so this second call is free.
+    pointerBound = evaluationAt(app.doc, frame.index, frame.alpha, app.registry).pointer !== null;
     restingAnimated = currentSlideHasVisibleAnimated();
     if (restingAnimated && idleRaf === null) idleRaf = requestAnimationFrame(idleTick);
     else if (!restingAnimated && idleRaf !== null) { cancelAnimationFrame(idleRaf); idleRaf = null; }
@@ -347,6 +359,42 @@
     return null;
   }
 
+  // ── THE AMBIENT POINTER, LIVE (manifest R7-24, core/pointer_input.js) ──────
+  //
+  // The presenter is the LIVE regime for the pointer for exactly the reason it is
+  // the live regime for the clock: every other consumer renders a STILL and must be
+  // byte-reproducible, so they inherit the frozen default and this one opts in. The
+  // feed is started at mount and stopped in the cleanup, beside startParticleClock.
+  //
+  // WHY THE SAMPLE IS IN WORLD UNITS: the seam stores world coordinates so that
+  // `x = mouse_x` means the same thing on every display (core/pointer_input.js's
+  // header). worldPointOf already inverts the exact fitRectView this frame was
+  // painted with, which is the same mapping the live-play hit test uses — one
+  // conversion, not two that could disagree.
+
+  /** Command (writes the ambient pointer seam; may repaint). Records the pointer in
+   *  WORLD units and repaints when it actually moved on a frame that reads it.
+   *
+   *  `e.buttons & 1` is the LEFT BUTTON HELD RIGHT NOW, which is what `mouse_left`
+   *  is — a value at every instant, not the click EVENT `e.button` describes (see
+   *  POINTER_KEYWORDS on why a moment cannot be a leaf). On pointerup the released
+   *  button is already out of `buttons`, so the same expression reports the release.
+   *
+   *  Gated on `pointerBound` so a deck that ignores the pointer pays one boolean per
+   *  mouse event; gated on `alpha === 1` for the repaint because a tween is already
+   *  painting every frame and must not be double-painted (idleTick's rule).
+   *
+   *  Bound on the WRAPPER, not on a canvas: the two present surfaces swap visibility
+   *  per frame (`.hidden` is display:none), so a canvas-bound listener would go deaf
+   *  for the duration of every fade. Canvas events bubble here, so the live-play
+   *  handlers below keep their own bindings untouched. */
+  function trackPointer(e) {
+    if (!pointerBound) return;
+    const w = worldPointOf(e);
+    const moved = samplePointer(w.x, w.y, (e.buttons & 1) !== 0);
+    if (moved && frame.alpha === 1) paint();
+  }
+
   /** Command. A press in the presenter: fire a trigger, or start a note. */
   function onPresentPointerDown(e) {
     if (e.button !== 0 || frame.alpha !== 1) return;
@@ -402,6 +450,13 @@
     // advancing time. Every other consumer (editor/CLI/thumbnails/export) leaves
     // the clock PAUSED → a deterministic freeze still. Stopped on exit (cleanup).
     startParticleClock();
+    // THE AMBIENT POINTER (manifest R7-24): present mode is the LIVE regime for the
+    // pointer too, and for the identical reason — every other consumer renders a
+    // still and inherits the frozen default, so a thumbnail, a CLI still and an
+    // export cannot depend on where the mouse happens to be. Starts FROM REST, so a
+    // presentation begins at the authored initial condition exactly as the clock and
+    // the simulation do. Stopped in the cleanup below.
+    startPointerFeed();
     // SIMULATED STATE (manifest R7-9): a presentation starts from the AUTHORED
     // INITIAL CONDITION, always. startParticleClock re-bases the clock to 0, so
     // the automatic backwards-time reset covers this entry today — but only by
@@ -447,6 +502,7 @@
       document.removeEventListener("fullscreenchange", onFsChange);
       presenter.stop();
       stopParticleClock(); // back to the PAUSED freeze regime (editor renders a still)
+      stopPointerFeed(); // …and the pointer with it: the editor must render POINTER_REST, not the last presented position
       // AND THE SIMULATION WITH IT — the editor must show the initial condition
       // again, not wherever the presentation left the pendulum. THE EXIT IS NOT
       // COVERED BY THE BACKWARDS-TIME RESET: leaving a presentation SHORTER than
@@ -466,7 +522,13 @@
   });
 </script>
 
-<div class="present">
+<div
+  class="present"
+  onpointermove={trackPointer}
+  onpointerdown={trackPointer}
+  onpointerup={trackPointer}
+  onpointercancel={trackPointer}
+>
   <canvas
     bind:this={canvasEl}
     class:hidden={showFade}

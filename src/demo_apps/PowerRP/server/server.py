@@ -686,6 +686,16 @@ RENDER_JOB_SCRIPT = os.path.join(APP_DIR, "cli", "render_job.js")
 NON_DETERMINISTIC_TYPES = ("video", "video_v5")
 # The deterministic alternatives, named in that warning so it is actionable.
 DETERMINISTIC_VIDEO_TYPES = ("video_scrub", "video_v5_scrub")
+# THE AMBIENT POINTER equation keywords (manifest R7-24, core/pointer_input.js).
+# Pointer position is RECORDABLE state read through a seam, exactly as the
+# presentation clock `time` is -- but with one asymmetry that has to be disclosed:
+# `t` is re-derivable from a frame index and a pointer position is not, so a render
+# with nothing driving the seam's override renders the pointer FROZEN AT REST. That
+# IS deterministic (it is a constant), so this is a warning and not a refusal.
+# MIRRORS core/pointer_input.POINTER_KEYWORDS, which cannot be imported across the
+# language boundary; tests/pointer_input_warning_test.py reads that file and fails
+# if the two lists ever disagree.
+POINTER_INPUT_KEYWORDS = ("mouse_x", "mouse_y", "mouse_left")
 # How much of the worker's stderr a job record may carry. The record is re-read by
 # the UI on every poll, so it must stay small; this is generous enough for the
 # document-repair notices and asset failures that actually appear there (a few
@@ -882,6 +892,92 @@ def playback_clock_warning(doc):
             f"({', '.join(DETERMINISTIC_VIDEO_TYPES)}), whose current time IS tweened document state.")
 
 
+def document_reads_pointer(doc):
+    """
+    Pure function. Does any string anywhere in `doc` mention an AMBIENT POINTER
+    keyword (manifest R7-24)?
+
+    CONSERVATIVE BY CONSTRUCTION, in the safe direction, and for the reason
+    core/expressions.sourceIsSimulated states for its own textual probe: a false YES
+    costs one warning line the author can read and dismiss, while a false NO is an
+    export that silently disagrees with the presentation. So this walks EVERY string
+    -- items live inside per-slide deltas, list elements and the project script, and
+    a scan that only knew about item leaves would miss most of them -- and matches on
+    a word boundary rather than trying to decide from Python which strings the
+    JavaScript evaluator would treat as equations.
+
+    Examples:
+        >>> document_reads_pointer({"slides": [{"delta": {"items": {"a": {"x": "= mouse_x"}}}}]})
+        True
+        >>> document_reads_pointer({"slides": [{"delta": {"items": {"a": {"x": "= self.w / 2"}}}}]})
+        False
+        >>> document_reads_pointer({"meta": {"script": "exports.f = () => mouse_left ? 1 : 0"}})
+        True
+        >>> document_reads_pointer({"slides": [{"delta": {"items": {"a": {"text": "mouse_xylophone"}}}}]})
+        False
+    """
+    pattern = re.compile(r"\b(?:%s)\b" % "|".join(POINTER_INPUT_KEYWORDS))
+
+    def walk(node):
+        if isinstance(node, str):
+            return bool(pattern.search(node))
+        if isinstance(node, dict):
+            return any(walk(v) for v in node.values())
+        if isinstance(node, list):
+            return any(walk(v) for v in node)
+        return False
+
+    return walk(doc)
+
+
+def pointer_input_warning(doc):
+    """
+    Pure function. A warning that this deck's pointer-driven properties will render
+    AT REST, or None when no equation reads the pointer.
+
+    It exists for the same reason playback_clock_warning does -- the alternative is
+    an author who renders a cursor-following deck and cannot tell why the cursor did
+    not move. Unlike the video player, the render IS reproducible (rest is a
+    constant); what it is not is a recording of the presentation.
+
+    Examples:
+        >>> pointer_input_warning({"slides": [{"delta": {"items": {"a": {"x": 3}}}}]}) is None
+        True
+        >>> "AT REST" in pointer_input_warning({"slides": [{"delta": {"items": {"a": {"x": "= mouse_x"}}}}]})
+        True
+    """
+    if not document_reads_pointer(doc):
+        return None
+    return (f"This deck has properties bound to the pointer ({', '.join(POINTER_INPUT_KEYWORDS)}). Pointer "
+            f"position is ambient presentation input, not document state, and -- unlike the presentation "
+            f"clock -- it cannot be re-derived from a frame number. With nothing driving it, this render "
+            f"puts the pointer AT REST (world origin, button up) for every frame: reproducible, but not a "
+            f"recording of a presentation. Present the deck to see it follow the pointer live.")
+
+
+# EVERY "this deck renders, but not the way you might expect" detector, in ONE list
+# so the submit seam cannot acquire a second one and forget it. Each returns a
+# sentence or None.
+EXPORT_WARNINGS = (playback_clock_warning, pointer_input_warning)
+
+
+def export_warning(doc):
+    """
+    Pure function. The warning a new render job carries: every EXPORT_WARNINGS
+    sentence that applies, or None when the deck raises none.
+
+    Examples:
+        >>> export_warning({"slides": [{"delta": {"items": {"a": {"type": "text"}}}}]}) is None
+        True
+        >>> export_warning({"slides": [{"delta": {"items": {"a": {"x": "= mouse_y"}}}}]}).count("\\n\\n")
+        0
+        >>> export_warning({"slides": [{"delta": {"items": {"a": {"type": "video", "x": "= mouse_y"}}}}]}).count("\\n\\n")
+        1
+    """
+    said = [w for w in (warn(doc) for warn in EXPORT_WARNINGS) if w]
+    return "\n\n".join(said) if said else None
+
+
 def merged_warning(existing, reports):
     """
     Pure function. The job's warning text after a worker run: whatever it already
@@ -961,7 +1057,7 @@ def create_job(name, params, doc, job_name, backend):
         "params": params,
         "output": None,
         "error": None,
-        "warning": playback_clock_warning(doc),
+        "warning": export_warning(doc),
         "workers": RENDER_WORKER_COUNT if backend == "server" else 1,
         "createdAt": time.time(),
         "startedAt": None,
