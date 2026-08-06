@@ -5313,6 +5313,49 @@ can legitimately want either (detecting a stall is a real use). Document them as
 nobody "unifies" them later. **`dt` remains the documented, recommended form** — an author
 should not have to know about the clamp to write a working simulation.
 
+### R7-24 POINTER POSITION IN EQUATIONS — why not, and the three ways it could be (user, 2026-08-06)
+
+> *"why mousex and mousey not exposed in equations?"*
+
+**MECHANICALLY: because an equation reaches the RENDER TREE, and nothing live may.**
+`core/live_control.js:257-279` already rules on live input and the reasoning transfers exactly:
+
+> *"a button/key PRESS is LIVE — a moment is not a value, and a leaf for it would be the
+> ephemeral state this project has none of; a recorded export plays no presses and that is
+> CORRECT"* … *"The law binds the RENDER … Nothing here reaches a render tree … An export of
+> a deck with a key held down renders the resting keyboard."*
+
+So **live input is already in this app** — the keyboard drives the audio engine and a
+screen-space overlay. What makes it legal is that it never reaches `emit()`. A `mouse_x`
+in an equation crosses that line: property → render tree → two viewers of one deck see
+different pictures, and an export disagrees with the editor.
+
+**THREE DESIGNS THAT WOULD WORK, in ascending order of what they cost and buy:**
+
+1. **LIVE, NON-RENDERING** (what the keyboard does today). The pointer drives an overlay or
+   the audio engine, never a property. Cheap, already-established seam, **and it does not
+   need equations at all** — so it does not answer the question as asked.
+2. **RECORDED — the strongest option, and the user already wants it.** Capture the pointer
+   track during a presentation into ordinary document state (a list property / keyframes).
+   Then it is property state: deterministic, exportable, replays identically, keyframe-
+   editable after the fact. **This is what the thoughts-dump asks for** — *"time-synced voice
+   recording + screen recording via HTML, so it knows what elements im point to"* (§ B-1). It
+   makes the pointer a recordable INPUT CHANNEL, exactly as MIDI would be: live while
+   presenting, stored by a recording pass, replayed from the store.
+3. **BOUNDED EXCEPTION**, following the precedent this round just set for simulated state:
+   expose it live, provide a predicate that DETECTS a document using it, and make export and
+   sharding **refuse loudly** rather than silently produce a different video. Honest, and the
+   right shape if the goal is a live interactive presentation (a spotlight tracking the
+   presenter's cursor) which is inherently unexportable.
+
+**WHAT MUST NOT HAPPEN is option 3 without the loud refusal** — a deck that renders one way
+in the editor and another in an export, with a green exit code. That is the failure this
+project forbids by name, and it is the reason the variable is absent rather than an oversight.
+
+**NOT SCHEDULED.** Recorded here because the user asked and the answer is a design decision,
+not a bug. **Option 2 is the recommendation**; it needs a ruling from the user before anyone
+builds it, since options 2 and 3 are different products.
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
