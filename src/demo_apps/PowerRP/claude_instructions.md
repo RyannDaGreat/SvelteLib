@@ -5155,6 +5155,73 @@ default. The consequence, stated honestly: **nodes in existing decks keep whatev
 were saved at and keep their current escape behaviour** — R7-10's ladder (slide up → shrink →
 clip) remains the safety net for them, so it must not be removed when this lands.
 
+### ⚠ R7-DIVERGENCE: TWO BRANCHES INDEPENDENTLY BUILT OVERLAPPING HALVES OF THIS ROUND
+
+**Discovered 2026-08-06 by the lead, while trying to establish a browser baseline.** The
+`powerrp` branch (main worktree `/root/CleanCode/Dumps/RPPT/SvelteLib`) is **six commits
+ahead of this branch's start point**, and those commits implement Round 7 requirements
+IN PARALLEL with `powerrp_branch2`. **64 files, +3963 / −608.** They are prefixed `[X]`,
+not `[C]`.
+
+    73bdb07 [X] Couple double pendulum as ordinary rectangles
+    b99f26f [X] Pin headless live-analysis reporting
+    6ee9e3f [X] Render configurable spectrograms in scene space
+    0c73cbf [X] Reset simulation sessions across clock regimes
+    7db9a46 [X] Pin variable-step simulation export replay
+    165834a [[x]] Audio fixes on Sol Medium? Let's see
+
+**WHAT EACH BRANCH COVERS — the unique work is roughly half each, so neither can simply
+be discarded:**
+
+| requirement | `powerrp_branch2` (this branch, `[C]`) | `powerrp` (`[X]`) |
+|---|---|---|
+| R7-1 bijection | **DONE** (unique) | — |
+| R7-10 node chrome | **DONE** (unique, large) | — |
+| R7-2 / R7-4 audio seam | **DONE** | partly (`audioMirror` +237) |
+| R7-9 simulated state | **DONE** — `core/simulation_history.js` | **DONE** — `core/simulation.js` + `core/simulation_syntax.js` |
+| R7-3 audio autostart | **DONE** — gesture harvest, `AudioBadge` kept for failures | **DONE** — `AudioBadge` DELETED, new `web/AudioAutostart.svelte` |
+| R7-5 canvas-space displays | queued | **DONE** — `AudioOverlay` DELETED, `live_analysis_registry.js` |
+| R7-7 output properties | queued | **DONE** — `core/output_properties.js` |
+| R7-15 trail | queued | **DONE** — `plugins/trail.js` |
+| R7-16 double pendulum | queued | **DONE** — `core/double_pendulum.js` |
+| R7-19 spectrogram options | queued | **DONE** — `synth/spectrum.js` |
+| R7-9 renderer wiring | queued | **DONE** — `videoExport`, `cameraFrame` +237 |
+
+**A TRIAL MERGE WAS RUN ON A THROWAWAY DETACHED WORKTREE (nothing was touched):
+12 CONFLICTED FILES.**
+
+    concerns.md · core/audio_mirror_diff.js · core/audio_nodes.js · core/document.js
+    core/expressions.js · plugins/camera.js · tests/audio_mirror_probe.js
+    web/AudioBadge.svelte · web/AudioOverlay.svelte · web/CanvasView.svelte
+    web/PresentMode.svelte · web/audioMirror.svelte.js
+
+**THE CONFLICTS ARE NOT MECHANICAL. Two of them are architectural:**
+1. **TWO INDEPENDENT IMPLEMENTATIONS OF `@` / `dt`.** Ours is
+   `core/simulation_history.js` plus a grammar in `core/expressions.js`; theirs is
+   `core/simulation.js` + `core/simulation_syntax.js`. **Both cannot survive** — two
+   grammars for one feature is the Tower of Babel at its most literal, and the manifest's
+   own law says one concept gets one expression. Choosing costs hours of the losing side.
+2. **TWO INCOMPATIBLE ANSWERS TO R7-3.** We kept `AudioBadge` for the FAILURE surface and
+   harvested a gesture; they deleted it and added `AudioAutostart.svelte`. The
+   no-silent-failure law bears on which is right.
+
+**THE LEAD DID NOT MERGE, AND THAT IS DELIBERATE.** A merge here is not conflict
+resolution, it is picking which of two tested implementations of the same subsystem lives.
+Guessing discards hours either way, and the choice is the user's. **Both branches are
+intact and nothing has been lost.**
+
+**AND IT INVALIDATES A STATEMENT THE LEAD MADE TO THE USER.** Asked why the double
+pendulum's rods were not coupled, the lead grepped THIS branch, found nothing, and replied
+"there is no double pendulum demo — nothing is built yet." **The user was looking at
+`powerrp`, where `core/double_pendulum.js` exists**, and where the very next commit
+(`73bdb07`) is titled *"Couple double pendulum as ordinary rectangles"*. The correct answer
+was available from `git log powerrp`. **Lesson: in a multi-worktree repo, "it does not
+exist" requires checking every branch the user might be looking at, not just your own.**
+
+**BLOCKED ON THIS: R7-5, R7-7, R7-15, R7-16, R7-19, R7-9-wiring, and — because it depends
+on R7-7's vocabulary — the whole R7-17 patch swarm.** Do not start them; they are already
+built on the other branch.
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
