@@ -35,6 +35,7 @@ import { tweenedState } from "../core/document.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { contentSizesFor } from "./contentSizes.js"; // intrinsic sizes: produced here, consumed as an evaluateState input
 import { evaluateState } from "../core/expressions.js";
+import { advanceTrailHistory } from "../core/trail_history.js"; // SIMULATED trail samples: an input evaluateState cannot fetch, threaded at the one seam every pixel consumer reaches (see evaluationAt)
 import { canSkipNode } from "../core/view.js";
 import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
 import { preRasterizePdfPages } from "../render_gpu/pdf_display.js";
@@ -94,8 +95,29 @@ export function evaluationAt(doc, slideIndex, alpha, registry) {
   // impure, they are not in the fold, and every pixel consumer reaches evaluation
   // through here — so threading them once covers thumbnails, PNG/MP4 export, the
   // presenter and the CLI hook, exactly as the script already is.
+  // THE TRAIL HISTORY (manifest R7-15, core/trail_history.js) rides this seam for a
+  // THIRD instance of the same argument: a trail's samples are SIMULATED state, so
+  // they are neither in the fold nor computable inside the equation jail, and every
+  // pixel consumer with a live clock reaches evaluation through here — the presenter,
+  // both video exporters (web/transitionRender.js's letterbox renderer evaluates
+  // through this call, and web/gpuService.js's docblock names that pass as the
+  // export's single ADVANCING consumer) and the CLI hook.
+  //
+  // IT RUNS OUTSIDE THE MEMO, ON PURPOSE. evaluateState caches per (state, clock,
+  // simulation generation), so the pass itself runs once per tick — but the several
+  // evaluations of one frame must all SEE the points, and a cache hit would skip the
+  // injection. advanceTrailHistory writes nothing unless the simulation has rolled
+  // and re-derives identical points when it has not, so repeating it here is free and
+  // cannot double-advance anything (core/trail_history.js, "Δt = 0 ⟹ BYTE-IDENTICAL").
+  //
+  // The EDITOR canvas evaluates through app.state() instead and is deliberately not
+  // covered: presented time is frozen there, so a simulated widget shows its initial
+  // condition and does not move (manifest R7-9's ruling) — a trail in the editor is
+  // one dot on its anchor, exactly as the sparkler does not animate there.
   const folded = tweenedState(doc, slideIndex, alpha, registry);
-  return evaluateState(folded, registry, doc.meta.script ?? "", contentSizesFor(folded, doc.meta?.name ?? ""));
+  const pass = evaluateState(folded, registry, doc.meta.script ?? "", contentSizesFor(folded, doc.meta?.name ?? ""));
+  advanceTrailHistory(pass.state, registry);
+  return pass;
 }
 
 /**
