@@ -275,7 +275,7 @@ const RESERVED_LITERALS = new Map([["true", true], ["false", false]]);
 //
 // Bare identifiers the evaluator's scope proxy (scopeGet, §computeEvaluatedState)
 // resolves to a deterministic HOST value rather than a document variable. `time`
-// is the ONE such name a user types: the presentation clock (`case "time": return
+// was the FIRST such name: the presentation clock (`case "time": return
 // readClock()`). Like RESERVED_LITERALS (true/false), it is GRAMMAR, not a
 // reference — and the SAME three passes must agree on that: resolveRef (returns a
 // {kind:"keyword"} descriptor, never {kind:"var"} so displayToStored does not
@@ -446,14 +446,16 @@ function mapThroughPrevMarker(token, rewriteInner) {
 }
 
 /**
- * Pure function. Is the ref token at index `i` a RESERVED KEYWORD (`time`) rather
- * than a reference? True for a reserved-keyword identifier NOT immediately
- * followed by "(" — a following "(" makes it a call NAME (`time(...)`), never the
- * keyword — mirroring booleanLiteralAt exactly so the parser, the display↔stored
- * mappers and the highlighter apply the identical rule.
+ * Pure function. Is the ref token at index `i` a RESERVED KEYWORD (any member of
+ * RESERVED_KEYWORDS — `time`, `dt`, the ambient pointer) rather than a reference?
+ * True for a reserved-keyword identifier NOT immediately followed by "(" — a
+ * following "(" makes it a call NAME (`time(...)`), never the keyword — mirroring
+ * booleanLiteralAt exactly so the parser, the display↔stored mappers and the
+ * highlighter apply the identical rule.
  *
  * @example reservedKeywordAt(tokenize("time"), 0) // true
  * @example reservedKeywordAt(tokenize("time % 12.5"), 0) // true
+ * @example reservedKeywordAt(tokenize("mouse_x"), 0) // true (the ambient pointer)
  * @example reservedKeywordAt(tokenize("time(1)"), 0) // false (a call name, not the keyword)
  * @example reservedKeywordAt(tokenize("speed"), 0) // false (an ordinary reference)
  */
@@ -628,9 +630,10 @@ export function equationTokenSpans(src, state, selfId = null, scriptExports = nu
     // literal, so it is grammar — never an unknown variable (which is what it
     // used to be painted as, showing a valid boolean equation entirely in red).
     if (booleanLiteralAt(tokens, i)) return { start: t.start, end: t.end, cls: "bool" };
-    // A RESERVED KEYWORD (`time`): grammar (the presentation clock), painted like
-    // the `self` keyword (both are reserved-keyword suggestions in equationSuggest)
-    // — never an unknown variable, which is what it used to be flagged as.
+    // A RESERVED KEYWORD (`time`, `dt`, the ambient pointer): grammar — a host value,
+    // not a document reference — painted like the `self` keyword (all of them are
+    // reserved-keyword suggestions in equationSuggest), never an unknown variable,
+    // which is what `time` used to be flagged as.
     if (reservedKeywordAt(tokens, i)) return { start: t.start, end: t.end, cls: "self" };
     // A WIDGET argument (bare item slug / "@id" at a widget param): an item ref.
     if (wSpans.has(`${t.start}:${t.end}`)) {

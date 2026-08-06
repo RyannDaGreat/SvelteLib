@@ -119,8 +119,9 @@ export function suggestEquation(text, cursor, state, registry, selfId = null, sc
   const candidates = [];
   if (headPath === "") {
     if ("self".startsWith(partial.toLowerCase()) || !partial) candidates.push({ text: "self", kind: "keyword" });
-    // THE RESERVED KEYWORDS — `time` (the presentation clock) and `dt` (the seconds
-    // this simulation step covers), both resolved by core/expressions.js scopeGet.
+    // THE RESERVED KEYWORDS — `time` (the presentation clock), `dt` (the seconds this
+    // simulation step covers) and the ambient pointer (`mouse_x`/`mouse_y`/
+    // `mouse_left`), all resolved by core/expressions.js scopeGet.
     // Offered here because they are the host identifiers a user has a reason to type,
     // and because they take precedence over a variable of the same name (as `Math`
     // and `random` do): a user who can SEE one reserved will not name a variable over
