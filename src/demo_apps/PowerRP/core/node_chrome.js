@@ -841,22 +841,50 @@ export function portIsWired(s, key) {
  * received. Centred in the space below the header, so a node with no ports on a
  * row still reads as a card with a number in it.
  *
+ * ── IT IS A BAND NOW, AND THAT IS WHY IT TAKES THE PLUGIN (R7-10) ───────────
+ * It used to place a BASELINE by hand at `(NODE_HEADER_H + h) / 2 + size / 3`,
+ * which is the third of the three hand-rolled placement schemes this workstream
+ * collapses — and it was wrong twice over. A text op's `y` is its line-box TOP
+ * (see textLineH), so the "+ size / 3" pushed the line DOWN rather than lifting
+ * its glyphs, and nothing capped it against the bottom rim. MEASURED at the
+ * DEFAULT size on a rendered still: the Number node's 22pt digit ran from y 133
+ * to 159 inside a card 68 tall — the bottom half of its own headline value cut
+ * off by its own rim, on a node nobody had resized.
+ *
+ * Now it declares a CENTRED RIGID BAND one line tall and lets `nodeFaceBand`
+ * place it, so it centres exactly where it always meant to, slides up on a short
+ * card, and shrinks rather than overflowing.
+ *
  * @param {object} s - the folded item state
  * @param {string} str - the already-formatted string to show
- * @param {number} [y] - LOCAL baseline y; defaults to just below the header
  * @returns {object[]} display-list commands
  *
  * @example nodeValueText({w: 120, h: 80}, "6").length // 1
  * @example nodeValueText({w: 120, h: 80}, "6")[0].text // "6"
  * @example nodeValueText({w: 120, h: 80}, "6")[0].boxStyle.align // "center"
+ * @example // the line is CENTRED in the body and its whole box is inside the card
+ * @example nodeValueText({w: 120, h: 80}, "6")[0].y // 38.8
+ * @example // …which is the property that was false before: top + line <= h
+ * @example nodeValueText({w: 120, h: 80}, "6")[0].y + 26.4 <= 80 // true
+ * @example // a card too short for a full-size line SHRINKS it instead of clipping
+ * @example nodeValueText({w: 120, h: 44}, "6")[0].size < NODE_VALUE_SIZE // true
  */
-export function nodeValueText(s, str, y) {
-  const w = s.w ?? 0, h = s.h ?? 0;
+export function nodeValueText(s, str) {
+  const { w, h } = nodeBox(s);
+  const line = textLineH(NODE_VALUE_SIZE);
+  // THE FLOOR IS THE HEADER, NOT THE PORT ROWS, and that is deliberate: this is a
+  // headline number centred in the card's body, and the ports it may pass beside
+  // sit on the EDGES with their labels suppressed when there is one per side. A
+  // band floored under the ports would push the trio's whole reason for existing
+  // into the bottom third of a card sized for one line of type.
+  const band = nodeFaceBand({
+    floorTop: NODE_HEADER_H, top: NODE_HEADER_H, height: line, anchor: "center",
+  }, h);
   return [text({
     text: str,
     x: 0,
-    y: y ?? (NODE_HEADER_H + h) / 2 + NODE_VALUE_SIZE / 3,
-    size: NODE_VALUE_SIZE,
+    y: band.top,
+    size: NODE_VALUE_SIZE * band.scale,
     color: NODE_VALUE_INK,
     boxW: w,
     boxStyle: { align: "center" },
@@ -952,7 +980,18 @@ export function knobOps(layout, accent, ui = {}) {
         fill: null, stroke: accent, strokeWidth: 1,
       }));
     }
-    ops.push(path({ d: knobArcPath(k, r, 0, 1), fill: null, stroke: KNOB_TRACK_INK, strokeWidth: KNOB_TRACK_WIDTH }));
+    // A DRIVEN DIAL'S TRACK WEARS ITS DRIVER'S TYPE COLOUR (R7-10's knob-or-input
+    // duality). The survey's convergent rule is that an unwired param shows its
+    // widget and a WIRED one shows what is driving it instead
+    // (patchers_blueprints_report.md's `showWidget` predicate, invented
+    // independently by Blender, Blueprint, Rete and litegraph). Where a dial is
+    // still drawn for a driven param — an audio param a wire SUMS into, Axoloti's
+    // `param_X + inlet_X`, where the dial is a live offset and not a stale number
+    // — the track says so. It is the same colour-means-TYPE language the beads
+    // already speak (ADDENDUM 7), so the palette does not grow: no new op, no new
+    // shape, no glyph that a font might not have.
+    const trackInk = k.driven ? portColor(k.drivenType ?? "number") : KNOB_TRACK_INK;
+    ops.push(path({ d: knobArcPath(k, r, 0, 1), fill: null, stroke: trackInk, strokeWidth: KNOB_TRACK_WIDTH }));
     ops.push(path({ d: knobArcPath(k, r, 0, k.fraction), fill: null, stroke: accent, strokeWidth: KNOB_TRACK_WIDTH }));
     const tip = knobPoint(k, r, k.fraction);
     const heel = knobPoint(k, r * KNOB_POINTER_INNER, k.fraction);

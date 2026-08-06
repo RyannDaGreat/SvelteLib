@@ -58,9 +58,12 @@
 import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
-import { NODE_ITEM_REFS, PORT_BEAD_R, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows, portLayout } from "./nodeflow.js";
-import { NODE_HEADER_H, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, knobOps, nodeFamily, portBeads } from "./node_chrome.js";
-import { KNOB_PITCH_X, KNOB_ROW_H, knobBandScale, knobLayout } from "./node_knobs.js";
+import { NODE_ITEM_REFS, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows } from "./nodeflow.js";
+import {
+  NODE_BODY_GAP, NODE_PAD, NODE_VALUE_INK, familyCard, familyRim, knobOps, nodeBodyTop,
+  nodeBox, nodeFaceBand, nodeFamily, portBeads, portIsWired, textLineH,
+} from "./node_chrome.js";
+import { KNOB_PITCH_X, KNOB_ROW_H, knobLayout } from "./node_knobs.js";
 import { text } from "../render_gpu/ir.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
@@ -510,10 +513,8 @@ export function audioReadoutOps(s, plugin, str, hasKnobs = false, bandTop = Infi
  * @param {number} [bandTop] - the knob band's resolved top, when there is a band
  */
 export function readoutBaseline(plugin, s, hasKnobs = false, bandTop = Infinity) {
-  const rows = portLayout(plugin, s);
-  const lastRow = rows.length ? Math.max(...rows.map((p) => p.y)) : NODE_HEADER_H;
-  const top = lastRow + PORT_BEAD_R + READOUT_GAP;
-  const h = s.h ?? 0;
+  const top = nodeBodyTop(plugin, s);
+  const h = nodeBox(s).h ?? 0;
   // WITH KNOBS BELOW IT, THE READOUT SITS RIGHT ON `top` AND DOES NOT CENTRE, and
   // this correction is the second time this line has been wrong in the same way.
   // Centring "in the remaining band" was right when the readout was the ONLY
@@ -536,15 +537,30 @@ export function readoutBaseline(plugin, s, hasKnobs = false, bandTop = Infinity)
   // the baseline, so a baseline AT the band's top already clears the dials; the
   // extra gap keeps a descender off the first arc. It never pushes the readout
   // ABOVE `top`, because the port row above it is the one thing that cannot give.
-  if (hasKnobs) return Math.max(top, Math.min(top + AUDIO_READOUT_SIZE, bandTop - READOUT_GAP / 2));
-  // Otherwise unchanged: centre in the remaining band when there is one, else sit
-  // right below the ports and let the card clip, which is the visible signal that
-  // it is too short.
-  return Math.max(top, top + Math.max(0, (h - top) / 2)) + AUDIO_READOUT_SIZE / 3;
+  //
+  // ── AND `y` IS THE LINE BOX'S TOP, NOT A BASELINE (W1-D, 2026-08-06) ───────
+  // Everything above this line was reasoned about a baseline, and the renderer
+  // has never had one: `render_gpu/skia/text_layout.js` draws a Paragraph at
+  // (cmd.x, cmd.y) — its TOP-LEFT — and svg_backend adds its own ascent. So the
+  // readout was consistently drawn ONE LINE LOWER than every correction above
+  // computed, which is why it kept landing on the dials no matter how many times
+  // the arithmetic was adjusted. Three separate fixes are recorded above; all
+  // three were tuning the wrong quantity. It is now placed as a line box, and
+  // `readoutLineH` is its height.
+  if (hasKnobs) return Math.max(top, Math.min(top, bandTop - readoutLineH() - NODE_BODY_GAP / 2));
+  // Otherwise: CENTRED in the band the ports leave free, which is what "centre in
+  // the remaining band" always meant — as a line box rather than as a baseline.
+  return Math.max(top, top + Math.max(0, (h - top - readoutLineH()) / 2));
 }
 
-/** The gap between the last port bead and the readout band. */
-const READOUT_GAP = 8;
+/** The vertical space the readout's own line occupies. */
+export function readoutLineH() {
+  return textLineH(AUDIO_READOUT_SIZE);
+}
+
+/** The gap between the last port bead and the readout band — the shared band gap
+ *  (core/node_chrome.NODE_BODY_GAP), not a second opinion about the same space. */
+const READOUT_GAP = NODE_BODY_GAP;
 
 /**
  * Pure function. Whether a node's READOUT LINE is drawn at this size — and when
@@ -594,11 +610,9 @@ const READOUT_GAP = 8;
  */
 export function readoutFits(spec, plugin, s, hasKnobs, bandTop) {
   if (!hasKnobs) return true;
-  const rows = portLayout(plugin, s);
-  const lastRow = rows.length ? Math.max(...rows.map((p) => p.y)) : NODE_HEADER_H;
-  const top = lastRow + PORT_BEAD_R + READOUT_GAP;
+  const top = nodeBodyTop(plugin, s);
   // The readout's own line, plus the half-gap readoutBaseline keeps under it.
-  if (bandTop - top >= AUDIO_READOUT_SIZE + READOUT_GAP / 2) return true;
+  if (bandTop - top >= readoutLineH() + READOUT_GAP / 2) return true;
   // No room. It stays only if it is the card's ONLY statement of its value —
   // which is exactly when its knob is discrete, so no dial is drawn for it.
   const knob = (spec.knobs ?? []).find((k) => k.key === spec.readout);
@@ -637,7 +651,76 @@ export function audioKnobLayout(spec, plugin, s) {
   // which its own docblock flagged as temporary). A control node stores its value
   // in a plain `value` leaf with no prefix, so a guessing mode would have written
   // `audioValue` into a widget that has no such property.
-  return knobLayout(spec.knobs, s, knobBandTop(spec, plugin, s), (k) => s?.[audioKnobKey(k.key)] ?? k.default, (k) => audioKnobKey(k.key));
+  //
+  // ONLY THE KNOBS THAT STILL SHOW A WIDGET are laid out — `paramShowsWidget`, the
+  // survey's convergent rule. A driven param's row is its bead and its label, and
+  // its dial is gone, so the band it was in gets shorter and the card reflows.
+  return knobLayout(
+    paramWidgetKnobs(spec, s), s, knobBandTop(spec, plugin, s),
+    (k) => s?.[audioKnobKey(k.key)] ?? k.default,
+    (k) => audioKnobKey(k.key),
+    () => false
+  );
+}
+
+/**
+ * Pure function. Does this param still show its own widget on the card?
+ *
+ * ── THE PREDICATE FOUR UNRELATED EDITORS INVENTED SEPARATELY (R7-10) ────────
+ * `showWidget = widget && (isOutput || !socket || linkCount === 0)`
+ * (`.frenzy/round7/patchers_blueprints_report.md` §(a): Blender's `node_draw.cc`,
+ * Unreal Blueprint's Slate rows, Rete.js's `{#if input.control &&
+ * input.showControl}`, and litegraph's TS fork all arrived at it independently,
+ * in C++/OpenGL, Slate, the DOM and canvas respectively. The report's judgement,
+ * which is the reason to take it: "That convergence is worth more than any single
+ * one being well designed.")
+ *
+ * THIS IS THE USER'S KNOB-OR-INPUT DUALITY, and it is the half that is VISIBLE:
+ * *"things can either be a knob control or they can be an input control."* An
+ * unwired param IS a knob; a wired one IS an input. The two states are mutually
+ * exclusive BY CONSTRUCTION, so there is no third state to get wrong and no
+ * "which one wins" question — which is precisely what a dial showing a stale
+ * number beside a live wire was.
+ *
+ * OUR SPECS ALREADY CARRY THE RAW MATERIAL. A Filter declares BOTH a `frequency`
+ * knob and a `frequency` input; so do the oscillator, the LFO, the delay and the
+ * VCA. That is Axoloti's `param_X + inlet_X` convention (Q3), spelled by hand,
+ * and it costs Axoloti ~70 duplicated `x` / `x m` objects. Deriving the pairing
+ * from the two arrays instead of listing it is what makes the duality free for
+ * the ~100 specs Wave 3 will author — see this file's SPEC VOCABULARY note.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} s - the folded item state
+ * @param {string} key - a knob's key
+ * @returns {boolean}
+ *
+ * @example // no same-named input at all: always a knob
+ * @example paramShowsWidget({inputs: [], knobs: [{key: "q"}]}, {}, "q") // true
+ * @example // a same-named input exists but nothing is plugged in: still a knob
+ * @example paramShowsWidget({inputs: [{key: "q", type: "number"}]}, {}, "q") // true
+ * @example // …and the moment a wire lands on it, the widget yields to the wire
+ * @example paramShowsWidget({inputs: [{key: "q", type: "number"}]}, {inputs: {q: {item: "n1", port: "out"}}}, "q") // false
+ * @example // a wire on a DIFFERENT port is not this param's business
+ * @example paramShowsWidget({inputs: [{key: "q", type: "number"}]}, {inputs: {in: {item: "n1", port: "out"}}}, "q") // true
+ */
+export function paramShowsWidget(spec, s, key) {
+  const socket = (spec?.inputs ?? []).some((p) => p.key === key);
+  return !socket || !portIsWired(s, key);
+}
+
+/**
+ * Pure function. A spec's dial knobs that still show a widget, in order.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} s - the folded item state
+ * @returns {object[]} knob declarations
+ *
+ * @example paramWidgetKnobs({knobs: [{key: "a"}, {key: "b", discrete: true}]}, {}).length // 1
+ * @example // a driven param drops out of the band entirely
+ * @example paramWidgetKnobs({inputs: [{key: "a", type: "number"}], knobs: [{key: "a"}]}, {inputs: {a: {item: "n1", port: "out"}}}) // []
+ */
+export function paramWidgetKnobs(spec, s) {
+  return (spec?.knobs ?? []).filter((k) => !k.discrete && paramShowsWidget(spec, s, k.key));
 }
 
 /**
@@ -663,15 +746,28 @@ export function audioKnobLayout(spec, plugin, s) {
  * the band's last row past the bottom, the band slides UP to sit against the rim
  * instead. That is a reflow and not a clamp-to-nothing, because it never rises
  * above `afterPorts` — the band gives up the slack it had under the readout
- * first, and only when that is exhausted does core/node_knobs.knobBandScale
- * start shrinking the dials themselves. Two mechanisms, in the order that costs
- * the picture least: move the band, then scale it, then (past the scale floor)
- * clip visibly.
+ * first, and only when that is exhausted does the fit scale start shrinking the
+ * dials themselves. Two mechanisms, in the order that costs the picture least:
+ * move the band, then scale it, then (past the scale floor) clip visibly.
  *
  * The height it reserves is `knobBandHeight` MINUS its bottom pad, because that
  * pad is a margin under the last label and this is measuring to the label, not
  * past it — reserving the pad too would push the band up by six units on every
  * card that is exactly tall enough, changing a picture that was already right.
+ *
+ * ── SINCE R7-10 THE LADDER IS NOT SPELLED HERE ──────────────────────────────
+ * Every clause above is still true and still the reason; what changed is that
+ * this function no longer IMPLEMENTS any of it. The reflow is
+ * `core/node_chrome.nodeFaceBand` and the port geometry is
+ * `core/node_chrome.nodeBodyTop`, so a Knob node's dial and a Mixer's band
+ * descend the SAME ladder and read the SAME port rows. That is the whole of
+ * R7-10: what was three hand-rolled schemes is now one declaration each.
+ *
+ * IT ALSO REMOVES A SECOND READER OF PORT GEOMETRY. This used to call
+ * `portLayout` itself and re-derive the last row, which is the duplication
+ * core/registry.js:220 and core/node_chrome.js's portBeads docblock both name as
+ * the defect to avoid — a face placed from its own copy of the port math drifts
+ * under a reflowed bead exactly on the short cards this is about.
  *
  * @param {object} spec - an audio node spec
  * @param {object} plugin - the node's plugin
@@ -692,20 +788,17 @@ export function audioKnobLayout(spec, plugin, s) {
  * @example knobBandTop({readout: "a", knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 120}) // 38
  */
 export function knobBandTop(spec, plugin, s) {
-  const rows = portLayout(plugin, s);
-  const lastRow = rows.length ? Math.max(...rows.map((p) => p.y)) : NODE_HEADER_H;
-  const afterPorts = lastRow + PORT_BEAD_R + READOUT_GAP;
-  // The readout, when there is one, sits at `afterPorts + AUDIO_READOUT_SIZE`
-  // (readoutBaseline's knobs branch — a BASELINE, so the glyphs sit above it).
-  // The band therefore starts one gap below that line, not below a centred one.
-  // TWO gaps below the readout's baseline, not one. One gap left the readout's
-  // descenders about four pixels above the first dial's arc — mathematically
-  // clear, and visibly cramped on a rendered still (the number read as sitting
-  // ON the dials). The band is the only thing that can give here: the readout's
-  // own position is fixed by the port rows above it.
-  const natural = spec.readout ? afterPorts + AUDIO_READOUT_SIZE + READOUT_GAP * 2 : afterPorts;
-  const full = knobBandHeight(spec, Math.abs(s?.w ?? 0));
-  if (full <= 0) return natural;
+  const afterPorts = nodeBodyTop(plugin, s);
+  // The readout, when there is one, is a LINE BOX one gap below the ports, so the
+  // band starts one gap below the bottom of that line. It used to be stated as
+  // "two gaps below the readout's BASELINE", a correction made because the number
+  // read as sitting on the dials — which it did, for the reason readoutBaseline
+  // now records: the op's `y` was never a baseline, so the line was already a
+  // whole line-height lower than the arithmetic believed. Stating the line's real
+  // height makes the fudge unnecessary and the gap honest.
+  const natural = spec.readout ? afterPorts + readoutLineH() + READOUT_GAP : afterPorts;
+  const rows = knobBandRows(spec, s);
+  if (rows <= 0) return natural;
   // A READOUT THAT CANNOT YIELD IS A HARD CEILING ON THE BAND. `readoutFits`
   // drops a readout that merely duplicates a dial, which is what lets the band
   // climb into its line; but a DISCRETE readout (Noise's colour, the Ding's
@@ -716,31 +809,36 @@ export function knobBandTop(spec, plugin, s) {
   // is the honest signal that the card is too short for what it is holding.
   const readoutKnob = (spec.knobs ?? []).find((k) => k.key === spec.readout);
   if (spec.readout && readoutKnob?.discrete) return natural;
-  // THE RESOLVED HEIGHT. A stored `h` may be NEGATIVE — a REFLECTION, how Flip V
-  // is stored — and a plugin never sees the sign (CLAUDE.md's NEGATIVE EXTENTS
-  // law). This reads RAW folded state, so it resolves the sign itself; without
-  // that, a vertically flipped module would compute a negative floor and jam its
-  // whole band up against the port rows.
-  // An ABSENT height is no statement about the card, not a statement that it is
-  // zero-high (core/node_knobs.knobBandScale records the same reading): the
-  // natural top stands, unfloored.
-  if (typeof s?.h !== "number" || !Number.isFinite(s.h)) return natural;
-  const h = Math.abs(s.h);
-  // THE FLOOR USES THE *SCALED* BAND HEIGHT, and the scale is measured from the
-  // floor, so the two are mutually recursive — resolved by measuring the scale at
-  // the tightest position the band can take (hard against `afterPorts`) and then
-  // placing that band's real height. One pass, not a fixed point: the scale is
-  // monotonic in the room available, so the tightest position gives the smallest
-  // band, and a band that fits at its smallest fits anywhere it is then placed.
-  // Without this the floor reserved FULL height for a band that was about to be
-  // drawn at a third of it, and pinned the card's shortest sizes several units
-  // further down than the picture needed — the dials' centres left the frame at
-  // h=220 while the arithmetic believed they were inside it.
-  const perRow = Math.max(1, Math.floor(Math.abs(s?.w ?? 0) / KNOB_PITCH_X));
-  const knobRows = Math.max(1, Math.ceil(dialCount(spec) / perRow));
-  const scaled = knobRows * KNOB_ROW_H * knobBandScale(afterPorts, knobRows, h) + KNOB_BAND_PAD;
-  const floored = h - (scaled - KNOB_BAND_PAD);
-  return Math.max(afterPorts, Math.min(natural, floored));
+  // THE LADDER, in the one place it lives. The band's height excludes
+  // KNOB_BAND_PAD for the reason the docblock states — this measures to the last
+  // LABEL, not past it.
+  return nodeFaceBand({
+    floorTop: afterPorts, top: natural, height: rows * KNOB_ROW_H,
+  }, nodeBox(s).h).top;
+}
+
+/**
+ * Pure function. How many ROWS of dials a spec's band wraps to at a card's width
+ * — counting only the dials that still show a widget.
+ *
+ * The ONE place the wrap is computed, because three functions need it (the
+ * band's height, the band's top and the layout itself) and a fourth copy is a
+ * fourth chance for them to disagree about how many rows a card is holding.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} s - the folded item state
+ * @returns {number}
+ *
+ * @example knobBandRows({knobs: [{key: "a"}]}, {w: 150}) // 1
+ * @example // four dials at a 150 pitch of 44 wrap to two rows
+ * @example knobBandRows({knobs: [{key: "a"}, {key: "b"}, {key: "c"}, {key: "d"}]}, {w: 150}) // 2
+ * @example knobBandRows({knobs: []}, {w: 150}) // 0
+ */
+export function knobBandRows(spec, s) {
+  const dials = paramWidgetKnobs(spec, s).length;
+  if (dials === 0) return 0;
+  const perRow = Math.max(1, Math.floor(nodeBox(s).w / KNOB_PITCH_X));
+  return Math.max(1, Math.ceil(dials / perRow));
 }
 
 /**

@@ -260,8 +260,16 @@ check("CD: THE REGRESSION ITSELF — the natural band top is BELOW the card at t
   // The arithmetic of the defect, stated so the fix cannot be undone without this
   // failing. `knobBandTop` must NOT return its natural value on a shortened card:
   // the mixer's natural top is 231, and at h=260 a band placed there reaches 325.
+  // 225.6 SINCE R7-10, and the move is the POINT rather than a drift: the readout
+  // above the band used to reserve `AUDIO_READOUT_SIZE + 2 gaps` = 29, where the
+  // doubled gap was a fudge compensating for a text op's `y` being treated as a
+  // baseline when the renderer has always treated it as the line box's TOP
+  // (core/node_chrome.textLineH records the measurement). The band now reserves
+  // the line's REAL height plus ONE honest gap — 15.6 + 8 = 23.6 — so the dials
+  // sit 5.4 higher and the gap under the readout is a true 8 units instead of the
+  // 0.4 that made the number read as sitting on the arcs.
   const natural = knobBandTop(MIXER_SPEC, audioMixerPlugin, { ...audioMixerPlugin.defaults, h: 1000 });
-  assert.equal(natural, 231, "the mixer's natural band top moved — update this pin's arithmetic with it");
+  assert.equal(natural, 225.6, "the mixer's natural band top moved — update this pin's arithmetic with it");
   for (const h of [300, 280, 260, 250, 240]) {
     const top = knobBandTop(MIXER_SPEC, audioMixerPlugin, { ...audioMixerPlugin.defaults, h });
     assert.ok(top < natural,
@@ -276,8 +284,12 @@ check("CD: a card WITH ROOM is byte-identical to the pre-CD layout", () => {
   for (const h of [355, 400, 500]) {
     const s = { ...audioMixerPlugin.defaults, h };
     const dials = audioMixerPlugin.knobLayout(s);
+    // The y values dropped 5.4 at R7-10 with the natural band top above; the
+    // INVARIANT this check exists for is unchanged — a card with room is laid out
+    // identically at every height at or above its default, which is what the
+    // sweep over [355, 400, 500] actually proves.
     assert.deepEqual(dials.map((d) => [d.cx, d.cy]),
-      [[31, 244], [75, 244], [119, 244], [53, 293], [97, 293]],
+      [[31, 238.6], [75, 238.6], [119, 238.6], [53, 287.6], [97, 287.6]],
       `mixer at h=${h} moved a dial that had room — the CD fix must be invisible on a card that already fitted`);
     assert.deepEqual(dials.map((d) => knobRadius(d)), [13, 13, 13, 13, 13]);
   }
