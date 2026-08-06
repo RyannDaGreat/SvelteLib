@@ -1446,6 +1446,25 @@ export function resolveNode(items, registry, id, outputsOf) {
   const inputs = {};
   for (const p of ports.inputs) {
     const c = state.inputs?.[p.key];
+    // ── A FEEDBACK-SAFE INPUT IS A CUT IN THE VALUE GRAPH, AND MUST NOT PULL ──
+    // It is the ONE port allowed to close a loop (`audio_delay.in`, pinned as the only
+    // one by tests/audio_nodes_test.js), so pulling through it is the one pull guaranteed
+    // to re-enter and throw. `evaluateNodeGraph` already zeroes the back edge at derive
+    // time; doing the same here is what makes the two drivers agree rather than one
+    // rendering a frame the other calls impossible.
+    //
+    // THIS IS THE OTHER HALF OF THE wouldCycle FIX AND I SHIPPED IT WITHOUT THIS HALF.
+    // Widening what may be WIRED without teaching the resolver what a legal loop is
+    // turned a now-legal feedback patch into a "Cyclic node outputs" throw on EVERY
+    // FRAME — the user saw it as a console flood off the slide thumbnails. The docblock
+    // below still said "one can only reach this from a hand-edited document", which my
+    // own change had made false; it now says what is true.
+    //
+    // Nothing is lost by zeroing: an `audio` port carries no value the evaluator can use
+    // (core/audio_nodes.js — audio modules declare no computeOutputs and are SINKS in the
+    // value evaluator's terms), so the cut costs the graph nothing and the SOUND still
+    // flows, because the engine wires that edge for real.
+    if (p.feedbackSafe) { inputs[p.key] = portZero(p.type); continue; }
     const srcOut = c && typeof c === "object" ? outputsOf(c.item)?.[c.port] : undefined;
     if (srcOut === undefined) {
       inputs[p.key] = portZero(p.type);
@@ -1477,8 +1496,9 @@ export function resolveNode(items, registry, id, outputsOf) {
  * what a wire CARRIES is defined once.
  *
  * ── CYCLES ARE LOUD HERE, unlike at derive ─────────────────────────────────
- * `connectionRefusal` refuses a cycle at connect time, so one can only reach this
- * from a hand-edited document. `evaluateNodeGraph` tolerates that (it reports
+ * `connectionRefusal` refuses a cycle at connect time EXCEPT through a `feedbackSafe`
+ * port, which `resolveNode` cuts before it can be pulled — so a re-entry here means a
+ * hand-edited document or a loop with no declared cut. `evaluateNodeGraph` tolerates that (it reports
  * `cyclic` and zeroes the back edge) because a frame must still be drawn. A PULL
  * cannot: there is no answer to give the equation that asked. So re-entry throws,
  * naming the chain, and the reading equation fails through the ordinary

@@ -33,7 +33,7 @@
   // mode's teardown. The SET is core/ so the presenter shares it; the MODE is web/.
   import { pressNote, releaseAllPresses, releaseNote } from "../core/live_control.js";
   import { litKeyRects, releaseHeldKeys, removeKeyUp, resetKeyboardPlay, setNoteSink } from "./keyboardPlay.js";
-  import { allPortBeads, beadAt, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
+  import { allPortBeads, beadAt, beadKey, wireBezierPath, wireDragStart, wireDrop, wireTargets } from "../core/wire_drag.js";
   // THE AUDIO MIRROR (NF-BIND): the document reflected into the one synth engine.
   // ONE WAY ONLY — the engine never writes back, so the core invariant is untouched.
   // AudioBadge is the autoplay surface. See web/audioMirror.svelte.js.
@@ -3821,7 +3821,7 @@
       // The hovered bead is only a TARGET when it is one of the drag's candidates
       // (the anchor itself is excluded by wireTargets), so hovering your own start
       // bead never lights up as a legal drop.
-      hovered: target && wireDrag.targets.has(`${target.item}.${target.key}`) ? target : null,
+      hovered: target && wireDrag.targets.has(beadKey(target)) ? target : null,
     };
   }
 
@@ -5326,7 +5326,7 @@
     // affordance: a hit target that is always live, and, during a drag, the
     // highlight/dim that says where this wire may land.
     const beads = allPortBeads(nodes).map((b) => {
-      const id = `${b.item}.${b.key}`;
+      const id = beadKey(b);
       const verdict = wireDrag?.targets.get(id);
       return {
         id, ...pt(b.x, b.y), color: portColor(b.type), label: b.label, type: b.type,

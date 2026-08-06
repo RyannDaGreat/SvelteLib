@@ -37,6 +37,7 @@ import { parsePaint } from "../render_gpu/ir.js";
 import { deriveRenderTree, deriveWires, nodePortAnchors, withDerivedInjections } from "../core/derive.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
+import { beadKey } from "../core/wire_drag.js";
 import { nodeMathPlugin } from "../plugins/node_math.js";
 import { nodeNumberPlugin } from "../plugins/node_number.js";
 import { displayReadout, nodeDisplayPlugin } from "../plugins/node_display.js";
@@ -275,6 +276,38 @@ check("a legal parallel path is NOT a cycle (a diamond is fine)", () => {
   const items = trio({ other: { type: "node_math", x: 0, y: 500, w: 150, h: 90, inputs: { a: { item: "src", port: "out" } } } });
   assert.ok(!wouldCycle(items, registry, { item: "other", port: "out" }, { item: "disp", port: "in" }),
     "src feeds both mul and other; joining them downstream is a diamond, not a loop");
+});
+
+check("EVERY registered node's bead keys are unique — the canvas keys an {#each} by them", () => {
+  // USER-REPORTED, 2026-08-06: a console flood of Svelte's `each_key_duplicate`,
+  // "duplicate key `ecb3aa60.not`". The bead id was `${item}.${key}`, which is not an
+  // identity — a port key is unique per SIDE, not per node. Measured across the
+  // registry at the time: 24 plugins have one key on both sides, every one of them
+  // faithfully naming its source module's own ports (a stereo effect's `l` in and `l`
+  // out; Bogaudio Bool's `not` in and `not` out; the Axoloti poly allocator's whole
+  // note surface). Renaming 24 modules would have been the wrong repair — the port
+  // names ARE the port — so the KEY gained the side.
+  //
+  // Swept over the whole registry rather than spot-checked, because the failure only
+  // appears for a node that happens to reuse a name, and the next such node has not
+  // been written yet.
+  const reg = createRegistry();
+  registerPlugins(reg);
+  const offenders = [];
+  for (const plugin of reg.all()) {
+    if (typeof plugin.ports !== "function") continue;
+    let ports;
+    try { ports = plugin.ports(plugin.defaults); } catch { continue; }
+    const beads = [
+      ...(ports.inputs ?? []).map((p) => ({ item: "n", side: "input", key: p.key })),
+      ...(ports.outputs ?? []).map((p) => ({ item: "n", side: "output", key: p.key })),
+    ];
+    const keys = beads.map(beadKey);
+    if (new Set(keys).size !== keys.length) offenders.push(plugin.type);
+  }
+  assert.deepEqual(offenders, [], "these nodes produce two beads with one key — the canvas cannot key them apart");
+  // And the identity really does separate the two sides, which is the whole fix.
+  assert.notEqual(beadKey({ item: "n", side: "input", key: "l" }), beadKey({ item: "n", side: "output", key: "l" }));
 });
 
 check("a port declaring feedbackSafe is exempt from the cycle rule (the reserved audio escape)", () => {

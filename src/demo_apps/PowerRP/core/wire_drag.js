@@ -61,6 +61,37 @@ import { nodePortAnchors } from "./derive.js";
  * @example allPortBeads([]) // []
  * @example allPortBeads([{itemId: "n", world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({outputs: [{key: "o", type: "number"}]})}}])[0].item // "n"
  */
+/**
+ * Pure function. A BEAD'S IDENTITY — item, SIDE and port key.
+ *
+ * ── THE SIDE IS LOAD-BEARING AND WAS MISSING ────────────────────────────────
+ * This composite was spelled `${item}.${key}` inline in three places, and that is not an
+ * identity: a port key is unique per SIDE, not per node. A stereo effect legitimately has
+ * `l` in and `l` out; Bogaudio's Bool has a `not` input and a `not` output; the Axoloti
+ * poly allocator takes `note`/`gate`/`velocity` in and emits the per-voice versions of the
+ * same names. Measured across the registry: 24 plugins do this, every one of them
+ * faithfully naming its source module's own ports.
+ *
+ * Without the side those two beads collide, and Svelte's keyed `{#each}` threw
+ * `each_key_duplicate` on the canvas — the user saw a console flood of
+ * "duplicate key `ecb3aa60.not`". Renaming 24 modules' ports away from their sources
+ * would have been the wrong repair: the port names ARE the port.
+ *
+ * ONE function because the three call sites must agree — the overlay keys its rows by
+ * this, and `wireTargets` keys the map the overlay looks the verdict up in. Two spellings
+ * of one identity is a highlight that lands on the wrong bead.
+ *
+ * @param {{item: string, side: string, key: string}} bead - a bead or a port reference
+ * @returns {string}
+ *
+ * @example beadKey({item: "n1", side: "input", key: "l"}) // "n1.input.l"
+ * @example // the two sides of a stereo effect no longer collide:
+ * @example beadKey({item: "n1", side: "output", key: "l"}) // "n1.output.l"
+ */
+export function beadKey(bead) {
+  return `${bead.item}.${bead.side}.${bead.key}`;
+}
+
 export function allPortBeads(nodes) {
   const beads = [];
   for (const n of nodes ?? []) {
@@ -170,7 +201,7 @@ export function wireDragStart(items, bead) {
  * @returns {Map<string, string|null>} "item.port" → refusal sentence, or null when legal
  *
  * @example // number output → number input is legal (null = no refusal)
- * @example wireTargets({a: {type: "s"}, b: {type: "d"}}, {get: (t) => t === "s" ? {ports: () => ({outputs: [{key: "o", type: "number"}]})} : {ports: () => ({inputs: [{key: "i", type: "number"}]})}}, [{item: "b", key: "i", side: "input", type: "number", x: 0, y: 0}], {anchor: {item: "a", port: "o", type: "number"}, detach: null}).get("b.i") // null
+ * @example wireTargets({a: {type: "s"}, b: {type: "d"}}, {get: (t) => t === "s" ? {ports: () => ({outputs: [{key: "o", type: "number"}]})} : {ports: () => ({inputs: [{key: "i", type: "number"}]})}}, [{item: "b", key: "i", side: "input", type: "number", x: 0, y: 0}], {anchor: {item: "a", port: "o", type: "number"}, detach: null}).get("b.input.i") // null
  */
 export function wireTargets(items, registry, beads, drag) {
   const out = new Map();
@@ -181,7 +212,7 @@ export function wireTargets(items, registry, beads, drag) {
   const wantSide = drag.anchor.isInput ? "output" : "input";
   for (const b of beads ?? []) {
     if (b.item === drag.anchor.item && b.key === drag.anchor.port) continue;
-    const id = `${b.item}.${b.key}`;
+    const id = beadKey(b);
     if (b.side !== wantSide) { out.set(id, `an ${b.side} cannot connect to an ${wantSide === "input" ? "input" : "output"}`); continue; }
     const [from, to] = drag.anchor.isInput
       ? [{ item: b.item, port: b.key }, { item: drag.anchor.item, port: drag.anchor.port }]
