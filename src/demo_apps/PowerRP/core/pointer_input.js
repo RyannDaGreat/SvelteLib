@@ -17,7 +17,9 @@
  * such a seam (particleTime); the pointer did not, which is the whole reason
  * `mouse_x` was absent rather than an oversight.
  *
- * ── THE THREE REGIMES, IN particleTime()'s PRECEDENCE ────────────────────────
+ * ── THE FOUR REGIMES, IN particleTime()'s PRECEDENCE ─────────────────────────
+ * (particleTime has three; the fourth is the freeze, which the clock does not need
+ * because it never goes live in a process that also renders stills — see below.)
  *   OVERRIDE  setPointerInputOverride(sample) wins over everything below, INCLUDING
  *             a freeze. Tests, and the per-frame seam an exporter (or a future
  *             recorded pointer TRACK) drives — the analogue of
