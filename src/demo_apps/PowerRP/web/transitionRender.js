@@ -257,6 +257,21 @@ export function createLetterboxFrameRenderer({ doc, registry, width, height, bac
   out.height = height;
   const ctx = out.getContext("2d");
   return async (index, alpha) => {
+    // ── THIS LINE IS THE EXPORT'S ONE ADVANCING SIMULATION CONSUMER, AND THE ORDER
+    //    BELOW IS LOAD-BEARING (W2-D, R7-9 wiring, 2026-08-06). ────────────────────
+    // `evaluatedStateAt` advances SIMULATED state (core/simulation_history.js) for
+    // EVERY slot, not just the camera's — it is a full evaluation that happens to be
+    // called here for a camera rect. `web/gpuService.renderCameraFrame` is wrapped in
+    // `withSimulationFrozen()` precisely BECAUSE this call already did the advancing;
+    // two advancing passes per frame would double every simulated step.
+    //
+    // So the sequence must stay: advance HERE, then paint through the frozen
+    // gpuService. Flip it and the pixels are one step stale — silently, with no error.
+    // All three export consumers reach the timeline through this builder
+    // (web/app.svelte.js, web/browserRenderJobs.js, web/renderJobPage.js), which is why
+    // freezing gpuService unconditionally is safe rather than a gamble.
+    // `tests/simulated_export_test.js` pins the order in BOTH directions: the flipped
+    // order must diverge, or this comment and gpuService's have gone stale together.
     const rect = cameraRect(evaluatedStateAt(doc, index, alpha, registry), doc.meta);
     const scale = Math.min(width / rect.w, height / rect.h);
     const cw = Math.max(1, Math.round(rect.w * scale));
