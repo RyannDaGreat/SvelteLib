@@ -4633,6 +4633,45 @@ is worse than no spec — see § R7-DIAGNOSIS's two-line-wrapper finding). Each 
 a disjoint slice of patches AND the spec files for the nodes that slice needs; where two
 slices need the same node, the lead assigns it to one owner and the other depends on it.
 
+**⚠ THE COUNTS ARE LITERAL. USER, 2026-08-06:** *"btw the numbers of patches i asked for
+were not exaggerated i actually want this many"*. So they are targets, not rhetorical
+scale, and **no swarm may quietly deliver a tenth of them and call it a representative
+sample**:
+
+| target | count |
+|---|---|
+| ported nodes | **~100** |
+| demo patches (R7-12) | **~30** |
+| of which faithfully-emulated VCV Rack patches | **≥20** |
+
+If a target cannot be met, the round says SO EXPLICITLY with the shortfall named and
+the reason — per the standing rule that scaling work down is the user's call, not the
+agent's. *"We gonna have a GIANT beautiful node library!"* is the requirement.
+
+### R7-18 A DEMO AUDIO PATCHES SUBMENU (user, 2026-08-06)
+
+> *"we need a demo audio patches submenu like demo widgets btw cause we gonna have a lot
+> of them"*
+
+A direct consequence of R7-17's counts: ~30 patches cannot live in a flat insert list.
+The precedent to follow is the existing **demo widgets** grouping — `plugins/demo/`
+already holds 27 demo plugins that are grouped separately from the main widget set
+(`plugins/index.js:65-76` marks the boundary: *"DEMO widgets (plugins/demo/) — showcase
+the extensibility story"*).
+
+**Find that grouping mechanism and REUSE it — do not invent a second one.** Whatever
+surfaces `plugins/demo/` as its own section is the thing a patches submenu must also go
+through, so that adding a patch means adding data, not touching a menu. If the demo
+grouping turns out to be a hand-maintained list, that is a Tower of Babel instance to
+DERIVE (from directory membership or a declared field) as part of this item rather than
+to copy a second time.
+
+A patch is not a widget — it is a set of items plus their `inputs` wiring — so this also
+needs a decision the lead must make before Wave 3: **is a demo patch an insertable
+TEMPLATE (a multi-item stamp) or a document to open?** The double-pendulum preset
+(R7-16) is the same question in miniature (*"it's just like an alias for creating two
+rectangles with the proper equations"*), so **the two must share one mechanism.**
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
