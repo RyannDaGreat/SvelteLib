@@ -141,7 +141,7 @@ try {
   // First, what the un-culled lists HELD — read from the same two functions the
   // overlay layers call, so the "before" figure is measured on this deck rather
   // than multiplied out on paper.
-  const uncalled = await page.evaluate(async (beadsUrl, anchorsUrl) => {
+  const unculled = await page.evaluate(async (beadsUrl, anchorsUrl) => {
     const { allPortBeads } = await import(beadsUrl);
     const { nodeAnchors } = await import(anchorsUrl);
     const nodes = window.__powerrp_app.nodes();
@@ -153,7 +153,7 @@ try {
 
   const beadsAtHome = await page.evaluate(() => document.querySelectorAll("circle.nf-bead").length);
   ok(beadsAtHome === VISIBLE_NODE_COUNT * PORTS_PER_NODE,
-    `only the ON-VIEW nodes get beads: ${beadsAtHome} (expected ${VISIBLE_NODE_COUNT * PORTS_PER_NODE}; the un-culled list holds ${uncalled.beads})`);
+    `only the ON-VIEW nodes get beads: ${beadsAtHome} (expected ${VISIBLE_NODE_COUNT * PORTS_PER_NODE}; the un-culled list holds ${unculled.beads})`);
 
   // Pan so that EVERYTHING is off-view — including the control pair. Nothing is
   // visible, so nothing may be in the DOM.
@@ -191,7 +191,7 @@ try {
     return { onView, offView };
   });
   ok(anchorMarks.onView > 0 && anchorMarks.offView === 0,
-    `anchor crosses are culled too: ${anchorMarks.onView} with the control on view, ${anchorMarks.offView} with the document off it (the un-culled list holds ${uncalled.anchors})`);
+    `anchor crosses are culled too: ${anchorMarks.onView} with the control on view, ${anchorMarks.offView} with the document off it (the un-culled list holds ${unculled.anchors})`);
 
   // ── 2. THE MEMO: ONE DERIVATION PER FRAME, AND IT STILL INVALIDATES ────────
   const perf = await page.evaluate(async (frames, hoverMoves) => {
@@ -286,8 +286,8 @@ try {
   console.log(`               wall ${perf.elapsed.toFixed(0)} ms (${msPerFrame.toFixed(1)} ms/frame; harness floor ≈ 33 ms = 2 rAF)`);
   console.log(`  HOVER, ${HOVER_MOVES} moves: app.nodes() calls ${perf.hover.calls}, full derivations ${perf.hover.derives}`);
   console.log(`               wall ${perf.hover.elapsed.toFixed(0)} ms (${(perf.hover.elapsed / HOVER_MOVES).toFixed(1)} ms/move)`);
-  console.log(`  beads   in the DOM: ${beadsAway} off-view / ${beadsAtHome} with the control on view / ${uncalled.beads} un-culled`);
-  console.log(`  anchors in the DOM: ${anchorMarks.offView} off-view / ${anchorMarks.onView} with the control on view / ${uncalled.anchors} un-culled\n`);
+  console.log(`  beads   in the DOM: ${beadsAway} off-view / ${beadsAtHome} with the control on view / ${unculled.beads} un-culled`);
+  console.log(`  anchors in the DOM: ${anchorMarks.offView} off-view / ${anchorMarks.onView} with the control on view / ${unculled.anchors} un-culled\n`);
 
   ok(panDerives <= MAX_DERIVES_PER_GESTURE,
     `panning ${PAN_FRAMES} frames costs at most ${MAX_DERIVES_PER_GESTURE} derivations (was ${panDerives}, from ${panCalls} calls)`);
