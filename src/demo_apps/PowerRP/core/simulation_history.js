@@ -126,7 +126,7 @@ import { reportOnce } from "./report.js";
 // THE ONE PRESENTATION CLOCK. core/ → render_gpu/ is established and
 // particle_clock.js is DOM-free bare-node code by its own contract, which is the
 // same justification core/expressions.js records for the same import.
-import { particleTime } from "../render_gpu/particle_clock.js";
+import { particleTime, isParticleClockPaused } from "../render_gpu/particle_clock.js";
 
 /** The camera property holding the max measured timestep, in SECONDS, or `null`
  *  for no clamp. It lives on THE CAMERA because the camera is the mandatory
@@ -231,6 +231,14 @@ export function clampedTimestep(elapsed, maxTimestep) {
  */
 export function beginSimulationStep(now, maxTimestep) {
   if (frozenDepth > 0) return stepDt; // read-only: renders the current step, cannot advance it
+  // A PAUSED CLOCK CANNOT PRODUCE AN INTERVAL, so the step is 0 by definition rather
+  // than by the arithmetic happening to come out that way. Tracking `now` keeps the
+  // next live reading from measuring against a stale instant. See observeClock.
+  if (isParticleClockPaused()) {
+    lastAdvanceTime = now;
+    stepDt = 0;
+    return 0;
+  }
   if (lastAdvanceTime !== null && now < lastAdvanceTime) resetSimulation();
   if (lastAdvanceTime === null) {
     lastAdvanceTime = now;
@@ -257,12 +265,31 @@ export function beginSimulationStep(now, maxTimestep) {
  * MEASURING IS NOT ADVANCING, and separating the two is the point: the history rolls
  * only for a document that actually reads `@`, while the FRAME INTERVAL is a fact
  * about the clock that any consumer may need (an audio ramp, a meter) whether or not
- * anything is simulated. This is called by beginSimulationStep and by
- * simulationTimestep, so both can never disagree about the interval.
+ * anything is simulated.
+ *
+ * ITS ONE CALLER IS simulationTimestep. An earlier draft of this line claimed
+ * beginSimulationStep called it too "so both can never disagree" — that was written
+ * for a draft where the two shared one measurement, and sharing was REMOVED on
+ * purpose (see observedDt: it would let any consumer starve the simulation by reading
+ * the clock first). The code was right and the sentence was the defect.
  *
  * A frozen consumer MAY observe: it is reading a measurement, not advancing state.
  */
 function observeClock(now, maxTimestep) {
+  // THE PAUSED REGIME HAS NO INTERVALS. Every still consumer runs here, the clock is
+  // fixed by contract, and a number measured across a REGIME CHANGE into it would then
+  // be reported forever, because nothing ever displaces it: measured 2026-08-06,
+  // presenting and leaving within EDITOR_FREEZE_TIME is a FORWARD jump into the freeze,
+  // and every editor audio ramp afterwards was pinned at the clamp for the life of the
+  // page. Answering 0 here makes "a frozen clock means dt = 0" structural instead of
+  // incidental, and it is why the fix is a REGIME question rather than a bigger-than-a-
+  // -frame heuristic: a genuine lag spike still clamps and still advances, which is what
+  // the camera setting was asked for.
+  if (isParticleClockPaused()) {
+    lastObservedTime = now;
+    observedDt = 0;
+    return 0;
+  }
   if (lastObservedTime === null || now < lastObservedTime) {
     lastObservedTime = now;
     observedDt = 0;
@@ -308,9 +335,24 @@ export function simulationTimestep(maxTimestep) {
 
 /**
  * Pure function. THE CAMERA's max simulation timestep for a folded state, in
- * seconds, or null for "none" (no clamp). Absent means the document predates the
- * setting, which takes the default — the absent-is-legacy discipline; an explicit
- * `null` is the author choosing none and is honoured.
+ * seconds, or null for "none" (no clamp).
+ *
+ * ABSENT ≡ NULL ≡ NONE, and that is the `nullable` row convention verbatim
+ * (core/properties.js, THE `nullable` ROW ASPECT): "a nullable row's stored ABSENCE
+ * may be `undefined` (never written) or `null` (cleared); both display as unset".
+ * They must therefore also READ as unset — the Inspector's clear affordance writes
+ * `null`, which is the fold's DELETE SENTINEL and lands as an ABSENT leaf, so a
+ * reader that resolved absent to the default made "none" literally inexpressible
+ * through the UI (measured, 2026-08-06).
+ *
+ * NO DEFAULT IS APPLIED HERE, and that is not the same as having no safe default.
+ * The 0.1 s clamp reaches every real document as a BORN-WITH VALUE — `defaultCameraState`
+ * writes it, and `repairedDocument`'s defaults-fill backfills it into any document
+ * written before the setting existed — so absence survives only where the author
+ * cleared it, or in a hand-built state fragment that has no camera and therefore no
+ * setting to read. Compare `plugins/camera.naturalZoomOn`, where ABSENT IS ON: that
+ * row is a BOOLEAN with two states and no "unset", so absent can only mean its
+ * default. This one is nullable, so absent is a third thing and means it.
  *
  * IT LIVES HERE, NOT IN THE EQUATION ENGINE, so a consumer that must not depend on
  * core/expressions.js can still honour the AUTHOR's value rather than assuming the
@@ -325,21 +367,22 @@ export function simulationTimestep(maxTimestep) {
  * @param {object} state - a folded or evaluated state ({items, vars})
  * @returns {number|null} seconds, or null for no clamp
  *
- * @example cameraMaxTimestep({items: {}}) // 0.1 (no camera — the default clamp)
  * @example cameraMaxTimestep({items: {c1: {type: "camera", maxTimestep: 0.25}}}) // 0.25
  * @example cameraMaxTimestep({items: {c1: {type: "camera", maxTimestep: null}}}) // null (the author chose "none")
- * @example cameraMaxTimestep({items: {c1: {type: "camera"}}}) // 0.1 (pre-setting document)
+ * @example cameraMaxTimestep({items: {c1: {type: "camera"}}}) // null (cleared — the leaf is absent, which IS "none")
+ * @example cameraMaxTimestep({items: {}}) // null (no camera, so no setting to read)
  */
 export function cameraMaxTimestep(state) {
   for (const item of Object.values(state.items ?? {})) {
-    if (item?.type !== "camera" || !(CAMERA_MAX_TIMESTEP_KEY in item)) continue;
+    if (item?.type !== "camera") continue;
     const value = item[CAMERA_MAX_TIMESTEP_KEY];
-    if (typeof value === "number" || value === null) return value;
+    if (typeof value === "number") return value;
+    if (value === null || value === undefined) return null; // cleared, or never written — both are "none"
     const message = `the camera's ${CAMERA_MAX_TIMESTEP_KEY} is ${JSON.stringify(value)} — the simulation clamp is read before equations are evaluated, so it cannot be one; using the ${CAMERA_MAX_TIMESTEP_DEFAULT}s default`;
     reportOnce(message, `PowerRP simulation: ${message}`);
     return CAMERA_MAX_TIMESTEP_DEFAULT;
   }
-  return CAMERA_MAX_TIMESTEP_DEFAULT;
+  return null; // no camera at all: nothing declares a clamp
 }
 
 /**

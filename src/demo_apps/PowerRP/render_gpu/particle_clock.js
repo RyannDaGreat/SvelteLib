@@ -103,6 +103,28 @@ export function isParticleClockLive() {
 }
 
 /**
+ * Query. Is the clock in the PAUSED regime — neither live nor overridden, so
+ * particleTime() is the fixed EDITOR_FREEZE_TIME and CANNOT advance?
+ *
+ * THE HEADER'S "TWO REGIMES" MADE READABLE. Every consumer that needs it used to
+ * infer it, and the two available inferences are both wrong: `isParticleClockLive()`
+ * misses the override (a test or an exporter is not paused), and comparing
+ * particleTime() to EDITOR_FREEZE_TIME misfires on an override that happens to equal
+ * it. The distinction matters to anything that measures an INTERVAL between two clock
+ * readings — core/simulation_history.js is the first — because in this regime there
+ * is no interval to measure and any number it computes is a leftover: measured
+ * 2026-08-06, exiting a presentation shorter than the freeze time is a FORWARD jump,
+ * and the clamped interval it produced was then reported forever, since the paused
+ * clock never moved again to displace it.
+ *
+ * @example // isParticleClockPaused() === true by default (the editor)
+ * @example // after startParticleClock() or setParticleTimeOverride(2) → false
+ */
+export function isParticleClockPaused() {
+  return overrideSeconds === null && liveEpochMs === null;
+}
+
+/**
  * Command. Forces particleTime() to return exactly `seconds` (overriding both
  * regimes), or clears the override when passed null. TESTS / CLI determinism
  * probes ONLY — the app never calls this. Lets a probe render the same doc at an

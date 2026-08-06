@@ -29,11 +29,11 @@ import {
 } from "../core/simulation_history.js";
 import { createRegistry } from "../core/registry.js";
 import {
-  newDocument, withNewItem, keyframed, documentIsSimulated, stridedShardRefusal,
+  newDocument, withNewItem, keyframed, documentIsSimulated, stridedShardRefusal, repairedDocument, slideState,
 } from "../core/document.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { cameraPlugin } from "../plugins/camera.js";
-import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
+import { setParticleTimeOverride, startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -214,13 +214,15 @@ test("Δt = 0 ⟹ the simulated contribution is unchanged while OTHER property s
 
 // ── The reset rule ───────────────────────────────────────────────────────────
 
-/** Pure function. rotationState plus THE camera with its clamp cleared to "none",
- *  for the tests that deliberately jump the clock further than one frame. */
-function unclampedRotationState(src) {
+/** Pure function. rotationState plus THE camera carrying `clamp` — a number, or null
+ *  for "none". A state with NO camera declares no clamp at all (absent ≡ none), so a
+ *  test about clamping has to say which it means. */
+function cameraRotationState(src, clamp) {
   const state = rotationState(src);
-  state.items.cam = { ...cameraPlugin.defaults, type: "camera", name: "Camera", [CAMERA_MAX_TIMESTEP_KEY]: null };
+  state.items.cam = { ...cameraPlugin.defaults, type: "camera", name: "Camera", [CAMERA_MAX_TIMESTEP_KEY]: clamp };
   return state;
 }
+const unclampedRotationState = (src) => cameraRotationState(src, null);
 
 test("time moving BACKWARDS resets to the initial condition — a negative step is never integrated", () => {
   freshRun();
@@ -285,7 +287,7 @@ test("clampedTimestep: an ordinary frame passes, a hitch is cut, and `none` disa
 
 test("a MEASURED hitch is clamped, and the lost time is DISCARDED (never caught up)", () => {
   freshRun();
-  const state = () => rotationState("= @@ + dt");
+  const state = () => cameraRotationState("= @@ + dt", CAMERA_MAX_TIMESTEP_DEFAULT);
   evaluateAt(state(), 0);
   evaluateAt(state(), 5); // a five-second stall against the 0.1s default clamp
   approx(evaluateAt(state(), 5).items.a1.rotation, CAMERA_MAX_TIMESTEP_DEFAULT);
@@ -297,17 +299,22 @@ test("a DICTATED step (an export) is never clamped — a render stays exactly re
   freshRun();
   const fps = 4; // 0.25 s per frame, well over the 0.1 s measured clamp
   setSimulationTimestepOverride(1 / fps);
-  const state = () => rotationState("= @@ + dt");
+  const state = () => cameraRotationState("= @@ + dt", CAMERA_MAX_TIMESTEP_DEFAULT);
   for (let i = 0; i <= 8; i++) evaluateAt(state(), i / fps);
   approx(evaluateAt(state(), 8 / fps).items.a1.rotation, 8 / fps); // 2 s of simulation, unclamped
   setSimulationTimestepOverride(null);
 });
 
-test("cameraMaxTimestep: absent takes the default, an explicit null is 'none', an equation is refused loudly", () => {
-  assert.equal(cameraMaxTimestep({ items: {} }), CAMERA_MAX_TIMESTEP_DEFAULT);
-  assert.equal(cameraMaxTimestep({ items: { c: { type: "camera" } } }), CAMERA_MAX_TIMESTEP_DEFAULT);
-  assert.equal(cameraMaxTimestep({ items: { c: { type: "camera", [CAMERA_MAX_TIMESTEP_KEY]: 0.25 } } }), 0.25);
+test("cameraMaxTimestep: ABSENT ≡ NULL ≡ NONE (the nullable row convention), and an equation is refused loudly", () => {
+  // core/properties.js THE `nullable` ROW ASPECT: "a nullable row's stored ABSENCE may
+  // be `undefined` (never written) or `null` (cleared); both display as unset". They
+  // must READ the same too — the clear affordance writes null, which is the fold's
+  // DELETE SENTINEL and lands as an ABSENT leaf, so a reader that resolved absent to
+  // the default made "none" inexpressible through the UI.
+  assert.equal(cameraMaxTimestep({ items: { c: { type: "camera" } } }), null);
   assert.equal(cameraMaxTimestep({ items: { c: { type: "camera", [CAMERA_MAX_TIMESTEP_KEY]: null } } }), null);
+  assert.equal(cameraMaxTimestep({ items: {} }), null); // no camera: nothing declares a clamp
+  assert.equal(cameraMaxTimestep({ items: { c: { type: "camera", [CAMERA_MAX_TIMESTEP_KEY]: 0.25 } } }), 0.25);
   const said = [];
   const original = console.error;
   console.error = (...a) => said.push(a.join(" "));
@@ -466,6 +473,52 @@ test("beginSimulationStep: the raw step ladder (first frame 0, same instant reus
   approx(beginSimulationStep(0.5, 0.1), 0.1); // same instant: the SAME step, no second roll
   approx(beginSimulationStep(0.52, 0.1), 0.02);
   approx(beginSimulationStep(0.1, 0.1), 0); // backwards: reset, and the frame is the initial condition
+});
+
+test("THE SAFE DEFAULT SURVIVES AS A BORN-WITH VALUE, and the author's `none` survives repair", () => {
+  const reg = createRegistry();
+  reg.register(cameraPlugin);
+  reg.register(rectPlugin);
+  const doc = newDocument();
+  const camId = Object.keys(doc.slides[0].delta.items)[0];
+
+  // A LEGACY document (the key predates nothing wrote it) is filled with the clamp on
+  // load, quietly — the version-skew path. This is what keeps "absent means none" from
+  // leaving every existing deck unprotected.
+  const legacy = structuredClone(doc);
+  delete legacy.slides[0].delta.items[camId][CAMERA_MAX_TIMESTEP_KEY];
+  const filled = repairedDocument(legacy, reg);
+  assert.equal(slideState(filled.doc, 0).items[camId][CAMERA_MAX_TIMESTEP_KEY], CAMERA_MAX_TIMESTEP_DEFAULT);
+  assert.deepEqual(filled.reports, [], "filling a legacy nullable key is version skew, and must stay quiet");
+
+  // THE AUTHOR CLEARS THE ROW. The Inspector writes literal null, which is the fold's
+  // delete sentinel, so the folded leaf is ABSENT. Repair must LEAVE IT — before this
+  // was fixed it came back 0.1 with a loud line calling the author's choice a deletion,
+  // on every load, forever, which made "none" unreachable through the UI.
+  const cleared = repairedDocument(keyframed(doc, 0, ["items", camId, CAMERA_MAX_TIMESTEP_KEY], null), reg);
+  assert.equal(cameraMaxTimestep(slideState(cleared.doc, 0)), null, "repair destroyed the author's cleared clamp");
+  assert.deepEqual(cleared.reports, [], "clearing a nullable row is not a repairable defect");
+  // …and it is IDEMPOTENT, the contract repairedDocument states for itself.
+  assert.deepEqual(repairedDocument(cleared.doc, reg).reports, []);
+});
+
+test("A PAUSED CLOCK YIELDS dt = 0 — including after a presentation SHORTER than the freeze window", () => {
+  // MEASURED DEFECT (2026-08-06): leaving a presentation inside EDITOR_FREEZE_TIME is a
+  // FORWARD jump into the frozen clock. The interval was clamped, memoized, and then
+  // reported forever, because a paused clock never moves again to displace it — so every
+  // editor audio ramp afterwards was pinned at the clamp for the life of the page.
+  freshRun();
+  setParticleTimeOverride(null); // the REAL regimes, not the test override
+  assert.equal(simulationTimestep(0.1), 0, "the paused editor clock has no interval to report");
+  startParticleClock(0); // present
+  const live = simulationTimestep(0.1);
+  assert.ok(live >= 0, `a live reading should be a real interval, got ${live}`);
+  stopParticleClock(); // Escape, well inside the 2 s freeze window — a FORWARD jump
+  assert.equal(simulationTimestep(0.1), 0, "the observed timestep stuck after leaving a short presentation");
+  assert.equal(simulationTimestep(0.1), 0, "…and it is still stuck on the next frame");
+  // The simulation's own step is answered by the same rule, so a still cannot inherit a
+  // phantom step from the discontinuity either.
+  assert.equal(beginSimulationStep(2, 0.1), 0);
 });
 
 setParticleTimeOverride(null);

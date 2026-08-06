@@ -44,6 +44,12 @@ import {
 import { withRichTextMigrated } from "./richtext.js";
 import { headModeSplit } from "./endpoints.js";
 import { withPaletteRampMigrated, rampMigrationReports } from "./ramp_migration.js";
+// The plugin ROW INDEX — the one place that knows how to look a declared row up by
+// key. Read here for the `nullable` aspect (see missingDefaults); imported rather
+// than re-derived, since a second `inspector`-to-map walk is the mirror this
+// codebase keeps paying for. No cycle: that module imports only slide_reorder,
+// deltas and multiselect, none of which import this file.
+import { rowsByKey } from "./item_properties_clipboard.js";
 import { bundleDefaults, linearEndpointsToAngle } from "./properties.js";
 // SIMULATED STATE (manifest R7-9): the camera carries the max simulation timestep,
 // and this module is where THE camera literal lives. The key/default are declared in
@@ -1220,6 +1226,13 @@ export function missingDefaults(doc, registry) {
     }
     const set = written.get(id);
     const nulls = nulled.get(id);
+    // THE KEYS WHOSE `null` IS AN AUTHORED VALUE, not a delete sentinel — the rows
+    // declaring `nullable: true` (core/properties.js "THE `nullable` ROW ASPECT":
+    // "a nullable row's stored ABSENCE may be `undefined` (never written) or `null`
+    // (cleared); both display as unset"). Derived from the plugin's own rows through
+    // the existing row index, so a widget that adds a nullable row is covered the
+    // day it declares one and nothing here has to be remembered.
+    const nullableKeys = new Set([...rowsByKey(plugin)].filter(([, row]) => row.nullable === true).map(([key]) => key));
     const missing = [];
     for (const [path, value] of leaves(plugin.defaults)) {
       // COMPUTED defaults (self.-equations) are skipped here ONLY for the two
@@ -1267,7 +1280,19 @@ export function missingDefaults(doc, registry) {
       // EXACTLY the state being asked for, so it counts as coverage; every
       // other key's delete-sentinel handling is untouched (a `w: null` still
       // reports and still gets the real default filled in).
-      const coveredByNull = value === null && nulls.has(key);
+      //
+      // A NULLABLE ROW'S `null` IS THE SECOND CASE THAT GATE WAS WRITTEN FOR, and
+      // the paragraph above promised it would need no further change; it needed one
+      // clause. `cropbox.target` qualifies because its DEFAULT is null. A nullable
+      // row qualifies because its null is what the author WROTE with the Inspector's
+      // clear affordance — "(none)" — which is a different value from its default,
+      // not the absence of one. MEASURED before this line, on the first nullable ITEM
+      // row the codebase has ever had (`camera.maxTimestep`; the other two nullable
+      // rows live on a SLIDE, so this fill had never met one): clearing it came back
+      // from one load as 0.1, with a loud repair line calling the author's deliberate
+      // choice a deletion. The author's "none" was destroyed by the machinery meant to
+      // protect required keys, on every load, forever.
+      const coveredByNull = nulls.has(key) && (value === null || nullableKeys.has(key));
       // WHY EACH FILL CARRIES ITS OWN CAUSE. This function's docblock has always
       // named TWO populations, and they are not the same event:
       //   VERSION SKEW — the key is absent from every slide delta because the
