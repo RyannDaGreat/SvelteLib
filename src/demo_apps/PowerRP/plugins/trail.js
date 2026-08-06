@@ -41,9 +41,16 @@
  *   TAPER AND FADE FOLLOW TIME, NOT SAMPLE COUNT. A point half a window old is drawn
  *   at half the taper whatever the frame rate did, which is the same framerate
  *   independence `dt` buys the trail's clock.
- *   THE QUADS BUTT, THEY DO NOT OVERLAP. Consecutive segments share their two edge
- *   vertices, so a semi-transparent trail does not double-blend at every joint —
- *   which is what a stack of independently-drawn round-capped strokes would do.
+ *   EVERY PIXEL IS COVERED EXACTLY TWICE, ON PURPOSE, and the alpha is
+ *   pre-compensated for it. Quads that BUTT exactly — sharing their joint vertices —
+ *   leave a visible light hairline at every joint, because an antialiased edge
+ *   drawn against another antialiased edge composites to ~0.75·α instead of α. That
+ *   is not a theory: rendered at 800x450 the ribbon came out visibly RIBBED with
+ *   antialiasing on and perfectly smooth with it off (.frenzy/round7/w3t). So each
+ *   quad is EXTENDED half a neighbouring segment at each end, which makes the
+ *   coverage count UNIFORMLY TWO along the whole interior — uniform, therefore not a
+ *   banding pattern — and each quad is drawn at doubleCoverageAlpha() so the two
+ *   layers composite back to exactly the authored opacity.
  * It is deliberately built from the EXISTING `polygon` op rather than a new Skia
  * mesh path: that op is already painted by Skia, PDF, SVG and the bare-node CLI, so
  * a trail exports to vector with zero backend work.
@@ -201,8 +208,15 @@ export function polylineNormals(path) {
 /**
  * Pure function. A tapering ribbon as one CONVEX QUAD PER SEGMENT, plus the taper
  * parameter at each quad's midpoint (what the colour and opacity ramps are sampled
- * at). Consecutive quads SHARE their edge vertices, so nothing overlaps and a
- * semi-transparent trail does not darken at its joints.
+ * at).
+ *
+ * EACH QUAD REACHES HALF A SEGMENT PAST EACH JOINT, so quad k, quad k−1 and quad
+ * k+1 between them cover every point of segment k exactly TWICE — see the header
+ * for the measured hairline that forces this, and doubleCoverageAlpha for the
+ * compensation that keeps the composite at the authored opacity. The two extreme
+ * half-segments (the very tip and the very tail) are covered once, which is why
+ * they must stay a half segment long: at TRAIL_SAMPLE_CAPACITY samples that is a
+ * few tenths of a percent of the streamer.
  *
  * Consecutive duplicate points are dropped first: a zero-length segment has no
  * direction to offset along, and it contributes no picture.
@@ -212,9 +226,12 @@ export function polylineNormals(path) {
  * @param {number} headWidth - ribbon width at t = 1
  * @returns {{quad: number[][], t: number}[]} one entry per segment, oldest first
  *
- * @example // a straight 10-unit run tapering 0 → 4 makes one quad, mid-parameter 0.5:
+ * @example // a straight 10-unit run tapering 0 → 4 makes one quad, mid-parameter 0.5;
+ * @example // a lone segment has no neighbours, so nothing is extended:
  * @example trailRibbonQuads([{p: [0, 0], t: 0}, {p: [10, 0], t: 1}], 0, 4)
  * @example // [{quad: [[0, 0], [10, -2], [10, 2], [0, 0]], t: 0.5}]
+ * @example // the middle quad of a three-segment run reaches 5 units back and 5 forward:
+ * @example trailRibbonQuads([{p: [0, 0], t: 0}, {p: [10, 0], t: 0.5}, {p: [20, 0], t: 1}, {p: [30, 0], t: 1}], 0, 4)[1].quad[0] // [5, -1]
  * @example trailRibbonQuads([{p: [0, 0], t: 1}], 0, 4) // [] (one point is a dot, not a ribbon)
  */
 export function trailRibbonQuads(path, tailWidth, headWidth) {
@@ -224,29 +241,66 @@ export function trailRibbonQuads(path, tailWidth, headWidth) {
   const half = kept.map((node) => lerp(tailWidth, headWidth, node.t) / 2);
   const left = kept.map((node, i) => [node.p[0] + normals[i][0] * half[i], node.p[1] + normals[i][1] * half[i]]);
   const right = kept.map((node, i) => [node.p[0] - normals[i][0] * half[i], node.p[1] - normals[i][1] * half[i]]);
-  return kept.slice(1).map((node, i) => ({
-    quad: [left[i], left[i + 1], right[i + 1], right[i]],
-    t: (kept[i].t + node.t) / 2,
-  }));
+  /** Pure function. Half the vector from point `from` to point `to`, or (0, 0) at
+   *  an end of the path where there is no neighbouring segment to reach into. */
+  const halfSpan = (from, to) => (kept[from] && kept[to] ? [(kept[to].p[0] - kept[from].p[0]) / 2, (kept[to].p[1] - kept[from].p[1]) / 2] : [0, 0]);
+  const shifted = (point, [dx, dy], sign) => [point[0] + sign * dx, point[1] + sign * dy];
+  return kept.slice(1).map((node, i) => {
+    const back = halfSpan(i - 1, i);        // reach back into the previous segment
+    const fwd = halfSpan(i + 1, i + 2);     // …and forward into the next
+    return {
+      quad: [shifted(left[i], back, -1), shifted(left[i + 1], fwd, 1), shifted(right[i + 1], fwd, 1), shifted(right[i], back, -1)],
+      t: (kept[i].t + node.t) / 2,
+    };
+  });
+}
+
+/**
+ * Pure function. The per-layer alpha that composites to `alpha` when TWO layers of
+ * it are drawn over each other: `1 − √(1 − α)`, the inverse of the source-over
+ * double blend `1 − (1 − a)²`.
+ *
+ * It exists because trailRibbonQuads deliberately double-covers the ribbon to kill
+ * the antialiasing hairline at every joint — so without this the whole streamer
+ * would paint at up to twice its authored opacity.
+ *
+ * @param {number} alpha - the authored opacity, 0..1
+ * @returns {number} the per-layer opacity
+ *
+ * @example doubleCoverageAlpha(0) // 0
+ * @example doubleCoverageAlpha(1) // 1
+ * @example doubleCoverageAlpha(0.75) // 0.5 (two 0.5 layers composite to 0.75)
+ */
+export function doubleCoverageAlpha(alpha) {
+  return 1 - Math.sqrt(1 - alpha);
 }
 
 /**
  * Pure function. The ribbon's colour at taper parameter `t`, as a CSS rgba string —
  * the tail colour/opacity ramping to the head colour at the widget's own opacity.
  *
+ * `layers` is how many times the pixel it fills will be painted — 2 for a ribbon
+ * quad (trailRibbonQuads double-covers on purpose), 1 for the lone tip dot. The
+ * alpha is pre-divided accordingly, so BOTH forms end at the authored opacity.
+ *
  * @param {object} state - the evaluated trail state (color, tailColor, tailOpacity, opacity)
  * @param {number} t - taper parameter, 0 at the window edge and 1 at the tip
+ * @param {number} [layers] - 1 (default) or 2, how many layers will composite here
  * @returns {string} an rgba() string
  *
  * @example trailColorAt({color: "#ffffff", tailColor: "#000000", tailOpacity: 0, opacity: 1}, 1) // "rgba(255,255,255,1)"
  * @example trailColorAt({color: "#ffffff", tailColor: "#000000", tailOpacity: 0, opacity: 1}, 0) // "rgba(0,0,0,0)"
  * @example trailColorAt({color: "#ffffff", tailColor: "#ffffff", tailOpacity: 0, opacity: 1}, 0.5) // "rgba(255,255,255,0.5)"
+ * @example trailColorAt({color: "#ffffff", tailColor: "#ffffff", tailOpacity: 0, opacity: 1}, 0.5, 2) // "rgba(255,255,255,0.2929)" (two of these composite to 0.5)
  */
-export function trailColorAt(state, t) {
+export function trailColorAt(state, t, layers = 1) {
   const tail = parseColor(state.tailColor);
   const head = parseColor(state.color);
   const alpha = lerp(state.tailOpacity * tail[3], state.opacity * head[3], t);
-  return rgbaToCss([lerp(tail[0], head[0], t), lerp(tail[1], head[1], t), lerp(tail[2], head[2], t), alpha]);
+  return rgbaToCss([
+    lerp(tail[0], head[0], t), lerp(tail[1], head[1], t), lerp(tail[2], head[2], t),
+    layers === 2 ? doubleCoverageAlpha(alpha) : alpha,
+  ]);
 }
 
 /**
@@ -306,22 +360,29 @@ export function trailWidthHandleFrame(state, atTail) {
 
 /**
  * Pure function. A width handle's own drag rule: project a dragged point onto the
- * LINE through `origin` along `normal` (THE HANDLE-CONSTRAINT PROTOCOL — the allowed
- * set is that line), and read the resulting width off it.
+ * RAY from `origin` along `normal`, and read the width off it.
+ *
+ * THE ALLOWED SET IS A RAY, NOT A LINE, and that is THE HANDLE-CONSTRAINT PROTOCOL
+ * doing its job rather than a clamp bolted on: a width cannot be negative, so the
+ * far side of the origin is not an allowed place for this handle to be. Projecting
+ * onto the whole line instead would break the protocol's ROUND TRIP law — a drag to
+ * the wrong side would be "allowed" at −40 while the handle it produced sat at +40,
+ * which is what tests/handle_constraints_test.js caught on the first version of this
+ * function.
  *
  * @param {{origin: number[], normal: number[]}} frame - from trailWidthHandleFrame
  * @param {{x: number, y: number}} desired - the dragged local point
  * @returns {{x: number, y: number, width: number}} the allowed point and the width it means
  *
  * @example trailWidthFromDrag({origin: [0, 0], normal: [0, -1]}, {x: 3, y: -5}) // {x: 0, y: -5, width: 10}
- * @example trailWidthFromDrag({origin: [0, 0], normal: [0, -1]}, {x: 0, y: 4}) // {x: 0, y: 4, width: 8}
+ * @example trailWidthFromDrag({origin: [0, 0], normal: [0, -1]}, {x: 0, y: 4}) // {x: 0, y: 0, width: 0} (the far side is not allowed)
  */
 export function trailWidthFromDrag(frame, desired) {
-  const along = (desired.x - frame.origin[0]) * frame.normal[0] + (desired.y - frame.origin[1]) * frame.normal[1];
+  const along = Math.max(0, (desired.x - frame.origin[0]) * frame.normal[0] + (desired.y - frame.origin[1]) * frame.normal[1]);
   return {
     x: frame.origin[0] + frame.normal[0] * along,
     y: frame.origin[1] + frame.normal[1] * along,
-    width: Math.abs(along) * 2,
+    width: along * 2,
   };
 }
 
@@ -427,7 +488,7 @@ export const trailPlugin = {
     const path = Array.isArray(s[TRAIL_POINTS_KEY]) ? trailLocalPath(s[TRAIL_POINTS_KEY], s) : [];
     const quads = trailRibbonQuads(path, s.tailWidth, s.width);
     const ops = quads.length
-      ? quads.map(({ quad, t }) => polygon({ points: quad, fill: trailColorAt(s, t) }))
+      ? quads.map(({ quad, t }) => polygon({ points: quad, fill: trailColorAt(s, t, 2) }))
       : [ellipse({ cx: 0, cy: 0, rx: s.width / 2, ry: s.width / 2, fill: trailColorAt(s, 1) })];
     return applyEffects(ops, s, world, trailInkRect(s));
   },

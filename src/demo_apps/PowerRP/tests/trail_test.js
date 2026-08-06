@@ -27,7 +27,7 @@ import {
 } from "../core/trail_history.js";
 import { createRegistry } from "../core/registry.js";
 import { newDocument, withNewItem, stridedShardRefusal, repairedDocument } from "../core/document.js";
-import { trailPlugin, trailInsertState, trailLocalPath, trailRibbonQuads, trailColorAt, trailInkRect, polylineNormals, trailWidthFromDrag, trailWidthHandleFrame } from "../plugins/trail.js";
+import { trailPlugin, trailInsertState, trailLocalPath, trailRibbonQuads, trailColorAt, doubleCoverageAlpha, trailInkRect, polylineNormals, trailWidthFromDrag, trailWidthHandleFrame } from "../plugins/trail.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { cameraPlugin } from "../plugins/camera.js";
 import { setParticleTimeOverride } from "../render_gpu/particle_clock.js";
@@ -192,14 +192,26 @@ test("trailLocalPath: world history → local points, taper parameter by AGE", (
   assert.deepEqual(path, [{ p: [-6, 0], t: 0.5 }, { p: [0, 0], t: 1 }]);
 });
 
-test("trailRibbonQuads: consecutive quads SHARE their edge vertices (no double blending)", () => {
-  const quads = trailRibbonQuads([{ p: [0, 0], t: 0 }, { p: [10, 0], t: 0.5 }, { p: [20, 0], t: 1 }], 0, 4);
-  assert.equal(quads.length, 2);
-  // quad0 = [leftA, leftB, rightB, rightA]; quad1 = [leftB, leftC, rightC, rightB].
-  assert.deepEqual(quads[0].quad[1], quads[1].quad[0], "the joint's LEFT vertex must be shared");
-  assert.deepEqual(quads[0].quad[2], quads[1].quad[3], "the joint's RIGHT vertex must be shared");
-  // …and the taper follows t: half-width at t = 0.5 of a 0 → 4 ramp is 1.
-  assert.deepEqual(quads[0].quad[1], [10, -1]);
+test("trailRibbonQuads: the interior is covered EXACTLY TWICE, which is what kills the AA hairline", () => {
+  // A straight 6-point run, so every interior segment has both neighbours to reach
+  // into. Coverage is counted by along-path span, which on a straight run is exact.
+  const path = [0, 1, 2, 3, 4, 5].map((i) => ({ p: [i * 10, 0], t: i / 5 }));
+  const quads = trailRibbonQuads(path, 0, 4);
+  assert.equal(quads.length, 5);
+  const spans = quads.map((q) => [Math.min(...q.quad.map((v) => v[0])), Math.max(...q.quad.map((v) => v[0]))]);
+  for (let x = 6; x <= 44; x += 2) {
+    const covering = spans.filter(([lo, hi]) => x > lo && x < hi).length;
+    assert.equal(covering, 2, `x=${x} is covered ${covering} time(s), not twice`);
+  }
+  // …and the taper still follows t: half-width at t = 0.2 of a 0 → 4 ramp is 0.4.
+  assert.deepEqual(quads[1].quad[0], [5, -0.4]);
+});
+
+test("doubleCoverageAlpha: two layers of it composite back to the authored opacity", () => {
+  for (const a of [0, 0.1, 0.5, 0.75, 1]) {
+    const layer = doubleCoverageAlpha(a);
+    assert.ok(Math.abs(1 - (1 - layer) ** 2 - a) < 1e-12, `${a} does not round-trip through ${layer}`);
+  }
 });
 
 test("trailRibbonQuads: a repeated point is dropped, a single point is no ribbon", () => {
@@ -250,7 +262,7 @@ test("the width handles slide along the ribbon's normal and read the width off i
   const allowed = handles[0].constrain(s, { x: 30, y: -10 });
   assert.deepEqual([allowed.x, allowed.y], [0, -10]);
   assert.deepEqual(handles[0].apply(s, allowed), { width: 20 });
-  assert.equal(trailWidthFromDrag(trailWidthHandleFrame(s, false), { x: 0, y: 4 }).width, 8);
+  // The far side of the origin is NOT allowed — a width cannot be negative.\n  assert.equal(trailWidthFromDrag(trailWidthHandleFrame(s, false), { x: 0, y: 4 }).width, 0);
 });
 
 test("an item with no ring at all is its live point, not an error", () => {
