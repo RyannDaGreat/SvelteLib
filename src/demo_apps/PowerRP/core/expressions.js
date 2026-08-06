@@ -128,6 +128,14 @@ import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
 // decorate.js), and particle_clock.js is DOM-free bare-node code by its own contract
 // (performance.now() is a node global), so core's bare-node requirement holds.
 import { particleTime } from "../render_gpu/particle_clock.js";
+// SIMULATED STATE — the fourth kind (manifest R7-9). This module owns the `@` and
+// `dt` GRAMMAR; core/simulation_history.js owns the ambient table those two read,
+// its double buffering, its reset rule and the max-timestep clamp. The split is the
+// same one particle_clock.js keeps: the pure grammar here, the mutable service there.
+import {
+  beginSimulationStep, hasSimulationValue, simulationValue, recordSimulationValue,
+  simulationGeneration, CAMERA_MAX_TIMESTEP_KEY, CAMERA_MAX_TIMESTEP_DEFAULT,
+} from "./simulation_history.js";
 // THE MATERIAL KNOB SCHEMAS (see §Material param knobs). A paint's material
 // params are declared in the material REGISTRY, not in plugin.defaults, so this
 // is the only place core can learn their kinds and defaults. Same layering as the
@@ -153,14 +161,20 @@ import { getStrokeMaterial, hasStrokeMaterial } from "../render_gpu/skia/stroke_
 // fallback for hand-stored equations, so no stored document changes meaning.
 const OP_CHARS = "+-*/()%";
 const NUM_RE = /^(?:\d+\.?\d*|\.\d+)/;
-// A reference token: optional "@" (stored item ref), then an identifier chain.
+// A reference token: an optional PREVIOUS-VALUE MARKER and/or stored-item "@"
+// (see §Previous-value marker), then an identifier chain.
 // A segment AFTER the head may be all digits, so a DECLARED LIST's element can be
 // addressed (`self.points.3.x`, `fill.linear.stops.1.offset`). Only the HEAD must
 // start with a letter/underscore/@ — the tokenizer only reaches REF_RE for those
 // characters, so a bare number is still a number and `2.5` still lexes as one.
 // The strings this newly accepts (`a.5`) were a restricted-grammar SYNTAX ERROR
 // before, so nothing that used to parse changes meaning.
-const REF_RE = /^@?[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*/;
+const REF_RE = /^@{0,2}[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*/;
+// A BARE previous-value marker — display "@" or stored "@@" naming no reference at
+// all, i.e. "this property's own previous value". REF_RE cannot match it (it needs
+// an identifier), and a lone "@" used to be a loud "Malformed reference"; it is now
+// the shortest token in the grammar.
+const BARE_PREV_RE = /^@@?(?![A-Za-z0-9_@])/;
 // Typed-literal tokens (any-type `=` equations): a quoted string (\\ / \" / \'
 // escapes only) and a CSS hex color (3/4/6/8 digits — interpolators.isHexColor's set).
 const STR_RE = /^"(?:\\.|[^"\\])*"|^'(?:\\.|[^'\\])*'/;
@@ -226,8 +240,8 @@ export function tokenize(src) {
       tokens.push({ kind: "color", value: m[0], start: i, end: i + m[0].length });
       i += m[0].length;
     } else if (ch === "@" || /[A-Za-z_]/.test(ch)) {
-      const m = REF_RE.exec(src.slice(i));
-      if (!m || m[0] === "@") throw new Error(`Malformed reference at ${i} in "${src}"`);
+      const m = REF_RE.exec(src.slice(i)) ?? BARE_PREV_RE.exec(src.slice(i));
+      if (!m) throw new Error(`Malformed reference at ${i} in "${src}"`);
       tokens.push({ kind: "ref", value: m[0], start: i, end: i + m[0].length });
       i += m[0].length;
     } else {
@@ -263,7 +277,113 @@ const RESERVED_LITERALS = new Map([["true", true], ["false", false]]);
 // keyword, never an unknown-reference error). Until manifest item 72 the UI-facing
 // validator threw `Unknown variable "time"` on it, contradicting the clock
 // plugins' own help text (clock_digital.js:221 tells users to type `= time`).
-const RESERVED_KEYWORDS = new Set(["time"]);
+// `dt` is the SECOND such name, and it is the same kind of thing: the seconds this
+// SIMULATION STEP covers (core/simulation_history.js), read through the same
+// controlled clock `time` is. It is a keyword rather than a variable for the same
+// three-passes-must-agree reason, and its display and stored forms are identical, so
+// it round-trips verbatim exactly as `time` does.
+const RESERVED_KEYWORDS = new Set(["time", "dt"]);
+
+// ── Previous-value marker (SIMULATED STATE — manifest R7-9) ──────────────────
+//
+// `@` is what the author TYPES for "the previous value": bare `@` is this
+// property's own, `@self.value` / `@osc1.phase` / `@speed` are another slot's.
+// USER, verbatim: "we can have reserved variables @ (meaning prev value), and
+// @self.value means (previous self.value)".
+//
+// IT CANNOT BE `@` IN THE STORED GRAMMAR, because `@` is ALREADY the stored
+// item-reference sigil (`@<itemId>.prop` — parseStoredRef). The resolution is the
+// one the display↔stored duality was built for: `@` is the DISPLAY token, exactly as
+// asked, and it SERIALIZES to `@@`. The item sigil is ABSORBED into the marker, so
+// the two grammars differ by exactly the number of leading "@":
+//
+//     display            stored          means
+//     @                  @@              this property, previous step
+//     @theta             @@theta         variable `theta`, previous step
+//     @self.value        @@self.value    this item's `value`, previous step
+//     @box.x             @@a1.x          item `box`'s `x`, previous step
+//
+// FOUR PASSES MUST AGREE ABOUT THIS, the same four RESERVED_KEYWORDS documents: the
+// parser (a marker token is an ordinary "ref" token the resolver interprets),
+// displayToStored/storedToDisplay (the table above), mapRefTokens' rewriters (a
+// rename or a clone re-point must see THROUGH the marker to the reference inside —
+// prevMarkerLength is how), and the highlighter (a marker paints as the reference it
+// wraps, never as an unknown identifier).
+const PREV_DISPLAY_MARKER = "@";
+const PREV_STORED_MARKER = "@@";
+
+/**
+ * Pure function. The length of the PREVIOUS-VALUE marker on a reference token: 2 for
+ * the stored `@@…`, 1 for the display `@…`, 0 for an ordinary reference. `form`
+ * selects the grammar, because a single leading "@" is the ITEM SIGIL in stored form
+ * and the marker in display form — the one ambiguity the two-@ spelling exists to
+ * keep out of everything else.
+ *
+ * @param {string} token - one reference token
+ * @param {"display"|"stored"} form - which grammar the token is written in
+ * @returns {number} 0, 1 or 2 — the number of leading characters to strip
+ *
+ * @example prevMarkerLength("@", "display") // 1 (this property's previous value)
+ * @example prevMarkerLength("@box.x", "display") // 1 (item box's x, previous step)
+ * @example prevMarkerLength("@a1.x", "stored") // 0 (an ordinary stored item reference)
+ * @example prevMarkerLength("@@a1.x", "stored") // 2 (item a1's x, previous step)
+ * @example prevMarkerLength("speed", "display") // 0
+ */
+export function prevMarkerLength(token, form) {
+  if (token.startsWith(PREV_STORED_MARKER)) return 2;
+  if (form === "display" && token.startsWith(PREV_DISPLAY_MARKER)) return 1;
+  return 0;
+}
+
+/**
+ * Pure function. The reference INSIDE a stored previous-value token, with the item
+ * sigil the marker absorbed put back — or `null` for the bare `@@` (this property's
+ * own previous value). The inverse of the table above, stored side.
+ *
+ * A dotted head is an ITEM (stored references carry ids, and a variable name never
+ * contains a dot); `self…` is the owner keyword; anything else is a variable.
+ *
+ * @param {string} token - a stored token beginning with "@@"
+ * @returns {string|null} the inner stored reference token, or null for the bare marker
+ *
+ * @example storedPrevInner("@@") // null (this property's own previous value)
+ * @example storedPrevInner("@@a1.x") // "@a1.x" (the absorbed sigil is restored)
+ * @example storedPrevInner("@@self.value") // "self.value"
+ * @example storedPrevInner("@@theta") // "theta" (a variable)
+ */
+export function storedPrevInner(token) {
+  const rest = token.slice(PREV_STORED_MARKER.length);
+  if (rest === "") return null;
+  if (rest === "self" || rest.startsWith("self.")) return rest;
+  return rest.includes(".") ? `@${rest}` : rest;
+}
+
+/**
+ * Pure function. Applies `rewriteInner` to the reference INSIDE a stored token,
+ * putting any previous-value marker back afterwards. THE SEAM EVERY mapRefTokens
+ * REWRITER GOES THROUGH — a variable rename and a clone's item re-point are about
+ * WHAT a reference names, and a marker only changes WHEN it is read, so a rewriter
+ * that could not see through the marker would leave `@@theta` pointing at a variable
+ * the rename had just deleted. That is the exact failure withMarkerPreserved exists
+ * for one level up, and this is its twin one level in.
+ *
+ * The bare `@@` names nothing rewritable and comes back untouched.
+ *
+ * @param {string} token - one STORED reference token
+ * @param {Function} rewriteInner - (innerToken) → rewritten inner token
+ * @returns {string} the rewritten token, marker restored
+ *
+ * @example mapThroughPrevMarker("@@a1.x", (t) => t.replace("a1", "z9")) // "@@z9.x"
+ * @example mapThroughPrevMarker("@a1.x", (t) => t.replace("a1", "z9")) // "@z9.x" (no marker: the inner rewrite IS the whole rewrite)
+ * @example mapThroughPrevMarker("@@", (t) => "anything") // "@@" (nothing inside to rewrite)
+ */
+function mapThroughPrevMarker(token, rewriteInner) {
+  if (!token.startsWith(PREV_STORED_MARKER)) return rewriteInner(token);
+  const inner = storedPrevInner(token);
+  if (inner === null) return token;
+  const rewritten = rewriteInner(inner);
+  return PREV_STORED_MARKER + (rewritten.startsWith("@") ? rewritten.slice(1) : rewritten);
+}
 
 /**
  * Pure function. Is the ref token at index `i` a RESERVED KEYWORD (`time`) rather
@@ -457,29 +577,65 @@ export function equationTokenSpans(src, state, selfId = null, scriptExports = nu
       const ok = t.value === "self" || t.value.startsWith("@") || slugs.toId.has(t.value);
       return { start: t.start, end: t.end, cls: ok ? "prop" : "error" };
     }
-    if (t.value === "self" || t.value.startsWith("self.")) {
-      try {
-        parseSelfRef(t.value, selfId); // validate shape (throws on bare/malformed self)
-        return { start: t.start, end: t.end, cls: "self" };
-      } catch {
-        return { start: t.start, end: t.end, cls: "error" };
-      }
+    // A PREVIOUS-VALUE reference (SIMULATED STATE): the marker is grammar, and the
+    // token paints as the reference INSIDE it — `@box.x` reads as a property
+    // reference, not as an unknown identifier beginning with "@". The bare marker
+    // has no inner reference and paints as the keyword it is.
+    const marker = prevMarkerLength(t.value, "display");
+    if (marker) {
+      const inner = t.value.slice(marker);
+      if (inner === "") return { start: t.start, end: t.end, cls: "self" };
+      const cls = refTokenClass(inner, slugs, vars, selfId, scriptExports);
+      // The display reading first, the STORED reading as the fallback — the identical
+      // order displayToStored uses, so the overlay's red always matches the field's
+      // invalid affordance (a stored `@a1.x` the field still accepts must not paint
+      // as an error just because "a1" is nobody's slug).
+      return { start: t.start, end: t.end, cls: cls === "error" ? refTokenClass(t.value, slugs, vars, selfId, scriptExports) : cls };
     }
-    try {
-      const d = resolveRef(t.value, slugs, selfId);
-      // A bare identifier resolves to {kind:"var"} STRUCTURALLY even when no such
-      // variable exists (resolveRef defers the existence check to displayToStored)
-      // — flag the nonexistent var as an error so the overlay matches the field.
-      // A PROJECT SCRIPT export counts as existing, in the same precedence order the
-      // evaluator uses (a real variable first, an export second), so the paint and
-      // the value can never disagree.
-      if (d.kind === "var" && !(d.name in vars) && !(scriptExports && d.name in scriptExports))
-        return { start: t.start, end: t.end, cls: "error" };
-      return { start: t.start, end: t.end, cls: d.kind === "var" ? "var" : d.kind }; // "prop" | "anchor" | "var"
-    } catch {
-      return { start: t.start, end: t.end, cls: "error" };
-    }
+    return { start: t.start, end: t.end, cls: refTokenClass(t.value, slugs, vars, selfId, scriptExports) };
   });
+}
+
+/**
+ * Pure function. The highlight class of ONE resolvable reference token — "self",
+ * "var", "prop", "anchor", or "error" when it resolves to nothing real. Shared by
+ * the ordinary token path and the PREVIOUS-VALUE marker path, so `@box.x` and
+ * `box.x` can never paint differently (a marker changes WHEN the value is read, not
+ * WHAT it refers to).
+ *
+ * @param {string} value - the reference token (no previous-value marker)
+ * @param {object} slugs - a slugMap(state)
+ * @param {object} vars - the document's variables (existence check)
+ * @param {string|null} selfId - the owner item's id, enabling `self.…`
+ * @param {object|null} scriptExports - the project script's export object
+ * @returns {string} the highlight class
+ *
+ * @example refTokenClass("self.w", slugMap({items: {}}), {}, "a1", null) // "self"
+ * @example refTokenClass("speed", slugMap({items: {}}), {speed: 1}, null, null) // "var"
+ * @example refTokenClass("ghost", slugMap({items: {}}), {}, null, null) // "error"
+ */
+function refTokenClass(value, slugs, vars, selfId, scriptExports) {
+  if (value === "self" || value.startsWith("self.")) {
+    try {
+      parseSelfRef(value, selfId); // validate shape (throws on bare/malformed self)
+      return "self";
+    } catch {
+      return "error";
+    }
+  }
+  try {
+    const d = resolveRef(value, slugs, selfId);
+    // A bare identifier resolves to {kind:"var"} STRUCTURALLY even when no such
+    // variable exists (resolveRef defers the existence check to displayToStored)
+    // — flag the nonexistent var as an error so the overlay matches the field.
+    // A PROJECT SCRIPT export counts as existing, in the same precedence order the
+    // evaluator uses (a real variable first, an export second), so the paint and
+    // the value can never disagree.
+    if (d.kind === "var" && !(d.name in vars) && !(scriptExports && d.name in scriptExports)) return "error";
+    return d.kind === "var" ? "var" : d.kind; // "prop" | "anchor" | "var"
+  } catch {
+    return "error";
+  }
 }
 
 /**
@@ -1332,6 +1488,14 @@ const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * @example // resolveRef("= speed", slugMap({items: {}})) throws: "= speed" is not one reference token
  */
 export function resolveRef(token, slugs, selfId = null) {
+  // A STORED previous-value token (`@@…`) — SIMULATED STATE. Only the stored
+  // spelling is resolved here: a single "@" is the item sigil in the grammar the
+  // evaluator reads, and the DISPLAY marker is peeled by the display-side passes
+  // (displayToStored, equationTokenSpans) before they ever get here.
+  if (token.startsWith(PREV_STORED_MARKER)) {
+    const inner = storedPrevInner(token);
+    return { kind: "prev", inner: inner === null ? null : resolveRef(inner, slugs, selfId) };
+  }
   if (token.startsWith("@")) return parseStoredRef(token);
   if (token === "self" || token.startsWith("self.")) return parseSelfRef(token, selfId);
   // A reserved KEYWORD (`time`) — the scope proxy resolves it to a host value, not
@@ -1512,22 +1676,16 @@ function pathToDisplay(path) {
  * @example displayToStored("time % 12.5", {items: {}}) // "time % 12.5" (the `time` keyword + `%` operator both round-trip; NOT an unknown variable)
  * @example // displayToStored("sped * 2", {vars: {speed: 5}}) throws: Unknown variable "sped"
  * @example // displayToStored("self.endWidth", {items: {}}) throws: Unknown property "endWidth" (self.endWidth) — camelCase is not accepted, one canonical form only
+ * @example displayToStored("@ + dt", {items: {}}) // "@@ + dt" (SIMULATED STATE: the display `@` marker serializes to `@@`; `dt` is a keyword)
+ * @example displayToStored("@box.x", {items: {a1: {type: "rect", name: "Box"}}}) // "@@a1.x" (the item sigil is absorbed by the marker)
  */
 export function displayToStored(src, state) {
   const clean = src.replace(/^\s*=\s*/, "");
   const ast = parseExpression(clean); // validate the full grammar, not just the tokens
   const wSpans = widgetArgSpans(ast); // validates function arity/kinds; marks widget-arg tokens
   const slugs = slugMap(state);
-  return mapRefTokens(clean, (token, tok) => {
-    // A function NAME (a ref immediately followed by "(") stays verbatim —
-    // it is grammar, not a reference; widgetArgSpans already validated it.
-    if (token in FUNCTIONS && clean[tok.end] === "(") return token;
-    // A WIDGET argument: a bare item slug → "@id" (or verbatim "self").
-    if (wSpans.has(`${tok.start}:${tok.end}`)) {
-      if (token === "self") return token;
-      const id = resolveWidgetArg(token, slugs); // throws on unknown widget
-      return storedItemRef(id);
-    }
+  /** The stored spelling of ONE display reference token (no previous-value marker). */
+  const storeOne = (token) => {
     if (token === "self" || token.startsWith("self.")) {
       const shape = selfRefShape(token); // throws "needs a property" on bare "self"
       if (shape.kind !== "prop") return token; // self.anchors.<id>.x|y: structural, stored verbatim
@@ -1544,6 +1702,48 @@ export function displayToStored(src, state) {
       return storedItemRef(d.itemId, `.${pathToStored(d.path).join(".")}`);
     }
     return storedItemRef(d.itemId, `_${d.anchorId}.${d.coord}`);
+  };
+  return mapRefTokens(clean, (token, tok) => {
+    // A function NAME (a ref immediately followed by "(") stays verbatim —
+    // it is grammar, not a reference; widgetArgSpans already validated it.
+    if (token in FUNCTIONS && clean[tok.end] === "(") return token;
+    // A WIDGET argument: a bare item slug → "@id" (or verbatim "self"). BEFORE the
+    // marker branch: a widget argument names an item's IDENTITY, which has no
+    // previous value, so `f(@box)` must fail as the unknown widget "@box" rather
+    // than quietly become a previous-value reference the solver cannot use.
+    if (wSpans.has(`${tok.start}:${tok.end}`)) {
+      if (token === "self") return token;
+      const id = resolveWidgetArg(token, slugs); // throws on unknown widget
+      return storedItemRef(id);
+    }
+    // A PREVIOUS-VALUE reference (SIMULATED STATE): the display "@" marker becomes
+    // the stored "@@", and the reference inside is stored exactly as it would be on
+    // its own — with its own "@" sigil absorbed, since the marker already carries one.
+    const marker = prevMarkerLength(token, "display");
+    if (marker) {
+      const inner = token.slice(marker);
+      if (inner === "") return PREV_STORED_MARKER;
+      try {
+        const stored = storeOne(inner);
+        return PREV_STORED_MARKER + (stored.startsWith("@") ? stored.slice(1) : stored);
+      } catch (displayError) {
+        // ALREADY-STORED INPUT STAYS IDEMPOTENT. A single "@" is the marker in the
+        // display grammar and the ITEM SIGIL in the stored one, and this function has
+        // always accepted a stored source unchanged (`@a1.x` → `@a1.x`), which several
+        // callers rely on. So the DISPLAY reading is tried first and wins; only when
+        // its inner names nothing does the token fall back to the stored reading —
+        // the same ordered-disambiguation shape resolveRef already uses for
+        // slug-before-anchor. The two only collide when an item's ID equals another
+        // item's SLUG, and there the display reading is the right one to prefer.
+        try {
+          resolveRef(token, slugs); // throws unless the whole token IS a stored ref
+        } catch {
+          throw displayError; // neither reading works: report the display one, which is what was typed
+        }
+        return storeOne(token);
+      }
+    }
+    return storeOne(token);
   });
 }
 
@@ -1594,6 +1794,30 @@ function storedBodyToDisplay(src, state) {
   } catch {
     // unparseable / unknown function — no widget-arg rewrites, verbatim fallback
   }
+  /** The display spelling of ONE stored token that is NOT a previous-value marker.
+   *  Unknown/unparseable references come back verbatim (see the function docs). */
+  const displayOne = (value) => {
+    if (value.startsWith("@")) {
+      try {
+        const d = parseStoredRef(value);
+        const slug = slugs.toSlug.get(d.itemId);
+        if (slug) return d.kind === "prop" ? `${slug}.${pathToDisplay(d.path).join(".")}` : `${slug}_${d.anchorId}.${d.coord}`;
+      } catch {
+        // Unparseable @token: keep it verbatim (evaluateState reports it).
+      }
+      return value;
+    }
+    if (value === "self" || value.startsWith("self.")) {
+      try {
+        const shape = selfRefShape(value);
+        // self.anchors.<id>.x|y: structural, shown verbatim.
+        if (shape.kind === "prop") return `self.${pathToDisplay(shape.path).join(".")}`;
+      } catch {
+        // Malformed self ref (e.g. bare "self"): keep it verbatim (evaluateState reports it).
+      }
+    }
+    return value; // bare variable name: unchanged
+  };
   let out = "";
   let last = 0;
   for (let i = 0; i < tokens.length; i++) {
@@ -1601,26 +1825,17 @@ function storedBodyToDisplay(src, state) {
     if (t.kind !== "ref") continue;
     if (tokens[i - 1]?.kind === "dot") continue; // member projection coord (.x/.y): grammar, unchanged
     let mapped = t.value;
-    if (wSpans.has(`${t.start}:${t.end}`) && t.value.startsWith("@")) {
+    if (t.value.startsWith(PREV_STORED_MARKER)) {
+      // SIMULATED STATE, stored → display: "@@" becomes the one "@" the author types,
+      // and the reference inside is displayed as it would be on its own.
+      const inner = storedPrevInner(t.value);
+      mapped = PREV_DISPLAY_MARKER + (inner === null ? "" : displayOne(inner));
+    } else if (wSpans.has(`${t.start}:${t.end}`) && t.value.startsWith("@")) {
       // A widget argument stored as a bare "@id" → its current slug.
       const slug = slugs.toSlug.get(t.value.slice(1));
       if (slug) mapped = slug; // unknown id stays "@id" verbatim (purged widget)
-    } else if (t.value.startsWith("@")) {
-      try {
-        const d = parseStoredRef(t.value);
-        const slug = slugs.toSlug.get(d.itemId);
-        if (slug) mapped = d.kind === "prop" ? `${slug}.${pathToDisplay(d.path).join(".")}` : `${slug}_${d.anchorId}.${d.coord}`;
-      } catch {
-        // Unparseable @token: keep it verbatim (evaluateState reports it).
-      }
-    } else if (t.value === "self" || t.value.startsWith("self.")) {
-      try {
-        const shape = selfRefShape(t.value);
-        if (shape.kind === "prop") mapped = `self.${pathToDisplay(shape.path).join(".")}`;
-        // self.anchors.<id>.x|y: structural, shown verbatim.
-      } catch {
-        // Malformed self ref (e.g. bare "self"): keep it verbatim (evaluateState reports it).
-      }
+    } else if (t.value.startsWith("@") || t.value === "self" || t.value.startsWith("self.")) {
+      mapped = displayOne(t.value);
     } else {
       continue; // bare variable name: unchanged
     }
@@ -2626,9 +2841,14 @@ const NUMERIC_SEGMENT_RE = /\.\d+(?:\.|$)/;
  * @example refToJs("self.points.3.x") // "self.points[3].x"
  * @example refToJs("fill.linear.stops.1.offset") // "fill.linear.stops[1].offset"
  * @example refToJs("speed") // "speed"
+ * @example refToJs("@@a1.x") // "$$a1.x" (a previous-value marker mangles the same way, one "$" per "@")
+ * @example refToJs("@@") // "$$" (the bare marker — this property's own previous value)
  */
 function refToJs(value) {
-  const head = value[0] === "@" ? `$${value.slice(1)}` : value;
+  // ONE "$" PER "@", so the previous-value marker (`@@`) survives the mangle as `$$`
+  // and segsToToken can put it back. A single blanket replace rather than a test on
+  // value[0]: the two sigils stack, and two branches would have to agree about that.
+  const head = value.replace(/^@+/, (at) => "$".repeat(at.length));
   const [first, ...rest] = head.split(".");
   return first + rest.map((seg) => (/^\d+$/.test(seg) ? `[${seg}]` : `.${seg}`)).join("");
 }
@@ -2719,9 +2939,11 @@ class CycleAbort {
  * @example segsToToken(["$a1", "x"]) // "@a1.x"
  * @example segsToToken(["box", "rotation_anchor", "x"]) // "box.rotation_anchor.x"
  * @example segsToToken(["self", "w"]) // "self.w"
+ * @example segsToToken(["$$a1", "x"]) // "@@a1.x" (the previous-value marker, unmangled)
+ * @example segsToToken(["$$"]) // "@@" (the bare marker)
  */
 function segsToToken(segs) {
-  const head = segs[0][0] === "$" ? "@" + segs[0].slice(1) : segs[0];
+  const head = segs[0].replace(/^\$+/, (dollars) => "@".repeat(dollars.length));
   return [head, ...segs.slice(1)].join(".");
 }
 
@@ -2849,12 +3071,50 @@ export function evaluateState(state, registry, script = "", contentSizes = null)
   // a NEW Map when a measurement arrives, never mutate one in place (a mutation
   // would be invisible here and the bug would look like "it only updates when I
   // nudge something").
+  // THE SIMULATION GENERATION IS THE SECOND INVALIDATION AXIS (SIMULATED STATE —
+  // manifest R7-9). The clock guard above nearly covers it, since a step is only ever
+  // taken when the clock moves — but a RESET moves the whole simulation back to its
+  // initial condition WITHOUT moving the clock (leaving present mode, a jump to the
+  // start, a document load), and a memo served across one would render the abandoned
+  // trajectory. Only a SIMULATED result carries the axis, so a document that reads
+  // neither `@` nor `dt` caches exactly as it always did.
   if (memo && memo.registry === registry && memo.script === script && memo.contentSizes === contentSizes
-    && (memo.result.clock === null || memo.result.clock === particleTime()))
+    && (memo.result.clock === null || memo.result.clock === particleTime())
+    && (!memo.result.simulated || memo.result.simGeneration === simulationGeneration()))
     return memo.result;
   const result = computeEvaluatedState(state, registry, script, contentSizes);
   evalMemo.set(state, { registry, script, contentSizes, result });
   return result;
+}
+
+/**
+ * Pure function. THE CAMERA's max simulation timestep for a folded state, in
+ * seconds, or null for "none" (no clamp). Absent means the document predates the
+ * setting, which takes the default — the absent-is-legacy discipline; an explicit
+ * `null` is the author choosing none and is honoured.
+ *
+ * AN EQUATION HERE CANNOT BE HONOURED and says so: the clamp is needed BEFORE the
+ * pass that would evaluate it, so a `=` in this slot falls back to the default and
+ * is reported rather than silently disabling the protection.
+ *
+ * @param {object} state - a folded state ({items, vars})
+ * @returns {number|null} seconds, or null for no clamp
+ *
+ * @example cameraMaxTimestep({items: {}}) // 0.1 (no camera — the default clamp)
+ * @example cameraMaxTimestep({items: {c1: {type: "camera", maxTimestep: 0.25}}}) // 0.25
+ * @example cameraMaxTimestep({items: {c1: {type: "camera", maxTimestep: null}}}) // null (the author chose "none")
+ * @example cameraMaxTimestep({items: {c1: {type: "camera"}}}) // 0.1 (pre-setting document)
+ */
+export function cameraMaxTimestep(state) {
+  for (const item of Object.values(state.items ?? {})) {
+    if (item?.type !== "camera" || !(CAMERA_MAX_TIMESTEP_KEY in item)) continue;
+    const value = item[CAMERA_MAX_TIMESTEP_KEY];
+    if (typeof value === "number" || value === null) return value;
+    const message = `the camera's ${CAMERA_MAX_TIMESTEP_KEY} is ${JSON.stringify(value)} — the simulation clamp is read before equations are evaluated, so it cannot be one; using the ${CAMERA_MAX_TIMESTEP_DEFAULT}s default`;
+    reportOnce(message, `PowerRP simulation: ${message}`);
+    return CAMERA_MAX_TIMESTEP_DEFAULT;
+  }
+  return CAMERA_MAX_TIMESTEP_DEFAULT;
 }
 
 /** Pure-core of evaluateState (see its docs); uncached. Full-JS, lazy engine. */
@@ -3001,6 +3261,33 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // reproducible sequence.
   let clockRead = null; // the clock value this pass used, or null if nothing read it
   const readClock = () => (clockRead ??= particleTime());
+
+  // THE SIMULATION STEP (SIMULATED STATE — manifest R7-9, core/simulation_history.js).
+  // Opened LAZILY by the first `@` or `dt` read, exactly as the clock is: a document
+  // that mentions neither never touches the history table, so nothing about a
+  // non-simulated document changes — not its cost, not its memo, not its pixels.
+  //
+  // `dt` IS THE ELAPSED TIME THIS STEP COVERS, and it is the same number for every
+  // pass at one clock instant (the history module's double buffer is what guarantees
+  // that). It is 0 in every still regime, because the clock does not move there and a
+  // frozen simulation does not move either — `x / dt` throwing is then the author's
+  // problem, per the user's own "the user is responsible for correctly using dt".
+  let simRead = false;
+  let simDt = 0;
+  let simGen = 0;
+  const readDt = () => {
+    if (!simRead) {
+      simRead = true;
+      simDt = beginSimulationStep(readClock(), cameraMaxTimestep(state));
+      simGen = simulationGeneration();
+    }
+    return simDt;
+  };
+  // Slot keys this pass read a PREVIOUS value of, → the path to read their new value
+  // back from. Recorded at the END of the pass (below the drive loop), never during:
+  // a mid-pass write would let one slot's `@` see another slot's already-stepped
+  // value, which is the one-table failure the history module's docblock explains.
+  const prevReads = new Map();
   const seededRandom = mulberry32(stringSeed([...slots.keys()].sort().join("|") + "|powerrp"));
 
   // THE PROJECT SCRIPT (core/project_script.js). Compiled ONCE per pass against the
@@ -3163,6 +3450,58 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     return solvePoint(d.itemId, tx, ty)[d.coord];
   };
 
+  /**
+   * Query→value (opens the simulation step; registers the slot for recording). THE
+   * `@` READ — this property's (or another slot's) value at the PREVIOUS simulation
+   * step, or its INITIAL CONDITION when there is no previous step.
+   *
+   * THIS IS THE CYCLE EXEMPTION, and it is expressed by NOT CREATING THE EDGE rather
+   * than by a flag: `@self.x` is a self-reference by construction, and requireSlot
+   * treats re-entry to an in-progress slot as a LOUD cycle. A previous-step read is
+   * not a dependency on the CURRENT step — nothing has to be settled first — so this
+   * path never calls requireSlot and never calls addDep, and the cycle walk simply
+   * never meets it. Same shape as core/nodeflow.js's `feedbackSafe`, which likewise
+   * exempts an edge by making cycleRefusal skip it rather than by teaching the walk a
+   * second kind of edge; the forward direction (a slot reading another slot's CURRENT
+   * value) still cycles loudly, exactly as before.
+   *
+   * THE INITIAL CONDITION is the slot's authored value: the folded value when the
+   * slot holds a plain value, and the plugin's declared DEFAULT when the slot holds
+   * the equation itself (there is nothing else it could be — the authored text at
+   * that path IS the equation). An author who wants a different start composes it,
+   * e.g. `rotation = theta0 + theta` with `theta` the simulated variable.
+   */
+  const prevValue = (d, token, slot) => {
+    readDt(); // marks the pass simulated and opens the step (the history double buffer)
+    const target = prevTarget(d.inner, token, slot);
+    prevReads.set(target.key, target.path);
+    if (hasSimulationValue(target.key)) return simulationValue(target.key);
+    if (slots.has(target.key)) return fallbackFor(target.path);
+    const folded = getPath(state, target.path);
+    if (folded === undefined)
+      throw new Error(`"${token}" has no previous value: nothing is stored at ${target.path.join(".")}`);
+    return folded;
+  };
+
+  /** Pure-ish (reads slugs). The (slotKey, path) a previous-value reference names.
+   *  `inner` is null for the bare marker — this slot's own previous value. */
+  const prevTarget = (inner, token, slot) => {
+    if (inner === null) return { key: slot.key, path: slot.path };
+    if (inner.kind === "var") return { key: `vars.${inner.name}`, path: ["vars", inner.name] };
+    if (inner.kind === "prop") {
+      if (!out.items?.[inner.itemId]) throw new Error(`Unknown item "@${inner.itemId}" in "${token}"`);
+      const spath = storedListPath(pathToStored(inner.path));
+      return { key: ["items", inner.itemId, ...spath].join("."), path: ["items", inner.itemId, ...spath] };
+    }
+    // An ANCHOR is a computed point, not a stored slot, so it has no history to read
+    // — and a `time` keyword's previous value is spelled `time - dt`. Both are loud
+    // rather than approximated, because an approximation here would be a plausible
+    // wrong number in an integrator.
+    throw new Error(inner.kind === "anchor"
+      ? `"${token}" is an anchor, which is computed rather than stored — it has no previous value; take the previous value of the properties it is computed from`
+      : `"${token}" has no previous value — only a property or a variable does (for the clock, write "time - dt")`);
+  };
+
   /** Query→value (records deps; may recurse). Resolves a ref-proxy path (display
    * form, or `$`-mangled stored form) to its value, settling and recording every
    * dependency. Throws loudly on unknown refs / wrong kinds (→ fail-loud). */
@@ -3170,6 +3509,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
     const selfId = slot.path[0] === "items" ? slot.path[1] : null;
     const token = segsToToken(segs);
     const d = resolveRef(token, slugs, selfId); // handles @ (from $) / self / display
+    if (d.kind === "prev") return prevValue(d, token, slot);
     if (d.kind === "var") {
       const depKey = `vars.${d.name}`;
       if (slots.has(depKey)) requireSlot(depKey);
@@ -3305,6 +3645,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
       case "Infinity": return Infinity;
       case "Math": return SAFE_MATH; // no random
       case "time": return readClock(); // the ONE presentation clock (see readClock)
+      case "dt": return readDt(); // the seconds THIS simulation step covers (see readDt)
       case "random": return seededRandom; // seeded, deterministic
     }
     if (name in DOMAIN_FUNCTIONS) return makeFn(name, slot, selfId);
@@ -3471,6 +3812,14 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   for (const key of slots.keys())
     if (!status.has(key)) evalSlot(slots.get(key));
 
+  // THE SIMULATION STEP CLOSES HERE — after every slot is settled, so what each
+  // `@`-read slot records is this step's FINAL value. Only slots something actually
+  // read the previous value of are recorded: the table stays the size of the
+  // simulation, not the size of the document. A frozen consumer records nothing at
+  // all (core/simulation_history.recordSimulationValue), which is what keeps a
+  // thumbnail of another slide out of the editor's timeline.
+  for (const [key, path] of prevReads) recordSimulationValue(key, getPath(out, path));
+
   // Rim solves ran INLINE (each closest ref / closest_to_rim call read the
   // per-pass memo) — no fixpoint sweep. A pair that did not converge under the
   // solver's iteration cap (near-degenerate/tangent geometry) is REPORTED once,
@@ -3484,7 +3833,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // place a morph's endpoint equations are cooked. See mutCookMorphEndpoints.
   mutCookMorphEndpoints(out, state, registry, script, contentSizes, errors);
 
-  return { state: out, errors, deps, clock: clockRead };
+  return { state: out, errors, deps, clock: clockRead, simulated: simRead, simGeneration: simGen };
 }
 
 /**
@@ -3720,7 +4069,10 @@ export function withVariableRenamed(doc, oldName, newName, registry) {
   const mentionsOld = IDENTIFIER_RE.test(oldName) ? new RegExp(`\\b${oldName}\\b`) : null;
   const renameRefs = (src) => {
     try {
-      return mapRefTokens(src, (token) => (token === oldName ? newName : token));
+      // Through the previous-value marker, so `@@speed` is renamed too (see
+      // mapThroughPrevMarker) — a rename that skipped it would leave the equation
+      // naming a variable that no longer exists, having reported success.
+      return mapRefTokens(src, (token) => mapThroughPrevMarker(token, (inner) => (inner === oldName ? newName : inner)));
     } catch (e) {
       if (!mentionsOld?.test(src)) return src; // nothing of ours in there — silent success
       const message = `variable "${oldName}" → "${newName}": the equation ${JSON.stringify(src)} is not restricted-grammar rewritable (${e.message}) — it still names "${oldName}", rewrite it by hand`;
@@ -3820,8 +4172,8 @@ export function withItemVariableRenamed(doc, itemId, oldName, newName, registry)
   const mentionsOld = new RegExp(`\\.vars\\.${oldName}\\b`);
   const renameRefs = (src, isOwner) => {
     try {
-      return mapRefTokens(src, (token) =>
-        isOwner && token === selfOld ? selfNew : token === crossOld ? crossNew : token);
+      return mapRefTokens(src, (token) => mapThroughPrevMarker(token, (inner) =>
+        isOwner && inner === selfOld ? selfNew : inner === crossOld ? crossNew : inner));
     } catch (e) {
       if (!mentionsOld.test(src)) return src;
       const message = `item "${itemId}" variable "${oldName}" → "${newName}": the equation ${JSON.stringify(src)} is not restricted-grammar rewritable (${e.message}) — it still names "${oldName}", rewrite it by hand`;
@@ -3931,12 +4283,12 @@ export function withItemRefsRemapped(src, idMap) {
   // which is exactly how this would go back to failing silently.
   for (const [from, to] of idMap) { storedItemRef(from); storedItemRef(to); }
   try {
-    const out = mapRefTokens(src, (token) => {
-      const id = storedRefItemId(token);
-      if (id === null) return token;
-      if (!idMap.has(id)) { external.add(id); return token; }
-      return storedItemRef(idMap.get(id), token.slice(1 + id.length));
-    });
+    const out = mapRefTokens(src, (token) => mapThroughPrevMarker(token, (inner) => {
+      const id = storedRefItemId(inner);
+      if (id === null) return inner;
+      if (!idMap.has(id)) { external.add(id); return inner; }
+      return storedItemRef(idMap.get(id), inner.slice(1 + id.length));
+    }));
     return { src: out, external: [...external] };
   } catch {
     return { src, external: [] }; // not a parseable equation — leave it (its own error affordance reports it)
