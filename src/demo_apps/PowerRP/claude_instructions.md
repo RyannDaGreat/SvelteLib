@@ -4183,6 +4183,18 @@ integrating its own prefix.
 **Δt = 0 STILL PRODUCES A BYTE-IDENTICAL FRAME** and that is not negotiable — it is
 what keeps the orthogonality law in `<app>/CLAUDE.md` alive. Pin it with a test.
 
+**⚠⚠ THE TRAP EVERY SIMULATED SLOT WALKS INTO, AND IT FAILS SILENTLY** (measured by W3-T,
+2026-08-06, and it applies far beyond trails). `core/expressions.js fallbackFor` answers `@` **on
+step one with the PLUGIN DEFAULT**. So if a plugin's default IS the equation, step one evaluates
+`"= @@ + dt" + 0` — **a string-concatenated clock. No error, no NaN, just garbage that looks like
+a value.**
+
+**THE RULE: a simulated slot's plugin DEFAULT is the NUMBER (its initial condition); the EQUATION
+belongs in the INSERTED STATE.** `plugins/trail.js` exports `trailInsertState(overrides)` for
+exactly this, and a preset must use it rather than `trailPlugin.defaults`. **This binds every
+simulated slot — `theta`, `omega`, `x`, `y`, `vx`, `vy`, `age` — not just trails**, which is why
+it lives here in R7-9 rather than in the trail's own section.
+
 **HISTORY NEEDS A RESET RULE, and the fixed-step design was hiding that it does.**
 The property's authored/keyframed value is the INITIAL CONDITION (user: *"of course
 I can set the rotation in the beginning"*). When history resets — seeking backwards,
