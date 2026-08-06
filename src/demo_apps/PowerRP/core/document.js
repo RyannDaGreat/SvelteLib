@@ -39,11 +39,17 @@ import { defaultTransition, withDurationMigrated } from "./transitions.js";
 import { interpKeyFor, EXP_TWEEN_MODE } from "./interp_modes.js";
 import {
   withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue, evaluateState,
+  sourceIsSimulated,
 } from "./expressions.js";
 import { withRichTextMigrated } from "./richtext.js";
 import { headModeSplit } from "./endpoints.js";
 import { withPaletteRampMigrated, rampMigrationReports } from "./ramp_migration.js";
 import { bundleDefaults, linearEndpointsToAngle } from "./properties.js";
+// SIMULATED STATE (manifest R7-9): the camera carries the max simulation timestep,
+// and this module is where THE camera literal lives. The key/default are declared in
+// simulation_history.js because core/expressions.js reads them and cannot import this
+// file — the document→expressions edge is one-way.
+import { CAMERA_MAX_TIMESTEP_KEY, CAMERA_MAX_TIMESTEP_DEFAULT } from "./simulation_history.js";
 import { worldTransform } from "./derive.js";
 import * as T from "./transform.js";
 
@@ -155,6 +161,13 @@ export function defaultCameraState(meta = {}) {
     // THE COUPLING'S SWITCH, born ON per the ruling — see the docblock for why it
     // is written rather than inferred, and why it does not keyframe in v1.
     [CAMERA_NATURAL_ZOOM_KEY]: CAMERA_NATURAL_ZOOM_DEFAULT,
+    // THE MAX SIMULATION TIMESTEP (SIMULATED STATE — user: "We can set a max timestep
+    // in the camera, under some settings, which can be none or .1 seconds etc to
+    // prevent extreme lag spikes from driving it crazy"). Written rather than
+    // inferred, for the same reason the switch above is: an author reading the row
+    // sees real state. `null` in the row means NO clamp; the semantics and the
+    // measured-vs-dictated rule live in core/simulation_history.js.
+    [CAMERA_MAX_TIMESTEP_KEY]: CAMERA_MAX_TIMESTEP_DEFAULT,
     z: 1000, rotation: 0, scale: 1, active: true, background: "#ffffff",
     // Rendering bundle (AA / retina / dither) is DECLARED on the camera plugin;
     // spread its defaults so a fresh camera is born complete — otherwise
@@ -2581,4 +2594,73 @@ export function allDocumentItems(doc) {
       out.set(id, cur);
     }
   return [...out.values()];
+}
+
+// ── Simulated state: is this document one? (manifest R7-9) ───────────────────
+
+/**
+ * Query (reads the fold cache). Does any equation in `doc` read SIMULATED STATE —
+ * a previous value (`@`) or the timestep (`dt`)?
+ *
+ * WHY A DOCUMENT-LEVEL PREDICATE EXISTS AT ALL. Simulated state deliberately gives
+ * up the SEEKABILITY recordable state has: frame N is a function of frames 0..N-1,
+ * so a renderer cannot start cold at frame 200. `cli/render_job.js` shards a render
+ * by STRIDED frame range, and a strided shard is exactly a cold start in the middle
+ * of a trajectory. This answers the question a render job has to ask BEFORE it
+ * renders anything, which is why it is static (core/expressions.sourceIsSimulated)
+ * rather than a flag off an evaluation that has not happened yet.
+ *
+ * THE SAME WALK THE EVALUATOR USES, deliberately: the folded state of every slide,
+ * every string variable, and every leaf `isEquationValue` accepts. Asking a
+ * different question than the evaluator would be a mirror that can drift, and the
+ * direction it would drift in is the wrong one (a source the evaluator treats as an
+ * equation and this does not is a silent strided shard).
+ *
+ * @param {object} doc - a repaired document
+ * @param {object} registry - the plugin registry
+ * @returns {boolean}
+ *
+ * @example // documentIsSimulated(newDocument(), registry) === false — a fresh deck simulates nothing
+ * @example // a deck with items.a1.rotation = "= @@ + dt" → true
+ */
+export function documentIsSimulated(doc, registry) {
+  for (let index = 0; index < doc.slides.length; index++) {
+    const state = slideState(doc, index);
+    for (const value of Object.values(state.vars ?? {}))
+      if (typeof value === "string" && sourceIsSimulated(value)) return true;
+    for (const item of Object.values(state.items ?? {})) {
+      if (typeof item?.type !== "string") continue;
+      const plugin = registry.get(item.type);
+      for (const value of Object.values(item.vars ?? {}))
+        if (typeof value === "string" && sourceIsSimulated(value)) return true;
+      for (const [path, value] of [...leaves(item), ...declaredListLeaves(item)])
+        if (path[0] !== "vars" && isEquationValue(plugin, path, value, item) && sourceIsSimulated(value))
+          return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Query. The sentence explaining why `doc` may NOT be sharded by STRIDED frame
+ * range, or `null` when it may — the problem-string-or-null shape
+ * core/nodeflow.nodeRefProblem and core/commands.commandUnavailableReason already
+ * use, so a caller reads it the same way it reads every other refusal here.
+ *
+ * A SIMULATED DOCUMENT MUST NEVER BE STRIDED-SHARDED SILENTLY. Each worker is its
+ * own process with its own history table, so a strided worker would integrate its
+ * frames from the wrong prefix and produce a plausible, wrong video with a green
+ * exit code — the exact failure this project forbids. Contiguous ranges are always
+ * safe (each worker walks its own prefix in order).
+ *
+ * @param {object} doc - a repaired document
+ * @param {object} registry - the plugin registry
+ * @returns {string|null} the refusal, or null when strided sharding is safe
+ *
+ * @example // stridedShardRefusal(newDocument(), registry) === null
+ * @example // a simulated deck → "…contains SIMULATED STATE… shard by CONTIGUOUS frame ranges instead"
+ */
+export function stridedShardRefusal(doc, registry) {
+  if (!documentIsSimulated(doc, registry)) return null;
+  return "this document contains SIMULATED STATE (an equation reading `@` or `dt`), so frame N is a function of frames 0..N-1 — a strided shard would start cold in the middle of a trajectory and render a plausible WRONG video; shard by CONTIGUOUS frame ranges instead, one prefix per worker";
 }

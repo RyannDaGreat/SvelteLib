@@ -14,7 +14,12 @@
 import { EPHEMERAL } from "../core/ephemeral.js";
 import { standardBBoxAnchors } from "../core/derive.js";
 import { defaultCameraState, CAMERA_NATURAL_ZOOM_KEY, CAMERA_NATURAL_ZOOM_DEFAULT } from "../core/document.js";
-import { props, bundle, bundleDefaults } from "../core/properties.js";
+import { props, bundle, bundleDefaults, SECONDS_SCRUB } from "../core/properties.js";
+// SIMULATED STATE's clamp (manifest R7-9). Declared in core/simulation_history.js
+// because the equation engine reads it and cannot import core/document.js; imported
+// straight from there rather than re-exported through document.js, since unlike
+// naturalZoom there is no cycle to route around.
+import { CAMERA_MAX_TIMESTEP_KEY, CAMERA_MAX_TIMESTEP_DEFAULT } from "../core/simulation_history.js";
 import { borderBandHit } from "../core/geometry.js";
 import { expLerp, expTweenApplies } from "../core/interp_modes.js";
 
@@ -239,6 +244,21 @@ export const cameraPlugin = {
       Object.fromEntries(COUPLED_PAN_KEYS.map((k) => [k, { interpNote: COUPLED_AXIS_NOTE }]))),
     ...props("background"),
     ...bundle("rendering"),
+    // THE MAX SIMULATION TIMESTEP — scene-global, so it lives on THE camera beside
+    // the other scene-global settings (user: "We can set a max timestep in the
+    // camera, under some settings"). Its own "Simulation" accordion rather than
+    // squatting in "Rendering": how far a simulation may step is not a render
+    // setting, and the Inspector titles an unknown category by start-casing its id,
+    // so a new section costs no registration.
+    //
+    // A LITERAL ROW, like Natural zoom above, rather than a core/properties.js PROPS
+    // entry: both are camera-only settings, and the row that belongs to exactly one
+    // widget is declared on that widget.
+    {
+      key: CAMERA_MAX_TIMESTEP_KEY, label: "Max timestep", kind: "number", category: "simulation",
+      default: CAMERA_MAX_TIMESTEP_DEFAULT, min: 0, scrub: SECONDS_SCRUB, nullable: true,
+      help: "The longest interval one displayed frame may advance a simulated equation (an `@` / `dt` equation), in seconds. It exists so a stall — a tab switch, a garbage-collection pause, a debugger breakpoint — cannot hand the integrator several seconds at once and fling the widget off the slide. The time lost to a stall is DISCARDED, never caught up: falling a little behind is the correct answer, and re-simulating the gap would make the next frame slower still. Cleared (—) there is no limit. It applies only to MEASURED time, so a video render, whose step is exactly 1/fps by definition, is never clamped and stays exactly reproducible.",
+    },
   ],
   commands: [
     // THE SAME STATE IN A SECOND SURFACING — the house rule that the palette, the

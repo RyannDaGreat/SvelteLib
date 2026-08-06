@@ -142,8 +142,14 @@ export const CAMERA_MAX_TIMESTEP_DEFAULT = 0.1;
 
 /** What `@` reads: each recorded slot's value at the PREVIOUS step. */
 let prevValues = new Map();
-/** What the running pass writes: each recorded slot's value at the CURRENT step. */
+/** What the running pass writes: each recorded slot's value at the CURRENT step.
+ *  SEEDED FROM `prev` at each roll, so a slot no pass touched this step keeps its
+ *  last known value instead of being blanked. */
 let curValues = new Map();
+/** The keys actually WRITTEN this step — `cur` cannot answer that, because the roll
+ *  pre-seeds it from `prev`. This is what makes the two-consumers-disagreeing check
+ *  above a real detector rather than a false alarm on every ordinary second pass. */
+let writtenThisStep = new Set();
 /** The clock reading (seconds) at the last roll, or null before the first pass. */
 let lastAdvanceTime = null;
 /** The timestep the CURRENT step covers. Computed at the roll and reused by every
@@ -215,6 +221,7 @@ export function beginSimulationStep(now, maxTimestep) {
     // every slot on it.
     prevValues = curValues;
     curValues = new Map(prevValues);
+    writtenThisStep = new Set();
     lastAdvanceTime = now;
     generation++;
   }
@@ -257,7 +264,7 @@ export function simulationValue(slotKey) {
  */
 export function recordSimulationValue(slotKey, value) {
   if (frozenDepth > 0) return;
-  if (curValues.has(slotKey)) {
+  if (writtenThisStep.has(slotKey)) {
     const already = curValues.get(slotKey);
     if (already !== value && !(Number.isNaN(already) && Number.isNaN(value))) {
       const message = `simulated slot "${slotKey}" was advanced twice in one step, to ${JSON.stringify(already)} and then ${JSON.stringify(value)} — two evaluation consumers are advancing the simulation from different states; every consumer but one must run inside withSimulationFrozen()`;
@@ -265,6 +272,7 @@ export function recordSimulationValue(slotKey, value) {
     }
   }
   curValues.set(slotKey, value);
+  writtenThisStep.add(slotKey);
 }
 
 /**
@@ -291,6 +299,7 @@ export function simulationGeneration() {
 export function resetSimulation() {
   prevValues = new Map();
   curValues = new Map();
+  writtenThisStep = new Set();
   lastAdvanceTime = null;
   currentDt = 0;
   generation++;
@@ -373,6 +382,7 @@ export function simulationSnapshot() {
 export function restoreSimulationSnapshot(snapshot) {
   prevValues = new Map(snapshot.prev);
   curValues = new Map(snapshot.cur);
+  writtenThisStep = new Set();
   lastAdvanceTime = snapshot.lastAdvanceTime;
   currentDt = snapshot.dt;
   generation++;

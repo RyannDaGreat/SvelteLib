@@ -359,6 +359,39 @@ export function storedPrevInner(token) {
 }
 
 /**
+ * Pure function. Does this equation source read SIMULATED STATE — a previous value
+ * (`@`/`@@`) or the timestep (`dt`)? The STATIC half of the answer, and the one a
+ * render job needs: it must decide how to SHARD before it renders anything, and the
+ * dynamic answer (`evaluateState(...).simulated`) only exists after a pass has run.
+ *
+ * CONSERVATIVE BY CONSTRUCTION, in the safe direction: a marker in a branch that
+ * never executes still counts, and a source the tokenizer cannot read (a full-JS
+ * IIFE) is probed textually rather than assumed innocent. A false YES costs a
+ * contiguous shard, which is always correct; a false NO would be a wrong video with
+ * a green exit code.
+ *
+ * @param {string} src - a stored equation source (a leading "=" is tolerated)
+ * @returns {boolean}
+ *
+ * @example sourceIsSimulated("@@ + dt") // true
+ * @example sourceIsSimulated("= @@a1.rotation * 0.99") // true (a previous value)
+ * @example sourceIsSimulated("speed * dt") // true (the timestep)
+ * @example sourceIsSimulated("self.w / 2") // false
+ * @example sourceIsSimulated("dt(3)") // false (a call NAME, not the keyword — the parser's own rule)
+ */
+export function sourceIsSimulated(src) {
+  const clean = String(src).replace(/^\s*=\s*/, "");
+  let tokens;
+  try {
+    tokens = tokenize(clean);
+  } catch {
+    return /@@|\$\$|\bdt\b/.test(clean); // unreadable source: probe textually rather than assume innocent
+  }
+  return tokens.some((t, i) => t.kind === "ref"
+    && (t.value.startsWith(PREV_STORED_MARKER) || (t.value === "dt" && reservedKeywordAt(tokens, i))));
+}
+
+/**
  * Pure function. Applies `rewriteInner` to the reference INSIDE a stored token,
  * putting any previous-value marker back afterwards. THE SEAM EVERY mapRefTokens
  * REWRITER GOES THROUGH — a variable rename and a clone's item re-point are about
@@ -1496,6 +1529,12 @@ export function resolveRef(token, slugs, selfId = null) {
     const inner = storedPrevInner(token);
     return { kind: "prev", inner: inner === null ? null : resolveRef(inner, slugs, selfId) };
   }
+  // A BARE "@" is the marker in BOTH grammars, because it is unambiguous: a lone
+  // sigil names no item, so there is no stored reading to collide with. That is what
+  // lets a hand-written save file say `= @ + dt` and mean it — the same tolerance
+  // this file already extends to display-form slugs inside stored documents. Only a
+  // QUALIFIED single-@ token (`@a1.x`) stays the stored item sigil.
+  if (token === PREV_DISPLAY_MARKER) return { kind: "prev", inner: null };
   if (token.startsWith("@")) return parseStoredRef(token);
   if (token === "self" || token.startsWith("self.")) return parseSelfRef(token, selfId);
   // A reserved KEYWORD (`time`) — the scope proxy resolves it to a host value, not
@@ -1723,6 +1762,10 @@ export function displayToStored(src, state) {
     if (marker) {
       const inner = token.slice(marker);
       if (inner === "") return PREV_STORED_MARKER;
+      // ALREADY the stored spelling ("@@…"): pass it through. This function has
+      // always been idempotent on a stored source, and a two-sigil token has no
+      // display reading to prefer — there is nothing to convert.
+      if (marker === 2) return token;
       try {
         const stored = storeOne(inner);
         return PREV_STORED_MARKER + (stored.startsWith("@") ? stored.slice(1) : stored);
