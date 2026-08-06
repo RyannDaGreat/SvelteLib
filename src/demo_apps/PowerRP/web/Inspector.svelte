@@ -217,6 +217,54 @@
   // Picker: items visible on this slide first (render-tree order, as before),
   // then every OTHER document item — not yet created here, or active:false — at
   // the BOTTOM, flagged `invisible` for the red style (manifest, round 11).
+  /**
+   * Query. The display title for a document item's `type`, tolerating the two cases
+   * `app.registry.get` throws on.
+   *
+   * ── WHY THIS IS NOT PARANOIA: THE PRODUCER SAYS THE FIELD MAY BE ABSENT ─────
+   * `allDocumentItems` (core/document.js) builds each row as
+   * `{id, type: undefined, name: undefined}` and only fills `type` if SOME slide's delta
+   * carries a type string. So `it.type` is declared as possibly-undefined by its own
+   * producer, and both call sites here passed it straight to `registry.get`, which
+   * THROWS on an unknown type — taking the whole Inspector down with
+   * `Unknown widget type "undefined"`.
+   *
+   * `core/nodeflow.pluginFor` is the codebase's documented idiom for exactly this trap,
+   * and its comment states the rule: a type absent on this fold is "not created on this
+   * fold — not an error". The item picker is a DOCUMENT-WIDE list whose whole purpose is
+   * to show items that are not on the current slide, so it is the surface most likely to
+   * meet one.
+   *
+   * REPORTED BY THE USER as a crash "when I added a patch". **I could not reproduce the
+   * trigger** — not from a raw patch build, not from two patches across two slides in a
+   * live editor, both measured. So this fixes the call site's provable unsafety against
+   * its own data source's contract, and does NOT claim to have found what produces a
+   * typeless entry. If it recurs, the document that does it is the missing evidence.
+   */
+  function itemTypeTitle(type) {
+    const plugin = itemPlugin(type);
+    if (plugin) return plugin.title;
+    return typeof type === "string" ? type : "Item";
+  }
+
+  /**
+   * Query. The plugin for a document item's `type`, or null — never a throw.
+   *
+   * ITS `?.` SIBLING WAS A LIE AND THAT IS WORTH NAMING. The purge filter read
+   * `app.registry.get(it.type)?.capabilities.purgeable !== false`, and the optional chain
+   * reads as if it handles the missing case. It cannot: `registry.get` THROWS on an
+   * unknown type rather than returning undefined, so `?.` never runs and the guard was
+   * decoration. A reader would reasonably believe that line was already safe.
+   */
+  function itemPlugin(type) {
+    if (typeof type !== "string") return null;
+    try {
+      return app.registry.get(type);
+    } catch {
+      return null;
+    }
+  }
+
   let itemChoices = $derived.by(() => {
     const visible = nodes.map((n) => ({ value: n.itemId, label: app.displayName(n.itemId) }));
     const visibleIds = new Set(nodes.map((n) => n.itemId));
@@ -224,7 +272,7 @@
       .filter((it) => !visibleIds.has(it.id))
       .map((it) => ({
         value: it.id,
-        label: it.name ?? itemFallbackName(app.registry.get(it.type).title, it.id),
+        label: it.name ?? itemFallbackName(itemTypeTitle(it.type), it.id),
         invisible: true,
       }));
     return [...visible, ...invisible];
@@ -2456,8 +2504,8 @@
         onpreview={hoverPreview ? (v) => hoverPreview(row.key, "select", v) : undefined}
         oncancelpreview={hoverPreview ? () => app.cancelPreview() : undefined}
         items={allDocumentItems(app.doc)
-          .filter((it) => it.id !== itemId && app.registry.get(it.type)?.capabilities.purgeable !== false)
-          .map((it) => ({ value: it.id, label: it.name ?? itemFallbackName(app.registry.get(it.type).title, it.id) }))}
+          .filter((it) => it.id !== itemId && itemPlugin(it.type)?.capabilities.purgeable !== false)
+          .map((it) => ({ value: it.id, label: it.name ?? itemFallbackName(itemTypeTitle(it.type), it.id) }))}
         value={valueAt(state, row.key)}
         onchange={(v) => oncommit(row.key, "select", v)}
       />
