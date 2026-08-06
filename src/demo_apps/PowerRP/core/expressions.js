@@ -277,12 +277,17 @@ const RESERVED_LITERALS = new Map([["true", true], ["false", false]]);
 // keyword, never an unknown-reference error). Until manifest item 72 the UI-facing
 // validator threw `Unknown variable "time"` on it, contradicting the clock
 // plugins' own help text (clock_digital.js:221 tells users to type `= time`).
+// EXPORTED because the AUTOCOMPLETE is a fourth pass that has to agree about this
+// set (core/equationSuggest.js), and it used to agree by carrying its own hardcoded
+// "time" — a one-element mirror of this list, which is exactly how `dt` would have
+// shipped undiscoverable. One list, every pass derives from it.
+//
 // `dt` is the SECOND such name, and it is the same kind of thing: the seconds this
 // SIMULATION STEP covers (core/simulation_history.js), read through the same
 // controlled clock `time` is. It is a keyword rather than a variable for the same
 // three-passes-must-agree reason, and its display and stored forms are identical, so
 // it round-trips verbatim exactly as `time` does.
-const RESERVED_KEYWORDS = new Set(["time", "dt"]);
+export const RESERVED_KEYWORDS = new Set(["time", "dt"]);
 
 // ── Previous-value marker (SIMULATED STATE — manifest R7-9) ──────────────────
 //

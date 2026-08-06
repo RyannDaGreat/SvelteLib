@@ -19,7 +19,7 @@
  * per the manifest's "natural reuse" note.
  */
 
-import { slugMap, numericPropertyPaths, equationFunctionNames } from "./expressions.js";
+import { slugMap, numericPropertyPaths, equationFunctionNames, RESERVED_KEYWORDS } from "./expressions.js";
 import { rpFuzzyScore } from "./fuzzy.js";
 
 // A trailing identifier chain: the token the cursor is currently inside/after.
@@ -119,11 +119,15 @@ export function suggestEquation(text, cursor, state, registry, selfId = null, sc
   const candidates = [];
   if (headPath === "") {
     if ("self".startsWith(partial.toLowerCase()) || !partial) candidates.push({ text: "self", kind: "keyword" });
-    // `time` — the presentation clock (core/expressions.js scopeGet). Offered here
-    // because it is the ONE host identifier a user has a reason to type, and because
-    // it takes precedence over a variable of the same name (as `Math` and `random`
-    // do): a user who can SEE it reserved will not name a variable over it.
-    if ("time".startsWith(partial.toLowerCase()) || !partial) candidates.push({ text: "time", kind: "keyword" });
+    // THE RESERVED KEYWORDS — `time` (the presentation clock) and `dt` (the seconds
+    // this simulation step covers), both resolved by core/expressions.js scopeGet.
+    // Offered here because they are the host identifiers a user has a reason to type,
+    // and because they take precedence over a variable of the same name (as `Math`
+    // and `random` do): a user who can SEE one reserved will not name a variable over
+    // it. DERIVED from the one set rather than listed: this line used to hardcode
+    // "time" alone, so `dt` would have shipped undiscoverable the day it was added.
+    for (const keyword of RESERVED_KEYWORDS)
+      if (keyword.startsWith(partial.toLowerCase()) || !partial) candidates.push({ text: keyword, kind: "keyword" });
     for (const slug of slugs.toId.keys()) candidates.push({ text: slug, kind: "slug" });
     for (const name of Object.keys(state.vars ?? {})) candidates.push({ text: name, kind: "variable" });
     // Equation FUNCTIONS (registry-driven — Lead scope addition): insert with
