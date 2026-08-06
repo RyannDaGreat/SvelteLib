@@ -9,10 +9,12 @@
  * properly."*
  *
  * ── IT IS SIMULATED STATE, AND IT SAYS SO IN ORDINARY DOCUMENT STATE ─────────
- * The trail's clock is one ordinary property, `age`, whose DEFAULT is the equation
- * `= @ + dt` — the user's own `dt` requirement, spelled in the app's own grammar
- * rather than in a mechanism of this widget's own. Everything follows from that one
- * choice and none of it is re-implemented here:
+ * The trail's clock is one ordinary property, `age`, which every new trail is
+ * inserted holding the equation `= @ + dt` — the user's own `dt` requirement,
+ * spelled in the app's own grammar rather than in a mechanism of this widget's own.
+ * (The equation is INSERTED STATE and the plugin default is the number 0, which is
+ * its initial condition; TRAIL_CLOCK_EQUATION explains why that split is forced.)
+ * Everything follows from that one choice and none of it is re-implemented here:
  *   · the camera's MAX TIMESTEP clamps it, so a tab-switch hitch cannot tear a
  *     multi-second gap across the streamer;
  *   · an export DICTATES `dt = 1/fps`, so a rendered video's trail is exactly

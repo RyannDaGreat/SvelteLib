@@ -321,12 +321,15 @@ export function advanceTrailHistory(state, registry) {
     if (!plugin?.trailSampler) continue;
     const sample = plugin.trailSampler(item);
     const age = item[TRAIL_CLOCK_KEY];
-    if (!Number.isFinite(sample.x) || !Number.isFinite(sample.y) || !Number.isFinite(age) || !(sample.seconds > 0)) {
+    if (!Number.isFinite(sample.x) || !Number.isFinite(sample.y) || !Number.isFinite(age) || !(sample.seconds >= 0)) {
       const message = `trail "${id}" cannot be sampled: point (${sample.x}, ${sample.y}), clock ${age}, window ${sample.seconds} — one of them is not a usable number, so no sample was taken`;
       reportOnce(message, `PowerRP trail: ${message}`);
       continue;
     }
-    advanceOne(id, sample, age);
+    // A ZERO-SECOND WINDOW IS AN AUTHORED CHOICE, NOT AN ERROR — the row's `min` is 0
+    // and "keep nothing" is what that means, so it records nothing and draws its live
+    // tip. Reporting it would be a complaint about a value the control offers.
+    if (sample.seconds > 0) advanceOne(id, sample, age);
     const points = trailHistoryPoints(id, sample, age);
     if (!samePointList(item[TRAIL_POINTS_KEY], points)) item[TRAIL_POINTS_KEY] = points;
   }

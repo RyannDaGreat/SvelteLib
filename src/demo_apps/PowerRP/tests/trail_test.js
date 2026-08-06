@@ -178,6 +178,13 @@ test("shortening the window drops old points on the NEXT frame, not after a full
   assert.ok(narrow < wide / 4, `a 0.5 s window should hold far fewer than a 4 s one (${narrow} vs ${wide})`);
 });
 
+test("a ZERO-second window keeps nothing and is not an error", () => {
+  freshRun();
+  let item = null;
+  for (let frame = 0; frame <= 20; frame++) item = stepTrail(frame / 20, frame * 5, 0, { seconds: 0 });
+  assert.equal(item[TRAIL_POINTS_KEY].length, 1, "a zero-second trail is its live tip and nothing else");
+});
+
 test("trailSpacingSeconds refuses a window it cannot divide", () => {
   assert.equal(trailSpacingSeconds(3), 3 / TRAIL_SAMPLE_CAPACITY);
   assert.throws(() => trailSpacingSeconds(0), /positive number of seconds/);
