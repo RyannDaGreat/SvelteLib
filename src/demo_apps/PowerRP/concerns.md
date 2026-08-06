@@ -453,6 +453,41 @@ cap failing a suite that needs 305 s), or from the BUILD ENVIRONMENT (this). **N
 three is the app, and all three read as the app.** Check all three before believing a
 browser red.
 
+### A GATE RUN DURING CONCURRENT WRITES IS UNINTERPRETABLE — 98 PHANTOM REDS (2026-08-06)
+
+**The lead's own error, and worth recording because the output is spectacular and meaningless.**
+A node-lane gate started while two writer agents were mid-task returned
+**`212 pass / 98 fail`** — and **every one of the 98 failed at `0s`**. A 0-second failure is not
+a test failing, it is a MODULE FAILING TO IMPORT: an agent's file was half-written at the
+instant the child process loaded it, so every suite whose import graph reached that file died
+before its first assertion.
+
+**Proven in one command:** `node tests/ink_bounds_test.js` alone → all checks `ok`. Nothing was
+wrong.
+
+**THE PROCEDURE: DO NOT RUN THE GATE WHILE ANY WRITER AGENT IS ACTIVE.** Wait until they have
+reported and committed. A partial gate over a moving tree is worse than no gate, because
+`212 pass / 98 fail` looks like a catastrophe and invites 98 investigations.
+
+**THE TELL, which makes this cheap to recognise next time: MASS FAILURE AT `0s`.** A real
+regression produces failures with plausible durations and assertion text. A wall of `(0s)`
+entries with no assertion text is an import-time crash, and if the count is large the cause is
+almost certainly ONE file, not many bugs.
+
+**THIS IS THE FOURTH NON-APP SOURCE OF REDS FOUND IN ONE DAY**, and the family is now the
+finding rather than any member of it:
+
+| source | signature | guard |
+|---|---|---|
+| **HOST** | every screenshot probe dies with a contentless `ProtocolError` | `tests/browser_capture_preflight.mjs` |
+| **HARNESS** | one suite fails at exactly the cap having printed every check `ok` | cap raised to 600 s, with the 305 s measurement documented |
+| **BUILD ENV** | many browser probes fail in 7–19 s; log shows `504 (Outdated Optimize Dep)` | warm the Vite dep cache with ONE probe alone |
+| **CONCURRENT WRITERS** | mass failure at `0s`, no assertion text | do not run the gate while writers are active |
+
+**None of the four is the app, and all four read as the app.** Check all four before believing
+a red — and note that three of them were discovered by chasing the fourth, which is the
+argument for writing the family down rather than the members.
+
 ### RISK ON THE TABLE FOR THIS ROUND
 
 **Simulated state (`@`, `dt`) deliberately weakens a property the app relies on.**
