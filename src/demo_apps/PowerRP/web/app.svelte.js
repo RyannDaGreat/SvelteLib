@@ -53,6 +53,11 @@ import { dedupeGroupSelection, expandGroupSelection, selectParentGroups } from "
 import { retypeChoices, retypeChoicesForSet, retypeEligible, retypedItem } from "../core/retype.js";
 import { shatterEligible, shatterNotReadyReason, shatteredDocument, shatterIds, shatterDisclosure, vectorRecovery } from "../core/shatter.js";
 import { rotatedBBoxAABB, effectInclusiveAABB, fitRectView, effectiveDpr } from "../core/view.js";
+// SIMULATED STATE (R7-9) is the one thing in this app that is NOT a function of
+// [[slide, alpha]] — it is a running integration, held in a module-level history
+// table that no document owns. So REPLACING the document must throw it away: see
+// the five load seams below, each of which calls this and says why there.
+import { resetSimulation } from "../core/simulation_history.js";
 // INK BOUNDS (fitSelectionToInkBounds): `T` maps a widget's local ink offset
 // through its own world before it is added to the stored x/y, and `reportAction`
 // says so when the command has nothing to change (a refusal of ONE user act is
@@ -5951,6 +5956,7 @@ export class PowerRPApp {
     // Legacy .powerrp.json still LOADS (manifest Round 12: on-disk is now a
     // folder, but old single-file saves migrate through the same repair path).
     // repaired() runs the full pipeline (bindings migration included).
+    resetSimulation(); // the incoming deck's `@` slots start at their authored initial condition, not the outgoing deck's last step
     this.commit(this.repaired(deserialize(await file.text())));
     this.slideIndex = 0;
     this.selection = null;
@@ -6315,6 +6321,7 @@ export class PowerRPApp {
     // any future Save, and a possibly-stale stored meta.name all agree on `name`
     // (keeps title / open / save consistent — the one-name-model invariant).
     const repaired = this.repaired(doc); // repaired() includes bindings migration
+    resetSimulation(); // see clearDoc: an opened project must not resume the previous one's simulation
     this.commit({ ...repaired, meta: { ...repaired.meta, name } });
     // A JUST-OPENED project IS the server's copy, so the save indicator must
     // read SAVED rather than showing a freshly-opened deck as unsaved work.
@@ -6804,6 +6811,10 @@ export class PowerRPApp {
     // inside the archive would lose them all. The draft key is where they were
     // just staged.
     await this.reloadPluginAssets(DRAFT_KEY);
+    // THE ONE RESET THAT COVERS EVERY IMPORT: a dropped zip, `?url=` and `?repo=`
+    // all land here, so the previous deck's simulation history is dropped for all
+    // three at this single seam rather than at three call sites free to drift.
+    resetSimulation();
     this.commit(this.repaired(doc));
     this.slideIndex = 0;
     this.selection = null;
@@ -7689,6 +7700,10 @@ export class PowerRPApp {
    *  the split. Any USER-FACING "new document" must go through that instead. */
   clearDoc() {
     clearDynamicFonts(); // a fresh doc has no project → drop uploaded font families
+    // A NEW DOCUMENT MUST NOT INHERIT THE OLD ONE'S TRAJECTORY. The simulation
+    // history is module state keyed by slot path, so without this an empty deck
+    // starts holding `@` values integrated from a document that is no longer open.
+    resetSimulation();
     this.commit(newDocument());
     // A BRAND-NEW DOCUMENT IS AN UNSAVED DRAFT — the unification (user ruling:
     // "Untitled is a special project — I shouldn't be allowed to just save it").
@@ -7711,6 +7726,7 @@ export class PowerRPApp {
       // LOUDLY, ensures THE camera, and migrates legacy {item, anchor} arrow
       // bindings to equation pairs (THE UNIFICATION) — all inside
       // repairedDocument now, so no separate withBindingsMigrated wrap.
+      resetSimulation(); // a restored autosave is a document ARRIVING; the history table is not part of it
       this.doc = this.repaired(deserialize(json));
       this.undoLog = createUndo(this.snapshot(this.doc));
       // THE REGRESSED SEAM: projectName() reads `this.draftMode` to choose
