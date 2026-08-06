@@ -320,7 +320,7 @@ const HOST_MODULES = Object.freeze({
  * project asset travels WITH the document (the zip round-trip carries assets/), so
  * its bytes are document state, not host state. Δt = 0 leaves this byte-identical,
  * and so does re-rendering on another machine — which is what keeps frame-range
- * sharding and CLI stills correct. See CLAUDE.md's three kinds of state.
+ * sharding and CLI stills correct. See CLAUDE.md's four kinds of state.
  *
  * @param {string} url - a served asset url, e.g. "/asset/MyDeck/sales.csv"
  * @returns {{text: string|null, status: string, error: string|null}}
@@ -356,7 +356,7 @@ function assetText(url) {
  * unjailed one.
  */
 const SAFE_BUILTINS = Object.freeze({
-  Math: SAFE_MATH, // no random — determinism (see CLAUDE.md's three kinds of state)
+  Math: SAFE_MATH, // no random — determinism (see CLAUDE.md's four kinds of state)
   JSON, Array, String, Number, Boolean, Map, Set,
   isNaN, isFinite, parseFloat, parseInt, Error, TypeError, RangeError,
   NaN, Infinity, undefined: undefined,

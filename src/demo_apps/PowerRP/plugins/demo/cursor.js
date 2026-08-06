@@ -14,7 +14,7 @@
  * never a plugin↔plugin import — exactly the manifest's magnifier→demo plan.
  *
  * ── THE BEACH-BALL SPIN IS RECORDABLE STATE (not serialized, not keyframed) ───
- * The spin is RECORDABLE state (see CLAUDE.md "The three kinds of state"),
+ * The spin is RECORDABLE state (see CLAUDE.md "The four kinds of state"),
  * identical in kind to the particle emitter's `t`: it is NOT derivable from
  * [[slide, alpha]] alone, but it IS a pure function of an ambient presentation
  * time, so it is deterministic given a timeline and therefore reproducible in a

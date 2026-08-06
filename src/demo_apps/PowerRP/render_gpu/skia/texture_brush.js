@@ -50,7 +50,7 @@
  * count at floor(2^16 / ROWS) and reports LOUDLY when a path is long enough to be
  * decimated (a silently-truncated ribbon is the failure this guards).
  *
- * ── STATE KIND: PROPERTY STATE (CLAUDE.md "three kinds of state") ──────────────
+ * ── STATE KIND: PROPERTY STATE (CLAUDE.md "four kinds of state") ──────────────
  * A texture-brush stroke is a PURE function of (path, knobs, seed, texture). No
  * `t`, no wall clock, no history, no Math.random. All colour jitter is seeded via
  * core/particles.js randUnit(seed, i, stream) — the same deterministic hash the

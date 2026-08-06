@@ -2485,7 +2485,7 @@ export function withExtraCamerasDropped(doc) {
 // over the set of distinct stored values) so bisection never runs out of
 // precision. A tweened in-between z is DERIVED, never written to the document,
 // so it is never normalized (this is the "not persisted" sense of transient —
-// nothing to do with the three kinds of state in CLAUDE.md).
+// nothing to do with the four kinds of state in CLAUDE.md).
 
 /** Pure function. Document with all stored z keyframes renormalized to 1..N. */
 export function withNormalizedZ(doc) {

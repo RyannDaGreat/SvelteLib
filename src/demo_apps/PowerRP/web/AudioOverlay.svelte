@@ -6,7 +6,7 @@
   document state and cannot be made into it: reading a sample buffer inside a
   plugin's emit() would make Δt = 0 produce two different pictures, which breaks the
   determinism law, frame-range sharding and export reproducibility at once
-  (CLAUDE.md's "three kinds of state").
+  (CLAUDE.md's "four kinds of state").
 
   So the picture is split in two, along the line the app already uses for selection
   handles:

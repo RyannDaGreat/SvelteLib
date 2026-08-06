@@ -9,7 +9,7 @@
  * keeps the PaintField "Mat" dropdown to a single readable line while still
  * shipping the full brush family.
  *
- * ── STATE KIND: PROPERTY STATE (CLAUDE.md "three kinds of state") ──────────────
+ * ── STATE KIND: PROPERTY STATE (CLAUDE.md "four kinds of state") ──────────────
  * A brush stroke is a PURE function of (path geometry, knobs, seed). No `t`, no
  * wall clock, no history, no Math.random. Δt = 0 changes nothing because there is
  * no `t` in the picture at all — a brush is simpler than a recordable particle
