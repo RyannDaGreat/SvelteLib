@@ -314,6 +314,43 @@ const round = (n) => Number(n.toFixed(6));
 export const KNOB_BAND_MIN_SCALE = 1 / 3;
 
 /**
+ * Pure function. THE RESIZE SEAM, IN ITS GENERAL FORM — the uniform scale ANY
+ * band of node chrome is drawn at so it fits inside the RESOLVED BOX, and 1 when
+ * it already does.
+ *
+ * This is `knobBandScale`'s rule with the knob taken out of it. The rule was
+ * measured and argued for the dial band (see that function's docblock, which is
+ * still where the reasoning lives); it is stated separately here because R7-10
+ * makes it the ONE ladder every node face descends — a Knob node's big dial, a
+ * Slider's track, a Button's face and a Display's number all shrink by this
+ * function rather than by three hand-rolled opinions about what to do on a card
+ * the author dragged too short.
+ *
+ * @param {number} top - LOCAL y the band starts at
+ * @param {number} natural - the band's unscaled height
+ * @param {number} [boxH] - the RESOLVED card height; absent/non-finite = unconstrained
+ * @param {number} [minScale] - the floor past which it clips instead of shrinking
+ * @returns {number} a factor in [minScale, 1]
+ *
+ * @example bandFitScale(60, 49, 200) // 1
+ * @example // half the room, half the band
+ * @example bandFitScale(60, 98, 109) // 0.5
+ * @example // the shrink STOPS at the floor and the band then clips, visibly
+ * @example bandFitScale(60, 196, 70) // 0.3333333333333333
+ * @example // no height stated is no statement about the card
+ * @example bandFitScale(60, 196, undefined) // 1
+ * @example // a band with no height has no scale to compute
+ * @example bandFitScale(60, 0, 0) // 1
+ */
+export function bandFitScale(top, natural, boxH, minScale = KNOB_BAND_MIN_SCALE) {
+  if (!(natural > 0)) return 1;
+  if (!Number.isFinite(boxH)) return 1;
+  const room = boxH - top;
+  if (room >= natural) return 1;
+  return Math.max(minScale, room / natural);
+}
+
+/**
  * Pure function. THE RESIZE SEAM — the uniform scale a node's knob band is drawn
  * at so it fits inside the RESOLVED BOX, and 1 when it already does.
  *
@@ -376,12 +413,7 @@ export const KNOB_BAND_MIN_SCALE = 1 / 3;
  * @example knobBandScale(60, 4, undefined) // 1
  */
 export function knobBandScale(bandTop, rows, boxH) {
-  const need = Math.max(0, rows) * KNOB_ROW_H;
-  if (need <= 0) return 1;
-  if (!Number.isFinite(boxH)) return 1;
-  const room = boxH - bandTop;
-  if (room >= need) return 1;
-  return Math.max(KNOB_BAND_MIN_SCALE, room / need);
+  return bandFitScale(bandTop, Math.max(0, rows) * KNOB_ROW_H, boxH, KNOB_BAND_MIN_SCALE);
 }
 
 /**
@@ -423,12 +455,36 @@ export function knobBandScale(bandTop, rows, boxH) {
  * `stateKeyOf` defaults to the knob's own key, which is the identity a
  * non-prefixing widget wants.
  *
+ * ── KNOB-OR-INPUT DUALITY: `driven` (R7-10) ─────────────────────────────────
+ * User, verbatim: "if you look at Axelotti, things can either be a knob control
+ * or they can be an input control. So to be fair, you might sometimes want to add
+ * the output of a knob to something else."
+ *
+ * Axoloti's answer is the `param_X + inlet_X` idiom: an object declares a
+ * parameter AND a same-named inlet, and the C code ADDS them, so the dial is a
+ * base value and the wire is modulation on top (axoloti_research_report.md Q3).
+ * OUR SPECS ALREADY DO THIS — a Filter declares both a `frequency` knob and a
+ * `frequency` input, and the mirror connects that wire to the same-named
+ * AudioParam, which in Web Audio SUMS with the param's set value. So the
+ * semantics match Axoloti's exactly and were already shipping; what was missing
+ * is that NOTHING SAID SO. A dial reading "800 Hz" while an LFO drives it is a
+ * true statement about the offset and a false-looking one about the sound.
+ *
+ * `driven` is that missing declaration, computed from the ONE place a connection
+ * lives (the consuming node's own `inputs` map — R7-1's law), so it is document
+ * property state and needs no evaluation pass. It is deliberately NOT `bound`:
+ * a bound dial cannot be turned (turning would overwrite an equation), whereas a
+ * driven one still contributes its offset and REMAINS TURNABLE — which is
+ * Axoloti's ruling too ("the knob does not grey out … because it is still
+ * contributing").
+ *
  * @param {Array<object>} knobs - the spec's knob declarations, in order
  * @param {object} state - the folded item state (its `w` decides the wrap)
  * @param {number} bandTop - LOCAL y the knob band starts at
  * @param {function} valueOf - (knob) → its current value, or a non-number when bound
  * @param {function} [stateKeyOf] - (knob) → the flat item-state key it writes to
- * @returns {Array<object>} [{key, stateKey, label, cx, cy, min, max, step, unit, value, fraction, bound}]
+ * @param {function} [drivenOf] - (knob) → is a wire currently feeding this param?
+ * @returns {Array<object>} [{key, stateKey, label, cx, cy, min, max, step, unit, value, fraction, bound, driven}]
  *
  * @example // one continuous knob centres itself in the first row of the band
  * @example knobLayout([{key: "cutoff", label: "Cutoff", min: 20, max: 20000}], {w: 150}, 60, () => 800).length // 1
@@ -443,8 +499,12 @@ export function knobBandScale(bandTop, rows, boxH) {
  * @example knobLayout([{key: "value", min: 0, max: 1}], {w: 150}, 60, () => 0.5)[0].stateKey // "value"
  * @example // …and a widget that namespaces its knobs says so
  * @example knobLayout([{key: "q", min: 0, max: 1}], {w: 150}, 60, () => 0.5, (k) => "audio" + k.key)[0].stateKey // "audioq"
+ * @example // an UNDRIVEN dial says so rather than leaving the field absent
+ * @example knobLayout([{key: "q", min: 0, max: 1}], {w: 150}, 60, () => 0.5)[0].driven // false
+ * @example // …and a param a wire is feeding reads as driven, while staying turnable
+ * @example knobLayout([{key: "q", min: 0, max: 1}], {w: 150}, 60, () => 0.5, undefined, () => true)[0].driven // true
  */
-export function knobLayout(knobs, state, bandTop, valueOf, stateKeyOf = (k) => k.key) {
+export function knobLayout(knobs, state, bandTop, valueOf, stateKeyOf = (k) => k.key, drivenOf = () => false) {
   const dials = (knobs ?? []).filter((k) => !k.discrete);
   if (dials.length === 0) return [];
   // THE RESOLVED BOX, sign-resolved here. A stored w/h MAY BE NEGATIVE — that is
@@ -490,7 +550,7 @@ export function knobLayout(knobs, state, bandTop, valueOf, stateKeyOf = (k) => k
       // a per-widget dial travel the same path; `pitchX`/`labelGap`/`labelSize`
       // are the same idea for the label box knobOps draws under it.
       r, pitchX, labelGap: KNOB_LABEL_GAP * k$, labelSize: KNOB_LABEL_SIZE * k$,
-      value, fraction: knobFraction(value, min, max), bound,
+      value, fraction: knobFraction(value, min, max), bound, driven: !!drivenOf(k),
     };
   });
 }

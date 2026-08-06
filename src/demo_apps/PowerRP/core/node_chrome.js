@@ -42,8 +42,10 @@
  */
 
 import { ellipse, path, rect, text } from "../render_gpu/ir.js";
+import { NATURAL_LINE_HEIGHT } from "./richtext.js";
 import { NODE_CORNER_R, PORT_BEAD_R, portColor, portLayout, wireBezierPath } from "./nodeflow.js";
 import {
+  bandFitScale, KNOB_BAND_MIN_SCALE,
   KNOB_LABEL_GAP, KNOB_LABEL_SIZE, KNOB_PITCH_X, KNOB_R, KNOB_TRACK_WIDTH, knobRadius,
   KNOB_VALUE_SIZE, knobArcPath, knobPoint, knobReadout,
 } from "./node_knobs.js";
@@ -91,6 +93,228 @@ export const PORT_LABEL_GAP = PORT_BEAD_R + 5;
  *  flat dot, so a bead reads as a SOCKET (something a wire enters) rather than as
  *  a decoration. Audulus's ports do exactly this. */
 export const BEAD_CORE_FRACTION = 0.45;
+
+// ── THE STACK: WHERE A NODE'S OWN CONTENT GOES (R7-10) ──────────────────────
+//
+// USER, verbatim: "Nodes don't seem to have any coherent way of where you place
+// the knobs. Axelotti does investigate that. Because right now, where the knobs
+// go is kind of haphazard. There's no guarantee the knobs will even be in the
+// node." … "Axolotl does it programmatically and it's amazing and we want that.
+// Read their source code."
+//
+// ── WHAT WAS ACTUALLY WRONG: THREE UNRELATED PLACEMENT SCHEMES ──────────────
+// MEASURED (`.frenzy/round7/powerrp_audio_map.md` §B.10) before this section
+// existed: the 24 audio modules auto-flowed a knob band that reflowed against
+// `h`; plugins/node_knob.js placed ONE dial at `cy = NODE_HEADER_H + 12 + r`,
+// constants from the top edge that never read `h` at all; plugins/node_slider.js
+// hand-rolled a third rule. Nothing connected them, so a fix to one was invisible
+// to the others — which is exactly how the audio family got the reflow in
+// workstream CD while the control family never did.
+//
+// ── THE AXOLOTI RULE, ADAPTED ───────────────────────────────────────────────
+// Axoloti's node is a VERTICAL BOX STACK and nothing in an object's declaration
+// carries a coordinate: title bar, then the iolet band, then attributes, then
+// parameters, then displays, each sized from its own content, and the node's own
+// size falls out as the sum (AxoObjectInstance.PostConstructor; the report's Q2).
+// A node IS its declaration list.
+//
+// We adopt the RULE and not the pixels, because two things differ and both are
+// deliberate here:
+//   OUR PORTS SIT ON THE EDGES, not in a band of their own — a Reaktor-style
+//     left-to-right flow the user ruled for in ADDENDUM 1. So the "iolet band"
+//     is the vertical extent of the port column, and a node's own face starts
+//     BELOW it (`nodeBodyTop`).
+//   OUR CARDS ARE RESIZABLE. Axoloti's size is computed and final; ours is a
+//     property the author drags, because a node lives on a SLIDE and the slide
+//     decides how big it may be. So a declared size cannot be the last word —
+//     it is a NATURAL size (what the content wants) and a FLOOR (where the
+//     reflow ladder bottoms out), with `nodeFaceBand` reflowing in between.
+//
+// ── THE LADDER, WHICH IS WORKSTREAM CD'S, GENERALIZED ───────────────────────
+// CD settled what a band does on a card too short for it, and that answer is not
+// re-litigated here — it is merely made to apply to every node family instead of
+// one: (1) sit at the natural top while there is room; (2) SLIDE UP against the
+// bottom rim; (3) SHRINK uniformly (core/node_knobs.bandFitScale); (4) past the
+// floor, CLIP VISIBLY, because the registry docblock's rule is to show an
+// overflow rather than hide it.
+
+/**
+ * Pure function. A node's RESOLVED box: `w` and `h` with their signs taken off.
+ *
+ * THE ONE ENTRANCE for every node face, and the reason it exists is a law:
+ * CLAUDE.md's NEGATIVE EXTENTS contract says a stored `w`/`h` MAY BE NEGATIVE
+ * (that is a REFLECTION, how Flip H/V is stored) and a plugin never sees the
+ * sign. `emit()` receives RAW folded state, which is one of the pre-derivation
+ * readers the law names, so each node face had to resolve the sign ITSELF — and
+ * MEASURED, four of them did not: `plugins/node_knob.js` put a flipped dial at
+ * negative x, and the slider's track, the button's face and the keyboard's face
+ * all did the same arithmetic. One shared entrance is what stops the fifth.
+ *
+ * `h` stays UNDEFINED when the state does not state one, and that is not the
+ * same as zero: a caller asking for a band's SHAPE with no card in hand has said
+ * nothing about the card (the reading core/node_knobs.knobBandScale and
+ * core/nodeflow.portPitchFor already make, for the same reason).
+ *
+ * @param {object} s - the folded item state
+ * @returns {{w: number, h: number|undefined}} LOCAL, sign-resolved
+ *
+ * @example nodeBox({w: 150, h: 90}) // {w: 150, h: 90}
+ * @example // a FLIP is a reflection, not a negative size
+ * @example nodeBox({w: -150, h: -90}) // {w: 150, h: 90}
+ * @example // an unstated height stays unstated
+ * @example nodeBox({w: 150}).h // undefined
+ * @example nodeBox() // {w: 0, h: undefined}
+ */
+export function nodeBox(s) {
+  const w = Number(s?.w);
+  const h = Number(s?.h);
+  return { w: Number.isFinite(w) ? Math.abs(w) : 0, h: Number.isFinite(h) ? Math.abs(h) : undefined };
+}
+
+/**
+ * Pure function. The vertical space ONE LINE of type occupies.
+ *
+ * ── A TEXT OP'S `y` IS ITS LINE-BOX TOP, NOT A BASELINE, AND THAT WAS THE BUG ─
+ * MEASURED on a rendered still (2026-08-06, W1-D): every text placement in the
+ * node chrome added `size / 3` to a y "so the glyphs sit above it", and the
+ * docblocks explained the choice at length. The renderer does not work that way.
+ * `render_gpu/skia/text_layout.js` draws with `layout.draw(canvas, cmd.x, cmd.y)`
+ * — a Skia Paragraph's origin is its TOP-LEFT — and `render_gpu/svg_backend.js`
+ * agrees (`baseline = cmd.y + ascentFraction·size`). So every one of those lines
+ * was drawn a full line-height LOWER than its author believed, which is why the
+ * Number node's 22pt digit was clipped by its own bottom rim at the DEFAULT size,
+ * why a card title sat below its header strip, and why the Knob and Slider
+ * readouts sat on the rim.
+ *
+ * Stating the line's height is what lets a band RESERVE one, so this is the
+ * number every node text is placed by. The ratio is `core/richtext`'s
+ * NATURAL_LINE_HEIGHT — the same one the text stack falls back to — rather than
+ * a second opinion about how tall a line is.
+ *
+ * @param {number} size - the type size
+ * @returns {number} LOCAL units
+ *
+ * @example textLineH(10) // 12
+ * @example textLineH(22) // 26.4
+ */
+export function textLineH(size) {
+  return Math.max(0, Number(size) || 0) * NATURAL_LINE_HEIGHT;
+}
+
+/**
+ * The gap between one band of node chrome and the next. One number, because two
+ * different gaps between the same two kinds of thing is how a stack stops
+ * reading as a stack.
+ */
+export const NODE_BODY_GAP = 8;
+
+/**
+ * Pure function. THE TOP OF A NODE'S OWN FACE: below its lowest port bead, with
+ * one gap. Every node family's content — a knob band, one big dial, a track, a
+ * button face, a number — starts at or below this line.
+ *
+ * Reads `core/nodeflow.portLayout`, the ONE port geometry the beads are painted
+ * from and the hit test grabs by, so the face cannot disagree with the ports
+ * about where the column ends. That matters more since workstream CH taught the
+ * column to reflow: a face placed from a REMEMBERED port height would drift
+ * under a reflowed bead on exactly the short cards this is all about.
+ *
+ * A node with no ports at all still clears its header, which is the honest floor.
+ *
+ * @param {object} plugin - the node's own plugin (for its port declaration)
+ * @param {object} s - the folded item state
+ * @returns {number} a LOCAL y
+ *
+ * @example // no ports: the header plus a gap
+ * @example nodeBodyTop({ports: () => ({inputs: [], outputs: []})}, {w: 150, h: 200}) // 38
+ * @example // one row of ports: the bead's own bottom plus a gap
+ * @example nodeBodyTop({ports: () => ({inputs: [{key: "a", type: "number"}]})}, {w: 150, h: 200}) // 48
+ * @example // more rows push it down…
+ * @example nodeBodyTop({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}]})}, {w: 150, h: 200}) // 70
+ * @example // …but a SHORT card reflows the column, so the face follows it up
+ * @example nodeBodyTop({ports: () => ({inputs: [{key: "a", type: "number"}, {key: "b", type: "number"}]})}, {w: 150, h: 80}) // 60
+ */
+export function nodeBodyTop(plugin, s) {
+  const rows = portLayout(plugin, s);
+  const lastRow = rows.length ? Math.max(...rows.map((p) => p.y)) : NODE_HEADER_H;
+  return lastRow + PORT_BEAD_R + NODE_BODY_GAP;
+}
+
+/**
+ * Pure function. THE ONE LAYOUT — where a node's face band sits and how big it
+ * is drawn, given what the band DECLARES it wants and the box it actually has.
+ *
+ * Every node factory routes through this: `core/audio_nodes.knobBandTop` for the
+ * 24 modules' dial band, `core/control_nodes.controlFace` for the knob, slider,
+ * button and keyboard, and `nodeValueText` for the number/math/display trio. It
+ * is the answer to "there's no guarantee the knobs will even be in the node":
+ * the guarantee is that `top + height <= boxH` for every band that fits at its
+ * declared minimum, and a test sweeps it (tests/node_chrome_layout_test.js).
+ *
+ * ── TWO KINDS OF BAND, AND THE DIFFERENCE IS PHYSICAL ───────────────────────
+ * RIGID (`grow` absent) — a dial, a row of dials, a line of type. Its internal
+ *   proportions ARE its reading: a dial's whole meaning is its pointer's angle,
+ *   and an oval dial reads its angle wrong everywhere but the axes. So a rigid
+ *   band shrinks UNIFORMLY and never stretches.
+ * ELASTIC (`grow: true`) — a slider's track, a button's face. Its length is not
+ *   a proportion, it is a range: a fader on a tall card should BE tall. So an
+ *   elastic band takes the room it is given, down to its declared natural height
+ *   times `minScale`, and clips past that.
+ * This is the same split Axoloti's BoxLayout makes between a fixed-size widget
+ * and a glue-backed stack, and it is why one function can serve both.
+ *
+ * ── ANCHORS ────────────────────────────────────────────────────────────────
+ * `anchor: "top"` (the default) puts the band at `top` and lets it slide UP
+ * against the bottom rim when short — the module band's behaviour, unchanged.
+ * `anchor: "center"` centres it in the room between `floorTop` and the bottom
+ * pad, which is what the number/math/display trio's headline value has always
+ * done ("Centred in the space below the header, so a node with no ports on a row
+ * still reads as a card with a number in it") and now does through the ladder
+ * instead of past it.
+ *
+ * @param {object} band - the declaration:
+ *     {floorTop, top, height, minScale?, grow?, bottomPad?, anchor?}
+ *     `floorTop` = the highest this band may ever climb; `top` = where it sits
+ *     when there is room (defaults to floorTop); `bottomPad` = space reserved
+ *     BELOW it (a readout line, a rim margin).
+ * @param {number} [boxH] - the RESOLVED card height; absent = unconstrained
+ * @returns {{top: number, height: number, scale: number}} LOCAL
+ *
+ * @example // a card with room: the band sits exactly where it asked to
+ * @example nodeFaceBand({floorTop: 40, top: 60, height: 50}, 300) // {top: 60, height: 50, scale: 1}
+ * @example // short: it SLIDES UP against the bottom rim before anything shrinks
+ * @example nodeFaceBand({floorTop: 40, top: 60, height: 50}, 100) // {top: 50, height: 50, scale: 1}
+ * @example // shorter still: it stops at its floor and SHRINKS
+ * @example nodeFaceBand({floorTop: 40, top: 60, height: 50}, 70).scale // 0.6
+ * @example // an ELASTIC band takes the room instead of leaving it
+ * @example nodeFaceBand({floorTop: 40, top: 40, height: 50, grow: true}, 300).height // 260
+ * @example // `bottomPad` is reserved for whatever sits under the band
+ * @example nodeFaceBand({floorTop: 40, top: 40, height: 50, grow: true, bottomPad: 30}, 300).height // 230
+ * @example // CENTERED, the trio's headline value: equal room above and below
+ * @example nodeFaceBand({floorTop: 24, top: 24, height: 26, anchor: "center"}, 100).top // 49
+ * @example // no height stated is no statement about the card
+ * @example nodeFaceBand({floorTop: 40, top: 60, height: 50}, undefined) // {top: 60, height: 50, scale: 1}
+ */
+export function nodeFaceBand(band, boxH) {
+  const floorTop = Math.max(0, band.floorTop ?? 0);
+  const wanted = Math.max(floorTop, band.top ?? floorTop);
+  const natural = Math.max(0, band.height ?? 0);
+  const bottomPad = Math.max(0, band.bottomPad ?? 0);
+  if (natural <= 0 || !Number.isFinite(boxH)) return { top: wanted, height: natural, scale: 1 };
+  const room = boxH - bottomPad;
+  // THE SCALE IS MEASURED AT THE TIGHTEST POSITION THE BAND CAN TAKE (hard
+  // against `floorTop`) and the resulting band is then placed. One pass, not a
+  // fixed point: the scale is monotonic in the room available, so a band that
+  // fits at its smallest fits anywhere it is then placed. (CD measured what the
+  // other order costs — reserving FULL height for a band about to be drawn at a
+  // third of it pinned the shortest cards several units too far down.)
+  const scale = bandFitScale(floorTop, natural, room, band.minScale ?? KNOB_BAND_MIN_SCALE);
+  const height = band.grow ? Math.max(natural * scale, room - wanted) : natural * scale;
+  if (band.anchor === "center") {
+    return { top: Math.max(floorTop, Math.min(wanted + (room - wanted - height) / 2, room - height)), height, scale };
+  }
+  return { top: Math.max(floorTop, Math.min(wanted, room - height)), height, scale };
+}
 
 // ── NODE FAMILIES (NF-BIND) ─────────────────────────────────────────────────
 
@@ -391,20 +615,43 @@ export function nodeFamily(name) {
  */
 export function familyCard(s, title, family) {
   const f = nodeFamily(family);
-  const w = s.w ?? 0, h = s.h ?? 0;
+  const { w, h } = nodeBox(s);
   const markOps = familyMarkOps(s, family);
   // The title's box ends one pad short of the mark's own left edge. With no mark
   // there is nothing to clear, and the box stays Infinity — the pre-CA op exactly.
   const titleBoxW = markOps.length
-    ? Math.max(0, Math.abs(w) - NODE_PAD - NODE_MARK_SIZE - NODE_PAD - NODE_PAD)
+    ? Math.max(0, w - NODE_PAD - NODE_MARK_SIZE - NODE_PAD - NODE_PAD)
     : Infinity;
   return [
-    rect({ x: 0, y: 0, w, h, cornerRadius: NODE_RADIUS, fill: NODE_BODY }),
+    rect({ x: 0, y: 0, w, h: h ?? 0, cornerRadius: NODE_RADIUS, fill: NODE_BODY }),
     rect({ x: 0, y: 0, w, h: NODE_HEADER_H, cornerRadius: NODE_RADIUS, fill: f.header }),
     rect({ x: 0, y: NODE_HEADER_H - NODE_RADIUS, w, h: NODE_RADIUS, fill: f.header }),
-    text({ text: title, x: NODE_PAD, y: NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3, size: NODE_TITLE_SIZE, color: NODE_TITLE_INK, bold: true, boxW: titleBoxW }),
+    text({ text: title, x: NODE_PAD, y: titleLineTop(), size: NODE_TITLE_SIZE, color: NODE_TITLE_INK, bold: true, boxW: titleBoxW }),
     ...markOps,
   ];
+}
+
+/**
+ * Pure function. The LOCAL y a card title's line box starts at: its own line,
+ * centred in the header strip.
+ *
+ * It used to be `NODE_HEADER_H / 2 + NODE_TITLE_SIZE / 3`, which reads as
+ * "half-way down, then a third of the type size for the baseline" and would be
+ * right if a text op's `y` were a baseline. It is not — it is the line box's TOP
+ * (see textLineH) — so the title's line ran 16..30.4 in a 24-unit header and the
+ * name was drawn hanging BELOW its own strip on every node in the app. Visible on
+ * any rendered still once you know to look; invisible to every test, because
+ * nothing knew how tall a line was.
+ *
+ * @returns {number} a LOCAL y
+ *
+ * @example // a 12pt line is 14.4 tall, so it is inset 4.8 in a 24-unit header
+ * @example titleLineTop() // 4.8
+ * @example // and the line it starts ENDS inside the strip, which is the whole point
+ * @example titleLineTop() + textLineH(NODE_TITLE_SIZE) <= NODE_HEADER_H // true
+ */
+export function titleLineTop() {
+  return (NODE_HEADER_H - textLineH(NODE_TITLE_SIZE)) / 2;
 }
 
 /**
@@ -421,7 +668,8 @@ export function familyCard(s, title, family) {
  * @example familyRim({w: 140, h: 90}, "output")[0].stroke[3] // 1
  */
 export function familyRim(s, family) {
-  return [rect({ x: 0, y: 0, w: s.w ?? 0, h: s.h ?? 0, cornerRadius: NODE_RADIUS, fill: null, stroke: nodeFamily(family).rim, strokeWidth: NODE_RIM_WIDTH })];
+  const { w, h } = nodeBox(s);
+  return [rect({ x: 0, y: 0, w, h: h ?? 0, cornerRadius: NODE_RADIUS, fill: null, stroke: nodeFamily(family).rim, strokeWidth: NODE_RIM_WIDTH })];
 }
 
 /**
@@ -491,29 +739,100 @@ export function nodeRim(s) {
  * @example // the ring is painted in the PORT TYPE's colour (ir.js has parsed it to RGBA)
  * @example portBeads({ports: () => ({inputs: [{key: "a", type: "number"}]})}, {w: 120, h: 80})[0].fill[2] > 0.9 // true
  * @example portBeads({}, {w: 120, h: 80}) // []
+ *
+ * ── A LONE PORT ON A SIDE GETS NO LABEL (Axoloti's rule, R7-10) ─────────────
+ * "a single inlet or single outlet gets NO label. The jack alone is the port.
+ * This is a big part of why simple objects look tiny."
+ * (axoloti_research_report.md Q2 §3, from InletInstance.java:90-108.)
+ *
+ * Adopted verbatim in RULE, because it is right for the same reason there: a
+ * node with one output has already said what that output is — it is the node.
+ * "Number → out", "Knob → out", "Display ← in" are three labels that name
+ * nothing the card does not.
+ *
+ * It also happens to delete the WORST instance of the escape this workstream is
+ * about. MEASURED on a rendered still: an output label was boxed at
+ * `[p.x - GAP, p.x - GAP + w/2 - GAP]` and drawn RIGHT-ALIGNED in it — a box
+ * whose right edge is at `1.5·w - 22`, i.e. HALF A CARD PAST the right rim. So
+ * every output label in the app was painted OUTSIDE its own node (visible on the
+ * probe render as "out" floating beside the Number, Math, Knob, Slider and
+ * Button cards). Most of them are single outputs and now draw nothing at all;
+ * the survivors are boxed correctly below.
+ *
+ * @example // ONE output: the jack alone, no label — two ops, not three
+ * @example portBeads({ports: () => ({outputs: [{key: "out", type: "number"}]})}, {w: 120, h: 80}).length // 2
+ * @example // TWO outputs need naming, so both are labelled…
+ * @example portBeads({ports: () => ({outputs: [{key: "pitch", type: "number"}, {key: "gate", type: "trigger"}]})}, {w: 120, h: 80}).filter((o) => o.op === "text").length // 2
+ * @example // …and the label's box now ENDS at the bead instead of starting there
+ * @example portBeads({ports: () => ({outputs: [{key: "pitch", type: "number"}, {key: "gate", type: "trigger"}]})}, {w: 120, h: 80}).find((o) => o.op === "text").x // 11
+ * @example // A CONNECTED input is a FILLED socket (Axoloti's jack rule), which is
+ * @example // the knob-or-input duality's honest signal: the wire is plugged in.
+ * @example portBeads({ports: () => ({inputs: [{key: "a", type: "number"}]})}, {w: 120, h: 80, inputs: {a: {item: "n1", port: "out"}}})[1].fill[3] // 1
  */
 export function portBeads(plugin, s) {
   const ops = [];
-  for (const p of portLayout(plugin, s)) {
+  const { w } = nodeBox(s);
+  const rows = portLayout(plugin, s);
+  const perSide = { input: 0, output: 0 };
+  for (const p of rows) perSide[p.side] += 1;
+  for (const p of rows) {
     const color = portColor(p.type);
-    ops.push(ellipse({ cx: p.x, cy: p.y, rx: PORT_BEAD_R, ry: PORT_BEAD_R, fill: color }));
-    ops.push(ellipse({ cx: p.x, cy: p.y, rx: PORT_BEAD_R * BEAD_CORE_FRACTION, ry: PORT_BEAD_R * BEAD_CORE_FRACTION, fill: NODE_BODY }));
-    // The label reads INWARD from its own edge. `boxW`/`boxStyle` are left at
-    // their defaults: these are one-word names, and a wrapped port label would
-    // mean the node is too narrow, which is a sizing problem to see rather than
-    // to hide.
     const isInput = p.side === "input";
+    ops.push(ellipse({ cx: p.x, cy: p.y, rx: PORT_BEAD_R, ry: PORT_BEAD_R, fill: color }));
+    // THE CORE says whether anything is plugged in: dark (a socket standing open)
+    // when nothing is, the port's own colour (a socket filled) when a wire lands
+    // on it. Axoloti's jack does exactly this and it is the ONLY "this is driven"
+    // indicator in that whole app. Read from `s.inputs`, the ONE place a
+    // connection lives (R7-1), so it is document property state and needs no
+    // evaluation pass — and outputs never fill, because fan-out is free and a
+    // filled output would say something about the OTHER node.
+    ops.push(ellipse({
+      cx: p.x, cy: p.y,
+      rx: PORT_BEAD_R * BEAD_CORE_FRACTION, ry: PORT_BEAD_R * BEAD_CORE_FRACTION,
+      fill: isInput && portIsWired(s, p.key) ? color : NODE_BODY,
+    }));
+    if (perSide[p.side] < 2) continue;
+    // The label reads INWARD from its own edge, and its BOX is inside the card on
+    // both sides — an input's runs right from the bead, an output's ENDS at the
+    // bead (a right-aligned run must be given the box it aligns against, not the
+    // one that starts where it should stop). Wrapping is still possible and still
+    // means the node is too narrow, which is a sizing problem to see rather than
+    // to hide; being drawn off the card was not.
+    const boxW = Math.max(0, w / 2 - PORT_LABEL_GAP);
     ops.push(text({
       text: p.label,
-      x: isInput ? p.x + PORT_LABEL_GAP : p.x - PORT_LABEL_GAP,
-      y: p.y + NODE_PORT_LABEL_SIZE / 3,
+      x: isInput ? p.x + PORT_LABEL_GAP : p.x - PORT_LABEL_GAP - boxW,
+      y: p.y - textLineH(NODE_PORT_LABEL_SIZE) / 2,
       size: NODE_PORT_LABEL_SIZE,
       color: NODE_PORT_INK,
-      boxW: Math.max(0, (s.w ?? 0) / 2 - PORT_LABEL_GAP),
+      boxW,
       boxStyle: isInput ? null : { align: "right" },
     }));
   }
   return ops;
+}
+
+/**
+ * Pure function. Is a wire currently landing on this node's named input?
+ *
+ * THE ONE READING of the connection map, so the filled bead, the driven dial and
+ * any future affordance cannot disagree about what "connected" means. The map is
+ * the consuming node's own `inputs` leaf — R7-1's law that a connection is
+ * property state on the CONSUMER and nothing else is a source of truth — so this
+ * is a pure function of the folded document and reads no graph evaluation.
+ *
+ * @param {object} s - the folded item state
+ * @param {string} key - an input port's key
+ * @returns {boolean}
+ *
+ * @example portIsWired({inputs: {in: {item: "n1", port: "out"}}}, "in") // true
+ * @example portIsWired({inputs: {}}, "in") // false
+ * @example // a slot left behind by a deleted source is not a wire
+ * @example portIsWired({inputs: {in: null}}, "in") // false
+ * @example portIsWired({}, "in") // false
+ */
+export function portIsWired(s, key) {
+  return typeof s?.inputs?.[key]?.item === "string";
 }
 
 /**
