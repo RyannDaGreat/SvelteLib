@@ -54,6 +54,7 @@
   import { LABEL_DIVIDER_PROPERTY } from "./labelFrac.js";
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
+  import { withSimulationFrozen } from "../core/simulation_history.js"; // documentState is a HYPOTHETICAL — see it
   import { cameraRectAt } from "./cameraFrame.js";
   import { renderCameraFrame } from "./gpuService.js";
   import {
@@ -969,6 +970,15 @@
    * That was a real, reproduced silent no-op on Unbind, not a hypothetical.
    * Both maps are memoized (foldState per document, evaluateState per state
    * identity), so this costs no more than reading app.state().
+   *
+   * IT IS FROZEN AGAINST THE SIMULATION (manifest R7-9), and this is the SHARPEST
+   * case of the scoping invariant in the app. Every other frozen consumer renders
+   * a DIFFERENT slide; this one evaluates the SAME slide at the SAME instant as
+   * app.state() — but deliberately WITHOUT the preview delta, i.e. a document the
+   * user is not looking at. Its simulated values are therefore f(prev) of a
+   * hypothetical, and a `= @ * 0.9` decay would compute (and, unfrozen, RECORD)
+   * one for every tool gate re-evaluated during a drag. Frozen means it cannot
+   * write, so the hypothetical can never become the timeline's next `@`.
    */
   function documentState(a) {
     const raw = foldState(a.doc, a.slideIndex, 1);
@@ -977,7 +987,7 @@
     // omits it sees every script-driven property fall back to its default — and a
     // "is there anything left to unbind?" gate reading defaults would answer about a
     // document the user is not looking at.
-    return { raw, evaluated: evaluateState(raw, a.registry, a.projectScript()).state };
+    return { raw, evaluated: withSimulationFrozen(() => evaluateState(raw, a.registry, a.projectScript()).state) };
   }
 
   /**

@@ -50,6 +50,7 @@ import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_
 import { sceneMedia, prepareSceneScrubFrames } from "../render_gpu/skia/browser_media.js";
 import { makeCpuUploader, makeGpuUploader } from "../render_gpu/gpu/video_registry.js";
 import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
+import { withSimulationFrozen } from "../core/simulation_history.js";
 
 let ckPromise = null;
 let queue = Promise.resolve();
@@ -307,11 +308,40 @@ function renderJob(reqWidth, reqHeight, buildIR) {
  * DIFFERENT, already-saved project's doc (e.g. the Open Project preview grid)
  * passes that project's own name instead.
  *
+ * ── THIS SERVICE IS READ-ONLY TOWARDS THE SIMULATION ─────────────────────────
+ * SIMULATED STATE (manifest R7-9) keeps a module-global history table keyed by
+ * SLOT, and core/simulation_history.js's scoping invariant is that EXACTLY ONE
+ * consumer per process may advance it. Every caller here is a STILL consumer that
+ * can run while the presenter's clock is live — the slide thumbnails and the
+ * minimap keep rendering behind a fullscreen presentation, because PresentMode is
+ * mounted ALONGSIDE the editor rather than instead of it (web/App.svelte:3060) —
+ * so the evaluation runs inside withSimulationFrozen.
+ *
+ * FROZEN MEANS NO WRITE, NOT MERELY dt = 0, and the difference is the whole point:
+ * a dt-FREE simulated equation (`= @ * 0.9`, a decay) still computes f(prev) at
+ * dt = 0, so a thumbnail of SLIDE 5 would otherwise land its value in the slot the
+ * presenter's timeline owns and the next roll would inherit it. Verified in the
+ * module: recordSimulationValue returns early at frozenDepth > 0 and
+ * beginSimulationStep cannot roll, so a frozen pass reads `prev` and writes
+ * nothing (core/simulation_history.js).
+ *
+ * AND THE VIDEO EXPORT IS NOT AN EXCEPTION TO THIS, WHICH IS WHY IT STILL MOVES.
+ * A movie's frames come through here too (web/transitionRender.js's letterbox
+ * renderer → renderTransitionFrame → this), so freezing here would freeze an
+ * export if this were the only evaluation. It is not: createLetterboxFrameRenderer
+ * evaluates the state ITSELF, for the camera rect, BEFORE it asks for pixels
+ * (transitionRender.js:260) — one unfrozen pass per sub-frame, at the controlled
+ * time the sampler has just set, and evaluateState advances every slot in the
+ * document, not just the camera's. That pass is the export's single advancing
+ * consumer; this one re-reads the same step and agrees with it exactly (same
+ * `prev`, same `dt`). The ORDER is load-bearing — pinned by
+ * tests/simulated_export_test.js.
+ *
  * @example // renderCameraFrame(doc, {slideIndex: 0, alpha: 1, registry, width: 256, height: 144, project: "RobotSim"}) → Promise<canvas>
  * @example // renderCameraFrame(doc, {slideIndex: 0, registry, width: 96, height: 54, quality: "proxy", project: "RobotSim"}) → cheap thumbnail
  */
 export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width, height, quality = "full", project = "" }) {
-  return renderJob(width, height, () => {
+  return renderJob(width, height, () => withSimulationFrozen(() => {
     const state = evaluatedStateAt(doc, slideIndex, alpha, registry);
     const rect = cameraRect(state, doc.meta);
     return {
@@ -325,7 +355,7 @@ export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width,
       antialias: antialiasCoverage(cameraAntialias(state)), // THE camera's coverage-AA → setAntiAlias
       quality,
     };
-  });
+  }));
 }
 
 /**

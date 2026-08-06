@@ -21,6 +21,7 @@
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
   import { cameraFrameIR, evaluatedStateAt, evaluationAt } from "./cameraFrame.js";
   import { startParticleClock, stopParticleClock } from "../render_gpu/particle_clock.js";
+  import { resetSimulation } from "../core/simulation_history.js"; // SIMULATED STATE: a presentation is a fresh trajectory (see the mount)
   import { paintIsAnimated } from "../render_gpu/skia/materials.js"; // an animated MATERIAL fill/stroke/background must also keep the loop alive
   // assetStoreFor, NOT the bare assetStore(): a transition sound can belong to an
   // OPEN DRAFT, whose bytes live in the LOCAL store regardless of storageMode()
@@ -401,6 +402,13 @@
     // advancing time. Every other consumer (editor/CLI/thumbnails/export) leaves
     // the clock PAUSED → a deterministic freeze still. Stopped on exit (cleanup).
     startParticleClock();
+    // SIMULATED STATE (manifest R7-9): a presentation starts from the AUTHORED
+    // INITIAL CONDITION, always. startParticleClock re-bases the clock to 0, so
+    // the automatic backwards-time reset covers this entry today — but only by
+    // arithmetic, and a presenter that ever resumed from a nonzero t0 would
+    // silently continue the previous run's trajectory. Stated explicitly here
+    // because "when does history reset" is a documented rule, not an emergent one.
+    resetSimulation();
     // ENTERING PRESENT IS A GESTURE, SO SPEND IT (R7-3). The user reached here by
     // clicking Present or pressing its shortcut, which is a user activation the
     // browser will accept — so a deck whose first slide is a patch is audible from
@@ -439,6 +447,14 @@
       document.removeEventListener("fullscreenchange", onFsChange);
       presenter.stop();
       stopParticleClock(); // back to the PAUSED freeze regime (editor renders a still)
+      // AND THE SIMULATION WITH IT — the editor must show the initial condition
+      // again, not wherever the presentation left the pendulum. THE EXIT IS NOT
+      // COVERED BY THE BACKWARDS-TIME RESET: leaving a presentation SHORTER than
+      // EDITOR_FREEZE_TIME is a jump FORWARD into the freeze (2 s), so the next
+      // editor evaluation would take one spurious clamped step instead of
+      // resetting. Measured on the twin defect in core/simulation_history's
+      // observeClock, which is where that discontinuity was first found.
+      resetSimulation();
       if (idleRaf !== null) { cancelAnimationFrame(idleRaf); idleRaf = null; } // stop the at-rest anim loop
       restingAnimated = false;
       if (transitionAudio) { transitionAudio.pause(); transitionAudio.src = ""; transitionAudio = null; } // release audio

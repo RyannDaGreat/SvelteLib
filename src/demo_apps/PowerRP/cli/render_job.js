@@ -47,9 +47,22 @@
  * or RECORDABLE state (needs an ambient `t`, but is a pure function of it —
  * particle_clock's own docstring says a particle's picture is "a pure function of
  * (params, t, seed)"). Frame N therefore never needs frame N-1, and a worker can
- * jump straight to its own frames. If a genuinely autoregressive widget is ever
- * added — a physics sim carrying velocity across frames — this striding becomes
- * silently WRONG and the supervisor must fall back to a single shard.
+ * jump straight to its own frames.
+ *
+ * THAT "IF A GENUINELY AUTOREGRESSIVE WIDGET IS EVER ADDED" HAS HAPPENED. SIMULATED
+ * STATE (manifest R7-9) is the FOURTH kind: an equation reading `@` (the previous
+ * value) or `dt` makes frame N a function of frames 0..N-1, and each worker is its
+ * own PROCESS with its own history table, so a strided worker would integrate its
+ * frames from a prefix it never walked and write a plausible WRONG video with a
+ * green exit code. This worker therefore ASKS, in node, before it launches
+ * anything: core/document.stridedShardRefusal answers with the sentence or null.
+ * A refusal means the job runs CONTIGUOUSLY — one shard, one browser, every frame
+ * in ascending order, and (see renderFramesInto) with the resume skip DISABLED, so
+ * the single worker integrates its own prefix instead of starting cold on top of a
+ * half-finished directory. Asked for parallelism as well, it FAILS LOUDLY rather
+ * than silently serialising: an operator who asked for eight browsers and got one
+ * is owed the reason, and the alternative — rendering anyway — is the exact
+ * wrong-video-with-a-green-exit failure this project forbids.
  *
  * ── THE PARALLEL SHAPE IS MEASURED, NOT ASSUMED ───────────────────────────────
  * `--workers N` runs N INDEPENDENT BROWSERS inside this ONE process, sharing ONE
@@ -119,6 +132,12 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import puppeteer from "puppeteer";
 import { parseArgs } from "./args.js";
+// SEEKABILITY, asked in node before a browser exists (see the header's sharding
+// note). The same bare-node import set cli/render.js already uses.
+import { deserialize, repairedDocument, stridedShardRefusal } from "../core/document.js";
+import { createRegistry } from "../core/registry.js";
+import { createCommands } from "../core/commands.js";
+import { registerAll } from "../plugins/index.js";
 
 /** Zero-padding for frame filenames. MUST equal server.py's EXPORT_FRAME_PAD: the
  *  ffmpeg input pattern is `frame_%06d.png`, and the padding is what makes the
@@ -208,6 +227,32 @@ export function workerShards(shard, shards, workers) {
   const out = [];
   for (let worker = 0; worker < workers; worker++) out.push({ shard: worker * shards + shard, shards: shards * workers });
   return out;
+}
+
+/**
+ * Pure function. The sentence refusing to split this job across shards or
+ * browsers, or `null` when the split is safe — the problem-string-or-null shape
+ * core/document.stridedShardRefusal itself uses, so a caller reads both the same
+ * way.
+ *
+ * `simulationRefusal` is that function's answer for the job's document. When it is
+ * null nothing here applies. When it is a sentence the job may still run, but only
+ * as ONE contiguous walk (shards === 1 and workers === 1); any other split is
+ * refused with the document's own explanation attached, because "why can this job
+ * not use eight browsers?" is answerable only by the document.
+ *
+ * @param {string|null} simulationRefusal core/document.stridedShardRefusal(doc, registry)
+ * @param {number} shards How many processes/machines the job was split across.
+ * @param {number} workers How many browsers this process was asked to run.
+ * @returns {string|null} the refusal, or null when this split may proceed
+ *
+ * @example parallelSplitRefusal(null, 4, 8) // null — an ordinary deck strides freely
+ * @example parallelSplitRefusal("it is simulated", 1, 1) // null — one contiguous walk is always safe
+ * @example parallelSplitRefusal("it is simulated", 1, 4).includes("--workers 1") // true
+ */
+export function parallelSplitRefusal(simulationRefusal, shards, workers) {
+  if (simulationRefusal === null || (shards === 1 && workers === 1)) return null;
+  return `render_job: this job was asked for ${shards} shard(s) x ${workers} browser(s), but ${simulationRefusal}. Re-run it with --shards 1 --workers 1 to render the whole timeline as one contiguous walk.`;
 }
 
 /**
@@ -357,14 +402,27 @@ async function openRenderPage(browser, url, report) {
  * below), so a job re-queued after a server restart skips what it has and picks
  * up where it stopped instead of re-rendering hours of work.
  *
+ * `resume` TURNS THAT OFF, AND A SIMULATED DOCUMENT REQUIRES IT OFF. Skipping a
+ * frame skips the SIMULATION STEP that frame carried, so on a document whose
+ * frame N depends on frames 0..N-1 a resumed run would continue an integration it
+ * never performed — plausible pixels, wrong trajectory, exit 0. Re-rendering the
+ * prefix is not waste there, it IS the prefix integration; it is the price of the
+ * fourth kind of state and it is paid loudly rather than skipped silently.
+ *
+ * Args:
+ *   session (object): an open render page ({page, failure, tag})
+ *   framesDir (string): the job's frames/ directory
+ *   frames (number[]): the output frame indices this session owns, ASCENDING
+ *   resume (boolean): may an existing file be treated as finished?
+ *
  * Returns:
  *   Promise<number> how many frames this call actually rendered
  */
-async function renderFramesInto(session, framesDir, frames) {
+async function renderFramesInto(session, framesDir, frames, resume) {
   let rendered = 0;
   for (const frameIndex of frames) {
     const outPath = path.join(framesDir, frameFileName(frameIndex));
-    if (existsSync(outPath)) continue;
+    if (resume && existsSync(outPath)) continue;
     const base64 = await session.page.evaluate((i) => window.__powerrp_renderJobFrame(i), frameIndex);
     const failure = session.failure();
     if (failure) throw failure; // an uncaught page error during THIS frame — never write it
@@ -393,6 +451,11 @@ async function renderFramesInto(session, framesDir, frames) {
  * Command (boots a browser, renders, writes PNGs). Renders this process's shard
  * of the job's timeline into `<jobDir>/frames/`.
  *
+ * THROWS BEFORE IT BOOTS ANYTHING when the document is SIMULATED and the caller
+ * asked for more than one shard or browser (parallelSplitRefusal). A simulated
+ * document renders as one contiguous walk with the resume skip off; see the
+ * header's sharding note.
+ *
  * Args:
  *   jobDir (string): the job directory holding job.json + doc.json
  *   shard (number): this process's 0-based shard index
@@ -410,6 +473,21 @@ export async function runShard(jobDir, shard, shards, workers) {
   const docJson = await readFile(path.join(jobDir, "doc.json"), "utf8");
   const framesDir = path.join(jobDir, "frames");
   await mkdir(framesDir, { recursive: true });
+
+  // IS THIS DOCUMENT SEEKABLE? Asked HERE, in node, before a browser or a dev
+  // server exists, because the answer decides the shape of the whole run. The
+  // repair is the same one the page performs on the same snapshot; its reports are
+  // printed there (web/renderJobPage.js), so printing them again from every shard
+  // would say each one N times.
+  const registry = createRegistry();
+  registerAll(registry, createCommands());
+  const { doc } = repairedDocument(deserialize(docJson), registry);
+  const simulationRefusal = stridedShardRefusal(doc, registry);
+  const splitRefusal = parallelSplitRefusal(simulationRefusal, shards, workers);
+  if (splitRefusal) throw new Error(splitRefusal);
+  // A simulated job renders CONTIGUOUSLY (shardFrames(total, 0, 1) is 0..total-1
+  // ascending) and may not skip a frame it already has — see renderFramesInto.
+  if (simulationRefusal) console.error(`render_job: rendering CONTIGUOUSLY, no resume — ${simulationRefusal}`);
 
   const consoleErrors = [];
   const report = (line) => {
@@ -435,7 +513,7 @@ export async function runShard(jobDir, shard, shards, workers) {
     if (totals.size !== 1) throw new Error(`render_job: workers disagreed about the frame count (${[...totals].join(", ")}) — the timeline must be a pure function of the snapshot`);
     const total = sessions[0].info.frames;
     const counts = await Promise.all(sessions.map((s) =>
-      renderFramesInto(s, framesDir, shardFrames(total, s.split.shard, s.split.shards))));
+      renderFramesInto(s, framesDir, shardFrames(total, s.split.shard, s.split.shards), simulationRefusal === null)));
     for (const s of sessions) await s.page.evaluate(() => window.__powerrp_renderJobClose());
     return {
       rendered: counts.reduce((a, b) => a + b, 0),

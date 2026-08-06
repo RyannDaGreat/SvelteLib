@@ -61,6 +61,24 @@
  * therefore go through createFrameSampler, which owns the per-output-frame
  * recipe (sub-frame times → controlled time → sampleTimeline → render → average).
  *
+ * ── SIMULATED STATE: AN EXPORT DICTATES ITS TIMESTEP ─────────────────────────
+ * The FOURTH kind of state (manifest R7-9, core/simulation_history.js) reads `dt`
+ * — the seconds one simulation step covers. In the presenter that is a MEASURED
+ * frame interval; here it is DEFINITIONAL, so createFrameSampler DICTATES it
+ * through setSimulationTimestepOverride and the max-timestep clamp never engages
+ * (there is no measurement to correct). That is what makes an export exactly
+ * reproducible while live playback is only approximately so.
+ *
+ * THE DIVISOR IS `fps * samples`, NOT `fps`, AND THAT IS THE WHOLE TRAP. Motion
+ * blur renders `samples` sub-frames per output frame at `samples` DISTINCT
+ * controlled times (subFrameTimes), and each one is a clock advance, so each one
+ * rolls the simulation. A dictated `1/fps` would therefore advance the simulation
+ * `samples` seconds for every second of video — a silently time-warped movie with
+ * no error anywhere. `1/(fps*samples)` is exactly the spacing of consecutive
+ * sub-times (including ACROSS an output-frame boundary), so the simulation
+ * advances 1/fps per output frame at every sample count, which is the only reading
+ * under which turning motion blur on does not change what the movie shows.
+ *
  * Node-runnable pure helpers (timelinePlan/sampleTimeline/subFrameTimes/
  * frameCount) — the node side of the worker imports them to compute a shard's
  * frame list. createFrameSampler and exportVideo need a DOM (canvas averaging)
@@ -69,6 +87,7 @@
 
 import { ease } from "../core/interpolators.js";
 import { resolveTransition } from "../core/transitions.js";
+import { resetSimulation, setSimulationTimestepOverride } from "../core/simulation_history.js";
 
 /** Default frames per second for an export (UI default). */
 export const DEFAULT_FPS = 30;
@@ -243,7 +262,21 @@ export function frameCount(duration, fps) {
  * allocates no scratch, so it is exactly one render per frame.
  *
  * Every frame is a pure function of (frameIndex, fps, samples, plan) — nothing
- * carries over between frames — which is what makes a strided shard legitimate.
+ * carries over between frames — which is what makes a strided shard legitimate,
+ * FOR EVERY DOCUMENT BUT A SIMULATED ONE. Simulated state (manifest R7-9) is the
+ * one thing that does carry over: frame N is a function of frames 0..N-1, so the
+ * strided walk above is refused for such a document BEFORE any browser is
+ * launched (cli/render_job.js, core/document.stridedShardRefusal). This line used
+ * to state the purity without the exception, which is exactly how a strided shard
+ * of a pendulum would have shipped as a plausible wrong video.
+ *
+ * THE SIMULATION IS RESET HERE AND DICTATED HERE. Construction is the start of a
+ * render, so `resetSimulation()` puts every `@` back on its authored initial
+ * condition — a second export in one page must not inherit the first one's
+ * trajectory — and `setSimulationTimestepOverride(1/(fps*samples))` makes every
+ * step definitional rather than measured (see the module header for why the
+ * divisor carries `samples`). `release()` returns the simulation to measured time,
+ * beside the controlled-time release it already does.
  *
  * @param {object} o
  * @param {{segments:object[], duration:number}} o.plan Timeline (timelinePlan).
@@ -259,10 +292,16 @@ export function frameCount(duration, fps) {
  * @example
  * // const s = createFrameSampler({plan, renderFrame, width: 96, height: 64, fps: 6, setTime});
  * // await s.sample(0)  // → the canvas for output frame 0 (rendered at t = 0.5/6 s)
- * // s.release()        // → setTime(null): back to the deterministic freeze
+ * // s.release()        // → setTime(null) + measured dt: back to the deterministic freeze
  */
 export function createFrameSampler({ plan, renderFrame, width, height, fps, samples = DEFAULT_SAMPLES, setTime = () => {} }) {
   const n = Math.max(1, Math.round(samples));
+  // SIMULATED STATE (see the docblock): this render starts from the initial
+  // condition, and its `dt` is DICTATED at the spacing of consecutive sub-frame
+  // times — 1/(fps*n), because every sub-frame is its own clock advance and so its
+  // own simulation step.
+  resetSimulation();
+  setSimulationTimestepOverride(1 / (fps * n));
   // Averaging scratch — allocated ONLY when blurring (samples>1), so samples=1 is
   // truly zero extra cost. `accum` sums RGBA across sub-frames as floats; `blend`
   // holds the divided result the consumer reads.
@@ -297,6 +336,7 @@ export function createFrameSampler({ plan, renderFrame, width, height, fps, samp
     },
     release() {
       setTime(null); // release the controlled-time override
+      setSimulationTimestepOverride(null); // …and return `dt` to MEASURED time
     },
   };
 }
