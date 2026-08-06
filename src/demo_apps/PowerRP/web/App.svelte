@@ -55,6 +55,7 @@
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
   import { withSimulationFrozen } from "../core/simulation_history.js"; // documentState is a HYPOTHETICAL — see it
+  import { withPointerFrozen } from "../core/pointer_input.js"; // …and it is hypothetical on BOTH ambient axes
   import { AUDIO_MUTE_COMMAND } from "./audioMirror.svelte.js"; // registered in coreCommands — see it
   import { cameraRectAt } from "./cameraFrame.js";
   import { renderCameraFrame } from "./gpuService.js";
@@ -988,7 +989,14 @@
     // omits it sees every script-driven property fall back to its default — and a
     // "is there anything left to unbind?" gate reading defaults would answer about a
     // document the user is not looking at.
-    return { raw, evaluated: withSimulationFrozen(() => evaluateState(raw, a.registry, a.projectScript()).state) };
+    // FROZEN ON BOTH AMBIENT AXES, and for one reason: this is a HYPOTHETICAL state
+    // (the fold WITHOUT the preview delta) evaluated at the same instant as
+    // `app.state()`. Simulated state must not advance twice for one frame, and the
+    // POINTER must not be read live here either — the mouse can move between this
+    // evaluation and the real one, so an unfrozen read would make two evaluations of
+    // one instant disagree, which is the ephemerality the recordable kind excludes.
+    // (W3-P, R7-24 freeze audit, 2026-08-06.)
+    return { raw, evaluated: withSimulationFrozen(() => withPointerFrozen(() => evaluateState(raw, a.registry, a.projectScript()).state)) };
   }
 
   /**

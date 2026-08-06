@@ -44,10 +44,12 @@
  * below), so a resume at frame 500 restarts the trajectory from the initial
  * condition and encodes 500 frames of the WRONG motion onto the end of a correct
  * prefix. This pipeline is handed a plan and a renderer and has neither the
- * document nor the registry, so the refusal has to be made by the caller that does
- * — cli/render_job.js makes it (core/document.stridedShardRefusal, and it turns the
- * frame skip off for the same reason). **web/browserRenderJobs.js does NOT yet**,
- * and that is a known open gap, recorded here rather than left to be discovered.
+ * document nor the registry, so the refusal has to be made by the caller that does.
+ * BOTH callers now make it: cli/render_job.js (core/document.stridedShardRefusal, and
+ * it turns the frame skip off for the same reason) and web/browserRenderJobs.js, whose
+ * `driveBrowserJob` is the first scope holding both the repaired doc and the registry
+ * and refuses a resume of a simulated deck outright. That gap was open when this
+ * paragraph was first written; it is closed.
  *
  * ── MOTION BLUR (temporal subsampling) ────────────────────────────────────────
  * `samples` (integer, DEFAULT 1) is the exposure subsample count. With samples=1
@@ -89,6 +91,18 @@
  * advances 1/fps per output frame at every sample count, which is the only reading
  * under which turning motion blur on does not change what the movie shows.
  *
+ * ── POINTER INPUT: THE SECOND AMBIENT INPUT, DICTATED THE SAME WAY ────────────
+ * R7-24 gave the pointer a seam of the same shape as the clock
+ * (core/pointer_input.js). An export must DICTATE it too, for a blunter reason than
+ * the timestep: **the editor's pointer feed keeps running while a render is in
+ * flight**, so reading the ambient value would make an exported video follow whatever
+ * the author's mouse happened to be doing — different every render, silently. So
+ * createFrameSampler sets POINTER_REST and releases it, exactly as it does the
+ * timestep, and that is what server.py's pointer-input export warning promises ("the
+ * pointer renders at rest"). An OVERRIDE and not a freeze, because this render is
+ * STATING a value rather than avoiding one — and it is the seam a future pointer
+ * track plugs into unchanged, dictating sampled values here instead of rest.
+ *
  * Node-runnable pure helpers (timelinePlan/sampleTimeline/subFrameTimes/
  * frameCount) — the node side of the worker imports them to compute a shard's
  * frame list. createFrameSampler and exportVideo need a DOM (canvas averaging)
@@ -98,6 +112,7 @@
 import { ease } from "../core/interpolators.js";
 import { resolveTransition } from "../core/transitions.js";
 import { resetSimulation, setSimulationTimestepOverride } from "../core/simulation_history.js";
+import { setPointerInputOverride, POINTER_REST } from "../core/pointer_input.js"; // the SECOND ambient input an export must dictate (R7-24)
 
 /** Default frames per second for an export (UI default). */
 export const DEFAULT_FPS = 30;
@@ -312,6 +327,19 @@ export function createFrameSampler({ plan, renderFrame, width, height, fps, samp
   // own simulation step.
   resetSimulation();
   setSimulationTimestepOverride(1 / (fps * n));
+  // POINTER INPUT (R7-24) IS DICTATED HERE FOR THE SAME REASON `dt` IS.
+  // It is the second ambient input, and an export must not read the LIVE one: the
+  // editor's pointer feed keeps running while a render is in flight, so without this
+  // an exported video would follow whatever the author's mouse happened to be doing —
+  // different every render, and silently so. Dictating POINTER_REST is what makes the
+  // export reproducible, and it is exactly what `server.py`'s pointer-input export
+  // warning promises the author ("the pointer renders at rest").
+  //
+  // An OVERRIDE rather than `withPointerFrozen`, deliberately: a freeze guards against
+  // reading the ambient value, whereas this render is STATING one — and it is the seam
+  // a future pointer track plugs into unchanged (it would dictate sampled values here
+  // instead of rest, and nothing else in this file would change).
+  setPointerInputOverride(POINTER_REST);
   // Averaging scratch — allocated ONLY when blurring (samples>1), so samples=1 is
   // truly zero extra cost. `accum` sums RGBA across sub-frames as floats; `blend`
   // holds the divided result the consumer reads.
@@ -347,6 +375,7 @@ export function createFrameSampler({ plan, renderFrame, width, height, fps, samp
     release() {
       setTime(null); // release the controlled-time override
       setSimulationTimestepOverride(null); // …and return `dt` to MEASURED time
+      setPointerInputOverride(null); // …and the pointer to the AMBIENT one (R7-24)
     },
   };
 }
