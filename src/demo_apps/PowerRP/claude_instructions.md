@@ -4303,6 +4303,93 @@ modules behind them), R7-12 (~30 patches + demo slides), R7-13 (keyboard already
 `baseNote`/`octaves`; only the LOCK toggle is missing), R7-14 (piano roll), R7-15
 (trail), R7-16 (double-pendulum preset — needs W1-C).
 
+### R7-11 PORTING RULES — the fixed-point→float laws, and the traps that change the sound
+
+From primary sources (Axoloti firmware + Java + 684 object definitions); full report
+`.frenzy/round7/axoloti_research_report.md`. The user's requirement is *"mathematically
+near identical so that they sound the same"* — **these are the specific things that
+decide whether that is true.** Every one below was measured, not assumed.
+
+**THE THREE LAYERS. Confusing them is the commonest way to get a port subtly wrong.**
+
+    XML dial value (−64…64) ──×2^21──▶ raw int32 ──pfunction──▶ param_X in C ──/2^27──▶ float
+
+- `frac32` is signed **Q27**: `real = i / 2^27`, audio full scale ±1.0 = 2^27, with
+  ±16.0 of headroom above it (that headroom is why a mixer can sum before saturating).
+- **A dial reading 64 IS 1.0.** Unsigned dials 0…64 step 0.5; signed −64…64 step 1.0.
+- **`param_X` IS NOT THE DIAL VALUE.** Every param passes a `pfunction` first:
+  `.gain` is `<<4` (rescaled to q31), `.squaregain` is `±(psat²/2^31)`,
+  `.kdecaytime.exp` is `0x7FFFFFFF − MTOF(−v)>>2` — a per-tick DECAY COEFFICIENT.
+  *That is why the ADSR body contains no `exp()`.* Port the pfunction, not the dial.
+- Cross-type coercion: `bool32 → frac32` is **+1.0, not +1/64**; `frac32 → int32` is
+  `>>21`, so **frac32 1.0 arrives as 64**; `frac32buffer → frac32` takes **sample 0,
+  not an average**.
+
+**THE PITCH LAW.** `pitch` is SEMITONES, 1 semitone = `1<<21`, and **pitch 0 = MIDI 64
+= E4 = 329.6276 Hz** (not A440, not C). So `hz = 440 · 2^((p − 5)/12)`, `midi = 64 + p`.
+"Frequency" in object code is a **32-bit phase increment** (`2^32·f/48000`) — hence
+`Phase += freq` with `uint32_t` wraparound as the modulo. Their table is piecewise-
+LINEAR between semitones (≤0.7 cents error) and hard-clamps at 24 kHz; that matters
+for detuned unisons and supersaws.
+
+**⚠ THE K-RATE BRIDGE — GET THIS WRONG AND EVERY ENVELOPE, LFO AND COEFFICIENT RUNS
+8× SLOW.** Axoloti is 48 kHz with `BUFSIZE 16`, so its control rate is **exactly 3000
+Hz**. In a 128-frame AudioWorklet quantum that means **8 k-rate ticks per `process()`,
+each followed by 16 sample-rate samples.** Hoisting the k-rate work to once per
+quantum is the obvious optimisation and it is WRONG by a factor of 8.
+
+Also port the k→s ramp (`gain/vca` is the reference): per buffer
+`step = (v − prev)/16; g = prev; prev = v`, then per sample `out = a·g; g += step`.
+**Their ramp is deliberately one buffer (333 µs) LATE** — it ramps from the previous
+block's value. Omit the ramp and the port sounds crunchy on every modulated gain.
+
+**⚠ THE BIQUAD'S EXTRA `qinv`.** `filter/lp`'s numerator carries a constant-peak-gain
+normalisation the textbook RBJ formula does not: `b0 = ((1−cos w0)/2)·qinv/a0`. **Omit
+it and every resonant sweep is far too loud.** `biquad_bp` has NO extra qinv. Resonance
+is stored as inverse-Q (`Q = 32/(64 − dial)`, a pole at 64) and passed as `1/Q` to
+avoid a division.
+`filter/lp1` is `alpha = 2·fc/48000` — **not** `1 − exp(...)`; its −3 dB point is
+`fc/π`, which is not where the label says. Copy the recurrence, not the intent.
+ADSR: **attack is LINEAR, decay and release are EXPONENTIAL.**
+
+**FAITHFULNESS HAS A LIMIT, AND HERE IS WHERE WE DRAW IT.** `env/ad` uses `/192000`
+where its siblings use `/96000` — **it runs 2× slower than its own display says.**
+That is a real bug in their library. The ruling: **port the SOUND faithfully and make
+the LABEL honest.** The user asked for patches that sound the same, not for a
+replicated display bug; a knob whose readout contradicts its behaviour is the "lie
+about its own affordance" this manifest already forbids. Note every such divergence
+in the spec's `help`.
+**`noise` is NOT reproducible on their hardware** (`rand_s32` reads the STM32 RNG).
+Ours must use the seeded `random` — determinism is non-negotiable here and this is an
+improvement, not a deviation to apologise for.
+
+**TWO AXOLOTI CHOICES WE DELIBERATELY REJECT:**
+1. **Execution order is SPATIAL there** (sorted y then x — moving a box changes the
+   sound). We have `topoOrder` (`core/nodeflow.js`) and it is better. Keep ours.
+2. **No automatic param/inlet duality.** Their authors declare a param and an inlet
+   with the same name and add them in C; the ` m` suffix (`filter/lp` vs `filter/lp m`)
+   is that convention and **it costs them ~70 duplicated objects.** Our rule instead:
+   **every param implicitly gets a same-named inlet defaulting to the combine law's
+   identity element (0 for summed, 1 for multiplied).** This is what delivers the
+   user's *"things can either be a knob control or they can be an input control"* with
+   no duplicated objects, and several of our specs already declare both by hand
+   (`audio_oscillator` has knob `frequency` AND input `frequency`), so it formalises
+   an existing pattern rather than inventing one.
+
+**INVENTORY REALITY.** 519 `.axo` files but **684 object definitions** — one file holds
+N `<obj.normal>` overloads (k-rate int / k-rate frac / s-rate buffer versions of the
+same `id`, resolved like C++ overloads by connected type). 610 are machine-generated,
+74 hand-authored. The hand-authored ones are the good ones: `osc/brds/` (40 Braids
+ports) and `fx/` (13 Mutable Instruments ports) are 100% hand-written.
+
+**THE COMMUNITY CORPUS IS FROZEN AND HALF-OFFLINE.** `community.axoloti.com` is down;
+the mirror is `sebiik.github.io/community.axoloti.com.backup`, and contributed patches
+live in `axoloti/axoloti-contrib` **at tag `1.0.12` only** (`master` is empty of them).
+The successor project is **Ksoloti** (active). Best-of-breed pads found: `Shimmer.axp`
+(two pitch-shifters inside an FDN feedback path), `EvolPad.axp` (three incommensurate
+7.7 s LFOs rewriting waveform STEP LEVELS so harmonic content drifts),
+`SolinaStrings.axp` (six objects, literal three-phase BBD ensemble).
+
 ### R7-RULING: THE TEST BUDGET
 
 User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
