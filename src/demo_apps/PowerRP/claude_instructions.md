@@ -4474,6 +4474,41 @@ Tier-2 ones and REFUSES WITH A SENTENCE for Tier 1 — never returns 0, never re
 stale sample. Tier is a property of the port's declared TYPE (`audio` vs `number`), so
 it is derived, not a second hand-maintained list.
 
+**BUILT AND MEASURED (W2-C, commits `214ccdc`, `135bec7`).** `= knob1.out` → 90 for a 0.25
+knob; `= m.out` → 7 across two wires; `= osc1.out` refused with a sentence naming the type and
+the reason, falling back to the plugin default and injecting NOTHING — not 0.
+`core/output_properties.js` holds the declaration side (node output ports **and**
+`plugin.outputProps`, one namespace, one Inspector section); `resolveNode()` was extracted in
+`core/nodeflow.js` so the topological sweep and the new lazy resolver cannot disagree about
+what a wire carries.
+
+**ONE CORRECTION TO THE TWO-TIER RULE, and it is a refinement rather than a detail: THE PORT
+TYPE ALONE CANNOT DECIDE READABILITY.** `TRIGGER_SPEC`'s output is typed `trigger`, which is
+readable — **but it has no `computeOutputs`, so its value lives in the engine, not the
+document.** It needs its OWN sentence, not the audio one and not a 0. So the rule is derived
+from the type AND from whether a producer exists: still derived, still no hand-maintained
+list, but two facts rather than one.
+
+**THE INSPECTOR ROW IS A REPORT, NOT A FIELD**, reusing the save dot's markup verbatim: no
+editor, no `=` affordance, no keyframe diamonds, `role="status"` + `tabindex="0"` +
+`aria-label` carrying the reason — focusable, so the sentence is not pointer-only.
+`jointEditProblem` refuses a `readOnly` row **ahead of** the kind table, which is necessary
+because the kind is an ordinary `"number"` that the table would otherwise call jointly
+editable.
+
+**R7-8 (TRIGGERS) IS DEFERRED, AND THE REASONING IS ACCEPTED.** W2-C: *"Exec wires,
+event/impure/latent node kinds, idempotent effects and `DelayAlpha` are a feature of their own
+scale, and half of it would be worse than none."* That is right — a half-built execution model
+would invite authors to depend on semantics we had not settled. R7-7's declaration surface is
+the foundation it needs, and that now exists. **R7-8 is a round of its own.**
+
+**KNOWN BOUNDARIES LEFT OPEN, disclosed rather than discovered later:**
+`deriveRenderTree` still calls `evaluateNodeGraph` itself — reusing the injected values would
+need `inputs` injected too, and that key **collides with the stored `inputs` wire map**
+(pre-existing, unchanged). And multi-selection shows no Outputs section, because rows are
+appended at the single-selection seam; the two `jointEditProblem`/`MULTI_EDITABLE_KINDS` guards
+make that a boundary rather than a hole.
+
 **THERE ARE THEREFORE TWO LFOs, AND THE UI MUST NOT PRETEND OTHERWISE:**
 1. **Audio LFO** — an AudioNode, modulates AudioParams at audio rate, invisible to the
    document. For tremolo, vibrato, filter sweeps, FM.
@@ -5141,7 +5176,23 @@ deletes rather than fixes:**
    defaults `seconds`/`progress` to `"self.…"` equation strings. Precedent exists; this
    extends it rather than inventing.
 
-**⚠ THE ONE THING TO VERIFY BEFORE BUILDING: IS IT A CYCLE?** W1-D measured that a node's
+**THE CYCLE RISK BELOW IS REAL AND HAS ALREADY BEEN SOLVED — by W2-C, and R7-21 is the case
+that forced the right design.** The obvious way to resolve an output property is *settle the
+item's slots, then compute its outputs*. **That is wrong, and this feature proves it:** with
+`w = "= self.node_width"` and `h = "= self.node_height"`, answering `node_width` by settling
+the whole item also settles `h`, which reads `node_height`, which needs `w` — **a legitimate
+DAG reported as a cycle, on the very feature the mechanism exists for.**
+
+The resolver therefore reads items through **a view that settles only the TOP-LEVEL KEY it
+touches**, so the dependency is discovered by execution like every other dependency in that
+pass, and a genuine self-cycle still lands loudly in `requireSlot`. For the same reason
+`outputProps` is a static map of **per-name thunks** rather than an eager
+`(state) => [{name, value}]`: asking for one output must not compute the others. Both are
+pinned by a test that counts producer calls.
+
+**So R7-21's builder does not need to solve this — it needs to not undo it.**
+
+**⚠ THE ORIGINAL WORRY, KEPT FOR THE RECORD: IS IT A CYCLE?** W1-D measured that a node's
 **floor is a function of WIDTH** (`audio_oscillator` at 80×124 wraps its knob band to three
 rows). So `node_height` legitimately depends on the resolved `w`. That is fine — a DAG —
 **provided `node_width` does NOT depend on `h`.** If both directions exist, `requireSlot`
