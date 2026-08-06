@@ -1991,9 +1991,16 @@
            whose value is produced in the engine. Focusable, so that reason is not
            pointer-only (the save-dot rule again). -->
       {@const shown = valueAt(state, row.key)}
-      <Tooltip text={row.unreadable ?? row.help}>
-        <span class="output-val" role="status" tabindex="0">
-          {row.unreadable ? (row.portType ? `${PORT_TYPES[row.portType].label} signal` : "no value") : equationBadge(shown)}
+      {@const reason = row.unreadable}
+      {@const text = reason ? (row.portType ? `${PORT_TYPES[row.portType].label} signal` : "no value") : equationBadge(shown)}
+      <!-- `role="status"` + `tabindex="0"` is the SAVE DOT's markup verbatim
+           (web/Toolbar.svelte) — the app's established shape for "an element that
+           reports and is reachable by keyboard". The aria-label carries the REASON
+           when there is one, so a focused reader is told why there is no value
+           rather than only being shown the type. -->
+      <Tooltip text={reason ?? row.help}>
+        <span class="output-val" role="status" tabindex="0" aria-label={reason ? `${row.label}: ${reason}` : `${row.label}: ${text}`}>
+          {text}
         </span>
       </Tooltip>
     {:else if multiRow?.problem}
