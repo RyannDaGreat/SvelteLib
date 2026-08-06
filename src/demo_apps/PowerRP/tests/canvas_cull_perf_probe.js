@@ -252,6 +252,12 @@ try {
     const c = app.nodes();
     app.commitPreview();
     const d = app.nodes();
+    // THE AXIS NO ARGUMENT CAN SEE: an asset ref's RESOLUTION changes with the
+    // blob-URL memo, not with the document (see nodes()). Bumping the library
+    // counter must re-derive, or a static deck whose assets prime after the first
+    // paint shows every one of them as missing for the rest of the session.
+    app.assetsVersion += 1;
+    const e = app.nodes();
 
     app.nodes = original;
     return {
@@ -261,6 +267,7 @@ try {
       stable: a === b,
       previewInvalidates: c !== b,
       commitInvalidates: d !== c,
+      assetsInvalidate: e !== d,
       movedTo: app.state().items.seen_0.x,
     };
   }, PAN_FRAMES, HOVER_MOVES);
@@ -289,6 +296,7 @@ try {
   ok(perf.stable, "two app.nodes() calls with nothing changed return the SAME array (the memo hits)");
   ok(perf.previewInvalidates, "a live preview re-derives (the memo must not outlive a mid-gesture edit)");
   ok(perf.commitInvalidates, "committing the preview re-derives again");
+  ok(perf.assetsInvalidate, "an asset-library change re-derives (a ref's RESOLUTION is not in the document)");
   ok(perf.movedTo === 999, `and the edit really landed (seen_0.x = ${perf.movedTo})`);
 
   ok(liveErrors.length === 0, `no page errors (${liveErrors.join(" | ")})`);

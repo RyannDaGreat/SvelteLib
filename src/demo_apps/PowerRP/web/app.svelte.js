@@ -1342,23 +1342,39 @@ export class PowerRPApp {
    * is written from inside $derived blocks (mutating reactive state there is an
    * error), which is the same reason #blendCache is a plain field.
    *
+   * ── THE FOURTH KEY IS `assetsVersion`, AND IT IS THE NON-OBVIOUS ONE ────────
+   * The derivation is not a function of its three ARGUMENTS alone: it resolves
+   * every asset ref through core/asset_ref's installed resolver, and in STATIC mode
+   * that resolver answers from a blob-URL memo web/assetStore.js fills
+   * ASYNCHRONOUSLY. So a ref can go from "missing sentinel" to a real blob: URL with
+   * the document, the registry and the project name all unchanged — a change no
+   * argument-identity key can see. Uncached, every call re-asked and a later repaint
+   * simply picked up the answer (loadAutosave's "fire-and-forget: a repaint
+   * follows"). Cached, that repaint would serve the pre-prime derivation FOREVER and
+   * a reloaded static deck would show every image as missing until the author
+   * happened to edit something. `assetsVersion` is this app's existing "the asset
+   * library changed" counter and every site that lands, removes or primes assets
+   * bumps it, so keying on it makes that dependency explicit instead of invisible.
+   *
    * Callers must not mutate the returned array or its nodes; they never did (the
    * derivation was already handed out fresh to a dozen readers that only read).
    */
-  #nodesCache = { state: null, registry: null, project: null, nodes: null };
+  #nodesCache = { state: null, registry: null, project: null, assets: -1, nodes: null };
 
   nodes() {
-    // state() FIRST and unconditionally: it is what registers this call's reactive
-    // dependencies (doc, previewDelta, slideIndex) with the surrounding $derived or
-    // $effect. Returning a cached array before reading it would make a consumer
-    // stop tracking the document.
+    // EVERY KEY IS READ FIRST AND UNCONDITIONALLY: these reads are what register
+    // this call's reactive dependencies (doc, previewDelta, slideIndex,
+    // assetsVersion) with the surrounding $derived or $effect. Returning a cached
+    // array before reading them would make a consumer stop tracking the document.
     const state = this.state();
     const project = this.projectName();
+    const assets = this.assetsVersion;
     const c = this.#nodesCache;
-    if (c.state !== state || c.registry !== this.registry || c.project !== project) {
+    if (c.state !== state || c.registry !== this.registry || c.project !== project || c.assets !== assets) {
       c.state = state;
       c.registry = this.registry;
       c.project = project;
+      c.assets = assets;
       c.nodes = deriveRenderTree(state, this.registry, project);
     }
     return c.nodes;
@@ -7755,7 +7771,18 @@ export class PowerRPApp {
       // reloaded draft's assets unprimed (every ref then reads as the MISSING
       // sentinel instead of the loud 500 the CRUD seam used to give — a quieter
       // but equally wrong failure of the same underlying routing gap).
-      assetStoreFor(this.projectName()).primeUrls(this.projectName()).catch((e) => console.error(`PowerRP boot: primeUrls failed — ${e}`));
+      // AND THE BUMP IS WHAT MAKES "a repaint follows" TRUE. Priming changes what
+      // an asset ref RESOLVES TO without touching the document, so a repaint alone
+      // re-derives nothing: nodes() memoizes on the evaluated state, which a prime
+      // leaves byte-identical. Before the memo, every consumer re-asked the
+      // resolver and the next frame quietly picked up the blob: URLs; with it, the
+      // pre-prime derivation — every ref reading as the MISSING sentinel — would be
+      // the answer for the rest of the session. `assetsVersion` is that memo's
+      // resolution key (see nodes()), and this is the one prime that lands after
+      // the document rather than before it.
+      assetStoreFor(this.projectName()).primeUrls(this.projectName())
+        .then(() => { this.assetsVersion++; })
+        .catch((e) => console.error(`PowerRP boot: primeUrls failed — ${e}`));
     }
   }
 
