@@ -163,10 +163,19 @@ let lastAdvanceTime = null;
 /** The clock reading (seconds) the CURRENT timestep was measured from, or null
  *  before the first observation. */
 let lastObservedTime = null;
-/** The timestep the CURRENT step covers. Computed ONCE per clock instant (see
- *  observeClock) and reused by every pass and every consumer at that instant, which
- *  is what makes the answer evaluation-count invariant. */
-let currentDt = 0;
+/** The seconds the CURRENT SIMULATION STEP covers — measured at a roll, from
+ *  lastAdvanceTime, and reused by every pass at that instant, which is what makes the
+ *  answer evaluation-count invariant. */
+let stepDt = 0;
+/** The seconds since the previous OBSERVED instant — what simulationTimestep answers.
+ *
+ *  IT IS A DIFFERENT GAP FROM stepDt, and deliberately so. They coincide whenever both
+ *  happen every tick, which is the normal case; they diverge when the simulation skips
+ *  a tick another consumer observed, and then each is still right about its OWN
+ *  question ("how long since the previous parameter push" vs "how long since the
+ *  previous simulation step"). Measuring the roll from the observation would let any
+ *  consumer starve the simulation of elapsed time by looking at the clock first. */
+let observedDt = 0;
 /** Bumped by every roll and every reset — the equation memo's second invalidation
  *  axis (core/expressions.evaluateState). `clock` alone is not enough: an explicit
  *  reset changes every `@` without moving the clock. */
@@ -221,12 +230,13 @@ export function clampedTimestep(elapsed, maxTimestep) {
  * @example // then beginSimulationStep(0.2, 0.1) // 0 — time went backwards: reset to the initial condition
  */
 export function beginSimulationStep(now, maxTimestep) {
-  if (frozenDepth > 0) return observeClock(now, maxTimestep); // read-only: renders the current step, cannot advance it
+  if (frozenDepth > 0) return stepDt; // read-only: renders the current step, cannot advance it
   if (lastAdvanceTime !== null && now < lastAdvanceTime) resetSimulation();
-  const dt = observeClock(now, maxTimestep);
   if (lastAdvanceTime === null) {
     lastAdvanceTime = now;
+    stepDt = 0;
   } else if (now > lastAdvanceTime) {
+    stepDt = dictatedSeconds ?? clampedTimestep(now - lastAdvanceTime, maxTimestep);
     // Carried forward, not emptied: a slot no pass touched this step keeps its last
     // known value, so a consumer that skips a slide does not blank the history of
     // every slot on it.
@@ -236,7 +246,7 @@ export function beginSimulationStep(now, maxTimestep) {
     lastAdvanceTime = now;
     generation++;
   }
-  return dt;
+  return stepDt;
 }
 
 /**
@@ -255,12 +265,12 @@ export function beginSimulationStep(now, maxTimestep) {
 function observeClock(now, maxTimestep) {
   if (lastObservedTime === null || now < lastObservedTime) {
     lastObservedTime = now;
-    currentDt = 0;
+    observedDt = 0;
   } else if (now > lastObservedTime) {
-    currentDt = dictatedSeconds ?? clampedTimestep(now - lastObservedTime, maxTimestep);
+    observedDt = dictatedSeconds ?? clampedTimestep(now - lastObservedTime, maxTimestep);
     lastObservedTime = now;
   }
-  return currentDt;
+  return observedDt;
 }
 
 /**
@@ -270,7 +280,9 @@ function observeClock(now, maxTimestep) {
  *
  * WHY IT EXISTS SEPARATELY FROM beginSimulationStep: that one is reached lazily, only
  * when an equation actually reads `@` or `dt`, so on a deck with no simulated state
- * it never runs. A consumer that needs the frame interval REGARDLESS — an audio
+ * it never runs. It also measures a DIFFERENT GAP — see observedDt: this one is "how
+ * long since the previous look at the clock", the step is "how long since the previous
+ * simulation step", and they only coincide while both happen every tick. A consumer that needs the frame interval REGARDLESS — an audio
  * parameter ramp is the first — would otherwise measure it a second time, and two
  * independent measurements of one physical quantity is the mirror-drift failure this
  * codebase keeps paying for. Cheap and allocation-free, so calling it every frame
@@ -404,7 +416,8 @@ export function resetSimulation() {
   writtenThisStep = new Set();
   lastAdvanceTime = null;
   lastObservedTime = null;
-  currentDt = 0;
+  stepDt = 0;
+  observedDt = 0;
   generation++;
 }
 
@@ -472,7 +485,7 @@ export function simulationSnapshot() {
     prev: [...prevValues],
     cur: [...curValues],
     lastAdvanceTime,
-    dt: currentDt,
+    dt: stepDt,
   };
 }
 
@@ -488,6 +501,7 @@ export function restoreSimulationSnapshot(snapshot) {
   writtenThisStep = new Set();
   lastAdvanceTime = snapshot.lastAdvanceTime;
   lastObservedTime = snapshot.lastAdvanceTime;
-  currentDt = snapshot.dt;
+  stepDt = snapshot.dt;
+  observedDt = snapshot.dt;
   generation++;
 }
