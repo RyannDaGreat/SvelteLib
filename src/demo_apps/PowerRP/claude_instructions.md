@@ -3575,7 +3575,157 @@ only — the editor must NOT depend on python at runtime.
 
 ## Backburner
 
-(empty — items graduate here only when the user says so)
+### B-1 THE 2026-08-06 THOUGHTS DUMP (verbatim; NOT Round 7 scope)
+
+The user prefixed this with *"This section is just a dump of thoughts… Here's a bunch of
+thoughts that give you context"* and closed the round brief with *"you don't need to
+implement everything, just the ones I'm mentioning right now."* So it is recorded here
+verbatim as the standing wish-list, and the items Round 7 actually pulled out of it are
+marked **[→R7]**. Everything unmarked is backburner: do not start it without being asked.
+
+> powerp Features
+>
+> HTML-in-Canvas -- SHOULD WE PIVOT TO THAT???
+> This looks amazingg!!!! Very ai friendly too!!!
+>
+> Github integration
+> - [ ] Version controlling
+> - [ ] History viewer - big modal. histories undo's too
+> - [x] All static hosted
+>
+> - [ ] talking to Claude with visual input simultaneously
+> - [ ] viewing Claude editing in real time
+> - [ ] Twin line transitions
+> - [x] A way of handling animation state with automatic transitions
+> - [x] Widgets can turn into other widgets and morph as a transition to be like manim
+> - [x] Entry and exit effects via transitions in viewability
+> - [ ] A "Keyframe Everything In Slide" tool
+> - [ ] A way to streamline project -> diagram PDF's -> Latex assets (perhaps a pdf capture widget? idk?)
+>
+> Audio latency is concerningly large....can we somehow get lower latency? Configurable perhaps as part of the camera settintgs (since its a big global camera can have audio settinsg)
+>
+> A presenter view?
+>
+> Our nodes...would be good to have trigger/event nodes like in blueprints. Will simplify things a lot. Better than needing a schmitt-trigger (tho thats good too). Trigger upon events from widgets - like on reveal, on hide, etc. **[→R7-8]**
+>
+> A trail-widget - that can be bound to an anchor, and draw a stream of N seconds...like my visualizer code... **[→R7-15]**
+>
+> Textures / image assets from Nodes --> and can be mapped onto threejs etc. Full material nodeflow.
+>
+> The canvas should cull objects in the editor too. Why isn't it doing that already??? It's laggy when there are tons of objects, even if they're out of view... **[→R7-6]**
+>
+> Use html2image as a widget - can it be animated? -> SVG
+>
+> Aspect ratio chain lock on H/W
+>
+> Make Camera has 3D transform in addition to 2d tranform: and a common 3d rendering backend. ThreeJS or Babylon? I want splats and particles and 3d models and lighting etc. It should be flexible enough we can do shaders in it too via plugins...like my noise warp...
+>
+> An "Advanced" property tab:
+> - Options include:
+>     - Visible on Presentation mode (empties are False)
+>     - Maybe more to come...
+>
+> ODE's in property equations i.e. we can have reserved variables "@" (meaning prev value), and @self.value means (previous self.value). All values are kept track of prev time frame including globals etc. The user is responsible for correctly using anothder reserved variable "dt" - so like if we set property rotation to "@+dt" it means we rotate 1 degree every second from whatever it was previously. When blending or tweening, it simply means to blend with that result just like any other result if its numerical - I'd like a double-monkey chaotic wrtench demo with a trail, given **[→R7-9, R7-16]**
+>
+> We probsbly want first-class support for 2-vectors, and 3-vectors such as RGB and XYZ etc. RGB values should be keyframeable by individual numbers...but these options, like the interp options, can be hidden by default ... maybe collapsible?
+>
+> "z" to zoom into camera
+>
+> Elk support in mermaid + demos.
+>
+> - [ ] Perlin Noise wrt. Time to make camera shake and stuff
+> - [ ] More audio stuff...this is really cool....but a lot of bugs to fix and things to patch...
+> - [ ] Visibility entry/exit settings: A delay option, and more suboptions. Make it first-class
+> - [ ] Groups...perhaps they shouldn't have a size after all....but worried about inconsisteny
+> - [ ] Telescopic magnifier: make it one object until shattering. Make a varaint with no zoom.
+> - [ ] Material nodes + other nodes --> a node option (can drag a node output into the properties tab then it registers as equation binding)
+> - [ ] Git control is important...
+> - [ ] Audio + Beats --> Animation (can we have music visualization)
+>     - [ ] From Midi? Can we have midi files? Piano roll? **[→R7-14 for the piano roll]**
+> - [ ] Empties. Replace the anhor widget. I want empties. Full transform, blender-style.
+>
+> USE CASE: Why is it so hard to rig a good stick figure animation?
+>     We might need inverse kinematics too? Idk yet
+> Why can't I bind an end of a line to another line? It tries  to move as little as possible or somethin...like, a constraint that it must be on that line.
+> We're getting into CAD territory here tho...
+> What about anchors that live on ojects? Custom anhors?
+> Yeah, we can do that...but that needs math right now, and that's annoying...
+> But doable, with Claude...
+> The claude frontend will fix this issue.
+> Why line not use normal stroke? It doesn't respond to materials?
+> Lines and arrows need to be dealt with...
+>
+> The buttons for previous keyframe and next keyframe should be disabled if there is no previous or next keyframe to go to.
+>
+> Paper peacock might need an easier to render proxy for all the slides. It's laggy to drag around. Actually anything involving pds may need to. Why don't we just make them white rectangles?
+>
+> We have .plugin.js, we have .material.plugin.js, and we have .lib.plugin.js. Would it make sense to make the convention instead dot what kind of plugin it is or just so like dot widget.plugin.js for example?
+>
+> Morphs: Add a https://github.com/veltman/flubber alternative to Manim? Are they the same?
+>
+> Riddle: Does it make any sense to have first-class 3d support? What would that even look like?
+>
+> Command V is STILL not EXACTLY equivalent to pressing the GUI paste button. There are differences. It's stupid as fuck. It doesn't paste properties. It should be structurally impossible for there to be differences between keyboard shortcuts and the buttons they correspond to.
+>
+> Why can't I edit interp options when selecting multiple?
+>
+> Multi-select should work even if obejcts are no longer visible. The object select dropdown should have checkboxes or some thign to let us select multi for ojbects that aren't visible, and when slide switches, it shouldn't change selection because of what is now visible or not.
+>
+> Slides with linger should be treated a bit different visually...not sure how yet tho...
+> Slides should be collapsible...and hover to preview maybe...
+>
+> The visible interp option wasn't able to be edited once when an object wasn't visible? What stupid conditional is that? Get rid of it. That's janky cruft.
+>
+> PASTE STILL DIDN'T FUCKING COPY THE PROPERTY SUCH AS WIDGET TYPE >:( WHHHYYY IS PASTE SO JANKY???? WE NEED A THROUGH INVESTIGATION. Are there tons of conditionals everywhere across files making it complex? Can it be streamlines and untangled?
+>
+> We need a View Current Slide buton that animates scroll in the slide viewer to the current slide. it's easy to get lost.
+>
+> Tried to edit text by double clicking it.
+> 5index-CbJtNAXT.js:2 Uncaught TypeError: Cannot read properties of undefined (reading '0')
+>     at Age (index-CbJtNAXT.js:3727:109713)
+>     at JDe (index-CbJtNAXT.js:3727:109486)
+>     at index-CbJtNAXT.js:3727:107633
+>     at Array.map (<anonymous>)
+>     at rht (index-CbJtNAXT.js:3727:107613)
+>     at N8 (index-CbJtNAXT.js:3727:106967)
+>     at index-CbJtNAXT.js:8071:37451
+>     at uLe (index-CbJtNAXT.js:2:29725)
+>     at Jre (index-CbJtNAXT.js:2:12928)
+>     at z5e (index-CbJtNAXT.js:2:12980)
+>
+> Why liquid glass  doesn't conform to the shape of text?
+>
+> WHY DOES MANDELBROT NOT ZOOM ANYMORE AAAAHHHH IT FADES????!!!???!??!???!
+> Why does text not manim-entry work? ?? IT FADES ON VISIBLE INTERP>.....
+>
+> When converting from text to plain text or vice versa, the text content should be preserved. Same with LaTex, and any other text-gui-based widgets (i.e. code). Can they all be the same property so we dont have to manually convert them?
+>
+> "Is a font property something we can have? If so, why not just do it that way?
+> "It does seem that global variables don't have any ability to set type inside the UI. That's a bit of a bug. There are several types of
+>  properties. We should be able to set which type of property a given variable is as a global variable." that way we can have font global vars...
+>
+> Are we suffering regressions?
+> Is our code sloppy ?
+>
+> We have so much code I'm worried our strucrture is falling apart...
+>
+> We constantly break things. So we'll need to version control the app BY presentation + commit hash. That will make it safe. it needs to be decentaralized...i.e.  a bunch of static sites on people's own git's that can all play anyone's presentations...
+>
+> Like, this project should (in the end)
+> - Make presentations with a GUI or coding agent, or both simulatenously (where I can watch ClaudeCode edit it visually with me as a 2nd user. todo: time-synced voice recording + screen recording via HTML, so it knows what elements im point to etc, to feed to Claude/Codex etc)
+> - Be remote controllable from my phone when presenting to people so I dont have to be by my laptop
+> - Have a synth engine to make presentations more dramatic - think things 'pop' or crackling into existence, where you can hear them and see them
+> - With fancy widgets that can be vibecoded on the fly (i.e. gimme a rigged stick figure, and claude gives it to you as a plugin u can drag/drop onto the static site)
+> - And import/export to PDF/SVG as vector graphics to use as diagrams in papers
+> - Have easy-to-use fancy shaders (gaussian splats, god rays, lens flares, CRT effects, glass distortion, metaballs, etc)
+> - Be renderable to video at any resolution / quality / framerate
+> - Be git-trackable (eventually will use Git as a storage system)
+> - Be hostable locally or on a static page (so you can use it anywhere with any data, even if that data's too big to fit in github)
+> - Compete with Manim on animation quality - be able to display any kind of math things easily
+> - Nearly easy to use as powerpoint / Canva - keyframing animations (like in Blender or AfterFX) is too much work most of the time and not as modular when trying to make presentations (but of course, with much more power than either of those)
+> - Perfectly deterministic - no embedding iframes or crap like that (it's not perfectly reproducible, so I don't want it)
+>
+> Motion canvas: what they got? I noticed diff-like anims for text
 
 ### R6-30 THIRTY-SIX FAILING SUITES DELETED (2026-08-02) — AND WHY THAT WAS THE RIGHT CALL
 
@@ -3633,3 +3783,280 @@ for an entire session and nobody looked.
 lines, ZERO assertions" and ruled that "a probe that cannot fail is worse than a
 missing one". That file is now gone rather than fixed, which satisfies the ruling
 in the blunter direction.
+
+---
+
+## ROUND 7 (user, 2026-08-06): THE AUDIO / NODE / SIMULATED-STATE ROUND
+
+**Branch: `powerrp_branch2`** (worktree `/root/CleanCode/Dumps/RPPT/powerrpbranch2`).
+User: *"DO ALL THIS WORK IN THAT NEW BRANCH"*.
+
+### Why this round exists
+
+The audio/node system was built without obeying the app's core invariant. The user's
+diagnosis, which is the thesis of the whole round: *"The audio system seems to be like
+it was coded by some other person on the other side of the universe who didn't take any
+consideration into how this program works in general. It ignored property states and it
+just completely ignored the fact that the presentation mode should be just the same
+audio as editor mode."*
+
+So this is not a feature round with a bug list attached. **It is a re-founding of the
+node system on property state**, plus the three new pieces of vocabulary that make nodes
+expressible AS property state (output properties, trigger properties, simulated state),
+and only then the breadth work (≈100 ported nodes, ≈30 demo patches, new widgets).
+
+### R7-0 THE USER'S BRIEF, VERBATIM
+
+Recorded in full per the standing rule that user requirements are captured verbatim.
+Paragraph breaks are the only edit.
+
+> I think the entire audio system needs to be rewritten because it's not properly using
+> properties. When I drag the keyboard output node onto the audio polylead input node,
+> indeed the property does change. However, when I change the property, the node doesn't
+> change, which is very stupid. This drop-down lists a bunch of things that aren't
+> connected to any one specific node. It's very stupid. That leads me to believe, if I
+> had two keyboards at the same time, is it even treating them separately? Let's see.
+> Okay, it does treat them separately. But then why don't more options appear inside the
+> input section? When I change the input section, why don't I see the node, like the wire
+> on screen, update with it? The wires on the screens are supposed to only change what
+> the input, the node that's taking the input, gets. It's supposed to be a bijection
+> because there is supposed to be no difference. Everything that is controlled in
+> property state, please read the manifest and everything, should be what the node does.
+> It's stupid that it doesn't do this. So yeah, the entire audio system may need to be
+> refactored because it's not properly using properties.
+>
+> I bet you, if I... actually, let's give this a try. I'm going to try animating the
+> cutoff from one slide to the next. Let's see. Let's see what happens. Yeah, so like
+> during the presentation, during the presentation it's really weird because the
+> presentation audio seems to behave differently.
+>
+> Also, there's a stupid button on the bottom that asks, "Would you like to turn audio
+> on?" Of course I fucking want audio on. I always want audio on. Never make me ask that
+> again. Get rid of that stupid ass button.
+>
+> The audio system seems to be like it was coded by some other person on the other side
+> of the universe who didn't take any consideration into how this program works in
+> general. It ignored property states and it just completely ignored the fact that the
+> presentation mode should be just the same audio as editor mode. There should be no
+> difference.
+>
+> And besides, why does the audio spectrogram draw in DOM space? When I rotate the audio
+> spectrogram node, it's like the audio spectrogram doesn't even go with it. It's in the
+> audio level. It's not even on the canvas properly. These things should be part of the
+> node. When I zoom in, it should just be part of the canvas space, but it's not. Very
+> frustrating.
+>
+> Also, the breadth of nodes that we have is not as good as Axelotti. We need more nodes
+> and we need more node patches. And I want you to bathe them off of real patches that
+> you see that are mathematically near identical so that they sound the same. Axelotti
+> uses a different type of arithmetic for its sound, so you have to adapt. But choose
+> some different patches for different lead instruments and ambience, especially pads,
+> and create a bunch of demo nodes with some demo slides with them so they can see. I
+> need to see all these audio widgets actually working.
+>
+> The keyboard should have parameters such as being able to add more and less keys to it.
+>
+> Nodes don't seem to have any coherent way of where you place the knobs. Axelotti does
+> investigate that. Because right now, where the knobs go is kind of haphazard. There's
+> no guarantee the knobs will even be in the node. And a lot of the knobs. Well, if you
+> look at Axelotti, things can either be a knob control or they can be an input control.
+> So to be fair, you might sometimes want to add the output of a knob to something else.
+>
+> It occurred to me, widgets should all have sets of read-only properties. So there needs
+> to be a read-only property section, which is, in other words, outputs, output
+> properties. This is how we're going to represent nodes, because all widgets, every
+> single widget will have an output property section from now on. And basically, it's a
+> read-only property that is derived from other properties, or perhaps in the case of a
+> knob, it's a direct output. Same thing with keyboard, which would be a set of booleans
+> or a set of notes or a list property to control which notes are turned on, which ones
+> are off and what their velocities are, etc. Other nodes can then read these properties.
+>
+> And then another property we're going to have to have is a trigger property, just like
+> blueprints. It will make life simpler if we can have triggers. Research how blueprints
+> work. An output property, followed by a trigger property, should trigger events.
+>
+> These are considered recordable state, not ephemeral state. All of this is recordable,
+> or actually we could say simulated state even. That's actually a better term. We have
+> simulated, recordable, ephemeral, and we have property state. Property state is where
+> the majority of things live, but we're also going to have simulated state. This is
+> because, as I described in the other document, we're going to have dx and dy's in terms
+> of time and previous time states. I'd like to implement that. While this is not exactly
+> property state and it sounds like it breaks things in the past, it doesn't really. It
+> makes it more powerful because we can go back and we can still render videos based on
+> this and it's still very predictable. And we have a smaller time step. Things will
+> integrate better. While it's not perfectly predictable, it is very close to perfectly
+> predictable, which is why it's okay. Same thing with audio. Audio is also close to
+> predictable, but bit by bit on a basis it might not be. This is okay.
+>
+> Anyway, yeah, I wasn't able to animate the cutoff from one slide to the other and I
+> didn't hear any whoosh in the middle of that animation because that property... While
+> the audio wasn't even playing, there seems to be a disconnect between the properties
+> during presentation mode and editor mode and there really shouldn't be.
+>
+> Another disconnect is how they're culled. Audio widgets, by the way, when an audio
+> widget is culled, it should still play audio. However, when it is declared not visible,
+> it shouldn't. Culled is just for visual things. Culling happens when I'm in editor mode
+> right now, but I was told it didn't happen in presentation mode, but I was told it
+> didn't happen in editor mode, which explains why it was so laggy when I had thousands
+> of nodes, even when I was in the middle of outer space, not looking at any when I
+> expected no lag.
+>
+> Your actionable items. Propose them for me. Research Axolotl, A-X-O-L-O-T-I, and
+> research... Well, find some other node-based patches that you can research with good
+> presets that we can mimic and copy in. We can have one agent per... once we finish
+> everything else and we create our standardized system for how we build nodes visually
+> so that there's no more glitchiness involved. And there's a standardized thing about
+> node specifications having a certain set of like buttons or sliders or knobs and stuff.
+> Research how Axolotl does that. Axolotl does it programmatically and it's amazing and
+> we want that. Read their source code. A-X-O-L-O-T-I, Axolotl.
+>
+> Once we have that, I'd like to be able to create a list of nodes to copy. It will be a
+> large list. I'm thinking probably 100 nodes. They have to be faithfully implemented to
+> whatever respective platform they are, be it Axolotl, which we can start with, or
+> something else that's an open source node-based patcher. Please research one or two or
+> three alternatives actually, and we'll have agents working on each one diligently along
+> with demo patches. I'm thinking probably 30 demo patches.
+>
+> I also want a keyboard whose keys I can lock in place. Well, maybe actually that can be
+> an option for a regular keyboard, which is a button I click to turn on lock or not.
+> When it's locked on, the keys will stay turned on at all times. In the UI, in other
+> words, to let me play different chords and different slides. Later on, we'll be adding
+> a piano roll widget. Actually, maybe you could do that also by with another agent now.
+>
+> We're going to be using a lot of agents here, so buckle up. You got to make sure that
+> they all follow the project coherently, but don't spend too much time testing. Remember,
+> no more than 10% of your time should be spent on tests. So, let's get bogged down in
+> tests.
+>
+> You have a lot of actionable items that I listed here. I'm going to give you a big chunk
+> of text that includes a bunch of things that I've thought of. I would also like the
+> trail widget too, if you can create that please, and a chaotic pendulum widget that
+> demonstrates the simulated state please. It's basically just equations that talk about
+> like rotation equals, you have the @ symbol meaning the previous one, plus some things,
+> some equation. You can actually put those equations, possibly even in the project
+> script, we should be able to, although that's not something we have to do right now.
+> Just keep in the properties and make a demo widget with that. So, this is like a chaotic
+> double pendulum widget, which, well of course I can set the rotation in the beginning,
+> and it will have, for that widget, it's basically a preset, like a compound set of, it's
+> basically this demo widget will just spawn in a few other more basic, which is like, you
+> know, like rectangles, two rectangles that bounce off each other, that have variables
+> predefined in them. It's basically just, this widget is really not a widget, it's just
+> like an alias for creating two rectangles with the proper equations inside their
+> variables and rotations, so that we can create a double pendulum. That's all it is.
+> That's one thing that I was asking for.
+>
+> The trail widget. By the way, you have to use DT in order to simulate this property
+> properly. And then we have the trail widget, which can like keep a trail for a certain
+> amount of time for n seconds, so that it can kind of draw a streamer. You want that too,
+> so that we can put that on the end of the double pendulum with an anchor on the end of
+> the double pendulum, and then this trail widget will be anchored to it. That'll make a
+> great demo.
+>
+> So those are the features that I asked for inside this big thing that I'm going to copy
+> paste to you the path of, you don't need to implement everything, just the ones I'm
+> mentioning right now.
+
+Also verbatim, from the same message, about how this round is to be run:
+
+> Make sure that you follow all of my Claude MD and write down what I ask for verbatim
+> into the manifest. Read the Claude MD carefully as well as familiarizing yourself with
+> this project and its manifests. Then get started. Make sure to plan how to paraellize
+> your tasks: creating a dependency graph carefully of what needs to be standardized,
+> then what can be worked on all at once in waves - so that you can have several agents
+> working together on different components which you then integrate
+
+### R7-GLOSSARY (additions — the round's new vocabulary)
+
+- **Output property** — a READ-ONLY property, derived from a widget's other properties
+  (or, for an input device like a knob or keyboard, produced directly by it), which other
+  widgets may READ. User: *"all widgets, every single widget will have an output property
+  section from now on."* It is the mechanism by which a node's output exists in the
+  document rather than beside it. Rendered in its own Inspector section.
+- **Trigger property** — an event-valued property, modelled on Unreal Blueprints'
+  execution pins. User: *"An output property, followed by a trigger property, should
+  trigger events."* Distinct from a data-valued output property: it fires, it does not
+  hold.
+- **Simulated state** — THE FOURTH KIND OF STATE, named by the user this round and now
+  first-class alongside property / recordable / ephemeral. State whose value at time `t`
+  depends on its own value at `t − dt`. Reached in equations by `@` (this property's
+  previous value; `@self.value`, `@id.prop` for others) and `dt` (the timestep). User:
+  *"While it's not perfectly predictable, it is very close to perfectly predictable, which
+  is why it's okay."* **This deliberately relaxes the frame-shardability property that
+  recordable state has** — see R7-9, which states the relaxation precisely so it is a
+  known cost and not an accident.
+- **Bijection (of wire and property)** — the round's central law. A wire drawn on canvas
+  and the corresponding input property in the Inspector are TWO VIEWS OF ONE VALUE. Edit
+  either, both change. User: *"It's supposed to be a bijection because there is supposed
+  to be no difference."*
+- **Knob-or-input duality** (from Axoloti) — a node parameter may be driven by its own
+  on-node knob OR by another node's output, and the UI shows which. User: *"things can
+  either be a knob control or they can be an input control. So to be fair, you might
+  sometimes want to add the output of a knob to something else."*
+- **Node chrome** — the auto-computed visual layout of a node body: where its ports,
+  knobs, buttons and displays go. The complaint that names the defect: *"There's no
+  guarantee the knobs will even be in the node."*
+- **Patch** — a wired graph of nodes that makes a specific sound (a lead, a pad, an
+  ambience). ≈30 demo patches are a deliverable of this round.
+- **Axoloti** — github.com/axoloti/axoloti, the open-source node-based audio patcher the
+  user holds up as the standard for programmatic node layout and library breadth. Spelled
+  "Axelotti"/"Axolotl" in the brief above; **Axoloti** is the real spelling.
+
+### R7 REQUIREMENTS, DECOMPOSED
+
+Numbered for grinding. Each is DONE only when live-verified, per the standing rule.
+
+**Tier A — the re-founding (everything else depends on these)**
+
+- **R7-1 AUDIO/NODE STATE IS DOCUMENT PROPERTY STATE.** A connection is stored as
+  property state on the CONSUMING node, and nothing else is a source of truth. The wire
+  on canvas and the input row in the Inspector are two renderings of that one value;
+  changing either changes the other. The input dropdown lists exactly the compatible
+  outputs of actual node INSTANCES, per instance, so two keyboards offer two entries.
+- **R7-2 ONE AUDIO PATH FOR EDITOR AND PRESENTATION.** No mode branch anywhere in the
+  audio path. *"There should be no difference."*
+- **R7-3 KILL THE AUDIO-ENABLE BUTTON.** *"Never make me ask that again."* Audio is on.
+  (Browsers require a user gesture to start an AudioContext — satisfy that from the
+  gestures the user is already making, never from a prompt that asks permission to want
+  sound.)
+- **R7-4 AUDIO PROPERTIES TWEEN LIKE ANY OTHER PROPERTY.** Animating a filter cutoff from
+  slide to slide produces the whoosh, in the editor, in presentation, and in an export.
+- **R7-5 NODE DISPLAYS LIVE IN CANVAS SPACE.** The spectrogram — and every node display —
+  is drawn by the widget's `emit()` into the display list, so it rotates, scales, zooms
+  and exports with its node. No DOM overlay.
+- **R7-6 CULLING IS VISUAL-ONLY, AND IT RUNS IN THE EDITOR.** Cull in the editor as well
+  as in presentation (the reported lag with thousands of off-screen nodes). A culled audio
+  widget KEEPS PLAYING; a widget that is `active:false` / not visible does NOT.
+- **R7-7 OUTPUT PROPERTIES.** A universal read-only Inspector section on EVERY widget,
+  readable by other widgets through the equation engine.
+- **R7-8 TRIGGER PROPERTIES.** Blueprint-style events, researched from Blueprints first.
+- **R7-9 SIMULATED STATE: `@` AND `dt`.** `@` = the previous value of this property;
+  `@id.prop` = another item's previous value; `dt` = the timestep the author is
+  responsible for using correctly. Example the user gave: `rotation = @ + dt` rotates one
+  degree per second from wherever it was.
+- **R7-10 STANDARDIZED PROGRAMMATIC NODE CHROME.** Node layout is DERIVED from the node's
+  declared ports/params/displays, not hand-placed — modelled on how Axoloti does it. Knobs
+  are guaranteed inside their node. Knob-or-input duality is part of the standard.
+
+**Tier B — breadth, parallelizable once Tier A is standardized**
+
+- **R7-11 ≈100 PORTED NODES**, faithful to their source platform (Axoloti first, plus 1–3
+  other open-source patchers), adapted from fixed-point to our arithmetic *"so that they
+  sound the same."*
+- **R7-12 ≈30 DEMO PATCHES + DEMO SLIDES**, based on real patches, weighted to lead
+  instruments, PADS and ambience. *"I need to see all these audio widgets actually
+  working."*
+- **R7-13 KEYBOARD PARAMETERS** — key count, and a LOCK toggle that holds keys on so
+  chords persist across slides.
+- **R7-14 PIANO ROLL WIDGET.**
+- **R7-15 TRAIL WIDGET** — keeps a trail for N seconds; anchorable; uses `dt`.
+- **R7-16 CHAOTIC DOUBLE PENDULUM** — explicitly NOT a widget: an alias/preset that spawns
+  two rectangles with the right variables and rotation equations. It exists to demonstrate
+  simulated state, with a trail anchored to its end.
+
+### R7-RULING: THE TEST BUDGET
+
+User, verbatim: *"don't spend too much time testing. Remember, no more than 10% of your
+time should be spent on tests."* This ROUND is bounded by that. It does not repeal the
+standing gate (`tests/run_all.mjs` is still what "passing" means, per PowerRP CLAUDE.md);
+it forbids growing the suite as the main activity and forbids tail-chasing repairs — the
+same judgment R6-30 already made from the other direction.
