@@ -344,6 +344,81 @@ trade the ruling protects; the lead re-litigated a decision that had been made.
 Cost: one wrong section in the manifest and a live agent redirected mid-build. Full
 corrected design and the follow-on max-timestep clamp: manifest § R7-9.
 
+### WAVE 1 POST-MORTEM (2026-08-06) — six mistakes, four of them about EVIDENCE
+
+Wave 1 delivered R7-1..R7-4, R7-9, R7-10 across ~32 commits with the bare-node gate at
+304/0. The code results are in the manifest. **What belongs here is how nearly every
+error in the round was an evidence error rather than a coding error.**
+
+**1. MINE: "do NOT commit — leave the tree dirty" made a single `git stash` catastrophic.**
+I told all four writer agents to leave work uncommitted so I could verify before merging.
+One agent then ran `git stash` to compare against HEAD and swept up **15 tracked files from
+all four writers**; `stash pop` then refused because another agent had rewritten one of them
+in the intervening minute. **Root cause: I put four agents' simultaneous uncommitted work in
+the one place a single command erases, for a benefit I never actually needed** — reviewing
+commits and reverting is just as good and costs a minute. Switched mid-round to path-scoped
+commits per agent (disjoint ownership makes them collision-free), and it paid for itself
+within minutes: the next agent to look found three of four agents' work already safely
+committed. **Lesson: in a shared worktree, uncommitted is not "pending review", it is
+"one command from gone".**
+
+**2. GREPPING A LITERAL WHERE THE CODEBASE USES A NAMED CONSTANT — twice in one hour, in
+opposite directions, once by me.** An agent reported "`maxTimestep` has no Inspector row, it
+does not exist as an authorable property"; the row was at `plugins/camera.js:258` under
+`CAMERA_MAX_TIMESTEP_KEY`. I then told another agent `defaultCameraState` lacked the key on
+the same evidence; it was at `core/document.js:170` as `[CAMERA_MAX_TIMESTEP_KEY]:` — a
+COMPUTED KEY, invisible to `grep maxTimestep`. I checked the commit timestamps rather than
+assume: the key landed 20 minutes before I grepped, so it was there and I missed it. **The
+agent I had just corrected re-verified instead of deferring to me, and was right to.**
+**Lesson: grep the CONSTANT, not the string it holds — and a lead's grep is not authority.**
+
+**3. A SHARED-CAUSE GENERALISATION RECORDED AS MEASURED FACT.** The recon report asserted
+that the unsplit-dotted-key bug also broke `plugins/magnifier.js` and
+`plugins/tangent_lines.js` ("same line, same shape"). I propagated it into the manifest and
+into a user-facing summary. **Both were fine** — those rows are `number`/`angle` kinds which
+never reach the broken seam. Only the third agent actually drove the widgets in a browser.
+**Lesson: a shared-cause claim is a hypothesis until the SECOND site is exercised.**
+
+**4. A TRUE OBSERVATION OF A SHARED TREE, STATED AS A STANDING FACT.** The same agent
+reported twice that another's audio work "exists only in `stash@{0}`". True when observed;
+false by the time I read it, because the owner had recovered and committed. Its own summary
+is the best statement of the rule: *"an inference is not a finding until it's been measured
+on its own terms, and if it's outside my fence I shouldn't be making it at all."*
+**Lesson: report your own files; cross-agent status is the lead's to hold, because only the
+lead can see all of it.**
+
+**5. THREE FIXES THAT DID NOT STICK WERE THE DIAGNOSTIC, AND NOBODY READ IT.** Three
+separate documented commits had "fixed" the audio readout landing on the dials. All three
+tuned an offset. The real cause: **a text op's `y` is the line box's TOP, not a baseline**
+(`render_gpu/skia/text_layout.js`), while every node text added `size/3` "so the glyphs sit
+above it" — so every node text in the app drew a full line low. It also explains the clipped
+Number digit and titles hanging below their header strips, each of which had been filed as
+its own bug. **Lesson: when a symptom returns after a repair, the repair is evidence the
+MODEL is wrong. Escalate to measuring the primitive instead of adjusting the number.**
+
+**6. A NON-OBVIOUS COUPLING: DERIVED SIZES MUST BE INTEGRAL.** The node-chrome unification
+made natural sizes derived, which produced a fractional `h` default for `node_knob` — and the
+scrub resolver derives a drag coefficient from a default's DECIMAL PLACES, so dragging a Knob
+node's height silently became 1.236 px per pixel. Caught by an existing sweep
+(`tests/default_step_test.js`) that names `x`/`y`/`w`/`h` explicitly because "a sensitivity
+regression here would be far worse than the bug this rule fixes". **Lesson: a value's
+PRECISION can be load-bearing somewhere you are not looking. The existing test was the only
+thing standing between this and shipping.**
+
+**ALSO FOUND, worth recording because each was invisible:**
+- **`setTransportLive` had zero callers repo-wide: the Sequencer node had never emitted a
+  single step, in either mode.** A shipped widget that did nothing.
+- **`camera.maxTimestep` is the first nullable ITEM row in the codebase** (all 135 widgets
+  swept; the other two nullable rows are on slides). So the defaults-filler had never met a
+  nullable leaf and treated a stored `null` as a delete sentinel — **the repair pipeline was
+  actively destroying the author's "none" on every load and reporting their deliberate choice
+  as a deletion** in the loud channel.
+- **A stale `stepDt` at a dead clock baked a phantom 0.1 s simulation step into any still
+  rendered after a short presentation** — deterministic, reproducible, and wrong. Found only
+  because the fix was applied at the clock REGIME rather than to the discontinuity arithmetic.
+- Renaming CLAUDE.md's "three kinds of state" to four left **seven** stale citations across
+  the tree. Fixed. Prose remains this project's worst-measured defect class.
+
 ### RISK ON THE TABLE FOR THIS ROUND
 
 **Simulated state (`@`, `dt`) deliberately weakens a property the app relies on.**
