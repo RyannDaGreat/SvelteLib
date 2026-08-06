@@ -16,6 +16,13 @@
  *               different ramp. plugins/demo/mandelbrot.js reads its default ramp and
  *               its nine COLOUR presets from that SAME object, so a preset swatch and
  *               the preset that shares its name cannot disagree.
+ *   colormaps — core/ramps.js SEQUENTIAL_RAMPS: the perceptually-uniform scientific
+ *               maps (viridis, magma, inferno, plasma, cividis, turbo) plus the
+ *               classic looks. Added for the spectrogram (R7-19), and appearing on a
+ *               shape's gradient fill IS the point rather than a side effect: the
+ *               library is a property of the DECLARATION, so one family reaches every
+ *               ramp in the app. A colormap that a spectrogram can use and a fill
+ *               cannot would be two libraries wearing one name.
  *
  * WHY THIS FILE EXISTS AT ALL rather than the picker importing both: the picker is a
  * CONTROL and should not know which libraries exist — the mount point tells it. And
@@ -30,7 +37,7 @@
  */
 
 import { GRADIENT_PRESETS } from "./gradient_presets.js";
-import { CYCLIC_RAMPS, DEFAULT_RAMP_SPACE } from "../core/ramps.js";
+import { CYCLIC_RAMPS, DEFAULT_RAMP_SPACE, SEQUENTIAL_RAMPS } from "../core/ramps.js";
 
 /**
  * Pure function. One preset record from a baked GRADIENT preset: its stops as
@@ -49,17 +56,24 @@ export function gradientPresetRecord(preset) {
 }
 
 /**
- * Pure function. One preset record from a named CYCLIC ramp — its label is the
- * human name the retired `palette` select showed, so the six palettes keep the
- * exact wording a user of the old widget already knew.
+ * Pure function. One preset record from a NAMED ramp (core/ramps.js CYCLIC_RAMPS
+ * or SEQUENTIAL_RAMPS — one shape, so one reader). Its label is the human name,
+ * which for the six cyclic palettes is the exact wording the retired `palette`
+ * select showed, so a user of the old widget still recognises them.
  *
- * @param {object} ramp - a CYCLIC_RAMPS entry
+ * The `loop` and `space` it carries are the ramp's own: a preset record is a
+ * whole ramp VALUE, which is what lets a cyclic OKLab palette and a clamped sRGB
+ * colormap land correctly from the same control with no branch in the picker.
+ *
+ * @param {object} ramp - a CYCLIC_RAMPS or SEQUENTIAL_RAMPS entry
  * @returns {{name: string, stops: object[], loop: boolean, space: string}}
  *
- * @example cyclicPresetRecord({id: "gold", label: "Gold (molten metal)", stops: [], loop: true, space: "oklab"}).name // "Gold (molten metal)"
- * @example cyclicPresetRecord({id: "gold", label: "Gold", stops: [], loop: true, space: "oklab"}).loop // true
+ * @example namedRampRecord({id: "gold", label: "Gold (molten metal)", stops: [], loop: true, space: "oklab"}).name // "Gold (molten metal)"
+ * @example namedRampRecord({id: "gold", label: "Gold", stops: [], loop: true, space: "oklab"}).loop // true
+ * @example // a SEQUENTIAL map is the same record with the other aspects
+ * @example namedRampRecord({id: "viridis", label: "Viridis", stops: [], loop: false, space: "oklab"}).loop // false
  */
-export function cyclicPresetRecord(ramp) {
+export function namedRampRecord(ramp) {
   return { name: ramp.label, stops: ramp.stops, loop: ramp.loop, space: ramp.space };
 }
 
@@ -72,16 +86,24 @@ export function cyclicPresetRecord(ramp) {
  * renders as one flat colour at depth), so the six ramps that do are the ones a
  * fractal user wants at the top of the grid. A gradient user scrolls past six
  * swatches to reach 343; a fractal user would otherwise scroll past 343 to reach
- * the only six that work.
+ * the only six that work. COLOURMAPS SECOND, above the 343, for the same reason
+ * one step weaker: they are the ten a data display wants, and a spectrogram
+ * author should not scroll a decorative library to find viridis.
  *
- * @example RAMP_PRESET_FAMILIES.map((f) => f.id) // ["cyclic", "gradients"]
+ * @example RAMP_PRESET_FAMILIES.map((f) => f.id) // ["cyclic", "colormaps", "gradients"]
  * @example RAMP_PRESET_FAMILIES[0].presets.length // 6
+ * @example RAMP_PRESET_FAMILIES[1].presets.length // 10
  */
 export const RAMP_PRESET_FAMILIES = [
   {
     id: "cyclic",
     title: "Cyclic ramps (seamless, perceptual)",
-    presets: Object.values(CYCLIC_RAMPS).map(cyclicPresetRecord),
+    presets: Object.values(CYCLIC_RAMPS).map(namedRampRecord),
+  },
+  {
+    id: "colormaps",
+    title: "Colour maps (data displays)",
+    presets: Object.values(SEQUENTIAL_RAMPS).map(namedRampRecord),
   },
   {
     id: "gradients",

@@ -104,7 +104,7 @@
 
 import { controlDefaults, controlNodeHeight, controlNodePlugin, CONTROL_CAT, CONTROL_FAMILY } from "../core/control_nodes.js";
 import { familyCard, familyRim, nodeFamily, portBeads, NODE_HEADER_H } from "../core/node_chrome.js";
-import { SEMITONES_PER_OCTAVE, keyAt, keyLayout, noteName } from "../core/keyboard_layout.js";
+import { SEMITONES_PER_OCTAVE, keyAt, keyLayout } from "../core/keyboard_layout.js";
 import { visibleElements, visibleIndices, withElementPurged } from "../core/lists.js";
 import { noteFrequency } from "../core/live_control.js";
 import { props } from "../core/properties.js";

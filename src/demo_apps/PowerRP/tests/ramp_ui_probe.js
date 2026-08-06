@@ -43,6 +43,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { launchBrowser } from "./puppeteerLaunch.js";
+import { RAMP_PRESET_FAMILIES } from "../web/ramp_preset_families.js";
 
 // Paths resolve off THIS file, never process.cwd() (the suite convention, enforced
 // by tests/probe_artifact_path_test.js).
@@ -157,11 +158,22 @@ try {
     t.click();
   });
   await settle(400);
+  // THE FAMILIES ARE READ FROM web/ramp_preset_families.js, NOT PINNED AS A LIST
+  // HERE. This probe used to hardcode "two families, 349 swatches" and both
+  // assertions went red the day R7-19 added the colour maps — a false report of a
+  // regression in a library that was working exactly as designed. What the probe
+  // is actually for is that the grid is family-GROUPED, cyclic first, and that
+  // every declared preset reaches the DOM from one shared home; asserting the
+  // roster's contents here is the hand-maintained mirror this codebase names as
+  // its worst defect. The roster's own count is asserted in its module's
+  // doctests, where the roster lives.
   const families = await jsonEval(() => JSON.stringify([...document.querySelectorAll(".gradient-presets-family")].map((e) => e.textContent)));
-  ok(families.length === 2 && /Cyclic/.test(families[0]) && /Gradients/i.test(families[1]),
+  ok(families.length === RAMP_PRESET_FAMILIES.length && /Cyclic/.test(families[0]),
     `the grid is FAMILY-GROUPED, cyclic ramps first (${JSON.stringify(families)})`);
   const swatchCount = await page.evaluate(() => document.querySelectorAll(".gradient-swatch").length);
-  ok(swatchCount === 349, `both families are offered from ONE shared library: 6 cyclic + 343 gradients = ${swatchCount}`);
+  const declared = RAMP_PRESET_FAMILIES.reduce((n, f) => n + f.presets.length, 0);
+  ok(swatchCount === declared,
+    `every declared preset is offered from ONE shared library: ${RAMP_PRESET_FAMILIES.map((f) => f.presets.length).join(" + ")} = ${swatchCount}`);
   await page.screenshot({ path: resolve(shots, "palette_library_open.png"), clip: await page.evaluate(() => {
     const r = document.querySelector(".ramp-presets-and-list").getBoundingClientRect();
     const PAD = 10;
@@ -236,12 +248,19 @@ try {
   ok(afterDropPixels.equals(beforeHoverPixels), "and the canvas is back to what the document actually holds");
 
   // ── (5) A SHARED GRADIENT PRESET RENDERS AS A PALETTE, in one undo unit ────
-  // Index 6 is the first GRADIENT-family swatch (6 cyclic ramps precede it), so
-  // this is one of the 343 baked from `rp` — the presets the user called beautiful.
-  const gradientName = await swatchName(6);
+  // THE INDEX IS DERIVED, NOT COUNTED. It used to be the literal 6 ("6 cyclic
+  // ramps precede it"), which silently became a COLOUR MAP when R7-19 inserted a
+  // family between them — and the assertion below then reported oklab as a defect
+  // when it was the picked preset's own correct aspect. The gradients are the
+  // presets the user called beautiful and they are what this check is about, so
+  // the probe asks the roster where they start.
+  const gradientIndex = RAMP_PRESET_FAMILIES
+    .slice(0, RAMP_PRESET_FAMILIES.findIndex((f) => f.id === "gradients"))
+    .reduce((n, f) => n + f.presets.length, 0);
+  const gradientName = await swatchName(gradientIndex);
   const beforePickDoc = await docJson();
-  await hoverSwatch(6);
-  await page.evaluate(() => document.querySelectorAll(".gradient-swatch")[6].click());
+  await hoverSwatch(gradientIndex);
+  await page.evaluate((i) => document.querySelectorAll(".gradient-swatch")[i].click(), gradientIndex);
   const pickedPixels = await shootCanvas("canvas_gradient_preset_applied");
   const stops = await rawAt(id, ["rampStops"]);
   ok(Array.isArray(stops) && stops.length >= 2 && stops.every((s) => typeof s.offset === "number" && /^#/.test(s.color)),

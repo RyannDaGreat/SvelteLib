@@ -94,10 +94,47 @@ const SKIP_DIRS = new Set(["node_modules", ".frenzy", "dist", "dist-powerrp", ".
  * ''
  */
 function stripComments(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/^[ \t]*\/\/.*$/gm, "");
+  // ── STRING-AWARE, AND IT HAS TO BE — measured 2026-08-06 ────────────────────
+  // This was three regexes, and a `/*` INSIDE A STRING LITERAL opened a comment that
+  // ran to the next `*/`, deleting everything between. `core/audio_specs_ax2.js` has
+  // help text reading "Axoloti's five `osc/*` oscillators…" — perfectly ordinary prose
+  // about a wildcard — and it silently ate NINE `export const` declarations. The
+  // collector then reported nine real exports as missing, so nine correct files were
+  // accused of dangling imports.
+  //
+  // THE FAILURE DIRECTION IS THE BAD ONE, WHICH IS WHY THIS IS WORTH A HAND-ROLLED
+  // SCANNER: an over-eager strip can also DELETE AN IMPORT, and a deleted import is a
+  // dangling import this test then cannot see. A guard that quietly stops guarding is
+  // the exact defect class this file exists to catch, so it must not have one itself.
+  //
+  // Not a full tokenizer — it tracks the three quote kinds and the two comment kinds,
+  // which is all JS needs here. A regex literal containing a quote could still confuse
+  // it; if that ever bites, the answer is a real parse, not a fourth regex.
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const c2 = src[i + 1];
+    if (c === "/" && c2 === "*") {                    // block comment → blank it, keep newlines
+      const end = src.indexOf("*/", i + 2);
+      const stop = end === -1 ? n : end + 2;
+      for (let j = i; j < stop; j++) out += src[j] === "\n" ? "\n" : " ";
+      i = stop;
+    } else if (c === "/" && c2 === "/") {             // line comment → to end of line
+      while (i < n && src[i] !== "\n") { out += " "; i++; }
+    } else if (c === '"' || c === "'" || c === "`") {  // string/template → COPIED VERBATIM
+      const quote = c;
+      out += c; i++;
+      while (i < n) {
+        if (src[i] === "\\") { out += src[i] + (src[i + 1] ?? ""); i += 2; continue; }
+        out += src[i];
+        if (src[i] === quote) { i++; break; }
+        i++;
+      }
+    } else { out += c; i++; }
+  }
+  return out.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
 }
 
 /** Query. Every source file under the app's roots, absolute. */

@@ -180,6 +180,14 @@
       // Read off the LIVE editor, not off the prop: the probe's question is "did Monaco
       // actually refuse the edit", and only the editor's own option answers that.
       isReadOnly: () => !!editor?.getOption(monaco.editor.EditorOption.readOnly),
+      // Same rule, same reason, for the LANGUAGE: a `language` id Monaco has not
+      // registered falls back to plaintext SILENTLY (MONACO_LANGUAGES' note), so the
+      // prop is not evidence the grammar is in force — the MODEL is. This exists
+      // because a real failure hid behind the prop being right: the equation modal's
+      // highlighting and autocomplete were both dead while `codeModal.language` read
+      // "powerrp-equation", and only the model's own id distinguished "provider is
+      // broken" from "Monaco is not asking".
+      modelLanguage: () => editor?.getModel()?.getLanguageId() ?? null,
     };
 
     return () => {

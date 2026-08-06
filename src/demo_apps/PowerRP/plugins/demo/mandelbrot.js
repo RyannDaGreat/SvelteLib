@@ -77,7 +77,7 @@
 import { EPHEMERAL } from "../../core/ephemeral.js";
 import { standardBBoxAnchors } from "../../core/derive.js";
 import { CUSTOM_CATEGORY, bundle, bundleDefaults, customProps, defaults, props } from "../../core/properties.js";
-import { cyclicRampStops, evenlySpacedRampStops } from "../../core/ramps.js";
+import { cyclicRampStops, evenlySpacedRampStops, rampFromState } from "../../core/ramps.js";
 import { reportOnce } from "../../core/report.js";
 import { materialFill } from "../../render_gpu/ir.js";
 import {
@@ -219,12 +219,7 @@ export function cachedOrbit(s) {
  * @example rampOf({rampStops: [], rampPhase: 0.25}).phase // 0.25
  */
 export function rampOf(s) {
-  return {
-    stops: s.rampStops,
-    loop: s.rampLoop ?? RAMP_DEFAULTS.rampLoop,
-    space: s.rampSpace ?? RAMP_DEFAULTS.rampSpace,
-    phase: s.rampPhase ?? RAMP_DEFAULTS.rampPhase,
-  };
+  return rampFromState(s, RAMP_DEFAULTS);
 }
 
 /**

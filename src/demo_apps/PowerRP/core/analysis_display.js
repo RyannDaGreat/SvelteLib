@@ -49,16 +49,27 @@
  * out of R7-5's scope, and the ring buffer here is a prerequisite for it either
  * way — an offline path produces exactly these columns from a different source.
  *
- * ── UNITS: THE RING IS UNIT-FREE ────────────────────────────────────────────
- * Every value in a column is a magnitude in 0..1. The engine's units (a
- * Uint8Array of 0..255 FFT bins, a dBFS level) are converted at the PUSH seam by
- * `spectrumColumnValues` / `meterColumnValues` below, so the buffer, the ring
- * arithmetic and the drawing all speak one scale. R7-19's `bins` row changes the
- * column LENGTH and nothing else.
+ * ── UNITS: THE RING IS 0..1, AND FOR A SPECTRUM THAT 0..1 IS A dB SCALE ─────
+ * Every value in a column is a magnitude in 0..1, so the buffer, the ring
+ * arithmetic and the drawing all speak one scale. What that 0..1 MEANS differs
+ * by kind and is stated at each push seam: a meter's is
+ * `METER_FLOOR_DB`..0 dBFS (`meterColumnValues`), a spectrum's is
+ * `SPECTRUM_PUSH_DB_FLOOR`..`SPECTRUM_PUSH_DB_CEIL` (synth/spectrum.js does the
+ * conversion; `spectrumColumnValues` only copies out of the engine's reused
+ * buffer).
+ *
+ * THE SPECTRUM'S PUSHED RANGE IS DELIBERATELY WIDER THAN WHAT IS DRAWN. The
+ * author's floor and ceiling rows are a DISPLAY window onto it
+ * (`spectrumDisplayFraction`), which is what lets them scrub live and tween
+ * across slides instead of rebuilding the analyser — and which is why the push
+ * must not clip at the ceiling the display happens to be showing.
+ *
+ * R7-19's `bins` row changes the column LENGTH and nothing else.
  */
 
 import { rect } from "../render_gpu/ir.js";
-import { sampleRampHex } from "./ramps.js";
+import { rampFromState, sampleRampHex, sequentialRamp } from "./ramps.js";
+import { bundle, bundleDefaults } from "./properties.js";
 import { NODE_PAD, nodeBodyTop, nodeBox } from "./node_chrome.js";
 
 /**
@@ -70,19 +81,76 @@ import { NODE_PAD, nodeBodyTop, nodeBox } from "./node_chrome.js";
 export const METER_FLOOR_DB = -60;
 
 /**
+ * THE WATERFALL'S REFERENCE WIDTH: how many columns speed 1 spreads across the
+ * band. 128 columns at the engine's ~60 Hz poll is a little over two seconds of
+ * history — long enough to see a note's decay, short enough that the picture
+ * still moves — and it is what the display drew before `speed` existed, which is
+ * why the default speed is exactly 1 and the default picture is unchanged.
+ */
+export const SPECTRUM_BASE_COLUMNS = 128;
+
+/**
+ * THE SPEED ROW'S BOUNDS (R7-19's "movement speed").
+ *
+ * SPEED IS A DIVISOR OF THE COLUMN COUNT, and that is forced rather than chosen:
+ * columns arrive at the poll's rate, so the only way a waterfall crosses its band
+ * faster is for fewer of them to fit across it. Speed 4 draws 32 columns, each
+ * four times as wide, and each leaves the band four times sooner.
+ *
+ * THE SLOW END IS WHAT COSTS MEMORY, which is why it has a floor: showing MORE
+ * history means STORING more, so the ring's capacity is exactly
+ * SPECTRUM_BASE_COLUMNS / SPECTRUM_MIN_SPEED. At 0.5 that is 256 columns, about
+ * 4.3 seconds, and one megabyte per node at the default bin count. The fast end
+ * costs nothing and is bounded only by legibility.
+ */
+export const SPECTRUM_MIN_SPEED = 0.5;
+export const SPECTRUM_MAX_SPEED = 16;
+
+/**
+ * THE dB RANGE A PUSHED SPECTRUM COLUMN'S 0..1 SPANS — synth/spectrum.js's
+ * SPECTRUM_DB_FLOOR / SPECTRUM_DB_CEIL, RESTATED.
+ *
+ * WHY RESTATED AND NOT IMPORTED: core/ may not import synth/** (core/audio_nodes
+ * .js states the law — the engine constructs an AudioContext, which does not
+ * exist in bare node, and every core suite and cli/render.js would break). This
+ * is the same restatement every audio knob's min/max already is, and it is kept
+ * honest the same way: tests/analysis_display_test.js imports BOTH and asserts
+ * they agree, which is where a dependency on the engine belongs.
+ *
+ * WHY THE DEFAULT WINDOW IS -100..-30: it is exactly what
+ * `AnalyserNode.getByteFrequencyData` mapped onto 0..255 before the FFT moved
+ * into synth/spectrum.js, so the SHAPE of the mapping is the one that was tuned
+ * against real material.
+ *
+ * IT IS NOT THE SAME BRIGHTNESS, and pretending otherwise would be the lie this
+ * paragraph exists to avoid: the pushed values are now TRUE dBFS (a full-scale
+ * sine reads 0), where the browser's node applied neither the one-sided x2 nor
+ * any window-gain correction and read it at -13.56 under Blackman. So an
+ * existing spectrogram is brighter by that measured amount. synth/spectrum.js
+ * SPECTRUM_DEFAULT_WINDOW states why that is not compensated for here — the
+ * offset differs per window, so compensating would make the window row a
+ * brightness knob.
+ */
+export const SPECTRUM_PUSH_DB_FLOOR = -100;
+export const SPECTRUM_PUSH_DB_CEIL = 0;
+const SPECTRUM_DEFAULT_FLOOR_DB = -100;
+const SPECTRUM_DEFAULT_CEIL_DB = -30;
+
+/**
  * How many columns of history each display kind keeps.
  *
- * A SPECTROGRAM'S depth is its time axis: 128 columns at the engine's ~60 Hz poll
- * is a little over two seconds of history, which is long enough to see a note's
- * decay and short enough that the picture still moves. A METER has no time axis —
- * it draws one bar from the newest reading — so its ring is depth 1. Depth 1 is a
- * legitimate instance of the ring contract ("the last N frames"), not a hack to
- * make one mechanism cover two widgets.
- *
- * NOT a per-node property yet. R7-19's `speed` row is exactly this number becoming
- * authored property state, and it is ordered after R7-5 deliberately.
+ * A SPECTROGRAM'S depth is its time axis, sized for the SLOWEST speed the row
+ * offers (above) — a faster setting draws a suffix of the same ring, so changing
+ * speed rescales the picture instead of restarting it, which is the same property
+ * that made zoom safe. A METER has no time axis — it draws one bar from the newest
+ * reading — so its ring is depth 1. Depth 1 is a legitimate instance of the ring
+ * contract ("the last N frames"), not a hack to make one mechanism cover two
+ * widgets.
  */
-export const ANALYSIS_HISTORY_COLUMNS = Object.freeze({ meter: 1, spectrum: 128 });
+export const ANALYSIS_HISTORY_COLUMNS = Object.freeze({
+  meter: 1,
+  spectrum: SPECTRUM_BASE_COLUMNS / SPECTRUM_MIN_SPEED,
+});
 
 /**
  * Query (throws on an unknown kind). The history depth for an `overlay` kind.
@@ -98,8 +166,9 @@ export const ANALYSIS_HISTORY_COLUMNS = Object.freeze({ meter: 1, spectrum: 128 
  *
  * @example analysisHistoryColumns("meter")
  * 1
+ * @example // the ring holds the SLOWEST speed's worth; speed 1 draws half of it
  * @example analysisHistoryColumns("spectrum")
- * 128
+ * 256
  */
 export function analysisHistoryColumns(kind) {
   const depth = ANALYSIS_HISTORY_COLUMNS[kind];
@@ -208,25 +277,44 @@ export function ringColumns(ring) {
 
 // ── THE PUSH SEAM'S UNIT CONVERSIONS ─────────────────────────────────────────
 
-/** The byte range `AnalyserNode.getByteFrequencyData` fills. */
-const FFT_BYTE_MAX = 255;
-
 /**
- * Pure function. One spectrum column from the engine's FFT bytes: 0..255 → 0..1.
+ * Pure function. One spectrum column from the engine's magnitudes — A COPY, and
+ * that is the whole job.
  *
- * @param {ArrayLike<number>} bins - `getByteFrequencyData` output (0..255)
- * @returns {Float32Array} the same length, in 0..1
+ * ── WHY IT IS ONLY A COPY NOW, AND WAS ARITHMETIC BEFORE ────────────────────
+ * It used to divide `getByteFrequencyData`'s 0..255 bytes by 255. R7-19's
+ * `window` row made that method unusable (it hard-wires a Blackman window that
+ * the Web Audio spec gives no parameter for), so synth/spectrum.js runs the
+ * transform and hands over values that are ALREADY the ring's unit — a dBFS
+ * reading normalised over SPECTRUM_DB_FLOOR..SPECTRUM_DB_CEIL. The unit
+ * CONVERSION moved to where the units are made; what stays here is the unit
+ * SEAM, which still has to exist for the one reason it always did:
  *
- * @example [...spectrumColumnValues([0, 255])]
+ * THE ENGINE'S BUFFER IS REUSED. synth/engine.js's poll writes the same
+ * Float32Array every frame, deliberately, so the analysis loop never triggers a
+ * GC that could stall the audio thread. The ring must therefore hold a copy;
+ * storing the buffer itself would make every column of history change together
+ * on the next poll. Deleting this function and pushing the buffer straight in
+ * would look like a simplification and would silently flatten the waterfall.
+ *
+ * @param {ArrayLike<number>} bins - the engine's normalised magnitudes, 0..1
+ * @returns {Float32Array} the same values, in memory the ring may keep
+ *
+ * @example [...spectrumColumnValues([0, 1])]
  * [ 0, 1 ]
- * @example // a mid-scale bin lands mid-scale — no dB curve is applied here,
- * @example // because getByteFrequencyData is already logarithmic
- * @example Number([...spectrumColumnValues([51])][0].toFixed(1))
- * 0.2
+ * @example [...spectrumColumnValues(Float32Array.of(0.25, 0.5))]
+ * [ 0.25, 0.5 ]
+ * @example // THE COPY IS THE POINT: the engine overwrites its buffer next frame
+ * @example // and the column the ring kept must not change with it.
+ * @example const shared = Float32Array.of(0.5);
+ * @example const kept = spectrumColumnValues(shared);
+ * @example shared[0] = 1;
+ * @example kept[0]
+ * 0.5
  */
 export function spectrumColumnValues(bins) {
   const out = new Float32Array(bins.length);
-  for (let i = 0; i < bins.length; i++) out[i] = bins[i] / FFT_BYTE_MAX;
+  out.set(bins);
   return out;
 }
 
@@ -263,24 +351,22 @@ export function meterColumnValues(db) {
 // ── COLOUR ───────────────────────────────────────────────────────────────────
 
 /**
- * The spectrogram's colour ramp: near-black blue → teal → warm white.
+ * THE SPECTROGRAM'S DEFAULT COLOUR MAP, and it is a NAMED, PUBLISHED one rather
+ * than a hand-mixed ramp.
  *
- * MONOTONIC IN LIGHTNESS as well as in hue, so it reads correctly in greyscale and
- * for a colour-blind viewer. A rainbow ramp — the default choice everywhere — is
- * neither, and its bright middle band invents a feature in the data that is not
- * there (the same reason a chart's sequential scale is perceptually uniform).
+ * magma is monotone in lightness by construction, which is the property that
+ * matters: a map with a bright band in the middle draws a ridge into the data
+ * that is not there, and on a spectrogram an invented ridge reads as an invented
+ * partial. It was chosen over its four uniform siblings because it STARTS AT
+ * NEAR-BLACK (#000004) — silence must disappear into a dark node card rather
+ * than glow — which viridis (#440154) and cividis (#00224e) do not.
  *
- * A `stops` ARRAY, in core/ramps.js's canonical shape, rather than a hand-written
- * interpolation function. R7-19 asks for authored colour maps — *"we have a
- * gradient picker so why not go ham with the presets??"* — and a colour map IS a
- * ramp, so that item becomes a swap of this value for a paint's stops rather than
- * a rewrite of the drawing.
+ * The ramp is ordinary AUTHORED STATE from here on (`rampStops` and the three
+ * aspects, the same bundle a Mandelbrot palette uses); this is only what a
+ * freshly inserted node is born with. core/ramps.js SEQUENTIAL_RAMPS states how
+ * the stops were measured and why the map declares OKLab.
  */
-export const SPECTRUM_RAMP_STOPS = Object.freeze([
-  { offset: 0, color: "#12182a" },
-  { offset: 0.5, color: "#3a7a8c" },
-  { offset: 1, color: "#ffe6b0" },
-]);
+export const SPECTRUM_DEFAULT_RAMP_ID = "magma";
 
 /**
  * How many discrete colours the spectrogram's ramp is quantized to.
@@ -294,16 +380,50 @@ export const SPECTRUM_RAMP_STOPS = Object.freeze([
  */
 export const SPECTRUM_RAMP_LEVELS = 24;
 
+/** How many distinct ramps' baked level tables are kept. A document animating a
+ *  ramp visits a new one every frame, so the cache must EVICT rather than grow;
+ *  16 is the plugins/demo/mandelbrot.js PALETTE_CACHE_LIMIT, for the same reason
+ *  and at the same negligible size (24 short strings per entry). */
+const LEVEL_COLORS_CACHE_LIMIT = 16;
+const _levelColorsCache = new Map();
+
 /**
- * The quantized ramp, baked once at module load: `SPECTRUM_RAMP_LEVELS` hex
- * colours, level `i` sampled at the middle of its band.
+ * Query (memoized; near-pure — same ramp, same table, and the table is never
+ * mutated). A ramp quantized to `SPECTRUM_RAMP_LEVELS` hex colours, level `i`
+ * sampled at the middle of its band.
  *
- * Baked because `sampleRampHex` does an OKLab blend per call and the drawing asks
- * for one colour per cell, ~60 times a second, per node.
+ * MEMOIZED because `sampleRampHex` does a per-call blend — in OKLab for every map
+ * that matters — and the drawing asks for one colour per cell, ~60 times a second,
+ * per node. Baking at module load is what this replaces, and it stopped being
+ * possible the moment the ramp became authored state.
+ *
+ * @param {{stops: object[], loop: boolean, space: string, phase: number}} ramp
+ * @returns {string[]} SPECTRUM_RAMP_LEVELS hex colours, dark end first
+ *
+ * @example spectrumLevelColors({stops: [{offset: 0, color: "#000000"}, {offset: 1, color: "#ffffff"}], loop: false, space: "srgb", phase: 0}).length
+ * 24
+ * @example // level 0 is the middle of the FIRST band, not the ramp's very start
+ * @example spectrumLevelColors({stops: [{offset: 0, color: "#000000"}, {offset: 1, color: "#ffffff"}], loop: false, space: "srgb", phase: 0})[0]
+ * '#050505'
+ * @example spectrumLevelColors({stops: [{offset: 0, color: "#000000"}, {offset: 1, color: "#ffffff"}], loop: false, space: "srgb", phase: 0})[23]
+ * '#fafafa'
+ * @example // the SAME ramp asked twice is the same table, not a second bake
+ * @example const r = {stops: [{offset: 0, color: "#000000"}, {offset: 1, color: "#ffffff"}], loop: false, space: "srgb", phase: 0};
+ * @example spectrumLevelColors(r) === spectrumLevelColors(r)
+ * true
  */
-const SPECTRUM_LEVEL_COLORS = Object.freeze(
-  Array.from({ length: SPECTRUM_RAMP_LEVELS }, (_, i) => sampleRampHex(SPECTRUM_RAMP_STOPS, (i + 0.5) / SPECTRUM_RAMP_LEVELS, {})),
-);
+export function spectrumLevelColors(ramp) {
+  const key = `${ramp.loop}|${ramp.space}|${ramp.phase}|${JSON.stringify(ramp.stops)}`;
+  const hit = _levelColorsCache.get(key);
+  if (hit) return hit;
+  const built = Array.from(
+    { length: SPECTRUM_RAMP_LEVELS },
+    (_, i) => sampleRampHex(ramp.stops, (i + 0.5) / SPECTRUM_RAMP_LEVELS, ramp),
+  );
+  if (_levelColorsCache.size >= LEVEL_COLORS_CACHE_LIMIT) _levelColorsCache.delete(_levelColorsCache.keys().next().value);
+  _levelColorsCache.set(key, built);
+  return built;
+}
 
 /**
  * Pure function. A magnitude's quantization level — the index the run-merge
@@ -355,6 +475,278 @@ export function meterColor(frac) {
 /** Where the meter turns amber and red, in dBFS. */
 const METER_AMBER_DB = -12;
 const METER_RED_DB = -3;
+
+// ── THE AUTHORED DISPLAY PROPERTIES (R7-19) ──────────────────────────────────
+//
+// USER, verbatim: *"the spectrogram should have some more options and presets
+// btw - like, what about linear and haming window options and num freqs and
+// movement speed and color theme (i.e. the gradient! we have a gradient picker so
+// why not go ham with the presets??)"*
+//
+// ── THE LINE THIS DRAWS, AND WHY IT IS NOT BOOKKEEPING ──────────────────────
+// Two of those four are DSP and two are DISPLAY, and they live in different
+// files because they behave differently:
+//
+//   `window` and `bins` change WHAT IS MEASURED. They are engine params, so they
+//     are construct-time KNOBS in core/audio_specs.js SPECTRUM_SPEC and a change
+//     rebuilds the analyser (the `construct: true` contract).
+//   `speed` and the colour map change HOW THE MEASUREMENT IS DRAWN. They never
+//     reach the engine, so declaring them as knobs would fail the spec/engine
+//     cross-check in tests/audio_nodes_test.js — correctly, because a knob that
+//     is not a param is the phantom-leaf defect. They belong HERE, beside the
+//     drawing they modify.
+//
+// ── AND THE COLOUR MAP IS THE SHARED `ramp` BUNDLE, NOT A COLORMAP TYPE ─────
+// USER, on the difference: *"gradient property vs spatial gradient property are
+// different since this spectrogram does not need angles"* — and then, on what to
+// do about it: *"dont duplicate gradient make one use the other for max reuse
+// and DRY gradient propertiss"*. core/ramps.js already factors it exactly that
+// way, and this is the second consumer of the geometry-free half:
+//
+//     ramp   = stops + how they are read (loop, space, phase)    ← this
+//     paint  = ramp + geometry (angle, wavelength | centre, radius)
+//
+// So `colors` is `bundle("ramp")` — the SAME four property keys a Mandelbrot
+// palette uses, the same stop editor, the same preset library. A spectrogram
+// gets viridis because a fill can have viridis, and a ramp an author builds for
+// a fill is available here, with nothing written twice to make that true.
+
+/**
+ * Every AUTHORED display property, per `overlay` kind: whether the kind's picture
+ * is coloured by a ramp (and which ramp it is born with), plus its own scalar
+ * rows.
+ *
+ * ONE DECLARATION, TWO READERS — `analysisDisplayRows` builds the Inspector rows
+ * from it and `analysisDisplayDefaults` the defaults fragment, so a row and its
+ * default cannot disagree and neither can be added without the other.
+ *
+ * LOUD ON AN UNKNOWN KIND, like its sibling `analysisHistoryColumns`: a third
+ * analysis widget states its display properties (`{ramp: null, rows: []}` is a
+ * perfectly good statement) or fails where the message says what to do.
+ *
+ * @example ANALYSIS_DISPLAY_PROPERTIES.meter.rows // []
+ * @example ANALYSIS_DISPLAY_PROPERTIES.meter.ramp // null
+ * @example ANALYSIS_DISPLAY_PROPERTIES.spectrum.rows.map((r) => r.key) // ["spectrumSpeed", "spectrumLogAxis", "spectrumFloorDb", "spectrumCeilDb"]
+ */
+export const ANALYSIS_DISPLAY_PROPERTIES = {
+  // A METER HAS NEITHER, and that is a statement rather than an omission: its bar
+  // is one reading with no time axis to scroll and its colour is a dBFS SCALE
+  // (green / amber from -12 / red from -3, `meterColor`), not a palette. An
+  // author-chosen ramp there would let a meter show green at 0 dBFS, which is a
+  // meter that lies about the one thing it is for.
+  meter: { ramp: null, rows: [] },
+  spectrum: {
+    ramp: SPECTRUM_DEFAULT_RAMP_ID,
+    rows: [
+      {
+        key: "spectrumSpeed", label: "Speed (×)", kind: "number",
+        default: 1, min: SPECTRUM_MIN_SPEED, max: SPECTRUM_MAX_SPEED, step: 0.25,
+        help: "How fast the waterfall crosses the card. 1 shows about two seconds of history; 4 shows half a second, moving four times as quickly. Slower than 1 shows more history — down to the ring's own depth, which is why 0.5 is the floor rather than an arbitrary one.",
+      },
+      {
+        key: "spectrumLogAxis", label: "Log frequency", kind: "boolean",
+        default: true,
+        help: "Spaces the frequency axis geometrically, so an octave is a constant distance and a harmonic series reads as evenly spaced. Turn it off for a LINEAR axis, which is what a plain FFT plot shows — the harmonics bunch at the bottom, but the bin spacing is honest.",
+      },
+      {
+        key: "spectrumFloorDb", label: "Floor (dB)", kind: "number",
+        default: SPECTRUM_DEFAULT_FLOOR_DB, min: SPECTRUM_PUSH_DB_FLOOR, max: SPECTRUM_PUSH_DB_CEIL, step: 1,
+        help: "The level the DARK end of the colour map means. Raise it to push the noise floor into the background; lower it to see what is happening in near-silence. This is a window onto the measurement, not a change to it, so it scrubs live and tweens between slides.",
+      },
+      {
+        key: "spectrumCeilDb", label: "Ceiling (dB)", kind: "number",
+        default: SPECTRUM_DEFAULT_CEIL_DB, min: SPECTRUM_PUSH_DB_FLOOR, max: SPECTRUM_PUSH_DB_CEIL, step: 1,
+        help: "The level the BRIGHT end of the colour map means. 0 dB is digital full scale; the -30 default is what the browser's own analyser used, so quiet material still reaches the top of the ramp. Set it to or below the floor and the map collapses to a hard threshold at that level, which is the limit of the window closing rather than an error.",
+      },
+    ],
+  },
+};
+
+/**
+ * Query (throws on an unknown kind). One kind's display declaration.
+ *
+ * @param {string} kind - an `overlay` value from an audio spec
+ * @returns {{ramp: string|null, rows: object[]}}
+ *
+ * @example analysisDisplayProperties("spectrum").ramp // "magma"
+ * @example analysisDisplayProperties("meter").rows.length // 0
+ */
+export function analysisDisplayProperties(kind) {
+  const decl = ANALYSIS_DISPLAY_PROPERTIES[kind];
+  if (!decl) {
+    throw new Error(
+      `analysisDisplayProperties: no display properties declared for overlay kind ${JSON.stringify(kind)}` +
+      ` — add them to ANALYSIS_DISPLAY_PROPERTIES in core/analysis_display.js (known: ${Object.keys(ANALYSIS_DISPLAY_PROPERTIES).join(", ")})`,
+    );
+  }
+  return decl;
+}
+
+/**
+ * Pure function. THE INSPECTOR ROWS an analysis node's display contributes — the
+ * shared ramp bundle when the kind is ramp-coloured, then the kind's own scalars,
+ * all in one category so a node's picture controls are one group.
+ *
+ * THE CATEGORY IS AN ARGUMENT, not a constant here: it belongs to the AUDIO NODE
+ * these rows are mounted on (core/audio_nodes.js AUDIO_CAT), and importing it
+ * would close a cycle — that module imports this one.
+ *
+ * @param {string} kind - an `overlay` value from an audio spec
+ * @param {string} category - the Inspector category to file every row under
+ * @returns {object[]} Inspector row descriptors
+ *
+ * @example analysisDisplayRows("meter", "audio") // []
+ * @example analysisDisplayRows("spectrum", "audio").map((r) => r.key)
+ * [
+ *   'rampStops',       'rampLoop',
+ *   'rampSpace',       'rampPhase',
+ *   'spectrumSpeed',   'spectrumLogAxis',
+ *   'spectrumFloorDb', 'spectrumCeilDb'
+ * ]
+ * @example // every row lands in the category it was asked for, bundle rows included
+ * @example new Set(analysisDisplayRows("spectrum", "audio").map((r) => r.category))
+ * Set(1) { 'audio' }
+ */
+export function analysisDisplayRows(kind, category) {
+  const decl = analysisDisplayProperties(kind);
+  // `default` is stripped from the scalar rows for the same reason
+  // core/properties.js row() strips it: a default belongs to defaults(), and a
+  // row carrying one would be the second place it is written down.
+  return [
+    ...(decl.ramp ? bundle("ramp") : []),
+    ...decl.rows.map(({ default: _default, ...row }) => row),
+  ].map((row) => ({ ...row, category }));
+}
+
+/**
+ * Pure function. An analysis node's display DEFAULTS fragment: the ramp it is
+ * born with (a FRESH copy — a document must never alias author-time data) plus
+ * every scalar row's declared default.
+ *
+ * @param {string} kind - an `overlay` value from an audio spec
+ * @returns {object} a fragment to spread into a plugin's `defaults`
+ *
+ * @example analysisDisplayDefaults("meter") // {}
+ * @example analysisDisplayDefaults("spectrum").rampSpace // "oklab"
+ * @example analysisDisplayDefaults("spectrum").rampLoop // false
+ * @example analysisDisplayDefaults("spectrum").rampStops.length // 13
+ * @example analysisDisplayDefaults("spectrum").spectrumSpeed // 1
+ * @example analysisDisplayDefaults("spectrum").spectrumLogAxis // true
+ */
+export function analysisDisplayDefaults(kind) {
+  const decl = analysisDisplayProperties(kind);
+  const ramp = decl.ramp ? sequentialRamp(decl.ramp) : null;
+  return {
+    ...(ramp ? { rampStops: ramp.stops, rampLoop: ramp.loop, rampSpace: ramp.space, rampPhase: bundleDefaults("ramp").rampPhase } : {}),
+    ...Object.fromEntries(decl.rows.map((r) => [r.key, r.default])),
+  };
+}
+
+/**
+ * Pure function. The resolved DRAWING PARAMETERS for a spectrum display: the ramp
+ * and the two scalars, each falling back to this widget's own declared default.
+ *
+ * The FALLBACKS matter for the same reason a Mandelbrot palette's do: a partial
+ * delta that lost `rampSpace` must still read the map in the space it was
+ * published in, or it is a different map. `spectrogramOps` takes this rather than
+ * raw state so it stays a pure function of explicit parameters.
+ *
+ * @param {object} s - the folded item state
+ * @returns {{ramp: object, speed: number, logAxis: boolean}}
+ *
+ * @example spectrumStyle({}).speed // 1
+ * @example spectrumStyle({}).logAxis // true
+ * @example spectrumStyle({}).ramp.space // "oklab"
+ * @example spectrumStyle({}).floorDb // -100
+ * @example spectrumStyle({}).ceilDb // -30
+ * @example spectrumStyle({spectrumSpeed: 4, spectrumLogAxis: false}).speed // 4
+ * @example spectrumStyle({spectrumSpeed: 4, spectrumLogAxis: false}).logAxis // false
+ * @example // a broken equation leaves a STRING in the slot; the default is used
+ * @example // rather than a NaN column width
+ * @example spectrumStyle({spectrumSpeed: "= nope"}).speed // 1
+ * @example spectrumStyle({spectrumCeilDb: "= nope"}).ceilDb // -30
+ */
+export function spectrumStyle(s) {
+  const fallback = analysisDisplayDefaults("spectrum");
+  const speed = Number(s.spectrumSpeed);
+  const number = (raw, fromDefault) => (Number.isFinite(Number(raw)) ? Number(raw) : fromDefault);
+  return {
+    ramp: rampFromState({ ...s, rampStops: s.rampStops ?? fallback.rampStops }, fallback),
+    speed: Number.isFinite(speed) && speed > 0 ? speed : fallback.spectrumSpeed,
+    logAxis: typeof s.spectrumLogAxis === "boolean" ? s.spectrumLogAxis : fallback.spectrumLogAxis,
+    floorDb: number(s.spectrumFloorDb, fallback.spectrumFloorDb),
+    ceilDb: number(s.spectrumCeilDb, fallback.spectrumCeilDb),
+  };
+}
+
+/**
+ * Pure function. Where a pushed column value sits inside the AUTHORED dB window
+ * — the display's re-mapping of the engine's fixed
+ * SPECTRUM_PUSH_DB_FLOOR..SPECTRUM_PUSH_DB_CEIL range.
+ *
+ * A COLLAPSED WINDOW IS A THRESHOLD, NOT AN ERROR. When the ceiling is at or
+ * below the floor there is no span to divide by, and the honest answer is the
+ * LIMIT of the window closing: everything at or above that level is the bright
+ * end, everything below it the dark end. That is the same reading the gradient
+ * `wavelength` row already takes of 0 (CLAUDE.md: "0 is not an error: it is the
+ * LIMIT of infinitely fine tiling"), rather than a NaN in a rect's fill.
+ *
+ * @param {number} v - a pushed column value, 0..1 over the engine's dB range
+ * @param {number} floorDb - the level the dark end means
+ * @param {number} ceilDb - the level the bright end means
+ * @returns {number} 0..1 within the authored window
+ *
+ * @example // the engine's own range, passed through unchanged
+ * @example spectrumDisplayFraction(0.5, -100, 0)
+ * 0.5
+ * @example // the DEFAULT window is -100..-30, so the engine's 0.7 (i.e. -30 dBFS)
+ * @example // is the top of the ramp — which is what the browser analyser showed
+ * @example spectrumDisplayFraction(0.7, -100, -30)
+ * 1
+ * @example spectrumDisplayFraction(0.35, -100, -30)
+ * 0.5
+ * @example // ...and anything below the floor clamps to the dark end
+ * @example spectrumDisplayFraction(0.1, -50, -30)
+ * 0
+ * @example // a collapsed window is a hard threshold at that level
+ * @example spectrumDisplayFraction(0.6, -40, -40)
+ * 1
+ * @example spectrumDisplayFraction(0.5, -40, -40)
+ * 0
+ */
+export function spectrumDisplayFraction(v, floorDb, ceilDb) {
+  const db = SPECTRUM_PUSH_DB_FLOOR + v * (SPECTRUM_PUSH_DB_CEIL - SPECTRUM_PUSH_DB_FLOOR);
+  const span = ceilDb - floorDb;
+  if (span <= 0) return db >= floorDb ? 1 : 0;
+  return Math.max(0, Math.min(1, (db - floorDb) / span));
+}
+
+/**
+ * Pure function. How many of the ring's newest columns a given speed draws across
+ * the band — the ONE place speed becomes a number of columns.
+ *
+ * @param {number} speed - the `spectrumSpeed` value
+ * @returns {number} a column count in 1..ANALYSIS_HISTORY_COLUMNS.spectrum
+ *
+ * @example // speed 1 is the reference: the picture the display has always drawn
+ * @example spectrumDrawnColumns(1)
+ * 128
+ * @example // four times as fast is a quarter of the columns, four times as wide
+ * @example spectrumDrawnColumns(4)
+ * 32
+ * @example // the slowest speed uses the whole ring, and nothing may ask for more
+ * @example spectrumDrawnColumns(0.5)
+ * 256
+ * @example spectrumDrawnColumns(0.01)
+ * 256
+ * @example // ...nor for less than one column, which would be a zero-width divide
+ * @example spectrumDrawnColumns(1000)
+ * 1
+ */
+export function spectrumDrawnColumns(speed) {
+  const wanted = Math.round(SPECTRUM_BASE_COLUMNS / speed);
+  return Math.max(1, Math.min(ANALYSIS_HISTORY_COLUMNS.spectrum, wanted));
+}
 
 // ── GEOMETRY ─────────────────────────────────────────────────────────────────
 
@@ -414,10 +806,10 @@ export function analysisDisplayRect(plugin, s) {
  * How many frequency rows the waterfall resolves.
  *
  * A DISPLAY resolution, deliberately independent of the analyser's bin count: the
- * bins are remapped onto these rows logarithmically, so the picture's detail is a
- * property of the picture and a `bins` change (R7-19) alters what is measured, not
- * how tall the image is. 40 rows over a ~56-unit band is about one row per 1.4
- * world units, which is finer than a rect edge reads at ordinary zoom.
+ * bins are remapped onto these rows, so the picture's detail is a property of the
+ * picture and a `bins` change (R7-19) alters what is measured, not how tall the
+ * image is. 40 rows over a ~56-unit band is about one row per 1.4 world units,
+ * which is finer than a rect edge reads at ordinary zoom.
  */
 export const SPECTRUM_DISPLAY_ROWS = 40;
 
@@ -458,6 +850,45 @@ export const SPECTRUM_DISPLAY_ROWS = 40;
 export function logBinForRow(row, rows, bins) {
   const t = rows > 1 ? (rows - 1 - row) / (rows - 1) : 1; // bottom = low
   return Math.max(0, Math.min(bins - 1, Math.round(Math.pow(bins, t)) - 1));
+}
+
+/**
+ * Pure function. The bin a display row samples on a LINEAR frequency axis, row 0
+ * at the TOP (high) and the last row at the bottom (low) — the other half of the
+ * `spectrumLogAxis` row.
+ *
+ * WHY OFFER IT AT ALL, given the log axis is the musically useful one: a linear
+ * axis is what a plain FFT plot shows, and it is the honest picture when the
+ * question is about BINS rather than about notes — inspecting aliasing, a
+ * bitcrusher's fold-down, or the even spacing of a harmonic series' actual
+ * frequencies. The log axis compresses the top half of the spectrum into a
+ * quarter of the card, which hides exactly that.
+ *
+ * PINNED AT BOTH ENDS, like its logarithmic sibling and for the same reason.
+ *
+ * @param {number} row - the display row, 0 = top
+ * @param {number} rows - how many rows the display has
+ * @param {number} bins - the column's length
+ * @returns {number} an index into the column
+ *
+ * @example // the bottom row is bin 0 and the top row is the last bin
+ * @example linearBinForRow(3, 4, 64)
+ * 0
+ * @example linearBinForRow(0, 4, 64)
+ * 63
+ * @example // ...and the steps between them are EQUAL, which is what "linear" means:
+ * @example // 0, 21, 42, 63 — the log axis gives 0, 3, 15, 63 over the same rows
+ * @example linearBinForRow(2, 4, 64)
+ * 21
+ * @example linearBinForRow(1, 4, 64)
+ * 42
+ * @example // a one-row display is a degenerate case, not a division by zero
+ * @example linearBinForRow(0, 1, 64)
+ * 63
+ */
+export function linearBinForRow(row, rows, bins) {
+  const t = rows > 1 ? (rows - 1 - row) / (rows - 1) : 1; // bottom = low
+  return Math.max(0, Math.min(bins - 1, Math.round(t * (bins - 1))));
 }
 
 /**
@@ -506,46 +937,72 @@ export function runLengthCells(levels) {
  * Pure function. THE FLOWING SPECTROGRAM, as display-list ops in LOCAL coords.
  *
  * Time runs left to right (oldest column at the left edge), frequency bottom to
- * top on a log axis. A PARTLY FILLED ring draws only what it has, pinned to the
- * RIGHT edge, so a freshly created node fills in from the right rather than
- * stretching two columns across the whole card.
+ * top. A PARTLY FILLED ring draws only what it has, pinned to the RIGHT edge, so
+ * a freshly created node fills in from the right rather than stretching two
+ * columns across the whole card.
+ *
+ * SPEED IS A SUFFIX, NOT A RESAMPLE: a faster style takes the newest
+ * `spectrumDrawnColumns(speed)` columns and gives each a proportionally wider
+ * slice. The ring is untouched, so speeding up and slowing down again shows the
+ * history that was there all along — the same property that makes a zoom safe
+ * (this file's header), applied to the other axis.
  *
  * @param {{x: number, y: number, w: number, h: number}} box - analysisDisplayRect output
  * @param {Float32Array[]} columns - ringColumns output, oldest first, values in 0..1
+ * @param {{ramp: object, speed: number, logAxis: boolean}} style - spectrumStyle output
  * @returns {object[]} display-list commands
  *
+ * @example const STYLE = spectrumStyle({});
  * @example // no history yet: nothing is drawn, and the node's static form stands
- * @example spectrogramOps({x: 0, y: 0, w: 100, h: 40}, [])
+ * @example spectrogramOps({x: 0, y: 0, w: 100, h: 40}, [], STYLE)
  * []
  * @example // one silent column is one flat colour per row, merged along time
- * @example spectrogramOps({x: 0, y: 0, w: 100, h: 40}, [new Float32Array(8)]).length
+ * @example spectrogramOps({x: 0, y: 0, w: 100, h: 40}, [new Float32Array(8)], STYLE).length
  * 40
- * @example spectrogramOps({x: 0, y: 0, w: 100, h: 40}, [new Float32Array(8)])[0].op
+ * @example spectrogramOps({x: 0, y: 0, w: 100, h: 40}, [new Float32Array(8)], STYLE)[0].op
  * 'rect'
+ * @example // SPEED IS VISIBLE IN THE GEOMETRY: at speed 1 one column of 128 is
+ * @example // 100/128 wide; at speed 4 it is one of 32, so four times as wide
+ * @example spectrogramOps({x: 0, y: 0, w: 128, h: 40}, [new Float32Array(8)], STYLE)[0].w
+ * 1
+ * @example spectrogramOps({x: 0, y: 0, w: 128, h: 40}, [new Float32Array(8)], spectrumStyle({spectrumSpeed: 4}))[0].w
+ * 4
+ * @example // THE RAMP IS THE COLOUR: the same silent column under two maps.
+ * @example // (`rect` parses a stored hex into rgba floats, so that is what a fill is.)
+ * @example spectrogramOps({x: 0, y: 0, w: 100, h: 40}, [new Float32Array(8)], STYLE)[0].fill.map((v) => +v.toFixed(4))
+ * [ 0.0039, 0.0039, 0.0471, 1 ]
+ * @example spectrogramOps({x: 0, y: 0, w: 100, h: 40}, [new Float32Array(8)], spectrumStyle({rampStops: [{offset: 0, color: "#000000"}, {offset: 1, color: "#ffffff"}], rampSpace: "srgb"}))[0].fill.map((v) => +v.toFixed(4))
+ * [ 0.0196, 0.0196, 0.0196, 1 ]
  */
-export function spectrogramOps(box, columns) {
+export function spectrogramOps(box, columns, style) {
   if (columns.length === 0) return [];
   const rows = SPECTRUM_DISPLAY_ROWS;
   const bins = columns[0].length;
+  const drawn = Math.min(columns.length, spectrumDrawnColumns(style.speed));
+  const shown = columns.slice(columns.length - drawn);
+  const binForRow = style.logAxis ? logBinForRow : linearBinForRow;
   const levels = [];
   for (let row = 0; row < rows; row++) {
-    const bin = logBinForRow(row, rows, bins);
-    const line = new Array(columns.length);
-    for (let col = 0; col < columns.length; col++) line[col] = spectrumLevel(columns[col][bin]);
+    const bin = binForRow(row, rows, bins);
+    const line = new Array(shown.length);
+    for (let col = 0; col < shown.length; col++) {
+      line[col] = spectrumLevel(spectrumDisplayFraction(shown[col][bin], style.floorDb, style.ceilDb));
+    }
     levels.push(line);
   }
-  // PINNED RIGHT: a full ring uses the whole band, a partial one keeps the same
+  // PINNED RIGHT: a full band uses the whole width, a partial one keeps the same
   // column width and leaves the left empty, so history arrives at a constant speed
   // instead of the picture rescaling itself while it fills.
-  const colW = box.w / ANALYSIS_HISTORY_COLUMNS.spectrum;
-  const x0 = box.x + box.w - columns.length * colW;
+  const colW = box.w / spectrumDrawnColumns(style.speed);
+  const x0 = box.x + box.w - shown.length * colW;
   const rowH = box.h / rows;
+  const levelColors = spectrumLevelColors(style.ramp);
   return runLengthCells(levels).map((c) => rect({
     x: x0 + c.col * colW,
     y: box.y + c.row * rowH,
     w: c.span * colW,
     h: rowH,
-    fill: SPECTRUM_LEVEL_COLORS[c.level],
+    fill: levelColors[c.level],
   }));
 }
 
@@ -605,7 +1062,7 @@ export function analysisDisplayOps(descriptor, plugin, s) {
   const box = analysisDisplayRect(plugin, s);
   if (!box) return [];
   if (descriptor.kind === "meter") return meterOps(box, descriptor.columns);
-  if (descriptor.kind === "spectrum") return spectrogramOps(box, descriptor.columns);
+  if (descriptor.kind === "spectrum") return spectrogramOps(box, descriptor.columns, spectrumStyle(s));
   throw new Error(
     `analysisDisplayOps: no drawing for overlay kind ${JSON.stringify(descriptor.kind)}` +
     ` — a spec declaring a new \`overlay\` must add one here (known: meter, spectrum)`,

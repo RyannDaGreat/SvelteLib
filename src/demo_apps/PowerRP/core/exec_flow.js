@@ -108,7 +108,7 @@
  * equation and name the target explicitly.
  */
 
-import { blendApplied, copiedDeep, setPath } from "./deltas.js";
+import { blendApplied, setPath } from "./deltas.js";
 import { foldState } from "./document.js";
 import { reportOnce } from "./report.js";
 import { EXEC_KEY, EXEC_TYPE, declaredPorts, evaluateNodeGraph, execEdgesOf, topoOrder } from "./nodeflow.js";
@@ -161,28 +161,44 @@ export function nodeExecKind(plugin, state) {
  * match its behaviour is a plugin-authoring mistake that must not be discoverable
  * only as a chain that silently stops.
  *
- * The three ways to get it wrong, each with its own fix:
+ * The four ways to get it wrong, each with its own fix:
  *   an EVENT with no `execEvent`   — nothing would ever fire it
  *   an `execEvent` with no exec out — it could fire, and nothing could hear it
  *   an IMPURE that neither writes nor forwards — it is a dead link in every chain
+ *   an exec OUT with no `exec: {}` default and no EXEC_ITEM_REFS — its wire has
+ *     nowhere to live, and a copy of it would fire at the ORIGINAL. That pair is the
+ *     one a plugin author actually forgets, because nothing about it shows up until
+ *     someone duplicates a patch; tests/multipaste_test.js catches the itemRefs half
+ *     from the other direction, and this catches both halves at declaration.
  *
  * @param {object} plugin - a widget plugin
  * @param {object} [state] - a state to ask for ports
  * @returns {string|null} the problem sentence, or null
  *
  * @example execKindProblem({type: "rect"}) // null (a pure widget declares nothing)
- * @example execKindProblem({type: "e", ports: () => ({outputs: [{key: "then", type: "exec"}]})})
- * @example // 'exec_flow: "e" declares an exec output but no `execEvent` predicate — nothing would ever fire it.'
- * @example execKindProblem({type: "e", execEvent: () => true, ports: () => ({outputs: [{key: "then", type: "exec"}]})}) // null
+ * @example // an exec output with nowhere to store its wire is caught first:
+ * @example execKindProblem({type: "e", ports: () => ({outputs: [{key: "then", type: "exec"}]})}).includes("exec: {}") // true
+ * @example // …and once it can store one, the missing predicate is the next problem:
+ * @example const wired = {type: "e", defaults: {exec: {}}, itemRefs: [["exec", "*", "item"]], ports: () => ({outputs: [{key: "then", type: "exec"}]})};
+ * @example execKindProblem(wired).includes("no `execEvent` predicate") // true
+ * @example execKindProblem({...wired, execEvent: () => true}) // null
  */
 export function execKindProblem(plugin, state) {
   const kind = nodeExecKind(plugin, state);
   const hasPredicate = typeof plugin?.execEvent === "function";
   if (kind === "pure")
     return hasPredicate ? `exec_flow: "${plugin?.type}" declares an \`execEvent\` predicate but no exec output port — it could fire and nothing could hear it. Declare an exec output in ports().` : null;
+  const outputs = declaredPorts(plugin, state ?? plugin?.defaults ?? {}).outputs;
+  const firesSomething = outputs.some((p) => p.type === EXEC_TYPE);
+  if (firesSomething) {
+    if (!plugin?.defaults || typeof plugin.defaults[EXEC_KEY] !== "object" || plugin.defaults[EXEC_KEY] === null)
+      return `exec_flow: "${plugin?.type}" declares an exec OUTPUT but its defaults have no \`${EXEC_KEY}: {}\` — that map is where the wire is stored, so it must be present-but-empty (the reason core/control_nodes.js keeps \`inputs: {}\`).`;
+    if (!(plugin.itemRefs ?? []).some((path) => path[0] === EXEC_KEY))
+      return `exec_flow: "${plugin?.type}" declares an exec OUTPUT but does not spread EXEC_ITEM_REFS in \`itemRefs\` — a duplicated copy of it would keep firing at the ORIGINAL, silently.`;
+  }
   if (kind === "event")
     return hasPredicate ? null : `exec_flow: "${plugin?.type}" declares an exec output but no \`execEvent\` predicate — nothing would ever fire it. Add execEvent(ctx) -> boolean, or give it an exec INPUT so something else can.`;
-  if (typeof plugin?.execEffect !== "function" && declaredPorts(plugin, state ?? plugin?.defaults ?? {}).outputs.every((p) => p.type !== EXEC_TYPE))
+  if (typeof plugin?.execEffect !== "function" && !firesSomething)
     return `exec_flow: "${plugin?.type}" has an exec input but neither an \`execEffect\` nor an exec output — running it would do nothing and stop the chain. Give it one or the other.`;
   return null;
 }
@@ -209,6 +225,24 @@ export function execKindProblem(plugin, state) {
  * @example documentUsesExec({}) // false
  */
 export function documentUsesExec(doc) {
+  // MEMOIZED PER DOCUMENT, because `web/app.svelte.js rawState()` asks on EVERY call
+  // and ~28 sites in CanvasView.svelte alone call it, several from pointermove
+  // handlers. The scan is small but it is O(slides × items), and the eventless deck
+  // — the one that must pay nothing — is exactly the one that would pay it on every
+  // mouse move. A WeakMap on the document is the whole invalidation: an edit mints a
+  // new document object.
+  if (typeof doc === "object" && doc !== null && usesExecMemo.has(doc)) return usesExecMemo.get(doc);
+  const answer = scanForExec(doc);
+  if (typeof doc === "object" && doc !== null) usesExecMemo.set(doc, answer);
+  return answer;
+}
+
+/** The per-document memory behind documentUsesExec. */
+const usesExecMemo = new WeakMap();
+
+/** Pure function. documentUsesExec's actual scan, split out so the memo above reads
+ *  as one sentence rather than as a cache wrapped around a loop. */
+function scanForExec(doc) {
   for (const slide of doc?.slides ?? []) {
     const items = slide?.delta?.items;
     if (!items || typeof items !== "object") continue;
@@ -259,6 +293,12 @@ function boundaryWrites(base, prev, registry, slideIndex, pending) {
   // boundary — not per frame (see execOverlayAt).
   const prevGraph = prev ? evaluateNodeGraph(prev.items ?? {}, registry).values : {};
   const steps = { n: 0, blown: false };
+  // HOW MANY TIMES EACH NODE HAS RUN AT THIS BOUNDARY, 0-based, handed to the effect
+  // as `ctx.runIndex`. It is what lets a node be run TWICE by one boundary and mean
+  // it — see plugins/node_counter.js, which is the whole reason it exists. Without
+  // it the double buffering would silently collapse two pulses into one, because
+  // both would compute their new value from the same unchanged base.
+  const runs = new Map();
 
   const run = (id, port) => {
     if (steps.n++ >= EXEC_STEP_BUDGET) { steps.blown = true; return; }
@@ -266,7 +306,9 @@ function boundaryWrites(base, prev, registry, slideIndex, pending) {
     if (!state || state.active === false) return;
     const plugin = registryPlugin(registry, state.type);
     if (!plugin) return;
-    const ctx = { id, self: state, inputs: graph[id]?.inputs ?? {}, prevInputs: prevGraph[id]?.inputs ?? {}, prevSelf: prev?.items?.[id] ?? null, state: base, prev, slideIndex, firedPort: port };
+    const runIndex = runs.get(id) ?? 0;
+    runs.set(id, runIndex + 1);
+    const ctx = { id, self: state, inputs: graph[id]?.inputs ?? {}, prevInputs: prevGraph[id]?.inputs ?? {}, prevSelf: prev?.items?.[id] ?? null, state: base, prev, slideIndex, firedPort: port, runIndex };
     if (typeof plugin.execLatent === "function") {
       const wait = Math.max(1, Math.round(Number(plugin.execLatent(ctx)) || 0));
       for (const p of declaredPorts(plugin, state).outputs) {
@@ -363,9 +405,12 @@ function validEffectPair(plugin, base, pair) {
   }
   // A target that is not on this slide is NOT an error and is NOT reported: an
   // effect aimed at a widget that is deleted here is the same per-slide patch a wire
-  // to an absent source is (core/nodeflow.connectionsOf states that rule). Writing
-  // anyway would conjure a partial item into the fold.
-  return !!base?.items?.[path[1]];
+  // to an absent source is (core/nodeflow.connectionsOf states that rule). `active:
+  // false` counts as absent for the same reason it does there — and writing anyway
+  // would be worse than useless, because the overlay is inherited forward, so the
+  // value would surface on whatever later slide brought the widget back.
+  const target = base?.items?.[path[1]];
+  return !!target && target.active !== false;
 }
 
 /**
@@ -409,11 +454,10 @@ export function execOverlayAt(doc, slideIndex, registry, evaluate) {
     const folded = foldState(doc, j, 1);
     const base = evaluate(overlay ? blendApplied(folded, overlay, 1) : folded);
     const writes = boundaryWrites(base, prev, registry, j, pending);
-    if (writes.length) {
-      const next = overlay ? copiedDeep(overlay) : {};
-      for (const [path, value] of writes) setPath(next, path, value);
-      overlay = next;
-    }
+    // `setPath` RETURNS a new tree rather than mutating (core/deltas.js), which is
+    // what makes each boundary's overlay a distinct frozen-in-time object — and
+    // therefore what makes the per-boundary memo below safe to hand out.
+    for (const [path, value] of writes) overlay = setPath(overlay ?? {}, path, value);
     prev = base;
     // MEMOIZE EVERY BOUNDARY ON THE WAY, not just the one asked for. The recurrence
     // already computed them, and a presentation asks for 0, 1, 2 … in turn — so

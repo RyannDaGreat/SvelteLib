@@ -17,6 +17,7 @@
   import * as T from "../core/transform.js";
   import { enableAudio, fireLiveTrigger, mirrorAudioFrame, playLiveNote, releaseAllLiveNotes } from "./audioMirror.svelte.js";
   import { fitRectView, canSkipNode } from "../core/view.js";
+  import { analysisFlowing } from "../render_gpu/gpu/live_analysis_registry.js"; // a live display is animated and declares no flag
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { isFadeFrame, renderTransitionFrame } from "./transitionRender.js";
   import { cameraFrameIR, evaluatedStateAt, evaluationAt } from "./cameraFrame.js";
@@ -112,15 +113,25 @@
     const cam = Object.values(state.items ?? {}).find((it) => it?.type === "camera" && it.active !== false);
     if (cam && paintIsAnimated(cam.background)) return true;
     const rect = cameraRect(state, app.doc.meta);
-    return deriveRenderTree(state, app.registry, app.projectName()).some(
+    const visibleNodes = deriveRenderTree(state, app.registry, app.projectName())
+      .filter((n) => !canSkipNode(n, rect));
+    // A LIVE ANALYSIS DISPLAY (R7-5) is animated and declares none of the flags below:
+    // it is not `state.animated`, it reads no `time`, and it is not a material paint. So
+    // without this clause `restingAnimated` stayed false, `idleTick` never started, and a
+    // spectrogram was FROZEN in the presenter — the same defect the editor had, for a
+    // different reason. `analysisFlowing` asks about FRESHNESS (columns actually landing),
+    // so it goes false by itself after the last one — on mute, on delete, on a
+    // backgrounded tab — and it takes the POST-CULL list because an off-screen
+    // spectrogram must not hold the loop open.
+    if (analysisFlowing(visibleNodes)) return true;
+    return visibleNodes.some(
       (n) =>
-        (n.state.animated === true ||
-          // A plain shape with an ANIMATED MATERIAL paint has no widget-level
-          // flag — the material registry is the only place that knows (the
-          // "rainy window froze in the presenter" bug, manifest item 73).
-          paintIsAnimated(n.state.fill) ||
-          paintIsAnimated(n.state.stroke)) &&
-        !canSkipNode(n, rect),
+        n.state.animated === true ||
+        // A plain shape with an ANIMATED MATERIAL paint has no widget-level
+        // flag — the material registry is the only place that knows (the
+        // "rainy window froze in the presenter" bug, manifest item 73).
+        paintIsAnimated(n.state.fill) ||
+        paintIsAnimated(n.state.stroke),
     );
   }
 

@@ -35,8 +35,8 @@
 import { EPHEMERAL } from "./ephemeral.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
-import { EXEC_KEY, NODE_ITEM_REFS, execOutputRows, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows } from "./nodeflow.js";
-import { nodeBox, nodeCard, nodeRim, nodeValueText, portBeads } from "./node_chrome.js";
+import { EXEC_ITEM_REFS, EXEC_KEY, NODE_ITEM_REFS, execOutputRows, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows } from "./nodeflow.js";
+import { NODE_PAD, NODE_VALUE_SIZE, nodeBox, nodeCard, nodeRim, nodeValueText, portBeads } from "./node_chrome.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import * as T from "./transform.js";
 
@@ -52,6 +52,49 @@ export const EXEC_COMMAND_CATEGORY = "Trigger Nodes";
  *  SENTENCE-ish readout ("x → 100") rather than a number, and a card that has to
  *  shrink its own readout on insertion is a card that was born too small. */
 export const EXEC_NODE_W = 170;
+
+/**
+ * Approximate advance of one glyph as a fraction of the font size, used ONLY to
+ * decide where to put an ellipsis.
+ *
+ * ── WHY AN ESTIMATE IS THE RIGHT TOOL HERE, WHICH IS NOT USUALLY TRUE ───────
+ * `nodeValueText` shrinks a line against the card's HEIGHT and hands the renderer a
+ * finite `boxW`, so a long string does not run off the side — IT WRAPS, and the
+ * second line then falls outside the one-line band the value text reserved. Measured
+ * on a rendered still: a Set Property node pointed at `particleSeed` printed
+ * "particleSeed →" over "wire", with the second line across its bottom rim. Every
+ * existing caller of nodeValueText passes a NUMBER, which is why nothing had hit it.
+ *
+ * The honest fix is to keep the readout to one line's worth, and that needs a width
+ * budget — but bare node has no font metrics (cli/render.js and the layout sweep both
+ * run there), so a real measurement is not available at the seam that has to decide.
+ * An estimate is sound BECAUSE OF WHAT IT DECIDES: being wrong costs a couple of
+ * characters of headroom or a slightly early ellipsis, never a wrong picture. That is
+ * the opposite of the geometry rules elsewhere in the node chrome, which is why this
+ * is the only estimated number in the family.
+ */
+const GLYPH_ADVANCE_RATIO = 0.55;
+
+/**
+ * Pure function. A readout string cut to what fits on ONE line of a card this wide,
+ * with an ellipsis when it had to cut. See GLYPH_ADVANCE_RATIO for why the width is
+ * estimated rather than measured.
+ *
+ * @param {string} str - the readout the plugin produced
+ * @param {number} boxW - the card's resolved width
+ * @returns {string} the string, or a cut of it ending in "…"
+ *
+ * @example oneLineReadout("x → 100", 170) // "x → 100"
+ * @example oneLineReadout("particleSeed → wire", 170) // "particleSeed…"
+ * @example // a wider card cuts less, because the budget is the card's own width
+ * @example oneLineReadout("particleSeed → wire", 260) // "particleSeed → wi…"
+ * @example oneLineReadout("", 170) // ""
+ */
+export function oneLineReadout(str, boxW) {
+  const text = String(str ?? "");
+  const budget = Math.max(1, Math.floor((Math.abs(boxW ?? 0) - 2 * NODE_PAD) / (NODE_VALUE_SIZE * GLYPH_ADVANCE_RATIO)));
+  return text.length <= budget ? text : `${text.slice(0, Math.max(1, budget - 1)).trimEnd()}…`;
+}
 
 /**
  * Pure function. The `defaults` bag every exec node shares — the transform, the
@@ -119,8 +162,11 @@ export function execNodePlugin(spec) {
     // watcher's `watch`, an effect's `target`). Those are itemIds in ordinary leaves,
     // so without naming them here a duplicated trigger would keep watching — or
     // keep WRITING TO — the original, which is the silent-copy defect NODE_ITEM_REFS
-    // exists to prevent, in its worst form.
-    itemRefs: Object.freeze([...NODE_ITEM_REFS, ...(spec.itemRefs ?? [])]),
+    // exists to prevent, in its worst form. EXEC_ITEM_REFS is spread here rather than
+    // folded into NODE_ITEM_REFS because a declared ref path promises the slot exists
+    // and only these widgets have an `exec` map (core/nodeflow.js records the measured
+    // reason).
+    itemRefs: Object.freeze([...NODE_ITEM_REFS, ...EXEC_ITEM_REFS, ...(spec.itemRefs ?? [])]),
     // THE FAMILY MARKER a sweep asks instead of keeping a type-string list, exactly
     // as core/control_nodes.js's `controlNode` does. core/exec_flow.js does NOT read
     // it — the four node KINDS are derived from the port declaration, which is the
@@ -155,7 +201,7 @@ export function execNodePlugin(spec) {
       const box = nodeBox(s);
       const ops = [
         ...nodeCard(s, spec.title),
-        ...(spec.readout ? nodeValueText(s, spec.readout(s)) : []),
+        ...(spec.readout ? nodeValueText(s, oneLineReadout(spec.readout(s), box.w)) : []),
         ...portBeads(plugin, s),
         ...nodeRim(s),
       ];

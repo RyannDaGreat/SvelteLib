@@ -38,6 +38,12 @@ import { formatNodeValue } from "../core/node_chrome.js";
 const MODES = ["rise", "fall", "both"];
 const MODE_LABELS = { rise: "Rising past", fall: "Falling past", both: "Crossing" };
 
+/** THE CARD'S readout, which is not the dropdown's label. `nodeValueText` shrinks a
+ *  line against the card's HEIGHT but never its WIDTH, so "Rising past 0.5" runs
+ *  past the rim of a default-width card — measured on a rendered still, the same way
+ *  plugins/node_on_reveal.js found it. An arrow says the direction in one glyph. */
+const MODE_MARKS = { rise: "\u2191", fall: "\u2193", both: "\u21c5" };
+
 /** Pure function. The number this node is watching in one boundary's inputs: the
  *  WIRE when one is attached, else the node's own `level` property. This is R7-10's
  *  knob-or-input duality read at evaluation time — one source of truth, chosen by
@@ -58,7 +64,7 @@ export const nodeOnThresholdPlugin = execNodePlugin({
     { key: "level", label: "Level", kind: "number", category: EXEC_NODE_CAT, help: "The number to watch when nothing is wired into the 'in' socket. Wire something in and this is ignored — the wire wins. It is an ordinary keyframable slot, so keyframing it across slides is itself a way to make this fire." },
     { key: "mode", label: "Fires", kind: "select", options: MODES, optionLabels: MODE_LABELS, category: EXEC_NODE_CAT, help: "Which crossing fires the chain: upward through the threshold, downward through it, or either." },
   ],
-  readout: (s) => `${MODE_LABELS[s.mode] ?? MODE_LABELS.rise} ${formatNodeValue(Number(s.threshold ?? 0))}`,
+  readout: (s) => `${MODE_MARKS[s.mode] ?? MODE_MARKS.rise} ${formatNodeValue(Number(s.threshold ?? 0))}`,
   /**
    * Pure function. Did the watched number cross the threshold in the listened-for
    * direction between the previous boundary and this one?

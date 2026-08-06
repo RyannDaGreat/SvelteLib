@@ -27,10 +27,11 @@ import { clipboardKind, propertySubsetKind, pasteBadge, pasteIntent } from "./pa
 // is its counterweight (core/slide_reorder.js states the law both obey).
 import { movedSlidePreservingLook, duplicateKeyframes, simplifyDuplicateKeyframes, withSlidesMovedToBoundary, slideClipboardPayload, withSlidesPasted, withSlidesMerged, withSlideRunMerged } from "../core/slide_reorder.js";
 import { unionRect } from "../core/geometry.js";
-// DEMO PATCHES (NF-BIND, user ADDENDUM 10): fully-wired audio graphs, inserted as a
-// group. The blueprints are pure data in core so the whole construction is checkable
-// in bare node; `insertDemoPatch` below is the one place they become a document.
-import { DEMO_PATCHES, PATCH_ROW, buildPatchItems, patchBounds } from "../core/audio_patches.js";
+// DEMO TEMPLATES (manifest R7-18): the ONE stamp behind both demo patches (items +
+// wires) and demo presets (items + equations). `insertDemoPatch` below is now the
+// METHOD SEAM onto it, not a second copy of it — web/demoInsert.js's header says
+// which sixty lines used to be duplicated here and why one mechanism replaced them.
+import { insertDemoTemplate } from "./demoInsert.js";
 // Arrange-into-Grid (bento) layout math — DOM-free, doctested in core/grid.js.
 import { gridAssign, cellCenters, effectiveRows } from "../core/grid.js";
 import { isSlideField, resolveTransition, retypedTransition, slideFieldKeys } from "../core/transitions.js";
@@ -39,6 +40,12 @@ import { deriveRenderTree, cameraRect, groupMembership, stateXYForCenterPivotWor
 // per-element hide and purge, shared with the Inspector's list control.
 import { LIST_ROW_KIND, withElementActive, withElementPurged } from "../core/lists.js";
 import { evaluateState, withVariableRenamed, withItemVariableRenamed, anchorRefName, materialParamDefaultAt } from "../core/expressions.js";
+// TRIGGERS (manifest R7-8). `execOverlayFor` is the app's ONE binding of the exec
+// replay to a real evaluator (web/execOverlay.js says why it is its own module);
+// `withExecOverlay` is the one spelling of the blend, so the editor and every pixel
+// consumer apply a slide's events identically.
+import { execOverlayFor } from "./execOverlay.js";
+import { withExecOverlay } from "../core/exec_flow.js";
 // "Which of these stored leaves hold an = equation" — ONE expression, four
 // consumers (web/canvas/equationBinding.js's header names them all). This file's
 // is beginTextEdit's refusal.
@@ -65,7 +72,11 @@ import { resetSimulation } from "../core/simulation_history.js";
 import * as T from "../core/transform.js";
 import { reportAction } from "../core/report.js";
 import { bundleDefaults } from "../core/properties.js";
-import { multiSelectPanel, unifyPairs, retypeSkipReason, MULTISELECT_MODE } from "../core/multiselect.js";
+import {
+  multiSelectPanel, multiToolPanel, presetPairs, materialPresetPairs, unifyPairs, retypeSkipReason,
+  MULTISELECT_MODE, MATERIAL_PRESET_ROW_KIND,
+} from "../core/multiselect.js";
+import { presetsForMaterial, materialDisplayName } from "../render_gpu/skia/material_presets.js";
 import { sectionTriState, sectionToggleAction, sectionJumpTarget } from "../core/section_keyframes.js";
 import { sceneIR } from "../render_gpu/ports.js";
 import { renderCameraFrame, rasterizeIrPng } from "./gpuService.js";
@@ -168,6 +179,7 @@ import { registerFontFamily, clearDynamicFonts, fontAssetId, fontDescriptor } fr
 import { loadDynamicFont } from "./fontLoader.js";
 // Asset thumbnail generalization (#25): pure tile-presentation + page-count badge.
 import { assetTilePresentation, pageCountBadge } from "./assetThumbnail.js";
+import { EQUATION_LANGUAGE_ID, setEquationCodeContext } from "./equationCode.js";
 
 const AUTOSAVE_KEY = "powerrp.autosave";
 const THEME_KEY = "powerrp.theme";
@@ -217,6 +229,12 @@ const BUILTIN_PLUGIN_EDIT_NOTE = "Built-in — Save copies into this project";
 // camera); sourcing it from the shared registry keeps it from drifting from
 // the Inspector's Rendering → Retina default.
 const CAMERA_RETINA_DEFAULT = bundleDefaults("rendering").retina;
+
+// The two PAINT SLOTS a material can sit in, and therefore the two a Tools-pane
+// material preset section can be built for (app.materialToolGroups). Named because
+// the slot is also written into the section's id and into every write path it
+// stages, so the pair is read three times for one fact.
+const MATERIAL_PRESET_SLOTS = ["fill", "stroke"];
 
 // THE settings repo (manifest "SETTINGS TAXONOMY"): every boolean BROWSER
 // setting declared ONCE here (key + default), consumed by a $state field
@@ -1184,6 +1202,36 @@ export class PowerRPApp {
   // One stable object per (base, preview) pair = ONE evaluation per move.
   #blendCache = { base: null, preview: null, state: null };
 
+  // Exec-overlay blend cache, and it exists for EXACTLY the reason #blendCache above
+  // does — identity stability. `withExecOverlay` mints a new object per call, so
+  // without this every consumer's rawState() read would defeat evaluateState's memo
+  // on any deck that uses triggers, which is the profiled drag-lag cliff arriving by
+  // a second door. Both inputs are already identity-stable (the fold is memoized;
+  // core/exec_flow.js memoizes the overlay per document and slide), so a two-field
+  // comparison is a complete key.
+  #execCache = { base: null, overlay: null, state: null };
+
+  /** The folded state with this slide's TRIGGER writes applied (manifest R7-8), or
+   *  `base` untouched when the deck has no exec wires — in which case nothing here
+   *  costs anything beyond one structural scan of the slide deltas.
+   *
+   *  THE EDITOR NEEDS THIS AND NOT ONLY THE PIXEL CONSUMERS. An event fires as a
+   *  function of slide POSITION, and the editor has a slide position, so a deck's
+   *  events must be visible while it is being authored — otherwise the canvas and
+   *  the export would show two different pictures of the same slide, which is the
+   *  disagreement web/execOverlay.js exists to make impossible. */
+  #withExecOverlay(base) {
+    const overlay = execOverlayFor(this.doc, this.slideIndex, this.registry);
+    if (!overlay) return base;
+    const c = this.#execCache;
+    if (c.base !== base || c.overlay !== overlay) {
+      c.base = base;
+      c.overlay = overlay;
+      c.state = withExecOverlay(base, overlay);
+    }
+    return c.state;
+  }
+
   /**
    * Folded state of the current slide, with any live drag preview applied —
    * RAW: equation slots still hold their stored strings. The Property Panel
@@ -1194,7 +1242,7 @@ export class PowerRPApp {
    * previewDelta wholesale each move, which is what keys the cache.
    */
   rawState() {
-    const base = foldState(this.doc, this.slideIndex, 1);
+    const base = this.#withExecOverlay(foldState(this.doc, this.slideIndex, 1));
     const preview = this.previewDelta;
     // ONE transient overlay: the live PREVIEW delta. A second one used to be blended
     // here — the filmstrip's fetch STATUS (processing / frameError) — and it went away
@@ -1441,6 +1489,82 @@ export class PowerRPApp {
 
   multiSelectPanel() {
     return multiSelectPanel(this.selectionEntries(), this.multiSelectMode);
+  }
+
+  /**
+   * Query. Everything the Tools pane renders: the tool groups every (or any)
+   * selected item declares, which items each row applies to, the reported
+   * conflicts and the items not on this slide. The tools counterpart of
+   * multiSelectPanel, off the SAME `selectionEntries()` adapter and the SAME
+   * `multiSelectMode` — so the two panes cannot show different modes, and cannot
+   * disagree about which items are in the selection.
+   *
+   * IT IS THE ONLY PATH, INCLUDING FOR ONE ITEM. core/multiselect.js returns a
+   * one-entry selection's own groups and rows BY IDENTITY, so a single selection is
+   * unchanged by construction rather than by a second branch in the pane — the same
+   * property that makes `intersectRows` leave the single-select Property Panel
+   * alone.
+   */
+  multiToolPanel() {
+    const entries = this.selectionEntries().map((e) => ({ ...e, groups: this.toolGroupsForItem(e) }));
+    return multiToolPanel(entries, this.multiSelectMode);
+  }
+
+  /**
+   * Query. The tool groups ONE selected item offers: its plugin's resolved
+   * `toolGroups` (per widget TYPE, core/registry.js withToolGroups) followed by the
+   * preset sections its CURRENT STATE adds (per ITEM — see materialToolGroups).
+   * Plugin-owned first, state-derived after, the order toolGroupsOf itself uses.
+   *
+   * @param {{itemId: string, plugin: object, state: object|null}} entry - a selectionEntries() entry
+   * @returns {Array<{id: string, title: string, rows: Array}>}
+   */
+  toolGroupsForItem(entry) {
+    return [...(entry.plugin?.toolGroups ?? []), ...this.materialToolGroups(entry)];
+  }
+
+  /**
+   * Query. The preset groups an item's CURRENT fill/stroke MATERIAL paints add
+   * (manifest D.10) — one section per slot whose paint is
+   * `{type:"material", material:{id}}` and whose material ships presets. ADDITIVE:
+   * a rect carrying the sky material as its fill gets the sky's presets even though
+   * the rect plugin declares none, and keyframing a slot to or from a material
+   * adds or drops the section.
+   *
+   * IT LIVES HERE, NOT IN THE PANE, because it is half of "which tools does this
+   * ITEM offer" and the tool intersection needs both halves. While the pane owned
+   * it, it read `app.selection` — so with five items selected the material sections
+   * were the PRIMARY's alone and no intersection could see the rest.
+   *
+   * The title is SPECIFIC to the material AND the slot (manifest D.11): fill →
+   * "Sky material presets", stroke → "Brush stroke presets", never a generic "fill
+   * material presets".
+   *
+   * @param {{itemId: string, state: object|null}} entry - a selectionEntries() entry
+   * @returns {Array<{id: string, title: string, rows: Array}>} empty when neither slot carries a preset-bearing material
+   */
+  materialToolGroups(entry) {
+    const state = entry.state;
+    if (!state) return [];
+    const out = [];
+    for (const slot of MATERIAL_PRESET_SLOTS) {
+      const paint = state[slot];
+      if (!paint || paint.type !== "material" || !paint.material?.id) continue;
+      const id = paint.material.id;
+      const presets = presetsForMaterial(id, this.registry); // widget presets FIRST (Round 4 #52), curated extras after
+      if (!presets.length) continue;
+      const noun = slot === "stroke" ? "stroke" : "material";
+      out.push({
+        id: `matpreset:${slot}:${id}`,
+        title: `${materialDisplayName(id)} ${noun} presets`,
+        rows: presets.map((p) => ({
+          kind: MATERIAL_PRESET_ROW_KIND,
+          slot,
+          preset: { name: p.title, description: p.description, params: p.params },
+        })),
+      });
+    }
+    return out;
   }
 
   /** Command. Switches the multi-selection panel between showing rows EVERY
@@ -2466,14 +2590,87 @@ export class PowerRPApp {
    * null. Reusable for ANY plugin that declares `presets` — nothing here is
    * lens-flare-specific.
    *
+   * ONE ITEM IS THE ONE-ELEMENT CASE OF applyPresetToItems, and delegates to it:
+   * there is exactly one preset write in the app, so the single-item path and the
+   * multi-selection path cannot come to disagree about what applying a preset
+   * means. (This signature stays because it is what the preset suites and probes
+   * drive — `app.applyPreset(id, {props})` is the app's named item-mutation seam.)
+   *
    * @param {string|null} itemId - the target item
    * @param {{props: Object}} preset - a plugin preset descriptor ({name, props, ...})
    */
   applyPreset(itemId, preset) {
-    if (itemId === null || !preset?.props) return;
-    const pairs = Object.entries(preset.props).map(([key, value]) => [["items", itemId, key], value]);
+    if (itemId === null) return;
+    this.applyPresetToItems([itemId], preset);
+  }
+
+  /**
+   * Command. Applies a preset to EVERY item in `itemIds` as ONE undo unit — the
+   * user's "when I click a tool, it does it to all selected objects" (2026-08-06),
+   * for the preset half of the Tools pane.
+   *
+   * ONE UNDO UNIT IS THE WHOLE POINT OF DOING IT HERE rather than looping
+   * applyPreset: setPreview REPLACES the staged delta wholesale and commitPreview
+   * walks it into a single `commit`, so N items written from ONE pairs list undo as
+   * one action. A loop of applyPreset calls would push N undo entries and make
+   * "stamp this look on twelve widgets" take twelve Ctrl-Zs — the same rule
+   * `unifySelection` obeys, through the same seam.
+   *
+   * NO-OP WHEN THERE IS NOTHING TO WRITE (no targets, or a preset with no props):
+   * committing an empty write would spend an undo unit on a change nobody made.
+   *
+   * @param {string[]} itemIds - the target items
+   * @param {{props: Object}} preset - a plugin preset descriptor ({name, props, ...})
+   * @returns {number} how many property writes were staged (0 = nothing committed)
+   */
+  applyPresetToItems(itemIds, preset) {
+    return this.applyPresetRow(itemIds, { kind: "preset", preset });
+  }
+
+  /**
+   * Query. The setPreview pairs one Tools-pane PRESET ROW would write over
+   * `itemIds` — the ONE place the two kinds of preset row are told apart. A plugin
+   * preset writes the item's own keys; a MATERIAL preset writes inside a paint
+   * slot's material params (core/multiselect.js owns both path shapes).
+   *
+   * @param {string[]} itemIds - the target items
+   * @param {{kind: string, slot?: string, preset: object}} row - a resolved preset tool row
+   * @returns {Array<[string[], *]>}
+   */
+  presetRowPairs(itemIds, row) {
+    return row.kind === MATERIAL_PRESET_ROW_KIND
+      ? materialPresetPairs(itemIds, row.slot, row.preset)
+      : presetPairs(itemIds, row.preset);
+  }
+
+  /**
+   * Command. Stages a preset row over `itemIds` WITHOUT committing — the pane's
+   * hover live-preview: the viewport renders it, the document is untouched and no
+   * undo entry is created. Stages nothing when the row writes nothing (expected
+   * control flow, not an error), so an empty hover cannot clear a staged preview
+   * by accident.
+   *
+   * IT STAGES THE SAME PAIRS THE CLICK COMMITS, over the same items — which is what
+   * makes hover-then-click and a cold click produce identical documents.
+   */
+  previewPresetRow(itemIds, row) {
+    const pairs = this.presetRowPairs(itemIds, row);
+    if (pairs.length === 0) return;
+    this.setPreview(pairs);
+  }
+
+  /**
+   * Command. Applies a preset row DURABLY over `itemIds`, as ONE undo unit (see
+   * applyPresetToItems for why the fan-out is one setPreview and not N calls).
+   *
+   * @returns {number} how many property writes were staged (0 = nothing committed)
+   */
+  applyPresetRow(itemIds, row) {
+    const pairs = this.presetRowPairs(itemIds, row);
+    if (pairs.length === 0) return 0;
     this.setPreview(pairs);
     this.commitPreview();
+    return pairs.length;
   }
 
   // ── WYSIWYG rich-text editing (Round 13.4) ─────────────────────────────────
@@ -2761,6 +2958,54 @@ export class PowerRPApp {
     this.codeModal = { scope: "item", itemId, property, language: opts.language ?? null, title: opts.title ?? "Edit code" };
   }
 
+  /** Command. Opens the full-screen code editor on ONE PROPERTY'S EQUATION — the
+   *  `{}` affordance every equation-bearing row carries (user, 2026-08-06:
+   *  "Equations should always have that option too - a code editing modal, with
+   *  correct autocomplete/highlighting pops up so u can edit the equation
+   *  multiline"). The equation grammar already accepts newlines, so the one-line
+   *  <input> was the only limit; see web/equationCode.js.
+   *
+   *  THE FOURTH SCOPE, and what makes it genuinely different from the other three
+   *  rather than a fourth copy of them: THIS SCOPE DOES NOT KNOW HOW TO WRITE. The
+   *  other scopes address a value by path and write it back, but committing an
+   *  equation is the FIELD's business and is not one rule — a ref-free expression
+   *  becomes a plain NUMBER in the row's own display units (degrees → radians on a
+   *  rotation row) while an expression with references is stored verbatim, and the
+   *  text is authored in DISPLAY form (snake_case, item slugs) which
+   *  displayToStored converts. Every one of those rules already lives in
+   *  NumericField/AngleField/Inspector's commit path. So the modal is seeded with
+   *  the text the field is already showing and hands the edited text BACK to that
+   *  same commit — which is why a rotation equation typed here cannot silently
+   *  land as radians, and why there is no second copy of the display↔stored
+   *  round-trip to keep in step.
+   *
+   *  Does NOT touch the selection: the row's own item is already selected (it is
+   *  how the row is on screen), and re-selecting would fight a multi-selection.
+   *
+   *  @param {{text: string, title: string, commit: (text: string) => void, selfId: string|null}} target
+   *    `text`   the DISPLAY-form equation to seed the buffer with (marker included)
+   *    `title`  the modal header
+   *    `commit` the field's own commit, called with the edited text on Save
+   *    `selfId` the item `self.` resolves against, for highlighting + suggestions */
+  openEquationCode(target) {
+    // The resolver inputs the Monaco providers read. Published here because they
+    // are registered globally and never see the document — see equationCode.js's
+    // "THE ONE LIVE CONTEXT" for why one slot is sound.
+    setEquationCodeContext({
+      state: this.rawState(),
+      registry: this.registry,
+      selfId: target.selfId ?? null,
+      scriptExports: this.projectScriptExports(),
+    });
+    this.codeModal = {
+      scope: "equation",
+      language: EQUATION_LANGUAGE_ID,
+      title: target.title,
+      text: target.text,
+      commit: target.commit,
+    };
+  }
+
   /** Command. Opens the full-screen code editor on THE PROJECT SCRIPT
    *  (doc.meta.script) — the per-document JavaScript library whose exports every
    *  property equation can call (core/project_script.js). No-op when it is already
@@ -2792,6 +3037,10 @@ export class PowerRPApp {
     // awaited the bytes and put them on the target, so the seed is a field read
     // rather than a state read. That is the whole reason the open is async.
     if (t.scope === "asset") return t.source ?? "";
+    // An EQUATION's seed is not a state read at all: it is the DISPLAY-form text the
+    // field is already showing (slugs, snake_case), which the opener passed in. A raw
+    // read here would hand the editor `@a1b2.x` — a form no author can edit.
+    if (t.scope === "equation") return t.text;
     if (t.scope === "document") return this.doc.meta[t.property] ?? "";
     return this.rawState().items?.[t.itemId]?.[t.property] ?? "";
   }
@@ -2810,6 +3059,16 @@ export class PowerRPApp {
     // async, and with no undo unit to make (see the scope's note). Routed here so
     // CodeEditorModal's single `onsave` serves all three scopes.
     if (t.scope === "asset") return this.commitPluginAssetCode(value);
+    // AN EQUATION COMMITS THROUGH THE FIELD, not through a path write here: the
+    // display→stored conversion and the "ref-free expression becomes a number in the
+    // row's display units" rule are the field's, and duplicating either would be the
+    // mirror this file's scope note warns about. The field's commit makes its own
+    // single undo unit, exactly as it does for an inline edit.
+    if (t.scope === "equation") {
+      t.commit(value);
+      this.closeCodeModal();
+      return;
+    }
     if (t.scope !== "document") {
       this.setPreview([[["items", t.itemId, t.property], value]]);
       this.commitPreview();
@@ -2829,8 +3088,13 @@ export class PowerRPApp {
     if (!this.projectScriptError()) this.codeModal = null;
   }
 
-  /** Command. Closes the modal WITHOUT committing (Cancel / Esc / backdrop). */
+  /** Command. Closes the modal WITHOUT committing (Cancel / Esc / backdrop), and
+   *  retires the equation providers' resolver context. Clearing it is not tidiness:
+   *  a stale context would let a LATER editor colour and autocomplete against the
+   *  document as it was when some earlier equation modal opened. The providers read
+   *  null as "colour nothing, offer nothing" rather than guessing. */
   closeCodeModal() {
+    setEquationCodeContext(null);
     this.codeModal = null;
   }
 
@@ -3585,81 +3849,23 @@ export class PowerRPApp {
    * "a menu called ... demo patches that will insert a demo patch in a group that is
    * just a fully patched audio thing ... Demo patches are freaking awesome").
    *
-   * ── ONE UNDO UNIT, WHICH IS WHY THIS IS NOT addItem IN A LOOP ──────────────
-   * A patch is up to eleven widgets and a dozen wires. Built with addItem the user
-   * would need eleven Cmd+Z to take it back, and each intermediate state would be a
-   * partially-wired patch the audio mirror dutifully reflected into the engine —
-   * eleven rounds of guarded rewiring for something the author has not seen yet.
-   * So every item, every wire and the group are assembled into ONE document and
-   * committed once, the `insertTelescopicMagnifier` precedent.
-   *
-   * ── THE WIRES ARE WRITTEN WITH REAL IDS, NOT PATCHED AFTERWARDS ────────────
-   * `withNewItem` mints an id, so a blueprint's symbolic names ("filter", "out")
-   * are resolved to real ids BEFORE any state is written — core/audio_patches
-   * .buildPatchItems takes an `idFor` for exactly this. Writing placeholder wires
-   * and rewriting them afterwards would leave a window in which the document names
-   * items that do not exist, which is what the repair pipeline is entitled to strip.
+   * ── THE BODY MOVED, AND R7-18 IS WHY ───────────────────────────────────────
+   * This method used to hold sixty lines that `insertDemoPreset` then held again:
+   * mint the ids, assemble everything into ONE document, commit once so one Cmd+Z
+   * takes it back, select what arrived. A patch is items + WIRES and a preset is
+   * items + EQUATIONS — the two differ in their DATA and in nothing else that is
+   * hard — so the manifest's answer is one mechanism, and it is
+   * web/demoInsert.insertDemoTemplate. The patch's own part (its grid layout, its
+   * group, the origin that dodges existing audio nodes) is the template record
+   * there; this is the METHOD SEAM, kept because tests/audio_mirror_probe.js and
+   * anything else holding the live app calls `app.insertDemoPatch("whoosh")`.
    *
    * @param {string} patchId - a DEMO_PATCHES id
    */
   insertDemoPatch(patchId) {
-    const patch = DEMO_PATCHES.find((p) => p.id === patchId);
-    // A COMMAND THAT CANNOT ACT SAYS SO. The palette builds its entries from the
-    // same array, so this is unreachable from the UI — it guards a script or a typo.
-    if (!patch) throw new Error(`insertDemoPatch: no demo patch with id ${JSON.stringify(patchId)} (have: ${DEMO_PATCHES.map((p) => p.id).join(", ")})`);
-
-    // PLACED AT THE VIEW CENTRE, offset so the patch's BOX is centred rather than
-    // its top-left corner — a patch that appeared with its first node under the
-    // cursor and the rest off-screen would look like it had failed.
-    const centre = this.#viewCenter();
-    const probe = patchBounds(patch, this.registry, { x: 0, y: 0 });
-    // AND THEN PUSHED CLEAR OF WHAT IS ALREADY THERE. Measured: inserting two patches
-    // in a row landed both on the view centre, on top of each other — eleven nodes
-    // interleaved with seven, which reads as one incomprehensible tangle rather than
-    // as two patches. So the origin drops BELOW the lowest existing audio node.
-    // Only AUDIO nodes are avoided, deliberately: a patch is meant to be placed on
-    // top of the slide's ordinary content (that is what it is FOR — ambience under a
-    // figure), and dodging every rectangle would push it off the canvas.
-    const existing = this.nodes().filter((n) => n.plugin?.audioModule).map(rotatedBBoxAABB).filter(Boolean);
-    const below = existing.length ? Math.max(...existing.map((b) => b.y + b.h)) + PATCH_ROW : null;
-    const origin = {
-      x: centre.x - probe.w / 2,
-      y: below ?? centre.y - probe.h / 2,
-    };
-
-    // MINT EVERY ID FIRST, in ONE pass, so the wires can be written with real ids
-    // the first time. `newItemId` is the same generator withNewItem uses, called
-    // ahead of it — which is what lets buildPatchItems stay a pure function of
-    // (blueprint, registry, origin, idFor) with no placeholder rewriting afterwards.
-    const idFor = new Map(patch.nodes.map((n) => [n.id, uuid()]));
-    const { states, order } = buildPatchItems(patch, this.registry, origin, (name) => idFor.get(name));
-
-    let doc = this.doc;
-    const zs = this.nodes().map((n) => n.state.z ?? 0);
-    let z = (zs.length ? Math.max(...zs) : 0) + 1;
-    // The same write withNewItem makes, with an id we minted rather than one it
-    // chose — `keyframed(doc, slide, ["items", id], state)` IS creating an item, and
-    // slide 0's delta creating everything is the document model's own rule.
-    for (const id of order) doc = keyframed(doc, this.slideIndex, ["items", id], { ...states[id], active: true, z: z++ });
-
-    // THE GROUP. Its bbox is the patch's own bounds and its bind pose is that box,
-    // so it sits exactly at its bind pose the instant it is made and moves nothing
-    // until the user transforms it — the same contract groupSelection establishes.
-    const bounds = patchBounds(patch, this.registry, origin);
-    const members = [...order];
-    const groupState = {
-      ...this.registry.get("group").defaults,
-      name: patch.title,
-      x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h,
-      rotation: 0, scale: 1,
-      members,
-      bind: { x: bounds.x, y: bounds.y, rotation: 0, scale: 1 },
-      active: true,
-      z: z++,
-    };
-    const [withGroup, groupId] = withNewItem(doc, this.slideIndex, groupState);
-    this.commit(withNormalizedZ(withGroup));
-    this.selection = groupId;
+    // A COMMAND THAT CANNOT ACT SAYS SO — but the sentence belongs to the roster,
+    // not here, so the id is translated and insertDemoTemplate does the refusing.
+    insertDemoTemplate(this, `demo-patch-${patchId}`);
   }
 
   groupSelection() {
@@ -5170,10 +5376,20 @@ export class PowerRPApp {
    * cluster reorders as one; any other selection is just itself. The group's
    * members list is the derived-node membership map (present-on-this-slide
    * members only — a member absent from zPairs is simply not reassigned, per
-   * blockZToExtreme). Returns the block itemIds (selection first).
+   * blockZToExtreme). Returns the block itemIds (primary first).
+   *
+   * EVERY SELECTED ITEM IS IN THE BLOCK, not just the primary. This used to seed
+   * from `this.selection` alone, which meant Bring Forward / Put on Top over a
+   * five-widget selection moved ONE widget and reported nothing — the silent
+   * primary-only behaviour the user's 2026-08-06 ruling names ("when I click a
+   * tool, it does it to all selected objects"). Seeding from `selectedIds()` needs
+   * no new semantics: a block of several is ALREADY the shipped case (a selected
+   * group and its members), and reorderSelection's own comment states the rule it
+   * inherits — "Forward/backward on a block is still a move to the extreme — a
+   * group has no single z to bisect around". A lone selection is a block of one and
+   * still bisects between its neighbours, exactly as before.
    */
   #zOrderBlock() {
-    if (!this.selection) return [];
     const nodes = this.nodes();
     const byId = new Map(nodes.map((n) => [n.itemId, n]));
     const block = new Set();
@@ -5184,7 +5400,7 @@ export class PowerRPApp {
       if (n?.type === "group" && Array.isArray(n.state.members))
         for (const m of n.state.members) visit(m);
     };
-    visit(this.selection);
+    for (const id of this.selectedIds()) visit(id);
     return [...block];
   }
 

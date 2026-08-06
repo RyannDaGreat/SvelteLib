@@ -47,11 +47,13 @@
   import AssetField from "./AssetField.svelte";
   import ListField from "./ListField.svelte";
   import EquationSuggest from "./EquationSuggest.svelte";
+  import EquationCodeButton from "./EquationCodeButton.svelte";
   import KeyframeControls from "./KeyframeControls.svelte";
   import SectionKeyframeControls from "./SectionKeyframeControls.svelte";
   import ItemVariablesPanel from "./ItemVariablesPanel.svelte";
   import LabelDivider from "./LabelDivider.svelte";
   import GalleryPopup from "./GalleryPopup.svelte";
+  import MultiSelectModeToggle from "./MultiSelectModeToggle.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import {
@@ -65,7 +67,7 @@
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_AUTO, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
-  import { NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
+  import { EXEC_CAT, NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleExecTargets, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
   import { OUTPUTS_CAT, outputPropertyRows } from "../core/output_properties.js";
   import { MIXED_MARK, fanOutPairs, UNIVERSAL_CATEGORY } from "../core/multiselect.js";
   import { sectionKeyPaths, sectionBubbleApplies } from "../core/section_keyframes.js";
@@ -382,6 +384,11 @@
     // wired to is how an author reads a patch, so it sits directly under Transform
     // and above the module's own knobs.
     inputs: "Inputs",
+    // WHAT THIS NODE FIRES (core/nodeflow.execOutputRows) — the control-flow half of
+    // a patch, directly after the value half. Named "Events" rather than "Exec"
+    // because the author's word for it is the thing that happens, not the pin's
+    // type; the pin's type is what the bead's colour says.
+    [EXEC_CAT]: "Events",
     // WHAT THE WIDGET PUBLISHES (core/output_properties.js) — the read-only mirror
     // of Inputs, directly beneath it, because a patch reads in that direction. Every
     // row here is a REPORT: computed, never stored, so no editor, no `=` and no
@@ -407,7 +414,7 @@
   // UNIVERSAL LEADS, for the reason the single-selection panel renders its
   // Universal section first: these are the properties every widget has, and a
   // plugin's sections are what it adds to them.
-  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "inputs", OUTPUTS_CAT, "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
+  const CATEGORY_ORDER = [UNIVERSAL_CATEGORY, "transform", "inputs", OUTPUTS_CAT, EXEC_CAT, "fillMaterial", "strokeMaterial", "formatting", "effects", "text", "arrow", "lens", "blur", "custom", "other"];
 
   /**
    * Pure function. The display title for the CUSTOM_CATEGORY bucket — a widget's
@@ -1411,6 +1418,25 @@
     eqOwnerId = null;
     eqFocusKey = null;
     eqInvalid = false;
+  }
+
+  /** Command. Commits an equation edited in the `{}` CODE MODAL through the row's
+   *  OWN commit path, so the modal has no second copy of the display→stored
+   *  conversion, the empty-draft rule or the loud-reject rule.
+   *
+   *  It seeds `eqDraft`/`eqPaths` first because commitEquation reads them from
+   *  module state, and those are normally seeded by onEqFocus — which never ran
+   *  here: opening the modal is not a focus session on the input. Without this the
+   *  Save would have committed the LAST focused row's paths, which is the class of
+   *  bug that writes a value onto the wrong property with no error.
+   *
+   *  @param {object[]} paths Every selected item's path for this row (multi-select fans out).
+   *  @param {string} edited The DISPLAY-form text the editor returned. */
+  function commitEquationFromCode(paths, edited) {
+    eqDraft = edited;
+    eqPaths = paths;
+    eqPath = paths[0];
+    commitEquation();
   }
 
   /** Command. Keyboard for the universal `=` row's equation input — the shared
@@ -2618,16 +2644,33 @@
          already show. nodeInputLabel used to derive its own name and fell through
          to `state.type`, so two keyboards both read "node_keyboard › pitch": the
          user's "a bunch of things that aren't connected to any one specific node". -->
+    <!-- AN EXEC OUTPUT ROW IS THE SAME CONTROL, POINTED THE OTHER WAY (R7-8). Both
+         rows edit a {item, port} reference; what differs is which side the wire is
+         stored on and therefore which list of pins is offerable. `row.execOut` is
+         the row's own declaration of that (core/nodeflow.execOutputRows), so the
+         branch is one ternary rather than a second SearchableDropdown with the same
+         props — and `compatibleExecTargets` routes through connectionRefusal for
+         the identical reason compatibleSources does: the picker and the wire drag
+         must not get two chances to disagree about what is connectable.
+         The disconnect entry says something different because the two rows mean
+         different things by empty: an unwired INPUT reads its type's zero, while an
+         unwired exec OUT means the chain simply ends there. -->
     <SearchableDropdown
       rankFn={appRankItems}
       minItemsForSearch={ALWAYS_SEARCHABLE}
       items={[
-        { value: "", label: "— not connected —" },
-        ...compatibleSources(app.state().items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
-          .map((o) => ({
-            value: nodeRefOptionValue({ item: o.item, port: o.port }),
-            label: `${nodeInputLabel(app.displayName(o.item), { item: o.item, port: o.port })}${o.note ? ` (${o.note})` : ""}`,
-          })),
+        { value: "", label: row.execOut ? "— nothing —" : "— not connected —" },
+        ...(row.execOut
+          ? compatibleExecTargets(app.state().items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
+            .map((o) => ({
+              value: nodeRefOptionValue({ item: o.item, port: o.port }),
+              label: nodeInputLabel(app.displayName(o.item), { item: o.item, port: o.port }),
+            }))
+          : compatibleSources(app.state().items ?? {}, app.registry, { item: pickedItemId, port: row.key.split(".")[1] })
+            .map((o) => ({
+              value: nodeRefOptionValue({ item: o.item, port: o.port }),
+              label: `${nodeInputLabel(app.displayName(o.item), { item: o.item, port: o.port })}${o.note ? ` (${o.note})` : ""}`,
+            }))),
       ]}
       value={nodeRefOptionValue(valueAt(state, row.key))}
       onchange={(v) => oncommit(row.key, NODE_INPUT_ROW_KIND, v)}
@@ -2896,6 +2939,18 @@
       />
     {/if}
   </span>
+  <!-- THE `{}` MULTILINE EDITOR — the SAME component NumericField and AngleField
+       use, so "equations should ALWAYS have that option" is satisfied structurally
+       rather than by three buttons kept in step. `text` is the row's DISPLAY form
+       (the same value the input shows), and Save routes back through this row's own
+       commit — see commitEquationFromCode for why the paths are re-seeded. -->
+  <EquationCodeButton
+    {app}
+    label={row.label}
+    selfId={pickedItemId}
+    {text}
+    oncommit={(edited) => commitEquationFromCode(paths, edited)}
+  />
 {/snippet}
 
 
@@ -3049,30 +3104,22 @@
            rows only some of them have — those still edit, keyframe, show "…" and
            unify exactly the same way ("same behaviour for both"); they simply
            apply to the items that declare them, which the row's own count says. -->
-      <!-- THE ICONS ARE VENN DIAGRAMS, and they are the SAME diagram with a
-           different region filled — mdi's own `set-*` family, so the pair reads as
-           one picture answering "which region of the two sets?" rather than two
-           unrelated glyphs. mdi:set-center fills the LENS (what both share);
-           mdi:set-all fills BOTH circles (everything either has). That is exactly
-           the distinction the toggle makes, which is why an icon is worth having
-           here at all. The words stay: "intersection"/"union" is set vocabulary
-           the user reached for, but an icon-only control for it would be a
-           guessing game for anyone who did not name it themselves. -->
-      <div class="multi-mode" role="group" aria-label="Which properties to show">
-        {#each [["intersection", "Shared", "mdi:set-center", "Only properties EVERY selected item has, so a change here reaches all of them. The safe default."], ["union", "All", "mdi:set-all", "Every property ANY selected item has. A property only some of them have still edits, keyframes and unifies the same way — it just applies to the ones that have it."]] as [mode, label, icon, tip] (mode)}
-          <Tooltip text={tip}>
-            <button
-              class="btn"
-              class:active={multiPanel.mode === mode}
-              aria-pressed={multiPanel.mode === mode}
-              onclick={() => app.setMultiSelectMode(mode)}
-            >
-              <iconify-icon {icon} width="14" height="14"></iconify-icon>
-              {label}
-            </button>
-          </Tooltip>
-        {/each}
-      </div>
+      <!-- THE SAME CONTROL THE TOOLS PANE SHOWS, and the same state behind both
+           (2026-08-06: "just like properties, I sholud be able to select
+           intersection OR union of available tools"). The words, the Venn glyphs
+           and the toggling all live in web/MultiSelectModeToggle.svelte over
+           core/multiselect.js MULTISELECT_MODE_CHOICES, so the two panes cannot
+           drift on any of them. Only the TIPS are this pane's own: a property
+           unifies and keyframes where a tool RUNS, so there is no one sentence to
+           share. -->
+      <MultiSelectModeToggle
+        {app}
+        label="Which properties to show"
+        tips={{
+          intersection: "Only properties EVERY selected item has, so a change here reaches all of them. The safe default.",
+          union: "Every property ANY selected item has. A property only some of them have still edits, keyframes and unifies the same way — it just applies to the ones that have it.",
+        }}
+      />
       <!-- WHAT IS NOT BEING EDITED, said out loud. An item that does not exist on
            this slide has no value to compare and must not be keyframed (that would
            manufacture a typeless item), so core drops it — and the panel reports

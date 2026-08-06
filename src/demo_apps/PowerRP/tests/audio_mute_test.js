@@ -148,6 +148,26 @@ test("`disableAudio` is GONE — the self-defeating suspend must not come back",
   if (mirror) assert.equal(typeof mirror.disableAudio, "undefined");
 });
 
+test("MUTING DOES NOT FREEZE THE ANALYSERS — they tap upstream of the mute", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../web/audioMirror.svelte.js"), "utf8");
+  const body = /function analysisWanted\(\)\s*\{([^}]*)\}/.exec(src);
+  assert.ok(body, "analysisWanted is the push gate and must exist");
+  // A `!muted` term here froze the spectrogram whenever the session muted. The
+  // analysers tap module INPUTS, upstream of the master mute, so the signal they
+  // measure genuinely exists — a frozen meter would read silence while the
+  // oscillator runs, which is the picture reporting something FALSE about the
+  // patch. Mute is about SPEAKERS, not about whether the author is looking.
+  assert.ok(!/muted/.test(body[1]),
+    `the push gate must not consider the mute (got: ${body[1].trim()}) — a muted deck still wakes; a STOPPED one does not`);
+  // And it must keep asking the ENGINE, not the mirror's gesture-bookkeeping flag:
+  // measured in a real page, `status` reads "blocked" while the context runs.
+  assert.ok(/isRunning\(\)/.test(body[1]), "the gate is engine.isRunning(), the measurement");
+  assert.ok(!/audioState/.test(body[1]), "and never audioState.status, which records a harvested gesture rather than engine health");
+});
+
 console.log("\n§4 SESSION STATE — the mute is in no document and no share link");
 
 test("nothing in the document model knows about muting", async () => {

@@ -267,6 +267,32 @@ check("A CONTROL NEVER HAS AN AUTHORED x — every face is derived from the box"
   }
 });
 
+check("A FACE IS NON-DEGENERATE AND CLEARS THE BANDS ABOVE IT — containment alone is a hole", () => {
+  // ── WHY THIS EXISTS: THE SWEEP ABOVE CAN BE SATISFIED BY COLLAPSING ──────────
+  // Found 2026-08-06, on plugins/node_keyboard.js — the one widget that was still
+  // outside the single layout path. It hand-placed its face at NODE_HEADER_H + 8 = 32
+  // while its card's `nodeBodyTop` is 70 (two output ports), so **the keys were painted
+  // straight through both port rows and their labels, at every size, on a widget nobody
+  // had resized**. The containment sweep PASSED it, because a `Math.max(0, …)` floored
+  // the face height at 0 and a zero-height rect is trivially inside the card.
+  //
+  // So "inside the card" is NECESSARY AND NOT SUFFICIENT: the cheapest way to satisfy it
+  // is to collapse, which is what a defensive `Math.max(0, …)` does by accident. Two
+  // further assertions close that: the face must have real extent at the default size,
+  // and it must start at or below `nodeBodyTop` so it cannot overlap the header, the
+  // port rows or the readout.
+  for (const plugin of NODES) {
+    if (!plugin.controlFace) continue;
+    const s = { ...plugin.defaults };
+    const face = plugin.controlFace(s);
+    assert.ok(face.h > 0 && face.w > 0,
+      `${plugin.type}'s face is DEGENERATE at its default size (${face.w}×${face.h}) — a collapsed face passes containment while drawing nothing, or draws outside a card that claims to hold it`);
+    const top = nodeBodyTop(plugin, s);
+    assert.ok(face.y >= top - 0.5,
+      `${plugin.type}'s face starts at y=${face.y} but the card's content begins at ${top} — it would paint through the header/ports/readout above it (the node_keyboard defect)`);
+  }
+});
+
 check("THE ONE LAYOUT PATH IS UNBYPASSABLE — no control node may hand-place its face", () => {
   // Bespoke Synth is the measured cautionary tale: an excellent auto-layout macro
   // that only 83 of ~265 modules use, because 191 headers override the sizing

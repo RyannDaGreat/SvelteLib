@@ -11,7 +11,10 @@
  *     REAL camelCase-keyed property (startWidth);
  *   - the autocomplete dropdown, triggered by typing "self.", lists the
  *     item's ACTUAL numeric properties in canonical snake_case, and
- *     accepting one commits a working equation.
+ *     accepting one commits a working equation;
+ *   - a BROKEN equation's (!) badge is REACHABLE BY A REAL CURSOR and its
+ *     Tooltip carries the evaluator's own message verbatim (the discoverability
+ *     of the ERROR, which is the half the user found missing).
  * Fails loudly (nonzero exit) on any assertion failure or unexpected page
  * console error. Run from SvelteLib root:
  *   node src/demo_apps/PowerRP/tests/equation_discoverability_probe.js
@@ -46,17 +49,23 @@ const ok = (cond, label) => { checks.push([!!cond, label]); if (!cond) errors.pu
 const IGNORE_BOOT = [/PowerRP repair:/, /was missing font/, /duration.*transition|transition.*duration/i, /no.*adapter|adapters/i];
 const isBootNoise = (s) => IGNORE_BOOT.some((re) => re.test(s));
 
-// EXPECTED mid-typing evaluation noise (NOT a bug): the autocomplete check
-// exercises page.keyboard.type() char-by-char to test live re-ranking, and
-// every intermediate fragment ("self.t", "self.ti", …) is a syntactically
-// valid-looking reference to a property that doesn't exist YET — exactly the
-// case evaluateState's OWN "has no property" console.error (core/report.js
-// reportOnce) is designed to report (the .eq-badge-error affordance exists
-// precisely to surface this to the user WHILE typing). This is the SAME
-// class of error the "camelCase is rejected" check deliberately provokes
-// too. Ignored ONLY here, narrowly, by message shape — anything else still
-// fails the probe.
-const isExpectedMidTypeNoise = (s) => /PowerRP expression error at items\..*(has no property|is not a numeric property)/.test(s);
+// EXPECTED evaluation noise (NOT a bug) from the errors this probe DELIBERATELY
+// provokes. Two sources, both intentional:
+//   1. the autocomplete check types char-by-char to test live re-ranking, so
+//      every intermediate fragment ("self.t", "self.ti", …) is a syntactically
+//      valid-looking reference to a property that doesn't exist YET — exactly
+//      the case evaluateState's OWN "has no property" console.error
+//      (core/report.js reportOnce) is designed to report. The "camelCase is
+//      rejected" check provokes the same class.
+//   2. the ERROR-TOOLTIP check stores a deliberately broken equation, whose
+//      "Unknown variable" report IS the sentence under test.
+// The .eq-badge-error affordance exists precisely to surface all of these to the
+// user, which is what makes them expected here rather than failures. Named
+// `isExpectedEvalNoise` after evaluate_affordance_probe.js, which already spells
+// this same concept (and the same "Unknown variable" arm) that way — the two
+// probes provoke the same errors for the same reason. Narrow by message shape:
+// anything else still fails the probe.
+const isExpectedEvalNoise = (s) => /PowerRP expression error at items\..*(has no property|is not a numeric property|Unknown variable)/.test(s);
 
 const expectedNoise = [];
 try {
@@ -66,10 +75,10 @@ try {
   page.on("console", (m) => {
     if (m.type() !== "error") return;
     const text = m.text();
-    // Expected mid-typing evaluation noise routes to its OWN bucket (still
+    // Deliberately provoked evaluation noise routes to its OWN bucket (still
     // visible in the final report) instead of failing the probe — see
-    // isExpectedMidTypeNoise's comment. Anything else is a real failure.
-    if (isExpectedMidTypeNoise(text)) expectedNoise.push(text);
+    // isExpectedEvalNoise's comment. Anything else is a real failure.
+    if (isExpectedEvalNoise(text)) expectedNoise.push(text);
     else errors.push(`console.error: ${text}`);
   });
   await page.evaluateOnNewDocument((json) => localStorage.setItem("powerrp.autosave", json), demoJson);
@@ -321,6 +330,56 @@ try {
   const revertedValue = await page.evaluate((id) => window.__powerrp_app.doc.slides[0].delta.items[id].endWidth, arrowId);
   ok(revertedValue === "self.startWidth + 2", `Escape reverted WITHOUT committing the rejected camelCase draft; end_width still ${JSON.stringify(revertedValue)}`);
 
+  // ── THE (!) BADGE IS HOVERABLE, AND SAYS WHAT THE EVALUATOR SAID ───────────
+  // User, 2026-08-06: "The (!) in the equations is never informative. ON hover it
+  // should show the full error!" It was not informative because it was not
+  // REACHABLE: `.eq-input` carries `z-index: 1` (raised to clear the syntax
+  // highlight overlay) while the badge was `position:absolute; z-index:auto`, so
+  // the input hit-tested above it at every point inside the badge and the Tooltip
+  // anchor never got pointerenter. The badge stayed VISIBLE throughout (the input
+  // above it is transparent), which is why the defect read as "uninformative"
+  // rather than "missing".
+  //
+  // A REAL CURSOR IS THE WHOLE POINT: dispatching a synthetic pointerenter at the
+  // anchor would have passed against the broken build, since the anchor's handler
+  // was always fine. Only page.mouse.move goes through hit testing, which is the
+  // thing that was wrong. Contract, not geometry: the tip's text is compared to
+  // `app.exprErrorAt` rather than to a literal, so the check cannot drift from the
+  // evaluator's own error vocabulary — if the message is reworded the probe still
+  // asserts the badge shows THAT message.
+  const brokenPath = ["items", arrowId, "endWidth"];
+  await page.evaluate((p) => {
+    const app = window.__powerrp_app;
+    app.setPreview([[p, "= nope"]]);
+    app.commitPreview();
+  }, brokenPath);
+  await new Promise((r) => setTimeout(r, 250));
+  const evaluatorSays = await page.evaluate((p) => window.__powerrp_app.exprErrorAt(p), brokenPath);
+  ok(evaluatorSays, `the evaluator reports an error for "= nope"; got ${JSON.stringify(evaluatorSays)}`);
+
+  const badgeCenter = await page.evaluate((expr) => {
+    const badge = eval(expr)?.querySelector(".eq-badge-error");
+    if (!badge) return null;
+    const r = badge.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }, findRow("End width"));
+  ok(badgeCenter, `the broken equation row renders the (!) badge; got ${JSON.stringify(badgeCenter)}`);
+  // Park the cursor away first: a tip left open by an earlier hover would read as
+  // a pass here regardless of whether this badge is reachable.
+  await page.mouse.move(5, 5);
+  await new Promise((r) => setTimeout(r, 150));
+  ok(!(await page.evaluate(() => !!document.querySelector(".tt-tip"))), "no tooltip is open before the hover");
+  await page.mouse.move(badgeCenter.x, badgeCenter.y, { steps: 6 });
+  await new Promise((r) => setTimeout(r, 300));
+  const hovered = await page.evaluate((x, y) => {
+    const hit = document.elementFromPoint(x, y);
+    return { hit: hit?.tagName.toLowerCase(), tip: document.querySelector(".tt-tip")?.textContent ?? null };
+  }, badgeCenter.x, badgeCenter.y);
+  ok(hovered.hit === "iconify-icon",
+    `the pointer reaches the badge's icon at the badge's own centre, not the input above it; got ${JSON.stringify(hovered.hit)}`);
+  ok(hovered.tip === evaluatorSays,
+    `hovering (!) shows the evaluator's FULL message; wanted ${JSON.stringify(evaluatorSays)}, got ${JSON.stringify(hovered.tip)}`);
+
   // ── Report ─────────────────────────────────────────────────────────────────
   if (errors.length) {
     console.error("PROBE ERRORS:\n" + errors.join("\n"));
@@ -328,7 +387,7 @@ try {
     process.exit(1);
   }
   console.log(`Equation discoverability probe passed: ${checks.length}/${checks.length} checks, zero UNEXPECTED console errors ` +
-    `(${expectedNoise.length} expected mid-typing evaluation errors, all matched the documented "has no property" shape).`);
+    `(${expectedNoise.length} deliberately provoked evaluation errors, all matched isExpectedEvalNoise's documented shapes).`);
   for (const [, label] of checks) console.log(`  ok  ${label}`);
 } finally {
   await browser.close();

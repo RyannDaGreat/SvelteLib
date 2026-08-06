@@ -549,3 +549,54 @@ is disqualifying. R7-9 introduces exactly that, with the user's eyes open
 therefore real and must be BOUNDED, not discovered later: a document containing
 simulated state cannot be frame-range sharded, and the render job must detect that
 and fall back to sequential rather than silently emit a wrong video.
+
+---
+
+## 2026-08-06 — A COMMIT OBJECT WENT MISSING UNDER TWELVE CONCURRENT COMMITTERS
+
+**Symptom, and it is not the one you would expect.** Every test passed and every file
+was present, but `git log` died:
+
+    error: Could not read 65faebbf70f971a088ec9950d1d3718f8782addb
+    fatal: Failed to traverse parents of commit 28260ed68d71bd980ff344950f32e9f47d32e38d
+
+So `git log`, `git blame` and `git log -S` were ALL unusable — which matters more than it
+sounds, because `.frenzy/round7/BRIEF.md` tells every agent to settle unnamed conventions
+by researching precedent with exactly those three commands. The tooling the stickler rule
+depends on was broken for hours and the working tree looked perfect the whole time.
+
+**Found by VC-5**, which hit it trying to attribute a build break and reported "the
+repository has an unreadable object reachable from history" rather than working around it.
+It could not name the author and **said so instead of guessing** — the right call.
+
+**Diagnosis.** `28260ed6` (a patch agent's Incanta commit) named a parent whose object was
+never in the store. The reflog shows the shape exactly: entries run `@{1}` = 28260ed6 then
+jump to `@{3}` — `@{2}` WAS the lost commit, sitting between `3acbdb83` and the Incanta
+commit. So a ref update landed for a commit whose object was lost, and the next commit
+built on it.
+
+**Cause, as far as it can be established: git's AUTO-GC racing a commit.** Around a dozen
+agents were committing to one worktree within the same minutes. Auto-gc triggers on loose
+object count, and a `gc --prune` that runs while another process has written an object but
+not yet referenced it can collect it. Nothing else in the session touched git plumbing, no
+agent ran `gc`, `prune`, `reset` or `stash`, and the branch rules forbid all of those.
+
+**Repair — non-destructive, and nothing was lost.**
+
+    git replace --graft 28260ed6 3acbdb83
+
+Traversal restored: 1379 commits reachable, `git log -- <path>` works again. **No file
+content was lost.** The lost commit's TREE survives inside every commit after it, because
+28260ed6 was built on top of it; what is gone is only that one commit's own message and its
+standalone diff. Its changes still appear, folded into 28260ed6's diff against 3acbdb83.
+The graft is reversible with `git replace -d 28260ed6`.
+
+**Prevention, applied:** `git config gc.auto 0` in this worktree. Turn it back on when the
+swarm is done and run one explicit `git gc` then.
+
+**THE LESSON THAT GENERALISES.** A dozen agents committing to one shared worktree is a
+concurrency regime git is not being asked to handle every day, and its failure mode here
+was SILENT and REMOTE from the cause: no commit failed, no test failed, no file changed,
+and the damage surfaced only when somebody tried to read history. **Before running a large
+swarm against one worktree again, disable auto-gc FIRST** — and treat "git log suddenly
+does not work" as a corruption symptom rather than as a bad command.

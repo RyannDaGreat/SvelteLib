@@ -49,6 +49,8 @@
 // two different pieces of code. audio_nodes.js does not import this file, so there
 // is no cycle.
 import { audioDisplayTitle } from "./audio_nodes.js";
+// The ported patch sets (R7-17-SEL). Data only; see that file's PATCH-SET CONTRACT.
+import { PORT_PATCH_SETS } from "./audio_patch_sets.js";
 
 /** Horizontal and vertical spacing of the patch grid, in world units. The column
  *  pitch leaves room for a default-width node (150) plus a wire long enough to read
@@ -66,9 +68,47 @@ export const PATCH_ROW = 130;
  * @example patchLayout({col: 0, row: 0}, {x: 100, y: 100}) // {x: 100, y: 100}
  * @example patchLayout({col: 2, row: 1}, {x: 0, y: 0}) // {x: 420, y: 130}
  */
-export function patchLayout(node, origin) {
-  return { x: origin.x + node.col * PATCH_COL, y: origin.y + node.row * PATCH_ROW };
+export function patchLayout(node, origin, colPitch = PATCH_COL) {
+  return { x: origin.x + node.col * colPitch, y: origin.y + node.row * PATCH_ROW };
 }
+
+/**
+ * Pure function. The column pitch a PARTICULAR patch needs — the widest card in it plus
+ * the gap that makes a wire read as a curve rather than a butt joint.
+ *
+ * ── WHY THE PITCH IS NO LONGER A CONSTANT ───────────────────────────────────
+ * `PATCH_COL` was 210 and every patchable card was 150-175 wide, so one number worked.
+ * The ported blocks broke that by being HONESTLY wider: Marbles has 9 inputs and 7
+ * outputs, Supercell has 16 inputs, and Bogaudio's PEQ carries 33 dials at w=420 — their
+ * PORT COLUMNS ALONE are taller and wider than the whole mixer that 210 was sized
+ * against. Rings at 270 is what made the law red.
+ *
+ * The two ways out were shrinking real modules until they clip, or spreading EVERY patch
+ * to fit the widest node in the library (420). Both are wrong for the same reason: they
+ * make one patch's geometry a function of another patch's contents. A pitch derived per
+ * patch keeps a narrow patch tight and lets a wide one breathe, and the law
+ * `tests/audio_patches_test.js` enforces — no card may overlap the next column — becomes
+ * true by construction instead of by everyone remembering a number.
+ *
+ * @param {object} patch - a blueprint
+ * @param {object} registry - the plugin registry
+ * @returns {number} world units between columns
+ *
+ * @example // patchColPitch(SPACEY_PAD_DRONE, registry) // 210 — nothing in it is wide
+ * @example // patchColPitch(VCV_GRANULAR_AMBIENT, registry) // 330 — Rings is 270
+ */
+export function patchColPitch(patch, registry) {
+  let widest = 0;
+  for (const node of patch.nodes) {
+    const w = Number.isFinite(node.w) ? node.w : (registry.get(node.type).defaults.w ?? 0);
+    if (w > widest) widest = w;
+  }
+  return Math.max(PATCH_COL, widest + PATCH_COL_GAP);
+}
+
+/** The clear space between the widest card and the next column. Same reason PATCH_COL
+ *  carried it: a wire needs room to read as a curve rather than a butt joint. */
+export const PATCH_COL_GAP = 60;
 
 /** The analysis tail every patch ends with, at a given column. Written once because
  *  four patches share it and a divergence would be meaningless variety. */
@@ -474,16 +514,18 @@ export const BUTTON_DING = {
  * USER, 2026-08-03 (verbatim): "All audio related widgets should be prefixed with
  * "Audio" like "Audio Delay" etc. Including  patches."
  *
- * Applied HERE, at the one export both consumers read (App.svelte's Demo Patches
- * menu and app.svelte.insertDemoPatch, which names the inserted group after it),
- * rather than in seven title literals a new patch could forget. `audioDisplayTitle`
- * is the SAME function the widgets use, so a patch and a widget cannot end up
- * prefixed differently — and it is idempotent, so a blueprint that spells the
- * prefix itself gets one.
+ * Applied HERE, at the one export every consumer reads — since R7-18 that is
+ * web/demoInsert.js, which turns each record into a TEMPLATE: the "Add Demo Audio
+ * Patch" submenu's children are generated from it, and the group a patch arrives in
+ * is named after it. Applying the prefix once here rather than in seven title
+ * literals is what a new patch cannot forget. `audioDisplayTitle` is the SAME
+ * function the widgets use, so a patch and a widget cannot end up prefixed
+ * differently — and it is idempotent, so a blueprint that spells the prefix itself
+ * gets one.
  *
- * `id` IS UNTOUCHED, deliberately: insertDemoPatch looks patches up by id and the
- * command registry builds entries from it, so ids are an API and titles are
- * display. Renaming the display cannot break a saved deck or a palette binding.
+ * `id` IS UNTOUCHED, deliberately: a patch's command id is `demo-patch-<id>` and the
+ * template is looked up by it, so ids are an API and titles are display. Renaming
+ * the display cannot break a saved deck or a palette binding.
  *
  * THE PREFIX IS WRITTEN ONTO THE BLUEPRINTS IN PLACE rather than onto copies. A
  * `.map()` here would hand out NEW objects, and both the exported blueprint
@@ -492,11 +534,29 @@ export const BUTTON_DING = {
  * would silently make those two things different objects with the same id, which
  * is precisely the kind of split this workstream is removing elsewhere.
  */
-for (const patch of [SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, WHOOSH, BEACH, PLAYABLE_KEYS, BUTTON_DING]) {
+export const DEMO_PATCHES = [
+  // THE HOUSE PATCHES — authored here, against our own module vocabulary.
+  SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, WHOOSH, BEACH, PLAYABLE_KEYS, BUTTON_DING,
+  // THE PORTED PATCHES — R7-17-SEL's rebuilt VCV Rack and Axoloti graphs, one array per
+  // set file. See core/audio_patch_sets.js for the contract and for why they are not
+  // written here.
+  ...PORT_PATCH_SETS,
+];
+
+/**
+ * THE "Audio " PREFIX IS APPLIED OVER THE ROSTER, NOT OVER A SECOND HAND-WRITTEN LIST.
+ *
+ * It used to iterate its own copy of the seven house patches, spelled out beside the
+ * identical list in the export below. That is the hand-maintained-list defect this round
+ * has now found five times (the engine law's five-file roster, the demo-widget list, the
+ * project script's keyword mirror, IMPLEMENTATION, and the init gate): a patch added to
+ * one list and not the other ships UNPREFIXED, and nothing says so. Deriving it from
+ * `DEMO_PATCHES` makes the two impossible to disagree — and it is what makes a ported set
+ * inherit the prefix for free.
+ */
+for (const patch of DEMO_PATCHES) {
   patch.title = audioDisplayTitle(patch.title);
 }
-
-export const DEMO_PATCHES = [SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, WHOOSH, BEACH, PLAYABLE_KEYS, BUTTON_DING];
 
 /**
  * Pure function. A patch's items as `{id → state}` plus its wires resolved to real
@@ -517,6 +577,7 @@ export const DEMO_PATCHES = [SPACEY_PAD_DRONE, SEQUENCED_DINGS, GAMELAN_BELLS, W
 export function buildPatchItems(patch, registry, origin, idFor) {
   const states = {};
   const order = [];
+  const pitch = patchColPitch(patch, registry);
   for (const node of patch.nodes) {
     const plugin = registry.get(node.type);
     const at = patchLayout(node, origin);
@@ -529,13 +590,27 @@ export function buildPatchItems(patch, registry, origin, idFor) {
     // state object takes any key, so the node would silently insert at its
     // defaults and the patch would be subtly wrong with nothing to see.
     //
-    // A widget SAYS which it is by declaring `audioModule`, so this asks rather
-    // than assumes. Pinned by tests/audio_patches_test.js, which asserts every
-    // knob a blueprint names is a key the target plugin's own defaults carry.
-    const prefixed = !!plugin.audioModule;
+    // The first fix asked `!!plugin.audioModule` — "does it bind an engine module?" —
+    // which was a PROXY for "are its leaves prefixed?", and the two came apart the day
+    // R7-17-SEL's PLACEHOLDER nodes arrived. A placeholder is built by `audioNodePlugin`
+    // (so its defaults ARE `audioPosition`, `audioSize`, …) and deliberately declares NO
+    // module (so the audio mirror skips it) — under the proxy its knobs were written
+    // UNPREFIXED, landing on keys the widget does not have. Exactly the silent failure
+    // the paragraph above describes, reintroduced by the test for it passing.
+    //
+    // SO ASK THE DEFAULTS, WHICH ARE THE THING THE ANSWER IS ABOUT. tests/
+    // audio_patches_test.js already says this is the right question — "asserts the
+    // OUTPUT rather than the rule … does not care how the key was derived" — and a
+    // derivation that reads the same source the assertion does cannot disagree with it.
+    // Loud when neither spelling exists: a knob naming nothing is the bug, not a case.
     const knobs = {};
-    for (const [key, value] of Object.entries(node.knobs ?? {}))
-      knobs[prefixed ? "audio" + key.charAt(0).toUpperCase() + key.slice(1) : key] = value;
+    for (const [key, value] of Object.entries(node.knobs ?? {})) {
+      const prefixed = "audio" + key.charAt(0).toUpperCase() + key.slice(1);
+      const target = prefixed in plugin.defaults ? prefixed : key;
+      if (!(target in plugin.defaults))
+        throw new Error(`demo patch "${patch.id}": node "${node.id}" (${node.type}) has no knob "${key}" — neither "${key}" nor "${prefixed}" is one of its defaults`);
+      knobs[target] = value;
+    }
     // ── A BLUEPRINT MAY SET A NODE'S SIZE, AND THE KEYBOARD IS WHY (BV) ──────
     // Every other patchable widget's default `w` is under PATCH_COL, so column
     // pitch alone laid patches out correctly and nothing needed this. The
@@ -581,9 +656,10 @@ export function buildPatchItems(patch, registry, origin, idFor) {
  */
 export function patchBounds(patch, registry, origin) {
   let maxX = origin.x, maxY = origin.y;
+  const pitch = patchColPitch(patch, registry);
   for (const node of patch.nodes) {
     const plugin = registry.get(node.type);
-    const at = patchLayout(node, origin);
+    const at = patchLayout(node, origin, pitch);
     maxX = Math.max(maxX, at.x + (plugin.defaults.w ?? 0));
     maxY = Math.max(maxY, at.y + (plugin.defaults.h ?? 0));
   }

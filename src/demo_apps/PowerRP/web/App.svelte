@@ -18,7 +18,7 @@
   import { isStatic } from "./storageMode.js";
   import { offlineRequirement } from "./connectivity.js";
   import { searchIconifyCells } from "../plugins/iconify.js"; // the offline probe's hook (see __powerrp_searchIconify)
-  import { commandUnavailableReason } from "../core/commands.js";
+  import { commandUnavailableReason, PLURAL_SCOPE } from "../core/commands.js";
   // The quick-Save gate and its REASON are ONE pure function (draftKeys.js) so
   // they cannot drift — see quickSaveBlocker, which answers both.
   import { quickSaveBlocker, saveCommandFor } from "./draftKeys.js";
@@ -57,6 +57,7 @@
   import { withSimulationFrozen } from "../core/simulation_history.js"; // documentState is a HYPOTHETICAL — see it
   import { withPointerFrozen } from "../core/pointer_input.js"; // …and it is hypothetical on BOTH ambient axes
   import { AUDIO_MUTE_COMMAND } from "./audioMirror.svelte.js"; // registered in coreCommands — see it
+  import { EDITOR_ANIMATION_COMMAND } from "./editorAnimation.svelte.js"; // likewise — the author's opt-in clock
   import { cameraRectAt } from "./cameraFrame.js";
   import { renderCameraFrame } from "./gpuService.js";
   import {
@@ -91,10 +92,14 @@
   // creation's multi-step placement — contributes its own registry entries.
   import { activations, canvasModes, handlerFor } from "./widget_handlers.js";
   import { unionRect, alignedPosition, mirroredPosition, flippedBox } from "../core/geometry.js";
-  // DEMO PATCHES (NF-BIND): the blueprint array the palette's "Demo Patch: …"
-  // entries are generated from, so a new patch is one record and its menu entry
-  // follows. app.insertDemoPatch does the insertion.
-  import { DEMO_PATCHES } from "../core/audio_patches.js";
+  // THE DEMO SUBMENUS (manifest R7-18). ONE table of sections in web/demoInsert.js
+  // decides what is grouped where, and the AUDIO PATCH and PRESET sections generate
+  // their children from their blueprint rosters (core/audio_patches.js,
+  // plugins/demo_presets.js) — so authoring patch #51 is one record there and its
+  // menu entry follows. Only the WIDGET section's children are written out below,
+  // because arming a crosshair is a different verb from stamping a template; that
+  // file's header says so, and tests/demo_insert_test.js gates the drift RED.
+  import { demoInsertMenus } from "./demoInsert.js";
   import { reportAction } from "../core/report.js";
   // The camera-bind pair's sentences live beside `frameBindable`, the predicate
   // they explain, so the Tools pane's pool row and these command entries show the
@@ -795,6 +800,26 @@
   // that broke saved decks would be a data-loss bug wearing a safety label.
   const REQUIRES_MAP_UNQUARANTINED = "the map widget to come out of quarantine — it is withheld deliberately while its known defects are fixed (it renders in the editor and in a presentation but NOT to MP4). Maps already in a document are untouched: they still open, render and export";
 
+  // ── WHAT A TOOL DOES OVER A PLURAL SELECTION ────────────────────────────────
+  // The optional `plural` declaration (core/commands.js PLURAL_SCOPE), surfaced by
+  // web/ToolsPane.svelte only while several widgets are selected. Aliased to two
+  // short locals because they are read on dozens of entries and the value is the
+  // whole declaration — there is no per-entry sentence to write, the scope's one
+  // sentence lives in PLURAL_SCOPE_NOTES.
+  //
+  // A REFUSAL IS NOT DECLARED HERE. A tool that cannot be plural says so through
+  // its `when`/`requires` and is rendered disabled with that sentence — shatter
+  // ("one widget selected, not several"), the light pin ("a multi-selection has no
+  // single widget to pin from"), distribute (">= 3"). See PLURAL_SCOPE for why a
+  // third enum value would be a second way to say a thing the app already says.
+  //
+  // ABSENT MEANS UNDECLARED, NOT A DEFAULT. A value is written only where somebody
+  // has READ what `run` does to a set; the field cannot be derived from anything the
+  // registry can see, so a mandate would be met by guessing and a guessed promise in
+  // a tooltip is worse than silence.
+  const PLURAL_EACH = PLURAL_SCOPE.EACH;
+  const PLURAL_TOGETHER = PLURAL_SCOPE.TOGETHER;
+
   // ── HELP shared by a family of commands ─────────────────────────────────────
   // The optional `help` a surfacing shows on hover (core/commands.js): the
   // CONSEQUENCE and the reason you would reach for it, never a restatement of the
@@ -1146,11 +1171,11 @@
     // must resolve HERE and not to delete-slides — see core/commands.entryScore,
     // which makes an exact name beat a command that merely starts with it.
     // "delete item"/"delete widget" mirror duplicate's alias shape below.
-    { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", aliases: ["delete", "delete item", "delete widget", "delete object", "hide item"], when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Keyframes `active` off from this slide onward. The widget still exists and still appears on the slides before this one — Show puts it back, and Purge is the irreversible one.", run: (a) => a.deleteSelection() },
-    { id: "purge-item", title: "Purge Item (remove from existence)", icon: "mdi:delete-forever-outline", when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Removes the widget from the DOCUMENT — every slide at once, and Show cannot bring it back. Reach for Delete when you only meant to stop it appearing here.", run: (a) => a.purgeSelection() },
+    { id: "delete-item", title: "Delete (deactivate on this slide)", icon: "mdi:eye-off-outline", aliases: ["delete", "delete item", "delete widget", "delete object", "hide item"], when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Keyframes `active` off from this slide onward. The widget still exists and still appears on the slides before this one — Show puts it back, and Purge is the irreversible one.", plural: PLURAL_EACH, run: (a) => a.deleteSelection() },
+    { id: "purge-item", title: "Purge Item (remove from existence)", icon: "mdi:delete-forever-outline", when: needsPurgeable, requires: REQUIRES_PURGEABLE, help: "Removes the widget from the DOCUMENT — every slide at once, and Show cannot bring it back. Reach for Delete when you only meant to stop it appearing here.", plural: PLURAL_EACH, run: (a) => a.purgeSelection() },
     // The inverse of delete-item — registry-routed per the cruft audit (un-hide
     // previously had NO command surfacing, so it could never get a shortcut).
-    { id: "show-item", title: "Show (activate on this slide)", icon: "mdi:eye-outline", when: needsSelection, requires: REQUIRES_SELECTION, help: "The inverse of Delete: keyframes `active` back on here, so a widget that was switched off earlier in the deck reappears from this slide onward.", run: (a) => a.showSelection() },
+    { id: "show-item", title: "Show (activate on this slide)", icon: "mdi:eye-outline", when: needsSelection, requires: REQUIRES_SELECTION, help: "The inverse of Delete: keyframes `active` back on here, so a widget that was switched off earlier in the deck reappears from this slide onward.", plural: PLURAL_EACH, run: (a) => a.showSelection() },
     // ── THE HANDLE SCOPE (selected modifier points — the inner selection scope) ──
     // Deliberately the SAME three verbs as the item block above, one level down, so
     // the vocabulary is learned once. Gated on a live handle selection, which is
@@ -1201,30 +1226,30 @@
     // phrasings. This is the general trap with aliases: an alias is not a synonym
     // list, it is a SUPERSTRING the likely queries can be threaded through, and a
     // near-miss alias scores exactly as badly as no alias at all.
-    { id: "remove-slide-keyframes", title: "Remove Keyframes on This Slide (the widget inherits the previous slide)", icon: "mdi:vector-point-minus", aliases: ["remove keyframes", "clear keyframes", "unkeyframe", "delete keyframes", "remove keyframes for a selected widget", "reset to previous slide", "inherit previous slide", "stop changing here"], when: (a) => a.slideKeyframeTargets().length > 0, requires: SLIDE_KEYFRAMES_REQUIRES, help: SLIDE_KEYFRAMES_HELP, run: (a) => a.removeSlideKeyframes() },
+    { id: "remove-slide-keyframes", title: "Remove Keyframes on This Slide (the widget inherits the previous slide)", icon: "mdi:vector-point-minus", aliases: ["remove keyframes", "clear keyframes", "unkeyframe", "delete keyframes", "remove keyframes for a selected widget", "reset to previous slide", "inherit previous slide", "stop changing here"], when: (a) => a.slideKeyframeTargets().length > 0, requires: SLIDE_KEYFRAMES_REQUIRES, help: SLIDE_KEYFRAMES_HELP, plural: PLURAL_EACH, run: (a) => a.removeSlideKeyframes() },
     // The sweeping one gets the words that mean WHOLE-STRETCH, so the two are told
     // apart by search and not only by reading their parentheticals. "remove
     // keyframes everywhere" is deliberately HERE and not above: it is the query of
     // someone who wants the sweep, and leaving it unclaimed would land them on the
     // local tool and quietly do a fraction of what they asked.
-    { id: "make-static", title: "Make Static from Current Slide (every slide from where it appears until it is hidden)", icon: "mdi:motion-pause-outline", aliases: ["remove keyframes everywhere", "remove all keyframes", "clear keyframes on every slide", "freeze", "stop animating", "unanimate", "flatten animation"], when: (a) => a.makeStaticTargets().length > 0, requires: MAKE_STATIC_REQUIRES, help: MAKE_STATIC_HELP, run: (a) => a.makeSelectionStatic() },
-    { id: "bring-forward", title: "Bring Forward", icon: "mdi:arrange-bring-forward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, run: (a) => a.reorderSelection(+1) },
-    { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, run: (a) => a.reorderSelection(-1) },
-    { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, run: (a) => a.sendToExtreme(+1) },
-    { id: "put-on-bottom", title: "Put on Bottom", icon: "mdi:arrange-send-to-back", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, run: (a) => a.sendToExtreme(-1) },
-    { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", when: (a) => a.selectedIds().length >= 3, requires: REQUIRES_THREE_BBOX, help: HELP_DISTRIBUTE, run: (a) => distribute(a, "x", "w") },
-    { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", when: (a) => a.selectedIds().length >= 3, requires: REQUIRES_THREE_BBOX, help: HELP_DISTRIBUTE, run: (a) => distribute(a, "y", "h") },
+    { id: "make-static", title: "Make Static from Current Slide (every slide from where it appears until it is hidden)", icon: "mdi:motion-pause-outline", aliases: ["remove keyframes everywhere", "remove all keyframes", "clear keyframes on every slide", "freeze", "stop animating", "unanimate", "flatten animation"], when: (a) => a.makeStaticTargets().length > 0, requires: MAKE_STATIC_REQUIRES, help: MAKE_STATIC_HELP, plural: PLURAL_EACH, run: (a) => a.makeSelectionStatic() },
+    { id: "bring-forward", title: "Bring Forward", icon: "mdi:arrange-bring-forward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.reorderSelection(+1) },
+    { id: "send-backward", title: "Send Backward", icon: "mdi:arrange-send-backward", when: needsSelection, requires: REQUIRES_SELECTION, help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.reorderSelection(-1) },
+    { id: "put-on-top", title: "Put on Top", icon: "mdi:arrange-bring-to-front", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.sendToExtreme(+1) },
+    { id: "put-on-bottom", title: "Put on Bottom", icon: "mdi:arrange-send-to-back", when: needsSelection, requires: "a selected widget to reorder", help: HELP_Z_ORDER, plural: PLURAL_TOGETHER, run: (a) => a.sendToExtreme(-1) },
+    { id: "distribute-h", title: "Distribute Horizontally", icon: "mdi:distribute-horizontal-center", when: (a) => a.selectedIds().length >= 3, requires: REQUIRES_THREE_BBOX, help: HELP_DISTRIBUTE, plural: PLURAL_TOGETHER, run: (a) => distribute(a, "x", "w") },
+    { id: "distribute-v", title: "Distribute Vertically", icon: "mdi:distribute-vertical-center", when: (a) => a.selectedIds().length >= 3, requires: REQUIRES_THREE_BBOX, help: HELP_DISTRIBUTE, plural: PLURAL_TOGETHER, run: (a) => distribute(a, "y", "h") },
     // OBJECT ALIGN (manifest 16.3, distinct from 15.6's text-paragraph align):
     // moves every selected bbox widget so its edge/center matches the
     // SELECTION's own collective edge/center — same needsMultiBbox gate as
     // distribute (≥2 items: aligning a single item to itself is a no-op, so
     // unlike distribute's ≥3 this only needs ≥2 to be meaningful).
-    { id: "align-left", title: "Align Left", icon: "mdi:align-horizontal-left", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "x", "min") },
-    { id: "align-right", title: "Align Right", icon: "mdi:align-horizontal-right", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "x", "max") },
-    { id: "align-top", title: "Align Top", icon: "mdi:align-vertical-top", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "y", "min") },
-    { id: "align-bottom", title: "Align Bottom", icon: "mdi:align-vertical-bottom", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "y", "max") },
-    { id: "align-center-h", title: "Align Center Horizontal", icon: "mdi:align-horizontal-center", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "x", "center") },
-    { id: "align-center-v", title: "Align Center Vertical", icon: "mdi:align-vertical-center", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, run: (a) => align(a, "y", "center") },
+    { id: "align-left", title: "Align Left", icon: "mdi:align-horizontal-left", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, plural: PLURAL_TOGETHER, run: (a) => align(a, "x", "min") },
+    { id: "align-right", title: "Align Right", icon: "mdi:align-horizontal-right", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, plural: PLURAL_TOGETHER, run: (a) => align(a, "x", "max") },
+    { id: "align-top", title: "Align Top", icon: "mdi:align-vertical-top", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, plural: PLURAL_TOGETHER, run: (a) => align(a, "y", "min") },
+    { id: "align-bottom", title: "Align Bottom", icon: "mdi:align-vertical-bottom", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, plural: PLURAL_TOGETHER, run: (a) => align(a, "y", "max") },
+    { id: "align-center-h", title: "Align Center Horizontal", icon: "mdi:align-horizontal-center", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, plural: PLURAL_TOGETHER, run: (a) => align(a, "x", "center") },
+    { id: "align-center-v", title: "Align Center Vertical", icon: "mdi:align-vertical-center", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_ALIGN, plural: PLURAL_TOGETHER, run: (a) => align(a, "y", "center") },
     // MIRROR (manifest 16.3): LAYOUT-ONLY mirror — reflects each selected
     // item's POSITION about the selection's own center axis; items swap
     // sides but their own content is NOT flipped. Titled "Mirror Layout"
@@ -1236,16 +1261,16 @@
     // reverses each item's own content, and together they reflect an
     // arrangement completely. See core/geometry.js mirroredPosition and
     // flippedBox for the two pieces of math.
-    { id: "mirror-h", title: "Mirror Layout Horizontal", icon: "mdi:flip-horizontal", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_MIRROR, run: (a) => mirror(a, "x") },
-    { id: "mirror-v", title: "Mirror Layout Vertical", icon: "mdi:flip-vertical", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_MIRROR, run: (a) => mirror(a, "y") },
+    { id: "mirror-h", title: "Mirror Layout Horizontal", icon: "mdi:flip-horizontal", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_MIRROR, plural: PLURAL_TOGETHER, run: (a) => mirror(a, "x") },
+    { id: "mirror-v", title: "Mirror Layout Vertical", icon: "mdi:flip-vertical", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: HELP_MIRROR, plural: PLURAL_TOGETHER, run: (a) => mirror(a, "y") },
     // FLIP (the CONTENT reflection — see the `flip` helper below). Needs only ONE
     // item, unlike align/mirror: a lone widget has its own center to reflect
     // about, so there is nothing arbitrary to invent here. The titles say
     // "Content" because "Flip" alone next to "Mirror Layout" would leave the
     // difference to be guessed — the same reason `mirror-h` is not plain "Mirror"
     // and `unbind-from-camera` names the keys it touches.
-    { id: "flip-h", title: "Flip Content Horizontal (mirror left ↔ right)", icon: "mdi:flip-horizontal", when: needsFlippable, requires: "a selected widget with a width to flip", help: HELP_FLIP, run: (a) => flip(a, "x") },
-    { id: "flip-v", title: "Flip Content Vertical (mirror top ↔ bottom)", icon: "mdi:flip-vertical", when: needsFlippable, requires: "a selected widget with a height to flip", help: HELP_FLIP, run: (a) => flip(a, "y") },
+    { id: "flip-h", title: "Flip Content Horizontal (mirror left ↔ right)", icon: "mdi:flip-horizontal", when: needsFlippable, requires: "a selected widget with a width to flip", help: HELP_FLIP, plural: PLURAL_EACH, run: (a) => flip(a, "x") },
+    { id: "flip-v", title: "Flip Content Vertical (mirror top ↔ bottom)", icon: "mdi:flip-vertical", when: needsFlippable, requires: "a selected widget with a height to flip", help: HELP_FLIP, plural: PLURAL_EACH, run: (a) => flip(a, "y") },
     // FLAGGED — PENDING USER RATIFICATION: no keybindings assigned to any of
     // the 10 align/mirror/flip commands above. Followed the exact precedent of
     // distribute-h/distribute-v (also palette-only, no bound keys) rather
@@ -1283,6 +1308,7 @@
         a.setPreview(cameraBindWrite(a));
         return () => a.cancelPreview();
       },
+      plural: PLURAL_EACH,
       run: (a) => {
         // setPreview REPLACES previewDelta wholesale, so any staged hover preview
         // is superseded rather than compounded; both writes are derived from the
@@ -1307,6 +1333,7 @@
         a.setPreview(cameraFreezeWrite(a));
         return () => a.cancelPreview();
       },
+      plural: PLURAL_EACH,
       run: (a) => {
         a.setPreview(cameraFreezeWrite(a)); // preview-free derivation; see documentState
         a.commitPreview();
@@ -1355,13 +1382,14 @@
       when: (a) => a.canFitToInkBounds(),
       requires: (a) => a.fitToInkBoundsRequires(),
       help: "Makes the box match what is actually drawn, in EITHER direction: a box larger than its ink shrinks to it just as one smaller than its ink grows (user, 2026-08-02 — \"getting smaller is a legitimate use case too\"). All the tool needs is a difference. It changes the numbers and not the picture — what is on screen must not move, at every point of a tween — so a widget whose content is sized BY its box declines rather than let itself be rescaled. On a GROUP it re-captures the members' collective box and re-binds the group at that pose — the same result as ungrouping and immediately regrouping, with the members left exactly where they are.",
+      plural: PLURAL_EACH,
       run: (a) => a.fitSelectionToInkBounds(),
     },
     // GROUPS (manifest rough draft): Group Selection needs ≥2 groupable items;
     // Ungroup is enabled when any selected node is a group. Both operate on the
     // selection through the app helpers (which own the AABB + keyframe baking).
-    { id: "group", title: "Group Selection", icon: "mdi:group", when: (a) => a.canGroup(), requires: "at least two groupable widgets — a one-widget group is inert, so grouping starts at two", help: "A group is a flat MEMBERSHIP parent, not a nested object: every member keeps its own id, its own keyframes and its own place in the delta, and gains one box that moves and resizes them together.", run: (a) => a.groupSelection() },
-    { id: "ungroup", title: "Ungroup", icon: "mdi:ungroup", when: (a) => a.selectedNodes().some((n) => n.type === "group"), requires: "a selected group", help: "Dissolves the group and BAKES what its box was doing into the members, so they stay exactly where they look like they are rather than springing back to their pre-group values.", run: (a) => a.ungroupSelection() },
+    { id: "group", title: "Group Selection", icon: "mdi:group", when: (a) => a.canGroup(), requires: "at least two groupable widgets — a one-widget group is inert, so grouping starts at two", help: "A group is a flat MEMBERSHIP parent, not a nested object: every member keeps its own id, its own keyframes and its own place in the delta, and gains one box that moves and resizes them together.", plural: PLURAL_TOGETHER, run: (a) => a.groupSelection() },
+    { id: "ungroup", title: "Ungroup", icon: "mdi:ungroup", when: (a) => a.selectedNodes().some((n) => n.type === "group"), requires: "a selected group", help: "Dissolves the group and BAKES what its box was doing into the members, so they stay exactly where they look like they are rather than springing back to their pre-group values.", plural: PLURAL_EACH, run: (a) => a.ungroupSelection() },
     // SELECT INSIDE GROUP sits between the two on purpose: it is the NON-destructive
     // way down into a group. Ungroup dissolves; this only moves the selection, so the
     // document is untouched and there is nothing to undo. Its `requires` is a FUNCTION
@@ -1379,6 +1407,7 @@
         ? "a selected group that HAS members — the selected group is empty, so there is nothing inside it to select"
         : "a selected group — this selects the things INSIDE a group, so something has to be a group first"),
       help: "Selects the group's members individually instead of the group's one box, so you can edit them together through the multi-selection Inspector. The group is NOT dissolved and nothing is written to the document — only the selection changes, so Ungroup is still the thing that takes a group apart. A member that is itself a group is not opened; run this again to go one level deeper.",
+      plural: PLURAL_EACH,
       run: (a) => a.selectInsideGroup(),
     },
     // …and the way back UP. Deliberately a SEPARATE entry rather than one
@@ -1394,6 +1423,7 @@
       when: (a) => a.canSelectParentGroup(),
       requires: "a selected widget that is INSIDE a group — this selects the group that owns something, so the selection has to be a member of one",
       help: "Selects the group that owns the selected widget, instead of the widget itself — the way back out after Select Inside Group. Nothing is written to the document; only the selection changes. Anything selected that is not in a group stays selected, so a mixed selection does not shrink. A group inside another group rises one level; run it again to keep going up.",
+      plural: PLURAL_EACH,
       run: (a) => a.selectParentGroup(),
     },
     // BIND HEIGHT TO CONTENT (#277) — placed beside the camera-bind pair because
@@ -1422,7 +1452,7 @@
     // if that lane hasn't merged yet (the picker + pure math still work).
     // Ellipsis per the storage-vocabulary rule below: `run` opens the grid-size
     // picker, so it needs further input before anything happens.
-    { id: "arrange-grid", title: "Arrange into Grid…", icon: "mdi:view-grid-plus-outline", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: "Creates ONE bento widget sized to the selection's combined box and re-flows each widget's centre into a cell. The widgets are MOVED, not parented — the bento is a layout scaffold they sit on, so moving one afterwards just moves it.", run: (a) => a.arrangeIntoGrid() },
+    { id: "arrange-grid", title: "Arrange into Grid…", icon: "mdi:view-grid-plus-outline", when: needsMultiBbox, requires: REQUIRES_MULTI_BBOX, help: "Creates ONE bento widget sized to the selection's combined box and re-flows each widget's centre into a cell. The widgets are MOVED, not parented — the bento is a layout scaffold they sit on, so moving one afterwards just moves it.", plural: PLURAL_TOGETHER, run: (a) => a.arrangeIntoGrid() },
     { id: "toggle-anchors", title: "Toggle Anchor Visibility", icon: "mdi:anchor", run: (a) => (a.anchorsVisible = !a.anchorsVisible) },
     { id: "toggle-snap", title: "Toggle Snapping", icon: "mdi:magnet", run: (a) => a.toggleSnap() },
     { id: "toggle-snap-size", title: "Toggle Snap to Matching Size", icon: "mdi:magnet-on", help: "Adds the OTHER widgets' widths and heights as snap targets while resizing, so two widgets can be made exactly the same size without reading a number off either.", run: (a) => a.toggleSnapSize() },
@@ -1590,10 +1620,10 @@
     // `sweep-every-selection-command-declares-its-gate` exists to catch. The
     // shortcut registry already knew (core/shortcut_entries.js gates the arrow
     // keys on `editSelection`); only the command entries were missing it.
-    { id: "nudge-left", title: "Nudge Left (1px)", icon: "mdi:arrow-left", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.nudgeSelection(-1, 0) },
-    { id: "nudge-right", title: "Nudge Right (1px)", icon: "mdi:arrow-right", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.nudgeSelection(1, 0) },
-    { id: "nudge-up", title: "Nudge Up (1px)", icon: "mdi:arrow-up", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.nudgeSelection(0, -1) },
-    { id: "nudge-down", title: "Nudge Down (1px)", icon: "mdi:arrow-down", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.nudgeSelection(0, 1) },
+    { id: "nudge-left", title: "Nudge Left (1px)", icon: "mdi:arrow-left", when: needsSelection, requires: REQUIRES_SELECTION, plural: PLURAL_EACH, run: (a) => a.nudgeSelection(-1, 0) },
+    { id: "nudge-right", title: "Nudge Right (1px)", icon: "mdi:arrow-right", when: needsSelection, requires: REQUIRES_SELECTION, plural: PLURAL_EACH, run: (a) => a.nudgeSelection(1, 0) },
+    { id: "nudge-up", title: "Nudge Up (1px)", icon: "mdi:arrow-up", when: needsSelection, requires: REQUIRES_SELECTION, plural: PLURAL_EACH, run: (a) => a.nudgeSelection(0, -1) },
+    { id: "nudge-down", title: "Nudge Down (1px)", icon: "mdi:arrow-down", when: needsSelection, requires: REQUIRES_SELECTION, plural: PLURAL_EACH, run: (a) => a.nudgeSelection(0, 1) },
     { id: "present", title: "Present (fullscreen)", icon: "mdi:play", run: (a) => a.enterPresentMode() },
     // ── STORAGE COMMAND VOCABULARY (the one scheme every title below obeys) ───
     // The user read "open project / load presentation / download project / save
@@ -1858,18 +1888,19 @@
     // matching the demo/shapeshifter inserts — one owner, since the command
     // registry throws on a duplicate id. Arms the shared endpoint crosshair.
     { id: "add-line", title: "Add Line", icon: "mdi:minus", run: (a) => a.armCrosshairPlacement(a.registry.get("line")) },
-    // INSERT DEMO WIDGET — a submenu (exactly the color-theme `children` pattern
-    // above) surfacing the DEMO widgets (plugins/demo/): the showcase widget
-    // that proves the custom self.* property mechanism, plus the magnifier (the
-    // original "PowerPoint can't do this" demo). Each child arms the GENERIC
-    // crosshair placement for its type via the existing insert path — the plugin
-    // is resolved lazily from the registry at click time, so registration order
-    // is irrelevant. Reachable like every submenu: Cmd+Shift+P → drill in.
-    {
-      id: "insert-demo-widget", // id is a stable reference (probes, ShapePicker's sibling); only the TITLE says "Add" — the app's verb (user ruling)
-      title: "Add Demo Widget",
-      icon: "mdi:flask-outline",
-      children: [
+    // ── THE DEMO SUBMENUS (manifest R7-18) ────────────────────────────────────
+    // THREE sibling submenus, from ONE section table (web/demoInsert.js), because
+    // the user asked for the patches menu to be "like demo widgets" — same shape,
+    // same drill-in, not a new kind of surface. The AUDIO PATCH and PRESET sections
+    // generate their own children from their rosters; the WIDGET section's are
+    // written out here and gated red against plugins/demo/ (see the import).
+    //
+    // Each widget child arms the GENERIC crosshair placement for its type via the
+    // existing insert path — the plugin is resolved lazily from the registry at
+    // click time, so registration order is irrelevant. Reachable like every
+    // submenu: Cmd+Shift+P → drill in.
+    ...demoInsertMenus({
+      widget: [
         { id: "demo-insert-showcase", title: "Demo Showcase (custom self.* prop)", icon: "mdi:flask", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_showcase")) },
         { id: "demo-insert-video-v2", title: "Video V2 (Skia direct upload)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v2")) },
         { id: "demo-insert-glass", title: "Liquid Glass (backdrop refraction shader)", icon: "mdi:blur", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_glass")) },
@@ -1949,6 +1980,11 @@
         // The DETERMINISTIC V5 scrubber: video_scrub.js's scrubTime UX driven
         // through the V5 off-main-thread scrub decoder (videoV5Frame op).
         { id: "demo-insert-video-v5-scrub", title: "Video V5 Scrubber (deterministic scrubTime)", icon: "mdi:video-image", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v5_scrub")) },
+        // THE TIME SCRUBBER — the core scrubber with `scrubTime` bound to a clock
+        // preset (`time % self.length`), i.e. a deterministic looping player.
+        // FOUND BY THE NEW GATE, not by a reader: it shipped in plugins/demo/ and
+        // was in NO menu, which is the exact drift R7-18 asks to make impossible.
+        { id: "demo-insert-video-time-scrub", title: "Video Time Scrubber (deterministic loop — scrubTime bound to the presentation clock)", icon: "mdi:video-check-outline", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_video_time_scrub")) },
         { id: "demo-insert-video-v6", title: "Video V6 (WebGPU external texture)", icon: "mdi:video", run: (a) => a.armCrosshairPlacement(a.registry.get("video_v6")) },
         // VIDEO V7 — a video PLAYER rendered by a PER-WIDGET WebGPU overlay
         // canvas (web/VideoV7Overlay.svelte), zero-copy external texture on a
@@ -1960,7 +1996,7 @@
         { id: "demo-insert-glitch", title: "Digital Glitch (animated datamosh — backdrop material shader)", icon: "mdi:image-broken-variant", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_glitch")) },
         { id: "demo-insert-brightness-contrast", title: "Brightness / Contrast (tone adjustment — backdrop material shader)", icon: "mdi:brightness-6", run: (a) => a.armCrosshairPlacement(a.registry.get("demo_brightness_contrast")) },
       ],
-    },
+    }),
     // INSERT SHAPE — ONE submenu for the parametric shapes; everyday primitives
     // (rect/circle/text/arrow) stay top-level.
     //
@@ -2060,12 +2096,12 @@
         })),
       ],
     },
-    { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, requires: "at least one selected widget to copy", help: "Copies TWICE, on purpose: the element itself (as deltas, on the server clipboard) and a rendered PNG onto the system clipboard. Pasting back into PowerRP round-trips the real widget; pasting into another app gets the picture.", run: (a) => a.copySelection() },
+    { id: "copy-item", title: "Copy Item", icon: "mdi:content-copy", when: needsSelection, requires: "at least one selected widget to copy", help: "Copies TWICE, on purpose: the element itself (as deltas, on the server clipboard) and a rendered PNG onto the system clipboard. Pasting back into PowerRP round-trips the real widget; pasting into another app gets the picture.", plural: PLURAL_TOGETHER, run: (a) => a.copySelection() },
     // COPY PROPERTIES — the SAME widget at a different TIME, which is why it sits
     // beside Copy rather than among the property rows: the user's framing is
     // "move an object back in time". Copy clones (a NEW item); this transports
     // state onto the item that is already there, on whatever slide you paste it.
-    { id: "copy-properties", title: "Copy Properties (the selected widget's state, to paste onto ITSELF on another slide)", icon: "mdi:text-box-multiple-outline", aliases: ["copy state", "copy properties", "copy all properties", "move object back in time", "copy widget state"], when: needsSelection, requires: "at least one selected widget whose state can be copied", help: "Copies what the widget LOOKS LIKE here — every property, equations verbatim. Pasting on another slide keyframes that appearance onto the SAME widget there, so it is transport through time rather than a second copy of the thing. A widget hidden on the destination slide comes back, because whether it is showing is part of the state being carried. Still puts the picture on your system clipboard, exactly as Copy does.", run: (a) => a.copySelectionProperties() },
+    { id: "copy-properties", title: "Copy Properties (the selected widget's state, to paste onto ITSELF on another slide)", icon: "mdi:text-box-multiple-outline", aliases: ["copy state", "copy properties", "copy all properties", "move object back in time", "copy widget state"], when: needsSelection, requires: "at least one selected widget whose state can be copied", help: "Copies what the widget LOOKS LIKE here — every property, equations verbatim. Pasting on another slide keyframes that appearance onto the SAME widget there, so it is transport through time rather than a second copy of the thing. A widget hidden on the destination slide comes back, because whether it is showing is part of the state being carried. Still puts the picture on your system clipboard, exactly as Copy does.", plural: PLURAL_TOGETHER, run: (a) => a.copySelectionProperties() },
     // THE SUBSETS, asked for in one breath with the whole-state one (user,
     // 2026-08-02): "We should also have copy position, copy dimensions, in other
     // words, hide width, and also copy x, y, h, w as options in the command
@@ -2077,14 +2113,14 @@
     // state (the subsets are reached from here and from the Tools pane), because a
     // second copy chord that differs only in what it omits is a thing to misfire
     // rather than a thing to learn.
-    { id: "copy-position", title: "Copy Position (just X and Y, to paste onto the SAME widget on another slide)", icon: "mdi:axis-arrow", aliases: ["copy xy", "copy location", "copy position", "copy x y"], when: needsSelection, requires: "at least one selected widget whose position can be copied", help: "Copies X and Y only — where the widget sits here, equations verbatim. Pasting keyframes ONLY those two properties onto the SAME widget on the current slide, so its size, colour and everything else stay exactly as you left them. A flipped widget stays flipped: nothing about its box is touched. Still puts the picture on your system clipboard, exactly as Copy does.", run: (a) => a.copySelectionProperties(["x", "y"], "Copy Position") },
+    { id: "copy-position", title: "Copy Position (just X and Y, to paste onto the SAME widget on another slide)", icon: "mdi:axis-arrow", aliases: ["copy xy", "copy location", "copy position", "copy x y"], when: needsSelection, requires: "at least one selected widget whose position can be copied", help: "Copies X and Y only — where the widget sits here, equations verbatim. Pasting keyframes ONLY those two properties onto the SAME widget on the current slide, so its size, colour and everything else stay exactly as you left them. A flipped widget stays flipped: nothing about its box is touched. Still puts the picture on your system clipboard, exactly as Copy does.", plural: PLURAL_TOGETHER, run: (a) => a.copySelectionProperties(["x", "y"], "Copy Position") },
     // Title only: "Copy Dimensions" became "Copy Size" (user's own spoken form,
     // "copy dimensions, in other words, hide width" — WORKSTREAM VV). The id and
     // key set (`["w", "h"]`) are UNCHANGED — nothing persists a command id in a
     // document (App.svelte holds only palette/chord/tool surfacings), so renaming
     // the id would buy nothing and cost every doctrine reference below. "dimensions"
     // stays as a search alias so the old spoken form still finds this row.
-    { id: "copy-dimensions", title: "Copy Size (just width and height, to paste onto the SAME widget on another slide)", icon: "mdi:ruler-square", aliases: ["copy size", "copy width height", "copy wh", "copy dimensions", "copy w h"], when: needsSelection, requires: "at least one selected widget whose size can be copied", help: "Copies width and height only — how big the widget is here, equations verbatim. Pasting keyframes ONLY those two properties onto the SAME widget on the current slide; it does not move it. A stored width or height may be NEGATIVE — that sign is how a flip is recorded — so copying size from a flipped widget carries the flip with it. Still puts the picture on your system clipboard, exactly as Copy does.", run: (a) => a.copySelectionProperties(["w", "h"], "Copy Size") },
+    { id: "copy-dimensions", title: "Copy Size (just width and height, to paste onto the SAME widget on another slide)", icon: "mdi:ruler-square", aliases: ["copy size", "copy width height", "copy wh", "copy dimensions", "copy w h"], when: needsSelection, requires: "at least one selected widget whose size can be copied", help: "Copies width and height only — how big the widget is here, equations verbatim. Pasting keyframes ONLY those two properties onto the SAME widget on the current slide; it does not move it. A stored width or height may be NEGATIVE — that sign is how a flip is recorded — so copying size from a flipped widget carries the flip with it. Still puts the picture on your system clipboard, exactly as Copy does.", plural: PLURAL_TOGETHER, run: (a) => a.copySelectionProperties(["w", "h"], "Copy Size") },
     // Copy Box → Copy Transform (WORKSTREAM VV): the family speaks TRANSFORM, so
     // the widest subset now says so and carries the two rows core/transform.js's
     // own similarity leaves out of the box — rotation and scale. `scale` rides
@@ -2098,12 +2134,12 @@
     // and none does. That is consistent with today's silent behaviour (nothing
     // reads scale through the Inspector either) rather than a new gap. Dropping
     // scale from this list is a one-line revert if that inconsistency is unwanted.
-    { id: "copy-box", title: "Copy Transform (X, Y, width, height, rotation and scale, to paste onto the SAME widget on another slide)", icon: "mdi:vector-square", aliases: ["copy x y h w", "copy bounds", "copy box", "copy rect", "copy frame", "copy position and size", "copy transform"], when: needsSelection, requires: "at least one selected widget whose transform can be copied", help: "Copies the whole transform — X, Y, width, height, rotation and scale, equations verbatim — and nothing else. Pasting keyframes ONLY those properties onto the SAME widget on the current slide, so it lands exactly where, how big and how rotated it was, while its colour, text and effects stay put. Copy Position, Copy Size and Copy Rotation are the pieces of this if you want only one. Still puts the picture on your system clipboard, exactly as Copy does.", run: (a) => a.copySelectionProperties(["x", "y", "w", "h", "rotation", "scale"], "Copy Transform") },
+    { id: "copy-box", title: "Copy Transform (X, Y, width, height, rotation and scale, to paste onto the SAME widget on another slide)", icon: "mdi:vector-square", aliases: ["copy x y h w", "copy bounds", "copy box", "copy rect", "copy frame", "copy position and size", "copy transform"], when: needsSelection, requires: "at least one selected widget whose transform can be copied", help: "Copies the whole transform — X, Y, width, height, rotation and scale, equations verbatim — and nothing else. Pasting keyframes ONLY those properties onto the SAME widget on the current slide, so it lands exactly where, how big and how rotated it was, while its colour, text and effects stay put. Copy Position, Copy Size and Copy Rotation are the pieces of this if you want only one. Still puts the picture on your system clipboard, exactly as Copy does.", plural: PLURAL_TOGETHER, run: (a) => a.copySelectionProperties(["x", "y", "w", "h", "rotation", "scale"], "Copy Transform") },
     // NEW (WORKSTREAM VV): rotation alone. `rotation` is a UNIVERSAL row (every
     // boxed widget composes BUNDLES.transform), so it transfers through the
     // intersection paste onto any other boxed widget, unlike scale above — a
     // rect's rotation onto a circle lands, because both declare the same row.
-    { id: "copy-rotation", title: "Copy Rotation (just the rotation, to paste onto the SAME widget on another slide)", icon: "mdi:rotate-360", aliases: ["copy rotation", "copy angle", "copy spin"], when: needsSelection, requires: "at least one selected widget whose rotation can be copied", help: "Copies rotation only — how the widget is turned here, equations verbatim. Pasting keyframes ONLY that one property onto the SAME widget on the current slide; position, size and everything else stay exactly as you left them. Still puts the picture on your system clipboard, exactly as Copy does.", run: (a) => a.copySelectionProperties(["rotation"], "Copy Rotation") },
+    { id: "copy-rotation", title: "Copy Rotation (just the rotation, to paste onto the SAME widget on another slide)", icon: "mdi:rotate-360", aliases: ["copy rotation", "copy angle", "copy spin"], when: needsSelection, requires: "at least one selected widget whose rotation can be copied", help: "Copies rotation only — how the widget is turned here, equations verbatim. Pasting keyframes ONLY that one property onto the SAME widget on the current slide; position, size and everything else stay exactly as you left them. Still puts the picture on your system clipboard, exactly as Copy does.", plural: PLURAL_TOGETHER, run: (a) => a.copySelectionProperties(["rotation"], "Copy Rotation") },
     // The named half of the transport. Plain Paste ALSO pastes a properties
     // payload (paste dispatches on what it finds — the user's "paste behaves as
     // normal"); this row exists because "Paste" in a list of palette rows cannot
@@ -2123,7 +2159,7 @@
     // same words from the entry directly below it, which is a genuine collision
     // now that R6-18.2's variant exists and the user's own phrase for it is
     // "duplicate in place". The user's vocabulary wins; this one is reworded.)
-    { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", aliases: ["duplicate object", "duplicate widget", "duplicate item", "clone", "copy item"], when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Each copy gets a NEW id and the SAME raw state, equations verbatim — but a reference INTO the duplicated set is rerouted to the new copy, so duplicating two linked widgets gives you a linked pair, not two widgets pointing at the originals.", run: (a) => a.duplicateSelection() },
+    { id: "duplicate", title: "Duplicate", icon: "mdi:content-duplicate", aliases: ["duplicate object", "duplicate widget", "duplicate item", "clone", "copy item"], when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Each copy gets a NEW id and the SAME raw state, equations verbatim — but a reference INTO the duplicated set is rerouted to the new copy, so duplicating two linked widgets gives you a linked pair, not two widgets pointing at the originals.", plural: PLURAL_EACH, run: (a) => a.duplicateSelection() },
     // R6-18.2: DUPLICATE IN PLACE. A SIBLING ENTRY, not a parameter on the one
     // above — palette commands take no args (see the arrange-grid note), so a mode
     // of one verb becomes `base-id + discriminator` (band-select-inner,
@@ -2132,7 +2168,7 @@
     // inventing a binding needs the user's say-so (Cmd+D is itself unratified).
     // The offset is a PARAMETER of the one clone home, so this is the same
     // behaviour with a different number rather than a second cloning path.
-    { id: "duplicate-in-place", title: "Duplicate in Place (no offset — the copy lands exactly on the original)", icon: "mdi:layers-plus", when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Useful when the copy's position is about to be driven by something else — an equation, a group, or a drag you are about to make — and the usual one-step nudge would just be something to undo. The copy is selected, so it is the one you move.", run: (a) => a.duplicateSelection(0) },
+    { id: "duplicate-in-place", title: "Duplicate in Place (no offset — the copy lands exactly on the original)", icon: "mdi:layers-plus", when: (a) => a.canDuplicate(), requires: "a selected widget that may be duplicated", help: "Useful when the copy's position is about to be driven by something else — an equation, a group, or a drag you are about to make — and the usual one-step nudge would just be something to undo. The copy is selected, so it is the one you move.", plural: PLURAL_EACH, run: (a) => a.duplicateSelection(0) },
     // Copy selection region to the SYSTEM clipboard (manifest Round 12B
     // "Palette / selection commands"): renders the selection's world AABB,
     // not the whole slide (unlike Export Slide as PNG/PDF above). when: selection
@@ -2140,8 +2176,8 @@
     // The titles name SELECTION because that scope difference was invisible:
     // beside "Export Slide as PNG" a bare "Copy as PNG" read as the same picture
     // going somewhere else, when it is in fact a different picture.
-    { id: "copy-as-png", title: "Copy Selection as PNG", icon: "mdi:image-multiple-outline", when: needsSelection, requires: REQUIRES_SELECTION, run: (a) => a.copyAsPng() },
-    { id: "copy-as-pdf", title: "Copy Selection as PDF", icon: "mdi:file-pdf-box", when: needsSelection, requires: REQUIRES_SELECTION, help: "Vector where it can be: shapes and text stay real PDF geometry (text is still selectable in the pasted result), and only the regions that cannot be expressed as vectors — a blur, a material — go across as raster.", run: (a) => a.copyAsPdf() },
+    { id: "copy-as-png", title: "Copy Selection as PNG", icon: "mdi:image-multiple-outline", when: needsSelection, requires: REQUIRES_SELECTION, plural: PLURAL_TOGETHER, run: (a) => a.copyAsPng() },
+    { id: "copy-as-pdf", title: "Copy Selection as PDF", icon: "mdi:file-pdf-box", when: needsSelection, requires: REQUIRES_SELECTION, help: "Vector where it can be: shapes and text stay real PDF geometry (text is still selectable in the pasted result), and only the regions that cannot be expressed as vectors — a blur, a material — go across as raster.", plural: PLURAL_TOGETHER, run: (a) => a.copyAsPdf() },
     {
       id: "copy-property",
       title: "Copy Property",
@@ -2235,34 +2271,20 @@
     // DECLARED BESIDE THE THING IT COMMANDS, not written out here: the entry lives
     // in web/audioMirror.svelte.js next to `setAudioMuted`, so the command and the
     // mute cannot drift apart, and this file names it rather than restating it. The
-    // same shape the DEMO_PATCHES spread below uses for the same reason. It is the
-    // registration that makes the surfacings possible — `commands.get` throws on an
-    // unknown id, so the toolbar button and the `M` shortcut both depend on this line.
+    // same shape the demo submenus use for the same reason. It is the registration
+    // that makes the surfacings possible — `commands.get` throws on an unknown id,
+    // so the toolbar button and the `M` shortcut both depend on this line.
     AUDIO_MUTE_COMMAND,
-    // ── DEMO PATCHES (NF-BIND) ────────────────────────────────────────────────
-    // The user's standing directive, ADDENDUM 10 verbatim: "We should have a menu
-    // called, well, in the command palette by the way, called demo patches that will
-    // insert a demo patch in a group that is just a fully patched audio thing ... I
-    // want to see a bunch of patches, so once you have everything, as you go by the
-    // way, just make demo patches."
-    //
-    // GENERATED FROM THE BLUEPRINT ARRAY rather than written out, so that authoring a
-    // new patch is one record in core/audio_patches.js and its palette entry follows.
-    // The alternative — a hand-written entry per patch — is how a patch ends up
-    // existing in the data and not in the menu, which for a feature whose whole
-    // purpose is to be FOUND is the worst possible failure. Each entry's `help` is
-    // the patch's own sentence, so the palette explains what you are about to hear.
-    //
-    // NO `when` GATE: inserting a patch is always possible, exactly like inserting a
-    // widget. A patch needs no selection and no precondition.
-    ...DEMO_PATCHES.map((patch) => ({
-      id: `demo-patch-${patch.id}`,
-      title: `Demo Patch: ${patch.title}`,
-      icon: "mdi:music-box-multiple-outline",
-      aliases: ["demo patch", "demo patches", "audio patch", "synth patch", patch.title.toLowerCase()],
-      help: patch.help,
-      run: (a) => a.insertDemoPatch(patch.id),
-    })),
+    // SAME ARRANGEMENT, SAME REASON (web/editorAnimation.svelte.js): the flag it
+    // toggles lives beside it there. This is what makes a simulated widget MOVE while
+    // you author — the user's spring and the double pendulum both sat on their initial
+    // condition because the editor's clock is frozen, not because `@` was broken.
+    EDITOR_ANIMATION_COMMAND,
+    // THE DEMO PATCHES AND PRESETS USED TO BE SPREAD HERE, one top-level entry each.
+    // They are now children of their sections' submenus, registered above with the
+    // demo widgets — manifest R7-18, and the user's reason for asking: "we gonna
+    // have a lot of them". Their command ids are unchanged, and `commands.get`
+    // resolves a child, so nothing that named one has broken.
   ];
   for (const c of coreCommands) app.commands.add(c);
   // Restore MRU only AFTER every command (plugins from the constructor + the

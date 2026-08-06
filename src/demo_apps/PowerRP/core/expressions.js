@@ -2133,6 +2133,24 @@ const PAINT_LEAF_KINDS = {
   // migration keeps them so old documents render byte-identically).
   "from.x": "number", "from.y": "number",
   "to.x": "number", "to.y": "number",
+  // ── THE TILING TRIO, MISSING SINCE THE SPREAD WORK LANDED ──────────────────
+  // A pre-existing gap, found 2026-08-06 while measuring the ramp factoring:
+  // `resultKindForSlot(plugin, ["fill","linear","wavelength"])` answered
+  // "unresolved" — and so did `phase` and `spread` — while its sibling `angle`
+  // answered "number". So three real, stored, author-editable leaves were
+  // invisible to every consumer of this table: an equation on a gradient's
+  // wavelength could not be typed. The spread feature added the leaves and did
+  // not register them here, which is exactly the drift a lookup table invites.
+  wavelength: "number",    // tiling period, a fraction of the ramp span
+  phase: "number",         // where the ramp's 0 sits, a fraction of the MODE's period
+  spread: "string",        // "mirror" | "loop" | "pad" — no options list in core, as with `type`
+  // ── THE RAMP'S INTERPOLATION SPACE (R7-19) ────────────────────────────────
+  // A gradient stores its stops but had nowhere to say which space to blend them
+  // IN, so a perceptual colormap (viridis, magma) picked onto a shape's fill
+  // rendered in sRGB — the space it was explicitly not published in. `space`
+  // closes that: core/ramps.RAMP_SPACES is ["srgb", "oklab"], and ABSENT means
+  // "srgb", so every gradient that exists today takes a byte-identical path.
+  space: "string",
 };
 
 /**

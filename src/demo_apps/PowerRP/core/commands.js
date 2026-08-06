@@ -115,7 +115,24 @@ export function createCommands() {
      * ranking (a membership check, a "does the fuzzy query hit this" probe).
      */
     search(query, parent = null) {
-      const pool = parent ? parent.children : topLevel;
+      // ── A TOP-LEVEL QUERY REACHES INTO SUBMENUS. A DRILLED-IN ONE DOES NOT. ──
+      // The pool used to be `topLevel` flat, always, and the note above called that
+      // "first and absolute". It is still absolute for a DRILLED-IN search — that is the
+      // half the rule was written for, and scoping there is what makes a submenu a
+      // submenu. But at top level it made every child UNFINDABLE BY NAME, and R7-18 moved
+      // a lot behind submenus: measured, `search("pendulum")` returned NOTHING, and so did
+      // "shimmer" and "incanta", so all 27 demo audio patches and all 3 presets could only
+      // be reached by knowing which menu they lived in first. The user reported exactly
+      // that — "I don't see the pendulum widget in the command palette."
+      //
+      // A palette whose whole promise is "type the name of the thing" cannot answer
+      // "nothing" for a command it has registered. So: WITH A QUERY and no parent, one
+      // level of children joins the pool and is ranked beside its parents.
+      //
+      // AN EMPTY top-level query is UNCHANGED and deliberately so — it opens onto the
+      // top-level MRU. Flattening there would greet the author with thirty demo entries
+      // in front of the commands they actually use, which is the opposite of a fix.
+      const pool = parent ? parent.children : query ? [...topLevel, ...topLevel.flatMap((c) => c.children ?? [])] : topLevel;
       if (!query)
         return [...pool].sort((a, b) => (used.get(b.id) ?? -1) - (used.get(a.id) ?? -1));
       // rp's ranking: LOWER score = better match (title OR any alias).
@@ -162,6 +179,77 @@ export function createCommands() {
       return c;
     },
   };
+}
+
+/**
+ * A TOOL'S DECLARED PLURAL SCOPE — what running it over a MULTI-SELECTION means.
+ *
+ * USER, 2026-08-06 (verbatim): *"Tools have the option to specify what happens or
+ * if they're allowed to be done in a plural selection - copy tool already does
+ * this so it might not be so bad."*
+ *
+ * ── THERE ARE THREE OUTCOMES AND ONLY TWO LIVE HERE ──────────────────────────
+ * "APPLIES TO EACH" and "ACTS ON THE SELECTION AS A WHOLE" are below. The third —
+ * REFUSED IN A PLURAL SELECTION — is NOT a value here, because the AVAILABILITY
+ * axis already expresses it and three shipped commands already use it that way:
+ *   - `shatterBlocker` (web/app.svelte.js): "one widget selected, not several —
+ *     shatter makes one group at a time";
+ *   - `pin-light-to-object`'s gate returns null unless exactly one item is
+ *     selected, and LIGHT_PIN_REQUIRES says "a multi-selection has no single
+ *     widget to pin from";
+ *   - `distribute-h`/`distribute-v` gate on `selectedIds().length >= 3`.
+ * Each renders DISABLED with its sentence through commandUnavailableReason, which
+ * is exactly what the user asked "if they're allowed" to produce. A third enum
+ * value would be a SECOND way to say a thing the app already says — the Tower of
+ * Babel the manifest names — and worse, a value nothing could enforce agreement
+ * with, so an entry could declare "refuse" while its gate said yes.
+ *
+ * ── OPTIONAL, ON `help`'s PRECEDENT ─────────────────────────────────────────
+ * Undeclared claims NOTHING and renders nothing, exactly as an absent `help`
+ * contributes no line ("absent on the obvious ones", above). The alternative —
+ * mandatory on every tool — sounds stricter but is not, because the value cannot
+ * be derived from anything the registry can read: it is a fact about what `run`
+ * does, so a mandate would be satisfied by GUESSING, and a guessed sentence in a
+ * tooltip is a confident lie where silence is merely quiet. So a value is
+ * declared where somebody has READ the run, and nowhere else.
+ *
+ * A DECLARED value must be one of these two — `registerFlat` throws otherwise, so
+ * a typo cannot ship as a silently-absent claim.
+ *
+ * @example PLURAL_SCOPE.EACH // "each"
+ * @example Object.keys(PLURAL_SCOPE) // ["EACH", "TOGETHER"]
+ */
+export const PLURAL_SCOPE = { EACH: "each", TOGETHER: "together" };
+
+/**
+ * The sentence each scope shows, written ONCE — the `unavailableMessage` shape:
+ * one home for one speech act, so no surfacing can grow its own wording.
+ *
+ * Both are phrased as a promise about the CLICK rather than about the tool, because
+ * that is the question a plural selection raises: "will this hit all five?".
+ */
+export const PLURAL_SCOPE_NOTES = {
+  [PLURAL_SCOPE.EACH]: "Applies to EVERY selected widget, independently — one undo unit.",
+  [PLURAL_SCOPE.TOGETHER]: "Acts on the selection AS A WHOLE, not on each widget separately.",
+};
+
+/**
+ * Pure function. The sentence to show for a command under a PLURAL selection, or
+ * null when it declares no plural scope (and so has nothing to promise).
+ *
+ * Null rather than a stand-in sentence: a surfacing renders nothing for an
+ * undeclared tool, the way the palette's help section is ABSENT rather than empty.
+ *
+ * @param {object} cmd - a command-registry entry
+ * @returns {string|null}
+ *
+ * @example pluralScopeNote({id: "duplicate", plural: PLURAL_SCOPE.EACH})
+ * 'Applies to EVERY selected widget, independently — one undo unit.'
+ * @example pluralScopeNote({id: "align-left", plural: PLURAL_SCOPE.TOGETHER}).startsWith("Acts on the selection") // true
+ * @example pluralScopeNote({id: "undo"}) // null (nothing declared, nothing claimed)
+ */
+export function pluralScopeNote(cmd) {
+  return PLURAL_SCOPE_NOTES[cmd?.plural] ?? null;
 }
 
 /**
@@ -311,6 +399,11 @@ function registerFlat(map, cmd) {
     throw new Error(`Malformed command (need id, title, and run XOR children): ${JSON.stringify(cmd).slice(0, 120)}`);
   if (cmd.aliases !== undefined && (!Array.isArray(cmd.aliases) || cmd.aliases.some((a) => typeof a !== "string" || !a)))
     throw new Error(`Command "${cmd.id}": aliases must be an array of non-empty strings, got ${JSON.stringify(cmd.aliases)} — a malformed alias would silently never match.`);
+  // A DECLARED plural scope must be a KNOWN one. Absent is legal (it claims
+  // nothing); a typo must not be, because it would read as absent and the tool
+  // would silently stop saying what a click does to five widgets.
+  if (cmd.plural !== undefined && !Object.values(PLURAL_SCOPE).includes(cmd.plural))
+    throw new Error(`Command "${cmd.id}": plural must be one of ${JSON.stringify(Object.values(PLURAL_SCOPE))}, got ${JSON.stringify(cmd.plural)} — a plural REFUSAL is declared through \`when\`/\`requires\`, not here (see PLURAL_SCOPE).`);
   if (map.has(cmd.id)) throw new Error(`Duplicate command id "${cmd.id}"`);
   map.set(cmd.id, cmd);
   for (const child of cmd.children ?? []) registerFlat(map, child);

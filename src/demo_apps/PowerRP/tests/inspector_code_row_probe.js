@@ -200,7 +200,22 @@ try {
   assert(/python/i.test(codeRow.ariaLabel ?? ""),
     `the button reports the language the WIDGET is set to, not a hardcoded id -> ${JSON.stringify(codeRow.ariaLabel)}`);
 
-  // ── (8) an equation-bound code row withholds the button ────────────────────
+  // ── (8) an equation-bound code row STILL offers {} — reversed by user ruling ─
+  // THIS CHECK USED TO ASSERT THE OPPOSITE, and the reversal is a user ruling, not a
+  // convenience. It read "an EQUATION-bound code row withholds the {} button (the ƒ
+  // field is already that value's editor)" — sound reasoning at the time, and overruled
+  // on 2026-08-06: "Equations should ALWAYS have that option too - a code editing
+  // modal, with correct autocomplete/highlighting pops up so u can edit the equation
+  // multiline." The premise that failed is the parenthesis: a one-line <input> is NOT
+  // already that value's editor once the value can be an expression spanning lines and
+  // calling into meta.script.
+  //
+  // The {} it offers is a DIFFERENT one and that is why both can be true at once: the
+  // `code` row's {} edits the property's literal source in the WIDGET's language
+  // (python, mermaid…), while an equation-bound row's comes from
+  // web/EquationCodeButton.svelte and edits the EXPRESSION in the equation language.
+  // Same slot, same glyph, same job — "open this value in a real editor" — so the
+  // language reported below is the thing that distinguishes them.
   await page.evaluate(() => {
     const app = window.__powerrp_app;
     app.setPreview([[["items", app.selection, "code"], "=\"y = 2\""]]);
@@ -208,8 +223,10 @@ try {
   });
   await sleep(900);
   const boundRow = await readRow("Code");
-  assert(boundRow.found && !boundRow.hasCodeButton,
-    "an EQUATION-bound code row withholds the {} button (the ƒ field is already that value's editor)");
+  assert(boundRow.found && boundRow.hasCodeButton,
+    "an EQUATION-bound code row STILL offers {} (user 2026-08-06: equations should ALWAYS have it)");
+  assert(/equation/i.test(boundRow.ariaLabel ?? ""),
+    `and it is the EQUATION editor, not the widget-language one -> ${JSON.stringify(boundRow.ariaLabel)}`);
 
   console.log(fails.length ? `\nFAILED: ${fails.length}` : "\nPASS — Inspector code-row affordance");
   process.exitCode = fails.length ? 1 : 0;

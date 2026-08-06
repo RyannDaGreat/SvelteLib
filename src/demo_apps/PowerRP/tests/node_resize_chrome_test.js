@@ -385,9 +385,29 @@ check("CD: a FLIPPED module lays its band out identically — the sign is a refl
 
 check("CD: every audio module with dials survives the whole height sweep", () => {
   // The roster form, so a module added later cannot quietly reintroduce this.
+  //
+  // ── EACH MODULE IS SWEPT AGAINST ITS OWN FLOOR, NOT THE MIXER'S ───────────
+  // `PORTS_ONLY_H` is DERIVED FROM `audioMixerPlugin`'s geometry — the check above says so
+  // and pins it there — and it was the whole sweep's lower bound while every module had
+  // roughly the mixer's port count. The VCV blocks broke that premise: Marbles has 9 inputs
+  // and 7 outputs and Supercell has 16 inputs, so their PORT COLUMNS ALONE are taller than
+  // the mixer's entire card. Below a module's own floor its band clips, and the test's own
+  // docblock already calls that "the documented behavior" — so asserting containment there
+  // was asserting that documented behaviour must not happen.
+  //
+  // EVERY PLUGIN ALREADY PUBLISHES ITS OWN ANSWER: `nodeFloorHeight`, which
+  // `core/audio_nodes` builds from the module's ports, readout and wrapped band, and whose
+  // docblock is explicit that a floor "is not one number" because the band wraps with the
+  // width. Asking the plugin keeps the check's real purpose — a card at or above its floor
+  // contains its own ink — and drops the false premise that one module's floor is every
+  // module's. It also needs no new import: the roster already hands us the plugin.
+  // MEASURED before the change: this rejected `audio_vcv_clouds` at h=320 while accepting
+  // the identical geometry at h=355, which is the shape of a wrong bound rather than a bug.
   for (const plugin of audioPlugins) {
     if (!plugin.knobLayout) continue;
+    const floor = plugin.nodeFloorHeight(plugin.defaults);
     for (const h of HEIGHTS) {
+      if (h < floor) continue;
       const s = { ...plugin.defaults, h };
       for (const d of plugin.knobLayout(s)) {
         assert.ok(Number.isFinite(d.cx) && Number.isFinite(d.cy),

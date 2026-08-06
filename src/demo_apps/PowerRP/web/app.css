@@ -62,6 +62,7 @@
   --a-port-trigger: #e0af68;
   --a-port-audio: #9ece6a;
   --a-port-node: #bb9af7;
+  --a-port-exec: #c0caf5;
   /* GHOST-wire chrome. Screen-space (the overlay is an SVG in screen coordinates)
      and GHOST-ONLY: the committed wires are painted into the SCENE now (WORKSTREAM
      BN), so their width lives in core/node_chrome.WIRE_WIDTH in WORLD units, where
@@ -7575,8 +7576,16 @@ audio.ae-preview-media {
    (the six that already disagree are a known, unresolved wart, and adding to the
    pile to save one line would be the wrong trade). Centered to sit under the
    .multi-count line it belongs to, and gapped rather than butt-joined because
-   these are two independent buttons, not a fused segmented run. */
-.inspector .multi-select .multi-mode {
+   these are two independent buttons, not a fused segmented run.
+
+   UNSCOPED, since 2026-08-06: web/MultiSelectModeToggle.svelte renders this in
+   BOTH the Property Panel and the Tools pane, over one piece of state. Widening
+   is right here where it was wrong for .transition-multi-note below — that note is
+   a DIFFERENT panel with different semantics reusing a look, and this is the SAME
+   control appearing twice. Scoping it under .inspector would have forced the
+   second pane to mint a second rule for one control, which is the drift the
+   component exists to remove. */
+.multi-mode {
   display: flex;
   gap: var(--a-sp-2);
   justify-content: center;
@@ -7585,7 +7594,7 @@ audio.ae-preview-media {
 
 /* The icon sits with the word, not above it: the Venn glyph is a HINT for the
    label, so they share a baseline run. */
-.inspector .multi-select .multi-mode .btn {
+.multi-mode .btn {
   display: inline-flex;
   align-items: center;
   gap: var(--a-sp-1);
@@ -7595,8 +7604,15 @@ audio.ae-preview-media {
    notes under the selection count. Same dim/centered treatment as .empty and
    .multi-count, so the three read as one block of panel prose. Was written in
    markup with NO rule at all until 2026-08-01 (tests/orphan_class_test.js now
-   makes that state a red). */
-.inspector .multi-select .multi-note {
+   makes that state a red).
+
+   UNSCOPED, since 2026-08-06: web/ToolsPane.svelte states the SAME two facts about
+   the SAME multi-selection (which items are not on this slide; which shared-looking
+   things mean different things), so it renders the same note. This is the widening
+   .transition-multi-note below is warned against being confused with — that is a
+   different panel with different semantics borrowing a look, and these two are one
+   statement about one selection appearing in the two panes that act on it. */
+.multi-note {
   color: var(--fg-dim);
   padding: 0 var(--a-sp-4) var(--a-sp-3);
   text-align: center;
@@ -7619,12 +7635,14 @@ audio.ae-preview-media {
   line-height: var(--a-text-line-height);
 }
 
-/* One excluded property KEY inside that note. Monospace because it IS a property
-   key (the equation grammar's own spelling), matching how this panel treats the
-   same vocabulary elsewhere. cursor:help because the Tooltip on it is the whole
-   point — it names which contract aspect excluded the row. Spelled var(--a-keyed)
-   directly rather than minting an --a-mixed-fg for one consumer (ledger C-1). */
-.inspector .multi-select .multi-conflict {
+/* One conflicting property KEY (or, in the Tools pane, one conflicting tool
+   identity) inside that note. Monospace because it IS a key — the equation
+   grammar's own spelling for a property, the row identity's for a tool — matching
+   how these panels treat that vocabulary elsewhere. cursor:help because the Tooltip
+   on it is the whole point: it names which aspect disagrees. Spelled var(--a-keyed)
+   directly rather than minting an --a-mixed-fg for one consumer (ledger C-1).
+   Unscoped for the reason .multi-note above is. */
+.multi-conflict {
   display: inline-block;
   margin: 0 var(--a-sp-1);
   padding: 0 var(--a-sp-2);
@@ -7635,7 +7653,7 @@ audio.ae-preview-media {
   cursor: help;
 }
 
-.inspector .multi-select .multi-conflict:hover {
+.multi-conflict:hover {
   color: var(--fg);
 }
 
@@ -8084,7 +8102,16 @@ audio.ae-preview-media {
    Dim + rule-separated so it reads as a footnote about availability rather than
    part of the description — the .path-tip-line precedent for a second line of
    tooltip content, minus the monospace (this is prose, not an equation path). */
-.tool-tip-requires {
+.tool-tip-requires,
+/* WHAT A CLICK REACHES over a plural selection — the tool's declared plural scope
+   (core/commands.js PLURAL_SCOPE) and, in union mode, which of the selected
+   widgets the row applies to. Shares the footnote treatment with the availability
+   sentence above rather than minting a second one: both are notes ABOUT the
+   control rather than descriptions OF it, and a plural row can show one, the other
+   or both, so two different footnote styles stacked would read as two voices.
+   Grouped as a selector list, not a second block, because there is nothing to say
+   differently — a copy of the same four declarations is a copy that can drift. */
+.tool-tip-plural {
   margin-top: var(--a-sp-2);
   padding-top: var(--a-sp-2);
   border-top: var(--a-hairline) solid var(--border);
@@ -9079,9 +9106,37 @@ audio.ae-preview-media {
   padding-left: var(--a-sp-1);
 }
 
+/* THE (!) BADGE IS THE ONE HOVERABLE THING IN THE EQUATION STACK, and this rule
+   is the WHOLE of that claim — all three sites that render it (NumericField,
+   AngleField, Inspector's generic equationEntry) share these two classes, so the
+   hover works or fails at ONE place.
+
+   `z-index` IS LOAD-BEARING AND WAS THE BUG (user, 2026-08-06: "The (!) in the
+   equations is never informative. ON hover it should show the full error!").
+   `pointer-events: auto` below has been here since the badge landed and was DEAD
+   the entire time: `.numfield .eq-input` sits at `z-index: 1` — raised to clear
+   the `.eq-highlight` overlay at 0 — while this badge, being `position:absolute`
+   with `z-index:auto`, stayed in the auto/0 layer. A positive z-index paints and
+   HIT-TESTS above that layer regardless of DOM order, so the pointer landed on
+   the input at every point inside the badge and the Tooltip anchor never received
+   pointerenter. MEASURED at the badge's own centre before this line existed:
+   `document.elementFromPoint` returned `input.eq-input`, and `.tt-tip` was absent
+   after a real cursor hover, at BOTH field sites. The badge was still VISIBLE the
+   whole time — the input above it is `background: transparent` — which is exactly
+   why the defect read as "never informative" rather than "missing": you can see
+   the mark, so you keep hovering something that structurally cannot answer.
+   A LOCAL number is right here (see THE Z LADDER): this orders three children of
+   one .eq-wrap — overlay 0, input 1, badge 2 — and claims nothing app-wide.
+
+   `cursor: help` follows `.help-btn` / `.field-label` (app.css:7980, :8555): a
+   Tooltip-only affordance whose whole purpose is to be read, not clicked. It also
+   says the truth about the 15px it now owns — being above the input, a click here
+   no longer lands in the text, and the pointer should not promise a caret. */
 .numfield .eq-badge-error {
   color: var(--a-guide);
   pointer-events: auto; /* hoverable: the tooltip carries the error message */
+  z-index: 2; /* above .eq-input's 1 — without it the pointer never arrives */
+  cursor: help;
   display: inline-flex;
 }
 
@@ -10072,6 +10127,18 @@ audio.ae-preview-media {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The submenu a searched-up child came from (CommandPalette). Dim and trailing, so
+   it reads as provenance rather than as part of the command's name — the same weight
+   the shortcut column carries, because both answer "about this row" rather than
+   "what this row is". */
+.palette-item .palette-in {
+  margin-left: auto;
+  padding-left: var(--a-sp-2);
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
   white-space: nowrap;
 }
 

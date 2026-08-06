@@ -4582,6 +4582,49 @@ replaying from slide 0 is cheap, correct, and identical every time, and
 `RenderTree = pure(document, [[slide, alpha]])` survives having events at all. This is
 the single most important sentence for whoever builds R7-8.
 
+**BUILT (W3-X, `e22e5de`, `e9d6b6a`, `78a2f41`, `25cbf54`). Gate 314 pass / 0 fail.**
+
+**IDEMPOTENCE ENDED UP STRUCTURAL, NOT A RULE.** `execEffect(ctx) → [[path, value]]` — no verb
+slot, no writer, no read-back, so an effect **cannot express `add`**. Each boundary evaluates
+`base_j = evaluate(fold(j) ⊕ overlay_{j−1})` and every predicate and value reads that fixed
+snapshot, making "re-running a boundary is a no-op" a THEOREM rather than a promise. Same move as
+the audio mute sitting downstream of the capture tap: prefer making a mistake inexpressible over
+documenting it.
+
+**EXEC IS AN ORDINARY PORT TYPE, STORED ON THE OUTPUT SIDE:** `state.exec = {"<outKey>":
+{item, port}}`, the exact mirror of `state.inputs`. Because it is keyed by the FIRING PIN,
+**`exec OUT ≤ 1` is arithmetic rather than a rule anything enforces** — the same structural trick
+that makes `inputs` fan-in-1. Beads, layout, hit-testing, colour and wire drawing came free from
+the one port table.
+
+**THE FIRING SCHEDULE IS THE SLIDE GRID, and that is the performance story.**
+`execOverlayAt(doc, k)` replays boundaries 0…k and returns a document delta. **It does not take
+alpha**, so ONE replay serves every frame of a tween — memoized per document, prefix-cached, so a
+deck costs O(n) not O(n²). A deck with no exec wires costs one memoized structural scan and ZERO
+evaluations (asserted).
+
+**⚠ THE COUNTER WAS THOUGHT FORBIDDEN AND IS NOT — read this before citing the rule above at
+someone.** "Never `add 1 to X`" is about REPLAY COST, not about accumulation being wicked.
+Idempotence exists so that replay need not happen; the slide grid already pays for replay, so an
+accumulator is still a pure function of `(document, slideIndex)` and Δt = 0, sharding and export
+reproducibility all survive. `plugins/node_counter.js` writes
+`set self.count to base + step × (runIndex + 1)` — **a `set`, with accumulation expressed as a
+function of the occurrence index.** `runIndex` is load-bearing: two events into one counter at one
+boundary must tick it TWICE, and reading the value back would silently collapse them into one.
+The rule's real protection survives — there is still no node an author can point at an ARBITRARY
+property to accumulate.
+
+**THE HONEST LIMIT, and it blocks one obvious demo.** "Fireworks on trigger" composes today
+(On Reveal → Counter → Set `particleSeed`) and gives a new burst pattern per trigger. What does
+NOT work is a burst that LAUNCHES at the trigger instant: `render_gpu/particle_clock.js` offers a
+fixed freeze or a global wall clock, never *"seconds since this slide was entered"* — and that is
+not document state, because a presenter lingers arbitrarily. A trigger-relative clock would be a
+new ambient input in the RECORDABLE class; separate design.
+
+**NOT DONE, each deliberate:** no `DelayAlpha` (a sub-slide wait would make the overlay a function
+of alpha and cost a replay per frame — the very thing this design avoids); no hysteresis on
+On Threshold (needs a latch, not two samples); effects write numbers only.
+
 ### R7-10 WAVE 1 RESULT — and the text-baseline bug that had defeated three fixes
 
 **THE FINDING WORTH THE WHOLE ROUND: A TEXT OP'S `y` IS THE LINE BOX'S TOP, NOT A
@@ -4620,6 +4663,21 @@ every registry-derived node type × 5 widths × ~11 heights down to each plugin'
 found two escapes the eye missed** — `node_knob` at 400×82, and `audio_oscillator` at
 80×124 where the band wraps to three rows, **so a floor is a function of WIDTH, not just
 of content**. It also pins "a control never has an authored x".
+
+**⚠ AND IT HAS A BLIND SPOT: CONTAINMENT-BY-FLOORING. Found 2026-08-06 (W3-K), on the one
+widget that was outside the single layout path.** `plugins/node_keyboard.js:281`
+hand-placed its face at `NODE_HEADER_H + 8 = 32` while the card's `nodeBodyTop` is **70**
+(it has two output ports). **So the keys were painted straight THROUGH both port rows and
+their labels, at every size, on a widget nobody had resized** — and the sweep passed it,
+because a `Math.max(0, …)` floored the face height at 0 and a zero-height face is
+trivially inside the card.
+
+**THE LESSON: "inside the card" is necessary and not sufficient.** A containment sweep can
+be satisfied by a DEGENERATE rect, so it must also assert the face is NON-DEGENERATE and
+that it does not OVERLAP the bands above it (ports, header, readout). Otherwise the
+cheapest way to pass is to collapse — which is exactly what a `Math.max(0, …)` does by
+accident. Fixed by the declaration + `paint(s, face)` route (default `h` 104 → 142, and
+that number is DERIVED by `controlNodeHeight`, not written down).
 
 **HONEST MEASUREMENT, RECORDED BECAUSE THE HABIT MATTERS MORE THAN THE NUMBER: THE
 DEDUP GREW THE CODE — +107 non-comment lines (1006 → 1113), and no simplification is
@@ -4969,6 +5027,218 @@ and the round reports the tally. **A set of 50 patches averaging four trivial no
 has FAILED, even at 50/50.** The report must make that visible rather than let a number
 stand in for the requirement — which is the same reason the test gate is not allowed to
 quote a partial count.
+
+#### R7-UNITS — WHAT A WIRE CARRIES. ONE LAW, DECIDED BY THE LEAD, 2026-08-06
+
+**THIS EXISTS BECAUSE FOUR AGENTS PORTING FOUR BLOCKS OF ONE PROJECT INDEPENDENTLY CHOSE
+THREE DIFFERENT ANSWERS**, each defensible, and the disagreement is INVISIBLE until a
+patch wires one block's output to another block's input. VC-3a found it by reading its
+three siblings' committed files and reported it rather than assuming its own was the
+convention — that is the only reason it was caught before twenty patches were built on it.
+
+What was measured, at the moment of the ruling:
+- **audio level** — VC-1, VC-3a and VC-5 all chose `1 unit = 5 Rack volts`; **VC-2 chose
+  `1 unit = 1 volt`**, with the conversion inside an AudioInterface node.
+- **pitch** — VC-1 and VC-5 chose **semitones**; VC-3a chose **volts ÷ 5**. A pitch wire
+  crossing that boundary is wrong by a factor of **60** (their 12 semitones is one octave;
+  a volts/5 port reads 12 as sixty octaves), and it is wrong in a *tune-shaped* way, so it
+  sounds like a bad port rather than like a units bug.
+
+**THE LAW, in three lines. It is not new — it is the one the 34 shipped Axoloti nodes and
+the house nodes were already following, written down:**
+
+1. **An `audio` wire is ±1, and ±1 IS ±5 Rack volts.** Divide every Rack voltage by 5.
+   Three of four blocks already did this; VC-2 changes.
+2. **A `number` wire carries the REAL UNIT OF ITS QUANTITY** — hertz for a frequency,
+   seconds for a time, 0..1 for a normalized depth. This is already the house rule:
+   `OSCILLATOR_SPEC` has knob `frequency` in Hz AND input `frequency` in Hz, and
+   `core/audio_specs_ax2.js`'s header states it as *"a knob and its same-named input carry
+   the SAME units"*.
+3. **A V/oct pitch port carries SEMITONES**, i.e. `semitones = 12 × volts`. Two of four
+   VCV blocks and ALL 34 Axoloti nodes already did this; VC-3a changes (its seam is one
+   constant, `OCTAVES_PER_UNIT`, used twice). A generic bipolar CV that is NOT a pitch is
+   ±1 like any other number wire.
+4. **A `gate` or `trigger` port carries 0…1, NOT volts ÷ 5** (added by VC-1, which hit it).
+   **WHICH of the two a gate becomes is decided by what the module DOES with it**, and
+   VC-1's Clouds pair is the clearest statement of the test: `trig` is latched during a
+   block and CLEARED after use, so it is an EVENT → `trigger`; `freeze` is
+   `p->freeze = freeze || voltage >= 1.0`, a SUSTAINED STATE held as long as the signal is
+   high, so it is a level → `number`. Same jack shape, same cable, different type.
+   A caution measured the same day: `core/nodeflow.COERCIONS` has **no `audio → trigger`**,
+   so typing a gate OUTPUT `audio` makes it an illegal drop onto a `trigger` input —
+   `Marbles[t2] → Rings[strum]`, a cable in P1's own list, was un-wireable in committed and
+   tested code until the placeholder cross-check surfaced it. `trigger` reaches trigger,
+   number AND audio; `audio` reaches only two. Prefer `trigger` for anything gate-shaped.
+   Branches emits a **10 V** gate, which clause 1 would make `2.0` — outside our `audio`
+   wire's ±1 and outside the `gate()` declaration's own `min 0, max 1`. **This project's
+   trigger convention predates the port, so it wins**, and clause 1 is about LEVEL, not
+   about logic.
+
+**A MEASURABLE ARGUMENT FOR CLAUSE 1, better than the three-to-one vote it was decided on**
+(VC-1, checked rather than asserted): every AudibleInstruments wrapper **already** divides
+its audio inputs by 5 and multiplies its outputs by 5 on the way to and from Mutable's
+float DSP. Choosing ÷5 makes both of those the IDENTITY at our boundary — **our wire IS the
+Mutable DSP's own internal float.** Any other factor inserts a gain that exists in neither
+codebase.
+
+**WHY SEMITONES AND NOT VOLTS, since VC-3a's argument for volts was a good one.** Its case
+was concrete: P5 wires `AddrSeq → Merge → Split → FMOp[Pitch]` directly, and under one
+volt-shaped law that chain needs no converter. True — but adopting it would have made a
+THIRD pitch convention in a codebase that already has two (house nodes in hertz, Axoloti
+nodes in semitones-from-E4, bridged for display by `semitonesToHz`), and it would have put
+34 shipped nodes and two finished VCV blocks on the wrong side of it. **The cost of the
+right answer is that a CV-into-pitch chain needs one visible scaler node, recorded as a
+deviation in the patch.** That is a cost paid once per patch, in the open; a third unit
+convention is a cost paid forever, silently.
+
+**THE ORIGINS ARE DIFFERENT AND THAT IS DELIBERATE — AND THERE ARE MORE THAN TWO OF THEM.**
+Axoloti semitone 0 is **E4** (MIDI 64, 329.6276 Hz); a VCV V/oct 0 V is **C4**
+(`dsp::FREQ_C4`, 261.6256 Hz). Keeping each corpus's own origin is what lets a harvested
+patch's dial numbers be copied across UNCHANGED, which is the entire point of porting
+rather than reimplementing — so an AX pitch wire into a VCV pitch port is off by four
+semitones, and that is a real trap. It is mitigated the way the hertz/semitone divergence
+already is: **a pitch knob displays its actual frequency** (the spec's `hz` field), so the
+author sees 261.63 Hz or 329.63 Hz rather than a bare `0 st`.
+
+**BUT THE DISPLAY BRIDGE IS PER MODULE FAMILY, NOT PER CORPUS, AND THAT IS WORSE THAN THIS
+PARAGRAPH FIRST CLAIMED.** VC-1 measured a THIRD origin inside VCV itself: Rings'
+Frequency knob is neither C4 nor A440-relative — `Rings.cpp:154` computes `tonic = 12 +
+knob` and `part.cc:504` does `SemitonesToRatio(note − 69)·a3`, so the knob is **MIDI note
+minus 12**, and its default of 30 is MIDI 42, about 93 Hz. So a VCV block does not get one
+shared C4 converter either; **it writes the converter its module's own tuning implies**
+(Rings': `hz = 440·2^((12 + knob − 69)/12)`). Nothing may reuse `semitonesToHz` from
+`core/audio_nodes.js` outside the Axoloti blocks — that one is E4.
+
+**AND A KNOB THAT IS A TRANSPOSITION GETS NO `hz` AT ALL** (VC-1's call, and its reason). Clouds' and Supercell's pitch
+knobs shift incoming material; there is no absolute frequency to show, so a hertz readout
+beside them would be a confident lie. Absence is the correct answer there, not a fallback.
+
+**A BLOCK MAY NOT RE-LITIGATE THIS.** If a port genuinely cannot be expressed in these
+units, report it to the lead and the law gains a clause, swept across every block in one
+commit — the same rule the PORT-BLOCK CONTRACT states about its five names.
+
+#### R7-POLY — HOW AN AXOLOTI `patch/patcher` BECOMES A POWERRP GRAPH (lead ruling, 2026-08-06)
+
+Three agents rebuilding Axoloti patches hit the same wall independently: `patch/patcher`
+with `poly=N` instantiates a subpatch N times WITH VOICE ALLOCATION, and PowerRP has no
+such construct. They returned two different answers, so it is settled here.
+
+**RATIFIED: a NOTE ALLOCATOR node in front of a voice graph drawn ONCE.** `poly/voices`
+takes one stream of note events (`note`, `gate`, `gate2`, `velocity`, `release_velocity`)
+and emits the per-voice versions of the same five; its `voices` knob is the patcher's
+`poly` attribute, so the harvested 7 / 7 / 8 / 5 / 3 survive as DATA rather than as prose.
+The contract it asks of AX-1, in one sentence: **"replicate the subgraph DOWNSTREAM of me
+N times."**
+
+**REJECTED — N EXPLICIT COPIES.** A1's voice is 30 nodes, so seven of them is 210, and A9
+embeds A1 (270). Worse than the size: one keyboard into five identical voice graphs is a
+UNISON, not polyphony — nothing allocates notes between them — so it is a false picture as
+well as an expensive one. It also hard-codes the voice count into the document, where the
+source states it in one attribute.
+
+**REJECTED — ONE VOICE, POLYPHONY AS A DEVIATION.** It delivers the pad and loses the thing
+the user asked for by name (*"batteries-included patches for polyphony"*), and it makes the
+node list LIE: `poly/voices` stops being owed by anything.
+
+**THE OBJECTION THAT LOST, AND WHY — it is worth recording because it is nearly right.**
+The `axo_machine` agent argued that a patcher's ports ARE its subpatch's `patch/inlet` and
+`patch/outlet` objects, so the type has no stable port list — A1's patcher is 0 in / 1 out,
+C4's is 6 in / 4 out — and `stubRegistry` cross-checks placeholder ports, so such a type
+would either fire spuriously forever or need an exemption. **That is correct, and it is an
+argument against a SUBPATCH-WRAPPER node, which is not what was ratified.** An allocator has
+a FIXED five-in/five-out signature that does not vary by patch. The boundary objects are
+ABSORBED instead — in a flat graph the wire that crossed the subpatch edge is just one wire
+— so `patch/inlet a`, `patch/inlet f` and `patch/outlet a` disappear entirely.
+
+**THE CONVERGENCE EVIDENCE:** `axo_poly` and `axo_reverb` declared `audio_ax_poly_voices`
+independently with BYTE-IDENTICAL ports, and `stubRegistry` reported no conflict between
+them. Two readings agreeing is the strongest signal this mechanism produces.
+
+#### R7-AXO-TRAPS — two conversions that look like no-ops and are not
+
+Both found by building patches rather than by reading, and both are silent.
+
+**1. `node_keyboard.pitch` IS IN HERTZ. EVERY AXOLOTI PITCH PORT IS IN SEMITONES FROM E4.**
+(`plugins/node_keyboard.js` `noteFrequency`, against R7-UNITS clause 3 and
+`core/audio_specs_ax2.js`'s header.) Wiring the playable keyboard straight into an Axoloti
+pitch inlet transposes every note **by its own frequency in semitones** — A4 arrives as
+semitone 440. It would look perfectly fine on the canvas and stay wrong until the block
+landed. **An Axoloti patch that wants to be playable needs AX-1's `midi/keyb`, or a
+Hz→semitone node that does not yet exist.** This is why `axo_machine` used a placeholder
+rather than the widget, and it affects every Axoloti patch in the set.
+
+**2. `conv/to i` IS ×64, NOT A TYPE COERCION.** AX-1 dropped `conv/to f` and `conv/to i` as
+coercions, which is true of the TYPE and false of the VALUE: frac32→int32 is `>>21`, i.e.
+multiply by 64, and that is exactly what turns a 0..1 LFO ramp into a step-table index.
+A10 needs it. Dropping it produces a sequencer that never leaves step 0.
+
+#### R7-17-SEL — THE 20 HEADLINE PATCHES, NAMED (user ruling, 2026-08-06)
+
+> *"Do not choose teh easy nodes or the easy patches. That's lazy. You need to choose 20
+> impressive, fully-equipped patches with tons of likes and views (especially the VCV rack
+> ones) and froim Axoloti (there are some batteries-included patches for polyphony there
+> too"*
+
+**This is a CORRECTION, and the thing it corrected must be recorded, because it is the
+exact failure R7-17's anti-gaming guard was written to prevent and the guard did not stop
+it.** Wave 3 shipped 34 ported nodes as blocks AX-1/AX-2/AX-3 — arithmetic, logic, step
+tables, oscillators, LFOs, noise, filters — **zero demo patches, and nothing from VCV
+Rack at all.** Those three blocks are precisely the *machine-generated boilerplate* the
+manifest already identified as the WRONG half (*"610 are machine-generated … 74 are
+hand-written — and the hand-written ones are the good ones … Demos come from there"*).
+The guard counted nodes-per-patch; it never asserted that any patch existed. **A node
+count is not a deliverable. The user cannot use a pile of nodes** (*"I cant use a dump
+fill of nodes"*).
+
+**THE 20 ARE FIXED HERE SO THE DELIVERABLE CANNOT DRIFT.** They come from the two Phase-1
+surveys (`.frenzy/round7/survey_vcv.md`, `survey_axoloti.md`), which harvested and PARSED
+real patch files rather than reading descriptions. Popularity figures are patchstorage's
+own. The 50-patch total of R7-11 still stands as the round's target; **these 20 are its
+hard core and are built FIRST.** Anything added later is added around them, never instead
+of them.
+
+**VCV RACK — 12** (the user: *"especially the VCV rack ones"*):
+
+| # | patch | popularity | distinct | why it is not an easy patch |
+|---|---|---|---:|---|
+| P1 | Simple Generative Granular Ambient | 1958 dl / 6071 views | 14 | the canonical modern ambient recipe: Rings modal resonator → Clouds → Chronoblob2 → Plateau, clocked by Marbles self-patching its own jitter |
+| P2 | Self-Playing Generative Ambient (Omri Cohen) | 1793 dl | 28 | **no sequencer at all** — burst generator + 7 sample-and-holds + 6 crossfaders; pins the send/return topology every other patch needs |
+| P3 | Your First Generative Patch (redmeansrecording) | 1636 dl | 23 | the densest Mutable cluster: Marbles, Branches, Plaits, Rings, Elements in one graph |
+| P4 | MICROCOSM v2 | 1117 dl / 40 likes | 18 | entirely an FX chain — 5 SQUONK microloopers + 5 Simpliciter granulators through 9 state-variable filters |
+| P5 | Incanta | 1271 dl | **37** | 105 instances / 236 cables, **seven** hard families; 8 FMOp operators and a modulation farm where no two rates are commensurate |
+| P8 | Borealis / Generative Kosmische | 920 dl / 43 likes | 30 | Berlin-School, not wash; Chord-Key voicing + ACFolding wavefolder + PalmLoop FM |
+| P9 | Generative Patching with Rampage | 1251 dl | 32 | Befaco Rampage as envelope, LFO, slew limiter and comparator **out of one recurrence** |
+| P12 | Building an Ambient Drone (Omri Cohen) | 2040 dl | 18 | Grayscale **Supercell** (per-grain pitch/reverb) + Vult Vessek physical voice + PEQ6 formants |
+| P19 | Korg MS-20 Full System | 1458 dl / 4671 views | 29 | Lindenberg MS20_VCF — a Sallen-Key filter with the MS-20's **diode-clipper self-oscillation**, a nonlinearity no other filter here has |
+| P20 | FM Pad, free modules only | 679 dl | 17 | index envelope shorter than amplitude envelope — the whole of FM design; WVCO through-zero FM with real anti-aliasing |
+| P22 | Ciani's Buchla — Performance Patch | 1658 dl / 37 likes | **38** | squinkylabs **freqshifter** (true SSB, inharmonic — a different algorithm from every other pitch module) |
+| P25 | Moog Subharmonicon in VCV | **3391 dl / 66 likes** | 20 | 8 × VCFrequencyDividerMkII against polyrhythmic sequencers: **true subharmonics**, and the most instantly recognisable sound in the set |
+
+**AXOLOTI — 8**, weighted to the *batteries-included polyphony* the user named:
+
+| # | patch | poly | distinct / DSP | why it is not an easy patch |
+|---|---|---:|---|---|
+| A1 | `demos/synth/strings.axp` | **7** | 24 / 15 | the reference poly string pad; pink-noise filter drift per voice |
+| A9 | `demos/sequencing/radioactive.axp` | 7 | 38 / 20 | `seq/lfsrseq` at polynomial `0x198` — an LFSR Geiger counter driving an FM voice, plus A1's whole pad as a split |
+| A10 | `demos/sequencing/drseq.axp` | — | **54 / 27** | the largest factory patch: 8-pattern drum machine + acid bass + `reverb/fdn4` + `pulse/lfsrburst 8` |
+| C1 | `tiar/synths/Shimmer.axp` | **5** | 26 / 20 | **two pitch shifters INSIDE a 6×6 FDN feedback path** — the structure R7-11 already names as the hard case |
+| C3 | `tiar/synths/ToTheStarsII.axp` | — | 38 / 21 (**140 objects**) | the flagship ambient pad: 12 ZDF filters, 10 allpasses, two SDRAM delays, 19 LFOs |
+| C4 | `tiar/synths/Tranquille.axp` | 3 | 24 / 16 | wavetables drawn at random from spectral banks **on every note** |
+| C7 | `tiar/synths/091-Pad 3 (polysynth)-tiar.axp` | **8** | 39 / 22 | 8-voice MPE pad into a **hand-built Dattorro plate reverb** — no reverb object, primitives only |
+| C11 | `mtyas/messymix/big MI stingy patch.axp` | 5 | 28 / 16 | four Mutable engines at once: Braids bowed → Elements diffuser + Elements reverb + Rings chorus → twin 341 ms delays |
+
+**THE TALLY THE ANTI-GAMING GUARD DEMANDS** — mean distinct modules/objects per patch
+**26.4**; smallest is 14 (P1) and it still spans four hard families; all nine hard families
+covered, polyphony by six of the eight Axoloti picks (7, 7, 5, 3, 8, 5 voices).
+
+**WHAT IS DELIBERATELY NOT PORTED, said plainly rather than discovered later.** Cosmetic
+furniture (blanks, panels, light strips, cable-colour keys, scopes used as decoration) is
+not a node and is dropped. Where a patch uses a generic utility whose semantics our
+existing node already has *exactly* (attenuverter, unity mixer, merge/split), the patch
+uses ours and **records the substitution as a named deviation in its entry** — an
+unrecorded substitution is the silent-divergence failure this whole section exists to
+prevent. Every module that makes the patch SOUND the way it does is ported faithfully; a
+substitution there is not a deviation, it is a different patch.
 
 ### R7-18 A DEMO AUDIO PATCHES SUBMENU (user, 2026-08-06)
 

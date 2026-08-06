@@ -65,7 +65,8 @@ import { graphGridPlugin } from "./graph_grid.js"; // coordinate grid + faded su
 import { graphBarsPlugin } from "./graph_bars.js"; // programmatic bar graph: direct/riemann/literal, the reveal grow-up, area-under-curve
 // DEMO widgets (plugins/demo/) — showcase the extensibility story (custom
 // self.* properties). Surfaced via the "Add Demo Widget" submenu (App.svelte),
-// not the core Add menus.
+// not the core Add menus. Every plugin imported from this directory must also
+// appear in `demoPlugins` below, which is where that requirement is explained.
 import { demoShowcasePlugin } from "./demo/showcase.js";
 import { glassPlugin } from "./demo/glass.js";
 import { frostedGlassPlugin } from "./demo/frosted_glass.js"; // basic frosted-blur panel (backdrop material, no liquid-glass refraction/specular)
@@ -111,7 +112,30 @@ import { audioPlugins } from "./audio_index.js";
 import { execPlugins } from "./exec_index.js";
 import { scene3dPlugins } from "./demo/scene3d.js"; // THE 3D VIEWPORT FAMILY: scene3d_splat (Gaussian splats, working) + scene3d_model (glTF, loader not wired) — camera pose is keyframable property state, double-click flies it
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
+/**
+ * THE plugins/demo/ HALF OF THE ROSTER, named because a MENU depends on it
+ * (manifest R7-18). "Add Demo Widget" is the one submenu whose membership is a
+ * DIRECTORY rather than a property of the widgets in it, and that directory was
+ * mirrored by a hand-written list of ~40 entries in web/App.svelte — the Tower of
+ * Babel failure in its commonest concrete form. It had already drifted:
+ * `demo_video_time_scrub` shipped and was reachable from no menu at all.
+ *
+ * A demo widget's menu entry cannot be fully derived (each carries an explanatory
+ * title, and eight of them insert by a route other than the plain crosshair), so
+ * this list is the GATE instead of the generator: tests/demo_insert_test.js reads
+ * plugins/demo/ off the disk and fails if this array and that directory disagree,
+ * then fails again if a member of this array is missing from the submenu. Adding a
+ * demo widget without a menu entry is therefore RED, which is what the requirement
+ * asks for where derivation is not honest.
+ *
+ * Membership is IMPORT PATH, nothing else: a plugin here iff its module lives in
+ * plugins/demo/. `magnifier`, `tangent_lines` and `progress_bar` appear in the
+ * submenu and are deliberately NOT here — the menu may show a non-demo widget, the
+ * gate only insists the directory is covered.
+ */
+export const demoPlugins = [demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins];
+
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
 
 /**
  * Command. Registers every plugin TYPE into `registry`, and nothing else.

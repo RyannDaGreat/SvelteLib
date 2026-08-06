@@ -19,7 +19,7 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -45,7 +45,7 @@ import {
   rampSettleSeconds,
   REWIRE_RAMP_SECONDS,
 } from "../synth/dsp.js";
-import { MODULE_FACTORIES, IMPLEMENTATION, moduleTypes } from "../synth/modules.js";
+import { MODULE_FACTORIES, IMPLEMENTATION, PORT_BLOCK_MODULES, moduleTypes } from "../synth/modules.js";
 
 let passed = 0;
 function test(name, fn) {
@@ -411,11 +411,22 @@ test("IMPLEMENTATION covers every module exactly", () => {
   }
 });
 
-test("NATIVE FIRST is actually honored — the worklet list is exactly the five", () => {
+test("NATIVE FIRST is actually honored — the hand-written worklet list is exactly the five", () => {
   // The implementation law. Worklets are the documented exception list, so a
   // sixth appearing silently would mean someone reached for JS DSP where a
   // native node exists.
-  const worklets = moduleTypes().filter((type) => IMPLEMENTATION[type] === "worklet").sort();
+  //
+  // THE LAW IS ABOUT MODULES WE DESIGNED, so the R7-17 port blocks are excluded — and
+  // by DERIVATION from PORT_BLOCK_MODULES, never by name. A ported node reproduces a
+  // fixed-point Axoloti kernel sample by sample; "which native AudioNode would have
+  // done?" has no answer for `filter/vcf3`, so reaching for JS DSP there is not the
+  // choice this test polices. What still must hold for them is asserted right below:
+  // every ported module IS a worklet, so the exclusion cannot become a place to park
+  // an unclassified module.
+  const ported = new Set(PORT_BLOCK_MODULES);
+  for (const type of ported)
+    assert.equal(IMPLEMENTATION[type], "worklet", `ported module ${type} must be classified worklet`);
+  const worklets = moduleTypes().filter((type) => !ported.has(type) && IMPLEMENTATION[type] === "worklet").sort();
   assert.deepEqual(worklets, ["adsr", "bitcrush", "quantize", "sampleHold", "trigger"]);
   // THE LAW IS THE WORKLET LIST, which the deepEqual above pins EXACTLY: a sixth
   // worklet appearing is the violation worth catching, and it still fails here.
@@ -423,9 +434,11 @@ test("NATIVE FIRST is actually honored — the worklet list is exactly the five"
   // merely reds every wave that lands a new native module (it did, when the poly
   // pad landed). What is still worth asserting is that every module has an
   // opinion — no module falls outside the split.
-  const natives = moduleTypes().filter((type) => IMPLEMENTATION[type] === "native");
-  assert.equal(natives.length + worklets.length, moduleTypes().length,
-    "every module must be classified native or worklet");
+  // (Stated as "nothing is unclassified" rather than "native + worklet = total": with
+  // the ported blocks excluded from `worklets` above, a sum no longer reaches the
+  // total, and rebuilding the total from three parts would just re-derive line 408.)
+  const unclassified = moduleTypes().filter((type) => IMPLEMENTATION[type] !== "native" && IMPLEMENTATION[type] !== "worklet");
+  assert.deepEqual(unclassified, [], "every module must be classified native or worklet");
 });
 
 console.log("synth: worklet / dsp constant agreement");
@@ -469,9 +482,31 @@ test("no synth file imports PowerRP", () => {
   // the synth never reaches back. A single convenience import from core/ would
   // make the library non-portable and is exactly the kind of thing that gets
   // added without thinking.
+  // ── THE ROSTER IS WALKED FROM DISK, NOT LISTED ───────────────────────────────
+  // It WAS a hard-coded list of five filenames, and that made **every synth file
+  // added after it exempt from this law by default** — found 2026-08-06 by the AX-1
+  // port agent, which broke the law (`synth/modules_ax1.js` imported
+  // `core/audio_specs_ax1.js`) and was not caught, while two more agents were
+  // adding synth files under the same blind spot. A hand-maintained list mirroring
+  // a directory's contents is the Tower-of-Babel shape this project keeps finding:
+  // the mirror does not fail when it drifts, it just stops checking.
+  //
+  // So the roster is DERIVED — every `.js` under synth/, recursively. A new file is
+  // covered the moment it exists, which is the only way an architectural law with a
+  // growing surface stays true.
   const here = dirname(fileURLToPath(import.meta.url));
-  for (const file of ["dsp.js", "engine.js", "modules.js", "scheduler.js", "worklets/processors.js"]) {
-    const source = readFileSync(join(here, "../synth", file), "utf8");
+  const synthRoot = join(here, "../synth");
+  const synthFiles = [];
+  const walk = (dir, prefix) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) walk(join(dir, entry.name), `${prefix}${entry.name}/`);
+      else if (entry.name.endsWith(".js")) synthFiles.push(`${prefix}${entry.name}`);
+    }
+  };
+  walk(synthRoot, "");
+  assert.ok(synthFiles.length >= 5, `expected to find synth files on disk, found ${synthFiles.length}`);
+  for (const file of synthFiles) {
+    const source = readFileSync(join(synthRoot, file), "utf8");
     const imports = [...source.matchAll(/^\s*import\s.*?from\s+["']([^"']+)["']/gm)].map((match) => match[1]);
     for (const specifier of imports) {
       assert.ok(

@@ -39,7 +39,18 @@ import {
   universalRowsWithInterp,
   retypeSkips,
   retypeSkipReason,
+  MULTISELECT_MODE,
+  MULTISELECT_MODE_CHOICES,
+  MATERIAL_PRESET_ROW_KIND,
+  toolRowKey,
+  toolRowContract,
+  sameToolRow,
+  intersectToolGroups,
+  multiToolPanel,
+  presetPairs,
+  materialPresetPairs,
 } from "../core/multiselect.js";
+import { PLURAL_SCOPE, PLURAL_SCOPE_NOTES, pluralScopeNote } from "../core/commands.js";
 import { MORPH_KEY } from "../core/morph_property.js";
 import {
   sectionKeyPaths,
@@ -851,6 +862,206 @@ test("BJ: the ‹ › arrows walk the UNION of a set's paths, not the primary it
   // slide 2 — q's keyframe — even though q is not the primary selected item.
   const target = sectionJumpTarget(rowPaths.map((p) => keyframeIndices(doc, p)), 0, +1);
   assert.equal(target, 2, "the union reaches the non-primary item's keyframe");
+});
+
+// ── TOOLS OVER A MULTI-SELECTION (user, 2026-08-06) ──────────────────────────
+// "When I select multiple objects, just like properties, I sholud be able to select
+// intersection OR union of available tools - and then when I click a tool, it does
+// it to all selected objects. … But whypresets dont do this?"
+
+/** Test helper. A tool entry: the item's resolved groups, as the app adapter builds
+ *  them (plugin.toolGroups plus any its state adds). */
+function toolEntry(itemId, groups, state = {}) {
+  return { itemId, groups, state };
+}
+
+const CMD_DUP = { kind: "command", command: "duplicate", applies: () => true };
+const CMD_SHATTER = { kind: "command", command: "shatter", applies: () => true };
+
+test("a tool row's IDENTITY is its command, its preset name, or slot+name", () => {
+  assert.equal(toolRowKey(CMD_DUP), "cmd:duplicate");
+  assert.equal(toolRowKey({ kind: "preset", preset: { name: "Soft", props: {} } }), "preset:Soft");
+  assert.equal(
+    toolRowKey({ kind: MATERIAL_PRESET_ROW_KIND, slot: "stroke", preset: { name: "Soft", params: {} } }),
+    "materialPreset:stroke:Soft");
+  // A preset named after a command is NOT that command — the prefix is what keeps
+  // the two namespaces apart.
+  assert.notEqual(toolRowKey({ kind: "preset", preset: { name: "duplicate", props: {} } }), toolRowKey(CMD_DUP));
+  // An unknown kind is LOUD, the polarity core/multiselect.js's row-kind gate uses:
+  // a row nothing recognises must not silently intersect as "equal to everything".
+  assert.throws(() => toolRowKey({ kind: "mystery" }), /unknown tool row kind/);
+});
+
+test("a PRESET's contract is WHAT IT WRITES — same name, different props, different tool", () => {
+  const a = { kind: "preset", preset: { name: "Soft", description: "one", props: { blur: 4, opacity: 1 } } };
+  const b = { kind: "preset", preset: { name: "Soft", description: "another", props: { opacity: 1, blur: 4 } } };
+  const c = { kind: "preset", preset: { name: "Soft", props: { radius: 4 } } };
+  // A description is presentational and declaration ORDER is not a difference.
+  assert.ok(sameToolRow(a, b));
+  assert.deepEqual(toolRowContract(a), { kind: "preset", props: ["blur", "opacity"] });
+  // Different properties under one name is the measured real case (magnifier vs
+  // demo_magnify share six preset names) — reported, never silently merged.
+  assert.ok(!sameToolRow(a, c));
+  // A MATERIAL preset's SLOT is part of its contract: the same material can be a
+  // widget's fill and its stroke, and those are two different writes.
+  const fill = { kind: MATERIAL_PRESET_ROW_KIND, slot: "fill", preset: { name: "X", params: { haze: 1 } } };
+  const stroke = { kind: MATERIAL_PRESET_ROW_KIND, slot: "stroke", preset: { name: "X", params: { haze: 1 } } };
+  assert.ok(!sameToolRow(fill, stroke));
+  // A pool `applies` predicate is NOT part of a command row's contract — an
+  // arriving row already applies (registry filtered it), and two closures are never
+  // equal by reference, so comparing them would make every command row conflict.
+  assert.ok(sameToolRow(CMD_DUP, { kind: "command", command: "duplicate", applies: () => false }));
+});
+
+test("INTERSECTION keeps only shared rows; UNION keeps every row, with who has it", () => {
+  const entries = [
+    toolEntry("a", [{ id: "edit", title: "Edit", rows: [CMD_DUP] }]),
+    toolEntry("b", [{ id: "edit", title: "Edit", rows: [CMD_DUP, CMD_SHATTER] }]),
+  ];
+  const inter = intersectToolGroups(entries, MULTISELECT_MODE.INTERSECTION);
+  assert.deepEqual(inter.groups.map((g) => g.rows.map((r) => r.key)), [["cmd:duplicate"]]);
+  assert.deepEqual(inter.groups[0].rows[0].appliesTo, ["a", "b"]);
+  const uni = intersectToolGroups(entries, MULTISELECT_MODE.UNION);
+  assert.deepEqual(uni.groups[0].rows.map((r) => r.key), ["cmd:duplicate", "cmd:shatter"]);
+  // WHO the row reaches is what lets a union write target exactly the items that
+  // have the tool — the Property Panel's `appliesTo` rule, for tools.
+  assert.deepEqual(uni.groups[0].rows[1].appliesTo, ["b"]);
+});
+
+test("a GROUP only one item declares is out of the intersection and in the union", () => {
+  const entries = [
+    toolEntry("a", [{ id: "edit", title: "Edit", rows: [CMD_DUP] }]),
+    toolEntry("b", [{ id: "edit", title: "Edit", rows: [CMD_DUP] }, { id: "presets", title: "Presets", rows: [{ kind: "preset", preset: { name: "Soft", props: { blur: 1 } } }] }]),
+  ];
+  assert.deepEqual(intersectToolGroups(entries).groups.map((g) => g.id), ["edit"]);
+  assert.deepEqual(intersectToolGroups(entries, MULTISELECT_MODE.UNION).groups.map((g) => g.id), ["edit", "presets"]);
+});
+
+test("EMPTINESS STAYS UNREPRESENTABLE — a group whose rows all fall out is not emitted", () => {
+  const entries = [
+    toolEntry("a", [{ id: "edit", title: "Edit", rows: [CMD_DUP] }]),
+    toolEntry("b", [{ id: "edit", title: "Edit", rows: [CMD_SHATTER] }]),
+  ];
+  // Both declare "edit", they share NO row — so there is no Edit section at all,
+  // rather than an empty accordion the pane would have to know to hide.
+  assert.deepEqual(intersectToolGroups(entries).groups, []);
+});
+
+test("DRIFT GATE: an intersected tool row IS the plugin's own object, never a copy", () => {
+  const rows = [CMD_DUP];
+  const entries = [toolEntry("a", [{ id: "edit", title: "Edit", rows }]), toolEntry("b", [{ id: "edit", title: "Edit", rows }])];
+  const out = intersectToolGroups(entries).groups[0].rows[0];
+  assert.equal(out.row, CMD_DUP, "the row must be the SAME object — a reference cannot drift from itself");
+});
+
+test("a CONFLICT warns and still offers the PRIMARY's version (#300, for tools)", () => {
+  const mine = { kind: "preset", preset: { name: "Soft", props: { blur: 4 } } };
+  const theirs = { kind: "preset", preset: { name: "Soft", props: { radius: 4 } } };
+  const out = intersectToolGroups([
+    toolEntry("a", [{ id: "presets", title: "Presets", rows: [mine] }]),
+    toolEntry("b", [{ id: "presets", title: "Presets", rows: [theirs] }]),
+  ]);
+  assert.deepEqual(out.conflicts, [{ key: "preset:Soft", aspects: ["props"] }]);
+  assert.equal(out.groups[0].rows[0].row, mine, "the primary's version is the one offered");
+});
+
+test("ONE selected item returns its OWN groups by IDENTITY — the single pane is unchanged", () => {
+  const group = { id: "edit", title: "Edit", rows: [CMD_DUP] };
+  const out = intersectToolGroups([toolEntry("a", [group])]);
+  assert.equal(out.groups[0].rows[0].row, CMD_DUP);
+  assert.equal(out.groups[0].title, group.title);
+  assert.deepEqual(out.conflicts, []);
+});
+
+test("an item NOT ON THIS SLIDE is skipped and reported, never acted on", () => {
+  const panel = multiToolPanel([
+    toolEntry("a", [{ id: "edit", title: "Edit", rows: [CMD_DUP] }]),
+    { itemId: "ghost", groups: [{ id: "edit", title: "Edit", rows: [CMD_DUP] }], state: null },
+  ]);
+  assert.deepEqual(panel.skipped, ["ghost"]);
+  assert.deepEqual(panel.itemIds, ["a"]);
+  assert.deepEqual(panel.groups[0].rows[0].appliesTo, ["a"], "the skipped item is not a target");
+});
+
+test("THE REAL ROSTER: arrow + rect + video share tools, and the union is strictly bigger", () => {
+  const ids = ["arrow", "rect", "video"];
+  const entries = ids.map((type, i) => toolEntry(`i${i}`, registry.get(type).toolGroups));
+  const inter = intersectToolGroups(entries);
+  const uni = intersectToolGroups(entries, MULTISELECT_MODE.UNION);
+  const count = (r) => r.groups.reduce((n, g) => n + g.rows.length, 0);
+  // The user's own three-widget example. Measured 2026-08-06: 22 shared rows out of
+  // a 65-row union. Asserted as a RELATION, not as those two numbers — a tool added
+  // to the pool tomorrow changes both and neither change is a defect.
+  assert.ok(count(inter) > 0, "three unrelated widgets do share tools");
+  assert.ok(count(uni) > count(inter), "and the union really is bigger, so the toggle has an effect");
+  // Every intersected row applies to all three; that IS what intersection means.
+  for (const g of inter.groups)
+    for (const r of g.rows) assert.equal(r.appliesTo.length, ids.length, `${r.key} must reach every selected item`);
+});
+
+test("THE REAL ROSTER: a PRESET-bearing widget's family only reaches the union", () => {
+  // A rect declares no preset family and a circle declares two (ring/arc), so the
+  // preset sections are exactly what the union adds — the case the user's "why don't
+  // presets do this?" is about.
+  const entries = [toolEntry("r", registry.get("rect").toolGroups), toolEntry("c", registry.get("circle").toolGroups)];
+  const interIds = intersectToolGroups(entries).groups.map((g) => g.id);
+  const uniIds = intersectToolGroups(entries, MULTISELECT_MODE.UNION).groups.map((g) => g.id);
+  assert.ok(!interIds.some((id) => id.startsWith("presets")), "no preset section is SHARED by rect and circle");
+  assert.ok(uniIds.some((id) => id.startsWith("presets")), "but the union offers the circle's");
+});
+
+// ── THE PRESET FAN-OUT (the answer to "why don't presets do this?") ──────────
+
+test("a preset FANS OUT over every target, as ONE pairs list (therefore one undo unit)", () => {
+  const preset = { name: "Soft", props: { blur: 4, opacity: 0.5 } };
+  assert.deepEqual(presetPairs(["a"], preset), [[["items", "a", "blur"], 4], [["items", "a", "opacity"], 0.5]]);
+  assert.equal(presetPairs(["a", "b", "c"], preset).length, 6, "3 items x 2 knobs, staged together");
+  assert.deepEqual(presetPairs([], preset), [], "no targets writes nothing");
+  assert.deepEqual(presetPairs(["a"], { props: {} }), [], "no knobs writes nothing — the caller must not commit");
+});
+
+test("a MATERIAL preset writes inside the paint slot, never a top-level item key", () => {
+  const pairs = materialPresetPairs(["a", "b"], "fill", { name: "Overcast", params: { haze: 0.4 } });
+  assert.deepEqual(pairs, [
+    [["items", "a", "fill", "material", "params", "haze"], 0.4],
+    [["items", "b", "fill", "material", "params", "haze"], 0.4],
+  ]);
+});
+
+test("an OBJECT knob is cloned PER TARGET — two items must not share one reference", () => {
+  const props = { shadow: { dx: 4 } };
+  const pairs = presetPairs(["a", "b"], { props });
+  assert.notEqual(pairs[0][1], pairs[1][1], "a shared reference would alias the two items' stored state");
+  assert.notEqual(pairs[0][1], props.shadow, "…and neither may alias the preset's own object");
+  assert.deepEqual(pairs[0][1], { dx: 4 });
+});
+
+// ── THE PLURAL DECLARATION ───────────────────────────────────────────────────
+
+test("a tool's plural scope has ONE sentence each, and undeclared says nothing", () => {
+  assert.equal(pluralScopeNote({ id: "duplicate", plural: PLURAL_SCOPE.EACH }), PLURAL_SCOPE_NOTES[PLURAL_SCOPE.EACH]);
+  assert.equal(pluralScopeNote({ id: "align-left", plural: PLURAL_SCOPE.TOGETHER }), PLURAL_SCOPE_NOTES[PLURAL_SCOPE.TOGETHER]);
+  // ABSENT, NOT EMPTY (the `help` precedent): an undeclared tool renders no line
+  // rather than a vague one.
+  assert.equal(pluralScopeNote({ id: "undo" }), null);
+  // Every scope must HAVE a sentence, or a declaration would disable itself.
+  for (const scope of Object.values(PLURAL_SCOPE))
+    assert.ok(PLURAL_SCOPE_NOTES[scope], `${scope} needs the sentence it promises`);
+});
+
+test("a MISDECLARED plural scope is loud at registration, not silently absent", () => {
+  const commands = createCommands();
+  assert.throws(() => commands.add({ id: "bad-plural", title: "Bad", plural: "refuse", run: () => {} }), /plural must be one of/);
+  // …and a REFUSAL is declared through when/requires, which the message says.
+  assert.throws(() => commands.add({ id: "bad-plural-2", title: "Bad", plural: "each ", run: () => {} }), /plural must be one of/);
+});
+
+test("the mode toggle's words and glyphs come from ONE place, one per mode", () => {
+  assert.deepEqual(MULTISELECT_MODE_CHOICES.map((c) => c.mode), Object.values(MULTISELECT_MODE));
+  for (const c of MULTISELECT_MODE_CHOICES) {
+    assert.ok(c.label, `${c.mode} needs a label`);
+    assert.ok(c.icon?.startsWith("mdi:set-"), `${c.mode}'s glyph must be one of mdi's set-* Venn family, got ${c.icon}`);
+  }
 });
 
 console.log(`\n  ${passed} multiselect core tests passed`);

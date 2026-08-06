@@ -287,6 +287,23 @@ check("a port declaring feedbackSafe is exempt from the cycle rule (the reserved
   // The same edge on an ORDINARY port does close one.
   const strict = { a: { type: "n", inputs: { i: { item: "b", port: "o" } } }, b: { type: "n" } };
   assert.ok(wouldCycle(strict, reg, { item: "a", port: "o" }, { item: "b", port: "i" }));
+
+  // ── AND THE PROPOSED EDGE IS EXEMPT TOO — THE HALF THAT WAS MISSING ──────
+  // The case above has the feedbackSafe edge ALREADY PRESENT and proposes an ordinary
+  // one. The mirror image — an ordinary chain already present, proposing the edge that
+  // enters the feedbackSafe port and CLOSES the loop — was REFUSED, so the one port
+  // designed to permit feedback could not receive the wire that makes the feedback.
+  //
+  // Measured on the shipped registry before the fix: a loop with ONE audio_delay was
+  // refused and a loop with TWO was allowed, which is exactly backwards. Since
+  // `audio_delay.in` is the only feedbackSafe port we ship, every single-delay feedback
+  // loop was inexpressible — it cost P1 its Marbles self-patch, made the Axoloti reverbs
+  // draw each FDN leg as two segments, and cut the self-timing loops out of three more.
+  const closing = { a: { type: "n", inputs: { i: { item: "b", port: "o" } } }, b: { type: "n" } };
+  assert.ok(!wouldCycle(closing, reg, { item: "a", port: "o" }, { item: "b", port: "fb" }),
+    "a wire INTO a feedbackSafe port may close a loop — that is what the declaration means");
+  assert.equal(connectionRefusal(closing, reg, { item: "a", port: "o" }, { item: "b", port: "fb" }), null,
+    "and the drag gesture must accept it too, not merely the predicate");
 });
 
 check("topoOrder survives a hand-edited cyclic document instead of hanging, and names the cycle", () => {

@@ -35,6 +35,8 @@ import { tweenedState } from "../core/document.js";
 import { deriveRenderTree, cameraRect } from "../core/derive.js";
 import { contentSizesFor } from "./contentSizes.js"; // intrinsic sizes: produced here, consumed as an evaluateState input
 import { evaluateState } from "../core/expressions.js";
+import { execOverlayFor } from "./execOverlay.js"; // TRIGGERS (R7-8): the writes a slide's events have made — an input evaluateState cannot fetch, threaded here like the script and the content sizes
+import { withExecOverlay } from "../core/exec_flow.js";
 import { advanceTrailHistory } from "../core/trail_history.js"; // SIMULATED trail samples: an input evaluateState cannot fetch, threaded at the one seam every pixel consumer reaches (see evaluationAt)
 import { canSkipNode } from "../core/view.js";
 import { sceneIR, resolvedBackgroundFill } from "../render_gpu/ports.js";
@@ -114,7 +116,7 @@ export function evaluationAt(doc, slideIndex, alpha, registry) {
   // covered: presented time is frozen there, so a simulated widget shows its initial
   // condition and does not move (manifest R7-9's ruling) — a trail in the editor is
   // one dot on its anchor, exactly as the sparkler does not animate there.
-  const folded = tweenedState(doc, slideIndex, alpha, registry);
+  const folded = withExecOverlay(tweenedState(doc, slideIndex, alpha, registry), execOverlayFor(doc, slideIndex, registry));
   const pass = evaluateState(folded, registry, doc.meta.script ?? "", contentSizesFor(folded, doc.meta?.name ?? ""));
   advanceTrailHistory(pass.state, registry);
   return pass;

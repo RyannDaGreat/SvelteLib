@@ -93,8 +93,11 @@
  * graph is PUSH-based with a one-block delay that is part of the sound. That is
  * NF-BIND's problem, and the escape hatch is already shaped: a port declaration may
  * carry `feedbackSafe: true`, and cycleRefusal() ignores edges entering such a
- * port. No audio port declares it yet, and nothing in this file interprets it
- * beyond skipping the check — the semantics belong to whoever adds the first one.
+ * port. Nothing in this file interprets it beyond skipping the check; the semantics
+ * live with whoever declares it, and EXACTLY ONE port does — `audio_delay.in`, whose
+ * spec states the bar a second one must clear. (This sentence read "No audio port
+ * declares it yet" long after DELAY_SPEC declared it. `tests/audio_nodes_test.js`
+ * pins the population at one, so that list cannot go stale the same way twice.)
  *
  * ── HOW VALUES FLOW ─────────────────────────────────────────────────────────
  * `evaluateNodeGraph(items, registry)` returns, per item, the values on its input
@@ -603,17 +606,23 @@ export function nodeInputRows(plugin, state) {
  * Declared HERE rather than written out in each node plugin so the path cannot be
  * spelled three different ways by three widgets.
  *
- * BOTH WIRE MAPS ARE NAMED, and a widget that has only one pays nothing for the
- * other: a wildcard over an absent slot expands to no paths. So every existing node
- * plugin gained exec remapping by importing the constant it already imported, which
- * is the whole reason this is one declaration rather than two — a second constant
- * would be a second thing to remember to spread, and the failure mode of forgetting
- * it (a duplicated patch whose EVENTS still fire at the original) is silent.
+ * THE EXEC MAP IS A SEPARATE CONSTANT, AND THAT WAS MEASURED RATHER THAN CHOSEN.
+ * The first attempt put `exec.*.item` in THIS array, reasoning that a widget without
+ * the map pays nothing because a wildcard over an absent slot expands to no paths.
+ * `tests/multipaste_test.js` refused it, correctly: *"plugin \"node_number\" declares
+ * itemRefs path [\"exec\",\"*\",\"item\"] but its defaults have no such key"*. A
+ * declared ref path is a PROMISE that the slot exists — the same promise `inputs: {}`
+ * is present-but-empty to keep — so naming a map a widget does not have is a
+ * declaration that can never be honoured. Widgets with exec pins spread
+ * EXEC_ITEM_REFS as well, and `execKindProblem` makes forgetting it LOUD rather than
+ * leaving a duplicated event firing at the original.
  */
-export const NODE_ITEM_REFS = Object.freeze([
-  Object.freeze(["inputs", "*", "item"]),
-  Object.freeze([EXEC_KEY, "*", "item"]),
-]);
+export const NODE_ITEM_REFS = Object.freeze([Object.freeze(["inputs", "*", "item"])]);
+
+/** The itemRefs declaration a widget with EXEC PINS spreads IN ADDITION to
+ *  NODE_ITEM_REFS, so a copied trigger fires at the copy. Separate from that
+ *  constant because a declared ref path promises the slot exists — see above. */
+export const EXEC_ITEM_REFS = Object.freeze([Object.freeze([EXEC_KEY, "*", "item"])]);
 
 // ── CONNECTIONS ──────────────────────────────────────────────────────────────
 
@@ -767,6 +776,32 @@ export function defaultOutputPort(items, registry, itemId) {
  * @example wouldCycle({a: {}, b: {inputs: {i: {item: "a", port: "o"}}}}, {get: () => ({})}, {item: "b", port: "o"}, {item: "a", port: "i"}) // true
  */
 export function wouldCycle(items, registry, from, to) {
+  // ── THE PROPOSED EDGE IS EXEMPT TOO, AND OMITTING IT WAS A REAL DEFECT ────
+  // The filter below excludes EXISTING edges entering a feedbackSafe port, but the edge
+  // being PROPOSED was never exempted — so the one port in the library designed to permit
+  // feedback could not receive the wire that CLOSES the loop.
+  //
+  // MEASURED, on the shipped registry:
+  //   loop with ONE  audio_delay  — proposing filter.out -> delay.in   REFUSED  (wrong)
+  //   loop with TWO  audio_delays — proposing d2.out    -> d1.in       allowed
+  //   loop with NO   safe port    — proposing b.out     -> a.in        REFUSED  (right)
+  // One is refused and two are fine, which is exactly backwards from what the declaration
+  // means. `audio_delay.in` is the only feedbackSafe port we ship, so in practice EVERY
+  // single-delay feedback loop was inexpressible.
+  //
+  // IT COST REAL FIDELITY BEFORE ANYONE NAMED IT. Three patch agents hit it independently
+  // and worked around it three different ways: the Axoloti reverb set drew every FDN leg
+  // as TWO delay segments summing to the authored length (adding a stated 6 ms detune to
+  // two legs); P1's `Marbles[Y] -> Marbles[T jitter]` self-patch — the module modulating
+  // its own clock jitter, which the survey calls the patch's signature — was dropped; and
+  // P2's burst generator, P9's Rampage self-timing and P22's pitch feedback were all cut.
+  //
+  // WHY IT IS SAFE: a feedbackSafe port is a declared CUT in the graph. An edge entering
+  // one cannot create a cycle that the evaluator must resolve, which is the entire claim
+  // the declaration makes — so the walk below has nothing to look for. The blast radius is
+  // unchanged: `tests/audio_nodes_test.js` pins that `audio_delay.in` is still the ONLY
+  // port allowed to declare it, so this widens nothing beyond that one deliberate hatch.
+  if (portIsFeedbackSafe(items, registry, to)) return false;
   const edges = connectionsOf(items).filter((e) => !portIsFeedbackSafe(items, registry, e.to));
   const upstream = new Map(); // itemId → [source itemIds]
   for (const e of edges) {

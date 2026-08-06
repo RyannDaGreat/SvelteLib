@@ -1640,6 +1640,76 @@ export function withToolGroups(plugin) {
   return { ...plugin, toolGroups: toolGroupsOf(plugin) };
 }
 
+/** The word every node's display title ends with, and the one place it is spelled —
+ *  so the "already says it" test and the construction cannot disagree, exactly as
+ *  `AUDIO_TITLE_PREFIX` does for the other half of a node's name. */
+const NODE_TITLE_SUFFIX = " Node";
+
+/**
+ * Pure function. A node's display title, ending in "Node".
+ *
+ * USER, 2026-08-06 (verbatim): *"All nodes should have "Node" in the name"*.
+ *
+ * IT WAS ALREADY THE CONVENTION FOR FOUR OF THE 73 — `Number Node`, `Math Node`,
+ * `Display Node` and the Piano Roll's neighbours were named that way by hand, and the
+ * other 69 were not. So this is not a new coat of paint; it is the majority of the
+ * roster being brought to a convention a minority already followed, which is the case
+ * the manifest's "one concept, one expression" rule is actually about.
+ *
+ * IDEMPOTENT, on the same argument `audioDisplayTitle` makes for its prefix: the four
+ * that already say it must not become "Number Node Node", and a future plugin author
+ * who spells it out gets exactly one.
+ *
+ * @param {string} title - the plugin's authored title
+ * @returns {string}
+ *
+ * @example nodeDisplayTitle("Gate") // "Gate Node"
+ * @example nodeDisplayTitle("Audio Delay") // "Audio Delay Node"
+ * @example // already ends in it — no doubling
+ * @example nodeDisplayTitle("Number Node") // "Number Node"
+ */
+export function nodeDisplayTitle(title) {
+  const name = String(title ?? "");
+  return name.endsWith(NODE_TITLE_SUFFIX) ? name : `${name}${NODE_TITLE_SUFFIX}`;
+}
+
+/**
+ * Pure function. A plugin whose title says "Node" if it IS one — the third
+ * registration-time wrap, beside withUniversalEffects and withInkAnchors.
+ *
+ * ── WHY AT REGISTRATION AND NOT IN EACH PLUGIN ──────────────────────────────
+ * The audio half already has a seam that cannot be forgotten: `audioNodePlugin` applies
+ * `audioDisplayTitle` to all 60-odd of its specs at one line. The HAND-WRITTEN node
+ * plugins (`plugins/node_*.js`, the exec nodes, the control nodes) have no such seam —
+ * each spells its own `title:` literal, which is exactly why 69 of 73 had drifted off
+ * the convention. Adding the suffix in 17 files would restore it for today and lose it
+ * again on the next plugin somebody writes.
+ *
+ * Registration is the one place every plugin passes through, and this file's own note on
+ * `REGISTRY_DERIVED_KEYS` establishes that deriving plugin shape here is the house
+ * pattern rather than a novelty.
+ *
+ * ── WHAT COUNTS AS A NODE: `ports`, not a list ──────────────────────────────
+ * A node is a widget with PORTS — that is what the whole node-graph vocabulary
+ * (core/nodeflow.js) is defined over, and a plugin declaring `ports()` is already how
+ * the canvas decides to draw beads, run hit tests for wire drags and offer connections.
+ * Anything else would be a hand-maintained roster of "which widgets are nodes", i.e.
+ * this project's most-repeated defect. Measured at the time of writing: 73 of 178
+ * registered plugins declare `ports`, and the 105 that do not are rectangles, text,
+ * images and the like — no false positives.
+ *
+ * @param {object} plugin - a widget plugin as authored
+ * @returns {object} the same object when it is not a node; a retitled copy when it is
+ *
+ * @example withNodeTitle({type: "rect", title: "Rectangle"}).title // "Rectangle"
+ * @example withNodeTitle({type: "node_gate", title: "Gate", ports: () => []}).title // "Gate Node"
+ * @example withNodeTitle({type: "node_number", title: "Number Node", ports: () => []}).title // "Number Node"
+ */
+export function withNodeTitle(plugin) {
+  if (typeof plugin.ports !== "function") return plugin;
+  return { ...plugin, title: nodeDisplayTitle(plugin.title) };
+}
+
 /**
  * The keys `register()` DERIVES onto a plugin, so the registered object is never
  * `===` (nor deep-equal) to the authored one.
@@ -1682,7 +1752,7 @@ export const REGISTRY_DERIVED_KEYS = ["effectsInjected", "toolGroups"];
  * questions of a registered plugin — "what appeared?" versus "what was wrapped?" —
  * and a test that conflated them could not assert either one exactly.
  */
-export const REGISTRY_REWRITTEN_KEYS = ["anchors"];
+export const REGISTRY_REWRITTEN_KEYS = ["anchors", "title"];
 
 export function createRegistry() {
   const plugins = new Map();
@@ -1731,7 +1801,7 @@ export function createRegistry() {
         const taken = [...plugins.values()].find((p) => p.assetDrop === plugin.assetDrop);
         if (taken) throw new Error(`Plugin "${plugin.type}" claims dropped "${plugin.assetDrop}" assets, but "${taken.type}" already does — exactly one widget may be what a dropped ${plugin.assetDrop} becomes`);
       }
-      plugins.set(plugin.type, withToolGroups(withUniversalEffects(withInkAnchors(plugin))));
+      plugins.set(plugin.type, withNodeTitle(withToolGroups(withUniversalEffects(withInkAnchors(plugin)))));
     },
     /** Query. Plugin by type; loud when unknown. */
     get(type) {

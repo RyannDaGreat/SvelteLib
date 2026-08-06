@@ -64,8 +64,9 @@ import {
   clampParam,
   REVERB_CHARACTERS,
 } from "./dsp.js";
-import { MODULE_FACTORIES } from "./modules.js";
+import { MODULE_FACTORIES, IMPLEMENTATION, moduleTypes } from "./modules.js";
 import { createScheduler } from "./scheduler.js";
+import { spectrumColumn } from "./spectrum.js";
 import {
   createVoicePool,
   noteOn as voiceNoteOn,
@@ -77,6 +78,53 @@ import {
 
 /** Where the worklet processors live, relative to this file. */
 const WORKLET_URL = new URL("./worklets/processors.js", import.meta.url);
+
+/**
+ * EVERY PORT BLOCK'S PROCESSOR MODULE URL, AS A LIST — resolved by a DYNAMIC import
+ * inside `init()`, which is the load-bearing part of this function and not a style.
+ *
+ * R7-17 ships ~336 ported nodes in 23 blocks, and each block that builds
+ * AudioWorkletNodes brings its own processor file. Three hard-coded `addModule` calls
+ * would be the same drift shape as the hard-coded five-file roster that made
+ * tests/synth_engine_test.js's ENGINE-LAW check exempt every synth file added after it
+ * (found 2026-08-06). So init() WALKS this list and a new block costs one entry in
+ * synth/worklet_urls.js.
+ *
+ * WHY `await import(…)` AND NOT A STATIC IMPORT — MEASURED 2026-08-06. It was static
+ * for one commit, and that took `tests/audio_mute_test.js` down with:
+ *   SyntaxError: The requested module './worklets/processors_ax1.js?worker&url'
+ *   does not provide an export named 'default'
+ * `?worker&url` is a Vite query suffix; bare node resolves the specifier to the real
+ * file and then finds no default export, so the failure lands at LINK time and takes
+ * every static importer with it. worklet_urls.js's quarantine was written to keep that
+ * specifier out of `synth/modules.js`'s graph — but `engine.js` is in the node lane too
+ * (any suite that drives the engine imports it), so the quarantine only actually holds
+ * if NOTHING links it statically. A dynamic import is the boundary that makes the
+ * quarantine true: node never evaluates it because node never calls `init()` (there is
+ * no AudioContext to call it on), and Vite still bundles it and rewrites the URLs.
+ *
+ * ── DERIVED FROM THE MODULE'S EXPORTS, NOT LISTED ───────────────────────────
+ * This used to be `[urls.AX1_WORKLET_URL, urls.AX2_WORKLET_URL, urls.AX3_WORKLET_URL]`,
+ * which made a new block cost TWO edits in two files — and the second one, here, is the
+ * one nobody thinks of, because forgetting it does not break the build or the node lane.
+ * It breaks AUDIO, at runtime, for that block only: every one of its modules constructs
+ * an AudioWorkletNode for a processor that was never registered. That is the sixth
+ * hand-maintained list this round has found (the engine law's five-file roster, the
+ * demo-widget list, the project script's keyword mirror, IMPLEMENTATION, the init gate,
+ * and this), and the rule the manifest states for all of them is: derive it, or gate it
+ * so drift turns something red. This one can simply be derived.
+ *
+ * A NEW BLOCK NOW COSTS EXACTLY ONE LINE, in worklet_urls.js. The suffix convention IS
+ * the contract — an export named `<BLOCK>_WORKLET_URL` is a processor to load.
+ *
+ * Query (reads the module graph). Returns `[name, url]` pairs in declaration order,
+ * falsy URLs dropped so a block that needs no processor may export `null` and say so.
+ * The NAME is carried so a failing load can say which block it was.
+ */
+async function portBlockWorkletUrls() {
+  const urls = await import("./worklet_urls.js");
+  return Object.entries(urls).filter(([name, url]) => name.endsWith("_WORKLET_URL") && url);
+}
 
 /**
  * Create a synth engine.
@@ -418,16 +466,33 @@ export function createEngine(options = {}) {
       for (const callback of callbacks) callback({ rms, db: peakDb });
     }
 
+    // ── THE SPECTRUM POLL RUNS OUR OWN FFT (R7-19) ──────────────────────────
+    // NOT getByteFrequencyData, and the reason is the `window` row: that method
+    // hard-wires a Blackman window (the Web Audio spec mandates it and offers no
+    // parameter), so honouring "linear and haming window options" is impossible
+    // through it. The node is still the tap — getFloatTimeDomainData is how the
+    // samples arrive — and synth/spectrum.js does the window, the transform and
+    // the dB normalisation. Every buffer it needs was allocated once at
+    // construct time (synth/modules.js spectrumModule), so this stays as
+    // allocation-free as the meter loop above it.
     for (const [id, callbacks] of spectrumSubscriptions) {
       const entry = modules.get(id);
       if (!entry || !entry.instance.analyser) continue;
-      const analyser = entry.instance.analyser;
-      const binCount = analyser.frequencyBinCount;
-      if (!entry.spectrumBuffer || entry.spectrumBuffer.length !== binCount) {
-        entry.spectrumBuffer = new Uint8Array(binCount);
+      const plan = entry.instance.spectrum;
+      if (!plan) {
+        throw new Error(`Module ${JSON.stringify(id)} (${entry.type}) has an analyser but no spectrum plan — a module answering subscribeSpectrum must build one (synth/modules.js spectrumModule)`);
       }
-      analyser.getByteFrequencyData(entry.spectrumBuffer);
-      for (const callback of callbacks) callback(entry.spectrumBuffer);
+      entry.instance.analyser.getFloatTimeDomainData(plan.time);
+      // THE FIRST FRAME SMOOTHS AT 0, which SEEDS the running average with the
+      // reading itself instead of blending it against a zeroed array — so a fresh
+      // display does not fade up out of silence for its first half second. The
+      // smoothing is a filter on a running signal, not a fade-in.
+      spectrumColumn(
+        plan.time, plan.window, plan.re, plan.im,
+        plan.smoothed, plan.seeded ? plan.smoothing : 0, plan.out,
+      );
+      plan.seeded = true;
+      for (const callback of callbacks) callback(plan.out);
     }
 
     pollHandle = requestAnimationFrame(poll);
@@ -464,7 +529,35 @@ export function createEngine(options = {}) {
      */
     async init() {
       if (initialized) return;
+      // ── SAY WHY, RATHER THAN DEREFERENCING `undefined` ──────────────────────────
+      // `BaseAudioContext.audioWorklet` is `[SecureContext]` in the Web Audio spec, so
+      // on an origin the browser does not consider trustworthy it is simply ABSENT.
+      // Loopback (`localhost`, `127.0.0.1`) and https are trustworthy; a bare LAN
+      // address over http is not. Without this check the next line threw
+      // "Cannot read properties of undefined (reading 'addModule')" — which cost a
+      // real debugging session, because it names the SYMPTOM and not one word of the
+      // cause. A missing capability must explain itself.
+      if (!context.audioWorklet) {
+        const where = typeof location === "undefined" ? "(no location)" : location.origin;
+        const secure = typeof isSecureContext === "undefined" ? "unknown" : String(isSecureContext);
+        throw new Error(
+          `this browser exposes no AudioWorklet on ${where} (isSecureContext=${secure}), and the Web Audio spec `
+          + `gates audioWorklet on a SECURE CONTEXT — so no audio can be built here at all. `
+          + `Serve over https, or reach the page on localhost / 127.0.0.1 (loopback counts as secure). `
+          + `run_server.sh sets up trusted HTTPS for exactly this reason; raw \`vite preview --host 0.0.0.0\` does not.`);
+      }
       await context.audioWorklet.addModule(WORKLET_URL);
+      // Loaded SEQUENTIALLY rather than with Promise.all: a failure must name WHICH
+      // block's processors could not load, and a parallel reject loses that. The name now
+      // comes from the export itself, so the sentence says `VC3A_WORKLET_URL` rather than
+      // leaving the reader to count positions in a list.
+      for (const [name, url] of await portBlockWorkletUrls()) {
+        try {
+          await context.audioWorklet.addModule(url);
+        } catch (e) {
+          throw new Error(`${name} failed to load (${url}): ${e.message} — that block's modules would each construct an AudioWorkletNode for a processor that was never registered`);
+        }
+      }
       initialized = true;
     },
 
@@ -520,7 +613,7 @@ export function createEngine(options = {}) {
       const pool = typeof instance.noteOn === "function"
         ? createVoicePool(instance.meta?.voices ?? DEFAULT_POLY_VOICES)
         : null;
-      modules.set(id, { instance, guards, guardLevel: 1, type, meterBuffer: null, spectrumBuffer: null, pool });
+      modules.set(id, { instance, guards, guardLevel: 1, type, meterBuffer: null, pool });
       instance.start();
 
       // A sequencer joins the shared transport, so all sequencers in a patch
@@ -866,7 +959,17 @@ export function createEngine(options = {}) {
       connections.clear();
       meterSubscriptions.clear();
       spectrumSubscriptions.clear();
-      await context.close();
+      // AN OfflineAudioContext HAS NO `close()`, and that is a spec fact rather than a
+      // browser quirk: it is not attached to a device, so there is no hardware handle to
+      // release — the whole thing is reclaimed when the last reference drops. Guarding on
+      // the METHOD rather than on a context-type string keeps this true for any future
+      // context that renders without a device.
+      //
+      // THIS IS NOT A SILENT FALLBACK. Nothing is being swallowed: there is no failure
+      // here to report, only a capability that legitimately does not exist. It was
+      // measured — `tests/patch_sound_probe.mjs` renders every demo patch offline and died
+      // on `context.close is not a function` at this line.
+      if (typeof context.close === "function") await context.close();
     },
 
     /** The shared transport (clock + sequencer timing). */
@@ -918,7 +1021,25 @@ export function createEngine(options = {}) {
       return {
         state: context.state,
         sampleRate: context.sampleRate,
-        modules: [...modules].map(([id, entry]) => ({ id, type: entry.type })),
+        // `driven` — DOES THIS MODULE NEED SOMETHING TO HAPPEN BEFORE IT MAKES SOUND?
+        // `transport` is a module the shared scheduler steps (a clock, a sequencer, a
+        // piano roll); `played` is one that waits for a note. Both are DERIVED from the
+        // instance's own surface, exactly as the `pool` decision above is — the engine
+        // already dispatches on `playStep` and `noteOn` to wire those up, so reporting
+        // them costs nothing and no roster has to be kept in step.
+        //
+        // IT EXISTS FOR THE OFFLINE RENDERER (tests/patch_sound_probe.mjs). Such a patch
+        // renders SILENT offline, because the scheduler's look-ahead runs on the wall
+        // clock and nobody presses a key — and "silent" is the probe's failure condition.
+        // Without a way to ask, the probe would have to keep its own list of which module
+        // types are event-driven, which is the hand-maintained mirror this codebase has
+        // found five separate instances of this round.
+        modules: [...modules].map(([id, entry]) => ({
+          id,
+          type: entry.type,
+          transport: typeof entry.instance.playStep === "function",
+          played: typeof entry.instance.noteOn === "function",
+        })),
         connections: [...connections.values()],
       };
     },
@@ -930,10 +1051,21 @@ export function createEngine(options = {}) {
   };
 }
 
-/** Module types that construct an AudioWorkletNode and therefore require
- * init() to have completed. Kept as data so addModule's error can name the
- * problem precisely instead of failing inside a constructor. */
-const WORKLET_MODULES = new Set(["adsr", "bitcrush", "quantize", "sampleHold", "trigger"]);
+/**
+ * Module types that construct an AudioWorkletNode and therefore require init() to
+ * have completed. Kept as data so addModule's error can name the problem precisely
+ * instead of failing inside a constructor.
+ *
+ * DERIVED FROM `IMPLEMENTATION`, not listed. It was a hand-written set of the same
+ * five names that constant already carries, i.e. one concept in two places — and the
+ * drift arrived on schedule: R7-17's port blocks added 34 worklet modules to
+ * MODULE_FACTORIES and every one of them was exempt from this gate, so placing an
+ * `axBiquad` before `await init()` threw from inside the AudioWorkletNode constructor,
+ * which is the exact failure the sentence below exists to replace. Both AX-1's and
+ * AX-2's module docblocks asked for those keys by name; deriving is how the ask stops
+ * needing to be repeated per block.
+ */
+const WORKLET_MODULES = new Set(moduleTypes().filter((type) => IMPLEMENTATION[type] === "worklet"));
 
 /** Fixed seed for generated impulse responses, so a patch's reverb is identical
  * across reloads and machines. */

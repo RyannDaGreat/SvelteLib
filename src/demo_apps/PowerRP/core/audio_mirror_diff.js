@@ -130,6 +130,45 @@ function pluginFor(registry, type) {
 const wireKey = (c) => `${c.sourceId}:${c.sourcePort}->${c.targetId}:${c.targetPort}`;
 
 /**
+ * Pure function. Has a knob's value ACTUALLY changed between two scenes?
+ *
+ * ── `===` WAS ENOUGH UNTIL A PARAM STOPPED BEING A SCALAR (R7-14) ───────────
+ * Every knob was a number or a short string, and identity was exactly the right
+ * test for those. A `derived` param (core/audio_nodes.audioKnobValues) may be an
+ * ARRAY — the piano roll's whole pattern — and two folds of an unchanged document
+ * build two equal arrays at different addresses. Under `===` that reads as a
+ * change EVERY PASS: in the editor one redundant setParam per document edit, and in
+ * the PRESENTER, which calls the mirror per rAF tick, sixty per second, each one
+ * dragging a `queueApply` → `applyOps` → `engine.inspect()` round trip behind it.
+ * The mirror's whole cheap-when-nothing-changed property depends on this answer.
+ *
+ * STRUCTURAL, VIA JSON, and that is a bounded claim rather than a general deep
+ * equal: a knob value is a number, a string, or a plain array of plain records
+ * built by a `derived` function — there are no cycles, no undefined-vs-missing
+ * subtleties and no Dates in that set, because those are the only three shapes
+ * `audioKnobValues` can produce. A general structural compare would be more code
+ * for a case that cannot arise.
+ *
+ * @param {number|string|Array} before - the value the engine has
+ * @param {number|string|Array} after - the value the document now says
+ * @returns {boolean}
+ *
+ * @example sameKnobValue(800, 800) // true
+ * @example sameKnobValue(800, 900) // false
+ * @example sameKnobValue("sine", "saw") // false
+ * @example // TWO EQUAL PATTERNS AT DIFFERENT ADDRESSES ARE THE SAME PATTERN
+ * @example sameKnobValue([{on: true, note: 60}], [{on: true, note: 60}]) // true
+ * @example sameKnobValue([{on: true, note: 60}], [{on: true, note: 67}]) // false
+ * @example // and a value only one side has is a change
+ * @example sameKnobValue(undefined, [{on: false, note: 60}]) // false
+ */
+function sameKnobValue(before, after) {
+  if (before === after) return true;
+  if (!Array.isArray(before) || !Array.isArray(after)) return false;
+  return JSON.stringify(before) === JSON.stringify(after);
+}
+
+/**
  * Pure function. The construct-time params a module must be BUILT with.
  *
  * These are the knobs the engine has no setter for (see core/audio_specs.js's
@@ -247,7 +286,7 @@ export function diffAudioScene(prev, next, rampSeconds = KNOB_RAMP_MIN_SECONDS) 
     if (!before) continue;
     if (before.module !== after.module) { rebuilt.add(id); continue; }
     for (const k of (after.spec.knobs ?? []).filter((x) => x.construct))
-      if (before.knobs[k.key] !== after.knobs[k.key]) { rebuilt.add(id); break; }
+      if (!sameKnobValue(before.knobs[k.key], after.knobs[k.key])) { rebuilt.add(id); break; }
   }
 
   const gone = (id) => (!(id in nextModules)) || rebuilt.has(id);
@@ -288,7 +327,7 @@ export function diffAudioScene(prev, next, rampSeconds = KNOB_RAMP_MIN_SECONDS) 
     for (const k of m.spec.knobs ?? []) {
       if (k.construct) continue; // handled by the rebuild above
       const value = m.knobs[k.key];
-      if (before.knobs[k.key] === value) continue;
+      if (sameKnobValue(before.knobs[k.key], value)) continue;
       // A DISCRETE param is a SETTER in the engine, not an AudioParam: rampSeconds
       // is meaningless for it and asking for one would put a lie in the transcript.
       ops.push({ op: "setParam", id, key: k.key, value, rampSeconds: k.discrete ? 0 : rampSeconds });
@@ -322,7 +361,7 @@ export function initialParamOps(module, id) {
 
 /** The op builders, exposed as one object so tests can reach the pieces the diff
  *  uses without re-deriving them. */
-export const audioEngineOps = { constructParams, wireKey };
+export const audioEngineOps = { constructParams, wireKey, sameKnobValue };
 
 /** The scheduler's own parameter names (synth/scheduler.js `setTempo`,
  *  `setStepCount`), which are ALSO the knob keys the specs that own those numbers

@@ -1,3 +1,12 @@
+import { BLOCK_PLUGINS as AX1_PLUGINS } from "./audio_index_ax1.js";
+import { BLOCK_PLUGINS as AX2_PLUGINS } from "./audio_index_ax2.js";
+import { BLOCK_PLUGINS as AX3_PLUGINS } from "./audio_index_ax3.js";
+import { BLOCK_PLUGINS as VC1_PLUGINS } from "./audio_index_vc1.js";
+import { BLOCK_PLUGINS as VC2_PLUGINS } from "./audio_index_vc2.js";
+import { BLOCK_PLUGINS as VC3A_PLUGINS } from "./audio_index_vc3a.js";
+import { BLOCK_PLUGINS as VC3B_PLUGINS } from "./audio_index_vc3b.js";
+import { BLOCK_PLUGINS as VC5_PLUGINS } from "./audio_index_vc5.js";
+import { BLOCK_PLUGINS as STUB_PLUGINS } from "./audio_index_stub.js";
 /**
  * THE AUDIO NODE ROSTER — every plugins/audio_*.js, in one array.
  *
@@ -50,4 +59,11 @@ export const audioPlugins = [
   audioLfoPlugin, audioAdsrPlugin, audioVcaPlugin, audioMixerPlugin, audioClockPlugin, audioSequencerPlugin, audioSampleHoldPlugin, audioTriggerPlugin,
   audioMeterPlugin, audioSpectrumPlugin,
   audioOutputPlugin,
+  // The PORTED BLOCKS (R7-17) — one entry per block, never a per-node list here.
+  ...AX1_PLUGINS, ...AX2_PLUGINS, ...AX3_PLUGINS, ...VC1_PLUGINS, ...VC2_PLUGINS, ...VC3A_PLUGINS, ...VC3B_PLUGINS, ...VC5_PLUGINS,
+  // The PLACEHOLDERS (R7-17-SEL) — nodes the 20 patches wire but no block has ported
+  // yet. LAST, so that if a real block and a placeholder ever claimed one type the real
+  // one would already be in the array when the duplicate is found; `tests/audio_stub_test.js`
+  // makes that collision red rather than letting registration order decide it.
+  ...STUB_PLUGINS,
 ];

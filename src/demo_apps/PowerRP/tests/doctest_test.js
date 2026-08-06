@@ -33,9 +33,12 @@
  *   1. Its file is importable in bare node. Files whose NAME promises a host
  *      (browser_*, *worker*) are excluded up front, by name — not by catching an
  *      import error, which would also swallow a genuine breakage. Beyond those,
- *      exactly four files are excused, each named in HOST_BOUND with the Vite-only
- *      specifier that stops node PINNED, so a listed module failing for any other
- *      reason is still a hard failure. Every other file imports clean, so one that
+ *      the files listed in HOST_BOUND are excused, each with the thing that stops
+ *      node PINNED, so a listed module failing for any other reason is still a hard
+ *      failure. (This sentence used to carry the COUNT, which made it a
+ *      hand-maintained mirror of an array three screens below — the class of defect
+ *      this codebase keeps paying for. The list is the count.)
+ *      Every other file imports clean, so one that
  *      stops doing so is a HARD FAILURE here, never a skip. That is not
  *      hypothetical: this suite caught a backtick inside a shader comment closing
  *      the template literal it lived in, minutes after it was written.
@@ -223,6 +226,17 @@ const HOST_BOUND = [
     file: "web/mermaidRenderer.js",
     signature: 'Unknown file extension ".ttf"',
     why: "statically imports a font file, which only a bundler can turn into a module",
+  },
+  {
+    file: "web/editorAnimation.svelte.js",
+    signature: "$state is not defined",
+    // A RUNE, not a specifier — the same class of dependency and the first of its
+    // kind here. `$state` is compiled away by vite-plugin-svelte, so a `.svelte.js`
+    // module holding one cannot be evaluated by node at all. web/audioMirror.svelte.js
+    // is the same shape and is absent from this list only because it carries no
+    // `@example`, so nothing ever imports it — which is luck, not a policy, and the
+    // reason this entry says what it says rather than deleting the examples to match.
+    why: "a `.svelte.js` module with a module-level `$state` rune, which only the Svelte compiler can turn into a module",
   },
 ];
 

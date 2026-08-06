@@ -15,7 +15,8 @@ import { nodeKnobPlugin } from "./node_knob.js";
 import { nodeSliderPlugin } from "./node_slider.js";
 import { nodeButtonPlugin } from "./node_button.js";
 import { nodeKeyboardPlugin } from "./node_keyboard.js";
+import { nodePianoRollPlugin } from "./node_piano_roll.js";
 
 /** Every control-source node, in increasing order of what they express: one
- *  number, one number, one event, many notes. */
-export const controlPlugins = [nodeKnobPlugin, nodeSliderPlugin, nodeButtonPlugin, nodeKeyboardPlugin];
+ *  number, one number, one event, many notes, a whole phrase. */
+export const controlPlugins = [nodeKnobPlugin, nodeSliderPlugin, nodeButtonPlugin, nodeKeyboardPlugin, nodePianoRollPlugin];

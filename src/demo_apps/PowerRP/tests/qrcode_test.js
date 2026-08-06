@@ -136,7 +136,18 @@ for (const { data, ecLevel } of CASES) {
     // pinning; core/registry.js REGISTRY_REWRITTEN_KEYS is the one place the
     // category is named, so the next wrap needs one line changed in one file.
     if (REGISTRY_REWRITTEN_KEYS.includes(key)) {
-      assert.deepEqual(registered[key](qrcodePlugin.defaults), value(qrcodePlugin.defaults), `registration changed what the authored "${key}" computes`);
+      // NOT EVERY REWRITTEN KEY IS A HOOK. This branch used to call `registered[key]`
+      // unconditionally, which was true of the only member the category had
+      // (`anchors`) and became false the moment `title` joined it — a node's title is
+      // rewritten to end in "Node" (core/registry.withNodeTitle) and a string is not
+      // callable. A VALUE is compared as a value; only a FUNCTION is compared by what
+      // it computes. Note that for THIS widget the title is untouched anyway — qrcode
+      // declares no `ports`, so it is not a node — which is itself worth asserting
+      // here: the wrap must not reach a widget that is not one.
+      if (typeof value === "function")
+        assert.deepEqual(registered[key](qrcodePlugin.defaults), value(qrcodePlugin.defaults), `registration changed what the authored "${key}" computes`);
+      else
+        assert.deepEqual(registered[key], value, `registration rewrote the authored "${key}" on a widget that is not a node`);
       continue;
     }
     assert.deepEqual(registered[key], value, `registration altered the authored "${key}"`);

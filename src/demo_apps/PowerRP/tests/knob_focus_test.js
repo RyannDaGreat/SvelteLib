@@ -50,9 +50,17 @@ const test = (name, fn) => { fn(); console.log(`  ok  ${name}`); passed += 1; };
 const registry = createRegistry();
 registerPlugins(registry);
 
-/** Every registered AUDIO node — derived from the registry, never listed, so the
- *  sweeps below cover a module added tomorrow. */
-const AUDIO = registry.all().filter((p) => p.audioModule);
+/** Every registered AUDIO MODULE WIDGET — derived from the registry, never listed,
+ *  so the sweeps below cover a module added tomorrow.
+ *
+ *  `&& !p.controlNode` NARROWS IT TO THE ONES core/audio_nodes.audioNodePlugin
+ *  BUILDS, which are the ones with a dial band, and that is what all three sweeps
+ *  below are actually about (a dial is grabbable where it is drawn, stays inside its
+ *  card, and enters knob focus on a double click). plugins/node_piano_roll.js binds
+ *  an engine module through the CONTROL factory instead — its face is a grid, so it
+ *  has no dials to grab and no knob-focus mode to enter — and it declares both flags,
+ *  which is how this line tells the two apart without a roster. */
+const AUDIO = registry.all().filter((p) => p.audioModule && !p.controlNode);
 
 /** EVERY widget with dials, audio or not — which since BV includes the KNOB and
  *  SLIDER control nodes, whose leaves carry no `audio` prefix at all. The sweeps

@@ -347,6 +347,16 @@
             <span class="title"
               >{#each titleSegments(cmd.title, query) as seg}{#if seg.hit}<mark class="fuzzy-hit">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span
             >
+            <!-- WHERE A CHILD LIVES, shown only when the query surfaced it from inside a
+                 submenu the author has not drilled into. Without it a top-level search for
+                 "drone" offers three rows reading "Ambient Drone", "Drone Patch" and
+                 "Building an Ambient Drone" with nothing to say that two are audio patches
+                 and one is a preset. Suppressed while drilled in, where the parent is
+                 already the placeholder text and repeating it on every row is noise. -->
+            {#if !parent}
+              {@const owner = app.commands.parentOf(cmd.id)}
+              {#if owner}<span class="palette-in">{owner.title}</span>{/if}
+            {/if}
             {#if app.shortcuts.commandKeys(cmd.id)}
               <span class="shortcut">
                 <KeyCombo keys={app.shortcuts.commandKeys(cmd.id)} />

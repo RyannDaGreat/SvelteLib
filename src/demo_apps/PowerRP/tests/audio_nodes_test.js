@@ -30,14 +30,21 @@
 import assert from "node:assert/strict";
 
 import { AUDIO_SPECS } from "../core/audio_specs.js";
-import { audioKnobDefaults, audioKnobKey, audioKnobRows, audioKnobValues, audioNodePlugin, audioPorts, audioReadout } from "../core/audio_nodes.js";
+import { PORT_BLOCK_SPECS } from "../core/audio_blocks.js";
+import { audioKnobDefaults, audioKnobKey, audioKnobRows, audioKnobValues, audioNodePlugin, audioPorts, audioReadout, semitonesToHz } from "../core/audio_nodes.js";
 import { NODE_FAMILIES, NODE_FAMILY_NAMES, familyCard, familyRim, nodeFamily } from "../core/node_chrome.js";
 import { PORT_TYPE_NAMES } from "../core/nodeflow.js";
 import { audioPlugins } from "../plugins/audio_index.js";
+// A BLOCK'S OWN TUNING LAW, imported so the `hz` sweep can hold a spec to the conversion
+// its own DSP uses rather than to one library's. See LAWS in the sweep below.
+import { bogaudioSemitonesToHz } from "../core/audio_specs_vc3a.js";
+import { ripplesKnobToHz } from "../core/audio_specs_vc1.js";
 import { MODULE_FACTORIES } from "../synth/modules.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { REVERB_CHARACTERS } from "../synth/dsp.js";
+import { axPitchToHz } from "../synth/ax3_kernels.js";
+import { axoPitchToHz } from "../synth/ax2_kernels.js";
 import { audioEngineOps, diffAudioScene, readAudioScene } from "../core/audio_mirror_diff.js";
 // For the FOLD pin at the bottom: a knob's value must survive the document model
 // and the expression pass, not merely sit in a flat state object.
@@ -165,7 +172,19 @@ check("the roster and the specs are the SAME modules", () => {
   // spec (or vice versa), and fails somewhere far from here. That assertion is
   // exact, unchanged, and does not need to know how many modules there are.
   assert.ok(AUDIO_SPECS.length > 0, "AUDIO_SPECS is empty — the roster would vacuously agree with it");
-  assert.deepEqual(audioPlugins.map((p) => p.type).sort(), AUDIO_SPECS.map((s) => s.type).sort(),
+  // ── PLACEHOLDERS ARE EXCLUDED, AND THE EXCLUSION IS THE POINT OF THEM ──────
+  // A placeholder (core/audio_stub_nodes.js) is a registered widget with NO engine
+  // module, standing in for a node no block has ported yet. It is deliberately absent
+  // from AUDIO_SPECS: this file's next two checks assert that every spec names a real
+  // engine factory and that specs and factories cover each other exactly, and a
+  // placeholder would red both — so putting one in AUDIO_SPECS would force an exemption
+  // in THOSE, which is how a sweep starts lying about the engine.
+  //
+  // Filtering on the DECLARATION (`audioSpec.stub`) rather than on a name prefix, per
+  // core/registry.js's law and for the reason the "Audio " sweep in audio_patches_test.js
+  // records: a type-string proxy holds only until the first widget that breaks it.
+  const shipped = audioPlugins.filter((p) => !p.audioSpec?.stub);
+  assert.deepEqual(shipped.map((p) => p.type).sort(), AUDIO_SPECS.map((s) => s.type).sort(),
     "plugins/audio_index.js must cover AUDIO_SPECS exactly — a module in one and not the other is half-registered");
 });
 
@@ -281,6 +300,150 @@ check("a reverb's characters are exactly the engine's impulse responses", () => 
   const knob = spec.knobs.find((k) => k.key === "character");
   assert.deepEqual(knob.options.sort(), Object.keys(REVERB_CHARACTERS).sort(),
     "the Character dropdown must offer exactly the impulse responses that exist — an option the engine refuses would throw on select");
+});
+
+check("a pitch knob's `hz` agrees with the DSP's own mtof — the restatement cannot drift", () => {
+  // THE SAME SITUATION AS processors.js RESTATING SCHMITT_LOW, and it gets the same
+  // treatment. `core/` may not import `synth/` and `synth/` may not import PowerRP, so
+  // Axoloti's tuning law is necessarily written on both sides: once in core as
+  // `semitonesToHz` (what the CARD shows) and once per block's kernels (what the DSP
+  // does). A test file may import all three, so this is the only place they can be held
+  // to each other — and a card reading out a frequency the DSP is not at would be worse
+  // than no readout, because it would be believed. BOTH kernels are checked, not one:
+  // AX-2 and AX-3 spell the function differently (`axoPitchToHz` / `axPitchToHz`) and a
+  // sweep that checked either alone would let the other drift.
+  const PITCHES = [-64, -24, 0, 5, 24, 64];
+  for (const pitch of PITCHES) {
+    assert.equal(semitonesToHz(pitch), axPitchToHz(pitch), `core's semitonesToHz disagrees with AX-3's DSP at pitch ${pitch}`);
+    assert.equal(semitonesToHz(pitch), axoPitchToHz(pitch), `core's semitonesToHz disagrees with AX-2's DSP at pitch ${pitch}`);
+  }
+
+  // AND EVERY KNOB'S `hz` IS THAT ONE CONVERSION, OR A STATED MULTIPLE OF IT. The AX-2
+  // LFO is the exception and the reason this half exists: its rate is mtof/64 (their
+  // `freq>>2`, once per 16-sample tick), so inheriting the shared conversion would have
+  // printed 330 Hz on a card oscillating at 5.15. The ratio is what is pinned, because
+  // that is the claim — a knob may rescale the law but may not invent one.
+  const LFO_RATE_DIVISOR = 64;
+
+  // ── A SECOND KIND OF RESCALING: A DIFFERENT ORIGIN, NOT A DIFFERENT RATE ────
+  // The AX-2 LFO above rescales the law by a RATE divisor. Rings rescales it by an
+  // ORIGIN, and the two look identical to this sweep because transposing a
+  // logarithmic tuning law is multiplication.
+  //
+  // Axoloti's semitone 0 is E4 = MIDI 64, which is what `semitonesToHz` implements.
+  // RINGS' Frequency knob is neither that nor a VCV V/oct's C4: `Rings.cpp:154`
+  // computes `tonic = 12 + knob` and `part.cc:504` then does
+  // `SemitonesToRatio(note − 69) · a3`, so knob 0 is MIDI 12. The ratio between the
+  // two conversions is therefore EXACTLY the interval between the two instruments'
+  // reference notes — 64 − 12 = 52 semitones — and is CONSTANT across the whole
+  // knob, which is what makes it a legal restatement rather than an invented law.
+  // MEASURED at all six probe pitches: 0.049606282874, i.e. 2^(−52/12), to 1e-12.
+  //
+  // Derived from the two MIDI notes rather than written as 0.0496…, so that a
+  // future module declaring a third origin states its origin and not a magic
+  // number — and so that a typo in either origin moves this ratio and reds here.
+  const AXOLOTI_ORIGIN_MIDI = 64;
+  const RINGS_ORIGIN_MIDI = 12;
+  const SEMITONES_PER_OCTAVE = 12;
+  const RINGS_ORIGIN_RATIO = 2 ** ((RINGS_ORIGIN_MIDI - AXOLOTI_ORIGIN_MIDI) / SEMITONES_PER_OCTAVE);
+
+  // ── A LAW, NOT A RATIO — AND THE OLD SHAPE WAS THE DEFECT ─────────────────
+  // This was `RESCALED = {type: scalar}`: every knob's `hz` had to be Axoloti's E4
+  // semitone law TIMES A CONSTANT. That encoded "this library has one tuning law", which
+  // was true while only the AX blocks existed and stopped being true the moment the VCV
+  // blocks landed. **A Valley octave dial is `440·2^(dial−5)` — a different exponent
+  // BASE, one octave per unit rather than one semitone — so NO scalar satisfies it.**
+  // VC-5 hit it, could not express its dials, and dropped five hertz readouts off real
+  // cards to get green; VC-1's Rings needed a whole paragraph to justify a ratio that
+  // happened to exist. The suite was making blocks lie about their own tuning or go
+  // silent, which is the opposite of what it is for.
+  //
+  // So an entry is now the LAW ITSELF, and the law is the block's OWN exported converter
+  // — the same one its specs call. That keeps the original purpose exactly ("a card
+  // reading out a frequency the DSP is not at would be worse than no readout, because it
+  // would be believed") while dropping the false premise that there is only one law. A
+  // number is still accepted, because a RATE rescale of the shared law really is a
+  // multiple of it and saying so is clearer than restating the whole conversion.
+  const LAWS = {
+    audio_ax_lfo: 1 / LFO_RATE_DIVISOR,
+    audio_vcv_rings: RINGS_ORIGIN_RATIO,
+    // RIPPLES IS THE CASE THAT PROVES THE GENERALISATION WAS NECESSARY, and it is why
+    // Rings and Ripples are entered differently even though one block owns both. Rings is
+    // a MULTIPLE of the shared law, so the ratio form asserts MORE than a converter would:
+    // it pins the RELATIONSHIP between the two tunings, not merely that the spec agrees
+    // with itself. Ripples has no such relationship to pin — its knob is not in semitones
+    // at all, it is stored as log2 OF HERTZ (Rack's own parameterisation, kept so a
+    // harvested patch's value lands unchanged), so its law is `2^knob` and NO scalar
+    // satisfies it. Entered as the block's own exported converter, which is the shape this
+    // table gained for exactly this.
+    audio_vcv_ripples: ripplesKnobToHz,
+    // Bogaudio tunes from its OWN C4 — 261.626 (`dsp/pitch.hpp`), not Rack's 261.6256.
+    // The block exports the converter its specs use; holding the spec to that is the
+    // honest check, and it is what catches a card drifting from its own DSP.
+    audio_vcv_bog_vco: bogaudioSemitonesToHz,
+    audio_vcv_bog_vcf: bogaudioSemitonesToHz,
+    audio_vcv_stack: bogaudioSemitonesToHz,
+    // Ripples' knob is not a pitch at all: Rack stores its cutoff as LOG2 OF HERTZ
+    // (4.321928 = 20 Hz, 14.287712 = 20 kHz), so its law is `2^knob` and its unit is
+    // ` log2Hz`. Keyed `type.key` because a module may hold two knobs under two laws.
+    "audio_vcv_ripples.frequency": (v) => 2 ** v,
+  };
+  // THE SHARED CONVERSION IS A SEMITONE CONVERSION, so it is only the default for a knob
+  // that IS in semitones. Ripples proved the point by failing against it: applying a
+  // semitone law to a log2-hertz knob is a category error, and it read as a defect in a
+  // correct spec. A knob in any other unit must NAME its law, and says so when it does not.
+  const SEMITONE_UNIT = " st";
+  let declared = 0;
+  for (const spec of AUDIO_SPECS)
+    for (const k of spec.knobs ?? []) {
+      if (typeof k.hz !== "function") continue;
+      declared++;
+      const law = LAWS[`${spec.type}.${k.key}`] ?? LAWS[spec.type]
+        ?? (k.unit === SEMITONE_UNIT ? 1 : undefined);
+      assert.ok(law !== undefined,
+        `${spec.type}.${k.key} declares hz but its unit is ${JSON.stringify(k.unit)}, not semitones — name its law in LAWS (keyed "${spec.type}.${k.key}") so the card can be held to the DSP`);
+      const expected = typeof law === "function" ? law : (pitch) => semitonesToHz(pitch) * law;
+      const how = typeof law === "function" ? "its block's own converter" : `the shared conversion x${law}`;
+      for (const pitch of PITCHES)
+        assert.ok(Math.abs(k.hz(pitch) - expected(pitch)) < 1e-9,
+          `${spec.type}.${k.key}.hz does not match ${how} at pitch ${pitch} (${k.hz(pitch)} vs ${expected(pitch)})`);
+    }
+  assert.ok(declared > 0, "no knob declares `hz` — either the mitigation was removed or this sweep is looking in the wrong place");
+});
+
+check("every semitone-tuned filter READS OUT its frequency — the lead's ruling, 2026-08-06", () => {
+  // "A pitch number with no frequency shown is a control the author cannot reason
+  // about." The library now has two tunings for cutoff (ours in hertz, the ports in
+  // semitones) and this is the mitigation that keeps the divergence visible; a ported
+  // spec that reads out a bare `st` is the thing the ruling forbids.
+  //
+  // SCOPED TO THE PORTED BLOCKS, and not because a native spec deserves less. `st` is
+  // not by itself a pitch: `audio_quantize`'s readout is `range`, a SPAN of 24 semitones,
+  // and it has no frequency to show — demanding one there would be asserting nonsense.
+  // Being a port is what makes a semitone reading a pitch here, so that is the gate.
+  // ── AN INTERVAL IS EXEMPT, AND THE RULE WAS OVER-REACHING WITHOUT IT ──────
+  // The ruling's reason is "a pitch number with no frequency shown is a control the
+  // author cannot reason about" — and that is about an ABSOLUTE pitch. A TRANSPOSITION is
+  // the opposite case: `+7 st` is a musical interval, which is MORE readable than a
+  // frequency, and there is no absolute frequency to show because the pitch arrives on a
+  // wire. VC-1 reached the same conclusion independently for Clouds' and Supercell's
+  // pitch knobs ("a hertz number beside a transposition would be a confident lie") and
+  // Bogaudio's Stack is the same shape: it ADDS semitones to an incoming V/oct.
+  //
+  // So a knob DECLARES `interval: true`, and the two halves become one coherent pair —
+  // an interval must NOT carry `hz`, an absolute pitch MUST. Derived from a declaration
+  // rather than a list of exempt types, which is core/registry.js's law and is what stops
+  // this needing an edit every time a block ships a transposer.
+  for (const spec of PORT_BLOCK_SPECS) {
+    const knob = (spec.knobs ?? []).find((k) => k.key === spec.readout);
+    if (!knob || knob.unit !== " st") continue;
+    if (knob.interval) {
+      assert.equal(knob.hz, undefined, `${spec.type}.${knob.key} is an interval, so a hertz readout beside it would be a confident lie`);
+      continue;
+    }
+    assert.equal(typeof knob.hz, "function", `${spec.type} reads out semitones with no frequency beside them — or declare the knob \`interval: true\` if it is a transposition`);
+    assert.match(audioReadout(spec, {}), / Hz$/, `${spec.type}'s readout must end in the frequency`);
+  }
 });
 
 check("feedbackSafe is declared on the delay's input and NOWHERE else", () => {

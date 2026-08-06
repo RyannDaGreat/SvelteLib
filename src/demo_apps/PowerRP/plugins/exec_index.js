@@ -16,14 +16,16 @@ import { nodeOnThresholdPlugin } from "./node_on_threshold.js";
 import { nodeSetPropertyPlugin } from "./node_set_property.js";
 import { nodeSequencePlugin } from "./node_sequence.js";
 import { nodeGatePlugin } from "./node_gate.js";
+import { nodeCounterPlugin } from "./node_counter.js";
 import { nodeDelayPlugin } from "./node_delay.js";
 
 /** Every trigger node, ordered as a chain reads: the two EVENTS that start one, the
- *  one EFFECT that does something, then the three that shape control flow. */
+ *  two that DO something, then the three that shape control flow. */
 export const execPlugins = [
   nodeOnRevealPlugin,
   nodeOnThresholdPlugin,
   nodeSetPropertyPlugin,
+  nodeCounterPlugin,
   nodeSequencePlugin,
   nodeGatePlugin,
   nodeDelayPlugin,

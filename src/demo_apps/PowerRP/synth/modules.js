@@ -54,13 +54,44 @@ import {
   BELL_PRESETS,
 } from "./dsp.js";
 import { DEFAULT_POLY_VOICES, MAX_POLY_VOICES, MIN_POLY_VOICES } from "./voices.js";
+import {
+  SPECTRUM_DEFAULT_BINS, SPECTRUM_DEFAULT_WINDOW, spectrumFftSize, windowTable,
+} from "./spectrum.js";
+import { BLOCK_MODULE_FACTORIES as AX1_FACTORIES, BLOCK_WORKLET_MODULES as AX1_WORKLETS } from "./modules_ax1.js";
+import { BLOCK_MODULE_FACTORIES as AX2_FACTORIES, BLOCK_WORKLET_MODULES as AX2_WORKLETS } from "./modules_ax2.js";
+import { BLOCK_MODULE_FACTORIES as AX3_FACTORIES, BLOCK_WORKLET_MODULES as AX3_WORKLETS } from "./modules_ax3.js";
+import { BLOCK_MODULE_FACTORIES as VC1_FACTORIES, BLOCK_WORKLET_MODULES as VC1_WORKLETS } from "./modules_vc1.js";
+import { BLOCK_MODULE_FACTORIES as VC2_FACTORIES, BLOCK_WORKLET_MODULES as VC2_WORKLETS } from "./modules_vc2.js";
+import { BLOCK_MODULE_FACTORIES as VC3A_FACTORIES, BLOCK_WORKLET_MODULES as VC3A_WORKLETS } from "./modules_vc3a.js";
+import { BLOCK_MODULE_FACTORIES as VC3B_FACTORIES, BLOCK_WORKLET_MODULES as VC3B_WORKLETS } from "./modules_vc3b.js";
+import { BLOCK_MODULE_FACTORIES as VC5_FACTORIES, BLOCK_WORKLET_MODULES as VC5_WORKLETS } from "./modules_vc5.js";
+
+/**
+ * EVERY PORTED BLOCK'S MODULE TYPE NAMES — the PORT-BLOCK CONTRACT's
+ * `BLOCK_WORKLET_MODULES`, concatenated. This is the synth-side twin of
+ * core/audio_blocks.PORT_BLOCK_SPECS and carries the same vocabulary; the two cannot
+ * be one file because the ENGINE law forbids `synth/` importing `core/`.
+ *
+ * Exported because both consumers must DERIVE from it rather than re-list it:
+ * `IMPLEMENTATION` below, and engine.js's `WORKLET_MODULES` init gate.
+ */
+export const PORT_BLOCK_MODULES = [...AX1_WORKLETS, ...AX2_WORKLETS, ...AX3_WORKLETS, ...VC1_WORKLETS, ...VC2_WORKLETS, ...VC3A_WORKLETS, ...VC3B_WORKLETS, ...VC5_WORKLETS];
 
 /**
  * Which modules are native-only and which need a worklet — the machine-readable
  * form of the implementation law, asserted by tests/synth_engine_test.js so the
- * "17 native / 5 worklet" claim cannot silently drift.
+ * native/worklet split cannot silently drift. (No count is quoted here: the two the
+ * file header used to quote both went stale the wave polyPad landed. The test counts.)
+ *
+ * THE PORTED BLOCKS ARE DERIVED, NOT LISTED. Every node R7-17 ports from Axoloti
+ * firmware is a worklet BY CONSTRUCTION — there is no native AudioNode that computes
+ * `filter/vcf3`, so "would a native node have done?" has one answer for all of them and
+ * re-typing it 34 times would be a mirror of PORT_BLOCK_MODULES that drifts on block 4.
+ * Spread FIRST, exactly as MODULE_FACTORIES does, so a hand-written name wins a
+ * collision and the coverage sweep sees it.
  */
 export const IMPLEMENTATION = {
+  ...Object.fromEntries(PORT_BLOCK_MODULES.map((type) => [type, "worklet"])),
   output: "native",
   oscillator: "native",
   supersaw: "native",
@@ -1109,17 +1140,51 @@ const METER_FFT_SIZE = 256;
 /** Heavy smoothing so the needle is readable rather than twitchy. */
 const METER_SMOOTHING = 0.8;
 
-/** SPECTRUM — a frequency-analysis tap, also pass-through. Larger FFT than the
- * meter because frequency resolution is the whole point here. */
+/**
+ * SPECTRUM — a frequency-analysis tap, also pass-through. Larger FFT than the
+ * meter because frequency resolution is the whole point here.
+ *
+ * ── IT RUNS ITS OWN FFT, AND `window` IS WHY (R7-19) ────────────────────────
+ * The AnalyserNode is still here — it is the cheapest way to get a
+ * time-domain window onto the signal — but its `getByteFrequencyData` is NOT
+ * used. That method **hard-wires a Blackman window**, which the Web Audio spec
+ * mandates and exposes no parameter for, so the user's "linear and haming window
+ * options" is unreachable through it. synth/spectrum.js does the window and the
+ * transform instead, from `getFloatTimeDomainData`.
+ *
+ * `bins` and `window` are both CONSTRUCT-TIME: fftSize sizes the node's internal
+ * buffers, and the window table and the smoothing state are sized from it. A
+ * change to either rebuilds the module, which is the honest thing — a
+ * spectrogram measured two ways is two pictures, and the ring restarts anyway
+ * (core/analysis_display.js pushColumn refuses a changed width).
+ *
+ * @param {AudioContext} context
+ * @param {{bins?: string|number, window?: string}} params - construct-time params
+ */
 function spectrumModule(context, params) {
   const analyser = context.createAnalyser();
-  analyser.fftSize = params.fftSize ?? SPECTRUM_FFT_SIZE;
-  analyser.smoothingTimeConstant = params.smoothing ?? SPECTRUM_SMOOTHING;
+  const size = spectrumFftSize(params.bins ?? SPECTRUM_DEFAULT_BINS);
+  analyser.fftSize = size;
+  const name = params.window ?? SPECTRUM_DEFAULT_WINDOW;
   return {
     inputs: { in: analyser },
     outputs: { out: analyser },
     params: {},
     analyser,
+    // THE ANALYSIS PLAN, read by the engine's poll (synth/engine.js). It lives on
+    // the instance rather than being recomputed there because every part of it is
+    // fixed for the module's lifetime, and because the poll must stay
+    // allocation-free: one window table and four buffers, built once here.
+    spectrum: {
+      window: windowTable(name, size),
+      smoothing: SPECTRUM_SMOOTHING,
+      time: new Float32Array(size),
+      re: new Float32Array(size),
+      im: new Float32Array(size),
+      smoothed: new Float32Array(size / 2),
+      out: new Float32Array(size / 2),
+      seeded: false,
+    },
     start() {},
     dispose() {
       analyser.disconnect();
@@ -1128,10 +1193,10 @@ function spectrumModule(context, params) {
   };
 }
 
-const SPECTRUM_FFT_SIZE = 2048;
-
 /** Lighter than the meter's: a spectrum that smooths too hard stops showing
- * transients, which is when you most want to see it. */
+ * transients, which is when you most want to see it. Kept at the value
+ * `AnalyserNode.smoothingTimeConstant` was set to before the FFT moved here, so
+ * the picture's responsiveness did not change with the transform. */
 const SPECTRUM_SMOOTHING = 0.72;
 
 // ─── 22. METALLIC DING (wow module) ──────────────────────────────────────────
@@ -1740,6 +1805,9 @@ const PAD_REVERB_WET = 0.55;
  * making it a module would hide the modular paradigm the whole project is about.
  */
 export const MODULE_FACTORIES = {
+  // The PORTED BLOCKS (R7-17). Spread FIRST so a name collision with a hand-written
+  // module below is won by the hand-written one and shows up in the coverage sweep.
+  ...AX1_FACTORIES, ...AX2_FACTORIES, ...AX3_FACTORIES, ...VC1_FACTORIES, ...VC2_FACTORIES, ...VC3A_FACTORIES, ...VC3B_FACTORIES, ...VC5_FACTORIES,
   output: outputModule,
   oscillator: oscillatorModule,
   supersaw: supersawModule,

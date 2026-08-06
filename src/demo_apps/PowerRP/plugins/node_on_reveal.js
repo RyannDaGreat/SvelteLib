@@ -30,6 +30,13 @@ import { EXEC_NODE_CAT, execNodePlugin } from "../core/exec_nodes.js";
 const MODES = ["reveal", "hide", "both"];
 const MODE_LABELS = { reveal: "When it appears", hide: "When it disappears", both: "Either way" };
 
+/** THE CARD'S readout, which is NOT the dropdown's label, and the reason is
+ *  measured: `nodeValueText` shrinks a line against the card's HEIGHT but never its
+ *  WIDTH, so "When it disappears" at NODE_VALUE_SIZE runs past the rim of a
+ *  default-width card. A rendered still is what showed it. The panel has room for a
+ *  sentence; the card has room for a word. */
+const MODE_MARKS = { reveal: "appears", hide: "hides", both: "either" };
+
 /** Is this item PRESENT on the slide `state` describes? The universal Delete
  *  semantics: absent from the fold and `active: false` are the same answer. */
 const present = (state, id) => {
@@ -48,7 +55,7 @@ export const nodeOnRevealPlugin = execNodePlugin({
     { key: "watch", label: "Watch", kind: "select", optionsFrom: "items", options: [], category: EXEC_NODE_CAT, help: "Which widget's appearing or disappearing this trigger listens for. Leave it empty to watch THIS node, which fires on the first slide the node itself is shown on — the deck's equivalent of \"when this slide arrives\"." },
     { key: "mode", label: "Fires", kind: "select", options: MODES, optionLabels: MODE_LABELS, category: EXEC_NODE_CAT, help: "Which edge fires the chain: the watched widget appearing, disappearing, or either. A widget is \"gone\" on a slide where it has been Deleted (hidden), not only where it has been purged." },
   ],
-  readout: (s) => MODE_LABELS[s.mode] ?? MODE_LABELS.reveal,
+  readout: (s) => MODE_MARKS[s.mode] ?? MODE_MARKS.reveal,
   /**
    * Pure function. Did the watched widget's presence change into the edge this node
    * listens for, between the previous slide boundary and this one?

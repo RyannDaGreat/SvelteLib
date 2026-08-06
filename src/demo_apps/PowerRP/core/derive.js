@@ -49,7 +49,7 @@ import { MORPH_KEY, isUniversalMorphToken } from "./morph_property.js";
 // THE NODE-GRAPH SEAM (see deriveRenderTree). One-way: nodeflow.js imports nothing
 // from this module, so the port/type/connection layer stays independently testable
 // in bare node with no derivation in the picture.
-import { evaluateNodeGraph, portLayout } from "./nodeflow.js";
+import { EXEC_KEY, evaluateNodeGraph, portLayout } from "./nodeflow.js";
 
 /**
  * Query (reads the registry; reports once on a refused pair). THE MORPH
@@ -1676,6 +1676,8 @@ export function nodePortAnchors(node) {
  * @example deriveWires([]) // []
  * @example // a→b on a number port: one wire, colored by the SOURCE type
  * @example deriveWires([{itemId: "a", world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({outputs: [{key: "o", type: "number"}]})}}, {itemId: "b", world: {x: 200, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80, inputs: {i: {item: "a", port: "o"}}}, plugin: {ports: () => ({inputs: [{key: "i", type: "number"}]})}}]).length // 1
+ * @example // AN EXEC WIRE IS STORED ON THE OTHER SIDE and draws identically:
+ * @example deriveWires([{itemId: "a", world: {x: 0, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80, exec: {then: {item: "b", port: "run"}}}, plugin: {ports: () => ({outputs: [{key: "then", type: "exec"}]})}}, {itemId: "b", world: {x: 200, y: 0, rotation: 0, scale: 1}, state: {w: 100, h: 80}, plugin: {ports: () => ({inputs: [{key: "run", type: "exec"}]})}}])[0].type // "exec"
  */
 export function deriveWires(nodes) {
   const anchorsByItem = new Map();
@@ -1684,21 +1686,42 @@ export function deriveWires(nodes) {
     anchorsByItem.set(n.itemId, nodePortAnchors(n));
   }
   const wires = [];
+  const push = (src, dst, from, to) => {
+    if (!src || !dst) return;
+    wires.push({ from: { ...from, x: src.x, y: src.y }, to: { ...to, x: dst.x, y: dst.y }, type: src.type });
+  };
   for (const n of nodes ?? []) {
-    const inputs = n.state?.inputs;
-    if (!inputs || typeof inputs !== "object") continue;
     const myAnchors = anchorsByItem.get(n.itemId) ?? [];
-    for (const port of Object.keys(inputs).sort()) {
-      const c = inputs[port];
-      if (!c || typeof c !== "object" || typeof c.item !== "string") continue;
-      const dst = myAnchors.find((a) => a.side === "input" && a.key === port);
-      const src = (anchorsByItem.get(c.item) ?? []).find((a) => a.side === "output" && a.key === c.port);
-      if (!src || !dst) continue;
-      wires.push({
-        from: { item: c.item, port: c.port, x: src.x, y: src.y },
-        to: { item: n.itemId, port, x: dst.x, y: dst.y },
-        type: src.type,
-      });
+    const inputs = n.state?.inputs;
+    if (inputs && typeof inputs === "object") {
+      for (const port of Object.keys(inputs).sort()) {
+        const c = inputs[port];
+        if (!c || typeof c !== "object" || typeof c.item !== "string") continue;
+        push(
+          (anchorsByItem.get(c.item) ?? []).find((a) => a.side === "output" && a.key === c.port),
+          myAnchors.find((a) => a.side === "input" && a.key === port),
+          { item: c.item, port: c.port }, { item: n.itemId, port }
+        );
+      }
+    }
+    // THE EXEC MAP IS THE SAME PICTURE READ FROM THE OTHER END. An exec wire is
+    // stored on the FIRING node (core/nodeflow.js EXEC WIRES: the cardinality
+    // mirror), so here `n` holds the OUTPUT anchor and the referenced item holds
+    // the INPUT anchor — the exact transpose of the loop above. Both produce the
+    // same record shape, so nothing downstream (wireOps, the SVG overlay, the PDF
+    // and SVG backends) needed to learn what an exec wire is: it is a wire whose
+    // `type` is "exec", which is already how a wire gets its colour.
+    const execWires = n.state?.[EXEC_KEY];
+    if (execWires && typeof execWires === "object") {
+      for (const port of Object.keys(execWires).sort()) {
+        const c = execWires[port];
+        if (!c || typeof c !== "object" || typeof c.item !== "string") continue;
+        push(
+          myAnchors.find((a) => a.side === "output" && a.key === port),
+          (anchorsByItem.get(c.item) ?? []).find((a) => a.side === "input" && a.key === c.port),
+          { item: n.itemId, port }, { item: c.item, port: c.port }
+        );
+      }
     }
   }
   return wires;

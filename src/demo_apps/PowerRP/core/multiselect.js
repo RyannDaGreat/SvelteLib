@@ -232,6 +232,40 @@ export const MIXED_MARK = "…";
 export const MULTISELECT_MODE = { INTERSECTION: "intersection", UNION: "union" };
 
 /**
+ * THE TOGGLE'S OWN WORDS AND GLYPHS — the invariant half of the intersection ⇄
+ * union control, in the ONE place both panes read it from.
+ *
+ * IT IS ONE CONTROL IN TWO ELEMENTS (2026-08-06: the user asked for the tools pane
+ * to offer the same choice, "just like properties"). The Property Panel and the
+ * Tools pane are independently hideable panels, so each needs its own ELEMENT —
+ * but the choice is ONE piece of view state (`app.multiSelectMode`), so the two
+ * cannot disagree about which mode is on. What they COULD have disagreed about is
+ * the wording and the icon, had each pane spelled its own; that is what this
+ * constant removes. The Save-dot/Save-button ruling is the precedent for the
+ * shape ("I said they share the same state, not the same element").
+ *
+ * THE ICONS ARE THE SAME VENN DIAGRAM WITH A DIFFERENT REGION FILLED — mdi's own
+ * `set-*` family, so the pair reads as one picture answering "which region of the
+ * two sets?" rather than two unrelated glyphs. `mdi:set-center` fills the LENS
+ * (what both share); `mdi:set-all` fills BOTH circles (everything either has).
+ * The WORDS stay beside them: "intersection"/"union" is set vocabulary the user
+ * reached for, but an icon-only control would be a guessing game for anyone who
+ * did not name it themselves.
+ *
+ * THE HOVER TIP IS NOT HERE, deliberately. Each pane's tip is a different sentence
+ * about a different noun — a property unifies and keyframes, a tool RUNS — so
+ * hoisting one text would mean a sentence that is vague in both places. That is
+ * not the copied-prose defect: there is no shared sentence to have one copy of.
+ *
+ * @example MULTISELECT_MODE_CHOICES.map((c) => c.mode) // ["intersection", "union"]
+ * @example MULTISELECT_MODE_CHOICES[0].label // "Shared"
+ */
+export const MULTISELECT_MODE_CHOICES = [
+  { mode: MULTISELECT_MODE.INTERSECTION, label: "Shared", icon: "mdi:set-center" },
+  { mode: MULTISELECT_MODE.UNION, label: "All", icon: "mdi:set-all" },
+];
+
+/**
  * The row aspects that are PRESENTATIONAL — the complete denylist the identity
  * relation ignores. Everything not named here is CONTRACT (see the module header
  * for why the polarity must be this way round).
@@ -979,6 +1013,343 @@ export function unifyPairs(entries, key, value) {
   return entries
     .filter((e) => e.state != null && !deepEqual(defaultedValue(e, path), value))
     .map((e) => [["items", e.itemId, ...path], perTarget()]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-SELECTION TOOL INTERSECTION — the same relation, over the TOOLS pane
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// USER, 2026-08-06 (verbatim): "When I select multiple objects, just like
+// properties, I sholud be able to select intersection OR union of available tools
+// - and then when I click a tool, it does it to all selected objects."
+//
+// "JUST LIKE PROPERTIES" IS A LITERAL INSTRUCTION, so this lives in THIS module
+// and reuses its vocabulary rather than growing a rival one next door:
+// MULTISELECT_MODE decides the two readings, participation rides in an `appliesTo`
+// SIDE TABLE, rows are pushed BY REFERENCE (the drift gate), and a row that two
+// items declare with different CONTRACTS is reported as a conflict. Everything
+// below is the property relation transposed; nothing about it is new machinery.
+//
+// WHAT A TOOL ROW IS (core/registry.js's TOOL GROUPS block owns the model):
+//     {kind: "command", command, applies}   — a command-registry surfacing
+//     {kind: "preset", preset}              — one preset card
+// resolved per PLUGIN at registration into `{id, title, rows}` groups, already
+// filtered by `applies(plugin)`. So the intersection asks nothing about
+// applicability — an arriving row applies by construction — and asks only which
+// selected items declare it.
+//
+// AN ENTRY CARRIES ITS OWN `groups`, RATHER THAN THESE READING plugin.toolGroups.
+// Two things decide which tools an item offers and only one of them is the plugin:
+// the resolved `toolGroups` are per WIDGET TYPE, but the MATERIAL preset sections
+// are per ITEM STATE (a rect whose fill is currently the sky material gets the
+// sky's presets — manifest D.10). A selected item's tools are the union of the two,
+// so the app adapter composes them and hands the result over. Reading
+// `plugin.toolGroups` here would have made the state-derived half unreachable to
+// the intersection, which is precisely the sort of second mechanism this section
+// exists not to grow.
+//
+// WHY THE GROUP IS THE UNIT AND NOT A FLAT ROW LIST. The pane's whole shape is
+// "a group IS the drop-down" (user ruling, web/ToolsPane.svelte's header), and an
+// EMPTY group is unrepresentable by construction (core/registry.js: "a group left
+// with no rows is DROPPED, so 'an empty group does not render' is not a rule the
+// pane remembers to apply, it is a shape the pane cannot receive"). Intersecting
+// group-wise keeps that property: a group whose rows all fall out has no rows, so
+// it is not emitted at all.
+
+/**
+ * The row kind a MATERIAL preset section uses — a preset whose knobs land inside a
+ * paint slot's material params rather than on the item's own keys. Spelled ONCE
+ * here because three places switch on it (the app adapter that builds those
+ * sections, the identity/contract pair below, and the pane's run path), and a
+ * fourth spelling would be a row nothing recognised.
+ */
+export const MATERIAL_PRESET_ROW_KIND = "materialPreset";
+
+/**
+ * Pure function. A tool row's IDENTITY — the key two rows must share before their
+ * contracts are even compared. `key` on a property row; this is its analogue.
+ *
+ * A COMMAND row is identified by its command id and a PRESET row by its name,
+ * because those are the only things a row carries that a person can see: every
+ * word a command row renders belongs to the command ENTRY (core/registry.js's
+ * pool: "A ROW IS TWO FACTS AND NOTHING ELSE"), and a preset row renders its
+ * preset's name. A MATERIAL preset also names its SLOT, because the same material
+ * can be a widget's fill and its stroke at once — two sections, two rows, two
+ * different writes, and one identity for both would silently merge them.
+ *
+ * @param {{kind: string, command?: string, slot?: string, preset?: {name: string}}} row - a resolved tool row
+ * @returns {string} a kind-prefixed identity
+ *
+ * @example toolRowKey({kind: "command", command: "duplicate"}) // "cmd:duplicate"
+ * @example toolRowKey({kind: "preset", preset: {name: "Cinematic", props: {}}}) // "preset:Cinematic"
+ * @example toolRowKey({kind: "materialPreset", slot: "fill", preset: {name: "Overcast", params: {}}}) // "materialPreset:fill:Overcast"
+ * @example // the prefix is why a preset called "duplicate" is not the Duplicate tool:
+ * @example toolRowKey({kind: "preset", preset: {name: "duplicate", props: {}}}) // "preset:duplicate"
+ */
+export function toolRowKey(row) {
+  if (row.kind === "command") return `cmd:${row.command}`;
+  if (row.kind === "preset") return `preset:${row.preset.name}`;
+  if (row.kind === MATERIAL_PRESET_ROW_KIND) return `${MATERIAL_PRESET_ROW_KIND}:${row.slot}:${row.preset.name}`;
+  throw new Error(`core/multiselect toolRowKey: unknown tool row kind "${row.kind}" — a tool row is a command, a preset, or a ${MATERIAL_PRESET_ROW_KIND} (core/registry.js TOOL GROUPS).`);
+}
+
+/**
+ * Pure function. A tool row's CONTRACT — what running it would DO, with the
+ * presentational part stripped. `rowContract`'s partition, applied to tools.
+ *
+ * A COMMAND ROW'S CONTRACT IS ITS ID, and that is a complete answer rather than a
+ * shortcut: the row carries no title, icon, help or gate of its own, so two rows
+ * naming one command are the same row in every observable way. There is nothing
+ * left to compare and therefore no way for two of them to disagree.
+ *
+ * A PRESET ROW'S CONTRACT IS THE KEY SET IT WRITES. A preset's NAME is
+ * presentational (it is what the button says) and the properties it STORES are the
+ * contract — the same split that makes a property row's `label` presentational and
+ * its `min`/`options`/`display` contract. app.applyPreset writes exactly
+ * `Object.keys(preset.props)`, so that set IS the row's effect.
+ *
+ * MEASURED, which is why this is not ceremony: over the registered roster 19 of
+ * 741 preset names are declared by more than one plugin with DIFFERENT key sets —
+ * `magnifier` and `demo_magnify` share six names, `text` and `plaintext` share
+ * "Broadcast Caption", `line` and `ss_bracket` share "Hairline Rule" — and the
+ * family id `presets` is shared by 46 plugins. Without this comparison a
+ * heterogeneous selection would offer one button that writes different properties
+ * on different items, which is the silent-wrongness the property relation exists
+ * to prevent.
+ *
+ * @param {object} row - a resolved tool row
+ * @returns {object} the contract aspects only
+ *
+ * @example toolRowContract({kind: "command", command: "duplicate", applies: () => true})
+ * // {kind: "command", command: "duplicate"}
+ * @example toolRowContract({kind: "preset", preset: {name: "Soft", description: "…", props: {blur: 4, opacity: 1}}})
+ * // {kind: "preset", props: ["blur", "opacity"]}
+ * @example // declaration ORDER is not a difference — the keys are sorted:
+ * @example toolRowContract({kind: "preset", preset: {name: "Soft", props: {opacity: 1, blur: 4}}})
+ * // {kind: "preset", props: ["blur", "opacity"]}
+ * @example // a MATERIAL preset's knobs are its contract, and the slot is part of it:
+ * @example toolRowContract({kind: "materialPreset", slot: "fill", preset: {name: "Overcast", params: {haze: 0.4}}})
+ * // {kind: "materialPreset", slot: "fill", props: ["haze"]}
+ */
+export function toolRowContract(row) {
+  if (row.kind === "command") return { kind: row.kind, command: row.command };
+  if (row.kind === MATERIAL_PRESET_ROW_KIND)
+    return { kind: row.kind, slot: row.slot, props: Object.keys(row.preset.params ?? {}).sort() };
+  return { kind: row.kind, props: Object.keys(row.preset.props ?? {}).sort() };
+}
+
+/**
+ * Pure function. Are these two tool rows THE SAME TOOL for a joint run — i.e. do
+ * their contracts match exactly? `sameRowContract`'s analogue, compared with the
+ * same core/deltas.js `deepEqual`.
+ *
+ * @param {object} a - a resolved tool row
+ * @param {object} b - another resolved tool row
+ * @returns {boolean}
+ *
+ * @example sameToolRow({kind: "command", command: "duplicate"}, {kind: "command", command: "duplicate", applies: () => true})
+ * // true (a pool `applies` predicate is not part of the contract — an arriving row already applies)
+ * @example sameToolRow({kind: "preset", preset: {name: "Soft", props: {blur: 4}}}, {kind: "preset", preset: {name: "Soft", props: {blur: 4}}})
+ * // true
+ * @example sameToolRow({kind: "preset", preset: {name: "Soft", props: {blur: 4}}}, {kind: "preset", preset: {name: "Soft", props: {radius: 4}}})
+ * // false (same name, different properties — two presets sharing a word)
+ */
+export function sameToolRow(a, b) {
+  return deepEqual(toolRowContract(a), toolRowContract(b));
+}
+
+/**
+ * Pure function. The tool GROUPS N selected items share, plus the conflicts worth
+ * reporting — `intersectRows` for the Tools pane.
+ *
+ * The primary's groups lead, in the primary's order, for the same reason the
+ * property panel reads as the primary item's panel: a one-item selection returns
+ * that plugin's own groups and rows BY IDENTITY, so the single-selection pane is
+ * unchanged by construction rather than by care. Union appends the groups only
+ * some items declare, primary-first, so the framing survives.
+ *
+ * A GROUP'S TITLE COMES FROM THE FIRST ITEM THAT DECLARES IT, by reference. Pool
+ * groups carry one title for the whole roster, and a plugin joining a pool group
+ * inherits it (core/registry.js toolGroupsOf), so the only way two titles could
+ * differ is two plugins opening their own section under one id — which is exactly
+ * what the `title` conflict below reports.
+ *
+ * @param {Array<{itemId: string, groups: Array}>} entries - selected items, primary FIRST
+ * @param {string} [mode] - MULTISELECT_MODE.INTERSECTION (default) or .UNION
+ * @returns {{groups: Array<{id: string, title: string, rows: Array<{key: string, row: object, appliesTo: string[]}>}>, conflicts: Array<{key: string, aspects: string[]}>}}
+ *
+ * @example intersectToolGroups([]) // {groups: [], conflicts: []}
+ * @example // two widgets sharing Duplicate but not Shatter:
+ * // intersectToolGroups([
+ * //   {itemId: "a", groups: [{id: "edit", title: "Edit", rows: [{kind: "command", command: "duplicate"}]}]},
+ * //   {itemId: "b", groups: [
+ * //      {id: "edit", title: "Edit", rows: [{kind: "command", command: "duplicate"}, {kind: "command", command: "shatter"}]}]},
+ * // ])
+ * // → groups: [{id: "edit", title: "Edit",
+ * //             rows: [{key: "cmd:duplicate", row: <a's duplicate row>, appliesTo: ["a", "b"]}]}], conflicts: []
+ */
+export function intersectToolGroups(entries, mode = MULTISELECT_MODE.INTERSECTION) {
+  if (entries.length === 0) return { groups: [], conflicts: [] };
+  const union = mode === MULTISELECT_MODE.UNION;
+  const groupsOf = entries.map((e) => e.groups ?? []);
+  // WHICH GROUP IDS ARE CANDIDATES — the primary's alone under intersection (an id
+  // it lacks can never be shared), every id any item declares under union.
+  const ids = [];
+  const seenIds = new Set();
+  for (const list of union ? groupsOf : [groupsOf[0]])
+    for (const g of list) if (!seenIds.has(g.id)) { seenIds.add(g.id); ids.push(g.id); }
+
+  const groups = [];
+  const conflicts = [];
+  for (const id of ids) {
+    const found = groupsOf.map((list) => list.find((g) => g.id === id));
+    const present = entries.filter((_, i) => found[i] !== undefined);
+    const declared = found.filter((g) => g !== undefined);
+    if (!union && declared.length !== entries.length) continue; // not shared
+    const seed = declared[0];
+    // A TITLE DISAGREEMENT IS A CONFLICT ON THE GROUP, not a silent pick. Reported
+    // under the group id so the pane can name it, and the seed's title is used —
+    // the primary's, which is the panel the user is looking at (the #300 rule:
+    // inform AND allow, never withhold).
+    if (declared.some((g) => g.title !== seed.title))
+      conflicts.push({ key: id, aspects: ["title"] });
+
+    const rows = [];
+    const rowKeys = [];
+    const seenRows = new Set();
+    for (const list of union ? declared : [seed])
+      for (const r of list.rows) { const k = toolRowKey(r); if (!seenRows.has(k)) { seenRows.add(k); rowKeys.push(k); } }
+    for (const key of rowKeys) {
+      const rowFound = declared.map((g) => g.rows.find((r) => toolRowKey(r) === key));
+      const rowDeclared = rowFound.filter((r) => r !== undefined);
+      if (!union && rowDeclared.length !== declared.length) continue;
+      const rowSeed = rowDeclared[0];
+      // A CONTRACT MISMATCH WARNS, IT DOES NOT BLOCK (#300, the property panel's
+      // own ruling): two presets sharing a name and writing different properties
+      // are still OFFERED — the primary's is the one that runs — and named in
+      // `conflicts` so the pane can say which items it will not mean the same
+      // thing to.
+      if (!rowDeclared.every((r) => sameToolRow(rowSeed, r)))
+        conflicts.push({ key, aspects: ["props"] });
+      // BY REFERENCE, NEVER REBUILT — the drift gate `intersectRows` states and
+      // tests/multiselect_test.js pins: "a reference cannot drift from itself".
+      // Participation rides on the WRAPPER, exactly as it does there.
+      // `key` rides on the WRAPPER too — the pane needs a stable {#each} key and a
+      // way to look a row up in `conflicts`, and re-deriving toolRowKey there would
+      // be a second expression of the identity relation living in a component.
+      rows.push({ key, row: rowSeed, appliesTo: present.filter((_, i) => rowFound[i] !== undefined).map((e) => e.itemId) });
+    }
+    // Emptiness stays unrepresentable (core/registry.js's own invariant): a group
+    // whose rows all fell out is not emitted, so the pane needs no "hide if empty".
+    if (rows.length > 0) groups.push({ id, title: seed.title, rows });
+  }
+  return { groups, conflicts };
+}
+
+/**
+ * Pure function. THE ONE CALL web/ToolsPane.svelte makes for a selection of N
+ * items — `multiSelectPanel`'s counterpart, with the same shape and the same
+ * honesty about who is not being acted on.
+ *
+ * AN ITEM NOT ON THIS SLIDE IS SKIPPED, for the reason the property panel skips it
+ * (see the module header): it has no folded state, so a preset write would
+ * manufacture a typeless-in-fold item. It is reported in `skipped` rather than
+ * quietly acted on or quietly dropped.
+ *
+ * @param {Array<{itemId: string, groups: Array, state: object|null}>} entries - selected items, primary FIRST
+ * @param {string} [mode] - MULTISELECT_MODE.INTERSECTION (default) or .UNION
+ * @returns {{groups: Array, conflicts: Array, skipped: string[], mode: string, itemIds: string[]}}
+ *
+ * @example multiToolPanel([]) // {groups: [], conflicts: [], skipped: [], mode: "intersection", itemIds: []}
+ * @example multiToolPanel([{itemId: "ghost", groups: [], state: null}]).skipped // ["ghost"]
+ */
+export function multiToolPanel(entries, mode = MULTISELECT_MODE.INTERSECTION) {
+  const live = entries.filter((e) => e.state != null);
+  const skipped = entries.filter((e) => e.state == null).map((e) => e.itemId);
+  const { groups, conflicts } = intersectToolGroups(live, mode);
+  return { groups, conflicts, skipped, mode, itemIds: live.map((e) => e.itemId) };
+}
+
+/**
+ * Pure function. THE PRESET FAN-OUT: one preset's props staged at every target
+ * item's state paths, as `app.setPreview` pairs — `unifyPairs` for a whole
+ * property SET rather than one key.
+ *
+ * WHY IT IS ONE CALL AND NOT N applyPresets. `app.setPreview` REPLACES the staged
+ * delta wholesale and `app.commitPreview` walks it into ONE `commit`, so N items
+ * written from one pairs list is ONE undo unit — the rule `app.unifySelection`
+ * already obeys. Applying a preset to twelve widgets must undo as one action.
+ *
+ * NOT MINIMAL-DELTA, unlike `unifyPairs`, and the difference is deliberate: a
+ * preset is an OVERLAY whose whole contract is "these keys now hold these values"
+ * (the rule every preset suite pins), and skipping an item that already holds one
+ * of them would make the write depend on which knobs happened to match. `unifyPairs`
+ * skips because it writes ONE key and an untouched item must not spend a keyframe;
+ * a preset click is an explicit request to stamp a look.
+ *
+ * OBJECT VALUES ARE CLONED PER TARGET, for `unifyPairs`'s reason: one shared
+ * reference written into N items would alias their stored state, so a later
+ * in-place mutation anywhere would silently edit all of them.
+ *
+ * @param {string[]} itemIds - the target items
+ * @param {{props: object}} preset - a plugin preset descriptor
+ * @returns {Array<[string[], *]>} [path, value] pairs for app.setPreview
+ *
+ * @example presetPairs(["a"], {name: "Soft", props: {blur: 4}})
+ * // [[["items", "a", "blur"], 4]]
+ * @example presetPairs(["a", "b"], {name: "Soft", props: {blur: 4}})
+ * // [[["items", "a", "blur"], 4], [["items", "b", "blur"], 4]]
+ * @example presetPairs([], {props: {blur: 4}}) // [] (nothing selected writes nothing)
+ * @example presetPairs(["a"], {props: {}}) // [] (a preset with no props writes nothing)
+ */
+export function presetPairs(itemIds, preset) {
+  return presetPairsAt(itemIds, [], Object.entries(preset?.props ?? {}));
+}
+
+/**
+ * Pure function. The `app.setPreview` pairs for a MATERIAL preset over N items:
+ * each of the preset's sparse knobs written into the PAINT's own material params —
+ * `["items", id, <slot>, "material", "params", <knob>]` — never to a top-level item
+ * key. That path IS what separates a material preset from a plugin preset, and only
+ * the knobs the preset names are written, so the material's other knobs keep their
+ * value.
+ *
+ * @param {string[]} itemIds - the target items
+ * @param {string} slot - the paint slot the material sits in ("fill" | "stroke")
+ * @param {{params: object}} preset - a material preset descriptor
+ * @returns {Array<[string[], *]>} [path, value] pairs for app.setPreview
+ *
+ * @example materialPresetPairs(["a"], "fill", {name: "Overcast", params: {haze: 0.4}})
+ * // [[["items", "a", "fill", "material", "params", "haze"], 0.4]]
+ * @example materialPresetPairs(["a", "b"], "stroke", {params: {width: 2}}).length // 2
+ * @example materialPresetPairs([], "fill", {params: {haze: 1}}) // []
+ */
+export function materialPresetPairs(itemIds, slot, preset) {
+  return presetPairsAt(itemIds, [slot, "material", "params"], Object.entries(preset?.params ?? {}));
+}
+
+/**
+ * Pure function. The shared staging walk behind both preset fan-outs: every knob of
+ * `knobs`, at `prefix` under every item. ONE expression of "a preset is a sparse
+ * overlay written per target", so the plugin-preset and material-preset paths cannot
+ * come to disagree about cloning or about ordering.
+ *
+ * @param {string[]} itemIds - the target items
+ * @param {string[]} prefix - the path inside the item the knobs sit under ([] = the item's own keys)
+ * @param {Array<[string, *]>} knobs - the preset's [key, value] entries
+ * @returns {Array<[string[], *]>} [path, value] pairs for app.setPreview
+ *
+ * @example presetPairsAt(["a"], [], [["blur", 4]]) // [[["items", "a", "blur"], 4]]
+ * @example presetPairsAt(["a"], ["fill", "material", "params"], [["haze", 1]])
+ * // [[["items", "a", "fill", "material", "params", "haze"], 1]]
+ * @example presetPairsAt(["a", "b"], [], []) // [] (no knobs — nothing to write)
+ */
+export function presetPairsAt(itemIds, prefix, knobs) {
+  // An OBJECT knob is cloned PER TARGET, `unifyPairs`'s rule: one shared reference
+  // written into N items would alias their stored state, so a later in-place
+  // mutation anywhere would silently edit all of them.
+  const perTarget = (v) => (v !== null && typeof v === "object" ? structuredClone(v) : v);
+  return itemIds.flatMap((itemId) => knobs.map(([key, value]) => [["items", itemId, ...prefix, key], perTarget(value)]));
 }
 
 /**

@@ -82,6 +82,11 @@ import { reportOnce } from "../core/report.js";
  *  every suspended context, and an unused one is a real resource). */
 let engine = null;
 let engineReady = null;
+/** FATAL: the engine could not initialise, so it can never build a module. Set ONLY by
+ *  ensureEngine's init catch — never by an apply failure, which may be transient. It is
+ *  what stops queueApply's self-healing pass from re-diffing an engine that will never
+ *  converge (see the block there; an unreachable AudioWorklet spun the page). */
+let engineUnusable = false;
 
 /** The scene the ENGINE currently holds — the `prev` half of every diff. Kept here
  *  rather than re-read from the engine because the engine's own `inspect()` reports
@@ -185,7 +190,10 @@ function ensureEngine() {
     // A FAILURE HERE IS FATAL TO AUDIO AND MUST SAY SO. The most common cause is
     // the worklet module failing to load (a 404 on processors.js under a changed
     // base path), which otherwise presents as "everything is wired and nothing
-    // makes noise" — indistinguishable from a bad patch.
+    // makes noise" — indistinguishable from a bad patch. The other cause seen in the
+    // wild is no AudioWorklet at all, on an origin the browser does not consider
+    // secure (synth/engine.js's init names it); either way NO module can be built.
+    engineUnusable = true; // the ONE place this is set — see queueApply's guard
     audioState.status = "failed";
     audioState.reason = `the synth engine could not start: ${e.message}`;
     reportOnce(`PowerRP: audio engine failed to initialise — ${e.message}`);
@@ -295,6 +303,31 @@ export function mirrorAudioFrame(state, registry) {
  */
 function queueApply(ops, scene) {
   if (applying) { pending = scene; return; }
+  // ── A PERMANENTLY BROKEN ENGINE MUST NOT BE RE-DIFFED FOREVER ────────────────
+  // The self-healing pass below re-reads the engine and re-issues whatever the target
+  // scene still lacks. That is right for a TRANSIENT miss (a module raced away
+  // mid-batch) and catastrophic for a PERMANENT one: if the engine cannot build ANY
+  // module — no AudioWorklet on an insecure origin, for instance — the diff never
+  // converges, so every pass re-issues the entire scene and the page SPINS.
+  //
+  // A user hit exactly this (2026-08-06): every audio demo patch "hung" the app, and a
+  // hang is worse than an error in two ways — `web/index.html`'s crash handler only
+  // catches throws during boot, so nothing reports it, and the autosave restores the
+  // same document on reload so refreshing does not help.
+  //
+  // So a fatal engine state STOPS the mirror — but ONLY a fatal one.
+  //
+  // ⚠ `audioState.status === "failed"` IS THE WRONG GATE, and the first version of this
+  // guard used it. Two reasons, both measured: that status is set by THIS function's own
+  // catch on ANY apply error, so one transient miss would have disabled audio for the
+  // rest of the session (worse than the loop it was fixing); and `status` tracks whether
+  // a GESTURE was harvested rather than engine health — a real page reports `blocked`
+  // while `engine.context.state` is already `"running"`.
+  //
+  // `engineUnusable` is set in exactly one place: ensureEngine's init catch. That is the
+  // only condition under which NO module can ever be built, which is the only condition
+  // under which re-diffing is futile rather than self-healing.
+  if (engineUnusable) return;
   applying = applyOps(ops)
     .catch((e) => {
       audioState.status = "failed";
@@ -435,24 +468,71 @@ async function applyOps(ops) {
 /** id → unsubscribe, for the modules whose analysis this mirror is watching. */
 const analysisSubs = new Map();
 
+/**
+ * Query. Is there anything worth recording right now?
+ *
+ * ── THIS IS THE BATTERY GATE, AND IT BELONGS AT THE PUSH ────────────────────
+ * Every pushed column wakes a repaint (live_analysis_registry.onAnalysisFrame),
+ * so a push nobody can learn anything from is a frame nobody needed. ONE
+ * condition, and it is a MEASUREMENT rather than a belief.
+ *
+ * THE CONTEXT IS RUNNING. The engine polls its analysers on rAF from the moment a
+ * module is added, INCLUDING while the context is suspended — and a suspended
+ * context's getByteFrequencyData returns zeros. So a blocked deck with one meter on
+ * it was filling its ring with silence sixty times a second, and would have held a
+ * repaint loop open forever showing a picture of nothing.
+ *
+ * ASKED OF THE ENGINE, NEVER OF `audioState.status`. Measured in a real page: the
+ * mirror reports `blocked` while `engine.context.state` is `"running"`, because
+ * `status` records whether a GESTURE WAS HARVESTED and is not a reading of engine
+ * health. A gate built on it would refuse to record audio that is genuinely
+ * playing.
+ *
+ * ── MUTING IS NOT PART OF THIS GATE, AND THAT IS A CORRECTION ───────────────
+ * It briefly was, and the picture froze whenever the session muted. That was
+ * wrong, and the reason is worth keeping: **the analysers tap module INPUTS,
+ * upstream of the master mute** (synth/engine.js's master-chain block), so while
+ * muted the signal they measure genuinely exists. Freezing the display would
+ * report something FALSE about the patch — the meter would read silence when the
+ * oscillator is running.
+ *
+ * It also mistakes what a mute is for. Mute is about SPEAKERS, not about whether
+ * the author is looking: silencing the room while watching a level meter is an
+ * ordinary way to work. The old gate conflated "silent" with "idle", and they are
+ * different states. A MUTED DECK STILL WAKES; A STOPPED ONE DOES NOT.
+ *
+ * The battery guarantee is unaffected, because it never rested on the mute:
+ * `analysisFlowing`'s freshness window still shuts the presenter's loop off on
+ * delete, on a backgrounded tab, and when audio genuinely stops.
+ *
+ * @returns {boolean}
+ */
+function analysisWanted() {
+  return !!engine && engine.isRunning();
+}
+
 /** Command. Subscribe to a module's live data, if it is an analysis node.
  *
  *  UNITS ARE CONVERTED HERE, at the one place that knows the engine's: the ring
  *  buffer is unit-free (magnitudes in 0..1), so the drawing never has to know
- *  whether a value arrived as an FFT byte or as dBFS. */
+ *  whether a value arrived as an FFT byte or as dBFS.
+ *
+ *  The `analysisWanted` early-return is a GATE, not a swallowed failure: nothing
+ *  has gone wrong when a suspended context reports silence, and the honest
+ *  response is to record nothing rather than to record zeros. */
 function subscribeAnalysis(id, module) {
   const kind = module?.spec?.overlay;
   if (!kind) return;
   unsubscribeAnalysis(id);
   if (kind === "meter") {
-    analysisSubs.set(id, engine.subscribeMeter(id, (level) => pushAnalysisFrame(id, kind, meterColumnValues(level.db))));
+    analysisSubs.set(id, engine.subscribeMeter(id, (level) => { if (analysisWanted()) pushAnalysisFrame(id, kind, meterColumnValues(level.db)); }));
   } else if (kind === "spectrum") {
     // THE ENGINE REUSES ITS BUFFER (NF-SYNTH's API note: "REUSED buffer — copy if
     // kept"). spectrumColumnValues reads it and returns a fresh Float32Array, which
     // pushColumn copies into the ring — so the reuse is respected without this seam
     // having to reason about lifetime at all. The per-frame allocation it does make
     // is one column, not one history.
-    analysisSubs.set(id, engine.subscribeSpectrum(id, (bins) => pushAnalysisFrame(id, kind, spectrumColumnValues(bins))));
+    analysisSubs.set(id, engine.subscribeSpectrum(id, (bins) => { if (analysisWanted()) pushAnalysisFrame(id, kind, spectrumColumnValues(bins)); }));
   }
 }
 

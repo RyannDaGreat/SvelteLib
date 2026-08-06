@@ -218,6 +218,20 @@ try {
     const analysisIds = Object.entries(state.items)
       .filter(([, it]) => app.registry.get(it.type)?.audioSpec?.overlay)
       .map(([id, it]) => [id, app.registry.get(it.type).audioSpec.overlay]);
+    // ── THE BATTERY GATE, AND A MEASUREMENT THAT CORRECTED THE FIRST DRAFT ──
+    // The wake must not fire when there is nothing to watch. The obvious probe for
+    // that is "the mirror says `blocked`, so nothing should be recording" — and it
+    // is WRONG HERE, which is worth pinning rather than quietly working around:
+    // in this page `audioState.status` is "blocked" while `engine.context.state` is
+    // "running". The status records whether a GESTURE was harvested; it is not a
+    // reading of the context. So the gate is built on `engine.isRunning()` (the
+    // measurement) and never on the status (the belief), and this check records
+    // both so a future reader sees the divergence instead of rediscovering it.
+    const contextState = (await import("/audioMirror.svelte.js")).audioEngine()?.context?.state ?? "none";
+    const wakes = [];
+    const offWake = reg.onAnalysisFrame((id) => wakes.push(id));
+    await new Promise((r) => setTimeout(r, 150));
+    offWake();
     // FEED THE RINGS the way the engine's subscription does. Synthetic columns,
     // because headless Chrome has no output device and this probe does not assert
     // on sound — what is proven is the PATH: registry -> pre-pass -> emit() -> IR.
@@ -234,10 +248,12 @@ try {
     const liveAgain = frame(true);
     const columns = Object.fromEntries(analysisIds.map(([id, kind]) => [kind, reg.analysisColumnCount(id)]));
     const declared = Object.fromEntries(analysisIds.map(([, kind]) => [kind, ANALYSIS_HISTORY_COLUMNS[kind]]));
-    return { kinds: analysisIds.map(([, k]) => k).sort(), headless, live, liveAgain, columns, declared };
+    return { kinds: analysisIds.map(([, k]) => k).sort(), headless, live, liveAgain, columns, declared, contextState, wakes: wakes.length };
   }, `/@fs${resolve(repo, "src/demo_apps/PowerRP/render_gpu/gpu/live_analysis_registry.js")}`,
      `/@fs${resolve(repo, "src/demo_apps/PowerRP/core/analysis_display.js")}`);
 
+  ok(analysisIr.contextState === "running" ? analysisIr.wakes > 0 : analysisIr.wakes === 0,
+    `the repaint wake fires exactly when the CONTEXT is running (state "${analysisIr.contextState}", ${analysisIr.wakes} wakes in 150ms) — this is the user's "doesnt update unless i move it": a pushed column is not document state, so without this seam nothing ever asks for the next frame`);
   ok(analysisIr.kinds.join(",") === "meter,spectrum",
     `exactly two nodes declare a live display, the meter and the spectrum (got ${JSON.stringify(analysisIr.kinds)})`);
   ok(analysisIr.live > analysisIr.headless,

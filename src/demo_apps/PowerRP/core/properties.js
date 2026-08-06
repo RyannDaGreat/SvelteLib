@@ -1967,6 +1967,42 @@ export const PROPS = {
     activeKey: "heldNotesActive",
     help: "The notes this keyboard is HOLDING — the latched chord, one entry per key. Only meaningful while Lock Keys is on: with the lock on, clicking a key adds it here and clicking it again removes it, so each slide can hold its own chord. Hiding an entry silences that note without losing which one it was.",
   },
+
+  // ── piano roll: THE PATTERN (a LIST property — core/lists.js) ────────────────
+  // R7-14. The notes a Piano Roll plays: a SPARSE list of (step, note) pairs, one
+  // entry per authored note and nothing at all for a rest.
+  //
+  // SPARSE, NOT ONE ENTRY PER STEP, and the reason is the pattern's LENGTH. A dense
+  // list would state the length as its own length, which is tidy — and then a bar
+  // ending in four rests would be indistinguishable from a bar four steps shorter,
+  // because a trailing rest has no element to be. The length is therefore its own
+  // property (`audioStepCount`, the engine's construct-time step count, which the
+  // shared transport already reads) and this list says only what SOUNDS.
+  //
+  // A TUPLE of two numbers, for the reason `points` and `frames` are tuples:
+  // core/interpolators.js interpolate() takes its pure-numeric-array branch for an
+  // all-number array. Both fields are integers and the tweenline INT RULE rounds a
+  // lerp between two of them — which is exactly right for both axes here, since
+  // there is no half-step and no quarter-tone: a pattern keyframed from one slide
+  // to the next walks its notes across the grid cell by cell.
+  //
+  // HIDE MEANS "THIS NOTE DOES NOT SOUND", not "close the sequence over it". That is
+  // the per-flavour reading core/lists.js's own header asks each consumer to state:
+  // an element carries its own step, so removing one from the picture leaves every
+  // other note exactly where it was, and the gap it leaves is a rest.
+  notes: {
+    label: "Notes", kind: LIST_ROW_KIND, category: "control",
+    element: {
+      storage: "tuple",
+      fields: [
+        { name: "step", kind: "number", min: 0, step: 1, label: "Step", help: "Which step of the pattern this note plays on, counting from 0. A note past the last step is kept but does not sound — raise Steps to reach it." },
+        { name: "note", kind: "number", step: 1, label: "Note", help: "The MIDI note this step plays. 60 is middle C and every 12 is an octave. Bind it to an equation to transpose a phrase without redrawing it." },
+      ],
+    },
+    order: "sequence",
+    activeKey: "notesActive",
+    help: "The pattern, as one entry per note: WHICH step and WHICH pitch. Click a cell on the widget to place a note, click it again to clear it. Hiding an entry turns that step into a rest without losing the note. One note per step — the sequencer sounds a single pitch at a time, so placing a note on an occupied step MOVES it.",
+  },
 };
 
 // LOUD IMPORT-TIME GUARD (the render_settings.js ANTIALIAS_MODES precedent, the

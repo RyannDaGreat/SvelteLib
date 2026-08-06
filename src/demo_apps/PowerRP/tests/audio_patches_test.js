@@ -21,10 +21,10 @@
 
 import assert from "node:assert/strict";
 
-import { BEACH, DEMO_PATCHES, PATCH_COL, PLAYABLE_KEYS, SEQUENCED_DINGS, SPACEY_PAD_DRONE, WHOOSH, buildPatchItems, patchBounds, patchLayout } from "../core/audio_patches.js";
+import { BEACH, DEMO_PATCHES, PATCH_COL, patchColPitch, PLAYABLE_KEYS, SEQUENCED_DINGS, SPACEY_PAD_DRONE, WHOOSH, buildPatchItems, patchBounds, patchLayout } from "../core/audio_patches.js";
 import { nodeKeyboardPlugin } from "../plugins/node_keyboard.js";
 import { connectionRefusal } from "../core/nodeflow.js";
-import { audioDisplayTitle } from "../core/audio_nodes.js";
+import { audioDisplayTitle, audioKnobValues } from "../core/audio_nodes.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
 import { readAudioScene } from "../core/audio_mirror_diff.js";
@@ -75,7 +75,14 @@ check("BZ: every audio widget AND every patch carries the 'Audio ' prefix", () =
   // out — and only a sweep can assert that.
   for (const p of DEMO_PATCHES)
     assert.ok(p.title.startsWith("Audio "), `patch ${p.id} is titled ${JSON.stringify(p.title)}`);
-  const audioWidgets = registry.all().filter((p) => p.type.startsWith("audio_"));
+  // WHAT MAKES A WIDGET AUDIO IS ITS ENGINE BINDING, NOT ITS TYPE STRING. This read
+  // `type.startsWith("audio_")` until R7-14, which was a proxy that held only while
+  // every audio widget was an `audioNodePlugin` wrapper — and it broke the day one
+  // was not: plugins/node_piano_roll.js binds the `sequencer` engine module through
+  // the CONTROL factory (its face is a grid, not a knob band), so it is `node_`-typed
+  // and unambiguously audio. Dispatching on the DECLARATION rather than on the name
+  // is core/registry.js's own law, and it is what makes this sweep keep working.
+  const audioWidgets = registry.all().filter((p) => p.audioModule);
   assert.ok(audioWidgets.length >= 20, `expected the full audio roster, saw ${audioWidgets.length}`);
   for (const w of audioWidgets)
     assert.ok(w.title.startsWith("Audio "), `${w.type} is titled ${JSON.stringify(w.title)}`);
@@ -84,13 +91,43 @@ check("BZ: every audio widget AND every patch carries the 'Audio ' prefix", () =
   // and the half a careless "prefix everything" would break. A Knob is not an audio
   // widget: the founding vision has these driving materials and shapes too, so
   // "Audio Knob" would be a false claim about what it can be wired to.
-  for (const g of registry.all().filter((p) => p.type.startsWith("node_")))
+  for (const g of registry.all().filter((p) => p.type.startsWith("node_") && !p.audioModule))
     assert.ok(!g.title.startsWith("Audio "),
       `${g.type} is a GENERIC control node and must not claim to be audio (${JSON.stringify(g.title)})`);
 
   // Idempotent: the derivation must not double-prefix if a spec spells it itself.
   assert.strictEqual(audioDisplayTitle("Audio Delay"), "Audio Delay");
   assert.strictEqual(audioDisplayTitle("Delay"), "Audio Delay");
+});
+
+check("every NODE's title ends in 'Node', and nothing else's does", () => {
+  // USER, 2026-08-06 (verbatim): "All nodes should have "Node" in the name".
+  //
+  // Swept for the same reason the prefix above is: the rule is applied at
+  // registration (core/registry.withNodeTitle), and the only way to assert that a
+  // widget added tomorrow cannot opt out is to check the whole population. Four of
+  // the 73 already said "Node" by hand and 69 did not — this is the sweep that
+  // stops them drifting apart again.
+  //
+  // WHAT MAKES A WIDGET A NODE IS `ports`, not its type string. Same law as the
+  // audio sweep above: dispatch on the declaration. A plugin that draws port beads
+  // and accepts wire drags IS a node, whatever it is called.
+  const nodes = registry.all().filter((p) => typeof p.ports === "function");
+  assert.ok(nodes.length >= 70, `expected the full node roster, saw ${nodes.length}`);
+  for (const n of nodes)
+    assert.ok(n.title.endsWith(" Node"), `${n.type} is a node titled ${JSON.stringify(n.title)}`);
+  // No doubling, for the four that spell it themselves.
+  for (const n of nodes)
+    assert.ok(!n.title.endsWith(" Node Node"), `${n.type} was suffixed twice: ${JSON.stringify(n.title)}`);
+
+  // AND THE OTHER HALF OF THE SCOPE, which a careless "suffix everything" breaks:
+  // a widget with no ports is not a node, and a PATCH is not a node either — it is
+  // a whole graph of them, so "Audio Beach Node" would be a false claim about what
+  // the menu item inserts.
+  for (const p of registry.all().filter((w) => typeof w.ports !== "function"))
+    assert.ok(!p.title.endsWith(" Node"), `${p.type} declares no ports and must not be titled a node (${JSON.stringify(p.title)})`);
+  for (const p of DEMO_PATCHES)
+    assert.ok(!p.title.endsWith(" Node"), `patch ${p.id} is a graph, not a node (${JSON.stringify(p.title)})`);
 });
 
 check("every node names a REGISTERED widget type", () => {
@@ -181,16 +218,38 @@ check("EVERY knob a blueprint names LANDS on a key the widget actually has", () 
   // This asserts the OUTPUT rather than the rule: whatever key the builder
   // chooses must be one the plugin's own defaults declare. That holds for both
   // kinds of node and does not care how the key was derived.
+  // ── AND IT IS A ROUND TRIP, NOT A SECOND COPY OF THE PREFIX RULE ─────────
+  // This used to recompute the target key as `plugin.audioModule ? "audio"+Key : key`
+  // — the same proxy buildPatchItems used — so the two agreed by construction and the
+  // check could only ever catch a typo. It stopped agreeing the day R7-17-SEL's
+  // PLACEHOLDER nodes arrived (built by audioNodePlugin, so `audio`-prefixed defaults,
+  // but declaring no engine module), and the mismatch was real: the knobs were being
+  // written to keys the widget does not have.
+  //
+  // So read the value BACK through the reader the app itself uses. `audioKnobValues` is
+  // what web/audioMirror.svelte.js calls to turn a folded state into engine params, so
+  // a value that survives that trip is a value the SOUND will actually get — and how
+  // the key was spelled in between is nobody's business here, which is what the
+  // paragraph above always claimed and now is true.
   const bad = [];
   for (const p of DEMO_PATCHES) {
     const { states } = buildPatchItems(p, registry, { x: 0, y: 0 }, (id) => id);
     for (const node of p.nodes) {
       const plugin = registry.get(node.type);
       const state = states[node.id];
+      const readBack = plugin.audioSpec
+        ? new Map(audioKnobValues(plugin.audioSpec, state).map((k) => [k.key, k.value]))
+        : null;
       for (const [key, value] of Object.entries(node.knobs ?? {})) {
-        const target = plugin.audioModule ? "audio" + key.charAt(0).toUpperCase() + key.slice(1) : key;
-        if (!(target in plugin.defaults)) bad.push(`${p.id}.${node.id}: "${key}" → "${target}", which ${node.type} does not declare`);
-        else if (state[target] !== value) bad.push(`${p.id}.${node.id}.${target} is ${state[target]}, not the ${value} the blueprint set`);
+        if (readBack) {
+          if (!readBack.has(key)) bad.push(`${p.id}.${node.id}: "${key}" is not a knob ${node.type} reads back (has ${[...readBack.keys()].join(", ")})`);
+          else if (readBack.get(key) !== value) bad.push(`${p.id}.${node.id}.${key} reads back ${readBack.get(key)}, not the ${value} the blueprint set`);
+          continue;
+        }
+        // A CONTROL node has no audioSpec: its settings are plain item leaves, so the
+        // plugin's own defaults are the only declaration there is to check against.
+        if (!(key in plugin.defaults)) bad.push(`${p.id}.${node.id}: "${key}" is not a leaf ${node.type} declares`);
+        else if (state[key] !== value) bad.push(`${p.id}.${node.id}.${key} is ${state[key]}, not the ${value} the blueprint set`);
       }
     }
   }
@@ -339,7 +398,7 @@ check("patchBounds covers every node the patch places", () => {
     const bounds = patchBounds(p, registry, { x: 0, y: 0 });
     assert.ok(bounds.w > 0 && bounds.h > 0, `${p.id} has an empty bounding box`);
     for (const n of p.nodes) {
-      const at = patchLayout(n, { x: 0, y: 0 });
+      const at = patchLayout(n, { x: 0, y: 0 }, patchColPitch(p, registry));
       const plugin = registry.get(n.type);
       assert.ok(at.x >= bounds.x && at.x + plugin.defaults.w <= bounds.x + bounds.w + 1e-9,
         `${p.id}.${n.id} sticks out of the patch's own bounds horizontally`);
@@ -458,14 +517,25 @@ check("every slide fits inside the deck's own frame", () => {
 // it took a rendered still to see. A blueprint fixes it with `w`. This sweeps
 // EVERY patch rather than pinning the one known node, so the next wide widget
 // dropped into a blueprint fails here instead of in a picture.
-check("no patch node is wider than the column pitch", () => {
+check("no patch node is wider than ITS PATCH's column pitch", () => {
+  // THE PITCH IS PER PATCH NOW, and the law is the same law. It used to compare against
+  // the constant `PATCH_COL` (210), which was sized when every patchable card was 150-175
+  // wide — the mixer's shape. The ported blocks are honestly wider: Marbles has 9 inputs
+  // and 7 outputs, Supercell 16 inputs, Bogaudio's PEQ 33 dials at w=420. Rings at 270 is
+  // what turned this red, and the two ways to satisfy the old form were both wrong —
+  // shrink real modules until their ports clip, or spread EVERY patch to fit the widest
+  // card in the whole library. Both make one patch's geometry depend on another patch's
+  // contents. `patchColPitch` derives it from the patch's own widest card, so a narrow
+  // patch stays tight and this law holds by construction.
   for (const p of DEMO_PATCHES) {
+    const pitch = patchColPitch(p, registry);
     const { states } = buildPatchItems(p, registry, { x: 0, y: 0 }, (n) => `${p.id}-${n}`);
     for (const [id, s] of Object.entries(states)) {
       if (typeof s.w !== "number") continue;
-      assert.ok(s.w <= PATCH_COL,
-        `${p.id}: ${id} is ${s.w} wide against a PATCH_COL of ${PATCH_COL} — it overlaps the next column; set \`w\` on the blueprint node`);
+      assert.ok(s.w <= pitch,
+        `${p.id}: ${id} is ${s.w} wide against a pitch of ${pitch} — it overlaps the next column`);
     }
+    assert.ok(pitch >= PATCH_COL, `${p.id}: a derived pitch may widen the default, never narrow it`);
   }
 });
 

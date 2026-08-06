@@ -56,7 +56,9 @@
  */
 
 import { EPHEMERAL } from "./ephemeral.js";
-import { ANALYSIS_DISPLAY_BAND_H, analysisDisplayOps } from "./analysis_display.js";
+import {
+  ANALYSIS_DISPLAY_BAND_H, analysisDisplayDefaults, analysisDisplayOps, analysisDisplayRows,
+} from "./analysis_display.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
 import { NODE_ITEM_REFS, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows } from "./nodeflow.js";
@@ -136,14 +138,35 @@ export function audioKnobKey(key) {
  * @example audioKnobValues({knobs: [{key: "cutoff", default: 800}]}, {audioCutoff: "= nope"})[0].value // 800
  * @example // discrete knobs are strings BY DESIGN and are passed through
  * @example audioKnobValues({knobs: [{key: "waveform", default: "sine", discrete: true}]}, {audioWaveform: "saw"})[0].value // "saw"
+ *
+ * ── `derived`: A PARAM WITH NO LEAF OF ITS OWN (R7-14) ──────────────────────
+ * The third spelling, and the spec vocabulary's newest word. Some engine params
+ * are not ONE number an author types — the sequencer's `steps` is a whole pattern,
+ * and its `stepCount` is that pattern's LENGTH. Neither can be a flat knob leaf:
+ * a pattern is a LIST property (core/lists.js), and a length read from a second
+ * leaf beside the list is a second source of truth for a number the list already
+ * states. So a `derived` knob declares a PURE FUNCTION of the item state instead
+ * of a state key, and everything downstream — `constructParams`, the rebuild test,
+ * `setParam`, `transportOf` — reads it exactly as it reads every other knob.
+ *
+ * It is the same argument `construct: true` settled and the same three options:
+ * drop the param (then a piano roll cannot reach the engine at all), pretend it is
+ * an ordinary knob (then `Number(raw)` on an array is NaN and the pattern silently
+ * becomes the default — the silent failure this project forbids), or DECLARE the
+ * shape. This is the declaration.
+ *
+ * @example // a derived param reads the state through its own function
+ * @example audioKnobValues({knobs: [{key: "stepCount", derived: (s) => (s.notes ?? []).length}]}, {notes: [[60], [64]]})[0].value // 2
  */
 export function audioKnobValues(spec, s) {
   return (spec.knobs ?? []).map((k) => {
     const stateKey = audioKnobKey(k.key);
     const raw = s?.[stateKey];
-    const value = k.discrete
-      ? (typeof raw === "string" ? raw : k.default)
-      : (Number.isFinite(Number(raw)) ? Number(raw) : k.default);
+    const value = k.derived
+      ? k.derived(s ?? {})
+      : k.discrete
+        ? (typeof raw === "string" ? raw : k.default)
+        : (Number.isFinite(Number(raw)) ? Number(raw) : k.default);
     return { key: k.key, stateKey, value, discrete: !!k.discrete };
   });
 }
@@ -166,7 +189,11 @@ export function audioKnobValues(spec, s) {
  * @example audioKnobRows({}) // []
  */
 export function audioKnobRows(spec) {
-  return (spec.knobs ?? []).map((k) => (k.discrete
+  // A DERIVED param has no leaf, so it has no row: its Inspector surface is the
+  // property it is derived FROM, which that widget declares itself. A row here
+  // would be a field writing a state key nothing reads — the phantom-leaf defect
+  // the R7 audio map opens with.
+  return (spec.knobs ?? []).filter((k) => !k.derived).map((k) => (k.discrete
     ? { key: audioKnobKey(k.key), label: k.label, kind: "select", options: k.options, category: AUDIO_CAT, help: k.help }
     : { key: audioKnobKey(k.key), label: k.label, kind: "number", min: k.min, max: k.max, step: k.step, category: AUDIO_CAT, help: k.help }));
 }
@@ -178,10 +205,13 @@ export function audioKnobRows(spec) {
  * @returns {object}
  *
  * @example audioKnobDefaults({knobs: [{key: "cutoff", default: 800}, {key: "Q", default: 1}]}) // {audioCutoff: 800, audioQ: 1}
+ * @example // a DERIVED param has no leaf, so it contributes none (R7-14) — a stored
+ * @example // `audioSteps` beside a derived one would be state nothing ever reads
+ * @example audioKnobDefaults({knobs: [{key: "steps", derived: () => []}]}) // {}
  * @example audioKnobDefaults({}) // {}
  */
 export function audioKnobDefaults(spec) {
-  return Object.fromEntries((spec.knobs ?? []).map((k) => [audioKnobKey(k.key), k.default]));
+  return Object.fromEntries((spec.knobs ?? []).filter((k) => !k.derived).map((k) => [audioKnobKey(k.key), k.default]));
 }
 
 /**
@@ -239,10 +269,30 @@ export function audioPorts(spec) {
  * @param {object} s - the folded item state
  * @returns {string} the readout, or "" when the spec declares none
  *
+ * ── A KNOB MAY DECLARE `hz(value)`, AND THE READOUT APPENDS IT ──────────────
+ * Lead ruling, 2026-08-06: the R7-17 filter ports stay TUNED IN SEMITONES, because
+ * Axoloti sums `param_pitch + inlet_pitch` in the pitch domain and that is what makes
+ * an LFO of depth 12 sweep an octave wherever the knob is parked. The cost is real —
+ * our native `audio_filter` is tuned in HERTZ, so the library now has two tunings for
+ * "cutoff" — and the ruling's own mitigation is that the divergence must not be
+ * hidden: **"a pitch number with no frequency shown is a control the author cannot
+ * reason about."** So a knob whose number is not itself a frequency may say what
+ * frequency it means, and the card shows both: `24 st · 1318 Hz`.
+ *
+ * The MECHANISM is generic: this function knows only "there may be a frequency behind
+ * this number" and never which one. A knob supplies the conversion, and the ported
+ * blocks supply `semitonesToHz` (below) because they share Axoloti's one tuning law.
+ *
+ * @param {object} spec - an audio node spec
+ * @param {object} s - the folded item state
+ * @returns {string} the readout, or "" when the spec declares none
+ *
  * @example audioReadout({knobs: [{key: "bpm", default: 120, unit: " BPM"}], readout: "bpm"}, {audioBpm: 96}) // "96 BPM"
  * @example audioReadout({knobs: [{key: "frequency", default: 440, unit: " Hz"}], readout: "frequency"}, {}) // "440 Hz"
  * @example // a discrete knob reads out as its own name, which is the whole value
  * @example audioReadout({knobs: [{key: "character", default: "hall", discrete: true}], readout: "character"}, {}) // "hall"
+ * @example // a pitch-domain knob shows the frequency it means, because "st" alone is unreadable
+ * @example audioReadout({knobs: [{key: "pitch", default: 24, unit: " st", hz: (p) => 440 * 2 ** ((p - 5) / 12)}], readout: "pitch"}, {}) // "24 st · 1319 Hz"
  * @example audioReadout({knobs: []}, {}) // ""
  */
 export function audioReadout(spec, s) {
@@ -251,8 +301,65 @@ export function audioReadout(spec, s) {
   if (!knob) return "";
   const { value } = audioKnobValues({ knobs: [knob] }, s)[0];
   if (knob.discrete) return String(value);
-  const rounded = Math.abs(value) >= 100 ? Math.round(value) : Number(Number(value).toFixed(2));
-  return `${rounded}${knob.unit ?? ""}`;
+  const also = typeof knob.hz === "function" ? ` · ${readoutNumber(knob.hz(Number(value)))} Hz` : "";
+  return `${readoutNumber(value)}${knob.unit ?? ""}${also}`;
+}
+
+/** Below this magnitude a readout keeps two decimals; at or above it, the decimals are
+ *  noise on a card that has one line — 1318.51 Hz says nothing 1319 Hz does not. */
+const READOUT_DECIMALS_BELOW = 100;
+
+/**
+ * Pure function. One number as a readout renders it — the rule applied to BOTH the
+ * knob's own value and any frequency it declares, so the two cannot round differently
+ * on the same line.
+ *
+ * @param {number} value - the number to render
+ * @returns {number}
+ *
+ * @example readoutNumber(1318.5102) // 1319
+ * @example readoutNumber(0.328194)  // 0.33
+ * @example readoutNumber(-64)       // -64
+ */
+export function readoutNumber(value) {
+  return Math.abs(value) >= READOUT_DECIMALS_BELOW ? Math.round(value) : Number(Number(value).toFixed(2));
+}
+
+/** A440 anchors equal temperament; on Axoloti's dial it sits five semitones up, because
+ *  pitch 0 is MIDI 64 = E4 and A4 is MIDI 69. The pair only means anything together. */
+const A440_HZ = 440;
+const A440_SEMITONES = 5;
+const SEMITONES_PER_OCTAVE = 12;
+
+/**
+ * Pure function. Axoloti's pitch domain to hertz — `hz = 440 · 2^((p − 5)/12)`, where
+ * pitch 0 is MIDI 64 = E4 = 329.6276 Hz. Every ported block that tunes in semitones
+ * shares this one law, so it is stated once for all of them here rather than per block.
+ *
+ * ── WHY THIS IS A RESTATEMENT AND WHY THAT IS FORCED ────────────────────────
+ * The DSP already computes it — `synth/ax2_kernels.axoPitchToHz` and
+ * `synth/ax3_kernels.axPitchToHz`. They cannot be shared with this file: `core/` may not
+ * import `synth/` (core must run in bare node) and `synth/` may not import PowerRP (the
+ * ENGINE law), so a spec that wants to SHOW the frequency its DSP will USE has to say it
+ * again. Exactly processors.js restating SCHMITT_LOW, and it gets the same treatment —
+ * `tests/audio_nodes_test.js` holds this against BOTH kernels rather than trusting them
+ * to agree. It is at least a fourth statement avoided: without it every block that tunes
+ * in semitones would carry its own copy.
+ *
+ * NO CLAMP, deliberately. The filters clamp at fs/2 because they must not alias; a
+ * readout's job is to say what the knob is asking for, and silently reporting 24 kHz for
+ * every pitch above the clamp would hide the very knob position an author is hunting.
+ *
+ * @param {number} semitones - Axoloti pitch; 0 is E4
+ * @returns {number} hertz
+ *
+ * @example semitonesToHz(0)   // 329.6275569128699
+ * @example semitonesToHz(5)   // 440
+ * @example semitonesToHz(24)  // 1318.5102276514797
+ * @example semitonesToHz(12) / semitonesToHz(0) // 2
+ */
+export function semitonesToHz(semitones) {
+  return A440_HZ * Math.pow(2, (semitones - A440_SEMITONES) / SEMITONES_PER_OCTAVE);
 }
 
 /**
@@ -358,6 +465,11 @@ export function audioNodePlugin(spec) {
       // without this key would stay wired to the original when it was copied.
       inputs: {},
       ...audioKnobDefaults(spec),
+      // THE DISPLAY'S OWN PROPERTIES (R7-19), for the specs that declare an
+      // `overlay`. They are not engine params — a spectrogram's colour map and
+      // scroll speed never reach the AudioContext — so they are not knobs, and
+      // core/analysis_display.js declares them beside the drawing they modify.
+      ...(spec.overlay ? analysisDisplayDefaults(spec.overlay) : {}),
       ...bundleNestedDefaults("effects"),
     },
     inspector: [
@@ -374,6 +486,11 @@ export function audioNodePlugin(spec) {
       // initialization" on the first run.)
       ...nodeInputRows({ ports: portsFn }),
       ...audioKnobRows(spec),
+      // BELOW THE KNOBS, because they describe the PICTURE rather than the sound:
+      // an author reads an analysis node by what it measures first. Filed under
+      // AUDIO_CAT so a node's knobs and its display controls are one group rather
+      // than two, and empty for every spec with no `overlay`.
+      ...(spec.overlay ? analysisDisplayRows(spec.overlay, AUDIO_CAT) : []),
       ...props("opacity"),
       ...bundle("effects"),
     ],
@@ -746,9 +863,11 @@ export function paramShowsWidget(spec, s, key) {
  * @example paramWidgetKnobs({knobs: [{key: "a"}, {key: "b", discrete: true}]}, {}).length // 1
  * @example // a driven param drops out of the band entirely
  * @example paramWidgetKnobs({inputs: [{key: "a", type: "number"}], knobs: [{key: "a"}]}, {inputs: {a: {item: "n1", port: "out"}}}) // []
+ * @example // …and so does a DERIVED one: it has no leaf, so there is nothing to turn
+ * @example paramWidgetKnobs({knobs: [{key: "steps", derived: () => []}]}, {}) // []
  */
 export function paramWidgetKnobs(spec, s) {
-  return (spec?.knobs ?? []).filter((k) => !k.discrete && paramShowsWidget(spec, s, k.key));
+  return (spec?.knobs ?? []).filter((k) => !k.discrete && !k.derived && paramShowsWidget(spec, s, k.key));
 }
 
 /**
@@ -940,10 +1059,12 @@ export function knobBandRows(spec, s) {
  * @example dialCount({knobs: [{key: "a"}, {key: "b"}]}) // 2
  * @example // a DISCRETE knob is a switch, not a dial: it lives in the Inspector
  * @example dialCount({knobs: [{key: "a"}, {key: "wave", discrete: true}]}) // 1
+ * @example // a DERIVED param has no leaf and therefore no dial (R7-14)
+ * @example dialCount({knobs: [{key: "a"}, {key: "steps", derived: () => []}]}) // 1
  * @example dialCount({}) // 0
  */
 export function dialCount(spec) {
-  return (spec?.knobs ?? []).filter((k) => !k.discrete).length;
+  return (spec?.knobs ?? []).filter((k) => !k.discrete && !k.derived).length;
 }
 
 /**

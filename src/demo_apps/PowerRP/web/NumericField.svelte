@@ -79,6 +79,7 @@
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import EquationSuggest from "./EquationSuggest.svelte";
+  import EquationCodeButton from "./EquationCodeButton.svelte";
   import { getPath } from "../core/deltas.js";
   import {
     displayToStored, storedToDisplay, compiled, evalAst,
@@ -664,6 +665,19 @@
         onpick={acceptCandidate}
       />
     </span>
+    <!-- THE `{}` MULTILINE EDITOR — the value-END accessory, the same slot and the
+         same class the `code`-kind rows' {} uses. It hands the modal THIS field's
+         draft text and THIS field's own commit, so a rotation equation typed in
+         the editor goes through the same degrees→radians rule as one typed inline
+         (see app.svelte.js openEquationCode). Reads `draft` rather than `stored`:
+         the editor should open on what the user is looking at. -->
+    <EquationCodeButton
+      {app}
+      {label}
+      {selfId}
+      text={draft}
+      oncommit={(edited) => { draft = edited; commitText(); }}
+    />
   {:else if showRefScrubber}
     <!-- REFERENCE scrub write-through (manifest "Equation special forms" +
          round-10 spec): the stored value is a pure, unmodified reference to a

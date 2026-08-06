@@ -24,7 +24,32 @@
 // The core editor worker, as a Vite worker chunk. Static import so Vite builds the
 // worker at server start (deterministic), not on first modal open (mid-session).
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+
+// ── THE SUGGEST WIDGET IS A CONTRIBUTION, AND IT HAS TO BE ASKED FOR ─────────
+// The docblock above says `editor.api` ships no built-in LANGUAGES. It also ships no
+// editor CONTRIBUTIONS — suggest, find, hover, folding and the rest live under
+// `contrib/` and are pulled in by `editor.main`, not by `editor.api`. So an editor
+// built from `editor.api` alone has no suggest CONTROLLER at all: a registered
+// CompletionItemProvider is never consulted, and no widget can appear.
+//
+// MEASURED, 2026-08-06, while wiring the equation language: `registerCompletionItemProvider`
+// was live and `suggestEquation` returned five candidates for the exact caret under
+// test (verified in bare node), the model's language id read "powerrp-equation", and
+// typing "self." produced NO suggest widget and NO error. THIS ALSO MEANS MERMAID'S
+// KEYWORD COMPLETION HAS NEVER RUN — that provider has been registered since the
+// modal landed, against an editor with nothing to call it. The user's ask for the
+// modal was "syntax highlighting, autocomplete, minimap, everything"; the
+// highlighting and the minimap arrived, and the autocomplete quietly did not.
+//
+// Imported HERE rather than in the modal because this file is "the single place that
+// wires Monaco", and imported as the CONTROLLER only (not `editor.main`) so the
+// bundle takes the one contribution the app actually uses instead of Monaco's whole
+// contrib set. It is a side-effect import: loading the module registers the
+// contribution with the editor.
+import "monaco-editor/esm/vs/editor/contrib/suggest/browser/suggestController.js";
+
 import { JS_KEYWORDS } from "../core/codeHighlight.js";
+import { EQUATION_LANGUAGE_ID, registerEquationLanguage } from "./equationCode.js";
 
 /**
  * The custom languages this app registers with Monaco. Monarch token rules are
@@ -38,8 +63,15 @@ import { JS_KEYWORDS } from "../core/codeHighlight.js";
  * silent-degradation shape this codebase refuses. THE PROJECT SCRIPT
  * (core/project_script.js) is edited in JavaScript, and the user asked for "the
  * modal with full syntax highlighting" in the same sentence that asked for it.
+ *
+ * THE EQUATION LANGUAGE is in this list but NOT declared in this file: unlike the
+ * three above it is not a keyword grammar at all, so it lives in
+ * web/equationCode.js with the resolver and suggest plumbing it delegates to (read
+ * that file's header for why a Monarch tokenizer cannot express it). Registered
+ * from registerLanguages() below so there is still exactly ONE place languages are
+ * turned on.
  */
-export const MONACO_LANGUAGES = ["mermaid", "latex", "javascript"];
+export const MONACO_LANGUAGES = ["mermaid", "latex", "javascript", EQUATION_LANGUAGE_ID];
 
 let didSetup = false;
 
@@ -141,6 +173,13 @@ function registerLanguages(monaco) {
       ],
     },
   });
+
+  // ── PowerRP equations ──────────────────────────────────────────────────────
+  // Declared in web/equationCode.js, not here: it is not a keyword grammar but a
+  // DOCUMENT SEMANTIC TOKENS provider over core/expressions.js's real resolver,
+  // plus a completion provider over core/equationSuggest.js. Called from here so
+  // this function stays the one place a language is turned on.
+  registerEquationLanguage(monaco);
 }
 
 /**

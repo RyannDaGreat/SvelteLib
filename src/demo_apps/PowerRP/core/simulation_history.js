@@ -511,6 +511,28 @@ export function setSimulationTimestepOverride(seconds) {
 }
 
 /**
+ * Query. Is a step being DICTATED — i.e. is a render walking this history table on
+ * its own terms rather than on measured time?
+ *
+ * WHAT IT IS FOR, because "introspection" would undersell it: it is how a LIVE
+ * consumer knows to stand aside. A dictated step means an exporter owns the
+ * trajectory frame by frame, and a second consumer evaluating a DIFFERENT frame at
+ * the same dictated instant writes its own numbers into the same slots — which is
+ * the two-timelines corruption recordSimulationValue reports, except that here the
+ * loser is the video. web/editorAnimation.svelte.js is the first caller and yields
+ * on it; withSimulationFrozen() is the other half of the same discipline, for a
+ * consumer that must RENDER during someone else's walk rather than skip.
+ *
+ * @returns {boolean}
+ *
+ * @example // setSimulationTimestepOverride(1 / 60); isSimulationTimestepDictated() // true
+ * @example // setSimulationTimestepOverride(null); isSimulationTimestepDictated() // false
+ */
+export function isSimulationTimestepDictated() {
+  return dictatedSeconds !== null;
+}
+
+/**
  * Query. A serializable CHECKPOINT of the whole simulation — the shape a contiguous
  * render shard would carry so a worker can resume a trajectory instead of walking it
  * from frame 0.

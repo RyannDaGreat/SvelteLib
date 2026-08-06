@@ -72,7 +72,8 @@
   // map would otherwise get no descriptor in the editor and fetch nothing.
   import { prepareMapTiles } from "../render_gpu/map_display.js";
   import { prepareScene3dViews } from "../render_gpu/scene3d_display.js";
-  import { prepareLiveAnalysis } from "../render_gpu/gpu/live_analysis_registry.js";
+  import { prepareLiveAnalysis, onAnalysisFrame } from "../render_gpu/gpu/live_analysis_registry.js";
+  import { onEditorAnimationFrame } from "./editorAnimation.svelte.js"; // the author's opt-in clock — wakes this paint, see the hook
   import { rect as rectCmd } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { bootDone, bootFailed } from "./bootProgress.js";
@@ -591,6 +592,22 @@
   // the reactive paint on a NEW frame of an on-screen V5 clip (same gate as above,
   // currentMediaRefs includes "video_v5" sources below).
   $effect(() => onVideoV5Frame((src) => { if (currentMediaRefs.has(src)) imageEpoch += 1; }));
+  // LIVE ANALYSIS (R7-5): a meter/spectrogram column is the SAME SHAPE as a video frame
+  // — an async producer whose output must wake a paint the document knows nothing about.
+  // It reuses this mechanism deliberately: a private rAF loop would have been a third
+  // idiom for "something arrived, repaint", and would have run even for decks with no
+  // analysis display. The bug this fixes: the ring filled but nothing invalidated, so
+  // the spectrogram only updated when the node was MOVED (user, 2026-08-06).
+  let currentAnalysisIds = new Set(); // non-reactive: the last paint's on-screen analysis items
+  $effect(() => onAnalysisFrame((id) => { if (currentAnalysisIds.has(id)) imageEpoch += 1; }));
+  // EDITOR ANIMATION (web/editorAnimation.svelte.js): while the author has the
+  // presentation clock running in the editor, every frame is a "something arrived,
+  // repaint" — the clock advanced, so a simulated property, a `= time` equation and a
+  // particle emitter all have a new value. SAME idiom as the six hooks above for the
+  // same reason: the alternative is a private rAF loop in here, which is a second
+  // answer to "wake the paint". Its loop only ticks while the toggle is on, so a
+  // deck sitting still costs one closure in a Set.
+  $effect(() => onEditorAnimationFrame(() => (imageEpoch += 1)));
   // VIDEO V8 OVERLAY (cohort): its own stacked canvas + backend, created async
   // (WebGPU device selection is async) once the element binds. Playing V8 frames
   // nudge the SAME imageEpoch (reactive paint, async frames) — but only for a src
@@ -926,7 +943,14 @@
         // to be handed over here, exactly as mapTiles and scene3d are. It is an
         // explicit argument and never a global sceneIR reaches for: that is what
         // keeps live samples out of every export and out of the CLI.
-        liveAnalysis: prepareLiveAnalysis(nodes),
+        liveAnalysis: (() => {
+          // Remember WHICH items got an analysis display this paint, so the wake below
+          // can ignore columns from off-screen or off-slide ones — the same gate
+          // `currentMediaRefs` gives the video wake.
+          const map = prepareLiveAnalysis(nodes);
+          currentAnalysisIds = new Set(map?.keys() ?? []);
+          return map;
+        })(),
         live: true,
         wireNodes: allNodes,
       }),

@@ -154,6 +154,7 @@
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { fieldOwnsKeydown } from "../../../lib/fieldKeys.js";
   import EquationSuggest from "./EquationSuggest.svelte";
+  import EquationCodeButton from "./EquationCodeButton.svelte";
   import { getPath } from "../core/deltas.js";
   // evaluateLiteralProblem only: this field's own `shownDeg` is already tidied to
   // tenths of a degree, so it needs the REFUSAL rule but not evaluatedLiteral's
@@ -689,6 +690,17 @@
         onpick={acceptCandidate}
       />
     </span>
+    <!-- THE `{}` MULTILINE EDITOR — see NumericField's note; this is the SAME
+         component, so the two fields cannot drift. It matters most here: this
+         field's commit is the one that converts DEGREES to radians, and routing
+         Save through commitText is what keeps a typed `= 45` meaning 45°. -->
+    <EquationCodeButton
+      {app}
+      {label}
+      {selfId}
+      text={draft}
+      oncommit={(edited) => { draft = edited; commitText(); }}
+    />
   {:else}
     {#if bound}
       <!-- Equation affordance (round-11 ruling): on the LEFT of the value,

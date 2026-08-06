@@ -524,26 +524,170 @@ export function bakeRampLut(stops, count, ramp) {
  * @example CYCLIC_RAMPS.gold.space // "oklab"
  * @example CYCLIC_RAMPS.gold.stops[1].offset // 0.125
  */
-export const CYCLIC_RAMPS = Object.fromEntries(Object.entries({
+export const CYCLIC_RAMPS = namedRampTable({
   ultrafractal: { label: "Ultra Fractal (blue / cream / amber)", colors: ["#000764", "#206bcb", "#edffff", "#ffaa00", "#000200"] },
   twilight: { label: "Twilight (dusk + wine)", colors: ["#e2d9e2", "#7ba1c2", "#5e43a5", "#2f1436", "#8d2b50", "#c6896c"] },
   magma: { label: "Magma (black → cream)", colors: ["#000004", "#2d1161", "#721f81", "#b73779", "#f1605d", "#feb078", "#fcfdbf", "#feb078", "#f1605d", "#b73779", "#721f81", "#2d1161"] },
   gold: { label: "Gold (molten metal)", colors: ["#120b02", "#5a3d0a", "#b8860b", "#ffd700", "#fff4c2", "#ffd700", "#b8860b", "#5a3d0a"] },
   ice: { label: "Ice (deep blue → white)", colors: ["#01040f", "#062b56", "#1b6ea8", "#79c6e8", "#eaf8ff", "#79c6e8", "#1b6ea8", "#062b56"] },
   ember: { label: "Ember (charcoal → flame)", colors: ["#050101", "#2b0a06", "#7c1d0c", "#d9541b", "#ffc46b", "#fff3d0", "#ffc46b", "#d9541b", "#7c1d0c", "#2b0a06"] },
-}).map(([id, r]) => [id, {
-  id,
-  label: r.label,
-  colors: r.colors,
-  stops: evenlySpacedRampStops(r.colors, true),
-  loop: true,
-  space: "oklab",
-}]));
+}, { loop: true, space: "oklab" });
 
 /**
- * Pure function. A FRESH copy of a named cyclic ramp's stops — never the shared
- * record, so neither a document nor a preview can alias author-time data (the
- * GradientPresetPicker freshStops discipline, one level down).
+ * THE NAMED SEQUENTIAL RAMPS — the COLOUR MAPS. A ramp read from one end to the
+ * other rather than round a circle: the form a heat map, a spectrogram or any
+ * data-driven colouring wants, and the form the six perceptually-uniform
+ * scientific maps are published in.
+ *
+ * ── WHY THESE SIX AND NOT SIX PRETTY ONES (user, R7-19: "go ham with the
+ * presets") ─────────────────────────────────────────────────────────────────
+ * viridis / magma / inferno / plasma / cividis are matplotlib's uniform
+ * sequential maps and turbo is Google's; every one is MONOTONE IN LIGHTNESS by
+ * construction. That is a correctness property, not a taste: a map with a bright
+ * band in the middle draws a ridge into data that has none, and a spectrogram is
+ * exactly the picture where an invented ridge reads as an invented partial. They
+ * also survive greyscale printing and the common colour-vision deficiencies,
+ * cividis being designed for the severe cases.
+ *
+ * ── THE STOPS ARE MEASURED, NOT TRANSCRIBED ─────────────────────────────────
+ * Each map's 13 colours are matplotlib 3.10.8's own 256-entry table sampled at
+ * i/12, and 13 was chosen by MEASURING the reconstruction: OKLab-interpolating
+ * those 13 stops reproduces the full table to a worst-case channel error of
+ * 9.9 (viridis), 5.6 (magma), 10.8 (inferno), 5.6 (plasma), 8.5 (cividis) and
+ * 12.5 (turbo) out of 255. Nine stops roughly doubles that; seventeen roughly
+ * halves it at the cost of a stop list nobody can edit.
+ *
+ * ── WHY THE SCIENTIFIC MAPS DECLARE `space: "oklab"` — AND THE MEASURED REASON
+ * IS NOT THE OBVIOUS ONE ────────────────────────────────────────────────────
+ * The obvious argument is that sRGB interpolation would reintroduce the bright
+ * band. MEASURED, that is false at this stop count: both spaces stay monotone in
+ * lightness (min ΔL > 0 across all five uniform maps), and in RAW CHANNEL bytes
+ * sRGB is actually the closer reconstruction, by up to 2/255. OKLab is right for
+ * a narrower and better reason — it tracks the map's LIGHTNESS CURVE, the axis
+ * the uniformity is a claim ABOUT, roughly a third closer: max |ΔL| 0.0020 vs
+ * 0.0034 (viridis), 0.0104 vs 0.0148 (magma), 0.0103 vs 0.0139 (inferno),
+ * 0.0021 vs 0.0046 (plasma). A byte here or there is not what these maps are for.
+ *
+ * (turbo is NOT monotone in lightness — min ΔL = -0.0078 — and that is turbo
+ * itself, not the resampling: it is a Jet REPLACEMENT, tuned for contrast at the
+ * cost of the ordering property. It is here because it is the map people reach
+ * for; the five above it are the ones to reach for instead.)
+ *
+ * ── THE CLASSICS DECLARE `space: "srgb"`, AND THAT IS THE POINT OF THE ASPECT ─
+ * greyscale / blackbody / rainbow / phosphor are LOOKS, defined as piecewise
+ * linear in the stored channels — which is what "srgb" means. Reading blackbody
+ * that way reproduces matplotlib's afmhot to 1.7/255 from nine stops; reading it
+ * in OKLab would be a different ramp wearing its name. This is the module
+ * header's claim about `space` travelling WITH a ramp, in its second instance.
+ * They are not perceptually uniform and are not offered as if they were.
+ *
+ * @example SEQUENTIAL_RAMPS.viridis.stops.length // 13
+ * @example SEQUENTIAL_RAMPS.viridis.loop // false
+ * @example SEQUENTIAL_RAMPS.viridis.space // "oklab"
+ * @example SEQUENTIAL_RAMPS.greyscale.space // "srgb"
+ * @example // clamped spacing, so the last stop is the end of the ramp
+ * @example SEQUENTIAL_RAMPS.greyscale.stops[1].offset // 1
+ */
+export const SEQUENTIAL_RAMPS = {
+  ...namedRampTable({
+    viridis: { label: "Viridis (perceptual)", colors: ["#440154", "#481f70", "#443983", "#3b528b", "#31688e", "#287c8e", "#21918c", "#20a486", "#35b779", "#5ec962", "#90d743", "#c8e020", "#fde725"] },
+    magma: { label: "Magma (perceptual)", colors: ["#000004", "#100b2d", "#2c115f", "#51127c", "#721f81", "#932b80", "#b73779", "#d8456c", "#f1605d", "#fc8961", "#feb078", "#fed799", "#fcfdbf"] },
+    inferno: { label: "Inferno (perceptual)", colors: ["#000004", "#110a30", "#320a5e", "#57106e", "#781c6d", "#9a2865", "#bc3754", "#d84c3e", "#ed6925", "#f98e09", "#fbb61a", "#f4df53", "#fcffa4"] },
+    plasma: { label: "Plasma (perceptual)", colors: ["#0d0887", "#3a049a", "#5c01a6", "#7e03a8", "#9c179e", "#b52f8c", "#cc4778", "#de5f65", "#ed7953", "#f89540", "#fdb42f", "#fbd524", "#f0f921"] },
+    cividis: { label: "Cividis (perceptual, colour-blind safe)", colors: ["#00224e", "#003170", "#2a3f6d", "#434e6c", "#575d6d", "#6a6c71", "#7d7c78", "#918b78", "#a59c74", "#bcae6c", "#d2c060", "#e9d34e", "#fee838"] },
+    turbo: { label: "Turbo (high contrast, NOT lightness-ordered)", colors: ["#30123b", "#434eba", "#4685fa", "#28bceb", "#1ae4b6", "#55fa76", "#a4fc3c", "#d9e436", "#faba39", "#fb7e21", "#e4450a", "#b91e02", "#7a0403"] },
+  }, { loop: false, space: "oklab" }),
+  ...namedRampTable({
+    greyscale: { label: "Greyscale (classic)", colors: ["#000000", "#ffffff"] },
+    blackbody: { label: "Black body (classic heat)", colors: ["#000000", "#400000", "#800000", "#c04000", "#ff8001", "#ffc041", "#ffff81", "#ffffc1", "#ffffff"] },
+    rainbow: { label: "Rainbow (classic analyser, NOT uniform)", colors: ["#000080", "#0000ff", "#00b0ff", "#00ffb0", "#80ff00", "#ffe000", "#ff5000", "#800000"] },
+    phosphor: { label: "Phosphor (green CRT)", colors: ["#000000", "#01331a", "#12b04a", "#8dffa8", "#ffffff"] },
+  }, { loop: false, space: DEFAULT_RAMP_SPACE }),
+};
+
+/**
+ * Pure function. A ramp TABLE from its authored form: each entry's evenly spaced
+ * `colors` plus the aspects the whole table shares. Shared by CYCLIC_RAMPS and
+ * SEQUENTIAL_RAMPS so the i/N-versus-i/(N−1) spacing decision (see
+ * evenlySpacedRampStops) is taken in ONE place for every named ramp in the app —
+ * the two tables differ only in `loop`, and that is exactly the argument of
+ * evenlySpacedRampStops.
+ *
+ * @param {object} entries - id → {label, colors}
+ * @param {{loop: boolean, space: string}} aspects - shared by every entry
+ * @returns {object} id → {id, label, colors, stops, loop, space}
+ *
+ * @example namedRampTable({x: {label: "X", colors: ["#000000", "#ffffff"]}}, {loop: false, space: "srgb"}).x.stops
+ * // [{offset: 0, color: "#000000"}, {offset: 1, color: "#ffffff"}]
+ * @example // the SAME two colours read cyclically are spaced i/N, not i/(N−1)
+ * @example namedRampTable({x: {label: "X", colors: ["#000000", "#ffffff"]}}, {loop: true, space: "srgb"}).x.stops[1].offset // 0.5
+ */
+function namedRampTable(entries, aspects) {
+  return Object.fromEntries(Object.entries(entries).map(([id, r]) => [id, {
+    id,
+    label: r.label,
+    colors: r.colors,
+    stops: evenlySpacedRampStops(r.colors, aspects.loop),
+    loop: aspects.loop,
+    space: aspects.space,
+  }]));
+}
+
+/**
+ * Pure function. A FRESH copy of a stop list — never the shared record, so
+ * neither a document nor a preview can alias author-time data (the
+ * GradientPresetPicker freshStops discipline, one level down). THE one place
+ * that copy is spelled, because every named-ramp reader owes it.
+ *
+ * @param {{offset: number, color: string}[]} stops
+ * @returns {{offset: number, color: string}[]} a new array of new records
+ *
+ * @example freshRampStops([{offset: 0, color: "#000000"}]) // [{offset: 0, color: "#000000"}]
+ * @example // ...and the copy is DEEP enough that editing it cannot reach the
+ * @example // original, which is the whole point: a document holding an aliased
+ * @example // stop would edit the shared library record.
+ * @example freshRampStops(CYCLIC_RAMPS.gold.stops)[0] === CYCLIC_RAMPS.gold.stops[0] // false
+ */
+export function freshRampStops(stops) {
+  return stops.map((s) => ({ offset: s.offset, color: s.color }));
+}
+
+/**
+ * Pure function. THE RAMP a widget state describes — its stop list plus the
+ * three aspects that decide how the ramp is READ, each falling back to that
+ * WIDGET's own defaults rather than to the registry's.
+ *
+ * WHY THE FALLBACK IS THE WIDGET'S: a Mandelbrot palette that lost `rampLoop` to
+ * a partial delta must still be CYCLIC (a clamped one renders as one flat colour
+ * at depth), and a colour map that lost `rampSpace` must still be the map it was
+ * published as. The registry's clamped-sRGB defaults are right for a gradient
+ * FILL and wrong for both, so the caller states its own.
+ *
+ * THE STOP LIST HAS NO FALLBACK, deliberately: an absent ramp is a fold bug, and
+ * checkRampStops says so loudly at the first sample rather than here.
+ *
+ * `defaults` is keyed by the PROPS keys (rampLoop / rampSpace / rampPhase), so a
+ * plugin passes its own `bundleDefaults("ramp")` fragment straight in.
+ *
+ * @param {object} s - folded item state
+ * @param {{rampLoop?: boolean, rampSpace?: string, rampPhase?: number}} defaults
+ * @returns {{stops: object[], loop: boolean, space: string, phase: number}}
+ *
+ * @example rampFromState({rampStops: []}, {rampLoop: true, rampSpace: "oklab", rampPhase: 0}).loop // true
+ * @example rampFromState({rampStops: [], rampSpace: "srgb"}, {rampSpace: "oklab"}).space // "srgb"
+ * @example rampFromState({rampStops: [], rampPhase: 0.25}, {rampPhase: 0}).phase // 0.25
+ */
+export function rampFromState(s, defaults) {
+  return {
+    stops: s.rampStops,
+    loop: s.rampLoop ?? defaults.rampLoop,
+    space: s.rampSpace ?? defaults.rampSpace,
+    phase: s.rampPhase ?? defaults.rampPhase,
+  };
+}
+
+/**
+ * Pure function. A FRESH copy of a named cyclic ramp's stops.
  *
  * @param {string} id - a CYCLIC_RAMPS key
  * @returns {{offset: number, color: string}[]}
@@ -554,7 +698,27 @@ export const CYCLIC_RAMPS = Object.fromEntries(Object.entries({
 export function cyclicRampStops(id) {
   const ramp = CYCLIC_RAMPS[id];
   if (!ramp) throw new Error(`ramps.cyclicRampStops: unknown cyclic ramp ${JSON.stringify(id)} (known: ${Object.keys(CYCLIC_RAMPS).join(", ")})`);
-  return ramp.stops.map((s) => ({ offset: s.offset, color: s.color }));
+  return freshRampStops(ramp.stops);
+}
+
+/**
+ * Pure function. A named SEQUENTIAL ramp as a whole ramp VALUE, freshly copied —
+ * the form a plugin's `defaults` fragment wants (stops plus the aspects that
+ * decide how they are read, because a map read in the wrong space is a different
+ * map).
+ *
+ * @param {string} id - a SEQUENTIAL_RAMPS key
+ * @returns {{stops: object[], loop: boolean, space: string}}
+ *
+ * @example sequentialRamp("magma").stops.length // 13
+ * @example sequentialRamp("magma").space // "oklab"
+ * @example sequentialRamp("magma").loop // false
+ * @example sequentialRamp("greyscale").stops // [{offset: 0, color: "#000000"}, {offset: 1, color: "#ffffff"}]
+ */
+export function sequentialRamp(id) {
+  const ramp = SEQUENTIAL_RAMPS[id];
+  if (!ramp) throw new Error(`ramps.sequentialRamp: unknown sequential ramp ${JSON.stringify(id)} (known: ${Object.keys(SEQUENTIAL_RAMPS).join(", ")})`);
+  return { stops: freshRampStops(ramp.stops), loop: ramp.loop, space: ramp.space };
 }
 
 // ── THE LEGACY MANDELBROT PALETTE → RAMP CONVERSION ──────────────────────────

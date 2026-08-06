@@ -338,6 +338,22 @@ export const DELAY_SPEC = {
     // a zero-delay module would create a real feedback explosion, which is a defect
     // in the sound rather than in the document, and therefore one no test here can
     // catch for you.
+    //
+    // THE BAR HAS NOW BEEN APPLIED ONCE, AND IT HELD (2026-08-06, R7-17 AX-3). The
+    // ported `filter/fdbkcomb` declared this flag on the reasoning that a feedback
+    // comb IS a feedback structure. It was removed, for two reasons worth keeping
+    // because they generalise to the other ~300 nodes still to be ported:
+    //   • A RECURSION INSIDE A MODULE IS NOT A CYCLE IN THE GRAPH. The comb's loop
+    //     runs against a buffer its own AudioWorkletProcessor owns; nothing travels
+    //     a wire, so there was never a refusal to be exempt from. `feedbackSafe`
+    //     licenses an EXTERNAL patch back into the port, which is a claim about the
+    //     graph and not about the DSP. Ask which loop the flag would permit.
+    //   • THE BAR IS THE KNOB'S FLOOR, NOT ITS DEFAULT. The comb's delay defaults to
+    //     1000 samples but reaches 1, so "it interposes a real delay line" is true of
+    //     the default and false of the range. A module clears this bar only if EVERY
+    //     reachable setting does.
+    // Pinned by tests/audio_nodes_test.js's "declared on the delay's input and
+    // NOWHERE else", which is what caught it.
     { key: "in", type: "audio", label: "in", feedbackSafe: true },
     { key: "time", type: "number", label: "time" },
     { key: "feedback", type: "number", label: "fb" },
@@ -500,13 +516,48 @@ export const METER_SPEC = {
   knobs: [],
 };
 
+/**
+ * THE LEGAL BIN COUNTS, powers of two — Web Audio's `fftSize` range (32…32768)
+ * halved, because `frequencyBinCount` is `fftSize / 2` and BINS are what the
+ * author is choosing ("num freqs", R7-19).
+ *
+ * A `discrete` row rather than a number with a step, because the set really is
+ * discrete: an FFT of a non-power-of-two size is not a slower FFT, it is a
+ * different algorithm, and Web Audio simply refuses one. A number row would
+ * invite typing 1000 and then explain itself with an error.
+ *
+ * RESTATED HERE rather than imported from synth/spectrum.js, which owns the
+ * clamp: this file may not import synth/** (see the header — it is data, and
+ * core/ must run in bare node). tests/audio_nodes_test.js checks every option
+ * against the engine's own gate, which is where a dependency on the engine
+ * belongs. The floor starts at 64 rather than at the engine's 16 because a
+ * 16-bin spectrogram has fewer bins than the display has rows.
+ */
+const SPECTRUM_BIN_OPTIONS = ["64", "128", "256", "512", "1024", "2048", "4096", "8192", "16384"];
+
+/**
+ * THE WINDOW FUNCTIONS, restated from synth/spectrum.js SPECTRUM_WINDOWS for the
+ * same reason and under the same cross-check.
+ */
+const SPECTRUM_WINDOW_OPTIONS = ["rectangular", "hann", "hamming", "blackman", "blackmanHarris"];
+
 export const SPECTRUM_SPEC = {
   type: "audio_spectrum", module: "spectrum", title: "Spectrum", family: "analysis",
   icon: "mdi:chart-histogram", readout: null, overlay: "spectrum", w: 200,
   help: "A flowing spectrogram of whatever passes through it — the user's 'spectrogram analyzers that can visualize the audio coming out of some node'. Frequency runs bottom to top, time scrolls right to left.",
   inputs: [{ key: "in", type: "audio", label: "in" }],
   outputs: [{ key: "out", type: "audio", label: "out" }],
-  knobs: [],
+  // ── TWO KNOBS, AND THEY ARE THE **MEASUREMENT** (R7-19) ─────────────────────
+  // The other half of that requirement — the colour map, the scroll speed, the
+  // frequency axis and the dB window — is NOT here, because none of it reaches
+  // the engine. Those are declared in core/analysis_display.js beside the drawing
+  // they modify; a knob that is not an engine param would fail this file's own
+  // contract (tests/audio_nodes_test.js: "every declared knob is a param the
+  // engine module really exposes") and be a phantom leaf.
+  knobs: [
+    { key: "bins", label: "Frequency bins", default: "1024", discrete: true, construct: true, options: SPECTRUM_BIN_OPTIONS, help: "CONSTRUCT-TIME: an analyser's transform size cannot change without resizing its buffers, so this rebuilds the module and the waterfall restarts. How finely the spectrum is measured — the FFT is twice this many points. MORE BINS IS NOT SIMPLY BETTER: it buys frequency resolution by spending TIME resolution, because each transform needs twice as many samples, so a fast run of notes smears. 1024 at 48 kHz resolves about 23 Hz per bin over a 43 ms window. The cost also grows: 16384 bins is roughly sixteen times the work of the default." },
+    { key: "window", label: "Window", default: "blackman", discrete: true, construct: true, options: SPECTRUM_WINDOW_OPTIONS, help: "CONSTRUCT-TIME (the weights are tabulated once, at the transform's size). How the sample slice is tapered before the transform. An FFT assumes its input repeats forever; a slice that does not join up with itself sprays energy across every bin, and the taper is what stops it. 'rectangular' is NO taper — the sharpest peaks and the worst smear. 'hann' is the general-purpose choice, 'hamming' is better right beside a peak and worse far from it, 'blackman' is what the browser's own analyser hard-wires (hence the default), and 'blackmanHarris' is for finding something quiet next to something very loud." },
+  ],
 };
 
 // ── OUTPUT ──────────────────────────────────────────────────────────────────
@@ -529,7 +580,10 @@ export const OUTPUT_SPEC = {
  * simply does not exist — which is the intended failure mode (a half-registered
  * module that appears in one place and not another is worse).
  */
+import { PORT_BLOCK_SPECS } from "./audio_blocks.js"; // the ported-node blocks (R7-17); see the PORT-BLOCK CONTRACT there
+
 export const AUDIO_SPECS = [
+  ...PORT_BLOCK_SPECS,
   OSCILLATOR_SPEC, SUPERSAW_SPEC, NOISE_SPEC, SAMPLER_SPEC, DING_SPEC, PAD_SPEC, POLY_PAD_SPEC,
   FILTER_SPEC, EQ3_SPEC, BITCRUSH_SPEC, QUANTIZE_SPEC,
   DELAY_SPEC, REVERB_SPEC,

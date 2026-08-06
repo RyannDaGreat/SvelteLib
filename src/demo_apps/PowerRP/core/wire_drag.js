@@ -44,7 +44,7 @@
  * highlight is how a UI ends up inviting a drop it then refuses.
  */
 
-import { PORT_BEAD_R, connectPairs, connectionRefusal, disconnectPairs } from "./nodeflow.js";
+import { EXEC_KEY, EXEC_TYPE, PORT_BEAD_R, connectionRefusal, disconnectPairs, execDisconnectPairs, isNodeRef, wirePairsFor } from "./nodeflow.js";
 import { nodePortAnchors } from "./derive.js";
 
 /**
@@ -120,10 +120,24 @@ export function beadAt(beads, wx, wy, tol = 0) {
  * @example wireDragStart({n: {}}, {item: "n", key: "i", side: "input", type: "number"}) // {anchor: {item: "n", port: "i", type: "number", isInput: true}, detach: null}
  * @example // pressing a CONNECTED input picks that wire's end up: the anchor becomes its SOURCE
  * @example wireDragStart({n: {inputs: {i: {item: "s", port: "o"}}}, s: {}}, {item: "n", key: "i", side: "input", type: "number"}) // {anchor: {item: "s", port: "o", type: "number"}, detach: {item: "n", port: "i"}}
+ * @example // AN EXEC OUT holds its own wire, so pressing a WIRED one picks that wire up
+ * @example wireDragStart({n: {exec: {then: {item: "t", port: "run"}}}}, {item: "n", key: "then", side: "output", type: "exec"}) // {anchor: {item: "n", port: "then", type: "exec"}, detach: {item: "n", port: "then", exec: true}}
  */
 export function wireDragStart(items, bead) {
   if (!bead) return null;
-  if (bead.side === "output") return { anchor: { item: bead.item, port: bead.key, type: bead.type }, detach: null };
+  if (bead.side === "output") {
+    // THE MIRROR OF THE CONNECTED-INPUT CASE BELOW, and it exists for the same
+    // reason: the gesture must pick up the wire the user is looking at. An exec
+    // wire is stored on the OUTPUT, so the output is where it is grabbed —
+    // `detach` carries `exec: true` because the pairs that clear it write a
+    // different map (core/nodeflow.execDisconnectPairs). Nothing changes for a
+    // DATA output, which stores no wire and therefore always starts a new one.
+    const held = bead.type === EXEC_TYPE ? items?.[bead.item]?.[EXEC_KEY]?.[bead.key] : null;
+    return {
+      anchor: { item: bead.item, port: bead.key, type: bead.type },
+      detach: isNodeRef(held) ? { item: bead.item, port: bead.key, exec: true } : null,
+    };
+  }
   const existing = items?.[bead.item]?.inputs?.[bead.key];
   if (existing && typeof existing === "object" && typeof existing.item === "string")
     // GESTURE 3/4: this input already holds a wire, so the press GRABS ITS END.
@@ -207,7 +221,7 @@ export function wireTargets(items, registry, beads, drag) {
 export function wireDrop(items, registry, drag, target) {
   if (!drag) return { pairs: [], kind: "cancel", refusal: null };
   if (!target) {
-    if (drag.detach) return { pairs: disconnectPairs(drag.detach), kind: "disconnect", refusal: null };
+    if (drag.detach) return { pairs: clearPairs(drag.detach), kind: "disconnect", refusal: null };
     return { pairs: [], kind: "cancel", refusal: null };
   }
   const [from, to] = drag.anchor.isInput
@@ -215,12 +229,23 @@ export function wireDrop(items, registry, drag, target) {
     : [{ item: drag.anchor.item, port: drag.anchor.port }, { item: target.item, port: target.key }];
   const refusal = connectionRefusal(items, registry, from, to);
   if (refusal) return { pairs: [], kind: "refused", refusal };
-  // A REROUTE clears the OLD input in the same pair list as it writes the new one,
-  // so the whole move is one undo unit. Order matters only if the two are the same
-  // input, in which case the connect must win — hence the clear goes FIRST.
-  const clear = drag.detach && !(drag.detach.item === to.item && drag.detach.port === to.port)
-    ? disconnectPairs(drag.detach) : [];
-  return { pairs: [...clear, ...connectPairs(from, to)], kind: drag.detach ? "reroute" : "connect", refusal: null };
+  // A REROUTE clears the OLD end in the same pair list as it writes the new one, so
+  // the whole move is one undo unit. Order matters only if the two are the same
+  // slot, in which case the connect must win — hence the clear goes FIRST. For an
+  // EXEC reroute the "same slot" is the SOURCE pin (that is where the wire lives),
+  // which is why the identity test reads the detach against the end it was taken
+  // from rather than always against `to`.
+  const held = drag.detach?.exec ? from : to;
+  const clear = drag.detach && !(drag.detach.item === held.item && drag.detach.port === held.port)
+    ? clearPairs(drag.detach) : [];
+  return { pairs: [...clear, ...wirePairsFor(items, registry, from, to)], kind: drag.detach ? "reroute" : "connect", refusal: null };
+}
+
+/** Pure function. The pairs that clear whichever end a detach names. One dispatcher
+ *  so the two maps are never confused for each other — `disconnectPairs` writing an
+ *  exec detach would null out a DATA input that happens to share the port key. */
+function clearPairs(detach) {
+  return detach.exec ? execDisconnectPairs(detach) : disconnectPairs(detach);
 }
 
 /**
