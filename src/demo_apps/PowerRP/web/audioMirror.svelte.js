@@ -33,11 +33,19 @@
  * transport's tempo and pattern length too. Everything BELOW it runs on the
  * AudioContext clock and is not reproducible, in either backend.
  *
- * THIS FILE READS NO CLOCK AT ALL, deliberately, and that paragraph used to say the
- * opposite — it pointed at a `scheduleFrom` that does not exist and at a
- * particleTime() seam only the dead `setTransportLive` ever mentioned. The transport
- * is not gated on the presentation clock's regime any more (see syncTransport for
- * the ruling and its reason), so there is nothing here for a clock to decide.
+ * THE CLOCKS THIS FILE READS, AND THE ONE THING NEITHER OF THEM DECIDES. It reads
+ * two — the presentation clock, through core/simulation_history.simulationTimestep,
+ * and the AudioContext's own — and both are read for exactly one purpose: how long
+ * a parameter ramp should be (frameTimestepSeconds). NEITHER DECIDES WHAT THE SCENE
+ * SAYS. A slow frame changes how smoothly a knob arrives at its value, never what
+ * that value is, so Δt = 0 still produces an identical scene and the invariant above
+ * is untouched. The transport is likewise NOT gated on the presentation clock's
+ * regime (see syncTransport for that ruling and its reason).
+ *
+ * This paragraph twice described a file that had stopped existing — first a
+ * `scheduleFrom` that was never written, then "reads no clock at all", true for
+ * about an hour until the adaptive ramp landed. Both times the code moved and the
+ * prose did not.
  *
  * ── AUTOPLAY: HARVESTED, NEVER ASKED ────────────────────────────────────────
  * USER RULING, 2026-08-06: "Of course I fucking want audio on. I always want audio
@@ -62,9 +70,9 @@
  */
 
 import { createEngine } from "../synth/engine.js";
-import { diffAudioScene, initialParamOps, readAudioScene, transportOf } from "../core/audio_mirror_diff.js";
+import { diffAudioScene, initialParamOps, knobRampSeconds, readAudioScene, transportOf } from "../core/audio_mirror_diff.js";
 import { noteRoutes, triggerRoutes } from "../core/live_control.js";
-import { particleTime } from "../render_gpu/particle_clock.js";
+import { cameraMaxTimestep, simulationTimestep } from "../core/simulation_history.js";
 import { reportOnce } from "../core/report.js";
 
 /** The one engine instance for the page. Created lazily: a deck with no audio
@@ -85,44 +93,50 @@ let engineScene = { modules: {}, connections: [] };
 let applying = null;
 let pending = null;
 
-/** The two clock readings the previous mirror pass took, or null before the first.
- *  See frameTimestepSeconds. */
-let lastPresentedTime = null;
+/** The AUDIO clock reading the previous mirror pass took, or null before the first.
+ *  There is no matching `lastPresentedTime`: core/simulation_history.simulationTimestep
+ *  keeps that reading for the whole app now. See frameTimestepSeconds. */
 let lastAudioTime = null;
-/** The gap the CURRENT batch has to bridge, in seconds. Held here rather than
- *  passed around because queueApply's self-healing follow-up diff must ramp like
- *  the batch it is repairing, not like a fresh one. */
-let frameTimestep = 0;
+/** The ramp the CURRENT batch is using, in seconds. Held here rather than passed
+ *  around because queueApply's self-healing follow-up diff must ramp like the batch
+ *  it is repairing, not like a fresh one. Starts at the FLOOR, not at 0: a 0 would
+ *  be a step discontinuity, which is an audible click, and "no pass has run yet" is
+ *  exactly the no-measurement case the floor exists for. */
+let frameRamp = knobRampSeconds(0);
 
 /**
- * Command (reads two ambient clocks; advances this module's own readings). THE GAP
- * a parameter push has to bridge — how long since the previous mirror pass.
+ * Command (observes the presentation clock; advances this module's audio-clock
+ * reading). THE GAP a parameter push has to bridge — how long since the previous
+ * mirror pass.
  *
- * ── WHY TWO CLOCKS, AND WHY THAT IS NOT A MODE BRANCH ───────────────────────
- * This is the same distinction core/simulation_history.beginSimulationStep makes in
- * one line (`dictatedSeconds ?? clampedTimestep(measured)`): a DICTATED interval
- * beats a measured one, because it is a definition rather than an observation.
- *
- *   PRESENTED TIME (render_gpu/particle_clock.particleTime) advances by the real
- *     frame interval in the presenter and by exactly 1/fps in an export, because
- *     the exporter overrides it per frame. So when it moved, it IS the interval —
- *     and a 10 fps render therefore ramps over 100 ms with no export-only code.
- *   THE AUDIO CLOCK is the fallback, and it is the honest one for the editor, where
- *     presented time is deliberately FROZEN. It is also the clock the ramp is
- *     actually scheduled against (synth/engine.js:597 reads context.currentTime),
- *     so a gap measured on it is precisely the gap the hardware will experience.
+ * ── TWO CLOCKS, AND THEY ARE NOT ONE CONCEPT SPELLED TWICE ──────────────────
+ *   THE PRESENTATION CLOCK is asked through core/simulation_history.simulationTimestep,
+ *     which is THE one answer to "how long is this frame?" for the whole app:
+ *     dictated by an export when one is running (so a 10 fps render ramps over
+ *     100 ms with no export-only code here), measured and clamped otherwise. It is
+ *     read-only — it never rolls the simulation, which matters because a ramp that
+ *     advanced the integrator would let audio make a pendulum run slow.
+ *   THE AUDIO CLOCK is this module's own, and it stays. Presented time is
+ *     deliberately FROZEN in the editor, where a patch is nonetheless audible and
+ *     being edited; and it is the clock the ramp is actually scheduled against
+ *     (synth/engine.js:597 reads context.currentTime), so a gap measured on it is
+ *     precisely the gap the hardware will experience. Different clock, different
+ *     question — not a duplicate reading.
  *
  * A suspended context's clock does not advance, so a patch built before the first
  * gesture measures 0 and takes the floor — correct, since nothing is audible yet.
  *
+ * @param {number|null} maxTimestep - the author's camera clamp, or null for none
  * @returns {number} seconds since the previous pass, or 0 when neither clock moved
  */
-function frameTimestepSeconds() {
-  const presented = particleTime();
+function frameTimestepSeconds(maxTimestep) {
+  const presentedStep = simulationTimestep(maxTimestep);
+  // THE AUDIO READING IS ADVANCED EVEN WHEN THE PRESENTED STEP WINS, and it has to
+  // be: skip it through a presentation and the first editor pass afterwards measures
+  // the whole show as one gap. `lastAudioTime` means "when this module last looked",
+  // so every look must move it, whichever answer is returned.
   const audio = engine ? engine.context.currentTime : null;
-  const presentedStep = lastPresentedTime === null ? 0 : presented - lastPresentedTime;
   const audioStep = (lastAudioTime === null || audio === null) ? 0 : audio - lastAudioTime;
-  lastPresentedTime = presented;
   lastAudioTime = audio;
   return presentedStep > 0 ? presentedStep : audioStep;
 }
@@ -209,7 +223,13 @@ export function mirrorAudioFrame(state, registry) {
   // has to bridge is the gap since the previous PASS, so a pass that turns out to
   // have nothing to do still has to move the reading. Skipping it on quiet passes
   // would report the whole quiet stretch as one interval to the next real one.
-  frameTimestep = frameTimestepSeconds();
+  //
+  // THE CEILING IS THE AUTHOR'S. cameraMaxTimestep reads the camera's `maxTimestep`
+  // row off this very frame, so raising it to 0.3 or choosing "none" applies to the
+  // audio ramp exactly as it applies to the simulation. A constant here would have
+  // made that row half-apply, which is worse than not having it.
+  const maxTimestep = cameraMaxTimestep(state ?? {});
+  frameRamp = knobRampSeconds(frameTimestepSeconds(maxTimestep), maxTimestep);
   const scene = readAudioScene(state?.items ?? {}, registry);
   const count = Object.keys(scene.modules).length;
   audioState.moduleCount = count;
@@ -227,7 +247,7 @@ export function mirrorAudioFrame(state, registry) {
   // engine) — there would be nothing for the gesture to make audible.
   if (count > 0) armAudioGesture();
 
-  const ops = diffAudioScene(engineScene, scene, frameTimestep);
+  const ops = diffAudioScene(engineScene, scene, frameRamp);
   if (ops.length === 0) {
     // THE TRANSPORT STILL HAS TO BE SYNCED HERE. Zero ops means the DOCUMENT said
     // nothing new — but the ENGINE may have started since the last pass (the first
@@ -283,7 +303,7 @@ function queueApply(ops, scene) {
       // same push arriving late, not a new one, so giving it a fresh (and, on this
       // path, always-zero) measurement would put the floor back exactly where a
       // slow frame needs the ramp widest.
-      const followUp = diffAudioScene(reached, target, frameTimestep);
+      const followUp = diffAudioScene(reached, target, frameRamp);
       if (followUp.length) queueApply(followUp, target);
     });
 }

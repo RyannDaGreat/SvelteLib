@@ -156,15 +156,19 @@ function constructParams(spec, knobs) {
  *  ramp may ever be shorter than this however fast the frames arrive. */
 export const KNOB_RAMP_MIN_SECONDS = 0.02;
 
-/** THE CEILING, and it is deliberately the SAME NUMBER as the simulation's max
- *  timestep, for the same reason: a multi-second stall is not a real interval to
- *  interpolate across. Without it, one GC pause or tab switch would smear every
- *  parameter in the patch over the length of the pause. */
-export const KNOB_RAMP_MAX_SECONDS = CAMERA_MAX_TIMESTEP_DEFAULT;
-
 /**
  * Pure function. THE RAMP a `setParam` gets when the gap to the next one is
  * `intervalSeconds`: the interval itself, floored and capped.
+ *
+ * ── THE CEILING IS THE AUTHOR'S, NOT A CONSTANT ─────────────────────────────
+ * It arrives as an argument because it is the camera's `maxTimestep` — the row the
+ * author sets, and which may be `null` for "none". This function briefly exported a
+ * `KNOB_RAMP_MAX_SECONDS` constant pinned to the default instead, and that was the
+ * inert-control lie the manifest forbids: the setting would have applied to the
+ * simulation and silently not to the audio, so "none" or "0.3" would have been
+ * half-obeyed. The reason the two share a ceiling at all is that they are asking one
+ * question — how much time may a single displayed frame claim to cover? — and a
+ * multi-second stall is not a real interval to interpolate across in either.
  *
  * ── WHY A CONSTANT WAS WRONG, AND ONLY BELOW ~50 fps ────────────────────────
  * A fixed 0.02 s is correct at 60 Hz — frames are 0.0167 s apart, so each ramp is
@@ -188,16 +192,21 @@ export const KNOB_RAMP_MAX_SECONDS = CAMERA_MAX_TIMESTEP_DEFAULT;
  *
  * @param {number} intervalSeconds - measured or dictated seconds since the previous
  *   parameter push; 0 or non-finite when there is no measurement yet
- * @returns {number} the ramp, in [KNOB_RAMP_MIN_SECONDS, KNOB_RAMP_MAX_SECONDS]
+ * @param {number|null} [maxTimestep] - the ceiling: cameraMaxTimestep(state), where
+ *   null is the author's "none". Defaults to the same value the simulation does.
+ * @returns {number} the ramp, ≥ KNOB_RAMP_MIN_SECONDS
  *
  * @example knobRampSeconds(0.05) // 0.05 (a 20 fps frame ramps for the whole frame)
  * @example knobRampSeconds(0.0167) // 0.02 (a 60 Hz frame is under the anti-zipper floor)
  * @example knobRampSeconds(3) // 0.1 (a three-second stall is not an interval to interpolate across)
  * @example knobRampSeconds(0) // 0.02 (no measurement yet — the floor)
+ * @example knobRampSeconds(3, 0.3) // 0.3 (the author raised the camera's clamp)
+ * @example knobRampSeconds(3, null) // 3 (the author chose "none" — no ceiling at all)
+ * @example knobRampSeconds(0.001, null) // 0.02 ("none" removes the CEILING, never the floor)
  */
-export function knobRampSeconds(intervalSeconds) {
+export function knobRampSeconds(intervalSeconds, maxTimestep = CAMERA_MAX_TIMESTEP_DEFAULT) {
   if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) return KNOB_RAMP_MIN_SECONDS;
-  return Math.max(KNOB_RAMP_MIN_SECONDS, clampedTimestep(intervalSeconds, KNOB_RAMP_MAX_SECONDS));
+  return Math.max(KNOB_RAMP_MIN_SECONDS, clampedTimestep(intervalSeconds, maxTimestep));
 }
 
 /**
@@ -210,9 +219,11 @@ export function knobRampSeconds(intervalSeconds) {
  *
  * @param {object} prev - a readAudioScene result (the engine's current state)
  * @param {object} next - a readAudioScene result (what the document now says)
- * @param {number} [intervalSeconds] - the gap this batch has to bridge before the
- *   next one arrives (see knobRampSeconds). Omitted, every ramp takes the floor,
- *   which is what every pre-round-7 caller got unconditionally.
+ * @param {number} [rampSeconds] - the ramp every non-discrete setParam in this batch
+ *   gets, ALREADY RESOLVED by knobRampSeconds. It arrives resolved rather than as a
+ *   raw interval because the ceiling is the camera's `maxTimestep`, which lives on
+ *   the STATE and never reaches a function that only sees two scenes. Omitted, every
+ *   ramp takes the floor — what every pre-round-7 caller got unconditionally.
  * @returns {object[]} ordered ops: {op, ...args}
  *
  * @example diffAudioScene({modules: {}, connections: []}, {modules: {}, connections: []}) // []
@@ -221,9 +232,8 @@ export function knobRampSeconds(intervalSeconds) {
  * @example // a slow frame's knob change ramps across the whole frame, not a fifth of it
  * @example diffAudioScene({modules: {f: {module: "filter", type: "audio_filter", spec: {knobs: [{key: "frequency"}]}, knobs: {frequency: 400}}}, connections: []}, {modules: {f: {module: "filter", type: "audio_filter", spec: {knobs: [{key: "frequency"}]}, knobs: {frequency: 900}}}, connections: []}, 0.05)[0].rampSeconds // 0.05
  */
-export function diffAudioScene(prev, next, intervalSeconds = 0) {
+export function diffAudioScene(prev, next, rampSeconds = KNOB_RAMP_MIN_SECONDS) {
   const ops = [];
-  const rampSeconds = knobRampSeconds(intervalSeconds);
   const prevModules = prev.modules ?? {};
   const nextModules = next.modules ?? {};
 

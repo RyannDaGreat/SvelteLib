@@ -71,10 +71,19 @@ const SLOW_FRAMES = 6;
  *  is for CADENCE JITTER only — the ramp is set from the PREVIOUS gap, so it can
  *  only ever be a predictor of the next one, and a setTimeout cadence is not exact. */
 const MIN_RAMP_COVERAGE = 0.75;
-/** Mirrors core/audio_mirror_diff.KNOB_RAMP_MAX_SECONDS (= the simulation's max
- *  timestep). Restated here because a probe that imported the value it is checking
- *  would pass whatever the module happened to say. */
+/** The camera's DEFAULT maxTimestep, which is also the ramp's default ceiling.
+ *  Restated here rather than imported because a probe that imported the value it is
+ *  checking would pass whatever the module happened to say. */
 const RAMP_CEILING_SECONDS = 0.1;
+/** A raised ceiling for the author-honours test — well clear of the 0.1 default, so
+ *  "the setting reached the ramp" cannot be confused with "the default did". */
+const AUTHOR_CEILING_SECONDS = 0.3;
+/** core/audio_mirror_diff.KNOB_RAMP_MIN_SECONDS, restated for the same reason as the
+ *  ceiling above. "none" removes the ceiling; nothing removes this. */
+const RAMP_FLOOR_SECONDS = 0.02;
+/** Longer than every ceiling under test, so each case is genuinely clamped (or, for
+ *  "none", genuinely not). */
+const IDLE_GAP_MS = 700;
 /** A dictated render rate whose frame (1/15 s ≈ 66.7 ms) is far longer than the
  *  wall time the probe actually spends between pushes, so "dictated beat measured"
  *  is unambiguous — and still under the ceiling, so the clamp does not mask it. */
@@ -111,7 +120,12 @@ try {
   // THE SPLASH MUST LIFT BEFORE ANY SYNTHETIC CLICK (tests/puppeteerLaunch.js):
   // it is fixed, inset 0, z-index 9999 until the first real painted frame, so a
   // tap before then lands on the splash and the check flakes 1-in-3.
-  await page.waitForFunction(() => document.getElementById("boot-splash") === null, { timeout: 30000 });
+  // 120 s, matching tests/present_reachable_probe.js and for the reason recorded
+  // there: with several agents' Vite servers on one host the dep optimizer keeps the
+  // network busy well past the app being interactive, and a tighter timeout reports
+  // a loaded HOST as a broken app. Measured here — this threw at 30 s while the same
+  // commit booted clean under tests/audio_mirror_probe.js moments later.
+  await page.waitForFunction(() => document.getElementById("boot-splash") === null, { timeout: 120000 });
 
   // ── BUILD A THREE-SLIDE DECK WITH AN ANIMATED CUTOFF ──────────────────────
   const ids = await page.evaluate((low, high, bpm, seconds) => {
@@ -251,7 +265,92 @@ try {
   ok(slow.every((c) => c.rampSeconds <= RAMP_CEILING_SECONDS + 1e-9),
     `no ramp exceeds the ceiling — a stall may not smear a parameter across it (${JSON.stringify(slow.map((c) => +c.rampSeconds.toFixed(4)))})`);
 
-  // ── 6. IN AN EXPORT THE INTERVAL IS DICTATED, NOT MEASURED ────────────────
+  // ── 6. THE AUTHOR'S CAMERA CLAMP REACHES THE RAMP ─────────────────────────
+  // The ceiling is the camera's `maxTimestep`, not a constant, so the setting that
+  // protects the simulation from a lag spike protects the audio ramp too. A constant
+  // would have made that value HALF-APPLY — obeyed by the simulation and quietly
+  // ignored by the audio, which is the inert-control lie the manifest forbids.
+  //
+  // THIS RUNS BEFORE THE EXPORT SECTION, AND THE ORDER IS LOAD-BEARING. Measured the
+  // hard way: with it after, all three cases returned 0.1 and looked like a broken
+  // integration. `setParticleTimeOverride` leaves the observed clock instant at the
+  // last override (~0.2 s); clearing it returns particleTime() to the constant
+  // EDITOR_FREEZE_TIME (2), which is a FORWARD jump, so observeClock computes one
+  // final dt, clamps it, and — because the paused clock never moves again — hands
+  // back that same memoized number for the rest of the page's life. Presented time
+  // then always "moved", the audio-clock fallback was never reached, and the ramp sat
+  // pinned at the clamp. Nothing here perturbs the clock, so the fallback measures the
+  // real idle.
+  //
+  // The gap comes from the engine's OWN timestamps on the two pushes bracketing the
+  // idle, so a stray mirror pass between them shows up as a shrunken gap rather than
+  // silently weakening the assertion.
+  let rampAlpha = 0.1;
+  /** Drive one mirror pass, optionally overriding the camera's clamp ON THE STATE. */
+  const drivePass = async (clampOverride) => {
+    rampAlpha += 0.07;
+    await page.evaluate(async (alpha, override, applyOverride) => {
+      const [mirror, camera] = await Promise.all([import("/audioMirror.svelte.js"), import("/cameraFrame.js")]);
+      const app = window.__powerrp_app;
+      const state = camera.evaluatedStateAt(app.doc, 1, alpha, app.registry);
+      if (applyOverride) {
+        const camId = Object.entries(state.items).find(([, it]) => it?.type === "camera")[0];
+        state.items = { ...state.items, [camId]: { ...state.items[camId], maxTimestep: override } };
+      }
+      mirror.mirrorAudioFrame(state, app.registry);
+    }, rampAlpha, clampOverride ?? null, clampOverride !== undefined);
+  };
+  const rampAfterIdle = async (clampOverride) => {
+    await page.evaluate(() => { window.__setParamLog.length = 0; });
+    await drivePass(clampOverride);
+    await sleep(IDLE_GAP_MS);
+    await drivePass(clampOverride);
+    return page.evaluate((id) => {
+      const l = window.__setParamLog.filter((c) => c.id === id && c.key === "frequency");
+      return l.length < 2 ? null : { ramp: l[l.length - 1].rampSeconds, gap: l[l.length - 1].when - l[l.length - 2].when };
+    }, ids.filter);
+  };
+  const setCameraClamp = (value) => page.evaluate((v) => {
+    const app = window.__powerrp_app;
+    const camId = Object.entries(app.state().items).find(([, it]) => it?.type === "camera")[0];
+    app.setPreview([[["items", camId, "maxTimestep"], v]]);
+    app.commitPreview();
+  }, value);
+
+  // ABSENT (the deck as built) → the default ceiling.
+  const defaultCeiling = await rampAfterIdle(undefined);
+  // RAISED, written as an ordinary keyframed leaf on the camera, exactly as an
+  // Inspector row would write it.
+  await setCameraClamp(AUTHOR_CEILING_SECONDS);
+  await sleep(250);
+  const raisedCeiling = await rampAfterIdle(undefined);
+  // "NONE" IS SUPPLIED ON THE STATE, NOT WRITTEN TO THE DOCUMENT, and that is a
+  // reported gap rather than a shortcut: a `null` does not survive
+  // app.commitPreview (measured — the leaf comes back ABSENT, which reads as the
+  // default), and `maxTimestep` has no Inspector row to write it with in the first
+  // place. What this still proves end to end is the half that is mine: when the
+  // evaluated state says "none", the ramp honours it all the way to engine.setParam.
+  const noCeiling = await rampAfterIdle(null);
+  console.log(`  note  after a ~${IDLE_GAP_MS} ms idle — absent ${JSON.stringify(defaultCeiling)}, raised ${JSON.stringify(raisedCeiling)}, none ${JSON.stringify(noCeiling)}`);
+  ok(defaultCeiling && Math.abs(defaultCeiling.ramp - RAMP_CEILING_SECONDS) < 1e-9,
+    `an ABSENT clamp caps the ramp at the ${RAMP_CEILING_SECONDS}s default (got ${defaultCeiling?.ramp})`);
+  ok(raisedCeiling && Math.abs(raisedCeiling.ramp - AUTHOR_CEILING_SECONDS) < 1e-9,
+    `the author RAISING it to ${AUTHOR_CEILING_SECONDS}s raises the ramp to ${AUTHOR_CEILING_SECONDS}s — the value is not half-applied (got ${raisedCeiling?.ramp})`);
+  ok(noCeiling && noCeiling.ramp > AUTHOR_CEILING_SECONDS && Math.abs(noCeiling.ramp - noCeiling.gap) / noCeiling.gap < 0.15,
+    `"none" removes the ceiling entirely — the ramp is the whole ${noCeiling?.gap?.toFixed(3)}s gap (got ${noCeiling?.ramp?.toFixed(3)})`);
+
+  // AND THE FLOOR STILL HOLDS UNDER "none" — it removes the CEILING, not the floor.
+  await page.evaluate(() => { window.__setParamLog.length = 0; });
+  for (let i = 0; i < 3; i++) { await drivePass(null); await sleep(5); }
+  const fastRamps = await page.evaluate((id) => window.__setParamLog.filter((c) => c.id === id && c.key === "frequency").map((c) => c.rampSeconds), ids.filter);
+  ok(fastRamps.length >= 2 && fastRamps.slice(1).every((r) => Math.abs(r - RAMP_FLOOR_SECONDS) < 1e-9),
+    `with no ceiling at all, a fast cadence still sits exactly on the ${RAMP_FLOOR_SECONDS}s anti-zipper floor (${JSON.stringify(fastRamps.map((r) => +r.toFixed(4)))})`);
+
+  // Back to the default, so the sections after this measure the deck as described.
+  await setCameraClamp(RAMP_CEILING_SECONDS);
+  await sleep(250);
+
+  // ── 7. IN AN EXPORT THE INTERVAL IS DICTATED, NOT MEASURED ────────────────
   // An exporter overrides presentation time per frame (1/fps), so presented time
   // moves 1/15 s while WALL time between these calls is ~30 ms. The dictated value
   // must win, exactly as core/simulation_history.beginSimulationStep prefers a
