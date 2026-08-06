@@ -5332,6 +5332,32 @@ background fill.
 different sentences and must not share one control — the badge's remaining failure state
 stays.
 
+**BUILT (W2-A). AND IT IMPROVED ON THE SPEC IN THE WAY THAT MATTERS MOST.** `synth/engine.js`
+grows a master chain `bus → mute → destination`, and **the mute gain sits DOWNSTREAM of
+`engine.captureTap()` — so a recorder structurally CANNOT capture it.** The requirement above
+said "an export must ignore the mute", which is a rule a future contributor has to remember and
+can therefore break. Placing the tap upstream makes it **mechanically impossible to get wrong**.
+Prefer that shape whenever a guarantee can be made structural instead of stated; it is the same
+reasoning that makes fan-in-1 structural in `core/nodeflow.js` rather than validated.
+Session state only, a gain rather than `suspend()` so the transport clock survives, one registry
+entry with three surfacings, `disableAudio()` deleted. Measured in a real browser: icon ink
+`rgb(228,232,240)` → `rgb(122,162,247)`, background transparent in both, one glyph throughout.
+
+**KNOWN BOUND — `M` DOES NOT WORK IN PRESENT MODE, and closing it is a bigger change than it
+looks.** Two separate blockers, both measured: no mode-spanning context exists (all 20
+`WHEN_RESOLVERS` predicates pin `c.mode`, and `presentMode` is not among them), AND
+`web/App.svelte:2941` hard-disables registry dispatch during a show (`if (app.mode ===
+"present") return;`) — the presenter deliberately owns the keyboard so editor shortcuts cannot
+fire mid-presentation. So it needs a vocabulary addition **and** a change to the presenter's
+key-ownership contract.
+
+**NOT DONE, DELIBERATELY: the user asked for a TOOLBAR button and that is delivered.** The
+shortcut is a bonus. Note this is NOT the mode asymmetry R7-2 forbids — the AUDIO behaves
+identically in both modes; only a keyboard binding is unavailable, and presentation has no
+toolbar to put a button on either. If it is wanted, the minimal honest shape is an explicit
+`presentSafe` allowlist consulted by that gate — **not** removing the gate, which exists for a
+good reason.
+
 ### R7-23 `dt` IS AN ALIAS FOR `time - @time` (user, 2026-08-06)
 
 > *"it occured to me - dt is just an alias for (time-@time)"*
