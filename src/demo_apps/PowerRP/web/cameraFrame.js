@@ -163,16 +163,27 @@ export function cameraRectAt(doc, slideIndex, alpha, registry) {
  * @param {object} state EVALUATED folded state (equations already numbers).
  * @param {object} meta doc.meta ({slideW, slideH}) — the camera-rect fallback.
  * @param {object} registry Plugin registry.
- * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number, project?: string, live?: boolean}} [opts]
+ * LIVE AUDIO ANALYSIS (R7-5) rides `opts.liveAnalysis`, and it is an EXPLICIT
+ * OPT-IN for the same reason `live` is — not inferred from `view`, and not run as
+ * a pre-pass here. A surface asks for it when it has a running AudioContext whose
+ * output the author is watching (the editor canvas, the presenter). Every other
+ * caller of this function — thumbnails, the minimap, PNG/PDF/SVG export, the video
+ * render job, the CLI hook — must NOT pass it: live samples are not reproducible,
+ * so an export that drew them would differ run to run, and a headless render has
+ * no samples to draw at all. Omitting it yields the analysis node's static form.
+ *
+ * @param {{cullRect?: object, view?: object, viewW?: number, viewH?: number, project?: string, live?: boolean, liveAnalysis?: Map}} [opts]
  *   Optional world-space cull rect + live view (view + device-px canvas size) to
  *   drive the PDF display re-raster, and the owning project for ref resolution.
  *   `live` declares that the CALLER repaints when an async raster lands — see the
  *   note at the sceneIR call below; it is deliberately NOT inferred from `view`.
+ *   `liveAnalysis` is render_gpu/gpu/live_analysis_registry.prepareLiveAnalysis's
+ *   map, and is likewise an explicit opt-in.
  * @returns {Array} IR command list: [cameraBgRect, ...sceneIR(nodes)].
  *
  * @example // cameraFrameIR(evaluatedState, doc.meta, registry, {project: doc.meta.name}) // [rectCmd(bg), ...scene]
  */
-export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0, project = "", live = false } = {}) {
+export function cameraFrameIR(state, meta, registry, { cullRect = null, view = null, viewW = 0, viewH = 0, project = "", live = false, liveAnalysis = null } = {}) {
   const rect = cameraRect(state, meta);
   const allNodes = deriveRenderTree(state, registry, project || meta?.name || "");
   let nodes = allNodes;
@@ -221,6 +232,6 @@ export function cameraFrameIR(state, meta, registry, { cullRect = null, view = n
     // presenter would show a DIFFERENT set of wires than the PDF/PNG export of the
     // same slide, which is exactly the split the user asked to close. With no
     // cullRect, `allNodes === nodes` and this is the same object it always was.
-    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, live, wireNodes: allNodes }),
+    ...sceneIR(nodes, { pdfDisplay, mapTiles, scene3d, liveAnalysis, live, wireNodes: allNodes }),
   ];
 }

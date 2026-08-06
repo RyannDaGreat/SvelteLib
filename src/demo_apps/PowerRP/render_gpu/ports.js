@@ -309,6 +309,19 @@ export function videoIR(s) {
  * flag is general because the question is (any async-raster widget has it), and
  * `false` — every existing caller — is byte-identical to before it existed.
  *
+ * `liveAnalysis` IS THE FOURTH PRE-PASS AND THE ONLY ONE THAT IS NOT VIEW-DERIVED
+ * (R7-5). An audio analysis node's waterfall is LIVE SAMPLES, which are not
+ * document state and cannot be — reading them inside emit() would make Δt = 0
+ * produce two different pictures. So they ride this seam for the same structural
+ * reason the three above do: emit() may not fetch them, and only a surface that
+ * HAS a running AudioContext can supply them. render_gpu/gpu/live_analysis_registry
+ * builds the map; the editor canvas and the presenter pass it; every export, every
+ * thumbnail and cli/render.js pass nothing and get the node's static form, which is
+ * the honest picture of a document that has no sound in it. It is deliberately NOT
+ * folded into `live`: that flag says "I repaint when a raster lands", this map says
+ * "here is what the speakers are doing", and a surface can want either without the
+ * other.
+ *
  * `wireNodes` IS THE ONE PIECE OF CONTEXT THAT IS NOT A PRE-PASS, and it exists
  * because CULLING AND WIRES DISAGREE ABOUT WHAT A NODE IS FOR. A cull rect drops
  * every node whose own bounds miss the view, which is correct for the node's
@@ -324,7 +337,7 @@ export function videoIR(s) {
  *
  * Args:
  *   nodes (object[]): deriveRenderTree output (nodes carry .plugin)
- *   ctx ({pdfDisplay?: Map, mapTiles?: Map, scene3d?: Map, live?: boolean, wireNodes?: object[]}): optional render-time display context (see above)
+ *   ctx ({pdfDisplay?: Map, mapTiles?: Map, scene3d?: Map, liveAnalysis?: Map, live?: boolean, wireNodes?: object[]}): optional render-time display context (see above)
  *
  * Returns:
  *   object[]: IR commands (z-ordered because nodes are)
@@ -343,6 +356,7 @@ export function sceneIR(nodes, ctx = {}) {
     pdfDisplay: ctx.pdfDisplay ?? null,
     mapTiles: ctx.mapTiles ?? null,
     scene3d: ctx.scene3d ?? null,
+    liveAnalysis: ctx.liveAnalysis ?? null,
     live: ctx.live === true,
   };
   const byId = new Map(nodes.map((n) => [n.itemId, n]));
@@ -547,7 +561,7 @@ function emitNode(node, byId, display) {
  *
  * @param {object} node - a derive render node (carries .plugin/.state/.world)
  * @param {Map} byId - itemId → node, for folded-member lookup
- * @param {{pdfDisplay: Map|null, mapTiles: Map|null, live: boolean}} display - the normalized render-time display context sceneIR built
+ * @param {{pdfDisplay: Map|null, mapTiles: Map|null, scene3d: Map|null, liveAnalysis: Map|null, live: boolean}} display - the normalized render-time display context sceneIR built
  * @returns {object[]} IR (empty when the node emits nothing — a pure ghost)
  */
 function emitNodeBody(node, byId, display) {
@@ -596,11 +610,12 @@ function emitNodeBody(node, byId, display) {
   // `live` participates in that test so a surface that repaints but happens to
   // hold no PDF and no map still reaches its widgets — without it, the flag would
   // silently evaporate on exactly the scenes it matters for.
-  const renderCtx = display.pdfDisplay || display.mapTiles || display.scene3d || display.live
+  const renderCtx = display.pdfDisplay || display.mapTiles || display.scene3d || display.liveAnalysis || display.live
     ? {
         pdfDisplay: display.pdfDisplay?.get(node.itemId) ?? null,
         mapTiles: display.mapTiles?.get(node.itemId) ?? null,
         scene3d: display.scene3d?.get(node.itemId) ?? null,
+        liveAnalysis: display.liveAnalysis?.get(node.itemId) ?? null,
         live: display.live,
       }
     : null;

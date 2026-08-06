@@ -73,6 +73,8 @@ import { createEngine } from "../synth/engine.js";
 import { diffAudioScene, initialParamOps, knobRampSeconds, readAudioScene, transportOf } from "../core/audio_mirror_diff.js";
 import { noteRoutes, triggerRoutes } from "../core/live_control.js";
 import { cameraMaxTimestep, simulationTimestep } from "../core/simulation_history.js";
+import { meterColumnValues, spectrumColumnValues } from "../core/analysis_display.js";
+import { dropAnalysis, pushAnalysisFrame } from "../render_gpu/gpu/live_analysis_registry.js";
 import { reportOnce } from "../core/report.js";
 
 /** The one engine instance for the page. Created lazily: a deck with no audio
@@ -383,50 +385,63 @@ async function applyOps(ops) {
   }
 }
 
-// ── LIVE ANALYSIS DATA (the meter and spectrum overlays) ─────────────────────
+// ── LIVE ANALYSIS DATA (the meter and spectrum displays) ─────────────────────
 //
 // THE SEAM, STATED PLAINLY. An analysis node's bouncing bar is LIVE AUDIO, which is
 // not document state and cannot be: reading it inside a plugin's emit() would make
 // Δt = 0 produce two different pictures, which breaks the determinism law, frame
 // range sharding and export reproducibility at once (CLAUDE.md).
 //
-// So it never touches emit(). The plugin paints the node's STATIC form — card,
-// frame, label — and the live bar is drawn by web/AudioOverlay.svelte as a CANVAS
-// OVERLAY on top, exactly the way selection handles are: a separate layer, in
-// screen space, that no export and no cli/render.js ever consults. Turn audio off,
-// or render the deck headlessly, and what remains is the static form, which is the
-// honest picture of a document that has no sound in it.
+// That is UNCHANGED, and it is worth saying because the DRAWING changed completely
+// (R7-5). What used to happen is that the plugin painted a static card and
+// web/AudioOverlay.svelte painted the motion on top, in screen space, on a DOM
+// canvas. The user rejected that: it drew above everything, it did not rotate, no
+// export contained it, and — the symptom he named first — IT RESTARTED ON ZOOM,
+// because the waterfall's history lived in that canvas's PIXELS and a resize resets
+// a canvas's backing store.
 //
-// The data lands in a plain Map rather than in reactive state on purpose: these
-// callbacks fire at rAF for every subscribed node, and routing them through Svelte's
-// reactivity would schedule a component update per frame per meter. The overlay
-// reads the Map on its own rAF instead.
+// So the history is now DATA: this seam pushes one column of magnitudes per frame
+// into render_gpu/gpu/live_analysis_registry.js, the node's own emit() draws those
+// columns into the display list, and a zoom re-renders the same columns at a new
+// size. The determinism law is honoured the same way `pdfDisplay` and `mapTiles`
+// honour it — the columns reach emit() as a render-time ARGUMENT that only a
+// surface with a running AudioContext supplies, never as a global and never from
+// inside a plugin. A headless render is byte-identical to what it was.
+//
+// The push stays OUT of Svelte's reactivity, as it always was: these callbacks fire
+// at rAF for every subscribed node, and routing them through runes would schedule a
+// component update per frame per meter.
 
-/** id → {rms, db} for meter nodes, and id → Uint8Array for spectrum nodes. */
-export const analysisData = new Map();
+/** id → unsubscribe, for the modules whose analysis this mirror is watching. */
 const analysisSubs = new Map();
 
-/** Command. Subscribe to a module's live data, if it is an analysis node. */
+/** Command. Subscribe to a module's live data, if it is an analysis node.
+ *
+ *  UNITS ARE CONVERTED HERE, at the one place that knows the engine's: the ring
+ *  buffer is unit-free (magnitudes in 0..1), so the drawing never has to know
+ *  whether a value arrived as an FFT byte or as dBFS. */
 function subscribeAnalysis(id, module) {
-  if (!module?.spec?.overlay) return;
+  const kind = module?.spec?.overlay;
+  if (!kind) return;
   unsubscribeAnalysis(id);
-  if (module.spec.overlay === "meter") {
-    analysisSubs.set(id, engine.subscribeMeter(id, (level) => analysisData.set(id, level)));
-  } else if (module.spec.overlay === "spectrum") {
+  if (kind === "meter") {
+    analysisSubs.set(id, engine.subscribeMeter(id, (level) => pushAnalysisFrame(id, kind, meterColumnValues(level.db))));
+  } else if (kind === "spectrum") {
     // THE ENGINE REUSES ITS BUFFER (NF-SYNTH's API note: "REUSED buffer — copy if
-    // kept"). The overlay reads this on its own rAF, strictly after the callback, so
-    // it is read before the next fill and a copy per frame would be pure garbage —
-    // ~1 KB per node per frame at 60 Hz. Stored by reference deliberately.
-    analysisSubs.set(id, engine.subscribeSpectrum(id, (bins) => analysisData.set(id, bins)));
+    // kept"). spectrumColumnValues reads it and returns a fresh Float32Array, which
+    // pushColumn copies into the ring — so the reuse is respected without this seam
+    // having to reason about lifetime at all. The per-frame allocation it does make
+    // is one column, not one history.
+    analysisSubs.set(id, engine.subscribeSpectrum(id, (bins) => pushAnalysisFrame(id, kind, spectrumColumnValues(bins))));
   }
 }
 
-/** Command. Drop a module's subscription and its last data. A subscription that
+/** Command. Drop a module's subscription and its history. A subscription that
  *  outlived its module would hold the callback and the buffer forever. */
 function unsubscribeAnalysis(id) {
   const off = analysisSubs.get(id);
   if (off) { off(); analysisSubs.delete(id); }
-  analysisData.delete(id);
+  dropAnalysis(id);
 }
 
 // ── THE AUTOPLAY GATE ────────────────────────────────────────────────────────

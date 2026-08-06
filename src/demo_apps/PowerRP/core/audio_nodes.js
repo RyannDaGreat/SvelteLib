@@ -56,6 +56,7 @@
  */
 
 import { EPHEMERAL } from "./ephemeral.js";
+import { ANALYSIS_DISPLAY_BAND_H, analysisDisplayOps } from "./analysis_display.js";
 import { standardBBoxAnchors } from "./derive.js";
 import { bundle, bundleNestedDefaults, props } from "./properties.js";
 import { NODE_ITEM_REFS, minimumNodeHeight, nodeCardRim, nodeInkBounds, nodeInputRows } from "./nodeflow.js";
@@ -378,24 +379,46 @@ export function audioNodePlugin(spec) {
     ],
     ports: portsFn,
     /**
-     * Pure function. The node's picture: family card, readout, beads, family rim.
+     * Pure function. The node's picture: family card, live display, readout, beads,
+     * family rim.
      *
-     * THIS PATH STAYS PURE, AND THAT IS WHY THE METERS ARE NOT DRAWN HERE. An
-     * analysis node's bouncing bar is LIVE audio data, which is not document state
-     * and cannot be — reading it inside emit() would make Δt = 0 produce two
-     * different pictures and break the determinism law outright (CLAUDE.md). So
-     * emit() draws the node's STATIC form, including the static form of its meter,
-     * and the live bar is a CANVAS OVERLAY the editor composites on top (see
-     * `overlay` in the spec and web/AudioOverlay.svelte). Exports and cli/render.js
-     * get the static form, which is the honest picture of a document that has no
-     * sound in it.
+     * ── THE ANALYSIS DISPLAY IS DRAWN HERE, AND THE PURITY LAW IS INTACT (R7-5) ─
+     * It used to be a DOM `<canvas>` composited over the whole scene by
+     * web/AudioOverlay.svelte, and the user rejected that in four words that name
+     * four symptoms: it drew on top of everything, it RESTARTED ON ZOOM, it did not
+     * rotate with its node, and no export contained it. All four followed from the
+     * history living in that canvas's PIXELS — core/analysis_display.js's header
+     * states the diagnosis in full.
+     *
+     * WHAT DID NOT CHANGE is the reason the old split existed: live samples are not
+     * document state, and reading them from inside emit() would make Δt = 0 produce
+     * two different pictures. They are not read here. They arrive as `ctx`, the
+     * RENDER-TIME DISPLAY CONTEXT that `pdfDisplay`, `mapTiles` and `scene3d`
+     * already use (render_gpu/ports.js states the law) — a plain argument, supplied
+     * only by a surface that has a running AudioContext. Same descriptor, same ops.
+     * A surface that passes none (every exporter, every thumbnail, cli/render.js)
+     * gets exactly the static form it got before, so a headless render is
+     * byte-identical to what it was.
+     *
+     * UNDER THE PORT BEADS AND THE RIM, deliberately: the display is part of the
+     * card's FACE, and a waterfall painted over a port label would be the same
+     * "one layer strikes through another" defect the wire layer avoids by drawing
+     * beneath the cards. That ordering is only expressible because the display is
+     * in the display list — it is precisely what a DOM overlay structurally cannot
+     * do.
+     *
+     * @param {object} [ctx] - the render-time display context; `ctx.liveAnalysis`
+     *   is THIS node's {kind, columns} descriptor, or null/absent
      */
-    emit(s, _target, world) {
+    emit(s, _target, world, ctx) {
       const readout = audioReadout(spec, s);
       const dials = audioKnobLayout(spec, plugin, s);
       const bandTop = knobBandTop(spec, plugin, s);
       const ops = [
         ...familyCard(s, title, spec.family),
+        // THE LIVE DISPLAY, when this surface supplied one. Empty for every module
+        // that declares no `overlay`, and empty on every headless surface.
+        ...(ctx?.liveAnalysis ? analysisDisplayOps(ctx.liveAnalysis, plugin, s) : []),
         // `dials.length` tells the readout it is sharing the band, so it stops
         // centring and sits above them (readoutBaseline states the collision); the
         // band's RESOLVED top then caps how far down it may sit, because on a
@@ -977,16 +1000,27 @@ const KNOB_BAND_PAD = textLineH(KNOB_LABEL_SIZE);
  * readout needs one more line below the last row, or the readout would be placed
  * outside the card it belongs to.
  *
+ * A SPEC WITH AN `overlay` NEEDS THE SAME COURTESY FOR ITS DISPLAY (R7-5). The two
+ * analysis specs declare `readout: null` and no knobs, so under the old sizing they
+ * were born at their PORT height with no free band at all — which is why the DOM
+ * overlay that preceded this drew straight over their port labels. A meter or a
+ * spectrum is a widget whose entire purpose is a picture; being born with room for
+ * one is the same reservation a readout already gets. The two are additive rather
+ * than exclusive, so a future module with both is sized for both.
+ *
  * @param {object} spec - an audio node spec
  * @param {object} portsFn - the node's ports accessor
  * @returns {number} a default height
  *
  * @example // a spec with a readout is taller than the same spec without one
  * @example readoutNodeHeight({readout: "x", knobs: [{key: "x", default: 1}]}, () => ({inputs: [], outputs: []})) > readoutNodeHeight({}, () => ({inputs: [], outputs: []})) // true
+ * @example // and so is one with a live display, for the same reason
+ * @example readoutNodeHeight({overlay: "spectrum"}, () => ({inputs: [], outputs: []})) > readoutNodeHeight({}, () => ({inputs: [], outputs: []})) // true
  */
 export function readoutNodeHeight(spec, portsFn, width = AUDIO_NODE_W) {
   const base = minimumNodeHeight({ ports: portsFn }, {});
-  const withReadout = spec.readout ? base + AUDIO_READOUT_SIZE + READOUT_GAP * 2 : base;
+  const withDisplay = spec.overlay ? base + ANALYSIS_DISPLAY_BAND_H : base;
+  const withReadout = spec.readout ? withDisplay + AUDIO_READOUT_SIZE + READOUT_GAP * 2 : withDisplay;
   // …AND FOR ITS KNOB BAND. A node born too short to show its own dials would
   // paint them past its bottom rim, which is the same defect the readout had
   // before it was placed below the port rows (see audioReadoutOps). The author
