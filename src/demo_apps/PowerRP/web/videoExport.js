@@ -39,6 +39,16 @@
  * the encoder, not the pipeline, that knows how far it got: the pipeline is handed
  * the number and trusts it.
  *
+ * A SIMULATED DOCUMENT MAY NOT BE RESUMED, and nothing here can tell: "every frame
+ * is a pure function of its INDEX" is exactly what simulated state gives up (see
+ * below), so a resume at frame 500 restarts the trajectory from the initial
+ * condition and encodes 500 frames of the WRONG motion onto the end of a correct
+ * prefix. This pipeline is handed a plan and a renderer and has neither the
+ * document nor the registry, so the refusal has to be made by the caller that does
+ * — cli/render_job.js makes it (core/document.stridedShardRefusal, and it turns the
+ * frame skip off for the same reason). **web/browserRenderJobs.js does NOT yet**,
+ * and that is a known open gap, recorded here rather than left to be discovered.
+ *
  * ── MOTION BLUR (temporal subsampling) ────────────────────────────────────────
  * `samples` (integer, DEFAULT 1) is the exposure subsample count. With samples=1
  * each output frame is one render at the frame-center time — zero extra cost,
