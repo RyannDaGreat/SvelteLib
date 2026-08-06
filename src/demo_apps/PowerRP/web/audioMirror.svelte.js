@@ -64,6 +64,7 @@
 import { createEngine } from "../synth/engine.js";
 import { diffAudioScene, initialParamOps, readAudioScene, transportOf } from "../core/audio_mirror_diff.js";
 import { noteRoutes, triggerRoutes } from "../core/live_control.js";
+import { particleTime } from "../render_gpu/particle_clock.js";
 import { reportOnce } from "../core/report.js";
 
 /** The one engine instance for the page. Created lazily: a deck with no audio
@@ -83,6 +84,48 @@ let engineScene = { modules: {}, connections: [] };
  *  would interleave their connects and disconnects, so a second one waits. */
 let applying = null;
 let pending = null;
+
+/** The two clock readings the previous mirror pass took, or null before the first.
+ *  See frameTimestepSeconds. */
+let lastPresentedTime = null;
+let lastAudioTime = null;
+/** The gap the CURRENT batch has to bridge, in seconds. Held here rather than
+ *  passed around because queueApply's self-healing follow-up diff must ramp like
+ *  the batch it is repairing, not like a fresh one. */
+let frameTimestep = 0;
+
+/**
+ * Command (reads two ambient clocks; advances this module's own readings). THE GAP
+ * a parameter push has to bridge — how long since the previous mirror pass.
+ *
+ * ── WHY TWO CLOCKS, AND WHY THAT IS NOT A MODE BRANCH ───────────────────────
+ * This is the same distinction core/simulation_history.beginSimulationStep makes in
+ * one line (`dictatedSeconds ?? clampedTimestep(measured)`): a DICTATED interval
+ * beats a measured one, because it is a definition rather than an observation.
+ *
+ *   PRESENTED TIME (render_gpu/particle_clock.particleTime) advances by the real
+ *     frame interval in the presenter and by exactly 1/fps in an export, because
+ *     the exporter overrides it per frame. So when it moved, it IS the interval —
+ *     and a 10 fps render therefore ramps over 100 ms with no export-only code.
+ *   THE AUDIO CLOCK is the fallback, and it is the honest one for the editor, where
+ *     presented time is deliberately FROZEN. It is also the clock the ramp is
+ *     actually scheduled against (synth/engine.js:597 reads context.currentTime),
+ *     so a gap measured on it is precisely the gap the hardware will experience.
+ *
+ * A suspended context's clock does not advance, so a patch built before the first
+ * gesture measures 0 and takes the floor — correct, since nothing is audible yet.
+ *
+ * @returns {number} seconds since the previous pass, or 0 when neither clock moved
+ */
+function frameTimestepSeconds() {
+  const presented = particleTime();
+  const audio = engine ? engine.context.currentTime : null;
+  const presentedStep = lastPresentedTime === null ? 0 : presented - lastPresentedTime;
+  const audioStep = (lastAudioTime === null || audio === null) ? 0 : audio - lastAudioTime;
+  lastPresentedTime = presented;
+  lastAudioTime = audio;
+  return presentedStep > 0 ? presentedStep : audioStep;
+}
 
 /**
  * The mirror's own reactive state, for the badge. Svelte 5 runes — this module is
@@ -162,6 +205,11 @@ function ensureEngine() {
  * @param {object} registry - the plugin registry
  */
 export function mirrorAudioFrame(state, registry) {
+  // MEASURED FIRST AND UNCONDITIONALLY, before any early return: the gap this pass
+  // has to bridge is the gap since the previous PASS, so a pass that turns out to
+  // have nothing to do still has to move the reading. Skipping it on quiet passes
+  // would report the whole quiet stretch as one interval to the next real one.
+  frameTimestep = frameTimestepSeconds();
   const scene = readAudioScene(state?.items ?? {}, registry);
   const count = Object.keys(scene.modules).length;
   audioState.moduleCount = count;
@@ -179,7 +227,7 @@ export function mirrorAudioFrame(state, registry) {
   // engine) — there would be nothing for the gesture to make audible.
   if (count > 0) armAudioGesture();
 
-  const ops = diffAudioScene(engineScene, scene);
+  const ops = diffAudioScene(engineScene, scene, frameTimestep);
   if (ops.length === 0) {
     // THE TRANSPORT STILL HAS TO BE SYNCED HERE. Zero ops means the DOCUMENT said
     // nothing new — but the ENGINE may have started since the last pass (the first
@@ -231,7 +279,11 @@ function queueApply(ops, scene) {
         connections: engineScene.connections.filter((c) => held.has(c.sourceId) && held.has(c.targetId)),
       };
       engineScene = target;
-      const followUp = diffAudioScene(reached, target);
+      // THE SAME INTERVAL AS THE BATCH THIS REPAIRS. A re-issued setParam is the
+      // same push arriving late, not a new one, so giving it a fresh (and, on this
+      // path, always-zero) measurement would put the floor back exactly where a
+      // slow frame needs the ramp widest.
+      const followUp = diffAudioScene(reached, target, frameTimestep);
       if (followUp.length) queueApply(followUp, target);
     });
 }

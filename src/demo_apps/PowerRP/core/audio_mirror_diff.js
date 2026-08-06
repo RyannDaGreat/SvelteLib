@@ -46,6 +46,13 @@
  */
 
 import { audioKnobValues } from "./audio_nodes.js";
+// THE CLAMP AND ITS CEILING ARE BORROWED, NOT RE-DERIVED. A ramp that spans the
+// frame it bridges asks the same question the simulation's timestep does — "how
+// much time may one displayed frame claim to cover?" — and answers a lag spike the
+// same way, so it uses the same pure clamp and the same ceiling rather than minting
+// a second pair that could drift from it. core/simulation_history.js imports only
+// core/report.js, so this edge adds no cycle.
+import { CAMERA_MAX_TIMESTEP_DEFAULT, clampedTimestep } from "./simulation_history.js";
 
 /**
  * Query (reads the plugin registry). THE AUDIO SCENE of a folded item map: which
@@ -143,11 +150,55 @@ function constructParams(spec, knobs) {
   return out;
 }
 
-/** The ramp a live knob change is given, in seconds. Long enough that a scrubbed
- *  slider is a glide rather than a staircase of clicks; short enough that turning a
- *  knob still feels immediate. An AudioParam set with no ramp at all is a step
- *  discontinuity, which is audible as a tick on anything loud. */
-export const KNOB_RAMP_SECONDS = 0.02;
+/** THE FLOOR on a live knob change's ramp, in seconds — and, until this round, the
+ *  whole story (it was `KNOB_RAMP_SECONDS`, a constant). An AudioParam set with no
+ *  ramp at all is a step discontinuity, audible as a tick on anything loud, so no
+ *  ramp may ever be shorter than this however fast the frames arrive. */
+export const KNOB_RAMP_MIN_SECONDS = 0.02;
+
+/** THE CEILING, and it is deliberately the SAME NUMBER as the simulation's max
+ *  timestep, for the same reason: a multi-second stall is not a real interval to
+ *  interpolate across. Without it, one GC pause or tab switch would smear every
+ *  parameter in the patch over the length of the pause. */
+export const KNOB_RAMP_MAX_SECONDS = CAMERA_MAX_TIMESTEP_DEFAULT;
+
+/**
+ * Pure function. THE RAMP a `setParam` gets when the gap to the next one is
+ * `intervalSeconds`: the interval itself, floored and capped.
+ *
+ * ── WHY A CONSTANT WAS WRONG, AND ONLY BELOW ~50 fps ────────────────────────
+ * A fixed 0.02 s is correct at 60 Hz — frames are 0.0167 s apart, so each ramp is
+ * still in motion when the next one retargets it and a sweep is continuous. On a
+ * heavy slide at 20 fps the frames are 0.05 s apart and the SAME constant covers
+ * only the first fifth of each one: the parameter lunges 92% of the way in 20 ms
+ * and then all but stops for 30 ms, every frame. That contour is a staircase, and
+ * it is R7-4's "no whoosh" complaint reappearing for a second, independent reason
+ * once the alpha plumbing is fixed. Making the ramp span the gap it bridges is what
+ * makes consecutive ramps meet at ANY framerate.
+ *
+ * WHAT `rampSeconds` ACTUALLY IS, stated because the old docblock's word "glide"
+ * hid it: synth/engine.js:607 passes it to `setTargetAtTime` as a TIME CONSTANT,
+ * not a duration. An exponential approach never arrives, so it never has a flat
+ * tail to hold — what a too-short time constant produces is a segment that has
+ * covered 1 - e^(-gap/τ) of its distance and gone quiet. At τ = gap that figure is
+ * 63%, so the parameter is still visibly moving when the next target lands, which
+ * is exactly the property "continuous across frame boundaries" names. The cost is
+ * a lag of about a third of one frame, which at any framerate worth the name is
+ * far below audibility.
+ *
+ * @param {number} intervalSeconds - measured or dictated seconds since the previous
+ *   parameter push; 0 or non-finite when there is no measurement yet
+ * @returns {number} the ramp, in [KNOB_RAMP_MIN_SECONDS, KNOB_RAMP_MAX_SECONDS]
+ *
+ * @example knobRampSeconds(0.05) // 0.05 (a 20 fps frame ramps for the whole frame)
+ * @example knobRampSeconds(0.0167) // 0.02 (a 60 Hz frame is under the anti-zipper floor)
+ * @example knobRampSeconds(3) // 0.1 (a three-second stall is not an interval to interpolate across)
+ * @example knobRampSeconds(0) // 0.02 (no measurement yet — the floor)
+ */
+export function knobRampSeconds(intervalSeconds) {
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) return KNOB_RAMP_MIN_SECONDS;
+  return Math.max(KNOB_RAMP_MIN_SECONDS, clampedTimestep(intervalSeconds, KNOB_RAMP_MAX_SECONDS));
+}
 
 /**
  * Pure function. THE DIFF: the ordered engine calls that turn scene `prev` into
@@ -159,14 +210,20 @@ export const KNOB_RAMP_SECONDS = 0.02;
  *
  * @param {object} prev - a readAudioScene result (the engine's current state)
  * @param {object} next - a readAudioScene result (what the document now says)
+ * @param {number} [intervalSeconds] - the gap this batch has to bridge before the
+ *   next one arrives (see knobRampSeconds). Omitted, every ramp takes the floor,
+ *   which is what every pre-round-7 caller got unconditionally.
  * @returns {object[]} ordered ops: {op, ...args}
  *
  * @example diffAudioScene({modules: {}, connections: []}, {modules: {}, connections: []}) // []
  * @example // adding one module is one call
  * @example diffAudioScene({modules: {}, connections: []}, {modules: {a: {module: "noise", type: "audio_noise", spec: {knobs: []}, knobs: {}}}, connections: []}).length // 1
+ * @example // a slow frame's knob change ramps across the whole frame, not a fifth of it
+ * @example diffAudioScene({modules: {f: {module: "filter", type: "audio_filter", spec: {knobs: [{key: "frequency"}]}, knobs: {frequency: 400}}}, connections: []}, {modules: {f: {module: "filter", type: "audio_filter", spec: {knobs: [{key: "frequency"}]}, knobs: {frequency: 900}}}, connections: []}, 0.05)[0].rampSeconds // 0.05
  */
-export function diffAudioScene(prev, next) {
+export function diffAudioScene(prev, next, intervalSeconds = 0) {
   const ops = [];
+  const rampSeconds = knobRampSeconds(intervalSeconds);
   const prevModules = prev.modules ?? {};
   const nextModules = next.modules ?? {};
 
@@ -224,7 +281,7 @@ export function diffAudioScene(prev, next) {
       if (before.knobs[k.key] === value) continue;
       // A DISCRETE param is a SETTER in the engine, not an AudioParam: rampSeconds
       // is meaningless for it and asking for one would put a lie in the transcript.
-      ops.push({ op: "setParam", id, key: k.key, value, rampSeconds: k.discrete ? 0 : KNOB_RAMP_SECONDS });
+      ops.push({ op: "setParam", id, key: k.key, value, rampSeconds: k.discrete ? 0 : rampSeconds });
     }
   }
 

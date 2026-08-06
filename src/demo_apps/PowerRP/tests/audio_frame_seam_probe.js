@@ -42,6 +42,12 @@ import { isWebGpuAbsenceNoise } from "./webgpu_absence_noise.js";
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const webRoot = resolve(repo, "src/demo_apps/PowerRP/web");
+/** Vite's root is `web/`, so a module OUTSIDE it has no plain `/path` URL — it is
+ *  served at `/@fs/<absolute path>`, which is the same URL the app's own
+ *  `../render_gpu/…` import resolves to and therefore the same module instance.
+ *  (Not that identity is taken on trust here: the dictated-interval assertion can
+ *  only pass if the override reached the clock the mirror reads.) */
+const PARTICLE_CLOCK_URL = `/@fs${resolve(repo, "src/demo_apps/PowerRP/render_gpu/particle_clock.js")}`;
 
 /** Long enough that a puppeteer round-trip lands comfortably inside the tween, so
  *  the mid-flight sample is a real mid-flight sample and not a race. */
@@ -54,6 +60,27 @@ const CUTOFF_HIGH = 8000;
  *  "the transport took the document's tempo" is distinguishable from "the transport
  *  happens to be at its default". */
 const DECK_BPM = 150;
+
+/** A deliberately SLOW cadence — 20 fps, the heavy-slide case where a fixed 0.02 s
+ *  time constant covers only the first fifth of each frame. Well clear of the
+ *  0.02 s floor and of the 0.1 s ceiling, so the measurement lands in the region
+ *  where the ramp genuinely tracks the interval. */
+const SLOW_FRAME_MS = 50;
+const SLOW_FRAMES = 6;
+/** ramp ÷ gap. 1.0 is "the ramp exactly spans the gap"; the shortfall allowed here
+ *  is for CADENCE JITTER only — the ramp is set from the PREVIOUS gap, so it can
+ *  only ever be a predictor of the next one, and a setTimeout cadence is not exact. */
+const MIN_RAMP_COVERAGE = 0.75;
+/** Mirrors core/audio_mirror_diff.KNOB_RAMP_MAX_SECONDS (= the simulation's max
+ *  timestep). Restated here because a probe that imported the value it is checking
+ *  would pass whatever the module happened to say. */
+const RAMP_CEILING_SECONDS = 0.1;
+/** A dictated render rate whose frame (1/15 s ≈ 66.7 ms) is far longer than the
+ *  wall time the probe actually spends between pushes, so "dictated beat measured"
+ *  is unambiguous — and still under the ceiling, so the clamp does not mask it. */
+const EXPORT_FPS = 15;
+const EXPORT_FRAMES = 4;
+const EXPORT_WALL_GAP_MS = 30;
 
 // HMR IS OFF, for the reason cli/render_job.js turns it off: a source edit landing
 // mid-run reloads the page and destroys the session this probe is measuring — and
@@ -162,7 +189,10 @@ try {
     window.__setParamLog = [];
     const original = engine.setParam.bind(engine);
     engine.setParam = (id, key, value, options) => {
-      window.__setParamLog.push({ id, key, value });
+      // `when` is the AUDIO clock, which is the clock the ramp is scheduled against
+      // (synth/engine.js reads context.currentTime), so a gap computed from two of
+      // these is the gap the hardware really sees between two pushes.
+      window.__setParamLog.push({ id, key, value, rampSeconds: options?.rampSeconds ?? 0, when: engine.context.currentTime });
       return original(id, key, value, options);
     };
     return { shared: mirror.audioState.status === window.__powerrp_audioState().status, why: mirror.audioState.status };
@@ -191,6 +221,64 @@ try {
   ok(swept.some((v) => v > CUTOFF_LOW && v < CUTOFF_HIGH),
     `with genuinely intermediate values between ${CUTOFF_LOW} and ${CUTOFF_HIGH} (${JSON.stringify(swept)})`);
   ok(Math.abs(swept[swept.length - 1] - CUTOFF_HIGH) < 1e-6, `and it lands exactly on the keyframe at alpha 1 (${swept[swept.length - 1]})`);
+
+  // ── 5. THE RAMP SPANS THE FRAME IT BRIDGES, NOT A FIXED 20 ms ─────────────
+  // A fixed 0.02 s time constant covers only the first fifth of a 20 fps frame, so
+  // the parameter lunges 92% of the way and then all but stops for 30 ms — a
+  // staircase, every frame, on any heavy slide. What is measured here is the thing
+  // that decides it: ramp ÷ the gap the hardware actually saw. Below 1 the segment
+  // has gone quiet before the next target lands (piecewise-constant); at 1 it is
+  // still in motion when retargeted (continuous).
+  await page.evaluate(() => { window.__setParamLog.length = 0; });
+  for (let i = 0; i < SLOW_FRAMES; i++) {
+    await page.evaluate(async (alpha) => {
+      const [mirror, camera] = await Promise.all([import("/audioMirror.svelte.js"), import("/cameraFrame.js")]);
+      const app = window.__powerrp_app;
+      mirror.mirrorAudioFrame(camera.evaluatedStateAt(app.doc, 1, alpha, app.registry), app.registry);
+    }, i / (SLOW_FRAMES - 1));
+    await sleep(SLOW_FRAME_MS);
+  }
+  const slow = await page.evaluate((id) => window.__setParamLog.filter((c) => c.id === id && c.key === "frequency"), ids.filter);
+  const coverage = slow.slice(1).map((c, i) => c.rampSeconds / (c.when - slow[i].when));
+  const oldCoverage = slow.slice(1).map((c, i) => 0.02 / (c.when - slow[i].when));
+  console.log(`  note  at a ~${SLOW_FRAME_MS} ms cadence: ramps ${JSON.stringify(slow.map((c) => +c.rampSeconds.toFixed(4)))}`);
+  console.log(`  note  ramp÷gap now ${JSON.stringify(coverage.map((c) => +c.toFixed(2)))} — with the old fixed 0.02 it would have been ${JSON.stringify(oldCoverage.map((c) => +c.toFixed(2)))}`);
+  ok(coverage.length >= 3, `enough slow frames to compare (${coverage.length})`);
+  ok(coverage.every((c) => c >= MIN_RAMP_COVERAGE),
+    `EVERY ramp still spans its gap — the parameter is continuous across frame boundaries (${JSON.stringify(coverage.map((c) => +c.toFixed(2)))})`);
+  ok(oldCoverage.every((c) => c < MIN_RAMP_COVERAGE),
+    `and the fixed 0.02 would have failed that on every one of these frames (${JSON.stringify(oldCoverage.map((c) => +c.toFixed(2)))})`);
+  ok(slow.every((c) => c.rampSeconds <= RAMP_CEILING_SECONDS + 1e-9),
+    `no ramp exceeds the ceiling — a stall may not smear a parameter across it (${JSON.stringify(slow.map((c) => +c.rampSeconds.toFixed(4)))})`);
+
+  // ── 6. IN AN EXPORT THE INTERVAL IS DICTATED, NOT MEASURED ────────────────
+  // An exporter overrides presentation time per frame (1/fps), so presented time
+  // moves 1/15 s while WALL time between these calls is ~30 ms. The dictated value
+  // must win, exactly as core/simulation_history.beginSimulationStep prefers a
+  // dictated timestep over a measured one.
+  await page.evaluate(() => { window.__setParamLog.length = 0; });
+  const dictated = await page.evaluate(async (fps, frames, gapMs, clockUrl) => {
+    const [mirror, camera, clock] = await Promise.all([
+      import("/audioMirror.svelte.js"), import("/cameraFrame.js"), import(clockUrl),
+    ]);
+    const app = window.__powerrp_app;
+    try {
+      for (let i = 0; i < frames; i++) {
+        clock.setParticleTimeOverride(i / fps);
+        // Alphas chosen so every frame is a real knob change; a zero-op diff would
+        // issue no setParam and there would be nothing to measure.
+        mirror.mirrorAudioFrame(camera.evaluatedStateAt(app.doc, 1, (i + 1) / (frames + 1), app.registry), app.registry);
+        await new Promise((r) => setTimeout(r, gapMs));
+      }
+    } finally {
+      clock.setParticleTimeOverride(null); // never leave the app's one clock overridden
+    }
+    return window.__setParamLog.filter((c) => c.key === "frequency").map((c) => c.rampSeconds);
+  }, EXPORT_FPS, EXPORT_FRAMES, EXPORT_WALL_GAP_MS, PARTICLE_CLOCK_URL);
+  console.log(`  note  ramps under a dictated ${EXPORT_FPS} fps (wall gap only ${EXPORT_WALL_GAP_MS} ms): ${JSON.stringify(dictated.map((r) => +r.toFixed(4)))}`);
+  ok(dictated.length >= 2, `the dictated pass pushed parameters (${dictated.length})`);
+  ok(dictated.slice(1).every((r) => Math.abs(r - 1 / EXPORT_FPS) < 1e-6),
+    `a ${EXPORT_FPS} fps render ramps over exactly 1/${EXPORT_FPS} s, not over the ${EXPORT_WALL_GAP_MS} ms of wall time it happened to take (${JSON.stringify(dictated.map((r) => +r.toFixed(4)))})`);
 
   // ── 4. THE TRANSPORT IS ALIVE, AND IT IS THE DOCUMENT'S ───────────────────
   const transport = await page.evaluate(async () => {
