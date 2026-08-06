@@ -5355,37 +5355,39 @@ project forbids by name, and it is the reason the variable is absent rather than
 **USER RULING, 2026-08-06: *"its recordable state. we can record it every frame"*** —
 **OPTION 2. Settled.**
 
-**⚠ TERMINOLOGY CLASH — THE LEAD CONFLATED TWO MEANINGS OF "RECORD" AND MUST NOT DO IT
-AGAIN.** The user asked directly: *"there is no mechanism for recording....yet. its for when
-i give a presentation and wanna record. this a later feature right? unless we have that now?
-tell me"*. **Answer: NO MECHANISM EXISTS.** Verified — zero hits for `MediaRecorder`,
-`getUserMedia`, `getDisplayMedia` or `captureStream` in `web/`, `core/` or `cli/`.
+**THE LEAD MISREAD THIS TWICE. The user's clarification, verbatim:** *"if it's deterministic
+its good. that's it. its conceptual. not literally telling u to record it. I said it's
+'recordable state' re-read the claude manifest maybe?"*
 
-- **The codebase's "recordable"** (`<app>/CLAUDE.md`) means *"deterministic given a timeline
-  and **records correctly**"* — i.e. **A VIDEO EXPORT CAN RE-DERIVE IT.** `web/videoExport.js`
-  is "the DETERMINISTIC presentation → video pipeline": it re-renders every frame FROM THE
-  DOCUMENT. Nothing is ever captured. A sparkler is "recordable" because the exporter can
-  RECOMPUTE it, not because a recorder observed it.
-- **The user's "record"** is the ordinary sense: capture a live presentation.
+**"RECORDABLE STATE" IS A CLASSIFICATION, NOT A COMMISSION.** The user was placing the
+pointer in the taxonomy's existing second kind. The lead read "record" in the ordinary sense,
+went looking for a `MediaRecorder`, found none, and reported the feature as blocked on a
+recorder that was never asked for.
 
-**These are different features, and the lead wrote R7-24 as though the first implied the
-second.** It does not. So:
+**WHAT THE TAXONOMY ACTUALLY SAYS, and it is the whole design:** recordable state is *"an
+ambient input (presentation time `t`) that is not document state"*, read **ONLY through a
+SEAM** — `render_gpu/particle_clock.particleTime()`, which *"the presenter drives live, the
+editor/CLI freeze for determinism, and BOTH exporters override per frame"*. The kind is
+defined by HOW THE INPUT IS REACHED, not by anything having been captured.
 
-**A POINTER RECORDER IS NEW WORK AND A LATER FEATURE.** The design below stands — recording
-a pointer track DOES convert an ephemeral input into something that is a pure function of `t`
-(`sample(track, t)`), which is what keeps `RenderTree = pure(document, [[slide, alpha]])`
-intact where a live `mouse_x` would break it. **But it requires building the recorder first,
-and nothing today can do it.**
+**SO THE POINTER GETS A SEAM OF EXACTLY THAT SHAPE, and it is buildable NOW:**
+- **live** in the presenter and editor,
+- **frozen** in the editor's settled state, the CLI and every still consumer — so Δt = 0
+  gives a byte-identical frame, which is the kind's defining test,
+- **overridable per frame** by an exporter, the way `setParticleTimeOverride` already is.
 
-**CONSEQUENCE FOR R7-25:** the cursor demo cannot work as described until either that
-recorder exists, or the bounded-live-exception (option 3) is accepted — and option 3 is
-unexportable by nature, which is the opposite of what a demo wants.
+**AND THAT IS WHY THE USER SAID IT IS CONCEPTUAL: BUILD THE SEAM, AND A RECORDER LATER IS
+JUST ANOTHER OVERRIDE FEEDING IT.** No recorder is needed for the seam to be correct, and no
+part of this design has to change when one arrives. A pointer track (§ B-1's session
+recorder) becomes one more supplier of the same override — not a prerequisite.
 
-**TWO SIZES OF FEATURE, do not confuse them either:**
-- **A POINTER TRACK is small and self-contained** — sample x/y/buttons per frame into `meta`,
-  replay via `sample(track, t)`. This is all R7-25 needs.
-- **A SESSION RECORDER is much larger** — pointer + voice + timing + "what am I pointing at"
-  (§ B-1's *"time-synced voice recording + screen recording via HTML"*). Different project.
+**THE ONE COST, STATED PLAINLY BECAUSE IT MUST NOT BE DISCOVERED LATER:** `t` is
+re-derivable from a frame index and a pointer position is not, so **an export with no
+override renders the pointer FROZEN at its last sampled value.** The manifest already
+documents this exact situation for a video PLAYER's current frame — *"renders fine in an
+export but is not reproducible"* — and `server.py` attaches a warning naming it. **Do the
+same here: a deck using pointer input must attach that warning to an export, not fail and
+not lie.** Within a live session it is deterministic, which is the bar the user set.
 
 **FOUR THINGS THE BUILD MUST DECIDE, none of them obvious:**
 
