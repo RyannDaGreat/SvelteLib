@@ -5218,9 +5218,61 @@ pendulum's rods were not coupled, the lead grepped THIS branch, found nothing, a
 was available from `git log powerrp`. **Lesson: in a multi-worktree repo, "it does not
 exist" requires checking every branch the user might be looking at, not just your own.**
 
-**BLOCKED ON THIS: R7-5, R7-7, R7-15, R7-16, R7-19, R7-9-wiring, and — because it depends
-on R7-7's vocabulary — the whole R7-17 patch swarm.** Do not start them; they are already
-built on the other branch.
+**USER RULING, 2026-08-06, which resolves it:** *"your job is to work in the worktree we
+made exclusively. you are not to work in the main branch."*
+
+**SO NOTHING IS BLOCKED AND NOTHING IS MERGED.** This branch builds the whole of Round 7 on
+its own terms. `powerrp` is out of scope — not to be edited, committed to, cherry-picked
+from, or merged in. Reconciling the two lines is the user's call at a time of their
+choosing, and both remain intact for it.
+
+**The duplication is therefore DELIBERATE and accepted**, not an accident to correct. Two
+independent implementations of `@`/`dt`, of R7-3, of the trail and the pendulum is a
+choice the user is entitled to make, and the honest note for whoever reconciles later is
+that each side was built without sight of the other — so where they differ, neither is a
+refinement of the other and both need reading on their merits.
+
+**AND ANOTHER AGENT IS ACTIVELY WORKING IN `powerrp`** (user, 2026-08-06). So it is a
+MOVING TARGET, not a reference: do not read it for baselines, do not run suites in it, do
+not diff against it expecting a stable answer. **A baseline for triaging this branch's
+browser reds must come from a detached checkout of THIS branch's start point (`c32321a`)
+in scratch space** — never from another agent's live worktree, which is the same
+stale-by-the-time-you-read-it hazard that produced two wrong findings inside this branch
+already.
+
+### R7-22 A REAL AUDIO MUTE IN THE TOOLBAR (user, 2026-08-06)
+
+> *"we should have an audio mute/unmute button in the toolbar btw"*
+
+**This closes a gap Wave 1 reported honestly rather than papering over:** `disableAudio()`
+has zero callers and is SELF-DEFEATING — the next user gesture re-arms audio, because R7-3
+made a gesture the trigger. A real mute needs its own state.
+
+**MUTE IS SESSION STATE, NOT DOCUMENT STATE.** A toolbar toggle is a viewer preference, like
+a volume slider: it is not part of the deck's content, keyframing it would be absurd, and
+sharing a project must not share the author's mute. Distinguish it from the
+document-level output volume (`audio_output`'s `volume` knob), which IS authored content.
+
+**⚠ AND THEREFORE AN EXPORT MUST IGNORE IT.** A video rendered while the author happened to
+be muted must not come out silent. That is the same "measured vs dictated" boundary R7-9's
+clamp uses, and getting it wrong produces a silent deliverable with a green exit code —
+the failure class this project forbids.
+
+**MECHANISM: a master gain to 0, not `context.suspend()`.** Suspending stops the
+AudioContext clock, which would stall the sequencer transport and desynchronise anything
+timed against it; muting a gain node keeps time running and is instantly reversible.
+
+**SURFACING: one command-registry entry, three surfaces.** The toolbar button, a keyboard
+shortcut and the palette are all views of ONE action — the house law that the palette,
+shortcuts and toolbar are surfacings of the same layer. A shortcut not registered in
+`core/shortcut_entries.js` does not exist and will not appear in the HintBar. The button
+both REPORTS state (muted / not) and ACTS, so unlike the save dot it is legitimately a
+button; use an icon toggle, and per the toggle ruling show state via the ICON, never a
+background fill.
+
+**Keep it distinct from the FAILURE surface.** "Audio failed" and "you muted audio" are
+different sentences and must not share one control — the badge's remaining failure state
+stays.
 
 ### R7-RULING: THE TEST BUDGET
 
