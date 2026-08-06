@@ -1925,6 +1925,48 @@ export const PROPS = {
     minLength: 1,
     help: "The frames the strip shows, left to right — each one a TIME in the clip. Insert between two frames to sample the moment between them; hide a frame to close the strip over it without losing its time.",
   },
+
+  // ── keyboard: THE LATCHED CHORD (a LIST property — core/lists.js) ─────────────
+  // R7-13, user verbatim: "I also want a keyboard whose keys I can lock in place …
+  // When it's locked on, the keys will stay turned on at all times. In the UI, in
+  // other words, to let me play different chords and different slides."
+  //
+  // ── WHY A LATCHED KEY IS DOCUMENT STATE WHEN A PRESSED ONE IS NOT ────────────
+  // core/live_control.js's ruling on a PRESS stands and is not being weakened: "a
+  // button/key PRESS is LIVE — a moment is not a value, and a leaf for it would be
+  // the ephemeral state this project has none of". A LATCH is the other thing. The
+  // user asked for keys that stay on "at all times", per slide, so that slide 2 can
+  // hold a different chord from slide 1 — that is not a moment, it is a VALUE, and
+  // the only way "different chords on different slides" can work is if it folds and
+  // keyframes like every other property. So the two coexist without contradiction:
+  // the press that TOGGLES a latch is live, and the latch it toggles is state.
+  //
+  // A SEQUENCE, not sorted: the order is the order the author latched them, and a
+  // chord has no canonical order to enforce. Nothing reads position — the consumer
+  // is a SET of notes — so sorting would buy nothing and would renumber the very
+  // indices `heldNotes.2.note` equations are bound to.
+  //
+  // Storage is a TUPLE ([note]) for the reason `frames` and `points` are tuples:
+  // core/interpolators.js interpolate() takes its pure-numeric-array branch for an
+  // all-number array, where a RECORD would recurse to the per-element path. A MIDI
+  // note is an integer and the int rule ROUNDS a lerp between two of them, which is
+  // exactly right here — a chord tweening across a transition lands on real notes
+  // rather than on quarter-tones.
+  //
+  // No minLength: an empty chord is the ordinary resting state of an unlatched
+  // keyboard, not a malformed list.
+  heldNotes: {
+    label: "Held Notes", kind: LIST_ROW_KIND, category: "control",
+    element: {
+      storage: "tuple",
+      fields: [
+        { name: "note", kind: "number", step: 1, label: "Note", help: "A MIDI note number this keyboard is holding down. 60 is middle C and every 12 is an octave. Bind it to an equation to make a latched chord move with the deck." },
+      ],
+    },
+    order: "sequence",
+    activeKey: "heldNotesActive",
+    help: "The notes this keyboard is HOLDING — the latched chord, one entry per key. Only meaningful while Lock Keys is on: with the lock on, clicking a key adds it here and clicking it again removes it, so each slide can hold its own chord. Hiding an entry silences that note without losing which one it was.",
+  },
 };
 
 // LOUD IMPORT-TIME GUARD (the render_settings.js ANTIALIAS_MODES precedent, the

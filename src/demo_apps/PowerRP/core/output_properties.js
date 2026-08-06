@@ -73,7 +73,7 @@
  * a previous widget's data.
  */
 
-import { declaredPorts, PORT_TYPES, portReadable } from "./nodeflow.js";
+import { declaredPorts, EXEC_TYPE, PORT_TYPES, portReadable } from "./nodeflow.js";
 
 /** The Inspector category an item's output rows file under — the read-only mirror
  *  of nodeflow's INPUTS_CAT, so a patch's two halves sit in two adjacent groups. */
@@ -106,10 +106,22 @@ export const OUTPUTS_CAT = "outputs";
  * @example outputPropertyDescriptors(lfo, {})[0].readable // false
  * @example // a widget with no outputs at all contributes nothing:
  * @example outputPropertyDescriptors({type: "rect", defaults: {}}, {}) // []
+ * @example // AN EXEC OUTPUT IS NOT AN OUTPUT PROPERTY — see the filter's comment:
+ * @example const ev = {type: "e", defaults: {}, ports: () => ({outputs: [{key: "then", type: "exec"}]})};
+ * @example outputPropertyDescriptors(ev, {}) // []
  */
 export function outputPropertyDescriptors(plugin, state) {
   const s = state ?? {};
-  const fromPorts = declaredPorts(plugin, s).outputs.map((p) => ({
+  // AN EXEC OUTPUT IS EXCLUDED OUTRIGHT, and the distinction from `audio` is the
+  // whole reason this is a filter rather than a third tier. An audio output HAS a
+  // value the document may not read, so listing it with a refusal sentence is
+  // informative. An exec output has no value in any domain — it is control flow —
+  // so a row saying "this has no value the document can read" would be a true
+  // sentence pointing at the wrong problem, and its `= ev.then` would look like a
+  // read that merely failed rather than a category error. Exec outputs get their
+  // OWN editable row instead (core/nodeflow.execOutputRows), which is where the
+  // author actually wants to be.
+  const fromPorts = declaredPorts(plugin, s).outputs.filter((p) => p.type !== EXEC_TYPE).map((p) => ({
     name: p.key,
     label: p.label,
     kind: PORT_KIND[p.type] ?? "text",

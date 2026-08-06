@@ -241,10 +241,40 @@ export const PORT_TYPES = Object.freeze({
   // `{item, port}` record, not a number, which is the tier-1 property TYPE the
   // R7-7 boundary names (core/expressions.js NODEREF_KIND validates it).
   node: Object.freeze({ label: "Node", color: "#bb9af7", zero: null, readable: true }),
+  // THE EXEC TYPE (manifest R7-8). An exec pin carries NO VALUE AT ALL — it carries
+  // CONTROL: "when this happens, do that next". Everything about it is the mirror
+  // image of a data port, and the mirror is the point (see EXEC WIRES below):
+  //
+  //   data OUT fans out to many │ data IN accepts at most one
+  //   exec OUT fires at most one│ exec IN may be fired by many
+  //
+  // `zero: null` for the reason `node` has one: there is no additive identity for
+  // "nothing happened". `readable: false` because there is no value to read — but
+  // note this is a DIFFERENT falsity from `audio`'s. An audio signal HAS a value the
+  // document may not see; an exec pulse has no value in any domain. That is why
+  // core/output_properties.js excludes exec ports from the outputs section outright
+  // rather than listing them with the audio refusal sentence, which would be a true
+  // statement about the wrong thing.
+  //
+  // THE COLOUR IS DELIBERATELY UNSATURATED. The other four types are hues that say
+  // "this is a KIND of value"; exec is not one of them, and Unreal reached the same
+  // answer (its exec pins are white among coloured data pins). A fifth hue would put
+  // control flow in the same visual vocabulary as the values it sequences.
+  exec: Object.freeze({ label: "Exec", color: "#c0caf5", zero: null, readable: false }),
 });
 
 /** Every declared port type name, for validation messages and test sweeps. */
 export const PORT_TYPE_NAMES = Object.freeze(Object.keys(PORT_TYPES));
+
+/** THE exec port type's name. Spelled once so no reader compares against the
+ *  string literal `"exec"` — the mistake the R7 brief calls "grep the constant, not
+ *  the string it holds". */
+export const EXEC_TYPE = "exec";
+
+/** THE state key an EXEC wire is stored under, mirroring `inputs` for data wires:
+ *  `state.exec = {"<execOutKey>": {item, port}}`. See EXEC WIRES below for why it
+ *  lives on the FIRING node rather than the fired one. */
+export const EXEC_KEY = "exec";
 
 /**
  * Pure function. The color for a port type — THE one lookup every surface uses
@@ -545,9 +575,16 @@ export const INPUTS_CAT = "inputs";
  * @example nodeInputRows({ports: () => ({inputs: [{key: "fm", type: "number", label: "FM depth"}]})})[0].label // "FM depth"
  * @example // a widget with no inputs contributes no rows at all
  * @example nodeInputRows({}) // []
+ * @example // an EXEC input has no row, because it stores nothing — the wire into it
+ * @example // lives on the FIRING node's side (see EXEC WIRES below)
+ * @example nodeInputRows({ports: () => ({inputs: [{key: "run", type: "exec"}]})}) // []
  */
 export function nodeInputRows(plugin, state) {
-  return declaredPorts(plugin, state ?? plugin?.defaults ?? {}).inputs.map((p) => ({
+  // EXEC INPUTS ARE EXCLUDED, and it is a storage fact rather than a presentation
+  // choice: `inputs.<port>` is where a DATA wire is stored, and an exec wire is not
+  // stored there — it is stored at `exec.<port>` on the node that FIRES it. A row
+  // here would edit a leaf nothing reads, which is exactly the defect R7-1 fixed.
+  return declaredPorts(plugin, state ?? plugin?.defaults ?? {}).inputs.filter((p) => p.type !== EXEC_TYPE).map((p) => ({
     key: `inputs.${p.key}`,
     label: p.label,
     kind: NODE_INPUT_ROW_KIND,
@@ -565,8 +602,18 @@ export function nodeInputRows(plugin, state) {
  *
  * Declared HERE rather than written out in each node plugin so the path cannot be
  * spelled three different ways by three widgets.
+ *
+ * BOTH WIRE MAPS ARE NAMED, and a widget that has only one pays nothing for the
+ * other: a wildcard over an absent slot expands to no paths. So every existing node
+ * plugin gained exec remapping by importing the constant it already imported, which
+ * is the whole reason this is one declaration rather than two — a second constant
+ * would be a second thing to remember to spread, and the failure mode of forgetting
+ * it (a duplicated patch whose EVENTS still fire at the original) is silent.
  */
-export const NODE_ITEM_REFS = Object.freeze([Object.freeze(["inputs", "*", "item"])]);
+export const NODE_ITEM_REFS = Object.freeze([
+  Object.freeze(["inputs", "*", "item"]),
+  Object.freeze([EXEC_KEY, "*", "item"]),
+]);
 
 // ── CONNECTIONS ──────────────────────────────────────────────────────────────
 
@@ -810,6 +857,11 @@ function portIsFeedbackSafe(items, registry, to) {
  * @example connectionRefusal({a: {type: "s"}, b: {type: "m"}}, {get: (t) => t === "s" ? {ports: () => ({outputs: [{key: "o", type: "number"}]})} : {ports: () => ({inputs: [{key: "i", type: "number"}]})}}, {item: "a", port: "o"}, {item: "b", port: "i"}) // null
  * @example // a missing source item:
  * @example connectionRefusal({}, {get: () => ({})}, {item: "ghost", port: "o"}, {item: "b", port: "i"}) // "the source widget is not on this slide"
+ * @example // an exec out into an exec in is legal, and its loop check is the EXEC walk
+ * @example const ereg = {get: () => ({ports: () => ({inputs: [{key: "run", type: "exec"}], outputs: [{key: "then", type: "exec"}]})})};
+ * @example connectionRefusal({a: {type: "e"}, b: {type: "e"}}, ereg, {item: "a", port: "then"}, {item: "b", port: "run"}) // null
+ * @example // …and exec never crosses into a data pin, in either direction
+ * @example connectionRefusal({a: {type: "e"}, b: {type: "n"}}, {get: (t) => t === "e" ? {ports: () => ({outputs: [{key: "then", type: "exec"}]})} : {ports: () => ({inputs: [{key: "i", type: "number"}]})}}, {item: "a", port: "then"}, {item: "b", port: "i"}) // "an Exec output cannot drive a Number input — an exec pin carries control, not a value: it says WHEN something happens, and there is no number in that"
  */
 export function connectionRefusal(items, registry, from, to) {
   const srcState = items?.[from.item];
@@ -822,8 +874,23 @@ export function connectionRefusal(items, registry, from, to) {
   const inPort = dstPlugin ? findPort(dstPlugin, dstState, "input", to.port) : null;
   if (!outPort) return `the source has no output named "${from.port}"`;
   if (!inPort) return `the destination has no input named "${to.port}"`;
-  if (!typesCompatible(outPort.type, inPort.type))
+  if (!typesCompatible(outPort.type, inPort.type)) {
+    // AN EXEC MISMATCH GETS ITS OWN SENTENCE, because "there is no conversion
+    // between them" would be a true statement that teaches the wrong thing: a
+    // reader would go looking for the missing coercion. There is no conversion
+    // because there is no VALUE — the two pin families answer different questions.
+    if (outPort.type === EXEC_TYPE || inPort.type === EXEC_TYPE)
+      return `an ${PORT_TYPES[outPort.type].label} output cannot drive a ${PORT_TYPES[inPort.type].label} input — an exec pin carries control, not a value: it says WHEN something happens, and there is no number in that`;
     return `a ${PORT_TYPES[outPort.type].label} output cannot drive a ${PORT_TYPES[inPort.type].label} input — there is no conversion between them`;
+  }
+  // THE TWO GRAPHS HAVE TWO LOOP RULES because they are two graphs (see
+  // execWouldCycle). Dispatching on the port type rather than checking both is what
+  // keeps an ordinary read-then-fire patch (data a→b, exec b→a) legal.
+  if (outPort.type === EXEC_TYPE) {
+    if (execWouldCycle(items, from, to))
+      return "that would make a loop — running this would eventually run it again, and an event cannot be its own cause";
+    return null;
+  }
   if (wouldCycle(items, registry, from, to))
     return "that would make a loop — this node already feeds the one you are dragging from, and a value cannot depend on itself";
   return null;
@@ -961,6 +1028,264 @@ export function connectPairs(from, to) {
  */
 export function disconnectPairs(to) {
   return [[["items", to.item, "inputs", to.port], null]];
+}
+
+// ── EXEC WIRES ───────────────────────────────────────────────────────────────
+//
+// THE CARDINALITIES ARE EXACT MIRRORS, AND THAT SYMMETRY IS THE STRUCTURAL FACT
+// (manifest R7-8 DESIGN, verified against Unreal Blueprint in
+// .frenzy/round7/patchers_blueprints_report.md §B1):
+//
+//     exec OUT ≤ 1 wire      exec IN  many
+//     data OUT   many        data IN  ≤ 1
+//
+// A DATA wire is stored on the INPUT side (`state.inputs[port]`) because that makes
+// fan-in-1 structural — a second wire to the same input is the same object key and
+// overwrites the first. THE EXEC WIRE IS STORED ON THE OUTPUT SIDE
+// (`state.exec[port]`) FOR EXACTLY THAT REASON, MIRRORED: an exec out fires at most
+// one thing, so a second wire from the same exec out overwrites the first, and
+// "two continuations from one pin" is not spellable. That is the manifest's
+// "cardinality is enforced by honouring the new wire and silently dropping the old,
+// not by refusing" — and here it is not even enforcement, it is arithmetic.
+//
+// WHY EXEC IS A SEPARATE WIRE KIND AT ALL, in one sentence: side effects need a
+// TOTAL order and pure values need only a partial one. Dataflow cannot express "do A
+// then B when neither reads the other", cannot express zero occurrences, and cannot
+// branch. The execution model that reads these edges is core/exec_flow.js; this
+// section is only the WIRE — its shape, its legality and its editing.
+//
+// EVERYTHING ELSE IS SHARED ON PURPOSE. An exec port is an ordinary entry in
+// PORT_TYPES, so it is declared by the ordinary `ports(state)`, laid out by the
+// ordinary portLayout, drawn as an ordinary bead in the ordinary type colour, and
+// hit-tested by the ordinary portAt. A parallel "execPorts" declaration would have
+// duplicated all of that, which is the Tower of Babel this file exists to avoid.
+
+/** The Inspector category an exec-out row files under — its own group, directly
+ *  after Inputs, because a patch reads values IN and control OUT and the two are
+ *  different questions about the same node. */
+export const EXEC_CAT = "exec";
+
+/**
+ * Pure function. Every EXEC edge in a folded item map — the mirror of
+ * `connectionsOf`, and THE one reader of the `state.exec` shape.
+ *
+ * The absent-source rule is mirrored too, and points the other way: a DATA edge is
+ * dropped when its SOURCE is off the slide; an exec edge is dropped when its TARGET
+ * is, because the edge is stored on the source. Both say the same thing — an edge
+ * with an end that is not on this slide is a per-slide patch, not an error.
+ *
+ * @param {object} items - folded items, {id: state}
+ * @returns {object[]} [{from: {item, port}, to: {item, port}}], deterministic order
+ *
+ * @example execEdgesOf({a: {exec: {then: {item: "b", port: "run"}}}, b: {}}) // [{from: {item: "a", port: "then"}, to: {item: "b", port: "run"}}]
+ * @example execEdgesOf({a: {exec: {then: {item: "gone", port: "run"}}}}) // [] (target absent on this slide — not an error)
+ * @example execEdgesOf({a: {exec: {then: null}}, b: {}}) // [] (null is the stored "disconnected")
+ */
+export function execEdgesOf(items) {
+  const out = [];
+  for (const id of Object.keys(items ?? {}).sort()) {
+    const state = items[id];
+    if (!state || state.active === false) continue;
+    const wires = state[EXEC_KEY];
+    if (!wires || typeof wires !== "object") continue;
+    for (const port of Object.keys(wires).sort()) {
+      const c = wires[port];
+      if (!isNodeRef(c)) continue;
+      const dst = items[c.item];
+      if (!dst || dst.active === false) continue;
+      out.push({ from: { item: id, port }, to: { item: c.item, port: c.port } });
+    }
+  }
+  return out;
+}
+
+/**
+ * Pure function. Would firing `from` (an exec out) into `to` (an exec in) close a
+ * loop in the execution graph? The mirror of `wouldCycle`, over exec edges.
+ *
+ * IT IS A SEPARATE WALK, NOT A SHARED ONE, and that is a semantic fact rather than
+ * an implementation detail: the two graphs are independent. A data edge a→b and an
+ * exec edge b→a is a perfectly ordinary patch — b reads a's number and then, when it
+ * runs, tells a to do something. Walking one combined graph would refuse it.
+ *
+ * @param {object} items - folded items
+ * @param {{item: string, port: string}} from - the proposed SOURCE (an exec out)
+ * @param {{item: string, port: string}} to - the proposed DESTINATION (an exec in)
+ * @returns {boolean}
+ *
+ * @example execWouldCycle({a: {}, b: {}}, {item: "a", port: "then"}, {item: "b", port: "run"}) // false
+ * @example execWouldCycle({a: {}}, {item: "a", port: "then"}, {item: "a", port: "run"}) // true (a node cannot fire itself)
+ * @example // a fires b already, so b firing a would loop:
+ * @example execWouldCycle({a: {exec: {then: {item: "b", port: "run"}}}, b: {}}, {item: "b", port: "then"}, {item: "a", port: "run"}) // true
+ */
+export function execWouldCycle(items, from, to) {
+  const downstream = new Map(); // itemId → [target itemIds]
+  for (const e of execEdgesOf(items)) {
+    if (!downstream.has(e.from.item)) downstream.set(e.from.item, []);
+    downstream.get(e.from.item).push(e.to.item);
+  }
+  // Walk FORWARD from the proposed destination: reaching the proposed source means
+  // the destination already fires the source, so source→destination closes the loop.
+  const seen = new Set();
+  const stack = [to.item];
+  while (stack.length) {
+    const id = stack.pop();
+    if (id === from.item) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    for (const down of downstream.get(id) ?? []) stack.push(down);
+  }
+  return false;
+}
+
+/**
+ * Pure function. The state-path/value pairs that wire an EXEC OUT to an EXEC IN —
+ * the mirror of `connectPairs`, writing on the SOURCE side.
+ *
+ * @param {{item: string, port: string}} from - the SOURCE exec out
+ * @param {{item: string, port: string}} to - the DESTINATION exec in
+ * @returns {Array} [[path, value]] pairs
+ *
+ * @example execConnectPairs({item: "a", port: "then"}, {item: "b", port: "run"}) // [[["items", "a", "exec", "then"], {item: "b", port: "run"}]]
+ */
+export function execConnectPairs(from, to) {
+  return [[["items", from.item, EXEC_KEY, from.port], { item: to.item, port: to.port }]];
+}
+
+/**
+ * Pure function. The pairs that CLEAR an exec out. `null`, not a deleted key, for
+ * the reason `disconnectPairs` states: a removed key would be re-inherited from an
+ * earlier slide's delta and the wire would come back on its own.
+ *
+ * @param {{item: string, port: string}} from - the exec out to clear
+ * @returns {Array} [[path, value]] pairs
+ *
+ * @example execDisconnectPairs({item: "a", port: "then"}) // [[["items", "a", "exec", "then"], null]]
+ */
+export function execDisconnectPairs(from) {
+  return [[["items", from.item, EXEC_KEY, from.port], null]];
+}
+
+/**
+ * Pure function. Is this an EXEC wire — i.e. does the SOURCE port declare the exec
+ * type? THE one dispatcher every caller that must pick a side asks, so "which map
+ * does this wire live in" is decided in one place from the declaration rather than
+ * re-derived at each call site.
+ *
+ * A source port that cannot be resolved answers false: an unresolvable wire is not
+ * an exec wire, and treating it as one would write into the wrong map.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {{item: string, port: string}} from - the SOURCE output port
+ * @returns {boolean}
+ *
+ * @example const reg = {get: () => ({ports: () => ({outputs: [{key: "then", type: "exec"}]})})};
+ * @example isExecWire({a: {type: "e"}}, reg, {item: "a", port: "then"}) // true
+ * @example isExecWire({a: {type: "e"}}, reg, {item: "a", port: "nope"}) // false
+ */
+export function isExecWire(items, registry, from) {
+  const state = items?.[from?.item];
+  const plugin = state ? pluginFor(items, registry, from.item) : null;
+  return (plugin ? findPort(plugin, state, "output", from.port)?.type : null) === EXEC_TYPE;
+}
+
+/**
+ * Pure function. THE pairs that make a wire, whichever kind it is — the one seam a
+ * drop gesture and a dropdown both go through, so neither has to know that exec
+ * wires are stored on the other side. `wirePairsFor` is to storage what
+ * `connectionRefusal` is to legality.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {{item: string, port: string}} from - the SOURCE output
+ * @param {{item: string, port: string}} to - the DESTINATION input
+ * @returns {Array} [[path, value]] pairs
+ *
+ * @example const reg = {get: () => ({ports: () => ({outputs: [{key: "o", type: "number"}]})})};
+ * @example wirePairsFor({a: {type: "n"}}, reg, {item: "a", port: "o"}, {item: "b", port: "i"}) // [[["items", "b", "inputs", "i"], {item: "a", port: "o"}]]
+ * @example const ereg = {get: () => ({ports: () => ({outputs: [{key: "then", type: "exec"}]})})};
+ * @example wirePairsFor({a: {type: "e"}}, ereg, {item: "a", port: "then"}, {item: "b", port: "run"}) // [[["items", "a", "exec", "then"], {item: "b", port: "run"}]]
+ */
+export function wirePairsFor(items, registry, from, to) {
+  return isExecWire(items, registry, from) ? execConnectPairs(from, to) : connectPairs(from, to);
+}
+
+/**
+ * Pure function. EVERY EXEC INPUT ON THIS SLIDE THIS EXEC OUT MAY LEGALLY FIRE —
+ * the option list behind an exec-out row's picker, and the mirror of
+ * `compatibleSources`.
+ *
+ * It routes through `connectionRefusal` for the reason that function's own docblock
+ * gives: the dropdown and the wire drag must not get two chances to disagree.
+ *
+ * @param {object} items - folded items
+ * @param {object} registry - plugin registry
+ * @param {{item: string, port: string}} from - the exec output being wired
+ * @returns {object[]} [{item, port, type, label}] in deterministic order
+ *
+ * @example // an event's `then` is offered every exec input on the slide:
+ * @example const reg = {get: (t) => t === "e" ? {ports: () => ({outputs: [{key: "then", type: "exec"}]})} : {ports: () => ({inputs: [{key: "run", type: "exec"}]})}};
+ * @example compatibleExecTargets({a: {type: "e"}, b: {type: "s"}}, reg, {item: "a", port: "then"}).map((o) => `${o.item}.${o.port}`) // ["b.run"]
+ * @example // …and never its own, which would be a loop
+ * @example compatibleExecTargets({a: {type: "x"}}, {get: () => ({ports: () => ({inputs: [{key: "run", type: "exec"}], outputs: [{key: "then", type: "exec"}]})})}, {item: "a", port: "then"}) // []
+ */
+export function compatibleExecTargets(items, registry, from) {
+  const out = [];
+  for (const id of Object.keys(items ?? {}).sort()) {
+    const state = items[id];
+    if (!state || state.active === false) continue;
+    const plugin = pluginFor(items, registry, id);
+    if (!plugin) continue;
+    for (const p of declaredPorts(plugin, state).inputs) {
+      if (p.type !== EXEC_TYPE) continue;
+      const to = { item: id, port: p.key };
+      if (connectionRefusal(items, registry, from, to) !== null) continue;
+      out.push({ item: id, port: p.key, type: p.type, label: p.label });
+    }
+  }
+  return out;
+}
+
+/**
+ * Pure function. THE INSPECTOR ROWS FOR A NODE'S EXEC OUTPUTS — one row per declared
+ * exec output, at the state path the wire is stored in (`exec.<port>`).
+ *
+ * ── WHY EXEC OUTS GET ROWS AND EXEC INS DO NOT ──────────────────────────────
+ * Not a presentation judgement: an exec OUT is where the wire is STORED, so it is a
+ * property, and NO JSON-ONLY PROPERTIES means it must have a row. An exec IN stores
+ * nothing at all — there is no leaf to edit — so a row there would be a control over
+ * a value that does not exist. The bead on the canvas is its whole surface, and that
+ * is the same answer `nodeInputRows` gives an output port.
+ *
+ * ── IT IS THE SAME CONTROL AS A DATA INPUT ROW, ON PURPOSE ──────────────────
+ * `kind` is NODE_INPUT_ROW_KIND, because both rows edit THE SAME THING: a
+ * `{item, port}` reference, picked from a list, cleared to null. `execOut: true` is
+ * what tells web/Inspector.svelte to fill the list from `compatibleExecTargets`
+ * instead of `compatibleSources`. A second row kind would have been a second control
+ * with the same behaviour, which is the duplication ROW_KINDS exists to bound.
+ *
+ * @param {object} plugin - the node's plugin
+ * @param {object} [state] - the folded state (a port list may vary with it)
+ * @returns {object[]} Inspector row descriptors, one per declared exec output
+ *
+ * @example execOutputRows({ports: () => ({outputs: [{key: "then", type: "exec", label: "Then"}]})})[0].key // "exec.then"
+ * @example execOutputRows({ports: () => ({outputs: [{key: "then", type: "exec", label: "Then"}]})})[0].kind // "nodeinput"
+ * @example execOutputRows({ports: () => ({outputs: [{key: "then", type: "exec", label: "Then"}]})})[0].execOut // true
+ * @example // a DATA output is not one of these — it publishes a value, it does not fire
+ * @example execOutputRows({ports: () => ({outputs: [{key: "out", type: "number"}]})}) // []
+ * @example execOutputRows({}) // []
+ */
+export function execOutputRows(plugin, state) {
+  return declaredPorts(plugin, state ?? plugin?.defaults ?? {}).outputs.filter((p) => p.type === EXEC_TYPE).map((p) => ({
+    key: `${EXEC_KEY}.${p.key}`,
+    label: p.label,
+    kind: NODE_INPUT_ROW_KIND,
+    execOut: true,
+    portType: p.type,
+    category: EXEC_CAT,
+    help: `What runs when this fires. Pick any node on this slide that has an exec input, or clear it to stop the chain here. One exec output fires exactly one thing — use a Sequence node to fire several in order. It is ordinary keyframable state, so a deck can rewire what an event does from one slide to the next.`,
+  }));
 }
 
 // ── EVALUATION ───────────────────────────────────────────────────────────────

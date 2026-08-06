@@ -242,6 +242,77 @@ const PITCH_INPUT_KEYS = new Set(["pitch", "frequency"]);
 const PITCH_OUTPUT_KEY = "pitch";
 
 /**
+ * Query (reads the plugin registry). THE LATCHED CHORDS a frame holds:
+ * `{itemId: [note, …]}` for every widget declaring a `noteLatch`.
+ *
+ * ── A LATCH IS DOCUMENT STATE; A PRESS IS NOT. THIS FILE NOW HOLDS BOTH ─────
+ * Everything below this function is the LIVE side — a moment, module scratch,
+ * never saved. This function is on the other side of that line and is placed here
+ * anyway, deliberately, because the two meet: a latched note produces the SAME
+ * engine calls a pressed one does (`noteRoutes`, above), and a note that sounded
+ * differently depending on how it was turned on would be the split this module was
+ * written to prevent. What differs is only where the note came FROM.
+ *
+ * WHICH WIDGETS LATCH IS ASKED, NOT LISTED. A plugin declaring `noteLatch.notes`
+ * is one; nothing here knows the roster (core/registry.js's law). `active: false`
+ * items are skipped for the same reason `readAudioScene` skips them — a chord
+ * sounding from a widget that is not on this slide is a drone with no visible
+ * source.
+ *
+ * @param {object} items - the folded, evaluated item map
+ * @param {object} registry - the plugin registry
+ * @returns {Object<string, number[]>} itemId → the notes it is holding
+ *
+ * @example latchedChords({}, {get: () => null}) // {}
+ * @example // a widget that declares no latch contributes nothing
+ * @example latchedChords({r: {type: "rect"}}, {get: () => ({})}) // {}
+ * @example // R is a registry whose keyboard declares noteLatch.notes
+ * @example // latchedChords({k: {type: "node_keyboard", heldNotes: [[60], [64]]}}, R) // {k: [60, 64]}
+ */
+export function latchedChords(items, registry) {
+  const chords = {};
+  for (const [id, state] of Object.entries(items ?? {})) {
+    if (state?.active === false) continue;
+    const notes = pluginFor(registry, state?.type)?.noteLatch?.notes?.(state);
+    if (notes?.length) chords[id] = notes;
+  }
+  return chords;
+}
+
+/**
+ * Pure function. WHAT CHANGED between two latched-chord maps, as note events in
+ * the order they must be sent: releases first, then presses.
+ *
+ * ── OFFS BEFORE ONS, AND IT IS NOT COSMETIC ─────────────────────────────────
+ * A voice pool is finite and steals the OLDEST voice when it runs out
+ * (synth/voices.js). Changing a five-note chord to a different five-note chord on
+ * an eight-voice pad sends five ons and five offs; issue the ons first and the pool
+ * is briefly holding ten notes, so it steals two that were about to be released and
+ * cuts two notes that should have kept sounding. Releasing first means the pool
+ * never exceeds what the document actually asks for.
+ *
+ * @param {Object<string, number[]>} prev - what is currently sounding
+ * @param {Object<string, number[]>} next - what the document now says
+ * @returns {Array<{id: string, phase: "on"|"off", note: number}>}
+ *
+ * @example latchedChordDelta({}, {}) // []
+ * @example latchedChordDelta({}, {k: [60]}) // [{id: "k", phase: "on", note: 60}]
+ * @example latchedChordDelta({k: [60]}, {}) // [{id: "k", phase: "off", note: 60}]
+ * @example // an UNCHANGED chord is not re-sent — a second noteOn restarts an envelope
+ * @example latchedChordDelta({k: [60, 64]}, {k: [60, 64]}) // []
+ * @example // …and a chord that changes releases before it presses
+ * @example latchedChordDelta({k: [60]}, {k: [64]}) // [{id: "k", phase: "off", note: 60}, {id: "k", phase: "on", note: 64}]
+ */
+export function latchedChordDelta(prev, next) {
+  const offs = [], ons = [];
+  for (const [id, notes] of Object.entries(prev ?? {}))
+    for (const note of notes) if (!(next?.[id] ?? []).includes(note)) offs.push({ id, phase: "off", note });
+  for (const [id, notes] of Object.entries(next ?? {}))
+    for (const note of notes) if (!(prev?.[id] ?? []).includes(note)) ons.push({ id, phase: "on", note });
+  return [...offs, ...ons];
+}
+
+/**
  * ── THE LIVE PRESS SET ───────────────────────────────────────────────────────
  *
  * WHICH KEYS ARE DOWN RIGHT NOW, per keyboard item: `itemId → Set<note>`.

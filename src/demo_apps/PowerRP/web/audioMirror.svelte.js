@@ -71,7 +71,7 @@
 
 import { createEngine } from "../synth/engine.js";
 import { diffAudioScene, initialParamOps, knobRampSeconds, readAudioScene, transportOf } from "../core/audio_mirror_diff.js";
-import { noteRoutes, triggerRoutes } from "../core/live_control.js";
+import { latchedChordDelta, latchedChords, noteFrequency, noteRoutes, triggerRoutes } from "../core/live_control.js";
 import { cameraMaxTimestep, simulationTimestep } from "../core/simulation_history.js";
 import { meterColumnValues, spectrumColumnValues } from "../core/analysis_display.js";
 import { dropAnalysis, pushAnalysisFrame } from "../render_gpu/gpu/live_analysis_registry.js";
@@ -259,6 +259,7 @@ export function mirrorAudioFrame(state, registry) {
   // engine) — there would be nothing for the gesture to make audible.
   if (count > 0) armAudioGesture();
 
+  lastFrame = { items: state?.items ?? {}, registry };
   const ops = diffAudioScene(engineScene, scene, frameRamp);
   if (ops.length === 0) {
     // THE TRANSPORT STILL HAS TO BE SYNCED HERE. Zero ops means the DOCUMENT said
@@ -266,11 +267,20 @@ export function mirrorAudioFrame(state, registry) {
     // gesture arrives long after the patch was built), and a scheduler that was
     // stopped when the context was suspended would never be started by anything.
     syncTransport(scene);
+    syncLatchedNotes(lastFrame.items, registry);
     return;
   }
+  // A TOPOLOGY CHANGE INVALIDATES THE LATCH RECORD, and only a topology change.
+  // `removeModule` destroys the voices a latched chord was sounding on and a rewire
+  // sends it somewhere else, so what the engine holds is no longer what the record
+  // claims and the chord must be re-asserted. A `setParam` batch changes none of
+  // that — clearing on one would re-send every latched note on every knob turn,
+  // restarting each envelope, which is a stutter rather than a held chord.
+  if (ops.some((op) => op.op !== "setParam")) engineLatched = {};
   engineScene = scene;
   queueApply(ops, scene);
   syncTransport(scene);
+  syncLatchedNotes(lastFrame.items, registry);
 }
 
 /**
@@ -714,16 +724,79 @@ export function fireLiveTrigger(items, registry, sourceId, sourcePort = "out") {
  * @param {"on"|"off"} phase - key down or key up
  * @param {number} note - the note identity (MIDI number)
  * @param {number} frequency - the pitch in Hz
+ * @returns {number} HOW MANY engine calls this note actually reached. 0 means the
+ *   note sounded NOTHING — no wire, no engine, or a target the engine has not
+ *   finished adding. A live press throws that away (a key pressed on an unwired
+ *   keyboard is silent and that is all there is to say), but the LATCH seam below
+ *   needs it: a latched note it recorded as "sounding" when nothing received it
+ *   would never be retried, and the chord would be silently missing for the rest
+ *   of the session.
  */
 export function playLiveNote(items, registry, sourceId, phase, note, frequency) {
-  if (!engine || !engine.isRunning()) return;
+  if (!engine || !engine.isRunning()) return 0;
   const held = new Set(engine.inspect().modules.map((m) => m.id));
+  let sent = 0;
   for (const route of noteRoutes(items, registry, sourceId, phase, note, frequency)) {
     if (!held.has(route.id)) continue;
     if (route.op === "noteOn") engine.noteOn(route.id, route.note, route.frequency);
     else if (route.op === "noteOff") engine.noteOff(route.id, route.note);
     else engine.trigger(route.id, route.port, undefined, { frequency: route.frequency });
+    sent++;
   }
+  return sent;
+}
+
+/**
+ * WHAT THE ENGINE IS CURRENTLY HOLDING BECAUSE THE DOCUMENT SAID SO:
+ * `{itemId: [note, …]}`, the latched half of `engineScene`.
+ *
+ * Module scratch and NOT reactive, exactly like `engineScene`: it is a record of
+ * what has been SENT, not a value anything renders. The picture of a latched key
+ * comes from the document through the keyboard's own `emit()`, which is the whole
+ * point of a latch being property state.
+ */
+let engineLatched = {};
+
+/** The last frame the mirror saw, so `releaseAllLiveNotes` can re-assert the
+ *  latched chord it just silenced without being handed the items again. */
+let lastFrame = null;
+
+/**
+ * Command. Make the engine's sounding notes match the document's LATCHED CHORDS
+ * (R7-13) — one noteOn per newly-held key, one noteOff per released one.
+ *
+ * ── WHY A LATCHED CHORD IS THE MIRROR'S JOB AND A PRESS IS NOT ──────────────
+ * `playLiveNote` is called BY A GESTURE: someone pressed a key, so a note happens.
+ * A latched chord is not an event at all — it is a property of the frame, exactly
+ * like a filter's cutoff, and the mirror's whole contract is "make the engine match
+ * this frame". So it belongs on the same per-frame path as `diffAudioScene`, is
+ * diffed the same way, and reaches an EXPORT for free: a rendered video of a deck
+ * whose keyboard holds a chord contains that chord, where a rendered video of a
+ * deck whose keyboard was pressed contains silence. Both are correct, and the
+ * difference between them is exactly the difference between a value and a moment.
+ *
+ * ONLY WHAT ACTUALLY SOUNDED IS RECORDED. `playLiveNote` returns its route count,
+ * and a note that reached nothing is left out of the record so the next pass tries
+ * it again. That is what makes this safe to run on the frame a module is still
+ * being added — the add is async and the note simply lands on the following frame,
+ * rather than being marked sent and lost.
+ *
+ * @param {object} items - the evaluated folded item map
+ * @param {object} registry - the plugin registry
+ */
+function syncLatchedNotes(items, registry) {
+  if (!engine || !engine.isRunning()) return;
+  const next = latchedChords(items, registry);
+  const reached = {};
+  for (const op of latchedChordDelta(engineLatched, next)) {
+    const sent = playLiveNote(items, registry, op.id, op.phase, op.note, noteFrequency(op.note));
+    if (op.phase === "on" && sent > 0) (reached[op.id] ??= []).push(op.note);
+  }
+  // Everything that was already sounding and still is, plus whatever just landed.
+  for (const [id, notes] of Object.entries(next))
+    for (const note of notes)
+      if ((engineLatched[id] ?? []).includes(note)) (reached[id] ??= []).push(note);
+  engineLatched = reached;
 }
 
 /**
@@ -744,6 +817,20 @@ export function releaseAllLiveNotes() {
     const scene = engineScene.modules[m.id];
     if (scene?.spec?.poly) engine.allNotesOff(m.id);
   }
+  // ── AND THE LATCHED CHORD IS PUT STRAIGHT BACK (R7-13) ────────────────────
+  // `allNotesOff` is wholesale — it cannot tell a note a finger was holding from a
+  // note the DOCUMENT is holding, and this function's caller is a slide change. The
+  // user asked for a lock precisely so a chord survives one ("to let me play
+  // different chords and different slides"), so silencing it here and leaving it
+  // silent would delete the feature at the one moment it exists for.
+  //
+  // Re-ASSERTED rather than exempted, and that is the cheaper correctness: the
+  // record is cleared and the very next statement rebuilds the chord the NEW
+  // frame's document asks for, which is the right chord even when the slide change
+  // also changed it. Exempting latched voices from the release would instead need
+  // the engine to distinguish two kinds of note it has no reason to know about.
+  engineLatched = {};
+  if (lastFrame) syncLatchedNotes(lastFrame.items, lastFrame.registry);
 }
 
 /** Query. The engine, for dev seams and probes. Null before anything audio exists —

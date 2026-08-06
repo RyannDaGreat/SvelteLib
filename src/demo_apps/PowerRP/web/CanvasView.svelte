@@ -3649,9 +3649,39 @@
     if (!hit) return false;
     const press = hit.plugin.livePress;
     const play = hit.plugin.livePlay;
-    if (!press && !play) return false;
+    const latch = hit.plugin.noteLatch;
+    if (!press && !play && !latch) return false;
     const local = localPointOf(hit, w.x, w.y);
     const items = app.state()?.items ?? {};
+    // ── A LATCHING WIDGET WRITES THE DOCUMENT INSTEAD OF PLAYING (R7-13) ──────
+    // User, on the keyboard's lock: "When it's locked on, the keys will stay turned
+    // on at all times. In the UI, in other words, to let me play different chords
+    // and different slides." The last clause is what forces this branch to exist:
+    // "different chords on different slides" is only expressible if the chord FOLDS,
+    // and a value that folds is written to the document, not fired at the engine.
+    //
+    // THIS IS THE ONE PLACE THE TWO KINDS OF STATE MEET, and it is checked FIRST
+    // because it is the more specific claim. Below it a press is a LIVE moment —
+    // routed to the engine, lit by module scratch, never written down, absent from
+    // every export. Here it is an ordinary EDIT: one property write, one undo unit,
+    // exactly like typing in the Inspector. Nothing about the live path is weakened;
+    // a second kind of thing simply arrives at the same key.
+    //
+    // NOTHING HERE KNOWS THE ROSTER. `noteLatch` is a plugin DECLARATION (see
+    // plugins/node_keyboard.js): `locked` says whether a press latches, `cellAt`
+    // hit-tests, `toggle` says what the property becomes, `notesKey` names the leaf.
+    // The Piano Roll declares the same four and gets this gesture with no code here.
+    //
+    // NO DRAG IS STARTED. A latch has no glissando and no release — the gesture is
+    // complete at pointer-down — so this consumes the press rather than capturing
+    // the pointer for a drag with nothing to move.
+    if (latch?.locked(hit.state)) {
+      const cell = latch.cellAt(hit.state, local.x, local.y);
+      if (!cell) return false;
+      app.setPreview([[["items", hit.itemId, latch.notesKey], latch.toggle(hit.state, cell)]]);
+      app.commitPreview();
+      return true;
+    }
     if (press && press.hit(hit.state, local.x, local.y)) {
       fireLiveTrigger(items, app.registry, hit.itemId, press.port);
       // Capture the pointer even though there is nothing to drag: without it the
