@@ -322,6 +322,28 @@ gets lost once a fix lands.
    already making, and keep a LOUD failure surface (the no-silent-failure law still
    binds). What dies is the state that ASKS PERMISSION TO WANT SOUND.
 
+### MISTAKE (lead, 2026-08-06): designed `dt` against half the requirement
+
+The lead specified `dt` as a FIXED simulation timestep in document state, reasoning
+from an existing ruling that had refused a `frame` variable. The user overruled it
+within the hour: *"By your logic, what happens if we have a framerate we render a
+video with like 1000? What if our dt is just .1 seconds? What do we do,
+interpolate?"* — a fixed step makes the simulation's resolution independent of the
+render's, so frames land between steps.
+
+**Root cause: the objections the lead raised had already been answered in the
+brief.** The user had written *"we have a smaller time step. Things will integrate
+better"* (meaning: higher fps ⇒ smaller dt ⇒ better integration — a property of
+frame-delta dt) and *"it's not perfectly predictable ... which is why it's okay"*
+(sanctioning the exact cost the lead was designing around). Both sentences were read
+past.
+
+**Lesson: when a design conflicts with a written ruling, re-read the WHOLE
+requirement before choosing which to honour.** The user had already weighed the
+trade the ruling protects; the lead re-litigated a decision that had been made.
+Cost: one wrong section in the manifest and a live agent redirected mid-build. Full
+corrected design and the follow-on max-timestep clamp: manifest § R7-9.
+
 ### RISK ON THE TABLE FOR THIS ROUND
 
 **Simulated state (`@`, `dt`) deliberately weakens a property the app relies on.**
