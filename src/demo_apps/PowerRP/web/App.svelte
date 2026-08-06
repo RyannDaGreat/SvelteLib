@@ -55,6 +55,7 @@
   import { keyframed, foldState } from "../core/document.js";
   import { isEquationValue, evaluateState } from "../core/expressions.js";
   import { withSimulationFrozen } from "../core/simulation_history.js"; // documentState is a HYPOTHETICAL — see it
+  import { AUDIO_MUTE_COMMAND } from "./audioMirror.svelte.js"; // registered in coreCommands — see it
   import { cameraRectAt } from "./cameraFrame.js";
   import { renderCameraFrame } from "./gpuService.js";
   import {
@@ -2222,6 +2223,14 @@
       help: "One JavaScript file per project. Assign to `exports` and any property equation can call it: `exports.ease = t => t*t` makes `= ease(0.5)` work everywhere. It runs in the same sandbox equations do, so Date and Math.random stay unavailable and `time` and the seeded `random` are the same ones equations see.",
       run: (a) => a.openProjectScript(),
     },
+    // ── AUDIO (R7-22) ─────────────────────────────────────────────────────────
+    // DECLARED BESIDE THE THING IT COMMANDS, not written out here: the entry lives
+    // in web/audioMirror.svelte.js next to `setAudioMuted`, so the command and the
+    // mute cannot drift apart, and this file names it rather than restating it. The
+    // same shape the DEMO_PATCHES spread below uses for the same reason. It is the
+    // registration that makes the surfacings possible — `commands.get` throws on an
+    // unknown id, so the toolbar button and the `M` shortcut both depend on this line.
+    AUDIO_MUTE_COMMAND,
     // ── DEMO PATCHES (NF-BIND) ────────────────────────────────────────────────
     // The user's standing directive, ADDENDUM 10 verbatim: "We should have a menu
     // called, well, in the command palette by the way, called demo patches that will
