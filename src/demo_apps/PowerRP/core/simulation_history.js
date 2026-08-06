@@ -42,7 +42,7 @@
  * render must therefore walk frames IN ORDER: `cli/render_job.js` shards by STRIDED
  * frame range, and a strided shard cannot compute its own prefix. That refusal is
  * built as a predicate rather than left to a comment — see core/document.js
- * documentIsSimulated / simulatedShardingRefusal. (N browsers is N processes is N
+ * documentIsSimulated / stridedShardRefusal. (N browsers is N processes is N
  * independent copies of this table, which is exactly why CONTIGUOUS sharding works
  * and strided does not.)
  *
