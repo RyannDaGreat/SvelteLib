@@ -5355,14 +5355,37 @@ project forbids by name, and it is the reason the variable is absent rather than
 **USER RULING, 2026-08-06: *"its recordable state. we can record it every frame"*** —
 **OPTION 2. Settled.**
 
-**AND THE RULING IS EXACTLY RIGHT IN THE TAXONOMY'S OWN TERMS, which is what makes it a
-design rather than a loophole.** `<app>/CLAUDE.md` defines recordable state as needing *"an
-ambient input (presentation time `t`) that is not document state, but is a PURE FUNCTION of
-it"*. A live pointer is not a function of `t` — but **a RECORDED pointer track is**:
-playback is `sample(track, t)`. **Recording converts an ephemeral input into recordable
-state by making it a function of time.** That is the whole trick, and it is why this
-proposal keeps `RenderTree = pure(document, [[slide, alpha]])` intact where exposing a live
-`mouse_x` would have broken it.
+**⚠ TERMINOLOGY CLASH — THE LEAD CONFLATED TWO MEANINGS OF "RECORD" AND MUST NOT DO IT
+AGAIN.** The user asked directly: *"there is no mechanism for recording....yet. its for when
+i give a presentation and wanna record. this a later feature right? unless we have that now?
+tell me"*. **Answer: NO MECHANISM EXISTS.** Verified — zero hits for `MediaRecorder`,
+`getUserMedia`, `getDisplayMedia` or `captureStream` in `web/`, `core/` or `cli/`.
+
+- **The codebase's "recordable"** (`<app>/CLAUDE.md`) means *"deterministic given a timeline
+  and **records correctly**"* — i.e. **A VIDEO EXPORT CAN RE-DERIVE IT.** `web/videoExport.js`
+  is "the DETERMINISTIC presentation → video pipeline": it re-renders every frame FROM THE
+  DOCUMENT. Nothing is ever captured. A sparkler is "recordable" because the exporter can
+  RECOMPUTE it, not because a recorder observed it.
+- **The user's "record"** is the ordinary sense: capture a live presentation.
+
+**These are different features, and the lead wrote R7-24 as though the first implied the
+second.** It does not. So:
+
+**A POINTER RECORDER IS NEW WORK AND A LATER FEATURE.** The design below stands — recording
+a pointer track DOES convert an ephemeral input into something that is a pure function of `t`
+(`sample(track, t)`), which is what keeps `RenderTree = pure(document, [[slide, alpha]])`
+intact where a live `mouse_x` would break it. **But it requires building the recorder first,
+and nothing today can do it.**
+
+**CONSEQUENCE FOR R7-25:** the cursor demo cannot work as described until either that
+recorder exists, or the bounded-live-exception (option 3) is accepted — and option 3 is
+unexportable by nature, which is the opposite of what a demo wants.
+
+**TWO SIZES OF FEATURE, do not confuse them either:**
+- **A POINTER TRACK is small and self-contained** — sample x/y/buttons per frame into `meta`,
+  replay via `sample(track, t)`. This is all R7-25 needs.
+- **A SESSION RECORDER is much larger** — pointer + voice + timing + "what am I pointing at"
+  (§ B-1's *"time-synced voice recording + screen recording via HTML"*). Different project.
 
 **FOUR THINGS THE BUILD MUST DECIDE, none of them obvious:**
 
