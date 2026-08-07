@@ -55,3 +55,7 @@ scratchpad*.mjs
 
 # scratch worktree for baseline comparison (never committed)
 .baseline_wt
+
+# Rendered patch audio: the .wav are 23 MB and regenerable (tests/renderPatchAudio.mjs);
+# the .mp3 beside them ARE committed, because cloning is how the user gets files.
+src/demo_apps/PowerRP/.claude_audio_checks/*.wav
