@@ -387,10 +387,30 @@ registerProcessor("ax-kfilter-lowpass-processor", AxKFilterLowpassProcessor);
  *     v[n] = x[n] + g·v[n-M]
  *     y[n] = v[n-M] - g·v[n]
  *
- * DEVIATIONS, both named in the spec: the line is float32 here rather than int16,
- * so the original's 15-bit quantisation noise inside a reverb tail is absent; and
- * the fractional read interpolates to a delay of exactly M where TSG's own 2-point
- * path lands one sample short of the M it computed.
+ * DEVIATION, named in the spec: the line is float32 here rather than int16, so the
+ * original's 15-bit quantisation noise inside a reverb tail is absent.
+ *
+ * ── THE TAPS STRADDLE DOWNWARD, AND THEY USED TO STRADDLE UP ────────────────
+ * `line[this.write]` is the slot the CURRENT sample is about to occupy, so a delay
+ * of M samples reads `write - M`. The two interpolation taps must therefore be
+ * `write - whole` (delay M) and `write - whole - 1` (delay M+1), so that frac 0
+ * lands on M.
+ *
+ * They were `write - whole` and `write - whole + 1`, i.e. straddling UPWARD, which
+ * made frac 0 — every integer delay, which is every use in the demo patches —
+ * return M-1. MEASURED 2026-08-07 two independent ways: an A/B against the real
+ * `filter/allpass` matched only when our `delay` was set to theirs PLUS ONE
+ * (NCC 1.000000 vs 0.873 at nominal equality), and an impulse through this
+ * processor at `delay: 64`, `g: 0` came out at sample 63.
+ *
+ * It mattered more than one sample suggests: this is the section every Schroeder
+ * diffuser and FDN is built from, so the error COMPOUNDED per stage, and 24 patch
+ * references carry it. `filter/fdbkcomb` has its own line and was always correct.
+ *
+ * The paragraph this replaces claimed the opposite of what the code did — it said
+ * this path hit "exactly M" where TSG's lands short. Ours was the one landing
+ * short. A docblock that states the fix a reader is looking for is worse than
+ * none, because it stops them reading the three lines below it.
  */
 class AxAllpassProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() {
@@ -426,8 +446,8 @@ class AxAllpassProcessor extends AudioWorkletProcessor {
       this.kPhase = (this.kPhase + 1) % AX_BUFSIZE;
       const whole = Math.floor(this.delay);
       const frac = this.delay - whole;
-      const older = line[(this.write - whole) & AX_DELAY_LINE_MASK];
-      const newer = line[(this.write - whole + 1) & AX_DELAY_LINE_MASK];
+      const newer = line[(this.write - whole) & AX_DELAY_LINE_MASK];
+      const older = line[(this.write - whole - 1) & AX_DELAY_LINE_MASK];
       const vDelayed = newer + (older - newer) * frac;
       // At |g| = 1 the inner comb `v = x + g*v[n-M]` never decays, and their `din`
       // is a bare int32 — so it folds rather than growing. Same wrap, same reason

@@ -1,0 +1,4 @@
+# Generated: C sources, binaries and the int32 I/O the harness streams.
+# Everything here is rebuilt by `node harness/run.mjs`.
+*
+!.gitignore

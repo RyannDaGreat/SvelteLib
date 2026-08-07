@@ -62,6 +62,19 @@ const FS = 48000;
  *  eval, and the eval could only ever reach TOP-LEVEL names. */
 const K = await import("../synth/ax3_kernels.js");
 
+/**
+ * THE SHIPPED PROCESSOR CLASSES, by registered name. The kernels above are the
+ * arithmetic; this is the code that actually runs in the browser, and the two can
+ * disagree — see the allpass impulse check below, which exists because they did.
+ * Imported at top level and SYNCHRONOUSLY thereafter, so a failing check reports
+ * inline instead of arriving after the summary line as an unhandled rejection.
+ */
+const WORKLET_CLASSES = new Map();
+globalThis.AudioWorkletProcessor = class { constructor() { this.port = { onmessage: null, postMessage() {} }; } };
+globalThis.registerProcessor = (name, cls) => WORKLET_CLASSES.set(name, cls);
+globalThis.sampleRate = FS;
+await import("../synth/worklets/processors_ax3.js");
+
 /** The processor file is still read as TEXT, for the three structural pins at the
  *  bottom (the k-rate tick, the wrap sites, the registered names). Those are
  *  properties of the BRIDGE, not of the arithmetic, and there is nothing to
@@ -711,6 +724,40 @@ check("allpass: the recovered v[n] = x + g*v[n-M] / y = v[n-M] - g*v[n] matches 
   // had reproduced a quantisation it deliberately does not have.
   assert.ok(worst < 2e-3, `allpass worst sample error ${worst.toExponential(3)}`);
   console.log(`  allpass: worst error vs firmware ${worst.toExponential(3)} (int16 line quantisation is ~5e-4)`);
+});
+
+check("allpass: THE SHIPPED PROCESSOR delays by the M it was asked for, not M-1", () => {
+  // WHY THIS DRIVES THE WORKLET WHEN THE CHECK ABOVE DOES NOT, AND WHY THAT MATTERED.
+  // The check above builds its own three-line `got()` and compares THAT to the
+  // firmware. It passes whatever the shipped processor does, because the shipped
+  // processor is not in it. On 2026-08-07 `AxAllpassProcessor` was reading its line
+  // one sample short — for 24 patch references, compounding through every Schroeder
+  // stage — and this suite was green the whole time, before AND after the fix. A test
+  // that re-implements the thing under test cannot fail when the thing under test is
+  // wrong; it can only fail when the transcription of the MATH is wrong, which is a
+  // different and much smaller claim.
+  //
+  // An impulse with g = 0 makes the allpass a plain delay line: one echo, at an index
+  // that is either right or wrong with nothing in between. No tolerance, no
+  // correlation, no room to argue.
+  const Cls = WORKLET_CLASSES.get("ax-allpass-processor");
+  assert.ok(Cls, "ax-allpass-processor must be registered");
+
+  const QUANTUM = 128;
+  for (const M of [17, 64, 333]) {
+    const proc = new Cls();
+    const out = [];
+    for (let q = 0; q * QUANTUM < M + QUANTUM; q++) {
+      const inBuf = new Float32Array(QUANTUM);
+      if (q === 0) inBuf[0] = 1;
+      const outBuf = new Float32Array(QUANTUM);
+      proc.process([[inBuf]], [[outBuf]], { delay: [M], g: [0] });
+      out.push(...outBuf);
+    }
+    const at = out.findIndex((v) => Math.abs(v) > 1e-4);
+    assert.equal(at, M, `an impulse into a g=0 allpass at delay ${M} must emerge at sample ${M}, got ${at}`);
+  }
+  console.log("  allpass: impulse emerges at exactly M for M = 17, 64, 333");
 });
 
 check("allpass is ALLPASS — flat magnitude, which is the only thing that makes it a diffuser", () => {
