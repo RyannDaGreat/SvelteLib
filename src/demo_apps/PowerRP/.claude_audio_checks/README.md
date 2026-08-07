@@ -26,29 +26,42 @@ re-implementation — if what you hear is wrong, the app is wrong the same way.
   OfflineAudioContext's does not, so no sequenced events fire in this render. This
   is a limit of the renderer, not of the patch.
 
-## Measured levels, 2026-08-07
+## Measured levels, 2026-08-07 (second render — nothing clips now)
 
 | patch | peak |
 |---|---|
-| axo-shimmer | **+1.4 dBFS — CLIPPING** |
-| axo-to-the-stars | **+0.1 dBFS — CLIPPING** |
 | spacey-pad-drone | −0.2 |
 | axo-radioactive | −0.8 |
-| axo-tranquille | −0.9 |
+| axo-to-the-stars | −0.9 |
 | vcv-first-generative | −1.8 |
+| axo-shimmer | −1.8 |
+| axo-mi-stack | −3.9 |
+| axo-tranquille | −5.2 |
+| axo-pad3-plate | −5.2 |
 | vcv-granular-ambient | −6.9 |
+| vcv-subharmonicon | −7.4 |
 | axo-strings-poly | −7.5 |
 | beach | −10.5 |
-| axo-pad3-plate | −11.2 |
 | vcv-borealis | −15.7 |
+| vcv-incanta | −19.1 |
 | axo-drseq | −20.7 |
 | whoosh | −24.7 |
+| **vcv-fm-pad** | **−67.7 — audible only in name; see below** |
 | sequenced-dings, gamelan-bells, playable-keys, button-ding | silent (event-driven) |
-| vcv-microcosm, vcv-ciani-buchla, vcv-ms20, axo-mi-stack | silent (placeholders) |
+| vcv-microcosm, vcv-ciani-buchla, vcv-ms20 | silent (placeholders) |
 
-Two patches exceed 0 dBFS, i.e. their float samples go past ±1. The WAV writer
-clamps rather than wrapping, so what you hear IS the clipping — that is deliberate:
-a wrapped sample would turn a level defect into noise and hide which one it was.
+**An earlier render had `axo-shimmer` at +1.4 dBFS and `axo-to-the-stars` at +0.1** —
+past ±1, i.e. clipping. Both are fixed, and the three causes were three different
+things worth knowing: shimmer's harvested `attenuate b: 15.5` is an FDN input drive
+whose FDN the autoplay branch skips, so it landed undivided (fixed by restoring the
+missing 1/15.5 trim, not by turning a knob down); to-the-stars shared one return-level
+constant with two patches whose signal path is 2.6 dB colder; tranquille summed three
+near-unison oscillators at unity and peaked at three. In two of the three, halving the
+return moved the peak by well under a dB — a limiter answering, which is how you tell a
+summing fault from a level fault.
+
+**`vcv-fm-pad` at −67.7 dBFS is not a level to nudge — it is inaudible**, ~0.04% of
+full scale. Treat it as a defect that has not been diagnosed yet, not as a quiet patch.
 
 ## What this CANNOT tell you
 

@@ -138,13 +138,19 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     { id: "llfoSlow", type: "audio_vcv_llfo", col: 0, row: 3, knobs: { frequency: 0.007, slow: 1, scale: 1 } },
     { id: "llfoFast", type: "audio_vcv_llfo", col: 0, row: 4, knobs: { frequency: 0.063, slow: 1, wave: 4, scale: 1 } },
     { id: "walk", type: "audio_vcv_walk", col: 0, row: 5, knobs: { rate: 0.3139, scale: 0.3193 } },
-    { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 6, knobs: { p0: -0.325 } },
+    // `speed` is Caudal's param 0; the harvested value is left as found and is outside
+    // our 0…1 knob, because Rack clamps before saving so a stored −0.325 proves Vult's
+    // own Speed knob is bipolar. Its bounds are closed source, so no rescale is invented.
+    { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 6, knobs: { speed: -0.325 } },
     // ── COLUMN 1 — the two sample-and-holds that decide what the machine does ─
     { id: "sh1", type: "audio_vcv_samplehold", col: 1, row: 0 },
     { id: "reseedEdge", type: "audio_trigger", col: 1, row: 1, knobs: { pulseMs: 5 } },
     { id: "sh4", type: "audio_vcv_samplehold", col: 1, row: 2 },
     // ── COLUMN 2 — the two things that generate TIME ────────────────────────
-    { id: "burst", type: "audio_vcv_burstgenerator", col: 2, row: 0, knobs: { rate: 1.0994, rate_cv: 0.2771, pulses_cv: 0.6747, probability: 1 } },
+    // `rateCvAtten`/`pulsesCvAtten`: VC-7a's header publishes this map, because a
+    // CountModula CV jack ATTENUATES its knob rather than summing with it, so the jack
+    // keeps the plain name and the trim beside it is what these two dials are.
+    { id: "burst", type: "audio_vcv_burstgenerator", col: 2, row: 0, knobs: { rate: 1.0994, rateCvAtten: 0.2771, pulsesCvAtten: 0.6747, probability: 1 } },
     { id: "seq3", type: "audio_vcv_seq3", col: 2, row: 2, knobs: { steps: 6 } },
     // ── COLUMN 3 — five more S&H pairs, plus the probabilistic one ──────────
     { id: "sh2", type: "audio_vcv_samplehold", col: 3, row: 0 },
@@ -178,12 +184,16 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     { id: "chrono2", type: "audio_vcv_chronoblob2", col: 9, row: 2, knobs: { time: 0.7199, feedback: 0.3313, mix: 1 } },
     // ── COLUMN 10 — the fade on voice A, and three stereo pairs of LPGs ────
     { id: "fade1", type: "audio_vcv_fade", col: 10, row: 0, knobs: { in: 0.9425, out: 0.9127 } },
-    { id: "tangent1", type: "audio_vcv_tangents", col: 10, row: 2, knobs: { p0: 0.6275, p4: 0.6 } },
-    { id: "tangent2", type: "audio_vcv_tangents", col: 10, row: 3, knobs: { p0: 0.5725, p4: 0.6 } },
-    { id: "tangent3", type: "audio_vcv_tangents", col: 10, row: 4, knobs: { p0: 0.7975, p4: 0.6 } },
-    { id: "tangent4", type: "audio_vcv_tangents", col: 10, row: 5, knobs: { p0: 0.555, p4: 0.6 } },
-    { id: "tangent5", type: "audio_vcv_tangents", col: 10, row: 6, knobs: { p0: 0.565, p1: 0.1575, p4: 0.6 } },
-    { id: "tangent6", type: "audio_vcv_tangents", col: 10, row: 7, knobs: { p0: 0.5575, p1: 0.1625, p4: 0.6 } },
+    // Tangents' param 0 is the Cutoff CV, so it is converted out of Vult's own 0…1 CV
+    // domain into our hertz by their law (`synth/vc10_kernels.vultCvToHz`); param 1 is
+    // Resonance. `p4` is a fifth param VC-10 does not model and stays raw — see the
+    // reasoning at vcv-ambient-drone's Tangents.
+    { id: "tangent1", type: "audio_vcv_tangents", col: 10, row: 2, knobs: { cutoff: 2533, p4: 0.6 } },
+    { id: "tangent2", type: "audio_vcv_tangents", col: 10, row: 3, knobs: { cutoff: 1730, p4: 0.6 } },
+    { id: "tangent3", type: "audio_vcv_tangents", col: 10, row: 4, knobs: { cutoff: 8228, p4: 0.6 } },
+    { id: "tangent4", type: "audio_vcv_tangents", col: 10, row: 5, knobs: { cutoff: 1532, p4: 0.6 } },
+    { id: "tangent5", type: "audio_vcv_tangents", col: 10, row: 6, knobs: { cutoff: 1642, resonance: 0.1575, p4: 0.6 } },
+    { id: "tangent6", type: "audio_vcv_tangents", col: 10, row: 7, knobs: { cutoff: 1559, resonance: 0.1625, p4: 0.6 } },
     // ── COLUMN 11 — the granulator and the remaining fades ────────────────
     { id: "simpl", type: "audio_vcv_simpliciter", col: 11, row: 0 },
     { id: "fade3", type: "audio_vcv_fade", col: 11, row: 2, knobs: { in: 10, out: 3 } },
@@ -230,8 +240,10 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     { from: "llfoFast", fromPort: "out", to: "sh6", toPort: "in1" },
     { from: "llfoFast", fromPort: "out", to: "fadeMix3", toPort: "in1" },
     { from: "llfoFast", fromPort: "out", to: "fadeMix4", toPort: "in2" },
-    { from: "caudal", fromPort: "o0", to: "wtOsc", toPort: "osc_mod_0" },
-    { from: "caudal", fromPort: "o3", to: "wtOsc", toPort: "osc_mod_1" },
+    // Caudal's twelve outputs are four (x, y, angle) triples, so index 0 and index 3 are
+    // segment 1's and segment 2's X — the same map vcv-microcosm and vcv-ambient-drone use.
+    { from: "caudal", fromPort: "x_1", to: "wtOsc", toPort: "osc_mod_0" },
+    { from: "caudal", fromPort: "x_2", to: "wtOsc", toPort: "osc_mod_1" },
     // ── THE BURST GENERATOR'S OWN SETTINGS ARE HELD RANDOM VALUES ──────────
     { from: "sh1", fromPort: "out1", to: "burst", toPort: "rate_cv" },
     { from: "sh1", fromPort: "out2", to: "burst", toPort: "pulses_cv" },
@@ -288,22 +300,26 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     { from: "wtOsc", fromPort: "output_r", to: "surgeVcf", toPort: "input_r" },
     { from: "surgeVcf", fromPort: "output_l", to: "chrono2", toPort: "in_l" },
     { from: "surgeVcf", fromPort: "output_r", to: "chrono2", toPort: "in_r" },
-    { from: "chrono2", fromPort: "out_l", to: "tangent1", toPort: "i1" },
-    { from: "chrono2", fromPort: "out_r", to: "tangent2", toPort: "i1" },
-    { from: "sh6", fromPort: "out1", to: "tangent1", toPort: "i3" },
-    { from: "sh6", fromPort: "out2", to: "tangent2", toPort: "i3" },
-    { from: "tangent1", fromPort: "o0", to: "fade3", toPort: "l" },
-    { from: "tangent2", fromPort: "o0", to: "fade3", toPort: "r" },
-    { from: "surgeVcf", fromPort: "output_l", to: "tangent3", toPort: "i1" },
-    { from: "surgeVcf", fromPort: "output_r", to: "tangent4", toPort: "i1" },
-    { from: "tangent3", fromPort: "o0", to: "fade5", toPort: "l" },
-    { from: "tangent4", fromPort: "o0", to: "fade5", toPort: "r" },
+    // Tangents' inlets are LP, BP, HP, cutoff CV, so index 1 is the BANDPASS input and
+    // index 3 is the cutoff. Transcribed as found rather than moved to the lowpass a pad
+    // would normally take: the manual's own note on the bandpass is that "when modulated
+    // magic happens", and the sample-and-hold on the next line is what modulates it.
+    { from: "chrono2", fromPort: "out_l", to: "tangent1", toPort: "bp_in" },
+    { from: "chrono2", fromPort: "out_r", to: "tangent2", toPort: "bp_in" },
+    { from: "sh6", fromPort: "out1", to: "tangent1", toPort: "cutoff" },
+    { from: "sh6", fromPort: "out2", to: "tangent2", toPort: "cutoff" },
+    { from: "tangent1", fromPort: "out", to: "fade3", toPort: "l" },
+    { from: "tangent2", fromPort: "out", to: "fade3", toPort: "r" },
+    { from: "surgeVcf", fromPort: "output_l", to: "tangent3", toPort: "bp_in" },
+    { from: "surgeVcf", fromPort: "output_r", to: "tangent4", toPort: "bp_in" },
+    { from: "tangent3", fromPort: "out", to: "fade5", toPort: "l" },
+    { from: "tangent4", fromPort: "out", to: "fade5", toPort: "r" },
     // The third pair takes voice A's DELAY tail, so the granulator and the gates
     // hear the same echo differently — which is how the patch gets its width.
-    { from: "chrono1", fromPort: "out_l", to: "tangent5", toPort: "i1" },
-    { from: "chrono1", fromPort: "out_r", to: "tangent6", toPort: "i1" },
-    { from: "tangent5", fromPort: "o0", to: "fade6", toPort: "l" },
-    { from: "tangent6", fromPort: "o0", to: "fade6", toPort: "r" },
+    { from: "chrono1", fromPort: "out_l", to: "tangent5", toPort: "bp_in" },
+    { from: "chrono1", fromPort: "out_r", to: "tangent6", toPort: "bp_in" },
+    { from: "tangent5", fromPort: "out", to: "fade6", toPort: "l" },
+    { from: "tangent6", fromPort: "out", to: "fade6", toPort: "r" },
     // ── VOICE C — the FM operator, its feedback and sustain freshly held ──
     { from: "sh5", fromPort: "out1", to: "fmop", toPort: "feedback_cv" },
     { from: "sh5", fromPort: "out2", to: "fmop", toPort: "sustain_cv" },
@@ -400,14 +416,16 @@ export const VCV_INCANTA = {
     { id: "clkC", type: "audio_clock", col: 0, row: 3, knobs: { bpm: 105 } },
     { id: "noise", type: "audio_noise", col: 0, row: 4, knobs: { color: "white", level: 0.5 } },
     // EIGHT 2-D WALKERS. Every rate is different on purpose — see the docblock.
-    { id: "w1", type: "audio_vcv_walk2", col: 0, row: 5, knobs: { rate_x: 0.3024, rate_y: 0.3265, scale_x: 0.9735, scale_y: 1 } },
-    { id: "w2", type: "audio_vcv_walk2", col: 0, row: 6, knobs: { rate_x: 0.4048, rate_y: 0.347, scale_x: 1, scale_y: 1 } },
-    { id: "w3", type: "audio_vcv_walk2", col: 0, row: 7, knobs: { rate_x: 0.4048, rate_y: 0.347, scale_x: 1, scale_y: 1 } },
-    { id: "w4", type: "audio_vcv_walk2", col: 0, row: 8, knobs: { rate_x: 0.3024, rate_y: 0.3265, scale_x: 1, scale_y: 1 } },
-    { id: "w5", type: "audio_vcv_walk2", col: 0, row: 9, knobs: { rate_x: 0.3024, rate_y: 0.3265, scale_x: 1, scale_y: 1 } },
-    { id: "w6", type: "audio_vcv_walk2", col: 0, row: 10, knobs: { rate_x: 0.4048, rate_y: 0.347, scale_x: 1, scale_y: 1 } },
-    { id: "w7", type: "audio_vcv_walk2", col: 0, row: 11, knobs: { rate_x: 0.2217, rate_y: 0.2506, scale_x: 1, scale_y: 1 } },
-    { id: "w8", type: "audio_vcv_walk2", col: 0, row: 12, knobs: { rate_x: 0.3036, rate_y: 0.3373, scale_x: 1, scale_y: 1 } },
+    // camelCase, not snake_case: Bogaudio is open and VC-3b spelled every one of these
+    // from its own `ParamsIds` (RATE_X_PARAM, SCALE_X_PARAM, …). Same knobs, same values.
+    { id: "w1", type: "audio_vcv_walk2", col: 0, row: 5, knobs: { rateX: 0.3024, rateY: 0.3265, scaleX: 0.9735, scaleY: 1 } },
+    { id: "w2", type: "audio_vcv_walk2", col: 0, row: 6, knobs: { rateX: 0.4048, rateY: 0.347, scaleX: 1, scaleY: 1 } },
+    { id: "w3", type: "audio_vcv_walk2", col: 0, row: 7, knobs: { rateX: 0.4048, rateY: 0.347, scaleX: 1, scaleY: 1 } },
+    { id: "w4", type: "audio_vcv_walk2", col: 0, row: 8, knobs: { rateX: 0.3024, rateY: 0.3265, scaleX: 1, scaleY: 1 } },
+    { id: "w5", type: "audio_vcv_walk2", col: 0, row: 9, knobs: { rateX: 0.3024, rateY: 0.3265, scaleX: 1, scaleY: 1 } },
+    { id: "w6", type: "audio_vcv_walk2", col: 0, row: 10, knobs: { rateX: 0.4048, rateY: 0.347, scaleX: 1, scaleY: 1 } },
+    { id: "w7", type: "audio_vcv_walk2", col: 0, row: 11, knobs: { rateX: 0.2217, rateY: 0.2506, scaleX: 1, scaleY: 1 } },
+    { id: "w8", type: "audio_vcv_walk2", col: 0, row: 12, knobs: { rateX: 0.3036, rateY: 0.3373, scaleX: 1, scaleY: 1 } },
     // FOUR LLFOs, all four in the millihertz — one cycle every eight to fifteen minutes.
     { id: "l1", type: "audio_vcv_llfo", col: 0, row: 13, knobs: { frequency: 0.00207, slow: 1, offset: 1, scale: 1 } },
     { id: "l2", type: "audio_vcv_llfo", col: 0, row: 14, knobs: { frequency: 0.00296, slow: 1, offset: 1, scale: 1 } },
@@ -481,7 +499,7 @@ export const VCV_INCANTA = {
     { id: "fmop6", type: "audio_vcv_fmop", col: 9, row: 5, knobs: { attack: 0.0494, decay: 0.9998, sustain: 0.8301, release: 2.728, feedback: 0.6277, level: 0.8783, envToLevel: "on" } },
     { id: "fmop7", type: "audio_vcv_fmop", col: 9, row: 6, knobs: { attack: 0.0632, decay: 0.8117, sustain: 0.512, release: 2.1344, depth: 0.5663, feedback: 0.4867, level: 0.7807, envToLevel: "on" } },
     { id: "fmop8", type: "audio_vcv_fmop", col: 9, row: 7, knobs: { attack: 0.101, decay: 0.9998, sustain: 1, release: 2.506, feedback: 0.2205, level: 0.9012, envToLevel: "on" } },
-    { id: "xco", type: "audio_vcv_xco", col: 9, row: 8, knobs: { frequency: 3, fm_depth: 0.1253, square_pw: 0.3927, square_mix: 0.9614, saw_mix: 1, triangle_mix: 1, sine_mix: 1 } },
+    { id: "xco", type: "audio_vcv_xco", col: 9, row: 8, knobs: { frequency: 3, fmDepth: 0.1253, squarePw: 0.3927, squareMix: 0.9614, sawMix: 1, triangleMix: 1, sineMix: 1 } },
     { id: "bogvco", type: "audio_vcv_bog_vco", col: 9, row: 9, knobs: { frequency: 1, pw: 0.2217 } },
     // ── COLUMN 10 — the FM banks' stereo mixes, THREE Rings, and the VCF ───
     { id: "mix1", type: "audio_vcv_mix4", col: 10, row: 0, knobs: { level1: 0.8651, pan1: -0.9687, level2: 0.7801, pan2: 0.8145, level3: 0.8541, pan3: -0.8988, level4: 0.9091, pan4: 0.9952, mix: 0.8801 } },
@@ -828,8 +846,11 @@ export const VCV_RAMPAGE_GENERATIVE = {
     // THE COMPARATOR HAT LANDS HERE: `max` sampled on `rising_a`.
     { id: "sah", type: "audio_vcv_sampleandhold", col: 2, row: 3 },
     { id: "reburst", type: "audio_vcv_reburst", col: 2, row: 4, knobs: { time: 1, rep: 8, accel: 1, jitter: 1, cv_mode: "random_pos", gate_mode: "trigger" } },
-    { id: "ad1", type: "audio_vcv_attackdecay", col: 2, row: 5, knobs: { p0: 0.4365, p1: 0.1 } },
-    { id: "ad2", type: "audio_vcv_attackdecay", col: 2, row: 6, knobs: { p1: 0.136 } },
+    // NYSTHI is not cloneable, but VC-8's AttackDecay defaults ARE these two numbers —
+    // 0.4365 s and 0.1 s — which is only possible if it read them off this very instance,
+    // so params 0 and 1 are Attack and Decay in that order.
+    { id: "ad1", type: "audio_vcv_attackdecay", col: 2, row: 5, knobs: { attack: 0.4365, decay: 0.1 } },
+    { id: "ad2", type: "audio_vcv_attackdecay", col: 2, row: 6, knobs: { decay: 0.136 } },
     { id: "br", type: "audio_vcv_branches", col: 2, row: 7, knobs: { p1: 0.5, p2: 0.5 } },
     // THE SLEW HAT'S DESTINATION: out_b summed with an ochd tap, into the gates.
     { id: "bMix", type: "audio_mixer", col: 2, row: 8, knobs: { level1: 1, level2: 1, master: 1 } },
@@ -855,10 +876,12 @@ export const VCV_RAMPAGE_GENERATIVE = {
     { id: "saich", type: "audio_vcv_saich", col: 7, row: 3, knobs: { p0: 0.4755, p7: 1, p8: 0.5 } },
     // ── COLUMN 8 — THE ENVELOPE HAT (voiceVca) and four lowpass gates ──────
     { id: "voiceVca", type: "audio_vca", col: 8, row: 0, knobs: { gain: 1 } },
-    { id: "tang1", type: "audio_vcv_tangents", col: 8, row: 1, knobs: { p0: 0.365, p1: 0.3885, p2: 0.156, p4: 0.6 } },
-    { id: "tang2", type: "audio_vcv_tangents", col: 8, row: 2, knobs: { p0: 0.6305, p4: 0.6 } },
-    { id: "tang3", type: "audio_vcv_tangents", col: 8, row: 3, knobs: { p0: 0.5, p1: 0.111, p2: 0.309, p4: 0.6 } },
-    { id: "tang4", type: "audio_vcv_tangents", col: 8, row: 4, knobs: { p0: 0.497, p2: 0.201, p4: 0.6 } },
+    // Cutoff CV → hertz, Resonance and the cutoff attenuverter as-is; `p4` stays raw.
+    // The reasoning for all four is at vcv-ambient-drone's Tangents.
+    { id: "tang1", type: "audio_vcv_tangents", col: 8, row: 1, knobs: { cutoff: 411, resonance: 0.3885, cutoffAtten: 0.156, p4: 0.6 } },
+    { id: "tang2", type: "audio_vcv_tangents", col: 8, row: 2, knobs: { cutoff: 2586, p4: 0.6 } },
+    { id: "tang3", type: "audio_vcv_tangents", col: 8, row: 3, knobs: { cutoff: 1047, resonance: 0.111, cutoffAtten: 0.309, p4: 0.6 } },
+    { id: "tang4", type: "audio_vcv_tangents", col: 8, row: 4, knobs: { cutoff: 1025, cutoffAtten: 0.201, p4: 0.6 } },
     // ── COLUMN 9 — one delay per voice, which is what makes it a WASH ──────
     { id: "delay", type: "audio_delay", col: 9, row: 0, knobs: { time: 0.602, feedback: 0.6635, wet: 0.5, dry: 0.5 } },
     { id: "chrono1", type: "audio_vcv_chronoblob2", col: 9, row: 1, knobs: { time: 0.68, feedback: 0.434, mix: 1 } },
@@ -910,8 +933,8 @@ export const VCV_RAMPAGE_GENERATIVE = {
     // ── HAT 3's DESTINATION: slewed noise plus an ochd tap, opening the gates ─
     { from: "rampage", fromPort: "out_b", to: "bMix", toPort: "in1" },
     { from: "ochd", fromPort: "out5", to: "bMix", toPort: "in2" },
-    { from: "bMix", fromPort: "out", to: "tang1", toPort: "i3" },
-    { from: "bMix", fromPort: "out", to: "tang2", toPort: "i3" },
+    { from: "bMix", fromPort: "out", to: "tang1", toPort: "cutoff" },
+    { from: "bMix", fromPort: "out", to: "tang2", toPort: "cutoff" },
     // ── THE DIVIDER FANS ONE EDGE OUT TO FOUR UNRELATED RATES ────────────
     { from: "clkdiv", fromPort: "div1", to: "sh1", toPort: "trigger2" },
     { from: "clkdiv", fromPort: "div2", to: "sh2", toPort: "trigger2" },
@@ -937,9 +960,14 @@ export const VCV_RAMPAGE_GENERATIVE = {
     { from: "quantum2", fromPort: "out", to: "pitchMul2", toPort: "a" },
     { from: "quantum3", fromPort: "out", to: "pitchMul3", toPort: "a" },
     // ── FOUR VOICES ─────────────────────────────────────────────────────
-    { from: "pitchMul1", fromPort: "out", to: "basal", toPort: "i0" },
-    { from: "ochd", fromPort: "out6", to: "basal", toPort: "i1" },
-    { from: "ochd", fromPort: "out7", to: "basal", toPort: "i2" },
+    // Basal has exactly three jacks and its manual lists them V/OCT, Mod 1 CV, Mod 2 CV —
+    // which is VC-10's order, and the cables agree with it: the pitch chain lands on 0 and
+    // the two ochd taps on 1 and 2. Its four DIALS are a different matter and stay raw:
+    // the manual documents an attenuverter beside each Mod knob, so the real module has at
+    // least six params against VC-10's four knobs and no index lines up.
+    { from: "pitchMul1", fromPort: "out", to: "basal", toPort: "v_oct" },
+    { from: "ochd", fromPort: "out6", to: "basal", toPort: "mod1" },
+    { from: "ochd", fromPort: "out7", to: "basal", toPort: "mod2" },
     { from: "pitchMul2", fromPort: "out", to: "fmop", toPort: "pitch" },
     { from: "ochd", fromPort: "out3", to: "fmop", toPort: "feedback_cv" },
     { from: "sh1", fromPort: "out2", to: "fmop", toPort: "sustain_cv" },
@@ -948,25 +976,30 @@ export const VCV_RAMPAGE_GENERATIVE = {
     { from: "ad1", fromPort: "out", to: "plaits", toPort: "level" },
     { from: "vcaC", fromPort: "out", to: "plaits", toPort: "harmonics" },
     { from: "ochd", fromPort: "out7", to: "plaits", toPort: "timbre" },
-    { from: "reftone1", fromPort: "out", to: "saich", toPort: "i0" },
-    { from: "ochd", fromPort: "out6", to: "saich", toPort: "i6" },
+    // Instruō publishes no source, so saich's jacks are VC-10's reading of the manual's
+    // panel order: four V/oct, then PWM, CV and Scan. Index 0 is a V/oct and the Reftone
+    // proves it; index 6 is the Scan fader's own jack, which is what a slow ochd tap is
+    // for. Its DIALS stay raw — index 8 lands on a discrete `wave` knob that cannot take
+    // the harvested 0.5, which refutes the dial order the same evidence supports for jacks.
+    { from: "reftone1", fromPort: "out", to: "saich", toPort: "voct1" },
+    { from: "ochd", fromPort: "out6", to: "saich", toPort: "scan" },
     // ── THE ENVELOPE ON THE BASAL VOICE, and the gates on the rest ───────
-    { from: "basal", fromPort: "o0", to: "voiceVca", toPort: "in" },
-    { from: "saich", fromPort: "o0", to: "tang1", toPort: "i1" },
+    { from: "basal", fromPort: "out", to: "voiceVca", toPort: "in" },
+    { from: "saich", fromPort: "out", to: "tang1", toPort: "bp_in" },
     // Gate into gate: two Tangents in series is how the original shapes that voice.
-    { from: "tang1", fromPort: "o0", to: "tang2", toPort: "i1" },
-    { from: "plaits", fromPort: "out", to: "tang3", toPort: "i1" },
-    { from: "noise", fromPort: "out", to: "tang4", toPort: "i1" },
-    { from: "ad2", fromPort: "out", to: "tang4", toPort: "i3" },
-    { from: "ochd", fromPort: "out7", to: "tang3", toPort: "i3" },
+    { from: "tang1", fromPort: "out", to: "tang2", toPort: "bp_in" },
+    { from: "plaits", fromPort: "out", to: "tang3", toPort: "bp_in" },
+    { from: "noise", fromPort: "out", to: "tang4", toPort: "bp_in" },
+    { from: "ad2", fromPort: "out", to: "tang4", toPort: "cutoff" },
+    { from: "ochd", fromPort: "out7", to: "tang3", toPort: "cutoff" },
     // ── ONE DELAY PER VOICE ─────────────────────────────────────────────
     { from: "voiceVca", fromPort: "out", to: "delay", toPort: "in" },
     { from: "ochd", fromPort: "out8", to: "delay", toPort: "time" },
-    { from: "tang2", fromPort: "o0", to: "chrono1", toPort: "in_l" },
+    { from: "tang2", fromPort: "out", to: "chrono1", toPort: "in_l" },
     { from: "fmop", fromPort: "audio", to: "chrono2", toPort: "in_l" },
     { from: "sh2", fromPort: "out2", to: "chrono2", toPort: "time" },
-    { from: "tang3", fromPort: "o0", to: "chrono3", toPort: "in_l" },
-    { from: "tang4", fromPort: "o0", to: "chrono4", toPort: "in_l" },
+    { from: "tang3", fromPort: "out", to: "chrono3", toPort: "in_l" },
+    { from: "tang4", fromPort: "out", to: "chrono4", toPort: "in_l" },
     { from: "reburst", fromPort: "gate_out", to: "chrono4", toPort: "mix" },
     // ── THE GRANULATOR TAKES THE FM VOICE'S ECHO, started by a Rampage edge ─
     { from: "chrono2", fromPort: "out_l", to: "simpl", toPort: "in_l" },

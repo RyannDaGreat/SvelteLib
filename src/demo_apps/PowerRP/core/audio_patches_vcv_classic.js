@@ -153,8 +153,11 @@ export const VCV_SUBHARMONICON = {
     // bus's pulse, which is what makes the polyrhythm audible as rhythm rather than as
     // pitch drift.
     { id: "orgate", type: "audio_vcv_bool", col: 4, row: 8 },
-    { id: "envFilter", type: "audio_vcv_attackdecay", col: 5, row: 8, knobs: { p1: 0.106 } },
-    { id: "envAmp", type: "audio_vcv_attackdecay", col: 5, row: 10, knobs: { p1: 0.292 } },
+    // `decay`, not `p1`: VC-8 shipped AttackDecay with `attack` and `decay` as params 0
+    // and 1, and its own defaults are the values harvested off this module's param 0/1
+    // pair in another patch — which is how the order is known without NYSTHI's source.
+    { id: "envFilter", type: "audio_vcv_attackdecay", col: 5, row: 8, knobs: { decay: 0.106 } },
+    { id: "envAmp", type: "audio_vcv_attackdecay", col: 5, row: 10, knobs: { decay: 0.292 } },
     { id: "quant", type: "audio_vcv_rewin", col: 5, row: 0 },
     // THE 8x8 MATRIX. Three crosspoints of sixty-four are closed, and they are what makes
     // the patch: in1 reaches out1 (oscillator 1's pitch) and out6 (divider 8's division
@@ -237,8 +240,12 @@ export const VCV_SUBHARMONICON = {
     { from: "orgate", fromPort: "or", to: "envFilter", toPort: "trig" },
     { from: "orgate", fromPort: "or", to: "envAmp", toPort: "trig" },
     { from: "blend", fromPort: "out", to: "ladder", toPort: "in" },
-    { from: "envFilter", fromPort: "out", to: "ladder", toPort: "fc_cv" },
-    { from: "ladder", fromPort: "out2", to: "vca", toPort: "in" },
+    // BOTH NAMES COME FROM `LateralusKernel`'s OWN "PORT NAMES CORRECTED" NOTE: the CV
+    // inlet is the Cutoff attenuverter's, so it is `cutoff`, and the four outputs are the
+    // manual's slopes in its order, so the stub's second one (index 1) is the 18 dB tap —
+    // "used by a famous acid box", which is what this Subharmonicon is reaching for.
+    { from: "envFilter", fromPort: "out", to: "ladder", toPort: "cutoff" },
+    { from: "ladder", fromPort: "out_18db", to: "vca", toPort: "in" },
     { from: "envAmp", fromPort: "out", to: "vca", toPort: "gain" },
     ...analysisWires("vca"),
   ],
@@ -460,9 +467,12 @@ export const VCV_FM_PAD = {
     { id: "vcaFm", type: "audio_vca", col: 7, row: 0, knobs: { gain: 1 } },
     { id: "sumFm", type: "audio_vca", col: 8, row: 0, knobs: { gain: 0.406 } },
     // ── THE THROUGH-ZERO PAIR. wvco2 modulates wvco1's LINEAR FM input. ──────
-    { id: "wvco2", type: "audio_vcv_wvco", col: 3, row: 6, knobs: { octave: 4, frequencyMultiplier: 1, fineTune: 0.072, fmDepth: 0.078, waveshapeGain: 0.6235, waveShape: 2, outputLevel: 1 } },
+    // `waveform`, and it is a NAME not a number: WVCO's `WAVE_SHAPE_PARAM` indexes
+    // `WVCODsp::WaveForm {Sine, Fold, SawTri}`, which VC-10 spells as a discrete knob with
+    // those three options, so the harvested 2 is `sawTri` and the 1 below is `fold`.
+    { id: "wvco2", type: "audio_vcv_wvco", col: 3, row: 6, knobs: { octave: 4, frequencyMultiplier: 1, fineTune: 0.072, fmDepth: 0.078, waveshapeGain: 0.6235, waveform: "sawTri", outputLevel: 1 } },
     { id: "vcaTz", type: "audio_vca", col: 4, row: 6, knobs: { gain: 1 } },
-    { id: "wvco1", type: "audio_vcv_wvco", col: 5, row: 6, knobs: { octave: 4, frequencyMultiplier: 1, fmDepth: 0.078, linearFmDepth: 0.324, waveshapeGain: 0.2625, waveShape: 1, feedback: 0.0765, outputLevel: 1 } },
+    { id: "wvco1", type: "audio_vcv_wvco", col: 5, row: 6, knobs: { octave: 4, frequencyMultiplier: 1, fmDepth: 0.078, linearFmDepth: 0.324, waveshapeGain: 0.2625, waveform: "fold", feedback: 0.0765, outputLevel: 1 } },
     { id: "vcaWvco", type: "audio_vca", col: 6, row: 6, knobs: { gain: 1 } },
     { id: "sumWvco", type: "audio_vca", col: 7, row: 6, knobs: { gain: 0.406 } },
     // ── THE WAVETABLE VOICE. Its frame is chosen by a random walk, per sample. ──

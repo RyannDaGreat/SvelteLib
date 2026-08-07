@@ -241,16 +241,19 @@ export const VCV_MICROCOSM = {
     { from: "squonk4", fromPort: "trig", to: "grain4", toPort: "trig" },
     { from: "squonk5", fromPort: "trig", to: "grain5", toPort: "trig" },
     // EVERY CLOUD GETS ITS OWN STATE-VARIABLE FILTER, cutoff on a pendulum tap.
+    // The jack is `fc_cv`, not `fc`: squinkylabs' `composites/F2.h` has an `FC_PARAM`
+    // beside its `FC_INPUT`, and the `_cv` suffix is how a jack that would collide with a
+    // knob is spelled here. Same index (1), same wire.
     { from: "grain1", fromPort: "out_l", to: "svf1", toPort: "audio" },
-    { from: "chaos", fromPort: "x_1", to: "svf1", toPort: "fc" },
+    { from: "chaos", fromPort: "x_1", to: "svf1", toPort: "fc_cv" },
     { from: "grain2", fromPort: "out_l", to: "svf2", toPort: "audio" },
-    { from: "chaos", fromPort: "x_2", to: "svf2", toPort: "fc" },
+    { from: "chaos", fromPort: "x_2", to: "svf2", toPort: "fc_cv" },
     { from: "grain3", fromPort: "out_l", to: "svf3", toPort: "audio" },
-    { from: "chaos", fromPort: "x_3", to: "svf3", toPort: "fc" },
+    { from: "chaos", fromPort: "x_3", to: "svf3", toPort: "fc_cv" },
     { from: "grain5", fromPort: "out_l", to: "svf9", toPort: "audio" },
-    { from: "chaos2", fromPort: "y_3", to: "svf9", toPort: "fc" },
+    { from: "chaos2", fromPort: "y_3", to: "svf9", toPort: "fc_cv" },
     { from: "cdelay1", fromPort: "out_l", to: "svf6", toPort: "audio" },
-    { from: "chaos", fromPort: "a_3", to: "svf6", toPort: "fc" },
+    { from: "chaos", fromPort: "a_3", to: "svf6", toPort: "fc_cv" },
     { from: "cdelay2", fromPort: "out_l", to: "svf7", toPort: "audio" },
     // THE DESK, in the original's own channel order — which is NOT the filters' order
     // (f2 #3 lands on track 2 and #2 on track 3), and the pans are per track, so the
@@ -282,9 +285,9 @@ export const VCV_MICROCOSM = {
     { from: "aux", fromPort: "send_3_l", to: "grain4", toPort: "in_l" },
     { from: "aux", fromPort: "send_3_r", to: "grain4", toPort: "in_r" },
     { from: "grain4", fromPort: "out_l", to: "svf4", toPort: "audio" },
-    { from: "chaos", fromPort: "x_4", to: "svf4", toPort: "fc" },
+    { from: "chaos", fromPort: "x_4", to: "svf4", toPort: "fc_cv" },
     { from: "grain4", fromPort: "out_r", to: "svf5", toPort: "audio" },
-    { from: "chaos", fromPort: "x_4", to: "svf5", toPort: "fc" },
+    { from: "chaos", fromPort: "x_4", to: "svf5", toPort: "fc_cv" },
     // SEND 4 — the second phaser, eight stages against the first one's four.
     { from: "aux", fromPort: "send_4_l", to: "phaser2", toPort: "in_l" },
     { from: "aux", fromPort: "send_4_r", to: "phaser2", toPort: "in_r" },
@@ -514,8 +517,15 @@ export const VCV_CIANI_BUCHLA = {
     { from: "env2", fromPort: "o5", to: "filt2", toPort: "cutoff" },
     { from: "env1", fromPort: "o5", to: "filt1", toPort: "cutoff" },
     { from: "gatesel", fromPort: "out2", to: "or1", toPort: "input_b_3" },
-    { from: "polycon", fromPort: "out", to: "slew", toPort: "rise" },
-    { from: "polycon", fromPort: "out", to: "slew", toPort: "fall" },
+    // POLYCON8 HAS ONE JACK IN RACK AND EIGHT HERE. Its `OutputsIds` is a single
+    // `OUT_OUTPUT` carrying eight POLY channels, and VC-3b's node splits that cable into
+    // eight mono outlets because PowerRP has no polyphony. Both cables in the original run
+    // from that one jack, so both take CHANNEL 1 — and the harvest's two set channels are
+    // −1 V each, so which channel a mono reader picks makes no audible difference here.
+    // `rise_cv`/`fall_cv` for the reason F2's `fc_cv` has it: `RISE_INPUT` sits beside a
+    // `RISE_PARAM`.
+    { from: "polycon", fromPort: "out1", to: "slew", toPort: "rise_cv" },
+    { from: "polycon", fromPort: "out1", to: "slew", toPort: "fall_cv" },
     { from: "shapes", fromPort: "o8", to: "ms1", toPort: "in_a_1" },
     { from: "shapes", fromPort: "o12", to: "ms1", toPort: "in_a_2" },
     { from: "shapes", fromPort: "o9", to: "ms2", toPort: "in_a_1" },

@@ -487,6 +487,11 @@ const AUTOPLAY_DRY_LEVEL = 0.85;
  *  two coincident ones 6 dB louder. */
 const AUTOPLAY_CENTRED_LEVEL = 0.42;
 
+/** One over the number of near-unison voices an autoplay branch sums, so the sum peaks at
+ *  one voice rather than at three. C4's trio is detuned by two and five cents, which is
+ *  close enough that they add in phase for seconds at a time. */
+const AUTOPLAY_VOICE_SUM_LEVEL = 1 / 3;
+
 /** A1's arpeggio tempo and note length. Half a hertz is two seconds a note — a PAD's
  *  pace, slow enough that the four-second swell of the harvested filter drift is still
  *  the thing you notice. The decay is `pulse/d`'s RATE dial, not a time: 0.02 is a
@@ -886,7 +891,12 @@ const AXO_TRANQUILLE_AUTOPLAY = (() => {
       { id: "apDraw1", type: "audio_ax_math", col: 3, row: 12, knobs: { operation: "multiply", b: AXO_TRANQUILLE_DRAW_SCALE_A } },
       { id: "apDraw2", type: "audio_ax_math", col: 4, row: 12, knobs: { operation: "multiply", b: AXO_TRANQUILLE_DRAW_SCALE_B } },
       ...voices.map((v) => ({ id: v.id, type: "audio_ax_osc", col: 5, row: v.row, knobs: { waveform: v.waveform, pitch: v.pitch } })),
-      { id: "apMix", type: "audio_mixer", col: 6, row: 13, knobs: { level1: 1, level2: 1, level3: 1, master: 1 } },
+      // UNITY ON THREE INPUTS IS A PEAK OF THREE, and that — not the return level — is
+      // where C4's headroom went. Measured: at unity this branch rendered at −0.9 dBFS,
+      // and cutting the RETURN by 4.2 dB moved the peak by 0.6, which is the output
+      // limiter answering rather than the level. Three near-unison oscillators sum
+      // coherently, so the honest place to normalise is the sum itself.
+      { id: "apMix", type: "audio_mixer", col: 6, row: 13, knobs: { level1: AUTOPLAY_VOICE_SUM_LEVEL, level2: AUTOPLAY_VOICE_SUM_LEVEL, level3: AUTOPLAY_VOICE_SUM_LEVEL, master: 1 } },
       ...note.nodes,
     ],
     wires: [

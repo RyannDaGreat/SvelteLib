@@ -517,10 +517,18 @@ export const VCV_AMBIENT_DRONE = {
     // harvested 9 was an index into that list. A440 is Reftone's whole purpose, so the
     // index and the name agree here; the number simply is not what the knob takes.
     { id: "reftone", type: "audio_vcv_reftone", col: 0, row: 0, knobs: { pitch: "A", octave: 4 } },
-    { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 1, knobs: { p0: -0.327 } },
+    // `speed`, not `p0` — Caudal's param 0 is the Speed knob the manual lists first, and
+    // vcv-microcosm already spells it that way. THE VALUE IS LEFT AS HARVESTED AND IS
+    // OUT OF OUR KNOB'S RANGE: Rack clamps a param to its own bounds before saving, so a
+    // stored −0.327 proves Vult's Speed knob is BIPOLAR while VC-10 models it as 0…1. The
+    // rescale needs Vult's real bounds, which are closed source, so it is not guessed here.
+    { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 1, knobs: { speed: -0.327 } },
     { id: "noiseW", type: "audio_noise", col: 0, row: 2, knobs: { color: "white", level: 1 } },
     { id: "noiseP", type: "audio_noise", col: 0, row: 3, knobs: { color: "pink", level: 1 } },
-    { id: "supersaw", type: "audio_vcv_super", col: 0, row: 4, knobs: { p0: -3, p1: -3, p3: 1.26, p5: 5 } },
+    // squinkylabs is open, so these four are read off `composites/Super.h`'s own
+    // `ParamIds`: OCTAVE, SEMI, FINE, DETUNE, DETUNE_TRIM, MIX — which is VC-10's knob
+    // order exactly, and every value lands inside the knob it names.
+    { id: "supersaw", type: "audio_vcv_super", col: 0, row: 4, knobs: { octave: -3, semi: -3, detune: 1.26, mix: 5 } },
     { id: "sample", type: "audio_vcv_complexsimpler", col: 0, row: 5, knobs: { p0: -1, p4: 1, p7: 1, p11: 1, p12: 2, p13: -2 } },
     // ADD5 IS THE HINGE OF THE WHOLE PATCH: six chaotic voltages in, six unipolar copies
     // out, and those copies are what the EQ's band levels and Vessek's timbre inputs read.
@@ -529,7 +537,17 @@ export const VCV_AMBIENT_DRONE = {
       id: "vessek", type: "audio_vcv_vessek", col: 2, row: 0,
       knobs: { p1: -0.0092, p4: 2, p6: 0.0135, p7: 0.225, p10: 0.5, p21: 0.462, p22: 1, p23: 0.669, p24: 0.79, p25: 0.639, p26: -0.774 },
     },
-    { id: "tangents", type: "audio_vcv_tangents", col: 2, row: 3, knobs: { p0: 0.5, p1: 0.3495, p2: 0.618, p4: 0.6 } },
+    // THREE OF THE FOUR VULT DIALS RESOLVE, AND THE FOURTH DOES NOT.
+    // `p2` is the only one the corpus ever stores NEGATIVE (−1.0 elsewhere), and an
+    // attenuverter is the only ±1 control Tangents has, so p2 is `cutoffAtten`. `p1` is
+    // absent (i.e. 0) on other instances that plainly pass audio, which rules out Drive —
+    // a zero input gain would silence them — leaving `resonance`. `p0` is the Cutoff CV
+    // the manual lists first, converted out of Vult's 0…1 CV domain into our hertz by
+    // their own law (`synth/vc10_kernels.vultCvToHz(0.5)`).
+    // `p4` STAYS RAW: Tangents has a fifth param VC-10 does not model, it is never 0 and
+    // never absent, and both of those say it is an input-level-like control whose neutral
+    // is 0.6 rather than 0 — so even its name would not license copying the number across.
+    { id: "tangents", type: "audio_vcv_tangents", col: 2, row: 3, knobs: { cutoff: 1047, resonance: 0.3495, cutoffAtten: 0.618, p4: 0.6 } },
     { id: "felineCv", type: "audio_mixer", col: 2, row: 5, knobs: { level1: 1, level2: 1, master: 1 } },
     {
       id: "peq6", type: "audio_vcv_peq6", col: 3, row: 0,
@@ -572,21 +590,31 @@ export const VCV_AMBIENT_DRONE = {
   ],
   wires: [
     // ── THE DRONE VOICE: a fixed reference pitch into Vessek, chaos into its timbre ──
-    { from: "reftone", fromPort: "cv", to: "vessek", toPort: "i0" },
-    { from: "caudal", fromPort: "o0", to: "add5", toPort: "volt_1" },
-    { from: "caudal", fromPort: "o3", to: "add5", toPort: "volt_2" },
-    { from: "caudal", fromPort: "o6", to: "add5", toPort: "volt_3" },
-    { from: "caudal", fromPort: "o9", to: "add5", toPort: "volt_4" },
-    { from: "caudal", fromPort: "o1", to: "add5", toPort: "volt_5" },
-    { from: "caudal", fromPort: "o4", to: "add5", toPort: "volt_6" },
+    // CAUDAL'S TWELVE OUTPUTS ARE FOUR (x, y, angle) TRIPLES, so index 3k+0/1/2 is
+    // segment k+1's x/y/a — the map vcv-microcosm already uses, and the one this patch's
+    // own index set confirms: it takes 0,3,6,9 and 1,4,7,10 and never a `2 mod 3`, which
+    // is a rack patched across the four segments' X and then their Y.
+    { from: "reftone", fromPort: "cv", to: "vessek", toPort: "v_oct" },
+    { from: "caudal", fromPort: "x_1", to: "add5", toPort: "volt_1" },
+    { from: "caudal", fromPort: "x_2", to: "add5", toPort: "volt_2" },
+    { from: "caudal", fromPort: "x_3", to: "add5", toPort: "volt_3" },
+    { from: "caudal", fromPort: "x_4", to: "add5", toPort: "volt_4" },
+    { from: "caudal", fromPort: "y_1", to: "add5", toPort: "volt_5" },
+    { from: "caudal", fromPort: "y_2", to: "add5", toPort: "volt_6" },
+    // VESSEK'S `i3`…`i8` ARE UNRESOLVED AND ARE LEFT AS INDICES ON PURPOSE. They are the
+    // six jacks of Vult's MODULATION-ASSIGNMENT section, whose destinations live in the
+    // module's own JSON rather than in the cable, and VC-10 replaced that matrix with four
+    // fixed CV inlets (its D-VULTMOD). Naming them would require Vessek's param enum,
+    // which is closed source. A wrong CV destination is inaudible as an error and ruinous
+    // as a sound, so these six wires keep the only true thing about them: their index.
     { from: "add5", fromPort: "volt_1", to: "vessek", toPort: "i3" },
-    { from: "caudal", fromPort: "o7", to: "vessek", toPort: "i4" },
+    { from: "caudal", fromPort: "y_3", to: "vessek", toPort: "i4" },
     { from: "add5", fromPort: "volt_2", to: "vessek", toPort: "i5" },
-    { from: "caudal", fromPort: "o10", to: "vessek", toPort: "i6" },
-    { from: "caudal", fromPort: "o3", to: "vessek", toPort: "i7" },
-    { from: "caudal", fromPort: "o0", to: "vessek", toPort: "i8" },
+    { from: "caudal", fromPort: "y_4", to: "vessek", toPort: "i6" },
+    { from: "caudal", fromPort: "x_2", to: "vessek", toPort: "i7" },
+    { from: "caudal", fromPort: "x_1", to: "vessek", toPort: "i8" },
     // ── THE FORMANT SHAPER: six band levels, six chaotic voltages ─────────────
-    { from: "vessek", fromPort: "o0", to: "peq6", toPort: "in" },
+    { from: "vessek", fromPort: "out", to: "peq6", toPort: "in" },
     { from: "add5", fromPort: "volt_1", to: "peq6", toPort: "level1_cv" },
     { from: "add5", fromPort: "volt_2", to: "peq6", toPort: "level2_cv" },
     { from: "add5", fromPort: "volt_3", to: "peq6", toPort: "level3_cv" },
@@ -597,8 +625,11 @@ export const VCV_AMBIENT_DRONE = {
     { from: "peq6", fromPort: "out", to: "supercell", toPort: "in_l" },
     // ── THE SECOND TAIL: supersaw → Feline (cutoff summed with white noise) → HPF
     // → delay → plate.
-    { from: "supersaw", fromPort: "o1", to: "feline", toPort: "in_l" },
-    { from: "supersaw", fromPort: "o0", to: "feline", toPort: "in_r" },
+    // THE STEREO PAIR REALLY IS CROSSED, and it is transcribed that way rather than
+    // tidied: Super's `OutputIds` is MAIN_OUTPUT_LEFT then MAIN_OUTPUT_RIGHT, so index 1
+    // is the right channel and it is the one the rack ran into Feline's left.
+    { from: "supersaw", fromPort: "right", to: "feline", toPort: "in_l" },
+    { from: "supersaw", fromPort: "left", to: "feline", toPort: "in_r" },
     { from: "add5", fromPort: "volt_3", to: "felineCv", toPort: "in1" },
     { from: "noiseW", fromPort: "out", to: "felineCv", toPort: "in2" },
     { from: "felineCv", fromPort: "out", to: "feline", toPort: "cutoff" },
@@ -608,10 +639,13 @@ export const VCV_AMBIENT_DRONE = {
     { from: "chrono", fromPort: "out_r", to: "plateau1", toPort: "in_r" },
     { from: "add5", fromPort: "volt_5", to: "plateau1", toPort: "input_high_damp" },
     // ── THE AIR BED: pink noise through Tangents, doubled into the vector mixer ──
-    { from: "noiseP", fromPort: "out", to: "tangents", toPort: "i1" },
-    { from: "caudal", fromPort: "o10", to: "tangents", toPort: "i3" },
-    { from: "tangents", fromPort: "o0", to: "vecmix", toPort: "in1" },
-    { from: "tangents", fromPort: "o0", to: "vecmix", toPort: "in2" },
+    // `bp_in`, index 1, and it is not a slip: Tangents exposes LP/BP/HP as three separate
+    // inlets and the manual's own note on the bandpass is that "when modulated magic
+    // happens" — which is exactly what Caudal is doing to the cutoff on the next line.
+    { from: "noiseP", fromPort: "out", to: "tangents", toPort: "bp_in" },
+    { from: "caudal", fromPort: "y_4", to: "tangents", toPort: "cutoff" },
+    { from: "tangents", fromPort: "out", to: "vecmix", toPort: "in1" },
+    { from: "tangents", fromPort: "out", to: "vecmix", toPort: "in2" },
     // ── THE THIRD TAIL: the sample player's own plate ─────────────────────────
     { from: "sample", fromPort: "o0", to: "plateau2", toPort: "in_l" },
     { from: "sample", fromPort: "o1", to: "plateau2", toPort: "in_r" },
