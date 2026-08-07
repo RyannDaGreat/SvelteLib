@@ -65,7 +65,7 @@
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
   import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage } from "../core/properties.js";
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
-  import { MORPH_AUTO, MORPH_KEY } from "../core/morph_property.js";
+  import { MORPH_DEFAULT, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
   import { EXEC_CAT, NODE_INPUT_ROW_KIND, PORT_TYPES, compatibleExecTargets, compatibleSources, isNodeRef, nodeInputLabel } from "../core/nodeflow.js";
   import { OUTPUTS_CAT, outputPropertyRows } from "../core/output_properties.js";
@@ -1618,7 +1618,7 @@
       // any one of its properties — and it is what replaced the interp affordance
       // the Widget type row above used to carry. core/properties.js declares it;
       // this only places it, so the two cannot describe different options.
-      { ...PROPS[MORPH_KEY], key: MORPH_KEY, absentValue: MORPH_AUTO },
+      { ...PROPS[MORPH_KEY], key: MORPH_KEY, absentValue: MORPH_DEFAULT },
     ],
   });
 

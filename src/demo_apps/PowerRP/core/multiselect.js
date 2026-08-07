@@ -184,7 +184,7 @@
 
 import { deepEqual, getPath } from "./deltas.js";
 import { ROW_KINDS, PROPS, interpRowFor, rowSupportsInterp } from "./properties.js";
-import { MORPH_KEY, MORPH_AUTO } from "./morph_property.js";
+import { MORPH_KEY, MORPH_DEFAULT } from "./morph_property.js";
 import { LIST_ROW_KIND } from "./lists.js";
 import { NODE_INPUT_ROW_KIND } from "./nodeflow.js";
 
@@ -505,7 +505,7 @@ const UNIVERSAL_ROW_DEFS = [
     onText: "Visible on this slide — click to hide every selected item (keyframes active: false)",
     offText: "Hidden on this slide — click to show every selected item (keyframes active: true)",
     help: "Whether these items show on THIS slide. Keyframeable like any other property, and its interpolation row is what fades a set in together." },
-  { ...PROPS[MORPH_KEY], key: MORPH_KEY, absentValue: MORPH_AUTO, category: UNIVERSAL_CATEGORY },
+  { ...PROPS[MORPH_KEY], key: MORPH_KEY, absentValue: MORPH_DEFAULT, category: UNIVERSAL_CATEGORY },
 ];
 
 /**

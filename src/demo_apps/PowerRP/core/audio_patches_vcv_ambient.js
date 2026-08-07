@@ -304,13 +304,17 @@ export const VCV_FIRST_GENERATIVE = {
     { id: "rnd4", type: "audio_vcv_random", col: 1, row: 4, knobs: { rate: 2, shape: 1, offset: 1, prob: 1, rand: 1 } },
     { id: "tides1", type: "audio_vcv_tides2", col: 1, row: 5, knobs: { shape: 0.5, smoothness: 0.6976, slope: 0.5, shift: 1 } },
     { id: "tides2", type: "audio_vcv_tides2", col: 1, row: 6, knobs: { shape: 0.5, smoothness: 1, slope: 0.5, shift: 1, slope_cv: 0.3413 } },
-    { id: "gseq1", type: "audio_vcv_gatesequencer8", col: 1, row: 7, knobs: { p0: 1, p3: 1, p12: 1, p16: 1, p64: 8 } },
+    // Knob/port names below were RAW RACK ENUM INDICES when this patch was transcribed
+    // (`p0`, `i1`, `o8`), because the placeholder rows were generated from the patch file
+    // itself. VC-7a shipped the real node and published the index→name map in
+    // `core/audio_specs_vc7a.js`'s header; these are that map applied verbatim.
+    { id: "gseq1", type: "audio_vcv_gatesequencer8", col: 1, row: 7, knobs: { step1_1: 1, step1_4: 1, step2_5: 1, step3_1: 1, length: 8 } },
     // ── SCALING: the tutorial's idiom, four times ─────────────────────────────
     { id: "branches", type: "audio_vcv_branches", col: 2, row: 0, knobs: { p1: 0.2904, p2: 0.5 } },
     { id: "atn1", type: "audio_vcv_dualatenuverter", col: 2, row: 1, knobs: { aten2: 0.159, offset2: 0 } },
     { id: "atn2", type: "audio_vcv_dualatenuverter", col: 2, row: 2, knobs: { aten1: 0.2361, offset1: 0.0241 } },
     { id: "atn3", type: "audio_vcv_dualatenuverter", col: 2, row: 3, knobs: { aten1: 0.1831, offset1: -0.5157 } },
-    { id: "gseq2", type: "audio_vcv_gatesequencer8", col: 2, row: 7, knobs: { p0: 1, p64: 8 } },
+    { id: "gseq2", type: "audio_vcv_gatesequencer8", col: 2, row: 7, knobs: { step1_1: 1, length: 8 } },
     { id: "rnd5", type: "audio_vcv_random", col: 2, row: 8, knobs: { rate: 2, shape: 1, prob: 1, rand: 1 } },
     { id: "dseq", type: "audio_vcv_digitalsequencer", col: 3, row: 0 },
     {
@@ -375,12 +379,16 @@ export const VCV_FIRST_GENERATIVE = {
     { from: "clkd", fromPort: "clk_2", to: "marbles", toPort: "t_clock" },
     { from: "clkd", fromPort: "clk_2", to: "clouds1", toPort: "trig" },
     { from: "clkd", fromPort: "clk_2", to: "clouds2", toPort: "trig" },
-    { from: "clkd", fromPort: "clk_2", to: "gseq1", toPort: "i1" },
+    { from: "clkd", fromPort: "clk_2", to: "gseq1", toPort: "clock" },
     { from: "clkd", fromPort: "clk_4", to: "tides1", toPort: "trig" },
     { from: "clkd", fromPort: "clk_4", to: "rnd1", toPort: "trig" },
     { from: "clkd", fromPort: "clk_4", to: "rnd2", toPort: "trig" },
     { from: "clkd", fromPort: "clk_3", to: "rnd3", toPort: "trig" },
-    { from: "clkd", fromPort: "run", to: "gseq1", toPort: "i2" },
+    // Rack input index 2 is RESET, not `run` — so the harvested rack really did cable the
+    // clock's run signal into the sequencer's reset. Transcribed as found rather than
+    // "corrected" to `run`: the original .vcv was not kept, so a tidier wire would be a
+    // guess dressed as a fix. If this turns out to be a transcription slip, it is one wire.
+    { from: "clkd", fromPort: "run", to: "gseq1", toPort: "reset" },
     // ── VOICE 1: Plaits, triggered by Marbles, shaped by Tides2 ──────────────
     { from: "marbles", fromPort: "t1", to: "plaits1", toPort: "trigger" },
     { from: "tides1", fromPort: "out_1", to: "plaits1", toPort: "timbre" },
@@ -418,13 +426,13 @@ export const VCV_FIRST_GENERATIVE = {
     { from: "branches", fromPort: "out1a", to: "dseq", toPort: "i1" },
     { from: "branches", fromPort: "out1b", to: "elements", toPort: "gate" },
     // ── VOICE 5: the drum machine, the second Rings, and the granulator they feed ──
-    { from: "gseq1", fromPort: "o8", to: "drums", toPort: "i0" },
-    { from: "gseq1", fromPort: "o10", to: "drums", toPort: "i30" },
-    { from: "gseq1", fromPort: "o12", to: "drums", toPort: "i20" },
-    { from: "gseq1", fromPort: "o10", to: "rnd5", toPort: "trig" },
+    { from: "gseq1", fromPort: "trig1", to: "drums", toPort: "i0" },
+    { from: "gseq1", fromPort: "trig3", to: "drums", toPort: "i30" },
+    { from: "gseq1", fromPort: "trig5", to: "drums", toPort: "i20" },
+    { from: "gseq1", fromPort: "trig3", to: "rnd5", toPort: "trig" },
     { from: "rnd5", fromPort: "smooth", to: "drums", toPort: "i34" },
-    { from: "gseq1", fromPort: "o11", to: "gseq2", toPort: "i1" },
-    { from: "gseq2", fromPort: "o8", to: "rings2", toPort: "strum" },
+    { from: "gseq1", fromPort: "trig4", to: "gseq2", toPort: "clock" },
+    { from: "gseq2", fromPort: "trig1", to: "rings2", toPort: "strum" },
     { from: "rings2", fromPort: "odd", to: "feline", toPort: "in_l" },
     { from: "rings2", fromPort: "even", to: "feline", toPort: "in_r" },
     { from: "tides2", fromPort: "out_4", to: "felineCv", toPort: "in1" },

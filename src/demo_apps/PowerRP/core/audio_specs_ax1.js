@@ -668,13 +668,32 @@ const AX_POLY_MAX_VOICES = 16;
 export const AX_POLY_VOICES_SPEC = {
   type: "audio_ax_poly_voices", module: "axPolyVoices", title: "AX Poly Voices",
   family: "modulation", icon: "mdi:call-split", readout: "voices", w: 200,
-  help: "Axoloti's `patch/patcher poly=N` voice allocator: one stream of notes in, and the note actually assigned to ONE voice out. IT ALLOCATES; IT DOES NOT REPLICATE. The engine has no way to instantiate the graph downstream of a node N times, so one of these drives ONE voice graph — for N real voices, place N of them on the same input wires with `voice` set 0…N−1, each feeding its own copy. The allocation arithmetic is the source's exactly: releases are stolen before sounding notes, and among equals the oldest.",
+  // POLY (§ R7-PLAYABLE, and the same declaration POLY_PAD_SPEC carries with the same
+  // meaning): this module takes NOTES — `engine.noteOn`/`noteOff` with a voice pool
+  // behind them — not strikes. `core/live_control.noteRoutes` reads this flag to decide
+  // whether a Keyboard's gate becomes a note or a one-shot trigger, and
+  // tests/poly_voices_test.js asserts it against the module really declaring `noteOn`.
+  // Until this landed, EXACTLY TWO ports in the whole library could receive a note
+  // (`audio_ding.gate`, `audio_poly_pad.gate`) and not one of them was a ported node,
+  // so a Keyboard dropped into any Axoloti patch was decoration.
+  poly: true,
+  help: "Axoloti's `patch/patcher poly=N` voice allocator, and the node that makes an Axoloti patch PLAYABLE: wire a Keyboard's gate into `play` and the keys reach the voice graph. IT ALLOCATES; IT DOES NOT REPLICATE — the engine has no way to instantiate the graph downstream of a node N times, so one of these drives ONE voice graph. For N real voices place N of them, all on the same Keyboard, with `voice` set 0…N−1 and each feeding its own copy. The wired allocation is the source's exactly: releases are stolen before sounding notes, and among equals the oldest.",
   inputs: [
     { key: "note", type: "number", label: "note" },
     { key: "gate", type: "trigger", label: "gate" },
     { key: "gate2", type: "trigger", label: "gate2" },
     { key: "velocity", type: "number", label: "vel" },
     { key: "release_velocity", type: "number", label: "rvel" },
+    // A METHOD PORT — a note is engine.noteOn/noteOff, not an AudioNode connection,
+    // because a voice ALLOCATION is a decision and a wire carries no decisions
+    // (POLY_PAD_SPEC's `gate` states the same reasoning).
+    //
+    // IT IS A SIXTH PORT RATHER THAN `gate` BECOMING ONE, and that is forced:
+    // `core/audio_mirror_diff.js:298` filters every method connection OUT of the wires
+    // it makes, so marking `gate` as a method would have silently un-wired
+    // `audio_ax_midi_keyb.gate → poly.gate` in A1, A9 and C4 — a dead cable that still
+    // draws. The five ratified § R7-POLY ports are untouched; this is additive.
+    { key: "play", type: "trigger", label: "play", method: true },
   ],
   outputs: [
     { key: "note", type: "number", label: "note" },
@@ -684,8 +703,10 @@ export const AX_POLY_VOICES_SPEC = {
     { key: "release_velocity", type: "number", label: "rvel" },
   ],
   knobs: [
-    { key: "voices", label: "Voices", default: 7, min: 1, max: AX_POLY_MAX_VOICES, step: 1, help: "The patcher's `poly` attribute, carried across as DATA — the harvested decks say 7 (A1, A9), 8 (C7), 5 (C1, C11) and 3 (C4). It is the SIZE OF THE POOL notes are allocated into, so raising it makes releases ring longer before they are stolen even when only one voice graph is listening. Theirs is a COMPILE-TIME attribute and this is an ordinary keyframable knob: the pool is always allocated at its maximum and this is the search width, so changing it mid-note is legal and only narrows where the next note may land." },
-    { key: "voice", label: "Voice", default: 0, min: 0, max: AX_POLY_MAX_VOICES - 1, step: 1, help: "WHICH voice of the pool these five outputs report. This knob is NOT in the source — a patcher has no such control because it genuinely instantiates the subpatch N times, and the engine cannot. It is the honest seam: without it this node could only ever be voice 0 and `voices` would be a knob with no picture behind it. Set it past `voices` and the outputs stay silent, which is the truth about a voice that does not exist." },
+    { key: "voices", label: "Voices", default: 7, min: 1, max: AX_POLY_MAX_VOICES, step: 1, construct: true, help: "The patcher's `poly` attribute, carried across as DATA — the harvested decks say 7 (A1, A9), 8 (C7), 5 (C1, C11) and 3 (C4). It is the SIZE OF THE POOL notes are allocated into, so raising it makes releases ring longer before they are stolen even when only one voice graph is listening. CONSTRUCT-TIME, and for a mechanical reason rather than a design one: `synth/engine.js`'s addModule reads it once, out of `meta.voices`, to size the pool a played note is allocated from — a live change would leave the engine's pool and this node's own table disagreeing about how many voices exist." },
+    { key: "voice", label: "Voice", default: 0, min: 0, max: AX_POLY_MAX_VOICES - 1, step: 1, help: "WHICH voice of the pool these five outputs report. This knob is NOT in the source — a patcher has no such control because it genuinely instantiates the subpatch N times, and the engine cannot. It is the honest seam: without it this node could only ever be voice 0 and `voices` would be a knob with no picture behind it. Set it past `voices` and the outputs stay silent, which is the truth about a voice that does not exist. TO PLAY A CHORD: place `voices` copies of this node on one Keyboard, number them 0…N−1 here, and give each its own voice graph." },
+    { key: "velocity", label: "Velocity", default: AX_DEFAULT_VELOCITY_BYTE / AX_MIDI_DATA_FULL_SCALE, ...UNIT, help: "What a note-on is worth. It is a knob AND the offset the `velocity` inlet sums into, which is what stops an UNWIRED node reporting zero — A1 multiplies its filter envelope by this, so a silent zero there is a pad with no sweep and nothing to say why. A key press carries no velocity (there is no MIDI in this engine), so a played note takes this value." },
+    { key: "release_velocity", label: "Release Vel", default: AX_DEFAULT_RELEASE_VELOCITY_BYTE / AX_MIDI_DATA_FULL_SCALE, ...UNIT, help: "What a note-off is worth, on the same knob-plus-inlet arrangement. A1 negates it into its decay time, so a higher value SHORTENS the release." },
   ],
   derivation: derivedFrom(FACTORY, ["objects/patch/patcher.axo", "objects/patch/inlet a.axo", "objects/patch/outlet a.axo"],
     "NOT an <obj> code block: `patch/patcher.axo` is a `AxoObjectPatcher` shell with no code at all. The allocator is GENERATED — axoloti/src/main/java/axoloti/codegen/patch/PatchViewCodegen.java:1042-1083 (`generatePolyCode`'s `sMidiCode`), with its state at :946-950 and its init at :965-987, read at axoloti/axoloti commit 46f6e4b383ce182da9dcca25b9d4b544fe20f990",
@@ -693,6 +714,8 @@ export const AX_POLY_VOICES_SPEC = {
     [
       KRATE_NOTE,
       "⚠ THE SUBGRAPH IS NOT REPLICATED, AND THAT IS THE HALF THIS NODE CANNOT DELIVER. § R7-POLY's ratified contract is \"replicate the subgraph DOWNSTREAM of me N times\"; `core/audio_mirror_diff.readAudioScene` is a FLAT 1:1 map — one item is one module and one wire is one connect — so nothing in the engine can honour it. What ships is the ALLOCATION, exactly; what is missing is the INSTANTIATION. Reported to the lead with what the mirror would need.",
+      "⚠ A PLAYED NOTE IS ALLOCATED BY **OUR** POOL, NOT BY AXOLOTI'S. `synth/engine.js:854-864` chooses the slot from `synth/voices.js` (oldest-first) and hands this module one; the LRU transcribed above runs only for the WIRED path. That is a real divergence and it is deliberate — the engine's reason for owning allocation is that two poly modules stealing differently would be a difference nobody could hear the reason for. The two policies agree on the common case (a free voice is taken before a sounding one is stolen) and differ on WHICH sounding voice loses: theirs is least-recently-*used* counting releases, ours is oldest-*started*.",
+      "A PLAYED NOTE LANDS AT THE NEXT CONTROL TICK, NOT AT THE AUDIO-CLOCK TIME THE ENGINE NAMED. `engine.noteOn` passes a `time` and this module reaches its processor by `postMessage`, which cannot be scheduled — so a note is up to one quantum (2.67 ms at 48 kHz) late. `synth/modules.js polyPad` honours `time` exactly through `setValueAtTime`; a worklet-backed voice cannot, and a SEQUENCED note would hear it as jitter where a played one will not.",
       "THE `voice` KNOB IS AN ADDITION TO THE RATIFIED SIGNATURE (the five ports are untouched). Without it the node is permanently voice 0 and looks polyphonic while being monophonic, which § R7-POLY names as the worst outcome available.",
       "THE SOURCE ALSO HANDLES SUSTAIN (CC64) AND `polychannel` / `polyexpression` MPE MODES (PatchViewCodegen.java:1086-1310). None is ported: there is no CC transport to carry a pedal and no per-channel note stream to split. A sustain pedal here would be a `hold` inlet, which is a design decision and not a transcription.",
       "THEIR `priority` COUNTER NEVER RESETS AND THE `100000` OFFSET IS FINITE, so after 100000 note events a released voice's priority catches up with a sounding one's and the two classes stop separating — the allocator starts stealing sounding notes while free voices sit idle. Ported as-is (it takes hours of playing to reach), and named because it is a real bound rather than an invariant.",

@@ -44,6 +44,8 @@ import {
   axPolyNoteOn, axPolyState, axSemitonesToHz,
 } from "../synth/ax1_dsp.js";
 import { audioKnobRows, audioPorts, semitonesToHz } from "../core/audio_nodes.js";
+import { noteRoutes } from "../core/live_control.js";
+import { createVoicePool, noteOn as voicePoolNoteOn } from "../synth/voices.js";
 import { NODE_FAMILY_NAMES } from "../core/node_chrome.js";
 import { PORT_TYPE_NAMES } from "../core/nodeflow.js";
 
@@ -611,6 +613,137 @@ check("poly/voices: a note-off releases EVERY voice holding it — their loop ha
   assert.deepEqual(axPolyNoteOff(60, s), [0, 1]);
 });
 
+// ── § R7-PLAYABLE — can a key press actually reach an Axoloti voice? ────────
+//
+// MEASURED 2026-08-07 AND THIS IS WHY THE NODE CHANGED: `core/live_control.noteRoutes`
+// is the ONLY path from a key press to the engine and its gate is one line —
+// `if (!port?.method) continue;`. Before this, exactly TWO ports in ~130 specs declared
+// `method: true` (`audio_ding.gate`, `audio_poly_pad.gate`) and neither was a ported
+// node, so a Keyboard dropped into any Axoloti patch was decoration. These checks are
+// the ones that would go red if that opt-in were ever removed again.
+
+/** Query. `audio_ax_poly_voices`'s plugin, as the registry hands it to noteRoutes. */
+const POLY_VOICES_PLUGIN = BLOCK_PLUGINS.find((p) => p.type === "audio_ax_poly_voices");
+
+/**
+ * Query (installs and restores a global). Build the real `axPolyVoices` factory against
+ * a recording stand-in for `AudioWorkletNode`, and return the module plus every message
+ * it posted — the note events are the only thing crossing to the audio thread, so they
+ * are what a test of the keyboard path has to read.
+ *
+ * `AudioWorkletNode` is a GLOBAL the worklet modules construct directly; installing a
+ * stand-in around the call is the pattern `tests/audio_nodes_test.js:151-163` already
+ * uses, copied rather than invented. Restored in a `finally` so one bad build cannot
+ * leave a fake constructor behind for every later check in this file.
+ *
+ * @param {object} params - construct params, e.g. {voices: 5}
+ * @returns {{instance: object, posted: object[]}}
+ */
+function buildPolyVoicesModule(params) {
+  const posted = [];
+  const priorWorklet = globalThis.AudioWorkletNode;
+  globalThis.AudioWorkletNode = function () {
+    const values = new Map();
+    return {
+      connect() { return this; },
+      disconnect() {},
+      // The factory reads `voices` back off this to fill `meta.voices`, so the stub has
+      // to remember what `applyParams` set rather than answering a constant.
+      parameters: {
+        get(name) {
+          if (!values.has(name)) values.set(name, { value: 0, minValue: -1e9, maxValue: 1e9 });
+          return values.get(name);
+        },
+      },
+      port: { postMessage(message) { posted.push(message); }, onmessage: null },
+    };
+  };
+  try {
+    return { instance: BLOCK_MODULE_FACTORIES.axPolyVoices({}, params), posted };
+  } finally {
+    globalThis.AudioWorkletNode = priorWorklet;
+  }
+}
+
+check("⚠ § R7-PLAYABLE: a Keyboard's gate really becomes a NOTE on the allocator", () => {
+  // End to end through the real router, not a re-implementation of it: a keyboard, a
+  // poly node whose `play` input is wired to that keyboard's `gate` output, and the
+  // engine calls that fall out. `noteRoutes` cares about the SOURCE port being `gate`
+  // (core/live_control.js:163) and about the TARGET port declaring `method: true`.
+  const registry = { get: (type) => (type === "audio_ax_poly_voices" ? POLY_VOICES_PLUGIN : null) };
+  const items = {
+    kbd: { type: "node_keyboard" },
+    poly: { type: "audio_ax_poly_voices", inputs: { play: { item: "kbd", port: "gate" } } },
+  };
+  const on = noteRoutes(items, registry, "kbd", "on", 69, 440);
+  assert.equal(on.length, 1, "the key should reach exactly the one wired allocator");
+  assert.equal(on[0].op, "noteOn", "a POLY spec takes NOTES, not a one-shot trigger");
+  assert.equal(on[0].id, "poly");
+  assert.equal(on[0].note, 69, "the note IDENTITY travels — it is what pairs the note-off");
+  assert.equal(on[0].frequency, 440, "…and the pitch travels in HERTZ, which is why the module converts");
+  const off = noteRoutes(items, registry, "kbd", "off", 69, 440);
+  assert.deepEqual(off, [{ op: "noteOff", id: "poly", note: 69 }]);
+});
+
+check("§ R7-PLAYABLE: the five WIRED ports are untouched — `play` is a sixth, not a rename", () => {
+  // The failure this avoids is silent: core/audio_mirror_diff.js:298 filters every
+  // method connection out of the wires it makes, so had `gate` become the method port,
+  // `audio_ax_midi_keyb.gate → poly.gate` in A1, A9 and C4 would have become a cable
+  // that still draws and carries nothing.
+  const spec = BLOCK_SPECS.find((s) => s.type === "audio_ax_poly_voices");
+  assert.equal(spec.poly, true, "the flag noteRoutes reads");
+  const method = spec.inputs.filter((p) => p.method).map((p) => p.key);
+  assert.deepEqual(method, ["play"], "exactly one method port, and it is not one of the ratified five");
+  // § R7-POLY's ratified signature, still exactly itself.
+  assert.deepEqual(spec.inputs.filter((p) => !p.method).map((p) => p.key),
+    ["note", "gate", "gate2", "velocity", "release_velocity"]);
+  assert.deepEqual(spec.outputs.map((p) => p.key),
+    ["note", "gate", "gate2", "velocity", "release_velocity"]);
+});
+
+check("§ R7-PLAYABLE: the module declares noteOn/noteOff and sizes the pool from `voices`", () => {
+  // `synth/engine.js:629-631` gives a voice pool to ANY instance declaring `noteOn`,
+  // sized `instance.meta?.voices ?? DEFAULT_POLY_VOICES`. Without `meta.voices` every
+  // patcher would silently get eight voices and the harvested 7 / 8 / 5 / 3 would be a
+  // knob that changed nothing about who gets stolen.
+  const built = buildPolyVoicesModule({ voices: 5 });
+  assert.equal(typeof built.instance.noteOn, "function");
+  assert.equal(typeof built.instance.noteOff, "function");
+  assert.equal(built.instance.meta.voices, 5);
+  assert.equal(createVoicePool(built.instance.meta.voices).slots.length, 5,
+    "the pool the engine would build really is the patcher's poly=N");
+});
+
+check("⚠ TRAP 1 AT THE ONE SEAM: engine.noteOn hands HERTZ, the processor is told SEMITONES", () => {
+  // The conversion that stops A440 arriving as semitone 440. It happens ONCE, here, so
+  // seventeen patches do not each need a converter node.
+  const built = buildPolyVoicesModule({ voices: 3 });
+  built.instance.noteOn(1, 440);
+  assert.deepEqual(built.posted, [{ note: { slot: 1, semitones: 5, on: true } }]);
+  built.instance.noteOn(2, axSemitonesToHz(0));
+  assert.ok(Math.abs(built.posted[1].note.semitones) < 1e-12, "E4 is semitone 0");
+  built.instance.noteOff(1);
+  assert.deepEqual(built.posted[2], { note: { slot: 1, on: false } });
+  // A frequency with no logarithm is REFUSED rather than posted as NaN: a NaN reaching
+  // an AudioParam stays NaN, so the voice would go silent for the rest of the session.
+  assert.throws(() => built.instance.noteOn(0, 0), /needs a positive frequency/);
+});
+
+check("§ R7-PLAYABLE: N nodes on one Keyboard stay in LOCKSTEP, which is what makes a chord", () => {
+  // THE CLAIM THE WHOLE N-COPIES ARRANGEMENT RESTS ON, and it is not obvious: each node
+  // gets its OWN pool from the engine, so N nodes are N independent allocators. They act
+  // as one instrument only because synth/voices.js is PURE — same size, same events,
+  // same order, therefore same slots. If that ever stopped holding, every voice graph
+  // would play the same note and the chord would collapse to a unison.
+  const chord = [60, 64, 67, 72];
+  const allocate = () => {
+    let pool = createVoicePool(4);
+    return chord.map((note) => { const r = voicePoolNoteOn(pool, note); pool = r.pool; return r.slot; });
+  };
+  assert.deepEqual(allocate(), allocate(), "two independent pools must allocate identically");
+  assert.deepEqual(allocate(), [0, 1, 2, 3], "…and a four-note chord on four voices steals nothing");
+});
+
 // ── The coercion table, restated as tests because it is the trap ────────────
 
 check("the cross-type coercions are the ones § R7-11 names, not the plausible ones", () => {
@@ -730,10 +863,19 @@ check("each factory's ports and params are exactly what its spec declares", () =
       `${spec.type}: the engine's knobs and the spec's disagree`);
 
     // PORTS ⇄ PORTS. A spec input is either an audio inlet the processor really has,
-    // or a param the factory chose to expose as an inlet (§ R7-11's duality rule).
+    // or a param the factory chose to expose as an inlet (§ R7-11's duality rule) — or
+    // a METHOD port, which is neither. A method port is engine.noteOn/noteOff and the
+    // mirror never connects it (core/audio_mirror_diff.js:298 filters method wires out
+    // of the connections it makes), so the engine's inputs map must NOT contain one;
+    // `synth/modules.js polyPad` likewise keeps its `gate` out of its own inputs map.
     const engineInlets = new Set([...declaration.inputs, ...declaration.paramInlets]);
-    assert.deepEqual([...engineInlets].sort(), spec.inputs.map((p) => p.key).sort(),
+    const wiredInputs = spec.inputs.filter((p) => !p.method);
+    assert.deepEqual([...engineInlets].sort(), wiredInputs.map((p) => p.key).sort(),
       `${spec.type}: the engine's inlets and the spec's disagree`);
+    for (const port of spec.inputs.filter((p) => p.method)) {
+      assert.ok(!engineInlets.has(port.key),
+        `${spec.type}.${port.key} is a METHOD port and must not also be an AudioNode inlet`);
+    }
     assert.deepEqual([...declaration.outputs].sort(), spec.outputs.map((p) => p.key).sort(),
       `${spec.type}: the engine's outlets and the spec's disagree`);
 
@@ -1058,7 +1200,10 @@ check("the worklet's allocator is ax1_dsp's allocator, and `voice` selects a rea
   const Poly = WORKLET.get("ax1-poly-voices");
   const silence = new Float32Array(AX1_QUANTUM);
   const notes = [5, 9, 12];
-  const params = (voice) => ({ voices: constantParam(3), voice: constantParam(voice) });
+  const params = (voice) => ({
+    voices: constantParam(3), voice: constantParam(voice),
+    velocity: constantParam(0.8), release_velocity: constantParam(0.25),
+  });
 
   const reported = [0, 1, 2].map((voice) => {
     const processor = new Poly();
@@ -1087,6 +1232,7 @@ check("the worklet's allocator is ax1_dsp's allocator, and `voice` selects a rea
   const gate = new Float32Array(AX1_QUANTUM).fill(1);
   const [outOfRange, outOfRangeGate] = runQuantum(beyond, [note, gate, silence, silence, silence], 5, {
     voices: constantParam(2), voice: constantParam(5),
+    velocity: constantParam(0.8), release_velocity: constantParam(0.25),
   });
   assert.equal(outOfRange[0], 0);
   assert.equal(outOfRangeGate[0], 0);

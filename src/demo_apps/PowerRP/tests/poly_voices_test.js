@@ -213,6 +213,39 @@ test("POLY_PAD_SPEC's ports are declared types with a legal `voices` range", () 
   assert.equal(voices.construct, true, "voices are built eagerly, so changing the count rebuilds");
 });
 
+/**
+ * Query. `AudioWorkletNode` is a GLOBAL the worklet-backed modules construct directly,
+ * and bare node has none — so a poly module implemented as a worklet crashes this file
+ * at construction rather than being checked. Installing a stand-in around the call is
+ * the pattern `tests/audio_nodes_test.js:151-163` already uses for exactly this, copied
+ * rather than invented.
+ *
+ * ADDED WHEN THE FIRST WORKLET-BACKED POLY MODULE LANDED (`audio_ax_poly_voices`,
+ * § R7-PLAYABLE). It changes no assertion — it widens the harness so the assertion
+ * below reaches modules it previously could not build. Before it, a worklet module
+ * declaring `poly: true` aborted this whole suite at check three with a bare
+ * `ReferenceError`, which reads as a broken test file rather than as a missing stub.
+ *
+ * @param {function} factory - an engine module factory
+ * @returns {object} the built module
+ */
+function buildWithWorkletStub(factory) {
+  const priorWorklet = globalThis.AudioWorkletNode;
+  globalThis.AudioWorkletNode = function () {
+    return {
+      connect() { return this; },
+      disconnect() {},
+      parameters: { get: () => param(0) },
+      port: { postMessage() {}, onmessage: null },
+    };
+  };
+  try {
+    return factory(stubAudioContext(), {}, {});
+  } finally {
+    globalThis.AudioWorkletNode = priorWorklet;
+  }
+}
+
 test("a spec claiming POLY names a module that really declares noteOn", () => {
   // core/live_control.noteRoutes routes a keyboard's gate by this flag alone. A
   // spec claiming polyphony the module cannot deliver would be a chord that
@@ -220,7 +253,7 @@ test("a spec claiming POLY names a module that really declares noteOn", () => {
   // noteOn, mid-performance.
   for (const spec of AUDIO_SPECS) {
     if (!spec.poly) continue;
-    const instance = MODULE_FACTORIES[spec.module](stubAudioContext(), {}, {});
+    const instance = buildWithWorkletStub(MODULE_FACTORIES[spec.module]);
     assert.equal(typeof instance.noteOn, "function", `${spec.type} claims poly but ${spec.module} has no noteOn`);
     assert.equal(typeof instance.noteOff, "function", `${spec.type} claims poly but ${spec.module} has no noteOff`);
   }

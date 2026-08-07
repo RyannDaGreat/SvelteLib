@@ -126,6 +126,9 @@ export const AXO_DRUM_MACHINE = {
     "`ctrl/i radio 8 v` ×7, `ctrl/i` ×2, `ctrl/dial b` ×2 and `disp/ibar 16` dropped as CHROME — NODE_REGISTRY.md's own ruling for the `ui/control` and `ui/scope` rows ('knob band (audio_nodes.js)', 'audio_meter + audio_spectrum'). Their values are not lost, they MOVED onto the knob they drove: the seven radios are the seven Step Levels `Row` knobs (5, 6, 5, 0, 0, 0, 2), the two `ctrl/i` are the two Mux `Select` knobs (3, 0), and the two dials are the clock LFO's pitch (−47.0) and the swing LFO's phase (21.0 dial → 0.328125 cycles).",
     "`audio/out stereo` → the mono analysis tail. Both its channels are fed by the SAME node in the original, so nothing is lost but the port count. `audio_ax_stereo_out` is shipped and faithful, but it has no outputs, so a patch ending in it could not reach the `audio_output` every blueprint must — see core/audio_patches.js.",
     // ── THE ONE ADDED-NODE CLASS ────────────────────────────────────────────
+    "AUTOPLAY (§ R7-AUDIBLE) — AND A10 NEEDS NONE, WHICH IS THE FIRST WAY AND THE ONE THE RULING PREFERS. It was −inf dBFS on 2026-08-07 and this file was briefed to give it a self-driving source; hours later AX-4's envelopes, `mix/mix N`, the two DP clippers and the crossfader landed and the harvested machine came alive on its own at −27.0 dBFS, peak −20.7, with a visible rhythmic envelope (an eight-slice RMS of −25 / −24 / −28 / −57 / silence / −34 / −24 / −24 — the machine's own bar-length rest). It has its own clock, its own 8-pattern step tables and its own `pulse/lfsrburst`; the silence was never a missing trigger, it was an unfinished port, exactly as the brief suspected. NOTHING WAS ADDED. Two placeholders remain — see the next entry.",
+    "⚠ `audio_ax_env_d` IS A PLACEHOLDER THAT WILL NEVER BE SUPERSEDED, AND IT IS A NAME COLLISION RATHER THAN MISSING WORK. AX-4 shipped `env/d` as `audio_ax_env_decay` (the name `core/audio_stubs_axo_poly.js` guessed); this file guessed `audio_ax_env_d`. Both stand for the same object with BYTE-IDENTICAL ports, so `STUB_SUPERSEDED` — which matches on the type string — retires one and not the other. The consequence is audible: `bdsweep`, `hhamp` and `snamp` are dead, so the kick has no pitch sweep and the hat and snare have no amplitude envelope. THE SWAP IS NOT SAFE TO MAKE FROM HERE, because the shipped node's `d` is in SECONDS and these three hold raw Axoloti dials (−20, 1.5, 16) — it is one case of the block-wide dial→unit sweep the entry below records. Reported to the lead rather than half-done.",
+    "⚠ THE HARVESTED DIALS ON THIS PATCH'S ENVELOPES AND MIXERS ARE STILL RAW, and now that AX-4 has landed they are OUT OF THE SHIPPED KNOBS' RANGES. Measured 2026-08-07 across all eight Axoloti patches: about 45 values, on `env/adsr` (a/d/r want `axTimeDialSeconds`, s wants dial/64), `env/ahd m` (`axDecayDialSeconds`), `env/d`, `env/d lin m` and the two DP clippers (dial/64). `core/audio_specs_ax4.js`'s own header names this work and defers it to whoever owns the patch files. IT IS NOT MECHANICAL EVERYWHERE: `idxbd`/`idxhh`/`idxsn` carry `gain1: 16`, which is not a gain but the ×16 that turns the clock's 0…1 saw into a 16-step index — dividing it by 64 is § R7-AXO-TRAPS trap 2 and would leave the sequencer on step 0. That one needs an `audio_ax_math` node, not a converted knob. Called out here rather than swept in silently, and rather than guessed at.",
     "NINE `audio_trigger` NODES ARE INSERTED, and they are the price of an honest type system. An Axoloti `bool32` outlet is a level our AX-1 nodes type `audio`; an Axoloti `bool32.rising` inlet is an EDGE we type `trigger`; and core/nodeflow.COERCIONS has no audio→trigger entry, deliberately, because turning a level into an edge is a real operation with a real parameter. So every junction where a logic gate, a mux or a decoder meets a counter, latch, envelope or burst generator goes through the Schmitt edge detector — which is exactly what core/audio_patches.js's SEQUENCED_DINGS records learning. Cost: their pulse is one control tick (1/3000 s) and ours is 1 ms, and ours has hysteresis (0.1/0.5) their bare `> 0` does not.",
   ],
   nodes: [
@@ -424,6 +427,139 @@ export const AXO_DRUM_MACHINE = {
  * mono voice. Their time inlets are separately knobbed and smoothed, which is what makes
  * a slow sweep of one side audible against the other.
  */
+/** A10 and this patch both need the 5.15 Hz base an `audio_ax_lfo` runs at with its
+ *  `pitch` knob at 0 — restated from AX-2's arithmetic, as the other two Axoloti patch
+ *  sets restate it. THE FIX FOR ALL THREE COPIES IS ONE LEAF MODULE THE LEAD OWNS; the
+ *  PATCH-SET CONTRACT allows one exported name per set file and forbids importing
+ *  `core/audio_patches.js`, so a helper two sets want has nowhere shared to live. */
+const AX_LFO_BASE_HZ = 5.15;
+
+/**
+ * THE AUTOPLAY GATE'S WIDTH — 100 ms, which is `TriggerProcessor`'s own `maxValue`
+ * (synth/worklets/processors.js:339) and therefore a ceiling rather than a taste.
+ * MEASURED on C7 in the sibling set: an `audio_adsr` handed the 5 ms the ported Schmitts
+ * use attacks for 5 ms and then RELEASES — one blip, not a note, and it cost that patch
+ * 30 dB. `env/ahd m` here is gated the same way and would have done the same.
+ */
+const AUTOPLAY_PULSE_MS = 100;
+
+/**
+ * Pure function. The `audio_ax_lfo` `pitch` knob that runs at a given rate.
+ *
+ * @param {number} hz - the wanted rate in hertz
+ * @returns {number} semitones, rounded to the dial's own tenth
+ *
+ * @example lfoPitchForHz(5.15) // 0
+ * @example lfoPitchForHz(0.5) // -40.4 — a note every two seconds
+ */
+function lfoPitchForHz(hz) {
+  return Math.round(12 * Math.log2(hz / AX_LFO_BASE_HZ) * 10) / 10;
+}
+
+/** C11's autoplay return gain on `mixl`/`mixr`'s free sixth input. Measured: at unity
+ *  the branch reached the tail at −0.5 dBFS peak with a 4 dB crest factor — squared off
+ *  against the limiter, because the two `dp_soft_clip` nodes it passes are still driven by
+ *  dial-unit gains. 0.12 lands it near −13 dBFS peak with the transients intact. */
+const C11_AUTOPLAY_RETURN_GAIN = 0.12;
+
+/** C11's four-note figure and the multiplier that turns it into hertz. 8/10/12/15 x 16 is
+ *  128 / 160 / 192 / 240 Hz — C3, E3, G3, B3 to within a few cents, and the octave the
+ *  harvested Braids voice sits in. The multiplier is 16 because that is `audio_ax_math`'s
+ *  `b` ceiling and one node is enough at this pitch; a higher octave would need the
+ *  two-node SCALE chain the sibling sets use. */
+const C11_AUTOPLAY_STEPS = [8, 10, 12, 15];
+const C11_AUTOPLAY_HZ_PER_STEP = 16;
+
+/** C11's autoplay note rate and its first free row. A bowed string with a 341 ms delay
+ *  behind it wants space between notes; 0.45 Hz is a note every 2.2 seconds. */
+const C11_AUTOPLAY_HZ = 0.45;
+const C11_AUTOPLAY_ROW = 18;
+
+/**
+ * C11's AUTOPLAY BRANCH — § R7-AUDIBLE's third way, in four nodes.
+ *
+ * ── WHAT WAS MEASURED, AND WHY THE PATCH WAS DEAD ──────────────────────────
+ * −inf dBFS. TWO reasons, and the second is the interesting one. `audio_ax_brds_bowed` is
+ * a placeholder, so the patch has no source at all — that much is expected. But its
+ * `audio_ax_midi_keyb` had NO WIRE ON ANY OF ITS FOUR INPUTS either: this patch ships no
+ * `node_keyboard` (its own deviation explains why — the widget emits hertz and has no
+ * velocity output), so nothing could ever have gated `env/ahd m`, and the velocity →
+ * colour mapping the patch's `help` calls "the expressive part" had no velocity to read.
+ *
+ * ── SO THE CLOCK GATES THE KEYBOARD NODE ITSELF ────────────────────────────
+ * `audio_ax_midi_keyb` is a real shipped node with a real `gate` inlet, and gating it
+ * wakes the whole front of the patch: `note` through `bendmix` to the pitch, `velocity`
+ * into `velamp` and `velcolour`, and the gate into the AHD envelope. The substituted
+ * oscillator is then pitched and gated entirely by the patch's own machinery.
+ *
+ * ── ⚠ AND A GATE ALONE IS NOT ENOUGH: THE NODE NEEDS A PITCH IN HERTZ ──────
+ * MEASURED, after the first version of this branch shipped a gate and nothing else and
+ * the patch stayed at −inf. `axMidiKeyb`'s note-on is guarded by its zone — its own
+ * derivation says a note outside [start_note, end_note] "is IGNORED entirely, gate
+ * included" — and with the `pitch` inlet unwired it reads 0 Hz, whose semitone value is
+ * −Infinity. So EVERY output stayed dead: no gate, no note, and no velocity either.
+ * Isolated in `.frenzy/w_r7aud`: the identical graph with the gate wired straight to the
+ * envelope sounds at −16.5 dBFS, and routed through the keyboard node it is silent; add a
+ * hertz value on `pitch` and the two match to a tenth of a dB.
+ *
+ * THAT IS A TRAP WORTH NAMING, because it is the mirror image of § R7-AXO-TRAPS trap 1.
+ * That trap is about wiring a HERTZ source into a SEMITONE port; this is about the
+ * adaptor built to fix it being INERT until something puts hertz in. Nothing warns you —
+ * the canvas shows a correctly wired keyboard driving a correctly wired envelope.
+ *
+ * The three nodes that supply it are a counter, a step table and one multiply: the table
+ * holds a four-note figure and the multiply turns it into 128/160/192/240 Hz, which is
+ * the octave the harvested `bowed` voice sits in.
+ *
+ * ── A SAW IS NOT A BOWED STRING, AND IS NOT CLAIMED TO BE ──────────────────
+ * Braids' BOWED model is a physical model with a bow-friction nonlinearity; a sawtooth
+ * through this patch's own vcf3 pair is a spectral impression of one. It is the closest
+ * shipped source, and the substitution is what the deviation records. Everything AFTER
+ * the oscillator is the patch's own: `velamp`'s envelope × velocity, both output filters,
+ * both soft clippers.
+ *
+ * ── IT ENTERS AT `in6`, THE MIXER'S SIXTH WEIGHTED INPUT ───────────────────
+ * `voicevca` and `voiceamp` are held by the placeholder's wires, and five of `mixl`/
+ * `mixr`'s six weighted inputs are taken (three of them by placeholders). `in6` is free on
+ * both. IT IS DELIBERATELY NOT `bus_in`, which is also free: `bus_in` is unity and this
+ * branch needs a level, because the harvested `dp_soft_clip` pair it passes through is
+ * driven by dial-unit gains (`ingain: 25`) that the shipped node's 0…1 range does not
+ * cover — at unity the branch peaked at −0.5 dBFS with a 4 dB crest factor, i.e. squared
+ * off against the output limiter. `gain6` is the honest lever because it is OURS; the
+ * clipper's gains are the port's, and re-deriving them is the block-wide dial→unit sweep
+ * this patch's own deviations already defer to AX-4.
+ *
+ * The diffuser, the reverb, the chorus and the two delays are all still placeholders, so
+ * what you hear is the dry voice through the filters — not the four-engine Mutable stack.
+ */
+const AXO_MUTABLE_STACK_AUTOPLAY = {
+  nodes: [
+    { id: "apLfo", type: "audio_ax_lfo", col: 0, row: C11_AUTOPLAY_ROW, knobs: { waveform: "square", pitch: lfoPitchForHz(C11_AUTOPLAY_HZ) } },
+    { id: "apEdge", type: "audio_trigger", col: 0, row: C11_AUTOPLAY_ROW + 1, knobs: { pulseMs: AUTOPLAY_PULSE_MS } },
+    // THE FOUR-NOTE FIGURE AND ITS HERTZ SCALER. All at column 0, because every one of
+    // them has to reach `keyb`, which is at column 0 — the same forced-column rule the
+    // sibling set's clock hits, and equal columns are legal.
+    { id: "apCount", type: "audio_ax_counter", col: 0, row: C11_AUTOPLAY_ROW + 2, knobs: { maximum: C11_AUTOPLAY_STEPS.length } },
+    { id: "apSteps", type: "audio_ax_steps_value", col: 0, row: C11_AUTOPLAY_ROW + 3, knobs: Object.fromEntries(C11_AUTOPLAY_STEPS.map((v, i) => [`v${i}`, v])) },
+    { id: "apHz", type: "audio_ax_math", col: 0, row: C11_AUTOPLAY_ROW + 4, knobs: { operation: "multiply", b: C11_AUTOPLAY_HZ_PER_STEP } },
+    { id: "apOsc", type: "audio_ax_osc", col: 2, row: C11_AUTOPLAY_ROW, knobs: { waveform: "saw", pitch: 0 } },
+    { id: "apVca", type: "audio_vca", col: 3, row: C11_AUTOPLAY_ROW, knobs: { gain: 0 } },
+  ],
+  wires: [
+    { from: "apLfo", fromPort: "out", to: "apEdge", toPort: "in" },
+    { from: "apEdge", fromPort: "out", to: "apCount", toPort: "trig" },
+    { from: "apCount", fromPort: "count", to: "apSteps", toPort: "index" },
+    { from: "apSteps", fromPort: "out", to: "apHz", toPort: "a" },
+    { from: "apHz", fromPort: "out", to: "keyb", toPort: "pitch" },
+    { from: "apEdge", fromPort: "out", to: "keyb", toPort: "gate" },
+    { from: "bendmix", fromPort: "out", to: "apOsc", toPort: "pitch" },
+    { from: "apOsc", fromPort: "out", to: "apVca", toPort: "in" },
+    { from: "velamp", fromPort: "out", to: "apVca", toPort: "gain" },
+    { from: "apVca", fromPort: "out", to: "mixl", toPort: "in6" },
+    { from: "apVca", fromPort: "out", to: "mixr", toPort: "in6" },
+  ],
+};
+
 export const AXO_MUTABLE_STACK = {
   id: "axo-mi-stack",
   title: "Axoloti Mutable Stack (big MI patch)",
@@ -449,6 +585,8 @@ export const AXO_MUTABLE_STACK = {
     "`gain/vca` → `audio_vca` (NODE_REGISTRY marks it `variant(ours)`), at `gain: 0` because the wire is the level. `audio/out stereo` → an `audio_mixer` summing L and R into the mono analysis tail: the tail's meter, spectrum and output are single-input, and a patch must reach an `audio_output`. The two channels genuinely differ here (unlike A10's), so this collapse loses the stereo image — the two chains are still separately visible and separately filtered up to that point.",
     "`tiar/dist/DPSoftClip`'s params are `InGain` / `OutGain`; the placeholder spells them `ingain` / `outgain` under the port-key normalisation rule (lowercase, non-alphanumerics to `_`). Values 25.0 / 15.0 unchanged.",
     "`kfilter/lowpass` has ONE `freq` param (16.0 harvested); our shipped `audio_ax_kfilter_lowpass` is the asymmetric variant with separate `rise` and `decay`. Both are set to 16.0, which is the symmetric filter the source has.",
+    "AUTOPLAY (§ R7-AUDIBLE, the THIRD way; seven `ap*` nodes). Measured before: −inf dBFS; after: −9.9 dBFS, peak −3.9. TWO reasons it was dead, and the second was not expected. `audio_ax_brds_bowed` is a placeholder, so there is no source — that much follows from the deviation above. But this patch ships no `node_keyboard` (see the unit-bug deviation for why), so its `audio_ax_midi_keyb` had NO WIRE ON ANY OF ITS FOUR INPUTS: nothing could ever have gated `env/ahd m`, and the velocity → colour mapping this patch's `help` calls the expressive part had no velocity to read. So the branch gates the keyboard node itself, which wakes the whole front of the patch, and substitutes ONE `audio_ax_osc` saw for the Braids BOWED model — a spectral impression of a physical model, not the model, and everything after it (the envelope × velocity, both vcf3s, both soft clippers) is the patch's own.",
+    "⚠ AND A GATE ALONE WAS NOT ENOUGH — `audio_ax_midi_keyb` NEEDS A PITCH IN HERTZ OR IT EMITS NOTHING AT ALL. Measured, after the first version of the branch shipped a gate and the patch stayed at −inf: the node's note-on is guarded by its zone, its own derivation says a note outside [start_note, end_note] is \"IGNORED entirely, gate included\", and an unwired `pitch` inlet reads 0 Hz whose semitone value is −Infinity. So gate, note AND velocity all stayed dead. Isolated in `.frenzy/w_r7aud`: the same graph with the gate wired straight to the envelope sounds at −16.5 dBFS and routed through the keyboard node is silent, and adding a hertz value on `pitch` makes the two match to a tenth of a dB. THIS IS THE MIRROR IMAGE OF § R7-AXO-TRAPS TRAP 1 — that trap is a hertz source landing on a semitone port; this is the adaptor built to fix it being INERT until something puts hertz in, with nothing on the canvas to show it. Three nodes supply it: a counter, a step table holding 8/10/12/15 and one ×16, i.e. 128/160/192/240 Hz.",
   ],
   nodes: [
     // ── THE VOICE (one; poly 5 is in the deviations) ───────────────────────
@@ -490,8 +628,9 @@ export const AXO_MUTABLE_STACK = {
     { id: "delayr", type: "audio_ax_delay_sdram", col: 8, row: 14, knobs: { time: 0 } },
     { id: "xfader", type: "audio_ax_xfade", col: 9, row: 14 },
     // ── THE TWO OUTPUT CHAINS, THEN THE MONO TAIL ─────────────────────────
-    { id: "mixl", type: "audio_ax_mix", col: 10, row: 16, knobs: { gain1: 0.304688, gain2: 0.109375, gain3: 0.140625, gain4: 0.140625, gain5: 0.601562 } },
-    { id: "mixr", type: "audio_ax_mix", col: 10, row: 17, knobs: { gain1: 0.09375, gain2: 0.289062, gain3: 0.140625, gain4: 0.140625, gain5: 0.609375 } },
+    // `gain6` IS THE AUTOPLAY RETURN — `in6` had no wire, so no harvested gain moves.
+    { id: "mixl", type: "audio_ax_mix", col: 10, row: 16, knobs: { gain1: 0.304688, gain2: 0.109375, gain3: 0.140625, gain4: 0.140625, gain5: 0.601562, gain6: C11_AUTOPLAY_RETURN_GAIN } },
+    { id: "mixr", type: "audio_ax_mix", col: 10, row: 17, knobs: { gain1: 0.09375, gain2: 0.289062, gain3: 0.140625, gain4: 0.140625, gain5: 0.609375, gain6: C11_AUTOPLAY_RETURN_GAIN } },
     { id: "vcfl", type: "audio_ax_vcf3", col: 11, row: 16, knobs: { pitch: 0, reso: 0 } },
     { id: "vcfr", type: "audio_ax_vcf3", col: 11, row: 17, knobs: { pitch: 0, reso: 0 } },
     { id: "clipl", type: "audio_ax_dp_soft_clip", col: 12, row: 16, knobs: { ingain: 25, outgain: 15 } },
@@ -500,6 +639,7 @@ export const AXO_MUTABLE_STACK = {
     { id: "meter", type: "audio_meter", col: 14, row: 16 },
     { id: "spectrum", type: "audio_spectrum", col: 15, row: 16 },
     { id: "out", type: "audio_output", col: 16, row: 16, knobs: { volume: 0.7 } },
+    ...AXO_MUTABLE_STACK_AUTOPLAY.nodes,
   ],
   wires: [
     { from: "keyb", fromPort: "note", to: "bendmix", toPort: "bus_in" },
@@ -566,6 +706,7 @@ export const AXO_MUTABLE_STACK = {
     { from: "stereosum", fromPort: "out", to: "meter", toPort: "in" },
     { from: "meter", fromPort: "out", to: "spectrum", toPort: "in" },
     { from: "spectrum", fromPort: "out", to: "out", toPort: "in" },
+    ...AXO_MUTABLE_STACK_AUTOPLAY.wires,
   ],
 };
 

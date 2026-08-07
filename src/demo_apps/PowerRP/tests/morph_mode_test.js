@@ -103,7 +103,10 @@ test("MID-TRANSITION the retype is carried by the UNIVERSAL token, not the `type
   // night), so `type` is an ordinary discrete string again and the endpoints ride
   // the `morph` leaf — which is what lets an equation edit or a tooth-count
   // change morph too, none of which touch `type` at all.
-  const mid = blendApplied({ items: { a: itemState() } }, { items: { a: { type: "circle" } } }, 0.5);
+  // `morph: "auto"` is explicit since the 2026-08-07 ruling made SNAP the absent
+  // value; the law under test is WHERE a retype's endpoints live, not what an
+  // unconfigured widget does.
+  const mid = blendApplied({ items: { a: itemState() } }, { items: { a: { type: "circle", [MORPH_KEY]: "auto" } } }, 0.5);
   assert.equal(mid.items.a.type, "circle", "`type` is a plain discrete leaf again");
   const tok = mid.items.a[MORPH_KEY];
   assert.ok(isUniversalMorphToken(tok), `the retype must ride the universal token, got ${JSON.stringify(tok)}`);
@@ -363,7 +366,7 @@ test("A RETYPE KEYFRAME KEEPS THE ITEM'S OTHER PROPERTIES", () => {
   // threw `Unknown widget type "crossfade"`. Every property below is a witness.
   const mid = blendApplied(
     { items: { a: itemState({ w: 100, fill: "#000000" }) } },
-    { items: { a: { type: "circle", w: 300, fill: "#ffffff" } } }, 0.5);
+    { items: { a: { type: "circle", w: 300, fill: "#ffffff", [MORPH_KEY]: "auto" } } }, 0.5);
   const it = mid.items.a;
   assert.equal(it.w, 200, "w must still tween");
   assert.equal(it.fill, "#808080", "fill must still tween per channel");

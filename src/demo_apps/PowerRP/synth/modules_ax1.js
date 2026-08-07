@@ -401,6 +401,12 @@ const buildPolyVoices = ax1WorkletModule({
   paramInlets: ["velocity", "release_velocity"],
 });
 
+/** A440 in Axoloti semitones (MIDI 69 − 64), and the octave's width. Restated from
+ *  synth/ax1_dsp.js, which restates core/audio_nodes.semitonesToHz. */
+const POLY_A440_HZ = 440;
+const POLY_A440_SEMITONES = 5;
+const POLY_SEMITONES_PER_OCTAVE = 12;
+
 /**
  * Pure function. Hertz to Axoloti semitones (0 = MIDI 64 = E4) — the inverse of
  * `core/audio_nodes.semitonesToHz`, restated here because synth/** may not import
@@ -423,12 +429,6 @@ function polyVoicesHzToSemitones(hz) {
   if (!(hz > 0)) return NaN;
   return POLY_A440_SEMITONES + POLY_SEMITONES_PER_OCTAVE * Math.log2(hz / POLY_A440_HZ);
 }
-
-/** A440 in Axoloti semitones (MIDI 69 − 64), and the octave's width. Restated from
- *  synth/ax1_dsp.js, which restates core/audio_nodes.semitonesToHz. */
-const POLY_A440_HZ = 440;
-const POLY_A440_SEMITONES = 5;
-const POLY_SEMITONES_PER_OCTAVE = 12;
 
 /**
  * Command. `patch/patcher poly=N` as a module the KEYBOARD CAN PLAY (§ R7-PLAYABLE).

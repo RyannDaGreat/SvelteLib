@@ -132,8 +132,12 @@ try {
 
     const results = [];
     for (const patch of DEMO_PATCHES) {
+      // MEASURE AN INCOMPLETE PATCH TOO — it just may not be CERTIFIED. Skipping it
+      // answered "is this patch good?" with silence, when the question a half-built
+      // library actually raises is "how much of it is there yet?". A render says that:
+      // a patch whose only source is a placeholder comes back at -inf, and one whose
+      // TAIL is missing comes back loud and dry. Both are useful; neither is a pass.
       const pending = patchPlaceholders(patch);
-      if (pending.length) { results.push({ id: patch.id, skipped: "placeholder", pending }); continue; }
 
       const { states } = buildPatchItems(patch, registry, { x: 0, y: 0 }, (n) => `${patch.id}-${n}`);
       const scene = readAudioScene(states, registry);
@@ -214,9 +218,9 @@ try {
           for (let i = a; i < b; i++) q += left[i] * left[i];
           env.push(Math.sqrt(q / (b - a)));
         }
-        results.push({ id: patch.id, nodes: patch.nodes.length, peak, rms, dc, bad, transportDriven, centroid: den ? num / den : 0, env });
+        results.push({ id: patch.id, nodes: patch.nodes.length, peak, rms, dc, bad, transportDriven, pending, centroid: den ? num / den : 0, env });
       } catch (e) {
-        results.push({ id: patch.id, error: e.message });
+        results.push({ id: patch.id, pending, error: e.message });
       } finally {
         await engine.dispose();
       }
@@ -227,7 +231,7 @@ try {
   const db = (x) => (x > 0 ? (20 * Math.log10(x)).toFixed(1) : "-inf");
   console.log(`PATCH SOUND — ${RENDER_SECONDS}s per patch at ${RENDER_RATE} Hz, rendered offline\n`);
   for (const r of report) {
-    if (r.skipped) { console.log(`  ..  ${r.id.padEnd(28)} not measured — waiting on ${r.pending.join(" ")}`); continue; }
+
     if (r.error) { console.log(`  XX  ${r.id.padEnd(28)} ${r.error}`); failures.push(`${r.id}: ${r.error}`); continue; }
     measured++;
     const flags = [];
@@ -238,14 +242,18 @@ try {
     // A tail that is LOUDER at the end than in the middle, by a lot, is a loop whose gain
     // exceeds unity — the failure mode of every hand-built reverb and comb in this round.
     if (r.env[7] > r.env[3] * 4 && r.env[7] > SILENCE_RMS) flags.push(`GROWING (env ${db(r.env[3])} -> ${db(r.env[7])} dBFS)`);
-    const mark = flags.length ? "XX" : r.transportDriven && r.rms < SILENCE_RMS ? ".." : "ok";
-    const note = r.transportDriven ? " [event-driven: no transport or keypress offline]" : "";
+    const incomplete = r.pending?.length ?? 0;
+    // A patch with placeholders CANNOT FAIL and cannot pass: it is not the finished
+    // graph, so neither verdict would be about the thing we shipped.
+    const mark = incomplete ? ".." : flags.length ? "XX" : r.transportDriven && r.rms < SILENCE_RMS ? ".." : "ok";
+    if (incomplete) flags.length = 0;
+    const note = (incomplete ? `  [${incomplete} placeholder node type(s) — NOT the finished patch]` : "") + (r.transportDriven ? " [event-driven]" : "");
     console.log(`  ${mark}  ${r.id.padEnd(28)} peak ${db(r.peak).padStart(6)}  rms ${db(r.rms).padStart(6)} dBFS  centroid ${Math.round(r.centroid).toString().padStart(5)} Hz  ${r.nodes} nodes${note}`);
     if (flags.length) { console.log(`      ${flags.join("; ")}`); failures.push(`${r.id}: ${flags.join("; ")}`); }
   }
 
-  const skipped = report.filter((r) => r.skipped).length;
-  console.log(`\n${measured} measured, ${skipped} waiting on placeholders, ${failures.length} with defects`);
+  const incompleteN = report.filter((r) => r.pending?.length).length;
+  console.log(`\n${measured} measured, ${incompleteN} still contain placeholders (measured, not certified), ${failures.length} with defects`);
   if (pageErrors.length) {
     console.log(`\nPAGE ERRORS (${pageErrors.length}):`);
     for (const e of pageErrors.slice(0, 10)) console.log(`  ${e}`);

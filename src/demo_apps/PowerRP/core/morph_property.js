@@ -31,18 +31,23 @@
  * State key `morph`, a plain keyframeable universal property (core/properties.js
  * declares the row; it is injected for every widget exactly as `active` is). Four
  * values, and the DEFAULT IS ABSENT — an untouched document stores nothing and
- * reads AUTO:
+ * reads SNAP:
  *
- *   auto      (default) Morph whenever both ENDPOINT outlines exist and DIFFER,
- *             whatever caused the difference. Crossfade when either side cannot
- *             produce an outline. Unchanged outlines are left exactly as they are
- *             today — no token, no render work, byte-identical.
+ *   snap      (default) The discrete switch, and the behavior every widget had
+ *             before morphing existed. USER RULING, 2026-08-07: "the default
+ *             transition should be [snap] not auto for most things make that the
+ *             true default we morph only if we want." Morphing is the special
+ *             effect, so it is the thing you ASK for; a shape that reflows because
+ *             an equation was edited is a surprise the author did not order.
+ *             Mints no token and does no render work.
+ *   auto      Morph whenever both ENDPOINT outlines exist and DIFFER, whatever
+ *             caused the difference. Crossfade when either side cannot produce an
+ *             outline. This was the default until the ruling above.
  *   morph     FORCE. Morph even where auto would decline to; if the outlines are
  *             genuinely unavailable, fall to CROSSFADE and REPORT the reason
  *             (never silently switch — the author asked for something specific).
  *   crossfade Always cross-render: draw BOTH endpoint states and composite them
  *             at (1-t)/t opacity. The honest answer for a pair with no outlines.
- *   snap      The discrete switch — today's pre-morph behavior, and the opt-out.
  *
  * IT IS A PLAIN PROPERTY, and that is load-bearing rather than incidental: it
  * rides deltas, keyframes, undo, copy and serialization with zero new concepts,
@@ -103,13 +108,27 @@
  */
 export const MORPH_KEY = "morph";
 
-/** The mode a widget has when it stores nothing. ABSENT = AUTO = today's
- * behavior for an unchanged outline, and the morph the user asked for when the
- * outline changed. */
+/** The AUTO mode's id. Named separately from the DEFAULT below because the two
+ * used to be the same value and are no longer — see MORPH_DEFAULT. */
 export const MORPH_AUTO = "auto";
 
-/** The four values the universal row offers, in the order it offers them. */
-export const MORPH_MODES = [MORPH_AUTO, "morph", "crossfade", "snap"];
+/** The SNAP mode's id — the discrete switch. */
+export const MORPH_SNAP = "snap";
+
+/**
+ * THE MODE A WIDGET HAS WHEN IT STORES NOTHING. User ruling, 2026-08-07: snap is
+ * "the true default we morph only if we want".
+ *
+ * Read this, never MORPH_AUTO, wherever you mean "the absent value" — the two
+ * were one constant until that ruling, so every `absentValue: MORPH_AUTO` in the
+ * tree was a place that meant DEFAULT and said AUTO. Keeping one name for each
+ * meaning is what stops the next change from having to find them all again.
+ */
+export const MORPH_DEFAULT = MORPH_SNAP;
+
+/** The four values the universal row offers, in the order it offers them —
+ * DEFAULT FIRST, the TRANSITION_TYPES convention. */
+export const MORPH_MODES = [MORPH_SNAP, MORPH_AUTO, "morph", "crossfade"];
 
 /** id → label, for the row's optionLabels. */
 export const MORPH_MODE_LABELS = {
@@ -122,10 +141,10 @@ export const MORPH_MODE_LABELS = {
 /** id → the sentence the row's help gives for each option. Written as a
  * consequence the author can see, not as a mechanism. */
 export const MORPH_MODE_HELP = {
-  auto: "Reshape the outline whenever it actually changes — a retype, a new icon, an edited equation, a different tooth count — and cross-dissolve when a widget has no outline to flow (a video, a photo). This is the default and needs no setting.",
+  auto: "Reshape the outline whenever it actually changes — a retype, a new icon, an edited equation, a different tooth count — and cross-dissolve when a widget has no outline to flow (a video, a photo).",
   morph: "Always reshape, even where Auto would decline. If an outline genuinely cannot be produced, it cross-dissolves instead and says why.",
   crossfade: "Draw BOTH the old and the new widget across the transition and dissolve one into the other. The honest answer when the two have nothing in common to flow.",
-  snap: "Switch at the instant the transition begins, with no in-between — the behavior every widget had before morphing existed.",
+  snap: "Switch at the instant the transition begins, with no in-between — the behavior every widget had before morphing existed. This is the default and needs no setting: reshaping is the effect you ask for, not the one you get by accident.",
 };
 
 /**
@@ -166,19 +185,19 @@ export function isUniversalMorphToken(v) {
  *
  * The TARGET wins the moment the transition begins (the user's "flicked
  * immediately at the beginning"), the standing value carries when the delta is
- * silent, and absent is AUTO.
+ * silent, and absent is the DEFAULT — snap, since 2026-08-07.
  *
  * @example morphModeForBlend(undefined, undefined)
- * 'auto'
- * @example morphModeForBlend("snap", undefined)
  * 'snap'
+ * @example morphModeForBlend("auto", undefined)
+ * 'auto'
  * @example morphModeForBlend(undefined, "crossfade")
  * 'crossfade'
- * @example morphModeForBlend("snap", "auto")
- * 'auto'
+ * @example morphModeForBlend("auto", "snap")
+ * 'snap'
  */
 export function morphModeForBlend(from, to) {
-  return to ?? from ?? MORPH_AUTO;
+  return to ?? from ?? MORPH_DEFAULT;
 }
 
 /**

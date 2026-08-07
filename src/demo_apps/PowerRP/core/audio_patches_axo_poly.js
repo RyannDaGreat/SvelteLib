@@ -177,12 +177,22 @@
 // `analysisTail`/`analysisWires` into a leaf module both sides import. Reported, not
 // applied — this agent owns two files.
 
-/** The meter → spectrum → output tail every patch ends in, at a given column. */
-const analysisTail = (col, row = 0) => [
+/** The output level every patch's tail runs at. A9 overrides it — see its deviations. */
+const ANALYSIS_TAIL_VOLUME = 0.7;
+
+/** The meter → spectrum → output tail every patch ends in, at a given column.
+ *  `volume` IS A PARAMETER because A9's harvested mix peaks at +0.6 dBFS through the
+ *  standard 0.7, which is over `tests/patch_sound_probe.mjs`'s clip bar. Trimming OUR
+ *  tail is the honest lever there; trimming a harvested mixer gain would edit the port. */
+const analysisTail = (col, row = 0, volume = ANALYSIS_TAIL_VOLUME) => [
   { id: "meter", type: "audio_meter", col, row },
   { id: "spectrum", type: "audio_spectrum", col: col + 1, row },
-  { id: "out", type: "audio_output", col: col + 2, row, knobs: { volume: 0.7 } },
+  { id: "out", type: "audio_output", col: col + 2, row, knobs: { volume } },
 ];
+
+/** A9's tail level. Measured 2026-08-07: the harvested mix peaks at +0.6 dBFS at 0.7 and
+ *  at −3.3 here, which leaves the headroom the `fx/chorus` placeholder will want. */
+const AXO_RADIOACTIVE_OUTPUT_VOLUME = 0.45;
 
 /** …and the wires that chain it. `from` is the module feeding the tail. */
 const analysisWires = (from) => [
@@ -588,84 +598,6 @@ export const AXO_STRING_PAD = {
   })(),
 };
 
-/** A9's three autoplay decay RATES (`pulse/d`'s dial, not a time — see `autoNote`).
- *  The bass rings about a beat at the patch's ~2 Hz clock; the Geiger click is short
- *  enough to be a click rather than a note, which is the whole character of an LFSR
- *  counter; the kick is between the two. */
-const AXO_RADIOACTIVE_BASS_DECAY = 0.05;
-const AXO_RADIOACTIVE_CLICK_DECAY = 0.3;
-const AXO_RADIOACTIVE_KICK_DECAY = 0.12;
-
-/**
- * A9's AUTOPLAY BRANCH — § R7-AUDIBLE's third way, and the LEAST invented of the three
- * in this file, because A9 already IS a machine with its own clock.
- *
- * NOTHING HERE GENERATES A RHYTHM. Every trigger is one the harvested patch already
- * produces and that already survives the placeholder cull — `clockedge` (the master
- * square's Schmitt), `kickedge` (the 16-step grid ANDed with `change`), and `lfsr.out`
- * (the 0x198 Geiger register itself). What the branch supplies is the ONE thing the
- * placeholders withhold: an envelope to open a VCA with. Every `env/adsr` and `env/d` in
- * this patch is an AX-4 placeholder, so every harvested VCA's `gain` wire is dropped and
- * every VCA sits at its authored `gain: 0`. Three parallel VCAs are added beside them,
- * one per voice that has a LIVE source behind it.
- *
- * WHICH THREE, AND WHY NOT THE OTHER THREE:
- *   BASS — `bassvcf` is live and its pitch already alternates ±12 semitones with the
- *     master square (`bassdepth` × `bassmix`), so the octave stab the patch is named for
- *     is real. Gated by `clockedge`.
- *   GEIGER — `fmcarrier` and `fmmod` are live, so the phase modulation is real. Gated by
- *     the LFSR, through a Schmitt because `lfsr.out` is `audio` and
- *     `core/nodeflow.COERCIONS` has no `audio → trigger`. This is the aperiodic clicking
- *     the patch was chosen for, and it is exactly reproducible.
- *   KICK — `kickosc` is live. Gated by `kickedge`, so it plays the harvested pattern
- *     word. Its 28-semitone pitch drop is NOT here: that comes from `kickenv`, which is a
- *     placeholder, so the kick is a flat low sine until AX-4 lands.
- *   SNARE AND HAT GET NOTHING, DELIBERATELY. `steps`' p2 and p3 are 0 in the saved file —
- *     the author wrote a kick-only pattern — so `snredge` and `hatedge` never fire and an
- *     envelope hung off them would be two cards that can never make a sound. Faithful.
- *   THE LEAD is left silent too: `melvcf`'s note comes from a keyboard that cannot be
- *     played (see this file's AUTOPLAY section), so a gate on it would sound one fixed
- *     pitch forever, which is worse than the author's own muted branch.
- */
-const AXO_RADIOACTIVE_AUTOPLAY = (() => {
-  const bass = autoNote("apBass", 5, 1, {
-    trig: { item: "clockedge", port: "out" }, source: { item: "bassvcf", port: "out" },
-    vcaCol: 9, decay: AXO_RADIOACTIVE_BASS_DECAY,
-  });
-  const geiger = autoNote("apGeig", 9, 10, {
-    trig: { item: "apGeigTrig", port: "out" }, source: { item: "fmcarrier", port: "out" },
-    vcaCol: 11, decay: AXO_RADIOACTIVE_CLICK_DECAY,
-  });
-  const kick = autoNote("apKick", 9, 17, {
-    trig: { item: "kickedge", port: "out" }, source: { item: "kickosc", port: "out" },
-    vcaCol: 13, decay: AXO_RADIOACTIVE_KICK_DECAY,
-  });
-  return {
-    nodes: [
-      ...bass.nodes,
-      { id: "apGeigTrig", type: "audio_trigger", col: 8, row: 10, knobs: { pulseMs: AUTOPLAY_PULSE_MS } },
-      ...geiger.nodes,
-      // The two synth voices meet before the harvested `synthmix`, which has exactly one
-      // free input left (`in4`, the bus_in the other three deviations describe).
-      { id: "apSynth", type: "audio_mixer", col: 13, row: 1, knobs: { level1: 1, level2: 1, master: 1 } },
-      ...kick.nodes,
-    ],
-    wires: [
-      ...bass.wires,
-      { from: "lfsr", fromPort: "out", to: "apGeigTrig", toPort: "in" },
-      ...geiger.wires,
-      { from: bass.out, fromPort: "out", to: "apSynth", toPort: "in1" },
-      { from: geiger.out, fromPort: "out", to: "apSynth", toPort: "in2" },
-      { from: "apSynth", fromPort: "out", to: "synthmix", toPort: "in4" },
-      ...kick.wires,
-      // The kick lands on BOTH drum buses at unity, which is where the harvested patch
-      // already puts it — "the kick is centred" is its own comment.
-      { from: kick.out, fromPort: "out", to: "drumsl", toPort: "in4" },
-      { from: kick.out, fromPort: "out", to: "drumsr", toPort: "in4" },
-    ],
-  };
-})();
-
 /**
  * A9 — RADIOACTIVE — `demos/sequencing/radioactive.axp`.
  *
@@ -707,7 +639,7 @@ export const AXO_RADIOACTIVE = {
   deviations: [
     ...STRING_VOICE_DEVIATIONS,
     "midi/in/script DROPPED — and it is not a loss: the object has NO nets at all in the source file, so it contributes nothing to the sound. Recorded because the survey lists it as a node this patch needs, and it does not.",
-    "AUTOPLAY (§ R7-AUDIBLE, the THIRD way; six `ap*` nodes) — AND IT INVENTS NO RHYTHM. Every trigger it uses is one the harvested patch already produces and that already survives the placeholder cull: `clockedge`, `kickedge`, and the 0x198 LFSR's own output through one added Schmitt. What it adds is the ENVELOPE the AX-4 placeholders withhold — three `pulse/d` + `audio_vca` pairs beside the harvested VCAs, which all sit shut at their authored `gain: 0` because their envelope wires run from placeholders and are dropped. Bass, Geiger and kick get one each; the snare and hat deliberately get none (p2 and p3 are 0 in the saved file, so their Schmitts never fire) and neither does the lead (its note comes from a keyboard that cannot be played). `synthmix`'s `level4` goes 0 → 0.85 to carry the synth pair; nothing else harvested is touched. Measured before: −inf dBFS.",
+    "AUTOPLAY (§ R7-AUDIBLE) — AND THIS PATCH NEEDED NONE IN THE END, WHICH IS THE FIRST WAY AND THE BEST ONE. It was −inf dBFS on 2026-08-07 and a six-node autoplay branch was built for it; hours later AX-4's `env/adsr`, `env/ahd m` and `env/d` landed, and the harvested machine — its own 2 Hz square clock, its own 16-step grid, its own 0x198 LFSR — came alive on its own at −29.4 dBFS. MEASURED BOTH WAYS before deleting: the port without the branch is audible, and the branch on top of it pushed the peak from +0.6 to +2.2 dBFS, i.e. duplicate DSP that clipped. So the branch is gone and nothing in this patch is invented. WHAT REMAINS OF THAT WORK is the `audio_ax_midi_keyb` swap and one measurement: the harvested mix peaks at +0.6 dBFS through the standard 0.7 output, over `patch_sound_probe`'s +0.5 clip bar, so THIS patch's analysis tail runs at 0.45. That is our scaffolding and not a harvested gain — no mixer level in the port was touched. THE SNARE AND HAT ARE STILL SILENT AND THAT IS FAITHFUL: `steps`' p2 and p3 are 0 in the saved file, so the author wrote a kick-only pattern. The lead is silent too, because its note comes from a `node_keyboard` that cannot reach an engine module — see the deviation above.",
     "midi/in/keyb zone lru ×2 → two more `audio_ax_midi_keyb` (AX-1, shipped) reading the SAME `node_keyboard`, with their zones as knobs in the note outlet's own units (MIDI 0–50 is −64…−14; 63–127 is −1…63). Their least-recently-used mono allocation is the placeholder's problem, not this patch's.",
     "THREE `audio/out stereo` FOLD TO ONE BUS (drums L/R, synths, strings), per ADDENDUM 10 — 'If we have multiple audio outputs we'll just add them all together'. The drum bus keeps its stereo split as two mixers so the harvested per-channel gains survive: the kick is centred, the long noise hit is right-only and the short one left-only.",
     "ctrl/dial b ×2 → `node_knob`, KEPT as nodes rather than folded into their targets because each one feeds its destination through a `math/smooth` — turning the knob glides the clock rate or the FM pitch, which is a live gesture and not a static parameter.",
@@ -796,22 +728,15 @@ export const AXO_RADIOACTIVE = {
       // ONE noise source, two envelopes, two pan positions: a long hit on the right and a
       // short one on the left. That is the whole percussion section besides the kick.
       { id: "pink", type: "audio_ax_noise", col: 6, row: 16, knobs: { colour: "pink", seed: 0 } },
-      // `level4` WAS 0 AND IS NOW THE AUTOPLAY RETURN. It is the one harvested gain this
-      // branch changes, and it changes nothing about the port: `in4` is the bus_in every
-      // mixer deviation here describes, and the saved file has nothing on it.
-      { id: "synthmix", type: "audio_mixer", col: 14, row: 2, knobs: { level1: 0, level2: 0.9921875, level3: 0.4375, level4: AUTOPLAY_DRY_LEVEL, master: 1 } },
-      // `level4` ON BOTH DRUM BUSES IS THE AUTOPLAY KICK, HALVED — it lands on L and R
-      // alike (the harvested comment: "the kick is centred"), so half on each is what
-      // sums to the one kick the author drew rather than to two.
-      { id: "drumsl", type: "audio_mixer", col: 14, row: 12, knobs: { level1: 1, level2: 0, level3: 0.9921875, level4: AUTOPLAY_CENTRED_LEVEL, master: 1 } },
-      { id: "drumsr", type: "audio_mixer", col: 14, row: 13, knobs: { level1: 1, level2: 0.9921875, level3: 0, level4: AUTOPLAY_CENTRED_LEVEL, master: 1 } },
+      { id: "synthmix", type: "audio_mixer", col: 14, row: 2, knobs: { level1: 0, level2: 0.9921875, level3: 0.4375, level4: 0, master: 1 } },
+      { id: "drumsl", type: "audio_mixer", col: 14, row: 12, knobs: { level1: 1, level2: 0, level3: 0.9921875, master: 1 } },
+      { id: "drumsr", type: "audio_mixer", col: 14, row: 13, knobs: { level1: 1, level2: 0.9921875, level3: 0, master: 1 } },
       // ── THE STRING PAD, verbatim from A1 (same function, same effective params) ──
       ...voice.nodes,
       { id: "chorus", type: "audio_ax_chorus", col: 12, row: 18, knobs: { depth: 2.5, speed: -47 } },
       { id: "stringsmix", type: "audio_mixer", col: 13, row: 18, knobs: { level1: 1, level2: 1, master: 1 } },
       { id: "bus", type: "audio_mixer", col: 15, row: 0, knobs: { level1: 1, level2: 1, level3: 1, level4: 1, master: 1 } },
-      ...analysisTail(16),
-      ...AXO_RADIOACTIVE_AUTOPLAY.nodes,
+      ...analysisTail(16, 0, AXO_RADIOACTIVE_OUTPUT_VOLUME),
     ];
   })(),
   wires: (() => {
@@ -904,7 +829,6 @@ export const AXO_RADIOACTIVE = {
       { from: "drumsr", fromPort: "out", to: "bus", toPort: "in3" },
       { from: "stringsmix", fromPort: "out", to: "bus", toPort: "in4" },
       ...analysisWires("bus"),
-      ...AXO_RADIOACTIVE_AUTOPLAY.wires,
     ];
   })(),
 };

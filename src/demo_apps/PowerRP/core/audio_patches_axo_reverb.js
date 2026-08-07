@@ -117,6 +117,135 @@
  */
 
 /**
+ * ════════════════════════════════════════════════════════════════════════════
+ * AUTOPLAY: WHY EVERY PATCH HERE CARRIES AN `ap*` BRANCH (§ R7-AUDIBLE)
+ * ════════════════════════════════════════════════════════════════════════════
+ * THE RULING (user, 2026-08-07): *"any patch that doesn't make audio right away … needs
+ * to make noise automatically"*. MEASURED before this branch existed: all three patches
+ * here rendered at **−inf dBFS** in `tests/patch_sound_probe.mjs`.
+ *
+ * NONE OF THE THREE HAS A KEYBOARD AT ALL, so § R7-AUDIBLE's second way was never
+ * available to them — and it would not have helped if it were. `readAudioScene` drops
+ * every wire out of a control widget, and `core/live_control.noteRoutes` delivers a key
+ * press only to an input declared `method: true`, which exactly two ports in the library
+ * are (`audio_ding.gate`, `audio_poly_pad.gate`). A `node_keyboard` in front of an
+ * Axoloti voice cannot sound it today. That is reported, not worked around.
+ *
+ * SO ALL THREE TAKE THE THIRD WAY — an added self-driving source, recorded as a deviation
+ * on each. Every branch is the same two-node clock, and it drives the patch's OWN
+ * `audio_ax_poly_voices` gate, which is the seam that wakes the harvested envelopes:
+ *
+ *      audio_ax_lfo (square)  →  audio_trigger  →  poly.gate
+ *
+ * The Schmitt is structural, not decoration — `core/nodeflow.COERCIONS` has no
+ * `audio → trigger`, deliberately, so a square wave becomes events only through one.
+ *
+ * ── THE CLOCK IS DRAWN IN THE POLY ALLOCATOR'S OWN COLUMN, AND THAT IS FORCED ─
+ * `tests/audio_patches_test.js` requires `from.col <= to.col` on every wire, `poly` is at
+ * column 0 in all three, and a clock must reach it — so the two clock nodes sit at
+ * column 0 too, stacked below the patch. Equal columns are legal; a column to the left
+ * would be negative. The same reason the tank is one column, applied to the front.
+ *
+ * ── WHAT EACH BRANCH ADDS BEYOND THE CLOCK, AND WHY IT DIFFERS ──────────────
+ * The voice's OSCILLATOR is a placeholder in all three (`audio_ax_selfpm`,
+ * `audio_ax_6coseg`, `audio_ax_dp2saw`), so each also substitutes shipped oscillators for
+ * it — and each routes them into as much of its own LIVE chain as an unoccupied input
+ * allows, rather than being a drone beside the patch. C3 is the extreme case and the best
+ * argument for the approach: two `audio_ax_osc` into `stereoL`/`stereoR`'s free inputs
+ * light up sixty live nodes, the whole twelve-filter ZDF bank included.
+ *
+ * ── NOTHING HARVESTED IS REWIRED ────────────────────────────────────────────
+ * Every branch takes FREE mixer inputs and FANS OUT of existing outputs, so the ported
+ * graph is byte-identical underneath it and the `ap*` nodes delete in one block the day
+ * their placeholders land. The exceptions are mixer LEVELS for inputs that had no wire,
+ * named at their sites.
+ */
+
+/** The rate an `audio_ax_lfo` runs at with its `pitch` knob at 0 — the base every LFO
+ *  dial in this corpus is relative to, restated from AX-2's arithmetic. */
+const AX_LFO_BASE_HZ = 5.15;
+
+/**
+ * THE AUTOPLAY GATE'S WIDTH, AND IT IS THE LONGEST THE ENGINE WILL GIVE — 100 ms,
+ * `TriggerProcessor`'s own `maxValue` (synth/worklets/processors.js:339).
+ *
+ * ── WHY NOT THE 5 ms THE PORTED PATCHES USE FOR THEIR OWN SCHMITTS ──────────
+ * Because those fire `pulse/d`, which HOLDS its own shape after a trigger, and these fire
+ * `audio_adsr`, which does not: an ADSR handed a 5 ms gate attacks for 5 ms and then
+ * RELEASES. Measured on C7 before this constant existed — its amplitude envelope decayed
+ * monotonically to −100 dBFS over the render and never came back, which is one blip, not
+ * a note, and it cost the patch 30 dB. C1 hid the same defect because its `ampScale`
+ * multiplies by 15.5, so a blip is still loud; that is exactly the kind of thing a
+ * measurement catches and a reading does not.
+ *
+ * 100 ms is not a musical choice, it is a ceiling. An ADSR with a 30 ms attack reaches
+ * full and starts its decay inside it, so the note is the envelope's own release rather
+ * than a click — good enough, and named as a bound rather than a value.
+ *
+ * ⚠ THE SPEC AND THE WORKLET DISAGREE ABOUT THIS BOUND: `TRIGGER_SPEC`'s knob says max
+ * 200, `TriggerProcessor` clamps at 100. Not this file's to fix; 100 is inside both.
+ */
+const AUTOPLAY_PULSE_MS = 100;
+
+/**
+ * How loud an autoplay branch returns into a harvested bus — the DEFAULT, which every
+ * patch here then overrides. Below the authored path's own level so that when the
+ * placeholders land the PORT dominates and the branch is a bed under it.
+ *
+ * ONE SHARED NUMBER WOULD HAVE CLIPPED TWO OF THE THREE, which is why `stereoTail` takes
+ * it as a parameter: a branch's loudness at the tail depends on how much of the patch's
+ * own gain staging it passes through first, and the three differ by 24 dB. Measured at
+ * this default: C1 +1.4 dBFS peak, C3 +0.1, C7 −11.2, against the probe's +0.5 clip bar.
+ */
+const AUTOPLAY_RETURN_LEVEL = 0.8;
+
+/**
+ * Pure function. The `audio_ax_lfo` `pitch` knob that runs at a given rate — written once
+ * so a third reader does not re-derive the 5.15 Hz base and land an octave out.
+ *
+ * @param {number} hz - the wanted rate in hertz
+ * @returns {number} semitones, rounded to the dial's own tenth
+ *
+ * @example lfoPitchForHz(5.15) // 0
+ * @example lfoPitchForHz(0.4) // -44.2 — a note every two and a half seconds
+ */
+function lfoPitchForHz(hz) {
+  return Math.round(12 * Math.log2(hz / AX_LFO_BASE_HZ) * 10) / 10;
+}
+
+/**
+ * Pure function. THE AUTOPLAY CLOCK, and the wire that plays the patch with it: a square
+ * LFO, the Schmitt that turns it into events, and the gate into `poly`.
+ *
+ * A LOCAL COPY OF A SHAPE `core/audio_patches_axo_poly.js` ALSO HOLDS, and that is the
+ * same debt `analysisTail` already carries in every set file: the PATCH-SET CONTRACT
+ * allows one exported name and forbids importing `core/audio_patches.js`, so a helper two
+ * sets want has nowhere shared to live. THE FIX IS ONE LEAF MODULE THE LEAD OWNS.
+ * Reported, not applied — this agent owns three files.
+ *
+ * @param {number} row - the LFO's row; the Schmitt sits one below, both at column 0
+ * @param {number} hz - the note rate
+ * @returns {{nodes: object[], wires: object[], trig: string}}
+ *
+ * @example autoPolyClock(25, 0.4).trig // "apEdge"
+ * @example autoPolyClock(25, 0.4).wires.at(-1).to // "poly"
+ * @example autoPolyClock(25, 5.15).nodes[0].knobs.pitch // 0
+ */
+function autoPolyClock(row, hz) {
+  return {
+    trig: "apEdge",
+    nodes: [
+      { id: "apLfo", type: "audio_ax_lfo", col: 0, row, knobs: { waveform: "square", pitch: lfoPitchForHz(hz) } },
+      { id: "apEdge", type: "audio_trigger", col: 0, row: row + 1, knobs: { pulseMs: AUTOPLAY_PULSE_MS } },
+    ],
+    wires: [
+      { from: "apLfo", fromPort: "out", to: "apEdge", toPort: "in" },
+      { from: "apEdge", fromPort: "out", to: "poly", toPort: "gate" },
+    ],
+  };
+}
+
+/**
  * Every audio_delay used to CUT a feedback loop rather than to carry an authored delay
  * gets this length. It is one Web Audio render quantum rounded up (128/48000 = 2.67 ms):
  * DELAY_SPEC's own bar for a real feedback path, and below it the browser mutes the cycle
@@ -203,17 +332,28 @@ function delayPairWires(id, from, to) {
  * module) with every node reaching it. Summing L and R is the smallest honest answer —
  * `audio_mixer` at unity, which BEACH already uses for exactly this fan-in reason.
  *
+ * `level3` AND `level4` ARE THE AUTOPLAY RETURN in all three patches — free inputs on the
+ * one mixer every patch here already has, so no harvested gain moves. The level is a
+ * PARAMETER because how much a branch has to give back depends on how much of the patch's
+ * own gain staging it passes through first, and C3 passes through all of it: measured, its
+ * two `audio_ax_math` voice gains (attenuate 10 and 12) put the same branch 2.6 dB hotter
+ * than C1's, over `tests/patch_sound_probe.mjs`'s +0.5 dBFS clip bar. One number per patch
+ * is the honest answer; one shared number would have been a clip in one of them.
+ *
  * @param {number} col - column of the summing mixer; the tail runs three columns right
  * @param {number} row - grid row for the whole tail
+ * @param {number} [returnLevel] - the autoplay branch's return gain on in3/in4
  * @returns {object[]} four blueprint nodes: sum, meter, spectrum, out
  *
  * @example stereoTail(10, 0).map((n) => n.type)
  * // ["audio_mixer", "audio_meter", "audio_spectrum", "audio_output"]
  * @example stereoTail(10, 0)[3].col // 13
+ * @example stereoTail(10, 0)[0].knobs.level3 // 0.8
+ * @example stereoTail(24, 0, 0.4)[0].knobs.level4 // 0.4
  */
-function stereoTail(col, row) {
+function stereoTail(col, row, returnLevel = AUTOPLAY_RETURN_LEVEL) {
   return [
-    { id: "sum", type: "audio_mixer", col, row, knobs: { level1: 0.5, level2: 0.5, master: 1 } },
+    { id: "sum", type: "audio_mixer", col, row, knobs: { level1: 0.5, level2: 0.5, level3: returnLevel, level4: returnLevel, master: 1 } },
     { id: "meter", type: "audio_meter", col: col + 1, row },
     { id: "spectrum", type: "audio_spectrum", col: col + 2, row },
     { id: "out", type: "audio_output", col: col + 3, row, knobs: { volume: 0.7 } },
@@ -264,6 +404,92 @@ function stereoTailWires(left, right) {
  * self-phase-modulating oscillators then take that pitch, their feedback amounts moved
  * 120° apart by one tri-phase LFO, which is what stops the pair from beating in step.
  */
+/** The first free row under C1's tank column, which runs to row 24. */
+const C1_AUTOPLAY_ROW = 26;
+
+/** C1's autoplay return level, back at the file default once the trim below exists. */
+const C1_AUTOPLAY_RETURN_LEVEL = AUTOPLAY_RETURN_LEVEL;
+
+/**
+ * THE ONE-OVER-`ampScale` TRIM, and it is a measurement, not taste.
+ *
+ * The harvested `ampScale` is `attenuate b: 15.5` and it drives `dca1`/`dca2` — VCAs
+ * whose output goes into a 6x6 FDN, where that 15.5 is the tank's input drive. The
+ * autoplay branch borrows that same envelope but does NOT go through the tank, so 15.5
+ * lands undivided on the output. Measured: the branch slammed the limiter at +1.4 dBFS,
+ * and HALVING the return level moved the peak by 0.3 dB — the signature of a limiter, not
+ * of a level. So the trim goes at the source, where the missing stage was.
+ */
+const C1_AUTOPLAY_AMP_TRIM = 1 / 15.5;
+
+/** C1's autoplay note rate, and the PM depth of its substitute oscillator pair. The
+ *  depth is a fraction of a cycle because `audio_ax_osc.phase` is in whole cycles; 0.18
+ *  is bright enough to hear as a timbre rather than as a sine, and short of the ragged
+ *  index a full cycle gives. */
+const C1_AUTOPLAY_HZ = 0.35;
+const C1_AUTOPLAY_PM_DEPTH = 0.18;
+
+/** The two allpasses the substitute voice returns through — the smallest honest stand-in
+ *  for a 6x6 FDN, using the ONE diffuser type this library ships. Their lengths are the
+ *  harvested tank's own two allpasses (`h4ap1` 473 samples, `h4ap2` 189), so the branch
+ *  at least rings at the frequencies the port will. */
+const C1_AUTOPLAY_AP = [{ delay: 473, g: 0.7 }, { delay: 189, g: 0.66 }];
+
+/**
+ * C1's AUTOPLAY BRANCH — § R7-AUDIBLE's third way.
+ *
+ * ── IT DRIVES THE HARVESTED VOICE, NOT A DRONE BESIDE IT ────────────────────
+ * The clock's gate into `poly` wakes FOUR live nodes at once, and they are the four this
+ * patch's own docstring calls its character: `vibEnv` and `ampEnv` (both `audio_adsr`,
+ * shipped), `rate` (a fresh `rand/uniform f` per note, which is what makes every note's
+ * vibrato run at a different speed) and, through `shape`, the five-point transfer that
+ * makes the vibrato bloom LATE. So the substitute oscillator is pitched by the harvested
+ * `notePitch` — real delayed vibrato at a real random rate — and gated by the harvested
+ * `ampScale`, i.e. the real four-second amplitude decay. Only the OSCILLATOR is ours.
+ *
+ * ── WHY AN OSCILLATOR HAD TO BE SUBSTITUTED AT ALL ──────────────────────────
+ * `audio_ax_selfpm` is a placeholder, and it cannot be built from shipped parts: feeding
+ * an oscillator's own output to its `phase` closes a directed cycle and
+ * `core/nodeflow.js` refuses that at connect time. TWO oscillators in series is the
+ * nearest expressible thing — classic two-operator phase modulation rather than self-PM,
+ * which is a different (and tamer) spectrum. Named, not glossed.
+ *
+ * ── AND THE TANK IS SIMPLY NOT REACHABLE ────────────────────────────────────
+ * Every input into the 6x6 matrix and its H4 child is held by a harvested wire, and both
+ * matrices are placeholders anyway, so the shimmer — the thing the patch is named for —
+ * cannot sound until AX-? lands `audio_ax_fdn_d6`, `audio_ax_fdn_h4`, `audio_ax_pitchx3`
+ * and `audio_ax_pitchoct`. Two `audio_ax_allpass` stand in for the diffusion so the
+ * branch is not bone dry; they are NOT a shimmer and are not claimed to be.
+ */
+const AXO_SHIMMER_AUTOPLAY = (() => {
+  const clock = autoPolyClock(C1_AUTOPLAY_ROW, C1_AUTOPLAY_HZ);
+  return {
+    nodes: [
+      ...clock.nodes,
+      { id: "apMod", type: "audio_ax_osc", col: 5, row: C1_AUTOPLAY_ROW, knobs: { waveform: "sine", pitch: 12 } },
+      { id: "apPmDepth", type: "audio_ax_math", col: 5, row: C1_AUTOPLAY_ROW + 1, knobs: { operation: "attenuate", b: C1_AUTOPLAY_PM_DEPTH } },
+      { id: "apCar", type: "audio_ax_osc", col: 6, row: C1_AUTOPLAY_ROW, knobs: { waveform: "sine", pitch: 0 } },
+      { id: "apAmpTrim", type: "audio_ax_math", col: 6, row: C1_AUTOPLAY_ROW + 1, knobs: { operation: "attenuate", b: C1_AUTOPLAY_AMP_TRIM } },
+      { id: "apVca", type: "audio_vca", col: 7, row: C1_AUTOPLAY_ROW, knobs: { gain: 0 } },
+      ...C1_AUTOPLAY_AP.map((ap, i) => ({ id: `apAp${i}`, type: "audio_ax_allpass", col: 8, row: C1_AUTOPLAY_ROW + i, knobs: ap })),
+    ],
+    wires: [
+      ...clock.wires,
+      { from: "apMod", fromPort: "out", to: "apPmDepth", toPort: "a" },
+      { from: "apPmDepth", fromPort: "out", to: "apCar", toPort: "phase" },
+      { from: "notePitch", fromPort: "out", to: "apCar", toPort: "pitch" },
+      { from: "apCar", fromPort: "out", to: "apVca", toPort: "in" },
+      { from: "ampScale", fromPort: "out", to: "apAmpTrim", toPort: "a" },
+      { from: "apAmpTrim", fromPort: "out", to: "apVca", toPort: "gain" },
+      { from: "apVca", fromPort: "out", to: "apAp0", toPort: "in" },
+      { from: "apAp0", fromPort: "out", to: "apAp1", toPort: "in" },
+      // The dry voice and its diffused copy take the summing mixer's two free inputs.
+      { from: "apVca", fromPort: "out", to: "sum", toPort: "in3" },
+      { from: "apAp1", fromPort: "out", to: "sum", toPort: "in4" },
+    ],
+  };
+})();
+
 export const AXO_SHIMMER = {
   id: "axo-shimmer",
   title: "Axoloti Shimmer (Poly 5)",
@@ -287,6 +513,7 @@ export const AXO_SHIMMER = {
     "`filter/hp1` substituted by `audio_ax_onepole` in highpass mode; `mix/mix 1` by `audio_mixer`; `tiar/filter/Butt10` and `tiar/kfunc/u4u` are the shipped `audio_ax_butterworth10` and `audio_ax_shaper`.",
     "DROPPED, and NOT cosmetic-by-assumption — traced through the patch's `<nets>`: the root `midi/in/keyb` and `osc/sine` exist ONLY to give the two `sss/disp/MIDscope` displays a sync reference (`keyb.note -> sine_2.pitch`, `sine_2.wave -> MIDscope.syncIn`, and that oscillator reaches nothing else). Dropping the scopes therefore drops both. The survey lists that oscillator as `osc/sine (pitch 0, key-tracked)` as though it were part of the voice; it is not.",
     "The stereo `audio/out stereo` is summed to one mono analysis tail, because a patch here must end at `audio_output` with a meter and a spectrum.",
+    "AUTOPLAY (§ R7-AUDIBLE, the THIRD way; seven `ap*` nodes). Measured before: −inf dBFS — this patch has NO live source, because `audio_ax_selfpm` is a placeholder and so are both matrices. A 0.35 Hz clock gates the harvested `poly`, which wakes the four live nodes this patch's own docstring calls its character: both `audio_adsr` envelopes, the per-note `rand/uniform f` that gives every note a different vibrato SPEED, and the five-point shaper that makes the vibrato bloom late. A substituted two-operator oscillator pair is then pitched by the harvested `notePitch` and gated by the harvested `ampScale`, so only the OSCILLATOR is ours. It is TWO-OPERATOR PM, not self-PM: feeding an oscillator's output to its own `phase` closes a directed cycle and `core/nodeflow.js` refuses that at connect time, so the nearest expressible thing is a tamer spectrum, and it is named rather than glossed. THE SHIMMER ITSELF DOES NOT SOUND — every input to the 6x6 matrix and its H4 child is held by a harvested wire and both matrices are placeholders, so two `audio_ax_allpass` at the harvested tank's own 473 and 189 samples stand in for the diffusion. They are not a shimmer and are not claimed to be. TWO NUMBERS IN THE BRANCH ARE MEASUREMENTS, not taste: the clock's gate is 100 ms because that is `TriggerProcessor`'s ceiling and an `audio_adsr` handed the 5 ms the ported Schmitts use attacks and immediately RELEASES (C7 lost 30 dB to exactly that, monotonically decaying to −100 dBFS over a whole render); and the branch divides the harvested `ampScale` by its own 15.5, because that factor is the FDN's input drive and this branch does not go through the FDN — at full it slammed the output limiter at +1.4 dBFS, and halving the return level moved the peak by 0.3 dB, which is what a limiter looks like and not what a level does. Measured after: −12.8 dBFS, peak −1.8.",
   ],
   nodes: [
     // ── THE VOICE (poly 5), drawn once as the allocator's template ───────────
@@ -361,7 +588,8 @@ export const AXO_SHIMMER = {
     { id: "sat", type: "audio_ax_math", col: 9, row: 22, knobs: { operation: "saturate" } },
     ...delayPair("shimB", 9, 23, PITCH_SHIFTER_WINDOW_SECONDS),
 
-    ...stereoTail(10, 0),
+    ...stereoTail(10, 0, C1_AUTOPLAY_RETURN_LEVEL),
+    ...AXO_SHIMMER_AUTOPLAY.nodes,
   ],
   wires: [
     // ── THE VOICE ───────────────────────────────────────────────────────────
@@ -426,6 +654,7 @@ export const AXO_SHIMMER = {
     { from: "modMixA", fromPort: "out", to: "legAa", toPort: "time" },
 
     ...stereoTailWires({ item: "d6", port: "out0" }, { item: "d6", port: "out1" }),
+    ...AXO_SHIMMER_AUTOPLAY.wires,
   ],
 };
 
@@ -625,6 +854,72 @@ const C3_REVERBS = [reverbChannel("l", C3_REVERB_L), reverbChannel("r", C3_REVER
  * vibrato. Every rate is an irrational dial away from every other, which is why nothing in
  * the picture ever lines up.
  */
+/** C3's autoplay return level. Measured: at the shared 0.8 the branch peaks at +0.1
+ *  dBFS, on the clip bar, because it passes through the patch's own voice gains and its
+ *  whole twelve-filter bank on the way. 0.25 lands it near −10 dBFS peak. */
+const C3_AUTOPLAY_RETURN_LEVEL = 0.25;
+
+/** C3's first free row — the two ZDF banks and the two tanks fill rows 0-19. */
+const C3_AUTOPLAY_ROW = 21;
+
+/** C3's autoplay note rate. Slower than C1's, because its amplitude envelope decays over
+ *  1.2 s and its three sample-and-hold morph clocks run at 0.2-0.3 Hz — a note every four
+ *  seconds is what lets one of those morphs actually finish inside a note. */
+const C3_AUTOPLAY_HZ = 0.25;
+
+/**
+ * C3's AUTOPLAY BRANCH — § R7-AUDIBLE's third way, and the cheapest of the three in this
+ * file at FOUR nodes, because almost everything downstream of the oscillators is already
+ * shipped and already wired.
+ *
+ * ── FOUR NODES LIGHT UP SIXTY ──────────────────────────────────────────────
+ * `audio_ax_6coseg` is a placeholder, so `osc0`/`osc1` are the ONLY hole between the note
+ * and the analysis tail: `stereoL`/`stereoR`, both `audio_vca`s, both voice gains, the
+ * three-way split, and the entire twelve-filter / six-allpass ZDF bank are shipped nodes
+ * sitting idle for want of a signal. Two `audio_ax_osc` on the harvested `notePitch` fix
+ * that, and they enter through `stereoL`/`stereoR`'s FREE `in3`/`in4` at the harvested
+ * pan gains, so the two substitutes are panned against each other exactly as `osc0` and
+ * `osc1` are — that opposition is the patch's whole stereo image.
+ *
+ * ── WHERE IT LEAVES, AND WHAT IS STILL DARK ────────────────────────────────
+ * The banks' outputs (`lDry`/`rDry`) fan out to the summing mixer's free inputs. They do
+ * NOT reach it the authored way, because that runs `vcaML`/`vcaMR` — whose gain is a
+ * `node_knob` squared, and a control widget's wire is dropped, so the master VCA is shut
+ * at its `gain: 0` — and then the two reverb tanks and `audio_ax_dpsoftclip`, which is a
+ * placeholder. So the TANKS DO NOT SOUND; what you hear is the voice through the filter
+ * bank, which is the majority of this patch's character but not its tail.
+ */
+const AXO_TO_THE_STARS_AUTOPLAY = (() => {
+  const clock = autoPolyClock(C3_AUTOPLAY_ROW, C3_AUTOPLAY_HZ);
+  // The harvested detunings, to the hundredth of a semitone, and the harvested waveforms'
+  // nearest shipped shapes: `6coseg` is a six-segment cosine table, so a saw and a pulse
+  // are a coarse stand-in and are named as one in the deviations.
+  const oscs = [
+    { id: "apOsc0", pitch: -0.01, waveform: "saw", row: C3_AUTOPLAY_ROW },
+    { id: "apOsc1", pitch: 0.01, waveform: "pwm", row: C3_AUTOPLAY_ROW + 1 },
+  ];
+  return {
+    nodes: [
+      ...clock.nodes,
+      ...oscs.map((o) => ({ id: o.id, type: "audio_ax_osc", col: 8, row: o.row, knobs: { waveform: o.waveform, pitch: o.pitch } })),
+    ],
+    wires: [
+      ...clock.wires,
+      ...oscs.map((o) => ({ from: "notePitch", fromPort: "out", to: o.id, toPort: "pitch" })),
+      // in3/in4 on both pan mixers, so each substitute reaches both channels — the
+      // harvested `stereoL`/`stereoR` gains already say how much of each goes where.
+      { from: "apOsc0", fromPort: "out", to: "stereoL", toPort: "in3" },
+      { from: "apOsc1", fromPort: "out", to: "stereoL", toPort: "in4" },
+      { from: "apOsc0", fromPort: "out", to: "stereoR", toPort: "in3" },
+      { from: "apOsc1", fromPort: "out", to: "stereoR", toPort: "in4" },
+      // Out of the filter banks and straight to the tail: the authored route through
+      // `vcaML` is shut by a control-widget gain, and ends at a placeholder clipper.
+      { from: "lDry", fromPort: "out", to: "sum", toPort: "in3" },
+      { from: "rDry", fromPort: "out", to: "sum", toPort: "in4" },
+    ],
+  };
+})();
+
 export const AXO_TO_THE_STARS = {
   id: "axo-to-the-stars",
   title: "Axoloti To The Stars II (Poly 5)",
@@ -646,6 +941,7 @@ export const AXO_TO_THE_STARS = {
     "`sss/gain/vcaST` substituted by TWO `audio_vca` sharing one gain wire — a stereo VCA with one control input is exactly that. Applies to both the voice's output stage and the master.",
     "`env/adsr` substituted by `audio_adsr`, dials converted by UNITS law 4. `kfilter/lowpass` is the shipped `audio_ax_kfilter_lowpass` with rise = decay. `math/smooth`, `logic/latch`, `rand/uniform f`, `filter/hp1`, `filter/lp1` and `tiar/filter/ZDF SVF 1` are all shipped nodes.",
     "DROPPED AFTER TRACING `<nets>`, not assumed: `triphase_vlfo_1` (1.5 s) and `triphase_vlfo_2` (1.315 s) are WIRED TO NOTHING in the source — the survey's \"19 LFOs, keep them all\" counts them, and two of the five tri-phase LFOs are dead. `patcher_1/*c_1` (amp 0.505) has no consumer either, and `patcher_1/dial_1` -> `math/-` is a dead pair (its output goes nowhere). Also dropped: `disp/dial b` x3, `disp/dial p`, `tiar/disp/scope` (displays), `midi/in/pgm` + `patch/load i` (preset recall), and the ten `patch/inlet f` / two `patch/outlet a` that vanish when a subpatch is inlined.",
+    "AUTOPLAY (§ R7-AUDIBLE, the THIRD way; four `ap*` nodes — the cheapest branch in this file). Measured before: −inf dBFS; after: −24.7 dBFS, peak −3.4. `audio_ax_6coseg` is a placeholder and it is the ONLY hole between the note and the tail — `stereoL`/`stereoR`, both voice VCAs, both voice gains, the three-way split and the entire twelve-filter/six-allpass ZDF bank are shipped nodes idling for want of a signal. So two `audio_ax_osc` at the harvested detunings (−0.01 / +0.01 semitones) enter through those two pan mixers' FREE `in3`/`in4`, at gains mirroring `level1`/`level2` so the substitutes are panned against each other the way the pair they stand in for is. A SAW AND A PULSE ARE A COARSE STAND-IN for a six-segment cosine table and are not claimed otherwise; what survives exactly is the pitch, the pan and everything downstream. THE TWO REVERB TANKS STILL DO NOT SOUND: the authored route out runs `vcaML`/`vcaMR`, whose gain is a `node_knob` squared and a control widget's wire is dropped by `readAudioScene`, so the master VCA is shut at `gain: 0`; and past it sits `audio_ax_dpsoftclip`, a placeholder. The branch therefore leaves from `lDry`/`rDry` — the filter banks' own outputs — into the summing mixer's free inputs, at 0.4 rather than the file's shared 0.8 because this patch's own voice gains put the same branch 2.6 dB hotter than C1's, over the probe's clip bar. Nothing harvested is rewired.",
     "The stereo pair is summed to one mono analysis tail, because a patch here must end at `audio_output` with a meter and a spectrum.",
   ],
   nodes: [
@@ -710,8 +1006,11 @@ export const AXO_TO_THE_STARS = {
     { id: "osc0", type: "audio_ax_6coseg", col: 8, row: 0, knobs: { pitch: -0.01 } },
     { id: "osc1", type: "audio_ax_6coseg", col: 8, row: 1, knobs: { pitch: 0.01 } },
     // mix/mix 2 x2 at 48/24.5 and 24/48 — the two oscillators panned against each other.
-    { id: "stereoL", type: "audio_mixer", col: 9, row: 0, knobs: { level1: 0.75, level2: 0.3828, master: 1 } },
-    { id: "stereoR", type: "audio_mixer", col: 9, row: 1, knobs: { level1: 0.375, level2: 0.75, master: 1 } },
+    // `level3`/`level4` MIRROR `level1`/`level2` — they carry the AUTOPLAY substitutes for
+    // the two placeholder oscillators, so the pair must be panned the same way the pair
+    // they stand in for is. Nothing harvested moves; these two inputs had no wire.
+    { id: "stereoL", type: "audio_mixer", col: 9, row: 0, knobs: { level1: 0.75, level2: 0.3828, level3: 0.75, level4: 0.3828, master: 1 } },
+    { id: "stereoR", type: "audio_mixer", col: 9, row: 1, knobs: { level1: 0.375, level2: 0.75, level3: 0.375, level4: 0.75, master: 1 } },
     { id: "ampMax", type: "audio_ax_math", col: 9, row: 2, knobs: { operation: "maximum", b: 0 } },
     { id: "vcaL", type: "audio_vca", col: 10, row: 0, knobs: { gain: 0 } },
     { id: "vcaR", type: "audio_vca", col: 10, row: 1, knobs: { gain: 0 } },
@@ -732,7 +1031,8 @@ export const AXO_TO_THE_STARS = {
     { id: "vcaMR", type: "audio_vca", col: 20, row: 1, knobs: { gain: 0 } },
 
     ...C3_REVERBS.flatMap((channel) => channel.nodes),
-    ...stereoTail(24, 0),
+    ...stereoTail(24, 0, C3_AUTOPLAY_RETURN_LEVEL),
+    ...AXO_TO_THE_STARS_AUTOPLAY.nodes,
   ],
   wires: [
     // ── THE VOICE ───────────────────────────────────────────────────────────
@@ -825,6 +1125,7 @@ export const AXO_TO_THE_STARS = {
 
     ...C3_REVERBS.flatMap((channel) => channel.wires),
     ...stereoTailWires({ item: "lClip", port: "out" }, { item: "rClip", port: "out" }),
+    ...AXO_TO_THE_STARS_AUTOPLAY.wires,
   ],
 };
 
@@ -905,6 +1206,67 @@ const C7_TAP_PARTS = C7_TAPS.map((cfg) => plateTap(cfg.id, cfg.row, cfg));
  * AND it crossfades the ring-modulated signal in. Both knobs start where he left them —
  * at zero — so turn Ring and Mod to hear what they do.
  */
+/** C7's autoplay return level, and it is ABOVE unity where C1's and C3's are well
+ *  under. Nothing arbitrary in that: C7's branch is the only one that passes through a
+ *  whole Dattorro plate before the tail — four `audio_delay` taps, six allpasses and two
+ *  one-pole pairs — and a diffuser network is lossy by construction. Measured at 0.6 it
+ *  peaked at −11.2 dBFS; 1.2 puts it beside the other two. */
+const C7_AUTOPLAY_RETURN_LEVEL = 1.2;
+
+/** C7's first free row — its voice and its plate fill rows 0-8, and only the tank column
+ *  goes deeper. */
+const C7_AUTOPLAY_ROW = 9;
+
+/** C7's autoplay note rate. An eight-voice MPE pad with a 1.2 s decay and a 0.27 s
+ *  release: a note every three seconds leaves the plate audibly ringing between them,
+ *  which is the point of putting a Dattorro plate behind it. */
+const C7_AUTOPLAY_HZ = 0.33;
+
+/**
+ * C7's AUTOPLAY BRANCH — § R7-AUDIBLE's third way.
+ *
+ * ── THE HOLE IS THE OSCILLATOR TRIO, AND ONLY THAT ─────────────────────────
+ * `audio_ax_dp2saw` is a placeholder, so `saw0`/`saw1`/`saw2` are dead and everything
+ * behind them idles: `filtBus`, the vcf3, both voice VCAs (whose gains come from the now
+ * shipped `audio_adsr` pair), the voice gain, and the entire plate. Three `audio_ax_osc`
+ * at the harvested detunings (0, +0.02, −0.0488 semitones — the two-and-five-cent spread
+ * that makes this a pad rather than one saw) sum into `filtBus`'s free `in3`, so the
+ * substitutes are filtered and enveloped by the patch's own stage.
+ *
+ * ── AND THE PLATE HAS TO BE FED AND TAPPED AROUND TWO PLACEHOLDERS ─────────
+ * The authored route into the tank runs `xfade` → `dphardclip` → the input diffusers, and
+ * the clipper is a placeholder, so `voiceGain` fans out to the tank mixers' FREE `in4`
+ * instead — one wire per side, entering the plate exactly where the diffuser chain would
+ * have delivered it. Coming back, the authored route runs `vcaOutL`/`vcaOutR`, whose gain
+ * is a `node_knob` and therefore a dropped wire, leaving them shut at `gain: 0`; so the
+ * tank's own `outMixA`/`outMixB` fan out to the summing mixer's free inputs. Both are
+ * additions, neither displaces a harvested wire, and both delete cleanly when
+ * `audio_ax_dphardclip` and a playable volume land.
+ */
+const AXO_PAD3_PLATE_AUTOPLAY = (() => {
+  const clock = autoPolyClock(C7_AUTOPLAY_ROW, C7_AUTOPLAY_HZ);
+  const saws = [
+    { id: "apSaw0", pitch: 0 }, { id: "apSaw1", pitch: 0.02 }, { id: "apSaw2", pitch: -0.0488 },
+  ];
+  return {
+    nodes: [
+      ...clock.nodes,
+      ...saws.map((v, i) => ({ id: v.id, type: "audio_ax_osc", col: 10, row: C7_AUTOPLAY_ROW + i, knobs: { waveform: "saw", pitch: v.pitch } })),
+      { id: "apSawMix", type: "audio_mixer", col: 11, row: C7_AUTOPLAY_ROW, knobs: { level1: 1, level2: 1, level3: 1, master: 1 } },
+    ],
+    wires: [
+      ...clock.wires,
+      ...saws.map((v) => ({ from: "notePitch", fromPort: "out", to: v.id, toPort: "pitch" })),
+      ...saws.map((v, i) => ({ from: v.id, fromPort: "out", to: "apSawMix", toPort: `in${i + 1}` })),
+      { from: "apSawMix", fromPort: "out", to: "filtBus", toPort: "in3" },
+      { from: "voiceGain", fromPort: "out", to: "mixA", toPort: "in4" },
+      { from: "voiceGain", fromPort: "out", to: "mixB", toPort: "in4" },
+      { from: "outMixA", fromPort: "out", to: "sum", toPort: "in3" },
+      { from: "outMixB", fromPort: "out", to: "sum", toPort: "in4" },
+    ],
+  };
+})();
+
 export const AXO_PAD3_PLATE = {
   id: "axo-pad3-plate",
   title: "Axoloti Pad 3 Plate (Poly 8)",
@@ -926,6 +1288,7 @@ export const AXO_PAD3_PLATE = {
     "DROPPED AFTER TRACING `<nets>`: the voice's `patch/inlet f` named `pitch` has NO source at root, so `mix_3.in2` (gain 7.0) is fed by nothing and both go. Also `disp/dial p` (a display), `midi/in/pgm` + `patch/load i` (preset recall) and the subpatch boundary inlets/outlets that vanish when a subpatch is inlined.",
     "ONE `math/*c` IS `multiply`, NOT `attenuate`: the voice's output gain is dial 21.5, and `attenuate`'s b IS the dial while `audio_ax_math`'s b range stops at ±16 (Axoloti's goes to 64). Transcribed as `multiply` with 21.5/64 = 0.3359 — identical arithmetic. That range is a real defect in AX_MATH_SPEC and is reported to the lead.",
     "SURVEY CORRECTION: § 2 C7 calls the four taps \"modulated\". They are not — all four `delay/read` objects carry a fixed `time` param and no wire. The modulation in this reverb is the two `fx/chorus` units, which is a different and more interesting thing.",
+    "AUTOPLAY (§ R7-AUDIBLE, the THIRD way; six `ap*` nodes). Measured before: −inf dBFS; after: −23.9 dBFS, peak −5.2. `audio_ax_dp2saw` is a placeholder, so `saw0`/`saw1`/`saw2` are the hole and everything behind them idles — `filtBus`, the vcf3, both voice VCAs, the voice gain, and the entire Dattorro plate. Three `audio_ax_osc` at the harvested detunings (0 / +0.02 / −0.0488 semitones, the two-and-five-cent spread that makes this a pad and not one saw) sum into `filtBus`'s free `in3`, so the substitutes are filtered and enveloped by the patch's own stage. THE PLATE IS FED AND TAPPED AROUND TWO PLACEHOLDERS, both by addition and neither by displacing a harvested wire: the authored way IN runs `xfade` → `audio_ax_dphardclip`, so `voiceGain` fans out to the tank mixers' free `in4` at the same gain `level1` gives the authored input tap; the authored way OUT runs `vcaOutL`/`vcaOutR`, whose gain is a `node_knob` and therefore a wire `readAudioScene` drops, leaving them shut at `gain: 0`, so `outMixA`/`outMixB` fan out to the summing mixer's free inputs. THIS BRANCH RETURNS ABOVE UNITY (1.2) where C1's and C3's are well under, and the reason is measured rather than tuned: it is the only one that crosses a whole diffuser network — four delay taps, six allpasses, two one-pole pairs — and diffusion is lossy by construction. It is also the patch that exposed the 100 ms gate: at the ported patches' 5 ms Schmitt its `audio_adsr` decayed monotonically to −100 dBFS and never retriggered, costing 30 dB.",
     "The stereo pair is summed to one mono analysis tail, because a patch here must end at `audio_output` with a meter and a spectrum.",
   ],
   nodes: [
@@ -981,7 +1344,8 @@ export const AXO_PAD3_PLATE = {
     { id: "saw2", type: "audio_ax_dp2saw", col: 10, row: 2, knobs: { pitch: -0.0488 } },
     { id: "sawSum", type: "audio_ax_math", col: 11, row: 0, knobs: { operation: "add", b: 0 } },
     { id: "vca1", type: "audio_vca", col: 12, row: 0, knobs: { gain: 0 } },
-    { id: "filtBus", type: "audio_mixer", col: 13, row: 0, knobs: { level1: 1, level2: 0.5, master: 1 } },
+    // `level3` CARRIES THE AUTOPLAY SAW TRIO, at the same unity `saw0` has on `in1`.
+    { id: "filtBus", type: "audio_mixer", col: 13, row: 0, knobs: { level1: 1, level2: 0.5, level3: 1, master: 1 } },
     { id: "vcf", type: "audio_ax_vcf3", col: 14, row: 0, knobs: { pitch: 23, reso: 35 } },
     { id: "vca2", type: "audio_vca", col: 15, row: 0, knobs: { gain: 0 } },
     // `math/*c 21.5` — and this ONE `*c` cannot be `attenuate`, because that operation's b IS
@@ -1014,11 +1378,13 @@ export const AXO_PAD3_PLATE = {
     { id: "chorus2", type: "audio_ax_chorus", col: 27, row: 1, knobs: { depth: 4.5, speed: -63.2 } },
 
     // ── THE TWO CROSS-COUPLED TANKS, in ONE column ──────────────────────────
-    { id: "mixA", type: "audio_mixer", col: C7_TANK_COL, row: 0, knobs: { level1: 0.6172, level2: 0.5391, level3: 0.3906, master: 1 } },
+    // `level4` ON BOTH TANK MIXERS IS THE AUTOPLAY INPUT — the door the placeholder
+    // clipper is standing in. Matched to `level1`, which is the authored input tap.
+    { id: "mixA", type: "audio_mixer", col: C7_TANK_COL, row: 0, knobs: { level1: 0.6172, level2: 0.5391, level3: 0.3906, level4: 0.6172, master: 1 } },
     { id: "apA0", type: "audio_ax_allpass", col: C7_TANK_COL, row: 1, knobs: { g: 0.7656, delay: 2364 } },
     { id: "apA1", type: "audio_ax_allpass", col: C7_TANK_COL, row: 2, knobs: { g: 0.7344, delay: 1116 } },
     { id: "apA2", type: "audio_ax_allpass", col: C7_TANK_COL, row: 3, knobs: { g: 0.75, delay: 587 } },
-    { id: "mixB", type: "audio_mixer", col: C7_TANK_COL, row: 4, knobs: { level1: 0.6094, level2: 0.5781, level3: 0.375, master: 1 } },
+    { id: "mixB", type: "audio_mixer", col: C7_TANK_COL, row: 4, knobs: { level1: 0.6094, level2: 0.5781, level3: 0.375, level4: 0.6094, master: 1 } },
     { id: "apB0", type: "audio_ax_allpass", col: C7_TANK_COL, row: 5, knobs: { g: 0.7969, delay: 2057 } },
     { id: "apB1", type: "audio_ax_allpass", col: C7_TANK_COL, row: 6, knobs: { g: 0.7188, delay: 1105 } },
     { id: "apB2", type: "audio_ax_allpass", col: C7_TANK_COL, row: 7, knobs: { g: 0.75, delay: 619 } },
@@ -1031,7 +1397,8 @@ export const AXO_PAD3_PLATE = {
     { id: "wetMixR", type: "audio_mixer", col: C7_TANK_COL + 2, row: 1, knobs: { level1: 0.5313, level2: 1, master: 1 } },
     { id: "vcaOutL", type: "audio_vca", col: C7_TANK_COL + 3, row: 0, knobs: { gain: 0 } },
     { id: "vcaOutR", type: "audio_vca", col: C7_TANK_COL + 3, row: 1, knobs: { gain: 0 } },
-    ...stereoTail(C7_TANK_COL + 4, 0),
+    ...stereoTail(C7_TANK_COL + 4, 0, C7_AUTOPLAY_RETURN_LEVEL),
+    ...AXO_PAD3_PLATE_AUTOPLAY.nodes,
   ],
   wires: [
     // ── THE MPE PRESSURE PATH ───────────────────────────────────────────────
@@ -1136,6 +1503,7 @@ export const AXO_PAD3_PLATE = {
     { from: "volKnob", fromPort: "out", to: "vcaOutL", toPort: "gain" },
     { from: "volKnob", fromPort: "out", to: "vcaOutR", toPort: "gain" },
     ...stereoTailWires({ item: "vcaOutL", port: "out" }, { item: "vcaOutR", port: "out" }),
+    ...AXO_PAD3_PLATE_AUTOPLAY.wires,
   ],
 };
 

@@ -73,10 +73,21 @@ console.log("\nthe universal morph property — MM + II\n");
 // ── FOLD LAW ─────────────────────────────────────────────────────────────────
 
 test("AUTO folds a token when the endpoint outlines differ", () => {
-  const mid = foldItem({ type: "rect", w: 10, h: 10 }, { type: "circle" }, 0.5);
+  const mid = foldItem({ type: "rect", w: 10, h: 10 }, { type: "circle", [MORPH_KEY]: "auto" }, 0.5);
   assert.ok(isUniversalMorphToken(mid[MORPH_KEY]),
-    `a retype must mint the universal token, got ${JSON.stringify(mid[MORPH_KEY])}`);
-  assert.equal(mid[MORPH_KEY].mode, "auto", "with nothing stored the mode IS auto");
+    `a retype under AUTO must mint the universal token, got ${JSON.stringify(mid[MORPH_KEY])}`);
+  assert.equal(mid[MORPH_KEY].mode, "auto");
+});
+
+// USER RULING, 2026-08-07: snap is "the true default we morph only if we want".
+// This is the assertion that ruling lives or dies by — everything else about the
+// morph machinery is unchanged, and the ONLY thing that moved is what you get
+// when you ask for nothing.
+test("with NOTHING stored a retype SNAPS — morphing is opt-in", () => {
+  const mid = foldItem({ type: "rect", w: 10, h: 10 }, { type: "circle" }, 0.5);
+  assert.ok(!isUniversalMorphToken(mid[MORPH_KEY]),
+    `an unconfigured retype must mint NO token, got ${JSON.stringify(mid[MORPH_KEY])}`);
+  assert.equal(mid.type, "circle", "and the type switches at once, as it did before morphing existed");
 });
 
 test("a PURE MOVE mints nothing — an ordinary document pays nothing", () => {
@@ -101,9 +112,9 @@ test("SNAP mints nothing — the discrete opt-out costs the render seam nothing"
 });
 
 test("the mode STEPS at the transition's start, like every interp value", () => {
-  assert.equal(morphModeForBlend(undefined, undefined), "auto", "absent is auto");
-  assert.equal(morphModeForBlend("snap", undefined), "snap", "a standing mode carries");
-  assert.equal(morphModeForBlend("snap", "crossfade"), "crossfade", "the TARGET wins from frame 1");
+  assert.equal(morphModeForBlend(undefined, undefined), "snap", "absent is SNAP (2026-08-07 ruling)");
+  assert.equal(morphModeForBlend("auto", undefined), "auto", "a standing mode carries");
+  assert.equal(morphModeForBlend("auto", "crossfade"), "crossfade", "the TARGET wins from frame 1");
   const mid = foldItem({ type: "rect", w: 10 }, { type: "circle", [MORPH_KEY]: "crossfade" }, 0.5);
   assert.equal(mid[MORPH_KEY].mode, "crossfade", "and the fold honours it from the first interior frame");
 });
@@ -119,7 +130,7 @@ test("morphEndpointsDiffer is a DENYLIST — a new shape leaf defaults to 'might
 
 test("the token carries the two FIXED ENDPOINT BAGS, never a mid-tween one", () => {
   const from = { type: "gear", teeth: 8, w: 100, h: 100 };
-  const to = { type: "gear", teeth: 20, w: 300, h: 300 };
+  const to = { type: "gear", teeth: 20, w: 300, h: 300, [MORPH_KEY]: "auto" };
   for (const alpha of [0.1, 0.5, 0.9]) {
     const tok = foldItem(from, to, alpha)[MORPH_KEY];
     assert.deepEqual(tok.from, from, `at alpha ${alpha} the FROM endpoint must be the transition's start, not a tween`);
@@ -129,7 +140,7 @@ test("the token carries the two FIXED ENDPOINT BAGS, never a mid-tween one", () 
 });
 
 test("the token carries NO GEOMETRY — the fold stays cheap and serializable", () => {
-  const tok = foldItem({ type: "rect", w: 10 }, { type: "circle" }, 0.5)[MORPH_KEY];
+  const tok = foldItem({ type: "rect", w: 10 }, { type: "circle", [MORPH_KEY]: "auto" }, 0.5)[MORPH_KEY];
   const json = JSON.stringify(tok);
   assert.ok(!json.includes("curves") && !json.includes("subpaths"),
     "a path list in a folded state would land in every cached slide state, undo entry and serialized form");
@@ -270,9 +281,11 @@ test("latex→latex morphs under PLAIN AUTO with NO per-row mode set", () => {
   // The user's sharpest catch: editing an equation does not change `type`, so the
   // type row's morph mode could never reach it however it was set. Under the
   // universal property it needs no setting at all.
-  const mid = foldItem({ type: "latex", latex: "x^2", w: 100, h: 60 }, { latex: "y^3" }, 0.5);
+  // Under AUTO explicitly, since 2026-08-07 — the point survives the default
+  // change: ONE row reaches an equation edit, where the type row never could.
+  const mid = foldItem({ type: "latex", latex: "x^2", w: 100, h: 60 }, { latex: "y^3", [MORPH_KEY]: "auto" }, 0.5);
   const tok = mid[MORPH_KEY];
-  assert.ok(isUniversalMorphToken(tok), "an equation EDIT must mint the universal token with nothing configured");
+  assert.ok(isUniversalMorphToken(tok), "an equation EDIT must mint the universal token under one universal row");
   assert.equal(tok.mode, "auto");
   assert.equal(tok.from.latex, "x^2", "the outgoing source");
   assert.equal(tok.to.latex, "y^3", "the incoming source");
@@ -282,7 +295,7 @@ test("latex→latex morphs under PLAIN AUTO with NO per-row mode set", () => {
 test("derive turns the token into a `.morph` mark and a clean state", () => {
   const mid = blendApplied(
     { items: { a: { type: "rect", w: 100, h: 80, fill: "#123456", strokeWidth: 0 } }, vars: {} },
-    { items: { a: { type: "circle" } } }, 0.5);
+    { items: { a: { type: "circle", [MORPH_KEY]: "auto" } } }, 0.5);
   const [node] = deriveRenderTree(mid, registry);
   assert.ok(node.morph, "the node must carry the pair mark");
   assert.deepEqual(node.morph.fromState.type, "rect");
@@ -330,7 +343,7 @@ test("AUTO falls to CROSSFADE for a pair that cannot outline", () => {
   // blink — and it does so SILENTLY, because choosing sensibly is what auto is.
   const mid = blendApplied(
     { items: { a: { type: "rect", w: 100, h: 80, fill: "#123456", strokeWidth: 0 } }, vars: {} },
-    { items: { a: { type: "video" } } }, 0.5);
+    { items: { a: { type: "video", [MORPH_KEY]: "auto" } } }, 0.5);
   const [node] = deriveRenderTree(mid, registry);
   assert.ok(node.morph?.crossfade,
     "a pair with no second outline must CROSSFADE under auto — two pictures still dissolve, even when they cannot flow");
@@ -359,7 +372,7 @@ test("the TYPE row's interp affordance is GONE — the universal row covers it",
 });
 
 test("the universal property offers exactly the four ruled options", () => {
-  assert.deepEqual(MORPH_MODES, ["auto", "morph", "crossfade", "snap"]);
+  assert.deepEqual(MORPH_MODES, ["snap", "auto", "morph", "crossfade"], "default first");
 });
 
 test("universalMorphToken mints nothing for an inert mode", () => {
@@ -379,12 +392,14 @@ test("universalMorphToken mints nothing for an inert mode", () => {
 // The ruling is GENERAL, so these pin EVERY transform property, not just the `h`
 // that happened to throw.
 
-/** The mid-transition evaluated state for a one-item doc morphing rect→circle. */
+/** The mid-transition evaluated state for a one-item doc morphing rect→circle.
+ *  `morph: "auto"` is explicit since the 2026-08-07 default flipped to snap — a
+ *  snapping retype mints no token, and every test below is ABOUT the token. */
 const equationMorphState = (item, extra = {}, vars = {}, alpha = 0.5) =>
   evaluateState(
     blendApplied(
       { vars, items: { a1: item, ...extra } },
-      { items: { a1: { type: "circle" } } },
+      { items: { a1: { type: "circle", [MORPH_KEY]: "auto" } } },
       alpha,
     ),
     registry,
@@ -434,7 +449,7 @@ test("AS: a NUMERIC morph is untouched — endpoint byte-identity holds", () => 
   // frame — which is the jiggle the endpoint law exists to prevent.
   const folded = blendApplied(
     { vars: {}, items: { a1: { type: "rect", x: 0, y: 0, w: 100, h: 50 } } },
-    { items: { a1: { type: "circle" } } },
+    { items: { a1: { type: "circle", [MORPH_KEY]: "auto" } } },
     0.5,
   );
   const raw = folded.items.a1[MORPH_KEY];

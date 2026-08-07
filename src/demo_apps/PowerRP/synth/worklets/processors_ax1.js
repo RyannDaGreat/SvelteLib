@@ -891,20 +891,62 @@ class Ax1MidiTouchProcessor extends AudioWorkletProcessor {
  * flat 1:1 map, so nothing can instantiate the graph downstream of this node N times.
  * These five outputs are ONE slot of the pool — the one the `voice` param names.
  *
- * Inputs 0…4 are note, gate, gate2, velocity, release velocity; outputs the same five.
- * A note-on is a rising `gate`, a `note` change under a held gate, OR a falling `gate2`
- * under a held gate — the three ways `audio_ax_midi_keyb` spells the one event.
+ * Inputs 0…2 are note, gate, gate2; velocity and release velocity are PARAMS (a knob a
+ * wire sums into, § R7-11's duality rule) so an unwired node still has a real velocity
+ * rather than a silent zero. Outputs 0…4 are the five per-voice signals.
+ *
+ * ── TWO SOURCES OF NOTES WRITE ONE SLOT TABLE ───────────────────────────────
+ * 1. THE WIRE PATH: a note-on is a rising `gate`, a `note` change under a held gate, OR
+ *    a falling `gate2` under a held gate — the three ways `audio_ax_midi_keyb` spells
+ *    the one event. Its slot is chosen HERE, by Axoloti's own LRU.
+ * 2. THE KEYBOARD PATH (§ R7-PLAYABLE): `engine.noteOn` has ALREADY chosen the slot
+ *    from its own pool (synth/voices.js) and posts it. Nothing is allocated here.
+ * They are not two policies fighting: they are two event sources writing the same
+ * table, and the later event for a slot wins — exactly as a knob and its inlet sum.
+ *
+ * A POSTED NOTE IS APPLIED AT THE NEXT CONTROL TICK, not at the audio-clock `time` the
+ * engine named: `postMessage` cannot be scheduled. The error is at most one quantum
+ * (2.67 ms at 48 kHz), which is inaudible on a played key and is NOT good enough for a
+ * sequenced one — `synth/modules.js polyPad` honours `time` exactly through
+ * `setValueAtTime` and this cannot. Named as a deviation on the spec.
  */
 class Ax1PolyVoicesProcessor extends AudioWorkletProcessor {
   static get parameterDescriptors() {
     return [
       { name: "voices", defaultValue: 7, minValue: 1, maxValue: AX_POLY_MAX_VOICES, automationRate: "a-rate" },
       { name: "voice", defaultValue: 0, minValue: 0, maxValue: AX_POLY_MAX_VOICES - 1, automationRate: "a-rate" },
+      { name: "velocity", defaultValue: 100 / 128, minValue: 0, maxValue: 1, automationRate: "a-rate" },
+      { name: "release_velocity", defaultValue: 0.5, minValue: 0, maxValue: 1, automationRate: "a-rate" },
     ];
   }
 
   constructor() {
     super();
+    // THE KEYBOARD PATH's mailbox. Pre-allocated and flag-shaped rather than a queue of
+    // objects, because `onmessage` runs on the AUDIO THREAD: pushing to an array there
+    // would allocate in the same place `process()` may not. A second note-on for a slot
+    // inside one quantum overwrites the first, which is correct — the engine's pool
+    // already released the stolen voice before it named the same slot again.
+    this.pendingNoteOn = new Int8Array(AX_POLY_MAX_VOICES);
+    this.pendingNoteOff = new Int8Array(AX_POLY_MAX_VOICES);
+    this.pendingSemitones = new Float32Array(AX_POLY_MAX_VOICES);
+    this.port.onmessage = (event) => {
+      const message = event.data && event.data.note;
+      if (!message) return;
+      const slot = message.slot | 0;
+      // NO SILENT DROP: a slot outside the table means the engine's pool and this
+      // processor disagree about the voice count, which is a real wiring fault.
+      if (slot < 0 || slot >= AX_POLY_MAX_VOICES) {
+        this.port.postMessage({ error: `ax1-poly-voices: note for slot ${slot}, which is outside 0…${AX_POLY_MAX_VOICES - 1}` });
+        return;
+      }
+      if (message.on) {
+        this.pendingSemitones[slot] = message.semitones;
+        this.pendingNoteOn[slot] = 1;
+      } else {
+        this.pendingNoteOff[slot] = 1;
+      }
+    };
     // Their <sInitCode>: `notePlaying[vi]=0; voicePriority[vi]=0; … priority=0;`.
     // Allocated ONCE at the maximum — `voices` narrows the search rather than resizing,
     // because a resize on the audio thread would allocate.
@@ -924,7 +966,7 @@ class Ax1PolyVoicesProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs, parameters) {
-    const [noteIn, gateIn, gate2In, velocityIn, releaseIn] = inputs;
+    const [noteIn, gateIn, gate2In] = inputs;
     const [noteOut, gateOut, gate2Out, velocityOut, releaseOut] = outputs;
     if (!noteOut || noteOut.length === 0) return true;
     const frames = noteOut[0].length;
@@ -932,25 +974,31 @@ class Ax1PolyVoicesProcessor extends AudioWorkletProcessor {
     for (let start = 0; start < frames; start += AX_KRATE_BLOCK) {
       const width = Math.max(1, Math.min(AX_POLY_MAX_VOICES,
         Math.round(axParamAt(parameters.voices, start))));
+      const velocity = axParamAt(parameters.velocity, start);
+      const releaseVelocity = axParamAt(parameters.release_velocity, start);
       const note = axInputAt(noteIn, start);
       const high = axInputAt(gateIn, start) > 0;
       const gate2High = axInputAt(gate2In, start) > 0;
+
+      // THE KEYBOARD PATH first, so a wire event in the same tick is the later one and
+      // wins — the wire is the patch's own statement and a key press is a visitor.
+      this.applyPostedNotes(velocity, releaseVelocity);
 
       if (high) {
         const retriggered = this.wasHigh && (note !== this.heldNote || (this.previousGate2High && !gate2High));
         if (!this.wasHigh || retriggered) {
           // A legato note-on releases the note it replaces first, exactly as their
           // NOTE_OFF branch would when the controller sends one.
-          if (retriggered) this.releaseNote(this.heldNote, axInputAt(releaseIn, start));
+          if (retriggered) this.releaseNote(this.heldNote, releaseVelocity);
           const slot = this.allocate(width, note);
           this.voiceNote[slot] = note;
-          this.voiceVelocity[slot] = axInputAt(velocityIn, start);
+          this.voiceVelocity[slot] = velocity;
           this.voiceGate[slot] = 1;
           this.voiceGate2[slot] = 0;
           this.heldNote = note;
         }
       } else if (this.wasHigh) {
-        this.releaseNote(this.heldNote, axInputAt(releaseIn, start));
+        this.releaseNote(this.heldNote, releaseVelocity);
       }
       this.wasHigh = high;
       this.previousGate2High = gate2High;
@@ -970,6 +1018,38 @@ class Ax1PolyVoicesProcessor extends AudioWorkletProcessor {
       for (let i = 0; i < AX_POLY_MAX_VOICES; i++) this.voiceGate2[i] = this.voiceGate[i];
     }
     return true;
+  }
+
+  /**
+   * Drain the keyboard mailbox into the slot table. The slot is the ENGINE's — it came
+   * from `synth/voices.js`, so nothing is allocated here; this only turns a decision
+   * that was already made into the five signals a voice graph reads.
+   *
+   * `notePlaying`/`pressed` are updated too, so the wire path's own LRU sees a
+   * keyboard-held voice as busy instead of stealing it on the next wired note.
+   */
+  applyPostedNotes(velocity, releaseVelocity) {
+    for (let slot = 0; slot < AX_POLY_MAX_VOICES; slot++) {
+      if (this.pendingNoteOff[slot]) {
+        this.pendingNoteOff[slot] = 0;
+        this.voiceGate[slot] = 0;
+        this.voiceRelease[slot] = releaseVelocity;
+        this.pressed[slot] = 0;
+        this.voicePriority[slot] = this.priority;
+        this.priority += 1;
+      }
+      if (this.pendingNoteOn[slot]) {
+        this.pendingNoteOn[slot] = 0;
+        this.voiceNote[slot] = this.pendingSemitones[slot];
+        this.voiceVelocity[slot] = velocity;
+        this.voiceGate[slot] = 1;
+        this.voiceGate2[slot] = 0;
+        this.notePlaying[slot] = this.pendingSemitones[slot];
+        this.pressed[slot] = 1;
+        this.voicePriority[slot] = AX_POLY_ACTIVE_PRIORITY_BASE + this.priority;
+        this.priority += 1;
+      }
+    }
   }
 
   /** Their NOTE_ON branch: steal the lowest-priority voice, push it above the offset. */

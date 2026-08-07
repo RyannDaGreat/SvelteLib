@@ -5883,3 +5883,34 @@ time should be spent on tests."* This ROUND is bounded by that. It does not repe
 standing gate (`tests/run_all.mjs` is still what "passing" means, per PowerRP CLAUDE.md);
 it forbids growing the suite as the main activity and forbids tail-chasing repairs — the
 same judgment R6-30 already made from the other direction.
+
+### R7-RULING: SNAP IS THE MORPH DEFAULT (user, 2026-08-07)
+
+Verbatim: *"the default transition should be [snap] not auto for most things make that the
+true default we morph only if we want."* (Said first as "Step", corrected to **snap** —
+which is the mode's real name; there is no Step mode, and the transition TYPE registry is a
+different thing entirely and was NOT touched.)
+
+**WHAT CHANGED IS ONE VALUE: the universal `morph` property's ABSENT value, `auto` → `snap`.**
+None of the morph machinery moved — auto/morph/crossfade all behave exactly as before, and
+every one is still one row-click away. What moved is what you get when you ask for nothing.
+
+**WHY IT IS THE RIGHT DEFAULT:** reshaping is a special effect, so it belongs to the author
+who ASKS for it. Under auto, editing a LaTeX equation or a gear's tooth count made the shape
+flow across the transition whether or not that was wanted — and the very generality that
+makes the universal property good (it does not care WHICH leaf changed) is what made its
+default reach edits nobody thought of as shape changes.
+
+**THE CONSTANT TO READ IS `MORPH_DEFAULT`, NEVER `MORPH_AUTO`.** They were one constant
+until this ruling, so every `absentValue: MORPH_AUTO` in the tree was a site that MEANT
+"the default" and SAID "auto". Both are now exported separately from
+`core/morph_property.js` and the two call sites (`core/multiselect.js`,
+`web/Inspector.svelte`) read the former.
+
+**LESSON, and it is the reusable part.** Three test files silently degraded rather than
+failing: `tests/morph_shape_only_test.js`'s `bothWaysFrom` built a "morphed" case by
+storing NOTHING and a "control" by storing `snap`, so the flip made the pair two copies of
+the control. Its comparing assertions failed loudly, but any non-comparing assertion in
+that file would have gone on passing while testing nothing. **A fixture that expresses a
+mode by OMITTING it is a fixture that stops testing what it names the day the default
+changes** — state the mode outright on both sides, even when one of them is the default.

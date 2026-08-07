@@ -91,9 +91,17 @@ function bothWays(enter, alpha) {
   return bothWaysFrom(START, enter, alpha);
 }
 
-/** The same pair, from a caller-chosen outgoing pose (so a key can have a start VALUE to tween from). */
+/** The same pair, from a caller-chosen outgoing pose (so a key can have a start VALUE to tween from).
+ *  Both sides state their mode OUTRIGHT. The morphed side relied on the absent
+ *  value being `auto` until the 2026-08-07 ruling made it `snap` — at which point
+ *  the pair silently became two copies of the control, and a file built to prove
+ *  "these are genuinely two pictures" would have gone on passing for the ones
+ *  that did not compare the two. */
 function bothWaysFrom(start, enter, alpha) {
-  return { morphed: render(start, enter, alpha), control: render(start, { ...enter, morph: "snap" }, alpha) };
+  return {
+    morphed: render(start, { ...enter, morph: "auto" }, alpha),
+    control: render(start, { ...enter, morph: "snap" }, alpha),
+  };
 }
 
 /** The ONE op a single-widget scene draws, whatever its kind (path, rect, ellipse, effectSubtree). */
