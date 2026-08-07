@@ -26,26 +26,32 @@ re-implementation — if what you hear is wrong, the app is wrong the same way.
   OfflineAudioContext's does not, so no sequenced events fire in this render. This
   is a limit of the renderer, not of the patch.
 
-## Measured levels, 2026-08-07 (second render — nothing clips now)
+## Measured levels, 2026-08-07 (third render — after the knob-unit sweep)
 
-| patch | peak |
-|---|---|
-| spacey-pad-drone | −0.2 |
-| axo-radioactive | −0.8 |
-| axo-to-the-stars | −0.9 |
-| vcv-first-generative | −1.8 |
-| axo-shimmer | −1.8 |
-| axo-mi-stack | −3.9 |
-| axo-tranquille | −5.2 |
-| axo-pad3-plate | −5.2 |
-| vcv-granular-ambient | −6.9 |
-| vcv-subharmonicon | −7.4 |
-| axo-strings-poly | −7.5 |
-| beach | −10.5 |
-| vcv-borealis | −15.7 |
-| vcv-incanta | −19.1 |
-| axo-drseq | −20.7 |
-| whoosh | −24.7 |
+`†` marks a patch whose knobs changed in that sweep: 89 harvested values that were raw
+Axoloti dials, raw Rack knob positions, raw volts or enum indices sitting in knobs that
+mean seconds, hertz or a named option. **Every peak that moved is in the table**, and all
+four moved by design; the eleven patches the sweep did not touch are byte-for-byte where
+they were, which is the control that says nothing else drifted.
+
+| patch | peak | was |
+|---|---|---|
+| spacey-pad-drone | −0.2 | |
+| axo-radioactive † | −1.0 | −0.8 |
+| axo-to-the-stars | −0.9 | |
+| vcv-first-generative | −1.8 | |
+| axo-shimmer | −1.8 | |
+| axo-tranquille † | −5.2 | −5.2 |
+| axo-pad3-plate † | −5.2 | −5.2 |
+| **axo-mi-stack** † | **−6.7** | **−3.9 — see below** |
+| vcv-granular-ambient | −6.9 | |
+| vcv-subharmonicon | −7.4 | |
+| axo-strings-poly † | −7.5 | −7.5 |
+| beach | −10.5 | |
+| vcv-borealis † | −14.5 | −15.7 |
+| vcv-incanta † | −17.8 | −19.1 |
+| axo-drseq † | −20.7 | −20.7 |
+| whoosh | −24.7 | |
 | **vcv-fm-pad** | **−67.7 — audible only in name; see below** |
 | sequenced-dings, gamelan-bells, playable-keys, button-ding | silent (event-driven) |
 | vcv-microcosm, vcv-ciani-buchla, vcv-ms20 | silent (placeholders) |
@@ -62,6 +68,25 @@ summing fault from a level fault.
 
 **`vcv-fm-pad` at −67.7 dBFS is not a level to nudge — it is inaudible**, ~0.04% of
 full scale. Treat it as a defect that has not been diagnosed yet, not as a quiet patch.
+
+**`axo-mi-stack` moved 2.8 dB and the interesting part is that it first moved 21.** Its
+two `dp_soft_clip` nodes held raw Axoloti dials — `ingain: 25`, i.e. a 100× drive into a
+soft clipper, which is not a clipper at all but a squarer, followed by `outgain: 15` as
+30× of make-up. Converting them to their real dial/64 values (0.390625 / 0.234375) dropped
+the patch to −24.7 dBFS, because the autoplay return feeding them had been trimmed to 0.12
+expressly to survive that 100× — its own comment said so. With the trim returned to unity
+the patch sits at −6.7. **It gained 18.0 dB from 18.4 dB of knob, and that near-linearity
+is the actual evidence the fix is right**: a shaper responding proportionally to its input
+is one working in its cubic region, which is what an in-gain below unity is supposed to
+produce. At the old 100× drive the same knob would have done almost nothing, because a
+saturated clipper has no gain left to give.
+
+**Three VCV patches are absent from the table because they do not BUILD**, and that is
+older than this render: `vcv-ambient-drone`, `vcv-self-playing-ambient` and
+`vcv-rampage-generative` each name a knob on a closed-source Vult/Instruō module
+(`vessek`, `tangents`, `basal`) that the shipped spec does not have — 25 such names across
+4 types, tracked by `.frenzy/round7/scratchpad_patch_reconcile.mjs`. Their knob-unit fixes
+are in the source and unheard, and they stay unheard until those names resolve.
 
 ## What this CANNOT tell you
 

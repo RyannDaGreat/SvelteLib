@@ -607,8 +607,13 @@ export const VCV_BOREALIS = {
     // patch this size needs only one modulation source for its slowest movements.
     { id: "ochd", type: "audio_vcv_ochd", col: 0, row: 6, knobs: { rate: 0.2909 } },
     { id: "noise", type: "audio_noise", col: 0, row: 10, knobs: { color: "white", level: 0.5 } },
-    // 0.0355 Hz — one sweep every 28 seconds. This one LFO reaches six destinations.
-    { id: "drift", type: "audio_vcv_llfo", col: 0, row: 14, knobs: { frequency: 0.0355, offset: 1, scale: 0.2819 } },
+    // One sweep every 28 seconds, and it takes TWO knobs to say so. The harvested raw is
+    // −1.8482 with `Slow mode=1.0`; VC-3b's rate knob is `bogaudioSemitonesToHz(12·(v − 7))`
+    // = 0.5677 Hz and `slow` is a separate control that `LlfoKernel.control` divides by 16.
+    // What was here was 0.0355 Hz — the rate AFTER that division — with the `slow` knob
+    // dropped, which is the same sweep on paper and a knob that reads 16× wrong, below its
+    // own 0.0639 Hz minimum. This one LFO reaches six destinations.
+    { id: "drift", type: "audio_vcv_llfo", col: 0, row: 14, knobs: { frequency: 0.567685, slow: "on", offset: 1, scale: 0.2819 } },
     { id: "edge", type: "audio_trigger", col: 1, row: 0, knobs: { pulseMs: 5 } },
     { id: "divider", type: "audio_vcv_clockdivider", col: 2, row: 0 },
     { id: "envShort", type: "audio_vcv_ad", col: 2, row: 6, knobs: { attack: 0.004, decay: 0.209 } },
@@ -632,7 +637,9 @@ export const VCV_BOREALIS = {
     { id: "quantLow", type: "audio_vcv_quantizer", col: 6, row: 8, knobs: { offset: -0.3639 } },
     { id: "quantFm", type: "audio_vcv_quantizer", col: 6, row: 14 },
     { id: "quantChord", type: "audio_vcv_quantizer", col: 7, row: 0 },
-    { id: "low", type: "audio_vcv_lvco", col: 7, row: 8, knobs: { wave: 1 } },
+    // "triangle", not 1: the harvested `Waveform=1.0` is an index into LVCO's `configSwitch`
+    // list and VC-3b's knob is the NAME (`BOG_LVCO_WAVES[1]`).
+    { id: "low", type: "audio_vcv_lvco", col: 7, row: 8, knobs: { wave: "triangle" } },
     { id: "octave", type: "audio_vcv_octave", col: 8, row: 0 },
     { id: "lowFilter", type: "audio_vcv_spf", col: 8, row: 8, knobs: { freq: 5.7875, r: 1.165 } },
     { id: "fmOsc", type: "audio_vcv_palmloop", col: 8, row: 14, knobs: { octave: 9 } },

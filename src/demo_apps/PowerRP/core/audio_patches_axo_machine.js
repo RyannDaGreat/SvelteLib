@@ -127,8 +127,8 @@ export const AXO_DRUM_MACHINE = {
     "`audio/out stereo` → the mono analysis tail. Both its channels are fed by the SAME node in the original, so nothing is lost but the port count. `audio_ax_stereo_out` is shipped and faithful, but it has no outputs, so a patch ending in it could not reach the `audio_output` every blueprint must — see core/audio_patches.js.",
     // ── THE ONE ADDED-NODE CLASS ────────────────────────────────────────────
     "AUTOPLAY (§ R7-AUDIBLE) — AND A10 NEEDS NONE, WHICH IS THE FIRST WAY AND THE ONE THE RULING PREFERS. It was −inf dBFS on 2026-08-07 and this file was briefed to give it a self-driving source; hours later AX-4's envelopes, `mix/mix N`, the two DP clippers and the crossfader landed and the harvested machine came alive on its own at −27.0 dBFS, peak −20.7, with a visible rhythmic envelope (an eight-slice RMS of −25 / −24 / −28 / −57 / silence / −34 / −24 / −24 — the machine's own bar-length rest). It has its own clock, its own 8-pattern step tables and its own `pulse/lfsrburst`; the silence was never a missing trigger, it was an unfinished port, exactly as the brief suspected. NOTHING WAS ADDED. Two placeholders remain — see the next entry.",
-    "⚠ `audio_ax_env_d` IS A PLACEHOLDER THAT WILL NEVER BE SUPERSEDED, AND IT IS A NAME COLLISION RATHER THAN MISSING WORK. AX-4 shipped `env/d` as `audio_ax_env_decay` (the name `core/audio_stubs_axo_poly.js` guessed); this file guessed `audio_ax_env_d`. Both stand for the same object with BYTE-IDENTICAL ports, so `STUB_SUPERSEDED` — which matches on the type string — retires one and not the other. The consequence is audible: `bdsweep`, `hhamp` and `snamp` are dead, so the kick has no pitch sweep and the hat and snare have no amplitude envelope. THE SWAP IS NOT SAFE TO MAKE FROM HERE, because the shipped node's `d` is in SECONDS and these three hold raw Axoloti dials (−20, 1.5, 16) — it is one case of the block-wide dial→unit sweep the entry below records. Reported to the lead rather than half-done.",
-    "⚠ THE HARVESTED DIALS ON THIS PATCH'S ENVELOPES AND MIXERS ARE STILL RAW, and now that AX-4 has landed they are OUT OF THE SHIPPED KNOBS' RANGES. Measured 2026-08-07 across all eight Axoloti patches: about 45 values, on `env/adsr` (a/d/r want `axTimeDialSeconds`, s wants dial/64), `env/ahd m` (`axDecayDialSeconds`), `env/d`, `env/d lin m` and the two DP clippers (dial/64). `core/audio_specs_ax4.js`'s own header names this work and defers it to whoever owns the patch files. IT IS NOT MECHANICAL EVERYWHERE: `idxbd`/`idxhh`/`idxsn` carry `gain1: 16`, which is not a gain but the ×16 that turns the clock's 0…1 saw into a 16-step index — dividing it by 64 is § R7-AXO-TRAPS trap 2 and would leave the sequencer on step 0. That one needs an `audio_ax_math` node, not a converted knob. Called out here rather than swept in silently, and rather than guessed at.",
+    "⚠ `audio_ax_env_d` IS A PLACEHOLDER THAT WILL NEVER BE SUPERSEDED, AND IT IS A NAME COLLISION RATHER THAN MISSING WORK. AX-4 shipped `env/d` as `audio_ax_env_decay` (the name `core/audio_stubs_axo_poly.js` guessed); this file guessed `audio_ax_env_d`. Both stand for the same object with BYTE-IDENTICAL ports, so `STUB_SUPERSEDED` — which matches on the type string — retires one and not the other. The consequence is audible: `bdsweep`, `hhamp` and `snamp` are dead, so the kick has no pitch sweep and the hat and snare have no amplitude envelope. THE SWAP IS NOT SAFE TO MAKE FROM HERE, because the shipped node's `d` is in SECONDS and these three hold raw Axoloti dials (−20, 1.5, 16). THE SWEEP THE ENTRY BELOW RECORDS IS DONE AND THESE THREE ARE STILL NOT PART OF IT, which is the thing to understand before touching them: their dials are untouched BECAUSE the type they point at is a placeholder that declares no module, so nothing reads them and converting them would be converting a value into a node that does not exist. They convert when the type does — `axTimeDialSeconds` of −20, 1.5 and 16, in the same edit that repoints the type. Reported to the lead rather than half-done.",
+    "THE HARVESTED DIALS ON THE ENVELOPES AND CLIPPERS ARE NOW CONVERTED — done 2026-08-07, across six of the eight Axoloti patches: 60 values on `env/adsr` (a/d/r through `axTimeDialSeconds`, s through dial/64), `env/ahd m` (`axDecayDialSeconds`), `env/d`, `env/d lin m` and the two DP clippers (dial/64). `core/audio_specs_ax4.js`'s header named this work and deferred it; this is it. TWO OF THEM THE RANGE LAW COULD NOT HAVE FOUND, because a raw dial small enough lands inside the seconds knob and reads as legal: `geigerenv.d` at dial 3 and `pmenv.d` at dial 2 were three and two SECONDS where the object means 0.115 s and 0.109 s. AND ONE CLASS IS DELIBERATELY LEFT: `idxbd`/`idxhh`/`idxsn` carry `gain1: 16`, which is not a gain but the ×16 that turns the clock's 0…1 saw into a 16-step index — dividing it by 64 is § R7-AXO-TRAPS trap 2 and would leave the sequencer on step 0. That one needs an `audio_ax_math` node, not a converted knob. Called out here rather than swept in silently, and rather than guessed at.",
     "NINE `audio_trigger` NODES ARE INSERTED, and they are the price of an honest type system. An Axoloti `bool32` outlet is a level our AX-1 nodes type `audio`; an Axoloti `bool32.rising` inlet is an EDGE we type `trigger`; and core/nodeflow.COERCIONS has no audio→trigger entry, deliberately, because turning a level into an edge is a real operation with a real parameter. So every junction where a logic gate, a mux or a decoder meets a counter, latch, envelope or burst generator goes through the Schmitt edge detector — which is exactly what core/audio_patches.js's SEQUENCED_DINGS records learning. Cost: their pulse is one control tick (1/3000 s) and ours is 1 ms, and ours has hysteresis (0.1/0.5) their bare `> 0` does not.",
   ],
   nodes: [
@@ -154,7 +154,11 @@ export const AXO_DRUM_MACHINE = {
     { id: "bdrect", type: "audio_ax_math", col: 1, row: 3, knobs: { operation: "absolute" } },
     { id: "bdlp", type: "audio_ax_onepole", col: 2, row: 3, knobs: { mode: "lowpass", pitch: -29 } },
     { id: "bdring", type: "audio_ax_math", col: 11, row: 3, knobs: { operation: "multiply", b: 0 } },
-    { id: "bdamp", type: "audio_ax_env_d_lin_m", col: 9, row: 4, knobs: { d: -16 } },
+    // `env/d lin m`'s WHOLE RAMP in seconds, dial −16 through `axTimeDialSeconds` — AX-4's
+    // D2, and on this object the conversion is exact rather than nominal (its own D2 says
+    // the ramp really does reach zero in `LinearTimeExp(dial)` seconds). As a raw dial the
+    // kick's amplitude ramp asked for −16 s and was clamped to the knob's 2.4 ms floor.
+    { id: "bdamp", type: "audio_ax_env_d_lin_m", col: 9, row: 4, knobs: { d: 0.038526 } },
     { id: "bdout", type: "audio_ax_math", col: 12, row: 3, knobs: { operation: "multiply", b: 0 } },
     // ── HI-HAT: noise through a decay VCA into a resonant bandpass ─────────
     { id: "hh", type: "audio_ax_steps_multi", col: 5, row: 5, knobs: { row: 6, t0: 16777728, t1: 318767360, t2: 16777232, t3: 303174162, t4: 1464996118, t5: 51380752, t6: 541134865, t7: 1986487911 } },
@@ -196,9 +200,14 @@ export const AXO_DRUM_MACHINE = {
     { id: "bassregate", type: "audio_ax_mux", col: 7, row: 9, knobs: { select: 0 } },
     { id: "bassdecode", type: "audio_ax_decode", col: 8, row: 9 },
     { id: "bassgate", type: "audio_trigger", col: 8, row: 10, knobs: { pulseMs: 1 } },
-    { id: "bassenv", type: "audio_ax_env_adsr", col: 9, row: 9, knobs: { a: -59, d: 24, s: 0, r: -30 } },
+    // IN SECONDS. dials −59 / 24 / 0 / −30 through `axTimeDialSeconds` (a/d/r) and dial/64
+    // (sustain) — AX-4's D2. The sustain's dial 0 is 0 either way, so it is unchanged.
+    { id: "bassenv", type: "audio_ax_env_adsr", col: 9, row: 9, knobs: { a: 0.003214, d: 0.388317, s: 0, r: 0.017161 } },
     { id: "pmgate", type: "audio_trigger", col: 9, row: 10, knobs: { pulseMs: 1 } },
-    { id: "pmenv", type: "audio_ax_env_adsr", col: 10, row: 9, knobs: { a: -36, d: 2, s: 0, r: 7 } },
+    // dials −36 / 2 / 0 / 7. ⚠ `d`'s DIAL OF 2 IS ONE THE RANGE LAW CANNOT SEE — two seconds
+    // is inside the knob — so it is converted with its neighbours rather than left as the
+    // only raw dial in the node: 0.109 s of FM index decay, not two seconds of it.
+    { id: "pmenv", type: "audio_ax_env_adsr", col: 10, row: 9, knobs: { a: 0.012135, d: 0.108968, s: 0, r: 0.145455 } },
     { id: "pmamt", type: "audio_ax_math", col: 11, row: 9, knobs: { operation: "attenuate", b: 0.65625 } },
     { id: "bassnote", type: "audio_ax_steps_multi", col: 5, row: 10, knobs: { row: 0, t0: 84153600, t1: 50899456, t2: 0, t3: 0, t4: 0, t5: 0, t6: 0, t7: 0 } },
     { id: "bassscale", type: "audio_ax_steps_value", col: 6, row: 10, knobs: { v0: 0, v1: 12, v2: 7, v3: 5 } },
@@ -216,7 +225,8 @@ export const AXO_DRUM_MACHINE = {
     { id: "acidchange", type: "audio_ax_logic", col: 6, row: 12, knobs: { operation: "change" } },
     { id: "acidregate", type: "audio_ax_mux", col: 7, row: 12, knobs: { select: 0 } },
     { id: "acidgate", type: "audio_trigger", col: 8, row: 12, knobs: { pulseMs: 1 } },
-    { id: "acidenv", type: "audio_ax_env_adsr", col: 9, row: 12, knobs: { a: -48, d: -32, s: 31, r: -14 } },
+    // dials −48 / −32 / 31 / −14
+    { id: "acidenv", type: "audio_ax_env_adsr", col: 9, row: 12, knobs: { a: 0.006067, d: 0.015289, s: 0.484375, r: 0.043244 } },
     { id: "acidamt", type: "audio_ax_math", col: 10, row: 12, knobs: { operation: "attenuate", b: 0.21875 } },
     { id: "acidosc", type: "audio_ax_osc", col: 0, row: 12, knobs: { waveform: "saw", pitch: -24 } },
     { id: "acidvcf", type: "audio_ax_vcf3", col: 11, row: 12, knobs: { pitch: 10, reso: 37 } },
@@ -456,11 +466,24 @@ function lfoPitchForHz(hz) {
   return Math.round(12 * Math.log2(hz / AX_LFO_BASE_HZ) * 10) / 10;
 }
 
-/** C11's autoplay return gain on `mixl`/`mixr`'s free sixth input. Measured: at unity
- *  the branch reached the tail at −0.5 dBFS peak with a 4 dB crest factor — squared off
- *  against the limiter, because the two `dp_soft_clip` nodes it passes are still driven by
- *  dial-unit gains. 0.12 lands it near −13 dBFS peak with the transients intact. */
-const C11_AUTOPLAY_RETURN_GAIN = 0.12;
+/**
+ * C11's autoplay return gain on `mixl`/`mixr`'s free sixth input.
+ *
+ * IT WAS 0.12, AND THAT NUMBER WAS COMPENSATING FOR A DEFECT RATHER THAN SETTING A LEVEL.
+ * Its own note said so: at unity the branch used to reach the tail at −0.5 dBFS peak with
+ * a 4 dB crest factor, squared off against the limiter, "because the two `dp_soft_clip`
+ * nodes it passes are still driven by dial-unit gains". Those gains are converted now
+ * (dial 25/15 → 0.390625/0.234375), so the shaper sees a 1.56× drive instead of a 100×
+ * one and the trim underneath it has nothing left to trim.
+ *
+ * Measured 2026-08-07, whole patch, 6 s offline: with the clippers fixed and this still at
+ * 0.12 the patch rendered −24.7 dBFS, twenty-one decibels under where it had been. At 1 it
+ * is −6.7 dBFS, no clipping. THE 18.0 dB IT GAINED FROM 18.4 dB OF KNOB IS THE POINT, not
+ * the level: a near-linear response is the shaper working in its cubic region, which is
+ * what an in-gain under unity is supposed to produce. The old pairing could not have shown
+ * that, because at 100× drive the thing was a squarer and gain did almost nothing.
+ */
+const C11_AUTOPLAY_RETURN_GAIN = 1;
 
 /** C11's four-note figure and the multiplier that turns it into hertz. 8/10/12/15 x 16 is
  *  128 / 160 / 192 / 240 Hz — C3, E3, G3, B3 to within a few cents, and the octave the
@@ -521,13 +544,17 @@ const C11_AUTOPLAY_ROW = 18;
  * ── IT ENTERS AT `in6`, THE MIXER'S SIXTH WEIGHTED INPUT ───────────────────
  * `voicevca` and `voiceamp` are held by the placeholder's wires, and five of `mixl`/
  * `mixr`'s six weighted inputs are taken (three of them by placeholders). `in6` is free on
- * both. IT IS DELIBERATELY NOT `bus_in`, which is also free: `bus_in` is unity and this
- * branch needs a level, because the harvested `dp_soft_clip` pair it passes through is
- * driven by dial-unit gains (`ingain: 25`) that the shipped node's 0…1 range does not
- * cover — at unity the branch peaked at −0.5 dBFS with a 4 dB crest factor, i.e. squared
- * off against the output limiter. `gain6` is the honest lever because it is OURS; the
- * clipper's gains are the port's, and re-deriving them is the block-wide dial→unit sweep
- * this patch's own deviations already defer to AX-4.
+ * both. IT IS DELIBERATELY NOT `bus_in`: `bus_in` is fixed at unity and this branch needs
+ * a level it can set. `gain6` is the honest lever because it is OURS, where the clipper's
+ * gains are the port's.
+ *
+ * THE REASON THIS PARAGRAPH GAVE FOR NEEDING A LEVEL AT ALL IS GONE, and the deletion is
+ * worth recording. It used to say the `dp_soft_clip` pair downstream was "driven by
+ * dial-unit gains (`ingain: 25`) that the shipped node's 0…1 range does not cover", so
+ * unity here peaked at −0.5 dBFS squared off against the limiter, and it deferred the
+ * re-derivation to AX-4's dial→unit sweep. That sweep is done (2026-08-07): `ingain` is
+ * 0.390625 and the clipper is a soft shaper again rather than a squarer, so unity here
+ * measures −6.7 dBFS with headroom and `C11_AUTOPLAY_RETURN_GAIN` is 1.
  *
  * The diffuser, the reverb, the chorus and the two delays are all still placeholders, so
  * what you hear is the dry voice through the filters — not the four-engine Mutable stack.
@@ -593,7 +620,14 @@ export const AXO_MUTABLE_STACK = {
     { id: "keyb", type: "audio_ax_midi_keyb", col: 0, row: 0 },
     { id: "bend", type: "audio_ax_midi_bend", col: 0, row: 1 },
     { id: "bendmix", type: "audio_ax_mix", col: 1, row: 0, knobs: { gain1: 0.2 } },
-    { id: "ahd", type: "audio_ax_env_ahd", col: 1, row: 1, knobs: { a: -50, d: 36 } },
+    // IN SECONDS, from the harvested dials −50 and 36 through `axDecayDialSeconds` — the
+    // HALF-LIFE map (`DecayTime`), which is `env/ahd m`'s and not `LinearTimeExp`.
+    // ⚠ THE ATTACK'S −50 IS CLAMPED TO DIAL 0 AND THAT IS THE FAITHFUL ANSWER, not a
+    // rounding: their dial is UNSIGNED (`pf_unsigned_clamp`), so on hardware a negative
+    // reads as 0 — which is the FASTEST setting at 14.8 ms, not the slowest. AX-4's knob
+    // help warns about exactly this value. It is written to eight decimals because dial 0 IS
+    // the knob's minimum: six would round BELOW the bound and fail the range law.
+    { id: "ahd", type: "audio_ax_env_ahd", col: 1, row: 1, knobs: { a: 0.01478714, d: 0.033799 } },
     { id: "velamp", type: "audio_ax_math", col: 2, row: 0, knobs: { operation: "multiply", b: 0 } },
     { id: "velcolour", type: "audio_ax_kfilter_lowpass", col: 1, row: 2, knobs: { rise: 16, decay: 16 } },
     { id: "bowed", type: "audio_ax_brds_bowed", col: 2, row: 1, knobs: { pitch: 0, timbre: 40.5, color: 40 } },
@@ -633,8 +667,12 @@ export const AXO_MUTABLE_STACK = {
     { id: "mixr", type: "audio_ax_mix", col: 10, row: 17, knobs: { gain1: 0.09375, gain2: 0.289062, gain3: 0.140625, gain4: 0.140625, gain5: 0.609375, gain6: C11_AUTOPLAY_RETURN_GAIN } },
     { id: "vcfl", type: "audio_ax_vcf3", col: 11, row: 16, knobs: { pitch: 0, reso: 0 } },
     { id: "vcfr", type: "audio_ax_vcf3", col: 11, row: 17, knobs: { pitch: 0, reso: 0 } },
-    { id: "clipl", type: "audio_ax_dp_soft_clip", col: 12, row: 16, knobs: { ingain: 25, outgain: 15 } },
-    { id: "clipr", type: "audio_ax_dp_soft_clip", col: 12, row: 17, knobs: { ingain: 25, outgain: 15 } },
+    // THE DP CLIPPER GAINS ARE NORMALISED dial/64 (AX-4's D9), so the harvested 25 and 15
+    // are 0.390625 and 0.234375. As raw dials both were 25× and 15× over the knob's top:
+    // an in-gain of 25 is a 100× drive, which is the whole mix pinned to the shaper's
+    // flat region — a square wave — and an out-gain of 15 is 30× on top of that.
+    { id: "clipl", type: "audio_ax_dp_soft_clip", col: 12, row: 16, knobs: { ingain: 0.390625, outgain: 0.234375 } },
+    { id: "clipr", type: "audio_ax_dp_soft_clip", col: 12, row: 17, knobs: { ingain: 0.390625, outgain: 0.234375 } },
     { id: "stereosum", type: "audio_mixer", col: 13, row: 16, knobs: { level1: 1, level2: 1, master: 1 } },
     { id: "meter", type: "audio_meter", col: 14, row: 16 },
     { id: "spectrum", type: "audio_spectrum", col: 15, row: 16 },

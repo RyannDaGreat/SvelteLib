@@ -1358,7 +1358,12 @@ export const AXO_PAD3_PLATE = {
     { id: "ringXfadeGain", type: "audio_ax_math", col: 17, row: 1, knobs: { operation: "gain16", b: 9.025 } },
     { id: "xfade", type: "audio_ax_xfade", col: 18, row: 0 },
     { id: "ringSat", type: "audio_ax_math", col: 18, row: 1, knobs: { operation: "saturate" } },
-    { id: "clip", type: "audio_ax_dphardclip", col: 19, row: 0, knobs: { ingain: 11, outgain: 28 } },
+    // THE DP CLIPPER GAINS ARE NORMALISED dial/64 (AX-4's D9), so the harvested dials 11
+    // and 28 are 0.171875 and 0.4375 — a drive just under unity's 0.25 and a ceiling just
+    // under the 0.5 that puts the shaper's own peak of 2 on ±1. As raw dials they were a
+    // 44× drive into a hard clipper followed by 56× of make-up, i.e. this node was a fuzz
+    // box in front of the plate rather than the gentle ceiling the patch was voiced with.
+    { id: "clip", type: "audio_ax_dphardclip", col: 19, row: 0, knobs: { ingain: 0.171875, outgain: 0.4375 } },
 
     // ── THE PLATE: BANDLIMIT, DIFFUSE, SPLIT ────────────────────────────────
     { id: "inLp", type: "audio_ax_onepole", col: 20, row: 0, knobs: { mode: "lowpass", pitch: 59 } },

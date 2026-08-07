@@ -556,10 +556,19 @@ export const VCV_AMBIENT_DRONE = {
         // VC-3b's real PEQ6 has two DISCRETE mode knobs. 1 meant "on", which is
         // "lowpass" on band 1 and "highpass" on band 6 — the shelf pair that makes this a
         // formant filter rather than six bandpasses.
+        // THE SIX BAND FREQUENCIES ARE IN HERTZ AND WERE HARVESTED AS KNOB POSITIONS.
+        // Bogaudio's PEQ frequency knob is `position² · 20000 Hz` (VC-3b's D13 header
+        // states it), and running the six raws 0.0707 / 0.0935 / 0.1323 / 0.1871 / 0.2646 /
+        // 0.3536 through it gives 99.97 / 174.8 / 350.1 / 700.1 / 1400.3 / 2500.7 — which
+        // is `PEQ6_FREQUENCIES_HZ` to four figures, i.e. this bank was left at PEQ6's own
+        // factory spread and the raws are those defaults rounded for the survey. So the
+        // exact defaults are written rather than the rounding's echo; the knob's step is
+        // 1 Hz and 99.97 is not even a position it has. As positions all six sat under
+        // 0.36 Hz, below the filter's own 3 Hz floor: the whole formant bank was inaudible.
         bandwidth: 0.33, lowMode: "lowpass", highMode: "highpass",
-        level1: 0.9091, frequency1: 0.0707, level2: 0.9091, frequency2: 0.0935,
-        level3: 0.9091, frequency3: 0.1323, level4: 0.9091, frequency4: 0.1871,
-        level5: 0.9091, frequency5: 0.2646, level6: 0.9091, frequency6: 0.3536,
+        level1: 0.9091, frequency1: 100, level2: 0.9091, frequency2: 175,
+        level3: 0.9091, frequency3: 350, level4: 0.9091, frequency4: 700,
+        level5: 0.9091, frequency5: 1400, level6: 0.9091, frequency6: 2500,
       },
     },
     { id: "feline", type: "audio_vcv_feline", col: 3, row: 4, knobs: { cutoff: 4.96, drive: 0.2865 } },

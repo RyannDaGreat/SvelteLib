@@ -148,8 +148,14 @@ export const VCV_MICROCOSM = {
     { id: "grain5", type: "audio_vcv_simpliciter", col: 2, row: 3 },
 
     { id: "split", type: "audio_vcv_split", col: 3, row: 0 },
-    { id: "svf6", type: "audio_vcv_f2", col: 3, row: 1, knobs: { fc: 1.46506 } },
-    { id: "svf7", type: "audio_vcv_f2", col: 3, row: 2, knobs: { fc: 1.50844 } },
+    // THE TWO DELAY FILTERS ARE IN HERTZ, NOT VOLTS. `fc` was harvested as squinkylabs'
+    // own 0…10 V control (1.46506 and 1.50844) and VC-10's knob is that control's OUTPUT,
+    // `261.6256 · 2^(v − 4)` — the law `f2CutoffVolts` inverts, and the one that produces
+    // the knob's own declared 16.35 Hz…16744 Hz bounds from that 0…10 V span. As volts the
+    // two numbers read as 1.5 Hz, which the engine clamps to the bottom of the knob: both
+    // looping delays would have come back as mud rather than as the 45 Hz rumble filter.
+    { id: "svf6", type: "audio_vcv_f2", col: 3, row: 1, knobs: { fc: 45.142672 } },
+    { id: "svf7", type: "audio_vcv_f2", col: 3, row: 2, knobs: { fc: 46.520668 } },
     { id: "svf9", type: "audio_vcv_f2", col: 3, row: 3, knobs: { q: 0.5494 } },
 
     // ── THE FIVE GRANULATORS ──────────────────────────────────────────────

@@ -76,8 +76,20 @@
  * BOTH ends:
  *
  *   signal → signal        `dial / 64`   (a `*c` of 20.0 into an audio path is b = 0.3125)
- *   dial   → dial          `dial`        (a `*c` of 8.0 into an envelope TIME is b = 8.0)
+ *   dial   → dial          `dial`        (a `*c` of 8.0 into a dial-unit port is b = 8.0)
  *   signal → dial/pitch    `dial`        (…and the 64 must appear somewhere on the path)
+ *
+ * ⚠ **AN ENVELOPE TIME IS NO LONGER A DIAL-UNIT PORT, and the second row's example used
+ * to say it was.** AX-4 landed and its a/d/r knobs AND their same-named inlets are in
+ * SECONDS (its D2, and its D3 for the inlets), so the ADSR and AHD knobs below are now
+ * `axTimeDialSeconds`/`axDecayDialSeconds` of their harvested dials. The knobs are done;
+ * THE MODULATION GAINS INTO THEM ARE NOT. `attackmod`/`decaymod` still carry the
+ * harvested `*c` of 8.0 as `b: 8`, which under D3 is eight SECONDS per unit of velocity
+ * into a 28 ms attack. It is left as harvested rather than guessed at, because theirs
+ * MULTIPLIES the coefficient where ours ADDS seconds — the two are not related by any
+ * constant, so the right value is a derivation and not a rescale. It is inaudible in the
+ * offline renders (`readAudioScene` drops every wire out of a keyboard, so velocity is 0
+ * there) and audible the moment somebody plays the patch.
  *
  * The third is where the work is. `mix13`'s pink-noise detune is `div 32` then a mixer at
  * gain 13.5, which on hardware is ±13.5/32 = ±0.42 SEMITONES; transcribed literally it
@@ -104,9 +116,10 @@
  *     SUBSTITUTED.
  *   - `mix/mix N` is `bus + Σ gainᵢ·inᵢ`, and `audio_mixer` holds every gain these patches
  *     use once divided by 64 → SUBSTITUTED (its `in4` carries the `bus_in`).
- *   - `env/adsr`'s four dials map to an exponential segment law we do not have, and no
- *     amount of arithmetic turns −17.0 into our `attack` seconds → PLACEHOLDER, so the
- *     dial rides the normal knob path and AX-4 gives it meaning.
+ *   - `env/adsr`'s four dials map to an exponential segment law we did not have when this
+ *     line was written, so the dial rode the normal knob path until AX-4 gave it meaning.
+ *     IT HAS. `LinearTimeExp` is that law, `axTimeDialSeconds` is its inverse, and −17.0
+ *     turns into 36.4 ms — so these are SUBSTITUTED now and every dial below is converted.
  *   - `ctrl/dial`, `ctrl/toggle` and `disp/*` are chrome; a dial IS a knob here, so it
  *     becomes `node_knob` where it feeds something through a smoother (a live gesture) and
  *     is folded into the target node's own knob where it does not (the param/inlet duality
@@ -370,7 +383,12 @@ function stringVoice(prefix, keysId, col, row) {
       n("oscmix", "audio_mixer", 7, 0, { level1: 0.0625, level2: 0.328125, level3: 0.40625, master: 1 }),
       // THE FILTER ENVELOPE is used ONLY as a cutoff shaper — it never touches amplitude,
       // which is why the pad has no attack transient but does have a swell.
-      n("envf", "audio_ax_env_adsr", 2, 5, { a: -17, d: 19, s: 21.5, r: 0 }),
+      // IN SECONDS, from the harvested dials −17 / 19 / 21.5 / 0 through AX-4's own
+      // `axTimeDialSeconds` (a/d/r) and its dial/64 for the sustain LEVEL. The dials are
+      // what `.axp` stores; AX-4's knobs are `LinearTimeExp`'s output, which is the whole
+      // point of that block's D2. As dials, `d: 19` asked for a nineteen-SECOND decay and
+      // got the knob's 3.91 s ceiling instead — this swell was five times too slow.
+      n("envf", "audio_ax_env_adsr", 2, 5, { a: 0.036364, d: 0.290909, s: 0.3359375, r: 0.097079 }),
       n("velmul", "audio_ax_math", 3, 5, { operation: "multiply" }),
       n("velgain", "audio_ax_math", 4, 5, { operation: "multiply", b: 13 }), // SCALE: 13 × 2 = 26
       // THE CUTOFF DRIFT: a ONE-OCTAVE pink walk (their `octaves` attribute is 1 here,
@@ -399,7 +417,12 @@ function stringVoice(prefix, keysId, col, row) {
       n("attackmod", "audio_ax_math", 3, 8, { operation: "multiply", b: 8 }),
       n("rvelneg", "audio_ax_math", 2, 9, { operation: "negate" }),
       n("decaymod", "audio_ax_math", 3, 9, { operation: "multiply", b: 8 }),
-      n("ampenv", "audio_ax_env_ahd", 4, 8, { a: 30, d: 56 }),
+      // IN SECONDS, from the harvested dials 30 and 56 through `axDecayDialSeconds` — the
+      // HALF-LIFE conversion (`DecayTime`), not `LinearTimeExp`: `env/ahd m` is the one
+      // envelope in AX-4 on that scale, and the spec's own help states dial 56 = 118 ms.
+      // As dials both stages sat on the knob's 1.89 s ceiling, so the pad's amp envelope
+      // was a two-second fade where the hardware gives 28 ms and 118 ms.
+      n("ampenv", "audio_ax_env_ahd", 4, 8, { a: 0.027835, d: 0.118297 }),
       n("vca", "audio_vca", 9, 0, { gain: 0 }),
       // `gain: 0` on the VCA and `b: 0.3125` here are one story: the knob is the OFFSET the
       // envelope wire sums into, so a non-zero knob would be a floor under every note, and
@@ -474,7 +497,7 @@ const STRING_VOICE_DEVIATIONS = [
   "math/c 32 + the pwm `mix/mix 1` ABSORBED into the PWM oscillator's own `pw` knob — a knob and its same-named input sum on one param here, so the constant is the knob.",
   "mix/mix 1 / 2 / 3 → `audio_mixer` (its `in4` carries `bus_in` at unity). Every harvested gain is the dial ÷ 64, except on the two paths that end at a pitch port, where the 64× of a frac32 pitch wire forces a two-node chain: 13 × 2 = 26 for the cutoff envelope and 11.5 × 2 = 23 for the drift.",
   "gain/vca → `audio_vca`; math/inv, math/*, math/*c and math/div 32 → `audio_ax_math` operations. Their nineteen arithmetic overloads are one node with an `operation` knob, which is AX-1's own collapse.",
-  "env/adsr and env/ahd m → placeholders, NOT our `audio_adsr`: their dials are an exponential segment law in 0…64 units and ours are seconds, so −17.0 has nowhere to land. The harvested dials ride the normal knob path instead of being parked in a comment.",
+  "env/adsr and env/ahd m → AX-4's own ported nodes, NOT our `audio_adsr`. This entry used to say the dials were \"an exponential segment law in 0…64 units\" with \"nowhere to land\", and that the harvested dials therefore rode the knob path raw. AX-4 landed the law: a/d/r are `LinearTimeExp` and the AHD's a/d are `DecayTime`, so every dial here is now `axTimeDialSeconds` or `axDecayDialSeconds` of itself and every sustain is dial/64. What the raw dials were doing meanwhile is worth recording — they were being read as SECONDS, so `d: 19` was a nineteen-second decay clamped to the knob's 3.91 s ceiling and every envelope in the set was pinned wide open.",
 ];
 
 /** How loud an autoplay branch returns into a harvested bus. Below the authored path's
@@ -676,10 +699,19 @@ export const AXO_RADIOACTIVE = {
       { id: "basshalve", type: "audio_ax_math", col: 7, row: 2, knobs: { operation: "divide2" } },
       { id: "bassvcf", type: "audio_ax_vcf3", col: 8, row: 2, knobs: { pitch: 24, reso: 62 } },
       { id: "bassvca", type: "audio_vca", col: 9, row: 2, knobs: { gain: 0 } },
-      { id: "bassfiltenv", type: "audio_ax_env_adsr", col: 5, row: 3, knobs: { a: -64, d: -21, s: 32, r: -1 } },
+      // ── EVERY ENVELOPE BELOW IS IN SECONDS, and every one of them was a raw `.axp` dial
+      // until 2026-08-07. AX-4's a/d/r knobs are `LinearTimeExp`'s OUTPUT — its own D2 —
+      // so a harvested dial goes through `axTimeDialSeconds`, and a `frac32.u.map` level
+      // (every sustain here) is dial/64. The dials are kept in the comments because they
+      // are what the source file says. The error they made was not subtle: a dial of −64
+      // means 2.4 ms and was being read as 64 seconds, i.e. every one of these attacks was
+      // pinned at the knob's 3.91 s ceiling and this patch had no transients at all.
+      // dials −64 / −21 / 32 / −1
+      { id: "bassfiltenv", type: "audio_ax_env_adsr", col: 5, row: 3, knobs: { a: 0.002408, d: 0.028862, s: 0.5, r: 0.091631 } },
       { id: "bassfiltgain", type: "audio_ax_math", col: 6, row: 3, knobs: { operation: "multiply", b: 12 } }, // SCALE: 12 × 2 = 24
       { id: "bassfiltgain2", type: "audio_ax_math", col: 7, row: 3, knobs: { operation: "multiply", b: 2 } },
-      { id: "bassampenv", type: "audio_ax_env_adsr", col: 5, row: 4, knobs: { a: -32, d: -5, s: 46.5, r: 20 } },
+      // dials −32 / −5 / 46.5 / 20
+      { id: "bassampenv", type: "audio_ax_env_adsr", col: 5, row: 4, knobs: { a: 0.015289, d: 0.072727, s: 0.7265625, r: 0.308207 } },
       // ── THE LEAD (zone MIDI 63–127), played by hand: its envelopes take the
       // keyboard's gate2, so a legato line retriggers.
       { id: "melkeyb", type: "audio_ax_midi_keyb", col: 1, row: 5, knobs: { start_note: -1, end_note: 63 } },
@@ -689,16 +721,23 @@ export const AXO_RADIOACTIVE = {
       { id: "melsaw", type: "audio_ax_osc", col: 6, row: 5, knobs: { waveform: "saw", pitch: -12 } },
       { id: "melvcf", type: "audio_ax_vcf3", col: 8, row: 5, knobs: { pitch: 12, reso: 59.5 } },
       { id: "melvca", type: "audio_vca", col: 9, row: 5, knobs: { gain: 0 } },
-      { id: "melfiltenv", type: "audio_ax_env_adsr", col: 5, row: 6, knobs: { a: -25, d: -9, s: 23.5, r: -9 } },
+      // dials −25 / −9 / 23.5 / −9
+      { id: "melfiltenv", type: "audio_ax_env_adsr", col: 5, row: 6, knobs: { a: 0.022908, d: 0.057724, s: 0.3671875, r: 0.057724 } },
       { id: "melfiltgain", type: "audio_ax_math", col: 6, row: 6, knobs: { operation: "multiply", b: 16 } },
-      { id: "melampenv", type: "audio_ax_env_adsr", col: 5, row: 7, knobs: { a: -32, d: 10, s: 0, r: 23 } },
+      // dials −32 / 10 / 0 / 23 — the sustain's dial 0 is 0 either way, which is why it alone
+      // never tripped the range law and is unchanged.
+      { id: "melampenv", type: "audio_ax_env_adsr", col: 5, row: 7, knobs: { a: 0.015289, d: 0.172976, s: 0, r: 0.366522 } },
       // ── THE GEIGER COUNTER. A fast square (pitch 27 → 24 Hz) clocks the shift
       // register, and the MASTER clock resets that square — so the aperiodic pattern is
       // re-seeded in time with everything else instead of drifting away from it.
       { id: "geigerlfo", type: "audio_ax_lfo", col: 5, row: 8, knobs: { waveform: "square", pitch: 27 } },
       { id: "geigeredge", type: "audio_trigger", col: 6, row: 8, knobs: { pulseMs: 5 } },
       { id: "lfsr", type: "audio_ax_lfsr_seq", col: 7, row: 8, knobs: { polynomial: 408 } },
-      { id: "geigerenv", type: "audio_ax_env_adsr", col: 8, row: 8, knobs: { a: -64, d: 3, s: 0, r: -64 } },
+      // dials −64 / 3 / 0 / −64. ⚠ `d`'s DIAL OF 3 IS THE ONE THE RANGE LAW COULD NOT SEE: three
+      // seconds is inside the knob, so a raw dial that happens to land there reads as a legal
+      // value. It is the same defect as its neighbours and is converted with them — 0.115 s,
+      // not 3 s, which is the difference between a geiger tick and a swell.
+      { id: "geigerenv", type: "audio_ax_env_adsr", col: 8, row: 8, knobs: { a: 0.002408, d: 0.115447, s: 0, r: 0.002408 } },
       { id: "geigergate", type: "node_knob", col: 8, row: 9, knobs: { value: 1, min: 0, max: 1, step: 1 } },
       { id: "geigermul", type: "audio_ax_math", col: 9, row: 8, knobs: { operation: "multiply" } },
       { id: "fmdial", type: "node_knob", col: 5, row: 10, knobs: { value: 19, min: -64, max: 64, step: 0.5 } },
@@ -715,7 +754,8 @@ export const AXO_RADIOACTIVE = {
       { id: "steps", type: "audio_ax_steps_bool", col: 6, row: 12, knobs: { p1: 65535, p2: 0, p3: 0, p4: 0, pulse: 1 } },
       { id: "kickand", type: "audio_ax_logic", col: 7, row: 12, knobs: { operation: "and" } },
       { id: "kickedge", type: "audio_trigger", col: 8, row: 12, knobs: { pulseMs: 5 } },
-      { id: "kickenv", type: "audio_ax_env_decay", col: 9, row: 12, knobs: { d: -32.5 } },
+      // `env/d`'s time constant in SECONDS, dial −32.5 through `axTimeDialSeconds` (AX-4 D2).
+      { id: "kickenv", type: "audio_ax_env_decay", col: 9, row: 12, knobs: { d: 0.014854 } },
       { id: "kickpitch1", type: "audio_ax_math", col: 10, row: 12, knobs: { operation: "multiply", b: 14 } }, // SCALE: 14 × 2 = 28
       { id: "kickpitch2", type: "audio_ax_math", col: 11, row: 12, knobs: { operation: "multiply", b: 2 } },
       // ONE envelope drives BOTH the kick's amplitude and its pitch — 28 semitones of
@@ -724,11 +764,13 @@ export const AXO_RADIOACTIVE = {
       { id: "kickvca", type: "audio_vca", col: 13, row: 12, knobs: { gain: 0 } },
       { id: "change", type: "audio_ax_logic", col: 6, row: 13, knobs: { operation: "change" } },
       { id: "snredge", type: "audio_trigger", col: 7, row: 14, knobs: { pulseMs: 5 } },
-      { id: "snrenv", type: "audio_ax_env_decay", col: 8, row: 14, knobs: { d: 22 } },
+      // dial 22. As a raw dial this asked for a 22-SECOND snare and got the knob's 3.91 s.
+      { id: "snrenv", type: "audio_ax_env_decay", col: 8, row: 14, knobs: { d: 0.345951 } },
       { id: "snrvca", type: "audio_vca", col: 9, row: 14, knobs: { gain: 0 } },
       { id: "hatand", type: "audio_ax_logic", col: 7, row: 15, knobs: { operation: "and" } },
       { id: "hatedge", type: "audio_trigger", col: 8, row: 15, knobs: { pulseMs: 5 } },
-      { id: "hatenv", type: "audio_ax_env_decay", col: 9, row: 15, knobs: { d: -15 } },
+      // dial −15.
+      { id: "hatenv", type: "audio_ax_env_decay", col: 9, row: 15, knobs: { d: 0.040817 } },
       { id: "hatvca", type: "audio_vca", col: 10, row: 15, knobs: { gain: 0 } },
       // ONE noise source, two envelopes, two pan positions: a long hit on the right and a
       // short one on the left. That is the whole percussion section besides the kick.
@@ -1001,8 +1043,12 @@ export const AXO_TRANQUILLE = {
     { id: "mixsend", type: "audio_mixer", col: 6, row: 3, knobs: { level1: 0.513828125, level2: 0.526171875, level3: 0.506875000, master: 1 } },
     // TWO envelopes on the SAME note: a fast one for the dry pair and a very slow one
     // (attack dial 17, sustain full) for the send, so the space swells in behind the note.
-    { id: "envfast", type: "audio_ax_env_adsr", col: 3, row: 8, knobs: { a: -64, d: 34, s: 6.5, r: 26 } },
-    { id: "envslow", type: "audio_ax_env_adsr", col: 3, row: 9, knobs: { a: 17, d: 52, s: 64, r: 36.61 } },
+    // IN SECONDS. dials −64 / 34 / 6.5 / 26 through `axTimeDialSeconds` (a/d/r) and dial/64
+    // (sustain) — AX-4's D2. As dials both of these envelopes sat on the knob's 3.91 s
+    // ceiling in every stage, so "fast" and "slow" were the same envelope.
+    { id: "envfast", type: "audio_ax_env_adsr", col: 3, row: 8, knobs: { a: 0.002408, d: 0.691902, s: 0.1015625, r: 0.435871 } },
+    // dials 17 / 52 / 64 / 36.61
+    { id: "envslow", type: "audio_ax_env_adsr", col: 3, row: 9, knobs: { a: 0.259171, d: 1.956995, s: 1, r: 0.804487 } },
     { id: "vcadry", type: "audio_ax_vca_stereo", col: 7, row: 0 },
     { id: "vcasend", type: "audio_ax_vca_stereo", col: 7, row: 3 },
     // The return path, per side: highpass → lowpass → 341 ms allpass, every corner and

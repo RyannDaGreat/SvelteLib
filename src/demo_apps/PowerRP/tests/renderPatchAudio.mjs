@@ -29,6 +29,17 @@
  * 2. A patch driven by the shared TRANSPORT (a clock, a sequencer) produces its drones and
  *    none of its events, because the scheduler's look-ahead runs on a wall clock and an
  *    OfflineAudioContext's does not. Marked `.NOEVENTS` in the filename for the same reason.
+ * 3. A patch played from a CONTROL WIDGET (a keyboard, a button) is rendered with nobody
+ *    at the keys. `readAudioScene` only wires nodes that HAVE an `audioModule`, so every
+ *    cable out of a keyboard is dropped — and where those cables carry a VCA's gain, every
+ *    voice sits at zero. Marked `.UNPLAYED`.
+ *
+ *    THIS TAG WAS ADDED AFTER IT BIT: `vcv-fm-pad` rendered at −67.7 dBFS and got read as a
+ *    level bug worth chasing. It is not. All four of its VCAs take their gain from
+ *    `keys.gate`, so what that file contains is leakage past four closed VCAs. Without the
+ *    tag the filename said only `PENDING-1`, which reads as "should work, doesn't" — the
+ *    exact misreading these tags exist to prevent, in a file whose whole job is to stop
+ *    people theorising about sound.
  */
 
 import { resolve, dirname, join } from "node:path";
@@ -114,9 +125,26 @@ try {
     const registry = createRegistry();
     registerPlugins(registry);
 
+    /**
+     * The nodes whose outgoing cables `readAudioScene` will DROP because they carry no
+     * `audioModule`, minus the placeholders (already counted separately). What is left is
+     * the CONTROL widgets — a keyboard or a button that nobody is touching offline.
+     */
+    const unplayedSources = (patch, placeholderTypes) => {
+      const typeOf = new Map(patch.nodes.map((n) => [n.id, n.type]));
+      const dropped = new Set();
+      for (const w of patch.wires ?? []) {
+        const type = typeOf.get(w.from);
+        if (placeholderTypes.has(type)) continue;
+        if (!registry.get(type)?.audioModule) dropped.add(w.from);
+      }
+      return dropped.size;
+    };
+
     const out = [];
     for (const patch of DEMO_PATCHES) {
       const pending = patchPlaceholders(patch);
+      const unplayed = unplayedSources(patch, new Set(pending)); // patchPlaceholders returns type strings
       // EVERY patch is attempted independently. `buildPatchItems` throws LOUDLY on a
       // blueprint whose knob names no longer match a shipped spec — which is correct, and
       // which would otherwise stop the whole run at the first unreconciled patch and cost
@@ -144,9 +172,9 @@ try {
         const L = Array.from(buf.getChannelData(0));
         const R = Array.from(buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0));
         for (const v of L) peak = Math.max(peak, Math.abs(v));
-        out.push({ id: patch.id, pending: pending.length, noEvents, peak, L, R });
+        out.push({ id: patch.id, pending: pending.length, unplayed, noEvents, peak, L, R });
       } catch (e) {
-        out.push({ id: patch.id, pending: pending.length, error: e.message });
+        out.push({ id: patch.id, pending: pending.length, unplayed, error: e.message });
       } finally {
         if (engine) await engine.dispose();
       }
@@ -158,7 +186,11 @@ try {
   let wrote = 0, silent = 0;
   for (const r of rendered) {
     if (r.error) { console.log(`  XX  ${r.id} — ${r.error.slice(0, 90)}`); continue; }
-    const tags = [r.pending ? `PENDING-${r.pending}` : null, r.noEvents ? "NOEVENTS" : null].filter(Boolean);
+    const tags = [
+      r.pending ? `PENDING-${r.pending}` : null,
+      r.unplayed ? "UNPLAYED" : null,
+      r.noEvents ? "NOEVENTS" : null,
+    ].filter(Boolean);
     const name = `${r.id}${tags.length ? "." + tags.join(".") : ""}.wav`;
     writeFileSync(join(outDir, name), wavBytes(Float32Array.from(r.L), Float32Array.from(r.R), RATE));
     wrote++;
@@ -168,7 +200,9 @@ try {
   }
   console.log(`\n${wrote} file(s) written, ${silent} silent.`);
   console.log(`Listen: ${outDir}`);
-  console.log("PENDING-n = n placeholder node types in that patch. NOEVENTS = clock/keyboard driven; offline renders its drones only.");
+  console.log("PENDING-n = n placeholder node types in that patch (their wires are dropped too).");
+  console.log("UNPLAYED  = played from a keyboard/button; nobody is at the keys offline, so gated voices sit at zero.");
+  console.log("NOEVENTS  = transport-driven; the scheduler needs a wall clock, so you hear the drones and no events.");
 } finally {
   await browser.close();
   await server.close();

@@ -127,7 +127,7 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     "AaronStatic/ScaleCV and DiatonicCV substituted by two of our audio_quantize. Both originals turn a random voltage into a scale-locked pitch, which is exactly what ours does — and ours states its output in SEMITONES (`range` is 'how many semitones the incoming 0..1 signal spans'), so it doubles as the R7-UNITS scaler this pitch path would otherwise need. What is lost is choosing the root and mode by CV.",
     "THE BURST GENERATOR'S SELF-PATCH IS BROKEN, and it is the most audible deviation here. Originally `BurstGenerator[pulses] -> SampleHold#1 -> BurstGenerator[rate CV, pulses CV]`: the burst re-rolls its own rate and length every time it fires. That is a directed cycle. Here `sh1` is clocked by an independent slow audio_clock (`reseed`, 24 bpm) instead, so the rate and length are still freshly random and no longer re-rolled BY the burst. One node was ADDED for this (the clock and its edge detector) and it is not in the original.",
     "The survey printed only the first 70 of 113 cables. Tangents #3-#6 and Fade #4-#6 are wired one stereo PAIR per voice, which is what the six visible Tangents cables show for the first pair; that grouping is inferred, not harvested.",
-    "R7-UNITS conversions applied: Fundamental/Compare's B offset -4.0964 V became -0.8193 (÷5); the burst's probability 10.0 became 1.0 (its configParam displays 0..10 as a percentage); FM-OP's envelope raws 0.0241/0.3162 became 0.0058 s and 1.0 s (Bogaudio shows those knobs as v²·10 seconds); the two LLFO frequencies became hertz (0.007 and 0.063) from their slow-mode raws.",
+    "R7-UNITS conversions applied: Fundamental/Compare's B offset -4.0964 V became -0.8193 (÷5); the burst's probability 10.0 became 1.0 (its configParam displays 0..10 as a percentage); FM-OP's envelope raws 0.0241/0.3162 became 0.0058 s and 1.0 s (Bogaudio shows those knobs as v²·10 seconds); the two LLFO frequencies became hertz (1.4363 and 12.9418) from their raws −0.509 and 2.6626 through `bogaudioSemitonesToHz(12·(v − 7))`. THAT LAST ONE WAS WRONG UNTIL 2026-08-07 and is worth the sentence: it read the slow-mode raws through a `2^v/100` that is no octave offset of Bogaudio's reference at all, and it stated the rate AFTER Slow's ÷16 in a knob that means the rate BEFORE it — so `LlfoKernel.control` divided a second time and both LFOs ran 200× slow, below the knob's own minimum.",
     "DIAL VALUES THAT COULD NOT BE CARRIED AT ALL, said plainly rather than discovered later: all four Surge XT modules' params serialise as p1…p50 with no names in the patch file and no fixed meaning across models, so their harvested settings are LOST and VC-4 must recover them. SEQ3's tempo is 120 bpm, which does not fit a placeholder's ±10 rail. Bogaudio SampleHold #6's 1011 ms smoothing likewise.",
   ],
   nodes: [
@@ -135,8 +135,19 @@ export const VCV_SELF_PLAYING_AMBIENT = {
     { id: "start", type: "node_button", col: 0, row: 0, knobs: { label: "Start" } },
     { id: "reseed", type: "audio_clock", col: 0, row: 1, knobs: { bpm: 24 } },
     { id: "noise", type: "audio_noise", col: 0, row: 2, knobs: { color: "white", level: 0.5 } },
-    { id: "llfoSlow", type: "audio_vcv_llfo", col: 0, row: 3, knobs: { frequency: 0.007, slow: 1, scale: 1 } },
-    { id: "llfoFast", type: "audio_vcv_llfo", col: 0, row: 4, knobs: { frequency: 0.063, slow: 1, wave: 4, scale: 1 } },
+    // THE LLFO RATE KNOB IS THE RATE BEFORE SLOW MODE, and these two used to double-count
+    // it. Their harvested raws are −0.509 and 2.6626 (survey_vcv.md), and VC-3b's map is
+    // `bogaudioSemitonesToHz(12·(v − 7))` — pinned by `vcv-fm-pad.lfo` over in
+    // core/audio_patches_vcv_classic.js, whose raw 0.624 was written 3.15 Hz under exactly
+    // that law. It is the one LLFO in the roster with Slow OFF and the only one that was
+    // already right, which is what identifies the fault as Slow rather than as the map.
+    // What was stored here was the rate AFTER the ÷16 (through a `2^v/100` that is no
+    // octave offset of Bogaudio's reference), so `LlfoKernel.control`'s own ÷16 applied
+    // twice: 204× slow. Slow still divides these to 0.09 and 0.81 Hz, which is also what
+    // finally makes the two nodes' names true.
+    { id: "llfoSlow", type: "audio_vcv_llfo", col: 0, row: 3, knobs: { frequency: 1.436305, slow: "on", scale: 1 } },
+    // `wave` is Bogaudio's own `configSwitch` index and 4 is `square` (BOG_LLFO_WAVES).
+    { id: "llfoFast", type: "audio_vcv_llfo", col: 0, row: 4, knobs: { frequency: 12.941762, slow: "on", wave: "square", scale: 1 } },
     { id: "walk", type: "audio_vcv_walk", col: 0, row: 5, knobs: { rate: 0.3139, scale: 0.3193 } },
     // `speed` is Caudal's param 0; the harvested value is left as found and is outside
     // our 0…1 knob, because Rack clamps before saving so a stored −0.325 proves Vult's
@@ -404,7 +415,7 @@ export const VCV_INCANTA = {
     "MindMeld MixMasterJr + AuxExpanderJr substituted by our audio_mixer, and EqMaster by our audio_eq3 (three bands instead of four; the harvested gains 2.5/3.2/3.7 dB carried across). The send/return is the acyclic dry+wet shape this file's header describes.",
     "Bogaudio-Mix4 x5 are the REAL ported node (VC-3a landed while this was being written), so they are not a substitution — but the fifth one is repurposed as the modulation summer feeding the two Feline cutoffs, because the survey printed only 70 of 236 cables and its original destination is in the unseen 166.",
     "Core/AudioInterface2 substituted by audio_output; VCV-Recorder, JW-Modules/Tree x4, Core/Blank x3, Bogaudio-Blank6 x3 and CountModula/Blank2HP x2 dropped as furniture (Tree is a drawing, not a sound). Fundamental/Noise substituted by audio_noise; Fundamental/LFO2 (the wavetable LFO) by audio_lfo at its harvested 0.0217 Hz, its wavetable position 0.096 being within a hair of a sine.",
-    "Dial conversions applied: the four LLFO frequencies became 0.00207 / 0.00296 / 0.0011 / 0.00119 Hz from their slow-mode raws (2^v/100); every FM-OP envelope stage became seconds via Bogaudio's own v²·10; ADDR-SEQ's `steps` raws were rounded to the integer step COUNT they are and `direction` became the discrete \"forward\". Pressor's threshold and gains are in DECIBELS in the ported spec and their raw 0..1 knob positions are not convertible without Bogaudio's curve, so only its ratio and detector mix are set.",
+    "Dial conversions applied: the four LLFO frequencies became 0.42345 / 0.605904 / 0.225604 / 0.24341 Hz from their raws −2.2711 / −1.7542 / −3.1795 / −3.0699 through `bogaudioSemitonesToHz(12·(v − 7))`. THIS LINE USED TO READ `2^v/100`, which is not Bogaudio's reference and not an octave offset of anything, and it also stated the rate AFTER Slow's ÷16 in a knob that means the rate BEFORE it — two independent errors compounding to 204×, which put all four below the knob's own 0.0639 Hz minimum. Every FM-OP envelope stage became seconds via Bogaudio's own v²·10; ADDR-SEQ's `steps` raws were rounded to the integer step COUNT they are and `direction` became the discrete \"forward\". Pressor's threshold and gains are in DECIBELS in the ported spec and their raw 0..1 knob positions are not convertible without Bogaudio's curve, so only its ratio and detector mix are set.",
     "Chronoblob2's TIME knob is stated in SECONDS by the landed spec; the harvested 0.612 is a 0..1 knob position and Chronoblob2 has no public source, so 0.612 s is carried across as the same order of magnitude rather than as an exact conversion.",
   ],
   nodes: [
@@ -426,11 +437,16 @@ export const VCV_INCANTA = {
     { id: "w6", type: "audio_vcv_walk2", col: 0, row: 10, knobs: { rateX: 0.4048, rateY: 0.347, scaleX: 1, scaleY: 1 } },
     { id: "w7", type: "audio_vcv_walk2", col: 0, row: 11, knobs: { rateX: 0.2217, rateY: 0.2506, scaleX: 1, scaleY: 1 } },
     { id: "w8", type: "audio_vcv_walk2", col: 0, row: 12, knobs: { rateX: 0.3036, rateY: 0.3373, scaleX: 1, scaleY: 1 } },
-    // FOUR LLFOs, all four in the millihertz — one cycle every eight to fifteen minutes.
-    { id: "l1", type: "audio_vcv_llfo", col: 0, row: 13, knobs: { frequency: 0.00207, slow: 1, offset: 1, scale: 1 } },
-    { id: "l2", type: "audio_vcv_llfo", col: 0, row: 14, knobs: { frequency: 0.00296, slow: 1, offset: 1, scale: 1 } },
-    { id: "l3", type: "audio_vcv_llfo", col: 0, row: 15, knobs: { frequency: 0.0011, slow: 1, offset: 1, scale: 1 } },
-    { id: "l4", type: "audio_vcv_llfo", col: 0, row: 16, knobs: { frequency: 0.00119, slow: 1, offset: 1, scale: 1 } },
+    // FOUR LLFOs IN SLOW MODE, one cycle every 26 to 71 seconds — and the RATE KNOB IS
+    // THE RATE BEFORE Slow's ÷16, which is what these four used to get wrong. Their raws
+    // are −2.2711 / −1.7542 / −3.1795 / −3.0699 (survey_vcv.md) through VC-3b's own
+    // `bogaudioSemitonesToHz(12·(v − 7))`; the numbers here before were those raws through
+    // `2^v/100`, which is neither Bogaudio's reference nor any octave offset of it, and
+    // which additionally stated the POST-÷16 rate so `LlfoKernel.control` divided again.
+    { id: "l1", type: "audio_vcv_llfo", col: 0, row: 13, knobs: { frequency: 0.42345, slow: "on", offset: 1, scale: 1 } },
+    { id: "l2", type: "audio_vcv_llfo", col: 0, row: 14, knobs: { frequency: 0.605904, slow: "on", offset: 1, scale: 1 } },
+    { id: "l3", type: "audio_vcv_llfo", col: 0, row: 15, knobs: { frequency: 0.225604, slow: "on", offset: 1, scale: 1 } },
+    { id: "l4", type: "audio_vcv_llfo", col: 0, row: 16, knobs: { frequency: 0.24341, slow: "on", offset: 1, scale: 1 } },
     { id: "lfo2a", type: "audio_lfo", col: 0, row: 17, knobs: { frequency: 0.0217, depth: 1, waveform: "sine" } },
     { id: "lfo2b", type: "audio_lfo", col: 0, row: 18, knobs: { frequency: 0.0217, depth: 1, waveform: "triangle" } },
     { id: "lfo2c", type: "audio_lfo", col: 0, row: 19, knobs: { frequency: 0.0217, depth: 1, waveform: "sine" } },
@@ -825,7 +841,7 @@ export const VCV_RAMPAGE_GENERATIVE = {
     "VultModulesFree/Punch and Instruo/tsl DROPPED, and this one is an honest gap rather than a judgement: both of their cables are in the 26 the survey did not print, so there is nothing to reconstruct them from. They are the two modules of the original's 32 that this rebuild simply does not have.",
     "NYSTHI/VectorMixer and Bogaudio-UMix x2 substituted by our audio_mixer (both are unity summers here — VectorMixer's four params are all 1.0 in the harvested file). MindMeld MixMasterJr + AuxExpanderJr likewise, with the send/return as the acyclic dry+wet shape this file's header describes. Core/AudioInterface substituted by audio_output; Fundamental/Noise by audio_noise; Fundamental/Delay by audio_delay; Fundamental/VCA x2 and VCA-1 x5 by our audio_vca.",
     "Rampage's `in_b` carries white noise and its `cycle_b` knob is left latched as harvested — the SLEW hat needs an input to slew, and the original's is in the unseen 26 cables. Slew-limited noise is the canonical demonstration and is what the module's own manual shows.",
-    "Dial conversions applied: FM-OP's envelope raws became seconds via Bogaudio's v²·10 (0.1414 -> 0.2 s attack); reburst's `cv_mode` raw 4 became the discrete \"random_pos\" and its gate mode \"trigger\"; Rampage's own rise/fall knobs are 0..1 panel positions in Befaco's C++ (`configParam(RISE_A_PARAM, 0, 1, 0)`) and carry across unchanged. Bogaudio Reftone's pitch/octave are a semitone index and an octave number, not volts, and likewise carry across.",
+    "Dial conversions applied: FM-OP's envelope raws became seconds via Bogaudio's v²·10 (0.1414 -> 0.2 s attack); reburst's `cv_mode` raw 4 became the discrete \"random_pos\" and its gate mode \"trigger\"; Rampage's own rise/fall knobs are 0..1 panel positions in Befaco's C++ (`configParam(RISE_A_PARAM, 0, 1, 0)`) and carry across unchanged. Bogaudio Reftone's pitch/octave are a semitone index and an octave number rather than volts — but only the OCTAVE carries across as a number: VC-3b's pitch knob is the note NAME, so the harvested index 7 is written \"G\".",
   ],
   nodes: [
     // ── COLUMN 0 — the whole patch's inputs: one button, one chaos farm, noise,
@@ -835,8 +851,11 @@ export const VCV_RAMPAGE_GENERATIVE = {
     // rates from a single knob, and it is the only modulation source in the patch.
     { id: "ochd", type: "audio_vcv_ochd", col: 0, row: 1, knobs: { rate: 0.2375 } },
     { id: "noise", type: "audio_noise", col: 0, row: 2, knobs: { color: "white", level: 0.5 } },
-    { id: "reftone1", type: "audio_vcv_reftone", col: 0, row: 3, knobs: { pitch: 7, octave: 2 } },
-    { id: "reftone2", type: "audio_vcv_reftone", col: 0, row: 4, knobs: { pitch: 7, octave: 4 } },
+    // "G", not 7. Reftone's PITCH_PARAM is an INDEX into the twelve note names and VC-3b's
+    // knob is the NAME (`BOGAUDIO_NOTE_NAMES[7]`), the same correction vcv-ambient-drone's
+    // reftone already took for its harvested 9 → "A". Two G's, two octaves apart.
+    { id: "reftone1", type: "audio_vcv_reftone", col: 0, row: 3, knobs: { pitch: "G", octave: 2 } },
+    { id: "reftone2", type: "audio_vcv_reftone", col: 0, row: 4, knobs: { pitch: "G", octave: 4 } },
     // ── COLUMN 1 — THE MODULE THE PATCH IS ABOUT, wearing all four hats ────
     { id: "rampage", type: "audio_vcv_rampage", col: 1, row: 0, knobs: { rise_a: 0.582, fall_a: 0.525, rise_b: 0.675, fall_b: 0.675, cycle_a: 1, cycle_b: 1, balance: 0.5 } },
     // ── COLUMN 2 — everything Rampage's six edges clock, plus the CV summers ─
