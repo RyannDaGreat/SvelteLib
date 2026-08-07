@@ -5914,3 +5914,45 @@ the control. Its comparing assertions failed loudly, but any non-comparing asser
 that file would have gone on passing while testing nothing. **A fixture that expresses a
 mode by OMITTING it is a fixture that stops testing what it names the day the default
 changes** — state the mode outright on both sides, even when one of them is the default.
+
+### R7-LESSON: THREE WAYS WORK HID FROM US IN ONE NIGHT (2026-08-07)
+
+All three were found by measuring, none by reading, and each had been quietly true for days.
+
+**1. BUILT IS NOT SHIPPED. Four port blocks — AX-4, VC-7a, VC-8, VC-10 — had specs, module
+factories, plugins, worklet processors and PASSING port tests, and were absent from
+`core/audio_blocks.js`.** So **49 nodes existed and did not exist**: every patch using one
+still saw a placeholder. The agents had finished; the four-seam wiring
+(`core/audio_blocks.js`, `plugins/audio_index.js`, `synth/modules.js`,
+`synth/worklet_urls.js`) is the LEAD's step and nobody did it. Reading the placeholder
+census as "work remaining" rather than "work finished but not connected" is what hid it —
+those are different failures. **Wiring immediately produced three real disagreements**
+(`voices` construct-vs-live, `aliasMode` the mirror image, four missing tuning origins), so
+the seams work; they were just never reached.
+
+**2. A TEST THAT STOPS AT THE FIRST FAILURE UNDER-REPORTS, AND ONE THAT THROWS REPORTS
+NOTHING AT ALL.** `audio_patches_test.js` prints the first failure PER CHECK, so
+reconciling 26 broken nodes through it would have cost 26 runs; a 40-line script that
+enumerated every mismatch at once turned that into one. Worse, its **range law had been
+DARK** — crashing on the first unknown knob name (`Cannot read properties of undefined`)
+before evaluating any value. With the names fixed it ran and found **89 bad values**: raw
+Axoloti dials in knobs that mean seconds, raw Rack positions and raw volts in knobs that
+mean hertz, enum indices in knobs that mean a named option. **A green suite containing a
+law that throws before it asserts is indistinguishable from one that passes.** When a check
+reports a name error, ask what it was going to check NEXT and whether it ever got there.
+
+**3. THIRTEEN OF TWENTY-FOUR DEMO PATCHES MAKE NO SOUND BECAUSE NOBODY CAN PLAY THEM.**
+`readAudioScene` wires only nodes that HAVE an `audioModule`, so every cable out of a
+`node_keyboard` is dropped — and where those cables carry a VCA's GAIN, every voice sits at
+zero. `vcv-fm-pad` renders at −67.7 dBFS, which is leakage past four closed VCAs, and its
+filename said only `PENDING-1`, i.e. "should work, doesn't". This is § R7-PLAYABLE's
+consequence, and it is much larger than that entry implied.
+`tests/renderPatchAudio.mjs` now tags such a patch `UNPLAYED`, because **a rendering aid
+that cannot distinguish "broken" from "nobody is at the keys" invites exactly the
+theorising the user banned.**
+
+**THE COMMON SHAPE.** In all three, something reported success at the wrong granularity: a
+block's tests passed while the block was unreachable, a suite passed while one of its laws
+never ran, and a file rendered while its voices were shut. **Ask what a green result is
+actually ranging over** — and prefer an artifact a human can check (a WAV, an enumerated
+list) over a pass/fail whose scope you have to infer.

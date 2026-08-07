@@ -318,6 +318,23 @@ export function estimateF0(x, sampleRate, n = 8192) {
     }
   }
   if (bestBin === 0) return 0;
+
+  // ── THE SUBHARMONIC GHOST, AND WHY THIS GUARD IS NOT OPTIONAL ─────────────
+  // HPS multiplies mag[k]·mag[2k]·mag[3k]·mag[4k]. For a NEAR-PURE SINE there
+  // are no harmonics to multiply, so the product is dominated by noise and the
+  // winner is often f0/3 or f0/4 — a bin with essentially no energy in it. That
+  // is not hypothetical: the Bogaudio VCO's sine at 3594 Hz was reported as
+  // 895 Hz on one side and 1199 Hz on the other, a 506-cent "failure", while
+  // the two signals correlated at 1.000000 and differed by 5.6 mV.
+  // The test is energy, not structure: a candidate that carries less than
+  // −40 dB of the spectrum's strongest bin is not a fundamental anyone can
+  // hear, so the strongest bin is taken instead. A real waveform's fundamental
+  // is its loudest partial by a wide margin, so this never fires on one.
+  const GHOST_FLOOR = 0.01; // −40 dB in amplitude
+  let peakBin = LOW_BIN;
+  for (let j = LOW_BIN; j < half; j++) if (mag[j] > mag[peakBin]) peakBin = j;
+  if (mag[bestBin] < GHOST_FLOOR * mag[peakBin]) bestBin = peakBin;
+
   // The HPS bin can sit one bin off the true local maximum; snap to it first.
   let k = bestBin;
   while (k > LOW_BIN && mag[k - 1] > mag[k]) k--;

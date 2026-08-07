@@ -83,6 +83,14 @@ function buildRepoArchive(key) {
  */
 function buildCase(c) {
   mkdirSync(BUILD, { recursive: true });
+  // `prep` exists for ONE situation, and it is not a general extension point:
+  // a plugin whose module glue you want to compile VERBATIM, but whose own
+  // `#include "foo.hpp"` resolves to the includer's directory and so cannot be
+  // redirected by any -I. The only way to put a shim in front of it is to copy
+  // the untouched .cpp somewhere else and compile it there. `prep` is where
+  // that copy happens, and a case that uses it must say in its header exactly
+  // which bytes it copied, so a reader can see nothing was edited.
+  if (c.prep) c.prep({ buildDir: BUILD, harnessRoot: HARNESS_ROOT, repoPath });
   const exe = join(BUILD, c.name.replace(/[^\w.-]/g, "_"));
   const cpp = join(HARNESS_ROOT, "cases", c.cpp);
   if (!existsSync(cpp)) throw new Error(`buildCase: ${c.name} names a missing driver ${cpp}`);
@@ -243,19 +251,35 @@ export async function runCase(c) {
 /**
  * Query. Load every case module in `cases/`, sorted by name.
  *
+ * A module that fails to IMPORT is reported and skipped rather than thrown,
+ * because one unfinished case file must not take down every other family's
+ * measurements — the harness is written by many hands at once. This is not a
+ * swallowed error: the file and its message come back in `loadErrors` and the
+ * runner prints them in the report's error section, where they read as a broken
+ * harness rather than a failing node.
+ *
  * @param {string} [filter] - substring; only matching case names are loaded
- * @returns {Promise<object[]>}
+ * @returns {Promise<{cases: object[], loadErrors: Array<{name: string, error: string}>}>}
  */
 export async function loadCases(filter) {
   const dir = join(HARNESS_ROOT, "cases");
-  const out = [];
+  const cases = [];
+  const loadErrors = [];
   for (const f of readdirSync(dir).sort()) {
     if (!f.endsWith(".mjs")) continue;
-    const mod = await import(pathToFileURL(join(dir, f)).href);
-    for (const c of mod.CASES ?? (mod.CASE ? [mod.CASE] : [])) {
+    let mod;
+    try {
+      mod = await import(pathToFileURL(join(dir, f)).href);
+    } catch (e) {
+      loadErrors.push({ name: `cases/${f}`, error: `will not import — ${String(e.message ?? e).split("\n")[0]}` });
+      continue;
+    }
+    const list = mod.CASES ?? (mod.CASE ? [mod.CASE] : []);
+    if (!list.length) loadErrors.push({ name: `cases/${f}`, error: "exports neither CASES nor CASE" });
+    for (const c of list) {
       if (filter && !c.name.includes(filter)) continue;
-      out.push(c);
+      cases.push(c);
     }
   }
-  return out;
+  return { cases, loadErrors };
 }

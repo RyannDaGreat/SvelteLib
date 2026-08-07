@@ -57,6 +57,24 @@ for (const hz of [110, 261.6256, 440]) {
   const cents = Math.abs(semitonesBetween(f, hz)) * 100;
   check(`estimateF0 saw ${hz} Hz (no octave error)`, cents < 1.0, `${f.toFixed(4)} Hz, ${cents.toFixed(3)} cents`);
 }
+// THE SUBHARMONIC GHOST. A near-pure sine with a little distortion noise has no
+// harmonics for the HPS to multiply, so its product peaks on f0/3 or f0/4 — a
+// bin with no energy in it. This exact signal made the Bogaudio VCO's sine
+// output read 895 Hz instead of 3594 Hz and produced a 506-cent phantom failure.
+{
+  const n = 32768;
+  const hz = 3593.97;
+  const s = Float64Array.from({ length: n }, (_, i) => {
+    // A deterministic low-level dither standing in for a wavetable's
+    // interpolation error, which is what fed the ghost in the real case.
+    const dither = 1e-4 * Math.sin(2 * Math.PI * 7 * i / n + 0.3);
+    return Math.sin(2 * Math.PI * hz * i / SR) + dither;
+  });
+  const f = estimateF0(s, SR, n);
+  check("estimateF0 rejects a subharmonic ghost on a near-pure sine",
+    Math.abs(semitonesBetween(f, hz)) * 100 < 1, `${f.toFixed(2)} Hz for a ${hz} Hz tone`);
+}
+
 // THE THING THE REPORT MUST NEVER MISS: a detuned pair must READ as detuned.
 {
   const semis = 1;

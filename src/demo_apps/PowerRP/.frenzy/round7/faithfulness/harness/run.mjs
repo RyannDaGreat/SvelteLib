@@ -84,9 +84,10 @@ async function main() {
   const mdPath = args.find((a) => a.startsWith("--md="))?.slice(5);
   const jsonPath = args.find((a) => a.startsWith("--json="))?.slice(7);
 
-  const cases = await loadCases(filter);
+  const { cases, loadErrors } = await loadCases(filter);
   const results = [];
-  const errors = [];
+  const errors = [...loadErrors];
+  for (const e of loadErrors) process.stderr.write(`ERROR ${e.name}: ${e.error}\n`);
   for (const c of cases) {
     try {
       const r = await runCase(c);
