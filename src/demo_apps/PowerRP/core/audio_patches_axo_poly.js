@@ -115,6 +115,57 @@
  *     already-shipped `audio_ax_stereo_out`: that node has no outputs, so it could not
  *     feed the mandatory meter → spectrum tail, and every node in a patch must REACH an
  *     `audio_output`. The stereo pair folds to one mono bus at the tail.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * AUTOPLAY: WHY EVERY PATCH HERE CARRIES AN `ap*` BRANCH (§ R7-AUDIBLE)
+ * ════════════════════════════════════════════════════════════════════════════
+ * THE RULING (user, 2026-08-07): *"any patch that doesn't make audio right away (unless
+ * it has a button or keyboard biult in to make noise) needs to make noise
+ * automatically"*, and the exemption is a WORKING trigger, not a trigger-shaped widget.
+ *
+ * MEASURED 2026-08-07, before this branch existed: all three patches here rendered at
+ * **−inf dBFS** in `tests/patch_sound_probe.mjs`, and pressing the `node_keyboard` made
+ * no sound. TWO independent reasons, both structural, both worth writing down because
+ * neither is visible on the canvas:
+ *
+ *   1. **THE KEYBOARD CANNOT REACH AN AXOLOTI CHAIN AT ALL, AND STILL CANNOT.**
+ *      `core/audio_mirror_diff.readAudioScene` drops every wire whose SOURCE has no
+ *      engine module, and a `node_keyboard` has none — it is a control widget. Its
+ *      presses instead travel through `core/live_control.noteRoutes`, which routes a key
+ *      ONLY to an input declared `method: true`. Exactly TWO ports in the whole library
+ *      declare that (`audio_ding.gate` and `audio_poly_pad.gate`, core/audio_specs.js),
+ *      and neither is ours. So a keyboard in front of an Axoloti voice is decorative
+ *      TODAY no matter how it is wired — including in front of the real
+ *      `audio_ax_midi_keyb`. Making it real means a `method` port plus a `noteOn`/
+ *      `noteOff` surface on `axMidiKeyb`, i.e. `core/audio_specs_ax1.js` and `synth/`,
+ *      which this file does not own. **Reported, not worked around.**
+ *   2. **THE VOICE'S AMPLITUDE ENVELOPE IS A PLACEHOLDER**, so every `audio_vca` in the
+ *      chain sits at its authored `gain: 0` offset with a dropped wire on its `gain`
+ *      input. Even a working note source would have produced silence.
+ *
+ * So these patches take § R7-AUDIBLE's **third way — a self-driving source the original
+ * implies** — and it is recorded as a deviation on each one. THE SHAPE IS THE SAME EVERY
+ * TIME and is built ONLY from shipped nodes:
+ *
+ *      audio_ax_lfo (square)  →  audio_trigger  →  [ counter → steps: the note pattern ]
+ *                                              →  [ pulse/d → a VCA gain: the envelope ]
+ *
+ * `audio_trigger` is not optional furniture: `core/nodeflow.COERCIONS` has no
+ * `audio → trigger`, so a square wave becomes an event stream only through a Schmitt —
+ * the same insertion A9 and C4 already record for their own clocks.
+ *
+ * **THE BRANCH DRIVES THE PATCH'S OWN VOICE WHEREVER ONE IS ALIVE**, rather than being a
+ * drone bolted on beside it. In A1 the arpeggio enters the harvested `notemix` and is
+ * heard through the harvested three oscillators, the pink detune and the vcf3; in A9 the
+ * envelopes hang off the harvested step grid's OWN Schmitts and the LFSR's OWN gate. What
+ * the branch supplies is exactly what a placeholder is failing to supply — a note pattern
+ * where `audio_ax_midi_keyb` cannot be played, and an envelope where AX-4 owes one.
+ *
+ * **EVERY `ap*` NODE IS DELETABLE IN ONE BLOCK** the day AX-4's envelopes and a playable
+ * keyboard land. Nothing existing was rewired to make room for it: the branch only takes
+ * FREE mixer inputs and FANS OUT of outputs, so the harvested graph is byte-identical
+ * underneath it. The one exception is a mixer LEVEL that was 0 for a free input, which is
+ * named at its site.
  */
 
 // ── THE ANALYSIS TAIL ───────────────────────────────────────────────────────
@@ -139,6 +190,104 @@ const analysisWires = (from) => [
   { from: "meter", fromPort: "out", to: "spectrum", toPort: "in" },
   { from: "spectrum", fromPort: "out", to: "out", toPort: "in" },
 ];
+
+// ── THE AUTOPLAY PRIMITIVES (§ R7-AUDIBLE — see this file's AUTOPLAY section) ─
+
+/**
+ * AN LFO PITCH IS SEMITONES FROM ITS OWN 5.15 Hz BASE, NOT FROM E4, and the two patches
+ * below state that base in prose already (*"LFO pitch 0 → 5.15 Hz"*, and A9's clock at
+ * −36 being 0.64 Hz). Writing the tempos as hertz and converting once is what stops a
+ * third reader re-deriving it — and getting a clock an octave out is the kind of error
+ * that reads as a musical choice rather than as a bug.
+ *
+ * Pure function. The `audio_ax_lfo` `pitch` knob that runs at a given rate.
+ *
+ * @param {number} hz - the wanted rate in hertz
+ * @returns {number} semitones, rounded to a tenth (the dial's own resolution)
+ *
+ * @example lfoPitchForHz(5.15) // 0
+ * @example lfoPitchForHz(0.64) // -36.1  — A9's master clock, which the patch calls 0.64 Hz
+ * @example lfoPitchForHz(2) // -16.4
+ */
+function lfoPitchForHz(hz) {
+  return Math.round(12 * Math.log2(hz / AX_LFO_BASE_HZ) * 10) / 10;
+}
+
+/** The rate an `audio_ax_lfo` runs at with its `pitch` knob at 0. Measured from the
+ *  block's own arithmetic and restated in both C4's and A9's node comments. */
+const AX_LFO_BASE_HZ = 5.15;
+
+/**
+ * Pure function. THE AUTOPLAY CLOCK: a square LFO and the Schmitt that turns it into
+ * events. Two nodes, written once because all three patches here need one and a
+ * divergence between them would be meaningless variety.
+ *
+ * `core/nodeflow.COERCIONS` HAS NO `audio → trigger`, deliberately — turning a
+ * continuous signal into events is a real operation with a real parameter — so the
+ * Schmitt is structural, not decoration. A9 and C4 already record the same insertion.
+ *
+ * @param {string} id - id prefix; the nodes are `<id>Lfo` and `<id>Edge`
+ * @param {number} col - column of the LFO; the Schmitt sits one to its right
+ * @param {number} row - the row both occupy
+ * @param {number} hz - the clock rate
+ * @returns {{nodes: object[], wires: object[], trig: string}} `trig` is the id whose
+ *   `out` port carries the event stream
+ *
+ * @example autoClock("ap", 0, 11, 0.5).trig // "apEdge"
+ * @example autoClock("ap", 0, 11, 0.5).nodes.length // 2
+ * @example autoClock("ap", 0, 11, 5.15).nodes[0].knobs // {waveform: "square", pitch: 0}
+ */
+function autoClock(id, col, row, hz) {
+  return {
+    trig: `${id}Edge`,
+    nodes: [
+      { id: `${id}Lfo`, type: "audio_ax_lfo", col, row, knobs: { waveform: "square", pitch: lfoPitchForHz(hz) } },
+      { id: `${id}Edge`, type: "audio_trigger", col: col + 1, row, knobs: { pulseMs: AUTOPLAY_PULSE_MS } },
+    ],
+    wires: [{ from: `${id}Lfo`, fromPort: "out", to: `${id}Edge`, toPort: "in" }],
+  };
+}
+
+/** The Schmitt width every autoplay clock uses — the same 5 ms the harvested patches
+ *  already give their own inserted Schmitts, so one clock cannot be subtly unlike another. */
+const AUTOPLAY_PULSE_MS = 5;
+
+/**
+ * Pure function. AN AUTOPLAY NOTE: `pulse/d` into a VCA — the two nodes that turn a live
+ * trigger plus a live audio source into something you can hear.
+ *
+ * THIS IS THE SHAPE THE PLACEHOLDERS ARE FAILING TO PROVIDE. Every harvested VCA here
+ * carries `gain: 0` (the knob is the OFFSET its envelope wire sums into) and every one of
+ * those envelope wires runs from an AX-4 placeholder, so it is dropped and the VCA stays
+ * shut. `audio_ax_pulse_decay` is `pulse/d`, an audio-rate exponential decay — NOT the
+ * `env/adsr` or `env/ahd m` the source uses, so it is a substitution and is recorded as
+ * one; what it has that they do not is an engine module today.
+ *
+ * @param {string} id - id prefix; the nodes are `<id>Env` and `<id>Vca`
+ * @param {number} col - column of the envelope; the VCA goes at `vcaCol`
+ * @param {number} row - the row both occupy
+ * @param {object} cfg - `{trig, source, vcaCol, decay}` — `trig` and `source` are
+ *   `{item, port}` records naming a LIVE trigger and a LIVE audio signal
+ * @returns {{nodes: object[], wires: object[], out: string}}
+ *
+ * @example // autoNote("apKick", 9, 17, {trig: {item: "kickedge", port: "out"}, …}).out
+ * @example // "apKickVca"
+ * @example autoNote("x", 1, 2, {trig: {item: "t", port: "out"}, source: {item: "s", port: "out"}, vcaCol: 4, decay: 0.2}).nodes.length // 2
+ */
+function autoNote(id, col, row, { trig, source, vcaCol, decay }) {
+  return {
+    out: `${id}Vca`,
+    nodes: [
+      { id: `${id}Env`, type: "audio_ax_pulse_decay", col, row, knobs: { decay } },
+      { id: `${id}Vca`, type: "audio_vca", col: vcaCol, row, knobs: { gain: 0 } },
+    ],
+    wires: [
+      { from: trig.item, fromPort: trig.port, to: `${id}Env`, toPort: "trig" },
+      { from: `${id}Env`, fromPort: "out", to: `${id}Vca`, toPort: "gain" },
+      { from: source.item, fromPort: source.port, to: `${id}Vca`, toPort: "in" },
+    ],
+  };
+}
 
 // ── A1's STRING VOICE, AS A FUNCTION, BECAUSE A9 CONTAINS IT TOO ────────────
 // A9 embeds `strings.axp`'s entire 7-voice subpatch as a keyboard split, with byte-
@@ -177,9 +326,12 @@ function stringVoice(prefix, keysId, col, row) {
   return {
     out: prefix + "amp",
     nodes: [
-      // THE NOTE SOURCE. The subpatch's own `midi/in/keyb` becomes `audio_ax_keyb`, and
-      // the allocator behind it is the patcher's `poly=7`.
-      n("keyb", "audio_ax_keyb", 0, 0, { start_note: -64, end_note: 63 }),
+      // THE NOTE SOURCE. The subpatch's own `midi/in/keyb` is AX-1's shipped
+      // `audio_ax_midi_keyb` — the placeholder this used to name landed under that name,
+      // and it is where § R7-AXO-TRAPS' hertz→semitone conversion has its home. Swapping
+      // the type changed no wire: the two carry the same five outputs and the same
+      // pitch/gate inputs, which is exactly what a placeholder promises.
+      n("keyb", "audio_ax_midi_keyb", 0, 0, { start_note: -64, end_note: 63 }),
       n("poly", "audio_ax_poly_voices", 1, 0, { voices: 7 }),
       // THE PER-VOICE DETUNE, which is what the patch is FOR: pink noise (a random WALK,
       // not a jitter) wandering each voice a few tens of cents off, so the ensemble never
@@ -305,7 +457,8 @@ function stringVoice(prefix, keysId, col, row) {
 const STRING_VOICE_DEVIATIONS = [
   "patch/patcher poly=7 → `audio_ax_poly_voices` (placeholder) with the voice graph drawn ONCE. See this file's POLYPHONY section for why, and for the two options rejected.",
   "THE PER-VOICE PINK DRIFT IS ONE SHARED DRIFT. In the original each of the seven patcher instances owns its own `rand/pink`, so no two voices' detunes or cutoffs ever coincide — that decorrelation is precisely why the patch sounds like a string machine and not like seven saws. Drawing the voice once necessarily shares one generator, so today the seven voices move TOGETHER. This retires the day AX-1's `poly/voices` replicates the subgraph downstream of it, and it is the strongest argument for that contract.",
-  "midi/in/keyb → `audio_ax_keyb` (placeholder) driven by a `node_keyboard`. PowerRP has no MIDI; the keyboard widget is the note source, and the placeholder is where its HERTZ becomes Axoloti's semitones-from-E4. Velocity and release velocity are the placeholder's — a mouse click has none, so AX-1 must decide what a clicked key's velocity is (this patch's attack and decay times depend on it).",
+  "midi/in/keyb → AX-1's shipped `audio_ax_midi_keyb`, driven by a `node_keyboard`. PowerRP has no MIDI; the keyboard widget is the note source, and that node is where its HERTZ becomes Axoloti's semitones-from-E4. Velocity and release velocity are ITS KNOBS, because a mouse click has none — this patch's attack and decay times read them, so the default 100/128 is what a clicked key is worth here.",
+  "THE `node_keyboard` IS DECORATIVE AND WE COULD NOT FIX IT (§ R7-AUDIBLE, measured 2026-08-07). `readAudioScene` drops every wire out of a control widget, and `live_control.noteRoutes` delivers a key press only to an input declared `method: true` — which exactly two ports in the library are, neither of them ours. So the keys reach nothing, in this patch or any Axoloti patch, and the fix is a `method` port plus a noteOn/noteOff surface on `axMidiKeyb` in files this set does not own. The keyboard is KEPT (a patch is not trimmed) and the patch is made audible the third way instead — see the AUTOPLAY branch below.",
   "patch/outlet a ABSORBED: a subpatch boundary is not a node in a flat graph, so the wire that crossed it is now one wire.",
   "MidiCC 1 on vcf3's cutoff → a `node_knob` into the cutoff mixer's free input. Not cosmetic: at the stored 55.0 the corner is 7902 Hz and the filter is transparent, so the modwheel IS how this patch is played.",
   "math/c 32 + the pwm `mix/mix 1` ABSORBED into the PWM oscillator's own `pw` knob — a knob and its same-named input sum on one param here, so the constant is the knob.",
@@ -313,6 +466,68 @@ const STRING_VOICE_DEVIATIONS = [
   "gain/vca → `audio_vca`; math/inv, math/*, math/*c and math/div 32 → `audio_ax_math` operations. Their nineteen arithmetic overloads are one node with an `operation` knob, which is AX-1's own collapse.",
   "env/adsr and env/ahd m → placeholders, NOT our `audio_adsr`: their dials are an exponential segment law in 0…64 units and ours are seconds, so −17.0 has nowhere to land. The harvested dials ride the normal knob path instead of being parked in a comment.",
 ];
+
+/** How loud an autoplay branch returns into a harvested bus. Below the authored path's
+ *  unity so that the day the placeholders land, the port is what dominates and the
+ *  branch is a bed under it rather than the other way round. */
+const AUTOPLAY_DRY_LEVEL = 0.85;
+
+/** …and the same return split across a stereo PAIR of buses. Half of the dry level on
+ *  each side, so a source that is mixed to both sums to one centred voice rather than to
+ *  two coincident ones 6 dB louder. */
+const AUTOPLAY_CENTRED_LEVEL = 0.42;
+
+/** A1's arpeggio tempo and note length. Half a hertz is two seconds a note — a PAD's
+ *  pace, slow enough that the four-second swell of the harvested filter drift is still
+ *  the thing you notice. The decay is `pulse/d`'s RATE dial, not a time: 0.02 is a
+ *  ~1.5 s time constant, so notes overlap the way a string machine's do. */
+const AXO_STRING_PAD_ARP_HZ = 0.5;
+const AXO_STRING_PAD_ARP_DECAY = 0.02;
+
+/**
+ * A1's AUTOPLAY BRANCH — § R7-AUDIBLE's third way, spelled out.
+ *
+ * A pad is the case the ruling says should do BOTH (self-play and be playable); it can
+ * only do the first here, for the reason this file's AUTOPLAY section measures. So this
+ * is a four-note arpeggio at half a hertz, and it is deliberately routed THROUGH the
+ * harvested voice rather than beside it: the pattern enters `notemix`, which is the fan-out
+ * the patch's own docstring calls "the patch's spine", so what sounds is the real sine +
+ * pwm + saw stack, the real pink-noise detune, and the real vcf3 with its pink cutoff
+ * drift. Only the note pattern and the amplitude envelope are ours.
+ *
+ * ROWS 11-12 ARE EMPTY IN THE HARVESTED LAYOUT (the voice occupies 0-9, the tail row 0),
+ * so the branch reads as its own band under the patch instead of interleaving with it.
+ */
+const AXO_STRING_PAD_AUTOPLAY = (() => {
+  const clock = autoClock("ap", 0, 11, AXO_STRING_PAD_ARP_HZ);
+  // The VCA taps `vcf.out` — AFTER the filter and BEFORE the harvested `vca`, whose gain
+  // input is held by the placeholder envelope and cannot take a second wire.
+  const note = autoNote("apAmp", 2, 12, {
+    trig: { item: clock.trig, port: "out" },
+    source: { item: "vcf", port: "out" },
+    vcaCol: 12,
+    decay: AXO_STRING_PAD_ARP_DECAY,
+  });
+  return {
+    nodes: [
+      ...clock.nodes,
+      { id: "apCount", type: "audio_ax_counter", col: 2, row: 11, knobs: { maximum: 4 } },
+      // A MINOR-SEVENTH ARPEGGIO over the note the allocator is holding (0, i.e. E4 with
+      // nothing pressed): root, fourth, fifth, octave. Four steps because a longer figure
+      // at this tempo takes longer than anyone looks at a freshly-inserted patch.
+      { id: "apSteps", type: "audio_ax_steps_value", col: 3, row: 11, knobs: { v0: 0, v1: 5, v2: 7, v3: 12 } },
+      ...note.nodes,
+    ],
+    wires: [
+      ...clock.wires,
+      { from: clock.trig, fromPort: "out", to: "apCount", toPort: "trig" },
+      { from: "apCount", fromPort: "count", to: "apSteps", toPort: "index" },
+      { from: "apSteps", fromPort: "out", to: "notemix", toPort: "in2" },
+      ...note.wires,
+      { from: note.out, fromPort: "out", to: "stereo", toPort: "in3" },
+    ],
+  };
+})();
 
 /**
  * A1 — STRING PAD (7 VOICES) — `demos/synth/strings.axp`.
@@ -344,6 +559,7 @@ export const AXO_STRING_PAD = {
     ...STRING_VOICE_DEVIATIONS,
     "audio/out stereo DROPPED in favour of the mandatory meter → spectrum → Output tail; the chorus's L and R fold to one mono bus through a mixer. Our Output limits where the hardware codec hard-clips (AX-1's `audio_ax_stereo_out` states that divergence), and that node cannot be used here because it has no outputs and so cannot feed the tail.",
     "fx/chorus → `audio_ax_chorus` (placeholder). It is an .axs SUBPATCH of five primitives; placeholdering the whole thing rather than assembling it keeps one hole instead of five, and its two promoted dials (depth 3.0, speed −33.0) ride the placeholder's knobs.",
+    "AUTOPLAY (§ R7-AUDIBLE, the THIRD way — an added self-driving source; six `ap*` nodes). THE ORIGINAL IS PLAYED BY HAND AND OURS PLAYS ITSELF: a 0.5 Hz square clock drives a four-step arpeggio (0 / +5 / +7 / +12 semitones) into `notemix`'s FREE `in2`, so the harvested three oscillators, the pink detune and the vcf3 are what you hear; the same clock's Schmitt fires a `pulse/d` into a new VCA fed from `vcf.out`, standing in for the `env/ahd m` amplitude envelope AX-4 owes. It reaches the mixer on the DRY input `in3`, because the only authored path out of this voice runs through the `audio_ax_chorus` placeholder and a placeholder drops every wire that touches it. Measured before: −inf dBFS. Nothing harvested was rewired — the branch takes a free mixer input and fans out of `vcf`, so deleting all six `ap*` nodes and `stereo`'s `level3` restores the port exactly.",
     "AS BUILT: 18 distinct types for the source's 24 objects/types. The shrink is entirely Axoloti's machine-generated overloads collapsing (three `mix/mix N` widths → one mixer, six arithmetic objects → one Math, two `rand/pink*` → one, three oscillators → one, two `lfo/sine` → one), plus the four absorptions above. No DSP was dropped.",
   ],
   nodes: (() => {
@@ -352,8 +568,11 @@ export const AXO_STRING_PAD = {
       { id: "keys", type: "node_keyboard", col: 0, row: 0, w: 196, knobs: { baseNote: 48, octaves: 2 } },
       ...voice.nodes,
       { id: "chorus", type: "audio_ax_chorus", col: 12, row: 0, knobs: { depth: 3, speed: -33 } },
-      { id: "stereo", type: "audio_mixer", col: 13, row: 0, knobs: { level1: 1, level2: 1, master: 1 } },
+      // `level3` CARRIES THE AUTOPLAY BRANCH'S DRY RETURN, and it is the only knob on a
+      // harvested node this branch touches. The two chorus returns keep their own levels.
+      { id: "stereo", type: "audio_mixer", col: 13, row: 0, knobs: { level1: 1, level2: 1, level3: AUTOPLAY_DRY_LEVEL, master: 1 } },
       ...analysisTail(14),
+      ...AXO_STRING_PAD_AUTOPLAY.nodes,
     ];
   })(),
   wires: (() => {
@@ -364,9 +583,88 @@ export const AXO_STRING_PAD = {
       { from: "chorus", fromPort: "l", to: "stereo", toPort: "in1" },
       { from: "chorus", fromPort: "r", to: "stereo", toPort: "in2" },
       ...analysisWires("stereo"),
+      ...AXO_STRING_PAD_AUTOPLAY.wires,
     ];
   })(),
 };
+
+/** A9's three autoplay decay RATES (`pulse/d`'s dial, not a time — see `autoNote`).
+ *  The bass rings about a beat at the patch's ~2 Hz clock; the Geiger click is short
+ *  enough to be a click rather than a note, which is the whole character of an LFSR
+ *  counter; the kick is between the two. */
+const AXO_RADIOACTIVE_BASS_DECAY = 0.05;
+const AXO_RADIOACTIVE_CLICK_DECAY = 0.3;
+const AXO_RADIOACTIVE_KICK_DECAY = 0.12;
+
+/**
+ * A9's AUTOPLAY BRANCH — § R7-AUDIBLE's third way, and the LEAST invented of the three
+ * in this file, because A9 already IS a machine with its own clock.
+ *
+ * NOTHING HERE GENERATES A RHYTHM. Every trigger is one the harvested patch already
+ * produces and that already survives the placeholder cull — `clockedge` (the master
+ * square's Schmitt), `kickedge` (the 16-step grid ANDed with `change`), and `lfsr.out`
+ * (the 0x198 Geiger register itself). What the branch supplies is the ONE thing the
+ * placeholders withhold: an envelope to open a VCA with. Every `env/adsr` and `env/d` in
+ * this patch is an AX-4 placeholder, so every harvested VCA's `gain` wire is dropped and
+ * every VCA sits at its authored `gain: 0`. Three parallel VCAs are added beside them,
+ * one per voice that has a LIVE source behind it.
+ *
+ * WHICH THREE, AND WHY NOT THE OTHER THREE:
+ *   BASS — `bassvcf` is live and its pitch already alternates ±12 semitones with the
+ *     master square (`bassdepth` × `bassmix`), so the octave stab the patch is named for
+ *     is real. Gated by `clockedge`.
+ *   GEIGER — `fmcarrier` and `fmmod` are live, so the phase modulation is real. Gated by
+ *     the LFSR, through a Schmitt because `lfsr.out` is `audio` and
+ *     `core/nodeflow.COERCIONS` has no `audio → trigger`. This is the aperiodic clicking
+ *     the patch was chosen for, and it is exactly reproducible.
+ *   KICK — `kickosc` is live. Gated by `kickedge`, so it plays the harvested pattern
+ *     word. Its 28-semitone pitch drop is NOT here: that comes from `kickenv`, which is a
+ *     placeholder, so the kick is a flat low sine until AX-4 lands.
+ *   SNARE AND HAT GET NOTHING, DELIBERATELY. `steps`' p2 and p3 are 0 in the saved file —
+ *     the author wrote a kick-only pattern — so `snredge` and `hatedge` never fire and an
+ *     envelope hung off them would be two cards that can never make a sound. Faithful.
+ *   THE LEAD is left silent too: `melvcf`'s note comes from a keyboard that cannot be
+ *     played (see this file's AUTOPLAY section), so a gate on it would sound one fixed
+ *     pitch forever, which is worse than the author's own muted branch.
+ */
+const AXO_RADIOACTIVE_AUTOPLAY = (() => {
+  const bass = autoNote("apBass", 5, 1, {
+    trig: { item: "clockedge", port: "out" }, source: { item: "bassvcf", port: "out" },
+    vcaCol: 9, decay: AXO_RADIOACTIVE_BASS_DECAY,
+  });
+  const geiger = autoNote("apGeig", 9, 10, {
+    trig: { item: "apGeigTrig", port: "out" }, source: { item: "fmcarrier", port: "out" },
+    vcaCol: 11, decay: AXO_RADIOACTIVE_CLICK_DECAY,
+  });
+  const kick = autoNote("apKick", 9, 17, {
+    trig: { item: "kickedge", port: "out" }, source: { item: "kickosc", port: "out" },
+    vcaCol: 13, decay: AXO_RADIOACTIVE_KICK_DECAY,
+  });
+  return {
+    nodes: [
+      ...bass.nodes,
+      { id: "apGeigTrig", type: "audio_trigger", col: 8, row: 10, knobs: { pulseMs: AUTOPLAY_PULSE_MS } },
+      ...geiger.nodes,
+      // The two synth voices meet before the harvested `synthmix`, which has exactly one
+      // free input left (`in4`, the bus_in the other three deviations describe).
+      { id: "apSynth", type: "audio_mixer", col: 13, row: 1, knobs: { level1: 1, level2: 1, master: 1 } },
+      ...kick.nodes,
+    ],
+    wires: [
+      ...bass.wires,
+      { from: "lfsr", fromPort: "out", to: "apGeigTrig", toPort: "in" },
+      ...geiger.wires,
+      { from: bass.out, fromPort: "out", to: "apSynth", toPort: "in1" },
+      { from: geiger.out, fromPort: "out", to: "apSynth", toPort: "in2" },
+      { from: "apSynth", fromPort: "out", to: "synthmix", toPort: "in4" },
+      ...kick.wires,
+      // The kick lands on BOTH drum buses at unity, which is where the harvested patch
+      // already puts it — "the kick is centred" is its own comment.
+      { from: kick.out, fromPort: "out", to: "drumsl", toPort: "in4" },
+      { from: kick.out, fromPort: "out", to: "drumsr", toPort: "in4" },
+    ],
+  };
+})();
 
 /**
  * A9 — RADIOACTIVE — `demos/sequencing/radioactive.axp`.
@@ -409,7 +707,8 @@ export const AXO_RADIOACTIVE = {
   deviations: [
     ...STRING_VOICE_DEVIATIONS,
     "midi/in/script DROPPED — and it is not a loss: the object has NO nets at all in the source file, so it contributes nothing to the sound. Recorded because the survey lists it as a node this patch needs, and it does not.",
-    "midi/in/keyb zone lru ×2 → two more `audio_ax_keyb` placeholders reading the SAME `node_keyboard`, with their zones as knobs in the note outlet's own units (MIDI 0–50 is −64…−14; 63–127 is −1…63). Their least-recently-used mono allocation is the placeholder's problem, not this patch's.",
+    "AUTOPLAY (§ R7-AUDIBLE, the THIRD way; six `ap*` nodes) — AND IT INVENTS NO RHYTHM. Every trigger it uses is one the harvested patch already produces and that already survives the placeholder cull: `clockedge`, `kickedge`, and the 0x198 LFSR's own output through one added Schmitt. What it adds is the ENVELOPE the AX-4 placeholders withhold — three `pulse/d` + `audio_vca` pairs beside the harvested VCAs, which all sit shut at their authored `gain: 0` because their envelope wires run from placeholders and are dropped. Bass, Geiger and kick get one each; the snare and hat deliberately get none (p2 and p3 are 0 in the saved file, so their Schmitts never fire) and neither does the lead (its note comes from a keyboard that cannot be played). `synthmix`'s `level4` goes 0 → 0.85 to carry the synth pair; nothing else harvested is touched. Measured before: −inf dBFS.",
+    "midi/in/keyb zone lru ×2 → two more `audio_ax_midi_keyb` (AX-1, shipped) reading the SAME `node_keyboard`, with their zones as knobs in the note outlet's own units (MIDI 0–50 is −64…−14; 63–127 is −1…63). Their least-recently-used mono allocation is the placeholder's problem, not this patch's.",
     "THREE `audio/out stereo` FOLD TO ONE BUS (drums L/R, synths, strings), per ADDENDUM 10 — 'If we have multiple audio outputs we'll just add them all together'. The drum bus keeps its stereo split as two mixers so the harvested per-channel gains survive: the kick is centred, the long noise hit is right-only and the short one left-only.",
     "ctrl/dial b ×2 → `node_knob`, KEPT as nodes rather than folded into their targets because each one feeds its destination through a `math/smooth` — turning the knob glides the clock rate or the FM pitch, which is a live gesture and not a static parameter.",
     "ctrl/toggle → a `node_knob` with step 1 over 0…1, multiplying the Geiger envelope. Same 0/1 semantics; we have no toggle widget with a number output.",
@@ -433,7 +732,7 @@ export const AXO_RADIOACTIVE = {
       // ── THE BASS (zone MIDI 0–50). The keyboard chooses the NOTE and the clock plays
       // it: both envelopes are gated by the square wave, and the clock is also mixed into
       // the pitch at 12 semitones, so every beat starts with an octave stab.
-      { id: "basskeyb", type: "audio_ax_keyb", col: 1, row: 2, knobs: { start_note: -64, end_note: -14 } },
+      { id: "basskeyb", type: "audio_ax_midi_keyb", col: 1, row: 2, knobs: { start_note: -64, end_note: -14 } },
       { id: "bassdepth", type: "audio_ax_math", col: 4, row: 2, knobs: { operation: "multiply", b: 6 } }, // SCALE: 6 × 2 = 12
       { id: "bassmix", type: "audio_mixer", col: 5, row: 2, knobs: { level1: 2, level4: 1, master: 1 } },
       { id: "basssaw", type: "audio_ax_osc", col: 6, row: 2, knobs: { waveform: "saw", pitch: -12 } },
@@ -446,7 +745,7 @@ export const AXO_RADIOACTIVE = {
       { id: "bassampenv", type: "audio_ax_env_adsr", col: 5, row: 4, knobs: { a: -32, d: -5, s: 46.5, r: 20 } },
       // ── THE LEAD (zone MIDI 63–127), played by hand: its envelopes take the
       // keyboard's gate2, so a legato line retriggers.
-      { id: "melkeyb", type: "audio_ax_keyb", col: 1, row: 5, knobs: { start_note: -1, end_note: 63 } },
+      { id: "melkeyb", type: "audio_ax_midi_keyb", col: 1, row: 5, knobs: { start_note: -1, end_note: 63 } },
       // level1 = 0 is the source's own dead branch: gate2 is wired into this mixer at
       // gain 0.0. Kept, because a gain the author zeroed is a decision, not a mistake.
       { id: "melmix", type: "audio_mixer", col: 5, row: 5, knobs: { level1: 0, level4: 1, master: 1 } },
@@ -497,15 +796,22 @@ export const AXO_RADIOACTIVE = {
       // ONE noise source, two envelopes, two pan positions: a long hit on the right and a
       // short one on the left. That is the whole percussion section besides the kick.
       { id: "pink", type: "audio_ax_noise", col: 6, row: 16, knobs: { colour: "pink", seed: 0 } },
-      { id: "synthmix", type: "audio_mixer", col: 14, row: 2, knobs: { level1: 0, level2: 0.9921875, level3: 0.4375, level4: 0, master: 1 } },
-      { id: "drumsl", type: "audio_mixer", col: 14, row: 12, knobs: { level1: 1, level2: 0, level3: 0.9921875, master: 1 } },
-      { id: "drumsr", type: "audio_mixer", col: 14, row: 13, knobs: { level1: 1, level2: 0.9921875, level3: 0, master: 1 } },
+      // `level4` WAS 0 AND IS NOW THE AUTOPLAY RETURN. It is the one harvested gain this
+      // branch changes, and it changes nothing about the port: `in4` is the bus_in every
+      // mixer deviation here describes, and the saved file has nothing on it.
+      { id: "synthmix", type: "audio_mixer", col: 14, row: 2, knobs: { level1: 0, level2: 0.9921875, level3: 0.4375, level4: AUTOPLAY_DRY_LEVEL, master: 1 } },
+      // `level4` ON BOTH DRUM BUSES IS THE AUTOPLAY KICK, HALVED — it lands on L and R
+      // alike (the harvested comment: "the kick is centred"), so half on each is what
+      // sums to the one kick the author drew rather than to two.
+      { id: "drumsl", type: "audio_mixer", col: 14, row: 12, knobs: { level1: 1, level2: 0, level3: 0.9921875, level4: AUTOPLAY_CENTRED_LEVEL, master: 1 } },
+      { id: "drumsr", type: "audio_mixer", col: 14, row: 13, knobs: { level1: 1, level2: 0.9921875, level3: 0, level4: AUTOPLAY_CENTRED_LEVEL, master: 1 } },
       // ── THE STRING PAD, verbatim from A1 (same function, same effective params) ──
       ...voice.nodes,
       { id: "chorus", type: "audio_ax_chorus", col: 12, row: 18, knobs: { depth: 2.5, speed: -47 } },
       { id: "stringsmix", type: "audio_mixer", col: 13, row: 18, knobs: { level1: 1, level2: 1, master: 1 } },
       { id: "bus", type: "audio_mixer", col: 15, row: 0, knobs: { level1: 1, level2: 1, level3: 1, level4: 1, master: 1 } },
       ...analysisTail(16),
+      ...AXO_RADIOACTIVE_AUTOPLAY.nodes,
     ];
   })(),
   wires: (() => {
@@ -598,9 +904,80 @@ export const AXO_RADIOACTIVE = {
       { from: "drumsr", fromPort: "out", to: "bus", toPort: "in3" },
       { from: "stringsmix", fromPort: "out", to: "bus", toPort: "in4" },
       ...analysisWires("bus"),
+      ...AXO_RADIOACTIVE_AUTOPLAY.wires,
     ];
   })(),
 };
+
+/** C4's autoplay note rate and length, and the two gains that turn a `rand/uniform i`
+ *  draw into semitones. THE TWO GAINS ARE NOT A STYLE CHOICE: a 16-step draw leaves as
+ *  `k/64` (their int32→frac32 coercion, AX-2's own note), so an octave of transposition
+ *  wants ×51.2 and `audio_ax_math`'s `b` stops at ±16 — the same two-node SCALE chain
+ *  this file's UNITS section describes, here reaching 0…11.25 semitones. */
+const AXO_TRANQUILLE_NOTE_HZ = 0.4;
+const AXO_TRANQUILLE_NOTE_DECAY = 0.015;
+const AXO_TRANQUILLE_DRAW_SCALE_A = 16;
+const AXO_TRANQUILLE_DRAW_SCALE_B = 3;
+
+/**
+ * C4's AUTOPLAY BRANCH — § R7-AUDIBLE's third way, and the most SUBSTITUTED of the three,
+ * because C4 has no live source at all: its three oscillators are `audio_ax_16steps_dp2`
+ * placeholders and so are both wavetable banks.
+ *
+ * So this stands in for the voice rather than driving it — three `audio_ax_osc` at the
+ * harvested detunings (0, +0.02, −0.05 semitones, which is the two-and-five-cent beating
+ * the patch's own docstring calls its character), gated by one `pulse/d` on a 0.4 Hz
+ * clock, into the harvested `outl`/`outr`'s free `in2`.
+ *
+ * ── IT KEEPS THE RANDOMISATION, WHICH IS WHAT THE PATCH IS FOR ──────────────
+ * A `rand/uniform i` draw at 16 steps chooses a fresh note on every clock, on the SAME
+ * node type and the same step count the patch's own three draws use — so "no two notes
+ * are the same" survives as PITCH where the original had it as TIMBRE. It gets its own
+ * seed (3) rather than sharing one of the harvested three, for the reason C4's own
+ * deviation already gives about seeds 0/1/2: two draws on one seed are one draw.
+ *
+ * ── WHAT IT CANNOT REACH, STATED PLAINLY ────────────────────────────────────
+ * The "pseudo reverb" return — the crossed highpass/lowpass/allpass pair that is the only
+ * other live thing in this patch — takes its input from `vcasend`, an `audio_ax_vca_stereo`
+ * placeholder, and an input port holds exactly one wire. So the branch is DRY only, and
+ * the two 341 ms allpasses stay silent until AX-4 lands. Splicing into `hpl.in` would mean
+ * deleting a harvested wire, which is not a trade worth making for a tail.
+ */
+const AXO_TRANQUILLE_AUTOPLAY = (() => {
+  const clock = autoClock("ap", 0, 12, AXO_TRANQUILLE_NOTE_HZ);
+  const note = autoNote("apAmp", 7, 13, {
+    trig: { item: clock.trig, port: "out" }, source: { item: "apMix", port: "out" },
+    vcaCol: 10, decay: AXO_TRANQUILLE_NOTE_DECAY,
+  });
+  // The three detunings are the harvested oscillators' own, kept to the cent.
+  const voices = [
+    { id: "apOsc1", waveform: "sine", pitch: 0, row: 12 },
+    { id: "apOsc2", waveform: "pwm", pitch: 0.02, row: 13 },
+    { id: "apOsc3", waveform: "saw", pitch: -0.05, row: 14 },
+  ];
+  return {
+    nodes: [
+      ...clock.nodes,
+      { id: "apRand", type: "audio_ax_rand", col: 2, row: 12, knobs: { mode: "trig", steps: 16, seed: 3 } },
+      { id: "apDraw1", type: "audio_ax_math", col: 3, row: 12, knobs: { operation: "multiply", b: AXO_TRANQUILLE_DRAW_SCALE_A } },
+      { id: "apDraw2", type: "audio_ax_math", col: 4, row: 12, knobs: { operation: "multiply", b: AXO_TRANQUILLE_DRAW_SCALE_B } },
+      ...voices.map((v) => ({ id: v.id, type: "audio_ax_osc", col: 5, row: v.row, knobs: { waveform: v.waveform, pitch: v.pitch } })),
+      { id: "apMix", type: "audio_mixer", col: 6, row: 13, knobs: { level1: 1, level2: 1, level3: 1, master: 1 } },
+      ...note.nodes,
+    ],
+    wires: [
+      ...clock.wires,
+      { from: clock.trig, fromPort: "out", to: "apRand", toPort: "trig" },
+      { from: "apRand", fromPort: "out", to: "apDraw1", toPort: "a" },
+      { from: "apDraw1", fromPort: "out", to: "apDraw2", toPort: "a" },
+      ...voices.map((v) => ({ from: "apDraw2", fromPort: "out", to: v.id, toPort: "pitch" })),
+      ...voices.map((v, i) => ({ from: v.id, fromPort: "out", to: "apMix", toPort: `in${i + 1}` })),
+      ...note.wires,
+      { from: note.out, fromPort: "out", to: "outl", toPort: "in2" },
+      { from: note.out, fromPort: "out", to: "outr", toPort: "in2" },
+    ],
+  };
+})();
 
 /**
  * C4 — TRANQUILLE — `tiar/synths/Tranquille.axp`.
@@ -640,7 +1017,8 @@ export const AXO_TRANQUILLE = {
   deviations: [
     "patch/patcher poly=3 → `audio_ax_poly_voices` (placeholder) with the voice drawn once. See this file's POLYPHONY section.",
     "patch/inlet a ×3, patch/inlet f ×3 and patch/outlet a ×4 ABSORBED — ten instances of three types. They exist only to name the subpatch boundary, and a flat graph crosses it with one wire. This is the patch that proves a subpatch WRAPPER placeholder was impossible: its patcher has six inlets and four outlets where A1's has none and one.",
-    "midi/in/keyb → `audio_ax_keyb` (placeholder) driven by a `node_keyboard`, as in the Strings patch, and for the same unit reason.",
+    "midi/in/keyb → AX-1's shipped `audio_ax_midi_keyb`, driven by a `node_keyboard`, as in the Strings patch and for the same unit reason. THE KEYBOARD IS DECORATIVE and could not be fixed from this file — see A1's deviation of the same name and this file's AUTOPLAY section.",
+    "AUTOPLAY (§ R7-AUDIBLE, the THIRD way; eleven `ap*` nodes) — and here it SUBSTITUTES rather than drives, because C4 has no live source at all: all three oscillators and both wavetable banks are placeholders. Three `audio_ax_osc` at the harvested detunings (0 / +0.02 / −0.05 semitones) are gated by one `pulse/d` on a 0.4 Hz clock and land on `outl`/`outr`'s free `in2`. A `rand/uniform i` draw at the SAME 16 steps the harvested three use picks a fresh note per clock, so the source’s own “no two notes are the same” survives as pitch where the original had it as timbre; its seed is 3, distinct from the harvested 0/1/2 for the reason the seed deviation above gives. IT IS DRY ONLY: the crossed allpass return takes its input from the `audio_ax_vca_stereo` placeholder and an input port holds one wire, so the two 341 ms allpasses stay silent until AX-4 lands. Measured before: −inf dBFS.",
     "THE THREE RANDOM DRAWS CARRY SEEDS 0, 1, 2. Theirs read the STM32 hardware RNG, so the three `rand/uniform i` instances are independent by accident of hardware; ours are seeded, because a document that renders differently every time is not a document (AX-2's deviation D4). Three identical seeds would hand all three oscillators the SAME waveform and destroy the patch, so the seeds differ — a choice the source did not have to make and we do.",
     "THE `wf16` PORTS ARE TYPED `audio` AND THEY ARE NOT AUDIO. On hardware a waveform bus and an audio bus are both a `frac32buffer`; this one holds 32 int16 harmonic amplitudes. `core/nodeflow.js` has no wavetable port type and adding one is outside this agent's ownership, so the widest honest type is used and the patch's own warning is repeated here: *\"<— These are wf_16 waveforms, not audio !!!\"*. Reported to the lead as the one place this corpus wants a fifth port type.",
     "TSG/filter/allpass m → `audio_ax_allpass` (shipped). His `time` inlet is a Q27 FRACTION of a power-of-two buffer; ours is a sample count, so dial 51.0 of a 16384-sample buffer is 13056 samples (341 ms × 51/64) and 51.48 is 13179. His `timemod` inlet folds into our `delay` input, which sums with the knob. His 3-point interpolation is not ported (AX-3 says so); `location=ExtRAM` has no meaning here.",
@@ -654,7 +1032,7 @@ export const AXO_TRANQUILLE = {
   ],
   nodes: [
     { id: "keys", type: "node_keyboard", col: 0, row: 0, w: 196, knobs: { baseNote: 48, octaves: 2 } },
-    { id: "keyb", type: "audio_ax_keyb", col: 1, row: 0, knobs: { start_note: -64, end_note: 63 } },
+    { id: "keyb", type: "audio_ax_midi_keyb", col: 1, row: 0, knobs: { start_note: -64, end_note: 63 } },
     { id: "poly", type: "audio_ax_poly_voices", col: 2, row: 0, knobs: { voices: 3 } },
     // ── THE WAVEFORM CROSSFADE. One accumulator, three phases 120° apart, so the three
     // gains always sum to the same total — a crossfade that cannot dip.
@@ -717,10 +1095,13 @@ export const AXO_TRANQUILLE = {
     { id: "aprmod1", type: "audio_ax_math", col: 7, row: 11, knobs: { operation: "multiply", b: 16 } },
     { id: "aprmod2", type: "audio_ax_math", col: 8, row: 11, knobs: { operation: "multiply", b: 16 } },
     { id: "aprmod3", type: "audio_ax_math", col: 9, row: 11, knobs: { operation: "multiply", b: 7 } },
-    { id: "outl", type: "audio_mixer", col: 11, row: 0, knobs: { level1: 0.4609375, level4: 1, master: 1 } },
-    { id: "outr", type: "audio_mixer", col: 11, row: 1, knobs: { level1: 0.4921875, level4: 1, master: 1 } },
+    // `level2` ON BOTH OUTPUT MIXERS IS THE AUTOPLAY RETURN, halved across the pair for
+    // the same reason A9 halves its kick: one mono voice mixed to L and R is one voice.
+    { id: "outl", type: "audio_mixer", col: 11, row: 0, knobs: { level1: 0.4609375, level2: AUTOPLAY_CENTRED_LEVEL, level4: 1, master: 1 } },
+    { id: "outr", type: "audio_mixer", col: 11, row: 1, knobs: { level1: 0.4921875, level2: AUTOPLAY_CENTRED_LEVEL, level4: 1, master: 1 } },
     { id: "bus", type: "audio_mixer", col: 12, row: 0, knobs: { level1: 1, level2: 1, master: 1 } },
     ...analysisTail(13),
+    ...AXO_TRANQUILLE_AUTOPLAY.nodes,
   ],
   wires: [
     { from: "keys", fromPort: "pitch", to: "keyb", toPort: "pitch" },
@@ -811,6 +1192,7 @@ export const AXO_TRANQUILLE = {
     { from: "outl", fromPort: "out", to: "bus", toPort: "in1" },
     { from: "outr", fromPort: "out", to: "bus", toPort: "in2" },
     ...analysisWires("bus"),
+    ...AXO_TRANQUILLE_AUTOPLAY.wires,
   ],
 };
 

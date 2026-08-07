@@ -224,6 +224,12 @@ function ax1WorkletModule(options) {
     return {
       inputs: modulePorts,
       outputs: moduleOutputs,
+      // THE NODE ITSELF, exposed for the one thing the uniform shape cannot express: a
+      // module that also takes NOTES (§ R7-PLAYABLE) has to reach `port.postMessage`
+      // from a wrapper the generic factory knows nothing about. Nothing in the engine
+      // reads this key — it looks modules up by `inputs`/`outputs`/`params` — so it is
+      // an extension point rather than a widening of the module contract.
+      workletNode: node,
       params: {
         ...paramMap(node, audioParamNames),
         ...Object.fromEntries(discrete.map((name) => [name, (value) => node.port.postMessage({ [name]: value })])),
@@ -376,18 +382,137 @@ const axMidiTouchModule = ax1WorkletModule({
 });
 
 /**
- * `patch/patcher poly=N` — the VOICE ALLOCATOR (§ R7-POLY).
+ * `patch/patcher poly=N` — the VOICE ALLOCATOR (§ R7-POLY), and THE BLOCK'S ONE NOTE
+ * SINK (§ R7-PLAYABLE).
  *
- * NO paramInlets: `voices` is a pool size and `voice` is which slot this node reports.
- * Neither is a signal — a wire into either would be asking the graph to renumber its own
- * voices at audio rate, which is not a thing a patch can mean.
+ * `voices` and `voice` get no inlet: one is a pool size and the other is which slot this
+ * node reports, and a wire into either would be asking the graph to renumber its own
+ * voices at audio rate. `velocity` and `release_velocity` DO — they are knobs a wire
+ * sums into, which is what stops an unwired node reporting a velocity of zero.
  */
-const axPolyVoicesModule = ax1WorkletModule({
+const buildPolyVoices = ax1WorkletModule({
   processor: "ax1-poly-voices", type: "audio_ax_poly_voices", label: "AX Poly Voices",
-  inputs: ["note", "gate", "gate2", "velocity", "release_velocity"],
+  // `play` is a METHOD port and so is NOT here: `core/audio_mirror_diff` never connects
+  // a method wire, and `synth/modules.js polyPad` likewise keeps its `gate` out of its
+  // inputs map. It reaches the module as noteOn/noteOff below, not as an AudioNode.
+  inputs: ["note", "gate", "gate2"],
   outputs: ["note", "gate", "gate2", "velocity", "release_velocity"],
-  params: ["voices", "voice"],
+  params: ["voices", "voice", "velocity", "release_velocity"],
+  paramInlets: ["velocity", "release_velocity"],
 });
+
+/**
+ * Pure function. Hertz to Axoloti semitones (0 = MIDI 64 = E4) — the inverse of
+ * `core/audio_nodes.semitonesToHz`, restated here because synth/** may not import
+ * core/** and pinned against it by tests/port_ax1_test.js.
+ *
+ * ⚠ THIS IS § R7-AXO-TRAPS TRAP 1'S ONE SEAM. `core/live_control.noteRoutes` hands
+ * `engine.noteOn` a frequency in HERTZ and every Axoloti pitch port reads SEMITONES; a
+ * key played straight through would arrive transposed by its own frequency in semitones
+ * — A440 as semitone 440, which is 36 octaves up and therefore silent. Converting here
+ * rather than in each patch is what makes it one seam instead of seventeen.
+ *
+ * @param {number} hz - the note's frequency
+ * @returns {number} semitones from E4; NaN for a non-positive frequency
+ *
+ * @example polyVoicesHzToSemitones(440) // 5
+ * @example Math.round(polyVoicesHzToSemitones(329.6275569128699)) // 0
+ * @example Number.isNaN(polyVoicesHzToSemitones(0)) // true
+ */
+function polyVoicesHzToSemitones(hz) {
+  if (!(hz > 0)) return NaN;
+  return POLY_A440_SEMITONES + POLY_SEMITONES_PER_OCTAVE * Math.log2(hz / POLY_A440_HZ);
+}
+
+/** A440 in Axoloti semitones (MIDI 69 − 64), and the octave's width. Restated from
+ *  synth/ax1_dsp.js, which restates core/audio_nodes.semitonesToHz. */
+const POLY_A440_HZ = 440;
+const POLY_A440_SEMITONES = 5;
+const POLY_SEMITONES_PER_OCTAVE = 12;
+
+/**
+ * Command. `patch/patcher poly=N` as a module the KEYBOARD CAN PLAY (§ R7-PLAYABLE).
+ *
+ * A wrapper rather than a bare `ax1WorkletModule` for the same reason `axStereoOut` is
+ * one: it needs a surface the generic factory does not build. Here that surface is
+ * `noteOn`/`noteOff`, which is EXACTLY what `synth/engine.js:629-631` looks for —
+ * declaring them is what earns this module a voice pool, and `meta.voices` is what
+ * sizes that pool to the patcher's own `poly=N` instead of `DEFAULT_POLY_VOICES`.
+ *
+ * THE ENGINE OWNS THE ALLOCATION ON THIS PATH AND THIS MODULE OWNS THE SOUND, which is
+ * the split `synth/engine.js:825-845` states: the pool decides the slot, the module is
+ * handed one. So the Axoloti LRU inside the processor is NOT consulted for a played
+ * note — a real divergence from the source, named on the spec, and the price of having
+ * one steal policy for every poly module in the app.
+ *
+ * @param {AudioContext} context - the audio context
+ * @param {object} params - construct params; `voices` sizes the engine's pool
+ * @returns {object} the engine's uniform module shape, plus noteOn/noteOff
+ */
+function axPolyVoicesModule(context, params = {}) {
+  const module = buildPolyVoices(context, params);
+  const node = module.params.voices;
+  return {
+    ...module,
+    // READ BY synth/engine.js's addModule: `createVoicePool(instance.meta?.voices ?? …)`.
+    // Without it every patcher would get an 8-voice pool and the harvested 7 / 8 / 5 / 3
+    // would be a knob that changed nothing about who gets stolen.
+    meta: { ...module.meta, voices: node ? node.value : undefined },
+    // ── `voices` IS NOT A LIVE SETTER, AND MUST NOT ADVERTISE ITSELF AS ONE ──
+    // The worklet keeps it as an AudioParam because that is how the value crosses to the
+    // audio thread, and the processor uses it to narrow its per-tick SEARCH. But the
+    // ENGINE reads it exactly once, above, to size the voice pool a played note is
+    // allocated from — so a live change would leave the pool and the node disagreeing
+    // about how many voices exist, which is a stuck or stolen note rather than a knob
+    // that does nothing.
+    //
+    // The spec is right to mark it `construct: true` (a change REBUILDS the module, which
+    // is what keeps pool and processor in step). Leaving it in `params` contradicted that
+    // by handing the mirror a setter, and tests/audio_nodes_test.js caught the pair
+    // disagreeing: "marked construct:true but engine module DOES expose it as a param".
+    // The flag is not the thing to drop — the setter is.
+    params: Object.fromEntries(Object.entries(module.params).filter(([k]) => k !== "voices")),
+    /**
+     * Command. Sound `frequency` on the slot the ENGINE's pool chose.
+     *
+     * `time` is accepted and cannot be honoured: a `postMessage` is applied at the next
+     * control tick, so a note lands within one quantum (2.67 ms at 48 kHz) of where the
+     * engine asked for it. Inaudible for a played key; not good enough for a sequenced
+     * one. Stated rather than silently rounded.
+     */
+    noteOn(slot, frequency) {
+      const semitones = polyVoicesHzToSemitones(frequency);
+      if (!Number.isFinite(semitones)) {
+        throw new RangeError(`axPolyVoices.noteOn: ${JSON.stringify(frequency)} Hz has no pitch — a note needs a positive frequency`);
+      }
+      postNote(module, { slot, semitones, on: true });
+    },
+    /** Command. Release the slot the engine's pool named. */
+    noteOff(slot) {
+      postNote(module, { slot, on: false });
+    },
+  };
+}
+
+// The spec ⇄ engine claim the generic factory records is kept on the WRAPPER too, so
+// tests/port_ax1_test.js's port and param checks still reach this module. `axStereoOut`
+// does not do this and is exempt from those checks as a result — a hole worth not
+// widening, reported to the lead rather than fixed in a file this block does not own.
+axPolyVoicesModule.ax1Declaration = buildPolyVoices.ax1Declaration;
+
+/**
+ * Command. Post one note event to the processor.
+ *
+ * Factored out so both halves spell the message the same way; the processor rejects an
+ * out-of-range slot LOUDLY rather than dropping it, because a slot the table does not
+ * have means the engine's pool and this module disagree about the voice count.
+ *
+ * @param {object} module - the built worklet module
+ * @param {object} note - {slot, semitones?, on}
+ */
+function postNote(module, note) {
+  module.workletNode.port.postMessage({ note });
+}
 
 /**
  * `sss/audio/StOutVol` — the stereo output with a hard clip.

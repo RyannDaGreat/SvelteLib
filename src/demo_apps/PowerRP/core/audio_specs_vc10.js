@@ -229,7 +229,12 @@ export const VCV_SUPER_SPEC = {
     { ...trimKnob("mixTrim", "Mix CV trim", "mix") },
     { key: "fm", label: "FM depth", default: 0, min: 0, max: 1, step: 0.01, help: "How much the `fm` inlet moves the pitch, SQUARED before use (`quadraticBipolar`) — so the bottom of the knob is a vibrato and the top is a scream, with very little in between. Theirs." },
     {
-      key: "aliasMode", label: "Alias suppression", default: "classic", discrete: true, options: ["classic", "clean", "clean2"], construct: true,
+      // NOT `construct: true` — the worklet lists it under `options`, not `construct`
+      // (`processors_vc10.js:175`: `construct: ["seed"], options: ["aliasMode", …]`), so it
+      // is delivered by postMessage and really does change live. `seed` beside it IS
+      // construct-time and correctly flagged. The module's own docblock claims aliasMode is
+      // construct too; that sentence is stale and the code is the authority.
+      key: "aliasMode", label: "Alias suppression", default: "classic", discrete: true, options: ["classic", "clean", "clean2"],
       help: "CONSTRUCT-TIME: it sizes the oversampling buffers, so changing it rebuilds the module. `classic` runs at the host rate with a four-pole high-pass on the output — the cheapest and the one the module shipped with. `clean` is 4× oversampled through a six-pole Butterworth decimator, `clean2` is 16×. Their own CPU figures are 14, 30 and 85 — the top setting is six times the cost of the bottom, for aliasing you will only hear on high notes.",
     },
     { key: "hardPan", label: "Hard pan", default: "off", discrete: true, options: ON_OFF, help: "STEREO ONLY. `off` spreads the seven saws across the field with overlapping gains, so each side hears most of them. `on` sends alternate saws hard left and hard right with only the centre saw in both — a much wider, hollower image that collapses badly to mono, which is exactly why it is a switch and not the default." },

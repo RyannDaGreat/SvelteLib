@@ -5212,6 +5212,41 @@ trigger-shaped widget".
 A patch may of course do both — self-play AND offer a keyboard. That is the best outcome
 for a pad, and it is what the user means by "impress people with my demos".
 
+#### R7-PLAYABLE — ONLY TWO PORTS IN THE LIBRARY CAN RECEIVE A NOTE (measured 2026-08-07)
+
+**§ R7-AUDIBLE offers "ships a working keyboard" as its second route. That route is
+STRUCTURALLY UNREACHABLE today, and this is why pressing keys on the MS-20 patch made no
+sound.** Found by the axo patch agent, verified independently at the source.
+
+`core/live_control.noteRoutes` is the only path from a key press to the engine, and its
+gate is one line — `if (!port?.method) continue;` (`core/live_control.js:161`). So a
+keyboard plays a node ONLY if that node declares an input with `method: true`. Measured
+across the registry:
+
+    audio_ding.gate
+    audio_poly_pad.gate
+    — 2 of 130 specs.
+
+**Not one ported node has one.** Every Axoloti voice, every VCV voice, the poly allocator:
+all unplayable, no matter what the patch wires. A `node_keyboard` in a ported patch is
+decoration. The second failure reinforces it — `readAudioScene` drops every wire out of a
+control widget, because a control node has no `audioModule` and is skipped along with its
+wires, so even the ordinary pitch wire never reaches the engine.
+
+**THEREFORE the three routes in § R7-AUDIBLE are really two, until this is fixed**, and the
+eight Axoloti patches all take the third (add a self-driving source, recorded as a
+deviation). That is the honest outcome and not a shortcut — but it means those patches
+play themselves and still cannot be PLAYED, which is not what the user wants from a
+synthesiser.
+
+**WHAT MAKING IT REAL COSTS**, so it is scheduled rather than rediscovered: a ported voice
+needs (1) an input declared `method: true` in its spec, and (2) a `noteOn`/`noteOff`
+surface on its engine module, which `synth/engine.js` already routes through its voice pool
+for any instance declaring `noteOn` (`createVoicePool`, `DEFAULT_POLY_VOICES`). The
+machinery exists; the ported specs simply never opted in. **The highest-value single node is
+`audio_ax_poly_voices`** — R7-POLY's ratified allocator, the note sink every Axoloti poly
+patch already routes through, so one node makes six patches playable.
+
 #### R7-17-SEL — THE 20 HEADLINE PATCHES, NAMED (user ruling, 2026-08-06)
 
 > *"Do not choose teh easy nodes or the easy patches. That's lazy. You need to choose 20

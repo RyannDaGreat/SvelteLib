@@ -38,6 +38,10 @@ import { audioPlugins } from "../plugins/audio_index.js";
 // A BLOCK'S OWN TUNING LAW, imported so the `hz` sweep can hold a spec to the conversion
 // its own DSP uses rather than to one library's. See LAWS in the sweep below.
 import { bogaudioSemitonesToHz } from "../core/audio_specs_vc3a.js";
+// VC-10 tunes from TWO more origins again — Vult's panel sits two octaves above its C1, so
+// zero is C3 = 130.813 Hz, and squinkylabs' is C4. Per R7-UNITS the display bridge is per
+// MODULE FAMILY, so each block exports its own and the sweep holds the spec to it.
+import { squinkySemitonesToHz, vultC3SemitonesToHz } from "../core/audio_specs_vc10.js";
 import { ripplesKnobToHz } from "../core/audio_specs_vc1.js";
 import { MODULE_FACTORIES } from "../synth/modules.js";
 import { createRegistry } from "../core/registry.js";
@@ -393,6 +397,22 @@ check("a pitch knob's `hz` agrees with the DSP's own mtof — the restatement ca
     // (4.321928 = 20 Hz, 14.287712 = 20 kHz), so its law is `2^knob` and its unit is
     // ` log2Hz`. Keyed `type.key` because a module may hold two knobs under two laws.
     "audio_vcv_ripples.frequency": (v) => 2 ** v,
+    // Vult: zero is C3, the C1 origin plus the two-octave panel offset its manuals document.
+    audio_vcv_bleak: vultC3SemitonesToHz,
+    audio_vcv_basal: vultC3SemitonesToHz,
+    // squinkylabs: C4, and its own spec says the origin is ASSUMED because the manual
+    // documents no reference — worth knowing if one of these ever sounds transposed.
+    audio_vcv_super: squinkySemitonesToHz,
+    audio_vcv_wvco: squinkySemitonesToHz,
+    // Everything else that tunes from C4 = 261.626. Bogaudio's two oscillators use their
+    // own 261.626 (dsp/pitch.hpp) and Instruo's saich the same number from its manual —
+    // the SAME value from THREE independently-read sources, which is worth stating rather
+    // than collapsing: if one vendor ever documents a different reference, the entry that
+    // has to change is obvious.
+    audio_vcv_bog_vco: bogaudioSemitonesToHz,
+    audio_vcv_xco: bogaudioSemitonesToHz,
+    audio_vcv_lvco: bogaudioSemitonesToHz,
+    audio_vcv_saich: squinkySemitonesToHz,
   };
   // THE SHARED CONVERSION IS A SEMITONE CONVERSION, so it is only the default for a knob
   // that IS in semitones. Ripples proved the point by failing against it: applying a

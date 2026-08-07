@@ -61,6 +61,18 @@ export { default as VC3A_WORKLET_URL } from "./worklets/processors_vc3a.js?worke
 /** VC-3b — Bogaudio part 2: PEQ, VCO, VCF, SampleHold, Walk, Pressor, VCA, VCM,
  *  XFade, Offset, Switch, Stack. Imports `../vc3b_kernels.js`. */
 export { default as VC3B_WORKLET_URL } from "./worklets/processors_vc3b.js?worker&url";
+/** AX4 — see core/audio_specs_ax4.js. Imports its kernels, so the worker pipeline is
+ *  load-bearing here, not cosmetic. */
+export { default as AX4_WORKLET_URL } from "./worklets/processors_ax4.js?worker&url";
+/** VC7A — see core/audio_specs_vc7a.js. Imports its kernels, so the worker pipeline is
+ *  load-bearing here, not cosmetic. */
+export { default as VC7A_WORKLET_URL } from "./worklets/processors_vc7a.js?worker&url";
+/** VC8 — see core/audio_specs_vc8.js. Imports its kernels, so the worker pipeline is
+ *  load-bearing here, not cosmetic. */
+export { default as VC8_WORKLET_URL } from "./worklets/processors_vc8.js?worker&url";
+/** VC10 — see core/audio_specs_vc10.js. Imports its kernels, so the worker pipeline is
+ *  load-bearing here, not cosmetic. */
+export { default as VC10_WORKLET_URL } from "./worklets/processors_vc10.js?worker&url";
 /** VC-5 — Valley/FrozenWasteland/other large FX: Plateau, Chronoblob2, Feline,
  *  Terrorform, JustAPhaser, SPF, rewin, reburst, XFXF35. Imports `../vc5_kernels.js`. */
 export { default as VC5_WORKLET_URL } from "./worklets/processors_vc5.js?worker&url";

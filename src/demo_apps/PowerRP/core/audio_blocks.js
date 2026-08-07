@@ -40,10 +40,14 @@ import { BLOCK_SPECS as VC1_SPECS } from "./audio_specs_vc1.js";
 import { BLOCK_SPECS as VC2_SPECS } from "./audio_specs_vc2.js";
 import { BLOCK_SPECS as VC3A_SPECS } from "./audio_specs_vc3a.js";
 import { BLOCK_SPECS as VC3B_SPECS } from "./audio_specs_vc3b.js";
+import { BLOCK_SPECS as AX4_SPECS } from "./audio_specs_ax4.js";
+import { BLOCK_SPECS as VC7A_SPECS } from "./audio_specs_vc7a.js";
+import { BLOCK_SPECS as VC8_SPECS } from "./audio_specs_vc8.js";
+import { BLOCK_SPECS as VC10_SPECS } from "./audio_specs_vc10.js";
 import { BLOCK_SPECS as VC5_SPECS } from "./audio_specs_vc5.js";
 
 /** Every ported block's specs, in registry order. ONE entry per block — see the contract. */
-export const PORT_BLOCK_SPECS = [...AX1_SPECS, ...AX2_SPECS, ...AX3_SPECS, ...VC1_SPECS, ...VC2_SPECS, ...VC3A_SPECS, ...VC3B_SPECS, ...VC5_SPECS];
+export const PORT_BLOCK_SPECS = [...AX1_SPECS, ...AX2_SPECS, ...AX3_SPECS, ...VC1_SPECS, ...VC2_SPECS, ...VC3A_SPECS, ...VC3B_SPECS, ...AX4_SPECS, ...VC7A_SPECS, ...VC8_SPECS, ...VC10_SPECS, ...VC5_SPECS];
 
 /**
  * Pure function. Every spec `type` the ported blocks contribute — used by

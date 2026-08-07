@@ -64,6 +64,10 @@ import { BLOCK_MODULE_FACTORIES as VC1_FACTORIES, BLOCK_WORKLET_MODULES as VC1_W
 import { BLOCK_MODULE_FACTORIES as VC2_FACTORIES, BLOCK_WORKLET_MODULES as VC2_WORKLETS } from "./modules_vc2.js";
 import { BLOCK_MODULE_FACTORIES as VC3A_FACTORIES, BLOCK_WORKLET_MODULES as VC3A_WORKLETS } from "./modules_vc3a.js";
 import { BLOCK_MODULE_FACTORIES as VC3B_FACTORIES, BLOCK_WORKLET_MODULES as VC3B_WORKLETS } from "./modules_vc3b.js";
+import { BLOCK_MODULE_FACTORIES as AX4_FACTORIES, BLOCK_WORKLET_MODULES as AX4_WORKLETS } from "./modules_ax4.js";
+import { BLOCK_MODULE_FACTORIES as VC7A_FACTORIES, BLOCK_WORKLET_MODULES as VC7A_WORKLETS } from "./modules_vc7a.js";
+import { BLOCK_MODULE_FACTORIES as VC8_FACTORIES, BLOCK_WORKLET_MODULES as VC8_WORKLETS } from "./modules_vc8.js";
+import { BLOCK_MODULE_FACTORIES as VC10_FACTORIES, BLOCK_WORKLET_MODULES as VC10_WORKLETS } from "./modules_vc10.js";
 import { BLOCK_MODULE_FACTORIES as VC5_FACTORIES, BLOCK_WORKLET_MODULES as VC5_WORKLETS } from "./modules_vc5.js";
 
 /**
@@ -75,7 +79,7 @@ import { BLOCK_MODULE_FACTORIES as VC5_FACTORIES, BLOCK_WORKLET_MODULES as VC5_W
  * Exported because both consumers must DERIVE from it rather than re-list it:
  * `IMPLEMENTATION` below, and engine.js's `WORKLET_MODULES` init gate.
  */
-export const PORT_BLOCK_MODULES = [...AX1_WORKLETS, ...AX2_WORKLETS, ...AX3_WORKLETS, ...VC1_WORKLETS, ...VC2_WORKLETS, ...VC3A_WORKLETS, ...VC3B_WORKLETS, ...VC5_WORKLETS];
+export const PORT_BLOCK_MODULES = [...AX1_WORKLETS, ...AX2_WORKLETS, ...AX3_WORKLETS, ...VC1_WORKLETS, ...VC2_WORKLETS, ...VC3A_WORKLETS, ...VC3B_WORKLETS, ...AX4_WORKLETS, ...VC7A_WORKLETS, ...VC8_WORKLETS, ...VC10_WORKLETS, ...VC5_WORKLETS];
 
 /**
  * Which modules are native-only and which need a worklet — the machine-readable
@@ -1807,7 +1811,7 @@ const PAD_REVERB_WET = 0.55;
 export const MODULE_FACTORIES = {
   // The PORTED BLOCKS (R7-17). Spread FIRST so a name collision with a hand-written
   // module below is won by the hand-written one and shows up in the coverage sweep.
-  ...AX1_FACTORIES, ...AX2_FACTORIES, ...AX3_FACTORIES, ...VC1_FACTORIES, ...VC2_FACTORIES, ...VC3A_FACTORIES, ...VC3B_FACTORIES, ...VC5_FACTORIES,
+  ...AX1_FACTORIES, ...AX2_FACTORIES, ...AX3_FACTORIES, ...VC1_FACTORIES, ...VC2_FACTORIES, ...VC3A_FACTORIES, ...VC3B_FACTORIES, ...AX4_FACTORIES, ...VC7A_FACTORIES, ...VC8_FACTORIES, ...VC10_FACTORIES, ...VC5_FACTORIES,
   output: outputModule,
   oscillator: oscillatorModule,
   supersaw: supersawModule,
