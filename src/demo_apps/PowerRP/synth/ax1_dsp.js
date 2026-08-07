@@ -918,6 +918,305 @@ export function axStep4Level(index, row, words, fallback) {
   return { level: (words[row] >>> (index * 2)) & 3, chain, chainRow };
 }
 
+// ─── midi/in/* — the note, bend and pressure sources ─────────────────────────
+//
+// ⚠ THERE IS NO MIDI TRANSPORT IN THIS ENGINE, AND THESE NODES DO NOT INVENT ONE.
+// Measured 2026-08-06: `navigator.requestMIDIAccess` appears NOWHERE in synth/, web/,
+// core/ or plugins/ — grep for `requestMIDIAccess`, `MIDIAccess` and `midimessage`
+// returns zero hits. Reading a live host MIDI port here would be EPHEMERAL state, which
+// CLAUDE.md's taxonomy says this project has none of ("Δt = 0 ⟹ the frame is
+// byte-identical"), so every one of these objects is re-expressed as a function of
+// WIREABLE signals and KNOBS — both of which are property state.
+//
+// What replaces the message stream, object by object:
+//   `midi/in/keyb`   a `pitch` wire in HERTZ (plugins/node_keyboard.js's `pitch` output)
+//                    plus a `gate` wire. A note-on is a rising gate OR a pitch change
+//                    while the gate is high, which is exactly what the source's
+//                    midihandler sees; velocity has no wire equivalent on a clicked key,
+//                    so it is a knob.
+//   `midi/in/bend`   the bender's POSITION as a −1…1 wire; a "message arrived" becomes
+//                    "the value changed".
+//   `midi/in/touch`  channel pressure as a 0…1 wire, same substitution.
+//
+// The cost, stated rather than discovered: a repeated IDENTICAL message re-triggers on
+// hardware and cannot here, because a wire carries a value and not an event.
+
+/** `_velo<<20` over frac32's 2^27 is `_velo/128` — so a MIDI 7-bit data byte's full
+ *  scale on the wire is 127/128, NOT 1.0. Every velocity, release velocity and channel
+ *  pressure in this section is that quantity. */
+export const AX_MIDI_DATA_FULL_SCALE = 128;
+
+/** `_note = data1 - 64` — Axoloti's pitch origin, MIDI 64 = E4 (§ R7-11's pitch law). */
+export const AX_MIDI_ORIGIN_NOTE = 64;
+
+/** A pitch-bend message's 14-bit centre, `0x2000` in their `- 0x2000` and the divisor
+ *  their `<<14` leaves behind: `(v − 8192)·2^14 / 2^27 = (v − 8192)/8192`. */
+export const AX_BEND_CENTRE = 0x2000;
+
+// The three constants of the E4 tuning law, RESTATED from core/audio_nodes.js's
+// `semitonesToHz` (A440_HZ / A440_SEMITONES / SEMITONES_PER_OCTAVE). The ENGINE law
+// forbids synth/** importing core/**, so this is a restatement and NOT a second law —
+// tests/port_ax1_test.js pins `axSemitonesToHz` against `semitonesToHz` over a sweep,
+// which is the same arrangement every other restatement in this file has.
+/** A440, the one frequency both tunings agree on. */
+const A440_HZ = 440;
+/** A440 in Axoloti semitones: MIDI 69 − 64. So pitch 5 is 440 Hz and pitch 0 is E4. */
+const A440_SEMITONES = 5;
+/** Twelve. Named because it is the base of the exponent, not a count of anything here. */
+const SEMITONES_PER_OCTAVE = 12;
+
+/**
+ * Pure function. Axoloti semitones (0 = MIDI 64 = E4) to hertz — the restatement of
+ * core/audio_nodes.semitonesToHz that this file is allowed to have.
+ *
+ * @param {number} semitones - semitones from E4
+ * @returns {number} hertz
+ *
+ * @example axSemitonesToHz(0) // 329.6275569128699
+ * @example axSemitonesToHz(5) // 440
+ * @example axSemitonesToHz(12) / axSemitonesToHz(0) // 2
+ */
+export function axSemitonesToHz(semitones) {
+  return A440_HZ * Math.pow(2, (semitones - A440_SEMITONES) / SEMITONES_PER_OCTAVE);
+}
+
+/**
+ * Pure function. THE INVERSE, and the whole reason `audio_ax_midi_keyb` exists
+ * (manifest § R7-AXO-TRAPS trap 1): `plugins/node_keyboard.js`'s `pitch` output is in
+ * HERTZ and every Axoloti pitch port is in SEMITONES FROM E4, so wiring the playable
+ * keyboard straight into one transposes every note by its own frequency in semitones —
+ * A4 arrives as semitone 440. This is the conversion that stops it.
+ *
+ * A NON-POSITIVE FREQUENCY HAS NO LOGARITHM and this returns NaN for one rather than
+ * clamping. That is deliberate and it is not a silent failure: the ONE caller
+ * (`axKeybTick`) tests the result and treats it as "no key is down", which is what a
+ * disconnected `pitch` input — Web Audio's zero — actually means. Clamping to some
+ * lowest note here would make a disconnected wire play a note.
+ *
+ * @param {number} hz - a frequency in hertz
+ * @returns {number} semitones from E4, or NaN when hz is not positive
+ *
+ * @example axHzToSemitones(329.6275569128699) // 0
+ * @example axHzToSemitones(440) // 5
+ * @example Math.round(axHzToSemitones(261.6255653005986)) // -4  — C4, four semitones below E4
+ * @example Number.isNaN(axHzToSemitones(0)) // true
+ */
+export function axHzToSemitones(hz) {
+  if (!(hz > 0)) return NaN;
+  return A440_SEMITONES + SEMITONES_PER_OCTAVE * Math.log2(hz / A440_HZ);
+}
+
+/**
+ * Near-pure function (mutates `s`). ONE CONTROL TICK of `objects/midi/in/keyb.axo`, with
+ * the zone guard of `objects/midi/in/keyb zone lru.axo`. Their `<code.krate>` is:
+ *
+ *     outlet_note = _note<<21;  outlet_gate = _gate;  outlet_gate2 = _gate2;
+ *     _gate2 = _gate;
+ *     outlet_velocity = _velo<<20;  outlet_releaseVelocity = _rvelo<<20;
+ *
+ * and their `<code.midihandler>` sets `_note = data1-64; _gate = 1<<27; _gate2 = 0` on a
+ * note-on, `_gate = 0` on the matching note-off.
+ *
+ * **`gate2` IS `gate` DELAYED ONE CONTROL TICK, AND THAT SINGLE LINE IS THE WHOLE
+ * DIFFERENCE BETWEEN THE TWO OUTLETS.** `_gate2 = _gate` runs AFTER the outlet is
+ * written, so a note-on (which zeroes `_gate2` directly) makes gate2 read 0 for exactly
+ * one tick while gate is already 1 — including on a LEGATO note-on, where gate never
+ * falls. That one-tick notch is what "retrigger on legato" means, and A1 depends on it:
+ * its filter envelope takes gate2 and its amplitude envelope takes gate, so the pad
+ * re-swells per finger but does not re-attack. The same lag also holds gate2 high for
+ * one tick AFTER gate falls, which is theirs and is kept.
+ *
+ * A note-on here is a RISING GATE or a PITCH CHANGE WHILE THE GATE IS HIGH — the two
+ * events their midihandler cannot tell apart either, since both arrive as MIDI_NOTE_ON.
+ *
+ * @param {number} pitchHz - the `pitch` wire, in HERTZ (node_keyboard's units)
+ * @param {number} gate - the `gate` wire; high is `> 0`
+ * @param {number} velocity - the velocity to latch on a note-on, 0…1
+ * @param {number} releaseVelocity - the release velocity to latch on a note-off, 0…1
+ * @param {number} startNote - low end of the zone, in semitones from E4
+ * @param {number} endNote - high end of the zone, in semitones from E4
+ * @param {object} s - mutable state {note, gate, gate2, velocity, releaseVelocity, wasHigh}
+ * @returns {{note: number, gate: number, gate2: number, velocity: number, releaseVelocity: number}}
+ *
+ * @example // a fresh note-on: gate is high at once, gate2 is still low for this tick
+ * @example axKeybTick(440, 1, 0.8, 0, -64, 63, {note: 0, gate: 0, gate2: 0, velocity: 0, releaseVelocity: 0, wasHigh: false})
+ * @example // {note: 5, gate: 1, gate2: 0, velocity: 0.8, releaseVelocity: 0}
+ * @example // out of zone: the note-on is skipped entirely, exactly as their guard does
+ * @example axKeybTick(440, 1, 0.8, 0, -64, 0, {note: 0, gate: 0, gate2: 0, velocity: 0, releaseVelocity: 0, wasHigh: false}).gate // 0
+ */
+export function axKeybTick(pitchHz, gate, velocity, releaseVelocity, startNote, endNote, s) {
+  const high = gate > 0;
+  if (high) {
+    const candidate = Math.round(axHzToSemitones(pitchHz));
+    const inZone = Number.isFinite(candidate) && candidate >= startNote && candidate <= endNote;
+    if (inZone && (!s.wasHigh || candidate !== s.note)) {
+      s.note = candidate;
+      s.velocity = velocity;
+      s.gate = 1;
+      s.gate2 = 0;
+    }
+  } else if (s.wasHigh) {
+    s.releaseVelocity = releaseVelocity;
+    s.gate = 0;
+  }
+  s.wasHigh = high;
+  const emitted = {
+    note: s.note, gate: s.gate, gate2: s.gate2,
+    velocity: s.velocity, releaseVelocity: s.releaseVelocity,
+  };
+  s.gate2 = s.gate;
+  return emitted;
+}
+
+/**
+ * Pure function. `objects/midi/in/bend.axo` <code.midihandler> —
+ * `_bend = ((int)((data2<<7)+data1) - 0x2000) << 14`, whose frac32 value is
+ * `(bend14 − 8192)/8192`, i.e. the bender's position on −1…1.
+ *
+ * On the wire that frac32 is a PITCH, and a frac32 pitch of 1.0 is 64 semitones
+ * (core/audio_specs_ax2.js's header: "to transcribe a real Axoloti patch, multiply a
+ * frac32 pitch wire by 64"). So a bender pushed fully up is +64 SEMITONES here, which
+ * looks absurd until you notice that every patch that uses it divides — A10 takes
+ * `bend → math/div 32`, giving the ±2 semitones a bender actually bends.
+ *
+ * @param {number} position - the bender, −1 (fully down) … +1 (fully up)
+ * @returns {number} semitones
+ *
+ * @example axBendSemitones(0) // 0
+ * @example axBendSemitones(1) // 64
+ * @example axBendSemitones(-0.5) // -32
+ * @example axBendSemitones(1) / 32 // 2  — a `div 32` after it is the usual ±2 semitones
+ */
+export function axBendSemitones(position) {
+  return position * AX_DIAL_FULL_SCALE;
+}
+
+/**
+ * Pure function. A 7-bit MIDI data byte as `midi/in/touch` and `midi/in/keyb` put it on
+ * the wire — `data<<20`, which over frac32's 2^27 is `data/128`.
+ *
+ * IT IS /128 AND NOT /127, so a maximum velocity or pressure reads 0.9921875 and never
+ * quite 1.0. That is a shift, not a scale factor, and it is why a patch multiplying by
+ * a full-scale velocity is very slightly quieter than one multiplying by 1.
+ *
+ * @param {number} data - a MIDI data byte, 0…127
+ * @returns {number} the frac32 value, 0…127/128
+ *
+ * @example axMidiDataToFrac(127) // 0.9921875
+ * @example axMidiDataToFrac(64) // 0.5
+ * @example axMidiDataToFrac(0) // 0
+ */
+export function axMidiDataToFrac(data) {
+  return data / AX_MIDI_DATA_FULL_SCALE;
+}
+
+// ─── patch/patcher poly=N — the voice allocator (manifest § R7-POLY) ─────────
+
+/** Their `voicePriority[mini] = 100000 + priority++` — an offset large enough that a
+ *  SOUNDING voice always outranks a RELEASED one, so releases are stolen first. It is
+ *  also the source's one real limit: after 100000 note events `priority` catches up and
+ *  the two classes stop separating. Ported as-is; named as deviation D3 on the spec. */
+export const AX_POLY_ACTIVE_PRIORITY_BASE = 100000;
+
+/** Their `int min = 1<<30` — the initial "lowest seen", above every real priority. */
+export const AX_POLY_PRIORITY_CEILING = 1 << 30;
+
+/** How many voices `patch/patcher`'s `poly` attribute is allowed to ask for here. The
+ *  source's combo box runs to 24; ours stops at synth/voices.MAX_POLY_VOICES's 16, which
+ *  already covers every harvested patch (the § R7-17-SEL set's largest is C7's 8). */
+export const AX_POLY_MAX_VOICES = 16;
+
+/**
+ * Pure function. A fresh allocator state for `count` voices — Axoloti's
+ * `PatchViewCodegen.generatePolyCode` <sInitCode>: `notePlaying[vi]=0;
+ * voicePriority[vi]=0; … priority=0;`.
+ *
+ * @param {number} count - the patcher's `poly` attribute
+ * @returns {object} {notePlaying, voicePriority, pressed, priority}
+ *
+ * @example axPolyState(3).voicePriority // [0, 0, 0]
+ * @example axPolyState(3).priority // 0
+ * @example axPolyState(2).pressed // [false, false]
+ */
+export function axPolyState(count) {
+  const n = Math.max(1, Math.min(AX_POLY_MAX_VOICES, Math.floor(count)));
+  return {
+    notePlaying: new Array(n).fill(0),
+    voicePriority: new Array(n).fill(0),
+    pressed: new Array(n).fill(false),
+    priority: 0,
+  };
+}
+
+/**
+ * Near-pure function (mutates `s`). THE ALLOCATION, transcribed from
+ * `axoloti/src/main/java/axoloti/codegen/patch/PatchViewCodegen.java:1042-1056`
+ * (`generatePolyCode`'s `sMidiCode`, the `MIDI_NOTE_ON && data2` branch):
+ *
+ *     int min = 1<<30; int mini = 0;
+ *     for(i=0;i<attr_poly;i++) if (voicePriority[i] < min) { min = voicePriority[i]; mini = i; }
+ *     voicePriority[mini] = 100000+priority++;
+ *     notePlaying[mini] = data1; pressed[mini] = 1;
+ *
+ * **IT IS LEAST-RECENTLY-USED WITH RELEASES FIRST, and the `100000` is the whole
+ * mechanism** — a pressed voice's priority is pushed above the offset while a released
+ * one's stays below it, so the search always finds a free voice before it steals a
+ * sounding one, and among equals it finds the oldest. `<` (not `<=`) means ties keep the
+ * LOWEST index, which is why a silent patcher always starts on voice 0.
+ *
+ * @param {number} note - the note's identity
+ * @param {object} s - allocator state from `axPolyState`
+ * @returns {number} the voice index the note was assigned to
+ *
+ * @example // an idle 3-voice allocator hands out 0, then 1, then 2
+ * @example axPolyNoteOn(60, axPolyState(3)) // 0
+ * @example // a second note does not land on the first note's voice
+ * @example // const s = axPolyState(3); axPolyNoteOn(60, s); axPolyNoteOn(62, s) // 1
+ */
+export function axPolyNoteOn(note, s) {
+  let min = AX_POLY_PRIORITY_CEILING;
+  let mini = 0;
+  for (let i = 0; i < s.voicePriority.length; i++) {
+    if (s.voicePriority[i] < min) { min = s.voicePriority[i]; mini = i; }
+  }
+  s.voicePriority[mini] = AX_POLY_ACTIVE_PRIORITY_BASE + s.priority;
+  s.priority += 1;
+  s.notePlaying[mini] = note;
+  s.pressed[mini] = true;
+  return mini;
+}
+
+/**
+ * Near-pure function (mutates `s`). The note-off half of the same `sMidiCode`
+ * (PatchViewCodegen.java:1058-1067):
+ *
+ *     for(i=0;i<attr_poly;i++) if ((notePlaying[i] == data1) && pressed[i]) {
+ *       voicePriority[i] = priority++; pressed[i] = 0; … }
+ *
+ * It releases EVERY voice holding that note, not the first — their loop has no `break`,
+ * and two voices can hold one note after a steal. Dropping the priority back below the
+ * `100000` offset is what returns the voice to the free pool.
+ *
+ * @param {number} note - the note's identity
+ * @param {object} s - allocator state
+ * @returns {number[]} the voice indices released, in ascending order
+ *
+ * @example // const s = axPolyState(2); axPolyNoteOn(60, s); axPolyNoteOff(60, s) // [0]
+ * @example axPolyNoteOff(99, axPolyState(2)) // []  — a note nobody is playing
+ */
+export function axPolyNoteOff(note, s) {
+  const released = [];
+  for (let i = 0; i < s.notePlaying.length; i++) {
+    if (s.notePlaying[i] === note && s.pressed[i]) {
+      s.voicePriority[i] = s.priority;
+      s.priority += 1;
+      s.pressed[i] = false;
+      released.push(i);
+    }
+  }
+  return released;
+}
+
 // ─── audio/out — the stereo output with volume ───────────────────────────────
 
 /**

@@ -1,5 +1,5 @@
 /**
- * VC-3b PORT PROOF — twelve Bogaudio modules, MEASURED.
+ * VC-3b PORT PROOF — twenty-six Bogaudio modules, MEASURED.
  * Run: node src/demo_apps/PowerRP/tests/port_vc3b_test.js
  *
  * ── WHAT A VCV PORT CAN GET WRONG, AND HOW THIS FILE CATCHES IT ─────────────
@@ -47,7 +47,7 @@ import { fileURLToPath } from "node:url";
 import * as K from "../synth/vc3b_kernels.js";
 import { BOG_GATE_VOLTS, PEQ14_FREQUENCIES_HZ, VC3B_PROCESSORS, vc3bOptionSetter } from "../synth/worklets/processors_vc3b.js";
 import { BLOCK_MODULE_FACTORIES, BLOCK_WORKLET_MODULES } from "../synth/modules_vc3b.js";
-import { BLOCK_SPECS, BOGAUDIO_SOURCE, bogaudioSemitonesToHz, peqBandKnobs } from "../core/audio_specs_vc3b.js";
+import { BLOCK_SPECS, BOGAUDIO_NOTE_NAMES, BOGAUDIO_SOURCE, bogaudioSemitonesToHz, peqBandKnobs } from "../core/audio_specs_vc3b.js";
 import { BLOCK_PLUGINS } from "../plugins/audio_index_vc3b.js";
 import { audioKnobDefaults, audioKnobRows, audioNodePlugin } from "../core/audio_nodes.js";
 import { NODE_FAMILY_NAMES } from "../core/node_chrome.js";
@@ -1065,12 +1065,20 @@ check("the spec's `hz` display and the DSP's own tuning are the same law", () =>
 });
 
 check("the PORT-BLOCK CONTRACT: five exports, spelled exactly, with the right shapes", () => {
-  assert.ok(Array.isArray(BLOCK_SPECS) && BLOCK_SPECS.length === 12, "BLOCK_SPECS must be an array of twelve");
-  assert.ok(Array.isArray(BLOCK_PLUGINS) && BLOCK_PLUGINS.length === 12, "BLOCK_PLUGINS must be an array of twelve");
+  // THE COUNT IS THE ROSTER'S, NOT A LITERAL. This check pinned "twelve" until the
+  // block grew to twenty-six, and the failure it produced said nothing about the
+  // contract — only that a number in a test had gone stale, which is the exact
+  // mistake <app>/CLAUDE.md records about pinned suite counts. What the contract
+  // really claims is that all four exports describe the SAME set of modules, and
+  // that claim is checkable without knowing how many there are.
+  const size = VC3B_PROCESSORS.length;
+  assert.ok(size > 0, "the roster is the source of the count and it is empty");
+  assert.ok(Array.isArray(BLOCK_SPECS) && BLOCK_SPECS.length === size, `BLOCK_SPECS must be an array of ${size}`);
+  assert.ok(Array.isArray(BLOCK_PLUGINS) && BLOCK_PLUGINS.length === size, `BLOCK_PLUGINS must be an array of ${size}`);
   assert.equal(typeof BLOCK_MODULE_FACTORIES, "object", "BLOCK_MODULE_FACTORIES must be an object");
   assert.ok(!Array.isArray(BLOCK_MODULE_FACTORIES));
   assert.ok(Array.isArray(BLOCK_WORKLET_MODULES), "BLOCK_WORKLET_MODULES must be an ARRAY, not a Set (AX-3 shipped a Set and it was swept back)");
-  assert.equal(BLOCK_WORKLET_MODULES.length, 12, "every one of these is a worklet");
+  assert.equal(BLOCK_WORKLET_MODULES.length, size, "every one of these is a worklet");
   for (const type of BLOCK_WORKLET_MODULES) assert.ok(type in BLOCK_MODULE_FACTORIES, `${type} has no factory`);
 });
 
@@ -1082,6 +1090,531 @@ check("the spec, the roster and the barrel agree about what exists", () => {
   const modules = BLOCK_SPECS.map((s) => s.module);
   assert.deepEqual([...modules].sort(), VC3B_PROCESSORS.map((r) => r.module).sort());
   assert.deepEqual([...modules].sort(), Object.keys(BLOCK_MODULE_FACTORIES).sort());
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE FOURTEEN LATER NODES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Query. How many SAMPLES a kernel takes to travel from 0 to `target` volts —
+ * the measurement `ShapedSlewLimiter`'s whole contract is stated in.
+ *
+ * @param {object} row - the roster row
+ * @param {number} target - volts
+ * @param {object} opts - runKernel options
+ * @returns {number} samples, or Infinity if it never arrives
+ */
+function riseSamples(row, target, opts) {
+  const samples = opts.samples ?? FS * 2;
+  const out = runKernel(row, { ...opts, samples, wire: { ...(opts.wire ?? {}), in: () => target } })[0];
+  const scale = outputScaleOf(row, row.outputs[0]);
+  for (let i = 0; i < out.length; i++) if (out[i] / scale >= target - 1e-9) return i;
+  return Infinity;
+}
+
+check("Slew: the SHAPED recurrence, against the closed form its own algebra gives", () => {
+  // Not a second implementation — a CONSEQUENCE of the C++, solved on paper.
+  // `ShapedSlewLimiter::next` computes the remaining distance as
+  //   u' = ((u^shape · T − 1/fs) / T)^(1/shape),  u = |target − last| / 10 V
+  // so `u^shape` falls by EXACTLY `1/(fs·T)` every sample, whatever the shape is.
+  // That linear decay of the SHAPED distance is the whole class in one line, and
+  // it is what a port treating `shape` as a per-sample rate curve would fail.
+  const row = rowOf("vcvSlew");
+  const target = K.BOG_SHAPED_SLEW_RANGE_V;
+  const seconds = 1;
+  for (const [riseShape, exponent] of [[-1, 0.1], [0, 1], [1, 2]]) {
+    const out = runKernel(row, { samples: FS, knobs: { rise: seconds, riseShape }, wire: { in: () => target } })[0];
+    const scale = outputScaleOf(row, row.outputs[0]);
+    for (const n of [1000, 12000, 24000, 40000]) {
+      const remaining = (target - out[n] / scale) / K.BOG_SHAPED_SLEW_RANGE_V;
+      const predicted = 1 - (n + 1) / (FS * seconds);
+      assert.ok(Math.abs(Math.pow(remaining, exponent) - predicted) < 1e-6,
+        `shape ${riseShape} at sample ${n}: u^${exponent} is ${Math.pow(remaining, exponent).toFixed(6)}, the recurrence says ${predicted.toFixed(6)}`);
+    }
+  }
+  // …and at shape 1 the two powers cancel, so the move really is a constant rate
+  // and the full 10 V arrives in exactly the knob's second.
+  const n = riseSamples(row, target, { knobs: { rise: 1, riseShape: 0 }, samples: FS * 2 });
+  assert.ok(Math.abs(n - FS) <= 2, `a linear 10 V rise at 1 s took ${n} samples, not ${FS}`);
+  // A SHALLOW exponent leaves an exponentially small tail rather than arriving
+  // early: at shape 0.1 the remaining distance is under a nanovolt long before the
+  // second is up, which is why the check above measures the shaped distance and
+  // not a crossing time.
+  const shallow = runKernel(row, { samples: FS, knobs: { rise: 1, riseShape: -1 }, wire: { in: () => target } })[0];
+  const left = target - shallow[Math.round(FS * 0.9)] / outputScaleOf(row, row.outputs[0]);
+  assert.ok(left > 0 && left < 1e-8, `nine tenths in, a 0.1-exponent rise has ${left.toExponential(2)} V left`);
+});
+
+check("Slew: the time knob is SECONDS (D13) and Slow multiplies it by ten", () => {
+  const row = rowOf("vcvSlew");
+  const twoSeconds = riseSamples(row, K.BOG_SHAPED_SLEW_RANGE_V, { knobs: { rise: 2 }, samples: FS * 4 });
+  assert.ok(Math.abs(twoSeconds - 2 * FS) <= 3, `a 2 s knob took ${twoSeconds} samples`);
+  // Slow is ×10, so a 0.2 s knob under Slow must take the same two seconds.
+  const slow = riseSamples(row, K.BOG_SHAPED_SLEW_RANGE_V, { knobs: { rise: 0.2 }, options: { slow: "on" }, samples: FS * 4 });
+  assert.ok(Math.abs(slow - 2 * FS) <= 3, `0.2 s under Slow took ${slow} samples, not ${2 * FS}`);
+});
+
+check("Slew: the CV inlet MULTIPLIES the knob and is UNIPOLAR (the _cv rule)", () => {
+  const row = rowOf("vcvSlew");
+  // 5 V on a 0…10 V unipolar CV is a half, and the time is the SQUARE of the
+  // position, so half the CV is a QUARTER of the time — theirs, `time*time*maxMS`.
+  const half = riseSamples(row, K.BOG_SHAPED_SLEW_RANGE_V, { knobs: { rise: 2 }, wire: { rise_cv: () => 5 }, samples: FS * 4 });
+  assert.ok(Math.abs(half - 0.5 * FS) <= 3, `a half-open CV gave ${half} samples, expected ${0.5 * FS}`);
+  // And an UNWIRED inlet must leave the knob alone rather than multiplying by zero.
+  const dry = riseSamples(row, K.BOG_SHAPED_SLEW_RANGE_V, { knobs: { rise: 2 }, samples: FS * 4 });
+  assert.ok(Math.abs(dry - 2 * FS) <= 3, "an unwired CV must not mute the time");
+});
+
+check("LVCO IS the VCO — byte-identical output, which is what makes the reuse a fact", () => {
+  // The dedup gate. `LvcoKernel` holds a `VcoKernel` and selects one of its four
+  // waveforms; if anyone ever forks the oscillator, these two arrays stop matching
+  // and this check says so. Byte-identical, not approximately equal — there is no
+  // arithmetic between them.
+  const vco = rowOf("vcvBogVco");
+  const lvco = rowOf("vcvLvco");
+  const pitch = 24;
+  const wire = { pitch: () => pitch };
+  const reference = runKernel(vco, { samples: 4096, wire });
+  for (const [wave, index] of [["square", 0], ["saw", 1], ["triangle", 2], ["sine", 3]]) {
+    const out = runKernel(lvco, { samples: 4096, wire, options: { wave } })[0];
+    for (let i = 0; i < out.length; i++) {
+      assert.equal(out[i], reference[index][i], `LVCO's ${wave} diverged from the VCO's at sample ${i}`);
+    }
+  }
+});
+
+check("LVCO: the three pulse widths are ONE mapping, and 10% is LLFO's own constant", () => {
+  // `bogPulseWidthKnob` inverts the `pw·(1−2·minPulseWidth)·0.5 + 0.5` every
+  // Bogaudio oscillator shares. If it is right, feeding its answer to the full
+  // VCO's `pw` knob must reproduce LVCO's pulse exactly — and its 10% answer must
+  // equal the literal LLFO writes out by hand for the same duty.
+  assert.equal(K.bogPulseWidthKnob(0.5), 0);
+  assert.ok(Math.abs(K.bogPulseWidthKnob(0.1) - K.BOG_LLFO_DEFAULT_PULSE_WIDTH) < 1e-6,
+    `10% is ${K.bogPulseWidthKnob(0.1)}, LLFO's own constant is ${K.BOG_LLFO_DEFAULT_PULSE_WIDTH}`);
+  const vco = runKernel(rowOf("vcvBogVco"), { samples: 4096, knobs: { pw: K.bogPulseWidthKnob(0.25) }, wire: { pitch: () => 24 } })[0];
+  const lvco = runKernel(rowOf("vcvLvco"), { samples: 4096, options: { wave: "pulse_25" }, wire: { pitch: () => 24 } })[0];
+  for (let i = 0; i < lvco.length; i++) assert.equal(lvco[i], vco[i], `the 25% pulse diverged at sample ${i}`);
+  // …and a 25% pulse really is a quarter high: their square is ±1 before the 5 V
+  // amplitude, so the mean of a duty-d pulse is 2d − 1, i.e. −0.5 at 25%.
+  const mean = lvco.subarray(2048).reduce((a, b) => a + b, 0) / 2048;
+  assert.ok(Math.abs(mean) < 0.05, `DC correction on, so the mean must be near zero; measured ${mean.toFixed(3)}`);
+  const raw = runKernel(rowOf("vcvLvco"), { samples: 4096, options: { wave: "pulse_25", dcCorrection: "off" }, wire: { pitch: () => 24 } })[0];
+  const rawMean = raw.subarray(2048).reduce((a, b) => a + b, 0) / 2048;
+  assert.ok(Math.abs(rawMean - -0.5) < 0.05, `DC correction off, a 25% pulse must sit at −0.5; measured ${rawMean.toFixed(3)}`);
+});
+
+check("XCO: the mix bus NORMALISES — four waveforms at full level come out at one's", () => {
+  // Their COMP clipping is a one-cycle AGC: divide by the last cycle's
+  // peak-to-peak span over ten volts, but never boost. Four ±5 V waveforms summed
+  // is ±20 V of headroom used; the measured mix must be back near ±5 V.
+  const row = rowOf("vcvXco");
+  const out = runKernel(row, { samples: 1 << 14, wire: { pitch: () => 12 } });
+  const peak = (a) => a.subarray(a.length / 2).reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  const sum = peak(out[0]) + peak(out[1]) + peak(out[2]) + peak(out[3]);
+  const mix = peak(out[4]);
+  assert.ok(sum > 3.5, `the four waveforms should use ±4 of wire between them; measured ${sum.toFixed(2)}`);
+  assert.ok(mix > 0.8 && mix < 1.4, `the comp'd mix must land near ±1 on the wire; measured ${mix.toFixed(2)}`);
+  // …and turning the AGC OFF must let it run hot, which is what proves the AGC is
+  // doing the work rather than the mix levels being low.
+  const none = runKernel(row, { samples: 1 << 14, options: { clipping: "none" }, wire: { pitch: () => 12 } });
+  assert.ok(peak(none[4]) > 2 * mix, `without comp the mix must be far hotter; ${peak(none[4]).toFixed(2)} vs ${mix.toFixed(2)}`);
+});
+
+check("XCO: the saw is anti-aliased, measured against a naive saw at the same pitch", () => {
+  // The same measurement the VCO check makes, because XCO has its OWN engine
+  // rather than VCOBase's — a port could have got the oversampling right on one
+  // and wrong on the other.
+  const row = rowOf("vcvXco");
+  const n = 1 << 13;
+  const bin = FS / n;
+  const f0 = Math.round(4000 / bin) * bin;
+  const semitones = 12 * Math.log2(f0 / K.BOG_REFERENCE_HZ);
+  const out = runKernel(row, { samples: n, wire: { pitch: () => semitones } })[1];
+  const naive = new Float64Array(n);
+  let phase = 0;
+  for (let i = 0; i < n; i++) {
+    phase += f0 / FS;
+    phase -= Math.floor(phase);
+    naive[i] = 2 * phase - 1;
+  }
+  const inharmonic = (signal) => {
+    let energy = 0;
+    for (let k = 1; k < n / 2; k++) {
+      const hz = k * bin;
+      if (Math.abs(hz / f0 - Math.round(hz / f0)) < 0.01) continue;
+      const a = amplitudeAt(signal, hz);
+      energy += a * a;
+    }
+    return Math.sqrt(energy);
+  };
+  const ported = db(inharmonic(out) / amplitudeAt(out, f0));
+  const raw = db(inharmonic(naive) / amplitudeAt(naive, f0));
+  assert.ok(ported < raw - 12, `XCO's saw must be far cleaner than a naive one: ${ported.toFixed(1)} vs ${raw.toFixed(1)} dB`);
+});
+
+check("XCO: sine FEEDBACK adds harmonics — the one thing the plain VCO's sine cannot do", () => {
+  const row = rowOf("vcvXco");
+  const wire = { pitch: () => 0 };
+  const f0 = K.BOG_REFERENCE_HZ;
+  const clean = runKernel(row, { samples: 1 << 14, wire })[3].subarray(1 << 13);
+  const fed = runKernel(row, { samples: 1 << 14, knobs: { sineFeedback: 0.8 }, wire })[3].subarray(1 << 13);
+  const ratio = (a) => db(amplitudeAt(a, 2 * f0) / amplitudeAt(a, f0));
+  assert.ok(ratio(clean) < -40, `a table sine's second harmonic must be tiny; measured ${ratio(clean).toFixed(1)} dB`);
+  assert.ok(ratio(fed) > ratio(clean) + 25, `feedback must grow harmonics; ${ratio(fed).toFixed(1)} vs ${ratio(clean).toFixed(1)} dB`);
+});
+
+check("XCO: saw SATURATION is the tanh table, applied before the BLEP correction", () => {
+  // The order is the deviation-worthy part (see bogBandLimitedSawForPhase): a
+  // saturator applied AFTER would waveshape the correction itself. Measured at the
+  // level, which is the observable consequence — tanh compresses the ramp.
+  assert.equal(K.bogSawSaturation(0.05), null, "below a tenth their saturator is BYPASSED, not applied gently");
+  const straight = K.bogSaturatedSawForPhase(K.BOG_CYCLE_PHASE * 0.9, null);
+  const shaped = K.bogSaturatedSawForPhase(K.BOG_CYCLE_PHASE * 0.9, K.bogSawSaturation(3));
+  assert.ok(shaped > straight, `saturation must push the shoulder out: ${shaped} vs ${straight}`);
+  assert.ok(shaped <= 1, "and never past the table's own rail");
+  // The normalisation only applies below 1.0 — above it they let the level fall.
+  assert.equal(K.bogSawSaturation(2).normalization, 1);
+  assert.ok(K.bogSawSaturation(0.5).normalization > 1);
+});
+
+check("LLFO: the Rate knob is HERTZ (D13) and Slow divides it by sixteen", () => {
+  const row = rowOf("vcvLlfo");
+  const hz = 100;
+  const fast = runKernel(row, { samples: 1 << 14, knobs: { frequency: hz } })[0].subarray(1 << 13);
+  assert.ok(amplitudeAt(fast, hz) > 0.8, `a 100 Hz knob must produce 100 Hz; measured ${amplitudeAt(fast, hz).toFixed(3)}`);
+  const slow = runKernel(row, { samples: 1 << 15, knobs: { frequency: hz }, options: { slow: "on" } })[0].subarray(1 << 14);
+  assert.ok(amplitudeAt(slow, hz) < 0.05, "Slow must move the fundamental away from 100 Hz");
+  assert.ok(amplitudeAt(slow, hz / K.BOG_LLFO_SLOW_DIVISOR) > 0.7,
+    `Slow must divide by sixteen; ${(hz / K.BOG_LLFO_SLOW_DIVISOR).toFixed(3)} Hz measured ${amplitudeAt(slow, hz / K.BOG_LLFO_SLOW_DIVISOR).toFixed(3)}`);
+});
+
+check("LLFO: the pitch inlet is SEMITONES and is an INTERVAL on the Rate knob", () => {
+  // R7-UNITS clause 3 at an LFO rate, which is where a volts/semitones mix-up
+  // would be a factor of twelve rather than a factor of sixty and could go unseen.
+  const row = rowOf("vcvLlfo");
+  const out = runKernel(row, { samples: 1 << 14, knobs: { frequency: 50 }, wire: { pitch: () => 12 } })[0].subarray(1 << 13);
+  assert.ok(amplitudeAt(out, 100) > 0.7, `+12 st must double 50 Hz to 100; measured ${amplitudeAt(out, 100).toFixed(3)}`);
+  assert.ok(amplitudeAt(out, 50) < 0.05, "and 50 Hz must be gone");
+});
+
+check("LLFO: Stepped is a SEEDED sequence, and the same seed replays the same tune", () => {
+  const row = rowOf("vcvLlfo");
+  const run = (seed) => runKernel(row, { samples: 8192, construct: { seed }, options: { wave: "stepped" }, knobs: { frequency: 200 } })[0];
+  const a = run(1);
+  const b = run(1);
+  const c = run(2);
+  for (let i = 0; i < a.length; i++) assert.equal(a[i], b[i], `seed 1 diverged from itself at sample ${i}`);
+  let differences = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== c[i]) differences++;
+  assert.ok(differences > a.length / 2, `seed 2 must give a different tune; only ${differences} samples differ`);
+  // A STEPPED wave really is stepped: its output must be piecewise constant, with
+  // as many distinct runs as there were cycles.
+  let steps = 1;
+  for (let i = 1; i < a.length; i++) if (a[i] !== a[i - 1]) steps++;
+  const cycles = Math.round((8192 / FS) * 200);
+  assert.ok(Math.abs(steps - cycles) <= 2, `a 200 Hz stepped wave over 8192 samples is ~${cycles} steps; counted ${steps}`);
+});
+
+check("Reftone: the defaults ARE 440 Hz, and the CV output carries semitones", () => {
+  const row = rowOf("vcvReftone");
+  const out = runKernel(row, { samples: 1 << 14 });
+  const sine = out[1].subarray(1 << 13);
+  assert.ok(amplitudeAt(sine, 440) > 0.9, `A4 must be 440 Hz; measured ${amplitudeAt(sine, 440).toFixed(3)} there`);
+  assert.ok(amplitudeAt(sine, 261.626) < 0.02, "and nothing at C4");
+  // The `cv` output is a PITCH port: 440 Hz is 9 semitones above Bogaudio's C4.
+  assert.ok(Math.abs(out[0][1000] - 9) < 1e-6, `the cv output must read 9 st; measured ${out[0][1000]}`);
+  // A note NAME, an octave and cents, exactly as their arithmetic composes them.
+  const up = runKernel(row, { samples: 4096, options: { pitch: "C" }, knobs: { octave: 5 } });
+  assert.ok(Math.abs(up[0][1000] - 12) < 1e-6, `C5 is 12 st above C4; measured ${up[0][1000]}`);
+  const flat = runKernel(row, { samples: 4096, knobs: { fine: -0.5 } });
+  assert.ok(Math.abs(flat[0][1000] - 8.5) < 1e-6, `50 cents flat of A4 is 8.5 st; measured ${flat[0][1000]}`);
+});
+
+check("Noise: five INDEPENDENT trees, seeded, with the right spectral tilts", () => {
+  const row = rowOf("vcvBogNoise");
+  const a = runKernel(row, { samples: 1 << 14, construct: { seed: 5 } });
+  const b = runKernel(row, { samples: 1 << 14, construct: { seed: 5 } });
+  for (let o = 0; o < 4; o++) for (let i = 0; i < 64; i++) {
+    assert.equal(a[o][i], b[o][i], `output ${o} is not deterministic at sample ${i}`);
+  }
+  // UNCORRELATED: white and gauss must not be the same stream scaled.
+  const correlation = (x, y) => {
+    let sxy = 0;
+    let sxx = 0;
+    let syy = 0;
+    for (let i = 0; i < x.length; i++) { sxy += x[i] * y[i]; sxx += x[i] * x[i]; syy += y[i] * y[i]; }
+    return sxy / Math.sqrt(sxx * syy);
+  };
+  assert.ok(Math.abs(correlation(a[0], a[3])) < 0.05, "white and gauss must be independent generators");
+  // THE TILTS: white is flat, pink falls, red falls harder, blue rises. Measured as
+  // the ratio of high-band to low-band energy, which is what "colour" means.
+  // Averaged over several probes per band: one Goertzel bin of a noise signal is
+  // itself a random variable, and a single pair of probes put red and pink within
+  // 1.8 dB of each other on the first run of this check.
+  const band = (signal, hzs) => hzs.reduce((sum, hz) => sum + amplitudeAt(signal, hz), 0) / hzs.length;
+  const tilt = (signal) => db(band(signal, [5000, 6000, 7000, 8000, 9000]) / band(signal, [150, 200, 250, 300, 350]));
+  const white = tilt(a[0]);
+  const pink = tilt(a[1]);
+  const red = tilt(a[2]);
+  const blue = tilt(a[5]);
+  assert.ok(pink < white - 3, `pink must fall relative to white: ${pink.toFixed(1)} vs ${white.toFixed(1)} dB`);
+  assert.ok(red < pink - 1, `red must fall harder than pink: ${red.toFixed(1)} vs ${pink.toFixed(1)} dB`);
+  assert.ok(blue > white, `blue must rise relative to white: ${blue.toFixed(1)} vs ${white.toFixed(1)} dB`);
+  // And the ABS output rectifies whatever is patched, noise or not.
+  const rectified = runKernel(row, { samples: 512, construct: { seed: 5 }, wire: { abs: (i) => (i % 2 ? -3 : 3) } })[4];
+  for (let i = 100; i < 200; i++) assert.ok(Math.abs(rectified[i] - 0.6) < 1e-9, `abs must be |−3 V| = 0.6 on the wire; got ${rectified[i]}`);
+});
+
+check("Noise: the gaussian is UNIT VARIANCE, which is why it needs no gain (D14)", () => {
+  // Their four other outputs are scaled 10× to 20×; the gaussian is not scaled at
+  // all, because `std::normal_distribution` already has standard deviation 1 —
+  // in VOLTS, so it is a quiet output on purpose. Measured, since a Box-Muller
+  // stand-in with a wrong constant would be √2 out and still look like noise.
+  const g = new K.BogGaussianNoise(11);
+  let sum = 0;
+  let square = 0;
+  const n = 200000;
+  for (let i = 0; i < n; i++) { const v = g.next(); sum += v; square += v * v; }
+  assert.ok(Math.abs(sum / n) < 0.02, `mean must be 0; measured ${(sum / n).toFixed(4)}`);
+  assert.ok(Math.abs(Math.sqrt(square / n) - 1) < 0.02, `standard deviation must be 1; measured ${Math.sqrt(square / n).toFixed(4)}`);
+});
+
+check("Sums: max and min are LOGIC, and the output limit is a ±12 V clamp", () => {
+  const row = rowOf("vcvSums");
+  const out = runKernel(row, { samples: 256, wire: { a: () => 4, b: () => -3, negate: () => 2 } });
+  // Volts, recovered through the port scale, so the comparisons carry one ULP of
+  // slack rather than pretending 4·0.2·5 is exactly 4.
+  const at = (o) => out[o][100] * K.RACK_VOLTS_PER_UNIT;
+  const isVolts = (got, want, what) => assert.ok(Math.abs(got - want) < 1e-9, `${what}: expected ${want} V, got ${got}`);
+  isVolts(at(0), 1, "4 + (−3)");
+  isVolts(at(1), 7, "4 − (−3)");
+  isVolts(at(2), 4, "max(4, −3)");
+  isVolts(at(3), -3, "min(4, −3)");
+  isVolts(at(4), -2, "the NEGATE section, which is independent of a and b");
+  const hot = runKernel(row, { samples: 256, wire: { a: () => 10, b: () => 9 } });
+  isVolts(hot[0][100] * K.RACK_VOLTS_PER_UNIT, 12, "19 V must clamp at their ±12 V limit");
+  const free = runKernel(row, { samples: 256, options: { outputLimit: "off" }, wire: { a: () => 10, b: () => 9 } });
+  isVolts(free[0][100] * K.RACK_VOLTS_PER_UNIT, 19, "and pass unclamped with the limit off");
+});
+
+check("PolyCon8: eight constants in VOLTS, one per output (D16)", () => {
+  const row = rowOf("vcvPolycon8");
+  const knobs = {};
+  for (let i = 1; i <= 8; i++) knobs[`channel${i}`] = i - 4;
+  const out = runKernel(row, { samples: 64, knobs });
+  for (let i = 0; i < 8; i++) {
+    assert.ok(Math.abs(out[i][30] * K.RACK_VOLTS_PER_UNIT - (i - 3)) < 1e-9,
+      `channel ${i + 1} must read ${i - 3} V; got ${out[i][30] * K.RACK_VOLTS_PER_UNIT}`);
+  }
+});
+
+check("the matrix: routing, INVERSION, and average dividing by CONNECTED inputs", () => {
+  // One engine, checked at the 8×8 size the two big panels share. The cell order is
+  // the part a port gets wrong silently — a transposed matrix routes, just not the
+  // way the panel says — so the check drives one input and reads one output.
+  const row = rowOf("vcvSwitch88");
+  // THE CELL SLEW IS SLOWER THAN IT LOOKS AND THAT IS THEIRS: `_sls[i]` is 0.5 ms
+  // over a unit range, but it is stepped from `modulate()`, which runs every 120
+  // samples — so a cell takes 24 CONTROL TICKS, i.e. ~2880 samples, to open fully.
+  // Every run below is long enough to have settled, and `clipping: "none"` is set
+  // so the measurement is the routing rather than the saturator.
+  const settle = 8192;
+  const dry = { samples: settle, options: { clipping: "none" } };
+  const at = (out, o) => out[o][settle - 1] * K.RACK_VOLTS_PER_UNIT;
+  const straight = runKernel(row, { ...dry, knobs: { mix31: 1 }, wire: { in3: () => 4 } });
+  assert.ok(Math.abs(at(straight, 0) - 4) < 1e-6, `mix31 must route INPUT 3 to OUTPUT 1; measured ${at(straight, 0)}`);
+  assert.equal(straight[1][settle - 1], 0, "and nothing to output 2");
+  const inverted = runKernel(row, { ...dry, knobs: { mix31: -1 }, wire: { in3: () => 4 } });
+  assert.ok(Math.abs(at(inverted, 0) + 4) < 1e-6, "a negative cell must INVERT — the switch's third position");
+  // SUM versus AVERAGE, and the divisor is CONNECTED inputs rather than routed ones.
+  const both = { in1: () => 3, in2: () => 3 };
+  const summed = runKernel(row, { ...dry, knobs: { mix11: 1, mix21: 1 }, wire: both });
+  assert.ok(Math.abs(at(summed, 0) - 6) < 1e-6, `two inputs at 3 V sum to 6 V; measured ${at(summed, 0)}`);
+  const averaged = runKernel(row, { ...dry, options: { clipping: "none", mixMode: "average" }, knobs: { mix11: 1, mix21: 1 }, wire: both });
+  assert.ok(Math.abs(at(averaged, 0) - 3) < 1e-6, `and average to 3 V; measured ${at(averaged, 0)}`);
+  // A THIRD CABLE THAT IS ROUTED NOWHERE still changes the average — theirs, and it
+  // is the observable difference between "unwired" and "wired at zero" (D3).
+  const third = runKernel(row, { ...dry, options: { clipping: "none", mixMode: "average" }, knobs: { mix11: 1, mix21: 1 }, wire: { ...both, in5: () => 0 } });
+  assert.ok(Math.abs(at(third, 0) - 2) < 1e-6,
+    `a connected-but-unrouted third input must divide by three; measured ${at(third, 0)}`);
+});
+
+check("the matrix: one kernel, three panels — Switch88 and Matrix88 are byte-identical", () => {
+  // The other half of the reuse claim. Same knobs, same inputs, same numbers: the
+  // only real difference is the crosspoint knob's STEP, which is a spec field.
+  const shared = { samples: 4096, knobs: { mix11: 0.6, mix42: -0.3 }, wire: { in1: voltSine(300, 4), in4: voltSine(700, 2) } };
+  const a = runKernel(rowOf("vcvSwitch88"), shared);
+  const b = runKernel(rowOf("vcvMatrix88"), shared);
+  for (let o = 0; o < 8; o++) for (let i = 0; i < 4096; i++) assert.equal(a[o][i], b[o][i], `output ${o} diverged at sample ${i}`);
+  const switch88 = BLOCK_SPECS.find((s) => s.type === "audio_vcv_switch88");
+  const matrix88 = BLOCK_SPECS.find((s) => s.type === "audio_vcv_matrix88");
+  assert.equal(switch88.knobs.find((k) => k.key === "mix11").step, 1, "a switch snaps to off / through / inverted");
+  assert.ok(matrix88.knobs.find((k) => k.key === "mix11").step < 1, "and a matrix knob does not");
+  // Switch18 is the SAME engine at 1×8, so its cells are `mixN` and not `mix1N`.
+  const one = runKernel(rowOf("vcvSwitch18"), { samples: 8192, options: { clipping: "none" }, knobs: { mix5: 1 }, wire: { in: () => 2 } });
+  assert.ok(Math.abs(one[4][8191] * K.RACK_VOLTS_PER_UNIT - 2) < 1e-6,
+    `Switch18's mix5 must route to output 5; measured ${one[4][8191] * K.RACK_VOLTS_PER_UNIT}`);
+  assert.equal(one[3][8191], 0, "and to nothing else");
+});
+
+check("OneEight: the clock walks, reset zeroes, and the 1 ms debounce swallows a race", () => {
+  const row = rowOf("vcvOneeight");
+  // A clock every 4800 samples (10 Hz) with nothing patched in: the selected output
+  // emits 10 V, i.e. 2.0 on the wire, and it walks 0 → 1 → 2 → …
+  const period = 4800;
+  const out = runKernel(row, { samples: period * 5, wire: { clock: voltGate(period, 100) } });
+  const liveAt = (i) => out.findIndex((o) => o[i] > 1);
+  assert.equal(liveAt(50), 0, "it starts on output 1");
+  assert.equal(liveAt(period + 50), 1, "and steps on the first clock");
+  assert.equal(liveAt(3 * period + 50), 3, "and keeps walking");
+  // STEPS shortens the loop: 3 steps means 0, 1, 2, 0, …
+  const short = runKernel(row, { samples: period * 5, knobs: { steps: 3 }, wire: { clock: voltGate(period, 100) } });
+  const shortAt = (i) => short.findIndex((o) => o[i] > 1);
+  assert.equal(shortAt(2 * period + 50), 2);
+  assert.equal(shortAt(3 * period + 50), 0, "a 3-step loop must wrap on the third clock");
+  // THE DEBOUNCE. A reset and a clock on the SAME edge must land on step 0, not 1 —
+  // without their 1 ms timer a self-resetting sequencer is permanently one out.
+  const raced = runKernel(row, { samples: period * 3, wire: { clock: voltGate(period, 100), reset: voltGate(period, 100) } });
+  for (let k = 1; k <= 2; k++) {
+    assert.equal(raced.findIndex((o) => o[k * period + 50] > 1), 0, `a coincident reset+clock must hold step 0 (clock ${k})`);
+  }
+  // SELECT offsets the step rather than replacing it.
+  const selected = runKernel(row, { samples: period * 2, knobs: { select: 3 }, wire: { clock: voltGate(period, 100) } });
+  assert.equal(selected.findIndex((o) => o[50] > 1), 3, "select 3 must start on output 4");
+  assert.equal(selected.findIndex((o) => o[period + 50] > 1), 4, "and the clock still advances it");
+});
+
+check("OneEight: a patched input is ROUTED, an unpatched one becomes a 10 V gate", () => {
+  const row = rowOf("vcvOneeight");
+  const routed = runKernel(row, { samples: 512, wire: { in: () => 3 } });
+  assert.ok(Math.abs(routed[0][100] * K.RACK_VOLTS_PER_UNIT - 3) < 1e-6, "the signal must pass at its own level");
+  const gated = runKernel(row, { samples: 512 });
+  assert.ok(Math.abs(gated[0][100] * K.RACK_VOLTS_PER_UNIT - 10) < 1e-6,
+    `unpatched, it must emit their 10 V gate; measured ${gated[0][100] * K.RACK_VOLTS_PER_UNIT} V`);
+});
+
+check("Walk2: two INDEPENDENT walkers, and the distance is their euclidean norm", () => {
+  const row = rowOf("vcvWalk2");
+  const out = runKernel(row, { samples: 1 << 15, construct: { seed: 3 }, knobs: { rateX: 0.9, rateY: 0.9 } });
+  let identical = 0;
+  for (let i = 0; i < out[0].length; i++) if (out[0][i] === out[1][i]) identical++;
+  assert.ok(identical < 10, `X and Y must take different seeds; ${identical} samples matched exactly`);
+  // The distance output, against its own definition — their scaling comment says
+  // 10/sqrt(200), which is 0.707107, and both operands are already on the wire.
+  for (const i of [1000, 9000, 20000]) {
+    const x = out[0][i] * K.RACK_VOLTS_PER_UNIT;
+    const y = out[1][i] * K.RACK_VOLTS_PER_UNIT;
+    const expected = Math.sqrt(x * x + y * y) * 0.707107;
+    assert.ok(Math.abs(out[2][i] * K.RACK_VOLTS_PER_UNIT - expected) < 1e-6,
+      `distance at ${i}: expected ${expected.toFixed(6)}, got ${(out[2][i] * K.RACK_VOLTS_PER_UNIT).toFixed(6)}`);
+    assert.ok(out[2][i] >= 0, "and it is unipolar");
+  }
+  // DETERMINISM, which is the whole reason the seed knob exists (D2).
+  const again = runKernel(row, { samples: 4096, construct: { seed: 3 }, knobs: { rateX: 0.9, rateY: 0.9 } });
+  for (let i = 0; i < 4096; i++) assert.equal(again[0][i], out[0][i], `seed 3 diverged from itself at sample ${i}`);
+});
+
+check("Walk2's slew tracks its RATE — and the effect is SMALL, which is measured", () => {
+  // `Walk2::modulate` sets `(1 − rate)·100 ms` where `Walk::sampleRateChange` sets a
+  // flat 100 ms. THE `rate` IT SEES IS THE SCALED ONE, `0.2·knob⁵`, which tops out
+  // at 0.2 — so Walk2's slew runs 100 ms down to 80 ms and no further. This check
+  // exists because the kernel's docblock claimed a tenfold difference, reasoned from
+  // the KNOB rather than the scaled rate; the real bound is about 25%, and pinning
+  // it here is what stops the prose drifting back.
+  const step = (signal) => {
+    let sum = 0;
+    for (let i = 1; i < signal.length; i++) sum += Math.abs(signal[i] - signal[i - 1]);
+    return sum / signal.length;
+  };
+  const walk = runKernel(rowOf("vcvWalk"), { samples: 1 << 16, construct: { seed: 3 }, knobs: { rate: 1 } })[0];
+  const walk2 = runKernel(rowOf("vcvWalk2"), { samples: 1 << 16, construct: { seed: 3 }, knobs: { rateX: 1 } })[0];
+  const ratio = step(walk2) / step(walk);
+  assert.ok(ratio > 1.05, `at the top of the knob Walk2's axis must move in bigger steps; ratio ${ratio.toFixed(3)}`);
+  assert.ok(ratio < 1.5, `…but only by the 100 ms → 80 ms the scaled rate allows; ratio ${ratio.toFixed(3)}`);
+  // …and at the BOTTOM of the knob the two slews are the same 100 ms, so there the
+  // only difference between the modules is the second axis.
+  const slowWalk = runKernel(rowOf("vcvWalk"), { samples: 1 << 15, construct: { seed: 3 }, knobs: { rate: 0 } })[0];
+  const slowWalk2 = runKernel(rowOf("vcvWalk2"), { samples: 1 << 15, construct: { seed: 3 }, knobs: { rateX: 0 } })[0];
+  assert.ok(Math.abs(step(slowWalk2) / step(slowWalk) - 1) < 0.01, "at rate 0 both slews are 100 ms");
+});
+
+check("PEQ6: a band's OWN frequency CV moves that band alone — D7's restored half", () => {
+  // The capability the collapsed fourteen-band node does not have, and the reason
+  // PEQ6 exists as a separate row. Measured as a magnitude response: band 3 sits at
+  // 350 Hz by default, and 5 V through its own inlet must move it up an octave
+  // while band 5 stays where it is.
+  const row = rowOf("vcvPeq6");
+  const silent = {};
+  for (let i = 1; i <= 6; i++) silent[`level${i}`] = -60;
+  const only3 = { knobs: { ...silent, level3: 0 }, options: { lowMode: "bandpass", highMode: "bandpass" } };
+  const parked = responseDb(row, 350, only3);
+  const swept = responseDb(row, 350, { ...only3, wire: { frequency_cv3: () => 5 } });
+  const swept700 = responseDb(row, 700, { ...only3, wire: { frequency_cv3: () => 5 } });
+  assert.ok(parked > -6, `band 3 must pass its own centre; measured ${parked.toFixed(1)} dB`);
+  assert.ok(swept < parked - 10, `its own CV must move it off 350 Hz; ${swept.toFixed(1)} vs ${parked.toFixed(1)} dB`);
+  assert.ok(swept700 > swept + 10, `and up an octave to 700 Hz; measured ${swept700.toFixed(1)} dB`);
+  // …and it must move NOTHING ELSE. Band 5 at 1400 Hz, with band 3's CV driven.
+  const only5 = { knobs: { ...silent, level5: 0 }, options: { lowMode: "bandpass", highMode: "bandpass" } };
+  const band5 = responseDb(row, 1400, only5);
+  const band5Swept = responseDb(row, 1400, { ...only5, wire: { frequency_cv3: () => 5 } });
+  assert.ok(Math.abs(band5 - band5Swept) < 0.1, `band 5 must be untouched; ${band5.toFixed(2)} vs ${band5Swept.toFixed(2)} dB`);
+});
+
+check("PEQ6 IS the shipped PEQ engine at six bands, not a second filter", () => {
+  // The reuse gate. With the per-band inlets unwired and their attenuverters at
+  // their defaults, PEQ6's mix must equal the collapsed node's mix at the same six
+  // centres — byte-identical, because it is the same kernel object.
+  const peq6 = rowOf("vcvPeq6");
+  const peq = rowOf("vcvPeq");
+  const centres = [100, 175, 350, 700, 1400, 2500];
+  const sixKnobs = {};
+  const wideKnobs = {};
+  for (let i = 1; i <= 6; i++) wideKnobs[`frequency${i}`] = centres[i - 1];
+  for (let i = 7; i <= 14; i++) wideKnobs[`level${i}`] = -60;
+  const wire = { in: voltSine(500, 2) };
+  const a = runKernel(peq6, { samples: 2048, knobs: sixKnobs, wire })[0];
+  const b = runKernel(peq, { samples: 2048, construct: { bands: 6 }, knobs: wideKnobs, wire })[0];
+  for (let i = 0; i < a.length; i++) assert.equal(a[i], b[i], `PEQ6 diverged from PEQ(bands=6) at sample ${i}`);
+});
+
+check("PEQ6: the roster's six centres are PEQ6.hpp's own, and the spec restates them", () => {
+  const spec = BLOCK_SPECS.find((s) => s.type === "audio_vcv_peq6");
+  const row = rowOf("vcvPeq6");
+  const specHz = spec.knobs.filter((k) => /^frequency\d+$/.test(k.key)).map((k) => k.default);
+  const rowHz = row.params.filter((p) => /^frequency\d+$/.test(p.name)).map((p) => p.defaultValue);
+  assert.deepEqual(specHz, rowHz, "the spec and the roster must state one list of centres");
+  // …and that list must be their own knob positions squared and scaled by 20 000.
+  const positions = [0.0707107, 0.0935414, 0.1322876, 0.1870829, 0.2645751, 0.3535534];
+  positions.forEach((p, i) => {
+    assert.ok(Math.abs(p * p * 20000 - specHz[i]) < 0.5,
+      `band ${i + 1}: PEQ6.hpp's knob ${p} is ${(p * p * 20000).toFixed(1)} Hz, spec says ${specHz[i]}`);
+  });
+});
+
+check("Reftone's note names are ONE list, restated in core/ and synth/", () => {
+  // core/ may not import synth/, so the twelve names are written twice. A spec
+  // offering a name the kernel throws on would be an Inspector row that kills the
+  // audio thread — the same class of failure the discrete-option sweep guards.
+  assert.deepEqual([...BOGAUDIO_NOTE_NAMES], [...K.BOG_REFTONE_NOTE_NAMES]);
+  assert.equal(BOGAUDIO_NOTE_NAMES.length, 12);
+  assert.equal(BOGAUDIO_NOTE_NAMES[9], "A", "their PITCH_PARAM default of 9 must be A");
+});
+
+check("LLFO's hertz range is the SAME converter core/ and synth/ each state", () => {
+  // The knob is in hertz (D13) and its bounds are `C4 · 2^(−12 … +1)` — derived on
+  // both sides from the same tuning law, so a drift in either shows up as a bound
+  // the engine refuses.
+  const row = rowOf("vcvLlfo");
+  const spec = BLOCK_SPECS.find((s) => s.type === "audio_vcv_llfo");
+  const param = row.params.find((p) => p.name === "frequency");
+  const knob = spec.knobs.find((k) => k.key === "frequency");
+  assert.equal(param.minValue, bogaudioSemitonesToHz(-144));
+  assert.equal(param.maxValue, bogaudioSemitonesToHz(12));
+  assert.equal(knob.min, param.minValue);
+  assert.equal(knob.max, param.maxValue);
+  assert.equal(knob.default, param.defaultValue);
+  assert.ok(Math.abs(knob.default - 2.0439) < 0.001, `their knob-zero is 2.044 Hz; spec says ${knob.default}`);
 });
 
 check("every spec knob is a real AudioParam, construct option or discrete option", () => {

@@ -383,6 +383,12 @@ check("a pitch knob's `hz` agrees with the DSP's own mtof — the restatement ca
     audio_vcv_bog_vco: bogaudioSemitonesToHz,
     audio_vcv_bog_vcf: bogaudioSemitonesToHz,
     audio_vcv_stack: bogaudioSemitonesToHz,
+    // XCO and LVCO are the same block's other two oscillators and therefore the same
+    // C4. They are entered because the DEFAULT branch below would hold them to
+    // Axoloti's E4 — four semitones out, and in a tune-shaped way — the moment their
+    // knobs declare ` st`, which is exactly what this table exists to catch.
+    audio_vcv_xco: bogaudioSemitonesToHz,
+    audio_vcv_lvco: bogaudioSemitonesToHz,
     // Ripples' knob is not a pitch at all: Rack stores its cutoff as LOG2 OF HERTZ
     // (4.321928 = 20 Hz, 14.287712 = 20 kHz), so its law is `2^knob` and its unit is
     // ` log2Hz`. Keyed `type.key` because a module may hold two knobs under two laws.

@@ -38,7 +38,12 @@ import {
 import { BLOCK_SPECS, AX1_MATH_OP_OPTIONS, AX1_LOGIC_OP_OPTIONS } from "../core/audio_specs_ax1.js";
 import { BLOCK_MODULE_FACTORIES } from "../synth/modules_ax1.js";
 import { BLOCK_PLUGINS } from "../plugins/audio_index_ax1.js";
-import { audioKnobRows, audioPorts } from "../core/audio_nodes.js";
+import {
+  AX_MIDI_DATA_FULL_SCALE, AX_MIDI_ORIGIN_NOTE, AX_POLY_ACTIVE_PRIORITY_BASE,
+  axBendSemitones, axHzToSemitones, axKeybTick, axMidiDataToFrac, axPolyNoteOff,
+  axPolyNoteOn, axPolyState, axSemitonesToHz,
+} from "../synth/ax1_dsp.js";
+import { audioKnobRows, audioPorts, semitonesToHz } from "../core/audio_nodes.js";
 import { NODE_FAMILY_NAMES } from "../core/node_chrome.js";
 import { PORT_TYPE_NAMES } from "../core/nodeflow.js";
 
@@ -395,6 +400,215 @@ check("audio/out: StOutVol is a HARD clip at ±1.0, applied after the volume", (
   assert.equal(axStereoOutSample(-4, 1), -1);
   // Volume first, THEN the clip — so a loud source turned down does not clip.
   assert.equal(axStereoOutSample(4, 0.1), 0.4);
+});
+
+// ── midi/in/* — the tuning chain, and § R7-AXO-TRAPS trap 1 ─────────────────
+//
+// THE WHOLE POINT OF `audio_ax_midi_keyb` IS ONE UNIT CONVERSION, so the conversion is
+// what gets pinned hardest. A hertz value reaching an Axoloti pitch port transposes a
+// note BY ITS OWN FREQUENCY IN SEMITONES and looks perfectly fine on the canvas; nothing
+// but a number here catches it.
+
+/**
+ * The INTEGER side of `midi/in/keyb`'s outlets, in BigInt, transcribed from its
+ * <code.krate>: `outlet_note = _note<<21` and `outlet_velocity = _velo<<20`, read back
+ * through frac32's 2^27. Modelled the way tests/port_ax3_test.js models `___SMMUL` —
+ * with the 64-bit intermediate exact — so the shift count is measured rather than
+ * asserted from the same arithmetic the port uses.
+ */
+const AX_FRAC32_ONE_BIG = 1n << 27n;
+const keybNoteOutletFrac = (midiNote) => Number((BigInt(midiNote - 64) << 21n) * 1000000n / AX_FRAC32_ONE_BIG) / 1000000;
+const keybVelocityOutletFrac = (velocityByte) => Number((BigInt(velocityByte) << 20n) * 1000000n / AX_FRAC32_ONE_BIG) / 1000000;
+
+check("midi/keyb: the MIDI → semitone → hertz chain lands on E4 at 64 and A440 at 69", () => {
+  // The three numbers § R7-11's pitch law names, checked end to end rather than as
+  // three separate identities that could each be right about a different tuning.
+  assert.equal(64 - AX_MIDI_ORIGIN_NOTE, 0);
+  assert.ok(Math.abs(axSemitonesToHz(64 - AX_MIDI_ORIGIN_NOTE) - 329.6275569128699) < 1e-10);
+  assert.equal(axSemitonesToHz(69 - AX_MIDI_ORIGIN_NOTE), 440);
+  // And back: the inverse is what the node actually runs, because its input is hertz.
+  assert.ok(Math.abs(axHzToSemitones(329.6275569128699) - 0) < 1e-12);
+  assert.equal(axHzToSemitones(440), 5);
+  // Every MIDI note round-trips to its own integer semitone, which is what makes
+  // `Math.round` in the node a no-op on a real key rather than a quantiser.
+  for (let midi = 0; midi <= 127; midi++) {
+    const semitones = midi - AX_MIDI_ORIGIN_NOTE;
+    assert.equal(Math.round(axHzToSemitones(axSemitonesToHz(semitones))), semitones);
+  }
+});
+
+check("midi/keyb: axSemitonesToHz IS core's semitonesToHz — the restatement, pinned", () => {
+  // synth/** may not import core/**, so the E4 law is written twice. This is the join.
+  for (let s = -128; s <= 128; s += 0.5) {
+    assert.ok(Math.abs(axSemitonesToHz(s) - semitonesToHz(s)) < 1e-9, `disagree at ${s} st`);
+  }
+});
+
+check("⚠ TRAP 1: a HERTZ value is not a semitone, and the node refuses to treat it as one", () => {
+  // The failure this block exists to prevent: A4 wired straight from node_keyboard into
+  // an Axoloti pitch inlet arrives as SEMITONE 440, which is 35 octaves up.
+  const a4Hz = 440;
+  assert.notEqual(axHzToSemitones(a4Hz), a4Hz);
+  assert.equal(axHzToSemitones(a4Hz), 5);
+  // Stated as the ratio, because that is the size of the mistake: reading A440's HERTZ
+  // as a semitone count puts the note 435 semitones — 36 octaves, a factor of 8.1e10 —
+  // above where it belongs, which is past the sample rate and therefore SILENT.
+  assert.ok(axSemitonesToHz(a4Hz) / axSemitonesToHz(5) > 1e10);
+  assert.ok(axSemitonesToHz(a4Hz) > 48000, "the mis-scaled note is above any sample rate");
+  // A disconnected `pitch` input is Web Audio's 0, which has no logarithm. NaN is the
+  // honest answer and the caller tests it; a clamp here would play a note from silence.
+  assert.ok(Number.isNaN(axHzToSemitones(0)));
+  assert.ok(Number.isNaN(axHzToSemitones(-1)));
+});
+
+check("midi/keyb: the outlets match their integer shifts — note <<21, velocity <<20", () => {
+  // `_note<<21` over 2^27 is (midi−64)/64, and OUR wire carries semitones, so the two
+  // differ by exactly the ×64 that core/audio_specs_ax2.js's header names. A port that
+  // forgot it would be 64× flat and would still make music.
+  for (const midi of [0, 40, 64, 69, 100, 127]) {
+    assert.equal(keybNoteOutletFrac(midi) * AX_DIAL_FULL_SCALE, midi - AX_MIDI_ORIGIN_NOTE);
+  }
+  // `_velo<<20` is /128, NOT /127: a maximum velocity is 0.9921875 and never 1.
+  assert.equal(axMidiDataToFrac(127), 127 / AX_MIDI_DATA_FULL_SCALE);
+  // 0.992187 and not 0.992188: the BigInt model FLOORS, exactly as the hardware's
+  // integer path does, so the last digit is their truncation rather than our rounding.
+  assert.equal(keybVelocityOutletFrac(127), 0.992187);
+  assert.equal(axMidiDataToFrac(64), 0.5);
+});
+
+check("midi/keyb: gate2 is gate DELAYED ONE TICK, and it notches on a LEGATO note-on", () => {
+  // The one-line difference between the two outlets, and A1's whole legato behaviour:
+  // the filter envelope takes gate2 and the amplitude envelope takes gate, so the pad
+  // re-swells per finger without re-attacking.
+  const s = { note: 0, gate: 0, gate2: 0, velocity: 0, releaseVelocity: 0, wasHigh: false };
+  const a440 = axSemitonesToHz(5);
+  const b = axSemitonesToHz(7);
+  const tick = (hz, gate) => axKeybTick(hz, gate, 0.8, 0.25, -64, 63, s);
+
+  const on = tick(a440, 1);
+  assert.deepEqual([on.note, on.gate, on.gate2, on.velocity], [5, 1, 0, 0.8]);
+  assert.deepEqual([tick(a440, 1).gate, tick(a440, 1).gate2], [1, 1]);
+  // LEGATO: the gate never falls, and gate2 still notches for exactly one tick.
+  const legato = tick(b, 1);
+  assert.deepEqual([legato.note, legato.gate, legato.gate2], [7, 1, 0]);
+  assert.equal(tick(b, 1).gate2, 1);
+  // RELEASE: gate falls at once, gate2 one tick later — their lag runs both ways.
+  const off = tick(b, 0);
+  assert.deepEqual([off.gate, off.gate2, off.releaseVelocity], [0, 1, 0.25]);
+  assert.equal(tick(b, 0).gate2, 0);
+});
+
+check("midi/keyb: a note-on OUTSIDE the zone is skipped entirely, gate included", () => {
+  // Their `keyb zone lru` guard verbatim — and it is what A9 splits one keyboard with.
+  const s = { note: 0, gate: 0, gate2: 0, velocity: 0, releaseVelocity: 0, wasHigh: false };
+  const bassZone = (hz, gate) => axKeybTick(hz, gate, 0.8, 0.25, -64, -14, s);
+  assert.equal(bassZone(axSemitonesToHz(-20), 1).gate, 1);
+  bassZone(axSemitonesToHz(-20), 0);
+  // Above the zone: nothing happens at all, not even a gate.
+  const outside = bassZone(axSemitonesToHz(10), 1);
+  assert.equal(outside.gate, 0);
+  assert.equal(outside.note, -20, "an out-of-zone note must not overwrite the last in-zone one");
+});
+
+check("midi/bend: a full bend is 64 SEMITONES, which a `div 32` turns into the usual ±2", () => {
+  // A frac32 pitch of 1.0 IS 64 semitones. Reading the bend as ±1 instead would make
+  // every ported vibrato 64× shallow — inaudible rather than wrong, which is worse.
+  assert.equal(axBendSemitones(0), 0);
+  assert.equal(axBendSemitones(1), AX_DIAL_FULL_SCALE);
+  assert.equal(axBendSemitones(-1), -AX_DIAL_FULL_SCALE);
+  assert.equal(AX_MATH_OPS.divide32.float(axBendSemitones(1)), 2);
+  // Their 14-bit centre really is the middle of the range they map to −1…1.
+  const bendPosition = (raw14) => (raw14 - 0x2000) / 0x2000;
+  assert.equal(bendPosition(0x2000), 0);
+  assert.equal(bendPosition(0), -1);
+});
+
+// ── patch/patcher poly=N — the allocator, against a transcription of the C ──
+
+/**
+ * Query (allocates). THE REFERENCE ALLOCATOR: `PatchViewCodegen.generatePolyCode`'s
+ * `sMidiCode` transcribed as literally as JavaScript allows, INDEPENDENTLY of
+ * synth/ax1_dsp.js — including their `int min = 1<<30`, their `<` (not `<=`) so ties
+ * keep the lowest index, and their note-off loop with no `break`.
+ *
+ * Written out rather than shared because a shared body would be the port measuring
+ * itself, which is the same reason ax1_dsp.js keeps both sides of every arithmetic.
+ *
+ * @param {number} poly - attr_poly
+ * @param {Array<[string, number]>} events - ["on"|"off", note] in order
+ * @returns {number[]} the voice index each event touched (−1 for an off that matched none)
+ */
+function referencePolyAllocator(poly, events) {
+  const notePlaying = new Array(poly).fill(0);
+  const voicePriority = new Array(poly).fill(0);
+  const pressed = new Array(poly).fill(0);
+  let priority = 0;
+  const touched = [];
+  for (const [kind, data1] of events) {
+    if (kind === "on") {
+      let min = 1 << 30;
+      let mini = 0;
+      for (let i = 0; i < poly; i++) {
+        if (voicePriority[i] < min) { min = voicePriority[i]; mini = i; }
+      }
+      voicePriority[mini] = 100000 + priority++;
+      notePlaying[mini] = data1;
+      pressed[mini] = 1;
+      touched.push(mini);
+    } else {
+      let hit = -1;
+      for (let i = 0; i < poly; i++) {
+        if ((notePlaying[i] === data1) && pressed[i]) {
+          voicePriority[i] = priority++;
+          pressed[i] = 0;
+          hit = i;
+        }
+      }
+      touched.push(hit);
+    }
+  }
+  return touched;
+}
+
+check("poly/voices: the allocation is their generated C, event for event", () => {
+  // A real playing sequence: a chord, a release, two more notes, then an overflow that
+  // has to steal. Anything that got the `100000` offset or the `<` wrong diverges here.
+  const events = [
+    ["on", 60], ["on", 64], ["on", 67], ["off", 64], ["on", 62], ["on", 65],
+    ["off", 60], ["on", 69], ["on", 71], ["on", 72], ["off", 67], ["on", 74],
+  ];
+  for (const poly of [1, 3, 5, 7]) {
+    const s = axPolyState(poly);
+    const ported = events.map(([kind, note]) => (kind === "on"
+      ? axPolyNoteOn(note, s)
+      : (axPolyNoteOff(note, s)[0] ?? -1)));
+    assert.deepEqual(ported, referencePolyAllocator(poly, events), `poly=${poly} diverges`);
+  }
+});
+
+check("poly/voices: a RELEASED voice is stolen before a SOUNDING one — the 100000 offset", () => {
+  // The whole mechanism, isolated. Without the offset a note-off would leave the voice
+  // with a HIGHER priority than an older sounding note, so the allocator would steal
+  // the held note and let the free one sit idle — a poly synth that eats its own chord.
+  const s = axPolyState(3);
+  assert.equal(axPolyNoteOn(60, s), 0);
+  assert.equal(axPolyNoteOn(64, s), 1);
+  assert.equal(axPolyNoteOn(67, s), 2);
+  assert.deepEqual(axPolyNoteOff(64, s), [1]);
+  // Voice 1 is free and voice 0 is the oldest sounding one; the free one must win.
+  assert.equal(axPolyNoteOn(69, s), 1);
+  assert.ok(s.voicePriority[0] >= AX_POLY_ACTIVE_PRIORITY_BASE, "a sounding voice sits above the offset");
+  // Now every voice sounds, so the next note steals the OLDEST — voice 0.
+  assert.equal(axPolyNoteOn(71, s), 0);
+});
+
+check("poly/voices: a note-off releases EVERY voice holding it — their loop has no break", () => {
+  // Two voices can hold one note after a steal, and their `for` has no `break`, so both
+  // are released. A `break` here would leak a voice per doubled note.
+  const s = axPolyState(2);
+  axPolyNoteOn(60, s);
+  axPolyNoteOn(60, s);
+  assert.deepEqual(axPolyNoteOff(60, s), [0, 1]);
 });
 
 // ── The coercion table, restated as tests because it is the trap ────────────
@@ -780,6 +994,102 @@ check("the worklet's stereo out is a hard clip after the volume, on both channel
   processor.process([[loud], [quiet]], outputs, { volume: constantParam(0.5) });
   assert.equal(outputs[0][0][0], axStereoOutSample(4, 0.5));
   assert.ok(Math.abs(outputs[0][1][0] - axStereoOutSample(0.8, 0.5)) < 1e-6);
+});
+
+check("the worklet's keyboard converts hertz to semitones and notches gate2, in a real quantum", () => {
+  // The restatement pin for the node § R7-AXO-TRAPS trap 1 is about. `processors_ax1.js`
+  // cannot import, so its copy of the E4 law is a third statement of it; a copy that was
+  // right in ax1_dsp.js and wrong here would pass every check above and still transpose.
+  const Keyb = WORKLET.get("ax1-midi-keyb");
+  const processor = new Keyb();
+  const a440 = new Float32Array(AX1_QUANTUM).fill(440);
+  const gate = new Float32Array(AX1_QUANTUM).fill(1);
+  const params = {
+    start_note: constantParam(-64), end_note: constantParam(63),
+    velocity: constantParam(0.8), release_velocity: constantParam(0.25),
+  };
+  const [note, gateOut, gate2, velocity] = runQuantum(processor, [a440, gate], 5, params);
+  // A440 IS semitone 5 on the wire, not 440 — the whole trap in one assertion.
+  assert.equal(note[0], 5);
+  assert.notEqual(note[0], 440);
+  // Float32Array storage: the reference is binary64 and the buffer is binary32.
+  assert.ok(Math.abs(velocity[0] - 0.8) < 1e-6);
+  // gate2 is low for the FIRST control tick only, and high from the second on.
+  assert.equal(gateOut[0], 1);
+  assert.equal(gate2[0], 0);
+  assert.equal(gate2[AX_KRATE_BLOCK], 1);
+  assert.equal(gate2[AX1_QUANTUM - 1], 1);
+  // And it agrees tick for tick with ax1_dsp.js over the same quantum.
+  const s = { note: 0, gate: 0, gate2: 0, velocity: 0, releaseVelocity: 0, wasHigh: false };
+  for (let block = 0; block < AX1_QUANTUM / AX_KRATE_BLOCK; block++) {
+    const expected = axKeybTick(440, 1, 0.8, 0.25, -64, 63, s);
+    assert.equal(note[block * AX_KRATE_BLOCK], expected.note);
+    assert.equal(gate2[block * AX_KRATE_BLOCK], expected.gate2);
+  }
+});
+
+check("the worklet's bend and touch fire ONE control tick per change, not per sample", () => {
+  // Their `ntrig` is cleared every k-rate tick, so the pulse is 1/3000 s wide. A
+  // per-sample copy would be 16× narrower and a downstream edge detector would miss it.
+  const Bend = WORKLET.get("ax1-midi-bend");
+  const bend = new Bend();
+  const position = new Float32Array(AX1_QUANTUM);
+  // One step, halfway through the quantum: exactly one control tick should trigger.
+  for (let i = 0; i < AX1_QUANTUM; i++) position[i] = i < AX1_QUANTUM / 2 ? 0 : 0.5;
+  const [bendOut, trig] = runQuantum(bend, [], 2, { position });
+  assert.equal(bendOut[0], axBendSemitones(0));
+  assert.equal(bendOut[AX1_QUANTUM - 1], axBendSemitones(0.5));
+  const trigTicks = [];
+  for (let start = 0; start < AX1_QUANTUM; start += AX_KRATE_BLOCK) trigTicks.push(trig[start]);
+  assert.deepEqual(trigTicks, [0, 0, 0, 0, 1, 0, 0, 0]);
+
+  const Touch = WORKLET.get("ax1-midi-touch");
+  const [pressureOut, touchTrig] = runQuantum(new Touch(), [], 2, { pressure: constantParam(0.75) });
+  assert.equal(pressureOut[0], 0.75);
+  // A value that arrives already different from the initial 0 triggers once, then holds.
+  assert.equal(touchTrig[0], 1);
+  assert.equal(touchTrig[AX_KRATE_BLOCK], 0);
+});
+
+check("the worklet's allocator is ax1_dsp's allocator, and `voice` selects a real slot", () => {
+  // TWO nodes on ONE input stream with different `voice` values is what N-voice
+  // polyphony costs here (the subgraph is not replicated — see the spec's deviations).
+  // This is the assertion that the two really do report DIFFERENT notes.
+  const Poly = WORKLET.get("ax1-poly-voices");
+  const silence = new Float32Array(AX1_QUANTUM);
+  const notes = [5, 9, 12];
+  const params = (voice) => ({ voices: constantParam(3), voice: constantParam(voice) });
+
+  const reported = [0, 1, 2].map((voice) => {
+    const processor = new Poly();
+    let seen = null;
+    // One note per quantum, each with a low gate between so the edge detector fires.
+    for (const semitone of notes) {
+      const note = new Float32Array(AX1_QUANTUM).fill(semitone);
+      const gate = new Float32Array(AX1_QUANTUM).fill(1);
+      const [noteOut] = runQuantum(processor, [note, gate, silence, silence, silence], 5, params(voice));
+      seen = noteOut[AX1_QUANTUM - 1];
+      runQuantum(processor, [note, silence, silence, silence, silence], 5, params(voice));
+    }
+    return seen;
+  });
+  // Three notes into three voices: each slot holds its own, in allocation order.
+  assert.deepEqual(reported, notes);
+
+  // …and it is the SAME allocation ax1_dsp.js computes for the same event stream.
+  const s = axPolyState(3);
+  const slots = notes.map((n) => { const slot = axPolyNoteOn(n, s); axPolyNoteOff(n, s); return slot; });
+  assert.deepEqual(slots, [0, 1, 2]);
+
+  // A `voice` past the pool is SILENT rather than wrapping onto a sounding slot.
+  const beyond = new Poly();
+  const note = new Float32Array(AX1_QUANTUM).fill(5);
+  const gate = new Float32Array(AX1_QUANTUM).fill(1);
+  const [outOfRange, outOfRangeGate] = runQuantum(beyond, [note, gate, silence, silence, silence], 5, {
+    voices: constantParam(2), voice: constantParam(5),
+  });
+  assert.equal(outOfRange[0], 0);
+  assert.equal(outOfRangeGate[0], 0);
 });
 
 check("a disconnected input reads 0 rather than NaN — a NaN here poisons the graph", () => {

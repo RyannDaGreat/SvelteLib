@@ -52,8 +52,11 @@
  */
 
 import {
-  bogModulateSteps, OffsetKernel, PeqKernel, PressorKernel, RACK_VOLTS_PER_UNIT, SampleHoldKernel,
-  StackKernel, SwitchKernel, VcaKernel, VcfKernel, VcmKernel, VcoKernel, WalkKernel, XFadeKernel,
+  BOG_LLFO_DEFAULT_PULSE_WIDTH, BOG_MATRIX_MAX_GAIN_DB, BOG_MATRIX_MIN_GAIN_DB, bogMatrixParamNames, bogModulateSteps, bogSemitonesToHz, LlfoKernel, LvcoKernel, MatrixKernel,
+  NoiseKernel, OffsetKernel, OneEightKernel, PeqKernel, PolyCon8Kernel, PressorKernel,
+  RACK_VOLTS_PER_UNIT, ReftoneKernel, SampleHoldKernel, SlewKernel, StackKernel, SumsKernel,
+  SwitchKernel, VcaKernel, VcfKernel, VcmKernel, VcoKernel, Walk2Kernel, WalkKernel, XcoKernel,
+  XFadeKernel,
 } from "../vc3b_kernels.js";
 
 /**
@@ -139,6 +142,135 @@ export function numberedPorts(stem, count, suffix = "") {
   const keys = [];
   for (let i = 1; i <= count; i++) keys.push(`${stem}${i}${suffix}`);
   return keys;
+}
+
+/** `PEQ6.hpp`'s six `configParam` positions, squared and scaled by 20 000 — the
+ *  band centres a 6-band bank starts on, which are NOT PEQ14's first six. */
+export const PEQ6_FREQUENCIES_HZ = Object.freeze([100, 175, 350, 700, 1400, 2500]);
+
+/** How many bands `Bogaudio-PEQ6` has. Six, and unlike the collapsed node it is
+ *  not a knob: PEQ6 is the width its per-band CV inlets are drawn for. */
+export const PEQ6_BANDS = 6;
+
+/** `PEQ6.hpp`'s per-band frequency-CV attenuverter default — ONE, where the
+ *  global one is zero. That asymmetry is theirs and it is what makes the per-band
+ *  inlets work the moment they are patched. */
+const PEQ6_BAND_CV_ATTEN_DEFAULT = 1;
+
+/**
+ * Pure function. PEQ6's per-band AudioParams — a level, a centre and a frequency-CV
+ * attenuverter for each of the six, generated rather than written out.
+ *
+ * @returns {object[]} AudioParam descriptors, 18 of them
+ *
+ * @example peq6BandParams().length // 18
+ * @example peq6BandParams()[0].name // "level1"
+ * @example peq6BandParams()[6].defaultValue // 100
+ * @example peq6BandParams()[12].name // "frequencyCvAtten1"
+ */
+export function peq6BandParams() {
+  const levels = [];
+  const frequencies = [];
+  const attenuators = [];
+  for (let i = 1; i <= PEQ6_BANDS; i++) {
+    levels.push(unit(`level${i}`, PEQ_LEVEL_DEFAULT_DB, -60, 6));
+    frequencies.push(unit(`frequency${i}`, PEQ6_FREQUENCIES_HZ[i - 1], 3, 20000));
+    attenuators.push(unit(`frequencyCvAtten${i}`, PEQ6_BAND_CV_ATTEN_DEFAULT, -1, 1));
+  }
+  return [...levels, ...frequencies, ...attenuators];
+}
+
+/**
+ * Pure function. PEQ6's audio inlets, IN BOGAUDIO'S OWN `InputsIds` ORDER — the
+ * global three, then a level/frequency PAIR per band. The order is preserved
+ * because it is the port index a wire resolves through, and because a card that
+ * lists its inlets in the panel's own order is one an author can follow.
+ *
+ * @returns {string[]} 15 keys
+ *
+ * @example peq6Inputs().slice(0, 3) // ["frequency_cv", "bandwidth_cv", "in"]
+ * @example peq6Inputs()[3] // "level1_cv"
+ * @example peq6Inputs()[4] // "frequency_cv1"
+ * @example peq6Inputs().length // 15
+ */
+export function peq6Inputs() {
+  const keys = ["frequency_cv", "bandwidth_cv", "in"];
+  for (let i = 1; i <= PEQ6_BANDS; i++) keys.push(`level${i}_cv`, `frequency_cv${i}`);
+  return keys;
+}
+
+/**
+ * Pure function. One matrix node's AudioParams — a cell per crosspoint plus the
+ * input-gain trim, derived from `bogMatrixParamNames` so the 64-cell nodes cannot
+ * carry a transposed or missing cell.
+ *
+ * @param {number} ins
+ * @param {number} outs
+ * @returns {object[]} AudioParam descriptors, ins·outs + 1
+ *
+ * @example matrixParams(1, 8).length // 9
+ * @example matrixParams(8, 8).length // 65
+ * @example matrixParams(2, 2)[1].name // "mix21"
+ */
+export function matrixParams(ins, outs) {
+  const cells = bogMatrixParamNames(ins, outs).map((name) => unit(name, 0, -1, 1));
+  return [...cells, unit("inputGain", 0, BOG_MATRIX_MIN_GAIN_DB, BOG_MATRIX_MAX_GAIN_DB)];
+}
+
+/** LLFO's frequency knob, in HERTZ (D13). Their −5…8 V knob sits SEVEN octaves
+ *  below a VCO's, so its span is `C4 · 2^(−12 … +1)` — which is what these three
+ *  calls say, restated in `core/audio_specs_vc3b.js` against the same converter. */
+const LLFO_MIN_HZ = bogSemitonesToHz(-144);
+const LLFO_MAX_HZ = bogSemitonesToHz(12);
+const LLFO_DEFAULT_HZ = bogSemitonesToHz(-84);
+
+/** The Offset knob's own full range (`LFOBase`'s `_offsetScale` of 2 × 5 V). */
+const LLFO_MAX_OFFSET_V = 10;
+
+/** XCO's phase knobs read out in DEGREES, so ±180 is their ±1 (D-XCOPHASE). */
+const XCO_MAX_PHASE_DEGREES = 180;
+
+/** `XCO.hpp`'s pulse-width bound — ±0.97, not ±1, because their own knob stops
+ *  short of the oscillator's 3% limit rather than clamping against it. */
+const XCO_MAX_PULSE_WIDTH = 0.97;
+
+/**
+ * Pure function. One XCO waveform's four AudioParams — a modifier, a phase and a
+ * mix, named `<wave><Modifier>` / `<wave>Phase` / `<wave>Mix`. Written once
+ * because the four waveforms differ only in the modifier's name and range, and
+ * sixteen hand-typed descriptors is sixteen chances to give the sine the saw's
+ * default.
+ *
+ * @param {string} wave - "square" | "saw" | "triangle" | "sine"
+ * @param {string} modifier - the modifier param's suffix, e.g. "Pw"
+ * @param {number} modifierDefault
+ * @param {number} modifierMin
+ * @param {number} modifierMax
+ * @returns {object[]} three AudioParam descriptors
+ *
+ * @example xcoWaveParams("saw", "Saturation", 0, 0, 1)[0].name // "sawSaturation"
+ * @example xcoWaveParams("saw", "Saturation", 0, 0, 1)[1].name // "sawPhase"
+ * @example xcoWaveParams("saw", "Saturation", 0, 0, 1)[2].defaultValue // 1
+ */
+export function xcoWaveParams(wave, modifier, modifierDefault, modifierMin, modifierMax) {
+  return [
+    unit(`${wave}${modifier}`, modifierDefault, modifierMin, modifierMax),
+    unit(`${wave}Phase`, 0, -XCO_MAX_PHASE_DEGREES, XCO_MAX_PHASE_DEGREES),
+    unit(`${wave}Mix`, 1, 0, 1),
+  ];
+}
+
+/**
+ * Pure function. One XCO waveform's three CV inlets, in their `InputsIds` order.
+ *
+ * @param {string} wave - "square" | "saw" | "triangle" | "sine"
+ * @param {string} modifier - the modifier inlet's stem, e.g. "pw"
+ * @returns {string[]}
+ *
+ * @example xcoWaveInputs("saw", "saturation") // ["saw_saturation_cv", "saw_phase_cv", "saw_mix_cv"]
+ */
+export function xcoWaveInputs(wave, modifier) {
+  return [`${wave}_${modifier}_cv`, `${wave}_phase_cv`, `${wave}_mix_cv`];
 }
 
 /**
@@ -307,6 +439,170 @@ export const VC3B_PROCESSORS = [
     params: [unit("semitones", 0, 0, 11), unit("octave", 0, -3, 3), unit("fine", 0, -0.99, 0.99)],
     audioInputs: ["cv", "in"],
     outputs: ["thru", "out"],
+  },
+  {
+    name: "vc3b-peq6-processor", module: "vcvPeq6", label: "VCV Bogaudio PEQ6",
+    pitchPorts: [], gatePorts: [],
+    construct: [], options: ["lowMode", "highMode", "fmodRange"],
+    // The SAME kernel the collapsed node runs, fixed at six bands and with D7's
+    // per-band frequency CV turned back on — see PeqKernel's D7 note for why the
+    // fourteen-band width does not get them and this one does.
+    make: (rate) => new PeqKernel(rate, { bands: PEQ6_BANDS, portBands: PEQ6_BANDS, perBandFrequencyCv: true }),
+    params: [
+      unit("bandwidth", 0.33, 0, 1),
+      unit("frequencyCvAtten", 0, -1, 1),
+      ...peq6BandParams(),
+    ],
+    audioInputs: peq6Inputs(),
+    outputs: ["out", ...numberedPorts("out", PEQ6_BANDS)],
+  },
+  {
+    name: "vc3b-xco-processor", module: "vcvXco", label: "VCV Bogaudio XCO",
+    pitchPorts: ["pitch"], gatePorts: [],
+    construct: [], options: ["slow", "fmMode", "dcCorrection", "clipping"],
+    make: (rate) => new XcoKernel(rate),
+    params: [
+      unit("frequency", 0, -36, 72),
+      unit("fine", 0, -1, 1),
+      unit("fmDepth", 0, 0, 1),
+      ...xcoWaveParams("square", "Pw", 0, -XCO_MAX_PULSE_WIDTH, XCO_MAX_PULSE_WIDTH),
+      ...xcoWaveParams("saw", "Saturation", 0, 0, 1),
+      ...xcoWaveParams("triangle", "Sample", 0, 0, 1),
+      ...xcoWaveParams("sine", "Feedback", 0, 0, 1),
+    ],
+    audioInputs: [
+      "fm", "fm_depth_cv",
+      ...xcoWaveInputs("square", "pw"),
+      ...xcoWaveInputs("saw", "saturation"),
+      ...xcoWaveInputs("triangle", "sample"),
+      ...xcoWaveInputs("sine", "feedback"),
+      "pitch", "sync",
+    ],
+    outputs: ["square", "saw", "triangle", "sine", "mix"],
+  },
+  {
+    name: "vc3b-lvco-processor", module: "vcvLvco", label: "VCV Bogaudio LVCO",
+    pitchPorts: ["pitch"], gatePorts: [],
+    construct: [], options: ["wave", "slow", "fmMode", "tuning", "dcCorrection"],
+    make: (rate) => new LvcoKernel(rate),
+    params: [unit("frequency", 0, -36, 72), unit("fmDepth", 0, 0, 1)],
+    audioInputs: ["pitch", "fm", "sync"],
+    outputs: ["out"],
+  },
+  {
+    name: "vc3b-llfo-processor", module: "vcvLlfo", label: "VCV Bogaudio LLFO",
+    pitchPorts: ["pitch"], gatePorts: [],
+    construct: ["seed"], options: ["wave", "slow"],
+    make: (rate, options) => new LlfoKernel(rate, options),
+    params: [
+      unit("frequency", LLFO_DEFAULT_HZ, LLFO_MIN_HZ, LLFO_MAX_HZ),
+      unit("offset", 0, -LLFO_MAX_OFFSET_V, LLFO_MAX_OFFSET_V),
+      unit("scale", 1, 0, 1),
+      unit("pulseWidth", BOG_LLFO_DEFAULT_PULSE_WIDTH, -1, 1),
+      unit("sampling", 0, 0, 1),
+      unit("smoothing", 0, 0, 1),
+    ],
+    audioInputs: ["pitch", "reset"],
+    outputs: ["out"],
+  },
+  {
+    name: "vc3b-reftone-processor", module: "vcvReftone", label: "VCV Bogaudio Reftone",
+    pitchPorts: ["cv"], gatePorts: [],
+    construct: [], options: ["pitch"],
+    make: (rate) => new ReftoneKernel(rate),
+    params: [unit("octave", 4, 1, 8), unit("fine", 0, -0.99, 0.99)],
+    audioInputs: [],
+    outputs: ["cv", "out"],
+  },
+  {
+    name: "vc3b-walk2-processor", module: "vcvWalk2", label: "VCV Bogaudio Walk2",
+    pitchPorts: [], gatePorts: ["jump"],
+    construct: ["seed"], options: ["jumpMode"],
+    make: (rate, options) => new Walk2Kernel(rate, options),
+    params: [
+      unit("rateX", 0.1, 0, 1), unit("offsetX", 0, -1, 1), unit("scaleX", 1, 0, 1),
+      unit("rateY", 0.1, 0, 1), unit("offsetY", 0, -1, 1), unit("scaleY", 1, 0, 1),
+    ],
+    audioInputs: ["offset_x_cv", "scale_x_cv", "rate_x_cv", "offset_y_cv", "scale_y_cv", "rate_y_cv", "jump"],
+    outputs: ["out_x", "out_y", "distance"],
+  },
+  {
+    name: "vc3b-noise-processor", module: "vcvBogNoise", label: "VCV Bogaudio Noise",
+    pitchPorts: [], gatePorts: [],
+    construct: ["seed"], options: [],
+    make: (rate, options) => new NoiseKernel(options),
+    params: [],
+    audioInputs: ["abs"],
+    outputs: ["white", "pink", "red", "gauss", "abs", "blue"],
+  },
+  {
+    name: "vc3b-sums-processor", module: "vcvSums", label: "VCV Bogaudio Sums",
+    pitchPorts: [], gatePorts: [],
+    construct: [], options: ["outputLimit"],
+    make: () => new SumsKernel(),
+    params: [],
+    audioInputs: ["a", "b", "negate"],
+    outputs: ["sum", "difference", "max", "min", "negate"],
+  },
+  {
+    name: "vc3b-slew-processor", module: "vcvSlew", label: "VCV Bogaudio Slew",
+    pitchPorts: [], gatePorts: [],
+    construct: [], options: ["slow"],
+    make: (rate) => new SlewKernel(rate),
+    // D13: the time knobs are SECONDS, and their default position
+    // (SQUARE_ROOT_ONE_TENTH) is exactly one second of them.
+    params: [
+      unit("rise", 1, 0, 10), unit("riseShape", 0, -1, 1),
+      unit("fall", 1, 0, 10), unit("fallShape", 0, -1, 1),
+    ],
+    audioInputs: ["rise_cv", "fall_cv", "in"],
+    outputs: ["out"],
+  },
+  {
+    name: "vc3b-polycon8-processor", module: "vcvPolycon8", label: "VCV Bogaudio PolyCon8",
+    pitchPorts: [], gatePorts: [],
+    construct: [], options: [],
+    make: () => new PolyCon8Kernel(),
+    params: numberedPorts("channel", 8).map((name) => unit(name, 0, -10, 10)),
+    audioInputs: [],
+    outputs: numberedPorts("out", 8),
+  },
+  {
+    name: "vc3b-oneeight-processor", module: "vcvOneeight", label: "VCV Bogaudio OneEight",
+    pitchPorts: [], gatePorts: ["clock", "reset"],
+    construct: [],
+    options: ["direction", "selectOnClock", "triggeredSelect", "reverseOnNegativeClock", "wrapSelectAtSteps"],
+    make: (rate) => new OneEightKernel(rate),
+    params: [unit("steps", 8, 1, 8), unit("select", 0, 0, 7)],
+    audioInputs: ["clock", "reset", "select_cv", "in"],
+    outputs: numberedPorts("out", 8),
+  },
+  {
+    name: "vc3b-switch18-processor", module: "vcvSwitch18", label: "VCV Bogaudio Switch18",
+    pitchPorts: [], gatePorts: [],
+    construct: [], options: ["clipping", "mixMode"],
+    make: (rate) => new MatrixKernel(rate, 1, 8, bogMatrixParamNames(1, 8)),
+    params: matrixParams(1, 8),
+    audioInputs: ["in"],
+    outputs: numberedPorts("out", 8),
+  },
+  {
+    name: "vc3b-switch88-processor", module: "vcvSwitch88", label: "VCV Bogaudio Switch88",
+    pitchPorts: [], gatePorts: [],
+    construct: [], options: ["clipping", "mixMode"],
+    make: (rate) => new MatrixKernel(rate, 8, 8, bogMatrixParamNames(8, 8)),
+    params: matrixParams(8, 8),
+    audioInputs: numberedPorts("in", 8),
+    outputs: numberedPorts("out", 8),
+  },
+  {
+    name: "vc3b-matrix88-processor", module: "vcvMatrix88", label: "VCV Bogaudio Matrix88",
+    pitchPorts: [], gatePorts: [],
+    construct: [], options: ["clipping", "mixMode"],
+    make: (rate) => new MatrixKernel(rate, 8, 8, bogMatrixParamNames(8, 8)),
+    params: matrixParams(8, 8),
+    audioInputs: numberedPorts("in", 8),
+    outputs: numberedPorts("out", 8),
   },
 ];
 

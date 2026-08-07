@@ -5172,6 +5172,46 @@ coercions, which is true of the TYPE and false of the VALUE: frac32→int32 is `
 multiply by 64, and that is exactly what turns a 0..1 LFO ramp into a step-table index.
 A10 needs it. Dropping it produces a sequencer that never leaves step 0.
 
+#### R7-AUDIBLE — A DEMO PATCH MAKES SOUND ON INSERT (user ruling, 2026-08-07)
+
+> *"So many of these patches just don't make audio for a while…any patch that doesn't make
+> audio right away (unless it has a button or keyboard biult in to make noise) needs to
+> make noise automatically"*
+
+**THE RULE.** Insert a demo patch and it is AUDIBLE, immediately, with no further gesture.
+The single exception is a patch that **ships its own trigger inside the patch** — a
+`node_keyboard` or a button the author can see and press. "Audible if you wire something
+to it" and "audible if you happen to own a MIDI controller" are not exceptions.
+
+**WHY THIS IS A REQUIREMENT AND NOT A NICETY.** A demo patch's entire job is to be
+impressive on first contact — `core/audio_patches.js` has said so since the first one, and
+`tests/audio_patches_test.js` already refuses a patch that cannot reach an output for the
+same reason. A patch that inserts perfectly and sits silent is indistinguishable, to the
+person who just inserted it, from a broken one. That is the exact failure the meter and
+spectrum tail exists to prevent visually, and this is its audible half.
+
+**IT IS NOT SATISFIED BY OWNING A KEYBOARD NODE THAT GOES NOWHERE.** Measured 2026-08-07:
+`axo-strings-poly`, `axo-radioactive` and `axo-tranquille` each already contain a
+`node_keyboard`, and pressing its keys made no sound, because the chain runs through
+`audio_ax_keyb` and `audio_ax_poly_voices` — both PLACEHOLDERS, and a placeholder drops
+every wire that touches it. The exemption is "ships a WORKING trigger", not "ships a
+trigger-shaped widget".
+
+**THE THREE HONEST WAYS TO SATISFY IT**, in preference order:
+1. **The patch self-plays** because the original does — a drum machine, a generative
+   sequence, a drone. `axo-drseq` is a machine with its own clock and never needed a
+   keyboard; if it is silent that is a defect in the port, not a missing trigger.
+2. **The patch ships a playable `node_keyboard`** wired so its keys really sound. For an
+   Axoloti patch this must respect § R7-AXO-TRAPS: `node_keyboard.pitch` is in HERTZ and
+   every Axoloti pitch port is in SEMITONES FROM E4, so a direct wire transposes each note
+   by its own frequency in semitones. It needs AX-1's `midi/keyb` or a Hz→semitone step.
+3. **The patch adds a self-driving source the original implies** — a slow gate loop under
+   a pad, a clock under a sequence. **This is a DEVIATION and is recorded as one**: the
+   original was played by hand and ours plays itself.
+
+A patch may of course do both — self-play AND offer a keyboard. That is the best outcome
+for a pad, and it is what the user means by "impress people with my demos".
+
 #### R7-17-SEL — THE 20 HEADLINE PATCHES, NAMED (user ruling, 2026-08-06)
 
 > *"Do not choose teh easy nodes or the easy patches. That's lazy. You need to choose 20

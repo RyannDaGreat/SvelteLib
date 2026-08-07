@@ -505,7 +505,10 @@ export const VCV_AMBIENT_DRONE = {
   ],
   nodes: [
     // ── THE MODULATION SOURCE AND THE VOICES ──────────────────────────────────
-    { id: "reftone", type: "audio_vcv_reftone", col: 0, row: 0, knobs: { pitch: 9, octave: 4 } },
+    // `pitch: "A"`, not 9 — VC-3b shipped Reftone with a DISCRETE note-name knob, and the
+    // harvested 9 was an index into that list. A440 is Reftone's whole purpose, so the
+    // index and the name agree here; the number simply is not what the knob takes.
+    { id: "reftone", type: "audio_vcv_reftone", col: 0, row: 0, knobs: { pitch: "A", octave: 4 } },
     { id: "caudal", type: "audio_vcv_caudal", col: 0, row: 1, knobs: { p0: -0.327 } },
     { id: "noiseW", type: "audio_noise", col: 0, row: 2, knobs: { color: "white", level: 1 } },
     { id: "noiseP", type: "audio_noise", col: 0, row: 3, knobs: { color: "pink", level: 1 } },
@@ -523,7 +526,11 @@ export const VCV_AMBIENT_DRONE = {
     {
       id: "peq6", type: "audio_vcv_peq6", col: 3, row: 0,
       knobs: {
-        bandwidth: 0.33, lp: 1, hp: 1,
+        // `lowMode`/`highMode`, not `lp`/`hp`: the placeholder guessed two booleans and
+        // VC-3b's real PEQ6 has two DISCRETE mode knobs. 1 meant "on", which is
+        // "lowpass" on band 1 and "highpass" on band 6 — the shelf pair that makes this a
+        // formant filter rather than six bandpasses.
+        bandwidth: 0.33, lowMode: "lowpass", highMode: "highpass",
         level1: 0.9091, frequency1: 0.0707, level2: 0.9091, frequency2: 0.0935,
         level3: 0.9091, frequency3: 0.1323, level4: 0.9091, frequency4: 0.1871,
         level5: 0.9091, frequency5: 0.2646, level6: 0.9091, frequency6: 0.3536,
@@ -572,12 +579,12 @@ export const VCV_AMBIENT_DRONE = {
     { from: "caudal", fromPort: "o0", to: "vessek", toPort: "i8" },
     // ── THE FORMANT SHAPER: six band levels, six chaotic voltages ─────────────
     { from: "vessek", fromPort: "o0", to: "peq6", toPort: "in" },
-    { from: "add5", fromPort: "volt_1", to: "peq6", toPort: "level1" },
-    { from: "add5", fromPort: "volt_2", to: "peq6", toPort: "level2" },
-    { from: "add5", fromPort: "volt_3", to: "peq6", toPort: "level3" },
-    { from: "add5", fromPort: "volt_4", to: "peq6", toPort: "level4" },
-    { from: "add5", fromPort: "volt_5", to: "peq6", toPort: "level5" },
-    { from: "add5", fromPort: "volt_6", to: "peq6", toPort: "level6" },
+    { from: "add5", fromPort: "volt_1", to: "peq6", toPort: "level1_cv" },
+    { from: "add5", fromPort: "volt_2", to: "peq6", toPort: "level2_cv" },
+    { from: "add5", fromPort: "volt_3", to: "peq6", toPort: "level3_cv" },
+    { from: "add5", fromPort: "volt_4", to: "peq6", toPort: "level4_cv" },
+    { from: "add5", fromPort: "volt_5", to: "peq6", toPort: "level5_cv" },
+    { from: "add5", fromPort: "volt_6", to: "peq6", toPort: "level6_cv" },
     // ── THE GRAIN ENGINE ──────────────────────────────────────────────────────
     { from: "peq6", fromPort: "out", to: "supercell", toPort: "in_l" },
     // ── THE SECOND TAIL: supersaw → Feline (cutoff summed with white noise) → HPF

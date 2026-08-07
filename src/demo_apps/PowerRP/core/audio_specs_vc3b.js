@@ -723,6 +723,600 @@ export const VCV_STACK_SPEC = {
   ],
 };
 
+// ── PEQ6 — THE SIX-BAND WIDTH, WITH THE PER-BAND CV THE COLLAPSED NODE DROPS ─
+
+/** `PEQ6.hpp`'s six frequency defaults, in HERTZ (their positions squared and
+ *  scaled by 20000). NOT PEQ14's first six — a six-band bank is spread wider. */
+const PEQ6_FREQUENCIES_HZ = [100, 175, 350, 700, 1400, 2500];
+const PEQ6_BANDS = 6;
+
+/**
+ * Pure function. PEQ6's per-band knob rows — a level, a centre and a frequency-CV
+ * attenuverter for each of the six, GENERATED for the reason `peqBandKnobs` is:
+ * eighteen literals is eighteen places for a band number to be wrong.
+ *
+ * @returns {object[]} knob declarations, grouped by KIND (all levels, all
+ *          centres, all attenuverters) so the Inspector reads the way an author
+ *          works a filter bank
+ *
+ * @example peq6BandKnobs().length // 18
+ * @example peq6BandKnobs()[0].key // "level1"
+ * @example peq6BandKnobs()[6].default // 100
+ * @example peq6BandKnobs()[12].key // "frequencyCvAtten1"
+ */
+export function peq6BandKnobs() {
+  const levels = [];
+  const frequencies = [];
+  const attenuators = [];
+  for (let i = 1; i <= PEQ6_BANDS; i++) {
+    levels.push({
+      key: `level${i}`, label: `Band ${i} level`, default: 0, min: PEQ_MIN_DB, max: PEQ_MAX_DB, step: 0.1, unit: " dB",
+      help: `Band ${i}'s output level in decibels, −60 (silence) to +6, with 0 dB their own default. Its CV inlet ATTENUATES this rather than adding — 10 V is unity and 0 V is silence — which is what lets six envelopes carve six formants out of one signal.`,
+    });
+    frequencies.push({
+      key: `frequency${i}`, label: `Band ${i} freq`, default: PEQ6_FREQUENCIES_HZ[i - 1], min: 3, max: 20000, step: 1, unit: " Hz",
+      help: `Band ${i}'s centre (or its corner, for bands 1 and 6 when they are shelving). PEQ6's own six defaults are 100, 175, 350, 700, 1400 and 2500 Hz — roughly an octave apart, which is what makes the bank cover the spectrum without gaps.`,
+    });
+    attenuators.push({
+      key: `frequencyCvAtten${i}`, label: `Band ${i} freq CV`, default: 1, min: -1, max: 1, step: 0.01,
+      help: `How far band ${i}'s OWN frequency CV inlet moves its centre, and in which direction. It defaults to FULLY OPEN, unlike the global depth which defaults to zero — Bogaudio's own asymmetry, and it means patching that inlet does something immediately. It also scales the global CV's contribution to this band, so one band can be made to ignore a bank-wide sweep.`,
+    });
+  }
+  return [...levels, ...frequencies, ...attenuators];
+}
+
+/**
+ * Pure function. PEQ6's audio inlets, in Bogaudio's own `InputsIds` order: the
+ * global three, then a LEVEL/FREQUENCY pair per band.
+ *
+ * @returns {object[]} port declarations, 15 of them
+ *
+ * @example peq6Inputs().length // 15
+ * @example peq6Inputs()[3].key // "level1_cv"
+ * @example peq6Inputs()[4].key // "frequency_cv1"
+ */
+export function peq6Inputs() {
+  const ports = [
+    { key: "frequency_cv", type: "audio", label: "f cv" },
+    { key: "bandwidth_cv", type: "audio", label: "bw cv" },
+    { key: "in", type: "audio", label: "in" },
+  ];
+  for (let i = 1; i <= PEQ6_BANDS; i++) {
+    ports.push({ key: `level${i}_cv`, type: "audio", label: `lvl${i}` });
+    ports.push({ key: `frequency_cv${i}`, type: "audio", label: `f${i} cv` });
+  }
+  return ports;
+}
+
+export const VCV_PEQ6_SPEC = {
+  derivation: derivedFrom(["src/PEQ6.cpp", "src/PEQ6.hpp", "src/parametric_eq.cpp", "src/dsp/filters/multimode.cpp"], "PeqKernel", [...BLOCK_WIDE_DEVIATIONS, "D7", "D8", "D-BE", "D-DEADSLEW", "D13"]),
+  type: "audio_vcv_peq6", module: "vcvPeq6", title: "VCV Bogaudio PEQ6", family: "filter",
+  icon: "mdi:tune-vertical", readout: "bandwidth", w: 380,
+  help: "Bogaudio's SIX-band parametric EQ, exactly as their panel draws it — and it is the same engine as the collapsed PEQ node with one thing added: EVERY BAND HAS ITS OWN FREQUENCY CV INLET AND ATTENUVERTER. That is the difference between a static formant bank and one whose bands move independently, which is what a vocoder or a sweeping resonator patch is made of. Six 4-pole bandpasses in parallel (the first and last optionally 12-pole shelves), summed and softly saturated, with every band also on its own output.",
+  inputs: peq6Inputs(),
+  outputs: [
+    { key: "out", type: "audio", label: "mix" },
+    ...Array.from({ length: PEQ6_BANDS }, (unused, i) => ({ key: `out${i + 1}`, type: "audio", label: `b${i + 1}` })),
+  ],
+  knobs: [
+    {
+      key: "bandwidth", label: "Bandwidth", default: 0.33, min: 0, max: 1, step: 0.01,
+      help: "How wide every BANDPASS band is, in OCTAVES rather than hertz — 0 is about 1/48 octave and 1 is ±2 octaves. Shared by all six, and their default is 0.33. It does nothing to a band running as a shelf, because a shelf has no skirts to widen.",
+    },
+    {
+      key: "frequencyCvAtten", label: "Global freq CV", default: 0, min: -1, max: 1, step: 0.01,
+      help: "How much the global Frequency CV inlet moves EVERY band's centre. Zero by default, which is theirs, so that inlet does nothing until this is turned up. It sums in the PITCH domain and is then scaled by each band's OWN attenuverter, so one depth setting transposes the whole bank by one interval — and a band with its attenuverter at zero sits still while the rest sweep.",
+    },
+    {
+      key: "lowMode", label: "Band 1 mode", default: "lowpass", discrete: true, options: ["bandpass", "lowpass"],
+      help: "The FIRST band is either a 4-pole bandpass like the middle four, or a TWELVE-pole lowpass shelf. Twelve poles is 72 dB per octave, which is what makes it read as a shelf rather than as a very wide band.",
+    },
+    {
+      key: "highMode", label: "Band 6 mode", default: "highpass", discrete: true, options: ["bandpass", "highpass"],
+      help: "The LAST band, mirrored: a 4-pole bandpass, or a 12-pole highpass shelf. With both ends shelving the bank covers the whole spectrum with no gaps at the edges.",
+    },
+    {
+      key: "fmodRange", label: "Freq CV range", default: "octave", discrete: true, options: ["octave", "full"],
+      help: "Whether ±5 V of frequency CV spans ONE OCTAVE (musical, their default) or the filter's entire 3 Hz…20 kHz range (a sweep). The choice is about resolution: an octave gives 12 semitones across the full CV swing, full range gives 75.",
+    },
+    ...peq6BandKnobs(),
+  ],
+};
+
+// ── SOURCES ─────────────────────────────────────────────────────────────────
+
+/**
+ * Pure function. One XCO waveform's three knob rows — its modifier, its phase and
+ * its mix. Written once because the four waveforms differ only in the modifier's
+ * name, range and sentence, and twelve hand-written rows is twelve chances to give
+ * the sine the saw's default.
+ *
+ * @param {string} wave - the key stem, "square" | "saw" | "triangle" | "sine"
+ * @param {string} label - the panel word, "Square" | "Saw" | …
+ * @param {object} modifier - {key, label, default, min, max, step, unit, help}
+ * @param {string} modifierHelp - the modifier row's sentence
+ * @returns {object[]} three knob declarations
+ *
+ * @example xcoWaveKnobs("saw", "Saw", {suffix: "Saturation", label: "saturation", default: 0, min: 0, max: 1}, "x")[0].key // "sawSaturation"
+ * @example xcoWaveKnobs("saw", "Saw", {suffix: "Saturation", label: "saturation", default: 0, min: 0, max: 1}, "x")[1].key // "sawPhase"
+ * @example xcoWaveKnobs("saw", "Saw", {suffix: "Saturation", label: "saturation", default: 0, min: 0, max: 1}, "x")[2].default // 1
+ */
+export function xcoWaveKnobs(wave, label, modifier, modifierHelp) {
+  return [
+    {
+      key: `${wave}${modifier.suffix}`, label: `${label} ${modifier.label}`,
+      default: modifier.default, min: modifier.min, max: modifier.max, step: 0.01,
+      help: modifierHelp,
+    },
+    {
+      key: `${wave}Phase`, label: `${label} phase`, default: 0, min: -180, max: 180, step: 1, unit: "°",
+      help: `Where the ${label.toLowerCase()} sits in the shared cycle, in DEGREES (their own readout unit). All four waveforms read ONE phase accumulator, so this is the only way to move them relative to each other — and moving two apart and mixing them is how you get comb-like cancellation from a single oscillator instead of from two detuned ones.`,
+    },
+    {
+      key: `${wave}Mix`, label: `${label} mix`, default: 1, min: 0, max: 1, step: 0.01,
+      help: `How much ${label.toLowerCase()} reaches the MIX output. It does not touch the ${label.toLowerCase()}'s own output, which is always at full level. Its CV inlet is UNIPOLAR and MULTIPLIES this, so an envelope there fades the waveform into the mix rather than adding to it.`,
+    },
+  ];
+}
+
+export const VCV_XCO_SPEC = {
+  derivation: derivedFrom(["src/XCO.cpp", "src/XCO.hpp", "src/dsp/oscillator.cpp", "src/dsp/table.cpp", "src/dsp/math.cpp", "src/dsp/filters/resample.cpp"], "XcoKernel", [...BLOCK_WIDE_DEVIATIONS, "D10", "D11", "D-ACTIVE", "D-XCOPHASE", "D13"]),
+  type: "audio_vcv_xco", module: "vcvXco", title: "VCV Bogaudio XCO", family: "source",
+  icon: "mdi:waveform", readout: "frequency", w: 400,
+  help: "Bogaudio's full-size oscillator, and NOT the VCO with more knobs: four waveforms off one phase accumulator, each with its OWN phase offset, its own modifier and its own mix level, plus a mix bus that normalises itself once per cycle. The modifiers are the reason to reach for it — the saw runs through a tanh saturator, the triangle's phase can be quantised into a stepped ramp, and the SINE CAN PHASE-MODULATE ITSELF, which is one-operator FM and is why its output can sound like a saw. Anti-aliased twice over, as the VCO is: minBLEP at every discontinuity plus 8× oversampling with a CIC decimator.",
+  inputs: [
+    { key: "fm", type: "audio", label: "fm" },
+    { key: "fm_depth_cv", type: "audio", label: "fm cv" },
+    { key: "square_pw_cv", type: "audio", label: "sq pw" },
+    { key: "square_phase_cv", type: "audio", label: "sq φ" },
+    { key: "square_mix_cv", type: "audio", label: "sq mix" },
+    { key: "saw_saturation_cv", type: "audio", label: "sw sat" },
+    { key: "saw_phase_cv", type: "audio", label: "sw φ" },
+    { key: "saw_mix_cv", type: "audio", label: "sw mix" },
+    { key: "triangle_sample_cv", type: "audio", label: "tr smp" },
+    { key: "triangle_phase_cv", type: "audio", label: "tr φ" },
+    { key: "triangle_mix_cv", type: "audio", label: "tr mix" },
+    { key: "sine_feedback_cv", type: "audio", label: "sn fb" },
+    { key: "sine_phase_cv", type: "audio", label: "sn φ" },
+    { key: "sine_mix_cv", type: "audio", label: "sn mix" },
+    { key: "pitch", type: "audio", label: "pitch" },
+    { key: "sync", type: "audio", label: "sync" },
+  ],
+  outputs: [
+    { key: "square", type: "audio", label: "sqr" },
+    { key: "saw", type: "audio", label: "saw" },
+    { key: "triangle", type: "audio", label: "tri" },
+    { key: "sine", type: "audio", label: "sin" },
+    { key: "mix", type: "audio", label: "mix" },
+  ],
+  knobs: [
+    {
+      key: "frequency", label: "Frequency", default: 0, min: -36, max: 72, step: 0.1, unit: " st", hz: bogaudioSemitonesToHz,
+      help: "Pitch in SEMITONES FROM C4 (R7-UNITS clause 3), so 0 is 261.626 Hz and 12 is an octave up. Rack's own knob is the same span in volts (−3…+6 V); these numbers are twelve times theirs and mean the same pitch. The `pitch` inlet also carries semitones and ADDS, clamped to their ±60.",
+    },
+    {
+      key: "fine", label: "Fine", default: 0, min: -1, max: 1, step: 0.01, unit: " st",
+      help: "Fine tune, ±1 semitone, summing with Frequency in the same unit. Two XCOs a few hundredths apart beat at a rate you can hear rather than at one you can count.",
+    },
+    {
+      key: "fmDepth", label: "FM depth", default: 0, min: 0, max: 1, step: 0.01,
+      help: "How much the `fm` inlet moves the pitch. It is SLEWED over 5 ms, so sweeping it does not zipper, and BELOW 0.01 THE FM PATH IS SKIPPED ENTIRELY — theirs, so zero depth costs nothing. Its own CV inlet is unipolar and multiplies it.",
+    },
+    ...xcoWaveKnobs("square", "Square", { suffix: "Pw", label: "width", default: 0, min: -0.97, max: 0.97 },
+      "The square's duty cycle: 0 is 50% and ±0.97 approaches their 3%/97% limits. LATCHED once per cycle, because moving an edge mid-cycle would displace that edge's anti-aliasing correction from the edge it corrects. Its CV inlet is BIPOLAR and multiplies the knob."),
+    ...xcoWaveKnobs("saw", "Saw", { suffix: "Saturation", label: "saturation", default: 0, min: 0, max: 1 },
+      "Runs the ramp through a tanh curve BEFORE the band-limiting correction is subtracted, which rounds its shoulders and compresses it — a saw that has been through a transformer rather than one that has been filtered. It engages only above a tenth of the way up, and below 1.0 it is level-compensated, so the top of the knob genuinely loses level."),
+    ...xcoWaveKnobs("triangle", "Triangle", { suffix: "Sample", label: "sampling", default: 0, min: 0, max: 1 },
+      "Quantises the triangle's PHASE onto a grid, turning it into a staircase that still traces a triangle. Any amount above zero FORCES OVERSAMPLING ON for this waveform, because a stepped wave is discontinuous and would otherwise alias badly. At the top the triangle becomes a four-step ramp, which is a chiptune sound rather than a triangle."),
+    ...xcoWaveKnobs("sine", "Sine", { suffix: "Feedback", label: "feedback", default: 0, min: 0, max: 1 },
+      "Offsets the sine's phase by ITS OWN PREVIOUS OUTPUT — one-operator phase modulation, so the sine grows harmonics and eventually sounds like a saw. Engaging it fades the sine's own 8× oversampling in over 100 samples, because a self-modulated sine aliases the way a square does."),
+    {
+      key: "slow", label: "Slow", default: "off", discrete: true, options: ON_OFF,
+      help: "Drops the frequency by SEVEN OCTAVES, putting the range at roughly 0.02…50 Hz. That turns the whole module into a four-output LFO with phase offsets and a mix bus, which is worth more than it sounds: most LFOs alias when you sweep them and this one does not.",
+    },
+    {
+      key: "fmMode", label: "FM mode", default: "exponential", discrete: true, options: ["linear", "exponential"],
+      help: "`linear` is THROUGH-ZERO PHASE modulation — the FM signal offsets the phase by `2·fm` radians, so the oscillator can run backwards and the timbre stays in tune as depth rises. `exponential` shifts the PITCH, which detunes as depth rises and is what a vibrato patch wants.",
+    },
+    {
+      key: "dcCorrection", label: "DC correction", default: "on", discrete: true, options: ON_OFF,
+      help: "SQUARE ONLY: removes the DC offset a non-50% duty cycle introduces. On by default. Off is not a bug — a narrow pulse with its DC intact pushes a step into whatever it feeds, which is a legitimate way to bias a filter.",
+    },
+    {
+      key: "clipping", label: "Mix clipping", default: "comp", discrete: true, options: ["comp", "soft", "hard", "none"],
+      help: "MIX OUTPUT ONLY. `comp` is theirs and is a ONE-CYCLE AGC: the mix is divided by the previous cycle's peak-to-peak span over ten volts, but only when that would attenuate — which is why four waveforms at full mix come out at roughly the level of one, and why the mix jumps level for a single cycle after a big knob move. `soft` is the shared saturator, `hard` a ±12 V clamp, `none` lets it run hot.",
+    },
+  ],
+};
+
+export const VCV_LVCO_SPEC = {
+  derivation: derivedFrom(["src/LVCO.cpp", "src/vco_base.cpp", "src/dsp/oscillator.cpp"], "LvcoKernel", [...BLOCK_WIDE_DEVIATIONS, "D10", "D11", "D-ACTIVE"]),
+  type: "audio_vcv_lvco", module: "vcvLvco", title: "VCV Bogaudio LVCO", family: "source",
+  icon: "mdi:sine-wave", readout: "frequency", w: 160,
+  help: "The 3 HP oscillator: one waveform at a time, chosen by a knob, and THE SAME ENGINE as the full-size VCO — the same minBLEP corrections, the same 8× oversampling, the same sync detector. Six waveforms, of which the last three are one band-limited square at three duty cycles. Reach for it when a patch needs its fourth or fifth voice and the panel is full; nothing about the sound is smaller.",
+  inputs: [
+    { key: "pitch", type: "audio", label: "pitch" },
+    { key: "fm", type: "audio", label: "fm" },
+    { key: "sync", type: "audio", label: "sync" },
+  ],
+  outputs: [{ key: "out", type: "audio", label: "out" }],
+  knobs: [
+    {
+      key: "frequency", label: "Frequency", default: 0, min: -36, max: 72, step: 0.1, unit: " st", hz: bogaudioSemitonesToHz,
+      help: "Pitch in SEMITONES FROM C4 (R7-UNITS clause 3), so 0 is 261.626 Hz. The `pitch` inlet carries semitones too and ADDS, clamped to their ±60 — five octaves either way.",
+    },
+    {
+      key: "fmDepth", label: "FM depth", default: 0, min: 0, max: 1, step: 0.01,
+      help: "How much the `fm` inlet moves the pitch. Below 0.01 the FM path is skipped entirely, so a depth of zero costs nothing.",
+    },
+    {
+      key: "wave", label: "Waveform", default: "sine", discrete: true,
+      options: ["sine", "triangle", "saw", "square", "pulse_25", "pulse_10"],
+      help: "Which single waveform the output carries. The last three are ONE band-limited square at 50%, 25% and 10% duty — narrower pulses are brighter and thinner, and the 10% one is the classic reedy lead. Unlike the full VCO, only the selected waveform is computed, which is their own behaviour and makes this the cheap oscillator as well as the small one.",
+    },
+    {
+      key: "slow", label: "Slow", default: "off", discrete: true, options: ON_OFF,
+      help: "Drops the frequency by SEVEN OCTAVES — roughly 0.02…50 Hz — turning it into a band-limited LFO with a sync input.",
+    },
+    {
+      key: "fmMode", label: "FM mode", default: "exponential", discrete: true, options: ["linear", "exponential"],
+      help: "`linear` is through-zero PHASE modulation, which stays in tune as depth rises; `exponential` shifts the pitch, which does not. The first is for FM timbres, the second for vibrato.",
+    },
+    {
+      key: "tuning", label: "Tuning", default: "voct", discrete: true, options: ["voct", "hertz"],
+      help: "`voct` is volts-per-octave, what everything else speaks. `hertz` makes the Frequency knob LINEAR in frequency (1 V = 1000 Hz, or 1 Hz in Slow mode), which is how you tune one oscillator to a fixed beat rate against another.",
+    },
+    {
+      key: "dcCorrection", label: "DC correction", default: "on", discrete: true, options: ON_OFF,
+      help: "SQUARE AND PULSE ONLY: removes the DC offset a non-50% duty cycle introduces. It matters more here than on the VCO, because two of the six waveforms are narrow pulses.",
+    },
+  ],
+};
+
+/** The twelve note names, in the order `Reftone`'s PITCH_PARAM counts them —
+ *  0 = C through 11 = B, which is their `referencePitch` of 0 meaning C. Sharps
+ *  rather than flats because their own panel display uses sharps. */
+export const BOGAUDIO_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+export const VCV_REFTONE_SPEC = {
+  derivation: derivedFrom(["src/Reftone.cpp", "src/Reftone.hpp", "src/dsp/oscillator.cpp", "src/dsp/pitch.hpp"], "ReftoneKernel", [...BLOCK_WIDE_DEVIATIONS]),
+  type: "audio_vcv_reftone", module: "vcvReftone", title: "VCV Bogaudio Reftone", family: "source",
+  icon: "mdi:tuning-fork", readout: "pitch", w: 165,
+  help: "A TUNING REFERENCE: pick a note, an octave and a cents trim, and get both a pitch CV and a sine at exactly that frequency. Its defaults are A4 = 440 Hz. The sine is a double-precision quadrature recurrence rather than a table read — every other sine in this library is a 4096-entry table, and a reference tone is the one signal you tune something else AGAINST, so a table's interpolation ripple would put beats exactly where the point is that there are none.",
+  inputs: [],
+  outputs: [
+    { key: "cv", type: "audio", label: "cv" },
+    { key: "out", type: "audio", label: "out" },
+  ],
+  knobs: [
+    {
+      key: "pitch", label: "Pitch", default: "A", discrete: true, options: BOGAUDIO_NOTE_NAMES,
+      help: "The note within the octave. A NAME rather than a number, because that is what their panel displays and because \"9\" is not something an author can reason about — the house rule this block's header states. Their default is A, which with the default octave gives 440 Hz.",
+    },
+    {
+      key: "octave", label: "Octave", default: 4, min: 1, max: 8, step: 1,
+      help: "Which octave, in scientific pitch notation — 4 is the one containing middle C. Also rounded. Octave 1 puts the reference at about 27 Hz and octave 8 at about 7 kHz.",
+    },
+    {
+      key: "fine", label: "Fine", default: 0, min: -0.99, max: 0.99, step: 0.01, unit: " st",
+      help: "Up to ±99 cents, and the ONLY control here that is not rounded — which is the point. It is how you set A = 432 Hz, or match an instrument that is a little flat, without leaving the note you named.",
+    },
+  ],
+};
+
+export const VCV_BOG_NOISE_SPEC = {
+  derivation: derivedFrom(["src/Noise.cpp", "src/Noise.hpp", "src/dsp/noise.hpp"], "NoiseKernel", [...BLOCK_WIDE_DEVIATIONS, "D2", "D14", "D-ACTIVE"]),
+  type: "audio_vcv_bog_noise", module: "vcvBogNoise", title: "VCV Bogaudio Noise", family: "source",
+  icon: "mdi:blur", readout: "seed", w: 165,
+  help: "FIVE COLOURS OF NOISE FROM FIVE INDEPENDENT GENERATORS, plus a rectifier. They are UNCORRELATED, which is the part that matters: white is uniform, pink is the Voss-McCartney tree over white, red is that tree applied to ITSELF, blue is pink's first difference, and gauss is a normal distribution. Mix white and pink and you get a wider spectrum than either; a module that filtered one source would give you a correlated pair and a comb.",
+  inputs: [{ key: "abs", type: "audio", label: "abs in" }],
+  outputs: [
+    { key: "white", type: "audio", label: "white" },
+    { key: "pink", type: "audio", label: "pink" },
+    { key: "red", type: "audio", label: "red" },
+    { key: "gauss", type: "audio", label: "gauss" },
+    { key: "abs", type: "audio", label: "abs" },
+    { key: "blue", type: "audio", label: "blue" },
+  ],
+  knobs: [
+    {
+      ...SEED,
+      help: `${SEED.help} All five generators are seeded from this one number, spaced far apart so that white and gauss do not read the same stream. The ABS output is not a generator and is unaffected.`,
+    },
+  ],
+};
+
+// ── MODULATION AND UTILITY ──────────────────────────────────────────────────
+
+/** LLFO's frequency knob in HERTZ (D13). Their −5…8 V knob sits SEVEN octaves
+ *  below a VCO's, so the span is C4 · 2^(−12 … +1). Written through this file's
+ *  own converter so the roster's `bogSemitonesToHz` calls and these produce the
+ *  identical double — tests/port_vc3b_test.js pins them equal. */
+const LLFO_MIN_HZ = bogaudioSemitonesToHz(-144);
+const LLFO_MAX_HZ = bogaudioSemitonesToHz(12);
+const LLFO_DEFAULT_HZ = bogaudioSemitonesToHz(-84);
+
+export const VCV_LLFO_SPEC = {
+  derivation: derivedFrom(["src/LLFO.cpp", "src/LLFO.hpp", "src/lfo_base.cpp", "src/dsp/oscillator.cpp"], "LlfoKernel", [...BLOCK_WIDE_DEVIATIONS, "D2", "D13", "D-OFFSETSCALE", "D-STEPPEDPHASE"]),
+  type: "audio_vcv_llfo", module: "vcvLlfo", title: "VCV Bogaudio LLFO", family: "modulation",
+  icon: "mdi:sine-wave", readout: "frequency", w: 175,
+  help: "The 3 HP LFO a big patch has six of: seven waveforms, a reset input, and two controls that are not the waveform at all. SAMPLING holds the output for a fraction of a quarter-cycle, so a sine becomes a staircase that still traces a sine; SMOOTHING is a shaped slew whose time is a fraction of the PERIOD, so it tracks the rate instead of fighting it. Together they turn one LFO into a stepped sequencer and a lag generator. The Stepped waveform is a seeded random SEQUENCE — the same seed always gives the same tune.",
+  inputs: [
+    { key: "pitch", type: "audio", label: "pitch" },
+    { key: "reset", type: "audio", label: "reset" },
+  ],
+  outputs: [{ key: "out", type: "audio", label: "out" }],
+  knobs: [
+    {
+      key: "frequency", label: "Rate", default: LLFO_DEFAULT_HZ, min: LLFO_MIN_HZ, max: LLFO_MAX_HZ, step: 0.001, unit: " Hz",
+      help: "The rate in HERTZ (R7-UNITS clause 2), spanning about 0.064 Hz — a cycle every sixteen seconds — up to 523 Hz, which is audio rate and is deliberate. The `pitch` inlet carries SEMITONES and is an INTERVAL on this, so ±12 there doubles or halves the rate exactly.",
+    },
+    {
+      key: "wave", label: "Waveform", default: "sine", discrete: true,
+      options: ["sine", "triangle", "ramp_up", "ramp_down", "square", "pulse", "stepped"],
+      help: "`ramp_up` and `ramp_down` are one saw and its negation. `square` is a fixed 50% and `pulse` uses the Pulse width knob. `stepped` is a random SEQUENCE read from a seeded 4096-entry table by cycle number — not random per sample, so it is a tune rather than noise, and the same seed replays it. Sampling does nothing to the last three, which are already piecewise constant.",
+    },
+    {
+      key: "slow", label: "Slow", default: "off", discrete: true, options: ON_OFF,
+      help: "Divides the rate by SIXTEEN — their two pitch offsets are four octaves apart. It is a range shift, not a separate mode: a rate of 2 Hz becomes 0.125 Hz and everything else behaves identically.",
+    },
+    {
+      key: "offset", label: "Offset", default: 0, min: -10, max: 10, step: 0.1, unit: " V",
+      help: "A DC added AFTER Scale, in VOLTS (on our wires 5 V is 1.0). Their panel has a range switch that makes the same knob position mean ±5 V or ±10 V; here the knob says volts directly, so the switch would be a second way to state a number the knob already states, and the full ±10 V is simply available. Offset 5 V with Scale 1 gives a 0…10 V unipolar LFO.",
+    },
+    {
+      key: "scale", label: "Scale", default: 1, min: 0, max: 1, step: 0.01,
+      help: "How far the waveform swings before Offset is added — 1 is their full ±5 V. At 0 the output is the Offset alone, which is a legitimate way to park an LFO at a constant.",
+    },
+    {
+      key: "pulseWidth", label: "Pulse width", default: -0.8510638, min: -1, max: 1, step: 0.01,
+      help: "PULSE WAVEFORM ONLY: 0 is 50% and ±1 reaches the 3%/97% limits. Their default of −0.851064 is exactly a 10% pulse, which is why the number looks arbitrary and is not — it is the inverse of the `pw·0.94·0.5 + 0.5` mapping every Bogaudio oscillator shares.",
+    },
+    {
+      key: "sampling", label: "Sampling", default: 0, min: 0, max: 1, step: 0.01,
+      help: "Holds the output for N samples, where N is this fraction of a QUARTER CYCLE — so the number of steps per cycle stays constant as the rate changes. Zero is smooth. At the top a sine becomes a four-step staircase, which is a stepped sequence you can still hear the shape of. Does nothing to the square, pulse and stepped waveforms.",
+    },
+    {
+      key: "smoothing", label: "Smoothing", default: 0, min: 0, max: 1, step: 0.01,
+      help: "A shaped slew whose time is a fraction of the PERIOD rather than a fixed number of milliseconds, so it tracks the rate: the same setting rounds a slow square and a fast one by the same proportion of a cycle. Put it after Sampling and a staircase becomes a smooth wandering line.",
+    },
+    { ...SEED, help: `${SEED.help} It seeds the STEPPED waveform's 4096-entry table, and nothing else here — the other six waveforms are deterministic already.` },
+  ],
+};
+
+export const VCV_WALK2_SPEC = {
+  derivation: derivedFrom(["src/Walk2.cpp", "src/Walk2.hpp", "src/dsp/noise.cpp"], "Walk2Kernel", [...BLOCK_WIDE_DEVIATIONS, "D2"]),
+  type: "audio_vcv_walk2", module: "vcvWalk2", title: "VCV Bogaudio Walk2", family: "modulation",
+  icon: "mdi:vector-polyline", readout: "rateX", w: 190,
+  help: "TWO random walkers and the distance between them — and it is not two Walks in a box. Each axis's Rate knob also sets that axis's OUTPUT SMOOTHING, at `(1 − rate)·100 ms`, where a single Walk's is a fixed 100 ms. So X and Y at different rates have different TEXTURES and not merely different speeds, which is what makes the pair read as a hand moving rather than as two knobs turning. The DISTANCE output is the third reason to use it: a unipolar signal that rises whenever the pair wanders away from the origin, correlated with both without being either.",
+  inputs: [
+    { key: "offset_x_cv", type: "audio", label: "off x" },
+    { key: "scale_x_cv", type: "audio", label: "scl x" },
+    { key: "rate_x_cv", type: "audio", label: "rate x" },
+    { key: "offset_y_cv", type: "audio", label: "off y" },
+    { key: "scale_y_cv", type: "audio", label: "scl y" },
+    { key: "rate_y_cv", type: "audio", label: "rate y" },
+    { key: "jump", type: "audio", label: "jump" },
+  ],
+  outputs: [
+    { key: "out_x", type: "audio", label: "x" },
+    { key: "out_y", type: "audio", label: "y" },
+    { key: "distance", type: "audio", label: "dist" },
+  ],
+  knobs: [
+    {
+      key: "rateX", label: "Rate X", default: 0.1, min: 0, max: 1, step: 0.01,
+      help: "How fast the X walk moves, raised to the FIFTH POWER — so the bottom nine-tenths of the knob is a very slow drift and the top tenth opens right up. It moves THREE things at once: the integrator's memory, the smoothing filter's cutoff, and this version's output slew. That triple coupling is the module's character.",
+    },
+    {
+      key: "offsetX", label: "Offset X", default: 0, min: -1, max: 1, step: 0.01,
+      help: "Where the X walk is centred, ±5 V. Applied AFTER Scale, so it survives being scaled to nothing — Scale 0 with an Offset set is a constant, which is how you park one axis and use the other.",
+    },
+    {
+      key: "scaleX", label: "Scale X", default: 1, min: 0, max: 1, step: 0.01,
+      help: "How far the X walk swings, before Offset. At 1 it uses the full ±5 V it reflects within, so its distribution piles up at the extremes rather than being gaussian — a walker that bounces off walls.",
+    },
+    { key: "rateY", label: "Rate Y", default: 0.1, min: 0, max: 1, step: 0.01, help: "The Y walk's rate, independently, with the same fifth-power curve and the same triple coupling. Setting X and Y a little apart is what makes the trace look drawn rather than plotted." },
+    { key: "offsetY", label: "Offset Y", default: 0, min: -1, max: 1, step: 0.01, help: "Where the Y walk is centred, ±5 V, applied after Scale Y." },
+    { key: "scaleY", label: "Scale Y", default: 1, min: 0, max: 1, step: 0.01, help: "How far the Y walk swings, before Offset Y." },
+    {
+      key: "jumpMode", label: "Jump input", default: "jump", discrete: true,
+      options: ["jump", "track_and_hold", "sample_and_hold"],
+      help: "What the `jump` inlet does to BOTH axes at once — a GATE port carrying 0…1 logic (R7-UNITS clause 4). `jump` teleports the pair somewhere new. `track_and_hold` freezes them while the gate is LOW. `sample_and_hold` freezes them between rising edges, turning a continuous wander into a stepped one that still wanders.",
+    },
+    { ...SEED, help: `${SEED.help} The two axes take DIFFERENT seeds derived from this one — one seed for both would make X and Y identical, which is a diagonal line rather than a walk.` },
+  ],
+};
+
+export const VCV_SUMS_SPEC = {
+  derivation: derivedFrom(["src/Sums.cpp", "src/Sums.hpp"], "SumsKernel", [...BLOCK_WIDE_DEVIATIONS]),
+  type: "audio_vcv_sums", module: "vcvSums", title: "VCV Bogaudio Sums", family: "modulation",
+  icon: "mdi:plus-minus-variant", readout: "outputLimit", w: 150,
+  help: "a+b, a−b, max(a,b), min(a,b) and −c, all at once. Sum and difference are a mixer and an inverter; MAX AND MIN ARE THE INTERESTING HALF — they are logic on analogue values. Max of two envelopes is their union, min is their overlap, and min against a constant is a hard ceiling with no knee. That is what their own subtitle \"arithmetic logic\" means, and it is why this 3 HP module keeps appearing in patches that already have a mixer.",
+  inputs: [
+    { key: "a", type: "audio", label: "a" },
+    { key: "b", type: "audio", label: "b" },
+    { key: "negate", type: "audio", label: "neg in" },
+  ],
+  outputs: [
+    { key: "sum", type: "audio", label: "a+b" },
+    { key: "difference", type: "audio", label: "a−b" },
+    { key: "max", type: "audio", label: "max" },
+    { key: "min", type: "audio", label: "min" },
+    { key: "negate", type: "audio", label: "−c" },
+  ],
+  knobs: [{ ...OUTPUT_LIMIT }],
+};
+
+export const VCV_SLEW_SPEC = {
+  derivation: derivedFrom(["src/Slew.cpp", "src/Slew.hpp", "src/slew_common.cpp", "src/dsp/signal.cpp"], "SlewKernel", [...BLOCK_WIDE_DEVIATIONS, "D13", "D-ACTIVE"]),
+  type: "audio_vcv_slew", module: "vcvSlew", title: "VCV Bogaudio Slew", family: "modulation",
+  icon: "mdi:transit-connection-horizontal", readout: "rise", w: 175,
+  help: "A slew limiter with a SHAPE on each direction, which is the difference between a glide and an envelope follower. The rise and fall times are independent, and each has an exponent knob that makes its segment logarithmic, linear or exponential. Feed it a stepped sequence and it is portamento; feed it a rectified audio signal and it is an envelope follower with an attack and a release; feed it a square and it is an AD envelope generator with no envelope module in the patch.",
+  inputs: [
+    { key: "rise_cv", type: "audio", label: "rise cv" },
+    { key: "fall_cv", type: "audio", label: "fall cv" },
+    { key: "in", type: "audio", label: "in" },
+  ],
+  outputs: [{ key: "out", type: "audio", label: "out" }],
+  knobs: [
+    {
+      key: "rise", label: "Rise", default: 1, min: 0, max: 10, step: 0.01, unit: " s",
+      help: "How long a RISE takes — and it is seconds PER TEN VOLTS, not seconds to reach the target, so a 1 V step at this default moves in 100 ms while a 10 V step takes a full second. That is a real slew limiter's slope spec, and it is why one setting glides a small interval quickly and a large one slowly. Their default is exactly 1 s. The `rise cv` inlet MULTIPLIES this by 0…1 from 0…10 V.",
+    },
+    {
+      key: "riseShape", label: "Rise shape", default: 0, min: -1, max: 1, step: 0.01,
+      help: "The rise segment's curve: 0 is a straight line, negative is fast-then-slow (logarithmic, like a capacitor charging), positive is slow-then-fast. THE TWO HALVES ARE NOT SYMMETRIC — theirs — the full anticlockwise travel is a 10× exponent and the full clockwise travel only a 2× one, so the logarithmic side has far more range.",
+    },
+    { key: "fall", label: "Fall", default: 1, min: 0, max: 10, step: 0.01, unit: " s", help: "How long a FALL takes, in the same seconds-per-ten-volts. Independent of Rise, which is the whole point: a fast rise and a slow fall is an envelope follower, the reverse is a reverse-envelope. Its own CV inlet multiplies it." },
+    { key: "fallShape", label: "Fall shape", default: 0, min: -1, max: 1, step: 0.01, help: "The fall segment's curve, with the same asymmetric mapping as Rise shape. A logarithmic fall is what a natural decay sounds like." },
+    {
+      key: "slow", label: "Slow", default: "off", discrete: true, options: ON_OFF,
+      help: "Multiplies BOTH times by ten, so the range becomes 0…100 seconds per ten volts. That is slow enough to be a drift generator rather than a glide.",
+    },
+  ],
+};
+
+export const VCV_POLYCON8_SPEC = {
+  derivation: derivedFrom(["src/PolyCon8.cpp", "src/PolyCon8.hpp", "src/output_range.hpp"], "PolyCon8Kernel", [...BLOCK_WIDE_DEVIATIONS, "D13", "D16"]),
+  type: "audio_vcv_polycon8", module: "vcvPolycon8", title: "VCV Bogaudio PolyCon8", family: "modulation",
+  icon: "mdi:numeric", readout: "channel1", w: 165,
+  help: "EIGHT CONSTANT VOLTAGES. In Rack this is one polyphonic cable carrying eight different numbers — a per-voice detune, a per-voice pan, a chord written down. Our wires are mono, so it is eight outputs instead of one cable: the same information with the bundling removed. Unglamorous and constantly useful, because a constant you can name and keyframe is worth more than a constant buried in a knob somewhere else.",
+  inputs: [],
+  outputs: Array.from({ length: 8 }, (unused, i) => ({ key: `out${i + 1}`, type: "audio", label: `${i + 1}` })),
+  knobs: Array.from({ length: 8 }, (unused, i) => ({
+    key: `channel${i + 1}`, label: `Channel ${i + 1}`, default: 0, min: -10, max: 10, step: 0.01, unit: " V",
+    help: `Channel ${i + 1}'s constant, in VOLTS — on our wires 5 V is 1.0, so ±10 V is ±2.0. Their panel states the same number and their default range is the same ±10 V. Like every value here it may be an equation, which is what makes eight constants more useful than eight numbers: bind one to \`time\` and it stops being constant.`,
+  })),
+};
+
+// ── THE MATRIX FAMILY — THREE PANELS OVER ONE ENGINE ────────────────────────
+
+/**
+ * Pure function. One matrix node's crosspoint knob rows plus its input-gain trim.
+ * GENERATED, because Switch88 and Matrix88 have sixty-four cells each and a
+ * hand-typed list of 64 is a list with a transposed pair in it.
+ *
+ * `step` is the ONE thing that differs between Bogaudio's knob matrix and their
+ * switch matrix: the param's range is identical (`configSwitchParam` is
+ * `configParam(-1, 1, 0)`), and only the widget differs — a continuous knob versus
+ * a three-position switch. A step of 1 IS that switch.
+ *
+ * @param {number} ins - how many inputs
+ * @param {number} outs - how many outputs
+ * @param {number} step - 1 for a three-position switch, finer for a knob
+ * @returns {object[]} ins·outs + 1 knob declarations, in Bogaudio's own
+ *          column-major param order
+ *
+ * @example matrixKnobs(1, 3, 1).length // 4
+ * @example matrixKnobs(1, 3, 1)[0].key // "mix1"
+ * @example matrixKnobs(2, 2, 0.01)[1].key // "mix21"
+ * @example matrixKnobs(2, 2, 0.01)[4].key // "inputGain"
+ */
+export function matrixKnobs(ins, outs, step) {
+  const cells = [];
+  for (let o = 1; o <= outs; o++) {
+    for (let i = 1; i <= ins; i++) {
+      const key = ins === 1 ? `mix${o}` : `mix${i}${o}`;
+      const route = ins === 1 ? `output ${o}` : `input ${i} to output ${o}`;
+      cells.push({
+        key, label: ins === 1 ? `Route ${o}` : `In ${i} → out ${o}`, default: 0, min: -1, max: 1, step,
+        help: `How much of ${route} passes. 0 is off, 1 is unity, and NEGATIVE INVERTS — which is the third position their switch has and the reason the range is bipolar rather than 0…1. Every cell is slewed over 0.5 ms, so flipping it is a fade and not a click.`,
+      });
+    }
+  }
+  return [...cells, {
+    key: "inputGain", label: "Input gain", default: 0, min: -60, max: 6, step: 0.1, unit: " dB",
+    help: "A trim applied to EVERY input before the matrix, −60…+6 dB. Their own menu offers four fixed values (unity, −3, −6, −12 dB) for one reason: summing eight sources at unity clips, and backing them all off by the same amount is the fix that does not change the balance.",
+  }];
+}
+
+/** The two rows every matrix node shares beyond its crosspoints — stated once so
+ *  three nodes cannot spell the same two controls three ways. */
+const MATRIX_CLIPPING = {
+  key: "clipping", label: "Clipping", default: "soft", discrete: true, options: ["soft", "hard", "none"],
+  help: "What happens at the ceiling. `soft` is the shared saturator and is their default (better for audio); `hard` is a ±12 V clamp (better for CV, because a saturated control voltage is a wrong control voltage); `none` lets the sum run as hot as it likes, which is fine when the next thing along saturates properly.",
+};
+
+const MATRIX_MIX_MODE = {
+  key: "mixMode", label: "Mix mode", default: "sum", discrete: true, options: ["sum", "average"],
+  help: "`sum` adds the routed inputs. `average` divides by the number of CONNECTED inputs — note connected, not routed, so patching a ninth cable quietly changes the level of the other eight. That is their behaviour and it is what makes average safe against clipping and unsafe against surprises.",
+};
+
+export const VCV_SWITCH18_SPEC = {
+  derivation: derivedFrom(["src/Switch18.cpp", "src/Switch18.hpp", "src/matrix_base.cpp"], "MatrixKernel", [...BLOCK_WIDE_DEVIATIONS, "D15", "D16", "D-ACTIVE"]),
+  type: "audio_vcv_switch18", module: "vcvSwitch18", title: "VCV Bogaudio Switch18", family: "modulation",
+  icon: "mdi:call-split", readout: "mix1", w: 175,
+  help: "ONE INPUT TO EIGHT OUTPUTS, each with its own three-position route switch: off, through, or INVERTED. It is a 1×8 slice of the same matrix engine Switch88 and Matrix88 run, so every route is slewed over half a millisecond and a flip is a fade rather than a click. More than one route may be on at once, which makes it a splitter as well as a switch — and with a couple inverted, one signal becomes a set that cancels.",
+  inputs: [{ key: "in", type: "audio", label: "in" }],
+  outputs: Array.from({ length: 8 }, (unused, i) => ({ key: `out${i + 1}`, type: "audio", label: `${i + 1}` })),
+  knobs: [...matrixKnobs(1, 8, 1), { ...MATRIX_CLIPPING }, { ...MATRIX_MIX_MODE }],
+};
+
+export const VCV_SWITCH88_SPEC = {
+  derivation: derivedFrom(["src/Switch88.cpp", "src/Switch88.hpp", "src/matrix_base.cpp"], "MatrixKernel", [...BLOCK_WIDE_DEVIATIONS, "D15", "D16", "D-ACTIVE"]),
+  type: "audio_vcv_switch88", module: "vcvSwitch88", title: "VCV Bogaudio Switch88", family: "modulation",
+  icon: "mdi:grid", readout: "mix11", w: 520,
+  help: "AN 8×8 ROUTING MATRIX with a three-position switch at every crosspoint — off, through, inverted. Sixty-four switches is a patchbay you can keyframe: a slide that reroutes an entire mixer is one delta here. Same engine as Matrix88, and the only difference is the control: these snap to the three positions where Matrix88's are continuous.",
+  inputs: Array.from({ length: 8 }, (unused, i) => ({ key: `in${i + 1}`, type: "audio", label: `in${i + 1}` })),
+  outputs: Array.from({ length: 8 }, (unused, i) => ({ key: `out${i + 1}`, type: "audio", label: `out${i + 1}` })),
+  knobs: [...matrixKnobs(8, 8, 1), { ...MATRIX_CLIPPING }, { ...MATRIX_MIX_MODE }],
+};
+
+export const VCV_MATRIX88_SPEC = {
+  derivation: derivedFrom(["src/Matrix88.cpp", "src/Matrix88.hpp", "src/matrix_base.cpp"], "MatrixKernel", [...BLOCK_WIDE_DEVIATIONS, "D15", "D16", "D-ACTIVE"]),
+  type: "audio_vcv_matrix88", module: "vcvMatrix88", title: "VCV Bogaudio Matrix88", family: "modulation",
+  icon: "mdi:grid-large", readout: "inputGain", w: 520,
+  help: "AN 8×8 MIXING MATRIX: sixty-four CONTINUOUS crosspoints, each a bipolar level from any input to any output. Switch88 is the same engine with the crosspoints snapped to off/through/inverted; this one is the version you automate. Eight sources into eight destinations at arbitrary levels is a whole mixing desk, and every one of those 64 numbers can be an equation.",
+  inputs: Array.from({ length: 8 }, (unused, i) => ({ key: `in${i + 1}`, type: "audio", label: `in${i + 1}` })),
+  outputs: Array.from({ length: 8 }, (unused, i) => ({ key: `out${i + 1}`, type: "audio", label: `out${i + 1}` })),
+  knobs: [...matrixKnobs(8, 8, 0.01), { ...MATRIX_CLIPPING }, { ...MATRIX_MIX_MODE }],
+};
+
+export const VCV_ONEEIGHT_SPEC = {
+  derivation: derivedFrom(["src/OneEight.cpp", "src/OneEight.hpp", "src/addressable_sequence.cpp"], "OneEightKernel", [...BLOCK_WIDE_DEVIATIONS, "D16", "D-ACTIVE"]),
+  type: "audio_vcv_oneeight", module: "vcvOneeight", title: "VCV Bogaudio OneEight", family: "modulation",
+  icon: "mdi:arrow-decision", readout: "steps", w: 190,
+  help: "AN EIGHT-WAY SEQUENTIAL SWITCH, and with nothing patched to its input it becomes an eight-step GATE SEQUENCER — the selected output emits 10 V and the rest sit at zero. Step and Select are two addresses that ADD: the clock walks a loop of length Steps, and Select offsets that loop, so one CV transposes the whole pattern. A 1 ms debounce swallows any clock edge arriving within a millisecond of a reset, which is what stops a sequencer restarted by its own end-of-cycle from being permanently one step out.",
+  inputs: [
+    { key: "clock", type: "audio", label: "clock" },
+    { key: "reset", type: "audio", label: "reset" },
+    { key: "select_cv", type: "audio", label: "sel cv" },
+    { key: "in", type: "audio", label: "in" },
+  ],
+  outputs: Array.from({ length: 8 }, (unused, i) => ({ key: `out${i + 1}`, type: "audio", label: `${i + 1}` })),
+  knobs: [
+    {
+      key: "steps", label: "Steps", default: 8, min: 1, max: 8, step: 1,
+      help: "How many outputs the clock cycles through before wrapping. The outputs above this count are still reachable by SELECT — the two addresses wrap differently unless you turn on `Wrap select at steps` — so a 3-step loop with a select of 5 walks outputs 6, 7 and 8.",
+    },
+    {
+      key: "select", label: "Select", default: 0, min: 0, max: 7, step: 1,
+      help: "An OFFSET added to the clock's step, 0…7. Its CV inlet ADDS on top, ±9.99 V mapped across all eight — their clamp is 9.99 and not 10 deliberately, so a full 10 V selects step 7 rather than wrapping to 8.",
+    },
+    {
+      key: "direction", label: "Direction", default: "forward", discrete: true, options: ["forward", "reverse"],
+      help: "Which way the clock walks the loop. A two-position switch on their panel, so it is a named choice here rather than a 0/1 number — \"reverse\" is a word, not a value.",
+    },
+    {
+      key: "selectOnClock", label: "Select on clock", default: "off", discrete: true, options: ON_OFF,
+      help: "Holds the Select address until the next CLOCK edge, instead of applying it the instant the CV moves. On, a select CV that drifts mid-step cannot glitch the output; off, it can be used as a live crossfade between patterns.",
+    },
+    {
+      key: "triggeredSelect", label: "Triggered select", default: "off", discrete: true, options: ON_OFF,
+      help: "Turns the SELECT inlet into a SECOND CLOCK: each rising edge advances the select address by one, wrapping at the Select knob's value. Two clocks at different rates then walk two independent counters that add, which is how you get long non-repeating patterns out of an eight-step switch.",
+    },
+    {
+      key: "reverseOnNegativeClock", label: "Negative clock reverses", default: "off", discrete: true, options: ON_OFF,
+      help: "A −1 V edge on the clock inlet steps BACKWARDS. With a bipolar clock source that makes one cable a bidirectional transport, and it is why the clock inlet is a level port rather than a plain gate.",
+    },
+    {
+      key: "wrapSelectAtSteps", label: "Wrap select at steps", default: "off", discrete: true, options: ON_OFF,
+      help: "Makes the combined address wrap at STEPS rather than at eight. Off (theirs) the select offset can walk outputs the clock never reaches; on, select and step stay inside the same short loop, which is what you want when Steps is a musical length.",
+    },
+  ],
+};
+
 /**
  * EVERY VC-3b SPEC — filters and sources first, then modulation and utility, which
  * is core/audio_specs.AUDIO_SPECS's own ordering rule, so the palette reads as one
@@ -734,9 +1328,11 @@ export const VCV_STACK_SPEC = {
  * author can reach. tests/port_vc3b_test.js sweeps this array either way.
  */
 export const BLOCK_SPECS = [
-  VCV_BOG_VCO_SPEC,
-  VCV_PEQ_SPEC, VCV_BOG_VCF_SPEC,
+  VCV_BOG_VCO_SPEC, VCV_XCO_SPEC, VCV_LVCO_SPEC, VCV_REFTONE_SPEC, VCV_BOG_NOISE_SPEC,
+  VCV_PEQ_SPEC, VCV_PEQ6_SPEC, VCV_BOG_VCF_SPEC,
   VCV_PRESSOR_SPEC,
-  VCV_SAMPLEHOLD_SPEC, VCV_WALK_SPEC,
+  VCV_SAMPLEHOLD_SPEC, VCV_WALK_SPEC, VCV_WALK2_SPEC, VCV_LLFO_SPEC,
   VCV_BOG_VCA_SPEC, VCV_VCM_SPEC, VCV_XFADE_SPEC, VCV_OFFSET_SPEC, VCV_SWITCH_SPEC, VCV_STACK_SPEC,
+  VCV_SUMS_SPEC, VCV_SLEW_SPEC, VCV_POLYCON8_SPEC,
+  VCV_ONEEIGHT_SPEC, VCV_SWITCH18_SPEC, VCV_SWITCH88_SPEC, VCV_MATRIX88_SPEC,
 ];

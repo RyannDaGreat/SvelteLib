@@ -600,3 +600,46 @@ was SILENT and REMOTE from the cause: no commit failed, no test failed, no file 
 and the damage surfaced only when somebody tried to read history. **Before running a large
 swarm against one worktree again, disable auto-gc FIRST** — and treat "git log suddenly
 does not work" as a corruption symptom rather than as a bad command.
+
+---
+
+## 2026-08-07 — THE DOCTEST GATE HAS NEVER SEEN `synth/`, WHICH IS WHERE THE ARITHMETIC IS
+
+`tests/doctest_test.js:116` is `const SEARCH_DIRS = ["core", "plugins", "render_gpu",
+"cli", "web"]`. **`synth` is not in it.** Measured 2026-08-07: **964 `@example` lines live
+in `synth/`** against 6128 in the scanned directories — so ~14% of the project's doctests
+have never been executed by the gate, and they are the ones on the DSP kernels, where
+every ported recurrence lives. CLAUDE.md says "doctests are the specification"; for the
+kernels there has been no specification, only prose that looked like one.
+
+**THIS IS THE SAME DEFECT THE FILE ALREADY RECORDS SURVIVING ONCE.** Its own header, line
+15: *"`web/` — the app shell, ~24k lines — was outside SEARCH_DIRS entirely."* A
+hand-maintained directory list lost `web/`, was fixed by adding one string, and then lost
+`synth/` the moment a new top-level directory started carrying doctests. Adding a second
+string fixes today and loses the next one. **The list should be derived** — the
+directories that exist and hold JS, minus a named exclusion set — so a new one is scanned
+the day it appears.
+
+**FOUND BY A PORT AGENT** that ran the harness by hand over its own block, noticed its
+examples had never been in the gate, and confirmed the cause at the source line rather
+than reporting a suspicion.
+
+**WHAT IS BEHIND THE HOLE, measured before flipping it:** 6 value failures
+(`ax2_kernels.js:580` and `:779`, `vc1_kernels.js:337`, `vc5_kernels.js:228`,
+`vc10_kernels.js:869` and `:2747`) and **3 UNPARSEABLE** examples — `vc5_kernels.js:253`
+and `:254` (`Unexpected token 'const'`) and `voices.js:65` (`Unexpected token 'try'`) —
+statements where the harness wants an expression, which specify nothing today. The harness
+exits 1 on `syntaxBroken` as well as on failures, so **both sets must be clear before the
+switch is flipped**, and `MIN_EXECUTED` needs raising (floor 3800 against a measured 3961;
+`synth` adds ~886 executed).
+
+**SEQUENCING, and why it was not fixed on the spot:** four port blocks were being written
+at that moment and the gate is the signal those agents work against. Turning it red on
+nine failures in files they were mid-edit on would have cost more than it bought. The
+switch is flipped once the blocks land — recorded here so it cannot be quietly dropped,
+which is exactly how `web/` stayed outside for as long as it did.
+
+**AND A SECOND-ORDER LESSON, worth more than the hole itself.** One of the stale doctests
+had propagated into user-facing prose: `core/audio_specs_vc8.js`'s `panLaw` knob `help`
+repeated the same pre-rewrite claim, and unlike a doctest that sentence is read by authors
+in the Inspector. **When a doctest goes stale, grep the prose that quoted its reasoning.**

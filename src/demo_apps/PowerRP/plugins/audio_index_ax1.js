@@ -1,12 +1,12 @@
 /**
- * THE AX-1 NODE ROSTER — the fifteen ported Axoloti arithmetic, logic and
- * step-table plugins, in one array.
+ * THE AX-1 NODE ROSTER — the ported Axoloti arithmetic, logic, step-table and
+ * MIDI-source plugins, in one array.
  *
  * A BARREL, for the reason `plugins/audio_index.js`'s docblock gives: one import and
- * one spread there instead of fifteen of each, in the file every widget workstream
- * edits. A SECOND barrel rather than fifteen more lines in the first because several
+ * one spread there instead of one of each, in the file every widget workstream
+ * edits. A SECOND barrel rather than a line per node in the first because several
  * agents are landing ported module sets concurrently (R7 Wave 3 Phase 3) and that
- * file would be fifteen merge conflicts wide. `plugins/audio_index_ax2.js` is the
+ * file would be one merge conflict per node wide. `plugins/audio_index_ax2.js` is the
  * same arrangement for that block.
  *
  * A literal list, not a glob: core/ and cli/ run in BARE NODE where
@@ -16,7 +16,7 @@
  * reds the suite instead of silently not appearing in the palette.
  *
  * THE BARREL LINE THIS NEEDS: `plugins/audio_index.js`'s `audioPlugins` must spread
- * `BLOCK_PLUGINS`, or none of these fifteen reach the palette. Three more are
+ * `BLOCK_PLUGINS`, or none of these reach the palette. Three more are
  * needed elsewhere and are reported with it — the specs into `AUDIO_SPECS`, the
  * factories into `MODULE_FACTORIES`, and `AX1_WORKLET_URL` into `engine.init()`.
  */
@@ -35,6 +35,10 @@ import { audioAxMuxPlugin } from "./audio_ax_mux.js";
 import { audioAxStepsBoolPlugin } from "./audio_ax_steps_bool.js";
 import { audioAxStepsValuePlugin } from "./audio_ax_steps_value.js";
 import { audioAxStepsMultiPlugin } from "./audio_ax_steps_multi.js";
+import { audioAxMidiKeybPlugin } from "./audio_ax_midi_keyb.js";
+import { audioAxMidiBendPlugin } from "./audio_ax_midi_bend.js";
+import { audioAxMidiTouchPlugin } from "./audio_ax_midi_touch.js";
+import { audioAxPolyVoicesPlugin } from "./audio_ax_poly_voices.js";
 import { audioAxStereoOutPlugin } from "./audio_ax_stereo_out.js";
 
 /** Every AX-1 plugin, in core/audio_specs_ax1.AX1_SPECS order — arithmetic, then the
@@ -55,5 +59,9 @@ export const BLOCK_PLUGINS = [
   audioAxStepsBoolPlugin,
   audioAxStepsValuePlugin,
   audioAxStepsMultiPlugin,
+  audioAxMidiKeybPlugin,
+  audioAxMidiBendPlugin,
+  audioAxMidiTouchPlugin,
+  audioAxPolyVoicesPlugin,
   audioAxStereoOutPlugin,
 ];

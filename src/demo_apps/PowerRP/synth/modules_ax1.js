@@ -5,7 +5,7 @@
  * Every factory takes `(context, params, resources)` and returns
  * `{inputs, outputs, params, start(), dispose(), meta}`. The engine NEVER
  * special-cases a module type — it looks ports up by name and ramps gains around
- * them — which is why adding fifteen modules needs no engine change beyond loading
+ * them — which is why adding a whole block of modules needs no engine change beyond loading
  * this block's worklet file. Read synth/modules.js's header first; every convention
  * in it applies here unchanged.
  *
@@ -16,7 +16,7 @@
  * ── WHY EVERY ONE OF THESE IS A WORKLET ─────────────────────────────────────
  * synth/modules.js states the implementation law: native AudioNodes FIRST, because
  * they are C++ under the hood, and a worklet is an exception that has to justify
- * itself. All fifteen here qualify, and for one reason each rather than by category:
+ * itself. Every module here qualifies, and for one reason each rather than by category:
  *
  *   - `axMath`'s twenty operations include comparison, absolute value, four
  *     saturating multipliers and an antialiased ring modulator. A GainNode can
@@ -31,6 +31,12 @@
  *   - `axWindow` and `axShaper` are transfer functions a WaveShaper genuinely could
  *     do — but a WaveShaper's curve is a construct-time array, so a keyframed
  *     breakpoint would rebuild the node on every frame of a tween. They stay here.
+ *   - `axMidiKeyb`, `axMidiBend` and `axMidiTouch` are EDGE DETECTORS with latched
+ *     state (`gate2` is `gate` delayed one control tick; `trig` is one tick on a value
+ *     change), which no native node has, and `axMidiKeyb` additionally has FIVE
+ *     outputs computed together.
+ *   - `axPolyVoices` holds an allocation TABLE — sixteen priorities searched per
+ *     note — and reports one slot of it on five outputs. Nothing native is close.
  *
  * ── THE K-RATE CONTRACT THESE MODULES DEPEND ON ─────────────────────────────
  * The processors run 8 control ticks per 128-frame quantum so that Axoloti's 3000 Hz
@@ -146,9 +152,9 @@ function paramMap(node, names) {
 /**
  * Command. Build a module around one of this block's worklet processors.
  *
- * Fifteen factories that differ in a processor name, an input count and an output
+ * A block of factories that differ in a processor name, an input count and an output
  * count is the same "one shape, N values" situation core/audio_nodes.js solves for
- * the widgets, and the reason is the same: fifteen hand-written copies is fifteen
+ * the widgets, and the reason is the same: nineteen hand-written copies is nineteen
  * chances to forget `dispose`, or to expose a param the spec does not declare.
  *
  * @param {object} options
@@ -238,7 +244,7 @@ function ax1WorkletModule(options) {
   return factory;
 }
 
-// ─── The fifteen factories ───────────────────────────────────────────────────
+// ─── The factories ───────────────────────────────────────────────────────────
 // Port ORDER is load-bearing: it is the processor's input/output INDEX, which is what
 // `connect(dest, outputIndex, inputIndex)` takes. A reordering here silently rewires
 // a patch, so each list is written in the same order as the spec's own ports.
@@ -343,6 +349,46 @@ const axStepsMultiModule = ax1WorkletModule({
   params: ["row", ...numbered("t", AX_MULTI_ROWS)], paramInlets: ["row"],
 });
 
+/** `midi/in/keyb` (+ `keyb zone lru`'s zone) — the HERTZ→SEMITONE adaptor that makes an
+ *  Axoloti patch playable. `velocity` and `release_velocity` are knobs AND inlets so a
+ *  sequencer's accent lane can drive them; the ZONE is knob-only, because a wired zone
+ *  boundary is a control nobody has a use for and two more beads on a busy card. */
+const axMidiKeybModule = ax1WorkletModule({
+  processor: "ax1-midi-keyb", type: "audio_ax_midi_keyb", label: "AX MIDI Keyboard",
+  inputs: ["pitch", "gate"],
+  outputs: ["note", "gate", "gate2", "velocity", "release_velocity"],
+  params: ["start_note", "end_note", "velocity", "release_velocity"],
+  paramInlets: ["velocity", "release_velocity"],
+});
+
+/** `midi/in/bend` — the bender's position in, a pitch interval out. */
+const axMidiBendModule = ax1WorkletModule({
+  processor: "ax1-midi-bend", type: "audio_ax_midi_bend", label: "AX MIDI Bend",
+  inputs: [], outputs: ["bend", "trig"],
+  params: ["position"], paramInlets: ["position"],
+});
+
+/** `midi/in/touch` — channel pressure, and a trigger on every move. */
+const axMidiTouchModule = ax1WorkletModule({
+  processor: "ax1-midi-touch", type: "audio_ax_midi_touch", label: "AX Channel Pressure",
+  inputs: [], outputs: ["o", "trig"],
+  params: ["pressure"], paramInlets: ["pressure"],
+});
+
+/**
+ * `patch/patcher poly=N` — the VOICE ALLOCATOR (§ R7-POLY).
+ *
+ * NO paramInlets: `voices` is a pool size and `voice` is which slot this node reports.
+ * Neither is a signal — a wire into either would be asking the graph to renumber its own
+ * voices at audio rate, which is not a thing a patch can mean.
+ */
+const axPolyVoicesModule = ax1WorkletModule({
+  processor: "ax1-poly-voices", type: "audio_ax_poly_voices", label: "AX Poly Voices",
+  inputs: ["note", "gate", "gate2", "velocity", "release_velocity"],
+  outputs: ["note", "gate", "gate2", "velocity", "release_velocity"],
+  params: ["voices", "voice"],
+});
+
 /**
  * `sss/audio/StOutVol` — the stereo output with a hard clip.
  *
@@ -408,6 +454,10 @@ export const BLOCK_MODULE_FACTORIES = {
   axStepsBool: axStepsBoolModule,
   axStepsValue: axStepsValueModule,
   axStepsMulti: axStepsMultiModule,
+  axMidiKeyb: axMidiKeybModule,
+  axMidiBend: axMidiBendModule,
+  axMidiTouch: axMidiTouchModule,
+  axPolyVoices: axPolyVoicesModule,
   axStereoOut: axStereoOutModule,
 };
 

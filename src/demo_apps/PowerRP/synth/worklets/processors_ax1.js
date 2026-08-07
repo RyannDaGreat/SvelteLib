@@ -709,6 +709,299 @@ class Ax1StepsMultiProcessor extends AudioWorkletProcessor {
   }
 }
 
+// ─── midi/in/* ──────────────────────────────────────────────────────────────
+//
+// ⚠ NO PROCESSOR HERE READS A HOST MIDI PORT, AND NONE MAY. There is no MIDI transport
+// in this engine, and an AudioWorkletGlobalScope could not reach one anyway; a live host
+// input would be the EPHEMERAL state CLAUDE.md forbids. Every one of these is a pure
+// function of its inlets, its params and its own latched state — property state and
+// recordable state only, so Δt = 0 gives a byte-identical frame.
+
+/** Restated from synth/ax1_dsp.js's E4 tuning law (A440_HZ / A440_SEMITONES /
+ *  SEMITONES_PER_OCTAVE — themselves restated from core/audio_nodes.semitonesToHz).
+ *  Axoloti pitch 0 is MIDI 64 = E4, so A440 is semitone 5. */
+const AX_A440_HZ = 440;
+const AX_A440_SEMITONES = 5;
+const AX_SEMITONES_PER_OCTAVE = 12;
+
+/** Restated from synth/ax1_dsp.AX_POLY_ACTIVE_PRIORITY_BASE — their `100000 +
+ *  priority++`, which is what makes a released voice outrank a sounding one. */
+const AX_POLY_ACTIVE_PRIORITY_BASE = 100000;
+/** Restated from synth/ax1_dsp.AX_POLY_PRIORITY_CEILING — their `int min = 1<<30`. */
+const AX_POLY_PRIORITY_CEILING = 1 << 30;
+/** Restated from synth/ax1_dsp.AX_POLY_MAX_VOICES. The tables are allocated at this
+ *  size once, in the constructor, and `voices` narrows the SEARCH — a per-tick resize
+ *  would allocate on the audio thread. */
+const AX_POLY_MAX_VOICES = 16;
+
+/**
+ * THE HERTZ→SEMITONE CONVERSION § R7-AXO-TRAPS TRAP 1 EXISTS FOR. Restated from
+ * synth/ax1_dsp.axHzToSemitones; NaN for a non-positive frequency, which is what a
+ * disconnected `pitch` input reads and which the caller treats as "no key is down".
+ */
+function axHzToSemitones(hz) {
+  if (!(hz > 0)) return NaN;
+  return AX_A440_SEMITONES + AX_SEMITONES_PER_OCTAVE * Math.log2(hz / AX_A440_HZ);
+}
+
+/**
+ * `audio_ax_midi_keyb` — `midi/in/keyb` with `keyb zone lru`'s zone guard.
+ *
+ * Input 0 is `pitch` in HERTZ, input 1 the gate. Outputs 0…4 are note (SEMITONES from
+ * E4), gate, gate2, velocity, release velocity.
+ *
+ * `gate2` IS `gate` DELAYED ONE CONTROL TICK — their `_gate2 = _gate` runs after the
+ * outlet write, and a note-on zeroes `_gate2` directly, so gate2 notches low for exactly
+ * one tick on EVERY note-on including a legato one. That notch is "retrigger on legato"
+ * and A1's filter envelope is wired to it.
+ */
+class Ax1MidiKeybProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [
+      { name: "start_note", defaultValue: -64, minValue: -64, maxValue: 63, automationRate: "a-rate" },
+      { name: "end_note", defaultValue: 63, minValue: -64, maxValue: 63, automationRate: "a-rate" },
+      { name: "velocity", defaultValue: 100 / 128, minValue: 0, maxValue: 1, automationRate: "a-rate" },
+      { name: "release_velocity", defaultValue: 0.5, minValue: 0, maxValue: 1, automationRate: "a-rate" },
+    ];
+  }
+
+  constructor() {
+    super();
+    // Their <code.init>: `_gate = 0; _note = 0;`.
+    this.note = 0;
+    this.gate = 0;
+    this.gate2 = 0;
+    this.velocity = 0;
+    this.releaseVelocity = 0;
+    this.wasHigh = false;
+  }
+
+  process(inputs, outputs, parameters) {
+    const [pitchIn, gateIn] = inputs;
+    const [noteOut, gateOut, gate2Out, velocityOut, releaseOut] = outputs;
+    if (!noteOut || noteOut.length === 0) return true;
+    const frames = noteOut[0].length;
+
+    for (let start = 0; start < frames; start += AX_KRATE_BLOCK) {
+      const high = axInputAt(gateIn, start) > 0;
+      if (high) {
+        const candidate = Math.round(axHzToSemitones(axInputAt(pitchIn, start)));
+        const low = axParamAt(parameters.start_note, start);
+        const top = axParamAt(parameters.end_note, start);
+        // Their zone guard is `(data1 >= attr_startNote) && (data1 <= attr_endNote)`,
+        // and a note-on outside it is skipped ENTIRELY — gate included.
+        if (Number.isFinite(candidate) && candidate >= low && candidate <= top
+            && (!this.wasHigh || candidate !== this.note)) {
+          this.note = candidate;
+          this.velocity = axParamAt(parameters.velocity, start);
+          this.gate = 1;
+          this.gate2 = 0;
+        }
+      } else if (this.wasHigh) {
+        this.releaseVelocity = axParamAt(parameters.release_velocity, start);
+        this.gate = 0;
+      }
+      this.wasHigh = high;
+      axHold(noteOut, start, this.note);
+      axHold(gateOut, start, this.gate);
+      axHold(gate2Out, start, this.gate2);
+      axHold(velocityOut, start, this.velocity);
+      axHold(releaseOut, start, this.releaseVelocity);
+      // AFTER the outlet write, exactly where theirs is. Moving it above would erase
+      // the one-tick notch and silently turn every legato retrigger into a no-op.
+      this.gate2 = this.gate;
+    }
+    return true;
+  }
+}
+
+/**
+ * `audio_ax_midi_bend` — `midi/in/bend`. NO audio inputs: the bender's position is a
+ * param (knob and inlet share it, per § R7-11's duality rule). Output 0 is the interval
+ * in SEMITONES (position × 64, the frac32-pitch factor), output 1 a one-tick trigger on
+ * every move.
+ */
+class Ax1MidiBendProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [{ name: "position", defaultValue: 0, minValue: -1, maxValue: 1, automationRate: "a-rate" }];
+  }
+
+  constructor() {
+    super();
+    // Their <code.init>: `_bend = 0; ntrig = 0;`. The previous value is what stands in
+    // for "a message arrived", since a wire carries a value and not an event.
+    this.previous = 0;
+  }
+
+  process(inputs, outputs, parameters) {
+    const [bendOut, trigOut] = outputs;
+    if (!bendOut || bendOut.length === 0) return true;
+    const frames = bendOut[0].length;
+
+    for (let start = 0; start < frames; start += AX_KRATE_BLOCK) {
+      const position = axParamAt(parameters.position, start);
+      // A frac32 pitch of 1.0 IS 64 semitones, so a fully-bent wheel is ±64 st and
+      // every patch that uses it divides (A10 takes `÷32` for the usual ±2).
+      axHold(bendOut, start, position * AX_DIAL_FULL_SCALE);
+      axHold(trigOut, start, position !== this.previous ? 1 : 0);
+      this.previous = position;
+    }
+    return true;
+  }
+}
+
+/**
+ * `audio_ax_midi_touch` — `midi/in/touch`, CHANNEL pressure. Same shape as the bend:
+ * a param in, the value and a one-tick change trigger out. Output 0 is `o`, output 1
+ * `trig`.
+ */
+class Ax1MidiTouchProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [{ name: "pressure", defaultValue: 0, minValue: 0, maxValue: 1, automationRate: "a-rate" }];
+  }
+
+  constructor() {
+    super();
+    this.previous = 0;
+  }
+
+  process(inputs, outputs, parameters) {
+    const [pressureOut, trigOut] = outputs;
+    if (!pressureOut || pressureOut.length === 0) return true;
+    const frames = pressureOut[0].length;
+
+    for (let start = 0; start < frames; start += AX_KRATE_BLOCK) {
+      const pressure = axParamAt(parameters.pressure, start);
+      axHold(pressureOut, start, pressure);
+      axHold(trigOut, start, pressure !== this.previous ? 1 : 0);
+      this.previous = pressure;
+    }
+    return true;
+  }
+}
+
+// ─── patch/patcher poly=N ───────────────────────────────────────────────────
+
+/**
+ * `audio_ax_poly_voices` — the voice allocator of `patch/patcher poly=N`
+ * (PatchViewCodegen.java:1042-1083, not an `.axo` code block: the patcher object is an
+ * empty shell and the allocator is generated).
+ *
+ * ⚠ IT ALLOCATES; IT DOES NOT REPLICATE. `core/audio_mirror_diff.readAudioScene` is a
+ * flat 1:1 map, so nothing can instantiate the graph downstream of this node N times.
+ * These five outputs are ONE slot of the pool — the one the `voice` param names.
+ *
+ * Inputs 0…4 are note, gate, gate2, velocity, release velocity; outputs the same five.
+ * A note-on is a rising `gate`, a `note` change under a held gate, OR a falling `gate2`
+ * under a held gate — the three ways `audio_ax_midi_keyb` spells the one event.
+ */
+class Ax1PolyVoicesProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [
+      { name: "voices", defaultValue: 7, minValue: 1, maxValue: AX_POLY_MAX_VOICES, automationRate: "a-rate" },
+      { name: "voice", defaultValue: 0, minValue: 0, maxValue: AX_POLY_MAX_VOICES - 1, automationRate: "a-rate" },
+    ];
+  }
+
+  constructor() {
+    super();
+    // Their <sInitCode>: `notePlaying[vi]=0; voicePriority[vi]=0; … priority=0;`.
+    // Allocated ONCE at the maximum — `voices` narrows the search rather than resizing,
+    // because a resize on the audio thread would allocate.
+    this.notePlaying = new Float32Array(AX_POLY_MAX_VOICES);
+    this.voicePriority = new Float64Array(AX_POLY_MAX_VOICES);
+    this.pressed = new Uint8Array(AX_POLY_MAX_VOICES);
+    // The per-voice surface each `midi/in/keyb` inside a voice would produce.
+    this.voiceNote = new Float32Array(AX_POLY_MAX_VOICES);
+    this.voiceGate = new Float32Array(AX_POLY_MAX_VOICES);
+    this.voiceGate2 = new Float32Array(AX_POLY_MAX_VOICES);
+    this.voiceVelocity = new Float32Array(AX_POLY_MAX_VOICES);
+    this.voiceRelease = new Float32Array(AX_POLY_MAX_VOICES);
+    this.priority = 0;
+    this.heldNote = 0;
+    this.wasHigh = false;
+    this.previousGate2High = false;
+  }
+
+  process(inputs, outputs, parameters) {
+    const [noteIn, gateIn, gate2In, velocityIn, releaseIn] = inputs;
+    const [noteOut, gateOut, gate2Out, velocityOut, releaseOut] = outputs;
+    if (!noteOut || noteOut.length === 0) return true;
+    const frames = noteOut[0].length;
+
+    for (let start = 0; start < frames; start += AX_KRATE_BLOCK) {
+      const width = Math.max(1, Math.min(AX_POLY_MAX_VOICES,
+        Math.round(axParamAt(parameters.voices, start))));
+      const note = axInputAt(noteIn, start);
+      const high = axInputAt(gateIn, start) > 0;
+      const gate2High = axInputAt(gate2In, start) > 0;
+
+      if (high) {
+        const retriggered = this.wasHigh && (note !== this.heldNote || (this.previousGate2High && !gate2High));
+        if (!this.wasHigh || retriggered) {
+          // A legato note-on releases the note it replaces first, exactly as their
+          // NOTE_OFF branch would when the controller sends one.
+          if (retriggered) this.releaseNote(this.heldNote, axInputAt(releaseIn, start));
+          const slot = this.allocate(width, note);
+          this.voiceNote[slot] = note;
+          this.voiceVelocity[slot] = axInputAt(velocityIn, start);
+          this.voiceGate[slot] = 1;
+          this.voiceGate2[slot] = 0;
+          this.heldNote = note;
+        }
+      } else if (this.wasHigh) {
+        this.releaseNote(this.heldNote, axInputAt(releaseIn, start));
+      }
+      this.wasHigh = high;
+      this.previousGate2High = gate2High;
+
+      const reported = Math.round(axParamAt(parameters.voice, start));
+      // A `voice` past the pool reports SILENCE rather than wrapping: a voice that does
+      // not exist has no note, and wrapping would make two nodes play in unison with
+      // nothing to say why.
+      const live = reported >= 0 && reported < width;
+      axHold(noteOut, start, live ? this.voiceNote[reported] : 0);
+      axHold(gateOut, start, live ? this.voiceGate[reported] : 0);
+      axHold(gate2Out, start, live ? this.voiceGate2[reported] : 0);
+      axHold(velocityOut, start, live ? this.voiceVelocity[reported] : 0);
+      axHold(releaseOut, start, live ? this.voiceRelease[reported] : 0);
+      // The one-tick gate2 lag, per voice, exactly as each voice's own `midi/in/keyb`
+      // would produce it.
+      for (let i = 0; i < AX_POLY_MAX_VOICES; i++) this.voiceGate2[i] = this.voiceGate[i];
+    }
+    return true;
+  }
+
+  /** Their NOTE_ON branch: steal the lowest-priority voice, push it above the offset. */
+  allocate(width, note) {
+    let min = AX_POLY_PRIORITY_CEILING;
+    let mini = 0;
+    for (let i = 0; i < width; i++) {
+      if (this.voicePriority[i] < min) { min = this.voicePriority[i]; mini = i; }
+    }
+    this.voicePriority[mini] = AX_POLY_ACTIVE_PRIORITY_BASE + this.priority;
+    this.priority += 1;
+    this.notePlaying[mini] = note;
+    this.pressed[mini] = 1;
+    return mini;
+  }
+
+  /** Their NOTE_OFF branch: EVERY voice holding that note, with no `break` — two can
+   *  hold one note after a steal. The priority drops below the offset, which is what
+   *  returns the voice to the free pool. */
+  releaseNote(note, releaseVelocity) {
+    for (let i = 0; i < AX_POLY_MAX_VOICES; i++) {
+      if (this.notePlaying[i] === note && this.pressed[i]) {
+        this.voicePriority[i] = this.priority;
+        this.priority += 1;
+        this.pressed[i] = 0;
+        this.voiceGate[i] = 0;
+        this.voiceRelease[i] = releaseVelocity;
+      }
+    }
+  }
+}
+
 // ─── audio/out ──────────────────────────────────────────────────────────────
 
 /**
@@ -754,4 +1047,8 @@ registerProcessor("ax1-mux", Ax1MuxProcessor);
 registerProcessor("ax1-steps-bool", Ax1StepsBoolProcessor);
 registerProcessor("ax1-steps-value", Ax1StepsValueProcessor);
 registerProcessor("ax1-steps-multi", Ax1StepsMultiProcessor);
+registerProcessor("ax1-midi-keyb", Ax1MidiKeybProcessor);
+registerProcessor("ax1-midi-bend", Ax1MidiBendProcessor);
+registerProcessor("ax1-midi-touch", Ax1MidiTouchProcessor);
+registerProcessor("ax1-poly-voices", Ax1PolyVoicesProcessor);
 registerProcessor("ax1-stereo-out", Ax1StereoOutProcessor);

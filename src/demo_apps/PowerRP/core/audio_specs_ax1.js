@@ -59,7 +59,7 @@ const CONTRIB = { project: "axoloti/axoloti-contrib", commit: "798166f0ce29f4b6a
 /**
  * Pure function. Build one derivation record. A helper rather than 15 object
  * literals because the SHAPE is the contract the test enforces, and a shape spelled
- * fifteen times is fifteen chances to drop the field that mattered.
+ * once per node is once per node's chance to drop the field that mattered.
  *
  * @param {{project: string, commit: string}} source - FACTORY or CONTRIB
  * @param {string[]} objects - source object paths, relative to the repo root
@@ -77,7 +77,7 @@ function derivedFrom(source, objects, codeBlock, recurrence, deviations) {
 }
 
 /** The deviation EVERY node in this block shares, stated once and referenced by name.
- *  Repeating it fifteen times would bury the per-node ones that actually matter. */
+ *  Repeating it per node would bury the per-node ones that actually matter. */
 const FIXED_POINT_DEVIATION = "Q4.27 fixed point → float32. frac32 1.0 = 2^27 becomes 1.0; the source TRUNCATES where we do not, so results differ by up to one frac32 LSB (7.45e-9). Measured per node by tests/port_ax1_test.js.";
 
 /** The other near-universal one: their control rate is 3000 Hz exactly (48 kHz /
@@ -526,6 +526,180 @@ export const AX_STEPS_MULTI_SPEC = {
     ]),
 };
 
+// ── midi/in/* — the note sources, and the trap that makes them necessary ────
+//
+// ⚠ § R7-AXO-TRAPS TRAP 1 IS THIS SECTION'S WHOLE REASON FOR EXISTING.
+// `plugins/node_keyboard.js`'s `pitch` output is in HERTZ; every Axoloti pitch port is
+// in SEMITONES FROM E4. Wiring the playable keyboard straight into one transposes every
+// note BY ITS OWN FREQUENCY IN SEMITONES — A4 arrives as semitone 440 — and it looks
+// perfectly fine on the canvas. `audio_ax_midi_keyb` is where that conversion has a
+// home, which is why 17 of the 20 § R7-17-SEL patches want it.
+//
+// ⚠ AND THERE IS NO MIDI TRANSPORT IN THIS ENGINE. Measured 2026-08-06:
+// `requestMIDIAccess` / `MIDIAccess` / `midimessage` appear NOWHERE in synth/, web/,
+// core/ or plugins/. Reading a live host port would be EPHEMERAL state, which CLAUDE.md
+// says this project has none of. So these three nodes take WIREABLE inputs and KNOBS —
+// both property state, both deterministic — and say so in their own `help` rather than
+// implying a MIDI cable that is not there.
+//
+// ── THE OUTPUT PORT TYPES ARE A DECISION, AND HERE IS THE ARGUMENT ──────────
+// Every audio module shipped before this section declares its outputs `audio` or
+// `trigger` and never `number` (checked across all nine spec files). These four break
+// that, and R7-UNITS clause 1 is why: **an `audio` wire is ±1**, and a note output
+// carries ±64 SEMITONES while a bend carries ±64 semitones too. Declaring those `audio`
+// would put a value sixty-four times the wire's own definition on it. Clause 2 — "a
+// `number` wire carries the REAL UNIT of its quantity" — is exactly the port these are,
+// and it is also the WIDER type: `number` reaches number, audio AND trigger, where
+// `audio` cannot reach `trigger` at all (core/nodeflow.COERCIONS).
+// GATE-SHAPED OUTPUTS STAY `trigger`, per clause 4's caution and for the same reach
+// argument — `trigger` is the only output type that can be dropped on all three.
+
+/** The MIDI note range a zone can span, expressed in the `note` outlet's OWN units:
+ *  semitones from E4, i.e. MIDI − 64. So MIDI 0…127 is −64…63, and `keyb zone lru`'s
+ *  0…50 split is −64…−14. Their spinners say 0…127; restating the range in the outlet's
+ *  units rather than MIDI's is what stops a zone knob and a note wire disagreeing. */
+const AX_ZONE_LOW = -64;
+const AX_ZONE_HIGH = 63;
+
+/** The velocity a clicked key gets when nothing drives the inlet, as a MIDI data byte —
+ *  100 is the conventional "played, not slammed" velocity, and the wire value is
+ *  100/128. It is a DEFAULT and not a constant of the port: A1's amplitude envelope
+ *  reads velocity twice, so a patch that wants a softer touch turns the knob. */
+const AX_DEFAULT_VELOCITY_BYTE = 100;
+/** The 7-bit data byte's divisor on the wire. Their `_velo<<20` over frac32's 2^27 is
+ *  `/128`, NOT `/127` — so a maximum velocity reads 0.9921875 and never quite 1.0. */
+const AX_MIDI_DATA_FULL_SCALE = 128;
+/** A released key's default note-off velocity. Half scale: a note-off velocity is the
+ *  one MIDI quantity most controllers do not send at all, and 64 is what they substitute. */
+const AX_DEFAULT_RELEASE_VELOCITY_BYTE = 64;
+
+/** A normalized 0…1 control — velocity, release velocity, channel pressure. Their
+ *  outlets are `frac32.positive`, whose real range is 0…127/128; the knob reaches a
+ *  round 1 because a knob is not a MIDI byte and refusing the last 0.8% would be a
+ *  field that cannot say "all the way". */
+const UNIT = { min: 0, max: 1, step: 0.001 };
+
+export const AX_MIDI_KEYB_SPEC = {
+  type: "audio_ax_midi_keyb", module: "axMidiKeyb", title: "AX MIDI Keyboard",
+  family: "source", icon: "mdi:piano", readout: "velocity", w: 200,
+  help: "Axoloti's `midi/in/keyb`, and THE ADAPTOR THAT MAKES AN AXOLOTI PATCH PLAYABLE: PowerRP's Keyboard widget emits HERTZ and every Axoloti pitch port reads SEMITONES FROM E4, so wiring the two together directly transposes A4 to semitone 440. Wire the Keyboard's `pitch` and `gate` in here and the note leaves in the units the rest of the block speaks. It is MONOPHONIC, exactly as the source object is — for chords, follow it with Poly Voices.",
+  inputs: [
+    { key: "pitch", type: "number", label: "pitch" },
+    { key: "gate", type: "trigger", label: "gate" },
+    { key: "velocity", type: "number", label: "vel" },
+    { key: "release_velocity", type: "number", label: "rvel" },
+  ],
+  outputs: [
+    { key: "note", type: "number", label: "note" },
+    { key: "gate", type: "trigger", label: "gate" },
+    { key: "gate2", type: "trigger", label: "gate2" },
+    { key: "velocity", type: "number", label: "vel" },
+    { key: "release_velocity", type: "number", label: "rvel" },
+  ],
+  knobs: [
+    { key: "start_note", label: "Zone Low", default: AX_ZONE_LOW, min: AX_ZONE_LOW, max: AX_ZONE_HIGH, step: 1, help: "The lowest note this keyboard answers, IN THE `note` OUTLET'S OWN UNITS — semitones from E4, so MIDI 0 is −64 and MIDI 127 is 63. Their `keyb zone lru` spinners say 0…127; restating the zone where the note wire lives is what stops the two disagreeing. A note-on outside the zone is IGNORED entirely, gate included, which is their guard verbatim — that is how A9 splits one keyboard into a bass half and a melody half." },
+    { key: "end_note", label: "Zone High", default: AX_ZONE_HIGH, min: AX_ZONE_LOW, max: AX_ZONE_HIGH, step: 1, help: "The highest note this keyboard answers, in semitones from E4. Set it below Zone Low and the keyboard answers nothing, which is a legal way to mute a split." },
+    { key: "velocity", label: "Velocity", default: AX_DEFAULT_VELOCITY_BYTE / AX_MIDI_DATA_FULL_SCALE, ...UNIT, help: "What a key press is worth, latched on the note-on. A MOUSE CLICK HAS NO VELOCITY and this project has no MIDI, so this is a knob rather than an invented host input — and being a knob it keyframes, folds and takes an `=` equation, so a sequencer's accent lane can drive it through the same-named inlet. The default 0.78125 is MIDI 100 over the 128 their `<<20` divides by." },
+    { key: "release_velocity", label: "Release Vel", default: AX_DEFAULT_RELEASE_VELOCITY_BYTE / AX_MIDI_DATA_FULL_SCALE, ...UNIT, help: "What releasing a key is worth, latched on the note-off. A1's amplitude envelope negates it into its decay time, so a higher value SHORTENS the release. The default 0.5 is MIDI 64, which is what a controller that does not measure release velocity sends." },
+  ],
+  derivation: derivedFrom(FACTORY, ["objects/midi/in/keyb.axo", "objects/midi/in/keyb zone lru.axo"],
+    "<code.krate> + <code.midihandler> of `keyb`, with `keyb zone lru`'s <code.midihandler> zone guard",
+    "Per k-rate tick, in order: a note-on (rising gate, or a pitch change while the gate is high) inside [start_note, end_note] sets note = round(hzToSemitones(pitch)), velocity = the knob, gate = 1 and gate2 = 0; a falling gate sets release_velocity = the knob and gate = 0. Then the five outlets are emitted and gate2 := gate — so gate2 is gate DELAYED ONE TICK, which is their `_gate2 = _gate` after the outlet write.",
+    [
+      KRATE_NOTE,
+      "THERE IS NO MIDI TRANSPORT IN THIS ENGINE (measured: `requestMIDIAccess` appears nowhere in synth/, web/, core/ or plugins/), so the message stream becomes a `pitch` wire in HERTZ plus a `gate` wire. Their midihandler cannot tell a fresh note-on from a legato one either — both are MIDI_NOTE_ON — so a pitch change under a held gate is a note-on here, which is the same event.",
+      "THE HERTZ→SEMITONE CONVERSION IS THIS NODE'S POINT, not an incidental (§ R7-AXO-TRAPS trap 1). It is ROUNDED to the nearest semitone because their `_note` is an `int8_t`, so a swept pitch input steps rather than glides. Glide belongs after this node, in the semitone domain, where `math/smooth` already lives.",
+      "VELOCITY AND RELEASE VELOCITY ARE KNOBS (with same-named inlets), because a clicked key has none and inventing a host input would be the ephemeral state CLAUDE.md forbids. Their wire quantity is `data/128`, so a full-scale MIDI byte is 0.9921875 — the knob reaches a round 1 anyway, which is 0.8% above anything the hardware can send.",
+      "`keyb zone lru`'s LEAST-RECENTLY-USED FALLBACK IS **NOT** PORTED, and it cannot be from these inputs. On a note-off their object scans its whole held-key table for the most recently pressed key still down and reverts to it; a `pitch` wire carries ONE value, not a set of held keys, so that table does not exist here. The ZONE half of that object — which is what A9's split actually uses — is ported. Named rather than approximated: a fallback that guessed would sound like a stuck note.",
+      "THE OUTPUT PORT TYPES DIVERGE FROM EVERY EARLIER PORTED BLOCK (`number`, not `audio`, for note/velocity/release_velocity). R7-UNITS clause 1 defines an `audio` wire as ±1 and `note` carries ±64 semitones; clause 2 is the port these are. `number` is also the only output type that can be dropped on a `trigger` input.",
+    ]),
+};
+
+export const AX_MIDI_BEND_SPEC = {
+  type: "audio_ax_midi_bend", module: "axMidiBend", title: "AX MIDI Bend",
+  family: "source", icon: "mdi:tune-vertical", readout: "position",
+  help: "Axoloti's `midi/in/bend`. Its output is a PITCH in semitones and its full swing is ±64 of them — which looks absurd until you see what every patch does with it: A10 sends it through a `÷32` and gets the ±2 semitones a bender actually bends. The `trig` output fires one control tick whenever the position moves.",
+  inputs: [{ key: "position", type: "number", label: "pos" }],
+  outputs: [
+    { key: "bend", type: "number", label: "bend" },
+    { key: "trig", type: "trigger", label: "trig" },
+  ],
+  knobs: [
+    { key: "position", label: "Position", default: 0, min: -1, max: 1, step: 0.001, help: "The bender's physical position: −1 fully down, 0 centred, +1 fully up. This is the 14-bit message mapped as their `(v − 0x2000) << 14` maps it, so the knob is the wheel and the `bend` output is the interval it means. It is a knob AND an inlet, so an LFO wired here is a vibrato with the patch's own bend depth already applied." },
+  ],
+  derivation: derivedFrom(FACTORY, ["objects/midi/in/bend.axo"],
+    "<code.krate> + <code.midihandler>",
+    "bend = position × 64 semitones; trig = 1 for one control tick when position differs from the previous tick's. Their `_bend = ((data2<<7)+data1 − 0x2000)<<14` is the frac32 (v14 − 8192)/8192, i.e. the position; the ×64 is the frac32-pitch→semitone factor core/audio_specs_ax2.js's header states.",
+    [
+      KRATE_NOTE,
+      "`trig` IS A VALUE CHANGE HERE, NOT A MESSAGE ARRIVAL. Their `ntrig` is set by the midihandler and cleared every k-rate tick, so a REPEATED IDENTICAL bend message re-triggers on hardware. A wire carries a value and not an event, so an unchanged position cannot fire. The difference is audible only where `trig` gates something and the controller is spamming its centre value.",
+      "The position is the INPUT and the semitone interval is the OUTPUT, deliberately under two names. A knob and its same-named input must carry the SAME units (core/audio_specs_ax2.js's header), and a −1…1 wheel and a ±64 semitone interval are not the same quantity — so they get different names rather than one name with two meanings.",
+    ]),
+};
+
+export const AX_MIDI_TOUCH_SPEC = {
+  type: "audio_ax_midi_touch", module: "axMidiTouch", title: "AX Channel Pressure",
+  family: "source", icon: "mdi:gesture-tap-hold", readout: "pressure",
+  help: "Axoloti's `midi/in/touch` — CHANNEL pressure, one value for the whole keyboard rather than per note. C3 and C7 take their pad's swell from it. Its `trig` fires one control tick whenever the pressure moves, which is how their patches retrigger on a squeeze.",
+  inputs: [{ key: "pressure", type: "number", label: "press" }],
+  outputs: [
+    { key: "o", type: "number", label: "o" },
+    { key: "trig", type: "trigger", label: "trig" },
+  ],
+  knobs: [
+    { key: "pressure", label: "Pressure", default: 0, ...UNIT, help: "How hard the keyboard is being leaned on, 0…1. Their outlet is `data1/128`, so a maximum MIDI pressure is 0.9921875 — this knob reaches a round 1 because a knob is not a MIDI byte. Knob AND inlet, so an envelope wired here is a programmed swell." },
+  ],
+  derivation: derivedFrom(FACTORY, ["objects/midi/in/touch.axo"],
+    "<code.krate> + <code.midihandler>",
+    "o = pressure; trig = 1 for one control tick when pressure differs from the previous tick's. Their `_press = data1<<20` is `data1/128` in frac32, which is the same 0…1 quantity the inlet carries.",
+    [
+      KRATE_NOTE,
+      "`trig` IS A VALUE CHANGE, NOT A MESSAGE ARRIVAL — the same substitution `audio_ax_midi_bend` records, for the same reason.",
+      "THIS IS CHANNEL PRESSURE, NOT POLYPHONIC AFTERTOUCH. `midi/in/keyb touch`'s per-note `touch` outlet is a DIFFERENT quantity and is NOT ported: it would have to reach the voice through `audio_ax_poly_voices`, whose five-port signature is ratified in § R7-POLY, so adding it to this block alone would be a port with nowhere to go. C3's and C7's recorded substitution stands until that decision is taken.",
+    ]),
+};
+
+// ── patch/patcher poly=N — the voice allocator (§ R7-POLY) ──────────────────
+
+/** The largest `poly` this node offers. Their combo box runs to 24; ours stops where
+ *  synth/voices.MAX_POLY_VOICES stops, and the § R7-17-SEL set's largest is C7's 8. */
+const AX_POLY_MAX_VOICES = 16;
+
+export const AX_POLY_VOICES_SPEC = {
+  type: "audio_ax_poly_voices", module: "axPolyVoices", title: "AX Poly Voices",
+  family: "modulation", icon: "mdi:call-split", readout: "voices", w: 200,
+  help: "Axoloti's `patch/patcher poly=N` voice allocator: one stream of notes in, and the note actually assigned to ONE voice out. IT ALLOCATES; IT DOES NOT REPLICATE. The engine has no way to instantiate the graph downstream of a node N times, so one of these drives ONE voice graph — for N real voices, place N of them on the same input wires with `voice` set 0…N−1, each feeding its own copy. The allocation arithmetic is the source's exactly: releases are stolen before sounding notes, and among equals the oldest.",
+  inputs: [
+    { key: "note", type: "number", label: "note" },
+    { key: "gate", type: "trigger", label: "gate" },
+    { key: "gate2", type: "trigger", label: "gate2" },
+    { key: "velocity", type: "number", label: "vel" },
+    { key: "release_velocity", type: "number", label: "rvel" },
+  ],
+  outputs: [
+    { key: "note", type: "number", label: "note" },
+    { key: "gate", type: "trigger", label: "gate" },
+    { key: "gate2", type: "trigger", label: "gate2" },
+    { key: "velocity", type: "number", label: "vel" },
+    { key: "release_velocity", type: "number", label: "rvel" },
+  ],
+  knobs: [
+    { key: "voices", label: "Voices", default: 7, min: 1, max: AX_POLY_MAX_VOICES, step: 1, help: "The patcher's `poly` attribute, carried across as DATA — the harvested decks say 7 (A1, A9), 8 (C7), 5 (C1, C11) and 3 (C4). It is the SIZE OF THE POOL notes are allocated into, so raising it makes releases ring longer before they are stolen even when only one voice graph is listening. Theirs is a COMPILE-TIME attribute and this is an ordinary keyframable knob: the pool is always allocated at its maximum and this is the search width, so changing it mid-note is legal and only narrows where the next note may land." },
+    { key: "voice", label: "Voice", default: 0, min: 0, max: AX_POLY_MAX_VOICES - 1, step: 1, help: "WHICH voice of the pool these five outputs report. This knob is NOT in the source — a patcher has no such control because it genuinely instantiates the subpatch N times, and the engine cannot. It is the honest seam: without it this node could only ever be voice 0 and `voices` would be a knob with no picture behind it. Set it past `voices` and the outputs stay silent, which is the truth about a voice that does not exist." },
+  ],
+  derivation: derivedFrom(FACTORY, ["objects/patch/patcher.axo", "objects/patch/inlet a.axo", "objects/patch/outlet a.axo"],
+    "NOT an <obj> code block: `patch/patcher.axo` is a `AxoObjectPatcher` shell with no code at all. The allocator is GENERATED — axoloti/src/main/java/axoloti/codegen/patch/PatchViewCodegen.java:1042-1083 (`generatePolyCode`'s `sMidiCode`), with its state at :946-950 and its init at :965-987, read at axoloti/axoloti commit 46f6e4b383ce182da9dcca25b9d4b544fe20f990",
+    "On a note-on: mini = argmin(voicePriority); voicePriority[mini] = 100000 + priority++; notePlaying[mini] = note; pressed[mini] = true. On a note-off: for every i with notePlaying[i] === note and pressed[i], voicePriority[i] = priority++ and pressed[i] = false. The chosen voice's five outputs then carry that note's note/gate/velocity/release_velocity, with gate2 the one-tick-delayed gate `midi/in/keyb` produces inside each voice.",
+    [
+      KRATE_NOTE,
+      "⚠ THE SUBGRAPH IS NOT REPLICATED, AND THAT IS THE HALF THIS NODE CANNOT DELIVER. § R7-POLY's ratified contract is \"replicate the subgraph DOWNSTREAM of me N times\"; `core/audio_mirror_diff.readAudioScene` is a FLAT 1:1 map — one item is one module and one wire is one connect — so nothing in the engine can honour it. What ships is the ALLOCATION, exactly; what is missing is the INSTANTIATION. Reported to the lead with what the mirror would need.",
+      "THE `voice` KNOB IS AN ADDITION TO THE RATIFIED SIGNATURE (the five ports are untouched). Without it the node is permanently voice 0 and looks polyphonic while being monophonic, which § R7-POLY names as the worst outcome available.",
+      "THE SOURCE ALSO HANDLES SUSTAIN (CC64) AND `polychannel` / `polyexpression` MPE MODES (PatchViewCodegen.java:1086-1310). None is ported: there is no CC transport to carry a pedal and no per-channel note stream to split. A sustain pedal here would be a `hold` inlet, which is a design decision and not a transcription.",
+      "THEIR `priority` COUNTER NEVER RESETS AND THE `100000` OFFSET IS FINITE, so after 100000 note events a released voice's priority catches up with a sounding one's and the two classes stop separating — the allocator starts stealing sounding notes while free voices sit idle. Ported as-is (it takes hours of playing to reach), and named because it is a real bound rather than an invariant.",
+      "`patch/inlet a` and `patch/outlet a` ARE ABSORBED, not ported: in a flat graph the wire that crossed the subpatch edge is one wire. Their code generator SUMS every voice's `outlet a` (PatchViewCodegen.java:1030-1036, `outlet_x[j] += getVoices()[vi]…`) and BROADCASTS every `inlet a` to all voices (:1015-1021) — which is what N of these plus a mixer reproduces.",
+    ]),
+};
+
 // ── audio/out ───────────────────────────────────────────────────────────────
 
 export const AX_STEREO_OUT_SPEC = {
@@ -567,5 +741,6 @@ export const BLOCK_SPECS = [
   AX_CONVERT_SPEC,
   AX_LOGIC_SPEC, AX_COUNTER_SPEC, AX_LATCH_SPEC, AX_DECODE_SPEC, AX_MUX_SPEC,
   AX_STEPS_BOOL_SPEC, AX_STEPS_VALUE_SPEC, AX_STEPS_MULTI_SPEC,
+  AX_MIDI_KEYB_SPEC, AX_MIDI_BEND_SPEC, AX_MIDI_TOUCH_SPEC, AX_POLY_VOICES_SPEC,
   AX_STEREO_OUT_SPEC,
 ];

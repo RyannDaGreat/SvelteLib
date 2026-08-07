@@ -1,0 +1,20 @@
+/**
+ * Bogaudio Reftone — the ported `Bogaudio-Reftone` as a PowerRP node widget.
+ *
+ * SOURCE family (warm amber header): it makes a signal out of nothing.
+ *
+ * A tuning reference: a note, an octave and a cents trim, emitting both a pitch CV and a table-free double-precision sine at exactly that frequency.
+ *
+ * ── WHY THIS FILE IS TWO LINES ──────────────────────────────────────────────
+ * Every audio node has the SAME shape and that shape lives ONCE in
+ * core/audio_nodes.js. What differs per module is DATA — here VCV_REFTONE_SPEC in
+ * core/audio_specs_vc3b.js, whose `help` sentences point at the DERIVATION RECORD
+ * in synth/vc3b_kernels.js: the Bogaudio module, the C++ file and function, the
+ * commit it was read at, the recurrence in float, and every deliberate deviation
+ * by name. Read that record before changing anything about how this sounds.
+ */
+
+import { audioNodePlugin } from "../core/audio_nodes.js";
+import { VCV_REFTONE_SPEC } from "../core/audio_specs_vc3b.js";
+
+export const audioVcvReftonePlugin = audioNodePlugin(VCV_REFTONE_SPEC);
