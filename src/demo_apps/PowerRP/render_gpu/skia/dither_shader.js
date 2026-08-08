@@ -16,9 +16,17 @@
  * downconvert. Everything about that is deleted: the props, the presets, the
  * `cameraDither()` reader, `renderWithDither`, `ditherDownconvert`, the F16
  * ImageInfo and the "this context cannot allocate a half-float render target"
- * degradation. WHAT SURVIVES IS THE MATH — the Bayer recursion, the blue-noise
- * tile (blue_noise_64.js) and the ±half-LSB wobble — because none of it was ever
- * the problem.
+ * degradation. WHAT SURVIVES IS THE MATH — the Bayer recursion and the ±half-step
+ * wobble — because neither was ever the problem.
+ *
+ * THE BLUE-NOISE TILE DID NOT SURVIVE, AND THIS SENTENCE USED TO SAY IT DID. It
+ * once read "the blue-noise tile (blue_noise_64.js) … because none of it was ever
+ * the problem", which was false: that tile was WHITE NOISE wearing a
+ * void-and-cluster docblock (spectral ratio 0.90 against ~1 for white noise, and a
+ * histogram that was not a rank permutation). It is replaced by a DOWNLOADED
+ * CC0 512x512 tile — see blue_noise_512.js for the provenance and the measurements,
+ * and render_gpu/tests/blue_noise_test.js for the gate that now makes the claim
+ * checkable instead of merely asserted.
  *
  * WHY THE PAINT-LEVEL VERSION NEEDS NO F16 INTERMEDIATE, WHICH IS THE WHOLE
  * REASON THIS IS A BETTER PLACE FOR IT. The camera pass needed one because it ran

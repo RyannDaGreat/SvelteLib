@@ -161,6 +161,7 @@
   import ColorPicker from "../../../lib/ColorPicker.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
   import { fanOutPairs } from "../core/multiselect.js";
+  import { recentColors, markColorUsed } from "./recentColors.js";
 
   let { app, path, paths = null, label, value, disabled = false } = $props();
   /**
@@ -173,6 +174,11 @@
 
 
   let open = $state(false);
+  // THE RECENT-COLOR COLUMN's list. Seeded from the shared store at construction
+  // and reassigned on each commit, so every ColorField on screen shows the same
+  // history the moment one of them is used — the store is the single owner and
+  // this is only the reactive read of it.
+  let recent = $state(recentColors());
 
   // Browser EyeDropper API (Chrome/Edge, secure context only) — a STATIC
   // capability, so a plain const suffices (it cannot change mid-session). When
@@ -200,6 +206,12 @@
   function commit(picked) {
     app.setPreview(fanOutPairs(writePaths, toStored(picked)));
     app.commitPreview();
+    // THE MRU IS RECORDED HERE AND NOT IN preview(), because a drag across the
+    // saturation square fires oninput continuously — recording each would push a
+    // dozen shades of one hue through the column per gesture and evict everything
+    // genuinely older. A settle is the event that means "the user chose this".
+    // The list is reassigned (not mutated) so the $state read below re-renders.
+    recent = markColorUsed(picked);
   }
 
   /**
@@ -295,7 +307,7 @@
          app.css so it matches every theme. Never shown for an equation-bound
          value: picking would write a literal over the expression. -->
     <div class="colorfield-picker">
-      <ColorPicker value={picker} {label} {disabled} oninput={preview} onchange={commit} />
+      <ColorPicker value={picker} {label} {disabled} {recent} oninput={preview} onchange={commit} />
     </div>
   {/if}
 </div>

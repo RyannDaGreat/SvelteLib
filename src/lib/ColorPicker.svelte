@@ -196,6 +196,20 @@
     disabled = false,
     /** @type {string} Accessible label prefix for the control group. */
     label = "color",
+    /**
+     * @type {string[]} MOST-RECENTLY-USED colors, newest first, as a column of
+     * swatches down the picker's right side. Empty (the default) renders NOTHING
+     * and leaves the layout byte-identical to before this prop existed — a
+     * consumer that does not opt in cannot tell it is here.
+     *
+     * THE LIST IS THE HOST'S, NOT THE PICKER'S, and that is the whole design.
+     * "Recently used" is an app-wide fact (the colors YOU picked, across every
+     * field, surviving a reload) — a component that kept its own would give each
+     * field a private history, which is the opposite of what the feature means.
+     * So this is a plain prop and the host owns storage and de-duplication;
+     * src/lib stays stateless.
+     */
+    recent = [],
   } = $props();
 
   // HSVA is the INTERNAL model: hue survives at s=0/v=0 (a hex round-trip would
@@ -251,6 +265,35 @@
   /** Command. Signal a settle (pointerup / committed hex). */
   function emitChange() {
     onchange?.(hex8);
+  }
+
+  /**
+   * Command. Adopt a swatch from the RECENT column: set the internal HSVA and
+   * emit BOTH a live value and a settle.
+   *
+   * IT EMITS BOTH BECAUSE A CLICK IS A COMPLETE GESTURE. A drag previews through
+   * `oninput` many times and settles once through `onchange`; this has no
+   * in-between, so a host that separates preview from commit (the documented
+   * split, and how ColorField stages vs commits an undo unit) would otherwise
+   * either never preview or never commit. Emitting the pair makes one click read
+   * as one whole gesture on both wires.
+   *
+   * It goes through `toHsva`, not a raw hex assignment, so the square and hue
+   * strip land where the color actually is — and so a grey swatch does not snap
+   * the hue thumb to 0 (the reason hsva is the internal source of truth at all).
+   */
+  function pickRecent(swatch) {
+    if (disabled) return;
+    // GUARD ON THE PARSE, NOT ON toHsva's RESULT. toHsva never fails — it answers
+    // black for unparseable input — so checking its return would be dead code AND
+    // would turn a host's malformed swatch into a silent black, overwriting a
+    // color the user did not ask to change. hexToRgba returning null is the only
+    // honest signal that the string was not a color.
+    const rgb = hexToRgba(swatch);
+    if (!rgb) return;
+    hsva = rgbaToHsva(rgb);
+    emitInput();
+    emitChange();
   }
 
   // -- Pointer drag on a track (square / hue / alpha) -------------------------
@@ -394,6 +437,10 @@
   style:--cp-solid={solidCss}
   style:--cp-swatch={swatchCss}
 >
+  <!-- THE CONTROL STACK. Wrapped so a RECENT column can sit beside it: `.cp` is
+       now the ROW and this is the column it always was. With no `recent` the row
+       has one child and renders exactly as before. -->
+  <div class="cp-main">
   <!-- Saturation / value square. Background = pure hue; white overlay left→right
        (saturation), black overlay top→bottom (value). The thumb sits at
        (s, 1-v). -->
@@ -466,6 +513,29 @@
       onblur={onHexBlur}
     />
   </div>
+  </div>
+
+  <!-- MOST-RECENTLY-USED column. Rendered only when the host supplies one, so
+       the default layout is untouched. Each swatch is a real <button>: the
+       colors are pickable, so they must be reachable by keyboard and named for
+       a screen reader, not decorative divs. The checkerboard shows through a
+       translucent color exactly as the readout swatch does. -->
+  {#if recent.length}
+    <div class="cp-recent" role="group" aria-label={`${label} recently used`}>
+      {#each recent as swatch, i (swatch + i)}
+        <button
+          type="button"
+          class="cp-recent-swatch"
+          class:cp-recent-current={normalize(swatch) === hex8}
+          style:--cp-recent-fill={swatch}
+          {disabled}
+          aria-label={`${label}: reuse ${swatch}`}
+          aria-current={normalize(swatch) === hex8 ? "true" : undefined}
+          onclick={() => pickRecent(swatch)}
+        ><span class="cp-recent-fill"></span></button>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -493,8 +563,13 @@
 
     --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 55%, transparent);
 
+    /* A ROW: the control stack (.cp-main) plus an optional RECENT column. With
+       no `recent` supplied the row has a single child, which lays out exactly as
+       the old column did — that is what keeps this prop invisible to consumers
+       that do not use it. */
     display: inline-flex;
-    flex-direction: column;
+    flex-direction: row;
+    align-items: flex-start;
     gap: var(--cp-gap);
     box-sizing: border-box;
     padding: var(--cp-gap);
@@ -637,5 +712,65 @@
   }
   .cp-hex:focus-visible {
     box-shadow: 0 0 0 2px var(--cp-focus-ring);
+  }
+
+  /* The control stack — the column .cp itself used to be. */
+  .cp-main {
+    display: flex;
+    flex-direction: column;
+    gap: var(--cp-gap);
+    min-width: 0;
+  }
+
+  /* RECENTLY-USED column. Scrolls rather than growing: the host decides how many
+     to keep, and an over-long list must not stretch the picker taller than its
+     square (which would move the hex field on every pick). */
+  .cp-recent {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: var(--cp-square-size);
+    overflow-y: auto;
+    flex: none;
+  }
+
+  .cp-recent-swatch {
+    /* The checkerboard lives on the BUTTON and the color on an inner span, so a
+       translucent swatch reads as translucent — the same underlay construction
+       .cp-swatch uses for the readout. */
+    position: relative;
+    width: var(--cp-strip-height);
+    height: var(--cp-strip-height);
+    padding: 0;
+    flex: none;
+    cursor: pointer;
+    border: 1px solid var(--cp-border);
+    border-radius: var(--cp-radius);
+    background-color: var(--cp-checker-a);
+    background-image:
+      conic-gradient(var(--cp-checker-b) 25%, transparent 25% 50%, var(--cp-checker-b) 50% 75%, transparent 75%);
+    background-size: var(--cp-checker-size) var(--cp-checker-size);
+  }
+
+  .cp-recent-fill {
+    position: absolute;
+    inset: 0;
+    background: var(--cp-recent-fill);
+  }
+
+  .cp-recent-swatch:focus-visible {
+    outline: 2px solid var(--cp-focus-ring);
+    outline-offset: 1px;
+  }
+
+  /* The swatch matching the current color is marked, so the column says which one
+     is live rather than leaving the user to compare by eye. */
+  .cp-recent-current {
+    border-color: var(--cp-accent);
+    box-shadow: 0 0 0 1px var(--cp-accent);
+  }
+
+  .cp-disabled .cp-recent-swatch {
+    cursor: not-allowed;
   }
 </style>
