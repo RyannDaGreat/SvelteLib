@@ -219,6 +219,16 @@ check("every declared PORT is a port the engine module really exposes", () => {
       // A `method: true` port is deliberately NOT an AudioNode input — it is routed
       // to engine.trigger() by the mirror. The ding's `gate` is the only one.
       if (p.method) continue;
+      // A `midi` port is not an engine port AT ALL, and this exemption is a fact
+      // about the TYPE rather than a hole. Every other port type names something in
+      // the audio graph — an AudioNode or an AudioParam — so "does the module really
+      // expose it?" is the right question. A midi wire carries a NOTE-STREAM CLIP
+      // (core/nodeflow.PORT_TYPES.midi): document state, read on the DOCUMENT side by
+      // whatever turns the presentation clock into note-on/note-off, which then calls
+      // engine.noteOn. There is nothing for `instance.inputs` to hold, and a module
+      // that grew a fake `notes` AudioParam to satisfy this sweep would be inventing
+      // an engine input nothing writes to — the opposite of what the sweep is for.
+      if (p.type === "midi") continue;
       assert.ok(p.key in instance.inputs,
         `${spec.type} declares input "${p.key}" but engine module ${spec.module} has [${Object.keys(instance.inputs)}]`);
     }
@@ -605,8 +615,16 @@ check("the analysis family is exactly the two nodes with live overlays", () => {
 check("a readout names a knob the spec really has, or nothing at all", () => {
   for (const spec of AUDIO_SPECS) {
     if (!spec.readout) continue;
-    assert.ok((spec.knobs ?? []).some((k) => k.key === spec.readout),
-      `${spec.type} reads out "${spec.readout}", which is not one of its knobs`);
+    // A readout may name a KNOB or a piece of the module's own non-knob `state`.
+    // The second half exists because the most useful thing a Surge card can say is
+    // which PATCH is loaded, and a patch name has no dial and no engine param behind
+    // it. Both are real declared leaves of the widget, which is the property that
+    // matters: the rule is "a readout names something the state actually has", and
+    // it was only ever spelled "knob" because knobs were all there were.
+    const named = (spec.knobs ?? []).some((k) => k.key === spec.readout)
+      || (spec.state ?? []).some((k) => k.key === spec.readout);
+    assert.ok(named,
+      `${spec.type} reads out "${spec.readout}", which is neither one of its knobs nor one of its declared state keys`);
   }
 });
 

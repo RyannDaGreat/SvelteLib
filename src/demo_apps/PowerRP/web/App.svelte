@@ -39,6 +39,10 @@
   import RenderCenterModal from "./RenderCenterModal.svelte";
   import FileBrowser from "./FileBrowser.svelte";
   import CodeEditorModal from "./CodeEditorModal.svelte";
+  import SurgeGuiModal from "./SurgeGuiModal.svelte";
+  import { patchBytesToBase64 } from "./surgeGui.js";
+  import { moduleControlFor } from "./audioMirror.svelte.js";
+  import PianoRollModal from "./PianoRollModal.svelte";
   import DebugConsole, { DEBUG_PAGES } from "./DebugConsole.svelte";
   import { renderBadgeCount } from "./renderJobView.js";
   // The record store, not projectApi: in static mode the toolbar badge counts
@@ -3488,5 +3492,71 @@
       onsave={(text) => app.commitCodeModal(text)}
       oncancel={() => app.closeCodeModal()}
     />
+  {/if}
+
+  <!-- SURGE XT's REAL INTERFACE (user, 2026-08-08: the synth should "bring up full
+       fledged UI's in giant modals when duoble clicked", and their editor "is soooo
+       good" — so this is Surge's OWN GUI rasterised from wasm, not an approximation
+       of it). Mounted off ONE app-state field exactly as CodeEditorModal is, so the
+       double-click handler carries no UI and the modal is reachable identically from
+       Enter and from any future palette entry.
+
+       THE FOUR CALLBACKS ARE THE GUI→ENGINE BRIDGE, and they split on ONE question:
+       is this thing DOCUMENT STATE?
+         onparam / onnote  are NOT. A turned Surge knob is one of ~2000 parameters
+                           addressed by index, and a key pressed on the modal's piano
+                           is a live performance gesture — core/live_control.js's own
+                           distinction. Both go straight to the engine and are never
+                           written to the document, which is why neither is undoable
+                           and why neither breaks the render-tree invariant.
+         onpatch           IS. Which instrument is loaded is exactly the kind of thing
+                           a deck must reproduce on another machine, so it travels the
+                           NORMAL ROAD: commitSurgePatch writes both leaves as one undo
+                           unit and the ordinary mirror carries it back down. The
+                           engine is also told directly, because a 30 MB archive load
+                           should not wait for a document round-trip. -->
+  {#if app.surgeModal}
+    <SurgeGuiModal
+      title="Surge XT"
+      onclose={() => app.closeSurgeModal()}
+      onparam={(index, value) => moduleControlFor(app.surgeModal?.itemId)?.setParam(index, value)}
+      onpatch={(entry) => {
+        const itemId = app.surgeModal?.itemId;
+        if (!itemId) return;
+        moduleControlFor(itemId)?.loadPatch(entry);
+        // `readBytes()` rather than `entry.bytes`: bytes are present ONLY for a
+        // remote on-demand patch, so reading the field would silently store an
+        // EMPTY patchData for every factory patch — a deck that plays correctly
+        // today and loads as "Init" on another machine. And base64 goes through
+        // patchBytesToBase64, because the obvious
+        // `btoa(String.fromCharCode(...bytes))` throws RangeError on a large
+        // patch (measured: 291 KB blows the argument stack) — it would have
+        // worked on every patch small enough to test with.
+        const bytes = entry.readBytes?.();
+        app.commitSurgePatch(itemId, {
+          name: entry.name,
+          data: bytes ? patchBytesToBase64(bytes) : "",
+        });
+      }}
+      onnote={({ type, note, velocity }) => {
+        const control = moduleControlFor(app.surgeModal?.itemId);
+        if (type === "on") control?.noteOn(note, velocity);
+        else control?.noteOff(note);
+      }}
+    />
+  {/if}
+
+  <!-- THE FULLSCREEN PIANO ROLL (user, 2026-08-08: the MIDI widgets should "bring
+       up full fledged UI's in giant modals when duoble clicked"). Mounted off its
+       own signal rather than as a fifth `codeModal` scope: the two dialogs share
+       their SHAPE and nothing else — a code modal seeds a buffer once and commits
+       on Save, where the roll writes CONTINUOUSLY and every released drag is its
+       own undo unit (app.svelte.js states the full argument at `pianoRoll`).
+
+       It takes the whole store rather than a value + callbacks, because unlike the
+       code modal it both READS the clip on every render (an undo behind the dialog
+       must be visible in it) and WRITES through the preview seam mid-gesture. -->
+  {#if app.pianoRoll}
+    <PianoRollModal {app} />
   {/if}
 </div>

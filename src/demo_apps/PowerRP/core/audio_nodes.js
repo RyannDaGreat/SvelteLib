@@ -215,6 +215,61 @@ export function audioKnobDefaults(spec) {
 }
 
 /**
+ * Pure function. A spec's `defaults` fragment for its NON-KNOB state — the leaves
+ * a module owns that are not engine params.
+ *
+ * ── WHY THIS EXISTS, AND WHY IT IS NOT JUST ANOTHER KNOB ────────────────────
+ * A knob is a promise: `setParam(id, key, value)` reaches the engine and changes
+ * the sound. tests/audio_nodes_test.js enforces that promise by checking every
+ * declared knob against the real module's params, which is the seam that stops an
+ * Inspector row from being a control the engine silently discards.
+ *
+ * Some module state is genuinely not that. A Surge patch is the clearest case: it
+ * is document state (saved, undone, keyframed, tweened between slides) but there
+ * is no AudioParam behind it — loading a patch is a MESSAGE to a running worklet,
+ * not a value ramp. Declaring it as a knob would either fail that sweep or, worse,
+ * pass it by adding a fake param, which is how a description stops being honest.
+ *
+ * So `spec.state` is the second, smaller vocabulary: `{key, default, row, help}`,
+ * where the key is used VERBATIM (no `audio` prefix — these are not the engine's
+ * vocabulary, so they are not at risk of the collision audioKnobKey exists for)
+ * and a null `row` means "state with no Inspector control", which is a legitimate
+ * thing to be (see SURGE_SPEC's patchData).
+ *
+ * The same route core/analysis_display.js already takes for a spectrogram's colour
+ * map: a module's own properties, declared beside the module rather than smuggled
+ * into a vocabulary that means something else.
+ *
+ * @param {object} spec - an audio node spec
+ * @returns {object} a fragment to spread into a plugin's `defaults`
+ *
+ * @example audioStateDefaults({}) // {}
+ * @example audioStateDefaults({state: [{key: "patchName", default: "Init"}]}) // {patchName: "Init"}
+ */
+export function audioStateDefaults(spec) {
+  return Object.fromEntries((spec.state ?? []).map((s) => [s.key, s.default]));
+}
+
+/**
+ * Pure function. The Inspector rows for a spec's non-knob state. A declaration
+ * with `row: null` contributes NOTHING — it is state the author edits somewhere
+ * else (a modal) or not at all.
+ *
+ * @param {object} spec - an audio node spec
+ * @returns {object[]} Inspector row declarations
+ *
+ * @example audioStateRows({}) // []
+ * @example audioStateRows({state: [{key: "patchData", default: "", row: null}]}) // []
+ * @example audioStateRows({state: [{key: "n", default: "", row: {kind: "text", label: "N"}, help: "h"}]})[0].key // "n"
+ * @example audioStateRows({state: [{key: "n", default: "", row: {kind: "text", label: "N"}, help: "h"}]})[0].help // "h"
+ */
+export function audioStateRows(spec) {
+  return (spec.state ?? [])
+    .filter((s) => s.row)
+    .map((s) => ({ key: s.key, help: s.help, ...s.row }));
+}
+
+/**
  * Pure function. The `{inputs, outputs}` port declaration for a spec.
  *
  * Ports are declared as `{key, type, label}` exactly like any node widget's, and
@@ -298,7 +353,16 @@ export function audioPorts(spec) {
 export function audioReadout(spec, s) {
   if (!spec.readout) return "";
   const knob = (spec.knobs ?? []).find((k) => k.key === spec.readout);
-  if (!knob) return "";
+  // A READOUT MAY NAME NON-KNOB STATE (`spec.state`), and Surge is why. The most
+  // useful thing a Surge card can say is WHICH PATCH is loaded, and a patch name is
+  // not a knob — there is no dial and no engine param behind it. Read as a plain
+  // string with no unit and no numeric formatting, because that is what it is.
+  if (!knob) {
+    const decl = (spec.state ?? []).find((k) => k.key === spec.readout);
+    if (!decl) return "";
+    const value = s?.[decl.key] ?? decl.default;
+    return typeof value === "string" ? value : String(value ?? "");
+  }
   const { value } = audioKnobValues({ knobs: [knob] }, s)[0];
   if (knob.discrete) return String(value);
   const also = typeof knob.hz === "function" ? ` · ${readoutNumber(knob.hz(Number(value)))} Hz` : "";
@@ -449,11 +513,23 @@ export function audioNodePlugin(spec) {
     // on declarations rather than on type strings (core/registry.js's law).
     audioModule: spec.module,
     audioSpec: spec,
+    // Passed through from the spec so an activate handler's `claims()` can see it.
+    // Absent (undefined) for every module that declares none, which is all but Surge.
+    surgeGui: spec.surgeGui,
     // DOUBLE-CLICK ACTIVATION (web/widget_handlers.js, phase "activate"): the
     // founding ask, verbatim — "If I double click the module, I can start
     // playing with the knobs in it". Enters KNOB FOCUS, a sustained mode in
     // which a press on a dial turns it and a press anywhere else leaves.
-    activate: "knob_focus",
+    //
+    // A SPEC MAY OVERRIDE IT, and exactly one does. `audio_surge` carries its own
+    // control surface — Surge XT's real GUI, in a modal — so the founding ask's
+    // "playing with the knobs in it" is answered there rather than by the card's
+    // three or four dials, and double-click opens that instead (user, 2026-08-08:
+    // the modules should "bring up full fledged UI's in giant modals when double
+    // clicked"). Declared as an override rather than a second plugin shape because
+    // everything else about a Surge node — its ports, its beads, its wiring, its
+    // Inspector rows — is exactly what every other module has.
+    activate: spec.activate ?? "knob_focus",
     defaults: {
       type: spec.type,
       x: 100, y: 100, w: width,
@@ -465,6 +541,10 @@ export function audioNodePlugin(spec) {
       // without this key would stay wired to the original when it was copied.
       inputs: {},
       ...audioKnobDefaults(spec),
+      // NON-KNOB MODULE STATE (`spec.state`): document leaves this module owns that
+      // are not engine params — a Surge patch blob and its label. See
+      // audioStateDefaults for why they are a second, smaller vocabulary.
+      ...audioStateDefaults(spec),
       // THE DISPLAY'S OWN PROPERTIES (R7-19), for the specs that declare an
       // `overlay`. They are not engine params — a spectrogram's colour map and
       // scroll speed never reach the AudioContext — so they are not knobs, and
@@ -486,6 +566,9 @@ export function audioNodePlugin(spec) {
       // initialization" on the first run.)
       ...nodeInputRows({ ports: portsFn }),
       ...audioKnobRows(spec),
+      // Beside the knobs, because they are this module's own properties too; a
+      // declaration with `row: null` contributes nothing at all.
+      ...audioStateRows(spec),
       // BELOW THE KNOBS, because they describe the PICTURE rather than the sound:
       // an author reads an analysis node by what it measures first. Filed under
       // AUDIO_CAT so a node's knobs and its display controls are one group rather
@@ -567,7 +650,13 @@ export function audioNodePlugin(spec) {
       title: `Add ${title}`,
       icon: spec.icon ?? "mdi:sine-wave",
       category: "Audio Nodes",
-      run: (app) => app.armCrosshairPlacement(plugin),
+      // A SPEC WITH A `rig` INSERTS THE WHOLE RIG. Everything else arms crosshair
+      // placement, which is right for a module that is useful on its own. Surge is
+      // not: alone it has nothing to play it and nowhere to go, so "Add Surge XT"
+      // means the three-node chain (core/audio_rigs.js). ONE undo unit, because
+      // insertDemoTemplate commits once — a Cmd+Z that left an orphaned keyboard
+      // behind would be the defect this shape avoids.
+      run: (app) => (spec.rig ? app.insertAudioRig(spec.rig) : app.armCrosshairPlacement(plugin)),
     }],
     cullMargin: effectsCullMargin,
     // THE BOUNDS PROTOCOL (core/registry.js): a node's ink is its card PLUS the

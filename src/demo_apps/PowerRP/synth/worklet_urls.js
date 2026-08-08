@@ -76,3 +76,40 @@ export { default as VC10_WORKLET_URL } from "./worklets/processors_vc10.js?worke
 /** VC-5 — Valley/FrozenWasteland/other large FX: Plateau, Chronoblob2, Feline,
  *  Terrorform, JustAPhaser, SPF, rewin, reburst, XFXF35. Imports `../vc5_kernels.js`. */
 export { default as VC5_WORKLET_URL } from "./worklets/processors_vc5.js?worker&url";
+
+/**
+ * SURGE XT — and it is the one export here that is `?url`, NOT `?worker&url`.
+ *
+ * THE DIFFERENCE IS A FACT ABOUT THE FILE, not a shortcut. Every processor above is
+ * OUR ES module and STATICALLY IMPORTS its kernels, so it needs the worker pipeline
+ * to inline those imports — that is the whole measured lesson at the top of this
+ * file. `surge-worklet-bundle.js` is a VENDORED CLASSIC SCRIPT with ZERO imports:
+ * WebSurge's build.sh produces it by literally `cat`-ing its prelude, Emscripten's
+ * UMD glue and the processor together, precisely so it can be loaded by a classic
+ * worklet scope. There is nothing for the pipeline to inline, and running it through
+ * `?worker` would re-wrap a file that is already a finished bundle — treating a
+ * classic script as an ES module worker, which is how `registerProcessor` goes
+ * missing. `?url` emits the bytes verbatim, which is what this file needs.
+ *
+ * It still lives HERE, because `?url` is Vite-only syntax and the quarantine's rule
+ * is about the SYNTAX, not about which query it is: `synth/modules_surge.js` is in
+ * the bare-node lane through `synth/modules.js`, so the specifier may not appear
+ * there. Reached through `engine.portBlockWorkletUrls()` like the rest, whose
+ * `_WORKLET_URL` suffix filter picks it up with no edit.
+ */
+export { default as SURGE_WORKLET_URL } from "../vendor/websurge/js/surge-worklet-bundle.js?url";
+
+/**
+ * THE VENDORED SURGE ARCHIVE INDEX — `{files: [{p, o, n}]}`, naming each packed
+ * file's path, byte offset and length inside the REMOTE 30 MB blob.
+ *
+ * DELIBERATELY NOT NAMED `…_WORKLET_URL`: it is data, not a processor, and
+ * `engine.portBlockWorkletUrls()` filters on that suffix precisely so this file can
+ * hold both kinds without the init loop trying to `addModule` a JSON index. That
+ * filter is what lets ONE quarantine serve every Vite-only specifier in `synth/`
+ * rather than growing a second file with the same docblock.
+ *
+ * The index is 57 KB and is vendored; the 30 MB blob it indexes is NOT (see
+ * synth/surge_remote.js for that ruling and its costs).
+ */
+export { default as SURGE_DATA_INDEX_URL } from "../vendor/websurge/data/surge-data.json?url";

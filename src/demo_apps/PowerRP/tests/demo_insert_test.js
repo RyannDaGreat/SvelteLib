@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { createRegistry } from "../core/registry.js";
 import { demoPlugins, registerPlugins } from "../plugins/index.js";
+import { AUDIO_RIGS } from "../core/audio_rigs.js";
 import { DEMO_PATCHES } from "../core/audio_patches.js";
 import { DEMO_PRESETS } from "../plugins/demo_presets.js";
 import { DEMO_SECTIONS, DEMO_TEMPLATES, demoInsertMenus, demoSectionChildren } from "../web/demoInsert.js";
@@ -66,11 +67,19 @@ function memoIdFor(prefix) {
   };
 }
 
-await test("ONE MECHANISM — every template is stamped by insertDemoTemplate, patches and presets alike", () => {
+await test("ONE MECHANISM — every template is stamped by insertDemoTemplate, patches, presets and rigs alike", () => {
+  // THREE BLUEPRINT ARRAYS NOW, NOT TWO. `AUDIO_RIGS` joined when Surge XT landed:
+  // adding a Surge node inserts a pre-wired keyboard -> synth -> output chain rather
+  // than a lone card (user, 2026-08-08, "so it works off theshelf"), and a rig is
+  // stamped by exactly the same one mechanism a patch is — which is the claim this
+  // test exists to protect, and the reason a rig did NOT get an insert path of its
+  // own. A rig is deliberately absent from the demo-patch SUBMENU (its `section` is
+  // not in SECTIONS): it is surfaced by its widget's own "Add …" command, so it is
+  // one action with one name rather than the same action in two places.
   assert.equal(
     DEMO_TEMPLATES.length,
-    DEMO_PATCHES.length + DEMO_PRESETS.length,
-    "the roster is derived from both blueprint arrays; a mismatch means one of them stopped feeding it"
+    DEMO_PATCHES.length + DEMO_PRESETS.length + AUDIO_RIGS.length,
+    "the roster is derived from all three blueprint arrays; a mismatch means one of them stopped feeding it"
   );
   // A template's ONLY behavioural surface is `build`. If a record ever grows its own
   // `run` or `insert`, that is a second insert path being reintroduced.

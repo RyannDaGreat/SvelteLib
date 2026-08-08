@@ -69,6 +69,10 @@ import { BLOCK_MODULE_FACTORIES as VC7A_FACTORIES, BLOCK_WORKLET_MODULES as VC7A
 import { BLOCK_MODULE_FACTORIES as VC8_FACTORIES, BLOCK_WORKLET_MODULES as VC8_WORKLETS } from "./modules_vc8.js";
 import { BLOCK_MODULE_FACTORIES as VC10_FACTORIES, BLOCK_WORKLET_MODULES as VC10_WORKLETS } from "./modules_vc10.js";
 import { BLOCK_MODULE_FACTORIES as VC5_FACTORIES, BLOCK_WORKLET_MODULES as VC5_WORKLETS } from "./modules_vc5.js";
+// SURGE XT. Same two-export shape as a ported block, but deliberately NOT spread
+// into PORT_BLOCK_MODULES: that list is what makes every ported node a worklet BY
+// CONSTRUCTION, and Surge is not one of those blocks. Named directly below instead.
+import { BLOCK_MODULE_FACTORIES as SURGE_FACTORIES } from "./modules_surge.js";
 
 /**
  * EVERY PORTED BLOCK'S MODULE TYPE NAMES — the PORT-BLOCK CONTRACT's
@@ -115,6 +119,8 @@ export const IMPLEMENTATION = {
   ding: "native",
   pad: "native",
   polyPad: "native",
+  // Surge XT: a whole synthesizer in one AudioWorkletNode (synth/modules_surge.js).
+  surge: "worklet",
   adsr: "worklet",
   bitcrush: "worklet",
   quantize: "worklet",
@@ -1812,6 +1818,7 @@ export const MODULE_FACTORIES = {
   // The PORTED BLOCKS (R7-17). Spread FIRST so a name collision with a hand-written
   // module below is won by the hand-written one and shows up in the coverage sweep.
   ...AX1_FACTORIES, ...AX2_FACTORIES, ...AX3_FACTORIES, ...VC1_FACTORIES, ...VC2_FACTORIES, ...VC3A_FACTORIES, ...VC3B_FACTORIES, ...AX4_FACTORIES, ...VC7A_FACTORIES, ...VC8_FACTORIES, ...VC10_FACTORIES, ...VC5_FACTORIES,
+  ...SURGE_FACTORIES,
   output: outputModule,
   oscillator: oscillatorModule,
   supersaw: supersawModule,

@@ -59,6 +59,7 @@ import { cameraRect } from "../core/derive.js";
 import { keyframed, uuid, withNewItem, withNormalizedZ } from "../core/document.js";
 import { rotatedBBoxAABB } from "../core/view.js";
 import { DEMO_PATCHES, PATCH_ROW, buildPatchItems, patchBounds } from "../core/audio_patches.js";
+import { AUDIO_RIGS, audioRigTemplateId } from "../core/audio_rigs.js";
 import { DEMO_PRESETS, buildPresetItems, withPresetScript } from "../plugins/demo_presets.js";
 
 /**
@@ -192,7 +193,47 @@ function presetTemplate(preset) {
  * written out here: a new patch or preset is one record in its own data file, and
  * this list, its palette entry and its submenu placement all follow.
  */
-export const DEMO_TEMPLATES = [...DEMO_PATCHES.map(patchTemplate), ...DEMO_PRESETS.map(presetTemplate)];
+/**
+ * Pure function. The template record for one off-the-shelf RIG (core/audio_rigs.js).
+ *
+ * A rig GROUPS, like a patch and unlike a preset, and for the patch's stated reason:
+ * three pre-wired nodes are one machine, and an author who wants it somewhere else
+ * wants to move all of it.
+ *
+ * IT GETS ITS OWN SECTION, and `tests/demo_insert_test.js` is why — it made the
+ * decision for me, in both directions, which is the useful kind of test. The first
+ * attempt gave a rig a `rig` section that was NOT in DEMO_SECTIONS, reasoning that a
+ * rig is already surfaced by its widget's own "Add …" command; the suite refused it,
+ * correctly, because a template in no section is an insertable nobody can find. The
+ * second attempt filed it under `patch`, and the suite refused THAT too, on the
+ * sharper law at its line 123: the patch submenu's children are EXACTLY the patch
+ * roster. Both refusals are right, and together they say a rig is a third kind.
+ *
+ * WHAT A RIG IS NOT is a DEMO PATCH. It is absent from `DEMO_PATCHES`, so the patch
+ * laws (a meter and a spectrum in every one, "so the canvas is ALIVE") do not apply
+ * — a rig is the SMALLEST graph that makes its widget playable, not a showcase. That
+ * is exactly the distinction the separate section now states in the UI as well.
+ *
+ * @param {object} rig - an AUDIO_RIGS blueprint
+ * @returns {object} a template record
+ */
+function rigTemplate(rig) {
+  return {
+    id: audioRigTemplateId(rig.id),
+    section: "rig",
+    title: rig.title,
+    icon: "mdi:piano",
+    aliases: [rig.title.toLowerCase()],
+    help: rig.help,
+    build(app, idFor) {
+      const origin = patchOrigin(app, rig);
+      const { states, order } = buildPatchItems(rig, app.registry, origin, idFor);
+      return { states, order, group: { name: rig.title, bounds: patchBounds(rig, app.registry, origin) } };
+    },
+  };
+}
+
+export const DEMO_TEMPLATES = [...DEMO_PATCHES.map(patchTemplate), ...DEMO_PRESETS.map(presetTemplate), ...AUDIO_RIGS.map(rigTemplate)];
 
 /**
  * THE SECTIONS demo insertables are grouped under — one submenu each, and the ONLY
@@ -223,6 +264,21 @@ export const DEMO_SECTIONS = [
     icon: "mdi:music-box-multiple-outline",
     aliases: ["demo patch", "demo patches", "audio patch", "synth patch", "patch library"],
     help: "Fully-wired working audio graphs. Each one arrives as a GROUP of real node widgets you can drag, rewire and keyframe — the patch is the acceptance test for the modules in it, so it already sounds like something.",
+  },
+  {
+    // OFF-THE-SHELF RIGS (core/audio_rigs.js). A third kind, not a thin patch: a
+    // patch is a SHOWCASE (and must carry a meter and a spectrum to be one), while a
+    // rig is the minimum wiring that makes ONE widget playable the moment it lands.
+    // Also reachable from that widget's own "Add …" command, which is the route most
+    // users take; this submenu is what makes it findable by someone who does not
+    // already know the widget exists.
+    id: "rig",
+    templated: true,
+    commandId: "insert-audio-rig",
+    title: "Add Playable Rig",
+    icon: "mdi:piano",
+    aliases: ["rig", "rigs", "playable rig", "off the shelf", "ready to play"],
+    help: "A widget that needs company, arriving with it: the instrument plus the keyboard that plays it and the output it reaches, already wired. The smallest thing that makes a sound when you click it.",
   },
   {
     id: "preset",

@@ -427,7 +427,16 @@ test("NATIVE FIRST is actually honored — the hand-written worklet list is exac
   for (const type of ported)
     assert.equal(IMPLEMENTATION[type], "worklet", `ported module ${type} must be classified worklet`);
   const worklets = moduleTypes().filter((type) => !ported.has(type) && IMPLEMENTATION[type] === "worklet").sort();
-  assert.deepEqual(worklets, ["adsr", "bitcrush", "quantize", "sampleHold", "trigger"]);
+  // `surge` IS ON THIS LIST AND IS THE ONE ENTRY THE LAW ABOVE DOES NOT REACH.
+  // The law asks "would a native AudioNode have done?" and answers it for modules WE
+  // designed — the four beside it are small DSP we chose to write in JS. Surge is a
+  // 5.4 MB compiled synthesizer: there is no native node that is Surge, so the
+  // question has the same non-answer it has for a ported Axoloti kernel. It is not
+  // excluded by `ported` because it is genuinely not one of the R7-17 port blocks
+  // (see synth/modules_surge.js's BLOCK_WORKLET_MODULES note), so it is named here
+  // instead — deliberately, so that adding it had to be a decision someone wrote
+  // down rather than a list that quietly grew.
+  assert.deepEqual(worklets, ["adsr", "bitcrush", "quantize", "sampleHold", "surge", "trigger"]);
   // THE LAW IS THE WORKLET LIST, which the deepEqual above pins EXACTLY: a sixth
   // worklet appearing is the violation worth catching, and it still fails here.
   // "Native" is that list's complement, so a hard native count adds nothing and

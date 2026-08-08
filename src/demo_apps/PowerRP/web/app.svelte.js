@@ -2945,6 +2945,8 @@ export class PowerRPApp {
   /** The open Monaco modal's target (see the SCOPES note above), else null. A
    *  reactive $state field App.svelte mounts CodeEditorModal off. */
   codeModal = $state(null);
+  /** THE SURGE GUI MODAL's open state: `{itemId}` or null. See openSurgeModal. */
+  surgeModal = $state(null);
 
   /** Command. Opens the full-screen code editor on an item's multi-line string
    *  property. Selects the item so the rest of the UI reflects it. No-op if that
@@ -3096,6 +3098,105 @@ export class PowerRPApp {
   closeCodeModal() {
     setEquationCodeContext(null);
     this.codeModal = null;
+  }
+
+  // ── THE FULLSCREEN PIANO ROLL MODAL ────────────────────────────────────────
+  // User, 2026-08-08: the MIDI widgets should "bring up full fledged UI's in giant
+  // modals when duoble clicked … a fullscreen midi piano roll editor ported over".
+  //
+  // MODELLED ON `codeModal` DELIBERATELY, AND IT IS A SEPARATE SIGNAL RATHER THAN A
+  // FIFTH SCOPE OF IT. The two dialogs share their SHAPE (a `$state` target, a
+  // component App.svelte mounts off it, Escape/backdrop dismissal) and share
+  // nothing else: a code modal reads ONE STRING once and writes it once on Save,
+  // where the piano roll reads a LIST and writes it CONTINUOUSLY — every drag is a
+  // live preview that has to be visible on the canvas behind the dialog, and every
+  // released gesture is its own undo unit. Forcing that through a lifecycle built
+  // for "seed a buffer, commit on Save" would have meant a `commit` that means
+  // something different per scope, which is the mirror hazard the codeModal
+  // docblock above is itself careful about.
+  //
+  // THE WRITES GO THROUGH setPreview → commitPreview, the universal seam. Nothing
+  // here knows what a keyframe is: a clip edited on slide 2 is keyframed on slide 2
+  // for the same reason moving a rectangle there is.
+
+  /** The open piano roll's target `{itemId}`, else null. A reactive `$state` field
+   *  App.svelte mounts PianoRollModal off. */
+  pianoRoll = $state(null);
+
+  /** Command. Opens the fullscreen piano roll on a widget that declares an EDITABLE
+   *  clip. Selects the item so the Inspector behind the dialog reflects it.
+   *
+   *  REFUSES LOUDLY on a widget that declares no editable clip, rather than opening
+   *  an editor with nothing to edit. Reaching here without one means a plugin named
+   *  `activate: "piano_roll_edit"` and forgot its `midiClip` declaration — a
+   *  plugin-authoring mistake, and the getHandler/getMaterial precedent is that an
+   *  unknown declared name is reported rather than silently doing nothing.
+   *  @param {string} itemId */
+  openPianoRoll(itemId) {
+    if (this.pianoRoll?.itemId === itemId) return;
+    const decl = this.#midiClipDecl(itemId);
+    if (!decl) {
+      console.error(`openPianoRoll: "${this.rawState().items?.[itemId]?.type}" has no editable clip — a widget whose activate is "piano_roll_edit" must also declare \`midiClip: {key, activeKey, editable: true}\` (see plugins/node_midi_clip.js).`);
+      return;
+    }
+    this.selection = itemId;
+    this.pianoRoll = { itemId };
+  }
+
+  /** Command. Closes the piano roll, DROPPING any uncommitted preview. A dialog
+   *  dismissed mid-drag must not leave a half-applied gesture on the canvas — the
+   *  same reason `closeCodeModal` commits nothing. */
+  closePianoRoll() {
+    this.cancelPreview();
+    this.pianoRoll = null;
+  }
+
+  /** Query. The open piano roll's clip as a core/lists.js LIST VALUE
+   *  (`{list, active}`), read off the RAW state so the editor sees what is STORED —
+   *  equations included — rather than an evaluated snapshot it would then write
+   *  back as literal numbers, silently destroying every binding in the clip.
+   *  @returns {{list: Array, active: Array|undefined}} */
+  pianoRollClip() {
+    const t = this.pianoRoll;
+    const decl = t && this.#midiClipDecl(t.itemId);
+    if (!decl) return { list: [], active: undefined };
+    const item = this.rawState().items?.[t.itemId] ?? {};
+    return { list: Array.isArray(item[decl.key]) ? item[decl.key] : [], active: item[decl.activeKey] };
+  }
+
+  /** Command. Shows a clip value as a LIVE PREVIEW — what a drag calls on every
+   *  pointer-move. Writes BOTH leaves in ONE preview delta so the elements and
+   *  their visibility companion can never be spliced out of step.
+   *
+   *  The companion is written only when the value actually HAS one, so editing a
+   *  clip that has never hidden a note does not mint an all-true companion into
+   *  the document (the INSERT_POINT_HANDLER precedent).
+   *  @param {{list: Array, active: Array|undefined}} value */
+  previewPianoRollClip(value) {
+    const t = this.pianoRoll;
+    const decl = t && this.#midiClipDecl(t.itemId);
+    if (!decl) return;
+    const pairs = [[["items", t.itemId, decl.key], value.list]];
+    if (value.active) pairs.push([["items", t.itemId, decl.activeKey], value.active]);
+    this.setPreview(pairs);
+  }
+
+  /** Command. Commits the previewed clip as ONE undo unit — what a released drag,
+   *  a placed note or a deletion calls. */
+  commitPianoRollClip() {
+    this.commitPreview();
+  }
+
+  /** Query. The `midiClip` declaration of the widget behind `itemId`, or null.
+   *  Asked of the PLUGIN so this store holds no widget roster (core/registry.js's
+   *  law) and no hardcoded leaf name. */
+  #midiClipDecl(itemId) {
+    const type = this.rawState().items?.[itemId]?.type;
+    if (!type) return null;
+    let plugin = null;
+    try { plugin = this.registry.get(type); } catch { return null; }
+    const decl = plugin?.midiClip;
+    return decl?.editable ? decl : null;
   }
 
   // ── THE THIRD SCOPE: a PLUGIN ASSET's JavaScript (user ruling: "If I double
@@ -3866,6 +3967,79 @@ export class PowerRPApp {
     // A COMMAND THAT CANNOT ACT SAYS SO — but the sentence belongs to the roster,
     // not here, so the id is translated and insertDemoTemplate does the refusing.
     insertDemoTemplate(this, `demo-patch-${patchId}`);
+  }
+
+  /**
+   * Command (ONE undo unit). Inserts an OFF-THE-SHELF RIG — a widget together with
+   * the minimum wiring that makes it playable (core/audio_rigs.js).
+   *
+   * The same method seam `insertDemoPatch` is: the whole mechanism is
+   * `insertDemoTemplate`, and this exists so a plugin's "Add …" command can name a
+   * rig without knowing how templates are registered. `spec.rig` already holds the
+   * FULL template id, so unlike the patch seam there is nothing to translate — the
+   * id a spec declares is the id the roster answers to, which is one fewer place a
+   * rename can go wrong.
+   *
+   * @param {string} rigTemplateId - an `audio-rig-<id>` template id
+   */
+  insertAudioRig(rigTemplateId) {
+    insertDemoTemplate(this, rigTemplateId);
+  }
+
+  // ── THE SURGE GUI MODAL ───────────────────────────────────────────────────
+  // `{itemId}` while open, null while closed — the `app.codeModal` shape, and for
+  // its stated reason: the handler carries no UI, App.svelte mounts the component
+  // off this one field, so the modal is reachable identically from double-click,
+  // from Enter and from any future palette entry.
+  //
+  // IT HOLDS ONLY AN ITEM ID. Everything else the modal needs — the patch, the
+  // knob values — is read from the DOCUMENT through this id, so the modal cannot
+  // drift from what is saved. Surge's own heavy state (the 19 MB GUI wasm, its
+  // parameter model) belongs to web/surgeGui.js and is NOT app state: it is a live
+  // resource, not something a document can hold.
+
+  /**
+   * Command. Opens Surge's interface for one node.
+   *
+   * Re-opening for the SAME item is a no-op rather than a reseed, exactly as
+   * `openProjectScript` guards: a second double-click while the 49 MB of wasm and
+   * archive is still downloading must not start that download again.
+   *
+   * @param {string} itemId - the audio_surge item
+   */
+  openSurgeModal(itemId) {
+    if (this.surgeModal?.itemId === itemId) return;
+    this.surgeModal = { itemId };
+  }
+
+  /** Command. Closes it. The GUI session's own teardown is the component's, on unmount. */
+  closeSurgeModal() {
+    this.surgeModal = null;
+  }
+
+  /**
+   * Command (ONE undo unit). Records which patch a Surge node is playing.
+   *
+   * ── BOTH LEAVES, ALWAYS, THROUGH THIS ONE SEAM ────────────────────────────
+   * `patchData` is the truth and `patchName` is the label (core/audio_specs_surge.js
+   * states that). Writing one without the other is how a card ends up confidently
+   * naming an instrument it is not playing — which is exactly the bug WebSurge's own
+   * `sgui_load_patch_path` works around inside Surge. So there is one writer and it
+   * writes the pair.
+   *
+   * setPreview -> commitPreview is the app's standard "one gesture, one undo entry"
+   * route, the same one `app.unifySelection` uses.
+   *
+   * @param {string} itemId - the audio_surge item
+   * @param {{name: string, data: string}} patch - the loaded patch's label and bytes (base64)
+   */
+  commitSurgePatch(itemId, patch) {
+    if (!itemId || !patch) return;
+    this.setPreview([
+      [["items", itemId, "patchName"], String(patch.name ?? "")],
+      [["items", itemId, "patchData"], String(patch.data ?? "")],
+    ]);
+    this.commitPreview();
   }
 
   groupSelection() {

@@ -777,6 +777,37 @@ export function createEngine(options = {}) {
      * Returns:
      *     AudioParam
      */
+    /**
+     * Query. A module's own CONTROL OBJECT, or null when it declares none.
+     *
+     * ── WHY THIS EXISTS BESIDE setParam, WHICH LOOKS LIKE IT SHOULD DO ────────
+     * `setParam` moves a KNOB: a named value with a range, declared in the spec and
+     * checked against this engine by tests/audio_nodes_test.js. Surge has 766
+     * parameters addressed by INDEX, a patch load that is an event rather than a
+     * value, and a piano in its own GUI — none of which is a knob, and inventing 766
+     * knobs to reach them through setParam would be a spec that lies about what an
+     * Inspector row is.
+     *
+     * So a module MAY declare `surgeControl`-style methods, and this is the one door
+     * to them. It returns the module's own object rather than a fixed interface,
+     * because the whole point is that these calls are module-specific; a caller that
+     * does not recognise what it gets should not be calling this.
+     *
+     * NAMED FOR THE CAPABILITY, NOT FOR SURGE: a second module with an out-of-band
+     * control surface reaches it the same way.
+     *
+     * Args:
+     *     id (string): Module id
+     *
+     * Returns:
+     *     object|null: the module's control object, or null
+     */
+    moduleControl(id) {
+      const entry = modules.get(id);
+      if (!entry) throw new Error(`No module with id ${JSON.stringify(id)}`);
+      return entry.instance.surgeControl ?? null;
+    },
+
     paramNode(id, key) {
       const entry = modules.get(id);
       if (!entry) throw new Error(`No module with id ${JSON.stringify(id)}`);

@@ -16,7 +16,13 @@ import { nodeSliderPlugin } from "./node_slider.js";
 import { nodeButtonPlugin } from "./node_button.js";
 import { nodeKeyboardPlugin } from "./node_keyboard.js";
 import { nodePianoRollPlugin } from "./node_piano_roll.js";
+import { nodeMidiClipPlugin } from "./node_midi_clip.js";
+import { nodeAbcPlugin } from "./node_abc.js";
 
 /** Every control-source node, in increasing order of what they express: one
- *  number, one number, one event, many notes, a whole phrase. */
-export const controlPlugins = [nodeKnobPlugin, nodeSliderPlugin, nodeButtonPlugin, nodeKeyboardPlugin, nodePianoRollPlugin];
+ *  number, one number, one event, many notes, a whole phrase — and then the two
+ *  MIDI sources, which express a phrase in TIME (starts, lengths, velocities) and
+ *  put it on a `midi` cable rather than on the audio thread. The last two differ
+ *  from each other only in how the phrase is AUTHORED (drawn vs typed); their
+ *  output is the same stream, deliberately, so either can drive the same patch. */
+export const controlPlugins = [nodeKnobPlugin, nodeSliderPlugin, nodeButtonPlugin, nodeKeyboardPlugin, nodePianoRollPlugin, nodeMidiClipPlugin, nodeAbcPlugin];

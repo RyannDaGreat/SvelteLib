@@ -284,7 +284,18 @@ test("7c. a node's emit() is unchanged by which knob the pointer is on", () => {
 test("8. every audio plugin declares BOTH the trigger string and the content descriptor", () => {
   const bad = [];
   for (const plugin of AUDIO) {
-    if (plugin.activate !== "knob_focus") bad.push(`${plugin.type}: activate is ${JSON.stringify(plugin.activate)}`);
+    // KNOB FOCUS IS THE DEFAULT, NOT A UNIVERSAL LAW — and the exception is declared,
+    // never inferred. A module whose spec sets `activate` has its own control surface
+    // and says so; `audio_surge` is the only one today, because Surge XT carries its
+    // real GUI (~2000 parameters, in a modal) and the card's few dials could not be
+    // what "play with the knobs in it" means for it.
+    //
+    // THE `knobLayout` HALF IS STILL ASSERTED FOR EVERY MODULE INCLUDING THAT ONE.
+    // That is the point of splitting the two checks: an overriding module must still
+    // declare its dials, because the Inspector, the readout and the card's picture
+    // all read them. Only the double-click TRIGGER is different.
+    if (plugin.activate !== "knob_focus" && !plugin.audioSpec?.activate)
+      bad.push(`${plugin.type}: activate is ${JSON.stringify(plugin.activate)} but its spec declares no override`);
     if (!KNOB_FOCUS_HANDLER.claims(plugin)) bad.push(`${plugin.type}: no knobLayout`);
   }
   assert.deepEqual(bad, [], `audio nodes that cannot be double-clicked into knob focus:\n    ${bad.join("\n    ")}`);

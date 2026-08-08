@@ -61,6 +61,7 @@
   --a-port-number: #7aa2f7;
   --a-port-trigger: #e0af68;
   --a-port-audio: #9ece6a;
+  --a-port-midi: #f7768e;
   --a-port-node: #bb9af7;
   --a-port-exec: #c0caf5;
   /* GHOST-wire chrome. Screen-space (the overlay is an SVG in screen coordinates)
@@ -12581,3 +12582,495 @@ audio.ae-preview-media {
   border-radius: 50%;
   background: currentColor;
 }
+
+/* ── SURGE XT GUI MODAL (web/SurgeGuiModal.svelte) ────────────────────────────
+   Surge XT's real interface — the C++ SurgeGUIEditor compiled to WebAssembly —
+   inside the shared lib/Modal.svelte at size="large" (90vw × 90vh). Three
+   stacked regions: the wasm CANVAS, a control BAR, and a 128-key PIANO.
+
+   ALMOST NOTHING HERE IS ABOUT HOW SURGE LOOKS. Surge paints its own SVG skin,
+   its own fonts and its own context menus into `.surge-canvas`; this block styles
+   only the PowerRP chrome around those pixels. The one exception is
+   `image-rendering` on the canvas, which is about not corrupting them.
+
+   The `:has()` rule mirrors the .code-modal-root precedent a few thousand lines
+   up: the shared modal's body is padded and scrolling by default, and a
+   full-bleed three-region layout needs it flexed and flush instead. Scoped to
+   panels that actually contain a .surge-root, so no other dialog is touched. */
+:root {
+  /* THE PIANO'S HEIGHT, and the black keys' share of it. 96px is about two
+     finger-widths at a 90vh dialog — tall enough to hit a black key, short
+     enough that the canvas above it still gets the room. */
+  --a-surge-piano-h: 96px;
+  --a-surge-black-key-h: 62%;
+  --a-surge-key-radius: 0 0 2px 2px; /* the ONE rounded thing here: a key IS round-bottomed */
+  --a-surge-white-key: #e8e6e1;
+  --a-surge-white-key-held: var(--a-selection);
+  --a-surge-black-key: #16171b;
+  --a-surge-black-key-held: color-mix(in srgb, var(--a-selection) 70%, #16171b);
+  --a-surge-key-edge: rgba(0, 0, 0, 0.55);
+  --a-surge-key-label: rgba(0, 0, 0, 0.5);
+
+  /* The bar between canvas and piano. */
+  --a-surge-bar-pad: 6px 10px;
+  --a-surge-bar-gap: 8px;
+  --a-surge-control-pad: 3px 6px;
+  /* Every control in the bar is sized EXPLICITLY, because all four of them
+     shrink-wrap their content and the content changes as the author browses:
+     an auto-width patch select jumps between "Sub" and "Bass Sequence That Never
+     Ends", dragging the whole right-hand group with it on every pick. Fixed
+     columns mean choosing a patch moves nothing. */
+  --a-surge-patch-select-w: 260px;
+  --a-surge-search-w: 160px;
+  --a-surge-bank-select-w: 108px; /* fits "All banks" and "3rd Party" */
+  --a-surge-zoom-select-w: 76px;  /* fits "100%" plus the native disclosure arrow */
+
+  /* The boot screen. */
+  --a-surge-boot-max-w: 460px;
+  --a-surge-boot-gap: 10px;
+  --a-surge-progress-h: 4px;
+  --a-surge-stage-bg: #0d0e11; /* Surge's own canvas is dark; the mat matches it */
+}
+
+/* Flush the shared modal's body so the three regions can meet the panel edges.
+   Same trick, same reason, as .code-modal-root's rule. */
+.modal-panel:has(.surge-root) > .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+.surge-root {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* THE STAGE. Scrolls in BOTH axes: Surge at 200% is larger than any dialog, and
+   an interface that is cropped is worse than one that is scrolled. Centred by
+   `place-content` so a canvas smaller than the stage sits in the middle rather
+   than in the corner. */
+.surge-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: auto;
+  display: grid;
+  place-content: center;
+  background: var(--a-surge-stage-bg);
+}
+
+/* `touch-action: none` so a drag on a knob is a drag on a knob — without it a
+   touch or trackpad drag scrolls the stage and the knob never moves.
+   `image-rendering: pixelated` because Surge already rasterised at exactly the
+   device's pixel density (sgui_set_scale went INTO the wasm); letting the
+   browser resample that 1:1 upload would blur a picture that is already correct. */
+.surge-canvas {
+  display: block;
+  touch-action: none;
+  image-rendering: pixelated;
+  outline: none;
+}
+/* Until the session is up the canvas is 0×0 and would otherwise show as a seam
+   through the boot screen. */
+.surge-canvas:not(.surge-canvas-live) {
+  display: none;
+}
+.surge-canvas:focus-visible {
+  outline: var(--a-selection-stroke) solid var(--a-selection);
+  outline-offset: 2px;
+}
+
+/* THE BOOT SCREEN. Not a spinner: 49 MB from a foreign origin gets a phase, a
+   size and, when it fails, the sentence. */
+.surge-boot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--a-surge-boot-gap);
+  max-width: var(--a-surge-boot-max-w);
+  padding: var(--a-surge-boot-gap);
+  text-align: center;
+  color: var(--fg);
+}
+.surge-boot-title {
+  margin: 0;
+  font-weight: 600;
+}
+.surge-boot-failed {
+  color: var(--a-eq-error);
+}
+.surge-boot-line {
+  margin: 0;
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums; /* the megabyte counter must not jitter */
+}
+.surge-boot-note {
+  margin: 0;
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+  opacity: var(--a-warning-teaser-opacity);
+}
+.surge-progress {
+  width: 100%;
+  height: var(--a-surge-progress-h);
+  background: var(--a-hover-bg);
+  overflow: hidden;
+}
+.surge-progress-fill {
+  height: 100%;
+  background: var(--a-selection);
+}
+/* A phase whose total the server did not declare (no Content-Length) gets a
+   dimmed full bar rather than a fake position — a progress bar that invents a
+   number is a lie about how far along it is. */
+.surge-progress-indeterminate .surge-progress-fill {
+  opacity: 0.35;
+}
+
+/* THE FAILURE SENTENCE. Same ink as an equation error, because it is the same
+   kind of thing: the app telling the author what it could not do. It WRAPS in
+   the boot screen (there is room, and the whole sentence is the point) and
+   truncates in the bar (where a save-blocking control is beside it). */
+.surge-failure {
+  color: var(--a-eq-error);
+  font-size: var(--a-font-sm);
+}
+.surge-bar .surge-failure {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* THE BAR. */
+.surge-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--a-surge-bar-gap);
+  padding: var(--a-surge-bar-pad);
+  border-top: var(--a-hairline) solid var(--border);
+  border-bottom: var(--a-hairline) solid var(--border);
+  background: var(--a-panel-bg);
+}
+.surge-bar-group {
+  display: flex;
+  align-items: center;
+  gap: var(--a-surge-bar-gap);
+  min-width: 0;
+}
+/* The right-hand group is what gives way when the bar is tight: the patch
+   selector is the thing being used, the readout beside it is ceremony. */
+.surge-bar-right {
+  justify-content: flex-end;
+  flex: 0 1 auto;
+}
+
+.surge-btn,
+.surge-select,
+.surge-search {
+  padding: var(--a-surge-control-pad);
+  color: var(--fg);
+  background: var(--control-bg);
+  border: var(--a-hairline) solid var(--border);
+  border-radius: var(--a-radius-control); /* square — the app-chrome rule */
+  font: inherit;
+  font-size: var(--a-font-sm);
+}
+.surge-btn {
+  cursor: pointer;
+  min-width: 2em;
+}
+.surge-btn:hover:not(:disabled) {
+  background: var(--a-hover-bg);
+}
+.surge-btn:disabled,
+.surge-select:disabled,
+.surge-search:disabled {
+  opacity: var(--a-disabled-opacity);
+  cursor: default;
+}
+.surge-select-patch {
+  width: var(--a-surge-patch-select-w);
+}
+.surge-select-bank {
+  width: var(--a-surge-bank-select-w);
+}
+.surge-select-zoom {
+  width: var(--a-surge-zoom-select-w);
+}
+.surge-search {
+  width: var(--a-surge-search-w);
+}
+.surge-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+.surge-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* THE PIANO. 128 absolutely-positioned keys in one relative strip. White keys
+   tile the full width; black keys are narrower and overlap the seams between
+   them (web/surgeGui.js keyLayout() computes both as FRACTIONS, which is why the
+   strip is width-responsive with no media queries). `touch-action: none` for the
+   same reason the canvas has it: a glissando drag must not scroll anything. */
+.surge-piano {
+  flex: none;
+  position: relative;
+  height: var(--a-surge-piano-h);
+  background: var(--a-surge-black-key);
+  touch-action: none;
+  user-select: none;
+  overflow: hidden;
+}
+.surge-piano-idle {
+  opacity: var(--a-disabled-opacity);
+}
+.surge-key {
+  position: absolute;
+  top: 0;
+  border-radius: var(--a-surge-key-radius);
+}
+.surge-key-white {
+  height: 100%;
+  background: var(--a-surge-white-key);
+  /* An inset edge rather than a border, so the 1px is inside the key's own
+     fraction of the width and 75 keys still add up to exactly 100%. */
+  box-shadow: inset -1px 0 0 var(--a-surge-key-edge);
+  z-index: 0;
+}
+.surge-key-black {
+  height: var(--a-surge-black-key-h);
+  background: var(--a-surge-black-key);
+  box-shadow: inset 0 0 0 1px var(--a-surge-key-edge);
+  z-index: 1;
+}
+.surge-key-white.surge-key-held {
+  background: var(--a-surge-white-key-held);
+}
+.surge-key-black.surge-key-held {
+  background: var(--a-surge-black-key-held);
+}
+/* Only the C's carry a label — 128 of them at this width would be unreadable,
+   and the octave marks are what the eye actually navigates by. `pointer-events:
+   none` on the pseudo-element is not needed (it has none), but the label must
+   never become the elementFromPoint hit, which is why it is a pseudo-element on
+   the key rather than a child node with its own data-note. */
+.surge-key-white[data-label]::after {
+  content: attr(data-label);
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  text-align: center;
+  font-size: 8px;
+  color: var(--a-surge-key-label);
+}
+
+/* ── PianoRollModal — THE fullscreen MIDI clip editor (web/PianoRollModal.svelte) ─
+   The dialog's CHROME and its grid. It rides the shared lib/Modal.svelte at
+   size="large" (90vw×90vh); the :has() rule below flexes THAT modal's body to fill
+   the panel so the grid can be full-height, scoped to panels that actually contain
+   a .pr-root so no other modal is affected — the same construction the code modal
+   above uses, and for the same reason.
+
+   Every structural literal is a declared --a-pr-* token. Declared, never a var()
+   FALLBACK: an undeclared token silently carrying everything through its fallback
+   is the defect tests/phantom_token_ban_test.js exists to catch, and the debug
+   console block in this file is the worked example of getting it wrong. */
+:root {
+  --a-pr-toolbar-pad: 8px 12px;
+  --a-pr-toolbar-gap: 16px;
+  --a-pr-footer-pad: 8px 12px;
+  --a-pr-footer-gap: 12px;
+  --a-pr-key-w: 56px;
+  --a-pr-row-h: 14px;
+  --a-pr-btn-pad: 4px 10px;
+  --a-pr-min-grid-h: 160px;
+  /* The grid's inks. Deliberately the same two near-identical darks the widget's
+     own painted preview uses (plugins/node_midi_clip.js LANE_*_INK), so the
+     thumbnail on the card and the editor read as one surface. They are restated
+     rather than shared because a display list carries LITERAL colours and cannot
+     reach a CSS token — core/nodeflow.js's docblock states that asymmetry. */
+  --a-pr-lane: #232838;
+  --a-pr-lane-black: #1a1e2b;
+  --a-pr-rule: #2e3446;
+  --a-pr-rule-bar: #454d66;
+  --a-pr-note: #7f8cc4;
+  --a-pr-note-selected: #c0caf5;
+  --a-pr-key-white: #c8cdd8;
+  --a-pr-key-black: #14171f;
+  --a-pr-key-edge: #0e1016;
+  --a-pr-key-label: #6b7280;
+}
+.modal-panel:has(.pr-root) > .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+.pr-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  /* The root takes focus so Delete/Backspace reach onkeydown without the author
+     first clicking a control. tabindex="-1" keeps it out of the tab ORDER. */
+  outline: none;
+}
+.pr-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--a-pr-toolbar-gap);
+  padding: var(--a-pr-toolbar-pad);
+  border-bottom: 1px solid var(--border);
+  background: var(--a-panel-bg);
+  flex: 0 0 auto;
+}
+.pr-toolbar-gap { flex: 1 1 auto; }
+.pr-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pr-field-label {
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pr-field-value {
+  color: var(--fg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  /* A fixed inline size so the number changing width does not shove the rest of
+     the toolbar sideways while a velocity slider is being dragged. */
+  min-width: 2.5ch;
+  text-align: right;
+}
+.pr-select,
+.pr-range {
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--a-radius-control); /* app chrome is square */
+}
+.pr-select { padding: 2px 4px; font-size: 12px; }
+.pr-range { width: 120px; }
+.pr-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pr-btn {
+  background: var(--control-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--a-radius-control);
+  padding: var(--a-pr-btn-pad);
+  font-size: 12px;
+  cursor: pointer;
+}
+.pr-btn:hover { background: var(--a-hover-bg); }
+.pr-primary { background: var(--a-selection); }
+.pr-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: var(--a-pr-min-grid-h);
+  overflow: hidden;
+}
+.pr-keys {
+  flex: 0 0 var(--a-pr-key-w);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  background: var(--a-pr-key-black);
+}
+.pr-key {
+  height: var(--a-pr-row-h);
+  box-sizing: border-box;
+  background: var(--a-pr-key-white);
+  border-bottom: 1px solid var(--a-pr-key-edge);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 4px;
+}
+.pr-key-black { background: var(--a-pr-key-black); }
+/* Every C carries a heavier top edge — the octave landmark the eye navigates by,
+   and the reason a label is not needed on all twelve rows at small zooms. */
+.pr-key-c { border-top: 1px solid var(--a-pr-rule-bar); }
+.pr-key-name {
+  font-size: 9px;
+  color: var(--a-pr-key-label);
+  font-variant-numeric: tabular-nums;
+}
+.pr-grid {
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  cursor: crosshair;
+  /* The wheel handler calls preventDefault to pan/zoom the view itself, so the
+     browser must not also try to scroll or page-zoom under it. */
+  touch-action: none;
+}
+.pr-grid-dragging { cursor: grabbing; }
+.pr-svg { display: block; }
+.pr-lane { fill: var(--a-pr-lane); }
+.pr-lane-black { fill: var(--a-pr-lane-black); }
+.pr-rule { stroke: var(--a-pr-rule); stroke-width: 1; }
+.pr-rule-bar { stroke: var(--a-pr-rule-bar); }
+.pr-note {
+  fill: var(--a-pr-note);
+  rx: 1;
+}
+.pr-note-selected {
+  fill: var(--a-pr-note-selected);
+}
+.pr-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--a-pr-footer-gap);
+  padding: var(--a-pr-footer-pad);
+  border-top: 1px solid var(--border);
+  background: var(--a-panel-bg);
+  flex: 0 0 auto;
+}
+.pr-hint {
+  color: var(--fg-dim);
+  font-size: 11px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-status {
+  color: var(--fg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The "not shown" count is a QUALIFICATION of the note count beside it, not a
+   failure, so it is dimmed rather than coloured — the same tone the code modal's
+   `note` line takes against its `problem` line. */
+.pr-skipped { color: var(--fg-dim); }

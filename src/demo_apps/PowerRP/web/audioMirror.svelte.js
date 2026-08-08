@@ -924,3 +924,38 @@ export function audioEngine() {
 export function mirroredScene() {
   return engineScene;
 }
+
+/**
+ * Query. The CONTROL OBJECT of one item's engine module, or null when there is no
+ * engine, no module for that item yet, or the module declares none.
+ *
+ * ── THE ONE-WAY LAW IS NOT BROKEN BY THIS ───────────────────────────────────
+ * This file's header states it: "ONE WAY, ALWAYS: document → engine." That is about
+ * DATA — nothing the engine holds ever writes back into the document, and nothing
+ * here does either. What this returns is a set of COMMANDS pointing at the engine,
+ * so a caller can push more document-derived decisions INTO it. The Surge modal
+ * needs it because Surge's GUI is a second Surge on the main thread whose parameter
+ * changes must reach the one that makes sound, and there are 766 of them addressed
+ * by index — not knobs, so not setParam's business (synth/engine.moduleControl says
+ * why). When the modal decides a PATCH has changed, that goes into the DOCUMENT via
+ * app.commitSurgePatch and comes back down through the ordinary mirror, which is how
+ * the invariant stays intact: the thing that is saved travels the normal road.
+ *
+ * NULL IS THE ORDINARY ANSWER, not an error: the engine is built lazily and Surge's
+ * own worklet is seconds behind a 35 MB download, so a caller must cope with "not
+ * yet" rather than treat it as failure.
+ *
+ * @param {string} itemId - the document item id
+ * @returns {object|null} the module's control object, or null
+ */
+export function moduleControlFor(itemId) {
+  if (!engine || !itemId) return null;
+  try {
+    return engine.moduleControl(itemId);
+  } catch {
+    // `moduleControl` throws for an id the engine has never heard of, which is the
+    // ordinary state of an item whose module has not been built yet. A caller
+    // polling for readiness must not have to guard every call in its own try.
+    return null;
+  }
+}

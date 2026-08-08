@@ -2136,10 +2136,15 @@ export const PROPS = {
   //
   // Storage is a TUPLE ([note]) for the reason `frames` and `points` are tuples:
   // core/interpolators.js interpolate() takes its pure-numeric-array branch for an
-  // all-number array, where a RECORD would recurse to the per-element path. A MIDI
-  // note is an integer and the int rule ROUNDS a lerp between two of them, which is
-  // exactly right here — a chord tweening across a transition lands on real notes
-  // rather than on quarter-tones.
+  // all-number array, where a RECORD would recurse to the per-element path.
+  //
+  // CORRECTION (2026-08-08, measured): the sentence that used to follow said the
+  // "int rule ROUNDS a lerp between two" integers on this branch. IT DOES NOT —
+  // interpolators.js:146 says so in as many words ("NO int-rounding"); the int rule
+  // is on the SCALAR path. A numeric tuple LERPS CONTINUOUSLY, so a chord tweening
+  // across a transition really does pass through quarter-tones. Nothing is broken by
+  // that, because `latchedNotes` ROUNDS on read — but it rounds because it chooses
+  // to, not because the tween did it. Do not design against the old claim.
   //
   // No minLength: an empty chord is the ordinary resting state of an unlatched
   // keyboard, not a malformed list.
@@ -2169,10 +2174,14 @@ export const PROPS = {
   //
   // A TUPLE of two numbers, for the reason `points` and `frames` are tuples:
   // core/interpolators.js interpolate() takes its pure-numeric-array branch for an
-  // all-number array. Both fields are integers and the tweenline INT RULE rounds a
-  // lerp between two of them — which is exactly right for both axes here, since
-  // there is no half-step and no quarter-tone: a pattern keyframed from one slide
-  // to the next walks its notes across the grid cell by cell.
+  // all-number array.
+  //
+  // CORRECTION (2026-08-08, measured): this used to say "the tweenline INT RULE
+  // rounds a lerp between two of them". IT DOES NOT on this branch —
+  // interpolators.js:146 is explicit ("NO int-rounding"), and the int rule lives on
+  // the SCALAR path. A keyframed pattern therefore does NOT walk the grid cell by
+  // cell mid-tween; it slides continuously and `patternNotes` ROUNDS on read, which
+  // is where the cell-by-cell behaviour actually comes from.
   //
   // HIDE MEANS "THIS NOTE DOES NOT SOUND", not "close the sequence over it". That is
   // the per-flavour reading core/lists.js's own header asks each consumer to state:
@@ -2190,6 +2199,60 @@ export const PROPS = {
     order: "sequence",
     activeKey: "notesActive",
     help: "The pattern, as one entry per note: WHICH step and WHICH pitch. Click a cell on the widget to place a note, click it again to clear it. Hiding an entry turns that step into a rest without losing the note. One note per step — the sequencer sounds a single pitch at a time, so placing a note on an occupied step MOVES it.",
+  },
+
+  // ── midi clip: THE CLIP (a LIST property — core/lists.js) ───────────────────
+  // The note stream a `midi` wire carries, and the model the fullscreen piano roll
+  // edits. `core/midi_clip.js` is what READS it; this is the declaration.
+  //
+  // ── WHY IT IS A LIST PROPERTY AND NOT A NEW KIND OF THING ───────────────────
+  // CLAUDE.md's four-kinds-of-state law leaves exactly one place to put a clip. The
+  // hardware reading of MIDI — bytes arriving from a device as a hand plays — is
+  // EPHEMERAL state, which this project has none of, so a deck containing one could
+  // not be exported or re-rendered identically. The AUTHORED clip is ordinary
+  // property state, and being a LIST is what buys it everything for free:
+  // per-element equations (`= clip.3.pitch` is a slot), insert-between, hide-vs-purge,
+  // an Inspector control, a keyframe per leaf, and a delta that folds.
+  //
+  // FOUR FIELDS, AND THE ORDER IS THE TIMELINE'S: start, duration, pitch, velocity.
+  // `start` leads because it is what a reader scans for and what every consumer
+  // sorts by.
+  //
+  // A TUPLE, for the reason `points`, `frames` and `notes` are tuples:
+  // core/interpolators.js interpolate() sends an all-numeric array down its
+  // pure-numeric-array branch, which is a PLAIN LERP. **AND IT DOES NOT ROUND** —
+  // interpolators.js:146 says so ("NO int-rounding"); the int rule is on the SCALAR
+  // path. The `heldNotes` and `notes` comments above claim the opposite and are
+  // WRONG about it (harmlessly, since both consumers round on read). So a clip
+  // TWEENS CONTINUOUSLY and `core/midi_clip.noteRecord` rounds pitch and velocity
+  // ITSELF, where the rounding can be seen. START AND DURATION ARE NOT ROUNDED,
+  // deliberately: they are BEATS, and an eighth note is 0.5 of one.
+  //
+  // "sequence", NOT "sorted by start", and this is the trap worth naming. A sorted
+  // list CANONICALIZES ON EVERY WRITE (core/lists.js), so dragging a note left past
+  // its neighbour would RENUMBER both — mid-gesture, while the pointer holds index
+  // 3 — and every equation bound to a later note would come to mean a different
+  // note. Nothing reads the stored order, so leaving it alone costs nothing;
+  // `clipNotes` sorts a COPY on read.
+  //
+  // No minLength: an empty clip is the resting state of a fresh widget, not a
+  // malformed list. And the element may GROW a fifth field (channel, bend) with no
+  // migration — core/lists.js appends it at index 4, where every stored 4-tuple
+  // already reads `undefined` and `noteRecord` already defaults.
+  clip: {
+    label: "Clip", kind: LIST_ROW_KIND, category: "control",
+    element: {
+      storage: "tuple",
+      fields: [
+        { name: "start", kind: "number", min: 0, label: "Start", help: "When this note begins, in BEATS from the clip's start. A beat is a quarter note, so 0.5 is an eighth note in. Bind it to an equation to make a phrase move with the deck." },
+        { name: "duration", kind: "number", min: 0, label: "Length", help: "How long this note lasts, in BEATS. 1 is a quarter note, 0.5 an eighth, 4 a whole note in 4/4." },
+        { name: "pitch", kind: "number", min: 0, max: 127, step: 1, label: "Pitch", help: "The MIDI note number. 60 is middle C and every 12 is an octave. Bind it to an equation to transpose a phrase without redrawing it." },
+        { name: "velocity", kind: "number", min: 1, max: 127, step: 1, label: "Velocity", help: "How hard the note is struck, 1 to 127. 100 is the default a freshly drawn note gets; what it changes is up to the instrument it is wired to." },
+      ],
+    },
+    order: "sequence",
+    activeKey: "clipActive",
+    help: "The notes this clip holds, one entry per note: WHEN it starts, HOW LONG it lasts, WHICH pitch and HOW HARD. Double-click the widget for the fullscreen piano roll. Hiding an entry silences that note without losing it or renumbering the ones after it.",
   },
 };
 

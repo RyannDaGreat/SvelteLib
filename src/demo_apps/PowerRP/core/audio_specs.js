@@ -580,11 +580,12 @@ export const OUTPUT_SPEC = {
  * simply does not exist — which is the intended failure mode (a half-registered
  * module that appears in one place and not another is worse).
  */
+import { SURGE_SPEC } from "./audio_specs_surge.js"; // Surge XT (R-SURGE); see that file
 import { PORT_BLOCK_SPECS } from "./audio_blocks.js"; // the ported-node blocks (R7-17); see the PORT-BLOCK CONTRACT there
 
 export const AUDIO_SPECS = [
   ...PORT_BLOCK_SPECS,
-  OSCILLATOR_SPEC, SUPERSAW_SPEC, NOISE_SPEC, SAMPLER_SPEC, DING_SPEC, PAD_SPEC, POLY_PAD_SPEC,
+  OSCILLATOR_SPEC, SUPERSAW_SPEC, NOISE_SPEC, SAMPLER_SPEC, DING_SPEC, PAD_SPEC, POLY_PAD_SPEC, SURGE_SPEC,
   FILTER_SPEC, EQ3_SPEC, BITCRUSH_SPEC, QUANTIZE_SPEC,
   DELAY_SPEC, REVERB_SPEC,
   LFO_SPEC, ADSR_SPEC, VCA_SPEC, MIXER_SPEC, CLOCK_SPEC, SEQUENCER_SPEC, SAMPLE_HOLD_SPEC, TRIGGER_SPEC,

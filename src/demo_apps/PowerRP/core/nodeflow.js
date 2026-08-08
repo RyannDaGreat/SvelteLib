@@ -228,6 +228,52 @@ export const PORT_TYPES = Object.freeze({
   number: Object.freeze({ label: "Number", color: "#7aa2f7", zero: 0, readable: true }),
   trigger: Object.freeze({ label: "Trigger", color: "#e0af68", zero: 0, readable: true }),
   audio: Object.freeze({ label: "Audio", color: "#9ece6a", zero: 0, readable: false }),
+  // THE MIDI TYPE (user, 2026-08-08: a Surge node with "a midi-in input node along
+  // with the signal midi output nodes"). A `midi` value is a NOTE STREAM: an array
+  // of `{pitch, start, duration, velocity}` records, in start order.
+  //
+  // ── IT CARRIES A CLIP, NOT A LIVE CABLE, AND THAT IS THE WHOLE DESIGN ───────
+  // The obvious reading of "MIDI" is the hardware one — a cable down which note-on
+  // and note-off BYTES arrive as they are played. That reading is INEXPRESSIBLE
+  // here and it is refused on purpose: a stream of bytes arriving from a host
+  // device is EPHEMERAL STATE (CLAUDE.md's taxonomy — "a widget that reads a host
+  // input ... inside emit() or a paint path introduces it"), so a deck containing
+  // one could not be exported, could not be re-rendered identically, and could not
+  // be sharded. We have no ephemeral state and avoiding it is a design goal.
+  //
+  // So what travels is the CLIP: the authored notes, which are PROPERTY STATE —
+  // keyframable, saved, folded from `[[slide, alpha]]`, identical on every machine.
+  // A receiver turns that stream into note-on/note-off by asking the PRESENTATION
+  // CLOCK which notes are sounding, which makes playback RECORDABLE (a pure
+  // function of elapsed time) rather than ephemeral. A live MIDI keyboard may still
+  // drive a synth for PERFORMANCE — it goes through core/live_control.js exactly as
+  // a key press does, and reaches no render or export path.
+  //
+  // ── `zero` IS THE EMPTY STREAM, WHICH IS A GENUINE ADDITIVE IDENTITY ────────
+  // Unlike `node`'s null (there is no identity item), there IS an identity note
+  // stream: merge the empty clip into anything and nothing changes. So an
+  // unconnected midi input reads as "no notes", a receiver with nothing wired plays
+  // silence, and no reader has to special-case absence. FROZEN, because every
+  // `zero` in this table is shared by every unconnected port of its type and a
+  // mutable one could be pushed into by a careless receiver.
+  //
+  // ── `readable: true`, AND IT IS THE EXACT OPPOSITE OF `audio`'s false ───────
+  // Audio is unreadable because sampling it into the document would be frame-rate
+  // dependent, ephemeral and non-reproducible. NONE of those is true of a clip: it
+  // is already document state, so `= roll1.notes` yields the same array on every
+  // machine and in bare node. Per this table's own rule, `readable: true` does not
+  // promise a value EXISTS — it says the type is one the document could hold, and
+  // whether a given port produces one is decided by its plugin's `computeOutputs`.
+  // The Surge node produces nothing on any port: it is a pure SINK.
+  //
+  // ── NO COERCIONS, IN EITHER DIRECTION (see COERCIONS below) ────────────────
+  // For `node`'s reason, restated for streams: every candidate pair is a category
+  // error. `number -> midi` would have to invent a pitch, a start and a duration
+  // out of one scalar; `midi -> number` would have to collapse a whole clip to one
+  // sample, and WHICH note it picked would be a hidden policy. Both operations are
+  // real and both are MODULES (an arpeggiator, a note-to-CV converter), which is
+  // the same answer `audio -> trigger` gets and for the same stated reason.
+  midi: Object.freeze({ label: "MIDI", color: "#f7768e", zero: Object.freeze([]), readable: true }),
   // THE NODE TYPE (user ruling, 2026-08-03: "Objects should be referenceable as
   // equations and should be nodes. It's a different type than just float ... It's
   // a node type."). A `node` value is a REFERENCE to another item's output port —

@@ -696,6 +696,32 @@ DETERMINISTIC_VIDEO_TYPES = ("video_scrub", "video_v5_scrub")
 # language boundary; tests/pointer_input_warning_test.py reads that file and fails
 # if the two lists ever disagree.
 POINTER_INPUT_KEYWORDS = ("mouse_x", "mouse_y", "mouse_left")
+# THE MIDI CLIP'S TRIGGER (user, 2026-08-08: "WHEN does the signal editor start to
+# play its song? what triggers it? a button node?"). A clip's playhead is
+# `now - startTime`, and WHAT IS WIRED TO ITS TRIGGER decides where startTime comes
+# from -- which decides whether the deck exports at all:
+#   nothing wired  -> the clip's own keyframable `startTime` leaf. RECORDABLE.
+#   a Clock        -> pulse times are a pure function of elapsed time. RECORDABLE.
+#   a Button       -> the moment a hand moved. EPHEMERAL, and a recorded export
+#                     contains no presses, so the clip renders SILENT.
+# The last case is legal (live performance is the user's own suggestion) and must
+# never be silent-wrong, so submit attaches a warning naming the clips and pointing
+# at both deterministic alternatives -- exactly what playback_clock_warning does for
+# the video player. core/clip_playback.js holds the full argument.
+#
+# BOTH TUPLES ARE MIRRORS of JavaScript declarations that cannot cross the language
+# boundary, the same debt POINTER_INPUT_KEYWORDS above carries: a TRIGGERABLE MIDI
+# SOURCE is a plugin whose ports emit `midi` AND take a `trigger` (NOT "a plugin
+# declaring midiClip" -- that keyed on the clip node alone and silently excluded the
+# ABC node, which the user caught by asking how to trigger it), and a LIVE type is
+# one declaring `livePress` or `livePlay`. tests/live_trigger_warning_test.py loads
+# the real plugin registry in node and fails if either list disagrees, so a new live
+# control -- or a new midi source -- cannot ship with an export that silently stops
+# warning about it.
+MIDI_TRIGGERABLE_TYPES = ("node_abc", "node_midi_clip")
+LIVE_TRIGGER_TYPES = ("node_button", "node_keyboard")
+# MIRRORS core/clip_playback.TRIGGER_PORT.
+MIDI_TRIGGER_PORT = "trigger"
 # How much of the worker's stderr a job record may carry. The record is re-read by
 # the UI on every poll, so it must stay small; this is generous enough for the
 # document-repair notices and asset failures that actually appear there (a few
@@ -958,7 +984,130 @@ def pointer_input_warning(doc):
 # EVERY "this deck renders, but not the way you might expect" detector, in ONE list
 # so the submit seam cannot acquire a second one and forget it. Each returns a
 # sentence or None.
-EXPORT_WARNINGS = (playback_clock_warning, pointer_input_warning)
+def item_types_by_id(doc):
+    """
+    Pure function. `{itemId: type}` for every item the document creates, gathered
+    from every per-slide `items` map.
+
+    FIRST STATEMENT WINS, which is the document model rather than a tie-break: slide
+    0's delta is what CREATES an item and states its type, and a later slide's delta
+    restates only what it changes. So the first `type` seen for an id is the item's
+    type for the whole deck.
+
+    Examples:
+        >>> item_types_by_id({"slides": [{"delta": {"items": {"a": {"type": "text"}}}}]})
+        {'a': 'text'}
+        >>> item_types_by_id({})
+        {}
+    """
+    out = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            items = node.get("items")
+            if isinstance(items, dict):
+                for item_id, state in items.items():
+                    if isinstance(state, dict) and isinstance(state.get("type"), str):
+                        out.setdefault(item_id, state["type"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(doc)
+    return out
+
+
+def live_triggered_clips(doc):
+    """
+    Pure function. The ids of every MIDI clip whose `trigger` input is wired to a
+    LIVE control, sorted.
+
+    Walks every per-slide `items` map rather than a flat table, for the reason
+    widget_types does: items live inside deltas, and a wire authored on slide 3 is
+    stated on slide 3.
+
+    Examples:
+        >>> doc = {"slides": [{"delta": {"items": {
+        ...     "b": {"type": "node_button"},
+        ...     "c": {"type": "node_midi_clip", "inputs": {"trigger": {"item": "b", "port": "out"}}}}}}]}
+        >>> live_triggered_clips(doc)
+        ['c']
+        >>> live_triggered_clips({"slides": [{"delta": {"items": {"c": {"type": "node_midi_clip"}}}}]})
+        []
+        >>> clocked = {"slides": [{"delta": {"items": {
+        ...     "k": {"type": "audio_clock"},
+        ...     "c": {"type": "node_midi_clip", "inputs": {"trigger": {"item": "k", "port": "out"}}}}}}]}
+        >>> live_triggered_clips(clocked)
+        []
+    """
+    types = item_types_by_id(doc)
+    found = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            items = node.get("items")
+            if isinstance(items, dict):
+                for item_id, state in items.items():
+                    if not isinstance(state, dict):
+                        continue
+                    if types.get(item_id) not in MIDI_TRIGGERABLE_TYPES:
+                        continue
+                    inputs = state.get("inputs")
+                    wire = inputs.get(MIDI_TRIGGER_PORT) if isinstance(inputs, dict) else None
+                    if isinstance(wire, dict) and types.get(wire.get("item")) in LIVE_TRIGGER_TYPES:
+                        found.add(item_id)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(doc)
+    return sorted(found)
+
+
+def live_trigger_warning(doc):
+    """
+    Pure function. A warning that this deck's MIDI clips will render SILENT, or None
+    when every clip in it is reproducible.
+
+    It exists for the sharpest version of the reason playback_clock_warning does: a
+    video player renders DIFFERENTLY on a re-render, which at least looks like
+    something. A live-triggered clip renders NOTHING, which looks like the feature is
+    broken rather than like the deck is -- so the sentence has to name the clips, say
+    what will actually happen, and point at both ways to fix it.
+
+    A WARNING AND NOT A REFUSAL, for playback_clock_warning's own reason: refusing
+    would make a legitimate deck unrenderable over a widget the author may not even
+    be triggering during the render. What must not happen is the SILENT version.
+
+    Examples:
+        >>> live_trigger_warning({"slides": [{"delta": {"items": {"a": {"type": "text"}}}}]}) is None
+        True
+        >>> doc = {"slides": [{"delta": {"items": {
+        ...     "b": {"type": "node_button"},
+        ...     "c": {"type": "node_midi_clip", "inputs": {"trigger": {"item": "b", "port": "out"}}}}}}]}
+        >>> "SILENT" in live_trigger_warning(doc)
+        True
+        >>> "Clock" in live_trigger_warning(doc)
+        True
+    """
+    present = live_triggered_clips(doc)
+    if not present:
+        return None
+    plural = "s" if len(present) > 1 else ""
+    return (f"This deck has {len(present)} MIDI source{plural} ({', '.join(present)}) triggered by a LIVE "
+            f"control -- a Button or a Keyboard, whose press is a human moment with no representation in "
+            f"the document. A recorded export contains no presses, so {'these clips' if plural else 'this clip'} "
+            f"will render SILENT however clearly {'they play' if plural else 'it plays'} in a live "
+            f"presentation. For an export that reproduces, leave the trigger UNWIRED (it then starts "
+            f"at its own keyframable Start Time) or drive it from a Clock, whose pulses are a pure function "
+            f"of elapsed time.")
+
+
+EXPORT_WARNINGS = (playback_clock_warning, pointer_input_warning, live_trigger_warning)
 
 
 def export_warning(doc):

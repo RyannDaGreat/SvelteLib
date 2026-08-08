@@ -208,6 +208,16 @@ const BUCKETS = {
  */
 const HOST_BOUND = [
   {
+    file: "web/surgeGui.js",
+    signature: "surge-data.json?url",
+    // The vendored Surge archive INDEX, imported by Vite `?url` — the same class as
+    // the canvaskit entries below. It is a `?url` specifier rather than a JSON
+    // import on purpose (we want the URL, not the parsed object, because the file is
+    // fetched at runtime beside a 30 MB blob), and bare node reads the query as part
+    // of the path and tries to parse it as JSON.
+    why: "imports the vendored Surge archive index by Vite `?url`, which bare node reads as a JSON file whose name ends in `?url`",
+  },
+  {
     file: "web/app.svelte.js",
     signature: "canvaskit.wasm?url",
     why: "reaches render_gpu/skia/browser_canvaskit.js, which imports the wasm binary by Vite `?url`",

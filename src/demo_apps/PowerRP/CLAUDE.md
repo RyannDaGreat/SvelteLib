@@ -482,6 +482,110 @@ in place of the one it fixed. A raster route also now REQUIRES a `rasterize`
 callback, so a caller without one gets a loud configuration error rather than a
 silently smooth gradient.
 
+MIDI IS A REAL WIRE TYPE, AND THE CLIP THAT TRAVELS ON IT IS DOCUMENT STATE
+(user, 2026-08-08: nodes with "a midi-in input node along with the signal midi
+output nodes and abc language output midi nodes", and — when the shape was in
+doubt — "**literally having signal as a node is important btw**"). `midi` is a
+`core/nodeflow.PORT_TYPES` entry beside `number`/`trigger`/`audio`, so the beads,
+the ghost wire, the colour, the fan-out and the refusal-on-a-bad-drop are the
+machinery every other cable already uses. **There is no "source" property naming
+another item**; clip → synth is a cable the author drags. The graph carries a
+non-scalar value with NO changes — `typesCompatible` allows `midi→midi` by
+identity, `deriveWires` colours by the source port's declared type, and
+`resolveNode` passes the value through untouched (measured end to end,
+`tests/midi_clip_test.js`).
+WHAT TRAVELS IS THE CLIP, NOT A LIVE CABLE, and that is forced by the four-kinds
+law rather than chosen: bytes arriving from a host MIDI device would be EPHEMERAL
+state, so a deck containing one could not be exported or re-rendered. So the value
+is an array of `{start, duration, pitch, velocity}` records — `core/midi_clip.js`
+owns the rules, `PROPS.clip` is the declaration, and it is an ordinary `core/lists.js`
+LIST property: per-element equations (`= clip.3.pitch`), insert-between,
+hide-vs-purge, an Inspector control and a keyframe per leaf, all for free.
+"sequence", NEVER "sorted by start" — a sorted list canonicalizes on every write, so
+dragging a note past its neighbour would RENUMBER both mid-gesture and silently
+rebind every equation; `clipNotes` sorts a COPY on read instead.
+A NUMERIC TUPLE LERPS CONTINUOUSLY AND DOES NOT ROUND (`interpolators.js:146`, "NO
+int-rounding" — the int rule is on the SCALAR path). The neighbouring `heldNotes`
+and `notes` declarations in `properties.js` claim the opposite and are WRONG about
+it; nothing depends on the mistake today because both round on read, as `clipNotes`
+does, but do not design against it. Start and duration are deliberately NOT rounded:
+they are BEATS, and an eighth note is 0.5 of one.
+THE EVENT VOCABULARY IS WIDER THAN WHAT WE PRODUCE. `MIDI_EVENT_RANK` declares
+`noteOff/cc/pitchBend/noteOn` and orders all four, because the Surge worklet already
+implements `pitchBend` and `cc` in full and a note-only signal type would have to be
+widened later. Only the two note types have a PRODUCER today; a bend/CC lane is the
+missing half, and it needs no change to the wire, the port type or a receiver.
+OFFS BEFORE ONS AT THE SAME BEAT is a law, not a tidy-up (the
+`latchedChordDelta` rule): every legato line ends one note as the next begins, and
+ons-first makes a full voice pool steal a voice that was about to be released.
+NO `channel` FIELD, stated rather than omitted: the receiving facade hardcodes
+channel 0, and the WIRE already answers what a channel would. One wire is one
+instrument; two parts is two wires, which the graph shows and a channel would hide.
+If it is ever wanted it is a FIFTH element field with no migration — `core/lists.js`
+appends at index 4, every stored 4-tuple reads `undefined` there, and `noteRecord`
+already defaults (pinned by `tests/midi_clip_test.js`).
+
+WHEN A CLIP PLAYS DECIDES WHETHER THE DECK EXPORTS (user: "WHEN does the signal
+editor start to play its song? what triggers it? a button node? … the signal editor
+therefore needs an input node too"). **BOTH** midi sources — the clip node and the
+ABC node — have a `trigger` INPUT of the EXISTING `trigger` type. Both, because the
+user asked "how to trigger the abc notation to start playing?" when only the clip
+node had one: how a phrase is AUTHORED (drawn vs typed) has nothing to do with WHEN
+it starts, and one question must not have two answers. The playhead is always `now − startTime`; everything turns
+on where `startTime` comes from, and `core/clip_playback.js` classifies it:
+  NOTHING WIRED → the clip's own keyframable `startTime` leaf. RECORDABLE, seekable,
+    shardable, exports correctly. **THE DEFAULT, so the off-the-shelf experience
+    exports and non-reproducibility has to be asked for.**
+  A CLOCK → pulse times are a pure function of elapsed time (`lastPulseSeconds` is
+    the proof: frame 200's pulse needs no frame 199). Still RECORDABLE.
+  A BUTTON → the moment a hand moved. HISTORY, so EPHEMERAL — and not SIMULATED
+    either, because a contiguous walk from frame 0 cannot reproduce it. **The clip
+    plays live and RENDERS SILENT.** Legal (live performance is the user's own
+    suggestion) and WARNED ABOUT, never silently different.
+WHICH WIDGETS ARE COVERED IS ASKED OF THE PORTS (`isTriggerableMidiSource`: emits
+`midi` AND takes a `trigger`), never of a clip declaration. Keying on `midiClip`
+covered the clip node ALONE, so a Button-driven ABC node would have rendered silent
+with no warning — the exact failure the warning exists to prevent, reintroduced by
+asking the wrong question about coverage. WHICH SOURCES ARE LIVE IS LIKEWISE ASKED
+OF THE DECLARATION, never a type list: a plugin declaring `livePress`/`livePlay` is live, which is the same predicate
+`core/live_control.js` already routes on, so a new live control is classified
+correctly the day it is written. `server.py live_trigger_warning` attaches the
+export warning — the `playback_clock_warning` precedent, naming the clips, saying
+they will render SILENT and pointing at both fixes. Its two type lists are MIRRORS
+across the language boundary; `tests/live_trigger_warning_test.py` derives them from
+the real plugin registry in node and fails if they drift.
+
+THE FULLSCREEN PIANO ROLL is `activate: "piano_roll_edit"` — ONE string, resolved
+through the ACTIVATE registry to `web/pianoRollEdit.js` + `web/PianoRollModal.svelte`.
+It is a MODAL and not a canvas mode (a node card is 200px and an editable roll needs
+a screen), so it raises an app signal exactly as `code_modal` does and declares no
+`mode`. The ARITHMETIC IS IN `core/piano_roll.js`, DOM-free and pinned in bare node,
+so the browser probe asks only what a browser can answer. A widget opts in by
+declaring `midiClip: {key, activeKey, editable}`; the ABC node deliberately does NOT
+(its notes are derived from text, and dragging one would mean rewriting source), so
+it declares `codeEditor` and gets the Monaco modal instead.
+**A `controlNodePlugin` SPEC ONLY PASSES `extra` THROUGH.** `codeEditor` and
+`outputProps` written at the spec's top level are SILENTLY DROPPED — the widget then
+carries `activate: "code_modal"` with nothing for the handler to read and
+double-clicking it throws. Measured, on the ABC node, and **nothing we have catches
+it**: `activation_migration_test` reports widgets declaring NO handler, and this one
+declared one; the handler's `claims` is migrationPlan-only so its false answer is
+never consulted; the build is green. It is the plugins-half of the missing-named-import
+hazard. `tests/piano_roll_probe.js` pins the double-click end to end because that is
+the only place the whole chain is visible.
+
+THE ABC SUBSET IS STATED EXHAUSTIVELY IN `core/abc.js`'s header — supported
+constructs and, more importantly, every REFUSED one with the sentence it produces.
+A silently-ignored ABC construct is the quiet wrongness this codebase forbids: a
+dropped repeat, tie or broken rhythm parses green, produces notes, plays, and is the
+wrong music with nothing to look at. So repeats, ties, slurs, broken rhythm, tuplets,
+grace notes, decorations, inline fields, voices, lyrics and continuations are each
+refused with a line, a column and what to write instead — and **a tune with ANY error
+yields NO NOTES AT ALL** (the project-script rule: half a tune looks like it worked).
+`tests/abc_test.js`'s BACKSTOP sweep is what makes that list a statement rather than a
+hope: it feeds every printable ASCII character into a note position and fails if any
+is neither understood nor refused. It caught `%` on its first run.
+
 ## Protocols a plugin must know about
 
 These are declared in `core/registry.js`'s docblock, which is the de-facto

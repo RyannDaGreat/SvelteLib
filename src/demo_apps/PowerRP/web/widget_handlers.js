@@ -116,6 +116,7 @@ import { NAVIGATE_SCENE_HANDLER } from "./sceneNav.js";
 import { LIGHT_POSITION_PIN_HANDLER } from "./lightPositionPin.js";
 import { POLYGON_CHAIN_HANDLER } from "./polygonDraw.js";
 import { PAINT_PATH_CHAIN_HANDLER } from "./paintPathDraw.js";
+import { PIANO_ROLL_EDIT_HANDLER } from "./pianoRollEdit.js";
 import { TELESCOPIC_RIG_HANDLER } from "./telescopicRig.js";
 
 /**
@@ -314,6 +315,30 @@ const ACTIVATE_HANDLERS = [
   LIGHT_POSITION_PIN_HANDLER,
   KNOB_FOCUS_HANDLER,
   KEYBOARD_PLAY_HANDLER,
+  PIANO_ROLL_EDIT_HANDLER,
+  {
+    id: "surge_gui",
+    phase: "activate",
+    label: "Open the Surge XT interface",
+    /** Pure function. `surgeGui: true` on a plugin means "this widget's real control
+     * surface is Surge's own GUI, not this card's dials". Only migrationPlan reads
+     * it; resolution is the plugin's `activate` string and nothing weaker.
+     * @example // claims({surgeGui: true}) → true */
+    claims: (plugin) => !!plugin.surgeGui,
+    /**
+     * Command. Opens Surge XT's real interface — the 18.9 MB GUI wasm rasterised to
+     * a canvas — for THIS node, in the shared 90%x90% modal.
+     *
+     * The `code_modal` shape exactly: the handler carries no UI, it flips one
+     * app-state field and web/App.svelte mounts the component off it. That is what
+     * keeps the modal reachable identically from double-click, from Enter (the
+     * keyboard route, whose ctx has NO `pointer` — so nothing here may read one),
+     * and from any future palette command.
+     */
+    run(ctx) {
+      ctx.app.openSurgeModal(ctx.node.itemId);
+    },
+  },
 ];
 
 /**

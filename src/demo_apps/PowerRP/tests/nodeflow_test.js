@@ -569,7 +569,23 @@ check("the coercion table covers every port-type pair the audio roster can actua
   // NO such justification — a gate simply IS a signal. That was a real gap, found by
   // enumeration rather than by reasoning, and the coercion is now in the table. The
   // assertion is what makes the NEXT gap show up as a decision to make.
-  assert.deepStrictEqual(refused.sort(), ["audio->trigger"],
+  //
+  // THE THREE `->midi` ENTRIES ARE THE SECOND DECISION ON RECORD, added when the
+  // Surge node landed a `midi` INPUT (2026-08-08) while every midi PRODUCER lives on
+  // the other half of that feature. They are refused for `node`'s reason rather than
+  // `audio->trigger`'s, and the difference is worth keeping: audio->trigger is a real
+  // operation deliberately reserved to a module, whereas these are CATEGORY ERRORS.
+  // A midi wire carries a note-stream CLIP — a list of {pitch, start, duration,
+  // velocity} — so `number -> midi` would have to invent a pitch, a start AND a
+  // duration out of one scalar, and `trigger -> midi` a whole melody out of an edge.
+  // There is no lossy-but-useful reading of either the way "an audio signal reads as
+  // its current sample" is a real thing a meter does. The operations that DO exist
+  // (an arpeggiator, a note-to-CV converter) are modules, not casts.
+  //
+  // This list growing is the sweep working: when the clip and ABC nodes add midi
+  // OUTPUTS, `midi->midi` becomes reachable and is already legal by identity, and
+  // `midi->number`/`midi->audio` will appear here as the NEXT decision to make.
+  assert.deepStrictEqual(refused.sort(), ["audio->midi", "audio->trigger", "number->midi", "trigger->midi"],
     "a reachable port-type pair is refused with no module to bridge it — either add the coercion or add the module");
 });
 
