@@ -5956,3 +5956,125 @@ block's tests passed while the block was unreachable, a suite passed while one o
 never ran, and a file rendered while its voices were shut. **Ask what a green result is
 actually ranging over** — and prefer an artifact a human can check (a WAV, an enumerated
 list) over a pass/fail whose scope you have to infer.
+
+### R7-26 THE CLIPBOARD CARRIES THE ASSETS A WIDGET USES (user, 2026-08-07/08)
+
+> *"Copy and paste copies image to and from my clipboard when I copy a widget and behaves
+> differently in-app. But what if I wanted to copy from one instance in one browser to
+> another browser?"*
+> *"what about the static wesite tho"*
+> *"but if i paste into another app like powerpoint i want the image to be pasted but if
+> into another powerrp i want the widget(s) to be"*
+> *"Is it possible to get the needed assets from a given widget?"* … *"if copy widget, then
+> also copy asset it uses? sounds good"*
+> **"I said it has to work on static AND server."**
+
+**THE LAST QUOTE IS THE ACCEPTANCE CRITERION, AND IT IS WHY THE FIRST DESIGN WAS REJECTED.**
+A server-only answer was offered as the recommendation after static had already been named
+a requirement. **Static is not the degraded tier of this feature; it is half of it.** A
+design that works only where a backend exists does not answer this brief.
+
+#### WHAT IS ALREADY TRUE (measured 2026-08-07, not recalled)
+
+**THE DUAL-FLAVOUR SPLIT THE USER WANTS ALREADY EXISTS.** One `ClipboardItem` carries BOTH
+`image/png` and `POWERRP_CLIPBOARD_MIME` (`web application/x-powerrp-item`). PowerPoint does
+not know the custom flavour, so it takes the PNG; PowerRP checks its own flavour first and
+pastes widgets. The precedence is written at `web/app.svelte.js:4415`, and
+`#isForeignFilePaste` biases toward the element because *"pasting the widget when the user
+meant the screenshot is one Ctrl+Z, whereas the old bias silently flattened a widget into a
+bitmap and lost its editability."* **Nothing about that behaviour may change.**
+
+**THE ONLY REASON IT IS BROWSER-LOCAL IS THAT THE FLAVOUR BODY IS THE STRING `"1"`**
+(`app.svelte.js:4287` — *"ownership is carried by the TYPE's presence, so nothing here needs
+to survive or be parsed"*). The real payload lives on the server keyed by the
+`powerrp_session` cookie, and `tests/clipboard_endpoint_test.py:108` asserts that isolation
+outright: *"a different browser must get its own session."* So browser B finds no payload,
+sees only a PNG, and inserts a flattened image. In static mode there is no server at all —
+`storageMode.js:77` already says so — and the store is `localStorage`, which is per browser
+per origin. **Cross-browser fails in server mode by cookie and in static mode by construction.**
+
+**`web/assetLocalize.js` ALREADY ANSWERS "WHICH ASSETS DOES THIS NEED".** `documentAssetRefs`
+returns one entry per OCCURRENCE tagged with `itemId`, so per-widget is a filter. Verified on
+a synthetic deck: it finds `src`, `svgUrl`, a slide's `transition.sound`, and BOTH frames of a
+filmstrip (arrays are walked by index), and correctly does not mistake `"= 1 + 2"` for a ref.
+The walk is BLIND — every string leaf, recognised by `parseAssetRef` — and its docblock states
+why a curated key list was refused: it *"would be wrong the day someone adds a widget —
+silently, and in the direction that loses data."*
+
+**AND STATIC MODE HAS A WRITABLE ASSET STORE.** `localAssetStore` (`web/assetStore.js:185`) is
+IndexedDB-backed, keyed `project/file`, holding real Blobs, and exposes the SAME
+`list`/`put`/`replace`/`delete` interface as `httpAssetStore`. **That symmetry is what makes one
+design cover both modes instead of two.**
+
+#### THE DESIGN
+
+**THE ASSET TRAVELS BY A COPY INSIDE THE STORE, NOT ON THE CLIPBOARD.** Add ONE verb to the
+asset-store interface — `copy(srcProject, dstProject, filename)` — implemented twice: a
+per-file server route (the twin of `copy_project_assets`, which already forks a library
+server-side *"so a fork of a deck holding a large video never pulls those bytes through the
+browser"*), and an IndexedDB blob get+put for local. **No base64, no size ceiling, and the same
+call site in both modes.** This covers every paste where source and destination share a store:
+cross-project, cross-tab, cross-browser-same-backend, and static-mode cross-project.
+
+**BYTES ON THE CLIPBOARD ARE ONLY FOR CROSSING A STORE BOUNDARY** — two browsers in static mode
+(IndexedDB is per browser), or two machines. That is the ONLY case a copy cannot serve, and it
+is where the size cap lives. Capping the rare case rather than the common one is the whole point
+of the split.
+
+**PASTE RESOLVES BY AN ORDERED CHAIN, EACH STEP A CAPABILITY CHECK AND NOT A FALLBACK:**
+
+1. **Destination already has the file** → rewrite the ref, transport nothing. (The common case:
+   pasting inside one project.)
+2. **Same store, source project reachable** → `store.copy`. Any size.
+3. **Inline bytes present** → `store.put`. The cross-store case.
+4. **None of the above** → insert the widget ANYWAY and **REPORT which assets are missing, by
+   name.** A widget that pastes with a dangling ref and says so beats one that silently
+   resolves to a different project's file — which is exactly what a relative ref does today.
+
+**THE FLAVOUR BODY STOPS BEING `"1"` AND CARRIES THE PAYLOAD.** That single change is what makes
+the widget path cross-browser and removes the server from the critical path, so it is also what
+makes static mode work. PowerPoint is unaffected — it never asks for a flavour it does not know.
+
+**`text/plain` IS REJECTED, AND THE REASON IS THE USER'S OWN REQUIREMENT.** It was proposed
+during this design and retracted: Word, Slack and PowerPoint's default paste can prefer text
+over image, so a JSON payload on `text/plain` would put goo where the user asked for a picture.
+**A custom flavour is invisible to every app that does not ask for it, and that invisibility is
+the feature.**
+
+#### THE GAP, MEASURED
+
+**RELATIVE REFS ARE INVISIBLE TO `documentAssetRefs`.** Verified: `"logo.png"` does not appear in
+its output. That is CORRECT for its original job — for export a relative ref is local by
+definition — and exactly backwards here, because a relative ref means *"whatever project owns
+this document"* and pasting it elsewhere silently resolves to a different file or none.
+
+**It cannot be fixed by extending the blind walk**: `"logo.png"` is indistinguishable from a
+widget name or a text label. Absolute refs are self-identifying; relative ones are not.
+
+**THE SIZE OF THE GAP IS BOUNDED, AND THAT IS THE USABLE FACT.** `AssetField.assetWriteValue`
+(`web/AssetField.svelte:146`) defaults to `assetForm: "url"` and writes ABSOLUTE
+`/asset/<project>/<file>` — deliberately, *"so the document survives a rename, a Save-As"*.
+Relative refs are minted only by `relativizedOwnRefs` at export/localise time. **So a live
+project holds absolute refs, and the relative case is confined to imported decks.** Identify
+those at copy time with `assetKindForName` (a recognised asset extension) AND an existence check
+against the source project's own listing — a real check, not a guess. Residual false positive: a
+text leaf whose entire value equals a real asset filename. Report it rather than rewriting
+silently.
+
+#### WHAT IS UNMEASURED, AND MUST BE BEFORE THIS SHIPS
+
+- **Cross-browser custom-flavour interop.** Chrome maps `web foo/bar` onto an
+  `org.w3.web-custom-format` pasteboard type. Chrome→Chrome (two profiles) is certain;
+  Chrome→Firefox→Safari is an empirical question. **Measure it, do not assume it.** Failure is
+  graceful — you get the PNG, i.e. today's behaviour — so this is upside, not risk.
+- **Reads must come from the paste EVENT's `clipboardData`, never `navigator.clipboard.read()`.**
+  The async API is secure-context-only and this app deliberately runs on plain HTTP — the same
+  constraint `web/clipboard.js` was built around.
+- **The size cap and its refusal.** `localStorage` is ~5–10 MB and pasteboard flavours have
+  limits. The cap must be a LOUD refusal that names the asset, never a truncated payload.
+
+#### STATUS
+
+**DESIGN ONLY — NOTHING BELOW `documentAssetRefs` IS BUILT.** The store `copy` verb, the per-file
+server route, the payload shape, the resolution chain and the relative-ref identification are all
+unimplemented as of 2026-08-08.
