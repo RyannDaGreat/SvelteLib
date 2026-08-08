@@ -60,8 +60,8 @@
  * instance and memoized; a compile failure throws LOUDLY (no silent fallback).
  */
 
-import { DITHER_MODES, PAINT_DEFAULT_BIT_DEPTH } from "../../core/properties.js";
-import { decodeBlueNoise, BLUE_NOISE_SIZE } from "./blue_noise_64.js";
+import { DITHER_MODES, PAINT_DEFAULT_BIT_DEPTH, PAINT_DITHER_DEFAULT_BAYER_SIZE } from "../../core/properties.js";
+import { decodeBlueNoise, BLUE_NOISE_SIZE } from "./blue_noise_512.js";
 
 // ── named constants (WHY each exists — no magic numbers) ─────────────────────
 // The mode ids the SHADER branches on. Kept in lock-step with core/properties.js
@@ -85,12 +85,17 @@ if (DITHER_MODES.slice().sort().join(",") !== KNOWN_MODES.slice().sort().join(",
 const RGBA_STRIDE = 4;
 const FULL_ALPHA = 255;
 
-// The Bayer 8x8 ORDERED matrix, computed ANALYTICALLY in the shader (the classic
-// recursive dispersed-dot construction, via floor/fract — SkSL RuntimeEffect
-// forbids array-constructor literals, so no baked matrix). bayer2 is the 2x2 base
-// cell; each recursion refines by a quarter-step. DITHER_BAYER_LEVELS = dim^2 is
-// the count of distinct thresholds (8x8 == 64), used to center each cell.
-const DITHER_BAYER_LEVELS = 64;
+// THE BAYER MATRIX IS COMPUTED ANALYTICALLY, AT ANY ORDER, FROM ONE GENERATOR.
+// SkSL RuntimeEffect forbids array-constructor literals, so there is no baked
+// matrix — and now that the order is selectable (2x2..16x16, core/properties.js
+// DITHER_BAYER_SIZES) there are deliberately no FOUR baked matrices either.
+//
+// The classic recursion is b_{2n}(a) = b_n(a/2)/4 + b_2(a), which unrolls to a
+// plain weighted SUM of the SAME 2x2 base cell sampled at halving scales:
+//     b_{2^k}(a) = Σ_{j=0}^{k-1} b2(a / 2^j) · 4^-j
+// so one `bayer2` and four terms cover every offered order; the order selects how
+// many terms participate. A 2^k matrix holds 4^k distinct thresholds, which is the
+// count each cell is centred against (see the half-cell offset in main).
 
 /**
  * THE paint dither SkSL. Children: `base` (the shader being dithered — today a
@@ -119,7 +124,6 @@ const DITHER_BAYER_LEVELS = 64;
  * never gains coloured noise in its invisible region.
  */
 export const DITHER_SKSL = `
-const float BAYER_HALF = 0.5 / ${DITHER_BAYER_LEVELS}.0; // half-cell offset (of 64 levels) → zero DC bias after centering
 const float MODE_BLUE = ${MODE_CODE[MODE_BLUE_NOISE]}.0;
 
 uniform shader base;        // child 0: the shader being dithered (local space)
@@ -128,20 +132,31 @@ uniform float uMode;        // 0 = bayer (ordered matrix), 1 = blueNoise (textur
 uniform float uEmphasis;    // wobble amplitude, in QUANTISATION STEPS (1 == +/- half a step; may exceed 1; 0 == depth reduction with no noise)
 uniform float uLevels;      // quantisation intervals per channel = 2^bits - 1 (255 at 8 bits, 1 at 1 bit)
 uniform float uQuantize;    // 1 = quantise explicitly (bits < 8); 0 = leave it to the surface write (bits == 8)
+uniform float uBayerOrder;  // log2(matrix edge): 1=2x2, 2=4x4, 3=8x8 (default), 4=16x16
 uniform float3x3 uToDevice; // local → device px (the canvas CTM), so one threshold == one output pixel
 
 // Pure. The 2x2 Bayer base cell as a fract-of-coordinate, values in {0,.25,.5,.75}.
 float bayer2(float2 a) { a = floor(a); return fract(a.x * 0.5 + a.y * a.y * 0.75); }
-// Pure. 4x4 and 8x8 ordered matrices by the standard quarter-step recursion.
-float bayer4(float2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
-float bayer8(float2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
+// Pure. The ordered matrix of edge 2^order, as the unrolled recursion described
+// above: the base cell at halving scales, each quarter the weight of the last.
+// Terms past the chosen order are switched off rather than branched around, so all
+// orders run the same straight-line code (no divergence, no per-order variant).
+float bayerAt(float2 a, float order) {
+  return bayer2(a)
+       + (order >= 2.0 ? bayer2(a * 0.5)   * 0.25     : 0.0)
+       + (order >= 3.0 ? bayer2(a * 0.25)  * 0.0625   : 0.0)
+       + (order >= 4.0 ? bayer2(a * 0.125) * 0.015625 : 0.0);
+}
 
 half4 main(float2 p) {
   half4 c = base.eval(p);                          // sample the gradient where it actually lives
   float2 dev = (uToDevice * float3(p, 1.0)).xy;    // ...but threshold on the DEVICE pixel grid
-  // ordered Bayer threshold from the integer device coordinate; + half a cell so
-  // the 64 levels straddle 0.5 with zero DC bias.
-  float bayerT = bayer8(dev) + BAYER_HALF;
+  // Ordered Bayer threshold from the integer device coordinate, plus HALF A CELL so
+  // the matrix's 4^order levels straddle 0.5 with zero DC bias. The offset must
+  // track the order: a 2x2 matrix has 4 levels and needs 1/8, an 8x8 has 64 and
+  // needs 1/128. A fixed offset would bias every order but the one it was written
+  // for — the dither would lighten or darken the fill instead of only scattering it.
+  float bayerT = bayerAt(dev, uBayerOrder) + 0.5 / pow(4.0, uBayerOrder);
   // blue-noise threshold: the Repeat-tiled texel value (stored as gray, read .r).
   float blueT = float(noise.eval(dev).r);
   float threshold = uMode < MODE_BLUE ? bayerT : blueT;
@@ -172,9 +187,9 @@ half4 main(float2 p) {
 }
 `;
 
-// uMode, uEmphasis, uLevels, uQuantize, then the 9 floats of uToDevice — asserted
-// by the packer.
-const DITHER_UNIFORM_FLOATS = 4 + 9;
+// uMode, uEmphasis, uLevels, uQuantize, uBayerOrder, then the 9 floats of
+// uToDevice — asserted by the packer.
+const DITHER_UNIFORM_FLOATS = 5 + 9;
 // A CanvasKit 3x3 from `canvas.getTotalMatrix()` is ROW-major [a,b,c, d,e,f, g,h,i];
 // an SkSL float3x3 uniform is filled COLUMN-major. These are the row-major indices
 // in column-major order — the transpose, named so the packer does not read as a
@@ -266,15 +281,16 @@ export function blueNoiseImage(CanvasKit) {
  * expects (uniform declaration order). Throws if the packed length drifts from
  * the shader's uniform block (loud, like packGlassUniforms).
  *
- * @param {{mode: string, emphasis: number, bits?: number}} d - depth/dither settings
+ * @param {{mode: string, emphasis: number, bits?: number, bayerSize?: number}} d - depth/dither settings
  * @param {number[]} ctm - the canvas CTM, CanvasKit row-major 9-float form
- * @returns {Float32Array} length 13: [modeCode, emphasis, levels, quantize, ...ctm column-major]
+ * @returns {Float32Array} length 14: [modeCode, emphasis, levels, quantize, bayerOrder, ...ctm column-major]
  *
  * @example packDitherUniforms({mode: "blueNoise", emphasis: 1, bits: 8}, [1,0,0,0,1,0,0,0,1])[0] // 1
  * @example packDitherUniforms({mode: "bayer", emphasis: 2, bits: 8}, [1,0,0,0,1,0,0,0,1])[2] // 255 (levels at 8 bits)
  * @example packDitherUniforms({mode: "bayer", emphasis: 2, bits: 8}, [1,0,0,0,1,0,0,0,1])[3] // 0 (no explicit quantise at 8 bits)
  * @example packDitherUniforms({mode: "bayer", emphasis: 1, bits: 1}, [1,0,0,0,1,0,0,0,1])[2] // 1 (levels at 1 bit)
- * @example packDitherUniforms({mode: "bayer", emphasis: 1, bits: 1}, [1,0,0,0,1,0,0,0,1]).length // 13
+ * @example packDitherUniforms({mode: "bayer", emphasis: 1, bits: 8, bayerSize: 16}, [1,0,0,0,1,0,0,0,1])[4] // 4 (log2 of the matrix edge)
+ * @example packDitherUniforms({mode: "bayer", emphasis: 1, bits: 1}, [1,0,0,0,1,0,0,0,1]).length // 14
  */
 export function packDitherUniforms(d, ctm) {
   const bits = d.bits ?? PAINT_DEFAULT_BIT_DEPTH;
@@ -285,7 +301,10 @@ export function packDitherUniforms(d, ctm) {
   // uniform NaN, which silently poisons the branch. Its emphasis is 0, so the mode
   // is arithmetically irrelevant — but it must still be a NUMBER.
   const modeCode = MODE_CODE[d.mode] ?? MODE_CODE[MODE_BAYER];
-  const out = new Float32Array([modeCode, d.emphasis, levels, bits < PAINT_DEFAULT_BIT_DEPTH ? 1 : 0, ...CTM_TRANSPOSED_ORDER.map((i) => ctm[i])]);
+  // log2 of the matrix edge. Math.log2(8) is exact for every power of two, and the
+  // sizes are validated upstream, so this cannot land between orders.
+  const bayerOrder = Math.log2(d.bayerSize ?? PAINT_DITHER_DEFAULT_BAYER_SIZE);
+  const out = new Float32Array([modeCode, d.emphasis, levels, bits < PAINT_DEFAULT_BIT_DEPTH ? 1 : 0, bayerOrder, ...CTM_TRANSPOSED_ORDER.map((i) => ctm[i])]);
   if (out.length !== DITHER_UNIFORM_FLOATS)
     throw new Error(`packDitherUniforms: packed ${out.length} floats, expected ${DITHER_UNIFORM_FLOATS} (shader uniform block changed?)`);
   return out;

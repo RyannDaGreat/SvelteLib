@@ -9,7 +9,7 @@
  * arbitrary-precision REFERENCE ORBIT (BigInt fixed point) and the OKLab PALETTE
  * BAKE. Both are pure functions of widget state and both produce plain float
  * arrays that ride to the GPU as ordinary op params — the same "baked data asset
- * beside its shader" shape as blue_noise_64.js beside dither_shader.js. The
+ * beside its shader" shape as blue_noise_512.js beside dither_shader.js. The
  * plugin (plugins/demo/mandelbrot.js) stays a thin declarative widget.
  *
  * ── 1. WHY NAIVE ITERATION DIES, AND WHAT PERTURBATION FIXES ─────────────────

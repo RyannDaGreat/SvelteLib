@@ -348,6 +348,43 @@ test("the insert-point chip survives a HANDLE selection (the reported flow exact
   assert.deepEqual(shown, ["Add a point"], `with a modifier point selected the bar must still offer the insert, got ${JSON.stringify(shown)}`);
 });
 
+test("COPY SURVIVES A HANDLE SELECTION — the chord and the toolbar button agree", () => {
+  // USER RULING, 2026-08-08: "the toolbar version is more correct than command c.
+  // command c should simply press the toolbar version."
+  //
+  // Both surfaces run the SAME command already (core/shortcuts.js dispatches
+  // app.runCommand(e.command)), so the only divergence was the GATE. `editSelection`
+  // excludes handlesSelected so the inner scope can own a CONTESTED key — right for
+  // Backspace, wrong for C, which that scope never binds. The result was not a
+  // handover but a DELETED KEY: toolbar Copy enabled and working, Ctrl+C doing
+  // nothing, with an edit point selected.
+  //
+  // The assertion is stated as an EQUIVALENCE to the toolbar's own gate
+  // (`selection !== null`) rather than as "Copy is present", because the ruling is
+  // about the two surfaces agreeing — a future scope change that broke one without
+  // the other would still satisfy a bare presence check.
+  const ctx = contexts.find((c) => c.mode === "edit" && c.hasSelection
+    && !c.dragging && !c.crosshairArmed && !c.canvasMode && !c.modalActive
+    && !c.typingTarget && !c.dialogOpen && !c.paletteOpen && !c.slideRail && !c.handlesSelected);
+  assert.ok(ctx, "no probe context selects a widget on the canvas");
+  // MATCH THE LABEL, NOT JUST THE COMBO. `copy-slides` is bound to the SAME
+  // Ctrl+C in the rail scope, so a combo-only check reports "copy is live" when
+  // what is live is the OTHER clipboard — which is precisely the confusion this
+  // test exists to rule out. (Caught while writing it: the rail assertion passed
+  // for the wrong reason until this discriminated.)
+  const copyOn = (c) => visible(c).some(([keys, label]) => keys.join("+") === "Ctrl+C" && label === "Copy");
+  const toolbarOn = (c) => !!c.hasSelection && c.mode === "edit" && !c.slideRail;
+
+  for (const withHandles of [false, true]) {
+    const probe = { ...ctx, handlesSelected: withHandles };
+    assert.equal(copyOn(probe), toolbarOn(probe),
+      `with handlesSelected=${withHandles} the Ctrl+C chord and the toolbar Copy button disagree — the chord is ${copyOn(probe) ? "live" : "DEAD"} while the button is ${toolbarOn(probe) ? "enabled" : "disabled"}.`);
+  }
+  // And the rail still wins the chord: two clipboards may not share one key.
+  assert.equal(copyOn({ ...ctx, slideRail: true }), false,
+    "with the slide rail focused Ctrl+C must mean copy-slides, not copy-item");
+});
+
 test("a creation mode's finalize GESTURE is announced iff the mode declares one", () => {
   for (const m of modes.filter((x) => x.phase === "create")) {
     const ctx = contexts.find((c) => c.canvasMode === m.handlerId && c.mode === "edit"

@@ -155,11 +155,21 @@ export const editMode = (c) => editBase(c) && !c.crosshairArmed && !c.canvasMode
  * THE TWO SELECTION SCOPES (see web/app.svelte.js handleSelection for the full
  * statement): an item selection is the OUTER scope, a set of the selected widget's
  * MODIFIER POINTS is the INNER one, and the INNER SCOPE WINS A CONTESTED KEY.
- * Excluding `handlesSelected` here is what implements that for every item-scoped
- * entry at once — Backspace hides the selected POINTS rather than the item, and
- * Escape clears the points rather than deselecting — without any ordering trick,
- * and therefore with exactly ONE chip per key on the HintBar. It is the same
- * disambiguation-by-`when` construction `deselectable` uses for a live point drag.
+ * Excluding `handlesSelected` here is what implements that for the CONTESTED keys
+ * — Backspace hides the selected POINTS rather than the item, and Escape clears the
+ * points rather than deselecting — without any ordering trick, and therefore with
+ * exactly ONE chip per key on the HintBar. It is the same disambiguation-by-`when`
+ * construction `deselectable` uses for a live point drag.
+ *
+ * THIS USED TO SAY "for every item-scoped entry at once", AND THAT WAS THE BUG.
+ * The exclusion is only correct where the inner scope actually WANTS the key, and
+ * that scope binds just `hide-points`/`purge-points`. Applied to an uncontested
+ * chord it does not hand the key over — it deletes the key, because nothing on the
+ * other side claims it. Ctrl+C was dead with an edit point selected while the
+ * toolbar's Copy button worked, for exactly that reason; copy now gates on
+ * `itemClipboardSelection`. **Before reusing this scope for a new entry, ask
+ * whether the handle scope binds that key at all** — if it does not, this is the
+ * wrong gate.
  *
  * @example editSelection({mode: "edit", hasSelection: true}) // true
  * @example editSelection({mode: "edit"}) // undefined (FALSY, not false: `&&` yields the absent flag itself, which is all a `when` gate reads)
@@ -217,6 +227,36 @@ export const slideRailFocus = (c) => editMode(c) && c.slideRail;
  * @example itemClipboardScope({mode: "edit", slideRail: true}) // false — the rail owns the clipboard keys
  */
 export const itemClipboardScope = (c) => editMode(c) && !c.slideRail;
+/**
+ * Pure function. THE ITEM CLIPBOARD'S SCOPE WITH SOMETHING TO COPY — the gate for
+ * the copy chords, and DELIBERATELY NOT `editSelection`.
+ *
+ * USER RULING, 2026-08-08: *"the toolbar version is more correct than command c.
+ * command c should simply press the toolbar version."* Both surfaces already run
+ * the SAME command (core/shortcuts.js dispatches `app.runCommand(e.command)`, and
+ * runCommand enforces the entry's own `when`), so the ACTION was never the
+ * divergence — only this gate was.
+ *
+ * WHAT WAS WRONG: `editSelection` excludes `handlesSelected` so that THE INNER
+ * SCOPE WINS A CONTESTED KEY (see its docblock). That is right for Backspace and
+ * Escape, which both scopes genuinely want. **COPY IS NOT A CONTESTED KEY** — the
+ * handle scope binds only `hide-points` and `purge-points`, so nothing there wants
+ * C. The blanket exclusion therefore bought nothing and cost a DEAD CHORD: with an
+ * edit point selected, the toolbar's Copy button was enabled and copied the widget
+ * while Ctrl+C did NOTHING AT ALL, because no command in that scope claimed it.
+ *
+ * `!c.slideRail` STAYS, and is not the same kind of exclusion. The rail owns the
+ * SLIDE clipboard on the same chord (`copy-slides`), and those are two different
+ * clipboards — a contested key, resolved by `when` exactly as slideRailFocus
+ * documents. Dropping it would be a real keybinding conflict, which
+ * createKeybindings throws on rather than letting one shadow the other.
+ *
+ * @example itemClipboardSelection({mode: "edit", hasSelection: true}) // true
+ * @example itemClipboardSelection({mode: "edit", hasSelection: true, handlesSelected: true}) // true — copy is uncontested, unlike Backspace
+ * @example itemClipboardSelection({mode: "edit"}) // undefined (FALSY — nothing to copy)
+ * @example itemClipboardSelection({mode: "edit", hasSelection: true, slideRail: true}) // false — the rail's slide clipboard owns the chord
+ */
+export const itemClipboardSelection = (c) => itemClipboardScope(c) && c.hasSelection;
 /**
  * The drag kinds whose ESCAPE is claimed by CanvasView, which cancels the gesture
  * from a CAPTURE-phase listener so the selection survives — it MUST pre-empt App's
@@ -518,9 +558,11 @@ export const KEYBINDING_DEFAULTS = [
   // by construction — `editSelection` excludes `slideRail` and `slideRailFocus`
   // requires it — so exactly one meaning is live and the HintBar shows one chip
   // per key, the same disambiguation-by-`when` the handle scope uses for
-  // Backspace. Only `paste` needs a predicate of its own (itemClipboardScope):
-  // it is the one item entry gated on editMode rather than on a selection.
-  { command: "copy-item", keys: ["Ctrl", "C"], when: "editSelection" },
+  // Backspace. `paste` uses `itemClipboardScope` (gated on editMode, not on a
+  // selection) and COPY uses `itemClipboardSelection` — copy is NOT a key the
+  // handle scope contests, so excluding `handlesSelected` only left the chord
+  // dead while the toolbar button worked (user ruling, 2026-08-08).
+  { command: "copy-item", keys: ["Ctrl", "C"], when: "itemClipboardSelection" },
   // COPY PROPERTIES — Cmd+Shift+C, the user's own choice of chord ("command
   // shift c can do this"). Deliberately the COPY key plus a modifier: it is the
   // same verb over a different unit (the widget's STATE rather than the widget),
@@ -641,7 +683,7 @@ export const KEYBINDING_LABELS = {
 };
 
 /** The `when`-name → predicate map the keybinding bridge resolves against. */
-export const WHEN_RESOLVERS = { editMode, editSelection, deselectable, handlesSelected, slideRailFocus, itemClipboardScope };
+export const WHEN_RESOLVERS = { editMode, editSelection, deselectable, handlesSelected, slideRailFocus, itemClipboardScope, itemClipboardSelection };
 
 /**
  * The HELD-MODIFIER verbs a drag kind can read, keyed by the semantic modifier id
