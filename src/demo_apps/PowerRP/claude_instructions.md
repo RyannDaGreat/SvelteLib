@@ -6078,3 +6078,124 @@ silently.
 **DESIGN ONLY — NOTHING BELOW `documentAssetRefs` IS BUILT.** The store `copy` verb, the per-file
 server route, the payload shape, the resolution chain and the relative-ref identification are all
 unimplemented as of 2026-08-08.
+
+### R7-26a AMENDMENT: THE SERVER LEAVES THE COPY/PASTE PATH ENTIRELY (user, 2026-08-08)
+
+> *"it shouldn't need server any more to copy and paste between sessions (i.e. between an
+> incognito browser tab and a safari one)"*
+
+**THE EXAMPLE IS THE SPECIFICATION, AND IT ELIMINATES EVERY STORE AT ONCE.** An incognito
+Chrome tab and a Safari window share no `localStorage`, no IndexedDB, no cookie, and
+therefore no server session — an incognito profile does not even share Chrome's own. The
+ONLY channel between them is the OS pasteboard. So R7-26's resolution chain loses two of
+its four steps for this case: "destination already has the file" and "same store, source
+project reachable" are both structurally unavailable, and what is left is the clipboard
+itself.
+
+Two consequences, and neither is optional any more:
+
+1. **THE PAYLOAD MOVES INTO THE CUSTOM FLAVOUR BODY.** Today it is the string `"1"`
+   (`web/app.svelte.js:4287`), a label whose presence proves ownership while the real
+   payload sits on the server keyed by `powerrp_session`. That indirection is exactly
+   what the server ruling removes. The flavour was always the right carrier — the OS
+   passes unknown flavours through VERBATIM, which is the measured reason the marker
+   survives when the PNG's own bytes do not (macOS re-encoded a 581-byte PNG to 645).
+2. **ASSET BYTES RIDE THE CLIPBOARD TOO, because there is no store to copy inside.**
+   R7-26 scoped inline bytes to "crossing a store boundary" and treated it as the rare
+   case. **This IS that case, and the user has made it the PRIMARY one.** The per-file
+   `store.copy` verb remains correct and remains the cheap path when both ends do share a
+   store, but it can no longer be the design's backbone.
+
+**THE OPEN EMPIRICAL QUESTION IS NOW LOAD-BEARING, NOT A FOOTNOTE.** Chrome maps a
+`web `-prefixed flavour onto an `org.w3.web-custom-format` pasteboard type. **Chrome to
+Chrome (including incognito) is the same implementation and will work. WHETHER SAFARI
+READS CHROME'S CUSTOM FLAVOUR IS UNMEASURED**, and the user's own example names Safari, so
+this must be MEASURED before the design is called done — not reasoned about. If it does
+not survive, the fallbacks are all worse in a way worth stating in advance:
+  - `text/plain` survives every browser and every transport, but Word/Slack/PowerPoint may
+    prefer it over `image/png`, which breaks the user's other stated requirement — *"if i
+    paste into another app like powerpoint i want the image to be pasted"*.
+  - A PNG metadata chunk (tEXt/iTXt) would ride the one universally-supported flavour, but
+    **the pasteboard RE-ENCODES images**, which is the measured fact that killed the
+    original `png_sig` design — a custom chunk would not survive either.
+  So a custom flavour is the only carrier that is both invisible to other apps and
+  unmangled in transit. If Safari cannot read it, the honest outcome is that Chrome-family
+  cross-session works and Safari degrades to the PNG, REPORTED rather than silently.
+
+**A SIZE CEILING BECOMES MANDATORY** once bytes are inline: a deck's video asset cannot go
+on a pasteboard. The cap must be a LOUD refusal naming the asset, never a truncated
+payload — a widget that pastes with silently missing bytes is the failure mode this whole
+entry exists to prevent.
+
+STATUS: still DESIGN ONLY. The Cmd+C/toolbar unification (R7-27) shipped; nothing in
+R7-26 or this amendment is built.
+
+### R7-27 Cmd+C IS THE TOOLBAR BUTTON, AND THE GATE WAS THE ONLY DIFFERENCE (user, 2026-08-08)
+
+> *"is the command+c EXACTLY UNDER 100% ALL CIRCUMSTANCES PERFECTLY AND EXACTLY the same as
+> pressing copy in the toolbar btw?"* … *"the toolbar version is more correct than command c.
+> command c should simply press the toolbar version."*
+
+**IT WAS NOT, AND THE ACTION WAS NEVER THE PROBLEM.** `core/shortcuts.js:263` already
+dispatches `ctx.app.runCommand(e.command)`, so both surfaces run the SAME registry entry
+and `runCommand` enforces that entry's own `when`. The divergence was one predicate:
+
+```
+Cmd+C   editSelection      = editMode && hasSelection && !handlesSelected && !slideRail
+toolbar needsSelection     = (a) => a.selection !== null
+```
+
+**THE DEFECT: A BLANKET EXCLUSION APPLIED TO AN UNCONTESTED KEY DOES NOT HAND THE KEY
+OVER — IT DELETES IT.** `editSelection` excludes `handlesSelected` so the INNER selection
+scope can win a contested chord, which is right for Backspace (`hide-points`) and Escape.
+But that scope binds only `hide-points` and `purge-points`; **nothing there binds C**. So
+with an edit point selected the toolbar's Copy button was enabled and worked while Ctrl+C
+did nothing at all, with no command claiming it. Fixed by a new `itemClipboardSelection`
+= `itemClipboardScope && hasSelection`, i.e. `editSelection` without the handle exclusion.
+
+`!slideRail` STAYS and is a different kind of exclusion: the rail owns the SLIDE clipboard
+on the same chord, two genuinely different clipboards, resolved by `when` exactly as
+`slideRailFocus` documents. Dropping it is a real keybinding conflict, which
+`createKeybindings` throws on.
+
+**THE RULE FOR THE NEXT ENTRY, since this scope is reused widely:** before gating a new
+entry on `editSelection`, ask whether the handle scope binds that key AT ALL. If it does
+not, this is the wrong gate and it will silently delete the chord. `editSelection`'s
+docblock used to claim it implemented the inner-scope rule "for every item-scoped entry at
+once" — that sentence WAS the bug, and it is now corrected in place.
+
+**AND A LESSON ABOUT THE TEST, caught while writing it.** The first version asserted that
+Ctrl+C was "visible" in the rail context by matching the KEY COMBO — which passed for the
+wrong reason, because `copy-slides` is bound to the same combo there. A combo-only check
+reports "copy is live" when what is live is the OTHER clipboard, i.e. exactly the confusion
+the test exists to rule out. It now discriminates by LABEL. Assert on the thing you mean,
+not on a proxy that happens to correlate.
+
+### R7-28 A MOST-RECENTLY-USED COLOUR COLUMN (user, 2026-08-08)
+
+> *"The color palettes' should have a Most-Recently-used color column on the right of the
+> color thing too"*
+
+`src/lib/ColorPicker.svelte` gains a `recent` prop — a string array, newest first, rendered
+as a column of swatch BUTTONS down its right side. **THE LIST IS THE HOST'S AND THE
+COMPONENT STORES NOTHING**, because "recently used" is an app-wide fact: the colours you
+picked, across every field, surviving a reload. A component owning its own would give each
+field a private history — the opposite of what the words mean, and empty exactly when it is
+most wanted (the second widget). `web/recentColors.js` owns it, persisting to
+`localStorage["powerrp.recentColors"]` beside the command MRU's `powerrp.mru`, the same
+"write on use, tolerate absence" shape rather than a second persistence mechanism for the
+same kind of fact. It is NOT document state and never enters the fold.
+
+**RECORDED ON COMMIT, NEVER ON PREVIEW.** A drag across the saturation square fires
+`oninput` continuously; recording each would push a dozen shades of one hue through the
+column per gesture and evict everything genuinely older. `onchange` — the settle — is the
+event that means "the user chose this".
+
+**DE-DUPLICATION IS CASE-INSENSITIVE AND MOVE-TO-FRONT.** The picker emits lowercase but a
+hand-typed `#FF0080FF` is the same colour, and a column showing both lies about having two.
+Re-picking an old colour promotes it rather than being skipped — that is what "recently
+used" means.
+
+Absent `recent` renders NOTHING and leaves the layout byte-identical, so a consumer that
+does not opt in cannot tell the prop exists: `.cp` became a ROW whose single child is the
+column it always was.
