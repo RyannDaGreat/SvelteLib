@@ -44,7 +44,6 @@ import { clampSurfaceSize, MAX_SURFACE_DIM } from "../core/clip.js";
 import { reportOnce } from "../core/report.js";
 import { parseColor } from "../render_gpu/ir.js";
 import { paintIR } from "../render_gpu/skia/paint_skia.js";
-import { renderWithDither, cameraDither } from "../render_gpu/skia/dither_shader.js";
 import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 import { ensureCanvasKit, loadFontCollection } from "../render_gpu/skia/browser_canvaskit.js";
 import { sceneMedia, prepareSceneScrubFrames } from "../render_gpu/skia/browser_media.js";
@@ -119,10 +118,11 @@ function ensureGlContext(CanvasKit) {
     CanvasKit.deleteContext(handle);
     return reportNoGlContext("MakeWebGLContext returned null");
   }
-  // The dither final pass composites through an RGBA16F intermediate, which is
-  // only an allocatable render target with these extensions (the same
-  // requirement the on-screen surface documents). Without them renderWithDither
-  // reports and degrades to a direct 8-bit paint — it does not fail the render.
+  // Float render targets, enabled for the SAME reason browser_surface.js keeps
+  // them after the camera dither was uprooted: they are a context capability that
+  // paintIR's offscreens can use, and asking for an extension nothing needs costs
+  // nothing. The RGBA16F whole-frame dither intermediate they were added for no
+  // longer exists — the paint-level dither needs no offscreen.
   const gl2 = canvas.getContext("webgl2");
   gl2?.getExtension("EXT_color_buffer_float");
   gl2?.getExtension("OES_texture_float_linear");
@@ -234,7 +234,7 @@ function renderJob(reqWidth, reqHeight, buildIR) {
     // of uploading onto a deleted surface. Safe because jobs are serialized.
     jobSurface = surface;
     try {
-      const { ir, view, background, dither = null, antialias = true, quality = "full" } = buildIR();
+      const { ir, view, background, antialias = true, quality = "full" } = buildIR();
       const uploader = ensureUploader(CanvasKit, gl);
       // SCRUBBER seek-and-await: park + decode every video_scrub frame the scene
       // needs BEFORE painting, so this one-shot pixel path (thumbnails / minimap /
@@ -250,13 +250,9 @@ function renderJob(reqWidth, reqHeight, buildIR) {
       // for video — deleting them would destroy the cache we just populated.
       const { media, release } = sceneMedia(uploader, ir);
       try {
-        // THE dither seam: renderWithDither composites into an RGBA16F
-        // intermediate and de-bands on the downconvert (when dither is active).
-        // Camera-frame consumers (thumbnails/minimap/PNG export) pass the camera's
-        // dither settings; the PDF raster-region callback passes none (dither is a
-        // RASTER post-pass — vector PDF/SVG export stays untouched).
-        renderWithDither(CanvasKit, surface, width, height, dither, (canvas) =>
-          paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection, makeSurface, antialias, quality }));
+        const canvas = surface.getCanvas();
+        paintIR(CanvasKit, canvas, ir, view, { media, background, fontCollection, makeSurface, antialias, quality });
+        surface.flush();
         const img = surface.makeImageSnapshot();
         if (!img) throw new Error("gpuService: makeImageSnapshot returned null");
         const px = img.readPixels(0, 0, {
@@ -292,14 +288,13 @@ function renderJob(reqWidth, reqHeight, buildIR) {
  * background is the first draw — thumbnail/export semantics.
  *
  * `quality` picks the render path:
- *   - "full" (default) — the editor/export path: THE camera's dither final pass
- *     PLUS the full glass/material/magnify backdrop machinery. Byte-identical to
- *     before this control existed, so every non-thumbnail caller (PNG export, the
- *     presenter, the minimap, the CLI parity probe) stays exactly as it was.
- *   - "proxy" — the CHEAP thumbnail/minimap path: NO dither (skips the RGBA16F
- *     intermediate — the single biggest per-thumbnail cost) and cheap backdrop
- *     stand-ins (paint_skia's proxy branch: no composite re-render, no full-screen
- *     blur, no SkSL), with invisible quality loss at ~100px.
+ *   - "full" (default) — the editor/export path: the full glass/material/magnify
+ *     backdrop machinery. Byte-identical to before this control existed, so every
+ *     non-thumbnail caller (PNG export, the presenter, the minimap, the CLI parity
+ *     probe) stays exactly as it was.
+ *   - "proxy" — the CHEAP thumbnail/minimap path: cheap backdrop stand-ins
+ *     (paint_skia's proxy branch: no composite re-render, no full-screen blur, no
+ *     SkSL), with invisible quality loss at ~100px.
  *
  * `project` is the OWNING project's name/key, threaded straight to
  * `cameraFrameIR` for asset-ref resolution — see that function's docblock for
@@ -357,10 +352,6 @@ export function renderCameraFrame(doc, { slideIndex, alpha = 1, registry, width,
       view: fitRectView(rect, width, height, 1),
       background: parseColor(rect.background),
       ir: cameraFrameIR(state, doc.meta, registry, { project }),
-      // PROXY skips the dither final pass entirely (dither:null ⇒ renderWithDither
-      // stays on the direct 8-bit paint — no RGBA16F intermediate). FULL keeps THE
-      // camera's dither settings, byte-identical to before.
-      dither: quality === "proxy" ? null : cameraDither(state),
       antialias: antialiasCoverage(cameraAntialias(state)), // THE camera's coverage-AA → setAntiAlias
       quality,
     };

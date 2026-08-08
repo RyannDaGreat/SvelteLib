@@ -15,7 +15,8 @@
  */
 
 export { isGradientPaint } from "../ir.js";
-import { isGradientPaint, linearGradientRender, collapsedGradientColor } from "../ir.js";
+import { isGradientPaint, linearGradientRender, collapsedGradientColor, paintDepth } from "../ir.js";
+import { depthShader } from "./dither_shader.js";
 
 /**
  * Pure function. A spread mode ("mirror" | "loop" | "pad") → the CanvasKit TileMode
@@ -45,16 +46,41 @@ export function skTileMode(CanvasKit, tile) {
  * for a parsed gradient Paint over a LOCAL bbox. `opacity` folds into every stop's
  * alpha (the item/group opacity, matching the solid fillPaint alpha fold).
  *
+ * THE DITHER WRAPS EVERY RETURN PATH (core/properties.js PAINT_DITHER_*), which is
+ * why it is applied at this one exit rather than inside the three branches: a
+ * linear ramp, a radial ramp AND a collapsed wavelength-0 solid all band, and a
+ * collapsed ramp is still an authored gradient whose author asked for dither.
+ * `ditheredShader` returns the shader UNCHANGED when the paint carries no dither
+ * (the overwhelming majority), so an undithered gradient allocates nothing extra
+ * and renders byte-identically to before the feature.
+ *
+ * `ctm` is `canvas.getTotalMatrix()` — the local→device mapping in force for this
+ * draw, which the dither needs because its threshold must land on the DEVICE pixel
+ * grid rather than on the shape's local one (see dither_shader.js's header). It is
+ * ignored entirely when the paint is not dithered, which is why every existing
+ * caller may keep passing nothing.
+ *
  * Args:
  *   CanvasKit: the CanvasKit module
  *   paint (object): a parsed gradient Paint (isGradientPaint(paint) === true)
  *   bounds ({x, y, w, h}): the shape's LOCAL bbox the objectBoundingBox maps onto
  *   opacity (number): 0..1, folded into stop alpha
+ *   ctm (number[]|null): canvas.getTotalMatrix(), or null for identity
  *
  * Returns:
  *   Shader
  */
-export function skShaderForPaint(CanvasKit, paint, bounds, opacity = 1) {
+export function skShaderForPaint(CanvasKit, paint, bounds, opacity = 1, ctm = null) {
+  return depthShader(CanvasKit, unditheredShaderForPaint(CanvasKit, paint, bounds, opacity), paintDepth(paint), ctm);
+}
+
+/**
+ * Query→build (allocates a Shader — consumed by skShaderForPaint's wrapper, which
+ * owns it from the moment it is returned). The gradient shader ITSELF, with no
+ * dither: split out so the dither wrap is one unconditional line at a single exit
+ * instead of three returns each remembering to wrap.
+ */
+function unditheredShaderForPaint(CanvasKit, paint, bounds, opacity = 1) {
   if (!isGradientPaint(paint)) throw new Error("skShaderForPaint: expected a gradient Paint (solid paints use setColor, not a shader)");
   const colors = paint.stops.map((s) => CanvasKit.Color4f(s.color[0], s.color[1], s.color[2], s.color[3] * opacity));
   const positions = paint.stops.map((s) => s.offset);

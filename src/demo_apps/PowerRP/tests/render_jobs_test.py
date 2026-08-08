@@ -97,7 +97,7 @@ def camera_item(background):
     """Pure function. THE camera item — every document must have exactly one."""
     return {"type": "camera", "name": "Camera", "x": 0, "y": 0, "w": WIDTH, "h": HEIGHT,
             "z": 1000, "rotation": 0, "scale": 1, "active": True, "background": background,
-            "antialias": "standard", "retina": True, "ditherMode": "off", "ditherEmphasis": 1}
+            "antialias": "standard", "retina": True}
 
 
 def shape_item(fill):

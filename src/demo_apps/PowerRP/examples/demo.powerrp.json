@@ -29,9 +29,7 @@
             "active": true,
             "background": "#ffffff",
             "antialias": "standard",
-            "retina": true,
-            "ditherMode": "off",
-            "ditherEmphasis": 1
+            "retina": true
           },
           "c5c2bed3": {
             "type": "rect",

@@ -13,7 +13,7 @@
  */
 
 import { paintIR } from "./paint_skia.js";
-import { renderWithDither } from "./dither_shader.js";
+import { refuseCameraDither } from "./dither_shader.js";
 import { ensureCanvasKit, loadFontCollection } from "./browser_canvaskit.js";
 import { sceneMedia } from "./browser_media.js";
 import { makeGpuUploader, disposeUploaderScope } from "../gpu/video_registry.js";
@@ -65,16 +65,14 @@ export class SkiaSurface {
     // reported instead of allocated. Queried off the SAME canvas CanvasKit bound
     // its GL context to (getContext returns that same context).
     const gl2 = canvasEl.getContext("webgl2");
-    // DITHER NEEDS THIS: the dither final pass (dither_shader.renderWithDither)
-    // composites into an RGBA16F offscreen, and RGBA16F is only a COLOR-RENDERABLE
-    // FBO attachment once EXT_color_buffer_float is enabled (linear-filterable via
-    // OES_texture_float_linear). WITHOUT them, surface.makeSurface(f16) fails on
-    // this on-screen context, so renderWithDither degrades to no-dither and the
-    // camera's dither is INVISIBLE while editing (it worked in node/CLI export,
-    // which always has F16). Enable on THE context CanvasKit renders through
-    // (getContext returns the same one) so the F16 intermediate is allocatable and
-    // dither (a camera render setting) shows live in the viewport — one camera,
-    // one look, everywhere.
+    // FLOAT RENDER TARGETS, kept after the camera dither that motivated them was
+    // uprooted. They were enabled so dither_shader's RGBA16F whole-frame
+    // intermediate could be allocated here; that intermediate is gone (the paint-
+    // level dither needs no offscreen at all — it rides the shader's own write to
+    // this surface). They stay because they are a CONTEXT capability, not a dither
+    // one: paintIR's backdrop/lens/effect offscreens are made through this same
+    // context, and enabling an extension is free when nothing asks for it. Removing
+    // them would be an unrelated, unmeasured change to every offscreen path.
     gl2?.getExtension("EXT_color_buffer_float");
     gl2?.getExtension("OES_texture_float_linear");
     const maxTex = gl2 ? gl2.getParameter(gl2.MAX_TEXTURE_SIZE) : 0;
@@ -158,11 +156,6 @@ export class SkiaSurface {
    * `background` (the bars) and clips the SCENE to it so off-camera content
    * cannot bleed into the bars. Ignored (full surface) when absent.
    *
-   * DITHER: THE camera's dither settings ({mode, emphasis} — dither_shader
-   * cameraDither), read from the scene by the caller (CanvasView) and applied as
-   * the whole-frame final pass right before present. Omitted / {mode:"off"} =
-   * no-op (today's behavior byte-for-byte).
-   *
    * ANTIALIAS: THE camera's per-draw COVERAGE anti-aliasing boolean
    * (render_settings.cameraAntialias/antialiasCoverage), read from the scene by
    * the caller and forwarded to paintIR's setAntiAlias. This is the LIVE
@@ -171,16 +164,22 @@ export class SkiaSurface {
    * coarser knob that only applies at surface creation.) Default true = today's
    * smooth look; false ⇒ crisp, jagged edges.
    */
-  render(ir, view, { background = [0, 0, 0, 0], media = null, scissor = null, dither = null, antialias = true } = {}) {
+  render(ir, view, opts = {}) {
+    refuseCameraDither("SkiaSurface.render", opts);
+    const { background = [0, 0, 0, 0], media = null, scissor = null, antialias = true } = opts;
     this._ensureSurface();
     if (!this.surface) return; // collapsed pane (zero-size canvas) — nothing to draw
     const built = media == null ? sceneMedia(this._uploader, ir) : { media, release() {} };
     try {
-      // THE dither seam: renderWithDither composites into an RGBA16F intermediate
-      // and de-bands on the downconvert to this 8-bit GL surface (when dither is
-      // active); "off" paints straight in + flushes, byte-identical to before.
-      renderWithDither(this.CanvasKit, this.surface, this._w, this._h, dither, (canvas) =>
-        paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface, antialias, maxUniformRows: this.maxUniformRows }));
+      // The canvas is hoisted rather than inlined as `this.surface.getCanvas()`:
+      // render_gpu/tests/material_device_limit_test.js asserts the uniform-row
+      // ceiling reaches paintIR by matching this call's SOURCE TEXT (it cannot
+      // build a WebGL2 canvas in bare node), and its `paintIR\([^)]*` pattern
+      // stops at the first `)` — so an inline call silently defeats the one check
+      // guarding the wire that, unconnected, leaves materials blank with no error.
+      const canvas = this.surface.getCanvas();
+      paintIR(this.CanvasKit, canvas, ir, view, { media: built.media, background, fontCollection: this.fontCollection, scissor, makeSurface: this._makeSurface, antialias, maxUniformRows: this.maxUniformRows });
+      this.surface.flush();
     } finally {
       built.release(); // free per-paint video frame Images even if paint throws (review MED)
     }

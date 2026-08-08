@@ -17,6 +17,7 @@ import {
   fancyArrowFillMigrations, withFancyArrowFillMigrated,
   linearGradientAngleMigrations, withLinearGradientAngleMigrated,
   antialiasSelectMigrations, withAntialiasSelectMigrated,
+  cameraDitherMigrations, withCameraDitherDropped,
   headModeMigrations, withHeadModeSplit,
   filmstripFramesMigrations, legacyBindings, itemCreationTypes,
   repairedDocument, defaultCameraState, withExtraCamerasDropped,
@@ -1011,6 +1012,86 @@ test("EVERY plugin: its own fresh defaults are not a migration candidate (widget
     assert.deepEqual(fancyArrowFillMigrations(doc, registry), [], `${plugin.type}: fancy-arrow fill`);
     assert.deepEqual(legacyBindings(doc), [], `${plugin.type}: legacy bindings`);
   }
+});
+
+
+// ── RETIRED CAMERA DITHER (uprooted 2026-08-07) ──────────────────────────────
+// The whole-frame camera dither is gone and dithering is a PAINT property now.
+// These pin the DROP: that it finds real leaves, that it is loud enough for
+// repairedDocument to report, that it does NOT touch a same-named property on
+// another widget, and — the one that would have caught a lazy implementation —
+// that a document with nothing to drop comes back UNCHANGED so a current-schema
+// deck still repairs with ZERO reports.
+
+test("cameraDitherMigrations finds both retired leaves on the camera, with their values", () => {
+  const doc = { slides: [{ delta: { items: { c: { type: "camera", ditherMode: "bayer", ditherEmphasis: 15.64, x: 0 } } } }] };
+  assert.deepEqual(cameraDitherMigrations(doc), [
+    { id: "c", slideIndex: 0, keys: ["ditherMode", "ditherEmphasis"], values: { ditherMode: "bayer", ditherEmphasis: 15.64 } },
+  ]);
+});
+
+test("cameraDitherMigrations finds a leaf keyframed on a LATER slide (no `type` in that delta)", () => {
+  // The itemCreationTypes gate is what makes this work: slide 1's delta carries
+  // no `type`, so a migration reading item.type alone would miss it entirely.
+  const doc = { slides: [
+    { delta: { items: { c: { type: "camera" } } } },
+    { delta: { items: { c: { ditherEmphasis: 8 } } } },
+  ] };
+  assert.deepEqual(cameraDitherMigrations(doc), [
+    { id: "c", slideIndex: 1, keys: ["ditherEmphasis"], values: { ditherEmphasis: 8 } },
+  ]);
+});
+
+test("cameraDitherMigrations does NOT touch a same-named property on another widget", () => {
+  // antialiasSelectMigrations' recorded lesson: "only the camera carries this
+  // property" is true of today's roster and is NOT a property of the format.
+  const doc = { slides: [{ delta: { items: { r: { type: "rect", ditherMode: "bayer", ditherEmphasis: 2 } } } }] };
+  assert.deepEqual(cameraDitherMigrations(doc), []);
+});
+
+test("withCameraDitherDropped DELETES the keys (never nulls them) and leaves the rest alone", () => {
+  const doc = { slides: [{ delta: { items: { c: { type: "camera", ditherMode: "bayer", ditherEmphasis: 3, background: "#000" } } } }] };
+  const { doc: out } = withCameraDitherDropped(doc);
+  const cam = out.slides[0].delta.items.c;
+  // A null would be a DELETED-key write, which withMissingDefaultsFilled reports
+  // loudly as a destroyed authored value on every subsequent load.
+  assert.equal("ditherMode" in cam, false, "ditherMode must not exist, not merely be null");
+  assert.equal("ditherEmphasis" in cam, false);
+  assert.deepEqual(cam, { type: "camera", background: "#000" });
+  assert.equal(doc.slides[0].delta.items.c.ditherMode, "bayer", "the input document must not be mutated");
+});
+
+test("withCameraDitherDropped returns the SAME object when there is nothing to drop", () => {
+  // This is what keeps repairedDocument's zero-report guarantee honest: an
+  // identity that allocates a new document would still be an identity, but it
+  // would make every clean load look like a change to anything comparing by ref.
+  const doc = { slides: [{ delta: { items: { c: { type: "camera", antialias: "standard" } } } }] };
+  assert.equal(withCameraDitherDropped(doc).doc, doc);
+  assert.equal(withCameraDitherDropped(doc).migrated.length, 0);
+});
+
+test("repairedDocument REPORTS the drop, naming both retired values, and is idempotent", () => {
+  const reg = createRegistry();
+  registerAll(reg, createCommands());
+  const base = repairedDocument(newDocument(), reg).doc;
+  const camId = Object.keys(base.slides[0].delta.items).find((id) => base.slides[0].delta.items[id].type === "camera");
+  assert.ok(camId, "the repaired default document must contain THE camera");
+  const dirty = structuredClone(base);
+  dirty.slides[0].delta.items[camId].ditherMode = "bayer";
+  dirty.slides[0].delta.items[camId].ditherEmphasis = 15.64;
+
+  const first = repairedDocument(dirty, reg);
+  const line = first.reports.find((r) => r.includes("retired camera dither"));
+  assert.ok(line, `expected a loud drop report, got ${JSON.stringify(first.reports)}`);
+  assert.match(line, /"bayer"/, "the report must name the dropped MODE — a silent drop of an authored value is the thing forbidden here");
+  assert.match(line, /15\.64/, "the report must name the dropped EMPHASIS");
+  assert.equal(first.reports.length, 1, `the drop must be the ONLY report; got ${JSON.stringify(first.reports)}`);
+
+  // Idempotent, and this is the assertion CLAUDE.md's zero-repair rule needs: the
+  // repaired document must not report again on the next load.
+  assert.deepEqual(repairedDocument(first.doc, reg).reports, []);
+  // And the default document, untouched, must have been silent to begin with.
+  assert.deepEqual(repairedDocument(newDocument(), reg).reports, []);
 });
 
 console.log(`\n${passed} repair tests passed`);

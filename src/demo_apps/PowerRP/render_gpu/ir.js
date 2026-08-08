@@ -69,8 +69,9 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_SPREAD, GRADIENT_SPREAD_MODES, GRADIENT_COLLAPSE_WAVELENGTH, spreadPeriodHalves, rampAverageColor, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
+import { DITHER_MODES, PAINT_DITHER_DEFAULT_MODE, PAINT_DITHER_DEFAULT_EMPHASIS, PAINT_DEFAULT_BIT_DEPTH, PAINT_MIN_BIT_DEPTH, PAINT_MAX_BIT_DEPTH, angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_SPREAD, GRADIENT_SPREAD_MODES, GRADIENT_COLLAPSE_WAVELENGTH, spreadPeriodHalves, rampAverageColor, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
+import { reportOnce } from "../core/report.js";
 import { CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
 
 // ── colors ──────────────────────────────────────────────────────────────────
@@ -650,8 +651,12 @@ export function parsePaint(paint) {
   // inline fields on the paint object itself.
   const g = type === "linearGradient" ? (paint.linear ?? paint) : (paint.radial ?? paint);
   const stops = normalizeStops(visibleStops(g));
+  // THE DITHER LEAVES ARE READ OFF THE PAINT, NOT OFF `g` — see paintDitherFields.
+  // They spread in LAST and are EMPTY when inactive, which is what keeps an
+  // undithered gradient's parsed object byte-identical to before this feature.
+  const dither = paintDepthFields(paint);
   if (type === "linearGradient") {
-    const linear = { type, stops, ...linearAxis(g), ...linearCenterWavelength(g) };
+    const linear = { type, stops, ...linearAxis(g), ...linearCenterWavelength(g), ...dither };
     // LOOP BAKES ITS WRAP SEGMENT HERE, once, for all three backends (see
     // loopWrappedStops). The tile is asked of linearGradientRender rather than read
     // off `spread`, because a whole-axis ramp resolves to "pad" whatever it stores.
@@ -661,7 +666,332 @@ export function parsePaint(paint) {
   }
   const center = requirePoint("radialGradient.center", g.center);
   if (typeof g.r !== "number" || !(g.r >= 0)) throw new Error(`parsePaint: radialGradient "r" must be a non-negative number, got ${JSON.stringify(g.r)}`);
-  return { type, stops, center, r: g.r };
+  return { type, stops, center, r: g.r, ...dither };
+}
+
+/**
+ * Pure function. THE PAINT-LEVEL DITHER LEAVES, validated, in the spreadable form
+ * parsePaint folds into a parsed gradient: `{}` when the dither is inactive, and
+ * `{ditherMode, ditherEmphasis}` when it is.
+ *
+ * WHY THE LEAVES SIT ON THE PAINT AND NOT INSIDE `linear`/`radial`. A dither is a
+ * property of how this paint is WRITTEN TO PIXELS, not of the ramp's geometry — it
+ * does not move a stop, an axis or a tile. Storing it beside `type` means switching
+ * a gradient between linear and radial carries the dither across (the sub-state
+ * wrappers are switched between, not merged), and it means the NEXT paint kind that
+ * wants dithering reads these same two leaves instead of minting a third pair. That
+ * is the "material-level, not gradient-only" seam the user asked for; only the two
+ * gradient branches consume it today.
+ *
+ * WHY IT ALSO APPLIES TO RADIAL, WHICH `spread` DELIBERATELY DOES NOT. CLAUDE.md's
+ * gradient section refuses a radial spread row because radial has no wavelength and
+ * no phase, so "what is missing is the FEATURE it would modify". Dither is the other
+ * case entirely: a radial ramp quantises into 8-bit rings exactly as a linear one
+ * quantises into 8-bit bands, so the feature a dither row modifies is fully present.
+ * Refusing radial here would be an arbitrary gap, not a boundary.
+ *
+ * ABSENT IS THE DEFAULT AND THE DEFAULT EMITS NOTHING. An inactive dither and an
+ * 8-bit depth each contribute NO key rather than `ditherMode: "off"` /
+ * `bitDepth: 8`, so a gradient authored before these features parses to the SAME
+ * object it always did — which matters concretely, because pdf_backend's shading
+ * cache is keyed on `JSON.stringify(paint)` and any always-present key would change
+ * every cache key in the repo.
+ *
+ * DEPTH AND DITHER ARE INDEPENDENT, AND THE ROW RULING DID NOT CHANGE THAT. The
+ * user asked for the SUB-OPTION shape (2026-08-08: "they should be suboptions …
+ * like dither emphasis need not exist if dither is off") and named EMPHASIS. Only
+ * emphasis hides, and that is the whole of it — because emphasis is meaningless
+ * without a mode to scale (it is "how hard is the noise", and there is no noise),
+ * while DEPTH is meaningful on its own: quantising to 2 bits with no noise is hard
+ * posterization, the poster/screenprint look, and a thing authors want.
+ *
+ * THE ALTERNATIVE WAS CONSIDERED AND REJECTED FOR A NAMED REASON. Hiding depth
+ * under the mode too would have forced it to become INERT while hidden — an
+ * invisible-but-active knob is the silent divergence this codebase forbids — and
+ * that would have made hard posterization inexpressible. Keeping the row VISIBLE
+ * satisfies the same rule (nothing is hidden AND acting) without deleting a
+ * capability. So the three combinations all stay reachable and compose honestly:
+ *   off    + 8 bits → today's picture, byte-identical.
+ *   off    + 1 bit  → hard posterize, flat banded colour.
+ *   bayer  + 1 bit  → the dithered retro look.
+ * Depth says HOW MANY LEVELS the paint quantises to; dither says HOW THE ERROR IS
+ * DISTRIBUTED across pixels. Neither needs the other to mean something.
+ *
+ * LOUD ON GARBAGE, like every other parsePaint leaf: an unknown mode, a negative
+ * emphasis, or a bit depth outside 1..8 (or non-integer) throws rather than
+ * quietly rendering something else.
+ *
+ * @param {object} paint - the RAW (unparsed) paint object
+ * @returns {{ditherMode?: string, ditherEmphasis?: number, bitDepth?: number}}
+ *
+ * @example paintDepthFields({}) // {} (absent — byte-identical legacy)
+ * @example paintDepthFields({ditherMode: "off", ditherEmphasis: 4}) // {} (off wins, whatever the emphasis)
+ * @example paintDepthFields({ditherMode: "bayer"}) // {ditherMode: "bayer", ditherEmphasis: 1} (default emphasis)
+ * @example paintDepthFields({ditherMode: "bayer", ditherEmphasis: 0}) // {} (zero emphasis is a no-op, same as off)
+ * @example paintDepthFields({bitDepth: 8}) // {} (8 IS the surface depth — nothing to reduce)
+ * @example paintDepthFields({bitDepth: 1}) // {bitDepth: 1} (hard posterize with NO dither — a look in its own right)
+ * @example paintDepthFields({ditherMode: "bayer", bitDepth: 2}) // {ditherMode: "bayer", ditherEmphasis: 1, bitDepth: 2}
+ */
+function paintDepthFields(paint) {
+  const mode = paint.ditherMode ?? PAINT_DITHER_DEFAULT_MODE;
+  if (!DITHER_MODES.includes(mode))
+    throw new Error(`parsePaint: dither mode must be one of ${DITHER_MODES.join(", ")}, got ${JSON.stringify(mode)}`);
+  const rawEmphasis = paint.ditherEmphasis ?? PAINT_DITHER_DEFAULT_EMPHASIS;
+  if (typeof rawEmphasis !== "number" || !Number.isFinite(rawEmphasis) || rawEmphasis < 0)
+    throw new Error(`parsePaint: dither emphasis must be a non-negative finite number, got ${JSON.stringify(paint.ditherEmphasis)}`);
+  const bits = paint.bitDepth ?? PAINT_DEFAULT_BIT_DEPTH;
+  if (!Number.isInteger(bits) || bits < PAINT_MIN_BIT_DEPTH || bits > PAINT_MAX_BIT_DEPTH)
+    throw new Error(`parsePaint: bitDepth must be an INTEGER from ${PAINT_MIN_BIT_DEPTH} to ${PAINT_MAX_BIT_DEPTH} (per channel; ${PAINT_MAX_BIT_DEPTH} is the surface's own depth), got ${JSON.stringify(paint.bitDepth)}`);
+  // The two no-op dither configurations collapse to the SAME empty result, so "off
+  // at emphasis 4" and "bayer at emphasis 0" are indistinguishable downstream —
+  // which they must be, because they draw the identical picture. `bitDepth` is NOT
+  // taken down with them: it stands on its own (see above).
+  const ditherOff = mode === PAINT_DITHER_DEFAULT_MODE || rawEmphasis === 0;
+  return {
+    ...(ditherOff ? {} : { ditherMode: mode, ditherEmphasis: rawEmphasis }),
+    ...(bits === PAINT_DEFAULT_BIT_DEPTH ? {} : { bitDepth: bits }),
+  };
+}
+
+/**
+ * Pure function. The COLOUR-DEPTH settings a PARSED paint carries, in the
+ * `{mode, emphasis, bits}` shape render_gpu/skia/dither_shader.js consumes — or
+ * null when the paint neither dithers nor reduces depth (which is every paint that
+ * predates these features, and the overwhelming majority of paints).
+ *
+ * NULL MEANS "NO SHADER PASS AT ALL", which is what keeps the default byte-
+ * identical: gradient.js wraps nothing when this returns null.
+ *
+ * The rename from `ditherMode`/`ditherEmphasis`/`bitDepth` to `mode`/`emphasis`/
+ * `bits` is deliberate: the STORED leaves are namespaced because they sit among a
+ * paint's other leaves, while the shader's bundle has nothing to be namespaced
+ * against. dither_shader.js therefore never learns the storage names.
+ *
+ * @param {object|null} paint - a PARSED paint (parsePaint output)
+ * @returns {{mode: string, emphasis: number, bits: number}|null}
+ *
+ * @example paintDepth({type: "linearGradient", ditherMode: "bayer", ditherEmphasis: 2}) // {mode: "bayer", emphasis: 2, bits: 8}
+ * @example paintDepth({type: "linearGradient", bitDepth: 1}) // {mode: "off", emphasis: 0, bits: 1} (posterize, no noise)
+ * @example paintDepth({type: "linearGradient"}) // null
+ * @example paintDepth(null) // null
+ */
+export function paintDepth(paint) {
+  if (!paint || typeof paint !== "object" || Array.isArray(paint)) return null;
+  const dithered = paint.ditherMode !== undefined;
+  const bits = paint.bitDepth ?? PAINT_DEFAULT_BIT_DEPTH;
+  if (!dithered && bits === PAINT_DEFAULT_BIT_DEPTH) return null;
+  // A depth-only paint reports emphasis 0, so the shader's one wobble expression
+  // multiplies out to zero and the SAME code path serves "quantise with noise" and
+  // "quantise with none" — no second branch that could drift from the first.
+  return {
+    mode: dithered ? paint.ditherMode : PAINT_DITHER_DEFAULT_MODE,
+    emphasis: dithered ? (paint.ditherEmphasis ?? PAINT_DITHER_DEFAULT_EMPHASIS) : 0,
+    bits,
+  };
+}
+
+/**
+ * Pure function. Whether this display-list op paints a DITHERED gradient, on
+ * either its fill or its stroke — THE VECTOR-BACKEND CAPABILITY PREDICATE.
+ *
+ * It is named, exported and consulted rather than inlined for the same reason
+ * `opHasMirrorLinearFill` was: the vector exporters' behaviour on a feature they
+ * cannot express is a list of MEASURED, NAMED capability gaps, and a gap that is
+ * only visible as an `if` inside one backend is a gap nobody can enumerate. Both
+ * pdf_backend.js and svg_backend.js ask this and report through it.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean}
+ *
+ * @example opHasDitheredGradient({op: "rect", fill: {type: "linearGradient", ditherMode: "bayer"}}) // true
+ * @example opHasDitheredGradient({op: "rect", stroke: {type: "radialGradient", ditherMode: "blueNoise"}}) // true
+ * @example opHasDitheredGradient({op: "rect", fill: {type: "linearGradient"}}) // false
+ * @example opHasDitheredGradient({op: "rect", fill: "#fff"}) // false
+ */
+export function opHasDitheredGradient(cmd) {
+  return paintIsDithered(cmd?.fill) || paintIsDithered(cmd?.stroke);
+}
+
+/** Pure function. Whether a parsed paint carries an ACTIVE dither (noise), as
+ *  opposed to a bare depth reduction. Private helper so the two op-level
+ *  predicates below cannot disagree about what "dithered" means. */
+function paintIsDithered(paint) {
+  const d = paintDepth(paint);
+  return d !== null && d.mode !== PAINT_DITHER_DEFAULT_MODE && d.emphasis > 0;
+}
+
+/**
+ * Pure function. Whether this op paints a gradient at REDUCED COLOUR DEPTH (fewer
+ * than 8 bits per channel) — THE RASTER-ROUTING PREDICATE for both vector backends.
+ *
+ * ── THIS IS THE PREDICATE THAT KILLED THE 8-BIT-ONLY RULE, AND IT IS WORTH SAYING
+ * WHY, because the rule it replaces was written one day earlier and read as settled.
+ * `reportVectorDitherOmission` justified DROPPING a dither from a vector export like
+ * this: "a dither is a sub-LSB wobble at a QUANTISATION BOUNDARY … designed to be
+ * invisible", so a PDF/SVG shading that omits it differs from the raster render by
+ * at most ±1/255 and nobody can see it.
+ *
+ * THAT ARGUMENT IS SOUND AT 8 BITS AND FALSE BELOW THEM. At 2 bits the quantisation
+ * step is 1/3 of the full range, not 1/255; the "wobble" is a third of the colour
+ * space and the posterization IS the rendered appearance rather than a perturbation
+ * of it. Exporting a 1-bit dithered gradient as a smooth continuous shading is not
+ * a sub-visible difference from what the author drew — it is a different picture,
+ * and it is exactly the silent cross-backend divergence this project forbids.
+ *
+ * SO BELOW 8 BITS THE OP ROUTES TO RASTER, in both exporters, through the same
+ * named `opHas…` line every other measured capability gap uses (pdf_backend's
+ * emitOpRange, svg_backend's emitRegion). Rasterizing costs resolution
+ * independence, which is a real price — but it is the price of exporting the
+ * picture that exists, and the alternative here is exporting a different one. At
+ * exactly 8 bits nothing changes: the old rule still holds and still applies.
+ *
+ * A VECTOR POSTERIZATION WAS CONSIDERED AND DEFERRED, deliberately. An undithered
+ * low-depth ramp IS a step function, and a PDF stitching function (already used
+ * here for mirror/loop spreads) or paired SVG stops could express hard bands
+ * exactly — which would keep the NOISE-FREE posterize case vector. It is deferred
+ * for one specific reason rather than effort: quantisation is PER CHANNEL, so the
+ * band boundaries are the union of the R, G and B step positions along the ramp,
+ * and a vector reconstruction that lands those boundaries even slightly differently
+ * from the shader would introduce a NEW divergence in place of the one it fixed —
+ * a worse outcome than an honest raster. Doing it properly means deriving the
+ * boundaries from the same expression the shader uses and pinning them against a
+ * rendered reference; that is its own piece of work.
+ *
+ * @param {object} cmd - a display-list op
+ * @returns {boolean}
+ *
+ * @example opHasReducedDepthGradient({op: "rect", fill: {type: "linearGradient", bitDepth: 1}}) // true
+ * @example opHasReducedDepthGradient({op: "rect", stroke: {type: "linearGradient", ditherMode: "bayer", bitDepth: 4}}) // true
+ * @example opHasReducedDepthGradient({op: "rect", fill: {type: "linearGradient", ditherMode: "bayer"}}) // false (8-bit dither: still vector)
+ * @example opHasReducedDepthGradient({op: "rect", fill: {type: "linearGradient"}}) // false
+ * @example opHasReducedDepthGradient({op: "rect", fill: "#fff"}) // false
+ */
+export function opHasReducedDepthGradient(cmd) {
+  return paintIsReducedDepth(cmd?.fill) || paintIsReducedDepth(cmd?.stroke);
+}
+
+/** Pure function. Whether a parsed paint quantises below the surface's 8 bits. */
+function paintIsReducedDepth(paint) {
+  const d = paintDepth(paint);
+  return d !== null && d.bits < PAINT_DEFAULT_BIT_DEPTH;
+}
+
+/**
+ * Pure function. `paint` with its dither leaves REMOVED — the exact paint the
+ * vector exporters describe, and the one whose identity their caches key on.
+ *
+ * WHY THE STRIP IS LOAD-BEARING AND NOT TIDINESS. pdf_backend's shading cache is
+ * keyed on `JSON.stringify(paint)`, so without this, two gradients identical in
+ * every ramp, axis, tile and stop but differing in a leaf the PDF cannot express
+ * would mint TWO byte-identical /Shading resources. Stripping first also makes the
+ * exported bytes for a dithered gradient IDENTICAL to those for its undithered
+ * twin, which is what lets the PDF/SVG parity gates keep asserting on a fixed
+ * expected output instead of growing a dither case they cannot draw anyway.
+ *
+ * @param {object|null} paint - a parsed paint
+ * @returns {object|null} the same paint with no ditherMode/ditherEmphasis/bitDepth
+ *
+ * @example undithered({type: "linearGradient", ditherMode: "bayer", ditherEmphasis: 2}).ditherMode // undefined
+ * @example undithered({type: "linearGradient", bitDepth: 2}).bitDepth // undefined
+ * @example undithered({type: "linearGradient", stops: []}).type // "linearGradient" (untouched)
+ */
+export function undithered(paint) {
+  if (paintDepth(paint) === null) return paint; // the common case: no copy at all
+  const { ditherMode, ditherEmphasis, bitDepth, ...rest } = paint;
+  return rest;
+}
+
+/**
+ * Command (console side effect, deduped). THE RASTER-ROUTE ANNOUNCEMENT for a
+ * reduced-depth gradient, said once per backend. The routing decision itself lives
+ * on each exporter's `opHas…` line; this is the sentence that stops the resulting
+ * quality change from being silent.
+ *
+ * IT REPORTS A DELIBERATE TRADE, NOT A FAILURE: the op is exported as a raster
+ * region at the exporter's own density, which loses resolution independence and
+ * costs file size, in exchange for exporting the picture the author actually drew.
+ * See opHasReducedDepthGradient for why a smooth vector shading is not an
+ * acceptable export below 8 bits.
+ *
+ * @param {string} backend - "pdf_backend" | "svg_backend", for the message
+ * @param {object} cmd - the op being routed
+ * @returns {boolean} whether this op is reduced-depth (i.e. whether it routes to raster)
+ */
+export function reportReducedDepthRaster(backend, cmd) {
+  if (!opHasReducedDepthGradient(cmd)) return false;
+  const d = paintDepth(cmd?.fill) ?? paintDepth(cmd?.stroke);
+  reportOnce(`${backend}-reduced-depth-raster`,
+    `${backend}: a gradient is quantised to ${d.bits} bit(s) per channel, and a vector shading cannot express a posterized (or dithered) step pattern — the op is exported as a RASTER region instead, at this exporter's density. That costs resolution independence on purpose: below 8 bits the quantisation IS the rendered appearance, so exporting a smooth shading would export a different picture. An 8-bit gradient still exports as a true vector shading.`);
+  return true;
+}
+
+/**
+ * Command (console side effect, deduped). THE VECTOR EXPORTERS' MEASURED
+ * CAPABILITY GAP FOR DITHER, single-sourced so PDF and SVG cannot drift into two
+ * different stories about the same omission.
+ *
+ * ── THE DECISION, AND WHY IT IS *NOT* "RASTERIZE LIKE opStrokeNeedsRaster DOES".
+ * Every other entry on pdf_backend's raster-routing line names a feature the
+ * vector format cannot DRAW, where rasterizing is the only way to keep the
+ * picture. Dither is categorically different, in two ways that both point the
+ * same direction:
+ *
+ *   1. THERE IS NO BIT DEPTH HERE TO DITHER AGAINST. A dither is a sub-LSB wobble
+ *      added at a QUANTIZATION BOUNDARY — it only means anything because the
+ *      destination has 256 levels. A PDF axial/radial shading and an SVG
+ *      <linearGradient> are resolution- AND depth-independent function
+ *      evaluations: the VIEWER picks the raster depth, at a zoom we do not know,
+ *      long after we are gone. The banding a reader might see is the viewer's
+ *      quantization, which no bytes we write can reach. So there is no boundary
+ *      here for the pattern to sit on, and a rasterized dither would be a wobble
+ *      against OUR chosen depth, then resampled by the viewer against a different
+ *      one — which is not the effect, it is noise.
+ *   2. THE TRADE IS ABSURD IN THE DIRECTION THAT MATTERS. Routing to raster would
+ *      swap an infinitely-scalable, few-hundred-byte shading for a fixed-DPI image
+ *      of the whole widget, in order to carry a +/-1/255 perturbation whose entire
+ *      design goal is to be invisible at 1:1. Every author who exports a vector
+ *      PDF would pay resolution and file size for an effect they cannot see.
+ *
+ * SO THE GRADIENT IS EXPORTED AS A TRUE VECTOR SHADING AND THE OMISSION IS SAID
+ * OUT LOUD. That is `cli/render.js`'s precedent exactly — the renderer that "counts
+ * those omissions and REPORTS them loudly, because it used to produce holed
+ * pictures while exiting 0" — and it is the one behaviour that is neither a silent
+ * difference between backends (forbidden) nor a self-defeating rasterization.
+ *
+ * ── AND ALL OF THAT HOLDS ONLY AT 8 BITS. Both numbered arguments above are
+ * arguments about MAGNITUDE: they work because the omitted quantity is 1/255. Once
+ * `bitDepth` exists the quantity is 1/(2^bits - 1), which at 1 bit is the ENTIRE
+ * range — the posterization is the picture, not a perturbation of it, and dropping
+ * it would export something the author did not draw. That case therefore does NOT
+ * come here: `opHasReducedDepthGradient` routes it to raster before any shading is
+ * minted, and this function is reached only by a gradient at full 8-bit depth. The
+ * early return below enforces that rather than trusting the caller, because a
+ * report claiming "designed to be invisible" over a 1-bit fill would be a confident
+ * lie in the loud channel.
+ *
+ * `opHasDitheredGradient` stays a named, exported predicate beside the other
+ * `opHas…` gap predicates so this gap is ENUMERABLE with them, even though it
+ * routes to a report rather than to the raster branch.
+ *
+ * @param {string} backend - "pdf_backend" | "svg_backend", for the message
+ * @param {object|null} paint - the parsed paint about to be emitted
+ * @returns {boolean} whether this paint was dithered (i.e. whether a gap was hit)
+ */
+export function reportVectorDitherOmission(backend, paint) {
+  const d = paintDepth(paint);
+  if (d === null) return false;
+  // A reduced-depth paint is the RASTER route's business, not this one's. It should
+  // never have reached a vector shading; say so loudly rather than describing the
+  // drop as invisible.
+  if (d.bits < PAINT_DEFAULT_BIT_DEPTH) {
+    reportOnce(`${backend}-depth-vector-leak`,
+      `${backend}: a ${d.bits}-bit gradient reached the VECTOR shading path — it should have been routed to raster by opHasReducedDepthGradient. Below 8 bits the posterization IS the picture, so a smooth vector shading is the wrong export. This is a routing bug, not a capability gap.`);
+    return true;
+  }
+  if (d.mode === PAINT_DITHER_DEFAULT_MODE || !(d.emphasis > 0)) return false;
+  reportOnce(`${backend}-paint-dither`,
+    `${backend}: a gradient carries dither (${d.mode}, emphasis ${d.emphasis}) at full 8-bit depth, and a vector shading cannot express a per-pixel pattern — the gradient is exported as a TRUE VECTOR shading with the dither DROPPED. This is deliberate, not a fallback: at 8 bits the omitted wobble is at most 1/255, a vector shading has no bit depth for it to sit on (the viewer picks the raster depth), and rasterizing the widget to carry it would trade resolution independence for an effect designed to be invisible. A gradient BELOW 8 bits is a different case entirely and rasterizes instead. The raster backends (editor, PNG/video export) dither normally.`);
+  return true;
 }
 
 /**

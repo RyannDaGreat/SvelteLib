@@ -1858,6 +1858,96 @@ export function withAntialiasSelectMigrated(doc) {
   return { doc: out, migrated };
 }
 
+/** The camera render props the dither uprooting retired. Named so the finder, the
+ *  dropper and the report all read one list and cannot drift. */
+const RETIRED_CAMERA_DITHER_KEYS = ["ditherMode", "ditherEmphasis"];
+
+/**
+ * Pure function. Every write of a RETIRED camera dither prop a document still
+ * carries: `{id, slideIndex, keys, values}` per slide-delta that has any of them.
+ *
+ * WHY THIS EXISTS AT ALL, WHEN NO OTHER RETIRED PROPERTY GETS A MIGRATION. The
+ * whole-frame camera dither was uprooted (user ruling, 2026-08-07) and its two
+ * property rows are gone from core/properties.js. A stale leaf on an item is
+ * normally harmless — `withMissingDefaultsFilled` only ADDS, and nothing reads an
+ * unknown key — so the tempting answer is to leave them. That is wrong here for a
+ * reason specific to this removal: THE DOCUMENTS THAT CARRY THESE KEYS ARE THE
+ * DOCUMENTS WHOSE AUTHOR DELIBERATELY TURNED DITHER ON. Leaving `ditherMode:
+ * "bayer"` sitting on the camera of a deck that now renders undithered is a stored
+ * value that describes a picture the app no longer draws — the author would reopen
+ * the deck, see the leaf survive a round-trip through save, and have no way to
+ * learn that the control was retired or where it went. Dropping them LOUDLY is the
+ * only version that tells them.
+ *
+ * PER-SLIDE, NOT PER-ITEM, AND THAT IS THE `headMode` CASE RATHER THAN THE
+ * FANCY-ARROW ONE. The fancy-arrow migration had to gate per ITEM because the
+ * current editor still writes its trigger key, so a keyframe authored today was
+ * indistinguishable from a legacy write. These keys are RETIRED: nothing in the
+ * editor can produce them any more, so every occurrence on any slide is legacy by
+ * construction and each is reported where it sits.
+ *
+ * IT STILL GATES ON THE CAMERA TYPE, for the reason antialiasSelectMigrations
+ * spells out: "only the camera carries this property" is true of today's roster
+ * and is not a property of the document format. A future widget with its own
+ * `ditherMode` must not have it silently deleted on load.
+ *
+ * Args:
+ *   doc (object): document
+ *
+ * Returns:
+ *   {id, slideIndex, keys, values}[] (empty when nothing needs migrating)
+ *
+ * @example cameraDitherMigrations({slides: [{delta: {items: {c: {type: "camera", ditherMode: "bayer", ditherEmphasis: 15.64}}}}]}) // [{id: "c", slideIndex: 0, keys: ["ditherMode", "ditherEmphasis"], values: {ditherMode: "bayer", ditherEmphasis: 15.64}}]
+ * @example cameraDitherMigrations({slides: [{delta: {items: {c: {type: "camera", antialias: "standard"}}}}]}) // [] (nothing to drop)
+ * @example cameraDitherMigrations({slides: [{delta: {items: {r: {type: "rect", ditherMode: "bayer"}}}}]}) // [] (not the camera — not this migration's property)
+ */
+export function cameraDitherMigrations(doc) {
+  const typeOf = itemCreationTypes(doc);
+  const out = [];
+  doc.slides.forEach((s, slideIndex) => {
+    for (const [id, item] of Object.entries(s.delta.items ?? {})) {
+      if (!item || typeof item !== "object" || typeOf.get(id) !== "camera") continue;
+      const keys = RETIRED_CAMERA_DITHER_KEYS.filter((k) => k in item);
+      if (keys.length) out.push({ id, slideIndex, keys, values: Object.fromEntries(keys.map((k) => [k, item[k]])) });
+    }
+  });
+  return out;
+}
+
+/**
+ * Pure function. Document with every retired camera dither leaf REMOVED from the
+ * slide deltas that write it (cameraDitherMigrations). REPORTING IS THE CALLER'S
+ * JOB. Idempotent — a document with none comes back as the SAME object, which is
+ * what keeps `repairedDocument` on a current-schema document reporting zero.
+ *
+ * DELETES rather than keyframes-to-null: a null would be a DELETED-key write, and
+ * withMissingDefaultsFilled reports those loudly as destroyed authored values on
+ * every subsequent load. The key must simply cease to exist.
+ *
+ * @example withCameraDitherDropped({slides: [{delta: {items: {c: {type: "camera", ditherMode: "bayer", x: 1}}}}]}).doc.slides[0].delta.items.c // {type: "camera", x: 1}
+ * @example withCameraDitherDropped({slides: [{delta: {items: {c: {type: "camera", x: 1}}}}]}).migrated.length // 0
+ */
+export function withCameraDitherDropped(doc) {
+  const migrated = cameraDitherMigrations(doc);
+  if (!migrated.length) return { doc, migrated };
+  const bySlide = new Map();
+  for (const m of migrated) bySlide.set(`${m.slideIndex} ${m.id}`, m.keys);
+  const slides = doc.slides.map((s, slideIndex) => {
+    const items = s.delta.items ?? {};
+    let touched = false;
+    const nextItems = Object.fromEntries(Object.entries(items).map(([id, item]) => {
+      const keys = bySlide.get(`${slideIndex} ${id}`);
+      if (!keys) return [id, item];
+      touched = true;
+      const next = { ...item };
+      for (const k of keys) delete next[k];
+      return [id, next];
+    }));
+    return touched ? { ...s, delta: { ...s.delta, items: nextItems } } : s;
+  });
+  return { doc: { ...doc, slides }, migrated };
+}
+
 /**
  * Pure function. The `headMode` → `headStart`/`headEnd` migrations a document
  * needs (core/endpoints.js headModeSplit explains WHY the property was split).
@@ -2105,6 +2195,11 @@ export function legacyBindings(doc) {
  *  2c. antialias boolean→select — the camera's `antialias` boolean became a
  *      quality SELECT (true→"standard", false→"off"). A VALUE migration; the key
  *      is present either way so its order vs defaults-fill is not load-bearing.
+ * 2c1. retired camera dither DROPPED — the whole-frame camera dither was uprooted
+ *      (2026-08-07) and its `ditherMode`/`ditherEmphasis` leaves are removed from
+ *      any camera delta still carrying them, LOUDLY. A pure removal with no
+ *      ordering hazard either way (it reads nothing the fill writes and writes
+ *      nothing the fill reads); grouped with its value-migration peers.
  * 2c2. lens-flare light RELATIVE→WORLD — lightX/lightY (a [0,1] fraction of the
  *      widget's box) renamed AND reinterpreted as lightWorldX/lightWorldY (an
  *      absolute world/document point), converted per-slide through the item's
@@ -2177,6 +2272,16 @@ export function repairedDocument(doc, registry) {
   for (const m of antialiasMigrated)
     reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy boolean antialias (${m.from}) → "${m.to}"`);
 
+  // RETIRED camera dither leaves DROPPED (user ruling, 2026-08-07: the whole-frame
+  // camera dither is uprooted; dithering is a PAINT property now). A pure REMOVAL,
+  // so it has no ordering hazard against the defaults-fill below in either
+  // direction: it neither reads a value the fill would overwrite nor writes one the
+  // fill would read. Placed with the other value migrations so the whole legacy
+  // chain stays in one readable run.
+  const { doc: ditherDroppedDoc, migrated: cameraDitherDropped } = withCameraDitherDropped(aaMigratedDoc);
+  for (const m of cameraDitherDropped)
+    reports.push(`PowerRP repair: item "${m.id}" slide ${m.slideIndex}: dropped retired camera dither ${m.keys.map((k) => `${k}=${JSON.stringify(m.values[k])}`).join(", ")} — the whole-frame camera dither was removed; dithering is now a PAINT property, set per gradient in the Inspector's Fill/Stroke editor`);
+
   // Arrow `headMode` (one enum over BOTH ends) SPLIT into the per-end head SHAPE
   // pair headStart/headEnd. A VALUE migration with a 1→2 split, so it cannot use
   // the declarative legacyKeys seam (that only moves a value between key names),
@@ -2184,7 +2289,7 @@ export function repairedDocument(doc, registry) {
   // below for the filmstrip step's exact reason: filling first would write the
   // new pair's DEFAULT over the slide before this step could read the old enum,
   // silently resetting every migrated arrow to one plain triangle.
-  const { doc: headDoc, migrated: headModeMigrated } = withHeadModeSplit(aaMigratedDoc, registry);
+  const { doc: headDoc, migrated: headModeMigrated } = withHeadModeSplit(ditherDroppedDoc, registry);
   for (const m of headModeMigrated)
     reports.push(m.to
       ? `PowerRP repair: item "${m.id}" slide ${m.slideIndex}: legacy headMode "${m.from}" → headStart "${m.to.headStart}" + headEnd "${m.to.headEnd}"; each end now picks its own head SHAPE`

@@ -338,6 +338,102 @@ emitted as a stitching function replicating the ramp per tile (mirrored tiles
 kept as a named predicate because that raster-routing line is a list of measured
 capability gaps and "linear gradients are not one" belongs where the others are.
 
+DITHERING IS A PAINT PROPERTY, NOT A CAMERA ONE, AND IT NEVER WORKED AS A CAMERA
+ONE (user ruling, 2026-08-07: "It will be a material-level thing you uproot any
+code in the camera for dithering"). A gradient paint carries `ditherMode` ("off" |
+"bayer" | "blueNoise", `DITHER_MODES`) and `ditherEmphasis` (no upper cap) BESIDE
+its `type` — not inside `linear`/`radial`, so flipping a gradient between the two
+modes carries the dither across, and so the next paint kind that wants one reads
+the same two leaves. It applies to RADIAL as well as linear, which is the opposite
+of the `spread` decision above and for a stated reason: radial has no wavelength or
+phase for a spread row to modify, but a radial ramp quantises into 8-bit RINGS
+exactly as a linear one quantises into bands, so the feature dither modifies is
+fully present. ABSENT IS OFF AND OFF IS BYTE-IDENTICAL — `parsePaint` OMITS both
+keys when the dither is inactive (mode "off" OR emphasis 0), so a pre-feature
+gradient produces the same parsed object, the same shader and the same exported
+bytes. `core/document.withCameraDitherDropped` removes the retired camera leaves
+LOUDLY on load.
+THE OLD CAMERA PASS WAS A NO-OP IN THE VIEWPORT FOR ITS WHOLE LIFE, and the
+autopsy is why the replacement is shaped as it is. It de-banded by compositing the
+frame into an RGBA16F offscreen and dithering on the F16 → 8-bit downconvert
+(adding noise to an already-8-bit surface does nothing). But `browser_surface.js`
+builds the on-screen GL context with `antialias: 1` whenever the camera's AA is
+"standard" — the DEFAULT — so the surface is 4x MSAA, and `makeSurface` inherits
+the source's sample count: it asked for a 4x-MSAA RGBA16F target, which Skia's
+GLES caps refuse. It returned null, the try/catch swallowed it, `console.warn`ed
+once and painted undithered. MEASURED on an M4 Max: `antialias:1` ⇒ null,
+`antialias:0` ⇒ non-null, sample count the only variable. `gpuService` was
+unaffected (`MakeRenderTarget` is always 1-sample), which is exactly why dither
+worked in PNG/video export and never on screen — a difference nobody could
+explain. THE PAINT-LEVEL VERSION NEEDS NO OFFSCREEN AT ALL: a paint shader's
+output is a float Skia quantises as it writes to the destination, so the shader is
+already standing on the quantisation boundary. MSAA is irrelevant to it.
+THE THRESHOLD IS SAMPLED IN DEVICE SPACE, via a `uToDevice` float3x3 uniform
+carrying `canvas.getTotalMatrix()`. A runtime-effect paint shader is invoked in
+LOCAL space, so without that mapping each 2x2 block of device pixels at dpr 2
+would share one threshold — the grain doubles and de-bands half as well, silently.
+`render_gpu/tests/gradient_dither_test.js` pins it by counting how often
+horizontally-adjacent device pixels differ on a VERTICAL ramp (where any
+difference IS the dither); dropping the CTM takes that from ~19% to 0.0%.
+BIT DEPTH IS THE SECOND HALF OF THE FEATURE (user, 2026-08-08: "more options for
+dithering too actually - like bit depth (by default 8 bit but can go down to 1
+bit)"). A paint carries `bitDepth`, 1..8 per channel, and 1 bit is two levels per
+channel — eight colours. QUANTISATION AND DITHER ARE SEPARATE COMPOSABLE
+OPERATIONS, so all three combinations are reachable: off+8 is today's picture,
+off+1 is HARD POSTERIZE, bayer+1 is the dithered retro look. That also reveals what
+the 8-bit-only version always was — dithering at the surface's own boundary; depth
+just MOVES the boundary.
+EMPHASIS IS IN QUANTISATION STEPS, AT EVERY DEPTH. `bitDepth` sets the step size
+(1/(2^bits − 1)); `ditherEmphasis` scales the wobble in units of that step, so
+emphasis 1 is ±half a step whether the step is 1/255 or the whole range. MEASURED,
+and it is the sharpest statement of the orthogonality: emphasis 1 moves 18.8% of
+bytes at 1, 2 and 4 bits against 18.5% at 8 — the same proportional work, only the
+jump size changes. A shader that kept the hardcoded 1/255 collapses that to 0.2%.
+8 BITS IS BYTE-IDENTICAL, AND THE SHADER KEEPS A SEPARATE BRANCH FOR IT: at 8 bits
+it does NOT quantise explicitly (the surface write already does), because a second
+round() risks differing in rounding mode. `parsePaint` drops a `bitDepth: 8` leaf
+entirely, so it never reaches a backend, a cache key or a uniform. Forcing explicit
+quantisation at 8 bits was MEASURED to change nothing on the software backend, so
+that branch is DEFENSIVE (the GPU evaluates in `half`, where a divide by 255 has no
+such guarantee) — do not delete it expecting a test to catch you; it is pinned
+structurally instead, by the packer's quantise flag.
+QUANTISATION IS DONE IN UNPREMULTIPLIED COLOUR. The incoming half4 is
+premultiplied, and posterizing that would quantise colour and alpha together, so a
+50%-transparent grey would land on a different colour than the same opaque grey and
+a fading gradient would shift hue as it faded. Unpremultiply, quantise,
+re-premultiply. (Testing this needs a TRANSPARENT backdrop: over an opaque one a
+50%-alpha fill blends to alpha 1 and the straight value is gone before readback.)
+ONLY `ditherEmphasis` HIDES WITH THE MODE (user ruling, 2026-08-08: "they should be
+suboptions … like dither emphasis need not exist if dither is off"). `bitDepth`
+does NOT hide, and the asymmetry is the point: emphasis is meaningless with no mode
+to scale, but depth means something on its own. Gating depth would have forced it
+to be INERT while hidden — an invisible-but-active knob — and deleted hard
+posterize to satisfy a row rule. The gate is the named predicate
+`core/properties.paintDitherIsOn`, resolved in PaintField with that block's `{#if}`
+idiom, because these are hand-written markup rows with no PROPS row for a
+`visibleWhen` to sit on. This REVERSED the earlier "emphasis stays visible-but-
+inert" rule, and both its statements were changed with it.
+THE VECTOR RULE IS DEPTH-AWARE, AND THE 8-BIT-ONLY VERSION OF IT WAS WRONG BELOW 8.
+At 8 bits the exporters DROP the dither and say so (`ir.js
+reportVectorDitherOmission`, shared by both so they cannot tell different stories):
+the omitted wobble is at most 1/255, a shading has no bit depth to carry it (the
+VIEWER picks the raster depth), and rasterizing would trade an infinitely-scalable
+few-hundred-byte shading for a fixed-DPI image to carry something designed to be
+invisible. **That argument is about MAGNITUDE and it dies below 8 bits.** At 1 bit
+the step is the entire range — the posterization IS the picture, not a perturbation
+of it — so exporting a smooth shading would export something the author never drew.
+BELOW 8 BITS THE OP ROUTES TO RASTER in both exporters, through
+`opHasReducedDepthGradient` on the same named `opHas…` line every other measured
+gap uses, announced by `reportReducedDepthRaster`. `reportVectorDitherOmission`
+refuses a sub-8-bit paint outright rather than describing its drop as invisible.
+A VECTOR POSTERIZATION IS DEFERRED, NOT MISSED: an undithered low-depth ramp IS a
+step function a PDF stitching function could express exactly, but quantisation is
+PER CHANNEL, so the band boundaries are the union of the R/G/B step positions and a
+reconstruction that lands them slightly differently would install a NEW divergence
+in place of the one it fixed. A raster route also now REQUIRES a `rasterize`
+callback, so a caller without one gets a loud configuration error rather than a
+silently smooth gradient.
+
 ## Protocols a plugin must know about
 
 These are declared in `core/registry.js`'s docblock, which is the de-facto

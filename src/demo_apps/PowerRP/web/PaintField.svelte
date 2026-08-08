@@ -250,7 +250,7 @@
   import { LABEL_DIVIDER_VARIABLE } from "./labelFrac.js";
   import { makeHoverPreview } from "./hoverPreview.js";
   import { resolveScrub } from "../../../lib/numberStep.js";
-  import { GRADIENT_STOPS_LIST, GRADIENT_SPREAD_MODES, GRADIENT_SPREAD_LABELS, GRADIENT_DEFAULT_SPREAD } from "../core/properties.js";
+  import { GRADIENT_STOPS_LIST, GRADIENT_SPREAD_MODES, GRADIENT_SPREAD_LABELS, GRADIENT_DEFAULT_SPREAD, DITHER_MODES, DITHER_MODE_LABELS, PAINT_DITHER_DEFAULT_MODE, PAINT_DITHER_DEFAULT_EMPHASIS, PAINT_DEFAULT_BIT_DEPTH, PAINT_MIN_BIT_DEPTH, PAINT_MAX_BIT_DEPTH, paintDitherIsOn, UNIT_SPAN_SCRUB } from "../core/properties.js";
   import { getPath } from "../core/deltas.js";
   import { getMaterial, fillCapableMaterialIds as fillIds, materialFillParamDefaults, visibleKnobRows } from "../render_gpu/skia/materials.js";
   import { getStrokeMaterial, strokeMaterialIds as strokeIds } from "../render_gpu/skia/stroke_materials.js";
@@ -323,6 +323,7 @@
   // DraggableNumber it fed: NumericField/AngleField own the identical
   // setPreview → commitPreview contract for the knob rows now, so a second
   // hand-rolled copy of it here would be the duplication, not the service.)
+
 
   /** Command. Switches the paint mode. EQUATION mode makes the WHOLE paint a
    * "=" expression (a computed color, evaluated like any other any-type
@@ -1063,6 +1064,95 @@
         </span>
       </div>
     {/if}
+      <!-- DITHER — scatters this gradient's pixels between adjacent 8-bit levels
+           so its banding dissolves into fine grain (user request: "blue noise +
+           bayer dithering options for gradient materials").
+
+           OUTSIDE THE linear/radial BRANCH ON PURPOSE, and it is the only row here
+           that is. The rows above are RAMP GEOMETRY — direction, wavelength,
+           spread, phase, radius — which is why each belongs to exactly one sub-
+           state. Dither is not geometry: it describes how this paint is written to
+           PIXELS, and a radial ramp quantises into concentric rings exactly as a
+           linear one quantises into bands. So both modes get it, and the stored
+           leaves sit on the PAINT rather than inside `linear`/`radial`, which also
+           means flipping a gradient between the two modes carries the dither
+           across instead of stranding it. (Contrast the SPREAD row, which is
+           deliberately linear-only — CLAUDE.md: radial has no wavelength and no
+           phase, so "what is missing is the FEATURE it would modify". Dither is the
+           other case: the feature it modifies is fully present on both.)
+
+           EMPHASIS IS A SUB-OPTION AND HIDES WITH THE MODE (user ruling,
+           2026-08-08: "they should be suboptions btw submenu like other things
+           right" / "like dither emphasis need not exist if dither is off"). This
+           REVERSED an earlier decision recorded here and in plugins/camera.js —
+           that emphasis should stay visible-but-inert — so both were changed
+           together rather than leaving the old prose standing.
+
+           BIT DEPTH DOES *NOT* HIDE, and the asymmetry is deliberate rather than
+           an oversight: emphasis is meaningless with no mode to scale, but depth
+           means something on its own (quantise with no noise = hard posterize).
+           Gating it would have forced it to be inert while hidden — an
+           invisible-but-active knob — and deleted that look to satisfy a row rule.
+           The gate is the NAMED predicate core/properties.paintDitherIsOn, kept
+           there beside strokeJoinIsMiter/strokeMaterialIsOn so a visibility rule
+           greps; these are hand-written markup rows rather than PROPS rows (like
+           every sibling above), so PaintField resolves it with the same `{#if}`
+           idiom this block already uses, instead of a `visibleWhen` that only
+           Inspector's PROPS path can reach.
+
+           BOTH NUMERIC ROWS PASS `value` — NumericField's documented SPARSE-SLOT
+           fallback, the seam material knobs already use. Absent means "the
+           default" for these leaves, and without it the field renders 0 while the
+           paint renders 8 / 1: a control contradicting the picture beside it. This
+           replaced an earlier workaround that WROTE the default into the document
+           when the mode turned on; the display seam is better because it stores
+           nothing, so an untouched paint stays byte-identical.
+
+           (These rows carry no help text — hand-written markup has no `help` slot;
+           the reasoning lives here and in core/properties.js.) -->
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Bit depth</span>
+        <span class="paint-sub-control">
+          <NumericField
+            {app}
+            path={[...path, "bitDepth"]}
+            paths={writePaths.map((p) => [...p, "bitDepth"])}
+            label={`${label} bit depth`}
+            min={PAINT_MIN_BIT_DEPTH}
+            max={PAINT_MAX_BIT_DEPTH}
+            step={1}
+            scrub={1}
+            value={raw?.bitDepth ?? PAINT_DEFAULT_BIT_DEPTH}
+          />
+        </span>
+      </div>
+      <div class="paint-sub-row">
+        <span class="paint-sub-label">Dither</span>
+        <span class="paint-sub-control">
+          <Dropdown
+            items={DITHER_MODES.map((m) => ({ value: m, label: DITHER_MODE_LABELS[m] }))}
+            value={raw?.ditherMode ?? PAINT_DITHER_DEFAULT_MODE}
+            {disabled}
+            onchange={(v) => commitAt(["ditherMode"], v)}
+          />
+        </span>
+      </div>
+      {#if paintDitherIsOn(raw)}
+        <div class="paint-sub-row">
+          <span class="paint-sub-label">Dither emphasis</span>
+          <span class="paint-sub-control">
+            <NumericField
+              {app}
+              path={[...path, "ditherEmphasis"]}
+              paths={writePaths.map((p) => [...p, "ditherEmphasis"])}
+              label={`${label} dither emphasis`}
+              min={0}
+              scrub={UNIT_SPAN_SCRUB}
+              value={raw?.ditherEmphasis ?? PAINT_DITHER_DEFAULT_EMPHASIS}
+            />
+          </span>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>

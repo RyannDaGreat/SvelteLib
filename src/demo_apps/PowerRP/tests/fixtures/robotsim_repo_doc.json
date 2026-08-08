@@ -67,9 +67,7 @@
        }
       },
       "antialias": "standard",
-      "retina": true,
-      "ditherMode": "off",
-      "ditherEmphasis": 1
+      "retina": true
      },
      "9a3342e9": {
       "type": "video",

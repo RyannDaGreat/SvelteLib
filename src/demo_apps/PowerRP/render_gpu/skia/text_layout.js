@@ -819,7 +819,7 @@ function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true
   const bounds = glyphGroupBounds(group, ox, y, CanvasKit);
   const shader = isMaterialPaint(fill)
     ? materialShaderForGlyphs(CanvasKit, fill, bounds)
-    : skShaderForPaint(CanvasKit, parsePaint(fill), bounds, opacity); // model gradient (string stops) → rgba stops
+    : skShaderForPaint(CanvasKit, parsePaint(fill), bounds, opacity, canvas.getTotalMatrix()); // model gradient (string stops) → rgba stops
   // No null guard: BOTH builders either return a shader or throw with a reason
   // (materialShaderForGlyphs checks makeShader's result itself). A `if (!shader)
   // return` here would be dead code that reads like a real fallback — i.e. it

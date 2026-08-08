@@ -715,22 +715,22 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
     case "rect": {
       const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h), cmd.cornerRadius, cmd.cornerRadius);
       const bounds = { x: cmd.x, y: cmd.y, w: cmd.w, h: cmd.h };
-      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), (p) => canvas.drawRRect(rr, p));
+      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa, canvas.getTotalMatrix()), (p) => canvas.drawRRect(rr, p));
       if (cmd.stroke && cmd.strokeWidth > 0) {
         if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
         else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, (p) => canvas.drawRRect(rr, p));
-        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor), (p) => canvas.drawRRect(rr, p));
+        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor, canvas.getTotalMatrix()), (p) => canvas.drawRRect(rr, p));
       }
       break;
     }
     case "ellipse": {
       const oval = CanvasKit.LTRBRect(cmd.cx - cmd.rx, cmd.cy - cmd.ry, cmd.cx + cmd.rx, cmd.cy + cmd.ry);
       const bounds = { x: cmd.cx - cmd.rx, y: cmd.cy - cmd.ry, w: 2 * cmd.rx, h: 2 * cmd.ry };
-      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), (p) => canvas.drawOval(oval, p));
+      if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa, canvas.getTotalMatrix()), (p) => canvas.drawOval(oval, p));
       if (cmd.stroke && cmd.strokeWidth > 0) {
         if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
         else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, (p) => canvas.drawOval(oval, p));
-        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor), (p) => canvas.drawOval(oval, p));
+        else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor, canvas.getTotalMatrix()), (p) => canvas.drawOval(oval, p));
       }
       break;
     }
@@ -754,7 +754,7 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       // cases above already carry.
       if (!cmd.fill) break;
       const path = buildPath(CanvasKit, cmd.points, true);
-      withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, pointsBounds(cmd.points), aa), (p) => canvas.drawPath(path, p));
+      withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, pointsBounds(cmd.points), aa, canvas.getTotalMatrix()), (p) => canvas.drawPath(path, p));
       path.delete();
       break;
     }
@@ -1023,14 +1023,14 @@ function drawPathOp(CanvasKit, canvas, cmd, opacity, aa = true, spaceDivisor = 1
   // softness tracks zoom. blur 0 (the default) ⇒ no filter, crisp as before.
   const maskBlur = cmd.blur > 0 ? CanvasKit.MaskFilter.MakeBlur(CanvasKit.BlurStyle.Normal, cmd.blur, true) : null;
   const drawWith = (p) => { if (maskBlur) p.setMaskFilter(maskBlur); canvas.drawPath(skPath, p); };
-  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa), drawWith);
+  if (cmd.fill) withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, aa, canvas.getTotalMatrix()), drawWith);
   if (cmd.stroke && cmd.strokeWidth > 0) {
     // A trimmed/capped path stroke takes the arc-length preprocessing route (the
     // optional soft `blur` mask does not apply to a trimmed stroke — a niche
     // combination; the fill above still carries it).
     if (opStrokeNeedsTrimPath(cmd)) drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa);
     else if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawWith);
-    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor), drawWith);
+    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, aa, cmd, spaceDivisor, canvas.getTotalMatrix()), drawWith);
   }
   if (maskBlur) maskBlur.delete();
   skPath.delete();
@@ -1128,7 +1128,7 @@ function drawLatexGlyphStroke(CanvasKit, canvas, cmd, opacity, aa) {
   if (isGradientPaint(cmd.glyphStroke)) {
     shader = isMaterialPaint(cmd.glyphStroke)
       ? materialShaderForGlyphs(CanvasKit, cmd.glyphStroke, bounds)
-      : skShaderForPaint(CanvasKit, parsePaint(cmd.glyphStroke), bounds, opacity);
+      : skShaderForPaint(CanvasKit, parsePaint(cmd.glyphStroke), bounds, opacity, canvas.getTotalMatrix());
     p.setShader(shader);
     if (isMaterialPaint(cmd.glyphStroke)) p.setAlphaf(opacity);
   } else {
@@ -1199,7 +1199,7 @@ function drawLatexShaderInk(CanvasKit, canvas, cmd, opacity, aa) {
   const bounds = { x: b[0], y: b[1], w: b[2] - b[0], h: b[3] - b[1] };
   const shader = isMaterialPaint(cmd.fill)
     ? materialShaderForGlyphs(CanvasKit, cmd.fill, bounds)
-    : skShaderForPaint(CanvasKit, parsePaint(cmd.fill), bounds, opacity);
+    : skShaderForPaint(CanvasKit, parsePaint(cmd.fill), bounds, opacity, canvas.getTotalMatrix());
   const p = new CanvasKit.Paint();
   p.setShader(shader);
   p.setStyle(CanvasKit.PaintStyle.Fill);
@@ -1606,7 +1606,7 @@ function drawOffsetOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, drawSha
     if (depth <= 0) continue; // a fully inner/outer stroke has no ink on the other side
     canvas.save();
     canvas.clipPath(clip, clipOp, aa);
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, 2 * depth * width, opacity, bounds, aa, cmd), drawShape);
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, 2 * depth * width, opacity, bounds, aa, cmd, 1, canvas.getTotalMatrix()), drawShape);
     canvas.restore();
   }
   if (!pathOverride) clip.delete();
@@ -1690,7 +1690,7 @@ function drawDetachedContourStroke(CanvasKit, canvas, cmd, bounds, opacity, aa, 
   outline.delete();
   if (!contour) throw new Error(`paintIR(skia): the detached-contour offset ${o} produced no path — a malformed op pair (report, do not swallow)`);
   if (!contour.isEmpty())
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa, cmd), (p) => canvas.drawPath(contour, p));
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa, cmd, 1, canvas.getTotalMatrix()), (p) => canvas.drawPath(contour, p));
   contour.delete();
 }
 
@@ -2232,7 +2232,7 @@ function fillTaperedRibbon(CanvasKit, canvas, path, cmd, bounds, opacity, aa, ca
   });
   const ribbon = b.detach();
   b.delete();
-  withPaint(CanvasKit, fillPaint(CanvasKit, cmd.stroke, opacity, bounds, aa), (p) => canvas.drawPath(ribbon, p));
+  withPaint(CanvasKit, fillPaint(CanvasKit, cmd.stroke, opacity, bounds, aa, canvas.getTotalMatrix()), (p) => canvas.drawPath(ribbon, p));
   ribbon.delete();
 }
 
@@ -2258,7 +2258,7 @@ function drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa) {
   if (capStart === "taper" || capEnd === "taper") {
     fillTaperedRibbon(CanvasKit, canvas, strokePath, cmd, bounds, opacity, aa, capStart, capEnd);
   } else {
-    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa, cmd), (p) => {
+    withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, width, opacity, bounds, aa, cmd, 1, canvas.getTotalMatrix()), (p) => {
       p.setStrokeCap(CanvasKit.StrokeCap.Butt);
       canvas.drawPath(strokePath, p);
     });
@@ -2266,7 +2266,7 @@ function drawTrimmedOpStroke(CanvasKit, canvas, cmd, bounds, opacity, aa) {
   // Round-cap discs — in BOTH branches, so a round end beside a tapered one still rounds.
   const roundEnds = ends.filter((e) => (e.side === "start" ? capStart : capEnd) === "round");
   if (roundEnds.length)
-    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.stroke, opacity, bounds, aa), (p) => {
+    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.stroke, opacity, bounds, aa, canvas.getTotalMatrix()), (p) => {
       for (const e of roundEnds) canvas.drawCircle(e.x, e.y, width / 2, p);
     });
   if (trimmed) trimmed.delete();
@@ -2814,7 +2814,7 @@ function drawGlassOutlineBorder(CanvasKit, canvas, cmd, view, world, opacity, aa
   if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd, spaceDivisor);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd, spaceDivisor, canvas.getTotalMatrix());
   const path = glassOutlinePath(CanvasKit, cmd.cx, cmd.cy, cmd.halfW, cmd.halfH, cmd.cornerRadius, cmd.squircle, cmd.surfaceTension, unitScale);
   canvas.drawPath(path, p);
   path.delete();
@@ -2833,7 +2833,7 @@ function drawGlassBorder(CanvasKit, canvas, cmd, view, world, opacity, aa = true
   if (!cmd.stroke || !(cmd.strokeWidth > 0)) return;
   canvas.save();
   applyView(canvas, view, world);
-  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd, spaceDivisor);
+  const p = strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, null, aa, cmd, spaceDivisor, canvas.getTotalMatrix());
   const rr = CanvasKit.RRectXY(CanvasKit.LTRBRect(cmd.cx - cmd.halfW, cmd.cy - cmd.halfH, cmd.cx + cmd.halfW, cmd.cy + cmd.halfH), cmd.cornerRadius, cmd.cornerRadius);
   canvas.drawRRect(rr, p);
   p.delete();
@@ -3789,7 +3789,7 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belo
   if (cmd.fill) {
     canvas.save();
     applyView(canvas, view, world);
-    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, ctx.antialias), (p) => canvas.drawRRect(rr, p));
+    withPaint(CanvasKit, fillPaint(CanvasKit, cmd.fill, opacity, bounds, ctx.antialias, canvas.getTotalMatrix()), (p) => canvas.drawRRect(rr, p));
     canvas.restore();
   }
 
@@ -3838,7 +3838,7 @@ function handleCropSubtree(CanvasKit, target, cmd, world, view, ctx, depth, belo
       ? (p) => canvas.drawPath(silPath, p)
       : (p) => canvas.drawRRect(rr, p);
     if (opStrokeIsOffset(cmd)) drawOffsetOpStroke(CanvasKit, canvas, { ...cmd, op: "rect" }, bounds, opacity, ctx.antialias, strokeShape, silPath);
-    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias, cmd), strokeShape);
+    else withPaint(CanvasKit, strokePaint(CanvasKit, cmd.stroke, cmd.strokeWidth, opacity, bounds, ctx.antialias, cmd, 1, canvas.getTotalMatrix()), strokeShape);
     if (silPath) silPath.delete();
     canvas.restore();
   }
@@ -4673,11 +4673,11 @@ function blitImage(CanvasKit, canvas, img, opacity) {
  * — the objectBoundingBox the gradient maps onto. Any gradient shader is stashed
  * on the paint as `_gradientShader` so withPaint disposes it. `aa` is the camera's
  * coverage-AA flag (ctx.antialias): false ⇒ crisp jagged edges. Caller deletes. */
-function fillPaint(CanvasKit, paint, opacity, bounds = null, aa = true) {
+function fillPaint(CanvasKit, paint, opacity, bounds = null, aa = true, ctm = null) {
   const p = new CanvasKit.Paint();
   p.setStyle(CanvasKit.PaintStyle.Fill);
   p.setAntiAlias(aa);
-  applyPaint(CanvasKit, p, paint, opacity, bounds);
+  applyPaint(CanvasKit, p, paint, opacity, bounds, ctm);
   return p;
 }
 
@@ -4694,7 +4694,7 @@ function fillPaint(CanvasKit, paint, opacity, bounds = null, aa = true) {
  * the offset ring, the proxy stand-in, the error affordance) means "the
  * identity", which is what those call sites drew before this argument existed.
  */
-function strokePaint(CanvasKit, paint, width, opacity, bounds = null, aa = true, cmd = null, spaceDivisor = 1) {
+function strokePaint(CanvasKit, paint, width, opacity, bounds = null, aa = true, cmd = null, spaceDivisor = 1, ctm = null) {
   const p = new CanvasKit.Paint();
   p.setStyle(CanvasKit.PaintStyle.Stroke);
   // SCREEN-SPACE WIDTH: gated on the op's own opt-in AND defaulted to an identity
@@ -4705,7 +4705,7 @@ function strokePaint(CanvasKit, paint, width, opacity, bounds = null, aa = true,
   p.setAntiAlias(aa);
   p.setStrokeJoin(skJoin(CanvasKit, opStrokeJoin(cmd ?? {})));
   p.setStrokeMiter(opStrokeMiter(cmd ?? {}));
-  applyPaint(CanvasKit, p, paint, opacity, bounds);
+  applyPaint(CanvasKit, p, paint, opacity, bounds, ctm);
   return p;
 }
 
@@ -4734,11 +4734,18 @@ function skJoin(CanvasKit, join) {
 /** Command (mutates `p`). Sets a solid color OR a gradient shader on a Paint. A
  * gradient (isGradientPaint) requires `bounds`; its shader is stashed on the
  * paint as `_gradientShader` for withPaint to dispose. A solid folds opacity into
- * alpha (byte-identical to the old fillPaint/strokePaint). */
-function applyPaint(CanvasKit, p, paint, opacity, bounds) {
+ * alpha (byte-identical to the old fillPaint/strokePaint).
+ *
+ * `ctm` is the drawing canvas's `getTotalMatrix()`, needed ONLY by a DITHERED
+ * gradient (render_gpu/skia/dither_shader.js samples its threshold on the device
+ * pixel grid, and a paint shader is invoked in local space). Every other paint
+ * ignores it, which is why the internal geometry strokes — the offset ring, the
+ * proxy stand-in, the error affordance, all of which paint a solid colour that can
+ * never be a gradient, let alone a dithered one — correctly pass nothing. */
+function applyPaint(CanvasKit, p, paint, opacity, bounds, ctm = null) {
   if (isGradientPaint(paint)) {
     if (!bounds) throw new Error("paintIR(skia): a gradient paint needs the op's local bounds (internal invariant)");
-    const shader = skShaderForPaint(CanvasKit, paint, bounds, opacity);
+    const shader = skShaderForPaint(CanvasKit, paint, bounds, opacity, ctm);
     p.setShader(shader);
     p._gradientShader = shader;
   } else {
@@ -4871,7 +4878,7 @@ function drawTextGlyphStroke(CanvasKit, canvas, cmd, opacity, aa) {
   if (isGradientPaint(cmd.glyphStroke)) {
     shader = isMaterialPaint(cmd.glyphStroke)
       ? materialShaderForGlyphs(CanvasKit, cmd.glyphStroke, bounds)
-      : skShaderForPaint(CanvasKit, parsePaint(cmd.glyphStroke), bounds, opacity);
+      : skShaderForPaint(CanvasKit, parsePaint(cmd.glyphStroke), bounds, opacity, canvas.getTotalMatrix());
     p.setShader(shader);
     if (isMaterialPaint(cmd.glyphStroke)) p.setAlphaf(opacity);
   } else {

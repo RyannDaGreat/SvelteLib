@@ -30,7 +30,6 @@
   // (web/storageMode.js) — the bare seam sent the draft key to the server.
   import { assetStoreFor } from "./storageMode.js"; // resolves a sound ref for THIS page's storage
   import { assetRef } from "./assetRef.js"; // the one "/asset/<project>/<file>" spelling
-  import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
 
   let { app } = $props();
@@ -264,8 +263,8 @@
         h: rect.h * view.zoom * dpr,
       },
       // The presenter honors the camera's render settings too (mirrors CanvasView):
-      // dither de-bands and the AA mode drives coverage AA in the fullscreen show.
-      dither: cameraDither(state),
+      // the AA mode drives coverage AA in the fullscreen show. Dither is not among
+      // them — it is a PAINT property now and rides each gradient's own shader.
       antialias: antialiasCoverage(cameraAntialias(state)),
     });
     app.renderFrameCount += 1; // the FPS counter reads PRESENTATION frames (round 11)

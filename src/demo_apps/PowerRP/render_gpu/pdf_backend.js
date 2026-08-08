@@ -48,7 +48,7 @@
  * browsers pass the GPU pixel service, node tests pass a stub.
  */
 
-import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, pdfTileSpan, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opHasMirrorLinearFill, opHasDitheredGradient, opHasReducedDepthGradient, reportVectorDitherOmission, reportReducedDepthRaster, undithered, opStrokeNeedsRaster, opHasMaskBlur, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, pdfTileSpan, rect, text, pushTransform, popTransform, effectSubtree, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, BLUR_SUPPORT_SIGMAS, MAX_LENS_DEPTH as LENS_DEPTH_CAP, BLEND_MODES } from "./ir.js";
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegion) — the painter's boundary in exporter
 // form. Uses the canonical ERROR-level report, not this file's reportOncePdf,
@@ -1103,7 +1103,7 @@ async function emitOpRange(flat, start, end, commands, rawIndexOf, region, out, 
       await emitCrop(cmd, world, region, out, ctx);
     } else if (cmd.op === "effectSubtree") {
       await emitEffect(cmd, world, region, out, ctx);
-    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || opStrokeNeedsRaster(cmd) || opHasMaskBlur(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd) || reportGlyphStrokeRaster(cmd)) {
+    } else if (!VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opHasMirrorLinearFill(cmd) || reportReducedDepthRaster("pdf_backend", cmd) || opStrokeNeedsRaster(cmd) || opHasMaskBlur(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd) || reportGlyphStrokeRaster(cmd)) {
       // (A MATERIAL-filled shape op is vector-shaped but shader-filled — PDF has
       // no vector form for it, so it takes the same region raster-embed. A
       // TRIMMED / TAPER-capped / ASYMMETRICALLY-capped stroke (opStrokeNeedsRaster)
@@ -2554,7 +2554,15 @@ class PdfAssembly {
    * ends. Colors are DeviceRGB (per-stop alpha is not expressible in a PDF shading
    * — the item opacity rides an ExtGState at the call site).
    */
-  shadingName(paint) {
+  shadingName(rawPaint) {
+    // THE DITHER IS DROPPED HERE, LOUDLY, AND BEFORE THE CACHE KEY. A PDF shading
+    // cannot carry a per-pixel pattern; render_gpu/ir.js reportVectorDitherOmission
+    // owns that decision and its reasoning (shared with svg_backend so the two
+    // cannot tell different stories). Stripping BEFORE keying is what keeps a
+    // dithered gradient's exported bytes identical to its undithered twin's,
+    // instead of minting a second, byte-identical /Shading per dither setting.
+    reportVectorDitherOmission("pdf_backend", rawPaint);
+    const paint = undithered(rawPaint);
     const key = JSON.stringify(paint);
     if (this._shadings.has(key)) return this._shadings.get(key);
     const ctx = this.doc.context;

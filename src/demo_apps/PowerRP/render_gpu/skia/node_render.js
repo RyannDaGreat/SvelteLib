@@ -19,7 +19,7 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { paintIR } from "./paint_skia.js";
-import { renderWithDither } from "./dither_shader.js";
+import { refuseCameraDither } from "./dither_shader.js";
 import { committedFaces, fontFileFor, FALLBACK_FACES } from "../fonts.js";
 import { makeSkiaRunMeasure, makeSkiaShapedPlacement } from "./text_layout.js";
 import { setInkMeasure } from "../../core/ink_metrics.js";
@@ -146,8 +146,6 @@ function buildFontCollection(CanvasKit) {
  *   opts.width, opts.height (number): surface size in DEVICE pixels
  *   opts.background (string): CSS clear color
  *   opts.media (object): ref → CanvasKit Image
- *   opts.dither ({mode, emphasis}): THE camera's dither settings (dither_shader
- *     cameraDither) — the whole-frame final pass. Omitted / {mode:"off"} = no-op.
  *   opts.antialias (boolean): THE camera's per-draw COVERAGE anti-aliasing
  *     (render_settings.cameraAntialias/antialiasCoverage) — forwarded to paintIR's
  *     setAntiAlias. Default true = smooth (today's look); false ⇒ crisp jagged
@@ -169,15 +167,15 @@ function buildFontCollection(CanvasKit) {
  * Returns:
  *   Promise<Uint8Array>: encoded PNG bytes
  */
-export async function renderToPng(commands, view, { width, height, background = "#ffffff", media = {}, dither = null, antialias = true, quality = "full", maxUniformRows = Infinity } = {}) {
+export async function renderToPng(commands, view, opts = {}) {
+  refuseCameraDither("node_render.renderToPng", opts);
+  const { width, height, background = "#ffffff", media = {}, antialias = true, quality = "full", maxUniformRows = Infinity } = opts;
   const CanvasKit = await ensureCanvasKit();
   const surface = CanvasKit.MakeSurface(width, height);
   if (!surface) throw new Error("node_render: MakeSurface returned null");
-  // THE dither seam: renderWithDither composites into an RGBA16F intermediate
-  // (when dither is active) and de-bands on the downconvert to this 8-bit
-  // surface; "off" paints straight in, byte-identical to before.
-  renderWithDither(CanvasKit, surface, width, height, dither, (canvas) =>
-    paintIR(CanvasKit, canvas, commands, view, { media, background, fontCollection: _fontCollection, antialias, quality, maxUniformRows }));
+  const canvas = surface.getCanvas();
+  paintIR(CanvasKit, canvas, commands, view, { media, background, fontCollection: _fontCollection, antialias, quality, maxUniformRows });
+  surface.flush();
   const img = surface.makeImageSnapshot();
   if (!img) throw new Error("node_render: makeImageSnapshot returned null");
   const png = img.encodeToBytes();

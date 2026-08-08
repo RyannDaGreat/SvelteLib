@@ -22,12 +22,13 @@
  *     collective AABB of its members. The members also OVERLAP, because the whole
  *     subject of the treatment family is that the effect applies to the union
  *     silhouette rather than per member.
- *   `camera` needs a WIDE SMOOTH GRADIENT (a dither pass has nothing to act on
- *     over a flat fill) AND a DIAGONAL edge (coverage anti-aliasing changes
- *     nothing along an axis-aligned one). The gradient is the repo's own banding
- *     torture test, lifted from tests/dither_vlm_check.js — a near-black ~10-level
- *     ramp that quantises into wide hard bands with dither off. A shallower ramp
- *     under-reports the whole family.
+ *   `camera` needs a DIAGONAL edge — coverage anti-aliasing changes nothing along
+ *     an axis-aligned one, and coverage AA is now the family's ONLY axis (the
+ *     dither profiles were removed with the camera dither itself, 2026-08-07; see
+ *     plugins/camera.js). The wide smooth gradient is KEPT even though nothing
+ *     reads it any more: it is a realistic frame for the AA measurement to be a
+ *     small share of, which is what makes the 0.12 bound meaningful rather than
+ *     trivially cleared.
  *   `bento` is the easy one: it strokes a rect per visible cell, so it tests like
  *     an ordinary widget.
  *
@@ -199,28 +200,33 @@ function assertPairwise(label, frames, distance, bound, metric, anchors) {
     ellipse({ cx: 110, cy: 110, rx: 70, ry: 55, fill: "#e0af68", stroke: "#1a1a1a", strokeWidth: 2 }),
   ];
   const shot = async (s) => readPng(await renderToPng(scene, view, { width: W, height: H, background: "#000000",
-    antialias: s.antialias === "standard", dither: { mode: s.ditherMode, emphasis: s.ditherEmphasis } }));
+    antialias: s.antialias === "standard" }));
 
   const frames = [{ name: "(DEFAULT)", png: await shot(camera.defaults) }];
   for (const p of presets) frames.push({ name: p.name, png: await shot({ ...camera.defaults, ...p.props }) });
 
   test(`camera: ${presets.length} render profiles and the default all render a DIFFERENT picture`, () => {
-    // 0.055 — the default against a blueNoise dither at emphasis 0.35. A REAL
-    //         COLLISION and a preset that WAS designed and is cut: one code value
-    //         on a tenth of the frame is the display floor, and a row whose only
-    //         claim is that you cannot see it is a dead row.
-    // 0.181 — Heavy Ordered Screen against Photocopy, the narrowest KEEP. They
-    //         differ ONLY in coverage anti-aliasing, which lives in 0.6% of the
-    //         pixels — hence the low mean and the maxAbs of 115 beside it.
+    // THE ASSERTION STILL HAS TEETH WITH ONE PRESET, and that is the reason the
+    // camera block survived the dither uprooting rather than being deleted with it.
+    // The remaining pair is DEFAULT (coverage AA on) vs "Crisp Pixel Edges" (off),
+    // which is exactly the pair that recorded this suite's narrowest-ever KEEP:
+    // 0.181 whole-frame mean, because coverage AA lives in ~0.6% of the pixels (the
+    // maxAbs printed beside it is 115). A preset that failed to turn AA off, or a
+    // painter that stopped honouring the flag, drops this to 0 and reds here.
+    // 0.055 — the historic REJECT anchor (a blueNoise dither at emphasis 0.35
+    //         against off): one code value on a tenth of the frame is the display
+    //         floor. Kept as the calibration for where the 0.12 bound sits, even
+    //         though no dither preset can produce it from here any more.
     assertPairwise("camera", frames, imageDistance, 0.12, "whole-frame",
-      "reject 0.055 (blueNoise emphasis 0.35 vs off) / keep 0.181 (Heavy Ordered Screen vs Photocopy)");
+      "reject 0.055 (a one-code-value change) / keep 0.181 (coverage AA on vs off)");
   });
 }
 
 test("EVERY preset in a family writes the IDENTICAL key set", () => {
   // The overlay contract. It is what forces `spans: []` onto the nine bento grids
-  // that merge nothing, and `ditherEmphasis` onto the two camera profiles where
-  // it is inert.
+  // that merge nothing. (It is vacuous for `camera`, whose family is down to one
+  // row since the dither uprooting — kept in the loop so it starts asserting again
+  // the moment a second camera render knob lands.)
   for (const type of ["bento", "group", "camera"])
     for (const family of presetFamiliesOf(get(type))) {
       const sets = new Set(family.presets.map((p) => Object.keys(p.props).sort().join(",")));

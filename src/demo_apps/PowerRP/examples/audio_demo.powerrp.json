@@ -73,9 +73,7 @@
             "active": true,
             "background": "#0e1018",
             "antialias": "standard",
-            "retina": true,
-            "ditherMode": "off",
-            "ditherEmphasis": 1
+            "retina": true
           },
           "1e71ed31": {
             "type": "plaintext",

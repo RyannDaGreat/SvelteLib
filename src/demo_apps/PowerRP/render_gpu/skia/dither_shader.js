@@ -1,57 +1,73 @@
 /**
- * THE deterministic whole-frame DITHER final-pass — the second live SkSL
- * RuntimeEffect in the tree (after glass_shader.js), and the single home for the
- * camera's `ditherMode` / `ditherEmphasis` render props (core/properties.js),
- * which until now NOTHING consumed.
+ * THE deterministic DITHER — one ordered/blue-noise sub-LSB pattern, applied
+ * PER PAINT (today: per gradient fill/stroke) rather than over the whole frame.
  *
- * WHAT IT FIXES: an 8-bit surface can only hold 256 levels per channel, so a
- * smooth gradient / soft shadow / blurred glass / bloom falloff collapses into
- * visible stair-step BANDS at the quantization boundary. Adding a sub-LSB
- * ordered pattern before the 8-bit write scatters each pixel between the two
- * nearest levels, so the eye averages them back to the true value and the bands
- * dissolve into fine grain. This is a GENERAL surface post-pass (fixes banding
- * everywhere on the composited frame — gradients AND shadows/blur/glass/bloom),
- * not a gradient-only trick.
+ * WHAT IT FIXES: an 8-bit surface holds 256 levels per channel, so a smooth
+ * gradient collapses into visible stair-step BANDS at the quantization boundary.
+ * Adding a sub-LSB ordered pattern BEFORE the 8-bit write scatters each pixel
+ * between the two nearest levels, so the eye averages them back to the true
+ * value and the bands dissolve into fine grain.
  *
- * WHERE IN THE PIPELINE — and WHY a higher-precision intermediate is MANDATORY:
- * dithering only de-bands if the sub-LSB pattern is added in MORE precision than
- * the 8-bit output, in the SAME step that quantizes. Adding noise to an ALREADY
- * 8-bit surface is a NO-OP — the fractional information is already gone, so
- * rounding an integer + a fraction < 0.5 lands back on the same integer. So the
- * SHARED helper renderWithDither() composites the whole scene into an RGBA16F
- * (half-float) offscreen surface FIRST — where the gradient / blur / shadow /
- * glass falloff stays smooth — then the dither RuntimeEffect adds the wobble on
- * the F16 -> 8-bit DOWNCONVERT (BlendMode.Src onto the real 8-bit sink). That
- * downconvert IS the quantization boundary. The F16 offscreen and the 8-bit sink
- * share ONE color space (SRGB), so the child image shader returns the sRGB-
- * ENCODED value unchanged (no transfer conversion) and one LSB == 1/255 in the
- * encoded space that quantizes — exactly right. All THREE raster sinks
- * (browser_surface, gpuService, node_render) route through renderWithDither, so
- * the pass is general (fixes banding everywhere), not per-sink.
+ * ── THIS FILE USED TO BE A WHOLE-FRAME CAMERA POST-PASS, AND THAT DESIGN IS GONE
+ * (user ruling, 2026-08-07: "It will be a material-level thing you uproot any
+ * code in the camera for dithering"). The camera carried `ditherMode` /
+ * `ditherEmphasis` render props and `renderWithDither()` composited the entire
+ * scene into an RGBA16F offscreen so the wobble could be added on the F16 → 8-bit
+ * downconvert. Everything about that is deleted: the props, the presets, the
+ * `cameraDither()` reader, `renderWithDither`, `ditherDownconvert`, the F16
+ * ImageInfo and the "this context cannot allocate a half-float render target"
+ * degradation. WHAT SURVIVES IS THE MATH — the Bayer recursion, the blue-noise
+ * tile (blue_noise_64.js) and the ±half-LSB wobble — because none of it was ever
+ * the problem.
  *
- * OFF == byte-identical to today: renderWithDither with mode "off" (or emphasis
- * <= 0) skips the F16 intermediate entirely and paints straight into the 8-bit
- * sink, so a default document pays nothing and renders exactly as before.
+ * WHY THE PAINT-LEVEL VERSION NEEDS NO F16 INTERMEDIATE, WHICH IS THE WHOLE
+ * REASON THIS IS A BETTER PLACE FOR IT. The camera pass needed one because it ran
+ * AFTER the scene had already been rasterized: adding noise to an already-8-bit
+ * surface is a NO-OP (the fractional information is gone, so an integer + a
+ * fraction < 0.5 rounds back to the same integer), so it had to re-composite the
+ * frame in half-float first and dither on the downconvert. A PAINT shader has no
+ * such problem: its output is a float that Skia quantizes as it writes to the
+ * destination, so the shader IS standing on the quantization boundary already.
+ * MEASURED (bare node, software Skia, a near-black 10-level ramp over 400px):
+ * emphasis 1 changes 18.5% of bytes by 1; emphasis 16 changes 68.5% by up to 8 —
+ * the SAME numbers the F16 camera pass produced, with no offscreen and no
+ * half-float support required anywhere.
  *
- * DETERMINISTIC: the pattern is a pure function of the integer fragment
- * coordinate (bayer) plus a static precomputed texture (blueNoise) — never time,
- * never Math.random — so RenderTree = pure(document) is preserved: the same
- * document renders byte-identically every time. RASTER-ONLY: this touches the
- * pixel surface; the vector exporters (PDF / SVG) never call it and are untouched.
+ * DEVICE-SPACE, VIA `uToDevice`. The pattern must land on the DEVICE PIXEL GRID:
+ * one threshold per output pixel is the entire premise of dithering, and a
+ * pattern computed in the shape's local space would grow into chunky blobs when
+ * zoomed in and alias when zoomed out. A runtime-effect shader's `main(float2 p)`
+ * receives LOCAL coordinates, so the caller passes the canvas CTM
+ * (`canvas.getTotalMatrix()`) as a float3x3 uniform and the shader maps `p`
+ * through it. MEASURED: the identical scene at dpr 1 and dpr 2 produces the same
+ * differing-byte count and the same max delta, i.e. the grain is one device pixel
+ * in both — which it would NOT be if this used local coordinates.
+ *
+ * DETERMINISTIC — the property-state law (CLAUDE.md, "the four kinds of state").
+ * The threshold is a pure function of the integer device coordinate (bayer) or a
+ * static precomputed texture (blueNoise). Never a clock, never Math.random. So
+ * RenderTree = pure(document, view) holds and Δt = 0 yields a byte-identical
+ * frame. The device coordinate is part of the RENDER REQUEST (view + CTM), not
+ * ambient state, exactly as anti-aliasing coverage is.
+ *
+ * OFF == byte-identical to today: `ditherActive` is false for mode "off" or
+ * emphasis <= 0, and render_gpu/ir.js parsePaint OMITS the leaves entirely in
+ * that case, so a paint that has never been dithered produces the same parsed
+ * object and the same untouched Skia gradient shader it always did.
  *
  * REUSES the glass compile+cache pattern (paint_skia.js glassEffect): the
  * RuntimeEffect and the blue-noise Image are each built ONCE per CanvasKit
  * instance and memoized; a compile failure throws LOUDLY (no silent fallback).
  */
 
-import { DITHER_MODES } from "../../core/properties.js";
+import { DITHER_MODES, PAINT_DEFAULT_BIT_DEPTH } from "../../core/properties.js";
 import { decodeBlueNoise, BLUE_NOISE_SIZE } from "./blue_noise_64.js";
 
 // ── named constants (WHY each exists — no magic numbers) ─────────────────────
 // The mode ids the SHADER branches on. Kept in lock-step with core/properties.js
 // DITHER_MODES so the stored state, the property row, and the shader can never
-// disagree; a startup assert (below) proves the mapping still matches.
-const MODE_OFF = "off";
+// disagree; the import-time assert below proves the mapping still matches.
+export const MODE_OFF = "off";
 const MODE_BAYER = "bayer";
 const MODE_BLUE_NOISE = "blueNoise";
 // Shader-side numeric mode selector (float uniform — SkSL has no string type).
@@ -59,7 +75,7 @@ const MODE_CODE = { [MODE_BAYER]: 0, [MODE_BLUE_NOISE]: 1 };
 // The ids this module knows how to render, asserted against the property registry
 // so a new DITHER_MODES entry that the shader does not handle fails loudly here
 // instead of silently rendering as a no-op.
-const KNOWN_MODES = [MODE_OFF, MODE_BAYER, MODE_BLUE_NOISE];
+export const KNOWN_MODES = [MODE_OFF, MODE_BAYER, MODE_BLUE_NOISE];
 if (DITHER_MODES.slice().sort().join(",") !== KNOWN_MODES.slice().sort().join(","))
   throw new Error(`dither_shader: DITHER_MODES ${JSON.stringify(DITHER_MODES)} != known ${JSON.stringify(KNOWN_MODES)} — a mode was added without shader support.`);
 
@@ -77,31 +93,42 @@ const FULL_ALPHA = 255;
 const DITHER_BAYER_LEVELS = 64;
 
 /**
- * THE dither SkSL. Children: `frame` (the composited surface snapshot, device
- * space) and `noise` (the tiled blue-noise texture). Output per pixel:
+ * THE paint dither SkSL. Children: `base` (the shader being dithered — today a
+ * Skia linear/radial gradient, in the SAME local space this effect is invoked in)
+ * and `noise` (the tiled blue-noise texture). Output per pixel:
  *
- *   out.rgb = frame.rgb + (threshold - 0.5) * uEmphasis * LSB * frame.a
- *   out.a   = frame.a
+ *   out.rgb = base.rgb + (threshold - 0.5) * uEmphasis * LSB * base.a
+ *   out.a   = base.a
  *
  * `threshold` in [0,1) comes from the analytic Bayer matrix (uMode 0) or the
- * blue-noise texel (uMode 1); centering by -0.5 makes it a zero-mean +/- half-
- * step wobble. LSB = 1/255 is one 8-bit level in normalized color, so uEmphasis
- * == 1 spreads a pixel across exactly the two nearest levels (peak-to-peak one
- * LSB). uEmphasis ABOVE 1 is fully supported — a grittier, louder grain (the
- * property's arbitrary max:1 in core/properties.js is another lane's to lift; the
- * shader itself does NOT clamp emphasis). Scaling the wobble by frame.a keeps a
- * premultiplied surface valid and leaves transparent pixels (a==0) untouched, so
- * the editor's transparent backdrop never gains colored noise.
+ * blue-noise texel (uMode 1), BOTH SAMPLED AT THE DEVICE COORDINATE `uToDevice`
+ * maps `p` to — see the header. Centering by -0.5 makes it a zero-mean +/- half-
+ * step wobble, so a dithered gradient has the SAME average colour as an
+ * un-dithered one (dither must not shift the picture, only break its bands).
+ * LSB = 1/255 is one 8-bit level in normalized colour, so uEmphasis == 1 spreads
+ * a pixel across exactly the two nearest levels (peak-to-peak one LSB).
+ * uEmphasis ABOVE 1 is supported and is a real authored look — a grittier, louder
+ * grain; the property has NO upper cap and the shader does not clamp.
+ *
+ * `base.eval(p)` uses the LOCAL coordinate, not the device one: the gradient must
+ * be sampled exactly where it would have been without this wrapper, or the fill
+ * would shift. Only the THRESHOLD lookup goes to device space.
+ *
+ * Scaling the wobble by base.a keeps a premultiplied result valid and leaves
+ * transparent pixels (a == 0) untouched, so a gradient fading to transparent
+ * never gains coloured noise in its invisible region.
  */
 export const DITHER_SKSL = `
-const float LSB = 1.0 / 255.0;               // one 8-bit level, in normalized [0,1] color
 const float BAYER_HALF = 0.5 / ${DITHER_BAYER_LEVELS}.0; // half-cell offset (of 64 levels) → zero DC bias after centering
 const float MODE_BLUE = ${MODE_CODE[MODE_BLUE_NOISE]}.0;
 
-uniform shader frame;   // child 0: the composited frame (device space, sRGB-encoded)
-uniform shader noise;   // child 1: the tiled blue-noise texel source (device space, Repeat)
-uniform float uMode;    // 0 = bayer (ordered matrix), 1 = blueNoise (texture)
-uniform float uEmphasis;// wobble amplitude multiplier (1 == +/- half an 8-bit level; may exceed 1)
+uniform shader base;        // child 0: the shader being dithered (local space)
+uniform shader noise;       // child 1: the tiled blue-noise texel source (Repeat)
+uniform float uMode;        // 0 = bayer (ordered matrix), 1 = blueNoise (texture)
+uniform float uEmphasis;    // wobble amplitude, in QUANTISATION STEPS (1 == +/- half a step; may exceed 1; 0 == depth reduction with no noise)
+uniform float uLevels;      // quantisation intervals per channel = 2^bits - 1 (255 at 8 bits, 1 at 1 bit)
+uniform float uQuantize;    // 1 = quantise explicitly (bits < 8); 0 = leave it to the surface write (bits == 8)
+uniform float3x3 uToDevice; // local → device px (the canvas CTM), so one threshold == one output pixel
 
 // Pure. The 2x2 Bayer base cell as a fract-of-coordinate, values in {0,.25,.5,.75}.
 float bayer2(float2 a) { a = floor(a); return fract(a.x * 0.5 + a.y * a.y * 0.75); }
@@ -109,25 +136,79 @@ float bayer2(float2 a) { a = floor(a); return fract(a.x * 0.5 + a.y * a.y * 0.75
 float bayer4(float2 a) { return bayer2(0.5 * a) * 0.25 + bayer2(a); }
 float bayer8(float2 a) { return bayer4(0.5 * a) * 0.25 + bayer2(a); }
 
-half4 main(float2 fragCoord) {
-  half4 c = frame.eval(fragCoord);
-  // ordered Bayer threshold from the integer fragment coordinate; + half a cell
-  // so the 64 levels straddle 0.5 with zero DC bias.
-  float bayerT = bayer8(fragCoord) + BAYER_HALF;
+half4 main(float2 p) {
+  half4 c = base.eval(p);                          // sample the gradient where it actually lives
+  float2 dev = (uToDevice * float3(p, 1.0)).xy;    // ...but threshold on the DEVICE pixel grid
+  // ordered Bayer threshold from the integer device coordinate; + half a cell so
+  // the 64 levels straddle 0.5 with zero DC bias.
+  float bayerT = bayer8(dev) + BAYER_HALF;
   // blue-noise threshold: the Repeat-tiled texel value (stored as gray, read .r).
-  float blueT = float(noise.eval(fragCoord).r);
+  float blueT = float(noise.eval(dev).r);
   float threshold = uMode < MODE_BLUE ? bayerT : blueT;
-  half wobble = half((threshold - 0.5) * uEmphasis * LSB);
-  return half4(c.rgb + wobble * c.a, c.a);
+  // ONE quantisation step in normalized colour. At 8 bits this is 1/255 — the LSB
+  // this shader used to hardcode — so the 8-bit picture is unchanged by the
+  // generalisation. Emphasis is measured in these steps at EVERY depth, which is
+  // what keeps "emphasis 1 == spread across the two nearest levels" true at 1 bit.
+  float step = 1.0 / uLevels;
+  half wobble = half((threshold - 0.5) * uEmphasis * step);
+
+  // 8-BIT PATH — BYTE-IDENTICAL TO BEFORE bitDepth EXISTED, and deliberately not
+  // merged with the branch below. At 8 bits the destination surface already
+  // quantises on write, so adding our OWN round() here would be a second
+  // quantisation whose rounding mode is not guaranteed to match Skia's — a way to
+  // change every existing dithered gradient by a code value for no benefit.
+  if (uQuantize < 0.5) return half4(c.rgb + wobble * c.a, c.a);
+
+  // REDUCED-DEPTH PATH — quantise explicitly, in UNPREMULTIPLIED colour. The
+  // incoming half4 is PREMULTIPLIED, and posterizing a premultiplied value would
+  // quantise colour and alpha together: a 50%-transparent mid-grey would land on a
+  // different colour than the same opaque grey, so a gradient fading out would
+  // shift hue as it faded. Unpremultiply, quantise, re-premultiply.
+  half a = c.a;
+  half3 straight = a > 0.0 ? c.rgb / a : c.rgb;
+  straight = clamp(straight + wobble, 0.0, 1.0);   // clamp BEFORE the round so the wobble cannot push past the end levels
+  half3 q = half3(floor(float3(straight) * uLevels + 0.5) / uLevels);
+  return half4(q * a, a);
 }
 `;
 
-const DITHER_UNIFORM_FLOATS = 2; // uMode, uEmphasis — asserted by the packer
+// uMode, uEmphasis, uLevels, uQuantize, then the 9 floats of uToDevice — asserted
+// by the packer.
+const DITHER_UNIFORM_FLOATS = 4 + 9;
+// A CanvasKit 3x3 from `canvas.getTotalMatrix()` is ROW-major [a,b,c, d,e,f, g,h,i];
+// an SkSL float3x3 uniform is filled COLUMN-major. These are the row-major indices
+// in column-major order — the transpose, named so the packer does not read as a
+// shuffle of magic numbers.
+const CTM_TRANSPOSED_ORDER = [0, 3, 6, 1, 4, 7, 2, 5, 8];
+// The identity CTM, used when a caller cannot supply one (see ditheredShader).
+const IDENTITY_CTM = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
 let _effect = null;    // cached compiled RuntimeEffect
 let _effectCK = null;  // the CanvasKit instance it was compiled against
 let _noiseImg = null;  // cached decoded blue-noise Image
 let _noiseCK = null;   // the CanvasKit instance it was built against
+
+/**
+ * Command (throws). THE TRIPWIRE FOR THE UPROOTED CAMERA PASS. Every raster sink
+ * used to take a `dither` render option carrying THE camera's whole-frame
+ * settings; that option is gone, and an options bag is a place where a removed key
+ * is IGNORED IN SILENCE.
+ *
+ * That silence is the exact failure mode CLAUDE.md records for this codebase ("A
+ * MISSING NAMED IMPORT IS SILENT HERE — NEITHER ERROR NOR WARNING … the failure
+ * surfaces as `X is not a function` in the user's hands, on a green build"), and a
+ * dropped render option is worse than that one, because there is no crash at all —
+ * the frame simply renders undithered and looks plausible. Serialized render-job
+ * payloads and the Python server tests both carried this key, so a caller that has
+ * not been updated must SAY SO rather than quietly produce a different picture.
+ *
+ * @param {string} who - the sink's name, for the message
+ * @param {object} opts - the render options bag to check
+ */
+export function refuseCameraDither(who, opts) {
+  if (opts && "dither" in opts)
+    throw new Error(`${who}: the \`dither\` render option is GONE — the whole-frame camera dither was uprooted (user ruling, 2026-08-07) and dithering is now a PAINT property (core/properties.js PAINT_DITHER_*, set per gradient). Remove the option and set ditherMode/ditherEmphasis on the paint that bands.`);
+}
 
 /**
  * Query→build (compiles once, memoized per CanvasKit instance). Returns the
@@ -181,181 +262,111 @@ export function blueNoiseImage(CanvasKit) {
 }
 
 /**
- * Pure function. Reads THE camera's dither settings out of a folded/evaluated
- * state — the first active camera item, mirroring core/derive.cameraRect's
- * selection (first active camera by id, deterministic). Absent camera / props →
- * the registry defaults (off, emphasis 1), so a pre-dither document is a no-op.
- *
- * @param {object} state - evaluated folded state ({items: {id: {type, ...}}})
- * @returns {{mode: string, emphasis: number}} the dither mode + emphasis
- *
- * @example cameraDither({items: {c: {type: "camera", ditherMode: "bayer", ditherEmphasis: 2}}}) // {mode: "bayer", emphasis: 2}
- * @example cameraDither({items: {}}).mode // "off"
- */
-export function cameraDither(state) {
-  const cams = Object.entries(state?.items ?? {})
-    .filter(([, s]) => s.type === "camera" && s.active !== false)
-    .sort(([a], [b]) => (a < b ? -1 : 1));
-  const cam = cams.length ? cams[0][1] : {};
-  const mode = KNOWN_MODES.includes(cam.ditherMode) ? cam.ditherMode : MODE_OFF;
-  const emphasis = typeof cam.ditherEmphasis === "number" && cam.ditherEmphasis >= 0 ? cam.ditherEmphasis : 1;
-  return { mode, emphasis };
-}
-
-/**
  * Pure function. Packs the dither uniforms into the flat Float32Array CanvasKit
  * expects (uniform declaration order). Throws if the packed length drifts from
  * the shader's uniform block (loud, like packGlassUniforms).
  *
- * @param {{mode: string, emphasis: number}} d - dither settings
- * @returns {Float32Array} length 2: [modeCode, emphasis]
+ * @param {{mode: string, emphasis: number, bits?: number}} d - depth/dither settings
+ * @param {number[]} ctm - the canvas CTM, CanvasKit row-major 9-float form
+ * @returns {Float32Array} length 13: [modeCode, emphasis, levels, quantize, ...ctm column-major]
  *
- * @example packDitherUniforms({mode: "blueNoise", emphasis: 1})[0] // 1
+ * @example packDitherUniforms({mode: "blueNoise", emphasis: 1, bits: 8}, [1,0,0,0,1,0,0,0,1])[0] // 1
+ * @example packDitherUniforms({mode: "bayer", emphasis: 2, bits: 8}, [1,0,0,0,1,0,0,0,1])[2] // 255 (levels at 8 bits)
+ * @example packDitherUniforms({mode: "bayer", emphasis: 2, bits: 8}, [1,0,0,0,1,0,0,0,1])[3] // 0 (no explicit quantise at 8 bits)
+ * @example packDitherUniforms({mode: "bayer", emphasis: 1, bits: 1}, [1,0,0,0,1,0,0,0,1])[2] // 1 (levels at 1 bit)
+ * @example packDitherUniforms({mode: "bayer", emphasis: 1, bits: 1}, [1,0,0,0,1,0,0,0,1]).length // 13
  */
-function packDitherUniforms(d) {
-  const out = new Float32Array([MODE_CODE[d.mode], d.emphasis]);
+export function packDitherUniforms(d, ctm) {
+  const bits = d.bits ?? PAINT_DEFAULT_BIT_DEPTH;
+  // 2^bits - 1 = the number of quantisation INTERVALS per channel: 255 at 8 bits
+  // (so `step` is the familiar 1/255), 1 at 1 bit (levels 0 and 1).
+  const levels = Math.pow(2, bits) - 1;
+  // A depth-only paint has no dither mode; MODE_CODE would be undefined and the
+  // uniform NaN, which silently poisons the branch. Its emphasis is 0, so the mode
+  // is arithmetically irrelevant — but it must still be a NUMBER.
+  const modeCode = MODE_CODE[d.mode] ?? MODE_CODE[MODE_BAYER];
+  const out = new Float32Array([modeCode, d.emphasis, levels, bits < PAINT_DEFAULT_BIT_DEPTH ? 1 : 0, ...CTM_TRANSPOSED_ORDER.map((i) => ctm[i])]);
   if (out.length !== DITHER_UNIFORM_FLOATS)
     throw new Error(`packDitherUniforms: packed ${out.length} floats, expected ${DITHER_UNIFORM_FLOATS} (shader uniform block changed?)`);
   return out;
 }
 
 /**
- * Pure function. Whether a dither setting actually does anything (a mode other
- * than "off" AND a positive emphasis). Everything else is a no-op the sinks skip.
+ * Pure function. Whether a depth/dither setting actually does anything — i.e.
+ * whether this paint needs the shader wrapper at all. TRUE when there is noise to
+ * add (a mode other than "off" AND a positive emphasis) OR depth to remove (fewer
+ * than 8 bits). Everything else is a no-op every caller skips, which is what keeps
+ * an untouched paint byte-identical.
  *
- * @param {{mode?: string, emphasis?: number}} dither - camera dither settings
+ * IT TAKES BOTH HALVES BECAUSE EITHER ALONE IS A REAL EFFECT: `bitDepth` with no
+ * dither is hard posterization, and a dither at 8 bits is what shipped first. A
+ * predicate that only asked about the mode would silently drop every posterize.
+ *
+ * @param {{mode?: string, emphasis?: number, bits?: number}} d - paint depth/dither settings
  * @returns {boolean}
  *
- * @example ditherActive({mode: "bayer", emphasis: 1}) // true
- * @example ditherActive({mode: "off", emphasis: 1}) // false
- * @example ditherActive({mode: "blueNoise", emphasis: 0}) // false
+ * @example paintDepthActive({mode: "bayer", emphasis: 1, bits: 8}) // true
+ * @example paintDepthActive({mode: "off", emphasis: 1, bits: 8}) // false
+ * @example paintDepthActive({mode: "blueNoise", emphasis: 0, bits: 8}) // false
+ * @example paintDepthActive({mode: "off", emphasis: 0, bits: 2}) // true (posterize, no noise)
+ * @example paintDepthActive(null) // false
  */
-export function ditherActive(dither) {
-  const { mode, emphasis } = dither ?? {};
-  return mode !== undefined && mode !== MODE_OFF && emphasis > 0;
+export function paintDepthActive(d) {
+  if (!d) return false;
+  const { mode, emphasis, bits } = d;
+  const hasNoise = mode !== undefined && mode !== MODE_OFF && emphasis > 0;
+  const reducesDepth = (bits ?? PAINT_DEFAULT_BIT_DEPTH) < PAINT_DEFAULT_BIT_DEPTH;
+  return hasNoise || reducesDepth;
 }
 
 /**
- * Command (draws onto `destCanvas`). THE downconvert: re-draw the composited F16
- * source through the dither RuntimeEffect (BlendMode.Src — the shader output
- * REPLACES the destination) so the sub-LSB wobble is added as the F16 value is
- * quantized to the 8-bit destination. Deletes every WASM handle it allocates.
- * Caller flushes the destination surface.
+ * Query→build (allocates a Shader — caller deletes; it also OWNS `base` from
+ * here on, see below). Wraps `base` in the depth/dither RuntimeEffect: the sub-step
+ * wobble is added, and (below 8 bits) the result is quantised, as Skia writes this
+ * paint into the destination surface.
+ *
+ * OWNERSHIP: the returned shader is the ONLY handle the caller keeps. `base` is
+ * consumed — it becomes a child of the runtime shader and is deleted here, so a
+ * caller that stashes one handle for cleanup (paint_skia.js `_gradientShader`)
+ * stays correct without learning that this wrapper exists. Returning `base`
+ * itself when the dither is inactive is what makes that uniform.
+ *
+ * `ctm` is `canvas.getTotalMatrix()` — CanvasKit's row-major 9-float 3x3, the
+ * local→device mapping in force for this draw. Passing null falls back to IDENTITY
+ * (local == device), which merely coarsens the grain rather than corrupting it.
+ *
+ * NO AUTHORED GRADIENT CAN REACH THAT FALLBACK, and it is structural rather than a
+ * matter of remembering. Audited across paint_skia.js: exactly three fill/stroke
+ * paint sites pass no CTM — the polyline op's `cmd.color`, the proxy stand-in's
+ * literal grey, and the lens border's `cmd.stroke` — and ALL THREE also pass
+ * `bounds: null`, which makes `applyPaint` THROW ("a gradient paint needs the op's
+ * local bounds") the instant a gradient arrives there. So those sites cannot paint
+ * a gradient at all, let alone a dithered one: the null-CTM path is reachable only
+ * by paints that have no dither to place. The parameter keeps its default so a
+ * future internal solid-stroke call site needs no ceremony.
  *
  * @param {object} CanvasKit - the CanvasKit module
- * @param {object} srcSurface - the composited RGBA16F source surface
- * @param {object} destCanvas - the 8-bit destination canvas (drawn over)
- * @param {{mode: string, emphasis: number}} dither - active dither settings
+ * @param {object} base - the Shader to dither (consumed — do not delete it)
+ * @param {{mode: string, emphasis: number, bits: number}|null} depth - paint depth/dither settings
+ * @param {number[]|null} ctm - canvas.getTotalMatrix(), or null for identity
+ * @returns {object} a Shader: the depth/dither wrapper, or `base` unchanged when inactive
  */
-function ditherDownconvert(CanvasKit, srcSurface, destCanvas, dither) {
-  const frame = srcSurface.makeImageSnapshot();
-  if (!frame) throw new Error("ditherDownconvert: srcSurface.makeImageSnapshot returned null");
+export function depthShader(CanvasKit, base, depth, ctm = null) {
+  if (!paintDepthActive(depth)) return base; // pass a null base straight through: unchanged from before this feature
+  // A null base can only come from a Skia constructor that failed. Say so HERE,
+  // where the cause is still nameable, rather than deferring to a `.delete()` of
+  // null two lines down or handing null to makeShaderWithChildren.
+  if (!base) throw new Error("depthShader: the gradient shader to dither is null — a CanvasKit gradient constructor failed before the dither wrapper was reached");
   const effect = ditherEffect(CanvasKit);
   const noise = blueNoiseImage(CanvasKit);
-  // frame: 1:1 device-pixel read of the F16 source (Nearest, Clamp — identity matrix).
-  const frameChild = frame.makeShaderOptions(CanvasKit.TileMode.Clamp, CanvasKit.TileMode.Clamp, CanvasKit.FilterMode.Nearest, CanvasKit.MipmapMode.None);
-  // noise: seamlessly TILED across the frame (Repeat), one texel per device px.
+  // noise: seamlessly TILED across the draw (Repeat), one texel per device px.
   const noiseChild = noise.makeShaderOptions(CanvasKit.TileMode.Repeat, CanvasKit.TileMode.Repeat, CanvasKit.FilterMode.Nearest, CanvasKit.MipmapMode.None);
-  const shader = effect.makeShaderWithChildren(packDitherUniforms(dither), [frameChild, noiseChild]);
-  if (!shader) throw new Error("ditherDownconvert: makeShaderWithChildren returned null");
-
-  const paint = new CanvasKit.Paint();
-  paint.setShader(shader);
-  paint.setBlendMode(CanvasKit.BlendMode.Src); // the dithered F16 REPLACES the 8-bit dest
-  destCanvas.drawPaint(paint);
-
-  paint.delete();
-  shader.delete();
-  frameChild.delete();
+  const shader = effect.makeShaderWithChildren(packDitherUniforms(depth, ctm ?? IDENTITY_CTM), [base, noiseChild]);
   noiseChild.delete();
-  frame.delete();
-}
-
-/**
- * Pure function. The RGBA16F ImageInfo (half-float, premultiplied, SRGB) for a
- * width x height dither intermediate. HALF-FLOAT so a gradient / blur / shadow
- * falloff keeps sub-8-bit precision until the dithered downconvert. SRGB matches
- * every 8-bit sink, so compositing is byte-for-byte the same values — just not
- * yet quantized — and the downconvert applies no transfer conversion.
- *
- * @param {object} CanvasKit - the CanvasKit module
- * @param {number} width - device px
- * @param {number} height - device px
- * @returns {object} a CanvasKit ImageInfo
- */
-function f16Info(CanvasKit, width, height) {
-  return {
-    width,
-    height,
-    alphaType: CanvasKit.AlphaType.Premul,
-    colorType: CanvasKit.ColorType.RGBA_F16,
-    colorSpace: CanvasKit.ColorSpace.SRGB,
-  };
-}
-
-/**
- * Command. THE shared dither entry point every raster sink uses. `paint(canvas)`
- * draws the whole scene into the canvas it is handed; renderWithDither decides
- * WHERE:
- *   - dither inactive ("off" / emphasis <= 0): paint straight into `destSurface`
- *     and flush — byte-identical to the pre-dither pipeline (zero extra cost).
- *   - dither active: paint into a fresh RGBA16F offscreen (derived from
- *     `destSurface` so it is GPU- or CPU-backed to match), then dither on the
- *     F16 -> 8-bit downconvert onto `destSurface`, and flush.
- *
- * This is the single place the precision intermediate lives, so all three sinks
- * de-band identically. If the F16 offscreen cannot be allocated (a WebGL2 context
- * with no half-float color-buffer support — common in browsers), it degrades
- * LOUDLY to a direct 8-bit paint (dither disabled here, reported once) rather
- * than bricking the frame. F16 still works where supported (node/headless
- * export), where dither de-bands as intended.
- *
- * @param {object} CanvasKit - the CanvasKit module
- * @param {object} destSurface - the real 8-bit output Surface
- * @param {number} width - surface width in device px
- * @param {number} height - surface height in device px
- * @param {{mode: string, emphasis: number}} dither - camera dither settings
- * @param {(canvas: object) => void} paint - draws the scene into the given canvas
- */
-let _ditherUnavailableWarned = false;
-/**
- * Command. Warns ONCE (never silent) that this context cannot allocate the F16
- * dither intermediate, so dithering is off here while the frame still renders.
- */
-function warnDitherUnavailableOnce() {
-  if (_ditherUnavailableWarned) return;
-  _ditherUnavailableWarned = true;
-  console.warn("renderWithDither: this GPU/WebGL2 context cannot allocate an RGBA16F render target (no half-float color buffer) — dithering is DISABLED here and the frame renders un-dithered. Dithering still works where F16 is supported (headless/node export).");
-}
-
-export function renderWithDither(CanvasKit, destSurface, width, height, dither, paint) {
-  if (!ditherActive(dither)) {
-    paint(destSurface.getCanvas());
-    destSurface.flush();
-    return;
+  if (!shader) {
+    base.delete();
+    throw new Error("depthShader: makeShaderWithChildren returned null — the dither RuntimeEffect could not be instantiated");
   }
-  // Dither needs an RGBA16F precision intermediate. Some WebGL2 contexts cannot
-  // allocate a half-float render target (no EXT_color_buffer_float): makeSurface
-  // then THROWS internally or returns null. Degrade LOUDLY to a direct 8-bit
-  // paint rather than bricking every frame — reported once, never silent.
-  let scene = null;
-  try {
-    scene = destSurface.makeSurface(f16Info(CanvasKit, width, height));
-  } catch {
-    scene = null;
-  }
-  if (!scene) {
-    warnDitherUnavailableOnce();
-    paint(destSurface.getCanvas());
-    destSurface.flush();
-    return;
-  }
-  try {
-    paint(scene.getCanvas());
-    scene.flush();
-    ditherDownconvert(CanvasKit, scene, destSurface.getCanvas(), dither);
-    destSurface.flush();
-  } finally {
-    scene.delete();
-  }
+  base.delete(); // the runtime shader holds its own reference to the child
+  return shader;
 }

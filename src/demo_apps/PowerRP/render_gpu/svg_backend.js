@@ -58,7 +58,7 @@
  * pixel service + fetch adapters, node tests pass stubs/fixtures.
  */
 
-import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
+import { flattenIR, parseColor, parsePaint, rgbaToCss, isGradientPaint, opHasCrossfadePaint, opHasMaterialFill, opHasVectorMaterialFill, opHasMaterialStroke, opStrokeNeedsRaster, opStrokeIsOffset, opStrokeJoin, opStrokeMiter, opStrokeLinecap, opHasMaskBlur, BLUR_SUPPORT_SIGMAS, STROKE_JOIN_DEFAULT, POLYLINE_JOIN, POLYLINE_CAP, strokeInsideFraction, strokeIsDetached, detachedRectContour, detachedEllipseContour, linearGradientRender, collapsedGradientColor, reportVectorDitherOmission, reportReducedDepthRaster, rect, text, pushTransform, popTransform, signedApply, isPaintableFrame, SUPERSAMPLE_DENSITY, MAX_LENS_DEPTH as LENS_DEPTH_CAP } from "./ir.js";
 import { STROKE_MITER_LIMIT } from "../core/properties.js"; // the identity limit this exporter may omit BECAUSE SVG's own initial value is the same number (pdf_backend cannot — see joinAttrs)
 import { patternCellFor, patternMatrix, shapeColor } from "./skia/pattern_material.js";
 // THE PER-NODE EXPORT BOUNDARY (emitRegionSVG) — see render_gpu/skia/paint_skia.js
@@ -413,6 +413,13 @@ export function paintRef(ctx, paint, opacity = 1) {
  * @example gradientDefSVG({type: "radialGradient", stops: [{offset: 0, color: [1,1,1,1]}, {offset: 1, color: [0,0,0,1]}], center: {x: 0.5, y: 0.5}, r: 0.5}, "rg1", 1).startsWith('<radialGradient id="rg1" cx="0.5" cy="0.5" r="0.5">') // true
  */
 export function gradientDefSVG(paint, id, opacity = 1) {
+  // THE DITHER IS DROPPED HERE, LOUDLY. An SVG gradient def cannot carry a
+  // per-pixel pattern; render_gpu/ir.js reportVectorDitherOmission owns that
+  // decision and its reasoning (shared with pdf_backend so the two cannot tell
+  // different stories). No strip is needed on this side — this function reads only
+  // the fields it names, so the dither leaves were already inert here and the
+  // emitted def is byte-identical to an undithered gradient's.
+  reportVectorDitherOmission("svg_backend", paint);
   const stops = paint.stops.map((s) => {
     const [r, g, b, a] = s.color;
     const byte = (v) => Math.round(v * 255);
@@ -1099,7 +1106,7 @@ async function emitOpRangeSVG(flat, start, end, commands, rawIndexOf, region, ou
       out.push(await emitCropSVG(cmd, world, region, ctx));
     } else if (cmd.op === "effectSubtree") {
       out.push(await emitEffectSVG(cmd, world, region, ctx));
-    } else if (!SVG_VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || opStrokeNeedsRaster(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd) || reportLatexGlyphStrokeRaster(cmd) || reportTextGlyphStrokeRaster(cmd)) {
+    } else if (!SVG_VECTOR_OPS.has(cmd.op) || (opHasMaterialFill(cmd) && !opHasVectorMaterialFill(cmd)) || opHasMaterialStroke(cmd) || reportReducedDepthRaster("svg_backend", cmd) || opStrokeNeedsRaster(cmd) || reportCrossfadeRaster(cmd) || reportLatexShaderInkRaster(cmd) || reportLatexGlyphStrokeRaster(cmd) || reportTextGlyphStrokeRaster(cmd)) {
       // (A MATERIAL-filled shape op has no vector form — same raster fallback as pdf_backend.
       //  A TRIMMED / TAPER-capped / ASYMMETRICALLY-capped stroke (opStrokeNeedsRaster)
       //  likewise rasterizes its own region rather than silently drawing the untrimmed

@@ -119,16 +119,126 @@ export const SECONDS_SCRUB = 0.01;
 export const UNIT_SPAN_SCRUB = 0.01;
 
 /**
- * THE camera's dither-pattern modes (manifest "CAMERA RENDERING"). "off"
- * disables dithering; "bayer" is an ordered checkerboard threshold matrix;
- * "blueNoise" is a softer, less regular precomputed scatter. The array VALUES
- * are the stored state / equation slugs; DITHER_MODE_LABELS maps each to the
- * human label the Inspector select shows. Single-sourced here so the future
- * dither final-pass (a SEPARATE task — this module only declares the property)
- * and the property row can never disagree on the exact ids.
+ * THE dither-pattern modes. "off" disables dithering; "bayer" is an ordered
+ * checkerboard threshold matrix; "blueNoise" is a softer, less regular
+ * precomputed scatter. The array VALUES are the stored state / equation slugs;
+ * DITHER_MODE_LABELS maps each to the human label the Inspector select shows.
+ * Single-sourced here so render_gpu/skia/dither_shader.js (which asserts this
+ * exact list at import time) and the property rows can never disagree on the ids.
+ *
+ * THESE USED TO BE CAMERA PROPS AND ARE NOW PAINT PROPS (user ruling, 2026-08-07:
+ * "It will be a material-level thing you uproot any code in the camera for
+ * dithering"). Dithering was a WHOLE-FRAME post-effect on THE camera, which meant
+ * a document could not de-band one banding gradient without putting grain over
+ * every pixel in the deck — including the text, the photos and the flat fills that
+ * had no banding to fix. The modes themselves were never the problem, so the two
+ * ids and their labels survive the uprooting unchanged; what moved is WHO OWNS
+ * THEM. See PAINT_DITHER_* below for the paint-level defaults, and
+ * core/document.js withCameraDitherDropped for the loud migration that removes the
+ * dead camera leaves from documents that still carry them.
  */
 export const DITHER_MODES = ["off", "bayer", "blueNoise"];
 export const DITHER_MODE_LABELS = { off: "Off", bayer: "Bayer", blueNoise: "Blue noise" };
+
+/**
+ * THE PAINT-LEVEL DITHER DEFAULTS. A paint stores `ditherMode` / `ditherEmphasis`
+ * beside its `type` (NOT inside the `linear`/`radial` sub-state), so switching a
+ * gradient between linear and radial keeps its dither exactly as switching keeps
+ * its `type`-level identity — and so a future solid/material/pattern paint can opt
+ * in by reading the SAME two leaves rather than minting its own pair.
+ *
+ * ABSENT IS OFF, AND OFF IS BYTE-IDENTICAL. render_gpu/ir.js parsePaint omits both
+ * keys from the parsed paint whenever the dither is inactive, so every gradient
+ * authored before this feature produces the same parsed object, the same Skia
+ * shader, the same PDF shading dictionary and the same SVG def it always did. That
+ * is the same absent-is-legacy discipline `spread`, `phase` and `wavelength` hold.
+ */
+export const PAINT_DITHER_DEFAULT_MODE = "off";
+export const PAINT_DITHER_DEFAULT_EMPHASIS = 1;
+
+/**
+ * THE PAINT'S COLOUR BIT DEPTH, PER CHANNEL (user, 2026-08-08: "more options for
+ * dithering too actually - like bit depth (by default 8 bit but can go down to 1
+ * bit)"). 8 is the surface's own depth and therefore today's behaviour; 1 bit is
+ * two levels per channel, i.e. eight colours — the classic posterized look.
+ *
+ * ── IT IS ITS OWN PROPERTY, NOT A SUB-OPTION OF DITHER, AND THAT IS THE WHOLE
+ * SHAPE OF THIS FEATURE. Quantisation and dithering are two SEPARATE, composable
+ * operations, and conflating them would make one of the three useful combinations
+ * unreachable:
+ *   depth alone            → hard posterized bands. A real, wanted look.
+ *   depth + dither         → the noise breaks the bands up, trading spatial
+ *                            resolution for apparent colour depth. THE classic
+ *                            1-bit dither picture.
+ *   dither alone (depth 8) → what shipped 2026-08-07: noise at the surface's own
+ *                            8-bit boundary, which de-bands a smooth ramp.
+ * So bit depth is reachable with dither OFF, and the third row above is revealed
+ * for what it always was — dithering at the 8-bit boundary. Depth simply MOVES
+ * that boundary; nothing about the dither's meaning changes.
+ *
+ * THE TWO KNOBS ARE ORTHOGONAL, AND THIS IS THE RELATIONSHIP TO STATE:
+ * `bitDepth` sets the SIZE of one quantisation step (1 / (2^bits - 1)), and
+ * `ditherEmphasis` scales the wobble IN UNITS OF THAT STEP — emphasis 1 is
+ * ±half a step at EVERY depth. That is exactly what emphasis 1 already meant at 8
+ * bits (±half of 1/255), so the existing knob is unchanged in meaning and merely
+ * generalized. At 1 bit a step is the whole 0..1 range, so emphasis 1 there is a
+ * ±0.5 wobble — which is precisely the amount that makes a 1-bit dither resolve
+ * the full ramp.
+ *
+ * ABSENT IS 8 AND 8 IS BYTE-IDENTICAL: render_gpu/ir.js omits the leaf whenever it
+ * is 8, and the shader does NOT add an explicit quantisation step at 8 bits — it
+ * leaves that to the surface write, exactly as before — so a pre-feature gradient
+ * takes a byte-identical path. Below 8 the shader quantises explicitly.
+ */
+export const PAINT_DEFAULT_BIT_DEPTH = 8;
+/** 1 bit = two levels per channel (eight colours) — the floor the user named. */
+export const PAINT_MIN_BIT_DEPTH = 1;
+/** 8 bits IS the render surface's depth; above it there is nothing to reduce. */
+export const PAINT_MAX_BIT_DEPTH = 8;
+
+/**
+ * Pure function. Whether a PAINT's dither is switched on — THE gate for the
+ * `ditherEmphasis` row in web/PaintField.svelte, and for that row ONLY.
+ *
+ * USER RULING, 2026-08-08: "they should be suboptions btw submenu like other
+ * things right" / "like dither emphasis need not exist if dither is off". This
+ * REVERSES the rule the camera-era code carried (plugins/camera.js used to argue
+ * emphasis must stay visible under mode "off" because "application is an
+ * overlay"); that reasoning was about PRESET application and never about the
+ * Inspector, and the user has overruled it for the panel.
+ *
+ * IT DOES NOT GATE `bitDepth`, AND THE ASYMMETRY IS THE POINT. Emphasis is
+ * meaningless without a mode — it scales a noise that is not being added — so
+ * hiding it hides nothing an author could have used. Depth means something on its
+ * own: quantising with no noise is HARD POSTERIZATION, a look in its own right.
+ * Gating depth here would have forced it to be inert while hidden (an
+ * invisible-but-active knob is the divergence this codebase forbids) and so would
+ * have deleted that capability to satisfy a row rule. Keeping the depth row
+ * VISIBLE obeys the same rule without the loss. See render_gpu/ir.js
+ * paintDepthFields for the render half of this decision.
+ *
+ * IT LIVES HERE, BESIDE strokeJoinIsMiter AND strokeMaterialIsOn, and is a NAMED
+ * function rather than an inline lambda for their reason: a row-visibility gate
+ * that greps is one a later reader can find from either end. It differs from those
+ * two only in what it reads — they take an ITEM STATE because they gate PROPS rows
+ * that Inspector.svelte's groupRows resolves, while a gradient's dither rows are
+ * sub-leaves of a PAINT and have no PROPS row to hang `visibleWhen` on (the same
+ * reason Direction/Wavelength/Spread/Phase are hand-written markup). So PaintField
+ * resolves this one directly, with the `{#if}` idiom that block already uses for
+ * its linear-vs-radial split.
+ *
+ * @param {object|string|null} paint - the RAW stored paint
+ * @returns {boolean}
+ *
+ * @example paintDitherIsOn({ ditherMode: "bayer" }) // true
+ * @example paintDitherIsOn({ ditherMode: "off" }) // false
+ * @example paintDitherIsOn({}) // false (absent IS off — the default)
+ * @example paintDitherIsOn("#ff0000") // false (a bare solid has no dither)
+ * @example paintDitherIsOn(null) // false
+ */
+export function paintDitherIsOn(paint) {
+  return !!paint && typeof paint === "object" && (paint.ditherMode ?? PAINT_DITHER_DEFAULT_MODE) !== PAINT_DITHER_DEFAULT_MODE;
+}
 
 /**
  * THE camera's ANTI-ALIASING quality/algorithm modes (manifest "CAMERA
@@ -1382,8 +1492,13 @@ export const PROPS = {
   // devicePixelRatio), dither OFF.
   antialias: { label: "Anti-aliasing", kind: "select", options: ANTIALIAS_MODES, optionLabels: ANTIALIAS_MODE_LABELS, category: "rendering", default: "standard", help: "How shape and text edges are smoothed. Standard blends edge pixels (the default look). Off gives crisp, pixelated staircase edges and renders a little faster. (A higher-quality supersample mode is planned.)" },
   retina: { label: "Retina (HiDPI)", kind: "boolean", category: "rendering", default: true, help: "Renders at the display's full pixel density (its device pixel ratio) so edges stay sharp on high-DPI screens. Off renders at 1:1 CSS pixels — softer on a Retina display but faster." },
-  ditherMode: { label: "Dither", kind: "select", options: DITHER_MODES, optionLabels: DITHER_MODE_LABELS, category: "rendering", default: "off", help: "Scatters pixels between adjacent colors to hide the visible stair-step banding in smooth gradients. Bayer is a fixed ordered checkerboard; blue-noise is a softer irregular scatter; off disables it." },
-  ditherEmphasis: { label: "Dither emphasis", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "rendering", default: 1, help: "How strongly the dither pattern is applied. 0 is none, 1 is full strength; above 1 over-emphasizes into pronounced, gritty grain (no upper cap). Only matters when a dither mode is on." },
+  // NO DITHER ROWS HERE. `ditherMode`/`ditherEmphasis` used to sit on this line as
+  // whole-scene camera render settings and were UPROOTED (user ruling, 2026-08-07 —
+  // see DITHER_MODES above). Dither is now a PAINT property, authored per gradient
+  // in web/PaintField.svelte, because the thing that bands is one fill, not the
+  // frame. Do not re-add them here: a camera-wide dither is the design that was
+  // overruled, and core/document.js withCameraDitherDropped exists to remove the
+  // leaves from documents that still carry them.
 
   // ── shape: the PRESET-SHAPE selector + its adjustable knobs (Wave 2) ─────────
   // Only the `shape` widget (plugins/shape.js) composes these — a single-consumer
@@ -2117,7 +2232,7 @@ export const BUNDLES = {
   // camera), single-sourced here like every other family. Order = Inspector row
   // order (the two on/off toggles first, then the dither pair). Spread its
   // defaults with bundleDefaults("rendering") — every key has a scalar default.
-  rendering: ["antialias", "retina", "ditherMode", "ditherEmphasis"],
+  rendering: ["antialias", "retina"],
 };
 
 /**

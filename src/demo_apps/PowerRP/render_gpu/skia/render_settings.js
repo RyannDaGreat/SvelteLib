@@ -1,7 +1,12 @@
 /**
- * THE camera's ANTI-ALIASING render-setting reader + resolvers — the AA twin of
- * dither_shader.cameraDither, kept in its own small module so the AA concern does
- * not bloat the dither file.
+ * THE camera's ANTI-ALIASING render-setting reader + resolvers. It used to be
+ * described as "the AA twin of dither_shader.cameraDither"; that twin no longer
+ * exists — the whole-frame camera dither was uprooted (user ruling, 2026-08-07)
+ * and dithering is a PAINT property now. So this first-active-camera lookup is the
+ * pattern rather than a mirror of one. (It is not the only READER of a camera
+ * render setting: `retina` is read by web/app.svelte.js through
+ * core/view.effectiveDpr, to size the editor canvas. It is the only one that
+ * resolves a render setting for the PAINTER.)
  *
  * WHAT IT WIRES: until now the camera's "Anti-aliasing" control was INERT — the
  * per-draw coverage AA in paint_skia.js / text_layout.js was HARDCODED on, so
@@ -39,8 +44,8 @@ for (const mode of ANTIALIAS_MODES)
 
 /**
  * Pure function. Reads THE camera's anti-aliasing mode out of a folded/evaluated
- * state — the first active camera item, mirroring dither_shader.cameraDither's
- * selection (first active camera by id, deterministic). Absent camera / prop, or
+ * state — the first active camera item (deterministic: first by id, matching
+ * core/derive.cameraRect's selection). Absent camera / prop, or
  * an unknown stored value, → the default ("standard"), so a pre-select document
  * renders byte-identically to today.
  *

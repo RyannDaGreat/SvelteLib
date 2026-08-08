@@ -77,7 +77,6 @@
   import { rect as rectCmd } from "../render_gpu/ir.js";
   import { SkiaSurface } from "../render_gpu/skia/browser_surface.js";
   import { bootDone, bootFailed } from "./bootProgress.js";
-  import { cameraDither } from "../render_gpu/skia/dither_shader.js";
   import { cameraAntialias, antialiasCoverage } from "../render_gpu/skia/render_settings.js";
   import { onImageLoad } from "../render_gpu/gpu/image_registry.js";
   import { onSvgSourceLoad } from "../render_gpu/gpu/svg_source_registry.js";
@@ -955,12 +954,12 @@
         wireNodes: allNodes,
       }),
     ];
-    // THE camera's dither settings drive the whole-frame final pass (scatters
-    // 8-bit banding into grain). Read from the SAME folded state the scene came
-    // from; "off" (the default) is a byte-for-byte no-op. `antialias` is THE
-    // camera's per-draw coverage-AA — the LIVE edge-smoothing control (no surface
-    // recreation): "off" ⇒ crisp jagged edges, "standard" ⇒ smooth (the default).
-    gpu.render(ir, view, { background: [0, 0, 0, 0], dither: cameraDither(state), antialias: antialiasCoverage(cameraAntialias(state)) });
+    // `antialias` is THE camera's per-draw coverage-AA — the LIVE edge-smoothing
+    // control (no surface recreation): "off" ⇒ crisp jagged edges, "standard" ⇒
+    // smooth (the default). There is NO dither option here any more: dithering is a
+    // PAINT property now (core/properties.js PAINT_DITHER_*), so it rides each
+    // gradient's own shader and needs nothing from the frame-level render call.
+    gpu.render(ir, view, { background: [0, 0, 0, 0], antialias: antialiasCoverage(cameraAntialias(state)) });
     // VIDEO V8 OVERLAY: draw the live frames on the stacked overlay canvas AFTER the
     // Skia scene, using the SAME view + device size so the quads pin exactly over
     // each widget's poster. Draws nothing (a transparent clear) when no V8 clip is

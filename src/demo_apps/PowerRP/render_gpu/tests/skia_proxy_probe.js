@@ -12,8 +12,6 @@
  *      the proxy render is dramatically cheaper.
  *   2. Not a hole — the proxy glass region has high pixel variance (the backdrop
  *      colorfield shows THROUGH the frost), i.e. a sensible ~100px preview.
- *   3. Dither — renderWithDither with the camera's dither allocates an RGBA16F
- *      intermediate; the proxy path (gpuService passes dither:null) allocates none.
  *
  * PNGs land in .claude_vlm_checks/ (proxy vs full, side by side) for a VLM check.
  *
@@ -25,7 +23,6 @@ import path from "path";
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
 import { paintIR } from "../skia/paint_skia.js";
-import { renderWithDither } from "../skia/dither_shader.js";
 import { rect, ellipse, pushTransform, popTransform, glassBackdrop, materialBackdrop } from "../ir.js";
 
 const require = createRequire(import.meta.url);
@@ -117,17 +114,6 @@ function redStddev(px, sw, x0, y0, x1, y1) {
   return Math.sqrt(Math.max(0, sum2 / n - mean * mean));
 }
 
-/** Command. Counts the RGBA16F intermediates renderWithDither allocates for `dither`. */
-function ditherF16Surfaces(dither) {
-  const surface = CanvasKit.MakeSurface(64, 64);
-  let f16 = 0;
-  const orig = surface.makeSurface.bind(surface);
-  surface.makeSurface = (info) => { f16++; return orig(info); }; // shadow the instance method to tally F16 allocations
-  renderWithDither(CanvasKit, surface, 64, 64, dither, (canvas) => canvas.clear(CanvasKit.Color4f(0.5, 0.5, 0.5, 1)));
-  surface.dispose();
-  return f16;
-}
-
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 console.log(`probe: ${W}x${H} @dpr${DPR} (${W * DPR}x${H * DPR} device px), ${TIMING_ITERS} timing iters\n`);
@@ -156,12 +142,12 @@ for (const [name, scene] of [["glass", glassScene], ["crt", crtScene]]) {
   assert.ok(proxy.png.length > 2000, `${name}: proxy PNG must be non-trivial`);
 }
 
-// ── dither skip ───────────────────────────────────────────────────────────────
-const dActive = ditherF16Surfaces({ mode: "bayer", emphasis: 1 });
-const dProxy = ditherF16Surfaces(null); // gpuService passes dither:null for proxy
-console.log("── dither ────────────────────────────────");
-console.log(`  RGBA16F intermediates: active-dither=${dActive}   proxy(null)=${dProxy}\n`);
-assert.ok(dActive >= 1, "active dither must allocate an RGBA16F intermediate");
-assert.equal(dProxy, 0, "proxy (dither:null) must allocate NO RGBA16F intermediate");
+// NO DITHER SECTION HERE ANY MORE. This probe used to assert that an active
+// camera dither allocated an RGBA16F intermediate and that the proxy path
+// allocated none. Both halves are gone with the camera dither itself (user ruling,
+// 2026-08-07): the paint-level dither that replaced it allocates NO offscreen at
+// all — it rides the gradient shader's own write to the destination surface — so
+// there is no longer any allocation for a proxy path to skip. Re-adding a count
+// here would assert about a surface nothing creates.
 
-console.log("OK skia_proxy_probe — proxy runs NO backdrop machinery, NO dither F16, and is not a hole");
+console.log("OK skia_proxy_probe — proxy runs NO backdrop machinery and is not a hole");
