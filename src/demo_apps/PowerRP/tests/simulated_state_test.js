@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import {
   tokenize, equationTokenSpans, displayToStored, storedToDisplay, resolveRef,
   evaluateState, withVariableRenamed, withItemRefsRemapped, sourceIsSimulated,
+  parseExpression, evalAst, compiled,
 } from "../core/expressions.js";
 import {
   beginSimulationStep, resetSimulation, withSimulationFrozen, setSimulationTimestepOverride,
@@ -30,6 +31,7 @@ import {
 import { createRegistry } from "../core/registry.js";
 import {
   newDocument, withNewItem, keyframed, documentIsSimulated, stridedShardRefusal, repairedDocument, slideState,
+  withNewSlide,
 } from "../core/document.js";
 import { rectPlugin } from "../plugins/rect.js";
 import { cameraPlugin } from "../plugins/camera.js";
@@ -519,6 +521,154 @@ test("A PAUSED CLOCK YIELDS dt = 0 — including after a presentation SHORTER th
   // The simulation's own step is answered by the same rule, so a still cannot inherit a
   // phantom step from the discontinuity either.
   assert.equal(beginSimulationStep(2, 0.1), 0);
+});
+
+// ── `first_step`: the INITIAL CONDITION, stated where an author looks for it ──
+//
+// USER, 2026-08-07: "why wouldn't i be able to just set the init values of things".
+// Before this keyword a simulated slot started at its plugin's declared default —
+// unconditionally 0 for a variable, since no plugin declares `defaults.vars` — and the
+// only way to seed an oscillator was a SEPARATE plain-number var added back wherever
+// the value was consumed. That works and is still legal; this makes the direct
+// spelling work too.
+
+/** Pure function. A folded state holding one rect with item var `v` = `src`. A distinct
+ *  object each call, for the same memo reason rotationState documents. */
+function varState(src) {
+  return { vars: {}, items: { a1: { ...rectPlugin.defaults, type: "rect", name: "Box", vars: { v: src } } } };
+}
+
+/** Command. Walks `src` for `n` steps at 60 fps from a fresh run, returning every value. */
+function walkVar(src, n) {
+  freshRun();
+  setSimulationTimestepOverride(1 / 60);
+  const out = [];
+  for (let f = 0; f < n; f++) out.push(evaluateAt(varState(src), f / 60).items.a1.vars.v);
+  return out;
+}
+
+test("`first_step` SEEDS a simulated slot — and the short-circuited `@` branch still records", () => {
+  // THE LOAD-BEARING CASE, and the one that fails self-cancellingly if readFirstStep
+  // forgets to register its slot. The idiom is a ternary, a ternary SHORT-CIRCUITS, so
+  // on step 0 the `@@` branch never executes — nothing calls prevValue, nothing lands in
+  // prevReads, nothing is recorded, and `first_step` would answer TRUE FOREVER, pinning
+  // the slot at its seed. The give-away is a slot stuck at exactly its initial value,
+  // which reads like "the equation isn't running" rather than like a recording bug.
+  assert.deepEqual(walkVar("= first_step ? 1 : @@ * 0.5", 5), [1, 0.5, 0.25, 0.125, 0.0625]);
+  assert.deepEqual(walkVar("= first_step ? 10 : @@ + 1", 4), [10, 11, 12, 13]);
+});
+
+test("`first_step` is TRUE only on a slot's first step, and a RESET makes it true again", () => {
+  // A counter, not a hold: [0,1,2,3] can only be produced by the seed firing ONCE.
+  // (A hold like `first_step ? 7 : @@` reads [7,7,7] whether the seed fires once or
+  // every step, so it cannot tell the two apart and is not worth asserting.)
+  assert.deepEqual(walkVar("= first_step ? 0 : @@ + 1", 4), [0, 1, 2, 3]);
+
+  // THE RESET, ISOLATED. An earlier draft of this test "checked" it with a second
+  // walkVar call — which resets internally, so it re-asserted a PREFIX of the line
+  // above and could not have failed. The reset has to happen MID-WALK to mean
+  // anything: run four steps, reset, and watch the counter start over.
+  freshRun();
+  setSimulationTimestepOverride(1 / 60);
+  const src = "= first_step ? 0 : @@ + 1";
+  const before = [0, 1, 2, 3].map((f) => evaluateAt(varState(src), f / 60).items.a1.vars.v);
+  assert.deepEqual(before, [0, 1, 2, 3]);
+  resetSimulation(); // a document load / present enter / export start, mid-timeline
+  const after = [4, 5].map((f) => evaluateAt(varState(src), f / 60).items.a1.vars.v);
+  assert.deepEqual(after, [0, 1], "a reset must put `first_step` back, restarting the count");
+});
+
+test("a SLIDE CHANGE is not a first step — a real two-slide document, navigated", () => {
+  // THE USER'S OWN REQUIREMENT, 2026-08-07: "when we jump from slide to slide, that
+  // shouldn't COUNT as a first. Granted, we should have first in case we use the first
+  // slide tho." Both halves are asserted below, against REAL slide folds — an earlier
+  // draft used a hand-built state with an extra item bolted on, which proved only that
+  // history is not keyed to state identity. That is necessary but is not navigation.
+  //
+  // The deck mirrors the shape this keyword was built for: slide 0 holds a PLAIN
+  // number, slide 1 keyframes the simulated equation over it.
+  const [withBox, id] = withNewItem(newDocument(), 0, { ...rectPlugin.defaults, type: "rect", name: "Box" });
+  let doc = keyframed(withBox, 0, ["items", id, "vars", "v"], 0);
+  // keyframed() does NOT create the slide it targets — without this the equation lands
+  // on slide 0 and the test silently exercises one slide. The length check below is
+  // what caught that while this test was being written; keep it.
+  [doc] = withNewSlide(doc, 0);
+  doc = keyframed(doc, 1, ["items", id, "vars", "v"], "= first_step ? 100 : @@ + 1");
+  assert.equal(doc.slides.length, 2, "the fixture needs the second slide the equation lives on");
+
+  freshRun();
+  setSimulationTimestepOverride(1 / 60);
+  let f = 0;
+  const at = (slide) => {
+    const s = slideState(doc, slide);
+    return evaluateAt({ ...s, items: { ...s.items } }, f++ / 60).items[id].vars.v;
+  };
+
+  // Slide 0 renders the plain number for a while. Nothing reads `@`, so NOTHING is
+  // recorded — which is exactly why the seed cannot come from here (the whole defect
+  // this keyword answers: a value can be on screen for 30 frames and the simulation
+  // never sees it).
+  for (let i = 0; i < 3; i++) assert.equal(at(0), 0);
+
+  // FIRST ARRIVAL at slide 1: no history for the slot, so the seed fires.
+  assert.equal(at(1), 100, "the equation's first slide must take its initial condition");
+  assert.equal(at(1), 101);
+  assert.equal(at(1), 102);
+
+  // NAVIGATE AWAY and BACK. This is the half the user asked for by name: returning
+  // must CONTINUE the trajectory, not restart it at 100.
+  assert.equal(at(0), 0, "slide 0 still shows its own plain value");
+  assert.equal(at(1), 103, "a slide jump re-seeded the simulation — `first_step` fired twice");
+  assert.equal(at(1), 104);
+});
+
+test("`first_step` makes a source SIMULATED, so a render job still refuses to shard it", () => {
+  // A false NO here is a WRONG VIDEO with a green exit code (sourceIsSimulated's own
+  // docblock) — a deck whose only simulated marker is the keyword must still refuse.
+  assert.equal(sourceIsSimulated("first_step ? 1 : @@ * 0.9"), true);
+  assert.equal(sourceIsSimulated("= first_step"), true);
+  assert.equal(sourceIsSimulated("first_step(3)"), false, "a call NAME is not the keyword");
+  const [withBox, id] = withNewItem(newDocument(), 0, { ...rectPlugin.defaults, type: "rect", name: "Box" });
+  const doc = keyframed(withBox, 0, ["items", id, "rotation"], "= first_step ? 90 : @@");
+  assert.equal(documentIsSimulated(doc, registry), true);
+  assert.match(stridedShardRefusal(doc, registry) ?? "", /CONTIGUOUS/);
+});
+
+test("THE CONDITIONAL round-trips with the previous-value marker — the reason `?`/`:` tokenize", () => {
+  // `= first_step ? x0 : @ + …` was IMPOSSIBLE to write before this, and the symptom
+  // pointed away from the cause: a bare `1 ? 2 : 3` already evaluated through the
+  // full-JS path, so the conditional looked supported — but toJsExpr TOKENIZES to
+  // mangle `@`→`$` and hands back the source verbatim when the tokenizer throws, so
+  // adding a marker left `@@` standing in the emitted JS. displayToStored additionally
+  // PARSES, so the restricted grammar needed the rule too or every UI commit was
+  // rejected before it could be stored.
+  assert.equal(displayToStored("first_step ? 1 : @ + dt", { items: {} }), "first_step ? 1 : @@ + dt");
+  assert.equal(storedToDisplay("first_step ? 1 : @@ + dt", { items: {} }), "first_step ? 1 : @ + dt");
+  // RIGHT-associative, like the JS that actually evaluates it: a=0 → (c ? d : e) → d.
+  const lk = (n) => ({ a: 0, c: 1, d: 2, e: 3, x: 1 })[n];
+  assert.equal(evalAst(parseExpression("a ? 9 : c ? d : e"), lk), 2);
+  assert.equal(evalAst(parseExpression("2 + (x ? 10 : 20)"), lk), 12);
+  assert.equal(evalAst(parseExpression("0 ? 2 : 3"), lk), 3);
+  assert.equal(parseExpression("a ? c : e").kind, "cond");
+  assert.throws(() => parseExpression("a ? b"), /Missing ":"/);
+});
+
+test("compiled().refs SEES INTO all three arms — an empty refs list is silent corruption", () => {
+  // THE ASSERTION THIS TEST EXISTS FOR, and it replaces a comment that claimed the
+  // wrong mechanism. `refs` does NOT drive the settle order (requireSlot resolves
+  // dependencies dynamically, as a ref is read). It answers "is this a CONSTANT?", and
+  // an empty list means "fold it now": web/Inspector.svelte:1200 commits such a source
+  // VERBATIM rather than through displayToStored.
+  //
+  // So a walk that skipped `cond` would report NO refs for every conditional, the
+  // Inspector would store the DISPLAY text unconverted, and a display `@` landing in a
+  // stored document is the ITEM SIGIL — the exact confusion `@`→`@@` prevents. Measured
+  // by deleting the walk: refs went from ["first_step","@@","dt"] to [].
+  assert.deepEqual(compiled("first_step ? 1 : @@ + dt").refs, ["first_step", "@@", "dt"]);
+  assert.deepEqual(compiled("a ? c : e").refs, ["a", "c", "e"]);
+  assert.notEqual(compiled("x ? 1 : 2").refs.length, 0, "a conditional is never a constant-foldable source");
+  // …and the end-to-end consequence, through the pass the Inspector actually uses.
+  assert.equal(displayToStored("first_step ? 1 : @self.rotation", BOX_STATE), "first_step ? 1 : @@self.rotation");
 });
 
 setParticleTimeOverride(null);

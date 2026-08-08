@@ -167,7 +167,26 @@ import { getStrokeMaterial, hasStrokeMaterial } from "../render_gpu/skia/stroke_
 // toJsExpr into JS's native `%`. It was absent here until manifest item 72 wired
 // `time % self.length` scrubbing; the runtime already computed `%` via the full-JS
 // fallback for hand-stored equations, so no stored document changes meaning.
-const OP_CHARS = "+-*/()%";
+// "?" and ":" are the CONDITIONAL, and they are here for `first_step` (SIMULATED
+// STATE's initial condition — RESERVED_KEYWORDS): the whole idiom is
+// `= first_step ? x0 : @ + …`, and until they tokenized that source was IMPOSSIBLE
+// to write rather than merely awkward. The reason is worth stating, because the
+// symptom pointed away from the cause: a bare `1 ? 2 : 3` already EVALUATED, via
+// compileEquationFn's full-JS path, so the conditional looked supported. But
+// toJsExpr TOKENIZES to mangle `@`→`$`, and returns the source VERBATIM when the
+// tokenizer throws — so adding a previous-value marker to a conditional left `@@`
+// standing in the emitted JS, and the slot failed with a tokenizer message about
+// "?" that named neither the marker nor the real problem.
+//
+// They pass verbatim through toJsExpr into JS's own conditional, exactly as "%" does
+// (see below), so no stored document changes meaning — a source that already worked
+// through the full-JS path computes the same thing, now with its refs rewritten. The
+// RESTRICTED parser still has no ternary rule and still rejects them, which is
+// harmless by compileEquationFn's contract: its restricted error is only surfaced
+// when `new Function` ALSO fails, and valid JS compiles. "??" tokenizes as two "?"
+// ops and reassembles verbatim, since every consumer of these tokens is
+// position-based (mapRefTokens preserves spacing and operators exactly).
+const OP_CHARS = "+-*/()%?:";
 const NUM_RE = /^(?:\d+\.?\d*|\.\d+)/;
 // A reference token: an optional PREVIOUS-VALUE MARKER and/or stored-item "@"
 // (see §Previous-value marker), then an identifier chain.
@@ -304,12 +323,48 @@ const RESERVED_LITERALS = new Map([["true", true], ["false", false]]);
 // second spelling of the list here is exactly the drift this set exists to prevent.
 // Their display and stored forms are identical, so they round-trip verbatim.
 //
+// `first_step` is the FOURTH, and it is the INITIAL CONDITION seam for SIMULATED
+// STATE. `@` answers "the previous value, or the authored one when there is no
+// previous step" — and when the slot holds the equation ITSELF the authored value IS
+// that equation, so `@` falls back to the plugin's declared default. For an item or
+// document VARIABLE no plugin declares anything, so that default is unconditionally
+// 0 (computeEvaluatedState's fallbackFor: `getPath(plugin.defaults, rel) ?? 0`, and
+// zero registered plugins declare `defaults.vars`). USER, 2026-08-07: "why wouldn't i
+// be able to just set the init values of things" — before this keyword the answer was
+// that you could not, and every deck seeded an oscillator by keeping the constant in a
+// SEPARATE plain-number var and adding it back wherever the value was consumed. That
+// works, but it puts the initial condition somewhere other than where an author looks
+// for it, and the failure when it is misplaced is silent (moving the seed INSIDE the
+// recurrence adds it every frame, at 60/s, and the deck simply flies off screen).
+//
+// It is a BOOLEAN, true exactly while the slot it is read from has no recorded
+// previous value, so the idiom is `= first_step ? x0 : @ + …`. It is NOT "frame 0 of
+// the presentation": a slot whose equation is introduced on slide 4 takes its first
+// step when slide 4 is first rendered, which is what makes the keyword mean the same
+// thing whatever slide it is written on. Slide NAVIGATION does not reset it — the
+// history table survives a slide change by design and resetSimulation() has no
+// navigation caller — so returning to a slide CONTINUES its trajectory rather than
+// re-seeding it, which is the behaviour the user asked for by name.
+//
+// IT IS MINTED, DELIBERATELY, AND THE BARE WORD `first` WAS REJECTED FOR IT. The rule
+// below is not a formality: `first` is an ORDINARY WORD, a deck may plausibly already
+// have a variable called it, and an unshadowable keyword would silently change what
+// that deck computes while still loading and still rendering. The underscore compound
+// follows `mouse_x`'s precedent and is a name no existing document can collide with.
+//
 // A KEYWORD IS UNSHADOWABLE (scopeGet resolves it before any document reference), so
 // a pre-existing variable named `mouse_x` would silently change meaning. That risk is
 // what kept `min`/`max` OUT of this precedence (see scopeGet's asymmetry note), and it
 // is acceptable here for the reason it was for `dt`: these are minted names, not
 // ordinary words a deck plausibly already uses for something else.
-export const RESERVED_KEYWORDS = new Set(["time", "dt", ...Object.keys(POINTER_KEYWORDS)]);
+export const RESERVED_KEYWORDS = new Set(["time", "dt", "first_step", ...Object.keys(POINTER_KEYWORDS)]);
+
+/** The reserved keywords that make a source SIMULATED — the ones whose value depends
+ *  on the step being taken rather than on the document alone. `time` is NOT one: it is
+ *  RECORDABLE state (seekable, shardable), which is the whole distinction the four
+ *  kinds of state draw. Read by sourceIsSimulated, which is what a render job consults
+ *  before it shards; a name missing here is a wrong video with a green exit code. */
+const SIMULATION_KEYWORDS = new Set(["dt", "first_step"]);
 
 // ── Previous-value marker (SIMULATED STATE — manifest R7-9) ──────────────────
 //
@@ -405,6 +460,7 @@ export function storedPrevInner(token) {
  * @example sourceIsSimulated("speed * dt") // true (the timestep)
  * @example sourceIsSimulated("self.w / 2") // false
  * @example sourceIsSimulated("dt(3)") // false (a call NAME, not the keyword — the parser's own rule)
+ * @example sourceIsSimulated("first_step ? 1 : @@ * 0.9") // true (the initial-condition keyword)
  */
 export function sourceIsSimulated(src) {
   const clean = String(src).replace(/^\s*=\s*/, "");
@@ -412,10 +468,11 @@ export function sourceIsSimulated(src) {
   try {
     tokens = tokenize(clean);
   } catch {
-    return /@@|\$\$|\bdt\b/.test(clean); // unreadable source: probe textually rather than assume innocent
+    return /@@|\$\$|\bdt\b|\bfirst_step\b/.test(clean); // unreadable source: probe textually rather than assume innocent
   }
   return tokens.some((t, i) => t.kind === "ref"
-    && (t.value.startsWith(PREV_STORED_MARKER) || (t.value === "dt" && reservedKeywordAt(tokens, i))));
+    && (t.value.startsWith(PREV_STORED_MARKER)
+      || (SIMULATION_KEYWORDS.has(t.value) && reservedKeywordAt(tokens, i))));
 }
 
 /**
@@ -728,6 +785,26 @@ export function parseExpression(src) {
     return null;
   };
   const takeKind = (kind) => (tokens[pos]?.kind === kind ? tokens[pos++] : null);
+  // THE CONDITIONAL — the grammar's LOWEST precedence tier, and RIGHT-associative
+  // (`a ? b : c ? d : e` groups as `a ? b : (c ? d : e)`), matching JS, which is what
+  // actually evaluates it via compileEquationFn's full-JS path. Both branches parse as
+  // `cond` so nesting works on either side without parentheses.
+  //
+  // IT IS HERE BECAUSE displayToStored PARSES, NOT ONLY TOKENIZES (line ~1810:
+  // "validate the full grammar, not just the tokens"). Teaching the tokenizer "?" and
+  // ":" made `= first_step ? x0 : @ + …` EVALUATE, but every commit through the UI
+  // still went through this parser first — so the equation was rejected before it was
+  // ever stored, and the keyword it exists for would have been unusable anywhere but a
+  // hand-edited JSON file. The two passes have to agree about the grammar; that is the
+  // same three-passes-must-agree rule RESERVED_KEYWORDS is built on.
+  function cond() {
+    const test = expr();
+    if (!takeOp("?")) return test;
+    const then = cond();
+    if (!takeOp(":"))
+      throw new Error(`Missing ":" in conditional at ${peek()?.start ?? clean.length} in "${clean}"`);
+    return { kind: "cond", test, then, else: cond() };
+  }
   function expr() {
     let node = term();
     let op;
@@ -756,7 +833,7 @@ export function parseExpression(src) {
   }
   function primary() {
     if (takeOp("(")) {
-      const inner = expr();
+      const inner = cond(); // a parenthesized group may itself be a conditional
       if (!takeOp(")")) throw new Error(`Missing ")" at ${peek()?.start ?? clean.length} in "${clean}"`);
       return inner;
     }
@@ -785,13 +862,13 @@ export function parseExpression(src) {
     takeOp("("); // consumed the "("
     const args = [];
     if (!(peek()?.kind === "op" && peek().value === ")")) {
-      args.push(expr());
-      while (takeKind("comma")) args.push(expr());
+      args.push(cond()); // an argument may be a conditional (the comma still separates)
+      while (takeKind("comma")) args.push(cond());
     }
     if (!takeOp(")")) throw new Error(`Missing ")" in call "${name}(...)" at ${peek()?.start ?? clean.length} in "${clean}"`);
     return { kind: "call", name, args };
   }
-  const ast = expr();
+  const ast = cond();
   if (pos < tokens.length)
     throw new Error(`Unexpected "${tokens[pos].value}" at ${tokens[pos].start} in "${clean}"`);
   return ast;
@@ -817,6 +894,21 @@ export function compiled(src) {
       if (n.kind === "member") walk(n.obj);
       if (n.kind === "call") { calls.push(n); n.args.forEach(walk); }
       if (n.kind === "bin") { walk(n.left); walk(n.right); }
+      // ALL THREE ARMS, including the branch this evaluation will not take.
+      //
+      // WHAT `refs` ACTUALLY DECIDES IS "IS THIS A CONSTANT?", not the settle order —
+      // dependencies are resolved DYNAMICALLY by requireSlot when a ref is read, so
+      // nothing here affects evaluation ordering. An empty `refs` means "no references,
+      // fold it now": web/Inspector.svelte:1200 commits such a source VERBATIM instead
+      // of through displayToStored, and web/NumericField.svelte:467 / AngleField:144
+      // constant-fold it through evalAst.
+      //
+      // SO OMITTING THIS LINE IS SILENT DOCUMENT CORRUPTION, not a missed optimisation.
+      // Measured: without it `compiled("first_step ? 1 : @@ + dt").refs` is [] rather
+      // than ["first_step", "@@", "dt"], so the Inspector stores the DISPLAY text as-is
+      // — and a display `@` written verbatim into a stored document is the ITEM SIGIL,
+      // which is the precise confusion `@`→`@@` serialization exists to prevent.
+      if (n.kind === "cond") { walk(n.test); walk(n.then); walk(n.else); }
     })(ast);
     parseCache.set(src, (c = { ast, refs, calls }));
   }
@@ -848,6 +940,13 @@ export function evalAst(ast, lookup, callFn = null) {
     case "bool": return ast.value;  // typed literal (boolean result)
     case "ref": return lookup(ast.name);
     case "neg": return -evalAst(ast.arg, lookup, callFn);
+    // SHORT-CIRCUITING, like JS's own conditional and not merely "picks a branch":
+    // only the taken side is evaluated, so `first_step ? x0 : @@ + dt` does not read
+    // `@@` on its first step. (That is exactly why reading `first_step` registers its
+    // own slot for recording — see readFirstStep.)
+    case "cond": return evalAst(ast.test, lookup, callFn)
+      ? evalAst(ast.then, lookup, callFn)
+      : evalAst(ast.else, lookup, callFn);
     case "member": {
       const pt = evalAstPoint(ast.obj, lookup, callFn);
       return pt[ast.prop];
@@ -1286,6 +1385,7 @@ export function widgetArgSpans(ast) {
     if (n.kind === "neg") walk(n.arg);
     if (n.kind === "member") walk(n.obj);
     if (n.kind === "bin") { walk(n.left); walk(n.right); }
+    if (n.kind === "cond") { walk(n.test); walk(n.then); walk(n.else); }
   })(ast);
   return spans;
 }
@@ -3404,6 +3504,33 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
   // a mid-pass write would let one slot's `@` see another slot's already-stepped
   // value, which is the one-table failure the history module's docblock explains.
   const prevReads = new Map();
+
+  /**
+   * Query→boolean (opens the step; REGISTERS the slot for recording). The
+   * `first_step` keyword: has nothing recorded a previous value for the slot this
+   * equation sits in — i.e. is this the first step of ITS simulation? The initial-
+   * condition seam, so `= first_step ? x0 : @ + …` states a starting value where an
+   * author looks for it (RESERVED_KEYWORDS' docblock has the why).
+   *
+   * REGISTERING THE SLOT HERE IS LOAD-BEARING, NOT BOOKKEEPING, and leaving it out
+   * is a self-cancelling bug that looks like the keyword simply not working. The
+   * whole idiom is a TERNARY, and a ternary SHORT-CIRCUITS: on the first step the
+   * `@` branch never executes, so prevValue never runs, so nothing lands in
+   * prevReads, so the end-of-pass loop records nothing — and `first_step` answers
+   * true on every subsequent step too, pinning the slot at its initial value
+   * forever. Reading this keyword IS the declaration that the slot is simulated, so
+   * it registers on exactly the terms an `@` read does.
+   *
+   * It does NOT consult prevValue's fallback: this is a question about the HISTORY
+   * TABLE, not about the value, and a slot legitimately holding `undefined` from a
+   * previous step is still not on its first one (hasSimulationValue is the query
+   * that distinguishes them — see its note on why undefined is not a sentinel).
+   */
+  const readFirstStep = (slot) => {
+    readDt(); // simulated state: open the step, and carry the memo's generation axis
+    prevReads.set(slot.key, slot.path);
+    return !hasSimulationValue(slot.key);
+  };
   const seededRandom = mulberry32(stringSeed([...slots.keys()].sort().join("|") + "|powerrp"));
 
   // THE PROJECT SCRIPT (core/project_script.js). Compiled ONCE per pass against the
@@ -3859,6 +3986,7 @@ function computeEvaluatedState(state, registry, script = "", contentSizes = null
       case "Math": return SAFE_MATH; // no random
       case "time": return readClock(); // the ONE presentation clock (see readClock)
       case "dt": return readDt(); // the seconds THIS simulation step covers (see readDt)
+      case "first_step": return readFirstStep(slot); // is this slot on its FIRST step? (see readFirstStep)
       case "random": return seededRandom; // seeded, deterministic
     }
     // THE AMBIENT POINTER (`mouse_x`/`mouse_y`/`mouse_left`) — one table, indexed
