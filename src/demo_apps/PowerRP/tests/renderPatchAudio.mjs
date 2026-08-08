@@ -45,6 +45,7 @@
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { ensureSurgeFixtures, installSurgeInterception } from "./surgeFixtures.js";
 import { createServer } from "vite";
 import { launchBrowser } from "./puppeteerLaunch.js";
 
@@ -55,6 +56,11 @@ const webRoot = resolve(app, "web");
 const outDir = resolve(process.argv[2] ?? join(app, ".claude_audio_checks"));
 const SECONDS = Number(process.argv[3] ?? 6);
 const RATE = 48000;
+/** How long a RIG renders. Longer than a demo patch's default because the phrase is
+ *  3.5 beats (1.75 s at 120 BPM) and the whole reason to render the reverb chain is
+ *  to hear what happens AFTER the triad releases — a tail cut off at the file's end
+ *  would make the reverb sound like a gate. */
+const RIG_SECONDS = 6;
 
 /**
  * Pure function. A 16-bit stereo WAV file, as bytes.
@@ -110,6 +116,12 @@ const browser = await launchBrowser();
 
 try {
   const page = await browser.newPage();
+  // THE RIG PASS NEEDS SURGE'S BINARIES; the demo-patch pass does not touch them.
+  // Interception passes every other request through unchanged, so the twenty-odd
+  // demo patches render exactly as they did before this was added.
+  const surge = await ensureSurgeFixtures((m) => console.log(m));
+  if (surge.ok) await installSurgeInterception(page, surge.files);
+  else console.log(`  !! SURGE RIGS SKIPPED — ${surge.reason}\n     The demo patches below still render; no Surge WAV was written.`);
   await page.goto(url, { waitUntil: "networkidle0" });
 
   const rendered = await page.evaluate(async ({ appDir, seconds, rate }) => {
@@ -198,11 +210,145 @@ try {
     if (r.peak <= 0) silent++;
     console.log(`  ${r.peak > 0 ? "♪" : " "}  ${name.padEnd(52)} ${db}`);
   }
+  // ── THE RIGS (user, 2026-08-08: "THESE ARE NECESSARY TESTS") ──────────────
+  // The three Surge chains, PLAYED — with a real phrase scheduled on the audio
+  // clock rather than one sustained chord, because the question a listener is
+  // answering is "are these the right notes, in tune, in the right order", which a
+  // held chord cannot answer and a dBFS figure cannot answer at all.
+  if (surge.ok) {
+    const rigs = await page.evaluate(async ({ appDir, seconds, rate }) => {
+      const [{ createRegistry }, { registerPlugins }, { readAudioScene }, { createEngine }, { clipEvents, clipNotes, timeAtBeat }] =
+        await Promise.all([
+          import(`/@fs${appDir}/core/registry.js`),
+          import(`/@fs${appDir}/plugins/index.js`),
+          import(`/@fs${appDir}/core/audio_mirror_diff.js`),
+          import(`/@fs${appDir}/synth/engine.js`),
+          import(`/@fs${appDir}/core/midi_clip.js`),
+        ]);
+      const registry = createRegistry();
+      registerPlugins(registry);
+      const D = (t) => ({ ...registry.get(t).defaults });
+
+      // A REAL PHRASE: a rising arpeggio into a held triad. Chosen so a listener can
+      // hear PITCH (is it in tune), ORDER (does it rise), RHYTHM (are the eighths
+      // even) and the reverb's TAIL after the triad releases — none of which a
+      // sustained chord or an RMS number exposes.
+      const TEMPO = 120;
+      const PHRASE = [
+        [0, 0.5, 60, 100], [0.5, 0.5, 64, 100], [1, 0.5, 67, 100], [1.5, 0.5, 72, 110],
+        [2, 1.5, 64, 90], [2, 1.5, 67, 90], [2, 1.5, 72, 90],
+      ];
+
+      /** Command. Render one rig, scheduling `PHRASE` on the AUDIO clock. */
+      async function renderRig(id, items, label) {
+        const scene = readAudioScene(items, registry);
+        const ctx = new OfflineAudioContext(2, Math.round(seconds * rate), rate);
+        const engine = createEngine({ audioContext: ctx });
+        try {
+          await engine.init();
+          for (const [mid, mod] of Object.entries(scene.modules)) engine.addModule(mod.module, mid, mod.knobs);
+          for (const c of scene.connections) {
+            if (c.method) continue;
+            await engine.connect(c.sourceId, c.sourcePort, c.targetId, c.targetPort);
+          }
+          const ready = await Promise.race([
+            engine.moduleControl(id + "-surge").whenReady(),
+            new Promise((r) => setTimeout(() => r("timeout"), 90000)),
+          ]);
+          if (ready !== true) return { id, label, error: `surge never became ready (${ready})` };
+
+          // ── SCHEDULED, NOT SUSTAINED ────────────────────────────────────────
+          // `synth/modules_surge.noteOn` IGNORES its `time` argument (the worklet
+          // protocol has no scheduled-note message), so `engine.noteOn(…, time)`
+          // cannot place a note in the future. An earlier pass concluded from that
+          // that offline rhythm was impossible. IT IS NOT: `OfflineAudioContext`
+          // renders in CHUNKS on demand, so suspending AT each event's time, posting
+          // there, and resuming puts every note exactly where it belongs — measured
+          // (three notes landed at 0.000, 0.800 and 1.600 on the audio clock).
+          const notes = clipNotes({ clip: PHRASE });
+          const events = clipEvents(notes).map((e) => ({ ...e, at: timeAtBeat(e.beat, TEMPO) }));
+          // STRAIGHT AT THE INSTRUMENT, not through the engine's voice POOL. The
+          // pool allocates a SLOT per note and Surge tracks one held note per slot;
+          // an arpeggio that releases and re-allocates the same slot within a few
+          // milliseconds made notes drop and sustain past their release (MEASURED:
+          // the second eighth came back 13 dB down and the dry chains droned after
+          // the triad). Surge does its OWN voice allocation internally — it is a
+          // 16-voice polysynth — so the pool is a second allocator fighting the
+          // first.  is the module's own note door, which is exactly
+          // what the GUI's piano plays through.
+          const surgeCtl = engine.moduleControl(id + "-surge");
+          const fire = (e) => {
+            if (e.type === "noteOn") surgeCtl.noteOn(e.pitch, e.velocity ?? 100);
+            else surgeCtl.noteOff(e.pitch);
+          };
+          for (const e of events.filter((e) => e.at <= 0)) fire(e);
+          const later = [...new Set(events.filter((e) => e.at > 0).map((e) => e.at))].sort((a, b) => a - b);
+          for (const at of later) {
+            if (at >= seconds) continue; // a suspension past the render's end never resolves
+            ctx.suspend(at).then(() => {
+              for (const e of events.filter((e) => e.at === at)) fire(e);
+              ctx.resume();
+            });
+          }
+          await new Promise((r) => setTimeout(r, 250));
+          const buf = await ctx.startRendering();
+          const L = Array.from(buf.getChannelData(0));
+          const R = Array.from(buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0));
+          let peak = 0;
+          for (const v of L) peak = Math.max(peak, Math.abs(v));
+          return { id, label, peak, L, R };
+        } catch (e) {
+          return { id, label, error: e.message };
+        } finally {
+          await engine.dispose();
+        }
+      }
+
+      const out = [];
+      // 1. keys -> surge -> out. The PRE-WIRED RIG's own topology; the notes are
+      //    injected because nobody is at the keys offline (the UNPLAYED trap).
+      out.push(await renderRig("keys", {
+        "keys-keys": D("node_keyboard"),
+        "keys-surge": { ...D("audio_surge"), inputs: { gate: { item: "keys-keys", port: "gate" }, pitch: { item: "keys-keys", port: "pitch" } } },
+        "keys-out": { ...D("audio_output"), inputs: { in: { item: "keys-surge", port: "out" } } },
+      }, "keys -> surge -> out"));
+      // 2. clip -> surge -> out. The same phrase down a `midi` cable.
+      out.push(await renderRig("clip", {
+        "clip-clip": { ...D("node_midi_clip"), tempo: TEMPO, clip: PHRASE },
+        "clip-surge": { ...D("audio_surge"), inputs: { notes: { item: "clip-clip", port: "midi" } } },
+        "clip-out": { ...D("audio_output"), inputs: { in: { item: "clip-surge", port: "out" } } },
+      }, "clip -> surge -> out"));
+      // 3. ...through a reverb, fully wet so the tail after the triad is unmissable.
+      out.push(await renderRig("clipverb", {
+        "clipverb-clip": { ...D("node_midi_clip"), tempo: TEMPO, clip: PHRASE },
+        "clipverb-surge": { ...D("audio_surge"), inputs: { notes: { item: "clipverb-clip", port: "midi" } } },
+        "clipverb-verb": { ...D("audio_reverb"), audioWet: 1, audioDry: 0.5, inputs: { in: { item: "clipverb-surge", port: "out" } } },
+        "clipverb-out": { ...D("audio_output"), inputs: { in: { item: "clipverb-verb", port: "out" } } },
+      }, "clip -> surge -> reverb -> out"));
+      return out;
+    }, { appDir: app, seconds: RIG_SECONDS, rate: RATE });
+
+    console.log("");
+    for (const r of rigs) {
+      if (r.error) { console.log(`  XX  ${r.id} — ${r.error.slice(0, 90)}`); continue; }
+      // NO `UNPLAYED` TAG, and that is the point: these rigs have their notes
+      // INJECTED, so a silent file here is a real defect rather than the documented
+      // "nobody at the keys" artefact. `PLAYED` says so positively.
+      const name = `rig-${r.id}.PLAYED.wav`;
+      writeFileSync(join(outDir, name), wavBytes(Float32Array.from(r.L), Float32Array.from(r.R), RATE));
+      wrote++;
+      const db = r.peak > 0 ? `${(20 * Math.log10(r.peak)).toFixed(1)} dBFS peak` : "SILENT";
+      if (r.peak <= 0) silent++;
+      console.log(`  ${r.peak > 0 ? "♪" : " "}  ${name.padEnd(52)} ${db}   ${r.label}`);
+    }
+  }
+
   console.log(`\n${wrote} file(s) written, ${silent} silent.`);
   console.log(`Listen: ${outDir}`);
   console.log("PENDING-n = n placeholder node types in that patch (their wires are dropped too).");
   console.log("UNPLAYED  = played from a keyboard/button; nobody is at the keys offline, so gated voices sit at zero.");
   console.log("NOEVENTS  = transport-driven; the scheduler needs a wall clock, so you hear the drones and no events.");
+  console.log("PLAYED    = a rig whose notes were INJECTED and SCHEDULED, so silence here is a real defect.");
 } finally {
   await browser.close();
   await server.close();

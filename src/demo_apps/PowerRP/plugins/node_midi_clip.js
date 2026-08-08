@@ -166,7 +166,19 @@ export function previewBeats(s) {
 
 export const nodeMidiClipPlugin = controlNodePlugin({
   type: "node_midi_clip",
-  title: "MIDI Clip",
+  // THE USER'S NAME FOR THIS WIDGET IS "SIGNAL", AND THE TITLE IS THE ONLY PLACE
+  // THAT SHOWS. They called it "the signal editor" throughout the design — "WHEN
+  // does the signal editor start to play its song?", "the signal editor therefore
+  // needs an input node too", "literally having signal as a node is important" —
+  // and it shipped titled "MIDI Clip", so the palette entry they went looking for
+  // did not exist under any name they had used. A widget the author cannot FIND is
+  // not shipped, which is the same failure as one that is not registered.
+  //
+  // The `type` stays `node_midi_clip`: it is the serialized discriminator in every
+  // saved document, and renaming it would break every deck that already holds one
+  // for a cosmetic gain. Title is display, type is storage; only the display was
+  // wrong.
+  title: "Signal",
   icon: "mdi:piano",
   ports: PORTS,
   face: PREVIEW_FACE,
