@@ -155,7 +155,7 @@ import { cameraFrameIR, evaluatedStateAt } from "./cameraFrame.js";
 import { videoUploadCount, videoPlaybackState, videoStatus } from "../render_gpu/gpu/video_registry.js";
 import { videoV5UploadCount, videoV5State, videoV5ScrubState } from "../render_gpu/skia/video_v5.js";
 import { nodePortAnchors } from "../core/derive.js";
-import { audioState, mirroredScene } from "./audioMirror.svelte.js";
+import { audioEngine, audioState, mirroredScene } from "./audioMirror.svelte.js";
 import { litKeyRects, setNoteSink } from "./keyboardPlay.js";
 import { keyboardRange } from "../plugins/node_keyboard.js";
 
@@ -201,6 +201,12 @@ window.__powerrp_setNoteSink = setNoteSink;
 // Zero prod effect: two read-only accessors.
 window.__powerrp_audioScene = mirroredScene;
 window.__powerrp_audioState = () => ({ ...audioState });
+// THE ENGINE ITSELF, and it must come from HERE rather than from a probe importing
+// the mirror: `web/audioMirror.svelte.js` holds its engine in a MODULE-LEVEL
+// variable, so a probe that imports it through Vite's `/@fs` door gets a SECOND
+// instance whose `engine` is null — measured, and it reads exactly like "audio
+// never started" while the app is audibly playing. One accessor, no prod effect.
+window.__powerrp_audioEngine = audioEngine;
 
 // Dev/test seams (like __powerrp_render / __powerrp_app): the running total of
 // <video>→GPU-texture uploads (probe confirms the frame-advance gate keeps uploads

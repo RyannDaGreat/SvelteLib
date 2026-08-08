@@ -72,6 +72,8 @@
 import { createEngine } from "../synth/engine.js";
 import { diffAudioScene, initialParamOps, knobRampSeconds, readAudioScene, transportOf } from "../core/audio_mirror_diff.js";
 import { latchedChordDelta, latchedChords, noteFrequency, noteRoutes, triggerRoutes } from "../core/live_control.js";
+import { clipTriggerTargets, isTriggerableMidiSource, midiRoutes, soundingClips } from "../core/clip_playback.js";
+import { particleTime } from "../render_gpu/particle_clock.js";
 import { cameraMaxTimestep, simulationTimestep } from "../core/simulation_history.js";
 import { meterColumnValues, spectrumColumnValues } from "../core/analysis_display.js";
 import { dropAnalysis, pushAnalysisFrame } from "../render_gpu/gpu/live_analysis_registry.js";
@@ -276,6 +278,7 @@ export function mirrorAudioFrame(state, registry) {
     // stopped when the context was suspended would never be started by anything.
     syncTransport(scene);
     syncLatchedNotes(lastFrame.items, registry);
+    syncClipNotes(lastFrame.items, registry);
     return;
   }
   // A TOPOLOGY CHANGE INVALIDATES THE LATCH RECORD, and only a topology change.
@@ -284,11 +287,17 @@ export function mirrorAudioFrame(state, registry) {
   // claims and the chord must be re-asserted. A `setParam` batch changes none of
   // that — clearing on one would re-send every latched note on every knob turn,
   // restarting each envelope, which is a stutter rather than a held chord.
-  if (ops.some((op) => op.op !== "setParam")) engineLatched = {};
+  if (ops.some((op) => op.op !== "setParam")) { engineLatched = {}; engineClipNotes = {}; }
   engineScene = scene;
   queueApply(ops, scene);
   syncTransport(scene);
   syncLatchedNotes(lastFrame.items, registry);
+  syncClipNotes(lastFrame.items, registry);
+  // A TIMELINE clip (nothing wired to its trigger) advances with the clock and is
+  // started by nobody, so the pump has to be armed from the document pass as well
+  // as from a press — otherwise the reproducible default would be the one that
+  // never plays, which is exactly backwards.
+  ensureClipPump();
 }
 
 /**
@@ -787,6 +796,124 @@ export function fireLiveTrigger(items, registry, sourceId, sourcePort = "out") {
     if (!engine.inspect().modules.some((m) => m.id === route.id)) continue;
     engine.trigger(route.id, route.port);
   }
+  // ── THE SECOND QUESTION THE SAME PRESS ANSWERS ─────────────────────────────
+  // A press on a Button wired to a MIDI CLIP produces no engine call at all —
+  // `triggerRoutes` correctly returns nothing, because a clip has no engine
+  // counterpart to strike (see core/clip_playback.clipTriggerTargets for why
+  // widening that gate would have been the wrong fix). What it does instead is
+  // START A PLAYHEAD, which is a fact about playback rather than a method call.
+  //
+  // THE START TIME IS MODULE SCRATCH AND NEVER DOCUMENT STATE, which is forced by
+  // the classification this feature already made: a press is a live human moment
+  // with no representation in [[slide, alpha]], so writing it to the document
+  // would be exactly the ephemeral state the project has none of. It lives here
+  // beside `engineLatched`, is gone at the end of the session, and an export
+  // contains none of it — which is what `live_trigger_warning` warns about.
+  for (const id of clipTriggerTargets(items, registry, sourceId, sourcePort))
+    liveClipStarts[id] = liveClockNow();
+  ensureClipPump();
+}
+
+/**
+ * Command. Keep `syncClipNotes` running on the FRAME CLOCK for as long as this
+ * document has a midi source in it.
+ *
+ * ── WHY THIS EXISTS: THE MIRROR IS DOCUMENT-DRIVEN AND A PLAYHEAD IS NOT ────
+ * `mirrorAudioFrame` is called from ONE Svelte `$effect` in web/CanvasView.svelte
+ * whose reactive dependencies are `app.doc`, `app.previewDelta` and
+ * `app.slideIndex` — the DOCUMENT, deliberately (its own comment: "panning the
+ * canvas or clicking a node must not touch the audio graph"). That is exactly right
+ * for everything the mirror did before this feature: a knob turn, a rewire and even
+ * a LATCHED CHORD are all document writes, so the effect re-runs and the engine is
+ * reconciled.
+ *
+ * **A PLAYHEAD IS THE FIRST THING THE MIRROR OWNS THAT CHANGES WITH TIME ALONE.**
+ * A button press writes nothing to the document, so nothing re-ran the effect and
+ * `syncClipNotes` was never called after the press — the clip's notes were computed
+ * correctly and never sent. MEASURED as the user's own symptom: "pressing fire does
+ * nothing", with every pure function in the chain returning the right answer.
+ * Sitting a clip's playback on the document effect would ALSO have meant a timeline
+ * clip only advanced when something was edited, i.e. a phrase that plays while you
+ * drag a rectangle and stops when you let go.
+ *
+ * SO IT IS GATED, NOT PERMANENT. The loop runs only while the frame actually holds
+ * a midi source and the engine is running, and stops itself otherwise — a deck with
+ * no clips in it pays nothing, which is the same bargain `ensureEngine` makes about
+ * not constructing an AudioContext for a deck with no audio.
+ *
+ * `requestAnimationFrame` is guarded because this module is imported by bare-node
+ * suites, which have no frame clock and nothing to pump.
+ */
+function ensureClipPump() {
+  if (clipPumpHandle !== null || typeof requestAnimationFrame !== "function") return;
+  const step = () => {
+    clipPumpHandle = null;
+    if (!lastFrame || !engine || !engine.isRunning()) return;
+    if (!hasMidiSource(lastFrame.items, lastFrame.registry)) return;
+    syncClipNotes(lastFrame.items, lastFrame.registry);
+    clipPumpHandle = requestAnimationFrame(step);
+  };
+  clipPumpHandle = requestAnimationFrame(step);
+}
+
+/** The pending frame request, or null when the pump is stopped. */
+let clipPumpHandle = null;
+
+/** Query. Does this frame hold anything whose playback advances with the clock?
+ *  Asked of the PLUGIN (core/clip_playback.isTriggerableMidiSource) so the pump has
+ *  no widget roster — a future arpeggiator starts it the day it is written. */
+function hasMidiSource(items, registry) {
+  for (const state of Object.values(items ?? {})) {
+    if (state?.active === false) continue;
+    try { if (isTriggerableMidiSource(registry.get(state?.type))) return true; } catch { /* unregistered mid-edit */ }
+  }
+  return false;
+}
+
+/**
+ * WHEN A LIVE-TRIGGERED MIDI SOURCE WAS LAST STARTED: `{itemId: seconds}` on the
+ * presentation clock. Module scratch, not reactive, never serialized — the same
+ * discipline `engineLatched` and `core/live_control.pressedByItem` keep, and for
+ * the same reason.
+ */
+let liveClipStarts = {};
+
+/**
+ * Query. THE PRESENTATION CLOCK, through the ONE sanctioned seam.
+ *
+ * `particleTime()` and never a wall clock: it is what the presenter drives live,
+ * what the editor and CLI FREEZE for determinism, and what both exporters override
+ * per frame. Reading `performance.now()` here would make a clip's playback
+ * unfreezable and unexportable in one line — the category error CLAUDE.md names.
+ */
+function clipClockNow() {
+  return particleTime();
+}
+
+/**
+ * Query. THE LIVE CLOCK — the AudioContext's own time, for LIVE-TRIGGERED clips
+ * only.
+ *
+ * ── WHY A SECOND CLOCK IS NOT A LOOPHOLE ───────────────────────────────────
+ * `clipClockNow` above is the presentation clock, and **the editor FREEZES it** —
+ * measured: `particleTime()` sits at a constant while the editor runs, which is
+ * precisely what makes a still render reproducible. A live press in the editor
+ * therefore started a playhead that could never advance, so the chord sounded and
+ * never released: a drone, which is the one failure `releaseAllLiveNotes` exists to
+ * prevent, arriving by a new route.
+ *
+ * A LIVE PRESS IS ALREADY EPHEMERAL STATE — it has no representation in
+ * `[[slide, alpha]]`, an export contains none of it, and `live_trigger_warning`
+ * says so out loud. So running ITS playhead on a live clock weakens no claim this
+ * feature makes: the reproducible kinds (timeline, clock-driven) still read the
+ * presentation clock and still export identically. The kind of clock matches the
+ * kind of state, which is the whole taxonomy working rather than an exception to it.
+ *
+ * Falls back to the presentation clock when there is no context yet, so a caller
+ * never gets NaN.
+ */
+function liveClockNow() {
+  return engine?.context?.currentTime ?? particleTime();
 }
 
 /**
@@ -877,6 +1004,106 @@ function syncLatchedNotes(items, registry) {
     for (const note of notes)
       if ((engineLatched[id] ?? []).includes(note)) (reached[id] ??= []).push(note);
   engineLatched = reached;
+}
+
+/**
+ * WHAT THE ENGINE IS SOUNDING BECAUSE A MIDI CLIP SAID SO: `{itemId: [pitch, …]}`.
+ * Module scratch beside `engineLatched`, and the same rule — a record of what has
+ * been SENT, never a value anything renders.
+ */
+let engineClipNotes = {};
+
+/**
+ * Command. Make the engine's sounding notes match what the frame's MIDI CLIPS have
+ * playing right now — the scheduler.
+ *
+ * ── IT IS A SET RECONCILIATION, NOT AN EVENT QUEUE, AND THAT IS THE DESIGN ──
+ * `syncLatchedNotes` directly above is the template, and the argument is identical
+ * one level up. The obvious scheduler walks `clipEvents` forward with a cursor and
+ * fires each event as its beat passes — which is STATE CARRIED FROM FRAME N−1, the
+ * thing CLAUDE.md disqualifies outright: it breaks Δt = 0 reproducibility and
+ * frame-range sharding at once, and a SEEK would either replay the whole prefix or
+ * miss every event before it.
+ *
+ * So this asks a pure question instead — `soundingClips(items, registry, now)`,
+ * "which notes are down at this instant" — and sends the DIFFERENCE. Consequences
+ * that are all the same consequence:
+ *   Δt = 0 gives an identical set, so nothing is sent and the frame is unchanged.
+ *   A SEEK to any time is correct with no prefix walked.
+ *   Scrubbing a presentation backwards works, because there is no cursor to rewind.
+ *   A paused clock holds the chord that was sounding, rather than drifting.
+ *
+ * OFFS BEFORE ONS, from `latchedChordDelta` — reused rather than restated, because
+ * the voice-stealing hazard it exists for is exactly the same one here: a legato
+ * line ends one note as the next begins, and ons-first makes a full pool steal a
+ * voice that was about to be released.
+ *
+ * ONLY WHAT ACTUALLY SOUNDED IS RECORDED, the rule `syncLatchedNotes` states: a
+ * note that reached nothing is left out of the record so the next pass retries it.
+ * That is what makes this safe on the frame a Surge node is still being added.
+ *
+ * @param {object} items - the evaluated folded item map
+ * @param {object} registry - the plugin registry
+ */
+function syncClipNotes(items, registry) {
+  if (!engine || !engine.isRunning()) return;
+  const next = soundingClips(items, registry, clipClockNow(), liveClipStarts, liveClockNow());
+  const reached = {};
+  for (const op of latchedChordDelta(engineClipNotes, next)) {
+    const sent = playClipNote(items, registry, op.id, op.phase, op.note);
+    if (op.phase === "on" && sent > 0) (reached[op.id] ??= []).push(op.note);
+  }
+  for (const [id, notes] of Object.entries(next))
+    for (const note of notes)
+      if ((engineClipNotes[id] ?? []).includes(note)) (reached[id] ??= []).push(note);
+  engineClipNotes = reached;
+}
+
+/**
+ * Command. Send ONE note from a midi source to every module its `midi` cable
+ * reaches.
+ *
+ * ── WHY NOT `playLiveNote` ──────────────────────────────────────────────────
+ * That one routes through `core/live_control.noteRoutes`, which looks for a
+ * METHOD port fed by a `gate` wire — the KEYBOARD's arrangement. A clip's cable is
+ * a `midi`-TYPED input (Surge's `notes`), which is a different route and a
+ * deliberately different function: `core/clip_playback.midiRoutes` resolves it by
+ * PORT TYPE, so a future sampler spelling its input `in` needs no code here.
+ *
+ * THE FREQUENCY IS NAMED, always. A clip states its own pitches, so unlike a
+ * keyboard whose pitch cable may have been cut, there is no arrangement in which
+ * the receiver should sound its own pitch instead — sending the note without one
+ * would make a melody play as one repeated note.
+ *
+ * @returns {number} how many engine calls this note reached (0 = it sounded nothing)
+ */
+function playClipNote(items, registry, sourceId, phase, note) {
+  if (!engine || !engine.isRunning()) return 0;
+  // ONE inspect() for the whole batch, and `played` is THE field — not `poly`.
+  //
+  // **THIS LINE READ `?.poly` AND SILENTLY SENT NOTHING.** `engine.inspect()`
+  // reports `{id, type, transport, played}`; there is no `poly` key, so the guard
+  // was `undefined` for every module and `continue` fired on every route. Zero
+  // noteOn calls, no error, no warning — a clip wired to a synth that simply did
+  // not play, which is the exact symptom the user reported ("pressing fire does
+  // nothing"). It is the missing-named-thing hazard CLAUDE.md records for imports,
+  // one level down: a field name guessed instead of checked is `undefined`, and
+  // `undefined` is falsy, so the wrong answer looks like a deliberate skip.
+  //
+  // `played` is derived from `typeof instance.noteOn === "function"`, which is the
+  // SAME predicate the engine uses to decide whether a module gets a voice pool —
+  // so it is exactly the question this guard means to ask. `engine.noteOn` throws
+  // by name (requirePoly) on a module without one, and a midi cable into a mono
+  // module is legal on the canvas and simply has nothing to allocate.
+  const playable = new Map(engine.inspect().modules.map((m) => [m.id, m.played]));
+  let sent = 0;
+  for (const route of midiRoutes(items, registry, sourceId)) {
+    if (!playable.get(route.id)) continue;
+    if (phase === "on") engine.noteOn(route.id, note, noteFrequency(note));
+    else engine.noteOff(route.id, note);
+    sent++;
+  }
+  return sent;
 }
 
 /**

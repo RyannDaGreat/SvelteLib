@@ -179,6 +179,30 @@ export function surgeModule(context, params = {}) {
     else queued.push(message);
   }
 
+  /**
+   * THE READINESS PROMISE. Resolves TRUE once the worklet exists and is connected
+   * to this module's output, FALSE if the load failed or the host has no
+   * `audioWorklet` at all.
+   *
+   * ── WHY THIS EXISTS: AN OFFLINE RENDER CANNOT WAIT BY GUESSING ────────────
+   * The async half below is deliberately un-awaited (its own comment says why: the
+   * module is usable the moment it returns, and Surge joins when it can). That is
+   * right for a LIVE context, where a few hundred milliseconds of silence at the
+   * start is invisible. It is fatal for an OfflineAudioContext, which renders as
+   * fast as it can and does not wait for anything — so `startRendering()` fired
+   * before the worklet had connected and every Surge render came back at EXACTLY
+   * -inf dBFS, three chains in a row, which is the signature of a harness fault
+   * rather than three independent bugs (tests/patch_sound_probe.mjs records the
+   * same tell). A `setTimeout` long enough to usually work is not a fix; it is a
+   * flake with a stopwatch.
+   *
+   * It resolves rather than rejects on failure, because a caller's question is
+   * "may I render now" and both answers are useful — `surgeFailure()` says what
+   * went wrong for anyone who needs it.
+   */
+  let markReady;
+  const ready = new Promise((resolve) => { markReady = resolve; });
+
   // ── THE ASYNC HALF ────────────────────────────────────────────────────────
   // Deliberately not awaited by anything: the module is usable (connectable,
   // level-rampable) from the moment this function returns, and Surge joins when it
@@ -194,7 +218,7 @@ export function surgeModule(context, params = {}) {
       // specifier and prints an unhandled rejection into a green test run. This is
       // the same reason `engine.portBlockWorkletUrls()` is only reached from
       // `init()`, which node never calls.
-      if (!context.audioWorklet) return;
+      if (!context.audioWorklet) { markReady(false); return; }
       const { SURGE_WORKLET_URL, SURGE_DATA_INDEX_URL } = await import("./worklet_urls.js");
       const [wasmBinary, index, archive] = await Promise.all([
         fetchSurgeAsset(SURGE_ENGINE_WASM_URL),
@@ -202,7 +226,7 @@ export function surgeModule(context, params = {}) {
         fetchSurgeAsset(SURGE_DATA_BIN_URL),
         context.audioWorklet.addModule(SURGE_WORKLET_URL),
       ]);
-      if (disposed) return;
+      if (disposed) { markReady(false); return; }
 
       const built = new AudioWorkletNode(context, SURGE_PROCESSOR, {
         numberOfInputs: 0,
@@ -234,9 +258,11 @@ export function surgeModule(context, params = {}) {
       node = built;
       for (const message of queued) built.port.postMessage(message);
       queued.length = 0;
+      markReady(true);
     } catch (err) {
       failure = err?.message ?? String(err);
       console.error(failure);
+      markReady(false);
     }
   })();
 
@@ -255,6 +281,35 @@ export function surgeModule(context, params = {}) {
     /** How many voices the pool gives this module. Surge allocates internally too;
      *  this is the pool's size, and 16 matches Surge's own default. */
     meta: { voices: SURGE_VOICES },
+    /**
+     * Command. THE ENGINE'S START HOOK. A no-op here, and its ABSENCE WAS A FATAL
+     * BUG — this method exists because of what happened without it.
+     *
+     * ── WHAT BROKE, AND WHY NOTHING CAUGHT IT ──────────────────────────────
+     * `synth/engine.js addModule` calls `instance.start()` UNCONDITIONALLY (there is
+     * no `?.`), because every one of the other ~112 module factories defines it.
+     * This one did not, so **`engine.addModule("surge", …)` threw
+     * `TypeError: instance.start is not a function` and the Surge node could not be
+     * instantiated AT ALL** — not in the editor, not in a presentation, not in an
+     * export. The feature was dead on arrival, committed and pushed.
+     *
+     * `tests/surge_test.js` passed throughout because it never calls `addModule`: it
+     * checks the spec, the knob table and the message protocol, all of which were
+     * correct. The graph was never built. That is precisely the gap the user's
+     * ruling names — "don't theorize about sound. we acrually need to HEAR it" —
+     * and it was found by `tests/surge_audio_probe.mjs` on its first run, because a
+     * probe that renders audio has to construct the module first.
+     *
+     * ── WHY A NO-OP IS THE RIGHT FIX, NOT `instance.start?.()` IN THE ENGINE ──
+     * Making the engine's call optional would weaken a contract that is currently
+     * total: a module that genuinely needs starting and forgets the method would
+     * then fail SILENTLY, producing a graph that builds and makes no sound. The
+     * contract stays strict and this module states its own answer to it, which is
+     * that it has nothing to defer — `pitchBus.start()` already ran during
+     * construction, and the worklet begins as soon as its async load resolves
+     * (see THE ASYNC HALF above). There is no third thing waiting for a cue.
+     */
+    start() {},
     /**
      * Command. Sound `frequency` on pool slot `slot`.
      *
@@ -294,6 +349,11 @@ export function surgeModule(context, params = {}) {
      * of which there are 766, and a patch load is an event.
      */
     surgeControl: {
+      /** Query. Resolves once the worklet is connected (true) or could not load
+       *  (false). The seam an OFFLINE render must await before `startRendering()`,
+       *  and the honest way for the GUI modal to know it may talk to the engine.
+       *  See `ready` above for the measured failure that made it necessary. */
+      whenReady: () => ready,
       /** Command. One of Surge's own parameters, by index, 0..1. */
       setParam: (index, value) => post({ type: "setParam", index, value }),
       /** Command. Load a patch. `bytes` is present only for an on-demand patch that

@@ -71,7 +71,7 @@
  * DOM-free, engine-free, clock-free: `now` is always an argument.
  */
 
-import { beatAtTime } from "./midi_clip.js";
+import { beatAtTime, soundingNotes } from "./midi_clip.js";
 
 /** The three playback kinds. `timeline` and `recordable` are both reproducible;
  *  only `live` is not — `PLAYBACK_REPRODUCIBLE` is the one predicate every reader
@@ -236,6 +236,242 @@ export function lastPulseSeconds(now, pulsesPerMinute) {
   if (!Number.isFinite(rate) || rate <= 0) return 0;
   const period = 60 / rate;
   return Math.floor(Math.max(0, now) / period) * period;
+}
+
+/**
+ * Query (reads the plugin registry). WHICH ENGINE MODULES receive this source's
+ * `midi` stream — the routing a scheduler needs to know who to play.
+ *
+ * ── A MIDI WIRE IS NOT AN AUDIO WIRE, AND THIS IS WHERE THAT SHOWS ─────────
+ * `readAudioScene` connects AudioNodes, and it only wires nodes that HAVE an
+ * `audioModule` — so a cable out of a clip node is DROPPED there, exactly as a
+ * cable out of a Keyboard is (tests/renderPatchAudio.mjs's `.UNPLAYED` tag records
+ * the same fact). That is CORRECT rather than a gap: a midi cable does not carry a
+ * signal to be connected, it carries the document-level fact "these notes go to
+ * that instrument". So the routing is resolved HERE, from the document, and the
+ * scheduler calls `engine.noteOn(id, …)` on the named module directly.
+ *
+ * MATCHED BY PORT TYPE, not by port key. Surge spells its midi input `notes`; a
+ * future sampler may spell it `in`. What makes an input a midi receiver is its
+ * declared TYPE, which is the same thing `typesCompatible` refused the bad drops on.
+ *
+ * @param {object} items - the folded item map
+ * @param {object} registry - the plugin registry
+ * @param {string} sourceId - the midi source's item id
+ * @returns {Array<{id: string, port: string}>} the receiving modules
+ *
+ * @example midiRoutes({}, {get: () => null}, "c") // []
+ * @example // a clip wired to nothing plays nothing
+ * @example midiRoutes({c: {type: "node_midi_clip"}}, {get: () => ({})}, "c") // []
+ */
+export function midiRoutes(items, registry, sourceId) {
+  const routes = [];
+  for (const [targetId, target] of Object.entries(items ?? {})) {
+    if (target?.active === false) continue;
+    let plugin = null;
+    try { plugin = registry.get(target?.type); } catch { continue; }
+    // ONLY AN ENGINE MODULE can sound a note. A clip wired into a Number node is
+    // legal on the canvas and simply has nothing to play — the same judgement
+    // core/live_control.triggerRoutes makes, for the same reason.
+    if (!plugin?.audioModule) continue;
+    const inputs = plugin.audioSpec?.inputs ?? [];
+    for (const [portKey, wire] of Object.entries(target?.inputs ?? {})) {
+      if (wire?.item !== sourceId) continue;
+      const port = inputs.find((p) => p.key === portKey);
+      if (port?.type !== "midi") continue;
+      routes.push({ id: targetId, port: portKey });
+    }
+  }
+  return routes;
+}
+
+/**
+ * Query (reads the plugin registry). WHICH MIDI SOURCES a press on `sourceId`
+ * RESTARTS — the clip nodes whose `trigger` input is wired to that control.
+ *
+ * ── WHY THIS EXISTS INSTEAD OF WIDENING `triggerRoutes` ────────────────────
+ * `core/live_control.triggerRoutes` opens with `if (!plugin?.audioModule) continue;`
+ * and it was tempting to delete that line, because a Button wired to a clip
+ * produces zero routes and the press appears to vanish. **DELETING IT WOULD BE
+ * WRONG.** That function answers exactly one question — "which ENGINE CALLS does
+ * this press produce" — and its gate is what keeps it from handing the engine an id
+ * it has never heard of, which its own docblock notes "throws in the middle of a
+ * presentation, the one place an exception is most expensive". For a clip node the
+ * honest answer to THAT question really is none: a clip has no engine counterpart
+ * to strike.
+ *
+ * The press does something else entirely — it moves a PLAYHEAD, which is a fact
+ * about the document's own playback, not an engine method call. So it is a SECOND
+ * question with its own function, and `triggerRoutes` keeps both its gate and its
+ * meaning. (This is the same split `noteRoutes` already makes beside it: two
+ * questions about one press, answered separately, rather than one function with a
+ * mode flag.)
+ *
+ * @param {object} items - the folded item map
+ * @param {object} registry - the plugin registry
+ * @param {string} sourceId - the control that fired
+ * @param {string} [sourcePort] - which of its outputs fired
+ * @returns {string[]} the ids of the midi sources this press restarts
+ *
+ * @example clipTriggerTargets({}, {get: () => null}, "b") // []
+ */
+export function clipTriggerTargets(items, registry, sourceId, sourcePort = "out") {
+  const targets = [];
+  for (const [id, state] of Object.entries(items ?? {})) {
+    if (state?.active === false) continue;
+    let plugin = null;
+    try { plugin = registry.get(state?.type); } catch { continue; }
+    if (!isTriggerableMidiSource(plugin)) continue;
+    const wire = state?.inputs?.[TRIGGER_PORT];
+    if (wire?.item !== sourceId) continue;
+    if ((wire.port ?? "out") !== sourcePort) continue;
+    targets.push(id);
+  }
+  return targets;
+}
+
+/**
+ * Query (reads the plugin registry). THE PLAYHEAD of one midi source at
+ * presentation time `now`, in beats — or null when it is not playing at all.
+ *
+ * The three kinds, resolved (see the file header for what each costs):
+ *   timeline    `now − startTime`.
+ *   recordable  `now − lastPulse`, the clock's most recent pulse. **THE CLOCK'S
+ *               RATE IS READ**, not assumed: a wire that changed nothing observable
+ *               is the "decorative cable" defect `core/live_control.js` records at
+ *               length (the user disconnected a pitch cable and "it was fine…this is
+ *               a big red flag"). A clock at 120 BPM must retrigger twice as often
+ *               as one at 60, or the cable is a lie.
+ *   live        `now − whenItWasPressed`, from the caller's scratch map. NULL when
+ *               it has never been pressed — a live clip is SILENT until a hand
+ *               starts it, which is the whole point of arming it that way.
+ *
+ * @param {object} items - the folded item map
+ * @param {object} registry - the plugin registry
+ * @param {string} itemId - the midi source
+ * @param {number} now - presentation time, seconds
+ * @param {object} [liveStarts] - `{itemId: seconds}` for live-triggered sources
+ * @param {number} [liveNow] - the LIVE clock's reading, for live-triggered sources
+ *     only (defaults to `now`). See the two-clocks note below.
+ * @returns {number|null} beats, or null when not playing
+ *
+ * ── TWO CLOCKS, AND THE KIND OF CLOCK MATCHES THE KIND OF STATE ────────────
+ * `now` is the PRESENTATION clock (`particleTime()`), which the presenter drives
+ * and **the editor deliberately FREEZES for determinism** — measured: it sits at a
+ * constant while the editor runs, which is exactly what makes a still render
+ * reproducible. That is right for the two REPRODUCIBLE kinds: a timeline clip and a
+ * clock-driven one must advance with the presentation, not with wall time, or an
+ * export would not match the room.
+ *
+ * It is WRONG for a LIVE-triggered clip, and the symptom was concrete: pressing a
+ * Button in the editor started a playhead that could never advance, so the chord
+ * sounded and never released — a drone. A live press is EPHEMERAL state already
+ * (it is why `live_trigger_warning` exists), so its playhead may legitimately run
+ * on a live clock without weakening any determinism claim: that path is already
+ * excluded from every export. So the caller passes the AUDIO clock as `liveNow`,
+ * and ONLY the live branch reads it.
+ *
+ * @example // an untriggered clip runs from its own startTime
+ * @example clipPlayhead({c: {type: "x", startTime: 0, tempo: 120}}, {get: () => ({})}, "c", 1) // 2
+ * @example clipPlayhead({c: {type: "x", startTime: 1, tempo: 120}}, {get: () => ({})}, "c", 1) // 0
+ * @example // a LIVE clip nobody has pressed is not playing
+ * @example clipPlayhead({c: {type: "x", inputs: {trigger: {item: "b", port: "out"}}}, b: {type: "btn"}}, {get: () => ({livePress: {}})}, "c", 5, {}) // null
+ */
+export function clipPlayhead(items, registry, itemId, now, liveStarts = {}, liveNow = now) {
+  const state = items?.[itemId];
+  if (!state) return null;
+  const tempo = state.tempo;
+  const kind = clipPlaybackKind(items, registry, itemId);
+  if (kind === "live") {
+    const started = liveStarts?.[itemId];
+    if (!Number.isFinite(started)) return null;
+    // THE LIVE CLOCK, not the presentation one — see the two-clocks note above.
+    return playheadBeats(liveNow, started, tempo);
+  }
+  if (kind === "recordable") {
+    const wire = state.inputs?.[TRIGGER_PORT];
+    // The clock's OWN rate, off its own knob leaf. A source that is not a clock (no
+    // bpm knob) falls back to the timeline reading rather than pretending to pulse.
+    const bpm = Number(items?.[wire?.item]?.audioBpm);
+    if (Number.isFinite(bpm) && bpm > 0) return playheadBeats(now, lastPulseSeconds(now, bpm), tempo);
+  }
+  const startTime = Number(state.startTime);
+  return playheadBeats(now, Number.isFinite(startTime) ? startTime : 0, tempo);
+}
+
+/**
+ * Query (reads the plugin registry). WHICH NOTES this midi source has SOUNDING at
+ * presentation time `now` — the set a scheduler reconciles the engine against.
+ *
+ * ── THE STREAM IS ASKED OF `computeOutputs`, WHICH IS WHY THERE IS NO ROSTER ─
+ * Every midi source already publishes its notes on its `midi` output port — that is
+ * what makes the wire work at all. So the scheduler reads the SAME value a receiver
+ * would, and a clip node, an ABC node and any future arpeggiator are all played by
+ * this one function with no code per widget. Reading the clip leaf directly would
+ * have worked for exactly one of them.
+ *
+ * ── A SET, NOT AN EVENT QUEUE, AND THAT IS THE WHOLE DESIGN ────────────────
+ * The obvious scheduler walks `clipEvents` forward and fires each one as its beat
+ * passes. That needs a cursor — state carried from frame N−1 — which CLAUDE.md
+ * disqualifies outright: it breaks Δt = 0 reproducibility and frame-range sharding
+ * at once, and a seek would either replay the whole prefix or miss every event
+ * before it. This asks a PURE QUESTION instead: given `now`, which notes are down?
+ * Δt = 0 gives the identical set, so no events are emitted and the frame is
+ * byte-identical; a seek to any time answers correctly with no prefix; and the
+ * caller turns set-differences into note-ons exactly as `syncLatchedNotes` already
+ * turns chord-differences into them.
+ *
+ * @param {object} items - the folded item map
+ * @param {object} registry - the plugin registry
+ * @param {string} itemId - the midi source
+ * @param {number} now - presentation time, seconds
+ * @param {object} [liveStarts] - `{itemId: seconds}` for live-triggered sources
+ * @returns {Array<object>} the sounding note records (empty when not playing)
+ *
+ * @example clipSoundingNotes({}, {get: () => null}, "c", 0) // []
+ */
+export function clipSoundingNotes(items, registry, itemId, now, liveStarts = {}, liveNow = now) {
+  const state = items?.[itemId];
+  if (!state || state.active === false) return [];
+  let plugin = null;
+  try { plugin = registry.get(state.type); } catch { return []; }
+  if (!isTriggerableMidiSource(plugin) || typeof plugin.computeOutputs !== "function") return [];
+  const beat = clipPlayhead(items, registry, itemId, now, liveStarts, liveNow);
+  if (beat === null) return [];
+  let notes = [];
+  // A producer's own parse (ABC) can be arbitrarily broken source; it must not take
+  // out the audio frame. A broken source plays nothing, which is its own rule.
+  try { notes = plugin.computeOutputs(state)?.midi ?? []; } catch { return []; }
+  return soundingNotes(notes, beat);
+}
+
+/**
+ * Query (reads the plugin registry). Every midi source in the frame, with the notes
+ * each has sounding: `{itemId: [pitch, …]}` — ascending and deduplicated, the shape
+ * `core/live_control.latchedChordDelta` diffs.
+ *
+ * DEDUPLICATED BECAUSE THE CONSUMER IS A VOICE POOL, which keys a note by its
+ * number: two overlapping notes at the same pitch are one sounding voice, and
+ * sending a second note-on would restart the first one's envelope mid-note.
+ * Sources with nothing sounding are OMITTED rather than mapped to `[]`, so the map
+ * compares equal to the engine's record when nothing is playing.
+ *
+ * @param {object} items - the folded item map
+ * @param {object} registry - the plugin registry
+ * @param {number} now - presentation time, seconds
+ * @param {object} [liveStarts] - `{itemId: seconds}` for live-triggered sources
+ * @returns {Object<string, number[]>}
+ *
+ * @example soundingClips({}, {get: () => null}, 0) // {}
+ */
+export function soundingClips(items, registry, now, liveStarts = {}, liveNow = now) {
+  const out = {};
+  for (const id of Object.keys(items ?? {})) {
+    const notes = clipSoundingNotes(items, registry, id, now, liveStarts, liveNow);
+    if (notes.length === 0) continue;
+    out[id] = [...new Set(notes.map((n) => n.pitch))].sort((a, b) => a - b);
+  }
+  return out;
 }
 
 /**

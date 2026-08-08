@@ -59,3 +59,8 @@ scratchpad*.mjs
 # Rendered patch audio: the .wav are 23 MB and regenerable (tests/renderPatchAudio.mjs);
 # the .mp3 beside them ARE committed, because cloning is how the user gets files.
 src/demo_apps/PowerRP/.claude_audio_checks/*.wav
+
+# Cached Surge engine binaries for tests/surge_audio_probe.mjs — 35 MB fetched
+# once from the upstream deploy (synth/surge_remote.js states why they are not
+# vendored). Regenerated on demand; never committed.
+src/demo_apps/PowerRP/tests/fixtures/surge/
