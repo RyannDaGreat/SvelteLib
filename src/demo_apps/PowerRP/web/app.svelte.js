@@ -3100,91 +3100,148 @@ export class PowerRPApp {
     this.codeModal = null;
   }
 
-  // ── THE FULLSCREEN PIANO ROLL MODAL ────────────────────────────────────────
+  // ── THE `signal` EDITOR MODAL ──────────────────────────────────────────────
   // User, 2026-08-08: the MIDI widgets should "bring up full fledged UI's in giant
   // modals when duoble clicked … a fullscreen midi piano roll editor ported over".
   //
-  // MODELLED ON `codeModal` DELIBERATELY, AND IT IS A SEPARATE SIGNAL RATHER THAN A
+  // THE EDITOR IS ryohey's `signal`, FRAMED — NOT A ROLL WE WROTE. Standing user
+  // ruling, stated three times ("USE IT dont imitate it") and violated once by a
+  // hand-rolled lookalike that is now deleted. web/SignalModal.svelte holds one
+  // same-origin <iframe> at the vendored web/public/signal/edit.html and does
+  // nothing but translate messages.
+  //
+  // ── WHAT THAT CHANGES ABOUT THIS SEAM, versus the roll it replaces ─────────
+  // The old roll wrote CONTINUOUSLY — every pointermove was a live preview and
+  // every released drag its own undo unit — because we owned the gesture. We do not
+  // own signal's gestures and never will: a drag inside the frame is signal's, and
+  // the parent cannot see it. So the write is a DISCRETE IMPORT: signal edits its
+  // own song, and the author's edits land in the document when the import runs.
+  // That is one `setPreview` + one `commitPreview`, i.e. ONE undo unit for one
+  // import, which is both simpler than the old lifecycle and the only shape the
+  // frame boundary permits.
+  //
+  // MODELLED ON `codeModal` DELIBERATELY, AND STILL A SEPARATE SIGNAL RATHER THAN A
   // FIFTH SCOPE OF IT. The two dialogs share their SHAPE (a `$state` target, a
   // component App.svelte mounts off it, Escape/backdrop dismissal) and share
-  // nothing else: a code modal reads ONE STRING once and writes it once on Save,
-  // where the piano roll reads a LIST and writes it CONTINUOUSLY — every drag is a
-  // live preview that has to be visible on the canvas behind the dialog, and every
-  // released gesture is its own undo unit. Forcing that through a lifecycle built
-  // for "seed a buffer, commit on Save" would have meant a `commit` that means
-  // something different per scope, which is the mirror hazard the codeModal
-  // docblock above is itself careful about.
+  // nothing else: a code modal seeds ONE STRING and commits ONE STRING, where this
+  // one reads and writes TWO LIST LEAVES (notes and automation) that must be
+  // written together or not at all.
   //
   // THE WRITES GO THROUGH setPreview → commitPreview, the universal seam. Nothing
-  // here knows what a keyframe is: a clip edited on slide 2 is keyframed on slide 2
-  // for the same reason moving a rectangle there is.
+  // here knows what a keyframe is: a clip imported on slide 2 is keyframed on slide
+  // 2 for the same reason moving a rectangle there is.
 
-  /** The open piano roll's target `{itemId}`, else null. A reactive `$state` field
-   *  App.svelte mounts PianoRollModal off. */
-  pianoRoll = $state(null);
+  /** The open signal editor's target `{itemId}`, else null. A reactive `$state`
+   *  field App.svelte mounts SignalModal off. */
+  signalEditor = $state(null);
 
-  /** Command. Opens the fullscreen piano roll on a widget that declares an EDITABLE
-   *  clip. Selects the item so the Inspector behind the dialog reflects it.
+  /** Command. Opens `signal` on a widget that declares an EDITABLE clip. Selects
+   *  the item so the Inspector behind the dialog reflects it.
    *
    *  REFUSES LOUDLY on a widget that declares no editable clip, rather than opening
    *  an editor with nothing to edit. Reaching here without one means a plugin named
-   *  `activate: "piano_roll_edit"` and forgot its `midiClip` declaration — a
+   *  `activate: "signal_edit"` and forgot its `midiClip` declaration — a
    *  plugin-authoring mistake, and the getHandler/getMaterial precedent is that an
    *  unknown declared name is reported rather than silently doing nothing.
    *  @param {string} itemId */
-  openPianoRoll(itemId) {
-    if (this.pianoRoll?.itemId === itemId) return;
+  openSignalEditor(itemId) {
+    if (this.signalEditor?.itemId === itemId) return;
     const decl = this.#midiClipDecl(itemId);
     if (!decl) {
-      console.error(`openPianoRoll: "${this.rawState().items?.[itemId]?.type}" has no editable clip — a widget whose activate is "piano_roll_edit" must also declare \`midiClip: {key, activeKey, editable: true}\` (see plugins/node_midi_clip.js).`);
+      console.error(`openSignalEditor: "${this.rawState().items?.[itemId]?.type}" has no editable clip — a widget whose activate is "signal_edit" must also declare \`midiClip: {key, activeKey, editable: true}\` (see plugins/node_midi_clip.js).`);
       return;
     }
     this.selection = itemId;
-    this.pianoRoll = { itemId };
+    this.signalEditor = { itemId };
   }
 
-  /** Command. Closes the piano roll, DROPPING any uncommitted preview. A dialog
-   *  dismissed mid-drag must not leave a half-applied gesture on the canvas — the
+  /** Command. Closes the editor, DROPPING any uncommitted preview. A dialog
+   *  dismissed mid-import must not leave a half-applied write on the canvas — the
    *  same reason `closeCodeModal` commits nothing. */
-  closePianoRoll() {
+  closeSignalEditor() {
     this.cancelPreview();
-    this.pianoRoll = null;
+    this.signalEditor = null;
   }
 
-  /** Query. The open piano roll's clip as a core/lists.js LIST VALUE
-   *  (`{list, active}`), read off the RAW state so the editor sees what is STORED —
-   *  equations included — rather than an evaluated snapshot it would then write
-   *  back as literal numbers, silently destroying every binding in the clip.
+  /** Query. The open editor's `midiClip` declaration, or null — what the modal
+   *  needs to know WHICH leaves it is editing without holding a widget roster.
+   *  @returns {object|null} */
+  signalClipDecl() {
+    const t = this.signalEditor;
+    return t ? this.#midiClipDecl(t.itemId) : null;
+  }
+
+  /** Query. The open editor's clip as a core/lists.js LIST VALUE (`{list, active}`),
+   *  read off the RAW state so the exporter sees what is STORED — equations
+   *  included — rather than an evaluated snapshot.
    *  @returns {{list: Array, active: Array|undefined}} */
-  pianoRollClip() {
-    const t = this.pianoRoll;
+  signalClip() {
+    return this.#signalListValue((d) => [d.key, d.activeKey]);
+  }
+
+  /** Query. The open editor's AUTOMATION lane as a LIST VALUE, or the empty value
+   *  when the widget declares no `ctrlKey`. A widget may hold notes without holding
+   *  automation, and asking for a lane it never declared must answer "none" rather
+   *  than reach for an undefined leaf name.
+   *  @returns {{list: Array, active: Array|undefined}} */
+  signalControls() {
+    return this.#signalListValue((d) => [d.ctrlKey, d.ctrlActiveKey]);
+  }
+
+  /** Query. One of the two declared list leaves as a LIST VALUE. Private because
+   *  the two public readers above are the vocabulary; this is their shared body. */
+  #signalListValue(pick) {
+    const t = this.signalEditor;
     const decl = t && this.#midiClipDecl(t.itemId);
-    if (!decl) return { list: [], active: undefined };
+    const [key, activeKey] = decl ? pick(decl) : [];
+    if (!key) return { list: [], active: undefined };
     const item = this.rawState().items?.[t.itemId] ?? {};
-    return { list: Array.isArray(item[decl.key]) ? item[decl.key] : [], active: item[decl.activeKey] };
+    return { list: Array.isArray(item[key]) ? item[key] : [], active: activeKey ? item[activeKey] : undefined };
   }
 
-  /** Command. Shows a clip value as a LIVE PREVIEW — what a drag calls on every
-   *  pointer-move. Writes BOTH leaves in ONE preview delta so the elements and
-   *  their visibility companion can never be spliced out of step.
+  /**
+   * Command. THE IMPORT — writes a converted song's notes and automation into the
+   * widget as ONE UNDO UNIT, and returns what it wrote.
    *
-   *  The companion is written only when the value actually HAS one, so editing a
-   *  clip that has never hidden a note does not mint an all-true companion into
-   *  the document (the INSERT_POINT_HANDLER precedent).
-   *  @param {{list: Array, active: Array|undefined}} value */
-  previewPianoRollClip(value) {
-    const t = this.pianoRoll;
+   * BOTH LEAVES IN ONE `setPreview`, which is the same rule the old roll's
+   * per-gesture write obeyed and it matters more here, not less: notes and
+   * automation are one musical statement, and a document that had taken the notes
+   * of an import and not its bends would be a clip nobody authored.
+   *
+   * THE COMPANIONS ARE CLEARED, NOT PRESERVED. An import REPLACES the clip, so a
+   * `clipActive` left over from the previous contents would hide elements by
+   * INDEX — silencing whichever imported notes happened to land where the old
+   * hidden ones were. Hiding is a statement about specific notes; those notes are
+   * gone. (Written as `undefined` rather than an all-true array, so a clip that
+   * never hid anything does not mint a companion — the INSERT_POINT_HANDLER
+   * precedent.)
+   *
+   * A WIDGET WITH NO DECLARED LANE TAKES THE NOTES AND REFUSES THE AUTOMATION
+   * LOUDLY rather than silently: an author who drew a filter sweep must be told it
+   * did not land.
+   *
+   * @param {{notes: Array, controls: Array}} song - converted lists (core/signal_song.js)
+   * @returns {{notes: number, controls: number}} how many elements were written
+   */
+  commitSignalImport(song) {
+    const t = this.signalEditor;
     const decl = t && this.#midiClipDecl(t.itemId);
-    if (!decl) return;
-    const pairs = [[["items", t.itemId, decl.key], value.list]];
-    if (value.active) pairs.push([["items", t.itemId, decl.activeKey], value.active]);
+    if (!decl) return { notes: 0, controls: 0 };
+    const notes = Array.isArray(song?.notes) ? song.notes : [];
+    const controls = Array.isArray(song?.controls) ? song.controls : [];
+    const pairs = [
+      [["items", t.itemId, decl.key], notes],
+      [["items", t.itemId, decl.activeKey], undefined],
+    ];
+    if (decl.ctrlKey) {
+      pairs.push([["items", t.itemId, decl.ctrlKey], controls]);
+      pairs.push([["items", t.itemId, decl.ctrlActiveKey], undefined]);
+    } else if (controls.length > 0) {
+      console.error(`commitSignalImport: "${this.rawState().items?.[t.itemId]?.type}" declares no \`ctrlKey\`, so ${controls.length} automation point(s) from signal were DROPPED. Add \`ctrlKey\`/\`ctrlActiveKey\` to the widget's \`midiClip\` declaration (see plugins/node_midi_clip.js) to keep them.`);
+    }
     this.setPreview(pairs);
-  }
-
-  /** Command. Commits the previewed clip as ONE undo unit — what a released drag,
-   *  a placed note or a deletion calls. */
-  commitPianoRollClip() {
     this.commitPreview();
+    return { notes: notes.length, controls: decl.ctrlKey ? controls.length : 0 };
   }
 
   /** Query. The `midiClip` declaration of the widget behind `itemId`, or null.

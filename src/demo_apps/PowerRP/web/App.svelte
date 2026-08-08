@@ -42,7 +42,7 @@
   import SurgeGuiModal from "./SurgeGuiModal.svelte";
   import { patchBytesToBase64 } from "./surgeGui.js";
   import { moduleControlFor } from "./audioMirror.svelte.js";
-  import PianoRollModal from "./PianoRollModal.svelte";
+  import SignalModal from "./SignalModal.svelte";
   import DebugConsole, { DEBUG_PAGES } from "./DebugConsole.svelte";
   import { renderBadgeCount } from "./renderJobView.js";
   // The record store, not projectApi: in static mode the toolbar badge counts
@@ -3546,17 +3546,18 @@
     />
   {/if}
 
-  <!-- THE FULLSCREEN PIANO ROLL (user, 2026-08-08: the MIDI widgets should "bring
-       up full fledged UI's in giant modals when duoble clicked"). Mounted off its
-       own signal rather than as a fifth `codeModal` scope: the two dialogs share
-       their SHAPE and nothing else — a code modal seeds a buffer once and commits
-       on Save, where the roll writes CONTINUOUSLY and every released drag is its
-       own undo unit (app.svelte.js states the full argument at `pianoRoll`).
+  <!-- THE MIDI EDITOR, WHICH IS ryohey's `signal` AND NOT OURS (user, 2026-08-08:
+       the MIDI widgets should "bring up full fledged UI's in giant modals when
+       duoble clicked"; and, standing, "USE IT dont imitate it"). One same-origin
+       iframe at the vendored web/public/signal/edit.html. Mounted off its own
+       signal rather than as a fifth `codeModal` scope: the two dialogs share their
+       SHAPE and nothing else — a code modal seeds one string and commits one
+       string, where this one reads and writes TWO list leaves (notes and
+       automation) that must land together or not at all.
 
-       It takes the whole store rather than a value + callbacks, because unlike the
-       code modal it both READS the clip on every render (an undo behind the dialog
-       must be visible in it) and WRITES through the preview seam mid-gesture. -->
-  {#if app.pianoRoll}
-    <PianoRollModal {app} />
+       It takes the whole store rather than a value + callbacks, because it both
+       READS the target on every render and WRITES through the preview seam. -->
+  {#if app.signalEditor}
+    <SignalModal {app} />
   {/if}
 </div>

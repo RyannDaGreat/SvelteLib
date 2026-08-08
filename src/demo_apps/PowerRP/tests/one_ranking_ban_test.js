@@ -107,8 +107,9 @@ export function stripComments(src) {
 
 /**
  * Query. Every .js/.mjs/.svelte file under `dir`, recursively, skipping the four
- * kinds of not-our-source: `node_modules`, `dist` and `deps` (BUILD OUTPUT and
- * vendored bundles — minified mermaid/katex/pdfjs match almost any shape probe),
+ * kinds of not-our-source: `node_modules`, `dist`, `deps` and `public` (BUILD OUTPUT
+ * and vendored bundles — minified mermaid/katex/pdfjs match almost any shape probe;
+ * Vite's `public/` is BY DEFINITION files copied verbatim into the build — never source we author. It holds the vendored ryohey/signal editor (web/public/signal/, a 2.35 MB minified third-party bundle whose own README says "Do not edit anything here by hand"), which matched this rule the day it landed and is not ours to hold to it.),
  * and dot-directories (`.frenzy/` holds whole snapshot trees of this app, stale
  * copies of every file here, so scanning them reports one finding per snapshot).
  *
@@ -121,7 +122,7 @@ export function stripComments(src) {
 export function sourceFiles(dir) {
   const out = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === "node_modules" || e.name === "dist" || e.name === "deps" || e.name.startsWith(".")) continue;
+    if (e.name === "node_modules" || e.name === "dist" || e.name === "deps" || e.name === "public" || e.name.startsWith(".")) continue;
     const full = resolve(dir, e.name);
     if (e.isDirectory()) out.push(...sourceFiles(full));
     else if (/\.(js|mjs|svelte)$/.test(e.name)) out.push(full);

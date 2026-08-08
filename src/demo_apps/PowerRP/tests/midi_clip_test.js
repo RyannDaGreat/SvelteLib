@@ -305,14 +305,19 @@ check("a fresh clip node is an EMPTY stream; a fresh ABC node is a playable tune
   assert.ok(tune.every((n) => Number.isFinite(n.pitch) && Number.isFinite(n.start)));
 });
 
-check("a widget whose activate is piano_roll_edit declares an EDITABLE clip", () => {
-  // The gate app.openPianoRoll refuses on. A plugin naming the handler and
+check("a widget whose activate is signal_edit declares an EDITABLE clip", () => {
+  // The gate app.openSignalEditor refuses on. A plugin naming the handler and
   // forgetting the declaration would open an editor with nothing to edit.
-  assert.equal(clipPlugin.activate, "piano_roll_edit");
+  assert.equal(clipPlugin.activate, "signal_edit");
   assert.equal(clipPlugin.midiClip.editable, true);
   assert.equal(clipPlugin.midiClip.key, "clip");
   assert.equal(clipPlugin.midiClip.activeKey, "clipActive");
-  // The ABC node must NOT be claimed by the roll: its notes are derived from text.
+  // THE AUTOMATION LANE IS DECLARED TOO, and the import refuses to write one
+  // without it — signal has full bend/CC lanes, so a widget that took its notes
+  // and dropped its automation would silently discard authored work.
+  assert.equal(clipPlugin.midiClip.ctrlKey, "ctrl");
+  assert.equal(clipPlugin.midiClip.ctrlActiveKey, "ctrlActive");
+  // The ABC node must NOT be claimed by signal: its notes are derived from text.
   assert.equal(abcPlugin.midiClip, undefined);
   assert.equal(abcPlugin.activate, "code_modal");
 });

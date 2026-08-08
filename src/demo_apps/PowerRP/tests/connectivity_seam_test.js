@@ -57,7 +57,8 @@ const GUARD = "tests/connectivity_seam_test.js";
  *  internals — as an app violation. Same reason as node_modules: not ours to
  *  hold to this rule. A gate that reports code we do not own is worse than no
  *  gate, because the next reader learns to ignore it. */
-const SKIP_DIRS = new Set(["node_modules", "dist", ".git", "__pycache__", ".frenzy", ".vite"]);
+/** `public` is here for the same reason as `dist`. Vite's `public/` is BY DEFINITION files copied verbatim into the build — never source we author. It holds the vendored ryohey/signal editor (web/public/signal/, a 2.35 MB minified third-party bundle whose own README says "Do not edit anything here by hand"), which matched this rule the day it landed and is not ours to hold to it. */
+const SKIP_DIRS = new Set(["node_modules", "dist", "public", ".git", "__pycache__", ".frenzy", ".vite"]);
 
 /** Source extensions the rule applies to. */
 const EXTS = [".js", ".mjs", ".svelte", ".html"];

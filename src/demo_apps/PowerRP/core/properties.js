@@ -2202,8 +2202,9 @@ export const PROPS = {
   },
 
   // ── midi clip: THE CLIP (a LIST property — core/lists.js) ───────────────────
-  // The note stream a `midi` wire carries, and the model the fullscreen piano roll
-  // edits. `core/midi_clip.js` is what READS it; this is the declaration.
+  // The note stream a `midi` wire carries, and the model the embedded `signal`
+  // editor imports into. `core/midi_clip.js` is what READS it; this is the
+  // declaration.
   //
   // ── WHY IT IS A LIST PROPERTY AND NOT A NEW KIND OF THING ───────────────────
   // CLAUDE.md's four-kinds-of-state law leaves exactly one place to put a clip. The
@@ -2252,7 +2253,42 @@ export const PROPS = {
     },
     order: "sequence",
     activeKey: "clipActive",
-    help: "The notes this clip holds, one entry per note: WHEN it starts, HOW LONG it lasts, WHICH pitch and HOW HARD. Double-click the widget for the fullscreen piano roll. Hiding an entry silences that note without losing it or renumbering the ones after it.",
+    help: "The notes this clip holds, one entry per note: WHEN it starts, HOW LONG it lasts, WHICH pitch and HOW HARD. Double-click the widget to edit it in signal, the full MIDI sequencer. Hiding an entry silences that note without losing it or renumbering the ones after it.",
+  },
+
+  // ── midi clip: THE CONTROL LANE (a LIST property — core/lists.js) ───────────
+  // Pitch bend and CC automation, beside `clip` and read by
+  // `core/midi_clip.clipControls`. THE OTHER HALF OF THE MIDI VOCABULARY:
+  // `MIDI_EVENT_RANK` has declared `cc` and `pitchBend` since the type was
+  // written and the Surge worklet has implemented both for longer than that —
+  // what was missing was a PRODUCER, and the embedded `signal` editor is one,
+  // because it has full automation lanes. A converter that read its notes and
+  // dropped its bends would silently discard authored work.
+  //
+  // THREE FIELDS: start, controller, value. `controller` is -1 for a pitch bend
+  // or a CC NUMBER 0..127; a negative can never be a CC by the protocol, so the
+  // sentinel cannot collide. ONE list rather than two keeps the element an
+  // all-numeric tuple (the plain-lerp branch, exactly as `clip`) and keeps "what
+  // automation happens at beat 3" one thing to look at.
+  //
+  // VALUES ARE RAW MIDI, NOT NORMALIZED — 0..127 for a CC, 0..16383 for a bend
+  // with 8192 as centre. Both ends of the pipe already speak those units (signal
+  // stores them; the worklet takes them), so a normalized middle would be two
+  // conversions and two roundings buying nothing. core/midi_clip.js states the
+  // full argument.
+  ctrl: {
+    label: "Automation", kind: LIST_ROW_KIND, category: "control",
+    element: {
+      storage: "tuple",
+      fields: [
+        { name: "start", kind: "number", min: 0, label: "Start", help: "When this automation point takes effect, in BEATS from the clip's start. A beat is a quarter note." },
+        { name: "controller", kind: "number", min: -1, max: 127, step: 1, label: "Controller", help: "WHICH controller this point moves. -1 is PITCH BEND. 0 to 127 is a MIDI CC number — 1 is the mod wheel, 7 volume, 11 expression, 74 the filter cutoff most synths map. What a CC actually does is up to the instrument this clip is wired to." },
+        { name: "value", kind: "number", min: 0, max: 16383, step: 1, label: "Value", help: "The value to send, in the controller's OWN MIDI range: 0 to 127 for a CC, and 0 to 16383 for a pitch bend where 8192 is dead centre (no bend). Out-of-range values are clamped to the range the controller actually has." },
+      ],
+    },
+    order: "sequence",
+    activeKey: "ctrlActive",
+    help: "Pitch-bend and CC automation for this clip, one entry per point. Sent at its beat, and — when it lands on the same beat as a note — sent BEFORE that note, so the note is heard under the controller state written for it. Hiding an entry drops that point without losing it or renumbering the ones after it.",
   },
 };
 

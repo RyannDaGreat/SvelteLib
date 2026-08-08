@@ -178,7 +178,8 @@ function sourceFiles(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = resolve(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === "dist" || entry.name === "node_modules") continue; // build output
+      // `public` joins the two build-output skips: Vite's `public/` is BY DEFINITION files copied verbatim into the build — never source we author. It holds the vendored ryohey/signal editor (web/public/signal/, a 2.35 MB minified third-party bundle whose own README says "Do not edit anything here by hand"), which matched this rule the day it landed and is not ours to hold to it.
+      if (entry.name === "dist" || entry.name === "node_modules" || entry.name === "public") continue;
       out.push(...sourceFiles(p));
     } else if (entry.name.endsWith(".svelte") || entry.name.endsWith(".js")) {
       out.push(p);

@@ -12884,178 +12884,84 @@ audio.ae-preview-media {
   color: var(--a-surge-key-label);
 }
 
-/* ── PianoRollModal — THE fullscreen MIDI clip editor (web/PianoRollModal.svelte) ─
-   The dialog's CHROME and its grid. It rides the shared lib/Modal.svelte at
-   size="large" (90vw×90vh); the :has() rule below flexes THAT modal's body to fill
-   the panel so the grid can be full-height, scoped to panels that actually contain
-   a .pr-root so no other modal is affected — the same construction the code modal
-   above uses, and for the same reason.
+/* ── SignalModal — the embedded `signal` MIDI editor (web/SignalModal.svelte) ───
+   REPLACES the .pr-* block that styled a hand-rolled piano roll. That editor is
+   deleted (standing user ruling: "USE IT dont imitate it"), and so is its CSS —
+   a stylesheet that kept dressing a component nobody mounts is the same confident
+   lie as doctrine describing a reverted design.
 
-   Every structural literal is a declared --a-pr-* token. Declared, never a var()
-   FALLBACK: an undeclared token silently carrying everything through its fallback
-   is the defect tests/phantom_token_ban_test.js exists to catch, and the debug
-   console block in this file is the worked example of getting it wrong. */
+   There is very little here ON PURPOSE. The dialog is a toolbar and an iframe; the
+   entire editing surface belongs to ryohey/signal and is styled inside the frame,
+   which we do not reach into and must not. It rides the shared lib/Modal.svelte at
+   size="large" (90vw x 90vh); the :has() rule below flexes THAT modal's body to
+   fill the panel so the frame can be full-height, scoped to panels that actually
+   contain a .sig-root so no other modal is affected — the same construction the
+   code modal uses, and for the same reason.
+
+   Every structural literal is a declared --a-sig-* token, ON :root AND NOT ON .app.
+   That is not a style preference: the shared Modal PORTALS its panel to <body>, out
+   from under the .app block, so a token declared on .app never reaches it. The code
+   modal above declares its own on :root for exactly this reason.
+
+   TWO SEPARATE MISTAKES COLLAPSED THIS FRAME AND THE PROBE MEASURED BOTH, which is
+   worth writing down because each alone looks like the other's fix:
+     - tokens on .app        → --a-sig-min-frame-h does not resolve → 150px
+     - .modal-body without   → the body does not GROW, so the floor above is all
+       `flex: 1 1 auto`        the height there is             → 240px
+   Correct is both, and it is 749px in a 90vh dialog. The first draft of this
+   comment blamed the whole collapse on the token scoping; that was reasoned rather
+   than measured, and reverting each change separately showed it was wrong. */
 :root {
-  --a-pr-toolbar-pad: 8px 12px;
-  --a-pr-toolbar-gap: 16px;
-  --a-pr-footer-pad: 8px 12px;
-  --a-pr-footer-gap: 12px;
-  --a-pr-key-w: 56px;
-  --a-pr-row-h: 14px;
-  --a-pr-btn-pad: 4px 10px;
-  --a-pr-min-grid-h: 160px;
-  /* The grid's inks. Deliberately the same two near-identical darks the widget's
-     own painted preview uses (plugins/node_midi_clip.js LANE_*_INK), so the
-     thumbnail on the card and the editor read as one surface. They are restated
-     rather than shared because a display list carries LITERAL colours and cannot
-     reach a CSS token — core/nodeflow.js's docblock states that asymmetry. */
-  --a-pr-lane: #232838;
-  --a-pr-lane-black: #1a1e2b;
-  --a-pr-rule: #2e3446;
-  --a-pr-rule-bar: #454d66;
-  --a-pr-note: #7f8cc4;
-  --a-pr-note-selected: #c0caf5;
-  --a-pr-key-white: #c8cdd8;
-  --a-pr-key-black: #14171f;
-  --a-pr-key-edge: #0e1016;
-  --a-pr-key-label: #6b7280;
+  --a-sig-toolbar-pad: 8px 12px;
+  --a-sig-toolbar-gap: 12px;
+  --a-sig-btn-pad: 6px 14px;
+  --a-sig-radius: 4px;
+  --a-sig-min-frame-h: 240px;
 }
-.modal-panel:has(.pr-root) > .modal-body {
+
+/* Fill the shared modal's body with the frame (the panel is already a flex column
+   at a fixed 90vh); drop its padding so signal meets the edges. Scoped by :has() so
+   no other dialog is reshaped — the same construction the code modal uses. */
+.modal-panel:has(.sig-root) > .modal-body {
   flex: 1 1 auto;
   min-height: 0;
   padding: 0;
   overflow: hidden;
   display: flex;
 }
-.pr-root {
+.sig-root {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  min-width: 0;
   min-height: 0;
-  /* The root takes focus so Delete/Backspace reach onkeydown without the author
-     first clicking a control. tabindex="-1" keeps it out of the tab ORDER. */
-  outline: none;
 }
-.pr-toolbar {
+.sig-toolbar {
   display: flex;
   align-items: center;
-  gap: var(--a-pr-toolbar-gap);
-  padding: var(--a-pr-toolbar-pad);
+  gap: var(--a-sig-toolbar-gap);
+  padding: var(--a-sig-toolbar-pad);
   border-bottom: 1px solid var(--border);
-  background: var(--a-panel-bg);
   flex: 0 0 auto;
 }
-.pr-toolbar-gap { flex: 1 1 auto; }
-.pr-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.pr-field-label {
-  color: var(--fg-dim);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.pr-field-value {
-  color: var(--fg);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  /* A fixed inline size so the number changing width does not shove the rest of
-     the toolbar sideways while a velocity slider is being dragged. */
-  min-width: 2.5ch;
-  text-align: right;
-}
-.pr-select,
-.pr-range {
-  background: var(--control-bg);
-  color: var(--fg);
+.sig-import {
+  padding: var(--a-sig-btn-pad);
   border: 1px solid var(--border);
-  border-radius: var(--a-radius-control); /* app chrome is square */
-}
-.pr-select { padding: 2px 4px; font-size: 12px; }
-.pr-range { width: 120px; }
-.pr-zoom {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.pr-btn {
-  background: var(--control-bg);
+  border-radius: var(--a-sig-radius);
+  background: var(--bg-raised);
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--a-radius-control);
-  padding: var(--a-pr-btn-pad);
-  font-size: 12px;
   cursor: pointer;
+  white-space: nowrap;
 }
-.pr-btn:hover { background: var(--a-hover-bg); }
-.pr-primary { background: var(--a-selection); }
-.pr-body {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: var(--a-pr-min-grid-h);
-  overflow: hidden;
-}
-.pr-keys {
-  flex: 0 0 var(--a-pr-key-w);
-  border-right: 1px solid var(--border);
-  overflow: hidden;
-  background: var(--a-pr-key-black);
-}
-.pr-key {
-  height: var(--a-pr-row-h);
-  box-sizing: border-box;
-  background: var(--a-pr-key-white);
-  border-bottom: 1px solid var(--a-pr-key-edge);
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding-right: 4px;
-}
-.pr-key-black { background: var(--a-pr-key-black); }
-/* Every C carries a heavier top edge — the octave landmark the eye navigates by,
-   and the reason a label is not needed on all twelve rows at small zooms. */
-.pr-key-c { border-top: 1px solid var(--a-pr-rule-bar); }
-.pr-key-name {
-  font-size: 9px;
-  color: var(--a-pr-key-label);
-  font-variant-numeric: tabular-nums;
-}
-.pr-grid {
-  flex: 1 1 auto;
-  min-width: 0;
-  position: relative;
-  overflow: hidden;
-  cursor: crosshair;
-  /* The wheel handler calls preventDefault to pan/zoom the view itself, so the
-     browser must not also try to scroll or page-zoom under it. */
-  touch-action: none;
-}
-.pr-grid-dragging { cursor: grabbing; }
-.pr-svg { display: block; }
-.pr-lane { fill: var(--a-pr-lane); }
-.pr-lane-black { fill: var(--a-pr-lane-black); }
-.pr-rule { stroke: var(--a-pr-rule); stroke-width: 1; }
-.pr-rule-bar { stroke: var(--a-pr-rule-bar); }
-.pr-note {
-  fill: var(--a-pr-note);
-  rx: 1;
-}
-.pr-note-selected {
-  fill: var(--a-pr-note-selected);
-}
-.pr-footer {
-  display: flex;
-  align-items: center;
-  gap: var(--a-pr-footer-gap);
-  padding: var(--a-pr-footer-pad);
-  border-top: 1px solid var(--border);
-  background: var(--a-panel-bg);
-  flex: 0 0 auto;
-}
-.pr-hint {
+.sig-import:hover:not(:disabled) { background: var(--bg-hover); }
+/* Disabled here IS the native attribute, unlike the toolbar's aria-disabled
+   buttons: the reason this one is disabled ("nothing to import yet") is carried by
+   the Tooltip on its WRAPPER, which stays hoverable and focusable, so no sentence
+   becomes unreachable by disabling the control itself. */
+.sig-import:disabled { opacity: 0.5; cursor: default; }
+
+/* The import result. A status line, not an error line — it says what happened
+   whether or not that was a success, so it takes the dimmed foreground. */
+.sig-footer {
   color: var(--fg-dim);
   font-size: 11px;
   flex: 1 1 auto;
@@ -13064,13 +12970,30 @@ audio.ae-preview-media {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pr-status {
-  color: var(--fg);
+/* The MONITORING note is a different kind of sentence: something the author did is
+   not being heard. Warned, never merged into the status line above, because their
+   fixes are unrelated (one is about the document, one about the wiring). */
+.sig-warn {
+  /* --a-guide, the token .name-modal-warning already uses for a warning line. NOT a
+     var() fallback on an undeclared name: this file's own rule is "Declared, never a
+     var() FALLBACK", because an undeclared token silently carrying everything
+     through its fallback is invisible until someone greps for the declaration. The
+     first draft of this rule wrote var(--warn, #d9a441) and --warn does not exist. */
+  color: var(--a-guide);
   font-size: 11px;
-  font-variant-numeric: tabular-nums;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The "not shown" count is a QUALIFICATION of the note count beside it, not a
-   failure, so it is dimmed rather than coloured — the same tone the code modal's
-   `note` line takes against its `problem` line. */
-.pr-skipped { color: var(--fg-dim); }
+
+/* THE FRAME. No border of its own — signal draws its own chrome to the edge, and a
+   second rule around it would read as a nested window. */
+.sig-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: var(--a-sig-min-frame-h);
+  border: 0;
+  display: block;
+}

@@ -116,7 +116,7 @@ import { NAVIGATE_SCENE_HANDLER } from "./sceneNav.js";
 import { LIGHT_POSITION_PIN_HANDLER } from "./lightPositionPin.js";
 import { POLYGON_CHAIN_HANDLER } from "./polygonDraw.js";
 import { PAINT_PATH_CHAIN_HANDLER } from "./paintPathDraw.js";
-import { PIANO_ROLL_EDIT_HANDLER } from "./pianoRollEdit.js";
+import { SIGNAL_EDIT_HANDLER } from "./signalEdit.js";
 import { TELESCOPIC_RIG_HANDLER } from "./telescopicRig.js";
 
 /**
@@ -315,7 +315,7 @@ const ACTIVATE_HANDLERS = [
   LIGHT_POSITION_PIN_HANDLER,
   KNOB_FOCUS_HANDLER,
   KEYBOARD_PLAY_HANDLER,
-  PIANO_ROLL_EDIT_HANDLER,
+  SIGNAL_EDIT_HANDLER,
   {
     id: "surge_gui",
     phase: "activate",

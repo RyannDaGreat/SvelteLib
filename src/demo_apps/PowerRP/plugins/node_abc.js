@@ -26,7 +26,7 @@
  * THIS NODE. Dragging a note would have to rewrite ABC text, which is a
  * source-rewriting problem (formatting, comments, line breaks) and not a note
  * problem. So this widget declares `codeEditor` and gets the Monaco modal, and the
- * clip node declares `midiClip.editable` and gets the piano roll. Two nodes, two
+ * clip node declares `midiClip.editable` and gets the `signal` editor. Two nodes, two
  * editors, one output type — and an author who wants to draw on a tune converts it
  * by wiring, not by fighting a round-trip.
  *
@@ -192,7 +192,7 @@ export const nodeAbcPlugin = controlNodePlugin({
      * is migrationPlan-only, so a false answer there is never consulted. It is the
      * plugins-half of the missing-named-import hazard CLAUDE.md records: the build is
      * green, the declaration is right there in the source, and the feature is dead.
-     * `tests/piano_roll_probe.js` now pins the double-click end to end, which is the
+     * `tests/signal_embed_probe.js` now pins the double-click end to end, which is the
      * only place the whole chain is visible.
      *
      * `language: null` rather than an ABC id because Monaco ships no ABC grammar and

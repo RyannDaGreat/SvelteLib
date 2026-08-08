@@ -510,11 +510,22 @@ and `notes` declarations in `properties.js` claim the opposite and are WRONG abo
 it; nothing depends on the mistake today because both round on read, as `clipNotes`
 does, but do not design against it. Start and duration are deliberately NOT rounded:
 they are BEATS, and an eighth note is 0.5 of one.
-THE EVENT VOCABULARY IS WIDER THAN WHAT WE PRODUCE. `MIDI_EVENT_RANK` declares
-`noteOff/cc/pitchBend/noteOn` and orders all four, because the Surge worklet already
-implements `pitchBend` and `cc` in full and a note-only signal type would have to be
-widened later. Only the two note types have a PRODUCER today; a bend/CC lane is the
-missing half, and it needs no change to the wire, the port type or a receiver.
+THE EVENT VOCABULARY IS `noteOff/cc/pitchBend/noteOn`, AND ALL FOUR NOW HAVE A
+PRODUCER. `MIDI_EVENT_RANK` declared and ordered all four from the start, because the
+Surge worklet already implemented `pitchBend` and `cc` in full and a note-only signal
+type would have had to be widened later. **The bend/CC half landed with the `signal`
+import** and cost exactly what that bet predicted — no change to the wire, the port
+type or a receiver. It is a SECOND LIST PROPERTY beside `clip`: `ctrl`, tuple
+`[start, controller, value]`, where `controller` is `BEND_CONTROLLER` (-1) or a CC
+number 0..127. ONE list rather than two keeps the element an all-numeric tuple (the
+plain-lerp branch, exactly as `clip`), and a negative can never be a CC by the
+protocol so the sentinel cannot collide. **VALUES ARE RAW MIDI, NOT NORMALIZED** —
+0..127 for a CC, 0..16383 for a bend with 8192 centre — because BOTH ENDS already
+speak those units (signal stores them; the worklet takes them), so a normalized
+middle would be two conversions and two roundings buying nothing a reader of the list
+can see. `clipEvents(notes, controls)` takes the lane as an OPTIONAL second argument
+and merges it into the one sorted stream, so every existing caller is byte-identical
+and no caller has to re-implement the rank to interleave.
 OFFS BEFORE ONS AT THE SAME BEAT is a law, not a tidy-up (the
 `latchedChordDelta` rule): every legato line ends one note as the next begins, and
 ons-first makes a full voice pool steal a voice that was about to be released.
@@ -555,15 +566,72 @@ they will render SILENT and pointing at both fixes. Its two type lists are MIRRO
 across the language boundary; `tests/live_trigger_warning_test.py` derives them from
 the real plugin registry in node and fails if they drift.
 
-THE FULLSCREEN PIANO ROLL is `activate: "piano_roll_edit"` — ONE string, resolved
-through the ACTIVATE registry to `web/pianoRollEdit.js` + `web/PianoRollModal.svelte`.
-It is a MODAL and not a canvas mode (a node card is 200px and an editable roll needs
-a screen), so it raises an app signal exactly as `code_modal` does and declares no
-`mode`. The ARITHMETIC IS IN `core/piano_roll.js`, DOM-free and pinned in bare node,
-so the browser probe asks only what a browser can answer. A widget opts in by
-declaring `midiClip: {key, activeKey, editable}`; the ABC node deliberately does NOT
-(its notes are derived from text, and dragging one would mean rewriting source), so
-it declares `codeEditor` and gets the Monaco modal instead.
+THE MIDI EDITOR IS ryohey's `signal`, VENDORED AND FRAMED — NOT ONE WE WROTE, AND
+THIS PARAGRAPH REPLACES ONE THAT DESCRIBED ONE WE DID. `signal` is a PROPER NOUN
+(<https://github.com/ryohey/signal>, MIT, pinned at `632de96` in
+`web/public/signal/PROVENANCE.txt`): a React/TypeScript application with a WebGL
+piano roll, an arrange view, a tempo graph and automation lanes. The user's ruling
+is standing and was stated three times — "the piano roll open source thing should
+NOT be vibecoded" / "Hopefully your agent is LITERALLY USING the midi code I gave?
+Not just trying to reimplement it" / "Again, USE IT dont imitate it" — and it was
+VIOLATED ONCE, by a hand-rolled roll (`web/PianoRollModal.svelte` +
+`core/piano_roll.js`) that the user met with "this little chicken shit 'midi clip'
+temu-quality 'we have signal at home' widget". **That lookalike is DELETED, not kept
+beside the real one**, and its doctrine went with it in the same commit — the rule
+this file states for itself two sections up. Do not grow another one: if the editor
+lacks a behaviour, the answer is in signal's embed patch, never in a new canvas here.
+
+It is `activate: "signal_edit"` — ONE string, resolved through the ACTIVATE registry
+to `web/signalEdit.js` + `web/SignalModal.svelte`, which holds ONE same-origin
+`<iframe>` and nothing else. A MODAL and not a canvas mode (a node card is 200px and
+signal is a whole application), so it raises an app signal exactly as `code_modal`
+does and declares no `mode`. A widget opts in by declaring
+`midiClip: {key, activeKey, ctrlKey, ctrlActiveKey, editable}`; the ABC node
+deliberately does NOT (its notes are derived from text, and dragging one would mean
+rewriting source), so it declares `codeEditor` and gets the Monaco modal instead.
+
+SAME-ORIGIN IS FORCED, NOT PREFERRED. signal posts with
+`postMessage(msg, window.location.origin)` — it targets ITS OWN origin — and the
+parent pins `ev.source !== frame.contentWindow`. A cross-origin copy receives
+nothing and delivers nothing, from both sides. It lives in `web/public/` rather than
+`vendor/` because it is an HTML PAGE for an iframe needing one stable URL identical
+in dev and in the build; `/@fs/` is wrong because Vite TRANSFORMS HTML it serves, so
+you would frame a rewritten page rather than the tested artifact. **`optimizeDeps.entries`
+is pinned to `["index.html"]`** because Vite's dep scanner globs HTML under the root,
+took `edit.html` as a second entry, and forced a mid-session re-optimization that
+reloads the page. Do not undo that.
+
+THE AUTHORING SEAM IS SIGNAL'S `localStorage` AUTOSAVE, AND IT IS A STANDARD MIDI
+FILE. `core/signal_song.js` owns the whole argument; the short version is that the
+stored `signal_autosave` value is `{midiData: <base64>, timestamp}` where `midiData`
+is a complete format-1 SMF written by signal's own `songToMidi`. **So we are coupled
+to SMF — a frozen 1996 grammar — and NOT to signal's minified internals**, which is
+why a signal upgrade that renames every symbol cannot break the import. The bundle
+exposes NO store handle (module-scoped `const`, no window global, no command bus), and
+the three alternatives were each measured and refused: the live `signal:synth-output`
+note stream is EPHEMERAL by construction (`delayMs` relative to post time, landed on
+`setTimeout`) and must never reach a render tree; `export-midi` needs a native save
+picker and REVOKES its blob URL, and its `onUserExplicitAction` DELETES the autosave;
+IndexedDB holds only Firebase and a soundfont cache. Three caveats are engineered
+around and written down there: a 10-SECOND interval (so the import is a BUTTON that
+states the snapshot's age, never automatic), deletion on New/Open/Import/Export (so
+the modal keeps the last snapshot in memory), and a `String.fromCharCode(...)` spread
+that silently drops autosaves for very large songs (nothing this side can do).
+
+MONITORING AND AUTHORING ARE TWO PIPES AND ONLY ONE IS DOCUMENT STATE. Authoring is
+PROPERTY STATE (the `clip` and `ctrl` list leaves, one undo unit per import).
+Monitoring — `web/signalBridge.js` — is EPHEMERAL and touches nothing but the live
+engine, the same fence a hand on the Surge modal's piano sits behind.
+**ITS `io` FACADE CARRIES `pitchBend` AND `cc`, WHICH IS THE GAP WEBSURGE SHIPPED.**
+Their mode interface is `{noteOn, noteOff, allNotesOff, setModeStatus}` and their own
+manifest calls what that costs "the biggest gap": signal has full automation lanes,
+their worklet implements both, and the events died at that boundary. Here both pipes
+carry them. ONE HALF IS STILL OPEN AND IS COUNTED RATHER THAN DROPPED: the engine
+facade a route resolves to (`surgeControl`) has no `pitchBend`/`cc` METHOD yet
+although the worklet behind it takes both message types, so monitored bends are
+tallied and reported in the modal's footer; `signalBridge.js`'s header names the
+two-line addition that closes it.
+
 **A `controlNodePlugin` SPEC ONLY PASSES `extra` THROUGH.** `codeEditor` and
 `outputProps` written at the spec's top level are SILENTLY DROPPED — the widget then
 carries `activate: "code_modal"` with nothing for the handler to read and
@@ -571,8 +639,13 @@ double-clicking it throws. Measured, on the ABC node, and **nothing we have catc
 it**: `activation_migration_test` reports widgets declaring NO handler, and this one
 declared one; the handler's `claims` is migrationPlan-only so its false answer is
 never consulted; the build is green. It is the plugins-half of the missing-named-import
-hazard. `tests/piano_roll_probe.js` pins the double-click end to end because that is
-the only place the whole chain is visible.
+hazard. `tests/signal_embed_probe.js` pins the double-click end to end because that is
+the only place the whole chain is visible — and it reaches INTO the frame to assert
+signal's own `#root` and WebGL canvases are there, because a `src` pointing at a 404
+or at our own markup would pass every other check in the file. It also dispatches
+inside the frame rather than at page coordinates, which is WebSurge's recorded trap:
+a click at page coordinates can hit whatever the host floats over the frame and
+produce a note, which looks exactly like success.
 
 THE ABC SUBSET IS STATED EXHAUSTIVELY IN `core/abc.js`'s header — supported
 constructs and, more importantly, every REFUSED one with the sentence it produces.

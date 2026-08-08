@@ -77,6 +77,7 @@
  * DOM-free, engine-free, clock-free: core/ runs in bare node.
  */
 
+import { BLACK_SEMITONES, SEMITONES_PER_OCTAVE } from "./keyboard_layout.js";
 import { elementActive } from "./lists.js";
 
 /** The MIDI note range, and the velocity range. Both are the protocol's, not
@@ -98,7 +99,7 @@ export const DEFAULT_VELOCITY = 100;
  *  128th note is 1/32 of a beat and is perfectly legal); it is the floor below
  *  which a note has no ON-to-OFF interval at all, so an engine would receive a
  *  note-off at the same instant as its note-on and sound nothing. A zero-length
- *  note is the piano roll's equivalent of a zero-length gradient wrap: legal to
+ *  note is a clip's equivalent of a zero-length gradient wrap: legal to
  *  ARRIVE at, never legal to CREATE. */
 export const MIN_DURATION_BEATS = 1 / 128;
 
@@ -262,9 +263,12 @@ export function clipLengthBeats(notes) {
  *
  * SO THE BOUNDARY IS EXPLICIT, NOT A HOLE: the vocabulary has room, the ordering
  * rule below already covers all four, and what is missing is the PRODUCER — a
- * bend/CC lane in the piano roll, which would write a second list property beside
- * `clip` and hand it to this same function. Nothing about the wire, the port type,
- * the clip's storage or a receiver changes when that lands.
+ * bend/CC lane, which writes a second list property beside `clip` and hands it to
+ * this same function. **THAT LANE NOW EXISTS** — see the control-lane section
+ * below; the producer is the `signal` importer (core/signal_song.js), because
+ * signal has full automation lanes and dropping them would discard authored work.
+ * Nothing about the wire, the port type or the clip's storage changed when it
+ * landed, exactly as this paragraph predicted.
  *
  * ── THE RANK, AND WHY EACH POSITION IS FORCED ──────────────────────────────
  *   noteOff (0)   before everything, and this is the rule
@@ -315,20 +319,39 @@ export const MIDI_EVENT_TYPES = Object.freeze(Object.keys(MIDI_EVENT_RANK));
  * pure, keeps a still render correct with no changes, and keeps a strided shard
  * able to compute its own frame.
  *
+ * CONTROLS ARE THE SECOND ARGUMENT AND ARE OPTIONAL, so every existing caller is
+ * byte-identical: a clip with no lane produces exactly the note stream it always
+ * did. When a lane IS present its events are MERGED into the same sorted stream
+ * rather than returned separately, which is the point — `MIDI_EVENT_RANK` exists
+ * to decide what happens when a bend and a note land on the same beat, and a
+ * caller handed two lists would have to re-implement that decision to interleave
+ * them, which is exactly how two producers come to disagree.
+ *
  * @param {Array<object>} notes - note records
- * @returns {Array<{beat: number, type: string, pitch: number, velocity: number}>}
+ * @param {Array<object>} [controls] - control records (`clipControls`)
+ * @returns {Array<object>} `{beat, type, …}` in SEND ORDER
  *
  * @example clipEvents([{start: 0, duration: 1, pitch: 60, velocity: 100}]).map((e) => e.type) // ["noteOn", "noteOff"]
  * @example clipEvents([{start: 0, duration: 1, pitch: 60, velocity: 100}])[1].beat // 1
  * @example // TWO LEGATO NOTES: the off at beat 1 precedes the on at beat 1
  * @example clipEvents([{start: 0, duration: 1, pitch: 60, velocity: 100}, {start: 1, duration: 1, pitch: 64, velocity: 100}]).map((e) => e.type) // ["noteOn", "noteOff", "noteOn", "noteOff"]
  * @example clipEvents([]) // []
+ * @example // A BEND AT A NOTE'S OWN BEAT IS HEARD UNDER IT, by MIDI_EVENT_RANK
+ * @example clipEvents([{start: 0, duration: 1, pitch: 60, velocity: 100}], [{start: 0, controller: -1, value: 9000}]).map((e) => e.type) // ["pitchBend", "noteOn", "noteOff"]
+ * @example // a CC becomes a cc event carrying its controller NUMBER, not the sentinel
+ * @example clipEvents([], [{start: 0, controller: 74, value: 20}])[0] // {beat: 0, type: "cc", cc: 74, value: 20}
+ * @example clipEvents([], [{start: 1, controller: -1, value: 0}])[0] // {beat: 1, type: "pitchBend", value: 0}
  */
-export function clipEvents(notes) {
+export function clipEvents(notes, controls = []) {
   const events = [];
   for (const n of notes) {
     events.push({ beat: n.start, type: "noteOn", pitch: n.pitch, velocity: n.velocity });
     events.push({ beat: n.start + n.duration, type: "noteOff", pitch: n.pitch, velocity: n.velocity });
+  }
+  for (const c of controls) {
+    events.push(c.controller === BEND_CONTROLLER
+      ? { beat: c.start, type: "pitchBend", value: c.value }
+      : { beat: c.start, type: "cc", cc: c.controller, value: c.value });
   }
   return sortedEvents(events);
 }
@@ -356,6 +379,167 @@ export function clipEvents(notes) {
 export function sortedEvents(events) {
   const rank = (e) => MIDI_EVENT_RANK[e.type] ?? Number.MAX_SAFE_INTEGER;
   return [...events].sort((a, b) => (a.beat === b.beat ? rank(a) - rank(b) : a.beat - b.beat));
+}
+
+// ── THE CONTROL LANE: pitch bend and CC (the half that had no producer) ──────
+//
+// `MIDI_EVENT_RANK` above has declared `cc` and `pitchBend` since the vocabulary
+// was written, and the receiving end has implemented both since before that
+// (`synth/modules_surge.js` posts `{type:"pitchBend", channel, value}` and
+// `{type:"cc", channel, cc, value}` to the worklet). What was missing was a
+// PRODUCER, and CLAUDE.md named its shape exactly: "a second list property beside
+// `clip`", handed to the same `clipEvents`. This is it.
+//
+// ── WHY IT ARRIVED NOW, AND NOT AS A DRAWN LANE ────────────────────────────
+// The editor is ryohey's `signal`, which HAS full automation lanes. So the notes
+// are no longer the only thing an author can draw, and a converter that read the
+// song's notes and dropped its bends would silently discard authored work. That
+// is the exact gap WebSurge's own manifest calls "the biggest" in their
+// integration (§14.1, "Dropped: pitch bend, CC lanes …"), and importing their
+// note-only boundary would have been shipping a known hole forward.
+//
+// ── THE UNITS ARE MIDI'S OWN, AND THAT IS THE WHOLE ARGUMENT ───────────────
+// `value` is RAW: 0..127 for a CC, 0..16383 for a bend with 8192 as centre. Not a
+// normalized 0..1 fraction, which was considered and refused. Both ENDS of this
+// pipe already speak raw MIDI — signal stores a bend as 0..16383 and a controller
+// as 0..127, and the worklet's message handler takes exactly those — so a
+// normalized middle would be a unit conversion on the way IN and its inverse on
+// the way OUT, i.e. two roundings and two places to be wrong, in exchange for
+// nothing a reader of the list can see. A stored 8192 IS a centred bend, in the
+// document, in the Inspector and on the wire.
+//
+// (`synth/modules_surge.js`'s `bend14bit`/`cc7bit` convert from a -1..1 / 0..1
+// KNOB, which is a different question — a knob is a human control with its own
+// natural range. A stored MIDI event is not a knob.)
+
+/** The `controller` field's value for a PITCH BEND, as opposed to a CC number.
+ *
+ *  A SENTINEL RATHER THAN A SECOND LIST, and it is available for a structural
+ *  reason rather than a convenient one: CC numbers are 0..127 BY THE PROTOCOL, so
+ *  no negative can ever collide with one. Keeping both in one list keeps the
+ *  element an ALL-NUMERIC TUPLE (the plain-lerp branch — see the header) and keeps
+ *  "the controller automation at beat 3" one thing an author can find, rather than
+ *  two lists that must be read together to know what happens there.
+ *  @example BEND_CONTROLLER // -1 */
+export const BEND_CONTROLLER = -1;
+
+/** The inclusive range of a CC number, and of each event kind's `value`. MIDI's,
+ *  not ours.
+ *  @example CC_MAX // 127
+ *  @example BEND_MAX // 16383
+ *  @example BEND_CENTER // 8192 */
+export const CC_MIN = 0;
+export const CC_MAX = 127;
+export const BEND_MIN = 0;
+export const BEND_MAX = 16383;
+export const BEND_CENTER = 8192;
+
+/**
+ * Pure function. ONE control-event record from a stored tuple, normalized — or
+ * null when the tuple does not describe a control event at all.
+ *
+ * `[start, controller, value]`. `controller` is `BEND_CONTROLLER` (-1) for a pitch
+ * bend or a CC number 0..127; `value` is in that controller's OWN raw MIDI range
+ * (see the section header on why it is not normalized).
+ *
+ * ROUNDS `controller` AND `value`, and does NOT round `start` — the same split
+ * `noteRecord` makes and for the same reasons: a controller number and a MIDI data
+ * byte are integers, a beat is not. A CONSEQUENCE WORTH STATING because a tween
+ * can reach it: `controller` lerping across -0.5 rounds to 0 and the event becomes
+ * CC 0 (Bank Select) for one frame. That is the identical hazard `pitch` already
+ * carries when a tween drags it across a semitone, it is inherent to lerping a
+ * discriminator, and the answer is the same — keyframe the lane, do not tween
+ * BETWEEN a bend and a CC.
+ *
+ * @param {Array} tuple - a stored `[start, controller, value]`
+ * @returns {{start: number, controller: number, value: number}|null}
+ *
+ * @example ctrlRecord([0, 1, 64]) // {start: 0, controller: 1, value: 64}
+ * @example // a BEND is the -1 sentinel, and its value spans 14 bits
+ * @example ctrlRecord([2, -1, 16383]) // {start: 2, controller: -1, value: 16383}
+ * @example // each kind is clamped to ITS OWN range, not to a shared one
+ * @example ctrlRecord([0, 1, 9999]).value // 127
+ * @example ctrlRecord([0, -1, 99999]).value // 16383
+ * @example // an unresolved equation is not an event
+ * @example ctrlRecord([0, 1, "= nope"]) // null
+ * @example ctrlRecord([]) // null
+ * @example // a controller below the bend sentinel is not a controller
+ * @example ctrlRecord([0, -7, 64]) // null
+ */
+export function ctrlRecord(tuple) {
+  const raw = Array.isArray(tuple) ? tuple : [];
+  const start = Number(raw[0]);
+  const controller = Number(raw[1]);
+  const value = Number(raw[2]);
+  if (!Number.isFinite(start) || !Number.isFinite(controller) || !Number.isFinite(value)) return null;
+  const ctl = Math.round(controller);
+  if (ctl < BEND_CONTROLLER || ctl > CC_MAX) return null;
+  const bend = ctl === BEND_CONTROLLER;
+  return {
+    start: Math.max(0, start),
+    controller: ctl,
+    value: clampInt(value, bend ? BEND_MIN : CC_MIN, bend ? BEND_MAX : CC_MAX),
+  };
+}
+
+/**
+ * Pure function. THE CONTROL LANE a widget's state holds: its VISIBLE control
+ * events, normalized, IN TIME ORDER.
+ *
+ * The `clipNotes` counterpart, obeying the same three rules for the same reasons —
+ * a hidden element is silent but keeps its index, a malformed element is not an
+ * event, and the sort is on a COPY so the stored order (and therefore every
+ * `= ctrl.3.value` binding) is untouched.
+ *
+ * THE TIE-BREAK IS BY CONTROLLER, where `clipNotes` breaks by pitch, and it is
+ * there for the identical reason: two bends written at the same beat must be sent
+ * in the same order on every machine, or two renders of one deck disagree about
+ * which one won.
+ *
+ * @param {object} s - the folded item state
+ * @param {string} [key] - which list leaf holds the lane (default "ctrl")
+ * @returns {Array<{start: number, controller: number, value: number}>}
+ *
+ * @example clipControls({ctrl: [[0, 1, 64]]}) // [{start: 0, controller: 1, value: 64}]
+ * @example // an unauthored widget holds the EMPTY lane, which is the type's zero
+ * @example clipControls({}) // []
+ * @example clipControls({ctrl: [[2, 1, 64], [0, -1, 8192]]}).map((c) => c.start) // [0, 2]
+ * @example // a HIDDEN event is silent, still stored, still numbered
+ * @example clipControls({ctrl: [[0, 1, 64], [1, 1, 70]], ctrlActive: [true, false]}).length // 1
+ */
+export function clipControls(s, key = CTRL_KEY) {
+  const list = Array.isArray(s?.[key]) ? s[key] : [];
+  const active = s?.[`${key}Active`];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    if (!elementActive(active, i)) continue;
+    const ev = ctrlRecord(list[i]);
+    if (ev) out.push(ev);
+  }
+  return [...out].sort((a, b) => (a.start === b.start ? a.controller - b.controller : a.start - b.start));
+}
+
+/**
+ * Pure function. A control record as its stored TUPLE, in the declared field
+ * order. The `noteTuple` counterpart, exported for the same reason: the converter
+ * (`core/signal_song.js`) builds a lane's worth of these without touching a list
+ * value, and a second copy of the field order is how storage and reader drift.
+ *
+ * @param {object} ev - a control record
+ * @returns {Array} `[start, controller, value]`
+ *
+ * @example ctrlTuple({start: 0, controller: 1, value: 64}) // [0, 1, 64]
+ * @example // absent fields default to "a centred bend at the top of the clip"
+ * @example ctrlTuple({}) // [0, -1, 8192]
+ */
+export function ctrlTuple(ev) {
+  const controller = Number.isFinite(Number(ev?.controller)) ? Math.round(Number(ev.controller)) : BEND_CONTROLLER;
+  const fallback = controller === BEND_CONTROLLER ? BEND_CENTER : 0;
+  return [
+    Number(ev?.start) || 0,
+    controller,
+    Number.isFinite(Number(ev?.value)) ? Number(ev.value) : fallback,
+  ];
 }
 
 /**
@@ -434,10 +618,15 @@ export function resolvedTempo(tempo) {
 // ── GRID SNAPPING ────────────────────────────────────────────────────────────
 
 /**
- * The snap divisions the piano roll offers, as BEATS PER CELL. Named here rather
- * than in the editor because the widget's own grid is drawn from the same list,
- * and a picture whose lines did not coincide with the positions a drag can land on
- * is a grid that lies about what it is for.
+ * MUSICALLY MEANINGFUL GRID DIVISIONS, as BEATS PER CELL — the vocabulary any
+ * caller that quantizes a beat position shares, so two of them cannot offer
+ * different sets of "a sixteenth".
+ *
+ * THE EDITOR NO LONGER READS THIS. It used to be the hand-rolled roll's snap menu;
+ * that roll is deleted and `signal` owns its own quantization entirely. What is
+ * left is the model's own answer to "which divisions are real", kept because
+ * `snapBeat` below is the shared arithmetic and a division list nobody agrees on is
+ * how two callers come to round differently.
  *
  * `0` is OFF, and it is a real entry rather than an absent one: "no snapping" is a
  * choice an author makes, and `snapBeat(x, 0)` returning x is what makes every
@@ -476,12 +665,18 @@ export function snapBeat(beat, division) {
   return Math.max(0, Math.round(b / d) * d);
 }
 
-// ── THE EDITS (what the piano roll writes) ───────────────────────────────────
+// ── THE EDITS (the model's WRITE vocabulary) ─────────────────────────────────
 //
 // Every function below takes and returns a core/lists.js LIST VALUE — the pair
 // `{list, active}` — so the element array and its visibility companion can never
 // be spliced out of step. The caller writes BOTH leaves in one `setPreview`, which
-// is what makes a piano-roll gesture exactly one undo unit.
+// is what makes an edit exactly one undo unit.
+//
+// THESE ARE PER-ELEMENT EDITS AND THE IMPORTER IS NOT ONE OF THEIR CALLERS. The
+// `signal` importer replaces the WHOLE clip in one write (web/app.svelte.js
+// `commitSignalImport`), because that is what importing a song is. These remain the
+// supported way to change ONE note without disturbing the numbering every equation
+// is bound to — which is what the Inspector's per-row controls do.
 
 /**
  * Pure function. The list value with one note APPENDED.
@@ -587,9 +782,48 @@ export function noteTuple(note) {
 }
 
 /** THE STATE KEYS a clip lives under. Spelled once so the widget, the editor and
- *  the handler all name the same two leaves — the "grep the constant, not the
+ *  the handler all name the same leaves — the "grep the constant, not the
  *  string it holds" rule core/nodeflow.EXEC_TYPE states.
  *  @example CLIP_KEY // "clip"
- *  @example CLIP_ACTIVE_KEY // "clipActive" */
+ *  @example CLIP_ACTIVE_KEY // "clipActive"
+ *  @example CTRL_KEY // "ctrl"
+ *  @example CTRL_ACTIVE_KEY // "ctrlActive" */
 export const CLIP_KEY = "clip";
 export const CLIP_ACTIVE_KEY = "clipActive";
+export const CTRL_KEY = "ctrl";
+export const CTRL_ACTIVE_KEY = "ctrlActive";
+
+/**
+ * Pure function. Is this MIDI note a BLACK key?
+ *
+ * ── WHY IT LIVES HERE ──────────────────────────────────────────────────────
+ * It used to live in `core/piano_roll.js`, beside the hand-rolled roll's
+ * coordinate arithmetic. That editor is GONE — the roll is ryohey's `signal` now,
+ * framed rather than imitated (see web/SignalModal.svelte) — and every one of that
+ * module's other exports went with it, because signal owns its own geometry. This
+ * one function did NOT go, because its single remaining caller is the Signal
+ * node's CARD PREVIEW (plugins/node_midi_clip.js), which is a picture of the clip
+ * and not an editor of it. A pitch-class fact belongs with the note model.
+ *
+ * READS `core/keyboard_layout.BLACK_SEMITONES` rather than restating the pattern,
+ * which is the reason the original gave and it still holds: the Keyboard widget
+ * draws its black keys from that list, and a second copy here would be a second
+ * place for "which rows are black" to be answered differently.
+ *
+ * Negative and out-of-range inputs answer rather than throw — `((n % 12) + 12) % 12`
+ * — because a tween can pass through one.
+ *
+ * @param {number} pitch - a MIDI note number
+ * @returns {boolean}
+ *
+ * @example isBlackPitch(60) // false
+ * @example isBlackPitch(61) // true
+ * @example isBlackPitch(72) // false
+ * @example isBlackPitch(-1) // false
+ * @example // an octave below zero still answers by pitch class
+ * @example isBlackPitch(-11) // true
+ */
+export function isBlackPitch(pitch) {
+  const n = Math.round(Number(pitch)) || 0;
+  return BLACK_SEMITONES.includes(((n % SEMITONES_PER_OCTAVE) + SEMITONES_PER_OCTAVE) % SEMITONES_PER_OCTAVE);
+}

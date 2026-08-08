@@ -255,8 +255,14 @@ const HOST_BOUND = [
  *  tests/probe_artifact_path_test.js:42, which sweep `web` and skip it for exactly
  *  this reason. 79 built .js files live there; none carries an `@example` today, so
  *  skipping them changes no count — but a bundle that ever did would send this
- *  suite off to `await import()` a minified third-party chunk in bare node. */
-const SKIP_PREFIXES = ["web/dist/"];
+ *  suite off to `await import()` a minified third-party chunk in bare node.
+ *
+ *  `web/public/` joined for the same reason and a sharper case: it holds the
+ *  vendored ryohey/signal editor (web/public/signal/, 2.9 MB, a BUILD OUTPUT whose
+ *  own README says "Do not edit anything here by hand"). Its 2.35 MB minified chunk
+ *  is precisely the "third-party chunk in bare node" this constant exists to keep
+ *  out. */
+const SKIP_PREFIXES = ["web/dist/", "web/public/"];
 
 /**
  * The ONE host global this suite supplies, and the reason it is a stub rather than

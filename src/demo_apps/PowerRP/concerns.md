@@ -643,3 +643,57 @@ which is exactly how `web/` stayed outside for as long as it did.
 had propagated into user-facing prose: `core/audio_specs_vc8.js`'s `panLaw` knob `help`
 repeated the same pre-rewrite claim, and unlike a doctest that sentence is read by authors
 in the Inspector. **When a doctest goes stale, grep the prose that quoted its reasoning.**
+
+## 2026-08-08 — ryohey/signal replaces the lookalike; two audio gaps written down before they evaporated
+
+### Two OPEN questions handed to this workstream that belonged to nobody's file
+
+Both arrived as prose in a briefing, were true, and were **written down nowhere in
+the repo** — which is exactly how a measured finding stops existing. Neither is in
+this workstream's area (both sit in `synth/` + `web/audioMirror.svelte.js`, owned by
+the Surge patch-restore workstream at the time), so neither was touched. They are
+recorded here so the next agent inherits them as facts rather than as folklore.
+
+1. **THE RENDERED-WAV ENERGY DOES NOT MATCH THE PHRASE.** Per-window energy of the
+   rendered WAV does not cleanly correspond to the notes: the SECOND EIGHTH comes
+   out roughly **13 dB down**, and dry chains sustain past their release. **The voice
+   pool has been RULED OUT.** The untested hypothesis is **the default patch's own
+   amp release** — i.e. the deck is correct and the instrument is ringing. That is
+   testable without touching the scheduler: render the same phrase against a patch
+   with a known-short amp release and see whether the window energies line up. Until
+   someone does, an energy-vs-phrase assertion is measuring the patch, not the code.
+
+2. **THE PUMP-START ON THE PRESS SIDE IS UNTESTED DEFENCE-IN-DEPTH.** `mirrorAudioFrame`
+   ALSO arms it, so removing the press-side start shows NO TEETH — a test written
+   against it would pass either way and would be a test of nothing. This is worth
+   stating rather than deleting the code: the belt is untested because the braces
+   work, which is a different situation from dead code, and a future agent who
+   "cleans it up" after a green run will have proved nothing about whether it was
+   load-bearing under a different arrival order.
+
+### What DID ship here (for the record)
+
+The hand-rolled piano roll is DELETED — `web/PianoRollModal.svelte`,
+`core/piano_roll.js`, `web/pianoRollEdit.js` and both its suites — and replaced by
+ryohey's `signal`, vendored and framed. The user's ruling was standing and had been
+stated three times ("USE IT dont imitate it"); the lookalike had already drawn
+"this little chicken shit 'midi clip' temu-quality 'we have signal at home' widget".
+**The doctrine went in the same commit as the code**, per this project's own rule
+that a revert leaving its prose standing installs a confident lie.
+
+**THE AUTHORING SEAM IS AN SMF, WHICH IS THE FINDING WORTH KEEPING.** signal's
+bundle exposes no store handle, so the parent cannot read its song object — but its
+`localStorage["signal_autosave"]` value is `{midiData: <base64>, timestamp}` where
+`midiData` is a complete **format-1 Standard MIDI File** written by signal's own
+exporter. So the coupling is to **SMF, a frozen 1996 grammar**, and NOT to a
+minified third-party object model: a signal upgrade that renames every symbol cannot
+break the import. The three alternatives were each measured and refused, and each
+refusal is recorded in `core/signal_song.js`'s header.
+
+**THE PRE-EXISTING REDS THE VENDORING CREATED WERE FIXED, NOT INHERITED.** Three ban
+suites (`one_ranking_ban_test`, `popover_reinvention_ban_test`,
+`connectivity_seam_test`) went red at the vendoring commit because they sweep `web/`
+and met a 2.35 MB minified third-party bundle under `web/public/`. Confirmed
+pre-existing by stashing. They now skip `public/` for the same stated reason they
+already skip `dist/` — Vite's `public/` is BY DEFINITION copied verbatim and is
+never source we author.

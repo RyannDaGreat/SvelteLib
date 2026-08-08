@@ -38,19 +38,36 @@
  * PLAYBACK is then recordable at one seam (`core/midi_clip.clipEvents` + the
  * presentation clock), which keeps a render seekable and shardable.
  *
- * ── DOUBLE-CLICK OPENS THE FULLSCREEN PIANO ROLL ────────────────────────────
- * ONE STRING — `activate: "piano_roll_edit"` — which is the whole point of
- * web/widget_handlers.js: the editor, its gestures, its HintBar chips and its
- * Escape all live in web/pianoRollEdit.js + web/PianoRollModal.svelte, and nothing
- * here knows about the DOM. A plugin may not carry a component (core/ and plugins/
- * must import in bare node), so it carries the NAME of one.
+ * ── DOUBLE-CLICK OPENS `signal`, WHICH IS NOT OURS AND MUST NOT BE ──────────
+ * ONE STRING — `activate: "signal_edit"` — which is the whole point of
+ * web/widget_handlers.js: the editor, its frame, its import step and its Escape all
+ * live in web/signalEdit.js + web/SignalModal.svelte, and nothing here knows about
+ * the DOM. A plugin may not carry a component (core/ and plugins/ must import in
+ * bare node), so it carries the NAME of one.
+ *
+ * THE EDITOR IS ryohey's `signal` (https://github.com/ryohey/signal, MIT), VENDORED
+ * AND FRAMED, not reimplemented. That is a standing user ruling, stated three
+ * times — "the piano roll open source thing should NOT be vibecoded", "Hopefully
+ * your agent is LITERALLY USING the midi code I gave? Not just trying to
+ * reimplement it", "Again, USE IT dont imitate it" — and it was violated once, by a
+ * hand-rolled roll the user called "this little chicken shit 'midi clip'
+ * temu-quality 'we have signal at home' widget". The lookalike is deleted; do not
+ * grow another one. If this widget needs an editor behaviour it does not have, the
+ * answer is in signal's patch, not in a new SVG here.
+ *
+ * ── WHAT THE CARD DRAWS IS STILL OURS ───────────────────────────────────────
+ * `paint()` below is a THUMBNAIL of the clip on a 220px node card — a picture, not
+ * an editor. Nobody clicks it; the gesture is double-click-to-open. That is why it
+ * survives the deletion and why it is not a second piano roll.
  */
 
-import { CLIP_ACTIVE_KEY, CLIP_KEY, clipLengthBeats, clipNotes, DEFAULT_TEMPO, VELOCITY_MAX } from "../core/midi_clip.js";
+import {
+  CLIP_ACTIVE_KEY, CLIP_KEY, CTRL_ACTIVE_KEY, CTRL_KEY, clipLengthBeats, clipNotes,
+  DEFAULT_TEMPO, isBlackPitch, VELOCITY_MAX,
+} from "../core/midi_clip.js";
 import { TRIGGER_PORT } from "../core/clip_playback.js";
 import { controlDefaults, controlNodeHeight, controlNodePlugin, CONTROL_CAT, CONTROL_FAMILY } from "../core/control_nodes.js";
 import { familyCard, familyRim, nodeFamily, portBeads } from "../core/node_chrome.js";
-import { isBlackPitch } from "../core/piano_roll.js";
 import { props } from "../core/properties.js";
 import { rect, text } from "../render_gpu/ir.js";
 
@@ -193,6 +210,7 @@ export const nodeMidiClipPlugin = controlNodePlugin({
     // PRESENT AT BIRTH though empty — a LIST leaf a wildcard delta path must be
     // able to expand over, the same reason `controlDefaults` ships `inputs: {}`.
     [CLIP_KEY]: [],
+    [CTRL_KEY]: [],
   }),
   rows: [
     { key: "tempo", label: "Tempo", kind: "number", min: 1, step: 1, category: CONTROL_CAT, help: "Beats per minute. The clip states its notes in BEATS, so this is what turns them into seconds — re-timing the whole phrase is this one number rather than an edit to every note." },
@@ -200,20 +218,29 @@ export const nodeMidiClipPlugin = controlNodePlugin({
     { key: "baseNote", label: "Base Note", kind: "number", min: 0, max: 127, step: 1, category: CONTROL_CAT, help: "MIDI note of the PREVIEW's bottom row. 48 is C3, 60 is middle C. This moves what the card shows; it does not move the notes. The fullscreen editor scrolls independently." },
     { key: "octaves", label: "Octaves", kind: "number", min: 1, step: 1, category: CONTROL_CAT, help: "How many octaves of pitch rows the card's preview shows. The face's height is divided among them, so a two-octave preview wants a taller node." },
     ...props(CLIP_KEY, { [CLIP_KEY]: { category: CONTROL_CAT } }),
+    ...props(CTRL_KEY, { [CTRL_KEY]: { category: CONTROL_CAT } }),
   ],
   /**
-   * DOUBLE-CLICK OPENS THE FULLSCREEN PIANO ROLL (the user's "full fledged UI's in
-   * giant modals when duoble clicked"). One string; see the file header.
+   * DOUBLE-CLICK OPENS `signal` (the user's "full fledged UI's in giant modals when
+   * duoble clicked"). One string; see the file header.
    */
-  activate: "piano_roll_edit",
+  activate: "signal_edit",
   extra: {
-    /** THE CLIP DECLARATION — which leaves hold this widget's notes, read by
-     *  web/pianoRollEdit.js and web/PianoRollModal.svelte so neither needs the
-     *  widget roster and neither hardcodes a key. A future widget that also holds
-     *  an editable clip declares the same two and inherits the whole editor with
-     *  no code in either place (the `noteLatch` precedent, which the Keyboard and
-     *  the step sequencer already share verbatim). */
-    midiClip: { key: CLIP_KEY, activeKey: CLIP_ACTIVE_KEY, editable: true },
+    /** THE CLIP DECLARATION — which leaves hold this widget's notes and its
+     *  automation, read by web/signalEdit.js and web/SignalModal.svelte so neither
+     *  needs the widget roster and neither hardcodes a key. A future widget that
+     *  also holds an editable clip declares the same keys and inherits the whole
+     *  editor with no code in either place (the `noteLatch` precedent, which the
+     *  Keyboard and the step sequencer already share verbatim).
+     *
+     *  `ctrlKey`/`ctrlActiveKey` are OPTIONAL in the declaration: a widget may hold
+     *  notes without holding automation, and the importer writes a lane only where
+     *  one is declared. */
+    midiClip: {
+      key: CLIP_KEY, activeKey: CLIP_ACTIVE_KEY,
+      ctrlKey: CTRL_KEY, ctrlActiveKey: CTRL_ACTIVE_KEY,
+      editable: true,
+    },
     outputProps: {
       /** THE CLIP'S LENGTH IN BEATS — what a loop, a transition or a bar counter
        *  wants, published so an equation can read it (`= clip1.beats`) without
