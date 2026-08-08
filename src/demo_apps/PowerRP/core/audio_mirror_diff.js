@@ -384,7 +384,7 @@ export function diffAudioScene(prev, next, rampSeconds = KNOB_RAMP_MIN_SECONDS) 
   for (const [id, m] of Object.entries(nextModules)) {
     const before = prevModules[id];
     if (!before || rebuilt.has(id)) continue;
-    for (const k of m.spec.knobs ?? []) {
+    for (const k of engineValueDecls(m.spec)) {
       if (k.construct) continue; // handled by the rebuild above
       const value = m.knobs[k.key];
       if (sameKnobValue(before.knobs[k.key], value)) continue;

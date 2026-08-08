@@ -314,6 +314,13 @@ check("PER-SLIDE: navigating to a slide with a different patch loads it", () => 
   const patchOp = ops.find((o) => o.op === "setParam" && o.key === "patchData");
   assert.ok(patchOp, `navigating slides produced no patch load: ${JSON.stringify(ops)}`);
   assert.equal(patchOp.value, "PATCH_TWO");
+  // AND IT MUST NOT RAMP. This is the assertion the `discrete` flag exists for, and
+  // it belongs on the DIFF path rather than the birth path — `initialParamOps` sends
+  // everything at ramp 0 anyway, so a reload test could never catch a lost flag.
+  // Without it the mirror would hand a 40 KB blob a 33 ms glide, which for a setter
+  // param means the ramp argument is simply a lie in the transcript.
+  assert.equal(patchOp.rampSeconds, 0,
+    "a patch load was given a ramp — a patch cannot be interpolated into");
 });
 
 check("PER-SLIDE: a slide that does NOT change the patch inherits it and reloads nothing", () => {
