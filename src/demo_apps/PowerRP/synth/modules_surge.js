@@ -172,6 +172,12 @@ export function surgeModule(context, params = {}) {
   /** The failure sentence, if the load failed. Read by `inspect()` so a silent
    *  Surge can SAY why rather than merely being quiet. */
   let failure = null;
+  /** THE PATCH THIS INSTANCE LAST LOADED — the "what did I already do" half of the
+   *  load-on-change rule. Compared against the folded value the mirror pushes, so an
+   *  unchanged document never re-sends a 40 KB blob (which would stutter the voice
+   *  it interrupts). Starts as the leaf's own default, because that is what a freshly
+   *  built Surge is actually playing: its Init patch. */
+  let loadedPatch = "";
 
   function post(message) {
     if (disposed) return;
@@ -275,6 +281,31 @@ export function surgeModule(context, params = {}) {
     params: {
       level: output.gain,
       pitch: pitchBus.offset,
+      /**
+       * THE PATCH, AS A PARAM — which is what makes a saved deck reopen playing its
+       * own instrument, and slide 3 play a different one.
+       *
+       * It is a SETTER (engine.setParam's function shape), so the mirror's ordinary
+       * knob diff drives it: it is called on birth by `initialParamOps` and then only
+       * when the FOLDED value changes. That is the load-on-change requirement met
+       * structurally rather than by a guard here — but the guard below exists anyway,
+       * because `initialParamOps` fires on every module birth and a rebuild would
+       * otherwise re-send an identical 40 KB blob to the worklet for nothing.
+       *
+       * AN EMPTY STRING IS "SURGE'S OWN DEFAULT", NOT AN ERROR. It is the leaf's
+       * default, so every Surge node that has never had a patch loaded carries one,
+       * and shipping that to the worklet as a zero-byte patch would replace a working
+       * Init with silence.
+       */
+      patchData: (value) => {
+        const next = typeof value === "string" ? value : "";
+        if (next === loadedPatch) return;
+        loadedPatch = next;
+        if (!next) return;
+        const bytes = base64ToBytes(next);
+        if (!bytes) return; // reported inside; a corrupt leaf must not silence the node
+        post({ type: "loadPatch", path: "", name: "", bytes: bytes.buffer });
+      },
       modwheel: (value) => post({ type: "cc", channel: 0, cc: 1, value: cc7bit(value) }),
       bend: (value) => post({ type: "pitchBend", channel: 0, value: bend14bit(value) }),
     },
@@ -381,6 +412,37 @@ export function surgeModule(context, params = {}) {
       output.disconnect();
     },
   };
+}
+
+/**
+ * Pure function. Base64 back to bytes, or null when the string is not base64.
+ *
+ * ── WHY IT IS HAND-ROLLED AND NOT `atob` + spread ──────────────────────────
+ * The obvious `Uint8Array.from(atob(s), c => c.charCodeAt(0))` is correct but the
+ * SPREAD form of it (`String.fromCharCode(...bytes)`, its mirror on the encode
+ * side) is what blew the argument stack on a large patch — web/surgeGui.js
+ * documents that measurement. This direction uses a loop for the same reason: the
+ * largest vendored factory patch is 549 KB, and a decoder that works on every patch
+ * anyone tested with and throws on the biggest one is the worst kind of bug.
+ *
+ * NULL RATHER THAN A THROW, reported once: a corrupt `patchData` leaf (a truncated
+ * save, a hand edit) must leave the node playing its current patch with a sentence
+ * in the console, not tear down a running presentation.
+ *
+ * @param {string} b64 - base64 text
+ * @returns {Uint8Array|null}
+ */
+function base64ToBytes(b64) {
+  if (typeof atob !== "function") return null; // bare node: nothing to decode into
+  try {
+    const binary = atob(b64);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  } catch (err) {
+    console.error(`Surge: stored patch data is not valid base64 (${err?.message ?? err}); keeping the current patch.`);
+    return null;
+  }
 }
 
 /** Pure function. 0..1, with a non-number reading as the middle of nothing. */

@@ -30,9 +30,9 @@ import { bend14bit, cc7bit, midiNoteFor } from "../synth/modules_surge.js";
 import { connectionRefusal, PORT_TYPES } from "../core/nodeflow.js";
 import { createRegistry } from "../core/registry.js";
 import { registerPlugins } from "../plugins/index.js";
-import { readAudioScene } from "../core/audio_mirror_diff.js";
+import { diffAudioScene, engineValueDecls, initialParamOps, readAudioScene } from "../core/audio_mirror_diff.js";
 import { documentIsSimulated, stridedShardRefusal } from "../core/document.js";
-import { newDocument } from "../core/document.js";
+import { keyframed, newDocument, slideState, withNewSlide } from "../core/document.js";
 
 let passed = 0;
 const check = (label, fn) => {
@@ -264,6 +264,101 @@ check("Surge routes double-click to its own GUI, not to knob focus", () => {
   assert.equal(surge.activate, "surge_gui");
   // And the roster's default is untouched by the override existing.
   assert.equal(registry.get("audio_poly_pad").activate, "knob_focus");
+});
+
+
+// ── THE PATCH SURVIVES: RELOAD, SLIDES, UNDO ─────────────────────────────────
+//
+// THE BUG THESE PIN (user, 2026-08-08): "surge's presets dont even survive a page
+// reload lol" … "we should be able to have a preset every slide lol". `patchData`
+// was stored correctly and NOTHING EVER READ IT BACK, so the engine booted Surge's
+// Init patch every time. The assertions below are deliberately about what reaches
+// the ENGINE, not about what the document holds — the document was always right,
+// which is exactly why nothing caught this.
+
+/** A document with one Surge node, and `patchData` keyframed per slide. */
+function deckWithPatches(perSlide) {
+  const surgePlugin = registry.get("audio_surge");
+  let doc = newDocument();
+  doc = keyframed(doc, 0, ["items", "s1"], { ...surgePlugin.defaults, active: true });
+  for (let i = 0; i < perSlide.length; i++) {
+    if (i > 0) [doc] = withNewSlide(doc, i - 1);
+    doc = keyframed(doc, i, ["items", "s1", "patchData"], perSlide[i]);
+  }
+  return doc;
+}
+
+/** The engine ops a scene transition produces, as the mirror would compute them. */
+const sceneOf = (doc, slide) => readAudioScene(slideState(doc, slide).items, registry);
+
+check("RELOAD: a freshly-built module is told the SAVED patch, not Surge's Init", () => {
+  // On boot every module is BORN, and `initialParamOps` is what the mirror sends
+  // right after `addModule`. If patchData is not in that burst, a reloaded deck
+  // plays Init — which is the reported bug, exactly.
+  const doc = deckWithPatches(["SAVEDPATCHBYTES"]);
+  const scene = sceneOf(doc, 0);
+  const ops = initialParamOps(scene.modules.s1, "s1");
+  const patchOp = ops.find((o) => o.key === "patchData");
+  assert.ok(patchOp, `no patchData in the birth burst — a reloaded deck would play Init. Got: ${ops.map((o) => o.key).join(", ")}`);
+  assert.equal(patchOp.value, "SAVEDPATCHBYTES");
+  assert.equal(patchOp.rampSeconds, 0, "a patch load cannot be glided into");
+});
+
+check("PER-SLIDE: navigating to a slide with a different patch loads it", () => {
+  // The user's "a preset every slide". Slide 0 and slide 1 hold different blobs;
+  // the diff between the two scenes must carry the second one.
+  const doc = deckWithPatches(["PATCH_ONE", "PATCH_TWO"]);
+  assert.equal(slideState(doc, 0).items.s1.patchData, "PATCH_ONE");
+  assert.equal(slideState(doc, 1).items.s1.patchData, "PATCH_TWO");
+  const ops = diffAudioScene(sceneOf(doc, 0), sceneOf(doc, 1));
+  const patchOp = ops.find((o) => o.op === "setParam" && o.key === "patchData");
+  assert.ok(patchOp, `navigating slides produced no patch load: ${JSON.stringify(ops)}`);
+  assert.equal(patchOp.value, "PATCH_TWO");
+});
+
+check("PER-SLIDE: a slide that does NOT change the patch inherits it and reloads nothing", () => {
+  // The other half, and the one that keeps this cheap: an unchanged fold must
+  // produce NO op at all. A 40 KB blob re-sent on every navigation would stutter
+  // the voice it interrupts.
+  const doc = deckWithPatches(["PATCH_ONE", "PATCH_TWO"]);
+  const [withThird] = withNewSlide(doc, 1);
+  assert.equal(slideState(withThird, 2).items.s1.patchData, "PATCH_TWO", "slide 3 must INHERIT the folded patch");
+  const ops = diffAudioScene(sceneOf(withThird, 1), sceneOf(withThird, 2));
+  assert.equal(ops.filter((o) => o.key === "patchData").length, 0,
+    `an unchanged patch was re-sent: ${JSON.stringify(ops)}`);
+});
+
+check("NO RELOAD ON EVERY FRAME: diffing a scene against ITSELF sends nothing", () => {
+  // The mirror runs per frame. This is the cheapest possible statement of "load
+  // only on change", and it is the assertion that catches a future refactor that
+  // rebuilds the value object each pass.
+  const doc = deckWithPatches(["PATCH_ONE"]);
+  const ops = diffAudioScene(sceneOf(doc, 0), sceneOf(doc, 0));
+  assert.deepEqual(ops, [], `a steady scene produced engine calls: ${JSON.stringify(ops)}`);
+});
+
+check("the patch is carried as an ENGINE VALUE, and patchName is NOT", () => {
+  // `patchName` is a LABEL; pushing it at the engine would be a call that means
+  // nothing. Only the leaf that declares `engineParam` travels.
+  const keys = engineValueDecls(SURGE_SPEC).map((k) => k.key);
+  assert.ok(keys.includes("patchData"), "patchData is not an engine value — it would be write-only again");
+  assert.ok(!keys.includes("patchName"), "patchName must not be pushed to the engine");
+  // And it must not have become a KNOB — that would put a 40 KB blob in an
+  // Inspector dial and red the engine-param sweep.
+  assert.ok(!(SURGE_SPEC.knobs ?? []).some((k) => k.key === "patchData"));
+});
+
+check("the DELTA COST is per DISTINCT PATCH, not per slide", () => {
+  // The user's "deltas between slides" concern, measured rather than assumed. A
+  // slide that changes nothing must carry no patch bytes at all.
+  const doc = deckWithPatches(["AAAA_one", "BBBB_two"]);
+  const [three] = withNewSlide(doc, 1);
+  const deltas = three.slides.map((sl) => JSON.stringify(sl.delta));
+  assert.ok(deltas[0].includes("AAAA_one"));
+  assert.ok(deltas[1].includes("BBBB_two"));
+  assert.ok(!deltas[1].includes("AAAA_one"), "slide 1's delta duplicated slide 0's patch");
+  assert.ok(!deltas[2].includes("patchData"),
+    `a slide that changes nothing carries patch bytes: ${deltas[2].slice(0, 120)}`);
 });
 
 console.log(process.exitCode ? `surge_test: ${passed} checks passed (WITH FAILURES)` : `surge_test: ${passed} checks passed`);

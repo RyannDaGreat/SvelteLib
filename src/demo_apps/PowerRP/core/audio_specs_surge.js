@@ -71,6 +71,29 @@
  * BETWEEN SLIDES like everything else. A discrete leaf switches at alpha > 0
  * (core/deltas.js's rule), so slide 3 can be a different instrument.
  *
+ * **THAT LAST SENTENCE WAS A FALSE CLAIM FOR A DAY, AND THE LESSON IS THE USUAL
+ * ONE.** The storage was correct from the start and nothing ever read it back: the
+ * modal wrote `patchData`, and the engine booted Surge's Init patch on every load,
+ * every reload and every slide. So this docblock described a per-slide capability
+ * the code did not have, in the file a contributor is sent to for the contract —
+ * CLAUDE.md's own "a revert that leaves the prose standing installs a confident
+ * lie" defect, arrived at by omission rather than by revert. The user found it in
+ * one sentence: *"surge's presets dont even survive a page reload lol"*. What makes
+ * it TRUE now is `engineParam: true` on the leaf below, which puts it in the
+ * mirror's ordinary diff; the mechanism and its reasoning are in
+ * core/audio_mirror_diff.engineValueDecls.
+ *
+ * ── WHAT A KEYFRAMED PATCH ACTUALLY COSTS, MEASURED ────────────────────────
+ * The 639 vendored factory patches are 23-549 KB raw, median 30.8 KB, which is
+ * ~41,000 base64 characters — call it 40 KB of JSON per patch. That sounds alarming
+ * for a 20-slide deck and is not, because a delta stores ONLY WHAT CHANGED:
+ * measured on a three-slide document, the slide that sets a patch carries the blob,
+ * the next slide that sets a different one carries only that one, and a slide that
+ * changes nothing carries a 2-byte delta. So the cost is 40 KB PER DISTINCT PATCH,
+ * not per slide — a deck with one instrument pays once no matter how long it is,
+ * and a deck that genuinely changes instrument on five slides pays for five
+ * because it genuinely contains five instruments.
+ *
  * `patchName` rides alongside as a human label. It is NOT the source of truth —
  * `patchData` is — and it exists so the card and the Inspector can say what is
  * loaded without decoding a blob. They are written together, always, by the one
@@ -195,6 +218,12 @@ export const SURGE_SPEC = {
     {
       key: "patchData",
       default: "",
+      // THE ENGINE MUST BE TOLD. Without this flag the leaf is stored and never
+      // read back — which is exactly the bug the user reported ("surge's presets
+      // dont even survive a page reload lol"). `engineParam` puts it in the mirror's
+      // ordinary diff (core/audio_mirror_diff.engineValueDecls), which is what makes
+      // reload, per-slide presets, undo and tween all work through ONE path.
+      engineParam: true,
       // NO INSPECTOR ROW AT ALL, deliberately. It is tens of kilobytes of base64;
       // rendering it in a text field would freeze the panel and inviting a hand
       // edit would invite a corrupt instrument with no way to say what broke. It

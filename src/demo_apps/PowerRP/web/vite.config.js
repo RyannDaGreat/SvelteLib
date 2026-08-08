@@ -153,6 +153,19 @@ export default defineConfig({
   // them up front means the scanner never discovers anything new. GLTFLoader is
   // listed EXPLICITLY because a deep subpath is not covered by its package entry.
   optimizeDeps: {
+    // ── THE SCANNER'S ENTRY LIST, PINNED TO OURS ──────────────────────────────
+    // By default Vite discovers dep-scan entries by GLOBBING HTML under the root,
+    // and `web/public/signal/edit.html` (the vendored ryohey/signal editor) is HTML
+    // under the root. MEASURED the moment it landed: the scanner took it as a second
+    // entry and tried to crawl its 2.35 MB pre-built bundle, forcing a dependency
+    // re-optimization — which reloads the page mid-session and is exactly the flake
+    // the `include` list below exists to prevent, arriving by a new door.
+    //
+    // It is a BUILT ARTIFACT, not source: it has no bare imports to discover and
+    // nothing in it should ever be pre-bundled. Naming our own entry explicitly is
+    // the narrowest fix — `public/` is copied verbatim by Vite either way, so the
+    // page is still served identically in dev and in the build.
+    entries: ["index.html"],
     include: [
       // BOTH pdfjs consumers (gpu/pdf_page_raster.js, gpu/pdf_page_vector.js) import
       // the LEGACY build's deep subpath, not the package entry — see the block comment

@@ -79,6 +79,57 @@ import { CAMERA_MAX_TIMESTEP_DEFAULT, clampedTimestep } from "./simulation_histo
  * @example // readAudioScene({o: {type: "audio_output"}}, registry).modules.o.module // "output"
  * @example readAudioScene({}, {get: () => ({})}).connections // []
  */
+/**
+ * Pure function. EVERY VALUE OF A MODULE THE ENGINE MUST BE TOLD ABOUT — its knobs,
+ * plus the non-knob state leaves that declare `engineParam: true`.
+ *
+ * ── WHY THIS EXISTS: `patchData` WAS WRITE-ONLY, AND NOTHING NOTICED ────────
+ * USER, 2026-08-08: *"surge's presets dont even survive a page reload lol"* …
+ * *"we should be able to have a preset every slide lol"*.
+ *
+ * The Surge modal stored a loaded patch into the document correctly, and NOTHING
+ * EVER READ IT BACK: the engine booted Surge's Init patch every time and no code
+ * path handed it the saved bytes. A saved deck reopened silent-of-its-instrument,
+ * and a patch keyframed onto slide 3 did nothing at all — while the spec's own
+ * docblock claimed slide 3 could be a different instrument. Storage without a read
+ * path is not a feature, it is a leak with a docblock.
+ *
+ * ── THE FIX IS TO REACT TO THE FOLDED VALUE, NOT TO A LOAD EVENT ───────────
+ * The obvious repair is "also tell the engine when the modal loads a patch". That
+ * fixes exactly one of the three complaints and none of the interesting ones —
+ * reload, slide navigation, undo and tween all change the patch WITHOUT any modal
+ * being open. So a patch is treated as what it is: an ordinary folded leaf that the
+ * mirror diffs like every knob. Boot loads it because `initialParamOps` sends every
+ * live value on birth; slide 3 loads it because refolding changes the value and the
+ * diff sees it; undo and redo travel the same road. No case is special.
+ *
+ * ── WHY NOT SIMPLY MAKE IT A KNOB ──────────────────────────────────────────
+ * Because `tests/audio_nodes_test.js` checks every declared knob against the real
+ * engine module's params AND renders one as an Inspector dial with a range. A patch
+ * blob has no range, no dial and no meaningful ramp. `engineParam: true` says the
+ * one thing that IS true of it — the engine must be told — without claiming the
+ * three things that are not.
+ *
+ * THEY ARE REPORTED AS `discrete`, which is not cosmetic: `diffAudioScene` gives a
+ * discrete param `rampSeconds: 0`, and a patch load is precisely the thing that
+ * cannot be glided into over 33 ms.
+ *
+ * @param {object} spec - an audio node spec
+ * @returns {object[]} knob-shaped declarations: `{key, discrete, construct?}`
+ *
+ * @example engineValueDecls({knobs: [{key: "level"}]}).map((k) => k.key) // ["level"]
+ * @example engineValueDecls({state: [{key: "patchData", engineParam: true}]}).map((k) => k.key) // ["patchData"]
+ * @example engineValueDecls({state: [{key: "patchName"}]}) // []
+ * @example engineValueDecls({state: [{key: "patchData", engineParam: true}]})[0].discrete // true
+ * @example engineValueDecls({}) // []
+ */
+export function engineValueDecls(spec) {
+  return [
+    ...(spec?.knobs ?? []),
+    ...(spec?.state ?? []).filter((s) => s.engineParam).map((s) => ({ key: s.key, discrete: true })),
+  ];
+}
+
 export function readAudioScene(items, registry) {
   const modules = {};
   for (const [id, state] of Object.entries(items ?? {})) {
@@ -92,7 +143,16 @@ export function readAudioScene(items, registry) {
       module: plugin.audioModule,
       type: state.type,
       spec: plugin.audioSpec,
-      knobs: Object.fromEntries(audioKnobValues(plugin.audioSpec, state).map((k) => [k.key, k.value])),
+      knobs: {
+        ...Object.fromEntries(audioKnobValues(plugin.audioSpec, state).map((k) => [k.key, k.value])),
+        // ENGINE-APPLIED NON-KNOB STATE (`engineParam: true`) rides in the same map,
+        // because it is diffed and pushed by exactly the same code. Read straight off
+        // the folded state with the declared default behind it — there is no
+        // audioKnobValues-style numeric guard, because these are not numbers.
+        ...Object.fromEntries((plugin.audioSpec?.state ?? [])
+          .filter((d) => d.engineParam)
+          .map((d) => [d.key, state?.[d.key] ?? d.default])),
+      },
     };
   }
 
@@ -354,7 +414,7 @@ export function diffAudioScene(prev, next, rampSeconds = KNOB_RAMP_MIN_SECONDS) 
  * @example initialParamOps({module: "noise", spec: {knobs: [{key: "level", default: 0.5}]}, knobs: {level: 0.3}}, "n") // [{op: "setParam", id: "n", key: "level", value: 0.3, rampSeconds: 0}]
  */
 export function initialParamOps(module, id) {
-  return (module.spec.knobs ?? [])
+  return engineValueDecls(module.spec)
     .filter((k) => !k.construct)
     .map((k) => ({ op: "setParam", id, key: k.key, value: module.knobs[k.key], rampSeconds: 0 }));
 }
