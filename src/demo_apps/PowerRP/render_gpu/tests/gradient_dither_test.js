@@ -37,7 +37,7 @@ import { paintIR } from "../skia/paint_skia.js";
 import { rect, parsePaint, paintDepth, opHasDitheredGradient, opHasReducedDepthGradient, undithered } from "../ir.js";
 import { irToSVG } from "../svg_backend.js";
 import { irToPDF } from "../pdf_backend.js";
-import { DITHER_MODES } from "../../core/properties.js";
+import { DITHER_MODES, DITHER_BAYER_SIZES, PAINT_DITHER_DEFAULT_BAYER_SIZE, bundle, bundleDefaults, BUNDLES } from "../../core/properties.js";
 import { paintDepthActive, packDitherUniforms, KNOWN_MODES } from "../skia/dither_shader.js";
 
 const require = createRequire(import.meta.url);
@@ -139,12 +139,12 @@ test("both NO-OP dither configurations parse to the undithered object exactly", 
 });
 
 test("an ACTIVE dither lands on the parsed paint, with the default emphasis filled", () => {
-  assert.deepEqual(paintDepth(ramp({ ditherMode: "bayer" })), { mode: "bayer", emphasis: 1, bits: 8 });
-  assert.deepEqual(paintDepth(ramp({ ditherMode: "blueNoise", ditherEmphasis: 3 })), { mode: "blueNoise", emphasis: 3, bits: 8 });
+  assert.deepEqual(paintDepth(ramp({ ditherMode: "bayer" })), { mode: "bayer", emphasis: 1, bits: 8, bayerSize: 8 });
+  assert.deepEqual(paintDepth(ramp({ ditherMode: "blueNoise", ditherEmphasis: 3 })), { mode: "blueNoise", emphasis: 3, bits: 8, bayerSize: 8 });
   // RADIAL TOO — unlike `spread`, which is deliberately linear-only because radial
   // has no wavelength/phase for it to modify. A radial ramp bands (in rings), so
   // the feature dither modifies is fully present here.
-  assert.deepEqual(paintDepth(radialRamp({ ditherMode: "bayer", ditherEmphasis: 2 })), { mode: "bayer", emphasis: 2, bits: 8 });
+  assert.deepEqual(paintDepth(radialRamp({ ditherMode: "bayer", ditherEmphasis: 2 })), { mode: "bayer", emphasis: 2, bits: 8, bayerSize: 8 });
 });
 
 test("parsePaint is LOUD on a bad dither, never quietly undithered", () => {
@@ -158,7 +158,7 @@ test("the shader's mode list and the property registry cannot drift", () => {
   // dither_shader.js asserts this at IMPORT time too; restated here so the reason
   // is visible in a suite rather than only as a module side effect.
   assert.deepEqual([...KNOWN_MODES].sort(), [...DITHER_MODES].sort());
-  assert.equal(paintDepthActive({ mode: "off", emphasis: 4, bits: 8 }), false);
+  assert.equal(paintDepthActive({ mode: "off", emphasis: 4, bits: 8, bayerSize: 8 }), false);
   assert.equal(paintDepthActive({ mode: "bayer", emphasis: 0, bits: 8 }), false);
   assert.equal(paintDepthActive({ mode: "bayer", emphasis: 1, bits: 8 }), true);
   assert.equal(paintDepthActive({ mode: "off", emphasis: 0, bits: 2 }), true, "a depth reduction with NO noise still needs the shader");
@@ -586,6 +586,92 @@ test("quantisation happens in UNPREMULTIPLIED colour — a faded gradient keeps 
   for (let i = 0; i < fadedLevels.length; i++)
     assert.ok(Math.abs(fadedLevels[i] - opaqueLevels[i]) <= 4,
       `level ${i}: faded ${fadedLevels[i]} vs opaque ${opaqueLevels[i]} — quantised in the wrong colour space`);
+});
+
+
+// ── 5. BAYER GRID SIZE + THE DITHER BUNDLE (user, 2026-08-08) ────────────────
+
+test("the DEFAULT Bayer size renders BYTE-IDENTICALLY to an absent one", () => {
+  // Same standard as the 8-bit depth default. 8x8 is what shipped before the row
+  // existed, so every gradient already dithered in the wild must be untouched.
+  const d = { ditherMode: "bayer", ditherEmphasis: 1 };
+  assert.deepEqual(fullRamp({ ...d, ditherBayerSize: 8 }), fullRamp(d), "the default size must not reach the parsed object");
+  assert.equal(diff(pixels(fullRamp(d)).px, pixels(fullRamp({ ...d, ditherBayerSize: 8 })).px).n, 0);
+});
+
+test("every Bayer size renders a DIFFERENT picture", () => {
+  // One recursive generator, four orders — so this also proves the recursion's
+  // term-masking actually selects, rather than always summing the same terms.
+  const shots = Object.fromEntries(DITHER_BAYER_SIZES.map((sz) =>
+    [sz, pixels(fullRamp({ ditherMode: "bayer", ditherEmphasis: 1, ditherBayerSize: sz })).px]));
+  for (const a of DITHER_BAYER_SIZES) for (const b of DITHER_BAYER_SIZES) {
+    if (a >= b) continue;
+    assert.ok(diff(shots[a], shots[b]).n > 0, `${a}x${a} and ${b}x${b} rendered identically — the order is not reaching the matrix`);
+  }
+});
+
+test("the half-cell offset TRACKS the order — no DC bias at any Bayer size", () => {
+  // THE ASSERTION A FIXED OFFSET FAILS, and the reason the constant had to become
+  // an expression. The matrix's 4^order thresholds are centred by adding half a
+  // cell; a 2x2 matrix has 4 levels and needs 1/8, an 8x8 has 64 and needs 1/128.
+  // Keeping the old hardcoded 0.5/64 would leave every order but 8x8 biased — the
+  // dither would LIGHTEN or DARKEN the fill instead of only scattering it, which
+  // no "the pixels changed" test can see.
+  const base = pixels(fullRamp()).px;
+  const meanOf = (px, ch) => { let s = 0, n = 0; for (let i = ch; i < px.length; i += 4) { s += px[i]; n++; } return s / n; };
+  for (const sz of DITHER_BAYER_SIZES) {
+    const shot = pixels(fullRamp({ ditherMode: "bayer", ditherEmphasis: 16, ditherBayerSize: sz })).px;
+    for (const [name, ch] of [["R", 0], ["G", 1], ["B", 2]]) {
+      const delta = meanOf(shot, ch) - meanOf(base, ch);
+      assert.ok(Math.abs(delta) < 0.1,
+        `Bayer ${sz}x${sz} at emphasis 16 shifted the mean ${name} by ${delta.toFixed(4)} code values — the half-cell offset does not match this order's level count`);
+    }
+  }
+});
+
+test("parsePaint is LOUD on a bad Bayer size, and drops one the mode cannot use", () => {
+  assert.throws(() => fullRamp({ ditherMode: "bayer", ditherBayerSize: 5 }), /ditherBayerSize must be one of 2, 4, 8, 16/);
+  assert.throws(() => fullRamp({ ditherMode: "bayer", ditherBayerSize: 32 }), /ditherBayerSize must be one of 2, 4, 8, 16/);
+  assert.throws(() => fullRamp({ ditherMode: "bayer", ditherBayerSize: "8" }), /ditherBayerSize must be one of 2, 4, 8, 16/);
+  // A size under blueNoise (which has no matrix) or under "off" is INERT, so it
+  // must not reach the parsed object — otherwise it would change the PDF shading
+  // cache key and the exported bytes for a setting that cannot be seen.
+  assert.deepEqual(fullRamp({ ditherMode: "blueNoise", ditherBayerSize: 16 }), fullRamp({ ditherMode: "blueNoise" }));
+  assert.deepEqual(fullRamp({ ditherBayerSize: 16 }), fullRamp());
+});
+
+test("packDitherUniforms sends the matrix ORDER, not its edge length", () => {
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  assert.equal(packDitherUniforms({ mode: "bayer", emphasis: 1, bits: 8, bayerSize: 2 }, I)[4], 1);
+  assert.equal(packDitherUniforms({ mode: "bayer", emphasis: 1, bits: 8, bayerSize: 8 }, I)[4], 3);
+  assert.equal(packDitherUniforms({ mode: "bayer", emphasis: 1, bits: 8, bayerSize: 16 }, I)[4], 4);
+  assert.equal(packDitherUniforms({ mode: "bayer", emphasis: 1, bits: 8 }, I)[4], Math.log2(PAINT_DITHER_DEFAULT_BAYER_SIZE), "an absent size must pack the default order");
+});
+
+test("THE DITHER BUNDLE is composable and declares every leaf the paint stores", () => {
+  // The user's ask: "bundled up into a dithering options property bundle - since
+  // other things might use dither soon too ... not just gradient". The value of a
+  // bundle is that ONE list drives every surfacing, so this asserts the list, its
+  // defaults, and that the visibility rules travel WITH it — the three things a
+  // future non-gradient consumer gets for free by spreading it.
+  assert.deepEqual(BUNDLES.dither, ["bitDepth", "ditherMode", "ditherBayerSize", "ditherEmphasis"]);
+  const rows = bundle("dither");
+  assert.deepEqual(rows.map((r) => r.key), BUNDLES.dither);
+  assert.deepEqual(bundleDefaults("dither"), { bitDepth: 8, ditherMode: "off", ditherBayerSize: 8, ditherEmphasis: 1 },
+    "every leaf must carry a scalar default, or a consumer spreading bundleDefaults gets an undefined slot");
+
+  const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+  // EMPHASIS hides with the mode (user ruling); BIT DEPTH does not, because hiding
+  // it would have forced it inert and deleted hard posterize.
+  assert.ok(byKey.ditherEmphasis.visibleWhen, "emphasis must declare a visibility gate");
+  assert.equal(byKey.ditherEmphasis.visibleWhen({ ditherMode: "bayer" }), true);
+  assert.equal(byKey.ditherEmphasis.visibleWhen({ ditherMode: "off" }), false);
+  assert.equal(byKey.ditherEmphasis.visibleWhen({}), false);
+  assert.equal(byKey.bitDepth.visibleWhen, undefined, "bit depth must NOT be gated — posterize with no dither is a look of its own");
+  // BAYER GRID is gated more narrowly still: blue noise has no matrix to size.
+  assert.equal(byKey.ditherBayerSize.visibleWhen({ ditherMode: "bayer" }), true);
+  assert.equal(byKey.ditherBayerSize.visibleWhen({ ditherMode: "blueNoise" }), false);
+  assert.equal(byKey.ditherBayerSize.visibleWhen({ ditherMode: "off" }), false);
 });
 
 console.log(`\n${passed} gradient dither tests passed`);

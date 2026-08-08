@@ -241,6 +241,45 @@ export function paintDitherIsOn(paint) {
 }
 
 /**
+ * THE BAYER MATRIX ORDER (user, 2026-08-08: "i should be able to, if i select
+ * bayer, choose the bayer grid size"). A 2^k x 2^k ordered matrix holding size²
+ * distinct thresholds: 2x2 is four levels and reads as a coarse cross-hatch, 16x16
+ * is 256 levels and is nearly as smooth as noise while staying strictly periodic.
+ *
+ * NUMBERS, NOT STRINGS, because the value IS the matrix edge length and the shader
+ * derives its recursion depth (log2) and level count (size²) from it arithmetically.
+ * `selectRowItems` maps numeric options through unchanged and `optionLabels` keys
+ * coerce, so a numeric select needs nothing special from the Inspector.
+ *
+ * 8 STAYS THE DEFAULT AND MUST STAY BYTE-IDENTICAL — it is what shipped before this
+ * row existed, and render_gpu/tests/gradient_dither_test.js pins the equality.
+ */
+export const DITHER_BAYER_SIZES = [2, 4, 8, 16];
+export const DITHER_BAYER_SIZE_LABELS = { 2: "2×2 (coarse)", 4: "4×4", 8: "8×8", 16: "16×16 (fine)" };
+/** The order that shipped before the row existed. Absent MUST render identically. */
+export const PAINT_DITHER_DEFAULT_BAYER_SIZE = 8;
+
+/**
+ * Pure function. Whether this paint/state dithers with the BAYER matrix — the gate
+ * for the grid-size row, which describes a knob only that mode has.
+ *
+ * A SECOND, NARROWER GATE THAN paintDitherIsOn, and deliberately so: grid size is
+ * meaningless under "off" AND under "blueNoise" (which has no matrix at all), so
+ * showing it beside a blue-noise dither would promise a control that does nothing.
+ *
+ * @param {object|string|null} paint - the RAW stored paint (or an item state
+ *   composing BUNDLES.dither — the four keys have the same names in both)
+ * @returns {boolean}
+ *
+ * @example paintDitherIsBayer({ ditherMode: "bayer" }) // true
+ * @example paintDitherIsBayer({ ditherMode: "blueNoise" }) // false (no matrix to size)
+ * @example paintDitherIsBayer({}) // false (absent IS off)
+ */
+export function paintDitherIsBayer(paint) {
+  return !!paint && typeof paint === "object" && paint.ditherMode === "bayer";
+}
+
+/**
  * THE camera's ANTI-ALIASING quality/algorithm modes (manifest "CAMERA
  * RENDERING"). This SELECT replaces the old `antialias` BOOLEAN (true→"standard",
  * false→"off"; migrated loudly in core/document.js). "off" disables per-draw
@@ -1492,7 +1531,41 @@ export const PROPS = {
   // devicePixelRatio), dither OFF.
   antialias: { label: "Anti-aliasing", kind: "select", options: ANTIALIAS_MODES, optionLabels: ANTIALIAS_MODE_LABELS, category: "rendering", default: "standard", help: "How shape and text edges are smoothed. Standard blends edge pixels (the default look). Off gives crisp, pixelated staircase edges and renders a little faster. (A higher-quality supersample mode is planned.)" },
   retina: { label: "Retina (HiDPI)", kind: "boolean", category: "rendering", default: true, help: "Renders at the display's full pixel density (its device pixel ratio) so edges stay sharp on high-DPI screens. Off renders at 1:1 CSS pixels — softer on a Retina display but faster." },
-  // NO DITHER ROWS HERE. `ditherMode`/`ditherEmphasis` used to sit on this line as
+  // ── dither: THE REUSABLE DITHER BUNDLE (user, 2026-08-08: "These should all be
+  // bundled up into a dithering options property bundle - since other things might
+  // use dither soon too" … "not just gradient") ────────────────────────────────
+  //
+  // These four are THE declaration of the dither options — labels, help, options,
+  // bounds, defaults and visibility — and they are single-sourced HERE rather than
+  // in the one editor that happens to render them today. Compose them anywhere with
+  // `bundle("dither")` + `bundleDefaults("dither")`, exactly as a widget composes
+  // `bundle("effects")`.
+  //
+  // TWO SURFACINGS, ONE DECLARATION. A future ITEM-level consumer gets these rows
+  // through Inspector's ordinary PROPS path (including `visibleWhen`, which
+  // groupRows already resolves) and lands them in a "Dither" accordion — the
+  // category id title-cases, so no Inspector change is needed. The PAINT-level
+  // consumer that ships today (web/PaintField.svelte, on a gradient fill/stroke)
+  // reads the SAME rows out of this bundle instead of hand-writing them, so the two
+  // cannot drift. That also RESOLVED a deviation recorded a day earlier: those rows
+  // used to be hand-written markup with no PROPS row for a `visibleWhen` to sit on,
+  // which is why the emphasis gate had to be spelled as a bare `{#if}`. It now hangs
+  // where every other gate in this file hangs.
+  //
+  // THE KEYS ARE THE SAME AT BOTH LEVELS (`ditherMode` on a paint, `ditherMode` on
+  // an item), which is what lets ONE `visibleWhen` predicate serve both: the
+  // functions below read `.ditherMode` off whatever object they are handed.
+  ditherMode: { label: "Dither", kind: "select", options: DITHER_MODES, optionLabels: DITHER_MODE_LABELS, category: "dither", default: PAINT_DITHER_DEFAULT_MODE, help: "Scatters pixels between the nearest representable colors so stair-step banding dissolves into fine grain. Bayer is a fixed ordered matrix (a regular cross-hatch); blue noise is an irregular scatter with no pattern the eye can lock onto; off disables it." },
+  ditherBayerSize: { label: "Bayer grid", kind: "select", options: DITHER_BAYER_SIZES, optionLabels: DITHER_BAYER_SIZE_LABELS, category: "dither", default: PAINT_DITHER_DEFAULT_BAYER_SIZE, visibleWhen: paintDitherIsBayer, help: "Edge length of the ordered Bayer matrix. Smaller is a coarser, more obvious cross-hatch with fewer levels (2×2 has four); larger is finer and closer to smooth (16×16 has 256). Only applies to the Bayer mode — blue noise has no matrix." },
+  ditherEmphasis: { label: "Dither emphasis", kind: "number", min: 0, scrub: UNIT_SPAN_SCRUB, category: "dither", default: PAINT_DITHER_DEFAULT_EMPHASIS, visibleWhen: paintDitherIsOn, help: "How strongly the pattern is applied, measured in quantization steps: 1 spreads each pixel across the two nearest levels, which is full strength at any bit depth. Above 1 over-emphasizes into pronounced grain (no upper cap); 0 is none." },
+  bitDepth: { label: "Bit depth", kind: "number", min: PAINT_MIN_BIT_DEPTH, max: PAINT_MAX_BIT_DEPTH, scrub: 1, category: "dither", default: PAINT_DEFAULT_BIT_DEPTH, help: "How many bits per color channel to reduce to. 8 is the screen's own depth and changes nothing; 1 is two levels per channel — eight colors — for a hard posterized look. Reachable WITHOUT a dither, which is what makes flat banded color a look of its own." },
+  // NO EXPLICIT `step` ON bitDepth, deliberately: its default is the INTEGER 8, so
+  // numberStep's precision fallback already derives step 1: an explicit one would be
+  // redundant AND would break tests/default_step_test.js's enumeration, which exists
+  // to state that only the 0..1-knob-with-integer-default rows need to override it.
+  // `scrub` (drag sensitivity) is a different aspect and is set: one bit per unit.
+
+  // NO CAMERA DITHER ROWS. `ditherMode`/`ditherEmphasis` used to sit on this line as
   // whole-scene camera render settings and were UPROOTED (user ruling, 2026-08-07 —
   // see DITHER_MODES above). Dither is now a PAINT property, authored per gradient
   // in web/PaintField.svelte, because the thing that bands is one fill, not the
@@ -2233,6 +2306,14 @@ export const BUNDLES = {
   // order (the two on/off toggles first, then the dither pair). Spread its
   // defaults with bundleDefaults("rendering") — every key has a scalar default.
   rendering: ["antialias", "retina"],
+  // THE DITHER bundle (user, 2026-08-08: "bundled up into a dithering options
+  // property bundle - since other things might use dither soon too"). Order = row
+  // order, and it is the order the picture is built in: what depth to quantise TO,
+  // then whether/how to distribute the error, then that mode's own knob, then how
+  // hard. Composed today by web/PaintField.svelte for a gradient fill/stroke; any
+  // future non-gradient consumer spreads `bundle("dither")` +
+  // `bundleDefaults("dither")` and gets identical rows, help and visibility.
+  dither: ["bitDepth", "ditherMode", "ditherBayerSize", "ditherEmphasis"],
 };
 
 /**

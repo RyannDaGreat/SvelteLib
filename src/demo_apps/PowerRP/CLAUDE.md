@@ -403,16 +403,64 @@ premultiplied, and posterizing that would quantise colour and alpha together, so
 a fading gradient would shift hue as it faded. Unpremultiply, quantise,
 re-premultiply. (Testing this needs a TRANSPARENT backdrop: over an opaque one a
 50%-alpha fill blends to alpha 1 and the straight value is gone before readback.)
-ONLY `ditherEmphasis` HIDES WITH THE MODE (user ruling, 2026-08-08: "they should be
-suboptions … like dither emphasis need not exist if dither is off"). `bitDepth`
-does NOT hide, and the asymmetry is the point: emphasis is meaningless with no mode
-to scale, but depth means something on its own. Gating depth would have forced it
-to be INERT while hidden — an invisible-but-active knob — and deleted hard
-posterize to satisfy a row rule. The gate is the named predicate
-`core/properties.paintDitherIsOn`, resolved in PaintField with that block's `{#if}`
-idiom, because these are hand-written markup rows with no PROPS row for a
-`visibleWhen` to sit on. This REVERSED the earlier "emphasis stays visible-but-
-inert" rule, and both its statements were changed with it.
+THE DITHER OPTIONS ARE A `BUNDLES` ENTRY (user, 2026-08-08: "bundled up into a
+dithering options property bundle - since other things might use dither soon too …
+not just gradient"). `BUNDLES.dither = ["bitDepth", "ditherMode", "ditherBayerSize",
+"ditherEmphasis"]` is THE declaration — labels, help, options, bounds, defaults and
+`visibleWhen` — composed with `bundle("dither")` / `bundleDefaults("dither")` like
+`bundle("effects")`. TWO SURFACINGS, ONE DECLARATION: a future ITEM-level consumer
+gets these rows through Inspector's ordinary PROPS path and a "Dither" accordion
+(the category id title-cases, so Inspector needed no change), and the PAINT-level
+consumer that ships today (`web/PaintField.svelte`, on a gradient fill/stroke)
+RENDERS FROM THE SAME BUNDLE rather than hand-writing rows. The keys are identical
+at both levels, which is what lets ONE `visibleWhen` predicate serve both.
+ONLY `ditherEmphasis` HIDES WITH THE MODE (user ruling: "like dither emphasis need
+not exist if dither is off"), and `ditherBayerSize` hides more narrowly still —
+blue noise has no matrix to size. `bitDepth` does NOT hide, and the asymmetry is
+the point: emphasis is meaningless with no mode to scale, but depth means something
+alone. Gating depth would have forced it INERT while hidden — an
+invisible-but-active knob — and deleted hard posterize to satisfy a row rule. This
+REVERSED the earlier "emphasis stays visible-but-inert" rule, and it also RESOLVED
+a deviation recorded a day earlier: those rows were hand-written markup with no
+PROPS row for a `visibleWhen` to hang on, which forced the gate to be a bare
+`{#if}`. Moving to the bundle put it where every other gate in `properties.js` lives.
+THE BAYER MATRIX ORDER IS SELECTABLE — 2×2, 4×4, 8×8 (default), 16×16 — from ONE
+generator, not four baked matrices (user: "i should be able to, if i select bayer,
+choose the bayer grid size"). The recursion b_{2n}(a) = b_n(a/2)/4 + b_2(a) unrolls
+to a weighted SUM of the same 2×2 base cell at halving scales, so the order just
+selects how many terms participate. THE HALF-CELL OFFSET MUST TRACK THE ORDER: a
+2^k matrix holds 4^k thresholds and is centred by 0.5/4^k. The old hardcoded 0.5/64
+biases every order but 8×8 — measured, it shifts a 2×2 dither's mean by 1.85 code
+values, i.e. the dither LIGHTENS or DARKENS the fill instead of only scattering it,
+which no "the pixels changed" test can see. 8×8 stays byte-identical (measured).
+THE BLUE-NOISE TILE WAS NOT BLUE NOISE, AND THIS IS THE ROUND'S SHARPEST LESSON.
+`blue_noise_64.js` claimed "Ulichney void-and-cluster (SPIE 1993)", a "toroidal
+Gaussian energy field" and a "perceptually-flat blue noise spectrum", and cited a
+generator script THAT DID NOT EXIST IN THIS REPO. Measured: high/low spectral power
+ratio 0.90 (a white-noise control scores ~1; real blue noise scores in the
+thousands) and a histogram of min 8 / max 17 where ranking every texel must give
+exactly 16 of each. It was white noise wearing a blue-noise docblock. NOTHING
+CAUGHT IT — not the render tests, which only asked whether the dither changed
+pixels (white noise changes pixels perfectly well), and not review, because the
+claim was confident and the data is unreadable base64. THE USER CAUGHT IT BY EYE at
+1 bit and high emphasis, and an agent then DISMISSED it as a known quality
+characteristic, which it was not: blue noise having no low-frequency energy is its
+DEFINITION, so visible blobs are proof of absence, not a tuning axis.
+THE REPLACEMENT IS DOWNLOADED, NOT GENERATED (user ruling: "you don't generate blue
+noise. you download it"). `blue_noise_512.js` — 512×512 from
+Calinou/free-blue-noise-textures (`512_512/LDR_LLL1_0.png`, Christoph Peters, CC0
+1.0, no attribution obligation). Measured: spectral ratio 4904.8, and an exact rank
+permutation (1024 of each value). It costs ~344 KB of base64 that does NOT gzip
+(random bytes) — a real bundle cost, accepted for a correct spectrum and a repeat
+period 8× longer (a 64px tile repeats ~30×17 across 1080p; 512px repeats ~4×2). The
+repo ships 128 and 256 variants if that is later judged too expensive; NEVER
+DOWNSAMPLE THE 512, because resampling destroys the spectrum that is the whole
+point — take the repo's own tile at that size.
+`render_gpu/tests/blue_noise_test.js` PINS BOTH PROPERTIES ON THE SHIPPED BYTES,
+and each independently catches the old tile: the spectrum (via an FFT, because a
+direct O(N⁴) DFT at 512 is ~7e10 ops) and the rank permutation. Its three controls
+— white noise ~1, smooth blobs ~0, checkerboard enormous — are ASSERTED, because a
+spectral test nobody calibrated is what let 0.90 read as acceptable.
 THE VECTOR RULE IS DEPTH-AWARE, AND THE 8-BIT-ONLY VERSION OF IT WAS WRONG BELOW 8.
 At 8 bits the exporters DROP the dither and say so (`ir.js
 reportVectorDitherOmission`, shared by both so they cannot tell different stories):

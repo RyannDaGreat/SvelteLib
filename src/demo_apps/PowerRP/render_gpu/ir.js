@@ -69,7 +69,7 @@
 
 import * as T from "../core/transform.js";
 import { DEFAULT_FONT } from "./fonts.js";
-import { DITHER_MODES, PAINT_DITHER_DEFAULT_MODE, PAINT_DITHER_DEFAULT_EMPHASIS, PAINT_DEFAULT_BIT_DEPTH, PAINT_MIN_BIT_DEPTH, PAINT_MAX_BIT_DEPTH, angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_SPREAD, GRADIENT_SPREAD_MODES, GRADIENT_COLLAPSE_WAVELENGTH, spreadPeriodHalves, rampAverageColor, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
+import { DITHER_MODES, PAINT_DITHER_DEFAULT_MODE, PAINT_DITHER_DEFAULT_EMPHASIS, PAINT_DEFAULT_BIT_DEPTH, PAINT_MIN_BIT_DEPTH, PAINT_MAX_BIT_DEPTH, DITHER_BAYER_SIZES, PAINT_DITHER_DEFAULT_BAYER_SIZE, angleToLinearEndpoints, GRADIENT_DEFAULT_ANGLE, GRADIENT_DEFAULT_CENTER, GRADIENT_DEFAULT_WAVELENGTH, GRADIENT_DEFAULT_PHASE, GRADIENT_DEFAULT_SPREAD, GRADIENT_SPREAD_MODES, GRADIENT_COLLAPSE_WAVELENGTH, spreadPeriodHalves, rampAverageColor, GRADIENT_STOPS_LIST, SCRUB_WRAP_MODES, BLEND_MODES, STROKE_CAP_MODES, STROKE_CAP_FLAT, STROKE_TRIM_KEYS, STROKE_JOIN_MODES, STROKE_JOIN_MITER, STROKE_MITER_LIMIT, STROKE_MITER_LIMIT_MIN } from "../core/properties.js";
 import { visibleElements } from "../core/lists.js";
 import { reportOnce } from "../core/report.js";
 import { CROSSFADE_PAINT_TYPE } from "../core/interp_modes.js";
@@ -742,13 +742,22 @@ function paintDepthFields(paint) {
   const bits = paint.bitDepth ?? PAINT_DEFAULT_BIT_DEPTH;
   if (!Number.isInteger(bits) || bits < PAINT_MIN_BIT_DEPTH || bits > PAINT_MAX_BIT_DEPTH)
     throw new Error(`parsePaint: bitDepth must be an INTEGER from ${PAINT_MIN_BIT_DEPTH} to ${PAINT_MAX_BIT_DEPTH} (per channel; ${PAINT_MAX_BIT_DEPTH} is the surface's own depth), got ${JSON.stringify(paint.bitDepth)}`);
+  const bayerSize = paint.ditherBayerSize ?? PAINT_DITHER_DEFAULT_BAYER_SIZE;
+  if (!DITHER_BAYER_SIZES.includes(bayerSize))
+    throw new Error(`parsePaint: ditherBayerSize must be one of ${DITHER_BAYER_SIZES.join(", ")} (the matrix edge length), got ${JSON.stringify(paint.ditherBayerSize)}`);
   // The two no-op dither configurations collapse to the SAME empty result, so "off
   // at emphasis 4" and "bayer at emphasis 0" are indistinguishable downstream —
   // which they must be, because they draw the identical picture. `bitDepth` is NOT
   // taken down with them: it stands on its own (see above).
   const ditherOff = mode === PAINT_DITHER_DEFAULT_MODE || rawEmphasis === 0;
+  // The grid size rides with the MODE, not on its own: it is a knob only Bayer has,
+  // so a non-default size on a blue-noise or off paint contributes nothing and must
+  // not change the parsed object (which is what keeps the exported bytes and the
+  // PDF shading cache key stable across a setting that cannot be seen).
+  const bayerDefaulted = bayerSize === PAINT_DITHER_DEFAULT_BAYER_SIZE || mode !== "bayer";
   return {
     ...(ditherOff ? {} : { ditherMode: mode, ditherEmphasis: rawEmphasis }),
+    ...(ditherOff || bayerDefaulted ? {} : { ditherBayerSize: bayerSize }),
     ...(bits === PAINT_DEFAULT_BIT_DEPTH ? {} : { bitDepth: bits }),
   };
 }
@@ -770,8 +779,8 @@ function paintDepthFields(paint) {
  * @param {object|null} paint - a PARSED paint (parsePaint output)
  * @returns {{mode: string, emphasis: number, bits: number}|null}
  *
- * @example paintDepth({type: "linearGradient", ditherMode: "bayer", ditherEmphasis: 2}) // {mode: "bayer", emphasis: 2, bits: 8}
- * @example paintDepth({type: "linearGradient", bitDepth: 1}) // {mode: "off", emphasis: 0, bits: 1} (posterize, no noise)
+ * @example paintDepth({type: "linearGradient", ditherMode: "bayer", ditherEmphasis: 2}) // {mode: "bayer", emphasis: 2, bits: 8, bayerSize: 8}
+ * @example paintDepth({type: "linearGradient", bitDepth: 1}) // {mode: "off", emphasis: 0, bits: 1, bayerSize: 8} (posterize, no noise)
  * @example paintDepth({type: "linearGradient"}) // null
  * @example paintDepth(null) // null
  */
@@ -787,6 +796,7 @@ export function paintDepth(paint) {
     mode: dithered ? paint.ditherMode : PAINT_DITHER_DEFAULT_MODE,
     emphasis: dithered ? (paint.ditherEmphasis ?? PAINT_DITHER_DEFAULT_EMPHASIS) : 0,
     bits,
+    bayerSize: paint.ditherBayerSize ?? PAINT_DITHER_DEFAULT_BAYER_SIZE,
   };
 }
 
@@ -889,7 +899,7 @@ function paintIsReducedDepth(paint) {
  * expected output instead of growing a dither case they cannot draw anyway.
  *
  * @param {object|null} paint - a parsed paint
- * @returns {object|null} the same paint with no ditherMode/ditherEmphasis/bitDepth
+ * @returns {object|null} the same paint with no dither/depth leaves
  *
  * @example undithered({type: "linearGradient", ditherMode: "bayer", ditherEmphasis: 2}).ditherMode // undefined
  * @example undithered({type: "linearGradient", bitDepth: 2}).bitDepth // undefined
@@ -897,7 +907,7 @@ function paintIsReducedDepth(paint) {
  */
 export function undithered(paint) {
   if (paintDepth(paint) === null) return paint; // the common case: no copy at all
-  const { ditherMode, ditherEmphasis, bitDepth, ...rest } = paint;
+  const { ditherMode, ditherEmphasis, ditherBayerSize, bitDepth, ...rest } = paint;
   return rest;
 }
 
