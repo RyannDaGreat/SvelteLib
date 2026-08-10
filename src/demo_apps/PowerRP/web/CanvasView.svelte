@@ -119,7 +119,7 @@
   // resize and the group resize) now go through canvas/dragKinds.js geometryPairs,
   // which is where the minimal delta and the constraint projection are one step.
   import { visibleLevels, ticksInRange } from "../../../lib/ticks.js";
-  import { ASSET_DRAG_MIME, isProjectZip } from "./projectApi.js"; // asset-tile drop payload type + the one .zip-is-a-project rule (drop-handler region)
+  import { ASSET_DRAG_MIME, isProjectZip, isPptxFile } from "./projectApi.js"; // asset-tile drop payload type + the one .zip-is-a-project / .pptx-is-a-deck rules (drop-handler region)
   import { assetDropKind } from "./pluginAssetLoader.js"; // what a dropped asset DOES: "widget" (*.plugin.js) | "media" | "none" — declared + bare-node tested
   import { assetKindForFile } from "./assetRef.js"; // ONE file classifier (MIME for media prefixes, extension table otherwise) — replaced a local MIME-only copy that refused OS-dropped PDFs
   import { reportAction, warnOnce } from "../core/report.js"; // a refused DROP is one user act — reportAction, never a deduped one. A refused POINTER LOCK is the opposite on both axes: repeated clicks, so deduped; and the gesture still works by a worse route, which is warnOnce's stated remit rather than reportOnce's
@@ -1129,11 +1129,14 @@
 
   /** Command. The canvas drop: asset-tile payload → insert at the drop point;
    *  a dropped .zip → import it as a NEW project and open it (never an asset
-   *  upload — see isProjectZip); other OS files → upload each, then insert at
-   *  the drop point. A failure in any step is REPORTED loudly (console.error)
-   *  — a user gesture must never fail silently, and an event handler has no
-   *  caller to rethrow to. app.importProjectZip ALSO surfaces its own result /
-   *  refusal in the UI, so a rejected archive is visible without the console. */
+   *  upload — see isProjectZip); a dropped .pptx/.pptm → the SAME "new
+   *  project" treatment via the confirm+progress import dialog (see
+   *  isPptxFile, app.showPptxImport); other OS files → upload each, then
+   *  insert at the drop point. A failure in any step is REPORTED loudly
+   *  (console.error) — a user gesture must never fail silently, and an event
+   *  handler has no caller to rethrow to. app.importProjectZip ALSO surfaces
+   *  its own result / refusal in the UI, so a rejected archive is visible
+   *  without the console; app.showPptxImport likewise owns its own dialog. */
   async function onCanvasDrop(e) {
     if (!dropAccepts(e.dataTransfer)) return;
     e.preventDefault();
@@ -1153,6 +1156,15 @@
           reportAction(`PowerRP: dropped ${zips.length} .zip archives — each is a whole project, so only "${zips[0].name}" was imported. Drop the others one at a time.`);
         }
         return await app.importProjectZip(zips[0]);
+      }
+      // A .pptx is likewise a WHOLE-DECK gesture, not an asset — same
+      // one-wins rule as a multi-zip drop.
+      const decks = files.filter(isPptxFile);
+      if (decks.length > 0) {
+        if (decks.length > 1) {
+          reportAction(`PowerRP: dropped ${decks.length} PowerPoint files — each is a whole deck, so only "${decks[0].name}" was opened for import. Drop the others one at a time.`);
+        }
+        return app.showPptxImport(decks[0]);
       }
       for (const file of files) {
         const up = await app.uploadAsset(file); // {ok, name, url}

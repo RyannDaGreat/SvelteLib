@@ -101,7 +101,7 @@ import { fetchZipBytes, validatedZipUrl, zipFileNameFromUrl } from "./projectUrl
 // THE WORKING-COPY MODEL: a zip or share link opens a DRAFT, not a library
 // entry. web/projectDraft.js states the invariant — read it before touching
 // projectName(), which is the seam the whole model turns on.
-import { DRAFT_KEY, DRAFT_STATE_KEY, UNTITLED_NAME, draftFromZipBytes, draftStateFromJson, isDraftKey, isUnsavedDraft, openNeedsConfirm, shareUrl, validProjectName } from "./projectDraft.js";
+import { DRAFT_KEY, DRAFT_STATE_KEY, UNTITLED_NAME, draftFromZipBytes, draftStateFromJson, isDraftKey, isUnsavedDraft, openNeedsConfirm, shareUrl, stageDraftAssets, validProjectName } from "./projectDraft.js";
 // A REPO IS A TRANSPORT, exactly as a URL is: this supplies the fetch and the
 // `?repo=` share-link shape, and hands `{doc, assets}` to the SAME draft
 // pipeline a zip goes through (githubProject.js's header states the invariant).
@@ -116,7 +116,7 @@ import { strToU8, zipSync } from "fflate";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
 import { assetRef, assetKindForFile, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
-import { documentAssetRefs, foreignAssetRefs, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "./assetLocalize.js";
+import { adoptedArchiveRefs, documentAssetRefs, foreignAssetRefs, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "./assetLocalize.js";
 import { createRegistry, widgetForAssetKind } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
 import { createShortcuts } from "../core/shortcuts.js";
@@ -7056,6 +7056,13 @@ export class PowerRPApp {
    *  rather than swallowing it. */
   showImportResult = (result) => console.log("PowerRP import:", result);
 
+  /** Hook installed by App.svelte: opens ImportPptxModal for a dropped/picked
+   *  .pptx File — the confirm-then-progress dialog that does the actual
+   *  parse/translate/stage/open work (web/pptxImport.js). Assigned there for
+   *  the same DOM-free reason showImportResult is; the default just reports
+   *  the drop so a harness without the shell does not silently ignore it. */
+  showPptxImport = (file) => console.log(`PowerRP: dropped "${file?.name}" — .pptx import needs the App.svelte shell (showPptxImport not wired).`);
+
   /**
    * Command. Open an exported project .zip (a File/Blob from a drop or the file
    * picker) as a DRAFT. Returns `{ok, name, requested, draft: true}`.
@@ -7283,6 +7290,55 @@ export class PowerRPApp {
     this.selection = null;
     this.assetsVersion++; // a draft is a different asset library
     this.syncFontAssets(DRAFT_KEY); // fire-and-forget: register this draft's fonts
+    console.log(`PowerRP: opened "${name}" as an UNSAVED DRAFT (${assetCount} asset(s) staged under ${DRAFT_KEY}) — nothing was added to the project library. Save to keep it.`);
+    return { name, assetCount };
+  }
+
+  /**
+   * Command. Open a TRANSLATED .pptx deck (a {doc, assets} pair already
+   * produced by core/pptx_translate/translate.js) as a DRAFT — the .pptx
+   * counterpart of openDraftFromZipBytes just above, sharing every rule that
+   * function documents (staged assets, draft-mode bookkeeping, undoable-edit
+   * commit) except the source: there is no archive to parse, because the
+   * caller (web/pptxImport.js) already ran parsePptx + translateDeck and is
+   * handing over a ready PowerRP document plus its media assets.
+   *
+   * `name` is the human display name (derived from the .pptx filename by the
+   * caller); assets are staged via the SAME stageDraftAssets a zip import
+   * uses, so both import paths write to IndexedDB identically and Save
+   * behaves the same regardless of which one produced the working copy.
+   *
+   * ARCHIVE ADOPTION APPLIES HERE TOO. translateDeck writes absolute refs
+   * ("/asset/<some deck-chosen name>/image1.png") naming a project that does
+   * not exist — this deck was never anyone's saved project. MEASURED: without
+   * healing, every translated image/video widget resolves to the MISSING
+   * sentinel the instant the draft opens (ensureImage's "refusing to load the
+   * missing-asset sentinel"). adoptedArchiveRefs (the exact function
+   * draftFromZipBytes uses for the equivalent legacy-zip case) rewrites any
+   * ref whose FILE component matches a staged asset name into the relative
+   * spelling, regardless of what project name the absolute ref used to carry
+   * — so it heals this case identically to a pre-localization zip.
+   *
+   * @param {object} doc A PowerRP document (pre-repair; this method repairs it).
+   * @param {Array<{name: string, bytes: Uint8Array}>} assets Media referenced by doc.
+   * @param {string} name Display name for the new draft.
+   * @returns {Promise<{name: string, assetCount: number}>}
+   */
+  async openDraftFromTranslatedDeck(doc, assets, name) {
+    this.draftMode = { name, sourceUrl: "" };
+    this.everSaved = false;
+    localStorage.setItem(DRAFT_STATE_KEY, JSON.stringify(this.draftMode));
+    clearDynamicFonts(); // drop the previous project's uploaded font families
+    const healed = adoptedArchiveRefs(doc, assets.map((a) => a.name));
+    const assetCount = await stageDraftAssets(assets);
+    // Plugin assets BEFORE repair — see openDraftFromZipBytes for why.
+    await this.reloadPluginAssets(DRAFT_KEY);
+    resetSimulation();
+    this.commit(this.repaired({ ...healed, meta: { ...healed.meta, name } }));
+    this.slideIndex = 0;
+    this.selection = null;
+    this.assetsVersion++;
+    this.syncFontAssets(DRAFT_KEY);
     console.log(`PowerRP: opened "${name}" as an UNSAVED DRAFT (${assetCount} asset(s) staged under ${DRAFT_KEY}) — nothing was added to the project library. Save to keep it.`);
     return { name, assetCount };
   }

@@ -384,6 +384,33 @@ export function isProjectZip(file) {
   return /\.zip$/i.test(file?.name ?? "") || ["application/zip", "application/x-zip-compressed"].includes(file?.type);
 }
 
+/** Pure function. Whether a dropped/picked OS File is a PowerPoint deck
+ *  (.pptx/.pptm — the macro-enabled variant parses identically, since
+ *  core/pptx/deck.js reads the same OOXML parts either way). Mirrors
+ *  isProjectZip's extension-and-MIME test so every drop surface classifies a
+ *  deck the same way.
+ *
+ *  @example isPptxFile({name: "Talk.pptx", type: "application/vnd.openxmlformats-officedocument.presentationml.presentation"}) // true
+ *  @example isPptxFile({name: "Deck.PPTM", type: ""})  // true (extension alone)
+ *  @example isPptxFile({name: "logo.png", type: "image/png"}) // false
+ */
+export function isPptxFile(file) {
+  return /\.pptm?$/i.test(file?.name ?? "") || file?.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+}
+
+/** Pure function. The project name a dropped/picked .pptx file wants: its
+ *  basename with the .pptx/.pptm extension stripped. Unlike projectZipName, a
+ *  deck has no archive root folder to fall back on if this is blank — the
+ *  caller is responsible for a final "Imported Presentation" fallback.
+ *
+ *  @example pptxDisplayName("Q3 Roadmap.pptx")   // "Q3 Roadmap"
+ *  @example pptxDisplayName("decks/Talk.PPTM")   // "Talk"
+ */
+export function pptxDisplayName(filename) {
+  const base = String(filename ?? "").split(/[\\/]/).pop();
+  return base.replace(/\.pptm?$/i, "").trim();
+}
+
 /** Command. Import an exported project .zip as a NEW project on the server —
  *  the inverse of downloadProjectZip. `file` is the raw archive (a File/Blob);
  *  `name` is the preferred project name (blank = the archive's root folder

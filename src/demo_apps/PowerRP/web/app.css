@@ -875,6 +875,12 @@
   --a-render-pending-opacity: 0.5;
   /* The list scrolls past this height rather than growing the dialog. */
   --a-render-list-h: 560px;
+  /* .pptx import progress log (ImportPptxModal.svelte): tall enough to read
+     several lines of running history at once, capped so the phases/report
+     above and below it stay on screen in a 90vh "large" modal. */
+  --a-pptx-log-min-h: 160px;
+  --a-pptx-log-max-h: 320px;
+  --a-pptx-log-phase-w: 88px;
   /* Left edge that marks a job active/failed, and the unseen dot. */
   --a-render-job-edge: 2px;
   --a-render-dot: 7px;
@@ -10843,6 +10849,146 @@ audio.ae-preview-media {
   word-break: break-all; /* a long zip URL must wrap inside the modal, not widen it */
 }
 
+/* ── .pptx import (ImportPptxModal.svelte) ───────────────────────────────────
+   Two stages in one dialog: a compact confirm ("Would you like to import?" +
+   SlideRangeField), then a "large" (90% viewport, Modal's own size token) live
+   progress view — the user's own spec: "a very super informative progress
+   modal ... shows in detail everything that's happening". Reuses .name-modal*
+   for the confirm stage's warning/note/action rows (the same dialog language
+   every other name/confirm modal in this app already speaks). */
+.pptx-import-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-4);
+}
+.pptx-import-question {
+  margin: 0;
+}
+.pptx-import-reading {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--a-font-sm);
+}
+
+.pptx-import-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-4);
+  min-height: 0; /* lets the log below scroll instead of growing the dialog past 90vh */
+}
+
+.pptx-import-phases {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-3);
+  flex: none;
+}
+.pptx-import-phase {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+  opacity: var(--a-render-pending-opacity); /* not yet reached — same dim the render list uses for a not-yet-minted URL */
+}
+.pptx-import-phase.is-active,
+.pptx-import-phase.is-done {
+  opacity: 1;
+}
+.pptx-import-phase-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: var(--a-font-sm);
+  color: var(--fg-dim);
+}
+.pptx-import-phase-count {
+  font-variant-numeric: tabular-nums;
+}
+.pptx-import-bar {
+  height: var(--a-render-bar-h);
+  background: var(--control-bg);
+  border: var(--a-hairline) solid var(--border);
+  overflow: hidden;
+}
+.pptx-import-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width var(--a-url-progress-ease) linear;
+}
+.pptx-import-bar.is-indeterminate .pptx-import-bar-fill {
+  width: var(--a-render-bar-sweep-w);
+  animation: render-center-sweep var(--a-render-bar-sweep-period) ease-in-out infinite alternate;
+  transition: none;
+}
+
+/* THE LOG. Monospace, scrolling, newest at the bottom (natural reading order
+   for a running log) — every event runImport emits lands here verbatim, so
+   "all the things being uploaded, all the things being processed" (the user's
+   words) is not a summary, it is the actual step-by-step record. */
+.pptx-import-log {
+  flex: 1 1 auto;
+  min-height: var(--a-pptx-log-min-h);
+  max-height: var(--a-pptx-log-max-h);
+  overflow-y: auto;
+  padding: var(--a-sp-3);
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--a-radius-control);
+  font-family: var(--a-mono);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+.pptx-import-log-row {
+  display: flex;
+  gap: var(--a-sp-3);
+}
+.pptx-import-log-row + .pptx-import-log-row {
+  margin-top: var(--a-sp-1);
+}
+.pptx-import-log-phase {
+  flex: 0 0 auto;
+  min-width: var(--a-pptx-log-phase-w);
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  font-size: var(--a-font-sm);
+}
+.pptx-import-log-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pptx-import-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-3);
+  flex: none;
+}
+.pptx-import-report-heading {
+  margin: 0;
+  font-size: var(--a-font-md);
+  font-weight: 600;
+}
+.pptx-import-report-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--a-sp-2);
+}
+.pptx-import-report-title {
+  font-size: var(--a-font-sm);
+  font-weight: 600;
+  color: var(--fg-dim);
+}
+.pptx-import-report-list {
+  margin: 0;
+  padding-left: var(--a-sp-5);
+  font-size: var(--a-font-sm);
+  line-height: var(--a-text-line-height);
+}
+.pptx-import-report-list.is-warning {
+  color: var(--a-keyed);
+}
+
 /* ── Built-in Assets browser (BuiltinAssetBrowser.svelte) ─────────────────────
    The discovery-only catalog of ship-with-the-app assets (cursors today),
    rendered in a Modal — a SEPARATE surface from the project Asset Explorer.
@@ -11173,6 +11319,37 @@ audio.ae-preview-media {
   margin: 0;
   color: var(--fg-dim);
   font-size: var(--a-font-sm);
+}
+
+/* ── SlideRangeField (web/SlideRangeField.svelte) ────────────────────────────
+   The "which slides" picker, extracted from the render-center rows above so
+   the .pptx import dialog can use the identical control. Same shape (label
+   cell + control cell, a --a-render-label-w gutter) but its own class names —
+   this field is used OUTSIDE the render center now, so it must not read as
+   coupled to that dialog's naming. */
+.range-field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+}
+.range-field-label {
+  flex: 0 0 var(--a-render-label-w);
+  color: var(--fg-dim);
+}
+.range-field-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.range-field-control .dd {
+  width: 100%;
+}
+.range-field-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--a-sp-3);
+}
+.range-field-times {
+  color: var(--fg-dim);
 }
 
 /* A SETTING THAT IS STATED, NOT CHOSEN — static mode's "Rendered by: Browser" and

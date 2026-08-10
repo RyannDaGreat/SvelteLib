@@ -104,6 +104,7 @@
   import DraggableNumber from "../../../lib/DraggableNumber.svelte";
   import SplitView from "../../../lib/SplitView.svelte";
   import Tooltip from "../../../lib/Tooltip.svelte";
+  import SlideRangeField from "./SlideRangeField.svelte";
   import { cameraRectAt } from "./cameraFrame.js";
   import { humanReadableFileSize } from "./fileSize.js";
   import { DEFAULT_FPS, DEFAULT_HOLD_SECONDS, DEFAULT_SAMPLES, planForParams, frameCount } from "./videoExport.js";
@@ -234,10 +235,6 @@
     { value: "medium", label: "Medium" },
     { value: "high", label: "High (crisper)" },
     { value: "custom", label: "Custom (CRF)…" },
-  ];
-  const RANGE_MODES = [
-    { value: "all", label: "All slides" },
-    { value: "custom", label: "Range…" },
   ];
   // The server backend renders in a headless browser running THIS app, so it draws
   // everything this page draws — media, LaTeX, Mermaid, motion blur. "needed for
@@ -806,20 +803,7 @@
       </label>
     {/if}
 
-    <div class="render-center-row">
-      <span class="render-center-label">Slides</span>
-      <span class="render-center-control"><Dropdown items={RANGE_MODES} bind:value={rangeMode} /></span>
-    </div>
-    {#if rangeMode === "custom"}
-      <div class="render-center-row">
-        <span class="render-center-label">From → To</span>
-        <span class="render-center-control render-center-inline">
-          <DraggableNumber bind:value={rangeFrom} min={1} max={slideCount} step={1} label="First slide" />
-          <span class="render-center-times">→</span>
-          <DraggableNumber bind:value={rangeTo} min={1} max={slideCount} step={1} label="Last slide" />
-        </span>
-      </div>
-    {/if}
+    <SlideRangeField {slideCount} bind:mode={rangeMode} bind:from={rangeFrom} bind:to={rangeTo} />
 
     <!-- THE app's standard boolean control, NOT a native checkbox (Inspector's
          "Plain boolean" branch precedent). Not a <label>: the control is a

@@ -37,6 +37,7 @@
   import { selectAllOnMount } from "../../../lib/selectAllOnMount.js";
   import GridSizePicker from "./GridSizePicker.svelte";
   import RenderCenterModal from "./RenderCenterModal.svelte";
+  import ImportPptxModal from "./ImportPptxModal.svelte";
   import FileBrowser from "./FileBrowser.svelte";
   import CodeEditorModal from "./CodeEditorModal.svelte";
   import SurgeGuiModal from "./SurgeGuiModal.svelte";
@@ -420,6 +421,17 @@
     // always the clean case, so it reports to the console and the open draft
     // (with its UNSAVED indicator) IS the feedback.
     console.log(`Import Project from .zip: opened "${result.name}" as an unsaved draft.`);
+  };
+
+  // Import-a-.pptx dialog: the confirm-then-progress modal (web/ImportPptxModal.svelte
+  // + web/pptxImport.js own the whole flow — parse, translate, stage assets, open
+  // as a draft). This hook just owns the DOM the drop handler (CanvasView.svelte)
+  // has none of: it stores the dropped File and shows the modal.
+  let pptxImportFile = $state(null);
+  let pptxImportVisible = $state(false);
+  app.showPptxImport = (file) => {
+    pptxImportFile = file;
+    pptxImportVisible = true;
   };
 
   // ── Open Project from URL… ──────────────────────────────────────────────────
@@ -3324,6 +3336,11 @@
       </div>
     </div>
   </Modal>
+  <!-- Import a .pptx: drag-drop confirm, then a live progress view (parse ->
+       translate -> stage assets -> open as an unsaved draft). Owns its whole
+       flow (web/ImportPptxModal.svelte + web/pptxImport.js); this mount is just
+       the DOM the app.showPptxImport hook needs. -->
+  <ImportPptxModal {app} bind:open={pptxImportVisible} file={pptxImportFile} />
   <!-- Open Project from URL: fetch a .zip over the network and open it as an
        UNSAVED DRAFT. The progress bar shows REAL bytes (indeterminate when the
        host sends no Content-Length) because a multi-megabyte deck must never
