@@ -50,6 +50,7 @@ import { qrcodePlugin } from "./qrcode.js";
 import { plaintextPlugin } from "./plaintext.js";
 import { bentoPlugin } from "./bento.js";
 import { shapeshifterPlugins } from "./shapeshifter.js";
+import { pptxPresetPlugin } from "./pptx_preset.js"; // PowerPoint AutoShape import: parametric geometry (core/pptx/preset_geometry.js) + PowerPoint's own adjust handles (core/pptx/preset_handles.js), never baked to a frozen path
 import { bracePlugins } from "./brace.js"; // curly `{` + square `[` — three-point anchorable connectors
 import { polygonPlugin } from "./polygon.js"; // freeform polygon/polyline: a variable-length vertex list, every vertex a handle, the whole list one keyframable leaf
 import { paintPathPlugin } from "./paint_path.js"; // paintable editable cubic-bezier stroke: mirrored-handle anchor list with BREAKS (multi-subpath) + the universal stroke-trim draw-on (strokeStart/End/phase/caps)
@@ -135,7 +136,7 @@ import { scene3dPlugins } from "./demo/scene3d.js"; // THE 3D VIEWPORT FAMILY: s
  */
 export const demoPlugins = [demoShowcasePlugin, glassPlugin, frostedGlassPlugin, cursorPlugin, crtPlugin, metaballsPlugin, magnifyPlugin, ...textMorphPlugins, ...corkboardPlugins, raycastDitherPlugin, rainyWindowPlugin, ...skyPlugins, lensFlarePlugin, godRaysPlugin, videoV2Plugin, videoV5Plugin, videoV5ScrubPlugin, videoTimeScrubPlugin, videoV6Plugin, videoV7Plugin, videoV8Plugin, comicPlugin, glitchPlugin, mandelbrotPlugin, globeMapPlugin, brightnessContrastPlugin, ...scene3dPlugins];
 
-export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
+export const allPlugins = [rectPlugin, shapePlugin, svgPlugin, iconifyPlugin, circlePlugin, labeledCirclePlugin, textPlugin, arrowPlugin, linePlugin, tangentLinesPlugin, fancyArrowPlugin, elbowArrowPlugin, curvedArrowPlugin, imagePlugin, videoPlugin, videoScrubPlugin, filmstripPlugin, imageStackPlugin, magnifierPlugin, blurPlugin, cameraPlugin, cropboxPlugin, groupPlugin, codeblockPlugin, anchorPointPlugin, pdfPagePlugin, paperPeacockPlugin, pdfPacketPlugin, particlesPlugin, latexPlugin, mermaidPlugin, qrcodePlugin, plaintextPlugin, bentoPlugin, ...shapeshifterPlugins, pptxPresetPlugin, ...bracePlugins, polygonPlugin, paintPathPlugin, trailPlugin, aperturePlugin, irisBladesPlugin, graphLinePlugin, graphTickMarksPlugin, graphGridPlugin, graphBarsPlugin, ...demoPlugins, nodeNumberPlugin, nodeMathPlugin, nodeDisplayPlugin, ...controlPlugins, ...audioPlugins, ...execPlugins];
 
 /**
  * Command. Registers every plugin TYPE into `registry`, and nothing else.
