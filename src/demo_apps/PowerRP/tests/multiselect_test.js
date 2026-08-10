@@ -284,9 +284,11 @@ test("THE CAMERA participates and honestly thins the intersection", () => {
   const keys = intersectRows([entry("c", "camera", {}), entry("r", "rect", {})]).rows.map((r) => r.key);
   // The universal rows lead (WORKSTREAM BE) and the camera's own exclusion shows
   // up right here: it is purgeable:false, so the set offers NO Visible row and
-  // therefore no visibility-interp row either. The PLUGIN half of the
+  // therefore no visibility-interp row either. `delay` (manifest "THE `delay`
+  // UNIVERSAL PROPERTY") joined `morph` in UNIVERSAL_MULTI_KEYS and is NOT
+  // gated on purgeable, so the camera still offers it. The PLUGIN half of the
   // intersection is unchanged — x/y/w/h and nothing else, as before.
-  assert.deepEqual(keys, ["type", "morph", "x", "y", "w", "h"]);
+  assert.deepEqual(keys, ["type", "morph", "delay", "x", "y", "w", "h"]);
 });
 
 test("intersection is ORDER-STABLE and follows the PRIMARY's row order", () => {
@@ -587,7 +589,7 @@ test("BE DRIFT GATE: the universal rows come from ONE definition, not a second c
   const b = universalRowsWithInterp([{ plugin: registry.get("circle"), state: { active: true } }]);
   assert.equal(a[0], b[0], "the type row is one shared object, by IDENTITY");
   assert.equal(a[1], b[1], "so is the visible row");
-  assert.deepEqual(a.map((r) => r.key), ["type", "active", "active~interp", MORPH_KEY]);
+  assert.deepEqual(a.map((r) => r.key), ["type", "active", "active~interp", MORPH_KEY, "delay"]);
 });
 
 // ── THE SECTION-HEADER KEYFRAME BUBBLE (WORKSTREAM BH) ───────────────────────

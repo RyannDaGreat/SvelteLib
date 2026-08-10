@@ -416,8 +416,10 @@ const MORPH_NON_SHAPE_KEYS = new Set([
   // selector against the clip duration.
   "scrubTime", "scrubWrap",
   // PRESENTATION + NON-VISUAL — visibility rides the fade seam, and the rest is
-  // bookkeeping nothing draws with.
-  "opacity", "active", "name", "locked", "group",
+  // bookkeeping nothing draws with. `delay` (manifest "THE `delay` UNIVERSAL
+  // PROPERTY") holds WHEN a tween begins, not what it draws — the timing
+  // knob, never the shape.
+  "opacity", "active", "name", "locked", "group", "delay",
 ]);
 
 /**

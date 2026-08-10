@@ -10,6 +10,14 @@
  * CPU surface. Because paint_skia.js is shared with the browser WebGL2 path,
  * headless output matches the editor's.
  *
+ * `--alpha` IS LINEAR transition progress, not a pre-eased value (THE ALPHA
+ * REFACTOR, manifest "THE `delay` UNIVERSAL PROPERTY — DESIGN"): the requested
+ * slide's own `transition.curve` is applied INSIDE the fold
+ * (core/document.foldState), per item, so `--alpha 0.5` on a "smooth" (cubic)
+ * transition renders the picture at cubic(0.5) strength — the same picture the
+ * presenter and video exporters show at their own local 50% mark — not the
+ * picture a bare linear half-blend would give.
+ *
  * The camera rect at (slide, alpha) is the view: fitRectView maps it to fill
  * width×height at dpr 1 (identical to the editor's PNG export at that size),
  * and the camera background clears the frame (letterbox edges included).
@@ -251,7 +259,8 @@ export async function pluginAssetSourcesBeside(docPath) {
  * Args:
  *   docJson (string): serialized .powerrp.json contents
  *   opts.slide (number): slide index (default 0)
- *   opts.alpha (number): tween alpha in [0, 1] (default 1)
+ *   opts.alpha (number): LINEAR tween progress in [0, 1] (default 1) — the
+ *     requested slide's transition curve is applied inside the fold, not here
  *   opts.width, opts.height (number): output size in pixels (dpr 1)
  *   opts.quality (string): "full" (the editor's render, the default) or "proxy"
  *     (paint_skia's cheap stand-ins — NOT the editor's render). Validated LOUDLY,

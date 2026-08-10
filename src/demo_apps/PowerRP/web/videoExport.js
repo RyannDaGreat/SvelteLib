@@ -17,10 +17,11 @@
  *
  * ── PIPELINE (frame source → encoder) ─────────────────────────────────────────
  *   time  ──sampleTimeline──▶ (slide, alpha)  ──renderFrame──▶ canvas  ──encoder──▶ .mp4
- * A pure timeline PLAN maps absolute presentation time → (slide, alpha); the
- * injected `renderFrame(index, alpha) → canvas` rasterizes a frame at the export
- * resolution (the caller wires it to the SAME deterministic camera path the
- * presenter/CLI use); the injected `encoder` consumes finished frames.
+ * A pure timeline PLAN maps absolute presentation time → (slide, LINEAR alpha —
+ * curve easing happens once, at core/document.foldState, THE ALPHA REFACTOR);
+ * the injected `renderFrame(index, alpha) → canvas` rasterizes a frame at the
+ * export resolution (the caller wires it to the SAME deterministic camera path
+ * the presenter/CLI use); the injected `encoder` consumes finished frames.
  *
  * ── ENCODER INTERFACE (pluggable) ─────────────────────────────────────────────
  *   encoder.addFrame(canvasSource, { timestamp, duration }) → Promise|void
@@ -109,7 +110,6 @@
  * and so are browser-only, but the timing math is unit-testable in node.
  */
 
-import { ease } from "../core/interpolators.js";
 import { resolveTransition } from "../core/transitions.js";
 import { resetSimulation, setSimulationTimestepOverride } from "../core/simulation_history.js";
 import { setPointerInputOverride, POINTER_REST } from "../core/pointer_input.js"; // the SECOND ambient input an export must dictate (R7-24)
@@ -165,12 +165,16 @@ export function timelinePlan(doc, { startIndex = 0, endIndex = doc.slides.length
 }
 
 /** Pure. The (index, alpha) for a segment at local time `localT` (seconds into
- *  the segment). Holds are alpha 1; transitions ease localT/seconds by curve. */
+ *  the segment). Holds are alpha 1; transitions report LINEAR localT/seconds —
+ *  UNEASED. THE ALPHA REFACTOR (manifest "THE `delay` UNIVERSAL PROPERTY —
+ *  DESIGN") moved curve easing to the fold seam (core/document.foldState),
+ *  which is the one place that also has a per-item `delay` to weigh against the
+ *  curve; this function used to ease here and that seam had no way to give a
+ *  delayed item its own window of the same curve. */
 function segmentSample(seg, localT) {
   if (seg.kind === "hold") return { index: seg.index, alpha: 1 };
   const frac = seg.seconds > 0 ? localT / seg.seconds : 1;
-  const easeFn = ease(seg.curve === "linear" ? "linear" : "cubic");
-  return { index: seg.index, alpha: easeFn(Math.max(0, Math.min(1, frac))) };
+  return { index: seg.index, alpha: Math.max(0, Math.min(1, frac)) };
 }
 
 /**
@@ -207,9 +211,11 @@ export function planForParams(doc, params) {
 }
 
 /**
- * Pure function. The (slide index, tween alpha) shown at absolute presentation
- * time `t` seconds, per `plan`. Clamps t to [0, duration]; the SAME ease the
- * presenter uses maps a transition's local time to alpha.
+ * Pure function. The (slide index, LINEAR tween alpha) shown at absolute
+ * presentation time `t` seconds, per `plan`. Clamps t to [0, duration].
+ * `alpha` is UNEASED progress — curve easing happens once, at the fold seam
+ * (core/document.foldState), the same linear contract the presenter's own
+ * `alpha` now carries (core/presentation.js).
  *
  * @param {{segments:object[], duration:number}} plan From timelinePlan.
  * @param {number} t Absolute time in seconds.

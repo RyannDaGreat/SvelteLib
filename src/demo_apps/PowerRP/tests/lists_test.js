@@ -550,7 +550,7 @@ test("leaves() STILL keeps arrays opaque — the blast-radius decision, pinned",
 
 const oneSlideDoc = (items) => repairedDocument({
   meta: { version: 1 },
-  slides: [{ id: "s0", name: "One", transition: { type: "cut", seconds: 0, curve: "linear" }, delta: { items } }],
+  slides: [{ id: "s0", name: "One", transition: { type: "tween", seconds: 0, curve: "linear" }, delta: { items } }],
 }, registry).doc;
 
 const poly = (extra) => ({ type: "polygon", x: 0, y: 0, w: 200, h: 100, closed: true, points: [[0, 0], [1, 0], [1, 1], [0, 1]], ...extra });
@@ -610,7 +610,7 @@ test("E2E: per-element VISIBILITY is an equation slot AND a keyframable leaf", (
   // KEYFRAMED: visible on slide 0, hidden on slide 1 — a boolean keyframe on the
   // companion path, needing no machinery beyond listSlotPaths' plain state paths.
   let doc = oneSlideDoc({ p: poly({ pointsActive: [true, true, true, true] }) });
-  doc = { ...doc, slides: [...doc.slides, { id: "s1", name: "Two", transition: { type: "cut", seconds: 0, curve: "linear" }, delta: {} }] };
+  doc = { ...doc, slides: [...doc.slides, { id: "s1", name: "Two", transition: { type: "tween", seconds: 0, curve: "linear" }, delta: {} }] };
   doc = keyframed(doc, 1, ["items", "p", "pointsActive", 1], false);
   assert.deepEqual(foldState(doc, 0, 1).items.p.pointsActive, [true, true, true, true]);
   assert.deepEqual(foldState(doc, 1, 1).items.p.pointsActive, [true, false, true, true]);
@@ -641,7 +641,7 @@ test("E2E: a GRADIENT STOP's offset and colour are equation slots", () => {
 
 test("KEYFRAMING: a whole-list keyframe still tweens ELEMENT-WISE with no int snapping", () => {
   let doc = oneSlideDoc({ p: poly({ points: [[0, 0], [1, 0], [1, 1], [0, 1]] }) });
-  doc = { ...doc, slides: [...doc.slides, { id: "s1", name: "Two", transition: { type: "cut", seconds: 1, curve: "linear" }, delta: {} }] };
+  doc = { ...doc, slides: [...doc.slides, { id: "s1", name: "Two", transition: { type: "tween", seconds: 1, curve: "linear" }, delta: {} }] };
   doc = keyframed(doc, 1, ["items", "p", "points"], [[0, 0], [1, 0], [1, 1], [0.5, 1]]);
   // The 0 → 0.5 coordinate lerps continuously; the 0 and 1 corners do NOT snap
   // (the pure-numeric-array branch, which is why points are PAIRS).
@@ -652,7 +652,7 @@ test("KEYFRAMING: a whole-list keyframe still tweens ELEMENT-WISE with no int sn
 
 test("KEYFRAMING: a LENGTH change is still DISCRETE (structural keyframing)", () => {
   let doc = oneSlideDoc({ p: poly({ points: [[0, 0], [1, 0], [1, 1]] }) });
-  doc = { ...doc, slides: [...doc.slides, { id: "s1", name: "Two", transition: { type: "cut", seconds: 1, curve: "linear" }, delta: {} }] };
+  doc = { ...doc, slides: [...doc.slides, { id: "s1", name: "Two", transition: { type: "tween", seconds: 1, curve: "linear" }, delta: {} }] };
   doc = keyframed(doc, 1, ["items", "p", "points"], [[0, 0], [1, 0], [1, 1], [0, 1]]);
   assert.equal(foldState(doc, 1, 0.5).items.p.points.length, 4, "no half-built intermediate list");
   assert.deepEqual(foldState(doc, 1, 0.5).items.p.points, [[0, 0], [1, 0], [1, 1], [0, 1]]);
@@ -660,7 +660,7 @@ test("KEYFRAMING: a LENGTH change is still DISCRETE (structural keyframing)", ()
 
 test("KEYFRAMING: a SPARSE per-element keyframe merges into the array (never over it)", () => {
   let doc = oneSlideDoc({ p: poly({ points: [[0, 0], [1, 0], [1, 1], [0, 1]] }) });
-  doc = { ...doc, slides: [...doc.slides, { id: "s1", name: "Two", transition: { type: "cut", seconds: 1, curve: "linear" }, delta: {} }] };
+  doc = { ...doc, slides: [...doc.slides, { id: "s1", name: "Two", transition: { type: "tween", seconds: 1, curve: "linear" }, delta: {} }] };
   doc = keyframed(doc, 1, ["items", "p", "points", 2, 0], 0.5);
   const folded = foldState(doc, 1, 1).items.p.points;
   assert.ok(Array.isArray(folded));

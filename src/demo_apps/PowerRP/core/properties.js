@@ -1346,6 +1346,23 @@ export const PROPS = {
     category: "transform",
     help: `How this widget's SHAPE crosses a transition when it changes — a different widget type, a new icon, an edited equation, a different number of teeth. ${MORPH_MODES.map((id) => `${MORPH_MODE_LABELS[id]} — ${MORPH_MODE_HELP[id]}`).join(" ")}`,
   },
+  // THE UNIVERSAL delay PROPERTY (manifest "THE `delay` UNIVERSAL PROPERTY —
+  // DESIGN"; user, request 3: "we have to add... a delay to visibility... the
+  // delay option should delay whatever tween a given object has"). Declared
+  // beside `active`/morph for the same reason both are: a per-widget property
+  // core must be able to name a kind for, universal rather than plugin-owned.
+  //
+  // SECONDS, and the shared unit-kind (SECONDS_SCRUB) rather than a re-typed
+  // one, so it scrubs at the same rate every other seconds row does (manifest
+  // 14.6). UNCLAMPED — no `min`/`max` — per the no-arbitrary-constraints law: a
+  // delay longer than the transition itself is a legal STEP-AT-THE-END, not an
+  // error (core/document.js foldState is where that degenerate case is enforced).
+  // Deliberately NO `default`: absent means 0, and 0 must stay byte-identical to
+  // every document written before this property existed.
+  delay: {
+    label: "Delay", kind: "number", scrub: SECONDS_SCRUB, category: "transform",
+    help: "Seconds to hold this item at its PREVIOUS state before its own tween into this slide begins — transform, fade, visibility, whatever the item's delta changes here. The item's own transition then plays over whatever time remains, eased by the transition's curve. A delay at or beyond the transition's length holds the item until the very end, then switches — no floor, no ceiling.",
+  },
 
   // ── transform (endpoint-pair — arrows) ────────────────────────────────────
   "from.x": { label: "From X", kind: "number", category: "transform", help: "X of the arrow's tail (its start point). Drag the tail handle on canvas, or bind it to an anchor to make it follow another item." },

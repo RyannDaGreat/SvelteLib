@@ -152,7 +152,7 @@ test("Z is untouched — stacking is the target's place in THIS slide", () => {
 test("the universal subset IS core/multiselect's — imported, never restated", () => {
   assert.deepEqual(UNIVERSAL_PASTE_KEYS, UNIVERSAL_MULTI_KEYS,
     "BF and BE must share one list, or a row added to one silently misses the other");
-  assert.deepEqual([...UNIVERSAL_PASTE_KEYS].sort(), ["active", "morph", "type"]);
+  assert.deepEqual([...UNIVERSAL_PASTE_KEYS].sort(), ["active", "delay", "morph", "type"]);
 });
 
 // ── THE TRANSMUTATION ────────────────────────────────────────────────────────

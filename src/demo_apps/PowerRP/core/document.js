@@ -35,8 +35,9 @@
  */
 
 import { blendApplied, copied, copiedDeep, deepEqual, getPath, isTree, setPath, deletePath, leaves } from "./deltas.js";
-import { defaultTransition, withDurationMigrated } from "./transitions.js";
+import { defaultTransition, withDurationMigrated, resolveTransition } from "./transitions.js";
 import { interpKeyFor, EXP_TWEEN_MODE } from "./interp_modes.js";
+import { ease } from "./interpolators.js";
 import {
   withBindingsMigrated, withItemRefsRemapped, declaredListLeaves, isEquationValue, evaluateState,
   sourceIsSimulated,
@@ -240,17 +241,135 @@ export function slideState(doc, index) {
 }
 
 /**
- * Pure function (uses memoized fold). State mid-transition INTO slide `index`
- * at tween strength `alpha` (0 = previous slide exactly, 1 = slide `index`).
- * This is the single evaluation point for editor, presenter, and CLI renderer.
+ * Pure function. The EASED per-item alpha for a `delay`-carrying item mid
+ * transition — the fold half of THE `delay` UNIVERSAL PROPERTY (manifest). `u`
+ * is the transition's LINEAR progress, `T` its total seconds, `d` the item's
+ * destination-slide `delay` (seconds), `easeFn` the transition's own curve
+ * (already resolved — this function does not know about curve NAMES).
  *
- * @example // foldState(doc, 2, 0.5) — halfway between slide 1 and slide 2
+ * The item's tween occupies the window [d, T] of the transition: it is pinned
+ * to its start value while `u·T < d`, then re-parameterizes the REMAINING
+ * span (T − d) into a fresh 0..1 and eases THAT. d ≥ T shrinks the window to
+ * nothing — the limit is a STEP exactly at the transition's end (u = 1), not an
+ * error and not floored. d ≤ 0 (including the absent-is-0 default) must
+ * reproduce `easeFn(u)` exactly — the whole-transition window is the identity
+ * case this property must stay invisible under.
+ *
+ * @param {number} u - linear transition progress, 0..1
+ * @param {number} T - transition length in seconds
+ * @param {number} d - this item's delay in seconds (0 = no delay)
+ * @param {(t:number)=>number} easeFn - the transition's resolved curve
+ * @returns {number} eased alpha for this item, 0..1
+ *
+ * @example itemDelayAlpha(0.5, 1, 0, ease("linear")) // 0.5 (d=0 is the identity)
+ * @example itemDelayAlpha(0.25, 1, 0.5, ease("linear")) // 0 (still inside the hold: 0.25 < 0.5)
+ * @example itemDelayAlpha(0.75, 1, 0.5, ease("linear")) // 0.5 ((0.75-0.5)/(1-0.5))
+ * @example itemDelayAlpha(0.9, 1, 2, ease("linear")) // 0 (d ≥ T: held until the very end)
+ * @example itemDelayAlpha(1, 1, 2, ease("linear")) // 1 (d ≥ T: steps exactly at u=1)
  */
-export function foldState(doc, index, alpha = 1) {
+export function itemDelayAlpha(u, T, d, easeFn) {
+  if (!(d > 0)) return easeFn(u); // no delay (incl. absent/0): identical to the plain fold
+  if (d >= T) return u >= 1 ? 1 : 0; // degenerate window: a step at the very end
+  const itemU = Math.max(0, Math.min(1, (u * T - d) / (T - d)));
+  return easeFn(itemU);
+}
+
+/**
+ * Query (reads a slide's destination fold; not itself memoized beyond
+ * `slideState`'s own cache). The itemIds on slide `index`'s DESTINATION fold
+ * that carry a nonzero `delay` — empty for the overwhelming majority of
+ * documents, which is what lets `foldState` take its ONE-ALPHA fast path.
+ *
+ * @param {object} doc - PowerRP document
+ * @param {number} index - destination slide index
+ * @returns {string[]} itemIds with delay > 0, or [] (byte-identical fast path)
+ *
+ * @example delayedItemIds({slides: [{delta: {items: {a: {x: 0}}}}]}, 0) // []
+ * @example delayedItemIds({slides: [{delta: {items: {a: {x: 0, delay: 0.5}}}}]}, 0) // ["a"]
+ */
+function delayedItemIds(doc, index) {
+  const items = slideState(doc, index).items ?? {};
+  const out = [];
+  for (const [id, state] of Object.entries(items)) if (state.delay > 0) out.push(id);
+  return out;
+}
+
+/**
+ * Query. The resolved transition seconds/curve/easeFn for the tween INTO slide
+ * `index`, bundled once so `foldState` and `tweenedState` cannot resolve the
+ * curve two different ways.
+ *
+ * @example transitionEasing({slides:[{},{transition:{type:"tween",seconds:1,curve:"linear"}}]}, 1).T // 1
+ */
+function transitionEasing(doc, index) {
+  const { seconds: T, curve } = resolveTransition(doc, index);
+  return { T, curve, easeFn: ease(curve === "linear" ? "linear" : "cubic") };
+}
+
+/**
+ * Query (uses memoized folds). The EFFECTIVE eased alpha item `id` tweens at,
+ * mid-transition INTO slide `index` at linear progress `u` — `easeFn(u)`
+ * itself unless the item's DESTINATION fold carries a `delay`, in which case
+ * itemDelayAlpha's windowed alpha. The one seam `foldState` and `tweenedState`
+ * share so an item's blend and its plugin coupling hook never disagree about
+ * what alpha it is AT.
+ *
+ * @example itemEffectiveAlpha({slides:[{delta:{items:{a:{x:0}}}},{delta:{items:{a:{x:10}}}}]}, 1, "a", 0.5) // 0.5 (no delay)
+ */
+function itemEffectiveAlpha(doc, index, id, u) {
+  const { T, easeFn } = transitionEasing(doc, index);
+  const d = slideState(doc, index).items?.[id]?.delay;
+  return d > 0 ? itemDelayAlpha(u, T, d, easeFn) : easeFn(u);
+}
+
+/**
+ * Pure function (uses memoized fold). State mid-transition INTO slide `index`
+ * at LINEAR transition progress `u` (0 = previous slide exactly, 1 = slide
+ * `index`). This is the single evaluation point for editor, presenter, and CLI
+ * renderer — every caller passes RAW linear progress; the transition's `curve`
+ * (core/transitions.resolveTransition) is applied HERE, once, per THE ALPHA
+ * REFACTOR (manifest "THE `delay` UNIVERSAL PROPERTY — DESIGN"). A delay-free
+ * document is BYTE-IDENTICAL to the pre-refactor picture: easing `u` at this
+ * one seam reproduces exactly the pre-eased alpha every caller used to compute
+ * for itself (core/presentation.js's tick, web/videoExport.js's segmentSample).
+ *
+ * `delay` (a universal item leaf, read from the DESTINATION slide's own alpha-1
+ * fold — constant for the whole transition, so its own interpolation can never
+ * matter) shrinks an item's tween into the window [delay, seconds] of the
+ * transition — see itemDelayAlpha. THE FAST PATH: when no destination item
+ * carries a delay, this is exactly the old one-`blendApplied`-call fold at the
+ * eased alpha. Only when at least one item declares a delay does the delta
+ * split per item, each blended at its OWN eased alpha; non-item leaves (vars)
+ * always blend at the plain eased alpha — delay is an ITEM property.
+ *
+ * @example // foldState(doc, 2, 0.5) — halfway (linear) between slide 1 and slide 2
+ */
+export function foldState(doc, index, u = 1) {
   // Slide 0 has no predecessor to tween from — it is always fully applied.
-  if (index === 0 || alpha >= 1) return slideState(doc, index);
+  if (index === 0 || u >= 1) return slideState(doc, index);
   if (doc.slides[index].enabled === false) return slideState(doc, index - 1);
-  return blendApplied(slideState(doc, index - 1), doc.slides[index].delta, alpha);
+  const prev = slideState(doc, index - 1);
+  const delta = doc.slides[index].delta;
+  const { T, easeFn } = transitionEasing(doc, index);
+  const delayed = delayedItemIds(doc, index);
+  if (delayed.length === 0) return blendApplied(prev, delta, easeFn(u));
+  // SLOW PATH: at least one destination item has a delay. Blend every
+  // NON-item leaf (vars, etc.) at the plain eased alpha; blend each item's OWN
+  // subtree at ITS OWN eased alpha (itemDelayAlpha), via the same generic
+  // blendApplied a plain fold uses — delay changes WHEN an item's blend
+  // starts, never HOW it blends.
+  const { items: itemDeltas, ...restDelta } = delta;
+  let out = blendApplied(prev, restDelta, easeFn(u));
+  if (itemDeltas) {
+    const dest = slideState(doc, index).items;
+    out = { ...out, items: { ...out.items } };
+    for (const [id, itemDelta] of Object.entries(itemDeltas)) {
+      const d = delayed.includes(id) ? dest[id].delay : 0;
+      const itemAlpha = itemDelayAlpha(u, T, d, easeFn);
+      out.items[id] = blendApplied(prev.items?.[id] ?? {}, itemDelta, itemAlpha);
+    }
+  }
+  return out;
 }
 
 /**
@@ -284,19 +403,23 @@ export function foldState(doc, index, alpha = 1) {
  *
  * A hook is consulted ONLY strictly between the endpoints: at alpha 0 and 1 the
  * answer IS a stored state, so this is the identity there by construction, and
- * `foldState` alone remains the exact fold it has always been.
+ * `foldState` alone remains the exact fold it has always been. For a DELAYED
+ * item those endpoints are the item's OWN — still inside its hold window (its
+ * effective alpha is 0) or already complete (1) — never `u` directly, per
+ * itemEffectiveAlpha; a hook sees exactly the alpha the item was actually
+ * blended at, so it can never "correct" a coupling the fold has not moved yet.
  *
  * @param {object} doc - PowerRP document
  * @param {number} index - slide index being tweened INTO
- * @param {number} alpha - tween strength 0..1
+ * @param {number} u - linear transition progress, 0..1
  * @param {object} registry - plugin registry (resolves each item's type → plugin)
  * @returns {object} the folded state, with every declared coupling applied
  *
- * @example // tweenedState(doc, 1, 0.5, registry) — halfway, coupled properties honored
+ * @example // tweenedState(doc, 1, 0.5, registry) — halfway (linear), coupled properties honored
  */
-export function tweenedState(doc, index, alpha, registry) {
-  const blended = foldState(doc, index, alpha);
-  if (index === 0 || alpha <= 0 || alpha >= 1) return blended;
+export function tweenedState(doc, index, u, registry) {
+  const blended = foldState(doc, index, u);
+  if (index === 0 || u <= 0 || u >= 1) return blended;
   if (doc.slides[index].enabled === false) return blended;
   const from = slideState(doc, index - 1), to = slideState(doc, index);
   let out = blended;
@@ -312,7 +435,13 @@ export function tweenedState(doc, index, alpha, registry) {
     if (state.active === false || typeof state.type !== "string") continue;
     const hook = registry.get(state.type).interpolateState;
     if (!hook) continue;
-    const over = hook(a, b, alpha);
+    // THE ITEM'S OWN alpha (itemEffectiveAlpha), not `u` — a delayed item's
+    // window may still read 0 or 1 while `u` itself is strictly interior, and
+    // the hook's endpoint-identity contract is stated in terms of the alpha it
+    // was actually blended AT.
+    const itemAlpha = itemEffectiveAlpha(doc, index, id, u);
+    if (itemAlpha <= 0 || itemAlpha >= 1) continue;
+    const over = hook(a, b, itemAlpha);
     if (Object.keys(over).length === 0) continue;
     // Copy-on-write: `blended` may be a CACHED fold (slideState's array) at the
     // endpoints, and even mid-tween it is shared with nothing that expects it to

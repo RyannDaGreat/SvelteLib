@@ -173,13 +173,17 @@ test("BLURFADE state is returned BY IDENTITY for every other node", () => {
 // this block pins as a live defect so it cannot be forgotten or mistaken for
 // this mode's business again.
 
-/** The whole shipped path a real author's document takes: repair → fold → evaluate → IR. */
+/** The whole shipped path a real author's document takes: repair → fold → evaluate → IR.
+ *  curve: "linear" — this exercises the blur-amount FORMULA (target + amount·(1−v))
+ *  against the raw progress `alpha` it is called with; foldState now applies the
+ *  destination slide's curve (THE ALPHA REFACTOR), and the default "smooth" cubic
+ *  would make these plain-fraction expectations wrong at every alpha but 0/0.5/1. */
 function documentInkOps(itemExtra, enteringDelta, alpha) {
   const doc = repairedDocument({
     meta: { name: "ap", w: CANVAS.w, h: CANVAS.h },
     slides: [
-      { id: "s0", name: "one", transition: { type: "cut", seconds: 0 }, delta: { items: { cam: { type: "camera" }, a1: { ...RECT, active: false, ...itemExtra } } } },
-      { id: "s1", name: "two", transition: { type: "fade", seconds: 1 }, delta: { items: { a1: { active: true, "active~interp": "blurFade", ...enteringDelta } } } },
+      { id: "s0", name: "one", transition: { type: "tween", seconds: 0 }, delta: { items: { cam: { type: "camera" }, a1: { ...RECT, active: false, ...itemExtra } } } },
+      { id: "s1", name: "two", transition: { type: "fade", seconds: 1, curve: "linear" }, delta: { items: { a1: { active: true, "active~interp": "blurFade", ...enteringDelta } } } },
     ],
   }, registry).doc;
   const state = evaluateState(tweenedState(doc, 1, alpha, registry), registry).state;

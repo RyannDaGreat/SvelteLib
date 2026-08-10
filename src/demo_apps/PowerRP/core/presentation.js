@@ -4,6 +4,16 @@
  * are linear that reduces to {index, alpha} — slides 0..index-1 at alpha 1,
  * slide `index` at `alpha`, later slides at 0.
  *
+ * `alpha` IS LINEAR TRANSITION PROGRESS (THE ALPHA REFACTOR, manifest "THE
+ * `delay` UNIVERSAL PROPERTY — DESIGN"). This module used to ease it here
+ * before emitting; curve easing now happens exactly once, at the fold seam
+ * (core/document.foldState/tweenedState), because that is the one place with
+ * both the transition's curve AND a per-item `delay` to weigh against it —
+ * easing per-emitter left no seam for a delayed item to re-parameterize its
+ * OWN window of the curve. A delay-free document is unaffected: foldState
+ * eases the same `u` this used to pre-ease, so the picture at any given wall
+ * time is byte-identical.
+ *
  * Transition triggers (user question, 2026-07-14): V1 = arrow keys, plus an
  * optional per-slide `autoAdvance` (seconds to linger AFTER the tween into
  * that slide completes before self-advancing — the linear-deck version of
@@ -11,7 +21,6 @@
  * triggers are V2+.
  */
 
-import { ease } from "./interpolators.js";
 import { resolveTransition } from "./transitions.js";
 
 /** Command (throws). The default frame scheduler: refuses loudly. An animated
@@ -84,8 +93,10 @@ export function createPresenter(
       autoTimer = setTimeout(() => api.next(), secs * 1000);
   }
 
-  /** Command. Animates alpha 0→1 into slide `to` over its transition's seconds,
-   * honoring the transition's curve (smooth = eased, linear = raw). The
+  /** Command. Animates alpha (LINEAR progress) 0→1 into slide `to` over its
+   * transition's seconds. Curve easing is NOT applied here — the fold seam
+   * (core/document.foldState) applies the transition's curve itself, per item,
+   * so a `delay`-carrying item can re-parameterize its own window of it. The
    * transition TYPE (tween|fade) is carried to the render surface via emit(). */
   function transitionTo(to) {
     cancel();
@@ -101,8 +112,6 @@ export function createPresenter(
     // itself (DOM-free; SPARKLER RULE — sounds never render headlessly).
     if (transition) onTransitionStart(transition);
     const duration = (transition?.seconds ?? 0) * 1000;
-    // Curve: "smooth" = the existing eased alpha (cubic); "linear" = raw alpha.
-    const easeFn = ease(transition?.curve === "linear" ? "linear" : "cubic");
     if (duration <= 0 || to === 0) {
       alpha = 1;
       emit();
@@ -118,7 +127,7 @@ export function createPresenter(
     const start = performance.now();
     function tick(now) {
       const t = Math.min((now - start) / duration, 1);
-      alpha = easeFn(t);
+      alpha = t; // LINEAR — the fold seam eases this, once, per item
       emit();
       if (t < 1) raf = requestFrame(tick);
       else armAutoAdvance();

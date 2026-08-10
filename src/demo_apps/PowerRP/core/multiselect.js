@@ -396,12 +396,15 @@ export const JOINT_UNEDITABLE_KINDS = {
 /**
  * The universal row KEYS a multi-selection offers, in the ruled order — "widget
  * type, visible, and morph all should be", and `name` deliberately absent (see
- * the module header for both halves).
+ * the module header for both halves). `delay` (manifest "THE `delay` UNIVERSAL
+ * PROPERTY") joins the set the same way `morph` did — a universal per-item
+ * property with no plugin declaration, so a set edit needs its OWN entry here
+ * exactly as the single-select panel needs its own row.
  *
  * @example UNIVERSAL_MULTI_KEYS.includes("name") // false (the row the user dropped)
- * @example UNIVERSAL_MULTI_KEYS // ["type", "active", "morph"]
+ * @example UNIVERSAL_MULTI_KEYS // ["type", "active", "morph", "delay"]
  */
-export const UNIVERSAL_MULTI_KEYS = ["type", "active", "morph"];
+export const UNIVERSAL_MULTI_KEYS = ["type", "active", "morph", "delay"];
 
 /**
  * Pure function. WHY one selected item cannot be retyped, or null when it can.
@@ -475,9 +478,9 @@ export function retypeSkips(entries) {
  * @returns {object[]} resolved rows, in UNIVERSAL_MULTI_KEYS order
  *
  * @example universalRows([{plugin: {capabilities: {}}}]).map((r) => r.key)
- * // ["type", "active", "morph"]
+ * // ["type", "active", "morph", "delay"]
  * @example universalRows([{plugin: {capabilities: {purgeable: false}}}]).map((r) => r.key)
- * // ["type", "morph"]   (the camera cannot be hidden, so it offers no Visible row)
+ * // ["type", "morph", "delay"]   (the camera cannot be hidden, so it offers no Visible row)
  * @example universalRows([]) // []
  */
 export function universalRows(entries) {
@@ -494,9 +497,10 @@ export function universalRows(entries) {
  * multi panel's own — the single-select panel supplies richer ones — but the
  * contract aspects here are what a joint write is defined against.
  *
- * `morph` is spread from core/properties.js PROPS so the two cannot describe
- * different option sets; `type` and `active` have no PROPS entry (they are not
- * plugin properties) and are stated here, once.
+ * `morph` and `delay` are spread from core/properties.js PROPS so the two
+ * selection paths cannot describe different option sets/bounds; `type` and
+ * `active` have no PROPS entry (they are not plugin properties) and are
+ * stated here, once.
  */
 const UNIVERSAL_ROW_DEFS = [
   { key: "type", label: "Widget type", kind: "select", optionsFrom: "retype", category: UNIVERSAL_CATEGORY },
@@ -506,6 +510,7 @@ const UNIVERSAL_ROW_DEFS = [
     offText: "Hidden on this slide — click to show every selected item (keyframes active: true)",
     help: "Whether these items show on THIS slide. Keyframeable like any other property, and its interpolation row is what fades a set in together." },
   { ...PROPS[MORPH_KEY], key: MORPH_KEY, absentValue: MORPH_DEFAULT, category: UNIVERSAL_CATEGORY },
+  { ...PROPS.delay, key: "delay", category: UNIVERSAL_CATEGORY },
 ];
 
 /**
@@ -553,9 +558,9 @@ const UNIVERSAL_ROW_DEFS = [
  * @returns {object[]} universal rows, each interp-capable one followed by its companion
  *
  * @example universalRowsWithInterp([{plugin: {capabilities: {}}, state: {active: true}}]).map((r) => r.key)
- * // ["type", "active", "active~interp", "morph"]
+ * // ["type", "active", "active~interp", "morph", "delay"]
  * @example universalRowsWithInterp([{plugin: {capabilities: {purgeable: false}}, state: {}}]).map((r) => r.key)
- * // ["type", "morph"]   (no Visible row, so no interp row either)
+ * // ["type", "morph", "delay"]   (no Visible row, so no interp row either)
  */
 export function universalRowsWithInterp(entries) {
   const out = [];

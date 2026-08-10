@@ -114,6 +114,11 @@ test("rotation keyframed 0 → 720° tweens through TWO WHOLE SPINS", () => {
   [doc] = withNewSlide(doc, 0);
   doc = keyframed(doc, 0, ["items", itemId, "rotation"], 0);
   doc = keyframed(doc, 1, ["items", itemId, "rotation"], toRadians(720));
+  // linear curve: this test is about the SPIN COUNT surviving the tween, not
+  // about transition easing — foldState now applies the curve (THE ALPHA
+  // REFACTOR), and the default "smooth" cubic would make the plain quarter-turn
+  // sample points below wrong (cubic(0.25) !== 0.25).
+  doc.slides[1] = { ...doc.slides[1], transition: { ...doc.slides[1].transition, curve: "linear" } };
 
   const degreesAt = (alpha) => toDegrees(foldState(doc, 1, alpha).items[itemId].rotation);
   const samples = [0, 0.25, 0.5, 0.75, 1].map(degreesAt);

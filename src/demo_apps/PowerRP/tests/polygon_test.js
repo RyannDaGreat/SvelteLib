@@ -426,6 +426,11 @@ test("KEYFRAMING: a SAME-COUNT point list tweens ELEMENT-WISE at 0.25 / 0.5 / 0.
   const to = [[0, 0], [1, 0], [0.5, 0.4], [0, 1]]; // only vertex 2 moves
   let doc = repairedDocument(oneSlideDoc(polyState({ points: from, closed: true }), 1), registry).doc;
   doc = keyframed(doc, 1, ["items", "poly", "points"], to);
+  // linear curve: this test is about the LEAF LERP (interpolate), not about
+  // transition easing — foldState now applies the destination slide's curve
+  // (THE ALPHA REFACTOR), and the default "smooth" cubic would make these
+  // plain-fraction expectations wrong at every alpha but 0/0.5/1.
+  doc.slides[1] = { ...doc.slides[1], transition: { type: "tween", seconds: 1, curve: "linear" } };
   for (const alpha of [0.25, 0.5, 0.75]) {
     const pts = foldState(doc, 1, alpha).items.poly.points;
     assert.equal(pts.length, 4, "the count is unchanged, so this is a SCALAR tween");
@@ -441,6 +446,7 @@ test("KEYFRAMING: a SAME-COUNT point list tweens ELEMENT-WISE at 0.25 / 0.5 / 0.
   // A 0 → 1 coordinate must lerp smoothly, not snap at the midpoint.
   let doc2 = repairedDocument(oneSlideDoc(polyState({ points: [[0, 0], [1, 0], [1, 1]] }), 1), registry).doc;
   doc2 = keyframed(doc2, 1, ["items", "poly", "points"], [[1, 1], [1, 0], [1, 1]]);
+  doc2.slides[1] = { ...doc2.slides[1], transition: { type: "tween", seconds: 1, curve: "linear" } };
   approx(foldState(doc2, 1, 0.25).items.poly.points[0][0], 0.25, 1e-12);
   approx(foldState(doc2, 1, 0.5).items.poly.points[0][1], 0.5, 1e-12);
   // The endpoints are exact.

@@ -1,14 +1,22 @@
 /**
  * Transition frame rendering — the ONE pure-ish planner that turns a
  * (doc, index, alpha) transition state into rendered pixels, honoring the
- * transition TYPE (manifest Round 12 "Slides & TRANSITIONS"):
+ * transition TYPE (manifest Round 12 "Slides & TRANSITIONS").
+ *
+ * `alpha` ARRIVING HERE IS LINEAR transition progress, UNEASED (THE ALPHA
+ * REFACTOR, manifest "THE `delay` UNIVERSAL PROPERTY — DESIGN") — the presenter
+ * and the exporters both emit raw progress now, never a pre-eased value:
  *
  *   TWEEN — the delta tween. ONE evaluated state at (index, alpha) through the
- *     camera, exactly the existing thumbnail/present/CLI path.
+ *     camera, exactly the existing thumbnail/present/CLI path. The curve is
+ *     applied downstream, at the fold seam (core/document.foldState) — this
+ *     module does not ease a tween frame itself.
  *   FADE  — a CROSSFADE of two COMPLETED-state snapshots: the previous slide
- *     (index-1 at alpha 1) and the new slide (index at alpha 1), blended by the
- *     curve-eased alpha. This is the manifest's "snapshot the previous state,
- *     snapshot the completed new one, crossfade between the two".
+ *     (index-1 at alpha 1) and the new slide (index at alpha 1), blended by
+ *     `fadeStrength`, which eases the raw `alpha` itself — the ONLY ease a fade
+ *     frame gets. (Per-item `delay` is INERT under fade: a fade blends two
+ *     already-COMPLETED endpoint snapshots, so there is no per-item window left
+ *     to shrink — see isFadeFrame.)
  *
  * The fade is a PURE FUNCTION OF ALPHA: at eased strength e the output is
  * frameA·(1-e) + frameB·e. Both endpoint frames depend only on the document, so
@@ -152,6 +160,15 @@ export function fadeStrength(alpha, curve) {
  * one completed slide, so the plain single-state path renders it — no crossfade
  * needed (and slide 0 has no predecessor to fade from).
  *
+ * PER-ITEM `delay` IS INERT UNDER FADE, and this is documented rather than a
+ * gap: a fade blends two already-COMPLETED endpoint snapshots (index-1 and
+ * index, each fully folded at alpha 1), so there is no partial per-item window
+ * left for a delay to shrink — by the time either snapshot exists, every
+ * item's delay has already fully elapsed inside it. A delayed item still holds
+ * its start value and then plays its OWN tween correctly on a TWEEN
+ * transition; it is only the FADE crossfade itself (the raster blend between
+ * two finished pictures) that a delay cannot subdivide.
+ *
  * @example // isFadeFrame(doc, 1, 0.5) → true  when slide 1's transition.type === "fade"
  * @example // isFadeFrame(doc, 0, 0.5) → false (slide 0 has no predecessor)
  */
@@ -166,13 +183,23 @@ export function isFadeFrame(doc, index, alpha) {
  * TWEEN frames are the single evaluated-state camera render; FADE frames
  * crossfade the two completed-state snapshots by the curve-eased alpha.
  *
+ * `alpha` IS LINEAR transition progress, UNEASED (THE ALPHA REFACTOR — see the
+ * module header). A TWEEN frame passes it straight to `renderCameraFrame`,
+ * which reaches core/document.foldState — the curve is applied THERE, once,
+ * per item. A FADE frame eases it here, in `fadeStrength` — the ONLY ease a
+ * fade frame gets. Before this refactor the presenter pre-eased `alpha` AND
+ * `fadeStrength` eased it again, a genuine DOUBLE-EASE on every fade transition
+ * (measured: the presenter's `tick` computed `easeFn(t)`, PresentMode fed that
+ * straight into this function, which eased it a second time). Fixed by making
+ * every emitter linear; this function's own logic did not need to change.
+ *
  * PURE in (doc, index, alpha): the presenter and (once wired) the CLI hook both
  * call this, so present and headless renders of a fade are pixel-consistent.
  *
  * Args:
  *   doc (object): document (already load-migrated — transitions resolved)
  *   index (number): target slide index
- *   alpha (number): tween strength 0..1 into `index`
+ *   alpha (number): LINEAR tween progress 0..1 into `index`
  *   registry (object): plugin registry
  *   width, height (number): output device px
  *

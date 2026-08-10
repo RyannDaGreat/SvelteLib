@@ -1619,6 +1619,12 @@
       // the Widget type row above used to carry. core/properties.js declares it;
       // this only places it, so the two cannot describe different options.
       { ...PROPS[MORPH_KEY], key: MORPH_KEY, absentValue: MORPH_DEFAULT },
+      // THE UNIVERSAL delay ROW (manifest "THE `delay` UNIVERSAL PROPERTY —
+      // DESIGN"; user, request 3: "the delay option should delay whatever tween
+      // that a given object has"). Same reasoning as Morph above: a question
+      // about the WIDGET's tween as a whole, not about any one leaf, so it
+      // lives here rather than behind a plugin's own inspector rows.
+      { ...PROPS.delay, key: "delay" },
     ],
   });
 

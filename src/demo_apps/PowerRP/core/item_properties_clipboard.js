@@ -434,7 +434,7 @@ export const UNRETARGETABLE_KEYS = {
  * this codebase keeps rediscovering — if BE adds a universal row, this must gain
  * it too, and importing is what makes that automatic.
  *
- * @example UNIVERSAL_PASTE_KEYS // ["type", "active", "morph"]
+ * @example UNIVERSAL_PASTE_KEYS // ["type", "active", "morph", "delay"]
  * @example UNIVERSAL_PASTE_KEYS.includes("name") // false (excluded by the ruling)
  */
 export const UNIVERSAL_PASTE_KEYS = UNIVERSAL_MULTI_KEYS;

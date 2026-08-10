@@ -1110,6 +1110,11 @@ test("A PURE PAN AT FIXED ZOOM STAYS LINEAR (the degenerate case, not a special 
     { centerX: 0.25, centerY: 0, centerFineX: 0, centerFineY: 0, fineExponent: 0, zoomExponent: 2 },
     { centerX: 1.25, centerY: 0.5 },
   );
+  // linear curve: this test is about the PAN LAW staying linear in ALPHA, not
+  // about transition easing — foldState now applies the destination slide's
+  // curve (THE ALPHA REFACTOR), and zoomDoc's default "smooth" cubic would make
+  // the plain `0.25 + a` expectation below wrong at every alpha but 0/0.5/1.
+  doc.slides[1] = { ...doc.slides[1], transition: { ...doc.slides[1].transition, curve: "linear" } };
   for (const a of [0, 0.25, 0.5, 0.75, 1]) {
     const s = tweenedState(doc, 1, a, registry).items[id];
     assert.equal(s.centerX, foldState(doc, 1, a).items[id].centerX, `a pan must be the plain lerp at alpha ${a}`);
