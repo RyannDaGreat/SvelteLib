@@ -499,8 +499,12 @@ export function foldPathList(pathLst, guides, shapeW, shapeH) {
  *   {subpaths: Array<{d: string, fill: string, stroke: boolean}>,
  *    textRect: {x,y,w,h} | null}
  *
- * @example presetShapePath("rect", {}, 100, 50).subpaths[0].d // "M 0,0 L 100,0 L 100,50 L 0,50 Z"
- * @example presetShapePath("roundRect", {}, 100, 100).subpaths.length // 1
+ * The two examples below need the vendored defs installed first
+ * (installPresetDefs — see tests/pptx_geometry_test.js), so they are
+ * comment-form; the same assertions run for real in that test file.
+ *
+ * @example // presetShapePath("rect", {}, 100, 50).subpaths[0].d → "M 0,0 L 100,0 L 100,50 L 0,50 Z"
+ * @example // presetShapePath("roundRect", {}, 100, 100).subpaths.length → 1
  */
 export function presetShapePath(name, adjustments, w, h, defs = null) {
   const table = defs ?? loadDefaultDefs();
