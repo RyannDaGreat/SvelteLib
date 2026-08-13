@@ -35,7 +35,7 @@
  * the module-level cache never mixes Paragraphs across instances.
  */
 
-import { parseColor, parsePaint, isGradientPaint, isMaterialPaint, paintSolidColor } from "../ir.js";
+import { parseColor, parsePaint, isGradientPaint, isMaterialPaint, isPaintOff, paintSolidColor } from "../ir.js";
 import { skShaderForPaint } from "./gradient.js";
 import { getMaterial, materialEffect, isFillCapableMaterial, isBackdropMaterial, isSamplerMaterial } from "./materials.js";
 import { fontFamilyChain } from "../fonts.js";
@@ -348,6 +348,79 @@ export function buildParagraph(CanvasKit, fc, pieces, pstyle, boxW, fallbackStyl
   return { para, height };
 }
 
+/** Fully transparent ink — what an OFF (`{type:"none"}`) run paints, glyphs and
+ * decorations alike. An rgba array, so it flows through ckColor/parseColor. */
+const TRANSPARENT_INK = [0, 0, 0, 0];
+
+/**
+ * Pure function. Does this RUN FILL need the shader glyph pass — i.e. will
+ * something repaint the glyphs after the Paragraph draws them transparent?
+ *
+ * THE ONE PLACE THAT QUESTION IS ANSWERED, because it is asked from two sides that
+ * MUST agree: `textStyle` uses it to decide whether to draw the Paragraph glyphs
+ * transparent, and `drawGlyphShaderFill` uses it to decide whether to build a
+ * shader and repaint them. A disagreement renders the run INVISIBLE — transparent
+ * glyphs that nothing repaints — with no error anywhere, which is precisely the
+ * failure mode this codebase treats as worse than a crash.
+ *
+ * It must be asked of the PARSED paint, never the raw one. `isGradientPaint` is the
+ * broad "is an object" test, so it answers TRUE for two objects that are not
+ * shaders: `{type:"none"}` (parses to null) and `{type:"solid", solid}` (parses to
+ * an rgba array — a solid paint OBJECT is not a string, but it is still a plain
+ * colour the Paragraph draws perfectly well). A MATERIAL is the exception in the
+ * other direction: parsePaint passes its sparse record through unchanged, so it
+ * stays an object and correctly reports true.
+ *
+ * @param {*} color - a run style's `color` (raw model paint)
+ * @returns {boolean}
+ *
+ * @example runFillNeedsShader({type: "linearGradient", linear: {stops: [{offset: 0, color: "#f00"}, {offset: 1, color: "#00f"}], angle: 0}}) // true
+ * @example runFillNeedsShader({type: "material", material: {id: "comic"}}) // true
+ * @example runFillNeedsShader({type: "solid", solid: "#123456"}) // false (an ordinary solid)
+ * @example runFillNeedsShader({type: "none"}) // false (nothing to paint)
+ * @example runFillNeedsShader("#f00") // false
+ */
+function runFillNeedsShader(color) {
+  if (!isGradientPaint(color)) return false;
+  if (isMaterialPaint(color)) return true; // built from the RAW sparse record
+  return isGradientPaint(parsePaint(color));
+}
+
+/**
+ * Pure function. A RUN COLOUR's representative solid, with a sentence when the
+ * paint is malformed. Delegates to ir.js's paintSolidColor — the ONE resolver that
+ * knows every paint shape (multi-sub-state, legacy inline, solid object, material,
+ * crossfade) — and exists only to name the RUN when that resolver refuses.
+ *
+ * A NAMED ERROR BEATS BOTH THE CRASH AND A SILENT DEFAULT. Before this, a paint
+ * shape the layout did not understand produced `Cannot read properties of
+ * undefined (reading '0')` from inside a CanvasKit builder — a stack with no
+ * mention of text, of a run, or of a paint, which is why the deployed crash took
+ * three days and two workstreams to place. Substituting a quiet black would be
+ * worse: the text would render in the wrong colour with nothing to look at, which
+ * is the silent wrongness this codebase forbids.
+ *
+ * @param {*} paint - a run style's `color` (raw model paint, never parsed)
+ * @returns {string|Array<number>} a colour paintSolidColor resolved
+ *
+ * @example solidInkForRun({type: "linearGradient", solid: "#f00", linear: {stops: [{offset: 0, color: "#0f0"}]}}) // "#f00"
+ * @example solidInkForRun({type: "linearGradient", stops: [{offset: 0, color: "#0f0"}]}) // "#0f0" (legacy inline)
+ * @example solidInkForRun({type: "material", material: {id: "comic"}}) // "#888888"
+ */
+function solidInkForRun(paint) {
+  try {
+    return paintSolidColor(paint);
+  } catch (e) {
+    throw new Error(
+      `text_layout: a text run carries a paint no colour can be resolved from — ${JSON.stringify(paint)}. ` +
+      `A run colour is RAW model state (ir.js text() does not parsePaint rich.runs), so it must be one of: ` +
+      `a CSS string, an rgba array, {type:"solid",solid}, a gradient with stops (under linear/radial, or inline), ` +
+      `{type:"material"}, {type:"crossfade"} or {type:"none"}. Underlying: ${e.message}`,
+      { cause: e },
+    );
+  }
+}
+
 /** Pure-ish helper. A run's style → CanvasKit TextStyle. (Moved verbatim from
  * paint_skia.js.) color/backgroundColor/decorationColor fold `opacity` into their
  * alpha; the RGB is never forced onto color-glyph (emoji) fonts. */
@@ -364,12 +437,44 @@ function textStyle(CanvasKit, st, charSpacing, wordSpacing, opacity) {
   // every other single-colour consumer of a material paint already uses. An
   // underline under material text is therefore gray rather than materialled; that
   // is a real bound, and it is the same one a material border/shadow tint has.
-  const shader = isGradientPaint(st.color);
-  const solidInk = !shader ? (st.color ?? "#000000")
-    : isMaterialPaint(st.color) ? paintSolidColor(st.color) // the ONE material→solid reduction (ir.js), not a second gray
-    : st.color.stops[0].color;
+  //
+  // EVERY PAINT SHAPE GOES THROUGH paintSolidColor, AND THAT IS THE WHOLE FIX FOR
+  // THE DOUBLE-CLICK CRASH (workstream TEXTCRASH, 2026-08-12). This read used to be
+  // a hand-rolled `st.color.stops[0].color`, which knew exactly ONE of the shapes a
+  // run colour actually takes: the LEGACY INLINE gradient (`{type, stops, from,
+  // to}`). A run colour arrives here RAW — `ir.js text()` parsePaints the op-level
+  // `color` but passes `rich` THROUGH UNTOUCHED, so `rich.runs[i].color` is model
+  // state, not a parsed paint — and the shape the PaintField writes TODAY is the
+  // multi-sub-state record (`{type, solid, linear: {stops}, radial: {stops}}`),
+  // whose stops live under `linear`/`radial` and NEVER at the top level. So the
+  // modern, current-schema gradient run was the crashing case and the legacy one
+  // was the only shape that worked — the exact inverse of how it was triaged. A
+  // `{type: "solid"}` object and an OFF paint fell down the same hole.
+  // paintSolidColor (ir.js) is the funnel that already resolves all of them —
+  // sub-state, legacy inline, solid object, material, crossfade — so routing here
+  // deletes the duplicate rather than adding a guard beside it. It is also what
+  // ckColor→parseColor does with an object on the line below, so the two halves of
+  // this function now agree by construction instead of by coincidence.
+  // THE SAME PREDICATE THE GLYPH PASS ROUTES ON — see runFillNeedsShader. These two
+  // decisions are one decision: this line decides to draw the glyphs TRANSPARENT
+  // because something else will repaint them, and the glyph pass decides whether
+  // anything actually does. If they ever disagree the run renders INVISIBLE, which
+  // is why the question is asked once, in one place, by both callers.
+  const shader = runFillNeedsShader(st.color);
+  // An OFF paint (`{type: "none"}`) is INVISIBLE INK, not a broken paint: it is the
+  // one object paintSolidColor has no answer for, and correctly refuses. Decorations
+  // take the same nothing the glyphs do, so it resolves to transparent here rather
+  // than throwing — matching every other backend's `if (cmd.fill)` skip.
+  const solidInk = isPaintOff(st.color) ? TRANSPARENT_INK
+    : !isGradientPaint(st.color) ? (st.color ?? "#000000")
+    : solidInkForRun(st.color);
   const spec = {
-    color: shader ? CanvasKit.Color4f(0, 0, 0, 0) : ckColor(CanvasKit, st.color ?? "#000000", opacity),
+    // A SHADER run draws its glyphs TRANSPARENT (the glyph pass repaints them). An
+    // OFF run also paints nothing — but it reaches that through solidInk/ckColor's
+    // transparent ink rather than through `shader`, because runFillNeedsShader says
+    // FALSE for it (there is no shader to build) — and a fully transparent colour
+    // draws exactly the same nothing.
+    color: shader ? CanvasKit.Color4f(0, 0, 0, 0) : ckColor(CanvasKit, solidInk, opacity),
     fontFamilies: fontFamilyChain(st.font ?? "system"),
     fontSize: st.size ?? DEFAULT_TEXT_SIZE,
     fontStyle: {
@@ -817,9 +922,33 @@ function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true
   const fill = group.style.color;
   if (!isGradientPaint(fill)) return;
   const bounds = glyphGroupBounds(group, ox, y, CanvasKit);
-  const shader = isMaterialPaint(fill)
-    ? materialShaderForGlyphs(CanvasKit, fill, bounds)
-    : skShaderForPaint(CanvasKit, parsePaint(fill), bounds, opacity, canvas.getTotalMatrix()); // model gradient (string stops) → rgba stops
+  // A MATERIAL is asked of the RAW paint (its shader is built from the sparse
+  // {material:{id,params}} record, which parsePaint passes through untouched).
+  if (isMaterialPaint(fill)) {
+    drawGlyphShader(CanvasKit, canvas, group, y, ox, opacity, aa, materialShaderForGlyphs(CanvasKit, fill, bounds), true);
+    return;
+  }
+  // EVERY OTHER KIND IS ROUTED ON THE **PARSED** PAINT, NOT THE RAW SHAPE, AND
+  // THAT DISTINCTION IS THE BUG THIS GUARD FIXES (workstream TEXTCRASH) — asked
+  // through runFillNeedsShader so this pass and textStyle's transparent-glyph
+  // decision are literally the same predicate. See its docblock for why the raw
+  // shape cannot answer it ({type:"none"} and {type:"solid"} are both objects that
+  // skShaderForPaint refuses with "expected a gradient Paint").
+  if (!runFillNeedsShader(fill)) return;
+  const parsed = parsePaint(fill); // model gradient (string stops) → rgba stops
+  drawGlyphShader(CanvasKit, canvas, group, y, ox, opacity, aa, skShaderForPaint(CanvasKit, parsed, bounds, opacity, canvas.getTotalMatrix()), false);
+}
+
+/** Command (draws one glyph group under a prepared shader Paint, then disposes the
+ * shader). Split out of drawGlyphShaderFill so the material and gradient routes
+ * share ONE drawing body — the masking was always identical between them, and only
+ * the shader construction and the opacity handling differ.
+ *
+ * `materialOpacity` selects which of those two: a gradient folds `opacity` into its
+ * stop alphas, so its Paint must NOT also carry it (that would square it); a
+ * material's shader has no stops to fold into, so the Paint carries it — the same
+ * split handleMaterialFill applies. */
+function drawGlyphShader(CanvasKit, canvas, group, y, ox, opacity, aa, shader, materialOpacity) {
   // No null guard: BOTH builders either return a shader or throw with a reason
   // (materialShaderForGlyphs checks makeShader's result itself). A `if (!shader)
   // return` here would be dead code that reads like a real fallback — i.e. it
@@ -830,7 +959,7 @@ function drawGlyphShaderFill(CanvasKit, canvas, group, y, ox, opacity, aa = true
   // A gradient folds `opacity` into its stop alphas; a material's shader has no
   // stops to fold it into, so the Paint carries it. Same visual result, and it is
   // also what handleMaterialFill does (the blit applies opacity, never the raster).
-  if (isMaterialPaint(fill)) p.setAlphaf(opacity);
+  if (materialOpacity) p.setAlphaf(opacity);
   p.setAntiAlias(aa);
   const font = new CanvasKit.Font(group.typeface, group.size);
   canvas.drawGlyphs(group.glyphs, group.positions, ox, y, font, p);
