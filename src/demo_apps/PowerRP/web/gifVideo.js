@@ -15,13 +15,20 @@
  * the question "is this animated" has already been answered authoritatively by
  * ffprobe, and the mp4 (if any) already exists.
  *
- * WHY A SEPARATE MODULE FOR ONE DECISION. The decision has THREE call sites — the
- * canvas drop (CanvasView.svelte), the paste-to-upload path and the Asset
- * Explorer's upload — and it is exactly the kind of two-line ternary that gets
- * hand-copied and then fixed in only one place. assetRef.js records that history:
- * one question about a dropped file's kind once had FIVE implementations, and the
- * PDF-drop bug lived in the copies. So this ships as ONE named function with
- * doctests, in a DOM-free module bare node can test.
+ * WHY A SEPARATE MODULE FOR ONE DECISION. It has TWO call sites today — the canvas
+ * drop (CanvasView.svelte onCanvasDrop) and the paste-to-upload path
+ * (app.svelte.js pasteFiles) — which is exactly the count at which a two-line
+ * ternary gets hand-copied and then fixed in only one of them. assetRef.js records
+ * where that ends: one question about a dropped file's kind once had FIVE
+ * implementations, and the PDF-drop bug lived in the copies. So this ships as ONE
+ * named function with doctests, in a DOM-free module bare node can test.
+ *
+ * THE ASSET EXPLORER'S UPLOAD IS DELIBERATELY NOT A CALL SITE. It adds a file to
+ * the library WITHOUT inserting a widget, so there is no insert decision to make;
+ * the .gif and its .mp4 sibling both simply appear as tiles. Dragging either onto
+ * the canvas afterwards goes through the tile-payload branch of the drop handler,
+ * which already routes by the asset's own kind — an .mp4 tile is a video there
+ * with no help from this module.
  *
  * IT IS ALSO WHERE STATIC MODE IS HONEST. A page with no Python backend has no
  * ffmpeg, so the transcode CANNOT happen there — and a static host's upload reply

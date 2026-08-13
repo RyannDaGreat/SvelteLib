@@ -1197,8 +1197,8 @@
         // AN ANIMATED GIF INSERTS ITS MP4 SIBLING, not the frozen picture. The
         // server transcoded it during the upload above and named the result in
         // `transcode`; insertTargetForUpload is the ONE place that reply is read
-        // (three call sites need this decision — see web/gifVideo.js on why it is
-        // a named function rather than a ternary here). Every other kind resolves
+        // (this and paste both need the decision — see web/gifVideo.js on why it
+        // is a named function rather than a ternary here). Every other kind resolves
         // to exactly what it did before.
         await insertDroppedAsset(insertTargetForUpload(up, assetKindForFile(file)), at);
         // Static mode has no ffmpeg, so nothing was probed or converted. Said out
