@@ -744,6 +744,11 @@ function drawLeafOp(CanvasKit, canvas, cmd, opacity, media, fontCollection, aa =
       // Both were `null` while this op's ink was parseColor'd, because a solid
       // needs neither — the same two arguments every other builder's stroke passes.
       const bounds = pointsBounds(cmd.points);
+      // The `null` cmd and identity `1` divisor are the values this call already
+      // implied before those arguments were reached: applyStrokeSpace stamps
+      // strokeScreenSpace only onto ops with a `stroke` field, and a polyline
+      // carries `color`/`width`, so it is skipped BY CONSTRUCTION — passing the op
+      // here would be the one way to start honouring a flag it can never carry.
       const p = strokePaint(CanvasKit, cmd.color, cmd.width, opacity, bounds, aa, null, 1, canvas.getTotalMatrix());
       // THE POLYLINE OP'S OWN CONTRACT, not a widget knob — read from ir.js so the
       // SVG and PDF exporters cannot spell it differently (they read the same two
