@@ -122,6 +122,8 @@
   import { ASSET_DRAG_MIME, isProjectZip, isPptxFile } from "./projectApi.js"; // asset-tile drop payload type + the one .zip-is-a-project / .pptx-is-a-deck rules (drop-handler region)
   import { assetDropKind } from "./pluginAssetLoader.js"; // what a dropped asset DOES: "widget" (*.plugin.js) | "media" | "none" — declared + bare-node tested
   import { assetKindForFile } from "./assetRef.js"; // ONE file classifier (MIME for media prefixes, extension table otherwise) — replaced a local MIME-only copy that refused OS-dropped PDFs
+  import { insertTargetForUpload, gifStaticRefusal } from "./gifVideo.js"; // an ANIMATED gif inserts the mp4 the server transcoded it into; static mode says why it cannot
+  import { isStatic, UNAVAILABLE_IN_STATIC } from "./storageMode.js"; // gifStaticRefusal needs to know whether a backend existed to do the transcoding, and takes its wording from the one roster
   import { reportAction, warnOnce } from "../core/report.js"; // a refused DROP is one user act — reportAction, never a deduped one. A refused POINTER LOCK is the opposite on both axes: repeated clicks, so deduped; and the gesture still works by a worse route, which is warnOnce's stated remit rather than reportOnce's
   import TextEditController from "./TextEditController.svelte"; // TRUE in-place rich-text editor (Skia-owned caret/selection)
   import LatexEditController from "./LatexEditController.svelte"; // WYSIWYG LaTeX editor (MathLive DOM overlay + canvas suppression)
@@ -1167,8 +1169,18 @@
         return app.showPptxImport(decks[0]);
       }
       for (const file of files) {
-        const up = await app.uploadAsset(file); // {ok, name, url}
-        await insertDroppedAsset({ name: up.name, kind: assetKindForFile(file), url: up.url }, at);
+        const up = await app.uploadAsset(file); // {ok, name, url, transcode?}
+        // AN ANIMATED GIF INSERTS ITS MP4 SIBLING, not the frozen picture. The
+        // server transcoded it during the upload above and named the result in
+        // `transcode`; insertTargetForUpload is the ONE place that reply is read
+        // (three call sites need this decision — see web/gifVideo.js on why it is
+        // a named function rather than a ternary here). Every other kind resolves
+        // to exactly what it did before.
+        await insertDroppedAsset(insertTargetForUpload(up, assetKindForFile(file)), at);
+        // Static mode has no ffmpeg, so nothing was probed or converted. Said out
+        // loud rather than leaving a frozen GIF to look like a rendering bug.
+        const refused = gifStaticRefusal(up, isStatic(), UNAVAILABLE_IN_STATIC.gifTranscode);
+        if (refused) reportAction(`PowerRP: ${refused}`);
       }
     } catch (err) {
       console.error("Canvas drop failed:", err);

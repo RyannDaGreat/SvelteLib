@@ -92,7 +92,7 @@
     canvasModeStepAxis,
     unsatisfiableEntries,
   } from "../core/shortcut_entries.js";
-  import { DRAG_KIND_MODIFIERS, DRAG_KINDS, MODAL_TRANSFORM_KINDS, MODAL_KINDS } from "./canvas/dragKinds.js";
+  import { DRAG_KIND_MODIFIERS, DRAG_KINDS, MODAL_TRANSFORM_KINDS, MODAL_KINDS, MODAL_TOGGLES } from "./canvas/dragKinds.js";
   // Widget-owned editor behaviour (see web/widget_handlers.js): every handler that
   // declares a sustained canvas mode — an activation's interior explore, a
   // creation's multi-step placement — contributes its own registry entries.
@@ -2598,10 +2598,19 @@
    * // "Grab · X · 2"
    * @example modalAnnouncement({ kind: "scale", axis: "y", buffer: "" })
    * // "Scale · Y"
+   * @example modalAnnouncement({ kind: "scale", axis: null, buffer: "2", toggles: { wholistic: true } })
+   * // "Scale · Wholistic · 2"
+   * @example modalAnnouncement({ kind: "rotate", axis: null, buffer: "", toggles: { individual: true } })
+   * // "Rotate · Individual · type an angle in degrees"
    */
   function modalAnnouncement(m) {
     const kind = MODAL_TRANSFORM_KINDS[m.kind];
     const parts = [kind.label];
+    // ACTIVE TOGGLES ANNOUNCE THEMSELVES, in the table's own order so two active
+    // toggles always read the same way round. A toggle that changes what the
+    // gesture MEANS and says nothing would be a mode the user cannot see they are
+    // in — the same reason the axis gets a segment.
+    for (const [id, t] of Object.entries(MODAL_TOGGLES)) if (m.toggles?.[id]) parts.push(t.mark);
     if (m.axis) parts.push(m.axis.toUpperCase());
     if (m.buffer) parts.push(m.buffer);
     else if (!m.axis) parts.push(kind.numericPrompt);
@@ -2643,6 +2652,8 @@
     // The G/S/R entries are GENERATED from this table, not typed out here — see
     // MODAL_TRANSFORM_KINDS (web/canvas/dragKinds.js) for why.
     modalTransformKinds: MODAL_TRANSFORM_KINDS,
+    // The I/W toggle chips are likewise GENERATED from their table, not typed here.
+    modalToggles: MODAL_TOGGLES,
     activations: activations(),
   });
 
@@ -2878,6 +2889,12 @@
       // it is what lets a chip be scoped to the kinds it is true for, which is how
       // rotate withholds the X/Y axis keys that have no meaning in the plane.
       modalKind: app.modalXform?.kind ?? null,
+      // WHETHER THE SELECTION HOLDS MORE THAN ONE ITEM. Its own axis rather than a
+      // reading of `hasSelection`, because the I toggle is the one input whose
+      // meaning depends on the COUNT: with a single item, "each about its own
+      // centre" and "all about the collective centre" are the same transform, so
+      // the chip is withheld rather than offered as a no-op.
+      multiSelection: app.selectedIds().length > 1,
       snapEngaged: app.snapEngaged, // manifest ARCHITECTURE PLAN #4: a drag has an active snap CORRECTION (what the guides and the toolbar tint read)
       // ...and whether that correction is one the A release can actually BIND. The two
       // are not the same, which is the defect: applyResizeSnap raises snapEngaged from

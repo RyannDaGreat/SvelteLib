@@ -89,7 +89,7 @@ import * as projectApi from "./projectApi.js";
 // mode). projectApi is still imported for the calls that are inherently
 // server-only (clipboard, render jobs, ffprobe duration) — those refuse loudly
 // in static mode rather than fetching a URL that cannot exist.
-import { assetStore, assetStoreFor, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason } from "./storageMode.js";
+import { assetStore, assetStoreFor, isStatic, projectStore, refuseInStatic, storageMode, storageModeReason, UNAVAILABLE_IN_STATIC } from "./storageMode.js";
 // localAssetStore DIRECTLY (not through the storageMode seam): a DRAFT always
 // stages in the browser, in both storage modes, because the server has no folder
 // for a project the user has not decided to keep. See web/projectDraft.js.
@@ -117,6 +117,9 @@ import { strToU8, zipSync } from "fflate";
 // The asset-reference grammar + the foreign-ref walk behind "Localize Foreign
 // Assets" and the self-contained .zip export (web/assetLocalize.js).
 import { assetRef, assetKindForFile, plainDoc, relativeAssetRef, uniqueAssetName } from "./assetRef.js";
+// An ANIMATED gif is a VIDEO: the server transcodes it at upload and these two read
+// that reply — which widget to insert, and what to say when there was no backend.
+import { insertTargetForUpload, gifStaticRefusal } from "./gifVideo.js";
 import { adoptedArchiveRefs, documentAssetRefs, foreignAssetRefs, localizationPlan, relativizedOwnRefs, rewriteAssetRefs } from "./assetLocalize.js";
 import { createRegistry, widgetForAssetKind } from "../core/registry.js";
 import { createCommands } from "../core/commands.js";
@@ -5163,13 +5166,21 @@ export class PowerRPApp {
   async pasteFiles(files) {
     for (const file of files) {
       try {
-        const up = await this.uploadAsset(file); // {ok, name, url}
-        const kind = assetKindForFile(file);
+        const up = await this.uploadAsset(file); // {ok, name, url, transcode?}
         // THE THIRD COPY of the image-or-video pair used to live here, which is
         // why a pasted PDF also went nowhere. The registry answers now, so paste
         // gained PDFs for free the moment pdf_page declared itself.
-        if (widgetForAssetKind(this.registry, kind)) await this.insertAssetWidget({ kind, url: up.url, name: up.name });
-        else console.warn(`Paste: uploaded "${up.name}" but no canvas widget exists for kind "${kind}" — it stays in the asset library.`);
+        //
+        // A PASTED ANIMATED GIF INSERTS ITS MP4 SIBLING — the same decision the
+        // canvas drop makes, from the same function (web/gifVideo.js), because
+        // this is exactly the call site that drifted last time this question had
+        // more than one implementation.
+        const target = insertTargetForUpload(up, assetKindForFile(file));
+        if (widgetForAssetKind(this.registry, target.kind)) await this.insertAssetWidget(target);
+        else console.warn(`Paste: uploaded "${up.name}" but no canvas widget exists for kind "${target.kind}" — it stays in the asset library.`);
+        // No ffmpeg in static mode, so a GIF pasted there is a still. Said out loud.
+        const refused = gifStaticRefusal(up, isStatic(), UNAVAILABLE_IN_STATIC.gifTranscode);
+        if (refused) console.warn(`Paste: ${refused}`);
       } catch (e) {
         console.error(`Paste-to-upload failed for "${file.name}":`, e);
       }
