@@ -358,6 +358,18 @@ export function sceneIR(nodes, ctx = {}) {
     scene3d: ctx.scene3d ?? null,
     liveAnalysis: ctx.liveAnalysis ?? null,
     live: ctx.live === true,
+    // THE INTERACTION-LOD FLAG (user, 2026-08-12: paper peacock "It's laggy to
+    // drag around"). False for exactly one thing: a frame painted DURING a live
+    // pointer gesture in the editor, where a PDF widget must draw from the raster
+    // cache it already has instead of kicking a fresh pdf.js render for whichever
+    // scale bucket the drag is sweeping through right now.
+    //
+    // DEFAULTS TRUE, AND THAT DEFAULT IS THE CONTRACT: every non-editor consumer
+    // — exports, the presenter, thumbnails, cameraFrame, the CLI — passes nothing
+    // and therefore renders at full quality, unchanged to the byte. An export can
+    // never see a degraded frame, because an export has no pointer gesture to
+    // report and cannot accidentally opt in by omission.
+    interactive: ctx.interactive !== false,
   };
   const byId = new Map(nodes.map((n) => [n.itemId, n]));
   // ── THE WIRE LAYER (WORKSTREAM BN, user 2026-08-03: "the wires between nodes
@@ -610,13 +622,19 @@ function emitNodeBody(node, byId, display) {
   // `live` participates in that test so a surface that repaints but happens to
   // hold no PDF and no map still reaches its widgets — without it, the flag would
   // silently evaporate on exactly the scenes it matters for.
-  const renderCtx = display.pdfDisplay || display.mapTiles || display.scene3d || display.liveAnalysis || display.live
+  // `!display.interactive` joins the gate rather than only the object: it is the
+  // one field whose INTERESTING value is falsy, so a frame that carries nothing but
+  // "a gesture is live" would otherwise collapse to a null renderCtx and the LOD
+  // would never reach emit(). The other five are truthy-when-present, which is why
+  // a bare truthiness chain was sufficient until now.
+  const renderCtx = display.pdfDisplay || display.mapTiles || display.scene3d || display.liveAnalysis || display.live || !display.interactive
     ? {
         pdfDisplay: display.pdfDisplay?.get(node.itemId) ?? null,
         mapTiles: display.mapTiles?.get(node.itemId) ?? null,
         scene3d: display.scene3d?.get(node.itemId) ?? null,
         liveAnalysis: display.liveAnalysis?.get(node.itemId) ?? null,
         live: display.live,
+        interactive: display.interactive,
       }
     : null;
   // emit() gets a subtree as arg 2 (a group's members' IR, or a crop box's target

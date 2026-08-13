@@ -108,13 +108,13 @@ import { standardBBoxAnchors } from "../core/derive.js";
 import { closestPointOnRectBorder } from "../core/geometry.js";
 import { bundle, bundleNestedDefaults, defaults, props } from "../core/properties.js";
 import * as T from "../core/transform.js";
-import { image, SUPERSAMPLE_DENSITY } from "../render_gpu/ir.js";
+import { image, rect, SUPERSAMPLE_DENSITY } from "../render_gpu/ir.js";
 import { decorateStrokedBox, cropInsetsToSource } from "../render_gpu/decorate.js";
 import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { reportOnce } from "../core/report.js";
 import {
-  ensurePdfDoc, ensurePdfPagePointSize, ensurePdfPageRasterized,
-  pdfPageCount, pdfPagePointSize, pdfPageRef, clampPage,
+  ensurePdfDoc, ensurePdfPagePointSize, pdfPageRasterRefForDisplay, PDF_PLACEHOLDER_PAPER,
+  pdfPageCount, pdfPagePointSize, clampPage,
 } from "../render_gpu/gpu/pdf_page_raster.js";
 import { ensurePdfPageVector, pdfPageVectorIRFor } from "../render_gpu/gpu/pdf_page_vector.js";
 import { PDF_RENDER_MODES, PDF_RENDER_MODE_DEFAULT, PDF_RASTER_DEFAULT_DPI } from "../render_gpu/pdf_display.js";
@@ -297,9 +297,15 @@ export const pdfPagePlugin = {
     // world unit) until the true point size is known — self-corrects the instant
     // pdfPagePointSize resolves.
     const wholeScale = point && point.w > 0 ? (c.w * density) / point.w : density;
-    ensurePdfPageRasterized(s.src, page, wholeScale); // whole-page raster — always kept available
-    const wholeRef = pdfPageRef(s.src, page, wholeScale);
-    const wholeQuad = image({ ref: wholeRef, x: c.x, y: c.y, w: c.w, h: c.h, opacity, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh });
+    // INTERACTION LOD: during an editor drag ask for NO new raster and draw the
+    // nearest resident scale instead (user: PDFs are "laggy to drag around" — a
+    // gesture sweeps scale buckets and every bucket used to be a fresh pdf.js
+    // render). Null = this page has no raster at any scale yet, and only then is
+    // there nothing to draw as a base.
+    const wholeRef = pdfPageRasterRefForDisplay(s.src, page, wholeScale, renderCtx?.interactive !== false);
+    const wholeQuad = wholeRef
+      ? image({ ref: wholeRef, x: c.x, y: c.y, w: c.w, h: c.h, opacity, sx: c.sx, sy: c.sy, sw: c.sw, sh: c.sh })
+      : null;
 
     // ── DISPLAY RE-RASTER (manifest RENDER PIVOT 2026-07-23, the Chrome model) ──
     // A render-time pre-pass (render_gpu/pdf_display.preRasterizePdfPages, run by
@@ -323,7 +329,9 @@ export const pdfPagePlugin = {
     const disp = renderCtx?.pdfDisplay ?? null;
     if (disp) {
       const regionQuad = image({ ref: disp.ref, x: disp.x, y: disp.y, w: disp.w, h: disp.h, opacity });
-      const content = opaque ? [wholeQuad, regionQuad] : [regionQuad];
+      // The whole-page base is dropped when nothing is resident (LOD, above) — the
+      // region quad still draws, so this is a missing BASE, not a missing page.
+      const content = opaque && wholeQuad ? [wholeQuad, regionQuad] : [regionQuad];
       return applyEffects(decorateStrokedBox(content, style, world), s, world, bbox);
     }
 
@@ -344,7 +352,13 @@ export const pdfPagePlugin = {
     // and fades the page as one — the same hybrid rule latex.js uses).
     const cropped = c.sw < 1 || c.sh < 1 || c.sx > 0 || c.sy > 0;
     const vectorOps = cropped || !opaque ? null : pdfPageVectorIRFor(s.src, page, { x: c.x, y: c.y, w: c.w, h: c.h });
-    const content = vectorOps ? vectorOps : [wholeQuad];
+    // `wholeQuad` is null only under interaction LOD with a cold cache. Every
+    // consumer of THIS path (exporters, thumbnails, CLI) renders interactive, so it
+    // is non-null for them by construction — but the first display frames of a drag
+    // can reach here before a region descriptor exists, and emitting [null] would
+    // put a hole in the display list rather than a picture. Flat paper instead.
+    const placeholder = rect({ x: c.x, y: c.y, w: c.w, h: c.h, fill: PDF_PLACEHOLDER_PAPER, opacity });
+    const content = vectorOps ? vectorOps : [wholeQuad ?? placeholder];
     // Effects wrap OUTSIDE the border decoration (render_gpu/effects.js order
     // rule): the shadow/bloom silhouette the FRAMED page, border included.
     return applyEffects(decorateStrokedBox(content, style, world), s, world, bbox);

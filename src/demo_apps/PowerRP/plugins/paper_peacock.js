@@ -70,8 +70,8 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { reportOnce } from "../core/report.js";
 import { partKey } from "../core/shatter.js"; // core, not a plugin — the mermaid/svg precedent
 import {
-  ensurePdfDoc, ensurePdfPagePointSize, ensurePdfPageRasterized,
-  pdfPageCount, pdfPagePointSize, pdfPageRef,
+  ensurePdfDoc, ensurePdfPagePointSize, pdfPageRasterRefForDisplay, PDF_PLACEHOLDER_PAPER,
+  pdfPageCount, pdfPagePointSize,
 } from "../render_gpu/gpu/pdf_page_raster.js";
 
 /** The fanAngle handle's allowed range, degrees (0 = a flat stack, 90 = a full
@@ -492,7 +492,7 @@ export const paperPeacockPlugin = {
    * Shadows draw even with no/loading PDF (see the module header); the whole
    * op list then wraps in the universal effects bundle over the widget box.
    */
-  emit(s, _targetWorldIR, world) {
+  emit(s, _targetWorldIR, world, renderCtx) {
     if (!(s.w > 0) || !(s.h > 0)) return [];
     const { layout: L, first, count, trimmed, src } = stateLayout(s);
     if (src) {
@@ -529,8 +529,15 @@ export const paperPeacockPlugin = {
         // pdfjs scale = (local px this sheet spans · density) / (PDF points that
         // fills); density alone until the point size is known — self-corrects.
         const scale = point && point.w > 0 ? (L.pageW * density) / point.w : density;
-        ensurePdfPageRasterized(src, page, scale);
-        ops.push(image({ ref: pdfPageRef(src, page, scale), x: L.pageX, y: L.pageY, w: L.pageW, h: L.pageH, opacity }));
+        // INTERACTION LOD: while a gesture is live this asks for NO new raster and
+        // returns whatever scale is already resident — the fix for "It's laggy to
+        // drag around", which on this widget cost one pdf.js render per SHEET per
+        // scale bucket. Null means this page has no raster at all yet, and only
+        // then does a sheet draw as blank paper.
+        const ref = pdfPageRasterRefForDisplay(src, page, scale, renderCtx?.interactive !== false);
+        ops.push(ref
+          ? image({ ref, x: L.pageX, y: L.pageY, w: L.pageW, h: L.pageH, opacity })
+          : path({ d: rectPathD(L.pageX, L.pageY, L.pageW, L.pageH), fill: PDF_PLACEHOLDER_PAPER, opacity }));
       }
       ops.push(popTransform());
     }

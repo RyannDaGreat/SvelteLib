@@ -34,7 +34,7 @@ import { applyEffects, effectsCullMargin } from "../render_gpu/effects.js";
 import { reportOnce } from "../core/report.js";
 import { packetPlan, turnedPose, stackJitter } from "../render_gpu/page_curl.js";
 import {
-  ensurePdfDoc, ensurePdfPagePointSize, ensurePdfPageRasterized,
+  ensurePdfDoc, ensurePdfPagePointSize, pdfPageRasterRefForDisplay,
   pdfPageCount, pdfPagePointSize, pdfPageRef, clampPage,
 } from "../render_gpu/gpu/pdf_page_raster.js";
 
@@ -130,13 +130,17 @@ export function packetBounds(s) {
  * author's own `rasterDensity` multiplier (core/properties.js has the full
  * reasoning for why it multiplies rather than naming an absolute DPI). Absent
  * ⇒ 1 ⇒ byte-identical to before this knob existed, cache key included. */
-function pageRasterRef(s, page, world) {
+function pageRasterRef(s, page, world, interactive = true) {
   const density = (world?.scale ?? 1) * RASTER_DENSITY * (s.rasterDensity ?? 1);
   const point = pdfPagePointSize(s.src, page);
   ensurePdfPagePointSize(s.src, page);
   const scale = point && point.w > 0 ? (s.w * density) / point.w : density;
-  ensurePdfPageRasterized(s.src, page, scale);
-  return pdfPageRef(s.src, page, scale);
+  // INTERACTION LOD: `interactive === false` (an editor drag) asks for no new
+  // raster and draws the nearest resident one. A cold page returns null, and this
+  // widget needs no placeholder branch for it — a paperCurl op with an unlanded ref
+  // already draws shaded blank paper (the media contract in emit()'s docblock), so
+  // falling back to the requested-but-unlanded ref keeps that exact behaviour.
+  return pdfPageRasterRefForDisplay(s.src, page, scale, interactive) ?? pdfPageRef(s.src, page, scale);
 }
 
 /** Query (reads state). The staple point in page-local coords. */
@@ -234,10 +238,11 @@ export const pdfPacketPlugin = {
    * density — the pdf_page precedent); async rasters draw as shaded blank
    * paper until they land (the paperCurl op's media contract).
    */
-  emit(s, _targetWorldIR, world) {
+  emit(s, _targetWorldIR, world, renderCtx) {
     if (typeof s.src !== "string" || s.src.length === 0) return [];
     if (!(s.w > 0) || !(s.h > 0)) return [];
     ensurePdfDoc(s.src);
+    const interactive = renderCtx?.interactive !== false;
     const pageCount = pdfPageCount(s.src);
     // Until the doc opens, assume just enough pages that the requested turn
     // still animates; the count self-corrects the emit after it resolves.
@@ -277,7 +282,7 @@ export const pdfPacketPlugin = {
     // (2) the OPEN page (what the packet currently shows), with a crisp
     // trailing-edge hairline (agent 9's "one hard line sells the loose sheet").
     ops.push(rect({ x: 0, y: 0, w: s.w, h: s.h, fill: paper, opacity }));
-    ops.push(image({ ref: pageRasterRef(s, plan.openPage, world), x: 0, y: 0, w: s.w, h: s.h, opacity }));
+    ops.push(image({ ref: pageRasterRef(s, plan.openPage, world, interactive), x: 0, y: 0, w: s.w, h: s.h, opacity }));
     ops.push(rect({ x: 0, y: 0, w: s.w, h: s.h, fill: null, stroke: EDGE_TINT, strokeWidth: 1, opacity }));
 
     // (3) already-turned pages, deepest (first-turned) first: settled paperCurl
@@ -290,7 +295,7 @@ export const pdfPacketPlugin = {
       const pose = turnedPose(k, plan.turnedCount, angle, s.spreadTurned ?? 7);
       ops.push(pushTransform(rotationAboutPoint(pose.rotationDeg, staple.x, staple.y)));
       ops.push(paperCurl({
-        ref: pageRasterRef(s, k + 1, world), x: 0, y: 0, w: s.w, h: s.h, staple, angleDeg: angle,
+        ref: pageRasterRef(s, k + 1, world, interactive), x: 0, y: 0, w: s.w, h: s.h, staple, angleDeg: angle,
         t: TURNED_REST_T, curlScale: residualCurl(k, plan.turnedCount) * curl,
         paper, shadowOpacity: shadow * 0.5, opacity,
       }));
@@ -300,7 +305,7 @@ export const pdfPacketPlugin = {
     // (4) the TURNING sheet — the fractional page mid-peel.
     if (plan.turningPage != null) {
       ops.push(paperCurl({
-        ref: pageRasterRef(s, plan.turningPage, world), x: 0, y: 0, w: s.w, h: s.h,
+        ref: pageRasterRef(s, plan.turningPage, world, interactive), x: 0, y: 0, w: s.w, h: s.h,
         staple, angleDeg: angle, t: plan.t, curlScale: curl,
         paper, shadowOpacity: shadow, opacity,
       }));
