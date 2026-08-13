@@ -54,6 +54,7 @@
   import LabelDivider from "./LabelDivider.svelte";
   import GalleryPopup from "./GalleryPopup.svelte";
   import MultiSelectModeToggle from "./MultiSelectModeToggle.svelte";
+  import Vector2Pad from "./Vector2Pad.svelte";
   import { allDocumentItems, keyframeIndices, foldState, itemFallbackName } from "../core/document.js";
   import { transitionInspector, TRANSITION_TYPES } from "../core/transitions.js";
   import {
@@ -63,7 +64,7 @@
   import { suggestEquation, acceptSuggestion } from "../core/equationSuggest.js";
   import { makeEquationSuggestKeydown } from "./equationSuggestKeys.js";
   import { richTextToPlain, withPlainTextReplaced } from "../core/richtext.js";
-  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage } from "../core/properties.js";
+  import { CUSTOM_CATEGORY, PROPS, RETIRED_ROW_KINDS, selectRowItems, interpRowFor, interpParamRowsFor, rowSupportsInterp, codeRowLanguage, withCompoundRows, ASPECT_LOCK_KEY, aspectLockedPair } from "../core/properties.js";
   import { displayedDefaultModeFor, interpKeyFor } from "../core/interp_modes.js";
   import { MORPH_DEFAULT, MORPH_KEY } from "../core/morph_property.js";
   import { LIST_ROW_KIND } from "../core/lists.js";
@@ -351,9 +352,33 @@
    */
   function sectionPaths(cat, opts) {
     if (opts?.keyframes === false || opts?.disabled) return [];
-    if (opts?.multi) return sectionKeyPaths(cat.rows, rowItemIds, writeKey);
+    // A COMPOUND IS NOT A PATH — flatten to its LEAVES first. `xy` is a grouping
+    // id, not a stored slot, so a section bubble that took it literally would
+    // keyframe ["items", id, "xy"] and silently stop keyframing x and y at all.
+    const rows = leafRows(cat.rows);
+    if (opts?.multi) return sectionKeyPaths(rows, rowItemIds, writeKey);
     if (opts?.itemId == null) return [];
-    return sectionKeyPaths(cat.rows, () => [opts.itemId], writeKey);
+    return sectionKeyPaths(rows, () => [opts.itemId], writeKey);
+  }
+
+  /**
+   * Pure function. Flattens a row list to its LEAF rows, descending through every
+   * compound at ANY depth (core/properties.js's arbitrary-depth rule; nothing
+   * here counts levels).
+   *
+   * THIS IS THE ONE ANSWER TO "WHICH REAL PROPERTIES DOES THIS STAND FOR", and
+   * both consumers need exactly it: a SECTION bubble reads the leaves of every
+   * row in the category, and a COMPOUND's own diamond reads the leaves under that
+   * one node. Sharing it is what makes those two diamonds agree — a compound
+   * showing "all" inside a section showing "some" is then arithmetic, not a bug.
+   *
+   * @example leafRows([{key: "opacity"}]).map((r) => r.key) // ["opacity"]
+   * @example // a compound contributes its children, never its own id:
+   * @example leafRows([{key: "xy", compound: true, children: [{key: "x"}, {key: "y"}]}]).map((r) => r.key)
+   * @example // ["x", "y"]
+   */
+  function leafRows(rows) {
+    return rows.flatMap((r) => (r.compound ? leafRows(r.children) : [r]));
   }
 
   /**
@@ -535,22 +560,35 @@
       title: id === CUSTOM_CATEGORY
         ? customCategoryTitle(widgetTitle)
         : CATEGORY_TITLES[id] ?? (id.charAt(0).toUpperCase() + id.slice(1)),
-      rows: buckets.get(id),
+      // COMPOUND ROWS ARE FOLDED HERE, AT THE ONE SEAM EVERY PANEL SHARES
+      // (workstream COMPOUND_; core/properties.js's COMPOUND ROWS header holds
+      // the reasoning). Folding after bucketing rather than before is what makes
+      // it safe: a compound's leaves all declare the same category (they are one
+      // property in the author's head), so grouping first means a compound can
+      // never straddle two sections — and the fold sees exactly the rows this
+      // section will render, including the ones `visibleWhen` just dropped.
+      // A widget missing any leaf keeps its plain rows, unchanged.
+      rows: withCompoundRows(buckets.get(id)),
     }));
   }
 
   /**
-   * Pure function. True iff this row RESTACKS to the panel's full width, i.e. it
-   * has no label⟷value boundary at --a-label-frac for a divider to mark.
+   * Query (reads the viewer-local `compoundOpen` map — see the compound branch).
+   * True iff this row RESTACKS to the panel's full width, i.e. it has no
+   * label⟷value boundary at --a-label-frac for a divider to mark.
    *
-   * Two kinds do: a LIST row (app.css `.row.row-list` — the list gets its own
-   * full-width second line) and a PAINT row (`:has(.gradient-presets)` — the
-   * gradient stack's mode strip, preset library and stops list span the panel).
-   * Both are declared by the ROW, which is why this is answerable here without
-   * touching the DOM — the earlier attempt measured offsetTop at runtime and kept
-   * racing the category's mount (see LabelDivider's header).
+   * Two kinds do unconditionally: a LIST row (app.css `.row.row-list` — the list
+   * gets its own full-width second line) and a PAINT row
+   * (`:has(.gradient-presets)` — the gradient stack's mode strip, preset library
+   * and stops list span the panel). Both are declared by the ROW, which is why
+   * those are answerable without touching the DOM — the earlier attempt measured
+   * offsetTop at runtime and kept racing the category's mount (see LabelDivider's
+   * header). A COMPOUND row is the third and is the reason this is no longer a
+   * pure function: it restacks only while DROPPED DOWN, which is panel state
+   * rather than a row aspect. It is still answered from a plain map lookup, never
+   * from the DOM, so the racing failure above cannot return.
    *
-   * @param {{kind: string, paint?: boolean}} row An inspector row def.
+   * @param {{kind: string, paint?: boolean, compound?: boolean}} row An inspector row def.
    * @returns {boolean}
    *
    * @example fullWidthRow({key: "x", kind: "number"})
@@ -566,6 +604,14 @@
    * true
    */
   function fullWidthRow(row) {
+    // AN OPEN COMPOUND IS A THIRD KIND (workstream COMPOUND_). Expanded, it
+    // restacks — a big pad on the parent line and the leaves as their own rows
+    // beneath — so a divider run through it would be the "extending too far
+    // down" complaint this function exists to answer, one feature later. Its
+    // children mount their own divider run instead (see .compound-children).
+    // COLLAPSED it is an ordinary boundary row: label on the left, fields on the
+    // right, exactly the boundary a divider names.
+    if (row.compound) return !!compoundOpen[row.key];
     const kind = rowKind(row);
     return kind === LIST_ROW_KIND || (kind === "color" && !!row.paint);
   }
@@ -647,6 +693,97 @@
   function toggleCategory(id) {
     collapsed = { ...collapsed, [id]: !collapsed[id] };
     localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed));
+  }
+
+  // ── COMPOUND ROW DISCLOSURE (workstream COMPOUND_, backburner CY) ───────────
+  // A compound's dropped-down state is VIEWER-LOCAL and PERSISTED, for exactly
+  // the reasons the category accordion above is: it is a question about how you
+  // want to look at the panel, not about the document, so it must survive a
+  // selection change and a reload and must NOT be a document edit. Keyed by the
+  // compound's id (`xy`, `wh`) and shared across item types, so opening Position
+  // on one widget leaves it open on the next — the accordion's own rule.
+  //
+  // THE TRIANGLE IS ALWAYS VISIBLE, which is the user's explicit ask ("they're
+  // always visible those arrows") and the one place this differs from the row's
+  // other label chrome (copy-path, help, gallery are hover-only). A disclosure
+  // the author has to discover by hovering is a feature they will never find,
+  // and its state is information — "there is more inside this row" — that a
+  // hover-only glyph withholds until asked.
+  const COMPOUND_OPEN_KEY = "powerrp.inspectorCompoundOpen";
+  let compoundOpen = $state(loadCompoundOpen());
+  function loadCompoundOpen() {
+    try {
+      const raw = localStorage.getItem(COMPOUND_OPEN_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      console.warn("PowerRP: bad inspectorCompoundOpen setting, ignoring:", e);
+      return {};
+    }
+  }
+  function toggleCompound(key) {
+    compoundOpen = { ...compoundOpen, [key]: !compoundOpen[key] };
+    localStorage.setItem(COMPOUND_OPEN_KEY, JSON.stringify(compoundOpen));
+  }
+
+  /**
+   * Query. The two axes a compound's `pad2d` editor drags, resolved to the full
+   * state path each one writes. Null when the compound declares no pad or does
+   * not have exactly two leaves — a pad is a 2-vector control by construction,
+   * so a 3-vector compound gets its rows and no pad rather than a pad that
+   * silently ignores a third axis.
+   *
+   * The paths go through `writeKey`, so a compound over derived rows would write
+   * the real slots (the cx/cy rule) with no special case here.
+   */
+  function padAxes(node, itemId) {
+    if (node.editor !== "pad2d" || itemId == null) return null;
+    const leaves = leafRows(node.children);
+    if (leaves.length !== 2) return null;
+    return leaves.map((row) => ({ row, path: ["items", itemId, ...writeKey(row).split(".")] }));
+  }
+
+  // ── THE ASPECT CHAIN LOCK (backburner AF) ──────────────────────────────────
+  // The lock is an ordinary per-item boolean leaf (core/properties.js
+  // ASPECT_LOCK_KEY), so reading and writing it needs no new app API — it is the
+  // same setPreview/commitPreview pair every property row uses, and it undoes
+  // like one.
+
+  /** Query. Is this item's width/height chain locked? Absent is OFF, which is
+   *  what makes every pre-feature document byte-identical. */
+  function aspectLocked(state) {
+    return state?.[ASPECT_LOCK_KEY] === true;
+  }
+
+  /** Command. Toggles the chain, one undo unit. */
+  function toggleAspectLock(state, itemId) {
+    if (itemId == null) return;
+    app.setPreview([[["items", itemId, ASPECT_LOCK_KEY], !aspectLocked(state)]]);
+    app.commitPreview();
+  }
+
+  /**
+   * Query. The extra write a locked chain implies when ONE of w/h is edited: the
+   * OTHER axis's path and its ratio-preserving value, or null when the chain is
+   * off, this is not a w/h row, or either side is not a plain number.
+   *
+   * WHY IT DECLINES ON A NON-NUMBER RATHER THAN GUESSING. If the other axis holds
+   * an EQUATION, writing a literal over it would destroy an expression the author
+   * wrote — ColorField's standing "would overwrite the equation" discipline. The
+   * edited axis still commits; only the chained write is withheld, so the lock
+   * degrades to doing nothing rather than to doing damage.
+   *
+   * The arithmetic itself is core's (`aspectLockedPair`), shared with the canvas
+   * resize gesture so a dragged handle and a typed number cannot disagree.
+   */
+  function aspectChainWrite(key, value, state, itemId) {
+    if (itemId == null || (key !== "w" && key !== "h")) return null;
+    if (!aspectLocked(state) || typeof value !== "number") return null;
+    const before = { w: state?.w, h: state?.h };
+    if (typeof before.w !== "number" || typeof before.h !== "number") return null;
+    const after = aspectLockedPair(key, value, before);
+    const other = key === "w" ? "h" : "w";
+    if (after[other] === before[other]) return null;
+    return [["items", itemId, other], after[other]];
   }
 
   // ── Equation discoverability (path tooltip + copy-path) ───────────────────────
@@ -1846,6 +1983,153 @@
      to it would COMMIT A TRANSITION TYPE ON HOVER. So the two created-item call
      sites opt in by name and the transition/not-yet-created ones simply do not.
      null (the default) = no hover preview, exactly as before. -->
+<!-- A COMPOUND ROW (workstream COMPOUND_, backburner CY; core/properties.js's
+     COMPOUND ROWS header is the doctrine). ONE parent row standing for several
+     leaf rows that the document already stores separately:
+
+       ▸ Position  [X] [Y] [pad]   ◆     collapsed
+       ▾ Position  [ big pad  ]    ◆     expanded, with X and Y as ordinary rows
+         X  [ 120 ]               ◆      beneath it
+         Y  [  40 ]               ◆
+
+     THE TRIANGLE IS ALWAYS VISIBLE and it PUSHES THE LABEL RIGHT — both are the
+     user's words verbatim ("triangles that indicate dropdown next to the property
+     name, which push the property name to the right a little (they're always
+     visible those arrows)"). The nudge is real layout, not decoration: it is what
+     makes a compound's label visibly a level above its children's.
+
+     IT RECURSES, so a compound whose child is another compound renders through
+     THIS SAME SNIPPET at the deeper indent — the user asked for sub-subproperties
+     and the architecture is the answer rather than a plan to rewrite it later.
+     `depth` is the ONLY thing that varies; no branch counts levels.
+
+     THE DIAMOND IS SectionKeyframeControls, THE SECTION BUBBLE ITSELF — not a
+     lookalike. The user's own framing is "you know how sections can be none, some
+     or all for keyframes? Same for these properties that have subproperties", so
+     the same component reads the same tri-state over this node's leaf paths, with
+     the same HALF→ALL ruling and the same one-undo-unit toggle. A second
+     implementation would be a second set of rules to keep in step. -->
+<!-- THE ONE ROW DISPATCH. A category renders rows through here rather than
+     calling propRow directly, so "is this a compound?" is asked in exactly one
+     place — the mistake this file has made before is a second branch that never
+     learns about a row aspect (see propRow's multi-selection note). Every caller
+     that renders a LIST of rows should call this; propRow stays the snippet for a
+     row already known to be a leaf. -->
+{#snippet anyRow(row, state, opts)}
+  {#if row.compound}
+    {@render compoundRow(row, state, opts, 0)}
+  {:else}
+    {@render propRow(row, state, opts)}
+  {/if}
+{/snippet}
+
+{#snippet compoundRow(node, state, opts, depth)}
+  {@const itemId = opts.itemId ?? null}
+  {@const open = !!compoundOpen[node.key]}
+  {@const leaves = leafRows(node.children)}
+  <!-- The leaf paths this node's diamond speaks for. Built through the SAME
+       sectionPaths gates the category bubble passes (a transition's config rows
+       and a not-yet-created item's grayed rows keyframe nothing), by handing it a
+       category-shaped object — so a compound can never claim a keyframing power
+       the rows beneath it visibly lack. -->
+  {@const kfPaths = sectionPaths({ rows: leaves }, opts)}
+  {@const axes = padAxes(node, itemId)}
+  <div class="row compound-row" class:compound-open={open} style="--compound-depth: {depth}">
+    <span class="row-label-chrome compound-label">
+      <!-- ALWAYS VISIBLE (never the hover-only reveal its chrome siblings use):
+           a disclosure the author must hover to discover is one they will not
+           find, and "there is more inside this row" is information the glyph is
+           there to carry at rest. -->
+      <Tooltip text={open ? `Collapse ${node.label} into one row` : `Expand ${node.label} into ${leaves.map((r) => r.label).join(" and ")}`}>
+        <button
+          class="compound-twisty"
+          aria-expanded={open}
+          aria-label={`${open ? "Collapse" : "Expand"} ${node.label}`}
+          onclick={() => toggleCompound(node.key)}
+        >
+          <iconify-icon icon={open ? "mdi:menu-down" : "mdi:menu-right"} width="14" height="14"></iconify-icon>
+        </button>
+      </Tooltip>
+      {#if node.help}
+        <Tooltip text={node.help}>
+          <button class="help-btn" aria-label={`Help: ${node.label}`}>
+            <iconify-icon icon="mdi:help-circle-outline" width="13" height="13"></iconify-icon>
+          </button>
+        </Tooltip>
+      {/if}
+      <span class="label">{node.label}</span>
+    </span>
+    <div class="compound-value">
+      <!-- COLLAPSED shows the leaves' fields INLINE plus the small pad — the
+           user's `> [X] [Y] [dragpad]`. EXPANDED shows the big pad alone here and
+           the leaves as their own full rows below — the user's `v [DragPad]`.
+           A compound with no pad editor simply shows its children inline when
+           collapsed and nothing here when open. -->
+      {#if !open}
+        {#each leaves as leaf (leaf.key)}
+          {@render valueControl(leaf, state, {
+            itemMode: opts.keyframes !== false && !opts.disabled,
+            disabled: !!opts.disabled,
+            onpreview: opts.onpreview, oncommit: opts.oncommit, itemId,
+            resolvedMax: typeof leaf.max === "function" ? leaf.max(state) : (leaf.max ?? null),
+            hoverPreview: opts.hoverPreview,
+            writePaths: opts.multi ? multiPaths(writeKey(leaf)) : null,
+          })}
+        {/each}
+      {/if}
+      {#if axes && !opts.disabled && opts.keyframes !== false && !opts.multi}
+        <Vector2Pad {app} {axes} large={open} label={node.label} />
+      {/if}
+      <!-- THE ASPECT CHAIN (backburner AF), on the compound that declares it and
+           nowhere else: a chain is a statement about the RATIO of two leaves, so
+           it belongs on the row that owns both. Its glyph is the equation lock
+           chain's family (mdi:link / mdi:link-off), so a reader who knows one
+           knows this one. -->
+      {#if node.aspectLock && itemId != null && !opts.disabled && opts.keyframes !== false && !opts.multi}
+        {@const locked = aspectLocked(state)}
+        <Tooltip text={locked
+          ? `Width and height are locked to their current ratio — editing either writes the other. Click to unlock.`
+          : `Lock width and height to their current ratio, so editing either writes the other and a resize drag keeps the proportions.`}>
+          <button
+            class="compound-chain"
+            class:chain-locked={locked}
+            aria-pressed={locked}
+            aria-label={`${locked ? "Unlock" : "Lock"} aspect ratio`}
+            onclick={() => toggleAspectLock(state, itemId)}
+          >
+            <iconify-icon icon={locked ? "mdi:link" : "mdi:link-off"} width="15" height="15"></iconify-icon>
+          </button>
+        </Tooltip>
+      {/if}
+    </div>
+    {#if sectionBubbleApplies(kfPaths)}
+      <span class="kf-controls">
+        <SectionKeyframeControls {app} paths={kfPaths} title={node.label} />
+      </span>
+    {:else}
+      <span class="kf-controls" aria-hidden="true"></span>
+    {/if}
+  </div>
+  {#if open}
+    <!-- THE CHILDREN, each rendered by the ORDINARY row machinery — so a leaf
+         inside a compound keeps its equation field, its own keyframe diamond, its
+         copy-path chrome, its interp strip and its undo unit by BEING an ordinary
+         row, not by having any of those re-implemented here. That is the same
+         property the interp strip buys by rendering through propRow, and it is
+         why "compounds are pure grouping" is true of the UI and not only of the
+         storage. A nested compound recurses into THIS snippet one level deeper. -->
+    <div class="compound-children" style="--compound-depth: {depth + 1}">
+      {#each node.children as child (child.key)}
+        {#if child.compound}
+          {@render compoundRow(child, state, opts, depth + 1)}
+        {:else}
+          {@render propRow(child, state, opts)}
+        {/if}
+      {/each}
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet propRow(row, state, { keyframes = true, disabled = false, onpreview, oncommit, itemId = null, pathState = null, hoverPreview = null, multi = null })}
   <!-- ITEM MODE (keyframes && !disabled): equation-aware NumericField + keyframe
        diamonds, writing item property keyframes. Otherwise PLAIN MODE: a not-yet-
@@ -2384,6 +2668,15 @@
         step={row.step ?? null}
         centerAxis={row.centerAxis ?? null}
         value={row.interpParamOf ? row.default : undefined}
+        companion={(stored) => {
+          // THE ASPECT CHAIN LOCK (backburner AF). Returns the OTHER axis's pair
+          // when this is a w/h row on a chained item, and [] otherwise — which is
+          // every other row in the app, byte-identically to before. It rides
+          // NumericField's `companion` seam so the coupled write is in the SAME
+          // preview and therefore the SAME undo unit as the edit that caused it.
+          const chained = aspectChainWrite(writeKey(row), stored, state, itemId);
+          return chained ? [chained] : [];
+        }}
       />
     {:else if disabled}
       <!-- Grayed display of a not-yet-created item: read the value straight
@@ -3069,12 +3362,12 @@
             <div class="cat-row-run">
               {@render labelDivider()}
               {#each run.rows as row (row.key)}
-                {@render propRow(row, state, opts)}
+                {@render anyRow(row, state, opts)}
               {/each}
             </div>
           {:else}
             {#each run.rows as row (row.key)}
-              {@render propRow(row, state, opts)}
+              {@render anyRow(row, state, opts)}
             {/each}
           {/if}
         {/each}

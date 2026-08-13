@@ -44,7 +44,10 @@
   scrubMin/scrubMax (DraggableNumber's drag-clamp bounds, in STORED units;
   default to min/max when absent — core/properties.js "SCRUB RANGE vs HARD
   BOUNDS"), display (display-unit name, e.g. "degrees"; null = identity),
-  centerAxis ("x" | "y" | null — the cx/cy shortcut; see below).
+  centerAxis ("x" | "y" | null — the cx/cy shortcut; see below),
+  companion (a pure hook coupling EXTRA pairs into this field's own write, so a
+  proportionally-linked property lands in the SAME undo unit — see its
+  declaration below).
   Styling lives in app.css (.numfield / .eq-*; app convention: no <style>).
 
   CENTER SHORTCUT (cx/cy, core/properties.js transform bundle): `centerAxis`
@@ -95,8 +98,32 @@
 
   let {
     app, path, paths = null, label, min = null, max = null, display = null, scrub = null, step = null,
-    centerAxis = null, scrubMin = null, scrubMax = null, value = undefined,
+    centerAxis = null, scrubMin = null, scrubMax = null, value = undefined, companion = null,
   } = $props();
+
+  // ── `companion` — THE COUPLED-WRITE SEAM (workstream COMPOUND_, backburner AF)
+  // A pure function `(storedValue) => [[path, value], …]` naming EXTRA pairs that
+  // must land in the SAME preview/commit as this field's own write. The aspect
+  // chain lock is its first and only consumer: editing W while the chain is on
+  // must write H too, and it must be ONE undo unit, or an author would undo a
+  // proportional resize in two steps and see a stretched intermediate state.
+  //
+  // WHY A PROP AND NOT A SECOND WRITE BY THE CALLER: `app.commitPreview` walks
+  // whatever `setPreview` staged, so a second setPreview would REPLACE the first
+  // (previewDelta is assigned, not merged) and the coupled value would win alone.
+  // The pairs must therefore be in the same list, which only this field can do.
+  //
+  // ABSENT IS BYTE-IDENTICAL: `writePairs` collapses to `fanOutPairs` exactly,
+  // which is what every one of the 1507 existing numeric rows gets.
+
+  /** Pure function. This field's write pairs — its own fan-out, plus whatever the
+   *  `companion` hook couples to it. Every write site in this file goes through
+   *  here, so a coupled property cannot be reached by one path and missed by
+   *  another (the drift this codebase keeps rediscovering). */
+  function writePairs(stored) {
+    const own = fanOutPairs(writePaths, stored);
+    return companion ? [...own, ...companion(stored)] : own;
+  }
 
   // `value` — THE SPARSE-SLOT FALLBACK, and ONLY that. Every ordinary row leaves
   // it undefined and reads the document at `path`, byte-identically to before.
@@ -380,11 +407,11 @@
   // back to the STORED unit (radians) before writing. Identity for normal rows.
 
   function previewNumber(shown) {
-    app.setPreview(fanOutPairs(writePaths, unit.fromDisplay(shown)));
+    app.setPreview(writePairs(unit.fromDisplay(shown)));
   }
 
   function commitNumber(shown) {
-    app.setPreview(fanOutPairs(writePaths, unit.fromDisplay(shown)));
+    app.setPreview(writePairs(unit.fromDisplay(shown)));
     app.commitPreview();
   }
 
@@ -418,7 +445,7 @@
     highlighted = 0;
     syncScroll(); // keep the highlight overlay aligned as the caret scrolls the input
     try {
-      app.setPreview(fanOutPairs(writePaths, toStored(draft)));
+      app.setPreview(writePairs(toStored(draft)));
       invalid = false;
     } catch {
       // Invalid draft: affordance only — the specific message would thrash
@@ -440,7 +467,7 @@
     draft = text;
     suggestionsOpen = false;
     try {
-      app.setPreview(fanOutPairs(writePaths, toStored(draft)));
+      app.setPreview(writePairs(toStored(draft)));
       invalid = false;
     } catch {
       app.cancelPreview();
@@ -470,7 +497,7 @@
     // text is authored in stored-space references — unit conversion of
     // free-form expressions is out of scope, see the field header note).
     const value = refs.length === 0 ? unit.fromDisplay(evalAst(ast, () => 0)) : storedForm;
-    app.setPreview(fanOutPairs(writePaths, value));
+    app.setPreview(writePairs(value));
     app.commitPreview();
     invalid = false;
     endTextEntry();
@@ -529,7 +556,7 @@
     // button is already disabled here; this guard makes the refusal true of the
     // FUNCTION, not merely of one caller.
     if (evaluateProblem) return;
-    app.setPreview(fanOutPairs(writePaths, evaluatedLiteral(evaluated, shownDecimals)));
+    app.setPreview(writePairs(evaluatedLiteral(evaluated, shownDecimals)));
     app.commitPreview();
     endTextEntry();
   }

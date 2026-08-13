@@ -20,6 +20,11 @@ import {
   itemCreationSlide, itemAnimationKeyframes, lostEquationKeyframes, withItemsMadeStatic,
   itemSlideKeyframes, slideEquationKeyframes, withSlideKeyframesRemoved,
 } from "../core/document.js";
+// GLOBAL VARIABLE KINDS (backburner CX). The kind is meta state, not fold
+// state — a variable does not become a colour halfway through a transition — so
+// these read/write doc.meta.varKinds beside meta.script rather than the vars
+// subtree. core/var_kinds.js owns every rule.
+import { VAR_KIND_ZEROS, varKind, withVarKind, withVarKindRenamed } from "../core/var_kinds.js";
 import { setPath, getPath, blendApplied, applied } from "../core/deltas.js";
 import { itemPropertiesPayload, partitionPurged, purgedRefusal, itemPropertiesDelta, retargetedPayload, retargetRefusal, retargetReport } from "../core/item_properties_clipboard.js"; // Copy Properties: the fold-then-diff time transport, and its selection-targeted retarget
 import { clipboardKind, propertySubsetKind, pasteBadge, pasteIntent } from "./pasteAffordance.js"; // what the paste button's badge and tooltip say (WORKSTREAM UU half 2)
@@ -2177,6 +2182,13 @@ export class PowerRPApp {
   modalSetAxis = () => {};
   modalAppendBuffer = () => {};
   modalBackspace = () => {};
+  // The MODAL TOGGLES (web/canvas/dragKinds.js MODAL_TOGGLES) — I flips individual
+  // origins, W flips wholistic scaling. Same seam as modalSetAxis, and modal for the
+  // same reason an axis lock is: the toggle belongs to THIS gesture and is gone when
+  // it ends, so nothing here persists. CanvasView guards it on a live modal AND on
+  // the toggle actually applying to the live kind, so a key arriving by another route
+  // cannot do what no chip offered.
+  modalToggle = () => {};
 
   // NUDGE hook — installed by CanvasView (which owns translateMembers /
   // translationPairs, so a nudge and a drag translate the selection through the
@@ -5923,9 +5935,51 @@ export class PowerRPApp {
     return this.rawState().vars ?? {};
   }
 
-  /** Creates a variable (value 0, keyframed on the CURRENT slide, like item
-   * creation). Loud on invalid names/duplicates; returns success. */
-  addVariable(name) {
+  /** THE VARIABLE KINDS map (doc.meta.varKinds — core/var_kinds.js): {name: kind}
+   * for every variable that is not a plain number. Absent entries ARE "number",
+   * which is why a pre-kinds document needs no migration. */
+  varKindsState() {
+    return this.doc.meta?.varKinds ?? {};
+  }
+
+  /** A variable's declared kind; "number" when it has none. */
+  variableKind(name) {
+    return varKind(this.varKindsState(), name);
+  }
+
+  /** Command. Retypes a variable, ONE undo unit — the kind AND the value together.
+   *
+   * THE VALUE MUST MOVE WITH THE KIND, and it is the whole reason this is not a
+   * two-line setter. A colour variable still holding `0` renders a swatch of
+   * nothing and every equation reading it gets a number where a hex string was
+   * promised; the row would look retyped while the document had not been. So the
+   * value is RESET TO THE NEW KIND'S ZERO on the current slide, in the same
+   * commit — a visible, undoable change rather than a silent mismatch.
+   *
+   * IT DELIBERATELY DOES NOT CONVERT. There is no honest number -> colour map, and
+   * inventing one (0 -> black? 0 -> #000000?) would fabricate an authored value. A
+   * retype is a fresh start, which the one undo step makes cheap to reverse.
+   * A retype to the SAME kind is a no-op and spends no undo unit. */
+  setVariableKind(name, kind) {
+    if (!(name in this.varsState())) {
+      console.error(`PowerRP: cannot set the kind of "${name}" — no such variable`);
+      return false;
+    }
+    if (this.variableKind(name) === kind) return true;
+    if (!(kind in VAR_KIND_ZEROS)) {
+      console.error(`PowerRP: "${kind}" is not a variable kind (known: ${Object.keys(VAR_KIND_ZEROS).join(", ")})`);
+      return false;
+    }
+    const doc = keyframed(this.doc, this.slideIndex, ["vars", name], VAR_KIND_ZEROS[kind]);
+    this.commit({ ...doc, meta: { ...doc.meta, varKinds: withVarKind(this.varKindsState(), name, kind) } });
+    return true;
+  }
+
+  /** Creates a variable, keyframed on the CURRENT slide at its KIND'S ZERO (like
+   * item creation). `kind` defaults to "number", which is byte-identical to what
+   * this method did before kinds existed. Loud on invalid names/duplicates;
+   * returns success. */
+  addVariable(name, kind = "number") {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
       console.error(`PowerRP: "${name}" is not a valid variable name (letters, digits, _; not starting with a digit)`);
       return false;
@@ -5934,7 +5988,15 @@ export class PowerRPApp {
       console.error(`PowerRP: a variable named "${name}" already exists`);
       return false;
     }
-    this.commit(keyframed(this.doc, this.slideIndex, ["vars", name], 0));
+    if (!(kind in VAR_KIND_ZEROS)) {
+      console.error(`PowerRP: "${kind}" is not a variable kind (known: ${Object.keys(VAR_KIND_ZEROS).join(", ")})`);
+      return false;
+    }
+    const doc = keyframed(this.doc, this.slideIndex, ["vars", name], VAR_KIND_ZEROS[kind]);
+    // ONE COMMIT for the value and the kind, so creating a colour variable is one
+    // undo step and never leaves a kind entry naming a variable that does not exist.
+    this.commit(kind === "number" ? doc
+      : { ...doc, meta: { ...doc.meta, varKinds: withVarKind(this.varKindsState(), name, kind) } });
     return true;
   }
 
@@ -5943,7 +6005,9 @@ export class PowerRPApp {
   deleteVariable(name) {
     let doc = this.doc;
     for (let i = 0; i < doc.slides.length; i++) doc = unkeyframed(doc, i, ["vars", name]);
-    this.commit(doc);
+    // THE KIND ENTRY GOES WITH IT. A stale entry would silently retype the NEXT
+    // variable that reused the name (core/var_kinds.withVarKindRenamed's header).
+    this.commit({ ...doc, meta: { ...doc.meta, varKinds: withVarKindRenamed(this.varKindsState(), name, null) } });
   }
 
   /** Renames a variable document-wide, rewriting equation references (names
@@ -5951,7 +6015,10 @@ export class PowerRPApp {
   renameVariable(oldName, newName) {
     if (newName === oldName) return true;
     try {
-      this.commit(withVariableRenamed(this.doc, oldName, newName, this.registry));
+      const doc = withVariableRenamed(this.doc, oldName, newName, this.registry);
+      // THE KIND FOLLOWS THE NAME. The map is keyed by name, so without this a
+      // renamed colour variable would read as a Number — retyped by a rename.
+      this.commit({ ...doc, meta: { ...doc.meta, varKinds: withVarKindRenamed(this.varKindsState(), oldName, newName) } });
       return true;
     } catch (e) {
       console.error(`PowerRP: rename variable failed: ${e.message}`);
